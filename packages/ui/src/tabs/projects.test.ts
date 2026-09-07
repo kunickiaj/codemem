@@ -387,7 +387,7 @@ describe("Projects tab", () => {
 		expect(state.lastProjectCoordinatorAdminGroups).toEqual([]);
 	});
 
-	it("renders mixed continuity and repair state without contradictory copy", async () => {
+	it("omits preserved continuity from mixed review and repair state", async () => {
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
 			has_more: false,
 			limit: 250,
@@ -425,10 +425,9 @@ describe("Projects tab", () => {
 		const surface = document.querySelector(".recipient-policy-review");
 		expect(surface?.textContent).toContain("Sharing review");
 		expect(surface?.textContent).toContain("Review findings (1)");
-		expect(surface?.textContent).toContain("Preserved legacy continuity (36)");
 		expect(surface?.textContent).toContain("Blocked source repairs (1)");
-		expect(surface?.textContent).toContain("36 preserved legacy findings");
-		expect(surface?.textContent).toContain("These preserved findings require no action");
+		expect(surface?.textContent).not.toContain("Preserved legacy continuity");
+		expect(surface?.textContent).not.toContain("preserved legacy findings");
 		expect(surface?.textContent).toContain("Action is required");
 		const reviewCopy = surface?.querySelector(".recipient-policy-review-decisions")?.textContent;
 		expect(reviewCopy).toContain("These findings are informational");
@@ -441,7 +440,68 @@ describe("Projects tab", () => {
 		expect(surface?.querySelector("button")?.textContent).toBe("Repair Project identity…");
 		expect(document.querySelectorAll(".recipient-policy-review-item")).toHaveLength(1);
 		expect(document.querySelector(".recipient-policy-review-decisions button")).toBeNull();
-		expect(document.querySelector(".recipient-policy-review-continuity button")).toBeNull();
+		expect(document.querySelector(".recipient-policy-review-continuity")).toBeNull();
+	});
+
+	it("preserves a focused repair when only hidden continuity data changes", async () => {
+		const initialReviewItem = reviewItem();
+		const refreshedReviewItem = reviewItem({ sourceFingerprint: "fingerprint-2" });
+		const blockedItem = {
+			blockedItemId: "blocked-1",
+			finding: "Project identity is unstable.",
+			ownerLabel: "Project owner",
+			reason: "Codemem requires source-state repair.",
+			repairAction: "Assign a stable canonical Project identity.",
+			repair: {
+				kind: "reassign_project" as const,
+				projectIdentity: "/workspace/unstable",
+				label: "Repair Project identity…",
+			},
+			version: 1 as const,
+		};
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [],
+			total: 0,
+		});
+		vi.mocked(api.loadRecipientPolicyReview)
+			.mockResolvedValueOnce(
+				recipientReview({
+					blockedItems: [blockedItem],
+					categoryCounts: {
+						actionableReview: 1,
+						blockedRepair: 1,
+						preservedContinuity: 1,
+					},
+					continuity: { findingCount: 1, state: "legacy_access_preserved" },
+					reviewItems: [initialReviewItem],
+				}),
+			)
+			.mockResolvedValueOnce(
+				recipientReview({
+					blockedItems: [blockedItem],
+					categoryCounts: {
+						actionableReview: 1,
+						blockedRepair: 1,
+						preservedContinuity: 2,
+					},
+					continuity: { findingCount: 2, state: "legacy_access_preserved" },
+					reviewItems: [refreshedReviewItem],
+				}),
+			);
+
+		await loadProjectsData();
+		const surface = document.querySelector<HTMLElement>(".recipient-policy-review");
+		const repair = surface?.querySelector<HTMLButtonElement>("button");
+		repair?.focus();
+
+		await loadProjectsData();
+
+		expect(document.querySelector(".recipient-policy-review")).toBe(surface);
+		expect(repair?.isConnected).toBe(true);
+		expect(document.activeElement).toBe(repair);
 	});
 
 	it("routes an unfinished server Team candidate into guided setup without resolving recipient review", async () => {
@@ -804,7 +864,7 @@ describe("Projects tab", () => {
 		expect(document.querySelector(".recipient-policy-review")).toBe(firstSurface);
 	});
 
-	it("rerenders the continuity surface when the preserved finding count changes", async () => {
+	it("hides preserved-only review results without a replacement notice", async () => {
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
 			has_more: false,
 			limit: 250,
@@ -836,13 +896,19 @@ describe("Projects tab", () => {
 			);
 
 		await loadProjectsData();
-		const firstSurface = document.querySelector(".recipient-policy-review");
+		await flushAsyncWork();
+		const mount = document.getElementById("recipientPolicyReviewMount");
+		expect(mount?.hidden).toBe(true);
+		expect(mount?.textContent).toBe("");
 
 		await loadProjectsData();
+		await flushAsyncWork();
 
-		expect(document.querySelector(".recipient-policy-review")).not.toBe(firstSurface);
-		expect(document.body.textContent).toContain("Preserved legacy continuity (2)");
-		expect(document.body.textContent).toContain("2 preserved legacy findings");
+		expect(mount?.hidden).toBe(true);
+		expect(mount?.textContent).toBe("");
+		expect(document.querySelector(".recipient-policy-review")).toBeNull();
+		expect(document.body.textContent).not.toContain("Preserved legacy continuity");
+		expect(mount?.querySelector('[aria-live="polite"]')).toBeNull();
 	});
 
 	it("does not offer an unusable repair action for an unmapped Project", async () => {

@@ -52,20 +52,6 @@ function renderReviewDecisionSection(review: RecipientPolicyReviewListV1): HTMLE
 	return section;
 }
 
-function renderContinuitySection(review: RecipientPolicyReviewListV1): HTMLElement {
-	const count = review.categoryCounts.preservedContinuity;
-	const section = document.createElement("section");
-	section.className = "recipient-policy-review-section recipient-policy-review-continuity";
-	const detail = paragraph(
-		`${count.toLocaleString()} preserved legacy finding${count === 1 ? "" : "s"}. Access has not changed. These preserved findings require no action. Next step: none for this category; Codemem will keep this legacy sharing state as-is.`,
-		"settings-note",
-	);
-	detail.setAttribute("role", "status");
-	detail.setAttribute("aria-live", "polite");
-	section.append(sectionHeading("Preserved legacy continuity", count), detail);
-	return section;
-}
-
 function renderBlockedSection(
 	review: RecipientPolicyReviewListV1,
 	options: RecipientPolicyReviewRenderOptions,
@@ -138,14 +124,24 @@ export function renderRecipientPolicyReview(
 	const repairAvailability = review.blockedItems.map((item) =>
 		options.onRepair && (options.isRepairAvailable?.(item.repair) ?? true) ? "1" : "0",
 	);
-	const signature = `review:${repairAvailability.join("")}:${JSON.stringify(review)}`;
+	const renderedReview = {
+		blockedItems: review.blockedItems.map((item) => ({
+			blockedItemId: item.blockedItemId,
+			finding: item.finding,
+			ownerLabel: item.ownerLabel,
+			reason: item.reason,
+			repair: item.repair,
+			repairAction: item.repairAction,
+		})),
+		reviewItems: review.reviewItems.map((item) => ({
+			finding: item.finding,
+			reason: item.reason,
+			reviewItemId: item.reviewItemId,
+		})),
+	};
+	const signature = `review:${repairAvailability.join("")}:${JSON.stringify(renderedReview)}`;
 	if (renderedReviewSignatures.get(mount) === signature) return;
-	const { preservedContinuity } = review.categoryCounts;
-	if (
-		review.reviewItems.length === 0 &&
-		preservedContinuity === 0 &&
-		review.blockedItems.length === 0
-	) {
+	if (review.reviewItems.length === 0 && review.blockedItems.length === 0) {
 		mount.replaceChildren();
 		mount.hidden = true;
 		renderedReviewSignatures.set(mount, signature);
@@ -162,7 +158,6 @@ export function renderRecipientPolicyReview(
 	surface.appendChild(title);
 
 	if (review.reviewItems.length > 0) surface.appendChild(renderReviewDecisionSection(review));
-	if (preservedContinuity > 0) surface.appendChild(renderContinuitySection(review));
 	if (review.blockedItems.length > 0) surface.appendChild(renderBlockedSection(review, options));
 
 	mount.replaceChildren(surface);
