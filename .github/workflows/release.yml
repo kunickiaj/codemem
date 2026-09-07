@@ -169,6 +169,20 @@ jobs:
           publish_if_missing "codemem" "packages/cli"
           publish_if_missing "@codemem/opencode-plugin" "packages/opencode-plugin"
 
+      - name: Verify latest dist-tag is absent or stable
+        # npm assigns `latest` to a package's first-ever version regardless of
+        # --tag, so a brand-new package whose debut is a prerelease exposes that
+        # prerelease to untagged installs. OIDC trusted publishing only grants
+        # publish, not dist-tag mutation, so this step cannot fix it; it
+        # reports. The manual fix is in docs/versioning.md under "First
+        # publication of a new package". Warning-only until every published
+        # package is clean, then flip continue-on-error to false.
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          node scripts/release-latest-guard.mjs \
+            @codemem/embeddings @codemem/core @codemem/mcp @codemem/server codemem @codemem/opencode-plugin
+
   release:
     name: Create GitHub Release
     needs: [publish-npm]
