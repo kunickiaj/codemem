@@ -902,15 +902,14 @@ export function listProjectScopeCandidates(
 	// in keyset pages and deduplicated as it goes. Stopping once cap+1 distinct
 	// identities are seen makes the overflow signal truthful: it fires only when
 	// the roster genuinely exceeds the budget, never because the window was cut
-	// short by volume. The candidate ceiling is the smaller of the result limit
-	// and the scan budget; both are applied to distinct candidates.
+	// short by volume. The walk ceiling is the LARGER of the result limit and
+	// cap+1: the overflow check must always be able to see cap+1 distinct
+	// identities, even when the caller only wants a handful back. The result
+	// limit is applied after the overflow check, never before it.
 	const candidateCeiling =
 		limit == null && maxScannedRows == null
 			? null
-			: Math.min(
-					limit ?? Number.POSITIVE_INFINITY,
-					(maxScannedRows ?? Number.POSITIVE_INFINITY) + 1,
-				);
+			: Math.max(limit ?? 0, maxScannedRows == null ? 0 : maxScannedRows + 1);
 	const scopes = listSharingDomainSettingsScopes(db);
 	const mappings = listProjectScopeSettingsMappingsForScopes(db, scopes);
 	const excludePeerReceived = options.excludePeerReceived === true;
@@ -988,13 +987,14 @@ export function listProjectScopeCandidates(
 		throw new Error("project_scope_candidate_scan_too_large");
 	}
 
-	return withCandidateGuardrails(
+	const sorted = withCandidateGuardrails(
 		candidates.toSorted(
 			(left, right) =>
 				left.display_project.localeCompare(right.display_project) ||
 				left.workspace_identity.localeCompare(right.workspace_identity),
 		),
 	);
+	return limit == null ? sorted : sorted.slice(0, limit);
 }
 
 export function listProjectScopeInventory(

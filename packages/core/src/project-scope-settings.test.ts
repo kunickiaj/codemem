@@ -263,6 +263,8 @@ describe("project scope settings", () => {
 	it("keeps the scan budget armed when a result limit is also supplied", () => {
 		// A numeric limit must not silently disable the fail-closed guard: the
 		// budget bounds distinct candidates regardless of how many are returned.
+		// Both orderings matter — limit > cap and limit <= cap — because a walk
+		// ceiling of min(limit, cap+1) would stop before overflow is visible.
 		const maxScannedRows = 5;
 		for (let index = 0; index < maxScannedRows + 1; index += 1) {
 			insertSession(db, {
@@ -275,6 +277,27 @@ describe("project scope settings", () => {
 		expect(() => listProjectScopeCandidates(db, { limit: 250, maxScannedRows })).toThrow(
 			"project_scope_candidate_scan_too_large",
 		);
+		expect(() => listProjectScopeCandidates(db, { limit: 5, maxScannedRows })).toThrow(
+			"project_scope_candidate_scan_too_large",
+		);
+		expect(() => listProjectScopeCandidates(db, { limit: 1, maxScannedRows })).toThrow(
+			"project_scope_candidate_scan_too_large",
+		);
+	});
+
+	it("applies the result limit after the overflow check, not before", () => {
+		// Under budget: limit trims the sorted result without affecting the guard.
+		const maxScannedRows = 10;
+		for (let index = 0; index < 4; index += 1) {
+			insertSession(db, {
+				cwd: `/workspace/project-${index}`,
+				gitRemote: null,
+				project: `project-${index}`,
+			});
+		}
+
+		expect(listProjectScopeCandidates(db, { limit: 2, maxScannedRows })).toHaveLength(2);
+		expect(listProjectScopeCandidates(db, { limit: null, maxScannedRows })).toHaveLength(4);
 	});
 
 	it("reports latest_session_at from the newest session of each Project", () => {
