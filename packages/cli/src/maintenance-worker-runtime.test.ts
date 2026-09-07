@@ -68,7 +68,7 @@ describe("maintenance worker runtime", () => {
 		);
 	});
 
-	it("constructs vector migration with the smaller worker-specific batch size", async () => {
+	it("constructs vector migration with bounded batches and the default idle cadence", async () => {
 		// Arrange
 		vi.stubEnv("CODEMEM_EMBEDDING_DISABLED", "0");
 		let vectorRunner: VectorModelMigrationRunner | null = null;
@@ -90,6 +90,9 @@ describe("maintenance worker runtime", () => {
 		// Assert
 		const configuredBatchSize = (vectorRunner as unknown as { batchSize: number } | null)
 			?.batchSize;
+		const configuredIdleInterval = (vectorRunner as unknown as { idleIntervalMs: number } | null)
+			?.idleIntervalMs;
 		expect(configuredBatchSize).toBe(10);
+		expect(configuredIdleInterval).toBeGreaterThanOrEqual(60_000);
 	});
 });
