@@ -9,6 +9,7 @@ import {
 	updateMaintenanceJob,
 } from "../maintenance-jobs.js";
 import { loadObserverConfig, ObserverClient } from "../observer-client.js";
+import { OBSERVER_CONCEPT_SET, OBSERVER_CONCEPTS } from "../observer-concepts.js";
 import { SecretScanner } from "../secret-scanner.js";
 import { isSummaryLikeMemory } from "../summary-memory.js";
 
@@ -22,17 +23,6 @@ const AI_BACKFILL_KINDS = [
 	"refactor",
 ] as const;
 
-const AI_BACKFILL_CONCEPTS = [
-	"how-it-works",
-	"why-it-exists",
-	"what-changed",
-	"problem-solution",
-	"gotcha",
-	"pattern",
-	"trade-off",
-] as const;
-const AI_BACKFILL_CONCEPT_SET = new Set<string>(AI_BACKFILL_CONCEPTS);
-
 const AI_BACKFILL_JOB_KIND = "ai_structured_backfill";
 const AI_BACKFILL_SCHEMA_NAME = "codemem_structured_memory_backfill";
 const AI_BACKFILL_SCHEMA: Record<string, unknown> = {
@@ -41,7 +31,7 @@ const AI_BACKFILL_SCHEMA: Record<string, unknown> = {
 	properties: {
 		narrative: { type: ["string", "null"] },
 		facts: { type: "array", items: { type: "string" } },
-		concepts: { type: "array", items: { type: "string", enum: [...AI_BACKFILL_CONCEPTS] } },
+		concepts: { type: "array", items: { type: "string", enum: [...OBSERVER_CONCEPTS] } },
 	},
 	required: ["narrative", "facts", "concepts"],
 };
@@ -157,7 +147,7 @@ function buildStructuredBackfillPrompt(row: {
 - narrative must end cleanly on a full sentence. Do not output a truncated clause.
 - facts: 2-8 source-grounded, self-contained statements. Prefer concrete details over generic purpose statements.
 - concepts: 2-5 values from this exact list only:
-  ["how-it-works", "why-it-exists", "what-changed", "problem-solution", "gotcha", "pattern", "trade-off"]
+  ${JSON.stringify([...OBSERVER_CONCEPTS])}
 </field_rules>
 
 <grounding_rules>
@@ -257,7 +247,7 @@ function parseStructuredBackfillResponse(raw: string | null): ParsedStructuredBa
 					(item): item is string =>
 						typeof item === "string" &&
 						item.trim().length > 0 &&
-						AI_BACKFILL_CONCEPT_SET.has(item.trim().toLowerCase()),
+						OBSERVER_CONCEPT_SET.has(item.trim().toLowerCase()),
 				)
 				.map((item) => item.trim().toLowerCase())
 		: [];

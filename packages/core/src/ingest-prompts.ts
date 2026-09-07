@@ -6,6 +6,7 @@
  */
 
 import type { ObserverContext, ToolEvent } from "./ingest-types.js";
+import { OBSERVER_CONCEPTS } from "./observer-concepts.js";
 
 // ---------------------------------------------------------------------------
 // Constants — prompt fragments matching Python's observer_prompts.py
@@ -134,7 +135,7 @@ const OBSERVATION_SCHEMA = `<observation>
     Aim for 100-500 words - enough to be useful, not overwhelming.
   ]</narrative>
   <concepts>
-    <concept>[how-it-works, why-it-exists, what-changed, problem-solution, gotcha, pattern, trade-off]</concept>
+    <concept>[${OBSERVER_CONCEPTS.join(", ")}]</concept>
   </concepts>
   <!-- concepts: 2-5 knowledge categories from the list above -->
   <files_read>

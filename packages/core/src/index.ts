@@ -615,6 +615,7 @@ export type {
 	ObserverTokenUsage,
 } from "./observer-client.js";
 export { loadObserverConfig, ObserverAuthError, ObserverClient } from "./observer-client.js";
+export * from "./observer-concepts.js";
 export type {
 	ConfigPathResolution,
 	ConfigPathSource,
@@ -652,6 +653,7 @@ export {
 	writeCodememConfigFile,
 	writeWorkspaceCodememConfigFile,
 } from "./observer-config.js";
+export * from "./observer-output-schema.js";
 export * from "./operational-status.js";
 export * from "./outcome-evidence.js";
 export type { PackArtifacts } from "./pack.js";

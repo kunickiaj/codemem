@@ -11,6 +11,7 @@
 import { isLowSignalObservation } from "./ingest-filters.js";
 import type { ParsedObservation, ParsedOutput, ParsedSummary } from "./ingest-types.js";
 import { REMEMBER_MEMORY_KINDS } from "./memory-kinds.js";
+import { OBSERVER_CONCEPT_SET } from "./observer-concepts.js";
 
 // ---------------------------------------------------------------------------
 // Regex patterns
@@ -32,16 +33,6 @@ const SUMMARY_FIELDS = new Set([
 	"notes",
 	"files_read",
 	"files_modified",
-]);
-
-const OBSERVATION_CONCEPTS = new Set([
-	"how-it-works",
-	"why-it-exists",
-	"what-changed",
-	"problem-solution",
-	"gotcha",
-	"pattern",
-	"trade-off",
 ]);
 
 export const SUPPORTED_OBSERVATION_KINDS = new Set<string>(REMEMBER_MEMORY_KINDS);
@@ -1076,7 +1067,7 @@ function addedObservationFieldsAreGrounded(
 			extractRecoverableChildTexts(fragment, "concepts", "concept"),
 			observation.concepts,
 			source,
-			(value) => OBSERVATION_CONCEPTS.has(value.trim().toLowerCase()),
+			(value) => OBSERVER_CONCEPT_SET.has(value.trim().toLowerCase()),
 		) &&
 		addedItemsAreGrounded(
 			extractRecoverableChildTexts(fragment, "files_read", "file"),
@@ -1311,7 +1302,7 @@ function observationsAreGroundedInPlainProse(
 		(!hasVisibleText(observation.subtitle ?? "") ||
 			isGroundedProsePhrase(observation.subtitle as string, prose)) &&
 		observation.facts.every((value) => isGroundedProsePhrase(value, prose)) &&
-		observation.concepts.every((value) => OBSERVATION_CONCEPTS.has(value.trim().toLowerCase())) &&
+		observation.concepts.every((value) => OBSERVER_CONCEPT_SET.has(value.trim().toLowerCase())) &&
 		[...observation.filesRead, ...observation.filesModified].every((value) =>
 			isGroundedProsePath(value, prose),
 		)
