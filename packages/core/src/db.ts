@@ -678,6 +678,21 @@ function ensureMemoryItemsPagingIndex(db: DatabaseType): void {
 	}
 }
 
+/**
+ * Create the (started_at, id) keyset index that newest-first candidate scans
+ * rely on (listProjectScopeCandidates). Same rationale as the memory_items
+ * paging index: run unconditionally so databases already at the current
+ * SCHEMA_VERSION pick it up instead of re-sorting sessions on every page.
+ */
+function ensureSessionsPagingIndex(db: DatabaseType): void {
+	if (!tableExists(db, "sessions")) return;
+	try {
+		db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_started_id ON sessions(started_at, id)");
+	} catch {
+		// Keep additive compatibility best-effort for index creation.
+	}
+}
+
 function assertRecipientPolicyDeviceEligibilityCompatibility(db: DatabaseType): void {
 	const recipientPolicySchemaPresent = [
 		"policy_teams",
@@ -926,6 +941,7 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 	ensureDeviceIdentityBindingAuditSchema(db);
 	ensureLegacyTeamSetupDraftSchema(db);
 	ensureMemoryItemsPagingIndex(db);
+	ensureSessionsPagingIndex(db);
 	const compatAlreadyApplied = schemaCompatAlreadyApplied(db);
 	if (!compatAlreadyApplied) {
 		// IMPORTANT: any NEW DDL added to this gated block REQUIRES bumping

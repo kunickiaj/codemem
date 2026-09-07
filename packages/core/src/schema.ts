@@ -13,19 +13,26 @@ import {
 	uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 
-export const sessions = sqliteTable("sessions", {
-	id: integer("id").primaryKey(),
-	started_at: text("started_at").notNull(),
-	ended_at: text("ended_at"),
-	cwd: text("cwd"),
-	project: text("project"),
-	git_remote: text("git_remote"),
-	git_branch: text("git_branch"),
-	user: text("user"),
-	tool_version: text("tool_version"),
-	metadata_json: text("metadata_json"),
-	import_key: text("import_key"),
-});
+export const sessions = sqliteTable(
+	"sessions",
+	{
+		id: integer("id").primaryKey(),
+		started_at: text("started_at").notNull(),
+		ended_at: text("ended_at"),
+		cwd: text("cwd"),
+		project: text("project"),
+		git_remote: text("git_remote"),
+		git_branch: text("git_branch"),
+		user: text("user"),
+		tool_version: text("tool_version"),
+		metadata_json: text("metadata_json"),
+		import_key: text("import_key"),
+	},
+	(table) => [
+		// Keyset paging for newest-first candidate scans (listProjectScopeCandidates).
+		index("idx_sessions_started_id").on(table.started_at, table.id),
+	],
+);
 
 export type Session = typeof sessions.$inferSelect;
 export type NewSession = typeof sessions.$inferInsert;

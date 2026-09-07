@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { toJson } from "./db.js";
 import {
 	analyzeProjectScopeMappingChangeGuardrails,
@@ -180,23 +180,116 @@ describe("project scope settings", () => {
 		expect(projects.every((project) => project.identity_source === "unmapped")).toBe(true);
 	});
 
-	it("fails closed when a bounded candidate scan exceeds its row budget", () => {
-		insertSession(db, { cwd: "/workspace/one", gitRemote: null, project: "one" });
-		insertSession(db, { cwd: "/workspace/two", gitRemote: null, project: "two" });
+	it("allows repeated sessions for one project within a bounded candidate scan", () => {
+		const maxScannedRows = 5;
+		for (let index = 0; index < maxScannedRows + 5; index += 1) {
+			insertSession(db);
+		}
 
-		expect(() => listProjectScopeCandidates(db, { limit: null, maxScannedRows: 1 })).toThrow(
+		expect(listProjectScopeCandidates(db, { limit: null, maxScannedRows })).toHaveLength(1);
+	});
+
+	it("fails closed when distinct candidates exceed the bounded scan budget", () => {
+		const maxScannedRows = 5;
+		for (let index = 0; index < maxScannedRows + 1; index += 1) {
+			insertSession(db, {
+				cwd: `/workspace/project-${index}`,
+				gitRemote: null,
+				project: `project-${index}`,
+			});
+		}
+
+		expect(() => listProjectScopeCandidates(db, { limit: null, maxScannedRows })).toThrow(
 			"project_scope_candidate_scan_too_large",
 		);
 	});
 
-	it("counts filtered-out sessions toward the bounded candidate scan budget", () => {
+	it("does not count filtered-out sessions toward the bounded candidate scan budget", () => {
 		insertSession(db, { cwd: null, gitRemote: null, project: null });
 		insertSession(db, { cwd: null, gitRemote: null, project: null });
 		insertSession(db);
 
-		expect(() => listProjectScopeCandidates(db, { limit: null, maxScannedRows: 2 })).toThrow(
+		expect(listProjectScopeCandidates(db, { limit: null, maxScannedRows: 2 })).toHaveLength(1);
+	});
+
+	it("pages the candidate scan by a composite (started_at, id) keyset", () => {
+		insertSession(db);
+		const prepare = vi.spyOn(db, "prepare");
+		let candidateSql: string | undefined;
+		try {
+			listProjectScopeCandidates(db, { limit: null, maxScannedRows: 5 });
+			candidateSql = prepare.mock.calls
+				.map(([sql]) => String(sql))
+				.find((sql) => sql.includes("FROM sessions s"));
+		} finally {
+			prepare.mockRestore();
+		}
+
+		expect(candidateSql).toMatch(/s\.started_at < \? OR \(s\.started_at = \? AND s\.id < \?\)/u);
+		expect(candidateSql).toMatch(/ORDER BY s\.started_at DESC, s\.id DESC\s+LIMIT \?/u);
+	});
+
+	it("does not evict an old distinct Project when newer sessions exceed one page", () => {
+		// Regression for the truncated-window false negative: a Project whose
+		// only sessions are older than several pages of other-project activity
+		// must still be found. The scan must page until distinct candidates
+		// are exhausted, not stop at a fixed row count.
+		const oldStartedAt = "2026-01-01T00:00:00Z";
+		db.prepare(
+			`INSERT INTO sessions(started_at, cwd, project, git_remote, git_branch, user, tool_version)
+			 VALUES (?, '/workspace/old', 'old-project', 'https://git.example.invalid/old.git', 'main', 'u', 't')`,
+		).run(oldStartedAt);
+		// 1200 newer sessions on one other Project: > 2 pages of 500.
+		const insertNewer = db.prepare(
+			`INSERT INTO sessions(started_at, cwd, project, git_remote, git_branch, user, tool_version)
+			 VALUES (?, '/workspace/busy', 'busy', 'https://git.example.invalid/busy.git', 'main', 'u', 't')`,
+		);
+		db.transaction(() => {
+			for (let index = 0; index < 1200; index += 1) {
+				insertNewer.run(`2026-06-01T00:${String(index % 60).padStart(2, "0")}:00Z`);
+			}
+		})();
+
+		const candidates = listProjectScopeCandidates(db, { limit: null, maxScannedRows: 10 });
+		expect(candidates.map((candidate) => candidate.project).toSorted()).toEqual([
+			"busy",
+			"old-project",
+		]);
+		expect(
+			candidates.find((candidate) => candidate.project === "old-project")?.latest_session_at,
+		).toBe(oldStartedAt);
+	});
+
+	it("keeps the scan budget armed when a result limit is also supplied", () => {
+		// A numeric limit must not silently disable the fail-closed guard: the
+		// budget bounds distinct candidates regardless of how many are returned.
+		const maxScannedRows = 5;
+		for (let index = 0; index < maxScannedRows + 1; index += 1) {
+			insertSession(db, {
+				cwd: `/workspace/project-${index}`,
+				gitRemote: null,
+				project: `project-${index}`,
+			});
+		}
+
+		expect(() => listProjectScopeCandidates(db, { limit: 250, maxScannedRows })).toThrow(
 			"project_scope_candidate_scan_too_large",
 		);
+	});
+
+	it("reports latest_session_at from the newest session of each Project", () => {
+		// sessions.id and started_at are not monotonic together (imports
+		// backdate started_at); the representative row must be chosen by time.
+		const insert = db.prepare(
+			`INSERT INTO sessions(started_at, cwd, project, git_remote, git_branch, user, tool_version)
+			 VALUES (?, '/workspace/p', 'p', 'https://git.example.invalid/p.git', ?, 'u', 't')`,
+		);
+		insert.run("2026-06-01T00:00:00Z", "newer-branch"); // lower id, newer time
+		insert.run("2026-01-01T00:00:00Z", "older-branch"); // higher id, older time
+
+		const [candidate] = listProjectScopeCandidates(db, { limit: null, maxScannedRows: 10 });
+		expect(candidate?.latest_session_at).toBe("2026-06-01T00:00:00Z");
+		expect(candidate?.git_branch).toBe("newer-branch");
 	});
 
 	it("fails closed when candidate mapping metadata exceeds its row budget", () => {
