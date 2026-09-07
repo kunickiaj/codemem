@@ -215,18 +215,40 @@ describe("project scope settings", () => {
 	it("pages the candidate scan by a composite (started_at, id) keyset", () => {
 		insertSession(db);
 		const prepare = vi.spyOn(db, "prepare");
-		let candidateSql: string | undefined;
+		let pageSqls: string[] = [];
 		try {
 			listProjectScopeCandidates(db, { limit: null, maxScannedRows: 5 });
-			candidateSql = prepare.mock.calls
+			pageSqls = prepare.mock.calls
 				.map(([sql]) => String(sql))
-				.find((sql) => sql.includes("FROM sessions s"));
+				.filter((sql) => sql.includes("FROM sessions s"));
 		} finally {
 			prepare.mockRestore();
 		}
 
-		expect(candidateSql).toMatch(/s\.started_at < \? OR \(s\.started_at = \? AND s\.id < \?\)/u);
-		expect(candidateSql).toMatch(/ORDER BY s\.started_at DESC, s\.id DESC\s+LIMIT \?/u);
+		// Two prepared shapes: an unbounded first page and a keyset-bounded
+		// continuation. Neither may rely on a sentinel start value.
+		expect(pageSqls).toHaveLength(2);
+		const [firstPage, nextPage] = pageSqls;
+		expect(firstPage).not.toMatch(/s\.started_at < \?/u);
+		expect(nextPage).toMatch(/s\.started_at < \? OR \(s\.started_at = \? AND s\.id < \?\)/u);
+		for (const sql of pageSqls) {
+			expect(sql).toMatch(/ORDER BY s\.started_at DESC, s\.id DESC\s+LIMIT \?/u);
+		}
+	});
+
+	it("includes sessions whose started_at sorts above any BMP sentinel", () => {
+		// started_at is free-form NOT NULL text; raw-event ingestion does not
+		// enforce ISO-8601. A value beginning with a supplementary-plane character
+		// sorts above "\uFFFF" in SQLite's byte collation, so a sentinel-seeded
+		// first page would exclude it forever. The first page must be unbounded.
+		db.prepare(
+			`INSERT INTO sessions(started_at, cwd, project, git_remote, git_branch, user, tool_version)
+			 VALUES ('🚀 not a timestamp', '/workspace/odd', 'odd', 'https://git.example.invalid/odd.git', 'main', 'u', 't')`,
+		).run();
+		insertSession(db);
+
+		const candidates = listProjectScopeCandidates(db, { limit: null, maxScannedRows: 10 });
+		expect(candidates.map((candidate) => candidate.project).toSorted()).toEqual(["api", "odd"]);
 	});
 
 	it("does not evict an old distinct Project when newer sessions exceed one page", () => {

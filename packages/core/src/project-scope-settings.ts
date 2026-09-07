@@ -928,7 +928,21 @@ export function listProjectScopeCandidates(
 	// started_at are not monotonic together (imports backdate started_at), so
 	// the keyset cursor must be the composite (started_at, id).
 	const pageSize = 500;
-	const sql = `SELECT
+	// The first page has no lower keyset bound. started_at is free-form NOT
+	// NULL text (raw-event ingestion does not enforce ISO-8601), so no sentinel
+	// string is guaranteed to sort above every stored value in SQLite's byte
+	// collation. Later pages bound on the last (started_at, id) actually seen.
+	const candidateFilterSql = `(
+			       COALESCE(TRIM(s.git_remote), TRIM(s.cwd), TRIM(s.project), '') <> ''
+			    OR EXISTS (SELECT 1 FROM memory_items mi_candidate WHERE mi_candidate.session_id = s.id)
+			 )${
+					excludePeerReceived
+						? `
+			   AND (s.cwd IS NULL OR substr(s.cwd, 1, length(?)) <> ?)
+			   AND COALESCE(s.tool_version, '') <> 'sync_replication'`
+						: ""
+}`;
+	const pageSql = (keysetBound: boolean) => `SELECT
 				s.id,
 				s.started_at,
 				s.cwd,
@@ -945,32 +959,24 @@ export function listProjectScopeCandidates(
 					LIMIT 1
 				) AS workspace_id
 			 FROM sessions s
-			 WHERE (s.started_at < ? OR (s.started_at = ? AND s.id < ?))
-			   AND (
-			       COALESCE(TRIM(s.git_remote), TRIM(s.cwd), TRIM(s.project), '') <> ''
-			    OR EXISTS (SELECT 1 FROM memory_items mi_candidate WHERE mi_candidate.session_id = s.id)
-			 )${
-					excludePeerReceived
-						? `
-			   AND (s.cwd IS NULL OR substr(s.cwd, 1, length(?)) <> ?)
-			   AND COALESCE(s.tool_version, '') <> 'sync_replication'`
-						: ""
-}
+			 WHERE ${keysetBound ? "(s.started_at < ? OR (s.started_at = ? AND s.id < ?)) AND " : ""}${candidateFilterSql}
 			 ORDER BY s.started_at DESC, s.id DESC
 			 LIMIT ?`;
-	const selectPage = db.prepare(sql);
+	const selectFirstPage = db.prepare(pageSql(false));
+	const selectNextPage = db.prepare(pageSql(true));
 	const seen = new Set<string>();
 	const candidates: ProjectScopeCandidate[] = [];
-	// Sentinel above any real ISO-8601 timestamp; started_at is NOT NULL TEXT.
-	let cursorStartedAt = "\uFFFF";
-	let cursorId = Number.MAX_SAFE_INTEGER;
+	let cursor: { startedAt: string; id: number } | null = null;
 	const ceilingReached = () => candidateCeiling != null && candidates.length >= candidateCeiling;
 	pages: while (!ceilingReached()) {
-		const queryParameters: Array<string | number> = [cursorStartedAt, cursorStartedAt, cursorId];
+		const queryParameters: Array<string | number> = cursor
+			? [cursor.startedAt, cursor.startedAt, cursor.id]
+			: [];
 		if (excludePeerReceived)
 			queryParameters.push(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX);
 		queryParameters.push(pageSize);
-		const rows = selectPage.all(...queryParameters) as ProjectScopeCandidateRow[];
+		const statement = cursor ? selectNextPage : selectFirstPage;
+		const rows = statement.all(...queryParameters) as ProjectScopeCandidateRow[];
 		if (rows.length === 0) break;
 		for (const row of rows) {
 			const identity = canonicalWorkspaceIdentity({
@@ -990,8 +996,7 @@ export function listProjectScopeCandidates(
 		// started_at is NOT NULL in the schema; a null here means the row shape
 		// diverged from the query and paging can no longer be trusted.
 		if (!last || last.started_at == null) break;
-		cursorStartedAt = last.started_at;
-		cursorId = last.id;
+		cursor = { startedAt: last.started_at, id: last.id };
 	}
 	if (maxScannedRows != null && candidates.length > maxScannedRows) {
 		throw new Error("project_scope_candidate_scan_too_large");
