@@ -944,8 +944,7 @@ export function listProjectScopeCandidates(
 			   AND COALESCE(s.tool_version, '') <> 'sync_replication'`
 						: ""
 }`;
-	const pageSql = (keysetBound: boolean) => `SELECT
-				s.id,
+	const selectColumnsSql = `s.id,
 				s.started_at,
 				s.cwd,
 				s.project,
@@ -959,26 +958,54 @@ export function listProjectScopeCandidates(
 					  AND TRIM(mi.workspace_id) <> ''
 					ORDER BY mi.id DESC
 					LIMIT 1
-				) AS workspace_id
+				) AS workspace_id`;
+	const selectFirstPage = db.prepare(`SELECT ${selectColumnsSql}
 			 FROM sessions s
-			 WHERE ${keysetBound ? "(s.started_at < ? OR (s.started_at = ? AND s.id < ?)) AND " : ""}${candidateFilterSql}
+			 WHERE ${candidateFilterSql}
 			 ORDER BY s.started_at DESC, s.id DESC
-			 LIMIT ?`;
-	const selectFirstPage = db.prepare(pageSql(false));
-	const selectNextPage = db.prepare(pageSql(true));
+			 LIMIT ?`);
+	// A single `a < x OR (a = x AND b < y)` predicate cannot use the composite
+	// index for a range seek: SQLite plans it as a full index SCAN from the
+	// newest entry every page, which makes the whole walk quadratic on large
+	// histories. Two seekable ranges unioned and re-sorted resume exactly at the
+	// cursor: the tail of the cursor's own timestamp, then everything older.
+	const selectNextPage = db.prepare(`SELECT * FROM (
+				SELECT ${selectColumnsSql}
+				 FROM sessions s
+				 WHERE s.started_at = ? AND s.id < ? AND ${candidateFilterSql}
+				 ORDER BY s.id DESC
+				 LIMIT ?
+			) UNION ALL SELECT * FROM (
+				SELECT ${selectColumnsSql}
+				 FROM sessions s
+				 WHERE s.started_at < ? AND ${candidateFilterSql}
+				 ORDER BY s.started_at DESC, s.id DESC
+				 LIMIT ?
+			)
+			 ORDER BY started_at DESC, id DESC
+			 LIMIT ?`);
 	const seen = new Set<string>();
 	const candidates: ProjectScopeCandidate[] = [];
 	let cursor: { startedAt: string; id: number } | null = null;
 	const ceilingReached = () => candidateCeiling != null && candidates.length >= candidateCeiling;
+	const filterParameters: string[] = excludePeerReceived
+		? [SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX]
+		: [];
 	pages: while (!ceilingReached()) {
-		const queryParameters: Array<string | number> = cursor
-			? [cursor.startedAt, cursor.startedAt, cursor.id]
-			: [];
-		if (excludePeerReceived)
-			queryParameters.push(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX);
-		queryParameters.push(pageSize);
-		const statement = cursor ? selectNextPage : selectFirstPage;
-		const rows = statement.all(...queryParameters) as ProjectScopeCandidateRow[];
+		const rows = (
+			cursor
+				? selectNextPage.all(
+						cursor.startedAt,
+						cursor.id,
+						...filterParameters,
+						pageSize,
+						cursor.startedAt,
+						...filterParameters,
+						pageSize,
+						pageSize,
+					)
+				: selectFirstPage.all(...filterParameters, pageSize)
+		) as ProjectScopeCandidateRow[];
 		if (rows.length === 0) break;
 		for (const row of rows) {
 			const identity = canonicalWorkspaceIdentity({

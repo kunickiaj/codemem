@@ -226,13 +226,53 @@ describe("project scope settings", () => {
 		}
 
 		// Two prepared shapes: an unbounded first page and a keyset-bounded
-		// continuation. Neither may rely on a sentinel start value.
+		// continuation. Neither may rely on a sentinel start value, and the
+		// continuation must be two seekable ranges, not an OR predicate that
+		// forces a full index scan from the newest entry every page.
 		expect(pageSqls).toHaveLength(2);
 		const [firstPage, nextPage] = pageSqls;
 		expect(firstPage).not.toMatch(/s\.started_at < \?/u);
-		expect(nextPage).toMatch(/s\.started_at < \? OR \(s\.started_at = \? AND s\.id < \?\)/u);
-		for (const sql of pageSqls) {
-			expect(sql).toMatch(/ORDER BY s\.started_at DESC, s\.id DESC\s+LIMIT \?/u);
+		expect(firstPage).toMatch(/ORDER BY s\.started_at DESC, s\.id DESC\s+LIMIT \?/u);
+		expect(nextPage).not.toMatch(/s\.started_at < \? OR/u);
+		expect(nextPage).toMatch(/s\.started_at = \? AND s\.id < \?/u);
+		expect(nextPage).toMatch(/UNION ALL/u);
+		expect(nextPage).toMatch(/\bs\.started_at < \?\s+AND/u);
+	});
+
+	it("continues each page with an index seek rather than a rescan", () => {
+		// The composite index only helps if SQLite can SEEK to the cursor. An
+		// OR-form keyset predicate degrades to SCAN of the whole index from the
+		// top every page, which is quadratic on large histories.
+		insertSession(db);
+		const prepare = vi.spyOn(db, "prepare");
+		let nextPageSql: string | undefined;
+		try {
+			listProjectScopeCandidates(db, { limit: null, maxScannedRows: 5 });
+			nextPageSql = prepare.mock.calls
+				.map(([sql]) => String(sql))
+				.find((sql) => sql.includes("FROM sessions s") && sql.includes("UNION ALL"));
+		} finally {
+			prepare.mockRestore();
+		}
+		if (!nextPageSql) throw new Error("continuation page SQL not prepared");
+
+		const filterParameterCount = 0; // excludePeerReceived not set in this call
+		const plan = db
+			.prepare(`EXPLAIN QUERY PLAN ${nextPageSql}`)
+			.all(
+				"2026-05-06T00:00:00Z",
+				1,
+				...Array(filterParameterCount).fill(""),
+				500,
+				"2026-05-06T00:00:00Z",
+				...Array(filterParameterCount).fill(""),
+				500,
+				500,
+			) as Array<{ detail: string }>;
+		const sessionSteps = plan.map((row) => row.detail).filter((d) => /\bs\b/u.test(d));
+		expect(sessionSteps.length).toBeGreaterThanOrEqual(2);
+		for (const step of sessionSteps) {
+			expect(step).toMatch(/^SEARCH s USING INDEX idx_sessions_started_id/u);
 		}
 	});
 
