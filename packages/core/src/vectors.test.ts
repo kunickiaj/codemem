@@ -16,6 +16,7 @@ import {
 	countIncompleteActiveMemoryVectorCoverage,
 	getSemanticIndexDiagnostics,
 	pruneObsoleteTargetModelVectors,
+	pruneObsoleteTargetModelVectorsWithCoverage,
 	resolveSemanticSearchModel,
 	semanticSearch,
 	storeVectors,
@@ -333,6 +334,7 @@ describe("vectors", () => {
 			insertTestVector(memoryId, 0, `obsolete-${index}`);
 		}
 		const controller = new AbortController();
+		let scanPageReads = 0;
 		const prepareSpy = vi.spyOn(db, "prepare");
 		prepareSpy.mockImplementation((sql: string) => {
 			const statement = Database.prototype.prepare.call(db, sql);
@@ -340,7 +342,8 @@ describe("vectors", () => {
 				const all = statement.all.bind(statement);
 				statement.all = ((...params: unknown[]) => {
 					const result = all(...params);
-					controller.abort();
+					scanPageReads++;
+					if (scanPageReads === 2) controller.abort();
 					return result;
 				}) as typeof statement.all;
 			}
@@ -357,6 +360,9 @@ describe("vectors", () => {
 		expect(
 			db.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE model = ?").get("test-model"),
 		).toMatchObject({ c: 252 });
+		expect(
+			db.prepare("SELECT name FROM temp.sqlite_schema WHERE name = 'vector_prune_scan'").get(),
+		).toBeUndefined();
 	});
 
 	it("pages stably and queries existing hashes once per page", async () => {
@@ -574,6 +580,143 @@ describe("vectors", () => {
 		).toMatchObject({ c: 1 });
 	});
 
+	it("bounds pruning query results and drops the spill table", () => {
+		const sessionId = insertTestSession(db);
+		const now = "2026-09-01T00:00:00.000Z";
+		const insertMemory = db.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+			 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
+			 VALUES (?, 'feature', ?, 'body', 0.5, '', 1, ?, ?, '{}', 1, 'shared')`,
+		);
+		db.transaction(() => {
+			for (let index = 1; index <= 1_000; index++) {
+				const title = `Memory ${index}`;
+				const memoryId = Number(insertMemory.run(sessionId, title, now, now).lastInsertRowid);
+				insertTestVector(memoryId, 0, embeddings.hashText(`${title}\nbody`));
+				insertTestVector(memoryId, 0, `obsolete-a-${index}`);
+				insertTestVector(memoryId, 0, `obsolete-b-${index}`);
+			}
+		})();
+		const allResultSizes: number[] = [];
+		const prepareSpy = vi.spyOn(db, "prepare");
+		prepareSpy.mockImplementation((sql: string) => {
+			const statement = Database.prototype.prepare.call(db, sql);
+			const all = statement.all.bind(statement);
+			statement.all = ((...params: unknown[]) => {
+				const rows = all(...params);
+				allResultSizes.push(rows.length);
+				return rows;
+			}) as typeof statement.all;
+			return statement;
+		});
+
+		try {
+			expect(pruneObsoleteTargetModelVectors(db, "test-model")).toBe(2_000);
+		} finally {
+			prepareSpy.mockRestore();
+		}
+		expect(Math.max(...allResultSizes)).toBeLessThanOrEqual(250);
+		expect(
+			db.prepare("SELECT name FROM temp.sqlite_schema WHERE name = 'vector_prune_scan'").get(),
+		).toBeUndefined();
+	});
+
+	it("spills the prune scan to disk and restores temp_store afterwards", () => {
+		// The connection defaults to temp_store=MEMORY (db.ts read tuning). If the
+		// prune left that in place the spill would live in SQLite's heap and peak
+		// memory would still be O(total vectors), which is the OOM Codex flagged.
+		// temp_store values: 0=DEFAULT, 1=FILE, 2=MEMORY.
+		db.pragma("temp_store = MEMORY");
+		expect(db.pragma("temp_store", { simple: true })).toBe(2);
+		const sessionId = insertTestSession(db);
+		const memoryId = insertBackfillMemory(sessionId, "Spill", "2026-09-01T00:00:00.000Z");
+		// A covering row keeps the memory "complete" so the obsolete sibling is
+		// actually eligible for pruning; an incomplete memory is left untouched.
+		insertTestVector(memoryId, 0, embeddings.hashText("Spill\nBackfill body"));
+		insertTestVector(memoryId, 0, "obsolete");
+
+		let tempStoreDuringSpill: number | null = null;
+		const prepareSpy = vi.spyOn(db, "prepare").mockImplementation((sql: string) => {
+			const statement = Database.prototype.prepare.call(db, sql);
+			if (sql.startsWith("INSERT INTO temp.vector_prune_scan")) {
+				const run = statement.run.bind(statement);
+				statement.run = ((...params: unknown[]) => {
+					tempStoreDuringSpill ??= db.pragma("temp_store", { simple: true }) as number;
+					return run(...params);
+				}) as typeof statement.run;
+			}
+			return statement;
+		});
+		try {
+			expect(pruneObsoleteTargetModelVectors(db, "test-model")).toBe(1);
+		} finally {
+			prepareSpy.mockRestore();
+		}
+		expect(tempStoreDuringSpill).toBe(1);
+		expect(db.pragma("temp_store", { simple: true })).toBe(2);
+	});
+
+	it("deletes target rows for inactive and missing memories", () => {
+		const sessionId = insertTestSession(db);
+		const inactiveId = insertBackfillMemory(sessionId, "Inactive", "2026-09-01T00:00:00.000Z");
+		db.prepare("UPDATE memory_items SET active = 0 WHERE id = ?").run(inactiveId);
+		insertTestVector(inactiveId, 0, "inactive-hash");
+		insertTestVector(999_999, 0, "missing-hash");
+
+		expect(pruneObsoleteTargetModelVectors(db, "test-model")).toBe(2);
+		expect(db.prepare("SELECT COUNT(*) AS c FROM memory_vectors").get()).toMatchObject({ c: 0 });
+	});
+
+	it("does not lock main-database writers while spilling a scan page", () => {
+		db.close();
+		const directory = mkdtempSync(join(tmpdir(), "codemem-vector-prune-lock-"));
+		const dbPath = join(directory, "mem.sqlite");
+		db = dbModule.connect(dbPath);
+		const otherDb = dbModule.connect(dbPath);
+		otherDb.pragma("busy_timeout = 0");
+		const sessionId = insertTestSession(db);
+		const memoryId = insertBackfillMemory(sessionId, "Current", "2026-09-01T00:00:00.000Z", "body");
+		insertTestVector(memoryId, 0, embeddings.hashText("Current\nbody"));
+		const now = "2026-09-01T00:00:00.000Z";
+		const concurrentInsert = otherDb.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+			 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
+			 VALUES (?, 'feature', 'Concurrent', 'write', 0.5, '', 0, ?, ?, '{}', 1, 'shared')`,
+		);
+		let concurrentMemoryId: number | null = null;
+		const prepareSpy = vi.spyOn(db, "prepare");
+		prepareSpy.mockImplementation((sql: string) => {
+			const statement = Database.prototype.prepare.call(db, sql);
+			if (sql.startsWith("INSERT INTO temp.vector_prune_scan")) {
+				const run = statement.run.bind(statement);
+				statement.run = ((...params: unknown[]) => {
+					const result = run(...params);
+					if (concurrentMemoryId == null) {
+						concurrentMemoryId = Number(concurrentInsert.run(sessionId, now, now).lastInsertRowid);
+					}
+					return result;
+				}) as typeof statement.run;
+			}
+			return statement;
+		});
+
+		try {
+			expect(pruneObsoleteTargetModelVectors(db, "test-model")).toBe(0);
+			expect(concurrentMemoryId).not.toBeNull();
+			expect(
+				db.prepare("SELECT id FROM memory_items WHERE id = ?").get(concurrentMemoryId),
+			).toEqual({
+				id: concurrentMemoryId,
+			});
+		} finally {
+			prepareSpy.mockRestore();
+			otherDb.close();
+			db.close();
+			db = new Database(":memory:");
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
 	it("keeps vec0 metadata scans outside delete transactions", () => {
 		const sessionId = insertTestSession(db);
 		const memoryId = insertBackfillMemory(sessionId, "Current", "2026-09-01T00:00:00.000Z", "body");
@@ -633,7 +776,10 @@ describe("vectors", () => {
 		insertTestVector(memoryId, 0, embeddings.hashText(firstChunk));
 		insertTestVector(memoryId, 0, "obsolete-target-hash");
 
-		expect(pruneObsoleteTargetModelVectors(db, "test-model")).toBe(0);
+		expect(pruneObsoleteTargetModelVectorsWithCoverage(db, "test-model")).toEqual({
+			deleted: 0,
+			incompleteActiveCoverage: 1,
+		});
 		expect(
 			db.prepare("SELECT content_hash FROM memory_vectors WHERE memory_id = ?").all(memoryId),
 		).toEqual(
