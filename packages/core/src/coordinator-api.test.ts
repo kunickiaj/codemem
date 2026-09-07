@@ -1619,7 +1619,7 @@ describe("createCoordinatorApp dependency injection", () => {
 				fingerprint: fingerprintPublicKey(publicKey),
 				recipient_actor_id: "actor-brian",
 				recipient_display_name: "Brian",
-				device_display_name: "Brian's Mac",
+				device_display_name: "emm-five.home.morgowicz.com",
 			}),
 		});
 

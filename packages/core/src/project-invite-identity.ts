@@ -5,6 +5,8 @@ const MACHINE_PREFIX_NAME = /^(?:actor|device|identity|local):\S+$/iu;
 const MACHINE_SLUG_NAME = /^(?:actor|device|identity)[_-][a-z0-9][a-z0-9._:-]{4,}$/iu;
 const PENDING_PERSON_NAME = /^pending[_-]\S+$/iu;
 const HEX_HOSTNAME = /^[a-f0-9]{12,64}$/iu;
+const HOSTNAME_NAME =
+	/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/iu;
 
 export interface ProjectInviteSummary {
 	display_name: string;
@@ -37,6 +39,7 @@ export function isHumanPresentationName(value: unknown): boolean {
 		MACHINE_SLUG_NAME,
 		PENDING_PERSON_NAME,
 		HEX_HOSTNAME,
+		HOSTNAME_NAME,
 	].some((pattern) => pattern.test(normalized));
 }
 
@@ -46,10 +49,20 @@ export function normalizeHumanPresentationName(value: string, field: string): st
 	return normalized;
 }
 
+export function normalizeDeviceDisplayName(value: string, field: string): string {
+	const normalized = normalizeIdentityDisplayName(value, field);
+	if (!HOSTNAME_NAME.test(normalized) && !isHumanPresentationName(normalized)) {
+		throw new Error(`${field}_invalid`);
+	}
+	return normalized;
+}
+
 export function normalizeDeviceNameHint(value: string | null | undefined): string | null {
-	const raw = String(value ?? "").replace(/\.local$/iu, "");
-	if (!raw.trim()) return null;
-	return normalizeIdentityDisplayName(raw.replace(/[-_]+/gu, " "), "device_display_name");
+	const candidate = String(value ?? "").trim();
+	const raw = candidate.replace(/\.local$/iu, "");
+	if (!raw) return null;
+	const normalized = HOSTNAME_NAME.test(candidate) ? raw : raw.replace(/[-_]+/gu, " ");
+	return normalizeDeviceDisplayName(normalized, "device_display_name");
 }
 
 export function friendlyDeviceName(input: {
@@ -59,11 +72,19 @@ export function friendlyDeviceName(input: {
 	fallbackSeed?: string | null;
 }): string {
 	for (const candidate of [input.explicitName, input.osName, input.coordinatorName]) {
-		const raw = String(candidate ?? "")
-			.replace(/\.local$/iu, "")
-			.trim();
+		const candidateText = String(candidate ?? "").trim();
+		const raw = candidateText.replace(/\.local$/iu, "");
 		// Classify before separator normalization so UUIDs and machine slugs cannot
 		// be disguised as human labels by replacing hyphens or underscores.
+		if (HOSTNAME_NAME.test(candidateText)) {
+			try {
+				const normalized = normalizeDeviceNameHint(candidateText);
+				if (normalized) return normalized;
+			} catch {
+				// Unusable automatic hints must degrade to the generated fallback.
+			}
+			continue;
+		}
 		if (!raw || !isHumanPresentationName(raw)) continue;
 		try {
 			const normalized = normalizeDeviceNameHint(candidate);
