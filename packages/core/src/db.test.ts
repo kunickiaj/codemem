@@ -679,6 +679,8 @@ describe("ensureAdditiveSchemaCompatibility", () => {
 		expect(columnExists(db, "raw_event_flush_batches", "observer_error_code")).toBe(true);
 		expect(columnExists(db, "raw_event_flush_batches", "observer_error_message")).toBe(true);
 		expect(columnExists(db, "raw_event_flush_batches", "attempt_count")).toBe(true);
+		expect(hasIndex(db, "idx_flush_batches_observer_status_updated")).toBe(true);
+		expect(hasIndex(db, "idx_flush_batches_capture_status_updated")).toBe(true);
 	});
 
 	it("adds Team device eligibility state without changing existing Team behavior", () => {

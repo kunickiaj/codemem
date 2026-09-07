@@ -693,6 +693,60 @@ function ensureSessionsPagingIndex(db: DatabaseType): void {
 	}
 }
 
+function ensureSyncAttemptsDiagnosticIndexes(db: DatabaseType): void {
+	if (!tableExists(db, "sync_attempts")) return;
+	try {
+		db.exec(`
+			CREATE INDEX IF NOT EXISTS idx_sync_attempts_occurred
+				ON sync_attempts(
+					CASE WHEN finished_at IS NULL THEN started_at ELSE finished_at END,
+					id
+				);
+			CREATE INDEX IF NOT EXISTS idx_sync_attempts_error_occurred
+				ON sync_attempts(
+					CASE WHEN finished_at IS NULL THEN started_at ELSE finished_at END,
+					id
+				)
+				WHERE ok = 0;
+			CREATE INDEX IF NOT EXISTS idx_sync_attempts_success_occurred
+				ON sync_attempts(
+					CASE WHEN finished_at IS NULL THEN started_at ELSE finished_at END,
+					id
+				)
+				WHERE ok <> 0;
+		`);
+	} catch {
+		// Keep additive compatibility best-effort for index creation.
+	}
+}
+
+function ensureRawEventSessionsPendingIndex(db: DatabaseType): void {
+	if (!tableExists(db, "raw_event_sessions")) return;
+	try {
+		db.exec(`CREATE INDEX IF NOT EXISTS idx_raw_event_sessions_pending_updated
+			ON raw_event_sessions(updated_at)
+			WHERE last_received_event_seq > last_flushed_event_seq`);
+	} catch {
+		// Keep additive compatibility best-effort for index creation.
+	}
+}
+
+function ensureFlushBatchDiagnosticIndexes(db: DatabaseType): void {
+	if (!tableExists(db, "raw_event_flush_batches")) return;
+	try {
+		db.exec(`
+			CREATE INDEX IF NOT EXISTS idx_flush_batches_observer_status_updated
+				ON raw_event_flush_batches(status, updated_at)
+				WHERE observer_provider IS NOT NULL;
+			CREATE INDEX IF NOT EXISTS idx_flush_batches_capture_status_updated
+				ON raw_event_flush_batches(status, updated_at)
+				WHERE observer_provider IS NULL;
+		`);
+	} catch {
+		// Keep additive compatibility best-effort for index creation.
+	}
+}
+
 function assertRecipientPolicyDeviceEligibilityCompatibility(db: DatabaseType): void {
 	const recipientPolicySchemaPresent = [
 		"policy_teams",
@@ -942,6 +996,8 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 	ensureLegacyTeamSetupDraftSchema(db);
 	ensureMemoryItemsPagingIndex(db);
 	ensureSessionsPagingIndex(db);
+	ensureSyncAttemptsDiagnosticIndexes(db);
+	ensureRawEventSessionsPendingIndex(db);
 	const compatAlreadyApplied = schemaCompatAlreadyApplied(db);
 	if (!compatAlreadyApplied) {
 		// IMPORTANT: any NEW DDL added to this gated block REQUIRES bumping
@@ -1751,6 +1807,10 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 			db.pragma(`user_version = ${SCHEMA_VERSION}`);
 		}
 	}
+	// Run after the gated legacy-column repair so one open can both add
+	// observer_provider and install its partial diagnostic indexes. This remains
+	// outside the marker gate for current-marker databases missing only indexes.
+	ensureFlushBatchDiagnosticIndexes(db);
 	// Intentionally fail the whole connect path: no runtime surface may open a
 	// partially upgraded authorization schema and discover the drift via raw SELECTs.
 	assertRecipientPolicyDeviceEligibilityCompatibility(db);

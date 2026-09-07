@@ -540,7 +540,12 @@ export const rawEventSessions = sqliteTable(
 		last_flushed_event_seq: integer("last_flushed_event_seq").notNull().default(-1),
 		updated_at: text("updated_at").notNull(),
 	},
-	(table) => [primaryKey({ columns: [table.source, table.stream_id] })],
+	(table) => [
+		primaryKey({ columns: [table.source, table.stream_id] }),
+		index("idx_raw_event_sessions_pending_updated")
+			.on(table.updated_at)
+			.where(sql`${table.last_received_event_seq} > ${table.last_flushed_event_seq}`),
+	],
 );
 
 export type RawEventSession = typeof rawEventSessions.$inferSelect;
@@ -600,6 +605,12 @@ export const rawEventFlushBatches = sqliteTable(
 		),
 		index("idx_flush_batches_session_created").on(table.opencode_session_id, table.created_at),
 		index("idx_flush_batches_status_updated").on(table.status, table.updated_at),
+		index("idx_flush_batches_observer_status_updated")
+			.on(table.status, table.updated_at)
+			.where(sql`${table.observer_provider} IS NOT NULL`),
+		index("idx_flush_batches_capture_status_updated")
+			.on(table.status, table.updated_at)
+			.where(sql`${table.observer_provider} IS NULL`),
 	],
 );
 
@@ -786,7 +797,25 @@ export const syncAttempts = sqliteTable(
 		peer_sync_capability: text("peer_sync_capability"),
 		negotiated_sync_capability: text("negotiated_sync_capability"),
 	},
-	(table) => [index("idx_sync_attempts_peer_started").on(table.peer_device_id, table.started_at)],
+	(table) => [
+		index("idx_sync_attempts_peer_started").on(table.peer_device_id, table.started_at),
+		index("idx_sync_attempts_occurred").on(
+			sql`CASE WHEN ${table.finished_at} IS NULL THEN ${table.started_at} ELSE ${table.finished_at} END`,
+			table.id,
+		),
+		index("idx_sync_attempts_error_occurred")
+			.on(
+				sql`CASE WHEN ${table.finished_at} IS NULL THEN ${table.started_at} ELSE ${table.finished_at} END`,
+				table.id,
+			)
+			.where(sql`${table.ok} = 0`),
+		index("idx_sync_attempts_success_occurred")
+			.on(
+				sql`CASE WHEN ${table.finished_at} IS NULL THEN ${table.started_at} ELSE ${table.finished_at} END`,
+				table.id,
+			)
+			.where(sql`${table.ok} <> 0`),
+	],
 );
 
 export type SyncAttempt = typeof syncAttempts.$inferSelect;
