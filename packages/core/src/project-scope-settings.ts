@@ -873,6 +873,19 @@ export function analyzeProjectScopeMappingChangeGuardrails(
 	};
 }
 
+/**
+ * How many distinct candidates the scan must observe before it may stop.
+ * Unbounded when neither a result limit nor a scan budget is set. Otherwise
+ * the larger of the two: the overflow check needs to see `maxScannedRows + 1`
+ * even when the caller only wants a few results back.
+ */
+function candidateWalkCeiling(limit: number | null, maxScannedRows: number | null): number | null {
+	if (limit == null && maxScannedRows == null) return null;
+	const resultCeiling = limit ?? 0;
+	const overflowCeiling = maxScannedRows == null ? 0 : maxScannedRows + 1;
+	return Math.max(resultCeiling, overflowCeiling);
+}
+
 export function listProjectScopeCandidates(
 	db: Database,
 	options: {
@@ -906,10 +919,7 @@ export function listProjectScopeCandidates(
 	// cap+1: the overflow check must always be able to see cap+1 distinct
 	// identities, even when the caller only wants a handful back. The result
 	// limit is applied after the overflow check, never before it.
-	const candidateCeiling =
-		limit == null && maxScannedRows == null
-			? null
-			: Math.max(limit ?? 0, maxScannedRows == null ? 0 : maxScannedRows + 1);
+	const candidateCeiling = candidateWalkCeiling(limit, maxScannedRows);
 	const scopes = listSharingDomainSettingsScopes(db);
 	const mappings = listProjectScopeSettingsMappingsForScopes(db, scopes);
 	const excludePeerReceived = options.excludePeerReceived === true;
