@@ -989,6 +989,9 @@ export const __teamSetupTestHooks = {
 	disambiguateChoiceLabels,
 	safeChoiceLabel,
 	viewerSafeAccessDelta,
+	// Lazy: the classifier and its typed error are declared below this object.
+	finishFailureDetails: (error: unknown) => teamSetupFinishFailureDetails(error),
+	localProjectScanBudgetError: (cause?: unknown) => new LocalProjectScanBudgetError(cause),
 };
 
 interface IdentityChoiceInternal extends LegacyTeamSetupIdentityChoiceV1 {
@@ -1081,12 +1084,12 @@ function projectMappingChoices(store: MemoryStore): ProjectMappingChoiceInternal
 			(error.message === "project_scope_candidate_scan_too_large" ||
 				error.message === "project_scope_candidate_metadata_too_large")
 		) {
-			throw new Error("legacy_team_setup_roster_too_large");
+			throw new LocalProjectScanBudgetError(error);
 		}
 		throw error;
 	}
 	if (candidates.length > MAX_PROJECT_MAPPING_CHOICES) {
-		throw new Error("legacy_team_setup_roster_too_large");
+		throw new LocalProjectScanBudgetError();
 	}
 	return candidates.map((candidate) => ({
 		projectIdentity: candidate.workspace_identity,
@@ -1222,35 +1225,70 @@ interface TeamSetupFinishFailureDetails {
 	code?: string;
 }
 
-const LOCAL_CANDIDATE_SCAN_BUDGET_ERRORS = new Set([
-	"legacy_team_setup_roster_too_large",
-	"project_scope_candidate_scan_too_large",
-	"project_scope_candidate_metadata_too_large",
-]);
+/**
+ * The generic `legacy_team_setup_roster_too_large` string is thrown by ten
+ * sites for unrelated limits (coordinator roster size, draft device count,
+ * local project choices). Only the local project-candidate scan is a
+ * "this device's history is too large" condition, so it carries a distinct
+ * type. The message is kept identical so the frozen API-code mapping and every
+ * existing caller that matches on it are unchanged.
+ */
+class LocalProjectScanBudgetError extends Error {
+	constructor(cause?: unknown) {
+		super("legacy_team_setup_roster_too_large", cause === undefined ? undefined : { cause });
+		this.name = "LocalProjectScanBudgetError";
+	}
+}
 
 /**
- * Only identifier-shaped remote error codes are safe to log verbatim. A
- * coordinator that returns a non-JSON body (error page, proxy interstitial)
- * has its first response bytes folded into `RemoteCoordinatorRequestError.code`
- * by the HTTP client, and those bytes can carry anything: stack traces,
- * internal hostnames, tokens. Anything that is not a bare snake_case token is
- * reduced to a fixed classification.
+ * Remote error codes the finish path can legitimately receive from the
+ * coordinator. Anything else — including identifier-shaped values, which a
+ * hostile or misconfigured upstream could use to smuggle a credential through
+ * a JSON `error` field — is reduced to a fixed classification before logging.
+ * A shape check is not an allowlist; only this set is echoed verbatim.
  */
-const SAFE_REMOTE_ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/u;
+const LOGGABLE_REMOTE_ERROR_CODES = new Set([
+	"body_too_large",
+	"completion_manifest_invalid",
+	"completion_manifest_unavailable",
+	"completion_not_found",
+	"completion_query_invalid",
+	"group_archived",
+	"group_id_and_candidate_ref_required",
+	"group_not_found",
+	"invalid_json",
+	"missing_admin_header",
+	"not_found",
+	"rate_limited",
+	"response_too_large",
+	"unauthorized",
+]);
 
 function loggableRemoteCode(code: string): string {
-	if (SAFE_REMOTE_ERROR_CODE.test(code)) return code;
+	if (LOGGABLE_REMOTE_ERROR_CODES.has(code)) return code;
 	if (code.startsWith("non_json_response")) return "non_json_response";
 	return "unclassified_remote_error";
 }
 
 /**
- * Local error messages are code-controlled identifiers except for transport
- * failures, whose messages come from undici/fetch and can embed the target
- * URL or system detail. Keep identifiers; classify everything else.
+ * Local causes the finish path can produce. Same allowlist discipline as
+ * remote codes: everything else, including transport messages that embed the
+ * target URL, is classified rather than echoed.
  */
+const LOGGABLE_LOCAL_CAUSES = new Set([
+	"completion_conflict",
+	"legacy_team_setup_roster_too_large",
+	"project_scope_candidate_metadata_too_large",
+	"project_scope_candidate_scan_too_large",
+	"team_setup_completion_conflict",
+	"team_setup_completion_invalid",
+	"team_setup_completion_unavailable",
+	"team_setup_confirmation_stale",
+	"team_setup_roster_unavailable",
+]);
+
 function loggableLocalCause(error: Error): string {
-	if (SAFE_REMOTE_ERROR_CODE.test(error.message)) return error.message;
+	if (LOGGABLE_LOCAL_CAUSES.has(error.message)) return error.message;
 	if (error.name === "AbortError" || error.name === "TimeoutError") return error.name;
 	if (/fetch failed/iu.test(error.message)) return "fetch_failed";
 	if (/timed out|timeout/iu.test(error.message)) return "timed_out";
@@ -1300,11 +1338,14 @@ function teamSetupFinishFailureDetails(error: unknown): TeamSetupFinishFailureDe
 			code: loggableRemoteCode(remote.code),
 		};
 	}
+	// Only typed scan-budget errors mean "this device's history is too large".
+	// The shared roster_too_large string also fires for coordinator roster size
+	// and draft device count, which are not local conditions.
 	if (
 		chain.some(
 			(item) =>
 				item instanceof LegacyTeamSetupRosterCapacityError ||
-				(item instanceof Error && LOCAL_CANDIDATE_SCAN_BUDGET_ERRORS.has(item.message)),
+				item instanceof LocalProjectScanBudgetError,
 		)
 	) {
 		return {

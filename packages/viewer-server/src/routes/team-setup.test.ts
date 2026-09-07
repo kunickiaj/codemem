@@ -277,12 +277,44 @@ describe("Team setup finish diagnostics", () => {
 		expect(result.warning).not.toContain("Internal Server Error");
 	});
 
-	it("keeps identifier-shaped remote error codes verbatim", async () => {
+	it("echoes only allowlisted remote error codes verbatim", async () => {
 		const result = await failedFinishResponse({
 			createError: new RemoteCoordinatorRequestError(409, "group_archived"),
 		});
 
 		expect(result.warning).toContain("code=group_archived");
+	});
+
+	it("classifies an identifier-shaped but unknown remote code instead of echoing it", async () => {
+		// A shape check is not an allowlist: a coordinator or proxy that puts a
+		// credential in the JSON `error` field would pass /^[a-z0-9_]+$/ and
+		// land in the log. Only known coordinator codes are echoed.
+		const smuggled = "supersecrettoken";
+		const result = await failedFinishResponse({
+			createError: new RemoteCoordinatorRequestError(403, smuggled),
+		});
+
+		expect(result.warning).toContain("code=unclassified_remote_error");
+		expect(result.warning).not.toContain(smuggled);
+	});
+
+	it("does not label a coordinator roster-size limit as a local scan failure", () => {
+		// Ten sites throw the shared `legacy_team_setup_roster_too_large`
+		// string. Only the typed local scan-budget error means "this device's
+		// history is too large"; the coordinator roster exceeding MAX_DEVICES
+		// throws the same string and must NOT get the local reason, or the UI
+		// tells the user to try another device for a server-side limit.
+		const rosterLimit = new Error("legacy_team_setup_roster_too_large");
+		const localScan = __teamSetupTestHooks.localProjectScanBudgetError();
+
+		expect(__teamSetupTestHooks.finishFailureDetails(rosterLimit)).toEqual({
+			cause: "legacy_team_setup_roster_too_large",
+		});
+		expect(__teamSetupTestHooks.finishFailureDetails(localScan)).toMatchObject({
+			reason: "local_candidate_scan_budget_exceeded",
+		});
+		// Same message, different type: the string alone is not the signal.
+		expect(localScan.message).toBe(rosterLimit.message);
 	});
 
 	it("classifies a missing fresh coordinator roster without changing the API error", async () => {
