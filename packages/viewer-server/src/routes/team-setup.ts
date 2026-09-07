@@ -7,6 +7,7 @@ import type {
 	LegacyTeamSetupActivationErrorCode,
 	LegacyTeamSetupActivationResultV1,
 	LegacyTeamSetupDraftView,
+	LegacyTeamSetupErrorReason,
 	MemoryStore,
 } from "@codemem/core";
 import {
@@ -34,6 +35,7 @@ import {
 	isLegacyTeamCandidateSelectable,
 	isLegacyTeamSetupProjectMappingIdentity,
 	LegacyTeamSetupAdditiveConvergenceError,
+	LegacyTeamSetupRosterCapacityError,
 	legacyTeamCandidateId,
 	legacyTeamCandidateProjectInventory,
 	legacyTeamCanonicalProjectRef,
@@ -42,6 +44,7 @@ import {
 	legacyTeamSetupApiErrorCode,
 	listProjectScopeCandidates,
 	previewLegacyTeamSetupActivation,
+	RemoteCoordinatorRequestError,
 	readCoordinatorSyncConfig,
 	recipientPolicyDigest,
 	reconstructLegacyTeamSetupCompletionManifest,
@@ -986,6 +989,9 @@ export const __teamSetupTestHooks = {
 	disambiguateChoiceLabels,
 	safeChoiceLabel,
 	viewerSafeAccessDelta,
+	// Lazy: the classifier and its typed error are declared below this object.
+	finishFailureDetails: (error: unknown) => teamSetupFinishFailureDetails(error),
+	localProjectScanBudgetError: (cause?: unknown) => new LocalProjectScanBudgetError(cause),
 };
 
 interface IdentityChoiceInternal extends LegacyTeamSetupIdentityChoiceV1 {
@@ -1078,12 +1084,12 @@ function projectMappingChoices(store: MemoryStore): ProjectMappingChoiceInternal
 			(error.message === "project_scope_candidate_scan_too_large" ||
 				error.message === "project_scope_candidate_metadata_too_large")
 		) {
-			throw new Error("legacy_team_setup_roster_too_large");
+			throw new LocalProjectScanBudgetError(error);
 		}
 		throw error;
 	}
 	if (candidates.length > MAX_PROJECT_MAPPING_CHOICES) {
-		throw new Error("legacy_team_setup_roster_too_large");
+		throw new LocalProjectScanBudgetError();
 	}
 	return candidates.map((candidate) => ({
 		projectIdentity: candidate.workspace_identity,
@@ -1198,6 +1204,218 @@ function apiErrorCode(error: unknown): LegacyTeamSetupActivationErrorCode {
 function completionApiError(error: unknown): LegacyTeamSetupActivationErrorCode {
 	const code = legacyTeamSetupApiErrorCode(error);
 	return code === "team_setup_failed" ? "team_setup_completion_unavailable" : code;
+}
+
+class TeamSetupFinishError extends Error {
+	constructor(
+		code: LegacyTeamSetupActivationErrorCode,
+		readonly reason: LegacyTeamSetupErrorReason | undefined,
+		readonly alreadyLogged: boolean,
+		cause?: unknown,
+	) {
+		super(code, cause === undefined ? undefined : { cause });
+		this.name = "TeamSetupFinishError";
+	}
+}
+
+interface TeamSetupFinishFailureDetails {
+	reason?: LegacyTeamSetupErrorReason;
+	cause: string;
+	status?: number;
+	code?: string;
+}
+
+/**
+ * The generic `legacy_team_setup_roster_too_large` string is thrown by ten
+ * sites for unrelated limits (coordinator roster size, draft device count,
+ * local project choices). Only the local project-candidate scan is a
+ * "this device's history is too large" condition, so it carries a distinct
+ * type. The message is kept identical so the frozen API-code mapping and every
+ * existing caller that matches on it are unchanged.
+ */
+class LocalProjectScanBudgetError extends Error {
+	constructor(cause?: unknown) {
+		super("legacy_team_setup_roster_too_large", cause === undefined ? undefined : { cause });
+		this.name = "LocalProjectScanBudgetError";
+	}
+}
+
+/**
+ * Remote error codes the finish path can legitimately receive from the
+ * coordinator. Anything else — including identifier-shaped values, which a
+ * hostile or misconfigured upstream could use to smuggle a credential through
+ * a JSON `error` field — is reduced to a fixed classification before logging.
+ * A shape check is not an allowlist; only this set is echoed verbatim.
+ */
+const LOGGABLE_REMOTE_ERROR_CODES = new Set([
+	"body_too_large",
+	"completion_manifest_invalid",
+	"completion_manifest_unavailable",
+	"completion_not_found",
+	"completion_query_invalid",
+	"group_archived",
+	"group_id_and_candidate_ref_required",
+	"group_not_found",
+	"invalid_json",
+	"missing_admin_header",
+	"not_found",
+	"rate_limited",
+	"response_too_large",
+	"unauthorized",
+]);
+
+function loggableRemoteCode(code: string): string {
+	if (LOGGABLE_REMOTE_ERROR_CODES.has(code)) return code;
+	if (code.startsWith("non_json_response")) return "non_json_response";
+	return "unclassified_remote_error";
+}
+
+/**
+ * Local causes the finish path can produce. Same allowlist discipline as
+ * remote codes: everything else, including transport messages that embed the
+ * target URL, is classified rather than echoed.
+ */
+const LOGGABLE_LOCAL_CAUSES = new Set([
+	"completion_conflict",
+	"legacy_team_setup_roster_too_large",
+	"project_scope_candidate_metadata_too_large",
+	"project_scope_candidate_scan_too_large",
+	"team_setup_completion_conflict",
+	"team_setup_completion_invalid",
+	"team_setup_completion_unavailable",
+	"team_setup_confirmation_stale",
+	"team_setup_roster_unavailable",
+]);
+
+function loggableLocalCause(error: Error): string {
+	if (LOGGABLE_LOCAL_CAUSES.has(error.message)) return error.message;
+	if (error.name === "AbortError" || error.name === "TimeoutError") return error.name;
+	if (/fetch failed/iu.test(error.message)) return "fetch_failed";
+	if (/timed out|timeout/iu.test(error.message)) return "timed_out";
+	return `unclassified_error:${error.name || "Error"}`;
+}
+
+function errorChain(error: unknown): unknown[] {
+	const chain: unknown[] = [];
+	let current = error;
+	while (current && !chain.includes(current)) {
+		chain.push(current);
+		current = current instanceof Error ? current.cause : undefined;
+	}
+	return chain;
+}
+
+function remoteFailureReason(
+	remote: RemoteCoordinatorRequestError,
+	fallback: LegacyTeamSetupErrorReason | undefined,
+): LegacyTeamSetupErrorReason | undefined {
+	if (
+		remote.status === 404 &&
+		(remote.code === "not_found" || remote.code.startsWith("non_json"))
+	) {
+		return "coordinator_route_missing";
+	}
+	if (remote.status === 400 && remote.code === "completion_manifest_invalid") {
+		return "coordinator_rejected_manifest";
+	}
+	return fallback;
+}
+
+function teamSetupFinishFailureDetails(error: unknown): TeamSetupFinishFailureDetails {
+	const chain = errorChain(error);
+	const wrapper = chain.find(
+		(item): item is TeamSetupFinishError => item instanceof TeamSetupFinishError,
+	);
+	const remote = chain.find(
+		(item): item is RemoteCoordinatorRequestError => item instanceof RemoteCoordinatorRequestError,
+	);
+	if (remote) {
+		const reason = remoteFailureReason(remote, wrapper?.reason);
+		return {
+			...(reason ? { reason } : {}),
+			cause: "remote coordinator request failed",
+			status: remote.status,
+			code: loggableRemoteCode(remote.code),
+		};
+	}
+	// Only typed scan-budget errors mean "this device's history is too large".
+	// The shared roster_too_large string also fires for coordinator roster size
+	// and draft device count, which are not local conditions.
+	if (
+		chain.some(
+			(item) =>
+				item instanceof LegacyTeamSetupRosterCapacityError ||
+				item instanceof LocalProjectScanBudgetError,
+		)
+	) {
+		return {
+			reason: "local_candidate_scan_budget_exceeded",
+			cause: "local project candidate scan exceeded budget",
+		};
+	}
+	const errorCause = chain.find(
+		(item): item is Error => item instanceof Error && !(item instanceof TeamSetupFinishError),
+	);
+	const cause = errorCause ? loggableLocalCause(errorCause) : "unclassified_non_error";
+	if (wrapper?.reason) return { reason: wrapper.reason, cause };
+	if (
+		errorCause &&
+		(errorCause.name === "AbortError" ||
+			errorCause.name === "TimeoutError" ||
+			/fetch failed|timed out|timeout/iu.test(errorCause.message))
+	) {
+		return { reason: "coordinator_unreachable", cause };
+	}
+	return { cause };
+}
+
+function warnTeamSetupFinishFailure(
+	error: unknown,
+	details: TeamSetupFinishFailureDetails,
+	context: {
+		candidateRef: string;
+		attemptId: string;
+		apiCode: LegacyTeamSetupActivationErrorCode;
+		redactValues?: readonly string[];
+	},
+): void {
+	if (
+		errorChain(error).some((item) => item instanceof TeamSetupFinishError && item.alreadyLogged)
+	) {
+		return;
+	}
+	const safe = (value: string | number): string => {
+		let sanitized = String(value).replace(/[\r\n\t]+/gu, " ");
+		for (const secret of context.redactValues ?? []) {
+			if (secret) sanitized = sanitized.replaceAll(secret, "[redacted]");
+		}
+		return sanitized.replace(/https?:\/\/[^\s]+/giu, (value) => {
+			try {
+				const url = new URL(value);
+				return `${url.protocol}//${url.host}`;
+			} catch {
+				return "[redacted-url]";
+			}
+		});
+	};
+	const fields = [
+		`candidateRef=${safe(context.candidateRef)}`,
+		`attemptId=${safe(context.attemptId)}`,
+		`apiCode=${safe(context.apiCode)}`,
+		`cause=${safe(details.cause)}`,
+		...(details.reason ? [`reason=${safe(details.reason)}`] : []),
+		...(details.status == null ? [] : [`status=${safe(details.status)}`]),
+		...(details.code == null ? [] : [`code=${safe(details.code)}`]),
+	];
+	console.warn(`[team-setup finish] ${fields.join(" ")}`);
+}
+
+function finishErrorResponse(
+	code: LegacyTeamSetupActivationErrorCode,
+	details: TeamSetupFinishFailureDetails,
+): { error: LegacyTeamSetupActivationErrorCode; reason?: LegacyTeamSetupErrorReason } {
+	const reason = details.reason;
+	return reason ? { error: code, reason } : { error: code };
 }
 
 type BoundedJsonResult = { ok: true; value: Record<string, unknown> } | { ok: false };
@@ -2409,6 +2627,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		let releaseMutation: (() => void) | undefined;
 		let releasePublicationMutation: (() => void) | undefined;
 		let releaseActorMutations: (() => void) | undefined;
+		let finishLogRedactValues: readonly string[] = [];
 		try {
 			const store = options.getStore();
 			const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
@@ -2511,12 +2730,20 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 							throw new Error("team_setup_completion_invalid");
 						}
 						const { config, remoteUrl } = authorization;
+						finishLogRedactValues = [config.syncCoordinatorAdminSecret];
 						const freshGroup = await loadFreshGroupSnapshot(
 							group,
 							remoteUrl,
 							publicationDeadlineMs,
 						);
-						if (!freshGroup) throw new Error("team_setup_roster_unavailable");
+						if (!freshGroup) {
+							throw new TeamSetupFinishError(
+								"team_setup_roster_unavailable",
+								"coordinator_roster_unavailable",
+								false,
+								new Error("coordinator roster unavailable"),
+							);
+						}
 						if (!stillAuthorizesGroup(authorization, group)) {
 							throw new Error("team_setup_completion_invalid");
 						}
@@ -2588,9 +2815,16 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 							}
 						} catch (error) {
 							const code = completionApiError(error);
+							const details = teamSetupFinishFailureDetails(error);
 							const getCompletion = completionDependencies.get;
 							if (code !== "team_setup_completion_conflict" || !getCompletion) {
-								throw new Error(code);
+								warnTeamSetupFinishFailure(error, details, {
+									candidateRef,
+									attemptId,
+									apiCode: code,
+									redactValues: finishLogRedactValues,
+								});
+								throw new TeamSetupFinishError(code, details.reason, true, error);
 							}
 							try {
 								const existing = await retryTransientCoordinatorRead(
@@ -2617,7 +2851,12 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 									throw new Error("team_setup_completion_conflict");
 								}
 							} catch (recoveryError) {
-								throw new Error(completionApiError(recoveryError));
+								throw new TeamSetupFinishError(
+									completionApiError(recoveryError),
+									teamSetupFinishFailureDetails(recoveryError).reason,
+									false,
+									recoveryError,
+								);
 							}
 						}
 						// Publication is the commit point. Apply its immutable winner after binding
@@ -2632,11 +2871,23 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 							);
 						} catch (error) {
 							if (legacyTeamSetupApiErrorCode(error) === "team_setup_completion_invalid") {
-								throw new Error("team_setup_roster_unavailable");
+								throw new TeamSetupFinishError(
+									"team_setup_roster_unavailable",
+									"coordinator_roster_unavailable",
+									false,
+									error,
+								);
 							}
 							throw error;
 						}
-						if (!postPublicationGroup) throw new Error("team_setup_roster_unavailable");
+						if (!postPublicationGroup) {
+							throw new TeamSetupFinishError(
+								"team_setup_roster_unavailable",
+								"coordinator_roster_unavailable",
+								false,
+								new Error("coordinator roster unavailable"),
+							);
+						}
 						const result = await applyLegacyTeamSetupCompletionManifestAndReturnActivation(
 							store.db,
 							{
@@ -2658,7 +2909,14 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			return response;
 		} catch (error) {
 			const code = apiErrorCode(error);
-			return c.json({ error: code }, errorStatus(code));
+			const details = teamSetupFinishFailureDetails(error);
+			warnTeamSetupFinishFailure(error, details, {
+				candidateRef,
+				attemptId,
+				apiCode: code,
+				redactValues: finishLogRedactValues,
+			});
+			return c.json(finishErrorResponse(code, details), errorStatus(code));
 		} finally {
 			releaseActorMutations?.();
 			releasePublicationMutation?.();

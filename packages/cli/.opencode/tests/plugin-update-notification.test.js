@@ -9,30 +9,102 @@ vi.mock("node:child_process", () => ({
 	execSync: (...args) => execSyncMock(...args),
 }));
 
+const { __testUtils } = await import("../plugins/codemem.js");
+const PINNED = __testUtils.PINNED_BACKEND_VERSION;
+
+/** Bump the prerelease counter of a version like x.y.z-beta.1 by `delta`. */
+function bumpPrerelease(version, delta) {
+	const match = /^(\d+\.\d+\.\d+-(?:alpha|beta|rc)\.)(\d+)$/u.exec(version);
+	if (!match) throw new Error(`not a prerelease: ${version}`);
+	return `${match[1]}${Number(match[2]) + delta}`;
+}
+
+/** Same version number on a different prerelease channel. */
+function onChannel(version, channel) {
+	return version.replace(/-(?:alpha|beta|rc)\./u, `-${channel}.`);
+}
+
+function previousCoreVersion(version) {
+	const match = /^(\d+)\.(\d+)\.(\d+)/u.exec(version);
+	if (!match) throw new Error(`not a semantic version: ${version}`);
+	const major = Number(match[1]);
+	const minor = Number(match[2]);
+	const patch = Number(match[3]);
+	if (patch > 0) return `${major}.${minor}.${patch - 1}`;
+	if (minor > 0) return `${major}.${minor - 1}.0`;
+	if (major > 0) return `${major - 1}.0.0`;
+	throw new Error(`no earlier core version: ${version}`);
+}
+
+const CURRENT = PINNED;
+function updateFixtureVersions(version) {
+	const channel = /-(alpha|beta|rc)\.(\d+)$/u.exec(version);
+	if (channel) {
+		let older = bumpPrerelease(version, -1);
+		if (Number(channel[2]) === 0) {
+			older = `${previousCoreVersion(version)}-${channel[1]}.0`;
+		}
+		return {
+			channel: channel[1],
+			newer: bumpPrerelease(version, 1),
+			newest: bumpPrerelease(version, 2),
+			older,
+			crossChannel: onChannel(bumpPrerelease(version, 1), channel[1] === "alpha" ? "beta" : "alpha"),
+		};
+	}
+	const stable = /^(\d+)\.(\d+)\.(\d+)$/u.exec(version);
+	if (!stable) throw new Error(`Unsupported fixture version: ${version}`);
+	const base = `${stable[1]}.${stable[2]}`;
+	return {
+		channel: "latest",
+		newer: `${base}.${Number(stable[3]) + 1}`,
+		newest: `${base}.${Number(stable[3]) + 2}`,
+		older: previousCoreVersion(version),
+		crossChannel: `${base}.${Number(stable[3]) + 1}-alpha.1`,
+	};
+}
+
+const {
+	newer: NEWER,
+	newest: NEWEST,
+	older: OLDER,
+	channel: CURRENT_CHANNEL,
+	crossChannel: CROSS_CHANNEL,
+} = updateFixtureVersions(PINNED);
+
+test("update fixtures support stable pins", () => {
+	expect(updateFixtureVersions("0.44.0")).toEqual({
+		channel: "latest",
+		newer: "0.44.1",
+		newest: "0.44.2",
+		older: "0.43.0",
+		crossChannel: "0.44.1-alpha.1",
+	});
+});
+
+test("update fixtures use an older core version for prerelease zero pins", () => {
+	expect(updateFixtureVersions("0.44.0-beta.0").older).toBe("0.43.0-beta.0");
+});
+
 const currentStatus = {
-	current_version: "0.40.2",
-	latest_version: "0.40.2",
+	current_version: CURRENT,
+	channel: CURRENT_CHANNEL,
+	latest_version: CURRENT,
 	update_available: false,
 	first_seen_at: "2026-08-10T12:00:00.000Z",
 	checked_at: "2026-08-10T12:00:00.000Z",
 	stale: false,
 	install_kind: "npm-global",
 	auto_update_eligible: false,
-	recommended_action: "No action required; codemem is up to date.",
+	recommended_action: `No action required; codemem is on the latest ${CURRENT_CHANNEL} release.`,
 	error: null,
-};
-
-const compatibleStatus = {
-	...currentStatus,
-	current_version: "0.41.0",
-	latest_version: "0.41.0",
 };
 
 const availableStatus = {
 	...currentStatus,
-	latest_version: "0.41.0",
+	latest_version: NEWER,
 	update_available: true,
-	recommended_action: "npm install -g codemem@0.41.0",
+	recommended_action: `npm install -g codemem@${NEWER}`,
 };
 
 function makeProcess(
@@ -83,7 +155,7 @@ function installCompatibilityAutoUpdateSpawnResult({ startViewer = false } = {})
 		if (args?.includes("version")) {
 			versionCallCount += 1;
 			return makeProcess({
-				stdout: versionCallCount === 1 ? "0.40.2\n" : "0.41.0\n",
+				stdout: versionCallCount === 1 ? "0.40.2\n" : `${availableStatus.latest_version}\n`,
 			});
 		}
 		if (args?.includes("update") && args?.includes("check")) {
@@ -100,11 +172,12 @@ function isPairedInstallCall(call) {
 	return (
 		call[0] === "npm" &&
 		call[1]?.join(" ") ===
-			"install -g --registry https://registry.npmjs.org/ --@codemem:registry=https://registry.npmjs.org/ codemem@0.41.0 @codemem/embeddings@0.41.0"
+			`install -g --registry https://registry.npmjs.org/ --@codemem:registry=https://registry.npmjs.org/ codemem@${availableStatus.latest_version} @codemem/embeddings@${availableStatus.latest_version}`
 	);
 }
 
 async function startPlugin(showToast = vi.fn().mockResolvedValue(undefined)) {
+	Reflect.deleteProperty(globalThis, Symbol.for("codemem.opencode-plugin.registrations"));
 	const { CodememPlugin } = await import("../plugins/codemem.js");
 	const hooks = await CodememPlugin({
 		project: { name: "codemem" },
@@ -143,6 +216,23 @@ describe("@codemem/opencode-plugin exports", () => {
 		expect(plugin.default).toBe(plugin.CodememPlugin);
 		expect(plugin.OpencodeMemPlugin).toBe(plugin.CodememPlugin);
 	});
+
+	test("keeps a newer same-channel prerelease on the global runner", async () => {
+		execSyncMock.mockReturnValueOnce(NEWER);
+		const { __testUtils } = await import("../plugins/codemem.js");
+
+		expect(__testUtils.detectRunner({ cwd: "/tmp/codemem", envRunner: "" })).toBe("codemem");
+	});
+
+	test.each([OLDER, CROSS_CHANNEL])(
+		"rejects an older or cross-channel global runner at %s",
+		async (version) => {
+			execSyncMock.mockReturnValueOnce(version);
+			const { __testUtils } = await import("../plugins/codemem.js");
+
+			expect(__testUtils.detectRunner({ cwd: "/tmp/codemem", envRunner: "" })).toBe("npx");
+		},
+	);
 });
 
 describe("OpenCode startup release notifications", () => {
@@ -213,7 +303,7 @@ describe("OpenCode startup release notifications", () => {
 		expect(showToast).toHaveBeenCalledTimes(1);
 		expect(showToast).toHaveBeenCalledWith({
 			body: expect.objectContaining({
-				message: expect.stringMatching(/0\.41\.0.*npm install -g codemem@0\.41\.0/i),
+				message: expect.stringContaining(availableStatus.recommended_action),
 			}),
 		});
 	});
@@ -225,7 +315,7 @@ describe("OpenCode startup release notifications", () => {
 			if (args?.includes("update") && args?.includes("check")) {
 				return makeProcess({ stdout: JSON.stringify(status) });
 			}
-			if (args?.includes("version")) return makeProcess({ stdout: "0.40.2\n" });
+			if (args?.includes("version")) return makeProcess({ stdout: `${currentStatus.current_version}\n` });
 			return makeProcess();
 		});
 		const showToast = vi.fn().mockResolvedValue(undefined);
@@ -235,15 +325,47 @@ describe("OpenCode startup release notifications", () => {
 		await runStartupChecks();
 		status = {
 			...availableStatus,
-			latest_version: "0.42.0",
-			recommended_action: "npm install -g codemem@0.42.0",
+			latest_version: NEWEST,
+			recommended_action: `npm install -g codemem@${NEWEST}`,
 		};
 		await startPlugin(showToast);
 		await runStartupChecks();
 
 		// Assert
 		expect(showToast).toHaveBeenCalledTimes(2);
-		expect(showToast.mock.calls[1]?.[0]?.body?.message).toMatch(/0\.42\.0/);
+		expect(showToast.mock.calls[1]?.[0]?.body?.message).toContain(NEWEST);
+	});
+
+	test.each([
+		{
+			label: "missing channel identity",
+			status: { ...availableStatus, channel: undefined },
+		},
+		{
+			label: "status from another channel",
+			status: {
+				...availableStatus,
+				channel: CURRENT_CHANNEL === "alpha" ? "beta" : "alpha",
+				latest_version: CROSS_CHANNEL,
+				recommended_action: `npm install -g codemem@${CROSS_CHANNEL}`,
+			},
+		},
+		{
+			label: "guidance for another version",
+			status: {
+				...availableStatus,
+				recommended_action: `npm install -g codemem@${NEWEST}`,
+			},
+		},
+	])("ignores $label", async ({ status }) => {
+		installSpawnResult(status);
+		const showToast = vi.fn().mockResolvedValue(undefined);
+
+		await startPlugin(showToast);
+		await runStartupChecks();
+
+		expect(showToast).not.toHaveBeenCalled();
+		expect(spawnMock.mock.calls.some((call) => call[1]?.includes("install"))).toBe(false);
 	});
 
 	test("off skips release discovery and notification without disabling compatibility checks", async () => {
@@ -287,7 +409,7 @@ describe("OpenCode startup release notifications", () => {
 		expect(args.some((value) => value?.join(" ") === "update install --json")).toBe(false);
 		expect(showToast).toHaveBeenCalledTimes(1);
 		expect(showToast.mock.calls[0]?.[0]?.body).toMatchObject({
-			message: "Updated codemem to 0.41.0.",
+			message: `Updated codemem to ${availableStatus.latest_version}.`,
 			variant: "success",
 		});
 	});
@@ -302,7 +424,7 @@ describe("OpenCode startup release notifications", () => {
 		await runStartupChecks();
 
 		const installCall = spawnMock.mock.calls.find(isPairedInstallCall);
-		expect(installCall?.[2]?.env).toBe(process.env);
+		expect(installCall?.[2]?.env === process.env).toBe(true);
 		expect(installCall?.[2]?.env).not.toHaveProperty("ONNXRUNTIME_NODE_INSTALL");
 	});
 
@@ -314,7 +436,7 @@ describe("OpenCode startup release notifications", () => {
 					stdout: JSON.stringify({ ...availableStatus, auto_update_eligible: true }),
 				});
 			}
-			if (args?.includes("version")) return makeProcess({ stdout: "0.40.2\n" });
+			if (args?.includes("version")) return makeProcess({ stdout: `${currentStatus.current_version}\n` });
 			return makeProcess();
 		});
 		const showToast = vi.fn().mockResolvedValue(undefined);
@@ -360,7 +482,9 @@ describe("OpenCode startup release notifications", () => {
 				});
 			}
 			if (args?.includes("version")) {
-				return makeProcess({ stdout: `${installed ? "0.41.0" : "0.40.2"}\n` });
+				return makeProcess({
+					stdout: `${installed ? availableStatus.latest_version : currentStatus.current_version}\n`,
+				});
 			}
 			return makeProcess();
 		});
@@ -508,8 +632,8 @@ describe("OpenCode startup release notifications", () => {
 				"--registry",
 				"https://registry.npmjs.org/",
 				"--@codemem:registry=https://registry.npmjs.org/",
-				"codemem@0.41.0",
-				"@codemem/embeddings@0.41.0",
+				`codemem@${availableStatus.latest_version}`,
+				`@codemem/embeddings@${availableStatus.latest_version}`,
 			],
 			expect.objectContaining({
 				cwd: "/tmp/codemem",
@@ -539,7 +663,7 @@ describe("OpenCode startup release notifications", () => {
 		).toHaveLength(1);
 		expect(showToast).toHaveBeenCalledWith({
 			body: {
-				message: "Updated codemem backend from 0.40.2 to 0.41.0.",
+				message: `Updated codemem backend from 0.40.2 to ${availableStatus.latest_version}.`,
 				variant: "success",
 			},
 		});
@@ -582,7 +706,7 @@ describe("OpenCode startup release notifications", () => {
 				(call) =>
 					call[0] === "npm" &&
 					call[1]?.join(" ") ===
-						"install -g --registry https://registry.npmjs.org/ --@codemem:registry=https://registry.npmjs.org/ codemem@0.41.0 @codemem/embeddings@0.41.0",
+						`install -g --registry https://registry.npmjs.org/ --@codemem:registry=https://registry.npmjs.org/ codemem@${availableStatus.latest_version} @codemem/embeddings@${availableStatus.latest_version}`,
 			),
 		).toBe(true);
 		expect(
@@ -597,7 +721,7 @@ describe("OpenCode startup release notifications", () => {
 		).toBe(false);
 		expect(showToast).toHaveBeenCalledWith({
 			body: {
-				message: "Updated codemem backend from 0.40.2 to 0.41.0.",
+				message: `Updated codemem backend from 0.40.2 to ${availableStatus.latest_version}.`,
 				variant: "success",
 			},
 		});
@@ -605,7 +729,7 @@ describe("OpenCode startup release notifications", () => {
 
 	test("compatibility auto-update skips a release that is not eligible", async () => {
 		process.env.CODEMEM_BACKEND_UPDATE_POLICY = "auto";
-		process.env.CODEMEM_MIN_VERSION = "0.41.0";
+		process.env.CODEMEM_MIN_VERSION = "0.45.0";
 		installSpawnResult({ ...availableStatus, auto_update_eligible: false });
 		const showToast = vi.fn().mockResolvedValue(undefined);
 
@@ -636,7 +760,9 @@ describe("OpenCode startup release notifications", () => {
 		await runStartupChecks();
 
 		expect(spawnMock.mock.calls.some((call) => call[1]?.includes("install"))).toBe(false);
-		expect(showToast.mock.calls[0]?.[0]?.body?.message).toMatch(/0\.41\.0.*npm install/i);
+		expect(showToast.mock.calls[0]?.[0]?.body?.message).toContain(
+			availableStatus.recommended_action,
+		);
 	});
 
 	test("auto does not invoke installation when runner provenance is pinned", async () => {
@@ -650,7 +776,9 @@ describe("OpenCode startup release notifications", () => {
 		await runStartupChecks();
 
 		expect(spawnMock.mock.calls.some((call) => call[1]?.includes("install"))).toBe(false);
-		expect(showToast.mock.calls.at(-1)?.[0]?.body?.message).toMatch(/0\.41\.0/);
+		expect(showToast.mock.calls.at(-1)?.[0]?.body?.message).toContain(
+			availableStatus.latest_version,
+		);
 	});
 
 	test.each([
@@ -666,7 +794,7 @@ describe("OpenCode startup release notifications", () => {
 					exitCode,
 				});
 			}
-			if (args?.includes("version")) return makeProcess({ stdout: "0.40.2\n" });
+			if (args?.includes("version")) return makeProcess({ stdout: `${currentStatus.current_version}\n` });
 			return makeProcess();
 		});
 		const showToast = vi.fn().mockResolvedValue(undefined);
@@ -688,7 +816,7 @@ describe("OpenCode startup release notifications", () => {
 		// Arrange
 		spawnMock.mockImplementation((_command, args) => {
 			if (args?.includes("update") && args?.includes("check")) return makeProcess({ settle: false });
-			if (args?.includes("version")) return makeProcess({ stdout: "0.40.2\n" });
+			if (args?.includes("version")) return makeProcess({ stdout: `${currentStatus.current_version}\n` });
 			return makeProcess();
 		});
 
@@ -711,8 +839,7 @@ describe("OpenCode startup release notifications", () => {
 		installSpawnResult({
 			...availableStatus,
 			install_kind: "docker",
-			recommended_action:
-				"Set CODEMEM_VERSION=0.41.0, then run CODEMEM_VERSION=0.41.0 docker compose build --pull and docker compose up -d.",
+			recommended_action: `Set CODEMEM_VERSION=${availableStatus.latest_version}, then run CODEMEM_VERSION=${availableStatus.latest_version} docker compose build --pull and docker compose up -d.`,
 		});
 		const showToast = vi.fn().mockResolvedValue(undefined);
 

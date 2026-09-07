@@ -190,6 +190,25 @@ describe("legacy recipient-policy projection", () => {
 		},
 	);
 
+	it("reports malformed legacy metadata as noncanonical without changing recipient policy", () => {
+		insertProject(db, {
+			cwd: "Command failed: git rev-parse --show-toplevel",
+			project: "error: failed to discover project",
+			remote: "fatal: not a git repository (or any of the parent directories): .git",
+		});
+		const recipientsBefore = db.prepare("SELECT * FROM project_recipients ORDER BY rowid").all();
+
+		const [projection] = projections(db);
+
+		expect(projection).toMatchObject({
+			conditions: [expect.objectContaining({ code: "noncanonical_project_identity" })],
+			enforcement: { safeErrorCode: "noncanonical_project_identity", state: "ambiguous" },
+		});
+		expect(db.prepare("SELECT * FROM project_recipients ORDER BY rowid").all()).toEqual(
+			recipientsBefore,
+		);
+	});
+
 	it("projects one exact canonical Project from one active managed scope", () => {
 		const scopeId = "managed-project-one";
 		const projectId = insertProject(db, { project: "api", scopeId });

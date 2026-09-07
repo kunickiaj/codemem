@@ -7,24 +7,27 @@ This is the published npm package for the `codemem` CLI.
 
 ## Install
 
-**Prerequisites:** Node.js 24.15+ and npm (or pnpm). Native database support
+**Prerequisites:** Node.js 24.15+ and npm. Native database support
 covers macOS x64/arm64, Linux x64/arm64 (glibc 2.34+ or musl), and Windows x64.
 32-bit targets, including Linux armv7, are not supported.
 
 On Linux, skip the unused ONNX Runtime GPU provider download:
 
 ```bash
-env ONNXRUNTIME_NODE_INSTALL=skip npm install -g codemem @codemem/embeddings
+env ONNXRUNTIME_NODE_INSTALL=skip npm install -g codemem
 ```
 
 On Apple silicon macOS and Windows:
 
 ```bash
-npm install -g codemem @codemem/embeddings
+npm install -g codemem
 ```
 
-The embedding package enables semantic retrieval. Installing only `codemem` keeps
-the CLI functional with FTS5 keyword retrieval.
+The CLI installs its matching embedding runtime by default. For a smaller
+keyword-only install, use `npm install -g codemem --omit=optional` and set
+`CODEMEM_EMBEDDING_DISABLED=1` in every Codemem process. The flag is required
+because npm also omits sqlite-vec's optional platform package; the CLI then
+remains functional with FTS5.
 
 Intel x64 Macs have no ONNX Runtime 1.24.3 artifact and remain on FTS5 retrieval.
 

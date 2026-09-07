@@ -278,6 +278,32 @@ describe("export/import", () => {
 		}
 	});
 
+	it("does not import command failures as session identity metadata", () => {
+		const payload = minimalPayload("local-default");
+		const session = payload.sessions[0];
+		if (!session) throw new Error("expected fixture session");
+		session.cwd = "Command failed: git rev-parse --show-toplevel";
+		session.project = "error: failed to discover project";
+		session.git_remote = "fatal: not a git repository";
+		session.git_branch = "fatal: ambiguous argument HEAD";
+		const destination = createDbPath("malformed-identity-import");
+		const setupDb = new Database(destination);
+		initTestSchema(setupDb);
+		setupDb.close();
+
+		importMemories(payload, { dbPath: destination });
+
+		const checkDb = new Database(destination, { readonly: true });
+		try {
+			const imported = checkDb
+				.prepare("SELECT cwd, project, git_remote, git_branch FROM sessions LIMIT 1")
+				.get();
+			expect(imported).toEqual({ cwd: null, project: null, git_remote: null, git_branch: null });
+		} finally {
+			checkDb.close();
+		}
+	});
+
 	it("preserves imported source scopes only when locally authorized", () => {
 		const authorizedDestPath = createDbPath("authorized-import-scope");
 		const authorizedDb = new Database(authorizedDestPath);

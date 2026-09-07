@@ -69,17 +69,19 @@ describe("resolveUpgradeGuidance", () => {
     expect(guidance.action).toContain("normal install method");
   });
 
-  test("tells the global codemem runner to install the embedding runtime too", () => {
+  test("tells the global codemem runner that the CLI installs its embedding runtime", () => {
     const guidance = resolveUpgradeGuidance({ runner: "codemem", runnerFrom: "" });
     expect(guidance.mode).toBe("global");
-    expect(guidance.action).toContain("npm install -g codemem @codemem/embeddings");
+    expect(guidance.action).toContain("npm install -g codemem");
+    expect(guidance.action).not.toContain("npm install -g codemem @codemem/embeddings");
     expect(guidance.action).toContain("ONNXRUNTIME_NODE_INSTALL=skip");
   });
 
-  test("tells the npx runner to install both packages", () => {
+  test("tells the npx runner to install the CLI and its embedding runtime", () => {
     const guidance = resolveUpgradeGuidance({ runner: "npx", runnerFrom: "codemem@latest" });
     expect(guidance.mode).toBe("npx");
-    expect(guidance.action).toContain("npm install -g codemem @codemem/embeddings");
+    expect(guidance.action).toContain("npm install -g codemem");
+    expect(guidance.action).not.toContain("npm install -g codemem @codemem/embeddings");
   });
 });
 
@@ -105,7 +107,11 @@ describe("parseBackendUpdatePolicy", () => {
 
 describe("resolveAutoUpdatePlan", () => {
 	test("allows the known global npm runner and updates both packages", () => {
-		const plan = resolveAutoUpdatePlan({ runner: "codemem", runnerFrom: "/tmp/project" });
+		const plan = resolveAutoUpdatePlan({
+			runner: "codemem",
+			runnerFrom: "/tmp/project",
+			targetVersion: "0.41.0",
+		});
 		expect(plan.allowed).toBe(true);
 		expect(plan.command).toEqual([
 			"npm",
@@ -114,8 +120,8 @@ describe("resolveAutoUpdatePlan", () => {
 			"--registry",
 			"https://registry.npmjs.org/",
 			"--@codemem:registry=https://registry.npmjs.org/",
-			"codemem@latest",
-			"@codemem/embeddings@latest",
+			"codemem@0.41.0",
+			"@codemem/embeddings@0.41.0",
 		]);
 	});
 
@@ -135,6 +141,75 @@ describe("resolveAutoUpdatePlan", () => {
 			"codemem@0.41.0",
 			"@codemem/embeddings@0.41.0",
 		]);
+	});
+
+	test("pins both packages to an opted-in prerelease target", () => {
+		const targetVersion = "0.44.0-alpha.2";
+		const plan = resolveAutoUpdatePlan({
+			runner: "codemem",
+			runnerFrom: "/tmp/project",
+			targetVersion,
+		});
+
+		expect(plan.command).toEqual([
+			"npm",
+			"install",
+			"-g",
+			"--registry",
+			"https://registry.npmjs.org/",
+			"--@codemem:registry=https://registry.npmjs.org/",
+			`codemem@${targetVersion}`,
+			`@codemem/embeddings@${targetVersion}`,
+		]);
+	});
+
+	test("pins both packages to an rc target", () => {
+		const plan = resolveAutoUpdatePlan({
+			runner: "codemem",
+			runnerFrom: "/tmp/project",
+			targetVersion: "0.44.0-rc.1",
+		});
+
+		expect(plan.command).toEqual([
+			"npm",
+			"install",
+			"-g",
+			"--registry",
+			"https://registry.npmjs.org/",
+			"--@codemem:registry=https://registry.npmjs.org/",
+			"codemem@0.44.0-rc.1",
+			"@codemem/embeddings@0.44.0-rc.1",
+		]);
+	});
+
+	test("rejects a missing target version", () => {
+		expect(
+			resolveAutoUpdatePlan({ runner: "codemem", runnerFrom: "/tmp/project" }),
+		).toMatchObject({ allowed: false, reason: "invalid-version" });
+	});
+
+	test("rejects a dist-tag target", () => {
+		expect(
+			resolveAutoUpdatePlan({
+				runner: "codemem",
+				runnerFrom: "/tmp/project",
+				targetVersion: "latest",
+			}),
+		).toMatchObject({ allowed: false, reason: "invalid-version" });
+	});
+
+	test("accepts an exact target with build metadata", () => {
+		const targetVersion = "0.41.0+build.7";
+		const plan = resolveAutoUpdatePlan({
+			runner: "codemem",
+			runnerFrom: "/tmp/project",
+			targetVersion,
+		});
+
+		expect(plan.command).toEqual(expect.arrayContaining([
+			`codemem@${targetVersion}`,
+			`@codemem/embeddings@${targetVersion}`,
+		]));
 	});
 
 	test("blocks plugin-owned auto-update on Windows", () => {
@@ -170,6 +245,7 @@ describe("resolveAutoUpdatePlan", () => {
 				runner: "npx",
 				runnerFrom: "codemem@latest",
 				runnerFromExplicit: true,
+				targetVersion: "0.41.0",
 			}),
 		).toMatchObject({ allowed: true });
 		expect(resolveAutoUpdatePlan({ runner: "npx", runnerFrom: "codemem@latest" })).toMatchObject({

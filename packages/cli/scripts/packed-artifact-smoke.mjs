@@ -7,6 +7,7 @@ import {
 	mkdtempSync,
 	readFileSync,
 	readdirSync,
+	renameSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -68,8 +69,21 @@ function resolveInstalledPackageDir(installDir, packageName) {
 		.split(/\r?\n/u)
 		.map((line) => line.trim())
 		.find((line) => line.endsWith(expectedSuffix));
-	assert(packageDir, `Semantic install is missing ${packageName}`);
+	assert(packageDir, `Installed fixture is missing ${packageName}`);
 	return packageDir;
+}
+
+function collectFiles(directory, predicate) {
+	const matches = [];
+	for (const entry of readdirSync(directory, { withFileTypes: true })) {
+		const entryPath = join(directory, entry.name);
+		if (entry.isDirectory()) {
+			matches.push(...collectFiles(entryPath, predicate));
+		} else if (predicate(entryPath)) {
+			matches.push(entryPath);
+		}
+	}
+	return matches;
 }
 
 function runAsync(command, args, options, input) {
@@ -642,30 +656,45 @@ try {
 		embeddingsTarListing.includes("package/dist/index.js"),
 		"Packed embeddings artifact is missing dist/index.js",
 	);
+	const packedPackageJson = JSON.parse(
+		run("tar", ["-xOf", packedTarball, "package/package.json"]).stdout,
+	);
+	assert(
+		packedPackageJson.optionalDependencies?.["@codemem/embeddings"] === packageVersion,
+		"Packed CLI must declare the matching @codemem/embeddings runtime as optional",
+	);
 
 	const installDir = join(tempDir, "install");
 	run(
 		"npm",
-		["install", "--prefix", installDir, coreTarball, mcpTarball, serverTarball, packedTarball],
+		[
+			"install",
+			"--omit=optional",
+			"--prefix",
+			installDir,
+			coreTarball,
+			mcpTarball,
+			serverTarball,
+			packedTarball,
+		],
 		packageRoot,
 		{ ...process.env, npm_config_install_strategy: "hoisted" },
 	);
 	const lexicalLockPath = join(installDir, "package-lock.json");
 	assert(existsSync(lexicalLockPath), "Lexical install did not produce a package-lock.json");
-	const lexicalLock = JSON.parse(readFileSync(lexicalLockPath, "utf8"));
-	const lexicalPackages = Object.keys(lexicalLock.packages ?? {});
 	for (const packageName of [
 		"@codemem/embeddings",
 		"@huggingface/transformers",
 		"@xenova/transformers",
+		"global-agent",
 		"onnxruntime-common",
 		"onnxruntime-node",
 		"onnxruntime-web",
+		"protobufjs",
 		"sharp",
 	]) {
 		assert(
-			// npm lockfile package keys use `/` and may be relative to a parent directory.
-			!lexicalPackages.some((path) => path.endsWith(`node_modules/${packageName}`)),
+			!existsSync(join(installDir, "node_modules", ...packageName.split("/"))),
 			`Lexical-only install unexpectedly contains ${packageName}`,
 		);
 	}
@@ -677,11 +706,25 @@ try {
 		JSON.stringify({ private: true }),
 		"utf8",
 	);
-	run("npm", ["install", "--prefix", semanticInstallDir, coreTarball, embeddingsTarball], packageRoot, {
-		...process.env,
-		ONNXRUNTIME_NODE_INSTALL: "skip",
-		npm_config_install_strategy: "hoisted",
-	});
+	run(
+		"npm",
+		[
+			"install",
+			"--prefix",
+			semanticInstallDir,
+			coreTarball,
+			embeddingsTarball,
+			mcpTarball,
+			serverTarball,
+			packedTarball,
+		],
+		packageRoot,
+		{
+			...process.env,
+			ONNXRUNTIME_NODE_INSTALL: "skip",
+			npm_config_install_strategy: "hoisted",
+		},
+	);
 	const semanticCoreBundle = readFileSync(
 		join(semanticInstallDir, "node_modules", "@codemem", "core", "dist", "index.js"),
 		"utf8",
@@ -732,9 +775,32 @@ try {
 	assert(existsSync(semanticLockPath), "Semantic install did not produce a package-lock.json");
 	const semanticLock = JSON.parse(readFileSync(semanticLockPath, "utf8"));
 	const semanticPackages = Object.keys(semanticLock.packages ?? {});
+	for (const packageName of [
+		"@huggingface/transformers",
+		"onnxruntime-node",
+		"sharp",
+		"protobufjs",
+		"global-agent",
+	]) {
+		const expectedSuffix = `node_modules/${packageName}`;
+		assert(
+			semanticPackages.some((path) => path.endsWith(expectedSuffix)),
+			`Semantic CLI fixture is missing required upstream dependency ${packageName}`,
+		);
+	}
+	const embeddingsPackageDir = join(
+		semanticInstallDir,
+		"node_modules",
+		"@codemem",
+		"embeddings",
+	);
+	assert(existsSync(embeddingsPackageDir), "Semantic CLI fixture is missing @codemem/embeddings");
+	const installedEmbeddingsPackage = JSON.parse(
+		readFileSync(join(embeddingsPackageDir, "package.json"), "utf8"),
+	);
 	assert(
-		semanticPackages.some((path) => path.endsWith("node_modules/@huggingface/transformers")),
-		"Semantic install is missing the @huggingface/transformers runtime",
+		installedEmbeddingsPackage.version === packageVersion,
+		`Semantic CLI fixture installed @codemem/embeddings ${installedEmbeddingsPackage.version}, expected ${packageVersion}`,
 	);
 	const ortPackageDir = resolveInstalledPackageDir(semanticInstallDir, "onnxruntime-node");
 	const ortBinaryDir = join(ortPackageDir, "bin", "napi-v6", process.platform, process.arch);
@@ -804,6 +870,65 @@ try {
 
 	const versionOutput = run(cliBin, ["version"]).stdout.trim();
 	assert(versionOutput === packageVersion, `Installed CLI reported ${versionOutput}, expected ${packageVersion}`);
+	const optionalFreeDbPath = join(tempDir, "optional-free.sqlite");
+	run(cliBin, ["stats"], installDir, {
+		...process.env,
+		CODEMEM_DB: optionalFreeDbPath,
+		CODEMEM_EMBEDDING_DISABLED: "1",
+	});
+	assert(existsSync(optionalFreeDbPath), "Optional-free CLI smoke did not create its isolated database");
+
+	const betterSqlitePackageDir = resolveInstalledPackageDir(installDir, "better-sqlite3");
+	const nativeBindings = collectFiles(betterSqlitePackageDir, (path) => path.endsWith(".node"));
+	assert(nativeBindings.length > 0, "Packed install is missing better-sqlite3 native binaries");
+	const hiddenBindings = nativeBindings.map((path) => `${path}.codemem-smoke-hidden`);
+	try {
+		for (let index = 0; index < nativeBindings.length; index += 1) {
+			renameSync(nativeBindings[index], hiddenBindings[index]);
+		}
+		const failedStart = spawnSync(
+			process.execPath,
+			[
+				join(installedPackageRoot, "dist", "index.js"),
+				"serve",
+				"restart",
+				"--port",
+				"38889",
+				"--db-path",
+				join(tempDir, "missing-native.sqlite"),
+			],
+			{
+				cwd: installDir,
+				encoding: "utf8",
+				env: { ...process.env, CODEMEM_EMBEDDING_DISABLED: "1" },
+			},
+		);
+		const output = `${failedStart.stdout ?? ""}\n${failedStart.stderr ?? ""}`;
+		assert(
+			failedStart.status !== 0,
+			`Background serve succeeded without a SQLite native binding: ${output}`,
+		);
+		assert(
+			output.includes("Required SQLite native binding is unavailable"),
+			`Background serve omitted required SQLite diagnostic: ${output}`,
+		);
+		assert(
+			output.includes(`Node ${process.version} on ${process.platform}/${process.arch}`),
+			"Background serve omitted runtime platform details",
+		);
+		assert(
+			output.includes(`npm install -g codemem@${packageVersion}`),
+			"Background serve omitted exact-version repair command",
+		);
+		assert(
+			!output.includes("Viewer started in background"),
+			"Background serve falsely claimed it started",
+		);
+	} finally {
+		for (let index = 0; index < nativeBindings.length; index += 1) {
+			if (existsSync(hiddenBindings[index])) renameSync(hiddenBindings[index], nativeBindings[index]);
+		}
+	}
 
 	const isolatedAdapters = join(tempDir, "isolated-adapters");
 	await buildAdapterNormalizers(isolatedAdapters);

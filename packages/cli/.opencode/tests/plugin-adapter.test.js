@@ -271,9 +271,9 @@ describe("opencode adapter event mapping", () => {
     expect(pressured).toBe(true);
   });
 
-  test("trimEventQueue enforces hard cap for unsent pressure", () => {
+  test("trimEventQueue trims durably spooled events before unspooled events", () => {
     const events = [
-      { _raw_event_id: "a", _raw_enqueued: false },
+      { _raw_event_id: "a", _raw_enqueued: false, _raw_spooled: true },
       { _raw_event_id: "b", _raw_enqueued: false },
       { _raw_event_id: "c", _raw_enqueued: false },
     ];
@@ -290,6 +290,31 @@ describe("opencode adapter event mapping", () => {
 
     expect(events.length).toBe(2);
     expect(dropped).toBe("a");
+  });
+
+  test("trimEventQueue stays at the hard cap by dropping the oldest unspooled event", () => {
+    const events = [
+      { _raw_event_id: "a", _raw_enqueued: false },
+      { _raw_event_id: "b", _raw_enqueued: false },
+      { _raw_event_id: "c", _raw_enqueued: false },
+    ];
+
+    let dropped = null;
+    __testUtils.trimEventQueue({
+      events,
+      maxEvents: 1,
+      hardMaxEvents: 2,
+      onForcedDrop: (event) => {
+        dropped = {
+          eventId: event?._raw_event_id || null,
+          durableSpoolCoverage: event?._raw_spooled === true,
+        };
+      },
+    });
+
+    expect(events).toHaveLength(2);
+    expect(events.map((event) => event._raw_event_id)).toEqual(["b", "c"]);
+    expect(dropped).toEqual({ eventId: "a", durableSpoolCoverage: false });
   });
 
   test("buildRunnerArgs returns empty for direct codemem runner", () => {

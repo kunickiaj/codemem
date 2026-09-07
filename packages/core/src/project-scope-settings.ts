@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { type Database, fromJson, toJson } from "./db.js";
 import { hasLocalInventoryIdentity } from "./local-project-inventory.js";
+import { cleanProjectIdentity } from "./project-identity.js";
 import { ensureScopeBackfillScopes, LEGACY_SHARED_REVIEW_SCOPE_ID } from "./scope-backfill.js";
 import {
 	canonicalWorkspaceIdentity,
@@ -458,6 +459,10 @@ function buildProjectScopeCandidate(
 	mappings: ProjectScopeSettingsMapping[],
 	scopes: SharingDomainSettingsScope[],
 ): ProjectScopeCandidate {
+	const project = cleanProjectIdentity(row.project);
+	const cwd = cleanProjectIdentity(row.cwd);
+	const gitRemote = cleanProjectIdentity(row.git_remote);
+	const gitBranch = cleanProjectIdentity(row.git_branch);
 	const identity = canonicalWorkspaceIdentity({
 		gitRemote: row.git_remote,
 		gitBranch: row.git_branch,
@@ -476,12 +481,11 @@ function buildProjectScopeCandidate(
 	const baseCandidate = {
 		workspace_identity: identity.value,
 		identity_source: identity.source,
-		display_project:
-			identity.displayProject ?? clean(row.project) ?? clean(row.cwd) ?? identity.value,
-		project: clean(row.project),
-		cwd: clean(row.cwd),
-		git_remote: clean(row.git_remote),
-		git_branch: clean(row.git_branch),
+		display_project: identity.displayProject ?? project ?? cwd ?? identity.value,
+		project,
+		cwd,
+		git_remote: gitRemote,
+		git_branch: gitBranch,
 		latest_session_at: row.started_at,
 		resolved_scope_id: resolution.scopeId,
 		resolution_reason: resolution.reason,
@@ -869,6 +873,21 @@ export function analyzeProjectScopeMappingChangeGuardrails(
 	};
 }
 
+/**
+ * How many distinct candidates the scan must observe before it may stop.
+ *
+ * When a scan budget exists it is the only ceiling: `maxScannedRows + 1`.
+ * Seeing that many distinct identities proves overflow, so walking further is
+ * pure waste; seeing fewer means the whole roster fits and the result limit is
+ * applied afterwards. Using the result limit here would either disable the
+ * guard (limit <= budget) or defeat its bounded failure path (limit > budget).
+ * Without a budget, the result limit bounds the walk; without either, unbounded.
+ */
+function candidateWalkCeiling(limit: number | null, maxScannedRows: number | null): number | null {
+	if (maxScannedRows != null) return maxScannedRows + 1;
+	return limit;
+}
+
 export function listProjectScopeCandidates(
 	db: Database,
 	options: {
@@ -882,12 +901,6 @@ export function listProjectScopeCandidates(
 	const limit = options.limit === null ? null : Math.max(1, Math.min(options.limit ?? 250, 1000));
 	const maxScannedRows =
 		options.maxScannedRows == null ? null : Math.max(1, Math.floor(options.maxScannedRows));
-	if (
-		maxScannedRows != null &&
-		db.prepare("SELECT 1 FROM sessions ORDER BY id DESC LIMIT 1 OFFSET ?").get(maxScannedRows)
-	) {
-		throw new Error("project_scope_candidate_scan_too_large");
-	}
 	const maxMetadataRows =
 		options.maxMetadataRows == null ? null : Math.max(1, Math.floor(options.maxMetadataRows));
 	if (
@@ -899,12 +912,39 @@ export function listProjectScopeCandidates(
 	) {
 		throw new Error("project_scope_candidate_metadata_too_large");
 	}
-	const queryLimit = limit;
+	// maxScannedRows bounds DISTINCT candidates, not raw session rows. A large
+	// history on few Projects must not trip it, so the session stream is walked
+	// in keyset pages and deduplicated as it goes. Stopping once cap+1 distinct
+	// identities are seen makes the overflow signal truthful: it fires only when
+	// the roster genuinely exceeds the budget, never because the window was cut
+	// short by volume. The walk ceiling is the LARGER of the result limit and
+	// cap+1: the overflow check must always be able to see cap+1 distinct
+	// identities, even when the caller only wants a handful back. The result
+	// limit is applied after the overflow check, never before it.
+	const candidateCeiling = candidateWalkCeiling(limit, maxScannedRows);
 	const scopes = listSharingDomainSettingsScopes(db);
 	const mappings = listProjectScopeSettingsMappingsForScopes(db, scopes);
 	const excludePeerReceived = options.excludePeerReceived === true;
-	const sql = `SELECT
-				s.id,
+	// Newest-first by started_at so the first row seen per identity carries the
+	// true latest_session_at; id is only a tiebreaker. sessions.id and
+	// started_at are not monotonic together (imports backdate started_at), so
+	// the keyset cursor must be the composite (started_at, id).
+	const pageSize = 500;
+	// The first page has no lower keyset bound. started_at is free-form NOT
+	// NULL text (raw-event ingestion does not enforce ISO-8601), so no sentinel
+	// string is guaranteed to sort above every stored value in SQLite's byte
+	// collation. Later pages bound on the last (started_at, id) actually seen.
+	const candidateFilterSql = `(
+			       COALESCE(TRIM(s.git_remote), TRIM(s.cwd), TRIM(s.project), '') <> ''
+			    OR EXISTS (SELECT 1 FROM memory_items mi_candidate WHERE mi_candidate.session_id = s.id)
+			 )${
+					excludePeerReceived
+						? `
+			   AND (s.cwd IS NULL OR substr(s.cwd, 1, length(?)) <> ?)
+			   AND COALESCE(s.tool_version, '') <> 'sync_replication'`
+						: ""
+}`;
+	const selectColumnsSql = `s.id,
 				s.started_at,
 				s.cwd,
 				s.project,
@@ -918,47 +958,87 @@ export function listProjectScopeCandidates(
 					  AND TRIM(mi.workspace_id) <> ''
 					ORDER BY mi.id DESC
 					LIMIT 1
-				) AS workspace_id
+				) AS workspace_id`;
+	const selectFirstPage = db.prepare(`SELECT ${selectColumnsSql}
 			 FROM sessions s
-			 WHERE (
-			       COALESCE(TRIM(s.git_remote), TRIM(s.cwd), TRIM(s.project), '') <> ''
-			    OR EXISTS (SELECT 1 FROM memory_items mi_candidate WHERE mi_candidate.session_id = s.id)
-			 )${
-					excludePeerReceived
-						? `
-			   AND (s.cwd IS NULL OR substr(s.cwd, 1, length(?)) <> ?)
-			   AND COALESCE(s.tool_version, '') <> 'sync_replication'`
-						: ""
-}
-			 ORDER BY s.started_at DESC, s.id DESC${queryLimit == null ? "" : "\n\t\t\t LIMIT ?"}`;
-	const queryParameters: Array<string | number> = excludePeerReceived
-		? [SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX]
-		: [];
-	if (queryLimit != null) queryParameters.push(queryLimit);
-	const rows = db.prepare(sql).all(...queryParameters) as ProjectScopeCandidateRow[];
-
+			 WHERE ${candidateFilterSql}
+			 ORDER BY s.started_at DESC, s.id DESC
+			 LIMIT ?`);
+	// A single `a < x OR (a = x AND b < y)` predicate cannot use the composite
+	// index for a range seek: SQLite plans it as a full index SCAN from the
+	// newest entry every page, which makes the whole walk quadratic on large
+	// histories. Two seekable ranges unioned and re-sorted resume exactly at the
+	// cursor: the tail of the cursor's own timestamp, then everything older.
+	const selectNextPage = db.prepare(`SELECT * FROM (
+				SELECT ${selectColumnsSql}
+				 FROM sessions s
+				 WHERE s.started_at = ? AND s.id < ? AND ${candidateFilterSql}
+				 ORDER BY s.id DESC
+				 LIMIT ?
+			) UNION ALL SELECT * FROM (
+				SELECT ${selectColumnsSql}
+				 FROM sessions s
+				 WHERE s.started_at < ? AND ${candidateFilterSql}
+				 ORDER BY s.started_at DESC, s.id DESC
+				 LIMIT ?
+			)
+			 ORDER BY started_at DESC, id DESC
+			 LIMIT ?`);
 	const seen = new Set<string>();
 	const candidates: ProjectScopeCandidate[] = [];
-	for (const row of rows) {
-		const identity = canonicalWorkspaceIdentity({
-			gitRemote: row.git_remote,
-			gitBranch: row.git_branch,
-			cwd: row.cwd,
-			project: row.project,
-			workspaceId: row.workspace_id,
-		});
-		if (seen.has(identity.value)) continue;
-		seen.add(identity.value);
-		candidates.push(buildProjectScopeCandidate(row, mappings, scopes));
+	let cursor: { startedAt: string; id: number } | null = null;
+	const ceilingReached = () => candidateCeiling != null && candidates.length >= candidateCeiling;
+	const filterParameters: string[] = excludePeerReceived
+		? [SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX]
+		: [];
+	pages: while (!ceilingReached()) {
+		const rows = (
+			cursor
+				? selectNextPage.all(
+						cursor.startedAt,
+						cursor.id,
+						...filterParameters,
+						pageSize,
+						cursor.startedAt,
+						...filterParameters,
+						pageSize,
+						pageSize,
+					)
+				: selectFirstPage.all(...filterParameters, pageSize)
+		) as ProjectScopeCandidateRow[];
+		if (rows.length === 0) break;
+		for (const row of rows) {
+			const identity = canonicalWorkspaceIdentity({
+				gitRemote: row.git_remote,
+				gitBranch: row.git_branch,
+				cwd: row.cwd,
+				project: row.project,
+				workspaceId: row.workspace_id,
+			});
+			if (seen.has(identity.value)) continue;
+			seen.add(identity.value);
+			candidates.push(buildProjectScopeCandidate(row, mappings, scopes));
+			if (ceilingReached()) break pages;
+		}
+		if (rows.length < pageSize) break;
+		const last = rows.at(-1);
+		// started_at is NOT NULL in the schema; a null here means the row shape
+		// diverged from the query and paging can no longer be trusted.
+		if (!last || last.started_at == null) break;
+		cursor = { startedAt: last.started_at, id: last.id };
+	}
+	if (maxScannedRows != null && candidates.length > maxScannedRows) {
+		throw new Error("project_scope_candidate_scan_too_large");
 	}
 
-	return withCandidateGuardrails(
+	const sorted = withCandidateGuardrails(
 		candidates.toSorted(
 			(left, right) =>
 				left.display_project.localeCompare(right.display_project) ||
 				left.workspace_identity.localeCompare(right.workspace_identity),
 		),
 	);
+	return limit == null ? sorted : sorted.slice(0, limit);
 }
 
 export function listProjectScopeInventory(

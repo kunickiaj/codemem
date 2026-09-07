@@ -17,12 +17,9 @@ import type {
 	StatItem,
 } from "./types";
 
-const STABLE_RELEASE_VERSION =
-	/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
-
-function isStableReleaseVersion(value: string): boolean {
-	const match = STABLE_RELEASE_VERSION.exec(value);
-	return Boolean(match?.slice(1, 4).map(Number).every(Number.isSafeInteger));
+function releaseChannelLabel(status: UpdateStatus): string | null {
+	if (status.channel === "latest") return "stable";
+	return status.channel;
 }
 
 export function buildHealthCard(input: HealthCardInput): HealthCardInput {
@@ -60,17 +57,18 @@ function updateBannerCopy(status: UpdateStatus) {
 		};
 	}
 
-	if (!isStableReleaseVersion(status.current_version)) {
+	const channelLabel = releaseChannelLabel(status);
+	if (!channelLabel) {
 		return {
 			title: `Unable to compare Codemem ${status.current_version} with ${status.latest_version}`,
-			detail: "The installed version is not a stable semantic version.",
+			detail: "The installed version is not on a supported release channel.",
 			tone: "unavailable",
 		};
 	}
 
 	return {
 		title: `Codemem ${status.current_version} is up to date`,
-		detail: "You are running the latest stable release.",
+		detail: `You are running the latest ${channelLabel} release.`,
 		tone: "current",
 	};
 }
@@ -78,10 +76,7 @@ function updateBannerCopy(status: UpdateStatus) {
 function UpdateBanner({ status }: { status: UpdateStatus }) {
 	const copy = updateBannerCopy(status);
 	const showGuidance =
-		status.update_available ||
-		status.stale ||
-		!status.latest_version ||
-		!isStableReleaseVersion(status.current_version);
+		status.update_available || status.stale || !status.latest_version || !status.channel;
 	return h(
 		"section",
 		{

@@ -2,7 +2,8 @@
 
 ## Check for updates
 
-Use the read-only release check to compare the running CLI with the latest stable npm release:
+Use the read-only release check to compare the running CLI with the latest npm release on its
+installed channel. Stable versions use `latest`; prereleases use `alpha`, `beta`, or `rc`:
 
 ```fish
 codemem update check
@@ -11,16 +12,16 @@ codemem update check --json
 ```
 
 - Results are cached locally for six hours; `--refresh` bypasses a fresh cache.
-- `--json` prints one stable status object and uses a non-zero exit code when no validated fresh
+- `--json` prints one channel-aware status object and uses a non-zero exit code when no validated fresh
   or stale status is available.
 - Stale validated cache data remains clearly labeled and may provide guidance when the registry is
   unavailable.
 - This command never installs or executes an update. Release installation remains outside this
   read-only check. `codemem update install` is the separate, fail-closed installer: it refreshes
-  release status, requires a proven global npm installation and a stable release observed for at
+  release status, requires a proven global npm installation and a same-channel release observed for at
   least 24 hours, installs exact matching `codemem` and `@codemem/embeddings` versions from the
   public npm registry, and verifies the active `codemem` command. It refuses npx, Docker, pinned,
-  development, stale, prerelease, downgrade, and unknown installations. Bare `codemem update`
+  development, stale, cross-channel, downgrade, unsupported-channel, and unknown installations. Bare `codemem update`
   remains non-mutating. As with a
   manual npm install, npm runs the packages' installation scripts for native CPU dependencies.
 
@@ -478,19 +479,19 @@ When selected history may already have replicated, all participating owner devic
 
 ### Semantic runtime unavailable
 
-Codemem defaults to FTS5 keyword retrieval when the optional embedding runtime
-is absent. Install both packages globally to enable semantic recall. On Linux,
-set the CPU-only policy so the installer skips the unused GPU provider:
+Codemem installs its matching optional embedding runtime by default and falls
+back to FTS5 keyword retrieval when that runtime is absent. On Linux, set the
+CPU-only policy so the installer skips the unused GPU provider:
 
 ```fish
-env ONNXRUNTIME_NODE_INSTALL=skip npm install -g codemem @codemem/embeddings
+env ONNXRUNTIME_NODE_INSTALL=skip npm install -g codemem
 ```
 
-On Apple silicon macOS and Windows, install both packages normally (no
+On Apple silicon macOS and Windows, install normally (no
 environment variable, which `env`/`cmd.exe`/PowerShell do not share):
 
 ```text
-npm install -g codemem @codemem/embeddings
+npm install -g codemem
 ```
 
 Rerun `codemem setup` after upgrading an existing installation. The scoped
@@ -498,6 +499,10 @@ Rerun `codemem setup` after upgrading an existing installation. The scoped
 replaces the old managed `npx -y codemem mcp` launcher and codemem MCP entries
 detected as UV/UVX-based so both packages resolve in one runtime. Other custom
 MCP commands remain unchanged.
+
+For a smaller keyword-only install, use `npm install -g codemem --omit=optional`
+and set `CODEMEM_EMBEDDING_DISABLED=1` in every Codemem process. The flag is
+required because npm also omits sqlite-vec's optional platform package.
 
 Generated MCP configurations use the durable global `codemem` binary when it is
 available, allowing it to resolve the globally installed sibling package.
@@ -544,6 +549,24 @@ hardware; the rebuild runs outside the viewer process in bounded batches.
 
 ONNX Runtime 1.24.3 has no macOS x64 artifact, so Intel Macs continue using
 FTS5 keyword retrieval instead of semantic inference.
+
+### Required SQLite native binding
+
+`better-sqlite3` is required for every codemem storage mode. Viewer startup now
+checks its native binding before preparing a database or detaching a background
+process; restart checks before stopping a healthy viewer. If the check fails,
+copy the exact-version `npm install -g codemem@<version>` repair command from the
+diagnostic. Use Node 24.15+ on a supported 64-bit target listed in the [native
+install matrix](plans/2026-03-15-install-matrix.md).
+
+`better-sqlite3` 13.0.3 bundles its N-API prebuilds and has no package install
+script, so a failed binding check does not by itself mean npm blocked lifecycle
+scripts. Semantic installs still carry upstream runtime requirements including
+Sharp, ONNX Runtime, protobufjs, and global-agent; ONNX Runtime's postinstall and
+roughly 220 MB unpacked weight remain upstream requirements. `sqlite-vec` stays
+optional: viewer startup catches its load failure, disables semantic search, and
+preserves FTS5 lexical search. Other commands require
+`CODEMEM_EMBEDDING_DISABLED=1` when sqlite-vec is unavailable.
 
 ### sqlite-vec / `no such module: vec0`
 

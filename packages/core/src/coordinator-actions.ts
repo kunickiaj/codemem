@@ -132,7 +132,7 @@ function coordinatorRemoteTarget(config = readCodememConfigFile()): {
 	return { remoteUrl, adminSecret };
 }
 
-class RemoteCoordinatorRequestError extends Error {
+export class RemoteCoordinatorRequestError extends Error {
 	constructor(
 		readonly status: number,
 		readonly code: string,

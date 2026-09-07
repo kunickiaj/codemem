@@ -1354,12 +1354,19 @@ describe("legacy Team setup completion manifests", () => {
 			freshRoster: FRESH_ROSTER,
 			manifest,
 		});
+		// The scan budget bounds distinct candidates, not raw session count: a
+		// large history on one Project must not trip it. Overflow requires more
+		// distinct Projects than the budget.
 		const insertSession = db.prepare(
 			"INSERT INTO sessions(started_at, project, git_remote) VALUES (?, ?, ?)",
 		);
 		const fillScanBudget = db.transaction(() => {
 			for (let index = 0; index <= 10_000; index += 1) {
-				insertSession.run(NOW, "Repeated project", PROJECT_A);
+				insertSession.run(
+					NOW,
+					`Distinct project ${index}`,
+					`git@example.com:org/repo-${index}.git`,
+				);
 			}
 		});
 		fillScanBudget();
@@ -1372,6 +1379,35 @@ describe("legacy Team setup completion manifests", () => {
 				manifest: { ...manifest, completed_at: "2026-09-01T12:01:00.000Z" },
 			}),
 		).rejects.toThrow("team_setup_roster_unavailable");
+		expect(db.prepare("SELECT status FROM policy_teams").pluck().get()).toBe("active");
+	});
+
+	it("applies completed policy when a large single-Project history fits the scan budget", async () => {
+		// Regression: the previous guard pre-rejected any DB with more sessions
+		// than the budget regardless of distinct Projects, blocking real users.
+		const draft = readyDraft();
+		const manifest = deriveLegacyTeamSetupCompletionManifest(db, {
+			candidateRef: draft.candidateRef,
+			attemptId: draft.attemptId,
+			completedAt: NOW,
+		});
+		const insertSession = db.prepare(
+			"INSERT INTO sessions(started_at, project, git_remote) VALUES (?, ?, ?)",
+		);
+		db.transaction(() => {
+			for (let index = 0; index <= 10_000; index += 1) {
+				insertSession.run(NOW, "Repeated project", PROJECT_A);
+			}
+		})();
+
+		await expect(
+			applyLegacyTeamSetupCompletionManifest(db, {
+				coordinatorId: COORDINATOR_ID,
+				groupId: GROUP_ID,
+				freshRoster: FRESH_ROSTER,
+				manifest,
+			}),
+		).resolves.toBeDefined();
 		expect(db.prepare("SELECT status FROM policy_teams").pluck().get()).toBe("active");
 	});
 
@@ -1671,7 +1707,11 @@ describe("legacy Team setup completion manifests", () => {
 		);
 		db.transaction(() => {
 			for (let index = 0; index <= 10_000; index += 1) {
-				insertSession.run(NOW, "Repeated project", PROJECT_A);
+				insertSession.run(
+					NOW,
+					`Distinct project ${index}`,
+					`git@example.com:org/repo-${index}.git`,
+				);
 			}
 		})();
 

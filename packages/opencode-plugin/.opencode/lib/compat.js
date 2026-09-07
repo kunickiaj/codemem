@@ -31,7 +31,7 @@ export const resolveUpgradeGuidance = ({ runner, runnerFrom }) => {
     return {
       mode: "global",
       action:
-        "Run `npm install -g codemem @codemem/embeddings` to update both the CLI and the optional semantic runtime, then restart OpenCode. On Linux, prefix with `ONNXRUNTIME_NODE_INSTALL=skip` to avoid the unused GPU provider download.",
+        "Run `npm install -g codemem` to update the CLI and its optional semantic runtime, then restart OpenCode. On Linux, prefix with `ONNXRUNTIME_NODE_INSTALL=skip` to avoid the unused GPU provider download.",
       note: "detected global codemem runner mode",
     };
   }
@@ -40,7 +40,7 @@ export const resolveUpgradeGuidance = ({ runner, runnerFrom }) => {
     return {
       mode: "npx",
       action:
-        "Run `npm install -g codemem @codemem/embeddings` to update the CLI and optional semantic runtime, then restart OpenCode. On Linux, prefix with `ONNXRUNTIME_NODE_INSTALL=skip` to avoid the unused GPU provider download.",
+        "Run `npm install -g codemem` to update the CLI and its optional semantic runtime, then restart OpenCode. On Linux, prefix with `ONNXRUNTIME_NODE_INSTALL=skip` to avoid the unused GPU provider download.",
       note: "detected npx runner mode",
     };
   }
@@ -117,6 +117,8 @@ const isPinnedGitSource = (runnerFrom) => {
 };
 
 const PUBLIC_NPM_REGISTRY = "https://registry.npmjs.org/";
+const UPDATE_TARGET_VERSION =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:alpha|beta|rc)(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
 const createNpmUpdatePlan = (targetVersion) => {
 	const command = [
@@ -136,7 +138,7 @@ export const resolveAutoUpdatePlan = ({
 	runner,
 	runnerFrom,
 	runnerFromExplicit = false,
-	targetVersion = "latest",
+	targetVersion,
 	platform = process.platform,
 }) => {
 	const normalizedRunner = String(runner || "").trim();
@@ -144,9 +146,6 @@ export const resolveAutoUpdatePlan = ({
 	const normalizedTargetVersion = String(targetVersion || "").trim();
 	if (platform === "win32") {
 		return { allowed: false, reason: "unsupported-platform", command: null, commandText: null };
-	}
-	if (normalizedTargetVersion !== "latest" && !/^\d+\.\d+\.\d+$/.test(normalizedTargetVersion)) {
-		return { allowed: false, reason: "invalid-version", command: null, commandText: null };
 	}
 	if (isPinnedGitSource(source) || /^codemem@(?!latest$|next$|\*$)[^\s]+$/i.test(source)) {
 		return {
@@ -175,6 +174,9 @@ export const resolveAutoUpdatePlan = ({
 				commandText: null,
 			};
 		}
+		if (!UPDATE_TARGET_VERSION.test(normalizedTargetVersion)) {
+			return { allowed: false, reason: "invalid-version", command: null, commandText: null };
+		}
 		return createNpmUpdatePlan(normalizedTargetVersion);
   }
 
@@ -197,6 +199,9 @@ export const resolveAutoUpdatePlan = ({
   }
 
 	if (normalizedRunner === "codemem") {
+		if (!UPDATE_TARGET_VERSION.test(normalizedTargetVersion)) {
+			return { allowed: false, reason: "invalid-version", command: null, commandText: null };
+		}
 		return createNpmUpdatePlan(normalizedTargetVersion);
 	}
 

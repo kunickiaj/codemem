@@ -371,6 +371,38 @@ describe("ingestRawEvents", () => {
 		}
 	});
 
+	it("discards failed Git discovery output and preserves valid fallback metadata", () => {
+		const store = createStore();
+		try {
+			ingestRawEvents(store, {
+				source: "opencode",
+				session_id: "session-failed-discovery",
+				cwd: "/workspace/valid",
+				project: "valid-project",
+				events: [
+					{
+						event_id: "event-failed-discovery",
+						event_type: "prompt",
+						payload: {},
+						cwd: "fatal: not a git repository (or any of the parent directories): .git",
+						project: "Command failed: git rev-parse --show-toplevel",
+					},
+				],
+			});
+
+			store.updateRawEventSessionMeta({
+				opencodeSessionId: "session-failed-discovery",
+				cwd: "fatal: not a git repository (or any of the parent directories): .git",
+				project: "error: failed to discover project",
+			});
+
+			const session = store.db.prepare("SELECT cwd, project FROM raw_event_sessions").get();
+			expect(session).toEqual({ cwd: "/workspace/valid", project: "valid-project" });
+		} finally {
+			store.close();
+		}
+	});
+
 	it.each(["claude", "codex"])("starts a fresh %s stream at sequence zero", (source) => {
 		const store = createStore();
 		try {

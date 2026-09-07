@@ -46,7 +46,7 @@ that package transitively through Transformers.js and Sharp.
 | Package | Native strategy | Build system | Fallback |
 |---|---|---|---|
 | better-sqlite3 | Bundled N-API binaries selected at runtime | node-gyp (explicit `build-release` only) | Runtime load error at first `new Database()` if the platform has no bundled binary; install still succeeds |
-| sqlite-vec | `optionalDependencies` per-platform packages | None — prebuilt binaries only | Fatal error if platform unsupported |
+| sqlite-vec | `optionalDependencies` per-platform packages | None — prebuilt binaries only | Viewer startup disables semantic search and keeps FTS5; other commands require `CODEMEM_EMBEDDING_DISABLED=1` |
 | onnxruntime-node | Single package, postinstall downloads platform binary | N-API addon, prebuilt | Fatal error if platform unsupported |
 
 ### sqlite-vec platform packages

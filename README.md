@@ -46,22 +46,24 @@ npx -y codemem db raw-events-status
 
 That's it. The plugin captures activity, builds memories, and injects context from here on.
 
-If you want `codemem` available directly on your `PATH` for manual commands and semantic retrieval, install the CLI and embedding runtime globally. The command differs by platform:
+If you want `codemem` available directly on your `PATH` for manual commands and semantic retrieval, install the CLI globally. The CLI installs its matching embedding runtime by default. The command differs by platform:
 
 On Linux, skip the unused ONNX Runtime GPU provider download:
 
 ```text
-env ONNXRUNTIME_NODE_INSTALL=skip npm install -g codemem @codemem/embeddings
+env ONNXRUNTIME_NODE_INSTALL=skip npm install -g codemem
 ```
 
-On Apple silicon macOS and Windows, install both packages normally:
+On Apple silicon macOS and Windows, install normally:
 
 ```text
-npm install -g codemem @codemem/embeddings
+npm install -g codemem
 ```
 
-Installing only `codemem` keeps the CLI functional with FTS5 keyword retrieval
-and does not download the embedding runtime.
+For a smaller keyword-only install, use `npm install -g codemem --omit=optional`
+and set `CODEMEM_EMBEDDING_DISABLED=1` in every Codemem process. The flag is
+required because npm also omits sqlite-vec's optional platform package; the CLI
+then remains functional with FTS5.
 
 Setup-managed `npx` launchers cannot set a platform-specific install variable.
 On Linux, either use the guarded global installation above or set
@@ -92,7 +94,12 @@ OpenCode plugin and CLI are now split intentionally:
 
 - `@codemem/opencode-plugin` — OpenCode plugin package
 - `codemem` — CLI and MCP commands
-- `@codemem/embeddings` — optional semantic embedding runtime
+- `@codemem/embeddings` — optional semantic embedding runtime installed by the CLI
+
+OpenCode treats configured npm plugins and checkout-local `.opencode/plugins/` files as separate
+sources. If both load Codemem for one Project, the first registration wins and later copies skip
+their hooks with a warning. Remove the configured npm entry when testing a source checkout so the
+checkout-local plugin loads first; otherwise your edits may appear to do nothing.
 
 ### Claude Code (marketplace install)
 
@@ -176,7 +183,7 @@ PL->>OC: inject codemem context
 
 **Retrieval** combines two strategies: keyword search via SQLite FTS5 with BM25 scoring and semantic similarity via sqlite-vec embeddings. In the pack-building path, results from both are merged, exactly deduplicated, and re-ranked using recency and memory-kind boosts. Near-related memories stay fully rendered by default; use compact rendering or `CODEMEM_PACK_COMPRESSION=ids` only when you intentionally want ID-based expansion via `memory_get_observations`.
 
-**Injection** happens automatically. The plugin builds a query from the current session context (first prompt, latest prompt, project, recently modified files), asks the long-lived local viewer to build the pack, and appends the result to the latest user message via `experimental.chat.messages.transform`. Before sending prompt-derived POST data, it performs a payload-free viewer/profile handshake and rejects redirects. Retryable viewer transport, version, database-target, effective identity/config-target, compression-setting, embedding-setting mismatch, or pre-handshake structured request failures fall back to the existing CLI path; structured request errors become terminal only after compatibility is established. Prior injected message blocks are replayed byte-for-byte on later turns so provider prompt caches can keep the stable prefix. Set `CODEMEM_INJECT_SURFACE=system` to use the legacy system-prompt surface. OpenCode raw-event capture streams through the viewer and falls back to direct CLI enqueue; explicit SQLite busy/locked results and command timeouts receive one idempotent retry with the same event ID, while terminal failures are reported and dropped instead of requeued. Each retrieval and current-request cache reuse is recorded through the viewer-backed local evidence ledger with bounded memory identities, machine-readable reason codes, delivery status, and safe repository-relative working-set paths; retryable ledger transport failures retain the CLI fallback. Repository-contained absolute tool paths are converted to repository-relative `/` paths before retrieval; outside-repository, traversing, blank, and overlong paths are omitted. Prompts, pack text, memory content, and absolute paths are not copied into the ledger, historical message reconstruction creates no new attempts, and recording failures never block injection. After a plugin restart, usable context also remains fail-open when fresh ledger-identity repair fails; fallback bytes are injected without attributing delivery to either the conflicted or failed attempt.
+**Injection** happens automatically. The plugin builds a query from the current session context (first prompt, latest prompt, project, recently modified files), asks the long-lived local viewer to build the pack, and appends the result to the latest user message via `experimental.chat.messages.transform`. Before sending prompt-derived POST data, it performs a payload-free viewer/profile handshake and rejects redirects. Retryable viewer transport, version, database-target, effective identity/config-target, compression-setting, embedding-setting mismatch, or pre-handshake structured request failures fall back to the existing CLI path; structured request errors become terminal only after compatibility is established. Prior injected message blocks are replayed byte-for-byte on later turns so provider prompt caches can keep the stable prefix. Set `CODEMEM_INJECT_SURFACE=system` to use the legacy system-prompt surface. After Viewer transport fails, OpenCode atomically saves the exact raw-event envelope to a private local spool before CLI enqueue; CLI success removes the entry, while runtime, lock, timeout, version-skew, and validation failures retry with the same event ID across session boundaries and plugin restarts. Bounded database, identity, contract, and connection notices omit target values, paths, payloads, subprocess output, and addresses. Each retrieval and current-request cache reuse is recorded through the viewer-backed local evidence ledger with bounded memory identities, machine-readable reason codes, delivery status, and safe repository-relative working-set paths; retryable ledger transport failures retain the CLI fallback. Repository-contained absolute tool paths are converted to repository-relative `/` paths before retrieval; outside-repository, traversing, blank, and overlong paths are omitted. Prompts, pack text, memory content, and absolute paths are not copied into the ledger, historical message reconstruction creates no new attempts, and recording failures never block injection. After a plugin restart, usable context also remains fail-open when fresh ledger-identity repair fails; fallback bytes are injected without attributing delivery to either the conflicted or failed attempt.
 
 The profile response advertises a closed compatibility range from
 `min_supported_protocol_version` through `protocol_version`. OpenCode accepts
@@ -215,8 +222,8 @@ For architecture details, see [docs/architecture.md](docs/architecture.md).
 | | `codemem sync once` | Run one immediate sync pass |
 | | `codemem sync doctor` | Diagnose sync configuration issues |
 | | `codemem sync bootstrap` | Bootstrap sync from a peer snapshot |
-| **Updates** | `codemem update install` | Install an eligible stable release from npm |
-| | `codemem update check` | Check the npm registry for a newer stable release (`--json` and `--refresh` supported) |
+| **Updates** | `codemem update install` | Install an eligible release from the installed channel |
+| | `codemem update check` | Check npm for a newer release on the installed channel (`--json` and `--refresh` supported) |
 | **Coordinator** | `codemem coordinator` | Self-hosted coordinator admin (groups, devices, invites) |
 | **Database** | `codemem db prune-memories` | Deactivate low-signal memories (`--dry-run` to preview) |
 | | `codemem db prune-observations` | Deactivate low-signal observations |
@@ -237,18 +244,19 @@ for the stable machine-readable report. `codemem stats` remains the inventory an
 usage command; use `sync status`/`sync doctor`, `maintenance status`, and
 `db raw-events-status` for subsystem detail.
 
-`codemem update check` is read-only: it reports the latest validated stable release and
+`codemem update check` is read-only: it derives `alpha`, `beta`, `rc`, or `latest` from the
+installed version and reports the latest validated release on that same channel with
 installation-specific guidance. Results are cached for six hours;
-pass `--refresh` to force a registry request or `--json` for one stable status object.
+pass `--refresh` to force a registry request or `--json` for one channel-aware status object.
 The Viewer Health page reads the same status from `/api/update-status`. The OpenCode plugin
 checks it after startup and shows at most one best-effort notification for each newly discovered
-release. `notify` is the default. `codemem update install` performs the explicit, fail-closed
+same-channel release. `notify` is the default. `codemem update install` performs the explicit, fail-closed
 installation; bare `codemem update` remains non-mutating. Explicit plugin
 `auto` policy may run a paired, version-pinned public-registry install of `codemem` and
 `@codemem/embeddings` only
-after the CLI reports a fresh, validated npm release observed for at least 24 hours and an
-installation whose npm origin can be proven. Pinned, prerelease, downgrade,
-repository-development, stale, Docker, and unknown installs refuse execution. Set
+after the CLI reports a fresh, validated same-channel npm release observed for at least 24 hours
+and an installation whose npm origin can be proven. Pinned, cross-channel, unsupported-channel,
+downgrade, repository-development, stale, Docker, and unknown installs refuse execution. Set
 `CODEMEM_BACKEND_UPDATE_POLICY=off` to disable release checks.
 On Linux, plugin-owned auto-updates preserve the OpenCode environment and set
 `ONNXRUNTIME_NODE_INSTALL=skip` for the install to avoid the unused GPU-provider download.

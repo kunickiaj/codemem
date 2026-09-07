@@ -13,17 +13,26 @@ import {
   resolveAutoUpdatePlan,
   resolveUpgradeGuidance,
 } from "../lib/compat.js";
+import {
+  DEFAULT_DRAIN_LIMIT,
+  DEFAULT_MAX_ENTRIES,
+  RAW_EVENT_SPOOL_FULL_CODE,
+  loadRawEventSpoolEntries,
+  removeRawEventSpoolEntry,
+  resolveSpoolDirectory,
+  writeRawEventSpoolEntry,
+} from "../lib/raw-event-spool.js";
 
 const TRUTHY_VALUES = ["1", "true", "yes"];
 const DISABLED_VALUES = ["0", "false", "off"];
-const PINNED_BACKEND_VERSION = "0.44.0-alpha.1";
+const PINNED_BACKEND_VERSION = "0.44.0-beta.1";
 const COMPAT_CHECK_DELAY_MS = 1500;
 const COMPAT_CHECK_CACHE_TTL_MS = 5 * 60 * 1000;
 const MAX_UPDATE_STATUS_BYTES = 16 * 1024;
 const MAX_UPDATE_ACTION_CHARS = 1000;
 const MAX_UPDATE_VERSION_CHARS = 128;
-const STABLE_RELEASE_VERSION =
-  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const RELEASE_VERSION =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const CODEMEM_CONTEXT_PART_ID_PREFIX = "codemem-context-";
 const MAX_MESSAGE_INJECTION_CACHE_SESSIONS = 20;
 const MAX_MESSAGE_INJECTION_CACHE_MESSAGES = 100;
@@ -36,9 +45,28 @@ const VIEWER_HEALTH_RESTART_COOLDOWN_MS = 5 * 60_000;
 const RAW_EVENTS_STATUS_TIMEOUT_MS = 5_000;
 const DEFAULT_EMBEDDING_MODEL = "Xenova/bge-small-en-v1.5";
 const DEFAULT_EMBEDDING_REVISION = "ea104dacec62c0de699686887e3f920caeb4f3e3";
+const PLUGIN_REGISTRATIONS_KEY = Symbol.for("codemem.opencode-plugin.registrations");
 
 let compatCheckCache = null;
 const notifiedReleaseVersions = new Set();
+
+const claimPluginRegistration = (cwd) => {
+  let registrations = globalThis[PLUGIN_REGISTRATIONS_KEY];
+  if (!(registrations instanceof Map)) {
+    registrations = new Map();
+    globalThis[PLUGIN_REGISTRATIONS_KEY] = registrations;
+  }
+  const projectPath = resolve(cwd);
+  if (registrations.has(projectPath)) return null;
+  const registration = Symbol(projectPath);
+  registrations.set(projectPath, registration);
+  return () => {
+    if (registrations.get(projectPath) === registration) {
+      registrations.delete(projectPath);
+    }
+  };
+};
+const rawEventSpoolDrainsInFlight = new Map();
 
 // Release an unread response body without surfacing cancellation failures.
 const discardResponseBody = (response) => {
@@ -354,10 +382,74 @@ const clearCompatCheckCache = () => {
   compatCheckCache = null;
 };
 
-const isStableReleaseVersion = (value) => {
-  if (typeof value !== "string" || value.length > MAX_UPDATE_VERSION_CHARS) return false;
-  const match = STABLE_RELEASE_VERSION.exec(value);
-  return Boolean(match && match.slice(1, 4).map(Number).every(Number.isSafeInteger));
+const parseReleaseVersion = (value) => {
+  if (typeof value !== "string" || value.length > MAX_UPDATE_VERSION_CHARS) return null;
+  const match = RELEASE_VERSION.exec(value);
+  if (!match || !match.slice(1, 4).map(Number).every(Number.isSafeInteger)) return null;
+  const prerelease = match[4]?.split(".") || [];
+  if (prerelease.some((identifier) => /^0\d+$/.test(identifier))) return null;
+  return { core: match.slice(1, 4).map(Number), prerelease };
+};
+
+const releaseChannelForVersion = (value) => {
+  const parsed = parseReleaseVersion(value);
+  if (!parsed) return null;
+  if (parsed.prerelease.length === 0) return "latest";
+  const channel = parsed.prerelease[0];
+  return channel === "alpha" || channel === "beta" || channel === "rc" ? channel : null;
+};
+
+const comparePrereleaseIdentifier = (left, right) => {
+  if (left === undefined) return right === undefined ? 0 : -1;
+  if (right === undefined) return 1;
+  if (left === right) return 0;
+  const leftNumeric = /^\d+$/.test(left);
+  const rightNumeric = /^\d+$/.test(right);
+  if (leftNumeric && rightNumeric && left.length !== right.length) {
+    return Math.sign(left.length - right.length);
+  }
+  if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
+  return left < right ? -1 : 1;
+};
+
+const compareReleaseVersions = (left, right) => {
+  const leftVersion = parseReleaseVersion(left);
+  const rightVersion = parseReleaseVersion(right);
+  if (!leftVersion || !rightVersion) return null;
+  for (let index = 0; index < leftVersion.core.length; index += 1) {
+    const difference = leftVersion.core[index] - rightVersion.core[index];
+    if (difference !== 0) return Math.sign(difference);
+  }
+  if (leftVersion.prerelease.length === 0) {
+    return rightVersion.prerelease.length === 0 ? 0 : 1;
+  }
+  if (rightVersion.prerelease.length === 0) return -1;
+  const length = Math.max(leftVersion.prerelease.length, rightVersion.prerelease.length);
+  for (let index = 0; index < length; index += 1) {
+    const comparison = comparePrereleaseIdentifier(
+      leftVersion.prerelease[index],
+      rightVersion.prerelease[index],
+    );
+    if (comparison !== 0) return comparison;
+  }
+  return 0;
+};
+
+const isSameChannelVersionAtLeast = (currentVersion, minimumVersion) => {
+  const currentChannel = releaseChannelForVersion(currentVersion);
+  if (!currentChannel || currentChannel !== releaseChannelForVersion(minimumVersion)) return false;
+  const comparison = compareReleaseVersions(currentVersion, minimumVersion);
+  return comparison !== null && comparison >= 0;
+};
+
+const PINNED_RELEASE_CHANNEL = releaseChannelForVersion(PINNED_BACKEND_VERSION);
+
+const guidanceMatchesRelease = (guidance, latestVersion) => {
+  const versions =
+    String(guidance || "").match(
+      /\b\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?/g,
+    ) || [];
+  return versions.length === 0 || versions.every((version) => version === latestVersion);
 };
 
 const parseReleaseNotification = (result) => {
@@ -368,18 +460,24 @@ const parseReleaseNotification = (result) => {
     const status = JSON.parse(stdout);
     if (!status || typeof status !== "object" || Array.isArray(status)) return null;
     if (status.update_available !== true) return null;
-    if (!isStableReleaseVersion(status.latest_version)) {
+    if (
+      !PINNED_RELEASE_CHANNEL
+      || status.channel !== PINNED_RELEASE_CHANNEL
+      || releaseChannelForVersion(status.latest_version) !== PINNED_RELEASE_CHANNEL
+    ) {
       return null;
     }
     if (
       typeof status.recommended_action !== "string"
       || !status.recommended_action.trim()
       || status.recommended_action.length > MAX_UPDATE_ACTION_CHARS
+      || !guidanceMatchesRelease(status.recommended_action, status.latest_version)
     ) {
       return null;
     }
     return {
       latestVersion: status.latest_version,
+      channel: PINNED_RELEASE_CHANNEL,
       recommendedAction: status.recommended_action.trim(),
       autoUpdateEligible: status.auto_update_eligible === true,
     };
@@ -760,6 +858,20 @@ const isViewerInvalidRequestPayload = (payload) =>
   isRecord(payload)
   && isRecord(payload.error)
   && payload.error.code === "invalid_request";
+
+const classifyRawEventViewerFailure = (payload) => {
+  if (isViewerDbMismatchPayload(payload)) return "database";
+  if (isViewerIdentityMismatchPayload(payload)) return "identity";
+  if (isViewerContractUnsupportedPayload(payload)) return "contract";
+  return "connection";
+};
+
+const RAW_EVENT_FAILURE_ACTIONS = Object.freeze({
+  database: "restart the viewer from the same workspace/config",
+  identity: "restart Codemem and OpenCode with the same environment",
+  contract: "update Codemem on the installed channel, then restart OpenCode",
+  connection: "check or restart the viewer",
+});
 
 // Dependency-free port of @codemem/core prompt-transport semantics. Keep the
 // range and classifier parity pinned by the plugin injection tests.
@@ -1594,7 +1706,11 @@ const trimEventQueue = ({ events, maxEvents, hardMaxEvents, onUnsentPressure, on
       hardMaxEvents > 0 &&
       events.length > hardMaxEvents
     ) {
-      const dropped = events.shift();
+      const durableIndex = events.findIndex(
+        (queued) => queued && typeof queued === "object" && queued._raw_spooled
+      );
+      const dropIndex = durableIndex >= 0 ? durableIndex : 0;
+      const [dropped] = events.splice(dropIndex, 1);
       if (typeof onForcedDrop === "function") {
         onForcedDrop(dropped, events.length, hardMaxEvents);
       }
@@ -1693,22 +1809,10 @@ const detectRunner = ({ cwd, envRunner }) => {
       // terminal on every OpenCode startup for npx-only installs.
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
-    // Accept any global codemem at or above the pinned backend version, so a
-    // newer global install is used instead of silently downgrading to
-    // `npx codemem@<pin>` (the old check only matched the exact pin or the
-    // long-obsolete 0.2x series).
-    // Accept a global codemem only when it is the EXACT pinned version, or a
-    // clean (non-prerelease) release at least as new as the pin. isVersionAtLeast
-    // ignores prerelease suffixes, so without this a prerelease like
-    // "0.36.1-alpha.0" would wrongly compare >= the "0.36.1" release even though
-    // SemVer orders it below. Requiring an exact match for prereleases also
-    // handles a prerelease PIN correctly (the release script can set one): only
-    // the identical prerelease is trusted, never an older/different one.
-    const isPrerelease = versionOutput.includes("-");
-    const matchesOrCleanNewer =
-      versionOutput === PINNED_BACKEND_VERSION ||
-      (!isPrerelease && isVersionAtLeast(versionOutput, PINNED_BACKEND_VERSION));
-    if (matchesOrCleanNewer) {
+    // Use a newer global CLI only when it remains on the plugin's release
+    // channel. This prevents both channel crossing and fallback to an older pin
+    // immediately after a successful prerelease auto-update.
+    if (isSameChannelVersionAtLeast(versionOutput, PINNED_BACKEND_VERSION)) {
       return "codemem";
     }
   } catch {
@@ -1822,6 +1926,13 @@ export const CodememPlugin = async ({
   if (pluginIgnored) {
     return {};
   }
+  const releasePluginRegistration = claimPluginRegistration(cwd);
+  if (!releasePluginRegistration) {
+    await log("warn", "codemem duplicate plugin registration skipped", {
+      next_action: "remove either the configured npm plugin or the project-local Codemem plugin",
+    });
+    return {};
+  }
 
   const runner = detectRunner({
     cwd,
@@ -1923,9 +2034,22 @@ export const CodememPlugin = async ({
     process.env.CODEMEM_RAW_EVENTS_HARD_MAX || "2000",
     2000
   );
+  const rawEventSpoolDrainLimit = parsePositiveInt(
+    process.env.CODEMEM_RAW_EVENT_SPOOL_DRAIN_LIMIT,
+    DEFAULT_DRAIN_LIMIT,
+  );
+  const rawEventSpoolMaxEntries = parsePositiveInt(
+    process.env.CODEMEM_RAW_EVENT_SPOOL_MAX_ENTRIES,
+    DEFAULT_MAX_ENTRIES,
+  );
+  const rawEventSpoolHome = process.env.HOME?.trim() || homedir();
+  const rawEventSpoolDirectory = resolveSpoolDirectory(rawEventSpoolHome);
+  // Memoize the exact serialized envelope by queued-object identity so retries
+  // cannot drift in timestamp, ID, property order, or bytes.
+  const rawEventEnvelopes = new WeakMap();
   let streamUnavailableUntil = 0;
-  let streamErrorNoted = false;
-  let fallbackFailureNoted = false;
+  let spoolPersistenceFailureNoted = null;
+  let spoolLoadFailureNoted = false;
   let lastStatusCheckAt = 0;
   let lastStatusAvailable = true;
   let promptPackTransportUnavailableUntil = 0;
@@ -1937,9 +2061,9 @@ export const CodememPlugin = async ({
     return `${Date.now()}-${Math.random()}`;
   };
 
-  const queueRawEventViaCli = async (body) => {
+  const queueRawEventViaCli = async (body, serialized = JSON.stringify(body)) => {
     const runFallback = () => runCli(["enqueue-raw-event"], {
-      stdinText: JSON.stringify(body),
+      stdinText: serialized,
     });
     let result = await runFallback();
     let classification = classifyFallbackCommandResult(result);
@@ -1954,21 +2078,189 @@ export const CodememPlugin = async ({
       const error = new Error(
         retryExhausted ? `${classification.cause} after retry` : classification.cause
       );
-      error.retryable = classification.retryable && !attemptedRetry;
+      error.retryable = classification.retryable;
       throw error;
     }
     return true;
   };
 
   const lastToastAtBySession = new Map();
-  const shouldToast = (sessionID) => {
+  const shouldToast = (sessionID, category = "general") => {
     const now = Date.now();
-    const last = lastToastAtBySession.get(sessionID) || 0;
+    const key = `${sessionID || "unknown"}:${category}`;
+    const last = lastToastAtBySession.get(key) || 0;
     if (now - last < 60000) {
       return false;
     }
-    lastToastAtBySession.set(sessionID, now);
+    lastToastAtBySession.set(key, now);
     return true;
+  };
+
+  const warnSpoolPersistenceFailure = async (sessionID, reason) => {
+    const message = reason === "spool_full"
+      ? "codemem raw-event retry spool is full; repair Codemem, then archive retained entries"
+      : "codemem could not save a raw event for retry; it remains queued in memory";
+    try {
+      await client.app.log({
+        service: "codemem",
+        level: "error",
+        message,
+        extra: { category: "persistence", reason },
+      });
+    } catch {
+      // Best-effort app logging only.
+    }
+    if (spoolPersistenceFailureNoted === reason) return;
+    spoolPersistenceFailureNoted = reason;
+    if (!client.tui?.showToast || !shouldToast(sessionID, `persistence:${reason}`)) return;
+    try {
+      await client.tui.showToast({
+        body: { message: `codemem: ${message}`, variant: "error" },
+      });
+    } catch {
+      // Best-effort toast only.
+    }
+  };
+
+  const persistRawEventForRetry = async ({ body, serialized, payload, sessionID }) => {
+    try {
+      await writeRawEventSpoolEntry({
+        envelope: body,
+        serialized,
+        homeDir: rawEventSpoolHome,
+        maxEntries: rawEventSpoolMaxEntries,
+      });
+      spoolPersistenceFailureNoted = null;
+      if (payload && typeof payload === "object") {
+        payload._raw_spooled = true;
+      }
+      return true;
+    } catch (error) {
+      const reason = error?.code === RAW_EVENT_SPOOL_FULL_CODE ? "spool_full" : "write_failed";
+      await logLine(`raw_events.spool.${reason} category=persistence`);
+      await warnSpoolPersistenceFailure(sessionID, reason);
+      return false;
+    }
+  };
+
+  const removeRawEventFromSpool = async ({ eventId, payload }) => {
+    try {
+      await removeRawEventSpoolEntry({ eventId, homeDir: rawEventSpoolHome });
+      if (payload && typeof payload === "object") {
+        payload._raw_spooled = false;
+      }
+    } catch {
+      await logLine("raw_events.spool.cleanup_failed category=persistence");
+    }
+  };
+
+  const notifyRawEventDelivery = async ({ category, delivered, durable, sessionID }) => {
+    const action = RAW_EVENT_FAILURE_ACTIONS[category] || RAW_EVENT_FAILURE_ACTIONS.connection;
+    let outcome = "was saved for retry";
+    if (delivered) {
+      outcome = "was queued via CLI";
+    } else if (!durable) {
+      outcome = "was not saved for retry; still queued in memory";
+    }
+    const message = `codemem raw event ${outcome}; ${action}`;
+    let delivery = "memory";
+    if (delivered) {
+      delivery = "cli";
+    } else if (durable) {
+      delivery = "spool";
+    }
+    try {
+      await client.app.log({
+        service: "codemem",
+        level: delivered ? "warn" : "error",
+        message,
+        extra: {
+          category,
+          delivery,
+        },
+      });
+    } catch {
+      // Best-effort app logging only.
+    }
+    if (!client.tui?.showToast || !shouldToast(sessionID, `${category}:${delivery}`)) return;
+    try {
+      await client.tui.showToast({
+        body: { message: `codemem: ${message}`, variant: delivered ? "warning" : "error" },
+      });
+    } catch {
+      // Best-effort toast only.
+    }
+  };
+
+  const drainRawEventSpool = () => {
+    if (!rawEventsEnabled) {
+      return Promise.resolve();
+    }
+    const existingDrain = rawEventSpoolDrainsInFlight.get(rawEventSpoolDirectory);
+    if (existingDrain) {
+      return existingDrain;
+    }
+    const drainPromise = (async () => {
+      let loaded;
+      try {
+        loaded = await loadRawEventSpoolEntries({
+          homeDir: rawEventSpoolHome,
+          limit: rawEventSpoolDrainLimit,
+        });
+      } catch {
+        await logLine("raw_events.spool.load_failed category=persistence");
+        const message = "codemem could not read saved raw events; spool entries were left untouched";
+        try {
+          await client.app.log({
+            service: "codemem",
+            level: "error",
+            message,
+            extra: { category: "persistence", delivery: "load" },
+          });
+        } catch {
+          // Best-effort app logging only.
+        }
+        if (!spoolLoadFailureNoted) {
+          spoolLoadFailureNoted = true;
+          if (client.tui?.showToast && shouldToast(null, "persistence:load")) {
+            try {
+              await client.tui.showToast({
+                body: { message: `codemem: ${message}`, variant: "error" },
+              });
+            } catch {
+              // Best-effort toast only.
+            }
+          }
+        }
+        return;
+      }
+      spoolLoadFailureNoted = false;
+      if (loaded.corruptCount > 0) {
+        await logLine(`raw_events.spool.corrupt_retained count=${loaded.corruptCount}`);
+      }
+      for (const entry of loaded.entries) {
+        try {
+          await queueRawEventViaCli(entry.envelope, entry.serialized);
+          await removeRawEventFromSpool({ eventId: entry.eventId });
+        } catch (error) {
+          await logLine("raw_events.spool.drain_deferred category=fallback");
+          if (error?.retryable === true) {
+            break;
+          }
+        }
+      }
+    })();
+    const trackedDrain = drainPromise
+      .catch(async () => {
+        await logLine("raw_events.spool.drain_failed category=persistence");
+      })
+      .finally(() => {
+        if (rawEventSpoolDrainsInFlight.get(rawEventSpoolDirectory) === trackedDrain) {
+          rawEventSpoolDrainsInFlight.delete(rawEventSpoolDirectory);
+        }
+      });
+    rawEventSpoolDrainsInFlight.set(rawEventSpoolDirectory, trackedDrain);
+    return trackedDrain;
   };
 
   const buildViewerCliArgs = (action) => {
@@ -1990,66 +2282,54 @@ export const CodememPlugin = async ({
       return false;
     }
     const now = Date.now();
-    const body = buildRawEventEnvelope({
-      sessionID,
-      type,
-      payload,
-      cwd,
-      project: resolveProjectName(project, cwd),
-      startedAt: sessionStartedAt,
-      nowMs: now,
-      nowMono:
-        typeof performance !== "undefined" && performance.now
-          ? performance.now()
-          : null,
-      nextEventId,
-    });
-
+    let cachedEnvelope = payload && typeof payload === "object"
+      ? rawEventEnvelopes.get(payload)
+      : null;
+    if (!cachedEnvelope) {
+      const builtEnvelope = buildRawEventEnvelope({
+        sessionID,
+        type,
+        payload,
+        cwd,
+        project: resolveProjectName(project, cwd),
+        startedAt: sessionStartedAt,
+        nowMs: now,
+        nowMono:
+          typeof performance !== "undefined" && performance.now
+            ? performance.now()
+            : null,
+        nextEventId,
+      });
+      const serialized = JSON.stringify(builtEnvelope);
+      cachedEnvelope = { body: JSON.parse(serialized), serialized };
+      if (payload && typeof payload === "object") {
+        rawEventEnvelopes.set(payload, cachedEnvelope);
+      }
+    }
+    const { body, serialized } = cachedEnvelope;
     if (now < streamUnavailableUntil) {
+      const durable = await persistRawEventForRetry({ body, serialized, payload, sessionID });
       try {
-        await queueRawEventViaCli(body);
-        fallbackFailureNoted = false;
+        await queueRawEventViaCli(body, serialized);
+        await removeRawEventFromSpool({ eventId: body.event_id, payload });
         if (payload && typeof payload === "object") {
           payload._raw_enqueued = true;
         }
+        await notifyRawEventDelivery({
+          category: "connection",
+          delivered: true,
+          durable,
+          sessionID,
+        });
         return true;
-      } catch (fallbackErr) {
-        if (payload && typeof payload === "object") {
-          payload._raw_fallback_terminal = fallbackErr?.retryable !== true;
-        }
-        await logLine(
-          `raw_events.fallback.error sessionID=${sessionID} type=${type} err=${String(
-            fallbackErr
-          ).slice(0, 200)}`
-        );
-        if (!fallbackFailureNoted) {
-          fallbackFailureNoted = true;
-          try {
-            await client.app.log({
-              service: "codemem",
-              level: "error",
-              message: "codemem fallback enqueue failed during stream backoff",
-              extra: {
-                sessionID,
-                backoffMs: rawEventsBackoffMs,
-              },
-            });
-          } catch (logErr) {
-            // best-effort logging only
-          }
-          if (client.tui?.showToast && shouldToast(sessionID)) {
-            try {
-              await client.tui.showToast({
-                body: {
-                  message: "codemem: fallback enqueue failed while stream is down",
-                  variant: "error",
-                },
-              });
-            } catch (toastErr) {
-              // best-effort only
-            }
-          }
-        }
+      } catch {
+        await logLine("raw_events.fallback.error category=connection");
+        await notifyRawEventDelivery({
+          category: "connection",
+          delivered: false,
+          durable,
+          sessionID,
+        });
         return false;
       }
     }
@@ -2080,130 +2360,46 @@ export const CodememPlugin = async ({
       });
       if (!postResp.ok) {
         let responseBody = null;
-        if (postResp.status === 409) {
-          try {
-            responseBody = await postResp.json();
-          } catch {
-            // Generic failure handling below remains the safe fallback.
-          }
+        try {
+          responseBody = await postResp.json();
+        } catch {
+          // Generic connection guidance below remains the safe fallback.
         }
-        const targetMismatch = isViewerDbMismatchPayload(responseBody)
-          || isViewerIdentityMismatchPayload(responseBody)
-          || isViewerContractUnsupportedPayload(responseBody);
         const postError = new Error(`raw-events post failed (${postResp.status})`);
-        postError.viewerTargetMismatch = targetMismatch;
+        postError.rawEventFailureCategory = classifyRawEventViewerFailure(responseBody);
         throw postError;
       }
       streamUnavailableUntil = 0;
-      streamErrorNoted = false;
-      fallbackFailureNoted = false;
       lastStatusAvailable = true;
+      await removeRawEventFromSpool({ eventId: body.event_id, payload });
       if (payload && typeof payload === "object") {
         payload._raw_enqueued = true;
       }
       return true;
     } catch (err) {
+      const category = err?.rawEventFailureCategory || "connection";
       streamUnavailableUntil = Date.now() + Math.max(1000, rawEventsBackoffMs);
-      await logLine(`raw_events.error sessionID=${sessionID} type=${type} err=${String(err).slice(0, 200)}`);
-      try {
-        await client.app.log({
-          service: "codemem",
-          level: "error",
-          message: "Failed to stream raw events to codemem viewer",
-          extra: {
-            sessionID,
-            type,
-            viewerHost,
-            viewerPort,
-            viewerTargetMismatch: err?.viewerTargetMismatch === true,
-            error: String(err),
-          },
-        });
-      } catch (logErr) {
-        // best-effort logging only
-      }
+      await logLine(`raw_events.error category=${category}`);
+      const durable = await persistRawEventForRetry({ body, serialized, payload, sessionID });
 
       let fallbackOk = false;
       try {
-        await queueRawEventViaCli(body);
+        await queueRawEventViaCli(body, serialized);
+        await removeRawEventFromSpool({ eventId: body.event_id, payload });
         fallbackOk = true;
-      } catch (fallbackErr) {
-        if (payload && typeof payload === "object") {
-          payload._raw_fallback_terminal = fallbackErr?.retryable !== true;
-        }
-        await logLine(
-          `raw_events.fallback.error sessionID=${sessionID} type=${type} err=${String(
-            fallbackErr
-          ).slice(0, 200)}`
-        );
+      } catch {
+        await logLine(`raw_events.fallback.error category=${category}`);
       }
 
       if (fallbackOk) {
-        fallbackFailureNoted = false;
         if (payload && typeof payload === "object") {
           payload._raw_enqueued = true;
         }
-        if (!streamErrorNoted) {
-          streamErrorNoted = true;
-          try {
-            await client.app.log({
-              service: "codemem",
-              level: "warn",
-              message: "codemem stream unavailable; queued raw event via CLI fallback",
-              extra: {
-                sessionID,
-                backoffMs: rawEventsBackoffMs,
-              },
-            });
-          } catch (logErr) {
-            // best-effort logging only
-          }
-        }
-        if (client.tui?.showToast && shouldToast(sessionID)) {
-          try {
-            await client.tui.showToast({
-              body: {
-                message: "codemem: viewer stream unavailable; queue fallback active",
-                variant: "warning",
-              },
-            });
-          } catch (toastErr) {
-            // best-effort only
-          }
-        }
+        await notifyRawEventDelivery({ category, delivered: true, durable, sessionID });
         return true;
       }
 
-      if (!streamErrorNoted) {
-        streamErrorNoted = true;
-        fallbackFailureNoted = true;
-        try {
-          await client.app.log({
-            service: "codemem",
-            level: "error",
-            message: "codemem stream unavailable; fallback enqueue failed",
-            extra: {
-              sessionID,
-              backoffMs: rawEventsBackoffMs,
-            },
-          });
-        } catch (logErr) {
-          // best-effort logging only
-        }
-      }
-
-      if (client.tui?.showToast && shouldToast(sessionID)) {
-        try {
-            await client.tui.showToast({
-              body: {
-                message: `codemem: stream unavailable (${viewerHost}:${viewerPort}); fallback failed`,
-                variant: "error",
-              },
-            });
-        } catch (toastErr) {
-          // best-effort only
-        }
-      }
+      await notifyRawEventDelivery({ category, delivered: false, durable, sessionID });
       return false;
     }
   };
@@ -3575,9 +3771,17 @@ export const CodememPlugin = async ({
         void logLine(`queue.pressure unsent_preserved queued=${queuedCount} max_events=${cap}`);
       },
       onForcedDrop: (dropped, queuedCount, hardCap) => {
+        const durableSpoolCoverage = dropped?._raw_spooled === true;
         void logLine(
-          `queue.drop hard_cap event_id=${dropped?._raw_event_id || "unknown"} queued=${queuedCount} hard_max=${hardCap}`
+          `queue.drop hard_cap durable_spool_coverage=${durableSpoolCoverage} queued=${queuedCount} hard_max=${hardCap}`
         );
+        void log("error", "codemem raw event dropped at in-memory hard cap", {
+          category: "queue_capacity",
+          delivery: durableSpoolCoverage ? "spool" : "memory",
+          durable_spool_coverage: durableSpoolCoverage,
+          queued_count: queuedCount,
+          hard_max_events: hardCap,
+        });
       },
     });
   };
@@ -3607,7 +3811,6 @@ export const CodememPlugin = async ({
       ...adapterAnnotatedEvent,
       _raw_event_id: rawEventId,
       _raw_session_id: resolvedSessionID,
-      _raw_retry_count: 0,
     };
     recordEvent(queuedEvent);
     void emitRawEvent({
@@ -3619,6 +3822,7 @@ export const CodememPlugin = async ({
 
   const flushEvents = async () => {
     if (!events.length) {
+      await drainRawEventSpool();
       await logLine("flush.skip empty");
       return;
     }
@@ -3630,16 +3834,8 @@ export const CodememPlugin = async ({
     }
 
     const failed = [];
-    let droppedCount = 0;
     for (const queuedEvent of batch) {
       if (queuedEvent && typeof queuedEvent === "object" && queuedEvent._raw_enqueued) {
-        continue;
-      }
-      if (queuedEvent && typeof queuedEvent === "object" && queuedEvent._raw_fallback_terminal) {
-        droppedCount += 1;
-        await logLine(
-          `flush.drop terminal_fallback event_id=${queuedEvent?._raw_event_id || "unknown"}`
-        );
         continue;
       }
       const queuedSessionID =
@@ -3652,27 +3848,13 @@ export const CodememPlugin = async ({
         payload: queuedEvent,
       });
       if (!ok) {
-        if (queuedEvent?._raw_fallback_terminal) {
-          droppedCount += 1;
-          await logLine(
-            `flush.drop terminal_fallback event_id=${queuedEvent?._raw_event_id || "unknown"}`
-          );
-          continue;
-        }
-        const currentRetry =
-          typeof queuedEvent?._raw_retry_count === "number" && Number.isFinite(queuedEvent._raw_retry_count)
-            ? queuedEvent._raw_retry_count
-            : 0;
-        const nextRetry = currentRetry + 1;
-        failed.push({
-          ...queuedEvent,
-          _raw_retry_count: nextRetry,
-        });
+        failed.push(queuedEvent);
       }
     }
     if (failed.length) {
       events.unshift(...failed);
       await logLine(`flush.retry_deferred count=${failed.length}`);
+      await drainRawEventSpool();
       return;
     }
 
@@ -3683,12 +3865,20 @@ export const CodememPlugin = async ({
     await logLine(
       `flush.stream_only finalize count=${batch.length} tools=${sessionContext.toolCount} prompts=${sessionContext.promptCount} duration=${Math.round(durationMs / 1000)}s`
     );
-    await logLine(`flush.ok count=${batch.length - droppedCount} dropped=${droppedCount}`);
+    await logLine(`flush.ok count=${batch.length} dropped=0`);
     sessionStartedAt = null;
     resetSessionContext();
+    await drainRawEventSpool();
   };
 
+  void drainRawEventSpool();
+
   return {
+    dispose: () => {
+      clearTimeout(updateCheckTimer);
+      stopHealthCheck();
+      releasePluginRegistration();
+    },
     "experimental.session.compacting": async (input) => {
       const sessionID = extractHookSessionID(input) || activeSessionID;
       markCompactionInjectionSkip(compactionInjectionSkips, sessionID);
@@ -4004,6 +4194,11 @@ export const CodememPlugin = async ({
       if (eventType === "session.deleted") {
         activeSessionID = null;
         if (sessionID) {
+          for (const key of lastToastAtBySession.keys()) {
+            if (key.startsWith(`${sessionID}:`)) {
+              lastToastAtBySession.delete(key);
+            }
+          }
           injectionToastShown.delete(sessionID);
           messageInjectionCache.delete(sessionID);
           compactionInjectionSkips.delete(sessionID);
@@ -4130,6 +4325,8 @@ export const __testUtils = {
   redactPackCommand,
   rejectsInternalLedgerFlag,
   classifyFallbackCommandResult,
+  classifyRawEventViewerFailure,
+  detectRunner,
   PROMPT_TRANSPORT_PROTOCOL_RANGE,
   normalizePromptTransportProtocolRange,
   arePromptTransportProtocolRangesCompatible,

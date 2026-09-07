@@ -47,6 +47,12 @@ export interface RecipientPolicyReviewContinuityV1 {
 	findingCount: number;
 }
 
+export interface RecipientPolicyReviewCategoryCountsV1 {
+	actionableReview: number;
+	preservedContinuity: number;
+	blockedRepair: number;
+}
+
 // Patch-level additive wire hint: existing v1 clients ignore the new field,
 // while current clients require it so absence cannot silently change UX mode.
 export interface RecipientPolicyReviewListV1 {
@@ -54,6 +60,7 @@ export interface RecipientPolicyReviewListV1 {
 	reviewItems: RecipientPolicyActionableReviewItemV1[];
 	blockedItems: RecipientPolicyBlockedItemV1[];
 	continuity: RecipientPolicyReviewContinuityV1 | null;
+	categoryCounts: RecipientPolicyReviewCategoryCountsV1;
 }
 
 export interface RecipientPolicyReviewResolveRequestV1 {
@@ -545,6 +552,11 @@ export function listRecipientPolicyReview(
 		version: RECIPIENT_POLICY_CONTRACT_VERSION,
 		reviewItems,
 		blockedItems: state.blockedItems,
+		categoryCounts: {
+			actionableReview: reviewItems.length,
+			preservedContinuity: state.preservedDiagnosticFindings.length,
+			blockedRepair: state.blockedItems.length,
+		},
 		continuity:
 			findingCount > 0
 				? {

@@ -722,10 +722,17 @@ export interface RecipientPolicyBlockedItemV1 {
 	};
 }
 
+export interface RecipientPolicyReviewCategoryCountsV1 {
+	actionableReview: number;
+	preservedContinuity: number;
+	blockedRepair: number;
+}
+
 export interface RecipientPolicyReviewListV1 {
 	version: 1;
 	reviewItems: RecipientPolicyReviewItemV1[];
 	blockedItems: RecipientPolicyBlockedItemV1[];
+	categoryCounts: RecipientPolicyReviewCategoryCountsV1;
 	continuity: {
 		state: "legacy_access_preserved";
 		findingCount: number;
@@ -1101,6 +1108,13 @@ export type LegacyTeamSetupErrorCode =
 	| "team_setup_completion_invalid"
 	| "team_setup_failed";
 
+export type LegacyTeamSetupErrorReason =
+	| "coordinator_route_missing"
+	| "coordinator_rejected_manifest"
+	| "coordinator_unreachable"
+	| "local_candidate_scan_budget_exceeded"
+	| "coordinator_roster_unavailable";
+
 const LEGACY_TEAM_SETUP_VERSION = 1;
 const LEGACY_TEAM_SETUP_ERROR_CODES = new Set<LegacyTeamSetupErrorCode>([
 	"team_setup_incomplete",
@@ -1113,6 +1127,13 @@ const LEGACY_TEAM_SETUP_ERROR_CODES = new Set<LegacyTeamSetupErrorCode>([
 	"team_setup_completion_conflict",
 	"team_setup_completion_invalid",
 	"team_setup_failed",
+]);
+export const LEGACY_TEAM_SETUP_ERROR_REASONS = new Set<LegacyTeamSetupErrorReason>([
+	"coordinator_route_missing",
+	"coordinator_rejected_manifest",
+	"coordinator_unreachable",
+	"local_candidate_scan_budget_exceeded",
+	"coordinator_roster_unavailable",
 ]);
 const LEGACY_TEAM_SETUP_STATUSES = new Set<LegacyTeamSetupStatusV1>([
 	"needs_setup",
@@ -1466,6 +1487,7 @@ export class LegacyTeamSetupApiError extends Error {
 	constructor(
 		readonly statusCode: number,
 		readonly errorCode: LegacyTeamSetupErrorCode,
+		readonly reason?: LegacyTeamSetupErrorReason,
 	) {
 		super(errorCode);
 		this.name = "LegacyTeamSetupApiError";
@@ -1508,7 +1530,19 @@ async function legacyTeamSetupRequest<T>(
 		const errorCode = LEGACY_TEAM_SETUP_ERROR_CODES.has(submittedCode as LegacyTeamSetupErrorCode)
 			? (submittedCode as LegacyTeamSetupErrorCode)
 			: "team_setup_failed";
-		throw new LegacyTeamSetupApiError(response.status, errorCode);
+		const submittedReason =
+			payload &&
+			typeof payload === "object" &&
+			"reason" in payload &&
+			typeof payload.reason === "string"
+				? payload.reason
+				: "";
+		const reason = LEGACY_TEAM_SETUP_ERROR_REASONS.has(
+			submittedReason as LegacyTeamSetupErrorReason,
+		)
+			? (submittedReason as LegacyTeamSetupErrorReason)
+			: undefined;
+		throw new LegacyTeamSetupApiError(response.status, errorCode, reason);
 	}
 	if (!isPayload(payload)) {
 		throw new LegacyTeamSetupApiError(response.status, "team_setup_failed");
@@ -1854,17 +1888,35 @@ export function createRecipientInvite(
 
 export async function loadRecipientPolicyReview(): Promise<RecipientPolicyReviewListV1> {
 	const review = await fetchJson<
-		Omit<RecipientPolicyReviewListV1, "continuity"> & {
+		Omit<RecipientPolicyReviewListV1, "categoryCounts" | "continuity"> & {
+			categoryCounts?: RecipientPolicyReviewListV1["categoryCounts"];
 			continuity?: RecipientPolicyReviewListV1["continuity"];
 		}
 	>("/api/sync/recipient-policy/v1/review");
-	if (review.continuity !== undefined) return { ...review, continuity: review.continuity };
+	const continuity = review.continuity ?? null;
+	if (review.categoryCounts) {
+		return {
+			...review,
+			continuity,
+			categoryCounts: {
+				actionableReview: review.reviewItems.length,
+				preservedContinuity: Math.max(0, review.categoryCounts.preservedContinuity),
+				blockedRepair: review.blockedItems.length,
+			},
+		};
+	}
+	const preservedContinuity = Math.max(
+		0,
+		(continuity?.findingCount ?? 0) - review.reviewItems.length,
+	);
 	return {
 		...review,
-		continuity:
-			review.reviewItems.length > 0
-				? { state: "legacy_access_preserved", findingCount: review.reviewItems.length }
-				: null,
+		continuity,
+		categoryCounts: {
+			actionableReview: review.reviewItems.length,
+			preservedContinuity,
+			blockedRepair: review.blockedItems.length,
+		},
 	};
 }
 

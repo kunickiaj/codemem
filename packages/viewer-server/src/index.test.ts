@@ -3200,6 +3200,7 @@ describe("viewer-server", () => {
 	describe("GET /api/update-status", () => {
 		const availableStatus: core.UpdateStatus = {
 			current_version: "0.40.2",
+			channel: "latest",
 			latest_version: "0.41.0",
 			update_available: true,
 			first_seen_at: "2026-08-10T12:00:00.000Z",
@@ -12849,6 +12850,12 @@ describe("viewer-server", () => {
 					"replication_scopes",
 					"project_scope_mappings",
 					"scope_memberships",
+					"policy_teams",
+					"policy_team_memberships",
+					"policy_team_device_decisions",
+					"project_recipients",
+					"recipient_policy_authority_states",
+					"recipient_policy_deny_overlays",
 					"memory_items",
 					"replication_ops",
 					"replication_cursors",
@@ -12869,6 +12876,11 @@ describe("viewer-server", () => {
 				).toBeUndefined();
 				const reviewResponse = await app.request("/api/sync/recipient-policy/v1/review");
 				const review = (await reviewResponse.json()) as {
+					categoryCounts: {
+						actionableReview: number;
+						preservedContinuity: number;
+						blockedRepair: number;
+					};
 					continuity: { findingCount: number; state: string } | null;
 					reviewItems: Array<{
 						reviewItemId: string;
@@ -12884,6 +12896,11 @@ describe("viewer-server", () => {
 				expect(review.continuity).toEqual({
 					findingCount: 1,
 					state: "legacy_access_preserved",
+				});
+				expect(review.categoryCounts).toEqual({
+					actionableReview: 1,
+					preservedContinuity: 0,
+					blockedRepair: 0,
 				});
 				expect(
 					store.db
@@ -13015,6 +13032,11 @@ describe("viewer-server", () => {
 				expect(completedReviewResponse.status).toBe(200);
 				expect(completedReview.continuity).toBeNull();
 				expect(completedReview).toHaveProperty("continuity");
+				expect(completedReview.categoryCounts).toEqual({
+					actionableReview: 0,
+					preservedContinuity: 0,
+					blockedRepair: 0,
+				});
 			} finally {
 				getStore()?.db.pragma("query_only = OFF");
 				cleanup();

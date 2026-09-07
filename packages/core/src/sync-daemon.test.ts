@@ -681,6 +681,90 @@ describe("createSerializedDaemonTickRunner", () => {
 		expect(run()).toBe(true);
 		expect(tick).toHaveBeenCalledTimes(2);
 	});
+
+	it("consumes a rejected tick and permits the next scheduled tick", async () => {
+		const failure = new Error("database connection failed before tick setup");
+		const tick = vi.fn().mockRejectedValueOnce(failure).mockResolvedValue(undefined);
+		const firstCompleted = vi.fn();
+		const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		const run = createSerializedDaemonTickRunner(tick, firstCompleted);
+
+		try {
+			expect(run()).toBe(true);
+			await vi.waitFor(() => expect(firstCompleted).toHaveBeenCalledOnce());
+			await vi.waitFor(() =>
+				expect(errorLog).toHaveBeenCalledWith(
+					"[codemem] scheduled sync daemon tick failed:",
+					failure,
+				),
+			);
+
+			expect(run()).toBe(true);
+			await vi.waitFor(() => expect(tick).toHaveBeenCalledTimes(2));
+		} finally {
+			errorLog.mockRestore();
+		}
+	});
+
+	it("contains a locked diagnostic write and recovers on a later tick", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "codemem-sync-daemon-locked-diagnostic-"));
+		const dbPath = join(tempDir, "mem.sqlite");
+		const keysDir = join(tempDir, "keys");
+		const setupDb = new Database(dbPath);
+		initTestSchema(setupDb);
+		setupDb.close();
+		const lockDb = new Database(dbPath);
+		const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		const unhandledRejections: unknown[] = [];
+		const onUnhandledRejection = (error: unknown) => unhandledRejections.push(error);
+		process.on("unhandledRejection", onUnhandledRejection);
+		let lockOnCallback = true;
+		const firstCompleted = vi.fn();
+		const tick = vi.fn(() =>
+			runTickOnce(dbPath, keysDir, undefined, ({ db }) => {
+				if (!lockOnCallback) return;
+				lockOnCallback = false;
+				db.pragma("busy_timeout = 1");
+				lockDb.exec("BEGIN EXCLUSIVE");
+				throw new Error("maintenance callback failed while database is locked");
+			}),
+		);
+		const run = createSerializedDaemonTickRunner(tick, firstCompleted);
+
+		try {
+			expect(run()).toBe(true);
+			await vi.waitFor(() => expect(firstCompleted).toHaveBeenCalledOnce());
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			expect(unhandledRejections).toEqual([]);
+			expect(errorLog).toHaveBeenCalledWith(
+				expect.stringContaining("could not persist its diagnostic"),
+				expect.any(Error),
+				expect.objectContaining({ code: "SQLITE_BUSY" }),
+			);
+
+			lockDb.exec("ROLLBACK");
+			expect(run()).toBe(true);
+			await vi.waitFor(() => expect(tick).toHaveBeenCalledTimes(2));
+			await vi.waitFor(() => {
+				const verified = new Database(dbPath);
+				try {
+					const lastOkAt = verified
+						.prepare("SELECT last_ok_at FROM sync_daemon_state WHERE id = 1")
+						.pluck()
+						.get();
+					expect(lastOkAt).toBeTruthy();
+				} finally {
+					verified.close();
+				}
+			});
+		} finally {
+			process.off("unhandledRejection", onUnhandledRejection);
+			if (lockDb.inTransaction) lockDb.exec("ROLLBACK");
+			lockDb.close();
+			errorLog.mockRestore();
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
 });
 
 // ---------------------------------------------------------------------------

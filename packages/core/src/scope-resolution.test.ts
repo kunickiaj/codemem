@@ -42,6 +42,65 @@ describe("canonicalWorkspaceIdentity", () => {
 			}).value,
 		).toBe("https://github.com/kunickiaj/codemem.git:feature/scope");
 	});
+
+	it("falls through malformed higher-priority identity to a valid cwd", () => {
+		expect(
+			canonicalWorkspaceIdentity({
+				cwd: "/work/acme/service",
+				gitRemote: "fatal: not a git repository (or any of the parent directories): .git",
+				project: "service",
+			}),
+		).toEqual({
+			displayProject: "service",
+			source: "cwd",
+			value: "/work/acme/service",
+		});
+	});
+
+	it("quarantines malformed legacy identity fields as unmapped", () => {
+		const identity = canonicalWorkspaceIdentity({
+			cwd: "Command failed: git rev-parse --show-toplevel",
+			gitRemote: "fatal: not a git repository (or any of the parent directories): .git",
+			project: "error: failed to discover project",
+			workspaceId: "git: 'workspace-id' is not a git command",
+		});
+
+		expect(identity).toMatchObject({ displayProject: null, source: "unmapped" });
+		expect(identity.value).toMatch(/^unmapped:[a-f0-9]{64}$/);
+	});
+
+	it("preserves the project-only unmapped hash", () => {
+		expect(canonicalWorkspaceIdentity({ project: "codemem" }).value).toBe(
+			"unmapped:34170381a2e99d876e3036c84ecdfcbbf0ef62cf9c89208236e7f8d528ed7720",
+		);
+	});
+
+	it("preserves the unknown hash for an empty identity", () => {
+		expect(canonicalWorkspaceIdentity({}).value).toBe(
+			"unmapped:b23a6a8439c0dde5515893e7c90c1e3233b8616e634470f20dc4928bcf3609bc",
+		);
+	});
+
+	it("keeps distinct malformed identity tuples in separate quarantines", () => {
+		const sharedFields = {
+			gitRemote: "fatal: not a git repository (or any of the parent directories): .git",
+			project: "error: failed to discover project",
+		};
+		const first = canonicalWorkspaceIdentity({
+			...sharedFields,
+			cwd: "Command failed: git rev-parse --show-toplevel",
+			workspaceId: "git: 'first-workspace' is not a git command",
+		});
+		const second = canonicalWorkspaceIdentity({
+			...sharedFields,
+			cwd: "Command failed: git rev-parse --show-prefix",
+			workspaceId: "git: 'second-workspace' is not a git command",
+		});
+
+		expect(first).toMatchObject({ source: "unmapped" });
+		expect(second).toMatchObject({ source: "unmapped" });
+		expect(first.value).not.toBe(second.value);
+	});
 });
 
 describe("resolveProjectScope", () => {

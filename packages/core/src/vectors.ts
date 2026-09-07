@@ -371,6 +371,351 @@ export function countIncompleteActiveMemoryVectorCoverage(db: Database, model: s
 	return incomplete;
 }
 
+function hasMemoryVectorRowidsShadowTable(db: Database): boolean {
+	const tables = db.prepare("PRAGMA table_list").all() as Array<{ name: string }>;
+	return tables.some((table) => table.name === "memory_vectors_rowids");
+}
+
+type TargetVectorRow = {
+	rowid: number;
+	memory_id: number;
+	content_hash: string | null;
+};
+
+type TargetVectorCoverageState = {
+	expectedHashes: string[];
+	expected: Set<string>;
+	existing: Set<string>;
+};
+
+function collectTargetVectorRows(
+	db: Database,
+	model: string,
+	batchSize: number,
+	signal?: AbortSignal,
+): boolean {
+	const selectRowIds = db.prepare(
+		"SELECT rowid FROM memory_vectors_rowids WHERE rowid > ? ORDER BY rowid ASC LIMIT ? /* vector-target-prune-rowids */",
+	);
+	const selectMetadata = db.prepare(
+		"SELECT memory_id, content_hash, model FROM memory_vectors WHERE rowid = ?",
+	);
+	const insertScanRow = db.prepare(
+		"INSERT INTO temp.vector_prune_scan(rowid, memory_id, content_hash) VALUES (?, ?, ?) /* vector-target-prune-spill */",
+	);
+	const insertScanPage = db.transaction((rows: TargetVectorRow[]) => {
+		for (const row of rows) insertScanRow.run(row.rowid, row.memory_id, row.content_hash);
+	});
+	let afterRowId = 0;
+	while (!signal?.aborted) {
+		const rowIds = selectRowIds.all(afterRowId, batchSize) as Array<{ rowid: number }>;
+		if (signal?.aborted) return false;
+		if (rowIds.length === 0) return true;
+		const targetRows: TargetVectorRow[] = [];
+		for (const { rowid } of rowIds) {
+			if (signal?.aborted) return false;
+			const metadata = selectMetadata.get(rowid) as
+				| { memory_id: number; content_hash: string | null; model: string }
+				| undefined;
+			if (!metadata || metadata.model !== model) continue;
+			targetRows.push({
+				rowid,
+				memory_id: metadata.memory_id,
+				content_hash: metadata.content_hash,
+			});
+		}
+		if (signal?.aborted) return false;
+		insertScanPage.deferred(targetRows);
+		afterRowId = rowIds.at(-1)?.rowid ?? afterRowId;
+		if (rowIds.length < batchSize) return true;
+	}
+	return false;
+}
+
+function visitTargetVectorRowsForMemories(
+	db: Database,
+	memoryIds: number[],
+	batchSize: number,
+	visit: (rows: TargetVectorRow[]) => void,
+	signal?: AbortSignal,
+): boolean {
+	if (memoryIds.length === 0) return true;
+	const placeholders = memoryIds.map(() => "?").join(", ");
+	const selectRows = db.prepare(
+		`SELECT rowid, memory_id, content_hash FROM temp.vector_prune_scan
+		 WHERE memory_id IN (${placeholders}) AND rowid > ?
+		 ORDER BY rowid ASC LIMIT ? /* vector-target-prune-spill-page */`,
+	);
+	let afterRowId = 0;
+	while (!signal?.aborted) {
+		const rows = selectRows.all(...memoryIds, afterRowId, batchSize) as TargetVectorRow[];
+		if (signal?.aborted) return false;
+		if (rows.length === 0) return true;
+		visit(rows);
+		afterRowId = rows.at(-1)?.rowid ?? afterRowId;
+		if (rows.length < batchSize) return true;
+	}
+	return false;
+}
+
+function deleteVectorRows(db: Database, rowIds: number[]): number {
+	const deleteStmt = db.prepare("DELETE FROM memory_vectors WHERE rowid = ?");
+	return db
+		.transaction(() => rowIds.reduce((count, rowid) => count + deleteStmt.run(rowid).changes, 0))
+		.immediate();
+}
+
+function createTargetVectorCoverageStates(
+	memories: MemoryTextRow[],
+): Map<number, TargetVectorCoverageState> {
+	return new Map(
+		memories.map((memory): [number, TargetVectorCoverageState] => {
+			const expectedHashes = chunkHashes(memoryText(memory.title, memory.body_text));
+			return [
+				memory.id,
+				{ expectedHashes, expected: new Set(expectedHashes), existing: new Set<string>() },
+			];
+		}),
+	);
+}
+
+function summarizeTargetVectorCoverage(states: Map<number, TargetVectorCoverageState>): {
+	coveredMemoryIds: number[];
+	incomplete: number;
+} {
+	const coveredMemoryIds: number[] = [];
+	let incomplete = 0;
+	for (const [memoryId, state] of states) {
+		if (!expectedHashSetContains(state.expectedHashes, state.existing)) incomplete++;
+		else coveredMemoryIds.push(memoryId);
+	}
+	return { coveredMemoryIds, incomplete };
+}
+
+function pruneCoveredTargetVectorRows(
+	db: Database,
+	states: Map<number, TargetVectorCoverageState>,
+	memoryIds: number[],
+	batchSize: number,
+	signal?: AbortSignal,
+): { completed: boolean; deleted: number } {
+	let deleted = 0;
+	const completed = visitTargetVectorRowsForMemories(
+		db,
+		memoryIds,
+		batchSize,
+		(rows) => {
+			const obsolete = rows
+				.filter((row) => {
+					const expected = states.get(row.memory_id)?.expected;
+					return row.content_hash == null || !expected?.has(row.content_hash);
+				})
+				.map((row) => row.rowid);
+			if (obsolete.length > 0) deleted += deleteVectorRows(db, obsolete);
+		},
+		signal,
+	);
+	return { completed, deleted };
+}
+
+function pruneActiveMemoryPage(
+	db: Database,
+	memories: MemoryTextRow[],
+	batchSize: number,
+	signal?: AbortSignal,
+): { completed: boolean; deleted: number; incomplete: number } {
+	const states = createTargetVectorCoverageStates(memories);
+	const memoryIds = memories.map((memory) => memory.id);
+	const covered = visitTargetVectorRowsForMemories(
+		db,
+		memoryIds,
+		batchSize,
+		(rows) => {
+			for (const row of rows) {
+				const state = states.get(row.memory_id);
+				if (row.content_hash != null && state?.expected.has(row.content_hash)) {
+					state.existing.add(row.content_hash);
+				}
+			}
+		},
+		signal,
+	);
+	if (!covered) return { completed: false, deleted: 0, incomplete: 0 };
+	const coverage = summarizeTargetVectorCoverage(states);
+	const pruned = pruneCoveredTargetVectorRows(
+		db,
+		states,
+		coverage.coveredMemoryIds,
+		batchSize,
+		signal,
+	);
+	if (!pruned.completed) {
+		return { completed: false, deleted: pruned.deleted, incomplete: coverage.incomplete };
+	}
+	const placeholders = memoryIds.map(() => "?").join(", ");
+	db.prepare(`DELETE FROM temp.vector_prune_scan WHERE memory_id IN (${placeholders})`).run(
+		...memoryIds,
+	);
+	return { completed: true, deleted: pruned.deleted, incomplete: coverage.incomplete };
+}
+
+function pruneRemainingTargetVectorRows(
+	db: Database,
+	batchSize: number,
+	signal?: AbortSignal,
+): { completed: boolean; deleted: number } {
+	const selectRows = db.prepare(
+		`SELECT rowid, memory_id, content_hash FROM temp.vector_prune_scan
+		 WHERE rowid > ? ORDER BY rowid ASC LIMIT ? /* vector-target-prune-spill-remainder */`,
+	);
+	let afterRowId = 0;
+	let deleted = 0;
+	while (!signal?.aborted) {
+		const rows = selectRows.all(afterRowId, batchSize) as TargetVectorRow[];
+		if (signal?.aborted) return { completed: false, deleted };
+		if (rows.length === 0) return { completed: true, deleted };
+		deleted += deleteVectorRows(
+			db,
+			rows.map((row) => row.rowid),
+		);
+		afterRowId = rows.at(-1)?.rowid ?? afterRowId;
+		if (rows.length < batchSize) return { completed: true, deleted };
+	}
+	return { completed: false, deleted };
+}
+
+function pruneTargetVectorRowsFromShadowTable(
+	db: Database,
+	model: string,
+	options: { signal?: AbortSignal },
+): { deleted: number; incompleteActiveCoverage: number | null } {
+	const batchSize = 250;
+	// The connection defaults to temp_store=MEMORY, which would keep the spill
+	// resident in SQLite's heap and leave peak memory O(total vectors). Force it
+	// to disk for the prune so the bound is genuinely one page. temp_store cannot
+	// change while temp tables exist, so this must bracket the CREATE/DROP.
+	const previousTempStore = readTempStore(db);
+	db.pragma("temp_store = FILE");
+	try {
+		return pruneTargetVectorRowsWithSpill(db, model, batchSize, options.signal);
+	} finally {
+		db.pragma(`temp_store = ${previousTempStore}`);
+	}
+}
+
+function readTempStore(db: Database): number {
+	const value = db.pragma("temp_store", { simple: true });
+	return typeof value === "number" ? value : 0;
+}
+
+function pruneTargetVectorRowsWithSpill(
+	db: Database,
+	model: string,
+	batchSize: number,
+	signal: AbortSignal | undefined,
+): { deleted: number; incompleteActiveCoverage: number | null } {
+	const options = { signal };
+	db.exec(`CREATE TEMP TABLE IF NOT EXISTS vector_prune_scan (
+		rowid INTEGER PRIMARY KEY,
+		memory_id INTEGER NOT NULL,
+		content_hash TEXT
+	)`);
+	try {
+		db.exec(
+			"CREATE INDEX IF NOT EXISTS temp.vector_prune_scan_memory_id_idx ON vector_prune_scan(memory_id)",
+		);
+		db.exec("DELETE FROM temp.vector_prune_scan");
+		if (!collectTargetVectorRows(db, model, batchSize, options.signal)) {
+			return { deleted: 0, incompleteActiveCoverage: null };
+		}
+		const selectMemories = db.prepare(
+			`SELECT id, title, body_text FROM memory_items
+			 WHERE active = 1 AND id > ?
+			 ORDER BY id ASC LIMIT ?`,
+		);
+		let afterMemoryId = 0;
+		let deleted = 0;
+		let incompleteActiveCoverage = 0;
+		while (!options.signal?.aborted) {
+			const memories = selectMemories.all(afterMemoryId, batchSize) as MemoryTextRow[];
+			if (memories.length === 0) break;
+			const result = pruneActiveMemoryPage(db, memories, batchSize, options.signal);
+			deleted += result.deleted;
+			if (!result.completed) return { deleted, incompleteActiveCoverage: null };
+			incompleteActiveCoverage += result.incomplete;
+			afterMemoryId = memories.at(-1)?.id ?? afterMemoryId;
+		}
+		if (options.signal?.aborted) return { deleted, incompleteActiveCoverage: null };
+		const remaining = pruneRemainingTargetVectorRows(db, batchSize, options.signal);
+		deleted += remaining.deleted;
+		return {
+			deleted,
+			incompleteActiveCoverage: remaining.completed ? incompleteActiveCoverage : null,
+		};
+	} finally {
+		db.exec("DROP TABLE IF EXISTS temp.vector_prune_scan");
+	}
+}
+
+function pruneTargetVectorRowsWithLegacyScan(
+	db: Database,
+	model: string,
+	options: { signal?: AbortSignal },
+): number {
+	const batchSize = 250;
+	let afterRowId = 0;
+	let deleted = 0;
+	const selectBatch = db.prepare(
+		`SELECT mv.rowid AS rowid, mv.memory_id AS memory_id, mv.content_hash AS content_hash,
+		        mi.title AS title, mi.body_text AS body_text, mi.active AS active
+		 FROM memory_vectors mv
+		 LEFT JOIN memory_items mi ON mi.id = mv.memory_id
+		 WHERE mv.model = ? AND mv.rowid > ?
+		 ORDER BY mv.rowid ASC
+		 LIMIT ?`,
+	);
+	const deleteStmt = db.prepare("DELETE FROM memory_vectors WHERE rowid = ?");
+	while (!options.signal?.aborted) {
+		const rows = selectBatch.all(model, afterRowId, batchSize) as Array<
+			TargetVectorRow & { title: string | null; body_text: string | null; active: number | null }
+		>;
+		if (rows.length === 0) break;
+		const obsoleteRowIds: number[] = [];
+		const expectedByMemory = new Map<number, Set<string>>();
+		const coverageByMemory = new Map<number, boolean>();
+		for (const row of rows) {
+			if (row.active == null || row.active === 0) {
+				obsoleteRowIds.push(row.rowid);
+				continue;
+			}
+			let covered = coverageByMemory.get(row.memory_id);
+			if (covered === undefined) {
+				covered = memoryHasCompleteVectorCoverage(
+					db,
+					{ id: row.memory_id, title: row.title, body_text: row.body_text },
+					model,
+				);
+				coverageByMemory.set(row.memory_id, covered);
+			}
+			if (!covered) continue;
+			const expected =
+				expectedByMemory.get(row.memory_id) ??
+				new Set(chunkHashes(memoryText(row.title, row.body_text)));
+			expectedByMemory.set(row.memory_id, expected);
+			if (row.content_hash == null || !expected.has(row.content_hash)) {
+				obsoleteRowIds.push(row.rowid);
+			}
+		}
+		deleted += db
+			.transaction(() =>
+				obsoleteRowIds.reduce((count, rowid) => count + deleteStmt.run(rowid).changes, 0),
+			)
+			.immediate();
+		afterRowId = rows.at(-1)?.rowid ?? afterRowId;
+	}
+	return deleted;
+}
+
 /**
  * Delete target-model vector rows whose content_hash is not part of their
  * memory's current chunk set. Coverage is a subset check, so a memory can be
@@ -387,70 +732,21 @@ export function pruneObsoleteTargetModelVectors(
 	model: string,
 	options: { signal?: AbortSignal } = {},
 ): number {
-	const batchSize = 250;
-	let afterRowId = 0;
-	let deleted = 0;
-	const selectBatch = db.prepare(
-		`SELECT mv.rowid AS rowid, mv.memory_id AS memory_id, mv.content_hash AS content_hash,
-		        mi.title AS title, mi.body_text AS body_text, mi.active AS active
-		 FROM memory_vectors mv
-		 LEFT JOIN memory_items mi ON mi.id = mv.memory_id
-		 WHERE mv.model = ? AND mv.rowid > ?
-		 ORDER BY mv.rowid ASC
-		 LIMIT ?`,
-	);
-	const deleteStmt = db.prepare("DELETE FROM memory_vectors WHERE rowid = ?");
-	const processBatch = db.transaction((cursor: number) => {
-		const rows = selectBatch.all(model, cursor, batchSize) as Array<{
-			rowid: number;
-			memory_id: number;
-			content_hash: string | null;
-			title: string | null;
-			body_text: string | null;
-			active: number | null;
-		}>;
-		const expectedByMemory = new Map<number, Set<string>>();
-		const coverageByMemory = new Map<number, boolean>();
-		const obsoleteRowIds: number[] = [];
-		for (const row of rows) {
-			if (row.active == null || row.active === 0) {
-				obsoleteRowIds.push(row.rowid);
-				continue;
-			}
-			let hasCompleteCoverage = coverageByMemory.get(row.memory_id);
-			if (hasCompleteCoverage === undefined) {
-				hasCompleteCoverage = memoryHasCompleteVectorCoverage(
-					db,
-					{ id: row.memory_id, title: row.title, body_text: row.body_text },
-					model,
-				);
-				coverageByMemory.set(row.memory_id, hasCompleteCoverage);
-			}
-			if (!hasCompleteCoverage) continue;
-			let expected = expectedByMemory.get(row.memory_id);
-			if (!expected) {
-				expected = new Set(chunkHashes(memoryText(row.title, row.body_text)));
-				expectedByMemory.set(row.memory_id, expected);
-			}
-			if (row.content_hash == null || !expected.has(row.content_hash)) {
-				obsoleteRowIds.push(row.rowid);
-			}
-		}
-		let deletedInBatch = 0;
-		for (const id of obsoleteRowIds) deletedInBatch += deleteStmt.run(id).changes;
+	return pruneObsoleteTargetModelVectorsWithCoverage(db, model, options).deleted;
+}
+
+export function pruneObsoleteTargetModelVectorsWithCoverage(
+	db: Database,
+	model: string,
+	options: { signal?: AbortSignal } = {},
+): { deleted: number; incompleteActiveCoverage: number | null } {
+	if (!hasMemoryVectorRowidsShadowTable(db)) {
 		return {
-			deleted: deletedInBatch,
-			nextCursor: rows.at(-1)?.rowid ?? cursor,
-			exhausted: rows.length === 0,
+			deleted: pruneTargetVectorRowsWithLegacyScan(db, model, options),
+			incompleteActiveCoverage: null,
 		};
-	}).immediate;
-	while (!options.signal?.aborted) {
-		const batch = processBatch(afterRowId);
-		deleted += batch.deleted;
-		if (batch.exhausted) break;
-		afterRowId = batch.nextCursor;
 	}
-	return deleted;
+	return pruneTargetVectorRowsFromShadowTable(db, model, options);
 }
 
 function toSqlStringLiteral(value: string): string {

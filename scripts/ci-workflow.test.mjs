@@ -7,6 +7,12 @@ const fullE2eWorkflow = readFileSync(
 	new URL("../.github/workflows/e2e-full.yml", import.meta.url),
 	"utf8",
 );
+const workerPackage = JSON.parse(
+	readFileSync(
+		new URL("../packages/cloudflare-coordinator-worker/package.json", import.meta.url),
+		"utf8",
+	),
+);
 const githubExpressionOpen = ["$", "{", "{"].join("");
 
 function getTopLevelBlock(workflow, key) {
@@ -57,6 +63,12 @@ const specializedScenarios = [
 ];
 
 describe("normal CI workflow source contract", () => {
+	it("does not rebuild workspace dependencies from the Worker build", () => {
+		assert.match(workerPackage.scripts.build, /pnpm run check:bundle:prepared/u);
+		assert.doesNotMatch(workerPackage.scripts.build, /pnpm run check:bundle(?:\s|$)/u);
+		assert.match(workerPackage.scripts["check:bundle"], /pnpm --filter @codemem\/core build/u);
+	});
+
 	it("contains only main push, default pull request, and workflow call triggers", () => {
 		assert.equal(
 			getTopLevelBlock(ciWorkflow, "on"),

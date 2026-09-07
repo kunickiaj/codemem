@@ -20,6 +20,7 @@ import {
 	countIncompleteActiveMemoryVectorCoverage,
 	findMemoryIdsWithCompleteActiveVectorCoverage,
 	pruneObsoleteTargetModelVectors,
+	pruneObsoleteTargetModelVectorsWithCoverage,
 	pruneStaleCurrentModelVectors,
 } from "./vectors.js";
 
@@ -59,6 +60,8 @@ type MigrationMetadata = {
 	removed_stale_rows?: number;
 	uncovered_target_memories?: number;
 	cleanup_pending?: boolean;
+	stale_scan_exhausted?: boolean;
+	stale_scan_exhausted_max_rowid?: number;
 	reconciliation_target_coverage_complete?: boolean;
 	cutover_retry_count?: number;
 	trigger?: string | null;
@@ -414,10 +417,114 @@ function vectorModels(db: SqliteDatabase): Array<{ model: string; rows: number }
 		.all() as Array<{ model: string; rows: number }>;
 }
 
-function hasSourceModelVectors(db: SqliteDatabase, targetModel: string): boolean {
-	return Boolean(
-		db.prepare("SELECT 1 FROM memory_vectors WHERE model != ? LIMIT 1").pluck().get(targetModel),
+type SourceModelScanResult = {
+	found: boolean;
+	/** Last rowid the scan examined, or null when the legacy full-scan path ran. */
+	scannedMaxRowId: number | null;
+};
+
+function scanForSourceModelVectorsAfter(
+	db: SqliteDatabase,
+	targetModel: string,
+	afterRowId: number,
+): SourceModelScanResult {
+	if (!hasMemoryVectorRowidsShadowTable(db)) {
+		const found = Boolean(
+			db.prepare("SELECT 1 FROM memory_vectors WHERE model != ? LIMIT 1").pluck().get(targetModel),
+		);
+		return { found, scannedMaxRowId: null };
+	}
+	const selectRowIds = db.prepare(
+		"SELECT rowid FROM memory_vectors_rowids WHERE rowid > ? ORDER BY rowid ASC LIMIT ? /* vector-source-scan-rowids */",
 	);
+	const selectMetadata = db.prepare(
+		"SELECT memory_id, content_hash, model FROM memory_vectors WHERE rowid = ?",
+	);
+	let cursor = afterRowId;
+	while (true) {
+		const rows = selectRowIds.all(cursor, 250) as Array<{ rowid: number }>;
+		if (rows.length === 0) return { found: false, scannedMaxRowId: cursor };
+		for (const row of rows) {
+			const metadata = selectMetadata.get(row.rowid) as { model: string } | undefined;
+			if (metadata && metadata.model !== targetModel) {
+				return { found: true, scannedMaxRowId: null };
+			}
+		}
+		cursor = rows.at(-1)?.rowid ?? cursor;
+	}
+}
+
+function hasSourceModelVectorsAfter(
+	db: SqliteDatabase,
+	targetModel: string,
+	afterRowId: number,
+): boolean {
+	return scanForSourceModelVectorsAfter(db, targetModel, afterRowId).found;
+}
+
+function hasSourceModelVectors(db: SqliteDatabase, targetModel: string): boolean {
+	return hasSourceModelVectorsAfter(db, targetModel, 0);
+}
+
+function hasMemoryVectorRowidsShadowTable(db: SqliteDatabase): boolean {
+	const tables = db.prepare("PRAGMA table_list").all() as Array<{ name: string }>;
+	return tables.some((table) => table.name === "memory_vectors_rowids");
+}
+
+function readMaxMemoryVectorRowId(db: SqliteDatabase): number | null {
+	if (!hasMemoryVectorRowidsShadowTable(db)) return null;
+	const row = db.prepare("SELECT MAX(rowid) AS max_rowid FROM memory_vectors_rowids").get() as
+		| { max_rowid: number | null }
+		| undefined;
+	return Number(row?.max_rowid ?? 0);
+}
+
+function checkCompletedStaleScan(
+	db: SqliteDatabase,
+	targetModel: string,
+	metadata: MigrationMetadata,
+): { canReturn: boolean; metadata: MigrationMetadata } {
+	if (metadata.cleanup_pending) return { canReturn: false, metadata };
+	if (!metadata.stale_scan_exhausted) {
+		// Jobs completed before the flag existed have no watermark. One clean
+		// compatibility scan is unavoidable, but persist its result so upgraded
+		// databases don't repeat it on every idle tick.
+		const scan = scanForSourceModelVectorsAfter(db, targetModel, 0);
+		if (scan.found) return { canReturn: false, metadata };
+		if (scan.scannedMaxRowId == null) return { canReturn: true, metadata };
+		const persisted = {
+			...metadata,
+			stale_scan_exhausted: true,
+			stale_scan_exhausted_max_rowid: scan.scannedMaxRowId,
+		};
+		updateMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB, { metadata: persisted });
+		return { canReturn: true, metadata: persisted };
+	}
+	const exhaustedMaxRowId = metadata.stale_scan_exhausted_max_rowid;
+	const currentMaxRowId = readMaxMemoryVectorRowId(db);
+	if (
+		typeof exhaustedMaxRowId === "number" &&
+		currentMaxRowId != null &&
+		currentMaxRowId <= exhaustedMaxRowId
+	) {
+		return { canReturn: true, metadata };
+	}
+	if (
+		typeof exhaustedMaxRowId === "number" &&
+		currentMaxRowId != null &&
+		!hasSourceModelVectorsAfter(db, targetModel, exhaustedMaxRowId)
+	) {
+		const refreshed = { ...metadata, stale_scan_exhausted_max_rowid: currentMaxRowId };
+		updateMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB, { metadata: refreshed });
+		return { canReturn: true, metadata: refreshed };
+	}
+	const invalidated = {
+		...metadata,
+		stale_scan_exhausted: undefined,
+		stale_scan_exhausted_max_rowid: undefined,
+	};
+	updateMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB, { metadata: invalidated });
+	return { canReturn: false, metadata: invalidated };
 }
 
 function countEmbeddableActiveMemories(db: SqliteDatabase): number {
@@ -513,29 +620,65 @@ function deleteStaleModelVectors(
 	db: SqliteDatabase,
 	targetModel: string,
 	signal?: AbortSignal,
-): { deleted: number; exhausted: boolean } {
+): { deleted: number; exhausted: boolean; scannedMaxRowId: number | null } {
 	const batchSize = 250;
 	let deleted = 0;
-	const selectStmt = db.prepare(
-		"SELECT rowid FROM memory_vectors WHERE model != ? ORDER BY rowid ASC LIMIT ?",
-	);
 	const deleteStmt = db.prepare("DELETE FROM memory_vectors WHERE rowid = ?");
-	if (signal?.aborted) return { deleted, exhausted: false };
-	const rows = selectStmt.all(targetModel, batchSize) as Array<{ rowid: number }>;
-	if (rows.length === 0) return { deleted, exhausted: true };
-	if (signal?.aborted) return { deleted, exhausted: false };
+	if (signal?.aborted) return { deleted, exhausted: false, scannedMaxRowId: null };
+	if (!hasMemoryVectorRowidsShadowTable(db)) {
+		const rows = db
+			.prepare("SELECT rowid FROM memory_vectors WHERE model != ? ORDER BY rowid ASC LIMIT ?")
+			.all(targetModel, batchSize) as Array<{ rowid: number }>;
+		if (rows.length === 0) return { deleted, exhausted: true, scannedMaxRowId: null };
+		if (signal?.aborted) return { deleted, exhausted: false, scannedMaxRowId: null };
+		db.transaction(() => {
+			for (const row of rows) deleted += deleteStmt.run(row.rowid).changes;
+		})();
+		return { deleted, exhausted: rows.length < batchSize, scannedMaxRowId: null };
+	}
+
+	const selectRowIds = db.prepare(
+		"SELECT rowid FROM memory_vectors_rowids WHERE rowid > ? ORDER BY rowid ASC LIMIT ? /* vector-stale-scan-rowids */",
+	);
+	const selectMetadata = db.prepare(
+		"SELECT memory_id, content_hash, model FROM memory_vectors WHERE rowid = ?",
+	);
+	const staleRowIds: number[] = [];
+	let afterRowId = 0;
+	let exhausted = false;
+	while (staleRowIds.length < batchSize && !signal?.aborted) {
+		const rows = selectRowIds.all(afterRowId, batchSize) as Array<{ rowid: number }>;
+		if (rows.length === 0) {
+			exhausted = true;
+			break;
+		}
+		for (const row of rows) {
+			const metadata = selectMetadata.get(row.rowid) as { model: string } | undefined;
+			if (metadata && metadata.model !== targetModel) staleRowIds.push(row.rowid);
+			afterRowId = row.rowid;
+			if (staleRowIds.length === batchSize) break;
+		}
+		const lastRowId = rows.at(-1)?.rowid;
+		if (rows.length < batchSize && afterRowId === lastRowId) exhausted = true;
+	}
+	// The watermark is the last rowid this scan actually examined. Rows inserted
+	// above it by a concurrent writer were never inspected and must be re-checked
+	// on the next pass, so it must not be read from MAX(rowid) after the fact.
+	const scannedMaxRowId = exhausted ? afterRowId : null;
+	if (signal?.aborted) return { deleted, exhausted: false, scannedMaxRowId: null };
+	if (staleRowIds.length === 0) return { deleted, exhausted, scannedMaxRowId };
 	// Stop after one bounded batch so the event loop can deliver shutdown before
 	// the next migration pass. Deleted rows are the durable cleanup cursor.
 	db.transaction(() => {
-		for (const row of rows) deleted += deleteStmt.run(row.rowid).changes;
+		for (const rowid of staleRowIds) deleted += deleteStmt.run(rowid).changes;
 	})();
-	return { deleted, exhausted: rows.length < batchSize };
+	return { deleted, exhausted, scannedMaxRowId };
 }
 
 function cleanupStaleModels(
 	db: SqliteDatabase,
 	targetModel: string,
-): { removed: number; exhausted: boolean } {
+): { removed: number; exhausted: boolean; scannedMaxRowId: number | null } {
 	const cleanup = deleteStaleModelVectors(db, targetModel);
 	// Also prune obsolete rows within the target model: coverage is a subset
 	// check, so a memory can be "covered" while retaining target rows for content
@@ -543,7 +686,11 @@ function cleanupStaleModels(
 	// vector maintenance). Leaving them lets MIN-distance recall surface stale
 	// content after the migration reports success.
 	const prunedObsolete = pruneObsoleteTargetModelVectors(db, targetModel);
-	return { removed: cleanup.deleted + prunedObsolete, exhausted: cleanup.exhausted };
+	return {
+		removed: cleanup.deleted + prunedObsolete,
+		exhausted: cleanup.exhausted,
+		scannedMaxRowId: cleanup.scannedMaxRowId,
+	};
 }
 
 type DatabaseMutationSnapshot = {
@@ -675,6 +822,8 @@ async function finalizeMigrationCutover(
 			metadata: {
 				...progressMetadata,
 				cleanup_pending: true,
+				stale_scan_exhausted: undefined,
+				stale_scan_exhausted_max_rowid: undefined,
 				cutover_retry_count: 0,
 				uncovered_target_memories: undefined,
 			},
@@ -721,6 +870,8 @@ function deferCompletedCleanup(
 				...latestMetadata,
 				removed_stale_rows: mergedRemovedRows(latestMetadata, previouslyRemoved, prunedTargetRows),
 				cleanup_pending: true,
+				stale_scan_exhausted: undefined,
+				stale_scan_exhausted_max_rowid: undefined,
 				reconciliation_target_coverage_complete: undefined,
 			},
 		});
@@ -744,6 +895,8 @@ function restartMigrationForIncompleteCoverage(
 			metadata: {
 				...latestMetadata,
 				cleanup_pending: false,
+				stale_scan_exhausted: undefined,
+				stale_scan_exhausted_max_rowid: undefined,
 				reconciliation_target_coverage_complete: undefined,
 				source_model: null,
 				last_cursor_id: 0,
@@ -776,6 +929,7 @@ function recordResumedCleanupResult(
 			: 0;
 		const removed = mergedRemovedRows(latestMetadata, options.previouslyRemoved, newlyRemoved);
 		cleanupCompleted = options.cleanup.exhausted && cleanupWasIsolated;
+		const exhaustedMaxRowId = cleanupCompleted ? readMaxMemoryVectorRowId(db) : null;
 		let message = "Finished re-indexing; removing stale vectors";
 		if (!cleanupWasIsolated) message = "Memory changes arrived during cleanup; retrying";
 		if (cleanupCompleted) {
@@ -791,6 +945,8 @@ function recordResumedCleanupResult(
 				...latestMetadata,
 				removed_stale_rows: removed,
 				cleanup_pending: !cleanupCompleted,
+				stale_scan_exhausted: cleanupCompleted || undefined,
+				stale_scan_exhausted_max_rowid: exhaustedMaxRowId ?? undefined,
 				reconciliation_target_coverage_complete: undefined,
 			},
 		});
@@ -874,7 +1030,8 @@ async function drainStaleModelVectors(
 type CompletedCleanupPassResult = {
 	continueMigration: boolean;
 	restartFromBeginning: boolean;
-	reconciliationTargetPruningComplete: boolean;
+	staleScanExhausted: boolean;
+	validatedTargetCoverageComplete: boolean;
 };
 
 async function finishCompletedCleanupPass(
@@ -887,17 +1044,20 @@ async function finishCompletedCleanupPass(
 	const stop: CompletedCleanupPassResult = {
 		continueMigration: false,
 		restartFromBeginning: false,
-		reconciliationTargetPruningComplete: false,
+		staleScanExhausted: false,
+		validatedTargetCoverageComplete: false,
 	};
 	if (signal?.aborted) return stop;
 
 	const previouslyRemoved = Number(metadata.removed_stale_rows ?? 0);
 	const pruneSnapshot = readDatabaseMutationSnapshot(db, "cleanup-prune-start");
-	const prunedTargetRows = pruneObsoleteTargetModelVectors(db, targetModel, { signal });
+	const pruneResult = pruneObsoleteTargetModelVectorsWithCoverage(db, targetModel, { signal });
+	const prunedTargetRows = pruneResult.deleted;
 	const validationSnapshot = readDatabaseMutationSnapshot(db, "cleanup-prune-end");
 	const uncovered = signal?.aborted
 		? 0
-		: countIncompleteActiveMemoryVectorCoverage(db, targetModel);
+		: (pruneResult.incompleteActiveCoverage ??
+			countIncompleteActiveMemoryVectorCoverage(db, targetModel));
 	const pruningWasIsolated = sameDatabaseDataVersion(pruneSnapshot, validationSnapshot);
 	if (
 		signal?.aborted ||
@@ -914,14 +1074,16 @@ async function finishCompletedCleanupPass(
 		return {
 			continueMigration: true,
 			restartFromBeginning: false,
-			reconciliationTargetPruningComplete: false,
+			staleScanExhausted: false,
+			validatedTargetCoverageComplete: false,
 		};
 	}
 	if (!metadata.cleanup_pending) {
 		return {
 			continueMigration: true,
 			restartFromBeginning: true,
-			reconciliationTargetPruningComplete: true,
+			staleScanExhausted: metadata.stale_scan_exhausted === true,
+			validatedTargetCoverageComplete: false,
 		};
 	}
 
@@ -936,7 +1098,8 @@ async function finishCompletedCleanupPass(
 	return {
 		continueMigration: true,
 		restartFromBeginning: true,
-		reconciliationTargetPruningComplete: true,
+		staleScanExhausted: true,
+		validatedTargetCoverageComplete: prunedTargetRows === 0,
 	};
 }
 
@@ -1008,30 +1171,32 @@ export async function runVectorMigrationPass(
 		metadataMemoryIds(existingMetadata.pending_delete_memory_ids).length;
 	let restartCompletedMigration = false;
 	let reconciliationTargetCoverageComplete = false;
+	let completedMetadata = existingMetadata;
 	if (
 		existingJob?.status === "completed" &&
-		existingMetadata.target_model === targetModel &&
+		completedMetadata.target_model === targetModel &&
 		queuedSyncWorkCount === 0
 	) {
-		if (!existingMetadata.cleanup_pending && !hasSourceModelVectors(db, targetModel)) return;
+		const staleScan = checkCompletedStaleScan(db, targetModel, completedMetadata);
+		if (staleScan.canReturn) return;
+		completedMetadata = staleScan.metadata;
 		const cleanupResult = await finishCompletedCleanupPass(
 			db,
 			targetModel,
-			existingMetadata,
+			completedMetadata,
 			options.signal,
 			options.shouldStop,
 		);
 		if (
 			!cleanupResult.continueMigration ||
 			options.signal?.aborted ||
-			(cleanupResult.restartFromBeginning && !hasSourceModelVectors(db, targetModel))
+			(cleanupResult.restartFromBeginning &&
+				(cleanupResult.staleScanExhausted || !hasSourceModelVectors(db, targetModel)))
 		) {
 			return;
 		}
 		restartCompletedMigration = cleanupResult.restartFromBeginning;
-		reconciliationTargetCoverageComplete =
-			cleanupResult.reconciliationTargetPruningComplete &&
-			countIncompleteActiveMemoryVectorCoverage(db, targetModel) === 0;
+		reconciliationTargetCoverageComplete = cleanupResult.validatedTargetCoverageComplete;
 		existingJob = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
 	}
 	if (existingJob) {
@@ -1129,6 +1294,20 @@ export async function runVectorMigrationPass(
 	}
 	if (sourceModel && embeddableTotal <= 0) {
 		const cleanup = cleanupStaleModels(db, targetModel);
+		// Only claim exhaustion when the scan itself walked the shadow table;
+		// the legacy full-scan path has no examined-rowid watermark to persist.
+		const staleScanExhausted = cleanup.exhausted && cleanup.scannedMaxRowId != null;
+		const cleanupMetadata = {
+			...requestMetadata,
+			source_model: sourceModel,
+			target_model: targetModel,
+			removed_stale_rows: cleanup.removed,
+			cleanup_pending: !cleanup.exhausted,
+			stale_scan_exhausted: staleScanExhausted || undefined,
+			stale_scan_exhausted_max_rowid: staleScanExhausted
+				? (cleanup.scannedMaxRowId ?? undefined)
+				: undefined,
+		};
 		startMaintenanceJob(db, {
 			kind: VECTOR_MODEL_MIGRATION_JOB,
 			title: "Re-indexing memories",
@@ -1137,24 +1316,12 @@ export async function runVectorMigrationPass(
 					? `Removed ${cleanup.removed} stale vector rows`
 					: "No embeddable memories to re-index",
 			progressTotal: 0,
-			metadata: {
-				...requestMetadata,
-				source_model: sourceModel,
-				target_model: targetModel,
-				removed_stale_rows: cleanup.removed,
-				cleanup_pending: !cleanup.exhausted,
-			},
+			metadata: cleanupMetadata,
 		});
 		completeMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB, {
 			progressCurrent: 0,
 			progressTotal: 0,
-			metadata: {
-				...requestMetadata,
-				source_model: sourceModel,
-				target_model: targetModel,
-				removed_stale_rows: cleanup.removed,
-				cleanup_pending: !cleanup.exhausted,
-			},
+			metadata: cleanupMetadata,
 		});
 		return;
 	}
@@ -1375,6 +1542,10 @@ export class VectorModelMigrationRunner {
 				metadataMemoryIds(meta.pending_upsert_memory_ids).length +
 				metadataMemoryIds(meta.pending_delete_memory_ids).length;
 			if (queued > 0) return false;
+			// A completed job with cleanup still owed (bounded stale batch not yet
+			// exhausted, or a deferred cleanup pass) is known work, not a quiet
+			// database. Keep it on the active cadence so it finishes promptly.
+			if (meta.cleanup_pending) return false;
 			return true;
 		}
 		// No job row yet. Peek coverage directly to tell whether the first

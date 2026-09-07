@@ -1,4 +1,8 @@
-import type { LegacyTeamSetupActivationErrorCode, LegacyTeamSetupDraftView } from "@codemem/core";
+import type {
+	LegacyTeamSetupActivationErrorCode,
+	LegacyTeamSetupDraftView,
+	LegacyTeamSetupErrorReason,
+} from "@codemem/core";
 
 export interface LegacyTeamSetupCandidateSummaryV1 {
 	candidateRef: string;
@@ -176,6 +180,7 @@ export type LegacyTeamSetupMutationResponseV1 = LegacyTeamSetupViewV1;
 
 export interface LegacyTeamSetupErrorResponseV1 {
 	error: LegacyTeamSetupActivationErrorCode;
+	reason?: LegacyTeamSetupErrorReason;
 }
 
 export interface LegacyTeamSetupFinishResponseV1 {

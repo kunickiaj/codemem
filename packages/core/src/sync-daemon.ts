@@ -127,6 +127,42 @@ export function setSyncDaemonError(db: Database, error: string, traceback?: stri
 		.run();
 }
 
+function logSyncDaemonFailure(details: {
+	message: string;
+	error: unknown;
+	reportingError?: unknown;
+}): void {
+	try {
+		if (details.reportingError === undefined) {
+			console.error(details.message, details.error);
+			return;
+		}
+		console.error(details.message, details.error, details.reportingError);
+	} catch {
+		// Diagnostics must never replace or rethrow the daemon failure being contained.
+	}
+}
+
+function reportSyncDaemonError(
+	db: Database,
+	error: unknown,
+	options?: { prefix?: string; phase?: Exclude<SyncDaemonPhase, null> },
+): void {
+	const message = error instanceof Error ? error.message : String(error);
+	const stack = error instanceof Error ? (error.stack ?? "") : "";
+	const reportedMessage = options?.prefix ? `${options.prefix}: ${message}` : message;
+	try {
+		setSyncDaemonError(db, reportedMessage, stack);
+		if (options?.phase) setSyncDaemonPhase(db, options.phase);
+	} catch (reportingError) {
+		logSyncDaemonFailure({
+			message: `[codemem] sync daemon failed and could not persist its diagnostic: ${reportedMessage}`,
+			error,
+			reportingError,
+		});
+	}
+}
+
 /** Valid sync daemon phases for the rebootstrap safety gate. */
 export type SyncDaemonPhase = "identity_error" | "needs_attention" | null;
 
@@ -359,13 +395,20 @@ export function createSerializedDaemonTickRunner(
 	return () => {
 		if (tickRunning) return false;
 		tickRunning = true;
-		void runTick().finally(() => {
-			tickRunning = false;
-			if (!firstTickCompleted) {
-				firstTickCompleted = true;
-				onFirstCompleted?.();
-			}
-		});
+		void runTick()
+			.finally(() => {
+				tickRunning = false;
+				if (!firstTickCompleted) {
+					firstTickCompleted = true;
+					onFirstCompleted?.();
+				}
+			})
+			.catch((error) => {
+				logSyncDaemonFailure({
+					message: "[codemem] scheduled sync daemon tick failed:",
+					error,
+				});
+			});
 		return true;
 	};
 }
@@ -399,9 +442,7 @@ export async function runTickOnce(
 			await onAfterCoordinatorRefresh?.({ db, dbPath, keysDir: resolvedKeysDir });
 		} catch (error) {
 			callbackFailed = true;
-			const message = error instanceof Error ? error.message : String(error);
-			const stack = error instanceof Error ? (error.stack ?? "") : "";
-			setSyncDaemonError(db, `daemon tick callback failed: ${message}`, stack);
+			reportSyncDaemonError(db, error, { prefix: "daemon tick callback failed" });
 		}
 		// Best-effort: skip peers the coordinator reports as offline.
 		// Returns empty set when coordinator is disabled or lookup fails.
@@ -416,13 +457,10 @@ export async function runTickOnce(
 			// Clear any prior needs_attention phase — all peers are healthy.
 			setSyncDaemonOk(db);
 		}
-	} catch (err: unknown) {
-		const message = err instanceof Error ? err.message : String(err);
-		const stack = err instanceof Error ? (err.stack ?? "") : "";
-		setSyncDaemonError(db, message, stack);
-		if (err instanceof DeviceIdentityError) {
-			setSyncDaemonPhase(db, "identity_error");
-		}
+	} catch (error: unknown) {
+		reportSyncDaemonError(db, error, {
+			phase: error instanceof DeviceIdentityError ? "identity_error" : undefined,
+		});
 	} finally {
 		db.close();
 	}

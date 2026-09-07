@@ -1,6 +1,6 @@
 {
 	"name": "codemem",
-	"version": "0.44.0-alpha.1",
+	"version": "0.44.0-beta.1",
 	"description": "Memory layer for AI coding agents — search, recall, and sync context across sessions",
 	"type": "module",
 	"bin": {
@@ -29,6 +29,9 @@
 		"commander": "^15.0.0",
 		"drizzle-orm": "catalog:",
 		"omelette": "^0.4.17"
+	},
+	"optionalDependencies": {
+		"@codemem/embeddings": "workspace:*"
 	},
 	"devDependencies": {
 		"@types/better-sqlite3": "catalog:",

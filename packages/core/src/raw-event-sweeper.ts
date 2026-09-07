@@ -12,7 +12,7 @@
  * 3. Purge old events (if retention configured)
  * 4. Mark stuck batches as error
  * 5. Flush sessions with pending queue entries
- * 6. Flush idle sessions with unflushed events
+ * 6. Flush sessions with unflushed events
  * 7. Handle auth errors by setting backoff
  */
 
@@ -96,10 +96,6 @@ export class RawEventSweeper {
 			return Math.max(1000, configSeconds * 1000);
 		}
 		return 30_000;
-	}
-
-	private idleMs(): number {
-		return envInt("CODEMEM_RAW_EVENTS_SWEEPER_IDLE_MS", 120_000);
 	}
 
 	private limit(): number {
@@ -465,7 +461,7 @@ export class RawEventSweeper {
 	 * 2. Purge old events
 	 * 3. Mark stuck batches
 	 * 4. Flush pending queue sessions
-	 * 5. Flush idle sessions
+	 * 5. Flush sessions with unflushed events
 	 */
 	async tick(): Promise<void> {
 		if (!this.enabled()) return;
@@ -480,7 +476,6 @@ export class RawEventSweeper {
 		}
 
 		const nowMs = Date.now();
-		const idleBefore = nowMs - this.idleMs();
 
 		// Purge old events if retention configured
 		const retentionMs = this.retentionMs();
@@ -532,9 +527,9 @@ export class RawEventSweeper {
 			}
 		}
 
-		// Phase 2: Flush idle sessions with unflushed events
-		const idleSessions = this.store.rawEventSessionsPendingIdleFlush(idleBefore, sessionLimit);
-		for (const item of idleSessions) {
+		// Phase 2: Flush accepted events even while their session remains active.
+		const pendingSessions = this.store.rawEventSessionsPendingFlush(sessionLimit);
+		for (const item of pendingSessions) {
 			const { source, streamId } = item;
 			if (!streamId) continue;
 			if (drained.has(`${source}:${streamId}`)) continue;

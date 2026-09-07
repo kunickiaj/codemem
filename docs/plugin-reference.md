@@ -14,6 +14,8 @@ This page covers advanced plugin behavior, environment variables, and stream rel
 4. Use `codemem stats` and `codemem recent` to confirm ingestion.
 5. Browse the viewer at the printed URL.
 
+OpenCode loads configured npm plugins and project-local `.opencode/plugins/` files as separate sources. If both resolve to Codemem for the same project, the first registration remains active and later registrations skip all hooks with a warning. Remove the configured npm entry when testing checkout-local plugin changes so the local copy initializes first.
+
 ### Repository-only lint feedback
 
 When OpenCode runs from a codemem source checkout, the root `opencode.jsonc` loads `packages/opencode-plugin/src/lint-feedback.ts`; that repository-owned entrypoint runs the installed Biome launcher through Node without a shell. The hook checks JavaScript and TypeScript paths included by `biome.json` when handled by `edit`, `write`, or `apply_patch`, including move destinations; paths outside that configured Biome scope are ignored. It appends at most 10 new or worsened diagnostics and leaves the edit intact when Biome fails or exceeds its 10-second timeout. Existing diagnostics are a warning-level ratchet rather than a cleanup mandate.
@@ -334,19 +336,22 @@ Stream contract:
 - Non-2xx and network failures are treated as stream failures.
 - Raw events are delivered through the viewer ingest API.
 - Raw-event batches accepted by the viewer are retried by the sweeper flush workers.
-- If the direct CLI fallback reports an explicit SQLite busy/locked result or command timeout, the plugin retries it once with the same event ID. Other failures are reported and dropped rather than requeued or spooled, and logs retain only a bounded failure category rather than raw command output.
+- After Viewer delivery fails, OpenCode writes the exact normalized envelope to `~/.codemem/opencode-raw-event-spool` before invoking the direct CLI fallback. A successful fallback removes the entry; missing runtimes, locks, timeouts, version skew, and validation failures remain on disk and retry at bounded startup or session boundaries with the same event ID.
+- Viewer mismatch notices expose only a fixed category and next action: restart Viewer from the same workspace/config for `database`, restart Codemem and OpenCode with the same environment for `identity`, update Codemem on the installed channel and restart OpenCode for `contract`, or check/restart Viewer for `connection`. Payloads, target values, subprocess output, paths, and addresses are omitted.
+- Corrupt spool entries are retained for recovery. The spool accepts at most `CODEMEM_RAW_EVENT_SPOOL_MAX_ENTRIES` `.json` entries and rejects a new event when full without evicting existing entries; an existing event ID remains idempotent. If a private spool write fails or the spool is full, OpenCode warns that the event remains only in the bounded in-memory queue rather than claiming durable preservation. OpenCode drains retained entries through the installed CLI, so repair or update that CLI and restart OpenCode; restarting Viewer alone does not recover this spool. If specific entries remain rejected, stop OpenCode and move `~/.codemem/opencode-raw-event-spool` to a backup location for manual recovery; do not delete it until the events are delivered or intentionally discarded.
+- `CODEMEM_RAW_EVENTS=0` pauses capture and every OpenCode spool drain. Existing spool files remain untouched until raw events are enabled again.
 
 `GET /api/raw-events/status` also includes `transcript_diagnostics`, a per-Viewer-process, per-router-instance counter block scoped explicitly to `legacy_compatibility_routes`. It counts Claude and Codex compatibility-route transcript reads by the fixed outcomes `ok`, `not_provided`, `path_rejected`, `unreadable`, `no_complete_record`, and `no_assistant_record`. These counters are not persisted, do not include paths or transcript content, and do not describe the normal generated-adapter path through `POST /api/raw-events`. A skipped legacy `Stop` response keeps `skip_reason: "transcript_unavailable"` and may include one of the non-`ok` outcomes as `skip_detail`; other mapping skips remain `skip_reason: "unsupported_hook"`.
 
 Suggested settings:
 
 ```bash
-export CODEMEM_RAW_EVENTS_AUTO_FLUSH=1
-export CODEMEM_RAW_EVENTS_DEBOUNCE_MS=60000
 export CODEMEM_RAW_EVENTS_SWEEPER=1
-export CODEMEM_RAW_EVENTS_SWEEPER_IDLE_MS=120000
 export CODEMEM_RAW_EVENTS_SWEEPER_LIMIT=25
 export CODEMEM_RAW_EVENTS_STUCK_BATCH_MS=300000
+# optional quiet-period flush before the next periodic sweep
+# export CODEMEM_RAW_EVENTS_AUTO_FLUSH=1
+# export CODEMEM_RAW_EVENTS_DEBOUNCE_MS=10000
 # optional retention
 # export CODEMEM_RAW_EVENTS_RETENTION_MS=$((7*24*60*60*1000))
 ```
@@ -381,7 +386,7 @@ Force-flush thresholds (immediate flush):
 Failure semantics:
 - Stream POST failures are backoff-gated in plugin runtime (`CODEMEM_RAW_EVENTS_BACKOFF_MS`).
 - Availability checks are rate-limited (`CODEMEM_RAW_EVENTS_STATUS_CHECK_MS`).
-- Accepted raw-event batches are retried by viewer/store queue workers (`codemem db raw-events-retry`).
+- Each periodic viewer sweep drains a bounded batch from accepted sessions, including sessions that remain active; failed batches are retried by viewer/store queue workers (`codemem db raw-events-retry`).
 
 ## Project label normalization
 
@@ -449,13 +454,14 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_RAW_EVENTS_BACKOFF_MS` | Backoff window after stream failure before retrying stream POSTs (default `10000`). |
 | `CODEMEM_RAW_EVENTS_STATUS_CHECK_MS` | Minimum interval between stream availability preflight checks (default `30000`). |
 | `CODEMEM_RAW_EVENTS_HARD_MAX` | Hard upper bound for in-memory plugin queue under sustained failure pressure (default `2000`). |
+| `CODEMEM_RAW_EVENT_SPOOL_DRAIN_LIMIT` | Max valid saved envelopes attempted per spool drain; corrupt entries do not consume this limit (default `20`). |
+| `CODEMEM_RAW_EVENT_SPOOL_MAX_ENTRIES` | Max `.json` entries in the OpenCode raw-event spool (default `2000`). A full spool rejects new event IDs without evicting existing entries; the failed write remains only in the bounded in-memory queue. |
 | `CODEMEM_RAW_EVENTS_AUTO_FLUSH` | Set to `1` to enable viewer-side debounced flush of streamed raw events (default off). |
-| `CODEMEM_RAW_EVENTS_DEBOUNCE_MS` | Debounce delay before auto-flush per session (default `60000`). |
-| `CODEMEM_RAW_EVENTS_SWEEPER` | Set to `1` to enable periodic sweeper flush for idle sessions (default on). |
+| `CODEMEM_RAW_EVENTS_DEBOUNCE_MS` | Debounce delay before auto-flush per session (default `60000`); the periodic sweeper may drain the session sooner. |
+| `CODEMEM_RAW_EVENTS_SWEEPER` | Set to `1` to enable periodic sweeper flush for sessions with unflushed events (default on). |
 | `CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_MS` | Sweeper tick interval (default `30000`). |
 | `CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_S` | Config/env interval in seconds used by Settings UI (default `30`; overridden by `CODEMEM_RAW_EVENTS_SWEEPER_INTERVAL_MS` when set). |
-| `CODEMEM_RAW_EVENTS_SWEEPER_IDLE_MS` | Consider session idle if no events since this many ms (default `120000`). |
-| `CODEMEM_RAW_EVENTS_SWEEPER_LIMIT` | Max idle sessions to flush per sweeper tick (default `25`). |
+| `CODEMEM_RAW_EVENTS_SWEEPER_LIMIT` | Max sessions with unflushed events to process per sweeper tick (default `25`). |
 | `CODEMEM_RAW_EVENTS_STUCK_BATCH_MS` | Mark flush batches older than this many ms as error (default `300000`). |
 | `CODEMEM_RAW_EVENTS_RETENTION_MS` | If >0, delete raw events older than this many ms (default `0`, keep forever). |
 | `CODEMEM_CLAUDE_HOOK_FLUSH` | Set to `0` to disable immediate `SessionEnd` boundary flush (default on for `SessionEnd`; `Stop` still requires `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1`). |
@@ -466,23 +472,24 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 
 When the plugin detects CLI/runtime version mismatch, it shows guidance based on runner mode:
 
-- `CODEMEM_RUNNER=codemem`: run `npm install -g codemem @codemem/embeddings` (the optional runtime enables semantic recall), then restart OpenCode. On Linux, prefix with `ONNXRUNTIME_NODE_INSTALL=skip` to avoid downloading the unused GPU provider (see the semantic-runtime install notes).
-- `CODEMEM_RUNNER=npx`: the compatibility warning recommends moving to a global install. Install `codemem` and `@codemem/embeddings` globally, clear explicit `CODEMEM_RUNNER` and `CODEMEM_RUNNER_FROM` overrides so the plugin detects that install, then restart OpenCode. To keep using npx instead, update `CODEMEM_RUNNER_FROM` to the desired `codemem@<version>` spec; the plugin pairs the matching `@codemem/embeddings` version automatically. On Linux, see the CPU-only semantic-runtime install notes in the README.
+- `CODEMEM_RUNNER=codemem`: run `npm install -g codemem` (the CLI installs its optional semantic runtime), then restart OpenCode. On Linux, prefix with `ONNXRUNTIME_NODE_INSTALL=skip` to avoid downloading the unused GPU provider (see the semantic-runtime install notes).
+- `CODEMEM_RUNNER=npx`: the compatibility warning recommends moving to a global `codemem` install, which includes its optional semantic runtime. Clear explicit `CODEMEM_RUNNER` and `CODEMEM_RUNNER_FROM` overrides so the plugin detects that install, then restart OpenCode. To keep using npx instead, update `CODEMEM_RUNNER_FROM` to the desired `codemem@<version>` spec; the plugin pairs the matching `@codemem/embeddings` version automatically. On Linux, see the CPU-only semantic-runtime install notes in the README.
 - `CODEMEM_RUNNER=node`: pull latest repo changes and run `pnpm build`, then restart OpenCode
 - custom/unknown runner: update the underlying `codemem` binary or package source, then restart OpenCode
 
 Update policy:
 
 - `CODEMEM_BACKEND_UPDATE_POLICY=notify` (default): show warning toast with suggested action
-- `CODEMEM_BACKEND_UPDATE_POLICY=auto`: try a best-effort auto-update for eligible compatibility-floor mismatches and fresh stable releases observed for at least 24 hours, then warn if still outdated
+- `CODEMEM_BACKEND_UPDATE_POLICY=auto`: try a best-effort auto-update for eligible compatibility-floor mismatches and fresh same-channel releases observed for at least 24 hours, then warn if still outdated
 	- skipped for `node` dev-mode runners
 	- skipped when `CODEMEM_RUNNER_FROM` is pinned to a fixed package/version
-	- skipped for Docker, unknown, stale, prerelease, or downgrade states
+	- skipped for Docker, unknown, stale, unsupported-channel, cross-channel, or downgrade states
 - `CODEMEM_BACKEND_UPDATE_POLICY=off`: no compatibility toast (logging still records mismatch)
 
 After its startup delay, the plugin also runs `codemem update check --json` through the same
-argv-based CLI runner. `notify` and `auto` show a best-effort toast at most once per latest stable
-release in the current OpenCode process; `off` skips this release check. Under explicit `auto`, an
+argv-based CLI runner. The CLI derives `alpha`, `beta`, `rc`, or `latest` from the installed version.
+`notify` and `auto` show a best-effort toast at most once per newly discovered release on that
+channel in the current OpenCode process; `off` skips this release check. Under explicit `auto`, an
 eligible result executes a paired, version-pinned public-registry install for `codemem` and
 `@codemem/embeddings`, then verifies the active CLI version before a plugin-owned Viewer is
 restarted. On Linux, both plugin-owned auto-update paths preserve the existing child environment

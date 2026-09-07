@@ -186,9 +186,12 @@ export function startMaintenanceWorkerRuntime(
 				dbPath,
 				signal: options.signal,
 				// This worker cannot receive the viewer process's in-memory wake signal,
-				// so retain the short poll while bounding each pass with a smaller batch.
+				// so work queued just after an idle tick waits up to one idle interval
+				// before being noticed. Once a tick sees running/pending work it stays on
+				// the normal interval; only genuinely idle polling slows. This trades
+				// bounded latency for not hammering a quiet DB every 5 seconds.
 				batchSize: 10,
-				idleIntervalMs: 5000,
+				idleIntervalMs: 60_000,
 			}),
 		);
 	}

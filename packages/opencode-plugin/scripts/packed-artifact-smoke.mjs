@@ -49,6 +49,10 @@ try {
 		"Packed artifact is missing .opencode/lib/compat.js",
 	);
 	assert(
+		tarListing.includes("package/.opencode/lib/raw-event-spool.js"),
+		"Packed artifact is missing .opencode/lib/raw-event-spool.js",
+	);
+	assert(
 		tarListing.includes("package/.opencode/package.json"),
 		"Packed artifact is missing .opencode/package.json",
 	);
@@ -62,6 +66,10 @@ try {
 	assert(
 		existsSync(join(installedPackageRoot, ".opencode", "plugins", "codemem.js")),
 		"Installed artifact is missing .opencode/plugins/codemem.js",
+	);
+	assert(
+		existsSync(join(installedPackageRoot, ".opencode", "lib", "raw-event-spool.js")),
+		"Installed artifact is missing .opencode/lib/raw-event-spool.js",
 	);
 
 	const packageJson = JSON.parse(readFileSync(join(installedPackageRoot, "package.json"), "utf8"));

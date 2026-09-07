@@ -93,6 +93,7 @@ export type {
 	RecipientPolicyReconciliationReadState,
 	RecipientPolicyReconciliationStatusV1,
 	RecipientPolicyReviewBulkResultV1,
+	RecipientPolicyReviewCategoryCountsV1,
 	RecipientPolicyReviewDecisionV1,
 	RecipientPolicyReviewItemV1,
 	RecipientPolicyReviewListV1,

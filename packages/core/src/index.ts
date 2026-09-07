@@ -5,7 +5,7 @@
  * and type definitions shared across the codemem TS backend.
  */
 
-export const VERSION = "0.44.0-alpha.1";
+export const VERSION = "0.44.0-beta.1";
 
 export * as Api from "./api-types.js";
 export { extractApplyPatchPaths, MUTATING_TOOL_NAMES } from "./apply-patch.js";
@@ -69,6 +69,7 @@ export {
 	coordinatorUnarchiveGroupAction,
 	coordinatorUpdateScopeAction,
 	isPeerTrustBindingCompatible,
+	RemoteCoordinatorRequestError,
 } from "./coordinator-actions.js";
 export type {
 	CoordinatorRequestVerifier,
@@ -505,9 +506,11 @@ export * from "./legacy-team-setup-draft.js";
 export type {
 	LegacyTeamSetupCoreErrorCode,
 	LegacyTeamSetupDraftErrorCode,
+	LegacyTeamSetupErrorReason,
 } from "./legacy-team-setup-errors.js";
 export {
 	LEGACY_TEAM_SETUP_API_ERROR_BY_CORE_ERROR,
+	LEGACY_TEAM_SETUP_ERROR_REASONS,
 	legacyTeamSetupApiErrorCode,
 } from "./legacy-team-setup-errors.js";
 export type {
@@ -588,6 +591,7 @@ export {
 	isDerivedFactRow,
 	readArtifactClass,
 } from "./memory-quality.js";
+export { probeRequiredNativeRuntime } from "./native-runtime.js";
 export type { ObserverAuthMaterial } from "./observer-auth.js";
 export {
 	buildCodexHeaders,
@@ -888,6 +892,7 @@ export type {
 	RecipientPolicyDerivedReviewState,
 	RecipientPolicyReviewActionOptionV1,
 	RecipientPolicyReviewBulkResultV1,
+	RecipientPolicyReviewCategoryCountsV1,
 	RecipientPolicyReviewContext,
 	RecipientPolicyReviewListV1,
 	RecipientPolicyReviewResolveRequestV1,

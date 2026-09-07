@@ -105,6 +105,21 @@ describe("MemoryStore", () => {
 		return Number(info.lastInsertRowid);
 	}
 
+	it("does not persist command failures as session identity metadata", () => {
+		const sessionId = store.startSession({
+			cwd: "Command failed: git rev-parse --show-toplevel",
+			project: "error: failed to discover project",
+			gitRemote: "fatal: not a git repository (or any parent): .git",
+			gitBranch: "fatal: ambiguous argument HEAD",
+		});
+
+		const session = store.db
+			.prepare("SELECT cwd, project, git_remote, git_branch FROM sessions WHERE id = ?")
+			.get(sessionId);
+
+		expect(session).toEqual({ cwd: null, project: null, git_remote: null, git_branch: null });
+	});
+
 	// -- get ----------------------------------------------------------------
 
 	describe("get", () => {

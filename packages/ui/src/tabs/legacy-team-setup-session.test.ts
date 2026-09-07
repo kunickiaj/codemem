@@ -729,6 +729,59 @@ describe("legacy Team setup session reducer", () => {
 		});
 	});
 
+	it("describes a local candidate scan budget failure without coordinator guidance", () => {
+		let state = reduceSetupSession(loaded(open(), readyView()), { type: "finish" });
+		if (state.status !== "open") throw new Error("expected finish session");
+		const command = state.commands[0];
+		if (command?.kind !== "finish") throw new Error("expected finish command");
+		state = reduceSetupSession(state, {
+			type: "effect_outcome",
+			outcome: {
+				status: "failure",
+				generation: command.generation,
+				id: command.id,
+				kind: command.kind,
+				cause: new LegacyTeamSetupApiError(
+					503,
+					"team_setup_roster_unavailable",
+					"local_candidate_scan_budget_exceeded",
+				),
+			},
+		});
+		if (state.status !== "open") throw new Error("expected failed finish session");
+
+		expect(globalError(state)?.message).toContain(
+			"Retry from a device with less history, or contact support.",
+		);
+		expect(globalError(state)?.message).not.toContain("coordinator connection");
+	});
+
+	it("identifies an older coordinator when the finish route is missing", () => {
+		let state = reduceSetupSession(loaded(open(), readyView()), { type: "finish" });
+		if (state.status !== "open") throw new Error("expected finish session");
+		const command = state.commands[0];
+		if (command?.kind !== "finish") throw new Error("expected finish command");
+		state = reduceSetupSession(state, {
+			type: "effect_outcome",
+			outcome: {
+				status: "failure",
+				generation: command.generation,
+				id: command.id,
+				kind: command.kind,
+				cause: new LegacyTeamSetupApiError(
+					503,
+					"team_setup_completion_unavailable",
+					"coordinator_route_missing",
+				),
+			},
+		});
+		if (state.status !== "open") throw new Error("expected failed finish session");
+
+		expect(globalError(state)?.message).toContain(
+			"The coordinator may be running an older version.",
+		);
+	});
+
 	it("uses a plain detail retry when confirmation-stale recovery also fails", () => {
 		let state = reduceSetupSession(loaded(open(), readyView()), { type: "finish" });
 		if (state.status !== "open") throw new Error("expected finish session");

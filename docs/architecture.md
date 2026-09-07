@@ -116,7 +116,7 @@ It does not currently gate sync or retrieval. See `docs/plans/2026-03-08-shared-
 
 ### Semantic search (sqlite-vec)
 
-When the optional `@codemem/embeddings` runtime is installed, `memory_vectors` (a `vec0` virtual table from sqlite-vec) stores 384-dimensional float vectors keyed by `memory_id`. Vectors are written automatically when memories are created, or backfilled with `codemem embed`. Lexical-only installs omit Transformers and ONNX Runtime.
+The `codemem` package installs its matching optional `@codemem/embeddings` runtime by default. When available, `memory_vectors` (a `vec0` virtual table from sqlite-vec) stores 384-dimensional float vectors keyed by `memory_id`. Vectors are written automatically when memories are created, or backfilled with `codemem embed`. Processes started with `CODEMEM_EMBEDDING_DISABLED=1` use lexical retrieval without loading Transformers or ONNX Runtime. An install made with `--omit=optional` also omits sqlite-vec's platform package and therefore requires this flag.
 
 Each vector row carries a canonical identity for model repository, revision,
 runtime generation, fp32 dtype, mean pooling, L2 normalization, and dimensions.
@@ -373,7 +373,7 @@ behavior and `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1` opt-in for `Stop` remain unch
 ### OpenCode stream reliability
 - Preflight check: `GET /api/raw-events/status` with periodic re-checks (`CODEMEM_RAW_EVENTS_STATUS_CHECK_MS`), bounded by a 5-second timeout
 - Backoff on failure: configurable via `CODEMEM_RAW_EVENTS_BACKOFF_MS`; on stream failure the plugin can fall back to CLI enqueue for durable persistence
-- Once events are accepted by the viewer/store queue, flush workers handle retries
+- Once events are accepted by the viewer/store queue, each periodic sweep drains bounded work from active or idle sessions and retries failed batches
 
 ### Claude hook flush boundaries
 - `SessionEnd` immediately flushes by default; `CODEMEM_CLAUDE_HOOK_FLUSH=0` disables the attempt

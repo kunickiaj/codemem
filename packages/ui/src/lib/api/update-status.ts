@@ -8,6 +8,7 @@ export async function loadUpdateStatus(): Promise<UpdateStatus> {
 export function unavailableUpdateStatus(error: unknown): UpdateStatus {
 	return {
 		current_version: "unknown",
+		channel: null,
 		latest_version: null,
 		update_available: false,
 		first_seen_at: null,
