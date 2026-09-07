@@ -9,25 +9,50 @@ vi.mock("node:child_process", () => ({
 	execSync: (...args) => execSyncMock(...args),
 }));
 
+const { __testUtils } = await import("../plugins/codemem.js");
+const PINNED = __testUtils.PINNED_BACKEND_VERSION;
+
+/** Bump the prerelease counter of a version like x.y.z-beta.1 by `delta`. */
+function bumpPrerelease(version, delta) {
+	const match = /^(\d+\.\d+\.\d+-(?:alpha|beta|rc)\.)(\d+)$/u.exec(version);
+	if (!match) throw new Error(`not a prerelease: ${version}`);
+	return `${match[1]}${Number(match[2]) + delta}`;
+}
+
+/** Same version number on a different prerelease channel. */
+function onChannel(version, channel) {
+	return version.replace(/-(?:alpha|beta|rc)\./u, `-${channel}.`);
+}
+
+const CURRENT = PINNED;
+const NEWER = bumpPrerelease(PINNED, 1);
+const NEWEST = bumpPrerelease(PINNED, 2);
+const OLDER = bumpPrerelease(PINNED, -1);
+const CURRENT_CHANNEL = /-(alpha|beta|rc)\./u.exec(PINNED)[1];
+const CROSS_CHANNEL = onChannel(
+	bumpPrerelease(PINNED, 1),
+	CURRENT_CHANNEL === "alpha" ? "beta" : "alpha",
+);
+
 const currentStatus = {
-	current_version: "0.44.0-alpha.1",
-	channel: "alpha",
-	latest_version: "0.44.0-alpha.1",
+	current_version: CURRENT,
+	channel: CURRENT_CHANNEL,
+	latest_version: CURRENT,
 	update_available: false,
 	first_seen_at: "2026-08-10T12:00:00.000Z",
 	checked_at: "2026-08-10T12:00:00.000Z",
 	stale: false,
 	install_kind: "npm-global",
 	auto_update_eligible: false,
-	recommended_action: "No action required; codemem is on the latest alpha release.",
+	recommended_action: `No action required; codemem is on the latest ${CURRENT_CHANNEL} release.`,
 	error: null,
 };
 
 const availableStatus = {
 	...currentStatus,
-	latest_version: "0.44.0-alpha.2",
+	latest_version: NEWER,
 	update_available: true,
-	recommended_action: "npm install -g codemem@0.44.0-alpha.2",
+	recommended_action: `npm install -g codemem@${NEWER}`,
 };
 
 function makeProcess(
@@ -141,13 +166,13 @@ describe("@codemem/opencode-plugin exports", () => {
 	});
 
 	test("keeps a newer same-channel prerelease on the global runner", async () => {
-		execSyncMock.mockReturnValueOnce("0.44.0-alpha.2");
+		execSyncMock.mockReturnValueOnce(NEWER);
 		const { __testUtils } = await import("../plugins/codemem.js");
 
 		expect(__testUtils.detectRunner({ cwd: "/tmp/codemem", envRunner: "" })).toBe("codemem");
 	});
 
-	test.each(["0.44.0-alpha.0", "0.44.0-beta.2"])(
+	test.each([OLDER, CROSS_CHANNEL])(
 		"rejects an older or cross-channel global runner at %s",
 		async (version) => {
 			execSyncMock.mockReturnValueOnce(version);
@@ -248,15 +273,15 @@ describe("OpenCode startup release notifications", () => {
 		await runStartupChecks();
 		status = {
 			...availableStatus,
-			latest_version: "0.44.0-alpha.3",
-			recommended_action: "npm install -g codemem@0.44.0-alpha.3",
+			latest_version: NEWEST,
+			recommended_action: `npm install -g codemem@${NEWEST}`,
 		};
 		await startPlugin(showToast);
 		await runStartupChecks();
 
 		// Assert
 		expect(showToast).toHaveBeenCalledTimes(2);
-		expect(showToast.mock.calls[1]?.[0]?.body?.message).toMatch(/0\.44\.0-alpha\.3/);
+		expect(showToast.mock.calls[1]?.[0]?.body?.message).toContain(NEWEST);
 	});
 
 	test.each([
@@ -277,7 +302,7 @@ describe("OpenCode startup release notifications", () => {
 			label: "guidance for another version",
 			status: {
 				...availableStatus,
-				recommended_action: "npm install -g codemem@0.44.0-alpha.3",
+				recommended_action: `npm install -g codemem@${NEWEST}`,
 			},
 		},
 	])("ignores $label", async ({ status }) => {
