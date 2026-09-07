@@ -8,7 +8,7 @@ codemem has five main pieces: **adapters** that capture shell/runtime activity, 
 |-----------|-------------|-----------|
 | Adapters | Capture and normalize agent events before enqueueing raw events | `packages/opencode-plugin/.opencode/plugins/codemem.js`, `plugins/claude/scripts/ingest-hook.mjs`, `plugins/codex/scripts/ingest-hook.mjs`, `packages/core/src/claude-hooks.ts`, `packages/core/src/codex-hooks.ts` |
 | Ingest pipeline | Extracts tool events, builds transcripts, runs the observer | `packages/core/src/ingest-pipeline.ts`, `packages/core/src/ingest-events.ts` |
-| Observer | Produces typed observations and session summaries from transcripts | `packages/core/src/ingest-prompts.ts`, `packages/core/src/ingest-xml-parser.ts` |
+| Observer | Produces typed observations and session summaries from transcripts | `packages/core/src/observer-output.ts`, `packages/core/src/observer-output-schema.ts`, `packages/core/src/ingest-xml-parser.ts` |
 | Store | SQLite persistence for sessions, memories, artifacts, embeddings | `packages/core/src/store.ts`, `packages/core/src/schema.ts` |
 | Viewer | Local web UI + JSON APIs for stats, sessions, and memory items | `packages/viewer-server/src/`, `packages/ui/src/` |
 | MCP server | Exposes memory tools (search, timeline, pack, remember, forget) to OpenCode | `packages/mcp-server/src/` |
@@ -45,7 +45,7 @@ flowchart LR
 5. Idle and sweeper workers claim batches and run them through ingest.
 6. Before building session context, raw events are passed through `normalizeEventsForSessionContext` (in `ingest-transcript.ts`) which projects adapter-enveloped events (`_adapter` schema v1.0) into the flat `user_prompt` / `tool.execute.after` shapes that `buildSessionContext` scans. This is critical for Claude Code hook events which always arrive wrapped in the adapter envelope.
 7. Ingest builds a transcript from user prompts and assistant messages, then hands it to the observer.
-8. The observer returns typed observations and an optional session summary as XML.
+8. The observer returns typed observations and an optional session summary through a capability-selected JSON Schema or legacy XML contract.
 9. Ingest writes artifacts (transcript, context snapshots), observations, and summaries to SQLite.
 10. The viewer, MCP server, and CLI all read from the same SQLite database.
 
@@ -287,6 +287,10 @@ The observer turns raw session transcripts into typed, structured memories. It's
 - Runtime defaults: `api_http` uses `gpt-5.4-mini`; `claude_sidecar` uses `claude-4.5-haiku` unless explicitly overridden.
 - For capability-safe paths, tier routing can default on without an explicit user toggle. Current safe classes are OpenAI/Anthropic over `api_http` and Claude subscription usage over `claude_sidecar`.
 - OpenAI `api_http` tier routing defaults to `gpt-5.6-luna` for simple batches and `gpt-5.6-terra` for rich batches. Official OpenAI and OAuth `codex_consumer` requests always use Responses and send reasoning effort `medium` unless explicitly overridden. `observer_openai_use_responses: false` is reserved for an explicitly configured custom `observer_base_url`; both tiers then use chat completions and clear effective reasoning effort/summary because those controls are not transmitted. Official OpenAI cannot opt out of Responses.
+- `observer_output_mode` defaults to `legacy_xml` for rollback safety. `auto` selects the versioned JSON envelope only for official OpenAI Responses and direct Anthropic API-key calls; unsupported auth/runtime paths select XML before calling the provider and record the fallback reason. `json_schema` may explicitly enable a compatible custom OpenAI gateway through `observer_base_url` or Anthropic gateway through `CODEMEM_ANTHROPIC_ENDPOINT`.
+- The provider-neutral `record_memories` forced-tool contract uses the same envelope schema and requires exactly one call. It is a tested transport seam, not an enabled provider/runtime cell; OAuth consumers, sidecars, and unproven gateways remain on XML until executable request/response tests prove their behavior.
+- Constrained responses fail closed on refusal, truncation, missing output, invalid JSON, or local envelope validation. They are never reparsed as XML; raw-event retry and terminal-state policies remain unchanged.
+- XML remains a measured compatibility path during rollout. Codemem will remove XML prompts, parsing, and repair only in a later compatibility-breaking release after a bounded observation window shows negligible fallback use and every supported access path has an intentional tested contract.
 - Simple-tier reasoning uses the global `observer_reasoning_effort` / `observer_reasoning_summary` overrides; the corresponding `observer_rich_reasoning_*` settings take precedence for rich-tier requests.
 - If a configured `observer_model` is not available in Claude CLI, codemem retries once with Claude's default model.
 - When a tier-selected path cannot honor the requested runtime/provider/model combination, codemem records the requested-versus-actual details plus a visible fallback reason rather than silently masking the downgrade.
@@ -341,8 +345,8 @@ flowchart TD
 A["Raw OpenCode events"] --> B["Extract relevant events"]
 B --> C["Filter low signal tools and internal memory calls"]
 C --> D["Build transcript and bounded tool context"]
-D --> E["Run observer prompt"]
-E --> F["Parse XML: typed observations and optional summary"]
+D --> E["Resolve requested mode and runtime capability"]
+E --> F["Validate JSON envelope or parse preselected legacy XML"]
 F --> G["Apply low signal text checks"]
 G --> H["Persist memory items with structured fields"]
 G --> I["Persist session summary"]

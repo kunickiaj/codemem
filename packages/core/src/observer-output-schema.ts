@@ -42,6 +42,11 @@ export interface ObserverEnvelopeV1 {
 	skip_reason: string | null;
 }
 
+export interface ObserverForcedToolCall {
+	name: string;
+	input: unknown;
+}
+
 export type ObserverEnvelopeFailureReason =
 	| "structured_output_refused"
 	| "structured_output_truncated"
@@ -348,6 +353,42 @@ export function parseObserverEnvelopeV1(raw: string): ObserverEnvelopeParseResul
 		};
 	}
 	return validateObserverEnvelopeV1(value);
+}
+
+export function parseObserverForcedToolCalls(
+	calls: readonly ObserverForcedToolCall[],
+): ObserverEnvelopeParseResult {
+	if (calls.length === 0) {
+		return {
+			ok: false,
+			reason: "forced_tool_missing",
+			issues: ["observer response must contain one record_memories tool call"],
+		};
+	}
+	if (calls.length !== 1) {
+		return {
+			ok: false,
+			reason: "forced_tool_multiple_calls",
+			issues: ["observer response must contain exactly one tool call"],
+		};
+	}
+	const call = calls[0];
+	if (call?.name !== "record_memories") {
+		return {
+			ok: false,
+			reason: "forced_tool_input_invalid",
+			issues: ["observer tool call must use record_memories"],
+		};
+	}
+	const parsed = validateObserverEnvelopeV1(call.input);
+	if (!parsed.ok) {
+		return {
+			ok: false,
+			reason: "forced_tool_input_invalid",
+			issues: parsed.issues,
+		};
+	}
+	return parsed;
 }
 
 function clampText(value: string): string {

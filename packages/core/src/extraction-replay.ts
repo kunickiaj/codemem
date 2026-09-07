@@ -253,6 +253,53 @@ export interface ReplayBatchAnalysis {
 	filesModified: string[];
 }
 
+export interface ExtractionReplayObserverIdentity {
+	tier: "simple" | "rich" | null;
+	provider: string;
+	model: string | null;
+	transport: string;
+	requestedModel: string | null;
+	resolvedModel: string | null;
+	modelFallbackApplied: boolean;
+	modelFallbackReason: string | null;
+	openaiUseResponses: boolean;
+	reasoningEffort: string | null;
+	reasoningSummary: string | null;
+	maxOutputTokens: number | null;
+	temperature: number | null;
+}
+
+export function extractionReplayObserverIdentity(
+	observer: ObserverClient,
+	tier: "simple" | "rich" | null,
+): ExtractionReplayObserverIdentity {
+	const status = observer.getStatus();
+	const model = status.modelFallbackApplied
+		? (status.actualModel ?? null)
+		: (status.actualModel ?? observer.model);
+	const transport =
+		status.auth.type === "codex_consumer" || status.auth.type === "anthropic_consumer"
+			? status.auth.type
+			: status.runtime;
+	const reportsRequestLimits = transport !== "codex_consumer";
+	const reportsReasoning = observer.openaiUseResponses || transport === "codex_consumer";
+	return {
+		tier,
+		provider: observer.provider,
+		model,
+		transport,
+		requestedModel: observer.requestedModel,
+		resolvedModel: model,
+		modelFallbackApplied: status.modelFallbackApplied === true,
+		modelFallbackReason: status.modelFallbackReason ?? null,
+		openaiUseResponses: observer.openaiUseResponses,
+		reasoningEffort: reportsReasoning ? observer.reasoningEffort : null,
+		reasoningSummary: reportsReasoning ? observer.reasoningSummary : null,
+		maxOutputTokens: reportsRequestLimits ? observer.maxOutputTokens : null,
+		temperature: reportsRequestLimits ? observer.temperature : null,
+	};
+}
+
 interface PreparedReplayBatch {
 	scenario: ReturnType<typeof getSessionExtractionEvalScenario> extends infer T
 		? Exclude<T, null>
@@ -809,6 +856,7 @@ export async function replayBatchExtractionWithTierRouting(
 		maxChars?: number;
 		observerMaxChars?: number;
 		transcriptBudget?: number;
+		onOutputFailure?: (context: ExtractionReplayObserverIdentity) => void;
 	},
 ): Promise<ExtractionReplayResult> {
 	const baseObserver = new ObserverClientImpl(baseConfig);
@@ -818,5 +866,10 @@ export async function replayBatchExtractionWithTierRouting(
 	});
 	const routed = buildTierRoutedReplayObserverConfig(baseObserver, prepared.analysis);
 	const observer = new ObserverClientImpl(routed.observer);
-	return replayPreparedBatch(prepared, observer, routed.tier, routed.reasons);
+	try {
+		return await replayPreparedBatch(prepared, observer, routed.tier, routed.reasons);
+	} catch (error) {
+		opts.onOutputFailure?.(extractionReplayObserverIdentity(observer, routed.tier));
+		throw error;
+	}
 }

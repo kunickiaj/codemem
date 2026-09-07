@@ -101,7 +101,9 @@ export interface ExtractionBenchmarkQualityDimensions {
 	factualGrounding: number | null;
 }
 
-const QUALITY_WEIGHTS: Readonly<Record<keyof ExtractionBenchmarkQualityDimensions, number>> = {
+export const EXTRACTION_BENCHMARK_QUALITY_WEIGHTS: Readonly<
+	Record<keyof ExtractionBenchmarkQualityDimensions, number>
+> = {
 	summaryDisposition: 0.1,
 	requiredRecall: 0.45,
 	optionalRecall: 0.05,
@@ -113,7 +115,7 @@ const QUALITY_WEIGHTS: Readonly<Record<keyof ExtractionBenchmarkQualityDimension
 	factualGrounding: 0,
 };
 
-const TOTAL_AUTOMATED_QUALITY_WEIGHT = Object.values(QUALITY_WEIGHTS).reduce(
+const TOTAL_AUTOMATED_QUALITY_WEIGHT = Object.values(EXTRACTION_BENCHMARK_QUALITY_WEIGHTS).reduce(
 	(sum, weight) => sum + weight,
 	0,
 );
@@ -332,17 +334,25 @@ function summaryDispositionScore(
 export function calculateWeightedQualityCoverage(
 	dimensions: ExtractionBenchmarkQualityDimensions,
 ): number {
-	const scoredWeight = (Object.keys(QUALITY_WEIGHTS) as Array<keyof typeof QUALITY_WEIGHTS>)
-		.filter((key) => dimensions[key] !== null && QUALITY_WEIGHTS[key] > 0)
-		.reduce((sum, key) => sum + QUALITY_WEIGHTS[key], 0);
+	const scoredWeight = (
+		Object.keys(EXTRACTION_BENCHMARK_QUALITY_WEIGHTS) as Array<
+			keyof typeof EXTRACTION_BENCHMARK_QUALITY_WEIGHTS
+		>
+	)
+		.filter((key) => dimensions[key] !== null && EXTRACTION_BENCHMARK_QUALITY_WEIGHTS[key] > 0)
+		.reduce((sum, key) => sum + EXTRACTION_BENCHMARK_QUALITY_WEIGHTS[key], 0);
 	return TOTAL_AUTOMATED_QUALITY_WEIGHT === 0 ? 0 : scoredWeight / TOTAL_AUTOMATED_QUALITY_WEIGHT;
 }
 
 export function calculateWeightedQualityScore(
 	dimensions: ExtractionBenchmarkQualityDimensions,
 ): number {
-	const scoredDimensions = (Object.keys(QUALITY_WEIGHTS) as Array<keyof typeof QUALITY_WEIGHTS>)
-		.map((key) => ({ score: dimensions[key], weight: QUALITY_WEIGHTS[key] }))
+	const scoredDimensions = (
+		Object.keys(EXTRACTION_BENCHMARK_QUALITY_WEIGHTS) as Array<
+			keyof typeof EXTRACTION_BENCHMARK_QUALITY_WEIGHTS
+		>
+	)
+		.map((key) => ({ score: dimensions[key], weight: EXTRACTION_BENCHMARK_QUALITY_WEIGHTS[key] }))
 		.filter(
 			(dimension): dimension is { score: number; weight: number } =>
 				dimension.score !== null && dimension.weight > 0,

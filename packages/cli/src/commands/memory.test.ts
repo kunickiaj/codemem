@@ -5,6 +5,7 @@ import { initDatabase, MemoryStore } from "@codemem/core";
 import { describe, expect, it, vi } from "vitest";
 import * as embeddings from "../../../core/src/embeddings.js";
 import {
+	estimateBenchmarkAttemptCost,
 	forgetMemoryCommand,
 	memoryCommand,
 	reconcileExtractionBenchmarkStatus,
@@ -12,6 +13,8 @@ import {
 	resolveOpenAIResponsesOverride,
 	showMemoryCommand,
 	summarizeBenchmarkReasoning,
+	summarizeExtractionBenchmarkAttempts,
+	summarizeExtractionBenchmarkReporting,
 } from "./memory.js";
 
 vi.mock("../../../core/src/embeddings.js", async () => {
@@ -214,6 +217,214 @@ describe("benchmark reasoning summaries", () => {
 				{ reasoningEffort: "high", reasoningSummary: "auto" },
 			),
 		).toEqual({ reasoningEffort: "mixed", reasoningSummary: null });
+	});
+});
+
+describe("benchmark output-mode reporting", () => {
+	it("prices failed attempts when model and usage are known", () => {
+		const cost = estimateBenchmarkAttemptCost("gpt-5.4-mini", {
+			inputTokens: 100,
+			outputTokens: 20,
+			totalTokens: 120,
+		});
+
+		expect(cost.unavailableReason).toBeNull();
+		expect(cost.total?.totalCostUsd).toBeGreaterThan(0);
+	});
+
+	it("reports comparable transport, validity, retry, token, and quality metrics", () => {
+		const report = summarizeExtractionBenchmarkReporting([
+			{
+				requestedOutputMode: "json_schema",
+				actualOutputMode: "json_schema",
+				outputValidation: "valid",
+				repairAttempted: false,
+				retryAttempted: true,
+				observations: 2,
+				telemetry: {
+					totalElapsedMs: 20,
+					totalUsage: { inputTokens: 100, outputTokens: 30, totalTokens: 130 },
+				},
+				quality: {
+					reviewStatus: "reviewed",
+					schemaCompliance: { compliant: true, score: 1, violations: [] },
+					summaryDisposition: { score: 1 },
+					weightedQualityScore: 0.8,
+				} as never,
+			},
+			{
+				requestedOutputMode: "json_schema",
+				actualOutputMode: "legacy_xml",
+				outputValidation: "not_applicable",
+				repairAttempted: true,
+				retryAttempted: false,
+				observations: 1,
+				telemetry: {
+					totalElapsedMs: 40,
+					totalUsage: { inputTokens: 200, outputTokens: 60 },
+				},
+				quality: {
+					reviewStatus: "reviewed",
+					schemaCompliance: { compliant: false, score: 0, violations: ["loss"] },
+					summaryDisposition: { score: 0 },
+					weightedQualityScore: 0.4,
+				} as never,
+			},
+		]);
+
+		expect(report.requestedOutputModes).toEqual({ json_schema: 2 });
+		expect(report.actualOutputModes).toEqual({ json_schema: 1, legacy_xml: 1 });
+		expect(report.overall).toEqual(
+			expect.objectContaining({
+				validOutputRate: 0.5,
+				repairRate: 0.5,
+				retryRate: 0.5,
+				meanLatencyMs: 30,
+				inputTokens: 300,
+				outputTokens: 90,
+				retainedObservations: 3,
+			}),
+		);
+		expect(report.overall.summaryDispositionMatchRate).toBe(0.5);
+		expect(report.overall.contractIntegrityRate).toBe(0.5);
+		expect(report.overall.meanSemanticQuality).toBe(0.5);
+		expect(report.byActualOutputMode.json_schema?.meanSemanticQuality).toBe(1);
+		expect(report.byActualOutputMode.legacy_xml?.repairRate).toBe(1);
+	});
+
+	it("includes failed attempts in stability denominators", () => {
+		const report = summarizeExtractionBenchmarkAttempts(
+			[
+				{
+					iteration: 2,
+					batchId: 1,
+					purpose: "shape_quality",
+					status: "pass",
+					expectedTier: "rich",
+					tier: "rich",
+				},
+				{
+					iteration: 1,
+					batchId: 1,
+					purpose: "shape_quality",
+					status: "output_failure",
+					expectedTier: "rich",
+					tier: "simple",
+				},
+				{
+					iteration: 1,
+					batchId: 2,
+					purpose: "replay_robustness",
+					status: "output_failure",
+					expectedTier: null,
+					tier: null,
+				},
+			],
+			[
+				{ batchId: 1, purpose: "shape_quality" },
+				{ batchId: 2, purpose: "replay_robustness" },
+			],
+		);
+
+		expect(report).toEqual(
+			expect.objectContaining({
+				total: 3,
+				shapeQualityTotal: 2,
+				shapeQualityPasses: 1,
+				shapeQualityFails: 1,
+				robustnessNoOutput: 1,
+				expectedTierTotal: 2,
+				expectedTierMatches: 1,
+			}),
+		);
+		expect(report.perBatchStability[0]).toEqual(
+			expect.objectContaining({
+				total: 2,
+				passes: 1,
+				passRate: 0.5,
+				statuses: ["output_failure", "pass"],
+			}),
+		);
+	});
+
+	it("uses canonical semantic weights for redundancy and segmentation", () => {
+		const report = summarizeExtractionBenchmarkReporting([
+			{
+				requestedOutputMode: "json_schema",
+				actualOutputMode: "json_schema",
+				outputValidation: "valid",
+				repairAttempted: false,
+				retryAttempted: false,
+				observations: 1,
+				telemetry: { totalElapsedMs: null, totalUsage: null },
+				quality: {
+					reviewStatus: "reviewed",
+					summaryDisposition: { score: 0 },
+					requiredRecall: { score: 0 },
+					optionalRecall: { score: 0 },
+					worthinessPrecision: { score: 0 },
+					summaryBreadth: { score: 0 },
+					observationSignals: { redundancyAvoidance: 1, segmentation: 1 },
+					schemaCompliance: { compliant: true, score: 1, violations: [] },
+					weightedQualityScore: 0,
+				} as never,
+			},
+		]);
+
+		expect(report.overall.meanSemanticQuality).toBeCloseTo(0.2);
+	});
+
+	it("excludes unreviewed runs from semantic quality", () => {
+		const report = summarizeExtractionBenchmarkReporting([
+			{
+				requestedOutputMode: "json_schema",
+				actualOutputMode: "json_schema",
+				outputValidation: "valid",
+				repairAttempted: false,
+				retryAttempted: false,
+				observations: 1,
+				telemetry: { totalElapsedMs: null, totalUsage: null },
+				quality: {
+					reviewStatus: "unreviewed",
+					summaryDisposition: { score: 1 },
+					observationSignals: { redundancyAvoidance: 1, segmentation: 1 },
+					schemaCompliance: { compliant: true, score: 1, violations: [] },
+					weightedQualityScore: null,
+				} as never,
+			},
+		]);
+
+		expect(report.overall.semanticQualityEvaluated).toBe(0);
+		expect(report.overall.meanSemanticQuality).toBeNull();
+	});
+
+	it("includes failed-attempt telemetry in output-mode totals", () => {
+		const report = summarizeExtractionBenchmarkReporting([
+			{
+				requestedOutputMode: "json_schema",
+				actualOutputMode: "json_schema",
+				outputValidation: "invalid",
+				repairAttempted: false,
+				retryAttempted: true,
+				observations: 0,
+				telemetry: {
+					totalElapsedMs: 15,
+					totalUsage: { inputTokens: 40, outputTokens: 5, totalTokens: 45 },
+				},
+				quality: null,
+			},
+		]);
+
+		expect(report.overall).toEqual(
+			expect.objectContaining({
+				runs: 1,
+				validOutputs: 0,
+				knownLatencyRuns: 1,
+				totalLatencyMs: 15,
+				knownTokenRuns: 1,
+				totalTokens: 45,
+			}),
+		);
 	});
 });
 

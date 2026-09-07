@@ -362,6 +362,7 @@ export {
 	calculateCostAdjustedScore,
 	calculateWeightedQualityCoverage,
 	calculateWeightedQualityScore,
+	EXTRACTION_BENCHMARK_QUALITY_WEIGHTS,
 	scoreExtractionBenchmarkOutput,
 } from "./extraction-benchmark-scoring.js";
 export type {
@@ -400,8 +401,12 @@ export {
 	getExtractionModelPricing,
 	listExtractionModelPricing,
 } from "./extraction-model-pricing.js";
-export type { ExtractionReplayResult } from "./extraction-replay.js";
+export type {
+	ExtractionReplayObserverIdentity,
+	ExtractionReplayResult,
+} from "./extraction-replay.js";
 export {
+	extractionReplayObserverIdentity,
 	replayBatchExtraction,
 	replayBatchExtractionWithTierRouting,
 } from "./extraction-replay.js";
@@ -653,6 +658,7 @@ export {
 	writeCodememConfigFile,
 	writeWorkspaceCodememConfigFile,
 } from "./observer-config.js";
+export * from "./observer-forced-tool.js";
 export * from "./observer-output.js";
 export * from "./observer-output-schema.js";
 export * from "./operational-status.js";

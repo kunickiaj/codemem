@@ -8,11 +8,14 @@
 import * as p from "@clack/prompts";
 import {
 	compareMemoryRoleReports,
+	EXTRACTION_BENCHMARK_QUALITY_WEIGHTS,
 	type ExtractionBenchmarkScore,
 	type ExtractionModelCostEstimate,
+	type ExtractionReplayObserverIdentity,
 	type ExtractionReplayResult,
 	type ExtractionStructuralDiagnostics,
 	estimateExtractionModelCost,
+	extractionReplayObserverIdentity,
 	getExtractionBenchmarkProfile,
 	getExtractionModelPricing,
 	getInjectionEvalScenarioPack,
@@ -26,6 +29,9 @@ import {
 	loadObserverConfig,
 	MemoryStore,
 	ObserverClient,
+	ObserverOutputError,
+	type ObserverOutputMode,
+	ObserverOutputTransportError,
 	type ObserverTokenUsage,
 	replayBatchExtraction,
 	replayBatchExtractionWithTierRouting,
@@ -1058,6 +1064,243 @@ function buildBenchmarkSecondAttempt(
 	};
 }
 
+interface ExtractionBenchmarkReportingRun {
+	requestedOutputMode: ObserverOutputMode;
+	actualOutputMode: ObserverOutputMode;
+	outputValidation: "valid" | "invalid" | "not_applicable";
+	repairAttempted: boolean;
+	retryAttempted: boolean;
+	observations: number;
+	telemetry: { totalElapsedMs: number | null; totalUsage: ObserverTokenUsage | null };
+	quality: ExtractionBenchmarkScore | null;
+}
+
+interface ExtractionBenchmarkModeMetrics {
+	runs: number;
+	validOutputs: number;
+	validOutputRate: number | null;
+	repairAttempts: number;
+	repairRate: number | null;
+	retryAttempts: number;
+	retryRate: number | null;
+	repairOrRetryAttempts: number;
+	repairOrRetryRate: number | null;
+	knownLatencyRuns: number;
+	totalLatencyMs: number;
+	meanLatencyMs: number | null;
+	knownTokenRuns: number;
+	inputTokens: number;
+	outputTokens: number;
+	totalTokens: number;
+	retainedObservations: number;
+	meanRetainedObservations: number | null;
+	summaryDispositionEvaluated: number;
+	summaryDispositionMatches: number;
+	summaryDispositionMatchRate: number | null;
+	structuralQualityEvaluated: number;
+	contractIntegrityRate: number | null;
+	semanticQualityEvaluated: number;
+	meanSemanticQuality: number | null;
+}
+
+type BenchmarkCostUnavailableReason =
+	| "missing_usage"
+	| "unknown_model_pricing"
+	| "model_fallback_unresolved"
+	| null;
+
+export function estimateBenchmarkAttemptCost(
+	model: string | null,
+	usage: ObserverTokenUsage | null,
+): {
+	total: ExtractionModelCostEstimate | null;
+	unavailableReason: BenchmarkCostUnavailableReason;
+} {
+	if (model === null) return { total: null, unavailableReason: "model_fallback_unresolved" };
+	const total = estimateExtractionModelCost(model, usage);
+	if (total) return { total, unavailableReason: null };
+	if (usage === null) return { total: null, unavailableReason: "missing_usage" };
+	return { total: null, unavailableReason: "unknown_model_pricing" };
+}
+
+function rate(numerator: number, denominator: number): number | null {
+	return denominator > 0 ? numerator / denominator : null;
+}
+
+function mean(values: number[]): number | null {
+	return values.length > 0 ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+}
+
+function countOutputModes(
+	runs: readonly ExtractionBenchmarkReportingRun[],
+	key: "requestedOutputMode" | "actualOutputMode",
+): Partial<Record<ObserverOutputMode, number>> {
+	const counts: Partial<Record<ObserverOutputMode, number>> = {};
+	for (const run of runs) counts[run[key]] = (counts[run[key]] ?? 0) + 1;
+	return counts;
+}
+
+function collectBenchmarkMetricSamples(runs: readonly ExtractionBenchmarkReportingRun[]) {
+	return {
+		latencies: runs.flatMap((run) =>
+			run.telemetry.totalElapsedMs == null ? [] : [run.telemetry.totalElapsedMs],
+		),
+		usages: runs.flatMap((run) =>
+			run.telemetry.totalUsage == null ? [] : [run.telemetry.totalUsage],
+		),
+		summaryScores: runs.flatMap((run) =>
+			run.quality == null ? [] : [run.quality.summaryDisposition.score],
+		),
+		structuralScores: runs.flatMap((run) => {
+			if (run.outputValidation === "invalid") return [0];
+			if (run.outputValidation === "valid") return [1];
+			return run.quality == null ? [] : [run.quality.schemaCompliance.score];
+		}),
+		semanticScores: runs.flatMap((run) =>
+			run.quality == null ? [] : semanticQualityScore(run.quality),
+		),
+	};
+}
+
+function semanticQualityScore(quality: ExtractionBenchmarkScore): number[] {
+	if (quality.reviewStatus !== "reviewed") return [];
+	const dimensions: Array<[number | null | undefined, number]> = [
+		[quality.summaryDisposition.score, EXTRACTION_BENCHMARK_QUALITY_WEIGHTS.summaryDisposition],
+		[quality.requiredRecall?.score, EXTRACTION_BENCHMARK_QUALITY_WEIGHTS.requiredRecall],
+		[quality.optionalRecall?.score, EXTRACTION_BENCHMARK_QUALITY_WEIGHTS.optionalRecall],
+		[quality.worthinessPrecision?.score, EXTRACTION_BENCHMARK_QUALITY_WEIGHTS.worthinessPrecision],
+		[quality.summaryBreadth?.score, EXTRACTION_BENCHMARK_QUALITY_WEIGHTS.summaryBreadth],
+		[
+			quality.observationSignals?.redundancyAvoidance,
+			EXTRACTION_BENCHMARK_QUALITY_WEIGHTS.redundancyAvoidance,
+		],
+		[quality.observationSignals?.segmentation, EXTRACTION_BENCHMARK_QUALITY_WEIGHTS.segmentation],
+	];
+	const available = dimensions.filter((entry): entry is [number, number] => entry[0] != null);
+	const weight = available.reduce((sum, [, dimensionWeight]) => sum + dimensionWeight, 0);
+	if (weight === 0) return [];
+	return [
+		available.reduce((sum, [score, dimensionWeight]) => sum + score * dimensionWeight, 0) / weight,
+	];
+}
+
+function benchmarkModeMetrics(
+	runs: readonly ExtractionBenchmarkReportingRun[],
+): ExtractionBenchmarkModeMetrics {
+	const validOutputs = runs.filter(
+		(run) => run.outputValidation === "valid" || run.quality?.schemaCompliance.compliant === true,
+	).length;
+	const repairAttempts = runs.filter((run) => run.repairAttempted).length;
+	const retryAttempts = runs.filter((run) => run.retryAttempted).length;
+	const repairOrRetryAttempts = runs.filter(
+		(run) => run.repairAttempted || run.retryAttempted,
+	).length;
+	const { latencies, usages, summaryScores, structuralScores, semanticScores } =
+		collectBenchmarkMetricSamples(runs);
+	const retainedObservations = runs.reduce((sum, run) => sum + run.observations, 0);
+	const matchingSummaryDispositions = summaryScores.filter((score) => score === 1).length;
+	return {
+		runs: runs.length,
+		validOutputs,
+		validOutputRate: rate(validOutputs, runs.length),
+		repairAttempts,
+		repairRate: rate(repairAttempts, runs.length),
+		retryAttempts,
+		retryRate: rate(retryAttempts, runs.length),
+		repairOrRetryAttempts,
+		repairOrRetryRate: rate(repairOrRetryAttempts, runs.length),
+		knownLatencyRuns: latencies.length,
+		totalLatencyMs: latencies.reduce((sum, value) => sum + value, 0),
+		meanLatencyMs: mean(latencies),
+		knownTokenRuns: usages.length,
+		inputTokens: usages.reduce((sum, usage) => sum + usage.inputTokens, 0),
+		outputTokens: usages.reduce((sum, usage) => sum + usage.outputTokens, 0),
+		totalTokens: usages.reduce(
+			(sum, usage) => sum + (usage.totalTokens ?? usage.inputTokens + usage.outputTokens),
+			0,
+		),
+		retainedObservations,
+		meanRetainedObservations: rate(retainedObservations, runs.length),
+		summaryDispositionEvaluated: summaryScores.length,
+		summaryDispositionMatches: matchingSummaryDispositions,
+		summaryDispositionMatchRate: rate(matchingSummaryDispositions, summaryScores.length),
+		structuralQualityEvaluated: structuralScores.length,
+		contractIntegrityRate: mean(structuralScores),
+		semanticQualityEvaluated: semanticScores.length,
+		meanSemanticQuality: mean(semanticScores),
+	};
+}
+
+export function summarizeExtractionBenchmarkReporting(
+	runs: readonly ExtractionBenchmarkReportingRun[],
+): {
+	requestedOutputModes: Partial<Record<ObserverOutputMode, number>>;
+	actualOutputModes: Partial<Record<ObserverOutputMode, number>>;
+	overall: ExtractionBenchmarkModeMetrics;
+	byActualOutputMode: Partial<Record<ObserverOutputMode, ExtractionBenchmarkModeMetrics>>;
+} {
+	const byActualOutputMode: Partial<Record<ObserverOutputMode, ExtractionBenchmarkModeMetrics>> =
+		{};
+	for (const mode of ["json_schema", "forced_tool", "legacy_xml"] as const) {
+		const modeRuns = runs.filter((run) => run.actualOutputMode === mode);
+		if (modeRuns.length > 0) byActualOutputMode[mode] = benchmarkModeMetrics(modeRuns);
+	}
+	return {
+		requestedOutputModes: countOutputModes(runs, "requestedOutputMode"),
+		actualOutputModes: countOutputModes(runs, "actualOutputMode"),
+		overall: benchmarkModeMetrics(runs),
+		byActualOutputMode,
+	};
+}
+
+type ExtractionBenchmarkAttemptStatus = {
+	iteration: number;
+	batchId: number;
+	purpose: "shape_quality" | "replay_robustness";
+	status: "pass" | "shape_fail" | "observer_no_output" | "output_failure";
+	expectedTier: string | null;
+	tier: string | null;
+};
+
+export function summarizeExtractionBenchmarkAttempts(
+	attempts: readonly ExtractionBenchmarkAttemptStatus[],
+	batches: readonly Pick<ExtractionBenchmarkAttemptStatus, "batchId" | "purpose">[],
+) {
+	return {
+		total: attempts.length,
+		shapeQualityTotal: attempts.filter((attempt) => attempt.purpose === "shape_quality").length,
+		shapeQualityPasses: attempts.filter(
+			(attempt) => attempt.purpose === "shape_quality" && attempt.status === "pass",
+		).length,
+		shapeQualityFails: attempts.filter(
+			(attempt) => attempt.purpose === "shape_quality" && attempt.status !== "pass",
+		).length,
+		expectedTierTotal: attempts.filter((attempt) => attempt.expectedTier != null).length,
+		expectedTierMatches: attempts.filter(
+			(attempt) => attempt.expectedTier != null && attempt.expectedTier === attempt.tier,
+		).length,
+		robustnessNoOutput: attempts.filter(
+			(attempt) =>
+				attempt.purpose === "replay_robustness" &&
+				(attempt.status === "observer_no_output" || attempt.status === "output_failure"),
+		).length,
+		perBatchStability: batches.map((batch) => {
+			const batchAttempts = attempts
+				.filter((attempt) => attempt.batchId === batch.batchId)
+				.toSorted((left, right) => left.iteration - right.iteration);
+			const passes = batchAttempts.filter((attempt) => attempt.status === "pass").length;
+			return {
+				batchId: batch.batchId,
+				purpose: batch.purpose,
+				passes,
+				total: batchAttempts.length,
+				passRate: rate(passes, batchAttempts.length),
+				statuses: batchAttempts.map((attempt) => attempt.status),
+			};
+		}),
+	};
+}
+
 function createMemoryExtractionBenchmarkCommand(): Command {
 	const cmd = new Command("extraction-benchmark")
 		.configureHelp(helpStyle)
@@ -1184,6 +1427,37 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 								],
 				};
 				const observer = new ObserverClient(observerConfigWithOverrides);
+				const outputFailures: Array<
+					ExtractionBenchmarkReportingRun & {
+						iteration: number;
+						batchId: number;
+						purpose: "shape_quality" | "replay_robustness";
+						status: "output_failure";
+						reason: string;
+						expectedTier: string | null;
+						provider: string;
+						model: string | null;
+						transport: string;
+						requestedModel: string | null;
+						resolvedModel: string | null;
+						modelFallbackApplied: boolean;
+						modelFallbackReason: string | null;
+						tier: "simple" | "rich" | null;
+						openaiUseResponses: boolean;
+						reasoningEffort: string | null;
+						reasoningSummary: string | null;
+						maxOutputTokens: number | null;
+						temperature: number | null;
+						cost: {
+							total: ExtractionModelCostEstimate | null;
+							unavailableReason:
+								| "missing_usage"
+								| "unknown_model_pricing"
+								| "model_fallback_unresolved"
+								| null;
+						};
+					}
+				> = [];
 				const runs = [] as Array<{
 					iteration: number;
 					batchId: number;
@@ -1210,6 +1484,9 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 					resolvedModel: string | null;
 					modelFallbackApplied: boolean;
 					modelFallbackReason: string | null;
+					requestedOutputMode: ObserverOutputMode;
+					actualOutputMode: ObserverOutputMode;
+					outputValidation: "valid" | "invalid" | "not_applicable";
 					openaiUseResponses: boolean;
 					reasoningEffort: string | null;
 					reasoningSummary: string | null;
@@ -1218,6 +1495,7 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 					summaries: number;
 					observations: number;
 					repairApplied: boolean;
+					repairAttempted: boolean;
 					retryAttempted: boolean;
 					retryReason: string | null;
 					initial: {
@@ -1283,22 +1561,63 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 				for (let iteration = 1; iteration <= repetitions; iteration += 1) {
 					for (const batch of benchmark.batches) {
 						const scenarioId = batch.scenarioId ?? benchmark.scenarioId;
-						const result =
-							opts.observerTierRouting === true
-								? await replayBatchExtractionWithTierRouting(
-										resolveDbOpt(opts),
-										observerConfigWithOverrides,
-										{
+						let selectedObserver: ExtractionReplayObserverIdentity =
+							extractionReplayObserverIdentity(observer, null);
+						let result: Awaited<ReturnType<typeof replayBatchExtraction>>;
+						try {
+							result =
+								opts.observerTierRouting === true
+									? await replayBatchExtractionWithTierRouting(
+											resolveDbOpt(opts),
+											observerConfigWithOverrides,
+											{
+												batchId: batch.batchId,
+												scenarioId,
+												transcriptBudget: transcriptBudget ?? undefined,
+												onOutputFailure: (context) => {
+													selectedObserver = context;
+												},
+											},
+										)
+									: await replayBatchExtraction(resolveDbOpt(opts), observer, {
 											batchId: batch.batchId,
 											scenarioId,
 											transcriptBudget: transcriptBudget ?? undefined,
-										},
-									)
-								: await replayBatchExtraction(resolveDbOpt(opts), observer, {
-										batchId: batch.batchId,
-										scenarioId,
-										transcriptBudget: transcriptBudget ?? undefined,
-									});
+										});
+						} catch (error) {
+							if (
+								!(error instanceof ObserverOutputError) &&
+								!(error instanceof ObserverOutputTransportError)
+							) {
+								throw error;
+							}
+							if (opts.observerTierRouting !== true) {
+								selectedObserver = extractionReplayObserverIdentity(observer, null);
+							}
+							const failureCost = estimateBenchmarkAttemptCost(
+								selectedObserver.model,
+								error.telemetry.totalUsage,
+							);
+							outputFailures.push({
+								iteration,
+								batchId: batch.batchId,
+								purpose: batch.purpose,
+								status: "output_failure",
+								reason: error instanceof ObserverOutputError ? error.reason : error.code,
+								expectedTier: batch.expectedTier ?? null,
+								...selectedObserver,
+								requestedOutputMode: error.diagnostics.requestedMode,
+								actualOutputMode: error.diagnostics.actualMode,
+								outputValidation: "invalid",
+								repairAttempted: error.diagnostics.repairAttempted,
+								retryAttempted: error.diagnostics.retryAttempted,
+								observations: 0,
+								telemetry: error.telemetry,
+								cost: failureCost,
+								quality: null,
+							});
+							continue;
+						}
 						const costModel = result.observer.modelFallbackApplied
 							? result.observer.resolvedModel
 							: (result.observer.resolvedModel ?? result.observer.model);
@@ -1407,6 +1726,9 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 							resolvedModel: result.observer.resolvedModel,
 							modelFallbackApplied: result.observer.modelFallbackApplied,
 							modelFallbackReason: result.observer.modelFallbackReason,
+							requestedOutputMode: result.observer.requestedOutputMode,
+							actualOutputMode: result.observer.actualOutputMode,
+							outputValidation: result.observer.outputValidation,
 							openaiUseResponses: result.observer.openaiUseResponses,
 							reasoningEffort: result.observer.reasoningEffort,
 							reasoningSummary: result.observer.reasoningSummary,
@@ -1415,6 +1737,7 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 							summaries: result.evaluation.counts.summaries,
 							observations: result.evaluation.counts.observations,
 							repairApplied: result.observer.repairApplied,
+							repairAttempted: result.observer.repairAttempted,
 							retryAttempted: result.observer.retryAttempted,
 							retryReason: result.observer.retryReason,
 							initial: {
@@ -1462,36 +1785,26 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 					}
 				}
 				const reviewedQualityRuns = runs.filter((run) => run.quality?.weightedQualityScore != null);
-				const knownCostRuns = runs.filter((run) => run.cost.total != null);
-				const knownElapsedRuns = runs.filter((run) => run.telemetry.totalElapsedMs != null);
+				const attempts = [...runs, ...outputFailures];
+				const knownCostRuns = attempts.filter((run) => run.cost.total != null);
+				const attemptSummary = summarizeExtractionBenchmarkAttempts(attempts, benchmark.batches);
+				const knownElapsedRuns = attempts.filter((run) => run.telemetry.totalElapsedMs != null);
 				const summary = {
 					repetitions,
-					total: runs.length,
-					shapeQualityTotal: runs.filter((run) => run.purpose === "shape_quality").length,
-					shapeQualityPasses: runs.filter(
-						(run) => run.purpose === "shape_quality" && run.status === "pass",
-					).length,
-					shapeQualityFails: runs.filter(
-						(run) => run.purpose === "shape_quality" && run.status === "shape_fail",
-					).length,
-					expectedTierTotal: runs.filter((run) => run.expectedTier != null).length,
-					expectedTierMatches: runs.filter(
-						(run) => run.expectedTier != null && run.expectedTier === run.tier,
-					).length,
-					robustnessNoOutput: runs.filter((run) => run.status === "observer_no_output").length,
+					...attemptSummary,
 					summaryDispositionTotal: runs.filter((run) => run.quality != null).length,
 					summaryDispositionMatches: runs.filter(
 						(run) => run.quality?.summaryDisposition.score === 1,
 					).length,
 					reviewedQualityRuns: reviewedQualityRuns.length,
 					knownCostRuns: knownCostRuns.length,
-					unknownCostRuns: runs.length - knownCostRuns.length,
-					missingUsageRuns: runs.filter((run) => run.cost.unavailableReason === "missing_usage")
+					unknownCostRuns: attempts.length - knownCostRuns.length,
+					missingUsageRuns: attempts.filter((run) => run.cost.unavailableReason === "missing_usage")
 						.length,
-					unknownPricingRuns: runs.filter(
+					unknownPricingRuns: attempts.filter(
 						(run) => run.cost.unavailableReason === "unknown_model_pricing",
 					).length,
-					fallbackUnresolvedRuns: runs.filter(
+					fallbackUnresolvedRuns: attempts.filter(
 						(run) => run.cost.unavailableReason === "model_fallback_unresolved",
 					).length,
 					totalKnownCostUsd: knownCostRuns.reduce(
@@ -1503,23 +1816,14 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 						(sum, run) => sum + (run.telemetry.totalElapsedMs ?? 0),
 						0,
 					),
-					perBatchStability: benchmark.batches.map((batch) => {
-						const batchRuns = runs.filter((run) => run.batchId === batch.batchId);
-						const passes = batchRuns.filter((run) => run.status === "pass").length;
-						return {
-							batchId: batch.batchId,
-							purpose: batch.purpose,
-							passes,
-							total: batchRuns.length,
-							passRate: batchRuns.length > 0 ? passes / batchRuns.length : null,
-							statuses: batchRuns.map((run) => run.status),
-						};
-					}),
+					output: summarizeExtractionBenchmarkReporting(attempts),
+					outputFailures,
 				};
 				const uniqueObserverKeys = Array.from(
-					new Set(runs.map((run) => `${run.provider}::${run.model}::${run.transport}`)),
+					new Set(attempts.map((run) => `${run.provider}::${run.model}::${run.transport}`)),
 				);
-				const benchmarkReasoning = summarizeBenchmarkReasoning(runs, {
+				const firstObserver = attempts[0];
+				const benchmarkReasoning = summarizeBenchmarkReasoning(attempts, {
 					reasoningEffort: observer.reasoningEffort,
 					reasoningSummary: observer.reasoningSummary,
 				});
@@ -1528,36 +1832,40 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 						? {
 								provider:
 									uniqueObserverKeys.length === 1
-										? (runs[0]?.provider ?? observer.provider)
+										? (firstObserver?.provider ?? observer.provider)
 										: "mixed",
 								model:
-									uniqueObserverKeys.length === 1 ? (runs[0]?.model ?? observer.model) : "mixed",
+									uniqueObserverKeys.length === 1
+										? (firstObserver?.model ?? observer.model)
+										: "mixed",
 								transport:
-									uniqueObserverKeys.length === 1 ? (runs[0]?.transport ?? "unknown") : "mixed",
+									uniqueObserverKeys.length === 1
+										? (firstObserver?.transport ?? "unknown")
+										: "mixed",
 								tierRouting: true,
 								openaiUseResponses:
 									uniqueObserverKeys.length === 1
-										? (runs[0]?.openaiUseResponses ?? observer.openaiUseResponses)
+										? (firstObserver?.openaiUseResponses ?? observer.openaiUseResponses)
 										: null,
 								reasoningEffort: benchmarkReasoning.reasoningEffort,
 								reasoningSummary: benchmarkReasoning.reasoningSummary,
 								maxOutputTokens:
-									uniqueObserverKeys.length === 1 ? (runs[0]?.maxOutputTokens ?? null) : null,
+									uniqueObserverKeys.length === 1 ? (firstObserver?.maxOutputTokens ?? null) : null,
 								temperature:
-									uniqueObserverKeys.length === 1 ? (runs[0]?.temperature ?? null) : null,
+									uniqueObserverKeys.length === 1 ? (firstObserver?.temperature ?? null) : null,
 								transcriptBudget: transcriptBudget ?? null,
 								selectedObservers: uniqueObserverKeys,
 							}
 						: {
 								provider: observer.provider,
 								model: observer.model,
-								transport: runs[0]?.transport ?? observer.getStatus().runtime,
+								transport: firstObserver?.transport ?? observer.getStatus().runtime,
 								tierRouting: false,
 								openaiUseResponses: observer.openaiUseResponses,
 								reasoningEffort: benchmarkReasoning.reasoningEffort,
 								reasoningSummary: benchmarkReasoning.reasoningSummary,
-								maxOutputTokens: runs[0]?.maxOutputTokens ?? null,
-								temperature: runs[0]?.temperature ?? null,
+								maxOutputTokens: firstObserver?.maxOutputTokens ?? null,
+								temperature: firstObserver?.temperature ?? null,
 								transcriptBudget: transcriptBudget ?? null,
 								selectedObservers: uniqueObserverKeys,
 							};
@@ -1600,6 +1908,10 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 						`Reviewed quality runs: ${summary.reviewedQualityRuns} (compare per-run dimensions; scores are fixture-specific)`,
 						`Known estimated cost: $${summary.totalKnownCostUsd.toFixed(6)} (${summary.knownCostRuns}/${summary.total}; missing usage=${summary.missingUsageRuns}, unknown pricing=${summary.unknownPricingRuns}, unresolved fallback=${summary.fallbackUnresolvedRuns})`,
 						`Known elapsed time: ${summary.totalKnownElapsedMs}ms (${summary.knownElapsedRuns}/${summary.total} run(s))`,
+						`Output modes requested/actual: ${JSON.stringify(summary.output.requestedOutputModes)} / ${JSON.stringify(summary.output.actualOutputModes)}`,
+						`Valid output: ${summary.output.overall.validOutputs}/${summary.output.overall.runs}; repair/retry: ${summary.output.overall.repairAttempts}/${summary.output.overall.retryAttempts}; mean latency: ${summary.output.overall.meanLatencyMs ?? "n/a"}ms`,
+						`Tokens input/output: ${summary.output.overall.inputTokens}/${summary.output.overall.outputTokens} (${summary.output.overall.knownTokenRuns} measured run(s)); retained observations: ${summary.output.overall.retainedObservations}`,
+						`Summary disposition matches: ${summary.output.overall.summaryDispositionMatches}/${summary.output.overall.summaryDispositionEvaluated}; contract integrity/semantic quality: ${summary.output.overall.contractIntegrityRate?.toFixed(3) ?? "n/a"}/${summary.output.overall.meanSemanticQuality?.toFixed(3) ?? "n/a"}`,
 					].join("\n"),
 				);
 				for (const run of runs) {
@@ -1613,7 +1925,20 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 						run.telemetry.totalElapsedMs == null ? "n/a" : `${run.telemetry.totalElapsedMs}ms`;
 					const missingRequired = run.quality?.requiredRecall.missingLabelIds.join(",") || "none";
 					p.log.message(
-						`  [${run.batchId}#${run.iteration}] ${run.status.padEnd(18)} ${run.complexity.padEnd(10)} tier=${run.tier.padEnd(6)} expected=${(run.expectedTier ?? "n/a").padEnd(6)} disposition=${run.quality?.summaryDisposition.actual ?? "n/a"}/${run.expectedSummaryDisposition} span=${String(run.analysis.eventSpan).padEnd(3)} prompts=${run.analysis.promptCount} tools=${String(run.analysis.toolCount).padEnd(2)} transcript=${run.analysis.transcriptLength} ${run.provider}/${run.model} [${run.transport}] initial=${run.initial.summaries}s/${run.initial.observations}o final=${run.summaries}s/${run.observations}o quality=${qualityLabel} coverage=${run.quality?.weightedQualityCoverage?.toFixed(3) ?? "n/a"} required_missing=${missingRequired} cost=${costLabel} latency=${latencyLabel} schema_loss=${run.initial.diagnostics?.dataLoss === true ? "yes" : "no"} fallback=${run.modelFallbackApplied ? "yes" : "no"} repair=${run.repairApplied ? "yes" : "no"} retry=${run.retryAttempted ? (run.retryReason ?? "yes") : "no"} — ${run.label}`,
+						`  [${run.batchId}#${run.iteration}] ${run.status.padEnd(18)} ${run.complexity.padEnd(10)} tier=${run.tier.padEnd(6)} expected=${(run.expectedTier ?? "n/a").padEnd(6)} mode=${run.requestedOutputMode}/${run.actualOutputMode} valid=${run.outputValidation} disposition=${run.quality?.summaryDisposition.actual ?? "n/a"}/${run.expectedSummaryDisposition} span=${String(run.analysis.eventSpan).padEnd(3)} prompts=${run.analysis.promptCount} tools=${String(run.analysis.toolCount).padEnd(2)} transcript=${run.analysis.transcriptLength} ${run.provider}/${run.model} [${run.transport}] initial=${run.initial.summaries}s/${run.initial.observations}o final=${run.summaries}s/${run.observations}o quality=${qualityLabel} coverage=${run.quality?.weightedQualityCoverage?.toFixed(3) ?? "n/a"} required_missing=${missingRequired} cost=${costLabel} latency=${latencyLabel} schema_loss=${run.initial.diagnostics?.dataLoss === true ? "yes" : "no"} fallback=${run.modelFallbackApplied ? "yes" : "no"} repair=${run.repairApplied ? "yes" : "no"} retry=${run.retryAttempted ? (run.retryReason ?? "yes") : "no"} — ${run.label}`,
+					);
+				}
+				for (const failure of outputFailures.toSorted(
+					(left, right) => left.iteration - right.iteration || left.batchId - right.batchId,
+				)) {
+					const costLabel =
+						failure.cost.total == null ? "n/a" : `$${failure.cost.total.totalCostUsd.toFixed(6)}`;
+					const latencyLabel =
+						failure.telemetry.totalElapsedMs == null
+							? "n/a"
+							: `${failure.telemetry.totalElapsedMs}ms`;
+					p.log.error(
+						`  [${failure.batchId}#${failure.iteration}] output_failure tier=${failure.tier ?? "n/a"} expected=${failure.expectedTier ?? "n/a"} mode=${failure.requestedOutputMode}/${failure.actualOutputMode} model=${failure.model ?? "unresolved"} cost=${costLabel} latency=${latencyLabel} — ${failure.reason}`,
 					);
 				}
 				p.outro("done");

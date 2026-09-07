@@ -3,7 +3,11 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { buildRawEventEnvelopeFromHook, TRUSTED_HOOK_MAPPER_OPTIONS } from "./claude-hooks.js";
-import { buildTierRoutedReplayObserverConfig, replayBatchExtraction } from "./extraction-replay.js";
+import {
+	buildTierRoutedReplayObserverConfig,
+	extractionReplayObserverIdentity,
+	replayBatchExtraction,
+} from "./extraction-replay.js";
 import {
 	type ObserverClient,
 	ObserverClient as ObserverClientImpl,
@@ -67,6 +71,30 @@ function replayObserverConfig(overrides: Partial<ObserverConfig> = {}): Observer
 }
 
 describe("extraction replay", () => {
+	it("describes the selected observer even when no replay result is available", () => {
+		const observer = new ObserverClientImpl(
+			replayObserverConfig({
+				observerModel: "gpt-5.4-mini",
+				observerReasoningEffort: "medium",
+				observerReasoningSummary: "auto",
+				observerMaxOutputTokens: 8_000,
+			}),
+		);
+
+		expect(extractionReplayObserverIdentity(observer, "simple")).toMatchObject({
+			tier: "simple",
+			provider: "openai",
+			model: "gpt-5.4-mini",
+			transport: "api_http",
+			requestedModel: "gpt-5.4-mini",
+			openaiUseResponses: true,
+			reasoningEffort: "medium",
+			reasoningSummary: "auto",
+			maxOutputTokens: 8_000,
+			temperature: null,
+		});
+	});
+
 	it("does not classify a transport-only structured retry as schema loss", async () => {
 		const batchId = 40001;
 		const dbPath = createSingleEventReplayFixture("structured-transport-retry", batchId);

@@ -275,6 +275,31 @@ Example agent requests:
 Provider/model selection can be overridden with `CODEMEM_OBSERVER_PROVIDER` and
 `CODEMEM_OBSERVER_MODEL`. Custom providers are loaded from OpenCode config.
 
+### Observer output rollout
+
+`legacy_xml` remains the default observer output mode during rollout. Set
+`CODEMEM_OBSERVER_OUTPUT_MODE=auto` to request constrained output where Codemem has executable
+transport evidence: official OpenAI Responses and direct Anthropic API-key calls use the versioned
+JSON envelope, while OAuth consumers, Claude/Codex sidecars, and unknown gateways preselect XML and
+report the capability reason.
+
+`json_schema` is an explicit operator assertion for a compatible custom OpenAI gateway configured by
+`observer_base_url`, or an Anthropic gateway configured by `CODEMEM_ANTHROPIC_ENDPOINT`. Codemem does
+not infer custom-gateway support from a provider name or URL, and a declared constrained path fails
+closed on refusal, truncation, missing output, invalid JSON, or local schema failure. It does not
+silently retry the response as XML. Diagnostics report fixed reason codes and requested/actual mode;
+they do not copy provider, transcript, or memory content.
+
+The provider-neutral `record_memories` tool definition is available for future transports and uses
+the same envelope as tool input. Codemem requires exactly one call and rejects missing, duplicate,
+wrong-name, or invalid-input calls. No provider/runtime cell uses this transport yet; each cell needs
+executable request and response contract tests before enablement.
+
+XML is a compatibility contract, not an immediate deprecation. Codemem will retain its prompt,
+parser, and repair path until a bounded rollout window shows negligible fallback use and every
+supported access path has a tested intentional contract. Removal will happen only in a later
+compatibility-breaking release with release notes.
+
 ### Observer auth modes
 
 Observer execution supports API, Claude, and Codex runtime paths.
@@ -444,6 +469,8 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_OBSERVER_API_KEY` | API key for observer model (optional). |
 | `CODEMEM_CLAUDE_COMMAND` | JSON argv array for Claude CLI invocation used by `claude_sidecar` (default `["claude"]`). |
 | `CODEMEM_OBSERVER_RUNTIME` | Observer runtime mode (`api_http` or `claude_sidecar`). |
+| `CODEMEM_OBSERVER_OUTPUT_MODE` | Observer output contract: `legacy_xml` (default); `auto` enables JSON Schema only on proven direct API cells and preselects XML elsewhere; `json_schema` explicitly asserts compatible custom OpenAI (`observer_base_url`) or Anthropic (`CODEMEM_ANTHROPIC_ENDPOINT`) gateway support. Malformed constrained output fails closed without XML reparsing. |
+| `CODEMEM_ANTHROPIC_ENDPOINT` | Anthropic Messages API endpoint override. With provider `anthropic`, API-key auth, and output mode `json_schema`, this explicitly opts a compatible endpoint into constrained output. |
 | `CODEMEM_OBSERVER_AUTH_SOURCE` | Observer auth source (`auto`, `env`, `file`, `command`, `none`). |
 | `CODEMEM_OBSERVER_AUTH_FILE` | Path to token file used when auth source is `file`. |
 | `CODEMEM_OBSERVER_AUTH_COMMAND` | Command argv as a JSON string array used when auth source is `command`. |
