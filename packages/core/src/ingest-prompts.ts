@@ -83,6 +83,26 @@ const RICH_SESSION_GUIDANCE = `When the session contains MULTIPLE meaningful thr
 - Choose subthreads that future sessions would most want for rediscovery reduction: important decisions, durable learnings, shipped changes, closed investigations, or troubleshooting outcomes.
 - If one thread clearly dominates and the rest are trivial, keep a single observation. Do not invent diversity where none exists.`;
 
+function jsonOutputGuidance(guidance: string): string {
+	return guidance
+		.replace(
+			"Output only XML. Do not include commentary outside XML.",
+			"Return only the supplied JSON object.",
+		)
+		.replace("Output no <observation> blocks", "Return no observations")
+		.replace(
+			'Output <skip_summary reason="low-signal"/> instead of a <summary> block.',
+			'Set status to skipped with skip_reason "low-signal" and summary to null.',
+		)
+		.replaceAll("an <observation>", "an observation")
+		.replaceAll("in <summary>", "in the summary")
+		.replace("Before writing XML", "Before producing output")
+		.replaceAll("the <summary>", "the summary")
+		.replaceAll("<observation> blocks", "observations")
+		.replaceAll("<observation>", "observation")
+		.replaceAll("a <summary>", "a summary");
+}
+
 const OUTPUT_GUIDANCE =
 	"Output only XML. Do not include commentary outside XML.\n\n" +
 	"Emit <observation> blocks only for content that passes the observation worthiness bar. " +
@@ -187,6 +207,18 @@ For rich sessions, make the summary broad enough that a future reader can see th
 
 This summary helps future sessions understand where this work left off.`;
 
+const SUMMARY_GUIDANCE = `Summary fields describe the current state of the primary work, not the observation process:
+- request: what the user requested and the goal of the session.
+- investigated: files, systems, logs, questions, and approaches examined.
+- learned: durable discoveries about the codebase, architecture, or domain.
+- completed: shipped work and concrete outcomes, including specific files and behavior changes.
+- next_steps: remaining work, blockers, dependencies, and the next useful action.
+- notes: relevant decisions, trade-offs, alternatives, or warnings not covered above.
+
+If the user prompt is a short approval or acknowledgement ("yes", "ok", "approved"), infer the request from the observed work and the completed or learned fields instead.
+Only summarize what is evidenced in the session context. Do not infer or fabricate file edits, behaviors, or outcomes that are not explicitly observed.
+Keep summaries concise (aim for ~150-450 words total across all fields). For rich sessions, cover the major subthreads so a future reader does not need every observation.`;
+
 // ---------------------------------------------------------------------------
 // XML escaping
 // ---------------------------------------------------------------------------
@@ -259,6 +291,47 @@ function truncateMiddle(text: string, limit: number): string {
 // Public API
 // ---------------------------------------------------------------------------
 
+function observerGuidance(outputMode: "json_schema" | "legacy_xml", guidance: string): string {
+	return outputMode === "json_schema" ? jsonOutputGuidance(guidance) : guidance;
+}
+
+function buildObserverSystemPrompt(
+	context: ObserverContext,
+	outputMode: "json_schema" | "legacy_xml",
+): string {
+	const systemBlocks: string[] = [
+		SYSTEM_IDENTITY,
+		"",
+		RECORDING_FOCUS,
+		"",
+		observerGuidance(outputMode, SKIP_GUIDANCE),
+		"",
+		observerGuidance(outputMode, WORTHINESS_GUIDANCE),
+		"",
+		NARRATIVE_GUIDANCE,
+		"",
+		observerGuidance(outputMode, RICH_SESSION_GUIDANCE),
+	];
+	if (outputMode === "json_schema") {
+		systemBlocks.push(
+			"",
+			jsonOutputGuidance(OUTPUT_GUIDANCE),
+			"",
+			'Return one JSON object that conforms exactly to the supplied JSON Schema. Do not emit XML, Markdown, or prose outside the object. When nothing should be captured, set status to skipped, observations to [], summary to null, and skip_reason to exactly "low-signal".',
+		);
+	} else {
+		systemBlocks.push("", OUTPUT_GUIDANCE, "", "Observation XML schema:", OBSERVATION_SCHEMA);
+	}
+	if (context.includeSummary && outputMode === "legacy_xml") {
+		systemBlocks.push("", "Summary XML schema:", SUMMARY_SCHEMA);
+	} else if (context.includeSummary) {
+		systemBlocks.push("", SUMMARY_GUIDANCE, "", "Emit a summary unless status is skipped.");
+	} else if (outputMode === "json_schema") {
+		systemBlocks.push("", "No summary was requested. Set summary to null.");
+	}
+	return systemBlocks.join("\n\n").trim();
+}
+
 /**
  * Build the observer prompt from session context.
  *
@@ -269,33 +342,15 @@ function truncateMiddle(text: string, limit: number): string {
  * the user message. We split system/user for cleaner API mapping, but the
  * content is equivalent.
  */
-export function buildObserverPrompt(context: ObserverContext): {
+export function buildObserverPrompt(
+	context: ObserverContext,
+	options: { outputMode?: "json_schema" | "legacy_xml" } = {},
+): {
 	system: string;
 	user: string;
 } {
-	// System prompt: identity + guidance + schemas
-	const systemBlocks: string[] = [
-		SYSTEM_IDENTITY,
-		"",
-		RECORDING_FOCUS,
-		"",
-		SKIP_GUIDANCE,
-		"",
-		WORTHINESS_GUIDANCE,
-		"",
-		NARRATIVE_GUIDANCE,
-		"",
-		RICH_SESSION_GUIDANCE,
-		"",
-		OUTPUT_GUIDANCE,
-		"",
-		"Observation XML schema:",
-		OBSERVATION_SCHEMA,
-	];
-	if (context.includeSummary) {
-		systemBlocks.push("", "Summary XML schema:", SUMMARY_SCHEMA);
-	}
-	const system = systemBlocks.join("\n\n").trim();
+	const outputMode = options.outputMode ?? "legacy_xml";
+	const system = buildObserverSystemPrompt(context, outputMode);
 
 	// User prompt: observed session context
 	const userBlocks: string[] = ["Observed session context:"];

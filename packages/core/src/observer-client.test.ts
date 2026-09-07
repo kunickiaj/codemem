@@ -42,6 +42,7 @@ describe("loadObserverConfig", () => {
 		"CODEMEM_OBSERVER_RICH_REASONING_SUMMARY",
 		"CODEMEM_OBSERVER_RICH_MAX_OUTPUT_TOKENS",
 		"CODEMEM_OBSERVER_OPENAI_USE_RESPONSES",
+		"CODEMEM_OBSERVER_OUTPUT_MODE",
 		"CODEMEM_OBSERVER_REASONING_EFFORT",
 		"CODEMEM_OBSERVER_REASONING_SUMMARY",
 		"CODEMEM_OBSERVER_MAX_OUTPUT_TOKENS",
@@ -246,6 +247,23 @@ describe("loadObserverConfig", () => {
 		expect(cfg.observerExplicitConfigKeys).toEqual(
 			expect.arrayContaining(["observerOpenAIUseResponses"]),
 		);
+	});
+
+	it("loads the observer output-mode rollback switch from config and env", () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-config-test-"));
+		const configPath = join(tmpDir, "config.json");
+		writeFileSync(configPath, JSON.stringify({ observer_output_mode: "json_schema" }));
+		try {
+			process.env.CODEMEM_CONFIG = configPath;
+			expect(loadObserverConfig().observerOutputMode).toBe("json_schema");
+
+			process.env.CODEMEM_OBSERVER_OUTPUT_MODE = "legacy_xml";
+			const cfg = loadObserverConfig();
+			expect(cfg.observerOutputMode).toBe("legacy_xml");
+			expect(cfg.observerExplicitConfigKeys).toContain("observerOutputMode");
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true });
+		}
 	});
 });
 
@@ -1903,6 +1921,219 @@ describe("ObserverClient.observe()", () => {
 		expect(status.modelFallbackReason).toBe(
 			"configured sidecar tier model unavailable; retried with default Claude model",
 		);
+	});
+});
+
+describe("ObserverClient.observeStructuredJson() failures", () => {
+	function directClient(provider: "openai" | "anthropic"): ObserverClient {
+		return new ObserverClient({
+			observerProvider: provider,
+			observerModel: provider === "openai" ? "gpt-test" : "claude-test",
+			observerRuntime: "api_http",
+			observerApiKey: fixtureToken(`structured-${provider}`),
+			observerBaseUrl: null,
+			observerMaxChars: 12_000,
+			observerMaxTokens: 4_000,
+			observerHeaders: {},
+			observerAuthSource: "auto",
+			observerAuthFile: null,
+			observerAuthCommand: [],
+			observerAuthTimeoutMs: 1500,
+			observerAuthCacheTtlS: 300,
+		});
+	}
+
+	it("classifies an OpenAI refusal without exposing refusal content", async () => {
+		const previousFetch = globalThis.fetch;
+		let payload: Record<string, unknown> | null = null;
+		globalThis.fetch = (async (_input, init) => {
+			payload = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			return new Response(
+				JSON.stringify({
+					status: "completed",
+					output: [
+						{
+							type: "message",
+							content: [{ type: "refusal", refusal: "sensitive provider text" }],
+						},
+					],
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		}) as typeof globalThis.fetch;
+		try {
+			const client = directClient("openai");
+			const result = await client.observeStructuredJson("system", "user", "test_schema", {
+				type: "object",
+			});
+			expect(result.failureReason).toBe("structured_output_refused");
+			expect(result.raw).toBeNull();
+			expect(client.getStatus().lastError).toEqual({
+				code: "structured_output_refused",
+				message: "OpenAI structured observer output failed (structured_output_refused).",
+			});
+			expect(payload?.text).toEqual({
+				format: {
+					type: "json_schema",
+					name: "test_schema",
+					schema: { type: "object" },
+					strict: true,
+				},
+			});
+		} finally {
+			globalThis.fetch = previousFetch;
+		}
+	});
+
+	it("classifies Anthropic max_tokens as truncation even when partial text exists", async () => {
+		const previousFetch = globalThis.fetch;
+		let anthropicBeta: string | null = null;
+		let payload: Record<string, unknown> | null = null;
+		globalThis.fetch = (async (input, init) => {
+			anthropicBeta = new Request(input, init).headers.get("anthropic-beta");
+			payload = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			return new Response(
+				JSON.stringify({
+					stop_reason: "max_tokens",
+					content: [{ type: "text", text: '{"schema_version":1' }],
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		}) as typeof globalThis.fetch;
+		try {
+			const client = directClient("anthropic");
+			const result = await client.observeStructuredJson("system", "user", "test_schema", {
+				type: "object",
+			});
+			expect(result.failureReason).toBe("structured_output_truncated");
+			expect(result.raw).toBe('{"schema_version":1');
+			expect(client.getStatus().lastError).toEqual({
+				code: "structured_output_truncated",
+				message: "Anthropic structured observer output failed (structured_output_truncated).",
+			});
+			expect(anthropicBeta).toBeNull();
+			expect(payload?.output_config).toEqual({
+				format: { type: "json_schema", schema: { type: "object" } },
+			});
+		} finally {
+			globalThis.fetch = previousFetch;
+		}
+	});
+
+	it("sends structured Anthropic requests to the explicit Anthropic endpoint", async () => {
+		const previousFetch = globalThis.fetch;
+		const previousEndpoint = process.env.CODEMEM_ANTHROPIC_ENDPOINT;
+		let requestedUrl = "";
+		process.env.CODEMEM_ANTHROPIC_ENDPOINT = "https://anthropic-gateway.example.test/messages";
+		globalThis.fetch = (async (input) => {
+			requestedUrl = String(input);
+			return new Response(
+				JSON.stringify({
+					stop_reason: "end_turn",
+					content: [{ type: "text", text: '{"ok":true}' }],
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		}) as typeof globalThis.fetch;
+		try {
+			const client = directClient("anthropic");
+			expect(client.hasCustomAnthropicEndpoint).toBe(true);
+			await client.observeStructuredJson("system", "user", "test_schema", { type: "object" });
+			expect(requestedUrl).toBe("https://anthropic-gateway.example.test/messages");
+		} finally {
+			globalThis.fetch = previousFetch;
+			if (previousEndpoint === undefined) delete process.env.CODEMEM_ANTHROPIC_ENDPOINT;
+			else process.env.CODEMEM_ANTHROPIC_ENDPOINT = previousEndpoint;
+		}
+	});
+
+	it("refreshes authentication and retries a structured request once", async () => {
+		const previousFetch = globalThis.fetch;
+		let callCount = 0;
+		globalThis.fetch = (async () => {
+			callCount += 1;
+			if (callCount === 1) return new Response("Unauthorized", { status: 401 });
+			return new Response(JSON.stringify({ status: "completed", output_text: '{"ok":true}' }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		}) as typeof globalThis.fetch;
+		try {
+			const result = await directClient("openai").observeStructuredJson(
+				"system",
+				"user",
+				"test_schema",
+				{ type: "object" },
+			);
+			expect(callCount).toBe(2);
+			expect(result.raw).toBe('{"ok":true}');
+		} finally {
+			globalThis.fetch = previousFetch;
+		}
+	});
+
+	it("preserves transport failure classification for non-success responses", async () => {
+		const previousFetch = globalThis.fetch;
+		globalThis.fetch = (async () =>
+			new Response("limited", { status: 429 })) as typeof globalThis.fetch;
+		try {
+			const client = directClient("openai");
+			const result = await client.observeStructuredJson("system", "user", "test_schema", {
+				type: "object",
+			});
+			expect(result.failureReason).toBeNull();
+			expect(result.transportFailureCode).toBe("rate_limited");
+		} finally {
+			globalThis.fetch = previousFetch;
+		}
+	});
+
+	it("classifies structured response processing failures locally", async () => {
+		const previousFetch = globalThis.fetch;
+		globalThis.fetch = (async () =>
+			new Response("not-json", {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			})) as typeof globalThis.fetch;
+		try {
+			const result = await directClient("openai").observeStructuredJson(
+				"system",
+				"user",
+				"test_schema",
+				{ type: "object" },
+			);
+			expect(result.failureReason).toBeNull();
+			expect(result.transportFailureCode).toBe("observer_call_failed");
+		} finally {
+			globalThis.fetch = previousFetch;
+		}
+	});
+
+	it("applies the configured prompt cap to structured requests", async () => {
+		const previousFetch = globalThis.fetch;
+		let payload: Record<string, unknown> | null = null;
+		globalThis.fetch = (async (_input, init) => {
+			payload = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			return new Response(
+				JSON.stringify({
+					status: "completed",
+					output_text: '{"ok":true}',
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		}) as typeof globalThis.fetch;
+		try {
+			const client = directClient("openai");
+			await client.observeStructuredJson("s".repeat(10_000), "u".repeat(10_000), "test_schema", {
+				type: "object",
+			});
+
+			const input = payload?.input as Array<{ content: Array<{ text: string }> }>;
+			const promptLength = input.reduce((sum, message) => sum + message.content[0].text.length, 0);
+			expect(promptLength).toBe(client.maxChars);
+		} finally {
+			globalThis.fetch = previousFetch;
+		}
 	});
 });
 

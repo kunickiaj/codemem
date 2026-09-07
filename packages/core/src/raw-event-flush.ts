@@ -23,6 +23,7 @@ import {
 } from "./ingest-transcript.js";
 import type { IngestPayload, SessionContext } from "./ingest-types.js";
 import { ObserverAuthError } from "./observer-client.js";
+import { ObserverOutputError, ObserverOutputTransportError } from "./observer-output.js";
 import type { MemoryStore } from "./store.js";
 
 const EXTRACTOR_VERSION = "raw_events_v1";
@@ -52,6 +53,26 @@ function providerDisplayName(provider: string | null | undefined): string {
 	return "Observer";
 }
 
+function summarizeObserverOutputFailure(exc: Error, providerTitle: string): string | null {
+	if (exc instanceof ObserverOutputTransportError) {
+		if (exc.code === "rate_limited") {
+			return `${providerTitle} request was rate limited during raw-event processing.`;
+		}
+		if (exc.code === "observer_auth_missing") {
+			return `${providerTitle} authentication is not configured for raw-event processing.`;
+		}
+		return `${providerTitle} request failed during raw-event processing.`;
+	}
+	if (!(exc instanceof ObserverOutputError)) return null;
+	if (exc.reason === "structured_output_refused") {
+		return `${providerTitle} refused the structured raw-event request.`;
+	}
+	if (exc.reason === "structured_output_truncated") {
+		return `${providerTitle} truncated its structured raw-event response.`;
+	}
+	return `${providerTitle} structured response could not be processed.`;
+}
+
 function summarizeFlushFailure(exc: Error, provider: string | null | undefined): string {
 	const providerTitle = providerDisplayName(provider);
 	const rawMessage = String(exc.message ?? "")
@@ -61,6 +82,8 @@ function summarizeFlushFailure(exc: Error, provider: string | null | undefined):
 	if (exc instanceof ObserverAuthError) {
 		return `${providerTitle} authentication failed. Refresh credentials and retry.`;
 	}
+	const observerOutputSummary = summarizeObserverOutputFailure(exc, providerTitle);
+	if (observerOutputSummary) return observerOutputSummary;
 	if (exc.name === "TimeoutError" || rawMessage.includes("timeout")) {
 		return `${providerTitle} request timed out during raw-event processing.`;
 	}
@@ -82,6 +105,8 @@ function summarizeFlushFailure(exc: Error, provider: string | null | undefined):
 function flushFailureErrorType(error: Error): string {
 	if (error instanceof ObserverAuthError) return "ObserverAuthError";
 	if (error instanceof RawEventObserverOutputError) return `${error.name}:${error.reason}`;
+	if (error instanceof ObserverOutputTransportError) return `${error.name}:${error.code}`;
+	if (error instanceof ObserverOutputError) return `${error.name}:${error.reason}`;
 	return error.name;
 }
 

@@ -6,6 +6,36 @@ import {
 } from "./ingest-prompts.js";
 
 describe("buildObserverPrompt", () => {
+	it("requests only the supplied JSON Schema contract in json_schema mode", () => {
+		const { system } = buildObserverPrompt(
+			{
+				project: "codemem",
+				userPrompt: "capture this",
+				promptNumber: 1,
+				transcript: "",
+				toolEvents: [],
+				lastAssistantMessage: null,
+				includeSummary: true,
+				diffSummary: "",
+				recentFiles: "",
+			},
+			{ outputMode: "json_schema" },
+		);
+
+		expect(system).toContain("conforms exactly to the supplied JSON Schema");
+		expect(system).not.toContain("Observation XML schema");
+		expect(system).not.toContain("Summary XML schema");
+		expect(system).not.toContain("<observation>");
+		expect(system).not.toContain("<summary>");
+		expect(system).not.toContain("<skip_summary");
+		expect(system).not.toContain("Before writing XML");
+		expect(system).not.toContain("Output only XML");
+		expect(system).not.toMatch(/<\/?[a-z_]+(?:\s|\/?>)/i);
+		expect(system).toContain("Emit a summary unless status is skipped");
+		expect(system).toContain("Only summarize what is evidenced in the session context");
+		expect(system).toContain("aim for ~150-450 words");
+	});
+
 	it("includes the Python parity examples and schema guidance", () => {
 		const { system } = buildObserverPrompt({
 			project: "codemem",

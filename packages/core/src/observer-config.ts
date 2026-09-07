@@ -199,6 +199,7 @@ export const CODEMEM_CONFIG_ENV_OVERRIDES: Record<string, string> = {
 	observer_rich_reasoning_effort: "CODEMEM_OBSERVER_RICH_REASONING_EFFORT",
 	observer_rich_reasoning_summary: "CODEMEM_OBSERVER_RICH_REASONING_SUMMARY",
 	observer_rich_max_output_tokens: "CODEMEM_OBSERVER_RICH_MAX_OUTPUT_TOKENS",
+	observer_output_mode: "CODEMEM_OBSERVER_OUTPUT_MODE",
 	observer_base_url: "CODEMEM_OBSERVER_BASE_URL",
 	observer_runtime: "CODEMEM_OBSERVER_RUNTIME",
 	observer_auth_source: "CODEMEM_OBSERVER_AUTH_SOURCE",

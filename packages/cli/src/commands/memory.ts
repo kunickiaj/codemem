@@ -10,6 +10,7 @@ import {
 	compareMemoryRoleReports,
 	type ExtractionBenchmarkScore,
 	type ExtractionModelCostEstimate,
+	type ExtractionReplayResult,
 	type ExtractionStructuralDiagnostics,
 	estimateExtractionModelCost,
 	getExtractionBenchmarkProfile,
@@ -1013,6 +1014,50 @@ export function summarizeBenchmarkReasoning(
 	};
 }
 
+function benchmarkSecondAttemptValue<T>(attempted: boolean, value: T | null): T | null {
+	return attempted ? value : null;
+}
+
+function benchmarkSecondAttemptList<T>(attempted: boolean, value: T[]): T[] {
+	return attempted ? value : [];
+}
+
+function buildBenchmarkSecondAttempt(
+	result: ExtractionReplayResult,
+	input: { attempted: boolean; reason: string | null; quality: ExtractionBenchmarkScore | null },
+) {
+	return {
+		attempted: input.attempted,
+		reason: input.reason,
+		raw: benchmarkSecondAttemptValue(input.attempted, result.observer.repairedRaw),
+		status: benchmarkSecondAttemptValue(
+			input.attempted,
+			result.repairedClassification?.status ?? null,
+		),
+		resultReason: benchmarkSecondAttemptValue(
+			input.attempted,
+			result.repairedClassification?.reason ?? null,
+		),
+		pass: benchmarkSecondAttemptValue(input.attempted, result.repairedEvaluation?.pass ?? null),
+		failureReasons: benchmarkSecondAttemptList(
+			input.attempted,
+			result.repairedEvaluation?.failureReasons ?? [],
+		),
+		summaries: benchmarkSecondAttemptValue(
+			input.attempted,
+			result.repairedEvaluation?.counts.summaries ?? null,
+		),
+		observations: benchmarkSecondAttemptValue(
+			input.attempted,
+			result.repairedEvaluation?.counts.observations ?? null,
+		),
+		diagnostics: benchmarkSecondAttemptValue(input.attempted, result.observer.repairedDiagnostics),
+		elapsedMs: benchmarkSecondAttemptValue(input.attempted, result.observer.repairedElapsedMs),
+		usage: benchmarkSecondAttemptValue(input.attempted, result.observer.repairedUsage),
+		quality: benchmarkSecondAttemptValue(input.attempted, input.quality),
+	};
+}
+
 function createMemoryExtractionBenchmarkCommand(): Command {
 	const cmd = new Command("extraction-benchmark")
 		.configureHelp(helpStyle)
@@ -1173,6 +1218,8 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 					summaries: number;
 					observations: number;
 					repairApplied: boolean;
+					retryAttempted: boolean;
+					retryReason: string | null;
 					initial: {
 						raw: string | null;
 						status: "pass" | "shape_fail" | "observer_no_output";
@@ -1200,6 +1247,21 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 						usage: ObserverTokenUsage | null;
 						quality: ExtractionBenchmarkScore | null;
 					};
+					retry: {
+						attempted: boolean;
+						reason: string | null;
+						raw: string | null;
+						status: "pass" | "shape_fail" | "observer_no_output" | null;
+						resultReason: string | null;
+						pass: boolean | null;
+						failureReasons: string[];
+						summaries: number | null;
+						observations: number | null;
+						diagnostics: ExtractionStructuralDiagnostics | null;
+						elapsedMs: number | null;
+						usage: ObserverTokenUsage | null;
+						quality: ExtractionBenchmarkScore | null;
+					};
 					telemetry: {
 						totalElapsedMs: number | null;
 						totalUsage: ObserverTokenUsage | null;
@@ -1208,6 +1270,7 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 					cost: {
 						initial: ExtractionModelCostEstimate | null;
 						repair: ExtractionModelCostEstimate | null;
+						retry: ExtractionModelCostEstimate | null;
 						total: ExtractionModelCostEstimate | null;
 						unavailableReason:
 							| "missing_usage"
@@ -1242,9 +1305,17 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 						const initialCost = costModel
 							? estimateExtractionModelCost(costModel, result.observer.initialUsage)
 							: null;
-						const repairCost = costModel
+						const secondAttemptCost = costModel
 							? estimateExtractionModelCost(costModel, result.observer.repairedUsage)
 							: null;
+						const repairCost = benchmarkSecondAttemptValue(
+							result.observer.repairAttempted,
+							secondAttemptCost,
+						);
+						const retryCost = benchmarkSecondAttemptValue(
+							result.observer.retryAttempted,
+							secondAttemptCost,
+						);
 						const totalCost = costModel
 							? estimateExtractionModelCost(costModel, result.observer.totalUsage)
 							: null;
@@ -1268,7 +1339,7 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 									expectedSummaryDisposition: batch.expectedSummaryDisposition,
 								})
 							: null;
-						const repairQuality =
+						const secondAttemptQuality =
 							result.observer.repairedParsed && result.observer.repairedDiagnostics
 								? scoreExtractionBenchmarkOutput({
 										parsed: result.observer.repairedParsed,
@@ -1277,7 +1348,7 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 											status: "unreviewed",
 											reviewerNotes: "No durable-fact review has been recorded for this batch.",
 										},
-										estimatedCostUsd: repairCost?.totalCostUsd ?? null,
+										estimatedCostUsd: secondAttemptCost?.totalCostUsd ?? null,
 										expectedSummaryDisposition: batch.expectedSummaryDisposition,
 									})
 								: null;
@@ -1299,6 +1370,16 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 							finalFailureReasons: result.evaluation.failureReasons,
 							initialQuality,
 							finalQuality,
+						});
+						const repairAttempt = buildBenchmarkSecondAttempt(result, {
+							attempted: result.observer.repairAttempted,
+							reason: null,
+							quality: secondAttemptQuality,
+						});
+						const retryAttempt = buildBenchmarkSecondAttempt(result, {
+							attempted: result.observer.retryAttempted,
+							reason: result.observer.retryReason,
+							quality: secondAttemptQuality,
 						});
 						runs.push({
 							iteration,
@@ -1334,6 +1415,8 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 							summaries: result.evaluation.counts.summaries,
 							observations: result.evaluation.counts.observations,
 							repairApplied: result.observer.repairApplied,
+							retryAttempted: result.observer.retryAttempted,
+							retryReason: result.observer.retryReason,
 							initial: {
 								raw: result.observer.initialRaw,
 								status: result.initialClassification.status,
@@ -1349,18 +1432,19 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 							},
 							repair: {
 								applied: result.observer.repairApplied,
-								raw: result.observer.repairedRaw,
-								status: result.repairedClassification?.status ?? null,
-								reason: result.repairedClassification?.reason ?? null,
-								pass: result.repairedEvaluation?.pass ?? null,
-								failureReasons: result.repairedEvaluation?.failureReasons ?? [],
-								summaries: result.repairedEvaluation?.counts.summaries ?? null,
-								observations: result.repairedEvaluation?.counts.observations ?? null,
-								diagnostics: result.observer.repairedDiagnostics,
-								elapsedMs: result.observer.repairedElapsedMs,
-								usage: result.observer.repairedUsage,
-								quality: repairQuality,
+								raw: repairAttempt.raw,
+								status: repairAttempt.status,
+								reason: repairAttempt.resultReason,
+								pass: repairAttempt.pass,
+								failureReasons: repairAttempt.failureReasons,
+								summaries: repairAttempt.summaries,
+								observations: repairAttempt.observations,
+								diagnostics: repairAttempt.diagnostics,
+								elapsedMs: repairAttempt.elapsedMs,
+								usage: repairAttempt.usage,
+								quality: repairAttempt.quality,
 							},
+							retry: retryAttempt,
 							telemetry: {
 								totalElapsedMs: result.observer.totalElapsedMs,
 								totalUsage: result.observer.totalUsage,
@@ -1369,6 +1453,7 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 							cost: {
 								initial: initialCost,
 								repair: repairCost,
+								retry: retryCost,
 								total: totalCost,
 								unavailableReason: costUnavailableReason,
 							},
@@ -1528,7 +1613,7 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 						run.telemetry.totalElapsedMs == null ? "n/a" : `${run.telemetry.totalElapsedMs}ms`;
 					const missingRequired = run.quality?.requiredRecall.missingLabelIds.join(",") || "none";
 					p.log.message(
-						`  [${run.batchId}#${run.iteration}] ${run.status.padEnd(18)} ${run.complexity.padEnd(10)} tier=${run.tier.padEnd(6)} expected=${(run.expectedTier ?? "n/a").padEnd(6)} disposition=${run.quality?.summaryDisposition.actual ?? "n/a"}/${run.expectedSummaryDisposition} span=${String(run.analysis.eventSpan).padEnd(3)} prompts=${run.analysis.promptCount} tools=${String(run.analysis.toolCount).padEnd(2)} transcript=${run.analysis.transcriptLength} ${run.provider}/${run.model} [${run.transport}] initial=${run.initial.summaries}s/${run.initial.observations}o final=${run.summaries}s/${run.observations}o quality=${qualityLabel} coverage=${run.quality?.weightedQualityCoverage?.toFixed(3) ?? "n/a"} required_missing=${missingRequired} cost=${costLabel} latency=${latencyLabel} schema_loss=${run.initial.diagnostics?.dataLoss === true ? "yes" : "no"} fallback=${run.modelFallbackApplied ? "yes" : "no"} repair=${run.repairApplied ? "yes" : "no"} — ${run.label}`,
+						`  [${run.batchId}#${run.iteration}] ${run.status.padEnd(18)} ${run.complexity.padEnd(10)} tier=${run.tier.padEnd(6)} expected=${(run.expectedTier ?? "n/a").padEnd(6)} disposition=${run.quality?.summaryDisposition.actual ?? "n/a"}/${run.expectedSummaryDisposition} span=${String(run.analysis.eventSpan).padEnd(3)} prompts=${run.analysis.promptCount} tools=${String(run.analysis.toolCount).padEnd(2)} transcript=${run.analysis.transcriptLength} ${run.provider}/${run.model} [${run.transport}] initial=${run.initial.summaries}s/${run.initial.observations}o final=${run.summaries}s/${run.observations}o quality=${qualityLabel} coverage=${run.quality?.weightedQualityCoverage?.toFixed(3) ?? "n/a"} required_missing=${missingRequired} cost=${costLabel} latency=${latencyLabel} schema_loss=${run.initial.diagnostics?.dataLoss === true ? "yes" : "no"} fallback=${run.modelFallbackApplied ? "yes" : "no"} repair=${run.repairApplied ? "yes" : "no"} retry=${run.retryAttempted ? (run.retryReason ?? "yes") : "no"} — ${run.label}`,
 					);
 				}
 				p.outro("done");

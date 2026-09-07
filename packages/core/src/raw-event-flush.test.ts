@@ -453,6 +453,63 @@ describe("flushRawEvents max retry", () => {
 		});
 	});
 
+	it("classifies structured transport failures without advancing the cursor", async () => {
+		const sessionId = "ses_structured_transport_failure";
+		seedEvents(sessionId);
+		const structuredObserver = {
+			provider: "openai",
+			runtime: "api_http",
+			openaiUseResponses: true,
+			hasCustomBaseUrl: false,
+			outputMode: "json_schema",
+			maxChars: 12_000,
+			observeStructuredJson: async () => ({
+				raw: null,
+				parsed: null,
+				provider: "openai",
+				model: "test-model",
+				usedStructuredOutputs: true,
+				failureReason: null,
+				transportFailureCode: "rate_limited",
+			}),
+			getStatus: () => ({
+				provider: "openai",
+				model: "test-model",
+				runtime: "api_http",
+				auth: { source: "env", type: "api_direct", hasToken: true },
+				lastError: { code: "rate_limited", message: "Try again later" },
+			}),
+		};
+		const flushOpts = {
+			opencodeSessionId: sessionId,
+			source: "opencode",
+			cwd: null,
+			project: null,
+			startedAt: null,
+			maxEvents: null,
+		};
+
+		await expect(
+			flushRawEvents(
+				store,
+				{ observer: structuredObserver } as unknown as IngestOptions,
+				flushOpts,
+			),
+		).rejects.toThrow("observer request failed (rate_limited)");
+
+		const batch = store.db
+			.prepare(
+				"SELECT status, error_type, error_message FROM raw_event_flush_batches WHERE opencode_session_id = ?",
+			)
+			.get(sessionId) as { status: string; error_type: string; error_message: string };
+		expect(batch).toEqual({
+			status: "failed",
+			error_type: "ObserverOutputTransportError:rate_limited",
+			error_message: "OpenAI request was rate limited during raw-event processing.",
+		});
+		expect(store.rawEventFlushState(sessionId)).toBe(-1);
+	});
+
 	it("keeps repeated unparseable microbatch output as gave_up", async () => {
 		process.env.CODEMEM_RAW_EVENTS_MAX_FLUSH_ATTEMPTS = "1";
 		const sessionId = "ses_unparseable_microbatch";

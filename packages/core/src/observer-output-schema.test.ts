@@ -135,6 +135,7 @@ describe("observer envelope v1", () => {
 			          "additionalProperties": false,
 			          "properties": {
 			            "completed": {
+			              "description": "Work completed and concrete outcomes.",
 			              "type": "string",
 			            },
 			            "files_modified": {
@@ -150,18 +151,23 @@ describe("observer envelope v1", () => {
 			              "type": "array",
 			            },
 			            "investigated": {
+			              "description": "What was examined or attempted.",
 			              "type": "string",
 			            },
 			            "learned": {
+			              "description": "Durable discoveries from the session.",
 			              "type": "string",
 			            },
 			            "next_steps": {
+			              "description": "Remaining work, blockers, and next actions.",
 			              "type": "string",
 			            },
 			            "notes": {
+			              "description": "Relevant decisions, trade-offs, or warnings.",
 			              "type": "string",
 			            },
 			            "request": {
+			              "description": "The user's request and session goal.",
 			              "type": "string",
 			            },
 			          },
@@ -302,26 +308,18 @@ describe("observer envelope failures", () => {
 			},
 		],
 		[
-			"too many concepts",
-			{
-				...validCapture(),
-				observations: [
-					{
-						...validCapture().observations[0],
-						concepts: Array.from({ length: OBSERVER_OUTPUT_LIMITS.concepts + 1 }, () => "gotcha"),
-					},
-				],
-			},
-		],
-		[
 			"empty skip reason",
 			{ ...validCapture(), status: "skipped", observations: [], skip_reason: " " },
+		],
+		[
+			"unsupported skip reason",
+			{ ...validCapture(), status: "skipped", observations: [], skip_reason: "other" },
 		],
 	])("rejects %s", (_name, value) => {
 		expect(validateObserverEnvelopeV1(value).ok).toBe(false);
 	});
 
-	it("rejects oversized strings and arrays", () => {
+	it("rejects provider-valid output with local size overages", () => {
 		const value = validCapture();
 		value.observations[0].title = "x".repeat(OBSERVER_OUTPUT_LIMITS.textCharacters + 1);
 		value.observations[0].facts = Array.from(
@@ -329,14 +327,64 @@ describe("observer envelope failures", () => {
 			() => "fact",
 		);
 		const result = validateObserverEnvelopeV1(value);
-		expect(result.ok).toBe(false);
-		if (result.ok) return;
-		expect(result.issues).toEqual(
-			expect.arrayContaining([
-				expect.stringContaining("title exceeds"),
-				expect.stringContaining("facts exceeds"),
-			]),
+		expect(result).toMatchObject({
+			ok: false,
+			reason: "structured_output_schema_invalid",
+		});
+	});
+
+	it("rejects observation-count overages before normalization", () => {
+		const value = validCapture();
+		value.observations = Array.from(
+			{ length: OBSERVER_OUTPUT_LIMITS.observations + 1 },
+			(_, index) => ({
+				...validCapture().observations[0],
+				title: `${index}${"x".repeat(OBSERVER_OUTPUT_LIMITS.textCharacters)}`,
+				facts: Array.from({ length: OBSERVER_OUTPUT_LIMITS.listItems + 1 }, () => "fact"),
+				concepts: Array.from({ length: OBSERVER_OUTPUT_LIMITS.concepts + 1 }, () => "gotcha"),
+			}),
 		);
+		const result = validateObserverEnvelopeV1(value);
+		expect(result).toMatchObject({
+			ok: false,
+			reason: "structured_output_schema_invalid",
+		});
+	});
+
+	it("keeps clipped text well-formed at a surrogate-pair boundary", () => {
+		const value = validCapture();
+		value.observations[0].title = `${"x".repeat(OBSERVER_OUTPUT_LIMITS.textCharacters - 1)}💾`;
+		const title = normalizeObserverEnvelopeV1(value).observations[0]?.title;
+		expect(title).toBe(`${"x".repeat(OBSERVER_OUTPUT_LIMITS.textCharacters - 1)}�`);
+		expect(title?.isWellFormed()).toBe(true);
+	});
+});
+
+describe("observer envelope persistability", () => {
+	it("rejects captured output with no persistable content", () => {
+		const emptySummary = {
+			request: "",
+			investigated: "",
+			learned: "",
+			completed: "",
+			next_steps: "",
+			notes: "",
+			files_read: [],
+			files_modified: [],
+		};
+		const emptyObservation = {
+			...validCapture().observations[0],
+			title: "",
+			narrative: "",
+		};
+
+		expect(
+			validateObserverEnvelopeV1({
+				...validCapture(),
+				observations: [emptyObservation],
+				summary: emptySummary,
+			}),
+		).toMatchObject({ ok: false, reason: "structured_output_schema_invalid" });
 	});
 
 	it("classifies invalid JSON separately from schema failures", () => {

@@ -57,13 +57,13 @@ export type ObserverEnvelopeParseResult =
 	| { ok: true; envelope: ObserverEnvelopeV1 }
 	| { ok: false; reason: ObserverEnvelopeFailureReason; issues: string[] };
 
-const boundedStringSchema = {
+const stringSchema = {
 	type: "string",
 } as const;
 
-const boundedStringArraySchema = {
+const stringArraySchema = {
 	type: "array",
-	items: boundedStringSchema,
+	items: stringSchema,
 } as const;
 
 const observationSchema = {
@@ -71,16 +71,16 @@ const observationSchema = {
 	additionalProperties: false,
 	properties: {
 		kind: { type: "string", enum: [...REMEMBER_MEMORY_KINDS] },
-		title: boundedStringSchema,
-		narrative: boundedStringSchema,
+		title: stringSchema,
+		narrative: stringSchema,
 		subtitle: { type: ["string", "null"] },
-		facts: boundedStringArraySchema,
+		facts: stringArraySchema,
 		concepts: {
 			type: "array",
-			items: { ...boundedStringSchema, enum: [...OBSERVER_CONCEPTS] },
+			items: { ...stringSchema, enum: [...OBSERVER_CONCEPTS] },
 		},
-		files_read: boundedStringArraySchema,
-		files_modified: boundedStringArraySchema,
+		files_read: stringArraySchema,
+		files_modified: stringArraySchema,
 	},
 	required: [
 		"kind",
@@ -98,14 +98,17 @@ const summarySchema = {
 	type: "object",
 	additionalProperties: false,
 	properties: {
-		request: boundedStringSchema,
-		investigated: boundedStringSchema,
-		learned: boundedStringSchema,
-		completed: boundedStringSchema,
-		next_steps: boundedStringSchema,
-		notes: boundedStringSchema,
-		files_read: boundedStringArraySchema,
-		files_modified: boundedStringArraySchema,
+		request: { ...stringSchema, description: "The user's request and session goal." },
+		investigated: { ...stringSchema, description: "What was examined or attempted." },
+		learned: { ...stringSchema, description: "Durable discoveries from the session." },
+		completed: { ...stringSchema, description: "Work completed and concrete outcomes." },
+		next_steps: {
+			...stringSchema,
+			description: "Remaining work, blockers, and next actions.",
+		},
+		notes: { ...stringSchema, description: "Relevant decisions, trade-offs, or warnings." },
+		files_read: stringArraySchema,
+		files_modified: stringArraySchema,
 	},
 	required: [
 		"request",
@@ -187,8 +190,7 @@ function validateString(value: unknown, path: string, issues: string[]): value i
 		return false;
 	}
 	if (value.length > OBSERVER_OUTPUT_LIMITS.textCharacters) {
-		issues.push(`${path} exceeds ${OBSERVER_OUTPUT_LIMITS.textCharacters} characters`);
-		return false;
+		issues.push(`${path} must contain at most ${OBSERVER_OUTPUT_LIMITS.textCharacters} characters`);
 	}
 	return true;
 }
@@ -197,14 +199,16 @@ function validateStringArray(
 	value: unknown,
 	path: string,
 	issues: string[],
-	options: { maxItems?: number; allowed?: ReadonlySet<string> } = {},
+	options: { allowed?: ReadonlySet<string>; maxItems?: number } = {},
 ): void {
 	if (!Array.isArray(value)) {
 		issues.push(`${path} must be an array`);
 		return;
 	}
 	const maxItems = options.maxItems ?? OBSERVER_OUTPUT_LIMITS.listItems;
-	if (value.length > maxItems) issues.push(`${path} exceeds ${maxItems} items`);
+	if (value.length > maxItems) {
+		issues.push(`${path} must contain at most ${maxItems} items`);
+	}
 	for (const [index, item] of value.entries()) {
 		if (!validateString(item, `${path}[${index}]`, issues)) continue;
 		if (options.allowed && !options.allowed.has(item)) {
@@ -231,8 +235,8 @@ function validateObservation(value: unknown, index: number, issues: string[]): v
 	if (value.subtitle !== null) validateString(value.subtitle, `${path}.subtitle`, issues);
 	validateStringArray(value.facts, `${path}.facts`, issues);
 	validateStringArray(value.concepts, `${path}.concepts`, issues, {
-		maxItems: OBSERVER_OUTPUT_LIMITS.concepts,
 		allowed: new Set(OBSERVER_CONCEPTS),
+		maxItems: OBSERVER_OUTPUT_LIMITS.concepts,
 	});
 	validateStringArray(value.files_read, `${path}.files_read`, issues);
 	validateStringArray(value.files_modified, `${path}.files_modified`, issues);
@@ -265,7 +269,9 @@ function validateEnvelopeFields(value: Record<string, unknown>, issues: string[]
 		issues.push("$.observations must be an array");
 	} else {
 		if (value.observations.length > OBSERVER_OUTPUT_LIMITS.observations) {
-			issues.push(`$.observations exceeds ${OBSERVER_OUTPUT_LIMITS.observations} items`);
+			issues.push(
+				`$.observations must contain at most ${OBSERVER_OUTPUT_LIMITS.observations} items`,
+			);
 		}
 		value.observations.forEach((observation, index) => {
 			validateObservation(observation, index, issues);
@@ -280,11 +286,22 @@ function validateEnvelopeState(value: Record<string, unknown>, issues: string[])
 		if (value.skip_reason !== null) {
 			issues.push("$.skip_reason must be null when status is captured");
 		}
-		if (
+		const hasPersistableObservation =
 			Array.isArray(value.observations) &&
-			value.observations.length === 0 &&
-			value.summary === null
-		) {
+			value.observations.some(
+				(observation) =>
+					isRecord(observation) &&
+					((typeof observation.title === "string" && observation.title.trim().length > 0) ||
+						(typeof observation.narrative === "string" && observation.narrative.trim().length > 0)),
+			);
+		const summary = isRecord(value.summary) ? value.summary : null;
+		const hasPersistableSummary =
+			summary !== null &&
+			["request", "investigated", "learned", "completed", "next_steps", "notes"].some((key) => {
+				const text = summary[key];
+				return typeof text === "string" && text.trim().length > 0;
+			});
+		if (!hasPersistableObservation && !hasPersistableSummary) {
 			issues.push("captured output must contain observations or a summary");
 		}
 		return;
@@ -294,8 +311,8 @@ function validateEnvelopeState(value: Record<string, unknown>, issues: string[])
 		issues.push("$.observations must be empty when status is skipped");
 	}
 	if (value.summary !== null) issues.push("$.summary must be null when status is skipped");
-	if (typeof value.skip_reason !== "string" || value.skip_reason.trim().length === 0) {
-		issues.push("$.skip_reason must be non-empty when status is skipped");
+	if (value.skip_reason !== "low-signal") {
+		issues.push('$.skip_reason must equal "low-signal" when status is skipped');
 	}
 }
 
@@ -333,28 +350,41 @@ export function parseObserverEnvelopeV1(raw: string): ObserverEnvelopeParseResul
 	return validateObserverEnvelopeV1(value);
 }
 
+function clampText(value: string): string {
+	return value.slice(0, OBSERVER_OUTPUT_LIMITS.textCharacters).toWellFormed();
+}
+
+function clampList(
+	values: string[],
+	maxItems: number = OBSERVER_OUTPUT_LIMITS.listItems,
+): string[] {
+	return values.slice(0, maxItems).map(clampText);
+}
+
 export function normalizeObserverEnvelopeV1(envelope: ObserverEnvelopeV1): ParsedOutput {
 	return {
-		observations: envelope.observations.map((observation) => ({
-			kind: observation.kind,
-			title: observation.title,
-			narrative: observation.narrative,
-			subtitle: observation.subtitle,
-			facts: [...observation.facts],
-			concepts: [...new Set(observation.concepts)],
-			filesRead: [...observation.files_read],
-			filesModified: [...observation.files_modified],
-		})),
+		observations: envelope.observations
+			.slice(0, OBSERVER_OUTPUT_LIMITS.observations)
+			.map((observation) => ({
+				kind: observation.kind,
+				title: clampText(observation.title),
+				narrative: clampText(observation.narrative),
+				subtitle: observation.subtitle === null ? null : clampText(observation.subtitle),
+				facts: clampList(observation.facts),
+				concepts: clampList([...new Set(observation.concepts)], OBSERVER_OUTPUT_LIMITS.concepts),
+				filesRead: clampList(observation.files_read),
+				filesModified: clampList(observation.files_modified),
+			})),
 		summary: envelope.summary
 			? {
-					request: envelope.summary.request,
-					investigated: envelope.summary.investigated,
-					learned: envelope.summary.learned,
-					completed: envelope.summary.completed,
-					nextSteps: envelope.summary.next_steps,
-					notes: envelope.summary.notes,
-					filesRead: [...envelope.summary.files_read],
-					filesModified: [...envelope.summary.files_modified],
+					request: clampText(envelope.summary.request),
+					investigated: clampText(envelope.summary.investigated),
+					learned: clampText(envelope.summary.learned),
+					completed: clampText(envelope.summary.completed),
+					nextSteps: clampText(envelope.summary.next_steps),
+					notes: clampText(envelope.summary.notes),
+					filesRead: clampList(envelope.summary.files_read),
+					filesModified: clampList(envelope.summary.files_modified),
 				}
 			: null,
 		skipSummaryReason: envelope.status === "skipped" ? envelope.skip_reason : null,

@@ -43,6 +43,7 @@ import {
 	stripJsonComments,
 	stripTrailingCommas,
 } from "./observer-config.js";
+import type { ObserverEnvelopeFailureReason } from "./observer-output-schema.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -121,6 +122,7 @@ export interface ObserverConfig {
 	observerRichReasoningSummary?: string | null;
 	observerRichMaxOutputTokens?: number | null;
 	observerOpenAIUseResponses?: boolean;
+	observerOutputMode?: "auto" | "json_schema" | "legacy_xml";
 	observerReasoningEffort?: string | null;
 	observerReasoningSummary?: string | null;
 	observerMaxOutputTokens?: number | null;
@@ -158,6 +160,10 @@ export interface ObserverTokenUsage {
 
 export interface ObserverStructuredJsonResponse extends ObserverResponse {
 	usedStructuredOutputs: boolean;
+	failureReason: ObserverEnvelopeFailureReason | null;
+	transportFailureCode: string | null;
+	/** HTTP status for provider request failures; null for non-HTTP failures. */
+	httpStatus?: number | null;
 }
 
 export interface ObserverStatus {
@@ -243,6 +249,11 @@ const OBSERVER_CONFIG_KEY_MAPPINGS: ObserverConfigKeyMapping[] = [
 		fileKey: "observer_openai_use_responses",
 		envKey: "CODEMEM_OBSERVER_OPENAI_USE_RESPONSES",
 		normalizedKey: "observerOpenAIUseResponses",
+	},
+	{
+		fileKey: "observer_output_mode",
+		envKey: "CODEMEM_OBSERVER_OUTPUT_MODE",
+		normalizedKey: "observerOutputMode",
 	},
 	{
 		fileKey: "observer_reasoning_effort",
@@ -443,6 +454,7 @@ export function loadObserverConfig(): ObserverConfig {
 		observerRichReasoningSummary: null,
 		observerRichMaxOutputTokens: null,
 		observerOpenAIUseResponses: undefined,
+		observerOutputMode: "legacy_xml",
 		observerReasoningEffort: null,
 		observerReasoningSummary: null,
 		observerMaxOutputTokens: null,
@@ -531,6 +543,13 @@ export function loadObserverConfig(): ObserverConfig {
 	if (data.observer_openai_use_responses != null) {
 		cfg.observerOpenAIUseResponses = data.observer_openai_use_responses === true;
 	}
+	if (
+		data.observer_output_mode === "auto" ||
+		data.observer_output_mode === "json_schema" ||
+		data.observer_output_mode === "legacy_xml"
+	) {
+		cfg.observerOutputMode = data.observer_output_mode;
+	}
 	if (typeof data.observer_reasoning_effort === "string") {
 		cfg.observerReasoningEffort = data.observer_reasoning_effort;
 	}
@@ -609,6 +628,10 @@ export function loadObserverConfig(): ObserverConfig {
 		cfg.observerOpenAIUseResponses =
 			process.env.CODEMEM_OBSERVER_OPENAI_USE_RESPONSES === "1" ||
 			process.env.CODEMEM_OBSERVER_OPENAI_USE_RESPONSES === "true";
+	}
+	const outputMode = process.env.CODEMEM_OBSERVER_OUTPUT_MODE;
+	if (outputMode === "auto" || outputMode === "json_schema" || outputMode === "legacy_xml") {
+		cfg.observerOutputMode = outputMode;
 	}
 	cfg.observerReasoningEffort =
 		process.env.CODEMEM_OBSERVER_REASONING_EFFORT ?? cfg.observerReasoningEffort;
@@ -922,6 +945,9 @@ function parseAnthropicResponse(body: Record<string, unknown>): string | null {
 interface ObserverCallResult {
 	raw: string | null;
 	usage: ObserverTokenUsage | null;
+	failureReason?: ObserverEnvelopeFailureReason | null;
+	transportFailureCode?: string | null;
+	httpStatus?: number | null;
 }
 
 function tokenCount(value: unknown): number | null {
@@ -955,7 +981,51 @@ function normalizeObserverUsage(body: Record<string, unknown>): ObserverTokenUsa
 }
 
 function emptyCallResult(raw: string | null): ObserverCallResult {
-	return { raw, usage: null };
+	return { raw, usage: null, failureReason: null, transportFailureCode: null };
+}
+
+function classifyOpenAIResponsesStructuredFailure(
+	body: Record<string, unknown>,
+): ObserverEnvelopeFailureReason | null {
+	if (body.status === "incomplete") {
+		const details = body.incomplete_details;
+		if (
+			typeof details === "object" &&
+			details != null &&
+			(details as Record<string, unknown>).reason === "content_filter"
+		) {
+			return "structured_output_refused";
+		}
+		return "structured_output_truncated";
+	}
+	const output = body.output;
+	if (!Array.isArray(output)) return null;
+	for (const item of output) {
+		if (typeof item !== "object" || item == null) continue;
+		const content = (item as Record<string, unknown>).content;
+		if (!Array.isArray(content)) continue;
+		if (
+			content.some(
+				(block) =>
+					typeof block === "object" &&
+					block != null &&
+					(block as Record<string, unknown>).type === "refusal",
+			)
+		) {
+			return "structured_output_refused";
+		}
+	}
+	return null;
+}
+
+function classifyAnthropicStructuredFailure(
+	body: Record<string, unknown>,
+): ObserverEnvelopeFailureReason | null {
+	if (body.stop_reason === "refusal") return "structured_output_refused";
+	if (body.stop_reason === "max_tokens" || body.stop_reason === "model_context_window_exceeded") {
+		return "structured_output_truncated";
+	}
+	return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1230,6 +1300,23 @@ function nowMs(): number {
 	return Date.now();
 }
 
+function clipObserverPrompts(
+	systemPrompt: string,
+	userPrompt: string,
+	maxChars: number,
+): { system: string; user: string } {
+	const minUserBudget = Math.floor(maxChars * 0.25);
+	const systemBudget = Math.max(0, maxChars - minUserBudget);
+	const system = (
+		systemPrompt.length > systemBudget ? systemPrompt.slice(0, systemBudget) : systemPrompt
+	).toWellFormed();
+	const userBudget = Math.max(minUserBudget, maxChars - system.length);
+	const user = (
+		userPrompt.length > userBudget ? userPrompt.slice(0, userBudget) : userPrompt
+	).toWellFormed();
+	return { system, user };
+}
+
 // ---------------------------------------------------------------------------
 // ObserverClient
 // ---------------------------------------------------------------------------
@@ -1258,6 +1345,9 @@ export class ObserverClient {
 	readonly richReasoningSummary: string | null;
 	readonly richMaxOutputTokens: number | null;
 	readonly openaiUseResponses: boolean;
+	readonly outputMode: "auto" | "json_schema" | "legacy_xml";
+	readonly hasCustomBaseUrl: boolean;
+	readonly hasCustomAnthropicEndpoint: boolean;
 	readonly reasoningEffort: string | null;
 	readonly reasoningSummary: string | null;
 	readonly maxChars: number;
@@ -1387,8 +1477,14 @@ export class ObserverClient {
 			typeof cfg.observerTemperature === "number" && Number.isFinite(cfg.observerTemperature)
 				? cfg.observerTemperature
 				: 0.2;
-		const hasCustomBaseUrl =
+		const hasConfiguredBaseUrl =
 			typeof cfg.observerBaseUrl === "string" && cfg.observerBaseUrl.trim().length > 0;
+		const hasCustomAnthropicEndpoint =
+			this.provider === "anthropic" &&
+			typeof process.env.CODEMEM_ANTHROPIC_ENDPOINT === "string" &&
+			process.env.CODEMEM_ANTHROPIC_ENDPOINT.trim().length > 0;
+		const hasCustomBaseUrl = hasConfiguredBaseUrl || hasCustomAnthropicEndpoint;
+		this.hasCustomAnthropicEndpoint = hasCustomAnthropicEndpoint;
 		this.tierRoutingEnabled = explicitConfigKeys.has("observerTierRoutingEnabled")
 			? cfg.observerTierRoutingEnabled === true
 			: supportsDefaultTierRouting(this.provider, this.runtime, hasCustomBaseUrl);
@@ -1439,6 +1535,8 @@ export class ObserverClient {
 			this.provider === "openai" && this.runtime === "api_http" && !hasCustomBaseUrl
 				? true
 				: configuredOpenAIUseResponses;
+		this.outputMode = cfg.observerOutputMode ?? "legacy_xml";
+		this.hasCustomBaseUrl = hasCustomBaseUrl;
 		const usesCustomOpenAIChatCompletions =
 			this.provider === "openai" &&
 			this.runtime === "api_http" &&
@@ -1533,6 +1631,7 @@ export class ObserverClient {
 			observerRichReasoningSummary: this.richReasoningSummary,
 			observerRichMaxOutputTokens: this.richMaxOutputTokens,
 			observerOpenAIUseResponses: this.openaiUseResponses,
+			observerOutputMode: this.outputMode,
 			observerReasoningEffort: this.reasoningEffort,
 			observerReasoningSummary: this.reasoningSummary,
 			observerMaxOutputTokens: this.maxOutputTokens,
@@ -1619,47 +1718,34 @@ export class ObserverClient {
 	async observe(systemPrompt: string, userPrompt: string): Promise<ObserverResponse> {
 		const startedAt = nowMs();
 		// Enforce configured prompt-length cap (matches Python behavior)
-		const maxChars = this.maxChars;
-		const minUserBudget = Math.floor(maxChars * 0.25);
-		const systemBudget = Math.max(0, maxChars - minUserBudget);
-		const clippedSystem = (
-			systemPrompt.length > systemBudget ? systemPrompt.slice(0, systemBudget) : systemPrompt
-		).toWellFormed();
-		const userBudget = Math.max(minUserBudget, maxChars - clippedSystem.length);
-		const clippedUser = (
-			userPrompt.length > userBudget ? userPrompt.slice(0, userBudget) : userPrompt
-		).toWellFormed();
+		const clipped = clipObserverPrompts(systemPrompt, userPrompt, this.maxChars);
 
+		if (this.runtime === "claude_sidecar") {
+			this._lastResolvedModel = this._sidecarModel;
+			this._sidecarModelFallbackApplied = false;
+			this._sidecarModelFallbackReason = null;
+		} else if (this.runtime === "codex_sidecar") {
+			this._lastResolvedModel = this._codexSidecarModel;
+			this._codexSidecarModelFallbackApplied = false;
+			this._codexSidecarModelFallbackReason = null;
+		}
+		const call = await this._callWithAuthRetry(() => this._callOnce(clipped.system, clipped.user));
+		if (call.raw) this._clearLastError();
+		return this._buildResponse(call, startedAt);
+	}
+
+	private async _callWithAuthRetry<T>(call: () => Promise<T>): Promise<T> {
 		try {
-			if (this.runtime === "claude_sidecar") {
-				this._lastResolvedModel = this._sidecarModel;
-				this._sidecarModelFallbackApplied = false;
-				this._sidecarModelFallbackReason = null;
-			} else if (this.runtime === "codex_sidecar") {
-				this._lastResolvedModel = this._codexSidecarModel;
-				this._codexSidecarModelFallbackApplied = false;
-				this._codexSidecarModelFallbackReason = null;
+			return await call();
+		} catch (error) {
+			if (!(error instanceof ObserverAuthError)) throw error;
+			this.refreshAuth();
+			if (!this.auth.token) throw error;
+			try {
+				return await call();
+			} catch {
+				throw error;
 			}
-			const call = await this._callOnce(clippedSystem, clippedUser);
-			if (call.raw) this._clearLastError();
-			return this._buildResponse(call, startedAt);
-		} catch (err) {
-			if (err instanceof ObserverAuthError) {
-				// Attempt one auth refresh + retry. Note: for sidecar runtimes
-				// (claude_sidecar / codex_sidecar) auth is delegated to the local CLI
-				// and this.auth.token is always null, so this retry is intentionally a
-				// no-op — the error propagates and the caller backs off.
-				this.refreshAuth();
-				if (!this.auth.token) throw err;
-				try {
-					const call = await this._callOnce(clippedSystem, clippedUser);
-					if (call.raw) this._clearLastError();
-					return this._buildResponse(call, startedAt);
-				} catch {
-					throw err; // re-throw original
-				}
-			}
-			throw err;
 		}
 	}
 
@@ -1693,10 +1779,15 @@ export class ObserverClient {
 		schema: Record<string, unknown>,
 	): Promise<ObserverStructuredJsonResponse> {
 		const startedAt = nowMs();
+		const clipped = clipObserverPrompts(systemPrompt, userPrompt, this.maxChars);
 		if (this.provider === "openai" && this.openaiUseResponses && !this._codexAccess) {
 			if (!this.auth.token && !this.canCallOpenAIDirectWithoutAuth()) {
 				this._initProvider(true);
 				if (!this.auth.token && !this.canCallOpenAIDirectWithoutAuth()) {
+					this._setLastError(
+						"OpenAI observer authentication is not configured.",
+						"observer_auth_missing",
+					);
 					return {
 						raw: null,
 						parsed: null,
@@ -1705,6 +1796,8 @@ export class ObserverClient {
 						elapsedMs: Math.max(0, nowMs() - startedAt),
 						usage: null,
 						usedStructuredOutputs: true,
+						failureReason: null,
+						transportFailureCode: "observer_auth_missing",
 					};
 				}
 			}
@@ -1715,15 +1808,10 @@ export class ObserverClient {
 			} else {
 				url = "https://api.openai.com/v1/responses";
 			}
-			const headers = buildOpenAIHeaders(this.auth.token);
-			const mergedHeaders = mergeHeadersCaseInsensitive(
-				headers,
-				renderObserverHeaders(this._observerHeaders, this.auth),
-			);
 			const payload = buildOpenAIResponsesStructuredPayload(
 				this.model,
-				systemPrompt,
-				userPrompt,
+				clipped.system,
+				clipped.user,
 				this.maxOutputTokens,
 				this.reasoningEffort,
 				this.reasoningSummary,
@@ -1731,10 +1819,19 @@ export class ObserverClient {
 				schemaName,
 				schema,
 			);
-			const call = await this._fetchJSON(url, mergedHeaders, payload, {
-				parseResponse: parseOpenAIResponsesResponse,
-				providerLabel: "OpenAI",
+			const call = await this._callWithAuthRetry(() => {
+				const headers = buildOpenAIHeaders(this.auth.token);
+				const mergedHeaders = mergeHeadersCaseInsensitive(
+					headers,
+					renderObserverHeaders(this._observerHeaders, this.auth),
+				);
+				return this._fetchJSON(url, mergedHeaders, payload, {
+					parseResponse: parseOpenAIResponsesResponse,
+					providerLabel: "OpenAI",
+					classifyStructuredFailure: classifyOpenAIResponsesStructuredFailure,
+				});
 			});
+			if (call.raw && !call.failureReason && !call.transportFailureCode) this._clearLastError();
 			return {
 				raw: call.raw,
 				parsed: call.raw ? tryParseJSON(call.raw) : null,
@@ -1743,6 +1840,11 @@ export class ObserverClient {
 				elapsedMs: Math.max(0, nowMs() - startedAt),
 				usage: call.usage,
 				usedStructuredOutputs: true,
+				failureReason:
+					call.failureReason ??
+					(call.raw || call.transportFailureCode ? null : "structured_output_missing"),
+				transportFailureCode: call.transportFailureCode ?? null,
+				httpStatus: call.httpStatus ?? null,
 			};
 		}
 
@@ -1755,23 +1857,28 @@ export class ObserverClient {
 					this._initProvider(true);
 				}
 				if (this.auth.token) {
-					const headers = buildAnthropicHeaders(this.auth.token, false);
-					const mergedHeaders = mergeHeadersCaseInsensitive(
-						headers,
-						renderObserverHeaders(this._observerHeaders, this.auth),
+					const payload = buildAnthropicStructuredPayload(
+						this.model,
+						clipped.system,
+						clipped.user,
+						this.maxTokens,
+						schema,
 					);
-					const call = await this._fetchJSON(
-						resolveAnthropicEndpoint(),
-						mergedHeaders,
-						buildAnthropicStructuredPayload(
-							this.model,
-							systemPrompt,
-							userPrompt,
-							this.maxTokens,
-							schema,
-						),
-						{ parseResponse: parseAnthropicResponse, providerLabel: "Anthropic" },
-					);
+					const call = await this._callWithAuthRetry(() => {
+						const headers = buildAnthropicHeaders(this.auth.token ?? "", false);
+						const mergedHeaders = mergeHeadersCaseInsensitive(
+							headers,
+							renderObserverHeaders(this._observerHeaders, this.auth),
+						);
+						return this._fetchJSON(resolveAnthropicEndpoint(), mergedHeaders, payload, {
+							parseResponse: parseAnthropicResponse,
+							providerLabel: "Anthropic",
+							classifyStructuredFailure: classifyAnthropicStructuredFailure,
+						});
+					});
+					if (call.raw && !call.failureReason && !call.transportFailureCode) {
+						this._clearLastError();
+					}
 					return {
 						raw: call.raw,
 						parsed: call.raw ? tryParseJSON(call.raw) : null,
@@ -1780,8 +1887,28 @@ export class ObserverClient {
 						elapsedMs: Math.max(0, nowMs() - startedAt),
 						usage: call.usage,
 						usedStructuredOutputs: true,
+						failureReason:
+							call.failureReason ??
+							(call.raw || call.transportFailureCode ? null : "structured_output_missing"),
+						transportFailureCode: call.transportFailureCode ?? null,
+						httpStatus: call.httpStatus ?? null,
 					};
 				}
+				this._setLastError(
+					"Anthropic observer authentication is not configured.",
+					"observer_auth_missing",
+				);
+				return {
+					raw: null,
+					parsed: null,
+					provider: this.provider,
+					model: this.model,
+					elapsedMs: Math.max(0, nowMs() - startedAt),
+					usage: null,
+					usedStructuredOutputs: true,
+					failureReason: null,
+					transportFailureCode: "observer_auth_missing",
+				};
 			}
 			// OAuth or no token — fall through to observe() fallback below
 		}
@@ -1795,6 +1922,8 @@ export class ObserverClient {
 			elapsedMs: Math.max(0, nowMs() - startedAt),
 			usage: fallback.usage,
 			usedStructuredOutputs: false,
+			failureReason: null,
+			transportFailureCode: null,
 		};
 	}
 
@@ -2507,6 +2636,9 @@ export class ObserverClient {
 		opts: {
 			parseResponse: (body: Record<string, unknown>) => string | null;
 			providerLabel: string;
+			classifyStructuredFailure?: (
+				body: Record<string, unknown>,
+			) => ObserverEnvelopeFailureReason | null;
 		},
 	): Promise<ObserverCallResult> {
 		try {
@@ -2519,26 +2651,53 @@ export class ObserverClient {
 
 			if (!response.ok) {
 				const errorText = await response.text().catch(() => "");
-				this._handleHttpError(response.status, errorText, opts.providerLabel);
-				return emptyCallResult(null);
+				const transportFailureCode = this._handleHttpError(
+					response.status,
+					errorText,
+					opts.providerLabel,
+				);
+				return {
+					...emptyCallResult(null),
+					transportFailureCode,
+					httpStatus: response.status,
+				};
 			}
 
 			const body = (await response.json()) as Record<string, unknown>;
+			const failureReason = opts.classifyStructuredFailure?.(body) ?? null;
 			const result = opts.parseResponse(body);
-			if (result === null) {
+			if (failureReason) {
 				this._setLastError(
-					`${opts.providerLabel} returned 200 but response contained no extractable text.`,
-					"empty_response",
+					`${opts.providerLabel} structured observer output failed (${failureReason}).`,
+					failureReason,
+				);
+			} else if (result === null) {
+				const structured = opts.classifyStructuredFailure != null;
+				this._setLastError(
+					structured
+						? `${opts.providerLabel} structured observer output was missing.`
+						: `${opts.providerLabel} returned 200 but response contained no extractable text.`,
+					structured ? "structured_output_missing" : "empty_response",
 				);
 			}
-			return { raw: result, usage: normalizeObserverUsage(body) };
+			return {
+				raw: result,
+				usage: normalizeObserverUsage(body),
+				failureReason,
+				transportFailureCode: null,
+				httpStatus: null,
+			};
 		} catch (err) {
 			if (err instanceof ObserverAuthError) throw err;
 			this._setLastError(
 				`${opts.providerLabel} processing failed during observer inference.`,
 				"observer_call_failed",
 			);
-			return emptyCallResult(null);
+			return {
+				...emptyCallResult(null),
+				transportFailureCode: "observer_call_failed",
+				httpStatus: null,
+			};
 		}
 	}
 
@@ -2593,7 +2752,7 @@ export class ObserverClient {
 	// Error handling
 	// -----------------------------------------------------------------------
 
-	private _handleHttpError(status: number, errorText: string, providerLabel: string): void {
+	private _handleHttpError(status: number, errorText: string, providerLabel: string): string {
 		const summary = redactText(errorText);
 
 		if (isAuthStatus(status)) {
@@ -2606,7 +2765,7 @@ export class ObserverClient {
 
 		if (status === 429) {
 			this._setLastError(`${providerLabel} rate limited. Retry later.`, "rate_limited");
-			return;
+			return "rate_limited";
 		}
 
 		// Check for model-not-found in Anthropic error responses
@@ -2622,7 +2781,7 @@ export class ObserverClient {
 							`${providerLabel} model ID not found: ${message.split(":")[1]?.trim() ?? this.model}.`,
 							"invalid_model_id",
 						);
-						return;
+						return "invalid_model_id";
 					}
 				}
 			} catch {
@@ -2631,6 +2790,7 @@ export class ObserverClient {
 		}
 
 		this._setLastError(`${providerLabel} request failed (${status}).`, "provider_request_failed");
+		return "provider_request_failed";
 	}
 
 	private _setLastError(message: string, code?: string): void {

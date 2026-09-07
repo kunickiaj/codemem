@@ -35,11 +35,7 @@ import {
 	projectAdapterToolEvent,
 } from "./ingest-events.js";
 import { isLowSignalObservation } from "./ingest-filters.js";
-import {
-	buildObserverPrompt,
-	buildObserverRepairPrompt,
-	truncateObserverTranscript,
-} from "./ingest-prompts.js";
+import { buildObserverPrompt, truncateObserverTranscript } from "./ingest-prompts.js";
 import { type CaptureRoutedObservation, routeObservationsForCapture } from "./ingest-routing.js";
 import {
 	buildTranscript,
@@ -54,19 +50,18 @@ import {
 import type {
 	IngestPayload,
 	ObserverContext,
-	ParsedOutput,
 	ParsedSummary,
 	SessionContext,
 	ToolEvent,
 } from "./ingest-types.js";
-import {
-	hasMeaningfulObservation,
-	parseObserverResponse,
-	shouldPreferRepairedObserverResponse,
-	shouldRepairObserverResponse,
-} from "./ingest-xml-parser.js";
+import { hasMeaningfulObservation } from "./ingest-xml-parser.js";
 import { REMEMBER_MEMORY_KINDS } from "./memory-kinds.js";
 import { type ObserverClient, ObserverClient as ObserverClientImpl } from "./observer-client.js";
+import {
+	observeAndNormalizeObserverOutput,
+	observerOutputMetadata,
+	resolveObserverOutputCapability,
+} from "./observer-output.js";
 import { resolveProject } from "./project.js";
 import * as schema from "./schema.js";
 import { classifySessionForInjection, shouldSuppressSummaryOnlyOutput } from "./session-policy.js";
@@ -320,67 +315,14 @@ export function rawEventObserverStatusFromError(
 	return observerFailureStatuses.get(error) ?? null;
 }
 
-async function observeStructuredOutput(
-	observer: ObserverClient,
-	system: string,
-	user: string,
-): Promise<{ raw: string | null; parsed: ParsedOutput; provider: string; model: string }> {
-	const first = await observer.observe(system, user);
-	const firstParsed = first.raw
-		? parseObserverResponse(first.raw)
-		: { observations: [], summary: null, skipSummaryReason: null };
-	if (!shouldRepairObserverResponse(first.raw, firstParsed)) {
-		return {
-			raw: first.raw,
-			parsed: firstParsed,
-			provider: first.provider,
-			model: first.model,
-		};
-	}
-
-	const repairPrompt = buildObserverRepairPrompt(
-		system,
-		user,
-		first.raw as string,
-		observer.maxChars,
-	);
-	let repaired: Awaited<ReturnType<ObserverClient["observe"]>>;
-	try {
-		repaired = await observer.observe(repairPrompt.system, repairPrompt.user);
-	} catch {
-		return {
-			raw: first.raw,
-			parsed: firstParsed,
-			provider: first.provider,
-			model: first.model,
-		};
-	}
-	const repairedParsed = repaired.raw
-		? parseObserverResponse(repaired.raw)
-		: { observations: [], summary: null, skipSummaryReason: null };
-	if (!shouldPreferRepairedObserverResponse(firstParsed, repaired.raw, repairedParsed, first.raw)) {
-		return {
-			raw: first.raw,
-			parsed: firstParsed,
-			provider: first.provider,
-			model: first.model,
-		};
-	}
-	return {
-		raw: repaired.raw,
-		parsed: repairedParsed,
-		provider: repaired.provider,
-		model: repaired.model,
-	};
-}
-
 async function observeRawEventOutput(
 	observer: ObserverClient,
 	system: string,
 	user: string,
-): Promise<Awaited<ReturnType<typeof observeStructuredOutput>>> {
+	capability: ReturnType<typeof resolveObserverOutputCapability>,
+): Promise<Awaited<ReturnType<typeof observeAndNormalizeObserverOutput>>> {
 	try {
-		return await observeStructuredOutput(observer, system, user);
+		return await observeAndNormalizeObserverOutput(observer, system, user, capability);
 	} catch (error) {
 		if ((typeof error === "object" || typeof error === "function") && error !== null) {
 			observerFailureStatuses.set(error, observer.getStatus());
@@ -594,12 +536,17 @@ export async function ingest(
 				: new ObserverClientImpl(tierConfig);
 		}
 
-		const { system, user } = buildObserverPrompt(observerContext);
+		const outputCapability = resolveObserverOutputCapability(selectedObserver);
+		const { system, user } = buildObserverPrompt(observerContext, {
+			outputMode: outputCapability.actualMode,
+		});
 
 		// ------------------------------------------------------------------
 		// Call observer LLM
 		// ------------------------------------------------------------------
-		const response = await observeRawEventOutput(selectedObserver, system, user);
+		const output = await observeRawEventOutput(selectedObserver, system, user, outputCapability);
+		const response = output.final;
+		const outputMetadata = observerOutputMetadata(output);
 
 		if (!response.raw) {
 			// Raw-event flushes must be lossless: if the observer returns no output,
@@ -629,10 +576,10 @@ export async function ingest(
 		const parsed = response.parsed;
 		if (
 			sessionContext?.flusher === "raw_events" &&
+			output.diagnostics.failureReason === "legacy_xml_lossy" &&
 			(parsed.observations.length > 0 ||
 				parsed.summary !== null ||
-				parsed.skipSummaryReason !== null) &&
-			shouldRepairObserverResponse(rawText, parsed)
+				parsed.skipSummaryReason !== null)
 		) {
 			throw new RawEventObserverOutputError(
 				"observer repair remained lossy during raw-event flush",
@@ -845,6 +792,7 @@ export async function ingest(
 					observer_openai_responses: selectedObserver.openaiUseResponses,
 					observer_fallback_applied: observerFallbackApplied,
 					observer_fallback_reason: observerFallbackReason,
+					...outputMetadata,
 					flush_batch: flushBatchMetadata,
 				});
 				vectorWriteInputs.push({ memoryId, title: memoryTitle, bodyText });
@@ -898,6 +846,7 @@ export async function ingest(
 						observer_openai_responses: selectedObserver.openaiUseResponses,
 						observer_fallback_applied: observerFallbackApplied,
 						observer_fallback_reason: observerFallbackReason,
+						...outputMetadata,
 						files_read: summary.filesRead,
 						files_modified: summary.filesModified,
 						source: "observer_summary",
@@ -949,6 +898,7 @@ export async function ingest(
 						openai_responses: selectedObserver.openaiUseResponses,
 						fallback_applied: observerFallbackApplied,
 						fallback_reason: observerFallbackReason,
+						...outputMetadata,
 						session_usage_tokens: usageTokenTotal,
 					}),
 				})
@@ -982,6 +932,7 @@ export async function ingest(
 			observer_openai_responses: selectedObserver.openaiUseResponses,
 			observer_fallback_applied: observerFallbackApplied,
 			observer_fallback_reason: observerFallbackReason,
+			...outputMetadata,
 		});
 	} catch (err) {
 		// End session even on error

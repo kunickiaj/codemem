@@ -17,11 +17,7 @@ import {
 	projectAdapterToolEvent,
 } from "./ingest-events.js";
 import { isLowSignalObservation } from "./ingest-filters.js";
-import {
-	buildObserverPrompt,
-	buildObserverRepairPrompt,
-	truncateObserverTranscript,
-} from "./ingest-prompts.js";
+import { buildObserverPrompt, truncateObserverTranscript } from "./ingest-prompts.js";
 import {
 	buildTranscript,
 	deriveRequest,
@@ -39,19 +35,20 @@ import type {
 	SessionContext,
 	ToolEvent,
 } from "./ingest-types.js";
-import {
-	parseObserverResponse,
-	SUPPORTED_OBSERVATION_KINDS,
-	shouldPreferRepairedObserverResponse,
-	shouldRepairObserverResponse,
-} from "./ingest-xml-parser.js";
+import { SUPPORTED_OBSERVATION_KINDS } from "./ingest-xml-parser.js";
 import {
 	type ObserverClient,
 	ObserverClient as ObserverClientImpl,
 	type ObserverConfig,
-	type ObserverStatus,
 	type ObserverTokenUsage,
 } from "./observer-client.js";
+import {
+	type ObserverOutputCapabilityReason,
+	type ObserverOutputMode,
+	type ObserverOutputValidation,
+	observeAndNormalizeObserverOutput,
+	resolveObserverOutputCapability,
+} from "./observer-output.js";
 import { resolveProject } from "./project.js";
 import { buildSessionContext } from "./raw-event-flush.js";
 
@@ -67,15 +64,6 @@ function normalizePath(path: string, repoRoot: string | null): string {
 
 function normalizePaths(paths: string[], repoRoot: string | null): string[] {
 	return paths.map((p) => normalizePath(p, repoRoot)).filter(Boolean);
-}
-
-function snapshotObserverStatus(observer: ObserverClient): ObserverStatus {
-	const status = observer.getStatus();
-	return {
-		...status,
-		auth: { ...status.auth },
-		...(status.lastError ? { lastError: { ...status.lastError } } : {}),
-	};
 }
 
 function summaryBody(summary: ParsedSummary): string {
@@ -116,76 +104,6 @@ function normalizeEventsForToolExtraction(
 	return toolEvents;
 }
 
-async function observeStructuredOutput(
-	observer: ObserverClient,
-	system: string,
-	user: string,
-): Promise<{
-	initial: {
-		raw: string | null;
-		parsed: ParsedOutput;
-		provider: string;
-		model: string;
-		elapsedMs: number | null;
-		usage: ObserverTokenUsage | null;
-		status: ObserverStatus;
-	};
-	repaired: {
-		raw: string | null;
-		parsed: ParsedOutput;
-		provider: string;
-		model: string;
-		elapsedMs: number | null;
-		usage: ObserverTokenUsage | null;
-		status: ObserverStatus;
-	} | null;
-}> {
-	const first = await observer.observe(system, user);
-	const firstParsed = first.raw
-		? parseObserverResponse(first.raw)
-		: { observations: [], summary: null, skipSummaryReason: null };
-	const initial = {
-		raw: first.raw,
-		parsed: firstParsed,
-		provider: first.provider,
-		model: first.model,
-		elapsedMs: first.elapsedMs ?? null,
-		usage: first.usage ?? null,
-		status: snapshotObserverStatus(observer),
-	};
-	if (!shouldRepairObserverResponse(first.raw, firstParsed)) {
-		return { initial, repaired: null };
-	}
-
-	const repairPrompt = buildObserverRepairPrompt(
-		system,
-		user,
-		first.raw as string,
-		observer.maxChars,
-	);
-	let repaired: Awaited<ReturnType<ObserverClient["observe"]>>;
-	try {
-		repaired = await observer.observe(repairPrompt.system, repairPrompt.user);
-	} catch {
-		return { initial, repaired: null };
-	}
-	const repairedParsed = repaired.raw
-		? parseObserverResponse(repaired.raw)
-		: { observations: [], summary: null, skipSummaryReason: null };
-	return {
-		initial,
-		repaired: {
-			raw: repaired.raw,
-			parsed: repairedParsed,
-			provider: repaired.provider,
-			model: repaired.model,
-			elapsedMs: repaired.elapsedMs ?? null,
-			usage: repaired.usage ?? null,
-			status: snapshotObserverStatus(observer),
-		},
-	};
-}
-
 function sumObserverUsage(
 	initial: ObserverTokenUsage | null,
 	repaired: ObserverTokenUsage | null,
@@ -212,6 +130,46 @@ function sumObserverUsage(
 		...(totalTokens != null ? { totalTokens } : {}),
 		...(cacheReadInputTokens != null ? { cacheReadInputTokens } : {}),
 		...(cacheCreationInputTokens != null ? { cacheCreationInputTokens } : {}),
+	};
+}
+
+function validatedEnvelopeDiagnostics(
+	parsed: ParsedOutput,
+): ReturnType<typeof evaluateExtractionStructure> {
+	const observationCount = parsed.observations.length;
+	const summaryCount = parsed.summary ? 1 : 0;
+	return {
+		recognizedOutput: true,
+		observationBlocks: observationCount,
+		retainedObservations: observationCount,
+		summaryBlocks: summaryCount,
+		retainedSummaries: summaryCount,
+		illegalObservationNestingInSummary: 0,
+		unknownSummaryFields: [],
+		unsupportedObservationKinds: [],
+		missingObservationKinds: 0,
+		discardedObservationBlocks: 0,
+		discardedSummaryBlocks: 0,
+		dataLoss: false,
+	};
+}
+
+function failedStructuredAttemptDiagnostics(options: {
+	dataLoss: boolean;
+}): ReturnType<typeof evaluateExtractionStructure> {
+	return {
+		recognizedOutput: false,
+		observationBlocks: 0,
+		retainedObservations: 0,
+		summaryBlocks: 0,
+		retainedSummaries: 0,
+		illegalObservationNestingInSummary: 0,
+		unknownSummaryFields: [],
+		unsupportedObservationKinds: [],
+		missingObservationKinds: 0,
+		discardedObservationBlocks: 0,
+		discardedSummaryBlocks: 0,
+		dataLoss: options.dataLoss,
 	};
 }
 
@@ -248,6 +206,17 @@ export interface ExtractionReplayResult {
 		maxOutputTokens: number | null;
 		temperature: number | null;
 		repairApplied: boolean;
+		requestedOutputMode: ObserverOutputMode;
+		actualOutputMode: Exclude<ObserverOutputMode, "forced_tool">;
+		outputSchemaVersion: number | null;
+		outputCapabilityReason: ObserverOutputCapabilityReason;
+		outputFallbackApplied: boolean;
+		outputFallbackReason: ObserverOutputCapabilityReason | null;
+		outputValidation: ObserverOutputValidation;
+		outputFailureReason: string | null;
+		repairAttempted: boolean;
+		retryAttempted: boolean;
+		retryReason: string | null;
 		initialRaw: string | null;
 		initialElapsedMs: number | null;
 		initialUsage: ObserverTokenUsage | null;
@@ -305,8 +274,6 @@ interface PreparedReplayBatch {
 	};
 	sessionContext: SessionContext;
 	observerContext: ObserverContext;
-	system: string;
-	user: string;
 	sessionPost: Record<string, unknown>;
 	analysis: ReplayBatchAnalysis;
 }
@@ -589,7 +556,6 @@ async function prepareReplayBatch(
 			diffSummary: "",
 			recentFiles: "",
 		};
-		const { system, user } = buildObserverPrompt(observerContext);
 		const sessionMeta = (() => {
 			try {
 				return batch.metadata_json
@@ -611,8 +577,6 @@ async function prepareReplayBatch(
 			},
 			sessionContext,
 			observerContext,
-			system,
-			user,
 			sessionPost: post,
 			analysis: {
 				batchId: batch.id,
@@ -638,7 +602,16 @@ async function replayPreparedBatch(
 	tierReasons: string[],
 ): Promise<ExtractionReplayResult> {
 	const configuredModel = observer.requestedModel ?? observer.model;
-	const response = await observeStructuredOutput(observer, prepared.system, prepared.user);
+	const outputCapability = resolveObserverOutputCapability(observer);
+	const prompt = buildObserverPrompt(prepared.observerContext, {
+		outputMode: outputCapability.actualMode,
+	});
+	const response = await observeAndNormalizeObserverOutput(
+		observer,
+		prompt.system,
+		prompt.user,
+		outputCapability,
+	);
 	const requestedModel = configuredModel || response.initial.model;
 	const session = {
 		id: prepared.batch.session_id,
@@ -668,17 +641,8 @@ async function replayPreparedBatch(
 				prepared.scenario,
 			)
 		: null;
-	const preferRepaired = response.repaired
-		? shouldPreferRepairedObserverResponse(
-				response.initial.parsed,
-				response.repaired.raw,
-				response.repaired.parsed,
-				response.initial.raw,
-			)
-		: false;
-	const finalResponse = preferRepaired
-		? (response.repaired as NonNullable<typeof response.repaired>)
-		: response.initial;
+	const preferRepaired = response.repairApplied || response.retryApplied;
+	const finalResponse = response.final;
 	const observerStatus = finalResponse.status;
 	const modelFallbackApplied = observerStatus.modelFallbackApplied === true;
 	const resolvedModel = modelFallbackApplied
@@ -697,22 +661,36 @@ async function replayPreparedBatch(
 				evaluation: repairedEvaluation ?? initialEvaluation,
 			})
 		: null;
-	const initialDiagnostics = evaluateExtractionStructure(
-		response.initial.raw ?? "",
-		response.initial.parsed,
-	);
-	const repairedDiagnostics = response.repaired
-		? evaluateExtractionStructure(response.repaired.raw ?? "", response.repaired.parsed)
-		: null;
-	const repairAttempted = response.repaired !== null;
+	let initialDiagnostics: ReturnType<typeof evaluateExtractionStructure>;
+	if (response.diagnostics.actualMode === "legacy_xml") {
+		initialDiagnostics = evaluateExtractionStructure(
+			response.initial.raw ?? "",
+			response.initial.parsed,
+		);
+	} else if (response.retryApplied) {
+		initialDiagnostics = failedStructuredAttemptDiagnostics({
+			dataLoss: response.initial.raw != null,
+		});
+	} else {
+		initialDiagnostics = validatedEnvelopeDiagnostics(response.initial.parsed);
+	}
+	let repairedDiagnostics: ReturnType<typeof evaluateExtractionStructure> | null = null;
+	if (response.repaired) {
+		repairedDiagnostics =
+			response.diagnostics.actualMode === "legacy_xml"
+				? evaluateExtractionStructure(response.repaired.raw ?? "", response.repaired.parsed)
+				: validatedEnvelopeDiagnostics(response.repaired.parsed);
+	}
+	const repairAttempted = response.diagnostics.repairAttempted;
+	const secondAttempted = repairAttempted || response.diagnostics.retryAttempted;
 	const totalElapsedMs =
-		response.initial.elapsedMs != null && (!repairAttempted || response.repaired?.elapsedMs != null)
+		response.initial.elapsedMs != null && (!secondAttempted || response.repaired?.elapsedMs != null)
 			? response.initial.elapsedMs + (response.repaired?.elapsedMs ?? 0)
 			: null;
 	const totalUsage = sumObserverUsage(
 		response.initial.usage,
 		response.repaired?.usage ?? null,
-		repairAttempted,
+		secondAttempted,
 	);
 	const transport =
 		observerStatus.auth.type === "codex_consumer" ||
@@ -750,7 +728,18 @@ async function replayPreparedBatch(
 			reasoningSummary: reportsReasoning ? observer.reasoningSummary : null,
 			maxOutputTokens: reportsRequestLimits ? observer.maxOutputTokens : null,
 			temperature: reportsRequestLimits ? observer.temperature : null,
-			repairApplied: preferRepaired,
+			repairApplied: response.repairApplied,
+			requestedOutputMode: response.diagnostics.requestedMode,
+			actualOutputMode: response.diagnostics.actualMode,
+			outputSchemaVersion: response.diagnostics.schemaVersion,
+			outputCapabilityReason: response.diagnostics.capabilityReason,
+			outputFallbackApplied: response.diagnostics.fallbackApplied,
+			outputFallbackReason: response.diagnostics.fallbackReason,
+			outputValidation: response.diagnostics.validation,
+			outputFailureReason: response.diagnostics.failureReason,
+			repairAttempted,
+			retryAttempted: response.diagnostics.retryAttempted,
+			retryReason: response.diagnostics.retryReason,
 			initialRaw: response.initial.raw,
 			initialElapsedMs: response.initial.elapsedMs,
 			initialUsage: response.initial.usage,
@@ -765,9 +754,7 @@ async function replayPreparedBatch(
 			totalElapsedMs,
 			totalUsage,
 			parsed: finalResponse.parsed,
-			diagnostics: preferRepaired
-				? (repairedDiagnostics as NonNullable<typeof repairedDiagnostics>)
-				: initialDiagnostics,
+			diagnostics: preferRepaired ? repairedDiagnostics : initialDiagnostics,
 		},
 		observerContext: prepared.observerContext,
 		initialClassification,

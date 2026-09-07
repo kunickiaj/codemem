@@ -2109,6 +2109,77 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 		expect(summaryMetadata.learned).toBe("Race condition in handler");
 	});
 
+	it("persists normalized JSON Schema output and content-free mode metadata", async () => {
+		const structuredObserver = {
+			provider: "openai",
+			model: "gpt-test",
+			runtime: "api_http",
+			openaiUseResponses: true,
+			outputMode: "auto",
+			hasCustomBaseUrl: false,
+			tierRoutingEnabled: false,
+			maxChars: 12_000,
+			observe: async () => {
+				throw new Error("legacy XML path must not run");
+			},
+			observeStructuredJson: async () => ({
+				raw: JSON.stringify({
+					schema_version: 1,
+					status: "captured",
+					observations: [
+						{
+							kind: "discovery",
+							title: "Schema output reached ingest",
+							narrative: "The shared boundary normalized provider JSON.",
+							subtitle: null,
+							facts: ["The persisted path did not parse XML."],
+							concepts: ["problem-solution"],
+							files_read: [],
+							files_modified: ["packages/core/src/ingest-pipeline.ts"],
+						},
+					],
+					summary: null,
+					skip_reason: null,
+				}),
+				parsed: null,
+				provider: "openai",
+				model: "gpt-test",
+				elapsedMs: 7,
+				usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
+				usedStructuredOutputs: true,
+				failureReason: null,
+			}),
+			getStatus: () => ({
+				provider: "openai",
+				model: "gpt-test",
+				runtime: "api_http",
+				auth: { source: "test", type: "api_direct", hasToken: true },
+			}),
+		};
+
+		await ingest(buildPayload(), store, {
+			observer: structuredObserver,
+			storeSummary: false,
+		} as unknown as IngestOptions);
+
+		const metadata = observerMemoryMetadata("Schema output reached ingest");
+		expect(metadata).toEqual(
+			expect.objectContaining({
+				observer_requested_output_mode: "json_schema",
+				observer_output_mode: "json_schema",
+				observer_output_schema_version: 1,
+				observer_output_validation: "valid",
+				observer_output_repair_attempted: false,
+				observer_output_initial_elapsed_ms: 7,
+			}),
+		);
+		expect(metadata.observer_output_initial_usage).toEqual({
+			inputTokens: 10,
+			outputTokens: 20,
+			totalTokens: 30,
+		});
+	});
+
 	it("repairs a structured response when parsing would discard an observation", async () => {
 		const calls: Array<{ system: string; user: string }> = [];
 		const lossy = `<summary>

@@ -653,6 +653,7 @@ export {
 	writeCodememConfigFile,
 	writeWorkspaceCodememConfigFile,
 } from "./observer-config.js";
+export * from "./observer-output.js";
 export * from "./observer-output-schema.js";
 export * from "./operational-status.js";
 export * from "./outcome-evidence.js";
