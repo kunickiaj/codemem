@@ -3,7 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../../../../lib/api";
 import { state } from "../../../../lib/state";
 import type { TeamSyncDiscoveredRow } from "../../components/team-sync-panel";
-import { deriveTeamSyncPrimaryStatus, type UiTeamSyncPrimaryStatus } from "../../view-model";
+import {
+	deriveSyncViewModel,
+	deriveTeamSyncPrimaryStatus,
+	type UiTeamSyncPrimaryStatus,
+} from "../../view-model";
 import { teamSyncState } from "../data/state";
 import {
 	needsCoordinatorGroupReview,
@@ -259,7 +263,56 @@ describe("submitDiscoveredDeviceReview", () => {
 	});
 });
 
-describe("renderTeamSync pending coordinator approval", () => {
+describe("renderTeamSync discovered-device state", () => {
+	it("presents a stale unpaired device as attention-visible but not reviewable", () => {
+		document.body.innerHTML = `
+			<div id="syncTeamMeta"></div>
+			<div id="syncSetupPanel"></div>
+			<div id="syncTeamActions"></div>
+			<div id="syncCoordinatorDiscovered"></div>
+			<div id="syncCoordinatorDiscoveredMeta"></div>
+			<div id="syncCoordinatorDiscoveredList"></div>
+		`;
+		state.lastSyncStatus = { enabled: true, daemon_state: "ok", daemon_running: true };
+		state.lastSyncPeers = [];
+		state.lastSyncCoordinator = {
+			configured: true,
+			coordinator_url: "https://coord.example.test",
+			sync_enabled: true,
+			groups: ["Acme"],
+			presence_status: "posted",
+			discovered_devices: [
+				{
+					device_id: "device-stale",
+					display_name: "Desk Mini",
+					fingerprint: "fingerprint-stale",
+					groups: ["Acme"],
+					addresses: [],
+					address_count: 0,
+					stale: true,
+				},
+			],
+		};
+		state.lastSyncViewModel = deriveSyncViewModel({
+			coordinator: state.lastSyncCoordinator,
+			peers: state.lastSyncPeers,
+			status: state.lastSyncStatus,
+		});
+
+		act(() => renderTeamSync());
+
+		const actions = document.getElementById("syncTeamActions") as HTMLElement;
+		const discovered = document.getElementById("syncCoordinatorDiscoveredList") as HTMLElement;
+		expect(actions.textContent).toContain("Desk Mini is available to review");
+		expect(actions.textContent).toContain("Open device");
+		expect(discovered.textContent).toContain("Offline");
+		expect(discovered.textContent).toContain("No fresh addresses");
+		expect(discovered.textContent).toContain(
+			"Wait for a fresh coordinator presence update, then review this device again here.",
+		);
+		expect(discovered.querySelector("button")).toBeNull();
+	});
+
 	it("keeps a stale authoritative approval row visible without counting it as actionable", () => {
 		document.body.innerHTML = `
 			<div id="syncTeamMeta"></div>

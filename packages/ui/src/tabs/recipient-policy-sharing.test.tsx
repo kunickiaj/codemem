@@ -58,6 +58,7 @@ import type {
 import { RecipientPolicyTeamRenameApiError } from "../lib/api/sync";
 import type { RecipientPolicyManagementProject } from "./recipient-policy-management";
 import { mountRecipientPolicySharing } from "./recipient-policy-sharing";
+import { deriveTeamSyncPrimaryStatus } from "./sync/view-model";
 
 const projects: RecipientPolicyManagementProject[] = [
 	{ canonicalProjectIdentity: "project-codemem", displayName: "Codemem", existingMemoryCount: 40 },
@@ -412,6 +413,44 @@ describe("recipient-focused Sharing", () => {
 		expect(text).toContain("1 active shared Project identity — Codemem");
 		expect(text).toContain("Yes — future Team members inherit the Team’s shared Projects");
 		expect(text).not.toContain("Old Team");
+	});
+
+	it("keeps active Team intent visible while Project enforcement needs attention", () => {
+		const graph = intent();
+		const sharedProject = graph.projectRecipients.find(
+			(recipient) => recipient.recipientKind === "team" && recipient.status === "active",
+		);
+		if (!sharedProject) throw new Error("active Team Project recipient missing");
+		mount(graph);
+		const sharingText = visiblePanel().textContent ?? "";
+		const advancedStatus = deriveTeamSyncPrimaryStatus({
+			status: { enabled: true, daemon_state: "ok", daemon_running: true },
+			coordinator: {
+				configured: true,
+				groups: ["ExampleCo"],
+				presence_status: "posted",
+			},
+			reconciliation: {
+				items: [
+					{
+						canonicalProjectIdentity: sharedProject.canonicalProjectIdentity,
+						state: "needs_attention",
+					},
+				],
+			},
+		});
+
+		expect(sharingText).toContain("2 active members — Adam, Brian");
+		expect(sharingText).toContain("2 active registered devices");
+		expect(sharingText).toContain("1 active shared Project identity — Codemem");
+		expect(sharingText).not.toContain("needs review");
+		expect(sharingText).not.toContain("Project access");
+		expect(advancedStatus).toMatchObject({
+			state: "needs-attention",
+			meta: "Team: ExampleCo. Team access needs review before it can continue.",
+			nextAction: "Open Sharing, review Project access, then sync again.",
+		});
+		expect(advancedStatus.meta).not.toContain(sharedProject.canonicalProjectIdentity);
 	});
 
 	it("bounds long member lists behind an accessible disclosure", () => {
