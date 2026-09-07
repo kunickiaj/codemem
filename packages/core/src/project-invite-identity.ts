@@ -6,7 +6,7 @@ const MACHINE_SLUG_NAME = /^(?:actor|device|identity)[_-][a-z0-9][a-z0-9._:-]{4,
 const PENDING_PERSON_NAME = /^pending[_-]\S+$/iu;
 const HEX_HOSTNAME = /^[a-f0-9]{12,64}$/iu;
 const HOSTNAME_NAME =
-	/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/iu;
+	/^(?=.{1,253}$)(?:(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.){2,}[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?|[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.local)$/iu;
 
 export interface ProjectInviteSummary {
 	display_name: string;
@@ -39,7 +39,6 @@ export function isHumanPresentationName(value: unknown): boolean {
 		MACHINE_SLUG_NAME,
 		PENDING_PERSON_NAME,
 		HEX_HOSTNAME,
-		HOSTNAME_NAME,
 	].some((pattern) => pattern.test(normalized));
 }
 

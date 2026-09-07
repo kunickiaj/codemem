@@ -30,8 +30,8 @@ describe("project invite identity", () => {
 			"host-name",
 		);
 		expect(
-			friendlyDeviceName({ osName: "emm-five.home.morgowicz.com", coordinatorName: "Remote" }),
-		).toBe("emm-five.home.morgowicz.com");
+			friendlyDeviceName({ osName: "emm-five.home.example.com", coordinatorName: "Remote" }),
+		).toBe("emm-five.home.example.com");
 		expect(friendlyDeviceName({ coordinatorName: "Remote" })).toBe("Remote");
 		expect(friendlyDeviceName({ fallbackSeed: "abcd-1234" })).toBe("Codemem device abcd12");
 		expect(friendlyDeviceName({ osName: "e67fda8c4b44", fallbackSeed: "e67fda8c4b44" })).toBe(
@@ -88,6 +88,13 @@ describe("project invite identity", () => {
 		},
 	);
 
+	it("keeps DNS hostnames scoped to device validation", () => {
+		expect(isHumanPresentationName("emm-five.home.example.com")).toBe(true);
+		expect(normalizeDeviceDisplayName("emm-five.home.example.com", "device_display_name")).toBe(
+			"emm-five.home.example.com",
+		);
+	});
+
 	it("normalizes human actor and device presentation names", () => {
 		expect(normalizeHumanPresentationName("  Brian   Example  ", "recipient_display_name")).toBe(
 			"Brian Example",
@@ -95,11 +102,12 @@ describe("project invite identity", () => {
 		expect(normalizeHumanPresentationName("Brian's MacBook", "device_display_name")).toBe(
 			"Brian's MacBook",
 		);
+		expect(normalizeHumanPresentationName("jane.doe", "recipient_display_name")).toBe("jane.doe");
 	});
 
 	it("accepts DNS hostnames as device presentation names", () => {
-		expect(normalizeDeviceDisplayName("emm-five.home.morgowicz.com", "device_display_name")).toBe(
-			"emm-five.home.morgowicz.com",
+		expect(normalizeDeviceDisplayName("emm-five.home.example.com", "device_display_name")).toBe(
+			"emm-five.home.example.com",
 		);
 		expect(() => normalizeDeviceDisplayName("device_abc123def", "device_display_name")).toThrow(
 			"device_display_name_invalid",

@@ -1460,7 +1460,7 @@ describe("createCoordinatorApp dependency injection", () => {
 				public_key: publicKey,
 				fingerprint: fingerprintPublicKey(publicKey),
 				recipient_display_name: "Brian Example",
-				device_display_name: "Brian's second device",
+				device_display_name: "emm-five.home.example.com",
 			}),
 		});
 
@@ -1473,7 +1473,7 @@ describe("createCoordinatorApp dependency injection", () => {
 		expect(consumeRecipientInvite).toHaveBeenCalledWith(
 			expect.objectContaining({
 				recipientDisplayName: "Brian Example",
-				deviceDisplayName: "Brian's second device",
+				deviceDisplayName: "emm-five.home.example.com",
 			}),
 		);
 	});
@@ -1619,7 +1619,7 @@ describe("createCoordinatorApp dependency injection", () => {
 				fingerprint: fingerprintPublicKey(publicKey),
 				recipient_actor_id: "actor-brian",
 				recipient_display_name: "Brian",
-				device_display_name: "emm-five.home.morgowicz.com",
+				device_display_name: "Brian's Mac",
 			}),
 		});
 
@@ -1676,13 +1676,16 @@ describe("createCoordinatorApp dependency injection", () => {
 				fingerprint: fingerprintPublicKey(publicKey),
 				recipient_actor_id: "actor-brian",
 				recipient_display_name: "Brian",
-				device_display_name: "Brian's Mac",
+				device_display_name: "emm-five.home.example.com",
 			}),
 		});
 
 		expect(response.status).toBe(200);
 		expect(await response.json()).toMatchObject({ ok: true, status: "pending_setup" });
 		expect(consumeProjectInvite).toHaveBeenCalledOnce();
+		expect(consumeProjectInvite).toHaveBeenCalledWith(
+			expect.objectContaining({ deviceDisplayName: "emm-five.home.example.com" }),
+		);
 	});
 
 	it("reports a newly consumed project invite as pending setup", async () => {
