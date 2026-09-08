@@ -191,6 +191,33 @@ describe("automatic session continuity", () => {
 		expect(generic.pack_text).toContain("Root sibling summary");
 	});
 });
+describe("automatic requester sentinel", () => {
+	usePackFixture();
+	it("never authorizes summaries for the unknown ledger sentinel even when a row maps it", () => {
+		const now = new Date().toISOString();
+		store.db
+			.prepare(
+				"INSERT INTO opencode_sessions(source, stream_id, opencode_session_id, session_id, created_at) VALUES (?, ?, ?, ?, ?)",
+			)
+			.run("opencode", "unknown", "unknown", sessionId, now);
+		store.remember(sessionId, "session_summary", "Sentinel summary", "sentinel continuity", 0.9);
+		const durableId = store.remember(
+			sessionId,
+			"decision",
+			"Sentinel durable fact",
+			"sentinel continuity durable",
+			0.8,
+		);
+
+		const pack = store.buildMemoryPack("sentinel continuity", 10, null, undefined, {
+			source: "opencode",
+			hostSessionId: "unknown",
+		});
+
+		expect(pack.pack_text).not.toContain("Sentinel summary");
+		expect(pack.item_ids).toContain(durableId);
+	});
+});
 describe("automatic eligibility inside SQL limits", () => {
 	usePackFixture();
 	it("applies summary eligibility inside the recent fallback query instead of paging by offset", () => {

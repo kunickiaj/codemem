@@ -81,14 +81,10 @@ function fixtureDigest() {
 }
 
 function sourceEvidence(source: string) {
-	const paths = git(
-		"ls-tree",
-		"-r",
-		"--name-only",
-		manifest.source.commit,
-		"packages",
-		"pnpm-lock.yaml",
-	)
+	// Enumerate the tree actually under evaluation: the pinned commit for the
+	// historical snapshot, the candidate's own tracked files for the checkout.
+	const tree = source === root ? "HEAD" : manifest.source.commit;
+	const paths = git("ls-tree", "-r", "--name-only", tree, "packages", "pnpm-lock.yaml")
 		.toString()
 		.trim()
 		.split("\n")

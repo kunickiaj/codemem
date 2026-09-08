@@ -1114,7 +1114,11 @@ function resolveAutomaticContinuity(
 	if (automaticContext === null) return { requested: true, sessionId: null };
 	const source = automaticContext.source.trim().toLowerCase();
 	const hostSessionId = automaticContext.hostSessionId.trim();
-	if (!source || !hostSessionId) return { requested: true, sessionId: null };
+	// The ledger's "unknown" placeholder is never a requester identity, even if a
+	// row with that stream ID exists.
+	if (!source || !hostSessionId || hostSessionId.toLowerCase() === "unknown") {
+		return { requested: true, sessionId: null };
+	}
 	const row = store.db
 		.prepare(
 			`SELECT session_id
