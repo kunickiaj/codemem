@@ -3587,7 +3587,10 @@ export const CodememPlugin = async ({
   const buildInjectedContext = async (query, context = {}) => {
     const requestPackBudget = reserveContextPrefixBudget(context.tokenBudget ?? injectTokenBudget);
     const queryHash = hashPromptPackQuery(query);
-    const requesterHostSessionID = context.sessionID || activeSessionID || null;
+    // Requester eligibility comes only from the transform's own session identity.
+    // activeSessionID tracks the latest event stream, which can belong to another
+    // overlapping session; inferring from it would authorize the wrong summaries.
+    const requesterHostSessionID = context.sessionID || null;
     const sessionID = requesterHostSessionID || "unknown";
     const surface = context.surface || injectSurface;
     let requestKey = context.requestKey || "unknown";

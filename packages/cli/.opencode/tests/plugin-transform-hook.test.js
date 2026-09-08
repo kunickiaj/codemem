@@ -807,6 +807,37 @@ describe("OpenCode transform-time injection", () => {
 		expect(packBody.attempt).not.toHaveProperty("source_session_id");
 	});
 
+	test("does not infer a missing requester from the most recent active session event", async () => {
+		process.env.CODEMEM_VIEWER = "1";
+		process.env.CODEMEM_VIEWER_AUTO = "0";
+		process.env.CODEMEM_RAW_EVENTS = "0";
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+			if (String(url).endsWith("/api/prompt-pack-profile")) return viewerProfileResponse();
+			if (String(url).endsWith("/api/pack")) return jsonResponse(200, packResponse());
+			return jsonResponse(200, { ok: true });
+		});
+		const { CodememPlugin } = await import("../plugins/codemem.js");
+		const hooks = await CodememPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+		// An overlapping session's event stream must not become another transform's requester.
+		await hooks.event({
+			event: { type: "session.created", properties: { sessionID: "sess-other-active" } },
+		});
+		const output = messageOutput({ messageId: "user-missing-session-after-event", sessionID: null });
+
+		await hooks["experimental.chat.messages.transform"]({}, output);
+		await vi.waitFor(() => expect(fetchPostCalls(fetchMock)).toHaveLength(2));
+
+		const packBody = fetchBody(fetchMock, 0);
+		expect(packBody).toHaveProperty("automatic_context", null);
+		expect(packBody.attempt).not.toHaveProperty("source_session_id");
+		expect(JSON.stringify(packBody)).not.toContain("sess-other-active");
+	});
+
 	test("keeps an explicit reserved token budget equal across Viewer and CLI fallback", async () => {
 		// Arrange
 		process.env.CODEMEM_VIEWER = "1";

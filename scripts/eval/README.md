@@ -150,8 +150,9 @@ pnpm run eval:pack:typecheck
 ```
 
 Run the first command twice and compare the JSON reports. Each run first requires
-the frozen historical suite to pass, verifies the fixture bytes against
-`5de04daf`, recomputes the recursively key-sorted canonical fixture hash and
+the frozen historical suite to pass, verifies the fixture bytes against the
+committed frozen copy under `scripts/eval/frozen/automatic-recall-pre-policy/`
+(originally frozen in `5de04daf`), recomputes the recursively key-sorted canonical fixture hash and
 asserts the manifest digest, and checks historical source blobs. It exercises mapped, unmapped,
 and missing requester identity on both transports, plus uninstrumented CLI
 controls for explicit retrieval and generic `Continue`. The baseline must

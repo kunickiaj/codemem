@@ -377,7 +377,7 @@ function prepareHistoricalSource() {
 	);
 	assert.deepEqual(
 		readFileSync(join(root, fixturePath)),
-		git("show", `${manifest.artifacts.frozen_harness_commit}:${fixturePath}`),
+		readFileSync(join(root, manifest.artifacts.frozen_harness_directory, fixturePath)),
 	);
 	const historical = execFileSync(
 		process.execPath,

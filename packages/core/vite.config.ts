@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { configDefaults, defineConfig } from "vitest/config";
+import { defineConfig } from "vitest/config";
 
 export default defineConfig({
 	build: {
@@ -30,7 +30,5 @@ export default defineConfig({
 	},
 	test: {
 		name: "core",
-		// Run the frozen baseline through scripts/eval/run-automatic-recall-baseline.mjs.
-		exclude: [...configDefaults.exclude, "**/automatic-recall-pre-policy.eval.test.ts"],
 	},
 });
