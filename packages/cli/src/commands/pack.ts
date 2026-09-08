@@ -319,8 +319,10 @@ async function withStore(
 function ledgerAutomaticContext(
 	payload: InternalLedgerPayload | undefined,
 ): AutomaticContext | null {
-	if (!payload?.source || !payload.source_session_id) return null;
-	return { source: payload.source, hostSessionId: payload.source_session_id };
+	// Internal ledger stdin comes only from the OpenCode plugin; keep the same source guard as Viewer.
+	if (payload?.source?.trim().toLowerCase() !== "opencode") return null;
+	if (!payload.source_session_id) return null;
+	return { source: "opencode", hostSessionId: payload.source_session_id };
 }
 
 async function readOptionalLedgerPayload(): Promise<InternalLedgerPayload | undefined> {

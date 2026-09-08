@@ -218,6 +218,46 @@ describe("automatic request continuity", () => {
 		expect(explicitBody.pack_text).not.toContain("Anonymous transport summary");
 		expect(legacyBody.pack_text).not.toContain("Anonymous transport summary");
 	});
+
+	it("keeps named non-OpenCode hook attempts on generic behavior like their local fallbacks", async () => {
+		const foreignSessionId = store.getOrCreateSessionForOpencodeSession({
+			opencodeSessionId: "host-foreign-hook",
+			project: "continuity-project",
+		});
+		store.remember(
+			foreignSessionId,
+			"session_summary",
+			"Foreign hook summary",
+			"hook fallback continuity",
+			0.9,
+		);
+
+		const responses = await Promise.all(
+			["codex", "claude"].map((source, index) =>
+				post("/api/pack", {
+					context: "hook fallback continuity",
+					project: "continuity-project",
+					attempt: {
+						attempt_id: `018f2db4-f9d3-7a22-8d18-00000000001${index}`,
+						source,
+						source_session_id: "hook-session-without-mapping",
+					},
+				}),
+			),
+		);
+		const generic = await post("/api/pack", {
+			context: "hook fallback continuity",
+			project: "continuity-project",
+		});
+		const genericBody = (await generic.json()) as { pack_text: string };
+
+		expect(genericBody.pack_text).toContain("Foreign hook summary");
+		for (const response of responses) {
+			expect(response.status).toBe(200);
+			const body = (await response.json()) as { pack_text: string };
+			expect(body.pack_text).toBe(genericBody.pack_text);
+		}
+	});
 });
 describe("automatic recall transport validation", () => {
 	useTransportFixture();

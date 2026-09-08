@@ -233,15 +233,14 @@ function resolveRequestAutomaticContext(
 		return validateAutomaticContext(value.automatic_context);
 	}
 	if (!attempt) return undefined;
-	const source = attempt.source;
+	// Only the OpenCode plugin's older attempt metadata implies an automatic request.
+	// Named non-OpenCode hook sources keep generic behavior so Viewer and their local
+	// fallbacks agree; an attempt with no source is unknown origin and stays fail-closed.
+	const source = typeof attempt.source === "string" ? attempt.source.trim().toLowerCase() : "";
+	if (source && source !== "opencode") return undefined;
 	const hostSessionId = attempt.source_session_id;
-	if (
-		typeof source === "string" &&
-		source.trim().length > 0 &&
-		typeof hostSessionId === "string" &&
-		hostSessionId.trim().length > 0
-	) {
-		return { source: source.trim(), hostSessionId: hostSessionId.trim() };
+	if (source === "opencode" && typeof hostSessionId === "string" && hostSessionId.trim()) {
+		return { source, hostSessionId: hostSessionId.trim() };
 	}
 	return null;
 }
