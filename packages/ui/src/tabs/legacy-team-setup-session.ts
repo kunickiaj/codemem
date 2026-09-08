@@ -633,7 +633,8 @@ function retryFor(
 			cause.errorCode === "team_setup_confirmation_stale") ||
 		(recoveryCause instanceof LegacyTeamSetupApiError &&
 			recoveryCause.errorCode === "team_setup_confirmation_stale");
-	if (confirmationStale || options.terminalRecovery) return "load";
+	if (confirmationStale) return "refresh";
+	if (options.terminalRecovery) return "load";
 	if (options.changed || options.rosterUnavailable) return "refresh";
 	if (command.kind === "refresh") return "refresh";
 	if (command.kind === "load" && command.refresh) return "refresh";

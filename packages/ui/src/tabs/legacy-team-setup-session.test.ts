@@ -782,7 +782,7 @@ describe("legacy Team setup session reducer", () => {
 		);
 	});
 
-	it("uses a plain detail retry when confirmation-stale recovery also fails", () => {
+	it("refreshes the draft when confirmation-stale recovery also fails", () => {
 		let state = reduceSetupSession(loaded(open(), readyView()), { type: "finish" });
 		if (state.status !== "open") throw new Error("expected finish session");
 		const command = state.commands[0];
@@ -802,12 +802,12 @@ describe("legacy Team setup session reducer", () => {
 
 		expect(globalError(state)).toMatchObject({
 			message: expect.stringContaining("changed since it was last reviewed"),
-			retry: "load",
+			retry: "refresh",
 		});
 		expect(globalError(state)?.message).not.toContain("no local changes were applied");
 		state = reduceSetupSession(state, { type: "retry" });
 		expect(state).toMatchObject({
-			commands: [expect.objectContaining({ kind: "load", refresh: false })],
+			commands: [expect.objectContaining({ kind: "load", refresh: true })],
 		});
 	});
 
@@ -873,7 +873,7 @@ describe("legacy Team setup session reducer", () => {
 		},
 	);
 
-	it("uses a plain detail retry when roster-change recovery finds a completed draft", () => {
+	it("refreshes when roster-change recovery reports stale confirmation without a completed view", () => {
 		let state = reduceSetupSession(loaded(open(), readyView()), { type: "finish" });
 		if (state.status !== "open") throw new Error("expected finish session");
 		const command = state.commands[0];
@@ -893,11 +893,11 @@ describe("legacy Team setup session reducer", () => {
 
 		expect(globalError(state)).toMatchObject({
 			message: expect.stringContaining("changed since it was last reviewed"),
-			retry: "load",
+			retry: "refresh",
 		});
 		state = reduceSetupSession(state, { type: "retry" });
 		expect(state).toMatchObject({
-			commands: [expect.objectContaining({ kind: "load", refresh: false })],
+			commands: [expect.objectContaining({ kind: "load", refresh: true })],
 		});
 	});
 
