@@ -917,6 +917,54 @@ describe("OpenCode transform-time injection", () => {
 		expect(output.messages[0].parts.at(-1).text).toContain("Legacy backend context");
 	});
 
+	test.each([
+		{ transport: "viewer", repair: false },
+		{ transport: "fallback", repair: false },
+		{ transport: "viewer", repair: true },
+		{ transport: "fallback", repair: true },
+	])("preserves changed empty-pack evaluation artifacts via $transport (repair=$repair)", async ({ transport, repair }) => {
+		process.env.CODEMEM_VIEWER = "1";
+		process.env.CODEMEM_VIEWER_AUTO = "0";
+		process.env.CODEMEM_RAW_EVENTS = "0";
+		let fingerprint = "a".repeat(64);
+		let packCalls = 0;
+		const receipts = [];
+		const response = () => ({
+			pack_text: "## Summary\n\n## Observations",
+			metrics: { total_items: 0, pack_tokens: 7 },
+			ledger_artifact_fingerprint: fingerprint,
+			ledger_outcome: repair && ++packCalls % 2 === 1
+				? { ok: false, errorCode: "retrieval_ledger_write_failed", reason: "idempotency_conflict" }
+				: undefined,
+		});
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
+			if (String(url).endsWith("/api/prompt-pack-profile")) return viewerProfileResponse();
+			if (String(url).endsWith("/api/pack")) return transport === "viewer"
+				? jsonResponse(200, response()) : jsonResponse(503, { error: "unavailable" });
+			if (String(url).endsWith("/api/prompt-pack-ledger")) receipts.push(JSON.parse(options.body));
+			return jsonResponse(200, { ok: true });
+		});
+		spawnMock.mockImplementation((_command, args) => {
+			const proc = makeProcess({ stdout: args.includes("pack") ? JSON.stringify(response()) : "{}" });
+			if (args.includes("prompt-pack-ledger")) proc.stdin.write = vi.fn((value) => receipts.push(JSON.parse(String(value))));
+			return proc;
+		});
+		const { CodememPlugin } = await import("../plugins/codemem.js");
+		const hooks = await CodememPlugin({ project: { name: "fixture" }, client: { app: { log: vi.fn() }, tui: {} }, directory: "/tmp/fixture", worktree: "/tmp/fixture" });
+		const output = messageOutput({ messageId: "empty-artifact", text: "same query" });
+		await hooks["experimental.chat.messages.transform"]({}, output);
+		await hooks["experimental.chat.messages.transform"]({}, output);
+		fingerprint = "b".repeat(64);
+		await hooks["experimental.chat.messages.transform"]({}, output);
+		expect(receipts).toHaveLength(3);
+		expect(receipts[0].evaluation_key).toBe(receipts[1].evaluation_key);
+		expect(receipts[2].evaluation_key).not.toBe(receipts[1].evaluation_key);
+		for (const receipt of receipts) {
+			expect(receipt).toMatchObject({ action: "recall", automatic_recall: { candidateItems: 0, beforeTokens: 0, afterTokens: 0 } });
+		}
+		expect(output.messages[0].parts).toHaveLength(1);
+	});
+
 	test("suppresses real zero-result packs without advancing delivery", async () => {
 		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-plugin-empty-pack-"));
 		tmpDirs.push(tmpDir);

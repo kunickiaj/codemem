@@ -46,7 +46,7 @@ The allowlist is `continue`, `proceed`, `go on`, and `keep going`, case-insensit
 
 ## Local Measurements
 
-Health's collapsed **Automatic recall (advanced)** panel summarizes durable local fresh-evaluation measurements without copying sensitive content.
+Health's collapsed **Automatic recall (advanced)** panel summarizes durable local fresh-evaluation measurements without copying sensitive content. Zero-item packs preserve the backend artifact fingerprint for evaluation identity even though their rendered headings are suppressed; unchanged-artifact retries count once, while changed artifacts count separately.
 
 The `automatic_recall` field on `/api/stats` covers the previous 30 days, with explicit inclusive `periodStart` and `periodEnd` timestamps. It scans at most the newest 1,000 successful/no-result OpenCode automatic prompt-pack attempts before checking current visibility. It excludes cache-reuse records, failed retrievals, and policy skips; an opted-in ceiling can prevent evaluation entirely, so ceiling skips are not zero-result evaluations or savings. All projects are included regardless of the UI project selector. Attempts with any selected memory now unavailable (including revoked scopes, deletion, or incomplete exposure coverage) are omitted in full.
 

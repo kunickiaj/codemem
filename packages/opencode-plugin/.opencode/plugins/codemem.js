@@ -3701,7 +3701,7 @@ export const CodememPlugin = async ({
     };
     let { packArgs, result } = await runPack();
     let { packText, conflictPackText, metrics, itemCount, ledgerConflict } = parsePackOutput(result);
-    let artifactFingerprint = packText
+    let artifactFingerprint = packText || itemCount === 0
       ? promptPackArtifactFingerprint(result.stdout, packText)
       : "";
     let injectedIdentity = identity;
@@ -3735,7 +3735,7 @@ export const CodememPlugin = async ({
       ({ packArgs, result } = await runPack());
       // Repair-conflict bytes are never preferred over the original preserved pack.
       ({ packText, metrics, itemCount, ledgerConflict } = parsePackOutput(result));
-      artifactFingerprint = packText
+      artifactFingerprint = packText || itemCount === 0
         ? promptPackArtifactFingerprint(result.stdout, packText)
         : "";
       const repairFailed = ledgerConflict
@@ -3820,7 +3820,7 @@ export const CodememPlugin = async ({
         );
         ({ packArgs, result } = await runPack());
         ({ packText, metrics, itemCount, ledgerConflict } = parsePackOutput(result));
-        artifactFingerprint = packText
+        artifactFingerprint = packText || itemCount === 0
           ? promptPackArtifactFingerprint(result.stdout, packText)
           : "";
 
