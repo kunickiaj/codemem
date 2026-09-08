@@ -3739,10 +3739,7 @@ export const CodememPlugin = async ({
       advancePromptPackRetryIdentity(attemptKey);
       retryCount = promptPackRetryCounts.get(attemptKey) || 0;
       identity = resolveIdentity();
-      metadata = attemptMetadata(
-        identity,
-        context.sessionID || activeSessionID || null,
-      );
+      metadata = attemptMetadata(identity, requesterHostSessionID);
       ({ packArgs, result } = await runPack());
       // Repair-conflict bytes are never preferred over the original preserved pack.
       ({ packText, metrics, itemCount, ledgerConflict } = parsePackOutput(result));
@@ -3825,10 +3822,7 @@ export const CodememPlugin = async ({
         advancePromptPackRetryIdentity(attemptKey);
         retryCount = promptPackRetryCounts.get(attemptKey) || 0;
         identity = resolveIdentity();
-        metadata = attemptMetadata(
-          identity,
-          context.sessionID || activeSessionID || null,
-        );
+        metadata = attemptMetadata(identity, requesterHostSessionID);
         ({ packArgs, result } = await runPack());
         ({ packText, metrics, itemCount, ledgerConflict } = parsePackOutput(result));
         artifactFingerprint = packText || itemCount === 0

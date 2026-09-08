@@ -1021,6 +1021,49 @@ describe("OpenCode transform-time injection", () => {
 		expect(output.messages[0].parts).toHaveLength(1);
 	});
 
+	test("keeps CLI repair retries fail-closed when the transform has no session identity", async () => {
+		process.env.CODEMEM_VIEWER = "1";
+		process.env.CODEMEM_VIEWER_AUTO = "0";
+		process.env.CODEMEM_RAW_EVENTS = "0";
+		let packCalls = 0;
+		const packStdin = [];
+		const response = () => ({
+			pack_text: "## Summary\n\n## Observations",
+			metrics: { total_items: 0, pack_tokens: 7 },
+			ledger_artifact_fingerprint: "c".repeat(64),
+			// First CLI pack reports a ledger conflict so the plugin rebuilds metadata and retries.
+			ledger_outcome: ++packCalls === 1
+				? { ok: false, errorCode: "retrieval_ledger_write_failed", reason: "idempotency_conflict" }
+				: undefined,
+		});
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+			if (String(url).endsWith("/api/prompt-pack-profile")) return viewerProfileResponse();
+			if (String(url).endsWith("/api/pack")) return jsonResponse(503, { error: "unavailable" });
+			return jsonResponse(200, { ok: true });
+		});
+		spawnMock.mockImplementation((_command, args) => {
+			const proc = makeProcess({ stdout: args.includes("pack") ? JSON.stringify(response()) : "{}" });
+			if (args.includes("pack")) proc.stdin.write = vi.fn((value) => packStdin.push(JSON.parse(String(value))));
+			return proc;
+		});
+		const { CodememPlugin } = await import("../plugins/codemem.js");
+		const hooks = await CodememPlugin({ project: { name: "fixture" }, client: { app: { log: vi.fn() }, tui: {} }, directory: "/tmp/fixture", worktree: "/tmp/fixture" });
+		await hooks.event({
+			event: { type: "session.created", properties: { sessionID: "sess-other-active" } },
+		});
+		const output = messageOutput({ messageId: "repair-missing-session", sessionID: null, text: "repair query" });
+
+		await hooks["experimental.chat.messages.transform"]({}, output);
+
+		expect(packCalls).toBeGreaterThanOrEqual(2);
+		expect(packStdin.length).toBe(packCalls);
+		for (const payload of packStdin) {
+			expect(payload).not.toHaveProperty("source_session_id");
+			expect(payload).not.toHaveProperty("stream_id");
+			expect(JSON.stringify(payload)).not.toContain("sess-other-active");
+		}
+	});
+
 	test("suppresses real zero-result packs without advancing delivery", async () => {
 		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-plugin-empty-pack-"));
 		tmpDirs.push(tmpDir);
