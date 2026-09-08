@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore } from "@codemem/core";
 import { Hono } from "hono";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import fixture from "../../../../scripts/eval/fixtures/automatic-recall-pre-policy.json";
 import { insertTestSession } from "../../../core/src/test-utils.js";
 import { packTransportRoutes } from "./pack.js";
 import { statsRoutes } from "./stats.js";
@@ -19,6 +20,30 @@ const empty = {
 	invalidRetainedMetadata: false,
 	packMetadata: "valid",
 };
+
+function seedRecallFixture(store: MemoryStore) {
+	for (const session of fixture.sessions) {
+		const sessionId = store.getOrCreateSessionForOpencodeSession({
+			opencodeSessionId: session.host_session_id,
+			project: fixture.project,
+			startedAt: session.started_at,
+		});
+		for (const memory of session.memories) {
+			const id = store.remember(
+				sessionId,
+				memory.kind,
+				memory.title,
+				memory.body,
+				memory.confidence,
+				memory.tags,
+				memory.metadata,
+			);
+			store.db
+				.prepare("UPDATE memory_items SET created_at = ?, updated_at = ? WHERE id = ?")
+				.run(memory.created_at, memory.created_at, id);
+		}
+	}
+}
 
 describe("automatic recall existing HTTP transport", () => {
 	let directory: string;
@@ -232,3 +257,47 @@ describe("automatic recall existing HTTP transport", () => {
 		).toEqual({ delivery_status: "handed_off" });
 	});
 });
+
+it(
+	"returns the actual pre-policy generic Continue incident through the Viewer route",
+	verifyViewerBaseline,
+);
+
+async function verifyViewerBaseline() {
+	vi.useFakeTimers({ toFake: ["Date"] });
+	vi.setSystemTime(new Date(fixture.clock));
+	const store = new MemoryStore(":memory:");
+	try {
+		// Arrange
+		seedRecallFixture(store);
+		const app = new Hono().route(
+			"/",
+			packTransportRoutes(() => store),
+		);
+
+		// Act
+		const response = await app.request("/api/pack", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				context: fixture.query,
+				project: fixture.project,
+				limit: fixture.limit,
+				token_budget: fixture.core_token_budget,
+			}),
+		});
+		const body = (await response.json()) as {
+			pack_text: string;
+			metrics: { mode: string };
+		};
+
+		// Assert
+		expect(response.status).toBe(200);
+		expect(body.metrics.mode).toBe("task");
+		expect(body.pack_text).toContain("QUARTZ_DURABLE_FACT");
+		expect(body.pack_text).toContain("ORCHID_UNRELATED_CONTINUITY");
+	} finally {
+		store.close();
+		vi.useRealTimers();
+	}
+}

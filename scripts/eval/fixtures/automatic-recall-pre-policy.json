@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "fixture_id": "generic-continue-cross-session-v1",
+  "clock": "2026-09-08T12:00:00.000Z",
+  "project": "public-fixture-project",
+  "requester_host_session_id": "host-quartz-task",
+  "query": "Continue",
+  "explicit_control_query": "What did we decide last time about quartz cache migration?",
+  "limit": 10,
+  "synthetic_wrapper_prefix": "[codemem context]\n",
+  "wrapper_scope": "Core text wrapped in a fixture prefix for an estimate only; no plugin hook or plugin budget enforcement executed",
+  "core_token_budget": 795,
+  "compression_mode": "off",
+  "viewer_compression_mode": "default; inclusion and mode assertions only, no token comparability",
+  "clock_scope": "JavaScript Date is faked; memory created_at/updated_at and session started_at are seeded; SQLite clock is not frozen",
+  "expected_updates": [],
+  "sessions": [
+    {
+      "host_session_id": "host-quartz-task",
+      "started_at": "2026-09-08T10:00:00.000Z",
+      "memories": [
+        {
+          "key": "relevant_durable_parallel_fact",
+          "kind": "decision",
+          "title": "Quartz cache migration next step",
+          "body": "QUARTZ_DURABLE_FACT: Keep the blue cache reader enabled until checksum parity reaches 100%.",
+          "confidence": 0.95,
+          "tags": ["quartz", "cache", "migration", "checksum"],
+          "created_at": "2026-09-08T10:05:00.000Z",
+          "metadata": { "artifact_class": "durable" }
+        }
+      ]
+    },
+    {
+      "host_session_id": "host-orchid-task",
+      "started_at": "2026-09-08T11:00:00.000Z",
+      "memories": [
+        {
+          "key": "newest_unrelated_continuity",
+          "kind": "session_summary",
+          "title": "Orchid release continuity",
+          "body": "ORCHID_UNRELATED_CONTINUITY: Continue the unrelated release checklist by polishing announcement copy.",
+          "confidence": 0.8,
+          "tags": ["orchid", "release"],
+          "created_at": "2026-09-08T11:05:00.000Z",
+          "metadata": { "is_summary": true, "artifact_class": "recap" }
+        }
+      ]
+    }
+  ],
+  "gold": {
+    "generic_continue": {
+      "required_keys": ["relevant_durable_parallel_fact"],
+      "forbidden_keys": ["newest_unrelated_continuity"]
+    },
+    "explicit_control": {
+      "required_keys": ["relevant_durable_parallel_fact"],
+      "forbidden_keys": ["newest_unrelated_continuity"]
+    }
+  }
+}

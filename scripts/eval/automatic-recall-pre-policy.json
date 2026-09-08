@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "purpose": "Actual-source pre-policy baseline candidate; gate pending independent parent review",
+  "source": {
+    "commit": "ad50a6a41d5ee78f36e8c96a2000648cf8a5863d",
+    "tree": "4ca51b5a75a79b4c0cf9ba1aca4354119f6ac83e",
+    "merged_foundation": "d95d4959d985bdab91a7b05997d276cbb48dbd6f",
+    "version": "0.44.0-beta.1",
+    "identity_scheme": "Git SHA-1 object IDs; full tree pins transitive source dependencies",
+    "blobs": {
+      "pnpm-lock.yaml": "4a4ea1675083be52f6339fedd2a8ff35ee3aaf73",
+      "packages/core/src/pack.ts": "3db2093fc757c6acffb5d735885ea95a8499d534",
+      "packages/core/src/search.ts": "4529529f686bc04c3e78b61cd5fd7f867cc53a62",
+      "packages/core/src/summary-memory.ts": "fc1c16a20e73b34a05273b93fa690fb853b01a39",
+      "packages/core/src/store.ts": "89a7d0cbde0509e1112e95f7fe6c2141510f043f",
+      "packages/core/src/schema.ts": "9e3cb1a772da0681e33caa22caa4cf2dab24c319",
+      "packages/core/src/types.ts": "02c95b8fda28c49d24ffdd63bfc05ccc92df0216",
+      "packages/cli/src/commands/pack.ts": "a9fe476d5fc672f6fbcc12fae0a7505676f619cd",
+      "packages/viewer-server/src/routes/pack.ts": "38a0f5303c2d03c531018fc3c5cd1843bc5adac9",
+      "packages/opencode-plugin/.opencode/plugins/codemem.js": "d208ab6910b42d0aeb8d94a21f51a0414848777f",
+      "packages/cli/.opencode/plugins/codemem.js": "ca854258a4011f83996bb38f237a61b8c47891e0",
+      "packages/cli/.opencode/tests/retained-recall-comparison.eval.test.js": "b0a0bf34cef05d85ace02d090a7a1c4c1262b044",
+      "packages/cli/.opencode/tests/retained-recall-comparison.eval-fixtures.js": "d2b5e8ab2bd33ab2ce4f4d9028728e51877ea784"
+    }
+  },
+  "observed_environment": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "node": "24.20.0",
+    "pnpm": "12.2.1",
+    "installed_dependencies": {
+      "@opencode-ai/plugin": "1.18.25",
+      "better-sqlite3": "13.0.3",
+      "sqlite-vec": "0.1.9",
+      "drizzle-orm": "0.45.2",
+      "hono": "4.13.5",
+      "tsx": "4.23.13",
+      "typescript": "7.0.2",
+      "vite": "8.2.2",
+      "vitest": "4.1.11"
+    },
+    "evidence": "node --version; pnpm --version; pnpm list --depth 0 -r --json; ESM SDK resolution from canonical plugin directory",
+    "limits": "Installed inventory is not a fresh frozen-lockfile install or proof of the live host plugin/Core. Nested runtime install reproducibility must be checked before evaluation."
+  },
+  "evaluation_contract": {
+    "baseline": "Execute the complete pinned merged source tree in a separate approved temporary snapshot; never use moving origin/main, candidate source, or runStageOneBaseline as historical policy.",
+    "runtime": "Current evidence executes Core selector/renderer and real Viewer routes via Vitest source resolution. Plugin hooks and CLI child processes are not executed. Git blob checks compare working source bytes and pinned commit objects, not JSON equality. No fresh frozen-lockfile install is claimed.",
+    "fixtures": "Invent public-safe incident rows and prompts, freeze their digest and gold facts/updates/negative summaries before execution, and seed independent temporary databases identically for baseline and candidate.",
+    "controls": "Core budget 795, compression off. Fixture prefix wrapping is a synthetic estimate, not a plugin hook or 800-token budget test. Viewer asserts inclusion/mode with default compression, not comparable token counts. Fake JavaScript Date plus seeded row times; SQLite now is not frozen. No live database or paid/provider calls.",
+    "reuse": "Reuse retained-recall reporting conventions and scripts/eval prompt-path transport setup, not the retained comparison's handwritten baseline or pre-rendered packs as actual-policy evidence.",
+    "measurement": "Run twice; compare stable metrics excluding documented timing fields. Report useful-fact coverage, wrongful summary inclusion, missed updates and new/retained estimated tokens with denominators and per-case losses."
+  },
+  "artifacts": {
+    "fixture": "scripts/eval/fixtures/automatic-recall-pre-policy.json",
+    "report": "scripts/eval/baselines/automatic-recall-pre-policy.json",
+    "regression": "packages/core/src/automatic-recall-pre-policy.eval.test.ts",
+    "viewer_regression": "packages/viewer-server/src/routes/automatic-recall.test.ts"
+  },
+  "gates": {
+    "source_identity_verified": true,
+    "source_identity_evidence": "git rev-parse commit^{tree}; all 13 listed blobs checked using git rev-parse commit:path and git hash-object working-path, with equal observed IDs. This verifies listed source bytes, not execution of plugin/CLI surfaces.",
+    "incident_fixture_digest": "7ea10a40b20f177df3f7c289916f2527349a13b113cde071a6bf2af0fadbcf12",
+    "incident_evaluation_executed": true,
+    "baseline_gate": "pending independent parent review",
+    "independent_parent_review": "pending",
+    "code_reviewer_and_adversarial_reviews": "pending",
+    "stage_1_policy_edits_cleared": false
+  }
+}
