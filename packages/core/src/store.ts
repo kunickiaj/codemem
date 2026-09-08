@@ -64,6 +64,7 @@ import {
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { recordReplicationOp } from "./sync-replication.js";
 import type {
+	AutomaticContext,
 	ExplainResponse,
 	MemoryFilters,
 	MemoryItem,
@@ -1637,8 +1638,18 @@ export class MemoryStore {
 		limit?: number,
 		tokenBudget?: number | null,
 		filters?: MemoryFilters,
+		automaticContext?: AutomaticContext | null,
 	): PackResponse {
-		return buildMemoryPack(this, context, limit, tokenBudget ?? null, filters);
+		return buildMemoryPack(
+			this,
+			context,
+			limit,
+			tokenBudget ?? null,
+			filters,
+			undefined,
+			undefined,
+			automaticContext,
+		);
 	}
 
 	buildMemoryPackTrace(
@@ -1646,8 +1657,18 @@ export class MemoryStore {
 		limit?: number,
 		tokenBudget?: number | null,
 		filters?: MemoryFilters,
+		automaticContext?: AutomaticContext | null,
 	): PackTrace {
-		return buildMemoryPackTrace(this, context, limit, tokenBudget ?? null, filters);
+		return buildMemoryPackTrace(
+			this,
+			context,
+			limit,
+			tokenBudget ?? null,
+			filters,
+			undefined,
+			undefined,
+			automaticContext,
+		);
 	}
 
 	buildMemoryPackWithTrace(
@@ -1656,6 +1677,7 @@ export class MemoryStore {
 		tokenBudget?: number | null,
 		filters?: MemoryFilters,
 		renderOptions?: PackRenderOptions,
+		automaticContext?: AutomaticContext | null,
 	): PackArtifacts {
 		return buildMemoryPackWithTrace(
 			this,
@@ -1665,6 +1687,7 @@ export class MemoryStore {
 			filters,
 			undefined,
 			renderOptions,
+			automaticContext,
 		);
 	}
 
@@ -1681,8 +1704,17 @@ export class MemoryStore {
 		tokenBudget?: number | null,
 		filters?: MemoryFilters,
 		renderOptions?: PackRenderOptions,
+		automaticContext?: AutomaticContext | null,
 	): Promise<PackResponse> {
-		return buildMemoryPackAsync(this, context, limit, tokenBudget ?? null, filters, renderOptions);
+		return buildMemoryPackAsync(
+			this,
+			context,
+			limit,
+			tokenBudget ?? null,
+			filters,
+			renderOptions,
+			automaticContext,
+		);
 	}
 
 	async buildMemoryPackWithTraceAsync(
@@ -1691,6 +1723,7 @@ export class MemoryStore {
 		tokenBudget?: number | null,
 		filters?: MemoryFilters,
 		renderOptions?: PackRenderOptions,
+		automaticContext?: AutomaticContext | null,
 	): Promise<PackArtifacts> {
 		return buildMemoryPackWithTraceAsync(
 			this,
@@ -1699,6 +1732,7 @@ export class MemoryStore {
 			tokenBudget ?? null,
 			filters,
 			renderOptions,
+			automaticContext,
 		);
 	}
 
@@ -1708,6 +1742,7 @@ export class MemoryStore {
 		tokenBudget?: number | null,
 		filters?: MemoryFilters,
 		renderOptions?: PackRenderOptions,
+		automaticContext?: AutomaticContext | null,
 	): Promise<PackTrace> {
 		return buildMemoryPackTraceAsync(
 			this,
@@ -1716,6 +1751,7 @@ export class MemoryStore {
 			tokenBudget ?? null,
 			filters,
 			renderOptions,
+			automaticContext,
 		);
 	}
 

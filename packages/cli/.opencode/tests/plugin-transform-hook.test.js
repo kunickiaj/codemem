@@ -781,6 +781,32 @@ describe("OpenCode transform-time injection", () => {
 		expect(spawnMock.mock.calls.filter(isPackOrLedgerSpawn)).toEqual([]);
 	});
 
+	test("does not authorize the unknown ledger sentinel when host session identity is missing", async () => {
+		process.env.CODEMEM_VIEWER = "1";
+		process.env.CODEMEM_VIEWER_AUTO = "0";
+		process.env.CODEMEM_RAW_EVENTS = "0";
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+			if (String(url).endsWith("/api/prompt-pack-profile")) return viewerProfileResponse();
+			if (String(url).endsWith("/api/pack")) return jsonResponse(200, packResponse());
+			return jsonResponse(200, { ok: true });
+		});
+		const { CodememPlugin } = await import("../plugins/codemem.js");
+		const hooks = await CodememPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+		const output = messageOutput({ messageId: "user-missing-session", sessionID: null });
+
+		await hooks["experimental.chat.messages.transform"]({}, output);
+		await vi.waitFor(() => expect(fetchPostCalls(fetchMock)).toHaveLength(2));
+
+		const packBody = fetchBody(fetchMock, 0);
+		expect(packBody).toHaveProperty("automatic_context", null);
+		expect(packBody.attempt).not.toHaveProperty("source_session_id");
+	});
+
 	test("keeps an explicit reserved token budget equal across Viewer and CLI fallback", async () => {
 		// Arrange
 		process.env.CODEMEM_VIEWER = "1";
@@ -872,7 +898,7 @@ describe("OpenCode transform-time injection", () => {
 		expect(output.messages[0].parts).toHaveLength(1);
 	});
 
-	test("retries pack without --internal-ledger when an older backend rejects the flag", async () => {
+	test("does not use an older backend's unsafe generic pack fallback", async () => {
 		const packArgs = [];
 		spawnMock.mockImplementation((_command, args) => {
 			if (Array.isArray(args) && args.includes("pack")) {
@@ -911,10 +937,9 @@ describe("OpenCode transform-time injection", () => {
 
 		await hooks["experimental.chat.messages.transform"]({}, output);
 
-		expect(packArgs).toHaveLength(2);
+		expect(packArgs).toHaveLength(1);
 		expect(packArgs[0]).toContain("--internal-ledger");
-		expect(packArgs[1]).not.toContain("--internal-ledger");
-		expect(output.messages[0].parts.at(-1).text).toContain("Legacy backend context");
+		expect(output.messages[0].parts).toHaveLength(1);
 	});
 
 	test.each([

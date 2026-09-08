@@ -25,7 +25,7 @@ import { memoryLooksRecapLike, queryPrefersRecap, recapPenaltyMultiplier } from 
 import { findByConcept, findByFile } from "./ref-queries.js";
 import * as schema from "./schema.js";
 import { resolveVisibleScopeIds } from "./scope-resolution.js";
-import { canonicalMemoryKind } from "./summary-memory.js";
+import { canonicalMemoryKind, summaryContinuityFilter } from "./summary-memory.js";
 import type {
 	ExplainError,
 	ExplainItem,
@@ -889,11 +889,27 @@ export function search(
 	query: string,
 	limit = 10,
 	filters?: MemoryFilters,
+	eligible: (item: MemoryResult) => boolean = () => true,
+	summarySessionId?: number | null,
 ): MemoryResult[] {
 	const effectiveQuery = sanitizeSearchQuery(query).clean_query;
-	const primary = searchOnce(store, effectiveQuery, limit, filters);
-	const withShared = applySharedWidening(store, primary, effectiveQuery, filters);
-	return applyProjectWidening(store, withShared, effectiveQuery, filters);
+	const primary = searchOnce(store, effectiveQuery, limit, filters, eligible, summarySessionId);
+	const withShared = applySharedWidening(
+		store,
+		primary,
+		effectiveQuery,
+		filters,
+		eligible,
+		summarySessionId,
+	);
+	return applyProjectWidening(
+		store,
+		withShared,
+		effectiveQuery,
+		filters,
+		eligible,
+		summarySessionId,
+	);
 }
 
 function applySharedWidening(
@@ -901,6 +917,8 @@ function applySharedWidening(
 	primary: MemoryResult[],
 	effectiveQuery: string,
 	filters: MemoryFilters | undefined,
+	eligible: (item: MemoryResult) => boolean,
+	summarySessionId: number | null | undefined,
 ): MemoryResult[] {
 	if (
 		!widenSharedWhenWeakEnabled(filters) ||
@@ -927,6 +945,8 @@ function applySharedWidening(
 			effectiveQuery,
 			WIDEN_SHARED_MAX_SHARED_RESULTS,
 			sharedWideningFilters(filters),
+			eligible,
+			summarySessionId,
 		).filter((item) => !ownedByOwner(item)),
 	);
 	const seen = new Set(primary.map((item) => item.id));
@@ -947,6 +967,8 @@ function applyProjectWidening(
 	primary: MemoryResult[],
 	effectiveQuery: string,
 	filters: MemoryFilters | undefined,
+	eligible: (item: MemoryResult) => boolean,
+	summarySessionId: number | null | undefined,
 ): MemoryResult[] {
 	const projectFilter = filters?.project?.trim();
 	if (!projectFilter) return primary;
@@ -973,6 +995,8 @@ function applyProjectWidening(
 		effectiveQuery,
 		maxToAdd * 4,
 		projectWideningFilters(filters),
+		eligible,
+		summarySessionId,
 	);
 	const seen = new Set(primary.map((item) => item.id));
 	const candidateSessionIds = new Set(
@@ -999,6 +1023,8 @@ function searchOnce(
 	query: string,
 	limit = 10,
 	filters?: MemoryFilters,
+	eligible: (item: MemoryResult) => boolean = () => true,
+	summarySessionId?: number | null,
 ): MemoryResult[] {
 	const effectiveLimit = Math.max(1, Math.trunc(limit));
 	const expanded = expandQuery(query);
@@ -1014,8 +1040,10 @@ function searchOnce(
 	const filterResult = buildFilterClausesWithContext(filters, ownershipFilterContext(store));
 	whereClauses.push(...filterResult.clauses);
 	params.push(...filterResult.params);
+	const continuityFilter = summaryContinuityFilter(summarySessionId);
+	whereClauses.push(...continuityFilter.clauses);
+	params.push(...continuityFilter.params);
 
-	const where = whereClauses.join(" AND ");
 	const joinClause = filterResult.joinSessions
 		? "JOIN sessions ON sessions.id = memory_items.session_id"
 		: "";
@@ -1027,7 +1055,7 @@ function searchOnce(
 		FROM memory_fts
 		JOIN memory_items ON memory_items.id = memory_fts.rowid
 		${joinClause}
-		WHERE ${where}
+		WHERE ${whereClauses.join(" AND ")}
 		ORDER BY (score * 1.5 + recency) DESC, memory_items.created_at DESC, memory_items.id DESC
 		LIMIT ?
 	`;
@@ -1035,13 +1063,14 @@ function searchOnce(
 
 	const rows = store.db.prepare(sql).all(...params) as Record<string, unknown>[];
 	const preserveFilteredKind = typeof filters?.kind === "string" && filters.kind.trim().length > 0;
-	const results = rows.map((row) => rowToMemoryResult(row, preserveFilteredKind));
+	const results = rows.map((row) => rowToMemoryResult(row, preserveFilteredKind)).filter(eligible);
 	const indexedCandidateIds = [
 		...queryPathHints(query).flatMap((path) =>
 			findByFile(store.db, path, {
 				limit: queryLimit,
 				project: filters?.project,
 				relation: "modified",
+				summarySessionId,
 			}).map((row) => row.id),
 		),
 		...queryConceptHints(query).flatMap((concept) =>
@@ -1050,6 +1079,7 @@ function searchOnce(
 				project: filters?.project,
 				since: filters?.since,
 				kind: filters?.kind,
+				summarySessionId,
 			}).map((row) => row.id),
 		),
 	];
@@ -1061,7 +1091,10 @@ function searchOnce(
 	});
 	const widened =
 		newIds.length > 0
-			? [...results, ...fetchResultsByIds(store, newIds, filters, preserveFilteredKind)]
+			? [
+					...results,
+					...fetchResultsByIds(store, newIds, filters, preserveFilteredKind).filter(eligible),
+				]
 			: results;
 
 	return rerankResults(store, widened, effectiveLimit, filters, query);

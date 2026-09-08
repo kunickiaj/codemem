@@ -733,6 +733,12 @@ export interface MemoryFilters {
 	widen_project_max_results?: number;
 }
 
+/** Request identity used only to constrain summaries in automatic context assembly. */
+export interface AutomaticContext {
+	source: string;
+	hostSessionId: string;
+}
+
 // ---------------------------------------------------------------------------
 // Pack rendering options
 // ---------------------------------------------------------------------------

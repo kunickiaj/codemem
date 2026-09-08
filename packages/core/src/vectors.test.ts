@@ -147,9 +147,9 @@ const invalidInjectedBackfillClients: Array<{
 	},
 ];
 
-describe("vectors", () => {
-	let db: InstanceType<typeof Database>;
+let db: InstanceType<typeof Database>;
 
+function useVectorFixture() {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		vi.mocked(embeddings.resolveEmbeddingModel).mockReturnValue("test-model");
@@ -184,48 +184,49 @@ describe("vectors", () => {
 	afterEach(() => {
 		db.close();
 	});
+}
 
-	function insertCoordinatorScope(scopeId: string): void {
-		const now = new Date().toISOString();
-		db.prepare(
-			`INSERT OR REPLACE INTO replication_scopes(
+function insertCoordinatorScope(scopeId: string): void {
+	const now = new Date().toISOString();
+	db.prepare(
+		`INSERT OR REPLACE INTO replication_scopes(
 				scope_id, label, kind, authority_type, coordinator_id, group_id,
 				membership_epoch, status, created_at, updated_at
 			 ) VALUES (?, ?, 'team', 'coordinator', 'coord-test', 'group-test', 0, 'active', ?, ?)`,
-		).run(scopeId, scopeId, now, now);
-	}
+	).run(scopeId, scopeId, now, now);
+}
 
-	function grantScopeToDevice(scopeId: string, deviceId: string): void {
-		insertCoordinatorScope(scopeId);
-		db.prepare(
-			`INSERT OR REPLACE INTO scope_memberships(
+function grantScopeToDevice(scopeId: string, deviceId: string): void {
+	insertCoordinatorScope(scopeId);
+	db.prepare(
+		`INSERT OR REPLACE INTO scope_memberships(
 				scope_id, device_id, role, status, membership_epoch,
 				coordinator_id, group_id, updated_at
 			 ) VALUES (?, ?, 'member', 'active', 0, 'coord-test', 'group-test', ?)`,
-		).run(scopeId, deviceId, new Date().toISOString());
-	}
+	).run(scopeId, deviceId, new Date().toISOString());
+}
 
-	function insertScopedMemory(scopeId: string, title: string, bodyText: string): number {
-		const sessionId = insertTestSession(db);
-		const now = new Date().toISOString();
-		const info = db
-			.prepare(
-				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+function insertScopedMemory(scopeId: string, title: string, bodyText: string): number {
+	const sessionId = insertTestSession(db);
+	const now = new Date().toISOString();
+	const info = db
+		.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
 				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility, scope_id)
 				 VALUES (?, 'discovery', ?, ?, 0.5, '', 1, ?, ?, '{}', 1, 'shared', ?)`,
-			)
-			.run(sessionId, title, bodyText, now, now, scopeId);
-		return Number(info.lastInsertRowid);
-	}
+		)
+		.run(sessionId, title, bodyText, now, now, scopeId);
+	return Number(info.lastInsertRowid);
+}
 
-	function insertTestVector(
-		memoryId: number,
-		value: number,
-		contentHash: string,
-		model = "test-model",
-	): void {
-		const vector = new Float32Array(384).fill(value);
-		db.exec(`
+function insertTestVector(
+	memoryId: number,
+	value: number,
+	contentHash: string,
+	model = "test-model",
+): void {
+	const vector = new Float32Array(384).fill(value);
+	db.exec(`
 			INSERT INTO memory_vectors(embedding, memory_id, chunk_index, content_hash, model)
 			VALUES (
 				vec_f32('${JSON.stringify(Array.from(vector))}'),
@@ -235,24 +236,26 @@ describe("vectors", () => {
 				'${model}'
 			)
 		`);
-	}
+}
 
-	function insertBackfillMemory(
-		sessionId: number,
-		title: string,
-		createdAt: string,
-		bodyText = "Backfill body",
-	): number {
-		const info = db
-			.prepare(
-				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+function insertBackfillMemory(
+	sessionId: number,
+	title: string,
+	createdAt: string,
+	bodyText = "Backfill body",
+): number {
+	const info = db
+		.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
 				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility)
 				 VALUES (?, 'feature', ?, ?, 0.5, '', 1, ?, ?, '{}', 1, 'shared')`,
-			)
-			.run(sessionId, title, bodyText, createdAt, createdAt);
-		return Number(info.lastInsertRowid);
-	}
+		)
+		.run(sessionId, title, bodyText, createdAt, createdAt);
+	return Number(info.lastInsertRowid);
+}
 
+describe("vectors", () => {
+	useVectorFixture();
 	it("stores vectors with integer metadata columns via sqlite-vec workaround", async () => {
 		vi.mocked(embeddings.embedTexts).mockResolvedValue([new Float32Array(384)]);
 
@@ -1594,7 +1597,43 @@ describe("vectors", () => {
 
 		expect(results.map((item) => item.id)).toEqual([visibleId]);
 	});
+});
+describe("automatic continuity ranking", () => {
+	useVectorFixture();
+	it("excludes summaries before semantic ranking when automatic continuity is unmapped", async () => {
+		const deviceId = "device-continuity";
+		grantScopeToDevice("authorized-team", deviceId);
+		for (let i = 0; i < 220; i += 1) {
+			const summaryId = insertScopedMemory(
+				"authorized-team",
+				`Foreign session summary ${i}`,
+				"semantic scope summary",
+			);
+			db.prepare("UPDATE memory_items SET kind = 'session_summary' WHERE id = ?").run(summaryId);
+			insertTestVector(summaryId, 0, `foreign-summary-hash-${i}`);
+		}
+		const durableId = insertScopedMemory(
+			"authorized-team",
+			"Durable semantic fact",
+			"semantic scope detail",
+		);
+		insertTestVector(durableId, 0.5, "durable-continuity-hash");
+		vi.mocked(embeddings.embedTexts).mockResolvedValue([new Float32Array(384)]);
 
+		const results = await semanticSearch(
+			db,
+			"semantic scope",
+			1,
+			null,
+			{ actorId: "local:device-continuity", deviceId },
+			null,
+		);
+
+		expect(results.map((item) => item.id)).toEqual([durableId]);
+	});
+});
+describe("vector scope and identity", () => {
+	useVectorFixture();
 	it("requires explicit scope context when vector search has candidates", async () => {
 		const memoryId = insertScopedMemory(
 			"local-default",

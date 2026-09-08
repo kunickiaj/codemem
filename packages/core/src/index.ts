@@ -1115,7 +1115,12 @@ export {
 	SUMMARY_DEDUP_BACKFILL_JOB,
 	SummaryDedupBackfillRunner,
 } from "./summary-dedup-backfill.js";
-export { canonicalMemoryKind, getSummaryMetadata, isSummaryLikeMemory } from "./summary-memory.js";
+export {
+	canonicalMemoryKind,
+	getSummaryMetadata,
+	isSummaryLikeMemory,
+	summaryLikeSqlPredicate,
+} from "./summary-memory.js";
 export type {
 	AuthHeaders,
 	BuildAuthHeadersOptions,
@@ -1303,6 +1308,7 @@ export { initTestSchema, insertTestSession, seedMixedScopeFixture } from "./test
 export type {
 	Actor,
 	Artifact,
+	AutomaticContext,
 	ExplainError,
 	ExplainItem,
 	ExplainResponse,

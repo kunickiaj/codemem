@@ -5916,6 +5916,7 @@ describe("viewer-server", () => {
 						working_set_paths: ["packages/viewer-server/src/index.ts"],
 					},
 					{ compact: true, compactDetailCount: 2 },
+					undefined,
 				);
 			} finally {
 				if (previousProject == null) delete process.env.CODEMEM_PROJECT;

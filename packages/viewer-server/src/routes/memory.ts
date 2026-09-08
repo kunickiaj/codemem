@@ -11,6 +11,7 @@ import {
 	parsePositiveMemoryId,
 	parseStrictInteger,
 	schema,
+	summaryLikeSqlPredicate,
 } from "@codemem/core";
 import { eq, inArray } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
@@ -297,19 +298,6 @@ function countVisibleMemoryRows(store: MemoryStore, filters?: MemoryFilters | nu
 		.prepare(`SELECT COUNT(*) AS total FROM ${from} WHERE ${clauses.join(" AND ")}`)
 		.get(...filterResult.params) as Record<string, unknown> | undefined;
 	return Number(row?.total ?? 0);
-}
-
-function summaryLikeSqlPredicate(): string {
-	return `(
-		LOWER(TRIM(COALESCE(memory_items.kind, ''))) = 'session_summary'
-		OR (
-			json_valid(COALESCE(memory_items.metadata_json, ''))
-			AND (
-				COALESCE(json_type(memory_items.metadata_json, '$.is_summary') = 'true', 0)
-				OR LOWER(TRIM(COALESCE(json_extract(memory_items.metadata_json, '$.source'), ''))) = 'observer_summary'
-			)
-		)
-	)`;
 }
 
 function memorySearchSql(query: string): { clause: string; params: unknown[] } {

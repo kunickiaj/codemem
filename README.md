@@ -101,10 +101,13 @@ sources. If both load Codemem for one Project, the first registration wins and l
 their hooks with a warning. Remove the configured npm entry when testing a source checkout so the
 checkout-local plugin loads first; otherwise your edits may appear to do nothing.
 
-Requester-session eligibility for automatic recall is not implemented yet. The
-pre-policy source identity and invented gold fixture have preflight clearance;
-plugin/CLI incident evaluation and implementation review remain pending. See
-[the historical baseline procedure](docs/opencode-retained-recall.md#historical-incident-baseline).
+Automatic OpenCode recall carries the host session ID through Viewer or CLI into
+Core assembly. Summary memories are eligible only from the exact mapped session;
+durable facts from other sessions remain eligible. If the mapping is not ready,
+automatic recall omits summary continuity rather than guessing from project, a
+missing host identity, or sibling IDs. Explicit `pack` and MCP requests keep
+their existing behavior. See
+[the requester-session contract](docs/opencode-retained-recall.md#requester-session-continuity).
 
 ### Claude Code (marketplace install)
 

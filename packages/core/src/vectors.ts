@@ -34,6 +34,7 @@ import {
 	startMaintenanceJob,
 } from "./maintenance-jobs.js";
 import { projectClause } from "./project.js";
+import { summaryContinuityFilter } from "./summary-memory.js";
 import type { ReplicationVectorWork } from "./sync-replication.js";
 import type { MemoryFilters } from "./types.js";
 
@@ -1552,6 +1553,25 @@ export interface SemanticSearchResult {
 	facts: string | null;
 }
 
+function semanticResult(row: Record<string, unknown>): SemanticSearchResult {
+	return {
+		id: Number(row.id),
+		kind: String(row.kind ?? "observation"),
+		title: String(row.title ?? ""),
+		body_text: String(row.body_text ?? ""),
+		confidence: Number(row.confidence ?? 0),
+		tags_text: String(row.tags_text ?? ""),
+		metadata_json: row.metadata_json == null ? null : String(row.metadata_json),
+		created_at: String(row.created_at ?? ""),
+		updated_at: String(row.updated_at ?? ""),
+		session_id: Number(row.session_id),
+		score: 1.0 / (1.0 + Number(row.distance ?? 0)),
+		distance: Number(row.distance ?? 0),
+		narrative: row.narrative == null ? null : String(row.narrative),
+		facts: row.facts == null ? null : String(row.facts),
+	};
+}
+
 /**
  * Search for memories by vector similarity using exact sqlite-vec distance.
  * Returns an empty array when embeddings are disabled or unavailable.
@@ -1564,6 +1584,7 @@ export async function semanticSearch(
 	limit: number,
 	filters: MemoryFilters | null,
 	context: SemanticSearchScopeContext,
+	summarySessionId?: number | null,
 ): Promise<SemanticSearchResult[]> {
 	if (query.trim().length < 3) return [];
 	if (!hasVectorRows(db)) return [];
@@ -1588,6 +1609,8 @@ export async function semanticSearch(
 	const whereClauses: string[] = ["memory_items.active = 1"];
 	const filterResult = buildFilterClausesWithContext(filters, scopeVisibleFilterContext(context));
 	whereClauses.push(...filterResult.clauses);
+	const continuityFilter = summaryContinuityFilter(summarySessionId);
+	whereClauses.push(...continuityFilter.clauses);
 
 	const where = whereClauses.join(" AND ");
 	const modelPlaceholders = searchModels.map(() => "?").join(", ");
@@ -1624,25 +1647,9 @@ export async function semanticSearch(
 		queryEmbedding,
 		...searchModels,
 		...filterResult.params,
+		...continuityFilter.params,
 		effectiveLimit,
 	) as Array<Record<string, unknown>>;
 
-	return rows
-		.map((row) => ({
-			id: Number(row.id),
-			kind: String(row.kind ?? "observation"),
-			title: String(row.title ?? ""),
-			body_text: String(row.body_text ?? ""),
-			confidence: Number(row.confidence ?? 0),
-			tags_text: String(row.tags_text ?? ""),
-			metadata_json: row.metadata_json == null ? null : String(row.metadata_json),
-			created_at: String(row.created_at ?? ""),
-			updated_at: String(row.updated_at ?? ""),
-			session_id: Number(row.session_id),
-			score: 1.0 / (1.0 + Number(row.distance ?? 0)),
-			distance: Number(row.distance ?? 0),
-			narrative: row.narrative == null ? null : String(row.narrative),
-			facts: row.facts == null ? null : String(row.facts),
-		}))
-		.slice(0, effectiveLimit);
+	return rows.map(semanticResult).slice(0, effectiveLimit);
 }

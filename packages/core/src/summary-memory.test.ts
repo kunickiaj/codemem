@@ -16,6 +16,8 @@ describe("summary memory normalization", () => {
 
 	it("leaves ordinary non-summary memories alone", () => {
 		expect(isSummaryLikeMemory({ kind: "change", metadata: { source: "observer" } })).toBe(false);
+		expect(isSummaryLikeMemory({ kind: "change", metadata: { is_summary: 1 } })).toBe(false);
 		expect(canonicalMemoryKind("change", { source: "observer" })).toBe("change");
+		expect(canonicalMemoryKind("change", { is_summary: 1 })).toBe("change");
 	});
 });

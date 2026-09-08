@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import incidentFixture from "../../../scripts/eval/fixtures/automatic-recall-pre-policy.json";
 import { connect } from "./db.js";
 import {
 	buildMemoryPack,
@@ -29,15 +30,74 @@ describe("estimateTokens", () => {
 	});
 });
 
+it("matches frozen Continue gold with current automatic policy in Core", () => {
+	vi.useFakeTimers({ toFake: ["Date"] });
+	vi.setSystemTime(new Date(incidentFixture.clock));
+	const store = new MemoryStore(":memory:");
+	try {
+		const keys = new Map<number, string>();
+		for (const session of incidentFixture.sessions) {
+			const sessionId = store.getOrCreateSessionForOpencodeSession({
+				opencodeSessionId: session.host_session_id,
+				project: incidentFixture.project,
+				startedAt: session.started_at,
+			});
+			for (const memory of session.memories) {
+				const id = store.remember(
+					sessionId,
+					memory.kind,
+					memory.title,
+					memory.body,
+					memory.confidence,
+					memory.tags,
+					memory.metadata,
+				);
+				store.db
+					.prepare("UPDATE memory_items SET created_at = ?, updated_at = ? WHERE id = ?")
+					.run(memory.created_at, memory.created_at, id);
+				keys.set(id, memory.key);
+			}
+		}
+		const trace = buildMemoryPackTrace(
+			store,
+			incidentFixture.query,
+			incidentFixture.limit,
+			incidentFixture.core_token_budget,
+			{ project: incidentFixture.project },
+			undefined,
+			{
+				compressionMode: incidentFixture.compression_mode,
+			},
+			{
+				source: "opencode",
+				hostSessionId: incidentFixture.requester_host_session_id,
+			},
+		);
+		const selected = Object.values(trace.assembly.sections)
+			.flat()
+			.map((id) => keys.get(id));
+		expect(trace.mode.selected).toBe("task");
+		expect(selected).toEqual(
+			expect.arrayContaining(incidentFixture.gold.generic_continue.required_keys),
+		);
+		for (const key of incidentFixture.gold.generic_continue.forbidden_keys) {
+			expect(selected).not.toContain(key);
+		}
+	} finally {
+		store.close();
+		vi.useRealTimers();
+	}
+});
+
 // ---------------------------------------------------------------------------
 // Integration tests: buildMemoryPack
 // ---------------------------------------------------------------------------
 
-describe("buildMemoryPack", () => {
-	let tmpDir: string;
-	let store: MemoryStore;
-	let sessionId: number;
+let tmpDir: string;
+let store: MemoryStore;
+let sessionId: number;
 
+function usePackFixture() {
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-pack-"));
 		const dbPath = join(tmpDir, "test.db");
@@ -52,7 +112,143 @@ describe("buildMemoryPack", () => {
 		store.close();
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
+}
 
+describe("automatic session continuity", () => {
+	usePackFixture();
+	it("keeps automatic summaries on the exact mapped host session while retaining durable facts", () => {
+		const otherSessionId = insertTestSession(store.db);
+		const now = new Date().toISOString();
+		store.db
+			.prepare(
+				"INSERT INTO opencode_sessions(source, stream_id, opencode_session_id, session_id, created_at) VALUES (?, ?, ?, ?, ?)",
+			)
+			.run("opencode", "host-current", "host-current", sessionId, now);
+		store.remember(
+			sessionId,
+			"change",
+			"Current continuity summary",
+			"current continuity handoff",
+			0.9,
+			undefined,
+			{ is_summary: true },
+		);
+		store.remember(
+			otherSessionId,
+			"session_summary",
+			"Foreign continuity summary",
+			"foreign continuity handoff",
+			0.99,
+		);
+		const durableId = store.remember(
+			otherSessionId,
+			"decision",
+			"Parallel continuity fact",
+			"durable continuity evidence",
+			0.95,
+		);
+
+		const pack = store.buildMemoryPack("continuity", 10, null, undefined, {
+			source: "opencode",
+			hostSessionId: "host-current",
+		});
+
+		expect(pack.pack_text).toContain("Current continuity summary");
+		expect(pack.pack_text).not.toContain("Foreign continuity summary");
+		expect(pack.item_ids).toContain(durableId);
+	});
+
+	it("excludes summary continuity when the exact host mapping is missing without changing generic packs", () => {
+		const now = new Date().toISOString();
+		store.db
+			.prepare(
+				"INSERT INTO opencode_sessions(source, stream_id, opencode_session_id, session_id, created_at) VALUES (?, ?, ?, ?, ?)",
+			)
+			.run("opencode", "root-session", "root-session", sessionId, now);
+		store.remember(
+			sessionId,
+			"session_summary",
+			"Root sibling summary",
+			"summary must require an exact mapping",
+			0.9,
+		);
+		const durableId = store.remember(
+			sessionId,
+			"decision",
+			"Durable sibling fact",
+			"durable facts remain eligible",
+			0.8,
+		);
+
+		const automatic = store.buildMemoryPack("unmatched automatic query", 10, null, undefined, {
+			source: "opencode",
+			hostSessionId: "root-session-child",
+		});
+		const generic = store.buildMemoryPack("unmatched generic query");
+
+		expect(automatic.pack_text).not.toContain("Root sibling summary");
+		expect(automatic.item_ids).toContain(durableId);
+		expect(generic.pack_text).toContain("Root sibling summary");
+	});
+});
+describe("automatic metadata and generic candidate bounds", () => {
+	usePackFixture();
+	it("keeps malformed and numeric summary metadata durable under automatic filtering", () => {
+		const otherSessionId = insertTestSession(store.db);
+		const malformedId = store.remember(
+			otherSessionId,
+			"decision",
+			"Malformed metadata fact",
+			"continuity malformed durable",
+			0.9,
+		);
+		store.db
+			.prepare("UPDATE memory_items SET metadata_json = ? WHERE id = ?")
+			.run("{", malformedId);
+		const numericId = store.remember(
+			otherSessionId,
+			"decision",
+			"Numeric marker fact",
+			"continuity numeric durable",
+			0.9,
+			undefined,
+			{ is_summary: 1 },
+		);
+
+		const pack = store.buildMemoryPack("continuity durable", 10, null, undefined, null);
+
+		expect(pack.item_ids).toContain(malformedId);
+		expect(pack.item_ids).toContain(numericId);
+	});
+
+	it("keeps the historical generic supplemental observation candidate target", () => {
+		store.remember(sessionId, "session_summary", "Special recap", "special recap marker", 0.9);
+		store.remember(
+			sessionId,
+			"bugfix",
+			"Out of historical supplemental window",
+			"durable unrelated high priority observation",
+			0.99,
+		);
+		for (let index = 0; index < 30; index += 1) {
+			store.remember(
+				sessionId,
+				"discovery",
+				`Supplemental fact ${index}`,
+				`durable unrelated observation ${index}`,
+				0.8,
+			);
+		}
+
+		const recentByKinds = vi.spyOn(store, "recentByKinds");
+		const { response } = buildMemoryPackWithTrace(store, "recap special marker", 10);
+
+		expect(recentByKinds.mock.calls[0]?.[1]).toBe(30);
+		expect(response.pack_text).not.toContain("Out of historical supplemental window");
+	});
+});
+describe("buildMemoryPack", () => {
+	usePackFixture();
 	it.each([false, true])(
 		"reports renderer-owned item spans without changing pack text (compact=%s)",
 		(compact) => {

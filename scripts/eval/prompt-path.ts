@@ -664,6 +664,25 @@ async function main(): Promise<void> {
 }
 
 const entrypoint = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
+
+export {
+	applyEnvironment,
+	benchmarkEnvironment,
+	createMessageOutput,
+	type Hook,
+	type PluginFactory,
+	readSubprocessCounts,
+	reservePort,
+	runCommand,
+	runnerSource,
+	settlePluginStartupChecks,
+	startViewer,
+	stopOwnedChildren,
+	stopViewer,
+	waitFor,
+	waitForViewer,
+};
+
 if (entrypoint === import.meta.url) {
 	main().catch((error) => {
 		const detail =

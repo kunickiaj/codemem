@@ -89,12 +89,34 @@ describe("buildPackArgs", () => {
       dbPath: "/tmp/test.db",
       identityTarget: {},
       attempt: {},
+      automaticContext: { source: "opencode", host_session_id: "host-session" },
     });
 
     expect(packBudget).toBe(795);
     expect(packBudget).toBeGreaterThan(0);
     expect(args).toContain("795");
     expect(body.token_budget).toBe(795);
+    expect(body.automatic_context).toEqual({
+      source: "opencode",
+      host_session_id: "host-session",
+    });
+  });
+
+  test("preserves an explicit unmapped automatic requester", () => {
+    const body = __testUtils.buildPackHttpBody({
+      query: "recent work",
+      filesModified: [],
+      injectLimit: 8,
+      injectTokenBudget: 795,
+      projectName: null,
+      cwd: "/workspace",
+      dbPath: "/tmp/test.db",
+      identityTarget: {},
+      attempt: {},
+      automaticContext: null,
+    });
+
+    expect(body).toHaveProperty("automatic_context", null);
   });
 
   test("keeps wrapped output within the requested estimator budget", () => {

@@ -16,6 +16,14 @@ The host message list is the evidence for which message IDs remain in context.
 - New retrieval and failed attachment do not consume retained allowance. Repeated transforms and reconstructed historical blocks are not newly delivered tokens.
 - The ceiling applies only to the message surface. The legacy system surface keeps its per-pack budget; explicit MCP recall and explicit pack CLI semantics remain unchanged.
 
+## Requester-Session Continuity
+
+Automatic OpenCode recall carries a named `{ source, host_session_id }` requester context through the plugin's Viewer request or internal CLI stdin metadata. When the host identity is unavailable, the plugin sends `automatic_context: null`; this means requested-but-unmapped and is distinct from an absent field on a generic pack request. Viewer also derives the same state from an older plugin's validated attempt metadata, treating an identity-less attempt as unmapped. Core resolves a supplied pair with an exact, read-only lookup in `opencode_sessions` before ranking, limits, and fallback assembly. It does not authorize the `unknown` ledger sentinel, use `MemoryFilters.session_id`, infer authority from root or sibling host IDs, or fall back to the newest project summary.
+
+Only summary-role memories are continuity-bound: native `session_summary` rows, rows with JSON boolean `is_summary: true`, and rows whose source is `observer_summary` must belong to the mapped numeric session. Numeric `is_summary: 1` is not a summary marker. Durable decisions, discoveries, fixes, and other non-summary facts from parallel sessions remain eligible under the existing project and visibility filters. A missing mapping or malformed metadata excludes no durable fact and excludes summary continuity only. Generic CLI packs and MCP `memory_pack` calls do not send automatic requester context and therefore keep their existing candidate windows and selection behavior.
+
+Viewer contract rejection does not cross into a different transport after a compatible handshake. If CLI fallback reaches an older backend that rejects `--internal-ledger`, the plugin suppresses that automatic pack instead of retrying the unsafe generic pack path. Ledger persistence remains best-effort after valid stdin metadata has been read for selection.
+
 ## Source Evidence
 
 The canonical plugin already exposes the required part identity and replay boundary, but its old normalization rules do not satisfy this contract.
@@ -80,9 +88,11 @@ Deterministic local tests exercise lifecycle and transport behavior without paid
 
 ### Historical Incident Baseline
 
-The source identity and frozen gold preflight is cleared; requester eligibility,
-plugin/CLI incident evaluation, and independent implementation reviews remain pending.
-This does not solve multiple tasks within one session. The retained cap remains off.
+The source identity and frozen gold preflight is cleared. The runner remains a
+frozen pre-policy comparison and does not validate requester-session continuity.
+The separate [transport regression](../scripts/eval/README.md#automatic-recall-transport-regression)
+checks requester eligibility through real plugin, Viewer, and CLI execution.
+This change does not solve multiple tasks within one session. The retained cap remains off.
 
 Run `node scripts/eval/run-automatic-recall-baseline.mjs` to export the full pinned
 `ad50a6a4` tree into a new temporary snapshot and overlay the byte-verified harness

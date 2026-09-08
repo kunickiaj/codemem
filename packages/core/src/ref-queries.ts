@@ -12,6 +12,7 @@
 import type { Database } from "./db.js";
 import { projectClause } from "./project.js";
 import { normalizeConcept } from "./ref-populate.js";
+import { summaryLikeSqlPredicate } from "./summary-memory.js";
 
 export interface RefQueryOptions {
 	/** Filter by memory kind (e.g. "decision", "bugfix") */
@@ -24,6 +25,8 @@ export interface RefQueryOptions {
 	limit?: number;
 	/** Only return memories created after this ISO timestamp */
 	since?: string;
+	/** Automatic recall only: admit summaries from this numeric session, or none when null. */
+	summarySessionId?: number | null;
 }
 
 export interface RefQueryResult {
@@ -46,6 +49,21 @@ export interface RefQueryResult {
 
 function escapeSqlLikePattern(value: string): string {
 	return value.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+}
+
+function appendSummaryEligibility(
+	clauses: string[],
+	params: unknown[],
+	summarySessionId: number | null | undefined,
+): void {
+	if (summarySessionId === undefined) return;
+	const summaryPredicate = summaryLikeSqlPredicate("mi");
+	if (summarySessionId == null) {
+		clauses.push(`NOT ${summaryPredicate}`);
+		return;
+	}
+	clauses.push(`(NOT ${summaryPredicate} OR mi.session_id = ?)`);
+	params.push(summarySessionId);
 }
 
 /**
@@ -104,6 +122,7 @@ export function findByFile(
 		outerClauses.push("mi.created_at > ?");
 		outerParams.push(options.since);
 	}
+	appendSummaryEligibility(outerClauses, outerParams, options?.summarySessionId);
 
 	const params: unknown[] = [...refParams, ...outerParams, limit];
 
@@ -164,6 +183,7 @@ export function findByConcept(
 		outerClauses.push("mi.created_at > ?");
 		outerParams.push(options.since);
 	}
+	appendSummaryEligibility(outerClauses, outerParams, options?.summarySessionId);
 
 	const params: unknown[] = [normalized, ...outerParams, limit];
 

@@ -132,3 +132,54 @@ test command and root CLI scripts:
 pnpm run eval:pack:typecheck
 node --import tsx --test scripts/eval/prompt-path-lib.test.ts
 ```
+
+## Automatic recall transport regression
+
+The deterministic incident harness runs the canonical plugin message-transform
+hook against a real foreground Viewer and a real source CLI fallback, comparing
+the immutable `ad50a6a4` policy with the working candidate. It reuses the
+prompt-path transport setup and historical baseline runner; no pack renderer,
+selector, HTTP response, or CLI result is mocked.
+For CLI cases only, fetch rejects requests to that case's Viewer origin to force
+network unavailability without a port-reuse race. CLI child execution and
+completion assertions remain real; healthy Viewer cases use real HTTP routes.
+
+```fish
+node --import ./scripts/eval/automatic-recall-clock.mjs --import tsx --conditions source scripts/eval/automatic-recall-transport.ts
+pnpm run eval:pack:typecheck
+```
+
+Run the first command twice and compare the JSON reports. Each run first requires
+the frozen historical suite to pass, verifies the fixture bytes against
+`5de04daf`, recomputes the recursively key-sorted canonical fixture hash and
+asserts the manifest digest, and checks historical source blobs. It exercises mapped, unmapped,
+and missing requester identity on both transports, plus uninstrumented CLI
+controls for explicit retrieval and generic `Continue`. The baseline must
+reproduce the unwanted summary; the candidate must exclude it while keeping the
+durable fact. An additional control changes only the requester to the fixture's
+summary owner: the summary must remain eligible and the other session's durable
+fact must survive. This catches blanket summary suppression or lost identity.
+Both explicit controls must remain identical across policies.
+
+Reports include per-case selected fixture keys, useful-fact and wrongful-summary
+counts with denominators, missed updates, estimated new/retained tokens, child
+counts, effective compression mode, source and harness hashes, runtime versions,
+and a Git-status-derived `candidate_dirty` flag beside `candidate_head`.
+Token estimates use `Math.ceil(text.length / 4)`: automatic cases include the
+actual plugin-injected wrapper; explicit cases measure bare CLI output and are
+not directly comparable. The configured budget is 800 and the harness asserts
+that its wrapper-inclusive estimate fits, but this is neither a provider token
+count nor a guarantee about production reserved-budget accounting. Reports
+contain no raw prompts, memory bodies, or database paths. Each run writes an
+ignored report copy and `automatic-recall-transport-latest.json` under `.tmp/`;
+temporary synthetic databases and historical snapshots remain there for review.
+
+Limits: `CODEMEM_PACK_COMPRESSION=off` is pinned in every case and its children,
+overriding ambient compression settings. `CODEMEM_EMBEDDING_DISABLED=1` is set in the harness and its children;
+this intentionally measures lexical search and empty-search fallbacks without
+provider calls, not semantic retrieval or a full-suite gate. JavaScript Date is
+frozen across processes; SQLite's clock is not. Installed dependencies are reused,
+not freshly installed. The frozen fixture contains no updates or retained history,
+so their denominators are zero. The summary-owner control has no forbidden
+summary, so its wrongful-summary denominator is also zero. System-hook fallback, compaction, restart,
+and multi-task authority remain outside this transport slice.

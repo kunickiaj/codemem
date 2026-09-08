@@ -30,8 +30,10 @@ import {
 	getSummaryMetadata,
 	isNativeSessionSummaryMemory,
 	isSummaryLikeMemory,
+	summaryLikeSqlPredicate,
 } from "./summary-memory.js";
 import type {
+	AutomaticContext,
 	MemoryFilters,
 	MemoryItemResponse,
 	MemoryResult,
@@ -987,23 +989,47 @@ function prioritizeRecallResults(
 	return ordered.slice(0, limit);
 }
 
+function recentEligible(
+	store: StoreHandle,
+	target: number,
+	filters: MemoryFilters | undefined,
+	eligible: (item: MemoryResult) => boolean,
+	kinds?: string[],
+): MemoryResult[] {
+	const selected: MemoryResult[] = [];
+	let offset = 0;
+	const pageSize = 100;
+	while (selected.length < target) {
+		const pageLimit = Math.min(pageSize, target - selected.length);
+		const rows = kinds
+			? store.recentByKinds(kinds, pageLimit, filters ?? null, offset)
+			: store.recent(pageLimit, filters ?? null, offset);
+		if (rows.length === 0) break;
+		selected.push(...rows.map(toMemoryResult).filter(eligible));
+		offset += rows.length;
+		if (rows.length < pageLimit) break;
+	}
+	return selected.slice(0, target);
+}
+
 function taskFallbackRecent(
 	store: StoreHandle,
 	limit: number,
 	filters?: MemoryFilters,
+	eligible: (item: MemoryResult) => boolean = () => true,
 ): MemoryResult[] {
-	const expandedLimit = Math.max(limit * 3, limit);
-	const recentRows = store.recent(expandedLimit, filters ?? null);
-	return prioritizeTaskResults(recentRows.map(toMemoryResult), limit);
+	const expandedLimit = limit * 3;
+	return prioritizeTaskResults(recentEligible(store, expandedLimit, filters, eligible), limit);
 }
 
 function recallFallbackRecent(
 	store: StoreHandle,
 	limit: number,
 	filters?: MemoryFilters,
+	eligible: (item: MemoryResult) => boolean = () => true,
 ): MemoryResult[] {
-	const expandedLimit = Math.max(limit * 4, limit);
-	const recentAll = store.recent(expandedLimit, filters ?? null).map(toMemoryResult);
+	const expandedLimit = limit * 4;
+	const recentAll = recentEligible(store, expandedLimit, filters, eligible);
 	const summaries = recentAll.filter(isSummaryLike).slice(0, limit);
 	if (summaries.length >= limit) return summaries.slice(0, limit);
 
@@ -1073,14 +1099,58 @@ function isSummaryLike(item: Pick<MemoryResult, "kind" | "metadata">): boolean {
 	return isSummaryLikeMemory(item);
 }
 
-function findLatestSummaryLike(store: StoreHandle, filters?: MemoryFilters): MemoryResult | null {
+type AutomaticContinuity = {
+	requested: boolean;
+	sessionId: number | null;
+};
+
+function resolveAutomaticContinuity(
+	store: StoreHandle,
+	automaticContext?: AutomaticContext | null,
+): AutomaticContinuity {
+	if (automaticContext === undefined) return { requested: false, sessionId: null };
+	if (automaticContext === null) return { requested: true, sessionId: null };
+	const source = automaticContext.source.trim().toLowerCase();
+	const hostSessionId = automaticContext.hostSessionId.trim();
+	if (!source || !hostSessionId) return { requested: true, sessionId: null };
+	const row = store.db
+		.prepare(
+			`SELECT session_id
+			 FROM opencode_sessions
+			 WHERE source = ? AND stream_id = ?
+			 LIMIT 1`,
+		)
+		.get(source, hostSessionId) as { session_id: number | null } | undefined;
+	return { requested: true, sessionId: row?.session_id ?? null };
+}
+
+function automaticEligible(continuity: AutomaticContinuity, item: MemoryResult): boolean {
+	if (!continuity.requested || !isSummaryLike(item)) return true;
+	return continuity.sessionId != null && item.session_id === continuity.sessionId;
+}
+
+function automaticSummarySessionId(
+	store: StoreHandle,
+	automaticContext?: AutomaticContext | null,
+): number | null | undefined {
+	const continuity = resolveAutomaticContinuity(store, automaticContext);
+	return continuity.requested ? continuity.sessionId : undefined;
+}
+
+function findLatestSummaryLike(
+	store: StoreHandle,
+	filters: MemoryFilters | undefined,
+	continuity: AutomaticContinuity,
+): MemoryResult | null {
+	if (continuity.requested && continuity.sessionId == null) return null;
 	const filterResult = buildFilterClausesWithContext(
 		filters ?? null,
 		ownershipFilterContext(store),
 	);
 	const whereParts = [
 		"memory_items.active = 1",
-		"(memory_items.kind = 'session_summary' OR json_extract(memory_items.metadata_json, '$.is_summary') = 1)",
+		summaryLikeSqlPredicate(),
+		...(continuity.requested ? ["memory_items.session_id = ?"] : []),
 		...filterResult.clauses,
 	];
 	const joinClause = filterResult.joinSessions
@@ -1095,7 +1165,10 @@ function findLatestSummaryLike(store: StoreHandle, filters?: MemoryFilters): Mem
 			 ORDER BY memory_items.created_at DESC, memory_items.id DESC
 			 LIMIT 1`,
 		)
-		.get(...filterResult.params) as MemoryItemResponse | null;
+		.get(
+			...(continuity.requested ? [continuity.sessionId] : []),
+			...filterResult.params,
+		) as MemoryItemResponse | null;
 	return row ? toMemoryResult(row) : null;
 }
 
@@ -1248,6 +1321,7 @@ function mergeResults(
 	limit: number,
 	query: string,
 	filters?: MemoryFilters,
+	eligible: (item: MemoryResult) => boolean = () => true,
 ): {
 	merged: MemoryResult[];
 	candidates: MemoryResult[];
@@ -1260,7 +1334,11 @@ function mergeResults(
 		const existing = seen.get(r.id);
 		if (!existing || r.score > existing.score) seen.set(r.id, r);
 	}
-	const scopedSemanticResults = rehydrateScopedCandidateResults(store, semanticResults, filters);
+	const scopedSemanticResults = rehydrateScopedCandidateResults(
+		store,
+		semanticResults,
+		filters,
+	).filter(eligible);
 	let semanticCount = 0;
 	for (const r of scopedSemanticResults) {
 		if (!seen.has(r.id)) semanticCount++;
@@ -1348,6 +1426,7 @@ function mergeFileRefCandidates(
 	results: MemoryResult[],
 	filters: MemoryFilters | undefined,
 	effectiveLimit: number,
+	summarySessionId?: number | null,
 ): MemoryResult[] {
 	const workingSetPaths = filters?.working_set_paths;
 	if (!workingSetPaths || !Array.isArray(workingSetPaths) || workingSetPaths.length === 0) {
@@ -1363,6 +1442,7 @@ function mergeFileRefCandidates(
 			limit: effectiveLimit,
 			project: filters?.project,
 			relation: "modified",
+			summarySessionId,
 		}).map((row) => row.id),
 	);
 	const newIds = refCandidateIds.filter((id) => !existingIds.has(id));
@@ -1389,6 +1469,25 @@ function mergeFileRefCandidates(
 	return [...results, ...refMemories];
 }
 
+function createPackRetrieval(
+	store: StoreHandle,
+	options: {
+		limit: number;
+		filters?: MemoryFilters;
+		eligible: (item: MemoryResult) => boolean;
+		summarySessionId?: number | null;
+	},
+) {
+	const { limit, filters, eligible, summarySessionId } = options;
+	return {
+		search: (query: string) => search(store, query, limit, filters, eligible, summarySessionId),
+		merge: (results: MemoryResult[], semantic: MemoryResult[], query: string) =>
+			mergeResults(store, results, semantic, limit, query, filters, eligible),
+		fileRefs: (results: MemoryResult[]) =>
+			mergeFileRefCandidates(store, results, filters, limit, summarySessionId).filter(eligible),
+	};
+}
+
 function buildPackArtifacts(
 	store: StoreHandle,
 	context: string,
@@ -1401,11 +1500,21 @@ function buildPackArtifacts(
 		compact?: boolean;
 		compactDetailCount?: number;
 		compressionMode?: PackCompressionMode;
+		automaticContext?: AutomaticContext | null;
 	} = {
 		recordUsage: true,
 	},
 ): PackArtifacts {
 	const effectiveLimit = Math.max(1, Math.trunc(limit));
+	const continuity = resolveAutomaticContinuity(store, options.automaticContext);
+	const eligible = (item: MemoryResult) => automaticEligible(continuity, item);
+	const summarySessionId = continuity.requested ? continuity.sessionId : undefined;
+	const retrieval = createPackRetrieval(store, {
+		limit: effectiveLimit,
+		filters,
+		eligible,
+		summarySessionId,
+	});
 	const sanitized = sanitizeSearchQuery(context);
 	const retrievalContext = sanitized.clean_query;
 	let fallbackUsed = false;
@@ -1435,27 +1544,20 @@ function buildPackArtifacts(
 	if (taskMode) {
 		const taskQuery = `${retrievalContext} ${TASK_HINT_QUERY}`.trim();
 		retrievalQuery = taskQuery;
-		let taskResults = search(store, taskQuery, effectiveLimit, filters);
+		let taskResults = retrieval.search(taskQuery);
 		ftsCount = taskResults.length;
 		if (semanticResults && semanticResults.length > 0) {
 			captureTraceCandidates(taskQuery, taskResults);
-			const merge = mergeResults(
-				store,
-				taskResults,
-				semanticResults,
-				effectiveLimit,
-				taskQuery,
-				filters,
-			);
+			const merge = retrieval.merge(taskResults, semanticResults, taskQuery);
 			taskResults = merge.merged;
 			semanticCount = merge.semanticCount;
 			captureTraceCandidates(retrievalContext, merge.semanticCandidates);
 		}
-		taskResults = mergeFileRefCandidates(store, taskResults, filters, effectiveLimit);
+		taskResults = retrieval.fileRefs(taskResults);
 		captureTraceCandidates(taskQuery, taskResults);
 		if (taskResults.length === 0) {
 			fallbackUsed = true;
-			results = taskFallbackRecent(store, effectiveLimit, filters);
+			results = taskFallbackRecent(store, effectiveLimit, filters, eligible);
 			captureTraceCandidates(taskQuery, results);
 		} else {
 			const actionableTaskResults = taskResults.filter((item) => !isSummaryLike(item));
@@ -1479,7 +1581,7 @@ function buildPackArtifacts(
 		const preferSummary = queryPrefersRecap(recallQuery);
 		const wantsTimeline = recallQueryWantsTimeline(recallQuery);
 		const topicalRecallQuery = [...queryContentTokens(recallQuery)].join(" ");
-		let recallResults = search(store, recallQuery, effectiveLimit, filters);
+		let recallResults = retrieval.search(recallQuery);
 		ftsCount = recallResults.length;
 		captureTraceCandidates(recallQuery, recallResults);
 		if (!preferSummary && topicalRecallQuery) {
@@ -1489,7 +1591,7 @@ function buildPackArtifacts(
 					(item) => isSummaryLike(item) || textOverlapScore(item, topicalRecallQuery) === 0,
 				);
 			if (needsTopicalRetry) {
-				const topicalResults = search(store, topicalRecallQuery, effectiveLimit, filters);
+				const topicalResults = retrieval.search(topicalRecallQuery);
 				captureTraceCandidates(topicalRecallQuery, topicalResults);
 				if (topicalResults.length > 0) {
 					recallResults = topicalResults;
@@ -1499,26 +1601,19 @@ function buildPackArtifacts(
 			}
 		}
 		if (recallResults.length === 0) {
-			const hintResults = search(store, RECALL_HINT_QUERY, effectiveLimit, filters);
+			const hintResults = retrieval.search(RECALL_HINT_QUERY);
 			captureTraceCandidates(RECALL_HINT_QUERY, hintResults);
 			recallResults = hintResults.filter(isSummaryLike);
 			ftsCount = recallResults.length;
 			retrievalQuery = RECALL_HINT_QUERY;
 		}
 		if (semanticResults && semanticResults.length > 0) {
-			const merge = mergeResults(
-				store,
-				recallResults,
-				semanticResults,
-				effectiveLimit,
-				recallQuery,
-				filters,
-			);
+			const merge = retrieval.merge(recallResults, semanticResults, recallQuery);
 			recallResults = merge.merged;
 			semanticCount = merge.semanticCount;
 			captureTraceCandidates(retrievalContext, merge.semanticCandidates);
 		}
-		recallResults = mergeFileRefCandidates(store, recallResults, filters, effectiveLimit);
+		recallResults = retrieval.fileRefs(recallResults);
 		captureTraceCandidates(retrievalQuery, recallResults);
 		results = prioritizeRecallResults(
 			recallResults,
@@ -1528,7 +1623,7 @@ function buildPackArtifacts(
 		);
 		if (results.length === 0) {
 			fallbackUsed = true;
-			results = recallFallbackRecent(store, effectiveLimit, filters);
+			results = recallFallbackRecent(store, effectiveLimit, filters, eligible);
 			captureTraceCandidates(retrievalQuery, results);
 		}
 		const anchor = preferSummary
@@ -1547,22 +1642,15 @@ function buildPackArtifacts(
 				filters ?? null,
 			);
 			if (timelineRows.length > 0) {
-				const timelineResults = timelineRows.map(toMemoryResult);
+				const timelineResults = timelineRows.map(toMemoryResult).filter(eligible);
 				captureTraceCandidates(retrievalQuery, timelineResults);
 				results = timelineResults;
 			}
 		}
 	} else {
-		const ftsResults = search(store, retrievalContext, effectiveLimit, filters);
+		const ftsResults = retrieval.search(retrievalContext);
 		if (semanticResults && semanticResults.length > 0) {
-			const merge = mergeResults(
-				store,
-				ftsResults,
-				semanticResults,
-				effectiveLimit,
-				retrievalContext,
-				filters,
-			);
+			const merge = retrieval.merge(ftsResults, semanticResults, retrievalContext);
 			results = prioritizeDefaultResults(merge.merged, effectiveLimit, retrievalContext);
 			ftsCount = merge.ftsCount;
 			semanticCount = merge.semanticCount;
@@ -1572,13 +1660,13 @@ function buildPackArtifacts(
 			ftsCount = results.length;
 			captureTraceCandidates(retrievalContext, ftsResults);
 		}
-		results = mergeFileRefCandidates(store, results, filters, effectiveLimit);
+		results = retrieval.fileRefs(results);
 		captureTraceCandidates(retrievalContext, results);
 		results = prioritizeDefaultResults(results, effectiveLimit, retrievalContext);
 
 		if (results.length === 0) {
 			fallbackUsed = true;
-			results = store.recent(effectiveLimit, filters ?? null).map(toMemoryResult);
+			results = recentEligible(store, effectiveLimit, filters, eligible);
 			captureTraceCandidates(retrievalContext, results);
 		}
 	}
@@ -1594,7 +1682,7 @@ function buildPackArtifacts(
 	let summaryItems = directSummaryMatches.slice(0, 1);
 	const allowGlobalSummaryFallback = !recallMode || queryPrefersRecap(retrievalContext);
 	if (summaryItems.length === 0 && allowGlobalSummaryFallback) {
-		const s = findLatestSummaryLike(store, filters);
+		const s = findLatestSummaryLike(store, filters, continuity);
 		if (s) {
 			summaryItems = [
 				{
@@ -1637,26 +1725,13 @@ function buildPackArtifacts(
 	}
 
 	if (observationItems.length === 0) {
-		const recentObs = store.recentByKinds(
-			OBSERVATION_KINDS,
+		supplementalObservationCandidates = recentEligible(
+			store,
 			Math.max(effectiveLimit * 3, 10),
-			filters ?? null,
+			filters,
+			eligible,
+			OBSERVATION_KINDS,
 		);
-		supplementalObservationCandidates = recentObs.map((row) => ({
-			id: row.id,
-			kind: row.kind,
-			title: row.title,
-			body_text: row.body_text,
-			confidence: row.confidence ?? 0,
-			created_at: row.created_at,
-			updated_at: row.updated_at,
-			tags_text: row.tags_text ?? "",
-			score: 0,
-			session_id: row.session_id,
-			metadata: row.metadata_json,
-			narrative: row.narrative ?? null,
-			facts: row.facts ?? null,
-		}));
 		observationItems = supplementalObservationCandidates;
 	}
 
@@ -2099,12 +2174,14 @@ export function buildMemoryPack(
 	filters?: MemoryFilters,
 	semanticResults?: MemoryResult[],
 	renderOptions?: PackRenderOptions,
+	automaticContext?: AutomaticContext | null,
 ): PackResponse {
 	return buildPackArtifacts(store, context, limit, tokenBudget, filters, semanticResults, {
 		recordUsage: true,
 		compact: renderOptions?.compact,
 		compactDetailCount: renderOptions?.compactDetailCount,
 		compressionMode: renderOptions?.compressionMode,
+		automaticContext,
 	}).response;
 }
 
@@ -2116,12 +2193,14 @@ export function buildMemoryPackWithTrace(
 	filters?: MemoryFilters,
 	semanticResults?: MemoryResult[],
 	renderOptions?: PackRenderOptions,
+	automaticContext?: AutomaticContext | null,
 ): PackArtifacts {
 	return buildPackArtifacts(store, context, limit, tokenBudget, filters, semanticResults, {
 		recordUsage: true,
 		compact: renderOptions?.compact,
 		compactDetailCount: renderOptions?.compactDetailCount,
 		compressionMode: renderOptions?.compressionMode,
+		automaticContext,
 	});
 }
 
@@ -2133,12 +2212,14 @@ export function buildMemoryPackTrace(
 	filters?: MemoryFilters,
 	semanticResults?: MemoryResult[],
 	renderOptions?: PackRenderOptions,
+	automaticContext?: AutomaticContext | null,
 ): PackTrace {
 	return buildPackArtifacts(store, context, limit, tokenBudget, filters, semanticResults, {
 		recordUsage: false,
 		compact: renderOptions?.compact,
 		compactDetailCount: renderOptions?.compactDetailCount,
 		compressionMode: renderOptions?.compressionMode,
+		automaticContext,
 	}).trace;
 }
 
@@ -2164,6 +2245,7 @@ export async function buildMemoryPackAsync(
 	tokenBudget: number | null = null,
 	filters?: MemoryFilters,
 	renderOptions?: PackRenderOptions,
+	automaticContext?: AutomaticContext | null,
 ): Promise<PackResponse> {
 	// Run semantic search (returns [] when embeddings unavailable)
 	let semResults: MemoryResult[] = [];
@@ -2175,6 +2257,7 @@ export async function buildMemoryPackAsync(
 			limit,
 			filters ?? null,
 			ownershipFilterContext(store),
+			automaticSummarySessionId(store, automaticContext),
 		);
 		semResults = semanticMemoryResults(raw);
 	} catch {
@@ -2186,6 +2269,7 @@ export async function buildMemoryPackAsync(
 		compact: renderOptions?.compact,
 		compactDetailCount: renderOptions?.compactDetailCount,
 		compressionMode: renderOptions?.compressionMode,
+		automaticContext,
 	}).response;
 }
 
@@ -2196,6 +2280,7 @@ export async function buildMemoryPackWithTraceAsync(
 	tokenBudget: number | null = null,
 	filters?: MemoryFilters,
 	renderOptions?: PackRenderOptions,
+	automaticContext?: AutomaticContext | null,
 ): Promise<PackArtifacts> {
 	let semResults: MemoryResult[] = [];
 	const semanticQuery = sanitizeSearchQuery(context).clean_query;
@@ -2206,6 +2291,7 @@ export async function buildMemoryPackWithTraceAsync(
 			limit,
 			filters ?? null,
 			ownershipFilterContext(store),
+			automaticSummarySessionId(store, automaticContext),
 		);
 		semResults = semanticMemoryResults(raw);
 	} catch {
@@ -2217,6 +2303,7 @@ export async function buildMemoryPackWithTraceAsync(
 		compact: renderOptions?.compact,
 		compactDetailCount: renderOptions?.compactDetailCount,
 		compressionMode: renderOptions?.compressionMode,
+		automaticContext,
 	});
 }
 
@@ -2227,6 +2314,7 @@ export async function buildMemoryPackTraceAsync(
 	tokenBudget: number | null = null,
 	filters?: MemoryFilters,
 	renderOptions?: PackRenderOptions,
+	automaticContext?: AutomaticContext | null,
 ): Promise<PackTrace> {
 	let semResults: MemoryResult[] = [];
 	const semanticQuery = sanitizeSearchQuery(context).clean_query;
@@ -2237,6 +2325,7 @@ export async function buildMemoryPackTraceAsync(
 			limit,
 			filters ?? null,
 			ownershipFilterContext(store),
+			automaticSummarySessionId(store, automaticContext),
 		);
 		semResults = semanticMemoryResults(raw);
 	} catch {
@@ -2248,5 +2337,6 @@ export async function buildMemoryPackTraceAsync(
 		compact: renderOptions?.compact,
 		compactDetailCount: renderOptions?.compactDetailCount,
 		compressionMode: renderOptions?.compressionMode,
+		automaticContext,
 	}).trace;
 }

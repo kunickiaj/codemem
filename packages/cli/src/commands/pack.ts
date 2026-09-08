@@ -1,6 +1,7 @@
 import { posix, win32 } from "node:path";
 import * as p from "@clack/prompts";
 import type {
+	AutomaticContext,
 	Database,
 	MemoryFilters,
 	PackArtifacts,
@@ -315,6 +316,22 @@ async function withStore(
 	}
 }
 
+function ledgerAutomaticContext(
+	payload: InternalLedgerPayload | undefined,
+): AutomaticContext | null {
+	if (!payload?.source || !payload.source_session_id) return null;
+	return { source: payload.source, hostSessionId: payload.source_session_id };
+}
+
+async function readOptionalLedgerPayload(): Promise<InternalLedgerPayload | undefined> {
+	try {
+		return await readInternalLedgerPayload();
+	} catch {
+		// Instrumentation metadata is best-effort; pack output remains available.
+		return undefined;
+	}
+}
+
 async function packAction(context: string, opts: PackCommandOptions): Promise<void> {
 	await withStore(opts, "pack_failed", async (store) => {
 		const { limit, budget, filters, renderOptions } = buildPackRequestOptions(opts, {
@@ -322,12 +339,14 @@ async function packAction(context: string, opts: PackCommandOptions): Promise<vo
 		});
 		let result: Awaited<ReturnType<MemoryStore["buildMemoryPackAsync"]>>;
 		if (opts.internalLedger) {
+			const ledgerPayload = await readOptionalLedgerPayload();
 			const artifacts = await store.buildMemoryPackWithTraceAsync(
 				context,
 				limit,
 				budget,
 				filters,
 				renderOptions,
+				ledgerAutomaticContext(ledgerPayload),
 			);
 			result = artifacts.response;
 			let artifactFingerprint: string | undefined;
@@ -338,7 +357,7 @@ async function packAction(context: string, opts: PackCommandOptions): Promise<vo
 			}
 			let ledgerOutcome: RetrievalLedgerWriteOutcome | undefined;
 			try {
-				const ledgerPayload = await readInternalLedgerPayload();
+				if (!ledgerPayload) throw new Error("internal ledger metadata unavailable");
 				ledgerOutcome = handleInstrumentedPackLedger(
 					store.db,
 					ledgerPayload,
@@ -359,9 +378,8 @@ async function packAction(context: string, opts: PackCommandOptions): Promise<vo
 					: undefined,
 			);
 			return;
-		} else {
-			result = await store.buildMemoryPackAsync(context, limit, budget, filters, renderOptions);
 		}
+		result = await store.buildMemoryPackAsync(context, limit, budget, filters, renderOptions);
 		emitPackResult(context, opts, result);
 	});
 }

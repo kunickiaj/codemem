@@ -1,5 +1,6 @@
 import { isAbsolute, posix, resolve as resolvePath, win32 } from "node:path";
 import type {
+	AutomaticContext,
 	AutomaticRecallWriteOutcome,
 	MemoryFilters,
 	MemoryStore,
@@ -48,6 +49,7 @@ const PACK_KEYS = new Set([
 	"db_path",
 	"identity_target",
 	"attempt",
+	"automatic_context",
 ]);
 const LEDGER_KEYS = new Set([
 	"automatic_recall",
@@ -97,6 +99,7 @@ type ValidatedPackRequest = {
 	filters: MemoryFilters;
 	renderOptions?: PackRenderOptions;
 	attempt?: Record<string, unknown>;
+	automaticContext?: AutomaticContext | null;
 };
 
 function invalidRequest(message: string) {
@@ -198,6 +201,72 @@ function attemptMetadata(payload: Record<string, unknown>): PromptPackAttemptMet
 	};
 }
 
+function validateAutomaticContext(value: unknown): AutomaticContext | null | string {
+	if (value === null) return null;
+	if (!isRecord(value)) return "automatic_context must be an object or null";
+	for (const key of Object.keys(value)) {
+		if (key !== "source" && key !== "host_session_id") {
+			return `automatic_context contains unsupported field: ${key}`;
+		}
+	}
+	const source = value.source;
+	const hostSessionId = value.host_session_id;
+	if (typeof source !== "string" || !source.trim() || source.length > 64) {
+		return "automatic_context source is invalid";
+	}
+	if (
+		typeof hostSessionId !== "string" ||
+		!hostSessionId.trim() ||
+		hostSessionId.length > MAX_METADATA_FIELD_CHARS ||
+		isAbsolutePath(hostSessionId)
+	) {
+		return "automatic_context host_session_id is invalid";
+	}
+	return { source: source.trim(), hostSessionId: hostSessionId.trim() };
+}
+
+function resolveRequestAutomaticContext(
+	value: Record<string, unknown>,
+	attempt: Record<string, unknown> | undefined,
+): AutomaticContext | null | undefined | string {
+	if (Object.hasOwn(value, "automatic_context")) {
+		return validateAutomaticContext(value.automatic_context);
+	}
+	if (!attempt) return undefined;
+	const source = attempt.source;
+	const hostSessionId = attempt.source_session_id;
+	if (
+		typeof source === "string" &&
+		source.trim().length > 0 &&
+		typeof hostSessionId === "string" &&
+		hostSessionId.trim().length > 0
+	) {
+		return { source: source.trim(), hostSessionId: hostSessionId.trim() };
+	}
+	return null;
+}
+
+function packRenderOptions(value: Record<string, unknown>): PackRenderOptions | undefined {
+	if (value.compact == null && value.compact_detail_count == null) return undefined;
+	return {
+		compact: value.compact === true || value.compact_detail_count != null,
+		...(value.compact_detail_count != null
+			? { compactDetailCount: value.compact_detail_count as number }
+			: {}),
+	};
+}
+
+function packRequestArgs(request: ValidatedPackRequest) {
+	return [
+		request.context,
+		request.limit,
+		request.tokenBudget,
+		request.filters,
+		request.renderOptions,
+		request.automaticContext,
+	] as const;
+}
+
 function validatePackRequest(value: unknown): ValidatedPackRequest | string {
 	if (!isRecord(value)) return "request body must be an object";
 	for (const key of Object.keys(value)) {
@@ -262,6 +331,8 @@ function validatePackRequest(value: unknown): ValidatedPackRequest | string {
 		if (attemptError) return attemptError;
 		attempt = value.attempt;
 	}
+	const automaticContext = resolveRequestAutomaticContext(value, attempt);
+	if (typeof automaticContext === "string") return automaticContext;
 
 	const filters: MemoryFilters = {};
 	if (value.all_projects !== true) {
@@ -276,22 +347,14 @@ function validatePackRequest(value: unknown): ValidatedPackRequest | string {
 	}
 	if (workingSetFiles.length > 0) filters.working_set_paths = workingSetFiles;
 
-	let renderOptions: PackRenderOptions | undefined;
-	if (value.compact != null || value.compact_detail_count != null) {
-		renderOptions = {
-			compact: value.compact === true || value.compact_detail_count != null,
-			...(value.compact_detail_count != null
-				? { compactDetailCount: value.compact_detail_count as number }
-				: {}),
-		};
-	}
 	return {
 		context,
 		limit,
 		tokenBudget: tokenBudget as number | null,
 		filters,
-		renderOptions,
+		renderOptions: packRenderOptions(value),
 		attempt,
+		automaticContext,
 	};
 }
 
@@ -415,22 +478,10 @@ export function packTransportRoutes(getStore: StoreFactory) {
 			const target = validateViewerTarget(store, parsed, { requireCurrentIdentity: true });
 			if (!target.ok) return c.json(target.body, target.status);
 			if (!request.attempt) {
-				const pack = await store.buildMemoryPackAsync(
-					request.context,
-					request.limit,
-					request.tokenBudget,
-					request.filters,
-					request.renderOptions,
-				);
+				const pack = await store.buildMemoryPackAsync(...packRequestArgs(request));
 				return c.json(pack);
 			}
-			const artifacts = await store.buildMemoryPackWithTraceAsync(
-				request.context,
-				request.limit,
-				request.tokenBudget,
-				request.filters,
-				request.renderOptions,
-			);
+			const artifacts = await store.buildMemoryPackWithTraceAsync(...packRequestArgs(request));
 			let ledgerArtifactFingerprint: string | undefined;
 			try {
 				ledgerArtifactFingerprint = promptPackArtifactFingerprint(

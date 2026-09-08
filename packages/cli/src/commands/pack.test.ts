@@ -313,8 +313,9 @@ describe("pack command", () => {
 		expect(parsed).not.toHaveProperty("attempt_id");
 		expect(parsed).not.toHaveProperty("delivery_status");
 	});
-
-	it("emits legacy pack JSON when internal ledger stdin is malformed", async () => {
+});
+describe("automatic ledger continuity", () => {
+	it("emits pack JSON but marks automatic continuity unmapped when ledger stdin is malformed", async () => {
 		buildMemoryPackAsync.mockResolvedValue({
 			items: [{ id: 101, kind: "decision", title: "Safe output", subtitle: null }],
 			metrics: {
@@ -330,10 +331,18 @@ describe("pack command", () => {
 		);
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
-		await parsePackCommand(["safe query", "--json", "--internal-ledger"]);
+		await parsePackCommand(["safe query", "--json", "--internal-ledger", "--all-projects"]);
 
 		expect(process.exitCode).toBe(0);
 		expect(buildMemoryPackWithTraceAsync).toHaveBeenCalledTimes(1);
+		expect(buildMemoryPackWithTraceAsync).toHaveBeenCalledWith(
+			"safe query",
+			10,
+			undefined,
+			{},
+			undefined,
+			null,
+		);
 		expect(JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]))).toMatchObject({
 			pack_text: "## Summary\n[101] (decision) Safe output",
 			metrics: { total_items: 1 },
@@ -341,6 +350,61 @@ describe("pack command", () => {
 		});
 	});
 
+	it("reads internal metadata before selection and passes automatic requester context", async () => {
+		buildMemoryPackAsync.mockResolvedValue({
+			items: [],
+			metrics: {
+				total_items: 0,
+				pack_tokens: 0,
+				fallback_used: false,
+				sources: { fts: 0, semantic: 0, fuzzy: 0 },
+			},
+			pack_text: "",
+		});
+		vi.spyOn(process, "stdin", "get").mockReturnValue(
+			Readable.from([
+				JSON.stringify({
+					attempt_id: "018f2db4-f9d3-7a22-8d18-000000000001",
+					source: "opencode",
+					source_session_id: "host-session-1",
+				}),
+			]) as unknown as typeof process.stdin,
+		);
+		vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parsePackCommand(["safe query", "--json", "--internal-ledger", "--all-projects"]);
+
+		expect(buildMemoryPackWithTraceAsync).toHaveBeenCalledWith(
+			"safe query",
+			10,
+			undefined,
+			{},
+			undefined,
+			{ source: "opencode", hostSessionId: "host-session-1" },
+		);
+	});
+
+	it("marks valid identity-less internal metadata as unmapped automatic context", async () => {
+		vi.spyOn(process, "stdin", "get").mockReturnValue(
+			Readable.from([
+				JSON.stringify({ attempt_id: "018f2db4-f9d3-7a22-8d18-000000000004" }),
+			]) as unknown as typeof process.stdin,
+		);
+		vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parsePackCommand(["safe query", "--json", "--internal-ledger", "--all-projects"]);
+
+		expect(buildMemoryPackWithTraceAsync).toHaveBeenCalledWith(
+			"safe query",
+			10,
+			undefined,
+			{},
+			undefined,
+			null,
+		);
+	});
+});
+describe("pack command ledger delivery", () => {
 	it("waits for internal ledger persistence before emitting instrumented pack output", async () => {
 		buildMemoryPackAsync.mockResolvedValue({
 			items: [{ id: 101, kind: "decision", title: "Early output", subtitle: null }],
@@ -442,7 +506,8 @@ describe("pack command", () => {
 		expect(output).not.toHaveProperty("ledger_outcome");
 		expect(process.exitCode).toBe(0);
 	});
-
+});
+describe("pack command request options", () => {
 	it("omits project filters for all-projects pack requests", async () => {
 		buildMemoryPackAsync.mockResolvedValue({
 			items: [],
@@ -531,7 +596,8 @@ describe("pack command", () => {
 		expect(process.exitCode).toBe(1);
 		expect(errorSpy).not.toHaveBeenCalled();
 	});
-
+});
+describe("pack command validation and trace errors", () => {
 	it("emits structured usage errors for invalid main pack numeric input", async () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -616,7 +682,8 @@ describe("pack command", () => {
 		expect(errorSpy).not.toHaveBeenCalled();
 		expect(buildMemoryPackTraceAsync).not.toHaveBeenCalled();
 	});
-
+});
+describe("pack command trace dispatch", () => {
 	it("dispatches the nested pack trace commander path", async () => {
 		buildMemoryPackTraceAsync.mockResolvedValue({
 			version: 1,
