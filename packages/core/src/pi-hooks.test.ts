@@ -13,7 +13,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { connect } from "./db.js";
 import {
 	buildIngestPayloadFromPiEvent,
@@ -852,5 +852,34 @@ describe("ingestRawEvents accepts pi envelopes", () => {
 		expect(ingestRawEvents(store, second)).toMatchObject({ inserted: 1, skipped: 0 });
 		expect(ingestRawEvents(store, first)).toMatchObject({ inserted: 0, skipped: 1 });
 		expect(ingestRawEvents(store, second)).toMatchObject({ inserted: 0, skipped: 1 });
+	});
+
+	it("distinguishes ts-less same-reason shutdowns by generated time", () => {
+		vi.useFakeTimers();
+		try {
+			vi.setSystemTime(new Date("2026-06-01T17:00:00Z"));
+			const first = requireEnvelope(
+				buildRawEventEnvelopeFromPiEvent({
+					piEvent: "session_shutdown",
+					sessionId: "pi-no-ts-reload",
+					entryId: "session_end",
+					reason: "reload",
+				}),
+			);
+			vi.setSystemTime(new Date("2026-06-01T17:00:01Z"));
+			const second = requireEnvelope(
+				buildRawEventEnvelopeFromPiEvent({
+					piEvent: "session_shutdown",
+					sessionId: "pi-no-ts-reload",
+					entryId: "session_end",
+					reason: "reload",
+				}),
+			);
+			expect(first.event_id).not.toBe(second.event_id);
+			expect(ingestRawEvents(store, first)).toMatchObject({ inserted: 1, skipped: 0 });
+			expect(ingestRawEvents(store, second)).toMatchObject({ inserted: 1, skipped: 0 });
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

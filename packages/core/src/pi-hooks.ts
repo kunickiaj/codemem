@@ -183,10 +183,10 @@ export function mapPiEventPayload(payload: Record<string, unknown>): PiHookAdapt
 		const reason = field(payload, "reason");
 		eventType = "session_end";
 		eventPayload = { reason: reason ?? null };
+		// Payload ts keeps retries stable; a generated ts falls back so ts-less
+		// same-reason shutdowns stay distinct (mirrors claude-hooks eventIdTsSeed).
 		idPart =
-			entryId && entryId !== "session_end"
-				? entryId
-				: `session_end:${coerceString(reason)}:${normalizedRawTs ?? ""}`;
+			entryId && entryId !== "session_end" ? entryId : `session_end:${coerceString(reason)}:${ts}`;
 		consumed.add("reason");
 	} else if (piEvent === "message_end") {
 		const role = coerceString(field(payload, "role")).toLowerCase();
