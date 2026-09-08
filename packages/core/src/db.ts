@@ -204,10 +204,6 @@ export function migrateLegacyDbPath(dbPath: string): void {
 	}
 }
 
-function isInMemoryDbPath(dbPath: string): boolean {
-	return dbPath === "" || dbPath === ":memory:" || dbPath.startsWith("file::memory:");
-}
-
 /**
  * Open a better-sqlite3 connection with the standard codemem pragmas.
  *
@@ -230,7 +226,7 @@ export function connect(dbPath: string = DEFAULT_DB_PATH): DatabaseType {
 
 		// In-memory databases cannot use WAL (SQLite reports "memory") and have
 		// no cross-process readers, so skip the pragma and its warning.
-		if (!isInMemoryDbPath(dbPath)) {
+		if (!db.memory) {
 			const journalMode = db.pragma("journal_mode = WAL", { simple: true }) as string;
 			if (journalMode.toLowerCase() !== "wal") {
 				console.warn(

@@ -72,6 +72,18 @@ describe("connect", () => {
 		}
 	});
 
+	it("enables WAL for a disk filename with an in-memory URI prefix", () => {
+		const cwd = process.cwd();
+		try {
+			process.chdir(tmpDir);
+			db = connect("file::memory:foo");
+			expect(db.memory).toBe(false);
+			expect(db.pragma("journal_mode", { simple: true })).toBe("wal");
+		} finally {
+			process.chdir(cwd);
+		}
+	});
+
 	it("sets busy_timeout to 5000ms", () => {
 		db = connect(join(tmpDir, "test.sqlite"));
 		const timeout = db.pragma("busy_timeout", { simple: true });
