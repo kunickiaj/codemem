@@ -1426,10 +1426,16 @@ describe("vector migration", () => {
 			firstDb = new Database(dbPath);
 			initTestSchema(firstDb);
 			const sessionId = insertTestSession(firstDb);
-			for (let id = 1; id <= 251; id++) {
-				seedMemory(firstDb, id, sessionId, `Memory ${id}`, `Body ${id}`);
-				seedVector(firstDb, id, "old-model");
-			}
+			// Seed in one transaction: this is a file-backed database with the
+			// default rollback journal, so per-statement autocommits each fsync
+			// and the 500+ seed writes became disk-latency-bound on CI runners.
+			const seedCorpus = firstDb.transaction(() => {
+				for (let id = 1; id <= 251; id++) {
+					seedMemory(firstDb as Database, id, sessionId, `Memory ${id}`, `Body ${id}`);
+					seedVector(firstDb as Database, id, "old-model");
+				}
+			});
+			seedCorpus();
 			let stopRequested = false;
 			let staleBatchSelections = 0;
 			const prepareSpy = vi.spyOn(firstDb, "prepare");
