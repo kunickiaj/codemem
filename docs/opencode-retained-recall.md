@@ -86,7 +86,9 @@ This does not solve multiple tasks within one session. The retained cap remains 
 
 Run `node scripts/eval/run-automatic-recall-baseline.mjs` to export the full pinned
 `ad50a6a4` tree into a new temporary snapshot and overlay the byte-verified harness
-from `5de04daf`. The historical test still checks all listed working-source blobs
+from the committed copies under `scripts/eval/frozen/automatic-recall-pre-policy/`
+(originally frozen in `5de04daf`, which squash merges leave unreachable; CI fetches
+full history only for the `ad50a6a4` archive). The historical test still checks all listed working-source blobs
 in that snapshot against the pinned Git objects. It exercises the real Core
 selector/renderer and Viewer route, not a mocked whole-pack baseline. The snapshot
 is retained for inspection; the runner does not update the recorded report.

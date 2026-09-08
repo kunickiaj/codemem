@@ -43,6 +43,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          # The automatic-recall baseline test archives a pinned historical main commit.
+          fetch-depth: 0
 
       - name: Install pnpm
         uses: pnpm/action-setup@v5

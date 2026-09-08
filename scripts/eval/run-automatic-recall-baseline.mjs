@@ -7,19 +7,22 @@ import { fileURLToPath } from "node:url";
 const root = realpathSync(fileURLToPath(new URL("../../", import.meta.url)));
 const manifest = JSON.parse(readFileSync(join(root, "scripts/eval/automatic-recall-pre-policy.json"), "utf8"));
 const git = (...args) => execFileSync("git", args, { cwd: root, maxBuffer: 64 * 1024 * 1024 });
-const frozen = manifest.artifacts.frozen_harness_commit;
+// Frozen harness bytes are committed copies; squash merges make the original
+// harness commit unreachable, and shallow CI checkouts never had it.
+const frozenDir = join(root, manifest.artifacts.frozen_harness_directory);
 const reportPath = "scripts/eval/baselines/automatic-recall-pre-policy.json";
-const report = JSON.parse(git("show", `${frozen}:${reportPath}`));
+const report = JSON.parse(readFileSync(join(frozenDir, reportPath), "utf8"));
 const scratch = join(root, ".tmp");
 mkdirSync(scratch, { recursive: true });
 const snapshot = mkdtempSync(join(scratch, "codemem-recall-baseline-"));
 
 // Export the historical tree, not candidate files or a handwritten selector substitute.
+// The historical commit is on main; CI must fetch full history for it.
 execFileSync("tar", ["-xf", "-", "-C", snapshot], {
   input: git("archive", manifest.source.commit),
 });
 for (const path of ["scripts/eval/automatic-recall-pre-policy.json", reportPath, ...Object.keys(report.provenance.harness_sha256)]) {
-  const bytes = git("show", `${frozen}:${path}`);
+  const bytes = readFileSync(join(frozenDir, path));
   const expected = report.provenance.harness_sha256[path];
   if (expected && createHash("sha256").update(bytes).digest("hex") !== expected) {
     throw new Error(`Frozen harness digest mismatch: ${path}`);
@@ -51,7 +54,9 @@ for (const name of readdirSync(join(snapshot, "packages"))) {
 
 // Git reads objects from the original clone and hashes working bytes from the snapshot.
 // Keep the snapshot for inspection; never overwrite the frozen report or a user database.
-console.log(`Historical source: ${manifest.source.commit}; frozen harness: ${frozen}`);
+console.log(
+  `Historical source: ${manifest.source.commit}; frozen harness: ${manifest.artifacts.frozen_harness_commit} (${manifest.artifacts.frozen_harness_directory})`,
+);
 console.log(`Baseline snapshot: ${snapshot}`);
 execFileSync(process.execPath, [join(root, "node_modules/vitest/vitest.mjs"), "run",
   "packages/core/src/automatic-recall-pre-policy.eval.test.ts",

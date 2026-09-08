@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "label": "actual-source-pre-policy-generic-continue-v1",
+  "provenance": {
+    "source_commit": "ad50a6a41d5ee78f36e8c96a2000648cf8a5863d",
+    "source_tree": "4ca51b5a75a79b4c0cf9ba1aca4354119f6ac83e",
+    "fixture_digest_scheme": "SHA-256 of compact JSON with recursively sorted object keys (en locale), preserving array order; entire fixture including sessions, gold and controls. Digest lives outside the fixture.",
+    "harness_digest_scheme": "SHA-256 of file bytes; fixture and test files only. Manifest/report excluded to avoid recursive self hashes.",
+    "harness_sha256": {
+      "scripts/eval/fixtures/automatic-recall-pre-policy.json": "ef5eadc6bc96abb28cc8369816cae2d3a57aaff8638f5b7577f2ca863b1716ab",
+      "packages/core/src/automatic-recall-pre-policy.eval.test.ts": "0775384a82ca00996bc7ad61cb4f2a16d5e62d763749fae61151d01eaa9d3276",
+      "packages/viewer-server/src/routes/automatic-recall.test.ts": "d3e4b9a8fe05c34925b76ee7232369a4573ff8ea8f075e6102de95eed8130d72"
+    },
+    "fixture_sha256": "7ea10a40b20f177df3f7c289916f2527349a13b113cde071a6bf2af0fadbcf12"
+  },
+  "observed": {
+    "generic_continue": {
+      "mode": "task",
+      "selected_keys": [
+        "newest_unrelated_continuity",
+        "relevant_durable_parallel_fact"
+      ],
+      "summary_keys": ["newest_unrelated_continuity"],
+      "timeline_keys": ["relevant_durable_parallel_fact"],
+      "pack_tokens": 119,
+      "wrapped_estimated_tokens": { "new": 124, "retained": 0 }
+    },
+    "explicit_control": {
+      "mode": "recall",
+      "selected_keys": ["relevant_durable_parallel_fact"],
+      "summary_keys": [],
+      "timeline_keys": ["relevant_durable_parallel_fact"],
+      "pack_tokens": 82,
+      "wrapped_estimated_tokens": { "new": 86, "retained": 0 }
+    }
+  },
+  "gold": {
+    "generic_continue": {
+      "required_keys": ["relevant_durable_parallel_fact"],
+      "forbidden_keys": ["newest_unrelated_continuity"]
+    },
+    "explicit_control": {
+      "required_keys": ["relevant_durable_parallel_fact"],
+      "forbidden_keys": ["newest_unrelated_continuity"]
+    }
+  },
+  "incident": {
+    "generic_continue": {
+      "useful_fact_coverage": { "present": 1, "total": 1 },
+      "wrongful_summary_inclusion": { "count": 1, "total": 1 },
+      "missed_updates": { "count": 0, "total": 0 }
+    },
+    "explicit_control": {
+      "useful_fact_coverage": { "present": 1, "total": 1 },
+      "wrongful_summary_inclusion": { "count": 0, "total": 1 },
+      "missed_updates": { "count": 0, "total": 0 }
+    },
+    "interpretation": "Observed pre-policy output includes the newest unrelated continuity summary after generic Continue. Desired gold excludes it while retaining the relevant durable parallel fact."
+  },
+  "stability": {
+    "status": "corrected harness executed twice in isolated worktree; both runs passed all 12 tests",
+    "runs": 2,
+    "stable_fields": [
+      "mode",
+      "selected_keys",
+      "summary_keys",
+      "timeline_keys",
+      "pack_tokens",
+      "wrapped_estimated_tokens"
+    ],
+    "metric_sources": {
+      "pack_tokens": "trace.output.estimated_tokens from the actual Core renderer",
+      "wrapped_estimated_tokens.new": "estimateTokens(fixture.synthetic_wrapper_prefix + trace.output.pack_text); synthetic wrapper estimate only, not plugin execution or delivery",
+      "wrapped_estimated_tokens.retained": "fixture assumption of zero retained context; no plugin retention path executed",
+      "useful_fact_coverage": "selected_keys intersected with gold.required_keys",
+      "wrongful_summary_inclusion": "selected_keys intersected with gold.forbidden_keys",
+      "missed_updates": "fixture expected_updates is empty, so the denominator is zero; update handling is not evaluated"
+    },
+    "excluded_fields": ["timing", "usage-event pack delta"],
+    "clock_limits": "JavaScript Date is faked and seed memory/session times are fixed; SQLite now and usage event timestamps are not frozen"
+  },
+  "executed_command": "pnpm exec vitest run packages/core/src/automatic-recall-pre-policy.eval.test.ts packages/viewer-server/src/routes/automatic-recall.test.ts",
+  "validation": {
+    "tests": "12 passed in each of two actual Vitest 4.1.11 invocations; assertions confirmed recorded Core and synthetic-wrapper estimates after production remember seeding",
+    "typecheck": "pnpm run tsc passed",
+    "scoped_lint": "pnpm exec biome check packages/core/src/automatic-recall-pre-policy.eval.test.ts packages/viewer-server/src/routes/automatic-recall.test.ts exited 0; no new diagnostics; one existing noExcessiveLinesPerFunction warning in unchanged HTTP transport describe callback",
+    "diff_check": "git diff --check passed",
+    "source_identity": "All 13 listed working-file git hash-object values equal git rev-parse ad50a6a4:path and manifest blob IDs; commit tree matches pinned tree. Core uses relative source imports and Viewer Vite config aliases @codemem/core to core/src/index.ts with source conditions.",
+    "baseline_gate": "pending independent parent review",
+    "stage_1_policy_edits_cleared": false
+  },
+  "surfaces": {
+    "core": "actual buildMemoryPackTrace selector and renderer",
+    "viewer": "real /api/pack generic Continue inclusion and task mode only, default compression; no token comparability to Core compression off",
+    "plugin": "not executed; fixture prefix wrapping is a Core text estimate, not a hook test",
+    "cli": "not executed"
+  }
+}

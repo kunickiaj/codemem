@@ -1,7 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import manifest from "../../../scripts/eval/automatic-recall-pre-policy.json";
@@ -11,22 +10,6 @@ import { buildMemoryPackTrace, estimateTokens } from "./pack.js";
 import { MemoryStore } from "./store.js";
 
 type FixtureMemory = (typeof fixture.sessions)[number]["memories"][number];
-
-it("executes the immutable historical source and frozen harness separately", () => {
-	const cwd = fileURLToPath(new URL("../../../", import.meta.url));
-	const output = execFileSync(
-		process.execPath,
-		["scripts/eval/run-automatic-recall-baseline.mjs"],
-		{
-			cwd,
-			encoding: "utf8",
-			timeout: 60_000,
-		},
-	);
-	expect(output).toContain(`Historical source: ${manifest.source.commit}`);
-	expect(output).toContain(`frozen harness: ${manifest.artifacts.frozen_harness_commit}`);
-	expect(output).toMatch(/12 passed/);
-}, 65_000);
 
 function canonicalJson(value: unknown): string {
 	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -43,30 +26,16 @@ function verifySourceIdentity() {
 	expect(git("rev-parse", `${manifest.source.commit}^{tree}`)).toBe(manifest.source.tree);
 	for (const [path, blob] of Object.entries(manifest.source.blobs)) {
 		expect(git("rev-parse", `${manifest.source.commit}:${path}`), path).toBe(blob);
+		expect(git("hash-object", path), path).toBe(blob);
 	}
-	// Committed frozen copies replace the harness commit, which squash merges leave unreachable.
-	const frozenDir = join(cwd, manifest.artifacts.frozen_harness_directory);
 	for (const [path, hash] of Object.entries(report.provenance.harness_sha256)) {
 		expect(
 			createHash("sha256")
-				.update(readFileSync(join(frozenDir, path)))
+				.update(readFileSync(new URL(`../../../${path}`, import.meta.url)))
 				.digest("hex"),
 			path,
 		).toBe(hash);
 	}
-	expect(
-		JSON.parse(
-			readFileSync(join(frozenDir, "scripts/eval/automatic-recall-pre-policy.json"), "utf8"),
-		).source,
-	).toEqual(manifest.source);
-	expect(
-		JSON.parse(
-			readFileSync(
-				join(frozenDir, "scripts/eval/baselines/automatic-recall-pre-policy.json"),
-				"utf8",
-			),
-		),
-	).toEqual(report);
 }
 
 function seedIncident(store: MemoryStore): Map<string, number> {
@@ -137,8 +106,7 @@ function countMatches(selectedKeys: string[], expectedKeys: readonly string[]): 
 	return expectedKeys.filter((key) => selectedKeys.includes(key)).length;
 }
 
-// Historical execution lives in run-automatic-recall-baseline.mjs; these calls retain explicit-pack semantics.
-describe("frozen baseline provenance and current explicit-pack compatibility", () => {
+describe("automatic recall actual-source pre-policy baseline", () => {
 	let store: MemoryStore;
 	let ids: Map<string, number>;
 

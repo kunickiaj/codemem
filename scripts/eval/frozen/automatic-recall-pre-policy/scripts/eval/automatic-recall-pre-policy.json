@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "purpose": "Reviewed source identity and frozen gold baseline; requester eligibility implementation and plugin/CLI incident evaluation remain pending",
+  "purpose": "Actual-source pre-policy baseline candidate; gate pending independent parent review",
   "source": {
     "commit": "ad50a6a41d5ee78f36e8c96a2000648cf8a5863d",
     "tree": "4ca51b5a75a79b4c0cf9ba1aca4354119f6ac83e",
@@ -44,17 +44,13 @@
   },
   "evaluation_contract": {
     "baseline": "Execute the complete pinned merged source tree in a separate approved temporary snapshot; never use moving origin/main, candidate source, or runStageOneBaseline as historical policy.",
-    "runtime": "Historical runner executes Core selector/renderer and real Viewer routes from the pinned source snapshot with the immutable frozen harness. Its Git blob checks compare snapshot working bytes and pinned objects. Current checkout tests verify immutable harness provenance and explicit-pack compatibility separately. Plugin hooks and CLI child processes are not incident-evaluated. No fresh frozen-lockfile install is claimed.",
+    "runtime": "Current evidence executes Core selector/renderer and real Viewer routes via Vitest source resolution. Plugin hooks and CLI child processes are not executed. Git blob checks compare working source bytes and pinned commit objects, not JSON equality. No fresh frozen-lockfile install is claimed.",
     "fixtures": "Invent public-safe incident rows and prompts, freeze their digest and gold facts/updates/negative summaries before execution, and seed independent temporary databases identically for baseline and candidate.",
     "controls": "Core budget 795, compression off. Fixture prefix wrapping is a synthetic estimate, not a plugin hook or 800-token budget test. Viewer asserts inclusion/mode with default compression, not comparable token counts. Fake JavaScript Date plus seeded row times; SQLite now is not frozen. No live database or paid/provider calls.",
     "reuse": "Reuse retained-recall reporting conventions and scripts/eval prompt-path transport setup, not the retained comparison's handwritten baseline or pre-rendered packs as actual-policy evidence.",
     "measurement": "Run twice; compare stable metrics excluding documented timing fields. Report useful-fact coverage, wrongful summary inclusion, missed updates and new/retained estimated tokens with denominators and per-case losses."
   },
   "artifacts": {
-    "frozen_harness_commit": "5de04daf3727fabe848ae29b9f5747c10aa77eb3",
-    "frozen_harness_directory": "scripts/eval/frozen/automatic-recall-pre-policy",
-    "frozen_harness_note": "Byte-exact copies of the harness commit's manifest, report, fixture, and two test files. Runtime reads these copies, never the commit, because squash merges and shallow checkouts do not retain it.",
-    "historical_runner": "scripts/eval/run-automatic-recall-baseline.mjs",
     "fixture": "scripts/eval/fixtures/automatic-recall-pre-policy.json",
     "report": "scripts/eval/baselines/automatic-recall-pre-policy.json",
     "regression": "packages/core/src/automatic-recall-pre-policy.eval.test.ts",
@@ -65,11 +61,9 @@
     "source_identity_evidence": "git rev-parse commit^{tree}; all 13 listed blobs checked using git rev-parse commit:path and git hash-object working-path, with equal observed IDs. This verifies listed source bytes, not execution of plugin/CLI surfaces.",
     "incident_fixture_digest": "7ea10a40b20f177df3f7c289916f2527349a13b113cde071a6bf2af0fadbcf12",
     "incident_evaluation_executed": true,
-    "baseline_gate": "source identity and frozen gold cleared only; plugin/CLI incident evaluation pending",
-    "independent_parent_review": "User reports AdversarialReviewer all5fixed clearance of source identity and gold preflight",
-    "code_reviewer_and_adversarial_reviews": "Requester eligibility implementation reviews pending; preflight clearance is not implementation approval",
-    "stage_1_policy_edits_cleared": true,
-    "requester_eligibility_implemented": false,
-    "plugin_cli_incident_evaluation": "pending"
+    "baseline_gate": "pending independent parent review",
+    "independent_parent_review": "pending",
+    "code_reviewer_and_adversarial_reviews": "pending",
+    "stage_1_policy_edits_cleared": false
   }
 }
