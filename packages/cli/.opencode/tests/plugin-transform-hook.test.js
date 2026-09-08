@@ -726,6 +726,9 @@ describe("OpenCode transform-time injection", () => {
 		output.messages.push(entry("second"));
 		await hooks["experimental.chat.messages.transform"]({}, output);
 		await hooks["experimental.chat.messages.transform"]({}, structuredClone(output));
+		await hooks.event({ event: { type: "session.created", properties: {} } });
+		await hooks["experimental.chat.messages.transform"]({}, { messages: [entry("first")] });
+		await hooks["experimental.chat.messages.transform"]({}, { messages: [entry("first")] });
 		hooks.dispose();
 		hooks = await CodememPlugin(init);
 		await hooks["experimental.chat.messages.transform"]({}, { messages: [entry("first")] });
@@ -733,15 +736,18 @@ describe("OpenCode transform-time injection", () => {
 			.filter(([url]) => String(url).endsWith("/api/prompt-pack-ledger"))
 			.map(([, options]) => JSON.parse(options.body))
 			.filter((payload) => payload.automatic_recall);
-		expect(measurements).toHaveLength(5);
+		expect(measurements).toHaveLength(7);
 		expect(measurements[0].evaluation_key).toBe(measurements[1].evaluation_key);
 		expect(measurements[2].evaluation_key).toBe(measurements[3].evaluation_key);
 		expect(measurements[0].evaluation_key).not.toBe(measurements[2].evaluation_key);
 		expect(measurements[0].attempt_id).not.toBe(measurements[2].attempt_id);
+		expect(measurements[4].evaluation_key).toBe(measurements[5].evaluation_key);
 		if (hostIds === "both") {
 			expect(measurements[4].evaluation_key).toBe(measurements[0].evaluation_key);
+			expect(measurements[6].evaluation_key).toBe(measurements[0].evaluation_key);
 		} else {
 			expect(measurements[4].evaluation_key).not.toBe(measurements[0].evaluation_key);
+			expect(measurements[6].evaluation_key).not.toBe(measurements[0].evaluation_key);
 		}
 	});
 

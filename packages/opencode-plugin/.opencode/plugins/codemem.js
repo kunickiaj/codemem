@@ -3580,7 +3580,7 @@ export const CodememPlugin = async ({
     }
   };
 
-  const fallbackEvaluationSessionId = nextEventId();
+  let fallbackEvaluationSessionId = nextEventId();
   const buildInjectedContext = async (query, context = {}) => {
     const requestPackBudget = reserveContextPrefixBudget(context.tokenBudget ?? injectTokenBudget);
     const queryHash = hashPromptPackQuery(query);
@@ -4520,6 +4520,7 @@ export const CodememPlugin = async ({
         activeSessionID = sessionID || null;
         sessionStartedAt = new Date().toISOString();
         promptCounter = 0;
+        fallbackEvaluationSessionId = nextEventId();
         skippedAttemptCounter = 0;
         disabledInjectionRecorded.delete("message:unknown");
         disabledInjectionRecorded.delete("system:unknown");
