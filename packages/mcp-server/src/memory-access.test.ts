@@ -625,6 +625,24 @@ describe("MCP memory access scope guards", () => {
 			});
 		});
 
+		it("omits renderer metadata from MCP packs without changing the source pack", async () => {
+			const pack = store.buildMemoryPack("direct-ID note", 5);
+			expect(pack.rendered_items?.length).toBeGreaterThan(0);
+			vi.spyOn(store, "buildMemoryPackAsync").mockResolvedValue(pack);
+			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const response = parseToolJson(
+				await getTool(server, "memory_pack").handler({ context: "direct-ID note", limit: 5 }),
+			);
+
+			const { rendered_items, ...expected } = pack;
+			expect(response).toEqual(expected);
+			expect(pack.rendered_items).toBe(rendered_items);
+			expect(queryRetrievalAttempts(store.db, { surface: "mcp_pack", limit: 1 })[0]).toMatchObject({
+				deliveryStatus: "handed_off",
+				exposures: pack.item_ids.map((memoryId) => ({ memoryId, handoffStatus: "handed_off" })),
+			});
+		});
+
 		it("covers direct, observations, index, explain, recent, pack, timeline, and expand surfaces", async () => {
 			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
 			await getTool(server, "memory_get").handler({ memory_id: otherProjectId });

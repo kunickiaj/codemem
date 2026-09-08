@@ -225,7 +225,9 @@ export function registerSearchTools(server: McpServer, context: ToolRegistration
 						filters,
 						renderOptions,
 					);
-					return { value: result, memoryIds: result.item_ids, filters };
+					// Renderer spans and fingerprints belong to automatic recall, not model context.
+					const { rendered_items: _renderedItems, ...value } = result;
+					return { value, memoryIds: result.item_ids, filters };
 				},
 			);
 		},
