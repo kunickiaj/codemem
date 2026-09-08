@@ -887,6 +887,18 @@ function quarantineDivergentCompletedPolicy(
 			 WHERE recipient_kind = 'team' AND recipient_id = ?
 			   AND provenance = 'reviewed_team_setup' AND status = 'active'`,
 		).run(team.revision, now, binding.teamId);
+		// Scope stamping ignores recipient status; remove this setup group's
+		// routing on active and retired scopes without touching independently owned mappings.
+		db.prepare(
+			`DELETE FROM project_scope_mappings
+			 WHERE source = 'reviewed_team_setup' AND scope_id IN (
+			   SELECT scope.scope_id FROM replication_scopes AS scope
+			   JOIN legacy_team_setup_drafts AS draft
+			     ON draft.coordinator_id = scope.coordinator_id AND draft.group_id = scope.group_id
+			   WHERE draft.candidate_id = ? AND draft.completed_team_id = ?
+			     AND scope.authority_type = 'coordinator'
+			 )`,
+		).run(binding.candidateRef, binding.teamId);
 		db.prepare(
 			`UPDATE legacy_team_setup_drafts SET finish_digest = NULL
 			 WHERE candidate_id = ? AND completed_team_id = ? AND state = 'completed'`,

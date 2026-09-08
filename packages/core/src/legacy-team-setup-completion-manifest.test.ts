@@ -11,6 +11,7 @@ import {
 import {
 	applyLegacyTeamSetupCompletionManifest,
 	areLegacyTeamSetupCompletionPolicyFactsAdditivelyCompatible,
+	containLegacyTeamSetupCompletionConflict,
 	deriveLegacyTeamSetupCompletionManifest,
 	LegacyTeamSetupAdditiveConvergenceError,
 	reconstructLegacyTeamSetupCompletionManifest,
@@ -29,6 +30,7 @@ import {
 	recipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
 import { renameRecipientPolicyTeam } from "./recipient-policy-team-metadata.js";
+import { resolveSessionScopeId } from "./scope-stamping.js";
 import { initTestSchema } from "./test-utils.js";
 
 const NOW = "2026-09-01T12:00:00.000Z";
@@ -765,6 +767,93 @@ describe("legacy Team setup completion manifests", () => {
 				.pluck()
 				.get(replacement.attemptId),
 		).toBe("completed");
+	});
+
+	it("rejects both canonical mutation APIs outside a transaction", () => {
+		const draft = readyDraft();
+		expect(() =>
+			applyCanonicalLegacyTeamSetupActivationInTransaction(db, {
+				candidateRef: CANDIDATE,
+				attemptId: draft.attemptId,
+				policyRevision: "revision",
+				completedAt: NOW,
+			}),
+		).toThrow("team_setup_failed");
+		expect(() =>
+			applyAdditiveCanonicalLegacyTeamSetupProjectsInTransaction(db, {
+				candidateRef: CANDIDATE,
+				attemptId: draft.attemptId,
+				teamId: "team",
+				projectRefs: [PROJECT_REF_A],
+				completedAt: NOW,
+			}),
+		).toThrow("team_setup_failed");
+		expect(db.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(0);
+	});
+
+	it("rolls back earlier additive Project writes when a later recipient write fails", async () => {
+		const draft = readyDraft();
+		const manifest = deriveLegacyTeamSetupCompletionManifest(db, {
+			candidateRef: CANDIDATE,
+			attemptId: draft.attemptId,
+			completedAt: NOW,
+		});
+		await applyLegacyTeamSetupCompletionManifest(db, {
+			coordinatorId: COORDINATOR_ID,
+			groupId: GROUP_ID,
+			freshRoster: FRESH_ROSTER,
+			manifest,
+		});
+		const projects = [PROJECT_A, PROJECT_B]
+			.map((identity) => ({ identity, ref: legacyTeamProjectRef(CANDIDATE, identity) }))
+			.sort((a, b) => a.ref.localeCompare(b.ref));
+		for (const project of projects)
+			db.prepare(`INSERT INTO legacy_team_setup_draft_projects(
+			attempt_id, project_ref, source_project_identity, display_name, source_fingerprint,
+			resolution_kind, resolved_project_identity, target_scope_id, updated_at
+		) VALUES (?, ?, ?, 'Project', 'source', 'deterministic', ?, 'scope-engineering', ?)`).run(
+				draft.attemptId,
+				project.ref,
+				project.identity,
+				project.identity,
+				NOW,
+			);
+		const snapshot = () =>
+			[
+				"project_scope_mappings",
+				"project_recipients",
+				"policy_teams",
+				"legacy_team_setup_completions",
+			].map((table) => db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
+		const before = snapshot();
+		db.exec(`CREATE TEMP TRIGGER fail_second_recipient BEFORE INSERT ON project_recipients
+			WHEN NEW.canonical_project_identity = '${projects[1].identity}'
+			BEGIN SELECT RAISE(ABORT, 'late additive failure'); END`);
+		let wroteFirstProject = false;
+		expect(() =>
+			db
+				.transaction(() => {
+					try {
+						applyAdditiveCanonicalLegacyTeamSetupProjectsInTransaction(db, {
+							candidateRef: CANDIDATE,
+							attemptId: draft.attemptId,
+							teamId: manifest.team_id,
+							projectRefs: projects.map((project) => project.ref),
+							completedAt: NOW,
+						});
+					} catch (error) {
+						wroteFirstProject = Boolean(
+							db
+								.prepare("SELECT 1 FROM project_recipients WHERE canonical_project_identity = ?")
+								.get(projects[0].identity),
+						);
+						throw error;
+					}
+				})
+				.immediate(),
+		).toThrow("team_setup_failed");
+		expect(wroteFirstProject).toBe(true);
+		expect(snapshot()).toEqual(before);
 	});
 
 	it("adds newly resolvable Projects without replaying completed Team policy", async () => {
@@ -1873,6 +1962,60 @@ describe("legacy Team setup completion manifests", () => {
 				loadProjectInventory: () => [],
 			}),
 		).rejects.toThrow("team_setup_confirmation_stale");
+	});
+
+	it("containment removes only setup-owned group routing and is idempotent", async () => {
+		const draft = readyDraft();
+		const manifest = deriveLegacyTeamSetupCompletionManifest(db, {
+			candidateRef: CANDIDATE,
+			attemptId: draft.attemptId,
+			completedAt: NOW,
+		});
+		await applyLegacyTeamSetupCompletionManifest(db, {
+			coordinatorId: COORDINATOR_ID,
+			groupId: GROUP_ID,
+			freshRoster: FRESH_ROSTER,
+			manifest,
+		});
+		const insertScope = db.prepare(`INSERT INTO replication_scopes(
+			scope_id, label, kind, authority_type, coordinator_id, group_id, status, created_at, updated_at
+		) VALUES (?, 'Scope', 'team', 'coordinator', ?, ?, ?, ?, ?)`);
+		insertScope.run("retired-scope", COORDINATOR_ID, GROUP_ID, "inactive", NOW, NOW);
+		insertScope.run("other-group", COORDINATOR_ID, "other-group", "active", NOW, NOW);
+		insertScope.run("other-coordinator", "other-coordinator", GROUP_ID, "active", NOW, NOW);
+		const insertMapping = db.prepare(`INSERT INTO project_scope_mappings(
+			workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+		) VALUES (?, ?, ?, 1000, ?, ?, ?)`);
+		for (const [project, scope, source] of [
+			[PROJECT_A, "scope-engineering", "reviewed_team_setup"],
+			[PROJECT_B, "retired-scope", "reviewed_team_setup"],
+			["manual", "scope-engineering", "user"],
+			["foreign-group", "other-group", "reviewed_team_setup"],
+			["foreign-coordinator", "other-coordinator", "reviewed_team_setup"],
+		])
+			insertMapping.run(project, project, scope, source, NOW, NOW);
+		const session = db.prepare(
+			"INSERT INTO sessions(started_at, project, git_remote) VALUES (?, ?, ?)",
+		);
+		const before = Number(session.run(NOW, "api", PROJECT_A).lastInsertRowid);
+		expect(resolveSessionScopeId(db, { sessionId: before })).toBe("scope-engineering");
+
+		await containLegacyTeamSetupCompletionConflict(db, {
+			coordinatorId: COORDINATOR_ID,
+			groupId: GROUP_ID,
+		});
+		await containLegacyTeamSetupCompletionConflict(db, {
+			coordinatorId: COORDINATOR_ID,
+			groupId: GROUP_ID,
+		});
+		const after = Number(session.run(NOW, "api", PROJECT_A).lastInsertRowid);
+		expect(resolveSessionScopeId(db, { sessionId: after })).toBe("local-default");
+		expect(
+			db
+				.prepare("SELECT project_pattern FROM project_scope_mappings ORDER BY project_pattern")
+				.pluck()
+				.all(),
+		).toEqual(["foreign-coordinator", "foreign-group", "manual"]);
 	});
 
 	it("quarantines divergent local policy when the canonical winner cannot be applied", async () => {
