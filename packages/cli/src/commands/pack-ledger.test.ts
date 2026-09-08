@@ -96,6 +96,64 @@ it("enriches the same local ledger through CLI delivery with retry-safe measurem
 	).toThrow("invalid automatic recall");
 });
 
+it.each(["missing", "invalid", "no_results", "downgrade"])(
+	"does not persist measurements for rejected %s CLI delivery",
+	(scenario) => {
+		if (scenario !== "no_results") {
+			store.remember(insertTestSession(store.db), "decision", "CLI candidate", "bounded body", 0.9);
+		}
+		const artifacts = buildMemoryPackWithTrace(store, "CLI candidate", 10);
+		handleInstrumentedPackLedger(
+			store.db,
+			{ attempt_id: id(13), source: "opencode", request_id: "rejected-delivery" },
+			"CLI candidate",
+			{},
+			artifacts,
+		);
+		if (scenario === "downgrade") {
+			handlePromptPackLedger(store.db, {
+				action: "delivery",
+				attempt_id: id(13),
+				delivery_status: "handed_off",
+			});
+		}
+		const before = store.db.prepare("SELECT * FROM retrieval_attempts").all();
+		let deliveryStatus: string | undefined = "failed";
+		if (scenario === "missing") deliveryStatus = undefined;
+		if (scenario === "invalid") deliveryStatus = "invalid";
+		expect(() =>
+			handlePromptPackLedger(
+				store.db,
+				parseInternalLedgerPayload(
+					JSON.stringify({
+						action: "delivery",
+						attempt_id: id(13),
+						delivery_status: deliveryStatus,
+						evaluation_key: "f".repeat(64),
+						automatic_recall: {
+							v: 1,
+							candidateItems: artifacts.response.metrics.total_items,
+							duplicatesOmitted: artifacts.response.metrics.total_items,
+							beforeTokens:
+								scenario === "no_results"
+									? 0
+									: Math.ceil(`[codemem context]\n${artifacts.response.pack_text}`.length / 4),
+							afterTokens: 0,
+							missingRetainedMetadata: false,
+							invalidRetainedMetadata: false,
+							packMetadata: "valid",
+						},
+					}),
+				),
+			),
+		).toThrow();
+		expect(store.db.prepare("SELECT * FROM retrieval_attempts").all()).toEqual(before);
+		expect(
+			automaticRecallHealth(store.db, { actorId: store.actorId, deviceId: store.deviceId }),
+		).toMatchObject({ freshEvaluations: 0, estimatedTokensAvoided: 0 });
+	},
+);
+
 it("keeps valid delivery receipts when recall diagnostics reject or storage fails", () => {
 	const sessionId = insertTestSession(store.db);
 	store.remember(sessionId, "decision", "Best effort diagnostics", "bounded body", 0.9);

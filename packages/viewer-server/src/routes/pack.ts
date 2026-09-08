@@ -322,7 +322,7 @@ function dispatchRecallMeasurement(
 				payload.automatic_recall,
 			);
 		} catch {
-			// Delivery diagnostics are best-effort; dispatchLedger still validates the receipt.
+			// Delivery diagnostics are best-effort after the receipt has been accepted.
 		}
 		return null;
 	}
@@ -342,25 +342,25 @@ function dispatchLedger(
 	payload: Record<string, unknown>,
 ): LedgerOutcome | string {
 	const action = payload.action;
-	const measurement = dispatchRecallMeasurement(store, payload);
-	if (measurement !== null) return measurement;
-	if (action !== "record" && action !== "delivery" && action !== "cache_reuse") {
-		return "ledger action is invalid";
-	}
 	const metadata = attemptMetadata(payload);
 	if (action === "delivery") {
 		const status = payload.delivery_status;
 		if (status !== "handed_off" && status !== "failed" && status !== "unknown") {
 			return "delivery action requires a valid delivery_status";
 		}
-		return tryUpdateRetrievalDelivery(store.db, metadata.attemptId, status);
+		const outcome = tryUpdateRetrievalDelivery(store.db, metadata.attemptId, status);
+		if (outcome.ok) dispatchRecallMeasurement(store, payload);
+		return outcome;
 	}
+	const measurement = dispatchRecallMeasurement(store, payload);
+	if (measurement !== null) return measurement;
 	if (action === "cache_reuse") {
 		if (typeof payload.original_attempt_id !== "string" || !payload.original_attempt_id) {
 			return "cache_reuse action requires original_attempt_id";
 		}
 		return clonePromptPackAttempt(store.db, payload.original_attempt_id, metadata);
 	}
+	if (action !== "record") return "ledger action is invalid";
 	if (
 		(payload.retrieval_status !== "skipped" && payload.retrieval_status !== "failed") ||
 		typeof payload.failure_code !== "string" ||

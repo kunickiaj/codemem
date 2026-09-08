@@ -130,6 +130,54 @@ describe("automatic recall existing HTTP transport", () => {
 				.get(attemptId),
 		).toEqual({ delivery_status: "not_attempted" });
 	});
+	it.each(["missing", "invalid", "no_results", "downgrade"])(
+		"does not persist measurements for rejected %s delivery",
+		async (scenario) => {
+			if (scenario !== "no_results") {
+				store.remember(
+					insertTestSession(store.db),
+					"decision",
+					"recall candidate",
+					"bounded fixture body",
+					0.9,
+				);
+			}
+			const response = await pack();
+			const payload = {
+				action: "delivery",
+				attempt_id: attemptId,
+				delivery_status: "handed_off",
+			};
+			if (scenario === "downgrade") {
+				expect((await post("/api/prompt-pack-ledger", payload)).status).toBe(200);
+			}
+			const before = store.db.prepare("SELECT * FROM retrieval_attempts").all();
+			let deliveryStatus: string | undefined = "failed";
+			if (scenario === "missing") deliveryStatus = undefined;
+			if (scenario === "invalid") deliveryStatus = "invalid";
+			const rejected = await post("/api/prompt-pack-ledger", {
+				...payload,
+				delivery_status: deliveryStatus,
+				evaluation_key: "d".repeat(64),
+				automatic_recall: {
+					...empty,
+					candidateItems: response.metrics.total_items,
+					duplicatesOmitted: response.metrics.total_items,
+					beforeTokens:
+						scenario === "no_results"
+							? 0
+							: Math.ceil(`[codemem context]\n${response.pack_text}`.length / 4),
+				},
+			});
+			expect(rejected.status).toBe(400);
+			expect(store.db.prepare("SELECT * FROM retrieval_attempts").all()).toEqual(before);
+			const stats = await (await app.request("/api/stats")).json();
+			expect(stats.automatic_recall).toMatchObject({
+				freshEvaluations: 0,
+				estimatedTokensAvoided: 0,
+			});
+		},
+	);
 	it("keeps delivery validation authoritative when diagnostics fail", async () => {
 		store.remember(
 			insertTestSession(store.db),

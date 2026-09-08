@@ -499,6 +499,11 @@ function handleRecallMeasurement(
 }
 
 export function handlePromptPackLedger(db: Database, payload: InternalLedgerPayload) {
+	if (payload.action === "delivery") {
+		const outcome = handlePromptPackLifecycle(db, payload);
+		handleRecallMeasurement(db, payload);
+		return outcome;
+	}
 	return handleRecallMeasurement(db, payload) ?? handlePromptPackLifecycle(db, payload);
 }
 
