@@ -190,6 +190,46 @@ describe("automatic session continuity", () => {
 		expect(automatic.item_ids).toContain(durableId);
 		expect(generic.pack_text).toContain("Root sibling summary");
 	});
+
+	it("skips pack delta baselines that carry another requester's summary", () => {
+		const otherSessionId = insertTestSession(store.db);
+		const now = new Date().toISOString();
+		const mapHost = store.db.prepare(
+			"INSERT INTO opencode_sessions(source, stream_id, opencode_session_id, session_id, created_at) VALUES (?, ?, ?, ?, ?)",
+		);
+		mapHost.run("opencode", "host-a", "host-a", sessionId, now);
+		mapHost.run("opencode", "host-b", "host-b", otherSessionId, now);
+		const summaryAId = store.remember(
+			sessionId,
+			"session_summary",
+			"Session A delta summary",
+			"delta baseline handoff",
+			0.9,
+		);
+		const durableId = store.remember(
+			otherSessionId,
+			"decision",
+			"Shared delta fact",
+			"delta baseline evidence",
+			0.9,
+		);
+		const packA = store.buildMemoryPack("delta baseline", 10, null, undefined, {
+			source: "opencode",
+			hostSessionId: "host-a",
+		});
+		expect(packA.item_ids).toContain(summaryAId);
+
+		const packB = store.buildMemoryPack("delta baseline", 10, null, undefined, {
+			source: "opencode",
+			hostSessionId: "host-b",
+		});
+
+		expect(packB.item_ids).not.toContain(summaryAId);
+		expect(packB.item_ids).toContain(durableId);
+		expect(packB.metrics.pack_delta_available).toBe(false);
+		expect(packB.metrics.removed_ids).not.toContain(summaryAId);
+		expect(packB.metrics.pack_token_delta).toBe(0);
+	});
 });
 describe("automatic requester sentinel", () => {
 	usePackFixture();

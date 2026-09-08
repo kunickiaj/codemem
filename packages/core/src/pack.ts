@@ -30,6 +30,7 @@ import {
 	getSummaryMetadata,
 	isNativeSessionSummaryMemory,
 	isSummaryLikeMemory,
+	summaryContinuityFilter,
 	summaryLikeSqlPredicate,
 } from "./summary-memory.js";
 import type {
@@ -1077,21 +1078,29 @@ function validatePackDeltaBaselineIds(
 	store: StoreHandle,
 	ids: number[],
 	filters: MemoryFilters | null,
+	summarySessionId: number | null | undefined,
 ): number[] | null {
 	if (ids.length === 0) return null;
 	const filterResult = buildFilterClausesWithContext(filters, ownershipFilterContext(store));
+	const continuity = summaryContinuityFilter(summarySessionId);
 	const placeholders = ids.map(() => "?").join(", ");
 	const joinClause = filterResult.joinSessions
 		? "JOIN sessions ON sessions.id = memory_items.session_id"
 		: "";
+	const whereParts = [
+		"memory_items.active = 1",
+		`memory_items.id IN (${placeholders})`,
+		...filterResult.clauses,
+		...continuity.clauses,
+	];
 	const rows = store.db
 		.prepare(
 			`SELECT memory_items.id
 			 FROM memory_items
 			 ${joinClause}
-			 WHERE ${["memory_items.active = 1", `memory_items.id IN (${placeholders})`, ...filterResult.clauses].join(" AND ")}`,
+			 WHERE ${whereParts.join(" AND ")}`,
 		)
-		.all(...ids, ...filterResult.params) as Array<{ id: number }>;
+		.all(...ids, ...filterResult.params, ...continuity.params) as Array<{ id: number }>;
 	const visibleIds = new Set(rows.map((row) => row.id));
 	if (visibleIds.size !== ids.length) return null;
 	return ids.filter((id) => visibleIds.has(id));
@@ -1181,6 +1190,7 @@ function findLatestSummaryLike(
 function getPackDeltaBaseline(
 	store: StoreHandle,
 	filters: MemoryFilters | null,
+	summarySessionId: number | null | undefined,
 ): { previousPackIds: number[] | null; previousPackTokens: number | null } {
 	const project = filters?.project ?? null;
 	const projectBase = project ? projectBasename(project) : null;
@@ -1221,7 +1231,7 @@ function getPackDeltaBaseline(
 
 			const { ids, valid } = coercePackItemIds(metadata.pack_item_ids);
 			if (!valid) continue;
-			const scopedIds = validatePackDeltaBaselineIds(store, ids, filters);
+			const scopedIds = validatePackDeltaBaselineIds(store, ids, filters, summarySessionId);
 			if (scopedIds == null) continue;
 
 			const previousTokens =
@@ -1961,7 +1971,11 @@ function buildPackArtifacts(
 		}
 	}
 
-	const { previousPackIds, previousPackTokens } = getPackDeltaBaseline(store, filters ?? null);
+	const { previousPackIds, previousPackTokens } = getPackDeltaBaseline(
+		store,
+		filters ?? null,
+		summarySessionId,
+	);
 	const packDeltaAvailable = previousPackIds != null && previousPackTokens != null;
 	const previousSet = new Set(previousPackIds ?? []);
 	const currentSet = new Set(allItemIds);
