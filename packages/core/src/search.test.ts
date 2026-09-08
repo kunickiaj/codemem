@@ -1529,6 +1529,30 @@ describe("MemoryStore.timeline", () => {
 		expect(titles).toContain("Database schema");
 	});
 
+	it("skips an ineligible foreign summary when resolving a continuity-bound query anchor", () => {
+		const sessionId = insertTestSession(store.db);
+		const durableId = store.remember(
+			sessionId,
+			"decision",
+			"Anchor durable qzvx",
+			"anchor durable qzvx evidence",
+			0.8,
+		);
+		store.remember(
+			sessionId,
+			"session_summary",
+			"Anchor summary qzvx",
+			"anchor qzvx qzvx qzvx",
+			0.99,
+		);
+
+		const unrestricted = store.timeline("recap qzvx", null, 0, 0);
+		const continuityBound = store.timeline("recap qzvx", null, 0, 0, null, null);
+
+		expect(unrestricted.map((item) => item.title)).toEqual(["Anchor summary qzvx"]);
+		expect(continuityBound.map((item) => item.id)).toEqual([durableId]);
+	});
+
 	it("finds anchor by memoryId", () => {
 		const { ids } = seedTimeline();
 		// Use the 4th memory (API endpoints) as anchor

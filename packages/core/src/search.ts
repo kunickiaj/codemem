@@ -1130,7 +1130,9 @@ export function timeline(
 		}
 	}
 	if (anchorRef == null && query) {
-		const matches = search(store, query, 1, filters ?? undefined);
+		// Continuity applies to anchor ranking too, so an ineligible foreign summary
+		// cannot win the anchor slot and empty the timeline for eligible matches.
+		const matches = search(store, query, 1, filters ?? undefined, undefined, summarySessionId);
 		if (matches.length > 0) {
 			const m = matches[0] as MemoryResult;
 			anchorRef = {

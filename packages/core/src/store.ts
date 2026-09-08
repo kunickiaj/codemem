@@ -1613,8 +1613,9 @@ export class MemoryStore {
 		depthBefore = 3,
 		depthAfter = 3,
 		filters?: MemoryFilters | null,
+		summarySessionId?: number | null,
 	): TimelineItemResponse[] {
-		return timelineFn(this, query, memoryId, depthBefore, depthAfter, filters);
+		return timelineFn(this, query, memoryId, depthBefore, depthAfter, filters, summarySessionId);
 	}
 
 	// explain
