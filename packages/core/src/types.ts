@@ -624,12 +624,21 @@ export interface PackItem {
 	compressed_ids?: number[];
 }
 
+/** Renderer-owned identity and offsets for one emitted item. */
+export interface RenderedPackItem {
+	id: number;
+	fingerprint: string;
+	spans: { start: number; end: number }[];
+}
+
 /** Pack response from buildMemoryPack() */
 export interface PackResponse {
 	context: string;
 	items: PackItem[];
 	item_ids: number[];
 	pack_text: string;
+	/** Renderer-owned offsets for incremental automatic recall; pack_text is unchanged. */
+	rendered_items?: RenderedPackItem[];
 	metrics: {
 		total_items: number;
 		pack_tokens: number;

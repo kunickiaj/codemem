@@ -35,7 +35,6 @@ const RELEASE_VERSION =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const CODEMEM_CONTEXT_PART_ID_PREFIX = "codemem-context-";
 const MAX_MESSAGE_INJECTION_CACHE_SESSIONS = 20;
-const MAX_MESSAGE_INJECTION_CACHE_MESSAGES = 100;
 const COMPACTION_INJECTION_SKIP_TTL_MS = 30 * 1000;
 const MAX_WORKING_SET_PATH_CHARS = 400;
 const VIEWER_HEALTH_CHECK_INTERVAL_MS = 60_000;
@@ -43,6 +42,9 @@ const VIEWER_HEALTH_TIMEOUT_MS = 5_000;
 const VIEWER_HEALTH_RESTART_THRESHOLD = 3;
 const VIEWER_HEALTH_RESTART_COOLDOWN_MS = 5 * 60_000;
 const RAW_EVENTS_STATUS_TIMEOUT_MS = 5_000;
+const DEFAULT_INJECT_TOKEN_BUDGET = 800;
+const DEFAULT_RETAINED_TOKEN_BUDGET = Infinity;
+const CODEMEM_CONTEXT_PREFIX = "[codemem context]\n";
 const DEFAULT_EMBEDDING_MODEL = "Xenova/bge-small-en-v1.5";
 const DEFAULT_EMBEDDING_REVISION = "ea104dacec62c0de699686887e3f920caeb4f3e3";
 const PLUGIN_REGISTRATIONS_KEY = Symbol.for("codemem.opencode-plugin.registrations");
@@ -789,7 +791,7 @@ const parsePackOutput = (result) => {
     ? Number(metrics.total_items)
     : null;
   const candidatePackText = succeeded && itemCount !== 0
-    ? String(payload?.pack_text || "").trim()
+    ? String(payload?.pack_text || "")
     : "";
   return {
     conflictPackText: ledgerConflict ? candidatePackText : "",
@@ -1226,16 +1228,11 @@ const getSessionMessageInjectionCache = (messageInjectionCache, sessionID) => {
   return sessionCache;
 };
 
-const trimSessionMessageInjectionCache = (sessionCache) => {
-  if (!sessionCache) return;
-  while (sessionCache.size > MAX_MESSAGE_INJECTION_CACHE_MESSAGES) {
-    const oldestKey = sessionCache.keys().next().value;
-    if (!oldestKey) break;
-    sessionCache.delete(oldestKey);
+const normalizeInjectedMessageParts = (messages, sessionCache, { pruneAbsent = true } = {}) => {
+  const presentIds = new Set(messages.map(resolveEntryMessageId).filter(Boolean));
+  for (const id of sessionCache?.keys() || []) {
+    if (pruneAbsent && !presentIds.has(id)) sessionCache.delete(id);
   }
-};
-
-const normalizeInjectedMessageParts = (messages, sessionCache) => {
   for (let index = 0; index < messages.length; index += 1) {
     const entry = messages[index];
     if (!isUserMessageEntry(entry) || !Array.isArray(entry.parts)) {
@@ -1243,24 +1240,19 @@ const normalizeInjectedMessageParts = (messages, sessionCache) => {
     }
 
     const messageId = resolveEntryMessageId(entry);
-    const retainedParts = [];
-    let existingText = null;
-    for (const part of entry.parts) {
-      if (isCodememContextPart(part)) {
-        const text = String(part?.text || "");
-        if (text.trim()) {
-          existingText = text;
-        }
-      } else {
-        retainedParts.push(part);
-      }
-    }
-    if (existingText && sessionCache && messageId && !sessionCache.has(messageId)) {
-      sessionCache.set(messageId, { text: existingText, attemptId: null, reconstructed: true });
-      trimSessionMessageInjectionCache(sessionCache);
-    }
-    if (retainedParts.length !== entry.parts.length) {
-      entry.parts.splice(0, entry.parts.length, ...retainedParts);
+    const parts = entry.parts.filter(isCodememContextPart);
+    if (parts.length && sessionCache && messageId) {
+      const cached = sessionCache.get(messageId);
+      sessionCache.set(messageId, {
+        ...cached,
+        text: parts[0].text,
+        parts: parts.map((part) => {
+          const recall = retainedPartRecall(part, cached?.parts);
+          return recall
+            ? { ...part, metadata: { ...part.metadata, codemem: recall } }
+            : { ...part };
+        }),
+      });
     }
   }
 };
@@ -1275,6 +1267,7 @@ const buildInjectedContextPart = (entry, index, text, options = {}) => {
     type: "text",
     text,
     synthetic: true,
+    ...(options.recall ? { metadata: { codemem: options.recall } } : {}),
   };
 };
 
@@ -1315,7 +1308,10 @@ const appendCachedInjectedContextParts = async (
       cacheReuseReady = typeof reuse === "object" ? reuse?.ready : null;
     }
     try {
-      entry.parts.push(buildInjectedContextPart(entry, index, text, { messageId, sessionID }));
+      if (!entry.parts.some(isCodememContextPart)) {
+        const parts = cached?.parts || [buildInjectedContextPart(entry, index, text, { messageId, sessionID })];
+        entry.parts.push(...parts.map((part) => ({ ...part })));
+      }
     } catch (error) {
       if (messageId === options.latestMessageId && attemptId && options.confirmDelivery) {
         if (cacheReuseReady) {
@@ -1342,6 +1338,11 @@ const appendCachedInjectedContextParts = async (
   return appended;
 };
 
+const scopeMessagesToSession = (messages, sessionID) => messages.filter((entry) => {
+  const entrySession = resolveEntrySessionID(entry);
+  return !entrySession || !sessionID || entrySession === sessionID;
+});
+
 const applyInjectedContextToMessages = async ({
   injectEnabled,
   input,
@@ -1355,40 +1356,82 @@ const applyInjectedContextToMessages = async ({
   confirmDelivery,
   recordCacheReuse,
   recordSkipped,
+  injectTokenBudget = DEFAULT_INJECT_TOKEN_BUDGET,
+  retainedTokenBudget = DEFAULT_RETAINED_TOKEN_BUDGET,
+  workingSet = [],
+  recordMeasurement,
 }) => {
   const hasMessages = Array.isArray(output?.messages);
-  const latestUser = hasMessages ? findLatestUserMessage(output.messages) : null;
-  const sessionID = latestUser
-    ? resolveEntrySessionID(latestUser.entry) || input?.sessionID || null
-    : input?.sessionID || null;
+  const hookSessionID = input?.sessionID || null;
+  const hookMessages = hasMessages ? scopeMessagesToSession(output.messages, hookSessionID) : [];
+  const latestUser = findLatestUserMessage(hookMessages);
+  const sessionID = hookSessionID || (latestUser ? resolveEntrySessionID(latestUser.entry) : null);
+  // Both transforms use the hook session when an entry omits session identity.
+  const messages = scopeMessagesToSession(hookMessages, sessionID);
+  const report = (reason, newTokens = 0, duplicates = 0) => {
+    const measurement = {
+      new_tokens: newTokens,
+      retained_tokens: countRetainedInjectionTokens(messages),
+      duplicates_omitted: duplicates,
+      reason,
+    };
+    try { void Promise.resolve(recordMeasurement?.(measurement)).catch(() => {}); } catch { /* best effort */ }
+  };
   if (!injectEnabled) {
     recordSkipped?.("injection_disabled", sessionID);
+    report("injection_disabled");
     return false;
   }
   if (!hasMessages) {
+    report("missing_history");
     return false;
   }
-
   if (consumeCompactionInjectionSkip(compactionInjectionSkips, sessionID)) {
-    normalizeInjectedMessageParts(output.messages, null);
+    const cache = getSessionMessageInjectionCache(messageInjectionCache, sessionID);
+    normalizeInjectedMessageParts(messages, cache, { pruneAbsent: false });
     recordSkipped?.("compaction_skipped", sessionID);
+    report("compaction_skipped");
     return false;
   }
 
   if (!latestUser) {
+    report("missing_user");
     return false;
   }
 
   const sessionCache = getSessionMessageInjectionCache(messageInjectionCache, sessionID);
-  normalizeInjectedMessageParts(output.messages, sessionCache);
+  normalizeInjectedMessageParts(messages, sessionCache);
 
   const latestMessageId = resolveEntryMessageId(latestUser.entry);
   const canReplay = Boolean(sessionCache && latestMessageId);
   const latestCached = canReplay ? sessionCache.get(latestMessageId) : null;
-  const latestWasCached = Boolean(latestCached) && latestCached?.reconstructed !== true;
+  const latestWasCached = Boolean(latestCached) || latestUser.entry.parts?.some(isCodememContextPart);
+  if (sessionCache) {
+    try {
+      await appendCachedInjectedContextParts(messages, sessionCache, sessionID, {
+        latestMessageId, confirmDelivery, recordCacheReuse,
+      });
+    } catch (error) {
+      report("delivery_failed");
+      throw error;
+    }
+  }
+  const retainedTokens = countRetainedInjectionTokens(messages);
+  const fullBudget = Math.min(injectTokenBudget, Math.max(0, retainedTokenBudget - retainedTokens));
   let latestWasBuilt = false;
+  let newlyDelivered = 0;
+  let duplicates = 0;
+  let reason = latestWasCached ? "replay" : "no_context";
   if (!latestWasCached) {
-    const firstUser = findFirstUserMessage(output.messages);
+    if (reserveContextPrefixBudget(fullBudget) === null) {
+      if (reserveContextPrefixBudget(injectTokenBudget) !== null) {
+        recordSkipped?.("allowance_exhausted", sessionID);
+      }
+      report("allowance_exhausted");
+      return retainedTokens > 0;
+    }
+    const firstUser = findFirstUserMessage(messages);
+    const workingContext = workingContextDigest(messages, workingSet);
     const query = resolveInjectQuery({
       firstPrompt: firstUser ? extractMessageText(firstUser.entry) : null,
       lastPromptText: extractMessageText(latestUser.entry),
@@ -1397,35 +1440,60 @@ const applyInjectedContextToMessages = async ({
       sessionID,
       requestKey: latestMessageId || fallbackEntryMessageId(latestUser.entry, latestUser.index),
       surface: "message",
+      tokenBudget: fullBudget,
+      retainedItems: retainedMemoryFingerprints(messages, sessionCache),
+      retainedMetadata: retainedMetadataGaps(messages, sessionCache),
+      workingContext,
+      continuationOnly: isContinuationOnly(extractMessageText(latestUser.entry), messages, workingContext, sessionCache),
     });
-    if (injected?.text) {
+    // Another transform may have delivered while retrieval was awaiting I/O.
+    if (sessionCache) {
+      await appendCachedInjectedContextParts(messages, sessionCache, sessionID, {
+        latestMessageId, confirmDelivery, recordCacheReuse,
+      });
+    }
+    if (latestUser.entry.parts?.some(isCodememContextPart)) {
+      duplicates = injected?.duplicates || 0;
+      if (injected?.attemptId) {
+        confirmDelivery?.(injected.attemptId, "unknown");
+      }
+      report("replay", 0, duplicates);
+      return true;
+    }
+    const deliveryBudget = Math.min(fullBudget, Math.max(
+      0, retainedTokenBudget - countRetainedInjectionTokens(messages),
+    ));
+    duplicates = injected?.duplicates || 0;
+    reason = injected?.skipReason || "no_context";
+    if (injected?.text && estimateTokens(injected.text) <= deliveryBudget) {
       latestWasBuilt = true;
-      if (canReplay) {
-        sessionCache.set(latestMessageId, {
-          text: injected.text,
-          attemptId: injected.attemptId || null,
-          requestId: injected.requestId || null,
-          queryHash: injected.queryHash || null,
-          promptNumber: injected.promptNumber || 0,
-          reuseCount: 0,
-        });
-        trimSessionMessageInjectionCache(sessionCache);
-      } else if (Array.isArray(latestUser.entry.parts)) {
+      if (Array.isArray(latestUser.entry.parts)) {
         try {
           latestUser.entry.parts.push(
             buildInjectedContextPart(latestUser.entry, latestUser.index, injected.text, {
               messageId: latestMessageId || undefined,
               sessionID: sessionID || undefined,
+              recall: injected.recall,
             })
           );
         } catch (error) {
           if (injected.attemptId) {
             confirmDelivery?.(injected.attemptId, "failed");
           }
+          report("delivery_failed", 0, duplicates);
           throw error;
         }
+        newlyDelivered = estimateTokens(injected.text);
+        reason = "delivered";
         if (injected.attemptId) {
-          confirmDelivery?.(injected.attemptId);
+          confirmDelivery?.(injected.attemptId, "handed_off");
+        }
+        if (canReplay) {
+          sessionCache.set(latestMessageId, {
+            ...injected,
+            parts: latestUser.entry.parts.filter(isCodememContextPart).map((part) => ({ ...part })),
+            reuseCount: 0,
+          });
         }
       }
 
@@ -1438,10 +1506,15 @@ const applyInjectedContextToMessages = async ({
           // best-effort only
         }
       }
-    } else if (canReplay && latestCached?.reconstructed === true) {
-      sessionCache.delete(latestMessageId);
+    } else if (injected?.skipReason) {
+      // The retrieval already has an attempt. Withheld output is not a second retrieval.
+      if (injected.attemptId) confirmDelivery?.(injected.attemptId, "unknown");
+    } else if (injected?.text) {
+      reason = "budget_rejected";
+      if (injected.attemptId) confirmDelivery?.(injected.attemptId, "failed");
     }
   }
+  report(reason, newlyDelivered, duplicates);
 
   if (!canReplay) {
     return Boolean(
@@ -1450,13 +1523,136 @@ const applyInjectedContextToMessages = async ({
     );
   }
 
-  const appended = await appendCachedInjectedContextParts(output.messages, sessionCache, sessionID, {
-    latestMessageId,
-    latestWasBuilt,
-    confirmDelivery,
-    recordCacheReuse,
-  });
-  return appended > 0;
+  return latestWasBuilt || retainedTokens > 0;
+};
+
+const countRetainedInjectionTokens = (messages) => messages.reduce(
+  (sum, entry) => sum + (entry.parts || []).filter(isCodememContextPart)
+    .reduce((tokens, part) => tokens + estimateTokens(part.text), 0),
+  0,
+);
+
+const injectionDigest = (text) => createHash("sha256").update(text).digest("hex");
+
+const retainedPartRecall = (part, cachedParts = []) => {
+  const valid = (candidate) => candidate?.metadata?.codemem?.v === 1
+    && candidate.metadata.codemem.digest === injectionDigest(String(part.text || ""));
+  if (valid(part)) return part.metadata.codemem;
+  const cached = cachedParts.find((candidate) => candidate.id === part.id && candidate.text === part.text && valid(candidate));
+  return cached?.metadata?.codemem;
+};
+
+const workingContextDigest = (messages, workingSet) => {
+  const scalar = (value) => typeof value === "string" ? value.slice(0, 256) : null;
+  const hash = createHash("sha256");
+  for (const path of [...workingSet].filter((value) => typeof value === "string").sort()) {
+    hash.update(JSON.stringify(["file", path.slice(0, MAX_WORKING_SET_PATH_CHARS)]));
+  }
+  for (const entry of messages) {
+    for (const part of entry.parts || []) {
+      if (part.type === "text") continue;
+      // Never traverse args, output, attachments, or arbitrary tool-state payloads.
+      hash.update(JSON.stringify([
+        scalar(entry.info?.id), scalar(part.type), scalar(part.id),
+        scalar(part.callID), scalar(part.state?.status),
+      ]));
+    }
+  }
+  return hash.digest("hex");
+};
+
+const isContinuationOnly = (prompt, messages, workingContext, sessionCache) => {
+  if (!/^(continue|proceed|go on|keep going)[.!]?$/i.test(prompt.trim())) return false;
+  const latest = findLatestUserMessage(messages);
+  for (let index = (latest?.index ?? 0) - 1; index >= 0; index -= 1) {
+    const entry = messages[index];
+    if (!isUserMessageEntry(entry)) continue;
+    return (entry.parts || []).some((part) => {
+      const recall = retainedPartRecall(part, sessionCache?.get(resolveEntryMessageId(entry))?.parts);
+      return isCodememContextPart(part) && recall?.v === 1
+        && recall.digest === injectionDigest(String(part.text || ""))
+        && recall.workingContext === workingContext;
+    });
+  }
+  return false;
+};
+
+const retainedMemoryFingerprints = (messages, sessionCache) => {
+  const retained = new Set();
+  for (const entry of messages) {
+    for (const part of (entry.parts || []).filter(isCodememContextPart)) {
+      const recall = retainedPartRecall(part, sessionCache?.get(resolveEntryMessageId(entry))?.parts);
+      if (recall?.v !== 1 || recall.digest !== injectionDigest(String(part.text || ""))) continue;
+      for (const item of Array.isArray(recall.items) ? recall.items : []) {
+        if (isRecord(item) && Number.isSafeInteger(item.id) && item.id > 0 && /^[a-f0-9]{64}$/.test(item.fingerprint)) {
+          retained.add(`${item.id}:${item.fingerprint}`);
+        }
+      }
+    }
+  }
+  return retained;
+};
+
+const filterRetainedPack = (stdout, packText, retained = new Set()) => {
+  const fallback = { text: packText, items: [], duplicates: 0, packMetadata: "missing" };
+  let payload;
+  try { payload = JSON.parse(stdout); } catch { return fallback; }
+  const items = payload?.rendered_items;
+  if (items != null) fallback.packMetadata = "invalid";
+  // Old transports and malformed metadata remain eligible rather than guessing from prose.
+  if (payload?.pack_text !== packText || !Array.isArray(items) || !items.length) return fallback;
+  if (payload.metrics?.total_items !== items.length) return fallback;
+  const spans = [];
+  const seen = new Set();
+  for (const item of items) {
+    if (!isRecord(item) || !Number.isSafeInteger(item.id) || item.id <= 0 || seen.has(item.id)
+      || !/^[a-f0-9]{64}$/.test(item.fingerprint) || !Array.isArray(item.spans) || !item.spans.length) return fallback;
+    seen.add(item.id);
+    for (const span of item.spans) {
+      if (!isRecord(span) || !Number.isSafeInteger(span.start) || !Number.isSafeInteger(span.end)
+        || span.start < 0 || span.end <= span.start || span.end > packText.length) return fallback;
+      spans.push({ ...span, omit: retained.has(`${item.id}:${item.fingerprint}`) });
+    }
+  }
+  if (payload.items != null) {
+    if (!Array.isArray(payload.items) || payload.items.length !== seen.size) return fallback;
+    const selectedIds = new Set(payload.items.map((item) => item?.id));
+    if (selectedIds.size !== seen.size || [...selectedIds].some((id) => !seen.has(id))) return fallback;
+  }
+  for (const ids of [payload.item_ids, payload.metrics?.pack_item_ids]) {
+    if (ids == null) continue;
+    if (!Array.isArray(ids) || new Set(ids).size !== ids.length
+      || ids.some((id) => !Number.isSafeInteger(id) || id <= 0)
+      || [...seen].some((id) => !ids.includes(id))) return fallback;
+  }
+  spans.sort((a, b) => a.start - b.start);
+  if (spans.some((span, index) => index > 0 && span.start < spans[index - 1].end)) return fallback;
+  const kept = items.filter((item) => !retained.has(`${item.id}:${item.fingerprint}`));
+  let text = packText;
+  for (const span of spans.reverse()) {
+    if (span.omit) text = text.slice(0, span.start) + text.slice(span.end);
+  }
+  return {
+    text: kept.length ? text : "",
+    items: kept.map(({ id, fingerprint }) => ({ id, fingerprint })),
+    duplicates: items.length - kept.length,
+    packMetadata: "valid",
+  };
+};
+
+const retainedMetadataGaps = (messages, sessionCache) => {
+  let missingRetainedMetadata = false;
+  let invalidRetainedMetadata = false;
+  for (const entry of messages) {
+    for (const part of (entry.parts || []).filter(isCodememContextPart)) {
+      const recall = retainedPartRecall(part, sessionCache?.get(resolveEntryMessageId(entry))?.parts);
+      if (recall?.v === 1 && Array.isArray(recall.items) && recall.items.length > 0
+        && recall.items.every((item) => isRecord(item) && Number.isSafeInteger(item.id) && item.id > 0 && /^[a-f0-9]{64}$/.test(item.fingerprint))) continue;
+      if (part.metadata?.codemem != null || recall != null) invalidRetainedMetadata = true;
+      else missingRetainedMetadata = true;
+    }
+  }
+  return { missingRetainedMetadata, invalidRetainedMetadata };
 };
 
 const mapOpencodeEventTypeToAdapterType = (eventType) => {
@@ -1767,6 +1963,25 @@ const parsePositiveInt = (value, fallback) => {
   return parsed;
 };
 
+const estimateTokens = (text) => Math.ceil(String(text || "").length / 4);
+
+const resolveInjectTokenBudget = (value) =>
+  parsePositiveInt(value, DEFAULT_INJECT_TOKEN_BUDGET);
+
+const resolveRetainedTokenBudget = (value) => {
+  const text = String(value ?? "").trim();
+  const parsed = Number(text);
+  return /^\d+$/.test(text) && Number.isSafeInteger(parsed) && parsed > 0
+    ? parsed : DEFAULT_RETAINED_TOKEN_BUDGET;
+};
+
+const reserveContextPrefixBudget = (tokenBudget) => {
+  const packBudget = tokenBudget - estimateTokens(CODEMEM_CONTEXT_PREFIX);
+  return packBudget > 0 ? packBudget : null;
+};
+
+const wrapInjectedContext = (packText) => `${CODEMEM_CONTEXT_PREFIX}${packText}`;
+
 export const buildInjectionToastMessage = (metrics) => {
   const items = asFiniteNonNegativeInt(metrics?.items) ?? asFiniteNonNegativeInt(metrics?.total_items);
   const packTokens = asFiniteNonNegativeInt(metrics?.pack_tokens);
@@ -1982,15 +2197,30 @@ export const CodememPlugin = async ({
     process.env.CODEMEM_INJECT_CONTEXT || "1"
   );
   const injectSurface = resolveInjectSurface(process.env.CODEMEM_INJECT_SURFACE);
-  // Only use env overrides if explicitly set; otherwise CLI uses config defaults
+  // The item limit remains optional so the CLI can use its configured default.
   const injectLimitEnv = process.env.CODEMEM_INJECT_LIMIT;
   const injectLimit = injectLimitEnv ? parseNumber(injectLimitEnv, null) : null;
-  const injectTokenBudgetEnv = process.env.CODEMEM_INJECT_TOKEN_BUDGET;
-  const injectTokenBudget = injectTokenBudgetEnv ? parseNumber(injectTokenBudgetEnv, null) : null;
+  const injectTokenBudget = resolveInjectTokenBudget(
+    process.env.CODEMEM_INJECT_TOKEN_BUDGET
+  );
+  const injectPackTokenBudget = reserveContextPrefixBudget(injectTokenBudget);
+  const retainedTokenBudget = resolveRetainedTokenBudget(process.env.CODEMEM_INJECT_RETAINED_TOKEN_BUDGET);
+  if (injectEnabled && injectPackTokenBudget === null) {
+    await log(
+      "warn",
+      "codemem context injection skipped: token budget is too small",
+      {
+        inject_token_budget: injectTokenBudget,
+        required_prefix_tokens: estimateTokens(CODEMEM_CONTEXT_PREFIX),
+        next_action: "increase CODEMEM_INJECT_TOKEN_BUDGET or unset it to use the default",
+      }
+    );
+  }
   const injectionToastShown = new Set();
   const messageInjectionCache = new Map();
   const compactionInjectionSkips = new Map();
   const disabledInjectionRecorded = new Set();
+  const latestPolicySkips = new Map();
   const attemptStartedAt = new Map();
   const promptPackRetryCounts = new Map();
   const successfulPromptPackArtifacts = new Map();
@@ -2953,9 +3183,18 @@ export const CodememPlugin = async ({
       queryHash: hashPromptPackQuery(""),
     });
 
-  const recordSkippedPromptPack = (failureCode, sessionID = null, surface = injectSurface) => {
+  const recordSkippedPromptPack = (failureCode, sessionID = null, surface = injectSurface, requestKey = null) => {
     const sessionKey = String(sessionID || "unknown");
     const memoKey = `${surface}:${sessionKey}`;
+    if (requestKey) {
+      const signature = `${requestKey}:${failureCode}`;
+      if (latestPolicySkips.get(memoKey) === signature) return null;
+      latestPolicySkips.delete(memoKey);
+      latestPolicySkips.set(memoKey, signature);
+      while (latestPolicySkips.size > MAX_MESSAGE_INJECTION_CACHE_SESSIONS) {
+        latestPolicySkips.delete(latestPolicySkips.keys().next().value);
+      }
+    }
     if (failureCode === "injection_disabled" && disabledInjectionRecorded.has(memoKey)) {
       return null;
     }
@@ -2964,7 +3203,7 @@ export const CodememPlugin = async ({
       failureCode,
       sessionID,
       surface,
-      failureCode === "injection_disabled" ? "once" : `event-${++skippedAttemptCounter}`,
+      requestKey || (failureCode === "injection_disabled" ? "once" : `event-${++skippedAttemptCounter}`),
     );
     void runPromptPackLedger({
       action: "record",
@@ -3323,6 +3562,7 @@ export const CodememPlugin = async ({
   };
 
   const buildInjectedContext = async (query, context = {}) => {
+    const requestPackBudget = reserveContextPrefixBudget(context.tokenBudget ?? injectTokenBudget);
     const queryHash = hashPromptPackQuery(query);
     const sessionID = context.sessionID || activeSessionID || "unknown";
     const surface = context.surface || injectSurface;
@@ -3349,12 +3589,21 @@ export const CodememPlugin = async ({
       identity,
       context.sessionID || activeSessionID || null,
     );
+    if (requestPackBudget === null) {
+      return {
+        text: "",
+        attemptId: identity.attemptId,
+        requestId: identity.requestId,
+        queryHash,
+        promptNumber: promptCounter,
+      };
+    }
     const runPack = async () => {
       let packArgs = buildPackArgs({
         query,
         filesModified: sessionContext.filesModified,
         injectLimit,
-        injectTokenBudget,
+        injectTokenBudget: requestPackBudget,
         internalLedger: true,
       });
       const httpResult = await postViewerJson({
@@ -3364,7 +3613,7 @@ export const CodememPlugin = async ({
           query,
           filesModified: sessionContext.filesModified,
           injectLimit,
-          injectTokenBudget,
+          injectTokenBudget: requestPackBudget,
           projectName: normalizeProjectLabel(process.env.CODEMEM_PROJECT),
           cwd,
           dbPath: promptPackDbPath,
@@ -3656,9 +3905,23 @@ export const CodememPlugin = async ({
         artifactFingerprint || promptPackArtifactFingerprint(result.stdout, packText)
       );
     }
+    const filtered = context.surface === "message"
+      ? filterRetainedPack(result.stdout, packText, context.retainedItems)
+      : { text: packText, items: [], duplicates: 0 };
+    const text = filtered.text ? wrapInjectedContext(filtered.text) : "";
+    const recall = filtered.items.length
+      ? { v: 1, digest: injectionDigest(text), items: filtered.items, workingContext: context.workingContext }
+      : undefined;
+    let skipReason = null;
+    if (!text && filtered.duplicates > 0) {
+      skipReason = context.continuationOnly ? "continuation_only" : "unchanged_memories";
+    }
     if (metrics) {
       return {
-        text: `[codemem context]\n${packText}`,
+        text,
+        recall,
+        duplicates: filtered.duplicates,
+        skipReason,
         metrics,
         attemptId: injectedIdentity?.attemptId || null,
         requestId: injectedIdentity?.requestId || null,
@@ -3667,7 +3930,10 @@ export const CodememPlugin = async ({
       };
     }
     return {
-      text: `[codemem context]\n${packText}`,
+      text,
+      recall,
+      duplicates: filtered.duplicates,
+      skipReason,
       attemptId: injectedIdentity?.attemptId || null,
       requestId: injectedIdentity?.requestId || null,
       queryHash,
@@ -3892,10 +4158,12 @@ export const CodememPlugin = async ({
       if (injectSurface === "system") {
         return;
       }
-      const latestUser = Array.isArray(output?.messages)
-        ? findLatestUserMessage(output.messages)
-        : null;
-      const sessionID = latestUser ? resolveEntrySessionID(latestUser.entry) : input?.sessionID;
+      const hookMessages = Array.isArray(output?.messages)
+        ? scopeMessagesToSession(output.messages, input?.sessionID || null)
+        : [];
+      const latestUser = findLatestUserMessage(hookMessages);
+      const sessionID = input?.sessionID
+        || (latestUser ? resolveEntrySessionID(latestUser.entry) : null);
       const latestPromptText = latestUser ? extractMessageText(latestUser.entry) : "";
       if (debug) {
         const query = resolveInjectQuery({ lastPromptText: latestPromptText });
@@ -3928,10 +4196,16 @@ export const CodememPlugin = async ({
           resolveInjectQuery,
           buildInjectedContext,
           messageInjectionCache,
+          injectTokenBudget,
+          retainedTokenBudget,
+          workingSet: [...sessionContext.filesModified, ...sessionContext.filesRead],
+          recordMeasurement: (measurement) => logLine(`inject.recall ${JSON.stringify(measurement)}`),
           compactionInjectionSkips,
           confirmDelivery: confirmPromptPackDelivery,
           recordCacheReuse: recordCachedPromptPack,
-          recordSkipped: recordSkippedPromptPack,
+          recordSkipped: (reason, sessionID) => recordSkippedPromptPack(
+            reason, sessionID, "message", latestUser ? resolveEntryMessageId(latestUser.entry) : null,
+          ),
         });
       } catch (err) {
         await logLine(
@@ -4204,6 +4478,8 @@ export const CodememPlugin = async ({
           compactionInjectionSkips.delete(sessionID);
           disabledInjectionRecorded.delete(`message:${sessionID}`);
           disabledInjectionRecorded.delete(`system:${sessionID}`);
+          latestPolicySkips.delete(`message:${sessionID}`);
+          latestPolicySkips.delete(`system:${sessionID}`);
         }
         await stopViewer();
       }
@@ -4356,5 +4632,18 @@ export const __testUtils = {
   buildRawEventEnvelope,
   trimEventQueue,
   parsePositiveInt,
+  resolveInjectTokenBudget,
+  reserveContextPrefixBudget,
+  wrapInjectedContext,
+  estimateTokens,
+  countRetainedInjectionTokens,
+  retainedMemoryFingerprints,
+  retainedMetadataGaps,
+  filterRetainedPack,
+  isContinuationOnly,
+  resolveRetainedTokenBudget,
+  workingContextDigest,
+  DEFAULT_INJECT_TOKEN_BUDGET,
+  CODEMEM_CONTEXT_PREFIX,
   createViewerHealthMonitor,
 };

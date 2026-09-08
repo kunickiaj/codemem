@@ -86,7 +86,10 @@ describe("Viewer prompt transport failure classification", () => {
       status: 409,
       body,
       compatibleProfile: true,
-    })).toMatchObject({ disposition: "terminal", retryable: false });
+    })).toMatchObject({
+      disposition: "terminal",
+      retryable: false,
+    });
   });
 
   test.each([

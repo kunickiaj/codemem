@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EventEmitter } from "node:events";
+import { createHash } from "node:crypto";
 import {
 	mkdirSync,
 	mkdtempSync,
@@ -322,6 +323,8 @@ describe("OpenCode transform-time injection", () => {
 			"CODEMEM_EMBEDDING_OFFLINE",
 			"CODEMEM_EMBEDDING_MODEL",
 			"CODEMEM_EMBEDDING_REVISION",
+			"CODEMEM_INJECT_TOKEN_BUDGET",
+			"CODEMEM_INJECT_RETAINED_TOKEN_BUDGET",
 		]) {
 			delete process.env[key];
 		}
@@ -435,6 +438,42 @@ describe("OpenCode transform-time injection", () => {
 		expect(replacementHooks["tool.execute.after"]).toBeTypeOf("function");
 	});
 
+	test.each([
+		[401, "unauthorized"],
+		[403, "policy_denied"],
+	])(
+		"does not retry or fall back after Viewer ledger policy/auth failure %s",
+		async (status, code) => {
+			process.env.CODEMEM_VIEWER = "1";
+			process.env.CODEMEM_VIEWER_AUTO = "0";
+			process.env.CODEMEM_RAW_EVENTS = "0";
+			const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+				if (String(url).endsWith("/api/prompt-pack-profile")) return viewerProfileResponse();
+				if (String(url).endsWith("/api/pack")) return jsonResponse(200, packResponse());
+				return jsonResponse(status, { error: { code } });
+			});
+			const { CodememPlugin } = await import("../plugins/codemem.js");
+			const hooks = await CodememPlugin({
+				project: { name: "fixture" },
+				client: { app: { log: vi.fn() }, tui: {} },
+				directory: "/tmp/fixture",
+				worktree: "/tmp/fixture",
+			});
+			await hooks["experimental.chat.messages.transform"](
+				{},
+				messageOutput({ messageId: `terminal-${status}` }),
+			);
+			await vi.waitFor(() =>
+				expect(
+					fetchPostCalls(fetchMock).filter(([url]) =>
+						String(url).endsWith("/api/prompt-pack-ledger"),
+					),
+				).toHaveLength(1),
+			);
+			expect(spawnMock.mock.calls.filter(isPackOrLedgerSpawn)).toEqual([]);
+		},
+	);
+
 	test("appends built memory pack to the latest user message by default", async () => {
 		const ledgerPayloads = [];
 		spawnMock.mockImplementation((_command, args) => {
@@ -502,6 +541,211 @@ describe("OpenCode transform-time injection", () => {
 			attempt_id: ledgerPayloads[0].attempt_id,
 			delivery_status: "handed_off",
 		});
+	});
+
+	test.each(["viewer", "fallback"])("applies remaining retained allowance through %s", async (transport) => {
+		process.env.CODEMEM_VIEWER = "1";
+		process.env.CODEMEM_VIEWER_AUTO = "0";
+		process.env.CODEMEM_RAW_EVENTS = "0";
+		process.env.CODEMEM_INJECT_RETAINED_TOKEN_BUDGET = "100";
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+			if (String(url).endsWith("/api/prompt-pack-profile")) return viewerProfileResponse();
+			if (String(url).endsWith("/api/pack")) return transport === "viewer"
+				? jsonResponse(200, packResponse("fresh")) : jsonResponse(503, { error: "unavailable" });
+			return jsonResponse(200, { ok: true });
+		});
+		spawnMock.mockImplementation(() => makeProcess({ stdout: JSON.stringify(packResponse("fresh")) }));
+		const { CodememPlugin, __testUtils } = await import("../plugins/codemem.js");
+		const hooks = await CodememPlugin({ project: { name: "fixture" }, client: { app: { log: vi.fn() }, tui: {} }, directory: "/tmp/fixture", worktree: "/tmp/fixture" });
+		const old = messageOutput({ messageId: "old" }).messages[0];
+		const text = `[codemem context]\n${"x".repeat(320)}`;
+		old.parts.push({ id: "codemem-context-old", type: "text", text, synthetic: true });
+		const output = messageOutput({ messageId: "new" });
+		output.messages.unshift(old);
+		await hooks["experimental.chat.messages.transform"]({}, output);
+		const remaining = 100 - __testUtils.estimateTokens(text);
+		expect(fetchBody(fetchMock, 0).token_budget).toBe(remaining - 5);
+		if (transport === "fallback") {
+			const args = spawnMock.mock.calls.find(([, args]) => args.includes("pack"))[1];
+			expect(args[args.indexOf("--token-budget") + 1]).toBe(String(remaining - 5));
+		}
+		expect(__testUtils.countRetainedInjectionTokens(output.messages)).toBeLessThanOrEqual(100);
+		expect(old.parts.at(-1).text).toBe(text);
+	});
+
+	test.each(["viewer", "fallback"])("dedup, changed facts, continuation, restart and measurements agree via %s", async (transport) => {
+		process.env.CODEMEM_VIEWER = "1";
+		process.env.CODEMEM_VIEWER_AUTO = "0";
+		process.env.CODEMEM_RAW_EVENTS = "0";
+		process.env.CODEMEM_PLUGIN_LOG = join(process.env.HOME, "recall.log");
+		let facts = "private fixture facts";
+		const recorded = [];
+		const response = () => {
+			const pack_text = `## Summary\n[1] ${facts}`;
+			return { ...packResponse(pack_text), rendered_items: [{
+				id: 1, fingerprint: createHash("sha256").update(facts).digest("hex"),
+				spans: [{ start: 11, end: pack_text.length }],
+			}] };
+		};
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+			if (String(url).endsWith("/api/prompt-pack-profile")) return viewerProfileResponse();
+			if (String(url).endsWith("/api/pack")) return transport === "viewer"
+				? jsonResponse(200, response()) : jsonResponse(503, { error: "unavailable" });
+			return jsonResponse(200, { ok: true });
+		});
+		spawnMock.mockImplementation((_cmd, args) => {
+			const proc = makeProcess({ stdout: args.includes("pack") ? JSON.stringify(response()) : "{}" });
+			if (args.includes("prompt-pack-ledger")) proc.stdin.write = vi.fn((value) => recorded.push(JSON.parse(String(value))));
+			return proc;
+		});
+		const { CodememPlugin, __testUtils } = await import("../plugins/codemem.js");
+		const init = { project: { name: "fixture" }, client: { app: { log: vi.fn() }, tui: {} }, directory: "/tmp/fixture", worktree: "/tmp/fixture" };
+		let hooks = await CodememPlugin(init);
+		const output = messageOutput({ messageId: "first", text: "retrieve private fixture" });
+		await hooks["experimental.chat.messages.transform"]({}, output);
+		const original = JSON.stringify(output.messages[0]);
+		output.messages.push(messageOutput({ messageId: "second", text: "continue" }).messages[0]);
+		await hooks["experimental.chat.messages.transform"]({}, output);
+		expect(output.messages[1].parts).toHaveLength(1);
+		facts = "updated private fixture facts";
+		await hooks["experimental.chat.messages.transform"]({}, output);
+		expect(output.messages[1].parts.at(-1).text).toContain(facts);
+		expect(JSON.stringify(output.messages[0])).toBe(original);
+		const retained = JSON.stringify(output);
+		const requestsBeforeRestart = fetchPostCalls(fetchMock).filter(([url]) => String(url).endsWith("/api/pack")).length;
+		hooks.dispose();
+		hooks = await CodememPlugin(init);
+		await hooks["experimental.chat.messages.transform"]({}, output);
+		expect(JSON.stringify(output)).toBe(retained);
+		expect(fetchPostCalls(fetchMock).filter(([url]) => String(url).endsWith("/api/pack")).length).toBe(requestsBeforeRestart);
+		await vi.waitFor(() => expect(readFileSync(process.env.CODEMEM_PLUGIN_LOG, "utf8").split("\n").filter((line) => line.includes("inject.recall "))).toHaveLength(4));
+		const lines = readFileSync(process.env.CODEMEM_PLUGIN_LOG, "utf8").split("\n").filter((line) => line.includes("inject.recall "));
+		const measurements = lines.map((line) => JSON.parse(line.split("inject.recall ")[1]));
+		expect(measurements.map((value) => value.reason)).toEqual(["delivered", "continuation_only", "delivered", "replay"]);
+		expect(measurements[1]).toMatchObject({ new_tokens: 0, duplicates_omitted: 1 });
+		expect(measurements.at(-1)).toMatchObject({ new_tokens: 0, retained_tokens: __testUtils.countRetainedInjectionTokens(output.messages) });
+		expect(JSON.stringify(measurements)).not.toContain("private");
+	});
+
+	test("sends the default reserved token budget through the Viewer transport", async () => {
+		// Arrange
+		process.env.CODEMEM_VIEWER = "1";
+		process.env.CODEMEM_VIEWER_AUTO = "0";
+		process.env.CODEMEM_RAW_EVENTS = "0";
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+			if (String(url).endsWith("/api/prompt-pack-profile")) return viewerProfileResponse();
+			if (String(url).endsWith("/api/pack")) return jsonResponse(200, packResponse());
+			return jsonResponse(200, { ok: true });
+		});
+		const { CodememPlugin } = await import("../plugins/codemem.js");
+		const hooks = await CodememPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+		const output = messageOutput({ messageId: "user-default-budget" });
+
+		// Act
+		await hooks["experimental.chat.messages.transform"]({}, output);
+		await vi.waitFor(() => expect(fetchPostCalls(fetchMock)).toHaveLength(2));
+
+		// Assert
+		const packBody = fetchBody(fetchMock, 0);
+		expect(packBody.token_budget).toBe(795);
+		expect(output.messages[0].parts.at(-1).text).toContain("Viewer-backed context");
+		expect(spawnMock.mock.calls.filter(isPackOrLedgerSpawn)).toEqual([]);
+	});
+
+	test("keeps an explicit reserved token budget equal across Viewer and CLI fallback", async () => {
+		// Arrange
+		process.env.CODEMEM_VIEWER = "1";
+		process.env.CODEMEM_VIEWER_AUTO = "0";
+		process.env.CODEMEM_RAW_EVENTS = "0";
+		process.env.CODEMEM_INJECT_TOKEN_BUDGET = "1200";
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+			if (String(url).endsWith("/api/prompt-pack-profile")) return viewerProfileResponse();
+			if (String(url).endsWith("/api/pack")) {
+				return jsonResponse(503, { error: "unavailable" });
+			}
+			return jsonResponse(200, { ok: true });
+		});
+		const packArgs = [];
+		spawnMock.mockImplementation((_command, args) => {
+			if (Array.isArray(args) && args.includes("pack")) {
+				packArgs.push(args);
+				return makeProcess({
+					stdout: JSON.stringify(packResponse("## Summary\n[2] CLI budget fallback")),
+				});
+			}
+			return makeProcess({ stdout: "" });
+		});
+		const { CodememPlugin } = await import("../plugins/codemem.js");
+		const hooks = await CodememPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+		const output = messageOutput({ messageId: "user-explicit-budget" });
+
+		// Act
+		await hooks["experimental.chat.messages.transform"]({}, output);
+		await vi.waitFor(() => expect(packArgs).toHaveLength(1));
+
+		// Assert
+		const cliBudgetIndex = packArgs[0].indexOf("--token-budget");
+		expect(fetchBody(fetchMock, 0).token_budget).toBe(1195);
+		expect(packArgs[0][cliBudgetIndex + 1]).toBe("1195");
+		expect(output.messages[0].parts.at(-1).text).toContain("CLI budget fallback");
+	});
+
+	test("skips pack transport and logs once when the positive budget cannot fit the prefix", async () => {
+		// Arrange
+		process.env.CODEMEM_VIEWER = "1";
+		process.env.CODEMEM_VIEWER_AUTO = "0";
+		process.env.CODEMEM_RAW_EVENTS = "0";
+		process.env.CODEMEM_INJECT_TOKEN_BUDGET = "1";
+		const fetchMock = vi
+			.spyOn(globalThis, "fetch")
+			.mockResolvedValue(jsonResponse(200, { ok: true }));
+		const appLog = vi.fn().mockResolvedValue(undefined);
+		const { CodememPlugin } = await import("../plugins/codemem.js");
+		const hooks = await CodememPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: appLog }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+		const output = messageOutput({
+			messageId: "user-tiny-budget",
+			text: "sensitive prompt must not be logged",
+		});
+
+		// Act
+		await hooks["experimental.chat.messages.transform"]({}, output);
+		await hooks["experimental.chat.messages.transform"]({}, output);
+
+		// Assert
+		const budgetWarnings = appLog.mock.calls
+			.map(([entry]) => entry)
+			.filter(
+				(entry) => entry.message === "codemem context injection skipped: token budget is too small",
+			);
+		expect(budgetWarnings).toEqual([
+			expect.objectContaining({
+				level: "warn",
+				extra: {
+					inject_token_budget: 1,
+					required_prefix_tokens: 5,
+					next_action: "increase CODEMEM_INJECT_TOKEN_BUDGET or unset it to use the default",
+				},
+			}),
+		]);
+		expect(JSON.stringify(budgetWarnings)).not.toContain("sensitive prompt");
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(spawnMock.mock.calls.filter(isPackOrLedgerSpawn)).toEqual([]);
+		expect(output.messages[0].parts).toHaveLength(1);
 	});
 
 	test("retries pack without --internal-ledger when an older backend rejects the flag", async () => {
@@ -702,11 +946,11 @@ describe("OpenCode transform-time injection", () => {
 				failure_stage: "transport",
 			}),
 		);
-		expect(ledgerPayloads).toContainEqual({
-			action: "delivery",
-			attempt_id: packPayloads[1].attempt_id,
-			delivery_status: "handed_off",
-		});
+    expect(ledgerPayloads).toContainEqual(expect.objectContaining({
+      action: "delivery",
+      attempt_id: packPayloads[1].attempt_id,
+      delivery_status: "handed_off",
+    }));
 		expect(output.messages[0].parts.at(-1).text).toContain("Retry succeeded");
 	});
 
@@ -1291,7 +1535,7 @@ describe("OpenCode transform-time injection", () => {
 			}
 			const deliveries = ledgerPayloads.filter((payload) => payload.action === "delivery");
 			if (expectsFreshDelivery) {
-				expect(deliveries).toEqual([
+        expect(deliveries).toMatchObject([
 					{
 						action: "delivery",
 						attempt_id: packPayloads[1].attempt_id,
@@ -2165,10 +2409,10 @@ describe("OpenCode transform-time injection", () => {
 		// Assert
 		expect(fetchPostCalls(fetchMock)).toHaveLength(1);
 		expect(packPayloads).toHaveLength(1);
-		expect(ledgerPayloads).toEqual([
-			{
-				action: "delivery",
-				attempt_id: packPayloads[0].attempt_id,
+    expect(ledgerPayloads).toMatchObject([
+      {
+        action: "delivery",
+        attempt_id: packPayloads[0].attempt_id,
 				delivery_status: "handed_off",
 			},
 		]);

@@ -460,7 +460,8 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_INJECT_CONTEXT` | Set to `0` to disable memory pack injection (default on). |
 | `CODEMEM_INJECT_SURFACE` | OpenCode injection surface: `message` by default; set `system` for the legacy system-prompt transform. |
 | `CODEMEM_INJECT_LIMIT` | Max memory items in injected pack (default `8`). |
-| `CODEMEM_INJECT_TOKEN_BUDGET` | Approx token budget for injected pack (default `800`). |
+| `CODEMEM_INJECT_RETAINED_TOKEN_BUDGET` | Opt-in approximate cap for retained OpenCode automatic message blocks, off by default. Only an explicit positive safe integer (for example `8000`) enables it; unset, invalid, or nonpositive values disable it. Count full wrapped blocks currently retained, including replay/reconstruction. Compaction notifications do not reset allowance. Does not apply to legacy system injection or explicit MCP recall. |
+| `CODEMEM_INJECT_TOKEN_BUDGET` | Positive approximate token cap for OpenCode's complete wrapped injection (default `800`). OpenCode reserves its context prefix before sending the remaining budget through Viewer or CLI; unset, zero, negative, and invalid values use `800`. An override too small to leave a positive pack budget injects nothing because `0` means unlimited to generic pack calls. Pack accounting uses `ceil(characters / 4)`, not the provider tokenizer. |
 | `CODEMEM_USE_OPENCODE_RUN` | Use `opencode run` for observer generation (default off). |
 | `CODEMEM_OPENCODE_MODEL` | Model for `opencode run` (default `gpt-5.1-codex-mini`). |
 | `CODEMEM_OPENCODE_AGENT` | Agent for `opencode run` (optional). |

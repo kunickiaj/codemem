@@ -14,6 +14,7 @@
  * tracking, discovery-token work estimation.
  */
 
+import { createHash } from "node:crypto";
 import { type Database, fromJson } from "./db.js";
 import { buildFilterClausesWithContext } from "./filters.js";
 import { inferMemoryRole, readArtifactClass } from "./memory-quality.js";
@@ -42,6 +43,7 @@ import type {
 	PackTraceDisposition,
 	PackTraceMode,
 	PackTraceSection,
+	RenderedPackItem,
 	TimelineItemResponse,
 } from "./types.js";
 import { semanticSearch } from "./vectors.js";
@@ -173,16 +175,108 @@ function formatItem(
 	return header;
 }
 
-/** Build a formatted section with header and items. */
-function formatSection(
-	header: string,
-	items: MemoryResult[],
-	clusterState?: ClusterCompressionState,
-	options: { includeRelatedIds?: boolean } = {},
+function joinPackSegments(
+	segments: { text: string; item?: MemoryResult }[],
+	renderedItems?: RenderedPackItem[],
 ): string {
-	const heading = `## ${header}`;
-	if (items.length === 0) return `${heading}\n`;
-	return [heading, ...items.map((item) => formatItem(item, clusterState, options))].join("\n");
+	let text = "";
+	const items = new Map<
+		number,
+		{ item: MemoryResult; spans: { start: number; end: number }[]; texts: string[] }
+	>();
+	for (const segment of segments) {
+		const start = text.length;
+		text += segment.text;
+		if (!renderedItems || !segment.item) continue;
+		const entry = items.get(segment.item.id) ?? { item: segment.item, spans: [], texts: [] };
+		entry.spans.push({ start, end: text.length });
+		entry.texts.push(segment.text);
+		items.set(segment.item.id, entry);
+	}
+	for (const { item, spans, texts } of items.values()) {
+		const fingerprint = createHash("sha256")
+			.update(
+				JSON.stringify([item.id, item.title, item.body_text, item.narrative, item.facts, texts]),
+			)
+			.digest("hex");
+		renderedItems?.push({ id: item.id, fingerprint, spans });
+	}
+	return text;
+}
+
+function renderStandardPack(
+	summary: MemoryResult[],
+	timelineItems: MemoryResult[],
+	observations: MemoryResult[],
+	clusterState: ClusterCompressionState,
+	options: { includeRelatedIds: boolean },
+	renderedItems?: RenderedPackItem[],
+): string {
+	const segments: { text: string; item?: MemoryResult }[] = [];
+	for (const [heading, items] of [
+		["Summary", summary],
+		["Timeline", timelineItems],
+		["Observations", observations],
+	] as const) {
+		if (segments.length) segments.push({ text: "\n\n" });
+		segments.push({ text: `## ${heading}\n` });
+		items.forEach((item, index) => {
+			if (index) segments.push({ text: "\n" });
+			segments.push({ text: formatItem(item, clusterState, options), item });
+		});
+	}
+	return joinPackSegments(segments, renderedItems);
+}
+
+function budgetStandardPack(
+	summaryItems: MemoryResult[],
+	timelineItems: MemoryResult[],
+	observationItems: MemoryResult[],
+	clusterState: ClusterCompressionState,
+	options: { tokenBudget: number; includeRelatedIds: boolean },
+): [MemoryResult[], MemoryResult[], MemoryResult[]] {
+	const budgetedSummary: MemoryResult[] = [];
+	for (const item of summaryItems) {
+		const candidate = renderStandardPack([...budgetedSummary, item], [], [], clusterState, options);
+		if (!fitsTokenBudget(candidate, options.tokenBudget)) break;
+		budgetedSummary.push(item);
+	}
+	const budgetedTimeline: MemoryResult[] = [];
+	for (const item of timelineItems) {
+		const candidate = renderStandardPack(
+			budgetedSummary,
+			[...budgetedTimeline, item],
+			[],
+			clusterState,
+			options,
+		);
+		if (!fitsTokenBudget(candidate, options.tokenBudget)) break;
+		budgetedTimeline.push(item);
+	}
+	const budgetedObservations: MemoryResult[] = [];
+	for (const item of observationItems) {
+		const candidate = renderStandardPack(
+			budgetedSummary,
+			budgetedTimeline,
+			[...budgetedObservations, item],
+			clusterState,
+			options,
+		);
+		if (!fitsTokenBudget(candidate, options.tokenBudget)) break;
+		budgetedObservations.push(item);
+	}
+	return [budgetedSummary, budgetedTimeline, budgetedObservations];
+}
+
+function fitsTokenBudget(text: string, tokenBudget: number): boolean {
+	return estimateTokens(text) <= tokenBudget;
+}
+
+function enforceTokenBudget(text: string, tokenBudget: number | null): string {
+	if (tokenBudget == null || tokenBudget <= 0 || fitsTokenBudget(text, tokenBudget)) {
+		return text;
+	}
+	return "";
 }
 
 // ---------------------------------------------------------------------------
@@ -212,18 +306,23 @@ function renderCompactPack(
 	items: MemoryResult[],
 	detailIds: Set<number>,
 	clusterState?: ClusterCompressionState,
+	renderedItems?: RenderedPackItem[],
 ): string {
-	const indexSection = `## Index\n${items.length > 0 ? items.map((item) => formatIndexLine(item, clusterState)).join("\n") : "(no items)"}`;
-
+	const segments: { text: string; item?: MemoryResult }[] = [{ text: "## Index\n" }];
+	if (!items.length) segments.push({ text: "(no items)" });
+	items.forEach((item, index) => {
+		if (index) segments.push({ text: "\n" });
+		segments.push({ text: formatIndexLine(item, clusterState), item });
+	});
+	segments.push({ text: "\n\n## Detail\n" });
 	const detailItems = items.filter((item) => detailIds.has(item.id));
-	const detailSection =
-		detailItems.length > 0
-			? `## Detail\n${detailItems
-					.map((item) => formatItem(item, clusterState, { includeRelatedIds: true }))
-					.join("\n\n")}`
-			: "## Detail\n(no items)";
-
-	return `${indexSection}\n\n${detailSection}\n\n${COMPACT_FOOTER}`;
+	if (!detailItems.length) segments.push({ text: "(no items)" });
+	detailItems.forEach((item, index) => {
+		if (index) segments.push({ text: "\n\n" });
+		segments.push({ text: formatItem(item, clusterState, { includeRelatedIds: true }), item });
+	});
+	segments.push({ text: `\n\n${COMPACT_FOOTER}` });
+	return joinPackSegments(segments, renderedItems);
 }
 
 // ---------------------------------------------------------------------------
@@ -1612,14 +1711,16 @@ function buildPackArtifacts(
 	// Step 4: apply token budget
 	// Step 5: format sections
 	//
-	// Compact mode flattens all items into a single list, budgets using
-	// index-line costs for items beyond the detail count, and renders a
-	// scannable Index + Detail layout instead of Summary/Timeline/Observations.
+	// Compact mode flattens all items into a single list, renders items beyond
+	// the detail count as index-only, and budgets the complete candidate pack.
+	// It renders a scannable Index + Detail layout instead of
+	// Summary/Timeline/Observations.
 
 	let budgetedSummary: MemoryResult[];
 	let budgetedTimeline: MemoryResult[];
 	let budgetedObservations: MemoryResult[];
 	let packText: string;
+	const renderedItems: RenderedPackItem[] = [];
 
 	if (compact) {
 		// Flatten all items, dedupe by id, preserve order
@@ -1635,16 +1736,16 @@ function buildPackArtifacts(
 		const detailIds = new Set<number>();
 
 		if (tokenBudget != null && tokenBudget > 0) {
-			let tokensUsed = 0;
 			let detailSlots = compactDetailCount;
 			for (const item of allCandidates) {
-				const indexCost = estimateTokens(formatIndexLine(item, clusterState));
 				if (detailSlots > 0) {
-					// Detail items appear in both Index and Detail — charge both.
-					const fullCost =
-						indexCost + estimateTokens(formatItem(item, clusterState, { includeRelatedIds: true }));
-					if (tokensUsed + fullCost <= tokenBudget) {
-						tokensUsed += fullCost;
+					const nextDetailIds = new Set(detailIds).add(item.id);
+					const detailedPack = renderCompactPack(
+						[...budgetedItems, item],
+						nextDetailIds,
+						clusterState,
+					);
+					if (fitsTokenBudget(detailedPack, tokenBudget)) {
 						budgetedItems.push(item);
 						detailIds.add(item.id);
 						detailSlots--;
@@ -1652,9 +1753,8 @@ function buildPackArtifacts(
 					}
 					// Detail too expensive — demote to index-only below.
 				}
-				// Index-only: skip if even the index line doesn't fit.
-				if (tokensUsed + indexCost > tokenBudget) continue;
-				tokensUsed += indexCost;
+				const indexedPack = renderCompactPack([...budgetedItems, item], detailIds, clusterState);
+				if (!fitsTokenBudget(indexedPack, tokenBudget)) continue;
 				budgetedItems.push(item);
 			}
 		} else {
@@ -1664,7 +1764,10 @@ function buildPackArtifacts(
 			}
 		}
 
-		packText = renderCompactPack(budgetedItems, detailIds, clusterState);
+		packText = enforceTokenBudget(
+			renderCompactPack(budgetedItems, detailIds, clusterState, renderedItems),
+			tokenBudget,
+		);
 		// For downstream metrics, put everything in timeline (compact flattens sections)
 		budgetedSummary = [];
 		budgetedTimeline = budgetedItems;
@@ -1675,46 +1778,28 @@ function buildPackArtifacts(
 		budgetedObservations = observationItems;
 
 		if (tokenBudget != null && tokenBudget > 0) {
-			let tokensUsed = 0;
-			const formatOptions = { includeRelatedIds: compressionMode === "ids" };
-
-			budgetedSummary = [];
-			for (const item of summaryItems) {
-				const cost = estimateTokens(formatItem(item, clusterState, formatOptions));
-				if (tokensUsed + cost > tokenBudget) break;
-				tokensUsed += cost;
-				budgetedSummary.push(item);
-			}
-
-			budgetedTimeline = [];
-			for (const item of timelineItems) {
-				const cost = estimateTokens(formatItem(item, clusterState, formatOptions));
-				if (tokensUsed + cost > tokenBudget) break;
-				tokensUsed += cost;
-				budgetedTimeline.push(item);
-			}
-
-			budgetedObservations = [];
-			for (const item of observationItems) {
-				const cost = estimateTokens(formatItem(item, clusterState, formatOptions));
-				if (tokensUsed + cost > tokenBudget) break;
-				tokensUsed += cost;
-				budgetedObservations.push(item);
-			}
+			[budgetedSummary, budgetedTimeline, budgetedObservations] = budgetStandardPack(
+				summaryItems,
+				timelineItems,
+				observationItems,
+				clusterState,
+				{ tokenBudget, includeRelatedIds: compressionMode === "ids" },
+			);
 		}
 
-		const sections = [
-			formatSection("Summary", budgetedSummary, clusterState, {
-				includeRelatedIds: compressionMode === "ids",
-			}),
-			formatSection("Timeline", budgetedTimeline, clusterState, {
-				includeRelatedIds: compressionMode === "ids",
-			}),
-			formatSection("Observations", budgetedObservations, clusterState, {
-				includeRelatedIds: compressionMode === "ids",
-			}),
-		];
-		packText = sections.join("\n\n");
+		packText = enforceTokenBudget(
+			renderStandardPack(
+				budgetedSummary,
+				budgetedTimeline,
+				budgetedObservations,
+				clusterState,
+				{
+					includeRelatedIds: compressionMode === "ids",
+				},
+				renderedItems,
+			),
+			tokenBudget,
+		);
 	}
 
 	const packTokens = estimateTokens(packText);
@@ -1885,6 +1970,7 @@ function buildPackArtifacts(
 		items: allItems,
 		item_ids: allItemIds,
 		pack_text: packText,
+		rendered_items: renderedItems,
 		metrics,
 	};
 

@@ -58,6 +58,55 @@ describe("buildInjectQuery", () => {
 });
 
 describe("buildPackArgs", () => {
+  test("initializes the documented budget default and preserves positive overrides", () => {
+    expect(__testUtils.resolveInjectTokenBudget(undefined)).toBe(800);
+    expect(__testUtils.resolveInjectTokenBudget("1200")).toBe(1200);
+  });
+
+  test.each(["0", "-1", "invalid"])(
+    "falls back to the default injection budget for %s",
+    (value) => {
+      expect(__testUtils.resolveInjectTokenBudget(value)).toBe(800);
+    },
+  );
+
+  test("reserves wrapper tokens for viewer and CLI pack requests", () => {
+    const requestedBudget = __testUtils.resolveInjectTokenBudget(undefined);
+    const packBudget = __testUtils.reserveContextPrefixBudget(requestedBudget);
+    const args = __testUtils.buildPackArgs({
+      query: "recent work",
+      filesModified: [],
+      injectLimit: 8,
+      injectTokenBudget: packBudget,
+    });
+    const body = __testUtils.buildPackHttpBody({
+      query: "recent work",
+      filesModified: [],
+      injectLimit: 8,
+      injectTokenBudget: packBudget,
+      projectName: null,
+      cwd: "/workspace",
+      dbPath: "/tmp/test.db",
+      identityTarget: {},
+      attempt: {},
+    });
+
+    expect(packBudget).toBe(795);
+    expect(packBudget).toBeGreaterThan(0);
+    expect(args).toContain("795");
+    expect(body.token_budget).toBe(795);
+  });
+
+  test("keeps wrapped output within the requested estimator budget", () => {
+    const requestedBudget = 800;
+    const packBudget = __testUtils.reserveContextPrefixBudget(requestedBudget);
+    expect(packBudget).not.toBeNull();
+    const wrapped = __testUtils.wrapInjectedContext("x".repeat(packBudget * 4));
+
+    expect(__testUtils.estimateTokens(wrapped)).toBeLessThanOrEqual(requestedBudget);
+    expect(__testUtils.reserveContextPrefixBudget(1)).toBeNull();
+  });
+
   test("includes limit, token budget, and recent working set files", () => {
     const args = __testUtils.buildPackArgs({
       query: "fix auth",
@@ -562,7 +611,7 @@ describe("applyInjectedContextToMessages", () => {
     expect(buildInjectedContext).toHaveBeenCalledTimes(1);
     expect(buildInjectedContext).toHaveBeenCalledWith(
       "fix prompt caching fix prompt caching",
-      { sessionID: "sess-messages", requestKey: "user-1", surface: "message" },
+      expect.objectContaining({ sessionID: "sess-messages", requestKey: "user-1", surface: "message", tokenBudget: 800 }),
     );
     expect(confirmDelivery).toHaveBeenCalledTimes(1);
     expect(showToast).toHaveBeenCalledTimes(1);
@@ -710,7 +759,7 @@ describe("applyInjectedContextToMessages", () => {
     expect(secondOutput.messages[0].parts.filter(__testUtils.isCodememContextPart)).toHaveLength(1);
   });
 
-  test("rebuilds the latest reconstructed part while preserving historical identity-less replay", async () => {
+  test("preserves reconstructed latest and historical blocks without ledger identity repair", async () => {
     // Arrange
     const messageInjectionCache = new Map();
     const output = {
@@ -767,20 +816,19 @@ describe("applyInjectedContextToMessages", () => {
     });
 
     // Assert
-    expect(buildInjectedContext).toHaveBeenCalledTimes(1);
+    expect(buildInjectedContext).not.toHaveBeenCalled();
     expect(recordCacheReuse).not.toHaveBeenCalled();
     expect(output.messages[0].parts.filter(__testUtils.isCodememContextPart)).toHaveLength(1);
     expect(output.messages[0].parts.at(-1).text).toBe("[codemem context]\nhistorical");
     expect(output.messages[1].parts.filter(__testUtils.isCodememContextPart)).toHaveLength(1);
-    expect(output.messages[1].parts.at(-1).text).toBe("[codemem context]\nrebuilt");
+    expect(output.messages[1].parts.at(-1).text).toBe("[codemem context]\nexisting");
     expect(messageInjectionCache.get("sess-messages").get("user-2")).toMatchObject({
-      text: "[codemem context]\nrebuilt",
-      attemptId: "rebuilt-attempt",
+      text: "[codemem context]\nexisting",
     });
-    expect(confirmDelivery).toHaveBeenCalledWith("rebuilt-attempt");
+    expect(confirmDelivery).not.toHaveBeenCalled();
   });
 
-  test("does not replay a reconstructed latest part when its rebuild is empty", async () => {
+  test("never deletes reconstructed latest bytes even if fresh retrieval would be empty", async () => {
     // Arrange
     const messageInjectionCache = new Map();
     const output = {
@@ -816,10 +864,10 @@ describe("applyInjectedContextToMessages", () => {
     });
 
     // Assert
-    expect(applied).toBe(false);
-    expect(buildInjectedContext).toHaveBeenCalledTimes(1);
-    expect(output.messages[0].parts.filter(__testUtils.isCodememContextPart)).toHaveLength(0);
-    expect(messageInjectionCache.get("sess-empty-rebuild").has("user-1")).toBe(false);
+    expect(applied).toBe(true);
+    expect(buildInjectedContext).not.toHaveBeenCalled();
+    expect(output.messages[0].parts.filter(__testUtils.isCodememContextPart)).toHaveLength(1);
+    expect(messageInjectionCache.get("sess-empty-rebuild").has("user-1")).toBe(true);
   });
 
   test("replays a freshly built latest cache entry without an attempt identity", async () => {
@@ -864,7 +912,7 @@ describe("applyInjectedContextToMessages", () => {
     expect(output.messages[0].parts.at(-1).text).toBe("[codemem context]\nfresh build");
   });
 
-  test("skips message injection once for compaction and strips codemem parts", async () => {
+  test("skips new recall once for compaction without stripping retained parts", async () => {
     const output = {
       messages: [
         {
@@ -907,15 +955,8 @@ describe("applyInjectedContextToMessages", () => {
     expect(applied).toBe(false);
     expect(buildInjectedContext).not.toHaveBeenCalled();
     expect(compactionInjectionSkips.has("sess-compact")).toBe(false);
-    expect(output.messages[0].parts).toEqual([
-      {
-        id: "user-compact-text",
-        sessionID: "sess-compact",
-        messageID: "user-compact",
-        type: "text",
-        text: "compact this session",
-      },
-    ]);
+    expect(output.messages[0].parts).toHaveLength(2);
+    expect(output.messages[0].parts.at(-1).text).toBe("[codemem context]\nold synthetic context");
   });
 
   test("does not replay cached context for unidentified sessions or positional messages", async () => {

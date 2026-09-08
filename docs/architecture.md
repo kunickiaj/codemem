@@ -236,9 +236,11 @@ Items are deduplicated across sections. If the query looks like a task lookup ("
 ### Limits
 
 - **Item limit** (`limit`, default from `pack_observation_limit` config, typically 50) — caps total memory items considered
-- **Token budget** (`token_budget`) — when set, sections are trimmed once the running token count exceeds the budget; earlier sections (Summary, Timeline) get priority
+- **Token budget** (`token_budget`) — `null` and `0` leave generic pack calls unlimited. A positive value caps the fully rendered pack, including headings, separators, and the compact footer, so it can select fewer items; earlier sections (Summary, Timeline) keep priority.
 
-In plugin mode, these can be overridden via `CODEMEM_INJECT_LIMIT` and `CODEMEM_INJECT_TOKEN_BUDGET`.
+Pack tokens use the approximate `ceil(characters / 4)` estimator rather than a provider tokenizer. In plugin mode, limits can be overridden via `CODEMEM_INJECT_LIMIT` and `CODEMEM_INJECT_TOKEN_BUDGET`. OpenCode defaults the injection budget to 800, reserves the estimated cost of its `[codemem context]` prefix, and sends the remaining positive budget through both Viewer and CLI pack transports.
+
+OpenCode's message surface supports an opt-in retained ceiling, off by default, derived from actual automatic blocks after host adoption and replay. Only an explicit positive `CODEMEM_INJECT_RETAINED_TOKEN_BUDGET` enables it; the per-pack default remains 800. No lifetime counter resets on compaction. Renderer-owned `rendered_items` spans and content fingerprints let the plugin omit unchanged retained facts without parsing Markdown; explicit recall remains unchanged, while positive generic-pack budgets account for the whole rendered pack and may select fewer items. [Retained recall](opencode-retained-recall.md) documents reconstruction, conservative continuations, and privacy-safe per-transform measurements.
 
 ### Injection hook
 

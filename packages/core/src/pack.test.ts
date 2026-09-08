@@ -53,6 +53,40 @@ describe("buildMemoryPack", () => {
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
+	it.each([false, true])(
+		"reports renderer-owned item spans without changing pack text (compact=%s)",
+		(compact) => {
+			const id = store.remember(
+				sessionId,
+				"decision",
+				"Retained span",
+				"A body with ## headings and [999] fake IDs",
+				0.9,
+			);
+			const first = buildMemoryPack(store, "Retained span", 10, 800, undefined, undefined, {
+				compact,
+			});
+			const item = first.rendered_items?.find((entry) => entry.id === id);
+			expect(item).toBeDefined();
+			expect(item?.fingerprint).toMatch(/^[a-f0-9]{64}$/);
+			for (const span of item?.spans ?? []) {
+				expect(first.pack_text.slice(span.start, span.end)).toContain(
+					`[${id}] (decision) Retained span`,
+				);
+			}
+			expect(first.metrics.pack_tokens).toBe(estimateTokens(first.pack_text));
+			store.db
+				.prepare("UPDATE memory_items SET body_text = ? WHERE id = ?")
+				.run("Changed facts", id);
+			const changed = buildMemoryPack(store, "Retained span", 10, 800, undefined, undefined, {
+				compact,
+			});
+			expect(changed.rendered_items?.find((entry) => entry.id === id)?.fingerprint).not.toBe(
+				item?.fingerprint,
+			);
+		},
+	);
+
 	function insertCoordinatorScope(scopeId: string): void {
 		const now = new Date().toISOString();
 		store.db
@@ -150,6 +184,50 @@ describe("buildMemoryPack", () => {
 		const fullPack = buildMemoryPack(store, "testing", 10, null);
 
 		expect(smallPack.items.length).toBeLessThanOrEqual(fullPack.items.length);
+	});
+
+	it("bounds the fully rendered standard pack within a positive token budget", () => {
+		for (let i = 0; i < 6; i++) {
+			store.remember(
+				sessionId,
+				"discovery",
+				`Rendered budget item ${i}`,
+				`Body ${i} is long enough to force standard pack trimming at a rendered boundary.`,
+				0.7,
+			);
+		}
+		const unbounded = buildMemoryPack(store, "rendered budget item", 10, null);
+		const tokenBudget = unbounded.metrics.pack_tokens - 1;
+
+		const budgeted = buildMemoryPack(store, "rendered budget item", 10, tokenBudget);
+
+		expect(estimateTokens(budgeted.pack_text)).toBe(budgeted.metrics.pack_tokens);
+		expect(budgeted.metrics.pack_tokens).toBeLessThanOrEqual(tokenBudget);
+		expect(budgeted.pack_text).not.toBe(unbounded.pack_text);
+	});
+
+	it("returns an empty traced pack when the positive budget cannot fit the rendered structure", () => {
+		store.remember(
+			sessionId,
+			"decision",
+			"Tiny rendered budget",
+			"This item cannot fit into a one-token fully rendered pack.",
+			0.9,
+		);
+
+		const { response, trace } = buildMemoryPackWithTrace(store, "tiny rendered budget", 10, 1);
+
+		expect(response.pack_text).toBe("");
+		expect(response.items).toEqual([]);
+		expect(response.item_ids).toEqual([]);
+		expect(response.metrics.pack_tokens).toBe(0);
+		expect(response.metrics.pack_item_ids).toEqual([]);
+		expect(trace.output.pack_text).toBe(response.pack_text);
+		expect(trace.output.estimated_tokens).toBe(response.metrics.pack_tokens);
+		expect(Object.values(trace.assembly.sections).flat()).toEqual([]);
+		expect(trace.retrieval.candidates).toEqual([
+			expect.objectContaining({ disposition: "trimmed" }),
+		]);
 	});
 
 	it("formats sections correctly", () => {
@@ -1248,7 +1326,7 @@ describe("buildMemoryPack", () => {
 			),
 		];
 
-		const pack = buildMemoryPack(store, "zzz_nomatch_zzz", 10, 20, undefined, semanticResults);
+		const pack = buildMemoryPack(store, "zzz_nomatch_zzz", 10, 40, undefined, semanticResults);
 
 		expect(pack.item_ids).toContain(visibleId);
 		expect(pack.item_ids).not.toContain(hiddenId);
@@ -1925,6 +2003,54 @@ describe("buildMemoryPack compact mode", () => {
 		);
 
 		expect(budgeted.items.length).toBeLessThanOrEqual(unbounded.items.length);
+	});
+
+	it("includes compact headings, separators, detail, and footer in the token budget", () => {
+		for (let i = 0; i < 6; i++) {
+			store.remember(
+				sessionId,
+				"feature",
+				`Compact rendered boundary ${i}`,
+				`Detailed compact body ${i} that consumes enough space to exercise demotion.`,
+				0.8,
+			);
+		}
+		const options = {
+			compact: true,
+			compactDetailCount: 2,
+			compressionMode: "off",
+		} as const;
+		const unbounded = buildMemoryPack(
+			store,
+			"compact rendered boundary",
+			10,
+			null,
+			undefined,
+			undefined,
+			options,
+		);
+		const tokenBudget = unbounded.metrics.pack_tokens - 1;
+
+		const budgeted = buildMemoryPack(
+			store,
+			"compact rendered boundary",
+			10,
+			tokenBudget,
+			undefined,
+			undefined,
+			options,
+		);
+
+		expect(budgeted.metrics.pack_tokens).toBeLessThanOrEqual(tokenBudget);
+		expect(budgeted.pack_text).toContain("## Index");
+		expect(budgeted.pack_text).toContain("## Detail");
+		expect(budgeted.pack_text).toContain("memory_get_observations");
+		const indexSection = budgeted.pack_text.split("## Detail")[0] ?? "";
+		for (const id of budgeted.item_ids) {
+			expect(indexSection).toContain(`[${id}]`);
+		}
+		const detailSection = budgeted.pack_text.split("## Detail")[1] ?? "";
+		expect(detailSection.match(/\[\d+\] \(/g)?.length ?? 0).toBeLessThanOrEqual(2);
 	});
 
 	it("compact trace and pack agree on pack_text", () => {
