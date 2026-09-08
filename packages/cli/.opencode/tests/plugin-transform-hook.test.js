@@ -700,6 +700,51 @@ describe("OpenCode transform-time injection", () => {
 		expect(JSON.stringify(fresh.map((payload) => payload.automatic_recall))).not.toMatch(/private|session|fingerprint|path/);
 	});
 
+	test.each(["neither", "session", "message", "both"])("keeps turn evaluations distinct with %s host IDs", async (hostIds) => {
+		process.env.CODEMEM_VIEWER = "1";
+		process.env.CODEMEM_VIEWER_AUTO = "0";
+		process.env.CODEMEM_RAW_EVENTS = "0";
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+			if (String(url).endsWith("/api/prompt-pack-profile")) return viewerProfileResponse();
+			if (String(url).endsWith("/api/pack")) return jsonResponse(200, { pack_text: "", metrics: { total_items: 0, pack_tokens: 0 } });
+			return jsonResponse(200, { ok: true });
+		});
+		const { CodememPlugin } = await import("../plugins/codemem.js");
+		const init = { project: { name: "fixture" }, client: { app: { log: vi.fn() }, tui: {} }, directory: "/tmp/fixture", worktree: "/tmp/fixture" };
+		let hooks = await CodememPlugin(init);
+		const entry = (id) => ({
+			info: {
+				role: "user",
+				...(hostIds === "message" || hostIds === "both" ? { id } : {}),
+				...(hostIds === "session" || hostIds === "both" ? { sessionID: "session" } : {}),
+			},
+			parts: [{ type: "text", text: "same prompt" }],
+		});
+		const output = { messages: [entry("first")] };
+		await hooks["experimental.chat.messages.transform"]({}, output);
+		await hooks["experimental.chat.messages.transform"]({}, structuredClone(output));
+		output.messages.push(entry("second"));
+		await hooks["experimental.chat.messages.transform"]({}, output);
+		await hooks["experimental.chat.messages.transform"]({}, structuredClone(output));
+		hooks.dispose();
+		hooks = await CodememPlugin(init);
+		await hooks["experimental.chat.messages.transform"]({}, { messages: [entry("first")] });
+		const measurements = fetchPostCalls(fetchMock)
+			.filter(([url]) => String(url).endsWith("/api/prompt-pack-ledger"))
+			.map(([, options]) => JSON.parse(options.body))
+			.filter((payload) => payload.automatic_recall);
+		expect(measurements).toHaveLength(5);
+		expect(measurements[0].evaluation_key).toBe(measurements[1].evaluation_key);
+		expect(measurements[2].evaluation_key).toBe(measurements[3].evaluation_key);
+		expect(measurements[0].evaluation_key).not.toBe(measurements[2].evaluation_key);
+		expect(measurements[0].attempt_id).not.toBe(measurements[2].attempt_id);
+		if (hostIds === "both") {
+			expect(measurements[4].evaluation_key).toBe(measurements[0].evaluation_key);
+		} else {
+			expect(measurements[4].evaluation_key).not.toBe(measurements[0].evaluation_key);
+		}
+	});
+
 	test("sends the default reserved token budget through the Viewer transport", async () => {
 		// Arrange
 		process.env.CODEMEM_VIEWER = "1";

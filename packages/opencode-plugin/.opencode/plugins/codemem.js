@@ -1441,6 +1441,7 @@ const applyInjectedContextToMessages = async ({
     const injected = await buildInjectedContext(query, {
       sessionID,
       requestKey: latestMessageId || fallbackEntryMessageId(latestUser.entry, latestUser.index),
+      fallbackTurn: sessionID && latestMessageId ? null : latestUser.index,
       surface: "message",
       tokenBudget: fullBudget,
       retainedItems: retainedMemoryFingerprints(messages, sessionCache),
@@ -3579,12 +3580,16 @@ export const CodememPlugin = async ({
     }
   };
 
+  const fallbackEvaluationSessionId = nextEventId();
   const buildInjectedContext = async (query, context = {}) => {
     const requestPackBudget = reserveContextPrefixBudget(context.tokenBudget ?? injectTokenBudget);
     const queryHash = hashPromptPackQuery(query);
     const sessionID = context.sessionID || activeSessionID || "unknown";
     const surface = context.surface || injectSurface;
-    const requestKey = context.requestKey || "unknown";
+    let requestKey = context.requestKey || "unknown";
+    if (context.fallbackTurn != null) {
+      requestKey = JSON.stringify([requestKey, fallbackEvaluationSessionId, promptCounter, context.fallbackTurn]);
+    }
     const evaluationFields = (
       beforeText,
       afterText,

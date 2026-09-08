@@ -195,7 +195,7 @@ Exact continuation prompts can skip new injection when working context and retri
 
 With local plugin logging enabled, `inject.recall` records new/retained token estimates, duplicate counts, and bounded reason codes without content or identifiers. These measurements describe hook delivery, not provider usage or answer quality.
 
-Health's collapsed **Automatic recall (advanced)** panel shows durable local duplicate hit rates, estimated injection tokens avoided, and metadata gaps. It summarizes at most the newest 1,000 eligible OpenCode retrieval attempts from the last 30 days, filtered to currently visible selected memories. Only recorded fresh evaluations enter the hit-rate denominator; old clients and failed recording mean unknown coverage, not zero savings. See [measurement definitions and limits](docs/opencode-retained-recall.md#local-measurements).
+Health's collapsed **Automatic recall (advanced)** panel shows durable local duplicate hit rates, estimated injection tokens avoided, and metadata gaps. It summarizes at most the newest 1,000 eligible OpenCode retrieval attempts from the last 30 days, filtered to currently visible selected memories. Only recorded fresh evaluations enter the hit-rate denominator; old clients and failed recording mean unknown coverage, not zero savings. When host IDs are missing, evaluation identity uses local turn information rather than prompt text alone. See [measurement definitions and limits](docs/opencode-retained-recall.md#local-measurements).
 
 The profile response advertises a closed compatibility range from
 `min_supported_protocol_version` through `protocol_version`. OpenCode accepts
