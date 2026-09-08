@@ -60,6 +60,18 @@ describe("connect", () => {
 		expect(mode.toLowerCase()).toBe("wal");
 	});
 
+	it("opens an in-memory database without attempting WAL or warning", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			db = connect(":memory:");
+			const mode = db.pragma("journal_mode", { simple: true }) as string;
+			expect(mode.toLowerCase()).toBe("memory");
+			expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("Failed to enable WAL mode"));
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
 	it("sets busy_timeout to 5000ms", () => {
 		db = connect(join(tmpDir, "test.sqlite"));
 		const timeout = db.pragma("busy_timeout", { simple: true });
