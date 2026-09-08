@@ -346,7 +346,7 @@ function failureEvent(row: DiagnosticSourceRow, includeTechnical: boolean): Orde
 		message: gaveUp
 			? "Processing stopped after all retry attempts were exhausted."
 			: "Processing failed and queued events are waiting for retry.",
-		recovery: { label: "Open observer settings", href: "#settings" },
+		recovery: { label: "Open Health", href: "#health" },
 		technical_detail: technicalDetail(
 			true,
 			`Failure category: ${row.category ?? "unspecified"}. Attempts: ${attempts}.`,

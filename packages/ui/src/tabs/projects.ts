@@ -59,6 +59,7 @@ const projectInventoryByIdentity = new Map<string, ProjectScopeInventoryProject>
 let coordinatorGroupNamesCurrent = false;
 let projectShareInventoryReady = false;
 let projectsLoadGeneration = 0;
+let latestProjectsLoad: Promise<boolean> | null = null;
 let projectsUserNavigationGeneration = 0;
 let teamSetupEntryLoadGeneration = 0;
 let recipientPolicyRepairInFlight: Promise<void> | null = null;
@@ -1557,7 +1558,22 @@ export interface ProjectsDataLoadOptions {
 	requireTeamSetupSummary?: boolean;
 }
 
-export async function loadProjectsData(options: ProjectsDataLoadOptions = {}) {
+export function loadProjectsData(options: ProjectsDataLoadOptions = {}): Promise<boolean> {
+	const operation = loadProjectsDataOperation(options);
+	latestProjectsLoad = operation;
+	return operation;
+}
+
+async function supersededProjectsLoad(
+	options: ProjectsDataLoadOptions,
+	teamSetupSummaryPromise: Promise<TeamSetupSummaryResult> | null,
+): Promise<boolean> {
+	if (!options.requireTeamSetupSummary) return latestProjectsLoad ?? false;
+	await teamSetupSummaryPromise;
+	return false;
+}
+
+async function loadProjectsDataOperation(options: ProjectsDataLoadOptions): Promise<boolean> {
 	const meta = el<HTMLDivElement>("projectsInventoryMeta");
 	const list = el<HTMLDivElement>("projectsInventoryList");
 	if (!meta || !list) {
@@ -1586,11 +1602,10 @@ export async function loadProjectsData(options: ProjectsDataLoadOptions = {}) {
 	recipientPolicyIntentReady = false;
 	updateSelectionControls();
 	meta.textContent = "Loading project inventory…";
+	let teamSetupSummaryPromise: Promise<TeamSetupSummaryResult> | null = null;
 	try {
 		const entryLoadGeneration = ++teamSetupEntryLoadGeneration;
-		const teamSetupSummaryPromise = loadTeamSetupSummaryOnce(
-			options.requireTeamSetupSummary === true,
-		);
+		teamSetupSummaryPromise = loadTeamSetupSummaryOnce(options.requireTeamSetupSummary === true);
 		const [result, settings, shareInventory, recipientPolicyReview, intentResult] =
 			await Promise.all([
 				api.loadProjectScopeInventory({
@@ -1613,8 +1628,7 @@ export async function loadProjectsData(options: ProjectsDataLoadOptions = {}) {
 					.catch((error: unknown) => ({ ok: false as const, error })),
 			]);
 		if (loadGeneration !== projectsLoadGeneration) {
-			if (options.requireTeamSetupSummary) await teamSetupSummaryPromise;
-			return false;
+			return supersededProjectsLoad(options, teamSetupSummaryPromise);
 		}
 		scopes = settings.scopes;
 		projectShareInventoryReady = shareInventory.ok;
@@ -1685,7 +1699,9 @@ export async function loadProjectsData(options: ProjectsDataLoadOptions = {}) {
 			return false;
 		return requiredLoadSucceeded && teamSetupSummary.ok;
 	} catch (error) {
-		if (loadGeneration !== projectsLoadGeneration) return false;
+		if (loadGeneration !== projectsLoadGeneration) {
+			return supersededProjectsLoad(options, teamSetupSummaryPromise);
+		}
 		projectInventoryByIdentity.clear();
 		projectShareInventoryReady = false;
 		recipientPolicyIntentReady = false;

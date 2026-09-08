@@ -29,6 +29,14 @@ export {
 	unarchiveCoordinatorAdminGroup,
 	updateCoordinatorAdminScope,
 } from "./api/coordinator-admin";
+export type {
+	DiagnosticEvent,
+	DiagnosticEventSeverity,
+	DiagnosticEventSubsystem,
+	DiagnosticEventsResponse,
+	DiagnosticRecoveryHref,
+	LoadDiagnosticEventsOptions,
+} from "./api/diagnostics";
 export {
 	forgetMemory,
 	loadMemories,

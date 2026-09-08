@@ -250,6 +250,10 @@ describe("GET /api/diagnostics/events", () => {
 			"maintenance_job_failed",
 		]);
 		expect(body.items.every((event) => event.technical_detail?.text == null)).toBe(true);
+		expect(body.items.find((event) => event.code === "observer_flush_failed")?.recovery).toEqual({
+			label: "Open Health",
+			href: "#health",
+		});
 	});
 
 	it("never returns stored sensitive text, identifiers, or paths", async () => {

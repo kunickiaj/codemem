@@ -535,6 +535,38 @@ describe("Devices app integration", () => {
 		expect(document.getElementById("refreshStatus")?.textContent).not.toContain("updated");
 	});
 
+	it("keeps Projects refresh failed until a later Projects load succeeds", async () => {
+		const { state } = await import("./lib/state");
+		state.activeTab = "projects";
+		mocks.loadProjectsData.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(5_100);
+		});
+		expect(document.getElementById("refreshStatus")?.dataset.refreshState).toBe("error");
+
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(5_100);
+		});
+		expect(document.getElementById("refreshStatus")?.dataset.refreshState).toBe("idle");
+	});
+
+	it("keeps Sharing refresh failed until a later Sharing load succeeds", async () => {
+		const { state } = await import("./lib/state");
+		state.activeTab = "sharing";
+		mocks.loadRecipientPolicySharingData.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(5_100);
+		});
+		expect(document.getElementById("refreshStatus")?.dataset.refreshState).toBe("error");
+
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(5_100);
+		});
+		expect(document.getElementById("refreshStatus")?.dataset.refreshState).toBe("idle");
+	});
+
 	it("uses a fresh Devices inventory instead of accepting cached Sync ownership", async () => {
 		const { state } = await import("./lib/state");
 		state.lastDeviceIdentityInventory = {

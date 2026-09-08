@@ -3248,6 +3248,144 @@
       @media (max-height: 720px) { .modal { align-items: flex-start; } }
       .modal-backdrop[hidden], .modal[hidden] { display: none; }
 
+      /* ── Contextual diagnostics drawer ─────────────────────── */
+      .diagnostics-drawer-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 45;
+        background: rgba(25, 24, 23, 0.42);
+        backdrop-filter: blur(4px);
+        animation: diagnosticsOverlayIn var(--duration-fast) var(--ease-standard);
+      }
+      .diagnostics-drawer {
+        position: fixed;
+        inset: 0 0 0 auto;
+        z-index: 46;
+        width: clamp(420px, 42vw, 640px);
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-3);
+        padding: var(--sp-5);
+        border-left: 1px solid var(--border);
+        background: var(--surface-1);
+        box-shadow: var(--shadow-lg);
+        color: var(--text-primary);
+        animation: diagnosticsDrawerIn var(--duration-fast) var(--ease-standard);
+      }
+      .diagnostics-drawer-header,
+      .diagnostics-secondary-controls,
+      .diagnostics-notice,
+      .diagnostics-event-heading,
+      .diagnostics-event-context {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--sp-3);
+      }
+      .diagnostics-drawer-header { flex-shrink: 0; align-items: flex-start; }
+      .diagnostics-drawer-header h2 { margin: 0; font-size: var(--font-size-2xl); }
+      .diagnostics-drawer-header p { margin-top: var(--sp-1); color: var(--text-secondary); }
+      .diagnostics-controls {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+        gap: var(--sp-2);
+        align-items: end;
+        flex-shrink: 0;
+      }
+      .diagnostics-controls label { display: grid; gap: 5px; color: var(--text-secondary); font-size: var(--font-size-sm); }
+      .diagnostics-controls select {
+        width: 100%;
+        min-height: 36px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        padding: 6px 10px;
+        background: var(--input-bg);
+        color: var(--text-primary);
+      }
+      .diagnostics-controls select:focus-visible,
+      .diagnostics-new-events:focus-visible,
+      .diagnostics-recovery:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+        box-shadow: 0 0 0 4px var(--focus-ring);
+      }
+      .diagnostics-secondary-controls { flex-shrink: 0; }
+      .diagnostics-generated-at,
+      .diagnostics-limit-note,
+      .diagnostics-filter-context { color: var(--text-tertiary); font-size: var(--font-size-sm); }
+      .diagnostics-notice {
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        padding: var(--sp-2) var(--sp-3);
+        background: var(--surface-2);
+        color: var(--text-secondary);
+        flex-shrink: 0;
+      }
+      .diagnostics-notice--error { border-color: color-mix(in srgb, var(--status-attention) 42%, var(--border)); }
+      .diagnostics-new-events {
+        align-self: center;
+        border: 1px solid var(--accent);
+        border-radius: var(--radius-pill);
+        padding: 7px 14px;
+        background: var(--accent-subtle);
+        color: var(--text-primary);
+        cursor: pointer;
+        font: inherit;
+        font-weight: var(--font-weight-semibold);
+      }
+      .diagnostics-event-list { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+      .diagnostics-event-list ul { display: grid; gap: var(--sp-2); margin: 0; padding: 0; list-style: none; }
+      .diagnostics-event {
+        display: grid;
+        gap: var(--sp-2);
+        border: 1px solid var(--border);
+        border-left-width: 3px;
+        border-radius: var(--radius-md);
+        padding: var(--sp-3);
+        background: var(--surface-0);
+      }
+      .diagnostics-event--info { border-left-color: var(--accent); }
+      .diagnostics-event--warning { border-left-color: var(--status-degraded); }
+      .diagnostics-event--error { border-left-color: var(--status-attention); }
+      .diagnostics-event-heading time,
+      .diagnostics-event-context,
+      .diagnostics-event-meta { color: var(--text-tertiary); font-size: var(--font-size-sm); }
+      .diagnostics-event-context { justify-content: flex-start; flex-wrap: wrap; }
+      .diagnostics-event-context span { text-transform: capitalize; }
+      .diagnostics-event p { margin: 0; line-height: 1.5; }
+      .diagnostics-severity { display: inline-flex; align-items: center; gap: 6px; font-weight: var(--font-weight-semibold); }
+      .diagnostics-severity-icon {
+        display: inline-grid;
+        place-items: center;
+        width: 20px;
+        height: 20px;
+        border: 1px solid currentColor;
+        border-radius: 50%;
+        font-weight: var(--font-weight-semibold);
+      }
+      .diagnostics-technical-detail pre,
+      .diagnostics-recovery-command code { white-space: pre-wrap; overflow-wrap: anywhere; }
+      .diagnostics-technical-detail pre { margin: var(--sp-2) 0 0; color: var(--text-secondary); }
+      .diagnostics-recovery { color: var(--accent); font-weight: var(--font-weight-semibold); width: fit-content; }
+      .diagnostics-recovery-command { display: grid; gap: 4px; color: var(--text-secondary); }
+      .diagnostics-empty { display: grid; place-items: center; gap: var(--sp-3); min-height: 220px; text-align: center; color: var(--text-secondary); }
+      .diagnostics-loading { display: grid; gap: var(--sp-2); }
+      .diagnostics-loading-row { display: grid; gap: var(--sp-2); padding: var(--sp-3); border: 1px solid var(--border); border-radius: var(--radius-md); }
+      .diagnostics-loading-row span { height: 10px; border-radius: var(--radius-pill); background: var(--surface-2); animation: pulse var(--duration-pulse) var(--ease-standard) infinite; }
+      .diagnostics-loading-row span:nth-child(2) { width: 64%; }
+      .diagnostics-loading-row span:nth-child(3) { width: 82%; }
+      .diagnostics-load-older { display: block; margin: var(--sp-3) auto 0; }
+      .diagnostics-limit-note { padding: var(--sp-3); text-align: center; }
+      @keyframes diagnosticsOverlayIn { from { opacity: 0; } to { opacity: 1; } }
+      @keyframes diagnosticsDrawerIn { from { transform: translateX(24px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+      @media (max-width: 699px) {
+        .diagnostics-drawer { inset: 0; width: 100vw; padding: var(--sp-4); border-left: 0; }
+        .diagnostics-controls { grid-template-columns: 1fr 1fr; }
+        .diagnostics-controls > button { grid-column: 1 / -1; }
+        .diagnostics-secondary-controls { align-items: flex-start; flex-direction: column; }
+      }
+
       .legacy-upgrade-modal .modal-card { width: min(620px, 100%); }
       .legacy-upgrade-summary {
         padding: var(--sp-3);
@@ -4101,6 +4239,7 @@
     <div id="toastRoot"></div>
     <div id="recipientPolicyManagementMount"></div>
     <div id="legacyTeamSetupMount"></div>
+    <div id="diagnosticsDrawerMount"></div>
     <div class="viewer-reconnect-overlay" id="viewerReconnectOverlay" hidden>
       <div class="viewer-reconnect-card" role="status" aria-live="assertive">
         <div class="viewer-reconnect-eyebrow">Viewer connection</div>
@@ -4374,6 +4513,7 @@
       <div class="card" style="animation-delay: 0s">
         <div class="section-header">
           <h2>System health</h2>
+          <button class="settings-button" id="healthOpenDiagnostics" type="button">View diagnostics</button>
         </div>
         <div class="section-meta" id="healthMeta">Assessing health signals…</div>
         <div class="health-actions" id="healthActions"></div>
@@ -4590,6 +4730,7 @@
             <h2>Sync diagnostics</h2>
           </div>
           <div class="section-actions">
+            <button class="settings-button" id="syncOpenDiagnostics" type="button">Recent sync events</button>
             <label class="small sync-redact-control">
               <span id="syncRedactMount"></span>
               <span id="syncRedactLabel">Redact</span>

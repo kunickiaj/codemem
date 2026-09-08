@@ -10,6 +10,12 @@
 declare const __CODEMEM_GIT_COMMIT__: string;
 
 import { createRecipientPolicySharingLoader } from "./app-sharing";
+import {
+	closeDiagnosticsDrawer,
+	coordinatedRefreshDiagnosticsDrawer,
+	initDiagnosticsEntryPoints,
+	mountDiagnosticsDrawer,
+} from "./components/diagnostics";
 import { mountToastHost } from "./components/primitives/toast";
 import * as api from "./lib/api";
 import type { ProjectScopeInventoryProject } from "./lib/api/sync";
@@ -221,7 +227,7 @@ function setLegacyUpgradeNotice(open: boolean, summary?: LegacyUpgradeReviewSumm
 function maybeShowLegacyUpgradeNotice(summary: LegacyUpgradeReviewSummary | null) {
 	if (!summary || legacyUpgradeNoticeShown || isLegacyUpgradeNoticeDismissed()) return;
 	legacyUpgradeNoticeShown = true;
-	setLegacyUpgradeNotice(true, summary);
+	closeDiagnosticsDrawer(() => setLegacyUpgradeNotice(true, summary));
 }
 
 async function checkLegacyUpgradeNotice() {
@@ -257,6 +263,7 @@ function scheduleReconnectLoop() {
 	if (reconnecting) return;
 	reconnecting = true;
 	stopPolling();
+	closeDiagnosticsDrawer();
 	setRefreshStatus("error", "(reconnecting)");
 	setReconnectOverlay(
 		true,
@@ -703,6 +710,44 @@ $select("projectFilter")?.addEventListener("change", () => {
 
 let refreshDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
+async function loadGlobalRefreshData(): Promise<void> {
+	await Promise.all([
+		loadHealthData(),
+		loadConfigData(),
+		coordinatedRefreshDiagnosticsDrawer().catch(() => undefined),
+	]);
+}
+
+function appendTabRefreshTasks(
+	promises: Promise<unknown>[],
+	refreshTab: TabId,
+	recordBooleanResult: (succeeded: boolean) => void,
+): void {
+	if (refreshTab === "feed") {
+		const coordinatorGeneration = beginStandaloneCoordinatorAdminStatusRefresh();
+		promises.push(
+			refreshCoordinatorAdminStatusForGeneration(coordinatorGeneration),
+			loadFeedData(),
+		);
+	}
+	if (refreshTab === "projects") {
+		promises.push(loadProjectsData().then(recordBooleanResult));
+	}
+	if (refreshTab === "sharing") {
+		promises.push(loadRecipientPolicySharingData().then(recordBooleanResult));
+	}
+	if (refreshTab === "devices") {
+		promises.push(loadDevicesData().then(recordBooleanResult));
+	}
+	if ((refreshTab === "advanced" && state.advancedSection === "sync") || refreshTab === "health") {
+		promises.push(loadSyncData());
+	}
+	if (refreshTab === "advanced" && state.advancedSection === "teams") {
+		promises.push(loadCoordinatorAdminData());
+	}
+	if (state.syncPairingOpen) promises.push(loadPairingData());
+}
+
 async function refresh() {
 	if (reconnecting) return;
 	// Debounce rapid calls (tab switch + hash change + visibility)
@@ -720,50 +765,12 @@ async function doRefresh() {
 
 	try {
 		setRefreshStatus("refreshing");
-
 		const refreshTab = state.activeTab;
-
-		// Always load health data (for the header health dot) and config
-		const promises: Promise<unknown>[] = [loadHealthData(), loadConfigData()];
-		let devicesRefreshSucceeded = true;
-		if (refreshTab === "feed") {
-			const coordinatorGeneration = beginStandaloneCoordinatorAdminStatusRefresh();
-			promises.push(refreshCoordinatorAdminStatusForGeneration(coordinatorGeneration));
-		}
-
-		// Load tab-specific data
-		if (refreshTab === "feed") {
-			promises.push(loadFeedData());
-		}
-		if (refreshTab === "projects") {
-			promises.push(loadProjectsData());
-		}
-		if (refreshTab === "sharing") {
-			promises.push(loadRecipientPolicySharingData());
-		}
-		if (refreshTab === "devices") {
-			promises.push(
-				loadDevicesData().then((succeeded) => {
-					devicesRefreshSucceeded = succeeded;
-				}),
-			);
-		}
-		// Sync data is needed by Advanced Sync and Health (health cards derive sync state).
-		if (
-			(refreshTab === "advanced" && state.advancedSection === "sync") ||
-			refreshTab === "health"
-		) {
-			promises.push(loadSyncData());
-		}
-		if (refreshTab === "advanced" && state.advancedSection === "teams") {
-			promises.push(loadCoordinatorAdminData());
-		}
-
-		// Load pairing if open
-		if (state.syncPairingOpen) {
-			promises.push(loadPairingData());
-		}
-
+		const promises: Promise<unknown>[] = [loadGlobalRefreshData()];
+		let activeTabRefreshSucceeded = true;
+		appendTabRefreshTasks(promises, refreshTab, (succeeded) => {
+			activeTabRefreshSucceeded = activeTabRefreshSucceeded && succeeded;
+		});
 		await Promise.all(promises);
 		maybeShowLegacyUpgradeNotice(readLegacyUpgradeReviewSummary(state.lastSyncLegacySharedReview));
 		const nextTab = resolveAccessibleTab(state.activeTab, state.lastCoordinatorAdminStatus);
@@ -771,7 +778,7 @@ async function doRefresh() {
 			setActiveTab(nextTab);
 		}
 		renderTabs(state.activeTab);
-		setRefreshStatus(devicesRefreshSucceeded ? "idle" : "error");
+		setRefreshStatus(activeTabRefreshSucceeded ? "idle" : "error");
 	} catch {
 		const ready = await isViewerReady();
 		if (!ready) {
@@ -795,6 +802,8 @@ initState();
 // Toast host — mount first so early notices (from tab init etc.) land.
 const toastRoot = document.getElementById("toastRoot");
 if (toastRoot) mountToastHost(toastRoot);
+const diagnosticsDrawerRoot = document.getElementById("diagnosticsDrawerMount");
+if (diagnosticsDrawerRoot) mountDiagnosticsDrawer(diagnosticsDrawerRoot);
 const legacyTeamSetupRoot = document.getElementById("legacyTeamSetupMount");
 if (legacyTeamSetupRoot) {
 	mountLegacyTeamSetupDialog(legacyTeamSetupRoot, {
@@ -824,6 +833,7 @@ initTabs();
 // Tab modules
 initFeedTab();
 initHealthTab();
+initDiagnosticsEntryPoints();
 initProjectsTab(() => refresh(), { onOpenTeamSetup: openLegacyTeamSetup });
 initSyncTab(() => refresh());
 initCoordinatorAdminTab();

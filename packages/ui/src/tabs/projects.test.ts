@@ -247,86 +247,87 @@ async function flushAsyncWork() {
 	}
 }
 
-describe("Projects tab", () => {
-	beforeEach(() => {
-		mountProjectsDom();
-		state.lastProjectCoordinatorAdminGroups = [
-			{ archived_at: null, display_name: "ExampleCo Team", group_id: "exampleco" },
-		];
-		vi.mocked(api.loadCoordinatorAdminStatus).mockResolvedValue({
-			has_admin_secret: true,
-			readiness: "ready",
-		});
-		vi.mocked(api.loadCoordinatorAdminGroupsFiltered).mockResolvedValue({
-			items: [{ archived_at: null, display_name: "ExampleCo Team", group_id: "exampleco" }],
-		});
-		vi.mocked(api.loadSharingDomainSettings).mockResolvedValue({
-			local_default_scope_id: "local-default",
-			mappings: [],
-			projects: [],
-			scopes: [
-				{
-					authority_type: "local",
-					kind: "system",
-					label: "Local only",
-					scope_id: "local-default",
-					status: "active",
-				},
-				{
-					authority_type: "local",
-					kind: "system",
-					label: "Legacy shared review",
-					scope_id: "legacy-shared-review",
-					status: "active",
-				},
-				{
-					authority_type: "coordinator",
-					group_id: "exampleco",
-					kind: "team_default",
-					label: "ExampleCo Work",
-					scope_id: "exampleco-work",
-					status: "active",
-				},
-			],
-		});
-		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue({
-			blockedItems: [],
-			categoryCounts: {
-				actionableReview: 0,
-				preservedContinuity: 0,
-				blockedRepair: 0,
-			},
-			continuity: null,
-			reviewItems: [],
-			version: 1,
-		});
-		vi.mocked(api.loadRecipientPolicyIntent).mockResolvedValue(recipientIntent());
-		vi.mocked(api.loadLegacyTeamSetupSummary).mockResolvedValue({ version: 1, candidates: [] });
-		vi.mocked(api.resolveRecipientPolicyReview).mockResolvedValue({
-			errorCode: null,
-			idempotent: false,
-			reviewItemId: "review-1",
-			sourceFingerprint: "fingerprint-1",
-			status: "applied",
-		});
-		vi.mocked(api.loadProjects).mockResolvedValue(["api", "codemem"]);
-		vi.mocked(api.reassignProjectInventoryProject).mockResolvedValue({
-			moved_memory_count: 1,
-			moved_session_count: 1,
-			previous_projects: ["api"],
-			project: "codemem",
-			workspace_identity: "https://git.example.invalid/exampleco/api.git",
-		});
-		vi.mocked(api.forgetProjectInventoryMemories).mockResolvedValue({
-			confirmation_token: "token",
-			confirmed: true,
-			forgotten_memory_count: 1,
-			local_owned_memory_count: 1,
-			peer_owned_memory_count: 0,
-			workspace_identity: "https://git.example.invalid/exampleco/api.git",
-		});
+function setupProjectsTest() {
+	mountProjectsDom();
+	state.lastProjectCoordinatorAdminGroups = [
+		{ archived_at: null, display_name: "ExampleCo Team", group_id: "exampleco" },
+	];
+	vi.mocked(api.loadCoordinatorAdminStatus).mockResolvedValue({
+		has_admin_secret: true,
+		readiness: "ready",
 	});
+	vi.mocked(api.loadCoordinatorAdminGroupsFiltered).mockResolvedValue({
+		items: [{ archived_at: null, display_name: "ExampleCo Team", group_id: "exampleco" }],
+	});
+	vi.mocked(api.loadSharingDomainSettings).mockResolvedValue({
+		local_default_scope_id: "local-default",
+		mappings: [],
+		projects: [],
+		scopes: [
+			{
+				authority_type: "local",
+				kind: "system",
+				label: "Local only",
+				scope_id: "local-default",
+				status: "active",
+			},
+			{
+				authority_type: "local",
+				kind: "system",
+				label: "Legacy shared review",
+				scope_id: "legacy-shared-review",
+				status: "active",
+			},
+			{
+				authority_type: "coordinator",
+				group_id: "exampleco",
+				kind: "team_default",
+				label: "ExampleCo Work",
+				scope_id: "exampleco-work",
+				status: "active",
+			},
+		],
+	});
+	vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue({
+		blockedItems: [],
+		categoryCounts: {
+			actionableReview: 0,
+			preservedContinuity: 0,
+			blockedRepair: 0,
+		},
+		continuity: null,
+		reviewItems: [],
+		version: 1,
+	});
+	vi.mocked(api.loadRecipientPolicyIntent).mockResolvedValue(recipientIntent());
+	vi.mocked(api.loadLegacyTeamSetupSummary).mockResolvedValue({ version: 1, candidates: [] });
+	vi.mocked(api.resolveRecipientPolicyReview).mockResolvedValue({
+		errorCode: null,
+		idempotent: false,
+		reviewItemId: "review-1",
+		sourceFingerprint: "fingerprint-1",
+		status: "applied",
+	});
+	vi.mocked(api.loadProjects).mockResolvedValue(["api", "codemem"]);
+	vi.mocked(api.reassignProjectInventoryProject).mockResolvedValue({
+		moved_memory_count: 1,
+		moved_session_count: 1,
+		previous_projects: ["api"],
+		project: "codemem",
+		workspace_identity: "https://git.example.invalid/exampleco/api.git",
+	});
+	vi.mocked(api.forgetProjectInventoryMemories).mockResolvedValue({
+		confirmation_token: "token",
+		confirmed: true,
+		forgotten_memory_count: 1,
+		local_owned_memory_count: 1,
+		peer_owned_memory_count: 0,
+		workspace_identity: "https://git.example.invalid/exampleco/api.git",
+	});
+}
 
+describe("Projects tab", () => {
+	beforeEach(setupProjectsTest);
 	afterEach(() => {
 		vi.clearAllMocks();
 		state.lastProjectCoordinatorAdminGroups = [];
@@ -1954,6 +1955,56 @@ describe("Projects tab", () => {
 			[],
 			{ inventoryError: true },
 		);
+	});
+
+	it("reports the newer successful result when an older overlapping load fails", async () => {
+		let rejectOlder!: (reason?: unknown) => void;
+		const inventory = {
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [project()],
+			total: 1,
+		};
+		vi.mocked(api.loadProjectScopeInventory)
+			.mockImplementationOnce(
+				() => new Promise<ProjectScopeInventoryResult>((_, reject) => (rejectOlder = reject)),
+			)
+			.mockResolvedValue(inventory);
+
+		const olderLoad = loadProjectsData();
+		await vi.waitFor(() => expect(api.loadProjectScopeInventory).toHaveBeenCalledTimes(2));
+		const newerLoad = loadProjectsData();
+
+		await expect(newerLoad).resolves.toBe(true);
+		rejectOlder(new Error("older load failed"));
+		await expect(olderLoad).resolves.toBe(true);
+	});
+
+	it("reports the newer failed result when an older overlapping load succeeds", async () => {
+		let resolveOlder!: (value: ProjectScopeInventoryResult) => void;
+		const inventory = {
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [project()],
+			total: 1,
+		};
+		vi.mocked(api.loadProjectScopeInventory)
+			.mockImplementationOnce(
+				() => new Promise<ProjectScopeInventoryResult>((resolve) => (resolveOlder = resolve)),
+			)
+			.mockResolvedValueOnce(inventory)
+			.mockRejectedValueOnce(new Error("newer load failed"))
+			.mockResolvedValue(inventory);
+
+		const olderLoad = loadProjectsData();
+		await vi.waitFor(() => expect(api.loadProjectScopeInventory).toHaveBeenCalledTimes(2));
+		const newerLoad = loadProjectsData();
+
+		await expect(newerLoad).resolves.toBe(false);
+		resolveOlder(inventory);
+		await expect(olderLoad).resolves.toBe(false);
 	});
 
 	it("does not reuse cached repair targets after an inventory load fails", async () => {

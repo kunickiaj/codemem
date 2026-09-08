@@ -10,8 +10,11 @@ export function payloadError(payload: unknown): string | undefined {
 	return typeof maybeError === "string" ? maybeError : undefined;
 }
 
-export async function fetchJson<T = Record<string, unknown>>(url: string): Promise<T> {
-	const resp = await fetch(url);
+export async function fetchJson<T = Record<string, unknown>>(
+	url: string,
+	init?: RequestInit,
+): Promise<T> {
+	const resp = init ? await fetch(url, init) : await fetch(url);
 	if (!resp.ok) throw new Error(`${url}: ${resp.status} ${resp.statusText}`);
 	return resp.json() as Promise<T>;
 }
