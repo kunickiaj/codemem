@@ -50,6 +50,7 @@ export interface RecentPack {
 }
 
 export interface CachedStatsPayload {
+	automatic_recall?: unknown;
 	identity?: { actor_id?: string };
 	database?: {
 		path?: string;

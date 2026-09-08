@@ -1,7 +1,13 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildMemoryPackWithTrace, connect, getRetrievalAttempt, MemoryStore } from "@codemem/core";
+import {
+	automaticRecallHealth,
+	buildMemoryPackWithTrace,
+	connect,
+	getRetrievalAttempt,
+	MemoryStore,
+} from "@codemem/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { initTestSchema, insertTestSession } from "../../../core/src/test-utils.js";
 import {
@@ -14,24 +20,134 @@ function id(sequence: number): string {
 	return `018f2db4-f9d3-7a22-8d18-${sequence.toString(16).padStart(12, "0")}`;
 }
 
+let directory: string;
+let store: MemoryStore;
+
+beforeEach(() => {
+	directory = mkdtempSync(join(tmpdir(), "codemem-cli-pack-ledger-"));
+	const path = join(directory, "test.sqlite");
+	const db = connect(path);
+	initTestSchema(db);
+	db.close();
+	store = new MemoryStore(path);
+});
+
+afterEach(() => {
+	store.close();
+	rmSync(directory, { recursive: true, force: true });
+});
+
+it("enriches the same local ledger through CLI delivery with retry-safe measurements", () => {
+	const sessionId = insertTestSession(store.db);
+	store.remember(sessionId, "decision", "CLI measured candidate", "bounded body", 0.9);
+	const artifacts = buildMemoryPackWithTrace(store, "CLI measured candidate", 10);
+	handleInstrumentedPackLedger(
+		store.db,
+		{ attempt_id: id(10), source: "opencode", request_id: "measurement" },
+		"CLI measured candidate",
+		{},
+		artifacts,
+	);
+	const tokens = Math.ceil(`[codemem context]\n${artifacts.response.pack_text}`.length / 4);
+	const payload = parseInternalLedgerPayload(
+		JSON.stringify({
+			action: "delivery",
+			attempt_id: id(10),
+			delivery_status: "handed_off",
+			evaluation_key: "c".repeat(64),
+			automatic_recall: {
+				v: 1,
+				candidateItems: artifacts.response.metrics.total_items,
+				duplicatesOmitted: 0,
+				beforeTokens: tokens,
+				afterTokens: tokens,
+				missingRetainedMetadata: true,
+				invalidRetainedMetadata: false,
+				packMetadata: "missing",
+			},
+		}),
+	);
+	handlePromptPackLedger(store.db, payload);
+	const dbPath = store.dbPath;
+	store.close();
+	store = new MemoryStore(dbPath);
+	handlePromptPackLedger(store.db, payload);
+	expect(
+		automaticRecallHealth(store.db, { actorId: store.actorId, deviceId: store.deviceId }),
+	).toMatchObject({
+		freshEvaluations: 1,
+		estimatedTokensAvoided: 0,
+		missingRetainedMetadata: 1,
+		packMetadataGaps: 1,
+	});
+	expect(
+		handlePromptPackLedger(store.db, {
+			...payload,
+			automatic_recall: { raw_memory: "private" },
+		}),
+	).toMatchObject({ changed: false });
+	expect(getRetrievalAttempt(store.db, id(10))).toMatchObject({ deliveryStatus: "handed_off" });
+	expect(() =>
+		handlePromptPackLedger(store.db, {
+			...payload,
+			action: "recall",
+			automatic_recall: { raw_memory: "private" },
+		}),
+	).toThrow("invalid automatic recall");
+});
+
+it("keeps valid delivery receipts when recall diagnostics reject or storage fails", () => {
+	const sessionId = insertTestSession(store.db);
+	store.remember(sessionId, "decision", "Best effort diagnostics", "bounded body", 0.9);
+	const artifacts = buildMemoryPackWithTrace(store, "Best effort diagnostics", 10);
+	const recordAttempt = (sequence: number) => {
+		handleInstrumentedPackLedger(
+			store.db,
+			{ attempt_id: id(sequence), source: "opencode", request_id: `diagnostic-${sequence}` },
+			"Best effort diagnostics",
+			{},
+			artifacts,
+		);
+	};
+	recordAttempt(11);
+	const rejected = {
+		action: "delivery" as const,
+		attempt_id: id(11),
+		delivery_status: "handed_off" as const,
+		evaluation_key: "d".repeat(64),
+		automatic_recall: {
+			v: 1,
+			candidateItems: 50,
+			duplicatesOmitted: 0,
+			beforeTokens: 0,
+			afterTokens: 0,
+			missingRetainedMetadata: false,
+			invalidRetainedMetadata: false,
+			packMetadata: "valid",
+		},
+	};
+	expect(handlePromptPackLedger(store.db, rejected)).toMatchObject({ changed: true });
+
+	recordAttempt(12);
+	store.db.exec("ALTER TABLE retrieval_attempts DROP COLUMN automatic_recall_json");
+	expect(
+		handlePromptPackLedger(store.db, {
+			...rejected,
+			attempt_id: id(12),
+			evaluation_key: "e".repeat(64),
+		}),
+	).toMatchObject({ changed: true });
+	expect(
+		store.db
+			.prepare("SELECT delivery_status FROM retrieval_attempts WHERE attempt_id = ?")
+			.get(id(12)),
+	).toEqual({ delivery_status: "handed_off" });
+	expect(() =>
+		handlePromptPackLedger(store.db, { ...rejected, delivery_status: "not_attempted" as never }),
+	).toThrow("invalid_input");
+});
+
 describe("prompt-pack ledger transport", () => {
-	let directory: string;
-	let store: MemoryStore;
-
-	beforeEach(() => {
-		directory = mkdtempSync(join(tmpdir(), "codemem-cli-pack-ledger-"));
-		const path = join(directory, "test.sqlite");
-		const db = connect(path);
-		initTestSchema(db);
-		db.close();
-		store = new MemoryStore(path);
-	});
-
-	afterEach(() => {
-		store.close();
-		rmSync(directory, { recursive: true, force: true });
-	});
-
 	it("handles failure recording, successful delivery retry, and cache reuse", () => {
 		const record = parseInternalLedgerPayload(
 			JSON.stringify({

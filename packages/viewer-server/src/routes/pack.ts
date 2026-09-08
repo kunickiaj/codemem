@@ -1,5 +1,6 @@
 import { isAbsolute, posix, resolve as resolvePath, win32 } from "node:path";
 import type {
+	AutomaticRecallWriteOutcome,
 	MemoryFilters,
 	MemoryStore,
 	PackRenderOptions,
@@ -10,8 +11,10 @@ import type {
 } from "@codemem/core";
 import {
 	clonePromptPackAttempt,
+	isAutomaticRecallMeasurement,
 	PROMPT_TRANSPORT_PROTOCOL_RANGE,
 	promptPackArtifactFingerprint,
+	recordAutomaticRecall,
 	recordPromptPackArtifacts,
 	recordPromptPackTerminal,
 	resolveProject,
@@ -21,7 +24,10 @@ import { Hono } from "hono";
 import { currentIdentityTarget, validateViewerTarget } from "./target-validation.js";
 
 type StoreFactory = () => MemoryStore;
-type LedgerOutcome = RetrievalLedgerWriteOutcome | RetrievalLedgerDeliveryOutcome;
+type LedgerOutcome =
+	| RetrievalLedgerWriteOutcome
+	| RetrievalLedgerDeliveryOutcome
+	| AutomaticRecallWriteOutcome;
 
 const MAX_LEDGER_PAYLOAD_BYTES = 16 * 1024;
 const MAX_METADATA_FIELD_CHARS = 512;
@@ -44,6 +50,8 @@ const PACK_KEYS = new Set([
 	"attempt",
 ]);
 const LEDGER_KEYS = new Set([
+	"automatic_recall",
+	"evaluation_key",
 	"action",
 	"attempt_id",
 	"started_at",
@@ -294,11 +302,48 @@ function ledgerFailureStatus(reason: RetrievalLedgerFailureReason): 400 | 409 | 
 	return 400;
 }
 
+function dispatchRecallMeasurement(
+	store: MemoryStore,
+	payload: Record<string, unknown>,
+): AutomaticRecallWriteOutcome | string | null {
+	const action = payload.action;
+	if (payload.automatic_recall === undefined && action !== "recall") return null;
+	const isValidMeasurement =
+		isAutomaticRecallMeasurement(payload.automatic_recall) &&
+		typeof payload.evaluation_key === "string" &&
+		/^[a-f0-9]{64}$/.test(payload.evaluation_key);
+	if (action === "delivery") {
+		if (!isValidMeasurement) return null;
+		try {
+			recordAutomaticRecall(
+				store.db,
+				payload.attempt_id as string,
+				payload.evaluation_key,
+				payload.automatic_recall,
+			);
+		} catch {
+			// Delivery diagnostics are best-effort; dispatchLedger still validates the receipt.
+		}
+		return null;
+	}
+	if (action !== "recall" || !isValidMeasurement) {
+		return "invalid automatic recall measurement";
+	}
+	return recordAutomaticRecall(
+		store.db,
+		payload.attempt_id as string,
+		payload.evaluation_key,
+		payload.automatic_recall,
+	);
+}
+
 function dispatchLedger(
 	store: MemoryStore,
 	payload: Record<string, unknown>,
 ): LedgerOutcome | string {
 	const action = payload.action;
+	const measurement = dispatchRecallMeasurement(store, payload);
+	if (measurement !== null) return measurement;
 	if (action !== "record" && action !== "delivery" && action !== "cache_reuse") {
 		return "ledger action is invalid";
 	}

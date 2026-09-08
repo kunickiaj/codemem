@@ -600,7 +600,7 @@ describe("retrieval attribution ledger", () => {
 				)
 				.pluck()
 				.get(),
-		).toBe(7);
+		).toBe(8);
 		expect(
 			db
 				.prepare(

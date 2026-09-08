@@ -195,12 +195,13 @@ Exact continuation prompts can skip new injection when working context and retri
 
 With local plugin logging enabled, `inject.recall` records new/retained token estimates, duplicate counts, and bounded reason codes without content or identifiers. These measurements describe hook delivery, not provider usage or answer quality.
 
+Health's collapsed **Automatic recall (advanced)** panel shows durable local duplicate hit rates, estimated injection tokens avoided, and metadata gaps. It summarizes at most the newest 1,000 eligible OpenCode retrieval attempts from the last 30 days, filtered to currently visible selected memories. Only recorded fresh evaluations enter the hit-rate denominator; old clients and failed recording mean unknown coverage, not zero savings. See [measurement definitions and limits](docs/opencode-retained-recall.md#local-measurements).
+
 The profile response advertises a closed compatibility range from
 `min_supported_protocol_version` through `protocol_version`. OpenCode accepts
 overlapping ranges, including legacy single-version profiles. Database/runtime
 identity mismatch falls back locally once without reading or retrying that Viewer.
-Validated request, policy, authorization, and `viewer_contract_unsupported`
-failures after a compatible handshake fail closed without a CLI child.
+Validated request, policy, and authorization failures after a compatible handshake fail closed without a CLI child. A delivery receipt rejected specifically as `viewer_contract_unsupported` retries once against the same Viewer without optional measurement fields; other contract failures remain terminal.
 
 **Memories** are typed — `bugfix`, `feature`, `refactor`, `change`, `discovery`, `decision`, `exploration` — with structured fields like `facts`, `concepts`, `files_read`, and `files_modified` that improve retrieval relevance. Low-signal events are filtered at multiple layers before persistence.
 

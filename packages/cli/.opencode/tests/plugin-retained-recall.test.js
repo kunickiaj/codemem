@@ -190,7 +190,7 @@ describe("retained automatic recall lifecycle", () => {
     expect(records.size).toBe(1);
     expect(records.get("attempt").status).toBe("unknown");
     expect(recordSkipped).not.toHaveBeenCalled();
-    expect(confirmDelivery).toHaveBeenCalledExactlyOnceWith("attempt", "unknown");
+    expect(confirmDelivery).toHaveBeenCalledExactlyOnceWith("attempt", "unknown", undefined);
   });
 
   test.each([undefined, "", "0", "-1", "1.5", "8000oops", "Infinity", "9007199254740992"])("uses retained default for invalid value %s", (value) => {
@@ -366,14 +366,18 @@ describe("retained automatic recall lifecycle", () => {
     const second = user("one");
     const requests = [apply(options, [first]), apply(options, [second])];
     await vi.waitFor(() => expect(releases).toHaveLength(2));
+    const winnerEvaluation = { evaluation_key: "winner" };
+    const losingEvaluation = { evaluation_key: "loser" };
     releases[0]({
       text: "[codemem context]\nfirst",
       attemptId: "winner-attempt",
+      evaluation: winnerEvaluation,
     });
     await requests[0];
     releases[1]({
       text: "[codemem context]\nsecond",
       attemptId: "losing-attempt",
+      evaluation: losingEvaluation,
       duplicates: 2,
     });
     await requests[1];
@@ -388,9 +392,10 @@ describe("retained automatic recall lifecycle", () => {
     expect(confirmDelivery).toHaveBeenCalledWith(
       "winner-attempt",
       "handed_off",
+      winnerEvaluation,
     );
     expect(confirmDelivery).toHaveBeenCalledWith("replay-attempt");
-    expect(confirmDelivery).toHaveBeenCalledWith("losing-attempt", "unknown");
+    expect(confirmDelivery).toHaveBeenCalledWith("losing-attempt", "unknown", losingEvaluation);
   });
 
   test("rejects an oversized backend result without changing history", async () => {
@@ -404,6 +409,6 @@ describe("retained automatic recall lifecycle", () => {
     await apply(options, [entry]);
     expect(entry.parts).toHaveLength(1);
     expect(options.messageInjectionCache.get("session").size).toBe(0);
-    expect(confirmDelivery).toHaveBeenCalledExactlyOnceWith("rejected-attempt", "failed");
+    expect(confirmDelivery).toHaveBeenCalledExactlyOnceWith("rejected-attempt", "failed", undefined);
   });
 });

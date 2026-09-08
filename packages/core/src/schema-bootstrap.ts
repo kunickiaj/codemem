@@ -95,6 +95,8 @@ CREATE TABLE IF NOT EXISTS retrieval_attempts (
 	failure_code TEXT,
 	failure_stage TEXT,
 	trace_version INTEGER,
+	automatic_recall_json TEXT,
+	automatic_recall_key TEXT,
 	retention_until TEXT,
 	retention_pinned INTEGER NOT NULL DEFAULT 0,
 	retention_finalized_at TEXT
@@ -973,6 +975,8 @@ function ensureRetrievalAttemptColumns(db: Database): void {
 		["evaluation_fixture_id", "TEXT"],
 		["evaluation_seed", "INTEGER"],
 		["retention_finalized_at", "TEXT"],
+		["automatic_recall_json", "TEXT"],
+		["automatic_recall_key", "TEXT"],
 	] as const) {
 		const exists = db
 			.prepare("SELECT 1 FROM pragma_table_info('retrieval_attempts') WHERE name = ? LIMIT 1")
@@ -981,6 +985,9 @@ function ensureRetrievalAttemptColumns(db: Database): void {
 			db.exec(`ALTER TABLE retrieval_attempts ADD COLUMN ${name} ${definition}`);
 		}
 	}
+	db.exec(
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_retrieval_attempts_automatic_recall_key ON retrieval_attempts(automatic_recall_key)",
+	);
 }
 
 function ensureOutcomeEvidenceColumns(db: Database): void {

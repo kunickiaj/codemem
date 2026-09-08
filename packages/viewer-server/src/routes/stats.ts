@@ -5,6 +5,7 @@
  */
 
 import {
+	automaticRecallHealth,
 	buildFilterClausesWithContext,
 	listMaintenanceJobs,
 	type MemoryStore,
@@ -379,7 +380,7 @@ export function statsRoutes(getStore: () => MemoryStore) {
 			error: job.error,
 		}));
 		return c.json({
-			...store.stats(),
+			...healthStats(store),
 			viewer_pid: process.pid,
 			maintenance_jobs: surfacedJobs,
 		});
@@ -481,6 +482,16 @@ export function statsRoutes(getStore: () => MemoryStore) {
 	});
 
 	return app;
+}
+
+function healthStats(store: MemoryStore) {
+	return {
+		...store.stats(),
+		automatic_recall: automaticRecallHealth(store.db, {
+			actorId: store.actorId,
+			deviceId: store.deviceId,
+		}),
+	};
 }
 
 /**

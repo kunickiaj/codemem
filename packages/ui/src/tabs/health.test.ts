@@ -5,6 +5,7 @@ import type { UpdateStatus } from "../lib/api";
 import * as api from "../lib/api";
 import { state } from "../lib/state";
 import { renderHealthOverview } from "./health";
+import { renderAutomaticRecall } from "./health/components";
 import { loadHealthData } from "./health/lifecycle";
 
 vi.mock("../components/primitives/tooltip", () => ({
@@ -63,6 +64,75 @@ afterEach(() => {
 		if (element) act(() => render(null, element));
 	}
 	document.body.innerHTML = "";
+});
+
+describe("Automatic recall disclosure", () => {
+	const stats = {
+		availability: "available",
+		periodStart: "2026-08-08T12:00:00.000Z",
+		periodEnd: "2026-09-07T12:00:00.000Z",
+		windowLimit: 1000,
+		captureVersion: "opencode-retained-v1",
+		freshEvaluations: 4,
+		evaluationsWithDuplicates: 1,
+		candidateItems: 8,
+		duplicatesOmitted: 2,
+		beforeTokens: 100,
+		afterTokens: 60,
+		estimatedTokensAvoided: 40,
+		missingRetainedMetadata: 1,
+		invalidRetainedMetadata: 0,
+		packMetadataGaps: 0,
+		unmeasuredAttempts: 2,
+	};
+	function draw(payload: unknown) {
+		const container = document.getElementById("healthGrid");
+		act(() => renderAutomaticRecall(container, payload));
+		return container as HTMLElement;
+	}
+	it("starts collapsed with native keyboard disclosure and explicit denominator and period", () => {
+		const container = draw(stats);
+		const details = container.querySelector("details") as HTMLDetailsElement;
+		expect(details.open).toBe(false);
+		expect(details.querySelector("summary")?.textContent).toBe("Automatic recall (advanced)");
+		expect(details.querySelector("section")?.getAttribute("aria-label")).toBe(
+			"Automatic recall measurements",
+		);
+		expect(container.textContent).toContain("1 / 4 fresh evaluations (25.0%)");
+		expect(container.textContent).toContain(stats.periodStart);
+		details.open = true;
+		draw({ ...stats, unmeasuredAttempts: 3 });
+		expect(details.open).toBe(true);
+	});
+	it("distinguishes an empty window from zero measured savings", () => {
+		const empty = Object.fromEntries(
+			Object.entries(stats).map(([key, value]) => [
+				key,
+				typeof value === "number" && key !== "windowLimit" ? 0 : value,
+			]),
+		);
+		expect(draw({ ...empty, availability: "no_data" }).textContent).toContain(
+			"Savings are unknown, not zero",
+		);
+		expect(
+			draw({
+				...stats,
+				evaluationsWithDuplicates: 0,
+				duplicatesOmitted: 0,
+				afterTokens: 100,
+				estimatedTokensAvoided: 0,
+			}).textContent,
+		).toContain("0 / 4 fresh evaluations (0.0%)");
+	});
+	it.each([
+		undefined,
+		{},
+		{ ...stats, freshEvaluations: -1 },
+		{ ...stats, estimatedTokensAvoided: 999 },
+		{ ...stats, periodStart: "invalid" },
+	])("fails closed for absent or invalid stats", (payload) => {
+		expect(draw(payload).textContent).toContain("Measurements unavailable");
+	});
 });
 
 describe("Health update banner", () => {

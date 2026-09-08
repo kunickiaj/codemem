@@ -88,6 +88,7 @@ describe("Viewer prompt transport failure classification", () => {
       compatibleProfile: true,
     })).toMatchObject({
       disposition: "terminal",
+      kind: "viewer_contract_unsupported",
       retryable: false,
     });
   });

@@ -307,12 +307,15 @@ export const retrievalAttempts = sqliteTable(
 		failure_code: text("failure_code"),
 		failure_stage: text("failure_stage"),
 		trace_version: integer("trace_version"),
+		automatic_recall_json: text("automatic_recall_json"),
+		automatic_recall_key: text("automatic_recall_key"),
 		retention_until: text("retention_until"),
 		retention_pinned: integer("retention_pinned").notNull().default(0),
 		retention_finalized_at: text("retention_finalized_at"),
 	},
 	(table) => [
 		index("idx_retrieval_attempts_session_started").on(table.session_id, table.started_at),
+		uniqueIndex("idx_retrieval_attempts_automatic_recall_key").on(table.automatic_recall_key),
 		index("idx_retrieval_attempts_source_stream_started").on(
 			table.source,
 			table.stream_id,

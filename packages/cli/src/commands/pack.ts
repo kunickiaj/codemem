@@ -10,8 +10,10 @@ import type {
 } from "@codemem/core";
 import {
 	clonePromptPackAttempt,
+	isAutomaticRecallMeasurement,
 	MemoryStore,
 	promptPackArtifactFingerprint,
+	recordAutomaticRecall,
 	recordPromptPackArtifacts,
 	recordPromptPackTerminal,
 	resolveDbPath,
@@ -58,7 +60,9 @@ const FORBIDDEN_INTERNAL_KEYS = new Set([
 ]);
 
 export type InternalLedgerPayload = {
-	action?: "record" | "delivery" | "cache_reuse";
+	action?: "record" | "delivery" | "cache_reuse" | "recall";
+	automatic_recall?: unknown;
+	evaluation_key?: string;
 	attempt_id: string;
 	started_at?: string;
 	source?: string;
@@ -74,6 +78,8 @@ export type InternalLedgerPayload = {
 };
 
 const INTERNAL_LEDGER_KEYS = new Set([
+	"automatic_recall",
+	"evaluation_key",
 	"action",
 	"attempt_id",
 	"started_at",
@@ -88,7 +94,7 @@ const INTERNAL_LEDGER_KEYS = new Set([
 	"failure_stage",
 	"original_attempt_id",
 ]);
-const INTERNAL_LEDGER_ACTIONS = new Set(["record", "delivery", "cache_reuse"]);
+const INTERNAL_LEDGER_ACTIONS = new Set(["record", "delivery", "cache_reuse", "recall"]);
 const INTERNAL_RETRIEVAL_STATUSES = new Set(["skipped", "failed"]);
 const INTERNAL_DELIVERY_STATUSES = new Set(["handed_off", "failed", "unknown"]);
 
@@ -456,7 +462,47 @@ packCmd.addCommand(traceCmd);
 
 export const packCommand = packCmd;
 
+function handleRecallMeasurement(
+	db: Database,
+	payload: InternalLedgerPayload,
+): { changed: boolean } | null {
+	if (payload.automatic_recall === undefined && payload.action !== "recall") return null;
+	const isValidMeasurement =
+		isAutomaticRecallMeasurement(payload.automatic_recall) &&
+		typeof payload.evaluation_key === "string" &&
+		/^[a-f0-9]{64}$/.test(payload.evaluation_key);
+	if (payload.action === "delivery") {
+		if (!isValidMeasurement) return null;
+		try {
+			recordAutomaticRecall(
+				db,
+				payload.attempt_id,
+				payload.evaluation_key,
+				payload.automatic_recall,
+			);
+		} catch {
+			// Delivery diagnostics are best-effort; the lifecycle receipt remains authoritative.
+		}
+		return null;
+	}
+	if (payload.action !== "recall" || !isValidMeasurement) {
+		throw new PackUsageError("invalid automatic recall measurement");
+	}
+	const outcome = recordAutomaticRecall(
+		db,
+		payload.attempt_id,
+		payload.evaluation_key,
+		payload.automatic_recall,
+	);
+	if (!outcome.ok) throw new PackUsageError(outcome.reason);
+	return outcome.value;
+}
+
 export function handlePromptPackLedger(db: Database, payload: InternalLedgerPayload) {
+	return handleRecallMeasurement(db, payload) ?? handlePromptPackLifecycle(db, payload);
+}
+
+function handlePromptPackLifecycle(db: Database, payload: InternalLedgerPayload) {
 	const metadata = attemptMetadata(payload);
 	if (payload.action === "delivery") {
 		const status = payload.delivery_status;

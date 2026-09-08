@@ -6,6 +6,7 @@
 import * as api from "../../lib/api";
 import { state } from "../../lib/state";
 import { updateFeedView } from "../feed";
+import { renderAutomaticRecall } from "./components";
 import { renderHealthOverview } from "./render/health-overview";
 import { renderSessionSummary } from "./render/session-summary";
 import { renderStats } from "./render/stats";
@@ -32,6 +33,10 @@ export async function loadHealthData() {
 	const nextActorId = state.lastStatsPayload?.identity?.actor_id || null;
 
 	renderStats();
+	renderAutomaticRecall(
+		document.getElementById("automaticRecallStats"),
+		state.lastStatsPayload.automatic_recall,
+	);
 	renderSessionSummary();
 	renderHealthOverview();
 	if (state.activeTab === "feed" && previousActorId !== nextActorId) {

@@ -46,7 +46,29 @@ The allowlist is `continue`, `proceed`, `go on`, and `keep going`, case-insensit
 
 ## Local Measurements
 
-Optional plugin logs report per-transform snapshots, not durable aggregates.
+Health's collapsed **Automatic recall (advanced)** panel summarizes durable local fresh-evaluation measurements without copying sensitive content.
+
+The `automatic_recall` field on `/api/stats` covers the previous 30 days, with explicit inclusive `periodStart` and `periodEnd` timestamps. It scans at most the newest 1,000 successful/no-result OpenCode automatic prompt-pack attempts before checking current visibility. It excludes cache-reuse records, failed retrievals, and policy skips; an opted-in ceiling can prevent evaluation entirely, so ceiling skips are not zero-result evaluations or savings. All projects are included regardless of the UI project selector. Attempts with any selected memory now unavailable (including revoked scopes, deletion, or incomplete exposure coverage) are omitted in full.
+
+| Field | Definition |
+|---|---|
+| `freshEvaluations` | First accepted measurement per stable session/message/surface/query/artifact evaluation key in the retained ledger. Transport retries and repeated empty-result transforms do not increase this denominator; changed retrieval artifacts do. Replay and reconstruction do not create measurements. |
+| `evaluationsWithDuplicates` | Measured evaluations omitting at least one unchanged retained item. Hit rate is this numerator divided by `freshEvaluations`, including measured empty results. |
+| `candidateItems`, `duplicatesOmitted` | Selected pack items before filtering and the subset omitted by retained-item deduplication; not all retrieval search candidates. |
+| `beforeTokens`, `afterTokens`, `estimatedTokensAvoided` | Sums of complete wrapped injection estimates before/after duplicate filtering and their difference, using `ceil(JavaScript string length / 4)`. Empty selections count zero, even if Core renders empty headings. |
+| `missingRetainedMetadata`, `invalidRetainedMetadata` | Counts of measured evaluations encountering at least one retained block with missing or unusable metadata, after valid cache metadata recovery. They count evaluations, not blocks, and may overlap. |
+| `packMetadataGaps` | Measured evaluations whose nonempty candidate pack lacks usable renderer metadata. No dedup savings are credited for these packs. |
+| `unmeasuredAttempts` | Visible eligible ledger rows without a valid measurement, including old clients, recording failures, and unsupported bounds. A durable duplicate marker is omitted only when its accepted measurement is also visible in the same bounded window; otherwise it remains unknown rather than crossing a scope or time boundary. This is not a second fresh-evaluation denominator. |
+| `availability` | `available` requires at least one recorded evaluation; `no_data` means savings are unknown; `unavailable` means the aggregate could not be read. A recorded zero savings is distinct from no data. |
+| `captureVersion` | `opencode-retained-v1` identifies the plugin measurement contract. It is not the installed package version, host version, or checkout hash; mixed-release attribution within this contract is unavailable. |
+
+The plugin attaches measurements to existing delivery ledger requests; empty results use a count-only `recall` action on the same endpoint/CLI fallback. An additive pair of nullable ledger columns stores one bounded object and a hashed evaluation key, with a unique index for cross-retry deduplication. A duplicate attempt stores a bounded marker so Health can remove it from unknown coverage only beside the visible accepted sample. Recording updates only existing OpenCode automatic attempts, validates allowlisted fields and integer bounds against server-owned selected counts and output-token estimates, and preserves the first accepted sample. Delivery still succeeds when optional diagnostics are malformed, rejected, or unavailable; the explicit `recall` action remains strict. No new endpoint, authentication rule, remote telemetry, or log parser is introduced. Existing ledger retention (90 days by default), privacy deletion, and scope checks apply.
+
+Limits: these are client-reported filtering estimates, not proof of host/provider consumption, provider cost, or answer usefulness. Failed attachment or a later budget rejection can still have a filtering measurement. Stable evaluation identity collapses same-artifact retries but counts changed retrieval artifacts separately. The bounded window can leave a retry marker unknown when its accepted sample is older or not currently visible. Older plugins do not report this contract, and unsupported/failed capture is never interpreted as zero savings.
+
+If an older CLI fallback rejects optional measurement fields, the plugin retries the original delivery receipt without them. A compatible but stale Viewer that specifically returns `viewer_contract_unsupported` gets the same one-time bare receipt retry on Viewer; policy/auth and other request rejections remain fail-closed. Measurement capture requires a compatible local backend; lack of capture does not disable recall.
+
+Optional plugin logs remain per-transform snapshots rather than the durable Health source.
 
 When `CODEMEM_PLUGIN_LOG` enables local logging, `inject.recall` lines contain a JSON object with only `new_tokens`, `retained_tokens`, `duplicates_omitted`, and `reason`. `new_tokens` counts newly attached wrapped blocks; replay, reconstruction, duplicate-only output, and failed attachment report zero. `retained_tokens` is the current hook session's wrapped-block sum, not a lifetime total or a sum across foreign-session entries. Do not sum retained snapshots across turns. Compaction snapshots describe only their supplied output and never reset replay state. These are hook handoff estimates, not proof that a provider consumed the request.
 

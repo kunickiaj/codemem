@@ -8,6 +8,7 @@
 import { Fragment, h, render } from "preact";
 import { Tooltip, TooltipProvider } from "../../components/primitives/tooltip";
 import type { UpdateStatus } from "../../lib/api";
+import { type AutomaticRecallStats, parseAutomaticRecallStats } from "../../lib/api/stats";
 import { copyToClipboard } from "../../lib/dom";
 import type {
 	HealthAction,
@@ -24,6 +25,88 @@ function releaseChannelLabel(status: UpdateStatus): string | null {
 
 export function buildHealthCard(input: HealthCardInput): HealthCardInput {
 	return input;
+}
+
+function automaticRecallRows(stats: AutomaticRecallStats) {
+	const rows = [["Unmeasured retrieval attempts", stats.unmeasuredAttempts.toLocaleString()]];
+	if (stats.freshEvaluations > 0) {
+		rows.unshift(
+			[
+				"Duplicate hit rate",
+				`${stats.evaluationsWithDuplicates} / ${stats.freshEvaluations} fresh evaluations (${((100 * stats.evaluationsWithDuplicates) / stats.freshEvaluations).toFixed(1)}%)`,
+			],
+			["Estimated injection tokens avoided", stats.estimatedTokensAvoided.toLocaleString()],
+			[
+				"Estimated tokens before / after filtering",
+				`${stats.beforeTokens.toLocaleString()} / ${stats.afterTokens.toLocaleString()}`,
+			],
+			[
+				"Duplicate items omitted / candidate items",
+				`${stats.duplicatesOmitted} / ${stats.candidateItems}`,
+			],
+			[
+				"Evaluations with missing / invalid retained metadata",
+				`${stats.missingRetainedMetadata} / ${stats.invalidRetainedMetadata}`,
+			],
+			["Evaluations with pack metadata gaps", String(stats.packMetadataGaps)],
+		);
+	}
+	return rows;
+}
+
+function automaticRecallDetail(stats: AutomaticRecallStats | null) {
+	if (!stats || stats.availability === "unavailable")
+		return h(
+			"p",
+			null,
+			"Measurements unavailable. Update the local backend and plugin, then refresh Health.",
+		);
+	return h(
+		Fragment,
+		null,
+		h(
+			"p",
+			null,
+			`Local OpenCode message recall, all projects. ${stats.periodStart} to ${stats.periodEnd}; at most the newest ${stats.windowLimit} eligible retrieval attempts, filtered to currently visible selected memories.`,
+		),
+		stats.freshEvaluations === 0
+			? h("p", null, "No recorded fresh evaluations in this window. Savings are unknown, not zero.")
+			: null,
+		h(
+			"dl",
+			null,
+			automaticRecallRows(stats).map(([label, value]) =>
+				h(Fragment, { key: label }, h("dt", null, label), h("dd", null, value)),
+			),
+		),
+		h(
+			"p",
+			null,
+			"Capture: opencode-retained-v1. Older clients and failed recording leave coverage unknown; unmeasured attempts are not zero savings. Retries and replay do not add measured evaluations. Ceiling skips prevent evaluation and are excluded.",
+		),
+		h(
+			"p",
+			null,
+			"Token estimates compare wrapped candidate text before and after duplicate filtering, not provider consumption, money, or answer quality. The retained ceiling is opt-in; per-pack budgeting still applies.",
+		),
+	);
+}
+
+export function renderAutomaticRecall(container: HTMLElement | null, payload: unknown) {
+	if (!container) return;
+	render(
+		h(
+			"details",
+			null,
+			h("summary", null, "Automatic recall (advanced)"),
+			h(
+				"section",
+				{ "aria-label": "Automatic recall measurements", style: "margin-top: var(--sp-3)" },
+				automaticRecallDetail(parseAutomaticRecallStats(payload)),
+			),
+		),
+		container,
+	);
 }
 
 function updateBannerCopy(status: UpdateStatus) {
