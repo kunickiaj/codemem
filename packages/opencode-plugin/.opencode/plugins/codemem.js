@@ -838,6 +838,7 @@ const isValidLedgerFailureHttpPayload = (payload) =>
   && (
     payload.errorCode === "retrieval_ledger_write_failed"
     || payload.errorCode === "retrieval_ledger_delivery_write_failed"
+    || payload.errorCode === "automatic_recall_write_failed"
   )
   && typeof payload.reason === "string";
 

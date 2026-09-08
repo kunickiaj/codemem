@@ -2730,6 +2730,8 @@ describe("OpenCode transform-time injection", () => {
 	test.each([
 		["write 404", 404, "retrieval_ledger_write_failed", "attempt_not_found"],
 		["delivery 503", 503, "retrieval_ledger_delivery_write_failed", "storage_unavailable"],
+		["recall 422", 422, "automatic_recall_write_failed", "attempt_not_found"],
+		["recall 409", 409, "automatic_recall_write_failed", "idempotency_conflict"],
 	])("treats a structured ledger %s as terminal without arming pack backoff", async (
 		_label,
 		status,
@@ -2744,7 +2746,9 @@ describe("OpenCode transform-time injection", () => {
 		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
 			if (String(url).endsWith("/api/prompt-pack-profile")) return viewerProfileResponse();
 			postCount += 1;
-			if (postCount === 1) return jsonResponse(200, packResponse("## Summary\n[1] First pack"));
+			if (postCount === 1) return jsonResponse(200, errorCode === "automatic_recall_write_failed"
+				? { pack_text: "", metrics: { total_items: 0, pack_tokens: 0 } }
+				: packResponse("## Summary\n[1] First pack"));
 			if (postCount === 2) return jsonResponse(status, { ok: false, errorCode, reason });
 			if (postCount === 3) return jsonResponse(200, packResponse("## Summary\n[2] Next pack"));
 			return jsonResponse(200, { ok: true });
