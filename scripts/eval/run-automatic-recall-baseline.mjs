@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = realpathSync(fileURLToPath(new URL("../../", import.meta.url)));
@@ -42,14 +42,44 @@ function linkDependencies(source, target) {
     }
     if (name.startsWith(".")) continue;
     const dependency = realpathSync(join(source, name));
-    const local = relative(root, dependency);
-    const destination = local.startsWith("packages/") ? resolve(snapshot, local) : dependency;
+    const destination = workspacePackageSegments(dependency)
+      ? join(snapshot, ...workspacePackageSegments(dependency))
+      : dependency;
     symlinkSync(destination, join(target, name), "dir");
   }
 }
+
+// Platform-independent containment check: path.relative yields backslashes on
+// Windows, so a string prefix test would keep candidate Core linked into the
+// historical snapshot and silently invalidate the baseline.
+function workspacePackageSegments(dependency) {
+  const local = relative(root, dependency);
+  if (!local || local.startsWith("..") || isAbsolute(local)) return null;
+  const segments = local.split(sep);
+  return segments[0] === "packages" && segments.length > 1 ? segments : null;
+}
+
+// Fail loudly if any workspace dependency would still resolve into the candidate checkout.
+function assertNoCandidateWorkspaceLinks(dir) {
+  for (const name of readdirSync(dir)) {
+    const entry = join(dir, name);
+    if (name.startsWith("@")) {
+      assertNoCandidateWorkspaceLinks(entry);
+      continue;
+    }
+    if (name.startsWith(".")) continue;
+    if (workspacePackageSegments(realpathSync(entry))) {
+      throw new Error(`Historical snapshot still links candidate workspace package: ${name}`);
+    }
+  }
+}
 linkDependencies(join(root, "node_modules"), join(snapshot, "node_modules"));
+assertNoCandidateWorkspaceLinks(join(snapshot, "node_modules"));
 for (const name of readdirSync(join(snapshot, "packages"))) {
   linkDependencies(join(root, "packages", name, "node_modules"), join(snapshot, "packages", name, "node_modules"));
+  if (existsSync(join(snapshot, "packages", name, "node_modules"))) {
+    assertNoCandidateWorkspaceLinks(join(snapshot, "packages", name, "node_modules"));
+  }
 }
 
 // Git reads objects from the original clone and hashes working bytes from the snapshot.
