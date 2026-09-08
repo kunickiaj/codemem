@@ -703,7 +703,16 @@ try {
 	mkdirSync(semanticInstallDir, { recursive: true });
 	writeFileSync(
 		join(semanticInstallDir, "package.json"),
-		JSON.stringify({ private: true }),
+		JSON.stringify({
+			private: true,
+			// Resolve unpublished workspace packages locally, but install only the CLI.
+			overrides: {
+				"@codemem/core": `file:${coreTarball}`,
+				"@codemem/embeddings": `file:${embeddingsTarball}`,
+				"@codemem/mcp": `file:${mcpTarball}`,
+				"@codemem/server": `file:${serverTarball}`,
+			},
+		}),
 		"utf8",
 	);
 	run(
@@ -712,10 +721,6 @@ try {
 			"install",
 			"--prefix",
 			semanticInstallDir,
-			coreTarball,
-			embeddingsTarball,
-			mcpTarball,
-			serverTarball,
 			packedTarball,
 		],
 		packageRoot,
@@ -853,6 +858,38 @@ try {
 			],
 			transformersPackageDir,
 		);
+		const semanticHome = join(tempDir, "semantic-home");
+		mkdirSync(semanticHome, { recursive: true });
+		run(process.execPath, ["--input-type=module", "--eval", `
+			import assert from "node:assert/strict";
+			import { MemoryStore, backfillVectors, getEmbeddingClient, semanticSearch } from "@codemem/core";
+			const client = await getEmbeddingClient();
+			assert(client, "CLI-only install must initialize semantic runtime");
+			const vectors = await client.embed(["A feline sleeps on the sofa", "Database transaction rollback"]);
+			assert.equal(vectors.length, 2);
+			assert(vectors.every(vector => vector.length === 384 && vector.every(Number.isFinite)));
+			const store = new MemoryStore(process.env.CODEMEM_DB);
+			try {
+				const session = store.startSession({ project: "packed-semantic" });
+				const id = store.remember(session, "discovery", "Feline rest", "A feline sleeps on the sofa");
+				await backfillVectors(store.db);
+				const matches = await semanticSearch(store.db, "A cat resting on a couch", 5, null, {
+					actorId: store.actorId, deviceId: store.deviceId, claimedDeviceIds: [], legacyActorIds: [],
+				});
+				assert(matches.some(match => match.id === id), "CLI-only install must retrieve a semantic match");
+			} finally { store.close(); }
+		`], semanticInstallDir, {
+			...process.env,
+			HOME: semanticHome,
+			XDG_CONFIG_HOME: join(semanticHome, "config"),
+			CODEMEM_DB: join(semanticHome, "mem.sqlite"),
+			CODEMEM_CONFIG: join(semanticHome, "codemem.json"),
+			CODEMEM_KEYS_DIR: join(semanticHome, "keys"),
+			CODEMEM_EMBEDDING_DISABLED: "0",
+			CODEMEM_EMBEDDING_OFFLINE: "0",
+			CODEMEM_EMBEDDING_MODEL: "Xenova/bge-small-en-v1.5",
+			CODEMEM_EMBEDDING_REVISION: "ea104dacec62c0de699686887e3f920caeb4f3e3",
+		});
 	}
 
 	const installedPackageRoot = join(installDir, "node_modules", "codemem");
