@@ -4,6 +4,7 @@
  * The risk scoring and recommendation rules are the single source of
  * truth for the Health tab's "Overall health" status. */
 
+import { openDiagnosticsDrawer } from "../../../components/diagnostics";
 import * as api from "../../../lib/api";
 import {
 	formatAgeShort,
@@ -23,6 +24,20 @@ import {
 import type { HealthAction, HealthCardInput } from "../types";
 
 const SCOPE_BACKFILL_JOB = "scope_id_backfill";
+
+function appendFailedMaintenanceDiagnosticsAction(
+	recommendations: HealthAction[],
+	hasFailedMaintenance: boolean,
+): void {
+	if (!hasFailedMaintenance || recommendations.length >= 3) return;
+	recommendations.push({
+		label: "Background maintenance failed. Review recent safe failure evidence.",
+		command: "codemem maintenance status",
+		action: (trigger) =>
+			openDiagnosticsDrawer({ severity: "error", subsystem: "maintenance", trigger }),
+		actionLabel: "View diagnostics",
+	});
+}
 
 export function renderHealthOverview() {
 	const healthGrid = document.getElementById("healthGrid");
@@ -48,6 +63,7 @@ export function renderHealthOverview() {
 		progress?: { current?: number; total?: number | null; unit?: string };
 	}> = Array.isArray(stats.maintenance_jobs) ? stats.maintenance_jobs : [];
 	const scopeBackfillJob = maintenanceJobs.find((job) => job.kind === SCOPE_BACKFILL_JOB);
+	const hasFailedMaintenance = maintenanceJobs.some((job) => job.status === "failed");
 	const reliability = stats.reliability || {};
 	const counts = reliability.counts || {};
 	const rates = reliability.rates || {};
@@ -288,6 +304,8 @@ export function renderHealthOverview() {
 		recommendations.push({
 			label: "Pipeline needs attention. Check queue health first.",
 			command: "codemem db raw-events-status",
+			action: (trigger) => openDiagnosticsDrawer({ subsystem: "capture", trigger }),
+			actionLabel: "View diagnostics",
 		});
 		recommendations.push({
 			label: "Then retry failed batches for impacted sessions.",
@@ -322,6 +340,7 @@ export function renderHealthOverview() {
 			actionLabel: "Sync now",
 		});
 	}
+	appendFailedMaintenanceDiagnosticsAction(recommendations, hasFailedMaintenance);
 	if (tagCoverage > 0 && tagCoverage < 0.7 && recommendations.length < 2) {
 		recommendations.push({
 			label: "Tag coverage is low. Preview backfill impact.",

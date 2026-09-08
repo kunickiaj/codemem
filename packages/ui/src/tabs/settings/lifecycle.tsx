@@ -3,6 +3,7 @@
  * to SettingsDialogContent + the settingsState-driven handlers. */
 
 import { render } from "preact";
+import { openDiagnosticsDrawer } from "../../components/diagnostics";
 import * as api from "../../lib/api";
 import { $, $button } from "../../lib/dom";
 import { showGlobalNotice } from "../../lib/notice";
@@ -56,7 +57,23 @@ const { onTextInput, onSelectValueChange, onSwitchInput } = createSettingsEventH
 
 function ObserverStatusBanner() {
 	const status = settingsState.renderState.observerStatus as ObserverStatusShape | null;
-	return <ObserverStatusBannerComponent status={status} />;
+	return (
+		<ObserverStatusBannerComponent
+			status={status}
+			onOpenDiagnostics={openObserverDiagnosticsFromSettings}
+		/>
+	);
+}
+
+export function openObserverDiagnosticsFromSettings(options: {
+	severity: "error";
+	subsystem: "observer";
+}): void {
+	if (!settingsState.startPolling || !settingsState.refresh) return;
+	closeSettings(settingsState.startPolling, settingsState.refresh);
+	if (settingsState.open) return;
+	const trigger = $button("settingsButton");
+	queueMicrotask(() => openDiagnosticsDrawer({ ...options, trigger }));
 }
 
 function SettingsDialogContent() {

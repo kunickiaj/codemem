@@ -1,6 +1,7 @@
 import { type ComponentChildren, render } from "preact";
 import { act } from "preact/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import staticHtml from "../../../static/index.html?raw";
 import type { DiagnosticEvent, DiagnosticEventsResponse } from "../../lib/api";
 import { DiagnosticEventsRequestError } from "../../lib/api/diagnostics";
 
@@ -39,7 +40,9 @@ import {
 	initDiagnosticsEntryPoints,
 	mountDiagnosticsDrawer,
 	openDiagnosticsDrawer,
+	recordViewerConnectionEvent,
 } from ".";
+import { resetViewerConnectionEventsForTests } from "./viewer-connection-events";
 
 function event(id: string, overrides: Partial<DiagnosticEvent> = {}): DiagnosticEvent {
 	return {
@@ -56,13 +59,14 @@ function event(id: string, overrides: Partial<DiagnosticEvent> = {}): Diagnostic
 function response(
 	items: DiagnosticEvent[] = [],
 	nextCursor: string | null = null,
+	generatedAt = "2026-09-07T12:00:01.000Z",
 ): DiagnosticEventsResponse {
 	return {
 		contract_version: 1,
 		items,
 		next_cursor: nextCursor,
 		redacted: true,
-		generated_at: "2026-09-07T12:00:01.000Z",
+		generated_at: generatedAt,
 	};
 }
 
@@ -72,6 +76,7 @@ function setup(loadEvents = vi.fn().mockResolvedValue(response())) {
 		<button class="tab-btn" id="tabBtn-advanced">Advanced</button>
 		<button id="healthOpenDiagnostics">View diagnostics</button>
 		<button id="syncOpenDiagnostics">Recent sync events</button>
+		<button id="viewerReconnectDiagnostics">View connection diagnostics</button>
 		<div id="diagnosticsDrawerMount"></div>
 	`;
 	const mount = document.getElementById("diagnosticsDrawerMount");
@@ -95,6 +100,7 @@ afterEach(() => {
 	dialogControls.onCloseAutoFocus = undefined;
 	dialogControls.onOpenAutoFocus = undefined;
 	dialogControls.onOpenChange = undefined;
+	resetViewerConnectionEventsForTests();
 	vi.restoreAllMocks();
 });
 
@@ -123,6 +129,20 @@ describe("diagnostics drawer", () => {
 		act(() => button("Reset filters").click());
 		await vi.waitFor(() => expect(loadEvents).toHaveBeenCalledTimes(3));
 		expect(loadEvents).toHaveBeenLastCalledWith(expect.objectContaining({ subsystem: undefined }));
+	});
+
+	it("ships a reconnect action that opens seeded viewer-session evidence", async () => {
+		expect(staticHtml).toContain('id="viewerReconnectDiagnostics"');
+		setup();
+		recordViewerConnectionEvent("connection_lost");
+		initDiagnosticsEntryPoints();
+
+		act(() => button("View connection diagnostics").click());
+
+		await vi.waitFor(() => expect(document.body.textContent).toContain("viewer_connection_lost"));
+		expect(
+			document.querySelector<HTMLSelectElement>('[aria-label="Diagnostic subsystem"]')?.value,
+		).toBe("viewer");
 	});
 
 	it("focuses the title, aborts on close, and restores trigger focus", async () => {
@@ -255,6 +275,39 @@ describe("diagnostics drawer automatic refresh", () => {
 });
 
 describe("diagnostics drawer paused actions", () => {
+	it("holds viewer-session events until updates resume", async () => {
+		setup(vi.fn().mockResolvedValue(response()));
+		act(() => openDiagnosticsDrawer());
+		await vi.waitFor(() => expect(button("Pause updates").disabled).toBe(false));
+		act(() => button("Pause updates").click());
+
+		act(() => recordViewerConnectionEvent("connection_lost"));
+
+		expect(document.body.textContent).not.toContain("viewer_connection_lost");
+		act(() => button("Resume updates").click());
+		await vi.waitFor(() => expect(document.body.textContent).toContain("viewer_connection_lost"));
+	});
+
+	it("keeps held viewer-session events hidden during paused retry", async () => {
+		const loadEvents = vi
+			.fn()
+			.mockResolvedValueOnce(response())
+			.mockRejectedValueOnce(new Error("refresh failed"))
+			.mockResolvedValue(response());
+		setup(loadEvents);
+		act(() => openDiagnosticsDrawer());
+		await vi.waitFor(() => expect(button("Pause updates").disabled).toBe(false));
+		await act(async () => coordinatedRefreshDiagnosticsDrawer());
+		await vi.waitFor(() => expect(document.querySelector('[role="alert"]')).not.toBeNull());
+		act(() => button("Pause updates").click());
+		act(() => recordViewerConnectionEvent("connection_lost"));
+
+		act(() => button("Retry").click());
+		await vi.waitFor(() => expect(loadEvents).toHaveBeenCalledTimes(3));
+
+		expect(document.body.textContent).not.toContain("viewer_connection_lost");
+	});
+
 	it("allows retry and filter requests while paused", async () => {
 		const loadEvents = vi
 			.fn()
@@ -305,22 +358,32 @@ describe("diagnostics drawer paused actions", () => {
 describe("diagnostics drawer updates and pagination", () => {
 	it("replaces mutable fields for a known event id during polling", async () => {
 		const refreshedEvent = event("one", {
+			occurred_at: "2026-09-07T12:00:04.000Z",
 			severity: "error",
+			code: "capture_backlog_blocked",
 			message: "The capture queue is blocked.",
 		});
+		const generatedAt = "2026-09-07T12:00:05.000Z";
 		const loadEvents = vi
 			.fn()
 			.mockResolvedValueOnce(response([event("one")], "older"))
-			.mockResolvedValueOnce(response([refreshedEvent]));
+			.mockResolvedValueOnce(response([refreshedEvent], null, generatedAt));
 		setup(loadEvents);
 		act(() => openDiagnosticsDrawer());
-		await vi.waitFor(() => expect(document.body.textContent).toContain("queue is growing"));
+		await vi.waitFor(() => expect(document.body.textContent).toContain("capture_backlog_growing"));
+		const list = document.querySelector<HTMLElement>(".diagnostics-event-list");
+		if (!list) throw new Error("event list missing");
+		list.scrollTop = 100;
 
 		await act(async () => coordinatedRefreshDiagnosticsDrawer());
 
 		expect(document.querySelectorAll(".diagnostics-event")).toHaveLength(1);
-		expect(document.body.textContent).toContain("queue is blocked");
-		expect(document.body.textContent).not.toContain("queue is growing");
+		expect(document.body.textContent).toContain("capture_backlog_blocked");
+		expect(document.body.textContent).toContain("The capture queue is blocked.");
+		expect(document.body.textContent).not.toContain("capture_backlog_growing");
+		expect(document.querySelector(".diagnostics-generated-at")?.textContent).toContain(
+			new Date(generatedAt).toLocaleTimeString(),
+		);
 	});
 
 	it("queues polled events while reading older rows and shows them on request", async () => {
@@ -341,6 +404,22 @@ describe("diagnostics drawer updates and pagination", () => {
 
 		act(() => button("Show 1 new event").click());
 		expect(document.querySelectorAll(".diagnostics-event")).toHaveLength(2);
+	});
+});
+
+describe("diagnostics drawer queued row details", () => {
+	it("does not offer filtered-out queued session events", async () => {
+		setup(vi.fn().mockResolvedValue(response([event("sync", { subsystem: "sync" })])));
+		act(() => openDiagnosticsDrawer({ subsystem: "sync" }));
+		await vi.waitFor(() => expect(document.querySelectorAll(".diagnostics-event")).toHaveLength(1));
+		const list = document.querySelector<HTMLElement>(".diagnostics-event-list");
+		if (!list) throw new Error("event list missing");
+		list.scrollTop = 100;
+
+		act(() => recordViewerConnectionEvent("connection_lost"));
+
+		expect(document.body.textContent).not.toContain("Show 1 new event");
+		expect(document.querySelectorAll(".diagnostics-event")).toHaveLength(1);
 	});
 
 	it("loads and reconciles technical details for queued server events", async () => {
@@ -377,7 +456,9 @@ describe("diagnostics drawer updates and pagination", () => {
 
 		expect(document.body.textContent).toContain("queued detail");
 	});
+});
 
+describe("diagnostics drawer queued promotion", () => {
 	it("removes queued events when a top-of-list poll promotes them", async () => {
 		const loadEvents = vi
 			.fn()
@@ -474,10 +555,133 @@ describe("diagnostics drawer retry history", () => {
 	});
 });
 
+describe("diagnostics drawer local evidence controls", () => {
+	it("keeps viewer events buffered before a paused clear hidden after resume", async () => {
+		setup(vi.fn().mockResolvedValue(response()));
+		act(() => openDiagnosticsDrawer());
+		await vi.waitFor(() => expect(button("Pause updates").disabled).toBe(false));
+		act(() => button("Pause updates").click());
+		act(() => recordViewerConnectionEvent("connection_lost"));
+
+		act(() => button("Clear view").click());
+		act(() => button("Resume updates").click());
+
+		await vi.waitFor(() => expect(button("Pause updates").disabled).toBe(false));
+		expect(document.body.textContent).not.toContain("viewer_connection_lost");
+		act(() => recordViewerConnectionEvent("reconnect_requested"));
+		expect(document.body.textContent).toContain("viewer_reconnect_requested");
+	});
+
+	it("keeps cleared session rows hidden until reopen while allowing later evidence", async () => {
+		recordViewerConnectionEvent("connection_lost");
+		const { loadEvents } = setup(vi.fn().mockResolvedValue(response([event("one")], "cursor")));
+		act(() => openDiagnosticsDrawer());
+		await vi.waitFor(() => expect(document.querySelectorAll(".diagnostics-event")).toHaveLength(2));
+
+		act(() => button("Clear view").click());
+
+		expect(document.querySelectorAll(".diagnostics-event")).toHaveLength(0);
+		expect(document.body.textContent).toContain("Not loaded yet");
+		await act(async () => coordinatedRefreshDiagnosticsDrawer());
+		expect(document.body.textContent).not.toContain("viewer_connection_lost");
+		expect(document.body.textContent).toContain("capture_backlog_growing");
+		for (const [options] of loadEvents.mock.calls) {
+			expect(options).not.toHaveProperty("method");
+		}
+		act(() => recordViewerConnectionEvent("reconnect_requested"));
+		expect(document.body.textContent).toContain("viewer_reconnect_requested");
+		act(() => button("Close").click());
+		act(() => openDiagnosticsDrawer());
+		await vi.waitFor(() => expect(document.body.textContent).toContain("viewer_connection_lost"));
+
+		expect(loadEvents).toHaveBeenCalledTimes(3);
+		act(() => button("Close").click());
+		await Promise.resolve();
+	});
+
+	it("warns and copies only visible redacted presentation fields", async () => {
+		const sensitiveEvent = event("opaque-id", {
+			recovery: { label: "Open Health", href: "#health", command: "private command" },
+			correlation: { kind: "session", label: "Safe session label" },
+			technical_detail: { available: true, text: "private technical detail" },
+		});
+		const hiddenEvent = event("hidden-id", {
+			subsystem: "sync",
+			message: "hidden sync message",
+		});
+		const queuedEvent = event("queued-id", { message: "queued capture message" });
+		setup(
+			vi
+				.fn()
+				.mockResolvedValueOnce(
+					response([{ ...sensitiveEvent, technical_detail: { available: false } }, hiddenEvent]),
+				)
+				.mockResolvedValueOnce(response([sensitiveEvent, hiddenEvent]))
+				.mockResolvedValueOnce(response([queuedEvent, sensitiveEvent, hiddenEvent]))
+				.mockResolvedValue(response([sensitiveEvent, hiddenEvent])),
+		);
+		const confirm = vi.spyOn(globalThis, "confirm").mockReturnValue(true);
+		const writeText = vi.fn().mockResolvedValue(undefined);
+		Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+		act(() => openDiagnosticsDrawer({ subsystem: "capture" }));
+		await vi.waitFor(() => expect(document.querySelectorAll(".diagnostics-event")).toHaveLength(1));
+		act(() => button("Reveal technical details").click());
+		await vi.waitFor(() => expect(document.body.textContent).toContain("private technical detail"));
+		const list = document.querySelector<HTMLElement>(".diagnostics-event-list");
+		if (!list) throw new Error("event list missing");
+		list.scrollTop = 100;
+		await act(async () => coordinatedRefreshDiagnosticsDrawer());
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Show 1 new event"));
+
+		await act(async () => button("Copy visible redacted events").click());
+
+		expect(confirm).toHaveBeenCalledWith(expect.stringContaining("sensitive operational context"));
+		const copied = String(writeText.mock.calls[0]?.[0]);
+		expect(copied).toContain('"recovery_label": "Open Health"');
+		expect(copied).toContain('"correlation_label": "Safe session label"');
+		expect(copied).not.toContain("opaque-id");
+		expect(copied).not.toContain("private command");
+		expect(copied).not.toContain("private technical detail");
+		expect(copied).not.toContain("hidden sync message");
+		expect(copied).not.toContain("queued capture message");
+		expect(document.body.textContent).toContain("Visible redacted events copied.");
+
+		const severity = document.querySelector<HTMLSelectElement>(
+			'[aria-label="Diagnostic severity"]',
+		);
+		if (!severity) throw new Error("severity filter missing");
+		severity.value = "warning";
+		act(() => {
+			severity.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+		expect(document.body.textContent).not.toContain("Visible redacted events copied.");
+	});
+
+	it("reports clipboard failure without exposing copied content", async () => {
+		setup(vi.fn().mockResolvedValue(response([event("one")])));
+		vi.spyOn(globalThis, "confirm").mockReturnValue(true);
+		Object.defineProperty(navigator, "clipboard", {
+			configurable: true,
+			value: { writeText: vi.fn().mockRejectedValue(new Error("clipboard denied")) },
+		});
+		act(() => openDiagnosticsDrawer());
+		await vi.waitFor(() => expect(document.querySelectorAll(".diagnostics-event")).toHaveLength(1));
+
+		await act(async () => button("Copy visible redacted events").click());
+
+		expect(document.body.textContent).toContain(
+			"Visible events could not be copied. Check clipboard permission and try again.",
+		);
+		expect(document.body.textContent).not.toContain("clipboard denied");
+	});
+});
+
 describe("diagnostics drawer filters and pagination", () => {
 	it("refetches for filters and technical reveal, then bounds older pagination", async () => {
 		const firstPage = Array.from({ length: 50 }, (_, index) => event(`first-${index}`));
-		const olderPage = Array.from({ length: 250 }, (_, index) => event(`older-${index}`));
+		const olderPage = Array.from({ length: 250 }, (_, index) =>
+			event(`older-${index}`, { severity: "error" }),
+		);
 		const loadEvents = vi
 			.fn()
 			.mockResolvedValueOnce(response(firstPage, "cursor-one"))
@@ -532,6 +736,7 @@ describe("diagnostics drawer recovery navigation", () => {
 	it("closes and resets before following an allowlisted recovery hash", async () => {
 		window.location.hash = "";
 		const recoveryEvent = event("recovery", {
+			subsystem: "sync",
 			recovery: { href: "#health", label: "Open Health" },
 		});
 		const { loadEvents } = setup(vi.fn().mockResolvedValue(response([recoveryEvent])));

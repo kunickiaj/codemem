@@ -6,6 +6,7 @@ vi.mock("../../lib/api", () => ({
 	loadShareOperations: vi.fn(),
 	loadCoordinatorAdminStatus: vi.fn(),
 	loadDeviceIdentityInventory: vi.fn(),
+	loadPairing: vi.fn(),
 }));
 
 vi.mock("../health", () => ({ renderHealthOverview: vi.fn() }));
@@ -25,6 +26,7 @@ vi.mock("./team-sync", () => ({
 }));
 vi.mock("./people", () => ({
 	renderSyncActors: vi.fn(),
+	renderSyncActorsUnavailable: vi.fn(),
 	renderSyncPeers: vi.fn(),
 	renderSyncPeopleUnavailable: vi.fn(),
 	renderLegacyDeviceClaims: vi.fn(),
@@ -55,27 +57,53 @@ function deferred<T>(): Deferred<T> {
 	return { promise, resolve, reject };
 }
 
+async function verifyRecoveryBypassesCachedHealthStatus(): Promise<void> {
+	const api = await import("../../lib/api");
+	const { state } = await import("../../lib/state");
+	const { loadSyncData } = await import("./index");
+	state.activeTab = "health";
+	vi.mocked(api.loadSyncStatus).mockResolvedValueOnce({ peers: [] } as never);
+	vi.mocked(api.loadSyncActors).mockResolvedValue({ items: [] });
+	vi.mocked(api.loadCoordinatorAdminStatus).mockResolvedValue({});
+	vi.mocked(api.loadShareOperations).mockResolvedValue({ items: [] });
+	await expect(loadSyncData()).resolves.toBe(true);
+
+	vi.mocked(api.loadSyncStatus).mockRejectedValueOnce(new Error("status unavailable"));
+	await expect(
+		loadSyncData({ requiredSurface: "health", requireFreshSyncStatus: true }),
+	).resolves.toBe(false);
+	expect(api.loadSyncStatus).toHaveBeenCalledTimes(2);
+
+	vi.mocked(api.loadSyncStatus).mockResolvedValueOnce({ peers: [] } as never);
+	await expect(
+		loadSyncData({ requiredSurface: "health", requireFreshSyncStatus: true }),
+	).resolves.toBe(true);
+	expect(api.loadSyncStatus).toHaveBeenCalledTimes(3);
+}
+
+async function resetSyncTestState(activeTab: "advanced" | "devices") {
+	vi.clearAllMocks();
+	const { state } = await import("../../lib/state");
+	const { resetSyncLoadStateForTests } = await import("./index");
+	resetSyncLoadStateForTests();
+	state.activeTab = activeTab;
+	state.currentProject = "";
+	state.lastSyncPeers = [];
+	state.pendingAcceptedSyncPeers = [];
+	state.lastSyncActors = [];
+	state.lastShareOperations = [];
+	state.shareOperationsLoadError = false;
+	state.lastSyncCoordinator = null;
+	state.lastSyncCoordinatorAdminStatus = null;
+	state.lastCoordinatorAdminStatus = null;
+	state.pendingCoordinatorApprovalsByDeviceId.clear();
+	state.lastSyncViewModel = null;
+	state.lastDeviceIdentityInventory = null;
+	state.deviceIdentityInventoryLoadError = false;
+}
+
 describe("loadSyncData", () => {
-	beforeEach(async () => {
-		vi.clearAllMocks();
-		const { state } = await import("../../lib/state");
-		const { resetSyncLoadStateForTests } = await import("./index");
-		resetSyncLoadStateForTests();
-		state.activeTab = "advanced";
-		state.currentProject = "";
-		state.lastSyncPeers = [];
-		state.pendingAcceptedSyncPeers = [];
-		state.lastSyncActors = [];
-		state.lastShareOperations = [];
-		state.shareOperationsLoadError = false;
-		state.lastSyncCoordinator = null;
-		state.lastSyncCoordinatorAdminStatus = null;
-		state.lastCoordinatorAdminStatus = null;
-		state.pendingCoordinatorApprovalsByDeviceId.clear();
-		state.lastSyncViewModel = null;
-		state.lastDeviceIdentityInventory = null;
-		state.deviceIdentityInventoryLoadError = false;
-	});
+	beforeEach(() => resetSyncTestState("advanced"));
 
 	it("retains pending approval when the matching device still needs local approval", async () => {
 		const api = await import("../../lib/api");
@@ -104,8 +132,9 @@ describe("loadSyncData", () => {
 		vi.mocked(api.loadSyncActors).mockResolvedValue({ items: [] });
 		vi.mocked(api.loadShareOperations).mockResolvedValue({ items: [] });
 
-		await loadSyncData();
+		const refreshed = await loadSyncData();
 
+		expect(refreshed).toBe(true);
 		expect(state.pendingCoordinatorApprovalsByDeviceId.get("device-a")).toEqual({
 			coordinatorUrl: "https://coord.example.test",
 			incomingRequestId: "request-a",
@@ -127,8 +156,9 @@ describe("loadSyncData", () => {
 			new Error("sync status refresh failed"),
 		);
 
-		await loadSyncData();
+		const refreshed = await loadSyncData();
 
+		expect(refreshed).toBe(false);
 		expect(state.lastCoordinatorAdminStatus?.active_group).toBe("retained-group");
 		expect(state.lastSyncCoordinatorAdminStatus).toBeNull();
 	});
@@ -398,7 +428,7 @@ describe("loadSyncData", () => {
 			attempts: [],
 			legacy_devices: [],
 		});
-		await secondLoad;
+		await expect(secondLoad).resolves.toBe(true);
 		expect(state.lastSyncPeers.map((peer) => peer.peer_device_id)).toEqual(["peer-new"]);
 		expect(api.loadSyncStatus).toHaveBeenNthCalledWith(1, false, "", {
 			includeJoinRequests: false,
@@ -413,8 +443,24 @@ describe("loadSyncData", () => {
 			attempts: [],
 			legacy_devices: [],
 		});
-		await firstLoad;
+		await expect(firstLoad).resolves.toBe(true);
 		expect(state.lastSyncPeers.map((peer) => peer.peer_device_id)).toEqual(["peer-new"]);
+	});
+
+	it("forwards an older overlapping load to the newer failed result", async () => {
+		const api = await import("../../lib/api");
+		const { loadSyncData } = await import("./index");
+		const olderStatus = deferred<{ peers: [] }>();
+		vi.mocked(api.loadSyncStatus)
+			.mockReturnValueOnce(olderStatus.promise as never)
+			.mockRejectedValueOnce(new Error("newer refresh failed"));
+
+		const olderLoad = loadSyncData();
+		const newerLoad = loadSyncData();
+
+		await expect(newerLoad).resolves.toBe(false);
+		olderStatus.resolve({ peers: [] });
+		await expect(olderLoad).resolves.toBe(false);
 	});
 
 	it("does not extend the health-tab cache ttl on cache hits", async () => {
@@ -439,6 +485,11 @@ describe("loadSyncData", () => {
 			includeJoinRequests: false,
 		});
 	});
+
+	it(
+		"bypasses a cached Health status when recovery requires fresh evidence",
+		verifyRecoveryBypassesCachedHealthStatus,
+	);
 
 	it("does not request secondary sync data when status fails", async () => {
 		const api = await import("../../lib/api");
@@ -598,5 +649,69 @@ describe("loadSyncData", () => {
 
 		expect(api.loadDeviceIdentityInventory).not.toHaveBeenCalled();
 		expect(state.deviceIdentityInventoryLoadError).toBe(true);
+	});
+});
+
+describe("loadSyncData devices surface", () => {
+	beforeEach(() => resetSyncTestState("devices"));
+
+	it("reports success when only auxiliary Advanced data fails", async () => {
+		const api = await import("../../lib/api");
+		const { loadSyncData } = await import("./index");
+		vi.mocked(api.loadSyncStatus).mockResolvedValue({ peers: [] } as never);
+		vi.mocked(api.loadSyncActors).mockRejectedValue(new Error("actors unavailable"));
+		vi.mocked(api.loadCoordinatorAdminStatus).mockRejectedValue(new Error("admin unavailable"));
+		vi.mocked(api.loadShareOperations).mockRejectedValue(new Error("shares unavailable"));
+
+		await expect(loadSyncData({ requiredSurface: "devices" })).resolves.toBe(true);
+		await expect(loadSyncData()).resolves.toBe(false);
+	});
+
+	it("still fails when the primary sync status request fails", async () => {
+		const api = await import("../../lib/api");
+		const { loadSyncData } = await import("./index");
+		vi.mocked(api.loadSyncStatus).mockRejectedValue(new Error("status unavailable"));
+
+		await expect(loadSyncData({ requiredSurface: "devices" })).resolves.toBe(false);
+	});
+});
+
+describe("loadPairingData", () => {
+	it("forwards a superseded load to the newer successful result", async () => {
+		const api = await import("../../lib/api");
+		const { state } = await import("../../lib/state");
+		const { loadPairingData, resetSyncLoadStateForTests } = await import("./index");
+		resetSyncLoadStateForTests();
+		const olderPairing = deferred<Record<string, unknown>>();
+		vi.mocked(api.loadPairing)
+			.mockReturnValueOnce(olderPairing.promise as never)
+			.mockResolvedValueOnce({ command: "newer" } as never);
+
+		const olderLoad = loadPairingData();
+		const newerLoad = loadPairingData();
+		await expect(newerLoad).resolves.toBe(true);
+		olderPairing.resolve({ command: "older" });
+
+		await expect(olderLoad).resolves.toBe(true);
+		expect(state.pairingPayloadRaw).toEqual({ command: "newer" });
+	});
+
+	it("forwards a superseded load to the newer failed result", async () => {
+		const api = await import("../../lib/api");
+		const { state } = await import("../../lib/state");
+		const { loadPairingData, resetSyncLoadStateForTests } = await import("./index");
+		resetSyncLoadStateForTests();
+		const olderPairing = deferred<Record<string, unknown>>();
+		vi.mocked(api.loadPairing)
+			.mockReturnValueOnce(olderPairing.promise as never)
+			.mockRejectedValueOnce(new Error("newer pairing failed"));
+
+		const olderLoad = loadPairingData();
+		const newerLoad = loadPairingData();
+		await expect(newerLoad).resolves.toBe(false);
+		olderPairing.resolve({ command: "older" });
+
+		await expect(olderLoad).resolves.toBe(false);
+		expect(state.pairingPayloadRaw).toBeNull();
 	});
 });

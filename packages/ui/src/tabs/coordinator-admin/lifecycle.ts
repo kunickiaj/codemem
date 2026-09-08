@@ -51,7 +51,9 @@ const {
 	runDeviceAction,
 } = createCoordinatorAdminActions({
 	renderShell: () => renderShell(),
-	reloadData: () => loadCoordinatorAdminData(),
+	reloadData: async () => {
+		await loadCoordinatorAdminData();
+	},
 });
 
 function renderShell() {
@@ -306,8 +308,21 @@ export function initCoordinatorAdminTab() {
 	renderShell();
 }
 
-export async function loadCoordinatorAdminData() {
+let latestCoordinatorAdminLoad: { generation: number; operation: Promise<boolean> } | null = null;
+
+function latestCoordinatorAdminLoadResult(generation: number): boolean | Promise<boolean> {
+	if (latestCoordinatorAdminLoad?.generation === generation) return false;
+	return latestCoordinatorAdminLoad?.operation ?? false;
+}
+
+export function loadCoordinatorAdminData(): Promise<boolean> {
 	const generation = beginCoordinatorAdminLoadGeneration();
+	const operation = runCoordinatorAdminLoad(generation);
+	latestCoordinatorAdminLoad = { generation, operation };
+	return operation;
+}
+
+async function runCoordinatorAdminLoad(generation: number): Promise<boolean> {
 	const isCurrent = () => isCurrentCoordinatorAdminLoadGeneration(generation);
 	if (!coordinatorAdminState.recoveryRetryRequested) {
 		coordinatorAdminState.recoveryAnnouncement = "";
@@ -318,7 +333,7 @@ export async function loadCoordinatorAdminData() {
 	beginSurfaceRefresh(coordinatorAdminState.recovery, "devices");
 	renderShell();
 	const statusResult = await refreshCoordinatorAdminStatusForGeneration(generation);
-	if (statusResult === "superseded") return;
+	if (statusResult === "superseded") return latestCoordinatorAdminLoadResult(generation);
 	const activeGroup = String(state.lastCoordinatorAdminStatus?.active_group || "").trim();
 	resolveAdminTargetGroup();
 	if (
@@ -327,10 +342,10 @@ export async function loadCoordinatorAdminData() {
 	) {
 		try {
 			const payload = await api.loadShareOperations();
-			if (!isCurrent()) return;
+			if (!isCurrent()) return latestCoordinatorAdminLoadResult(generation);
 			state.lastShareOperations = Array.isArray(payload.items) ? payload.items : [];
 		} catch {
-			if (!isCurrent()) return;
+			if (!isCurrent()) return latestCoordinatorAdminLoadResult(generation);
 			// Keep the previous read-only reflection; Coordinator Administration remains usable.
 		}
 		try {
@@ -339,14 +354,14 @@ export async function loadCoordinatorAdminData() {
 			)) as {
 				items?: typeof state.lastCoordinatorAdminGroups;
 			};
-			if (!isCurrent()) return;
+			if (!isCurrent()) return latestCoordinatorAdminLoadResult(generation);
 			if (!Array.isArray(groupsPayload?.items)) throw new Error("Invalid groups payload");
 			state.lastCoordinatorAdminGroups = groupsPayload.items;
 			completeSurfaceRefresh(coordinatorAdminState.recovery, "groups");
 			reconcileGroupRenameDrafts();
 			resolveAdminTargetGroup();
 		} catch {
-			if (!isCurrent()) return;
+			if (!isCurrent()) return latestCoordinatorAdminLoadResult(generation);
 			failSurfaceRefresh(coordinatorAdminState.recovery, "groups");
 		}
 		const targetGroup = currentAdminTargetGroup();
@@ -356,13 +371,13 @@ export async function loadCoordinatorAdminData() {
 			const payload = (await api.loadCoordinatorAdminJoinRequests(targetGroup || activeGroup)) as {
 				items?: typeof state.lastCoordinatorAdminJoinRequests;
 			};
-			if (!isCurrent()) return;
+			if (!isCurrent()) return latestCoordinatorAdminLoadResult(generation);
 			if (!Array.isArray(payload?.items)) throw new Error("Invalid join requests payload");
 			state.lastCoordinatorAdminJoinRequests = payload.items;
 			coordinatorAdminState.joinRequestsSnapshotTarget = snapshotTarget;
 			completeSurfaceRefresh(coordinatorAdminState.recovery, "joinRequests");
 		} catch {
-			if (!isCurrent()) return;
+			if (!isCurrent()) return latestCoordinatorAdminLoadResult(generation);
 			failSurfaceRefresh(
 				coordinatorAdminState.recovery,
 				"joinRequests",
@@ -377,14 +392,14 @@ export async function loadCoordinatorAdminData() {
 			)) as {
 				items?: typeof state.lastCoordinatorAdminDevices;
 			};
-			if (!isCurrent()) return;
+			if (!isCurrent()) return latestCoordinatorAdminLoadResult(generation);
 			if (!Array.isArray(devicesPayload?.items)) throw new Error("Invalid devices payload");
 			state.lastCoordinatorAdminDevices = devicesPayload.items;
 			coordinatorAdminState.devicesSnapshotTarget = snapshotTarget;
 			completeSurfaceRefresh(coordinatorAdminState.recovery, "devices");
 			reconcileDeviceRenameDrafts();
 		} catch {
-			if (!isCurrent()) return;
+			if (!isCurrent()) return latestCoordinatorAdminLoadResult(generation);
 			failSurfaceRefresh(
 				coordinatorAdminState.recovery,
 				"devices",
@@ -393,10 +408,10 @@ export async function loadCoordinatorAdminData() {
 		}
 		try {
 			const projects = await api.loadProjects();
-			if (!isCurrent()) return;
+			if (!isCurrent()) return latestCoordinatorAdminLoadResult(generation);
 			coordinatorAdminState.availableProjects = projects;
 		} catch {
-			if (!isCurrent()) return;
+			if (!isCurrent()) return latestCoordinatorAdminLoadResult(generation);
 			// Non-fatal — picker falls back to free-text entry.
 		}
 	} else if (coordinatorAdminState.recovery.status.availability === "fresh") {
@@ -418,7 +433,7 @@ export async function loadCoordinatorAdminData() {
 			adminSnapshotTargetMatchesCurrent(coordinatorAdminState.devicesSnapshotTarget),
 		);
 	}
-	if (!isCurrent()) return;
+	if (!isCurrent()) return latestCoordinatorAdminLoadResult(generation);
 	stableUnnamedDeviceAliases(
 		[
 			...state.lastCoordinatorAdminDevices,
@@ -447,4 +462,5 @@ export async function loadCoordinatorAdminData() {
 	}
 	coordinatorAdminState.recoveryRetryRequested = false;
 	renderShell();
+	return coordinatorAdminRecoveryNotice(coordinatorAdminState.recovery) === null;
 }

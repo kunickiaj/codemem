@@ -4,6 +4,7 @@
  * unavailable" fallback for when the whole /api/sync/status call
  * failed. */
 
+import { openDiagnosticsDrawer } from "../../../../components/diagnostics";
 import { formatTimestamp } from "../../../../lib/format";
 import { isSyncRedactionEnabled, state } from "../../../../lib/state";
 import {
@@ -25,6 +26,13 @@ export function shouldShowSyncAttemptRedactionHint(
 	redact: boolean,
 ): boolean {
 	return redact && attempt.error_redacted === true;
+}
+
+function failedAttemptDiagnosticsAction(isError: boolean): Partial<SyncAttemptItem> {
+	if (!isError) return {};
+	return {
+		action: (trigger) => openDiagnosticsDrawer({ severity: "error", subsystem: "sync", trigger }),
+	};
 }
 
 export function renderSyncAttempts() {
@@ -78,6 +86,7 @@ export function renderSyncAttempts() {
 			peerLabel,
 			detail: detailParts.join(" · "),
 			startedAt: time ? formatTimestamp(time) : "",
+			...failedAttemptDiagnosticsAction(isError),
 			...(shouldShowSyncAttemptRedactionHint(attempt, redact)
 				? {
 						actionHref: "#sync/diagnostics",

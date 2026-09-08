@@ -15,6 +15,7 @@ import {
 	coordinatedRefreshDiagnosticsDrawer,
 	initDiagnosticsEntryPoints,
 	mountDiagnosticsDrawer,
+	recordViewerConnectionEvent,
 } from "./components/diagnostics";
 import { mountToastHost } from "./components/primitives/toast";
 import * as api from "./lib/api";
@@ -92,6 +93,7 @@ const LEGACY_UPGRADE_NOTICE_DISMISSED_KEY = "codemem-legacy-upgrade-notice-dismi
 
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnecting = false;
+let viewerIncidentAwaitingRefresh = false;
 let legacyUpgradeNoticeShown = false;
 let legacyUpgradeNoticePreviousFocus: HTMLElement | null = null;
 
@@ -259,9 +261,25 @@ function canResumeRefresh() {
 	return document.visibilityState !== "hidden" && !isSettingsOpen();
 }
 
+function activeRefreshSurface(): string {
+	return `${state.activeTab}:${state.advancedSection}:${state.syncPairingOpen}`;
+}
+
+function recordViewerRestoredAfterSuccessfulRefresh(options: {
+	refreshSucceeded: boolean;
+	surface: string;
+}): void {
+	if (state.refreshQueued || options.surface !== activeRefreshSurface()) return;
+	if (!options.refreshSucceeded || !viewerIncidentAwaitingRefresh || reconnecting) return;
+	viewerIncidentAwaitingRefresh = false;
+	recordViewerConnectionEvent("connection_restored");
+}
+
 function scheduleReconnectLoop() {
 	if (reconnecting) return;
 	reconnecting = true;
+	viewerIncidentAwaitingRefresh = true;
+	recordViewerConnectionEvent("connection_lost");
 	stopPolling();
 	closeDiagnosticsDrawer();
 	setRefreshStatus("error", "(reconnecting)");
@@ -621,7 +639,7 @@ async function runLoadDevicesData(mount: HTMLElement, revision: number): Promise
 		});
 	}
 	try {
-		const [projects, intent, reconciliation, inventoryResult] = await Promise.all([
+		const [projects, intent, reconciliation, inventoryResult, syncRefreshed] = await Promise.all([
 			loadRecipientPolicyProjects(),
 			api.loadRecipientPolicyIntent(),
 			api.loadRecipientPolicyReconciliationStatus(),
@@ -629,7 +647,7 @@ async function runLoadDevicesData(mount: HTMLElement, revision: number): Promise
 				.loadDeviceIdentityInventory()
 				.then((inventory) => ({ inventory, unavailable: false }))
 				.catch(() => ({ inventory: lastDevicesData?.inventory, unavailable: true })),
-			loadSyncData(),
+			loadSyncData({ requiredSurface: "devices" }),
 		]);
 		if (revision !== devicesLoadRevision) return latestDevicesLoad ?? false;
 		const availability = deriveDeviceAvailability();
@@ -665,7 +683,7 @@ async function runLoadDevicesData(mount: HTMLElement, revision: number): Promise
 			inventoryUnavailable: inventoryResult.unavailable,
 			coordinatorEnrollmentIssueCount,
 		};
-		return true;
+		return syncRefreshed;
 	} catch {
 		if (revision !== devicesLoadRevision) return latestDevicesLoad ?? false;
 		if (lastDevicesData) {
@@ -739,13 +757,24 @@ function appendTabRefreshTasks(
 	if (refreshTab === "devices") {
 		promises.push(loadDevicesData().then(recordBooleanResult));
 	}
-	if ((refreshTab === "advanced" && state.advancedSection === "sync") || refreshTab === "health") {
-		promises.push(loadSyncData());
+	if (refreshTab === "health") {
+		promises.push(
+			loadSyncData({
+				requiredSurface: "health",
+				requireFreshSyncStatus: viewerIncidentAwaitingRefresh,
+			}).then(recordBooleanResult),
+		);
+	}
+	if (refreshTab === "advanced" && state.advancedSection === "sync") {
+		promises.push(loadSyncData().then(recordBooleanResult));
 	}
 	if (refreshTab === "advanced" && state.advancedSection === "teams") {
-		promises.push(loadCoordinatorAdminData());
+		promises.push(loadCoordinatorAdminData().then(recordBooleanResult));
 	}
-	if (state.syncPairingOpen) promises.push(loadPairingData());
+	if (!state.syncPairingOpen) return;
+	const pairingVisible = refreshTab === "advanced" && state.advancedSection === "sync";
+	const pairingRefresh = loadPairingData();
+	promises.push(pairingVisible ? pairingRefresh.then(recordBooleanResult) : pairingRefresh);
 }
 
 async function refresh() {
@@ -755,7 +784,7 @@ async function refresh() {
 	refreshDebounceTimer = setTimeout(() => doRefresh(), 80);
 }
 
-async function doRefresh() {
+async function doRefresh(): Promise<void> {
 	if (reconnecting) return;
 	if (state.refreshInFlight) {
 		state.refreshQueued = true;
@@ -766,6 +795,7 @@ async function doRefresh() {
 	try {
 		setRefreshStatus("refreshing");
 		const refreshTab = state.activeTab;
+		const surface = activeRefreshSurface();
 		const promises: Promise<unknown>[] = [loadGlobalRefreshData()];
 		let activeTabRefreshSucceeded = true;
 		appendTabRefreshTasks(promises, refreshTab, (succeeded) => {
@@ -779,6 +809,10 @@ async function doRefresh() {
 		}
 		renderTabs(state.activeTab);
 		setRefreshStatus(activeTabRefreshSucceeded ? "idle" : "error");
+		recordViewerRestoredAfterSuccessfulRefresh({
+			refreshSucceeded: activeTabRefreshSucceeded,
+			surface,
+		});
 	} catch {
 		const ready = await isViewerReady();
 		if (!ready) {
@@ -843,6 +877,7 @@ initSettings(stopPolling, startPolling, () => refresh());
 loadProjects();
 
 $("viewerReconnectRetry")?.addEventListener("click", async () => {
+	recordViewerConnectionEvent("reconnect_requested");
 	setReconnectOverlay(true, "Checking whether the viewer server is back…");
 	const ready = await isViewerReady();
 	if (!ready) {

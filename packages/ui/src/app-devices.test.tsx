@@ -8,12 +8,17 @@ const mocks = vi.hoisted(() => ({
 	loadProjectScopeInventory: vi.fn(),
 	loadDeviceIdentityInventory: vi.fn(),
 	loadLegacyTeamSetupDetail: vi.fn(),
+	loadHealthData: vi.fn(),
 	loadProjectsData: vi.fn(),
 	loadRecipientPolicyIntent: vi.fn(),
 	loadRecipientPolicyReconciliationStatus: vi.fn(),
 	loadRecipientPolicySharingData: vi.fn(),
 	loadSyncData: vi.fn(),
+	loadPairingData: vi.fn(),
+	loadCoordinatorAdminData: vi.fn(),
 	mountLegacyTeamSetupDialog: vi.fn(),
+	loadSyncStatus: vi.fn(),
+	pingViewerReady: vi.fn(),
 }));
 
 vi.mock("./app-sharing", () => ({
@@ -32,8 +37,8 @@ vi.mock("./lib/api", () => ({
 	loadRecipientPolicyIntent: mocks.loadRecipientPolicyIntent,
 	loadRecipientPolicyReconciliationStatus: mocks.loadRecipientPolicyReconciliationStatus,
 	loadRuntimeInfo: vi.fn(async () => ({ version: "test" })),
-	loadSyncStatus: vi.fn(async () => ({})),
-	pingViewerReady: vi.fn(async () => true),
+	loadSyncStatus: mocks.loadSyncStatus,
+	pingViewerReady: mocks.pingViewerReady,
 	refreshLegacyTeamSetupCandidate: vi.fn(),
 	saveLegacyTeamSetupAssignment: vi.fn(),
 	saveLegacyTeamSetupDecision: vi.fn(),
@@ -41,7 +46,7 @@ vi.mock("./lib/api", () => ({
 }));
 vi.mock("./tabs/coordinator-admin", () => ({
 	initCoordinatorAdminTab: vi.fn(),
-	loadCoordinatorAdminData: vi.fn(async () => undefined),
+	loadCoordinatorAdminData: mocks.loadCoordinatorAdminData,
 }));
 vi.mock("./tabs/feed", () => ({
 	initFeedTab: vi.fn(),
@@ -50,7 +55,7 @@ vi.mock("./tabs/feed", () => ({
 }));
 vi.mock("./tabs/health", () => ({
 	initHealthTab: vi.fn(),
-	loadHealthData: vi.fn(async () => undefined),
+	loadHealthData: mocks.loadHealthData,
 }));
 vi.mock("./tabs/legacy-team-setup-dialog", () => ({
 	mountLegacyTeamSetupDialog: mocks.mountLegacyTeamSetupDialog,
@@ -74,7 +79,7 @@ vi.mock("./tabs/settings", () => ({
 vi.mock("./tabs/sync", () => ({
 	initSyncTab: vi.fn(),
 	invalidateSyncPeerScopeCache: vi.fn(),
-	loadPairingData: vi.fn(async () => undefined),
+	loadPairingData: mocks.loadPairingData,
 	loadSyncData: mocks.loadSyncData,
 }));
 vi.mock("./tabs/sync/sync-view-controller", () => ({ applySyncSubView: vi.fn() }));
@@ -148,108 +153,306 @@ function bodyMarkup(): string {
 	return html.match(/<body[^>]*>([\s\S]*?)<\/body>/)?.[1] ?? "";
 }
 
-describe("Devices app integration", () => {
-	beforeEach(async () => {
-		vi.useFakeTimers();
-		vi.clearAllMocks();
-		vi.resetModules();
-		localStorage.clear();
-		localStorage.setItem("codemem-theme", "light");
-		document.body.innerHTML = bodyMarkup();
-		window.location.hash = "devices";
-		mocks.loadProjectScopeInventory.mockResolvedValue({
-			projects: [
-				{
-					workspace_identity: "project-private",
-					identity_source: "git_remote",
-					display_project: "Codemem",
-					memory_count: 10,
-					read_only: false,
-				},
-			],
-			has_more: false,
-			limit: 250,
-			offset: 0,
-		});
-		mocks.loadRecipientPolicyIntent.mockResolvedValue(intent);
-		mocks.loadProjectsData.mockResolvedValue(true);
-		mocks.loadRecipientPolicySharingData.mockResolvedValue(true);
-		mocks.loadLegacyTeamSetupDetail.mockResolvedValue({
-			version: 1,
-			candidate: {
-				candidateRef: "opaque-candidate-ref",
-				displayName: "Example Team",
-				status: "in_progress",
-				deviceCount: 0,
-				projectCount: 0,
-				unresolvedDeviceCount: 0,
-				unresolvedProjectCount: 0,
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	let reject!: (reason?: unknown) => void;
+	const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+		resolve = resolvePromise;
+		reject = rejectPromise;
+	});
+	return { promise, reject, resolve };
+}
+
+async function verifyRestorationWaitsForQueuedActiveTabRefresh(): Promise<void> {
+	const { state } = await import("./lib/state");
+	const connectionEvents = await import("./components/diagnostics/viewer-connection-events");
+	connectionEvents.resetViewerConnectionEventsForTests();
+	mocks.loadHealthData.mockRejectedValueOnce(new Error("viewer unavailable"));
+	mocks.pingViewerReady.mockRejectedValueOnce(new Error("viewer unavailable"));
+
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(5_100);
+	});
+	expect(connectionEvents.getViewerConnectionEvents().map((event) => event.code)).toContain(
+		"viewer_connection_lost",
+	);
+
+	const devicesRefresh = deferred<typeof intent>();
+	const intentCalls = mocks.loadRecipientPolicyIntent.mock.calls.length;
+	const projectCalls = mocks.loadProjectsData.mock.calls.length;
+	mocks.loadRecipientPolicyIntent.mockReturnValueOnce(devicesRefresh.promise);
+	mocks.loadProjectsData.mockResolvedValueOnce(false);
+	await act(async () => {
+		vi.advanceTimersByTime(1_600);
+		await Promise.resolve();
+		await Promise.resolve();
+	});
+	expect(mocks.loadRecipientPolicyIntent).toHaveBeenCalledTimes(intentCalls + 1);
+
+	state.activeTab = "projects";
+	state.refreshQueued = true;
+
+	await act(async () => {
+		devicesRefresh.resolve(intent);
+		await devicesRefresh.promise;
+		await vi.advanceTimersByTimeAsync(0);
+	});
+	expect(mocks.loadProjectsData).toHaveBeenCalledTimes(projectCalls + 1);
+	expect(document.getElementById("refreshStatus")?.dataset.refreshState).toBe("error");
+	expect(connectionEvents.getViewerConnectionEvents().map((event) => event.code)).not.toContain(
+		"viewer_connection_restored",
+	);
+
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(5_100);
+	});
+	expect(connectionEvents.getViewerConnectionEvents().map((event) => event.code)).toContain(
+		"viewer_connection_restored",
+	);
+}
+
+async function verifyHealthRestorationWaitsForSyncRefresh(): Promise<void> {
+	const { state } = await import("./lib/state");
+	const connectionEvents = await import("./components/diagnostics/viewer-connection-events");
+	connectionEvents.resetViewerConnectionEventsForTests();
+	state.activeTab = "health";
+	mocks.loadHealthData.mockRejectedValueOnce(new Error("viewer unavailable"));
+	mocks.pingViewerReady.mockRejectedValueOnce(new Error("viewer unavailable"));
+
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(5_100);
+	});
+	expect(connectionEvents.getViewerConnectionEvents().map((event) => event.code)).toContain(
+		"viewer_connection_lost",
+	);
+
+	mocks.loadSyncData.mockResolvedValueOnce(false);
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(1_600);
+	});
+	expect(mocks.loadSyncData).toHaveBeenLastCalledWith({
+		requiredSurface: "health",
+		requireFreshSyncStatus: true,
+	});
+	expect(connectionEvents.getViewerConnectionEvents().map((event) => event.code)).not.toContain(
+		"viewer_connection_restored",
+	);
+
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(5_100);
+	});
+	expect(connectionEvents.getViewerConnectionEvents().map((event) => event.code)).toContain(
+		"viewer_connection_restored",
+	);
+}
+
+async function verifyDevicesRestorationWaitsForSyncRefresh(): Promise<void> {
+	const connectionEvents = await import("./components/diagnostics/viewer-connection-events");
+	connectionEvents.resetViewerConnectionEventsForTests();
+	mocks.loadHealthData.mockRejectedValueOnce(new Error("viewer unavailable"));
+	mocks.pingViewerReady.mockRejectedValueOnce(new Error("viewer unavailable"));
+
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(5_100);
+	});
+	expect(connectionEvents.getViewerConnectionEvents().map((event) => event.code)).toContain(
+		"viewer_connection_lost",
+	);
+
+	mocks.loadSyncData.mockResolvedValueOnce(false);
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(1_600);
+	});
+	expect(connectionEvents.getViewerConnectionEvents().map((event) => event.code)).not.toContain(
+		"viewer_connection_restored",
+	);
+
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(5_100);
+	});
+	expect(connectionEvents.getViewerConnectionEvents().map((event) => event.code)).toContain(
+		"viewer_connection_restored",
+	);
+}
+
+async function verifyPairingRestorationWaitsForRefresh(): Promise<void> {
+	const { state } = await import("./lib/state");
+	const connectionEvents = await import("./components/diagnostics/viewer-connection-events");
+	connectionEvents.resetViewerConnectionEventsForTests();
+	state.activeTab = "advanced";
+	state.advancedSection = "sync";
+	state.syncPairingOpen = true;
+	mocks.loadHealthData.mockRejectedValueOnce(new Error("viewer unavailable"));
+	mocks.pingViewerReady.mockRejectedValueOnce(new Error("viewer unavailable"));
+
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(5_100);
+	});
+	mocks.loadPairingData.mockResolvedValueOnce(false);
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(1_600);
+	});
+	expect(connectionEvents.getViewerConnectionEvents().map((event) => event.code)).not.toContain(
+		"viewer_connection_restored",
+	);
+
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(5_100);
+	});
+	expect(connectionEvents.getViewerConnectionEvents().map((event) => event.code)).toContain(
+		"viewer_connection_restored",
+	);
+}
+
+async function verifyHiddenPairingFailureDoesNotBlockRestoration(): Promise<void> {
+	const { state } = await import("./lib/state");
+	const connectionEvents = await import("./components/diagnostics/viewer-connection-events");
+	connectionEvents.resetViewerConnectionEventsForTests();
+	state.syncPairingOpen = true;
+	mocks.loadHealthData.mockRejectedValueOnce(new Error("viewer unavailable"));
+	mocks.pingViewerReady.mockRejectedValueOnce(new Error("viewer unavailable"));
+
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(5_100);
+	});
+	mocks.loadPairingData.mockResolvedValue(false);
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(1_600);
+	});
+	expect(state.activeTab).toBe("devices");
+	expect(document.getElementById("refreshStatus")?.textContent).not.toBe("refresh failed");
+	expect(connectionEvents.getViewerConnectionEvents().map((event) => event.code)).toContain(
+		"viewer_connection_restored",
+	);
+}
+
+async function verifyDevicesRestorationIgnoresAuxiliarySyncFailures(): Promise<void> {
+	const connectionEvents = await import("./components/diagnostics/viewer-connection-events");
+	connectionEvents.resetViewerConnectionEventsForTests();
+	mocks.loadHealthData.mockRejectedValueOnce(new Error("viewer unavailable"));
+	mocks.pingViewerReady.mockRejectedValueOnce(new Error("viewer unavailable"));
+
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(5_100);
+	});
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(1_600);
+	});
+	expect(mocks.loadSyncData).toHaveBeenLastCalledWith({ requiredSurface: "devices" });
+	expect(connectionEvents.getViewerConnectionEvents().map((event) => event.code)).toContain(
+		"viewer_connection_restored",
+	);
+}
+
+async function setupDevicesAppTest() {
+	vi.useFakeTimers();
+	vi.clearAllMocks();
+	vi.resetModules();
+	localStorage.clear();
+	localStorage.setItem("codemem-theme", "light");
+	document.body.innerHTML = bodyMarkup();
+	window.location.hash = "devices";
+	mocks.loadProjectScopeInventory.mockResolvedValue({
+		projects: [
+			{
+				workspace_identity: "project-private",
+				identity_source: "git_remote",
+				display_project: "Codemem",
+				memory_count: 10,
+				read_only: false,
 			},
-			attemptId: "opaque-attempt",
-			state: "reviewing",
+		],
+		has_more: false,
+		limit: 250,
+		offset: 0,
+	});
+	mocks.loadRecipientPolicyIntent.mockResolvedValue(intent);
+	mocks.loadProjectsData.mockResolvedValue(true);
+	mocks.loadRecipientPolicySharingData.mockResolvedValue(true);
+	mocks.loadCoordinatorAdminData.mockResolvedValue(true);
+	mocks.loadPairingData.mockResolvedValue(true);
+	mocks.loadHealthData.mockResolvedValue(undefined);
+	mocks.loadSyncStatus.mockResolvedValue({});
+	mocks.pingViewerReady.mockResolvedValue(true);
+	mocks.loadLegacyTeamSetupDetail.mockResolvedValue({
+		version: 1,
+		candidate: {
+			candidateRef: "opaque-candidate-ref",
+			displayName: "Example Team",
+			status: "in_progress",
+			deviceCount: 0,
+			projectCount: 0,
 			unresolvedDeviceCount: 0,
 			unresolvedProjectCount: 0,
-			devices: [],
-			projects: [],
-			identityChoices: [],
-			actions: {
-				refresh: { enabled: true, blockedReason: null },
-				finish: { enabled: false, blockedReason: "setup_incomplete" },
+		},
+		attemptId: "opaque-attempt",
+		state: "reviewing",
+		unresolvedDeviceCount: 0,
+		unresolvedProjectCount: 0,
+		devices: [],
+		projects: [],
+		identityChoices: [],
+		actions: {
+			refresh: { enabled: true, blockedReason: null },
+			finish: { enabled: false, blockedReason: "setup_incomplete" },
+		},
+	});
+	if (expect.getState().currentTestName?.includes("first Devices load")) {
+		mocks.loadDeviceIdentityInventory.mockRejectedValue(new Error("inventory unavailable"));
+	} else {
+		mocks.loadDeviceIdentityInventory.mockResolvedValue(configuredDeviceInventory());
+	}
+	mocks.loadRecipientPolicyReconciliationStatus.mockResolvedValue({
+		version: 1,
+		items: [
+			{
+				canonicalProjectIdentity: "project-private",
+				state: "needs_attention",
+				label: "Needs attention",
+				explanation: "Current access remains in place until it is safe to retry.",
+				deliveredCopiesMayRemain: true,
+				revocationWarning: "internal warning",
 			},
-		});
-		if (expect.getState().currentTestName?.includes("first Devices load")) {
-			mocks.loadDeviceIdentityInventory.mockRejectedValue(new Error("inventory unavailable"));
-		} else {
-			mocks.loadDeviceIdentityInventory.mockResolvedValue(configuredDeviceInventory());
-		}
-		mocks.loadRecipientPolicyReconciliationStatus.mockResolvedValue({
-			version: 1,
-			items: [
+		],
+	});
+	mocks.loadSyncData.mockImplementation(async () => {
+		const { state } = await import("./lib/state");
+		state.lastSyncStatus = {
+			coordinator_enrollment_reconciliation_issues: { counts: { open: 2, resolved: 1 } },
+		};
+		state.lastSyncPeers = [
+			{
+				peer_device_id: "device-private",
+				runtime_version: "0.42.0",
+				runtime_version_observed_at: "2026-08-11T12:00:00.000Z",
+				status: { peer_state: "online", fresh: true },
+			},
+			{
+				peer_device_id: "unmatched-paired-device",
+				runtime_version: "9.9.9",
+				runtime_version_observed_at: "2026-08-11T12:00:00.000Z",
+				status: { peer_state: "online", fresh: true },
+			},
+		];
+		state.lastSyncCoordinator = {
+			discovered_devices: [
 				{
-					canonicalProjectIdentity: "project-private",
-					state: "needs_attention",
-					label: "Needs attention",
-					explanation: "Current access remains in place until it is safe to retry.",
-					deliveredCopiesMayRemain: true,
-					revocationWarning: "internal warning",
+					device_id: "coordinator-only-device",
+					display_name: "Coordinator Tablet",
+					stale: false,
 				},
 			],
-		});
-		mocks.loadSyncData.mockImplementation(async () => {
-			const { state } = await import("./lib/state");
-			state.lastSyncStatus = {
-				coordinator_enrollment_reconciliation_issues: { counts: { open: 2, resolved: 1 } },
-			};
-			state.lastSyncPeers = [
-				{
-					peer_device_id: "device-private",
-					runtime_version: "0.42.0",
-					runtime_version_observed_at: "2026-08-11T12:00:00.000Z",
-					status: { peer_state: "online", fresh: true },
-				},
-				{
-					peer_device_id: "unmatched-paired-device",
-					runtime_version: "9.9.9",
-					runtime_version_observed_at: "2026-08-11T12:00:00.000Z",
-					status: { peer_state: "online", fresh: true },
-				},
-			];
-			state.lastSyncCoordinator = {
-				discovered_devices: [
-					{
-						device_id: "coordinator-only-device",
-						display_name: "Coordinator Tablet",
-						stale: false,
-					},
-				],
-			};
-		});
-		await import("./app");
-		await act(async () => {
-			await vi.advanceTimersByTimeAsync(100);
-		});
+		};
+		return true;
 	});
+	await import("./app");
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(100);
+	});
+}
 
+describe("Devices app integration", () => {
+	beforeEach(setupDevicesAppTest);
 	afterEach(() => {
 		vi.clearAllTimers();
 		vi.useRealTimers();
@@ -567,6 +770,97 @@ describe("Devices app integration", () => {
 		expect(document.getElementById("refreshStatus")?.dataset.refreshState).toBe("idle");
 	});
 
+	it("records restoration only after the active Devices refresh succeeds", async () => {
+		const connectionEvents = await import("./components/diagnostics/viewer-connection-events");
+		connectionEvents.resetViewerConnectionEventsForTests();
+		mocks.loadHealthData.mockRejectedValueOnce(new Error("viewer unavailable"));
+		mocks.pingViewerReady.mockRejectedValueOnce(new Error("viewer unavailable"));
+
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(5_100);
+		});
+		expect(connectionEvents.getViewerConnectionEvents().map((event) => event.code)).toContain(
+			"viewer_connection_lost",
+		);
+
+		mocks.loadRecipientPolicyIntent.mockRejectedValueOnce(new Error("refresh failed"));
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(1_600);
+		});
+		expect(connectionEvents.getViewerConnectionEvents().map((event) => event.code)).not.toContain(
+			"viewer_connection_restored",
+		);
+
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(5_100);
+		});
+		expect(connectionEvents.getViewerConnectionEvents().map((event) => event.code)).toContain(
+			"viewer_connection_restored",
+		);
+	});
+
+	it(
+		"waits for a queued new-tab refresh before recording restoration",
+		verifyRestorationWaitsForQueuedActiveTabRefresh,
+	);
+
+	it(
+		"records restoration only after the active Health sync refresh succeeds",
+		verifyHealthRestorationWaitsForSyncRefresh,
+	);
+	it(
+		"records restoration only after the active Devices sync refresh succeeds",
+		verifyDevicesRestorationWaitsForSyncRefresh,
+	);
+
+	it.each(["sync", "teams"] as const)(
+		"records restoration only after the active Advanced %s refresh succeeds",
+		async (advancedSection) => {
+			const { state } = await import("./lib/state");
+			const connectionEvents = await import("./components/diagnostics/viewer-connection-events");
+			connectionEvents.resetViewerConnectionEventsForTests();
+			state.activeTab = "advanced";
+			state.advancedSection = advancedSection;
+			mocks.loadHealthData.mockRejectedValueOnce(new Error("viewer unavailable"));
+			mocks.pingViewerReady.mockRejectedValueOnce(new Error("viewer unavailable"));
+
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(5_100);
+			});
+			if (advancedSection === "sync") mocks.loadSyncData.mockResolvedValueOnce(false);
+			if (advancedSection === "teams") mocks.loadCoordinatorAdminData.mockResolvedValueOnce(false);
+
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(1_600);
+			});
+			expect(connectionEvents.getViewerConnectionEvents().map((event) => event.code)).not.toContain(
+				"viewer_connection_restored",
+			);
+
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(5_100);
+			});
+			expect(connectionEvents.getViewerConnectionEvents().map((event) => event.code)).toContain(
+				"viewer_connection_restored",
+			);
+		},
+	);
+
+	it(
+		"records restoration only after an open pairing panel refresh succeeds",
+		verifyPairingRestorationWaitsForRefresh,
+	);
+
+	it(
+		"ignores a hidden pairing panel failure when recording restoration",
+		verifyHiddenPairingFailureDoesNotBlockRestoration,
+	);
+
+	it(
+		"scopes the Devices sync refresh to the Devices surface",
+		verifyDevicesRestorationIgnoresAuxiliarySyncFailures,
+	);
+
 	it("uses a fresh Devices inventory instead of accepting cached Sync ownership", async () => {
 		const { state } = await import("./lib/state");
 		state.lastDeviceIdentityInventory = {
@@ -590,6 +884,7 @@ describe("Devices app integration", () => {
 		mocks.loadDeviceIdentityInventory.mockClear();
 		mocks.loadSyncData.mockImplementationOnce(async () => {
 			state.deviceIdentityInventoryLoadError = true;
+			return true;
 		});
 
 		await act(async () => {

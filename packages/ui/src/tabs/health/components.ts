@@ -230,7 +230,7 @@ export function HealthActionRow({ item }: HealthActionRowProps) {
 		actionButton.disabled = true;
 		actionButton.textContent = "Running…";
 		try {
-			await item.action();
+			await item.action(actionButton);
 		} catch {}
 		actionButton.disabled = false;
 		actionButton.textContent = actionLabel;

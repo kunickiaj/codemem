@@ -7,7 +7,7 @@ export type HealthAction = {
 	label: string;
 	command: string;
 	/** If set, show an actionable button that triggers this async function. */
-	action?: () => Promise<void>;
+	action?: (trigger: HTMLButtonElement) => Promise<void> | void;
 	actionLabel?: string;
 };
 

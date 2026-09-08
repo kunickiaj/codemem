@@ -169,8 +169,9 @@ describe("coordinator administration recovery lifecycle", () => {
 			],
 		});
 
-		await loadCoordinatorAdminData();
+		const refreshed = await loadCoordinatorAdminData();
 
+		expect(refreshed).toBe(true);
 		expect(coordinatorAdminState.unnamedDeviceAliases.aliases.get("join-unnamed")).toBe(
 			"Unnamed device 2",
 		);
@@ -207,8 +208,9 @@ describe("coordinator administration recovery lifecycle", () => {
 	it("marks first-load failures unavailable instead of treating them as empty snapshots", async () => {
 		mocks.loadCoordinatorAdminStatus.mockRejectedValue(new Error("secret backend detail"));
 
-		await loadCoordinatorAdminData();
+		const refreshed = await loadCoordinatorAdminData();
 
+		expect(refreshed).toBe(false);
 		expect(coordinatorAdminState.recovery.status.availability).toBe("unavailable");
 		expect(coordinatorAdminState.recovery.groups.availability).toBe("unavailable");
 		expect(surfaceHasSnapshot(coordinatorAdminState.recovery, "devices")).toBe(false);
@@ -360,16 +362,39 @@ describe("coordinator administration recovery lifecycle", () => {
 			});
 
 		const olderLoad = loadCoordinatorAdminData();
-		await loadCoordinatorAdminData();
+		const newerLoad = loadCoordinatorAdminData();
+		await expect(newerLoad).resolves.toBe(true);
 		olderStatus.resolve({
 			active_group: "group-old",
 			coordinator_url: "https://old.example",
 			readiness: "ready",
 		});
-		await olderLoad;
+		await expect(olderLoad).resolves.toBe(true);
 
 		expect(state.lastCoordinatorAdminStatus?.active_group).toBe("group-new");
 		expect(coordinatorAdminState.recovery.status.availability).toBe("fresh");
+	});
+
+	it("forwards an older load to the newer failed result", async () => {
+		const olderStatus = deferred<{
+			active_group: string;
+			coordinator_url: string;
+			readiness: "ready";
+		}>();
+		mocks.loadCoordinatorAdminStatus
+			.mockImplementationOnce(() => olderStatus.promise)
+			.mockRejectedValueOnce(new Error("newer refresh failed"));
+
+		const olderLoad = loadCoordinatorAdminData();
+		const newerLoad = loadCoordinatorAdminData();
+
+		await expect(newerLoad).resolves.toBe(false);
+		olderStatus.resolve({
+			active_group: "group-old",
+			coordinator_url: "https://old.example",
+			readiness: "ready",
+		});
+		await expect(olderLoad).resolves.toBe(false);
 	});
 
 	it("shares generation authority with the feed status writer", async () => {

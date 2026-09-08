@@ -5,6 +5,7 @@ import {
 	DiagnosticEventsRequestError,
 	type DiagnosticEventsResponse,
 	type DiagnosticRecoveryHref,
+	isDiagnosticRecoveryHref,
 	type LoadDiagnosticEventsOptions,
 	type loadDiagnosticEvents,
 } from "../../lib/api/diagnostics";
@@ -18,8 +19,13 @@ import {
 	mergeUnique,
 	PAGE_SIZE,
 	type RequestMode,
+	visibleDiagnosticRows,
 } from "./state";
 import { loadTechnicalHistory } from "./technical-history";
+import {
+	getViewerConnectionEvents,
+	subscribeToViewerConnectionEvents,
+} from "./viewer-connection-events";
 
 type EventLoader = typeof loadDiagnosticEvents;
 type RequestReason = "routine" | "retry";
@@ -40,7 +46,7 @@ function requestOptions(
 	state: ReturnType<typeof initialDiagnosticsDrawerState>,
 	signal: AbortSignal,
 ): LoadDiagnosticEventsOptions {
-	const remaining = MAX_ROWS - state.rows.length;
+	const remaining = MAX_ROWS - visibleDiagnosticRows(state).length;
 	return {
 		limit: mode === "older" ? Math.max(1, Math.min(PAGE_SIZE, remaining)) : PAGE_SIZE,
 		cursor: mode === "older" ? (state.nextCursor ?? undefined) : undefined,
@@ -51,7 +57,7 @@ function requestOptions(
 	};
 }
 
-async function loadForMode(
+function loadForMode(
 	loadEvents: EventLoader,
 	mode: RequestMode,
 	state: DiagnosticsDrawerState,
@@ -158,9 +164,8 @@ type DrawerActionContext = {
 	listRef: { current: HTMLDivElement | null };
 };
 
-function createDrawerActions(context: DrawerActionContext) {
-	const { state, dispatch, abortRequest, runRequest, openerRef, recoveryNavigationRef, listRef } =
-		context;
+function createLifecycleActions(context: DrawerActionContext) {
+	const { dispatch, abortRequest, openerRef, recoveryNavigationRef } = context;
 	return {
 		open(options: OpenDiagnosticsDrawerOptions = {}) {
 			abortRequest();
@@ -170,6 +175,7 @@ function createDrawerActions(context: DrawerActionContext) {
 				type: "open",
 				severity: options.severity ?? "",
 				subsystem: options.subsystem ?? "",
+				sessionRows: getViewerConnectionEvents(),
 			});
 		},
 		close() {
@@ -185,9 +191,15 @@ function createDrawerActions(context: DrawerActionContext) {
 				setTimeout(() => recoveryTabFocusTarget(href)?.focus(), 0);
 			});
 		},
-		refresh: () => runRequest("poll"),
-		retry: () => runRequest(state.rows.length > 0 ? "poll" : "replace", "retry"),
-		loadOlder: () => runRequest("older"),
+		restoreFocus(event: { preventDefault: () => void }) {
+			restoreDrawerFocus(event, openerRef, recoveryNavigationRef);
+		},
+	};
+}
+
+function createQueryActions(context: DrawerActionContext) {
+	const { state, dispatch, abortRequest } = context;
+	return {
 		setSeverity(severity: DiagnosticEventSeverity | "") {
 			abortRequest();
 			dispatch({ type: "set_severity", severity });
@@ -208,14 +220,76 @@ function createDrawerActions(context: DrawerActionContext) {
 			abortRequest();
 			dispatch({ type: "reveal_technical" });
 		},
+	};
+}
+
+async function copyVisibleEvents(
+	state: DiagnosticsDrawerState,
+	dispatch: DrawerActionContext["dispatch"],
+): Promise<void> {
+	if (
+		!globalThis.confirm(
+			"Copied diagnostics may contain sensitive operational context. Copy the visible redacted events?",
+		)
+	) {
+		return;
+	}
+	const payload = serializeVisibleEvents(visibleDiagnosticRows(state));
+	try {
+		await navigator.clipboard.writeText(payload);
+		dispatch({ type: "set_copy_status", status: "Visible redacted events copied." });
+	} catch {
+		dispatch({
+			type: "set_copy_status",
+			status: "Visible events could not be copied. Check clipboard permission and try again.",
+		});
+	}
+}
+
+function createEvidenceActions(context: DrawerActionContext) {
+	const { state, dispatch, abortRequest, listRef } = context;
+	return {
 		showQueued() {
 			dispatch({ type: "show_queued" });
 			if (listRef.current) listRef.current.scrollTop = 0;
 		},
-		restoreFocus(event: { preventDefault: () => void }) {
-			restoreDrawerFocus(event, openerRef, recoveryNavigationRef);
+		clearView() {
+			abortRequest();
+			dispatch({ type: "clear_view", sessionEvents: getViewerConnectionEvents() });
 		},
+		copyVisibleEvents: () => copyVisibleEvents(state, dispatch),
 	};
+}
+
+function createDrawerActions(context: DrawerActionContext) {
+	return {
+		...createLifecycleActions(context),
+		refresh: () => context.runRequest("poll"),
+		retry: () => context.runRequest(context.state.rows.length > 0 ? "poll" : "replace", "retry"),
+		loadOlder: () => context.runRequest("older"),
+		...createQueryActions(context),
+		...createEvidenceActions(context),
+	};
+}
+
+export function serializeVisibleEvents(events: ReturnType<typeof visibleDiagnosticRows>): string {
+	return JSON.stringify(
+		events.map((event) => {
+			const recoveryIsDisplayed =
+				isDiagnosticRecoveryHref(event.recovery?.href) || Boolean(event.recovery?.command);
+			return {
+				occurred_at: event.occurred_at,
+				severity: event.severity,
+				subsystem: event.subsystem,
+				code: event.code,
+				message: event.message,
+				...(recoveryIsDisplayed ? { recovery_label: event.recovery?.label } : {}),
+				...(event.correlation?.label ? { correlation_label: event.correlation.label } : {}),
+			};
+		}),
+		null,
+		2,
+	);
 }
 
 function useRequestRefs(state: DiagnosticsDrawerState) {
@@ -246,12 +320,16 @@ function useQueryRequests(state: DiagnosticsDrawerState, runRequest: RequestRunn
 	}, [state.includeTechnical, state.open]);
 }
 
-export function useDiagnosticsDrawer(loadEvents: EventLoader) {
-	const [state, dispatch] = useReducer(diagnosticsDrawerReducer, initialDiagnosticsDrawerState());
+type RequestRunnerOptions = {
+	state: DiagnosticsDrawerState;
+	dispatch: DrawerActionContext["dispatch"];
+	loadEvents: EventLoader;
+	listRef: DrawerActionContext["listRef"];
+};
+
+function useDiagnosticsRequestRunner(options: RequestRunnerOptions) {
+	const { state, dispatch, loadEvents, listRef } = options;
 	const { stateRef, requestRef, generationRef } = useRequestRefs(state);
-	const openerRef = useRef<HTMLElement | null>(null);
-	const recoveryNavigationRef = useRef(false);
-	const listRef = useRef<HTMLDivElement | null>(null);
 
 	function abortRequest() {
 		generationRef.current += 1;
@@ -270,6 +348,11 @@ export function useDiagnosticsDrawer(loadEvents: EventLoader) {
 
 	async function runRequest(mode: RequestMode, reason: RequestReason = "routine"): Promise<void> {
 		if (shouldSkipRequest(mode, reason)) return;
+		dispatch({
+			type: "refresh_session_rows",
+			events: getViewerConnectionEvents(),
+			readingOlder: isReadingOlder(listRef),
+		});
 		const controller = new AbortController();
 		requestRef.current?.controller.abort();
 		const generation = ++generationRef.current;
@@ -298,6 +381,28 @@ export function useDiagnosticsDrawer(loadEvents: EventLoader) {
 	}
 
 	useQueryRequests(state, runRequest);
+	return { abortRequest, runRequest };
+}
+
+export function useDiagnosticsDrawer(loadEvents: EventLoader) {
+	const [state, dispatch] = useReducer(diagnosticsDrawerReducer, initialDiagnosticsDrawerState());
+	const openerRef = useRef<HTMLElement | null>(null);
+	const recoveryNavigationRef = useRef(false);
+	const listRef = useRef<HTMLDivElement | null>(null);
+	const { abortRequest, runRequest } = useDiagnosticsRequestRunner({
+		state,
+		dispatch,
+		loadEvents,
+		listRef,
+	});
+	useEffect(
+		() =>
+			subscribeToViewerConnectionEvents((event) => {
+				dispatch({ type: "session_event_recorded", event, readingOlder: isReadingOlder(listRef) });
+			}),
+		[],
+	);
+
 	const actions = createDrawerActions({
 		state,
 		dispatch,
@@ -307,5 +412,5 @@ export function useDiagnosticsDrawer(loadEvents: EventLoader) {
 		recoveryNavigationRef,
 		listRef,
 	});
-	return { state, listRef, ...actions };
+	return { state, visibleRows: visibleDiagnosticRows(state), listRef, ...actions };
 }

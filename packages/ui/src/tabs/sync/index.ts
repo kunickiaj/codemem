@@ -122,6 +122,9 @@ function pendingCoordinatorApprovalHashInput(): Array<readonly [string, string, 
 let cachedSyncStatus: { key: string; expiresAtMs: number; payload: SyncStatusResponseLike } | null =
 	null;
 let latestSyncLoadRequestId = 0;
+let latestSyncLoad: Promise<boolean> | null = null;
+let latestPairingLoadRequestId = 0;
+let latestPairingLoad: Promise<boolean> | null = null;
 
 const HEALTH_SYNC_STATUS_CACHE_TTL_MS = 15_000;
 
@@ -166,31 +169,62 @@ function hideStaleSyncSecondarySections() {
 	if (legacyClaimsMeta) legacyClaimsMeta.textContent = "";
 }
 
-export async function loadSyncData() {
-	const requestId = ++latestSyncLoadRequestId;
+export interface SyncDataLoadOptions {
+	requiredSurface?: "all" | "health" | "devices";
+	requireFreshSyncStatus?: boolean;
+}
+
+async function fetchSyncStatusPayload(
+	project: string,
+	options: Required<SyncDataLoadOptions>,
+): Promise<{ payload: SyncStatusResponseLike; fetchedFreshSyncStatus: boolean }> {
+	const useCache = state.activeTab === "health" && !options.requireFreshSyncStatus;
+	if (useCache) {
+		const payload = readCachedSyncStatus(project);
+		if (payload) return { payload, fetchedFreshSyncStatus: false };
+	}
+
+	// Raw diagnostics remain an explicit Advanced-view choice.
+	const includeDiagnostics = !isSyncRedactionEnabled();
+	const payload = await api.loadSyncStatus(includeDiagnostics, project, {
+		includeJoinRequests: false,
+	});
+	return { payload, fetchedFreshSyncStatus: true };
+}
+
+function didRequiredSyncSurfacesRefresh(input: {
+	requiredSurface: "all" | "health" | "devices";
+	actorLoadError: boolean;
+	coordinatorAdminLoadError: boolean;
+	shareOperationsLoadError: boolean;
+	requiresDeviceIdentityInventory: boolean;
+	deviceIdentityInventoryLoadError: boolean;
+}): boolean {
+	// Health and Devices consume only the primary sync status, which has
+	// already loaded by the time this runs; auxiliary surfaces are Advanced-only.
+	if (input.requiredSurface !== "all") return true;
+	if (input.actorLoadError || input.coordinatorAdminLoadError || input.shareOperationsLoadError) {
+		return false;
+	}
+	return !input.requiresDeviceIdentityInventory || !input.deviceIdentityInventoryLoadError;
+}
+
+export function loadSyncData(options: SyncDataLoadOptions = {}): Promise<boolean> {
+	const operation = runLoadSyncData(++latestSyncLoadRequestId, {
+		requiredSurface: options.requiredSurface ?? "all",
+		requireFreshSyncStatus: options.requireFreshSyncStatus ?? false,
+	});
+	latestSyncLoad = operation;
+	return operation;
+}
+
+async function runLoadSyncData(
+	requestId: number,
+	options: Required<SyncDataLoadOptions>,
+): Promise<boolean> {
 	try {
 		const project = state.currentProject || "";
-		const includeJoinRequests = false;
-		const useCache = state.activeTab === "health";
-		let fetchedFreshSyncStatus = false;
-
-		// When the Advanced diagnostics "Redact" toggle is OFF the user is
-		// opting into raw diagnostics — pass includeDiagnostics=true so the
-		// server returns real addresses, pairing payload, and peer errors.
-		const includeDiagnostics = !isSyncRedactionEnabled();
-		let payload: SyncStatusResponseLike;
-		if (useCache) {
-			payload = readCachedSyncStatus(project);
-			if (!payload) {
-				payload = await api.loadSyncStatus(includeDiagnostics, project, {
-					includeJoinRequests: false,
-				});
-				fetchedFreshSyncStatus = true;
-			}
-		} else {
-			payload = await api.loadSyncStatus(includeDiagnostics, project, { includeJoinRequests });
-			fetchedFreshSyncStatus = true;
-		}
+		const { payload, fetchedFreshSyncStatus } = await fetchSyncStatusPayload(project, options);
 
 		let actorsPayload: SyncActorListResponseLike | null = null;
 		let coordinatorAdminStatus: Record<string, unknown> | null = null;
@@ -226,7 +260,15 @@ export async function loadSyncData() {
 			shareOperationsLoadError = true;
 		}
 
-		if (requestId !== latestSyncLoadRequestId) return;
+		if (requestId !== latestSyncLoadRequestId) return latestSyncLoad ?? false;
+		const refreshSucceeded = didRequiredSyncSurfacesRefresh({
+			requiredSurface: options.requiredSurface,
+			actorLoadError,
+			coordinatorAdminLoadError,
+			shareOperationsLoadError,
+			requiresDeviceIdentityInventory: state.activeTab === "advanced",
+			deviceIdentityInventoryLoadError,
+		});
 
 		if (fetchedFreshSyncStatus) {
 			writeCachedSyncStatus(project, normalizeSyncStatusForCache(payload));
@@ -245,7 +287,7 @@ export async function loadSyncData() {
 			duplicatePersonDecisions,
 			pendingCoordinatorApprovalHashInput(),
 		]);
-		if (hash === lastSyncHash) return;
+		if (hash === lastSyncHash) return refreshSucceeded;
 		lastSyncHash = hash;
 
 		const statusPayload =
@@ -317,8 +359,9 @@ export async function loadSyncData() {
 			state.lastSyncCoordinatorAdminStatus = null;
 			renderTeamSync();
 		}
+		return refreshSucceeded;
 	} catch {
-		if (requestId !== latestSyncLoadRequestId) return;
+		if (requestId !== latestSyncLoadRequestId) return latestSyncLoad ?? false;
 		lastSyncHash = "";
 		state.deviceIdentityInventoryLoadError = true;
 		// Clear all skeletons so the error state is visible, not masked by loading placeholders
@@ -329,6 +372,7 @@ export async function loadSyncData() {
 		hideStaleSyncSecondarySections();
 		renderSyncPeopleUnavailable();
 		renderSyncDiagnosticsUnavailable();
+		return false;
 	}
 }
 
@@ -350,19 +394,36 @@ export function resetSyncLoadStateForTests() {
 	lastSyncHash = "";
 	cachedSyncStatus = null;
 	latestSyncLoadRequestId = 0;
+	latestSyncLoad = null;
+	latestPairingLoadRequestId = 0;
+	latestPairingLoad = null;
 }
 
-export async function loadPairingData() {
+async function reloadSyncData(): Promise<void> {
+	await loadSyncData();
+}
+
+export function loadPairingData(): Promise<boolean> {
+	const operation = runLoadPairingData(++latestPairingLoadRequestId);
+	latestPairingLoad = operation;
+	return operation;
+}
+
+async function runLoadPairingData(requestId: number): Promise<boolean> {
 	try {
 		// Pairing payload is always returned in full — it's the actual
 		// command the user shares, not a diagnostic. The "Show pairing
 		// command" disclosure in the UI is the user-facing exposure gate.
 		const payload = await api.loadPairing();
+		if (requestId !== latestPairingLoadRequestId) return latestPairingLoad ?? false;
 		state.pairingPayloadRaw = payload || null;
 		renderPairing();
+		return true;
 	} catch {
+		if (requestId !== latestPairingLoadRequestId) return latestPairingLoad ?? false;
 		state.pairingPayloadRaw = null;
 		renderPairing();
+		return false;
 	}
 }
 
@@ -372,12 +433,12 @@ export function initSyncTab(refreshCallback: () => void) {
 	ensureSyncRenderBoundary();
 	ensureSyncDialogHost();
 	// Wire cross-module callbacks to avoid circular imports
-	setTeamSyncLoadData(loadSyncData);
-	setPeopleLoadData(loadSyncData);
+	setTeamSyncLoadData(reloadSyncData);
+	setPeopleLoadData(reloadSyncData);
 	setRenderSyncPeers(renderSyncPeers);
 
-	initTeamSyncEvents(refreshCallback, loadSyncData);
-	initPeopleEvents(loadSyncData);
+	initTeamSyncEvents(refreshCallback, reloadSyncData);
+	initPeopleEvents(reloadSyncData);
 	initDiagnosticsEvents(refreshCallback);
 
 	// Apply the current #sync vs #sync/diagnostics sub-view and keep it in

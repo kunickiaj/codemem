@@ -8,6 +8,11 @@ import {
 } from "./use-diagnostics-drawer";
 import { DiagnosticsDrawerView } from "./view";
 
+export {
+	getViewerConnectionEvents,
+	recordViewerConnectionEvent,
+} from "./viewer-connection-events";
+
 type DrawerCommands = {
 	open: (options?: OpenDiagnosticsDrawerOptions) => void;
 	refresh: () => Promise<void>;
@@ -59,6 +64,12 @@ export function initDiagnosticsEntryPoints(): void {
 	document.getElementById("syncOpenDiagnostics")?.addEventListener("click", (event) => {
 		openDiagnosticsDrawer({
 			subsystem: "sync",
+			trigger: event.currentTarget as HTMLElement,
+		});
+	});
+	document.getElementById("viewerReconnectDiagnostics")?.addEventListener("click", (event) => {
+		openDiagnosticsDrawer({
+			subsystem: "viewer",
 			trigger: event.currentTarget as HTMLElement,
 		});
 	});

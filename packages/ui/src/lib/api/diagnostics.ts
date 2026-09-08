@@ -152,7 +152,7 @@ function parseDiagnosticEventsResponse(value: unknown): DiagnosticEventsResponse
 		if (!isBoundedString(value.next_cursor, MAX_CURSOR_LENGTH)) return null;
 		nextCursor = value.next_cursor;
 	}
-	if (typeof value.redacted !== "boolean" || !isTimestamp(value.generated_at)) return null;
+	if (value.redacted !== true || !isTimestamp(value.generated_at)) return null;
 	return {
 		contract_version: 1,
 		items: value.items.filter(isDiagnosticEvent),

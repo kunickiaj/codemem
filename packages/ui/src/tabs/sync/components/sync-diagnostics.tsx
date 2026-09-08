@@ -13,6 +13,7 @@ export type SyncAttemptItem = {
 	startedAt: string;
 	actionHref?: string;
 	actionLabel?: string;
+	action?: (trigger: HTMLElement) => void;
 };
 
 export type PairingView = {
@@ -55,6 +56,15 @@ function AttemptsList({ attempts, note }: { attempts: SyncAttemptItem[]; note?: 
 							<a class="small" href={attempt.actionHref}>
 								{attempt.actionLabel}
 							</a>
+						) : null}
+						{attempt.action ? (
+							<button
+								className="settings-button small"
+								onClick={(event) => attempt.action?.(event.currentTarget)}
+								type="button"
+							>
+								View sync diagnostics
+							</button>
 						) : null}
 					</div>
 					<div class="right">{attempt.startedAt}</div>

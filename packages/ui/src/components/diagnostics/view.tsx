@@ -9,7 +9,7 @@ import {
 } from "../../lib/api/diagnostics";
 import { DialogCloseButton } from "../primitives/dialog-close-button";
 import { RadixDialog, RadixDialogTitle } from "../primitives/radix-dialog";
-import { MAX_ROWS } from "./state";
+import { MAX_ROWS, queuedDiagnosticRowCount } from "./state";
 import type { useDiagnosticsDrawer } from "./use-diagnostics-drawer";
 
 type DrawerController = ReturnType<typeof useDiagnosticsDrawer>;
@@ -143,14 +143,27 @@ function DrawerControls({ controller }: { controller: DrawerController }) {
 				</button>
 			</div>
 			<div className="diagnostics-secondary-controls">
-				<button
-					className="settings-button"
-					disabled={state.includeTechnical || state.loading}
-					onClick={controller.revealTechnical}
-					type="button"
-				>
-					{state.includeTechnical ? "Technical details shown" : "Reveal technical details"}
-				</button>
+				<div className="diagnostics-secondary-actions">
+					<button
+						className="settings-button"
+						disabled={state.includeTechnical || state.loading}
+						onClick={controller.revealTechnical}
+						type="button"
+					>
+						{state.includeTechnical ? "Technical details shown" : "Reveal technical details"}
+					</button>
+					<button className="settings-button" onClick={controller.clearView} type="button">
+						Clear view
+					</button>
+					<button
+						className="settings-button"
+						disabled={!controller.visibleRows.length}
+						onClick={() => void controller.copyVisibleEvents()}
+						type="button"
+					>
+						Copy visible redacted events
+					</button>
+				</div>
 				<span className="diagnostics-generated-at">
 					{state.generatedAt
 						? `Generated ${new Date(state.generatedAt).toLocaleTimeString()}`
@@ -163,11 +176,15 @@ function DrawerControls({ controller }: { controller: DrawerController }) {
 
 function DrawerNotices({ controller }: { controller: DrawerController }) {
 	const { state } = controller;
+	const queuedCount = queuedDiagnosticRowCount(state);
 	const staleLabel = state.error && state.rows.length ? "Showing stale events." : "";
 	return (
 		<>
 			<div aria-atomic="true" aria-live="polite" className="sr-only">
 				{state.announcement}
+			</div>
+			<div aria-atomic="true" aria-live="polite" className="diagnostics-copy-status">
+				{state.copyStatus}
 			</div>
 			{state.subsystem || state.severity ? (
 				<div className="diagnostics-filter-context">
@@ -189,9 +206,9 @@ function DrawerNotices({ controller }: { controller: DrawerController }) {
 					</button>
 				</div>
 			) : null}
-			{state.queuedRows.length ? (
+			{queuedCount ? (
 				<button className="diagnostics-new-events" onClick={controller.showQueued} type="button">
-					Show {state.queuedRows.length} new {state.queuedRows.length === 1 ? "event" : "events"}
+					Show {queuedCount} new {queuedCount === 1 ? "event" : "events"}
 				</button>
 			) : null}
 		</>
@@ -200,12 +217,13 @@ function DrawerNotices({ controller }: { controller: DrawerController }) {
 
 function DrawerEventList({ controller }: { controller: DrawerController }) {
 	const { state } = controller;
+	const rows = controller.visibleRows;
 	const hasFilters = Boolean(state.severity || state.subsystem);
-	const canLoadOlder = Boolean(state.nextCursor) && state.rows.length < MAX_ROWS && !state.loading;
+	const canLoadOlder = Boolean(state.nextCursor) && rows.length < MAX_ROWS && !state.loading;
 	return (
 		<div className="diagnostics-event-list" ref={controller.listRef}>
-			{state.loading && !state.rows.length ? <LoadingRows /> : null}
-			{!state.loading && !state.error && !state.rows.length ? (
+			{state.loading && !rows.length ? <LoadingRows /> : null}
+			{!state.loading && !state.error && !rows.length ? (
 				<div className="diagnostics-empty">
 					<p>No events match the recent retained window.</p>
 					{hasFilters ? (
@@ -215,9 +233,9 @@ function DrawerEventList({ controller }: { controller: DrawerController }) {
 					) : null}
 				</div>
 			) : null}
-			{state.rows.length ? (
+			{rows.length ? (
 				<ul aria-label="Diagnostic events">
-					{state.rows.map((event) => (
+					{rows.map((event) => (
 						<DiagnosticsEventRow
 							event={event}
 							includeTechnical={state.includeTechnical}
@@ -236,7 +254,7 @@ function DrawerEventList({ controller }: { controller: DrawerController }) {
 					Load older
 				</button>
 			) : null}
-			{state.rows.length >= MAX_ROWS ? (
+			{rows.length >= MAX_ROWS ? (
 				<div className="diagnostics-limit-note">Showing the newest {MAX_ROWS} events.</div>
 			) : null}
 		</div>

@@ -21,7 +21,28 @@ export type ObserverStatusShape = {
 	} | null;
 };
 
-export function ObserverStatusBanner({ status }: { status: ObserverStatusShape | null }) {
+type ObserverDiagnosticsActionProps = {
+	onOpenDiagnostics?: (options: { severity: "error"; subsystem: "observer" }) => void;
+};
+
+type ObserverStatusBannerProps = ObserverDiagnosticsActionProps & {
+	status: ObserverStatusShape | null;
+};
+
+function ObserverDiagnosticsAction({ onOpenDiagnostics }: ObserverDiagnosticsActionProps) {
+	if (!onOpenDiagnostics) return null;
+	return (
+		<button
+			className="settings-button"
+			onClick={() => onOpenDiagnostics({ severity: "error", subsystem: "observer" })}
+			type="button"
+		>
+			View observer diagnostics
+		</button>
+	);
+}
+
+export function ObserverStatusBanner({ status, onOpenDiagnostics }: ObserverStatusBannerProps) {
 	if (!status) {
 		return <div id="observerStatusBanner" className="observer-status-banner" hidden />;
 	}
@@ -122,6 +143,7 @@ export function ObserverStatusBanner({ status }: { status: ObserverStatusShape |
 						{typeof failure.impact === "string" && failure.impact.trim() ? (
 							<div className="status-issue-impact">{failure.impact.trim()}</div>
 						) : null}
+						<ObserverDiagnosticsAction onOpenDiagnostics={onOpenDiagnostics} />
 					</div>
 				</>
 			) : null}

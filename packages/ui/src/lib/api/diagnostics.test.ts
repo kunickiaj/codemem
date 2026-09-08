@@ -83,6 +83,7 @@ describe("diagnostics API", () => {
 		validResponse({ contract_version: 2 }),
 		validResponse({ items: null }),
 		validResponse({ next_cursor: 3 }),
+		validResponse({ redacted: false }),
 		validResponse({ redacted: "yes" }),
 		validResponse({ generated_at: null }),
 	])("rejects an unsupported top-level response shape", async (payload) => {
