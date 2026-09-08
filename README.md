@@ -101,6 +101,11 @@ sources. If both load Codemem for one Project, the first registration wins and l
 their hooks with a warning. Remove the configured npm entry when testing a source checkout so the
 checkout-local plugin loads first; otherwise your edits may appear to do nothing.
 
+Requester-session eligibility for automatic recall is not implemented yet. The
+pre-policy source identity and invented gold fixture have preflight clearance;
+plugin/CLI incident evaluation and implementation review remain pending. See
+[the historical baseline procedure](docs/opencode-retained-recall.md#historical-incident-baseline).
+
 ### Claude Code (marketplace install)
 
 1. Install codemem's Claude MCP config:

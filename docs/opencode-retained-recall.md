@@ -78,6 +78,30 @@ Reasons are `delivered`, `replay`, `allowance_exhausted`, `unchanged_memories`, 
 
 Deterministic local tests exercise lifecycle and transport behavior without paid provider calls.
 
+### Historical Incident Baseline
+
+The source identity and frozen gold preflight is cleared; requester eligibility,
+plugin/CLI incident evaluation, and independent implementation reviews remain pending.
+This does not solve multiple tasks within one session. The retained cap remains off.
+
+Run `node scripts/eval/run-automatic-recall-baseline.mjs` to export the full pinned
+`ad50a6a4` tree into a new temporary snapshot and overlay the byte-verified harness
+from `5de04daf`. The historical test still checks all listed working-source blobs
+in that snapshot against the pinned Git objects. It exercises the real Core
+selector/renderer and Viewer route, not a mocked whole-pack baseline. The snapshot
+is retained for inspection; the runner does not update the recorded report.
+
+The current checkout's provenance test verifies the immutable harness bytes,
+not production working-file hashes. Its pack calls are explicit-pack compatibility
+checks, not evidence of automatic requester eligibility. The frozen report retains
+its original pending-review fields as historical evidence; the manifest records the
+later user-reported source-and-gold clearance separately.
+
+Limits: the runner reuses installed external dependencies rather than proving a
+fresh frozen-lockfile install. Workspace package links point into the historical
+snapshot. The fixture has no expected updates, its wrapping estimate is synthetic,
+and it does not prove cross-session durable-fact coverage or plugin delivery.
+
 Run `pnpm --filter codemem test:plugin` for all plugin regressions, or add `.opencode/tests/plugin-retained-recall.test.js` to select the lifecycle/measurement fixtures. `plugin-transform-hook.test.js` includes real hook tests for Viewer and CLI fallback budgets, changed facts, continuation skips, restart byte stability, and log reconciliation. Run `pnpm exec vitest run packages/core/src/pack.test.ts` for standard/compact renderer spans and budget checks. From `packages/cli`, run the comparative fixtures with:
 
 ```fish
