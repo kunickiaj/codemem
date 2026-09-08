@@ -61,6 +61,7 @@ import {
 	type ScanDetection,
 	SecretScanner,
 } from "./secret-scanner.js";
+import { summaryContinuityFilter } from "./summary-memory.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { recordReplicationOp } from "./sync-replication.js";
 import type {
@@ -1100,11 +1101,18 @@ export class MemoryStore {
 	 * Return recent active memories, newest first.
 	 * Supports optional filters via buildFilterClauses.
 	 */
-	recent(limit = 10, filters?: MemoryFilters | null, offset = 0): MemoryItemResponse[] {
+	recent(
+		limit = 10,
+		filters?: MemoryFilters | null,
+		offset = 0,
+		summarySessionId?: number | null,
+	): MemoryItemResponse[] {
 		const baseClauses = ["memory_items.active = 1"];
 		const filterResult = buildFilterClausesWithContext(filters, this.scopeVisibleFilterContext());
-		const allClauses = [...baseClauses, ...filterResult.clauses];
-		const whereSql = buildWhereSql(allClauses, filterResult.params);
+		// Automatic continuity applies inside the query so LIMIT counts eligible rows only.
+		const continuity = summaryContinuityFilter(summarySessionId);
+		const allClauses = [...baseClauses, ...filterResult.clauses, ...continuity.clauses];
+		const whereSql = buildWhereSql(allClauses, [...filterResult.params, ...continuity.params]);
 
 		// Note: joinSessions is set by the project filter (not yet ported).
 		// Once project filtering lands, it will trigger the sessions JOIN.
@@ -1132,6 +1140,7 @@ export class MemoryStore {
 		limit = 10,
 		filters?: MemoryFilters | null,
 		offset = 0,
+		summarySessionId?: number | null,
 	): MemoryItemResponse[] {
 		const kindsList = kinds.filter((k) => k.length > 0);
 		if (kindsList.length === 0) return [];
@@ -1139,8 +1148,9 @@ export class MemoryStore {
 		const kindPlaceholders = kindsList.map(() => "?").join(", ");
 		const baseClauses = ["memory_items.active = 1", `memory_items.kind IN (${kindPlaceholders})`];
 		const filterResult = buildFilterClausesWithContext(filters, this.scopeVisibleFilterContext());
-		const allClauses = [...baseClauses, ...filterResult.clauses];
-		const params = [...kindsList, ...filterResult.params];
+		const continuity = summaryContinuityFilter(summarySessionId);
+		const allClauses = [...baseClauses, ...filterResult.clauses, ...continuity.clauses];
+		const params = [...kindsList, ...filterResult.params, ...continuity.params];
 		const whereSql = buildWhereSql(allClauses, params);
 
 		const fromSql = filterResult.joinSessions

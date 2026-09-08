@@ -58,12 +58,18 @@ export interface StoreHandle {
 	buildOwnershipPredicate?(): (
 		item: MemoryItem | MemoryResult | Record<string, unknown>,
 	) => boolean;
-	recent(limit?: number, filters?: MemoryFilters | null, offset?: number): MemoryItemResponse[];
+	recent(
+		limit?: number,
+		filters?: MemoryFilters | null,
+		offset?: number,
+		summarySessionId?: number | null,
+	): MemoryItemResponse[];
 	recentByKinds(
 		kinds: string[],
 		limit?: number,
 		filters?: MemoryFilters | null,
 		offset?: number,
+		summarySessionId?: number | null,
 	): MemoryItemResponse[];
 }
 
@@ -1113,6 +1119,7 @@ export function timeline(
 	depthBefore = 3,
 	depthAfter = 3,
 	filters?: MemoryFilters | null,
+	summarySessionId?: number | null,
 ): TimelineItemResponse[] {
 	// Find anchor: prefer explicit memoryId, fall back to search
 	let anchorRef: { id: number; session_id: number; created_at: string } | null = null;
@@ -1137,7 +1144,7 @@ export function timeline(
 		return [];
 	}
 
-	return timelineAround(store, anchorRef, depthBefore, depthAfter, filters);
+	return timelineAround(store, anchorRef, depthBefore, depthAfter, filters, summarySessionId);
 }
 
 /** Fetch memories before/after an anchor within the same session. */
@@ -1147,6 +1154,7 @@ function timelineAround(
 	depthBefore: number,
 	depthAfter: number,
 	filters?: MemoryFilters | null,
+	summarySessionId?: number | null,
 ): TimelineItemResponse[] {
 	const anchorId = anchor.id;
 	const anchorCreatedAt = anchor.created_at;
@@ -1159,8 +1167,10 @@ function timelineAround(
 	}
 
 	const filterResult = buildFilterClausesWithContext(filters, ownershipFilterContext(store));
-	const whereParts = ["memory_items.active = 1", ...filterResult.clauses];
-	const baseParams = [...filterResult.params];
+	// Automatic continuity is applied here so each depth LIMIT counts eligible rows only.
+	const continuity = summaryContinuityFilter(summarySessionId);
+	const whereParts = ["memory_items.active = 1", ...filterResult.clauses, ...continuity.clauses];
+	const baseParams = [...filterResult.params, ...continuity.params];
 
 	if (anchorSessionId) {
 		whereParts.push("memory_items.session_id = ?");

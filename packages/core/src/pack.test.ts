@@ -191,6 +191,95 @@ describe("automatic session continuity", () => {
 		expect(generic.pack_text).toContain("Root sibling summary");
 	});
 });
+describe("automatic eligibility inside SQL limits", () => {
+	usePackFixture();
+	it("applies summary eligibility inside the recent fallback query instead of paging by offset", () => {
+		const otherSessionId = insertTestSession(store.db);
+		const durableIds = [1, 2, 3].map((index) =>
+			store.remember(
+				otherSessionId,
+				"decision",
+				`Older durable fallback fact ${index}`,
+				`zzqx durable fallback ${index}`,
+				0.8,
+			),
+		);
+		for (let index = 0; index < 120; index += 1) {
+			store.remember(
+				otherSessionId,
+				"session_summary",
+				`Newer foreign summary ${index}`,
+				`zzqx foreign summary ${index}`,
+				0.9,
+			);
+		}
+		const recent = vi.spyOn(store, "recent");
+
+		const pack = store.buildMemoryPack("no lexical match here", 10, null, undefined, {
+			source: "opencode",
+			hostSessionId: "host-without-mapping",
+		});
+
+		expect(pack.metrics.fallback_used).toBe(true);
+		for (const id of durableIds) expect(pack.item_ids).toContain(id);
+		expect(pack.pack_text).not.toContain("Newer foreign summary");
+		expect(recent).toHaveBeenCalledTimes(1);
+		expect(recent.mock.calls[0]?.[3]).toBeNull();
+	});
+
+	it("applies summary eligibility before timeline depth limits around a foreign durable anchor", () => {
+		const otherSessionId = insertTestSession(store.db);
+		const now = Date.now();
+		const stamp = (offsetSeconds: number) => new Date(now + offsetSeconds * 1000).toISOString();
+		const at = (id: number, created: string) =>
+			store.db
+				.prepare("UPDATE memory_items SET created_at = ?, updated_at = ? WHERE id = ?")
+				.run(created, created, id);
+		const anchorId = store.remember(
+			otherSessionId,
+			"decision",
+			"Anchor decision",
+			"what did we decide about the qqzv anchor",
+			0.9,
+		);
+		at(anchorId, stamp(0));
+		const neighborIds: number[] = [];
+		for (let index = 1; index <= 3; index += 1) {
+			const summaryId = store.remember(
+				otherSessionId,
+				"session_summary",
+				`Interleaved foreign summary ${index}`,
+				`foreign summary after anchor ${index}`,
+				0.9,
+			);
+			at(summaryId, stamp(index * 10));
+		}
+		const neighborId = store.remember(
+			otherSessionId,
+			"bugfix",
+			"Durable neighbor after summaries",
+			"durable neighbor beyond the summaries",
+			0.9,
+		);
+		at(neighborId, stamp(100));
+		neighborIds.push(neighborId);
+
+		const pack = store.buildMemoryPack(
+			"what did we decide about the qqzv anchor",
+			6,
+			null,
+			undefined,
+			{
+				source: "opencode",
+				hostSessionId: "host-without-mapping",
+			},
+		);
+
+		expect(pack.item_ids).toContain(anchorId);
+		expect(pack.item_ids).toContain(neighborId);
+		expect(pack.pack_text).not.toContain("Interleaved foreign summary");
+	});
+});
 describe("automatic metadata and generic candidate bounds", () => {
 	usePackFixture();
 	it("keeps malformed and numeric summary metadata durable under automatic filtering", () => {

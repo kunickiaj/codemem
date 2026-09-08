@@ -989,47 +989,49 @@ function prioritizeRecallResults(
 	return ordered.slice(0, limit);
 }
 
+type RecentEligibility = {
+	eligible: (item: MemoryResult) => boolean;
+	summarySessionId: number | null | undefined;
+};
+
+const RECENT_UNRESTRICTED: RecentEligibility = {
+	eligible: () => true,
+	summarySessionId: undefined,
+};
+
+// Continuity is enforced inside the recent query so LIMIT counts eligible rows;
+// the predicate remains as a defensive check rather than an OFFSET paging loop.
 function recentEligible(
 	store: StoreHandle,
 	target: number,
 	filters: MemoryFilters | undefined,
-	eligible: (item: MemoryResult) => boolean,
+	eligibility: RecentEligibility,
 	kinds?: string[],
 ): MemoryResult[] {
-	const selected: MemoryResult[] = [];
-	let offset = 0;
-	const pageSize = 100;
-	while (selected.length < target) {
-		const pageLimit = Math.min(pageSize, target - selected.length);
-		const rows = kinds
-			? store.recentByKinds(kinds, pageLimit, filters ?? null, offset)
-			: store.recent(pageLimit, filters ?? null, offset);
-		if (rows.length === 0) break;
-		selected.push(...rows.map(toMemoryResult).filter(eligible));
-		offset += rows.length;
-		if (rows.length < pageLimit) break;
-	}
-	return selected.slice(0, target);
+	const rows = kinds
+		? store.recentByKinds(kinds, target, filters ?? null, 0, eligibility.summarySessionId)
+		: store.recent(target, filters ?? null, 0, eligibility.summarySessionId);
+	return rows.map(toMemoryResult).filter(eligibility.eligible);
 }
 
 function taskFallbackRecent(
 	store: StoreHandle,
 	limit: number,
 	filters?: MemoryFilters,
-	eligible: (item: MemoryResult) => boolean = () => true,
+	eligibility: RecentEligibility = RECENT_UNRESTRICTED,
 ): MemoryResult[] {
 	const expandedLimit = limit * 3;
-	return prioritizeTaskResults(recentEligible(store, expandedLimit, filters, eligible), limit);
+	return prioritizeTaskResults(recentEligible(store, expandedLimit, filters, eligibility), limit);
 }
 
 function recallFallbackRecent(
 	store: StoreHandle,
 	limit: number,
 	filters?: MemoryFilters,
-	eligible: (item: MemoryResult) => boolean = () => true,
+	eligibility: RecentEligibility = RECENT_UNRESTRICTED,
 ): MemoryResult[] {
 	const expandedLimit = limit * 4;
-	const recentAll = recentEligible(store, expandedLimit, filters, eligible);
+	const recentAll = recentEligible(store, expandedLimit, filters, eligibility);
 	const summaries = recentAll.filter(isSummaryLike).slice(0, limit);
 	if (summaries.length >= limit) return summaries.slice(0, limit);
 
@@ -1509,6 +1511,7 @@ function buildPackArtifacts(
 	const continuity = resolveAutomaticContinuity(store, options.automaticContext);
 	const eligible = (item: MemoryResult) => automaticEligible(continuity, item);
 	const summarySessionId = continuity.requested ? continuity.sessionId : undefined;
+	const recentEligibility: RecentEligibility = { eligible, summarySessionId };
 	const retrieval = createPackRetrieval(store, {
 		limit: effectiveLimit,
 		filters,
@@ -1557,7 +1560,7 @@ function buildPackArtifacts(
 		captureTraceCandidates(taskQuery, taskResults);
 		if (taskResults.length === 0) {
 			fallbackUsed = true;
-			results = taskFallbackRecent(store, effectiveLimit, filters, eligible);
+			results = taskFallbackRecent(store, effectiveLimit, filters, recentEligibility);
 			captureTraceCandidates(taskQuery, results);
 		} else {
 			const actionableTaskResults = taskResults.filter((item) => !isSummaryLike(item));
@@ -1623,7 +1626,7 @@ function buildPackArtifacts(
 		);
 		if (results.length === 0) {
 			fallbackUsed = true;
-			results = recallFallbackRecent(store, effectiveLimit, filters, eligible);
+			results = recallFallbackRecent(store, effectiveLimit, filters, recentEligibility);
 			captureTraceCandidates(retrievalQuery, results);
 		}
 		const anchor = preferSummary
@@ -1640,6 +1643,7 @@ function buildPackArtifacts(
 				depthBefore,
 				depthAfter,
 				filters ?? null,
+				summarySessionId,
 			);
 			if (timelineRows.length > 0) {
 				const timelineResults = timelineRows.map(toMemoryResult).filter(eligible);
@@ -1666,7 +1670,7 @@ function buildPackArtifacts(
 
 		if (results.length === 0) {
 			fallbackUsed = true;
-			results = recentEligible(store, effectiveLimit, filters, eligible);
+			results = recentEligible(store, effectiveLimit, filters, recentEligibility);
 			captureTraceCandidates(retrievalContext, results);
 		}
 	}
@@ -1729,7 +1733,7 @@ function buildPackArtifacts(
 			store,
 			Math.max(effectiveLimit * 3, 10),
 			filters,
-			eligible,
+			recentEligibility,
 			OBSERVATION_KINDS,
 		);
 		observationItems = supplementalObservationCandidates;
