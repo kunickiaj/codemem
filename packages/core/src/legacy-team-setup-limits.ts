@@ -43,15 +43,21 @@ export function requireLegacyTeamSetupAccessDeltaTraversalWithinLimit(input: {
  */
 export function requireLegacyTeamSetupReachableDevicesWithinLimit(
 	db: Database,
-	devices: readonly unknown[],
+	devices: readonly { deviceId: string }[],
 	projects: readonly unknown[],
 ): void {
 	if (projects.length === 0) return;
+	const deviceIds = [...new Set(devices.map((device) => device.deviceId))];
+	const excludeRoster =
+		deviceIds.length > 0 ? `WHERE device_id NOT IN (${deviceIds.map(() => "?").join(", ")})` : "";
 	const assignmentRows = Number(
-		db.prepare("SELECT COUNT(*) FROM identity_devices").pluck().get() ?? 0,
+		db
+			.prepare(`SELECT COUNT(*) FROM identity_devices ${excludeRoster}`)
+			.pluck()
+			.get(...deviceIds) ?? 0,
 	);
 	if (
-		(devices.length + assignmentRows) * projects.length >
+		(deviceIds.length + assignmentRows) * projects.length >
 		LEGACY_TEAM_SETUP_MAX_PROJECT_DEVICE_PAIRS
 	) {
 		throw new Error("legacy_team_setup_roster_too_large");
