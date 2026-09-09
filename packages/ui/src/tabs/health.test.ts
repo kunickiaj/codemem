@@ -1,4 +1,5 @@
-import { render } from "preact";
+import type { ComponentChildren } from "preact";
+import { h, render } from "preact";
 import { act } from "preact/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UpdateStatus } from "../lib/api";
@@ -9,7 +10,8 @@ import { renderAutomaticRecall } from "./health/components";
 import { loadHealthData } from "./health/lifecycle";
 
 vi.mock("../components/primitives/tooltip", () => ({
-	Tooltip: ({ children }: { children?: unknown }) => children,
+	Tooltip: ({ children, label }: { children?: ComponentChildren; label?: string }) =>
+		h("span", { "data-tooltip": label }, children),
 	TooltipProvider: ({ children }: { children?: unknown }) => children,
 }));
 
@@ -44,6 +46,7 @@ beforeEach(() => {
 	document.body.innerHTML = `
 		<div id="healthUpdateBanner"></div>
 		<div id="healthGrid"></div>
+		<div id="automaticRecallStats"></div>
 		<div id="healthMeta"></div>
 		<div id="healthActions"></div>
 		<div id="healthDot"></div>
@@ -59,7 +62,7 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	state.activeTab = "feed";
 	setUpdateStatus(null);
-	for (const id of ["healthUpdateBanner", "healthGrid", "healthActions"]) {
+	for (const id of ["healthUpdateBanner", "healthGrid", "automaticRecallStats", "healthActions"]) {
 		const element = document.getElementById(id);
 		if (element) act(() => render(null, element));
 	}
@@ -86,20 +89,34 @@ describe("Automatic recall disclosure", () => {
 		unmeasuredAttempts: 2,
 	};
 	function draw(payload: unknown) {
-		const container = document.getElementById("healthGrid");
+		const container = document.getElementById("automaticRecallStats");
 		act(() => renderAutomaticRecall(container, payload));
 		return container as HTMLElement;
 	}
-	it("starts collapsed with native keyboard disclosure and explicit denominator and period", () => {
+	it("shows measured recall outcomes as the existing stat tiles", () => {
 		const container = draw(stats);
 		const details = container.querySelector("details") as HTMLDetailsElement;
 		expect(details.open).toBe(false);
-		expect(details.querySelector("summary")?.textContent).toBe("Automatic recall (advanced)");
+		expect(details.querySelector("summary")?.textContent).toBe("Automatic recall");
 		expect(details.querySelector("section")?.getAttribute("aria-label")).toBe(
 			"Automatic recall measurements",
 		);
-		expect(container.textContent).toContain("1 / 4 fresh evaluations (25.0%)");
-		expect(container.textContent).toContain(stats.periodStart);
+		expect([...container.querySelectorAll(".stat .label")].map((node) => node.textContent)).toEqual(
+			["Recalls with repeats", "Memories skipped", "Repeated tokens removed", "Recalls checked"],
+		);
+		expect([...container.querySelectorAll(".stat .value")].map((node) => node.textContent)).toEqual(
+			["25%", "2", "~40 tokens", "4"],
+		);
+		expect(container.textContent).not.toContain(stats.periodStart);
+		expect(container.textContent).not.toContain("opencode-retained-v1");
+		expect(container.querySelector(`time[datetime="${stats.periodStart}"]`)).not.toBeNull();
+		expect(container.querySelector(`time[datetime="${stats.periodEnd}"]`)).not.toBeNull();
+		expect(container.querySelectorAll("dl")).toHaveLength(0);
+		expect(container.querySelectorAll(".stat[tabindex='0']")).toHaveLength(4);
+		expect(container.querySelector("[data-tooltip*='1 of 4 automatic recalls']")).not.toBeNull();
+		expect(
+			container.querySelector("[data-tooltip*='Some results may be incomplete']"),
+		).not.toBeNull();
 		details.open = true;
 		draw({ ...stats, unmeasuredAttempts: 3 });
 		expect(details.open).toBe(true);
@@ -111,18 +128,51 @@ describe("Automatic recall disclosure", () => {
 				typeof value === "number" && key !== "windowLimit" ? 0 : value,
 			]),
 		);
-		expect(draw({ ...empty, availability: "no_data" }).textContent).toContain(
-			"Savings are unknown, not zero",
-		);
+		const noData = draw({ ...empty, availability: "no_data", unmeasuredAttempts: 404 });
+		expect(noData.textContent).toContain("No recalls were checked, so savings are unknown");
+		expect([...noData.querySelectorAll(".stat .label")].map((node) => node.textContent)).toEqual([
+			"Recalls checked",
+			"Not checked",
+		]);
+		expect([...noData.querySelectorAll(".stat .value")].map((node) => node.textContent)).toEqual([
+			"0",
+			"404",
+		]);
+		const measuredZero = draw({
+			...stats,
+			evaluationsWithDuplicates: 0,
+			duplicatesOmitted: 0,
+			afterTokens: 100,
+			estimatedTokensAvoided: 0,
+		});
 		expect(
-			draw({
-				...stats,
-				evaluationsWithDuplicates: 0,
-				duplicatesOmitted: 0,
-				afterTokens: 100,
-				estimatedTokensAvoided: 0,
-			}).textContent,
-		).toContain("0 / 4 fresh evaluations (0.0%)");
+			[...measuredZero.querySelectorAll(".stat .value")].map((node) => node.textContent),
+		).toEqual(["0%", "0", "~0 tokens", "4"]);
+	});
+	it("keeps a small nonzero reduction distinct from zero", () => {
+		const container = draw({
+			...stats,
+			freshEvaluations: 900,
+			evaluationsWithDuplicates: 2,
+			candidateItems: 900,
+			duplicatesOmitted: 2,
+			missingRetainedMetadata: 0,
+		});
+		expect(container.querySelector(".stat .value")?.textContent).toBe("<1%");
+	});
+	it("keeps a high non-total reduction distinct from 100 percent", () => {
+		const container = draw({
+			...stats,
+			freshEvaluations: 900,
+			evaluationsWithDuplicates: 899,
+			candidateItems: 900,
+			duplicatesOmitted: 899,
+			beforeTokens: 900,
+			afterTokens: 1,
+			estimatedTokensAvoided: 899,
+			missingRetainedMetadata: 0,
+		});
+		expect(container.querySelector(".stat .value")?.textContent).toBe(">99%");
 	});
 	it.each([
 		undefined,
@@ -131,7 +181,7 @@ describe("Automatic recall disclosure", () => {
 		{ ...stats, estimatedTokensAvoided: 999 },
 		{ ...stats, periodStart: "invalid" },
 	])("fails closed for absent or invalid stats", (payload) => {
-		expect(draw(payload).textContent).toContain("Measurements unavailable");
+		expect(draw(payload).textContent).toContain("Automatic recall details aren’t available");
 	});
 });
 
@@ -198,7 +248,9 @@ describe("Health update banner", () => {
 		expect(updateBannerText()).toContain("Verify the current codemem version and try again.");
 		expect(updateBannerText()).not.toMatch(/up to date|latest stable release/i);
 	});
+});
 
+describe("Health update banner channels and guidance", () => {
 	it("identifies an up-to-date rc installation as rc", () => {
 		setUpdateStatus({
 			...availableStatus,
