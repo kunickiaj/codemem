@@ -92,4 +92,35 @@ describe("FeedItemCard", () => {
 		expect(mount.textContent).not.toContain(actorId);
 		expect(mount.textContent).not.toContain(deviceId);
 	});
+
+	it("renders tags only as chips", () => {
+		renderCard({
+			body_text: "A tagged memory body.",
+			tags_text: "searchable-tag second-tag",
+			title: "Tagged memory",
+		});
+
+		expect(mount.querySelector(".feed-meta")).toBeNull();
+		expect(mount.querySelector(".feed-tags")?.textContent).toContain("searchable-tag");
+		expect(mount.querySelectorAll(".tag-chip")).toHaveLength(2);
+	});
+
+	it("applies readable measure to narrative view", () => {
+		renderCard({
+			body_text: "A longer narrative with enough detail to differ from the summary.",
+			metadata_json: {
+				narrative: "A longer narrative with enough detail to differ from the summary.",
+				subtitle: "Short summary.",
+			},
+			title: "Narrative memory",
+		});
+
+		const narrativeButton = Array.from(mount.querySelectorAll("button")).find(
+			(button) => button.textContent === "Narrative",
+		);
+		expect(narrativeButton).toBeDefined();
+		act(() => narrativeButton?.click());
+
+		expect(mount.querySelector(".feed-body")?.classList.contains("narrative")).toBe(true);
+	});
 });
