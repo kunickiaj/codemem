@@ -59,7 +59,8 @@ Support tiers describe operational expectations for each adapter path:
 
 | Adapter | Tier | Notes |
 |---|---|---|
-| OpenCode plugin | Supported | Primary reference adapter for lifecycle events and injection behavior. |
+| OpenCode 1 plugin | Supported | Primary reference adapter for lifecycle events and injection behavior. |
+| OpenCode 2 plugin | Experimental | The beta entrypoint loads as an inactive compatibility shell; capture and injection are not enabled. |
 | Claude hooks/plugin | Supported | Hook-first queue path with CLI/runtime fallback and parity slices tracked in adapter stack PRs. |
 | Codex plugin (hooks + MCP) | Experimental (early beta) | Functional capture pipeline (`plugins/codex/`, `packages/core/src/codex-hooks.ts`) dogfooded end-to-end: edge normalization → `POST /api/raw-events` → observer → memories. Prompt-time injection present and env-gated but not fully validated on strict models. Not yet promoted to a stable support tier. |
 | Windsurf integration | Experimental | Planned via shared adapter contract after OpenCode/Claude stabilization. |
@@ -184,7 +185,7 @@ flowchart TD
 
 ## Context injection
 
-The plugin injects a memory pack automatically on every turn. In OpenCode, volatile recall output is appended beside the latest user message by default so provider prompt caches can keep the stable system/history prefix.
+The OpenCode 1 plugin injects a memory pack automatically on every turn. Volatile recall output is appended beside the latest user message by default so provider prompt caches can keep the stable system/history prefix. The experimental OpenCode 2 beta entrypoint is an inactive compatibility shell and does not inject context.
 
 ### Packaged Claude and Codex hooks
 
@@ -244,7 +245,7 @@ OpenCode's message surface supports an opt-in retained ceiling, off by default, 
 
 ### Injection hook
 
-The OpenCode plugin uses `experimental.chat.messages.transform` to append the current pack text to the latest user message. Earlier injected message blocks are cached by message ID and replayed byte-for-byte on later turns, preserving the stable prompt prefix for provider prompt caches while only the newest user turn receives volatile recall output. Scope revocation affects newly built packs, but historical injected blocks in the same OpenCode session are not retroactively scrubbed; start a new session after revoking access if prompt history must be clean. Set `CODEMEM_INJECT_SURFACE=system` to use the legacy `experimental.chat.system.transform` system-prompt surface. A toast notification shows injection stats on first inject per session.
+The OpenCode 1 plugin uses `experimental.chat.messages.transform` to append the current pack text to the latest user message. Earlier injected message blocks are cached by message ID and replayed byte-for-byte on later turns, preserving the stable prompt prefix for provider prompt caches while only the newest user turn receives volatile recall output. Scope revocation affects newly built packs, but historical injected blocks in the same OpenCode session are not retroactively scrubbed; start a new session after revoking access if prompt history must be clean. Set `CODEMEM_INJECT_SURFACE=system` to use the legacy `experimental.chat.system.transform` system-prompt surface. A toast notification shows injection stats on first inject per session.
 
 Before each pack build, the plugin derives stable attempt and request identities from safe request components so an exact adapter retry is idempotent. At the tool-event boundary, repository-contained absolute working-set paths are converted to repository-relative `/` paths; outside-repository, traversing, blank, and overlong paths are discarded. The same normalized set feeds pack retrieval and its ledger metadata. Before sending prompt-derived POST data, the plugin performs a payload-free, redirect-disabled handshake that verifies the Codemem viewer marker plus resolved database, identity/config, compression, and embedding targets. The viewer also verifies that its cached store identity still matches current database/config resolution before retrieval or ledger writes. Connection failures, timeouts, unavailable endpoints, unrecognized responses, server failures, unusable success responses, profile-target mismatches, and structured request errors before a compatible handshake use the compatible CLI fallback. Structured request errors become terminal only after compatibility is established. Pack assembly returns its legacy response and trace from the same retrieval pass, then the local evidence ledger stores at most 50 selected exposures and 20 diagnostics. Exposure snapshots contain bounded identity, revision, scope, score, and reason-code fields; working-set evidence is limited to normalized repository-relative paths. Attempt recording, handoff, skipped attempts, and cache reuse use the viewer ledger dispatcher on healthy paths and retain classified CLI fallback. A cache hit for the current request creates and delivers one new attempt without modifying the original, while byte-for-byte reconstruction of historical message parts creates no attempts. Ledger writes are fail-open and do not alter retrieval, rendering, or injection.
 

@@ -25,10 +25,15 @@ OpenCode installs npm plugins automatically with Bun at startup.
 
 ## Exports
 
-`CodememPlugin` is the canonical named export and the package default export.
+The package default export is one dual-host object. OpenCode 1 calls its
+`server()` function, while OpenCode 2 calls its `setup()` function. The OpenCode 2
+setup is an intentionally inactive compatibility shell until the V2 adapter is
+enabled.
+
+`CodememPlugin` remains the canonical named OpenCode 1 function export.
 `OpencodeMemPlugin` remains available as a deprecated, reference-identical alias
-for compatibility with integrations created before the Codemem rename. No removal
-version is currently scheduled.
+for integrations created before the Codemem rename. No removal version is
+currently scheduled.
 
 ## Documentation
 

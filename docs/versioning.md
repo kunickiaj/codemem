@@ -101,7 +101,7 @@ change whether the current CLI satisfies the plugin's minimum supported version.
 
 ## Compatibility-floor check
 
-The OpenCode plugin performs a runtime CLI version check and warns if the local CLI is below
+The OpenCode 1 plugin performs a runtime CLI version check and warns if the local CLI is below
 `CODEMEM_MIN_VERSION` (default `0.9.20`).
 
 The compatibility reaction is controlled by `CODEMEM_BACKEND_UPDATE_POLICY`:
@@ -119,7 +119,11 @@ discovery.
 Codemem 0.45 raises the minimum supported OpenCode 1 host to 1.18.29. The
 `@codemem/opencode-plugin` package records this floor through
 `engines.opencode`, which OpenCode checks when loading npm plugins, and CI runs
-the V1 plugin suite against that exact release.
+the V1 plugin suite against that exact SDK release. The packed-artifact smoke
+also installs OpenCode 1.18.30 and requires the dual entrypoint to complete the
+host's non-pure startup path. The package default export changes from a callable
+V1 plugin function to the documented dual-host object; named V1 exports remain
+available for integrations that invoke the function directly.
 This is a breaking host-compatibility change from Codemem 0.44; upgrade OpenCode
 before installing the 0.45 plugin.
 

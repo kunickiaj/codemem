@@ -1,5 +1,7 @@
 # OpenCode Retained Recall
 
+This contract applies to the OpenCode 1 plugin. The experimental OpenCode 2 beta entrypoint is an inactive compatibility shell and does not perform automatic recall.
+
 Automatic message recall must preserve retained bytes and derive allowance from the current transform output, not a lifetime counter.
 
 ## Lifecycle Contract

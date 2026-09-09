@@ -6,7 +6,9 @@ This page covers advanced plugin behavior, environment variables, and stream rel
 
 <img src="images/codemem-settings.png" alt="codemem observer settings" width="520" />
 
-## Running OpenCode with the plugin
+## Running OpenCode 1 with the plugin
+
+These capture and recall behaviors apply to OpenCode 1. The experimental OpenCode 2 beta entrypoint currently loads as an inactive compatibility shell.
 
 1. Start OpenCode inside this repo (or make the plugin global so it globs in everywhere).
 2. Every tooling session creates memory artifacts in SQLite.
@@ -14,7 +16,7 @@ This page covers advanced plugin behavior, environment variables, and stream rel
 4. Use `codemem stats` and `codemem recent` to confirm ingestion.
 5. Browse the viewer at the printed URL.
 
-OpenCode loads configured npm plugins and project-local `.opencode/plugins/` files as separate sources. If both resolve to Codemem for the same project, the first registration remains active and later registrations skip all hooks with a warning. Remove the configured npm entry when testing checkout-local plugin changes so the local copy initializes first.
+OpenCode 1 loads configured npm plugins and project-local `.opencode/plugins/` files as separate sources. If both resolve to Codemem for the same project, the first registration remains active and later registrations skip all hooks with a warning. Remove the configured npm entry when testing checkout-local plugin changes so the local copy initializes first.
 
 ### Repository-only lint feedback
 
@@ -43,7 +45,7 @@ bodies are not replayed to another endpoint.
 
 ### OpenCode prompt-path benchmark
 
-A 30-run synthetic-fixture benchmark measured the **OpenCode plugin path only**; it does not measure
+A 30-run synthetic-fixture benchmark measured the **OpenCode 1 plugin path only**; it does not measure
 Claude or Codex latency. The privacy-safe report contains no prompt, memory content, IDs, or paths.
 
 | Mode | Median / p95 | Prompt children |
@@ -239,7 +241,7 @@ The plugin now passes that explicit host/port through when it auto-starts, healt
 
 If compatibility toasts appear after restart, follow the runner-specific guidance in Compatibility guidance behavior below.
 
-## Plugin tools exposed to the model
+## OpenCode 1 plugin tools exposed to the model
 
 - `mem-status` - show viewer URL, log path, stats, and recent entries.
 - `mem-stats` - show just the stats block.
@@ -405,7 +407,7 @@ codemem db raw-events-retry <session_stream_id>
 
 ## Hook lifecycle and flush boundaries
 
-The plugin uses OpenCode event hooks and flushes on explicit lifecycle boundaries:
+The OpenCode 1 plugin uses event hooks and flushes on explicit lifecycle boundaries:
 
 - `tool.execute.after`: queue tool event; contributes to force-flush thresholds.
 - `session.idle`: immediate flush attempt.

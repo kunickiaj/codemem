@@ -18,6 +18,7 @@ import { join, resolve } from "node:path";
 const packageRoot = process.cwd();
 const workspaceRoot = resolve(packageRoot, "..", "..");
 const pinnedVersion = "0.0.0-beta-19296";
+const packedPluginTarget = "./node_modules/@codemem/opencode-plugin";
 const packedFixtureTarget = "./node_modules/@codemem/opencode-plugin/v2-contract-fixture";
 const tempDir = mkdtempSync(join(tmpdir(), "codemem-opencode-v2-contract-"));
 let providerServer;
@@ -359,6 +360,7 @@ try {
 		JSON.stringify({
 			model: { providerID: "contract", model: "contract-model" },
 			plugins: [
+				{ package: packedPluginTarget },
 				{
 					package: packedFixtureTarget,
 					options: { contract: true },
@@ -485,7 +487,11 @@ try {
 		env,
 	});
 	assert(
-		configResult.stdout.includes(packedFixtureTarget),
+		configResult.stdout.includes(JSON.stringify(packedPluginTarget)),
+		"Pinned host did not report the installed package plugin target",
+	);
+	assert(
+		configResult.stdout.includes(JSON.stringify(packedFixtureTarget)),
 		"Pinned host did not report the configured project plugin target",
 	);
 	const hostResult = run(opencode2, [
@@ -500,6 +506,24 @@ try {
 		cwd: projectDir,
 		env,
 	});
+	const hostLogLines = `${hostResult.stdout}\n${hostResult.stderr}`.split(/\r?\n/u);
+	const installedPluginPath = "node_modules/@codemem/opencode-plugin";
+	assert(
+		hostLogLines.some(
+			(line) =>
+				line.includes("loading plugin") && line.includes(`${installedPluginPath}/index.js`),
+		),
+		"Pinned host did not attempt to load the installed dual plugin",
+	);
+	assert(
+		!hostLogLines.some(
+			(line) =>
+				line.includes("failed to load plugin") &&
+				line.includes(installedPluginPath) &&
+				!line.includes("v2-contract-fixture"),
+		),
+		"Pinned host rejected the installed dual plugin",
+	);
 	const sessionResult = run(
 		opencode2,
 		[

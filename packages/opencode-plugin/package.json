@@ -4,13 +4,16 @@
 	"description": "CodeMem plugin for OpenCode",
 	"type": "module",
 	"main": "./index.js",
+	"types": "./index.d.ts",
 	"exports": {
 		".": {
+			"types": "./index.d.ts",
 			"import": "./index.js"
 		}
 	},
 	"files": [
 		"index.js",
+		"index.d.ts",
 		"src/opencode-v2-contract-fixture.ts",
 		"v2-contract-fixture/",
 		"README.md",

@@ -2,11 +2,11 @@
 
 [![CI](https://github.com/kunickiaj/codemem/actions/workflows/ci.yml/badge.svg)](https://github.com/kunickiaj/codemem/actions/workflows/ci.yml) [![codecov](https://codecov.io/gh/kunickiaj/codemem/branch/main/graph/badge.svg)](https://codecov.io/gh/kunickiaj/codemem) [![Release](https://img.shields.io/github/v/release/kunickiaj/codemem)](https://github.com/kunickiaj/codemem/releases)
 
-Persistent memory for [OpenCode](https://opencode.ai) and [Claude Code](https://claude.ai/code). codemem captures what you work on across sessions, retrieves relevant context using hybrid search, and injects relevant context automatically in OpenCode.
+Persistent memory for [OpenCode](https://opencode.ai) and [Claude Code](https://claude.ai/code). codemem captures what you work on across sessions, retrieves relevant context using hybrid search, and injects relevant context automatically in OpenCode 1.
 
 - **Local-first** — everything lives in SQLite on your machine
 - **Hybrid retrieval** — FTS5 BM25 lexical search + sqlite-vec semantic search, merged and re-ranked
-- **Automatic injection** — the OpenCode plugin injects context into every prompt, no manual steps
+- **Automatic injection for OpenCode 1** — the plugin injects context into every prompt, no manual steps
 - **Claude Code plugin support** — install from the codemem marketplace source
 - **Built-in viewer** — browse memories, sessions, and observer output in a local web UI
 - **Peer-to-peer sync** — replicate memories across machines without a central service
@@ -28,6 +28,10 @@ codemem keeps one minimum Node.js version across published packages and workspac
 
 Codemem requires OpenCode 1.18.29 or newer.
 
+The experimental OpenCode 2 beta entrypoint currently loads as an inactive
+compatibility shell. Capture, memory building, and automatic context injection
+remain OpenCode 1 features until the OpenCode 2 adapter is enabled.
+
 1. Install the OpenCode plugin and MCP config:
 
 ```text
@@ -36,7 +40,7 @@ npx -y codemem setup --opencode-only
 
 2. Restart OpenCode.
 
-The OpenCode plugin manages backend execution automatically — no separate global install is required.
+On OpenCode 1, the plugin manages backend execution automatically — no separate global install is required.
 
 3. Verify:
 
@@ -46,7 +50,7 @@ npx -y codemem stats
 npx -y codemem db raw-events-status
 ```
 
-That's it. The plugin captures activity, builds memories, and injects context from here on.
+That's it. On OpenCode 1, the plugin captures activity, builds memories, and injects context from here on.
 
 If you want `codemem` available directly on your `PATH` for manual commands and semantic retrieval, install the CLI globally. The CLI installs its matching embedding runtime by default. The command differs by platform:
 
@@ -176,11 +180,13 @@ Codex hook ingestion shares the same raw-event pipeline as Claude and OpenCode t
 
 ## How it works
 
-Adapters hook into runtime event systems (OpenCode plugin and Claude hooks). They capture tool calls and conversation messages, flush them through an observer pipeline that produces typed memories, and surface retrieval context for future prompts.
+Adapters hook into runtime event systems (the OpenCode 1 plugin and Claude hooks). They capture tool calls and conversation messages, flush them through an observer pipeline that produces typed memories, and surface retrieval context for future prompts.
+
+> The OpenCode workflow below applies only to OpenCode 1. The OpenCode 2 entrypoint is currently an inactive compatibility shell.
 
 ```mermaid
 sequenceDiagram
-participant OC as OpenCode
+participant OC as OpenCode 1
 participant PL as codemem plugin
 participant VW as viewer HTTP
 participant ST as MemoryStore
