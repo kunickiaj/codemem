@@ -858,6 +858,30 @@
         text-transform: uppercase;
       }
 
+      .stat[tabindex="0"]:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      .automatic-recall { margin-top: var(--sp-3); }
+      .automatic-recall > summary {
+        min-height: 44px;
+        padding: 10px 0;
+        cursor: pointer;
+        color: var(--text-secondary);
+        font-size: var(--font-size-md);
+        font-weight: var(--font-weight-medium);
+      }
+      .automatic-recall > section { margin-top: var(--sp-2); }
+      .automatic-recall-grid { margin-top: var(--sp-3); }
+      .automatic-recall-meta {
+        max-width: 65ch;
+        margin-top: var(--sp-3);
+        color: var(--text-tertiary);
+        font-size: var(--font-size-sm);
+        line-height: 1.5;
+      }
+
       .health-primary {
         border-width: 2px;
       }
@@ -4529,7 +4553,7 @@
         <div class="card" style="animation-delay: 0.05s">
           <h2>Stats</h2>
           <div class="grid-2" id="statsGrid"></div>
-          <div id="automaticRecallStats" style="margin-top: var(--sp-3)"></div>
+          <div id="automaticRecallStats"></div>
         </div>
         <div class="card" style="animation-delay: 0.1s">
           <h2>Current session</h2>

@@ -10,6 +10,7 @@ import { Tooltip, TooltipProvider } from "../../components/primitives/tooltip";
 import type { UpdateStatus } from "../../lib/api";
 import { type AutomaticRecallStats, parseAutomaticRecallStats } from "../../lib/api/stats";
 import { copyToClipboard } from "../../lib/dom";
+import { formatTokenCount } from "../../lib/format";
 import type {
 	HealthAction,
 	HealthActionRowProps,
@@ -27,67 +28,111 @@ export function buildHealthCard(input: HealthCardInput): HealthCardInput {
 	return input;
 }
 
-function automaticRecallRows(stats: AutomaticRecallStats) {
-	const rows = [["Unmeasured retrieval attempts", stats.unmeasuredAttempts.toLocaleString()]];
-	if (stats.freshEvaluations > 0) {
-		rows.unshift(
-			[
-				"Duplicate hit rate",
-				`${stats.evaluationsWithDuplicates} / ${stats.freshEvaluations} fresh evaluations (${((100 * stats.evaluationsWithDuplicates) / stats.freshEvaluations).toFixed(1)}%)`,
-			],
-			["Estimated injection tokens avoided", stats.estimatedTokensAvoided.toLocaleString()],
-			[
-				"Estimated tokens before / after filtering",
-				`${stats.beforeTokens.toLocaleString()} / ${stats.afterTokens.toLocaleString()}`,
-			],
-			[
-				"Duplicate items omitted / candidate items",
-				`${stats.duplicatesOmitted} / ${stats.candidateItems}`,
-			],
-			[
-				"Evaluations with missing / invalid retained metadata",
-				`${stats.missingRetainedMetadata} / ${stats.invalidRetainedMetadata}`,
-			],
-			["Evaluations with pack metadata gaps", String(stats.packMetadataGaps)],
-		);
+function formatAutomaticRecallPeriod(stats: AutomaticRecallStats): [string, string] {
+	const start = new Date(stats.periodStart);
+	const end = new Date(stats.periodEnd);
+	const shortDate = new Intl.DateTimeFormat(undefined, {
+		month: "short",
+		day: "numeric",
+	});
+	const datedYear = new Intl.DateTimeFormat(undefined, {
+		month: "short",
+		day: "numeric",
+		year: "numeric",
+	});
+	if (start.getFullYear() === end.getFullYear()) {
+		return [shortDate.format(start), datedYear.format(end)];
 	}
-	return rows;
+	return [datedYear.format(start), datedYear.format(end)];
+}
+
+function formatRecallShare(part: number, total: number): string {
+	const rawPercent = (100 * part) / total;
+	const roundedPercent = Math.round(rawPercent);
+	if (rawPercent > 0 && roundedPercent === 0) return "<1%";
+	if (rawPercent < 100 && roundedPercent === 100) return ">99%";
+	return `${roundedPercent}%`;
+}
+
+function automaticRecallItems(stats: AutomaticRecallStats): StatItem[] {
+	if (stats.freshEvaluations === 0) {
+		return [
+			{
+				label: "Recalls checked",
+				value: 0,
+				tooltip: "No automatic recalls were checked for repeated memories in this period.",
+				icon: "activity",
+			},
+			{
+				label: "Not checked",
+				value: stats.unmeasuredAttempts,
+				tooltip: `Codemem could not check ${stats.unmeasuredAttempts.toLocaleString()} automatic recalls for repeated memories, so savings are unknown.`,
+				icon: "circle-help",
+			},
+		];
+	}
+
+	const deduplicatedValue = formatRecallShare(
+		stats.evaluationsWithDuplicates,
+		stats.freshEvaluations,
+	);
+	const hasIncompleteResults =
+		stats.missingRetainedMetadata > 0 ||
+		stats.invalidRetainedMetadata > 0 ||
+		stats.packMetadataGaps > 0;
+	return [
+		{
+			label: "Recalls with repeats",
+			value: deduplicatedValue,
+			tooltip: `Codemem removed repeated memories from ${stats.evaluationsWithDuplicates.toLocaleString()} of ${stats.freshEvaluations.toLocaleString()} automatic recalls.`,
+			icon: "filter",
+		},
+		{
+			label: "Memories skipped",
+			value: stats.duplicatesOmitted,
+			tooltip: `Codemem left out ${stats.duplicatesOmitted.toLocaleString()} memories that were already in your conversation, out of ${stats.candidateItems.toLocaleString()} considered.`,
+			icon: "minus-circle",
+		},
+		{
+			label: "Repeated tokens removed",
+			value: `~${formatTokenCount(stats.estimatedTokensAvoided)}`,
+			tooltip: `About ${stats.estimatedTokensAvoided.toLocaleString()} tokens were left out because they repeated information already in your conversation.`,
+			icon: "trending-down",
+		},
+		{
+			label: "Recalls checked",
+			value: stats.freshEvaluations,
+			tooltip: `Codemem checked ${stats.freshEvaluations.toLocaleString()} automatic recalls for repeated memories. ${stats.unmeasuredAttempts.toLocaleString()} more could not be checked.${hasIncompleteResults ? " Some results may be incomplete." : ""}`,
+			icon: "activity",
+		},
+	];
 }
 
 function automaticRecallDetail(stats: AutomaticRecallStats | null) {
 	if (!stats || stats.availability === "unavailable")
 		return h(
 			"p",
-			null,
-			"Measurements unavailable. Update the local backend and plugin, then refresh Health.",
+			{ class: "section-meta" },
+			"Automatic recall details aren’t available. Update Codemem and refresh this page.",
 		);
+	const [periodStart, periodEnd] = formatAutomaticRecallPeriod(stats);
 	return h(
 		Fragment,
 		null,
 		h(
-			"p",
-			null,
-			`Local OpenCode message recall, all projects. ${stats.periodStart} to ${stats.periodEnd}; at most the newest ${stats.windowLimit} eligible retrieval attempts, filtered to currently visible selected memories.`,
-		),
-		stats.freshEvaluations === 0
-			? h("p", null, "No recorded fresh evaluations in this window. Savings are unknown, not zero.")
-			: null,
-		h(
-			"dl",
-			null,
-			automaticRecallRows(stats).map(([label, value]) =>
-				h(Fragment, { key: label }, h("dt", null, label), h("dd", null, value)),
+			"div",
+			{ class: "grid-2 automatic-recall-grid" },
+			automaticRecallItems(stats).map((item) =>
+				h(StatBlock, { ...item, key: `${item.label}-${item.icon}` }),
 			),
 		),
 		h(
 			"p",
-			null,
-			"Capture: opencode-retained-v1. Older clients and failed recording leave coverage unknown; unmeasured attempts are not zero savings. Retries and replay do not add measured evaluations. Ceiling skips prevent evaluation and are excluded.",
-		),
-		h(
-			"p",
-			null,
-			"Token estimates compare wrapped candidate text before and after duplicate filtering, not provider consumption, money, or answer quality. The retained ceiling is opt-in; per-pack budgeting still applies.",
+			{ class: "automatic-recall-meta" },
+			h("time", { dateTime: stats.periodStart }, periodStart),
+			"–",
+			h("time", { dateTime: stats.periodEnd }, periodEnd),
+			` · Based on up to ${stats.windowLimit.toLocaleString()} recent automatic recalls across all projects.${stats.freshEvaluations === 0 ? " No recalls were checked, so savings are unknown." : ""}`,
 		),
 	);
 }
@@ -96,17 +141,22 @@ export function renderAutomaticRecall(container: HTMLElement | null, payload: un
 	if (!container) return;
 	render(
 		h(
-			"details",
+			TooltipProvider,
 			null,
-			h("summary", null, "Automatic recall (advanced)"),
 			h(
-				"section",
-				{ "aria-label": "Automatic recall measurements", style: "margin-top: var(--sp-3)" },
-				automaticRecallDetail(parseAutomaticRecallStats(payload)),
+				"details",
+				{ class: "automatic-recall" },
+				h("summary", null, "Automatic recall"),
+				h(
+					"section",
+					{ "aria-label": "Automatic recall measurements" },
+					automaticRecallDetail(parseAutomaticRecallStats(payload)),
+				),
 			),
 		),
 		container,
 	);
+	renderIcons();
 }
 
 function updateBannerCopy(status: UpdateStatus) {
@@ -295,6 +345,7 @@ export function StatBlock({ label, value, icon, tooltip }: StatItem) {
 		{
 			class: "stat",
 			style: tooltip ? "cursor: help;" : undefined,
+			tabIndex: tooltip ? 0 : undefined,
 		},
 		h("i", {
 			"data-lucide": icon,
