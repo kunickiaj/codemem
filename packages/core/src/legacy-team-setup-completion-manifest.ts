@@ -868,27 +868,34 @@ function quarantineDivergentCompletedPolicy(
 	db.transaction(() => {
 		const team = db
 			.prepare(
-				`SELECT revision FROM policy_teams
-				 WHERE team_id = ? AND status = 'active'
+				`SELECT revision, status FROM policy_teams
+				 WHERE team_id = ?
+				   AND (status = 'active' OR (status = 'inactive' AND migration_state = 'needs_setup'))
 				   AND provenance = 'reviewed_team_candidate'`,
 			)
-			.get(binding.teamId) as { revision: string } | undefined;
-		// Repeated containment is a no-op once the active setup-owned policy is gone.
+			.get(binding.teamId) as { revision: string; status: string } | undefined;
 		if (!team) return;
-		const now = new Date().toISOString();
-		db.prepare(
-			`UPDATE policy_teams
-			 SET status = 'inactive', migration_state = 'needs_setup', updated_at = ?
-			 WHERE team_id = ? AND provenance = 'reviewed_team_candidate'`,
-		).run(now, binding.teamId);
-		db.prepare(
-			`UPDATE project_recipients
-			 SET status = 'revoked', policy_revision = ?, migration_state = 'needs_setup', updated_at = ?
-			 WHERE recipient_kind = 'team' AND recipient_id = ?
-			   AND provenance = 'reviewed_team_setup' AND status = 'active'`,
-		).run(team.revision, now, binding.teamId);
+		if (team.status === "active") {
+			const now = new Date().toISOString();
+			db.prepare(
+				`UPDATE policy_teams
+				 SET status = 'inactive', migration_state = 'needs_setup', updated_at = ?
+				 WHERE team_id = ? AND provenance = 'reviewed_team_candidate'`,
+			).run(now, binding.teamId);
+			db.prepare(
+				`UPDATE project_recipients
+				 SET status = 'revoked', policy_revision = ?, migration_state = 'needs_setup', updated_at = ?
+				 WHERE recipient_kind = 'team' AND recipient_id = ?
+				   AND provenance = 'reviewed_team_setup' AND status = 'active'`,
+			).run(team.revision, now, binding.teamId);
+			db.prepare(
+				`UPDATE legacy_team_setup_drafts SET finish_digest = NULL
+				 WHERE candidate_id = ? AND completed_team_id = ? AND state = 'completed'`,
+			).run(binding.candidateRef, binding.teamId);
+		}
 		// Scope stamping ignores recipient status; remove this setup group's
 		// routing on active and retired scopes without touching independently owned mappings.
+		// Older containment already deactivated policy but left these mappings behind.
 		db.prepare(
 			`DELETE FROM project_scope_mappings
 			 WHERE source = 'reviewed_team_setup' AND scope_id IN (
@@ -898,10 +905,6 @@ function quarantineDivergentCompletedPolicy(
 			   WHERE draft.candidate_id = ? AND draft.completed_team_id = ?
 			     AND scope.authority_type = 'coordinator'
 			 )`,
-		).run(binding.candidateRef, binding.teamId);
-		db.prepare(
-			`UPDATE legacy_team_setup_drafts SET finish_digest = NULL
-			 WHERE candidate_id = ? AND completed_team_id = ? AND state = 'completed'`,
 		).run(binding.candidateRef, binding.teamId);
 	}).immediate();
 }

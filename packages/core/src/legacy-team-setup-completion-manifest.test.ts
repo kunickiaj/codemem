@@ -1964,59 +1964,110 @@ describe("legacy Team setup completion manifests", () => {
 		).rejects.toThrow("team_setup_confirmation_stale");
 	});
 
-	it("containment removes only setup-owned group routing and is idempotent", async () => {
-		const draft = readyDraft();
-		const manifest = deriveLegacyTeamSetupCompletionManifest(db, {
-			candidateRef: CANDIDATE,
-			attemptId: draft.attemptId,
-			completedAt: NOW,
-		});
-		await applyLegacyTeamSetupCompletionManifest(db, {
-			coordinatorId: COORDINATOR_ID,
-			groupId: GROUP_ID,
-			freshRoster: FRESH_ROSTER,
-			manifest,
-		});
-		const insertScope = db.prepare(`INSERT INTO replication_scopes(
+	function seedPriorContainmentState(state: string, teamId: string, attemptId: string): void {
+		if (state === "legacy-contained" || state === "unbound-contained") {
+			db.prepare(
+				"UPDATE policy_teams SET status = 'inactive', migration_state = 'needs_setup' WHERE team_id = ?",
+			).run(teamId);
+			db.prepare(
+				"UPDATE legacy_team_setup_drafts SET finish_digest = NULL WHERE attempt_id = ?",
+			).run(attemptId);
+		}
+		if (state === "unbound-contained") {
+			db.prepare(
+				"UPDATE legacy_team_setup_drafts SET completed_team_id = NULL WHERE attempt_id = ?",
+			).run(attemptId);
+		}
+		if (state === "independently-inactive") {
+			db.prepare("UPDATE policy_teams SET status = 'inactive' WHERE team_id = ?").run(teamId);
+		}
+		if (state === "non-setup-owned") {
+			db.prepare("UPDATE policy_teams SET provenance = 'user' WHERE team_id = ?").run(teamId);
+		}
+		if (state === "missing-team")
+			db.prepare("DELETE FROM policy_teams WHERE team_id = ?").run(teamId);
+	}
+
+	it.each([
+		{ state: "active", cleanup: true },
+		{ state: "legacy-contained", cleanup: true },
+		{ state: "independently-inactive", cleanup: false },
+		{ state: "non-setup-owned", cleanup: false },
+		{ state: "missing-team", cleanup: false },
+		{ state: "unbound-contained", cleanup: false },
+	])(
+		"containment preserves ownership and is idempotent for $state policy",
+		async ({ state, cleanup }) => {
+			const draft = readyDraft();
+			const manifest = deriveLegacyTeamSetupCompletionManifest(db, {
+				candidateRef: CANDIDATE,
+				attemptId: draft.attemptId,
+				completedAt: NOW,
+			});
+			await applyLegacyTeamSetupCompletionManifest(db, {
+				coordinatorId: COORDINATOR_ID,
+				groupId: GROUP_ID,
+				freshRoster: FRESH_ROSTER,
+				manifest,
+			});
+			const insertScope = db.prepare(`INSERT INTO replication_scopes(
 			scope_id, label, kind, authority_type, coordinator_id, group_id, status, created_at, updated_at
 		) VALUES (?, 'Scope', 'team', 'coordinator', ?, ?, ?, ?, ?)`);
-		insertScope.run("retired-scope", COORDINATOR_ID, GROUP_ID, "inactive", NOW, NOW);
-		insertScope.run("other-group", COORDINATOR_ID, "other-group", "active", NOW, NOW);
-		insertScope.run("other-coordinator", "other-coordinator", GROUP_ID, "active", NOW, NOW);
-		const insertMapping = db.prepare(`INSERT INTO project_scope_mappings(
+			insertScope.run("retired-scope", COORDINATOR_ID, GROUP_ID, "inactive", NOW, NOW);
+			insertScope.run("other-group", COORDINATOR_ID, "other-group", "active", NOW, NOW);
+			insertScope.run("other-coordinator", "other-coordinator", GROUP_ID, "active", NOW, NOW);
+			const insertMapping = db.prepare(`INSERT INTO project_scope_mappings(
 			workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
 		) VALUES (?, ?, ?, 1000, ?, ?, ?)`);
-		for (const [project, scope, source] of [
-			[PROJECT_A, "scope-engineering", "reviewed_team_setup"],
-			[PROJECT_B, "retired-scope", "reviewed_team_setup"],
-			["manual", "scope-engineering", "user"],
-			["foreign-group", "other-group", "reviewed_team_setup"],
-			["foreign-coordinator", "other-coordinator", "reviewed_team_setup"],
-		])
-			insertMapping.run(project, project, scope, source, NOW, NOW);
-		const session = db.prepare(
-			"INSERT INTO sessions(started_at, project, git_remote) VALUES (?, ?, ?)",
-		);
-		const before = Number(session.run(NOW, "api", PROJECT_A).lastInsertRowid);
-		expect(resolveSessionScopeId(db, { sessionId: before })).toBe("scope-engineering");
+			for (const [project, scope, source] of [
+				[PROJECT_A, "scope-engineering", "reviewed_team_setup"],
+				[PROJECT_B, "retired-scope", "reviewed_team_setup"],
+				["manual", "scope-engineering", "user"],
+				["foreign-group", "other-group", "reviewed_team_setup"],
+				["foreign-coordinator", "other-coordinator", "reviewed_team_setup"],
+			])
+				insertMapping.run(project, project, scope, source, NOW, NOW);
+			const session = db.prepare(
+				"INSERT INTO sessions(started_at, project, git_remote) VALUES (?, ?, ?)",
+			);
+			const before = Number(session.run(NOW, "api", PROJECT_A).lastInsertRowid);
+			expect(resolveSessionScopeId(db, { sessionId: before })).toBe("scope-engineering");
+			seedPriorContainmentState(state, manifest.team_id, draft.attemptId);
+			const policySnapshot = () =>
+				["policy_teams", "project_recipients", "legacy_team_setup_drafts"].map((table) =>
+					db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),
+				);
+			const previousPolicy = policySnapshot();
+			const mappings = () => db.prepare("SELECT * FROM project_scope_mappings ORDER BY id").all();
+			const previousMappings = mappings();
 
-		await containLegacyTeamSetupCompletionConflict(db, {
-			coordinatorId: COORDINATOR_ID,
-			groupId: GROUP_ID,
-		});
-		await containLegacyTeamSetupCompletionConflict(db, {
-			coordinatorId: COORDINATOR_ID,
-			groupId: GROUP_ID,
-		});
-		const after = Number(session.run(NOW, "api", PROJECT_A).lastInsertRowid);
-		expect(resolveSessionScopeId(db, { sessionId: after })).toBe("local-default");
-		expect(
-			db
-				.prepare("SELECT project_pattern FROM project_scope_mappings ORDER BY project_pattern")
-				.pluck()
-				.all(),
-		).toEqual(["foreign-coordinator", "foreign-group", "manual"]);
-	});
+			await containLegacyTeamSetupCompletionConflict(db, {
+				coordinatorId: COORDINATOR_ID,
+				groupId: GROUP_ID,
+			});
+			if (state !== "active") expect(policySnapshot()).toEqual(previousPolicy);
+			if (!cleanup) expect(mappings()).toEqual(previousMappings);
+			const containedPolicy = policySnapshot();
+			const containedMappings = mappings();
+			await containLegacyTeamSetupCompletionConflict(db, {
+				coordinatorId: COORDINATOR_ID,
+				groupId: GROUP_ID,
+			});
+			expect(policySnapshot()).toEqual(containedPolicy);
+			expect(mappings()).toEqual(containedMappings);
+			const after = Number(session.run(NOW, "api", PROJECT_A).lastInsertRowid);
+			expect(resolveSessionScopeId(db, { sessionId: after })).toBe(
+				cleanup ? "local-default" : "scope-engineering",
+			);
+			if (!cleanup) return;
+			expect(
+				db
+					.prepare("SELECT project_pattern FROM project_scope_mappings ORDER BY project_pattern")
+					.pluck()
+					.all(),
+			).toEqual(["foreign-coordinator", "foreign-group", "manual"]);
+		},
+	);
 
 	it("quarantines divergent local policy when the canonical winner cannot be applied", async () => {
 		const draft = readyDraft();
