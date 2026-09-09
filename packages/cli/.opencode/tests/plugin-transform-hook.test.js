@@ -386,10 +386,12 @@ describe("OpenCode transform-time injection", () => {
 		);
 
 		expect(secondHooks).toEqual({});
-		expect(secondAppLog).toHaveBeenCalledWith(expect.objectContaining({
-			level: "warn",
-			message: "codemem duplicate plugin registration skipped",
-		}));
+		expect(secondAppLog).toHaveBeenCalledWith({
+			body: expect.objectContaining({
+				level: "warn",
+				message: "codemem duplicate plugin registration skipped",
+			}),
+		});
 		const captureLines = readFileSync(process.env.CODEMEM_PLUGIN_LOG, "utf8")
 			.split("\n")
 			.filter((line) => line.includes("tool.execute.after read queued=1"));
@@ -909,9 +911,9 @@ describe("OpenCode transform-time injection", () => {
 
 		// Assert
 		const budgetWarnings = appLog.mock.calls
-			.map(([entry]) => entry)
+			.map(([entry]) => entry.body)
 			.filter(
-				(entry) => entry.message === "codemem context injection skipped: token budget is too small",
+				(entry) => entry?.message === "codemem context injection skipped: token budget is too small",
 			);
 		expect(budgetWarnings).toEqual([
 			expect.objectContaining({
@@ -1261,7 +1263,7 @@ describe("OpenCode transform-time injection", () => {
 		expect(spawnMock).toHaveBeenCalledTimes(1);
 
 		await hooks.event({
-			event: { type: "session.deleted", properties: { sessionID: "sess-disabled" } },
+			event: { type: "session.deleted", properties: { info: { id: "sess-disabled" } } },
 		});
 		await hooks["experimental.chat.messages.transform"]({}, output);
 		expect(spawnMock).toHaveBeenCalledTimes(2);
@@ -1950,13 +1952,13 @@ describe("OpenCode transform-time injection", () => {
 					failure_code: expectedFailureCode,
 				}),
 			);
-			expect(appLog).toHaveBeenCalledWith(
-				expect.objectContaining({
+			expect(appLog).toHaveBeenCalledWith({
+				body: expect.objectContaining({
 					level: "warn",
 					message: "codemem prompt-pack identity repair failed",
 					extra: expect.objectContaining({ reason: expectedReason }),
 				}),
-			);
+			});
 		},
 	);
 
@@ -2119,8 +2121,7 @@ describe("OpenCode transform-time injection", () => {
 			event: {
 				type: "message.updated",
 				properties: {
-					sessionID: "sess-empty-override",
-					info: { id: "user-stale", role: "user" },
+					info: { id: "user-stale", sessionID: "sess-empty-override", role: "user" },
 				},
 			},
 		});
@@ -2128,8 +2129,13 @@ describe("OpenCode transform-time injection", () => {
 			event: {
 				type: "message.part.updated",
 				properties: {
-					sessionID: "sess-empty-override",
-					part: { messageID: "user-stale", type: "text", text: "stale captured prompt" },
+					part: {
+						id: "part-stale",
+						sessionID: "sess-empty-override",
+						messageID: "user-stale",
+						type: "text",
+						text: "stale captured prompt",
+					},
 				},
 			},
 		});
@@ -2157,6 +2163,188 @@ describe("OpenCode transform-time injection", () => {
 		expect(output.messages[0].parts.at(-1).text).toBe(
 			"[codemem context]\n## Summary\n[1] (feature) Empty prompt override respected",
 		);
+	});
+
+	test("captures OpenCode 1.18.29 message and failed-tool event shapes", async () => {
+		process.env.CODEMEM_VIEWER = "1";
+		process.env.CODEMEM_VIEWER_AUTO = "0";
+		process.env.CODEMEM_RAW_EVENTS = "1";
+		const postedBodies = [];
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+			if (String(url).includes("/api/raw-events/status")) {
+				return jsonResponse(200, { ingest: { available: true } });
+			}
+			if (String(url).endsWith("/api/raw-events") && init?.method === "POST") {
+				postedBodies.push(JSON.parse(String(init.body)));
+				return jsonResponse(200, { ok: true });
+			}
+			return jsonResponse(200, {});
+		});
+
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+		await hooks.event({
+			event: {
+				type: "message.part.updated",
+				properties: {
+					part: {
+						id: "assistant-text-current",
+						sessionID: "sess-current-sdk",
+						messageID: "assistant-current",
+						type: "text",
+						text: "Current SDK assistant response",
+					},
+				},
+			},
+		});
+		await hooks.event({
+			event: {
+				type: "message.updated",
+				properties: {
+					info: {
+						id: "assistant-current",
+						sessionID: "sess-current-sdk",
+						role: "assistant",
+						time: { created: 1, completed: 2 },
+						parentID: "user-current",
+						modelID: "model-current",
+						providerID: "provider-current",
+						mode: "chat",
+						path: { cwd: "/tmp/greenroom", root: "/tmp/greenroom" },
+						cost: 0,
+						tokens: {
+							input: 10,
+							output: 5,
+							reasoning: 2,
+							cache: { read: 3, write: 4 },
+						},
+					},
+				},
+			},
+		});
+		await hooks.event({
+			event: {
+				type: "message.updated",
+				properties: {
+					info: {
+						id: "assistant-legacy",
+						sessionID: "sess-current-sdk",
+						role: "assistant",
+						finish: "stop",
+						usage: {
+							input_tokens: 7,
+							output_tokens: 6,
+							cache_creation_input_tokens: 5,
+							cache_read_input_tokens: 4,
+						},
+					},
+				},
+			},
+		});
+		const failedToolEvent = {
+			type: "message.part.updated",
+			properties: {
+				part: {
+					id: "tool-current",
+					sessionID: "sess-current-sdk",
+					messageID: "assistant-current",
+					type: "tool",
+					callID: "call-current",
+					tool: "read",
+					state: {
+						status: "error",
+						input: { filePath: "src/current.ts" },
+						error: "permission denied",
+						time: { start: 1, end: 2 },
+					},
+				},
+			},
+		};
+		await hooks.event({ event: failedToolEvent });
+		await hooks.event({ event: failedToolEvent });
+		await hooks["tool.execute.after"](
+			{
+				tool: "write",
+				sessionID: "sess-current-sdk",
+				callID: "call-completed",
+				args: { filePath: "src/completed.ts" },
+			},
+			{ title: "Write src/completed.ts", output: "saved", metadata: {} },
+		);
+
+		await vi.waitFor(() => expect(postedBodies).toHaveLength(5));
+		const assistantEnvelope = postedBodies.find((entry) => entry.event_type === "assistant_message");
+		expect(assistantEnvelope).toMatchObject({
+			session_id: "sess-current-sdk",
+			payload: { assistant_text: "Current SDK assistant response" },
+		});
+		const usageEnvelope = postedBodies.find(
+			(entry) => entry.event_type === "assistant_usage" && entry.payload.message_id === "assistant-current",
+		);
+		expect(usageEnvelope).toMatchObject({
+			session_id: "sess-current-sdk",
+			payload: {
+				usage: {
+					input_tokens: 10,
+					output_tokens: 5,
+					cache_creation_input_tokens: 4,
+					cache_read_input_tokens: 3,
+				},
+			},
+		});
+		const legacyUsageEnvelope = postedBodies.find(
+			(entry) => entry.event_type === "assistant_usage" && entry.payload.message_id === "assistant-legacy",
+		);
+		expect(legacyUsageEnvelope.payload.usage).toEqual({
+			input_tokens: 7,
+			output_tokens: 6,
+			cache_creation_input_tokens: 5,
+			cache_read_input_tokens: 4,
+		});
+		const failedToolEnvelope = postedBodies.find(
+			(entry) => entry.event_type === "tool.execute.after" && entry.payload.tool === "read",
+		);
+		expect(failedToolEnvelope).toMatchObject({
+			session_id: "sess-current-sdk",
+			payload: {
+				tool: "read",
+				args: { filePath: "src/current.ts" },
+				result: null,
+			},
+		});
+		expect(failedToolEnvelope.payload.error).toContain("permission denied");
+		const completedToolEnvelope = postedBodies.find(
+			(entry) => entry.event_type === "tool.execute.after" && entry.payload.tool === "write",
+		);
+		expect(completedToolEnvelope).toMatchObject({
+			session_id: "sess-current-sdk",
+			payload: {
+				args: { filePath: "src/completed.ts" },
+				error: null,
+			},
+		});
+		expect(completedToolEnvelope.payload.result).toContain("saved");
+	});
+
+	test("tolerates null arguments from a successful tool hook", async () => {
+		process.env.CODEMEM_RAW_EVENTS = "0";
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		const hooks = await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+
+		await expect(hooks["tool.execute.after"](
+			{ tool: "custom", sessionID: "sess-null-args", callID: "call-null", args: null },
+			{ title: "Custom", output: "done", metadata: {} },
+		)).resolves.toBeUndefined();
 	});
 
 	test("passes only normalized repository paths to pack retrieval and ledger recording", async () => {
@@ -2955,10 +3143,12 @@ describe("OpenCode transform-time injection", () => {
 		);
 		await vi.waitFor(() => expect(fallbackBytes).toHaveLength(1));
 		await vi.waitFor(() =>
-			expect(appLog).toHaveBeenCalledWith(expect.objectContaining({
-				message: `codemem raw event was queued via CLI; ${nextAction}`,
-				extra: { category, delivery: "cli" },
-			})),
+			expect(appLog).toHaveBeenCalledWith({
+				body: expect.objectContaining({
+					message: `codemem raw event was queued via CLI; ${nextAction}`,
+					extra: { category, delivery: "cli" },
+				}),
+			}),
 		);
 
 		const httpEnvelope = { ...postedBodies[0] };
@@ -3035,10 +3225,12 @@ describe("OpenCode transform-time injection", () => {
 		);
 		await vi.waitFor(() => expect(enqueueBytes).toHaveLength(initialAttempts));
 		await vi.waitFor(() =>
-			expect(appLog).toHaveBeenCalledWith(expect.objectContaining({
-				message: "codemem raw event was saved for retry; check or restart the viewer",
-				extra: { category: "connection", delivery: "spool" },
-			})),
+			expect(appLog).toHaveBeenCalledWith({
+				body: expect.objectContaining({
+					message: "codemem raw event was saved for retry; check or restart the viewer",
+					extra: { category: "connection", delivery: "spool" },
+				}),
+			}),
 		);
 		await hooks.event({ event: { type: "session.idle", properties: { sessionID } } });
 
@@ -3263,7 +3455,7 @@ describe("OpenCode transform-time injection", () => {
 		await hooks["tool.execute.after"]({ tool: "read", args: {}, sessionID: "sess-latch-first" }, {});
 		await vi.waitFor(() =>
 			expect(appLog.mock.calls.filter(([entry]) =>
-				entry.message === "codemem could not save a raw event for retry; it remains queued in memory",
+				entry.body?.message === "codemem could not save a raw event for retry; it remains queued in memory",
 			)).toHaveLength(1),
 		);
 		rmSync(join(home, ".codemem"), { force: true });
@@ -3277,7 +3469,7 @@ describe("OpenCode transform-time injection", () => {
 
 		await vi.waitFor(() =>
 			expect(appLog.mock.calls.filter(([entry]) =>
-				entry.message === "codemem could not save a raw event for retry; it remains queued in memory",
+				entry.body?.message === "codemem could not save a raw event for retry; it remains queued in memory",
 			)).toHaveLength(2),
 		);
 		expect(showToast.mock.calls.filter(([entry]) =>
@@ -3316,10 +3508,12 @@ describe("OpenCode transform-time injection", () => {
 			{},
 		);
 		await vi.waitFor(() =>
-			expect(appLog).toHaveBeenCalledWith(expect.objectContaining({
-				message: "codemem could not save a raw event for retry; it remains queued in memory",
-				extra: { category: "persistence", reason: "write_failed" },
-			})),
+			expect(appLog).toHaveBeenCalledWith({
+				body: expect.objectContaining({
+					message: "codemem could not save a raw event for retry; it remains queued in memory",
+					extra: { category: "persistence", reason: "write_failed" },
+				}),
+			}),
 		);
 		const notices = JSON.stringify(appLog.mock.calls);
 		expect(notices).not.toContain("sensitive subprocess failure");
@@ -3355,7 +3549,7 @@ describe("OpenCode transform-time injection", () => {
 		);
 
 		await vi.waitFor(() =>
-			expect(appLog.mock.calls.some(([entry]) => entry.extra?.reason === "spool_full")).toBe(true),
+			expect(appLog.mock.calls.some(([entry]) => entry.body?.extra?.reason === "spool_full")).toBe(true),
 		);
 		const notices = [...appLog.mock.calls, ...showToast.mock.calls]
 			.map(([entry]) => JSON.stringify(entry))

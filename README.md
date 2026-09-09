@@ -103,6 +103,13 @@ sources. If both load Codemem for one Project, the first registration wins and l
 their hooks with a warning. Remove the configured npm entry when testing a source checkout so the
 checkout-local plugin loads first; otherwise your edits may appear to do nothing.
 
+Capture follows the OpenCode 1.18.29 runtime contract: completed assistant
+messages use `info.time.completed`, token usage comes from `info.tokens`, and
+successful and failed tool executions are both recorded. OpenCode reports
+successful tools through `tool.execute.after` and failed tools through errored
+tool parts; Codemem normalizes both into the shared raw-event stream without
+double-counting repeated failure updates.
+
 Automatic OpenCode recall carries the host session ID through Viewer or CLI into
 Core assembly. Summary memories are eligible only from the exact mapped session;
 durable facts from other sessions remain eligible. If the mapping is not ready,

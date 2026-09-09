@@ -521,10 +521,12 @@ const createDebugLogger = ({ debug, client, logTimeoutMs, getLogLine, getErrorLo
     }
     try {
       const logPromise = client.app.log({
-        service: "codemem",
-        level,
-        message,
-        extra,
+        body: {
+          service: "codemem",
+          level,
+          message,
+          extra,
+        },
       });
       if (!Number.isFinite(logTimeoutMs) || logTimeoutMs <= 0) {
         await logPromise;
@@ -2240,6 +2242,7 @@ export const CodememPlugin = async ({
   let lastPromptText = null;
   let lastAssistantText = null;
   const assistantUsageCaptured = new Set();
+  const failedToolCaptured = new Set();
 
   // Track message roles and accumulated text by messageID
   const messageRoles = new Map();
@@ -2338,10 +2341,12 @@ export const CodememPlugin = async ({
       : "codemem could not save a raw event for retry; it remains queued in memory";
     try {
       await client.app.log({
-        service: "codemem",
-        level: "error",
-        message,
-        extra: { category: "persistence", reason },
+        body: {
+          service: "codemem",
+          level: "error",
+          message,
+          extra: { category: "persistence", reason },
+        },
       });
     } catch {
       // Best-effort app logging only.
@@ -2407,12 +2412,14 @@ export const CodememPlugin = async ({
     }
     try {
       await client.app.log({
-        service: "codemem",
-        level: delivered ? "warn" : "error",
-        message,
-        extra: {
-          category,
-          delivery,
+        body: {
+          service: "codemem",
+          level: delivered ? "warn" : "error",
+          message,
+          extra: {
+            category,
+            delivery,
+          },
         },
       });
     } catch {
@@ -2448,10 +2455,12 @@ export const CodememPlugin = async ({
         const message = "codemem could not read saved raw events; spool entries were left untouched";
         try {
           await client.app.log({
-            service: "codemem",
-            level: "error",
-            message,
-            extra: { category: "persistence", delivery: "load" },
+            body: {
+              service: "codemem",
+              level: "error",
+              message,
+              extra: { category: "persistence", delivery: "load" },
+            },
           });
         } catch {
           // Best-effort app logging only.
@@ -2641,10 +2650,29 @@ export const CodememPlugin = async ({
   };
 
   const extractSessionID = (event) => {
-    if (!event) {
+    if (!event || typeof event !== "object") {
       return null;
     }
-    return event?.properties?.sessionID || null;
+    const properties = event.properties;
+    if (!properties || typeof properties !== "object") {
+      return null;
+    }
+    if (typeof properties.sessionID === "string") {
+      return properties.sessionID;
+    }
+    if (typeof properties.info?.sessionID === "string") {
+      return properties.info.sessionID;
+    }
+    if (typeof properties.part?.sessionID === "string") {
+      return properties.part.sessionID;
+    }
+    if (
+      ["session.created", "session.updated", "session.deleted"].includes(event.type) &&
+      typeof properties.info?.id === "string"
+    ) {
+      return properties.info.id;
+    }
+    return null;
   };
 
   const extractHookSessionID = (input) => {
@@ -2788,7 +2816,7 @@ export const CodememPlugin = async ({
         // Only return assistant text when message is finished
         if (
           info.role === "assistant" &&
-          info.finish &&
+          (info.finish || info.time?.completed) &&
           messageTexts.has(info.id)
         ) {
           const text = messageTexts.get(info.id);
@@ -2826,10 +2854,16 @@ export const CodememPlugin = async ({
     if (!usage || typeof usage !== "object") {
       return null;
     }
-    const inputTokens = Number(usage.input_tokens || 0);
-    const outputTokens = Number(usage.output_tokens || 0);
-    const cacheCreationTokens = Number(usage.cache_creation_input_tokens || 0);
-    const cacheReadTokens = Number(usage.cache_read_input_tokens || 0);
+    const currentTokens = usage.tokens && typeof usage.tokens === "object" ? usage.tokens : null;
+    const currentCache = currentTokens?.cache && typeof currentTokens.cache === "object"
+      ? currentTokens.cache
+      : null;
+    const inputTokens = Number(currentTokens?.input ?? usage.input_tokens ?? 0);
+    const outputTokens = Number(currentTokens?.output ?? usage.output_tokens ?? 0);
+    const cacheCreationTokens = Number(
+      currentCache?.write ?? usage.cache_creation_input_tokens ?? 0
+    );
+    const cacheReadTokens = Number(currentCache?.read ?? usage.cache_read_input_tokens ?? 0);
     const total = inputTokens + outputTokens + cacheCreationTokens;
     if (!Number.isFinite(total) || total <= 0) {
       return null;
@@ -2847,14 +2881,14 @@ export const CodememPlugin = async ({
       return null;
     }
     const info = event.properties.info;
-    if (!info.id || info.role !== "assistant" || !info.finish) {
+    if (!info.id || info.role !== "assistant" || (!info.finish && !info.time?.completed)) {
       return null;
     }
     if (assistantUsageCaptured.has(info.id)) {
       return null;
     }
     const usage = normalizeUsage(
-      info.usage || event.properties?.usage || event.usage
+      info.tokens ? info : info.usage || event.properties?.usage || event.usage
     );
     if (!usage) {
       return null;
@@ -4496,6 +4530,29 @@ export const CodememPlugin = async ({
             `assistant_usage captured id=${assistantUsage.id.slice(-8)}`
           );
         }
+
+        const toolPart = eventType === "message.part.updated"
+          ? event.properties?.part
+          : null;
+        if (toolPart?.type === "tool" && toolPart.state?.status === "error") {
+          const failedToolKey = `${sessionID || "unknown"}:${toolPart.callID || toolPart.id}`;
+          if (!failedToolCaptured.has(failedToolKey)) {
+            failedToolCaptured.add(failedToolKey);
+            updateActivity();
+            sessionContext.toolCount++;
+            captureEvent(sessionID, {
+              type: "tool.execute.after",
+              tool: toolPart.tool,
+              args: toolPart.state.input,
+              result: null,
+              error: truncate(safeStringify(toolPart.state.error)),
+              timestamp: new Date().toISOString(),
+            });
+            await logLine(
+              `tool.execute.after ${toolPart.tool} failed queued=${events.length} tools=${sessionContext.toolCount}`
+            );
+          }
+        }
       }
 
       // NEW ACCUMULATION STRATEGY
@@ -4549,15 +4606,20 @@ export const CodememPlugin = async ({
           disabledInjectionRecorded.delete(`system:${sessionID}`);
           latestPolicySkips.delete(`message:${sessionID}`);
           latestPolicySkips.delete(`system:${sessionID}`);
+          for (const key of failedToolCaptured) {
+            if (key.startsWith(`${sessionID}:`)) {
+              failedToolCaptured.delete(key);
+            }
+          }
         }
         await stopViewer();
       }
     },
+    // OpenCode invokes this hook after successful tools; failures arrive as errored ToolPart events.
     "tool.execute.after": async (input, output) => {
-      const args = output?.args ?? input?.args ?? {};
-      const result = output?.result ?? output?.output ?? output?.data ?? null;
-      const error = output?.error ?? null;
-      const toolName = input?.tool || output?.tool || "unknown";
+      const args = input.args ?? {};
+      const result = output.output;
+      const toolName = input.tool;
 
       // Update activity and session context
       updateActivity();
@@ -4580,12 +4642,12 @@ export const CodememPlugin = async ({
         }
       }
 
-      captureEvent(input?.sessionID || null, {
+      captureEvent(input.sessionID, {
         type: "tool.execute.after",
         tool: toolName,
         args,
         result: truncate(safeStringify(result)),
-        error: truncate(safeStringify(error)),
+        error: null,
         timestamp: new Date().toISOString(),
       });
       await logLine(`tool.execute.after ${toolName} queued=${events.length} tools=${sessionContext.toolCount}`);

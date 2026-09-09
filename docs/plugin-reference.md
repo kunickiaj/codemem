@@ -360,6 +360,16 @@ Stream contract:
 - Event streaming: `POST /api/raw-events`
 - Non-2xx and network failures are treated as stream failures.
 - Raw events are delivered through the viewer ingest API.
+- OpenCode 1.18.29 session IDs are read from each event's SDK-shaped `info` or
+  `part` payload. Assistant messages and usage are captured after either
+  `info.finish` or `info.time.completed`; current `info.tokens` and legacy usage
+  fields are normalized into one token shape.
+- Successful tools arrive through `tool.execute.after` and record
+  `output.output`. Failed tools arrive as errored `ToolPart` updates and are
+  normalized to `tool.execute.after` raw events with a null result and the
+  reported error. Repeated failure updates for the same session and call are
+  captured once, and their deduplication state is cleared when the session is
+  deleted.
 - Raw-event batches accepted by the viewer are retried by the sweeper flush workers.
 - After Viewer delivery fails, OpenCode writes the exact normalized envelope to `~/.codemem/opencode-raw-event-spool` before invoking the direct CLI fallback. A successful fallback removes the entry; missing runtimes, locks, timeouts, version skew, and validation failures remain on disk and retry at bounded startup or session boundaries with the same event ID.
 - Viewer mismatch notices expose only a fixed category and next action: restart Viewer from the same workspace/config for `database`, restart Codemem and OpenCode with the same environment for `identity`, update Codemem on the installed channel and restart OpenCode for `contract`, or check/restart Viewer for `connection`. Payloads, target values, subprocess output, paths, and addresses are omitted.
