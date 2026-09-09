@@ -8,7 +8,6 @@ import {
 	formatDate,
 	formatFileList,
 	formatRelativeTime,
-	formatTagLabel,
 	parseJsonArray,
 } from "../../../lib/format";
 import { showGlobalNotice } from "../../../lib/notice";
@@ -73,7 +72,6 @@ export function FeedItemCard({
 	const workspaceKind = String(item.workspace_kind || metadata?.workspace_kind || "").trim();
 	const originSource = String(item.origin_source || metadata?.origin_source || "").trim();
 	const trustState = String(item.trust_state || metadata?.trust_state || "").trim();
-	const tagContent = tags.length ? ` · ${tags.map((t) => formatTagLabel(t)).join(", ")}` : "";
 	const fileContent = files.length ? ` · ${formatFileList(files)}` : "";
 	const memoryId = Number(item.id || 0);
 	const memoryIdLabel = memoryId > 0 ? `ID ${memoryId}` : "";
@@ -146,13 +144,12 @@ export function FeedItemCard({
 	]
 		.filter(Boolean)
 		.join(" · ");
-	const metaText = [`${tagContent}${fileContent}`.trim(), provenanceDetails]
-		.filter(Boolean)
-		.join(" · ");
+	const metaText = [fileContent.trim(), provenanceDetails].filter(Boolean).join(" · ");
 
 	const canClamp = Boolean(observationData) && shouldClampBody(activeMode, observationData);
 	const bodyClassName = [
 		activeMode === "facts" ? "feed-body facts" : "feed-body",
+		activeMode === "narrative" ? "narrative" : "",
 		canClamp && !expanded ? clampClass(activeMode).join(" ") : "",
 	]
 		.filter(Boolean)
@@ -359,11 +356,7 @@ export function FeedItemCard({
 						)
 					: null,
 			),
-			h(
-				"div",
-				{ className: "feed-meta" },
-				metaText || "No tags, files, or provenance details attached.",
-			),
+			metaText ? h("div", { className: "feed-meta" }, metaText) : null,
 			bodyContent,
 			h(
 				"div",
