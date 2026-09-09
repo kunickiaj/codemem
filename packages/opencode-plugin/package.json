@@ -11,6 +11,8 @@
 	},
 	"files": [
 		"index.js",
+		"src/opencode-v2-contract-fixture.ts",
+		"v2-contract-fixture/",
 		"README.md",
 		"LICENSE",
 		".opencode/package.json",
