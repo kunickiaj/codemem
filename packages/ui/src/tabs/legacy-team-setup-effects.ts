@@ -27,6 +27,7 @@ export type SetupEffect =
 			kind: "load";
 			candidateRef: string;
 			refresh: boolean;
+			completionOnly?: boolean;
 			focusOnOutcome: boolean;
 	  })
 	| (SetupEffectBase & {
@@ -204,7 +205,7 @@ async function recover(
 	}
 	if (
 		effect.kind === "load" &&
-		(effect.refresh || cause.errorCode !== "team_setup_confirmation_stale")
+		(effect.refresh || effect.completionOnly || cause.errorCode !== "team_setup_confirmation_stale")
 	) {
 		return undefined;
 	}

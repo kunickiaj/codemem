@@ -680,6 +680,54 @@ describe("legacy Team setup session reducer", () => {
 		});
 	});
 
+	it("binds completion-only fallback rejection to its command and generation", () => {
+		const pending = reduceSetupSession(
+			{
+				...loaded(open(), readyView()),
+				errors: [{ scope: { kind: "global" }, retry: "completion", message: "stale" }],
+			},
+			{ type: "retry" },
+		);
+		if (pending.status !== "open") throw new Error("expected pending fallback");
+		const command = pending.commands[0];
+		if (command?.kind !== "load") throw new Error("expected load");
+		expect(command).toMatchObject({ refresh: false, completionOnly: true });
+		const event: SetupSessionEvent = {
+			type: "effect_outcome",
+			outcome: {
+				status: "success",
+				generation: command.generation,
+				id: command.id,
+				kind: "load",
+				view: readyView(),
+			},
+		};
+		expect(
+			reduceSetupSession(pending, {
+				...event,
+				outcome: {
+					...event.outcome,
+					generation: command.generation + 1,
+				},
+			}),
+		).toBe(pending);
+		const rejected = reduceSetupSession(pending, event);
+		if (rejected.status !== "open") throw new Error("expected rejected fallback");
+		expect(globalError(rejected)).toMatchObject({ retry: "refresh" });
+		expect(reduceSetupSession(rejected, { type: "finish" })).toBe(rejected);
+		const refreshing = reduceSetupSession(rejected, { type: "retry" });
+		expect(refreshing).toMatchObject({
+			commands: [
+				expect.objectContaining({
+					kind: "load",
+					refresh: true,
+					completionOnly: false,
+				}),
+			],
+		});
+		expect(reduceSetupSession(refreshing, event)).toBe(refreshing);
+	});
+
 	it("blocks finish resubmission after an ordinary finish failure", () => {
 		let state = reduceSetupSession(loaded(open(), readyView()), { type: "finish" });
 		if (state.status !== "open") throw new Error("expected finish session");

@@ -27,7 +27,7 @@ export type SetupErrorScope =
 
 export interface SetupSessionError {
 	message: string;
-	retry: "load" | "refresh" | null;
+	retry: "load" | "refresh" | "completion" | null;
 	scope: SetupErrorScope;
 }
 
@@ -240,6 +240,7 @@ function retry(state: SetupSessionState): SetupSessionState {
 		kind: "load",
 		candidateRef: state.candidateRef,
 		refresh: retryMode === "refresh",
+		completionOnly: retryMode === "completion",
 		focusOnOutcome: true,
 	});
 }
@@ -432,6 +433,21 @@ function outcome(state: SetupSessionState, result: SetupEffectOutcome): SetupSes
 		...state,
 		commands: state.commands.filter((item) => item.id !== result.id),
 	};
+	// A plain detail read can return an obsolete draft after the candidate disappears.
+	// Only a completed view can clear the stale error for this command's fallback.
+	if (
+		command.kind === "load" &&
+		command.completionOnly &&
+		!(result.status === "success" && result.view?.state === "completed")
+	) {
+		return failed(withoutCommand, command, {
+			status: "failure",
+			generation: result.generation,
+			id: result.id,
+			kind: command.kind,
+			cause: new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale"),
+		});
+	}
 	if (result.status === "failure") return failed(withoutCommand, command, result);
 	if (command.kind === "completion_refresh") {
 		return {
@@ -634,7 +650,7 @@ function retryFor(
 		(recoveryCause instanceof LegacyTeamSetupApiError &&
 			recoveryCause.errorCode === "team_setup_confirmation_stale");
 	if (confirmationStale) {
-		if (command.kind === "load" && command.refresh) return "load";
+		if (command.kind === "load" && command.refresh) return "completion";
 		return "refresh";
 	}
 	if (options.terminalRecovery) return "load";

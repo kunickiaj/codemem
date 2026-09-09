@@ -2924,58 +2924,82 @@ describe("legacy Team setup dialog", () => {
 		expect(button("Finish Team setup").getAttribute("aria-disabled")).toBe("true");
 	});
 
-	it("loads completed details after a stale finish and a stale retry refresh", async () => {
-		const initial = detail({ canFinish: true });
-		const loadDetail = vi
-			.fn()
-			.mockResolvedValueOnce(initial)
-			.mockResolvedValueOnce(initial)
-			.mockResolvedValueOnce(detail({ draftState: "completed" }));
-		const stale = new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale");
-		const finish = vi.fn().mockRejectedValue(stale);
-		const refreshCandidate = vi.fn().mockRejectedValue(stale);
-		const onCompleted = vi.fn().mockResolvedValue(undefined);
-		setup({ loadDetail, finish, refreshCandidate, onCompleted });
-		await vi.waitFor(() => expect(document.body.textContent).toContain("Finish Team setup"));
-		const confirmation = document.querySelector<HTMLInputElement>(
-			".legacy-team-setup-confirmation input",
-		);
-		if (!confirmation) throw new Error("finish confirmation missing");
-		confirmation.checked = true;
-		act(() => {
-			confirmation.dispatchEvent(new Event("change", { bubbles: true }));
-		});
-		act(() => button("Finish Team setup").click());
-		await vi.waitFor(() => expect(document.querySelector('[role="alert"]')).not.toBeNull());
-		expect(loadDetail).toHaveBeenCalledTimes(2);
-		expect(document.querySelector(".legacy-team-setup-confirmation input")).toBeNull();
+	it.each(["completed", "ready", "failed", "stale"] as const)(
+		"accepts only completed fallback details after stale refresh: %s",
+		async (fallback) => {
+			const initial = detail({ canFinish: true });
+			const loadDetail = vi
+				.fn()
+				.mockResolvedValueOnce(initial)
+				.mockResolvedValueOnce(initial)
+				.mockImplementationOnce(async () => {
+					if (fallback === "failed") throw new Error("detail unavailable");
+					if (fallback === "stale")
+						throw new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale");
+					return fallback === "completed" ? detail({ draftState: "completed" }) : initial;
+				});
+			const stale = new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale");
+			const finish = vi.fn().mockRejectedValue(stale);
+			const refreshCandidate = vi.fn().mockRejectedValue(stale);
+			const onCompleted = vi.fn().mockResolvedValue(undefined);
+			setup({ loadDetail, finish, refreshCandidate, onCompleted });
+			await vi.waitFor(() => expect(document.body.textContent).toContain("Finish Team setup"));
+			const confirmation = document.querySelector<HTMLInputElement>(
+				".legacy-team-setup-confirmation input",
+			);
+			if (!confirmation) throw new Error("finish confirmation missing");
+			confirmation.checked = true;
+			act(() => {
+				confirmation.dispatchEvent(new Event("change", { bubbles: true }));
+			});
+			act(() => button("Finish Team setup").click());
+			await vi.waitFor(() => expect(document.querySelector('[role="alert"]')).not.toBeNull());
+			expect(loadDetail).toHaveBeenCalledTimes(2);
+			expect(document.querySelector(".legacy-team-setup-confirmation input")).toBeNull();
 
-		act(() => document.getElementById("legacy-team-setup-retry")?.click());
-		await vi.waitFor(() => {
-			expect(refreshCandidate).toHaveBeenCalledTimes(1);
-			expect(button("Retry")).toBeTruthy();
-		});
-		// Refresh recovery intentionally skips loadDetail; the next Retry must load it.
-		expect(loadDetail).toHaveBeenCalledTimes(2);
-		expect(
-			document.querySelector<HTMLInputElement>(".legacy-team-setup-confirmation input")?.checked,
-		).toBe(false);
-		expect(button("Finish Team setup").getAttribute("aria-disabled")).toBe("true");
-		act(() => button("Retry").click());
-		await vi.waitFor(() => expect(document.body.textContent).toContain("Team setup complete"));
-		expect(loadDetail).toHaveBeenCalledTimes(3);
-		expect(refreshCandidate).toHaveBeenCalledTimes(1);
-		expect(onCompleted).toHaveBeenCalledTimes(1);
-		expect(finish).toHaveBeenCalledTimes(1);
-		expect(finish).toHaveBeenCalledWith("opaque-candidate", {
-			attemptId: "opaque-attempt",
-			finishDigest: "opaque-finish-digest",
-			confirmedAccessDeltaDigest: "opaque-access-digest",
-			confirmedViewerAccessDeltaDigest: "opaque-viewer-access-digest",
-		});
-		expect(document.querySelector(".legacy-team-setup-confirmation input")).toBeNull();
-		expect(document.querySelector('[role="alert"]')).toBeNull();
-	});
+			act(() => document.getElementById("legacy-team-setup-retry")?.click());
+			await vi.waitFor(() => {
+				expect(refreshCandidate).toHaveBeenCalledTimes(1);
+				expect(button("Retry")).toBeTruthy();
+			});
+			// Refresh recovery intentionally skips loadDetail; the next Retry must load it.
+			expect(loadDetail).toHaveBeenCalledTimes(2);
+			expect(
+				document.querySelector<HTMLInputElement>(".legacy-team-setup-confirmation input")?.checked,
+			).toBe(false);
+			expect(button("Finish Team setup").getAttribute("aria-disabled")).toBe("true");
+			act(() => button("Retry").click());
+			if (fallback === "completed") {
+				await vi.waitFor(() => expect(document.body.textContent).toContain("Team setup complete"));
+				expect(onCompleted).toHaveBeenCalledTimes(1);
+				expect(document.querySelector('[role="alert"]')).toBeNull();
+			} else {
+				await vi.waitFor(() => {
+					expect(loadDetail).toHaveBeenCalledTimes(3);
+					expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+						"changed since it was last reviewed",
+					);
+					expect(document.querySelector(".legacy-team-setup-confirmation input")).toBeNull();
+				});
+				expect(onCompleted).not.toHaveBeenCalled();
+				act(() => document.getElementById("legacy-team-setup-retry")?.click());
+				await vi.waitFor(() => {
+					expect(refreshCandidate).toHaveBeenCalledTimes(2);
+					expect(button("Retry")).toBeTruthy();
+				});
+				expect(button("Finish Team setup").getAttribute("aria-disabled")).toBe("true");
+			}
+			expect(loadDetail).toHaveBeenCalledTimes(3);
+			expect(refreshCandidate).toHaveBeenCalledTimes(fallback === "completed" ? 1 : 2);
+			expect(finish).toHaveBeenCalledTimes(1);
+			expect(finish).toHaveBeenCalledWith("opaque-candidate", {
+				attemptId: "opaque-attempt",
+				finishDigest: "opaque-finish-digest",
+				confirmedAccessDeltaDigest: "opaque-access-digest",
+				confirmedViewerAccessDeltaDigest: "opaque-viewer-access-digest",
+			});
+		},
+	);
 
 	it("treats a stale finish recovery that is already completed as success", async () => {
 		const onCompleted = vi.fn().mockRejectedValue(new Error("private refresh failure"));
