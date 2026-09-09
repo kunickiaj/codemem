@@ -114,6 +114,25 @@ This check enforces a minimum supported CLI version. It does not query the npm r
 the latest available release, and its existing policy and update behavior are unchanged by release
 discovery.
 
+## OpenCode host compatibility
+
+Codemem 0.45 raises the minimum supported OpenCode 1 host to 1.18.29. The
+`@codemem/opencode-plugin` package records this floor through
+`engines.opencode`, which OpenCode checks when loading npm plugins, and CI runs
+the V1 plugin suite against that exact release.
+This is a breaking host-compatibility change from Codemem 0.44; upgrade OpenCode
+before installing the 0.45 plugin.
+
+Dependabot continues to propose SDK updates, but accepting one requires updating
+all checked-in runtime pins together. CI keeps the minimum host gate fixed at
+1.18.29 until the documented compatibility floor changes. The ignored
+`.opencode/package.json` is only a local contributor runtime and is not a release
+pin. Refresh it when testing the minimum host locally:
+
+```fish
+npm install --prefix .opencode --save-exact @opencode-ai/plugin@1.18.29
+```
+
 Override for testing:
 
 ```bash

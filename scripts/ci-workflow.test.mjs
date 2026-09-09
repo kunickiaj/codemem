@@ -91,6 +91,20 @@ describe("normal CI workflow source contract", () => {
 		);
 	});
 
+	it("tests the minimum OpenCode 1 plugin runtime through both package suites", () => {
+		const pluginJob = getJob(ciWorkflow, "plugin-smoke");
+
+		assert.match(
+			pluginJob,
+			/npm install --prefix packages\/cli\/\.opencode --no-save @opencode-ai\/plugin@1\.18\.29/u,
+		);
+		assert.match(
+			pluginJob,
+			/npm install --prefix packages\/opencode-plugin\/\.opencode --no-save @opencode-ai\/plugin@1\.18\.29/u,
+		);
+		assert.match(pluginJob, /pnpm --filter @codemem\/opencode-plugin test &&/u);
+	});
+
 	it("defines the regular E2E Smoke check without an event condition", () => {
 		const smokeJob = getJob(ciWorkflow, "e2e-smoke");
 

@@ -18,13 +18,15 @@
 		".opencode/lib/"
 	],
 	"scripts": {
+		"test": "pnpm exec vitest run",
 		"test:packed-artifact": "node ./scripts/packed-artifact-smoke.mjs"
 	},
 	"dependencies": {
-		"@opencode-ai/plugin": "1.18.25"
+		"@opencode-ai/plugin": "1.18.29"
 	},
 	"devDependencies": {
-		"@types/node": "^24.12.4"
+		"@types/node": "^24.12.4",
+		"vitest": "catalog:"
 	},
 	"repository": {
 		"type": "git",
@@ -36,7 +38,8 @@
 		"url": "https://github.com/kunickiaj/codemem/issues"
 	},
 	"engines": {
-		"node": ">=24.15.0"
+		"node": ">=24.15.0",
+		"opencode": ">=1.18.29"
 	},
 	"license": "MIT",
 	"publishConfig": {

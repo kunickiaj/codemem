@@ -26,6 +26,8 @@ codemem keeps one minimum Node.js version across published packages and workspac
 
 ### OpenCode
 
+Codemem requires OpenCode 1.18.29 or newer.
+
 1. Install the OpenCode plugin and MCP config:
 
 ```text

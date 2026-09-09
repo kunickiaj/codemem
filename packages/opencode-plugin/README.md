@@ -2,6 +2,8 @@
 
 Persistent memory plugin for [OpenCode](https://opencode.ai).
 
+Requires OpenCode 1.18.29 or newer.
+
 ## Install
 
 Recommended:
