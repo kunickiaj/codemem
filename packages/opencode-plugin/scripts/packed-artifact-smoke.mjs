@@ -45,6 +45,14 @@ try {
 		"Packed artifact is missing .opencode/plugins/codemem.js",
 	);
 	assert(
+		tarListing.includes("package/.opencode/lib/runtime.js"),
+		"Packed artifact is missing .opencode/lib/runtime.js",
+	);
+	assert(
+		tarListing.includes("package/.opencode/lib/host-contract.js"),
+		"Packed artifact is missing .opencode/lib/host-contract.js",
+	);
+	assert(
 		tarListing.includes("package/.opencode/lib/compat.js"),
 		"Packed artifact is missing .opencode/lib/compat.js",
 	);
@@ -66,6 +74,14 @@ try {
 	assert(
 		existsSync(join(installedPackageRoot, ".opencode", "plugins", "codemem.js")),
 		"Installed artifact is missing .opencode/plugins/codemem.js",
+	);
+	assert(
+		existsSync(join(installedPackageRoot, ".opencode", "lib", "runtime.js")),
+		"Installed artifact is missing .opencode/lib/runtime.js",
+	);
+	assert(
+		existsSync(join(installedPackageRoot, ".opencode", "lib", "host-contract.js")),
+		"Installed artifact is missing .opencode/lib/host-contract.js",
 	);
 	assert(
 		existsSync(join(installedPackageRoot, ".opencode", "lib", "raw-event-spool.js")),

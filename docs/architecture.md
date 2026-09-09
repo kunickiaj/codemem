@@ -6,7 +6,7 @@ codemem has five main pieces: **adapters** that capture shell/runtime activity, 
 
 | Component | What it does | Key files |
 |-----------|-------------|-----------|
-| Adapters | Capture and normalize agent events before enqueueing raw events | `packages/opencode-plugin/.opencode/plugins/codemem.js`, `plugins/claude/scripts/ingest-hook.mjs`, `plugins/codex/scripts/ingest-hook.mjs`, `packages/core/src/claude-hooks.ts`, `packages/core/src/codex-hooks.ts` |
+| Adapters | Capture and normalize agent events before enqueueing raw events | `packages/opencode-plugin/.opencode/plugins/codemem.js`, `packages/opencode-plugin/.opencode/lib/runtime.js`, `plugins/claude/scripts/ingest-hook.mjs`, `plugins/codex/scripts/ingest-hook.mjs`, `packages/core/src/claude-hooks.ts`, `packages/core/src/codex-hooks.ts` |
 | Ingest pipeline | Extracts tool events, builds transcripts, runs the observer | `packages/core/src/ingest-pipeline.ts`, `packages/core/src/ingest-events.ts` |
 | Observer | Produces typed observations and session summaries from transcripts | `packages/core/src/observer-output.ts`, `packages/core/src/observer-output-schema.ts`, `packages/core/src/ingest-xml-parser.ts` |
 | Store | SQLite persistence for sessions, memories, artifacts, embeddings | `packages/core/src/store.ts`, `packages/core/src/schema.ts` |

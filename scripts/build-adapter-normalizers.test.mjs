@@ -126,7 +126,7 @@ test("generated normalizers match the frozen core fixtures", async () => {
 
 test("OpenCode random event IDs remain outside derived algorithm versioning", async () => {
 	const source = await readFile(
-		resolve(repoRoot, "packages/opencode-plugin/.opencode/plugins/codemem.js"),
+		resolve(repoRoot, "packages/opencode-plugin/.opencode/lib/runtime.js"),
 		"utf8",
 	);
 	assert.match(source, /const nextEventId = \(\) => \{/);

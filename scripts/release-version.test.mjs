@@ -47,7 +47,7 @@ function makeRepo(version = "0.16.0") {
 		`const PINNED_BACKEND_VERSION = "${version}";\n`,
 	);
 	write(
-		join(root, "packages/opencode-plugin/.opencode/plugins/codemem.js"),
+		join(root, "packages/opencode-plugin/.opencode/lib/runtime.js"),
 		`const PINNED_BACKEND_VERSION = "${version}";\n`,
 	);
 	write(
@@ -143,7 +143,7 @@ describe("release-version script", () => {
 			"packages/core/src/index.ts",
 			"packages/embeddings/package.json",
 			"packages/mcp-server/package.json",
-			"packages/opencode-plugin/.opencode/plugins/codemem.js",
+			"packages/opencode-plugin/.opencode/lib/runtime.js",
 			"packages/opencode-plugin/package.json",
 			"packages/viewer-server/package.json",
 			"plugins/claude/.claude-plugin/plugin.json",
@@ -186,7 +186,7 @@ describe("release-version script", () => {
 		assert.throws(() => setVersion(root, "1.0.1"), /missing codemem plugin entry/);
 		assert.match(readFileSync(join(root, "packages/core/package.json"), "utf8"), /"1.0.0"/);
 		assert.match(
-			readFileSync(join(root, "packages/opencode-plugin/.opencode/plugins/codemem.js"), "utf8"),
+			readFileSync(join(root, "packages/opencode-plugin/.opencode/lib/runtime.js"), "utf8"),
 			/PINNED_BACKEND_VERSION = "1.0.0"/,
 		);
 	});

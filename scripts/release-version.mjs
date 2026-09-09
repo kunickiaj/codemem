@@ -20,7 +20,7 @@ const REQUIRED_REPO_MARKERS = [
 	"packages/core/src/index.ts",
 	"packages/core/src/index.test.ts",
 	"packages/cli/.opencode/plugins/codemem.js",
-	"packages/opencode-plugin/.opencode/plugins/codemem.js",
+	"packages/opencode-plugin/.opencode/lib/runtime.js",
 	"plugins/claude/.claude-plugin/plugin.json",
 	".claude-plugin/marketplace.json",
 	"plugins/codex/.codex-plugin/plugin.json",
@@ -185,12 +185,12 @@ export function readVersions(root) {
 		cli_plugin_pin: extractSingle(
 			readText(resolveManagedPath(repoRoot, "packages/cli/.opencode/plugins/codemem.js")),
 			PLUGIN_PIN_RE,
-			"Could not find PINNED_BACKEND_VERSION in .opencode/plugin/codemem.js",
+			"Could not find PINNED_BACKEND_VERSION in packages/cli/.opencode/plugins/codemem.js",
 		),
 		opencode_plugin_pin: extractSingle(
-			readText(resolveManagedPath(repoRoot, "packages/opencode-plugin/.opencode/plugins/codemem.js")),
+			readText(resolveManagedPath(repoRoot, "packages/opencode-plugin/.opencode/lib/runtime.js")),
 			PLUGIN_PIN_RE,
-			"Could not find PINNED_BACKEND_VERSION in .opencode/plugin/codemem.js",
+			"Could not find PINNED_BACKEND_VERSION in packages/opencode-plugin/.opencode/lib/runtime.js",
 		),
 		claude_plugin_manifest: String(claudePlugin.version ?? ""),
 		marketplace_metadata: String(metadata.version ?? ""),
@@ -251,12 +251,12 @@ export function setVersion(root, version, { dryRun = false } = {}) {
 		{
 			relativePath: "packages/cli/.opencode/plugins/codemem.js",
 			regex: PLUGIN_PIN_RE,
-			missing: "Could not replace PINNED_BACKEND_VERSION in .opencode/plugin/codemem.js",
+			missing: "Could not replace PINNED_BACKEND_VERSION in packages/cli/.opencode/plugins/codemem.js",
 		},
 		{
-			relativePath: "packages/opencode-plugin/.opencode/plugins/codemem.js",
+			relativePath: "packages/opencode-plugin/.opencode/lib/runtime.js",
 			regex: PLUGIN_PIN_RE,
-			missing: "Could not replace PINNED_BACKEND_VERSION in .opencode/plugin/codemem.js",
+			missing: "Could not replace PINNED_BACKEND_VERSION in packages/opencode-plugin/.opencode/lib/runtime.js",
 		},
 	];
 
