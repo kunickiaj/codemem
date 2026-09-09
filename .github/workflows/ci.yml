@@ -171,6 +171,7 @@ jobs:
       - name: Run packed artifact smoke test
         run: |
           pnpm --filter @codemem/opencode-plugin test:packed-artifact
+          pnpm --filter @codemem/opencode-plugin test:opencode-v2-contract
           pnpm --filter codemem test:packed-artifact
 
   windows-embedding-runtime-smoke:

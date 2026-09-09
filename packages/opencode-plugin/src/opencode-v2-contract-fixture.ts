@@ -87,11 +87,16 @@ async function registerContextHook(context: Plugin.Context, report: ContractRepo
 		input.providerOptions = { ...input.providerOptions, codememContract: true };
 		await report({
 			phase: "context",
+			agent: input.agent,
 			generationMutable: typeof input.generation === "object",
+			hasAgent: Boolean(input.agent),
 			hasKind: "kind" in input,
 			hasMessageID: "messageID" in input,
+			hasModel: Boolean(input.model),
 			hasSessionID: Boolean(input.sessionID),
 			messagesMutable: Array.isArray(input.messages),
+			model: input.model,
+			sessionID: input.sessionID,
 			systemMutable: Array.isArray(input.system),
 			toolsMutable: typeof input.tools === "object",
 		});
@@ -109,6 +114,8 @@ async function registerSessionHooks(
 				phase: "prompt",
 				hasMessageID: Boolean(input.messageID),
 				hasSessionID: Boolean(input.sessionID),
+				messageID: input.messageID,
+				sessionID: input.sessionID,
 			});
 		}),
 	);

@@ -133,6 +133,17 @@ pin. Refresh it when testing the minimum host locally:
 npm install --prefix .opencode --save-exact @opencode-ai/plugin@1.18.29
 ```
 
+The OpenCode 2 contract spike separately pins matching
+`@opencode/cli@0.0.0-beta-19296` and
+`@opencode/plugin@0.0.0-beta-19296` development dependencies. The workspace
+allows the CLI package's postinstall because it installs the matching platform
+binary used by the packed-host smoke test. For beta-19296, the reviewed
+postinstall copies that platform binary and detects AVX2 support with `sysctl` on
+macOS or PowerShell on Windows. Re-review the postinstall whenever the exact pin
+changes. Update both beta revisions together and rerun the executable checks
+documented in [the OpenCode 2 beta contract](opencode-v2-contract.md); do not
+replace these pins with a moving beta tag or semver range.
+
 Override for testing:
 
 ```bash

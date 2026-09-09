@@ -21,6 +21,7 @@
 	],
 	"scripts": {
 		"test": "pnpm exec vitest run",
+		"test:opencode-v2-contract": "node ./scripts/packed-v2-host-smoke.mjs",
 		"test:packed-artifact": "node ./scripts/packed-artifact-smoke.mjs"
 	},
 	"dependencies": {

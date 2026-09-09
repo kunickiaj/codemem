@@ -30,9 +30,7 @@ function makeEvents(
 			const finishAbort = () => {
 				aborted.value = true;
 				if (fixtureOptions.abortWithError) {
-					const error = new Error("event stream aborted");
-					error.name = "AbortError";
-					reject(error);
+					reject(new DOMException("event stream aborted", "AbortError"));
 					return;
 				}
 				resolve();
@@ -265,13 +263,25 @@ describe("OpenCode 2 executable fixture", () => {
 					hasToast: false,
 				}),
 				expect.objectContaining({ phase: "storage", removed: true, valueMatches: true }),
-				expect.objectContaining({ phase: "prompt", hasMessageID: true, hasSessionID: true }),
+				expect.objectContaining({
+					phase: "prompt",
+					hasMessageID: true,
+					hasSessionID: true,
+					messageID: "message-a",
+					sessionID: "session-a",
+				}),
 				expect.objectContaining({
 					phase: "context",
+					agent: "agent-a",
 					generationMutable: true,
+					hasAgent: true,
 					hasKind: false,
 					hasMessageID: false,
+					hasModel: true,
+					hasSessionID: true,
 					messagesMutable: true,
+					model: { providerID: "provider", modelID: "model" },
+					sessionID: "session-a",
 					systemMutable: true,
 					toolsMutable: true,
 				}),
@@ -348,22 +358,6 @@ describe("OpenCode 2 executable fixture", () => {
 		expect(fixture.disposals.every((dispose) => dispose.mock.calls.length === 1)).toBe(true);
 	});
 
-	it("reports event-stream completion when cancellation throws AbortError", async () => {
-		// Arrange
-		const records: ContractRecord[] = [];
-		const fixture = makeContext({ abortWithError: true });
-		const plugin = defineOpenCodeV2ContractFixture((record) => {
-			records.push(record);
-		});
-		const cleanup = await plugin.setup(fixture.context);
-
-		// Act
-		await runCleanup(cleanup);
-
-		// Assert
-		expect(records).toContainEqual(expect.objectContaining({ phase: "event.end", aborted: true }));
-	});
-
 	it("records event families without prompt or tool-result content", () => {
 		// Arrange
 		const events = [
@@ -384,6 +378,24 @@ describe("OpenCode 2 executable fixture", () => {
 			"tool",
 		]);
 		expect(JSON.stringify(summaries)).not.toContain("private");
+	});
+});
+
+describe("OpenCode 2 event stream cancellation", () => {
+	it("reports completion when cancellation throws AbortError", async () => {
+		// Arrange
+		const records: ContractRecord[] = [];
+		const fixture = makeContext({ abortWithError: true });
+		const plugin = defineOpenCodeV2ContractFixture((record) => {
+			records.push(record);
+		});
+		const cleanup = await plugin.setup(fixture.context);
+
+		// Act
+		await runCleanup(cleanup);
+
+		// Assert
+		expect(records).toContainEqual(expect.objectContaining({ phase: "event.end", aborted: true }));
 	});
 });
 
