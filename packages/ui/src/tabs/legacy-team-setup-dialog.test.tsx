@@ -2977,7 +2977,9 @@ describe("legacy Team setup dialog", () => {
 				await vi.waitFor(() => {
 					expect(loadDetail).toHaveBeenCalledTimes(3);
 					expect(document.querySelector('[role="alert"]')?.textContent).toContain(
-						"changed since it was last reviewed",
+						fallback === "failed"
+							? "temporarily unavailable"
+							: "changed since it was last reviewed",
 					);
 					expect(document.querySelector(".legacy-team-setup-confirmation input")).toBeNull();
 				});

@@ -438,7 +438,8 @@ function outcome(state: SetupSessionState, result: SetupEffectOutcome): SetupSes
 	if (
 		command.kind === "load" &&
 		command.completionOnly &&
-		!(result.status === "success" && result.view?.state === "completed")
+		result.status === "success" &&
+		result.view?.state !== "completed"
 	) {
 		return failed(withoutCommand, command, {
 			status: "failure",
@@ -653,11 +654,21 @@ function retryFor(
 		if (command.kind === "load" && command.refresh) return "completion";
 		return "refresh";
 	}
+	if (command.kind === "load" && command.completionOnly) {
+		return completionOnlyRetry(cause);
+	}
 	if (options.terminalRecovery) return "load";
 	if (options.changed || options.rosterUnavailable) return "refresh";
 	if (command.kind === "refresh") return "refresh";
 	if (command.kind === "load" && command.refresh) return "refresh";
 	return "load";
+}
+
+function completionOnlyRetry(cause: unknown): "completion" | "refresh" {
+	if (cause instanceof LegacyTeamSetupApiError && completionErrorCode(cause.errorCode) !== null) {
+		return "completion";
+	}
+	return "refresh";
 }
 
 function completionOrChangedMessage(options: {
