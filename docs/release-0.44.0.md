@@ -22,4 +22,4 @@ Remaining recall stages and expanded evaluation move to 0.45+, preserving the co
 
 The npm latest-tag guard remains verify-only and warning-only. Stable publication uses `--tag latest`; publishing a new stable embeddings version can advance its tag naturally, but skipping an already-published version does not repair tags. No registry mutation is part of this preparation.
 
-Independent review and the release task's upgrade, supported-platform, and workload evidence must be reconciled before publication. Tagging remains restricted to the merged, clean main commit under [the versioning policy](versioning.md).
+Independent review and the release task's upgrade, supported-platform, and workload evidence must be reconciled before publication. Tagging is restricted to an approved, clean release head under [the versioning policy](versioning.md).

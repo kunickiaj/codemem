@@ -52,6 +52,6 @@
 
 ## Release traps
 
-- Release tags trigger publishing. Tag only the merged `main` commit, not a `release/*` branch tip.
+- Release tags trigger publishing. Tag either a merged `main` commit or the exact head of the matching protected, persistent `release/X.Y` maintenance branch.
 - Version alignment is scripted in `scripts/release-version.mjs`; tag safety is enforced by `pnpm run release:preflight-tag` / `scripts/release-tag-preflight.sh`.
 - Releases publish to the public npm registry; keep `.opencode/.npmrc` pointed at `https://registry.npmjs.org/`.
