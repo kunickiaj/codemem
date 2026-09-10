@@ -18,7 +18,7 @@ export function registerItemTools(server: McpServer, context: ToolRegistrationCo
 
 	server.tool(
 		"memory_get",
-		"Fetch a single memory item by ID.",
+		"Fetch one memory by exact ID. Does not inherit the default project; optional filters constrain the lookup, and a mismatch returns not_found.",
 		{
 			memory_id: z.number().int().describe("Memory ID"),
 			...filterSchema,
@@ -50,7 +50,7 @@ export function registerItemTools(server: McpServer, context: ToolRegistrationCo
 
 	server.tool(
 		"memory_get_observations",
-		"Fetch multiple memory items by their IDs.",
+		"Fetch multiple memories by exact IDs. Does not inherit the default project. Missing or filtered-out IDs are omitted from results, not reported as not_found.",
 		{
 			ids: z.array(z.number().int()).max(200).describe("Memory IDs to fetch"),
 			...filterSchema,
@@ -109,7 +109,7 @@ export function registerItemTools(server: McpServer, context: ToolRegistrationCo
 
 	server.tool(
 		"memory_forget",
-		"Soft-delete a memory item. Use for incorrect or sensitive data.",
+		"Soft-delete a memory by exact ID so it no longer appears in normal retrieval; this is not secure erasure. Does not inherit the default project; optional filters must match or the tool returns not_found.",
 		{
 			memory_id: z.number().int().describe("Memory ID to forget"),
 			...filterSchema,

@@ -11,7 +11,7 @@ export function registerSearchTools(server: McpServer, context: ToolRegistration
 
 	server.tool(
 		"memory_search",
-		"Search memories by text query. Returns full body text for each match.",
+		"Keyword-search memories when you know exact terms or identifiers. Returns full body text for each match; use memory_search_index when you only need compact candidates.",
 		{
 			query: z.string().describe("Search query"),
 			limit: z.number().int().min(1).max(50).default(5).describe("Max results"),
@@ -56,7 +56,7 @@ export function registerSearchTools(server: McpServer, context: ToolRegistration
 
 	server.tool(
 		"memory_search_index",
-		"Search memories by text query. Returns compact index entries (no body) for browsing.",
+		"Keyword-search memories when you know exact terms or identifiers. Returns compact entries with IDs and titles, without bodies; expand selected IDs with memory_get or memory_get_observations.",
 		{
 			query: z.string().describe("Search query"),
 			limit: z.number().int().min(1).max(50).default(8).describe("Max results"),
@@ -170,7 +170,7 @@ export function registerSearchTools(server: McpServer, context: ToolRegistration
 
 	server.tool(
 		"memory_pack",
-		"Build a formatted memory pack from search results — quick one-shot context block.",
+		"Build a formatted context block for a concept or task using keyword and semantic search when embeddings are available, with automatic keyword-only fallback. Use for conceptually relevant context; use memory_search or memory_search_index for exact identifiers.",
 		{
 			context: z.string().describe("Context description to search for"),
 			limit: z.number().int().min(1).max(50).optional().describe("Max items to include"),
