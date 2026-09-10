@@ -114,6 +114,8 @@ function seedMemories(store: MemoryStore): { sessionId: number; ids: number[] } 
 // ---------------------------------------------------------------------------
 
 describe("POST /api/pi-hooks", () => {
+	// hashed id format shared with @codemem/core (pi/1 algo)
+	const PI_EVENT_ID = /^pi_evt_[0-9a-f]{24}$/;
 	it("records a pi event with source=pi and nudges the sweeper with (stream, pi)", async () => {
 		const nudge = vi.fn();
 		const { app, getStore, cleanup } = createTestApp({
@@ -149,7 +151,7 @@ describe("POST /api/pi-hooks", () => {
 			};
 			expect(eventRow.source).toBe("pi");
 			expect(eventRow.stream_id).toBe("pi-sess-route-1");
-			expect(eventRow.event_id).toBe("pi:pi-sess-route-1:session_start");
+			expect(eventRow.event_id).toMatch(PI_EVENT_ID);
 			expect(eventRow.event_type).toBe("pi.hook");
 
 			const sessionRow = store.db
@@ -199,10 +201,8 @@ describe("POST /api/pi-hooks", () => {
 			const store = getStore();
 			if (!store) throw new Error("store missing");
 			const count = store.db
-				.prepare(
-					"SELECT COUNT(*) AS n FROM raw_events WHERE source = 'pi' AND stream_id = ? AND event_id = ?",
-				)
-				.get("pi-sess-dedupe", "pi:pi-sess-dedupe:entry-42") as { n: number };
+				.prepare("SELECT COUNT(*) AS n FROM raw_events WHERE source = 'pi' AND stream_id = ?")
+				.get("pi-sess-dedupe") as { n: number };
 			expect(count.n).toBe(1);
 			expect(nudge).toHaveBeenCalledTimes(2);
 			expect(nudge).toHaveBeenNthCalledWith(1, "pi-sess-dedupe", "pi");
