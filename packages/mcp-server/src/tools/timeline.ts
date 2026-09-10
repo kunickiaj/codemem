@@ -6,19 +6,37 @@ import { getManyForMcp } from "../memory-access.js";
 import { buildFilters } from "../project-scope.js";
 import { filterSchema } from "../schemas.js";
 import type { ToolRegistrationContext } from "../tool-context.js";
+import { toolAnnotations, toolOutputSchemas } from "../tool-contracts.js";
+
+const timelineInputSchema = {
+	query: z.string().optional().describe("Search query to find anchor"),
+	memory_id: z.number().int().optional().describe("Anchor memory ID"),
+	depth_before: z.number().int().min(0).default(3).describe("Items before anchor"),
+	depth_after: z.number().int().min(0).default(3).describe("Items after anchor"),
+	...filterSchema,
+};
+
+const expandInputSchema = {
+	ids: z
+		.array(z.union([z.number(), z.string()]))
+		.max(200)
+		.describe("Memory IDs to expand"),
+	depth_before: z.number().int().min(0).default(3).describe("Timeline items before"),
+	depth_after: z.number().int().min(0).default(3).describe("Timeline items after"),
+	include_observations: z.boolean().default(false).describe("Include full observation details"),
+	...filterSchema,
+};
 
 export function registerTimelineTools(server: McpServer, context: ToolRegistrationContext): void {
 	const { defaultProject, store } = context;
 
-	server.tool(
+	server.registerTool(
 		"memory_timeline",
-		"Get a chronological window of memories around an anchor (by ID or query).",
 		{
-			query: z.string().optional().describe("Search query to find anchor"),
-			memory_id: z.number().int().optional().describe("Anchor memory ID"),
-			depth_before: z.number().int().min(0).default(3).describe("Items before anchor"),
-			depth_after: z.number().int().min(0).default(3).describe("Items after anchor"),
-			...filterSchema,
+			description: "Get a chronological window of memories around an anchor (by ID or query).",
+			inputSchema: timelineInputSchema,
+			outputSchema: toolOutputSchemas.memory_timeline,
+			annotations: toolAnnotations.memory_timeline,
 		},
 		async (args, extra) => {
 			return withMcpRetrieval(
@@ -48,18 +66,13 @@ export function registerTimelineTools(server: McpServer, context: ToolRegistrati
 		},
 	);
 
-	server.tool(
+	server.registerTool(
 		"memory_expand",
-		"Fetch memories by ID with surrounding timeline context.",
 		{
-			ids: z
-				.array(z.union([z.number(), z.string()]))
-				.max(200)
-				.describe("Memory IDs to expand"),
-			depth_before: z.number().int().min(0).default(3).describe("Timeline items before"),
-			depth_after: z.number().int().min(0).default(3).describe("Timeline items after"),
-			include_observations: z.boolean().default(false).describe("Include full observation details"),
-			...filterSchema,
+			description: "Fetch memories by ID with surrounding timeline context.",
+			inputSchema: expandInputSchema,
+			outputSchema: toolOutputSchemas.memory_expand,
+			annotations: toolAnnotations.memory_expand,
 		},
 		async (args, extra) => {
 			return withMcpRetrieval(
