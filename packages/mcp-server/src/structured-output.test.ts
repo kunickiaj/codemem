@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect, initTestSchema, MemoryStore } from "@codemem/core";
+import { connect, initTestSchema, MemoryStore, queryRetrievalAttempts } from "@codemem/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,21 +11,15 @@ type ToolResult = Awaited<ReturnType<Client["callTool"]>>;
 
 const expectedAnnotations = {
 	memory_distill_candidates: {
-		readOnlyHint: false,
-		destructiveHint: false,
-		idempotentHint: false,
+		readOnlyHint: true,
 		openWorldHint: true,
 	},
 	memory_expand: {
-		readOnlyHint: false,
-		destructiveHint: false,
-		idempotentHint: false,
+		readOnlyHint: true,
 		openWorldHint: false,
 	},
 	memory_explain: {
-		readOnlyHint: false,
-		destructiveHint: false,
-		idempotentHint: false,
+		readOnlyHint: true,
 		openWorldHint: false,
 	},
 	memory_forget: {
@@ -35,33 +29,23 @@ const expectedAnnotations = {
 		openWorldHint: false,
 	},
 	memory_get: {
-		readOnlyHint: false,
-		destructiveHint: false,
-		idempotentHint: false,
+		readOnlyHint: true,
 		openWorldHint: false,
 	},
 	memory_get_observations: {
-		readOnlyHint: false,
-		destructiveHint: false,
-		idempotentHint: false,
+		readOnlyHint: true,
 		openWorldHint: false,
 	},
 	memory_learn: {
 		readOnlyHint: true,
-		destructiveHint: false,
-		idempotentHint: true,
 		openWorldHint: false,
 	},
 	memory_pack: {
-		readOnlyHint: false,
-		destructiveHint: false,
-		idempotentHint: false,
+		readOnlyHint: true,
 		openWorldHint: true,
 	},
 	memory_recent: {
-		readOnlyHint: false,
-		destructiveHint: false,
-		idempotentHint: false,
+		readOnlyHint: true,
 		openWorldHint: false,
 	},
 	memory_remember: {
@@ -72,26 +56,18 @@ const expectedAnnotations = {
 	},
 	memory_schema: {
 		readOnlyHint: true,
-		destructiveHint: false,
-		idempotentHint: true,
 		openWorldHint: false,
 	},
 	memory_search: {
-		readOnlyHint: false,
-		destructiveHint: false,
-		idempotentHint: false,
+		readOnlyHint: true,
 		openWorldHint: false,
 	},
 	memory_search_index: {
-		readOnlyHint: false,
-		destructiveHint: false,
-		idempotentHint: false,
+		readOnlyHint: true,
 		openWorldHint: false,
 	},
 	memory_timeline: {
-		readOnlyHint: false,
-		destructiveHint: false,
-		idempotentHint: false,
+		readOnlyHint: true,
 		openWorldHint: false,
 	},
 } as const;
@@ -201,8 +177,8 @@ async function rememberFixturePair(): Promise<[number, number]> {
 }
 
 describe("registered MCP tool declarations", () => {
-	it("publishes an output schema and the audited conservative annotations for all 14 tools", async () => {
-		// Arrange: the expected map pins retrieval logging, external compute, and write semantics.
+	it("publishes an output schema and the audited annotations for all 14 tools", async () => {
+		// Arrange: the expected map pins read locality and write semantics.
 		const expectedNames = Object.keys(expectedAnnotations).toSorted();
 
 		// Act
@@ -217,6 +193,53 @@ describe("registered MCP tool declarations", () => {
 			expect(tool.annotations, `${tool.name} annotations`).toEqual(
 				expectedAnnotations[tool.name as keyof typeof expectedAnnotations],
 			);
+		}
+	});
+
+	it("keeps retrieval tools read-only when default ledger capture records a real query", async () => {
+		// Arrange: the fixture server disables capture, while this server uses the enabled default.
+		const [memoryId] = await rememberFixturePair();
+		const attemptsBefore = queryRetrievalAttempts(store.db, { surface: "mcp_search" }).length;
+		const captureServer = createCodememMcpServer(store, {
+			defaultProject: "contract-fixture",
+			envProject: null,
+		});
+		const captureClient = new Client({ name: "ledger-contract-test", version: "1.0.0" });
+		const [captureClientTransport, captureServerTransport] = InMemoryTransport.createLinkedPair();
+		await captureServer.connect(captureServerTransport);
+		await captureClient.connect(captureClientTransport);
+
+		try {
+			// Act: compare declarations across capture modes, then perform a captured retrieval.
+			const disabledCaptureTool = (await client.listTools()).tools.find(
+				(tool) => tool.name === "memory_search",
+			);
+			const defaultCaptureTool = (await captureClient.listTools()).tools.find(
+				(tool) => tool.name === "memory_search",
+			);
+			const result = assertStructuredSuccess(
+				await captureClient.callTool({
+					name: "memory_search",
+					arguments: { query: "contract sentinel", limit: 10 },
+				}),
+			);
+			const attemptsAfter = queryRetrievalAttempts(store.db, { surface: "mcp_search" }).length;
+
+			// Assert: incidental local ledger writes do not change the tool's primary classification.
+			expect(defaultCaptureTool?.annotations).toEqual({
+				readOnlyHint: true,
+				openWorldHint: false,
+			});
+			expect(defaultCaptureTool?.annotations).toEqual(disabledCaptureTool?.annotations);
+			expect(defaultCaptureTool?.annotations).not.toHaveProperty("destructiveHint");
+			expect(defaultCaptureTool?.annotations).not.toHaveProperty("idempotentHint");
+			expect(result.items).toEqual(
+				expect.arrayContaining([expect.objectContaining({ id: memoryId })]),
+			);
+			expect(attemptsAfter).toBe(attemptsBefore + 1);
+		} finally {
+			await captureClient.close();
+			await captureServer.close();
 		}
 	});
 });

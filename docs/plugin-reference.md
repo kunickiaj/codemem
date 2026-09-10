@@ -261,7 +261,7 @@ All 14 tools publish the standard optional `outputSchema` and `annotations` fiel
 
 Check `isError` before reading `structuredContent`: errors set `isError: true`, provide only the JSON error text, and omit `structuredContent` so SDKs do not validate an error against the success schema.
 
-Annotations are conservative client hints, not authorization; they can trigger approval prompts. Metadata/schema tools are read-only; retrieval tools are not read-only or idempotent because they append local delivery-ledger diagnostics. `memory_remember` adds data, while `memory_forget` is a destructive soft delete and is idempotent only in the no-added-effects sense—repeating it returns `not_found`. `memory_pack`, `memory_distill_candidates`, and `memory_remember` may load an external model or invoke the observer. These annotations do not change authentication or transport.
+Annotations describe each tool's primary operation on user data and its access beyond the local server; they are not authorization. Retrieval, metadata/schema, pack, and proposal-only distill tools are read-only. Incidental delivery logging, usage records, and caches do not change that classification. `memory_remember` adds data, while `memory_forget` is a destructive soft delete and is idempotent only in the no-added-effects sense—repeating it returns `not_found`. `memory_pack`, `memory_distill_candidates`, and `memory_remember` may load an external model or invoke the observer, so their open-world hints remain enabled. These annotations do not change authentication or transport, and clients may still apply their own prompting policies.
 
 `memory_distill_candidates` mines recurring lessons into reviewable context
 candidates. It is read-only and does not modify documentation files. By
