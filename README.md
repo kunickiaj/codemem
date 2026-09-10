@@ -35,9 +35,9 @@ covers macOS x64/arm64, Linux x64/arm64 (glibc 2.34+ or musl), and Windows x64.
 
 Codemem requires OpenCode 1.18.29 or newer.
 
-The experimental OpenCode 2 beta entrypoint currently loads as an inactive
-compatibility shell. Capture, memory building, and automatic context injection
-remain OpenCode 1 features until the OpenCode 2 adapter is enabled.
+The experimental OpenCode 2 beta entrypoint captures user and assistant messages,
+terminal usage, tool results, and session lifecycle events. It does not yet inject
+automatic recall or expose memory tools; those remain OpenCode 1 features.
 
 1. Install the OpenCode plugin and MCP config:
 
@@ -197,7 +197,7 @@ Codex hook ingestion shares the same raw-event pipeline as Claude and OpenCode t
 
 Adapters hook into runtime event systems (the OpenCode 1 plugin and Claude hooks). They capture tool calls and conversation messages, flush them through an observer pipeline that produces typed memories, and surface retrieval context for future prompts.
 
-> The OpenCode workflow below applies only to OpenCode 1. The OpenCode 2 entrypoint is currently an inactive compatibility shell.
+> The workflow below describes OpenCode 1 recall. OpenCode 2 currently captures activity and manages lifecycle cleanup, but it does not inject automatic recall or expose memory tools.
 
 ```mermaid
 sequenceDiagram

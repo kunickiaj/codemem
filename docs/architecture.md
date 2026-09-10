@@ -60,7 +60,7 @@ Support tiers describe operational expectations for each adapter path:
 | Adapter | Tier | Notes |
 |---|---|---|
 | OpenCode 1 plugin | Supported | Primary reference adapter for lifecycle events and injection behavior. |
-| OpenCode 2 plugin | Experimental | The beta entrypoint loads as an inactive compatibility shell; capture and injection are not enabled. |
+| OpenCode 2 plugin | Experimental | The beta entrypoint captures conversation, tool, terminal usage, and lifecycle activity with bounded cleanup. Automatic recall and memory tools are not enabled. |
 | Claude hooks/plugin | Supported | Hook-first queue path with CLI/runtime fallback and parity slices tracked in adapter stack PRs. |
 | Codex plugin (hooks + MCP) | Supported | Functional capture pipeline (`plugins/codex/`, `packages/core/src/codex-hooks.ts`) dogfooded end-to-end: edge normalization → `POST /api/raw-events` → observer → memories. Prompt-time injection is present and env-gated but not fully validated on strict models. |
 | Windsurf integration | Experimental | Planned via shared adapter contract after OpenCode/Claude stabilization. |
@@ -185,7 +185,7 @@ flowchart TD
 
 ## Context injection
 
-The OpenCode 1 plugin injects a memory pack automatically on every turn. Volatile recall output is appended beside the latest user message by default so provider prompt caches can keep the stable system/history prefix. The experimental OpenCode 2 beta entrypoint is an inactive compatibility shell and does not inject context.
+The OpenCode 1 plugin injects a memory pack automatically on every turn. Volatile recall output is appended beside the latest user message by default so provider prompt caches can keep the stable system/history prefix. The experimental OpenCode 2 beta entrypoint captures activity and manages lifecycle cleanup, but it does not inject automatic recall or expose memory tools.
 
 ### Packaged Claude and Codex hooks
 

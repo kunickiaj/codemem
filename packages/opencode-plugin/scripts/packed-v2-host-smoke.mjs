@@ -370,7 +370,7 @@ try {
 				contract: {
 					package: "@opencode/ai/providers/openai-compatible",
 					settings: {
-						apiKey: "contract-token",
+						apiKey: provider.baseURL,
 						baseURL: provider.baseURL,
 						provider: "contract",
 					},
@@ -401,6 +401,9 @@ try {
 		PATH: process.env.PATH ?? "",
 		HOME: homeDir,
 		XDG_CONFIG_HOME: join(homeDir, ".config"),
+		CODEMEM_BACKEND_UPDATE_POLICY: "off",
+		CODEMEM_RAW_EVENTS: "0",
+		CODEMEM_VIEWER: "0",
 		CODEMEM_OPENCODE_V2_CONTRACT_REPORT: reportPath,
 		OPENCODE_DISABLE_AUTOUPDATE: "true",
 		OPENCODE_DISABLE_MODELS_FETCH: "true",
@@ -556,9 +559,9 @@ try {
 		env,
 	});
 	const expectedEventTypes = [
-		"session.inbox.delivered",
-		"session.tool.success",
-		"session.tool.failed",
+		"session.inbox.enqueued",
+		"session.step.ended",
+		"session.execution.succeeded",
 		"session.text.ended",
 	];
 	const eventDeadline = Date.now() + 10_000;
@@ -613,6 +616,59 @@ try {
 	assert(
 		records.some((record) => record.phase === "event.end" && record.aborted === true),
 		"Host event subscription did not end cleanly after abort",
+	);
+	assert(
+		records.some(
+			(record) =>
+				record.phase === "event" &&
+				record.type === "session.inbox.enqueued" &&
+				record.hasInboxID &&
+				record.hasSessionID &&
+				record.hasTextPayload &&
+				record.isUserItem,
+		),
+		"Pinned host inbox event omitted the expected content-free payload shape",
+	);
+	assert(
+		records.some(
+			(record) =>
+				record.phase === "event" &&
+				record.type === "session.step.ended" &&
+				record.hasAssistantMessageID &&
+				record.hasFinish &&
+				record.hasSessionID &&
+				record.hasTokens,
+		),
+		"Pinned host step-ended event omitted the expected content-free payload shape",
+	);
+	const observedFinishReasons = new Set(
+		records
+			.filter((record) => record.phase === "event" && record.type === "session.step.ended")
+			.map((record) => record.finish),
+	);
+	assert(
+		observedFinishReasons.has("tool-calls") && observedFinishReasons.has("stop"),
+		`Pinned host tool continuation omitted terminal finish evidence; observed ${JSON.stringify([...observedFinishReasons])}`,
+	);
+	const eventRecords = records.filter((record) => record.phase === "event");
+	const terminalStepIndex = eventRecords.findIndex(
+		(record) => record.type === "session.step.ended" && record.finish === "stop",
+	);
+	const precedingTextIndex = eventRecords.findLastIndex(
+		(record, index) => index < terminalStepIndex && record.type === "session.text.ended",
+	);
+	assert(
+		precedingTextIndex >= 0 && precedingTextIndex < terminalStepIndex,
+		"Pinned host did not deliver assistant text before its terminal step",
+	);
+	assert(
+		records.some(
+			(record) =>
+				record.phase === "event" &&
+				record.type === "session.execution.succeeded" &&
+				record.hasSessionID,
+		),
+		"Pinned host execution terminal event omitted session identity",
 	);
 	assert(
 		records.some(

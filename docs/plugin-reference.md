@@ -8,7 +8,7 @@ This page covers advanced plugin behavior, environment variables, and stream rel
 
 ## Running OpenCode 1 with the plugin
 
-These capture and recall behaviors apply to OpenCode 1. The experimental OpenCode 2 beta entrypoint currently loads as an inactive compatibility shell.
+OpenCode 1 supports the capture and recall behavior below. The experimental OpenCode 2 beta entrypoint captures user and assistant messages, terminal usage, tool results, and session lifecycle events, but it does not yet inject automatic recall or expose memory tools.
 
 1. Start OpenCode inside this repo (or make the plugin global so it globs in everywhere).
 2. Every tooling session creates memory artifacts in SQLite.

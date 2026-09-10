@@ -122,6 +122,10 @@ try {
 		"Packed artifact is missing .opencode/lib/runtime.js",
 	);
 	assert(
+		tarListing.includes("package/.opencode/lib/opencode-v2-adapter.js"),
+		"Packed artifact is missing .opencode/lib/opencode-v2-adapter.js",
+	);
+	assert(
 		tarListing.includes("package/.opencode/lib/host-contract.js"),
 		"Packed artifact is missing .opencode/lib/host-contract.js",
 	);
@@ -155,6 +159,10 @@ try {
 	assert(
 		existsSync(join(installedPackageRoot, ".opencode", "lib", "runtime.js")),
 		"Installed artifact is missing .opencode/lib/runtime.js",
+	);
+	assert(
+		existsSync(join(installedPackageRoot, ".opencode", "lib", "opencode-v2-adapter.js")),
+		"Installed artifact is missing .opencode/lib/opencode-v2-adapter.js",
 	);
 	assert(
 		existsSync(join(installedPackageRoot, ".opencode", "lib", "host-contract.js")),
@@ -191,11 +199,28 @@ try {
 		typeConsumer,
 	]);
 
-	run(process.execPath, [
-		"--input-type=module",
-		"-e",
-		"const mod = await import('@codemem/opencode-plugin'); if (!mod.default || typeof mod.default !== 'object') throw new Error('default export is not an object'); if (mod.default.id !== 'codemem') throw new Error('default export has the wrong id'); if (typeof mod.default.server !== 'function') throw new Error('default server is not a function'); if (typeof mod.default.setup !== 'function') throw new Error('default setup is not a function'); if (typeof mod.CodememPlugin !== 'function') throw new Error('canonical named V1 export is not a function'); if (mod.default.server !== mod.CodememPlugin) throw new Error('default server is not the canonical V1 export'); if (mod.OpencodeMemPlugin !== mod.CodememPlugin) throw new Error('legacy V1 export is not a compatibility alias'); const result = await mod.default.setup({}); if (result !== undefined) throw new Error('V2 setup shell has behavior');",
-	], installDir);
+	const v2Home = join(tempDir, "v2-home");
+	mkdirSync(v2Home, { recursive: true });
+	const v2Env = {
+		...process.env,
+		HOME: v2Home,
+		CODEMEM_BACKEND_UPDATE_POLICY: "off",
+		CODEMEM_VIEWER: "0",
+	};
+	const installedV2Adapter = pathToFileURL(
+		join(installedPackageRoot, ".opencode", "lib", "opencode-v2-adapter.js"),
+	).href;
+	const packedEntrypoint = pathToFileURL(join(installedPackageRoot, "index.js")).href;
+	run(
+		process.execPath,
+		[
+			join(packageRoot, "scripts", "packed-v2-adapter-probe.mjs"),
+			packedEntrypoint,
+			installedV2Adapter,
+		],
+		installDir,
+		v2Env,
+	);
 
 	const pinnedOpenCodeV1Version = "1.18.30";
 	run("npm", ["install", "--prefix", installDir, `opencode-ai@${pinnedOpenCodeV1Version}`]);

@@ -179,7 +179,7 @@ Command/file token caching notes:
 - Low-signal observations are filtered before writing.
 
 ## Automatic context injection
-- The OpenCode 1 plugin injects a memory pack next to the latest user message by default, keeping older prompt prefixes stable for provider prompt caches. The experimental OpenCode 2 beta entrypoint is an inactive compatibility shell and does not inject context.
+- The OpenCode 1 plugin injects a memory pack next to the latest user message by default, keeping older prompt prefixes stable for provider prompt caches. The experimental OpenCode 2 beta entrypoint captures activity and manages lifecycle cleanup, but it does not inject automatic recall or expose memory tools.
 - Controls:
   - `CODEMEM_INJECT_CONTEXT=0` disables injection.
   - `CODEMEM_INJECT_SURFACE=system` uses the legacy OpenCode system-prompt injection surface.

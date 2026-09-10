@@ -46,6 +46,15 @@ const CODEMEM_CONTEXT_PREFIX = "[codemem context]\n";
 const DEFAULT_EMBEDDING_MODEL = "Xenova/bge-small-en-v1.5";
 const DEFAULT_EMBEDDING_REVISION = "ea104dacec62c0de699686887e3f920caeb4f3e3";
 const PLUGIN_REGISTRATIONS_KEY = Symbol.for("codemem.opencode-plugin.registrations");
+const ADAPTER_DIAGNOSTIC_CODES = new Set([
+  "v2_event_capture_failed",
+  "v2_event_stream_cleanup_timeout",
+  "v2_event_stream_ended_unexpectedly",
+  "v2_event_stream_failed",
+  "v2_registration_cleanup_timeout",
+  "v2_runtime_cleanup_timeout",
+  "v2_tool_capture_failed",
+]);
 
 let compatCheckCache = null;
 const notifiedReleaseVersions = new Set();
@@ -1691,17 +1700,22 @@ const buildOpencodeAdapterPayload = (event) => {
     if (!text) {
       return null;
     }
-    return { text };
+    return {
+      text,
+      message_id: event?.message_id ? String(event.message_id) : null,
+    };
   }
 
   if (eventType === "tool.execute.after") {
     const toolName = String(event?.tool || "unknown");
+    const toolCallID = event?.tool_call_id ? String(event.tool_call_id) : null;
     return {
       tool_name: toolName,
       status: event?.error ? "error" : "ok",
       tool_input: event?.args || {},
       tool_output: event?.result ?? null,
       error: event?.error ?? null,
+      ...(toolCallID ? { tool_call_id: toolCallID } : {}),
     };
   }
 
@@ -2109,6 +2123,7 @@ export const createCodememRuntime = async ({ location, host }) => {
   const hostLog = typeof host?.log === "function" ? host.log : async () => {};
   const hostNotify = typeof host?.notify === "function" ? host.notify : null;
   const events = [];
+  const flushingBatches = new Set();
   const maxEvents = parsePositiveInt(process.env.CODEMEM_PLUGIN_MAX_EVENTS, 200);
   const maxChars = Number.parseInt(
     process.env.CODEMEM_PLUGIN_MAX_EVENT_CHARS || "8000",
@@ -2234,13 +2249,16 @@ export const createCodememRuntime = async ({ location, host }) => {
   let promptCounter = 0;
   let skippedAttemptCounter = 0;
   let lastPromptText = null;
-  let lastAssistantText = null;
+  const capturedPrompts = new Set();
+  const pendingPrompts = new Map();
+  const capturedAssistantMessages = new Set();
   const assistantUsageCaptured = new Set();
   const failedToolCaptured = new Set();
 
   // Track message roles and accumulated text by messageID
   const messageRoles = new Map();
   const messageTexts = new Map();
+  const promptPartsByMessage = new Map();
   let debugLogCount = 0;
 
   const rawEventsEnabled = envNotDisabled(
@@ -2286,6 +2304,8 @@ export const createCodememRuntime = async ({ location, host }) => {
   let lastStatusCheckAt = 0;
   let lastStatusAvailable = true;
   let promptPackTransportUnavailableUntil = 0;
+  const rawEventAbortController = new AbortController();
+  let runtimeActive = true;
 
   const nextEventId = () => {
     if (typeof crypto !== "undefined" && crypto.randomUUID) {
@@ -2534,6 +2554,9 @@ export const createCodememRuntime = async ({ location, host }) => {
       }
     }
     const { body, serialized } = cachedEnvelope;
+    if (!runtimeActive) {
+      return persistRawEventForRetry({ body, serialized, payload, sessionID });
+    }
     if (now < streamUnavailableUntil) {
       const durable = await persistRawEventForRetry({ body, serialized, payload, sessionID });
       try {
@@ -2579,6 +2602,10 @@ export const createCodememRuntime = async ({ location, host }) => {
       const postResp = await fetch(rawEventsUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: AbortSignal.any([
+          rawEventAbortController.signal,
+          AbortSignal.timeout(RAW_EVENTS_STATUS_TIMEOUT_MS),
+        ]),
         body: JSON.stringify({
           ...body,
           db_path: promptPackDbPath,
@@ -2604,6 +2631,9 @@ export const createCodememRuntime = async ({ location, host }) => {
       }
       return true;
     } catch (err) {
+      if (!runtimeActive) {
+        return persistRawEventForRetry({ body, serialized, payload, sessionID });
+      }
       const category = err?.rawEventFailureCategory || "connection";
       streamUnavailableUntil = Date.now() + Math.max(1000, rawEventsBackoffMs);
       await logLine(`raw_events.error category=${category}`);
@@ -2670,7 +2700,75 @@ export const createCodememRuntime = async ({ location, host }) => {
 
   const updateActivity = () => {};
 
-  const extractPromptText = (event) => {
+  const promptMessageKey = (sessionID, messageID) =>
+    `${sessionID || activeSessionID || "unknown"}:${String(messageID)}`;
+
+  const accumulatePromptPart = (part) => {
+    const key = promptMessageKey(part.sessionID, part.messageID);
+    const parts = promptPartsByMessage.get(key) || new Map();
+    parts.set(String(part.id || "text"), part.text);
+    promptPartsByMessage.set(key, parts);
+    return [...parts.values()].join("").trim();
+  };
+
+  const promptIdentityForEvent = (event) => {
+    const info = event?.messageInfo;
+    if (event?.type === "message.updated" && info?.role === "user" && info.id) {
+      return promptMessageKey(info.sessionID || event.sessionID, info.id);
+    }
+    const part = event?.part;
+    if (
+      event?.type === "message.part.updated"
+      && part?.messageID
+      && messageRoles.get(part.messageID) === "user"
+    ) {
+      return promptMessageKey(part.sessionID || event.sessionID, part.messageID);
+    }
+    return null;
+  };
+
+  const clearPromptPartsForSession = (sessionID) => {
+    const resolvedSessionID = sessionID || activeSessionID;
+    if (!resolvedSessionID) {
+      return;
+    }
+    const prefix = `${resolvedSessionID}:`;
+    for (const key of promptPartsByMessage.keys()) {
+      if (key.startsWith(prefix)) {
+        promptPartsByMessage.delete(key);
+      }
+    }
+  };
+
+  const clearPromptSession = (sessionID) => {
+    if (!sessionID) {
+      return;
+    }
+    const prefix = `${sessionID}:`;
+    for (const key of capturedPrompts) {
+      if (key.startsWith(prefix)) {
+        capturedPrompts.delete(key);
+      }
+    }
+    for (const key of pendingPrompts.keys()) {
+      if (key.startsWith(prefix)) {
+        pendingPrompts.delete(key);
+      }
+    }
+    for (const key of capturedAssistantMessages) {
+      if (key.startsWith(prefix)) {
+        capturedAssistantMessages.delete(key);
+      }
+    }
+    for (const key of assistantUsageCaptured) {
+      if (key.startsWith(prefix)) {
+        assistantUsageCaptured.delete(key);
+      }
+    }
+    clearPromptPartsForSession(sessionID);
+  };
+
+  const extractPrompt = (event) => {
     if (!event) {
       return null;
     }
@@ -2681,9 +2779,12 @@ export const createCodememRuntime = async ({ location, host }) => {
       if (info.id && info.role) {
         messageRoles.set(info.id, info.role);
 
-        // If we have buffered text for this message and it's a user message, return it
-        if (info.role === "user" && messageTexts.has(info.id)) {
-          const text = messageTexts.get(info.id);
+        const promptKey = promptMessageKey(info.sessionID, info.id);
+        const promptParts = promptPartsByMessage.get(promptKey);
+        if (info.role === "user" && (promptParts?.size || messageTexts.has(info.id))) {
+          const text = promptParts?.size
+            ? [...promptParts.values()].join("").trim()
+            : messageTexts.get(info.id).trim();
           messageTexts.delete(info.id); // Clean up
           if (debugExtraction) {
             logLine(
@@ -2692,7 +2793,10 @@ export const createCodememRuntime = async ({ location, host }) => {
               )} len=${text.length}`
             );
           }
-          return text;
+          return { messageID: String(info.id), text };
+        }
+        if (info.role !== "user") {
+          promptPartsByMessage.delete(promptKey);
         }
       }
       return null;
@@ -2707,17 +2811,21 @@ export const createCodememRuntime = async ({ location, host }) => {
 
       const role = messageRoles.get(part.messageID);
       if (role === "user") {
-        // We know it's a user message, return the text immediately
+        const text = accumulatePromptPart(part);
         if (debugExtraction) {
           logLine(
             `user prompt captured immediately id=${part.messageID.slice(
               -8
-            )} len=${part.text.length}`
+            )} len=${text.length}`
           );
         }
-        return part.text.trim() || null;
+        if (!text) {
+          return null;
+        }
+        return { messageID: String(part.messageID), text };
       } else if (!role) {
         // Buffer this text until we know the role
+        accumulatePromptPart(part);
         const existing = messageTexts.get(part.messageID) || "";
         messageTexts.set(part.messageID, existing + part.text);
         if (debugExtraction) {
@@ -2763,7 +2871,10 @@ export const createCodememRuntime = async ({ location, host }) => {
         ) {
           const text = messageTexts.get(info.id);
           messageTexts.delete(info.id); // Clean up
-          return text.trim() || null;
+          const assistantText = text.trim();
+          return assistantText
+            ? { messageID: String(info.id), text: assistantText }
+            : null;
         }
       }
       return null;
@@ -2826,7 +2937,8 @@ export const createCodememRuntime = async ({ location, host }) => {
     if (!info.id || info.role !== "assistant" || (!info.finish && !info.time?.completed)) {
       return null;
     }
-    if (assistantUsageCaptured.has(info.id)) {
+    const usageIdentity = promptMessageKey(info.sessionID || event.sessionID, info.id);
+    if (assistantUsageCaptured.has(usageIdentity)) {
       return null;
     }
     const usage = normalizeUsage(
@@ -2835,7 +2947,7 @@ export const createCodememRuntime = async ({ location, host }) => {
     if (!usage) {
       return null;
     }
-    assistantUsageCaptured.add(info.id);
+    assistantUsageCaptured.add(usageIdentity);
     return { usage, id: info.id };
   };
 
@@ -4118,14 +4230,78 @@ export const createCodememRuntime = async ({ location, host }) => {
       _raw_session_id: resolvedSessionID,
     };
     recordEvent(queuedEvent);
-    void emitRawEvent({
+    const deliveryTask = emitRawEvent({
       sessionID: resolvedSessionID,
       type: queuedEvent?.type || "unknown",
       payload: queuedEvent,
     });
+    void deliveryTask.catch(() => {});
+    return deliveryTask;
+  };
+
+  const capturePendingPrompts = async ({
+    exceptIdentity = null,
+    skipFlush = false,
+    awaitDurability = false,
+  } = {}) => {
+    let durabilityFailed = false;
+    for (const [promptIdentity, prompt] of pendingPrompts) {
+      if (!runtimeActive && !skipFlush) return true;
+      if (promptIdentity === exceptIdentity) {
+        continue;
+      }
+      if (capturedPrompts.has(promptIdentity)) {
+        pendingPrompts.delete(promptIdentity);
+        continue;
+      }
+
+      pendingPrompts.delete(promptIdentity);
+      capturedPrompts.add(promptIdentity);
+
+      if (!skipFlush && (prompt.text.trim() === "/new" || prompt.text.trim().startsWith("/new "))) {
+        await logLine("detected /new command, flushing events");
+        await flushEvents();
+      }
+
+      promptCounter += 1;
+      updateActivity();
+
+      if (!sessionContext.firstPrompt) {
+        sessionContext.firstPrompt = prompt.text;
+        sessionContext.startTime = Date.now();
+      }
+      sessionContext.promptCount++;
+
+      const promptEvent = {
+        type: "user_prompt",
+        prompt_number: promptCounter,
+        prompt_text: prompt.text,
+        timestamp: new Date().toISOString(),
+      };
+      if (awaitDurability) {
+        try {
+          const durable = await captureCodememEvent(prompt.sessionID, promptEvent);
+          durabilityFailed ||= !durable;
+        } catch {
+          durabilityFailed = true;
+        }
+      } else {
+        captureCodememEvent(prompt.sessionID, promptEvent);
+      }
+      await logLine(
+        `user_prompt captured #${promptCounter}: ${prompt.text.substring(0, 50)}`
+      );
+
+      if (!skipFlush && shouldForceFlush()) {
+        await logLine(`force flush triggered: tools=${sessionContext.toolCount}, prompts=${sessionContext.promptCount}, duration=${Math.round((Date.now() - (sessionContext.startTime || Date.now())) / 1000)}s`);
+        await flushEvents();
+      }
+    }
+    return !durabilityFailed;
   };
 
   const flushEvents = async () => {
+    if (!runtimeActive) return;
     if (!events.length) {
       await drainRawEventSpool();
       await logLine("flush.skip empty");
@@ -4137,6 +4313,7 @@ export const createCodememRuntime = async ({ location, host }) => {
       await logLine("flush.skip empty");
       return;
     }
+    flushingBatches.add(batch);
 
     const failed = [];
     for (const queuedEvent of batch) {
@@ -4157,9 +4334,14 @@ export const createCodememRuntime = async ({ location, host }) => {
       }
     }
     if (failed.length) {
+      flushingBatches.delete(batch);
       events.unshift(...failed);
       await logLine(`flush.retry_deferred count=${failed.length}`);
       await drainRawEventSpool();
+      return;
+    }
+    if (!runtimeActive) {
+      flushingBatches.delete(batch);
       return;
     }
 
@@ -4171,6 +4353,7 @@ export const createCodememRuntime = async ({ location, host }) => {
       `flush.stream_only finalize count=${batch.length} tools=${sessionContext.toolCount} prompts=${sessionContext.promptCount} duration=${Math.round(durationMs / 1000)}s`
     );
     await logLine(`flush.ok count=${batch.length} dropped=0`);
+    flushingBatches.delete(batch);
     sessionStartedAt = null;
     resetSessionContext();
     await drainRawEventSpool();
@@ -4178,12 +4361,65 @@ export const createCodememRuntime = async ({ location, host }) => {
 
   void drainRawEventSpool();
 
+  const deactivateRuntime = () => {
+    if (!runtimeActive) return;
+    runtimeActive = false;
+    clearTimeout(updateCheckTimer);
+    stopHealthCheck();
+    rawEventAbortController.abort();
+    releasePluginRegistration();
+  };
+
+  const ensureQueuedEventsDurable = async () => {
+    let durable = true;
+    const queuedEvents = new Set(events);
+    for (const batch of flushingBatches) {
+      for (const queuedEvent of batch) {
+        queuedEvents.add(queuedEvent);
+      }
+    }
+    for (const queuedEvent of queuedEvents) {
+      if (queuedEvent?._raw_enqueued || queuedEvent?._raw_spooled) {
+        continue;
+      }
+      const queuedSessionID = queuedEvent?._raw_session_id || null;
+      const persisted = await emitRawEvent({
+        sessionID: queuedSessionID,
+        type: queuedEvent?.type || "unknown",
+        payload: queuedEvent,
+      });
+      durable &&= persisted;
+    }
+    return durable;
+  };
+
   return {
-    dispose: () => {
-      clearTimeout(updateCheckTimer);
-      stopHealthCheck();
-      releasePluginRegistration();
+    deactivate: deactivateRuntime,
+    dispose: async () => {
+      deactivateRuntime();
+      const promptsDurable = await capturePendingPrompts({
+        skipFlush: true,
+        awaitDurability: true,
+      });
+      const deliveriesDurable = await ensureQueuedEventsDurable();
+      if (!promptsDurable || !deliveriesDurable) {
+        await errorLogLine("raw_events.dispose_durability_failed category=persistence");
+      }
     },
+    reportDiagnostic: async (code) => {
+      const safeCode = ADAPTER_DIAGNOSTIC_CODES.has(code)
+        ? code
+        : "unknown_adapter_diagnostic";
+      await errorLogLine(`adapter.diagnostic code=${safeCode}`);
+    },
+    // Test-only state inspection; adapters must not depend on this method.
+    inspectBufferedPromptPartCount: () => [...promptPartsByMessage.values()]
+      .reduce((count, parts) => count + parts.size, 0),
+    inspectQueuedPrompts: () => events
+      .filter((event) => event.type === "user_prompt")
+      .map((event) => ({ number: event.prompt_number, text: event.prompt_text })),
+    inspectQueuedEventTypes: () => events.map((event) => event.type),
+    inspectCapturedPromptCount: () => capturedPrompts.size,
     handleCompacting: async ({ sessionID: requestedSessionID } = {}) => {
       const sessionID = requestedSessionID || activeSessionID;
       markCompactionInjectionSkip(compactionInjectionSkips, sessionID);
@@ -4311,9 +4547,12 @@ export const createCodememRuntime = async ({ location, host }) => {
       }
     },
     handleEvent: async (event) => {
+      if (!runtimeActive) return;
       const eventType = event?.type || "unknown";
       const sessionID = event?.sessionID || null;
       const rawEvent = event?.raw;
+      await capturePendingPrompts({ exceptIdentity: promptIdentityForEvent(event) });
+      if (!runtimeActive) return;
 
       // Always log session-related events for debugging /new
       if (eventType.startsWith("session.")) {
@@ -4380,65 +4619,36 @@ export const createCodememRuntime = async ({ location, host }) => {
           "message.part.updated",
         ].includes(eventType)
       ) {
-        const promptText = extractPromptText(event);
-        if (promptText) {
-          // Update activity tracking
-          updateActivity();
-
-          // Track session context
-          if (!sessionContext.firstPrompt) {
-            sessionContext.firstPrompt = promptText;
-            sessionContext.startTime = Date.now();
-          }
-          sessionContext.promptCount++;
-
-          // Check for /new command and flush before session reset
-          if (
-            promptText.trim() === "/new" ||
-            promptText.trim().startsWith("/new ")
-          ) {
-            await logLine("detected /new command, flushing events");
-            await flushEvents();
-          }
-
-          if (promptText !== lastPromptText) {
-            promptCounter += 1;
-          // promptCount incremented when capturing user_prompt
-
-            lastPromptText = promptText;
-            captureCodememEvent(sessionID, {
-              type: "user_prompt",
-              prompt_number: promptCounter,
-              prompt_text: promptText,
-              timestamp: new Date().toISOString(),
-            });
-            await logLine(
-              `user_prompt captured #${promptCounter}: ${promptText.substring(
-                0,
-                50
-              )}`
-            );
-
-            // Check if we should force flush due to threshold
-            if (shouldForceFlush()) {
-              await logLine(`force flush triggered: tools=${sessionContext.toolCount}, prompts=${sessionContext.promptCount}, duration=${Math.round((Date.now() - (sessionContext.startTime || Date.now())) / 1000)}s`);
-              await flushEvents();
-            }
+        const prompt = extractPrompt(event);
+        if (prompt) {
+          const promptText = prompt.text;
+          const promptIdentity = promptIdentityForEvent(event)
+            || promptMessageKey(sessionID, prompt.messageID);
+          const promptSessionID = event?.messageInfo?.sessionID
+            || event?.part?.sessionID
+            || sessionID;
+          lastPromptText = promptText;
+          if (!capturedPrompts.has(promptIdentity)) {
+            pendingPrompts.set(promptIdentity, { sessionID: promptSessionID, text: promptText });
           }
         }
 
-        const assistantText = extractAssistantText(event);
-        if (assistantText && assistantText !== lastAssistantText) {
-          updateActivity();
-          lastAssistantText = assistantText;
-          captureCodememEvent(sessionID, {
-            type: "assistant_message",
-            assistant_text: assistantText,
-            timestamp: new Date().toISOString(),
-          });
-          await logLine(
-            `assistant_message captured: ${assistantText.substring(0, 50)}`
-          );
+        const assistant = extractAssistantText(event);
+        if (assistant) {
+          const assistantIdentity = promptMessageKey(sessionID, assistant.messageID);
+          if (!capturedAssistantMessages.has(assistantIdentity)) {
+            capturedAssistantMessages.add(assistantIdentity);
+            updateActivity();
+            captureCodememEvent(sessionID, {
+              type: "assistant_message",
+              message_id: assistant.messageID,
+              assistant_text: assistant.text,
+              timestamp: new Date().toISOString(),
+            });
+            await logLine(
+              `assistant_message captured: ${assistant.text.substring(0, 50)}`
+            );
+          }
         }
 
         const assistantUsage = extractAssistantUsage(event);
@@ -4488,11 +4698,13 @@ export const createCodememRuntime = async ({ location, host }) => {
       //
       // REMOVED: session.compacted, session.compacting (too frequent)
       if (eventType === "session.error") {
+        clearPromptPartsForSession(sessionID);
         await logLine("session.error detected, flushing immediately");
         await flushEvents();
       }
 
       if (eventType === "session.idle") {
+        clearPromptPartsForSession(sessionID);
         await logLine(
           `session.idle detected, flushing immediately (tools=${sessionContext.toolCount}, prompts=${sessionContext.promptCount})`
         );
@@ -4511,7 +4723,7 @@ export const createCodememRuntime = async ({ location, host }) => {
         disabledInjectionRecorded.delete("message:unknown");
         disabledInjectionRecorded.delete("system:unknown");
         lastPromptText = null;
-        lastAssistantText = null;
+        clearPromptSession(sessionID);
         resetSessionContext();
         startViewer();
       }
@@ -4535,15 +4747,21 @@ export const createCodememRuntime = async ({ location, host }) => {
               failedToolCaptured.delete(key);
             }
           }
+          clearPromptSession(sessionID);
         }
         await stopViewer();
       }
     },
-    // OpenCode invokes this hook after successful tools; failures arrive as errored ToolPart events.
+    // V1 sends successes here and failures as ToolPart events; V2 sends both variants here.
     handleToolResult: async (input, output) => {
+      if (!runtimeActive) return;
+      await capturePendingPrompts();
+      if (!runtimeActive) return;
       const args = input.args ?? {};
       const result = output.output;
+      const error = output.error ?? null;
       const toolName = input.tool;
+      const toolCallID = input.id ?? null;
 
       // Update activity and session context
       updateActivity();
@@ -4570,8 +4788,9 @@ export const createCodememRuntime = async ({ location, host }) => {
         type: "tool.execute.after",
         tool: toolName,
         args,
-        result: truncate(safeStringify(result)),
-        error: null,
+        result: error ? null : truncate(safeStringify(result)),
+        error: error ? truncate(safeStringify(error)) : null,
+        ...(toolCallID ? { tool_call_id: String(toolCallID) } : {}),
         timestamp: new Date().toISOString(),
       });
       await logLine(`tool.execute.after ${toolName} queued=${events.length} tools=${sessionContext.toolCount}`);

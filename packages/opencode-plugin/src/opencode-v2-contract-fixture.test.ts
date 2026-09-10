@@ -81,6 +81,26 @@ function makeContext(
 				[
 					{ type: "server.connected" },
 					{ type: "session.created", properties: { id: "redacted" } },
+					{
+						type: "session.inbox.enqueued",
+						data: {
+							sessionID: "session-a",
+							inboxID: "message-a",
+							item: { type: "user", payload: { text: "must-not-be-recorded" } },
+						},
+					},
+					{
+						type: "session.step.ended",
+						data: {
+							sessionID: "session-a",
+							assistantMessageID: "message-b",
+							finish: "stop",
+							tokens: { input: 1, output: 1 },
+						},
+					},
+					{ type: "session.execution.succeeded", data: { sessionID: "session-a" } },
+					{ type: "session.execution.failed", data: { sessionID: "session-a" } },
+					{ type: "session.execution.interrupted", data: { sessionID: "session-a" } },
 					{ type: "message.updated", properties: { content: "must-not-be-recorded" } },
 					{ type: "tool.updated", properties: { result: "must-not-be-recorded" } },
 				],
@@ -243,11 +263,46 @@ async function executeLifecycleContract() {
 	return { contextInput, fixture, records };
 }
 
+function expectCapturedEventShapes(records: ContractRecord[]) {
+	const eventRecords = records.filter((record) => record.phase === "event");
+	expect(eventRecords.map((record) => record.family)).toEqual([
+		"generic",
+		"session",
+		"session",
+		"session",
+		"session",
+		"session",
+		"session",
+		"message",
+		"tool",
+	]);
+	expect(eventRecords).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({
+				type: "session.inbox.enqueued",
+				hasInboxID: true,
+				hasSessionID: true,
+				hasTextPayload: true,
+				isUserItem: true,
+			}),
+			expect.objectContaining({
+				type: "session.step.ended",
+				finish: "stop",
+				hasAssistantMessageID: true,
+				hasFinish: true,
+				hasSessionID: true,
+				hasTokens: true,
+			}),
+			expect.objectContaining({ type: "session.execution.succeeded", hasSessionID: true }),
+			expect.objectContaining({ type: "session.execution.failed", hasSessionID: true }),
+			expect.objectContaining({ type: "session.execution.interrupted", hasSessionID: true }),
+		]),
+	);
+	expect(JSON.stringify(eventRecords)).not.toContain("must-not-be-recorded");
+}
+
 describe("OpenCode 2 executable fixture", () => {
 	it("observes location, options, storage, events, hooks, tools, and deterministic cleanup", async () => {
-		// Arrange
-		const expectedEventFamilies = ["generic", "session", "message", "tool"];
-
 		// Act
 		const { contextInput, fixture, records } = await executeLifecycleContract();
 
@@ -326,11 +381,11 @@ describe("OpenCode 2 executable fixture", () => {
 		expect(contextInput.providerOptions.codememContract).toBe(true);
 		expect(fixture.aborted.value).toBe(true);
 		expect(fixture.disposals.every((dispose) => dispose.mock.calls.length === 1)).toBe(true);
-		const eventRecords = records.filter((record) => record.phase === "event");
-		expect(eventRecords.map((record) => record.family)).toEqual(expectedEventFamilies);
-		expect(JSON.stringify(eventRecords)).not.toContain("must-not-be-recorded");
+		expectCapturedEventShapes(records);
 	});
+});
 
+describe("OpenCode 2 fixture cleanup", () => {
 	it("disposes completed registrations when setup fails", async () => {
 		// Arrange
 		const fixture = makeContext({ failToolHook: true });
