@@ -348,7 +348,7 @@ export function rawEventsRoutes(getStore: StoreFactory, sweeper?: RawEventSweepe
 			if (envelope === null) {
 				return c.json({ inserted: 0, skipped: 1 });
 			}
-			const ingestResult = ingestNormalizedEnvelope(getStore(), sweeper, {
+			const ingestResult = await ingestNormalizedEnvelope(getStore(), sweeper, {
 				...envelope,
 				source: "pi",
 			});
