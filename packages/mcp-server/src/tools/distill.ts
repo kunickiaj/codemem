@@ -17,6 +17,37 @@ import { errorContent, jsonContent } from "../content.js";
 import { buildFilters } from "../project-scope.js";
 import { filterSchema } from "../schemas.js";
 import type { ToolRegistrationContext } from "../tool-context.js";
+import { toolAnnotations, toolOutputSchemas } from "../tool-contracts.js";
+
+const distillInputSchema = {
+	limit: z.number().int().min(1).max(50).default(10).describe("Max candidates"),
+	min_recurrence: z
+		.number()
+		.int()
+		.min(1)
+		.max(50)
+		.default(2)
+		.describe("Minimum member count per candidate"),
+	all_projects: z.boolean().default(false).describe("Mine memories across all projects"),
+	include_documented: z
+		.boolean()
+		.default(false)
+		.describe("Include candidates already represented in context files"),
+	max_evidence_items: z
+		.number()
+		.int()
+		.min(1)
+		.max(20)
+		.default(5)
+		.describe("Evidence snippets per candidate"),
+	judge: z
+		.boolean()
+		.default(true)
+		.describe(
+			"Judge candidates with the observer model and drop routine-activity clusters (on by default; falls back to unjudged output when no observer model is configured)",
+		),
+	...filterSchema,
+};
 
 function readContextFile(
 	path: string,
@@ -80,37 +111,14 @@ function buildDistillFilters(
 export function registerDistillTools(server: McpServer, context: ToolRegistrationContext): void {
 	const { defaultProject, store } = context;
 
-	server.tool(
+	server.registerTool(
 		"memory_distill_candidates",
-		"Mine recurring memories into reviewable context candidates. Read-only; does not modify context files.",
 		{
-			limit: z.number().int().min(1).max(50).default(10).describe("Max candidates"),
-			min_recurrence: z
-				.number()
-				.int()
-				.min(1)
-				.max(50)
-				.default(2)
-				.describe("Minimum member count per candidate"),
-			all_projects: z.boolean().default(false).describe("Mine memories across all projects"),
-			include_documented: z
-				.boolean()
-				.default(false)
-				.describe("Include candidates already represented in context files"),
-			max_evidence_items: z
-				.number()
-				.int()
-				.min(1)
-				.max(20)
-				.default(5)
-				.describe("Evidence snippets per candidate"),
-			judge: z
-				.boolean()
-				.default(true)
-				.describe(
-					"Judge candidates with the observer model and drop routine-activity clusters (on by default; falls back to unjudged output when no observer model is configured)",
-				),
-			...filterSchema,
+			description:
+				"Mine recurring memories into reviewable context candidates. Reads project/user context files without modifying them and can call the optional observer when judge=true.",
+			inputSchema: distillInputSchema,
+			outputSchema: toolOutputSchemas.memory_distill_candidates,
+			annotations: toolAnnotations.memory_distill_candidates,
 		},
 		async (args) => {
 			try {

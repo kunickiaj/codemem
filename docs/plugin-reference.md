@@ -253,6 +253,14 @@ slash commands in the OpenCode chat input.
 The MCP server exposes memory retrieval and write tools such as `memory_search`,
 `memory_pack`, `memory_recent`, `memory_remember`, and `memory_forget`.
 
+### MCP result and annotation contract
+
+All 14 tools publish the standard optional `outputSchema` and `annotations` fields; `packages/mcp-server/src/tool-contracts.ts` is the authority. On success, `structuredContent` is an object that validates against the declared schema, and `content[0].text` remains compact JSON for compatible text-only clients. The two representations are identical after JSON serialization, so `undefined` properties are omitted.
+
+Check `isError` before reading `structuredContent`: errors set `isError: true`, provide only the JSON error text, and omit `structuredContent` so SDKs do not validate an error against the success schema.
+
+Annotations describe each tool's primary operation on user data and its access beyond the local server; they are not authorization. Retrieval, metadata/schema, pack, and proposal-only distill tools are read-only. Incidental delivery logging, usage records, and caches do not change that classification. `memory_remember` adds data, while `memory_forget` is a destructive soft delete and is idempotent only in the no-added-effects sense—repeating it returns `not_found`. `memory_pack`, `memory_distill_candidates`, and `memory_remember` may load an external model or invoke the observer, so their open-world hints remain enabled. These annotations do not change authentication or transport, and clients may still apply their own prompting policies.
+
 `memory_distill_candidates` mines recurring lessons into reviewable context
 candidates. It is read-only and does not modify documentation files. By
 default an observer-model worthiness pass drops routine-activity clusters

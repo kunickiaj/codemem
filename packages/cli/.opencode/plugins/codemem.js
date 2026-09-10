@@ -1,4 +1,4 @@
-const PINNED_BACKEND_VERSION = "0.44.1";
+const PINNED_BACKEND_VERSION = "0.44.2";
 
 export {
 	default,
