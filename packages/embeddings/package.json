@@ -15,7 +15,7 @@
 	],
 	"scripts": {
 		"clean": "rm -rf dist tsconfig.tsbuildinfo",
-		"build": "pnpm exec vite build && pnpm exec tsc --build --force",
+		"build": "pnpm exec vite build && pnpm exec tsc --build",
 		"typecheck": "pnpm exec tsc --noEmit",
 		"test": "pnpm exec vitest run",
 		"test:packed-runtime": "node ./scripts/packed-runtime-smoke.mjs"
