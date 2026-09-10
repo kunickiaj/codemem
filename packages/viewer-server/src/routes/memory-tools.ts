@@ -37,7 +37,7 @@ import { parseJsonObjectBody, queryInt } from "../helpers.js";
 
 type StoreFactory = () => MemoryStore;
 
-const ALLOWED_REMEMBER_KINDS = new Set(REMEMBER_MEMORY_KINDS);
+const ALLOWED_REMEMBER_KINDS = new Set<string>(REMEMBER_MEMORY_KINDS);
 
 const MEMORY_TOOLS_MAX_BODY_BYTES = 1_048_576;
 /** Filter names exposed by memory_schema (sorted, matches MCP filterSchema keys). */
