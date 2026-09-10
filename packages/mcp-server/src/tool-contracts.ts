@@ -210,42 +210,29 @@ export const toolOutputSchemas = {
 	}),
 } as const;
 
-// Retrievals append delivery diagnostics to the local ledger, so they are not
-// read-only or idempotent even though their primary operation only reads memories.
-const localRetrievalAnnotations = {
-	readOnlyHint: false,
-	destructiveHint: false,
-	idempotentHint: false,
+// Incidental diagnostics and caches do not change the primary read operation.
+const localReadAnnotations = {
+	readOnlyHint: true,
 	openWorldHint: false,
 } satisfies ToolAnnotations;
 
-// Pack/distill execution may load embedding models or call the observer. Those
-// interactions can populate caches or contact entities outside the local store.
-const externalComputeAnnotations = {
-	readOnlyHint: false,
-	destructiveHint: false,
-	idempotentHint: false,
+// Pack/distill remain read-only while model loading or observer calls may access
+// entities outside the local store.
+const externalReadAnnotations = {
+	readOnlyHint: true,
 	openWorldHint: true,
 } satisfies ToolAnnotations;
 
-// These static catalogs neither mutate state nor interact outside the server.
-const metadataAnnotations = {
-	readOnlyHint: true,
-	destructiveHint: false,
-	idempotentHint: true,
-	openWorldHint: false,
-} satisfies ToolAnnotations;
-
 export const toolAnnotations = {
-	memory_search: localRetrievalAnnotations,
-	memory_search_index: localRetrievalAnnotations,
-	memory_explain: localRetrievalAnnotations,
-	memory_recent: localRetrievalAnnotations,
-	memory_pack: externalComputeAnnotations,
-	memory_timeline: localRetrievalAnnotations,
-	memory_expand: localRetrievalAnnotations,
-	memory_get: localRetrievalAnnotations,
-	memory_get_observations: localRetrievalAnnotations,
+	memory_search: localReadAnnotations,
+	memory_search_index: localReadAnnotations,
+	memory_explain: localReadAnnotations,
+	memory_recent: localReadAnnotations,
+	memory_pack: externalReadAnnotations,
+	memory_timeline: localReadAnnotations,
+	memory_expand: localReadAnnotations,
+	memory_get: localReadAnnotations,
+	memory_get_observations: localReadAnnotations,
 	// Remember is additive, but embedding generation can load external model assets.
 	memory_remember: {
 		readOnlyHint: false,
@@ -260,7 +247,7 @@ export const toolAnnotations = {
 		idempotentHint: true,
 		openWorldHint: false,
 	},
-	memory_distill_candidates: externalComputeAnnotations,
-	memory_schema: metadataAnnotations,
-	memory_learn: metadataAnnotations,
+	memory_distill_candidates: externalReadAnnotations,
+	memory_schema: localReadAnnotations,
+	memory_learn: localReadAnnotations,
 } as const satisfies Record<keyof typeof toolOutputSchemas, ToolAnnotations>;
