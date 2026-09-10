@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { jsonContent } from "../content.js";
+import { toolAnnotations, toolOutputSchemas } from "../tool-contracts.js";
 
 const MEMORY_LEARN_GUIDANCE = {
 	intro: "Use this tool when you're new to codemem or unsure when to recall/persist.",
@@ -89,10 +90,14 @@ const MEMORY_LEARN_GUIDANCE = {
 } as const;
 
 export function registerLearnTools(server: McpServer): void {
-	server.tool(
+	server.registerTool(
 		"memory_learn",
-		"Learn how to use codemem memory tools. Call this first if unfamiliar.",
-		{},
+		{
+			description: "Learn how to use codemem memory tools. Call this first if unfamiliar.",
+			inputSchema: {},
+			outputSchema: toolOutputSchemas.memory_learn,
+			annotations: toolAnnotations.memory_learn,
+		},
 		async () => jsonContent(MEMORY_LEARN_GUIDANCE),
 	);
 }
