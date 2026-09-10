@@ -1,20 +1,27 @@
 # codemem
 
 [![CI](https://github.com/kunickiaj/codemem/actions/workflows/ci.yml/badge.svg)](https://github.com/kunickiaj/codemem/actions/workflows/ci.yml) [![codecov](https://codecov.io/gh/kunickiaj/codemem/branch/main/graph/badge.svg)](https://codecov.io/gh/kunickiaj/codemem) [![Release](https://img.shields.io/github/v/release/kunickiaj/codemem)](https://github.com/kunickiaj/codemem/releases)
+[![npm version](https://img.shields.io/npm/v/codemem)](https://www.npmjs.com/package/codemem) [![npm downloads per month](https://img.shields.io/npm/dm/codemem?label=npm%20downloads%2Fmonth)](https://www.npmjs.com/package/codemem) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-Persistent memory for [OpenCode](https://opencode.ai) and [Claude Code](https://claude.ai/code). codemem captures what you work on across sessions, retrieves relevant context using hybrid search, and injects relevant context automatically in OpenCode 1.
+**The code is still there. The reasoning usually isn’t.**
 
-- **Local-first** — everything lives in SQLite on your machine
+codemem is persistent coding memory across sessions, machines, and teammates for [OpenCode](https://opencode.ai), [Claude Code](https://claude.ai/code), and Codex. It captures decisions, dead ends, and repository-specific traps, then automatically brings relevant context into later prompts.
+
+- **Automatic context injection** — relevant memories reach the agent without asking it to search; unchanged memories already in OpenCode context are not repeated
+- **Optional sync and sharing** — peer-to-peer sync carries selected project memory across machines; share project knowledge with a teammate or Team when it helps
+- **Local-first storage** — memories live in SQLite on your machine; observer processing uses your configured model provider and can incur costs or consume plan usage
 - **Hybrid retrieval** — FTS5 BM25 lexical search + sqlite-vec semantic search, merged and re-ranked
 - **Automatic injection for OpenCode 1** — the plugin injects context into every prompt, no manual steps
 - **Claude Code plugin support** — install from the codemem marketplace source
 - **Built-in viewer** — browse memories, sessions, and observer output in a local web UI
-- **Peer-to-peer sync** — replicate memories across machines without a central service
+- **Remote MCP access** — advanced single-user self-hosting can expose an OAuth-protected Streamable HTTP MCP endpoint to configured remote clients; keep the localhost viewer private ([guide](docs/remote-mcp-oauth.md))
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/codemem-dark.png">
-  <img alt="codemem viewer — feed tab" src="docs/images/codemem-light.png">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/docs-feed-dark.png">
+  <img alt="codemem Feed showing invented coding decisions, discoveries, and fixes" src="docs/images/docs-feed-light.png">
 </picture>
+
+*Synthetic project memories, not real session data. Explore the [Feed, Facts, and Projects walkthrough](docs/user-guide.md#explore-the-viewer) to see how to inspect what was captured.*
 
 ## Quick start
 
@@ -22,7 +29,7 @@ Persistent memory for [OpenCode](https://opencode.ai) and [Claude Code](https://
 covers macOS x64/arm64, Linux x64/arm64 (glibc 2.34+ or musl), and Windows x64.
 32-bit targets, including Linux armv7, are not supported.
 
-codemem keeps one minimum Node.js version across published packages and workspace tooling.
+**Linux:** set `ONNXRUNTIME_NODE_INSTALL=skip` in your shell and the environment that launches OpenCode, Claude Code, or Codex **before the first package install**. This avoids downloading the unused ONNX Runtime GPU provider while keeping CPU inference. Setup-managed `npx` launchers cannot set it themselves.
 
 ### OpenCode
 
@@ -40,7 +47,7 @@ npx -y codemem setup --opencode-only
 
 2. Restart OpenCode.
 
-On OpenCode 1, the plugin manages backend execution automatically — no separate global install is required.
+`npx` uses a downloaded or cached package to configure the OpenCode host; it does not create a durable `codemem` CLI installation. On OpenCode 1, the configured plugin manages backend execution independently, so no global install is required for automatic capture and context injection.
 
 3. Verify:
 
@@ -50,51 +57,56 @@ npx -y codemem stats
 npx -y codemem db raw-events-status
 ```
 
-That's it. On OpenCode 1, the plugin captures activity, builds memories, and injects context from here on.
+That's it. On OpenCode 1, the plugin captures activity, builds memories, and injects relevant context from here on.
 
-If you want `codemem` available directly on your `PATH` for manual commands and semantic retrieval, install the CLI globally. The CLI installs its matching embedding runtime by default. The command differs by platform:
+### Try a fresh-session recall
 
-On Linux, skip the unused ONNX Runtime GPU provider download:
+After completing a task, check that its decision appears in the local viewer at `http://localhost:38888`. Start a new OpenCode session in the same project and ask about that decision without supplying the answer. For example, if your task involved a database migration:
 
 ```text
-env ONNXRUNTIME_NODE_INSTALL=skip npm install -g codemem
+What decision did we make about the database migration, and why?
 ```
 
-On Apple silicon macOS and Windows, install normally:
+Verify the answer against the stored decision and the original task evidence. If capture is still pending or recall is empty, inspect the local state:
 
 ```text
+npx -y codemem status
+npx -y codemem db raw-events-status
+```
+
+### Observer access and external-model costs
+
+The observer is the model that turns captured activity into memories. It needs a configured runtime and usable authentication: `api_http` uses your provider credentials; sidecar runtimes use Claude or Codex authentication. Local storage does not mean local-only processing: captured context is sent to the configured model, and calls can incur charges or consume plan usage. See [configuration](#configuration) for options.
+
+<details>
+<summary>Installation, upgrades, and runtime details</summary>
+
+codemem keeps one minimum Node.js version across published packages and workspace tooling.
+
+If you want `codemem` on your `PATH` for manual commands and semantic retrieval, install the CLI globally. The CLI installs its matching embedding runtime by default:
+
+```text
+# Linux: skip the unused ONNX Runtime GPU provider download
+env ONNXRUNTIME_NODE_INSTALL=skip npm install -g codemem
+
+# Apple silicon macOS and Windows
 npm install -g codemem
 ```
 
-For a smaller keyword-only install, use `npm install -g codemem --omit=optional`
-and set `CODEMEM_EMBEDDING_DISABLED=1` in every Codemem process. The flag is
-required because npm also omits sqlite-vec's optional platform package; the CLI
-then remains functional with FTS5.
+For a smaller keyword-only install, use `npm install -g codemem --omit=optional` and set `CODEMEM_EMBEDDING_DISABLED=1` in every Codemem process. The flag is required because npm also omits sqlite-vec's optional platform package; the CLI then remains functional with FTS5.
 
-Setup-managed `npx` launchers cannot set a platform-specific install variable.
-On Linux, either use the guarded global installation above or set
-`ONNXRUNTIME_NODE_INSTALL=skip` in the environment that launches OpenCode,
-Claude Code, or Codex before its first `npx` package resolution. This prevents
-the unused ONNX Runtime GPU-provider download while retaining CPU inference.
+An npm-capable manager, such as mise's `npm:codemem` backend, can also provide the durable CLI. Ensure `codemem` is on your `PATH`, then run `codemem setup --opencode-only`.
 
-After upgrading an existing installation, rerun `codemem setup` (or the
-app-specific `--opencode-only`, `--claude-only`, or `--codex-only` form).
-Setup replaces the old managed `npx -y codemem mcp` launcher and codemem MCP
-entries detected as UV/UVX-based so both packages share one runtime. Other
-custom MCP commands remain unchanged.
+Upgrade a durable CLI with the package manager that installed it, then rerun the corresponding setup command for an existing setup-managed integration. Setup replaces its old managed `npx -y codemem mcp` launcher and codemem MCP entries detected as UV/UVX-based so both packages share one runtime; other custom MCP commands remain unchanged. The host plugin is managed independently. Claude marketplace installs use the plugin's bundled MCP configuration and do not require a separate `setup --claude-only` step.
 
-Generated MCP configurations use the durable global `codemem` binary when it is
-available. Without a global install, setup-managed `npx` launchers request both
-packages in the same temporary environment. After changing the installation,
-restart the host whose config you updated — OpenCode, Claude Code, or Codex —
-plus any running `codemem serve` process. Each MCP process caches runtime
-availability for its lifetime, so a still-running Claude or Codex MCP host keeps
-lexical-only recall until it restarts; restarting `codemem serve` alone does not
-restart that MCP child.
+Generated MCP configurations use the global `codemem` binary when available. Otherwise, setup-managed `npx` launchers request both packages in one temporary environment. Restart the updated host and any `codemem serve` process after an installation change. An already-running Claude or Codex MCP host keeps lexical-only recall until it restarts; restarting `codemem serve` does not restart that child.
 
-The semantic runtime is pinned to CPU inference on every platform.
-ONNX Runtime 1.24.3 does not ship a macOS x64 binary, so Intel Macs continue
-with FTS5 keyword retrieval when semantic runtime initialization fails.
+The semantic runtime is pinned to CPU inference on every platform. ONNX Runtime 1.24.3 does not ship a macOS x64 binary, so Intel Macs continue with FTS5 keyword retrieval when semantic runtime initialization fails.
+
+</details>
+
+<details>
+<summary>OpenCode recall and source-checkout details</summary>
 
 OpenCode plugin and CLI are now split intentionally:
 
@@ -122,22 +134,23 @@ missing host identity, or sibling IDs. Explicit `pack` and MCP requests keep
 their existing behavior. See
 [the requester-session contract](docs/opencode-retained-recall.md#requester-session-continuity).
 
+</details>
+
 ### Claude Code (marketplace install)
 
-1. Install codemem's Claude MCP config:
-
-```text
-npx -y codemem setup --claude-only
-```
-
-2. In [Claude Code](https://claude.ai/code), add the codemem marketplace source and install the plugin:
+1. In [Claude Code](https://claude.ai/code), add the codemem marketplace source and install the plugin:
 
 ```text
 /plugin marketplace add kunickiaj/codemem
 /plugin install codemem
 ```
 
-The Claude plugin starts MCP with the TS CLI (`codemem mcp`).
+2. Restart Claude Code.
+
+The plugin bundles its MCP configuration and capture/context-injection hooks, and starts MCP with the TS CLI (`codemem mcp`). No preliminary `codemem setup --claude-only` command or global CLI install is required. The prerequisites and observer-access requirements above still apply.
+
+<details>
+<summary>Claude and Codex adapter transport details</summary>
 
 Claude and Codex plugins normalize native hooks at the plugin edge and send the resulting envelope to the canonical `POST /api/raw-events` endpoint. New ingestion requests include the intended database path and runtime identity target; Viewer rejects a mismatch before writing, and the client uses its existing identity-correct command fallback. On a retryable Viewer failure, Codex persists that exact envelope before attempting command fallbacks and removes the spool only after a fallback succeeds; Claude uses the command fallbacks without a file spool. Claude `SessionEnd` asks Viewer to finish boundary extraction best-effort inside the host's 1.5-second default exit budget, reserving command-fallback time after preprocessing and across both HTTP attempts. `Stop` flushing remains opt-in and uses a 130-second host timeout for its 125-second internal extraction budget. Transcript fallback reads at most the final 16 MiB: it preserves the first record when the tail starts immediately after a newline, but discards the first fragment when the tail starts in the middle of a record. The checked-in dependency-free normalizers are generated from the TypeScript implementations in `packages/core/src/claude-hooks.ts` and `packages/core/src/codex-hooks.ts`. Named Viewer hook routes remain compatibility aliases/callers for older packaged and plugin-free CLI paths; requests that omit targeting fields remain accepted for 0.41 compatibility.
 
@@ -151,9 +164,11 @@ fail closed.
 Prompt and event HTTP reject non-loopback Viewer hosts without fetching them. Codex reserves a total
 4.5-second prompt-output budget within its 5-second host timeout.
 
-### Codex (early beta)
+</details>
 
-Codex support is **early beta** — functional and dogfooded, but not yet promoted to a stable support tier. It installs through Codex's own plugin marketplace:
+### Codex
+
+Codex installs through its own plugin marketplace:
 
 1. Add the codemem marketplace and install the plugin:
 
@@ -176,7 +191,7 @@ This merges `[mcp_servers.codemem]` into `~/.codex/config.toml` and writes `~/.c
 
 Codex hook ingestion shares the same raw-event pipeline as Claude and OpenCode through normalized `POST /api/raw-events`. After a retryable HTTP failure it writes the exact envelope to `~/.codemem/codex-raw-event-spool`, attempts the `codemem enqueue-raw-event` command fallbacks, and removes the spooled envelope only after success. That spool is separate from the legacy native-hook spool. `UserPromptSubmit` runs capture ingest in the background and injects memory context via `additionalContext`; disable injection with `CODEMEM_INJECT_CONTEXT=0`. See [docs/plugin-reference.md](docs/plugin-reference.md) for details and troubleshooting.
 
-> Migrating from `opencode-mem`? See [docs/rename-migration.md](docs/rename-migration.md).
+> Was this repository previously installed as `opencode-mem`? See the [rename migration guide](docs/rename-migration.md). It covers this repository's former name, not importing data from [`tickernelz/opencode-mem`](https://github.com/tickernelz/opencode-mem).
 
 ## How it works
 
@@ -363,10 +378,11 @@ The viewer includes a grouped Settings modal (`Connection`, `Processing`, `Devic
 
 Observer runtime/auth:
 
-- Runtime options: `api_http` and `claude_sidecar`.
+- Runtime options: `api_http`, `claude_sidecar`, and `codex_sidecar`.
 - `api_http` defaults to `gpt-5.1-codex-mini` (OpenAI path) unless you set `observer_model`.
 - Anthropic direct API calls accept Anthropic model IDs/aliases. codemem maps the common Claude shorthand `claude-4.5-haiku` to Anthropic's direct API alias `claude-haiku-4-5`; you can also set a pinned snapshot like `claude-haiku-4-5-20251001` explicitly.
 - `claude_sidecar` defaults to `claude-4.5-haiku`; if the selected `observer_model` is unsupported by Claude CLI, codemem retries once with Claude's CLI default model.
+- `codex_sidecar` uses the local Codex CLI's authentication and defaults to `gpt-5.1-codex-mini` unless `observer_model` is set. See [observer auth modes](docs/plugin-reference.md#observer-auth-modes) for configuration and automatic selection rules.
 - `claude_sidecar` command is configurable with `claude_command` (`CODEMEM_CLAUDE_COMMAND`) as a JSON argv array.
   - Config file example: `"claude_command": ["wrapper", "claude", "--"]`
   - Env var example: `CODEMEM_CLAUDE_COMMAND='["wrapper","claude","--"]'`
@@ -490,5 +506,5 @@ The repository's root `opencode.jsonc` also enables a contributor-only lint-feed
 - [Coordinator deployment](docs/coordinator-deployment.md) — advanced operator deployment and discovery
 - [Coordinator E2E runbook](docs/coordinator-e2e-runbook.md) — advanced coordinator validation
 - [Plugin reference](docs/plugin-reference.md) — plugin behavior, env vars, stream reliability
-- [Migration guide](docs/rename-migration.md) — migrating from `opencode-mem`
+- [Rename migration guide](docs/rename-migration.md) — this repository's former `opencode-mem` name; not an importer for `tickernelz/opencode-mem`
 - [Contributing](CONTRIBUTING.md) — development setup, tests, linting, releases

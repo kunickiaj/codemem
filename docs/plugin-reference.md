@@ -127,9 +127,9 @@ For Claude hooks, project resolution precedence is:
 
 `PreToolUse` is intentionally deferred in the default template. Current memory extraction uses `PostToolUse` / `PostToolUseFailure` (`tool_result`) as the shipped Claude tool signal.
 
-## Codex integration (early beta)
+## Codex integration
 
-Codex support is early beta — functional and dogfooded end-to-end, but not yet promoted to a stable support tier. The Codex plugin uses the same shared raw-event pipeline as Claude and OpenCode. It is packaged under `plugins/codex/` with `.codex-plugin/plugin.json`, bundled `.mcp.json`, and hook scripts under `plugins/codex/scripts/`.
+Codex is a supported integration. The Codex plugin uses the same shared raw-event pipeline as Claude and OpenCode. It is packaged under `plugins/codex/` with `.codex-plugin/plugin.json`, bundled `.mcp.json`, and hook scripts under `plugins/codex/scripts/`.
 
 Codex's Node/ESM wrapper adds a timestamp and nonce when the host omitted a timestamp, normalizes exactly once, and sends the exact envelope to `POST /api/raw-events`. Healthy HTTP ingestion starts no `codemem` or `npx` child. After a retryable HTTP failure, it durably spools the normalized envelope before starting this fallback chain:
 
@@ -174,7 +174,7 @@ For Codex hooks, project resolution precedence matches the Claude hook path:
 
 `Stop` events map the inline `last_assistant_message` when present, and fall back to the last assistant message in `transcript_path` so final responses are captured even when the inline field is omitted. This fallback uses the same backward, bounded 16 MiB JSONL scan and record-boundary rules as Claude.
 
-The packaged Codex template registers `SessionStart`, `UserPromptSubmit`, `PostToolUse`, and `Stop` in `plugins/codex/hooks/hooks.json`. Codex support is early beta; see `docs/plans/2026-05-28-codex-first-class-integration.md` for the rollout plan and validation gates.
+The packaged Codex template registers `SessionStart`, `UserPromptSubmit`, `PostToolUse`, and `Stop` in `plugins/codex/hooks/hooks.json`. See `docs/plans/2026-05-28-codex-first-class-integration.md` for the historical rollout plan and validation gates.
 
 ### Install, update, and uninstall
 

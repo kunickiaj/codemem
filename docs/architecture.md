@@ -62,7 +62,7 @@ Support tiers describe operational expectations for each adapter path:
 | OpenCode 1 plugin | Supported | Primary reference adapter for lifecycle events and injection behavior. |
 | OpenCode 2 plugin | Experimental | The beta entrypoint loads as an inactive compatibility shell; capture and injection are not enabled. |
 | Claude hooks/plugin | Supported | Hook-first queue path with CLI/runtime fallback and parity slices tracked in adapter stack PRs. |
-| Codex plugin (hooks + MCP) | Experimental (early beta) | Functional capture pipeline (`plugins/codex/`, `packages/core/src/codex-hooks.ts`) dogfooded end-to-end: edge normalization → `POST /api/raw-events` → observer → memories. Prompt-time injection present and env-gated but not fully validated on strict models. Not yet promoted to a stable support tier. |
+| Codex plugin (hooks + MCP) | Supported | Functional capture pipeline (`plugins/codex/`, `packages/core/src/codex-hooks.ts`) dogfooded end-to-end: edge normalization → `POST /api/raw-events` → observer → memories. Prompt-time injection is present and env-gated but not fully validated on strict models. |
 | Windsurf integration | Experimental | Planned via shared adapter contract after OpenCode/Claude stabilization. |
 | Cursor integration | Experimental | Planned via shared adapter contract after OpenCode/Claude stabilization. |
 
@@ -72,7 +72,7 @@ Rollout sequencing:
 2. Reach OpenCode parity on ingest + retrieval quality.
 3. Ship Claude MVP, then close parity gaps (injection/capture/lifecycle).
 4. Keep Claude in Supported tier by enforcing reliability and review gates.
-5. Add additional adapters (Codex/Windsurf/Cursor) behind the same contract.
+5. Add additional adapters (Windsurf/Cursor) behind the same contract.
 
 Explicit non-goals:
 

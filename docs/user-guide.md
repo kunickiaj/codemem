@@ -1,5 +1,30 @@
 # User Guide
 
+## Explore the viewer
+
+The Feed shows captured memories; use the theme control to switch appearance and search to narrow the list.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/docs-feed-dark.png">
+  <img alt="Feed showing captured memories" src="images/docs-feed-light.png">
+</picture>
+
+Select **Facts** on a memory to review its extracted facts without leaving the Feed.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/docs-memory-facts-dark.png">
+  <img alt="Extracted facts for a memory in the Feed" src="images/docs-memory-facts.png">
+</picture>
+
+Optionally, use **Projects** to review project-level information. This example uses synthetic fixture data: its two Sharing review findings are informational, show no recipients, and do not show a successful sharing or sync flow.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/docs-projects-dark.png">
+  <img alt="Projects view with fixture data" src="images/docs-projects.png">
+</picture>
+
+All screenshots use invented data. Maintainers can reproduce them with the [screenshot guide](docs-screenshots.md).
+
 ## Check for updates
 
 Use the read-only release check to compare the running CLI with the latest npm release on its
@@ -501,11 +526,13 @@ environment variable, which `env`/`cmd.exe`/PowerShell do not share):
 npm install -g codemem
 ```
 
-Rerun `codemem setup` after upgrading an existing installation. The scoped
-`--opencode-only`, `--claude-only`, and `--codex-only` forms work too. Setup
-replaces the old managed `npx -y codemem mcp` launcher and codemem MCP entries
-detected as UV/UVX-based so both packages resolve in one runtime. Other custom
-MCP commands remain unchanged.
+For an existing setup-managed installation, upgrade `codemem` with the package
+manager that originally installed it, then rerun its setup command. The scoped
+`--opencode-only` and `--codex-only` forms work too. Setup replaces the old
+managed `npx -y codemem mcp` launcher and codemem MCP entries detected as
+UV/UVX-based so both packages resolve in one runtime. Other custom MCP commands
+remain unchanged. Claude marketplace installs bundle MCP configuration and need
+no separate setup command.
 
 For a smaller keyword-only install, use `npm install -g codemem --omit=optional`
 and set `CODEMEM_EMBEDDING_DISABLED=1` in every Codemem process. The flag is
