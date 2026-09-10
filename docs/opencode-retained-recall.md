@@ -1,6 +1,6 @@
 # OpenCode Retained Recall
 
-This retained-recall contract applies to the OpenCode 1 plugin. The experimental OpenCode 2 beta entrypoint captures activity and manages lifecycle cleanup, but it does not perform automatic recall or expose memory tools.
+This retained-recall contract applies to the OpenCode 1 plugin. The experimental OpenCode 2 beta entrypoint captures activity, manages lifecycle cleanup, and exposes manual `mem-status`, `mem-recent`, and `mem-stats` tools. It does not perform automatic recall because its context hook has no request kind or request ID, so compaction and transient safety cannot be guaranteed.
 
 Automatic message recall must preserve retained bytes and derive allowance from the current transform output, not a lifetime counter.
 

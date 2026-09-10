@@ -370,7 +370,7 @@ describe("OpenCode 2 executable fixture", () => {
 				}),
 				expect.objectContaining({
 					phase: "tool.transform",
-					declaredName: "mem-status",
+					declaredName: "contract-probe",
 					effectiveID: null,
 				}),
 				expect.objectContaining({ phase: "event.end", aborted: true }),

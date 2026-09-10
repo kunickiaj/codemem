@@ -201,10 +201,15 @@ try {
 
 	const v2Home = join(tempDir, "v2-home");
 	mkdirSync(v2Home, { recursive: true });
+	const builtCli = join(packageRoot, "..", "cli", "dist", "index.js");
+	assert(existsSync(builtCli), `Built local CLI not found: ${builtCli}`);
 	const v2Env = {
 		...process.env,
 		HOME: v2Home,
 		CODEMEM_BACKEND_UPDATE_POLICY: "off",
+		CODEMEM_DB: "",
+		CODEMEM_RUNNER: "node",
+		CODEMEM_RUNNER_FROM: builtCli,
 		CODEMEM_VIEWER: "0",
 	};
 	const installedV2Adapter = pathToFileURL(

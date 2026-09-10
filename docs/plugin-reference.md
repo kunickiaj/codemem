@@ -8,7 +8,7 @@ This page covers advanced plugin behavior, environment variables, and stream rel
 
 ## Running OpenCode 1 with the plugin
 
-OpenCode 1 supports the capture and recall behavior below. The experimental OpenCode 2 beta entrypoint captures user and assistant messages, terminal usage, tool results, and session lifecycle events, but it does not yet inject automatic recall or expose memory tools.
+OpenCode 1 supports the capture and recall behavior below. The experimental OpenCode 2 beta entrypoint captures user and assistant messages, terminal usage, tool results, and session lifecycle events. It exposes manual `mem-status`, `mem-recent`, and `mem-stats` tools through `tool.transform` with `codemode: false`, but automatic recall remains disabled because the V2 context hook has no request kind or request ID.
 
 1. Start OpenCode inside this repo (or make the plugin global so it globs in everywhere).
 2. Every tooling session creates memory artifacts in SQLite.
@@ -241,14 +241,15 @@ The plugin now passes that explicit host/port through when it auto-starts, healt
 
 If compatibility toasts appear after restart, follow the runner-specific guidance in Compatibility guidance behavior below.
 
-## OpenCode 1 plugin tools exposed to the model
+## OpenCode plugin tools exposed to the model
 
 - `mem-status` - show viewer URL, log path, stats, and recent entries.
 - `mem-stats` - show just the stats block.
 - `mem-recent` - show recent items (defaults to 5).
 
-These are plugin tools callable by the agent/runtime. They are not user-facing
-slash commands in the OpenCode chat input.
+These are plugin tools callable by the agent/runtime, not user-facing slash
+commands. OpenCode 2 registers the same hyphenated IDs through `tool.transform`
+with `codemode: false`; a packed-host smoke test verifies the IDs are preserved.
 
 ## MCP tools exposed to agents
 

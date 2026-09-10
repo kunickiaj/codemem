@@ -256,7 +256,8 @@ function createV2Subscription(rows, state, toolsHandled, markTerminalHandled) {
 
 function createV2Context(rows) {
 	let hook;
-	const state = { aborted: false, disposed: false };
+	const memoryTools = [];
+	const state = { aborted: false, hookDisposed: false, transformDisposed: false };
 	let markTerminalHandled;
 	let markToolsHandled;
 	const terminalHandled = new Promise((resolve) => {
@@ -280,15 +281,24 @@ function createV2Context(rows) {
 					hook = callback;
 					return {
 						dispose: async () => {
-							state.disposed = true;
+							state.hookDisposed = true;
+						},
+					};
+				},
+				transform: async (callback) => {
+					callback({ add: (tool) => memoryTools.push(tool) });
+					return {
+						dispose: async () => {
+							state.transformDisposed = true;
 						},
 					};
 				},
 			},
 		},
 		getHook: () => hook,
+		getMemoryTools: () => memoryTools,
 		isAborted: () => state.aborted,
-		isDisposed: () => state.disposed,
+		isDisposed: () => state.hookDisposed && state.transformDisposed,
 		markToolsHandled,
 		terminalHandled,
 	};
@@ -298,8 +308,22 @@ async function driveV2(mod, rows) {
 	const fixture = createV2Context(rows);
 	const cleanup = await mod.default.setup(fixture.context);
 	const hook = fixture.getHook();
+	const memoryTools = fixture.getMemoryTools();
 	assert(typeof cleanup === "function", "packed V2 setup did not return cleanup");
 	assert(typeof hook === "function", "packed V2 setup did not register tool capture");
+	assert(
+		JSON.stringify(memoryTools.map((tool) => tool.name).sort()) ===
+			JSON.stringify(["mem-recent", "mem-stats", "mem-status"]),
+		"packed V2 setup did not register all shared memory tools",
+	);
+	const recentTool = memoryTools.find((tool) => tool.name === "mem-recent");
+	assert(recentTool.input.properties.limit.type === "number", "packed V2 recent limit is not numeric");
+	const recentResult = await recentTool.execute({ limit: 1 });
+	assert(typeof recentResult.content === "string", "packed V2 memory tool returned invalid content");
+	assert(
+		!recentResult.content.startsWith("Failed to fetch recent:"),
+		`packed V2 memory tool failed: ${recentResult.content}`,
+	);
 	await hook({
 		id: "v2-tool-present-1",
 		status: "completed",

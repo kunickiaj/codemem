@@ -19,18 +19,33 @@ function makeRuntime() {
 		handleEvent: vi.fn(async () => undefined),
 		handleToolResult: vi.fn(async () => undefined),
 		reportDiagnostic: vi.fn(async () => undefined),
+		tools: {},
 	};
 }
 
 function makeContext(
 	events: readonly unknown[] = [],
-	options: { eventError?: Error; hookError?: Error; stuck?: boolean; stuckDispose?: boolean } = {},
+	options: {
+		eventError?: Error;
+		hookError?: Error;
+		stuck?: boolean;
+		stuckDispose?: boolean;
+		stuckTransformDispose?: boolean;
+		transformError?: Error;
+	} = {},
 ) {
 	const aborted = { value: false };
 	const hookDispose = vi.fn(async () => {
 		if (options.stuckDispose) await new Promise(() => {});
 	});
+	const transformDispose = vi.fn(async () => {
+		if (options.stuckTransformDispose) await new Promise(() => {});
+	});
+	const addedTools: Array<Record<string, unknown>> = [];
 	let toolHook: ((input: unknown) => Promise<void>) | undefined;
+	let toolTransform:
+		| ((editor: { add: (tool: Record<string, unknown>) => void }) => void)
+		| undefined;
 	const context = {
 		location: {
 			directory: "/repo/worktree/nested",
@@ -57,9 +72,25 @@ function makeContext(
 				toolHook = callback;
 				return { dispose: hookDispose };
 			}),
+			transform: vi.fn(
+				async (callback: (editor: { add: (tool: Record<string, unknown>) => void }) => void) => {
+					if (options.transformError) throw options.transformError;
+					toolTransform = callback;
+					callback({ add: (tool) => addedTools.push(tool) });
+					return { dispose: transformDispose };
+				},
+			),
 		},
 	};
-	return { aborted, context, hookDispose, invokeTool: (input: unknown) => toolHook?.(input) };
+	return {
+		aborted,
+		addedTools,
+		context,
+		hookDispose,
+		invokeTool: (input: unknown) => toolHook?.(input),
+		invokeTransform: () => toolTransform?.({ add: (tool) => addedTools.push(tool) }),
+		transformDispose,
+	};
 }
 
 type EventStream = Awaited<ReturnType<Plugin.Context["event"]["subscribe"]>>;
@@ -295,6 +326,41 @@ describe("OpenCode 2 tool capture", () => {
 			});
 
 		expect(createEvent("tool-call-1").event_id).not.toBe(createEvent("tool-call-2").event_id);
+	});
+});
+
+describe("OpenCode 2 memory tools", () => {
+	it("registers shared memory tools with V2 schemas and results", async () => {
+		const runtime = makeRuntime();
+		const executeRecent = vi.fn(async ({ limit }: { limit?: number }) => `recent:${limit ?? 5}`);
+		runtime.tools = {
+			"mem-recent": {
+				description: "Show recent codemem entries",
+				args: { limit: { type: "number", optional: true } },
+				execute: executeRecent,
+			},
+		};
+		const fixture = makeContext();
+		const setup = adapter.createOpenCodeV2Adapter({ createRuntime: async () => runtime });
+		const cleanup = await setup(fixture.context);
+		const tool = fixture.addedTools[0] as {
+			execute: (args: unknown) => Promise<unknown>;
+			input: unknown;
+			name: string;
+			options: unknown;
+		};
+
+		expect(tool.name).toBe("mem-recent");
+		expect(tool.input).toEqual({
+			type: "object",
+			properties: { limit: { type: "number" } },
+			additionalProperties: false,
+		});
+		expect(tool.options).toEqual({ codemode: false });
+		await expect(tool.execute({ limit: 3 })).resolves.toEqual({ content: "recent:3" });
+		expect(executeRecent).toHaveBeenCalledWith({ limit: 3 });
+		await cleanup?.();
+		expect(fixture.transformDispose).toHaveBeenCalledOnce();
 	});
 });
 
@@ -596,6 +662,47 @@ describe("OpenCode 2 adapter setup", () => {
 		expect(runtime.dispose).toHaveBeenCalledOnce();
 	});
 
+	it("disposes completed registrations when memory-tool setup fails", async () => {
+		const runtime = makeRuntime();
+		const fixture = makeContext([], { transformError: new Error("transform unavailable") });
+		const setup = adapter.createOpenCodeV2Adapter({ createRuntime: async () => runtime });
+
+		await expect(setup(fixture.context)).rejects.toThrow("transform unavailable");
+		expect(fixture.hookDispose).toHaveBeenCalledOnce();
+		expect(runtime.dispose).toHaveBeenCalledOnce();
+	});
+
+	it("bounds registration disposal when memory-tool setup fails", async () => {
+		const runtime = makeRuntime();
+		runtime.reportDiagnostic.mockImplementation(async () => new Promise(() => {}));
+		const waitForDiagnosticTask = vi.fn(async () => false);
+		const waitForRegistrationTask = vi.fn(async () => false);
+		const fixture = makeContext([], {
+			stuckDispose: true,
+			transformError: new Error("transform unavailable"),
+		});
+		const setup = adapter.createOpenCodeV2Adapter({
+			createRuntime: async () => runtime,
+			waitForDiagnosticTask,
+			waitForRegistrationTask,
+		});
+
+		const result = await Promise.race([
+			setup(fixture.context).then(
+				() => "resolved",
+				(error: Error) => error.message,
+			),
+			new Promise((resolve) => setTimeout(() => resolve("timed-out"), 25)),
+		]);
+
+		expect(result).toBe("transform unavailable");
+		expect(waitForDiagnosticTask).toHaveBeenCalledOnce();
+		expect(waitForRegistrationTask).toHaveBeenCalledOnce();
+		expect(fixture.hookDispose).toHaveBeenCalledOnce();
+		expect(runtime.reportDiagnostic).toHaveBeenCalledWith("v2_registration_cleanup_timeout");
+		expect(runtime.dispose).toHaveBeenCalledOnce();
+	});
+
 	it("skips hook registration when the shared runtime rejects activation", async () => {
 		const fixture = makeContext();
 		const setup = adapter.createOpenCodeV2Adapter({ createRuntime: async () => null });
@@ -683,7 +790,7 @@ describe("OpenCode 2 registration and stream cleanup timeout", () => {
 
 		expect(result).toBe("completed");
 		expect(waitForDiagnosticTask).toHaveBeenCalledOnce();
-		expect(waitForRegistrationTask).toHaveBeenCalledOnce();
+		expect(waitForRegistrationTask).toHaveBeenCalledTimes(2);
 		expect(runtime.reportDiagnostic).toHaveBeenCalledWith("v2_registration_cleanup_timeout");
 		expect(runtime.dispose).toHaveBeenCalledOnce();
 		await fixture.invokeTool({
@@ -696,6 +803,69 @@ describe("OpenCode 2 registration and stream cleanup timeout", () => {
 		expect(runtime.handleToolResult).not.toHaveBeenCalled();
 	});
 
+	it("continues disposing hooks when the transform registration is stuck", async () => {
+		const runtime = makeRuntime();
+		let registrationWaits = 0;
+		const setup = adapter.createOpenCodeV2Adapter({
+			createRuntime: async () => runtime,
+			waitForRegistrationTask: async (task: Promise<void>) => {
+				registrationWaits += 1;
+				if (registrationWaits === 1) return false;
+				await task;
+				return true;
+			},
+		});
+		const fixture = makeContext([], { stuckTransformDispose: true });
+		const cleanup = await setup(fixture.context);
+
+		await cleanup?.();
+
+		expect(fixture.transformDispose).toHaveBeenCalledOnce();
+		expect(fixture.hookDispose).toHaveBeenCalledOnce();
+		expect(runtime.reportDiagnostic).toHaveBeenCalledWith("v2_registration_cleanup_timeout");
+		expect(runtime.dispose).toHaveBeenCalledOnce();
+	});
+
+	it("disables transformed memory tools before bounded cleanup returns", async () => {
+		const runtime = makeRuntime();
+		const executeRecent = vi.fn(async () => "recent");
+		let releaseRegistrationWait: (() => void) | undefined;
+		const registrationWait = new Promise<void>((resolve) => {
+			releaseRegistrationWait = resolve;
+		});
+		runtime.tools = {
+			"mem-recent": {
+				description: "Show recent codemem entries",
+				args: {},
+				execute: executeRecent,
+			},
+		};
+		const setup = adapter.createOpenCodeV2Adapter({
+			createRuntime: async () => runtime,
+			waitForRegistrationTask: async () => {
+				await registrationWait;
+				return false;
+			},
+		});
+		const fixture = makeContext([], { stuckTransformDispose: true });
+		const cleanup = await setup(fixture.context);
+		const tool = fixture.addedTools[0] as { execute: (args: unknown) => Promise<unknown> };
+		await expect(tool.execute({})).resolves.toEqual({ content: "recent" });
+
+		const pendingCleanup = cleanup?.();
+		fixture.invokeTransform();
+
+		await expect(tool.execute({})).rejects.toThrow(
+			"Codemem tool is unavailable after adapter cleanup",
+		);
+		expect(executeRecent).toHaveBeenCalledOnce();
+		expect(fixture.addedTools).toHaveLength(1);
+		releaseRegistrationWait?.();
+		await pendingCleanup;
+	});
+});
+
+describe("OpenCode 2 event stream cleanup timeout", () => {
 	it("releases runtime ownership after bounded cleanup of a stuck stream", async () => {
 		const firstRuntime = makeRuntime();
 		firstRuntime.reportDiagnostic.mockImplementation(async () => new Promise(() => {}));
@@ -775,6 +945,7 @@ describe("OpenCode 2 registration and stream cleanup timeout", () => {
 			},
 			tool: {
 				hook: vi.fn(async () => ({ dispose: vi.fn(async () => undefined) })),
+				transform: vi.fn(async () => ({ dispose: vi.fn(async () => undefined) })),
 			},
 		};
 		const setup = adapter.createOpenCodeV2Adapter({

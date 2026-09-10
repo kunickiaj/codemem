@@ -356,9 +356,9 @@ lifecycle cleanup are stable.
    transitions, measurements, and empty-pack behavior.
 6. Confirm that injected context affects only outbound model context and is not
    persisted as user-authored history.
-7. Register the memory tools with `ctx.tool.transform()`. Keep V1's hyphenated
-   names stable and use the V2 effective IDs proved by the spike, expected to be
-   `mem_status`, `mem_recent`, and `mem_stats`.
+7. Register the memory tools with `ctx.tool.transform()` using `codemode: false`.
+   The approved plan expected underscore V2 IDs; the pinned packed-host result
+   verifies that `mem-status`, `mem-recent`, and `mem-stats` are preserved.
 8. Keep retrieval and optional diagnostics fail-open without swallowing host
    contract defects in tests.
 

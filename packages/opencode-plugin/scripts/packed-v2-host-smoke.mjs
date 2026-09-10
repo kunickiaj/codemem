@@ -123,6 +123,7 @@ async function startProvider(projectDir) {
 					name: tool.function?.name,
 					description: tool.function?.description,
 				})),
+			toolNames: body.tools?.map((tool) => tool.function?.name).filter(Boolean),
 		});
 		attempts += 1;
 		if (request.headers["x-codemem-contract-kind"] === "primary") primaryAttempts += 1;
@@ -674,7 +675,7 @@ try {
 		records.some(
 			(record) =>
 				record.phase === "tool.transform" &&
-				record.declaredName === "mem-status" &&
+				record.declaredName === "contract-probe" &&
 				record.effectiveID === null,
 		),
 		"Host unexpectedly exposed an effective ID while adding the hyphenated tool name",
@@ -763,6 +764,14 @@ try {
 	assert(
 		provider.primaryAttempts() >= 2,
 		`Local provider received ${provider.primaryAttempts()} primary requests across ${provider.attempts()} requests`,
+	);
+	assert(
+		provider.observations().some((observation) =>
+			["mem-status", "mem-recent", "mem-stats"].every((name) =>
+				observation.toolNames?.includes(name),
+			),
+		),
+		`Pinned host did not expose V2 memory-tool IDs; observed ${JSON.stringify(provider.observations().map((observation) => observation.toolNames))}`,
 	);
 	assert(records.some((record) => record.phase === "cleanup"), "Host omitted plugin cleanup on unload");
 } finally {

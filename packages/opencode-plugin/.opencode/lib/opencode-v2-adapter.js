@@ -154,16 +154,32 @@ export const translateV2ToolResult = (input) => {
   };
 };
 
-const disposeAll = async (registrations) => {
-  let firstError;
-  for (const registration of [...registrations].reverse()) {
-    try {
-      await registration.dispose();
-    } catch (error) {
-      firstError ??= error;
+export const createV2Tool = (name, definition, { isActive = () => true } = {}) => {
+  const properties = {};
+  const required = [];
+  for (const [argumentName, argument] of Object.entries(definition.args)) {
+    if (argument.type !== "number") {
+      throw new Error(`Unsupported OpenCode 2 tool argument: ${argumentName}:${argument.type}`);
     }
+    properties[argumentName] = { type: "number" };
+    if (!argument.optional) required.push(argumentName);
   }
-  if (firstError) throw firstError;
+  const input = {
+    type: "object",
+    properties,
+    additionalProperties: false,
+    ...(required.length > 0 ? { required } : {}),
+  };
+  return {
+    name,
+    description: definition.description,
+    input,
+    options: { codemode: false },
+    execute: async (args) => {
+      if (!isActive()) throw new Error("Codemem tool is unavailable after adapter cleanup");
+      return { content: await definition.execute(asRecord(args)) };
+    },
+  };
 };
 
 const defaultWaitForEventTask = (eventTask, timeoutMs) =>
@@ -180,16 +196,22 @@ const defaultWaitForEventTask = (eventTask, timeoutMs) =>
   });
 
 const waitForRegistrationDisposal = async (registrations, waitForTask, timeoutMs) => {
-  let disposalError;
-  const disposalTask = disposeAll(registrations).catch((error) => {
-    disposalError = error;
-  });
-  try {
-    const completed = await waitForTask(disposalTask, timeoutMs);
-    return { completed, error: disposalError };
-  } catch (error) {
-    return { completed: false, error };
-  }
+  const outcomes = await Promise.all([...registrations].reverse().map(async (registration) => {
+    let disposalError;
+    const disposalTask = Promise.resolve().then(() => registration.dispose()).catch((error) => {
+      disposalError = error;
+    });
+    try {
+      const completed = await waitForTask(disposalTask, timeoutMs);
+      return { completed, error: disposalError };
+    } catch (error) {
+      return { completed: false, error };
+    }
+  }));
+  return {
+    completed: outcomes.every((outcome) => outcome.completed),
+    error: outcomes.find((outcome) => outcome.error)?.error,
+  };
 };
 
 const waitForRuntimeDisposal = (runtime, waitForTask, timeoutMs) =>
@@ -413,6 +435,12 @@ export const createOpenCodeV2Adapter = ({
         waitForDiagnosticTask,
       });
     }));
+    registrations.push(await context.tool.transform((editor) => {
+      if (!active) return;
+      for (const [name, definition] of Object.entries(runtime.tools)) {
+        editor.add(createV2Tool(name, definition, { isActive: () => active }));
+      }
+    }));
     eventTask = consumeEvents(context, abortController.signal, runtime, translator, {
       eventTaskTimeoutMs,
       scheduleCapture,
@@ -424,7 +452,19 @@ export const createOpenCodeV2Adapter = ({
     runtime.deactivate?.();
     abortController.abort();
     translator.clear();
-    await disposeAll(registrations).catch(() => {});
+    const registrationCleanup = await waitForRegistrationDisposal(
+      registrations,
+      waitForRegistrationTask,
+      eventTaskTimeoutMs,
+    );
+    if (!registrationCleanup.completed) {
+      await reportDiagnosticWithinTimeout(
+        runtime,
+        "v2_registration_cleanup_timeout",
+        waitForDiagnosticTask,
+        eventTaskTimeoutMs,
+      );
+    }
     const runtimeCleanup = await waitForRuntimeDisposal(
       runtime,
       waitForRuntimeDisposalTask,

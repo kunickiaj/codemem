@@ -202,7 +202,7 @@ async function registerToolContracts(
 	});
 	registrations.push(after);
 	let effectiveID: string | null = null;
-	const declaredName = "mem-status";
+	const declaredName = "contract-probe";
 	const transform = await context.tool.transform((editor) => {
 		editor.add({
 			name: declaredName,
