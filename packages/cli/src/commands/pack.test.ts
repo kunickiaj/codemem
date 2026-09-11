@@ -156,7 +156,7 @@ describe("pack command", () => {
 		expect(longs).toContain("--all-projects");
 	});
 
-	it("renders grouped human-readable trace text", () => {
+	it.each([false, true])("renders grouped human-readable trace text (hybrid=%s)", (hybrid) => {
 		const rendered = renderPackTrace({
 			version: 1,
 			inputs: {
@@ -181,6 +181,18 @@ describe("pack command", () => {
 						title: "Keep Search as the inspector entry point",
 						preview: "Search is the first manual query surface.",
 						scores: {
+							fusion: hybrid
+								? {
+										fts_score: 1.2,
+										fts_rank: 1,
+										semantic_score: null,
+										semantic_rank: null,
+										fused_score: 1 / 61,
+										fusion_rank: 2,
+										rank_constant: 60,
+										secondary_score: 0.6,
+									}
+								: undefined,
 							base_score: 1.2,
 							combined_score: 2.4,
 							recency: 0.9,
@@ -266,6 +278,16 @@ describe("pack command", () => {
 		expect(rendered).toContain("truncated: no");
 		expect(rendered).toContain("Final pack");
 		expect(rendered).toContain("## Summary");
+		expect(rendered).toContain("combined=2.40 base=1.20");
+		if (hybrid) {
+			expect(rendered).toContain("fused_score=0.016393443 fusion_rank=2");
+			expect(rendered).toContain(
+				"combined_score is a legacy diagnostic, not the hybrid selection key",
+			);
+		} else {
+			expect(rendered).not.toContain("fused_score=");
+			expect(rendered).not.toContain("hybrid selection key");
+		}
 	});
 
 	it("supports the main pack commander path with json output", async () => {

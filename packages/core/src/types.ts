@@ -83,7 +83,19 @@ export type PackTraceDisposition = "selected" | "dropped" | "deduped" | "trimmed
 
 export type PackTraceSection = "summary" | "timeline" | "observations";
 
+export type PackFusionEvidence = {
+	fts_score: number | null;
+	fts_rank: number | null;
+	semantic_score: number | null;
+	semantic_rank: number | null;
+	fused_score: number;
+	rank_constant: number;
+	fusion_rank: number;
+	secondary_score: number;
+};
+
 export type PackTraceCandidateScores = {
+	fusion?: PackFusionEvidence;
 	base_score: number | null;
 	combined_score: number | null;
 	recency: number;

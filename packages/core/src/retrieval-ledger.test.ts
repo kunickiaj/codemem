@@ -2230,6 +2230,9 @@ describe("retrieval attribution ledger", () => {
 			'{"combined_score":[]}',
 			'{"combined_score":1e309}',
 			'{"recency":null}',
+			'{"fused_score":1e309}',
+			'{"fts_rank":"1"}',
+			'{"unknown_fusion_score":1}',
 		]) {
 			db.prepare(
 				"UPDATE retrieval_exposures SET score_summary_json = ? WHERE attempt_id = ? AND rank = 1",
@@ -2240,6 +2243,48 @@ describe("retrieval attribution ledger", () => {
 			expect(queryRetrievalAttempts(db).map((attempt) => attempt.attemptId)).toContain(
 				recorded.attempt.attemptId,
 			);
+		}
+	});
+
+	it("strictly validates flat and nested fusion scores without accepting unrelated keys", () => {
+		const selected = input().exposures[0];
+		if (selected == null) throw new Error("fixture must contain a selected exposure");
+		const invalidScores = [
+			{ fusion: { private_score: 1 } },
+			{ fusion: { base_score: 1 } },
+			{ fusion: [] },
+			{ fusion: null },
+			{ fusion: { fused_score: 0.1 }, fused_score: 0.2 },
+			{ fused_score: null },
+			{ secondary_score: null },
+			...[
+				"fts_score",
+				"fts_rank",
+				"semantic_score",
+				"semantic_rank",
+				"fused_score",
+				"rank_constant",
+				"fusion_rank",
+				"secondary_score",
+			].flatMap((key) =>
+				[Number.NaN, Infinity, -Infinity, "0.5", {}, true].flatMap((value) => [
+					{ [key]: value },
+					{ fusion: { [key]: value } },
+				]),
+			),
+		];
+		for (const [index, scoreSummary] of invalidScores.entries()) {
+			const invalid = input({
+				attemptId: attemptId(4000 + index),
+				requestId: `invalid-fusion-${index}`,
+				candidateCount: 1,
+				exposures: [{ ...selected, scoreSummary: scoreSummary as never }],
+			});
+			expect(tryRecordRetrievalAttempt(db, invalid)).toMatchObject({
+				ok: false,
+				reason: "invalid_input",
+			});
+			expect(getRetrievalAttempt(db, invalid.attemptId)).toBeNull();
 		}
 	});
 

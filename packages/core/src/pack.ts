@@ -15,16 +15,24 @@
  */
 
 import { createHash } from "node:crypto";
-import { type Database, fromJson } from "./db.js";
+import type { Database } from "./db.js";
 import { buildFilterClausesWithContext } from "./filters.js";
 import { inferMemoryRole, readArtifactClass } from "./memory-quality.js";
+import { fusePackCandidates } from "./pack-fusion.js";
 import { projectBasename } from "./project.js";
 import { sanitizeSearchQuery } from "./query-sanitizer.js";
 import { memoryLooksRecapLike, queryPrefersRecap } from "./recap-policy.js";
 import { findByFile } from "./ref-queries.js";
 import { MAX_RETRIEVAL_DIAGNOSTIC_EXPOSURES } from "./retrieval-ledger.js";
 import type { StoreHandle } from "./search.js";
-import { ownershipFilterContext, rerankResults, scoreResult, search, timeline } from "./search.js";
+import {
+	ownershipFilterContext,
+	rerankResults,
+	rowToMemoryResult,
+	scoreResult,
+	search,
+	timeline,
+} from "./search.js";
 import {
 	canonicalMemoryKind,
 	getSummaryMetadata,
@@ -38,6 +46,7 @@ import type {
 	MemoryFilters,
 	MemoryItemResponse,
 	MemoryResult,
+	PackFusionEvidence,
 	PackItem,
 	PackRenderOptions,
 	PackResponse,
@@ -1327,8 +1336,7 @@ function recordPackUsage(store: StoreHandle, metrics: Record<string, unknown>): 
  * 5. Format sections into pack_text
  */
 /**
- * Merge FTS and semantic results by ID, keeping the higher score for dupes.
- * Matches Python's always-merge behavior when semantic results are available.
+ * Fuse eligible channel ranks, retaining raw scores for diagnostics.
  */
 function mergeResults(
 	store: StoreHandle,
@@ -1344,26 +1352,37 @@ function mergeResults(
 	semanticCandidates: MemoryResult[];
 	ftsCount: number;
 	semanticCount: number;
+	fusion: Map<number, PackFusionEvidence>;
 } {
-	const seen = new Map<number, MemoryResult>();
-	for (const r of ftsResults) {
-		const existing = seen.get(r.id);
-		if (!existing || r.score > existing.score) seen.set(r.id, r);
-	}
 	const scopedSemanticResults = rehydrateScopedCandidateResults(
 		store,
 		semanticResults,
 		filters,
 	).filter(eligible);
-	let semanticCount = 0;
-	for (const r of scopedSemanticResults) {
-		if (!seen.has(r.id)) semanticCount++;
-		const existing = seen.get(r.id);
-		if (!existing || r.score > existing.score) seen.set(r.id, r);
-	}
-	const candidates = [...seen.values()];
-	const merged = rerankResults(store, candidates, limit, filters, query);
+	const ftsIds = new Set(ftsResults.map((item) => item.id));
+	// FTS candidates already passed eligibility in retrieval.search -> searchOnce.
+	const semanticCount = scopedSemanticResults.filter((item) => !ftsIds.has(item.id)).length;
+	const referenceNow = new Date();
+	const ownership =
+		store.buildOwnershipPredicate?.() ?? ((item: MemoryResult) => store.memoryOwnedBySelf(item));
+	const ranked = fusePackCandidates(
+		ftsResults,
+		scopedSemanticResults,
+		(item) =>
+			scoreResult(store, { ...item, score: 0 }, filters, query, referenceNow, ownership)
+				.combined_score ?? 0,
+	);
+	const hybrid =
+		ranked.some(({ evidence }) => evidence.fts_rank != null) &&
+		ranked.some(({ evidence }) => evidence.semantic_rank != null);
+	const candidates = hybrid
+		? ranked.map(({ item }) => item)
+		: [...ftsResults, ...scopedSemanticResults];
+	const merged = hybrid
+		? candidates.slice(0, limit)
+		: rerankResults(store, candidates, limit, filters, query);
 	return {
+		fusion: new Map(hybrid ? ranked.map(({ item, evidence }) => [item.id, evidence]) : []),
 		merged,
 		candidates,
 		semanticCandidates: scopedSemanticResults,
@@ -1372,17 +1391,23 @@ function mergeResults(
 	};
 }
 
+function validCandidateResultsById(candidates: MemoryResult[]): Map<number, MemoryResult> {
+	const originalById = new Map<number, MemoryResult>();
+	for (const item of candidates) {
+		if (!Number.isSafeInteger(item.id) || item.id <= 0) continue;
+		if (!Number.isFinite(item.score)) continue;
+		const original = originalById.get(item.id);
+		if (!original || item.score > original.score) originalById.set(item.id, item);
+	}
+	return originalById;
+}
+
 function rehydrateScopedCandidateResults(
 	store: StoreHandle,
 	candidates: MemoryResult[],
 	filters?: MemoryFilters,
 ): MemoryResult[] {
-	if (candidates.length === 0) return [];
-	const originalById = new Map<number, MemoryResult>();
-	for (const item of candidates) {
-		if (!Number.isSafeInteger(item.id) || item.id <= 0) continue;
-		if (!originalById.has(item.id)) originalById.set(item.id, item);
-	}
+	const originalById = validCandidateResultsById(candidates);
 	const ids = [...originalById.keys()];
 	if (ids.length === 0) return [];
 
@@ -1410,22 +1435,12 @@ function rehydrateScopedCandidateResults(
 			const id = Number(row.id);
 			const original = originalById.get(id);
 			if (!original) continue;
-			const metadataJson = row.metadata_json == null ? null : String(row.metadata_json);
-			scopedById.set(id, {
+			const preserveFilteredKind =
+				typeof filters?.kind === "string" && filters.kind.trim().length > 0;
+			scopedById.set(
 				id,
-				kind: canonicalMemoryKind(String(row.kind ?? "observation"), metadataJson),
-				title: String(row.title ?? ""),
-				body_text: String(row.body_text ?? ""),
-				confidence: Number(row.confidence ?? 0),
-				created_at: String(row.created_at ?? ""),
-				updated_at: String(row.updated_at ?? ""),
-				tags_text: String(row.tags_text ?? ""),
-				score: original.score,
-				session_id: Number(row.session_id),
-				metadata: fromJson(metadataJson),
-				narrative: row.narrative == null ? null : String(row.narrative),
-				facts: row.facts == null ? null : String(row.facts),
-			});
+				rowToMemoryResult({ ...row, score: original.score }, preserveFilteredKind),
+			);
 		}
 	}
 
@@ -1495,13 +1510,29 @@ function createPackRetrieval(
 	},
 ) {
 	const { limit, filters, eligible, summarySessionId } = options;
+	// Each mutually exclusive pack mode merges at most once, so IDs identify
+	// evidence from one fusion pass; this map is not a multi-query accumulator.
+	const fusion = new Map<number, PackFusionEvidence>();
 	return {
+		fusion,
 		search: (query: string) => search(store, query, limit, filters, eligible, summarySessionId),
-		merge: (results: MemoryResult[], semantic: MemoryResult[], query: string) =>
-			mergeResults(store, results, semantic, limit, query, filters, eligible),
+		merge: (results: MemoryResult[], semantic: MemoryResult[], query: string) => {
+			const merged = mergeResults(store, results, semantic, limit, query, filters, eligible);
+			for (const [id, evidence] of merged.fusion) fusion.set(id, evidence);
+			return merged;
+		},
 		fileRefs: (results: MemoryResult[]) =>
 			mergeFileRefCandidates(store, results, filters, limit, summarySessionId).filter(eligible),
 	};
+}
+
+function withFusionScores(
+	scores: ReturnType<typeof scoreResult>,
+	fusion: PackFusionEvidence | undefined,
+): ReturnType<typeof scoreResult> {
+	if (!fusion) return scores;
+	// Keep the legacy diagnostic calculation; fusion alone supplies the hybrid key.
+	return { ...scores, fusion };
 }
 
 function buildPackArtifacts(
@@ -2105,7 +2136,7 @@ function buildPackArtifacts(
 						: "dropped";
 		const baseScores = scoreResult(store, item, filters, query, referenceNow, traceOwnership);
 		const scoredCandidate = {
-			...baseScores,
+			...withFusionScores(baseScores, retrieval.fusion.get(item.id)),
 			text_overlap: textOverlapScore(item, query),
 			tag_overlap: countOverlap(item.tags_text, queryContentTokens(query)),
 		};

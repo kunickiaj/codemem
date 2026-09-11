@@ -245,6 +245,12 @@ function describeCandidate(candidate: PackTrace["retrieval"]["candidates"][numbe
 	if (candidate.section) lines.push(`   - section: ${candidate.section}`);
 	if (candidate.reasons.length > 0) lines.push(`   - reasons: ${candidate.reasons.join(", ")}`);
 	if (scoreParts) lines.push(`   - scores: ${scoreParts}`);
+	const fusion = candidate.scores.fusion;
+	if (fusion) {
+		lines.push(
+			`   - hybrid: fused_score=${fusion.fused_score.toPrecision(8)} fusion_rank=${fusion.fusion_rank}; combined_score is a legacy diagnostic, not the hybrid selection key`,
+		);
+	}
 	if (candidate.preview) lines.push(`   - preview: ${candidate.preview}`);
 	return lines;
 }
