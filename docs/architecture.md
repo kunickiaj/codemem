@@ -236,6 +236,8 @@ Items are deduplicated across sections. Task browsing recognizes bare collection
 
 Automatic non-browsing misses remain empty. Explicit recap uses the existing `queryPrefersRecap` policy and may fall back only to an eligible requester-owned summary, without recent durable observations or unrelated timeline neighbors. Manual browsing retains its fallback behavior. See [topical retrieval and limits](opencode-retained-recall.md#topical-retrieval).
 
+For automatic non-task requests, assembly drops semantic-only batches when scoped keyword retrieval finds no eligible support; it uses no distance threshold and knowingly loses useful paraphrases. Supported hybrid batches can still contain semantic-only items, and direct file-reference retrieval remains independent. All automatic requests suppress timeline neighbor expansion; manual semantic and timeline retrieval remain supported.
+
 ### Limits
 
 - **Item limit** (`limit`, default from `pack_observation_limit` config, typically 50) — caps total memory items considered

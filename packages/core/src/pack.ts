@@ -688,6 +688,15 @@ function candidateReasons(
 	return reasons.length > 0 ? reasons : ["included in retrieval pool"];
 }
 
+function semanticRejectionReasons(
+	id: number,
+	disposition: PackTraceDisposition,
+	rejectedIds: Set<number>,
+): string[] {
+	if (disposition !== "dropped" || !rejectedIds.has(id)) return [];
+	return ["automatic_semantic_only_without_keyword_support"];
+}
+
 export type PackArtifacts = {
 	response: PackResponse;
 	trace: PackTrace;
@@ -790,34 +799,86 @@ function itemLooksTaskLike(item: MemoryResult): boolean {
 	return false;
 }
 
+function workingSetBasename(path: string): string {
+	const normalized = path.replaceAll("\\", "/");
+	let end = normalized.length;
+	while (end > 0 && normalized[end - 1] === "/") end -= 1;
+	const start = normalized.lastIndexOf("/", end - 1) + 1;
+	return normalized.slice(start, end);
+}
+
 function taskIntentQuery(query: string, filters?: MemoryFilters): string {
 	// Hook builders append project, then the last five modified-file basenames.
 	// Strip only a complete metadata-derived suffix, never retrieval text itself.
 	const files = (filters?.working_set_paths ?? [])
 		.filter((path) => path.trim().length > 0)
 		.slice(-5)
-		.map((path) => path.replace(/\\/g, "/").replace(/\/+$/, "").split("/").pop())
+		.map(workingSetBasename)
 		.filter(Boolean);
 	const suffix = [filters?.project, ...files].filter(Boolean).join(" ");
 	if (!suffix || !query.endsWith(` ${suffix}`)) return query;
 	return query.slice(0, -(suffix.length + 1));
 }
 
-function queryLooksLikeTasks(query: string): boolean {
-	const request = query
+function trimTaskRequest(query: string): string {
+	const trimmed = query.trim();
+	let end = trimmed.length;
+	while (end > 0 && ".!?".includes(trimmed.charAt(end - 1))) end -= 1;
+	// Match the former non-Unicode /i grammar without folding lookalike letters.
+	return trimmed
+		.slice(0, end)
 		.trim()
-		.replace(/[.!?]+$/, "")
-		.trim();
+		.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+}
+
+function taskCollectionEnd(request: string, tokens: RegExpExecArray[], index: number): number {
+	const collection = tokens[index];
+	if (!collection) return -1;
+	if (
+		[
+			"tasks",
+			"todo",
+			"todos",
+			"backlog",
+			"followup",
+			"followups",
+			"follow-up",
+			"follow-ups",
+		].includes(collection[0])
+	)
+		return index + 1;
+	const next = tokens[index + 1];
+	if (collection[0] !== "follow" || !next || !["up", "ups"].includes(next[0])) return -1;
+	// The existing collection spelling permits one literal space, not arbitrary whitespace.
+	const separatorStart = collection.index + "follow".length;
+	if (request.slice(separatorStart, next.index) !== " ") return -1;
+	return index + 2;
+}
+
+function queryLooksLikeTasks(query: string): boolean {
+	const request = trimTaskRequest(query);
+	const tokens = [...request.matchAll(/\S+/g)];
+	const word = (index: number) => tokens[index]?.[0];
+	let index = 0;
+	if (word(index) === "please") index += 1;
+	const listing = word(index) === "show" || word(index) === "list";
+	if (listing) {
+		index += 1;
+		if (word(index) === "me" || word(index) === "us") index += 1;
+	} else if (index > 0) {
+		return false;
+	}
 	// Bare collection labels and explicit listing requests express browsing intent.
 	// A task word inside a technical question is not enough to broaden retrieval.
-	if (
-		/^(?:(?:my|our|the|pending|open)\s+)*(?:tasks|todos?|backlog|follow[ -]?ups?)$/i.test(request)
-	) {
-		return true;
-	}
-	return /^(?:please\s+)?(?:show|list)\s+(?:(?:me|us)\s+)?(?:(?:my|our|the|pending|open)\s+)*(?:tasks|todos?|backlog|follow[ -]?ups?)(?:\s+(?:for|about|in)\s+.+)?$/i.test(
-		request,
-	);
+	while (["my", "our", "the", "pending", "open"].includes(word(index) ?? "")) index += 1;
+	index = taskCollectionEnd(request, tokens, index);
+	if (index < 0) return false;
+	if (index === tokens.length) return true;
+	if (!listing || !["for", "about", "in"].includes(word(index) ?? "")) return false;
+	const topic = tokens[index + 1];
+	if (!topic) return false;
+	// Preserve the former single-line topic tail; whitespace before it may span lines.
+	return !/[\n\r\u2028\u2029]/.test(request.slice(topic.index));
 }
 
 function queryLooksLikeRecall(query: string): boolean {
@@ -843,8 +904,8 @@ function queryLooksLikeRecall(query: string): boolean {
 }
 
 function recallQueryWantsTimeline(query: string, options: { automatic: boolean }): boolean {
-	// Automatic recap keeps retrieved facts, but must not add unrelated neighbors.
-	if (options.automatic && queryPrefersRecap(query)) return false;
+	// Automatic recall keeps retrieved facts, but must not add unrelated neighbors.
+	if (options.automatic) return false;
 	const lowered = query.toLowerCase();
 	for (const phrase of [
 		"what did we do",
@@ -1444,18 +1505,27 @@ function createPackRetrieval(
 		filters?: MemoryFilters;
 		eligible: (item: MemoryResult) => boolean;
 		summarySessionId?: number | null;
+		requireKeywordSupport: boolean;
 	},
 ) {
 	const { limit, filters, eligible, summarySessionId } = options;
 	// Each mutually exclusive pack mode merges at most once, so IDs identify
 	// evidence from one fusion pass; this map is not a multi-query accumulator.
 	const fusion = new Map<number, PackFusionEvidence>();
+	const rejectedSemanticIds = new Set<number>();
 	return {
 		fusion,
+		rejectedSemanticIds,
 		search: (query: string) => search(store, query, limit, filters, eligible, summarySessionId),
 		merge: (results: MemoryResult[], semantic: MemoryResult[], query: string) => {
 			const merged = mergeResults(store, results, semantic, limit, query, filters, eligible);
 			for (const [id, evidence] of merged.fusion) fusion.set(id, evidence);
+			// Nearest neighbors have no calibrated confidence cutoff. Reject the batch
+			// on automatic non-task misses, accepting paraphrase false negatives.
+			if (options.requireKeywordSupport && results.length === 0) {
+				for (const item of merged.semanticCandidates) rejectedSemanticIds.add(item.id);
+				return { ...merged, merged: [], semanticCount: 0 };
+			}
 			return merged;
 		},
 		fileRefs: (results: MemoryResult[]) =>
@@ -1494,14 +1564,18 @@ function buildPackArtifacts(
 	const eligible = (item: MemoryResult) => automaticEligible(continuity, item);
 	const summarySessionId = continuity.requested ? continuity.sessionId : undefined;
 	const recentEligibility: RecentEligibility = { eligible, summarySessionId };
+	const sanitized = sanitizeSearchQuery(context);
+	const retrievalContext = sanitized.clean_query;
+	const taskMode = queryLooksLikeTasks(taskIntentQuery(retrievalContext, filters));
+	const recallMode = !taskMode && queryLooksLikeRecall(retrievalContext);
+	const allowUnrelatedFallback = !continuity.requested || taskMode;
 	const retrieval = createPackRetrieval(store, {
 		limit: effectiveLimit,
 		filters,
 		eligible,
 		summarySessionId,
+		requireKeywordSupport: continuity.requested && !taskMode,
 	});
-	const sanitized = sanitizeSearchQuery(context);
-	const retrievalContext = sanitized.clean_query;
 	let fallbackUsed = false;
 	let ftsCount = 0;
 	let semanticCount = 0;
@@ -1523,9 +1597,6 @@ function buildPackArtifacts(
 	let supplementalObservationCandidates: MemoryResult[] = [];
 	let retrievalQuery = retrievalContext;
 	let results: MemoryResult[];
-	const taskMode = queryLooksLikeTasks(taskIntentQuery(retrievalContext, filters));
-	const recallMode = !taskMode && queryLooksLikeRecall(retrievalContext);
-	const allowUnrelatedFallback = !continuity.requested || taskMode;
 
 	if (taskMode) {
 		const taskQuery = `${retrievalContext} ${TASK_HINT_QUERY}`.trim();
@@ -2077,7 +2148,10 @@ function buildPackArtifacts(
 			title: item.title,
 			preview: preview(item.narrative || item.body_text),
 			scores: scoredCandidate,
-			reasons: candidateReasons(item, scoredCandidate, section, disposition),
+			reasons: [
+				...candidateReasons(item, scoredCandidate, section, disposition),
+				...semanticRejectionReasons(item.id, disposition, retrieval.rejectedSemanticIds),
+			],
 			disposition,
 			section,
 			artifact_class: readArtifactClass(item.metadata),

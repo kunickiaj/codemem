@@ -64,6 +64,11 @@ describe("topical pack routing", () => {
 		"follow-ups",
 		"show me pending tasks for Orchid",
 		"list tasks for Orchid",
+		" PLEASE show us OUR open pending todos about Orchid?! ",
+		"the my our pending open follow ups",
+		"list followup in Orchid",
+		"show\tme\tpending\ttasks\tfor\tOrchid",
+		"show tasks for\nOrchid",
 	])("supports explicit task browsing: %s", (query) => {
 		const id = store.remember(
 			session,
@@ -122,6 +127,48 @@ describe("topical pack routing", () => {
 		// Assert
 		expect(trace.mode.selected).toBe("default");
 		expect(trace.assembly.sections.timeline[0]).toBe(topic);
+	});
+});
+
+describe("linear task intent parsing", () => {
+	useTopicalFixture();
+	it.each([
+		"please tasks",
+		"show me tasks Orchid",
+		"show tasks for",
+		"follow\tups",
+		"follow  ups",
+		"show tasks for Orchid\nindexing",
+		"tasKs",
+	])("preserves unsupported grammar: %s", (query) => {
+		expect(buildMemoryPackTrace(store, query).mode.selected).toBe("default");
+	});
+
+	it("handles long near-matching requests and suffix paths without backtracking", () => {
+		const queries = [
+			{ query: `show ${"open ".repeat(20_000)}tasks trailing`, mode: "default" },
+			{ query: `show ${" ".repeat(100_000)}!`, mode: "default" },
+			{ query: `tasks${"!".repeat(100_000)}`, mode: "task" },
+			{ query: `tasks${"!".repeat(100_000)}x`, mode: "default" },
+		];
+		// Keep this regression focused on parsing; retrieval has its own input contracts.
+		vi.spyOn(retrieval, "search").mockReturnValue([]);
+		for (const { query, mode } of queries) {
+			expect(buildMemoryPackTrace(store, query).mode.selected).toBe(mode);
+		}
+		for (const { path, basename } of [
+			{ path: `src/${"/".repeat(100_000)}x`, basename: "x" },
+			{ path: `src/file.ts${"/".repeat(100_000)}`, basename: "file.ts" },
+			{ path: "C:\\src\\file.ts\\", basename: "file.ts" },
+			{ path: "/".repeat(100_000), basename: "" },
+		]) {
+			const suffix = ["synthetic", basename].filter(Boolean).join(" ");
+			const trace = buildMemoryPackTrace(store, `list tasks ${suffix}`, 10, null, {
+				project: "synthetic",
+				working_set_paths: [path],
+			});
+			expect(trace.mode.selected).toBe("task");
+		}
 	});
 });
 
@@ -270,6 +317,31 @@ describe("automatic topical scope", () => {
 		expect(selected).toContain(durable);
 		expect(selected).not.toContain(siblingSummary);
 		expect(selected).not.toContain(otherProject);
+	});
+});
+
+describe("automatic timeline expansion", () => {
+	useTopicalFixture();
+	it("keeps quartz recall topical automatically while manual recall expands neighbors", () => {
+		const before = store.remember(session, "discovery", "Accounting", "Invoices balance.", 0.9);
+		const anchor = store.remember(session, "decision", "Quartz", "Quartz uses segments.", 0.9);
+		const after = store.remember(session, "feature", "Tooling", "Formatter configuration.", 0.9);
+		const query = "What did we decide last time about quartz?";
+		const automaticTrace = buildMemoryPackTrace(
+			store,
+			query,
+			10,
+			null,
+			undefined,
+			undefined,
+			undefined,
+			automatic,
+		);
+		const manual = buildMemoryPackTrace(store, query);
+		expect([...new Set(Object.values(automaticTrace.assembly.sections).flat())]).toEqual([anchor]);
+		expect(Object.values(manual.assembly.sections).flat()).toEqual(
+			expect.arrayContaining([before, anchor, after]),
+		);
 	});
 });
 

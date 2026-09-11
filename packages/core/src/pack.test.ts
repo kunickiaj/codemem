@@ -10,6 +10,7 @@ import {
 	buildMemoryPackWithTrace,
 	estimateTokens,
 } from "./pack.js";
+import { timeline } from "./search.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
 import type { MemoryResult } from "./types.js";
@@ -308,7 +309,7 @@ describe("automatic eligibility inside SQL limits", () => {
 		expect(recent.mock.calls[0]?.[3]).toBeNull();
 	});
 
-	it("applies summary eligibility before timeline depth limits around a foreign durable anchor", () => {
+	it("skips automatic neighbors while direct timeline applies summary eligibility before depth limits", () => {
 		const otherSessionId = insertTestSession(store.db);
 		const now = Date.now();
 		const stamp = (offsetSeconds: number) => new Date(now + offsetSeconds * 1000).toISOString();
@@ -357,8 +358,10 @@ describe("automatic eligibility inside SQL limits", () => {
 		);
 
 		expect(pack.item_ids).toContain(anchorId);
-		expect(pack.item_ids).toContain(neighborId);
+		expect(pack.item_ids).not.toContain(neighborId);
 		expect(pack.pack_text).not.toContain("Interleaved foreign summary");
+		const neighbors = timeline(store, undefined, anchorId, 3, 2, undefined, null);
+		expect(neighbors.map((row) => row.id)).toEqual([anchorId, neighborId]);
 	});
 });
 describe("automatic metadata and generic candidate bounds", () => {
