@@ -30,7 +30,22 @@ describe("estimateTokens", () => {
 	});
 });
 
-it("matches frozen Continue gold with current automatic policy in Core", () => {
+it.each([
+	{
+		name: "leaves automatic Continue empty",
+		query: incidentFixture.query,
+		mode: "default",
+		required: [],
+		forbidden: incidentFixture.gold.generic_continue.forbidden_keys,
+	},
+	{
+		name: "retrieves explicit Quartz control with the same automatic gates",
+		query: incidentFixture.explicit_control_query,
+		mode: "recall",
+		required: incidentFixture.gold.explicit_control.required_keys,
+		forbidden: incidentFixture.gold.explicit_control.forbidden_keys,
+	},
+])("$name in Core", ({ query, mode, required, forbidden }) => {
 	vi.useFakeTimers({ toFake: ["Date"] });
 	vi.setSystemTime(new Date(incidentFixture.clock));
 	const store = new MemoryStore(":memory:");
@@ -60,7 +75,7 @@ it("matches frozen Continue gold with current automatic policy in Core", () => {
 		}
 		const trace = buildMemoryPackTrace(
 			store,
-			incidentFixture.query,
+			query,
 			incidentFixture.limit,
 			incidentFixture.core_token_budget,
 			{ project: incidentFixture.project },
@@ -76,11 +91,10 @@ it("matches frozen Continue gold with current automatic policy in Core", () => {
 		const selected = Object.values(trace.assembly.sections)
 			.flat()
 			.map((id) => keys.get(id));
-		expect(trace.mode.selected).toBe("task");
-		expect(selected).toEqual(
-			expect.arrayContaining(incidentFixture.gold.generic_continue.required_keys),
-		);
-		for (const key of incidentFixture.gold.generic_continue.forbidden_keys) {
+		expect(trace.mode.selected).toBe(mode);
+		if (required.length === 0) expect(selected).toEqual([]);
+		else expect(selected).toEqual(expect.arrayContaining(required));
+		for (const key of forbidden) {
 			expect(selected).not.toContain(key);
 		}
 	} finally {
@@ -180,7 +194,7 @@ describe("automatic session continuity", () => {
 			0.8,
 		);
 
-		const automatic = store.buildMemoryPack("unmatched automatic query", 10, null, undefined, {
+		const automatic = store.buildMemoryPack("durable sibling fact", 10, null, undefined, {
 			source: "opencode",
 			hostSessionId: "root-session-child",
 		});
@@ -282,7 +296,7 @@ describe("automatic eligibility inside SQL limits", () => {
 		}
 		const recent = vi.spyOn(store, "recent");
 
-		const pack = store.buildMemoryPack("no lexical match here", 10, null, undefined, {
+		const pack = store.buildMemoryPack("backlog", 10, null, undefined, {
 			source: "opencode",
 			hostSessionId: "host-without-mapping",
 		});
@@ -1195,7 +1209,7 @@ describe("buildMemoryPack", () => {
 			0.9,
 		);
 
-		const trace = buildMemoryPackTrace(store, "continue review stack comments", 10);
+		const trace = buildMemoryPackTrace(store, "list tasks for review stack", 10);
 		const candidate = trace.retrieval.candidates[0];
 
 		expect(trace.mode.selected).toBe("task");
@@ -1237,14 +1251,8 @@ describe("buildMemoryPack", () => {
 			},
 		];
 
-		const trace = buildMemoryPackTrace(
-			store,
-			"continue quasar",
-			1,
-			null,
-			undefined,
-			semanticResults,
-		);
+		const query = "list tasks for quasar";
+		const trace = buildMemoryPackTrace(store, query, 1, null, undefined, semanticResults);
 		const candidate = trace.retrieval.candidates.find((item) => item.id === semanticId);
 
 		expect(trace.mode.selected).toBe("task");
@@ -1741,7 +1749,7 @@ describe("buildMemoryPack", () => {
 		expect(pack.pack_text).not.toContain("Hidden fallback summary");
 	});
 
-	it("keeps topical terms when using task mode", () => {
+	it("keeps topical continuation in default mode", () => {
 		const decisionId = store.remember(
 			sessionId,
 			"decision",
@@ -1759,7 +1767,7 @@ describe("buildMemoryPack", () => {
 
 		const pack = buildMemoryPack(store, "what should we do next about auth", 10);
 
-		expect(pack.metrics.mode).toBe("task");
+		expect(pack.metrics.mode).toBe("default");
 		expect(pack.item_ids[0]).toBe(decisionId);
 		expect(pack.pack_text.toLowerCase()).toContain("auth");
 	});
@@ -2865,7 +2873,7 @@ describe("buildMemoryPack file-ref candidates in task and recall modes", () => {
 		);
 
 		// Task-like query that will trigger task mode
-		const pack = buildMemoryPack(store, "what should I do next", 10, null, {
+		const pack = buildMemoryPack(store, "show pending tasks", 10, null, {
 			working_set_paths: ["packages/core/src/auth.ts"],
 		});
 

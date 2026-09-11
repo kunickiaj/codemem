@@ -222,17 +222,19 @@ The plugin constructs a search query from the current session's working set (`re
 - **Project name** — scopes results to the active project
 - **Recently modified files** — last 5 filenames from `tool.execute.after` events with `edit`/`write` tools
 
-These are concatenated into a single query string, capped at 500 characters.
+These are concatenated into a single query string, capped at 500 characters. Claude's hook uses the same project-then-last-five-basenames suffix; both transports provide up to eight modified-file paths as working-set metadata. Core uses an exact suffix reconstructed from the supplied project and working-set metadata only to classify task intent. It retains the complete query for retrieval and query identity; missing, mismatched, or truncated suffixes are not guessed.
 
 ### How the pack is built
 
 `buildMemoryPack` (`packages/core/src/pack.ts`) assembles three sections:
 
-1. **Summary** — the most recent `session_summary` matching the query (or the latest one if none match)
-2. **Timeline** — recent memories from search results, ordered by relevance
-3. **Observations** — typed memories (`decision`, `feature`, `bugfix`, `refactor`, `change`, `discovery`, `exploration`, `note`) sorted by tag overlap with the query, then recency, then kind priority
+1. **Summary** — the first eligible summary in retrieval order; explicit automatic recap may instead use the requester's own latest eligible summary
+2. **Timeline** — non-summary retrieval results in relevance order; manual recap can expand a timeline around an anchor
+3. **Observations** — remaining non-summary results in retrieval order; browsing fallback may supplement from eligible kinds (`decision`, `feature`, `bugfix`, `refactor`, `change`, `discovery`, `exploration`, and legacy `note`)
 
-Items are deduplicated across sections. If the query looks like a task lookup ("todo", "pending", "what's next") or a recall query ("what did we do", "last time"), the pack uses specialized retrieval paths that prioritize relevant kinds and recency.
+Items are deduplicated across sections. Task browsing recognizes bare collections (`pending tasks`, `backlog`) and conservative `show`/`list` forms (`show tasks for Orchid`). Continuation verbs alone and technical clauses such as `show the pending tasks table schema` do not request task expansion, even with appended hook context. Task recency/summary filters and intentional recap groups remain, but generic word overlap, kind, and recency no longer override retrieval order within those policies. Only supplemental browsing observations use tag-overlap ordering.
+
+Automatic non-browsing misses remain empty. Explicit recap uses the existing `queryPrefersRecap` policy and may fall back only to an eligible requester-owned summary, without recent durable observations or unrelated timeline neighbors. Manual browsing retains its fallback behavior. See [topical retrieval and limits](opencode-retained-recall.md#topical-retrieval).
 
 ### Limits
 
@@ -341,7 +343,7 @@ Each observation is persisted with structured metadata that improves retrieval:
 - **`narrative`** — the full observation text
 - **`tags_text`** — auto-derived from kind, concepts, and file paths (`packages/core/src/tags.ts`); used in FTS5 indexing
 
-These fields feed into tag derivation, which directly influences FTS5 recall and pack section ordering (tag overlap with the query boosts observation ranking).
+These fields feed into tag derivation and retrieval scoring. Pack assembly preserves the resulting relevance order within its recap/task policies; tag overlap sorts supplemental browsing observations only.
 
 ```mermaid
 flowchart TD
