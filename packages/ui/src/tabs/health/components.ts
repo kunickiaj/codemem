@@ -160,6 +160,14 @@ export function renderAutomaticRecall(container: HTMLElement | null, payload: un
 }
 
 function updateBannerCopy(status: UpdateStatus) {
+	if (status.install_kind === "repo-dev") {
+		return {
+			title: "Running from repository source",
+			detail: `Package metadata version: ${status.current_version}. Registry releases do not describe the checked-out source revision.`,
+			tone: "current",
+		};
+	}
+
 	if (!status.latest_version) {
 		return {
 			title: "Update check unavailable",
@@ -209,7 +217,11 @@ function updateBannerCopy(status: UpdateStatus) {
 function UpdateBanner({ status }: { status: UpdateStatus }) {
 	const copy = updateBannerCopy(status);
 	const showGuidance =
-		status.update_available || status.stale || !status.latest_version || !status.channel;
+		status.install_kind === "repo-dev" ||
+		status.update_available ||
+		status.stale ||
+		!status.latest_version ||
+		!status.channel;
 	return h(
 		"section",
 		{

@@ -474,7 +474,7 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_PLUGIN_CMD_TIMEOUT` | Milliseconds before a plugin CLI call is aborted (default `20000`). |
 | `CODEMEM_MIN_VERSION` | Minimum required CLI version for plugin compatibility warnings (default `0.9.20`). |
 | `CODEMEM_BACKEND_UPDATE_POLICY` | Compatibility and release-notification policy: `notify` (default), `auto`, or `off`. |
-| `CODEMEM_INSTALL_KIND` | Internal/advanced release-guidance detection override (`npm-global`, `npx`, `docker`, `repo-dev`, `pinned`, or `unknown`). This does not enable installation. |
+| `CODEMEM_INSTALL_KIND` | Internal/advanced release-guidance detection override (`npm-global`, `mise`, `npx`, `docker`, `repo-dev`, `pinned`, or `unknown`). This does not prove ownership or enable installation. |
 | `CODEMEM_CODEX_ENDPOINT` | Override Codex OAuth endpoint. |
 | `CODEMEM_PLUGIN_DEBUG` | Set to `1`, `true`, or `yes` to log plugin lifecycle events. |
 | `CODEMEM_PLUGIN_IGNORE` | Skip all plugin behavior for this process. |
@@ -532,7 +532,7 @@ Update policy:
 - `CODEMEM_BACKEND_UPDATE_POLICY=auto`: try a best-effort auto-update for eligible compatibility-floor mismatches and fresh same-channel releases observed for at least 24 hours, then warn if still outdated
 	- skipped for `node` dev-mode runners
 	- skipped when `CODEMEM_RUNNER_FROM` is pinned to a fixed package/version
-	- skipped for Docker, unknown, stale, unsupported-channel, cross-channel, or downgrade states
+	- skipped for mise, Docker, unknown, stale, unsupported-channel, cross-channel, or downgrade states
 - `CODEMEM_BACKEND_UPDATE_POLICY=off`: no compatibility toast (logging still records mismatch)
 
 After its startup delay, the plugin also runs `codemem update check --json` through the same
@@ -549,6 +549,16 @@ effort: it does not
 use the CLI install lock or Windows npm-shim handling, and plugin-owned auto-update is disabled on
 Windows. Avoid starting simultaneous automatic updates from multiple OpenCode sessions; use
 `codemem update install` when serialized installation is required.
+
+Mise-managed CLIs are detected from a semver-qualified mise install path or normalized
+`MISE_DATA_DIR` path and receive global `mise use -g npm:codemem@<exact-version>` guidance. Only the
+user's explicit `codemem update install` command may execute that argv-only update. It first compares
+bounded machine-readable active and global mise source records, requires a user-owned global source,
+and canonicalizes current install-path ownership. It then pins public npm registries for the spawned
+command and writes the exact release into mise's primary global config. Verification allows the source
+to move from user `conf.d` or the recognized user-level `~/.config/mise.toml` file to `config.toml` but requires the post-update global
+`version` or `requested_version` before running `mise exec -- codemem version` outside the invoking project; plugin background
+auto-update never treats mise as eligible.
 
 Docker images set `CODEMEM_INSTALL_KIND=docker` so release guidance cannot mistake the bundled
 global npm package for a host npm installation. Docker deployments never self-update; rebuild and

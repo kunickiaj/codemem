@@ -42,13 +42,26 @@ codemem update check --json
 - Stale validated cache data remains clearly labeled and may provide guidance when the registry is
   unavailable.
 - This command never installs or executes an update. Release installation remains outside this
-  read-only check. `codemem update install` is the separate, fail-closed installer: it refreshes
-  release status, requires a proven global npm installation and a same-channel release observed for at
-  least 24 hours, installs exact matching `codemem` and `@codemem/embeddings` versions from the
-  public npm registry, and verifies the active `codemem` command. It refuses npx, Docker, pinned,
+  read-only check. For a mise-managed CLI, it reports the exact global mise action; on Linux that
+  action is `env ONNXRUNTIME_NODE_INSTALL=skip mise use -g npm:codemem@<exact-version>`.
+- `codemem update install` is the separate, fail-closed installer. Proven npm-global installations
+  retain the 24-hour first-seen delay and install exact matching `codemem` and
+  `@codemem/embeddings` versions from the public npm registry. Before a mise mutation, the installer
+  reads bounded JSON from `mise ls --current` and `mise ls --global`, requires the active source
+  to match a global source under the user's home directory, and requires its canonical install path
+  to own the running CLI entrypoint. System, unresolved, and ambiguous custom sources are refused. It then runs
+  `mise use -g npm:codemem@<exact-version>` with inherited
+  environment, public default and `@codemem` registries, and Linux's CPU-only ONNX setting. Mise
+  writes that exact release into the primary global config, which may move a declaration from a
+  user `conf.d` or recognized user-level `~/.config/mise.toml` source to `config.toml`. Verification re-reads global state and requires `version`
+  or `requested_version` to match the target,
+  then uses `mise exec -- codemem version` from outside the invoking project, avoiding stale `PATH`
+  entries and project-local overrides. Both paths refresh release status and stay on the installed channel. It refuses npx, Docker, pinned,
   development, stale, cross-channel, downgrade, unsupported-channel, and unknown installations. Bare `codemem update`
   remains non-mutating. As with a
   manual npm install, npm runs the packages' installation scripts for native CPU dependencies.
+- Mise installations are never eligible for plugin background auto-update. Changing mise's global
+  tool configuration requires the direct `codemem update install` command or the reported manual action.
 
 ## Start or restart the viewer
 - `codemem serve` runs the viewer in the foreground.

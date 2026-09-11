@@ -24,7 +24,15 @@ vi.mock("@codemem/core", async (importOriginal) => {
 import { updateCommand } from "./update.js";
 
 const originalHome = process.env.HOME;
+const originalArgv = [...process.argv];
+const originalMiseConfigDir = process.env.MISE_CONFIG_DIR;
+const originalMiseGlobalConfigFile = process.env.MISE_GLOBAL_CONFIG_FILE;
+const originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
 let testHome = "";
+
+function useMiseEntrypoint(): void {
+	process.argv[1] = "/home/user/.local/share/mise/installs/npm-codemem/0.40.2/dist/index.js";
+}
 
 const availableStatus = {
 	current_version: "0.40.2",
@@ -46,6 +54,45 @@ const currentStatus = {
 	update_available: false,
 	recommended_action: "No action required; codemem is up to date.",
 } as const;
+
+const miseStatus = {
+	...availableStatus,
+	install_kind: "mise",
+	recommended_action: "mise use -g npm:codemem@0.41.0",
+} as const;
+
+function miseState(
+	options: {
+		installPath?: string;
+		requestedVersion?: string;
+		source?: Record<string, unknown>;
+		version?: string;
+	} = {},
+): string {
+	const version = options.version ?? "0.40.2";
+	return JSON.stringify([
+		{
+			active: true,
+			install_path:
+				options.installPath ?? "/home/user/.local/share/mise/installs/npm-codemem/0.40.2",
+			requested_version: options.requestedVersion ?? version,
+			source:
+				options.source ??
+				({ path: join(testHome, ".config", "mise", "config.toml"), type: "mise.toml" } as const),
+			version,
+		},
+	]);
+}
+
+const globalMiseState = (): string => miseState();
+const updatedGlobalMiseState = (source?: Record<string, unknown>): string =>
+	miseState({
+		installPath: "/home/user/.local/share/mise/installs/npm-codemem/0.41.0",
+		source,
+		version: "0.41.0",
+	});
+const localMiseState = (): string =>
+	miseState({ source: { path: join(testHome, "workspace", "mise.toml"), type: "mise.toml" } });
 
 const unavailableStatus = {
 	...availableStatus,
@@ -69,18 +116,40 @@ async function parseUpdateCommand(args: string[]): Promise<void> {
 beforeEach(async () => {
 	testHome = await mkdtemp(join(tmpdir(), "codemem-update-test-"));
 	process.env.HOME = testHome;
+	delete process.env.MISE_CONFIG_DIR;
+	delete process.env.MISE_GLOBAL_CONFIG_FILE;
+	delete process.env.XDG_CONFIG_HOME;
+	const miseConfigDirectory = join(testHome, ".config", "mise");
+	await mkdir(miseConfigDirectory, { recursive: true });
+	await writeFile(join(miseConfigDirectory, "config.toml"), "");
 });
 
 afterEach(async () => {
 	getUpdateStatus.mockReset();
 	spawn.mockReset();
 	process.exitCode = undefined;
-	process.env.HOME = originalHome;
+	process.argv.splice(0, process.argv.length, ...originalArgv);
+	if (originalHome === undefined) delete process.env.HOME;
+	else process.env.HOME = originalHome;
+	if (originalMiseConfigDir === undefined) delete process.env.MISE_CONFIG_DIR;
+	else process.env.MISE_CONFIG_DIR = originalMiseConfigDir;
+	if (originalMiseGlobalConfigFile === undefined) delete process.env.MISE_GLOBAL_CONFIG_FILE;
+	else process.env.MISE_GLOBAL_CONFIG_FILE = originalMiseGlobalConfigFile;
+	if (originalXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
+	else process.env.XDG_CONFIG_HOME = originalXdgConfigHome;
 	await rm(testHome, { recursive: true, force: true });
 	vi.restoreAllMocks();
 });
 
-function commandProcess(options: { stdout?: string; stderr?: string; exitCode?: number } = {}) {
+function commandProcess(
+	options: {
+		stdout?: string;
+		stdoutChunks?: string[];
+		stderr?: string;
+		exitCode?: number;
+		error?: Error;
+	} = {},
+) {
 	const child = new EventEmitter() as EventEmitter & {
 		kill: ReturnType<typeof vi.fn>;
 		stdout: EventEmitter & { setEncoding: () => void };
@@ -90,7 +159,13 @@ function commandProcess(options: { stdout?: string; stderr?: string; exitCode?: 
 	child.stderr = Object.assign(new EventEmitter(), { setEncoding: vi.fn() });
 	child.kill = vi.fn();
 	queueMicrotask(() => {
-		if (options.stdout) child.stdout.emit("data", options.stdout);
+		if (options.error) {
+			child.emit("error", options.error);
+			return;
+		}
+		for (const chunk of options.stdoutChunks ?? (options.stdout ? [options.stdout] : [])) {
+			child.stdout.emit("data", chunk);
+		}
 		if (options.stderr) child.stderr.emit("data", options.stderr);
 		child.emit("close", options.exitCode ?? 0);
 	});
@@ -125,6 +200,24 @@ describe("update check command", () => {
 		// Assert
 		expect(log.mock.calls.flat().join("\n")).toMatch(/0\.40\.2.*up to date/i);
 		expect(process.exitCode).toBeUndefined();
+	});
+
+	it("describes repository source without claiming its package metadata is up to date", async () => {
+		getUpdateStatus.mockResolvedValue({
+			...currentStatus,
+			install_kind: "repo-dev",
+			latest_version: "0.41.0",
+			recommended_action:
+				"Package-release updates do not apply to repository source. Run git pull, pnpm install, and pnpm build in the codemem repository.",
+		});
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["check"]);
+
+		const output = log.mock.calls.flat().join("\n");
+		expect(output).toMatch(/running from repository source/i);
+		expect(output).toMatch(/package metadata: 0\.40\.2/i);
+		expect(output).not.toMatch(/up to date/i);
 	});
 
 	it("qualifies a stale up-to-date human result as cached", async () => {
@@ -311,7 +404,7 @@ describe("update install command", () => {
 		expect(process.exitCode).toBeUndefined();
 	});
 
-	it("installs an eligible prerelease within the reported channel with exact package pairing", async () => {
+	it("installs an eligible prerelease within its reported channel", async () => {
 		vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
 		getUpdateStatus.mockResolvedValue({
 			...availableStatus,
@@ -334,6 +427,480 @@ describe("update install command", () => {
 			expect.objectContaining({ shell: false }),
 		);
 		expect(process.exitCode).toBeUndefined();
+	});
+
+	it("does not terminate a successful npm install when command output exceeds the capture limit", async () => {
+		vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+		getUpdateStatus.mockResolvedValue({ ...availableStatus, auto_update_eligible: true });
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: "x".repeat(65 * 1_024) }))
+			.mockImplementationOnce(() => commandProcess({ stdout: "0.41.0\n" }));
+		vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(spawn.mock.results[0]?.value.kill).not.toHaveBeenCalled();
+		expect(spawn).toHaveBeenCalledTimes(2);
+		expect(process.exitCode).toBeUndefined();
+	});
+});
+
+describe("mise update install execution", () => {
+	beforeEach(useMiseEntrypoint);
+	it("proves global ownership and installs with safe Unix options", async () => {
+		vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+		getUpdateStatus.mockResolvedValue(miseStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: globalMiseState() }))
+			.mockImplementationOnce(() => commandProcess({ stdout: globalMiseState() }))
+			.mockImplementationOnce(() => commandProcess())
+			.mockImplementationOnce(() => commandProcess({ stdout: updatedGlobalMiseState() }))
+			.mockImplementationOnce(() => commandProcess({ stdout: "0.41.0\n" }));
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(spawn.mock.calls.map(([, args]) => args)).toEqual([
+			["ls", "npm:codemem", "--current", "--json"],
+			["ls", "npm:codemem", "--global", "--json"],
+			["use", "-g", "npm:codemem@0.41.0"],
+			["ls", "npm:codemem", "--global", "--json"],
+			["exec", "--", "codemem", "version"],
+		]);
+		expect(spawn.mock.calls[2]?.[2]).toEqual(
+			expect.objectContaining({
+				cwd: "/",
+				detached: true,
+				env: expect.objectContaining({
+					HOME: testHome,
+					ONNXRUNTIME_NODE_INSTALL: "skip",
+					npm_config_registry: "https://registry.npmjs.org/",
+					"npm_config_@codemem:registry": "https://registry.npmjs.org/",
+				}),
+				shell: false,
+			}),
+		);
+		expect(spawn.mock.calls[4]?.[2]).toEqual(expect.objectContaining({ cwd: "/" }));
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+			previous_version: "0.40.2",
+			installed_version: "0.41.0",
+		});
+		expect(process.exitCode).toBeUndefined();
+	});
+});
+
+describe("mise update install failures", () => {
+	beforeEach(useMiseEntrypoint);
+	it("reports a failed mise update", async () => {
+		getUpdateStatus.mockResolvedValue(miseStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: globalMiseState() }))
+			.mockImplementationOnce(() => commandProcess({ stdout: globalMiseState() }))
+			.mockImplementationOnce(() =>
+				commandProcess({ stderr: "mise backend failed\n", exitCode: 1 }),
+			);
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toMatchObject({
+			error: "update_install_failed",
+			message: "mise backend failed",
+		});
+		expect(spawn).toHaveBeenCalledTimes(3);
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("bounds failed install output without returning raw oversized stderr", async () => {
+		getUpdateStatus.mockResolvedValue(miseStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: globalMiseState() }))
+			.mockImplementationOnce(() => commandProcess({ stdout: globalMiseState() }))
+			.mockImplementationOnce(() =>
+				commandProcess({ stderr: `sensitive-marker${"x".repeat(65 * 1_024)}`, exitCode: 1 }),
+			);
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+			error: "update_install_failed",
+			message: "command output too large",
+		});
+		expect(log.mock.calls.flat().join("\n")).not.toContain("sensitive-marker");
+		expect(process.exitCode).toBe(1);
+	});
+});
+
+describe("mise update install safeguards", () => {
+	beforeEach(useMiseEntrypoint);
+	it("reports missing mise with the exact manual recovery command", async () => {
+		getUpdateStatus.mockResolvedValue(miseStatus);
+		const missingMise = Object.assign(new Error("spawn mise ENOENT"), { code: "ENOENT" });
+		spawn.mockImplementationOnce(() => commandProcess({ error: missingMise }));
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toMatchObject({
+			error: "update_install_failed",
+			message: "mise was not found on PATH; install mise, then run mise use -g npm:codemem@0.41.0",
+		});
+		expect(process.exitCode).toBe(1);
+	});
+});
+
+describe("mise update ownership safeguards", () => {
+	beforeEach(useMiseEntrypoint);
+	it("refuses when the active mise source is not the global source", async () => {
+		getUpdateStatus.mockResolvedValue(miseStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: localMiseState() }))
+			.mockImplementationOnce(() => commandProcess({ stdout: globalMiseState() }));
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+			error: "update_install_refused",
+			message:
+				"Could not prove the active mise codemem installation is globally configured. mise use -g npm:codemem@0.41.0",
+		});
+		expect(spawn).toHaveBeenCalledTimes(2);
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("refuses a matching system-scope global source", async () => {
+		const systemState = miseState({
+			source: { path: "/etc/mise/config.toml", type: "mise.toml" },
+		});
+		getUpdateStatus.mockResolvedValue(miseStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: systemState }))
+			.mockImplementationOnce(() => commandProcess({ stdout: systemState }));
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toMatchObject({
+			error: "update_install_refused",
+		});
+		expect(spawn).toHaveBeenCalledTimes(2);
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("accepts a user conf.d source before writing the exact release to config.toml", async () => {
+		const confSource = {
+			path: join(testHome, ".config", "mise", "conf.d", "codemem.toml"),
+			type: "mise.toml",
+		};
+		const configSource = {
+			path: join(testHome, ".config", "mise", "config.toml"),
+			type: "mise.toml",
+		};
+		await mkdir(join(testHome, ".config", "mise", "conf.d"), { recursive: true });
+		await writeFile(confSource.path, "");
+		getUpdateStatus.mockResolvedValue(miseStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: miseState({ source: confSource }) }))
+			.mockImplementationOnce(() => commandProcess({ stdout: miseState({ source: confSource }) }))
+			.mockImplementationOnce(() => commandProcess())
+			.mockImplementationOnce(() =>
+				commandProcess({ stdout: updatedGlobalMiseState(configSource) }),
+			)
+			.mockImplementationOnce(() => commandProcess({ stdout: "0.41.0\n" }));
+		vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(spawn).toHaveBeenCalledTimes(5);
+		expect(process.exitCode).toBeUndefined();
+	});
+
+	it("accepts an explicit user-owned MISE_GLOBAL_CONFIG_FILE", async () => {
+		const source = {
+			path: join(testHome, "dotfiles", "mise-global.toml"),
+			type: "mise.toml",
+		};
+		await mkdir(join(testHome, "dotfiles"), { recursive: true });
+		await writeFile(source.path, "");
+		process.env.MISE_GLOBAL_CONFIG_FILE = source.path;
+		getUpdateStatus.mockResolvedValue(miseStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: miseState({ source }) }))
+			.mockImplementationOnce(() => commandProcess({ stdout: miseState({ source }) }))
+			.mockImplementationOnce(() => commandProcess())
+			.mockImplementationOnce(() => commandProcess({ stdout: updatedGlobalMiseState(source) }))
+			.mockImplementationOnce(() => commandProcess({ stdout: "0.41.0\n" }));
+		vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(spawn).toHaveBeenCalledTimes(5);
+		expect(process.exitCode).toBeUndefined();
+	});
+
+	it("migrates a user-level ~/.config/mise.toml source when --global is empty", async () => {
+		const source = {
+			path: join(testHome, ".config", "mise.toml"),
+			type: "mise.toml",
+		};
+		await writeFile(source.path, "");
+		getUpdateStatus.mockResolvedValue(miseStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: miseState({ source }) }))
+			.mockImplementationOnce(() => commandProcess({ stdout: "[]" }))
+			.mockImplementationOnce(() => commandProcess())
+			.mockImplementationOnce(() => commandProcess({ stdout: updatedGlobalMiseState() }))
+			.mockImplementationOnce(() => commandProcess({ stdout: "0.41.0\n" }));
+		vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(spawn).toHaveBeenCalledTimes(5);
+		expect(process.exitCode).toBeUndefined();
+	});
+
+	it("refuses an empty --global result for a non-legacy source", async () => {
+		getUpdateStatus.mockResolvedValue(miseStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: globalMiseState() }))
+			.mockImplementationOnce(() => commandProcess({ stdout: "[]" }));
+		vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(spawn).toHaveBeenCalledTimes(2);
+		expect(process.exitCode).toBe(1);
+	});
+});
+
+describe("mise install-path ownership safeguards", () => {
+	beforeEach(useMiseEntrypoint);
+	it("refuses when the active install path does not own the running entry", async () => {
+		const previousArgv = [...process.argv];
+		process.argv[1] =
+			"/home/user/.local/share/mise/installs/npm-codemem/0.40.2/lib/node_modules/codemem/dist/index.js";
+		getUpdateStatus.mockResolvedValue(miseStatus);
+		spawn.mockImplementationOnce(() =>
+			commandProcess({
+				stdout: miseState({
+					installPath: "/home/other/.local/share/mise/installs/npm-codemem/0.40.2",
+				}),
+			}),
+		);
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		try {
+			await parseUpdateCommand(["install", "--json"]);
+		} finally {
+			process.argv.splice(0, process.argv.length, ...previousArgv);
+		}
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toMatchObject({
+			error: "update_install_refused",
+		});
+		expect(spawn).toHaveBeenCalledTimes(1);
+		expect(process.exitCode).toBe(1);
+	});
+
+	it.runIf(process.platform !== "win32")(
+		"canonicalizes a symlinked mise install path before ownership comparison",
+		async () => {
+			const installPath = join(
+				testHome,
+				".local",
+				"share",
+				"mise",
+				"installs",
+				"npm-codemem",
+				"0.40.2",
+			);
+			const entryPath = join(installPath, "lib", "node_modules", "codemem", "dist", "index.js");
+			const linkedInstallPath = join(testHome, "linked-mise-install");
+			await mkdir(join(installPath, "lib", "node_modules", "codemem", "dist"), {
+				recursive: true,
+			});
+			await writeFile(entryPath, "#!/usr/bin/env node\n", "utf8");
+			await symlink(installPath, linkedInstallPath, "dir");
+			const previousArgv = [...process.argv];
+			process.argv[1] = entryPath;
+			const activeState = miseState({ installPath: linkedInstallPath });
+			getUpdateStatus.mockResolvedValue(miseStatus);
+			spawn
+				.mockImplementationOnce(() => commandProcess({ stdout: activeState }))
+				.mockImplementationOnce(() => commandProcess({ stdout: activeState }))
+				.mockImplementationOnce(() => commandProcess())
+				.mockImplementationOnce(() => commandProcess({ stdout: updatedGlobalMiseState() }))
+				.mockImplementationOnce(() => commandProcess({ stdout: "0.41.0\n" }));
+			vi.spyOn(console, "log").mockImplementation(() => {});
+
+			try {
+				await parseUpdateCommand(["install", "--json"]);
+			} finally {
+				process.argv.splice(0, process.argv.length, ...previousArgv);
+			}
+
+			expect(spawn).toHaveBeenCalledTimes(5);
+			expect(process.exitCode).toBeUndefined();
+		},
+	);
+});
+
+describe("mise update state validation", () => {
+	beforeEach(useMiseEntrypoint);
+	it("ignores additional bounded fields in mise source metadata", async () => {
+		const source = Object.fromEntries([
+			["path", join(testHome, ".config", "mise", "config.toml")],
+			["metadata", { origin: "future-mise-version" }],
+			...Array.from({ length: 9 }, (_, index) => [`field-${index}`, `value-${index}`]),
+			["x".repeat(5_000), "long-key"],
+		]);
+		getUpdateStatus.mockResolvedValue(miseStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: miseState({ source }) }))
+			.mockImplementationOnce(() => commandProcess({ stdout: miseState({ source }) }))
+			.mockImplementationOnce(() => commandProcess())
+			.mockImplementationOnce(() =>
+				commandProcess({ stdout: miseState({ source, version: "0.41.0" }) }),
+			)
+			.mockImplementationOnce(() => commandProcess({ stdout: "0.41.0\n" }));
+		vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(spawn).toHaveBeenCalledTimes(5);
+		expect(process.exitCode).toBeUndefined();
+	});
+
+	it("refuses malformed mise ownership state before mutation", async () => {
+		getUpdateStatus.mockResolvedValue(miseStatus);
+		spawn.mockImplementationOnce(() => commandProcess({ stdout: "{not-json" }));
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toMatchObject({
+			error: "update_install_refused",
+			message: expect.stringContaining("mise use -g npm:codemem@0.41.0"),
+		});
+		expect(spawn).toHaveBeenCalledTimes(1);
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("bounds mise ownership output before parsing", async () => {
+		getUpdateStatus.mockResolvedValue(miseStatus);
+		spawn.mockImplementationOnce(() => commandProcess({ stdout: "x".repeat(65 * 1_024) }));
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toMatchObject({
+			error: "update_install_refused",
+		});
+		expect(spawn).toHaveBeenCalledTimes(1);
+		expect(process.exitCode).toBe(1);
+	});
+});
+
+describe("mise update lifecycle safeguards", () => {
+	beforeEach(useMiseEntrypoint);
+	it("refuses a stale mise release before spawning", async () => {
+		getUpdateStatus.mockResolvedValue({ ...miseStatus, stale: true });
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toMatchObject({
+			error: "update_install_refused",
+		});
+		expect(spawn).not.toHaveBeenCalled();
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("fails when mise exits successfully but global state remains on the old version", async () => {
+		getUpdateStatus.mockResolvedValue(miseStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: globalMiseState() }))
+			.mockImplementationOnce(() => commandProcess({ stdout: globalMiseState() }))
+			.mockImplementationOnce(() => commandProcess())
+			.mockImplementationOnce(() => commandProcess({ stdout: globalMiseState() }));
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toMatchObject({
+			error: "update_verification_failed",
+		});
+		expect(spawn).toHaveBeenCalledTimes(4);
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("accepts the target requested version when the installed version field lags", async () => {
+		getUpdateStatus.mockResolvedValue(miseStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: globalMiseState() }))
+			.mockImplementationOnce(() => commandProcess({ stdout: globalMiseState() }))
+			.mockImplementationOnce(() => commandProcess())
+			.mockImplementationOnce(() =>
+				commandProcess({
+					stdout: miseState({ requestedVersion: "0.41.0", version: "0.40.2" }),
+				}),
+			)
+			.mockImplementationOnce(() => commandProcess({ stdout: "0.41.0\n" }));
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+			installed_version: "0.41.0",
+			previous_version: "0.40.2",
+		});
+		expect(spawn).toHaveBeenCalledTimes(5);
+		expect(process.exitCode).toBeUndefined();
+	});
+
+	it("fails when a mise update does not become the active CLI version", async () => {
+		getUpdateStatus.mockResolvedValue(miseStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: globalMiseState() }))
+			.mockImplementationOnce(() => commandProcess({ stdout: globalMiseState() }))
+			.mockImplementationOnce(() => commandProcess())
+			.mockImplementationOnce(() => commandProcess({ stdout: updatedGlobalMiseState() }))
+			.mockImplementationOnce(() => commandProcess({ stdout: "0.40.2\n" }));
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toMatchObject({
+			error: "update_verification_failed",
+		});
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("bounds verification output and reports a generic failure", async () => {
+		getUpdateStatus.mockResolvedValue(miseStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: globalMiseState() }))
+			.mockImplementationOnce(() => commandProcess({ stdout: globalMiseState() }))
+			.mockImplementationOnce(() => commandProcess())
+			.mockImplementationOnce(() => commandProcess({ stdout: updatedGlobalMiseState() }))
+			.mockImplementationOnce(() =>
+				commandProcess({
+					stdoutChunks: ["0.41.0\n", `sensitive-marker${"x".repeat(65 * 1_024)}`],
+				}),
+			);
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+			error: "update_verification_failed",
+			message:
+				"mise updated global configuration, but installed version verification failed; inspect the global mise codemem state before retrying",
+		});
+		expect(log.mock.calls.flat().join("\n")).not.toContain("sensitive-marker");
+		expect(process.exitCode).toBe(1);
 	});
 });
 
@@ -371,6 +938,43 @@ describe("update install command on Windows", () => {
 				`""${npmShim}" install -g --registry https://registry.npmjs.org/ --@codemem:registry=https://registry.npmjs.org/ codemem@0.41.0 @codemem/embeddings@0.41.0"`,
 			],
 			expect.objectContaining({ shell: false, windowsVerbatimArguments: true }),
+		);
+		expect(process.exitCode).toBeUndefined();
+	});
+});
+
+describe("mise update install command on Windows", () => {
+	beforeEach(useMiseEntrypoint);
+	it("uses direct argv and Windows-safe spawn options", async () => {
+		vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+		getUpdateStatus.mockResolvedValue(miseStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: globalMiseState() }))
+			.mockImplementationOnce(() => commandProcess({ stdout: globalMiseState() }))
+			.mockImplementationOnce(() => commandProcess())
+			.mockImplementationOnce(() => commandProcess({ stdout: updatedGlobalMiseState() }))
+			.mockImplementationOnce(() => commandProcess({ stdout: "0.41.0\n" }));
+		vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(spawn.mock.calls.map(([command, args]) => [command, args])).toEqual([
+			["mise", ["ls", "npm:codemem", "--current", "--json"]],
+			["mise", ["ls", "npm:codemem", "--global", "--json"]],
+			["mise", ["use", "-g", "npm:codemem@0.41.0"]],
+			["mise", ["ls", "npm:codemem", "--global", "--json"]],
+			["mise", ["exec", "--", "codemem", "version"]],
+		]);
+		expect(spawn.mock.calls[2]?.[2]).toEqual(
+			expect.objectContaining({
+				detached: false,
+				env: expect.objectContaining({
+					npm_config_registry: "https://registry.npmjs.org/",
+					"npm_config_@codemem:registry": "https://registry.npmjs.org/",
+				}),
+				shell: false,
+				windowsVerbatimArguments: undefined,
+			}),
 		);
 		expect(process.exitCode).toBeUndefined();
 	});

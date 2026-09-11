@@ -96,7 +96,7 @@ npm install -g codemem
 
 For a smaller keyword-only install, use `npm install -g codemem --omit=optional` and set `CODEMEM_EMBEDDING_DISABLED=1` in every Codemem process. The flag is required because npm also omits sqlite-vec's optional platform package; the CLI then remains functional with FTS5.
 
-An npm-capable manager, such as mise's `npm:codemem` backend, can also provide the durable CLI. Ensure `codemem` is on your `PATH`, then run `codemem setup --opencode-only`.
+An npm-capable manager, such as mise's `npm:codemem` backend, can also provide the durable CLI. Ensure `codemem` is on your `PATH`, then run `codemem setup --opencode-only`. For a mise-managed CLI, `codemem update check` reports the exact global update command. An explicit `codemem update install` confirms from bounded `mise ls --json` output that the active tool source matches a global source under the user's home directory and that its install path owns the running entry. It writes the exact release into mise's primary global config, confirms the global configured version, and runs the configured tool through `mise exec` outside the invoking project rather than through a possibly stale or locally overridden `PATH` entry.
 
 Upgrade a durable CLI with the package manager that installed it, then rerun the corresponding setup command for an existing setup-managed integration. Setup replaces its old managed `npx -y codemem mcp` launcher and codemem MCP entries detected as UV/UVX-based so both packages share one runtime; other custom MCP commands remain unchanged. The host plugin is managed independently. Claude marketplace installs use the plugin's bundled MCP configuration and do not require a separate `setup --claude-only` step.
 
@@ -309,11 +309,21 @@ pass `--refresh` to force a registry request or `--json` for one channel-aware s
 The Viewer Health page reads the same status from `/api/update-status`. The OpenCode plugin
 checks it after startup and shows at most one best-effort notification for each newly discovered
 same-channel release. `notify` is the default. `codemem update install` performs the explicit, fail-closed
-installation; bare `codemem update` remains non-mutating. Explicit plugin
+installation for proven npm-global and mise-managed CLIs. Mise updates require matching active and
+global machine-readable source records under the user's home directory plus matching install-path
+evidence. A recognized user-level `~/.config/mise.toml` source may instead migrate when the bounded
+global query succeeds with an empty result. Updates pin public default and `@codemem` npm registries, run
+`mise use -g npm:codemem@<exact-version>` without a shell to write the exact release into the primary
+global config, and verify with
+an exact target in the post-update global `version` or `requested_version`, followed by
+`mise exec -- codemem version` outside the invoking project. Linux also sets
+`ONNXRUNTIME_NODE_INSTALL=skip`. Bare
+`codemem update` remains non-mutating. Explicit plugin
 `auto` policy may run a paired, version-pinned public-registry install of `codemem` and
 `@codemem/embeddings` only
 after the CLI reports a fresh, validated same-channel npm release observed for at least 24 hours
-and an installation whose npm origin can be proven. Pinned, cross-channel, unsupported-channel,
+and an installation whose npm-global origin can be proven. Mise is never eligible for background
+auto-update because changing its global tool configuration requires a direct user command. Pinned, cross-channel, unsupported-channel,
 downgrade, repository-development, stale, Docker, and unknown installs refuse execution. Set
 `CODEMEM_BACKEND_UPDATE_POLICY=off` to disable release checks.
 On Linux, plugin-owned auto-updates preserve the OpenCode environment and set

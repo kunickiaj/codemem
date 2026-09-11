@@ -64,7 +64,7 @@ export interface UpdateStatus {
 	first_seen_at: string | null;
 	checked_at: string | null;
 	stale: boolean;
-	install_kind: "npm-global" | "npx" | "docker" | "repo-dev" | "pinned" | "unknown";
+	install_kind: "npm-global" | "mise" | "npx" | "docker" | "repo-dev" | "pinned" | "unknown";
 	auto_update_eligible: boolean;
 	recommended_action: string;
 	error: string | null;
