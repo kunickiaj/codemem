@@ -42,7 +42,7 @@ describe("buildMemoryPack usefulness evals", () => {
 	it("prioritizes auth follow-up work for task-oriented auth queries", () => {
 		const corpus = createPackEvalCorpus(store);
 
-		const pack = buildMemoryPack(store, "what should we do next about auth", 10);
+		const pack = buildMemoryPack(store, "show tasks for auth", 10);
 
 		expect(pack.metrics.mode).toBe("task");
 		expect(pack.item_ids[0]).toBe(corpus.ids.authTaskDecisionId);
@@ -55,7 +55,7 @@ describe("buildMemoryPack usefulness evals", () => {
 
 		const pack = buildMemoryPack(store, "continue the viewer health work", 10);
 
-		expect(pack.metrics.mode).toBe("task");
+		expect(pack.metrics.mode).toBe("default");
 		expect(pack.item_ids.slice(0, 3)).toContain(corpus.ids.viewerHealthFeatureId);
 		expect(pack.pack_text).toContain("Viewer health improvements");
 		expect(pack.pack_text).toContain("freshness and backlog diagnostics");
@@ -185,7 +185,7 @@ describe("buildMemoryPack usefulness evals", () => {
 	it("combines task-mode ranking with working-set overlap", () => {
 		const corpus = createPackEvalCorpus(store);
 
-		const pack = buildMemoryPack(store, "what should we do next about auth", 10, null, {
+		const pack = buildMemoryPack(store, "show tasks for auth", 10, null, {
 			working_set_paths: ["packages/ui/src/tabs/health.ts"],
 		});
 

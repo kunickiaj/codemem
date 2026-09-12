@@ -662,7 +662,7 @@ function queryPathOverlapBoost(item: MemoryResult, query: string): number {
 	return Math.min(0.18, boost);
 }
 
-function rowToMemoryResult(
+export function rowToMemoryResult(
 	row: Record<string, unknown>,
 	preserveFilteredKind: boolean,
 ): MemoryResult {

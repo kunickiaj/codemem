@@ -1,13 +1,15 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { miseInstallVersionFromPath } from "./mise-install-path.js";
 import {
 	createReleaseCacheIo,
 	createReleaseDiscovery,
 	detectInstallKind,
 	type InstallDetectionInput,
 	type InstallKind,
+	isExplicitUpdateInstallEligible,
 	type ReleaseChannel,
 	type ReleaseDiscoveryDependencies,
 } from "./release-discovery.js";
@@ -483,6 +485,107 @@ describe("release discovery registry contract", () => {
 			expect.objectContaining({ redirect: "error", signal: expect.any(AbortSignal) }),
 		);
 	});
+});
+
+describe("repository-source release status", () => {
+	it("keeps registry metadata informational", async () => {
+		const status = await check(dependencies({ payload: { version: "0.44.2" } }), {
+			currentVersion: "0.44.0",
+			installKind: "repo-dev",
+		});
+
+		expect(status).toMatchObject({
+			current_version: "0.44.0",
+			install_kind: "repo-dev",
+			latest_version: "0.44.2",
+			update_available: false,
+		});
+		expect(status.recommended_action).toBe(
+			"Package-release updates do not apply to repository source. Run git pull, pnpm install, and pnpm build in the codemem repository.",
+		);
+	});
+});
+
+describe("mise release eligibility", () => {
+	it("never authorizes automatic installation for mise", async () => {
+		const deps = dependencies({
+			cache: JSON.stringify(
+				cacheRecord({
+					first_seen_at: "2026-08-09T12:00:00.000Z",
+					checked_at: NOW.toISOString(),
+				}),
+			),
+		});
+
+		const status = await check(deps, { installKind: "mise" });
+
+		expect(status.auto_update_eligible).toBe(false);
+	});
+
+	it("permits a fresh error-free explicit mise update", async () => {
+		const status = await check(dependencies(), { installKind: "mise" });
+
+		expect(status.auto_update_eligible).toBe(false);
+		expect(isExplicitUpdateInstallEligible(status)).toBe(true);
+	});
+
+	it("preserves delayed npm-global explicit eligibility", async () => {
+		const pending = await check(dependencies(), { installKind: "npm-global" });
+		const eligible = await check(
+			dependencies({
+				cache: JSON.stringify(
+					cacheRecord({
+						first_seen_at: "2026-08-09T12:00:00.000Z",
+						checked_at: NOW.toISOString(),
+					}),
+				),
+			}),
+			{ installKind: "npm-global" },
+		);
+
+		expect(isExplicitUpdateInstallEligible(pending)).toBe(false);
+		expect(isExplicitUpdateInstallEligible(eligible)).toBe(true);
+	});
+});
+
+describe("explicit mise update eligibility", () => {
+	it.each([
+		{ error: "registry request failed", stale: false },
+		{ error: null, stale: true },
+	])("refuses mise when stale=$stale and error=$error", async ({ error, stale }) => {
+		const status = await check(dependencies(), { installKind: "mise" });
+
+		expect(isExplicitUpdateInstallEligible({ ...status, error, stale })).toBe(false);
+	});
+});
+
+describe("explicit pnpm-global update eligibility", () => {
+	it("keeps a fresh pnpm-global update explicit-only", async () => {
+		const status = await check(dependencies(), { installKind: "pnpm-global" });
+
+		expect(status.auto_update_eligible).toBe(false);
+		expect(isExplicitUpdateInstallEligible(status)).toBe(true);
+	});
+
+	it.each([
+		{ error: "registry request failed", stale: false },
+		{ error: null, stale: true },
+		{ error: null, stale: false, updateAvailable: false },
+	])(
+		"refuses pnpm-global when stale=$stale, error=$error, and updateAvailable=$updateAvailable",
+		async ({ error, stale, updateAvailable = true }) => {
+			const status = await check(dependencies(), { installKind: "pnpm-global" });
+
+			expect(
+				isExplicitUpdateInstallEligible({
+					...status,
+					error,
+					stale,
+					update_available: updateAvailable,
+				}),
+			).toBe(false);
+		},
+	);
 });
 
 describe("release discovery cache contract", () => {
@@ -1029,6 +1132,313 @@ describe("installation-kind detection", () => {
 	});
 });
 
+describe("mise installation-kind detection", () => {
+	it.each([
+		{
+			label: "Unix path",
+			entryPath:
+				"/home/user/.local/share/mise/installs/npm-codemem/0.41.0/lib/node_modules/codemem/dist/index.js",
+		},
+		{
+			label: "Windows-style path",
+			entryPath:
+				"C:\\Users\\user\\AppData\\Local\\mise\\installs\\npm-codemem\\0.41.0\\lib\\node_modules\\codemem\\dist\\index.js",
+		},
+	])("detects a mise npm backend $label", ({ entryPath }) => {
+		expect(detectInstallKind({ entryPath })).toBe("mise");
+	});
+
+	it("detects an executable beneath a symlinked default mise data directory", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "codemem-mise-default-link-"));
+		temporaryDirectories.push(directory);
+		const home = join(directory, "home");
+		const dataDirectory = join(home, ".local", "share", "mise");
+		const canonicalStore = join(directory, "tool-store");
+		const relativeEntry = join(
+			"installs",
+			"npm-codemem",
+			"0.41.0",
+			"lib",
+			"node_modules",
+			"codemem",
+			"dist",
+			"index.js",
+		);
+		await mkdir(dirname(join(canonicalStore, relativeEntry)), { recursive: true });
+		await writeFile(join(canonicalStore, relativeEntry), "");
+		await mkdir(join(dataDirectory, ".."), { recursive: true });
+		await symlink(canonicalStore, dataDirectory, process.platform === "win32" ? "junction" : "dir");
+
+		expect(
+			detectInstallKind({
+				entryPath: join(dataDirectory, relativeEntry),
+				env: { HOME: home },
+			}),
+		).toBe("mise");
+	});
+});
+
+describe("pnpm-global installation-kind detection", () => {
+	it.each([
+		{
+			label: "current isolated global virtual-store package",
+			entryPath:
+				"/opt/pnpm/global/v11/group-token/node_modules/.pnpm/codemem@0.44.2_better-sqlite3@13.0.3_hono@4.13.7/node_modules/codemem/dist/index.js",
+		},
+		{
+			label: "current normalized Windows isolated global virtual-store package",
+			entryPath:
+				"C:\\pnpm\\global\\v11\\short-group\\node_modules\\.pnpm\\codemem@0.44.2_peer@1.0.0\\node_modules\\codemem\\dist\\..\\dist\\index.js",
+		},
+		{
+			label: "legacy Unix virtual-store package",
+			entryPath: "/opt/pnpm/global/5/.pnpm/codemem@0.44.2/node_modules/codemem/dist/index.js",
+		},
+		{
+			label: "legacy Windows virtual-store package",
+			entryPath:
+				"C:\\pnpm\\global\\5\\.pnpm\\codemem@0.44.2\\node_modules\\codemem\\dist\\index.js",
+		},
+	])("detects a $label", ({ entryPath }) => {
+		expect(detectInstallKind({ entryPath })).toBe("pnpm-global");
+	});
+
+	it("classifies an unresolved group alias from its canonical virtual-store entry", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "codemem-pnpm-global-link-"));
+		temporaryDirectories.push(directory);
+		const shortGroupPath = join(directory, "global", "v11", "7fe-18d46352ecbd2b50-0");
+		const packageDirectoryName = "codemem@0.44.2_better-sqlite3@13.0.3_hono@4.13.7";
+		const canonicalPackagePath = join(
+			shortGroupPath,
+			"node_modules",
+			".pnpm",
+			packageDirectoryName,
+			"node_modules",
+			"codemem",
+		);
+		const canonicalEntryPath = join(canonicalPackagePath, "dist", "index.js");
+		const topLevelPackagePath = join(shortGroupPath, "node_modules", "codemem");
+		const aliasGroupPath = join(directory, "global", "v11", "a".repeat(64));
+		const aliasEntryPath = join(aliasGroupPath, "node_modules", "codemem", "dist", "index.js");
+		const directoryLinkType = process.platform === "win32" ? "junction" : "dir";
+		await mkdir(dirname(canonicalEntryPath), { recursive: true });
+		await writeFile(canonicalEntryPath, "");
+		await symlink(canonicalPackagePath, topLevelPackagePath, directoryLinkType);
+		await symlink(shortGroupPath, aliasGroupPath, directoryLinkType);
+
+		expect(detectInstallKind({ entryPath: aliasEntryPath, env: { PNPM_HOME: directory } })).toBe(
+			"pnpm-global",
+		);
+	});
+
+	it("detects a legacy global entry beneath a custom normalized PNPM_HOME", () => {
+		expect(
+			detectInstallKind({
+				entryPath:
+					"/srv/tools/pnpm-home/../pnpm-home/global/5/.pnpm/codemem@0.44.2/node_modules/codemem/dist/index.js",
+				env: { PNPM_HOME: "/srv/tools/pnpm-home" },
+			}),
+		).toBe("pnpm-global");
+	});
+
+	it("treats PNPM_HOME as authoritative when it is configured", () => {
+		expect(
+			detectInstallKind({
+				entryPath: "/opt/pnpm/global/5/.pnpm/codemem@0.44.2/node_modules/codemem/dist/index.js",
+				env: { PNPM_HOME: "/srv/tools/pnpm-home" },
+			}),
+		).toBe("unknown");
+	});
+});
+
+describe("pnpm-global installation-kind refusals", () => {
+	it.each([
+		{
+			label: "pnpm dlx package",
+			entryPath:
+				"/opt/pnpm-cache/pnpm/dlx/abc/def/node_modules/.pnpm/codemem@0.44.2/node_modules/codemem/dist/index.js",
+			expected: "npx",
+		},
+		{
+			label: "legacy .pnpm dlx package",
+			entryPath:
+				"/opt/pnpm-cache/.pnpm/dlx/abc/node_modules/.pnpm/codemem@0.44.2/node_modules/codemem/dist/index.js",
+			expected: "npx",
+		},
+		{
+			label: "project-local virtual-store package",
+			entryPath:
+				"/workspace/app/node_modules/.pnpm/codemem@0.44.2/node_modules/codemem/dist/index.js",
+			expected: "unknown",
+		},
+		{
+			label: "legacy global package without an exact version",
+			entryPath: "/opt/pnpm/global/5/.pnpm/codemem@latest/node_modules/codemem/dist/index.js",
+			expected: "unknown",
+		},
+		{
+			label: "global package with a malformed version segment",
+			entryPath:
+				"/opt/pnpm/global/latest/group/node_modules/.pnpm/codemem@0.44.2/node_modules/codemem/dist/index.js",
+			expected: "unknown",
+		},
+		{
+			label: "global virtual-store package with an invalid semver",
+			entryPath:
+				"/opt/pnpm/global/v11/group/node_modules/.pnpm/codemem@01.2.3_peer@1/node_modules/codemem/dist/index.js",
+			expected: "unknown",
+		},
+		{
+			label: "global virtual-store package with an empty peer suffix",
+			entryPath:
+				"/opt/pnpm/global/v11/group/node_modules/.pnpm/codemem@0.44.2_/node_modules/codemem/dist/index.js",
+			expected: "unknown",
+		},
+		{
+			label: "generic package-manager global path",
+			entryPath: "/opt/package-manager/global/node_modules/codemem/dist/index.js",
+			expected: "unknown",
+		},
+		{
+			label: "ambiguous versioned global package path",
+			entryPath: "/srv/app/global/v1/group/node_modules/codemem/dist/index.js",
+			expected: "unknown",
+		},
+		{
+			label: "project-local versioned global virtual store",
+			entryPath:
+				"/srv/app/global/v11/group/node_modules/.pnpm/codemem@0.44.2/node_modules/codemem/dist/index.js",
+			expected: "unknown",
+		},
+		{
+			label: "project path merely containing pnpm dlx segments",
+			entryPath:
+				"/workspace/pnpm/dlx/cache/node_modules/.pnpm/codemem@0.44.2/node_modules/codemem/dist/index.js",
+			expected: "unknown",
+		},
+		{ label: "missing entry path", entryPath: "", expected: "unknown" },
+	] as const)("refuses a $label", ({ entryPath, expected }) => {
+		expect(detectInstallKind({ entryPath })).toBe(expected);
+	});
+
+	it("preserves mise precedence over a pnpm-global environment marker", () => {
+		expect(
+			detectInstallKind({
+				entryPath: "/opt/mise/installs/npm-codemem/0.44.2/lib/node_modules/codemem/dist/index.js",
+				env: { CODEMEM_INSTALL_KIND: "pnpm-global" },
+			}),
+		).toBe("mise");
+	});
+});
+
+describe("custom mise data directory detection", () => {
+	it.each([
+		{
+			entryPath:
+				"/home/user/xdg/mise/installs/npm-codemem/0.41.0/lib/node_modules/codemem/dist/index.js",
+			env: { XDG_DATA_HOME: "/home/user/xdg" },
+			label: "XDG data home",
+		},
+		{
+			entryPath:
+				"D:\\Users\\user\\AppData\\Local\\mise\\installs\\npm-codemem\\0.41.0\\lib\\node_modules\\codemem\\dist\\index.js",
+			env: { LOCALAPPDATA: "D:\\Users\\user\\AppData\\Local" },
+			label: "Windows LocalAppData",
+		},
+		{
+			entryPath:
+				"/home/user/.local/share/mise/installs/npm-codemem/0.41.0/lib/node_modules/codemem/dist/index.js",
+			env: { USERPROFILE: "/home/user" },
+			label: "USERPROFILE fallback",
+		},
+	])("detects the default mise root from $label", ({ entryPath, env }) => {
+		expect(detectInstallKind({ entryPath, env })).toBe("mise");
+	});
+
+	it.each([
+		{
+			dataDir: "/opt/mise-data/../mise-data/",
+			entryPath:
+				"/opt/mise-data/installs/npm-codemem/0.41.0/lib/node_modules/codemem/dist/index.js",
+			label: "Unix",
+		},
+		{
+			dataDir: "C:\\mise-data\\.\\",
+			entryPath:
+				"C:\\mise-data\\installs\\npm-codemem\\0.41.0\\lib\\node_modules\\codemem\\dist\\index.js",
+			label: "Windows-style",
+		},
+	])("accepts a normalized $label MISE_DATA_DIR install prefix", ({ dataDir, entryPath }) => {
+		expect(
+			detectInstallKind({
+				entryPath,
+				env: { MISE_DATA_DIR: dataDir },
+			}),
+		).toBe("mise");
+	});
+
+	it("extracts the exact version from the same comparable custom path used for matching", () => {
+		expect(
+			miseInstallVersionFromPath(
+				"C:\\MİSE-DATA\\installs\\npm-codemem\\0.41.0\\lib\\node_modules\\codemem\\dist\\index.js",
+				{ MISE_DATA_DIR: "C:\\MİSE-DATA\\" },
+			),
+		).toBe("0.41.0");
+	});
+
+	it.each([
+		"/opt/tools/installs/npm-codemem/0.41.0/bin/codemem",
+		"/opt/mise-data-other/installs/npm-codemem/0.41.0/bin/codemem",
+	])("rejects insufficient mise path evidence at %s", (entryPath) => {
+		expect(detectInstallKind({ entryPath, env: { MISE_DATA_DIR: "/opt/mise-data" } })).toBe(
+			"unknown",
+		);
+	});
+});
+
+describe("mise installation evidence safeguards", () => {
+	it("fails closed for an unrecognized npm backend install root", () => {
+		expect(
+			detectInstallKind({
+				entryPath:
+					"/opt/tool-store/installs/npm-codemem/0.41.0/lib/node_modules/codemem/dist/index.js",
+			}),
+		).toBe("unknown");
+	});
+
+	it.each([
+		{
+			label: "an unrecognized executable path",
+			entryPath: "/opt/custom/codemem-cli.js",
+		},
+		{
+			label: "conflicting npm-global path evidence",
+			entryPath: "/usr/local/lib/node_modules/codemem/dist/index.js",
+		},
+	])("does not let an explicit mise marker claim $label", ({ entryPath }) => {
+		expect(detectInstallKind({ entryPath, env: { CODEMEM_INSTALL_KIND: "mise" } })).toBe("unknown");
+	});
+
+	it("prefers mise path evidence over the generic npm-global layout", () => {
+		expect(
+			detectInstallKind({
+				entryPath:
+					"/home/user/.local/share/mise/installs/npm-codemem/0.41.0/lib/node_modules/codemem/dist/index.js",
+				env: { CODEMEM_INSTALL_KIND: "npm-global" },
+			}),
+		).toBe("mise");
+	});
+
+	it("requires an exact version segment in mise path evidence", () => {
+		expect(
+			detectInstallKind({
+				entryPath:
+					"/home/user/.local/share/mise/installs/npm-codemem/latest/lib/node_modules/codemem/dist/index.js",
+			}),
+		).toBe("unknown");
+	});
+});
+
 describe("installation guidance", () => {
 	it.each([
 		{ channel: "alpha", currentVersion: "0.44.0-alpha.1", latestVersion: "0.44.0-alpha.2" },
@@ -1046,6 +1456,7 @@ describe("installation guidance", () => {
 
 	it.each([
 		["npm-global", "npm install -g codemem@0.41.0"],
+		["pnpm-global", "pnpm add -g codemem@0.41.0 @codemem/embeddings@0.41.0"],
 		["npx", "codemem@0.41.0 and @codemem/embeddings@0.41.0"],
 		["docker", "CODEMEM_VERSION=0.41.0 docker compose build --pull"],
 		["repo-dev", "git pull"],
@@ -1086,6 +1497,26 @@ describe("installation guidance", () => {
 		expect(status.recommended_action).toBe("npm install -g codemem@0.41.0");
 	});
 
+	it("returns exact paired pnpm-global guidance off Linux", async () => {
+		const platform = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+		const status = await check(dependencies(), { installKind: "pnpm-global" }).finally(() =>
+			platform.mockRestore(),
+		);
+
+		expect(status.recommended_action).toBe("pnpm add -g codemem@0.41.0 @codemem/embeddings@0.41.0");
+	});
+
+	it("prefixes pnpm-global guidance with the Linux CPU-only ONNX policy", async () => {
+		const platform = vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+		const status = await check(dependencies(), { installKind: "pnpm-global" }).finally(() =>
+			platform.mockRestore(),
+		);
+
+		expect(status.recommended_action).toBe(
+			"env ONNXRUNTIME_NODE_INSTALL=skip pnpm add -g codemem@0.41.0 @codemem/embeddings@0.41.0",
+		);
+	});
+
 	it("returns no-upgrade guidance when the installation is current", async () => {
 		// Arrange
 		const deps = dependencies({ payload: { version: "0.40.2" } });
@@ -1095,5 +1526,27 @@ describe("installation guidance", () => {
 
 		// Assert
 		expect(status.recommended_action).toMatch(/up to date|no action/i);
+	});
+});
+
+describe("mise installation guidance", () => {
+	it("returns the exact mise upgrade command off Linux", async () => {
+		const platform = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+		const status = await check(dependencies(), { installKind: "mise" }).finally(() =>
+			platform.mockRestore(),
+		);
+
+		expect(status.recommended_action).toBe("mise use -g npm:codemem@0.41.0");
+	});
+
+	it("returns the exact Linux mise upgrade command with install safeguards", async () => {
+		const platform = vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+		const status = await check(dependencies(), { installKind: "mise" }).finally(() =>
+			platform.mockRestore(),
+		);
+
+		expect(status.recommended_action).toBe(
+			"env ONNXRUNTIME_NODE_INSTALL=skip mise use -g npm:codemem@0.41.0",
+		);
 	});
 });

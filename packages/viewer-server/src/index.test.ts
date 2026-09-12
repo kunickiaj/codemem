@@ -5987,6 +5987,55 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("persists hybrid evidence through the Viewer automatic pack route", async () => {
+			const { app, ensureStore, cleanup } = createTestApp();
+			try {
+				const store = ensureStore();
+				const sessionId = insertTestSession(store.db);
+				const memoryId = store.remember(
+					sessionId,
+					"decision",
+					"quasar evidence",
+					"quasar fact",
+					0.9,
+				);
+				const semantic = core.search(store, "quasar", 10).map((item) => ({ ...item, score: 0.75 }));
+				const artifacts = core.buildMemoryPackWithTrace(
+					store,
+					"quasar",
+					10,
+					null,
+					undefined,
+					semantic,
+				);
+				// Supply deterministic candidates without invoking an embedding provider.
+				vi.spyOn(store, "buildMemoryPackWithTraceAsync").mockResolvedValue(artifacts);
+				const response = await postViewerJson(app, "/api/pack", {
+					context: "quasar",
+					all_projects: true,
+					attempt: {
+						attempt_id: promptPackAttemptId(500),
+						source: "opencode",
+						started_at: "2026-08-03T10:00:00.000Z",
+						request_id: "hybrid-ledger",
+					},
+				});
+				expect(response.status).toBe(200);
+				expect(await response.json()).not.toHaveProperty("ledger_outcome");
+				const fusion = artifacts.trace.retrieval.candidates.find((item) => item.id === memoryId)
+					?.scores.fusion;
+				if (!fusion) throw new Error("fixture must produce hybrid evidence");
+				const recorded = core.getRetrievalAttempt(store.db, promptPackAttemptId(500));
+				const scoreSummary = recorded?.exposures.find(
+					(item) => item.memoryId === memoryId,
+				)?.scoreSummary;
+				expect(scoreSummary).toMatchObject(fusion);
+				expect(scoreSummary).not.toHaveProperty("fusion");
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("returns a stable structured error when pack construction fails", async () => {
 			const { app, ensureStore, cleanup } = createTestApp();
 			try {

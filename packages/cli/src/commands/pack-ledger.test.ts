@@ -7,6 +7,7 @@ import {
 	connect,
 	getRetrievalAttempt,
 	MemoryStore,
+	search,
 } from "@codemem/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { initTestSchema, insertTestSession } from "../../../core/src/test-utils.js";
@@ -35,6 +36,28 @@ beforeEach(() => {
 afterEach(() => {
 	store.close();
 	rmSync(directory, { recursive: true, force: true });
+});
+
+it("persists hybrid evidence through the CLI instrumented ledger handler", () => {
+	const sessionId = insertTestSession(store.db);
+	const memoryId = store.remember(sessionId, "decision", "quasar evidence", "quasar fact", 0.9);
+	const semantic = search(store, "quasar", 10).map((item) => ({ ...item, score: 0.75 }));
+	const artifacts = buildMemoryPackWithTrace(store, "quasar", 10, null, undefined, semantic);
+	const outcome = handleInstrumentedPackLedger(
+		store.db,
+		{ attempt_id: id(500), source: "opencode", request_id: "hybrid-ledger" },
+		"quasar",
+		{},
+		artifacts,
+	);
+	const fusion = artifacts.trace.retrieval.candidates.find((item) => item.id === memoryId)?.scores
+		.fusion;
+	if (!fusion) throw new Error("fixture must produce hybrid evidence");
+	const recorded = getRetrievalAttempt(store.db, id(500));
+	const scoreSummary = recorded?.exposures.find((item) => item.memoryId === memoryId)?.scoreSummary;
+	expect(outcome.ok).toBe(true);
+	expect(scoreSummary).toMatchObject(fusion);
+	expect(scoreSummary).not.toHaveProperty("fusion");
 });
 
 it("enriches the same local ledger through CLI delivery with retry-safe measurements", () => {

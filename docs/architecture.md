@@ -60,7 +60,7 @@ Support tiers describe operational expectations for each adapter path:
 | Adapter | Tier | Notes |
 |---|---|---|
 | OpenCode 1 plugin | Supported | Primary reference adapter for lifecycle events and injection behavior. |
-| OpenCode 2 plugin | Experimental | The beta entrypoint loads as an inactive compatibility shell; capture and injection are not enabled. |
+| OpenCode 2 plugin | Experimental | The beta entrypoint captures conversation, tool, terminal usage, and lifecycle activity with bounded cleanup. It exposes manual `mem-status`, `mem-recent`, and `mem-stats` tools through `tool.transform` with `codemode: false`; automatic recall remains disabled because the context hook has no request kind or request ID. |
 | Claude hooks/plugin | Supported | Hook-first queue path with CLI/runtime fallback and parity slices tracked in adapter stack PRs. |
 | Codex plugin (hooks + MCP) | Supported | Functional capture pipeline (`plugins/codex/`, `packages/core/src/codex-hooks.ts`) dogfooded end-to-end: edge normalization → `POST /api/raw-events` → observer → memories. Prompt-time injection is present and env-gated but not fully validated on strict models. |
 | Windsurf integration | Experimental | Planned via shared adapter contract after OpenCode/Claude stabilization. |
@@ -185,7 +185,7 @@ flowchart TD
 
 ## Context injection
 
-The OpenCode 1 plugin injects a memory pack automatically on every turn. Volatile recall output is appended beside the latest user message by default so provider prompt caches can keep the stable system/history prefix. The experimental OpenCode 2 beta entrypoint is an inactive compatibility shell and does not inject context.
+The OpenCode 1 plugin injects a memory pack automatically on every turn. Volatile recall output is appended beside the latest user message by default so provider prompt caches can keep the stable system/history prefix. The experimental OpenCode 2 beta entrypoint captures activity, manages lifecycle cleanup, and exposes manual `mem-status`, `mem-recent`, and `mem-stats` tools through `tool.transform` with `codemode: false`. It does not inject automatic recall because the V2 context hook has no request kind or request ID, so compaction and transient safety cannot be guaranteed.
 
 ### Packaged Claude and Codex hooks
 
@@ -222,17 +222,21 @@ The plugin constructs a search query from the current session's working set (`re
 - **Project name** — scopes results to the active project
 - **Recently modified files** — last 5 filenames from `tool.execute.after` events with `edit`/`write` tools
 
-These are concatenated into a single query string, capped at 500 characters.
+These are concatenated into a single query string, capped at 500 characters. Claude's hook uses the same project-then-last-five-basenames suffix; both transports provide up to eight modified-file paths as working-set metadata. Core uses an exact suffix reconstructed from the supplied project and working-set metadata only to classify task intent. It retains the complete query for retrieval and query identity; missing, mismatched, or truncated suffixes are not guessed.
 
 ### How the pack is built
 
 `buildMemoryPack` (`packages/core/src/pack.ts`) assembles three sections:
 
-1. **Summary** — the most recent `session_summary` matching the query (or the latest one if none match)
-2. **Timeline** — recent memories from search results, ordered by relevance
-3. **Observations** — typed memories (`decision`, `feature`, `bugfix`, `refactor`, `change`, `discovery`, `exploration`, `note`) sorted by tag overlap with the query, then recency, then kind priority
+1. **Summary** — the first eligible summary in retrieval order; explicit automatic recap may instead use the requester's own latest eligible summary
+2. **Timeline** — non-summary retrieval results in relevance order; manual recap can expand a timeline around an anchor
+3. **Observations** — remaining non-summary results in retrieval order; browsing fallback may supplement from eligible kinds (`decision`, `feature`, `bugfix`, `refactor`, `change`, `discovery`, `exploration`, and legacy `note`)
 
-Items are deduplicated across sections. If the query looks like a task lookup ("todo", "pending", "what's next") or a recall query ("what did we do", "last time"), the pack uses specialized retrieval paths that prioritize relevant kinds and recency.
+Items are deduplicated across sections. Task browsing recognizes bare collections (`pending tasks`, `backlog`) and conservative `show`/`list` forms (`show tasks for Orchid`). Continuation verbs alone and technical clauses such as `show the pending tasks table schema` do not request task expansion, even with appended hook context. Task recency/summary filters and intentional recap groups remain, but generic word overlap, kind, and recency no longer override retrieval order within those policies. Only supplemental browsing observations use tag-overlap ordering.
+
+Automatic non-browsing misses remain empty. Explicit recap uses the existing `queryPrefersRecap` policy and may fall back only to an eligible requester-owned summary, without recent durable observations or unrelated timeline neighbors. Manual browsing retains its fallback behavior. See [topical retrieval and limits](opencode-retained-recall.md#topical-retrieval).
+
+For automatic non-task requests, assembly drops semantic-only batches when scoped keyword retrieval finds no eligible support; it uses no distance threshold and knowingly loses useful paraphrases. Supported hybrid batches can still contain semantic-only items, and direct file-reference retrieval remains independent. All automatic requests suppress timeline neighbor expansion; manual semantic and timeline retrieval remain supported.
 
 ### Limits
 
@@ -341,7 +345,7 @@ Each observation is persisted with structured metadata that improves retrieval:
 - **`narrative`** — the full observation text
 - **`tags_text`** — auto-derived from kind, concepts, and file paths (`packages/core/src/tags.ts`); used in FTS5 indexing
 
-These fields feed into tag derivation, which directly influences FTS5 recall and pack section ordering (tag overlap with the query boosts observation ranking).
+These fields feed into tag derivation and retrieval scoring. Pack assembly preserves the resulting relevance order within its recap/task policies; tag overlap sorts supplemental browsing observations only.
 
 ```mermaid
 flowchart TD

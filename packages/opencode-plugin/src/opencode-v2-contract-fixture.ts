@@ -32,11 +32,37 @@ export function summarizeEvent(event: unknown): ContractRecord {
 	const candidate = event as Record<string, unknown>;
 	const type = typeof candidate.type === "string" ? candidate.type : "unknown";
 	const family = ["session", "message", "tool"].find((prefix) => type.startsWith(`${prefix}.`));
-	return {
+	const summary: ContractRecord = {
 		family: family ?? "generic",
 		type,
 		hasProperties: candidate.properties != null,
 	};
+	const data = candidate.data as Record<string, unknown> | undefined;
+	if (type === "session.inbox.enqueued") {
+		const item = data?.item as Record<string, unknown> | undefined;
+		const payload = item?.payload as Record<string, unknown> | undefined;
+		return {
+			...summary,
+			hasInboxID: typeof data?.inboxID === "string",
+			hasSessionID: typeof data?.sessionID === "string",
+			hasTextPayload: typeof payload?.text === "string",
+			isUserItem: item?.type === "user",
+		};
+	}
+	if (type === "session.step.ended") {
+		return {
+			...summary,
+			finish: typeof data?.finish === "string" ? data.finish : null,
+			hasAssistantMessageID: typeof data?.assistantMessageID === "string",
+			hasFinish: typeof data?.finish === "string",
+			hasSessionID: typeof data?.sessionID === "string",
+			hasTokens: data?.tokens != null && typeof data.tokens === "object",
+		};
+	}
+	if (type.startsWith("session.execution.")) {
+		return { ...summary, hasSessionID: typeof data?.sessionID === "string" };
+	}
+	return summary;
 }
 
 function defaultReporter(record: ContractRecord) {
@@ -176,7 +202,7 @@ async function registerToolContracts(
 	});
 	registrations.push(after);
 	let effectiveID: string | null = null;
-	const declaredName = "mem-status";
+	const declaredName = "contract-probe";
 	const transform = await context.tool.transform((editor) => {
 		editor.add({
 			name: declaredName,

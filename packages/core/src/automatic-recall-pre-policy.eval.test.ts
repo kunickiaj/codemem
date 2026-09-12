@@ -178,7 +178,7 @@ describe("frozen baseline provenance and current explicit-pack compatibility", (
 
 	it("verifies pinned Git blobs and separately hashed harness content", verifySourceIdentity);
 
-	it("records the unwanted generic Continue inclusion separately from desired gold", () => {
+	it("retains current manual Continue browsing separately from historical routing", () => {
 		// Arrange
 		const gold = fixture.gold.generic_continue;
 
@@ -188,7 +188,7 @@ describe("frozen baseline provenance and current explicit-pack compatibility", (
 
 		// Assert
 		expect(first).toEqual(second);
-		expect(first).toMatchObject(report.observed.generic_continue);
+		expect(first.mode).toBe("default");
 		expect(first.selected_keys).toEqual(
 			expect.arrayContaining([...gold.required_keys, ...gold.forbidden_keys]),
 		);

@@ -11,6 +11,7 @@ import {
 	recordPromptPackTerminal,
 } from "./prompt-pack-ledger.js";
 import { getRetrievalAttempt, updateRetrievalDelivery } from "./retrieval-ledger.js";
+import { search } from "./search.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
 import type { MemoryResult } from "./types.js";
@@ -113,6 +114,53 @@ describe("prompt-pack retrieval ledger", () => {
 		expect(attempt?.exposures.flatMap((exposure) => exposure.reasonCodes ?? [])).toEqual(
 			expect.arrayContaining([expect.stringMatching(/^[a-z0-9][a-z0-9._-]{0,63}$/)]),
 		);
+	});
+
+	it("persists and clones hybrid channel evidence through automatic pack recording", () => {
+		store.remember(sessionId, "decision", "quasar shared", "quasar shared evidence", 0.8);
+		store.remember(sessionId, "discovery", "quasar lexical", "quasar lexical evidence", 0.8);
+		store.remember(sessionId, "discovery", "nebula semantic", "nebula semantic evidence", 0.8);
+		const lexical = search(store, "quasar", 10);
+		const semanticOnly = search(store, "nebula", 10);
+		const semantic = [...lexical.slice(0, 1), ...semanticOnly].map((item, index) => ({
+			...item,
+			score: 0.9 - index / 10,
+		}));
+		const artifacts = buildMemoryPackWithTrace(store, "quasar", 10, null, undefined, semantic);
+		expect(artifacts.trace.retrieval.candidates.filter((item) => item.scores.fusion)).toHaveLength(
+			3,
+		);
+		const outcome = recordPromptPackArtifacts(
+			store.db,
+			{
+				attemptId: id(500),
+				startedAt,
+				completedAt,
+				source: "opencode",
+			},
+			"quasar",
+			undefined,
+			artifacts,
+		);
+		expect(outcome.ok).toBe(true);
+		const recorded = getRetrievalAttempt(store.db, id(500));
+		for (const candidate of artifacts.trace.retrieval.candidates) {
+			const { fusion, ...legacyScores } = candidate.scores;
+			expect(
+				recorded?.exposures.find((item) => item.memoryId === candidate.id)?.scoreSummary,
+			).toEqual({ ...legacyScores, ...fusion });
+		}
+		expect(
+			clonePromptPackAttempt(store.db, id(500), {
+				attemptId: id(501),
+				startedAt,
+				completedAt,
+				source: "opencode",
+			}).ok,
+		).toBe(true);
+		expect(
+			getRetrievalAttempt(store.db, id(501))?.exposures.map((item) => item.scoreSummary),
+		).toEqual(recorded?.exposures.map((item) => item.scoreSummary));
 	});
 
 	it("treats an exact caller retry as idempotent", () => {

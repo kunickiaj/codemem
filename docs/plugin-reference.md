@@ -8,7 +8,7 @@ This page covers advanced plugin behavior, environment variables, and stream rel
 
 ## Running OpenCode 1 with the plugin
 
-These capture and recall behaviors apply to OpenCode 1. The experimental OpenCode 2 beta entrypoint currently loads as an inactive compatibility shell.
+OpenCode 1 supports the capture and recall behavior below. The experimental OpenCode 2 beta entrypoint captures user and assistant messages, terminal usage, tool results, and session lifecycle events. It exposes manual `mem-status`, `mem-recent`, and `mem-stats` tools through `tool.transform` with `codemode: false`, but automatic recall remains disabled because the V2 context hook has no request kind or request ID.
 
 1. Start OpenCode inside this repo (or make the plugin global so it globs in everywhere).
 2. Every tooling session creates memory artifacts in SQLite.
@@ -241,19 +241,28 @@ The plugin now passes that explicit host/port through when it auto-starts, healt
 
 If compatibility toasts appear after restart, follow the runner-specific guidance in Compatibility guidance behavior below.
 
-## OpenCode 1 plugin tools exposed to the model
+## OpenCode plugin tools exposed to the model
 
 - `mem-status` - show viewer URL, log path, stats, and recent entries.
 - `mem-stats` - show just the stats block.
 - `mem-recent` - show recent items (defaults to 5).
 
-These are plugin tools callable by the agent/runtime. They are not user-facing
-slash commands in the OpenCode chat input.
+These are plugin tools callable by the agent/runtime, not user-facing slash
+commands. OpenCode 2 registers the same hyphenated IDs through `tool.transform`
+with `codemode: false`; a packed-host smoke test verifies the IDs are preserved.
 
 ## MCP tools exposed to agents
 
 The MCP server exposes memory retrieval and write tools such as `memory_search`,
 `memory_pack`, `memory_recent`, `memory_remember`, and `memory_forget`.
+
+### MCP result and annotation contract
+
+All 14 tools publish the standard optional `outputSchema` and `annotations` fields; `packages/mcp-server/src/tool-contracts.ts` is the authority. On success, `structuredContent` is an object that validates against the declared schema, and `content[0].text` remains compact JSON for compatible text-only clients. The two representations are identical after JSON serialization, so `undefined` properties are omitted.
+
+Check `isError` before reading `structuredContent`: errors set `isError: true`, provide only the JSON error text, and omit `structuredContent` so SDKs do not validate an error against the success schema.
+
+Annotations describe each tool's primary operation on user data and its access beyond the local server; they are not authorization. Retrieval, metadata/schema, pack, and proposal-only distill tools are read-only. Incidental delivery logging, usage records, and caches do not change that classification. `memory_remember` adds data, while `memory_forget` is a destructive soft delete and is idempotent only in the no-added-effects sense—repeating it returns `not_found`. `memory_pack`, `memory_distill_candidates`, and `memory_remember` may load an external model or invoke the observer, so their open-world hints remain enabled. These annotations do not change authentication or transport, and clients may still apply their own prompting policies.
 
 `memory_distill_candidates` mines recurring lessons into reviewable context
 candidates. It is read-only and does not modify documentation files. By
@@ -465,7 +474,7 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_PLUGIN_CMD_TIMEOUT` | Milliseconds before a plugin CLI call is aborted (default `20000`). |
 | `CODEMEM_MIN_VERSION` | Minimum required CLI version for plugin compatibility warnings (default `0.9.20`). |
 | `CODEMEM_BACKEND_UPDATE_POLICY` | Compatibility and release-notification policy: `notify` (default), `auto`, or `off`. |
-| `CODEMEM_INSTALL_KIND` | Internal/advanced release-guidance detection override (`npm-global`, `npx`, `docker`, `repo-dev`, `pinned`, or `unknown`). This does not enable installation. |
+| `CODEMEM_INSTALL_KIND` | Internal/advanced release-guidance detection override (`npm-global`, `pnpm-global`, `mise`, `npx`, `docker`, `repo-dev`, `pinned`, or `unknown`). Markers do not prove ownership or enable installation. |
 | `CODEMEM_CODEX_ENDPOINT` | Override Codex OAuth endpoint. |
 | `CODEMEM_PLUGIN_DEBUG` | Set to `1`, `true`, or `yes` to log plugin lifecycle events. |
 | `CODEMEM_PLUGIN_IGNORE` | Skip all plugin behavior for this process. |
@@ -523,7 +532,7 @@ Update policy:
 - `CODEMEM_BACKEND_UPDATE_POLICY=auto`: try a best-effort auto-update for eligible compatibility-floor mismatches and fresh same-channel releases observed for at least 24 hours, then warn if still outdated
 	- skipped for `node` dev-mode runners
 	- skipped when `CODEMEM_RUNNER_FROM` is pinned to a fixed package/version
-	- skipped for Docker, unknown, stale, unsupported-channel, cross-channel, or downgrade states
+	- skipped for pnpm-global, mise, Docker, unknown, stale, unsupported-channel, cross-channel, or downgrade states
 - `CODEMEM_BACKEND_UPDATE_POLICY=off`: no compatibility toast (logging still records mismatch)
 
 After its startup delay, the plugin also runs `codemem update check --json` through the same
@@ -540,6 +549,26 @@ effort: it does not
 use the CLI install lock or Windows npm-shim handling, and plugin-owned auto-update is disabled on
 Windows. Avoid starting simultaneous automatic updates from multiple OpenCode sessions; use
 `codemem update install` when serialized installation is required.
+
+Mise-managed CLIs are detected from a semver-qualified mise install path or normalized
+`MISE_DATA_DIR` path and receive global `mise use -g npm:codemem@<exact-version>` guidance. Only the
+user's explicit `codemem update install` command may execute that argv-only update. It first compares
+bounded machine-readable active and global mise source records, requires a user-owned global source,
+and canonicalizes current install-path ownership. It then pins public npm registries for the spawned
+command and writes the exact release into mise's primary global config. Verification allows the source
+to move from user `conf.d` or the recognized user-level `~/.config/mise.toml` file to `config.toml` but requires the post-update global
+`version` or `requested_version` before running `mise exec -- codemem version` outside the invoking project; plugin background
+auto-update never treats mise as eligible.
+
+pnpm-global CLIs are recognized from canonical virtual-store path evidence, which can provide release
+notifications and the exact paired package command but cannot prove ownership. Only an explicit
+`codemem update install` may mutate that installation: from a neutral directory it uses bounded,
+no-shell `pnpm root -g`, `pnpm bin -g`, and `pnpm list -g --depth 0 --json` checks to prove the
+root is exactly the list root (pnpm 12) or its `node_modules` directory (pnpm 9–11), and that the list root owns the active Codemem package. It installs exact matching `codemem` and
+`@codemem/embeddings` packages from the public npm registry and verifies both
+registered package state and that launcher. The updater never runs a build-approval command; pnpm 9 still runs install scripts by default,
+while newer releases apply their configured build-script policy. Plugin
+background auto-install never treats pnpm-global as eligible.
 
 Docker images set `CODEMEM_INSTALL_KIND=docker` so release guidance cannot mistake the bundled
 global npm package for a host npm installation. Docker deployments never self-update; rebuild and

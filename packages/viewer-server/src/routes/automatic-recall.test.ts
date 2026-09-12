@@ -404,13 +404,22 @@ describe("automatic recall delivery validation", () => {
 	});
 });
 
-it("returns the actual pre-policy generic Continue incident through the Viewer route", () =>
+it("retains manual Continue browsing through the current Viewer route", () =>
 	verifyViewerIncident({ automatic: false }));
 
-it("matches frozen Continue gold with current automatic policy in Viewer", () =>
+it("leaves automatic Continue empty in the current Viewer route", () =>
 	verifyViewerIncident({ automatic: true }));
 
-async function verifyViewerIncident({ automatic }: { automatic: boolean }) {
+it("retrieves explicit Quartz control with the same automatic Viewer gates", () =>
+	verifyViewerIncident({ automatic: true, explicit: true }));
+
+async function verifyViewerIncident({
+	automatic,
+	explicit = false,
+}: {
+	automatic: boolean;
+	explicit?: boolean;
+}) {
 	vi.useFakeTimers({ toFake: ["Date"] });
 	vi.setSystemTime(new Date(fixture.clock));
 	const store = new MemoryStore(":memory:");
@@ -427,7 +436,7 @@ async function verifyViewerIncident({ automatic }: { automatic: boolean }) {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
-				context: fixture.query,
+				context: explicit ? fixture.explicit_control_query : fixture.query,
 				project: fixture.project,
 				limit: fixture.limit,
 				token_budget: fixture.core_token_budget,
@@ -443,24 +452,33 @@ async function verifyViewerIncident({ automatic }: { automatic: boolean }) {
 		});
 		const body = (await response.json()) as {
 			pack_text: string;
+			item_ids: number[];
 			metrics: { mode: string };
 		};
 
 		// Assert
 		expect(response.status).toBe(200);
-		expect(body.metrics.mode).toBe("task");
-		expect(body.pack_text).toContain("QUARTZ_DURABLE_FACT");
-		if (automatic) {
-			for (const key of fixture.gold.generic_continue.required_keys) {
-				const memory = fixture.sessions
-					.flatMap((session) => session.memories)
-					.find((item) => item.key === key);
-				expect(body.pack_text).toContain(memory?.body);
-			}
-			expect(body.pack_text).not.toContain("ORCHID_UNRELATED_CONTINUITY");
-		} else {
+		expect(body.metrics.mode).toBe(explicit ? "recall" : "default");
+		if (automatic && !explicit) expect(body.item_ids).toEqual([]);
+		else expect(body.pack_text).toContain("QUARTZ_DURABLE_FACT");
+		if (!automatic) {
 			expect(body.pack_text).toContain("ORCHID_UNRELATED_CONTINUITY");
+			return;
 		}
+		const gold = explicit ? fixture.gold.explicit_control : fixture.gold.generic_continue;
+		for (const key of explicit ? gold.required_keys : []) {
+			const memory = fixture.sessions
+				.flatMap((session) => session.memories)
+				.find((item) => item.key === key);
+			expect(body.pack_text).toContain(memory?.body);
+		}
+		for (const key of gold.forbidden_keys) {
+			const memory = fixture.sessions
+				.flatMap((session) => session.memories)
+				.find((item) => item.key === key);
+			expect(body.pack_text).not.toContain(memory?.body);
+		}
+		expect(body.pack_text).not.toContain("ORCHID_UNRELATED_CONTINUITY");
 	} finally {
 		store.close();
 		vi.useRealTimers();

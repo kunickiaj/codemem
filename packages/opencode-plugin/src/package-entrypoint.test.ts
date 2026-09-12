@@ -27,7 +27,7 @@ it("exports one typed dual-host object while retaining V1 compatibility names", 
 	expect(entrypoint.id).toBe("codemem");
 	expect(entrypoint.server).toBe(CodememPlugin);
 	expect(OpencodeMemPlugin).toBe(CodememPlugin);
-	expect(await entrypoint.setup({} as OpenCodeV2.Context)).toBeUndefined();
+	expect(entrypoint.setup).toBeTypeOf("function");
 });
 
 it("keeps the OpenCode 1 SDK manifests aligned with the supported host floor", async () => {

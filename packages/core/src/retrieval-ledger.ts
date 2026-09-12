@@ -1,7 +1,12 @@
 import { createHash } from "node:crypto";
 import { isAbsolute, posix, win32 } from "node:path";
 import type { Database } from "./db.js";
-import type { MemoryFilters, PackTraceCandidateScores, PackTraceSection } from "./types.js";
+import type {
+	MemoryFilters,
+	PackFusionEvidence,
+	PackTraceCandidateScores,
+	PackTraceSection,
+} from "./types.js";
 
 export const RETRIEVAL_LEDGER_CONTRACT_VERSION = 1 as const;
 export const DEFAULT_RETRIEVAL_LEDGER_RETENTION_DAYS = 90;
@@ -30,7 +35,8 @@ export type RetrievalDeliveryStatus = "not_attempted" | "handed_off" | "failed" 
 export type RetrievalDisposition = "selected" | "dropped" | "deduped" | "trimmed" | "compressed";
 
 export type RetrievalFilterSummary = Omit<MemoryFilters, "working_set_paths">;
-export type RetrievalScoreSummary = Partial<PackTraceCandidateScores>;
+/** Accept trace evidence on write; persisted/read summaries use flat numeric fields. */
+export type RetrievalScoreSummary = Partial<PackTraceCandidateScores & PackFusionEvidence>;
 
 export interface RetrievalExposureInput {
 	memoryId?: number | null;
@@ -230,6 +236,17 @@ const FILTER_KEY_ORDER = [
 ] as const satisfies readonly (keyof RetrievalFilterSummary)[];
 const FILTER_KEYS = new Set<string>(FILTER_KEY_ORDER);
 
+const FUSION_SCORE_KEY_ORDER = [
+	"fts_score",
+	"fts_rank",
+	"semantic_score",
+	"semantic_rank",
+	"fused_score",
+	"rank_constant",
+	"fusion_rank",
+	"secondary_score",
+] as const satisfies readonly (keyof PackFusionEvidence)[];
+const FUSION_SCORE_KEYS = new Set<string>(FUSION_SCORE_KEY_ORDER);
 const SCORE_KEY_ORDER = [
 	"base_score",
 	"combined_score",
@@ -245,9 +262,17 @@ const SCORE_KEY_ORDER = [
 	"tasklike_penalty",
 	"text_overlap",
 	"tag_overlap",
+	...FUSION_SCORE_KEY_ORDER,
 ] as const satisfies readonly (keyof RetrievalScoreSummary)[];
 const SCORE_KEYS = new Set<string>(SCORE_KEY_ORDER);
-const NULLABLE_SCORE_KEYS = new Set<string>(["base_score", "combined_score"]);
+const NULLABLE_SCORE_KEYS = new Set<string>([
+	"base_score",
+	"combined_score",
+	"fts_score",
+	"fts_rank",
+	"semantic_score",
+	"semantic_rank",
+]);
 
 const RETRIEVAL_SURFACES = new Set<RetrievalSurface>([
 	"prompt_pack",
@@ -385,13 +410,35 @@ function serializeFilterSummary(input: RetrievalFilterSummary | null | undefined
 	return boundedJson(output, "filterSummary");
 }
 
+function flattenScoreSummary(input: RetrievalScoreSummary): Record<string, unknown> {
+	const { fusion, ...flat } = input;
+	if (fusion === undefined) return flat;
+	if (!isPlainObjectRecord(fusion)) {
+		throw new RetrievalLedgerValidationError("scoreSummary.fusion contains an invalid value shape");
+	}
+	for (const key of Object.keys(fusion)) {
+		if (!FUSION_SCORE_KEYS.has(key)) {
+			throw new RetrievalLedgerValidationError(
+				`scoreSummary.fusion contains unsupported key: ${key}`,
+			);
+		}
+		if (Object.hasOwn(flat, key)) {
+			throw new RetrievalLedgerValidationError(
+				`scoreSummary contains duplicate fusion key: ${key}`,
+			);
+		}
+	}
+	// All values still pass the same finite-number/null validator below.
+	return { ...flat, ...fusion };
+}
+
 function serializeScoreSummary(input: RetrievalScoreSummary | null | undefined): string | null {
 	if (input == null) return null;
 	if (!isPlainObjectRecord(input)) {
 		throw new RetrievalLedgerValidationError("scoreSummary contains an invalid value shape");
 	}
 	const definedEntries: Record<string, unknown> = {};
-	for (const [key, value] of Object.entries(input)) {
+	for (const [key, value] of Object.entries(flattenScoreSummary(input))) {
 		if (!SCORE_KEYS.has(key)) {
 			throw new RetrievalLedgerValidationError(`scoreSummary contains unsupported key: ${key}`);
 		}

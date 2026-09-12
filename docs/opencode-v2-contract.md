@@ -2,9 +2,11 @@
 
 The pinned OpenCode 2 beta can load a TypeScript plugin fixture from Codemem's
 packed npm artifact, but its context-mutation hook cannot identify the request
-kind that caused each call. Codemem must therefore keep automatic recall
-disabled in the V2 adapter until the host exposes an unambiguous request identity
-or adds `kind` to that hook.
+that caused each call. A later development host separates primary context from
+auxiliary generation hooks and preserves IDs on the messages passed to each
+primary context call. Codemem must keep automatic recall disabled against the
+pinned beta, but a supported host with the development contract can correlate
+recall without a new top-level request ID once the correlation tests pass.
 
 ## Pinned test host
 
@@ -26,6 +28,36 @@ spike's published-file allowlist because the smoke must load them from the
 installed Codemem tarball. They are not exported as a supported consumer API.
 The production V2 entrypoint replaces this temporary package content in the
 later adapter PR.
+
+## Development host evaluation
+
+Development build `0.0.0-dev-19439`, produced from upstream commit
+`3edbc8822520e51dca9954b73e2712ecf2884443`, improves hook separation but does
+not replace the exact beta versions pinned by the repository. It is probe-only,
+not a supported production target.
+
+The disposable packed-host probe found:
+
+- `session.context` runs once for each primary model request, including an
+  accepted retry and a tool continuation. Each call receives a fresh mutable
+  request; a system marker added by one call does not appear in later calls.
+- Compaction, generation, and title use their dedicated session hooks rather
+  than `session.context`.
+- The runner intentionally combines overlapping steering prompts into one model
+  continuation. The context transcript retains a stable ID on every user
+  message, including the latest message used to key the turn. Retries and tool
+  continuations repeat that latest ID, which gives Codemem the stable replay key
+  it needs.
+- Setting `input.result` in the compaction and title hooks does not suppress the
+  corresponding model requests in this build. This does not match the documented
+  result short-circuit behavior.
+
+The source and tests confirm that prompt coalescing is intentional rather than a
+lost-identity defect. Codemem can treat the coalesced prompt set as one model
+turn, build new recall for its latest user-message ID, and replay that result
+when the same ID appears on retries or tool continuations. The V2 adapter still
+needs to translate the new message shape and remove assumptions tied to the V1
+prompt counter, but it does not need another host identity field for correctness.
 
 ## Verified surfaces
 
@@ -51,9 +83,10 @@ The fixture and its type-level tests verify these beta-19296 contracts:
   decision but no `kind` or request ID.
 - Tool completion hooks distinguish `completed` results from `error` outcomes
   and carry call, message, session, agent, tool, and input identity.
-- The packed-host smoke verifies that the fixture can declare the hyphenated
-  tool name `mem-status`. The transform API neither accepts an explicit custom
-  ID nor exposes the host-generated effective ID while adding the tool.
+- The packed-host smoke verifies that `tool.transform` with `codemode: false`
+  preserves the hyphenated `mem-status`, `mem-recent`, and `mem-stats` IDs. The
+  transform API neither accepts an explicit custom ID nor exposes the effective
+  ID while adding the tool.
 - The promise-plugin context used by Codemem exposes neither logging nor toast
   methods. The separate TUI plugin API exposes `ui.toast`, but that is not the
   adapter surface under test. The V2 promise adapter must retain local file
@@ -64,14 +97,21 @@ The fixture and its type-level tests verify these beta-19296 contracts:
 
 ## Automatic recall gate
 
-The context hook is Codemem's recall-injection point, but it identifies a request
-with only the tuple of session, agent, and model. Concurrent primary and
-auxiliary requests can share that tuple. The later model-request and HTTP hooks
-carry `kind`, and headers can preserve it downstream, but that cannot
-retroactively classify an earlier context mutation. Retry hooks also omit both
-request kind and request ID. Adjacency or timing cannot resolve the context-hook
-ambiguity without race conditions.
+The context hook is Codemem's recall-injection point, but the pinned beta
+identifies a request with only the tuple of session, agent, and model. Concurrent
+primary and auxiliary requests can share that tuple. The later model-request
+and HTTP hooks carry `kind`, and headers can preserve it downstream, but that
+cannot retroactively classify an earlier context mutation. Retry hooks also omit
+both request kind and request ID. Adjacency or timing cannot resolve the
+context-hook ambiguity without race conditions.
+
+The development host removes the auxiliary-request ambiguity by adding separate
+session hooks. Although `session.context` has no top-level request ID, each
+history-derived user message carries its own ID. That message identity is enough
+to correlate retrieval and replay because overlapping prompts are deliberately
+processed as one model turn.
 
 The V2 adapter may capture events and expose manual memory tools, but it must not
-inject automatic recall until a later pinned host contract passes concurrency,
+inject automatic recall against the current pinned beta. Recall can proceed once
+a supported pinned host exposes the split session hooks and passes concurrency,
 retry, auxiliary-generation, and compaction correlation tests.

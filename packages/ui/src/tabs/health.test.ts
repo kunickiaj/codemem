@@ -228,6 +228,27 @@ describe("Health update banner", () => {
 		);
 	});
 
+	it("describes repository source without release freshness claims", () => {
+		setUpdateStatus({
+			...availableStatus,
+			current_version: "0.44.0",
+			latest_version: "0.44.2",
+			update_available: true,
+			stale: true,
+			install_kind: "repo-dev",
+			recommended_action:
+				"Package-release updates do not apply to repository source. Run git pull, pnpm install, and pnpm build in the codemem repository.",
+		});
+
+		renderOverview();
+
+		const banner = updateBannerText();
+		expect(banner).toContain("Running from repository source");
+		expect(banner).toContain("Package metadata version: 0.44.0");
+		expect(banner).toContain("git pull, pnpm install, and pnpm build");
+		expect(banner).not.toMatch(/up to date|outdated|cached update|0\.44\.2 is available/i);
+	});
+
 	it("shows unavailable status for an unsupported installed version", () => {
 		// Arrange
 		setUpdateStatus({

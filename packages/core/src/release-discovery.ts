@@ -1,8 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
 import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { codememHomeDir } from "./home.js";
+import {
+	miseInstallVersionFromPath,
+	normalizeInstallEntryPath,
+	resolveComparablePath,
+} from "./mise-install-path.js";
+
+export { resolveComparablePath };
 
 const REGISTRY_URL_PREFIX = "https://registry.npmjs.org/codemem/";
 const REQUEST_TIMEOUT_MS = 2_000;
@@ -16,8 +22,27 @@ const AUTO_UPDATE_DELAY_MS = 24 * 60 * 60 * 1_000;
 const SEMVER =
 	/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
-export type InstallKind = "npm-global" | "npx" | "docker" | "repo-dev" | "pinned" | "unknown";
+export type InstallKind =
+	| "npm-global"
+	| "pnpm-global"
+	| "mise"
+	| "npx"
+	| "docker"
+	| "repo-dev"
+	| "pinned"
+	| "unknown";
 export type ReleaseChannel = "alpha" | "beta" | "rc" | "latest";
+
+const KNOWN_INSTALL_KINDS: readonly InstallKind[] = [
+	"npm-global",
+	"pnpm-global",
+	"mise",
+	"npx",
+	"docker",
+	"repo-dev",
+	"pinned",
+	"unknown",
+];
 
 export interface UpdateStatus {
 	current_version: string;
@@ -31,6 +56,16 @@ export interface UpdateStatus {
 	auto_update_eligible: boolean;
 	recommended_action: string;
 	error: string | null;
+}
+
+export function isExplicitUpdateInstallEligible(status: UpdateStatus): boolean {
+	if (status.install_kind === "npm-global") return status.auto_update_eligible;
+	return (
+		(status.install_kind === "mise" || status.install_kind === "pnpm-global") &&
+		status.update_available &&
+		!status.stale &&
+		status.error === null
+	);
 }
 
 interface ReleaseCacheRecord {
@@ -299,6 +334,9 @@ function recommendedAction(
 	updateAvailable: boolean,
 	channel: ReleaseChannel | null,
 ): string {
+	if (installKind === "repo-dev") {
+		return "Package-release updates do not apply to repository source. Run git pull, pnpm install, and pnpm build in the codemem repository.";
+	}
 	if (!channel || !isReleaseVersionForChannel(currentVersion, channel)) {
 		return "Verify the current codemem version and try again.";
 	}
@@ -310,17 +348,31 @@ function recommendedAction(
 	switch (installKind) {
 		case "npm-global":
 			return `${process.platform === "linux" ? "env ONNXRUNTIME_NODE_INSTALL=skip " : ""}npm install -g codemem@${latestVersion}`;
+		case "pnpm-global":
+			return `${process.platform === "linux" ? "env ONNXRUNTIME_NODE_INSTALL=skip " : ""}pnpm add -g codemem@${latestVersion} @codemem/embeddings@${latestVersion}`;
+		case "mise":
+			return process.platform === "linux"
+				? `env ONNXRUNTIME_NODE_INSTALL=skip mise use -g npm:codemem@${latestVersion}`
+				: `mise use -g npm:codemem@${latestVersion}`;
 		case "npx":
 			return `Update your launcher to request codemem@${latestVersion} and @codemem/embeddings@${latestVersion} together.`;
 		case "docker":
 			return `Set CODEMEM_VERSION=${latestVersion}, then run CODEMEM_VERSION=${latestVersion} docker compose build --pull and docker compose up -d.`;
-		case "repo-dev":
-			return "Run git pull, pnpm install, and pnpm build in the codemem repository.";
 		case "pinned":
 			return `Update the pinned codemem version to ${latestVersion}, then restart codemem.`;
 		default:
 			return `Update codemem to ${latestVersion} using your installation method.`;
 	}
+}
+
+function hasNewerPackageRelease(
+	installKind: InstallKind,
+	currentVersion: string,
+	latestVersion: string | null,
+): boolean {
+	if (installKind === "repo-dev" || latestVersion === null) return false;
+	const comparison = compareSemver(latestVersion, currentVersion);
+	return comparison !== null && comparison > 0;
 }
 
 function toStatus(
@@ -329,8 +381,11 @@ function toStatus(
 	channel: ReleaseChannel | null,
 ): UpdateStatus {
 	const latestVersion = resolution.record?.latest_version ?? null;
-	const comparison = latestVersion ? compareSemver(latestVersion, options.currentVersion) : null;
-	const updateAvailable = comparison !== null && comparison > 0;
+	const updateAvailable = hasNewerPackageRelease(
+		options.installKind,
+		options.currentVersion,
+		latestVersion,
+	);
 	return {
 		current_version: options.currentVersion,
 		channel,
@@ -530,52 +585,104 @@ function isPinnedSource(source: string): boolean {
 	return fragment.length > 0 && !containsWhitespace(fragment);
 }
 
+function miseInstallKindForPath(
+	entryPath: string,
+	env: Record<string, string | undefined>,
+): "mise" | "unknown" | null {
+	const version = miseInstallVersionFromPath(entryPath, env);
+	if (version === null) return null;
+	return parseSemver(version) === null ? "unknown" : "mise";
+}
+
+function narrowedInstallKind(
+	entryPath: string,
+	explicit: string,
+	env: Record<string, string | undefined>,
+): InstallKind | null {
+	if (!explicit) return null;
+	if (!KNOWN_INSTALL_KINDS.includes(explicit as InstallKind)) return "unknown";
+	if (explicit === "mise" && miseInstallKindForPath(entryPath, env) !== "mise") return "unknown";
+	if (["docker", "repo-dev", "pinned", "unknown"].includes(explicit)) {
+		return explicit as InstallKind;
+	}
+	return null;
+}
+
+function runnerInstallKind(runner: string): InstallKind | null {
+	return runner === "node" || runner === "uv" ? "repo-dev" : null;
+}
+
+function pnpmVirtualStoreVersion(packagePath: string): string | null {
+	const match =
+		/^\.pnpm\/codemem@([^/_]+)(?:_[^/]+)?\/node_modules\/codemem\/dist\/index\.js$/i.exec(
+			packagePath,
+		);
+	return match?.[1] && parseSemver(match[1]) !== null ? match[1] : null;
+}
+
+function pnpmGlobalRelativePath(
+	entryPath: string,
+	env: Record<string, string | undefined>,
+): string | null {
+	const pnpmHome = env.PNPM_HOME?.trim();
+	if (pnpmHome) {
+		const prefix = `${resolveComparablePath(pnpmHome)}/global/`;
+		return entryPath.startsWith(prefix) ? entryPath.slice(prefix.length) : null;
+	}
+	const marker = "/pnpm/global/";
+	const markerIndex = entryPath.indexOf(marker);
+	return markerIndex >= 0 ? entryPath.slice(markerIndex + marker.length) : null;
+}
+
+function isPnpmGlobalEntryPath(
+	entryPath: string,
+	env: Record<string, string | undefined>,
+): boolean {
+	const relativePath = pnpmGlobalRelativePath(entryPath, env);
+	if (!relativePath) return false;
+	const layout = /^(?:[1-9]\d*\/|v[1-9]\d*\/[^/]+\/node_modules\/)/i.exec(relativePath);
+	if (!layout) return false;
+	return pnpmVirtualStoreVersion(relativePath.slice(layout[0].length)) !== null;
+}
+
+function isPnpmDlxEntryPath(entryPath: string): boolean {
+	const match =
+		/\/(?:pnpm\/dlx\/[^/]+\/[^/]+|\.pnpm\/dlx\/[^/]+)\/node_modules\/(\.pnpm\/codemem@.+)$/i.exec(
+			entryPath,
+		);
+	return match?.[1] !== undefined && pnpmVirtualStoreVersion(match[1]) !== null;
+}
+
+function installKindForEntryPath(
+	entryPath: string,
+	env: Record<string, string | undefined>,
+): InstallKind {
+	const miseInstallKind = miseInstallKindForPath(entryPath, env);
+	if (miseInstallKind) return miseInstallKind;
+	if (/\/_npx\//.test(entryPath) || isPnpmDlxEntryPath(entryPath)) return "npx";
+	if (/\/installs\/npm-codemem\/[^/]+\//.test(entryPath)) return "unknown";
+	if (isPnpmGlobalEntryPath(resolveComparablePath(entryPath), env)) return "pnpm-global";
+	if (/\/lib\/node_modules\/codemem\/dist\/index\.js$/.test(entryPath)) return "npm-global";
+	if (/\/AppData\/Roaming\/npm\/node_modules\/codemem\/dist\/index\.js$/i.test(entryPath)) {
+		return "npm-global";
+	}
+	return "unknown";
+}
+
 export function detectInstallKind(input: InstallDetectionInput): InstallKind {
 	const env = input.env ?? {};
 	const source = env.CODEMEM_RUNNER_FROM?.trim() ?? "";
 	if (isPinnedSource(source)) return "pinned";
 
-	let entryPath = input.entryPath;
-	if (entryPath) {
-		try {
-			entryPath = realpathSync(entryPath);
-		} catch {
-			// Preserve synthetic, removed, and otherwise unresolved paths for the
-			// existing pattern checks below.
-		}
-	}
-	entryPath = entryPath.replaceAll("\\", "/");
+	const entryPath = normalizeInstallEntryPath(input.entryPath);
 	if (/\/packages\/cli\/src\/index\.ts$/.test(entryPath)) return "repo-dev";
 
 	const explicit = env.CODEMEM_INSTALL_KIND?.trim().toLowerCase();
-	const knownKinds: readonly InstallKind[] = [
-		"npm-global",
-		"npx",
-		"docker",
-		"repo-dev",
-		"pinned",
-		"unknown",
-	];
-	if (explicit) {
-		if (!knownKinds.includes(explicit as InstallKind)) return "unknown";
-		// An environment marker may safely narrow permissions, but it must never
-		// authorize process execution on its own.
-		if (["docker", "repo-dev", "pinned", "unknown"].includes(explicit)) {
-			return explicit as InstallKind;
-		}
-	}
+	const narrowedKind = narrowedInstallKind(entryPath, explicit ?? "", env);
+	if (narrowedKind) return narrowedKind;
 
 	const runner = env.CODEMEM_RUNNER?.trim().toLowerCase();
-	if (runner === "node" || runner === "uv") return "repo-dev";
-
-	if (/\/(?:_npx|\.pnpm\/dlx)\//.test(entryPath)) return "npx";
-	if (/\/lib\/node_modules\/codemem\/dist\/index\.js$/.test(entryPath)) {
-		return "npm-global";
-	}
-	if (/\/AppData\/Roaming\/npm\/node_modules\/codemem\/dist\/index\.js$/i.test(entryPath)) {
-		return "npm-global";
-	}
-	return "unknown";
+	return runnerInstallKind(runner ?? "") ?? installKindForEntryPath(entryPath, env);
 }
 
 const defaultReleaseDiscovery = createReleaseDiscovery({

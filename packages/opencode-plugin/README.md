@@ -27,8 +27,10 @@ OpenCode installs npm plugins automatically with Bun at startup.
 
 The package default export is one dual-host object. OpenCode 1 calls its
 `server()` function, while OpenCode 2 calls its `setup()` function. The OpenCode 2
-setup is an intentionally inactive compatibility shell until the V2 adapter is
-enabled.
+setup captures conversation, tool, usage, and lifecycle activity and disposes its
+host registrations on unload. It exposes the manual `mem-status`, `mem-recent`,
+and `mem-stats` tools through `tool.transform` with `codemode: false`. It does not
+inject automatic recall because the V2 context hook has no request kind or request ID.
 
 `CodememPlugin` remains the canonical named OpenCode 1 function export.
 `OpencodeMemPlugin` remains available as a deprecated, reference-identical alias

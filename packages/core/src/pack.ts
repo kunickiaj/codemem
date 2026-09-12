@@ -15,16 +15,24 @@
  */
 
 import { createHash } from "node:crypto";
-import { type Database, fromJson } from "./db.js";
+import type { Database } from "./db.js";
 import { buildFilterClausesWithContext } from "./filters.js";
 import { inferMemoryRole, readArtifactClass } from "./memory-quality.js";
+import { fusePackCandidates } from "./pack-fusion.js";
 import { projectBasename } from "./project.js";
 import { sanitizeSearchQuery } from "./query-sanitizer.js";
 import { memoryLooksRecapLike, queryPrefersRecap } from "./recap-policy.js";
 import { findByFile } from "./ref-queries.js";
 import { MAX_RETRIEVAL_DIAGNOSTIC_EXPOSURES } from "./retrieval-ledger.js";
 import type { StoreHandle } from "./search.js";
-import { ownershipFilterContext, rerankResults, scoreResult, search, timeline } from "./search.js";
+import {
+	ownershipFilterContext,
+	rerankResults,
+	rowToMemoryResult,
+	scoreResult,
+	search,
+	timeline,
+} from "./search.js";
 import {
 	canonicalMemoryKind,
 	getSummaryMetadata,
@@ -38,6 +46,7 @@ import type {
 	MemoryFilters,
 	MemoryItemResponse,
 	MemoryResult,
+	PackFusionEvidence,
 	PackItem,
 	PackRenderOptions,
 	PackResponse,
@@ -55,17 +64,17 @@ import { semanticSearch } from "./vectors.js";
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Observation kind priority — higher-signal kinds sort first. */
-const OBSERVATION_KIND_PRIORITY: Record<string, number> = {
-	decision: 0,
-	feature: 1,
-	bugfix: 2,
-	refactor: 3,
-	change: 4,
-	discovery: 5,
-	exploration: 6,
-	note: 7,
-};
+/** Kinds eligible for supplemental browsing, including legacy reader kinds. */
+const OBSERVATION_KINDS = [
+	"decision",
+	"feature",
+	"bugfix",
+	"refactor",
+	"change",
+	"discovery",
+	"exploration",
+	"note",
+];
 
 const TASK_RECENCY_DAYS = 365;
 
@@ -679,6 +688,15 @@ function candidateReasons(
 	return reasons.length > 0 ? reasons : ["included in retrieval pool"];
 }
 
+function semanticRejectionReasons(
+	id: number,
+	disposition: PackTraceDisposition,
+	rejectedIds: Set<number>,
+): string[] {
+	if (disposition !== "dropped" || !rejectedIds.has(id)) return [];
+	return ["automatic_semantic_only_without_keyword_support"];
+}
+
 export type PackArtifacts = {
 	response: PackResponse;
 	trace: PackTrace;
@@ -781,36 +799,86 @@ function itemLooksTaskLike(item: MemoryResult): boolean {
 	return false;
 }
 
+function workingSetBasename(path: string): string {
+	const normalized = path.replaceAll("\\", "/");
+	let end = normalized.length;
+	while (end > 0 && normalized[end - 1] === "/") end -= 1;
+	const start = normalized.lastIndexOf("/", end - 1) + 1;
+	return normalized.slice(start, end);
+}
+
+function taskIntentQuery(query: string, filters?: MemoryFilters): string {
+	// Hook builders append project, then the last five modified-file basenames.
+	// Strip only a complete metadata-derived suffix, never retrieval text itself.
+	const files = (filters?.working_set_paths ?? [])
+		.filter((path) => path.trim().length > 0)
+		.slice(-5)
+		.map(workingSetBasename)
+		.filter(Boolean);
+	const suffix = [filters?.project, ...files].filter(Boolean).join(" ");
+	if (!suffix || !query.endsWith(` ${suffix}`)) return query;
+	return query.slice(0, -(suffix.length + 1));
+}
+
+function trimTaskRequest(query: string): string {
+	const trimmed = query.trim();
+	let end = trimmed.length;
+	while (end > 0 && ".!?".includes(trimmed.charAt(end - 1))) end -= 1;
+	// Match the former non-Unicode /i grammar without folding lookalike letters.
+	return trimmed
+		.slice(0, end)
+		.trim()
+		.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+}
+
+function taskCollectionEnd(request: string, tokens: RegExpExecArray[], index: number): number {
+	const collection = tokens[index];
+	if (!collection) return -1;
+	if (
+		[
+			"tasks",
+			"todo",
+			"todos",
+			"backlog",
+			"followup",
+			"followups",
+			"follow-up",
+			"follow-ups",
+		].includes(collection[0])
+	)
+		return index + 1;
+	const next = tokens[index + 1];
+	if (collection[0] !== "follow" || !next || !["up", "ups"].includes(next[0])) return -1;
+	// The existing collection spelling permits one literal space, not arbitrary whitespace.
+	const separatorStart = collection.index + "follow".length;
+	if (request.slice(separatorStart, next.index) !== " ") return -1;
+	return index + 2;
+}
+
 function queryLooksLikeTasks(query: string): boolean {
-	const lowered = query.toLowerCase();
-	for (const token of [
-		"todo",
-		"todos",
-		"pending",
-		"task",
-		"tasks",
-		"next",
-		"resume",
-		"continue",
-		"backlog",
-	]) {
-		if (lowered.includes(token)) return true;
+	const request = trimTaskRequest(query);
+	const tokens = [...request.matchAll(/\S+/g)];
+	const word = (index: number) => tokens[index]?.[0];
+	let index = 0;
+	if (word(index) === "please") index += 1;
+	const listing = word(index) === "show" || word(index) === "list";
+	if (listing) {
+		index += 1;
+		if (word(index) === "me" || word(index) === "us") index += 1;
+	} else if (index > 0) {
+		return false;
 	}
-	for (const phrase of [
-		"follow up",
-		"follow-up",
-		"followups",
-		"pick up",
-		"pick-up",
-		"left off",
-		"where we left off",
-		"work on next",
-		"what's next",
-		"what was next",
-	]) {
-		if (lowered.includes(phrase)) return true;
-	}
-	return false;
+	// Bare collection labels and explicit listing requests express browsing intent.
+	// A task word inside a technical question is not enough to broaden retrieval.
+	while (["my", "our", "the", "pending", "open"].includes(word(index) ?? "")) index += 1;
+	index = taskCollectionEnd(request, tokens, index);
+	if (index < 0) return false;
+	if (index === tokens.length) return true;
+	if (!listing || !["for", "about", "in"].includes(word(index) ?? "")) return false;
+	const topic = tokens[index + 1];
+	if (!topic) return false;
+	// Preserve the former single-line topic tail; whitespace before it may span lines.
+	return !/[\n\r\u2028\u2029]/.test(request.slice(topic.index));
 }
 
 function queryLooksLikeRecall(query: string): boolean {
@@ -835,7 +903,9 @@ function queryLooksLikeRecall(query: string): boolean {
 	return false;
 }
 
-function recallQueryWantsTimeline(query: string): boolean {
+function recallQueryWantsTimeline(query: string, options: { automatic: boolean }): boolean {
+	// Automatic recall keeps retrieved facts, but must not add unrelated neighbors.
+	if (options.automatic) return false;
 	const lowered = query.toLowerCase();
 	for (const phrase of [
 		"what did we do",
@@ -860,42 +930,11 @@ function prioritizeDefaultResults(
 	query: string,
 ): MemoryResult[] {
 	const preferSummary = queryPrefersRecap(query);
-	const ordered = [...results];
-	ordered.sort((a, b) => {
-		if (!preferSummary) {
-			const recapDelta = Number(memoryLooksRecapLike(a)) - Number(memoryLooksRecapLike(b));
-			if (recapDelta !== 0) return recapDelta;
-			// Relevance wins before kind. A row that directly matches the query must
-			// not be displaced by a less-relevant row that merely has a
-			// higher-priority kind (e.g. a generic `decision` outranking the
-			// `feature` the user actually asked about). Kind/task-like ordering
-			// then breaks ties among comparably-relevant rows.
-			const overlapDelta = textOverlapScore(b, query) - textOverlapScore(a, query);
-			if (overlapDelta !== 0) return overlapDelta;
-			const taskLikeDelta = Number(itemLooksTaskLike(a)) - Number(itemLooksTaskLike(b));
-			if (taskLikeDelta !== 0) return taskLikeDelta;
-			const rank = (item: MemoryResult): number => {
-				if (item.kind === "decision") return 0;
-				if (item.kind === "bugfix") return 1;
-				if (item.kind === "discovery") return 2;
-				if (item.kind === "refactor") return 3;
-				if (item.kind === "feature") return 4;
-				if (item.kind === "exploration") return 5;
-				if (item.kind === "note") return 6;
-				if (item.kind === "observation") return 7;
-				if (item.kind === "change") return 8;
-				if (item.kind === "entities") return 9;
-				return 10;
-			};
-			const rankDelta = rank(a) - rank(b);
-			if (rankDelta !== 0) return rankDelta;
-			return 0;
-		}
-		const overlapDelta = textOverlapScore(b, query) - textOverlapScore(a, query);
-		if (overlapDelta !== 0) return overlapDelta;
-		return 0;
-	});
-	return ordered.slice(0, limit);
+	if (preferSummary) return results.slice(0, limit);
+	// Keep the intentional recap demotion, preserving retrieval order within each group.
+	return [...results]
+		.sort((a, b) => Number(memoryLooksRecapLike(a)) - Number(memoryLooksRecapLike(b)))
+		.slice(0, limit);
 }
 
 function toMemoryResult(row: MemoryItemResponse | TimelineItemResponse): MemoryResult {
@@ -927,13 +966,11 @@ function filterRecentResults(results: MemoryResult[], days: number): MemoryResul
 	return results.filter((item) => parseCreatedAt(item.created_at) >= cutoff);
 }
 
-function prioritizeTaskResults(results: MemoryResult[], limit: number, query = ""): MemoryResult[] {
+function prioritizeTaskFallback(results: MemoryResult[], limit: number): MemoryResult[] {
 	const ordered = [...results].sort((a, b) =>
 		(b.created_at ?? "").localeCompare(a.created_at ?? ""),
 	);
 	ordered.sort((a, b) => {
-		const overlapDelta = textOverlapScore(b, query) - textOverlapScore(a, query);
-		if (overlapDelta !== 0) return overlapDelta;
 		const taskLikeDelta = Number(itemLooksTaskLike(b)) - Number(itemLooksTaskLike(a));
 		if (taskLikeDelta !== 0) return taskLikeDelta;
 		const rank = (kind: string): number => {
@@ -950,44 +987,14 @@ function prioritizeTaskResults(results: MemoryResult[], limit: number, query = "
 function prioritizeRecallResults(
 	results: MemoryResult[],
 	limit: number,
-	preferSummary: boolean,
-	query: string,
+	options: { preferSummary: boolean },
 ): MemoryResult[] {
-	const ordered = [...results].sort((a, b) =>
-		(b.created_at ?? "").localeCompare(a.created_at ?? ""),
-	);
-	ordered.sort((a, b) => {
-		const rank = (item: MemoryResult): number => {
-			if (preferSummary) {
-				if (isSummaryLike(item)) return 0;
-				if (item.kind === "decision") return 1;
-				if (item.kind === "note") return 2;
-				if (item.kind === "observation") return 3;
-				if (item.kind === "entities") return 4;
-				return 5;
-			}
-			if (itemLooksTaskLike(item)) return 8;
-			if (item.kind === "decision") return 0;
-			if (item.kind === "bugfix") return 1;
-			if (item.kind === "discovery") return 2;
-			if (item.kind === "exploration") return 3;
-			if (isSummaryLike(item)) return 4;
-			if (item.kind === "note") return 5;
-			if (item.kind === "observation") return 6;
-			if (item.kind === "entities") return 7;
-			return 5;
-		};
-		if (!preferSummary) {
-			const rankDelta = rank(a) - rank(b);
-			if (rankDelta !== 0) return rankDelta;
-			const recapDelta = Number(memoryLooksRecapLike(a)) - Number(memoryLooksRecapLike(b));
-			if (recapDelta !== 0) return recapDelta;
-		}
-		const overlapDelta = textOverlapScore(b, query) - textOverlapScore(a, query);
-		if (overlapDelta !== 0) return overlapDelta;
-		return rank(a) - rank(b);
-	});
-	return ordered.slice(0, limit);
+	return [...results]
+		.sort((a, b) => {
+			if (options.preferSummary) return Number(isSummaryLike(b)) - Number(isSummaryLike(a));
+			return Number(memoryLooksRecapLike(a)) - Number(memoryLooksRecapLike(b));
+		})
+		.slice(0, limit);
 }
 
 type RecentEligibility = {
@@ -1022,7 +1029,7 @@ function taskFallbackRecent(
 	eligibility: RecentEligibility = RECENT_UNRESTRICTED,
 ): MemoryResult[] {
 	const expandedLimit = limit * 3;
-	return prioritizeTaskResults(recentEligible(store, expandedLimit, filters, eligibility), limit);
+	return prioritizeTaskFallback(recentEligible(store, expandedLimit, filters, eligibility), limit);
 }
 
 function recallFallbackRecent(
@@ -1038,7 +1045,7 @@ function recallFallbackRecent(
 
 	const summaryIds = new Set(summaries.map((item) => item.id));
 	const remainder = recentAll.filter((item) => !summaryIds.has(item.id));
-	const prioritized = prioritizeTaskResults(remainder, limit - summaries.length);
+	const prioritized = prioritizeTaskFallback(remainder, limit - summaries.length);
 	return [...summaries, ...prioritized];
 }
 function parseNonNegativeInt(value: unknown): number | null {
@@ -1327,8 +1334,7 @@ function recordPackUsage(store: StoreHandle, metrics: Record<string, unknown>): 
  * 5. Format sections into pack_text
  */
 /**
- * Merge FTS and semantic results by ID, keeping the higher score for dupes.
- * Matches Python's always-merge behavior when semantic results are available.
+ * Fuse eligible channel ranks, retaining raw scores for diagnostics.
  */
 function mergeResults(
 	store: StoreHandle,
@@ -1344,26 +1350,37 @@ function mergeResults(
 	semanticCandidates: MemoryResult[];
 	ftsCount: number;
 	semanticCount: number;
+	fusion: Map<number, PackFusionEvidence>;
 } {
-	const seen = new Map<number, MemoryResult>();
-	for (const r of ftsResults) {
-		const existing = seen.get(r.id);
-		if (!existing || r.score > existing.score) seen.set(r.id, r);
-	}
 	const scopedSemanticResults = rehydrateScopedCandidateResults(
 		store,
 		semanticResults,
 		filters,
 	).filter(eligible);
-	let semanticCount = 0;
-	for (const r of scopedSemanticResults) {
-		if (!seen.has(r.id)) semanticCount++;
-		const existing = seen.get(r.id);
-		if (!existing || r.score > existing.score) seen.set(r.id, r);
-	}
-	const candidates = [...seen.values()];
-	const merged = rerankResults(store, candidates, limit, filters, query);
+	const ftsIds = new Set(ftsResults.map((item) => item.id));
+	// FTS candidates already passed eligibility in retrieval.search -> searchOnce.
+	const semanticCount = scopedSemanticResults.filter((item) => !ftsIds.has(item.id)).length;
+	const referenceNow = new Date();
+	const ownership =
+		store.buildOwnershipPredicate?.() ?? ((item: MemoryResult) => store.memoryOwnedBySelf(item));
+	const ranked = fusePackCandidates(
+		ftsResults,
+		scopedSemanticResults,
+		(item) =>
+			scoreResult(store, { ...item, score: 0 }, filters, query, referenceNow, ownership)
+				.combined_score ?? 0,
+	);
+	const hybrid =
+		ranked.some(({ evidence }) => evidence.fts_rank != null) &&
+		ranked.some(({ evidence }) => evidence.semantic_rank != null);
+	const candidates = hybrid
+		? ranked.map(({ item }) => item)
+		: [...ftsResults, ...scopedSemanticResults];
+	const merged = hybrid
+		? candidates.slice(0, limit)
+		: rerankResults(store, candidates, limit, filters, query);
 	return {
+		fusion: new Map(hybrid ? ranked.map(({ item, evidence }) => [item.id, evidence]) : []),
 		merged,
 		candidates,
 		semanticCandidates: scopedSemanticResults,
@@ -1372,17 +1389,23 @@ function mergeResults(
 	};
 }
 
+function validCandidateResultsById(candidates: MemoryResult[]): Map<number, MemoryResult> {
+	const originalById = new Map<number, MemoryResult>();
+	for (const item of candidates) {
+		if (!Number.isSafeInteger(item.id) || item.id <= 0) continue;
+		if (!Number.isFinite(item.score)) continue;
+		const original = originalById.get(item.id);
+		if (!original || item.score > original.score) originalById.set(item.id, item);
+	}
+	return originalById;
+}
+
 function rehydrateScopedCandidateResults(
 	store: StoreHandle,
 	candidates: MemoryResult[],
 	filters?: MemoryFilters,
 ): MemoryResult[] {
-	if (candidates.length === 0) return [];
-	const originalById = new Map<number, MemoryResult>();
-	for (const item of candidates) {
-		if (!Number.isSafeInteger(item.id) || item.id <= 0) continue;
-		if (!originalById.has(item.id)) originalById.set(item.id, item);
-	}
+	const originalById = validCandidateResultsById(candidates);
 	const ids = [...originalById.keys()];
 	if (ids.length === 0) return [];
 
@@ -1410,22 +1433,12 @@ function rehydrateScopedCandidateResults(
 			const id = Number(row.id);
 			const original = originalById.get(id);
 			if (!original) continue;
-			const metadataJson = row.metadata_json == null ? null : String(row.metadata_json);
-			scopedById.set(id, {
+			const preserveFilteredKind =
+				typeof filters?.kind === "string" && filters.kind.trim().length > 0;
+			scopedById.set(
 				id,
-				kind: canonicalMemoryKind(String(row.kind ?? "observation"), metadataJson),
-				title: String(row.title ?? ""),
-				body_text: String(row.body_text ?? ""),
-				confidence: Number(row.confidence ?? 0),
-				created_at: String(row.created_at ?? ""),
-				updated_at: String(row.updated_at ?? ""),
-				tags_text: String(row.tags_text ?? ""),
-				score: original.score,
-				session_id: Number(row.session_id),
-				metadata: fromJson(metadataJson),
-				narrative: row.narrative == null ? null : String(row.narrative),
-				facts: row.facts == null ? null : String(row.facts),
-			});
+				rowToMemoryResult({ ...row, score: original.score }, preserveFilteredKind),
+			);
 		}
 	}
 
@@ -1492,16 +1505,41 @@ function createPackRetrieval(
 		filters?: MemoryFilters;
 		eligible: (item: MemoryResult) => boolean;
 		summarySessionId?: number | null;
+		requireKeywordSupport: boolean;
 	},
 ) {
 	const { limit, filters, eligible, summarySessionId } = options;
+	// Each mutually exclusive pack mode merges at most once, so IDs identify
+	// evidence from one fusion pass; this map is not a multi-query accumulator.
+	const fusion = new Map<number, PackFusionEvidence>();
+	const rejectedSemanticIds = new Set<number>();
 	return {
+		fusion,
+		rejectedSemanticIds,
 		search: (query: string) => search(store, query, limit, filters, eligible, summarySessionId),
-		merge: (results: MemoryResult[], semantic: MemoryResult[], query: string) =>
-			mergeResults(store, results, semantic, limit, query, filters, eligible),
+		merge: (results: MemoryResult[], semantic: MemoryResult[], query: string) => {
+			const merged = mergeResults(store, results, semantic, limit, query, filters, eligible);
+			for (const [id, evidence] of merged.fusion) fusion.set(id, evidence);
+			// Nearest neighbors have no calibrated confidence cutoff. Reject the batch
+			// on automatic non-task misses, accepting paraphrase false negatives.
+			if (options.requireKeywordSupport && results.length === 0) {
+				for (const item of merged.semanticCandidates) rejectedSemanticIds.add(item.id);
+				return { ...merged, merged: [], semanticCount: 0 };
+			}
+			return merged;
+		},
 		fileRefs: (results: MemoryResult[]) =>
 			mergeFileRefCandidates(store, results, filters, limit, summarySessionId).filter(eligible),
 	};
+}
+
+function withFusionScores(
+	scores: ReturnType<typeof scoreResult>,
+	fusion: PackFusionEvidence | undefined,
+): ReturnType<typeof scoreResult> {
+	if (!fusion) return scores;
+	// Keep the legacy diagnostic calculation; fusion alone supplies the hybrid key.
+	return { ...scores, fusion };
 }
 
 function buildPackArtifacts(
@@ -1526,14 +1564,18 @@ function buildPackArtifacts(
 	const eligible = (item: MemoryResult) => automaticEligible(continuity, item);
 	const summarySessionId = continuity.requested ? continuity.sessionId : undefined;
 	const recentEligibility: RecentEligibility = { eligible, summarySessionId };
+	const sanitized = sanitizeSearchQuery(context);
+	const retrievalContext = sanitized.clean_query;
+	const taskMode = queryLooksLikeTasks(taskIntentQuery(retrievalContext, filters));
+	const recallMode = !taskMode && queryLooksLikeRecall(retrievalContext);
+	const allowUnrelatedFallback = !continuity.requested || taskMode;
 	const retrieval = createPackRetrieval(store, {
 		limit: effectiveLimit,
 		filters,
 		eligible,
 		summarySessionId,
+		requireKeywordSupport: continuity.requested && !taskMode,
 	});
-	const sanitized = sanitizeSearchQuery(context);
-	const retrievalContext = sanitized.clean_query;
 	let fallbackUsed = false;
 	let ftsCount = 0;
 	let semanticCount = 0;
@@ -1555,8 +1597,6 @@ function buildPackArtifacts(
 	let supplementalObservationCandidates: MemoryResult[] = [];
 	let retrievalQuery = retrievalContext;
 	let results: MemoryResult[];
-	const taskMode = queryLooksLikeTasks(retrievalContext);
-	const recallMode = !taskMode && queryLooksLikeRecall(retrievalContext);
 
 	if (taskMode) {
 		const taskQuery = `${retrievalContext} ${TASK_HINT_QUERY}`.trim();
@@ -1582,21 +1622,18 @@ function buildPackArtifacts(
 				actionableTaskResults.length > 0 ? actionableTaskResults : taskResults,
 				TASK_RECENCY_DAYS,
 			);
-			results = prioritizeTaskResults(
-				recentTaskResults.length > 0
-					? recentTaskResults
-					: actionableTaskResults.length > 0
-						? actionableTaskResults
-						: taskResults,
-				effectiveLimit,
-				retrievalContext,
-			);
+			results = taskResults;
+			if (actionableTaskResults.length > 0) results = actionableTaskResults;
+			if (recentTaskResults.length > 0) results = recentTaskResults;
+			results = results.slice(0, effectiveLimit);
 		}
 	} else if (recallMode) {
 		const recallQuery = retrievalContext.trim().length > 0 ? retrievalContext : RECALL_HINT_QUERY;
 		retrievalQuery = recallQuery;
 		const preferSummary = queryPrefersRecap(recallQuery);
-		const wantsTimeline = recallQueryWantsTimeline(recallQuery);
+		const wantsTimeline = recallQueryWantsTimeline(recallQuery, {
+			automatic: continuity.requested,
+		});
 		const topicalRecallQuery = [...queryContentTokens(recallQuery)].join(" ");
 		let recallResults = retrieval.search(recallQuery);
 		ftsCount = recallResults.length;
@@ -1617,7 +1654,7 @@ function buildPackArtifacts(
 				}
 			}
 		}
-		if (recallResults.length === 0) {
+		if (recallResults.length === 0 && allowUnrelatedFallback) {
 			const hintResults = retrieval.search(RECALL_HINT_QUERY);
 			captureTraceCandidates(RECALL_HINT_QUERY, hintResults);
 			recallResults = hintResults.filter(isSummaryLike);
@@ -1632,13 +1669,8 @@ function buildPackArtifacts(
 		}
 		recallResults = retrieval.fileRefs(recallResults);
 		captureTraceCandidates(retrievalQuery, recallResults);
-		results = prioritizeRecallResults(
-			recallResults,
-			effectiveLimit,
-			preferSummary,
-			retrievalContext,
-		);
-		if (results.length === 0) {
+		results = prioritizeRecallResults(recallResults, effectiveLimit, { preferSummary });
+		if (results.length === 0 && allowUnrelatedFallback) {
 			fallbackUsed = true;
 			results = recallFallbackRecent(store, effectiveLimit, filters, recentEligibility);
 			captureTraceCandidates(retrievalQuery, results);
@@ -1682,7 +1714,7 @@ function buildPackArtifacts(
 		captureTraceCandidates(retrievalContext, results);
 		results = prioritizeDefaultResults(results, effectiveLimit, retrievalContext);
 
-		if (results.length === 0) {
+		if (results.length === 0 && allowUnrelatedFallback) {
 			fallbackUsed = true;
 			results = recentEligible(store, effectiveLimit, filters, recentEligibility);
 			captureTraceCandidates(retrievalContext, results);
@@ -1691,15 +1723,16 @@ function buildPackArtifacts(
 
 	// Step 2: categorize results
 
-	// Summary: prefer search match; only inject a global fallback when the user
-	// explicitly wants a summary or we're in non-recall mode.
+	// Explicit recap can use a requester-scoped summary without enabling recent
+	// durable fallback. Manual browsing retains its existing summary fallback.
 	const directSummaryMatches =
 		recallMode && !queryPrefersRecap(retrievalContext)
 			? results.filter((item) => isNativeSessionSummaryMemory(item))
 			: results.filter(isSummaryLike);
 	let summaryItems = directSummaryMatches.slice(0, 1);
-	const allowGlobalSummaryFallback = !recallMode || queryPrefersRecap(retrievalContext);
-	if (summaryItems.length === 0 && allowGlobalSummaryFallback) {
+	const allowSummaryFallback =
+		queryPrefersRecap(retrievalContext) || (allowUnrelatedFallback && !recallMode);
+	if (summaryItems.length === 0 && allowSummaryFallback) {
 		const s = findLatestSummaryLike(store, filters, continuity);
 		if (s) {
 			summaryItems = [
@@ -1729,20 +1762,13 @@ function buildPackArtifacts(
 	const timelineIds = new Set(timelineItems.map((r) => r.id));
 
 	// Observations: from search results, then fall back to recent by observation kinds
-	const OBSERVATION_KINDS = Object.keys(OBSERVATION_KIND_PRIORITY);
-	let observationItems = [...results]
-		.filter((r) => !isSummaryLike(r) && !timelineIds.has(r.id))
-		.sort((a, b) => {
-			const pa = OBSERVATION_KIND_PRIORITY[a.kind] ?? 99;
-			const pb = OBSERVATION_KIND_PRIORITY[b.kind] ?? 99;
-			return pa - pb;
-		});
+	let observationItems = results.filter((r) => !isSummaryLike(r) && !timelineIds.has(r.id));
 
 	if (recallMode && observationItems.length === 0) {
 		observationItems = results.filter((r) => !isSummaryLike(r));
 	}
 
-	if (observationItems.length === 0) {
+	if (observationItems.length === 0 && allowUnrelatedFallback) {
 		supplementalObservationCandidates = recentEligible(
 			store,
 			Math.max(effectiveLimit * 3, 10),
@@ -1757,9 +1783,9 @@ function buildPackArtifacts(
 		observationItems = [...timelineItems];
 	}
 
-	// Sort observations by tag overlap with context, then by kind priority
-	observationItems = sortByTagOverlap(observationItems, context);
 	if (supplementalObservationCandidates.length > 0) {
+		// Browsing fallback has no retrieval rank. Never reorder retrieved observations.
+		observationItems = sortByTagOverlap(observationItems, context);
 		// Trace supplemental candidates in the same deterministic order used by
 		// section assembly, before dedupe/compression/budget dispositions apply.
 		supplementalObservationCandidates = [...observationItems];
@@ -2105,7 +2131,7 @@ function buildPackArtifacts(
 						: "dropped";
 		const baseScores = scoreResult(store, item, filters, query, referenceNow, traceOwnership);
 		const scoredCandidate = {
-			...baseScores,
+			...withFusionScores(baseScores, retrieval.fusion.get(item.id)),
 			text_overlap: textOverlapScore(item, query),
 			tag_overlap: countOverlap(item.tags_text, queryContentTokens(query)),
 		};
@@ -2122,7 +2148,10 @@ function buildPackArtifacts(
 			title: item.title,
 			preview: preview(item.narrative || item.body_text),
 			scores: scoredCandidate,
-			reasons: candidateReasons(item, scoredCandidate, section, disposition),
+			reasons: [
+				...candidateReasons(item, scoredCandidate, section, disposition),
+				...semanticRejectionReasons(item.id, disposition, retrieval.rejectedSemanticIds),
+			],
 			disposition,
 			section,
 			artifact_class: readArtifactClass(item.metadata),

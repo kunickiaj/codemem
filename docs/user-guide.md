@@ -42,13 +42,36 @@ codemem update check --json
 - Stale validated cache data remains clearly labeled and may provide guidance when the registry is
   unavailable.
 - This command never installs or executes an update. Release installation remains outside this
-  read-only check. `codemem update install` is the separate, fail-closed installer: it refreshes
-  release status, requires a proven global npm installation and a same-channel release observed for at
-  least 24 hours, installs exact matching `codemem` and `@codemem/embeddings` versions from the
-  public npm registry, and verifies the active `codemem` command. It refuses npx, Docker, pinned,
+  read-only check. For a pnpm-global CLI, it reports the exact paired
+  `pnpm add -g codemem@<exact-version> @codemem/embeddings@<exact-version>` action. Path-based
+  pnpm-global detection recognizes a canonical global virtual-store entry but does not prove mutable ownership. For a
+  mise-managed CLI, it reports the exact global mise action; on Linux that action is
+  `env ONNXRUNTIME_NODE_INSTALL=skip mise use -g npm:codemem@<exact-version>`.
+- `codemem update install` is the separate, fail-closed installer. Proven npm-global installations
+  retain the 24-hour first-seen delay and install exact matching `codemem` and
+  `@codemem/embeddings` versions from the public npm registry. For pnpm-global installations, it
+  first runs bounded, neutral-directory `pnpm root -g`, `pnpm bin -g`, and
+  `pnpm list -g --depth 0 --json` queries without a shell. It accepts only pnpm 9–11's
+  `<list-root>/node_modules` root or pnpm 12's `<list-root>` root. The registered Codemem path and
+  resolved entry must agree before it installs with explicit default and `@codemem` registry pins; it then verifies exact registered
+  package versions and the exact launcher from the reported pnpm bin directory. It never runs a pnpm build-approval
+  command; pnpm 9 still runs install scripts by default, while newer releases apply their configured build-script policy. Before a mise mutation, the installer
+  reads bounded JSON from `mise ls --current` and `mise ls --global`, requires the active source
+  to match a global source under the user's home directory, and requires its canonical install path
+  to own the running CLI entrypoint. System, unresolved, and ambiguous custom sources are refused. It then runs
+  `mise use -g npm:codemem@<exact-version>` with inherited
+  environment, public default and `@codemem` registries, and Linux's CPU-only ONNX setting. Mise
+  writes that exact release into the primary global config, which may move a declaration from a
+  user `conf.d` or recognized user-level `~/.config/mise.toml` source to `config.toml`. Verification re-reads global state and requires `version`
+  or `requested_version` to match the target,
+  then uses `mise exec -- codemem version` from outside the invoking project, avoiding stale `PATH`
+  entries and project-local overrides. Both paths refresh release status and stay on the installed channel. It refuses npx, Docker, pinned,
   development, stale, cross-channel, downgrade, unsupported-channel, and unknown installations. Bare `codemem update`
   remains non-mutating. As with a
   manual npm install, npm runs the packages' installation scripts for native CPU dependencies.
+- Mise and pnpm-global installations are never eligible for plugin background auto-install. Changing
+  either global installation requires the direct `codemem update install` command or the reported
+  manual action.
 
 ## Start or restart the viewer
 - `codemem serve` runs the viewer in the foreground.
@@ -179,7 +202,7 @@ Command/file token caching notes:
 - Low-signal observations are filtered before writing.
 
 ## Automatic context injection
-- The OpenCode 1 plugin injects a memory pack next to the latest user message by default, keeping older prompt prefixes stable for provider prompt caches. The experimental OpenCode 2 beta entrypoint is an inactive compatibility shell and does not inject context.
+- The OpenCode 1 plugin injects a memory pack next to the latest user message by default, keeping older prompt prefixes stable for provider prompt caches. The experimental OpenCode 2 beta entrypoint captures activity, manages lifecycle cleanup, and exposes manual `mem-status`, `mem-recent`, and `mem-stats` tools through `tool.transform` with `codemode: false`. It does not inject automatic recall because the V2 context hook has no request kind or request ID, so compaction and transient safety cannot be guaranteed.
 - Controls:
   - `CODEMEM_INJECT_CONTEXT=0` disables injection.
   - `CODEMEM_INJECT_SURFACE=system` uses the legacy OpenCode system-prompt injection surface.

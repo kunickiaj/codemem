@@ -202,10 +202,10 @@ implementation spike will choose whether typed TypeScript source can be shipped
 directly to both hosts or must be compiled to JavaScript; the packed artifact,
 not only the workspace copy, decides that outcome.
 
-OpenCode 2 normalizes unsupported characters in tool names to underscores.
-Codemem will keep the V1 names stable and document V2's effective
-`mem_status`, `mem_recent`, and `mem_stats` IDs unless the spike finds a supported
-way to preserve the hyphenated names.
+At approval, the plan expected OpenCode 2 to normalize unsupported tool-name
+characters to underscores. The pinned packed-host result instead verifies that
+`tool.transform` with `codemode: false` preserves Codemem's hyphenated
+`mem-status`, `mem-recent`, and `mem-stats` IDs.
 
 ## Failure handling
 

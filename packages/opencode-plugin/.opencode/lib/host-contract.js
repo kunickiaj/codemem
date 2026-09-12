@@ -30,6 +30,7 @@
 
 /**
  * @typedef {object} CodememToolResult
+ * @property {string | null} [id] Stable host tool-call identity; OpenCode V1 omits it.
  * @property {string | null} sessionID
  * @property {string} tool
  * @property {object} args
@@ -37,12 +38,14 @@
 
 /**
  * @typedef {object} CodememRuntime
- * @property {() => void} dispose
+ * @property {() => void} deactivate
+ * @property {() => Promise<void>} dispose
  * @property {(context: CodememPromptContext) => Promise<void>} handleCompacting
  * @property {(input: CodememPromptContext, output: object) => Promise<void>} transformMessages
  * @property {(input: CodememPromptContext, output: object) => Promise<void>} transformSystem
  * @property {(event: CodememCapturedEvent) => Promise<void>} handleEvent
  * @property {(input: CodememToolResult, output: object) => Promise<void>} handleToolResult
+ * @property {(code: string) => Promise<void>} reportDiagnostic
  * @property {Record<string, {description: string, args: object, execute: Function}>} tools
  */
 
