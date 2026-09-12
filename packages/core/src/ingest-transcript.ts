@@ -5,6 +5,7 @@
  * from codemem/plugin_ingest.py.
  */
 
+import { captureContextFields, promptOriginLabel } from "./capture-context.js";
 import { extractAdapterEvent, projectAdapterToolEvent } from "./ingest-events.js";
 import { stripPrivate } from "./ingest-sanitize.js";
 import type { ParsedSummary } from "./ingest-types.js";
@@ -137,7 +138,7 @@ export function buildTranscript(events: Record<string, unknown>[]): string {
 		const eventType = event.type;
 		if (eventType === "user_prompt") {
 			const promptText = stripPrivate(String(event.prompt_text ?? "")).trim();
-			if (promptText) parts.push(`User: ${promptText}`);
+			if (promptText) parts.push(`${promptOriginLabel(event)}: ${promptText}`);
 		} else if (eventType === "assistant_message") {
 			const assistantText = stripPrivate(String(event.assistant_text ?? "")).trim();
 			if (assistantText) parts.push(`Assistant: ${assistantText}`);
@@ -235,6 +236,7 @@ export function normalizeEventsForSessionContext(
 					normalized.push({
 						type: "user_prompt",
 						prompt_text: text,
+						...captureContextFields(event),
 						timestamp: adapter.ts ?? null,
 						timestamp_wall_ms: wallMs,
 					});
@@ -287,6 +289,7 @@ export function normalizeAdapterEvents(
 			return {
 				type: "user_prompt",
 				prompt_text: text,
+				...captureContextFields(event),
 				prompt_number: p.prompt_number ?? null,
 				timestamp: a.ts ?? null,
 			};

@@ -23,6 +23,8 @@ export interface ToolEvent {
 // ---------------------------------------------------------------------------
 
 export interface ObserverContext {
+	/** Earlier delegated instructions, appended only after current evidence. */
+	delegatedBriefs?: string[];
 	project: string | null;
 	userPrompt: string;
 	promptNumber: number | null;
@@ -71,6 +73,8 @@ export interface ParsedOutput {
 // ---------------------------------------------------------------------------
 
 export interface SessionContext {
+	/** Bounded earlier instructions from this raw stream, never new evidence. */
+	delegatedBriefs?: string[];
 	flushBatch?: Record<string, unknown>;
 	firstPrompt?: string;
 	promptCount?: number;

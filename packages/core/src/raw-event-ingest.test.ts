@@ -38,6 +38,65 @@ afterEach(() => {
 	for (const path of cleanupPaths.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
+describe("ingestRawEvents schema compatibility", () => {
+	it("adds capture context storage before ingesting into an existing database", () => {
+		const dbPath = createDbPath();
+		const db = connect(dbPath);
+		try {
+			db.exec("DROP INDEX idx_raw_events_capture_context");
+			db.exec("ALTER TABLE raw_events DROP COLUMN capture_context_json");
+
+			expect(
+				ingestRawEvents(
+					{ db },
+					{
+						source: "opencode",
+						session_id: "session-legacy-sidecar",
+						event_id: "event-legacy-sidecar-1",
+						event_type: "user_prompt",
+						payload: { prompt_text: "ordinary prompt" },
+					},
+				),
+			).toMatchObject({ inserted: 1, skipped: 0 });
+
+			const brief = "delegated task";
+			ingestRawEvents(
+				{ db },
+				{
+					source: "opencode",
+					session_id: "session-legacy-sidecar",
+					event_id: "event-legacy-sidecar-2",
+					event_type: "user_prompt",
+					payload: { prompt_text: brief },
+					capture_context: {
+						version: 1,
+						host: "opencode-v1",
+						origin: "delegated_brief",
+						parent_session_id: "session-parent",
+						child_session_id: "session-legacy-sidecar",
+						task_call_id: "task-call-1",
+						message_id: "message-1",
+						requested_agent: "explore",
+						current_agent: "explore",
+						brief_sha256: createHash("sha256").update(brief).digest("hex"),
+					},
+				},
+			);
+			const row = db
+				.prepare("SELECT capture_context_json FROM raw_events WHERE event_id = ?")
+				.get("event-legacy-sidecar-2") as {
+				capture_context_json: string;
+			};
+			expect(JSON.parse(row.capture_context_json)).toMatchObject({
+				origin: "delegated_brief",
+				parent_session_id: "session-parent",
+			});
+		} finally {
+			db.close();
+		}
+	});
+});
+
 describe("ingestRawEvents", () => {
 	it("matches the current MemoryStore batch and metadata persistence behavior", () => {
 		const directStore = createStore();

@@ -29,6 +29,7 @@ import { expandUserPath } from "./observer-config.js";
 import {
 	canAutoBootstrapSchema,
 	ensureLegacyTeamSetupDraftSchema,
+	ensureRawEventCaptureContextSchema,
 	ensureRetrievalLedgerSchema,
 	ensureSchemaBootstrapped,
 	ensureSyncPeerSignatureStateSchema,
@@ -995,6 +996,7 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 	// Always run: current-marker databases may predate these no-version-bump
 	// columns, so the schema_compat_state gate cannot prove they exist.
 	ensureSyncPeerRuntimeVersionColumns(db);
+	ensureRawEventCaptureContextSchema(db);
 	ensureSyncPeerSignatureStateSchema(db);
 	ensureDeviceIdentityBindingAuditSchema(db);
 	ensureLegacyTeamSetupDraftSchema(db);

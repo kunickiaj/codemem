@@ -819,6 +819,7 @@ export function bootstrapSchema(db: Database): void {
 		db.exec(TEST_SCHEMA_BASE_DDL);
 		db.exec(SCHEMA_AUX_DDL);
 		ensureLegacyTeamSetupDraftSchema(db);
+		ensureRawEventCaptureContextSchema(db);
 		ensurePolicyTeamDeviceEligibilityColumns(db);
 		ensureSyncPeerSignatureStateSchema(db);
 		ensureRetrievalAttemptColumns(db);
@@ -1036,6 +1037,28 @@ function columnExists(db: Database, table: string, column: string): boolean {
 		.prepare("SELECT 1 FROM pragma_table_info(?) WHERE name = ? LIMIT 1")
 		.get(table, column);
 	return row !== undefined;
+}
+
+/** Additive only: old event IDs, payloads and provenance remain untouched. */
+export function ensureRawEventCaptureContextSchema(db: Database): void {
+	if (isReadonlyDatabase(db) || !tableExists(db, "raw_events")) return;
+	const indexExists = db
+		.prepare(
+			"SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_raw_events_capture_context'",
+		)
+		.get();
+	if (columnExists(db, "raw_events", "capture_context_json") && indexExists) return;
+	db.transaction(() => {
+		if (!columnExists(db, "raw_events", "capture_context_json")) {
+			db.exec("ALTER TABLE raw_events ADD COLUMN capture_context_json TEXT");
+		}
+		if (
+			["source", "stream_id", "event_seq"].every((column) => columnExists(db, "raw_events", column))
+		) {
+			db.exec(`CREATE INDEX IF NOT EXISTS idx_raw_events_capture_context
+				ON raw_events(source, stream_id, event_seq) WHERE capture_context_json IS NOT NULL`);
+		}
+	}).immediate();
 }
 
 /**
