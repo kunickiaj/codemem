@@ -344,11 +344,14 @@ export function rawEventsRoutes(getStore: StoreFactory, sweeper?: RawEventSweepe
 		const payload = result;
 
 		try {
-			const envelope = buildRawEventEnvelopeFromPiEvent(payload);
+			const store = getStore();
+			const target = validateViewerTarget(store, payload, { requirePairedTargets: true });
+			if (!target.ok) return c.json(target.body, target.status);
+			const envelope = buildRawEventEnvelopeFromPiEvent(untargetedPayload(payload));
 			if (envelope === null) {
 				return c.json({ inserted: 0, skipped: 1 });
 			}
-			const ingestResult = await ingestNormalizedEnvelope(getStore(), sweeper, {
+			const ingestResult = await ingestNormalizedEnvelope(store, sweeper, {
 				...envelope,
 				source: "pi",
 			});

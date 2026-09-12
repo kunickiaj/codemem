@@ -2475,6 +2475,15 @@ describe("viewer-server", () => {
 					prompt: "targeted Codex event",
 				},
 			},
+			{
+				route: "/api/pi-hooks",
+				payload: {
+					piEvent: "session_start",
+					sessionId: "targeted-pi",
+					cwd: "/tmp/pi-target",
+					ts: "2026-04-01T12:00:00.000Z",
+				},
+			},
 		] as const;
 
 		it.each(targetedIngestCases)(
