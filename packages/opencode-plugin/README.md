@@ -30,7 +30,10 @@ The package default export is one dual-host object. OpenCode 1 calls its
 setup captures conversation, tool, usage, and lifecycle activity and disposes its
 host registrations on unload. It exposes the manual `mem-status`, `mem-recent`,
 and `mem-stats` tools through `tool.transform` with `codemode: false`. It does not
-inject automatic recall because the V2 context hook has no request kind or request ID.
+inject automatic recall yet. OpenCode 2.0.2 provides separate primary and auxiliary
+hooks, and tested primary histories carry stable user-message IDs. Because its
+schema permits missing IDs, the pending V2 recall adapter must degrade safely when
+identity is absent.
 
 `CodememPlugin` remains the canonical named OpenCode 1 function export.
 `OpencodeMemPlugin` remains available as a deprecated, reference-identical alias
