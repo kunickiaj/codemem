@@ -1886,6 +1886,7 @@ const buildRawEventEnvelope = ({
   nowMs,
   nowMono,
   nextEventId,
+  captureContext,
 }) => ({
   session_stream_id: sessionID,
   session_id: sessionID,
@@ -1898,6 +1899,7 @@ const buildRawEventEnvelope = ({
   cwd,
   project,
   started_at: startedAt,
+  ...(captureContext ? { capture_context: captureContext } : {}),
 });
 
 const trimEventQueue = ({ events, maxEvents, hardMaxEvents, onUnsentPressure, onForcedDrop }) => {
@@ -2298,6 +2300,10 @@ export const createCodememRuntime = async ({ location, host }) => {
   // Memoize the exact serialized envelope by queued-object identity so retries
   // cannot drift in timestamp, ID, property order, or bytes.
   const rawEventEnvelopes = new WeakMap();
+  const rawEventCaptureContexts = new WeakMap();
+  const rawEventPreparations = new WeakMap();
+  const rawEventDeliveries = new WeakMap();
+  let rawEventDeliveryTail = Promise.resolve();
   let streamUnavailableUntil = 0;
   let spoolPersistenceFailureNoted = null;
   let spoolLoadFailureNoted = false;
@@ -2521,13 +2527,14 @@ export const createCodememRuntime = async ({ location, host }) => {
     return args;
   };
 
-  const emitRawEvent = async ({ sessionID, type, payload }) => {
+  const deliverRawEvent = async ({ sessionID, type, payload }) => {
     if (!rawEventsEnabled) {
       return true;
     }
     if (!sessionID || !type) {
       return false;
     }
+    if (payload?._raw_enqueued) return true;
     const now = Date.now();
     let cachedEnvelope = payload && typeof payload === "object"
       ? rawEventEnvelopes.get(payload)
@@ -2546,6 +2553,7 @@ export const createCodememRuntime = async ({ location, host }) => {
             ? performance.now()
             : null,
         nextEventId,
+        captureContext: rawEventCaptureContexts.get(payload),
       });
       const serialized = JSON.stringify(builtEnvelope);
       cachedEnvelope = { body: JSON.parse(serialized), serialized };
@@ -4203,7 +4211,23 @@ export const createCodememRuntime = async ({ location, host }) => {
     });
   };
 
-  const captureCodememEvent = (sessionID, event) => {
+  // Reserve delivery in capture order. Flush/disposal reuse the same task, and
+  // preparation never waits on delivery, so neither can serialize early or cycle.
+  const emitRawEvent = (input) => {
+    const existing = rawEventDeliveries.get(input.payload);
+    if (existing) return existing;
+    const delivery = rawEventDeliveryTail.then(async () => {
+      await rawEventPreparations.get(input.payload);
+      return deliverRawEvent(input);
+    });
+    rawEventDeliveries.set(input.payload, delivery);
+    rawEventDeliveryTail = delivery.catch(() => {}).finally(() => {
+      rawEventDeliveries.delete(input.payload);
+    });
+    return delivery;
+  };
+
+  const captureCodememEvent = (sessionID, event, prompt = null) => {
     const normalizedSessionID =
       typeof sessionID === "string" && sessionID.trim() ? sessionID.trim() : null;
     if (normalizedSessionID) {
@@ -4230,6 +4254,15 @@ export const createCodememRuntime = async ({ location, host }) => {
       _raw_session_id: resolvedSessionID,
     };
     recordEvent(queuedEvent);
+    if (prompt && rawEventsEnabled && host.resolveCaptureContext) {
+      const preparation = Promise.resolve().then(() => host.resolveCaptureContext(prompt))
+        .then((context) => {
+          if (context) rawEventCaptureContexts.set(queuedEvent, context);
+        }).catch(() => {
+          // Optional provenance must never discard an otherwise valid prompt.
+        });
+      rawEventPreparations.set(queuedEvent, preparation);
+    }
     const deliveryTask = emitRawEvent({
       sessionID: resolvedSessionID,
       type: queuedEvent?.type || "unknown",
@@ -4241,12 +4274,15 @@ export const createCodememRuntime = async ({ location, host }) => {
 
   const capturePendingPrompts = async ({
     exceptIdentity = null,
+    sessionID = null,
     skipFlush = false,
     awaitDurability = false,
   } = {}) => {
-    let durabilityFailed = false;
+    const deliveries = [];
+    // Keep this loop await-free: each prompt must reserve delivery before sibling events.
     for (const [promptIdentity, prompt] of pendingPrompts) {
       if (!runtimeActive && !skipFlush) return true;
+      if (sessionID && prompt.sessionID !== sessionID) continue;
       if (promptIdentity === exceptIdentity) {
         continue;
       }
@@ -4259,8 +4295,8 @@ export const createCodememRuntime = async ({ location, host }) => {
       capturedPrompts.add(promptIdentity);
 
       if (!skipFlush && (prompt.text.trim() === "/new" || prompt.text.trim().startsWith("/new "))) {
-        await logLine("detected /new command, flushing events");
-        await flushEvents();
+        void logLine("detected /new command, flushing events");
+        void flushEvents();
       }
 
       promptCounter += 1;
@@ -4278,26 +4314,19 @@ export const createCodememRuntime = async ({ location, host }) => {
         prompt_text: prompt.text,
         timestamp: new Date().toISOString(),
       };
-      if (awaitDurability) {
-        try {
-          const durable = await captureCodememEvent(prompt.sessionID, promptEvent);
-          durabilityFailed ||= !durable;
-        } catch {
-          durabilityFailed = true;
-        }
-      } else {
-        captureCodememEvent(prompt.sessionID, promptEvent);
-      }
-      await logLine(
+      deliveries.push(captureCodememEvent(prompt.sessionID, promptEvent, prompt));
+      void logLine(
         `user_prompt captured #${promptCounter}: ${prompt.text.substring(0, 50)}`
       );
 
       if (!skipFlush && shouldForceFlush()) {
-        await logLine(`force flush triggered: tools=${sessionContext.toolCount}, prompts=${sessionContext.promptCount}, duration=${Math.round((Date.now() - (sessionContext.startTime || Date.now())) / 1000)}s`);
-        await flushEvents();
+        void logLine(`force flush triggered: tools=${sessionContext.toolCount}, prompts=${sessionContext.promptCount}, duration=${Math.round((Date.now() - (sessionContext.startTime || Date.now())) / 1000)}s`);
+        void flushEvents();
       }
     }
-    return !durabilityFailed;
+    if (!awaitDurability) return true;
+    const results = await Promise.allSettled(deliveries);
+    return results.every((result) => result.status === "fulfilled" && result.value);
   };
 
   const flushEvents = async () => {
@@ -4402,6 +4431,7 @@ export const createCodememRuntime = async ({ location, host }) => {
         awaitDurability: true,
       });
       const deliveriesDurable = await ensureQueuedEventsDurable();
+      await rawEventDeliveryTail;
       if (!promptsDurable || !deliveriesDurable) {
         await errorLogLine("raw_events.dispose_durability_failed category=persistence");
       }
@@ -4551,7 +4581,9 @@ export const createCodememRuntime = async ({ location, host }) => {
       const eventType = event?.type || "unknown";
       const sessionID = event?.sessionID || null;
       const rawEvent = event?.raw;
-      await capturePendingPrompts({ exceptIdentity: promptIdentityForEvent(event) });
+      if (sessionID) {
+        void capturePendingPrompts({ sessionID, exceptIdentity: promptIdentityForEvent(event) });
+      }
       if (!runtimeActive) return;
 
       // Always log session-related events for debugging /new
@@ -4629,7 +4661,7 @@ export const createCodememRuntime = async ({ location, host }) => {
             || sessionID;
           lastPromptText = promptText;
           if (!capturedPrompts.has(promptIdentity)) {
-            pendingPrompts.set(promptIdentity, { sessionID: promptSessionID, text: promptText });
+            pendingPrompts.set(promptIdentity, { sessionID: promptSessionID, messageID: prompt.messageID, text: promptText });
           }
         }
 
@@ -4755,7 +4787,8 @@ export const createCodememRuntime = async ({ location, host }) => {
     // V1 sends successes here and failures as ToolPart events; V2 sends both variants here.
     handleToolResult: async (input, output) => {
       if (!runtimeActive) return;
-      await capturePendingPrompts();
+      const sessionID = input.sessionID || activeSessionID;
+      if (sessionID) void capturePendingPrompts({ sessionID });
       if (!runtimeActive) return;
       const args = input.args ?? {};
       const result = output.output;

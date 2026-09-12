@@ -366,6 +366,8 @@ Command/file token cache behavior:
 
 ## Stream-only mode (advanced)
 
+Raw events preserve captured activity independently of observer extraction.
+
 Stream contract:
 - Preflight availability: `GET /api/raw-events/status`
 - Event streaming: `POST /api/raw-events`
@@ -386,6 +388,102 @@ Stream contract:
 - Viewer mismatch notices expose only a fixed category and next action: restart Viewer from the same workspace/config for `database`, restart Codemem and OpenCode with the same environment for `identity`, update Codemem on the installed channel and restart OpenCode for `contract`, or check/restart Viewer for `connection`. Payloads, target values, subprocess output, paths, and addresses are omitted.
 - Corrupt spool entries are retained for recovery. The spool accepts at most `CODEMEM_RAW_EVENT_SPOOL_MAX_ENTRIES` `.json` entries and rejects a new event when full without evicting existing entries; an existing event ID remains idempotent. If a private spool write fails or the spool is full, OpenCode warns that the event remains only in the bounded in-memory queue rather than claiming durable preservation. OpenCode drains retained entries through the installed CLI, so repair or update that CLI and restart OpenCode; restarting Viewer alone does not recover this spool. If specific entries remain rejected, stop OpenCode and move `~/.codemem/opencode-raw-event-spool` to a backup location for manual recovery; do not delete it until the events are delivered or intentionally discarded.
 - `CODEMEM_RAW_EVENTS=0` pauses capture and every OpenCode spool drain. Existing spool files remain untouched until raw events are enabled again.
+
+### Delegated brief capture (OpenCode 1)
+
+A verified task brief is context for later work, not evidence of human approval or a new discovery.
+The OpenCode 1 adapter observes running `task` parts with `callID`,
+`state.input.{subagent_type,description,prompt}` and
+`state.metadata.{parentSessionId,sessionId}`. On the pinned OpenCode 1.18.30 host,
+`chat.message` receives the complete resolved message and parts before the host
+persists those parts individually.
+
+The production adapter requires that hook snapshot together with a matching live
+task binding. The snapshot must contain exactly one ordinary, non-ignored text part,
+with the exact task brief and requested child agent. It retains the original message
+and parts so later in-place hook changes are checked too.
+
+At the prompt-capture boundary, SDK reads cross-check the hook snapshot against the
+stored child session and message: parent/child IDs, message and part IDs, creation
+time, current agent and exact text must match. The child message must postdate the
+task start. A seemingly complete SDK read alone cannot qualify because it may show
+only partially persisted parts; missing snapshots or task metadata delivered after
+the hook leave provenance unknown.
+
+The parent assistant's agent is not used as the child's agent.
+
+The plugin freezes optional `capture_context` outside the event payload and ID seed.
+Spool replay preserves the same envelope. Ingress stores validated provenance in
+nullable `raw_events.capture_context_json`; the first accepted event wins on retries,
+including when it had no provenance. Invalid optional provenance stays unknown and
+does not reject valid raw data; existing identity validation remains strict. Old rows
+stay unknown, and access identity, project, visibility and memory kinds do not change.
+
+Classification revalidates the complete host report against the prompt's exact
+text and shape, including after adapter normalization. Removing private content
+can change the prompt hash: that mismatch safely yields unknown provenance, not
+proof of forgery. A host provenance report never grants access or proves human approval.
+
+A batch containing only proven briefs and harmless lifecycle bookkeeping completes
+without an observer request or durable memory. Raw events remain under the existing
+retention policy. Later tool or assistant findings use earlier briefs from the exact
+same source and stream as labeled observer context; they are not replayed as new
+events. A partial index supports bounded retrieval without scanning unrelated events.
+
+Recovered briefs follow all new evidence in the observer prompt. Their full text
+is sanitized before truncation, and the appended context block has a small aggregate
+cap including its label. Observer clipping can omit old context, but cannot displace
+the evidence prefix that would have been sent without it.
+
+The recovered `delegatedBriefs` list is transient observer context, not a duplicate
+stored in `sessions.metadata_json.session_context`. Other session-context fields
+remain intact, including a provenance-labeled `firstPrompt` when applicable.
+The context cap preserves complete XML entities and Unicode code points.
+
+Session-context backfill and extraction replay read the same validated raw-event
+sidecar as normal flushes. Replay refuses proven brief-only input before calling
+the observer (`ContextOnlyReplayError`, code `delegated_brief_context_only`),
+including batches without a local session mapping; mixed batches keep their labels
+and may recover earlier same-stream instructions. This refusal does not fabricate
+a successful extraction evaluation or alter the raw history.
+
+`memory extraction-replay` presents that context-only result as a non-error outcome
+with `status: "context_only"`, `code: "delegated_brief_context_only"`,
+`evaluated: false` and exit status zero. `memory extraction-benchmark` records it in
+`summary.contextOnlySkips`, increments `summary.contextOnlySkipped`, and continues
+the remaining batches and repetitions. The existing `runs`, output failures and
+all evaluation, stability, cost, latency and output-rate denominators exclude these
+skips; `summary.scheduledTotal` counts the full scheduled workload.
+
+The generated schema includes the nullable sidecar and its partial index. Existing
+database upgrades remain behind the normal compatibility gates; plain `connect()`
+does not add this column to an existing database. Legacy backfill/replay readers
+treat an absent column as unknown provenance without running a migration.
+
+| Bound | Limit |
+|---|---|
+| Observed task bindings, including replay guards | 128 per plugin instance |
+| Binding lifetime | 10 minutes |
+| Exact brief text | 64,000 characters |
+| Host metadata lookup at capture | 200 ms total; sibling failure and disposal abort outstanding reads |
+| Concurrent metadata lookups | At most the current binding-cache size; duplicate requests share a lookup |
+| Earlier instructions recovered for an observer batch | Latest 4 provenance-bearing events; at most 800 appended characters in aggregate, including label |
+
+Missing, late, expired, conflicting, synthetic or multipart provenance remains
+unknown; capture does not wait for a later metadata event. Replayed updates cannot
+bind a consumed task to a different message. Distinct later task calls can bind new
+messages in a reused child session; ambiguous simultaneous matches do not qualify.
+Restart and disposal discard live bindings but preserve already captured envelopes.
+Tasks that started before the plugin instance do not qualify. Disposal waits for
+capture preparation before checking durable delivery, and cancels active host
+lookups immediately rather than waiting for their timeout.
+Mixed batches continue normal extraction with proven instructions labeled as context.
+This is a host-specific provenance check, not a complete language classifier.
+OpenCode 2, Claude Code, Codex and Pi are unchanged; reviewer recall opt-out is a
+separate follow-up and is not enabled by this metadata. Restart OpenCode to load
+an updated plugin.
+
+### Stream diagnostics and settings
 
 `GET /api/raw-events/status` also includes `transcript_diagnostics`, a per-Viewer-process, per-router-instance counter block scoped explicitly to `legacy_compatibility_routes`. It counts Claude and Codex compatibility-route transcript reads by the fixed outcomes `ok`, `not_provided`, `path_rejected`, `unreadable`, `no_complete_record`, and `no_assistant_record`. These counters are not persisted, do not include paths or transcript content, and do not describe the normal generated-adapter path through `POST /api/raw-events`. A skipped legacy `Stop` response keeps `skip_reason: "transcript_unavailable"` and may include one of the non-`ok` outcomes as `skip_detail`; other mapping skips remain `skip_reason: "unsupported_hook"`.
 
