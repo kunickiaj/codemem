@@ -1,7 +1,8 @@
 import { EventEmitter } from "node:events";
+import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -27,6 +28,7 @@ const originalHome = process.env.HOME;
 const originalArgv = [...process.argv];
 const originalMiseConfigDir = process.env.MISE_CONFIG_DIR;
 const originalMiseGlobalConfigFile = process.env.MISE_GLOBAL_CONFIG_FILE;
+const originalPnpmHome = process.env.PNPM_HOME;
 const originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
 let testHome = "";
 
@@ -60,6 +62,152 @@ const miseStatus = {
 	install_kind: "mise",
 	recommended_action: "mise use -g npm:codemem@0.41.0",
 } as const;
+
+const pnpmStatus = {
+	...availableStatus,
+	install_kind: "pnpm-global",
+	recommended_action: "pnpm add -g codemem@0.41.0 @codemem/embeddings@0.41.0",
+} as const;
+
+function pnpmRoot(): string {
+	return join(testHome, ".local", "share", "pnpm", "global", "v11");
+}
+
+function pnpmGroup(version: string): string {
+	if (version === "0.40.2") return "a".repeat(64);
+	if (version === "0.41.0") return "b".repeat(64);
+	return "c".repeat(64);
+}
+
+function pnpmPackagePath(name: "codemem" | "embeddings", version = "0.40.2"): string {
+	const groupRoot = join(pnpmRoot(), pnpmGroup(version), "node_modules");
+	if (name === "codemem") return join(groupRoot, "codemem");
+	return join(groupRoot, "@codemem", "embeddings");
+}
+
+function canonicalPnpmPackagePath(name: "codemem" | "embeddings", version = "0.40.2"): string {
+	const virtualStore = join(pnpmRoot(), pnpmGroup(version), "node_modules", ".pnpm");
+	if (name === "codemem") {
+		return join(
+			virtualStore,
+			`codemem@${version}_better-sqlite3@12.6.2`,
+			"node_modules",
+			"codemem",
+		);
+	}
+	return join(
+		virtualStore,
+		`@codemem+embeddings@${version}`,
+		"node_modules",
+		"@codemem",
+		"embeddings",
+	);
+}
+
+function pnpmBin(): string {
+	return join(testHome, ".local", "share", "pnpm");
+}
+
+function canonicalPnpmBin(): string {
+	return realpathSync(pnpmBin());
+}
+
+function pnpmUpdateCwd(): string {
+	return join(testHome, ".codemem");
+}
+
+function pnpmListState(
+	options: {
+		codememPath?: string;
+		codememVersion?: string;
+		embeddingsPath?: string;
+		embeddingsVersion?: string;
+		includeEmbeddings?: boolean;
+		private?: boolean;
+		rootPath?: string;
+	} = {},
+): string {
+	const codememVersion = options.codememVersion ?? "0.40.2";
+	const dependencies: Record<string, unknown> = {
+		codemem: {
+			path: options.codememPath ?? pnpmPackagePath("codemem", codememVersion),
+			version: codememVersion,
+		},
+	};
+	if (options.includeEmbeddings ?? true) {
+		const embeddingsVersion = options.embeddingsVersion ?? codememVersion;
+		dependencies["@codemem/embeddings"] = {
+			path: options.embeddingsPath ?? pnpmPackagePath("embeddings", embeddingsVersion),
+			version: embeddingsVersion,
+		};
+	}
+	return JSON.stringify([
+		{
+			path: options.rootPath ?? pnpmRoot(),
+			private: options.private ?? true,
+			dependencies,
+		},
+	]);
+}
+
+function updatedPnpmListState(options: Parameters<typeof pnpmListState>[0] = {}): string {
+	return pnpmListState({
+		codememVersion: "0.41.0",
+		embeddingsVersion: "0.41.0",
+		...options,
+	});
+}
+
+async function usePnpmEntrypoint(): Promise<void> {
+	for (const version of ["0.40.2", "0.41.0"]) {
+		for (const name of ["codemem", "embeddings"] as const) {
+			const listedPath = pnpmPackagePath(name, version);
+			const canonicalPath = canonicalPnpmPackagePath(name, version);
+			await mkdir(canonicalPath, { recursive: true });
+			await mkdir(dirname(listedPath), { recursive: true });
+			await symlink(canonicalPath, listedPath, "dir");
+		}
+	}
+	const entryPath = join(pnpmPackagePath("codemem"), "dist", "index.js");
+	await mkdir(join(canonicalPnpmPackagePath("codemem"), "dist"), { recursive: true });
+	await mkdir(pnpmBin(), { recursive: true });
+	await writeFile(entryPath, "#!/usr/bin/env node\n", "utf8");
+	process.argv[1] = entryPath;
+}
+
+function legacyPnpmListRoot(): string {
+	return join(testHome, ".local", "share", "pnpm", "global", "5");
+}
+
+function legacyPnpmPackagePath(name: "codemem" | "embeddings"): string {
+	const packageSegments = name === "codemem" ? ["codemem"] : ["@codemem", "embeddings"];
+	return join(legacyPnpmListRoot(), "node_modules", ...packageSegments);
+}
+
+function legacyCanonicalPnpmPackagePath(name: "codemem" | "embeddings", version: string): string {
+	const packageSegments = name === "codemem" ? ["codemem"] : ["@codemem", "embeddings"];
+	const storeName = name === "codemem" ? `codemem@${version}` : `@codemem+embeddings@${version}`;
+	return join(legacyPnpmListRoot(), ".pnpm", storeName, "node_modules", ...packageSegments);
+}
+
+async function useLegacyPnpmEntrypoint(): Promise<void> {
+	for (const version of ["0.40.2", "0.41.0"]) {
+		for (const name of ["codemem", "embeddings"] as const) {
+			const listedPath = legacyPnpmPackagePath(name);
+			const canonicalPath = legacyCanonicalPnpmPackagePath(name, version);
+			await mkdir(canonicalPath, { recursive: true });
+			await mkdir(dirname(listedPath), { recursive: true });
+			if (version === "0.40.2") await symlink(canonicalPath, listedPath, "dir");
+		}
+	}
+	const entryPath = join(legacyPnpmPackagePath("codemem"), "dist", "index.js");
+	await mkdir(join(legacyCanonicalPnpmPackagePath("codemem", "0.40.2"), "dist"), {
+		recursive: true,
+	});
+	await mkdir(pnpmBin(), { recursive: true });
+	await writeFile(entryPath, "#!/usr/bin/env node\n", "utf8");
+	process.argv[1] = entryPath;
+}
 
 function miseState(
 	options: {
@@ -118,6 +266,7 @@ beforeEach(async () => {
 	process.env.HOME = testHome;
 	delete process.env.MISE_CONFIG_DIR;
 	delete process.env.MISE_GLOBAL_CONFIG_FILE;
+	delete process.env.PNPM_HOME;
 	delete process.env.XDG_CONFIG_HOME;
 	const miseConfigDirectory = join(testHome, ".config", "mise");
 	await mkdir(miseConfigDirectory, { recursive: true });
@@ -135,6 +284,8 @@ afterEach(async () => {
 	else process.env.MISE_CONFIG_DIR = originalMiseConfigDir;
 	if (originalMiseGlobalConfigFile === undefined) delete process.env.MISE_GLOBAL_CONFIG_FILE;
 	else process.env.MISE_GLOBAL_CONFIG_FILE = originalMiseGlobalConfigFile;
+	if (originalPnpmHome === undefined) delete process.env.PNPM_HOME;
+	else process.env.PNPM_HOME = originalPnpmHome;
 	if (originalXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
 	else process.env.XDG_CONFIG_HOME = originalXdgConfigHome;
 	await rm(testHome, { recursive: true, force: true });
@@ -429,19 +580,23 @@ describe("update install command", () => {
 		expect(process.exitCode).toBeUndefined();
 	});
 
-	it("does not terminate a successful npm install when command output exceeds the capture limit", async () => {
+	it("fails closed when npm install output exceeds the capture limit", async () => {
 		vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
 		getUpdateStatus.mockResolvedValue({ ...availableStatus, auto_update_eligible: true });
 		spawn
 			.mockImplementationOnce(() => commandProcess({ stdout: "x".repeat(65 * 1_024) }))
 			.mockImplementationOnce(() => commandProcess({ stdout: "0.41.0\n" }));
-		vi.spyOn(console, "log").mockImplementation(() => {});
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		await parseUpdateCommand(["install", "--json"]);
 
 		expect(spawn.mock.results[0]?.value.kill).not.toHaveBeenCalled();
-		expect(spawn).toHaveBeenCalledTimes(2);
-		expect(process.exitCode).toBeUndefined();
+		expect(spawn).toHaveBeenCalledTimes(1);
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+			error: "update_install_failed",
+			message: "command output too large",
+		});
+		expect(process.exitCode).toBe(1);
 	});
 });
 
@@ -904,6 +1059,769 @@ describe("mise update lifecycle safeguards", () => {
 	});
 });
 
+describe("pnpm-global update execution", () => {
+	it("proves ownership, installs the exact pair, and verifies the pnpm-owned Unix shim", async () => {
+		vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+		await usePnpmEntrypoint();
+		expect(pnpmRoot()).toContain(join("global", "v11"));
+		expect(realpathSync(pnpmPackagePath("codemem"))).toBe(
+			realpathSync(canonicalPnpmPackagePath("codemem")),
+		);
+		expect(realpathSync(pnpmPackagePath("codemem"))).toContain(
+			join(".pnpm", "codemem@0.40.2_better-sqlite3@12.6.2"),
+		);
+		getUpdateStatus.mockResolvedValue(pnpmStatus);
+		const originalRegistry = process.env.NPM_CONFIG_REGISTRY;
+		const originalScopedRegistry = process.env["npm_config_@codemem:registry"];
+		const originalOnnxPolicy = process.env.OnnxRuntime_Node_Install;
+		process.env.NPM_CONFIG_REGISTRY = "https://untrusted.invalid/";
+		process.env["npm_config_@codemem:registry"] = "https://untrusted-scope.invalid/";
+		process.env.OnnxRuntime_Node_Install = "build";
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmRoot()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmBin()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: pnpmListState() }))
+			.mockImplementationOnce(() => commandProcess())
+			.mockImplementationOnce(() => commandProcess({ stdout: updatedPnpmListState() }))
+			.mockImplementationOnce(() => commandProcess({ stdout: "0.41.0\n" }));
+		vi.spyOn(console, "log").mockImplementation(() => {});
+
+		try {
+			await parseUpdateCommand(["install", "--json"]);
+		} finally {
+			if (originalRegistry === undefined) delete process.env.NPM_CONFIG_REGISTRY;
+			else process.env.NPM_CONFIG_REGISTRY = originalRegistry;
+			if (originalScopedRegistry === undefined) {
+				delete process.env["npm_config_@codemem:registry"];
+			} else {
+				process.env["npm_config_@codemem:registry"] = originalScopedRegistry;
+			}
+			if (originalOnnxPolicy === undefined) delete process.env.OnnxRuntime_Node_Install;
+			else process.env.OnnxRuntime_Node_Install = originalOnnxPolicy;
+		}
+
+		expect(spawn.mock.calls.map(([, args]) => args)).toEqual([
+			["root", "-g"],
+			["bin", "-g"],
+			["list", "-g", "--depth", "0", "--json"],
+			[
+				"add",
+				"-g",
+				"--registry",
+				"https://registry.npmjs.org/",
+				"--config.@codemem:registry=https://registry.npmjs.org/",
+				"codemem@0.41.0",
+				"@codemem/embeddings@0.41.0",
+			],
+			["list", "-g", "--depth", "0", "--json"],
+			["version"],
+		]);
+		const installOptions = spawn.mock.calls[3]?.[2];
+		expect(realpathSync(pnpmUpdateCwd())).toContain(".codemem");
+		expect(installOptions).toEqual(
+			expect.objectContaining({
+				cwd: pnpmUpdateCwd(),
+				env: expect.objectContaining({
+					ONNXRUNTIME_NODE_INSTALL: "skip",
+					npm_config_registry: "https://registry.npmjs.org/",
+					"npm_config_@codemem:registry": "https://registry.npmjs.org/",
+				}),
+				shell: false,
+			}),
+		);
+		expect(installOptions?.env).not.toHaveProperty("NPM_CONFIG_REGISTRY");
+		expect(installOptions?.env).not.toHaveProperty("OnnxRuntime_Node_Install");
+		expect(spawn.mock.calls[3]?.[1].join(" ")).not.toMatch(/allow-build|approve-builds/);
+		for (const callIndex of [0, 1, 2, 4]) {
+			expect(spawn.mock.calls[callIndex]?.[2]).toEqual(
+				expect.objectContaining({ cwd: pnpmUpdateCwd(), shell: false }),
+			);
+		}
+		expect(spawn).toHaveBeenNthCalledWith(
+			6,
+			join(canonicalPnpmBin(), "codemem"),
+			["version"],
+			expect.objectContaining({ cwd: pnpmUpdateCwd(), shell: false }),
+		);
+		expect(process.exitCode).toBeUndefined();
+	});
+});
+
+describe("pnpm-global compatibility", () => {
+	it("accepts pnpm 9-11 list metadata and node_modules root semantics", async () => {
+		await useLegacyPnpmEntrypoint();
+		getUpdateStatus.mockResolvedValue(pnpmStatus);
+		const legacyState = (version: string) =>
+			pnpmListState({
+				codememPath: legacyPnpmPackagePath("codemem"),
+				codememVersion: version,
+				embeddingsPath: legacyPnpmPackagePath("embeddings"),
+				embeddingsVersion: version,
+				private: false,
+				rootPath: legacyPnpmListRoot(),
+			});
+		spawn
+			.mockImplementationOnce(() =>
+				commandProcess({ stdout: `${join(legacyPnpmListRoot(), "node_modules")}\n` }),
+			)
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmBin()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: legacyState("0.40.2") }))
+			.mockImplementationOnce(() => commandProcess())
+			.mockImplementationOnce(() => commandProcess({ stdout: legacyState("0.41.0") }))
+			.mockImplementationOnce(() => commandProcess({ stdout: "0.41.0\n" }));
+		vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(spawn.mock.calls[2]?.[1]).toEqual(["list", "-g", "--depth", "0", "--json"]);
+		expect(process.exitCode).toBeUndefined();
+	});
+
+	it("ignores benign notice lines around the one existing root and bin directory", async () => {
+		await usePnpmEntrypoint();
+		getUpdateStatus.mockResolvedValue(pnpmStatus);
+		spawn
+			.mockImplementationOnce(() =>
+				commandProcess({ stdout: `Update available: run pnpm self-update\n${pnpmRoot()}\n` }),
+			)
+			.mockImplementationOnce(() =>
+				commandProcess({ stdout: `WARN using configured global bin\n${pnpmBin()}\n` }),
+			)
+			.mockImplementationOnce(() => commandProcess({ stdout: pnpmListState() }))
+			.mockImplementationOnce(() => commandProcess())
+			.mockImplementationOnce(() => commandProcess({ stdout: updatedPnpmListState() }))
+			.mockImplementationOnce(() => commandProcess({ stdout: "0.41.0\n" }));
+		vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(process.exitCode).toBeUndefined();
+	});
+});
+
+describe("pnpm-global ownership probe validation", () => {
+	it.each([
+		["malformed JSON", "{not-json"],
+		["an empty result", "[]"],
+		[
+			"ambiguous results",
+			JSON.stringify([
+				{ dependencies: { codemem: { path: "/one", version: "0.40.2" } } },
+				{ dependencies: { codemem: { path: "/two", version: "0.40.2" } } },
+			]),
+		],
+		["a missing dependency map", JSON.stringify([{ name: "global" }])],
+		["a relative list root", pnpmListState({ rootPath: "relative/global/5" })],
+		[
+			"an invalid codemem record",
+			JSON.stringify([
+				{
+					path: pnpmRoot(),
+					private: false,
+					dependencies: { codemem: { path: pnpmPackagePath("codemem") } },
+				},
+			]),
+		],
+		["a relative package path", pnpmListState({ codememPath: "relative/node_modules/codemem" })],
+	])("refuses %s from the bounded package-state probe", async (_label, listOutput) => {
+		await usePnpmEntrypoint();
+		getUpdateStatus.mockResolvedValue(pnpmStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmRoot()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmBin()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: listOutput }));
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+			error: "update_install_refused",
+			message: "pnpm list -g returned malformed or ambiguous global package state",
+		});
+		expect(spawn).toHaveBeenCalledTimes(3);
+	});
+
+	it("accepts real top-level private false metadata", async () => {
+		await usePnpmEntrypoint();
+		getUpdateStatus.mockResolvedValue(pnpmStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmRoot()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmBin()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: pnpmListState({ private: false }) }))
+			.mockImplementationOnce(() => commandProcess())
+			.mockImplementationOnce(() =>
+				commandProcess({ stdout: updatedPnpmListState({ private: false }) }),
+			)
+			.mockImplementationOnce(() => commandProcess({ stdout: "0.41.0\n" }));
+		vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(process.exitCode).toBeUndefined();
+	});
+});
+
+describe("pnpm-global path ownership safeguards", () => {
+	it.each([
+		{ args: ["root", "-g"], label: "root" },
+		{ args: ["bin", "-g"], label: "bin" },
+		{ args: ["list", "-g", "--depth", "0", "--json"], label: "list" },
+	])("reports a failed pnpm $label probe before mutation", async ({ args: failedArgs }) => {
+		await usePnpmEntrypoint();
+		getUpdateStatus.mockResolvedValue(pnpmStatus);
+		const results: Array<Parameters<typeof commandProcess>[0]> = [
+			{ stdout: `${pnpmRoot()}\n` },
+			{ stdout: `${pnpmBin()}\n` },
+			{ stdout: pnpmListState() },
+		];
+		const failedIndex = [
+			["root", "-g"],
+			["bin", "-g"],
+			["list", "-g", "--depth", "0", "--json"],
+		].findIndex((args) => args.join("\0") === failedArgs.join("\0"));
+		results[failedIndex] = { exitCode: 1, stderr: "probe failed\n", stdout: "" };
+		for (const result of results) {
+			spawn.mockImplementationOnce(() => commandProcess(result));
+		}
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+			error: "update_install_refused",
+			message: `pnpm ${failedArgs.join(" ")} failed: probe failed`,
+		});
+		expect(spawn).toHaveBeenCalledTimes(failedIndex + 1);
+	});
+
+	it("refuses a pnpm package version that differs from the running CLI", async () => {
+		await usePnpmEntrypoint();
+		getUpdateStatus.mockResolvedValue(pnpmStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmRoot()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmBin()}\n` }))
+			.mockImplementationOnce(() =>
+				commandProcess({ stdout: pnpmListState({ codememVersion: "0.39.0" }) }),
+			);
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+			error: "update_install_refused",
+			message: "pnpm global codemem is 0.39.0, but the running CLI is 0.40.2",
+		});
+		expect(spawn).toHaveBeenCalledTimes(3);
+	});
+
+	it("refuses ambiguous root output containing two existing absolute directories", async () => {
+		await usePnpmEntrypoint();
+		getUpdateStatus.mockResolvedValue(pnpmStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmRoot()}\n${pnpmBin()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmBin()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: pnpmListState() }));
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+			error: "update_install_refused",
+			message: "pnpm root -g did not return one absolute non-root path",
+		});
+		expect(spawn).toHaveBeenCalledTimes(3);
+	});
+
+	it("returns pnpm setup guidance for a missing global bin directory", async () => {
+		await usePnpmEntrypoint();
+		getUpdateStatus.mockResolvedValue(pnpmStatus);
+		spawn.mockImplementationOnce(() =>
+			commandProcess({
+				exitCode: 1,
+				stderr:
+					' ERROR  The configured global bin directory "/home/user/.local/share/pnpm" is not in PATH\nFor help, run: pnpm help root\n',
+			}),
+		);
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+			error: "update_install_refused",
+			message: "Run pnpm setup, then retry codemem update install",
+		});
+		expect(spawn).toHaveBeenCalledTimes(1);
+	});
+
+	it("bounds pnpm ownership output before parsing", async () => {
+		await usePnpmEntrypoint();
+		getUpdateStatus.mockResolvedValue(pnpmStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmRoot()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmBin()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: "x".repeat(65 * 1_024) }));
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+			error: "update_install_refused",
+			message: "pnpm list -g --depth 0 --json returned too much output; inspect pnpm global state",
+		});
+		expect(spawn).toHaveBeenCalledTimes(3);
+	});
+});
+
+describe("pnpm-global package ownership safeguards", () => {
+	it.each([
+		{
+			bin: "/",
+			expectedMessage: "pnpm bin -g did not return one absolute non-root path",
+			label: "root bin directory",
+			list: () => pnpmListState(),
+			root: (): string => pnpmRoot(),
+		},
+		{
+			bin: () => pnpmBin(),
+			expectedMessage: "pnpm list -g root does not own the listed codemem package path",
+			label: "package outside root",
+			list: () => pnpmListState({ codememPath: join(testHome, "other", "codemem") }),
+			root: (): string => pnpmRoot(),
+			setup: () => mkdir(join(testHome, "other", "codemem"), { recursive: true }),
+		},
+		{
+			bin: () => pnpmBin(),
+			expectedMessage: "pnpm root -g did not return one absolute non-root path",
+			label: "root path",
+			list: () => pnpmListState(),
+			root: (): string => "/",
+		},
+		{
+			bin: () => pnpmBin(),
+			expectedMessage:
+				"pnpm root -g is neither the pnpm list -g root nor its node_modules directory",
+			label: "listed root",
+			list: () => pnpmListState({ rootPath: join(testHome, "other-root") }),
+			root: (): string => pnpmRoot(),
+			setup: () => mkdir(join(testHome, "other-root"), { recursive: true }),
+		},
+	])("refuses a $label mismatch", async ({ bin, expectedMessage, list, root, setup }) => {
+		await usePnpmEntrypoint();
+		await setup?.();
+		getUpdateStatus.mockResolvedValue(pnpmStatus);
+		const binOutput = typeof bin === "function" ? bin() : bin;
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: `${root()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: `${binOutput}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: list() }));
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+			error: "update_install_refused",
+			message: expectedMessage,
+		});
+		expect(spawn).toHaveBeenCalledTimes(3);
+		expect(process.exitCode).toBe(1);
+	});
+});
+
+describe("pnpm-global entry ownership safeguards", () => {
+	it("refuses when pnpm package ownership does not include the running entry", async () => {
+		await usePnpmEntrypoint();
+		getUpdateStatus.mockResolvedValue(pnpmStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmRoot()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmBin()}\n` }))
+			.mockImplementationOnce(() =>
+				commandProcess({ stdout: pnpmListState({ codememPath: pnpmPackagePath("embeddings") }) }),
+			);
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+			error: "update_install_refused",
+			message: "the pnpm global codemem package does not own the running JavaScript entry",
+		});
+		expect(spawn).toHaveBeenCalledTimes(3);
+	});
+
+	it("does not trust a pnpm-global environment marker without entry-path ownership", async () => {
+		await usePnpmEntrypoint();
+		const outsideEntry = join(testHome, "other", "index.js");
+		await mkdir(join(testHome, "other"), { recursive: true });
+		await writeFile(outsideEntry, "#!/usr/bin/env node\n", "utf8");
+		process.argv[1] = outsideEntry;
+		const originalInstallKind = process.env.CODEMEM_INSTALL_KIND;
+		process.env.CODEMEM_INSTALL_KIND = "pnpm-global";
+		getUpdateStatus.mockResolvedValue(pnpmStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmRoot()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmBin()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: pnpmListState() }));
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		try {
+			await parseUpdateCommand(["install", "--json"]);
+		} finally {
+			if (originalInstallKind === undefined) delete process.env.CODEMEM_INSTALL_KIND;
+			else process.env.CODEMEM_INSTALL_KIND = originalInstallKind;
+		}
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+			error: "update_install_refused",
+			message: "the pnpm global codemem package does not own the running JavaScript entry",
+		});
+		expect(spawn).toHaveBeenCalledTimes(3);
+	});
+
+	it("reports a missing pnpm executable before mutation", async () => {
+		await usePnpmEntrypoint();
+		getUpdateStatus.mockResolvedValue(pnpmStatus);
+		const missingPnpm = Object.assign(new Error("spawn pnpm ENOENT"), { code: "ENOENT" });
+		spawn.mockImplementationOnce(() => commandProcess({ error: missingPnpm }));
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+			error: "update_install_refused",
+			message: "pnpm was not found on PATH; install pnpm, then retry codemem update install",
+		});
+		expect(spawn).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("pnpm-global install and verification failures", () => {
+	it("reports pnpm install failure without attempting verification", async () => {
+		await usePnpmEntrypoint();
+		getUpdateStatus.mockResolvedValue(pnpmStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmRoot()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmBin()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: pnpmListState() }))
+			.mockImplementationOnce(() => commandProcess({ exitCode: 1, stderr: "pnpm add failed\n" }));
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+			error: "update_install_failed",
+			message: "pnpm add failed",
+		});
+		expect(spawn).toHaveBeenCalledTimes(4);
+	});
+
+	it("verifies state after an oversized successful pnpm install", async () => {
+		await usePnpmEntrypoint();
+		getUpdateStatus.mockResolvedValue(pnpmStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmRoot()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmBin()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: pnpmListState() }))
+			.mockImplementationOnce(() => commandProcess({ exitCode: 0, stdout: "x".repeat(65 * 1_024) }))
+			.mockImplementationOnce(() => commandProcess({ stdout: updatedPnpmListState() }))
+			.mockImplementationOnce(() => commandProcess({ stdout: "0.41.0\n" }));
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+			installed_version: "0.41.0",
+			previous_version: "0.40.2",
+		});
+		expect(spawn).toHaveBeenCalledTimes(6);
+		expect(process.exitCode).toBeUndefined();
+	});
+
+	it("returns pnpm setup guidance when installation reports a missing global bin directory", async () => {
+		await usePnpmEntrypoint();
+		getUpdateStatus.mockResolvedValue(pnpmStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmRoot()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmBin()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: pnpmListState() }))
+			.mockImplementationOnce(() =>
+				commandProcess({
+					exitCode: 1,
+					stderr: "ERR_PNPM_GLOBAL_BIN_DIR_NOT_IN_PATH Configure PNPM_HOME first\n",
+				}),
+			);
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+			error: "update_install_failed",
+			message: "Run pnpm setup, then retry codemem update install",
+		});
+		expect(spawn).toHaveBeenCalledTimes(4);
+	});
+});
+
+describe("pnpm-global post-install package verification", () => {
+	it.each([
+		{
+			expectedMessage:
+				"pnpm update completed, but global package versions do not both equal 0.41.0",
+			label: "stale package versions",
+			state: () => pnpmListState({ codememVersion: "0.40.2", embeddingsVersion: "0.40.2" }),
+		},
+		{
+			expectedMessage:
+				"pnpm update completed, but @codemem/embeddings is absent from global package state",
+			label: "a missing paired package",
+			state: () => updatedPnpmListState({ includeEmbeddings: false }),
+		},
+		{
+			expectedMessage:
+				"pnpm update completed, but the pnpm list -g root does not own both package paths",
+			label: "a package path outside the proven root",
+			setup: () => mkdir(join(testHome, "other", "embeddings"), { recursive: true }),
+			state: () => updatedPnpmListState({ embeddingsPath: join(testHome, "other", "embeddings") }),
+		},
+		{
+			expectedMessage:
+				"pnpm update completed, but the pnpm list -g root changed after ownership was proven",
+			label: "a changed listed root",
+			setup: () => mkdir(join(testHome, "other-root"), { recursive: true }),
+			state: () => updatedPnpmListState({ rootPath: join(testHome, "other-root") }),
+		},
+	])(
+		"fails post-install verification for $label",
+		async ({ expectedMessage, setup, state: postInstallState }) => {
+			await usePnpmEntrypoint();
+			await setup?.();
+			getUpdateStatus.mockResolvedValue(pnpmStatus);
+			spawn
+				.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmRoot()}\n` }))
+				.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmBin()}\n` }))
+				.mockImplementationOnce(() => commandProcess({ stdout: pnpmListState() }))
+				.mockImplementationOnce(() => commandProcess())
+				.mockImplementationOnce(() => commandProcess({ stdout: postInstallState() }));
+			const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+			await parseUpdateCommand(["install", "--json"]);
+
+			expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+				error: "update_verification_failed",
+				message: expectedMessage,
+			});
+			expect(spawn).toHaveBeenCalledTimes(5);
+		},
+	);
+
+	it.each([
+		{
+			expectedMessage:
+				"pnpm update completed, but package-state verification failed: pnpm list -g --depth 0 --json failed: post-install list failed",
+			label: "fails",
+			result: { exitCode: 1, stderr: "post-install list failed\n" },
+		},
+		{
+			expectedMessage:
+				"pnpm update completed, but package-state verification failed: pnpm list -g --depth 0 --json returned too much output; inspect pnpm global state",
+			label: "exceeds the output bound",
+			result: { stdout: "x".repeat(65 * 1_024) },
+		},
+	])(
+		"fails verification when the post-install package probe $label",
+		async ({ expectedMessage, result }) => {
+			await usePnpmEntrypoint();
+			getUpdateStatus.mockResolvedValue(pnpmStatus);
+			spawn
+				.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmRoot()}\n` }))
+				.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmBin()}\n` }))
+				.mockImplementationOnce(() => commandProcess({ stdout: pnpmListState() }))
+				.mockImplementationOnce(() => commandProcess())
+				.mockImplementationOnce(() => commandProcess(result));
+			const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+			await parseUpdateCommand(["install", "--json"]);
+
+			expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+				error: "update_verification_failed",
+				message: expectedMessage,
+			});
+			expect(spawn).toHaveBeenCalledTimes(5);
+		},
+	);
+});
+
+describe("pnpm-global launcher verification", () => {
+	it("accepts benign launcher notices around one target-version line", async () => {
+		await usePnpmEntrypoint();
+		getUpdateStatus.mockResolvedValue(pnpmStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmRoot()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmBin()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: pnpmListState() }))
+			.mockImplementationOnce(() => commandProcess())
+			.mockImplementationOnce(() => commandProcess({ stdout: updatedPnpmListState() }))
+			.mockImplementationOnce(() =>
+				commandProcess({ stdout: "A newer pnpm is available\n0.41.0\nRun pnpm self-update\n" }),
+			);
+		vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(process.exitCode).toBeUndefined();
+	});
+
+	it("fails when the exact pnpm-owned shim reports another version", async () => {
+		await usePnpmEntrypoint();
+		getUpdateStatus.mockResolvedValue(pnpmStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmRoot()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmBin()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: pnpmListState() }))
+			.mockImplementationOnce(() => commandProcess())
+			.mockImplementationOnce(() => commandProcess({ stdout: updatedPnpmListState() }))
+			.mockImplementationOnce(() => commandProcess({ stdout: "0.40.2\n" }));
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+			error: "update_verification_failed",
+			message: "pnpm-owned codemem launcher did not report 0.41.0",
+		});
+		expect(spawn.mock.calls[5]?.[0]).toBe(join(canonicalPnpmBin(), "codemem"));
+	});
+
+	it("refuses launcher output containing more than one version line", async () => {
+		await usePnpmEntrypoint();
+		getUpdateStatus.mockResolvedValue(pnpmStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmRoot()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmBin()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: pnpmListState() }))
+			.mockImplementationOnce(() => commandProcess())
+			.mockImplementationOnce(() => commandProcess({ stdout: updatedPnpmListState() }))
+			.mockImplementationOnce(() => commandProcess({ stdout: "0.40.2\n0.41.0\n" }));
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await parseUpdateCommand(["install", "--json"]);
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+			error: "update_verification_failed",
+			message: "pnpm-owned codemem launcher did not report 0.41.0",
+		});
+	});
+});
+
+describe("pnpm-global update execution on Windows", () => {
+	it("uses the bounded pnpm.cmd wrapper and the exact bin-directory codemem.cmd shim", async () => {
+		vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+		await usePnpmEntrypoint();
+		const originalSystemRoot = process.env.SystemRoot;
+		const systemRoot = join(tmpdir(), "Windows");
+		const system32 = join(systemRoot, "System32");
+		const pnpmShim = join(system32, "pnpm.cmd");
+		process.env.SystemRoot = systemRoot;
+		getUpdateStatus.mockResolvedValue(pnpmStatus);
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmShim}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmRoot()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: `${pnpmBin()}\n` }))
+			.mockImplementationOnce(() => commandProcess({ stdout: pnpmListState() }))
+			.mockImplementationOnce(() => commandProcess())
+			.mockImplementationOnce(() => commandProcess({ stdout: updatedPnpmListState() }))
+			.mockImplementationOnce(() => commandProcess({ stdout: "0.41.0\n" }));
+		vi.spyOn(console, "log").mockImplementation(() => {});
+
+		try {
+			await parseUpdateCommand(["install", "--json"]);
+		} finally {
+			if (originalSystemRoot === undefined) delete process.env.SystemRoot;
+			else process.env.SystemRoot = originalSystemRoot;
+		}
+
+		expect(spawn.mock.calls.slice(1, 4).map(([, args]) => args)).toEqual([
+			["/d", "/s", "/c", `""${pnpmShim}" root -g"`],
+			["/d", "/s", "/c", `""${pnpmShim}" bin -g"`],
+			["/d", "/s", "/c", `""${pnpmShim}" list -g --depth 0 --json"`],
+		]);
+		for (const callIndex of [1, 2, 3, 4, 5, 6]) {
+			expect(spawn.mock.calls[callIndex]?.[2]).toEqual(
+				expect.objectContaining({ cwd: pnpmUpdateCwd(), shell: false }),
+			);
+		}
+		expect(spawn).toHaveBeenNthCalledWith(
+			5,
+			join(system32, "cmd.exe"),
+			[
+				"/d",
+				"/s",
+				"/c",
+				`""${pnpmShim}" add -g --registry https://registry.npmjs.org/ --config.@codemem:registry=https://registry.npmjs.org/ codemem@0.41.0 @codemem/embeddings@0.41.0"`,
+			],
+			expect.objectContaining({ shell: false, windowsVerbatimArguments: true }),
+		);
+		expect(spawn).toHaveBeenNthCalledWith(
+			7,
+			join(system32, "cmd.exe"),
+			["/d", "/s", "/c", `""${join(canonicalPnpmBin(), "codemem.cmd")}" version"`],
+			expect.objectContaining({ shell: false, windowsVerbatimArguments: true }),
+		);
+		expect(process.exitCode).toBeUndefined();
+	});
+});
+
+describe("pnpm-global Windows shim resolution safeguards", () => {
+	it("maps a missing pnpm.cmd shim to the pnpm recovery error", async () => {
+		vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+		await usePnpmEntrypoint();
+		const originalSystemRoot = process.env.SystemRoot;
+		process.env.SystemRoot = join(tmpdir(), "Windows");
+		getUpdateStatus.mockResolvedValue(pnpmStatus);
+		spawn.mockImplementationOnce(() => commandProcess({ exitCode: 1 }));
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		try {
+			await parseUpdateCommand(["install", "--json"]);
+		} finally {
+			if (originalSystemRoot === undefined) delete process.env.SystemRoot;
+			else process.env.SystemRoot = originalSystemRoot;
+		}
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+			error: "update_install_refused",
+			message: "pnpm was not found on PATH; install pnpm, then retry codemem update install",
+		});
+		expect(spawn).toHaveBeenCalledTimes(1);
+	});
+
+	it("rejects oversized where.exe output before accepting a pnpm.cmd shim", async () => {
+		vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+		await usePnpmEntrypoint();
+		const originalSystemRoot = process.env.SystemRoot;
+		const systemRoot = join(tmpdir(), "Windows");
+		const pnpmShim = join(systemRoot, "System32", "pnpm.cmd");
+		process.env.SystemRoot = systemRoot;
+		getUpdateStatus.mockResolvedValue(pnpmStatus);
+		spawn.mockImplementationOnce(() =>
+			commandProcess({ stdoutChunks: [`${pnpmShim}\n`, "x".repeat(65 * 1_024)] }),
+		);
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		try {
+			await parseUpdateCommand(["install", "--json"]);
+		} finally {
+			if (originalSystemRoot === undefined) delete process.env.SystemRoot;
+			else process.env.SystemRoot = originalSystemRoot;
+		}
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+			error: "update_install_refused",
+			message: "unable to resolve pnpm.cmd: where.exe output too large",
+		});
+		expect(spawn).toHaveBeenCalledTimes(1);
+	});
+});
+
 describe("update install command on Windows", () => {
 	it("pins the public default and scoped registries in the Windows install command", async () => {
 		vi.spyOn(process, "platform", "get").mockReturnValue("win32");
@@ -940,6 +1858,65 @@ describe("update install command on Windows", () => {
 			expect.objectContaining({ shell: false, windowsVerbatimArguments: true }),
 		);
 		expect(process.exitCode).toBeUndefined();
+	});
+});
+
+describe("Windows updater shim output safeguards", () => {
+	it("rejects oversized where.exe output before accepting an npm.cmd shim", async () => {
+		vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+		const originalSystemRoot = process.env.SystemRoot;
+		const systemRoot = join(tmpdir(), "Windows");
+		const npmShim = join(systemRoot, "System32", "npm.cmd");
+		process.env.SystemRoot = systemRoot;
+		getUpdateStatus.mockResolvedValue({ ...availableStatus, auto_update_eligible: true });
+		spawn.mockImplementationOnce(() =>
+			commandProcess({ stdoutChunks: [`${npmShim}\n`, "x".repeat(65 * 1_024)] }),
+		);
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		try {
+			await parseUpdateCommand(["install", "--json"]);
+		} finally {
+			if (originalSystemRoot === undefined) delete process.env.SystemRoot;
+			else process.env.SystemRoot = originalSystemRoot;
+		}
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+			error: "update_install_failed",
+			message: "unable to resolve npm.cmd: where.exe output too large",
+		});
+		expect(spawn).toHaveBeenCalledTimes(1);
+	});
+
+	it("rejects oversized where.exe output before accepting a codemem.cmd shim", async () => {
+		vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+		const originalSystemRoot = process.env.SystemRoot;
+		const systemRoot = join(tmpdir(), "Windows");
+		const system32 = join(systemRoot, "System32");
+		const npmShim = join(system32, "npm.cmd");
+		const codememShim = join(system32, "codemem.cmd");
+		process.env.SystemRoot = systemRoot;
+		getUpdateStatus.mockResolvedValue({ ...availableStatus, auto_update_eligible: true });
+		spawn
+			.mockImplementationOnce(() => commandProcess({ stdout: `${npmShim}\n` }))
+			.mockImplementationOnce(() => commandProcess())
+			.mockImplementationOnce(() =>
+				commandProcess({ stdoutChunks: [`${codememShim}\n`, "x".repeat(65 * 1_024)] }),
+			);
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		try {
+			await parseUpdateCommand(["install", "--json"]);
+		} finally {
+			if (originalSystemRoot === undefined) delete process.env.SystemRoot;
+			else process.env.SystemRoot = originalSystemRoot;
+		}
+
+		expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+			error: "update_install_failed",
+			message: "unable to resolve codemem.cmd: where.exe output too large",
+		});
+		expect(spawn).toHaveBeenCalledTimes(3);
 	});
 });
 

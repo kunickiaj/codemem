@@ -2,9 +2,13 @@ import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { codememHomeDir } from "./home.js";
-import { miseInstallVersionFromPath, normalizeInstallEntryPath } from "./mise-install-path.js";
+import {
+	miseInstallVersionFromPath,
+	normalizeInstallEntryPath,
+	resolveComparablePath,
+} from "./mise-install-path.js";
 
-export { resolveComparablePath } from "./mise-install-path.js";
+export { resolveComparablePath };
 
 const REGISTRY_URL_PREFIX = "https://registry.npmjs.org/codemem/";
 const REQUEST_TIMEOUT_MS = 2_000;
@@ -20,6 +24,7 @@ const SEMVER =
 
 export type InstallKind =
 	| "npm-global"
+	| "pnpm-global"
 	| "mise"
 	| "npx"
 	| "docker"
@@ -30,6 +35,7 @@ export type ReleaseChannel = "alpha" | "beta" | "rc" | "latest";
 
 const KNOWN_INSTALL_KINDS: readonly InstallKind[] = [
 	"npm-global",
+	"pnpm-global",
 	"mise",
 	"npx",
 	"docker",
@@ -55,7 +61,7 @@ export interface UpdateStatus {
 export function isExplicitUpdateInstallEligible(status: UpdateStatus): boolean {
 	if (status.install_kind === "npm-global") return status.auto_update_eligible;
 	return (
-		status.install_kind === "mise" &&
+		(status.install_kind === "mise" || status.install_kind === "pnpm-global") &&
 		status.update_available &&
 		!status.stale &&
 		status.error === null
@@ -342,6 +348,8 @@ function recommendedAction(
 	switch (installKind) {
 		case "npm-global":
 			return `${process.platform === "linux" ? "env ONNXRUNTIME_NODE_INSTALL=skip " : ""}npm install -g codemem@${latestVersion}`;
+		case "pnpm-global":
+			return `${process.platform === "linux" ? "env ONNXRUNTIME_NODE_INSTALL=skip " : ""}pnpm add -g codemem@${latestVersion} @codemem/embeddings@${latestVersion}`;
 		case "mise":
 			return process.platform === "linux"
 				? `env ONNXRUNTIME_NODE_INSTALL=skip mise use -g npm:codemem@${latestVersion}`
@@ -604,14 +612,56 @@ function runnerInstallKind(runner: string): InstallKind | null {
 	return runner === "node" || runner === "uv" ? "repo-dev" : null;
 }
 
+function pnpmVirtualStoreVersion(packagePath: string): string | null {
+	const match =
+		/^\.pnpm\/codemem@([^/_]+)(?:_[^/]+)?\/node_modules\/codemem\/dist\/index\.js$/i.exec(
+			packagePath,
+		);
+	return match?.[1] && parseSemver(match[1]) !== null ? match[1] : null;
+}
+
+function pnpmGlobalRelativePath(
+	entryPath: string,
+	env: Record<string, string | undefined>,
+): string | null {
+	const pnpmHome = env.PNPM_HOME?.trim();
+	if (pnpmHome) {
+		const prefix = `${resolveComparablePath(pnpmHome)}/global/`;
+		return entryPath.startsWith(prefix) ? entryPath.slice(prefix.length) : null;
+	}
+	const marker = "/pnpm/global/";
+	const markerIndex = entryPath.indexOf(marker);
+	return markerIndex >= 0 ? entryPath.slice(markerIndex + marker.length) : null;
+}
+
+function isPnpmGlobalEntryPath(
+	entryPath: string,
+	env: Record<string, string | undefined>,
+): boolean {
+	const relativePath = pnpmGlobalRelativePath(entryPath, env);
+	if (!relativePath) return false;
+	const layout = /^(?:[1-9]\d*\/|v[1-9]\d*\/[^/]+\/node_modules\/)/i.exec(relativePath);
+	if (!layout) return false;
+	return pnpmVirtualStoreVersion(relativePath.slice(layout[0].length)) !== null;
+}
+
+function isPnpmDlxEntryPath(entryPath: string): boolean {
+	const match =
+		/\/(?:pnpm\/dlx\/[^/]+\/[^/]+|\.pnpm\/dlx\/[^/]+)\/node_modules\/(\.pnpm\/codemem@.+)$/i.exec(
+			entryPath,
+		);
+	return match?.[1] !== undefined && pnpmVirtualStoreVersion(match[1]) !== null;
+}
+
 function installKindForEntryPath(
 	entryPath: string,
 	env: Record<string, string | undefined>,
 ): InstallKind {
 	const miseInstallKind = miseInstallKindForPath(entryPath, env);
 	if (miseInstallKind) return miseInstallKind;
-	if (/\/(?:_npx|\.pnpm\/dlx)\//.test(entryPath)) return "npx";
+	if (/\/_npx\//.test(entryPath) || isPnpmDlxEntryPath(entryPath)) return "npx";
 	if (/\/installs\/npm-codemem\/[^/]+\//.test(entryPath)) return "unknown";
+	if (isPnpmGlobalEntryPath(resolveComparablePath(entryPath), env)) return "pnpm-global";
 	if (/\/lib\/node_modules\/codemem\/dist\/index\.js$/.test(entryPath)) return "npm-global";
 	if (/\/AppData\/Roaming\/npm\/node_modules\/codemem\/dist\/index\.js$/i.test(entryPath)) {
 		return "npm-global";

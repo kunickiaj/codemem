@@ -86,7 +86,10 @@ backs off failed registry checks for 15 minutes, while `--refresh` bypasses that
 `codemem update check` remains informational. It detects a semver-qualified
 `mise/installs/npm-codemem/<version>/` layout from the resolved CLI entry path, or the equivalent
 layout beneath a normalized `MISE_DATA_DIR`, and reports
-`mise use -g npm:codemem@<exact-version>` for that installation kind.
+`mise use -g npm:codemem@<exact-version>` for that installation kind. It also recognizes canonical
+pnpm global virtual-store entries from resolved paths and reports the exact paired
+`pnpm add -g codemem@<exact-version> @codemem/embeddings@<exact-version>` command. Those path markers
+do not prove pnpm package ownership.
 `codemem update install` separately requires fresh validated status. Proven npm-global installations
 retain the 24-hour first-seen delay and install exact matching `codemem` and
 `@codemem/embeddings` versions with an argv-only npm command. Before mutation, proven mise
@@ -100,6 +103,13 @@ the exact release into the primary global config, so a declaration may move from
 `config.toml`. Mise verification re-reads bounded global state, requires an exact target `version` or
 `requested_version` value, and runs `mise exec -- codemem version` outside the invoking project;
 npm-global verification uses the active CLI.
+For pnpm-global installations, the explicit installer uses bounded, no-shell `pnpm root -g`,
+`pnpm bin -g`, and `pnpm list -g --depth 0 --json` calls from a neutral directory immediately
+before mutation. It requires `pnpm root -g` to equal the list root (pnpm 12) or its `node_modules`
+directory (pnpm 9–11), the canonical registered Codemem package to remain under that list root, and that package
+to own the resolved JavaScript entry. It then installs exact matching paired packages using public default and scoped registry flags
+and verifies exact registered package versions plus the specific pnpm-bin launcher. The updater never runs a build-approval command;
+pnpm 9 still runs install scripts by default, while newer releases apply their configured build-script policy.
 Bare `codemem update` remains non-mutating. Installing an alpha, beta, or release candidate is
 explicit opt-in, so the
 existing auto-update policy may install a delayed eligible update within that installed channel.
@@ -109,7 +119,9 @@ Docker, and unknown states. The npm-global updater always installs exact matchin
 CPU dependencies, just as a manual global install does.
 Mise remains ineligible for background auto-update because its command changes declarative global
 tool configuration; only a direct user install command may authorize that change, and a local source
-that overrides the global source is refused with manual global-update guidance.
+that overrides the global source is refused with manual global-update guidance. pnpm-global is also
+never eligible for plugin background auto-install; it supports notifications and the direct
+`codemem update install` path only.
 
 Release discovery compares the running product version with the latest release on its channel.
 It is separate from the compatibility-floor check below: discovering a newer release does not

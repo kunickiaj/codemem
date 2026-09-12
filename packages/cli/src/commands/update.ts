@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { mkdir, open, readFile, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, win32 } from "node:path";
@@ -57,6 +58,23 @@ interface MiseStateQuery {
 	state: MiseToolState | null;
 }
 
+interface PnpmPackageState {
+	path: string;
+	version: string;
+}
+
+interface PnpmGlobalState {
+	codemem: PnpmPackageState;
+	embeddings: PnpmPackageState | null;
+	listRootPath: string;
+}
+
+interface PnpmGlobalOwnership {
+	binPath: string;
+	command: ResolvedCommand;
+	listRootPath: string;
+}
+
 interface CommandOptions {
 	cwd?: string;
 	env?: NodeJS.ProcessEnv;
@@ -71,6 +89,7 @@ const UPDATE_LOCK_FILE = "update-install.lock";
 const UPDATE_COMMAND_MAX_OUTPUT_BYTES = 64 * 1_024;
 
 class UpdateInstallLockedError extends Error {}
+class PnpmOwnershipError extends Error {}
 
 function commandStderr(outputExceeded: boolean, timedOut: boolean, stderr: string): string {
 	if (outputExceeded) return "command output too large";
@@ -234,18 +253,24 @@ function runCommand(
 	});
 }
 
-async function resolveWindowsShim(name: "npm.cmd" | "codemem.cmd"): Promise<string> {
+async function resolveWindowsShim(name: "npm.cmd" | "codemem.cmd" | "pnpm.cmd"): Promise<string> {
 	const systemRoot = process.env.SystemRoot?.trim();
 	if (!systemRoot || !isAbsolute(systemRoot)) throw new Error("Windows SystemRoot is unavailable");
 	const result = await runCommand(join(systemRoot, "System32", "where.exe"), [name], 10_000, {
 		cwd: join(systemRoot, "System32"),
 		maxOutputBytes: UPDATE_COMMAND_MAX_OUTPUT_BYTES,
 	});
+	if (result.outputExceeded) {
+		throw new Error(`unable to resolve ${name}: where.exe output too large`);
+	}
 	const shim = result.stdout
 		.split(/\r?\n/)
 		.map((value) => value.trim())
 		.find((value) => isAbsolute(value));
-	if (result.exitCode !== 0 || !shim) throw new Error(`unable to resolve ${name} from PATH`);
+	if (!shim) {
+		throw Object.assign(new Error(`unable to resolve ${name} from PATH`), { code: "ENOENT" });
+	}
+	if (result.exitCode !== 0) throw new Error(`where.exe failed while resolving ${name}`);
 	return shim;
 }
 
@@ -266,6 +291,25 @@ async function resolveNpmInstallCommand(): Promise<{
 		args: ["/d", "/s", "/c", await resolveWindowsShim("npm.cmd")],
 		cwd: join(systemRoot, "System32"),
 	};
+}
+
+async function resolvePnpmCommand(): Promise<ResolvedCommand> {
+	if (process.platform !== "win32") return { command: "pnpm", args: [] };
+	const systemRoot = process.env.SystemRoot?.trim();
+	if (!systemRoot || !isAbsolute(systemRoot)) throw new Error("Windows SystemRoot is unavailable");
+	return {
+		command: join(systemRoot, "System32", "cmd.exe"),
+		args: ["/d", "/s", "/c", await resolveWindowsShim("pnpm.cmd")],
+		cwd: join(systemRoot, "System32"),
+		windowsVerbatimArguments: true,
+	};
+}
+
+function resolvedCommandArgs(command: ResolvedCommand, args: string[]): string[] {
+	if (process.platform !== "win32") return args;
+	const shim = command.args[3];
+	if (!shim) throw new Error("Windows command shim is unavailable");
+	return [...command.args.slice(0, 3), windowsCommandLine(shim, args)];
 }
 
 async function resolveVerificationCommand(): Promise<{
@@ -367,7 +411,7 @@ function updateInstallArgs(npmArgs: string[], targetVersion: string): string[] {
 	return [...npmArgs.slice(0, 3), windowsCommandLine(npmArgs[3] ?? "", installArgs)];
 }
 
-function miseCommandEnvironment(): NodeJS.ProcessEnv {
+function packageManagerEnvironment(): NodeJS.ProcessEnv {
 	const env = { ...process.env };
 	const protectedKeys = new Set(["npm_config_registry", "npm_config_@codemem:registry"]);
 	if (process.platform === "linux") protectedKeys.add("onnxruntime_node_install");
@@ -390,16 +434,38 @@ function miseGlobalCwd(): string {
 	return process.env.HOME?.trim() || homedir();
 }
 
+function updateInstallCwd(): string {
+	return dirname(updateInstallLockPath());
+}
+
 async function resolveUpdateInstallCommand(
 	installKind: InstallKind,
 	targetVersion: string,
+	pnpmCommand?: ResolvedCommand,
 ): Promise<ResolvedCommand> {
 	if (installKind === "mise") {
 		return {
 			command: "mise",
 			args: ["use", "-g", `npm:codemem@${targetVersion}`],
 			cwd: miseGlobalCwd(),
-			env: miseCommandEnvironment(),
+			env: packageManagerEnvironment(),
+		};
+	}
+	if (installKind === "pnpm-global") {
+		const pnpm = pnpmCommand ?? (await resolvePnpmCommand());
+		return {
+			...pnpm,
+			args: resolvedCommandArgs(pnpm, [
+				"add",
+				"-g",
+				"--registry",
+				PUBLIC_NPM_REGISTRY,
+				`--config.@codemem:registry=${PUBLIC_NPM_REGISTRY}`,
+				`codemem@${targetVersion}`,
+				`@codemem/embeddings@${targetVersion}`,
+			]),
+			cwd: updateInstallCwd(),
+			env: packageManagerEnvironment(),
 		};
 	}
 
@@ -422,24 +488,30 @@ function installLaunchErrorMessage(
 	error: unknown,
 ): string {
 	if (
-		installKind === "mise" &&
+		(installKind === "mise" || installKind === "pnpm-global") &&
 		error instanceof Error &&
 		(error as NodeJS.ErrnoException).code === "ENOENT"
 	) {
+		if (installKind === "pnpm-global") {
+			return "pnpm was not found on PATH; install pnpm, then retry codemem update install";
+		}
 		return `mise was not found on PATH; install mise, then run mise use -g npm:codemem@${targetVersion}`;
 	}
 	return error instanceof Error ? error.message : "update installation failed";
 }
 
 function failedInstallMessage(installKind: InstallKind): string {
-	return installKind === "mise" ? "mise installation failed" : "npm installation failed";
+	if (installKind === "mise") return "mise installation failed";
+	if (installKind === "pnpm-global") return "pnpm installation failed";
+	return "npm installation failed";
 }
 
 async function runUpdateInstallCommand(
 	installKind: InstallKind,
 	targetVersion: string,
+	pnpmCommand?: ResolvedCommand,
 ): Promise<CommandResult> {
-	const install = await resolveUpdateInstallCommand(installKind, targetVersion);
+	const install = await resolveUpdateInstallCommand(installKind, targetVersion, pnpmCommand);
 	try {
 		return await runCommand(install.command, install.args, INSTALL_TIMEOUT_MS, {
 			cwd: install.cwd,
@@ -509,7 +581,7 @@ async function readMiseState(
 	try {
 		const result = await runCommand("mise", args, VERIFY_TIMEOUT_MS, {
 			cwd: options.cwd,
-			env: miseCommandEnvironment(),
+			env: packageManagerEnvironment(),
 			maxOutputBytes: UPDATE_COMMAND_MAX_OUTPUT_BYTES,
 		});
 		if (result.exitCode !== 0 || result.outputExceeded) return null;
@@ -523,8 +595,187 @@ function isPathWithin(path: string, root: string): boolean {
 	return path === root || path.startsWith(`${root}/`);
 }
 
+function isPathBelow(path: string, root: string): boolean {
+	return path.startsWith(`${root}/`);
+}
+
 function isPortableAbsolutePath(value: string): boolean {
 	return value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value);
+}
+
+function isSafeAbsoluteDirectory(value: string): boolean {
+	if (!isPortableAbsolutePath(value)) return false;
+	const normalized = resolveComparablePath(value);
+	return normalized !== "/" && !/^[a-z]:$/i.test(normalized);
+}
+
+function resolveExistingComparablePath(value: string): string | null {
+	try {
+		return resolveComparablePath(realpathSync(value));
+	} catch {
+		return null;
+	}
+}
+
+function parsePnpmPackageState(value: unknown): PnpmPackageState | null {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	const record = value as Record<string, unknown>;
+	if (
+		typeof record.path !== "string" ||
+		!isPortableAbsolutePath(record.path) ||
+		typeof record.version !== "string" ||
+		!record.version
+	) {
+		return null;
+	}
+	return { path: record.path, version: record.version };
+}
+
+function parsePnpmGlobalState(raw: string): PnpmGlobalState | null {
+	if (Buffer.byteLength(raw) > UPDATE_COMMAND_MAX_OUTPUT_BYTES) return null;
+	let payload: unknown;
+	try {
+		payload = JSON.parse(raw);
+	} catch {
+		return null;
+	}
+	if (!Array.isArray(payload) || payload.length !== 1) return null;
+	const topLevel = payload[0];
+	if (!topLevel || typeof topLevel !== "object" || Array.isArray(topLevel)) return null;
+	const topLevelRecord = topLevel as Record<string, unknown>;
+	if (
+		typeof topLevelRecord.private !== "boolean" ||
+		typeof topLevelRecord.path !== "string" ||
+		!isPortableAbsolutePath(topLevelRecord.path)
+	) {
+		return null;
+	}
+	const dependencies = topLevelRecord.dependencies;
+	if (!dependencies || typeof dependencies !== "object" || Array.isArray(dependencies)) return null;
+	const records = dependencies as Record<string, unknown>;
+	if (!Object.hasOwn(records, "codemem")) return null;
+	const codemem = parsePnpmPackageState(records.codemem);
+	if (!codemem) return null;
+	if (!Object.hasOwn(records, "@codemem/embeddings")) {
+		return { codemem, embeddings: null, listRootPath: topLevelRecord.path };
+	}
+	const embeddings = parsePnpmPackageState(records["@codemem/embeddings"]);
+	return embeddings ? { codemem, embeddings, listRootPath: topLevelRecord.path } : null;
+}
+
+function parsePnpmDirectory(raw: string): string | null {
+	if (Buffer.byteLength(raw) > UPDATE_COMMAND_MAX_OUTPUT_BYTES) return null;
+	const lines = raw
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter(Boolean);
+	const directories = lines
+		.filter(isSafeAbsoluteDirectory)
+		.map(resolveExistingComparablePath)
+		.filter((directory): directory is string => directory !== null);
+	return directories.length === 1 ? (directories[0] ?? null) : null;
+}
+
+const PNPM_SETUP_GUIDANCE = "Run pnpm setup, then retry codemem update install";
+
+function isMissingPnpmGlobalBinDirectory(
+	result: Pick<CommandResult, "stderr" | "stdout">,
+): boolean {
+	const output = `${result.stdout}\n${result.stderr}`.toLowerCase();
+	return (
+		output.includes("err_pnpm_global_bin_dir_not_in_path") ||
+		(output.includes("configured global bin directory") && output.includes("is not in path"))
+	);
+}
+
+async function runPnpmQuery(command: ResolvedCommand, args: string[]): Promise<CommandResult> {
+	try {
+		return await runCommand(
+			command.command,
+			resolvedCommandArgs(command, args),
+			VERIFY_TIMEOUT_MS,
+			{
+				cwd: updateInstallCwd(),
+				maxOutputBytes: UPDATE_COMMAND_MAX_OUTPUT_BYTES,
+				windowsVerbatimArguments: command.windowsVerbatimArguments,
+			},
+		);
+	} catch (error) {
+		if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+			throw new PnpmOwnershipError(
+				"pnpm was not found on PATH; install pnpm, then retry codemem update install",
+			);
+		}
+		throw error;
+	}
+}
+
+async function requirePnpmQuery(command: ResolvedCommand, args: string[]): Promise<string> {
+	const result = await runPnpmQuery(command, args);
+	const label = `pnpm ${args.join(" ")}`;
+	if (isMissingPnpmGlobalBinDirectory(result)) {
+		throw new PnpmOwnershipError(PNPM_SETUP_GUIDANCE);
+	}
+	if (result.outputExceeded) {
+		throw new PnpmOwnershipError(`${label} returned too much output; inspect pnpm global state`);
+	}
+	if (result.exitCode !== 0) {
+		throw new PnpmOwnershipError(
+			`${label} failed${result.stderr.trim() ? `: ${result.stderr.trim()}` : "; inspect pnpm global configuration"}`,
+		);
+	}
+	return result.stdout;
+}
+
+async function provePnpmGlobalOwnership(plan: ExplicitUpdatePlan): Promise<PnpmGlobalOwnership> {
+	let command: ResolvedCommand;
+	try {
+		command = await resolvePnpmCommand();
+	} catch (error) {
+		const message = installLaunchErrorMessage("pnpm-global", plan.targetVersion, error);
+		throw new PnpmOwnershipError(message);
+	}
+	const rootRaw = await requirePnpmQuery(command, ["root", "-g"]);
+	const binRaw = await requirePnpmQuery(command, ["bin", "-g"]);
+	const listRaw = await requirePnpmQuery(command, ["list", "-g", "--depth", "0", "--json"]);
+	const rootPath = parsePnpmDirectory(rootRaw);
+	if (!rootPath)
+		throw new PnpmOwnershipError("pnpm root -g did not return one absolute non-root path");
+	const binPath = parsePnpmDirectory(binRaw);
+	if (!binPath)
+		throw new PnpmOwnershipError("pnpm bin -g did not return one absolute non-root path");
+	const state = parsePnpmGlobalState(listRaw);
+	if (!state) {
+		throw new PnpmOwnershipError(
+			"pnpm list -g returned malformed or ambiguous global package state",
+		);
+	}
+	if (state.codemem.version !== VERSION) {
+		throw new PnpmOwnershipError(
+			`pnpm global codemem is ${state.codemem.version}, but the running CLI is ${VERSION}`,
+		);
+	}
+	const listRootPath = resolveExistingComparablePath(state.listRootPath);
+	const legacyModulesPath = listRootPath
+		? resolveExistingComparablePath(join(listRootPath, "node_modules"))
+		: null;
+	if (!listRootPath || (rootPath !== listRootPath && rootPath !== legacyModulesPath)) {
+		throw new PnpmOwnershipError(
+			"pnpm root -g is neither the pnpm list -g root nor its node_modules directory",
+		);
+	}
+	const packagePath = resolveExistingComparablePath(state.codemem.path);
+	if (!packagePath || !isPathBelow(packagePath, listRootPath)) {
+		throw new PnpmOwnershipError("pnpm list -g root does not own the listed codemem package path");
+	}
+	const entryPath = plan.runningEntryPath;
+	const canonicalEntryPath = entryPath ? resolveExistingComparablePath(entryPath) : null;
+	if (!canonicalEntryPath || !isPathWithin(canonicalEntryPath, packagePath)) {
+		throw new PnpmOwnershipError(
+			"the pnpm global codemem package does not own the running JavaScript entry",
+		);
+	}
+	return { binPath, command, listRootPath };
 }
 
 function isUserOwnedMiseSource(state: MiseToolState): boolean {
@@ -602,7 +853,9 @@ async function resolveExplicitUpdatePlan(
 		installKind: status.install_kind,
 		manualGuidance: status.recommended_action,
 		runningEntryPath:
-			detectedInstallKind === "mise" ? resolveRunningEntryPath(process.argv[1] ?? "") : null,
+			detectedInstallKind === "mise" || detectedInstallKind === "pnpm-global"
+				? resolveRunningEntryPath(process.argv[1] ?? "")
+				: null,
 		targetVersion: status.latest_version,
 	};
 }
@@ -631,7 +884,7 @@ async function verifyMiseInstalledVersion(plan: ExplicitUpdatePlan): Promise<boo
 		VERIFY_TIMEOUT_MS,
 		{
 			cwd: miseGlobalCwd(),
-			env: miseCommandEnvironment(),
+			env: packageManagerEnvironment(),
 			maxOutputBytes: UPDATE_COMMAND_MAX_OUTPUT_BYTES,
 		},
 	);
@@ -640,6 +893,102 @@ async function verifyMiseInstalledVersion(plan: ExplicitUpdatePlan): Promise<boo
 		verification.exitCode === 0 &&
 		verification.stdout.trim() === plan.targetVersion
 	);
+}
+
+function pnpmPackageStateError(
+	state: PnpmGlobalState,
+	ownership: PnpmGlobalOwnership,
+	targetVersion: string,
+): string | null {
+	if (!state.embeddings) {
+		return "pnpm update completed, but @codemem/embeddings is absent from global package state";
+	}
+	if (state.codemem.version !== targetVersion || state.embeddings.version !== targetVersion) {
+		return `pnpm update completed, but global package versions do not both equal ${targetVersion}`;
+	}
+	const listedRootPath = resolveExistingComparablePath(state.listRootPath);
+	if (listedRootPath !== ownership.listRootPath) {
+		return "pnpm update completed, but the pnpm list -g root changed after ownership was proven";
+	}
+	const packagePaths = [state.codemem.path, state.embeddings.path].map(
+		resolveExistingComparablePath,
+	);
+	if (
+		packagePaths.some(
+			(packagePath) => !packagePath || !isPathBelow(packagePath, ownership.listRootPath),
+		)
+	) {
+		return "pnpm update completed, but the pnpm list -g root does not own both package paths";
+	}
+	return null;
+}
+
+async function verifyPnpmOwnedLauncher(
+	plan: ExplicitUpdatePlan,
+	ownership: PnpmGlobalOwnership,
+): Promise<string | null> {
+	const shimName = process.platform === "win32" ? "codemem.cmd" : "codemem";
+	const shimPath = join(ownership.binPath, shimName);
+	let verification: CommandResult;
+	try {
+		if (process.platform === "win32") {
+			verification = await runCommand(
+				ownership.command.command,
+				["/d", "/s", "/c", windowsCommandLine(shimPath, ["version"])],
+				VERIFY_TIMEOUT_MS,
+				{
+					cwd: updateInstallCwd(),
+					maxOutputBytes: UPDATE_COMMAND_MAX_OUTPUT_BYTES,
+					windowsVerbatimArguments: true,
+				},
+			);
+		} else {
+			verification = await runCommand(shimPath, ["version"], VERIFY_TIMEOUT_MS, {
+				cwd: updateInstallCwd(),
+				maxOutputBytes: UPDATE_COMMAND_MAX_OUTPUT_BYTES,
+			});
+		}
+	} catch (error) {
+		const detail = error instanceof Error ? `: ${error.message}` : "";
+		return `pnpm-owned codemem launcher could not be executed${detail}`;
+	}
+	if (verification.outputExceeded) {
+		return "pnpm-owned codemem launcher returned too much output during version verification";
+	}
+	if (verification.exitCode !== 0) {
+		return "pnpm-owned codemem launcher failed during version verification";
+	}
+	const versionLines = verification.stdout
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter((line) =>
+			/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(
+				line,
+			),
+		);
+	if (versionLines.length !== 1 || versionLines[0] !== plan.targetVersion) {
+		return `pnpm-owned codemem launcher did not report ${plan.targetVersion}`;
+	}
+	return null;
+}
+
+async function verifyPnpmInstalledVersion(
+	plan: ExplicitUpdatePlan,
+	ownership: PnpmGlobalOwnership,
+): Promise<string | null> {
+	let listRaw: string;
+	try {
+		listRaw = await requirePnpmQuery(ownership.command, ["list", "-g", "--depth", "0", "--json"]);
+	} catch (error) {
+		return error instanceof Error
+			? `pnpm update completed, but package-state verification failed: ${error.message}`
+			: "pnpm update completed, but package-state verification failed";
+	}
+	const state = parsePnpmGlobalState(listRaw);
+	if (!state) return "pnpm update completed, but global package state is malformed or ambiguous";
+	const packageStateError = pnpmPackageStateError(state, ownership, plan.targetVersion);
+	if (packageStateError) return packageStateError;
+	return verifyPnpmOwnedLauncher(plan, ownership);
 }
 
 async function verifyInstalledVersion(plan: ExplicitUpdatePlan): Promise<boolean> {
@@ -669,6 +1018,22 @@ function emitInstallSuccess(options: UpdateInstallOptions, targetVersion: string
 	else console.log(`Updated codemem from ${VERSION} to ${targetVersion}.`);
 }
 
+async function resolvePnpmOwnershipForExecution(
+	options: UpdateInstallOptions,
+	plan: ExplicitUpdatePlan,
+): Promise<PnpmGlobalOwnership | null> {
+	try {
+		return await provePnpmGlobalOwnership(plan);
+	} catch (error) {
+		failInstall(
+			options,
+			"update_install_refused",
+			error instanceof Error ? error.message : "could not prove pnpm global ownership",
+		);
+		return null;
+	}
+}
+
 async function executeExplicitUpdate(
 	options: UpdateInstallOptions,
 	plan: ExplicitUpdatePlan,
@@ -682,8 +1047,17 @@ async function executeExplicitUpdate(
 		);
 		return;
 	}
+	const pnpmOwnership =
+		plan.installKind === "pnpm-global"
+			? await resolvePnpmOwnershipForExecution(options, plan)
+			: null;
+	if (plan.installKind === "pnpm-global" && !pnpmOwnership) return;
+	if (pnpmOwnership) {
+		await executePnpmUpdate(options, plan, pnpmOwnership);
+		return;
+	}
 	const installation = await runUpdateInstallCommand(plan.installKind, plan.targetVersion);
-	if (installation.exitCode !== 0) {
+	if (installation.exitCode !== 0 || installation.outputExceeded) {
 		failInstall(
 			options,
 			"update_install_failed",
@@ -697,6 +1071,31 @@ async function executeExplicitUpdate(
 				? "mise updated global configuration, but installed version verification failed; inspect the global mise codemem state before retrying"
 				: "installed version verification failed";
 		failInstall(options, "update_verification_failed", message);
+		return;
+	}
+	emitInstallSuccess(options, plan.targetVersion);
+}
+
+async function executePnpmUpdate(
+	options: UpdateInstallOptions,
+	plan: ExplicitUpdatePlan,
+	ownership: PnpmGlobalOwnership,
+): Promise<void> {
+	const installation = await runUpdateInstallCommand(
+		plan.installKind,
+		plan.targetVersion,
+		ownership.command,
+	);
+	if (installation.exitCode !== 0) {
+		const message = isMissingPnpmGlobalBinDirectory(installation)
+			? PNPM_SETUP_GUIDANCE
+			: installation.stderr.trim() || failedInstallMessage(plan.installKind);
+		failInstall(options, "update_install_failed", message);
+		return;
+	}
+	const verificationError = await verifyPnpmInstalledVersion(plan, ownership);
+	if (verificationError) {
+		failInstall(options, "update_verification_failed", verificationError);
 		return;
 	}
 	emitInstallSuccess(options, plan.targetVersion);

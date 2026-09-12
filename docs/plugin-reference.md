@@ -474,7 +474,7 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_PLUGIN_CMD_TIMEOUT` | Milliseconds before a plugin CLI call is aborted (default `20000`). |
 | `CODEMEM_MIN_VERSION` | Minimum required CLI version for plugin compatibility warnings (default `0.9.20`). |
 | `CODEMEM_BACKEND_UPDATE_POLICY` | Compatibility and release-notification policy: `notify` (default), `auto`, or `off`. |
-| `CODEMEM_INSTALL_KIND` | Internal/advanced release-guidance detection override (`npm-global`, `mise`, `npx`, `docker`, `repo-dev`, `pinned`, or `unknown`). This does not prove ownership or enable installation. |
+| `CODEMEM_INSTALL_KIND` | Internal/advanced release-guidance detection override (`npm-global`, `pnpm-global`, `mise`, `npx`, `docker`, `repo-dev`, `pinned`, or `unknown`). Markers do not prove ownership or enable installation. |
 | `CODEMEM_CODEX_ENDPOINT` | Override Codex OAuth endpoint. |
 | `CODEMEM_PLUGIN_DEBUG` | Set to `1`, `true`, or `yes` to log plugin lifecycle events. |
 | `CODEMEM_PLUGIN_IGNORE` | Skip all plugin behavior for this process. |
@@ -532,7 +532,7 @@ Update policy:
 - `CODEMEM_BACKEND_UPDATE_POLICY=auto`: try a best-effort auto-update for eligible compatibility-floor mismatches and fresh same-channel releases observed for at least 24 hours, then warn if still outdated
 	- skipped for `node` dev-mode runners
 	- skipped when `CODEMEM_RUNNER_FROM` is pinned to a fixed package/version
-	- skipped for mise, Docker, unknown, stale, unsupported-channel, cross-channel, or downgrade states
+	- skipped for pnpm-global, mise, Docker, unknown, stale, unsupported-channel, cross-channel, or downgrade states
 - `CODEMEM_BACKEND_UPDATE_POLICY=off`: no compatibility toast (logging still records mismatch)
 
 After its startup delay, the plugin also runs `codemem update check --json` through the same
@@ -559,6 +559,16 @@ command and writes the exact release into mise's primary global config. Verifica
 to move from user `conf.d` or the recognized user-level `~/.config/mise.toml` file to `config.toml` but requires the post-update global
 `version` or `requested_version` before running `mise exec -- codemem version` outside the invoking project; plugin background
 auto-update never treats mise as eligible.
+
+pnpm-global CLIs are recognized from canonical virtual-store path evidence, which can provide release
+notifications and the exact paired package command but cannot prove ownership. Only an explicit
+`codemem update install` may mutate that installation: from a neutral directory it uses bounded,
+no-shell `pnpm root -g`, `pnpm bin -g`, and `pnpm list -g --depth 0 --json` checks to prove the
+root is exactly the list root (pnpm 12) or its `node_modules` directory (pnpm 9–11), and that the list root owns the active Codemem package. It installs exact matching `codemem` and
+`@codemem/embeddings` packages from the public npm registry and verifies both
+registered package state and that launcher. The updater never runs a build-approval command; pnpm 9 still runs install scripts by default,
+while newer releases apply their configured build-script policy. Plugin
+background auto-install never treats pnpm-global as eligible.
 
 Docker images set `CODEMEM_INSTALL_KIND=docker` so release guidance cannot mistake the bundled
 global npm package for a host npm installation. Docker deployments never self-update; rebuild and
