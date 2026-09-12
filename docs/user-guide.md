@@ -141,6 +141,20 @@ codemem status --db-path ./codemem.sqlite --config ./codemem.json
   2. workspace-scoped config derived from `CODEMEM_RUNTIME_ROOT` or `CODEMEM_WORKSPACE_ID`
   3. legacy global config (`~/.config/codemem/config.json` or `~/.config/codemem/config.jsonc`)
 
+## Extraction replay and benchmarks
+
+Proven delegated brief-only batches produce a context-only outcome instead of an
+observer evaluation. `memory extraction-replay --json` returns
+`status: "context_only"`, `code: "delegated_brief_context_only"`, `evaluated: false`,
+the batch/scenario IDs and an explanatory message, with exit status zero.
+
+`memory extraction-benchmark` continues past context-only batches and records each
+skipped iteration in `summary.contextOnlySkips`. `summary.contextOnlySkipped` counts
+those skips, while `summary.scheduledTotal` counts every scheduled batch/iteration.
+`summary.total`, `runs`, failure counts and quality, stability, output, cost and
+latency metrics cover actual observer attempts only; an all-context-only benchmark
+has no evaluated runs and null rates, rather than a quality pass.
+
 ## Observer auth configuration
 
 - Runtime choices are `api_http`, `claude_sidecar`, and `codex_sidecar`.

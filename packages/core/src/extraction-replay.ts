@@ -1,3 +1,8 @@
+import {
+	boundedDelegatedBriefs,
+	isDelegatedBrief,
+	isDelegatedBriefOnlyBatch,
+} from "./capture-context.js";
 import { connect, resolveDbPath } from "./db.js";
 import {
 	evaluateExtractionStructure,
@@ -50,6 +55,12 @@ import {
 	resolveObserverOutputCapability,
 } from "./observer-output.js";
 import { resolveProject } from "./project.js";
+import {
+	hydrateRawEvent,
+	loadPriorDelegatedBriefEvents,
+	type RawEventContextRow,
+	rawEventCaptureContextProjection,
+} from "./raw-event-context.js";
 import { buildSessionContext } from "./raw-event-flush.js";
 
 function normalizePath(path: string, repoRoot: string | null): string {
@@ -325,6 +336,17 @@ interface PreparedReplayBatch {
 	analysis: ReplayBatchAnalysis;
 }
 
+/** Brief-only batches are retained context, not failed or successful observer evaluations. */
+export class ContextOnlyReplayError extends Error {
+	readonly code = "delegated_brief_context_only";
+	constructor(batchId: number) {
+		super(
+			`Flush batch ${batchId} is context-only delegated instructions; no observer replay is needed`,
+		);
+		this.name = "ContextOnlyReplayError";
+	}
+}
+
 function classifyReplayResult(input: {
 	raw: string | null;
 	evaluation: ReturnType<typeof evaluateSessionExtractionItems>;
@@ -484,13 +506,10 @@ async function prepareReplayBatch(
 			  }
 			| undefined;
 		if (!batch) throw new Error(`Flush batch ${opts.batchId} not found`);
-		if (batch.session_id == null) {
-			throw new Error(`Flush batch ${opts.batchId} is not linked to a local session`);
-		}
-
 		const rawRows = db
 			.prepare(
-				`SELECT event_seq, event_type, ts_wall_ms, ts_mono_ms, payload_json, event_id
+				`SELECT event_seq, event_type, ts_wall_ms, ts_mono_ms, payload_json, event_id,
+				 ${rawEventCaptureContextProjection(db)}
 				 FROM raw_events
 				 WHERE source = ?
 				   AND stream_id = ?
@@ -498,25 +517,23 @@ async function prepareReplayBatch(
 				   AND event_seq <= ?
 				 ORDER BY event_seq ASC`,
 			)
-			.all(batch.source, batch.stream_id, batch.start_event_seq, batch.end_event_seq) as Array<{
-			event_seq: number;
-			event_type: string;
-			ts_wall_ms: number | null;
-			ts_mono_ms: number | null;
-			payload_json: string;
-			event_id: string | null;
-		}>;
-		const events = rawRows.map<Record<string, unknown>>((row) => {
-			const payload = JSON.parse(row.payload_json) as Record<string, unknown>;
-			payload.type = payload.type || row.event_type;
-			payload.timestamp_wall_ms = row.ts_wall_ms;
-			payload.timestamp_mono_ms = row.ts_mono_ms;
-			payload.event_seq = row.event_seq;
-			payload.event_id = row.event_id;
-			return payload;
-		});
+			.all(
+				batch.source,
+				batch.stream_id,
+				batch.start_event_seq,
+				batch.end_event_seq,
+			) as RawEventContextRow[];
+		const events = rawRows.map((row) =>
+			hydrateRawEvent(row, { source: batch.source, streamId: batch.stream_id }),
+		);
 		if (events.length === 0) {
 			throw new Error(`Flush batch ${opts.batchId} has no raw events in range`);
+		}
+		if (batch.source === "opencode" && isDelegatedBriefOnlyBatch(events)) {
+			throw new ContextOnlyReplayError(batch.id);
+		}
+		if (batch.session_id == null) {
+			throw new Error(`Flush batch ${opts.batchId} is not linked to a local session`);
 		}
 
 		// Claude Code raw events arrive as `claude.hook` with an adapter envelope;
@@ -592,7 +609,17 @@ async function prepareReplayBatch(
 		}
 		const transcriptBudget =
 			opts.transcriptBudget ?? Math.max(1500, Math.min(5000, Math.floor(observerMaxChars * 0.4)));
+		const delegatedBriefs = boundedDelegatedBriefs(
+			loadPriorDelegatedBriefEvents(db, {
+				source: batch.source,
+				streamId: batch.stream_id,
+				beforeEventSeq: batch.start_event_seq,
+			})
+				.filter(isDelegatedBrief)
+				.map((event) => String(event.prompt_text)),
+		);
 		const observerContext: ObserverContext = {
+			...(delegatedBriefs.length ? { delegatedBriefs } : {}),
 			project: batch.project ?? resolveProject(batch.cwd ?? process.cwd()) ?? null,
 			userPrompt: observerPrompt,
 			promptNumber,

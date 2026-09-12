@@ -5,6 +5,11 @@
  * sent to the observer LLM that extracts memories from session transcripts.
  */
 
+import {
+	boundedDelegatedBriefs,
+	DELEGATED_BRIEF_LABEL,
+	MAX_DELEGATED_CONTEXT_CHARS,
+} from "./capture-context.js";
 import type { ObserverContext, ToolEvent } from "./ingest-types.js";
 import { OBSERVER_CONCEPTS } from "./observer-concepts.js";
 
@@ -332,6 +337,25 @@ function buildObserverSystemPrompt(
 	return systemBlocks.join("\n\n").trim();
 }
 
+function appendPriorDelegatedBriefs(user: string, briefs: readonly string[]): string {
+	const text = boundedDelegatedBriefs(briefs).join("\n\n");
+	if (!text) return user;
+	const label = `\n\n[${DELEGATED_BRIEF_LABEL}; earlier in this raw stream]\n`;
+	const body = escapeXmlWithinBudget(text, MAX_DELEGATED_CONTEXT_CHARS - label.length);
+	return `${user}${label}${body}`;
+}
+
+function escapeXmlWithinBudget(text: string, budget: number): string {
+	let escaped = "";
+	// Escape whole code points so neither XML entities nor surrogate pairs are split.
+	for (const character of text.toWellFormed()) {
+		const entity = escapeXml(character);
+		if (escaped.length + entity.length > budget) break;
+		escaped += entity;
+	}
+	return escaped;
+}
+
 /**
  * Build the observer prompt from session context.
  *
@@ -397,7 +421,10 @@ export function buildObserverPrompt(
 		);
 	}
 
-	const user = userBlocks.join("\n\n").trim();
+	const user = appendPriorDelegatedBriefs(
+		userBlocks.join("\n\n").trim(),
+		context.delegatedBriefs ?? [],
+	);
 
 	return { system, user };
 }

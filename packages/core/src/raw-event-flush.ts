@@ -9,6 +9,12 @@
  */
 
 import { extractApplyPatchPaths, MUTATING_TOOL_NAMES } from "./apply-patch.js";
+import {
+	boundedDelegatedBriefs,
+	isDelegatedBrief,
+	isDelegatedBriefOnlyBatch,
+	promptContextText,
+} from "./capture-context.js";
 import { extractAdapterEvent, projectAdapterToolEvent } from "./ingest-events.js";
 import {
 	type IngestOptions,
@@ -223,7 +229,7 @@ export function buildSessionContext(events: Record<string, unknown>[]): SessionC
 		if (e.type !== "user_prompt") continue;
 		const text = e.prompt_text;
 		if (typeof text === "string" && text.trim()) {
-			firstPrompt = text.trim();
+			firstPrompt = promptContextText(e, text.trim());
 			break;
 		}
 	}
@@ -278,6 +284,43 @@ function isTerminalLowSignalSession(
 // Main flush function
 // ---------------------------------------------------------------------------
 
+function buildFlushSessionContext(
+	store: MemoryStore,
+	events: Record<string, unknown>[],
+	{
+		opencodeSessionId,
+		source,
+		startEventSeq,
+		lastEventSeq,
+		batchId,
+	}: {
+		opencodeSessionId: string;
+		source: string;
+		startEventSeq: number;
+		lastEventSeq: number;
+		batchId: number;
+	},
+): SessionContext {
+	const context = buildSessionContext(normalizeEventsForSessionContext(events));
+	context.opencodeSessionId = opencodeSessionId;
+	context.source = source;
+	context.streamId = opencodeSessionId;
+	context.flusher = "raw_events";
+	context.flushBatch = {
+		batch_id: batchId,
+		start_event_seq: startEventSeq,
+		end_event_seq: lastEventSeq,
+	};
+	const priorBriefs = boundedDelegatedBriefs(
+		store
+			.priorDelegatedBriefEvents(opencodeSessionId, source, startEventSeq)
+			.filter(isDelegatedBrief)
+			.map((event) => String(event.prompt_text)),
+	);
+	if (priorBriefs.length) context.delegatedBriefs = priorBriefs;
+	return context;
+}
+
 export interface FlushRawEventsOptions {
 	opencodeSessionId: string;
 	source?: string;
@@ -286,6 +329,28 @@ export interface FlushRawEventsOptions {
 	startedAt?: string | null;
 	maxEvents?: number | null;
 	throughEventSeq?: number | null;
+}
+
+function completeContextOnlyBatch(
+	store: MemoryStore,
+	events: Record<string, unknown>[],
+	{
+		source,
+		opencodeSessionId,
+		batchId,
+		lastEventSeq,
+	}: {
+		source: string;
+		opencodeSessionId: string;
+		batchId: number;
+		lastEventSeq: number;
+	},
+): { flushed: number; updatedState: number } | null {
+	if (source !== "opencode" || !isDelegatedBriefOnlyBatch(events)) return null;
+	if (!store.claimRawEventFlushBatch(batchId)) return { flushed: 0, updatedState: 0 };
+	store.updateRawEventFlushBatchStatus(batchId, "completed");
+	store.updateRawEventFlushState(opencodeSessionId, lastEventSeq, source);
+	return { flushed: events.length, updatedState: 1 };
 }
 
 /**
@@ -370,6 +435,13 @@ export async function flushRawEvents(
 		store.updateRawEventFlushState(opencodeSessionId, lastEventSeq, source);
 		return { flushed: 0, updatedState: 1 };
 	}
+	const contextOnly = completeContextOnlyBatch(store, events, {
+		source,
+		opencodeSessionId,
+		batchId,
+		lastEventSeq,
+	});
+	if (contextOnly) return contextOnly;
 
 	// Give up after too many failed attempts — mark batch as permanently failed
 	// and advance the cursor so the pipeline isn't blocked forever.
@@ -404,21 +476,13 @@ export async function flushRawEvents(
 		return { flushed: 0, updatedState: 0 };
 	}
 
-	// Build session context. Claude Code raw events arrive as `claude.hook`
-	// with an adapter envelope; normalize them to the flat user_prompt /
-	// tool.execute.after shapes before scanning so promptCount, toolCount,
-	// firstPrompt, filesRead, and filesModified are populated correctly.
-	const normalizedForContext = normalizeEventsForSessionContext(events);
-	const sessionContext: SessionContext = buildSessionContext(normalizedForContext);
-	sessionContext.opencodeSessionId = opencodeSessionId;
-	sessionContext.source = source;
-	sessionContext.streamId = opencodeSessionId;
-	sessionContext.flusher = "raw_events";
-	sessionContext.flushBatch = {
-		batch_id: batchId,
-		start_event_seq: startEventSeq,
-		end_event_seq: lastEventSeq,
-	};
+	const sessionContext = buildFlushSessionContext(store, events, {
+		opencodeSessionId,
+		source,
+		startEventSeq,
+		lastEventSeq,
+		batchId,
+	});
 
 	if (isTerminalLowSignalSession(events, sessionContext)) {
 		store.updateRawEventFlushBatchStatus(batchId, "completed");
