@@ -129,13 +129,13 @@ export const MAX_DELEGATED_CONTEXT_CHARS = 800;
 export function boundedDelegatedBriefs(briefs: readonly string[]): string[] {
 	let remaining = MAX_DELEGATED_CONTEXT_CHARS;
 	const bounded: string[] = [];
-	for (const brief of briefs.slice(-4)) {
+	for (const brief of briefs.slice(-4).reverse()) {
 		// Strip complete private regions before any cut can split their markers.
 		const text = stripPrivate(brief).slice(0, remaining);
 		remaining -= text.length;
 		if (text) bounded.push(text);
 	}
-	return bounded;
+	return bounded.reverse();
 }
 
 export function promptOriginLabel(event: Record<string, unknown>): string {

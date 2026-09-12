@@ -5,6 +5,11 @@
  * sent to the observer LLM that extracts memories from session transcripts.
  */
 
+import {
+	boundedDelegatedBriefs,
+	DELEGATED_BRIEF_LABEL,
+	MAX_DELEGATED_CONTEXT_CHARS,
+} from "./capture-context.js";
 import type { ObserverContext, ToolEvent } from "./ingest-types.js";
 import { OBSERVER_CONCEPTS } from "./observer-concepts.js";
 
@@ -332,6 +337,41 @@ function buildObserverSystemPrompt(
 	return systemBlocks.join("\n\n").trim();
 }
 
+function appendPriorDelegatedBriefs(user: string, briefs: readonly string[]): string {
+	const label = `\n\n[${DELEGATED_BRIEF_LABEL}; earlier in this raw stream]\n`;
+	const body = escapedDelegatedBriefsWithinBudget(
+		boundedDelegatedBriefs(briefs),
+		MAX_DELEGATED_CONTEXT_CHARS - label.length,
+	);
+	if (!body) return user;
+	return `${user}${label}${body}`;
+}
+
+function escapedDelegatedBriefsWithinBudget(briefs: readonly string[], budget: number): string {
+	let remaining = budget;
+	const bounded: string[] = [];
+	for (const brief of briefs.slice().reverse()) {
+		const separatorLength = bounded.length === 0 ? 0 : 2;
+		if (remaining <= separatorLength) break;
+		const text = escapeXmlWithinBudget(brief, remaining - separatorLength);
+		if (!text) continue;
+		bounded.push(text);
+		remaining -= separatorLength + text.length;
+	}
+	return bounded.reverse().join("\n\n");
+}
+
+function escapeXmlWithinBudget(text: string, budget: number): string {
+	let escaped = "";
+	// Escape whole code points so neither XML entities nor surrogate pairs are split.
+	for (const character of text.toWellFormed()) {
+		const entity = escapeXml(character);
+		if (escaped.length + entity.length > budget) break;
+		escaped += entity;
+	}
+	return escaped;
+}
+
 /**
  * Build the observer prompt from session context.
  *
@@ -397,7 +437,10 @@ export function buildObserverPrompt(
 		);
 	}
 
-	const user = userBlocks.join("\n\n").trim();
+	const user = appendPriorDelegatedBriefs(
+		userBlocks.join("\n\n").trim(),
+		context.delegatedBriefs ?? [],
+	);
 
 	return { system, user };
 }
