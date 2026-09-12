@@ -194,6 +194,57 @@ describe("delegated brief classification", () => {
 	});
 });
 
+describe("current-batch delegated brief extraction", () => {
+	it("bounds a current-batch brief without displacing tool evidence", async () => {
+		const currentBrief = `CURRENT_BRIEF_START ${"x".repeat(20_000)} CURRENT_BRIEF_TAIL`;
+		const currentContext = {
+			...context,
+			brief_sha256: createHash("sha256").update(currentBrief).digest("hex"),
+		};
+		ingestRawEvents(store, {
+			...envelope,
+			payload: {
+				...envelope.payload,
+				prompt_text: currentBrief,
+				_adapter: {
+					...envelope.payload._adapter,
+					payload: { text: currentBrief },
+				},
+			},
+			capture_context: currentContext,
+		});
+		store.recordRawEvent({
+			opencodeSessionId: "child",
+			eventId: "same-batch-finding",
+			eventType: "tool.execute.after",
+			payload: {
+				type: "tool.execute.after",
+				tool: "read",
+				args: { filePath: "src/cache.ts" },
+				result: "CURRENT_BATCH_TOOL_EVIDENCE survives observer budgeting.",
+			},
+		});
+		const observe = vi.fn(async () => ({
+			raw: `<summary><request>Inspect cache behavior</request><completed>Read the cache implementation.</completed><learned>Tool evidence survived budgeting.</learned><investigated>Cache behavior.</investigated><next_steps></next_steps><notes></notes></summary>`,
+			parsed: null,
+			provider: "test",
+			model: "test",
+		}));
+
+		await flushRawEvents(store, { observer: { observe, getStatus } } as unknown as IngestOptions, {
+			opencodeSessionId: "child",
+		});
+
+		const observerInput = observe.mock.calls[0]?.[1] ?? "";
+		expect(observerInput).toContain(DELEGATED_BRIEF_LABEL);
+		expect(observerInput).toContain("CURRENT_BRIEF_START");
+		expect(observerInput).not.toContain("CURRENT_BRIEF_TAIL");
+		expect(observerInput).not.toContain("User: CURRENT_BRIEF_START");
+		expect(observerInput).not.toContain("<user_request>CURRENT_BRIEF_START");
+		expect(observerInput).toContain("CURRENT_BATCH_TOOL_EVIDENCE survives observer budgeting.");
+	});
+});
+
 describe("delegated brief extraction", () => {
 	it("completes brief-only batches without observer, memories, or retry loops", async () => {
 		const observe = vi.fn();
@@ -299,11 +350,7 @@ describe("mixed delegated batches", () => {
 		{ type: "user_prompt", prompt_text: "Use a separate pending queue for retry ownership." },
 		{ type: "assistant_message", assistant_text: "The pending queue owns retry entries." },
 		{ type: "tool.execute.after", tool: "read", args: {}, result: "pending queue implementation" },
-		{ type: "assistant_usage", usage: { input_tokens: 12 } },
-		{ type: "session.idle", synthetic: true, result: "injected task result" },
-		{ type: "session.idle", parts: [{ type: "text", text: "synthetic result", synthetic: true }] },
-		{ type: "session.idle", future_result: { text: "unknown result shape" } },
-	])("keeps substantive or synthetic $type batches on the observer path", async (payload) => {
+	])("keeps substantive $type batches on the observer path", async (payload) => {
 		ingestRawEvents(store, envelope);
 		store.recordRawEvent({
 			opencodeSessionId: "child",
@@ -321,5 +368,27 @@ describe("mixed delegated batches", () => {
 			}),
 		).rejects.toThrow("observer reached");
 		expect(observe).toHaveBeenCalledTimes(1);
+	});
+
+	it.each([
+		{ type: "assistant_usage", usage: { input_tokens: 12 } },
+		{ type: "session.idle", synthetic: true, result: "injected task result" },
+		{ type: "session.idle", parts: [{ type: "text", text: "synthetic result", synthetic: true }] },
+		{ type: "session.idle", future_result: { text: "unknown result shape" } },
+	])("does not treat a brief as evidence for unsupported $type payloads", async (payload) => {
+		ingestRawEvents(store, envelope);
+		store.recordRawEvent({
+			opencodeSessionId: "child",
+			eventId: "unsupported",
+			eventType: payload.type,
+			payload,
+		});
+		const observe = vi.fn();
+		await expect(
+			flushRawEvents(store, { observer: { observe, getStatus } } as unknown as IngestOptions, {
+				opencodeSessionId: "child",
+			}),
+		).rejects.toThrow("observer produced no storable output for raw-event flush");
+		expect(observe).not.toHaveBeenCalled();
 	});
 });

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { DELEGATED_BRIEF_LABEL, MAX_DELEGATED_CONTEXT_CHARS } from "./capture-context.js";
 import { buildObserverPrompt } from "./ingest-prompts.js";
 
-const label = `\n\n[${DELEGATED_BRIEF_LABEL}; earlier in this raw stream]\n`;
+const label = `\n\n[${DELEGATED_BRIEF_LABEL}]\n`;
 const bodyBudget = MAX_DELEGATED_CONTEXT_CHARS - label.length;
 
 function appendedBody(brief: string): string {

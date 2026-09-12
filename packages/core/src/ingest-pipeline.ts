@@ -21,7 +21,7 @@
 
 import { and, eq, isNull, lt } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import { boundedDelegatedBriefs } from "./capture-context.js";
+import { boundedDelegatedBriefs, partitionDelegatedBriefEvents } from "./capture-context.js";
 import { normalizeProjectLabel } from "./claude-hooks.js";
 import { fromJson, toJson } from "./db.js";
 import {
@@ -332,14 +332,13 @@ async function observeRawEventOutput(
 	}
 }
 
-function priorDelegatedBriefsForObserver(context: SessionContext): string[] | undefined {
-	if (
-		context.source !== "opencode" ||
-		context.flusher !== "raw_events" ||
-		!context.delegatedBriefs?.length
-	)
-		return undefined;
-	return boundedDelegatedBriefs(context.delegatedBriefs);
+function delegatedBriefsForObserver(
+	context: SessionContext,
+	currentBriefs: string[],
+): string[] | undefined {
+	if (context.source !== "opencode" || context.flusher !== "raw_events") return undefined;
+	const briefs = boundedDelegatedBriefs([...(context.delegatedBriefs ?? []), ...currentBriefs]);
+	return briefs.length ? briefs : undefined;
 }
 
 function sessionContextForStorage(
@@ -416,7 +415,10 @@ export async function ingest(
 		// Extract data from events
 		// ------------------------------------------------------------------
 		const normalizedEvents = normalizeAdapterEvents(events);
-		const prompts = extractPrompts(normalizedEvents);
+		const { primaryEvents, delegatedBriefs: currentDelegatedBriefs } =
+			partitionDelegatedBriefEvents(normalizedEvents);
+		const hasDelegatedTask = currentDelegatedBriefs.length > 0;
+		const prompts = extractPrompts(primaryEvents);
 		const promptNumber =
 			prompts.length > 0 ? (prompts[prompts.length - 1]?.promptNumber ?? prompts.length) : null;
 
@@ -428,8 +430,8 @@ export async function ingest(
 		toolEvents = budgetToolEvents(toolEvents, toolBudget, 30);
 
 		// Assistant messages
-		const assistantMessages = extractAssistantMessages(normalizedEvents);
-		const assistantUsageEvents = extractAssistantUsage(normalizedEvents);
+		const assistantMessages = extractAssistantMessages(primaryEvents);
+		const assistantUsageEvents = extractAssistantUsage(primaryEvents);
 		const lastAssistantMessage = assistantMessages.at(-1) ?? null;
 
 		// Latest prompt
@@ -471,7 +473,7 @@ export async function ingest(
 		// ------------------------------------------------------------------
 		// Build transcript
 		// ------------------------------------------------------------------
-		const transcript = buildTranscript(normalizedEvents);
+		const transcript = buildTranscript(primaryEvents);
 
 		// ------------------------------------------------------------------
 		// Build observer prompt
@@ -504,7 +506,7 @@ export async function ingest(
 
 		const transcriptBudget = Math.max(1500, Math.min(5000, Math.floor(observerMaxChars * 0.4)));
 		const observerContext: ObserverContext = {
-			delegatedBriefs: priorDelegatedBriefsForObserver(sessionContext),
+			delegatedBriefs: delegatedBriefsForObserver(sessionContext, currentDelegatedBriefs),
 			project,
 			userPrompt: observerPrompt,
 			promptNumber,
@@ -681,6 +683,7 @@ export async function ingest(
 			hasAssistantMessage: Boolean(lastAssistantMessage),
 			observationsCount: observationsToStore.length,
 			hasSummaryCandidate: summaryToStore != null,
+			hasDelegatedTask,
 		});
 		let summaryDisposition: "stored" | "suppressed" | "none" = summaryToStore ? "stored" : "none";
 
@@ -692,6 +695,7 @@ export async function ingest(
 				latestPrompt,
 				toolEventCount: toolEvents.length,
 				hasAssistantMessage: Boolean(lastAssistantMessage),
+				hasDelegatedTask,
 				skipSummaryReason: parsed.skipSummaryReason,
 			})
 		) {
@@ -726,6 +730,7 @@ export async function ingest(
 						latestPrompt,
 						toolEventCount: toolEvents.length,
 						hasAssistantMessage: Boolean(lastAssistantMessage),
+						hasDelegatedTask,
 						skipSummaryReason: parsed.skipSummaryReason,
 					});
 				// Only soft-skip when capture routing suppressed EVERY observation

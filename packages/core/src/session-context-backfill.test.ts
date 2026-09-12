@@ -1,6 +1,10 @@
 import Database from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
-import { getMaintenanceJob } from "./maintenance-jobs.js";
+import {
+	completeMaintenanceJob,
+	getMaintenanceJob,
+	startMaintenanceJob,
+} from "./maintenance-jobs.js";
 import {
 	hasPendingSessionContextBackfill,
 	runSessionContextBackfillPass,
@@ -204,6 +208,7 @@ describe("session-context backfill maintenance", () => {
 			progress: { current: 1, total: 1, unit: "items" },
 		});
 		expect(job?.metadata).toMatchObject({
+			reconstruction_version: 2,
 			rewritten_sessions: 1,
 			processed_sessions: 1,
 			unchanged_sessions: 0,
@@ -260,7 +265,9 @@ describe("session-context backfill maintenance", () => {
 		const metadataBefore = db
 			.prepare("SELECT metadata_json FROM sessions WHERE id = ?")
 			.get(sessionId) as { metadata_json: string };
+		const jobBefore = getMaintenanceJob(db, SESSION_CONTEXT_BACKFILL_JOB);
 
+		expect(hasPendingSessionContextBackfill(db)).toBe(false);
 		const hasMore = await runSessionContextBackfillPass(db, { batchSize: 10 });
 		expect(hasMore).toBe(false);
 
@@ -269,12 +276,7 @@ describe("session-context backfill maintenance", () => {
 			.get(sessionId) as { metadata_json: string };
 		expect(metadataAfter.metadata_json).toBe(metadataBefore.metadata_json);
 
-		const job = getMaintenanceJob(db, SESSION_CONTEXT_BACKFILL_JOB);
-		expect(job?.status).toBe("completed");
-		expect(job?.metadata).toMatchObject({
-			unchanged_sessions: 1,
-			rewritten_sessions: 0,
-		});
+		expect(getMaintenanceJob(db, SESSION_CONTEXT_BACKFILL_JOB)).toEqual(jobBefore);
 	});
 
 	it("skips a raw-event session that has no raw events and records the skip", async () => {
@@ -410,7 +412,7 @@ describe("session-context backfill maintenance", () => {
 		expect(getMaintenanceJob(db, SESSION_CONTEXT_BACKFILL_JOB)).toBeNull();
 	});
 
-	it("processes multiple candidates across batches and reports progress", async () => {
+	it("resumes current-version work across batches and reports progress", async () => {
 		const source = "opencode";
 		for (let i = 1; i <= 3; i++) {
 			const streamId = `ses-multi-${i}`;
@@ -442,6 +444,7 @@ describe("session-context backfill maintenance", () => {
 		const runningJob = getMaintenanceJob(db, SESSION_CONTEXT_BACKFILL_JOB);
 		expect(runningJob?.status).toBe("running");
 		expect(runningJob?.metadata).toMatchObject({
+			reconstruction_version: 2,
 			processed_sessions: 2,
 			rewritten_sessions: 2,
 			total_candidates: 3,
@@ -452,8 +455,100 @@ describe("session-context backfill maintenance", () => {
 		const completedJob = getMaintenanceJob(db, SESSION_CONTEXT_BACKFILL_JOB);
 		expect(completedJob?.status).toBe("completed");
 		expect(completedJob?.metadata).toMatchObject({
+			reconstruction_version: 2,
 			processed_sessions: 3,
 			rewritten_sessions: 3,
+		});
+	});
+});
+
+describe("session-context reconstruction versions", () => {
+	let db: Database;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+	});
+
+	function insertVersionedFixture(streamId: string, prompt: string): number {
+		const source = "opencode";
+		insertRawEventSession(db, source, streamId, new Date().toISOString());
+		insertRawEvent(
+			db,
+			source,
+			streamId,
+			1,
+			`${streamId}-event`,
+			"user_prompt",
+			{ type: "user_prompt", prompt_text: prompt },
+			1_700_000_000_000,
+		);
+		return insertSessionRow(db, source, streamId, {
+			flusher: "raw_events",
+			promptCount: 0,
+			toolCount: 0,
+		});
+	}
+
+	it("restarts completed legacy reconstruction in the same job row", async () => {
+		const sessionId = insertVersionedFixture(
+			"ses-versioned-rerun",
+			"Rebuild with the corrected pass",
+		);
+		startMaintenanceJob(db, {
+			kind: SESSION_CONTEXT_BACKFILL_JOB,
+			title: "Legacy session-context backfill",
+		});
+		completeMaintenanceJob(db, SESSION_CONTEXT_BACKFILL_JOB);
+
+		expect(hasPendingSessionContextBackfill(db)).toBe(true);
+		await runSessionContextBackfillPass(db, { batchSize: 10 });
+
+		expect(readSessionContext(db, sessionId).firstPrompt).toBe("Rebuild with the corrected pass");
+		expect(getMaintenanceJob(db, SESSION_CONTEXT_BACKFILL_JOB)).toMatchObject({
+			kind: SESSION_CONTEXT_BACKFILL_JOB,
+			status: "completed",
+			metadata: { reconstruction_version: 2 },
+		});
+	});
+
+	it("restarts interrupted legacy reconstruction before its stale cursor", async () => {
+		const sessionId = insertVersionedFixture(
+			"ses-versioned-interrupted",
+			"Rebuild before the legacy cursor",
+		);
+		startMaintenanceJob(db, {
+			kind: SESSION_CONTEXT_BACKFILL_JOB,
+			title: "Legacy session-context backfill",
+			metadata: { last_cursor_id: sessionId + 100 },
+		});
+
+		await runSessionContextBackfillPass(db, { batchSize: 10 });
+
+		expect(readSessionContext(db, sessionId).firstPrompt).toBe("Rebuild before the legacy cursor");
+		expect(getMaintenanceJob(db, SESSION_CONTEXT_BACKFILL_JOB)?.metadata).toMatchObject({
+			reconstruction_version: 2,
+			processed_sessions: 1,
+			rewritten_sessions: 1,
+		});
+	});
+
+	it("counts an already-correct candidate as unchanged", async () => {
+		insertVersionedFixture("ses-versioned-unchanged", "Keep the reconstructed context");
+		await runSessionContextBackfillPass(db, { batchSize: 10 });
+		startMaintenanceJob(db, {
+			kind: SESSION_CONTEXT_BACKFILL_JOB,
+			title: "Current session-context backfill",
+			metadata: { reconstruction_version: 2 },
+		});
+
+		await runSessionContextBackfillPass(db, { batchSize: 10 });
+
+		expect(getMaintenanceJob(db, SESSION_CONTEXT_BACKFILL_JOB)?.metadata).toMatchObject({
+			reconstruction_version: 2,
+			processed_sessions: 1,
+			rewritten_sessions: 0,
+			unchanged_sessions: 1,
 		});
 	});
 });

@@ -17,6 +17,7 @@
  */
 
 import type { Database as SqliteDatabase } from "better-sqlite3";
+import { partitionDelegatedBriefEvents } from "./capture-context.js";
 import { connect, resolveDbPath } from "./db.js";
 import { normalizeEventsForSessionContext } from "./ingest-transcript.js";
 import type { SessionContext } from "./ingest-types.js";
@@ -35,8 +36,10 @@ import {
 import { buildSessionContext } from "./raw-event-flush.js";
 
 export const SESSION_CONTEXT_BACKFILL_JOB = "session_context_backfill";
+const SESSION_CONTEXT_RECONSTRUCTION_VERSION = 2;
 
 type SessionContextBackfillMetadata = {
+	reconstruction_version?: number;
 	last_cursor_id?: number;
 	total_candidates?: number;
 	processed_sessions?: number;
@@ -46,6 +49,10 @@ type SessionContextBackfillMetadata = {
 	skipped_invalid_payload?: number;
 	unchanged_sessions?: number;
 };
+
+function hasCurrentReconstruction(metadata: SessionContextBackfillMetadata): boolean {
+	return metadata.reconstruction_version === SESSION_CONTEXT_RECONSTRUCTION_VERSION;
+}
 
 export interface SessionContextBackfillRunnerOptions {
 	batchSize?: number;
@@ -232,7 +239,8 @@ function processCandidateBatch(
 			continue;
 		}
 		const normalized = normalizeEventsForSessionContext(events);
-		const rebuilt = buildSessionContext(normalized);
+		const { primaryEvents } = partitionDelegatedBriefEvents(normalized);
+		const rebuilt = buildSessionContext(primaryEvents);
 		const metadata = parseSessionMetadata(row.metadata_json);
 		const existingContextValue = metadata.session_context;
 		const existingContext =
@@ -263,7 +271,8 @@ function processCandidateBatch(
 
 export function hasPendingSessionContextBackfill(db: SqliteDatabase): boolean {
 	const job = getMaintenanceJob(db, SESSION_CONTEXT_BACKFILL_JOB);
-	if (job?.status === "completed") return false;
+	const metadata = (job?.metadata ?? {}) as SessionContextBackfillMetadata;
+	if (job?.status === "completed" && hasCurrentReconstruction(metadata)) return false;
 	return countCandidateSessions(db) > 0;
 }
 
@@ -274,9 +283,10 @@ export async function runSessionContextBackfillPass(
 	const batchSize = Math.max(1, options.batchSize ?? 100);
 	const existingJob = getMaintenanceJob(db, SESSION_CONTEXT_BACKFILL_JOB);
 	const existingMetadata = (existingJob?.metadata ?? {}) as SessionContextBackfillMetadata;
+	const hasCurrentVersion = hasCurrentReconstruction(existingMetadata);
+	if (existingJob?.status === "completed" && hasCurrentVersion) return false;
 
-	const isFreshRun =
-		!existingJob || existingJob.status === "completed" || existingJob.status === "failed";
+	const isFreshRun = !existingJob || !hasCurrentVersion || existingJob.status === "failed";
 
 	const lastCursorId = isFreshRun ? 0 : Number(existingMetadata.last_cursor_id ?? 0);
 	const totalCandidates = isFreshRun
@@ -294,6 +304,7 @@ export async function runSessionContextBackfillPass(
 			message: `Rebuilding session_context for ${totalCandidates} raw-event sessions`,
 			progressTotal: totalCandidates,
 			metadata: {
+				reconstruction_version: SESSION_CONTEXT_RECONSTRUCTION_VERSION,
 				last_cursor_id: 0,
 				total_candidates: totalCandidates,
 				processed_sessions: 0,
@@ -335,6 +346,7 @@ export async function runSessionContextBackfillPass(
 		Number(metadataBefore.skipped_invalid_payload ?? 0) + batchResult.skippedInvalidPayload;
 	const unchangedSessions = Number(metadataBefore.unchanged_sessions ?? 0) + batchResult.unchanged;
 	const nextMetadata: SessionContextBackfillMetadata = {
+		reconstruction_version: SESSION_CONTEXT_RECONSTRUCTION_VERSION,
 		last_cursor_id: batchResult.lastCursorId,
 		total_candidates: Number(metadataBefore.total_candidates ?? totalCandidates),
 		processed_sessions: processedSessions,
