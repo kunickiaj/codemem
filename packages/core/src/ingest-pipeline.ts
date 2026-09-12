@@ -21,6 +21,7 @@
 
 import { and, eq, isNull, lt } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import { boundedDelegatedBriefs } from "./capture-context.js";
 import { normalizeProjectLabel } from "./claude-hooks.js";
 import { fromJson, toJson } from "./db.js";
 import {
@@ -331,6 +332,23 @@ async function observeRawEventOutput(
 	}
 }
 
+function priorDelegatedBriefsForObserver(context: SessionContext): string[] | undefined {
+	if (
+		context.source !== "opencode" ||
+		context.flusher !== "raw_events" ||
+		!context.delegatedBriefs?.length
+	)
+		return undefined;
+	return boundedDelegatedBriefs(context.delegatedBriefs);
+}
+
+function sessionContextForStorage(
+	context: SessionContext,
+): Omit<SessionContext, "delegatedBriefs"> {
+	const { delegatedBriefs: _delegatedBriefs, ...persistent } = context;
+	return persistent;
+}
+
 /**
  * Process a batch of raw coding session events through the full ingest pipeline.
  *
@@ -362,7 +380,7 @@ export async function ingest(
 		source: "plugin",
 		event_count: events.length,
 		started_at: payload.startedAt,
-		session_context: sessionContext,
+		session_context: sessionContextForStorage(sessionContext),
 	};
 	const sessionId =
 		sessionContext.flusher === "raw_events" && sessionContext.opencodeSessionId
@@ -486,6 +504,7 @@ export async function ingest(
 
 		const transcriptBudget = Math.max(1500, Math.min(5000, Math.floor(observerMaxChars * 0.4)));
 		const observerContext: ObserverContext = {
+			delegatedBriefs: priorDelegatedBriefsForObserver(sessionContext),
 			project,
 			userPrompt: observerPrompt,
 			promptNumber,
@@ -962,7 +981,7 @@ function endSession(
 		post: extraPost,
 		source: "plugin",
 		event_count: eventCount,
-		session_context: sessionContext,
+		session_context: sessionContextForStorage(sessionContext),
 	});
 }
 
