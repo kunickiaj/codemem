@@ -22,7 +22,10 @@ import {
 	buildDistillReport,
 	dedupeOrderedIds,
 	judgeDistillReport,
+	MEMORY_FILTER_FIELD_TYPES,
+	MEMORY_FILTER_NAMES,
 	MEMORY_KIND_DESCRIPTIONS as MEMORY_KINDS,
+	memoryFilterValueMatchesType,
 	ObserverClient,
 	parseStrictInteger,
 	projectMatchesFilter,
@@ -40,31 +43,6 @@ type StoreFactory = () => MemoryStore;
 const ALLOWED_REMEMBER_KINDS = new Set<string>(REMEMBER_MEMORY_KINDS);
 
 const MEMORY_TOOLS_MAX_BODY_BYTES = 1_048_576;
-/** Filter names exposed by memory_schema (sorted, matches MCP filterSchema keys). */
-const SCHEMA_FILTER_NAMES = [
-	"exclude_actor_ids",
-	"exclude_scope_ids",
-	"exclude_trust_states",
-	"exclude_visibility",
-	"exclude_workspace_ids",
-	"exclude_workspace_kinds",
-	"include_actor_ids",
-	"include_scope_ids",
-	"include_trust_states",
-	"include_visibility",
-	"include_workspace_ids",
-	"include_workspace_kinds",
-	"kind",
-	"ownership_scope",
-	"personal_first",
-	"project",
-	"scope_id",
-	"trust_bias",
-	"visibility",
-	"widen_shared_min_personal_results",
-	"widen_shared_min_personal_score",
-	"widen_shared_when_weak",
-].toSorted();
 
 const SCHEMA_FIELDS = {
 	title: "short text",
@@ -101,16 +79,6 @@ function resolveWriteProject(input: {
  */
 type FilterParse = { ok: true; filters: MemoryFilters | undefined } | { ok: false; error: string };
 
-function isFilterScalar(value: unknown): boolean {
-	return typeof value === "string" || typeof value === "number" || typeof value === "boolean";
-}
-
-function isValidFilterValue(value: unknown): boolean {
-	if (isFilterScalar(value)) return true;
-	if (Array.isArray(value)) return value.every(isFilterScalar);
-	return false;
-}
-
 function buildFilters(
 	raw: Record<string, unknown>,
 	defaultProject: string | null = null,
@@ -133,35 +101,14 @@ function buildFilters(
 		hasAny = true;
 	}
 
-	for (const key of [
-		"kind",
-		"visibility",
-		"scope_id",
-		"include_scope_ids",
-		"exclude_scope_ids",
-		"include_visibility",
-		"exclude_visibility",
-		"include_workspace_ids",
-		"exclude_workspace_ids",
-		"include_workspace_kinds",
-		"exclude_workspace_kinds",
-		"include_actor_ids",
-		"exclude_actor_ids",
-		"include_trust_states",
-		"exclude_trust_states",
-		"ownership_scope",
-		"personal_first",
-		"trust_bias",
-		"widen_shared_when_weak",
-		"widen_shared_min_personal_results",
-		"widen_shared_min_personal_score",
-	] as const) {
+	for (const [key, fieldType] of Object.entries(MEMORY_FILTER_FIELD_TYPES)) {
+		if (key === "project") continue;
 		const val = raw[key];
 		if (val === undefined || val === null) continue;
 		if (key === "kind" && typeof val !== "string") {
 			return { ok: false, error: "kind must be a string" };
 		}
-		if (!isValidFilterValue(val)) {
+		if (!memoryFilterValueMatchesType(val, fieldType)) {
 			return { ok: false, error: `${key} has an invalid type` };
 		}
 		(filters as Record<string, unknown>)[key] = val;
@@ -632,7 +579,7 @@ export function memoryToolRoutes(getStore: StoreFactory) {
 			kinds: Object.keys(MEMORY_KINDS),
 			kind_descriptions: MEMORY_KINDS,
 			fields: SCHEMA_FIELDS,
-			filters: SCHEMA_FILTER_NAMES,
+			filters: MEMORY_FILTER_NAMES,
 		});
 	});
 

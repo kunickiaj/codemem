@@ -287,6 +287,40 @@ describe("POST /api/pi-hooks", () => {
 			cleanup();
 		}
 	});
+
+	it("strips db_path and identity_target before persisting a targeted pi event", async () => {
+		const { app, getStore, ensureStore, cleanup } = createTestApp();
+		try {
+			ensureStore();
+			const store = getStore();
+			if (!store) throw new Error("store missing");
+			const profile = (await (await app.request("/api/prompt-pack-profile")).json()) as {
+				identity_target: Record<string, unknown>;
+			};
+			const res = await app.request("/api/pi-hooks", {
+				method: "POST",
+				headers: jsonHeaders(),
+				body: JSON.stringify({
+					piEvent: "session_start",
+					sessionId: "pi-sess-targeted",
+					cwd: "/tmp/pi-proj",
+					ts: "2026-04-01T12:03:00.000Z",
+					db_path: store.dbPath,
+					identity_target: profile.identity_target,
+				}),
+			});
+			expect(res.status).toBe(200);
+			expect(await res.json()).toEqual({ inserted: 1, skipped: 0 });
+
+			const row = store.db
+				.prepare("SELECT payload_json FROM raw_events WHERE stream_id = ?")
+				.get("pi-sess-targeted") as { payload_json: string };
+			expect(row.payload_json).not.toContain("db_path");
+			expect(row.payload_json).not.toContain("identity_target");
+		} finally {
+			cleanup();
+		}
+	});
 });
 // ---------------------------------------------------------------------------
 // 4.2 / 4.3 Memory tool routes vs MCP twins
@@ -376,6 +410,45 @@ describe("memory tool routes", () => {
 				expect(res.status).toBe(400);
 				const body = (await res.json()) as { error: string };
 				expect(body.error).toMatch(/kind must be a string/);
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("rejects malformed scalar and array filter values with 400 (MCP contract parity)", async () => {
+			const { app, cleanup } = createTestApp();
+			try {
+				const malformed: Array<Record<string, unknown>> = [
+					{ include_scope_ids: false },
+					{ widen_shared_min_personal_results: "abc" },
+					{ include_visibility: ["private", 3] },
+					{ personal_first: 3 },
+				];
+				for (const filters of malformed) {
+					const res = await app.request(
+						`/api/memories/timeline?filters=${encodeURIComponent(JSON.stringify(filters))}`,
+						{ headers: jsonHeaders() },
+					);
+					expect(res.status).toBe(400);
+					const body = (await res.json()) as { error: string };
+					expect(body.error).toMatch(/has an invalid type/);
+				}
+			} finally {
+				cleanup();
+			}
+		});
+
+		it("accepts boolean union filters like the MCP schema", async () => {
+			const { app, ensureStore, cleanup } = createTestApp();
+			try {
+				const store = ensureStore();
+				seedMemories(store);
+				const filters = encodeURIComponent(JSON.stringify({ personal_first: true }));
+				const res = await app.request(
+					`/api/memories/timeline?query=Database&depth_before=5&depth_after=5&filters=${filters}`,
+					{ headers: jsonHeaders() },
+				);
+				expect(res.status).toBe(200);
 			} finally {
 				cleanup();
 			}
