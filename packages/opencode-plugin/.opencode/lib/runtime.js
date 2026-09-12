@@ -1886,6 +1886,7 @@ const buildRawEventEnvelope = ({
   nowMs,
   nowMono,
   nextEventId,
+  captureContext,
 }) => ({
   session_stream_id: sessionID,
   session_id: sessionID,
@@ -1898,6 +1899,7 @@ const buildRawEventEnvelope = ({
   cwd,
   project,
   started_at: startedAt,
+  ...(captureContext ? { capture_context: captureContext } : {}),
 });
 
 const trimEventQueue = ({ events, maxEvents, hardMaxEvents, onUnsentPressure, onForcedDrop }) => {
@@ -2124,6 +2126,12 @@ export const createCodememRuntime = async ({ location, host }) => {
   const hostNotify = typeof host?.notify === "function" ? host.notify : null;
   const events = [];
   const flushingBatches = new Set();
+  // Session boundaries retain distinct owners but share one serialized drain.
+  const pendingBoundaryBatches = [];
+  let boundaryDrain = null;
+  let deferredFlush = null;
+  const queuedEventOrder = new WeakMap();
+  let nextQueuedEventOrder = 0;
   const maxEvents = parsePositiveInt(process.env.CODEMEM_PLUGIN_MAX_EVENTS, 200);
   const maxChars = Number.parseInt(
     process.env.CODEMEM_PLUGIN_MAX_EVENT_CHARS || "8000",
@@ -2242,6 +2250,7 @@ export const createCodememRuntime = async ({ location, host }) => {
   const promptPackRetryCounts = new Map();
   const successfulPromptPackArtifacts = new Map();
   let sessionStartedAt = null;
+  let sessionStartSessionID = null;
   let activeSessionID = null;
   let viewerStarted = false;
   let viewerStartInFlight = false;
@@ -2285,6 +2294,7 @@ export const createCodememRuntime = async ({ location, host }) => {
     process.env.CODEMEM_RAW_EVENTS_HARD_MAX || "2000",
     2000
   );
+  const rawEventQueueCapacity = Math.max(maxEvents, rawEventsHardMax);
   const rawEventSpoolDrainLimit = parsePositiveInt(
     process.env.CODEMEM_RAW_EVENT_SPOOL_DRAIN_LIMIT,
     DEFAULT_DRAIN_LIMIT,
@@ -2298,6 +2308,14 @@ export const createCodememRuntime = async ({ location, host }) => {
   // Memoize the exact serialized envelope by queued-object identity so retries
   // cannot drift in timestamp, ID, property order, or bytes.
   const rawEventEnvelopes = new WeakMap();
+  const rawEventCaptureContexts = new WeakMap();
+  const rawEventPreparations = new WeakMap();
+  const rawEventDeliveries = new WeakMap();
+  const rawEventStartedAts = new WeakMap();
+  const capacityDeferredEvents = new Set();
+  let rawEventDeliveryCount = 0;
+  let rawEventDeliveryTail = Promise.resolve();
+  let flushDeliveryTail = Promise.resolve();
   let streamUnavailableUntil = 0;
   let spoolPersistenceFailureNoted = null;
   let spoolLoadFailureNoted = false;
@@ -2521,13 +2539,14 @@ export const createCodememRuntime = async ({ location, host }) => {
     return args;
   };
 
-  const emitRawEvent = async ({ sessionID, type, payload }) => {
+  const deliverRawEvent = async ({ sessionID, type, payload }) => {
     if (!rawEventsEnabled) {
       return true;
     }
     if (!sessionID || !type) {
       return false;
     }
+    if (payload?._raw_enqueued) return true;
     const now = Date.now();
     let cachedEnvelope = payload && typeof payload === "object"
       ? rawEventEnvelopes.get(payload)
@@ -2539,13 +2558,16 @@ export const createCodememRuntime = async ({ location, host }) => {
         payload,
         cwd,
         project: resolveProjectName(project, cwd),
-        startedAt: sessionStartedAt,
+        startedAt: rawEventStartedAts.has(payload)
+          ? rawEventStartedAts.get(payload)
+          : sessionStartedAt,
         nowMs: now,
         nowMono:
           typeof performance !== "undefined" && performance.now
             ? performance.now()
             : null,
         nextEventId,
+        captureContext: rawEventCaptureContexts.get(payload),
       });
       const serialized = JSON.stringify(builtEnvelope);
       cachedEnvelope = { body: JSON.parse(serialized), serialized };
@@ -2662,22 +2684,37 @@ export const createCodememRuntime = async ({ location, host }) => {
   };
 
   // Session context tracking for comprehensive memories
-  const sessionContext = {
+  const createSessionContext = () => ({
     firstPrompt: null,
     promptCount: 0,
     toolCount: 0,
     startTime: null,
     filesModified: new Set(),
     filesRead: new Set(),
-  };
+  });
+  let sessionContext = createSessionContext();
 
   const resetSessionContext = () => {
-    sessionContext.firstPrompt = null;
-    sessionContext.promptCount = 0;
-    sessionContext.toolCount = 0;
-    sessionContext.startTime = null;
-    sessionContext.filesModified = new Set();
-    sessionContext.filesRead = new Set();
+    sessionContext = createSessionContext();
+  };
+
+  const mergeSessionContext = (detachedContext) => {
+    const detachedStartedFirst = detachedContext.startTime != null
+      && (sessionContext.startTime == null || detachedContext.startTime <= sessionContext.startTime);
+    if (detachedContext.firstPrompt && (!sessionContext.firstPrompt || detachedStartedFirst)) {
+      sessionContext.firstPrompt = detachedContext.firstPrompt;
+    }
+    if (detachedStartedFirst) {
+      sessionContext.startTime = detachedContext.startTime;
+    }
+    sessionContext.promptCount += detachedContext.promptCount;
+    sessionContext.toolCount += detachedContext.toolCount;
+    for (const path of detachedContext.filesModified) {
+      sessionContext.filesModified.add(path);
+    }
+    for (const path of detachedContext.filesRead) {
+      sessionContext.filesRead.add(path);
+    }
   };
 
   // Check if we should force flush immediately (threshold-based)
@@ -2740,14 +2777,16 @@ export const createCodememRuntime = async ({ location, host }) => {
     }
   };
 
-  const clearPromptSession = (sessionID) => {
+  const clearPromptSession = (sessionID, { preserveCapturedPrompts = false } = {}) => {
     if (!sessionID) {
       return;
     }
     const prefix = `${sessionID}:`;
-    for (const key of capturedPrompts) {
-      if (key.startsWith(prefix)) {
-        capturedPrompts.delete(key);
+    if (!preserveCapturedPrompts) {
+      for (const key of capturedPrompts) {
+        if (key.startsWith(prefix)) {
+          capturedPrompts.delete(key);
+        }
       }
     }
     for (const key of pendingPrompts.keys()) {
@@ -4178,12 +4217,11 @@ export const createCodememRuntime = async ({ location, host }) => {
     }
   };
 
-  const recordEvent = (event) => {
-    events.push(event);
+  const trimRetainedEvents = (retainedEvents) => {
     trimEventQueue({
-      events,
+      events: retainedEvents,
       maxEvents,
-      hardMaxEvents: Math.max(maxEvents, rawEventsHardMax),
+      hardMaxEvents: rawEventQueueCapacity,
       onUnsentPressure: (queuedCount, cap) => {
         void logLine(`queue.pressure unsent_preserved queued=${queuedCount} max_events=${cap}`);
       },
@@ -4203,7 +4241,74 @@ export const createCodememRuntime = async ({ location, host }) => {
     });
   };
 
-  const captureCodememEvent = (sessionID, event) => {
+  const trimRetainedEventQueues = () => {
+    // The currently delivering batch is unavoidable; cap all mutable retained storage together.
+    const retainedEvents = [
+      ...pendingBoundaryBatches.flatMap((batch) => batch.events),
+      ...events,
+    ].sort(
+      (left, right) =>
+        (queuedEventOrder.get(left) ?? Number.MAX_SAFE_INTEGER) -
+        (queuedEventOrder.get(right) ?? Number.MAX_SAFE_INTEGER)
+    );
+    trimRetainedEvents(retainedEvents);
+    const retained = new Set(retainedEvents);
+    const liveEvents = events.filter((event) => retained.has(event));
+    events.splice(0, events.length, ...liveEvents);
+    for (let index = pendingBoundaryBatches.length - 1; index >= 0; index--) {
+      const batch = pendingBoundaryBatches[index];
+      batch.events = batch.events.filter((event) => retained.has(event));
+      if (batch.events.length) continue;
+      pendingBoundaryBatches.splice(index, 1);
+      flushingBatches.delete(batch);
+      batch.completion.resolve();
+    }
+    const trackedEvents = new Set(retainedEvents);
+    for (const batch of flushingBatches) {
+      for (const event of batch.events) trackedEvents.add(event);
+    }
+    for (const deferredEvent of capacityDeferredEvents) {
+      if (!trackedEvents.has(deferredEvent)) capacityDeferredEvents.delete(deferredEvent);
+    }
+  };
+
+  const recordEvent = (event) => {
+    queuedEventOrder.set(event, nextQueuedEventOrder++);
+    events.push(event);
+    trimRetainedEventQueues();
+  };
+
+  // Reserve delivery in capture order. Flush/disposal reuse the same task, and
+  // preparation never waits on delivery, so neither can serialize early or cycle.
+  const emitRawEvent = (input) => {
+    const existing = rawEventDeliveries.get(input.payload);
+    if (existing) return existing;
+    const inputOrder = queuedEventOrder.get(input.payload) ?? Number.MAX_SAFE_INTEGER;
+    const olderDeferredEventExists = [...capacityDeferredEvents].some((event) =>
+      (queuedEventOrder.get(event) ?? Number.MAX_SAFE_INTEGER) < inputOrder);
+    if (runtimeActive && (rawEventDeliveryCount >= rawEventQueueCapacity
+      || olderDeferredEventExists)) {
+      capacityDeferredEvents.add(input.payload);
+      void logLine(
+        `delivery.pressure queued=${rawEventDeliveryCount} hard_max=${rawEventQueueCapacity}`
+      );
+      return Promise.resolve(false);
+    }
+    capacityDeferredEvents.delete(input.payload);
+    rawEventDeliveryCount++;
+    const delivery = rawEventDeliveryTail.then(async () => {
+      await rawEventPreparations.get(input.payload);
+      return deliverRawEvent(input);
+    });
+    rawEventDeliveries.set(input.payload, delivery);
+    rawEventDeliveryTail = delivery.catch(() => {}).finally(() => {
+      rawEventDeliveries.delete(input.payload);
+      rawEventDeliveryCount--;
+    });
+    return delivery;
+  };
+
+  const captureCodememEvent = (sessionID, event, prompt = null) => {
     const normalizedSessionID =
       typeof sessionID === "string" && sessionID.trim() ? sessionID.trim() : null;
     if (normalizedSessionID) {
@@ -4229,7 +4334,17 @@ export const createCodememRuntime = async ({ location, host }) => {
       _raw_event_id: rawEventId,
       _raw_session_id: resolvedSessionID,
     };
+    rawEventStartedAts.set(queuedEvent, sessionStartedAt);
     recordEvent(queuedEvent);
+    if (prompt && rawEventsEnabled && host.resolveCaptureContext) {
+      const preparation = Promise.resolve().then(() => host.resolveCaptureContext(prompt))
+        .then((context) => {
+          if (context) rawEventCaptureContexts.set(queuedEvent, context);
+        }).catch(() => {
+          // Optional provenance must never discard an otherwise valid prompt.
+        });
+      rawEventPreparations.set(queuedEvent, preparation);
+    }
     const deliveryTask = emitRawEvent({
       sessionID: resolvedSessionID,
       type: queuedEvent?.type || "unknown",
@@ -4239,14 +4354,16 @@ export const createCodememRuntime = async ({ location, host }) => {
     return deliveryTask;
   };
 
-  const capturePendingPrompts = async ({
+  const drainPendingPrompts = async ({
     exceptIdentity = null,
+    sessionID = null,
     skipFlush = false,
     awaitDurability = false,
   } = {}) => {
-    let durabilityFailed = false;
+    const deliveries = [];
     for (const [promptIdentity, prompt] of pendingPrompts) {
       if (!runtimeActive && !skipFlush) return true;
+      if (sessionID && prompt.sessionID !== sessionID) continue;
       if (promptIdentity === exceptIdentity) {
         continue;
       }
@@ -4259,8 +4376,8 @@ export const createCodememRuntime = async ({ location, host }) => {
       capturedPrompts.add(promptIdentity);
 
       if (!skipFlush && (prompt.text.trim() === "/new" || prompt.text.trim().startsWith("/new "))) {
-        await logLine("detected /new command, flushing events");
-        await flushEvents();
+        void logLine("detected /new command, flushing events");
+        void flushEvents();
       }
 
       promptCounter += 1;
@@ -4278,45 +4395,41 @@ export const createCodememRuntime = async ({ location, host }) => {
         prompt_text: prompt.text,
         timestamp: new Date().toISOString(),
       };
-      if (awaitDurability) {
-        try {
-          const durable = await captureCodememEvent(prompt.sessionID, promptEvent);
-          durabilityFailed ||= !durable;
-        } catch {
-          durabilityFailed = true;
-        }
-      } else {
-        captureCodememEvent(prompt.sessionID, promptEvent);
-      }
-      await logLine(
+      deliveries.push(captureCodememEvent(prompt.sessionID, promptEvent, prompt));
+      void logLine(
         `user_prompt captured #${promptCounter}: ${prompt.text.substring(0, 50)}`
       );
 
       if (!skipFlush && shouldForceFlush()) {
-        await logLine(`force flush triggered: tools=${sessionContext.toolCount}, prompts=${sessionContext.promptCount}, duration=${Math.round((Date.now() - (sessionContext.startTime || Date.now())) / 1000)}s`);
-        await flushEvents();
+        void logLine(`force flush triggered: tools=${sessionContext.toolCount}, prompts=${sessionContext.promptCount}, duration=${Math.round((Date.now() - (sessionContext.startTime || Date.now())) / 1000)}s`);
+        void flushEvents();
       }
     }
-    return !durabilityFailed;
+    if (!awaitDurability) return true;
+    const results = await Promise.allSettled(deliveries);
+    return results.every((result) => result.status === "fulfilled" && result.value);
   };
 
-  const flushEvents = async () => {
-    if (!runtimeActive) return;
-    if (!events.length) {
-      await drainRawEventSpool();
-      await logLine("flush.skip empty");
-      return;
-    }
+  const capturePendingPrompts = (options = {}) => drainPendingPrompts(options);
 
-    const batch = events.splice(0, events.length);
-    if (!batch.length) {
-      await logLine("flush.skip empty");
-      return;
+  const requeueDetachedBatch = (batch, failedEvents) => {
+    if (batch.restored || !failedEvents.length) return;
+    batch.restored = true;
+    events.push(...failedEvents);
+    events.sort(
+      (left, right) =>
+        (queuedEventOrder.get(left) ?? Number.MAX_SAFE_INTEGER) -
+        (queuedEventOrder.get(right) ?? Number.MAX_SAFE_INTEGER)
+    );
+    trimRetainedEventQueues();
+    if (batch.owner && batch.owner === activeSessionID) {
+      mergeSessionContext(batch.context);
     }
-    flushingBatches.add(batch);
+  };
 
-    const failed = [];
-    for (const queuedEvent of batch) {
+  const deliverDetachedBatch = async (batch) => {
+    const failedEvents = [];
+    for (const queuedEvent of batch.events) {
       if (queuedEvent && typeof queuedEvent === "object" && queuedEvent._raw_enqueued) {
         continue;
       }
@@ -4324,39 +4437,140 @@ export const createCodememRuntime = async ({ location, host }) => {
         queuedEvent?._raw_session_id ||
         queuedEvent?.properties?.sessionID ||
         null;
-      const ok = await emitRawEvent({
-        sessionID: queuedSessionID,
-        type: queuedEvent?.type || "unknown",
-        payload: queuedEvent,
-      });
-      if (!ok) {
-        failed.push(queuedEvent);
+      try {
+        const delivered = await emitRawEvent({
+          sessionID: queuedSessionID,
+          type: queuedEvent?.type || "unknown",
+          payload: queuedEvent,
+        });
+        if (!delivered) failedEvents.push(queuedEvent);
+      } catch {
+        failedEvents.push(queuedEvent);
       }
     }
-    if (failed.length) {
-      flushingBatches.delete(batch);
-      events.unshift(...failed);
-      await logLine(`flush.retry_deferred count=${failed.length}`);
-      await drainRawEventSpool();
+    requeueDetachedBatch(batch, failedEvents);
+    const durationMs = batch.context.startTime
+      ? Date.now() - batch.context.startTime
+      : 0;
+    try {
+      if (failedEvents.length) {
+        await logLine(`flush.retry_deferred count=${failedEvents.length}`);
+      } else {
+        await logLine(
+          `flush.stream_only finalize count=${batch.events.length} tools=${batch.context.toolCount} prompts=${batch.context.promptCount} duration=${Math.round(durationMs / 1000)}s`
+        );
+        await logLine(`flush.ok count=${batch.events.length} dropped=0`);
+      }
+      if (runtimeActive) await drainRawEventSpool();
+    } catch {
+      // Flush delivery and diagnostics must not reject into OpenCode hooks.
+    }
+  };
+
+  const resumeDeferredFlush = () => {
+    if (flushingBatches.size > 0 || !deferredFlush) return;
+    const pendingFlush = deferredFlush;
+    deferredFlush = null;
+    if (!runtimeActive || !events.length) {
+      pendingFlush.resolve();
       return;
     }
-    if (!runtimeActive) {
+    void flushEvents().then(pendingFlush.resolve, pendingFlush.resolve);
+  };
+
+  const scheduleDetachedBatch = (batch) => {
+    flushingBatches.add(batch);
+    const delivery = flushDeliveryTail.then(() => deliverDetachedBatch(batch));
+    const contained = delivery.catch(() => {
+      const undelivered = batch.events.filter((event) => !event?._raw_enqueued);
+      requeueDetachedBatch(batch, undelivered);
+    }).finally(() => {
       flushingBatches.delete(batch);
-      return;
+      resumeDeferredFlush();
+    });
+    flushDeliveryTail = contained;
+    return contained;
+  };
+
+  const flushEmptyQueue = async () => {
+    try {
+      await drainRawEventSpool();
+      await logLine("flush.skip empty");
+    } catch {
+      // Empty flushes follow the same non-rejecting hook contract.
+    }
+  };
+
+  const detachQueuedEvents = ({ owner }) => {
+    const batch = {
+      events: events.splice(0, events.length),
+      context: sessionContext,
+      owner,
+      restored: false,
+    };
+    resetSessionContext();
+    return batch;
+  };
+
+  const scheduleQueuedEvents = ({ owner }) => {
+    return scheduleDetachedBatch(detachQueuedEvents({ owner }));
+  };
+
+  const startBoundaryDrain = () => {
+    if (boundaryDrain) return;
+    // One drain consumes every queued owner batch without extending the promise tail per session.
+    const drain = flushDeliveryTail.then(async () => {
+      while (pendingBoundaryBatches.length) {
+        const batch = pendingBoundaryBatches.shift();
+        try {
+          await deliverDetachedBatch(batch);
+        } catch {
+          const undelivered = batch.events.filter((event) => !event?._raw_enqueued);
+          requeueDetachedBatch(batch, undelivered);
+        } finally {
+          flushingBatches.delete(batch);
+          batch.completion.resolve();
+        }
+      }
+    });
+    const contained = drain.catch(() => {}).finally(() => {
+      boundaryDrain = null;
+      if (pendingBoundaryBatches.length) {
+        startBoundaryDrain();
+        return;
+      }
+      resumeDeferredFlush();
+    });
+    boundaryDrain = contained;
+    flushDeliveryTail = contained;
+  };
+
+  const scheduleBoundaryBatch = (batch) => {
+    batch.completion = Promise.withResolvers();
+    pendingBoundaryBatches.push(batch);
+    flushingBatches.add(batch);
+    trimRetainedEventQueues();
+    startBoundaryDrain();
+    return batch.completion.promise;
+  };
+
+  const flushBoundaryEvents = ({ owner }) => {
+    if (!runtimeActive || !events.length) return Promise.resolve();
+    return scheduleBoundaryBatch(detachQueuedEvents({ owner }));
+  };
+
+  const flushEvents = () => {
+    if (!runtimeActive) return Promise.resolve();
+    if (flushingBatches.size > 0) {
+      if (!events.length) return flushDeliveryTail;
+      if (!deferredFlush) deferredFlush = Promise.withResolvers();
+      return deferredFlush.promise;
+    }
+    if (!events.length) {
+      return flushEmptyQueue();
     }
 
-    // Calculate session duration
-    const durationMs = sessionContext.startTime
-      ? Date.now() - sessionContext.startTime
-      : 0;
-    await logLine(
-      `flush.stream_only finalize count=${batch.length} tools=${sessionContext.toolCount} prompts=${sessionContext.promptCount} duration=${Math.round(durationMs / 1000)}s`
-    );
-    await logLine(`flush.ok count=${batch.length} dropped=0`);
-    flushingBatches.delete(batch);
-    sessionStartedAt = null;
-    resetSessionContext();
-    await drainRawEventSpool();
+    return scheduleQueuedEvents({ owner: activeSessionID });
   };
 
   void drainRawEventSpool();
@@ -4374,7 +4588,7 @@ export const createCodememRuntime = async ({ location, host }) => {
     let durable = true;
     const queuedEvents = new Set(events);
     for (const batch of flushingBatches) {
-      for (const queuedEvent of batch) {
+      for (const queuedEvent of batch.events) {
         queuedEvents.add(queuedEvent);
       }
     }
@@ -4383,17 +4597,23 @@ export const createCodememRuntime = async ({ location, host }) => {
         continue;
       }
       const queuedSessionID = queuedEvent?._raw_session_id || null;
-      const persisted = await emitRawEvent({
-        sessionID: queuedSessionID,
-        type: queuedEvent?.type || "unknown",
-        payload: queuedEvent,
-      });
+      let persisted = false;
+      try {
+        persisted = await emitRawEvent({
+          sessionID: queuedSessionID,
+          type: queuedEvent?.type || "unknown",
+          payload: queuedEvent,
+        });
+      } catch {
+        // Disposal must contain serialization and persistence failures.
+      }
       durable &&= persisted;
     }
     return durable;
   };
 
   return {
+    capturePendingPrompts,
     deactivate: deactivateRuntime,
     dispose: async () => {
       deactivateRuntime();
@@ -4402,6 +4622,8 @@ export const createCodememRuntime = async ({ location, host }) => {
         awaitDurability: true,
       });
       const deliveriesDurable = await ensureQueuedEventsDurable();
+      await rawEventDeliveryTail.catch(() => {});
+      await flushDeliveryTail.catch(() => {});
       if (!promptsDurable || !deliveriesDurable) {
         await errorLogLine("raw_events.dispose_durability_failed category=persistence");
       }
@@ -4419,6 +4641,26 @@ export const createCodememRuntime = async ({ location, host }) => {
       .filter((event) => event.type === "user_prompt")
       .map((event) => ({ number: event.prompt_number, text: event.prompt_text })),
     inspectQueuedEventTypes: () => events.map((event) => event.type),
+    inspectQueuedEvents: () => events.map((event) => ({
+      sessionID: event._raw_session_id,
+      toolCallID: event.tool_call_id ?? null,
+      type: event.type,
+    })),
+    inspectPendingBoundaryEvents: () =>
+      pendingBoundaryBatches.flatMap((batch) =>
+        batch.events.map((event) => ({
+          owner: batch.owner,
+          sessionID: event._raw_session_id,
+        }))),
+    inspectRawEventDeliveryCount: () => rawEventDeliveryCount,
+    inspectFlushingBatchCount: () => flushingBatches.size,
+    inspectSessionContext: () => ({
+      firstPrompt: sessionContext.firstPrompt,
+      promptCount: sessionContext.promptCount,
+      toolCount: sessionContext.toolCount,
+      filesModified: [...sessionContext.filesModified],
+      filesRead: [...sessionContext.filesRead],
+    }),
     inspectCapturedPromptCount: () => capturedPrompts.size,
     handleCompacting: async ({ sessionID: requestedSessionID } = {}) => {
       const sessionID = requestedSessionID || activeSessionID;
@@ -4550,8 +4792,42 @@ export const createCodememRuntime = async ({ location, host }) => {
       if (!runtimeActive) return;
       const eventType = event?.type || "unknown";
       const sessionID = event?.sessionID || null;
+      const priorActiveSessionID = activeSessionID;
       const rawEvent = event?.raw;
-      await capturePendingPrompts({ exceptIdentity: promptIdentityForEvent(event) });
+      let sessionBoundaryDelivery = null;
+      if (eventType === "session.created") {
+        if (priorActiveSessionID) {
+          await capturePendingPrompts({ sessionID: priorActiveSessionID, skipFlush: true });
+        }
+        if (!runtimeActive) {
+          resetSessionContext();
+          return;
+        }
+        const hasBoundaryEvents = events.length > 0;
+        sessionBoundaryDelivery = hasBoundaryEvents
+          ? flushBoundaryEvents({ owner: priorActiveSessionID })
+          : Promise.resolve();
+        if (!hasBoundaryEvents) resetSessionContext();
+        activeSessionID = sessionID || null;
+        sessionStartSessionID = sessionID || null;
+        sessionStartedAt = new Date().toISOString();
+        promptCounter = 0;
+        fallbackEvaluationSessionId = nextEventId();
+        skippedAttemptCounter = 0;
+        disabledInjectionRecorded.delete("message:unknown");
+        disabledInjectionRecorded.delete("system:unknown");
+        lastPromptText = null;
+        if (sessionID) {
+          await capturePendingPrompts({
+            sessionID,
+            exceptIdentity: promptIdentityForEvent(event),
+            skipFlush: true,
+          });
+          clearPromptSession(sessionID, { preserveCapturedPrompts: true });
+        }
+      } else if (sessionID) {
+        await capturePendingPrompts({ sessionID, exceptIdentity: promptIdentityForEvent(event) });
+      }
       if (!runtimeActive) return;
 
       // Always log session-related events for debugging /new
@@ -4629,7 +4905,7 @@ export const createCodememRuntime = async ({ location, host }) => {
             || sessionID;
           lastPromptText = promptText;
           if (!capturedPrompts.has(promptIdentity)) {
-            pendingPrompts.set(promptIdentity, { sessionID: promptSessionID, text: promptText });
+            pendingPrompts.set(promptIdentity, { sessionID: promptSessionID, messageID: prompt.messageID, text: promptText });
           }
         }
 
@@ -4712,23 +4988,17 @@ export const createCodememRuntime = async ({ location, host }) => {
       }
 
       if (eventType === "session.created") {
-        if (events.length) {
-          await flushEvents();
-        }
-        activeSessionID = sessionID || null;
-        sessionStartedAt = new Date().toISOString();
-        promptCounter = 0;
-        fallbackEvaluationSessionId = nextEventId();
-        skippedAttemptCounter = 0;
-        disabledInjectionRecorded.delete("message:unknown");
-        disabledInjectionRecorded.delete("system:unknown");
-        lastPromptText = null;
-        clearPromptSession(sessionID);
-        resetSessionContext();
+        await sessionBoundaryDelivery;
         startViewer();
       }
       if (eventType === "session.deleted") {
-        activeSessionID = null;
+        if (!sessionID || sessionID === activeSessionID) {
+          activeSessionID = null;
+        }
+        if (!sessionID || sessionID === sessionStartSessionID) {
+          sessionStartedAt = null;
+          sessionStartSessionID = null;
+        }
         if (sessionID) {
           for (const key of lastToastAtBySession.keys()) {
             if (key.startsWith(`${sessionID}:`)) {
@@ -4755,7 +5025,8 @@ export const createCodememRuntime = async ({ location, host }) => {
     // V1 sends successes here and failures as ToolPart events; V2 sends both variants here.
     handleToolResult: async (input, output) => {
       if (!runtimeActive) return;
-      await capturePendingPrompts();
+      const sessionID = input.sessionID || activeSessionID;
+      if (sessionID) await capturePendingPrompts({ sessionID });
       if (!runtimeActive) return;
       const args = input.args ?? {};
       const result = output.output;

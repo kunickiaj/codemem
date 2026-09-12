@@ -9,6 +9,7 @@
  * @typedef {object} CodememHost
  * @property {(entry: {service: string, level: string, message: string, extra: object}) => Promise<unknown>} log
  * @property {((notice: {message: string, variant: string}) => Promise<unknown>) | null} notify
+ * @property {((prompt: {sessionID: string, messageID: string, text: string}) => Promise<object | null>) | null} resolveCaptureContext
  */
 
 /**
@@ -55,7 +56,8 @@ export const createRuntimeLocation = ({ project, directory, worktree }) => ({
   worktree,
 });
 
-export const createRuntimeHost = ({ log, notify = null }) => ({
+export const createRuntimeHost = ({ log, notify = null, resolveCaptureContext = null }) => ({
   log,
   notify,
+  resolveCaptureContext,
 });

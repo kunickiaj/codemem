@@ -127,6 +127,16 @@ successful tools through `tool.execute.after` and failed tools through errored
 tool parts; Codemem normalizes both into the shared raw-event stream without
 double-counting repeated failure updates.
 
+OpenCode 1 also preserves verified delegation provenance for individual task briefs.
+A proven brief-only batch stays in raw storage without an observer call or learned
+memory; later findings recover bounded earlier instructions from the same raw stream.
+Recovered instructions follow new evidence so observer clipping does not replace
+current findings with old task briefs.
+
+Missing or ambiguous provenance retains normal extraction. See
+[delegated brief capture](docs/plugin-reference.md#delegated-brief-capture-opencode-1)
+for matching rules and limits. Restart OpenCode after updating the plugin.
+
 Automatic OpenCode recall carries the host session ID through Viewer or CLI into
 Core assembly. Summary memories are eligible only from the exact mapped session;
 durable facts from other sessions remain eligible. If the mapping is not ready,
