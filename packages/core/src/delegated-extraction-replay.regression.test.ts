@@ -36,12 +36,15 @@ function createReplayFixture({ includeFinding }: { includeFinding: boolean }): {
 	cleanupPaths.push(directory);
 	const dbPath = join(directory, "test.sqlite");
 	const store = new MemoryStore(dbPath);
-	const brief = "Inspect retry ownership and report observed findings.";
+	const brief = includeFinding
+		? `REPLAY_BRIEF_START ${"x".repeat(20_000)} REPLAY_BRIEF_TAIL`
+		: "Inspect retry ownership and report observed findings.";
 	try {
 		const events: Record<string, unknown>[] = [
 			{
 				event_id: "brief-event",
 				event_type: "user_prompt",
+				ts_wall_ms: 100,
 				payload: { type: "user_prompt", prompt_text: brief },
 				capture_context: provenance(brief),
 			},
@@ -50,6 +53,7 @@ function createReplayFixture({ includeFinding }: { includeFinding: boolean }): {
 			events.push({
 				event_id: "finding-event",
 				event_type: "tool.execute.after",
+				ts_wall_ms: 600_100,
 				payload: {
 					type: "tool.execute.after",
 					tool: "read",
@@ -142,13 +146,23 @@ describe("delegated provenance extraction replay", () => {
 		});
 
 		// Assert
+		const observerInput = observe.mock.calls[0]?.[1] ?? "";
 		expect({
 			observerCalls: observe.mock.calls.length,
-			labeledBrief: result.observerContext.transcript.includes(
-				`${DELEGATED_BRIEF_LABEL}: ${fixture.brief}`,
-			),
-			misclassifiedBrief: result.observerContext.transcript.includes(`User: ${fixture.brief}`),
-		}).toEqual({ observerCalls: 1, labeledBrief: true, misclassifiedBrief: false });
+			boundedBriefs: result.observerContext.delegatedBriefs,
+			briefInTranscript: result.observerContext.transcript.includes(fixture.brief),
+			labeledBrief: observerInput.includes(DELEGATED_BRIEF_LABEL),
+			toolEvidence: observerInput.includes("The pending queue retains retry entries"),
+		}).toEqual({
+			observerCalls: 1,
+			boundedBriefs: [fixture.brief.slice(0, 800)],
+			briefInTranscript: false,
+			labeledBrief: true,
+			toolEvidence: true,
+		});
+		expect(observerInput).toContain("REPLAY_BRIEF_START");
+		expect(observerInput).not.toContain("REPLAY_BRIEF_TAIL");
+		expect(observerInput).toContain("10.0 minutes of work");
 	});
 
 	it("does not send a proven brief-only replay batch to the observer", async () => {

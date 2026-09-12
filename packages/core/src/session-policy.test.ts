@@ -52,6 +52,28 @@ describe("session policy classification", () => {
 		expect(result).toBe("micro_high_signal");
 	});
 
+	it("classifies short delegated work as high signal without using brief text as evidence", () => {
+		const result = classifySessionForInjection(
+			input({
+				latestPrompt: null,
+				toolEventCount: 1,
+				hasDelegatedTask: true,
+			}),
+		);
+		expect(result).toBe("micro_high_signal");
+	});
+
+	it("preserves low-value classification when delegated-task signal is absent", () => {
+		const result = classifySessionForInjection(
+			input({
+				latestPrompt: null,
+				toolEventCount: 1,
+				hasDelegatedTask: false,
+			}),
+		);
+		expect(result).toBe("micro_low_value");
+	});
+
 	it("classifies working sessions in the middle band", () => {
 		const result = classifySessionForInjection(
 			input({
@@ -112,6 +134,18 @@ describe("summary-only suppression policy", () => {
 		expect(
 			shouldSuppressSummaryOnlyOutput(
 				suppressionInput({ observationsCount: 1, hasSummaryCandidate: true }),
+			),
+		).toBe(false);
+	});
+
+	it("keeps summary-only output for short delegated work", () => {
+		expect(
+			shouldSuppressSummaryOnlyOutput(
+				suppressionInput({
+					latestPrompt: null,
+					toolEventCount: 1,
+					hasDelegatedTask: true,
+				}),
 			),
 		).toBe(false);
 	});

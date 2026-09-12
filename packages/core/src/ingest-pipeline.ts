@@ -21,7 +21,7 @@
 
 import { and, eq, isNull, lt } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import { boundedDelegatedBriefs } from "./capture-context.js";
+import { boundedDelegatedBriefs, partitionDelegatedBriefEvents } from "./capture-context.js";
 import { normalizeProjectLabel } from "./claude-hooks.js";
 import { fromJson, toJson } from "./db.js";
 import {
@@ -64,6 +64,7 @@ import {
 	resolveObserverOutputCapability,
 } from "./observer-output.js";
 import { resolveProject } from "./project.js";
+import { resolveAdjacentDelegatedContext } from "./raw-event-context.js";
 import * as schema from "./schema.js";
 import { classifySessionForInjection, shouldSuppressSummaryOnlyOutput } from "./session-policy.js";
 import type { MemoryStore } from "./store.js";
@@ -332,21 +333,55 @@ async function observeRawEventOutput(
 	}
 }
 
-function priorDelegatedBriefsForObserver(context: SessionContext): string[] | undefined {
-	if (
-		context.source !== "opencode" ||
-		context.flusher !== "raw_events" ||
-		!context.delegatedBriefs?.length
-	)
-		return undefined;
-	return boundedDelegatedBriefs(context.delegatedBriefs);
+function delegatedBriefsForObserver(
+	context: SessionContext,
+	priorBriefs: string[],
+	currentBriefs: string[],
+): string[] | undefined {
+	if (!isTrustedOpenCodeRawEventContext(context)) return undefined;
+	const briefs = boundedDelegatedBriefs([...priorBriefs, ...currentBriefs]);
+	return briefs.length ? briefs : undefined;
+}
+
+function isTrustedOpenCodeRawEventContext(
+	context: SessionContext,
+): context is SessionContext & { source: "opencode"; flusher: "raw_events" } {
+	return context.source === "opencode" && context.flusher === "raw_events";
+}
+
+function resolvePriorDelegatedContext(
+	store: MemoryStore,
+	context: SessionContext,
+): { briefs: string[]; hasDelegatedTask: boolean } {
+	if (!isTrustedOpenCodeRawEventContext(context)) {
+		return { briefs: [], hasDelegatedTask: false };
+	}
+	const opencodeSessionId = context.opencodeSessionId;
+	if (!context.streamId || !opencodeSessionId || context.streamId !== opencodeSessionId) {
+		return { briefs: [], hasDelegatedTask: false };
+	}
+	const startEventSeq = context.flushBatch?.start_event_seq;
+	const extractorVersion = context.flushBatch?.extractor_version;
+	if (typeof startEventSeq !== "number" || typeof extractorVersion !== "string") {
+		return { briefs: [], hasDelegatedTask: false };
+	}
+	return resolveAdjacentDelegatedContext(store.db, {
+		source: context.source,
+		streamId: context.streamId,
+		opencodeSessionId,
+		startEventSeq,
+		extractorVersion,
+	});
 }
 
 function sessionContextForStorage(
 	context: SessionContext,
 ): Omit<SessionContext, "delegatedBriefs"> {
 	const { delegatedBriefs: _delegatedBriefs, ...persistent } = context;
-	return persistent;
+	if (!persistent.flushBatch) return persistent;
+	const { batch_id, start_event_seq, end_event_seq, extractor_version } = persistent.flushBatch;
+	const flushBatch = { batch_id, start_event_seq, end_event_seq, extractor_version };
+	return { ...persistent, flushBatch };
 }
 
 /**
@@ -366,6 +401,8 @@ export async function ingest(
 	if (!Array.isArray(events) || events.length === 0) return;
 
 	const sessionContext = payload.sessionContext ?? {};
+	const priorDelegatedContext = resolvePriorDelegatedContext(store, sessionContext);
+	const priorDelegatedBriefs = priorDelegatedContext.briefs;
 	const storeSummary = options.storeSummary ?? true;
 	const storeTyped = options.storeTyped ?? true;
 	const maxChars = options.maxChars ?? 12_000;
@@ -416,7 +453,13 @@ export async function ingest(
 		// Extract data from events
 		// ------------------------------------------------------------------
 		const normalizedEvents = normalizeAdapterEvents(events);
-		const prompts = extractPrompts(normalizedEvents);
+		const { primaryEvents, delegatedBriefs: currentDelegatedBriefs } =
+			isTrustedOpenCodeRawEventContext(sessionContext)
+				? partitionDelegatedBriefEvents(normalizedEvents)
+				: { primaryEvents: normalizedEvents, delegatedBriefs: [] };
+		const hasDelegatedTask =
+			currentDelegatedBriefs.length > 0 || priorDelegatedContext.hasDelegatedTask;
+		const prompts = extractPrompts(primaryEvents);
 		const promptNumber =
 			prompts.length > 0 ? (prompts[prompts.length - 1]?.promptNumber ?? prompts.length) : null;
 
@@ -428,8 +471,8 @@ export async function ingest(
 		toolEvents = budgetToolEvents(toolEvents, toolBudget, 30);
 
 		// Assistant messages
-		const assistantMessages = extractAssistantMessages(normalizedEvents);
-		const assistantUsageEvents = extractAssistantUsage(normalizedEvents);
+		const assistantMessages = extractAssistantMessages(primaryEvents);
+		const assistantUsageEvents = extractAssistantUsage(primaryEvents);
 		const lastAssistantMessage = assistantMessages.at(-1) ?? null;
 
 		// Latest prompt
@@ -471,7 +514,7 @@ export async function ingest(
 		// ------------------------------------------------------------------
 		// Build transcript
 		// ------------------------------------------------------------------
-		const transcript = buildTranscript(normalizedEvents);
+		const transcript = buildTranscript(primaryEvents);
 
 		// ------------------------------------------------------------------
 		// Build observer prompt
@@ -504,7 +547,11 @@ export async function ingest(
 
 		const transcriptBudget = Math.max(1500, Math.min(5000, Math.floor(observerMaxChars * 0.4)));
 		const observerContext: ObserverContext = {
-			delegatedBriefs: priorDelegatedBriefsForObserver(sessionContext),
+			delegatedBriefs: delegatedBriefsForObserver(
+				sessionContext,
+				priorDelegatedBriefs.length ? priorDelegatedBriefs : (sessionContext.delegatedBriefs ?? []),
+				currentDelegatedBriefs,
+			),
 			project,
 			userPrompt: observerPrompt,
 			promptNumber,
@@ -681,6 +728,7 @@ export async function ingest(
 			hasAssistantMessage: Boolean(lastAssistantMessage),
 			observationsCount: observationsToStore.length,
 			hasSummaryCandidate: summaryToStore != null,
+			hasDelegatedTask,
 		});
 		let summaryDisposition: "stored" | "suppressed" | "none" = summaryToStore ? "stored" : "none";
 
@@ -692,6 +740,7 @@ export async function ingest(
 				latestPrompt,
 				toolEventCount: toolEvents.length,
 				hasAssistantMessage: Boolean(lastAssistantMessage),
+				hasDelegatedTask,
 				skipSummaryReason: parsed.skipSummaryReason,
 			})
 		) {
@@ -726,6 +775,7 @@ export async function ingest(
 						latestPrompt,
 						toolEventCount: toolEvents.length,
 						hasAssistantMessage: Boolean(lastAssistantMessage),
+						hasDelegatedTask,
 						skipSummaryReason: parsed.skipSummaryReason,
 					});
 				// Only soft-skip when capture routing suppressed EVERY observation

@@ -169,13 +169,35 @@ export function isDelegatedBrief(event: Record<string, unknown>): boolean {
 	);
 }
 
+export function partitionDelegatedBriefEvents(events: Record<string, unknown>[]): {
+	primaryEvents: Record<string, unknown>[];
+	delegatedBriefs: string[];
+} {
+	const primaryEvents: Record<string, unknown>[] = [];
+	const delegatedBriefs: string[] = [];
+	for (const event of events) {
+		if (isDelegatedBrief(event)) {
+			delegatedBriefs.push(String(event.prompt_text));
+		} else {
+			primaryEvents.push(event);
+		}
+	}
+	return { primaryEvents, delegatedBriefs };
+}
+
 export function isDelegatedBriefOnlyBatch(events: Record<string, unknown>[]): boolean {
 	if (!events.some(isDelegatedBrief)) return false;
-	return events.every((event) => {
-		if (isDelegatedBrief(event)) return true;
-		if (!["session.started", "session.idle", "session.ended"].includes(String(event.type)))
-			return false;
-		// Unknown fields may contain results. Only ordinary bookkeeping qualifies.
-		return Object.keys(event).every((key) => BOOKKEEPING_FIELDS.has(key));
-	});
+	return events.every((event) => isDelegatedBrief(event) || isBookkeepingEvent(event));
+}
+
+export function isBookkeepingOnlyBatch(events: Record<string, unknown>[]): boolean {
+	return events.length > 0 && events.every(isBookkeepingEvent);
+}
+
+function isBookkeepingEvent(event: Record<string, unknown>): boolean {
+	if (!["session.started", "session.idle", "session.ended"].includes(String(event.type))) {
+		return false;
+	}
+	// Unknown fields may contain results. Only ordinary bookkeeping qualifies.
+	return Object.keys(event).every((key) => BOOKKEEPING_FIELDS.has(key));
 }

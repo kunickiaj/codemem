@@ -10,9 +10,8 @@
 
 import { extractApplyPatchPaths, MUTATING_TOOL_NAMES } from "./apply-patch.js";
 import {
-	boundedDelegatedBriefs,
-	isDelegatedBrief,
 	isDelegatedBriefOnlyBatch,
+	partitionDelegatedBriefEvents,
 	promptContextText,
 } from "./capture-context.js";
 import { extractAdapterEvent, projectAdapterToolEvent } from "./ingest-events.js";
@@ -151,16 +150,21 @@ function shouldRediagnoseLegacyNoOutputMicrobatch(
  *
  * Port of build_session_context() from raw_event_flush.py.
  */
-export function buildSessionContext(events: Record<string, unknown>[]): SessionContext {
+export function buildSessionContext(
+	events: Record<string, unknown>[],
+	{ contentEvents = events }: { contentEvents?: Record<string, unknown>[] } = {},
+): SessionContext {
 	let promptCount = 0;
 	let toolCount = 0;
 
-	for (const e of events) {
+	for (const e of contentEvents) {
 		if (e.type === "user_prompt") promptCount++;
 		if (e.type === "tool.execute.after") toolCount++;
 	}
 
 	const tsValues: number[] = [];
+	// Duration covers the complete event range even when delegated prompt content
+	// is excluded from the content-derived fields below.
 	for (const e of events) {
 		const ts = e.timestamp_wall_ms;
 		if (ts == null) continue;
@@ -186,7 +190,7 @@ export function buildSessionContext(events: Record<string, unknown>[]): SessionC
 
 	const filesModified = new Set<string>();
 	const filesRead = new Set<string>();
-	for (const e of events) {
+	for (const e of contentEvents) {
 		if (e.type !== "tool.execute.after") continue;
 		const tool = String(e.tool ?? "").toLowerCase();
 		const args = e.args;
@@ -225,7 +229,7 @@ export function buildSessionContext(events: Record<string, unknown>[]): SessionC
 	}
 
 	let firstPrompt: string | undefined;
-	for (const e of events) {
+	for (const e of contentEvents) {
 		if (e.type !== "user_prompt") continue;
 		const text = e.prompt_text;
 		if (typeof text === "string" && text.trim()) {
@@ -285,7 +289,6 @@ function isTerminalLowSignalSession(
 // ---------------------------------------------------------------------------
 
 function buildFlushSessionContext(
-	store: MemoryStore,
 	events: Record<string, unknown>[],
 	{
 		opencodeSessionId,
@@ -301,7 +304,9 @@ function buildFlushSessionContext(
 		batchId: number;
 	},
 ): SessionContext {
-	const context = buildSessionContext(normalizeEventsForSessionContext(events));
+	const normalizedEvents = normalizeEventsForSessionContext(events);
+	const { primaryEvents } = partitionDelegatedBriefEvents(normalizedEvents);
+	const context = buildSessionContext(normalizedEvents, { contentEvents: primaryEvents });
 	context.opencodeSessionId = opencodeSessionId;
 	context.source = source;
 	context.streamId = opencodeSessionId;
@@ -310,14 +315,8 @@ function buildFlushSessionContext(
 		batch_id: batchId,
 		start_event_seq: startEventSeq,
 		end_event_seq: lastEventSeq,
+		extractor_version: EXTRACTOR_VERSION,
 	};
-	const priorBriefs = boundedDelegatedBriefs(
-		store
-			.priorDelegatedBriefEvents(opencodeSessionId, source, startEventSeq)
-			.filter(isDelegatedBrief)
-			.map((event) => String(event.prompt_text)),
-	);
-	if (priorBriefs.length) context.delegatedBriefs = priorBriefs;
 	return context;
 }
 
@@ -476,7 +475,7 @@ export async function flushRawEvents(
 		return { flushed: 0, updatedState: 0 };
 	}
 
-	const sessionContext = buildFlushSessionContext(store, events, {
+	const sessionContext = buildFlushSessionContext(events, {
 		opencodeSessionId,
 		source,
 		startEventSeq,

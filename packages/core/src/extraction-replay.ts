@@ -1,7 +1,7 @@
 import {
 	boundedDelegatedBriefs,
-	isDelegatedBrief,
 	isDelegatedBriefOnlyBatch,
+	partitionDelegatedBriefEvents,
 } from "./capture-context.js";
 import { connect, resolveDbPath } from "./db.js";
 import {
@@ -57,9 +57,9 @@ import {
 import { resolveProject } from "./project.js";
 import {
 	hydrateRawEvent,
-	loadPriorDelegatedBriefEvents,
 	type RawEventContextRow,
 	rawEventCaptureContextProjection,
+	resolveAdjacentDelegatedBriefs,
 } from "./raw-event-context.js";
 import { buildSessionContext } from "./raw-event-flush.js";
 
@@ -475,6 +475,7 @@ async function prepareReplayBatch(
 					b.opencode_session_id,
 					b.start_event_seq,
 					b.end_event_seq,
+					b.extractor_version,
 					b.updated_at,
 					os.session_id,
 					s.cwd,
@@ -496,6 +497,7 @@ async function prepareReplayBatch(
 					opencode_session_id: string;
 					start_event_seq: number;
 					end_event_seq: number;
+					extractor_version: string;
 					updated_at: string;
 					session_id: number | null;
 					cwd: string | null;
@@ -541,7 +543,11 @@ async function prepareReplayBatch(
 		// scanning so promptCount, toolCount, firstPrompt, filesRead, and
 		// filesModified are populated correctly during replay.
 		const normalizedForContext = normalizeEventsForSessionContext(events);
-		const sessionContext: SessionContext = buildSessionContext(normalizedForContext);
+		const { primaryEvents: primaryContextEvents } =
+			partitionDelegatedBriefEvents(normalizedForContext);
+		const sessionContext: SessionContext = buildSessionContext(normalizedForContext, {
+			contentEvents: primaryContextEvents,
+		});
 		sessionContext.opencodeSessionId = batch.opencode_session_id;
 		sessionContext.source = batch.source;
 		sessionContext.streamId = batch.stream_id;
@@ -550,18 +556,21 @@ async function prepareReplayBatch(
 			batch_id: batch.id,
 			start_event_seq: batch.start_event_seq,
 			end_event_seq: batch.end_event_seq,
+			extractor_version: batch.extractor_version,
 		};
 
 		const maxChars = opts.maxChars ?? 12_000;
 		const observerMaxChars = opts.observerMaxChars ?? 12_000;
 		const normalizedEvents = normalizeAdapterEvents(events);
-		const prompts = extractPrompts(normalizedEvents);
+		const { primaryEvents, delegatedBriefs: currentDelegatedBriefs } =
+			partitionDelegatedBriefEvents(normalizedEvents);
+		const prompts = extractPrompts(primaryEvents);
 		const promptNumber =
 			prompts.length > 0 ? (prompts[prompts.length - 1]?.promptNumber ?? prompts.length) : null;
 		let toolEvents = normalizeEventsForToolExtraction(events, maxChars);
 		const toolBudget = Math.max(2000, Math.min(8000, observerMaxChars - 5000));
 		toolEvents = budgetToolEvents(toolEvents, toolBudget, 30);
-		const assistantMessages = extractAssistantMessages(normalizedEvents);
+		const assistantMessages = extractAssistantMessages(primaryEvents);
 		const lastAssistantMessage = assistantMessages.at(-1) ?? null;
 		const latestPrompt =
 			sessionContext.firstPrompt ??
@@ -582,7 +591,7 @@ async function prepareReplayBatch(
 			throw new Error(`Flush batch ${opts.batchId} has no meaningful observer input to replay`);
 		}
 
-		const transcript = buildTranscript(normalizedEvents);
+		const transcript = buildTranscript(primaryEvents);
 		const sessionSummaryParts: string[] = [];
 		if ((sessionContext.promptCount ?? 0) > 1) {
 			sessionSummaryParts.push(`Session had ${sessionContext.promptCount} prompts`);
@@ -609,15 +618,17 @@ async function prepareReplayBatch(
 		}
 		const transcriptBudget =
 			opts.transcriptBudget ?? Math.max(1500, Math.min(5000, Math.floor(observerMaxChars * 0.4)));
-		const delegatedBriefs = boundedDelegatedBriefs(
-			loadPriorDelegatedBriefEvents(db, {
-				source: batch.source,
-				streamId: batch.stream_id,
-				beforeEventSeq: batch.start_event_seq,
-			})
-				.filter(isDelegatedBrief)
-				.map((event) => String(event.prompt_text)),
-		);
+		const priorDelegatedBriefs = resolveAdjacentDelegatedBriefs(db, {
+			source: batch.source,
+			streamId: batch.stream_id,
+			opencodeSessionId: batch.opencode_session_id,
+			startEventSeq: batch.start_event_seq,
+			extractorVersion: batch.extractor_version,
+		});
+		const delegatedBriefs = boundedDelegatedBriefs([
+			...priorDelegatedBriefs,
+			...currentDelegatedBriefs,
+		]);
 		const observerContext: ObserverContext = {
 			...(delegatedBriefs.length ? { delegatedBriefs } : {}),
 			project: batch.project ?? resolveProject(batch.cwd ?? process.cwd()) ?? null,

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DELEGATED_BRIEF_LABEL, type DelegatedBriefContext } from "./capture-context.js";
+import type { DelegatedBriefContext } from "./capture-context.js";
 import { ingestRawEvents } from "./raw-event-ingest.js";
 import { runSessionContextBackfillPass } from "./session-context-backfill.js";
 import { MemoryStore } from "./store.js";
@@ -65,7 +65,7 @@ afterEach(() => {
 });
 
 describe("delegated provenance session-context backfill", () => {
-	it("keeps the validated sidecar and rebuilds a labeled first prompt", async () => {
+	it("includes brief timestamps in duration while excluding brief content from derived fields", async () => {
 		// Arrange
 		const store = createStore();
 		const brief = "Inspect retry ownership and report observed findings.";
@@ -75,8 +75,21 @@ describe("delegated provenance session-context backfill", () => {
 				session_stream_id: "child",
 				event_id: "brief-event",
 				event_type: "user_prompt",
+				ts_wall_ms: 1_000,
 				payload: { type: "user_prompt", prompt_text: brief },
 				capture_context: provenance(brief),
+			});
+			ingestRawEvents(store, {
+				source: "opencode",
+				session_stream_id: "child",
+				event_id: "finding-event",
+				event_type: "tool.execute.after",
+				ts_wall_ms: 601_000,
+				payload: {
+					type: "tool.execute.after",
+					tool: "read",
+					args: { filePath: "/fixture/src/queue.ts" },
+				},
 			});
 			const sessionId = linkBackfillCandidate(store);
 			const sidecarBefore = store.db
@@ -98,8 +111,17 @@ describe("delegated provenance session-context backfill", () => {
 			const sidecarAfter = store.db
 				.prepare("SELECT capture_context_json FROM raw_events WHERE event_id = ?")
 				.get("brief-event");
-			expect({ firstPrompt: metadata.session_context.firstPrompt, sidecarAfter }).toEqual({
-				firstPrompt: `${DELEGATED_BRIEF_LABEL}: ${brief}`,
+			expect({
+				durationMs: metadata.session_context.durationMs,
+				firstPrompt: metadata.session_context.firstPrompt,
+				promptCount: metadata.session_context.promptCount,
+				toolCount: metadata.session_context.toolCount,
+				sidecarAfter,
+			}).toEqual({
+				durationMs: 600_000,
+				firstPrompt: undefined,
+				promptCount: 0,
+				toolCount: 1,
 				sidecarAfter: sidecarBefore,
 			});
 		} finally {

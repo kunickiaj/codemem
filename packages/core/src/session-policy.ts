@@ -15,6 +15,46 @@ export interface SessionClassificationInput {
 	hasAssistantMessage: boolean;
 	observationsCount: number;
 	hasSummaryCandidate: boolean;
+	hasDelegatedTask?: boolean;
+}
+
+interface SessionSignals {
+	durationMs: number;
+	promptCount: number;
+	toolCount: number;
+	hasModifiedFiles: boolean;
+	hasReadFiles: boolean;
+	trivialPrompt: boolean;
+	hasTaskSignal: boolean;
+}
+
+function isTrivialTurn(signals: SessionSignals): boolean {
+	return (
+		signals.trivialPrompt &&
+		signals.durationMs > 0 &&
+		signals.durationMs < 60_000 &&
+		signals.promptCount <= 1 &&
+		signals.toolCount === 0 &&
+		!signals.hasModifiedFiles &&
+		!signals.hasTaskSignal
+	);
+}
+
+function classifyMicroSession(signals: SessionSignals): SessionClass {
+	const hasStrongSignals =
+		signals.hasTaskSignal ||
+		signals.hasModifiedFiles ||
+		signals.toolCount >= 3 ||
+		signals.hasReadFiles ||
+		(signals.toolCount > 0 && !signals.trivialPrompt);
+	if (!hasStrongSignals) return "micro_low_value";
+
+	const hasHighSignal =
+		signals.hasTaskSignal ||
+		signals.hasModifiedFiles ||
+		(signals.toolCount > 0 && !signals.trivialPrompt) ||
+		signals.hasReadFiles;
+	return hasHighSignal ? "micro_high_signal" : "micro_low_value";
 }
 
 export function classifySessionForInjection(input: SessionClassificationInput): SessionClass {
@@ -26,36 +66,21 @@ export function classifySessionForInjection(input: SessionClassificationInput): 
 	const hasModifiedFiles = (input.sessionContext.filesModified?.length ?? 0) > 0;
 	const hasReadFiles = (input.sessionContext.filesRead?.length ?? 0) > 0;
 	const trivialPrompt = isTrivialRequest(input.latestPrompt);
-	const hasTypedObservations = input.observationsCount > 0;
-	const hasStrongSignals =
-		hasTypedObservations ||
-		hasModifiedFiles ||
-		toolCount >= 3 ||
-		hasReadFiles ||
-		(toolCount > 0 && !trivialPrompt);
+	const hasTaskSignal = input.observationsCount > 0 || input.hasDelegatedTask === true;
+	const signals = {
+		durationMs,
+		promptCount,
+		toolCount,
+		hasModifiedFiles,
+		hasReadFiles,
+		trivialPrompt,
+		hasTaskSignal,
+	};
 
-	if (
-		trivialPrompt &&
-		durationMs > 0 &&
-		durationMs < 60_000 &&
-		promptCount <= 1 &&
-		toolCount === 0 &&
-		!hasModifiedFiles &&
-		!hasTypedObservations
-	) {
-		return "trivial_turn";
-	}
+	if (isTrivialTurn(signals)) return "trivial_turn";
 
 	if (durationMs > 0 && durationMs < 60_000) {
-		if (hasStrongSignals) {
-			return hasTypedObservations ||
-				hasModifiedFiles ||
-				(toolCount > 0 && !trivialPrompt) ||
-				hasReadFiles
-				? "micro_high_signal"
-				: "micro_low_value";
-		}
-		return "micro_low_value";
+		return classifyMicroSession(signals);
 	}
 
 	if (

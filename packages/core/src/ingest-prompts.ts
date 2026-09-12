@@ -337,8 +337,8 @@ function buildObserverSystemPrompt(
 	return systemBlocks.join("\n\n").trim();
 }
 
-function appendPriorDelegatedBriefs(user: string, briefs: readonly string[]): string {
-	const label = `\n\n[${DELEGATED_BRIEF_LABEL}; earlier in this raw stream]\n`;
+function appendDelegatedBriefs(user: string, briefs: readonly string[]): string {
+	const label = `\n\n[${DELEGATED_BRIEF_LABEL}]\n`;
 	const body = escapedDelegatedBriefsWithinBudget(
 		boundedDelegatedBriefs(briefs),
 		MAX_DELEGATED_CONTEXT_CHARS - label.length,
@@ -437,10 +437,7 @@ export function buildObserverPrompt(
 		);
 	}
 
-	const user = appendPriorDelegatedBriefs(
-		userBlocks.join("\n\n").trim(),
-		context.delegatedBriefs ?? [],
-	);
+	const user = appendDelegatedBriefs(userBlocks.join("\n\n").trim(), context.delegatedBriefs ?? []);
 
 	return { system, user };
 }
