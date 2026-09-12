@@ -20,7 +20,7 @@
 	],
 	"scripts": {
 		"clean": "rm -rf dist tsconfig.tsbuildinfo",
-		"build": "pnpm exec vite build && pnpm exec tsc --build",
+		"build": "pnpm exec vite build && rm -f tsconfig.tsbuildinfo && pnpm exec tsc --build && test -f dist/index.d.ts && test -f dist/internal/cloudflare-coordinator.d.ts",
 		"typecheck": "pnpm exec tsc --noEmit",
 		"generate:test-schema": "pnpm exec tsx scripts/generate-test-schema.ts"
 	},
