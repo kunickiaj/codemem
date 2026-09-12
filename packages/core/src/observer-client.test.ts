@@ -2525,10 +2525,16 @@ describe("ObserverClient — pi-derived auth (D8)", () => {
 		piDir = undefined;
 	});
 
-	function writePiApiKeyFixture(opts?: { provider?: string; model?: string; baseUrl?: string }) {
+	function writePiApiKeyFixture(opts?: {
+		provider?: string;
+		model?: string;
+		baseUrl?: string;
+		api?: string;
+	}) {
 		const provider = opts?.provider ?? "acme";
 		const model = opts?.model ?? "gpt-mini";
 		const baseUrl = opts?.baseUrl ?? "https://api.acme.test/v1";
+		const api = opts?.api ?? "openai-completions";
 		if (!piDir) throw new Error("piDir unset");
 		writeFileSync(
 			join(piDir, "settings.json"),
@@ -2540,7 +2546,7 @@ describe("ObserverClient — pi-derived auth (D8)", () => {
 				providers: {
 					[provider]: {
 						baseUrl,
-						api: "openai-completions",
+						api,
 						models: [{ id: model }, { id: "gpt-premium-ultra" }],
 					},
 				},
@@ -2597,6 +2603,37 @@ describe("ObserverClient — pi-derived auth (D8)", () => {
 		expect(client.getStatus().auth.hasToken).toBe(true);
 		expect(client.getStatus().auth.source).toBe("pi");
 		expect(client.toConfig().observerApiKey).toBeNull();
+	});
+
+	it("does not adopt pi provider when only observer model is set", () => {
+		writePiApiKeyFixture({
+			provider: "acme",
+			model: "gpt-mini",
+			baseUrl: "https://api.acme.test/v1",
+		});
+		process.env.CODEMEM_OBSERVER_MODEL = "gpt-4o-mini";
+		const cfg = loadObserverConfig();
+		expect(cfg.observerModel).toBe("gpt-4o-mini");
+		expect(cfg.observerProvider).toBeNull();
+		expect(cfg.observerBaseUrl).toBeNull();
+
+		const client = new ObserverClient();
+		expect(client.provider).toBe("openai");
+		expect(client.model).toBe("gpt-4o-mini");
+		expect(client.getStatus().auth.source).not.toBe("pi");
+		expect(client.auth.token).not.toBe(PI_FIXTURE_KEY);
+	});
+
+	it("honors pi openai-responses on the no-arg ObserverClient path", () => {
+		writePiApiKeyFixture({
+			provider: "acme",
+			model: "gpt-mini",
+			baseUrl: "https://api.acme.test/v1",
+			api: "openai-responses",
+		});
+		const client = new ObserverClient();
+		expect(client.provider).toBe("acme");
+		expect(client.openaiUseResponses).toBe(true);
 	});
 
 	it("explicit CODEMEM_OBSERVER_API_KEY wins over pi", () => {

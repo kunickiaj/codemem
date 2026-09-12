@@ -433,7 +433,10 @@ function codexCliAvailable(command: string): boolean {
 /**
  * Project unset observer fields from pi agent config (D8).
  *
- * When provider is entirely unset, fill provider/model/baseUrl/wire from pi.
+ * When provider and model are both unset, fill provider/model/baseUrl/wire from pi.
+ * When model is already set (env or config) and provider is not, leave provider
+ * unset so the client infers it from the model — never route that model through
+ * pi's provider/endpoint/key.
  * When provider is already set (setup or user), only fill a missing model if
  * it matches the pi provider — never rewrite an explicit openai/anthropic
  * baseUrl with a pi custom endpoint.
@@ -454,8 +457,9 @@ function applyPiDerivedObserverFields(cfg: ObserverConfig): void {
 	if (!pi.ok) return;
 
 	if (!cfg.observerProvider) {
+		if (cfg.observerModel) return;
 		cfg.observerProvider = pi.provider;
-		if (!cfg.observerModel) cfg.observerModel = pi.model;
+		cfg.observerModel = pi.model;
 		if (!cfg.observerBaseUrl && pi.baseUrl) cfg.observerBaseUrl = pi.baseUrl;
 		if (cfg.observerOpenAIUseResponses === undefined) {
 			cfg.observerOpenAIUseResponses = pi.openAIUseResponses;
@@ -1594,9 +1598,11 @@ export class ObserverClient {
 			Number.isFinite(cfg.observerRichMaxOutputTokens)
 				? cfg.observerRichMaxOutputTokens
 				: null;
-		const configuredOpenAIUseResponses = explicitConfigKeys.has("observerOpenAIUseResponses")
-			? cfg.observerOpenAIUseResponses === true
-			: this.provider === "openai" && this.runtime === "api_http";
+		const configuredOpenAIUseResponses =
+			explicitConfigKeys.has("observerOpenAIUseResponses") ||
+			cfg.observerOpenAIUseResponses === true
+				? cfg.observerOpenAIUseResponses === true
+				: this.provider === "openai" && this.runtime === "api_http";
 		this.openaiUseResponses =
 			this.provider === "openai" && this.runtime === "api_http" && !hasCustomBaseUrl
 				? true
