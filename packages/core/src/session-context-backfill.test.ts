@@ -59,6 +59,21 @@ function insertRawEvent(
 	);
 }
 
+function insertRawEventJson(
+	db: Database,
+	streamId: string,
+	payloadJson: string,
+	eventSeq = 1,
+): void {
+	const now = new Date().toISOString();
+	db.prepare(
+		`INSERT INTO raw_events(
+			source, stream_id, opencode_session_id, event_id, event_seq,
+			event_type, ts_wall_ms, payload_json, created_at
+		) VALUES ('opencode', ?, ?, ?, ?, 'user_prompt', 1700000000000, ?, ?)`,
+	).run(streamId, streamId, `${streamId}-event-${eventSeq}`, eventSeq, payloadJson, now);
+}
+
 function insertSessionRow(
 	db: Database,
 	source: string | null,
@@ -319,6 +334,72 @@ describe("session-context backfill maintenance", () => {
 			rewritten_sessions: 0,
 		});
 	});
+
+	it.each([
+		{ label: "malformed JSON", payloadJson: "not-json" },
+		{ label: "empty text", payloadJson: "" },
+		{ label: "array", payloadJson: "[]" },
+		{ label: "null", payloadJson: "null" },
+		{ label: "scalar", payloadJson: '"scalar"' },
+	])(
+		"skips $label raw-event payload without overwriting metadata",
+		async ({ label, payloadJson }) => {
+			const invalidStreamId = `ses-invalid-${label.replaceAll(" ", "-")}`;
+			const validStreamId = `ses-valid-${label.replaceAll(" ", "-")}`;
+			const now = new Date().toISOString();
+			insertRawEventSession(db, "opencode", invalidStreamId, now);
+			insertRawEvent(
+				db,
+				"opencode",
+				invalidStreamId,
+				1,
+				`${invalidStreamId}-valid-event`,
+				"user_prompt",
+				{ type: "user_prompt", prompt_text: "Do not partially rebuild" },
+				1_700_000_000_000,
+			);
+			insertRawEventJson(db, invalidStreamId, payloadJson, 2);
+			const invalidSessionId = insertSessionRow(db, "opencode", invalidStreamId, {
+				flusher: "raw_events",
+				firstPrompt: "Keep this valid context",
+				promptCount: 1,
+				toolCount: 2,
+			});
+
+			insertRawEventSession(db, "opencode", validStreamId, now);
+			insertRawEvent(
+				db,
+				"opencode",
+				validStreamId,
+				1,
+				`${validStreamId}-event`,
+				"user_prompt",
+				{ type: "user_prompt", prompt_text: "Process clean candidates" },
+				1_700_000_000_000,
+			);
+			const validSessionId = insertSessionRow(db, "opencode", validStreamId, {
+				flusher: "raw_events",
+				promptCount: 0,
+				toolCount: 0,
+			});
+
+			await runSessionContextBackfillPass(db, { batchSize: 10 });
+
+			expect(readSessionContext(db, invalidSessionId)).toMatchObject({
+				firstPrompt: "Keep this valid context",
+				promptCount: 1,
+				toolCount: 2,
+			});
+			expect(readSessionContext(db, validSessionId)).toMatchObject({
+				firstPrompt: "Process clean candidates",
+				promptCount: 1,
+			});
+			expect(getMaintenanceJob(db, SESSION_CONTEXT_BACKFILL_JOB)?.metadata).toMatchObject({
+				skipped_invalid_payload: 1,
+				rewritten_sessions: 1,
+			});
+		},
+	);
 
 	it("ignores sessions not flushed via raw_events", async () => {
 		// Non-raw-events session should not be enqueued at all.

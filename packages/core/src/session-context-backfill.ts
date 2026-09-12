@@ -28,7 +28,7 @@ import {
 	updateMaintenanceJob,
 } from "./maintenance-jobs.js";
 import {
-	hydrateRawEvent,
+	hydrateRawEventStrict,
 	type RawEventContextRow,
 	rawEventCaptureContextProjection,
 } from "./raw-event-context.js";
@@ -43,6 +43,7 @@ type SessionContextBackfillMetadata = {
 	rewritten_sessions?: number;
 	skipped_no_events?: number;
 	skipped_no_bridge?: number;
+	skipped_invalid_payload?: number;
 	unchanged_sessions?: number;
 };
 
@@ -111,12 +112,12 @@ function selectCandidateBatch(
 		.all(afterId, batchSize) as CandidateSessionRow[];
 }
 
-function loadRawEventsForStream(
+function loadRawEventRowsForStream(
 	db: SqliteDatabase,
 	source: string,
 	streamId: string,
-): Record<string, unknown>[] {
-	const rows = db
+): RawEventContextRow[] {
+	return db
 		.prepare(
 			`SELECT event_seq, event_type, ts_wall_ms, ts_mono_ms, payload_json, event_id,
 			 ${rawEventCaptureContextProjection(db)}
@@ -125,7 +126,21 @@ function loadRawEventsForStream(
 			 ORDER BY event_seq ASC`,
 		)
 		.all(source, streamId) as RawEventContextRow[];
-	return rows.map((row) => hydrateRawEvent(row, { source, streamId }));
+}
+
+function hydrateBackfillEvents(
+	rows: RawEventContextRow[],
+	identity: { sessionId: number; source: string; streamId: string },
+): Record<string, unknown>[] | null {
+	try {
+		return rows.map((row) => hydrateRawEventStrict(row, identity));
+	} catch (error) {
+		console.warn(
+			`[codemem] Session-context backfill: skipping session ${identity.sessionId} (${identity.source}/${identity.streamId}) with invalid raw-event payload`,
+			error,
+		);
+		return null;
+	}
 }
 
 function parseSessionMetadata(value: string | null): Record<string, unknown> {
@@ -178,6 +193,7 @@ interface BatchResult {
 	rewritten: number;
 	skippedNoEvents: number;
 	skippedNoBridge: number;
+	skippedInvalidPayload: number;
 	unchanged: number;
 	lastCursorId: number;
 	exhausted: boolean;
@@ -191,6 +207,7 @@ function processCandidateBatch(
 	let rewritten = 0;
 	let skippedNoEvents = 0;
 	let skippedNoBridge = 0;
+	let skippedInvalidPayload = 0;
 	let unchanged = 0;
 	let lastCursorId = candidates.at(-1)?.id ?? 0;
 
@@ -202,9 +219,16 @@ function processCandidateBatch(
 			skippedNoBridge += 1;
 			continue;
 		}
-		const events = loadRawEventsForStream(db, row.source, row.stream_id);
-		if (events.length === 0) {
+		const source = row.source;
+		const streamId = row.stream_id;
+		const eventRows = loadRawEventRowsForStream(db, source, streamId);
+		if (eventRows.length === 0) {
 			skippedNoEvents += 1;
+			continue;
+		}
+		const events = hydrateBackfillEvents(eventRows, { sessionId: row.id, source, streamId });
+		if (!events) {
+			skippedInvalidPayload += 1;
 			continue;
 		}
 		const normalized = normalizeEventsForSessionContext(events);
@@ -230,6 +254,7 @@ function processCandidateBatch(
 		rewritten,
 		skippedNoEvents,
 		skippedNoBridge,
+		skippedInvalidPayload,
 		unchanged,
 		lastCursorId,
 		exhausted: candidates.length < batchSize,
@@ -275,6 +300,7 @@ export async function runSessionContextBackfillPass(
 				rewritten_sessions: 0,
 				skipped_no_events: 0,
 				skipped_no_bridge: 0,
+				skipped_invalid_payload: 0,
 				unchanged_sessions: 0,
 			},
 		});
@@ -305,6 +331,8 @@ export async function runSessionContextBackfillPass(
 		Number(metadataBefore.skipped_no_events ?? 0) + batchResult.skippedNoEvents;
 	const skippedNoBridge =
 		Number(metadataBefore.skipped_no_bridge ?? 0) + batchResult.skippedNoBridge;
+	const skippedInvalidPayload =
+		Number(metadataBefore.skipped_invalid_payload ?? 0) + batchResult.skippedInvalidPayload;
 	const unchangedSessions = Number(metadataBefore.unchanged_sessions ?? 0) + batchResult.unchanged;
 	const nextMetadata: SessionContextBackfillMetadata = {
 		last_cursor_id: batchResult.lastCursorId,
@@ -313,6 +341,7 @@ export async function runSessionContextBackfillPass(
 		rewritten_sessions: rewrittenSessions,
 		skipped_no_events: skippedNoEvents,
 		skipped_no_bridge: skippedNoBridge,
+		skipped_invalid_payload: skippedInvalidPayload,
 		unchanged_sessions: unchangedSessions,
 	};
 
@@ -339,7 +368,10 @@ export async function runSessionContextBackfillPass(
 function summarizeCompletion(metadata: SessionContextBackfillMetadata): string {
 	const rewritten = Number(metadata.rewritten_sessions ?? 0);
 	const processed = Number(metadata.processed_sessions ?? 0);
-	const skipped = Number(metadata.skipped_no_events ?? 0) + Number(metadata.skipped_no_bridge ?? 0);
+	const skipped =
+		Number(metadata.skipped_no_events ?? 0) +
+		Number(metadata.skipped_no_bridge ?? 0) +
+		Number(metadata.skipped_invalid_payload ?? 0);
 	if (processed === 0) {
 		return "No raw-event sessions required session_context backfill";
 	}

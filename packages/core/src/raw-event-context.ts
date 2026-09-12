@@ -1,5 +1,5 @@
 import { readCaptureContext } from "./capture-context.js";
-import { columnExists, type Database, fromJson } from "./db.js";
+import { columnExists, type Database, fromJson, fromJsonStrict } from "./db.js";
 
 export interface RawEventContextRow {
 	event_seq: number;
@@ -17,6 +17,25 @@ export function hydrateRawEvent(
 	identity: { source: string; streamId: string },
 ): Record<string, unknown> {
 	const payload = fromJson(row.payload_json) as Record<string, unknown>;
+	return hydrateRawEventPayload(row, identity, payload);
+}
+
+/** Reject invalid payloads before a maintenance path can persist derived data. */
+export function hydrateRawEventStrict(
+	row: RawEventContextRow,
+	identity: { source: string; streamId: string },
+): Record<string, unknown> {
+	if (row.payload_json.length === 0) {
+		throw new Error(`hydrateRawEventStrict: empty payload_json for event_seq ${row.event_seq}`);
+	}
+	return hydrateRawEventPayload(row, identity, fromJsonStrict(row.payload_json));
+}
+
+function hydrateRawEventPayload(
+	row: RawEventContextRow,
+	identity: { source: string; streamId: string },
+	payload: Record<string, unknown>,
+): Record<string, unknown> {
 	payload.type = payload.type || row.event_type;
 	payload.timestamp_wall_ms = row.ts_wall_ms;
 	payload.timestamp_mono_ms = row.ts_mono_ms;
