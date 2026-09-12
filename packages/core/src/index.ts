@@ -407,6 +407,7 @@ export type {
 	ExtractionReplayResult,
 } from "./extraction-replay.js";
 export {
+	ContextOnlyReplayError,
 	extractionReplayObserverIdentity,
 	replayBatchExtraction,
 	replayBatchExtractionWithTierRouting,

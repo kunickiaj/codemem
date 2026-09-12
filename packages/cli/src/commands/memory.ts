@@ -7,6 +7,7 @@
 
 import * as p from "@clack/prompts";
 import {
+	ContextOnlyReplayError,
 	compareMemoryRoleReports,
 	EXTRACTION_BENCHMARK_QUALITY_WEIGHTS,
 	type ExtractionBenchmarkScore,
@@ -57,6 +58,34 @@ function parseStrictPositiveId(value: string): number | null {
 	if (!/^\d+$/.test(value.trim())) return null;
 	const n = Number(value.trim());
 	return Number.isFinite(n) && n >= 1 && Number.isInteger(n) ? n : null;
+}
+
+interface ContextOnlyReplayOutcome {
+	status: "context_only";
+	code: "delegated_brief_context_only";
+	evaluated: false;
+	batchId: number;
+	scenarioId: string;
+	message: string;
+}
+
+function contextOnlyReplayOutcome(
+	error: ContextOnlyReplayError,
+	target: { batchId: number; scenarioId: string },
+): ContextOnlyReplayOutcome {
+	return {
+		...target,
+		status: "context_only",
+		code: error.code,
+		evaluated: false,
+		message: error.message,
+	};
+}
+
+function emitContextOnlyReplayOutcome(outcome: ContextOnlyReplayOutcome, opts: JsonOpts): void {
+	if (opts.json) console.log(JSON.stringify(outcome, null, 2));
+	else p.log.info(outcome.message);
+	process.exitCode = 0;
 }
 
 export function resolveOpenAIResponsesOverride(
@@ -945,6 +974,16 @@ function createMemoryExtractionReplayCommand(): Command {
 				);
 				p.outro("done");
 			} catch (error) {
+				if (error instanceof ContextOnlyReplayError) {
+					emitContextOnlyReplayOutcome(
+						contextOnlyReplayOutcome(error, {
+							batchId: Number(opts.batchId),
+							scenarioId: opts.scenario.trim(),
+						}),
+						opts,
+					);
+					return;
+				}
 				const message = error instanceof Error ? error.message : "Extraction replay failed";
 				if (opts.json) {
 					emitJsonError("extraction_replay_failed", message);
@@ -1262,6 +1301,11 @@ type ExtractionBenchmarkAttemptStatus = {
 	tier: string | null;
 };
 
+interface ExtractionBenchmarkContextOnlySkip extends ContextOnlyReplayOutcome {
+	iteration: number;
+	purpose: "shape_quality" | "replay_robustness";
+}
+
 export function summarizeExtractionBenchmarkAttempts(
 	attempts: readonly ExtractionBenchmarkAttemptStatus[],
 	batches: readonly Pick<ExtractionBenchmarkAttemptStatus, "batchId" | "purpose">[],
@@ -1558,6 +1602,7 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 					};
 					quality: ExtractionBenchmarkScore | null;
 				}>;
+				const contextOnlySkips: ExtractionBenchmarkContextOnlySkip[] = [];
 				for (let iteration = 1; iteration <= repetitions; iteration += 1) {
 					for (const batch of benchmark.batches) {
 						const scenarioId = batch.scenarioId ?? benchmark.scenarioId;
@@ -1585,6 +1630,14 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 											transcriptBudget: transcriptBudget ?? undefined,
 										});
 						} catch (error) {
+							if (error instanceof ContextOnlyReplayError) {
+								contextOnlySkips.push({
+									...contextOnlyReplayOutcome(error, { batchId: batch.batchId, scenarioId }),
+									iteration,
+									purpose: batch.purpose,
+								});
+								continue;
+							}
 							if (
 								!(error instanceof ObserverOutputError) &&
 								!(error instanceof ObserverOutputTransportError)
@@ -1785,12 +1838,16 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 					}
 				}
 				const reviewedQualityRuns = runs.filter((run) => run.quality?.weightedQualityScore != null);
+				// Context-only skips never enter evaluation, stability, cost or output-rate denominators.
 				const attempts = [...runs, ...outputFailures];
 				const knownCostRuns = attempts.filter((run) => run.cost.total != null);
 				const attemptSummary = summarizeExtractionBenchmarkAttempts(attempts, benchmark.batches);
 				const knownElapsedRuns = attempts.filter((run) => run.telemetry.totalElapsedMs != null);
 				const summary = {
 					repetitions,
+					scheduledTotal: benchmark.batches.length * repetitions,
+					contextOnlySkipped: contextOnlySkips.length,
+					contextOnlySkips,
 					...attemptSummary,
 					summaryDispositionTotal: runs.filter((run) => run.quality != null).length,
 					summaryDispositionMatches: runs.filter(
@@ -1900,6 +1957,7 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 						`Temperature: ${observerSummary.transport === "mixed" ? "mixed" : (observerSummary.temperature ?? "not transmitted")}`,
 						`Transcript budget override: ${transcriptBudget ?? "default"}`,
 						`Repetitions: ${summary.repetitions}`,
+						`Context-only skips: ${summary.contextOnlySkipped} (${summary.scheduledTotal} scheduled; ${summary.total} observer attempts)`,
 						`Shape-quality passes: ${summary.shapeQualityPasses}/${summary.shapeQualityTotal}`,
 						`Shape-quality fails: ${summary.shapeQualityFails}`,
 						`Expected-tier matches: ${summary.expectedTierMatches}/${summary.expectedTierTotal}`,
@@ -1914,6 +1972,11 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 						`Summary disposition matches: ${summary.output.overall.summaryDispositionMatches}/${summary.output.overall.summaryDispositionEvaluated}; contract integrity/semantic quality: ${summary.output.overall.contractIntegrityRate?.toFixed(3) ?? "n/a"}/${summary.output.overall.meanSemanticQuality?.toFixed(3) ?? "n/a"}`,
 					].join("\n"),
 				);
+				for (const skipped of contextOnlySkips) {
+					p.log.message(
+						`  [${skipped.batchId}#${skipped.iteration}] context_only — ${skipped.code}; not evaluated`,
+					);
+				}
 				for (const run of runs) {
 					const qualityLabel =
 						run.quality?.weightedQualityScore == null
