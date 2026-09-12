@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
-import type { Database } from "./db.js";
+import { type DelegatedBriefContext, normalizeCaptureContext } from "./capture-context.js";
+import { type Database, toJsonNullable } from "./db.js";
 import { stripPrivateObj } from "./ingest-sanitize.js";
 import { cleanProjectIdentity } from "./project-identity.js";
+import { ensureRawEventCaptureContextSchema } from "./schema-bootstrap.js";
 
 const SESSION_ID_KEYS = [
 	"session_stream_id",
@@ -31,6 +33,7 @@ export interface RawEventIngestResult {
 }
 
 interface NormalizedEvent {
+	captureContext: DelegatedBriefContext | null;
 	streamId: string;
 	eventId: string;
 	eventIdAliases: string[];
@@ -216,6 +219,12 @@ function normalizeEvent(
 	}
 	return {
 		streamId,
+		captureContext: normalizeCaptureContext(item.capture_context, {
+			source,
+			streamId,
+			eventType,
+			payload,
+		}),
 		eventId,
 		eventIdAliases,
 		eventType,
@@ -310,8 +319,8 @@ function persistStream(
 	const insertEvent = store.db.prepare(
 		`INSERT INTO raw_events(
 			source, stream_id, opencode_session_id, event_id, event_seq,
-			event_type, ts_wall_ms, ts_mono_ms, payload_json, created_at
-		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			event_type, ts_wall_ms, ts_mono_ms, payload_json, created_at, capture_context_json
+		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	);
 	let inserted = 0;
 	for (const event of candidates) {
@@ -327,6 +336,7 @@ function persistStream(
 			event.tsMonoMs,
 			JSON.stringify(event.payload),
 			now,
+			toJsonNullable(event.captureContext),
 		);
 		inserted++;
 		lastReceived = assignedSeq;
@@ -412,6 +422,7 @@ function recordIngestOutcome(
 
 export function ingestRawEvents(store: RawEventIngestStore, request: object): RawEventIngestResult {
 	const normalized = normalizeRequest(request as Record<string, unknown>);
+	ensureRawEventCaptureContextSchema(store.db);
 	return store.db
 		.transaction(() => {
 			const byStream = new Map<string, NormalizedEvent[]>();

@@ -27,6 +27,11 @@ import {
 	startMaintenanceJob,
 	updateMaintenanceJob,
 } from "./maintenance-jobs.js";
+import {
+	hydrateRawEvent,
+	type RawEventContextRow,
+	rawEventCaptureContextProjection,
+} from "./raw-event-context.js";
 import { buildSessionContext } from "./raw-event-flush.js";
 
 export const SESSION_CONTEXT_BACKFILL_JOB = "session_context_backfill";
@@ -53,15 +58,6 @@ interface CandidateSessionRow {
 	metadata_json: string | null;
 	source: string | null;
 	stream_id: string | null;
-}
-
-interface RawEventRow {
-	event_seq: number;
-	event_type: string;
-	ts_wall_ms: number | null;
-	ts_mono_ms: number | null;
-	payload_json: string;
-	event_id: string | null;
 }
 
 /**
@@ -122,21 +118,14 @@ function loadRawEventsForStream(
 ): Record<string, unknown>[] {
 	const rows = db
 		.prepare(
-			`SELECT event_seq, event_type, ts_wall_ms, ts_mono_ms, payload_json, event_id
+			`SELECT event_seq, event_type, ts_wall_ms, ts_mono_ms, payload_json, event_id,
+			 ${rawEventCaptureContextProjection(db)}
 			 FROM raw_events
 			 WHERE source = ? AND stream_id = ?
 			 ORDER BY event_seq ASC`,
 		)
-		.all(source, streamId) as RawEventRow[];
-	return rows.map<Record<string, unknown>>((row) => {
-		const payload = JSON.parse(row.payload_json) as Record<string, unknown>;
-		payload.type = payload.type || row.event_type;
-		payload.timestamp_wall_ms = row.ts_wall_ms;
-		payload.timestamp_mono_ms = row.ts_mono_ms;
-		payload.event_seq = row.event_seq;
-		payload.event_id = row.event_id;
-		return payload;
-	});
+		.all(source, streamId) as RawEventContextRow[];
+	return rows.map((row) => hydrateRawEvent(row, { source, streamId }));
 }
 
 function parseSessionMetadata(value: string | null): Record<string, unknown> {

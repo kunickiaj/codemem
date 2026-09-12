@@ -505,6 +505,7 @@ export const rawEvents = sqliteTable(
 		ts_wall_ms: integer("ts_wall_ms"),
 		ts_mono_ms: real("ts_mono_ms"),
 		payload_json: text("payload_json").notNull(),
+		capture_context_json: text("capture_context_json"),
 		created_at: text("created_at").notNull(),
 	},
 	(table) => [
@@ -520,6 +521,9 @@ export const rawEvents = sqliteTable(
 		),
 		index("idx_raw_events_session_seq").on(table.opencode_session_id, table.event_seq),
 		index("idx_raw_events_created").on(table.created_at),
+		index("idx_raw_events_capture_context")
+			.on(table.source, table.stream_id, table.event_seq)
+			.where(sql`${table.capture_context_json} IS NOT NULL`),
 	],
 );
 

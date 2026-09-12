@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { and, desc, eq, gt, inArray, isNotNull, lt, lte, or, type SQL, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import { normalizeCaptureContext } from "./capture-context.js";
 import type { Database } from "./db.js";
 import {
 	assertSchemaReady,
@@ -43,6 +44,7 @@ import {
 	buildMemoryPackWithTraceAsync,
 } from "./pack.js";
 import { cleanProjectIdentity } from "./project-identity.js";
+import { hydrateRawEvent, loadPriorDelegatedBriefEvents } from "./raw-event-context.js";
 import { populateMemoryRefs } from "./ref-populate.js";
 import type { RefQueryOptions, RefQueryResult } from "./ref-queries.js";
 import { findByConcept as findByConceptFn, findByFile as findByFileFn } from "./ref-queries.js";
@@ -2099,6 +2101,7 @@ export class MemoryStore {
 				ts_wall_ms: schema.rawEvents.ts_wall_ms,
 				ts_mono_ms: schema.rawEvents.ts_mono_ms,
 				payload_json: schema.rawEvents.payload_json,
+				capture_context_json: schema.rawEvents.capture_context_json,
 				event_id: schema.rawEvents.event_id,
 			})
 			.from(schema.rawEvents)
@@ -2114,22 +2117,20 @@ export class MemoryStore {
 
 		const rows = limit != null && limit > 0 ? baseQuery.limit(limit).all() : baseQuery.all();
 
-		return rows.map((row) => {
-			const payload = fromJson(row.payload_json) as Record<string, unknown>;
-			// Use || (not ??) to match Python's `or` semantics — empty string falls through
-			payload.type = payload.type || row.event_type;
-			payload.timestamp_wall_ms = row.ts_wall_ms;
-			payload.timestamp_mono_ms = row.ts_mono_ms;
-			payload.event_seq = row.event_seq;
-			payload.event_id = row.event_id;
-			return payload;
-		});
+		return rows.map((row) => hydrateRawEvent(row, { source: s, streamId: sid }));
 	}
 
-	/**
-	 * Get or create a flush batch record. Returns [batchId, status].
-	 * Port of get_or_create_raw_event_flush_batch().
-	 */
+	/** Read at most four earlier provenance-bearing events from the exact raw stream. */
+	priorDelegatedBriefEvents(
+		opencodeSessionId: string,
+		source: string,
+		beforeEventSeq: number,
+	): Record<string, unknown>[] {
+		const [s, sid] = this.normalizeStreamIdentity(source, opencodeSessionId);
+		return loadPriorDelegatedBriefEvents(this.db, { source: s, streamId: sid, beforeEventSeq });
+	}
+
+	/** Get or create a flush batch record, preserving the existing idempotency boundary. */
 	getOrCreateRawEventFlushBatch(
 		opencodeSessionId: string,
 		source: string,
@@ -2393,6 +2394,7 @@ export class MemoryStore {
 		eventId: string;
 		eventType: string;
 		payload: Record<string, unknown>;
+		captureContext?: unknown;
 		tsWallMs?: number | null;
 		tsMonoMs?: number | null;
 	}): boolean {
@@ -2480,6 +2482,14 @@ export class MemoryStore {
 					ts_wall_ms: opts.tsWallMs ?? null,
 					ts_mono_ms: opts.tsMonoMs ?? null,
 					payload_json: toJson(opts.payload),
+					capture_context_json: toJsonNullable(
+						normalizeCaptureContext(opts.captureContext, {
+							source,
+							streamId,
+							eventType: opts.eventType,
+							payload: opts.payload,
+						}),
+					),
 					created_at: now,
 				})
 				.run();
@@ -2531,6 +2541,7 @@ export class MemoryStore {
 			let skippedConflict = 0;
 
 			interface NormalizedEvent {
+				captureContext: unknown;
 				eventId: string;
 				eventType: string;
 				payload: Record<string, unknown>;
@@ -2560,6 +2571,7 @@ export class MemoryStore {
 				}
 				seenIds.add(eventId);
 				normalized.push({
+					captureContext: event.capture_context,
 					eventId,
 					eventType,
 					payload: payload as Record<string, unknown>,
@@ -2637,6 +2649,14 @@ export class MemoryStore {
 					ts_wall_ms: tsWallMs,
 					ts_mono_ms: tsMonoMs,
 					payload_json: toJson(event.payload),
+					capture_context_json: toJsonNullable(
+						normalizeCaptureContext(event.captureContext, {
+							source,
+							streamId,
+							eventType: event.eventType,
+							payload: event.payload,
+						}),
+					),
 					created_at: now,
 				};
 			});
