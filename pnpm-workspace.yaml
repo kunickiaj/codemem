@@ -37,3 +37,26 @@ catalog:
   typescript: ^7.0.2
   vite: ^8.2.2
   vitest: ^4.1.11
+
+# Temporary, approved exception for the OpenCode 2.0.2 contract evaluation.
+# Remove once these exact versions clear the configured minimum release age.
+minimumReleaseAgeExclude:
+  - '@opencode/ai@2.0.2'
+  - '@opencode/cli-darwin-arm64@2.0.2'
+  - '@opencode/cli-darwin-x64-baseline@2.0.2'
+  - '@opencode/cli-darwin-x64@2.0.2'
+  - '@opencode/cli-linux-arm64-musl@2.0.2'
+  - '@opencode/cli-linux-arm64@2.0.2'
+  - '@opencode/cli-linux-x64-baseline-musl@2.0.2'
+  - '@opencode/cli-linux-x64-baseline@2.0.2'
+  - '@opencode/cli-linux-x64-musl@2.0.2'
+  - '@opencode/cli-linux-x64@2.0.2'
+  - '@opencode/cli-windows-arm64@2.0.2'
+  - '@opencode/cli-windows-x64-baseline@2.0.2'
+  - '@opencode/cli-windows-x64@2.0.2'
+  - '@opencode/cli@2.0.2'
+  - '@opencode/client@2.0.2'
+  - '@opencode/plugin@2.0.2'
+  - '@opencode/protocol@2.0.2'
+  - '@opencode/schema@2.0.2'
+  - '@opencode/util@2.0.2'

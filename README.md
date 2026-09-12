@@ -35,10 +35,12 @@ covers macOS x64/arm64, Linux x64/arm64 (glibc 2.34+ or musl), and Windows x64.
 
 Codemem requires OpenCode 1.18.29 or newer.
 
-The experimental OpenCode 2 beta entrypoint captures user and assistant messages,
+The experimental OpenCode 2 entrypoint captures user and assistant messages,
 terminal usage, tool results, and session lifecycle events. It also exposes the
-manual `mem-status`, `mem-recent`, and `mem-stats` tools. Automatic recall remains
-an OpenCode 1 feature because the V2 context hook has no request kind or request ID.
+manual `mem-status`, `mem-recent`, and `mem-stats` tools. OpenCode 2.0.2 provides
+separate primary and auxiliary hooks, and tested primary histories carry stable
+user-message IDs. Its schema permits missing IDs, so automatic recall remains
+disabled until Codemem's V2 adapter can degrade safely when identity is absent.
 
 1. Install the OpenCode plugin and MCP config:
 
@@ -210,7 +212,7 @@ Adapters hook into runtime event systems (the OpenCode 1 plugin and Claude hooks
 
 > The workflow below describes OpenCode 1 recall. OpenCode 2 captures activity,
 > manages lifecycle cleanup, and exposes manual memory tools, but it does not inject
-> automatic recall because its context hook cannot identify the request safely.
+> automatic recall until Codemem's V2 recall adapter is implemented.
 
 ```mermaid
 sequenceDiagram

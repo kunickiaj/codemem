@@ -212,7 +212,7 @@ importers:
         version: 15.0.0
       drizzle-orm:
         specifier: 'catalog:'
-        version: 0.45.2(@cloudflare/workers-types@4.20260529.1)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)
+        version: 0.45.2(@cloudflare/workers-types@4.20260529.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)
       omelette:
         specifier: ^0.4.17
         version: 0.4.17
@@ -237,7 +237,7 @@ importers:
         version: 8.2.2(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.13)(yaml@2.9.0)
       vitest:
         specifier: 'catalog:'
-        version: 4.1.11(@types/node@24.13.3)(jsdom@30.0.1)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.13)(yaml@2.9.0))
+        version: 4.1.11(@opentelemetry/api@1.9.0)(@types/node@24.13.3)(jsdom@30.0.1)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.13)(yaml@2.9.0))
     optionalDependencies:
       '@codemem/embeddings':
         specifier: workspace:*
@@ -269,7 +269,7 @@ importers:
         version: 8.2.2(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.13)(yaml@2.9.0)
       vitest:
         specifier: 'catalog:'
-        version: 4.1.11(@types/node@24.13.3)(jsdom@30.0.1)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.13)(yaml@2.9.0))
+        version: 4.1.11(@opentelemetry/api@1.9.0)(@types/node@24.13.3)(jsdom@30.0.1)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.13)(yaml@2.9.0))
       wrangler:
         specifier: ^4.127.1
         version: 4.127.1(@cloudflare/workers-types@5.20260901.1)
@@ -284,7 +284,7 @@ importers:
         version: 1.4.4
       drizzle-orm:
         specifier: 'catalog:'
-        version: 0.45.2(@cloudflare/workers-types@4.20260529.1)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)
+        version: 0.45.2(@cloudflare/workers-types@4.20260529.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)
       hono:
         specifier: 'catalog:'
         version: 4.13.5
@@ -309,7 +309,7 @@ importers:
         version: 8.2.2(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.13)(yaml@2.9.0)
       vitest:
         specifier: 'catalog:'
-        version: 4.1.11(@types/node@24.13.3)(jsdom@30.0.1)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.13)(yaml@2.9.0))
+        version: 4.1.11(@opentelemetry/api@1.9.0)(@types/node@24.13.3)(jsdom@30.0.1)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.13)(yaml@2.9.0))
 
   packages/embeddings:
     dependencies:
@@ -325,7 +325,7 @@ importers:
         version: 8.2.2(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.13)(yaml@2.9.0)
       vitest:
         specifier: 'catalog:'
-        version: 4.1.11(@types/node@24.13.3)(jsdom@30.0.1)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.13)(yaml@2.9.0))
+        version: 4.1.11(@opentelemetry/api@1.9.0)(@types/node@24.13.3)(jsdom@30.0.1)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.13)(yaml@2.9.0))
 
   packages/mcp-server:
     dependencies:
@@ -359,7 +359,7 @@ importers:
         version: 8.2.2(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.13)(yaml@2.9.0)
       vitest:
         specifier: 'catalog:'
-        version: 4.1.11(@types/node@24.13.3)(jsdom@30.0.1)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.13)(yaml@2.9.0))
+        version: 4.1.11(@opentelemetry/api@1.9.0)(@types/node@24.13.3)(jsdom@30.0.1)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.13)(yaml@2.9.0))
 
   packages/opencode-plugin:
     dependencies:
@@ -368,11 +368,11 @@ importers:
         version: 1.18.29
     devDependencies:
       '@opencode/cli':
-        specifier: 0.0.0-beta-19296
-        version: 0.0.0-beta-19296
+        specifier: 2.0.2
+        version: 2.0.2
       '@opencode/plugin':
-        specifier: 0.0.0-beta-19296
-        version: 0.0.0-beta-19296(@opentelemetry/api-logs@0.214.0)(@opentelemetry/resources@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-logs@0.214.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-metrics@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/semantic-conventions@1.43.0)(redis@6.2.1(@opentelemetry/api@1.9.0))(supports-color@10.2.2)
+        specifier: 2.0.2
+        version: 2.0.2(@opentelemetry/api-logs@0.214.0)(@opentelemetry/resources@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-logs@0.214.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-metrics@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/semantic-conventions@1.43.0)(redis@6.2.1(@opentelemetry/api@1.9.0))(supports-color@10.2.2)
       '@types/node':
         specifier: ^24.12.4
         version: 24.13.3
@@ -451,7 +451,7 @@ importers:
         version: 2.1.1(hono@4.13.5)
       drizzle-orm:
         specifier: 'catalog:'
-        version: 0.45.2(@cloudflare/workers-types@4.20260529.1)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)
+        version: 0.45.2(@cloudflare/workers-types@4.20260529.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)
       hono:
         specifier: 'catalog:'
         version: 4.13.5
@@ -479,7 +479,7 @@ importers:
         version: 8.2.2(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.13)(yaml@2.9.0)
       vitest:
         specifier: 'catalog:'
-        version: 4.1.11(@types/node@24.13.3)(jsdom@30.0.1)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.13)(yaml@2.9.0))
+        version: 4.1.11(@opentelemetry/api@1.9.0)(@types/node@24.13.3)(jsdom@30.0.1)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.13)(yaml@2.9.0))
 
 packages:
 
@@ -1901,77 +1901,77 @@ packages:
   '@opencode-ai/sdk@1.18.29':
     resolution: {integrity: sha512-4CS+FoLPkymTlcga8jxivGDDb2AbWMIIl3b8+myoe2wtv/1ANYCErslgz1xy5hTVHymWE6CtVNKzRuPU0ED57A==}
 
-  '@opencode/ai@0.0.0-beta-19296':
-    resolution: {integrity: sha512-os3dldWWHXqaem6ksmxEXTx9K9PVkYi0/uD0X8pRSBNZ1rPTANTBoZfVybNjdfWs9ByTKeVDaLzu/66s/yw2Vg==}
+  '@opencode/ai@2.0.2':
+    resolution: {integrity: sha512-Byq9c3kRdIl+AfGidPkd3JUC6DnjaNXGem77sAFRSxYwA0AMJMImPm+ua6ibnRqJ+6HlEq9JSh+Z1nQ8s8xzrQ==}
 
-  '@opencode/cli-darwin-arm64@0.0.0-beta-19296':
-    resolution: {integrity: sha512-UIZqxsYD5xkZ9VMbIkA/xL0BP9Wwnn+7ON7e0u6Y+OgsqbGasd6ZBVc4Wg5yur8y/mIMZ3wvvt40NvN9RjYD4A==}
+  '@opencode/cli-darwin-arm64@2.0.2':
+    resolution: {integrity: sha512-JgCEsOQ/GxrhXFB5UG3nVw43iuFKiCc3LMDvck6T42e2X1MGP/tH3bdaPYQdtKHdh6kXr82qD0uYVvNYaIxGtw==}
     cpu: [arm64]
     os: [darwin]
 
-  '@opencode/cli-darwin-x64-baseline@0.0.0-beta-19296':
-    resolution: {integrity: sha512-AoNhaY8wRyqf4wOHcNRFPhkvfuyzOyUQkUQlW2DCsuhD4xKrPbQOQPR5yPq1sv2Y9WBITZR885Mvhnk1pLm56A==}
+  '@opencode/cli-darwin-x64-baseline@2.0.2':
+    resolution: {integrity: sha512-sQmjh9r3Lbkx7adlGcSFsNOQrMMqWpnkYipsUjOj5P40iiN8uetTHl6LrnpaGDEQI+mVChfffRL5DZO5y0amqg==}
     cpu: [x64]
     os: [darwin]
 
-  '@opencode/cli-darwin-x64@0.0.0-beta-19296':
-    resolution: {integrity: sha512-Tfu290xJg18JkebD8y49+w0Zoy5Ag9Xg9tWHLdW9AfCDaTKSNuC9YKirkmWrCpKTV/WZtQaDcjvQaNgVs1RsrA==}
+  '@opencode/cli-darwin-x64@2.0.2':
+    resolution: {integrity: sha512-GF3SjNVJwdYhwEJHdlw6mIrezmuaaoy4Ol+7bg5fSKZ/u2Cd/SPKE/wGNOgsyjPEW7GPhjWd39pxcCzgvl6aYw==}
     cpu: [x64]
     os: [darwin]
 
-  '@opencode/cli-linux-arm64-musl@0.0.0-beta-19296':
-    resolution: {integrity: sha512-mlhp9+/3/qAvwl+9P2FweJPUd0Pn7rR5OsyACk0Gf21Tm8hXYLm/vecFt5Mu2k/IzCQueKospuKC8KgrNGKA9g==}
+  '@opencode/cli-linux-arm64-musl@2.0.2':
+    resolution: {integrity: sha512-hwCrSEMQMr/ABkVZb2pzP7oMpFwllhPLQxKprIv/0zd6766LhY1pIw4W2o0Q4G9hBCpKzTk9Hx88ThE1burMGA==}
     cpu: [arm64]
     os: [linux]
 
-  '@opencode/cli-linux-arm64@0.0.0-beta-19296':
-    resolution: {integrity: sha512-KdEK+HJhI9dud3iUoZ81/SzUpyFQQX+6BASci8h3hTxOy6QFPYZOYwla+ax2nf2o4zD584mMPYLjrQ4u9H+ugg==}
+  '@opencode/cli-linux-arm64@2.0.2':
+    resolution: {integrity: sha512-9NUcKcihSNRd4ofy/lRamaOop6A/REQPyGEvfV/1OsyiRR9WGkAiJoyZ0fO0gS9RonQlxDyI9IBxlF7HRQwHNA==}
     cpu: [arm64]
     os: [linux]
 
-  '@opencode/cli-linux-x64-baseline-musl@0.0.0-beta-19296':
-    resolution: {integrity: sha512-08FHp4HaaltpWHtYhJ7nAxEW1Xo5JXxXY0B0/pgGQAOFvt41r79ym+2C6ALiQPviOfUd13tCDPi5IbUwq+b/og==}
+  '@opencode/cli-linux-x64-baseline-musl@2.0.2':
+    resolution: {integrity: sha512-LjHsVgO5Py/0oDCIYPD3tN6V4Cuv1SGM+oPEt9aoFDMft5/+rCxwf9RN1w053OoF8UpdE70Ed6jtK0AYcqpICQ==}
     cpu: [x64]
     os: [linux]
 
-  '@opencode/cli-linux-x64-baseline@0.0.0-beta-19296':
-    resolution: {integrity: sha512-KMCXaODkFcbrqrlGPZ0wBTeX6Yw5N1OO1dIgWPEhJnlEAuXNJrXjEYElDrVUHis6K/N3Y6AohvbJQ0Ii2Xx9ZQ==}
+  '@opencode/cli-linux-x64-baseline@2.0.2':
+    resolution: {integrity: sha512-QnxTyLDrIWbKDnHO1q8glguu/neWaPSTBMQNsNN9cspswZ3m4cMy+ZGaR4lbOyaSlBdkQIQB2SJUwqmSAH7vZg==}
     cpu: [x64]
     os: [linux]
 
-  '@opencode/cli-linux-x64-musl@0.0.0-beta-19296':
-    resolution: {integrity: sha512-WLGwhHghvzuUyB1ZhN76BittRuPRSysBMVz6jIdGUoCiTh7YOt01yNevuLvgl5DkevJu1dEkcqYYorG9FYQXCQ==}
+  '@opencode/cli-linux-x64-musl@2.0.2':
+    resolution: {integrity: sha512-AHcFjD57HJgJ+dZCxt1aahnIOgWw6kbUbnzjoKM/X60UlGdXt7hfAN8fF8SsFxbh3TKLi952UJemn1M6cjh1YA==}
     cpu: [x64]
     os: [linux]
 
-  '@opencode/cli-linux-x64@0.0.0-beta-19296':
-    resolution: {integrity: sha512-7+KuHy7ZL6tE7YOKnfjlDm1kuCrB8/+Slip86Qnm67dosdf/myU6fbBzczMSahPUW5qbGHkgB6RoewI/kP8LYQ==}
+  '@opencode/cli-linux-x64@2.0.2':
+    resolution: {integrity: sha512-huhUQIpjj7g+ZMnjTNa4PApZ3cFEAno8F0OXv3KQbZZVP9Xa7JgSg0iOZ8H8iiNkaPUZpmzwX4DXyuyRCQhO4A==}
     cpu: [x64]
     os: [linux]
 
-  '@opencode/cli-windows-arm64@0.0.0-beta-19296':
-    resolution: {integrity: sha512-CsqpH7PU8OzkJqny9DmZeSXzdvnT0kFB1DpNbKYtHxKNuPbaciO3WpyIP6IZR07bKXZ+vjQKadSHnAllLGbpyg==}
+  '@opencode/cli-windows-arm64@2.0.2':
+    resolution: {integrity: sha512-AzpKajNpEmQu9ziGhpJlmrXTMwHshwE7e/q/YVWHbg1cFmEOPcneBbpBfoa98+ohRNRL7Nn9IecgHsX6+eKRSQ==}
     cpu: [arm64]
     os: [win32]
 
-  '@opencode/cli-windows-x64-baseline@0.0.0-beta-19296':
-    resolution: {integrity: sha512-ji0X2+wAdPMn8kfmLAccPhkGJknX16jMGixOdxWcHJQvi7D9o+lsbsaP46YOHcBm9BQBPflD1C/cxiB9KVZc2Q==}
+  '@opencode/cli-windows-x64-baseline@2.0.2':
+    resolution: {integrity: sha512-ZpmS0Odywn3qoDSYXJEVUX0gjlVgGGICRKttV8tKUwKkyS3OrZcdbPQ7Y0cvXN+tb/YX2qL2QHGwJSBNj1LpNw==}
     cpu: [x64]
     os: [win32]
 
-  '@opencode/cli-windows-x64@0.0.0-beta-19296':
-    resolution: {integrity: sha512-NKSVrgZJLSfXar318wnzWfp/T+42BwmxXnNQBIJDZQapVuNo8D3/3+/hp9+VG3Xa6SEaOelb+RYX+1EcOxzZxw==}
+  '@opencode/cli-windows-x64@2.0.2':
+    resolution: {integrity: sha512-ddOKVlEQP8OY7rjIAPYVUcdAWljaAqogTysDIcb35PnLYcnTE6xzcPN+yBr+8xOtqXuEnq3z+y2glrxm2PEudg==}
     cpu: [x64]
     os: [win32]
 
-  '@opencode/cli@0.0.0-beta-19296':
-    resolution: {integrity: sha512-R6j2F5VX99t+cyClRb37WIj/k6EjKk+yDUChBYB7K9rG0+HEfwsA+Cfe7+31RhC3a5EMYRw8OUJq/+oT2KATog==}
+  '@opencode/cli@2.0.2':
+    resolution: {integrity: sha512-O18TgC5bpNkJHNrGYxXEAi7Qw4y1j2XYLYqyV9YnkLyaZRfuxeCM3QBGTfbJc0GHbJIjQKDvOxo9yEBkohfYLA==}
     cpu: [arm64, x64]
     os: [darwin, linux, win32]
     hasBin: true
 
-  '@opencode/client@0.0.0-beta-19296':
-    resolution: {integrity: sha512-2UtyI1Bkq5PWOo+hWrGQawLjQ9+k+TgZPmUIN4aqr6cUlmKThVycxNoScN7NSUc4Y79qTSM8FM3qtEU6rkSF7A==}
+  '@opencode/client@2.0.2':
+    resolution: {integrity: sha512-w8rrSsxY9qnuFrsQAHdLDE6mrEqUKQeo7fNsw2i/tFtimgspT53/8/3ckEVRuRUM5k6v68KiU2deG0W2gEIVDQ==}
     peerDependencies:
       effect: 4.0.0-rc.112
       solid-js: '>=1.9.0'
@@ -1981,10 +1981,10 @@ packages:
       solid-js:
         optional: true
 
-  '@opencode/plugin@0.0.0-beta-19296':
-    resolution: {integrity: sha512-ci/cMYttDD0cmOdN9v4+NoKx+eVDTS61e0HueK9rpnQ9VAacDtmuq+f5bu/7sMddGHcC/67fXDrPtsEtbNO9IQ==}
+  '@opencode/plugin@2.0.2':
+    resolution: {integrity: sha512-lFXcsyg1fhzCpzuMqBhb2yNddMeynXZwXL3aHs1T9ftbFu4buFAdtE9ox09Q+CL/r7yGbbX4mdtjKYdnt0dn5Q==}
     peerDependencies:
-      '@opencode/theme': 0.0.0-beta-19296
+      '@opencode/theme': 2.0.2
       '@opentui/core': '>=0.5.10'
       '@opentui/solid': '>=0.5.10'
       solid-js: '>=1.9.0'
@@ -1998,14 +1998,14 @@ packages:
       solid-js:
         optional: true
 
-  '@opencode/protocol@0.0.0-beta-19296':
-    resolution: {integrity: sha512-N36usL362is3T9CAqPIr4r2zfvvVrm3QNQRo4HNWxsz7cdvcm5Pi/5j0j7MxRTCRzUbhCcFaJuskiP4iKGs30g==}
+  '@opencode/protocol@2.0.2':
+    resolution: {integrity: sha512-FxTxdHPNz46NkG8ZBB2S60QzXbZDlVEyZ6KeYTt2G7hcWB5JlMYBh8jeqHlsLbquKinvMKA2iuEsA1NaccN+YQ==}
 
-  '@opencode/schema@0.0.0-beta-19296':
-    resolution: {integrity: sha512-X2TlT0O8by3VvqiyxECF/mYIjCJVObr5tx8tGBM+ZkL87sSom4d6rNGeAgw9+acmy1YDBSX6vC9eaF/LGNFmbw==}
+  '@opencode/schema@2.0.2':
+    resolution: {integrity: sha512-jF23H41j6zM2Az1pYLD6NFfzpoQ79CX0AxRkfNxTZFbPfjGGc+EPSOzVQP/r4Y/5bkSSqVga0Vn7MyoP8QhwDQ==}
 
-  '@opencode/util@0.0.0-beta-19296':
-    resolution: {integrity: sha512-aD3lUdvmn37EQBds7vtAKf7VbISbWQi8xC+24ctJbe3TdBawy/JM6CwKzwe2uBxYHedvfAyUWS3NWsLDbDipBA==}
+  '@opencode/util@2.0.2':
+    resolution: {integrity: sha512-AKnFr44s1Q7/Ud+Pl4QMCEJoIp33xyDiTi693BofXn+HBDHdJmKrwq87YpG+Kwt9t48gVv6Cx1glmqJ4lVJpHg==}
 
   '@opentelemetry/api-logs@0.214.0':
     resolution: {integrity: sha512-40lSJeqYO8Uz2Yj7u94/SJWE/wONa7rmMKjI1ZcIjgf3MHNHv1OZUCrCETGuaRF62d5pQD1wKIW+L4lmSMTzZA==}
@@ -6282,10 +6282,10 @@ snapshots:
     dependencies:
       cross-spawn: 7.0.6
 
-  '@opencode/ai@0.0.0-beta-19296(supports-color@10.2.2)':
+  '@opencode/ai@2.0.2(supports-color@10.2.2)':
     dependencies:
       '@aws-sdk/credential-providers': 3.1057.0
-      '@opencode/schema': 0.0.0-beta-19296
+      '@opencode/schema': 2.0.2
       '@smithy/eventstream-codec': 4.2.14
       '@smithy/util-utf8': 4.2.2
       aws4fetch: 1.0.20
@@ -6294,72 +6294,72 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@opencode/cli-darwin-arm64@0.0.0-beta-19296':
+  '@opencode/cli-darwin-arm64@2.0.2':
     optional: true
 
-  '@opencode/cli-darwin-x64-baseline@0.0.0-beta-19296':
+  '@opencode/cli-darwin-x64-baseline@2.0.2':
     optional: true
 
-  '@opencode/cli-darwin-x64@0.0.0-beta-19296':
+  '@opencode/cli-darwin-x64@2.0.2':
     optional: true
 
-  '@opencode/cli-linux-arm64-musl@0.0.0-beta-19296':
+  '@opencode/cli-linux-arm64-musl@2.0.2':
     optional: true
 
-  '@opencode/cli-linux-arm64@0.0.0-beta-19296':
+  '@opencode/cli-linux-arm64@2.0.2':
     optional: true
 
-  '@opencode/cli-linux-x64-baseline-musl@0.0.0-beta-19296':
+  '@opencode/cli-linux-x64-baseline-musl@2.0.2':
     optional: true
 
-  '@opencode/cli-linux-x64-baseline@0.0.0-beta-19296':
+  '@opencode/cli-linux-x64-baseline@2.0.2':
     optional: true
 
-  '@opencode/cli-linux-x64-musl@0.0.0-beta-19296':
+  '@opencode/cli-linux-x64-musl@2.0.2':
     optional: true
 
-  '@opencode/cli-linux-x64@0.0.0-beta-19296':
+  '@opencode/cli-linux-x64@2.0.2':
     optional: true
 
-  '@opencode/cli-windows-arm64@0.0.0-beta-19296':
+  '@opencode/cli-windows-arm64@2.0.2':
     optional: true
 
-  '@opencode/cli-windows-x64-baseline@0.0.0-beta-19296':
+  '@opencode/cli-windows-x64-baseline@2.0.2':
     optional: true
 
-  '@opencode/cli-windows-x64@0.0.0-beta-19296':
+  '@opencode/cli-windows-x64@2.0.2':
     optional: true
 
-  '@opencode/cli@0.0.0-beta-19296':
+  '@opencode/cli@2.0.2':
     optionalDependencies:
-      '@opencode/cli-darwin-arm64': 0.0.0-beta-19296
-      '@opencode/cli-darwin-x64': 0.0.0-beta-19296
-      '@opencode/cli-darwin-x64-baseline': 0.0.0-beta-19296
-      '@opencode/cli-linux-arm64': 0.0.0-beta-19296
-      '@opencode/cli-linux-arm64-musl': 0.0.0-beta-19296
-      '@opencode/cli-linux-x64': 0.0.0-beta-19296
-      '@opencode/cli-linux-x64-baseline': 0.0.0-beta-19296
-      '@opencode/cli-linux-x64-baseline-musl': 0.0.0-beta-19296
-      '@opencode/cli-linux-x64-musl': 0.0.0-beta-19296
-      '@opencode/cli-windows-arm64': 0.0.0-beta-19296
-      '@opencode/cli-windows-x64': 0.0.0-beta-19296
-      '@opencode/cli-windows-x64-baseline': 0.0.0-beta-19296
+      '@opencode/cli-darwin-arm64': 2.0.2
+      '@opencode/cli-darwin-x64': 2.0.2
+      '@opencode/cli-darwin-x64-baseline': 2.0.2
+      '@opencode/cli-linux-arm64': 2.0.2
+      '@opencode/cli-linux-arm64-musl': 2.0.2
+      '@opencode/cli-linux-x64': 2.0.2
+      '@opencode/cli-linux-x64-baseline': 2.0.2
+      '@opencode/cli-linux-x64-baseline-musl': 2.0.2
+      '@opencode/cli-linux-x64-musl': 2.0.2
+      '@opencode/cli-windows-arm64': 2.0.2
+      '@opencode/cli-windows-x64': 2.0.2
+      '@opencode/cli-windows-x64-baseline': 2.0.2
 
-  '@opencode/client@0.0.0-beta-19296(effect@4.0.0-rc.112)':
+  '@opencode/client@2.0.2(effect@4.0.0-rc.112)':
     dependencies:
-      '@opencode/protocol': 0.0.0-beta-19296
-      '@opencode/schema': 0.0.0-beta-19296
+      '@opencode/protocol': 2.0.2
+      '@opencode/schema': 2.0.2
     optionalDependencies:
       effect: 4.0.0-rc.112
 
-  '@opencode/plugin@0.0.0-beta-19296(@opentelemetry/api-logs@0.214.0)(@opentelemetry/resources@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-logs@0.214.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-metrics@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/semantic-conventions@1.43.0)(redis@6.2.1(@opentelemetry/api@1.9.0))(supports-color@10.2.2)':
+  '@opencode/plugin@2.0.2(@opentelemetry/api-logs@0.214.0)(@opentelemetry/resources@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-logs@0.214.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-metrics@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/semantic-conventions@1.43.0)(redis@6.2.1(@opentelemetry/api@1.9.0))(supports-color@10.2.2)':
     dependencies:
       '@ai-sdk/provider': 3.0.8
-      '@opencode/ai': 0.0.0-beta-19296(supports-color@10.2.2)
-      '@opencode/client': 0.0.0-beta-19296(effect@4.0.0-rc.112)
-      '@opencode/protocol': 0.0.0-beta-19296
-      '@opencode/schema': 0.0.0-beta-19296
-      '@opencode/util': 0.0.0-beta-19296(@opentelemetry/api-logs@0.214.0)(@opentelemetry/resources@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-logs@0.214.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-metrics@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/semantic-conventions@1.43.0)(redis@6.2.1(@opentelemetry/api@1.9.0))(supports-color@10.2.2)
+      '@opencode/ai': 2.0.2(supports-color@10.2.2)
+      '@opencode/client': 2.0.2(effect@4.0.0-rc.112)
+      '@opencode/protocol': 2.0.2
+      '@opencode/schema': 2.0.2
+      '@opencode/util': 2.0.2(@opentelemetry/api-logs@0.214.0)(@opentelemetry/resources@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-logs@0.214.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-metrics@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/semantic-conventions@1.43.0)(redis@6.2.1(@opentelemetry/api@1.9.0))(supports-color@10.2.2)
       '@standard-schema/spec': 1.1.0
       effect: 4.0.0-rc.112
       zod: 4.1.8
@@ -6375,17 +6375,17 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@opencode/protocol@0.0.0-beta-19296':
+  '@opencode/protocol@2.0.2':
     dependencies:
-      '@opencode/schema': 0.0.0-beta-19296
+      '@opencode/schema': 2.0.2
       effect: 4.0.0-rc.112
 
-  '@opencode/schema@0.0.0-beta-19296':
+  '@opencode/schema@2.0.2':
     dependencies:
       '@standard-schema/spec': 1.1.0
       effect: 4.0.0-rc.112
 
-  '@opencode/util@0.0.0-beta-19296(@opentelemetry/api-logs@0.214.0)(@opentelemetry/resources@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-logs@0.214.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-metrics@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/semantic-conventions@1.43.0)(redis@6.2.1(@opentelemetry/api@1.9.0))(supports-color@10.2.2)':
+  '@opencode/util@2.0.2(@opentelemetry/api-logs@0.214.0)(@opentelemetry/resources@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-logs@0.214.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-metrics@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/semantic-conventions@1.43.0)(redis@6.2.1(@opentelemetry/api@1.9.0))(supports-color@10.2.2)':
     dependencies:
       '@effect/opentelemetry': 4.0.0-rc.112(@opentelemetry/api-logs@0.214.0)(@opentelemetry/api@1.9.0)(@opentelemetry/resources@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-logs@0.214.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-metrics@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-trace-base@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-trace-node@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/semantic-conventions@1.43.0)(effect@4.0.0-rc.112)
       '@effect/platform-node': 4.0.0-rc.112(effect@4.0.0-rc.112)(redis@6.2.1(@opentelemetry/api@1.9.0))
@@ -7596,9 +7596,10 @@ snapshots:
       esbuild: 0.25.12
       tsx: 4.23.13
 
-  drizzle-orm@0.45.2(@cloudflare/workers-types@4.20260529.1)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3):
+  drizzle-orm@0.45.2(@cloudflare/workers-types@4.20260529.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3):
     optionalDependencies:
       '@cloudflare/workers-types': 4.20260529.1
+      '@opentelemetry/api': 1.9.0
       '@types/better-sqlite3': 9.6.0
       better-sqlite3: 13.0.3
 
@@ -9185,34 +9186,6 @@ snapshots:
       why-is-node-running: 2.3.0
     optionalDependencies:
       '@opentelemetry/api': 1.9.0
-      '@types/node': 24.13.3
-      jsdom: 30.0.1
-    transitivePeerDependencies:
-      - msw
-
-  vitest@4.1.11(@types/node@24.13.3)(jsdom@30.0.1)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.13)(yaml@2.9.0)):
-    dependencies:
-      '@vitest/expect': 4.1.11
-      '@vitest/mocker': 4.1.11(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.13)(yaml@2.9.0))
-      '@vitest/pretty-format': 4.1.11
-      '@vitest/runner': 4.1.11
-      '@vitest/snapshot': 4.1.11
-      '@vitest/spy': 4.1.11
-      '@vitest/utils': 4.1.11
-      es-module-lexer: 2.1.0
-      expect-type: 1.3.0
-      magic-string: 0.30.21
-      obug: 2.1.1
-      pathe: 2.0.3
-      picomatch: 4.0.4
-      std-env: 4.1.0
-      tinybench: 2.9.0
-      tinyexec: 1.2.3
-      tinyglobby: 0.2.17
-      tinyrainbow: 3.1.0
-      vite: 8.2.2(@types/node@24.13.3)(esbuild@0.28.1)(tsx@4.23.13)(yaml@2.9.0)
-      why-is-node-running: 2.3.0
-    optionalDependencies:
       '@types/node': 24.13.3
       jsdom: 30.0.1
     transitivePeerDependencies:

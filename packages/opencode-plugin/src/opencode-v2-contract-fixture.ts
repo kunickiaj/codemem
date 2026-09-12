@@ -1,7 +1,8 @@
 import { appendFile } from "node:fs/promises";
 import { Plugin } from "@opencode/plugin";
 
-export const OPEN_CODE_V2_CONTRACT_VERSION = "0.0.0-beta-19296";
+export const OPEN_CODE_V2_CONTRACT_VERSION = "2.0.2";
+export const OPEN_CODE_V2_CONTEXT_MARKER = "codemem-v2-context-hook-applied";
 
 export type ContractRecord = Readonly<Record<string, unknown>>;
 export type ContractReporter = (record: ContractRecord) => Promise<void> | void;
@@ -16,15 +17,23 @@ function identity(input: {
 	return JSON.stringify([input.sessionID, input.agent, input.model]);
 }
 
-export function hasUnambiguousRequestIdentity(
-	requests: ReadonlyArray<{
-		readonly sessionID: unknown;
-		readonly agent: unknown;
-		readonly model: unknown;
-	}>,
-) {
-	const identities = requests.map(identity);
-	return new Set(identities).size === identities.length;
+export function userMessageIDs(messages: readonly unknown[]) {
+	return messages.flatMap((message) => {
+		if (message == null || typeof message !== "object") return [];
+		const candidate = message as Record<string, unknown>;
+		if (candidate.role !== "user" || typeof candidate.id !== "string") return [];
+		return candidate.id.trim().length > 0 ? [candidate.id] : [];
+	});
+}
+
+export function latestUserMessageID(messages: readonly unknown[]) {
+	const latestUser = messages.findLast((message) => {
+		if (message == null || typeof message !== "object") return false;
+		return (message as Record<string, unknown>).role === "user";
+	});
+	if (latestUser == null || typeof latestUser !== "object") return null;
+	const id = (latestUser as Record<string, unknown>).id;
+	return typeof id === "string" && id.trim().length > 0 ? id : null;
 }
 
 export function summarizeEvent(event: unknown): ContractRecord {
@@ -105,26 +114,72 @@ async function consumeEvents(
 }
 
 async function registerContextHook(context: Plugin.Context, report: ContractReporter) {
+	const seenSystems = new WeakSet<object>();
+	const seenMessages = new WeakSet<object>();
+	const seenTools = new WeakSet<object>();
 	return context.session.hook("context", async (input) => {
-		input.system = [...input.system];
-		input.messages = [...input.messages];
-		input.tools = { ...input.tools };
-		input.generation = { ...input.generation };
-		input.providerOptions = { ...input.providerOptions, codememContract: true };
+		const { system, messages, tools } = input;
+		const alreadyMarked = input.options.codememContract === true;
+		const systemAlreadyMarked = system.some(
+			(part) => part.type === "text" && part.text === OPEN_CODE_V2_CONTEXT_MARKER,
+		);
+		const systemReused = seenSystems.has(system);
+		const messagesReused = seenMessages.has(messages);
+		const toolsReused = seenTools.has(tools);
+		seenSystems.add(system);
+		seenMessages.add(messages);
+		seenTools.add(tools);
+		input.system = [...system, { type: "text", text: OPEN_CODE_V2_CONTEXT_MARKER }];
+		input.messages = [...messages];
+		input.tools = { ...tools };
+		input.options = { ...input.options, codememContract: true };
+		seenSystems.add(input.system);
+		seenMessages.add(input.messages);
+		seenTools.add(input.tools);
 		await report({
 			phase: "context",
 			agent: input.agent,
-			generationMutable: typeof input.generation === "object",
+			alreadyMarked,
 			hasAgent: Boolean(input.agent),
-			hasKind: "kind" in input,
-			hasMessageID: "messageID" in input,
 			hasModel: Boolean(input.model),
 			hasSessionID: Boolean(input.sessionID),
+			latestUserMessageID: latestUserMessageID(input.messages),
 			messagesMutable: Array.isArray(input.messages),
+			messagesReused,
 			model: input.model,
+			optionsMutable: typeof input.options === "object",
 			sessionID: input.sessionID,
 			systemMutable: Array.isArray(input.system),
+			systemAlreadyMarked,
+			systemReused,
 			toolsMutable: typeof input.tools === "object",
+			toolsReused,
+			userMessageIDs: userMessageIDs(input.messages),
+		});
+	});
+}
+
+async function registerAuxiliaryHook(
+	context: Plugin.Context,
+	report: ContractReporter,
+	phase: "compaction" | "generate" | "title",
+) {
+	return context.session.hook(phase, async (input) => {
+		const alreadyMarked = input.options.codememContract === true;
+		input.system = [...input.system];
+		input.messages = [...input.messages];
+		input.options = { ...input.options, codememContract: true };
+		await report({
+			phase,
+			alreadyMarked,
+			hasAgent: "agent" in input && Boolean(input.agent),
+			hasModel: Boolean(input.model),
+			hasSessionID: Boolean(input.sessionID),
+			latestUserMessageID: latestUserMessageID(input.messages),
+			messagesMutable: Array.isArray(input.messages),
+			optionsMutable: typeof input.options === "object",
+			sessionID: input.sessionID,
+			systemMutable: Array.isArray(input.system),
 		});
 	});
 }
@@ -146,6 +201,9 @@ async function registerSessionHooks(
 		}),
 	);
 	registrations.push(await registerContextHook(context, report));
+	registrations.push(await registerAuxiliaryHook(context, report, "compaction"));
+	registrations.push(await registerAuxiliaryHook(context, report, "generate"));
+	registrations.push(await registerAuxiliaryHook(context, report, "title"));
 	registrations.push(
 		await context.session.hook("model.request", async (input) => {
 			input.headers["x-codemem-contract-kind"] = input.kind;

@@ -8,7 +8,7 @@ This page covers advanced plugin behavior, environment variables, and stream rel
 
 ## Running OpenCode 1 with the plugin
 
-OpenCode 1 supports the capture and recall behavior below. The experimental OpenCode 2 beta entrypoint captures user and assistant messages, terminal usage, tool results, and session lifecycle events. It exposes manual `mem-status`, `mem-recent`, and `mem-stats` tools through `tool.transform` with `codemode: false`, but automatic recall remains disabled because the V2 context hook has no request kind or request ID.
+OpenCode 1 supports the capture and recall behavior below. The experimental OpenCode 2 entrypoint captures user and assistant messages, terminal usage, tool results, and session lifecycle events. It exposes manual `mem-status`, `mem-recent`, and `mem-stats` tools through `tool.transform` with `codemode: false`. OpenCode 2.0.2 provides separate primary and auxiliary hooks, and tested primary histories carry stable user-message IDs. Its schema permits missing IDs, so automatic recall remains disabled until Codemem's V2 adapter can degrade safely when identity is absent.
 
 1. Start OpenCode inside this repo (or make the plugin global so it globs in everywhere).
 2. Every tooling session creates memory artifacts in SQLite.

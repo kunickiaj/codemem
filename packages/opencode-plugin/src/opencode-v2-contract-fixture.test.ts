@@ -5,9 +5,11 @@ import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import {
 	type ContractRecord,
 	defineOpenCodeV2ContractFixture,
-	hasUnambiguousRequestIdentity,
+	latestUserMessageID,
+	OPEN_CODE_V2_CONTEXT_MARKER,
 	OPEN_CODE_V2_CONTRACT_VERSION,
 	summarizeEvent,
+	userMessageIDs,
 } from "./opencode-v2-contract-fixture.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../../..");
@@ -65,7 +67,7 @@ function makeContext(
 		return makeRegistration(dispose);
 	};
 	const context = {
-		app: { name: "opencode", version: OPEN_CODE_V2_CONTRACT_VERSION, channel: "beta" },
+		app: { name: "opencode", version: OPEN_CODE_V2_CONTRACT_VERSION, channel: "stable" },
 		location: {
 			directory: "/fixture/project-worktree",
 			workspaceID: "workspace-fixture",
@@ -150,31 +152,28 @@ async function runCleanup(cleanup: Awaited<ReturnType<Plugin.Plugin["setup"]>>) 
 }
 
 describe("pinned OpenCode 2 package contract", () => {
-	it("keeps the CLI and plugin API on the exact matching beta", async () => {
+	it("keeps the CLI and plugin API on one exact release without tag or range syntax", async () => {
 		// Arrange
 		const manifest = JSON.parse(
 			await readFile(path.join(repositoryRoot, "packages/opencode-plugin/package.json"), "utf8"),
+		);
+		const fixtureManifest = JSON.parse(
+			await readFile(
+				path.join(repositoryRoot, "packages/opencode-plugin/v2-contract-fixture/package.json"),
+				"utf8",
+			),
 		);
 
 		// Act
 		const versions = [
 			manifest.devDependencies["@opencode/cli"],
 			manifest.devDependencies["@opencode/plugin"],
+			fixtureManifest.peerDependencies["@opencode/plugin"],
 		];
 
 		// Assert
-		expect(versions).toEqual([OPEN_CODE_V2_CONTRACT_VERSION, OPEN_CODE_V2_CONTRACT_VERSION]);
-	});
-
-	it("rejects a moving beta range", () => {
-		// Arrange
-		const invalidPins = ["beta", "^0.0.0-beta-19296"];
-
-		// Act
-		const exact = invalidPins.filter((version) => version === OPEN_CODE_V2_CONTRACT_VERSION);
-
-		// Assert
-		expect(exact).toEqual([]);
+		expect(versions).toEqual(Array.from({ length: 3 }, () => OPEN_CODE_V2_CONTRACT_VERSION));
+		expect(versions.every((version) => /^\d+\.\d+\.\d+$/u.test(version))).toBe(true);
 	});
 
 	it("types the public context without undocumented diagnostics or request identity", () => {
@@ -207,10 +206,13 @@ async function executeLifecycleContract() {
 		agent: "agent-a",
 		model: { providerID: "provider", modelID: "model" },
 		system: [],
-		messages: [],
+		messages: [
+			{ id: "message-old", role: "user", content: [] },
+			{ id: "message-assistant", role: "assistant", content: [] },
+			{ id: "message-a", role: "user", content: [] },
+		],
 		tools: {},
-		generation: {},
-		providerOptions: {} as Record<string, unknown>,
+		options: {} as Record<string, unknown>,
 	};
 	const cleanup = await plugin.setup(fixture.context);
 	await invoke(fixture.sessionHooks, "prompt", {
@@ -218,6 +220,20 @@ async function executeLifecycleContract() {
 		messageID: "message-a",
 	});
 	await invoke(fixture.sessionHooks, "context", contextInput);
+	await invoke(fixture.sessionHooks, "compaction", {
+		...contextInput,
+		options: {},
+		result: undefined,
+	});
+	await invoke(fixture.sessionHooks, "generate", { ...contextInput, options: {} });
+	await invoke(fixture.sessionHooks, "title", {
+		sessionID: contextInput.sessionID,
+		model: contextInput.model,
+		system: [],
+		messages: [{ id: "title-message", role: "user", content: [] }],
+		options: {},
+		result: undefined,
+	});
 	const requestHeaders: Record<string, string> = {};
 	await invoke(fixture.sessionHooks, "model.request", {
 		sessionID: "session-a",
@@ -328,17 +344,36 @@ describe("OpenCode 2 executable fixture", () => {
 				expect.objectContaining({
 					phase: "context",
 					agent: "agent-a",
-					generationMutable: true,
+					alreadyMarked: false,
 					hasAgent: true,
-					hasKind: false,
-					hasMessageID: false,
 					hasModel: true,
 					hasSessionID: true,
+					latestUserMessageID: "message-a",
 					messagesMutable: true,
 					model: { providerID: "provider", modelID: "model" },
+					optionsMutable: true,
 					sessionID: "session-a",
 					systemMutable: true,
 					toolsMutable: true,
+					userMessageIDs: ["message-old", "message-a"],
+				}),
+				expect.objectContaining({
+					phase: "compaction",
+					alreadyMarked: false,
+					hasAgent: true,
+					optionsMutable: true,
+				}),
+				expect.objectContaining({
+					phase: "generate",
+					alreadyMarked: false,
+					hasAgent: true,
+					optionsMutable: true,
+				}),
+				expect.objectContaining({
+					phase: "title",
+					alreadyMarked: false,
+					hasAgent: false,
+					optionsMutable: true,
 				}),
 				expect.objectContaining({ phase: "model.request", kind: "compaction" }),
 				expect.objectContaining({
@@ -374,11 +409,15 @@ describe("OpenCode 2 executable fixture", () => {
 					effectiveID: null,
 				}),
 				expect.objectContaining({ phase: "event.end", aborted: true }),
-				expect.objectContaining({ phase: "cleanup", disposed: 8 }),
+				expect.objectContaining({ phase: "cleanup", disposed: 11 }),
 			]),
 		);
 		expect(fixture.storage.size).toBe(0);
-		expect(contextInput.providerOptions.codememContract).toBe(true);
+		expect(contextInput.system).toContainEqual({
+			type: "text",
+			text: "codemem-v2-context-hook-applied",
+		});
+		expect(contextInput.options.codememContract).toBe(true);
 		expect(fixture.aborted.value).toBe(true);
 		expect(fixture.disposals.every((dispose) => dispose.mock.calls.length === 1)).toBe(true);
 		expectCapturedEventShapes(records);
@@ -396,7 +435,7 @@ describe("OpenCode 2 fixture cleanup", () => {
 
 		// Assert
 		await expect(setup).rejects.toThrow("hook unavailable");
-		expect(fixture.disposals).toHaveLength(6);
+		expect(fixture.disposals).toHaveLength(9);
 		expect(fixture.disposals.every((dispose) => dispose.mock.calls.length === 1)).toBe(true);
 	});
 
@@ -455,49 +494,79 @@ describe("OpenCode 2 event stream cancellation", () => {
 });
 
 describe("OpenCode 2 request and tool contracts", () => {
-	it("distinguishes requests whose public session identities do not overlap", () => {
-		// Arrange
-		const kinds = ["primary", "compaction", "title", "generate"] as const;
-		const requests = kinds.map((kind) => ({
-			sessionID: `session-${kind}`,
-			agent: "agent",
-			model: "model",
-		}));
+	it("rejects an empty latest-user ID instead of correlating it or reusing an older ID", () => {
+		const transcript = [
+			{ id: "user-a", role: "user" },
+			{ id: "assistant-a", role: "assistant" },
+			{ id: "", role: "user" },
+		];
 
-		// Act
-		const safe = hasUnambiguousRequestIdentity(requests);
-
-		// Assert
-		expect(safe).toBe(true);
+		expect(latestUserMessageID(transcript)).toBeNull();
 	});
 
-	it("cannot distinguish request kinds that share one public session identity", () => {
+	it("rejects whitespace-only latest-user IDs without falling back to an older identity", () => {
+		const transcript = [
+			{ id: "user-a", role: "user" },
+			{ id: " \t\n", role: "user" },
+		];
+
+		expect(latestUserMessageID(transcript)).toBeNull();
+		expect(userMessageIDs(transcript)).toEqual(["user-a"]);
+	});
+
+	it("retains durable user message IDs in transcript order", () => {
 		// Arrange
-		const identity = { sessionID: "session-a", agent: "agent-a", model: "model-a" };
-		const requests = [
-			{ ...identity, kind: "primary" },
-			{ ...identity, kind: "compaction" },
-			{ ...identity, kind: "title" },
-			{ ...identity, kind: "generate" },
+		const messages = [
+			{ id: "user-a", role: "user" },
+			{ id: "assistant-a", role: "assistant" },
+			{ id: "user-b", role: "user" },
 		];
 
 		// Act
-		const safe = hasUnambiguousRequestIdentity(requests);
+		const ids = userMessageIDs(messages);
 
 		// Assert
-		expect(safe).toBe(false);
+		expect(ids).toEqual(["user-a", "user-b"]);
 	});
 
-	it("rejects correlation for concurrent or retried requests sharing the public identity", () => {
+	it("keys a coalesced turn by the latest durable user message ID", () => {
 		// Arrange
-		const identity = { sessionID: "session-a", agent: "agent-a", model: "model-a" };
-		const overlapping = [identity, identity];
+		const transcript = [
+			{ id: "user-a", role: "user" },
+			{ id: "user-b", role: "user" },
+		];
 
 		// Act
-		const safe = hasUnambiguousRequestIdentity(overlapping);
+		const messageID = latestUserMessageID(transcript);
 
 		// Assert
-		expect(safe).toBe(false);
+		expect(messageID).toBe("user-b");
+	});
+
+	it("does not invent an identity when the transcript has no durable user ID", () => {
+		// Arrange
+		const transcript = [{ id: "assistant-a", role: "assistant" }, { role: "user" }];
+
+		// Act
+		const messageID = latestUserMessageID(transcript);
+
+		// Assert
+		expect(messageID).toBeNull();
+	});
+
+	it("does not reuse an older identity when the latest user message has no ID", () => {
+		// Arrange
+		const transcript = [
+			{ id: "user-a", role: "user" },
+			{ id: "assistant-a", role: "assistant" },
+			{ role: "user" },
+		];
+
+		// Act
+		const messageID = latestUserMessageID(transcript);
+
+		// Assert
+		expect(messageID).toBeNull();
 	});
 
 	it("reports both completed and failed tool variants", async () => {
@@ -528,5 +597,81 @@ describe("OpenCode 2 request and tool contracts", () => {
 				.filter((record) => record.phase === "tool.execute.after")
 				.map((record) => record.status),
 		).toEqual(["completed", "error"]);
+	});
+});
+
+function makePrimaryContextInput() {
+	const system: Array<{ type: "text"; text: string }> = [];
+	const tools: Record<string, unknown> = {};
+	const options: Record<string, unknown> = {};
+	return {
+		sessionID: "session-a",
+		agent: "agent-a",
+		model: { providerID: "provider", modelID: "model" },
+		system,
+		messages: [{ id: "user-a", role: "user", content: [] }],
+		tools,
+		options,
+	};
+}
+
+describe("OpenCode 2 context freshness evidence", () => {
+	it.each([
+		{ field: "system", evidence: "systemAlreadyMarked" },
+		{ field: "messages", evidence: "messagesReused" },
+		{ field: "tools", evidence: "toolsReused" },
+	] as const)("detects reused $field even when options are fresh", async ({ field, evidence }) => {
+		const records: ContractRecord[] = [];
+		const fixture = makeContext();
+		const plugin = defineOpenCodeV2ContractFixture((record) => {
+			records.push(record);
+		});
+		const cleanup = await plugin.setup(fixture.context);
+		const first = makePrimaryContextInput();
+		try {
+			await invoke(fixture.sessionHooks, "context", first);
+			const replay = { ...makePrimaryContextInput(), [field]: first[field] };
+			expect(replay.options).not.toBe(first.options);
+			expect(replay[field]).toBe(first[field]);
+			if (field === "system") {
+				expect(replay.system).toContainEqual({ type: "text", text: OPEN_CODE_V2_CONTEXT_MARKER });
+			}
+			await invoke(fixture.sessionHooks, "context", replay);
+			const contexts = records.filter((record) => record.phase === "context");
+			expect(contexts).toHaveLength(2);
+			expect(contexts.at(-1)?.alreadyMarked).toBe(false);
+			expect(
+				contexts.at(-1)?.[evidence],
+				`reused ${field} must be reported independently of options`,
+			).toBe(true);
+		} finally {
+			await runCleanup(cleanup);
+		}
+	});
+
+	it("reports fresh values on each invocation of the same turn", async () => {
+		const records: ContractRecord[] = [];
+		const fixture = makeContext();
+		const plugin = defineOpenCodeV2ContractFixture((record) => {
+			records.push(record);
+		});
+		const cleanup = await plugin.setup(fixture.context);
+		try {
+			await invoke(fixture.sessionHooks, "context", makePrimaryContextInput());
+			await invoke(fixture.sessionHooks, "context", makePrimaryContextInput());
+			const contexts = records.filter((record) => record.phase === "context");
+			expect(contexts).toHaveLength(2);
+			for (const context of contexts) {
+				expect(context).toMatchObject({
+					latestUserMessageID: "user-a",
+					alreadyMarked: false,
+					systemAlreadyMarked: false,
+					messagesReused: false,
+					toolsReused: false,
+				});
+			}
+		} finally {
+			await runCleanup(cleanup);
+		}
 	});
 });

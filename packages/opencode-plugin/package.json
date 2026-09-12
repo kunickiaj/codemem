@@ -31,8 +31,8 @@
 		"@opencode-ai/plugin": "1.18.29"
 	},
 	"devDependencies": {
-		"@opencode/cli": "0.0.0-beta-19296",
-		"@opencode/plugin": "0.0.0-beta-19296",
+		"@opencode/cli": "2.0.2",
+		"@opencode/plugin": "2.0.2",
 		"@types/node": "^24.12.4",
 		"vitest": "catalog:"
 	},

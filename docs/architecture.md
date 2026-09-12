@@ -60,7 +60,7 @@ Support tiers describe operational expectations for each adapter path:
 | Adapter | Tier | Notes |
 |---|---|---|
 | OpenCode 1 plugin | Supported | Primary reference adapter for lifecycle events and injection behavior. |
-| OpenCode 2 plugin | Experimental | The beta entrypoint captures conversation, tool, terminal usage, and lifecycle activity with bounded cleanup. It exposes manual `mem-status`, `mem-recent`, and `mem-stats` tools through `tool.transform` with `codemode: false`; automatic recall remains disabled because the context hook has no request kind or request ID. |
+| OpenCode 2 plugin | Experimental | The entrypoint captures conversation, tool, terminal usage, and lifecycle activity with bounded cleanup. It exposes manual `mem-status`, `mem-recent`, and `mem-stats` tools through `tool.transform` with `codemode: false`. OpenCode 2.0.2 separates primary and auxiliary hooks; automatic recall remains disabled pending an identity-safe V2 adapter. |
 | Claude hooks/plugin | Supported | Hook-first queue path with CLI/runtime fallback and parity slices tracked in adapter stack PRs. |
 | Codex plugin (hooks + MCP) | Supported | Functional capture pipeline (`plugins/codex/`, `packages/core/src/codex-hooks.ts`) dogfooded end-to-end: edge normalization → `POST /api/raw-events` → observer → memories. Prompt-time injection is present and env-gated but not fully validated on strict models. |
 | Windsurf integration | Experimental | Planned via shared adapter contract after OpenCode/Claude stabilization. |
@@ -185,7 +185,9 @@ flowchart TD
 
 ## Context injection
 
-The OpenCode 1 plugin injects a memory pack automatically on every turn. Volatile recall output is appended beside the latest user message by default so provider prompt caches can keep the stable system/history prefix. The experimental OpenCode 2 beta entrypoint captures activity, manages lifecycle cleanup, and exposes manual `mem-status`, `mem-recent`, and `mem-stats` tools through `tool.transform` with `codemode: false`. It does not inject automatic recall because the V2 context hook has no request kind or request ID, so compaction and transient safety cannot be guaranteed.
+The OpenCode 1 plugin injects a memory pack automatically on every turn. Volatile recall output is appended beside the latest user message by default so provider prompt caches can keep the stable system/history prefix.
+
+The experimental OpenCode 2 entrypoint captures activity, manages lifecycle cleanup, and exposes manual `mem-status`, `mem-recent`, and `mem-stats` tools through `tool.transform` with `codemode: false`. The pinned [OpenCode 2.0.2 contract](opencode-v2-contract.md) separates primary context from compaction, title, and transient generation; tested primary histories retain stable user-message IDs, but the schema permits missing IDs. Automatic recall remains disabled until the V2 adapter supports the message shape and safely skips injection when the latest user identity is missing or blank.
 
 ### Packaged Claude and Codex hooks
 
