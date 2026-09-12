@@ -29,11 +29,11 @@ The package default export is one dual-host object. OpenCode 1 calls its
 `server()` function, while OpenCode 2 calls its `setup()` function. The OpenCode 2
 setup captures conversation, tool, usage, and lifecycle activity and disposes its
 host registrations on unload. It exposes the manual `mem-status`, `mem-recent`,
-and `mem-stats` tools through `tool.transform` with `codemode: false`. It does not
-inject automatic recall yet. OpenCode 2.0.2 provides separate primary and auxiliary
-hooks, and tested primary histories carry stable user-message IDs. Because its
-schema permits missing IDs, the pending V2 recall adapter must degrade safely when
-identity is absent.
+and `mem-stats` tools through `tool.transform` with `codemode: false`. OpenCode
+2.0.2 automatic recall runs through `session.context` when the latest user message
+has a non-empty ID. Each identified turn performs one fresh retrieval, while
+retries and tool continuations replay retained context. Missing or blank identity
+skips recall safely, and auxiliary hooks remain isolated.
 
 `CodememPlugin` remains the canonical named OpenCode 1 function export.
 `OpencodeMemPlugin` remains available as a deprecated, reference-identical alias

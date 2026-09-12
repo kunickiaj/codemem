@@ -1,9 +1,10 @@
 # OpenCode 2 contract
 
-OpenCode 2.0.2 provides the hook separation Codemem needs for safe recall
-correlation. Tested primary histories carry stable user-message IDs, but the
-installed message schema permits missing IDs. Production automatic recall remains
-disabled until the V2 adapter can degrade safely when identity is absent or blank.
+OpenCode 2.0.2 provides the hook separation Codemem uses for safe recall
+correlation. Automatic recall runs only through `session.context` and requires a
+non-empty, non-whitespace latest user-message ID. The installed schema permits
+missing IDs, so missing or blank identities skip safely rather than inferring
+identity.
 
 ## Pinned test host
 
@@ -36,10 +37,10 @@ OpenCode 2.0.2 separates primary context mutation from auxiliary model work:
   references with per-hook weak sets. The smoke checks auxiliary hooks for mutable
   request fields but invokes each auxiliary hook only once.
 - Observed primary histories retain stable IDs on user messages. The message
-  schema makes `id` optional, so Codemem may key a coalesced turn by the latest
+  schema makes `id` optional, so Codemem keys a coalesced turn by the latest
   user-message ID only when it is a non-empty, non-whitespace string. Missing or
-  blank identity must skip unsafe recall rather than reuse an older user ID or
-  infer a key from timing or adjacency.
+  blank identity skips recall rather than reusing an older user ID or inferring a
+  key from timing or adjacency.
 - `model.request` identifies `primary`, `compaction`, `title`, and `generate`
   through `kind`. The smoke verifies `primary` identity and header propagation
   through `http.request` and `http.response`; their auxiliary kinds are declared
@@ -86,10 +87,11 @@ pinned release remains unverified.
 
 The 2.0.2 host contract removes the earlier auxiliary-request ambiguity. When the
 latest user-message ID is non-empty and non-whitespace, it can identify a
-deliberately coalesced model turn across retries and continuations. Dedicated hooks keep compaction, title,
-and transient generation away from primary recall injection.
+deliberately coalesced model turn across retries and continuations. Dedicated
+hooks keep compaction, title, and transient generation away from primary recall
+injection.
 
-Codemem's V2 entrypoint may continue capture and manual memory tools, but it must
-not inject automatic recall until the V2 adapter translates the 2.0.2 message
-shape, declines unsafe injection when the latest user ID is absent or blank, and
-passes its concurrency, retry, continuation, and auxiliary-request tests.
+Codemem translates the 2.0.2 message shape and performs one fresh retrieval per
+identified turn. Retries and tool continuations replay retained context
+byte-for-byte without another retrieval. The default message surface and legacy
+system surface both work; missing or blank latest-user identity skips safely.

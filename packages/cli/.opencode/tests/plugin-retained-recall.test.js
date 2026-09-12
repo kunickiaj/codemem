@@ -302,6 +302,35 @@ describe("retained automatic recall lifecycle", () => {
     expect(options.buildInjectedContext).not.toHaveBeenCalled();
   });
 
+  test("reuses successful empty recalls without suppressing failures or policy retries", async () => {
+    const successfulEmpty = setup({
+      cacheSuccessfulEmpty: true,
+      emptyRecallCache: new Map(),
+      buildInjectedContext: vi.fn(async () => ({ text: "", cacheableEmpty: true })),
+    });
+    await apply(successfulEmpty, [user("empty")]);
+    await apply(successfulEmpty, [user("empty")]);
+    expect(successfulEmpty.buildInjectedContext).toHaveBeenCalledTimes(1);
+
+    const skipped = setup({
+      cacheSuccessfulEmpty: true,
+      emptyRecallCache: new Map(),
+      buildInjectedContext: vi.fn(async () => ({ text: "", skipReason: "unchanged_memories" })),
+    });
+    await apply(skipped, [user("skipped")]);
+    await apply(skipped, [user("skipped")]);
+    expect(skipped.buildInjectedContext).toHaveBeenCalledTimes(2);
+
+    const failed = setup({
+      cacheSuccessfulEmpty: true,
+      emptyRecallCache: new Map(),
+      buildInjectedContext: vi.fn(async () => ({ text: "" })),
+    });
+    await apply(failed, [user("failed")]);
+    await apply(failed, [user("failed")]);
+    expect(failed.buildInjectedContext).toHaveBeenCalledTimes(2);
+  });
+
   test("failed attachment consumes no allowance and does not cache undelivered bytes", async () => {
     const options = setup();
     const first = user("one");

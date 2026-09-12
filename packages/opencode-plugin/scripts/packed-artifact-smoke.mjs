@@ -210,7 +210,9 @@ try {
 		CODEMEM_DB: "",
 		CODEMEM_RUNNER: "node",
 		CODEMEM_RUNNER_FROM: builtCli,
-		CODEMEM_VIEWER: "0",
+		CODEMEM_VIEWER: "1",
+		CODEMEM_VIEWER_AUTO: "0",
+		CODEMEM_VIEWER_AUTO_STOP: "0",
 	};
 	const installedV2Adapter = pathToFileURL(
 		join(installedPackageRoot, ".opencode", "lib", "opencode-v2-adapter.js"),

@@ -1,6 +1,9 @@
 import { appendFile } from "node:fs/promises";
 import { Plugin } from "@opencode/plugin";
 
+const SYSTEM_PART_CONTRACT_TEXT = "codemem-v2-system-part-contract";
+const MESSAGE_PART_CONTRACT_TEXT = "codemem-v2-message-part-contract";
+
 export const OPEN_CODE_V2_CONTRACT_VERSION = "2.0.2";
 export const OPEN_CODE_V2_CONTEXT_MARKER = "codemem-v2-context-hook-applied";
 
@@ -129,8 +132,27 @@ async function registerContextHook(context: Plugin.Context, report: ContractRepo
 		seenSystems.add(system);
 		seenMessages.add(messages);
 		seenTools.add(tools);
-		input.system = [...system, { type: "text", text: OPEN_CODE_V2_CONTEXT_MARKER }];
-		input.messages = [...messages];
+		input.system = [
+			...system,
+			{ type: "text", text: OPEN_CODE_V2_CONTEXT_MARKER },
+			{ type: "text", text: SYSTEM_PART_CONTRACT_TEXT },
+		];
+		const latestUserIndex = messages.findLastIndex((message) => message.role === "user");
+		input.messages = messages.map((message, index) => {
+			if (index !== latestUserIndex || message.role !== "user") return { ...message };
+			return {
+				...message,
+				content: [
+					...message.content,
+					{
+						type: "text",
+						text: MESSAGE_PART_CONTRACT_TEXT,
+						metadata: { codememPart: { v: 1, synthetic: true } },
+					},
+				],
+			};
+		});
+		const latestUser = input.messages.findLast((message) => message.role === "user");
 		input.tools = { ...tools };
 		input.options = { ...input.options, codememContract: true };
 		seenSystems.add(input.system);
@@ -146,12 +168,20 @@ async function registerContextHook(context: Plugin.Context, report: ContractRepo
 			latestUserMessageID: latestUserMessageID(input.messages),
 			messagesMutable: Array.isArray(input.messages),
 			messagesReused,
+			messagePartAccepted:
+				latestUser?.role === "user" &&
+				latestUser.content.some(
+					(part) => part.type === "text" && part.text === MESSAGE_PART_CONTRACT_TEXT,
+				),
 			model: input.model,
 			optionsMutable: typeof input.options === "object",
 			sessionID: input.sessionID,
 			systemMutable: Array.isArray(input.system),
 			systemAlreadyMarked,
 			systemReused,
+			systemPartAccepted: input.system.some(
+				(part) => part.type === "text" && part.text === SYSTEM_PART_CONTRACT_TEXT,
+			),
 			toolsMutable: typeof input.tools === "object",
 			toolsReused,
 			userMessageIDs: userMessageIDs(input.messages),
