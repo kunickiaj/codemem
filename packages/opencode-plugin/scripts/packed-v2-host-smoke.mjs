@@ -17,7 +17,7 @@ import { join, resolve } from "node:path";
 
 const packageRoot = process.cwd();
 const workspaceRoot = resolve(packageRoot, "..", "..");
-const pinnedVersion = "0.0.0-beta-19296";
+const pinnedVersion = "2.0.2";
 const packedPluginTarget = "./node_modules/@codemem/opencode-plugin";
 const packedFixtureTarget = "./node_modules/@codemem/opencode-plugin/v2-contract-fixture";
 const tempDir = mkdtempSync(join(tmpdir(), "codemem-opencode-v2-contract-"));
@@ -112,6 +112,7 @@ async function startProvider(projectDir) {
 			return;
 		}
 		const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+		const requestKind = request.headers["x-codemem-contract-kind"];
 		observations.push({
 			messages: body.messages?.map((message) => ({
 				role: message.role,
@@ -126,8 +127,8 @@ async function startProvider(projectDir) {
 			toolNames: body.tools?.map((tool) => tool.function?.name).filter(Boolean),
 		});
 		attempts += 1;
-		if (request.headers["x-codemem-contract-kind"] === "primary") primaryAttempts += 1;
-		if (primaryAttempts === 1) {
+		if (requestKind === "primary") primaryAttempts += 1;
+		if (requestKind === "primary" && primaryAttempts === 1) {
 			response.writeHead(429, {
 				"content-type": "application/json",
 				"retry-after-ms": "1",
@@ -143,7 +144,10 @@ async function startProvider(projectDir) {
 		const messagesAfterPrompt = messages.slice(latestUserIndex + 1);
 		const hasToolResult = messagesAfterPrompt.some((message) => message.role === "tool");
 		const requestFailure = JSON.stringify(messages.at(latestUserIndex)).includes("failure");
-		const selectedTool = body.tools?.find((tool) => tool.function?.name === "read")?.function?.name;
+		const selectedTool =
+			requestKind === "primary"
+				? body.tools?.find((tool) => tool.function?.name === "read")?.function?.name
+				: undefined;
 		if (!hasToolResult && selectedTool) {
 			response.write(
 				`data: ${JSON.stringify({
@@ -189,6 +193,10 @@ async function startProvider(projectDir) {
 			response.end("data: [DONE]\n\n");
 			return;
 		}
+		const responseText =
+			requestKind === "compaction"
+				? "## Objective\n- Verify the OpenCode 2 contract\n\n## Next Move\n1. Continue"
+				: "contract-ok";
 		response.write(
 			`data: ${JSON.stringify({
 				id: "chatcmpl-contract",
@@ -198,7 +206,7 @@ async function startProvider(projectDir) {
 				choices: [
 					{
 						index: 0,
-						delta: { role: "assistant", content: "contract-ok" },
+						delta: { role: "assistant", content: responseText },
 						finish_reason: null,
 					},
 				],
@@ -303,6 +311,43 @@ async function promptHost(opencode2, host, sessionID, text, options) {
 	);
 }
 
+async function generateHost(opencode2, host, sessionID, options) {
+	await runAsync(
+		opencode2,
+		[
+			"api",
+			"--server",
+			host.baseURL,
+			"POST",
+			`/api/session/${sessionID}/generate`,
+			"--data",
+			JSON.stringify({ prompt: "contract generation probe" }),
+		],
+		options,
+	);
+}
+
+async function compactHost(opencode2, host, sessionID, options) {
+	await runAsync(
+		opencode2,
+		[
+			"api",
+			"--server",
+			host.baseURL,
+			"POST",
+			`/api/session/${sessionID}/compact`,
+			"--data",
+			JSON.stringify({}),
+		],
+		options,
+	);
+	await runAsync(
+		opencode2,
+		["api", "--server", host.baseURL, "POST", `/api/session/${sessionID}/wait`],
+		options,
+	);
+}
+
 async function stopHost(child) {
 	if (child.exitCode !== null) return;
 	const closed = once(child, "close");
@@ -330,6 +375,20 @@ function readContractRecords(reportPath, hostResult) {
 		.map((line) => JSON.parse(line));
 }
 
+async function waitForContractPhase(reportPath, phase, hostResult, timeoutMs = 10_000) {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		try {
+			const records = readContractRecords(reportPath, hostResult);
+			if (records.some((record) => record.phase === phase)) return;
+		} catch (error) {
+			if (!(error instanceof SyntaxError)) throw error;
+		}
+		await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+	}
+	throw new Error(`Pinned host did not dispatch the ${phase} hook within ${timeoutMs}ms`);
+}
+
 try {
 	run("pnpm", ["pack", "--pack-destination", tempDir]);
 	const tarballs = readdirSync(tempDir).filter((name) => name.endsWith(".tgz"));
@@ -354,6 +413,22 @@ try {
 	const projectDir = installDir;
 	const homeDir = join(tempDir, "home");
 	mkdirSync(homeDir, { recursive: true });
+	const reportPath = join(tempDir, "contract-report.jsonl");
+	const env = {
+		PATH: process.env.PATH ?? "",
+		HOME: homeDir,
+		XDG_CONFIG_HOME: join(homeDir, ".config"),
+		CODEMEM_BACKEND_UPDATE_POLICY: "off",
+		CODEMEM_RAW_EVENTS: "0",
+		CODEMEM_VIEWER: "0",
+		CODEMEM_OPENCODE_V2_CONTRACT_REPORT: reportPath,
+		OPENCODE_DISABLE_AUTOUPDATE: "true",
+		OPENCODE_DISABLE_MODELS_FETCH: "true",
+		OPENCODE_SERVER_PASSWORD: randomBytes(32).toString("base64url"),
+	};
+	for (const name of ["TMPDIR", "LANG", "LC_ALL", "SYSTEMROOT", "COMSPEC", "PATHEXT"]) {
+		if (process.env[name]) env[name] = process.env[name];
+	}
 	const provider = await startProvider(projectDir);
 	providerServer = provider.server;
 	writeFileSync(
@@ -387,32 +462,16 @@ try {
 		"utf8",
 	);
 
-	const reportPath = join(tempDir, "contract-report.jsonl");
 	const opencode2 = resolve(
 		workspaceRoot,
-		"packages/opencode-plugin/node_modules/@opencode/cli/bin/opencode2.exe",
+		"packages/opencode-plugin/node_modules/@opencode/cli/bin/opencode.exe",
 	);
-	assert(existsSync(opencode2), "Pinned @opencode/cli did not install the opencode2 binary");
-	const version = run(opencode2, ["--version"], { cwd: projectDir }).stdout.trim();
+	assert(existsSync(opencode2), "Pinned @opencode/cli did not install the opencode binary");
+	const version = run(opencode2, ["--version"], { cwd: projectDir, env }).stdout.trim();
 	assert(
-		version === `opencode2 v${pinnedVersion}`,
-		`Pinned host reported ${JSON.stringify(version)}, expected opencode2 v${pinnedVersion}`,
+		version === `opencode v${pinnedVersion}`,
+		`Pinned host reported ${JSON.stringify(version)}, expected opencode v${pinnedVersion}`,
 	);
-	const env = {
-		PATH: process.env.PATH ?? "",
-		HOME: homeDir,
-		XDG_CONFIG_HOME: join(homeDir, ".config"),
-		CODEMEM_BACKEND_UPDATE_POLICY: "off",
-		CODEMEM_RAW_EVENTS: "0",
-		CODEMEM_VIEWER: "0",
-		CODEMEM_OPENCODE_V2_CONTRACT_REPORT: reportPath,
-		OPENCODE_DISABLE_AUTOUPDATE: "true",
-		OPENCODE_DISABLE_MODELS_FETCH: "true",
-		OPENCODE_SERVER_PASSWORD: randomBytes(32).toString("base64url"),
-	};
-	for (const name of ["TMPDIR", "LANG", "LC_ALL", "SYSTEMROOT", "COMSPEC", "PATHEXT"]) {
-		if (process.env[name]) env[name] = process.env[name];
-	}
 	const repositoryDir = join(installDir, "repository");
 	const worktreeDir = join(installDir, "worktree");
 	const worktreeActiveDirectory = join(worktreeDir, "nested");
@@ -559,6 +618,16 @@ try {
 		cwd: projectDir,
 		env,
 	});
+	await generateHost(opencode2, host, sessionID, { cwd: projectDir, env });
+	await waitForContractPhase(reportPath, "generate", {
+		stdout: host.output(),
+		stderr: "",
+	});
+	await compactHost(opencode2, host, sessionID, { cwd: projectDir, env });
+	await waitForContractPhase(reportPath, "title", {
+		stdout: host.output(),
+		stderr: "",
+	});
 	const expectedEventTypes = [
 		"session.inbox.enqueued",
 		"session.step.ended",
@@ -684,23 +753,35 @@ try {
 		records.some(
 			(record) =>
 				record.phase === "context" &&
-				record.generationMutable &&
+				record.alreadyMarked === false &&
 				record.hasAgent &&
 				record.messagesMutable &&
 				record.hasModel &&
 				record.hasSessionID &&
+				record.optionsMutable &&
 				record.systemMutable &&
 				record.toolsMutable &&
-				record.hasKind === false &&
-				record.hasMessageID === false &&
 				record.sessionID === sessionID &&
+				typeof record.latestUserMessageID === "string" &&
 				typeof record.agent === "string" &&
 				record.agent.length > 0 &&
 				typeof record.model === "object" &&
 				record.model != null,
 		),
-		"Pinned host context hook did not expose the expected mutable fields or identity limits",
+		"Pinned host context hook did not expose fresh mutable fields and durable message identity",
 	);
+	for (const phase of ["compaction", "generate", "title"]) {
+		assert(
+			records.some(
+				(record) =>
+					record.phase === phase &&
+					record.messagesMutable &&
+					record.optionsMutable &&
+					record.systemMutable,
+			),
+			`Pinned host did not dispatch a mutable ${phase} hook; observed ${observedHooks}`,
+		);
+	}
 	assert(
 		records.some(
 			(record) =>
@@ -711,10 +792,29 @@ try {
 		),
 		`Pinned host did not dispatch the prompt hook with session and message identity; observed ${observedHooks}`,
 	);
-	assert(
-		records.some((record) => record.phase === "model.request" && record.kind === "primary"),
-		`Pinned host did not dispatch the primary model-request hook; observed ${observedHooks}`,
-	);
+	const promptMessageIDs = records
+		.filter((record) => record.phase === "prompt" && typeof record.messageID === "string")
+		.map((record) => record.messageID);
+	assert(promptMessageIDs.length >= 2, "Pinned host did not report both contract prompt IDs");
+	for (const messageID of promptMessageIDs.slice(0, 2)) {
+		const matchingContexts = records.filter(
+			(record) => record.phase === "context" && record.latestUserMessageID === messageID,
+		);
+		assert(
+			matchingContexts.length >= 2,
+			`Pinned host did not repeat latest user message ID ${messageID} across the turn`,
+		);
+		assert(
+			matchingContexts.every((record) => record.alreadyMarked === false),
+			`Pinned host reused mutable context input for user message ID ${messageID}`,
+		);
+	}
+	for (const kind of ["primary", "compaction", "generate", "title"]) {
+		assert(
+			records.some((record) => record.phase === "model.request" && record.kind === kind),
+			`Pinned host did not dispatch the ${kind} model-request hook; observed ${observedHooks}`,
+		);
+	}
 	assert(
 		records.some(
 			(record) =>
@@ -774,6 +874,7 @@ try {
 		`Pinned host did not expose V2 memory-tool IDs; observed ${JSON.stringify(provider.observations().map((observation) => observation.toolNames))}`,
 	);
 	assert(records.some((record) => record.phase === "cleanup"), "Host omitted plugin cleanup on unload");
+	process.stdout.write(`OpenCode ${version}: packed contract passed (${records.length} records)\n`);
 } finally {
 	if (hostProcess) {
 		try {

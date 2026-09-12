@@ -404,7 +404,7 @@ export const createOpenCodeV2Adapter = ({
   waitForRuntimeDisposalTask = defaultWaitForEventTask,
 } = {}) => async (context) => {
   const location = context.location;
-  // beta-19296 exposes neither app logging nor toast APIs, so V2 uses local diagnostics only.
+  // OpenCode 2.0.2 exposes neither app logging nor toast APIs, so V2 uses local diagnostics only.
   const runtime = await createRuntime({
     location: createRuntimeLocation({
       project: { ...location.project, root: location.project.canonical },

@@ -8,7 +8,7 @@ import CodememDualPlugin, { CodememPlugin, OpencodeMemPlugin } from "../index.js
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../../..");
 const minimumOpenCodeVersion = "1.18.29";
-const pinnedOpenCodeV2Version = "0.0.0-beta-19296";
+const pinnedOpenCodeV2Version = "2.0.2";
 
 async function readJson(relativePath: string) {
 	return JSON.parse(await readFile(path.join(repositoryRoot, relativePath), "utf8"));
