@@ -20,6 +20,7 @@ import {
   resolveSpoolDirectory,
   writeRawEventSpoolEntry,
 } from "./raw-event-spool.js";
+import { V2_ADAPTER_DIAGNOSTICS } from "./host-contract.js";
 
 const TRUTHY_VALUES = ["1", "true", "yes"];
 const DISABLED_VALUES = ["0", "false", "off"];
@@ -33,6 +34,7 @@ const RELEASE_VERSION =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const CODEMEM_CONTEXT_PART_ID_PREFIX = "codemem-context-";
 const MAX_MESSAGE_INJECTION_CACHE_SESSIONS = 20;
+const MAX_MESSAGE_INJECTION_CACHE_ENTRIES = 100;
 const COMPACTION_INJECTION_SKIP_TTL_MS = 30 * 1000;
 const MAX_WORKING_SET_PATH_CHARS = 400;
 const VIEWER_HEALTH_CHECK_INTERVAL_MS = 60_000;
@@ -46,15 +48,7 @@ const CODEMEM_CONTEXT_PREFIX = "[codemem context]\n";
 const DEFAULT_EMBEDDING_MODEL = "Xenova/bge-small-en-v1.5";
 const DEFAULT_EMBEDDING_REVISION = "ea104dacec62c0de699686887e3f920caeb4f3e3";
 const PLUGIN_REGISTRATIONS_KEY = Symbol.for("codemem.opencode-plugin.registrations");
-const ADAPTER_DIAGNOSTIC_CODES = new Set([
-  "v2_event_capture_failed",
-  "v2_event_stream_cleanup_timeout",
-  "v2_event_stream_ended_unexpectedly",
-  "v2_event_stream_failed",
-  "v2_registration_cleanup_timeout",
-  "v2_runtime_cleanup_timeout",
-  "v2_tool_capture_failed",
-]);
+const ADAPTER_DIAGNOSTIC_CODES = new Set(Object.values(V2_ADAPTER_DIAGNOSTICS));
 
 let compatCheckCache = null;
 const notifiedReleaseVersions = new Set();
@@ -1240,6 +1234,16 @@ const getSessionMessageInjectionCache = (messageInjectionCache, sessionID) => {
   return sessionCache;
 };
 
+const setSessionMessageInjectionCacheEntry = (sessionCache, messageID, value) => {
+  sessionCache.delete(messageID);
+  sessionCache.set(messageID, value);
+  while (sessionCache.size > MAX_MESSAGE_INJECTION_CACHE_ENTRIES) {
+    const oldestMessageID = sessionCache.keys().next().value;
+    if (!oldestMessageID) break;
+    sessionCache.delete(oldestMessageID);
+  }
+};
+
 const normalizeInjectedMessageParts = (messages, sessionCache, { pruneAbsent = true } = {}) => {
   const presentIds = new Set(messages.map(resolveEntryMessageId).filter(Boolean));
   for (const id of sessionCache?.keys() || []) {
@@ -1255,7 +1259,7 @@ const normalizeInjectedMessageParts = (messages, sessionCache, { pruneAbsent = t
     const parts = entry.parts.filter(isCodememContextPart);
     if (parts.length && sessionCache && messageId) {
       const cached = sessionCache.get(messageId);
-      sessionCache.set(messageId, {
+      setSessionMessageInjectionCacheEntry(sessionCache, messageId, {
         ...cached,
         text: parts[0].text,
         parts: parts.map((part) => {
@@ -1304,6 +1308,7 @@ const appendCachedInjectedContextParts = async (
     if (!text) {
       continue;
     }
+    setSessionMessageInjectionCacheEntry(sessionCache, messageId, cached);
     let attemptId = cached?.attemptId || null;
     let cacheReuseReady = null;
     if (
@@ -1372,6 +1377,9 @@ const applyInjectedContextToMessages = async ({
   retainedTokenBudget = DEFAULT_RETAINED_TOKEN_BUDGET,
   workingSet = [],
   recordMeasurement,
+  pruneAbsentCacheEntries = true,
+  requireLatestUserMessageID = false,
+  surface = "message",
 }) => {
   const hasMessages = Array.isArray(output?.messages);
   const hookSessionID = input?.sessionID || null;
@@ -1411,10 +1419,16 @@ const applyInjectedContextToMessages = async ({
     return false;
   }
 
-  const sessionCache = getSessionMessageInjectionCache(messageInjectionCache, sessionID);
-  normalizeInjectedMessageParts(messages, sessionCache);
-
   const latestMessageId = resolveEntryMessageId(latestUser.entry);
+  if (requireLatestUserMessageID && !latestMessageId) {
+    recordSkipped?.("missing_message_identity", sessionID);
+    report("missing_message_identity");
+    return false;
+  }
+
+  const sessionCache = getSessionMessageInjectionCache(messageInjectionCache, sessionID);
+  normalizeInjectedMessageParts(messages, sessionCache, { pruneAbsent: pruneAbsentCacheEntries });
+
   const canReplay = Boolean(sessionCache && latestMessageId);
   const latestCached = canReplay ? sessionCache.get(latestMessageId) : null;
   const latestWasCached = Boolean(latestCached) || latestUser.entry.parts?.some(isCodememContextPart);
@@ -1452,7 +1466,7 @@ const applyInjectedContextToMessages = async ({
       sessionID,
       requestKey: latestMessageId || fallbackEntryMessageId(latestUser.entry, latestUser.index),
       fallbackTurn: sessionID && latestMessageId ? null : latestUser.index,
-      surface: "message",
+      surface,
       tokenBudget: fullBudget,
       retainedItems: retainedMemoryFingerprints(messages, sessionCache),
       retainedMetadata: retainedMetadataGaps(messages, sessionCache),
@@ -1502,7 +1516,7 @@ const applyInjectedContextToMessages = async ({
           confirmDelivery?.(injected.attemptId, "handed_off", injected.evaluation);
         }
         if (canReplay) {
-          sessionCache.set(latestMessageId, {
+          setSessionMessageInjectionCacheEntry(sessionCache, latestMessageId, {
             ...injected,
             parts: latestUser.entry.parts.filter(isCodememContextPart).map((part) => ({ ...part })),
             reuseCount: 0,
@@ -3317,12 +3331,12 @@ export const createCodememRuntime = async ({ location, host }) => {
     return identity.attemptId;
   };
 
-  const recordCachedPromptPack = (cached, { messageId, sessionID } = {}) => {
+  const recordCachedPromptPack = (cached, { messageId, sessionID, surface = "message" } = {}) => {
     cached.reuseCount = (cached.reuseCount || 0) + 1;
     const identity = promptPackIdentity({
       sessionID: sessionID || "unknown",
       requestKey: `${messageId || "unknown"}:cache:${cached.reuseCount}`,
-      surface: "message",
+      surface,
       promptNumber: cached.promptNumber || promptCounter,
       queryHash: cached.queryHash || hashPromptPackQuery(""),
     });
@@ -3356,6 +3370,34 @@ export const createCodememRuntime = async ({ location, host }) => {
         return runPromptPackLedger(delivery);
       }
     }).catch(() => {});
+  };
+
+  const createTransformDelivery = (deferred) => {
+    if (!deferred) {
+      return {
+        complete: undefined,
+        confirm: confirmPromptPackDelivery,
+      };
+    }
+    let completion = null;
+    const pending = [];
+    const dispatch = ([attemptId, status, evaluation]) => {
+      const deliveryStatus = completion === "failed" && (!status || status === "handed_off")
+        ? "failed"
+        : status;
+      confirmPromptPackDelivery(attemptId, deliveryStatus, evaluation);
+    };
+    return {
+      complete: (status = "handed_off") => {
+        if (completion) return;
+        completion = status;
+        for (const confirmation of pending.splice(0)) dispatch(confirmation);
+      },
+      confirm: (...confirmation) => {
+        if (completion) dispatch(confirmation);
+        else pending.push(confirmation);
+      },
+    };
   };
 
   const showToast = async (message, variant = "warning") => {
@@ -4459,9 +4501,10 @@ export const createCodememRuntime = async ({ location, host }) => {
         );
       }
     },
-    transformMessages: async (input, output) => {
-      if (injectSurface === "system") {
-        return;
+    transformMessages: async (input, output, options = {}) => {
+      const delivery = createTransformDelivery(options.deferDeliveryConfirmation === true);
+      if (injectSurface === "system" && options.enableSystemSurface !== true) {
+        return { applied: false, surface: injectSurface, completeDelivery: delivery.complete };
       }
       const hookMessages = Array.isArray(output?.messages)
         ? scopeMessagesToSession(output.messages, input?.sessionID || null)
@@ -4495,15 +4538,24 @@ export const createCodememRuntime = async ({ location, host }) => {
           buildInjectedContext,
           messageInjectionCache,
           injectTokenBudget,
-          retainedTokenBudget,
+          retainedTokenBudget: injectSurface === "system" ? Number.POSITIVE_INFINITY : retainedTokenBudget,
           workingSet: [...sessionContext.filesModified, ...sessionContext.filesRead],
           recordMeasurement: (measurement) => logLine(`inject.recall ${JSON.stringify(measurement)}`),
           compactionInjectionSkips,
-          confirmDelivery: confirmPromptPackDelivery,
-          recordCacheReuse: recordCachedPromptPack,
-          recordSkipped: (reason, sessionID) => recordSkippedPromptPack(
-            reason, sessionID, "message", latestUser ? resolveEntryMessageId(latestUser.entry) : null,
-          ),
+          confirmDelivery: delivery.confirm,
+          recordCacheReuse: (cached, context) => recordCachedPromptPack(cached, {
+            ...context,
+            surface: injectSurface,
+          }),
+          recordSkipped: (reason, sessionID) => {
+            const latestMessageID = latestUser ? resolveEntryMessageId(latestUser.entry) : null;
+            const requestKey = latestMessageID
+              || (reason === "missing_message_identity" ? "missing-identity" : null);
+            return recordSkippedPromptPack(reason, sessionID, injectSurface, requestKey);
+          },
+          pruneAbsentCacheEntries: options.pruneAbsentCacheEntries !== false,
+          requireLatestUserMessageID: options.requireLatestUserMessageID === true,
+          surface: injectSurface,
         });
       } catch (err) {
         await logLine(
@@ -4521,6 +4573,7 @@ export const createCodememRuntime = async ({ location, host }) => {
           `inject.messages_transform.result sessionID=${sessionID || "unknown"} applied=${Boolean(applied)} messages=${Array.isArray(output?.messages) ? output.messages.length : 0} parts=${partsCount}`
         );
       }
+      return { applied, surface: injectSurface, completeDelivery: delivery.complete };
     },
     transformSystem: async (input, output) => {
       if (injectSurface !== "system") {
@@ -4888,6 +4941,8 @@ export const createCodememRuntime = async ({ location, host }) => {
 };
 
 export const __testUtils = {
+  adapterDiagnosticCodes: [...ADAPTER_DIAGNOSTIC_CODES],
+  MAX_MESSAGE_INJECTION_CACHE_ENTRIES,
   PINNED_BACKEND_VERSION,
   fetchRawEventsStatus,
   inferProjectFromCwd,
@@ -4942,6 +4997,7 @@ export const __testUtils = {
   filterRetainedPack,
   isContinuationOnly,
   resolveRetainedTokenBudget,
+  setSessionMessageInjectionCacheEntry,
   workingContextDigest,
   DEFAULT_INJECT_TOKEN_BUDGET,
   CODEMEM_CONTEXT_PREFIX,

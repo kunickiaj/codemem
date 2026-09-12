@@ -35,12 +35,13 @@ covers macOS x64/arm64, Linux x64/arm64 (glibc 2.34+ or musl), and Windows x64.
 
 Codemem requires OpenCode 1.18.29 or newer.
 
-The experimental OpenCode 2 entrypoint captures user and assistant messages,
-terminal usage, tool results, and session lifecycle events. It also exposes the
-manual `mem-status`, `mem-recent`, and `mem-stats` tools. OpenCode 2.0.2 provides
-separate primary and auxiliary hooks, and tested primary histories carry stable
-user-message IDs. Its schema permits missing IDs, so automatic recall remains
-disabled until Codemem's V2 adapter can degrade safely when identity is absent.
+The experimental OpenCode 2.0.2 entrypoint captures user and assistant messages,
+terminal usage, tool results, and session lifecycle events. It uses
+`session.context` only for automatic recall: the latest user-message ID is
+required, and missing identity skips recall safely. Each identified turn performs
+one fresh retrieval; retries and tool continuations replay retained context
+byte-for-byte. Compaction, title, and generate hooks stay isolated. Both the
+default message surface and legacy `CODEMEM_INJECT_SURFACE=system` surface work.
 
 1. Install the OpenCode plugin and MCP config:
 
@@ -210,9 +211,9 @@ Codex hook ingestion shares the same raw-event pipeline as Claude and OpenCode t
 
 Adapters hook into runtime event systems (the OpenCode 1 plugin and Claude hooks). They capture tool calls and conversation messages, flush them through an observer pipeline that produces typed memories, and surface retrieval context for future prompts.
 
-> The workflow below describes OpenCode 1 recall. OpenCode 2 captures activity,
-> manages lifecycle cleanup, and exposes manual memory tools, but it does not inject
-> automatic recall until Codemem's V2 recall adapter is implemented.
+> The workflow below illustrates the OpenCode 1 hook names. OpenCode 2.0.2 uses
+> `session.context` for the same automatic recall behavior, with the latest
+> user-message ID required for safe turn identity.
 
 ```mermaid
 sequenceDiagram

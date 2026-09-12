@@ -1,4 +1,8 @@
-import { createRuntimeHost, createRuntimeLocation } from "./host-contract.js";
+import {
+  V2_ADAPTER_DIAGNOSTICS,
+  createRuntimeHost,
+  createRuntimeLocation,
+} from "./host-contract.js";
 import { createCodememRuntime } from "./runtime.js";
 
 const DEFAULT_EVENT_TASK_TIMEOUT_MS = 250;
@@ -6,9 +10,190 @@ const FAILED_TOOL_ERROR = Object.freeze({
   name: "CodememToolCaptureError",
   message: "OpenCode reported a failed tool without error details",
 });
+const CODEMEM_CONTEXT_PART_ID_PREFIX = "codemem-context-";
+const CODEMEM_RECALL_METADATA_VERSION = 1;
+const CODEMEM_V2_PART_METADATA_KEY = "codememPart";
 
 const asRecord = (value) =>
   value && typeof value === "object" && !Array.isArray(value) ? value : {};
+
+const hasV2CodememMarker = (part) => {
+  const candidate = asRecord(part);
+  const metadata = asRecord(candidate.metadata);
+  const marker = asRecord(metadata[CODEMEM_V2_PART_METADATA_KEY]);
+  const markerID = String(marker.id || "");
+  return candidate.type === "text"
+    && marker.v === CODEMEM_RECALL_METADATA_VERSION
+    && marker.synthetic === true
+    && markerID.startsWith(CODEMEM_CONTEXT_PART_ID_PREFIX);
+};
+
+const isV2CodememTextPart = (part, messageID = null) => {
+  if (!hasV2CodememMarker(part)) return false;
+  const marker = asRecord(asRecord(part).metadata)[CODEMEM_V2_PART_METADATA_KEY];
+  return !messageID || marker.id === `${CODEMEM_CONTEXT_PART_ID_PREFIX}${messageID}`;
+};
+
+const translateV2MessagePart = (part, { messageID, sessionID }) => {
+  const candidate = asRecord(part);
+  if (messageID && hasV2CodememMarker(candidate) && !isV2CodememTextPart(candidate, messageID)) {
+    return null;
+  }
+  if (!messageID || !isV2CodememTextPart(candidate, messageID)) {
+    // Keep null explicit: V2 must never synthesize identity for an unidentified message.
+    return { ...candidate, messageID, sessionID };
+  }
+  const metadata = asRecord(candidate.metadata);
+  const marker = asRecord(metadata[CODEMEM_V2_PART_METADATA_KEY]);
+  const canonicalMetadata = { ...metadata };
+  delete canonicalMetadata[CODEMEM_V2_PART_METADATA_KEY];
+  return {
+    ...candidate,
+    id: marker.id,
+    messageID,
+    sessionID,
+    synthetic: true,
+    metadata: canonicalMetadata,
+  };
+};
+
+export const translateV2Messages = (messages, sessionID) => {
+  if (!Array.isArray(messages)) return [];
+  return messages.map((message) => {
+    const candidate = asRecord(message);
+    const messageID = typeof candidate.id === "string" ? candidate.id : null;
+    const content = Array.isArray(candidate.content) ? candidate.content : [];
+    return {
+      info: {
+        ...(messageID ? { id: messageID } : {}),
+        role: candidate.role,
+        sessionID,
+      },
+      parts: content
+        .map((part) => translateV2MessagePart(part, { messageID, sessionID }))
+        .filter(Boolean),
+    };
+  });
+};
+
+const isCanonicalCodememTextPart = (part) =>
+  part?.type === "text"
+  && part?.synthetic === true
+  && String(part?.id || "").startsWith(CODEMEM_CONTEXT_PART_ID_PREFIX);
+
+const toV2CodememTextPart = (part) => {
+  const metadata = asRecord(part.metadata);
+  return {
+    type: "text",
+    text: part.text,
+    metadata: {
+      ...metadata,
+      [CODEMEM_V2_PART_METADATA_KEY]: {
+        v: CODEMEM_RECALL_METADATA_VERSION,
+        synthetic: true,
+        id: part.id,
+      },
+    },
+  };
+};
+
+const copyInjectedContextToV2Messages = (messages, canonicalMessages) =>
+  messages.map((original, index) => {
+    const message = asRecord(original);
+    const content = Array.isArray(message.content) ? message.content : [];
+    const injected = canonicalMessages[index]?.parts
+      ?.filter(isCanonicalCodememTextPart)
+      .map(toV2CodememTextPart) || [];
+    return {
+      ...message,
+      content: [
+        ...content.filter((part) => !hasV2CodememMarker(part)),
+        ...injected,
+      ],
+    };
+  });
+
+const copyLatestInjectedContextToV2System = (system, canonicalMessages) => {
+  for (let index = canonicalMessages.length - 1; index >= 0; index -= 1) {
+    const message = canonicalMessages[index];
+    if (message?.info?.role !== "user") continue;
+    const injected = message.parts?.find(isCanonicalCodememTextPart);
+    if (!injected) return null;
+    return [
+      ...system.filter((part) => !hasV2CodememMarker(part)),
+      toV2CodememTextPart(injected),
+    ];
+  }
+  return null;
+};
+
+export const transformV2Context = async (runtime, input) => {
+  const messages = Array.isArray(input?.messages) ? input.messages : [];
+  const canonicalMessages = translateV2Messages(messages, input?.sessionID || null);
+  const result = await runtime.transformMessages(
+    { sessionID: input?.sessionID || null },
+    { messages: canonicalMessages },
+    {
+      deferDeliveryConfirmation: true,
+      enableSystemSurface: true,
+      pruneAbsentCacheEntries: false,
+      requireLatestUserMessageID: true,
+    },
+  );
+  try {
+    if (result?.surface === "system") {
+      const system = Array.isArray(input?.system) ? input.system : [];
+      const transformed = copyLatestInjectedContextToV2System(system, canonicalMessages);
+      if (transformed && !Array.isArray(input?.system)) {
+        throw new TypeError("OpenCode V2 context input omitted the mutable system array");
+      }
+      if (transformed) {
+        input.system.splice(0, input.system.length, ...transformed);
+      }
+      result?.completeDelivery?.("handed_off");
+      return;
+    }
+    if (!Array.isArray(input?.messages)) {
+      if (result?.applied) {
+        throw new TypeError("OpenCode V2 context input omitted the mutable messages array");
+      }
+      result?.completeDelivery?.("handed_off");
+      return;
+    }
+    const transformed = copyInjectedContextToV2Messages(messages, canonicalMessages);
+    input.messages.splice(0, input.messages.length, ...transformed);
+    result?.completeDelivery?.("handed_off");
+  } catch (error) {
+    result?.completeDelivery?.("failed");
+    throw error;
+  }
+};
+
+const createContextScheduler = () => {
+  const tails = new Map();
+  const schedule = async (key, run) => {
+    const previous = tails.get(key) || Promise.resolve();
+    // Serialize retries of one turn without blocking independent turns or sessions.
+    const task = previous.catch(() => {}).then(run);
+    tails.set(key, task);
+    try {
+      await task;
+    } finally {
+      if (tails.get(key) === task) tails.delete(key);
+    }
+  };
+  return {
+    schedule,
+    waitForIdle: () => Promise.allSettled([...tails.values()]),
+  };
+};
+
+const contextScheduleKey = (input) => {
+  const messages = Array.isArray(input?.messages) ? input.messages : [];
+  const latestUser = messages.findLast((message) => message?.role === "user");
+  const messageID = typeof latestUser?.id === "string" ? latestUser.id : "missing";
+  return `${input?.sessionID || "unknown"}:${messageID}`;
+};
 
 const canonicalEvent = (event, overrides) => ({
   type: overrides.type,
@@ -304,7 +489,7 @@ const consumeEvents = async (
           runtime,
           run: () => runtime.handleEvent(translated),
           scheduleCapture,
-          diagnosticCode: "v2_event_capture_failed",
+          diagnosticCode: V2_ADAPTER_DIAGNOSTICS.eventCaptureFailed,
           timeoutMs: eventTaskTimeoutMs,
           waitForCaptureTask,
           waitForDiagnosticTask,
@@ -318,7 +503,7 @@ const consumeEvents = async (
     if (!signal.aborted) {
       await reportDiagnosticWithinTimeout(
         runtime,
-        "v2_event_stream_ended_unexpectedly",
+        V2_ADAPTER_DIAGNOSTICS.eventStreamEndedUnexpectedly,
         waitForDiagnosticTask,
         eventTaskTimeoutMs,
       );
@@ -327,7 +512,7 @@ const consumeEvents = async (
     if (signal.aborted && error instanceof Error && error.name === "AbortError") return;
     await reportDiagnosticWithinTimeout(
       runtime,
-      "v2_event_stream_failed",
+      V2_ADAPTER_DIAGNOSTICS.eventStreamFailed,
       waitForDiagnosticTask,
       eventTaskTimeoutMs,
     );
@@ -338,10 +523,12 @@ const cleanupAdapter = async ({
   abortController,
   eventTask,
   eventTaskTimeoutMs,
+  contextTask,
   registrations,
   runtime,
   translator,
   waitForDiagnosticTask,
+  waitForContextTask,
   waitForEventTask,
   waitForRegistrationTask,
   waitForRuntimeDisposalTask,
@@ -357,7 +544,21 @@ const cleanupAdapter = async ({
   if (!registrationCleanup.completed) {
     await reportDiagnosticWithinTimeout(
       runtime,
-      "v2_registration_cleanup_timeout",
+      V2_ADAPTER_DIAGNOSTICS.registrationCleanupTimeout,
+      waitForDiagnosticTask,
+      eventTaskTimeoutMs,
+    );
+  }
+  let contextCompleted = false;
+  try {
+    contextCompleted = await waitForContextTask(contextTask, eventTaskTimeoutMs);
+  } catch (error) {
+    firstError ??= error;
+  }
+  if (!contextCompleted) {
+    await reportDiagnosticWithinTimeout(
+      runtime,
+      V2_ADAPTER_DIAGNOSTICS.contextCleanupTimeout,
       waitForDiagnosticTask,
       eventTaskTimeoutMs,
     );
@@ -372,7 +573,7 @@ const cleanupAdapter = async ({
   if (!completed) {
     await reportDiagnosticWithinTimeout(
       runtime,
-      "v2_event_stream_cleanup_timeout",
+      V2_ADAPTER_DIAGNOSTICS.eventStreamCleanupTimeout,
       waitForDiagnosticTask,
       eventTaskTimeoutMs,
     );
@@ -386,7 +587,7 @@ const cleanupAdapter = async ({
   if (!runtimeCleanup.completed) {
     await reportDiagnosticWithinTimeout(
       runtime,
-      "v2_runtime_cleanup_timeout",
+      V2_ADAPTER_DIAGNOSTICS.runtimeCleanupTimeout,
       waitForDiagnosticTask,
       eventTaskTimeoutMs,
     );
@@ -398,6 +599,7 @@ export const createOpenCodeV2Adapter = ({
   createRuntime = createCodememRuntime,
   eventTaskTimeoutMs = DEFAULT_EVENT_TASK_TIMEOUT_MS,
   waitForCaptureTask = defaultWaitForEventTask,
+  waitForContextTask = defaultWaitForEventTask,
   waitForDiagnosticTask = defaultWaitForEventTask,
   waitForEventTask = defaultWaitForEventTask,
   waitForRegistrationTask = defaultWaitForEventTask,
@@ -419,9 +621,25 @@ export const createOpenCodeV2Adapter = ({
   const registrations = [];
   const translator = createV2EventTranslator();
   const scheduleCapture = createCaptureScheduler();
+  const scheduleContext = createContextScheduler();
   let active = true;
   let eventTask;
   try {
+    registrations.push(await context.session.hook("context", async (input) => {
+      if (!active) return;
+      try {
+        await scheduleContext.schedule(contextScheduleKey(input), async () => {
+          if (active) await transformV2Context(runtime, input);
+        });
+      } catch {
+        await reportDiagnosticWithinTimeout(
+          runtime,
+          V2_ADAPTER_DIAGNOSTICS.contextRecallFailed,
+          waitForDiagnosticTask,
+          eventTaskTimeoutMs,
+        );
+      }
+    }));
     registrations.push(await context.tool.hook("execute.after", async (input) => {
       if (!active) return;
       const translated = translateV2ToolResult(input);
@@ -429,7 +647,7 @@ export const createOpenCodeV2Adapter = ({
         runtime,
         run: () => runtime.handleToolResult(translated.input, translated.output),
         scheduleCapture,
-        diagnosticCode: "v2_tool_capture_failed",
+        diagnosticCode: V2_ADAPTER_DIAGNOSTICS.toolCaptureFailed,
         timeoutMs: eventTaskTimeoutMs,
         waitForCaptureTask,
         waitForDiagnosticTask,
@@ -460,7 +678,7 @@ export const createOpenCodeV2Adapter = ({
     if (!registrationCleanup.completed) {
       await reportDiagnosticWithinTimeout(
         runtime,
-        "v2_registration_cleanup_timeout",
+        V2_ADAPTER_DIAGNOSTICS.registrationCleanupTimeout,
         waitForDiagnosticTask,
         eventTaskTimeoutMs,
       );
@@ -473,7 +691,7 @@ export const createOpenCodeV2Adapter = ({
     if (!runtimeCleanup.completed) {
       await reportDiagnosticWithinTimeout(
         runtime,
-        "v2_runtime_cleanup_timeout",
+        V2_ADAPTER_DIAGNOSTICS.runtimeCleanupTimeout,
         waitForDiagnosticTask,
         eventTaskTimeoutMs,
       );
@@ -488,12 +706,14 @@ export const createOpenCodeV2Adapter = ({
       active = false;
       cleanupTask = cleanupAdapter({
         abortController,
+        contextTask: scheduleContext.waitForIdle(),
         eventTask,
         eventTaskTimeoutMs,
         registrations,
         runtime,
         translator,
         waitForDiagnosticTask,
+        waitForContextTask,
         waitForEventTask,
         waitForRegistrationTask,
         waitForRuntimeDisposalTask,

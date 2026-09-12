@@ -11,6 +11,10 @@ const runtimeUrl = pathToFileURL(
 	path.resolve(import.meta.dirname, "../.opencode/lib/runtime.js"),
 ).href;
 const runtimeModule = await import(runtimeUrl);
+const hostContractUrl = pathToFileURL(
+	path.resolve(import.meta.dirname, "../.opencode/lib/host-contract.js"),
+).href;
+const hostContract = await import(hostContractUrl);
 
 function makeRuntime() {
 	return {
@@ -19,13 +23,75 @@ function makeRuntime() {
 		handleEvent: vi.fn(async () => undefined),
 		handleToolResult: vi.fn(async () => undefined),
 		reportDiagnostic: vi.fn(async () => undefined),
+		transformMessages: vi.fn(
+			async (
+				_input: { sessionID?: string | null },
+				_output: { messages?: Array<Record<string, unknown>> },
+			): Promise<unknown> => ({ applied: false, surface: "message" }),
+		),
 		tools: {},
 	};
+}
+
+const RECALL_TEXT = "[codemem context]\nRemember the adapter contract.";
+
+function makeRecallRuntime() {
+	const runtime = makeRuntime();
+	runtime.transformMessages.mockImplementation(async (input, output) => {
+		const messages = output.messages as Array<{
+			info: { id?: string; role: string; sessionID?: string };
+			parts: Array<Record<string, unknown>>;
+		}>;
+		const latestUser = messages.findLast((message) => message.info.role === "user");
+		if (!latestUser?.info.id) return { applied: false, surface: "message" };
+		latestUser.parts.push({
+			id: `codemem-context-${latestUser.info.id}`,
+			messageID: latestUser.info.id,
+			metadata: { codemem: { attemptId: `attempt-${latestUser.info.id}` } },
+			sessionID: input.sessionID,
+			synthetic: true,
+			text: RECALL_TEXT,
+			type: "text",
+		});
+		return { applied: true, surface: "message" };
+	});
+	return runtime;
+}
+
+function userMessage(
+	id: string | undefined,
+	text: string,
+): { id?: string; role: string; content: Array<Record<string, unknown>> } {
+	return {
+		...(id ? { id } : {}),
+		role: "user",
+		content: [{ type: "text", text }],
+	};
+}
+
+function retainedRecallPart(messageID: string, text = RECALL_TEXT) {
+	return {
+		type: "text",
+		text,
+		metadata: {
+			codemem: { v: 1, digest: "a".repeat(64), items: [] },
+			codememPart: { v: 1, synthetic: true, id: `codemem-context-${messageID}` },
+		},
+	};
+}
+
+function recallText(message: { content: Array<Record<string, unknown>> } | undefined) {
+	const part = message?.content.find((part) => {
+		const metadata = part.metadata as Record<string, unknown> | undefined;
+		return part.text === RECALL_TEXT && metadata?.codememPart != null;
+	});
+	return typeof part?.text === "string" ? part.text : undefined;
 }
 
 function makeContext(
 	events: readonly unknown[] = [],
 	options: {
+		contextHookError?: Error;
 		eventError?: Error;
 		hookError?: Error;
 		stuck?: boolean;
@@ -35,6 +101,7 @@ function makeContext(
 	} = {},
 ) {
 	const aborted = { value: false };
+	const contextDispose = vi.fn(async () => undefined);
 	const hookDispose = vi.fn(async () => {
 		if (options.stuckDispose) await new Promise(() => {});
 	});
@@ -42,6 +109,7 @@ function makeContext(
 		if (options.stuckTransformDispose) await new Promise(() => {});
 	});
 	const addedTools: Array<Record<string, unknown>> = [];
+	let contextHook: ((input: Record<string, unknown>) => Promise<void>) | undefined;
 	let toolHook: ((input: unknown) => Promise<void>) | undefined;
 	let toolTransform:
 		| ((editor: { add: (tool: Record<string, unknown>) => void }) => void)
@@ -66,6 +134,15 @@ function makeContext(
 				});
 			},
 		},
+		session: {
+			hook: vi.fn(
+				async (name: string, callback: (input: Record<string, unknown>) => Promise<void>) => {
+					if (name === "context" && options.contextHookError) throw options.contextHookError;
+					if (name === "context") contextHook = callback;
+					return { dispose: contextDispose };
+				},
+			),
+		},
 		tool: {
 			hook: vi.fn(async (_name: string, callback: (input: unknown) => Promise<void>) => {
 				if (options.hookError) throw options.hookError;
@@ -86,7 +163,9 @@ function makeContext(
 		aborted,
 		addedTools,
 		context,
+		contextDispose,
 		hookDispose,
+		invokeContext: (input: Record<string, unknown>) => contextHook?.(input),
 		invokeTool: (input: unknown) => toolHook?.(input),
 		invokeTransform: () => toolTransform?.({ add: (tool) => addedTools.push(tool) }),
 		transformDispose,
@@ -364,6 +443,323 @@ describe("OpenCode 2 memory tools", () => {
 	});
 });
 
+describe("OpenCode 2 automatic recall", () => {
+	it("translates synthetic recall context onto the latest identified user message", async () => {
+		// Arrange
+		const runtime = makeRecallRuntime();
+		const fixture = makeContext();
+		const setup = adapter.createOpenCodeV2Adapter({ createRuntime: async () => runtime });
+		const cleanup = await setup(fixture.context);
+		const input = {
+			sessionID: "session-1",
+			messages: [
+				userMessage("user-1", "First prompt"),
+				{ id: "assistant-1", role: "assistant", content: [{ type: "text", text: "Reply" }] },
+				userMessage("user-2", "Latest prompt"),
+			],
+		};
+
+		// Act
+		await fixture.invokeContext(input);
+
+		// Assert
+		expect(runtime.transformMessages).toHaveBeenCalledOnce();
+		expect(runtime.transformMessages).toHaveBeenCalledWith(
+			{ sessionID: "session-1" },
+			expect.objectContaining({
+				messages: expect.arrayContaining([
+					expect.objectContaining({
+						info: expect.objectContaining({
+							id: "user-2",
+							role: "user",
+							sessionID: "session-1",
+						}),
+					}),
+				]),
+			}),
+			{
+				deferDeliveryConfirmation: true,
+				enableSystemSurface: true,
+				pruneAbsentCacheEntries: false,
+				requireLatestUserMessageID: true,
+			},
+		);
+		expect(recallText(input.messages[2])).toBe(RECALL_TEXT);
+		expect(recallText(input.messages[0])).toBeUndefined();
+		await cleanup?.();
+	});
+
+	it("replays byte-identical recall for retries and tool continuations of one user turn", async () => {
+		// Arrange
+		const runtime = makeRecallRuntime();
+		const fixture = makeContext();
+		const setup = adapter.createOpenCodeV2Adapter({ createRuntime: async () => runtime });
+		const cleanup = await setup(fixture.context);
+		const makeTurn = (includeToolContinuation = false) => ({
+			sessionID: "session-1",
+			messages: [
+				userMessage("user-1", "Recall this"),
+				...(includeToolContinuation
+					? [
+							{
+								id: "assistant-1",
+								role: "assistant",
+								content: [{ type: "tool-call", id: "call-1", name: "read", input: {} }],
+							},
+							{
+								id: "tool-1",
+								role: "tool",
+								content: [
+									{
+										type: "tool-result",
+										id: "call-1",
+										name: "read",
+										result: { type: "text", value: "ok" },
+									},
+								],
+							},
+						]
+					: []),
+			],
+		});
+		const initial = makeTurn();
+		const retry = makeTurn();
+		const continuation = makeTurn(true);
+
+		// Act
+		await fixture.invokeContext(initial);
+		await fixture.invokeContext(retry);
+		await fixture.invokeContext(continuation);
+
+		// Assert
+		const recalled = [initial, retry, continuation].map((turn) => recallText(turn.messages[0]));
+		expect(runtime.transformMessages).toHaveBeenCalledTimes(3);
+		expect(recalled).toEqual([RECALL_TEXT, RECALL_TEXT, RECALL_TEXT]);
+		await cleanup?.();
+	});
+
+	it("serializes retries of one turn without blocking a different turn", async () => {
+		const runtime = makeRuntime();
+		let releaseFirst: (() => void) | undefined;
+		const firstPending = new Promise<void>((resolve) => {
+			releaseFirst = resolve;
+		});
+		runtime.transformMessages.mockImplementation(async (input) => {
+			if (input.sessionID === "session-1") await firstPending;
+			return { applied: false, surface: "message" };
+		});
+		const fixture = makeContext();
+		const setup = adapter.createOpenCodeV2Adapter({ createRuntime: async () => runtime });
+		const cleanup = await setup(fixture.context);
+		const first = fixture.invokeContext({
+			sessionID: "session-1",
+			messages: [userMessage("user-1", "First")],
+		});
+		const retry = fixture.invokeContext({
+			sessionID: "session-1",
+			messages: [userMessage("user-1", "Retry")],
+		});
+		const nextTurn = fixture.invokeContext({
+			sessionID: "session-1",
+			messages: [userMessage("user-2", "Next")],
+		});
+
+		await vi.waitFor(() => expect(runtime.transformMessages).toHaveBeenCalledTimes(2));
+		expect(
+			runtime.transformMessages.mock.calls.map(([, output]) => {
+				const messages = output.messages as Array<{ info: { id?: string; role: string } }>;
+				return messages.findLast((message) => message.info.role === "user")?.info.id;
+			}),
+		).toEqual(["user-1", "user-2"]);
+		releaseFirst?.();
+		await Promise.all([first, retry, nextTurn]);
+		expect(runtime.transformMessages).toHaveBeenCalledTimes(3);
+		await cleanup?.();
+	});
+});
+
+describe("OpenCode 2 automatic recall turn safety", () => {
+	it("treats a second identified user message as a new turn", async () => {
+		// Arrange
+		const runtime = makeRecallRuntime();
+		const fixture = makeContext();
+		const setup = adapter.createOpenCodeV2Adapter({ createRuntime: async () => runtime });
+		const cleanup = await setup(fixture.context);
+		const firstTurn = {
+			sessionID: "session-1",
+			messages: [userMessage("user-1", "First prompt")],
+		};
+		const secondTurn = {
+			sessionID: "session-1",
+			messages: [
+				userMessage("user-1", "First prompt"),
+				{ id: "assistant-1", role: "assistant", content: [{ type: "text", text: "Reply" }] },
+				userMessage("user-2", "Second prompt"),
+			],
+		};
+
+		// Act
+		await fixture.invokeContext(firstTurn);
+		await fixture.invokeContext(secondTurn);
+
+		// Assert
+		expect(runtime.transformMessages).toHaveBeenCalledTimes(2);
+		expect(recallText(firstTurn.messages[0])).toBe(RECALL_TEXT);
+		expect(recallText(secondTurn.messages[0])).toBeUndefined();
+		expect(recallText(secondTurn.messages[2])).toBe(RECALL_TEXT);
+		await cleanup?.();
+	});
+
+	it("skips runtime recall when the latest user message has no ID", async () => {
+		// Arrange
+		const runtime = makeRecallRuntime();
+		const fixture = makeContext();
+		const setup = adapter.createOpenCodeV2Adapter({ createRuntime: async () => runtime });
+		const cleanup = await setup(fixture.context);
+		const input = {
+			sessionID: "session-1",
+			messages: [userMessage("user-1", "Identified"), userMessage(undefined, "Unsafe latest")],
+		};
+
+		// Act
+		await fixture.invokeContext(input);
+
+		// Assert
+		expect(runtime.transformMessages).toHaveBeenCalledWith(
+			{ sessionID: "session-1" },
+			expect.any(Object),
+			{
+				deferDeliveryConfirmation: true,
+				enableSystemSurface: true,
+				pruneAbsentCacheEntries: false,
+				requireLatestUserMessageID: true,
+			},
+		);
+		expect(input.messages.every((message) => recallText(message) === undefined)).toBe(true);
+		await cleanup?.();
+	});
+});
+
+describe("OpenCode 2 automatic recall surfaces and failures", () => {
+	it("preserves retained recall when a later unidentified turn is skipped", async () => {
+		const runtime = makeRecallRuntime();
+		const fixture = makeContext();
+		const setup = adapter.createOpenCodeV2Adapter({ createRuntime: async () => runtime });
+		const cleanup = await setup(fixture.context);
+		const retained = userMessage("user-1", "Identified");
+		retained.content.push(retainedRecallPart("user-1"));
+		const input = {
+			sessionID: "session-1",
+			messages: [retained, userMessage(undefined, "Unsafe latest")],
+		};
+
+		await fixture.invokeContext(input);
+
+		expect(recallText(input.messages[0])).toBe(RECALL_TEXT);
+		expect(recallText(input.messages[1])).toBeUndefined();
+		await cleanup?.();
+	});
+
+	it("does not promote a recall marker copied onto a different message", async () => {
+		const translated = adapter.translateV2Messages(
+			[
+				{
+					...userMessage("user-2", "New turn"),
+					content: [retainedRecallPart("user-1")],
+				},
+			],
+			"session-1",
+		);
+
+		expect(translated[0].parts).toEqual([]);
+	});
+
+	it("maps the legacy system surface onto V2 system parts", async () => {
+		const runtime = makeRecallRuntime();
+		runtime.transformMessages.mockImplementation(async (_input, output) => {
+			const messages = output.messages as Array<{
+				info: { id?: string; role: string };
+				parts: Array<Record<string, unknown>>;
+			}>;
+			const latestUser = messages.findLast((message) => message.info.role === "user");
+			latestUser?.parts.push({
+				id: `codemem-context-${latestUser.info.id}`,
+				metadata: { codemem: { v: 1, digest: "b".repeat(64), items: [] } },
+				synthetic: true,
+				text: RECALL_TEXT,
+				type: "text",
+			});
+			return { applied: true, surface: "system" };
+		});
+		const fixture = makeContext();
+		const setup = adapter.createOpenCodeV2Adapter({ createRuntime: async () => runtime });
+		const cleanup = await setup(fixture.context);
+		const input = {
+			sessionID: "session-1",
+			system: [{ type: "text", text: "base system" }],
+			messages: [userMessage("user-1", "Recall")],
+		};
+
+		await fixture.invokeContext(input);
+
+		expect(input.system).toHaveLength(2);
+		expect(input.system[1]).toMatchObject({ text: RECALL_TEXT, type: "text" });
+		expect(recallText(input.messages[0])).toBeUndefined();
+		await cleanup?.();
+	});
+
+	it("contains adapter translation failures without breaking the context hook", async () => {
+		const runtime = makeRuntime();
+		runtime.transformMessages.mockRejectedValueOnce(new Error("translation failed"));
+		const fixture = makeContext();
+		const setup = adapter.createOpenCodeV2Adapter({ createRuntime: async () => runtime });
+		const cleanup = await setup(fixture.context);
+
+		await expect(
+			fixture.invokeContext({
+				sessionID: "session-1",
+				messages: [userMessage("user-1", "Recall")],
+			}),
+		).resolves.toBeUndefined();
+		expect(runtime.reportDiagnostic).toHaveBeenCalledWith("v2_context_recall_failed");
+		await cleanup?.();
+	});
+
+	it("marks deferred delivery failed when the host message array rejects mutation", async () => {
+		const runtime = makeRecallRuntime();
+		const completeDelivery = vi.fn();
+		runtime.transformMessages.mockImplementationOnce(async (input, output) => {
+			const messages = output.messages as Array<{
+				info: { id?: string; role: string };
+				parts: Array<Record<string, unknown>>;
+			}>;
+			const latestUser = messages.findLast((message) => message.info.role === "user");
+			latestUser?.parts.push({
+				id: `codemem-context-${latestUser.info.id}`,
+				messageID: latestUser.info.id,
+				sessionID: input.sessionID,
+				synthetic: true,
+				text: RECALL_TEXT,
+				type: "text",
+			});
+			return { applied: true, completeDelivery, surface: "message" };
+		});
+		const fixture = makeContext();
+		const setup = adapter.createOpenCodeV2Adapter({ createRuntime: async () => runtime });
+		const cleanup = await setup(fixture.context);
+		const messages = Object.freeze([userMessage("user-1", "Recall")]);
+
+		await expect(
+			fixture.invokeContext({ sessionID: "session-1", messages }),
+		).resolves.toBeUndefined();
+
+		expect(completeDelivery).toHaveBeenCalledOnce();
+		expect(completeDelivery).toHaveBeenCalledWith("failed");
+		expect(runtime.reportDiagnostic).toHaveBeenCalledWith("v2_context_recall_failed");
+		await cleanup?.();
+	});
+});
+
 describe("OpenCode 2 adapter lifecycle", () => {
 	it("captures completed and failed tools without changing their outcomes", async () => {
 		const runtime = makeRuntime();
@@ -448,6 +844,7 @@ describe("OpenCode 2 adapter lifecycle", () => {
 		await Promise.all([cleanup?.(), cleanup?.()]);
 
 		expect(fixture.aborted.value).toBe(true);
+		expect(fixture.contextDispose).toHaveBeenCalledTimes(1);
 		expect(fixture.hookDispose).toHaveBeenCalledTimes(1);
 		expect(runtime.dispose).toHaveBeenCalledTimes(1);
 		expect(createRuntime).toHaveBeenCalledWith(
@@ -653,21 +1050,61 @@ describe("OpenCode 2 adapter capture timeout", () => {
 });
 
 describe("OpenCode 2 adapter setup", () => {
-	it("disposes the runtime after partial setup failure", async () => {
+	it("keeps every adapter diagnostic in the runtime allowlist", () => {
+		expect(new Set(runtimeModule.__testUtils.adapterDiagnosticCodes)).toEqual(
+			new Set(Object.values(hostContract.V2_ADAPTER_DIAGNOSTICS)),
+		);
+	});
+
+	it("bounds each session replay cache while refreshing reused entries", () => {
+		const cache = new Map<string, { text: string }>();
+		const { MAX_MESSAGE_INJECTION_CACHE_ENTRIES, setSessionMessageInjectionCacheEntry } =
+			runtimeModule.__testUtils;
+		for (let index = 0; index < MAX_MESSAGE_INJECTION_CACHE_ENTRIES; index += 1) {
+			setSessionMessageInjectionCacheEntry(cache, `message-${index}`, { text: `${index}` });
+		}
+		setSessionMessageInjectionCacheEntry(cache, "message-0", { text: "refreshed" });
+		setSessionMessageInjectionCacheEntry(cache, "message-overflow", { text: "overflow" });
+
+		expect(cache.size).toBe(MAX_MESSAGE_INJECTION_CACHE_ENTRIES);
+		expect(cache.get("message-0")).toEqual({ text: "refreshed" });
+		expect(cache.has("message-1")).toBe(false);
+	});
+
+	it("disposes the runtime when context-hook registration fails", async () => {
+		const runtime = makeRuntime();
+		const fixture = makeContext([], { contextHookError: new Error("context unavailable") });
+		const setup = adapter.createOpenCodeV2Adapter({ createRuntime: async () => runtime });
+
+		await expect(setup(fixture.context)).rejects.toThrow("context unavailable");
+		expect(runtime.dispose).toHaveBeenCalledOnce();
+	});
+
+	it("disposes the context registration and runtime after a later hook fails", async () => {
+		// Arrange
 		const runtime = makeRuntime();
 		const fixture = makeContext([], { hookError: new Error("hook unavailable") });
 		const setup = adapter.createOpenCodeV2Adapter({ createRuntime: async () => runtime });
 
+		// Act
 		await expect(setup(fixture.context)).rejects.toThrow("hook unavailable");
+
+		// Assert
+		expect(fixture.contextDispose).toHaveBeenCalledOnce();
 		expect(runtime.dispose).toHaveBeenCalledOnce();
 	});
 
 	it("disposes completed registrations when memory-tool setup fails", async () => {
+		// Arrange
 		const runtime = makeRuntime();
 		const fixture = makeContext([], { transformError: new Error("transform unavailable") });
 		const setup = adapter.createOpenCodeV2Adapter({ createRuntime: async () => runtime });
 
+		// Act
 		await expect(setup(fixture.context)).rejects.toThrow("transform unavailable");
+
+		// Assert
+		expect(fixture.contextDispose).toHaveBeenCalledOnce();
 		expect(fixture.hookDispose).toHaveBeenCalledOnce();
 		expect(runtime.dispose).toHaveBeenCalledOnce();
 	});
@@ -697,7 +1134,7 @@ describe("OpenCode 2 adapter setup", () => {
 
 		expect(result).toBe("transform unavailable");
 		expect(waitForDiagnosticTask).toHaveBeenCalledOnce();
-		expect(waitForRegistrationTask).toHaveBeenCalledOnce();
+		expect(waitForRegistrationTask).toHaveBeenCalledTimes(2);
 		expect(fixture.hookDispose).toHaveBeenCalledOnce();
 		expect(runtime.reportDiagnostic).toHaveBeenCalledWith("v2_registration_cleanup_timeout");
 		expect(runtime.dispose).toHaveBeenCalledOnce();
@@ -713,6 +1150,37 @@ describe("OpenCode 2 adapter setup", () => {
 });
 
 describe("OpenCode 2 adapter cleanup timeout", () => {
+	it("bounds an in-flight context transform before disposing the runtime", async () => {
+		const runtime = makeRuntime();
+		let releaseContext: (() => void) | undefined;
+		runtime.transformMessages.mockImplementation(
+			async () =>
+				new Promise((resolve) => {
+					releaseContext = () => resolve({ applied: false, surface: "message" });
+				}),
+		);
+		const waitForContextTask = vi.fn(async () => false);
+		const fixture = makeContext();
+		const setup = adapter.createOpenCodeV2Adapter({
+			createRuntime: async () => runtime,
+			waitForContextTask,
+		});
+		const cleanup = await setup(fixture.context);
+		const contextTask = fixture.invokeContext({
+			sessionID: "session-1",
+			messages: [userMessage("user-1", "Recall")],
+		});
+		await vi.waitFor(() => expect(runtime.transformMessages).toHaveBeenCalledOnce());
+
+		await cleanup?.();
+
+		expect(waitForContextTask).toHaveBeenCalledOnce();
+		expect(runtime.reportDiagnostic).toHaveBeenCalledWith("v2_context_cleanup_timeout");
+		expect(runtime.dispose).toHaveBeenCalledOnce();
+		releaseContext?.();
+		await contextTask;
+	});
+
 	it("deactivates the runtime before disposing around a stalled event handler", async () => {
 		const runtime = makeRuntime();
 		let releaseCapture: (() => void) | undefined;
@@ -790,7 +1258,7 @@ describe("OpenCode 2 registration and stream cleanup timeout", () => {
 
 		expect(result).toBe("completed");
 		expect(waitForDiagnosticTask).toHaveBeenCalledOnce();
-		expect(waitForRegistrationTask).toHaveBeenCalledTimes(2);
+		expect(waitForRegistrationTask).toHaveBeenCalledTimes(3);
 		expect(runtime.reportDiagnostic).toHaveBeenCalledWith("v2_registration_cleanup_timeout");
 		expect(runtime.dispose).toHaveBeenCalledOnce();
 		await fixture.invokeTool({
@@ -942,6 +1410,9 @@ describe("OpenCode 2 event stream cleanup timeout", () => {
 						markDone?.();
 					}
 				},
+			},
+			session: {
+				hook: vi.fn(async () => ({ dispose: vi.fn(async () => undefined) })),
 			},
 			tool: {
 				hook: vi.fn(async () => ({ dispose: vi.fn(async () => undefined) })),
