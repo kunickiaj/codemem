@@ -275,12 +275,17 @@ export interface ObserverAuthResolveOptions {
 	explicitToken?: string | null;
 	envTokens?: string[];
 	oauthToken?: string | null;
+	/**
+	 * In-memory credential from pi auth.json (D8). Used only when no explicit,
+	 * env, or oauth token is available. Never persist or log this value.
+	 */
+	piToken?: string | null;
 	forceRefresh?: boolean;
 }
 
 /**
  * Resolves auth credentials through a configurable cascade:
- * explicit → env → oauth → file → command.
+ * explicit → env → oauth → pi → file → command.
  *
  * Results from file/command sources are cached for `cacheTtlS` seconds.
  */
@@ -314,6 +319,7 @@ export class ObserverAuthAdapter {
 		const explicitToken = opts?.explicitToken ?? null;
 		const envTokens = opts?.envTokens ?? [];
 		const oauthToken = opts?.oauthToken ?? null;
+		const piToken = opts?.piToken ?? null;
 		const forceRefresh = opts?.forceRefresh ?? false;
 
 		if (source === "none") return noAuth();
@@ -341,6 +347,11 @@ export class ObserverAuthAdapter {
 			if (!token && oauthToken) {
 				token = oauthToken;
 				tokenSource = "oauth";
+			}
+			// D8: pi auth.json credential at point of use (after explicit/env/oauth).
+			if (!token && piToken) {
+				token = piToken;
+				tokenSource = "pi";
 			}
 		} else if (source === "env") {
 			token = envTokens.find((t) => !!t) ?? null;

@@ -685,6 +685,19 @@ export {
 	PI_FLUSH_ONLY_EVENTS,
 } from "./pi-hooks.js";
 export type {
+	PiObserverResolveErr,
+	PiObserverResolveInput,
+	PiObserverResolveOk,
+	PiObserverResolveReason,
+	PiObserverResolveResult,
+} from "./pi-observer-config.js";
+export {
+	describePiObserverStatus,
+	hasExplicitObserverEnvOverride,
+	resolvePiAgentDir,
+	resolvePiObserverConfig,
+} from "./pi-observer-config.js";
+export type {
 	BlockedPolicyTeamDeviceEligibilityResult,
 	DerivePolicyTeamDeviceEligibilityInput,
 	EligiblePolicyTeamDeviceEligibilityResult,
