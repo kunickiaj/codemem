@@ -1,6 +1,9 @@
 import { appendFile } from "node:fs/promises";
 import { Plugin } from "@opencode/plugin";
 
+const SYSTEM_PART_CONTRACT_TEXT = "codemem-v2-system-part-contract";
+const MESSAGE_PART_CONTRACT_TEXT = "codemem-v2-message-part-contract";
+
 export const OPEN_CODE_V2_CONTRACT_VERSION = "2.0.2";
 
 export type ContractRecord = Readonly<Record<string, unknown>>;
@@ -108,8 +111,23 @@ async function consumeEvents(
 async function registerContextHook(context: Plugin.Context, report: ContractReporter) {
 	return context.session.hook("context", async (input) => {
 		const alreadyMarked = input.options.codememContract === true;
-		input.system = [...input.system];
-		input.messages = [...input.messages];
+		input.system = [...input.system, { type: "text", text: SYSTEM_PART_CONTRACT_TEXT }];
+		const latestUserIndex = input.messages.findLastIndex((message) => message.role === "user");
+		input.messages = input.messages.map((message, index) => {
+			if (index !== latestUserIndex || message.role !== "user") return { ...message };
+			return {
+				...message,
+				content: [
+					...message.content,
+					{
+						type: "text",
+						text: MESSAGE_PART_CONTRACT_TEXT,
+						metadata: { codememPart: { v: 1, synthetic: true } },
+					},
+				],
+			};
+		});
+		const latestUser = input.messages.findLast((message) => message.role === "user");
 		input.tools = { ...input.tools };
 		input.options = { ...input.options, codememContract: true };
 		await report({
@@ -121,10 +139,18 @@ async function registerContextHook(context: Plugin.Context, report: ContractRepo
 			hasSessionID: Boolean(input.sessionID),
 			latestUserMessageID: latestUserMessageID(input.messages),
 			messagesMutable: Array.isArray(input.messages),
+			messagePartAccepted:
+				latestUser?.role === "user" &&
+				latestUser.content.some(
+					(part) => part.type === "text" && part.text === MESSAGE_PART_CONTRACT_TEXT,
+				),
 			model: input.model,
 			optionsMutable: typeof input.options === "object",
 			sessionID: input.sessionID,
 			systemMutable: Array.isArray(input.system),
+			systemPartAccepted: input.system.some(
+				(part) => part.type === "text" && part.text === SYSTEM_PART_CONTRACT_TEXT,
+			),
 			toolsMutable: typeof input.tools === "object",
 			userMessageIDs: userMessageIDs(input.messages),
 		});

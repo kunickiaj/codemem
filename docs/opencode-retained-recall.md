@@ -1,6 +1,10 @@
 # OpenCode Retained Recall
 
-This retained-recall contract applies to the OpenCode 1 plugin. The experimental OpenCode 2 beta entrypoint captures activity, manages lifecycle cleanup, and exposes manual `mem-status`, `mem-recent`, and `mem-stats` tools. It does not perform automatic recall because its context hook has no request kind or request ID, so compaction and transient safety cannot be guaranteed.
+This retained-recall contract applies to the OpenCode message surface. OpenCode
+2.0.2 runs automatic recall through `session.context` only: it requires the
+latest user-message ID and skips safely when that identity is missing. Retries
+and tool continuations replay retained context byte-for-byte; compaction, title,
+and generate hooks stay isolated.
 
 Automatic message recall must preserve retained bytes and derive allowance from the current transform output, not a lifetime counter.
 
@@ -10,7 +14,7 @@ The host message list is the evidence for which message IDs remain in context.
 
 - Identify automatic text parts by the existing `codemem-context-` part ID prefix, not by matching prose inside user messages.
 - Adopt host-provided parts without changing their text or order, including the latest message after restart. Never retrieve merely to repair a historical ledger identity.
-- Replay cached parts only for message IDs present in the current session's transform. Remove cache entries for absent IDs on ordinary transforms. Cache membership alone is not retained usage.
+- Replay cached parts only for message IDs present in the current session's transform. Serialized V1 transforms remove absent entries immediately. V2 keeps a bounded per-session replay cache because distinct turns can overlap; an older in-flight turn must not evict a newer turn's bytes. Cache membership alone is not retained usage.
 - Count every automatic part in the current hook session's resulting message list using `ceil(text.length / 4)` per full wrapped block. Preserve foreign-session entries, but do not charge them to the current session. This estimates JavaScript string characters, not provider tokens or UTF-8 bytes.
 - A compaction notification skips new recall for one transform, but neither clears replay state nor releases allowance. Only the next ordinary message list can demonstrate reclamation.
 - Preserve host blocks even when their total exceeds a lowered ceiling, or their count exceeds the old replay-cache message limit. No eviction or truncation of present blocks is permitted.
@@ -106,7 +110,7 @@ Optional plugin logs remain per-transform snapshots rather than the durable Heal
 
 When `CODEMEM_PLUGIN_LOG` enables local logging, `inject.recall` lines contain a JSON object with only `new_tokens`, `retained_tokens`, `duplicates_omitted`, and `reason`. `new_tokens` counts newly attached wrapped blocks; replay, reconstruction, duplicate-only output, and failed attachment report zero. `retained_tokens` is the current hook session's wrapped-block sum, not a lifetime total or a sum across foreign-session entries. Do not sum retained snapshots across turns. Compaction snapshots describe only their supplied output and never reset replay state. These are hook handoff estimates, not proof that a provider consumed the request.
 
-Reasons are `delivered`, `replay`, `allowance_exhausted`, `unchanged_memories`, `continuation_only`, `budget_rejected`, `delivery_failed`, `no_context`, `compaction_skipped`, `injection_disabled`, `missing_history`, and `missing_user`. No prompts, text, paths, memory IDs, fingerprints, or session IDs enter these measurement objects. Recording errors are best-effort and cannot block recall. Existing retrieval-ledger records still describe retrieval, not the post-dedup delivered item set; policy skip repeats are memoized for the latest request per session in a bounded map.
+Reasons are `delivered`, `replay`, `allowance_exhausted`, `unchanged_memories`, `continuation_only`, `budget_rejected`, `delivery_failed`, `no_context`, `compaction_skipped`, `injection_disabled`, `missing_history`, `missing_user`, and `missing_message_identity`. No prompts, text, paths, memory IDs, fingerprints, or session IDs enter these measurement objects. Recording errors are best-effort and cannot block recall. Existing retrieval-ledger records still describe retrieval, not the post-dedup delivered item set; policy skip repeats are memoized for the latest request per session in a bounded map.
 
 ## Evaluation Interface
 

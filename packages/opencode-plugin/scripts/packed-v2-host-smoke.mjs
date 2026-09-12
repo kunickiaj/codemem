@@ -117,6 +117,12 @@ async function startProvider(projectDir) {
 			messages: body.messages?.map((message) => ({
 				role: message.role,
 				mentionsFailure: JSON.stringify(message.content).includes("failure"),
+				mentionsSystemContract: JSON.stringify(message.content).includes(
+					"codemem-v2-system-part-contract",
+				),
+				mentionsMessageContract: JSON.stringify(message.content).includes(
+					"codemem-v2-message-part-contract",
+				),
 			})),
 			tools: body.tools
 				?.filter((tool) => tool.function?.name === "read")
@@ -756,10 +762,12 @@ try {
 				record.alreadyMarked === false &&
 				record.hasAgent &&
 				record.messagesMutable &&
+				record.messagePartAccepted &&
 				record.hasModel &&
 				record.hasSessionID &&
 				record.optionsMutable &&
 				record.systemMutable &&
+				record.systemPartAccepted &&
 				record.toolsMutable &&
 				record.sessionID === sessionID &&
 				typeof record.latestUserMessageID === "string" &&
@@ -769,6 +777,22 @@ try {
 				record.model != null,
 		),
 		"Pinned host context hook did not expose fresh mutable fields and durable message identity",
+	);
+	assert(
+		provider.observations().some((observation) =>
+			observation.messages?.some(
+				(message) => message.role === "system" && message.mentionsSystemContract,
+			),
+		),
+		"Pinned host did not forward an object-shaped context system part to the model request",
+	);
+	assert(
+		provider.observations().some((observation) =>
+			observation.messages?.some(
+				(message) => message.role === "user" && message.mentionsMessageContract,
+			),
+		),
+		"Pinned host did not forward a replaced message object with an object-shaped text part",
 	);
 	for (const phase of ["compaction", "generate", "title"]) {
 		assert(

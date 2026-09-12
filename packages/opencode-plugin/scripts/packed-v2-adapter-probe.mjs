@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { join } from "node:path";
 
 const V2_SESSION = "packed-session";
 const V1_SESSION = "packed-v1-session";
@@ -13,18 +14,56 @@ function assert(condition, message) {
 	if (!condition) throw new Error(message);
 }
 
-async function startReceiver() {
+async function startReceiver(profile) {
 	const rows = [];
+	const requests = {
+		ledger: 0,
+		ledgerActions: [],
+		pack: 0,
+		packBodies: [],
+		profile: 0,
+		rawEvents: 0,
+	};
+	const readBody = async (request) => {
+		const chunks = [];
+		for await (const chunk of request) chunks.push(chunk);
+		return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+	};
 	const server = createServer(async (request, response) => {
 		if (request.method === "GET" && request.url?.startsWith("/api/raw-events/status")) {
 			response.writeHead(200, { "content-type": "application/json" });
 			response.end(JSON.stringify({ ingest: { available: true } }));
 			return;
 		}
+		if (request.method === "GET" && request.url === "/api/prompt-pack-profile") {
+			requests.profile += 1;
+			response.writeHead(200, { "content-type": "application/json" });
+			response.end(JSON.stringify(profile.value));
+			return;
+		}
+		if (request.method === "POST" && request.url === "/api/pack") {
+			requests.pack += 1;
+			requests.packBodies.push(await readBody(request));
+			response.writeHead(200, { "content-type": "application/json" });
+			response.end(
+				JSON.stringify({
+					pack_text: `Packed production recall ${requests.pack}`,
+					metrics: { pack_tokens: 4, total_items: 1 },
+				}),
+			);
+			return;
+		}
+		if (request.method === "POST" && request.url === "/api/prompt-pack-ledger") {
+			requests.ledger += 1;
+			const body = await readBody(request);
+			requests.ledgerActions.push(body.action);
+			response.writeHead(200, { "content-type": "application/json" });
+			response.end(JSON.stringify({ ok: true }));
+			return;
+		}
 		if (request.method === "POST" && request.url === "/api/raw-events") {
-			const chunks = [];
-			for await (const chunk of request) chunks.push(chunk);
-			rows.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+			requests.rawEvents += 1;
+			rows.push(await readBody(request));
 			response.writeHead(200, { "content-type": "application/json" });
 			response.end(JSON.stringify({ ok: true }));
 			return;
@@ -35,7 +74,7 @@ async function startReceiver() {
 		server.once("error", reject);
 		server.listen(0, "127.0.0.1", resolve);
 	});
-	return { rows, server };
+	return { requests, rows, server };
 }
 
 function rowsForSession(rows, sessionID) {
@@ -59,6 +98,15 @@ async function waitForRows(rows, sessionID, count) {
 	throw new Error(
 		`Packed capture timed out for ${sessionID}: ${JSON.stringify(rowsForSession(rows, sessionID).map((row) => ({ eventID: row.event_id, toolCallID: row.payload?.tool_call_id, type: row.event_type })))}`,
 	);
+}
+
+async function waitForRequestCount(requests, key, count) {
+	const deadline = Date.now() + 2_000;
+	while (Date.now() < deadline) {
+		if (requests[key] >= count) return;
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+	throw new Error(`Packed receiver timed out waiting for ${key} requests: ${requests[key]}`);
 }
 
 async function waitWithTimeout(promise, timeoutMs, message) {
@@ -255,9 +303,15 @@ function createV2Subscription(rows, state, toolsHandled, markTerminalHandled) {
 }
 
 function createV2Context(rows) {
-	let hook;
+	let contextHook;
+	let toolHook;
 	const memoryTools = [];
-	const state = { aborted: false, hookDisposed: false, transformDisposed: false };
+	const state = {
+		aborted: false,
+		contextDisposed: false,
+		hookDisposed: false,
+		transformDisposed: false,
+	};
 	let markTerminalHandled;
 	let markToolsHandled;
 	const terminalHandled = new Promise((resolve) => {
@@ -275,10 +329,21 @@ function createV2Context(rows) {
 			event: {
 				subscribe: createV2Subscription(rows, state, toolsHandled, markTerminalHandled),
 			},
+			session: {
+				hook: async (name, callback) => {
+					assert(name === "context", "packed V2 setup registered an auxiliary session hook");
+					contextHook = callback;
+					return {
+						dispose: async () => {
+							state.contextDisposed = true;
+						},
+					};
+				},
+			},
 			tool: {
 				hook: async (name, callback) => {
 					assert(name === "execute.after", "packed V2 setup registered the wrong hook");
-					hook = callback;
+					toolHook = callback;
 					return {
 						dispose: async () => {
 							state.hookDisposed = true;
@@ -295,21 +360,138 @@ function createV2Context(rows) {
 				},
 			},
 		},
-		getHook: () => hook,
+		getContextHook: () => contextHook,
+		getHook: () => toolHook,
 		getMemoryTools: () => memoryTools,
 		isAborted: () => state.aborted,
-		isDisposed: () => state.hookDisposed && state.transformDisposed,
+		isContextDisposed: () => state.contextDisposed,
+		isDisposed: () => state.contextDisposed && state.hookDisposed && state.transformDisposed,
 		markToolsHandled,
 		terminalHandled,
 	};
 }
 
-async function driveV2(mod, rows) {
+function v2UserMessage(id, text) {
+	return {
+		...(id ? { id } : {}),
+		role: "user",
+		content: [{ type: "text", text }],
+	};
+}
+
+function recalledText(input, messageID) {
+	const message = input.messages.find((candidate) => candidate.id === messageID);
+	const part = message?.content.find(
+		(candidate) =>
+			candidate.type === "text" &&
+			candidate.metadata?.codememPart?.v === 1 &&
+			candidate.metadata.codememPart.synthetic === true,
+	);
+	return part?.text;
+}
+
+function hasRecall(input) {
+	return input.messages.some((message) =>
+		message.content.some(
+			(part) =>
+				part.type === "text" &&
+				part.metadata?.codememPart?.v === 1 &&
+				part.metadata.codememPart.synthetic === true,
+		),
+	);
+}
+
+function createV2RecallInputs() {
+	const first = {
+		sessionID: V2_SESSION,
+		messages: [v2UserMessage("v2-recall-user-1", "first recall prompt")],
+	};
+	const retry = {
+		sessionID: V2_SESSION,
+		messages: [v2UserMessage("v2-recall-user-1", "first recall prompt")],
+	};
+	const continuation = {
+		sessionID: V2_SESSION,
+		messages: [
+			v2UserMessage("v2-recall-user-1", "first recall prompt"),
+			{
+				id: "v2-recall-assistant-1",
+				role: "assistant",
+				content: [{ type: "tool-call", id: "call-1", name: "read", input: {} }],
+			},
+			{
+				id: "v2-recall-tool-1",
+				role: "tool",
+				content: [
+					{ type: "tool-result", id: "call-1", name: "read", result: { type: "text", value: "read ok" } },
+				],
+			},
+		],
+	};
+	const second = {
+		sessionID: V2_SESSION,
+		messages: [
+			v2UserMessage("v2-recall-user-1", "first recall prompt"),
+			{
+				id: "v2-recall-assistant-2",
+				role: "assistant",
+				content: [{ type: "text", text: "first response" }],
+			},
+			v2UserMessage("v2-recall-user-2", "second recall prompt"),
+		],
+	};
+	const missing = {
+		sessionID: V2_SESSION,
+		messages: [
+			v2UserMessage("v2-recall-user-1", "first recall prompt"),
+			v2UserMessage(undefined, "latest user has no identity"),
+		],
+	};
+	return { continuation, first, missing, retry, second };
+}
+
+async function driveV2Recall(contextHook, requests) {
+	const { continuation, first, missing, retry, second } = createV2RecallInputs();
+
+	await Promise.all([contextHook(first), contextHook(retry)]);
+	await contextHook(continuation);
+	await contextHook(second);
+	await contextHook(missing);
+	await waitForRequestCount(requests, "ledger", 7);
+
+	const firstRecall = recalledText(first, "v2-recall-user-1");
+	const retryRecall = recalledText(retry, "v2-recall-user-1");
+	const continuationRecall = recalledText(continuation, "v2-recall-user-1");
+	assert(typeof firstRecall === "string", "packed V2 first turn omitted production recall");
+	assert(
+		firstRecall === retryRecall && retryRecall === continuationRecall,
+		"packed V2 retry or tool continuation changed recalled bytes",
+	);
+	assert(
+		recalledText(second, "v2-recall-user-2") === "[codemem context]\nPacked production recall 2",
+		"packed V2 second identified turn omitted fresh production recall",
+	);
+	assert(!hasRecall(missing), "packed V2 recalled context for a missing latest user ID");
+	assert(requests.pack === 2, `packed V2 made ${requests.pack} pack requests instead of two`);
+	assert(
+		requests.ledgerActions.filter((action) => action === "cache_reuse").length === 2,
+		`packed V2 recorded unexpected cache reuse actions: ${JSON.stringify(requests.ledgerActions)}`,
+	);
+	assert(
+		new Set(requests.packBodies.map((body) => body.attempt?.request_id)).size === 2,
+		"packed V2 fresh turns did not use distinct retrieval identities",
+	);
+}
+
+async function driveV2(mod, receiver) {
+	const { requests, rows } = receiver;
 	const fixture = createV2Context(rows);
 	const cleanup = await mod.default.setup(fixture.context);
+	const contextHook = fixture.getContextHook();
 	const hook = fixture.getHook();
 	const memoryTools = fixture.getMemoryTools();
 	assert(typeof cleanup === "function", "packed V2 setup did not return cleanup");
+	assert(typeof contextHook === "function", "packed V2 setup did not register production recall");
 	assert(typeof hook === "function", "packed V2 setup did not register tool capture");
 	assert(
 		JSON.stringify(memoryTools.map((tool) => tool.name).sort()) ===
@@ -324,6 +506,7 @@ async function driveV2(mod, rows) {
 		!recentResult.content.startsWith("Failed to fetch recent:"),
 		`packed V2 memory tool failed: ${recentResult.content}`,
 	);
+	await driveV2Recall(contextHook, requests);
 	await hook({
 		id: "v2-tool-present-1",
 		status: "completed",
@@ -354,7 +537,8 @@ async function driveV2(mod, rows) {
 	await waitWithTimeout(fixture.terminalHandled, 3_000, "Packed V2 terminal event timed out");
 	await cleanup();
 	assert(fixture.isAborted(), "packed V2 cleanup did not abort event consumption");
-	assert(fixture.isDisposed(), "packed V2 cleanup did not dispose hook registration");
+	assert(fixture.isContextDisposed(), "packed V2 cleanup did not dispose context registration");
+	assert(fixture.isDisposed(), "packed V2 cleanup did not dispose all registrations");
 }
 
 async function emitV1Event(hooks, event) {
@@ -502,7 +686,8 @@ async function driveV1(mod, rows) {
 
 const [entrypointURL, adapterURL] = process.argv.slice(2);
 assert(entrypointURL && adapterURL, "Packed V2 probe requires package URLs");
-const receiver = await startReceiver();
+const profile = { value: null };
+const receiver = await startReceiver(profile);
 const address = receiver.server.address();
 assert(address && typeof address === "object", "Packed receiver did not bind a port");
 process.env.CODEMEM_RAW_EVENTS = "1";
@@ -512,9 +697,17 @@ process.env.CODEMEM_VIEWER_PORT = String(address.port);
 try {
 	const mod = await import(entrypointURL);
 	const adapter = await import(adapterURL);
+	const runtime = await import(new URL("./runtime.js", adapterURL));
+	profile.value = {
+		service: "codemem-viewer",
+		protocol_version: 1,
+		min_supported_protocol_version: 1,
+		db_path: join(process.env.HOME, ".codemem", "mem.sqlite"),
+		identity_target: runtime.__testUtils.buildViewerIdentityTarget(process.env, process.cwd()),
+	};
 	assertEntrypoint(mod);
 	assertPackedTranslation(adapter);
-	await driveV2(mod, receiver.rows);
+	await driveV2(mod, receiver);
 	await driveV1(mod, receiver.rows);
 	const v2Rows = normalizeRows(receiver.rows, V2_SESSION);
 	const v1Rows = normalizeRows(receiver.rows, V1_SESSION);
