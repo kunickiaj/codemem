@@ -1,4 +1,5 @@
 import { tool } from "@opencode-ai/plugin";
+import { createDelegationContext } from "../lib/delegation-context.js";
 
 import { createRuntimeHost, createRuntimeLocation } from "../lib/host-contract.js";
 import {
@@ -73,11 +74,34 @@ const createV1Tool = (definition) => {
   });
 };
 
+const dispatchV1Event = async (delegation, runtime, event) => {
+  const translated = translateV1Event(event);
+  if (event?.type === "session.deleted") {
+    try {
+      return await runtime.handleEvent(translated);
+    } finally {
+      delegation.observe(event);
+    }
+  }
+  delegation.observe(event);
+  return runtime.handleEvent(translated);
+};
+
 const createOpenCodeV1Adapter = async ({ project, client, directory, worktree }) => {
+  const delegation = createDelegationContext({
+    requirePromptSnapshot: true,
+    readSession: client.session?.get
+      ? async (id, signal) => (await client.session.get({ path: { id }, signal })).data
+      : null,
+    readMessage: client.session?.message
+      ? async (id, messageID, signal) => (await client.session.message({ path: { id, messageID }, signal })).data
+      : null,
+  });
   const runtime = await createCodememRuntime({
     location: createRuntimeLocation({ project, directory, worktree }),
     host: createRuntimeHost({
       log: (entry) => client.app.log({ body: entry }),
+      resolveCaptureContext: delegation.resolve,
       notify: client.tui?.showToast
         ? (notice) => client.tui.showToast({ body: notice })
         : null,
@@ -90,7 +114,16 @@ const createOpenCodeV1Adapter = async ({ project, client, directory, worktree })
   );
 
   return {
-    dispose: runtime.dispose,
+    dispose: async () => {
+      try {
+        await runtime.dispose();
+      } finally {
+        delegation.dispose();
+      }
+    },
+    "chat.message": async (input, output) => {
+      delegation.observePrompt(input, output);
+    },
     "experimental.session.compacting": (input) => runtime.handleCompacting({
       sessionID: extractV1HookSessionID(input),
     }),
@@ -102,7 +135,7 @@ const createOpenCodeV1Adapter = async ({ project, client, directory, worktree })
       translateV1PromptInput(input),
       output,
     ),
-    event: ({ event }) => runtime.handleEvent(translateV1Event(event)),
+    event: ({ event }) => dispatchV1Event(delegation, runtime, event),
     "tool.execute.after": (input, output) => {
       const translated = translateV1ToolResult(input, output);
       return runtime.handleToolResult(translated.input, translated.output);
@@ -122,6 +155,7 @@ export const OpencodeMemPlugin = CodememPlugin;
 export { __testUtils, buildInjectionToastMessage };
 export const __v1AdapterTestUtils = {
   createV1Tool,
+  dispatchV1Event,
   extractV1HookSessionID,
   extractV1SessionID,
   translateV1Event,
