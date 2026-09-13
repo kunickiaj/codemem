@@ -10,9 +10,9 @@
 
 import { extractApplyPatchPaths, MUTATING_TOOL_NAMES } from "./apply-patch.js";
 import {
-	boundedDelegatedBriefs,
 	isDelegatedBrief,
 	isDelegatedBriefOnlyBatch,
+	partitionDelegatedBriefEvents,
 	promptContextText,
 } from "./capture-context.js";
 import { extractAdapterEvent, projectAdapterToolEvent } from "./ingest-events.js";
@@ -301,7 +301,9 @@ function buildFlushSessionContext(
 		batchId: number;
 	},
 ): SessionContext {
-	const context = buildSessionContext(normalizeEventsForSessionContext(events));
+	const normalizedEvents = normalizeEventsForSessionContext(events);
+	const { primaryEvents } = partitionDelegatedBriefEvents(normalizedEvents);
+	const context = buildSessionContext(primaryEvents);
 	context.opencodeSessionId = opencodeSessionId;
 	context.source = source;
 	context.streamId = opencodeSessionId;
@@ -311,12 +313,10 @@ function buildFlushSessionContext(
 		start_event_seq: startEventSeq,
 		end_event_seq: lastEventSeq,
 	};
-	const priorBriefs = boundedDelegatedBriefs(
-		store
-			.priorDelegatedBriefEvents(opencodeSessionId, source, startEventSeq)
-			.filter(isDelegatedBrief)
-			.map((event) => String(event.prompt_text)),
-	);
+	const priorBriefs = store
+		.priorDelegatedBriefEvents(opencodeSessionId, source, startEventSeq)
+		.filter(isDelegatedBrief)
+		.map((event) => String(event.prompt_text));
 	if (priorBriefs.length) context.delegatedBriefs = priorBriefs;
 	return context;
 }

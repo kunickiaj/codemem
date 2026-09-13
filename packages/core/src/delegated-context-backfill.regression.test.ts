@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DELEGATED_BRIEF_LABEL, type DelegatedBriefContext } from "./capture-context.js";
+import type { DelegatedBriefContext } from "./capture-context.js";
 import { ingestRawEvents } from "./raw-event-ingest.js";
 import { runSessionContextBackfillPass } from "./session-context-backfill.js";
 import { MemoryStore } from "./store.js";
@@ -65,7 +65,7 @@ afterEach(() => {
 });
 
 describe("delegated provenance session-context backfill", () => {
-	it("keeps the validated sidecar and rebuilds a labeled first prompt", async () => {
+	it("keeps the validated sidecar and excludes the brief from derived prompt fields", async () => {
 		// Arrange
 		const store = createStore();
 		const brief = "Inspect retry ownership and report observed findings.";
@@ -98,8 +98,13 @@ describe("delegated provenance session-context backfill", () => {
 			const sidecarAfter = store.db
 				.prepare("SELECT capture_context_json FROM raw_events WHERE event_id = ?")
 				.get("brief-event");
-			expect({ firstPrompt: metadata.session_context.firstPrompt, sidecarAfter }).toEqual({
-				firstPrompt: `${DELEGATED_BRIEF_LABEL}: ${brief}`,
+			expect({
+				firstPrompt: metadata.session_context.firstPrompt,
+				promptCount: metadata.session_context.promptCount,
+				sidecarAfter,
+			}).toEqual({
+				firstPrompt: undefined,
+				promptCount: 0,
 				sidecarAfter: sidecarBefore,
 			});
 		} finally {

@@ -169,6 +169,22 @@ export function isDelegatedBrief(event: Record<string, unknown>): boolean {
 	);
 }
 
+export function partitionDelegatedBriefEvents(events: Record<string, unknown>[]): {
+	primaryEvents: Record<string, unknown>[];
+	delegatedBriefs: string[];
+} {
+	const primaryEvents: Record<string, unknown>[] = [];
+	const delegatedBriefs: string[] = [];
+	for (const event of events) {
+		if (isDelegatedBrief(event)) {
+			delegatedBriefs.push(String(event.prompt_text));
+		} else {
+			primaryEvents.push(event);
+		}
+	}
+	return { primaryEvents, delegatedBriefs };
+}
+
 export function isDelegatedBriefOnlyBatch(events: Record<string, unknown>[]): boolean {
 	if (!events.some(isDelegatedBrief)) return false;
 	return events.every((event) => {
