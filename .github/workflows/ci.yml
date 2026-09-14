@@ -121,16 +121,16 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MERGE_SHA: ${{ github.sha }}
         run: |
           mkdir -p .tmp/biome-delta
-          pnpm lint:delta -- --base "$BASE_SHA" --head "$HEAD_SHA" --json --github-annotations > .tmp/biome-delta/report.json
+          pnpm --silent lint:delta -- --base "$BASE_SHA" --head "$MERGE_SHA" --json --github-annotations > .tmp/biome-delta/report.json
 
       - name: Upload Biome delta report
         if: always() && github.event_name == 'pull_request'
         uses: actions/upload-artifact@v6
         with:
-          name: biome-delta-${{ github.event.pull_request.base.sha }}-${{ github.event.pull_request.head.sha }}
+          name: biome-delta-${{ github.event.pull_request.base.sha }}-${{ github.sha }}
           path: .tmp/biome-delta/report.json
           if-no-files-found: error
           retention-days: 7

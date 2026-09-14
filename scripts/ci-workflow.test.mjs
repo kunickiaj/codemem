@@ -128,14 +128,15 @@ describe("normal CI workflow source contract", () => {
 		assert.match(lintJob, /^ {4}name: TypeScript Lint$/m);
 		assert.match(lintJob, /^ {10}fetch-depth: 0$/m);
 		assert.match(lintJob, /BASE_SHA: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/u);
-		assert.match(lintJob, /HEAD_SHA: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/u);
+		assert.match(lintJob, /MERGE_SHA: \$\{\{ github\.sha \}\}/u);
 		assert.match(
 			lintJob,
-			/pnpm lint:delta -- --base "\$BASE_SHA" --head "\$HEAD_SHA" --json --github-annotations > \.tmp\/biome-delta\/report\.json/u,
+			/pnpm --silent lint:delta -- --base "\$BASE_SHA" --head "\$MERGE_SHA" --json --github-annotations > \.tmp\/biome-delta\/report\.json/u,
 		);
 		assert.match(lintJob, /uses: actions\/upload-artifact@v6/u);
 		assert.match(lintJob, /if-no-files-found: error/u);
 		assert.doesNotMatch(lintJob, /continue-on-error/u);
+		assert.doesNotMatch(lintJob, /github\.event\.pull_request\.head\.sha/u);
 		assert.doesNotMatch(lintJob, /--base (?:main|origin\/main)/u);
 	});
 });
