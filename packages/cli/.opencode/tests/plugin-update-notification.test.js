@@ -729,8 +729,12 @@ describe("OpenCode startup release notifications", () => {
 
 	test("compatibility auto-update skips a release that is not eligible", async () => {
 		process.env.CODEMEM_BACKEND_UPDATE_POLICY = "auto";
-		process.env.CODEMEM_MIN_VERSION = "0.45.0";
-		installSpawnResult({ ...availableStatus, auto_update_eligible: false });
+		process.env.CODEMEM_MIN_VERSION = CURRENT;
+		installSpawnResult({
+			...availableStatus,
+			current_version: previousCoreVersion(CURRENT),
+			auto_update_eligible: false,
+		});
 		const showToast = vi.fn().mockResolvedValue(undefined);
 
 		await startPlugin(showToast);
