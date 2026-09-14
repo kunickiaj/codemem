@@ -165,6 +165,17 @@ pin. Refresh it when testing the minimum host locally:
 npm install --prefix .opencode --save-exact @opencode-ai/plugin@1.18.29
 ```
 
+The same 0.45 package also runs on OpenCode 2 through its `setup()` entrypoint.
+Codemem validates that path against the exact stable `@opencode/cli@2.0.2` and
+`@opencode/plugin@2.0.2` releases and labels its OpenCode 2 integration beta.
+`codemem setup --opencode-only` keeps writing the singular `plugin` key because
+OpenCode 1 requires it and OpenCode 2 translates it. Required CI gates run only
+against the 1.18.29 floor and the exact 2.0.2 pin; any compatibility run against
+a newer or moving OpenCode release is advisory and never blocks a Codemem change
+until the pin moves in its own reviewed PR. Rollback is a host-edge change:
+disable the V2 path with `CODEMEM_PLUGIN_IGNORE=1` or return to OpenCode 1
+without any database migration.
+
 The OpenCode 2 contract separately pins matching `@opencode/cli@2.0.2` and
 `@opencode/plugin@2.0.2` development dependencies. The workspace
 allows the CLI package's postinstall because it installs the matching platform

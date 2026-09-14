@@ -6,15 +6,19 @@ This page covers advanced plugin behavior, environment variables, and stream rel
 
 <img src="images/codemem-settings.png" alt="codemem observer settings" width="520" />
 
-## Running OpenCode 1 with the plugin
+## Running OpenCode with the plugin
 
-OpenCode 1 supports the capture and recall behavior below. The experimental
-OpenCode 2.0.2 entrypoint captures user and assistant messages, terminal usage,
-tool results, and session lifecycle events. Its automatic recall uses
-`session.context` only: the latest user-message ID is required, missing identity
-skips safely, and retries or tool continuations replay retained context
-byte-for-byte. Compaction, title, and generate hooks remain isolated. Both the
-default message surface and legacy system surface work.
+One `@codemem/opencode-plugin` package serves OpenCode 1.18.29+ through its
+`server()` entrypoint and OpenCode 2 through its `setup()` entrypoint. OpenCode 2
+support is validated against the exact stable `@opencode/cli@2.0.2` and
+`@opencode/plugin@2.0.2` releases; Codemem labels its OpenCode 2 integration
+beta. OpenCode 1 supports the capture and recall behavior below. On OpenCode 2
+the plugin captures user and assistant messages, terminal usage, tool results,
+and session lifecycle events. Its automatic recall uses `session.context` only:
+the latest user-message ID is required, missing identity skips safely, and
+retries or tool continuations replay retained context byte-for-byte.
+Compaction, title, and generate hooks remain isolated. Both the default message
+surface and legacy system surface work.
 
 1. Start OpenCode inside this repo (or make the plugin global so it globs in everywhere).
 2. Every tooling session creates memory artifacts in SQLite.
@@ -22,7 +26,30 @@ default message surface and legacy system surface work.
 4. Use `codemem stats` and `codemem recent` to confirm ingestion.
 5. Browse the viewer at the printed URL.
 
-OpenCode 1 loads configured npm plugins and project-local `.opencode/plugins/` files as separate sources. If both resolve to Codemem for the same project, the first registration remains active and later registrations skip all hooks with a warning. Remove the configured npm entry when testing checkout-local plugin changes so the local copy initializes first.
+OpenCode loads configured npm plugins and project-local `.opencode/plugins/` files as separate sources. If both resolve to Codemem for the same project, the first registration remains active and later registrations skip all hooks with a warning. Remove the configured npm entry when testing checkout-local plugin changes so the local copy initializes first.
+
+### OpenCode host support, troubleshooting, and rollback
+
+Host support at a glance:
+
+| Host | Requirement | Status |
+| --- | --- | --- |
+| OpenCode 1 | 1.18.29 or newer (`engines.opencode`) | Supported |
+| OpenCode 2 | validated on exact `@opencode/cli@2.0.2` and `@opencode/plugin@2.0.2` | Beta integration |
+
+Install on either host with `codemem setup --opencode-only` (or `npx -y codemem setup --opencode-only`). Setup writes the singular `plugin` key on purpose: OpenCode 1 requires it, and OpenCode 2 translates it into its native `plugins` configuration, so one entry serves both hosts. The manual `mem-status`, `mem-recent`, and `mem-stats` tools keep their hyphenated IDs on both hosts.
+
+Troubleshooting:
+
+- **No automatic recall on OpenCode 2.** Recall runs through `session.context` and requires a non-empty, non-whitespace latest user-message ID. When the ID is missing or blank, that turn skips recall rather than guessing identity; capture and the manual tools continue. Retries and tool continuations replay retained context and do not retrieve again, so a repeated turn without new context is expected.
+- **Duplicate registration warning.** `codemem duplicate plugin registration skipped` in `~/.codemem/plugin.log` means OpenCode loaded Codemem twice for one project, usually a configured npm entry plus a checkout-local copy. Remove one of them. OpenCode 2.0.2 exposes no host log or toast API to plugins, so on that host the warning appears only in the local log.
+- **Capture looks stalled on either host.** Run `codemem db raw-events-status` and follow the [post-restart config sanity checklist](#post-restart-config-sanity-checklist); both hosts share the same raw-event pipeline and spool behavior.
+
+Rollback:
+
+- **Stop the OpenCode 2 path.** Set `CODEMEM_PLUGIN_IGNORE=1` in the environment that launches OpenCode 2, or remove the Codemem plugin entry from that host's config. OpenCode 1 keeps working from the same installed package.
+- **Return to OpenCode 1.** Launch OpenCode 1.18.29+ with the same config. Both hosts write one raw-event stream and one SQLite database, so switching hosts in either direction needs no storage migration.
+- **Pin changes.** Codemem only moves its OpenCode 2 pin in a dedicated change that reruns the [pinned contract](opencode-v2-contract.md) and packed-host smoke tests; see [versioning](versioning.md#opencode-host-compatibility).
 
 ### Repository-only lint feedback
 
@@ -581,7 +608,7 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_INSTALL_KIND` | Internal/advanced release-guidance detection override (`npm-global`, `pnpm-global`, `mise`, `npx`, `docker`, `repo-dev`, `pinned`, or `unknown`). Markers do not prove ownership or enable installation. |
 | `CODEMEM_CODEX_ENDPOINT` | Override Codex OAuth endpoint. |
 | `CODEMEM_PLUGIN_DEBUG` | Set to `1`, `true`, or `yes` to log plugin lifecycle events. |
-| `CODEMEM_PLUGIN_IGNORE` | Skip all plugin behavior for this process. |
+| `CODEMEM_PLUGIN_IGNORE` | Skip all plugin behavior for this process on either OpenCode host. |
 | `CODEMEM_INJECT_CONTEXT` | Set to `0` to disable memory pack injection (default on). |
 | `CODEMEM_INJECT_SURFACE` | OpenCode injection surface: `message` by default; set `system` for the legacy system-prompt transform. |
 | `CODEMEM_INJECT_LIMIT` | Max memory items in injected pack (default `8`). |

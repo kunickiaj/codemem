@@ -11,7 +11,7 @@ codemem is persistent coding memory across sessions, machines, and teammates for
 - **Optional sync and sharing** — peer-to-peer sync carries selected project memory across machines; share project knowledge with a teammate or Team when it helps
 - **Local-first storage** — memories live in SQLite on your machine; observer processing uses your configured model provider and can incur costs or consume plan usage
 - **Hybrid retrieval** — FTS5 BM25 lexical search + sqlite-vec semantic search, merged and re-ranked
-- **Automatic injection for OpenCode 1** — the plugin injects context into every prompt, no manual steps
+- **Automatic injection for OpenCode 1 and 2** — the plugin injects context into every prompt, no manual steps; the OpenCode 2 integration is beta
 - **Claude Code plugin support** — install from the codemem marketplace source
 - **Built-in viewer** — browse memories, sessions, and observer output in a local web UI
 - **Remote MCP access** — advanced single-user self-hosting can expose an OAuth-protected Streamable HTTP MCP endpoint to configured remote clients; keep the localhost viewer private ([guide](docs/remote-mcp-oauth.md))
@@ -33,15 +33,22 @@ covers macOS x64/arm64, Linux x64/arm64 (glibc 2.34+ or musl), and Windows x64.
 
 ### OpenCode
 
-Codemem requires OpenCode 1.18.29 or newer.
+Codemem requires OpenCode 1.18.29 or newer. One installed
+`@codemem/opencode-plugin` package serves both host generations: OpenCode 1 calls
+its `server()` entrypoint and OpenCode 2 calls its `setup()` entrypoint. OpenCode 2
+support is validated against the exact stable `@opencode/cli@2.0.2` and
+`@opencode/plugin@2.0.2` releases; Codemem labels its OpenCode 2 integration
+**beta** until it has shipped through a full release cycle.
 
-The experimental OpenCode 2.0.2 entrypoint captures user and assistant messages,
-terminal usage, tool results, and session lifecycle events. It uses
-`session.context` only for automatic recall: the latest user-message ID is
-required, and missing identity skips recall safely. Each identified turn performs
-one fresh retrieval; retries and tool continuations replay retained context
-byte-for-byte. Compaction, title, and generate hooks stay isolated. Both the
-default message surface and legacy `CODEMEM_INJECT_SURFACE=system` surface work.
+On OpenCode 2 the plugin captures user and assistant messages, terminal usage,
+tool results, and session lifecycle events, and exposes the same `mem-status`,
+`mem-recent`, and `mem-stats` tools. Automatic recall runs through
+`session.context`: the latest user-message ID is required, and a missing or blank
+ID skips recall safely. Each identified turn performs one fresh retrieval; retries
+and tool continuations replay retained context byte-for-byte. Compaction, title,
+and generate hooks stay isolated. Both the default message surface and legacy
+`CODEMEM_INJECT_SURFACE=system` surface work. See
+[OpenCode host support, troubleshooting, and rollback](docs/plugin-reference.md#opencode-host-support-troubleshooting-and-rollback).
 
 1. Install the OpenCode plugin and MCP config:
 
@@ -51,7 +58,9 @@ npx -y codemem setup --opencode-only
 
 2. Restart OpenCode.
 
-`npx` uses a downloaded or cached package to configure the OpenCode host; it does not create a durable `codemem` CLI installation. On OpenCode 1, the configured plugin manages backend execution independently, so no global install is required for automatic capture and context injection.
+`npx` uses a downloaded or cached package to configure the OpenCode host; it does not create a durable `codemem` CLI installation. The configured plugin manages backend execution independently on both hosts, so no global install is required for automatic capture and context injection.
+
+Setup writes the singular `plugin` key on purpose. OpenCode 1 requires that key, and OpenCode 2 translates it into its native `plugins` configuration, so one config entry works on both hosts. Keep one Codemem entry; if OpenCode loads Codemem twice for one project, the first registration wins and later copies skip their hooks with a warning.
 
 3. Verify:
 
@@ -61,7 +70,7 @@ npx -y codemem stats
 npx -y codemem db raw-events-status
 ```
 
-That's it. On OpenCode 1, the plugin captures activity, builds memories, and injects relevant context from here on.
+That's it. On either host, the plugin captures activity, builds memories, and injects relevant context from here on.
 
 ### Try a fresh-session recall
 
@@ -121,7 +130,13 @@ OpenCode plugin and CLI are now split intentionally:
 OpenCode treats configured npm plugins and checkout-local `.opencode/plugins/` files as separate
 sources. If both load Codemem for one Project, the first registration wins and later copies skip
 their hooks with a warning. Remove the configured npm entry when testing a source checkout so the
-checkout-local plugin loads first; otherwise your edits may appear to do nothing.
+checkout-local plugin loads first; otherwise your edits may appear to do nothing. The same
+first-registration rule applies on OpenCode 2; its warning lands in the local plugin log because
+OpenCode 2.0.2 exposes no host log or toast API to plugins.
+
+OpenCode 2 support needs no storage change. Both hosts write the same raw-event stream and SQLite
+database, so switching between OpenCode 1 and OpenCode 2, or setting `CODEMEM_PLUGIN_IGNORE=1` in
+the OpenCode 2 environment to stop the V2 path, requires no database migration.
 
 Capture follows the OpenCode 1.18.29 runtime contract: completed assistant
 messages use `info.time.completed`, token usage comes from `info.tokens`, and
