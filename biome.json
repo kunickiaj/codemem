@@ -69,6 +69,9 @@
 			"packages/**/src/**/*.ts",
 			"packages/**/src/**/*.tsx",
 			"packages/**/src/**/*.js",
+			"packages/opencode-plugin/.opencode/lib/**/*.js",
+			"packages/opencode-plugin/.opencode/plugins/**/*.js",
+			".opencode/plugins/**/*.js",
 			"packages/**/*.json",
 			"packages/**/vite.config.ts",
 			"plugins/claude/scripts/ingest-hook.mjs",
@@ -83,6 +86,16 @@
 		]
 	},
 	"overrides": [
+		{
+			"includes": [
+				"packages/opencode-plugin/.opencode/lib/**/*.js",
+				"packages/opencode-plugin/.opencode/plugins/**/*.js",
+				".opencode/plugins/**/*.js"
+			],
+			"formatter": {
+				"enabled": false
+			}
+		},
 		{
 			"includes": ["**/*.test.ts", "**/*.test.tsx"],
 			"linter": {

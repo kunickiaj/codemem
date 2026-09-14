@@ -1,9 +1,9 @@
-import { appendFile, mkdir } from "node:fs/promises";
-import { existsSync, readFileSync } from "node:fs";
-import { basename, dirname, join, posix, resolve, win32 } from "node:path";
-import { homedir } from "node:os";
+import { execSync, spawn as nodeSpawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { spawn as nodeSpawn, execSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { appendFile, mkdir } from "node:fs/promises";
+import { homedir } from "node:os";
+import { basename, dirname, join, posix, resolve, win32 } from "node:path";
 import {
   isVersionAtLeast,
   parseBackendUpdatePolicy,
@@ -11,16 +11,16 @@ import {
   resolveAutoUpdatePlan,
   resolveUpgradeGuidance,
 } from "./compat.js";
+import { V2_ADAPTER_DIAGNOSTICS } from "./host-contract.js";
 import {
   DEFAULT_DRAIN_LIMIT,
   DEFAULT_MAX_ENTRIES,
-  RAW_EVENT_SPOOL_FULL_CODE,
   loadRawEventSpoolEntries,
+  RAW_EVENT_SPOOL_FULL_CODE,
   removeRawEventSpoolEntry,
   resolveSpoolDirectory,
   writeRawEventSpoolEntry,
 } from "./raw-event-spool.js";
-import { V2_ADAPTER_DIAGNOSTICS } from "./host-contract.js";
 
 const TRUTHY_VALUES = ["1", "true", "yes"];
 const DISABLED_VALUES = ["0", "false", "off"];
@@ -249,7 +249,7 @@ const resolveInjectSurface = (value) => {
   return "message";
 };
 
-const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value || {}, key);
+const hasOwn = (value, key) => Object.hasOwn(value || {}, key);
 
 const deterministicUuid = (namespace, components) => {
   const hex = createHash("sha256")
@@ -332,7 +332,7 @@ const classifyFallbackCommandResult = (result) => {
   if (structured.code === "validation_error" || /invalid raw event|session id required/i.test(diagnostic)) {
     return { retryable: false, cause: "enqueue-raw-event validation failed" };
   }
-  if (/unknown command ['\"]?enqueue-raw-event|command not found|\bENOENT\b/i.test(diagnostic)) {
+  if (/unknown command ['"]?enqueue-raw-event|command not found|\bENOENT\b/i.test(diagnostic)) {
     return { retryable: false, cause: "enqueue-raw-event command unavailable" };
   }
   const exitCode = result?.exitCode ?? "unknown";
@@ -388,7 +388,7 @@ const clearCompatCheckCache = () => {
 const parseReleaseVersion = (value) => {
   if (typeof value !== "string" || value.length > MAX_UPDATE_VERSION_CHARS) return null;
   const match = RELEASE_VERSION.exec(value);
-  if (!match || !match.slice(1, 4).map(Number).every(Number.isSafeInteger)) return null;
+  if (!match?.slice(1, 4).map(Number).every(Number.isSafeInteger)) return null;
   const prerelease = match[4]?.split(".") || [];
   if (prerelease.some((identifier) => /^0\d+$/.test(identifier))) return null;
   return { core: match.slice(1, 4).map(Number), prerelease };
@@ -504,7 +504,7 @@ const createLogLine = (logPath) => async (line) => {
   try {
     await mkdir(dirname(logPath), { recursive: true });
     await appendFile(logPath, `${new Date().toISOString()} ${line}\n`);
-  } catch (err) {
+  } catch {
     // ignore logging failures
   }
 };
@@ -544,7 +544,7 @@ const createDebugLogger = ({ debug, host, logTimeoutMs, getLogLine, getErrorLogL
       if (timedOut) {
         await getLogLine()("debug log timed out");
       }
-    } catch (err) {
+    } catch {
       // ignore debug logging failures
     }
   };
@@ -711,7 +711,7 @@ const buildPackArgs = ({ query, filesModified, injectLimit, injectTokenBudget, i
 };
 
 const parsePackText = (stdout) => {
-  if (!stdout || !stdout.trim()) {
+  if (!stdout?.trim()) {
     return "";
   }
   try {
@@ -723,7 +723,7 @@ const parsePackText = (stdout) => {
 };
 
 const parsePackMetrics = (stdout) => {
-  if (!stdout || !stdout.trim()) {
+  if (!stdout?.trim()) {
     return null;
   }
   try {
@@ -2056,7 +2056,7 @@ const attachAdapterEvent = ({ sessionID, event }) => {
   let adapterEvent = null;
   try {
     adapterEvent = buildOpencodeAdapterEvent({ sessionID, event });
-  } catch (err) {
+  } catch {
     return event;
   }
   if (!adapterEvent) {
@@ -2167,18 +2167,6 @@ const detectRunner = ({ cwd, envRunner }) => {
     // not on PATH or timed out
   }
   return "npx";
-};
-
-/**
- * Check if the TS CLI is available at the given path.
- * Used by the "node" runner to verify the built CLI exists.
- */
-const tsCliAvailable = (cliPath) => {
-  try {
-    return require("fs").existsSync(cliPath);
-  } catch {
-    return false;
-  }
 };
 
 // When an explicit npx override targets the codemem package, pair it with the
@@ -2383,8 +2371,6 @@ export const createCodememRuntime = async ({ location, host }) => {
   const messageRoles = new Map();
   const messageTexts = new Map();
   const promptPartsByMessage = new Map();
-  let debugLogCount = 0;
-
   const rawEventsEnabled = envNotDisabled(
     process.env.CODEMEM_RAW_EVENTS || "1"
   );
@@ -3084,7 +3070,7 @@ export const createCodememRuntime = async ({ location, host }) => {
   };
 
   const extractAssistantUsage = (event) => {
-    if (!event || event.type !== "message.updated" || !event.messageInfo) {
+    if (event?.type !== "message.updated" || !event.messageInfo) {
       return null;
     }
     const info = event.messageInfo;
@@ -3578,7 +3564,7 @@ export const createCodememRuntime = async ({ location, host }) => {
     }
     try {
       await hostNotify({ message, variant });
-    } catch (toastErr) {
+    } catch {
       // best-effort only
     }
   };
@@ -3615,7 +3601,7 @@ export const createCodememRuntime = async ({ location, host }) => {
     }
 
     const versionResult = await runCli(["version"]);
-    if (!versionResult || versionResult.exitCode !== 0) {
+    if (versionResult?.exitCode !== 0) {
       await logLine(
         `compat.version_check_failed exit=${versionResult?.exitCode ?? "unknown"} stderr=${
           versionResult?.stderr ? redactLog(versionResult.stderr.trim()) : ""
@@ -3955,7 +3941,7 @@ export const createCodememRuntime = async ({ location, host }) => {
       };
     }
     const runPack = async () => {
-      let packArgs = buildPackArgs({
+      const packArgs = buildPackArgs({
         query,
         filesModified: sessionContext.filesModified,
         injectLimit,
@@ -4142,7 +4128,7 @@ export const createCodememRuntime = async ({ location, host }) => {
           // recorded that terminal outcome; do not misclassify it as a decode
           // failure or fall back to stale non-empty context.
           injectedIdentity = identity;
-        } else if (!result || result.exitCode !== 0 || !packText) {
+        } else if (result?.exitCode !== 0 || !packText) {
           const malformedSuccess = result?.exitCode === 0;
           const exitCode = result?.exitCode ?? "unknown";
           const stderr = redactLog(result?.stderr ? result.stderr.trim() : "");
@@ -4185,7 +4171,7 @@ export const createCodememRuntime = async ({ location, host }) => {
         }
       }
     }
-    if (!result || result.exitCode !== 0) {
+    if (result?.exitCode !== 0) {
       const exitCode = result?.exitCode ?? "unknown";
       const stderr = redactLog(result?.stderr ? result.stderr.trim() : "");
       const stdout = redactLog(result?.stdout ? result.stdout.trim() : "");
@@ -4336,7 +4322,7 @@ export const createCodememRuntime = async ({ location, host }) => {
       // not a git repo. The catch below leaves version as "unknown".
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
-  } catch (err) {
+  } catch {
     // Ignore - version will remain 'unknown'
   }
 
@@ -4386,7 +4372,7 @@ export const createCodememRuntime = async ({ location, host }) => {
     }
     try {
       return JSON.stringify(value);
-    } catch (err) {
+    } catch {
       return String(value);
     }
   };
@@ -4501,7 +4487,7 @@ export const createCodememRuntime = async ({ location, host }) => {
     });
     const rawEventId =
       adapterAnnotatedEvent?._adapter?.event_id ||
-      (adapterAnnotatedEvent && adapterAnnotatedEvent._raw_event_id) ||
+      adapterAnnotatedEvent?._raw_event_id ||
       nextEventId();
     const queuedEvent = {
       ...adapterAnnotatedEvent,

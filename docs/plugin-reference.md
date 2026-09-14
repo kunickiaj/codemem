@@ -58,6 +58,45 @@ When OpenCode runs from a codemem source checkout, `.opencode/plugins/lint-feedb
 
 This hook is contributor tooling only. Neither the repository wrapper nor `src/lint-feedback.ts` is included in the published `@codemem/opencode-plugin` package, so installing codemem does not activate it. Restart OpenCode after changing the checkout's plugin configuration.
 
+The Biome pilot is the repository's bounded lint experiment. It covers package `src` trees, the canonical published OpenCode runtime under `packages/opencode-plugin/.opencode`, the two checkout plugin entrypoints, selected adapter hooks, package JSON, and root TypeScript configuration. The OpenCode runtime keeps its existing two-space formatting for package stability; Biome still applies lint rules, including the complexity-15 and 50-line production thresholds.
+
+The tracked JS/TS inventory at the 0.45.0 baseline is:
+
+| Source family | Files | Biome status |
+| --- | ---: | --- |
+| Existing package source and selected hooks/config | 770 | Covered |
+| Published OpenCode runtime and checkout entrypoints | 10 | Covered by this extension |
+| E2E harness | 36 | Excluded from this bounded pilot; exercised by E2E jobs |
+| Root scripts and configuration | 22 | Excluded except `scripts/ci-workflow.test.mjs` and `vitest.config.ts`; exercised by focused script tests |
+| Legacy CLI plugin harness | 18 | Excluded; compatibility tests run through the plugin smoke job |
+| Package support scripts, tests, and configuration | 12 | Excluded; package-specific checks remain authoritative |
+| Plugin package shims, smoke scripts, and contract fixture | 7 | Excluded; packed-artifact and host smoke tests remain authoritative |
+| Other adapter entrypoint | 1 | Excluded; adapter-normalizer tests remain authoritative |
+| Generated adapter bundles | 2 | Excluded; generated from `packages/core/src/claude-hooks.ts` and `codex-hooks.ts` |
+| Frozen evaluation snapshots | 2 | Excluded; immutable baseline fixtures |
+| Type declaration files | 4 | Excluded; checked by TypeScript/package contract tests |
+
+Generated normalizer bundles and frozen evaluation snapshots must not be lint-fixed directly. Change their source or regeneration workflow instead.
+
+Expanding coverage leaves the existing 1,592 warnings unchanged and exposes 63 warnings plus one informational diagnostic in the canonical runtime. The new diagnostics break down as follows:
+
+| Rule | Count |
+| --- | ---: |
+| `noExcessiveCognitiveComplexity` | 42 |
+| `noExcessiveLinesPerFunction` | 17 |
+| `noNestedTernary` | 2 |
+| `noUnusedFunctionParameters` | 1 |
+| `noPrototypeBuiltins` | 1 |
+| `noUselessEscapeInRegex` (information) | 1 |
+
+| Runtime path | Diagnostics |
+| --- | ---: |
+| `packages/opencode-plugin/.opencode/lib/runtime.js` | 50 |
+| `packages/opencode-plugin/.opencode/lib/opencode-v2-adapter.js` | 7 |
+| `packages/opencode-plugin/.opencode/lib/delegation-context.js` | 4 |
+| `packages/opencode-plugin/.opencode/lib/compat.js` | 2 |
+| `packages/opencode-plugin/.opencode/lib/raw-event-spool.js` | 1 |
+
 OpenCode prompt-time pack construction and prompt-pack ledger transitions use the
 long-lived local viewer first. Retryable connection, timeout, endpoint-version,
 server, or malformed-response failures fall back to the compatible CLI path.

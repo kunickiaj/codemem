@@ -1,7 +1,7 @@
 import {
-  V2_ADAPTER_DIAGNOSTICS,
   createRuntimeHost,
   createRuntimeLocation,
+  V2_ADAPTER_DIAGNOSTICS,
 } from "./host-contract.js";
 import { createCodememRuntime } from "./runtime.js";
 import { registerV2NotificationBridge } from "./v2-notification-bridge.js";

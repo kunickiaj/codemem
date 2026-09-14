@@ -398,6 +398,10 @@ export function resolveWorktreePath(worktree: string, candidate: string): string
 function isConfiguredLintPath(relativePath: string): boolean {
 	// Keep this allowlist synchronized with biome.json files.includes; the focused test enforces the mirror.
 	if (/^packages\/.+\/src\/.+\.(?:js|ts|tsx)$/.test(relativePath)) return true;
+	if (/^packages\/opencode-plugin\/\.opencode\/(?:lib|plugins)\/.+\.js$/.test(relativePath)) {
+		return true;
+	}
+	if (/^\.opencode\/plugins\/.+\.js$/.test(relativePath)) return true;
 	if (/^packages\/.+\/vite\.config\.ts$/.test(relativePath)) return true;
 	if (
 		/^plugins\/(?:claude|codex)\/scripts\/(?:ingest-hook|user-prompt-hook)\.mjs$/.test(relativePath)

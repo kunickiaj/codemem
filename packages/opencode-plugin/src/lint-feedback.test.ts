@@ -213,7 +213,9 @@ describe("lint feedback scope and measurements", () => {
 			"packages/core/src/example.ts",
 		]);
 	});
+});
 
+describe("lint feedback configured paths", () => {
 	it("admits only source paths represented by the mirrored Biome includes", async () => {
 		const biome = JSON.parse(await readFile(path.join(repositoryRoot, "biome.json"), "utf8"));
 		const sourceIncludes = biome.files.includes.filter(
@@ -224,6 +226,9 @@ describe("lint feedback scope and measurements", () => {
 			"packages/**/src/**/*.ts",
 			"packages/**/src/**/*.tsx",
 			"packages/**/src/**/*.js",
+			"packages/opencode-plugin/.opencode/lib/**/*.js",
+			"packages/opencode-plugin/.opencode/plugins/**/*.js",
+			".opencode/plugins/**/*.js",
 			"packages/**/vite.config.ts",
 			"plugins/claude/scripts/ingest-hook.mjs",
 			"plugins/claude/scripts/user-prompt-hook.mjs",
@@ -238,6 +243,22 @@ describe("lint feedback scope and measurements", () => {
 		expect(resolveWorktreePath(repositoryRoot, "packages/core/src/example.ts")).toBe(
 			"packages/core/src/example.ts",
 		);
+		expect(
+			resolveWorktreePath(repositoryRoot, "packages/opencode-plugin/.opencode/lib/runtime.js"),
+		).toBe("packages/opencode-plugin/.opencode/lib/runtime.js");
+		expect(
+			resolveWorktreePath(repositoryRoot, "packages/opencode-plugin/.opencode/plugins/codemem.js"),
+		).toBe("packages/opencode-plugin/.opencode/plugins/codemem.js");
+		expect(resolveWorktreePath(repositoryRoot, ".opencode/plugins/codemem.js")).toBe(
+			".opencode/plugins/codemem.js",
+		);
+		expect(
+			getTouchedPaths(
+				"edit",
+				{ path: "packages/opencode-plugin/.opencode/lib/runtime.js" },
+				repositoryRoot,
+			),
+		).toEqual(["packages/opencode-plugin/.opencode/lib/runtime.js"]);
 		expect(resolveWorktreePath(repositoryRoot, "scripts/example.ts")).toBeUndefined();
 		expect(resolveWorktreePath(repositoryRoot, "scripts/ci-workflow.test.mjs")).toBe(
 			"scripts/ci-workflow.test.mjs",
