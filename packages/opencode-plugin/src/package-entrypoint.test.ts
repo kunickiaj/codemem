@@ -51,20 +51,17 @@ it("keeps the OpenCode 1 SDK manifests aligned with the supported host floor", a
 	});
 });
 
-it("loads the repository wrapper from the canonical package implementation", async () => {
-	const packageEntrypointUrl = pathToFileURL(
-		path.join(repositoryRoot, "packages/opencode-plugin/index.js"),
-	).href;
+it("keeps repository dogfooding on V1 without activating a second V2 plugin", async () => {
 	const repositoryWrapperUrl = pathToFileURL(
 		path.join(repositoryRoot, ".opencode/plugins/codemem.js"),
 	).href;
 
-	const packageEntrypoint = await import(packageEntrypointUrl);
 	const repositoryWrapper = await import(repositoryWrapperUrl);
 
 	expect(Object.keys(repositoryWrapper)).toEqual(["default"]);
-	expect(repositoryWrapper.default).toBe(packageEntrypoint.default);
-	expect(repositoryWrapper.default.server).toBe(packageEntrypoint.CodememPlugin);
+	expect(repositoryWrapper.default.id).toBe("codemem-source-checkout-v1");
+	expect(repositoryWrapper.default.server).toBe(CodememPlugin);
+	expect(await repositoryWrapper.default.setup({})).toBeUndefined();
 });
 
 it("keeps repository lint feedback on V1 and makes it an explicit V2 no-op", async () => {

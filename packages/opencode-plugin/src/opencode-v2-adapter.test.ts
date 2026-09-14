@@ -468,6 +468,26 @@ describe("OpenCode 2 notifications", () => {
 		await cleanup?.();
 		expect(rpcDispose).toHaveBeenCalledOnce();
 	});
+
+	it("publishes an injection notice after real runtime recall", async () => {
+		const fixture = await makeRuntimeRecallFixture();
+		try {
+			const input = { sessionID: "session-notice", messages: [userMessage("user-1", "Recall")] };
+
+			await fixture.invokeContext(input);
+
+			expect(injectedTexts(input.messages[0])).toHaveLength(1);
+			expect(fixture.noticeEmit).toHaveBeenCalledWith(
+				"notice",
+				expect.objectContaining({
+					message: "codemem injected · 1 items",
+					variant: "info",
+				}),
+			);
+		} finally {
+			await fixture.dispose();
+		}
+	});
 });
 
 describe("OpenCode 2 memory tools", () => {
@@ -1719,6 +1739,15 @@ async function makeRuntimeRecallFixture(
 		}),
 	);
 	const fixture = makeContext();
+	const noticeEmit = vi.fn(async () => undefined);
+	Object.assign(fixture.context, {
+		rpc: {
+			register: vi.fn(async () => ({
+				dispose: vi.fn(async () => undefined),
+				events: { emit: noticeEmit },
+			})),
+		},
+	});
 	const setup = adapter.createOpenCodeV2Adapter();
 	const cleanup = await setup(fixture.context);
 	return {
@@ -1726,6 +1755,7 @@ async function makeRuntimeRecallFixture(
 		ledger,
 		pack,
 		retrieve,
+		noticeEmit,
 		measurements: (): RecallMeasurement[] =>
 			recallIO.appendFile.mock.calls.flatMap(([, data]) => {
 				const line = String(data);

@@ -595,6 +595,7 @@ try {
 		HOME: checkoutHomeDir,
 		XDG_CONFIG_HOME: join(checkoutHomeDir, ".config"),
 		CODEMEM_OPENCODE_V2_CONTRACT_REPORT: join(tempDir, "checkout-contract-report.jsonl"),
+		OPENCODE_CONFIG_CONTENT: JSON.stringify({ plugin: [packageRoot] }),
 	};
 	const checkoutHost = await startHost(opencode2, workspaceRoot, checkoutEnv);
 	try {
@@ -623,7 +624,16 @@ try {
 			env: checkoutEnv,
 		});
 		const entries = readPluginEntries(pluginResult);
-		assertActiveLocalPlugin(entries, "codemem", ".opencode/plugins/codemem.js");
+		assertActiveLocalPlugin(
+			entries,
+			"codemem-source-checkout-v1",
+			".opencode/plugins/codemem.js",
+		);
+		assert(
+			entries.filter((entry) => entry.id === "codemem").length === 1,
+			"Configured package did not remain the only active OpenCode 2 Codemem plugin",
+		);
+		assertPackedNotificationCompanion(entries);
 		assertActiveLocalPlugin(
 			entries,
 			"codemem-lint-feedback",

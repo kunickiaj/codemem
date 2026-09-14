@@ -345,16 +345,19 @@ describe("shared runtime boundary adapters", () => {
 		).toThrow("Unsupported OpenCode 1 tool argument: query:string");
 	});
 
-	it("keeps checkout wrappers as re-exports of their canonical host entrypoints", async () => {
+	it("keeps checkout wrappers on their intended host entrypoints", async () => {
 		const repositoryRoot = path.resolve(packageRoot, "../..");
 		const [repositoryWrapper, cliWrapper] = await Promise.all([
 			readFile(path.join(repositoryRoot, ".opencode/plugins/codemem.js"), "utf8"),
 			readFile(path.join(repositoryRoot, "packages/cli/.opencode/plugins/codemem.js"), "utf8"),
 		]);
 
-		expect(repositoryWrapper.trim()).toBe(
-			'export { default } from "../../packages/opencode-plugin/index.js";',
+		expect(repositoryWrapper).toContain(
+			'import { CodememPlugin } from "../../packages/opencode-plugin/index.js";',
 		);
+		expect(repositoryWrapper).toContain('id: "codemem-source-checkout-v1"');
+		expect(repositoryWrapper).toContain("server: CodememPlugin");
+		expect(repositoryWrapper).toContain("setup: async () => undefined");
 		const version = cliWrapper.match(/^const PINNED_BACKEND_VERSION = "([^"]+)";/)?.[1];
 		expect(version).toBeDefined();
 		expect(cliWrapper.trim()).toBe(`const PINNED_BACKEND_VERSION = "${version}";
@@ -367,6 +370,7 @@ export {
 	buildInjectionToastMessage,
 } from "../../../opencode-plugin/.opencode/plugins/codemem.js";`);
 		expect(repositoryWrapper).not.toContain("runtime.js");
+		expect(repositoryWrapper).not.toContain("setupOpenCodeV2");
 		expect(cliWrapper).not.toContain("runtime.js");
 	});
 });

@@ -10,7 +10,7 @@
 - Viewer HTTP API + SPA host: `packages/viewer-server/src/index.ts`.
 - Viewer UI source: `packages/ui/src/`.
 - OpenCode plugin source of truth: `packages/opencode-plugin/.opencode/plugins/codemem.js`.
-- `packages/cli/.opencode/plugins/codemem.js` and repo-root `.opencode/plugins/codemem.js` are wrappers/re-exports, not the main implementation.
+- `packages/cli/.opencode/plugins/codemem.js` is a wrapper/re-export. The repo-root `.opencode/plugins/codemem.js` wraps only the V1 implementation and is an explicit V2 no-op to avoid colliding with a configured npm plugin.
 - `packages/cloudflare-coordinator-worker/` is its own worker package with separate tests.
 
 ## Commands worth using

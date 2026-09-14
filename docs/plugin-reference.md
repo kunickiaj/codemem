@@ -20,13 +20,13 @@ retries or tool continuations replay retained context byte-for-byte.
 Compaction, title, and generate hooks remain isolated. Both the default message
 surface and legacy system surface work.
 
-1. Start OpenCode inside this repo (or make the plugin global so it globs in everywhere).
+1. Install the configured npm plugin on either host. OpenCode 1 contributors can instead remove that entry temporarily and start OpenCode inside this repo to load the checkout-local V1 source.
 2. Every tooling session creates memory artifacts in SQLite.
 3. Prompt-time memory injection appends volatile recall output to the latest user message by default, preserving the stable system/history prefix for provider prompt caches.
 4. Use `codemem stats` and `codemem recent` to confirm ingestion.
 5. Browse the viewer at the printed URL.
 
-OpenCode loads configured npm plugins and project-local `.opencode/plugins/` files as separate sources. If both resolve to Codemem for the same project, the first registration remains active and later registrations skip all hooks with a warning. Remove the configured npm entry when testing checkout-local plugin changes so the local copy initializes first.
+OpenCode loads configured npm plugins and project-local `.opencode/plugins/` files as separate sources. In this repository, the local wrapper loads the V1 source but is a no-op on OpenCode 2. For OpenCode 1 source testing, temporarily remove the configured npm entry before launching from the checkout so the local wrapper cannot lose the first-registration race. For OpenCode 2 source testing, add this checkout's `packages/opencode-plugin` directory to the host's `cli.json` `plugins` list, temporarily remove the npm entry, and restart the TUI. Restore the npm entry after testing; removing it without adding the package directory leaves Codemem inactive on OpenCode 2.
 
 ### OpenCode host support, troubleshooting, and rollback
 

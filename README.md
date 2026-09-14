@@ -128,17 +128,16 @@ OpenCode plugin and CLI are now split intentionally:
 - `@codemem/embeddings` — optional semantic embedding runtime installed by the CLI
 
 OpenCode treats configured npm plugins and checkout-local `.opencode/plugins/` files as separate
-sources. If both load Codemem for one Project, the first registration wins and later copies skip
-their hooks with a warning. Remove the configured npm entry when testing a source checkout so the
-checkout-local plugin loads first; otherwise your edits may appear to do nothing. The same
-first-registration rule applies on OpenCode 2. OpenCode 2 loads the package's `./tui` companion,
-which displays injection, compatibility, persistence, and update notices emitted by the server
-plugin. Notices remain best-effort and never affect capture or recall.
+sources. The repository wrapper loads the checkout source on OpenCode 1 and acts as a no-op on
+OpenCode 2. Before dogfooding OpenCode 1 source changes, temporarily remove the configured npm
+plugin so it cannot initialize before the checkout wrapper; restore the npm entry after testing.
+On OpenCode 2, the configured npm plugin remains the only active Codemem instance and loads the
+package's `./tui` companion, which displays injection, compatibility, persistence, and update
+notices emitted by the server plugin. Notices remain best-effort and never affect capture or recall.
 
 When dogfooding unpublished TUI changes from a source checkout, add the checkout's
-`packages/opencode-plugin` directory to the OpenCode 2 `cli.json` `plugins` list,
-restart the TUI, and remove that temporary entry after testing. The flat
-checkout server wrapper remains first for unpublished capture and recall changes.
+`packages/opencode-plugin` directory to the OpenCode 2 `cli.json` `plugins` list, temporarily
+remove the configured npm plugin, restart the TUI, and restore the npm entry after testing.
 
 OpenCode 2 support needs no storage change. Both hosts write the same raw-event stream and SQLite
 database, so switching between OpenCode 1 and OpenCode 2, or setting `CODEMEM_PLUGIN_IGNORE=1` in
@@ -551,7 +550,11 @@ npx -y codemem stats
 
 ### Plugin for development
 
-Start OpenCode inside the codemem repo directory — the plugin auto-loads from `.opencode/plugins/`.
+On OpenCode 1, temporarily remove the configured npm plugin, then start OpenCode inside the codemem
+repo directory to auto-load the V1 plugin source from `.opencode/plugins/`; restore the npm entry
+after testing. On OpenCode 2, that repository wrapper is a no-op: keep the configured npm plugin
+for normal use, or follow the source-checkout steps above to load `packages/opencode-plugin`
+explicitly while testing unpublished changes.
 
 The repository's `.opencode/plugins/lint-feedback.js` auto-loads a contributor-only lint-feedback pilot from `packages/opencode-plugin/src/lint-feedback.ts`. Under OpenCode 1, that repository-owned entrypoint pins the local Biome command, runs it before and after JavaScript or TypeScript edits covered by `biome.json`, appends only new or worsened diagnostics, and preserves edits with one warning if linting fails or times out. OpenCode 2 loads an explicit no-op until agent-visible edit feedback is implemented there. The wrapper and pilot source are excluded from `@codemem/opencode-plugin`; installing codemem does not enable this feedback hook.
 
