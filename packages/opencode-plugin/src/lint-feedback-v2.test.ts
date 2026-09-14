@@ -14,7 +14,10 @@ function fixture(message = "[lint-feedback] New diagnostic") {
 		dispose: vi.fn(async () => undefined),
 	};
 	const context = {
-		location: { directory: "/repo/worktree" },
+		location: {
+			directory: "/repo/worktree/packages/core",
+			project: { directory: "/repo/worktree" },
+		},
 		tool: {
 			hook: async (name: string, hook: Hook) => {
 				hooks.set(name, hook);
@@ -22,11 +25,19 @@ function fixture(message = "[lint-feedback] New diagnostic") {
 			},
 		},
 	};
-	const plugin = defineLintFeedbackV2Plugin({ createController: () => controller });
-	return { context, controller, disposed, hooks, plugin };
+	const createController = vi.fn(() => controller);
+	const plugin = defineLintFeedbackV2Plugin({ createController });
+	return { context, controller, createController, disposed, hooks, plugin };
 }
 
 describe("OpenCode 2 lint feedback", () => {
+	it("anchors lint feedback at the worktree root for nested sessions", async () => {
+		const test = fixture();
+		await test.plugin.setup(test.context as never);
+
+		expect(test.createController).toHaveBeenCalledWith("/repo/worktree");
+	});
+
 	it("passes full call identity and appends feedback to completed string results", async () => {
 		const test = fixture();
 		const cleanup = await test.plugin.setup(test.context as never);
