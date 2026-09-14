@@ -4,10 +4,11 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { type ChangedPath, compareBiomeReports } from "./biome-ratchet.js";
+import { type ChangedPath, compareBiomeReports, compareBiomeToolPolicy } from "./biome-ratchet.js";
 import { formatDiagnostic } from "./lint-diagnostics.js";
 
 const HUMAN_DIAGNOSTIC_LIMIT = 10;
+const GITHUB_ANNOTATION_LIMIT = 10;
 
 export function resolveRootBiomeEntrypoint(root: string): string {
 	return createRequire(path.join(root, "package.json")).resolve("@biomejs/biome/bin/biome");
@@ -17,6 +18,7 @@ export interface CliOptions {
 	base: string;
 	head?: string;
 	json: boolean;
+	githubAnnotations?: boolean;
 }
 
 interface CommandResult {
@@ -30,15 +32,23 @@ interface Snapshot {
 	commit: string;
 }
 
+const BOOLEAN_FLAGS = new Map<string, "json" | "githubAnnotations">([
+	["--json", "json"],
+	["--github-annotations", "githubAnnotations"],
+]);
+
+function referenceOption(argument: string, value: string): Partial<CliOptions> {
+	return argument === "--base" ? { base: value } : { head: value };
+}
+
 export function parseArguments(argv: string[]): CliOptions {
-	let base: string | undefined;
-	let head: string | undefined;
-	let json = false;
+	const options: Partial<CliOptions> = { json: false, githubAnnotations: false };
 	for (let index = 0; index < argv.length; index += 1) {
-		const argument = argv[index];
+		const argument = argv[index] ?? "";
 		if (argument === "--") continue;
-		if (argument === "--json") {
-			json = true;
+		const booleanFlag = BOOLEAN_FLAGS.get(argument);
+		if (booleanFlag) {
+			options[booleanFlag] = true;
 			continue;
 		}
 		if (argument !== "--base" && argument !== "--head") {
@@ -46,12 +56,11 @@ export function parseArguments(argv: string[]): CliOptions {
 		}
 		const value = argv[index + 1];
 		if (!value || value.startsWith("--")) throw new Error(`${argument} requires a value`);
-		if (argument === "--base") base = value;
-		else head = value;
+		Object.assign(options, referenceOption(argument, value));
 		index += 1;
 	}
-	if (!base) throw new Error("--base is required");
-	return { base, head, json };
+	if (!options.base) throw new Error("--base is required");
+	return options as CliOptions;
 }
 
 export function runCommand(
@@ -306,6 +315,97 @@ export function formatHumanResult(result: Awaited<ReturnType<typeof runRatchet>>
 	return ["Biome ratchet failed.", ...policy, ...diagnostics].join("\n");
 }
 
+function escapeWorkflowData(value: string): string {
+	return value.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
+}
+
+function escapeWorkflowProperty(value: string): string {
+	return escapeWorkflowData(value).replaceAll(":", "%3A").replaceAll(",", "%2C");
+}
+
+function workflowError(
+	message: string,
+	options: { title: string; path?: string; line?: number },
+): string {
+	const properties = [`title=${escapeWorkflowProperty(options.title)}`];
+	if (options.path) properties.push(`file=${escapeWorkflowProperty(options.path)}`);
+	if (options.line) properties.push(`line=${options.line}`);
+	return `::error ${properties.join(",")}::${escapeWorkflowData(message)}`;
+}
+
+export function formatGithubAnnotations(result: Awaited<ReturnType<typeof runRatchet>>): string {
+	const policy = result.policyViolations.map((violation) => ({
+		message: violation.message,
+		title: "Biome policy regression",
+		path: violation.path,
+		line: undefined,
+	}));
+	const diagnostics = result.regressions.map((diagnostic) => ({
+		message: diagnostic.description,
+		title: diagnostic.category,
+		path: diagnostic.path,
+		line: diagnostic.line,
+	}));
+	const findings = [...policy, ...diagnostics];
+	const visibleLimit =
+		findings.length > GITHUB_ANNOTATION_LIMIT
+			? GITHUB_ANNOTATION_LIMIT - 1
+			: GITHUB_ANNOTATION_LIMIT;
+	const annotations = findings.slice(0, visibleLimit).map((finding) =>
+		workflowError(finding.message, {
+			title: finding.title,
+			path: finding.path,
+			line: finding.line,
+		}),
+	);
+	const hidden = findings.length - annotations.length;
+	if (hidden > 0) {
+		annotations.push(
+			workflowError(`${hidden} additional Biome findings are available in the JSON artifact.`, {
+				title: "Biome delta findings",
+			}),
+		);
+	}
+	return annotations.join("\n");
+}
+
+function emitGithubAnnotations(
+	enabled: boolean | undefined,
+	result: Awaited<ReturnType<typeof runRatchet>>,
+): void {
+	if (!enabled) return;
+	const annotations = formatGithubAnnotations(result);
+	if (annotations) process.stderr.write(`${annotations}\n`);
+}
+
+function emitGithubFailure(enabled: boolean, message: string): void {
+	if (!enabled) return;
+	process.stderr.write(
+		`${workflowError(message, { title: "Biome delta could not compare snapshots" })}\n`,
+	);
+}
+
+async function loadSnapshotInputs(root: string, baseSnapshot: Snapshot, headSnapshot: Snapshot) {
+	const baseConfigPath = path.join(baseSnapshot.directory, "biome.json");
+	const headConfigPath = path.join(headSnapshot.directory, "biome.json");
+	const [baseConfigText, headConfigText, baseLockfile, headLockfile, changes] = await Promise.all([
+		readFile(baseConfigPath, "utf8"),
+		readFile(headConfigPath, "utf8"),
+		optionalFile(path.join(baseSnapshot.directory, "pnpm-lock.yaml")),
+		optionalFile(path.join(headSnapshot.directory, "pnpm-lock.yaml")),
+		listChanges(root, baseSnapshot.commit, headSnapshot.commit),
+	]);
+	return {
+		baseConfigPath,
+		headConfigPath,
+		baseConfigText,
+		headConfigText,
+		baseLockfile,
+		headLockfile,
+		changes,
+	};
+}
+
 export async function runRatchet(
 	options: CliOptions,
 	dependencies: {
@@ -329,13 +429,15 @@ export async function runRatchet(
 		headSnapshot = await addSnapshot(root, temporaryRoot, "head", headCommit);
 		await dependencies.afterSnapshot?.();
 
-		const baseConfigPath = path.join(baseSnapshot.directory, "biome.json");
-		const headConfigPath = path.join(headSnapshot.directory, "biome.json");
-		const [baseConfigText, headConfigText, changes] = await Promise.all([
-			readFile(baseConfigPath, "utf8"),
-			readFile(headConfigPath, "utf8"),
-			listChanges(root, baseCommit, headCommit),
-		]);
+		const {
+			baseConfigPath,
+			headConfigPath,
+			baseConfigText,
+			headConfigText,
+			baseLockfile,
+			headLockfile,
+			changes,
+		} = await loadSnapshotInputs(root, baseSnapshot, headSnapshot);
 		const changesWithSources = await addSources(
 			changes,
 			baseSnapshot.directory,
@@ -354,6 +456,7 @@ export async function runRatchet(
 			headConfigText,
 			changes: changesWithSources,
 		});
+		comparison.policyViolations.push(...compareBiomeToolPolicy(baseLockfile, headLockfile));
 		return {
 			mode: options.head ? "refs" : "working-tree",
 			base: baseCommit,
@@ -373,12 +476,17 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 	try {
 		options = parseArguments(argv);
 		const result = await runRatchet(options);
+		emitGithubAnnotations(options.githubAnnotations, result);
 		process.stdout.write(
 			options.json ? `${JSON.stringify(result)}\n` : `${formatHumanResult(result)}\n`,
 		);
 		return result.regressions.length > 0 || result.policyViolations.length > 0 ? 1 : 0;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
+		emitGithubFailure(
+			Boolean(options?.githubAnnotations || argv.includes("--github-annotations")),
+			message,
+		);
 		if (options?.json || argv.includes("--json")) {
 			process.stdout.write(`${JSON.stringify({ error: message })}\n`);
 		} else {

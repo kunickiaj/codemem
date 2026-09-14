@@ -6,10 +6,13 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	compareBiomePolicy,
+	compareBiomeToolPolicy,
 	compareChangedDiagnostics,
 	parsePinnedBiomeReport,
+	SUPPORTED_BIOME_VERSION,
 } from "./biome-ratchet.js";
 import {
+	formatGithubAnnotations,
 	formatHumanResult,
 	parseArguments,
 	parseNameStatus,
@@ -274,6 +277,29 @@ describe("pinned Biome report schema", () => {
 });
 
 describe("Biome policy comparison", () => {
+	it("requires an explicit policy migration when the pinned Biome version changes", () => {
+		const lockfile = (version: string) => `packages:\n\n  '@biomejs/biome@${version}':\n`;
+
+		expect(
+			compareBiomeToolPolicy(lockfile(SUPPORTED_BIOME_VERSION), lockfile("2.6.0")),
+		).toMatchObject([{ kind: "coverage", path: "pnpm-lock.yaml" }]);
+		expect(compareBiomeToolPolicy(lockfile("2.5.10"), lockfile(SUPPORTED_BIOME_VERSION))).toEqual(
+			[],
+		);
+		expect(
+			compareBiomeToolPolicy(lockfile(SUPPORTED_BIOME_VERSION), lockfile(SUPPORTED_BIOME_VERSION)),
+		).toEqual([]);
+		expect(
+			compareBiomeToolPolicy(
+				lockfile(SUPPORTED_BIOME_VERSION).repeat(2),
+				lockfile(SUPPORTED_BIOME_VERSION).repeat(2),
+			),
+		).toEqual([]);
+		expect(compareBiomeToolPolicy(undefined, undefined)).toMatchObject([
+			{ kind: "coverage", path: "pnpm-lock.yaml" },
+		]);
+	});
+
 	it("fails coverage, severity, threshold, and suppression weakening", () => {
 		const violations = compareBiomePolicy(
 			config(),
@@ -961,12 +987,36 @@ describe("Biome ratchet CLI", () => {
 		expect(parseArguments(["--", "--base", "main", "--json"])).toEqual({
 			base: "main",
 			json: true,
+			githubAnnotations: false,
 		});
-		expect(parseArguments(["--base", "main", "--head", "HEAD"])).toEqual({
+		expect(parseArguments(["--base", "main", "--head", "HEAD", "--github-annotations"])).toEqual({
 			base: "main",
 			head: "HEAD",
 			json: false,
+			githubAnnotations: true,
 		});
+	});
+
+	it("emits bounded escaped GitHub annotations while retaining the full result", () => {
+		const regressions = Array.from({ length: 12 }, (_, index) => ({
+			...diagnostic("src/a.ts", index + 1, 16, `function ${index}`),
+			description: `Regression ${index}%\nnext`,
+		}));
+		const annotations = formatGithubAnnotations({
+			mode: "refs",
+			base: "base",
+			head: "head",
+			changedFiles: 1,
+			regressions,
+			policyViolations: [{ kind: "coverage", message: "Policy changed", path: "biome.json" }],
+			baseDiagnosticCount: 0,
+			headDiagnosticCount: regressions.length,
+		});
+
+		expect(annotations.match(/::error /g)).toHaveLength(10);
+		expect(annotations).toContain("file=src/a.ts,line=1");
+		expect(annotations).toContain("Regression 0%25%0Anext");
+		expect(annotations).toContain("4 additional Biome findings");
 	});
 
 	it("parses rename, addition, modification, and deletion status", () => {

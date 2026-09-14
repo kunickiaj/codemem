@@ -107,6 +107,8 @@ pnpm lint:delta -- --base <git-ref> [--head <git-ref>] [--json]
 
 Exit code `0` means no new diagnostics or policy weakening, `1` means regressions were found, and `2` means the comparison could not be trusted. JSON output includes every regression; human output shows the first ten. Missing refs, tool failures, malformed or incomplete Biome reports, removed includes, changed Git ignore policy, new exclusions or suppressions, disabled linting, changed lint overrides, weaker rule levels, and increased thresholds fail closed.
 
+Pull request CI runs this comparison inside the required `TypeScript Lint` job using the event's immutable base and head commits. The job uploads the complete JSON report and emits at most ten annotations total; unchanged legacy debt passes. Because enforcement extends an existing required status, it needs no separate branch-protection setting. Comparison results are not cached, so revisions and tool or policy changes cannot reuse a stale result; dependency caching remains lockfile-keyed.
+
 OpenCode prompt-time pack construction and prompt-pack ledger transitions use the
 long-lived local viewer first. Retryable connection, timeout, endpoint-version,
 server, or malformed-response failures fall back to the compatible CLI path.

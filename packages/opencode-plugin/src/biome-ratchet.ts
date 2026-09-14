@@ -8,6 +8,8 @@ import {
 
 type UnknownRecord = Record<string, unknown>;
 
+export const SUPPORTED_BIOME_VERSION = "2.5.11";
+
 export interface ChangedPath {
 	status: "added" | "deleted" | "modified" | "renamed";
 	beforePath?: string;
@@ -27,6 +29,33 @@ export interface RatchetComparison {
 	policyViolations: PolicyViolation[];
 	baseDiagnosticCount: number;
 	headDiagnosticCount: number;
+}
+
+function biomeLockVersions(lockfile: string | undefined): string[] {
+	if (!lockfile) return [];
+	return [
+		...new Set(
+			[...lockfile.matchAll(/^\s{2}'@biomejs\/biome@([^']+)':$/gm)]
+				.map((match) => match[1] ?? "")
+				.filter(Boolean),
+		),
+	].sort();
+}
+
+export function compareBiomeToolPolicy(
+	baseLockfile: string | undefined,
+	headLockfile: string | undefined,
+): PolicyViolation[] {
+	const baseVersions = biomeLockVersions(baseLockfile);
+	const headVersions = biomeLockVersions(headLockfile);
+	if (headVersions.length === 1 && headVersions[0] === SUPPORTED_BIOME_VERSION) return [];
+	return [
+		{
+			kind: "coverage",
+			message: `Pinned Biome tool changed (${baseVersions.join(", ") || "missing"} → ${headVersions.join(", ") || "missing"}); update SUPPORTED_BIOME_VERSION in the ratchet as an explicit policy migration`,
+			path: "pnpm-lock.yaml",
+		},
+	];
 }
 
 function isRecord(value: unknown): value is UnknownRecord {
