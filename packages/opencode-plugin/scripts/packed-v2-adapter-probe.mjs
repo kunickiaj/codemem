@@ -305,11 +305,14 @@ function createV2Subscription(rows, state, toolsHandled, markTerminalHandled) {
 function createV2Context(rows) {
 	let contextHook;
 	let toolHook;
+	let notificationHandlers;
+	let notificationListener;
 	const memoryTools = [];
 	const state = {
 		aborted: false,
 		contextDisposed: false,
 		hookDisposed: false,
+		rpcDisposed: false,
 		transformDisposed: false,
 	};
 	let markTerminalHandled;
@@ -328,6 +331,23 @@ function createV2Context(rows) {
 			},
 			event: {
 				subscribe: createV2Subscription(rows, state, toolsHandled, markTerminalHandled),
+			},
+			rpc: {
+				register: async (definition, handlers) => {
+					assert(definition.id === "codemem.notifications", "packed V2 registered the wrong RPC");
+					notificationHandlers = handlers;
+					return {
+						dispose: async () => {
+							state.rpcDisposed = true;
+						},
+						events: {
+							emit: async (name, data) => {
+								assert(name === "notice", "packed V2 emitted the wrong RPC event");
+								notificationListener?.({ data });
+							},
+						},
+					};
+				},
 			},
 			session: {
 				hook: async (name, callback) => {
@@ -363,9 +383,22 @@ function createV2Context(rows) {
 		getContextHook: () => contextHook,
 		getHook: () => toolHook,
 		getMemoryTools: () => memoryTools,
+		getNotificationClient: () => ({
+			drain: (input) => notificationHandlers.drain(input),
+			events: {
+				on: (name, listener) => {
+					assert(name === "notice", "packed TUI subscribed to the wrong RPC event");
+					notificationListener = listener;
+					return () => {
+						notificationListener = undefined;
+					};
+				},
+			},
+		}),
 		isAborted: () => state.aborted,
 		isContextDisposed: () => state.contextDisposed,
-		isDisposed: () => state.contextDisposed && state.hookDisposed && state.transformDisposed,
+		isDisposed: () =>
+			state.contextDisposed && state.hookDisposed && state.rpcDisposed && state.transformDisposed,
 		markToolsHandled,
 		terminalHandled,
 	};
@@ -490,7 +523,7 @@ async function driveV2Recall(contextHook, requests) {
 	);
 }
 
-async function driveV2(mod, receiver) {
+async function driveV2(mod, tui, receiver) {
 	const { requests, rows } = receiver;
 	const fixture = createV2Context(rows);
 	const cleanup = await mod.default.setup(fixture.context);
@@ -514,6 +547,20 @@ async function driveV2(mod, receiver) {
 		`packed V2 memory tool failed: ${recentResult.content}`,
 	);
 	await driveV2Recall(contextHook, requests);
+	const toasts = [];
+	const tuiCleanup = await tui.default.setup({
+		client: { rpc: () => fixture.getNotificationClient() },
+		ui: { toast: { show: (notice) => toasts.push(notice) } },
+	});
+	assert(
+		toasts.some(
+			(toast) =>
+				toast.title === "Codemem" &&
+				toast.variant === "info" &&
+				toast.message.includes("codemem injected"),
+		),
+		"packed OpenCode 2 TUI companion did not replay the injection notice",
+	);
 	await hook({
 		id: "v2-tool-present-1",
 		status: "completed",
@@ -542,6 +589,7 @@ async function driveV2(mod, receiver) {
 		`packed V2 capture lost tool-call identity: ${JSON.stringify(toolCallIDs)}`,
 	);
 	await waitWithTimeout(fixture.terminalHandled, 3_000, "Packed V2 terminal event timed out");
+	await tuiCleanup();
 	await cleanup();
 	assert(fixture.isAborted(), "packed V2 cleanup did not abort event consumption");
 	assert(fixture.isContextDisposed(), "packed V2 cleanup did not dispose context registration");
@@ -691,8 +739,8 @@ async function driveV1(mod, rows) {
 	await reloaded.dispose();
 }
 
-const [entrypointURL, adapterURL] = process.argv.slice(2);
-assert(entrypointURL && adapterURL, "Packed V2 probe requires package URLs");
+const [entrypointURL, adapterURL, tuiURL] = process.argv.slice(2);
+assert(entrypointURL && adapterURL && tuiURL, "Packed V2 probe requires package URLs");
 const profile = { value: null };
 const receiver = await startReceiver(profile);
 const address = receiver.server.address();
@@ -703,6 +751,7 @@ process.env.CODEMEM_VIEWER_PORT = String(address.port);
 
 try {
 	const mod = await import(entrypointURL);
+	const tui = await import(tuiURL);
 	const adapter = await import(adapterURL);
 	const runtime = await import(new URL("./runtime.js", adapterURL));
 	profile.value = {
@@ -714,7 +763,7 @@ try {
 	};
 	assertEntrypoint(mod);
 	assertPackedTranslation(adapter);
-	await driveV2(mod, receiver);
+	await driveV2(mod, tui, receiver);
 	await driveV1(mod, receiver.rows);
 	const v2Rows = normalizeRows(receiver.rows, V2_SESSION);
 	const v1Rows = normalizeRows(receiver.rows, V1_SESSION);

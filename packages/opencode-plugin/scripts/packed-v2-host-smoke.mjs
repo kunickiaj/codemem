@@ -76,6 +76,18 @@ function assertActiveLocalPlugin(entries, id, pathSuffix) {
 	);
 }
 
+function assertPackedNotificationCompanion(entries) {
+	const plugin = entries.find((entry) => entry.id === "codemem");
+	assert(
+		plugin,
+		`Pinned host did not register the packed Codemem plugin: ${JSON.stringify(entries)}`,
+	);
+	assert(plugin.state?.status === "active", "Packed Codemem plugin did not activate");
+	assert(plugin.features?.server === true, "Packed Codemem server component was not discovered");
+	assert(plugin.features?.tui === true, "Packed Codemem TUI companion was not discovered");
+	assert(plugin.features?.rpc === true, "Packed Codemem RPC contract was not discovered");
+}
+
 function runAsync(command, args, options = {}) {
 	return new Promise((resolvePromise, reject) => {
 		const child = spawn(command, args, {
@@ -842,6 +854,33 @@ try {
 		expectedEventTypes.every((eventType) => deliveredEventTypes.has(eventType)),
 		`Pinned host did not deliver expected events before shutdown; observed ${JSON.stringify([...deliveredEventTypes])}`,
 	);
+	run(
+		opencode2,
+		[
+			"api",
+			"--server",
+			host.baseURL,
+			"POST",
+			"/api/plugin/await-activation",
+			"--param",
+			`location=${projectDir}`,
+		],
+		{ cwd: projectDir, env },
+	);
+	const packedPluginResult = run(
+		opencode2,
+		[
+			"api",
+			"--server",
+			host.baseURL,
+			"GET",
+			"/api/plugin",
+			"--param",
+			`location=${projectDir}`,
+		],
+		{ cwd: projectDir, env },
+	);
+	assertPackedNotificationCompanion(readPluginEntries(packedPluginResult));
 	await stopHost(hostProcess);
 	hostProcess = undefined;
 

@@ -32,6 +32,10 @@ npm plugin plus a checkout-local `.opencode/plugins/` copy), the first
 registration wins and later copies skip their hooks with a warning in
 `~/.codemem/plugin.log`.
 
+OpenCode 2 automatically loads the package's `./tui` companion. It displays
+best-effort injection, compatibility, persistence, and update notices from the
+server plugin without making notification delivery part of capture or recall.
+
 ## Troubleshooting and rollback
 
 - No automatic recall on OpenCode 2: recall requires a non-empty latest
@@ -39,6 +43,8 @@ registration wins and later copies skip their hooks with a warning in
   turn skips recall instead of guessing. Capture and the manual tools still work.
 - Duplicate registration warning: remove either the configured npm entry or the
   project-local copy so only one Codemem plugin loads.
+- No notifications on OpenCode 2: restart the TUI after installing or upgrading
+  the plugin so it loads the matching `./tui` companion.
 - Stop the OpenCode 2 path: set `CODEMEM_PLUGIN_IGNORE=1` in the environment that
   launches OpenCode 2, or remove the plugin entry from that host's config.
   OpenCode 1 keeps working from the same package.
@@ -56,6 +62,10 @@ the hyphenated IDs. OpenCode 2.0.2 automatic recall runs through
 `session.context` when the latest user message has a non-empty ID. Each identified turn performs one fresh retrieval, while
 retries and tool continuations replay retained context. Missing or blank identity
 skips recall safely, and auxiliary hooks remain isolated.
+
+The `./rpc` export defines the location-scoped notification contract. The
+`./tui` export subscribes before draining the bounded startup backlog, suppresses
+duplicate notice IDs, and renders matching-location notices as Codemem toasts.
 
 `CodememPlugin` remains the canonical named OpenCode 1 function export.
 `OpencodeMemPlugin` remains available as a deprecated, reference-identical alias

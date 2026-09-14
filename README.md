@@ -131,8 +131,14 @@ OpenCode treats configured npm plugins and checkout-local `.opencode/plugins/` f
 sources. If both load Codemem for one Project, the first registration wins and later copies skip
 their hooks with a warning. Remove the configured npm entry when testing a source checkout so the
 checkout-local plugin loads first; otherwise your edits may appear to do nothing. The same
-first-registration rule applies on OpenCode 2; its warning lands in the local plugin log because
-OpenCode 2.0.2 exposes no host log or toast API to plugins.
+first-registration rule applies on OpenCode 2. OpenCode 2 loads the package's `./tui` companion,
+which displays injection, compatibility, persistence, and update notices emitted by the server
+plugin. Notices remain best-effort and never affect capture or recall.
+
+When dogfooding unpublished TUI changes from a source checkout, add the checkout's
+`packages/opencode-plugin` directory to the OpenCode 2 `cli.json` `plugins` list,
+restart the TUI, and remove that temporary entry after testing. The flat
+checkout server wrapper remains first for unpublished capture and recall changes.
 
 OpenCode 2 support needs no storage change. Both hosts write the same raw-event stream and SQLite
 database, so switching between OpenCode 1 and OpenCode 2, or setting `CODEMEM_PLUGIN_IGNORE=1` in

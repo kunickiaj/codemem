@@ -39,8 +39,16 @@ it("keeps the OpenCode 1 SDK manifests aligned with the supported host floor", a
 	expect(packageManifest.engines.opencode).toBe(`>=${minimumOpenCodeVersion}`);
 	expect(pluginRuntimeManifest.dependencies["@opencode-ai/plugin"]).toBe(minimumOpenCodeVersion);
 	expect(cliRuntimeManifest.dependencies["@opencode-ai/plugin"]).toBe(minimumOpenCodeVersion);
-	expect(packageManifest.dependencies["@opencode/plugin"]).toBeUndefined();
-	expect(packageManifest.devDependencies["@opencode/plugin"]).toBe(pinnedOpenCodeV2Version);
+	expect(packageManifest.dependencies["@opencode/plugin"]).toBe(pinnedOpenCodeV2Version);
+	expect(packageManifest.devDependencies["@opencode/plugin"]).toBeUndefined();
+	expect(packageManifest.exports["./rpc"]).toEqual({
+		types: "./rpc.d.ts",
+		import: "./rpc.js",
+	});
+	expect(packageManifest.exports["./tui"]).toEqual({
+		types: "./tui.d.ts",
+		import: "./tui.js",
+	});
 });
 
 it("loads the repository wrapper from the canonical package implementation", async () => {

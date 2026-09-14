@@ -167,7 +167,7 @@ describe("pinned OpenCode 2 package contract", () => {
 		// Act
 		const versions = [
 			manifest.devDependencies["@opencode/cli"],
-			manifest.devDependencies["@opencode/plugin"],
+			manifest.dependencies["@opencode/plugin"],
 			fixtureManifest.peerDependencies["@opencode/plugin"],
 		];
 

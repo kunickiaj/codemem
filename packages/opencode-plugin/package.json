@@ -9,11 +9,23 @@
 		".": {
 			"types": "./index.d.ts",
 			"import": "./index.js"
+		},
+		"./rpc": {
+			"types": "./rpc.d.ts",
+			"import": "./rpc.js"
+		},
+		"./tui": {
+			"types": "./tui.d.ts",
+			"import": "./tui.js"
 		}
 	},
 	"files": [
 		"index.js",
 		"index.d.ts",
+		"rpc.js",
+		"rpc.d.ts",
+		"tui.js",
+		"tui.d.ts",
 		"src/opencode-v2-contract-fixture.ts",
 		"v2-contract-fixture/",
 		"README.md",
@@ -28,11 +40,11 @@
 		"test:packed-artifact": "pnpm --filter codemem build && node ./scripts/packed-artifact-smoke.mjs"
 	},
 	"dependencies": {
-		"@opencode-ai/plugin": "1.18.29"
+		"@opencode-ai/plugin": "1.18.29",
+		"@opencode/plugin": "2.0.2"
 	},
 	"devDependencies": {
 		"@opencode/cli": "2.0.2",
-		"@opencode/plugin": "2.0.2",
 		"@types/node": "^24.12.4",
 		"vitest": "catalog:"
 	},

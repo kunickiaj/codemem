@@ -428,6 +428,48 @@ describe("OpenCode 2 tool capture", () => {
 	});
 });
 
+describe("OpenCode 2 notifications", () => {
+	it("publishes runtime notices through the registered RPC bridge", async () => {
+		const runtime = makeRuntime();
+		const emit = vi.fn(async () => undefined);
+		const rpcDispose = vi.fn(async () => undefined);
+		let drain: (() => Promise<{ notices: unknown[] }>) | undefined;
+		const fixture = makeContext();
+		Object.assign(fixture.context, {
+			rpc: {
+				register: vi.fn(async (_definition, handlers) => {
+					drain = handlers.drain;
+					return { dispose: rpcDispose, events: { emit } };
+				}),
+			},
+		});
+		const createRuntime = vi.fn(
+			async (_input: {
+				host: {
+					notify: ((notice: { message: string; variant: string }) => Promise<void>) | null;
+				};
+			}) => runtime,
+		);
+		const setup = adapter.createOpenCodeV2Adapter({
+			createRuntime,
+		});
+		const cleanup = await setup(fixture.context);
+		const notify = createRuntime.mock.calls[0]?.[0].host.notify;
+
+		await notify?.({ message: "Context injected", variant: "success" });
+
+		expect(emit).toHaveBeenCalledWith(
+			"notice",
+			expect.objectContaining({ message: "Context injected", variant: "success" }),
+		);
+		await expect(drain?.()).resolves.toEqual({
+			notices: [expect.objectContaining({ message: "Context injected", variant: "success" })],
+		});
+		await cleanup?.();
+		expect(rpcDispose).toHaveBeenCalledOnce();
+	});
+});
+
 describe("OpenCode 2 memory tools", () => {
 	it("registers shared memory tools with V2 schemas and results", async () => {
 		const runtime = makeRuntime();

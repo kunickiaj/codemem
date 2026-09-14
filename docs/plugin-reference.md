@@ -42,7 +42,8 @@ Install on either host with `codemem setup --opencode-only` (or `npx -y codemem 
 Troubleshooting:
 
 - **No automatic recall on OpenCode 2.** Recall runs through `session.context` and requires a non-empty, non-whitespace latest user-message ID. When the ID is missing or blank, that turn skips recall rather than guessing identity; capture and the manual tools continue. Retries and tool continuations replay retained context and do not retrieve again, so a repeated turn without new context is expected.
-- **Duplicate registration warning.** `codemem duplicate plugin registration skipped` in `~/.codemem/plugin.log` means OpenCode loaded Codemem twice for one project, usually a configured npm entry plus a checkout-local copy. Remove one of them. OpenCode 2.0.2 exposes no host log or toast API to plugins, so on that host the warning appears only in the local log.
+- **No notifications on OpenCode 2.** OpenCode 2 loads `@codemem/opencode-plugin/tui` automatically beside the server plugin. The companion subscribes to the server plugin's location-scoped RPC notices and replays notices emitted during startup. Restart the TUI after installing or upgrading the plugin; notification delivery is best-effort and does not affect capture or recall.
+- **Duplicate registration warning.** `codemem duplicate plugin registration skipped` in `~/.codemem/plugin.log` means OpenCode loaded Codemem twice for one project, usually a configured npm entry plus a checkout-local copy. Remove one of them. The first server registration owns notifications as well as capture and recall.
 - **Capture looks stalled on either host.** Run `codemem db raw-events-status` and follow the [post-restart config sanity checklist](#post-restart-config-sanity-checklist); both hosts share the same raw-event pipeline and spool behavior.
 
 Rollback:

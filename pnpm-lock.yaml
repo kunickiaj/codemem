@@ -366,13 +366,13 @@ importers:
       '@opencode-ai/plugin':
         specifier: 1.18.29
         version: 1.18.29
+      '@opencode/plugin':
+        specifier: 2.0.2
+        version: 2.0.2(@opentelemetry/api-logs@0.214.0)(@opentelemetry/resources@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-logs@0.214.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-metrics@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/semantic-conventions@1.43.0)(redis@6.2.1(@opentelemetry/api@1.9.0))(supports-color@10.2.2)
     devDependencies:
       '@opencode/cli':
         specifier: 2.0.2
         version: 2.0.2
-      '@opencode/plugin':
-        specifier: 2.0.2
-        version: 2.0.2(@opentelemetry/api-logs@0.214.0)(@opentelemetry/resources@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-logs@0.214.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-metrics@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/semantic-conventions@1.43.0)(redis@6.2.1(@opentelemetry/api@1.9.0))(supports-color@10.2.2)
       '@types/node':
         specifier: ^24.12.4
         version: 24.13.3

@@ -4,6 +4,7 @@ import {
   createRuntimeLocation,
 } from "./host-contract.js";
 import { createCodememRuntime } from "./runtime.js";
+import { registerV2NotificationBridge } from "./v2-notification-bridge.js";
 
 const DEFAULT_EVENT_TASK_TIMEOUT_MS = 250;
 const FAILED_TOOL_ERROR = Object.freeze({
@@ -619,19 +620,36 @@ export const createOpenCodeV2Adapter = ({
   waitForRuntimeDisposalTask = defaultWaitForEventTask,
 } = {}) => async (context) => {
   const location = context.location;
-  // OpenCode 2.0.2 exposes neither app logging nor toast APIs, so V2 uses local diagnostics only.
-  const runtime = await createRuntime({
-    location: createRuntimeLocation({
-      project: { ...location.project, root: location.project.canonical },
-      directory: location.directory,
-      worktree: location.project.directory,
-    }),
-    host: createRuntimeHost({ log: async () => {}, notify: null }),
-  });
-  if (!runtime) return undefined;
+  const notificationBridge = await registerV2NotificationBridge(context);
+  let runtime;
+  try {
+    runtime = await createRuntime({
+      location: createRuntimeLocation({
+        project: { ...location.project, root: location.project.canonical },
+        directory: location.directory,
+        worktree: location.project.directory,
+      }),
+      host: createRuntimeHost({ log: async () => {}, notify: notificationBridge.notify }),
+    });
+  } catch (error) {
+    try {
+      await notificationBridge.registration?.dispose();
+    } catch {
+      // Preserve the runtime activation error.
+    }
+    throw error;
+  }
+  if (!runtime) {
+    try {
+      await notificationBridge.registration?.dispose();
+    } catch {
+      // Duplicate registration cleanup is best-effort.
+    }
+    return undefined;
+  }
 
   const abortController = new AbortController();
-  const registrations = [];
+  const registrations = notificationBridge.registration ? [notificationBridge.registration] : [];
   const translator = createV2EventTranslator();
   const scheduleCapture = createCaptureScheduler();
   const scheduleContext = createContextScheduler();
