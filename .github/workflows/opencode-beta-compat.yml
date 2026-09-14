@@ -1,0 +1,62 @@
+name: OpenCode Beta Compatibility
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "43 4 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  opencode-beta-compat:
+    name: Advisory OpenCode 2 Beta Packed Host
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Resolve matching OpenCode beta packages
+        id: beta-version
+        run: |
+          node --input-type=module <<'NODE'
+          import { execFileSync } from "node:child_process";
+          import { appendFileSync } from "node:fs";
+          const cliVersion = JSON.parse(execFileSync("npm", ["view", "@opencode/cli@beta", "version", "--json"], { encoding: "utf8" }));
+          const pluginVersion = JSON.parse(execFileSync("npm", ["view", "@opencode/plugin@beta", "version", "--json"], { encoding: "utf8" }));
+          if (cliVersion !== pluginVersion) {
+            throw new Error(`OpenCode beta version mismatch: @opencode/cli=${JSON.stringify(cliVersion)}, @opencode/plugin=${JSON.stringify(pluginVersion)}`);
+          }
+          const exactVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\+[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*)?$/u;
+          if (typeof cliVersion !== "string" || cliVersion.trim() !== cliVersion || !exactVersion.test(cliVersion)) {
+            throw new Error("OpenCode beta packages must resolve to one exact semver version");
+          }
+          appendFileSync(process.env.GITHUB_OUTPUT, `version=${cliVersion}\n`);
+          NODE
+
+      - name: Install matching beta host and SDK without changing workspace pins
+        env:
+          CODEMEM_OPENCODE_V2_VERSION: ${{ steps.beta-version.outputs.version }}
+        run: |
+          npm install --prefix "$RUNNER_TEMP/opencode-beta" --no-save --package-lock=false "@opencode/cli@$CODEMEM_OPENCODE_V2_VERSION" "@opencode/plugin@$CODEMEM_OPENCODE_V2_VERSION"
+          ln -sfn "$RUNNER_TEMP/opencode-beta/node_modules/@opencode/cli" "packages/opencode-plugin/node_modules/@opencode/cli"
+          ln -sfn "$RUNNER_TEMP/opencode-beta/node_modules/@opencode/plugin" "packages/opencode-plugin/node_modules/@opencode/plugin"
+
+      - name: Run advisory packed OpenCode 2 contract
+        env:
+          CODEMEM_OPENCODE_V2_VERSION: ${{ steps.beta-version.outputs.version }}
+        run: pnpm --filter @codemem/opencode-plugin test:opencode-v2-contract
