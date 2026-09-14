@@ -126,7 +126,7 @@ describe("packed OpenCode 2 host config", () => {
 			const checkVersion = (reported: string) =>
 				new Script(
 					`${smokeSection("const pinnedVersion =", "const contextMarker =")}
-			${smokeSection('\tconst version = run(opencode2, ["--version"]', "\tconst repositoryDir =")}`,
+					${smokeSection('\tconst version = run(opencode2, ["--version"]', "\tconst checkoutHomeDir =")}`,
 				).runInNewContext({
 					process: { env: { CODEMEM_OPENCODE_V2_VERSION: override } },
 					opencode2: "opencode",

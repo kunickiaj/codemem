@@ -60,6 +60,22 @@ function isExpectedProjectPath(value, expectedPath) {
 	);
 }
 
+function readPluginEntries(result) {
+	const response = JSON.parse(result.stdout);
+	assert(Array.isArray(response.data), "Pinned host returned an invalid plugin registry response");
+	return response.data;
+}
+
+function assertActiveLocalPlugin(entries, id, pathSuffix) {
+	const plugin = entries.find((entry) => entry.id === id);
+	assert(plugin, `Pinned host did not register checkout plugin ${id}`);
+	assert(plugin.state?.status === "active", `Checkout plugin ${id} did not activate`);
+	assert(
+		plugin.source?.type === "local" && plugin.source.path?.endsWith(pathSuffix),
+		`Checkout plugin ${id} was not loaded from ${pathSuffix}`,
+	);
+}
+
 function runAsync(command, args, options = {}) {
 	return new Promise((resolvePromise, reject) => {
 		const child = spawn(command, args, {
@@ -560,6 +576,55 @@ try {
 		version === `opencode v${hostVersion}`,
 		`Pinned host reported ${JSON.stringify(version)}, expected opencode v${hostVersion}`,
 	);
+	const checkoutHomeDir = join(tempDir, "checkout-home");
+	mkdirSync(checkoutHomeDir, { recursive: true });
+	const checkoutEnv = {
+		...env,
+		HOME: checkoutHomeDir,
+		XDG_CONFIG_HOME: join(checkoutHomeDir, ".config"),
+		CODEMEM_OPENCODE_V2_CONTRACT_REPORT: join(tempDir, "checkout-contract-report.jsonl"),
+	};
+	const checkoutHost = await startHost(opencode2, workspaceRoot, checkoutEnv);
+	try {
+		run(opencode2, [
+			"api",
+			"--server",
+			checkoutHost.baseURL,
+			"POST",
+			"/api/plugin/await-activation",
+			"--param",
+			`location=${workspaceRoot}`,
+		], {
+			cwd: workspaceRoot,
+			env: checkoutEnv,
+		});
+		const pluginResult = run(opencode2, [
+			"api",
+			"--server",
+			checkoutHost.baseURL,
+			"GET",
+			"/api/plugin",
+			"--param",
+			`location=${workspaceRoot}`,
+		], {
+			cwd: workspaceRoot,
+			env: checkoutEnv,
+		});
+		const entries = readPluginEntries(pluginResult);
+		assertActiveLocalPlugin(entries, "codemem", ".opencode/plugins/codemem.js");
+		assertActiveLocalPlugin(
+			entries,
+			"codemem-lint-feedback",
+			".opencode/plugins/lint-feedback.js",
+		);
+		assert(
+			!entries.some((entry) => entry.state?.status === "failed"),
+			"Pinned host reported a failed plugin during checkout activation",
+		);
+	} finally {
+		await stopHost(checkoutHost.child);
+		hostProcess = undefined;
+	}
 	const repositoryDir = join(installDir, "repository");
 	const worktreeDir = join(installDir, "worktree");
 	const worktreeActiveDirectory = join(worktreeDir, "nested");

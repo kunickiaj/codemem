@@ -55,6 +55,19 @@ it("loads the repository wrapper from the canonical package implementation", asy
 	const repositoryWrapper = await import(repositoryWrapperUrl);
 
 	expect(Object.keys(repositoryWrapper)).toEqual(["default"]);
-	expect(repositoryWrapper.default).toBe(packageEntrypoint.CodememPlugin);
-	expect(packageEntrypoint.default.server).toBe(repositoryWrapper.default);
+	expect(repositoryWrapper.default).toBe(packageEntrypoint.default);
+	expect(repositoryWrapper.default.server).toBe(packageEntrypoint.CodememPlugin);
+});
+
+it("keeps repository lint feedback on V1 and makes it an explicit V2 no-op", async () => {
+	const lintFeedbackEntrypoint = await import("./lint-feedback.js");
+	const repositoryWrapperUrl = pathToFileURL(
+		path.join(repositoryRoot, ".opencode/plugins/lint-feedback.js"),
+	).href;
+	const repositoryWrapper = await import(repositoryWrapperUrl);
+
+	expect(Object.keys(repositoryWrapper)).toEqual(["default"]);
+	expect(repositoryWrapper.default.id).toBe("codemem-lint-feedback");
+	expect(repositoryWrapper.default.server).toBe(lintFeedbackEntrypoint.default);
+	expect(await repositoryWrapper.default.setup({})).toBeUndefined();
 });

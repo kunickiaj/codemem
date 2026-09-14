@@ -345,7 +345,7 @@ describe("shared runtime boundary adapters", () => {
 		).toThrow("Unsupported OpenCode 1 tool argument: query:string");
 	});
 
-	it("keeps checkout wrappers as re-exports of the canonical V1 adapter", async () => {
+	it("keeps checkout wrappers as re-exports of their canonical host entrypoints", async () => {
 		const repositoryRoot = path.resolve(packageRoot, "../..");
 		const [repositoryWrapper, cliWrapper] = await Promise.all([
 			readFile(path.join(repositoryRoot, ".opencode/plugins/codemem.js"), "utf8"),
@@ -353,7 +353,7 @@ describe("shared runtime boundary adapters", () => {
 		]);
 
 		expect(repositoryWrapper.trim()).toBe(
-			'export { default } from "../../packages/opencode-plugin/.opencode/plugins/codemem.js";',
+			'export { default } from "../../packages/opencode-plugin/index.js";',
 		);
 		const version = cliWrapper.match(/^const PINNED_BACKEND_VERSION = "([^"]+)";/)?.[1];
 		expect(version).toBeDefined();

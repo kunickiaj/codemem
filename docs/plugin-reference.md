@@ -53,9 +53,9 @@ Rollback:
 
 ### Repository-only lint feedback
 
-When OpenCode runs from a codemem source checkout, the root `opencode.jsonc` loads `packages/opencode-plugin/src/lint-feedback.ts`; that repository-owned entrypoint runs the installed Biome launcher through Node without a shell. The hook checks JavaScript and TypeScript paths included by `biome.json` when handled by `edit`, `write`, or `apply_patch`, including move destinations; paths outside that configured Biome scope are ignored. It appends at most 10 new or worsened diagnostics and leaves the edit intact when Biome fails or exceeds its 10-second timeout. Existing diagnostics are a warning-level ratchet rather than a cleanup mandate.
+When OpenCode runs from a codemem source checkout, `.opencode/plugins/lint-feedback.js` auto-loads `packages/opencode-plugin/src/lint-feedback.ts`; that repository-owned entrypoint runs the installed Biome launcher through Node without a shell on OpenCode 1. The hook checks JavaScript and TypeScript paths included by `biome.json` when handled by `edit`, `write`, or `apply_patch`, including move destinations; paths outside that configured Biome scope are ignored. It appends at most 10 new or worsened diagnostics and leaves the edit intact when Biome fails or exceeds its 10-second timeout. Existing diagnostics are a warning-level ratchet rather than a cleanup mandate. OpenCode 2 accepts the same repository wrapper but uses a no-op setup until its host exposes a proven agent-visible edit-feedback path.
 
-This hook is contributor tooling only. Neither the root OpenCode config nor `src/lint-feedback.ts` is included in the published `@codemem/opencode-plugin` package, so installing codemem does not activate it. Restart OpenCode after changing the checkout's plugin configuration.
+This hook is contributor tooling only. Neither the repository wrapper nor `src/lint-feedback.ts` is included in the published `@codemem/opencode-plugin` package, so installing codemem does not activate it. Restart OpenCode after changing the checkout's plugin configuration.
 
 OpenCode prompt-time pack construction and prompt-pack ledger transitions use the
 long-lived local viewer first. Retryable connection, timeout, endpoint-version,

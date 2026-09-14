@@ -261,6 +261,29 @@ try {
 			readFileSync(v1ActivationLog, "utf8").includes("plugin initialized"),
 		`Pinned OpenCode 1 host did not invoke server() on the installed dual plugin\n${v1Host.output}`,
 	);
+	const checkoutV1Home = join(tempDir, "checkout-v1-home");
+	const checkoutV1ActivationLog = join(tempDir, "checkout-v1-activation.log");
+	mkdirSync(checkoutV1Home, { recursive: true });
+	const checkoutV1Host = await exerciseV1Host(
+		opencodeV1,
+		join(packageRoot, "..", ".."),
+		{
+			...v1Env,
+			HOME: checkoutV1Home,
+			XDG_CONFIG_HOME: join(checkoutV1Home, ".config"),
+			CODEMEM_PLUGIN_LOG: checkoutV1ActivationLog,
+		},
+		checkoutV1ActivationLog,
+	);
+	assert(
+		checkoutV1Host.activated &&
+			readFileSync(checkoutV1ActivationLog, "utf8").includes("plugin initialized"),
+		`Pinned OpenCode 1 host did not activate the checkout dual plugin\n${checkoutV1Host.output}`,
+	);
+	assert(
+		!checkoutV1Host.output.toLowerCase().includes("failed to load plugin"),
+		`Pinned OpenCode 1 host rejected a checkout-local plugin\n${checkoutV1Host.output}`,
+	);
 
 	const brokenPluginRoot = join(tempDir, "broken-plugin");
 	cpSync(installedPackageRoot, brokenPluginRoot, { recursive: true });

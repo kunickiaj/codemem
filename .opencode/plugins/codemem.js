@@ -1,1 +1,1 @@
-export { default } from "../../packages/opencode-plugin/.opencode/plugins/codemem.js";
+export { default } from "../../packages/opencode-plugin/index.js";
