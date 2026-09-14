@@ -18,6 +18,11 @@ import { join, resolve } from "node:path";
 const packageRoot = process.cwd();
 const workspaceRoot = resolve(packageRoot, "..", "..");
 const pinnedVersion = "2.0.2";
+const hostVersion = process.env.CODEMEM_OPENCODE_V2_VERSION ?? pinnedVersion;
+const exactVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\+[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*)?$/u;
+if (hostVersion.trim() !== hostVersion || !exactVersion.test(hostVersion)) {
+	throw new Error("CODEMEM_OPENCODE_V2_VERSION must be an exact semver version");
+}
 const contextMarker = "codemem-v2-context-hook-applied";
 const packedPluginTarget = "./node_modules/@codemem/opencode-plugin";
 const packedFixtureTarget = "./node_modules/@codemem/opencode-plugin/v2-contract-fixture";
@@ -481,7 +486,7 @@ try {
 	const installDir = join(tempDir, "install");
 	mkdirSync(installDir, { recursive: true });
 	writeFileSync(join(installDir, "package.json"), JSON.stringify({ private: true }), "utf8");
-	run("npm", ["install", tarball, `@opencode/plugin@${pinnedVersion}`], { cwd: installDir });
+	run("npm", ["install", tarball, `@opencode/plugin@${hostVersion}`], { cwd: installDir });
 
 	const installedFixture = join(
 		installDir,
@@ -518,8 +523,8 @@ try {
 		join(projectDir, "opencode.json"),
 		JSON.stringify({
 			model: { providerID: "contract", model: "contract-model" },
+			plugin: [packedPluginTarget],
 			plugins: [
-				{ package: packedPluginTarget },
 				{
 					package: packedFixtureTarget,
 					options: { contract: true },
@@ -552,8 +557,8 @@ try {
 	assert(existsSync(opencode2), "Pinned @opencode/cli did not install the opencode binary");
 	const version = run(opencode2, ["--version"], { cwd: projectDir, env }).stdout.trim();
 	assert(
-		version === `opencode v${pinnedVersion}`,
-		`Pinned host reported ${JSON.stringify(version)}, expected opencode v${pinnedVersion}`,
+		version === `opencode v${hostVersion}`,
+		`Pinned host reported ${JSON.stringify(version)}, expected opencode v${hostVersion}`,
 	);
 	const repositoryDir = join(installDir, "repository");
 	const worktreeDir = join(installDir, "worktree");
