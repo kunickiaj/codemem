@@ -420,6 +420,11 @@ const waitForRuntimeDisposal = (runtime, waitForTask, timeoutMs) =>
     timeoutMs,
   );
 
+const disposeNotificationRegistration = async (registration, waitForTask, timeoutMs) => {
+  if (!registration) return;
+  await waitForRegistrationDisposal([registration], waitForTask, timeoutMs);
+};
+
 const reportDiagnosticSafely = async (runtime, code) => {
   try {
     await runtime.reportDiagnostic?.(code);
@@ -632,19 +637,19 @@ export const createOpenCodeV2Adapter = ({
       host: createRuntimeHost({ log: async () => {}, notify: notificationBridge.notify }),
     });
   } catch (error) {
-    try {
-      await notificationBridge.registration?.dispose();
-    } catch {
-      // Preserve the runtime activation error.
-    }
+    await disposeNotificationRegistration(
+      notificationBridge.registration,
+      waitForRegistrationTask,
+      eventTaskTimeoutMs,
+    );
     throw error;
   }
   if (!runtime) {
-    try {
-      await notificationBridge.registration?.dispose();
-    } catch {
-      // Duplicate registration cleanup is best-effort.
-    }
+    await disposeNotificationRegistration(
+      notificationBridge.registration,
+      waitForRegistrationTask,
+      eventTaskTimeoutMs,
+    );
     return undefined;
   }
 

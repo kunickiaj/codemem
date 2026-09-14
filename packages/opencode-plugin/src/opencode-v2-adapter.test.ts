@@ -1298,6 +1298,46 @@ describe("OpenCode 2 adapter setup", () => {
 		expect(await setup(fixture.context)).toBeUndefined();
 		expect(fixture.context.tool.hook).not.toHaveBeenCalled();
 	});
+
+	it("bounds RPC disposal when runtime activation fails", async () => {
+		const fixture = makeContext();
+		const rpcDispose = vi.fn(async () => new Promise<undefined>(() => {}));
+		Object.assign(fixture.context, {
+			rpc: {
+				register: vi.fn(async () => ({ dispose: rpcDispose, events: { emit: vi.fn() } })),
+			},
+		});
+		const waitForRegistrationTask = vi.fn(async () => false);
+		const setup = adapter.createOpenCodeV2Adapter({
+			createRuntime: async () => {
+				throw new Error("activation failed");
+			},
+			waitForRegistrationTask,
+		});
+
+		await expect(setup(fixture.context)).rejects.toThrow("activation failed");
+		expect(rpcDispose).toHaveBeenCalledOnce();
+		expect(waitForRegistrationTask).toHaveBeenCalledOnce();
+	});
+
+	it("bounds RPC disposal when runtime activation is rejected", async () => {
+		const fixture = makeContext();
+		const rpcDispose = vi.fn(async () => new Promise<undefined>(() => {}));
+		Object.assign(fixture.context, {
+			rpc: {
+				register: vi.fn(async () => ({ dispose: rpcDispose, events: { emit: vi.fn() } })),
+			},
+		});
+		const waitForRegistrationTask = vi.fn(async () => false);
+		const setup = adapter.createOpenCodeV2Adapter({
+			createRuntime: async () => null,
+			waitForRegistrationTask,
+		});
+
+		expect(await setup(fixture.context)).toBeUndefined();
+		expect(rpcDispose).toHaveBeenCalledOnce();
+		expect(waitForRegistrationTask).toHaveBeenCalledOnce();
+	});
 });
 
 describe("OpenCode 2 adapter cleanup timeout", () => {
