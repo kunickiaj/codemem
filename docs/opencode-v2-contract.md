@@ -15,6 +15,10 @@ ranges are intentionally unsupported.
 - `@opencode/plugin@2.0.2`
 - CLI identity: `opencode v2.0.2`
 
+Both packages are stable, published releases. Codemem still labels its own
+OpenCode 2 integration beta; see the
+[adapter support matrix](architecture.md#adapter-support-matrix-and-rollout).
+
 `pnpm --filter @codemem/opencode-plugin test:opencode-v2-contract` packs the
 Codemem plugin, installs that tarball in an isolated project, and activates the
 fixture from the installed package directory. The smoke uses an isolated home,

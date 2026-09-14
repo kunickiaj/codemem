@@ -55,12 +55,13 @@ Support tiers describe operational expectations for each adapter path:
 
 - Supported: shipped in normal workflows, covered by integration tests, and maintained for reliability regressions.
 - Partial: usable for targeted workflows, but with known gaps and narrower guarantees.
+- Beta: feature-complete and covered by contract plus packed-host smoke tests against an exact pinned host release, but not yet proven through a full release cycle; rollback stays a host-edge change with no storage migration.
 - Experimental: architecture path or branch exists, but not ready for general use.
 
 | Adapter | Tier | Notes |
 |---|---|---|
-| OpenCode 1 plugin | Supported | Primary reference adapter for lifecycle events and injection behavior. |
-| OpenCode 2 plugin | Experimental | The 2.0.2 entrypoint captures conversation, tool, terminal usage, and lifecycle activity with bounded cleanup. `session.context` performs automatic recall only when the latest user message has a non-empty, non-whitespace ID; retries and tool continuations replay retained context byte-for-byte, while compaction, title, and generate hooks stay isolated. |
+| OpenCode 1 plugin | Supported | Primary reference adapter for lifecycle events and injection behavior. Minimum host 1.18.29. |
+| OpenCode 2 plugin | Beta | Same package, `setup()` entrypoint, validated on the exact stable `@opencode/cli@2.0.2` and `@opencode/plugin@2.0.2` releases. Captures conversation, tool, terminal usage, and lifecycle activity with bounded cleanup and keeps the hyphenated `mem-status`, `mem-recent`, and `mem-stats` tool IDs. `session.context` performs automatic recall only when the latest user message has a non-empty, non-whitespace ID; retries and tool continuations replay retained context byte-for-byte, while compaction, title, and generate hooks stay isolated. Disable with `CODEMEM_PLUGIN_IGNORE=1` or return to OpenCode 1 without a database migration. |
 | Claude hooks/plugin | Supported | Hook-first queue path with CLI/runtime fallback and parity slices tracked in adapter stack PRs. |
 | Codex plugin (hooks + MCP) | Supported | Functional capture pipeline (`plugins/codex/`, `packages/core/src/codex-hooks.ts`) dogfooded end-to-end: edge normalization → `POST /api/raw-events` → observer → memories. Prompt-time injection is present and env-gated but not fully validated on strict models. |
 | Windsurf integration | Experimental | Planned via shared adapter contract after OpenCode/Claude stabilization. |
@@ -185,7 +186,7 @@ flowchart TD
 
 ## Context injection
 
-The OpenCode 1 plugin injects a memory pack automatically on every turn. Volatile recall output is appended beside the latest user message by default so provider prompt caches can keep the stable system/history prefix. The experimental OpenCode 2.0.2 entrypoint uses `session.context` only: it requires a non-empty, non-whitespace latest user-message ID, skips safely when that identity is absent or blank, and performs one fresh retrieval per identified turn. Retries and tool continuations replay retained context byte-for-byte; compaction, title, and generate hooks do not receive automatic recall. Both the default message surface and legacy system surface are supported.
+The OpenCode 1 plugin injects a memory pack automatically on every turn. Volatile recall output is appended beside the latest user message by default so provider prompt caches can keep the stable system/history prefix. The OpenCode 2 entrypoint (beta integration, validated on 2.0.2) uses `session.context` only: it requires a non-empty, non-whitespace latest user-message ID, skips safely when that identity is absent or blank, and performs one fresh retrieval per identified turn. Retries and tool continuations replay retained context byte-for-byte; compaction, title, and generate hooks do not receive automatic recall. Both the default message surface and legacy system surface are supported.
 
 ### Packaged Claude and Codex hooks
 
