@@ -360,6 +360,48 @@ describe("Biome policy bypass prevention", () => {
 		});
 	});
 
+	it("detects suppressions after regex literals used as control-flow bodies", () => {
+		expect(
+			compareBiomePolicy(config(), config(), [
+				{
+					status: "modified",
+					afterPath: "src/a.ts",
+					afterSource:
+						'if (ready(")")) /"/.test(value);\n// biome-ignore lint/suspicious/noExplicitAny\nconst hidden: any = value;',
+				},
+			]),
+		).toContainEqual({
+			kind: "suppression",
+			message: "1 Biome suppression directive added or changed",
+			path: "src/a.ts",
+		});
+	});
+
+	it("rejects edits covered by existing broad suppressions", () => {
+		const fileWide = "// biome-ignore-all lint/a: legacy\nconst first = 1;";
+		const range = [
+			"const outside = 1;",
+			"// biome-ignore-start lint/a: legacy",
+			"const hidden = 1;",
+			"// biome-ignore-end lint/a: legacy",
+		].join("\n");
+
+		for (const [beforeSource, afterSource] of [
+			[fileWide, `${fileWide}\nconst hidden = 2;`],
+			[range, range.replace("const hidden = 1;", "const hidden = 2;")],
+		]) {
+			expect(
+				compareBiomePolicy(config(), config(), [
+					{ status: "modified", afterPath: "src/a.ts", beforeSource, afterSource },
+				]),
+			).toContainEqual({
+				kind: "suppression",
+				message: "Code changed under an existing broad Biome suppression",
+				path: "src/a.ts",
+			});
+		}
+	});
+
 	it("requires review for changed language-level lint controls", () => {
 		const baseConfig = JSON.stringify({ javascript: { formatter: { quoteStyle: "double" } } });
 		const headConfig = JSON.stringify({

@@ -211,6 +211,7 @@ function canStartRegex(source: string, index: number): boolean {
 	if (!prefix) return true;
 	const previous = prefix.at(-1) ?? "";
 	if ("([{:;,=!?&|+-*%^~<>".includes(previous)) return true;
+	if (previous === ")" && followsControlFlowHeader(prefix)) return true;
 	const keyword = prefix.match(/([A-Za-z_$][\w$]*)$/)?.[1];
 	return Boolean(
 		keyword &&
@@ -229,6 +230,28 @@ function canStartRegex(source: string, index: number): boolean {
 				"yield",
 			].includes(keyword),
 	);
+}
+
+function followsControlFlowHeader(prefix: string): boolean {
+	const openingParentheses: number[] = [];
+	const comments: SourceComment[] = [];
+	for (let index = 0; index < prefix.length; index += 1) {
+		if (prefix[index] === "(") {
+			openingParentheses.push(index);
+			continue;
+		}
+		if (prefix[index] === ")") {
+			const opening = openingParentheses.pop();
+			if (index !== prefix.length - 1 || opening === undefined) continue;
+			const keyword = prefix
+				.slice(0, opening)
+				.trimEnd()
+				.match(/([A-Za-z_$][\w$]*)$/)?.[1];
+			return Boolean(keyword && ["for", "if", "while", "with"].includes(keyword));
+		}
+		index = scanCodeToken(prefix, index, comments) - 1;
+	}
+	return false;
 }
 
 function skipRegex(source: string, start: number): number {
@@ -312,6 +335,80 @@ function suppressionDirectives(source: string | undefined): string[] {
 		directives.push(`${normalized}|${scope}|${anchor ?? ""}`);
 	}
 	return directives;
+}
+
+interface BroadSuppressionRange {
+	identity: string;
+	start: number;
+	end: number;
+}
+
+function broadSuppressionIdentity(
+	source: string,
+	comment: SourceComment,
+	directive: string,
+): string {
+	const normalized = directive.trim().replace(/\s+/g, " ");
+	const line = source.slice(0, comment.start).split("\n").length;
+	const scope = getScopeIdentity(source, line) ?? "";
+	return `${normalized}|${scope}`;
+}
+
+function broadSuppressionRanges(source: string | undefined): BroadSuppressionRange[] {
+	if (!source) return [];
+	const ranges: BroadSuppressionRange[] = [];
+	const starts: Array<Omit<BroadSuppressionRange, "end">> = [];
+	for (const comment of sourceComments(source)) {
+		const directive = comment.text.match(
+			/^(?:\/\/|\/\*)\s*(biome-ignore(?:-all|-start|-end)?\b[^\n*]*)/,
+		)?.[1];
+		if (!directive) continue;
+		const identity = broadSuppressionIdentity(source, comment, directive);
+		if (directive.startsWith("biome-ignore-all")) {
+			ranges.push({ identity, start: 0, end: source.length });
+			continue;
+		}
+		if (directive.startsWith("biome-ignore-start")) {
+			starts.push({ identity, start: comment.end });
+			continue;
+		}
+		if (!directive.startsWith("biome-ignore-end")) continue;
+		const start = starts.pop();
+		if (start) ranges.push({ ...start, end: comment.start });
+	}
+	for (const start of starts) ranges.push({ ...start, end: source.length });
+	return ranges;
+}
+
+function changedAfterSpan(
+	before: string | undefined,
+	after: string | undefined,
+): { start: number; end: number } | undefined {
+	if (before === undefined || after === undefined || before === after) return undefined;
+	let start = 0;
+	while (start < before.length && start < after.length && before[start] === after[start])
+		start += 1;
+	let beforeEnd = before.length;
+	let afterEnd = after.length;
+	while (beforeEnd > start && afterEnd > start && before[beforeEnd - 1] === after[afterEnd - 1]) {
+		beforeEnd -= 1;
+		afterEnd -= 1;
+	}
+	return afterEnd > start ? { start, end: afterEnd } : undefined;
+}
+
+function editsCoveredByExistingBroadSuppression(change: ChangedPath): boolean {
+	const changed = changedAfterSpan(change.beforeSource, change.afterSource);
+	if (!changed) return false;
+	const existing = new Set(
+		broadSuppressionRanges(change.beforeSource).map((suppression) => suppression.identity),
+	);
+	return broadSuppressionRanges(change.afterSource).some(
+		(suppression) =>
+			existing.has(suppression.identity) &&
+			changed.start < suppression.end &&
+			changed.end > suppression.start,
+	);
 }
 
 function coverageViolations(base: UnknownRecord, head: UnknownRecord): PolicyViolation[] {
@@ -563,19 +660,27 @@ function overrideViolations(base: UnknownRecord, head: UnknownRecord): PolicyVio
 
 function suppressionViolations(changes: ChangedPath[]): PolicyViolation[] {
 	return changes.flatMap((change) => {
+		const violations: PolicyViolation[] = [];
 		const remaining = suppressionDirectives(change.afterSource);
 		for (const previous of suppressionDirectives(change.beforeSource)) {
 			const match = remaining.indexOf(previous);
 			if (match !== -1) remaining.splice(match, 1);
 		}
-		if (remaining.length === 0) return [];
-		return [
-			{
+		if (remaining.length > 0) {
+			violations.push({
 				kind: "suppression" as const,
 				message: `${remaining.length} Biome suppression directive${remaining.length === 1 ? "" : "s"} added or changed`,
 				path: change.afterPath,
-			},
-		];
+			});
+		}
+		if (editsCoveredByExistingBroadSuppression(change)) {
+			violations.push({
+				kind: "suppression",
+				message: "Code changed under an existing broad Biome suppression",
+				path: change.afterPath,
+			});
+		}
+		return violations;
 	});
 }
 
