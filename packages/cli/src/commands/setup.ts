@@ -19,7 +19,13 @@ import * as p from "@clack/prompts";
 import { VERSION } from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
-import { loadJsoncConfig, resolveOpencodeConfigPath, writeJsonConfig } from "./setup-config.js";
+import {
+	loadJsoncConfig,
+	OPENCODE_PLUGIN_SPEC,
+	reconcileOpencodePluginConfig,
+	resolveOpencodeConfigPath,
+	writeJsonConfig,
+} from "./setup-config.js";
 
 function opencodeConfigDir(): string {
 	return join(homedir(), ".config", "opencode");
@@ -33,10 +39,6 @@ function claudeConfigDir(): string {
 export function codexConfigDir(): string {
 	return process.env.CODEX_HOME?.trim() || join(homedir(), ".codex");
 }
-
-/** The npm package name used in the OpenCode plugin array. */
-const OPENCODE_PLUGIN_SPEC = "@codemem/opencode-plugin";
-const LEGACY_OPENCODE_PLUGIN_SPECS = ["codemem", "@kunickiaj/codemem"];
 
 // ---------------------------------------------------------------------------
 // Legacy migration helpers
@@ -150,43 +152,18 @@ function installPlugin(force: boolean): boolean {
 		return false;
 	}
 
-	let plugins = config.plugin as unknown;
-	if (!Array.isArray(plugins)) {
-		plugins = [];
-	}
-
-	const isManagedPluginSpec = (entry: unknown): entry is string =>
-		typeof entry === "string" &&
-		[OPENCODE_PLUGIN_SPEC, ...LEGACY_OPENCODE_PLUGIN_SPECS].some(
-			(spec) => entry === spec || entry.startsWith(`${spec}@`),
-		);
-
-	const hasCanonicalSpec = (plugins as string[]).some(
-		(entry) =>
-			typeof entry === "string" &&
-			(entry === OPENCODE_PLUGIN_SPEC || entry.startsWith(`${OPENCODE_PLUGIN_SPEC}@`)),
-	);
-	const hasLegacySpec = (plugins as string[]).some(
-		(entry) =>
-			typeof entry === "string" &&
-			LEGACY_OPENCODE_PLUGIN_SPECS.some((spec) => entry === spec || entry.startsWith(`${spec}@`)),
-	);
-
-	if (hasCanonicalSpec && !hasLegacySpec && !force) {
+	const result = reconcileOpencodePluginConfig(config, { force });
+	if (!result.changed) {
 		p.log.info(`Plugin "${OPENCODE_PLUGIN_SPEC}" already in plugin array`);
 		return true;
 	}
 
-	plugins = (plugins as string[]).filter((entry) => !isManagedPluginSpec(entry));
-	if (hasLegacySpec) {
+	if (result.removedLegacy) {
 		p.log.step("Removed legacy OpenCode plugin spec(s): codemem / @kunickiaj/codemem");
 	}
 
-	(plugins as string[]).push(OPENCODE_PLUGIN_SPEC);
-	config.plugin = plugins;
-
 	try {
-		writeJsonConfig(configPath, config);
+		writeJsonConfig(configPath, result.config);
 		p.log.success(`Plugin "${OPENCODE_PLUGIN_SPEC}" added to ${configPath}`);
 	} catch (err) {
 		p.log.error(
