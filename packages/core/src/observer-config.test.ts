@@ -1,4 +1,5 @@
 import {
+	chmodSync,
 	closeSync,
 	existsSync,
 	fchmodSync,
@@ -442,6 +443,53 @@ describe("config mutation concurrency", () => {
 			if (previousWorkspaceId == null) delete process.env.CODEMEM_WORKSPACE_ID;
 			else process.env.CODEMEM_WORKSPACE_ID = previousWorkspaceId;
 		}
+	});
+});
+
+describe("config mutation revision safeguards", () => {
+	let tmpHome: string;
+
+	beforeEach(() => {
+		tmpHome = mkdtempSync(join(tmpdir(), "codemem-config-revision-"));
+	});
+
+	afterEach(() => {
+		rmSync(tmpHome, { recursive: true, force: true });
+	});
+
+	it("seeds from a read-only fallback without locking beside it", () => {
+		const fallbackDirectory = join(tmpHome, "managed");
+		const legacyPath = join(fallbackDirectory, "config.json");
+		const targetPath = join(tmpHome, "workspace", "config.json");
+		mkdirSync(fallbackDirectory, { recursive: true });
+		writeFileSync(legacyPath, '{"legacy":true}\n', "utf8");
+		chmodSync(fallbackDirectory, 0o555);
+		try {
+			const result = mutateCodememConfigFile(
+				(config) => ({ ...config, scoped: true }),
+				targetPath,
+				{ fallbackReadPath: legacyPath },
+			);
+
+			expect(result.data).toEqual({ legacy: true, scoped: true });
+			expect(existsSync(`${legacyPath}.lock`)).toBe(false);
+		} finally {
+			chmodSync(fallbackDirectory, 0o755);
+		}
+	});
+
+	it("rejects a concurrent target mode change before replacement", () => {
+		const configPath = join(tmpHome, "mode-change.json");
+		writeFileSync(configPath, '{"value":1}\n', { encoding: "utf8", mode: 0o644 });
+
+		expect(() =>
+			mutateCodememConfigFile((config) => {
+				chmodSync(configPath, 0o600);
+				return { ...config, value: 2 };
+			}, configPath),
+		).toThrow(expect.objectContaining({ code: "changed" }));
+		expect(readFileSync(configPath, "utf8")).toBe('{"value":1}\n');
+		expect(statSync(configPath).mode & 0o777).toBe(0o600);
 	});
 });
 

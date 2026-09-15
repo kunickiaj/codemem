@@ -696,6 +696,15 @@ function currentRevision(path: string): string | "missing" | "unreadable" {
 	}
 }
 
+function currentMode(path: string): number | "missing" | "unreadable" {
+	if (!existsSync(path)) return "missing";
+	try {
+		return statSync(path).mode & 0o777;
+	} catch {
+		return "unreadable";
+	}
+}
+
 function acquireConfigLock(targetPath: string): { fd: number; path: string } {
 	const path = `${targetPath}.lock`;
 	try {
@@ -789,9 +798,7 @@ function acquireConfigMutationLocks(
 			preliminaryTarget.status === "missing" && fallbackReadPath != null
 				? resolveConfigMutationTarget(expandUserPath(fallbackReadPath))
 				: undefined;
-		const locks = acquireConfigLocks(
-			fallbackMutationPath ? [targetMutationPath, fallbackMutationPath] : [targetMutationPath],
-		);
+		const locks = acquireConfigLocks([targetMutationPath]);
 		const targetIdentityStable = resolveConfigMutationTarget(targetPath) === targetMutationPath;
 		const fallbackIdentityStable =
 			fallbackMutationPath === undefined ||
@@ -840,6 +847,7 @@ function verifyConfigMutation(input: {
 	targetPath: string;
 	targetMutationPath: string;
 	expectedRevision: string;
+	expectedMode: number | undefined;
 	fallbackReadPath: string | undefined;
 	fallbackMutationPath: string | undefined;
 	inputOutcome: CodememConfigReadOutcome;
@@ -847,7 +855,9 @@ function verifyConfigMutation(input: {
 }): void {
 	if (
 		resolveConfigMutationTarget(input.targetPath) !== input.targetMutationPath ||
-		currentRevision(input.targetMutationPath) !== input.expectedRevision
+		currentRevision(input.targetMutationPath) !== input.expectedRevision ||
+		(input.expectedMode !== undefined &&
+			currentMode(input.targetMutationPath) !== input.expectedMode)
 	) {
 		throw new CodememConfigMutationError(
 			"changed",
@@ -918,6 +928,7 @@ export function mutateCodememConfigFile(
 					targetPath,
 					targetMutationPath,
 					expectedRevision,
+					expectedMode: outcome.status === "valid" ? outcome.mode : undefined,
 					fallbackReadPath,
 					fallbackMutationPath,
 					inputOutcome,
