@@ -191,35 +191,88 @@ function diagnosticsForPath(
 	return diagnostics.filter((diagnostic) => diagnostic.path === normalized);
 }
 
-function safeAmbiguousMeasuredCategories(
+function scopeIdentityCounts(diagnostics: LintDiagnostic[]): Map<string, number> {
+	const counts = new Map<string, number>();
+	for (const diagnostic of diagnostics) {
+		if (!diagnostic.scopeIdentity) continue;
+		counts.set(diagnostic.scopeIdentity, (counts.get(diagnostic.scopeIdentity) ?? 0) + 1);
+	}
+	return counts;
+}
+
+function uniquelyPairedScopeIdentities(
+	before: LintDiagnostic[],
+	after: LintDiagnostic[],
+): Set<string> {
+	const beforeCounts = scopeIdentityCounts(before);
+	const afterCounts = scopeIdentityCounts(after);
+	return new Set(
+		[...beforeCounts].flatMap(([identity, count]) =>
+			count === 1 && afterCounts.get(identity) === 1 ? [identity] : [],
+		),
+	);
+}
+
+function withoutPairedScopes(
+	diagnostics: LintDiagnostic[],
+	pairedIdentities: Set<string>,
+): LintDiagnostic[] {
+	return diagnostics.filter(
+		(diagnostic) => !diagnostic.scopeIdentity || !pairedIdentities.has(diagnostic.scopeIdentity),
+	);
+}
+
+function hasAmbiguousScopeIdentities(before: LintDiagnostic[], after: LintDiagnostic[]): boolean {
+	const beforeIdentities = before.map((diagnostic) => diagnostic.scopeIdentity);
+	const afterIdentities = after.map((diagnostic) => diagnostic.scopeIdentity);
+	return (
+		[...beforeIdentities, ...afterIdentities].some((identity) => !identity) ||
+		new Set(beforeIdentities).size !== beforeIdentities.length ||
+		new Set(afterIdentities).size !== afterIdentities.length
+	);
+}
+
+function ignoreSafeAmbiguousMeasuredResidual(
+	before: LintDiagnostic[],
+	after: LintDiagnostic[],
+	category: string,
+	path: string,
+	ignored: Set<LintDiagnostic>,
+): void {
+	if (after.length === 0) {
+		for (const diagnostic of before) ignored.add(diagnostic);
+		return;
+	}
+	if (before.length <= 1 && after.length <= 1) return;
+	if (!hasAmbiguousScopeIdentities(before, after)) return;
+	if (before.length !== after.length || measuredValuesCouldRegress(before, after)) {
+		throw new Error(`Ambiguous ${category} function identity in ${path}`);
+	}
+	for (const diagnostic of [...before, ...after]) ignored.add(diagnostic);
+}
+
+function ambiguousMeasuredDiagnosticsToIgnore(
 	before: LintDiagnostic[],
 	after: LintDiagnostic[],
 	path: string,
-): Set<string> {
-	const safeCategories = new Set<string>();
+): Set<LintDiagnostic> {
+	const ignored = new Set<LintDiagnostic>();
 	const categories = new Set(
 		[...before, ...after].map((diagnostic) => diagnostic.category).filter(isMeasuredCategory),
 	);
 	for (const category of categories) {
 		const categoryBefore = before.filter((diagnostic) => diagnostic.category === category);
 		const categoryAfter = after.filter((diagnostic) => diagnostic.category === category);
-		if (categoryAfter.length === 0) continue;
-		if (categoryBefore.length <= 1 && categoryAfter.length <= 1) continue;
-		const identities = [...categoryBefore, ...categoryAfter].map(
-			(diagnostic) => diagnostic.scopeIdentity,
+		const pairedIdentities = uniquelyPairedScopeIdentities(categoryBefore, categoryAfter);
+		ignoreSafeAmbiguousMeasuredResidual(
+			withoutPairedScopes(categoryBefore, pairedIdentities),
+			withoutPairedScopes(categoryAfter, pairedIdentities),
+			category,
+			path,
+			ignored,
 		);
-		const beforeIdentities = categoryBefore.map((diagnostic) => diagnostic.scopeIdentity);
-		const afterIdentities = categoryAfter.map((diagnostic) => diagnostic.scopeIdentity);
-		const ambiguous =
-			identities.some((identity) => !identity) ||
-			new Set(beforeIdentities).size !== beforeIdentities.length ||
-			new Set(afterIdentities).size !== afterIdentities.length;
-		if (ambiguous && measuredValuesCouldRegress(categoryBefore, categoryAfter)) {
-			throw new Error(`Ambiguous ${category} function identity in ${path}`);
-		}
-		if (ambiguous) safeCategories.add(category);
 	}
-	return safeCategories;
+	return ignored;
 }
 
 function measuredValuesCouldRegress(before: LintDiagnostic[], after: LintDiagnostic[]): boolean {
@@ -243,15 +296,15 @@ export function compareChangedDiagnostics(
 		if (!change.afterPath) continue;
 		const before = diagnosticsForPath(baseDiagnostics, change.beforePath);
 		const after = diagnosticsForPath(headDiagnostics, change.afterPath);
-		const safeAmbiguousCategories = safeAmbiguousMeasuredCategories(
+		const ignoredAmbiguousDiagnostics = ambiguousMeasuredDiagnosticsToIgnore(
 			before,
 			after,
 			change.afterPath,
 		);
 		regressions.push(
 			...compareDiagnostics(
-				before.filter((diagnostic) => !safeAmbiguousCategories.has(diagnostic.category)),
-				after.filter((diagnostic) => !safeAmbiguousCategories.has(diagnostic.category)),
+				before.filter((diagnostic) => !ignoredAmbiguousDiagnostics.has(diagnostic)),
+				after.filter((diagnostic) => !ignoredAmbiguousDiagnostics.has(diagnostic)),
 			).map((diagnostic) => ({
 				...diagnostic,
 				path: normalizePath(change.afterPath as string),

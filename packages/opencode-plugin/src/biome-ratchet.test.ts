@@ -236,6 +236,45 @@ describe("Biome diagnostic ambiguity handling", () => {
 			]),
 		).toEqual([]);
 	});
+
+	it("retains uniquely paired regressions beside safe ambiguous diagnostics", () => {
+		const before = [
+			{ ...diagnostic("src/a.ts", 10, 100, "duplicate"), scopeIdentity: ":binding:handler" },
+			{ ...diagnostic("src/a.ts", 30, 10, "duplicate"), scopeIdentity: ":binding:handler" },
+			{ ...diagnostic("src/a.ts", 50, 20, "unique"), scopeIdentity: ":function:unique" },
+		];
+		const regression = {
+			...diagnostic("src/a.ts", 50, 90, "unique changed"),
+			scopeIdentity: ":function:unique",
+		};
+		const after = [
+			{ ...diagnostic("src/a.ts", 10, 10, "duplicate"), scopeIdentity: ":binding:handler" },
+			{ ...diagnostic("src/a.ts", 30, 10, "duplicate"), scopeIdentity: ":binding:handler" },
+			regression,
+		];
+
+		expect(
+			compareChangedDiagnostics(before, after, [
+				{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
+			]),
+		).toEqual([regression]);
+	});
+
+	it("fails closed when ambiguous measured diagnostic counts shrink", () => {
+		const before = [
+			{ ...diagnostic("src/a.ts", 10, 30, "duplicate"), scopeIdentity: ":binding:handler" },
+			{ ...diagnostic("src/a.ts", 30, 10, "duplicate"), scopeIdentity: ":binding:handler" },
+		];
+		const after = [
+			{ ...diagnostic("src/a.ts", 20, 20, "duplicate"), scopeIdentity: ":binding:handler" },
+		];
+
+		expect(() =>
+			compareChangedDiagnostics(before, after, [
+				{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
+			]),
+		).toThrow("Ambiguous");
+	});
 });
 
 describe("pinned Biome report schema", () => {
