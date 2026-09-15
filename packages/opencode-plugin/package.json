@@ -40,7 +40,7 @@
 		"test:packed-artifact": "pnpm --filter codemem build && node ./scripts/packed-artifact-smoke.mjs"
 	},
 	"dependencies": {
-		"@opencode-ai/plugin": "1.18.29",
+		"@opencode-ai/plugin": "1.18.30",
 		"@opencode/plugin": "2.0.2"
 	},
 	"devDependencies": {
