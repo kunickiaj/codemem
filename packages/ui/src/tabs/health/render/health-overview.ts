@@ -68,13 +68,10 @@ export function renderHealthOverview() {
 	const counts = reliability.counts || {};
 	const rates = reliability.rates || {};
 	const dbStats = stats.database || {};
-	const totals =
-		usagePayload.totals_filtered ||
-		usagePayload.totals ||
-		usagePayload.totals_global ||
-		stats.usage?.totals ||
-		{};
 	const recentPacks = Array.isArray(usagePayload.recent_packs) ? usagePayload.recent_packs : [];
+	const usageEvents =
+		usagePayload.events_filtered || usagePayload.events || usagePayload.events_global || [];
+	const packUsage = usageEvents.find((event) => event.event === "pack") || {};
 	const lastPackAt = recentPacks.length ? recentPacks[0]?.created_at : null;
 	const latestPackMeta = recentPacks.length ? recentPacks[0]?.metadata_json || {} : {};
 	const latestPackDeduped = Number(latestPackMeta?.exact_duplicates_collapsed || 0);
@@ -82,7 +79,10 @@ export function renderHealthOverview() {
 	const erroredBatches = Number(counts.errored_batches || 0);
 	const flushSuccessRate = Number(rates.flush_success_rate ?? 1);
 	const droppedRate = Number(rates.dropped_event_rate || 0);
-	const reductionLabel = formatReductionPercent(totals.tokens_saved, totals.tokens_read);
+	const reductionLabel = formatReductionPercent(
+		packUsage.total_tokens_saved,
+		packUsage.total_tokens_read,
+	);
 	const reductionPercent = parsePercentValue(reductionLabel);
 	const tagCoverage = Number(dbStats.tags_coverage || 0);
 	const syncState = String(syncStatus.daemon_state || "unknown");
@@ -190,7 +190,7 @@ export function renderHealthOverview() {
 		healthDot.title = statusLabel;
 	}
 
-	const retrievalDetail = `${Number(totals.tokens_saved || 0).toLocaleString()} saved tokens · ${latestPackDeduped.toLocaleString()} deduped in latest pack`;
+	const retrievalDetail = `${Number(packUsage.total_tokens_saved || 0).toLocaleString()} estimated saved tokens · ${latestPackDeduped.toLocaleString()} deduped in latest pack`;
 	const pipelineDetail = rawPending > 0 ? "Queue is actively draining" : "Queue is clear";
 	const syncDetail = syncDisabled
 		? "Sync disabled"

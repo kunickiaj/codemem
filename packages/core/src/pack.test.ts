@@ -845,6 +845,13 @@ describe("buildMemoryPack", () => {
 			? (JSON.parse(row.metadata_json) as Record<string, unknown>)
 			: {};
 		expect(metadata.project).toBe("test-project");
+		expect(metadata.token_usage).toEqual({
+			unit: "tokens",
+			source: "estimate",
+			input_direction: "pack_injected",
+			output_direction: null,
+			attempt_count: 1,
+		});
 	});
 
 	it("uses discovery_tokens metadata for avoided-work metrics", () => {

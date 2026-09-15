@@ -37,6 +37,26 @@ export interface UsageTotals {
 	tokens_read?: number;
 	tokens_saved?: number;
 	work_investment_tokens?: number;
+	token_unit?: "tokens";
+	measured_count?: number;
+	estimated_count?: number;
+	unavailable_count?: number;
+	legacy_text_length_count?: number;
+	legacy_unclassified_count?: number;
+}
+
+export interface UsageEventSummary {
+	event?: string;
+	count?: number;
+	total_tokens_read?: number;
+	total_tokens_written?: number;
+	total_tokens_saved?: number;
+	token_unit?: "tokens";
+	measured_count?: number;
+	estimated_count?: number;
+	unavailable_count?: number;
+	legacy_text_length_count?: number;
+	legacy_unclassified_count?: number;
 }
 
 export interface RecentPack {
@@ -71,10 +91,12 @@ export interface CachedStatsPayload {
 }
 
 export interface CachedUsagePayload {
+	events?: UsageEventSummary[];
+	events_global?: UsageEventSummary[];
+	events_filtered?: UsageEventSummary[] | null;
 	totals_global?: UsageTotals;
 	totals?: UsageTotals;
 	totals_filtered?: UsageTotals | null;
-	events?: unknown[];
 	recent_packs?: RecentPack[];
 }
 

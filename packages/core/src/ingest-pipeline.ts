@@ -60,7 +60,9 @@ import { REMEMBER_MEMORY_KINDS } from "./memory-kinds.js";
 import { type ObserverClient, ObserverClient as ObserverClientImpl } from "./observer-client.js";
 import {
 	observeAndNormalizeObserverOutput,
+	observerOutputAttemptCount,
 	observerOutputMetadata,
+	observerOutputTotalUsage,
 	resolveObserverOutputCapability,
 } from "./observer-output.js";
 import { resolveProject } from "./project.js";
@@ -613,6 +615,7 @@ export async function ingest(
 		const output = await observeRawEventOutput(selectedObserver, system, user, outputCapability);
 		const response = output.final;
 		const outputMetadata = observerOutputMetadata(output);
+		const observerUsage = observerOutputTotalUsage(output);
 
 		if (!response.raw) {
 			// Raw-event flushes must be lossless: if the observer returns no output,
@@ -638,7 +641,6 @@ export async function ingest(
 		// ------------------------------------------------------------------
 		// Parse response
 		// ------------------------------------------------------------------
-		const rawText = response.raw;
 		const parsed = response.parsed;
 		if (
 			sessionContext?.flusher === "raw_events" &&
@@ -937,11 +939,18 @@ export async function ingest(
 				.values({
 					session_id: sessionId,
 					event: "observer_call",
-					tokens_read: rawText.length,
-					tokens_written: transcript.length,
+					tokens_read: observerUsage?.inputTokens ?? null,
+					tokens_written: observerUsage?.outputTokens ?? null,
 					created_at: new Date().toISOString(),
 					metadata_json: toJson({
 						project,
+						token_usage: {
+							unit: "tokens",
+							source: observerUsage ? "provider" : "unavailable",
+							input_direction: "observer_input",
+							output_direction: "observer_output",
+							attempt_count: observerOutputAttemptCount(output),
+						},
 						observation_count: observationsToStore.length,
 						has_summary: summaryToStore != null,
 						// Only emit capture-routing telemetry when the gate is on, so

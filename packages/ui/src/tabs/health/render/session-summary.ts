@@ -38,13 +38,13 @@ export function renderSessionSummary() {
 		{
 			label: "Last pack savings",
 			value: latestPack ? `${formatTokenCount(savedTokens)} (${reductionPercent})` : "n/a",
-			tooltip: latestPack ? `Exact: ${savedTokens.toLocaleString()} saved` : undefined,
+			tooltip: latestPack ? `Estimate: ${savedTokens.toLocaleString()} saved` : undefined,
 			icon: "trending-up",
 		},
 		{
 			label: "Last pack size",
 			value: latestPack ? formatTokenCount(packTokens) : "n/a",
-			tooltip: latestPack ? `Exact: ${packTokens.toLocaleString()} injected` : undefined,
+			tooltip: latestPack ? `Estimate: ${packTokens.toLocaleString()} injected` : undefined,
 			icon: "package",
 		},
 		{

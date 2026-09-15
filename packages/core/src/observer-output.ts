@@ -299,6 +299,17 @@ function sumObserverUsage(
 	};
 }
 
+export function observerOutputTotalUsage(
+	output: NormalizedObserverOutput,
+): ObserverTokenUsage | null {
+	if (observerOutputAttemptCount(output) > 1 && output.repaired == null) return null;
+	return sumObserverUsage(output.initial.usage, output.repaired?.usage);
+}
+
+export function observerOutputAttemptCount(output: NormalizedObserverOutput): number {
+	return output.diagnostics.repairAttempted || output.diagnostics.retryAttempted ? 2 : 1;
+}
+
 function failureTelemetry(
 	first: ObserverStructuredJsonResponse,
 	second: ObserverStructuredJsonResponse | null,

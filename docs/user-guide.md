@@ -230,6 +230,12 @@ Command/file token caching notes:
 - Reuse savings estimate discovery work versus pack read size.
 - Automatic message recall deduplicates unchanged retained item fingerprints. Narrow continuation prompts skip injection only after retrieval confirms no changed facts and file/tool context is unchanged. When local plugin logging is enabled, `inject.recall` JSON separates new and retained estimated tokens, duplicate counts, and bounded reasons without content or identifiers. See [lifecycle and evaluation details](opencode-retained-recall.md); these estimates do not measure answer usefulness or provider token usage.
 
+### Usage metric semantics
+
+`codemem stats --json` and the viewer usage API identify token units and provenance. Pack rows are estimates of tokens injected into context. Observer rows use provider-reported input tokens (`tokens_read`) and output tokens (`tokens_written`) across every attempted observer call; transports without usage telemetry record those values as unavailable instead of estimating them.
+
+Observer rows written before this provenance marker used UTF-16 text lengths, not tokens. Codemem keeps those rows for audit but excludes their values from token aggregates and reports them through `legacy_text_length_count`; the original token counts cannot be recovered. Health’s Injected, Savings, and Reduction cards use pack estimates only, so observer model usage is not mixed into pack-size metrics.
+
 ## Retrieval attribution diagnostics
 
 Use `codemem stats --attribution` to inspect local, bounded, observational retrieval diagnostics:

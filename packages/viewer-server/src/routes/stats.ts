@@ -188,6 +188,12 @@ type UsageAggregateRow = {
 	tokens_read: number;
 	tokens_written: number;
 	tokens_saved: number;
+	token_unit: "tokens";
+	measured_count: number;
+	estimated_count: number;
+	unavailable_count: number;
+	legacy_text_length_count: number;
+	legacy_unclassified_count: number;
 };
 
 /**
@@ -203,6 +209,12 @@ function mapAggregateEvents(rows: UsageAggregateRow[]): Record<string, unknown>[
 			total_tokens_written: row.tokens_written,
 			total_tokens_saved: row.tokens_saved,
 			count: row.count,
+			token_unit: row.token_unit,
+			measured_count: row.measured_count,
+			estimated_count: row.estimated_count,
+			unavailable_count: row.unavailable_count,
+			legacy_text_length_count: row.legacy_text_length_count,
+			legacy_unclassified_count: row.legacy_unclassified_count,
 		}))
 		.sort((a, b) => a.event.localeCompare(b.event));
 }
@@ -210,20 +222,45 @@ function mapAggregateEvents(rows: UsageAggregateRow[]): Record<string, unknown>[
 /**
  * Sum the neutral core aggregate rows into the ApiUsageTotals wire shape.
  */
-function totalsFromAggregate(rows: UsageAggregateRow[]): {
+type UsageAggregateTotals = {
 	tokens_read: number;
 	tokens_written: number;
 	tokens_saved: number;
 	count: number;
-} {
-	return rows.reduce(
+	token_unit: "tokens";
+	measured_count: number;
+	estimated_count: number;
+	unavailable_count: number;
+	legacy_text_length_count: number;
+	legacy_unclassified_count: number;
+};
+
+function totalsFromAggregate(rows: UsageAggregateRow[]): UsageAggregateTotals {
+	return rows.reduce<UsageAggregateTotals>(
 		(acc, row) => ({
 			tokens_read: acc.tokens_read + row.tokens_read,
 			tokens_written: acc.tokens_written + row.tokens_written,
 			tokens_saved: acc.tokens_saved + row.tokens_saved,
 			count: acc.count + row.count,
+			token_unit: "tokens",
+			measured_count: acc.measured_count + row.measured_count,
+			estimated_count: acc.estimated_count + row.estimated_count,
+			unavailable_count: acc.unavailable_count + row.unavailable_count,
+			legacy_text_length_count: acc.legacy_text_length_count + row.legacy_text_length_count,
+			legacy_unclassified_count: acc.legacy_unclassified_count + row.legacy_unclassified_count,
 		}),
-		{ tokens_read: 0, tokens_written: 0, tokens_saved: 0, count: 0 },
+		{
+			tokens_read: 0,
+			tokens_written: 0,
+			tokens_saved: 0,
+			count: 0,
+			token_unit: "tokens",
+			measured_count: 0,
+			estimated_count: 0,
+			unavailable_count: 0,
+			legacy_text_length_count: 0,
+			legacy_unclassified_count: 0,
+		},
 	);
 }
 

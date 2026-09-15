@@ -527,6 +527,12 @@ export interface UsageEventRow {
 	tokens_read: number;
 	tokens_written: number;
 	tokens_saved: number;
+	token_unit: "tokens";
+	measured_count: number;
+	estimated_count: number;
+	unavailable_count: number;
+	legacy_text_length_count: number;
+	legacy_unclassified_count: number;
 }
 
 export interface StoreStats {
@@ -555,6 +561,12 @@ export interface StoreStats {
 			tokens_read: number;
 			tokens_written: number;
 			tokens_saved: number;
+			token_unit: "tokens";
+			measured_count: number;
+			estimated_count: number;
+			unavailable_count: number;
+			legacy_text_length_count: number;
+			legacy_unclassified_count: number;
 		};
 	};
 }

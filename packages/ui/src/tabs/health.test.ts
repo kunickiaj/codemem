@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UpdateStatus } from "../lib/api";
 import * as api from "../lib/api";
 import { state } from "../lib/state";
-import { renderHealthOverview } from "./health";
+import { renderHealthOverview, renderStats } from "./health";
 import { renderAutomaticRecall } from "./health/components";
 import { loadHealthData } from "./health/lifecycle";
 
@@ -50,12 +50,47 @@ beforeEach(() => {
 		<div id="healthMeta"></div>
 		<div id="healthActions"></div>
 		<div id="healthDot"></div>
+		<div id="statsGrid"></div>
+		<div id="metaLine"></div>
 	`;
 	state.lastStatsPayload = {};
 	state.lastUsagePayload = {};
 	state.lastRawEventsPayload = {};
 	state.lastSyncStatus = { enabled: false, daemon_state: "disabled" };
 	state.lastSyncPeers = [];
+});
+
+describe("Usage metric provenance", () => {
+	it("renders pack estimates instead of mixed observer and pack totals", () => {
+		state.lastUsagePayload = {
+			totals_global: { tokens_read: 1_010, tokens_saved: 40 },
+			events_global: [
+				{ event: "observer_call", total_tokens_read: 1_000, measured_count: 1 },
+				{
+					event: "pack",
+					total_tokens_read: 10,
+					total_tokens_saved: 40,
+					estimated_count: 1,
+				},
+			],
+		};
+
+		renderStats();
+		renderHealthOverview();
+
+		const stats = [...document.querySelectorAll("#statsGrid .stat")];
+		const injected = stats.find((node) => node.querySelector(".label")?.textContent === "Injected");
+		expect(injected?.querySelector(".value")?.textContent).toBe("10 tokens");
+		expect(injected?.parentElement?.getAttribute("data-tooltip")).toContain(
+			"Estimated tokens injected",
+		);
+		const healthCards = [...document.querySelectorAll("#healthGrid .stat")];
+		const retrieval = healthCards.find(
+			(node) => node.querySelector(".label")?.textContent === "Retrieval impact",
+		);
+		expect(retrieval?.textContent).toContain("80%");
+		expect(retrieval?.textContent).toContain("40 estimated saved tokens");
+	});
 });
 
 afterEach(() => {

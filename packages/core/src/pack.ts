@@ -1313,7 +1313,22 @@ function recordPackUsage(store: StoreHandle, metrics: Record<string, unknown>): 
 				`INSERT INTO usage_events(session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json)
 				 VALUES (?, 'pack', ?, 0, ?, ?, ?)`,
 			)
-			.run(sessionId, tokensRead, tokensSaved, now, JSON.stringify(metrics));
+			.run(
+				sessionId,
+				tokensRead,
+				tokensSaved,
+				now,
+				JSON.stringify({
+					...metrics,
+					token_usage: {
+						unit: "tokens",
+						source: "estimate",
+						input_direction: "pack_injected",
+						output_direction: null,
+						attempt_count: 1,
+					},
+				}),
+			);
 	} catch {
 		// Non-fatal for pack building path
 	}

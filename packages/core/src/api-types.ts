@@ -59,6 +59,12 @@ export interface ApiUsageEventSummary {
 	total_tokens_written: number;
 	total_tokens_saved: number;
 	count: number;
+	token_unit: "tokens";
+	measured_count: number;
+	estimated_count: number;
+	unavailable_count: number;
+	legacy_text_length_count: number;
+	legacy_unclassified_count: number;
 }
 
 /** Usage totals row. */
@@ -67,6 +73,12 @@ export interface ApiUsageTotals {
 	tokens_written: number;
 	tokens_saved: number;
 	count: number;
+	token_unit: "tokens";
+	measured_count: number;
+	estimated_count: number;
+	unavailable_count: number;
+	legacy_text_length_count: number;
+	legacy_unclassified_count: number;
 }
 
 /** Recent pack event row. */

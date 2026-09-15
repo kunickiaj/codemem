@@ -37,6 +37,22 @@ import {
 	TEAM_SETUP_ROUTE_PREFIX,
 } from "./routes/team-setup.js";
 
+const TOKEN_PROVENANCE_BASE = {
+	token_unit: "tokens",
+	measured_count: 0,
+	unavailable_count: 0,
+	legacy_text_length_count: 0,
+} as const;
+const PACK_ESTIMATE_PROVENANCE = {
+	...TOKEN_PROVENANCE_BASE,
+	legacy_unclassified_count: 0,
+};
+const LEGACY_UNCLASSIFIED_PROVENANCE = {
+	...TOKEN_PROVENANCE_BASE,
+	estimated_count: 0,
+	legacy_unclassified_count: 1,
+};
+
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
@@ -3691,40 +3707,7 @@ describe("viewer-server", () => {
 
 				const res = await app.request("/api/usage?project=codemem");
 				expect(res.status).toBe(200);
-				const body = (await res.json()) as {
-					events_global: Array<{
-						event: string;
-						total_tokens_read: number;
-						total_tokens_written: number;
-						total_tokens_saved: number;
-						count: number;
-					}>;
-					totals_global: {
-						tokens_read: number;
-						tokens_written: number;
-						tokens_saved: number;
-						count: number;
-					};
-					events_filtered: Array<{
-						event: string;
-						total_tokens_read: number;
-						total_tokens_written: number;
-						total_tokens_saved: number;
-						count: number;
-					}> | null;
-					totals_filtered: {
-						tokens_read: number;
-						tokens_written: number;
-						tokens_saved: number;
-						count: number;
-					} | null;
-					totals: {
-						tokens_read: number;
-						tokens_written: number;
-						tokens_saved: number;
-						count: number;
-					};
-				};
+				const body = (await res.json()) as core.ApiUsageResponse;
 
 				// Global aggregate = all four rows, NULL tokens_saved coalesced to 0.
 				expect(body.totals_global).toEqual({
@@ -3732,6 +3715,9 @@ describe("viewer-server", () => {
 					tokens_written: 133,
 					tokens_saved: 62,
 					count: 4,
+					...TOKEN_PROVENANCE_BASE,
+					estimated_count: 3,
+					legacy_unclassified_count: 1,
 				});
 				// events_global is sorted by event name ASC (pack before search).
 				expect(body.events_global).toEqual([
@@ -3741,6 +3727,8 @@ describe("viewer-server", () => {
 						total_tokens_written: 130,
 						total_tokens_saved: 55,
 						count: 3,
+						...PACK_ESTIMATE_PROVENANCE,
+						estimated_count: 3,
 					},
 					{
 						event: "search",
@@ -3748,6 +3736,7 @@ describe("viewer-server", () => {
 						total_tokens_written: 3,
 						total_tokens_saved: 7,
 						count: 1,
+						...LEGACY_UNCLASSIFIED_PROVENANCE,
 					},
 				]);
 
@@ -3757,6 +3746,9 @@ describe("viewer-server", () => {
 					tokens_written: 33,
 					tokens_saved: 12,
 					count: 3,
+					...TOKEN_PROVENANCE_BASE,
+					estimated_count: 2,
+					legacy_unclassified_count: 1,
 				});
 				expect(body.events_filtered).toEqual([
 					{
@@ -3765,6 +3757,8 @@ describe("viewer-server", () => {
 						total_tokens_written: 30,
 						total_tokens_saved: 5,
 						count: 2,
+						...PACK_ESTIMATE_PROVENANCE,
+						estimated_count: 2,
 					},
 					{
 						event: "search",
@@ -3772,6 +3766,7 @@ describe("viewer-server", () => {
 						total_tokens_written: 3,
 						total_tokens_saved: 7,
 						count: 1,
+						...LEGACY_UNCLASSIFIED_PROVENANCE,
 					},
 				]);
 

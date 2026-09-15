@@ -33,6 +33,11 @@ export function renderStats() {
 	const totalsFiltered = usagePayload?.totals_filtered || null;
 	const isFiltered = !!(project && totalsFiltered);
 	const usage = isFiltered ? totalsFiltered : totalsGlobal;
+	const events = isFiltered ? usagePayload.events_filtered || [] : usagePayload.events_global || [];
+	const globalPackUsage = (usagePayload.events_global || []).find(
+		(event) => event.event === "pack",
+	);
+	const packUsage = events.find((event) => event.event === "pack") || {};
 	const rawSessions = Number(raw.sessions || 0);
 	const rawPending = Number(raw.pending || 0);
 
@@ -40,30 +45,30 @@ export function renderStats() {
 		? `\nGlobal: ${Number(totalsGlobal.work_investment_tokens || 0).toLocaleString()} invested`
 		: "";
 	const globalLineRead = isFiltered
-		? `\nGlobal: ${Number(totalsGlobal.tokens_read || 0).toLocaleString()} read`
+		? `\nGlobal: ${Number(globalPackUsage?.total_tokens_read || 0).toLocaleString()} estimated injected`
 		: "";
 	const globalLineSaved = isFiltered
-		? `\nGlobal: ${Number(totalsGlobal.tokens_saved || 0).toLocaleString()} saved`
+		? `\nGlobal: ${Number(globalPackUsage?.total_tokens_saved || 0).toLocaleString()} estimated saved`
 		: "";
 
 	const items: StatItem[] = [
 		{
 			label: isFiltered ? "Savings (project)" : "Savings",
-			value: formatTokenCount(usage.tokens_saved || 0),
-			tooltip: `Tokens saved by reusing compressed memories. Exact: ${Number(usage.tokens_saved || 0).toLocaleString()} saved${globalLineSaved}`,
+			value: formatTokenCount(packUsage.total_tokens_saved || 0),
+			tooltip: `Estimated tokens saved by reusing compressed memories: ${Number(packUsage.total_tokens_saved || 0).toLocaleString()}${globalLineSaved}`,
 			icon: "trending-up",
 		},
 		{
 			label: isFiltered ? "Injected (project)" : "Injected",
-			value: formatTokenCount(usage.tokens_read || 0),
-			tooltip: `Tokens injected into context (pack size). Exact: ${Number(usage.tokens_read || 0).toLocaleString()} injected${globalLineRead}`,
+			value: formatTokenCount(packUsage.total_tokens_read || 0),
+			tooltip: `Estimated tokens injected into context (pack size): ${Number(packUsage.total_tokens_read || 0).toLocaleString()}${globalLineRead}`,
 			icon: "book-open",
 		},
 		{
 			label: isFiltered ? "Reduction (project)" : "Reduction",
-			value: formatReductionPercent(usage.tokens_saved, usage.tokens_read),
+			value: formatReductionPercent(packUsage.total_tokens_saved, packUsage.total_tokens_read),
 			tooltip:
-				`Percent reduction from reuse. Factor: ${formatMultiplier(usage.tokens_saved, usage.tokens_read)}.` +
+				`Estimated percent reduction from reuse. Factor: ${formatMultiplier(packUsage.total_tokens_saved, packUsage.total_tokens_read)}.` +
 				globalLineRead +
 				globalLineSaved,
 			icon: "percent",

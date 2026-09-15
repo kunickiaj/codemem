@@ -4,6 +4,7 @@ import {
 	type ObserverOutputError,
 	observeAndNormalizeObserverOutput,
 	observerOutputMetadata,
+	observerOutputTotalUsage,
 	resolveObserverOutputCapability,
 } from "./observer-output.js";
 
@@ -283,7 +284,7 @@ describe("observeAndNormalizeObserverOutput failures and compatibility", () => {
 				provider: "openai",
 				model: "test-model",
 				elapsedMs: 2,
-				usage: null,
+				usage: { inputTokens: 10, outputTokens: 2 },
 				usedStructuredOutputs: true,
 				failureReason: null,
 				transportFailureCode: "rate_limited",
@@ -307,6 +308,7 @@ describe("observeAndNormalizeObserverOutput failures and compatibility", () => {
 
 		expect(output.repairApplied).toBe(false);
 		expect(output.retryApplied).toBe(true);
+		expect(observerOutputTotalUsage(output)).toBeNull();
 		expect(output.diagnostics).toEqual(
 			expect.objectContaining({
 				repairAttempted: false,
