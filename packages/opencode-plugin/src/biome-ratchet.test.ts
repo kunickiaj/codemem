@@ -294,6 +294,29 @@ describe("Biome policy comparison", () => {
 		});
 	});
 
+	it("requires review for options added to an implicitly enabled preset rule", () => {
+		const baseConfig = JSON.stringify({ linter: { rules: { preset: "all" } } });
+		const headConfig = JSON.stringify({
+			linter: {
+				rules: {
+					preset: "all",
+					complexity: {
+						noExcessiveLinesPerFunction: {
+							level: "error",
+							options: { maxLines: 1_000 },
+						},
+					},
+				},
+			},
+		});
+
+		expect(compareBiomePolicy(baseConfig, headConfig, [])).toContainEqual({
+			kind: "rule-level",
+			message:
+				"Biome rule options changed; explicit policy review required: complexity.noExcessiveLinesPerFunction",
+		});
+	});
+
 	it("rejects narrowing default coverage with explicit includes", () => {
 		expect(
 			compareBiomePolicy("{}", JSON.stringify({ files: { includes: ["src/**"] } }), []),
@@ -465,6 +488,51 @@ describe("Biome policy bypass prevention", () => {
 		).not.toContainEqual({
 			kind: "suppression",
 			message: "Code changed under an existing broad Biome suppression",
+			path: "src/a.ts",
+		});
+	});
+
+	it("rejects edits inside a node with an existing ordinary suppression", () => {
+		const beforeSource = [
+			"// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: legacy",
+			"function calculate(value: number) {",
+			"\tif (value > 0) return value;",
+			"\treturn 0;",
+			"}",
+			"const outside = 1;",
+		].join("\n");
+		const insideEdit = beforeSource.replace(
+			"\treturn 0;",
+			"\tif (value < 0) return -value;\n\treturn 0;",
+		);
+		const outsideEdit = beforeSource.replace("const outside = 1;", "const outside = 2;");
+
+		expect(
+			compareBiomePolicy(config(), config(), [
+				{
+					status: "modified",
+					afterPath: "src/a.ts",
+					beforeSource,
+					afterSource: insideEdit,
+				},
+			]),
+		).toContainEqual({
+			kind: "suppression",
+			message: "Code changed under an existing Biome suppression",
+			path: "src/a.ts",
+		});
+		expect(
+			compareBiomePolicy(config(), config(), [
+				{
+					status: "modified",
+					afterPath: "src/a.ts",
+					beforeSource,
+					afterSource: outsideEdit,
+				},
+			]),
+		).not.toContainEqual({
+			kind: "suppression",
+			message: "Code changed under an existing Biome suppression",
 			path: "src/a.ts",
 		});
 	});

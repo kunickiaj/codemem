@@ -343,6 +343,40 @@ interface BroadSuppressionRange {
 	end: number;
 }
 
+function ordinarySuppressionRanges(source: string | undefined): BroadSuppressionRange[] {
+	if (!source) return [];
+	const ranges: BroadSuppressionRange[] = [];
+	for (const comment of sourceComments(source)) {
+		const directive = comment.text.match(/^(?:\/\/|\/\*)\s*(biome-ignore\b[^\n*]*)/)?.[1];
+		if (!directive) continue;
+		const start = comment.end;
+		const comments: SourceComment[] = [];
+		let end = source.length;
+		for (let index = start; index < source.length; index += 1) {
+			const current = source[index];
+			if (current === ";") {
+				end = index + 1;
+				break;
+			}
+			if (current === "{") {
+				end = scanCode(source, index + 1, comments, { stopAtBrace: true });
+				break;
+			}
+			index = scanCodeToken(source, index, comments) - 1;
+		}
+		const normalized = directive.trim().replace(/\s+/g, " ");
+		const line = source.slice(0, comment.start).split("\n").length;
+		const scope = getScopeIdentity(source, line) ?? "";
+		const anchor = source
+			.slice(comment.end)
+			.split("\n")
+			.map((line) => line.trim())
+			.find((line) => line && !line.startsWith("//") && !line.startsWith("/*"));
+		ranges.push({ identity: `${normalized}|${scope}|${anchor ?? ""}`, start, end });
+	}
+	return ranges;
+}
+
 function broadSuppressionIdentity(
 	source: string,
 	comment: SourceComment,
@@ -478,6 +512,19 @@ function editsCoveredByExistingBroadSuppression(change: ChangedPath): boolean {
 	);
 }
 
+function editsCoveredByExistingOrdinarySuppression(change: ChangedPath): boolean {
+	if (change.beforeSource === undefined || change.afterSource === undefined) return false;
+	const changed = changedAfterRanges(change.beforeSource, change.afterSource);
+	const existing = new Set(
+		ordinarySuppressionRanges(change.beforeSource).map((suppression) => suppression.identity),
+	);
+	return ordinarySuppressionRanges(change.afterSource).some(
+		(suppression) =>
+			existing.has(suppression.identity) &&
+			changed.some((range) => range.start < suppression.end && range.end > suppression.start),
+	);
+}
+
 function coverageViolations(base: UnknownRecord, head: UnknownRecord): PolicyViolation[] {
 	const baseFileControls = isRecord(base.files) ? base.files : undefined;
 	const headFileControls = isRecord(head.files) ? head.files : undefined;
@@ -531,7 +578,16 @@ function newRuleViolations(
 		if (headSeverity === 0) {
 			return [{ kind: "rule-level" as const, message: `Biome rule explicitly disabled: ${rule}` }];
 		}
-		if (!usesImplicitRulePreset(base) || headSeverity === undefined || headSeverity >= 3) return [];
+		if (!usesImplicitRulePreset(base)) return [];
+		if (ruleOptions(headSetting) !== undefined) {
+			return [
+				{
+					kind: "rule-level" as const,
+					message: `Biome rule options changed; explicit policy review required: ${rule}`,
+				},
+			];
+		}
+		if (headSeverity === undefined || headSeverity >= 3) return [];
 		return [{ kind: "rule-level" as const, message: `Biome preset rule weakened: ${rule}` }];
 	});
 }
@@ -764,6 +820,13 @@ function suppressionViolations(changes: ChangedPath[]): PolicyViolation[] {
 			violations.push({
 				kind: "suppression",
 				message: "Code changed under an existing broad Biome suppression",
+				path: change.afterPath,
+			});
+		}
+		if (editsCoveredByExistingOrdinarySuppression(change)) {
+			violations.push({
+				kind: "suppression",
+				message: "Code changed under an existing Biome suppression",
 				path: change.afterPath,
 			});
 		}
