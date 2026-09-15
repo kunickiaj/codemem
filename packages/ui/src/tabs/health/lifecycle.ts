@@ -14,7 +14,7 @@ export async function refreshViewerStatus(options: ReadRequestOptions = {}) {
 	const status = await api.loadViewerStatus(options);
 	if (options.signal?.aborted) return;
 	state.viewerActorId = status.identity.actor_id;
-	if (state.activeTab === "feed" && previousActorId !== state.viewerActorId) updateFeedView(true);
+	if (previousActorId !== state.viewerActorId) updateFeedView(true);
 }
 
 export async function loadHealthData(options: ReadRequestOptions = {}) {

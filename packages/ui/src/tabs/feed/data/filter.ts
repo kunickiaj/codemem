@@ -18,7 +18,8 @@ export function filterByType(items: FeedItem[]): FeedItem[] {
 
 export function computeSignature(items: FeedItem[]): string {
 	const parts = items.map(
-		(i) => `${itemSignature(i)}:${i.kind || ""}:${i.created_at_utc || i.created_at || ""}`,
+		(i) =>
+			`${itemSignature(i)}:${i.kind || ""}:${i.created_at_utc || i.created_at || ""}:${String(i.owned_by_self ?? "")}`,
 	);
-	return `${state.feedTypeFilter}|${state.feedScopeFilter}|${state.currentProject}|${normalize(state.feedQuery)}|${parts.join("|")}`;
+	return `${state.feedTypeFilter}|${state.feedScopeFilter}|${state.currentProject}|${state.viewerActorId ?? ""}|${normalize(state.feedQuery)}|${parts.join("|")}`;
 }

@@ -39,12 +39,12 @@ describe("refreshViewerStatus", () => {
 		expect(mocks.updateFeedView).not.toHaveBeenCalled();
 	});
 
-	it("updates shared identity without rendering an inactive Feed", async () => {
+	it("invalidates inactive Feed ownership when the shared identity changes", async () => {
 		state.activeTab = "projects";
 
 		await refreshViewerStatus();
 
 		expect(state.viewerActorId).toBe("actor-local");
-		expect(mocks.updateFeedView).not.toHaveBeenCalled();
+		expect(mocks.updateFeedView).toHaveBeenCalledWith(true);
 	});
 });

@@ -19,6 +19,7 @@ import {
 	renderActionList,
 	renderHealthCards,
 	renderIcons,
+	renderText,
 	renderUpdateBanner,
 } from "../components";
 import type { HealthAction, HealthCardInput } from "../types";
@@ -28,9 +29,12 @@ const SCOPE_BACKFILL_JOB = "scope_id_backfill";
 
 export function markHealthStatusUnchecked(): void {
 	const healthDot = document.getElementById("healthDot");
-	if (!healthDot) return;
-	healthDot.className = "health-dot status-unknown";
-	healthDot.title = "Open Health to check status";
+	if (healthDot) {
+		healthDot.className = "health-dot status-unknown";
+		healthDot.title = "Open Health to check status";
+	}
+	const metaLine = document.getElementById("metaLine");
+	if (metaLine) renderText(metaLine, "");
 }
 
 function appendFailedMaintenanceDiagnosticsAction(

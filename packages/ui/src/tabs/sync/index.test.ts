@@ -9,7 +9,7 @@ vi.mock("../../lib/api", () => ({
 	loadPairing: vi.fn(),
 }));
 
-vi.mock("../health", () => ({ renderHealthOverview: vi.fn() }));
+vi.mock("../health", () => ({ markHealthStatusUnchecked: vi.fn(), renderHealthOverview: vi.fn() }));
 vi.mock("./diagnostics", () => ({
 	renderSyncStatus: vi.fn(),
 	renderSyncAttempts: vi.fn(),
@@ -649,6 +649,26 @@ describe("loadSyncData", () => {
 
 		expect(api.loadDeviceIdentityInventory).not.toHaveBeenCalled();
 		expect(state.deviceIdentityInventoryLoadError).toBe(true);
+	});
+});
+
+describe("off-Health sync status", () => {
+	beforeEach(() => resetSyncTestState("advanced"));
+
+	it("keeps global Health status unchecked after refresh", async () => {
+		const api = await import("../../lib/api");
+		const health = await import("../health");
+		const { loadSyncData } = await import("./index");
+		vi.mocked(api.loadSyncStatus).mockResolvedValue({ peers: [] } as never);
+		vi.mocked(api.loadSyncActors).mockResolvedValue({ items: [] });
+		vi.mocked(api.loadCoordinatorAdminStatus).mockResolvedValue({});
+		vi.mocked(api.loadDeviceIdentityInventory).mockResolvedValue({ items: [] } as never);
+		vi.mocked(api.loadShareOperations).mockResolvedValue({ items: [] });
+
+		await expect(loadSyncData()).resolves.toBe(true);
+
+		expect(health.markHealthStatusUnchecked).toHaveBeenCalledOnce();
+		expect(health.renderHealthOverview).not.toHaveBeenCalled();
 	});
 });
 

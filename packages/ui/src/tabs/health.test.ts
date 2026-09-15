@@ -61,10 +61,20 @@ beforeEach(() => {
 });
 
 it("marks the global Health indicator as unchecked when details are not loading", () => {
+	const metaLine = document.getElementById("metaLine");
+	state.lastStatsPayload = {
+		database: { path: "/home/example/.codemem/codemem.db", size_bytes: 2_000_000 },
+	};
+	renderStats();
+	expect(metaLine?.textContent).toContain("codemem.db");
 	markHealthStatusUnchecked();
 
 	expect(document.getElementById("healthDot")?.className).toBe("health-dot status-unknown");
 	expect(document.getElementById("healthDot")?.title).toBe("Open Health to check status");
+	expect(metaLine?.textContent).toBe("");
+
+	renderStats();
+	expect(metaLine?.textContent).toContain("codemem.db");
 });
 
 describe("Usage metric provenance", () => {

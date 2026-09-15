@@ -7,7 +7,7 @@ import {
 	isSyncRedactionEnabled,
 	state,
 } from "../../lib/state";
-import { renderHealthOverview } from "../health";
+import { markHealthStatusUnchecked, renderHealthOverview } from "../health";
 import { ensureSyncRenderBoundary } from "./components/render-root";
 
 import {
@@ -382,8 +382,8 @@ async function runLoadSyncData(
 		renderSyncPeers();
 		renderLegacyDeviceClaims();
 		renderSyncAttempts();
-		// Re-render health indicators since they consume sync state (health dot, etc.)
-		renderHealthOverview();
+		// Detailed health is current only while Health owns this refresh.
+		refreshHealthStatusAfterSync();
 		if (actorLoadError) {
 			renderSyncActorsUnavailable();
 		}
@@ -407,6 +407,14 @@ async function runLoadSyncData(
 		renderSyncDiagnosticsUnavailable();
 		return false;
 	}
+}
+
+function refreshHealthStatusAfterSync(): void {
+	if (state.activeTab === "health") {
+		renderHealthOverview();
+		return;
+	}
+	markHealthStatusUnchecked();
 }
 
 /**
