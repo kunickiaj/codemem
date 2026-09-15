@@ -228,6 +228,20 @@ describe("app refresh session wiring", () => {
 			}
 		},
 	);
+
+	it.each([
+		["projects", mocks.loadProjectsData],
+		["sharing", mocks.loadRecipientPolicySharingData],
+	] as const)("keeps the %s Team summary inside the refresh session", async (tab, loader) => {
+		document.getElementById(`tabBtn-${tab}`)?.click();
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(100);
+		});
+
+		expect(loader).toHaveBeenLastCalledWith(
+			expect.objectContaining({ awaitTeamSetupSummary: true, signal: expect.any(AbortSignal) }),
+		);
+	});
 });
 
 describe("app refresh deadlines", () => {

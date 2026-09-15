@@ -75,13 +75,31 @@ async function loadRecipientPolicyWithoutMount(
 	dependencies: RecipientPolicySharingLoaderDependencies,
 	options: RecipientPolicySharingRefreshOptions,
 ): Promise<boolean> {
-	if (!options.requireTeamSetupSummary) return true;
+	if (!options.awaitTeamSetupSummary && !options.requireTeamSetupSummary) return true;
 	try {
 		await dependencies.loadTeamSetupSummary({ signal: options.signal });
-		return true;
+		return !options.signal?.aborted;
 	} catch {
-		return false;
+		return !options.requireTeamSetupSummary && !options.signal?.aborted;
 	}
+}
+
+function finishRecipientPolicySharingLoad(input: {
+	isCurrent: () => boolean;
+	loadSucceeded: boolean;
+	options: RecipientPolicySharingRefreshOptions;
+	teamSetupSummaryPromise: Promise<boolean>;
+}): boolean | Promise<boolean> {
+	if (!input.options.awaitTeamSetupSummary && !input.options.requireTeamSetupSummary)
+		return input.loadSucceeded;
+	return input.teamSetupSummaryPromise.then((teamSetupSucceeded) => {
+		if (!input.isCurrent()) return false;
+		return input.loadSucceeded && (!input.options.requireTeamSetupSummary || teamSetupSucceeded);
+	});
+}
+
+function waitsForTeamSetupSummary(options: RecipientPolicySharingRefreshOptions): boolean {
+	return options.awaitTeamSetupSummary === true || options.requireTeamSetupSummary === true;
 }
 
 export function createRecipientPolicySharingLoader(
@@ -185,7 +203,8 @@ export function createRecipientPolicySharingLoader(
 				}),
 			]);
 		if (!isCurrent()) {
-			if (!refreshOptions.requireTeamSetupSummary) return latestLoad ?? false;
+			if (refreshOptions.signal?.aborted) return false;
+			if (!waitsForTeamSetupSummary(refreshOptions)) return latestLoad ?? false;
 			await teamSetupSummaryPromise;
 			return false;
 		}
@@ -267,16 +286,19 @@ export function createRecipientPolicySharingLoader(
 				loadError: true,
 			});
 		}
-		if (!refreshOptions.requireTeamSetupSummary) return loadSucceeded;
-		const teamSetupSucceeded = await teamSetupSummaryPromise;
-		if (revision !== loadRevision) return false;
-		return loadSucceeded && teamSetupSucceeded;
+		return finishRecipientPolicySharingLoad({
+			isCurrent,
+			loadSucceeded,
+			options: refreshOptions,
+			teamSetupSummaryPromise,
+		});
 	}
 
 	return loadRecipientPolicySharingData;
 }
 
 export interface RecipientPolicySharingRefreshOptions {
+	awaitTeamSetupSummary?: boolean;
 	requireTeamSetupSummary?: boolean;
 	signal?: AbortSignal;
 }

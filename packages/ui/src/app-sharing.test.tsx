@@ -799,3 +799,86 @@ describe("Sharing app data refresh", () => {
 		);
 	});
 });
+
+describe("Sharing aggregate refresh ownership", () => {
+	it("keeps awaiting its Team summary after a newer load supersedes it", async () => {
+		document.body.innerHTML = '<div id="recipientPolicySharingMount"></div>';
+		const oldProjects = deferred<{ manageable: typeof projects; received: never[] }>();
+		const oldTeamSetup = deferred<LegacyTeamSetupSummaryResponseV1>();
+		const teamSetupSummary: LegacyTeamSetupSummaryResponseV1 = { version: 1, candidates: [] };
+		const load = createRecipientPolicySharingLoader({
+			loadDeviceInventory: vi.fn().mockResolvedValue({ version: 1, items: [], truncated: false }),
+			loadIntent: vi.fn().mockResolvedValue(intent),
+			loadProjects: vi
+				.fn()
+				.mockImplementationOnce(() => oldProjects.promise)
+				.mockResolvedValue({ manageable: projects, received: [] }),
+			loadTeamSetupSummary: vi
+				.fn()
+				.mockImplementationOnce(() => oldTeamSetup.promise)
+				.mockResolvedValue(teamSetupSummary),
+			mountSharing: vi.fn(),
+		});
+
+		const aggregateLoad = load({ awaitTeamSetupSummary: true });
+		await expect(load()).resolves.toBe(true);
+		oldProjects.resolve({ manageable: projects, received: [] });
+		let settled = false;
+		void aggregateLoad.then(() => {
+			settled = true;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(settled).toBe(false);
+
+		oldTeamSetup.resolve(teamSetupSummary);
+		await expect(aggregateLoad).resolves.toBe(false);
+	});
+
+	it("returns false when cancellation aborts the latest load", async () => {
+		document.body.innerHTML = '<div id="recipientPolicySharingMount"></div>';
+		const controller = new AbortController();
+		const abortableRead = vi.fn(
+			(options: { signal?: AbortSignal } = {}) =>
+				new Promise<never>((_, reject) => {
+					options.signal?.addEventListener("abort", () => reject(options.signal?.reason), {
+						once: true,
+					});
+				}),
+		);
+		const load = createRecipientPolicySharingLoader({
+			loadDeviceInventory: vi.fn().mockResolvedValue({ version: 1, items: [], truncated: false }),
+			loadIntent: vi.fn().mockResolvedValue(intent),
+			loadProjects: abortableRead,
+			loadTeamSetupSummary: abortableRead,
+			mountSharing: vi.fn(),
+		});
+
+		const operation = load({ awaitTeamSetupSummary: true, signal: controller.signal });
+		await vi.waitFor(() => expect(abortableRead).toHaveBeenCalledTimes(2));
+		controller.abort(new DOMException("Refresh canceled", "AbortError"));
+
+		await expect(operation).resolves.toBe(false);
+	});
+
+	it("waits for optional Team setup discovery without making it required", async () => {
+		document.body.innerHTML = '<div id="recipientPolicySharingMount"></div>';
+		const teamSetupResult = deferred<LegacyTeamSetupSummaryResponseV1>();
+		const load = createRecipientPolicySharingLoader({
+			loadDeviceInventory: vi.fn().mockResolvedValue({ version: 1, items: [], truncated: false }),
+			loadIntent: vi.fn().mockResolvedValue(intent),
+			loadProjects: vi.fn().mockResolvedValue({ manageable: projects, received: [] }),
+			loadTeamSetupSummary: vi.fn(() => teamSetupResult.promise),
+			mountSharing: vi.fn(),
+		});
+
+		const operation = load({ awaitTeamSetupSummary: true });
+		let settled = false;
+		void operation.then(() => {
+			settled = true;
+		});
+		await vi.waitFor(() => expect(settled).toBe(false));
+
+		teamSetupResult.reject(new Error("setup unavailable"));
+		await expect(operation).resolves.toBe(true);
+	});
+});

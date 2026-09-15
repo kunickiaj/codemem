@@ -774,11 +774,18 @@ function appendTabRefreshTasks(
 		);
 	}
 	if (refreshTab === "projects") {
-		promises.push(loadProjectsData({ signal: session.signal }).then(recordBooleanResult));
+		promises.push(
+			loadProjectsData({ awaitTeamSetupSummary: true, signal: session.signal }).then(
+				recordBooleanResult,
+			),
+		);
 	}
 	if (refreshTab === "sharing") {
 		promises.push(
-			loadRecipientPolicySharingData({ signal: session.signal }).then(recordBooleanResult),
+			loadRecipientPolicySharingData({
+				awaitTeamSetupSummary: true,
+				signal: session.signal,
+			}).then(recordBooleanResult),
 		);
 	}
 	if (refreshTab === "devices") {

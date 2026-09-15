@@ -3437,3 +3437,121 @@ describe("Projects tab", () => {
 		});
 	});
 });
+
+describe("Projects refresh cancellation", () => {
+	beforeEach(setupProjectsTest);
+	afterEach(() => {
+		vi.clearAllMocks();
+		state.lastProjectCoordinatorAdminGroups = [];
+		state.lastCoordinatorAdminStatus = null;
+		state.lastCoordinatorAdminGroups = [];
+		document.body.innerHTML = "";
+	});
+
+	it("does not mark retained Team setup status unavailable after cancellation", async () => {
+		const summary = {
+			version: 1 as const,
+			candidates: [
+				{
+					candidateRef: "opaque-candidate-ref",
+					displayName: "Example Team",
+					status: "in_progress" as const,
+					deviceCount: 2,
+					projectCount: 1,
+					unresolvedDeviceCount: 1,
+					unresolvedProjectCount: 0,
+				},
+			],
+		};
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [],
+			total: 0,
+		});
+		vi.mocked(api.loadLegacyTeamSetupSummary).mockResolvedValueOnce(summary);
+
+		await loadProjectsData();
+		await flushAsyncWork();
+		const entry = document.querySelector<HTMLElement>(".project-team-setup-entry");
+		expect(entry?.textContent).toContain("Example Team");
+
+		vi.mocked(api.loadLegacyTeamSetupSummary).mockImplementationOnce(
+			(options: { signal?: AbortSignal } = {}) =>
+				new Promise((_, reject) => {
+					options.signal?.addEventListener("abort", () => reject(options.signal?.reason), {
+						once: true,
+					});
+				}),
+		);
+		const controller = new AbortController();
+		const operation = loadProjectsData({
+			awaitTeamSetupSummary: true,
+			signal: controller.signal,
+		});
+		await vi.waitFor(() => expect(api.loadLegacyTeamSetupSummary).toHaveBeenCalledTimes(2));
+		let settled = false;
+		void operation.then(() => {
+			settled = true;
+		});
+		await Promise.resolve();
+		expect(settled).toBe(false);
+		controller.abort(new DOMException("Refresh canceled", "AbortError"));
+		await expect(operation).resolves.toBe(false);
+
+		expect(document.querySelector(".project-team-setup-entry")).toBe(entry);
+		expect(entry?.querySelector('[role="status"]')).toBeNull();
+	});
+
+	it("does not reuse an unowned Team summary for an aggregate refresh", async () => {
+		let resolveUnowned!: (value: LegacyTeamSetupSummaryResponseV1) => void;
+		vi.mocked(api.loadLegacyTeamSetupSummary)
+			.mockImplementationOnce(() => new Promise((resolve) => (resolveUnowned = resolve)))
+			.mockImplementationOnce(
+				(options: { signal?: AbortSignal } = {}) =>
+					new Promise((_, reject) => {
+						options.signal?.addEventListener("abort", () => reject(options.signal?.reason), {
+							once: true,
+						});
+					}),
+			);
+		await loadProjectsData();
+
+		const controller = new AbortController();
+		const operation = loadProjectsData({
+			awaitTeamSetupSummary: true,
+			signal: controller.signal,
+		});
+		await vi.waitFor(() => expect(api.loadLegacyTeamSetupSummary).toHaveBeenCalledTimes(2));
+		controller.abort(new DOMException("Refresh canceled", "AbortError"));
+
+		await expect(operation).resolves.toBe(false);
+		resolveUnowned({ version: 1, candidates: [] });
+	});
+
+	it("keeps deadline ownership after a required Projects read fails", async () => {
+		let resolveTeamSetup!: (value: LegacyTeamSetupSummaryResponseV1) => void;
+		vi.mocked(api.loadLegacyTeamSetupSummary).mockImplementationOnce(
+			() => new Promise((resolve) => (resolveTeamSetup = resolve)),
+		);
+		vi.mocked(api.loadProjectScopeInventory).mockRejectedValueOnce(
+			new Error("Project inventory unavailable"),
+		);
+
+		const operation = loadProjectsData({ awaitTeamSetupSummary: true });
+		let settled = false;
+		void operation.then(() => {
+			settled = true;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(document.getElementById("projectsInventoryMeta")?.textContent).toBe(
+			"Project inventory failed to load.",
+		);
+		expect(settled).toBe(false);
+
+		resolveTeamSetup({ version: 1, candidates: [] });
+		await expect(operation).resolves.toBe(false);
+	});
+});
