@@ -866,6 +866,23 @@ describe("Biome policy bypass prevention", () => {
 });
 
 describe("Biome suppressed-edit policy", () => {
+	it("skips line diffing for large rewrites without retained suppressions", () => {
+		const beforeSource = Array.from(
+			{ length: 4_000 },
+			(_, index) => `const before${index} = 1;`,
+		).join("\n");
+		const afterSource = Array.from(
+			{ length: 4_000 },
+			(_, index) => `const after${index} = 2;`,
+		).join("\n");
+
+		expect(
+			compareBiomePolicy(config(), config(), [
+				{ status: "modified", afterPath: "src/a.ts", beforeSource, afterSource },
+			]),
+		).toEqual([]);
+	});
+
 	it("rejects edits covered by existing broad suppressions", () => {
 		const fileWide = "// biome-ignore-all lint/a: legacy\nconst first = 1;";
 		const range = [

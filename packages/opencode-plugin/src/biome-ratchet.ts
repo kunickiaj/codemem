@@ -942,27 +942,31 @@ function changedAfterRanges(before: string, after: string): Array<{ start: numbe
 
 function editsCoveredByExistingBroadSuppression(change: ChangedPath): boolean {
 	if (change.beforeSource === undefined || change.afterSource === undefined) return false;
-	const changed = changedAfterRanges(change.beforeSource, change.afterSource);
 	const existing = new Set(
 		broadSuppressionRanges(change.beforeSource).map((suppression) => suppression.identity),
 	);
-	return broadSuppressionRanges(change.afterSource).some(
-		(suppression) =>
-			existing.has(suppression.identity) &&
-			changed.some((range) => range.start < suppression.end && range.end > suppression.start),
+	const retained = broadSuppressionRanges(change.afterSource).filter((suppression) =>
+		existing.has(suppression.identity),
+	);
+	if (retained.length === 0) return false;
+	const changed = changedAfterRanges(change.beforeSource, change.afterSource);
+	return retained.some((suppression) =>
+		changed.some((range) => range.start < suppression.end && range.end > suppression.start),
 	);
 }
 
 function editsCoveredByExistingOrdinarySuppression(change: ChangedPath): boolean {
 	if (change.beforeSource === undefined || change.afterSource === undefined) return false;
-	const changed = changedAfterRanges(change.beforeSource, change.afterSource);
 	const existing = new Set(
 		ordinarySuppressionRanges(change.beforeSource).map((suppression) => suppression.identity),
 	);
-	return ordinarySuppressionRanges(change.afterSource).some(
-		(suppression) =>
-			existing.has(suppression.identity) &&
-			changed.some((range) => range.start < suppression.end && range.end > suppression.start),
+	const retained = ordinarySuppressionRanges(change.afterSource).filter((suppression) =>
+		existing.has(suppression.identity),
+	);
+	if (retained.length === 0) return false;
+	const changed = changedAfterRanges(change.beforeSource, change.afterSource);
+	return retained.some((suppression) =>
+		changed.some((range) => range.start < suppression.end && range.end > suppression.start),
 	);
 }
 
