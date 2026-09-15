@@ -171,6 +171,7 @@ has no evaluated runs and null rates, rather than a quality pass.
 - Anthropic direct API calls use Anthropic's direct model IDs. codemem translates the common shorthand `claude-4.5-haiku` to `claude-haiku-4-5`; if you want a fixed snapshot, set a versioned model like `claude-haiku-4-5-20251001` directly.
 - If a configured `observer_model` is unsupported by a sidecar CLI, codemem retries once with that CLI's default model.
 - Supported auth sources: `auto`, `env`, `file`, `command`, `none`.
+- Endpoint and credential always come from the same source: vendor-scoped env/OAuth credentials (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENCODE_API_KEY`, `CODEX_API_KEY`, Anthropic OAuth) are only sent to the official provider endpoint. A custom `observer_base_url` or pi-derived gateway authenticates via `CODEMEM_OBSERVER_API_KEY`, `observer_api_key`, an OpenCode provider block's own key, or the endpoint-matched pi credential — never a vendor key.
 - `observer_auth_command` is argv and must be a JSON string array, not a space-separated string.
   - Config file form: `"observer_auth_command": ["iap-auth", "--audience", "example"]`
   - Env var form (`CODEMEM_OBSERVER_AUTH_COMMAND`): `'["iap-auth","--audience","example"]'`

@@ -1108,6 +1108,11 @@ export function getOpenCodeProviderConfig(provider: string): AnyRecord {
 	return data ?? {};
 }
 
+/** True when the opencode config has a provider block for this provider name. */
+export function hasOpenCodeProviderConfig(provider: string): boolean {
+	return Object.keys(getOpenCodeProviderConfig(provider)).length > 0;
+}
+
 /** List all custom provider keys from the opencode config. */
 export function listCustomProviders(): Set<string> {
 	const config = loadOpenCodeConfig();

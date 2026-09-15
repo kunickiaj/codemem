@@ -34,6 +34,22 @@ describe("ObserverAuthAdapter", () => {
 			expect(result.source).toBe("oauth");
 		});
 
+		it("falls back to pi token after env/oauth", () => {
+			const adapter = new ObserverAuthAdapter();
+			const result = adapter.resolve({ piToken: "tok-pi" });
+			expect(result.token).toBe("tok-pi");
+			expect(result.source).toBe("pi");
+		});
+
+		it("explicit and env beat pi token", () => {
+			const adapter = new ObserverAuthAdapter();
+			expect(adapter.resolve({ explicitToken: "tok-explicit", piToken: "tok-pi" }).source).toBe(
+				"explicit",
+			);
+			expect(adapter.resolve({ envTokens: ["tok-env"], piToken: "tok-pi" }).source).toBe("env");
+			expect(adapter.resolve({ oauthToken: "tok-oauth", piToken: "tok-pi" }).source).toBe("oauth");
+		});
+
 		it("returns no token with source=none", () => {
 			const adapter = new ObserverAuthAdapter({ source: "none" });
 			const result = adapter.resolve({ explicitToken: "ignored" });

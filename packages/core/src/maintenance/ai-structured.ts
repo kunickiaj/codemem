@@ -8,7 +8,11 @@ import {
 	startMaintenanceJob,
 	updateMaintenanceJob,
 } from "../maintenance-jobs.js";
-import { loadObserverConfig, ObserverClient } from "../observer-client.js";
+import {
+	loadObserverConfig,
+	ObserverClient,
+	observerBaseUrlForProviderOverride,
+} from "../observer-client.js";
 import { OBSERVER_CONCEPT_SET, OBSERVER_CONCEPTS } from "../observer-concepts.js";
 import { SecretScanner } from "../secret-scanner.js";
 import { isSummaryLikeMemory } from "../summary-memory.js";
@@ -93,6 +97,9 @@ function createStructuredBackfillObserver(): StructuredBackfillObserver {
 	return new ObserverClient({
 		...base,
 		observerProvider: "openai",
+		// A pi-derived base URL belongs to the pi provider; only an OpenAI-bound
+		// URL survives the provider override.
+		observerBaseUrl: observerBaseUrlForProviderOverride(base, "openai"),
 		observerModel: "gpt-5.4",
 		observerTemperature: 0.2,
 		observerOpenAIUseResponses: true,

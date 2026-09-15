@@ -1,4 +1,5 @@
 import type { ObserverConfig } from "./observer-client.js";
+import { observerBaseUrlForProviderOverride } from "./observer-client.js";
 
 export interface ExtractionReplayTierRoutingInput {
 	batchId: number;
@@ -145,6 +146,7 @@ export function buildTieredObserverSelection(
 		const observer = {
 			...baseConfig,
 			observerProvider: "anthropic",
+			observerBaseUrl: observerBaseUrlForProviderOverride(baseConfig, "anthropic"),
 			observerModel:
 				decision.tier === "simple"
 					? (baseConfig.observerSimpleModel ??
@@ -201,6 +203,7 @@ export function buildTieredObserverSelection(
 		const observer = {
 			...baseConfig,
 			observerProvider: "openai",
+			observerBaseUrl: observerBaseUrlForProviderOverride(baseConfig, "openai"),
 			observerModel:
 				decision.tier === "simple"
 					? (baseConfig.observerSimpleModel ?? baseConfig.observerModel)
@@ -246,6 +249,7 @@ export function buildTieredObserverSelection(
 			const observer = {
 				...baseConfig,
 				observerProvider: knownProvider,
+				observerBaseUrl: observerBaseUrlForProviderOverride(baseConfig, knownProvider),
 				observerModel:
 					baseConfig.observerSimpleModel ?? tierDefaults.observerModel ?? baseConfig.observerModel,
 				observerTemperature:
@@ -277,6 +281,7 @@ export function buildTieredObserverSelection(
 		const observer = {
 			...baseConfig,
 			observerProvider: preservedProvider,
+			observerBaseUrl: observerBaseUrlForProviderOverride(baseConfig, preservedProvider ?? ""),
 			observerModel: baseConfig.observerSimpleModel ?? baseConfig.observerModel,
 			observerTemperature: baseConfig.observerSimpleTemperature ?? baseConfig.observerTemperature,
 			observerOpenAIUseResponses: undefined,
@@ -303,6 +308,7 @@ export function buildTieredObserverSelection(
 		const observer = {
 			...baseConfig,
 			observerProvider: knownProvider,
+			observerBaseUrl: observerBaseUrlForProviderOverride(baseConfig, knownProvider),
 			observerModel:
 				baseConfig.observerRichModel ?? tierDefaults.observerModel ?? baseConfig.observerModel,
 			observerTemperature:
@@ -345,6 +351,7 @@ export function buildTieredObserverSelection(
 	const observer = {
 		...baseConfig,
 		observerProvider: preservedProvider,
+		observerBaseUrl: observerBaseUrlForProviderOverride(baseConfig, preservedProvider ?? ""),
 		observerModel: baseConfig.observerRichModel ?? baseConfig.observerModel,
 		observerTemperature: baseConfig.observerRichTemperature ?? baseConfig.observerTemperature,
 		observerOpenAIUseResponses: undefined,

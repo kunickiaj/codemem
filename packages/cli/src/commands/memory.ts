@@ -34,6 +34,7 @@ import {
 	type ObserverOutputMode,
 	ObserverOutputTransportError,
 	type ObserverTokenUsage,
+	observerBaseUrlForProviderOverride,
 	replayBatchExtraction,
 	replayBatchExtractionWithTierRouting,
 	resolveDbPath,
@@ -1442,6 +1443,12 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 				const observerConfigWithOverrides = {
 					...observerConfig,
 					observerProvider: opts.observerProvider?.trim() || observerConfig.observerProvider,
+					// A pi-derived base URL belongs to the pi provider; drop it when the
+					// --observer-provider flag routes to a different provider.
+					observerBaseUrl: observerBaseUrlForProviderOverride(
+						observerConfig,
+						opts.observerProvider?.trim() || observerConfig.observerProvider || "",
+					),
 					observerModel: opts.observerModel?.trim() || observerConfig.observerModel,
 					observerTemperature: observerTemperature ?? observerConfig.observerTemperature,
 					observerOpenAIUseResponses: resolveOpenAIResponsesOverride(

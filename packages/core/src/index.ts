@@ -622,7 +622,12 @@ export type {
 	ObserverStatus,
 	ObserverTokenUsage,
 } from "./observer-client.js";
-export { loadObserverConfig, ObserverAuthError, ObserverClient } from "./observer-client.js";
+export {
+	loadObserverConfig,
+	ObserverAuthError,
+	ObserverClient,
+	observerBaseUrlForProviderOverride,
+} from "./observer-client.js";
 export * from "./observer-concepts.js";
 export type {
 	CodememConfigMutationResult,
@@ -691,6 +696,19 @@ export {
 	mapPiEventPayload,
 	PI_FLUSH_ONLY_EVENTS,
 } from "./pi-hooks.js";
+export type {
+	PiObserverResolveErr,
+	PiObserverResolveInput,
+	PiObserverResolveOk,
+	PiObserverResolveReason,
+	PiObserverResolveResult,
+} from "./pi-observer-config.js";
+export {
+	describePiObserverStatus,
+	hasExplicitObserverEnvOverride,
+	resolvePiAgentDir,
+	resolvePiObserverConfig,
+} from "./pi-observer-config.js";
 export type {
 	BlockedPolicyTeamDeviceEligibilityResult,
 	DerivePolicyTeamDeviceEligibilityInput,

@@ -584,4 +584,71 @@ describe("extraction tier routing", () => {
 		expect(selection.metadata.fallbackReason).toBe("unsupported tier override for runtime");
 		expect(selection.observer.observerProvider).toBe("anthropic");
 	});
+
+	it("clears a pi-derived base URL when the tier routes to a different provider", () => {
+		const decision = decideExtractionReplayTier({
+			batchId: 18503,
+			sessionId: 166405,
+			eventSpan: 153,
+			promptCount: 4,
+			toolCount: 12,
+			transcriptLength: 2800,
+		});
+		expect(decision.tier).toBe("rich");
+		// pi-derived config: provider + baseUrl from pi, neither explicit.
+		const selection = buildTieredObserverSelection(
+			baseConfig({
+				observerProvider: "acme",
+				observerBaseUrl: "https://pi-acme.test/v1",
+				observerRichProvider: "openai",
+				observerExplicitConfigKeys: ["observerRichProvider"],
+			}),
+			decision,
+		);
+		expect(selection.observer.observerProvider).toBe("openai");
+		expect(selection.observer.observerBaseUrl).toBeNull();
+	});
+
+	it("keeps a pi-derived base URL when the tier stays on the same provider", () => {
+		const decision = decideExtractionReplayTier({
+			batchId: 18503,
+			sessionId: 166405,
+			eventSpan: 153,
+			promptCount: 4,
+			toolCount: 12,
+			transcriptLength: 2800,
+		});
+		const selection = buildTieredObserverSelection(
+			baseConfig({
+				observerProvider: "openai",
+				observerBaseUrl: "https://pi-openai-gateway.test/v1",
+			}),
+			decision,
+		);
+		expect(selection.observer.observerProvider).toBe("openai");
+		expect(selection.observer.observerBaseUrl).toBe("https://pi-openai-gateway.test/v1");
+	});
+
+	it("keeps an explicit base URL under the user's own provider override", () => {
+		const decision = decideExtractionReplayTier({
+			batchId: 18503,
+			sessionId: 166405,
+			eventSpan: 153,
+			promptCount: 4,
+			toolCount: 12,
+			transcriptLength: 2800,
+		});
+		const selection = buildTieredObserverSelection(
+			baseConfig({
+				observerProvider: "acme",
+				observerBaseUrl: "https://user-gateway.test/v1",
+				observerRichProvider: "openai",
+				observerExplicitConfigKeys: ["observerBaseUrl", "observerRichProvider"],
+			}),
+			decision,
+		);
+		expect(selection.observer.observerProvider).toBe("openai");
+		// Explicit (file/env) URLs survive — the user owns them.
+		expect(selection.observer.observerBaseUrl).toBe("https://user-gateway.test/v1");
+	});
 });
