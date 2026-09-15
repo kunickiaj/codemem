@@ -443,7 +443,9 @@ ${packageVersions.map((packageVersion) => `  '@biomejs/biome@${packageVersion}':
 
 		expect(compareBiomePolicy(baseConfig, headConfig, [])).toEqual([]);
 	});
+});
 
+describe("Biome suppression policy comparison", () => {
 	it("detects changed suppression identities even when the count is unchanged", () => {
 		expect(
 			compareBiomePolicy(config(), config(), [
