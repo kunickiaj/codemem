@@ -444,10 +444,12 @@ export function statsRoutes(getStore: () => MemoryStore) {
 			// store.stats()), so they never load the full usage_events table
 			// into JS. Only the small surfaced recent_packs window below keeps
 			// per-row scope visibility + metadata sanitization.
-			const globalAggregate = store.usageAggregate();
+			const globalAggregate = store.classifiedUsageAggregate();
 			const eventsGlobal = mapAggregateEvents(globalAggregate);
 			const totalsGlobal = totalsFromAggregate(globalAggregate);
-			const filteredAggregate = projectFilter ? store.usageAggregate(projectFilter) : null;
+			const filteredAggregate = projectFilter
+				? store.classifiedUsageAggregate(projectFilter)
+				: null;
 			const eventsFiltered = filteredAggregate ? mapAggregateEvents(filteredAggregate) : null;
 			const totalsFiltered = filteredAggregate ? totalsFromAggregate(filteredAggregate) : null;
 

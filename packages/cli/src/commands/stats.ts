@@ -24,20 +24,21 @@ function fmtTokens(n: number): string {
 
 function formatUsageEvent(
 	event: ReturnType<MemoryStore["stats"]>["usage"]["events"][number],
+	provenance: ReturnType<MemoryStore["stats"]>["usage"]["provenance"]["events"][number] | undefined,
 ): string {
 	const parts = [`${event.event}: ${event.count.toLocaleString()}`];
 	if (event.tokens_read > 0) parts.push(`read ${fmtTokens(event.tokens_read)} tokens`);
 	if (event.tokens_saved > 0) {
 		parts.push(`est. saved ${fmtTokens(event.tokens_saved)} tokens`);
 	}
-	if (event.measured_count > 0) parts.push(`${event.measured_count} provider-measured`);
-	if (event.estimated_count > 0) parts.push(`${event.estimated_count} estimated`);
-	if (event.unavailable_count > 0) parts.push(`${event.unavailable_count} unavailable`);
-	if (event.legacy_text_length_count > 0) {
-		parts.push(`${event.legacy_text_length_count} legacy length excluded`);
+	if (provenance?.measured_count) parts.push(`${provenance.measured_count} provider-measured`);
+	if (provenance?.estimated_count) parts.push(`${provenance.estimated_count} estimated`);
+	if (provenance?.unavailable_count) parts.push(`${provenance.unavailable_count} unavailable`);
+	if (provenance?.legacy_text_length_count) {
+		parts.push(`${provenance.legacy_text_length_count} legacy length excluded`);
 	}
-	if (event.legacy_unclassified_count > 0) {
-		parts.push(`${event.legacy_unclassified_count} legacy unclassified`);
+	if (provenance?.legacy_unclassified_count) {
+		parts.push(`${provenance.legacy_unclassified_count} legacy unclassified`);
 	}
 	return `  ${parts.join(", ")}`;
 }
@@ -113,7 +114,12 @@ export const statsCommand = statsCmd.action(
 			);
 
 			if (result.usage.events.length > 0) {
-				const lines = result.usage.events.map(formatUsageEvent);
+				const provenanceByEvent = new Map(
+					result.usage.provenance.events.map((event) => [event.event, event]),
+				);
+				const lines = result.usage.events.map((event) =>
+					formatUsageEvent(event, provenanceByEvent.get(event.event)),
+				);
 
 				const t = result.usage.totals;
 				lines.push("");

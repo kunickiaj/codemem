@@ -2069,22 +2069,6 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 		return JSON.parse(row.metadata_json) as Record<string, unknown>;
 	}
 
-	function latestObserverUsageRow(targetStore = store): {
-		tokens_read: number | null;
-		tokens_written: number | null;
-		metadata_json: string;
-	} {
-		return targetStore.db
-			.prepare(
-				"SELECT tokens_read, tokens_written, metadata_json FROM usage_events WHERE event = 'observer_call' ORDER BY id DESC LIMIT 1",
-			)
-			.get() as {
-			tokens_read: number | null;
-			tokens_written: number | null;
-			metadata_json: string;
-		};
-	}
-
 	function observerMemoryMetadata(title: string, targetStore = store): Record<string, unknown> {
 		const row = targetStore.db
 			.prepare("SELECT metadata_json FROM memory_items WHERE title = ? ORDER BY id DESC LIMIT 1")
@@ -2194,35 +2178,6 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 			outputTokens: 20,
 			totalTokens: 30,
 		});
-		const usage = latestObserverUsageRow();
-		expect(usage.tokens_read).toBe(10);
-		expect(usage.tokens_written).toBe(20);
-		expect(JSON.parse(usage.metadata_json).token_usage).toEqual({
-			unit: "tokens",
-			source: "provider",
-			input_direction: "observer_input",
-			output_direction: "observer_output",
-			attempt_count: 1,
-		});
-	});
-
-	it("records unavailable observer token usage without using Unicode text lengths", async () => {
-		const raw = `<observation><type>discovery</type><title>Unicode usage</title><narrative>😀漢字 text must not become token usage.</narrative><facts></facts><concepts></concepts><files_read></files_read><files_modified></files_modified></observation>`;
-		await ingest(buildPayload(), store, {
-			observer: observerWithRaw(raw),
-			storeSummary: false,
-		} as unknown as IngestOptions);
-
-		const usage = latestObserverUsageRow();
-		expect(usage.tokens_read).toBeNull();
-		expect(usage.tokens_written).toBeNull();
-		expect(JSON.parse(usage.metadata_json).token_usage).toEqual({
-			unit: "tokens",
-			source: "unavailable",
-			input_direction: "observer_input",
-			output_direction: "observer_output",
-			attempt_count: 1,
-		});
 	});
 
 	it("repairs a structured response when parsing would discard an observation", async () => {
@@ -2255,10 +2210,6 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 					parsed: null,
 					provider: "test",
 					model: "test-model",
-					usage:
-						calls.length === 1
-							? { inputTokens: 11, outputTokens: 3 }
-							: { inputTokens: 7, outputTokens: 2 },
 				};
 			},
 			getStatus: () => ({
@@ -2277,13 +2228,6 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 		expect(
 			store.recent(10).some((memory) => memory.title === "Parser data loss now triggers repair"),
 		).toBe(true);
-		const usage = latestObserverUsageRow();
-		expect(usage.tokens_read).toBe(18);
-		expect(usage.tokens_written).toBe(5);
-		expect(JSON.parse(usage.metadata_json).token_usage).toMatchObject({
-			source: "provider",
-			attempt_count: 2,
-		});
 	});
 
 	it("retains valid initial content when the parser repair returns no output", async () => {

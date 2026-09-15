@@ -68,6 +68,7 @@ import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { recordReplicationOp } from "./sync-replication.js";
 import type {
 	AutomaticContext,
+	ClassifiedUsageEventRow,
 	ExplainResponse,
 	MemoryFilters,
 	MemoryItem,
@@ -1183,6 +1184,18 @@ export class MemoryStore {
 	 * Callers sort the returned rows as needed.
 	 */
 	usageAggregate(projectFilter?: string | null): UsageEventRow[] {
+		return this.classifiedUsageAggregate(projectFilter).map(
+			({ event, count, tokens_read, tokens_written, tokens_saved }) => ({
+				event,
+				count,
+				tokens_read,
+				tokens_written,
+				tokens_saved,
+			}),
+		);
+	}
+
+	classifiedUsageAggregate(projectFilter?: string | null): ClassifiedUsageEventRow[] {
 		// The global variant avoids a needless sessions join; both paths share the
 		// same projection so historical observer-length handling cannot drift.
 		const hasProject = typeof projectFilter === "string" && projectFilter.length > 0;
@@ -1299,22 +1312,34 @@ export class MemoryStore {
 		// Usage stats. Sort by count DESC to preserve the historical
 		// ORDER BY COUNT(*) DESC ordering of this block, with event name as a
 		// stable tiebreaker so equal-count rows have a deterministic order.
-		const usageEvents = this.usageAggregate().sort(
+		const classifiedUsageEvents = this.classifiedUsageAggregate().sort(
 			(a, b) => b.count - a.count || a.event.localeCompare(b.event),
+		);
+		const usageEvents = classifiedUsageEvents.map(
+			({ event, count, tokens_read, tokens_written, tokens_saved }) => ({
+				event,
+				count,
+				tokens_read,
+				tokens_written,
+				tokens_saved,
+			}),
 		);
 
 		const totalEvents = usageEvents.reduce((s, e) => s + e.count, 0);
 		const totalTokensRead = usageEvents.reduce((s, e) => s + e.tokens_read, 0);
 		const totalTokensWritten = usageEvents.reduce((s, e) => s + e.tokens_written, 0);
 		const totalTokensSaved = usageEvents.reduce((s, e) => s + e.tokens_saved, 0);
-		const totalMeasuredEvents = usageEvents.reduce((s, e) => s + e.measured_count, 0);
-		const totalEstimatedEvents = usageEvents.reduce((s, e) => s + e.estimated_count, 0);
-		const totalUnavailableEvents = usageEvents.reduce((s, e) => s + e.unavailable_count, 0);
-		const totalLegacyTextLengthEvents = usageEvents.reduce(
+		const totalMeasuredEvents = classifiedUsageEvents.reduce((s, e) => s + e.measured_count, 0);
+		const totalEstimatedEvents = classifiedUsageEvents.reduce((s, e) => s + e.estimated_count, 0);
+		const totalUnavailableEvents = classifiedUsageEvents.reduce(
+			(s, e) => s + e.unavailable_count,
+			0,
+		);
+		const totalLegacyTextLengthEvents = classifiedUsageEvents.reduce(
 			(s, e) => s + e.legacy_text_length_count,
 			0,
 		);
-		const totalLegacyUnclassifiedEvents = usageEvents.reduce(
+		const totalLegacyUnclassifiedEvents = classifiedUsageEvents.reduce(
 			(s, e) => s + e.legacy_unclassified_count,
 			0,
 		);
@@ -1345,12 +1370,35 @@ export class MemoryStore {
 					tokens_read: totalTokensRead,
 					tokens_written: totalTokensWritten,
 					tokens_saved: totalTokensSaved,
-					token_unit: "tokens",
-					measured_count: totalMeasuredEvents,
-					estimated_count: totalEstimatedEvents,
-					unavailable_count: totalUnavailableEvents,
-					legacy_text_length_count: totalLegacyTextLengthEvents,
-					legacy_unclassified_count: totalLegacyUnclassifiedEvents,
+				},
+				provenance: {
+					events: classifiedUsageEvents.map(
+						({
+							event,
+							token_unit,
+							measured_count,
+							estimated_count,
+							unavailable_count,
+							legacy_text_length_count,
+							legacy_unclassified_count,
+						}) => ({
+							event,
+							token_unit,
+							measured_count,
+							estimated_count,
+							unavailable_count,
+							legacy_text_length_count,
+							legacy_unclassified_count,
+						}),
+					),
+					totals: {
+						token_unit: "tokens",
+						measured_count: totalMeasuredEvents,
+						estimated_count: totalEstimatedEvents,
+						unavailable_count: totalUnavailableEvents,
+						legacy_text_length_count: totalLegacyTextLengthEvents,
+						legacy_unclassified_count: totalLegacyUnclassifiedEvents,
+					},
 				},
 			},
 		};

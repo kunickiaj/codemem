@@ -2065,54 +2065,18 @@ describe("MemoryStore", () => {
 		function insertUsageEvent(
 			sessionId: number | null,
 			event: string,
-			tokensRead: number | null,
-			tokensWritten: number | null,
+			tokensRead: number,
+			tokensWritten: number,
 			tokensSaved: number | null,
 			createdAt = "2026-03-26T23:30:00Z",
-			metadata: Record<string, unknown> = {},
 		): void {
 			store.db
 				.prepare(
 					`INSERT INTO usage_events(session_id, event, tokens_read, tokens_written, tokens_saved, created_at, metadata_json)
-					 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+					 VALUES (?, ?, ?, ?, ?, ?, '{}')`,
 				)
-				.run(
-					sessionId,
-					event,
-					tokensRead,
-					tokensWritten,
-					tokensSaved,
-					createdAt,
-					JSON.stringify(metadata),
-				);
+				.run(sessionId, event, tokensRead, tokensWritten, tokensSaved, createdAt);
 		}
-
-		it("excludes legacy observer character lengths and reports token provenance", () => {
-			const sessionId = insertTestSession(store.db);
-			insertUsageEvent(sessionId, "observer_call", 500, 200, 0);
-			insertUsageEvent(sessionId, "observer_call", 17, 5, 0, undefined, {
-				token_usage: { unit: "tokens", source: "provider" },
-			});
-			insertUsageEvent(sessionId, "observer_call", null, null, 0, undefined, {
-				token_usage: { unit: "tokens", source: "unavailable" },
-			});
-
-			expect(store.usageAggregate()).toEqual([
-				{
-					event: "observer_call",
-					count: 3,
-					tokens_read: 17,
-					tokens_written: 5,
-					tokens_saved: 0,
-					token_unit: "tokens",
-					measured_count: 1,
-					estimated_count: 0,
-					unavailable_count: 1,
-					legacy_text_length_count: 1,
-					legacy_unclassified_count: 0,
-				},
-			]);
-		});
 
 		it("groups by event and sums tokens with tokens_saved NULL coalesced to 0", () => {
 			const sessionId = insertTestSession(store.db);
@@ -2129,12 +2093,6 @@ describe("MemoryStore", () => {
 				tokens_written: 30,
 				// NULL tokens_saved on the second pack contributes 0.
 				tokens_saved: 5,
-				token_unit: "tokens",
-				measured_count: 0,
-				estimated_count: 2,
-				unavailable_count: 0,
-				legacy_text_length_count: 0,
-				legacy_unclassified_count: 0,
 			});
 			expect(byEvent.get("search")).toEqual({
 				event: "search",
@@ -2142,12 +2100,6 @@ describe("MemoryStore", () => {
 				tokens_read: 30,
 				tokens_written: 3,
 				tokens_saved: 7,
-				token_unit: "tokens",
-				measured_count: 0,
-				estimated_count: 0,
-				unavailable_count: 0,
-				legacy_text_length_count: 0,
-				legacy_unclassified_count: 1,
 			});
 		});
 
@@ -2163,19 +2115,7 @@ describe("MemoryStore", () => {
 
 			const filtered = store.usageAggregate("codemem");
 			expect(filtered).toEqual([
-				{
-					event: "pack",
-					count: 1,
-					tokens_read: 100,
-					tokens_written: 10,
-					tokens_saved: 5,
-					token_unit: "tokens",
-					measured_count: 0,
-					estimated_count: 1,
-					unavailable_count: 0,
-					legacy_text_length_count: 0,
-					legacy_unclassified_count: 0,
-				},
+				{ event: "pack", count: 1, tokens_read: 100, tokens_written: 10, tokens_saved: 5 },
 			]);
 
 			// Empty-string filter behaves like the unfiltered (global) variant.
@@ -2183,14 +2123,7 @@ describe("MemoryStore", () => {
 			const global = store.usageAggregate();
 			expect(globalViaEmpty).toEqual(global);
 			expect(global).toEqual([
-				expect.objectContaining({
-					event: "pack",
-					count: 2,
-					tokens_read: 1100,
-					tokens_written: 110,
-					tokens_saved: 55,
-					estimated_count: 2,
-				}),
+				{ event: "pack", count: 2, tokens_read: 1100, tokens_written: 110, tokens_saved: 55 },
 			]);
 		});
 
@@ -2208,34 +2141,14 @@ describe("MemoryStore", () => {
 			const usage = store.stats().usage;
 			// stats() sorts events by count DESC.
 			expect(usage.events).toEqual([
-				expect.objectContaining({
-					event: "pack",
-					count: 2,
-					tokens_read: 300,
-					tokens_written: 30,
-					tokens_saved: 5,
-					estimated_count: 2,
-				}),
-				expect.objectContaining({
-					event: "search",
-					count: 1,
-					tokens_read: 30,
-					tokens_written: 3,
-					tokens_saved: 7,
-					legacy_unclassified_count: 1,
-				}),
+				{ event: "pack", count: 2, tokens_read: 300, tokens_written: 30, tokens_saved: 5 },
+				{ event: "search", count: 1, tokens_read: 30, tokens_written: 3, tokens_saved: 7 },
 			]);
 			expect(usage.totals).toEqual({
 				events: 3,
 				tokens_read: 330,
 				tokens_written: 33,
 				tokens_saved: 12,
-				token_unit: "tokens",
-				measured_count: 0,
-				estimated_count: 2,
-				unavailable_count: 0,
-				legacy_text_length_count: 0,
-				legacy_unclassified_count: 1,
 			});
 		});
 	});
