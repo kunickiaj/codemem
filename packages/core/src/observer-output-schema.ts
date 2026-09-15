@@ -1,5 +1,6 @@
+import * as z from "zod";
 import type { ParsedOutput } from "./ingest-types.js";
-import { REMEMBER_MEMORY_KINDS, type RememberMemoryKind } from "./memory-kinds.js";
+import { REMEMBER_MEMORY_KINDS } from "./memory-kinds.js";
 import { OBSERVER_CONCEPTS } from "./observer-concepts.js";
 
 export const OBSERVER_ENVELOPE_SCHEMA_VERSION = 1 as const;
@@ -12,35 +13,41 @@ export const OBSERVER_OUTPUT_LIMITS = {
 	textCharacters: 16_384,
 } as const;
 
-export interface ObserverObservationV1 {
-	kind: RememberMemoryKind;
-	title: string;
-	narrative: string;
-	subtitle: string | null;
-	facts: string[];
-	concepts: string[];
-	files_read: string[];
-	files_modified: string[];
-}
+const stringArraySchema = z.array(z.string());
 
-export interface ObserverSummaryV1 {
-	request: string;
-	investigated: string;
-	learned: string;
-	completed: string;
-	next_steps: string;
-	notes: string;
-	files_read: string[];
-	files_modified: string[];
-}
+const observerObservationV1Schema = z.strictObject({
+	kind: z.enum(REMEMBER_MEMORY_KINDS),
+	title: z.string(),
+	narrative: z.string(),
+	subtitle: z.string().nullable(),
+	facts: stringArraySchema,
+	concepts: z.array(z.enum(OBSERVER_CONCEPTS)),
+	files_read: stringArraySchema,
+	files_modified: stringArraySchema,
+});
 
-export interface ObserverEnvelopeV1 {
-	schema_version: typeof OBSERVER_ENVELOPE_SCHEMA_VERSION;
-	status: "captured" | "skipped";
-	observations: ObserverObservationV1[];
-	summary: ObserverSummaryV1 | null;
-	skip_reason: string | null;
-}
+const observerSummaryV1Schema = z.strictObject({
+	request: z.string().describe("The user's request and session goal."),
+	investigated: z.string().describe("What was examined or attempted."),
+	learned: z.string().describe("Durable discoveries from the session."),
+	completed: z.string().describe("Work completed and concrete outcomes."),
+	next_steps: z.string().describe("Remaining work, blockers, and next actions."),
+	notes: z.string().describe("Relevant decisions, trade-offs, or warnings."),
+	files_read: stringArraySchema,
+	files_modified: stringArraySchema,
+});
+
+const observerEnvelopeV1Schema = z.strictObject({
+	schema_version: z.literal(OBSERVER_ENVELOPE_SCHEMA_VERSION),
+	status: z.enum(["captured", "skipped"]),
+	observations: z.array(observerObservationV1Schema),
+	summary: observerSummaryV1Schema.nullable(),
+	skip_reason: z.string().nullable(),
+});
+
+export type ObserverObservationV1 = z.infer<typeof observerObservationV1Schema>;
+export type ObserverSummaryV1 = z.infer<typeof observerSummaryV1Schema>;
+export type ObserverEnvelopeV1 = z.infer<typeof observerEnvelopeV1Schema>;
 
 export interface ObserverForcedToolCall {
 	name: string;
@@ -62,248 +69,105 @@ export type ObserverEnvelopeParseResult =
 	| { ok: true; envelope: ObserverEnvelopeV1 }
 	| { ok: false; reason: ObserverEnvelopeFailureReason; issues: string[] };
 
-const stringSchema = {
-	type: "string",
-} as const;
+type JsonSchemaObject = Record<string, unknown>;
 
-const stringArraySchema = {
-	type: "array",
-	items: stringSchema,
-} as const;
+function createProviderEnvelopeSchema(): JsonSchemaObject {
+	const schema = z.toJSONSchema(observerEnvelopeV1Schema) as JsonSchemaObject;
+	delete schema.$schema;
 
-const observationSchema = {
-	type: "object",
-	additionalProperties: false,
-	properties: {
-		kind: { type: "string", enum: [...REMEMBER_MEMORY_KINDS] },
-		title: stringSchema,
-		narrative: stringSchema,
-		subtitle: { type: ["string", "null"] },
-		facts: stringArraySchema,
-		concepts: {
-			type: "array",
-			items: { ...stringSchema, enum: [...OBSERVER_CONCEPTS] },
-		},
-		files_read: stringArraySchema,
-		files_modified: stringArraySchema,
-	},
-	required: [
-		"kind",
-		"title",
-		"narrative",
-		"subtitle",
-		"facts",
-		"concepts",
-		"files_read",
-		"files_modified",
-	],
-} as const;
-
-const summarySchema = {
-	type: "object",
-	additionalProperties: false,
-	properties: {
-		request: { ...stringSchema, description: "The user's request and session goal." },
-		investigated: { ...stringSchema, description: "What was examined or attempted." },
-		learned: { ...stringSchema, description: "Durable discoveries from the session." },
-		completed: { ...stringSchema, description: "Work completed and concrete outcomes." },
-		next_steps: {
-			...stringSchema,
-			description: "Remaining work, blockers, and next actions.",
-		},
-		notes: { ...stringSchema, description: "Relevant decisions, trade-offs, or warnings." },
-		files_read: stringArraySchema,
-		files_modified: stringArraySchema,
-	},
-	required: [
-		"request",
-		"investigated",
-		"learned",
-		"completed",
-		"next_steps",
-		"notes",
-		"files_read",
-		"files_modified",
-	],
-} as const;
+	// Supported providers accept the existing conservative integer enum, not `const`.
+	const properties = schema.properties as Record<string, JsonSchemaObject>;
+	properties.schema_version = {
+		type: "integer",
+		enum: [OBSERVER_ENVELOPE_SCHEMA_VERSION],
+	};
+	return schema;
+}
 
 /** Conservative provider-neutral JSON Schema accepted by supported direct APIs. */
-export const OBSERVER_ENVELOPE_JSON_SCHEMA: Record<string, unknown> = {
-	type: "object",
-	additionalProperties: false,
-	properties: {
-		schema_version: { type: "integer", enum: [OBSERVER_ENVELOPE_SCHEMA_VERSION] },
-		status: { type: "string", enum: ["captured", "skipped"] },
-		observations: {
-			type: "array",
-			items: observationSchema,
-		},
-		summary: { anyOf: [summarySchema, { type: "null" }] },
-		skip_reason: { type: ["string", "null"] },
-	},
-	required: ["schema_version", "status", "observations", "summary", "skip_reason"],
-};
+export const OBSERVER_ENVELOPE_JSON_SCHEMA = createProviderEnvelopeSchema();
 
-const ENVELOPE_KEYS = [
-	"schema_version",
-	"status",
-	"observations",
-	"summary",
-	"skip_reason",
-] as const;
-const OBSERVATION_KEYS = [
-	"kind",
-	"title",
-	"narrative",
-	"subtitle",
-	"facts",
-	"concepts",
-	"files_read",
-	"files_modified",
-] as const;
-const SUMMARY_KEYS = [
-	"request",
-	"investigated",
-	"learned",
-	"completed",
-	"next_steps",
-	"notes",
-	"files_read",
-	"files_modified",
-] as const;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
+function formatIssuePath(path: readonly PropertyKey[]): string {
+	return path.reduce<string>((formatted, segment) => {
+		if (typeof segment === "number") return `${formatted}[${segment}]`;
+		return `${formatted}.${String(segment)}`;
+	}, "$");
 }
 
-function validateExactKeys(
-	value: Record<string, unknown>,
-	keys: readonly string[],
-	path: string,
-	issues: string[],
-): void {
-	for (const key of keys) {
-		if (!Object.hasOwn(value, key)) issues.push(`${path}.${key} is required`);
+function sanitizeStructuralIssue(issue: z.core.$ZodIssue): string {
+	const path = formatIssuePath(issue.path);
+	if (issue.code === "unrecognized_keys") {
+		return `${path} has ${issue.keys.length} unexpected properties`;
 	}
-	const unexpectedCount = Object.keys(value).filter((key) => !keys.includes(key)).length;
-	if (unexpectedCount > 0) issues.push(`${path} has ${unexpectedCount} unexpected properties`);
+	if (issue.code === "invalid_type") return `${path} has an invalid type`;
+	return `${path} is invalid`;
 }
 
-function validateString(value: unknown, path: string, issues: string[]): value is string {
-	if (typeof value !== "string") {
-		issues.push(`${path} must be a string`);
-		return false;
-	}
+function validateTextLimit(value: string, path: string, issues: string[]): void {
 	if (value.length > OBSERVER_OUTPUT_LIMITS.textCharacters) {
 		issues.push(`${path} must contain at most ${OBSERVER_OUTPUT_LIMITS.textCharacters} characters`);
 	}
-	return true;
 }
 
-function validateStringArray(
-	value: unknown,
+function validateListLimits(
+	values: string[],
 	path: string,
 	issues: string[],
-	options: { allowed?: ReadonlySet<string>; maxItems?: number } = {},
+	maxItems?: number,
 ): void {
-	if (!Array.isArray(value)) {
-		issues.push(`${path} must be an array`);
-		return;
-	}
-	const maxItems = options.maxItems ?? OBSERVER_OUTPUT_LIMITS.listItems;
-	if (value.length > maxItems) {
-		issues.push(`${path} must contain at most ${maxItems} items`);
-	}
-	for (const [index, item] of value.entries()) {
-		if (!validateString(item, `${path}[${index}]`, issues)) continue;
-		if (options.allowed && !options.allowed.has(item)) {
-			issues.push(`${path}[${index}] is not allowed`);
-		}
-	}
-}
-
-function validateObservation(value: unknown, index: number, issues: string[]): void {
-	const path = `$.observations[${index}]`;
-	if (!isRecord(value)) {
-		issues.push(`${path} must be an object`);
-		return;
-	}
-	validateExactKeys(value, OBSERVATION_KEYS, path, issues);
-	if (
-		typeof value.kind !== "string" ||
-		!REMEMBER_MEMORY_KINDS.includes(value.kind as RememberMemoryKind)
-	) {
-		issues.push(`${path}.kind is not supported`);
-	}
-	validateString(value.title, `${path}.title`, issues);
-	validateString(value.narrative, `${path}.narrative`, issues);
-	if (value.subtitle !== null) validateString(value.subtitle, `${path}.subtitle`, issues);
-	validateStringArray(value.facts, `${path}.facts`, issues);
-	validateStringArray(value.concepts, `${path}.concepts`, issues, {
-		allowed: new Set(OBSERVER_CONCEPTS),
-		maxItems: OBSERVER_OUTPUT_LIMITS.concepts,
+	const limit = maxItems ?? OBSERVER_OUTPUT_LIMITS.listItems;
+	if (values.length > limit) issues.push(`${path} must contain at most ${limit} items`);
+	values.forEach((value, index) => {
+		validateTextLimit(value, `${path}[${index}]`, issues);
 	});
-	validateStringArray(value.files_read, `${path}.files_read`, issues);
-	validateStringArray(value.files_modified, `${path}.files_modified`, issues);
 }
 
-function validateSummary(value: unknown, issues: string[]): void {
-	if (!isRecord(value)) {
-		issues.push("$.summary must be an object or null");
-		return;
+function validateEnvelopeLimits(value: ObserverEnvelopeV1, issues: string[]): void {
+	if (value.observations.length > OBSERVER_OUTPUT_LIMITS.observations) {
+		issues.push(`$.observations must contain at most ${OBSERVER_OUTPUT_LIMITS.observations} items`);
 	}
-	validateExactKeys(value, SUMMARY_KEYS, "$.summary", issues);
-	for (const key of SUMMARY_KEYS) {
-		if (key === "files_read" || key === "files_modified") {
-			validateStringArray(value[key], `$.summary.${key}`, issues);
-			continue;
+	value.observations.forEach((observation, index) => {
+		const path = `$.observations[${index}]`;
+		validateTextLimit(observation.title, `${path}.title`, issues);
+		validateTextLimit(observation.narrative, `${path}.narrative`, issues);
+		if (observation.subtitle !== null) {
+			validateTextLimit(observation.subtitle, `${path}.subtitle`, issues);
 		}
-		validateString(value[key], `$.summary.${key}`, issues);
-	}
-}
+		validateListLimits(observation.facts, `${path}.facts`, issues);
+		validateListLimits(
+			observation.concepts,
+			`${path}.concepts`,
+			issues,
+			OBSERVER_OUTPUT_LIMITS.concepts,
+		);
+		validateListLimits(observation.files_read, `${path}.files_read`, issues);
+		validateListLimits(observation.files_modified, `${path}.files_modified`, issues);
+	});
 
-function validateEnvelopeFields(value: Record<string, unknown>, issues: string[]): void {
-	validateExactKeys(value, ENVELOPE_KEYS, "$", issues);
-	if (value.schema_version !== OBSERVER_ENVELOPE_SCHEMA_VERSION) {
-		issues.push(`$.schema_version must equal ${OBSERVER_ENVELOPE_SCHEMA_VERSION}`);
-	}
-	if (value.status !== "captured" && value.status !== "skipped") {
-		issues.push('$.status must equal "captured" or "skipped"');
-	}
-	if (!Array.isArray(value.observations)) {
-		issues.push("$.observations must be an array");
-	} else {
-		if (value.observations.length > OBSERVER_OUTPUT_LIMITS.observations) {
-			issues.push(
-				`$.observations must contain at most ${OBSERVER_OUTPUT_LIMITS.observations} items`,
-			);
+	if (value.summary !== null) {
+		for (const [key, text] of Object.entries(value.summary)) {
+			const path = `$.summary.${key}`;
+			if (Array.isArray(text)) validateListLimits(text, path, issues);
+			else validateTextLimit(text, path, issues);
 		}
-		value.observations.forEach((observation, index) => {
-			validateObservation(observation, index, issues);
-		});
 	}
-	if (value.summary !== null) validateSummary(value.summary, issues);
-	if (value.skip_reason !== null) validateString(value.skip_reason, "$.skip_reason", issues);
+	if (value.skip_reason !== null) validateTextLimit(value.skip_reason, "$.skip_reason", issues);
 }
 
-function validateEnvelopeState(value: Record<string, unknown>, issues: string[]): void {
+function validateEnvelopeState(value: ObserverEnvelopeV1, issues: string[]): void {
 	if (value.status === "captured") {
 		if (value.skip_reason !== null) {
 			issues.push("$.skip_reason must be null when status is captured");
 		}
-		const hasPersistableObservation =
-			Array.isArray(value.observations) &&
-			value.observations.some(
-				(observation) =>
-					isRecord(observation) &&
-					((typeof observation.title === "string" && observation.title.trim().length > 0) ||
-						(typeof observation.narrative === "string" && observation.narrative.trim().length > 0)),
-			);
-		const summary = isRecord(value.summary) ? value.summary : null;
+		const hasPersistableObservation = value.observations.some(
+			(observation) =>
+				observation.title.trim().length > 0 || observation.narrative.trim().length > 0,
+		);
+		const summary = value.summary;
 		const hasPersistableSummary =
 			summary !== null &&
 			["request", "investigated", "learned", "completed", "next_steps", "notes"].some((key) => {
-				const text = summary[key];
+				const text = summary[key as keyof ObserverSummaryV1];
 				return typeof text === "string" && text.trim().length > 0;
 			});
 		if (!hasPersistableObservation && !hasPersistableSummary) {
@@ -311,8 +175,7 @@ function validateEnvelopeState(value: Record<string, unknown>, issues: string[])
 		}
 		return;
 	}
-	if (value.status !== "skipped") return;
-	if (Array.isArray(value.observations) && value.observations.length > 0) {
+	if (value.observations.length > 0) {
 		issues.push("$.observations must be empty when status is skipped");
 	}
 	if (value.summary !== null) issues.push("$.summary must be null when status is skipped");
@@ -322,22 +185,23 @@ function validateEnvelopeState(value: Record<string, unknown>, issues: string[])
 }
 
 export function validateObserverEnvelopeV1(value: unknown): ObserverEnvelopeParseResult {
-	const issues: string[] = [];
-	if (!isRecord(value)) {
+	const parsed = observerEnvelopeV1Schema.safeParse(value);
+	if (!parsed.success) {
 		return {
 			ok: false,
 			reason: "structured_output_schema_invalid",
-			issues: ["$ must be an object"],
+			issues: parsed.error.issues.map(sanitizeStructuralIssue),
 		};
 	}
 
-	validateEnvelopeFields(value, issues);
-	validateEnvelopeState(value, issues);
+	const issues: string[] = [];
+	validateEnvelopeLimits(parsed.data, issues);
+	validateEnvelopeState(parsed.data, issues);
 
 	if (issues.length > 0) {
 		return { ok: false, reason: "structured_output_schema_invalid", issues };
 	}
-	return { ok: true, envelope: value as unknown as ObserverEnvelopeV1 };
+	return { ok: true, envelope: parsed.data };
 }
 
 export function parseObserverEnvelopeV1(raw: string): ObserverEnvelopeParseResult {

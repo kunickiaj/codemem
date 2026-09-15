@@ -333,6 +333,20 @@ describe("observer envelope failures", () => {
 		});
 	});
 
+	it("does not echo unknown property names or values in diagnostics", () => {
+		const result = validateObserverEnvelopeV1({
+			...validCapture(),
+			private_payload: "raw private observer output",
+		});
+
+		expect(result).toMatchObject({
+			ok: false,
+			issues: ["$ has 1 unexpected properties"],
+		});
+		expect(JSON.stringify(result)).not.toContain("private_payload");
+		expect(JSON.stringify(result)).not.toContain("raw private observer output");
+	});
+
 	it("rejects observation-count overages before normalization", () => {
 		const value = validCapture();
 		value.observations = Array.from(
