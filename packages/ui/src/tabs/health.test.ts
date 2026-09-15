@@ -91,6 +91,25 @@ describe("Usage metric provenance", () => {
 		expect(retrieval?.textContent).toContain("80%");
 		expect(retrieval?.textContent).toContain("40 estimated saved tokens");
 	});
+
+	it("keeps global pack values distinct in project tooltips", () => {
+		state.currentProject = "codemem";
+		state.lastUsagePayload = {
+			totals_filtered: { tokens_read: 10, tokens_saved: 40 },
+			events: [{ event: "pack", total_tokens_read: 10, total_tokens_saved: 40 }],
+			events_filtered: [{ event: "pack", total_tokens_read: 10, total_tokens_saved: 40 }],
+			events_global: [{ event: "pack", total_tokens_read: 100, total_tokens_saved: 400 }],
+		};
+
+		renderStats();
+
+		const injected = [...document.querySelectorAll("#statsGrid .stat")].find(
+			(node) => node.querySelector(".label")?.textContent === "Injected (project)",
+		);
+		expect(injected?.parentElement?.getAttribute("data-tooltip")).toContain(
+			"Global: 100 estimated injected",
+		);
+	});
 });
 
 afterEach(() => {
