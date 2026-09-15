@@ -13,6 +13,7 @@ import {
 	formatHumanResult,
 	parseArguments,
 	parseNameStatus,
+	resolveRootBiomeEntrypoint,
 	runRatchet,
 } from "./biome-ratchet-cli.js";
 import type { LintDiagnostic } from "./lint-diagnostics.js";
@@ -430,7 +431,32 @@ describe("Biome policy comparison", () => {
 			{ kind: "threshold" },
 		]);
 	});
+});
 
+describe("Biome default threshold policy", () => {
+	it("requires review when an explicit threshold replaces the Biome default", () => {
+		const base = JSON.stringify({
+			linter: {
+				rules: {
+					complexity: {
+						noExcessiveLinesPerFunction: {
+							level: "warn",
+							options: { skipBlankLines: true },
+						},
+					},
+				},
+			},
+		});
+		const head = base.replace('skipBlankLines":true', 'skipBlankLines":true,"maxLines":1000');
+
+		expect(compareBiomePolicy(base, head, [])).toContainEqual({
+			kind: "threshold",
+			message: "Biome threshold increased: complexity.noExcessiveLinesPerFunction",
+		});
+	});
+});
+
+describe("Biome policy comparison", () => {
 	it("does not treat suppression text inside a string as a directive", () => {
 		expect(
 			compareBiomePolicy(config(), config(), [
@@ -728,7 +754,65 @@ describe("Biome policy bypass prevention", () => {
 			).toBe(expected);
 		}
 	});
+});
 
+describe("Biome reviewed dependency and compound policy", () => {
+	it("covers every branch of a compound statement suppression", () => {
+		const beforeSource = [
+			"// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: legacy",
+			"if (enabled) {",
+			'\tlog("enabled");',
+			"} else {",
+			'\tlog("disabled");',
+			"}",
+			"const outside = 1;",
+		].join("\n");
+		const afterSource = beforeSource.replace('log("disabled");', 'log("changed");');
+
+		expect(
+			compareBiomePolicy(config(), config(), [
+				{ status: "modified", afterPath: "src/a.ts", beforeSource, afterSource },
+			]),
+		).toContainEqual({
+			kind: "suppression",
+			message: "Code changed under an existing Biome suppression",
+			path: "src/a.ts",
+		});
+	});
+
+	it("requires review when dependency inputs select a different Biome binary", () => {
+		for (const [changedPath, beforeSource, afterSource] of [
+			[
+				"pnpm-workspace.yaml",
+				'catalog:\n  "@biomejs/biome": ^2.5.11\n',
+				'catalog:\n  "@biomejs/biome": ^2.6.0\n',
+			],
+			[
+				"package.json",
+				'{"devDependencies":{"@biomejs/biome":"catalog:"}}',
+				'{"devDependencies":{"@biomejs/biome":"2.6.0"}}',
+			],
+		] as const) {
+			expect(
+				compareBiomePolicy(config(), config(), [
+					{
+						status: "modified",
+						beforePath: changedPath,
+						afterPath: changedPath,
+						beforeSource,
+						afterSource,
+					},
+				]),
+			).toContainEqual({
+				kind: "coverage",
+				message: expect.stringContaining("Pinned Biome tool changed"),
+				path: changedPath,
+			});
+		}
+	});
+});
+
+describe("Biome policy bypass prevention", () => {
 	it("requires review for changed language-level lint controls", () => {
 		const baseConfig = JSON.stringify({ javascript: { formatter: { quoteStyle: "double" } } });
 		const headConfig = JSON.stringify({
@@ -846,6 +930,28 @@ describe("Biome policy fail-closed controls", () => {
 		expect(
 			compareBiomePolicy(JSON.stringify(base), JSON.stringify(nestedPreset), []),
 		).toMatchObject([{ kind: "rule-level" }]);
+	});
+});
+
+describe("Biome root tool resolution", () => {
+	it("resolves the Biome binary from the workspace root", () => {
+		const root = mkdtempSync(path.join(tmpdir(), "codemem-biome-resolution-test-"));
+		temporaryDirectories.push(root);
+		const packageRoot = path.join(root, "node_modules/@biomejs/biome");
+		const nestedPackageRoot = path.join(root, "packages/tool/node_modules/@biomejs/biome");
+		for (const directory of [packageRoot, nestedPackageRoot]) {
+			mkdirSync(path.join(directory, "bin"), { recursive: true });
+			writeFileSync(path.join(directory, "package.json"), '{"name":"@biomejs/biome"}');
+			writeFileSync(path.join(directory, "bin/biome"), "");
+		}
+		writeFileSync(path.join(root, "package.json"), '{"private":true}');
+
+		expect(resolveRootBiomeEntrypoint(root)).toBe(path.join(packageRoot, "bin/biome"));
+		expect(
+			createRequire(path.join(root, "packages/tool/package.json")).resolve(
+				"@biomejs/biome/bin/biome",
+			),
+		).toBe(path.join(nestedPackageRoot, "bin/biome"));
 	});
 });
 

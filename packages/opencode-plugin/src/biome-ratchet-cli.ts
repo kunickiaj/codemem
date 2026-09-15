@@ -8,7 +8,10 @@ import { type ChangedPath, compareBiomeReports } from "./biome-ratchet.js";
 import { formatDiagnostic } from "./lint-diagnostics.js";
 
 const HUMAN_DIAGNOSTIC_LIMIT = 10;
-const biomeEntrypoint = createRequire(import.meta.url).resolve("@biomejs/biome/bin/biome");
+
+export function resolveRootBiomeEntrypoint(root: string): string {
+	return createRequire(path.join(root, "package.json")).resolve("@biomejs/biome/bin/biome");
+}
 
 export interface CliOptions {
 	base: string;
@@ -312,8 +315,8 @@ export async function runRatchet(
 	} = {},
 ) {
 	const cwd = dependencies.cwd ?? process.cwd();
-	const entrypoint = dependencies.biomeEntrypoint ?? biomeEntrypoint;
 	const root = (await git(cwd, ["rev-parse", "--show-toplevel"])).trim();
+	const entrypoint = dependencies.biomeEntrypoint ?? resolveRootBiomeEntrypoint(root);
 	const baseCommit = await resolveCommit(root, options.base);
 	const temporaryRoot = await mkdtemp(path.join(tmpdir(), "codemem-biome-ratchet-"));
 	let baseSnapshot: Snapshot | undefined;

@@ -527,6 +527,34 @@ function nextNodeStart(source: string, start: number): number {
 	return source.length;
 }
 
+function completeCompoundStatementEnd(
+	source: string,
+	blockEnd: number,
+	comments: SourceComment[],
+): number {
+	let end = blockEnd;
+	while (end < source.length) {
+		const continuationStart = nextNodeStart(source, end);
+		const continuation = source.slice(continuationStart).match(/^(?:else\b|catch\b|finally\b)/u);
+		if (!continuation) return end;
+		const previousEnd = end;
+		for (
+			let index = continuationStart + continuation[0].length;
+			index < source.length;
+			index += 1
+		) {
+			if (source[index] === "{") {
+				end = scanCode(source, index + 1, comments, { stopAtBrace: true });
+				break;
+			}
+			if (source[index] === ";") return index + 1;
+			index = scanCodeToken(source, index, comments) - 1;
+		}
+		if (end === previousEnd) return end;
+	}
+	return end;
+}
+
 function ordinarySuppressionRanges(source: string | undefined): BroadSuppressionRange[] {
 	if (!source) return [];
 	const ranges: BroadSuppressionRange[] = [];
@@ -548,7 +576,8 @@ function ordinarySuppressionRanges(source: string | undefined): BroadSuppression
 				break;
 			}
 			if (current === "{") {
-				end = scanCode(source, index + 1, comments, { stopAtBrace: true });
+				const blockEnd = scanCode(source, index + 1, comments, { stopAtBrace: true });
+				end = completeCompoundStatementEnd(source, blockEnd, comments);
 				break;
 			}
 			index = scanCodeToken(source, index, comments) - 1;
@@ -818,8 +847,9 @@ function ruleViolations(base: UnknownRecord, head: UnknownRecord): PolicyViolati
 		const baseThreshold = threshold(baseSetting);
 		const headThreshold = threshold(headSetting);
 		if (
-			baseThreshold !== undefined &&
-			(headThreshold === undefined || headThreshold > baseThreshold)
+			(headThreshold !== undefined && baseThreshold === undefined) ||
+			(baseThreshold !== undefined &&
+				(headThreshold === undefined || headThreshold > baseThreshold))
 		) {
 			violations.push({ kind: "threshold", message: `Biome threshold increased: ${rule}` });
 		}
@@ -1049,6 +1079,87 @@ function ignoreFileViolations(changes: ChangedPath[]): PolicyViolation[] {
 	});
 }
 
+function unquoteYamlScalar(value: string): string {
+	const trimmed = value.trim();
+	if (
+		(trimmed.startsWith("'") && trimmed.endsWith("'")) ||
+		(trimmed.startsWith('"') && trimmed.endsWith('"'))
+	) {
+		return trimmed.slice(1, -1);
+	}
+	return trimmed;
+}
+
+function yamlSections(source: string, key: string, indentation: number): string[] {
+	const lines = source.split("\n");
+	const marker = `${" ".repeat(indentation)}${key}:`;
+	const sections: string[] = [];
+	for (let start = 0; start < lines.length; start += 1) {
+		if (lines[start] !== marker) continue;
+		let end = start + 1;
+		while (end < lines.length) {
+			const line = lines[end] ?? "";
+			const lineIndentation = line.length - line.trimStart().length;
+			if (line.trim() && lineIndentation <= indentation) break;
+			end += 1;
+		}
+		sections.push(lines.slice(start + 1, end).join("\n"));
+		start = end - 1;
+	}
+	return sections;
+}
+
+function biomeLockfileVersion(source: string): string | undefined {
+	for (const importers of yamlSections(source, "importers", 0)) {
+		const rootImporter = yamlSections(importers, ".", 2)[0];
+		if (!rootImporter) continue;
+		for (const key of ["'@biomejs/biome'", '"@biomejs/biome"']) {
+			const dependency = yamlSections(rootImporter, key, 6)[0];
+			const version = dependency?.split("\n").find((line) => line.startsWith("        version:"));
+			if (version) return unquoteYamlScalar(version.trim().slice("version:".length));
+		}
+	}
+	return undefined;
+}
+
+function biomeDependencySelection(
+	pathValue: string,
+	source: string | undefined,
+): string | undefined {
+	if (!source) return undefined;
+	if (pathValue === "pnpm-lock.yaml") return biomeLockfileVersion(source);
+	if (pathValue === "pnpm-workspace.yaml") {
+		return source.match(/^\s*["']?@biomejs\/biome["']?\s*:\s*(.+)$/mu)?.[1]?.trim();
+	}
+	if (pathValue !== "package.json") return undefined;
+	const manifest: unknown = JSON.parse(source);
+	if (!isRecord(manifest)) return undefined;
+	for (const field of ["dependencies", "devDependencies"]) {
+		const dependencies = manifest[field];
+		if (isRecord(dependencies) && typeof dependencies["@biomejs/biome"] === "string") {
+			return dependencies["@biomejs/biome"];
+		}
+	}
+	return undefined;
+}
+
+function toolDependencyViolations(changes: ChangedPath[]): PolicyViolation[] {
+	return changes.flatMap((change) => {
+		const changedPath = normalizePath(change.afterPath ?? change.beforePath ?? "");
+		if (!["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"].includes(changedPath)) return [];
+		const before = biomeDependencySelection(changedPath, change.beforeSource);
+		const after = biomeDependencySelection(changedPath, change.afterSource);
+		if (before === after) return [];
+		return [
+			{
+				kind: "coverage" as const,
+				message: `Pinned Biome tool changed (${before ?? "missing"} → ${after ?? "missing"}); explicit policy review required`,
+				path: changedPath,
+			},
+		];
+	});
+}
+
 function sourceLookup(
 	changes: ChangedPath[],
 	side: "before" | "after",
@@ -1077,6 +1188,7 @@ export function compareBiomePolicy(
 		...ruleControlViolations(base, head),
 		...ruleViolations(base, head),
 		...overrideViolations(base, head),
+		...toolDependencyViolations(changes),
 		...ignoreFileViolations(changes),
 		...suppressionViolations(changes, base, head),
 	];
