@@ -114,7 +114,9 @@ describe("Biome diagnostic comparison", () => {
 			),
 		).toEqual([]);
 	});
+});
 
+describe("Biome diagnostic scope comparison", () => {
 	it("does not cross-pair a deleted measured scope with a remaining regression", () => {
 		const deleted = {
 			...diagnostic("src/a.ts", 10, 30, "deleted function"),
@@ -582,7 +584,9 @@ describe("Biome policy comparison", () => {
 			path: "src/a.tsx",
 		});
 	});
+});
 
+describe("Biome suppression coverage comparison", () => {
 	it("ignores suppression-like examples outside Biome lint coverage", () => {
 		expect(
 			compareBiomePolicy(config(), config(), [
