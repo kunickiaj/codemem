@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -1082,12 +1082,14 @@ describe("Biome root tool resolution", () => {
 		}
 		writeFileSync(path.join(root, "package.json"), '{"private":true}');
 
-		expect(resolveRootBiomeEntrypoint(root)).toBe(path.join(packageRoot, "bin/biome"));
+		expect(resolveRootBiomeEntrypoint(root)).toBe(
+			realpathSync(path.join(packageRoot, "bin/biome")),
+		);
 		expect(
 			createRequire(path.join(root, "packages/tool/package.json")).resolve(
 				"@biomejs/biome/bin/biome",
 			),
-		).toBe(path.join(nestedPackageRoot, "bin/biome"));
+		).toBe(realpathSync(path.join(nestedPackageRoot, "bin/biome")));
 	});
 });
 
