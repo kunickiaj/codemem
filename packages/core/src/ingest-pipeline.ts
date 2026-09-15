@@ -57,8 +57,13 @@ import type {
 } from "./ingest-types.js";
 import { hasMeaningfulObservation } from "./ingest-xml-parser.js";
 import { REMEMBER_MEMORY_KINDS } from "./memory-kinds.js";
-import { type ObserverClient, ObserverClient as ObserverClientImpl } from "./observer-client.js";
 import {
+	type ObserverClient,
+	ObserverClient as ObserverClientImpl,
+	type ObserverTokenUsage,
+} from "./observer-client.js";
+import {
+	type NormalizedObserverOutput,
 	observeAndNormalizeObserverOutput,
 	observerOutputAttemptCount,
 	observerOutputMetadata,
@@ -616,6 +621,7 @@ export async function ingest(
 		const response = output.final;
 		const outputMetadata = observerOutputMetadata(output);
 		const observerUsage = observerOutputTotalUsage(output);
+		const observerTokenCounts = normalizedObserverTokenCounts(observerUsage);
 
 		if (!response.raw) {
 			// Raw-event flushes must be lossless: if the observer returns no output,
@@ -638,9 +644,6 @@ export async function ingest(
 			return;
 		}
 
-		// ------------------------------------------------------------------
-		// Parse response
-		// ------------------------------------------------------------------
 		const parsed = response.parsed;
 		if (
 			sessionContext?.flusher === "raw_events" &&
@@ -818,10 +821,34 @@ export async function ingest(
 				: null;
 
 		// Persist all observations, summary, and usage atomically
+		const usageTokenTotal = assistantUsageEvents.reduce(
+			(sum, event) => sum + (event.total_tokens ?? 0),
+			0,
+		);
+		const observerCallMetadata = {
+			project,
+			token_usage: observerTokenUsageMetadata(output, observerUsage),
+			observation_count: observationsToStore.length,
+			has_summary: summaryToStore != null,
+			...captureMetadata(captureRoutingEnabled, captureSuppressedCount, captureCandidateCount),
+			session_class: sessionClass,
+			summary_disposition: summaryDisposition,
+			observer_tier: selectedTier,
+			observer_tier_reasons: selectedTierReasons,
+			requested_provider: requestedObserverProvider,
+			requested_model: requestedObserverModel,
+			requested_runtime: requestedObserverRuntime,
+			requested_openai_responses: requestedObserverOpenAIResponses,
+			provider: response.provider,
+			model: response.model,
+			runtime: observerStatus.runtime,
+			openai_responses: selectedObserver.openaiUseResponses,
+			fallback_applied: observerFallbackApplied,
+			fallback_reason: observerFallbackReason,
+			...outputMetadata,
+			session_usage_tokens: usageTokenTotal,
+		};
 		store.db.transaction(() => {
-			// ------------------------------------------------------------------
-			// Filter and persist observations
-			// ------------------------------------------------------------------
 			for (const obs of observationsToStore) {
 				const kind = obs.kind.trim().toLowerCase();
 
@@ -928,59 +955,7 @@ export async function ingest(
 				vectorWriteInputs.push({ memoryId, title: summaryTitle, bodyText: body });
 			}
 
-			// ------------------------------------------------------------------
-			// Record observer usage
-			// ------------------------------------------------------------------
-			const usageTokenTotal = assistantUsageEvents.reduce(
-				(sum, e) => sum + (e.total_tokens ?? 0),
-				0,
-			);
-			d.insert(schema.usageEvents)
-				.values({
-					session_id: sessionId,
-					event: "observer_call",
-					tokens_read: observerUsage?.inputTokens ?? null,
-					tokens_written: observerUsage?.outputTokens ?? null,
-					created_at: new Date().toISOString(),
-					metadata_json: toJson({
-						project,
-						token_usage: {
-							unit: "tokens",
-							source: observerUsage ? "provider" : "unavailable",
-							input_direction: "observer_input",
-							output_direction: "observer_output",
-							attempt_count: observerOutputAttemptCount(output),
-						},
-						observation_count: observationsToStore.length,
-						has_summary: summaryToStore != null,
-						// Only emit capture-routing telemetry when the gate is on, so
-						// default-off output stays byte-identical to pre-feature.
-						...(captureRoutingEnabled
-							? {
-									capture_suppressed_count: captureSuppressedCount,
-									capture_candidate_count: captureCandidateCount,
-									capture_routing_enabled: true,
-								}
-							: {}),
-						session_class: sessionClass,
-						summary_disposition: summaryDisposition,
-						observer_tier: selectedTier,
-						observer_tier_reasons: selectedTierReasons,
-						requested_provider: requestedObserverProvider,
-						requested_model: requestedObserverModel,
-						requested_runtime: requestedObserverRuntime,
-						requested_openai_responses: requestedObserverOpenAIResponses,
-						provider: response.provider,
-						model: response.model,
-						runtime: observerStatus.runtime,
-						openai_responses: selectedObserver.openaiUseResponses,
-						fallback_applied: observerFallbackApplied,
-						fallback_reason: observerFallbackReason,
-						...outputMetadata,
-						session_usage_tokens: usageTokenTotal,
-					}),
-				})
-				.run();
+			recordObserverUsage(store, sessionId, observerTokenCounts, observerCallMetadata);
 		})();
 
 		for (const input of vectorWriteInputs) {
@@ -1089,4 +1064,57 @@ export async function main(store: MemoryStore, observer: ObserverClient): Promis
 	}
 
 	await ingest(payload, store, { observer });
+}
+function observerTokenUsageMetadata(
+	output: NormalizedObserverOutput,
+	usage: ObserverTokenUsage | null,
+): Record<string, unknown> {
+	return {
+		unit: "tokens",
+		source: usage ? "provider" : "unavailable",
+		input_direction: "observer_input",
+		output_direction: "observer_output",
+		attempt_count: observerOutputAttemptCount(output),
+	};
+}
+
+function normalizedObserverTokenCounts(usage: ObserverTokenUsage | null): {
+	inputTokens: number | null;
+	outputTokens: number | null;
+} {
+	if (!usage) return { inputTokens: null, outputTokens: null };
+	return usage;
+}
+
+function recordObserverUsage(
+	store: MemoryStore,
+	sessionId: number,
+	tokens: { inputTokens: number | null; outputTokens: number | null },
+	metadata: Record<string, unknown>,
+): void {
+	store.db
+		.prepare(
+			`INSERT INTO usage_events(session_id, event, tokens_read, tokens_written, created_at, metadata_json)
+			 VALUES (?, 'observer_call', ?, ?, ?, ?)`,
+		)
+		.run(
+			sessionId,
+			tokens.inputTokens,
+			tokens.outputTokens,
+			new Date().toISOString(),
+			toJson(metadata),
+		);
+}
+
+function captureMetadata(
+	enabled: boolean,
+	suppressedCount: number,
+	candidateCount: number,
+): Record<string, unknown> {
+	if (!enabled) return {};
+	return {
+		capture_suppressed_count: suppressedCount,
+		capture_candidate_count: candidateCount,
+		capture_routing_enabled: true,
+	};
 }

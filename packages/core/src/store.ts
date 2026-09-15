@@ -83,6 +83,99 @@ import type {
 } from "./types.js";
 import { storeVectors } from "./vectors.js";
 
+function classifiedUsageSql(sourceSql: string): string {
+	return `WITH classified_usage AS (
+		SELECT usage_events.*,
+			CASE WHEN json_valid(usage_events.metadata_json)
+				THEN json_extract(usage_events.metadata_json, '$.token_usage.source')
+				ELSE NULL
+			END AS usage_source
+		${sourceSql}
+	)
+	SELECT event,
+		COUNT(*) AS count,
+		COALESCE(SUM(CASE WHEN event = 'observer_call' AND usage_source IS NOT 'provider' THEN 0 ELSE COALESCE(tokens_read, 0) END), 0) AS tokens_read,
+		COALESCE(SUM(CASE WHEN event = 'observer_call' AND usage_source IS NOT 'provider' THEN 0 ELSE COALESCE(tokens_written, 0) END), 0) AS tokens_written,
+		COALESCE(SUM(COALESCE(tokens_saved, 0)), 0) AS tokens_saved,
+		SUM(CASE WHEN usage_source = 'provider' THEN 1 ELSE 0 END) AS measured_count,
+		SUM(CASE WHEN usage_source = 'estimate' OR (event = 'pack' AND usage_source IS NULL) THEN 1 ELSE 0 END) AS estimated_count,
+		SUM(CASE WHEN event = 'observer_call' AND usage_source IS NOT NULL AND usage_source != 'provider' THEN 1 ELSE 0 END) AS unavailable_count,
+		SUM(CASE WHEN event = 'observer_call' AND usage_source IS NULL THEN 1 ELSE 0 END) AS legacy_text_length_count,
+		SUM(CASE WHEN event != 'observer_call' AND event != 'pack' AND usage_source IS NULL THEN 1 ELSE 0 END) AS legacy_unclassified_count
+	FROM classified_usage
+	GROUP BY event`;
+}
+
+function mapClassifiedUsageRow(row: Record<string, unknown>): ClassifiedUsageEventRow {
+	return {
+		event: String(row.event),
+		count: Number(row.count ?? 0),
+		tokens_read: Number(row.tokens_read ?? 0),
+		tokens_written: Number(row.tokens_written ?? 0),
+		tokens_saved: Number(row.tokens_saved ?? 0),
+		token_unit: "tokens",
+		measured_count: Number(row.measured_count ?? 0),
+		estimated_count: Number(row.estimated_count ?? 0),
+		unavailable_count: Number(row.unavailable_count ?? 0),
+		legacy_text_length_count: Number(row.legacy_text_length_count ?? 0),
+		legacy_unclassified_count: Number(row.legacy_unclassified_count ?? 0),
+	};
+}
+
+function usageProvenance(events: ClassifiedUsageEventRow[]): StoreStats["usage"]["provenance"] {
+	const totals = events.reduce(
+		(sum, event) => ({
+			token_unit: "tokens" as const,
+			measured_count: sum.measured_count + event.measured_count,
+			estimated_count: sum.estimated_count + event.estimated_count,
+			unavailable_count: sum.unavailable_count + event.unavailable_count,
+			legacy_text_length_count: sum.legacy_text_length_count + event.legacy_text_length_count,
+			legacy_unclassified_count: sum.legacy_unclassified_count + event.legacy_unclassified_count,
+		}),
+		{
+			token_unit: "tokens" as const,
+			measured_count: 0,
+			estimated_count: 0,
+			unavailable_count: 0,
+			legacy_text_length_count: 0,
+			legacy_unclassified_count: 0,
+		},
+	);
+	return {
+		events: events.map(
+			({
+				event,
+				count: _count,
+				tokens_read: _read,
+				tokens_written: _written,
+				tokens_saved: _saved,
+				...provenance
+			}) => ({ event, ...provenance }),
+		),
+		totals,
+	};
+}
+
+function buildUsageStats(events: ClassifiedUsageEventRow[]): StoreStats["usage"] {
+	const sorted = events.sort((a, b) => b.count - a.count || a.event.localeCompare(b.event));
+	return {
+		events: sorted.map(({ event, count, tokens_read, tokens_written, tokens_saved }) => ({
+			event,
+			count,
+			tokens_read,
+			tokens_written,
+			tokens_saved,
+		})),
+		totals: {
+			events: sorted.reduce((sum, event) => sum + event.count, 0),
+			tokens_read: sorted.reduce((sum, event) => sum + event.tokens_read, 0),
+			tokens_written: sorted.reduce((sum, event) => sum + event.tokens_written, 0),
+			tokens_saved: sorted.reduce((sum, event) => sum + event.tokens_saved, 0),
+		},
+		provenance: usageProvenance(sorted),
+	};
+}
+
 // Locally reviewed flows that can establish same-person ownership. Coordinator
 // enrollment remains discovery evidence and must never grant write authority.
 const SAME_PERSON_BINDING_PROVENANCE = new Set([
@@ -1204,42 +1297,11 @@ export class MemoryStore {
 				 JOIN sessions ON sessions.id = usage_events.session_id
 				 WHERE sessions.project = ?`
 			: "FROM usage_events";
-		const aggregateSql = `WITH classified_usage AS (
-			SELECT usage_events.*,
-				CASE WHEN json_valid(usage_events.metadata_json)
-					THEN json_extract(usage_events.metadata_json, '$.token_usage.source')
-					ELSE NULL
-				END AS usage_source
-			${sourceSql}
-		)
-		SELECT event,
-			COUNT(*) AS count,
-			COALESCE(SUM(CASE WHEN event = 'observer_call' AND usage_source IS NOT 'provider' THEN 0 ELSE COALESCE(tokens_read, 0) END), 0) AS tokens_read,
-			COALESCE(SUM(CASE WHEN event = 'observer_call' AND usage_source IS NOT 'provider' THEN 0 ELSE COALESCE(tokens_written, 0) END), 0) AS tokens_written,
-			COALESCE(SUM(COALESCE(tokens_saved, 0)), 0) AS tokens_saved,
-			SUM(CASE WHEN usage_source = 'provider' THEN 1 ELSE 0 END) AS measured_count,
-			SUM(CASE WHEN usage_source = 'estimate' OR (event = 'pack' AND usage_source IS NULL) THEN 1 ELSE 0 END) AS estimated_count,
-			SUM(CASE WHEN event = 'observer_call' AND usage_source IS NOT NULL AND usage_source != 'provider' THEN 1 ELSE 0 END) AS unavailable_count,
-			SUM(CASE WHEN event = 'observer_call' AND usage_source IS NULL THEN 1 ELSE 0 END) AS legacy_text_length_count,
-			SUM(CASE WHEN event != 'observer_call' AND event != 'pack' AND usage_source IS NULL THEN 1 ELSE 0 END) AS legacy_unclassified_count
-		FROM classified_usage
-		GROUP BY event`;
+		const aggregateSql = classifiedUsageSql(sourceSql);
 		const rows = hasProject
 			? (this.db.prepare(aggregateSql).all(projectFilter) as Record<string, unknown>[])
 			: (this.db.prepare(aggregateSql).all() as Record<string, unknown>[]);
-		return rows.map((row) => ({
-			event: String(row.event),
-			count: Number(row.count ?? 0),
-			tokens_read: Number(row.tokens_read ?? 0),
-			tokens_written: Number(row.tokens_written ?? 0),
-			tokens_saved: Number(row.tokens_saved ?? 0),
-			token_unit: "tokens",
-			measured_count: Number(row.measured_count ?? 0),
-			estimated_count: Number(row.estimated_count ?? 0),
-			unavailable_count: Number(row.unavailable_count ?? 0),
-			legacy_text_length_count: Number(row.legacy_text_length_count ?? 0),
-			legacy_unclassified_count: Number(row.legacy_unclassified_count ?? 0),
-		}));
+		return rows.map(mapClassifiedUsageRow);
 	}
 
 	// stats
@@ -1309,40 +1371,7 @@ export class MemoryStore {
 			// File may not exist yet or be inaccessible
 		}
 
-		// Usage stats. Sort by count DESC to preserve the historical
-		// ORDER BY COUNT(*) DESC ordering of this block, with event name as a
-		// stable tiebreaker so equal-count rows have a deterministic order.
-		const classifiedUsageEvents = this.classifiedUsageAggregate().sort(
-			(a, b) => b.count - a.count || a.event.localeCompare(b.event),
-		);
-		const usageEvents = classifiedUsageEvents.map(
-			({ event, count, tokens_read, tokens_written, tokens_saved }) => ({
-				event,
-				count,
-				tokens_read,
-				tokens_written,
-				tokens_saved,
-			}),
-		);
-
-		const totalEvents = usageEvents.reduce((s, e) => s + e.count, 0);
-		const totalTokensRead = usageEvents.reduce((s, e) => s + e.tokens_read, 0);
-		const totalTokensWritten = usageEvents.reduce((s, e) => s + e.tokens_written, 0);
-		const totalTokensSaved = usageEvents.reduce((s, e) => s + e.tokens_saved, 0);
-		const totalMeasuredEvents = classifiedUsageEvents.reduce((s, e) => s + e.measured_count, 0);
-		const totalEstimatedEvents = classifiedUsageEvents.reduce((s, e) => s + e.estimated_count, 0);
-		const totalUnavailableEvents = classifiedUsageEvents.reduce(
-			(s, e) => s + e.unavailable_count,
-			0,
-		);
-		const totalLegacyTextLengthEvents = classifiedUsageEvents.reduce(
-			(s, e) => s + e.legacy_text_length_count,
-			0,
-		);
-		const totalLegacyUnclassifiedEvents = classifiedUsageEvents.reduce(
-			(s, e) => s + e.legacy_unclassified_count,
-			0,
-		);
+		const usage = buildUsageStats(this.classifiedUsageAggregate());
 
 		return {
 			identity: {
@@ -1363,44 +1392,7 @@ export class MemoryStore {
 				tags_coverage: tagsCoverage,
 				raw_events: rawEvents,
 			},
-			usage: {
-				events: usageEvents,
-				totals: {
-					events: totalEvents,
-					tokens_read: totalTokensRead,
-					tokens_written: totalTokensWritten,
-					tokens_saved: totalTokensSaved,
-				},
-				provenance: {
-					events: classifiedUsageEvents.map(
-						({
-							event,
-							token_unit,
-							measured_count,
-							estimated_count,
-							unavailable_count,
-							legacy_text_length_count,
-							legacy_unclassified_count,
-						}) => ({
-							event,
-							token_unit,
-							measured_count,
-							estimated_count,
-							unavailable_count,
-							legacy_text_length_count,
-							legacy_unclassified_count,
-						}),
-					),
-					totals: {
-						token_unit: "tokens",
-						measured_count: totalMeasuredEvents,
-						estimated_count: totalEstimatedEvents,
-						unavailable_count: totalUnavailableEvents,
-						legacy_text_length_count: totalLegacyTextLengthEvents,
-						legacy_unclassified_count: totalLegacyUnclassifiedEvents,
-					},
-				},
-			},
+			usage,
 		};
 	}
 

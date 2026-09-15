@@ -14,6 +14,27 @@ import {
 import { state } from "../../../lib/state";
 import { renderIcons, renderStatBlocks, renderText } from "../components";
 import type { StatItem } from "../types";
+import { selectPackUsage } from "../usage";
+
+function appendRawEventStats(items: StatItem[], pending: number, sessions: number): void {
+	if (pending > 0) {
+		items.push({
+			label: "Raw events pending",
+			value: pending,
+			tooltip: "Pending raw events waiting to be flushed",
+			icon: "activity",
+		});
+		return;
+	}
+	if (sessions > 0) {
+		items.push({
+			label: "Raw sessions",
+			value: sessions,
+			tooltip: "Sessions with pending raw events",
+			icon: "inbox",
+		});
+	}
+}
 
 export function renderStats() {
 	const statsGrid = document.getElementById("statsGrid");
@@ -33,11 +54,8 @@ export function renderStats() {
 	const totalsFiltered = usagePayload?.totals_filtered || null;
 	const isFiltered = !!(project && totalsFiltered);
 	const usage = isFiltered ? totalsFiltered : totalsGlobal;
-	const events = isFiltered ? usagePayload.events_filtered || [] : usagePayload.events_global || [];
-	const globalPackUsage = (usagePayload.events_global || []).find(
-		(event) => event.event === "pack",
-	);
-	const packUsage = events.find((event) => event.event === "pack") || {};
+	const globalPackUsage = selectPackUsage(usagePayload, false);
+	const packUsage = selectPackUsage(usagePayload, isFiltered);
 	const rawSessions = Number(raw.sessions || 0);
 	const rawPending = Number(raw.pending || 0);
 
@@ -93,20 +111,7 @@ export function renderStats() {
 			icon: "tag",
 		},
 	];
-	if (rawPending > 0)
-		items.push({
-			label: "Raw events pending",
-			value: rawPending,
-			tooltip: "Pending raw events waiting to be flushed",
-			icon: "activity",
-		});
-	else if (rawSessions > 0)
-		items.push({
-			label: "Raw sessions",
-			value: rawSessions,
-			tooltip: "Sessions with pending raw events",
-			icon: "inbox",
-		});
+	appendRawEventStats(items, rawPending, rawSessions);
 
 	renderStatBlocks(statsGrid, items);
 

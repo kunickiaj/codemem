@@ -22,6 +22,7 @@ import {
 	renderUpdateBanner,
 } from "../components";
 import type { HealthAction, HealthCardInput } from "../types";
+import { selectPackUsage } from "../usage";
 
 const SCOPE_BACKFILL_JOB = "scope_id_backfill";
 
@@ -69,9 +70,7 @@ export function renderHealthOverview() {
 	const rates = reliability.rates || {};
 	const dbStats = stats.database || {};
 	const recentPacks = Array.isArray(usagePayload.recent_packs) ? usagePayload.recent_packs : [];
-	const usageEvents =
-		usagePayload.events_filtered || usagePayload.events || usagePayload.events_global || [];
-	const packUsage = usageEvents.find((event) => event.event === "pack") || {};
+	const packUsage = selectPackUsage(usagePayload, usagePayload.events_filtered != null);
 	const lastPackAt = recentPacks.length ? recentPacks[0]?.created_at : null;
 	const latestPackMeta = recentPacks.length ? recentPacks[0]?.metadata_json || {} : {};
 	const latestPackDeduped = Number(latestPackMeta?.exact_duplicates_collapsed || 0);

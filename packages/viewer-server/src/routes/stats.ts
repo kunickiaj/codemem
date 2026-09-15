@@ -264,6 +264,17 @@ function totalsFromAggregate(rows: UsageAggregateRow[]): UsageAggregateTotals {
 	);
 }
 
+function usageAggregatePayload(store: MemoryStore, project: string | null) {
+	const globalRows = store.classifiedUsageAggregate();
+	const filteredRows = project ? store.classifiedUsageAggregate(project) : null;
+	return {
+		eventsGlobal: mapAggregateEvents(globalRows),
+		totalsGlobal: totalsFromAggregate(globalRows),
+		eventsFiltered: filteredRows ? mapAggregateEvents(filteredRows) : null,
+		totalsFiltered: filteredRows ? totalsFromAggregate(filteredRows) : null,
+	};
+}
+
 type UsagePayload = Record<string, unknown>;
 
 interface UsageCacheEntry {
@@ -444,14 +455,7 @@ export function statsRoutes(getStore: () => MemoryStore) {
 			// store.stats()), so they never load the full usage_events table
 			// into JS. Only the small surfaced recent_packs window below keeps
 			// per-row scope visibility + metadata sanitization.
-			const globalAggregate = store.classifiedUsageAggregate();
-			const eventsGlobal = mapAggregateEvents(globalAggregate);
-			const totalsGlobal = totalsFromAggregate(globalAggregate);
-			const filteredAggregate = projectFilter
-				? store.classifiedUsageAggregate(projectFilter)
-				: null;
-			const eventsFiltered = filteredAggregate ? mapAggregateEvents(filteredAggregate) : null;
-			const totalsFiltered = filteredAggregate ? totalsFromAggregate(filteredAggregate) : null;
+			const aggregates = usageAggregatePayload(store, projectFilter);
 
 			// recent_packs candidate window. Over-fetch the most-recent pack
 			// events (20x the 10 we surface) so that, in the common case where a
@@ -502,12 +506,12 @@ export function statsRoutes(getStore: () => MemoryStore) {
 
 			const payload: UsagePayload = {
 				project: projectFilter,
-				events: projectFilter ? eventsFiltered : eventsGlobal,
-				totals: projectFilter ? totalsFiltered : totalsGlobal,
-				events_global: eventsGlobal,
-				totals_global: totalsGlobal,
-				events_filtered: eventsFiltered,
-				totals_filtered: totalsFiltered,
+				events: projectFilter ? aggregates.eventsFiltered : aggregates.eventsGlobal,
+				totals: projectFilter ? aggregates.totalsFiltered : aggregates.totalsGlobal,
+				events_global: aggregates.eventsGlobal,
+				totals_global: aggregates.totalsGlobal,
+				events_filtered: aggregates.eventsFiltered,
+				totals_filtered: aggregates.totalsFiltered,
 				recent_packs: recentPacks,
 			};
 			const setAtMs = Date.now();
