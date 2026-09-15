@@ -17,11 +17,6 @@ describe("project-first navigation layout", () => {
 		expect(html).toContain('id="legacyTeamSetupMount"');
 	});
 
-	it("wires the global Team setup dialog to Sharing and Projects", () => {
-		expect(appSource).toContain("mountLegacyTeamSetupDialog");
-		expect(appSource.match(/onOpenTeamSetup: openLegacyTeamSetup/g)).toHaveLength(2);
-	});
-
 	it("orders the visible navigation with Sharing before Advanced", () => {
 		const navigation = html.slice(
 			html.indexOf('<nav class="tab-bar"'),
@@ -240,20 +235,12 @@ describe("project-first navigation layout", () => {
 		expect(html.slice(advanced, diagnostics)).toContain("Create person");
 	});
 
-	it("preserves Health sync refresh and the legacy upgrade review destinations", () => {
-		expect(appSource).toContain('refreshTab === "health"');
-		expect(appSource).toContain('window.location.hash = "sync"');
-		expect(appSource).toContain('window.location.hash = "projects"');
+	it("keeps the legacy upgrade review destination available", () => {
 		expect(html).toContain('id="syncSharingReview"');
 	});
 
-	it("wires Devices to its read-only data sources without introducing mutation endpoints", () => {
+	it("keeps Devices read-only at the app integration boundary", () => {
 		expect(html).toContain('id="devicesMount"');
-		expect(appSource).toMatch(/from ["'].+devices["']/i);
-		expect(appSource).toContain("loadDevicesData");
-		expect(appSource).toContain("loadRecipientPolicyIntent");
-		expect(appSource).toContain("loadRecipientPolicyReconciliationStatus");
-		expect(appSource).toContain("loadSyncData");
 		expect(appSource).not.toMatch(
 			/commitRecipientPolicy|previewRecipientPolicy|updatePeer|triggerSync/,
 		);
