@@ -3,6 +3,7 @@
  * the manual sync-now trigger. Every request in this file hits
  * /api/sync/* or /api/sync/run/* on the viewer. */
 
+import type { ReadRequestOptions } from "../read-request";
 import { fetchJson, payloadError, readJsonPayload } from "./internal";
 import type { AcceptDiscoveredPeerResult, ImportInviteResult, SyncRunResponse } from "./types";
 
@@ -209,14 +210,14 @@ type TriggerSyncTarget = {
 export async function loadSyncStatus(
 	includeDiagnostics: boolean,
 	project = "",
-	options?: { includeJoinRequests?: boolean },
+	options?: { includeJoinRequests?: boolean; signal?: AbortSignal },
 ): Promise<unknown> {
 	const params = new URLSearchParams();
 	if (includeDiagnostics) params.set("includeDiagnostics", "1");
 	if (project) params.set("project", project);
 	if (options?.includeJoinRequests) params.set("includeJoinRequests", "1");
 	const suffix = params.size ? `?${params.toString()}` : "";
-	return fetchJson(`/api/sync/status${suffix}`);
+	return fetchJson(`/api/sync/status${suffix}`, { signal: options?.signal });
 }
 
 export async function importCoordinatorInvite(
@@ -260,13 +261,16 @@ export async function inspectCoordinatorInvite(
 	return payload as InspectInviteResult;
 }
 
-export async function loadSyncActors(): Promise<unknown> {
-	return fetchJson("/api/sync/actors");
+export async function loadSyncActors(options: ReadRequestOptions = {}): Promise<unknown> {
+	return fetchJson("/api/sync/actors", options);
 }
 
-export async function loadPairing(includeDiagnostics = false): Promise<unknown> {
+export async function loadPairing(
+	includeDiagnostics = false,
+	options: ReadRequestOptions = {},
+): Promise<unknown> {
 	const suffix = includeDiagnostics ? "?includeDiagnostics=1" : "";
-	return fetchJson(`/api/sync/pairing${suffix}`);
+	return fetchJson(`/api/sync/pairing${suffix}`, options);
 }
 
 export async function updatePeerScope(
@@ -1558,8 +1562,11 @@ function legacyTeamSetupJson(method: "PUT" | "POST" | "DELETE", body: unknown): 
 	};
 }
 
-export function loadLegacyTeamSetupSummary(): Promise<LegacyTeamSetupSummaryResponseV1> {
-	return legacyTeamSetupRequest(legacyTeamSetupPath(), isLegacyTeamSetupSummary);
+export function loadLegacyTeamSetupSummary(
+	options: ReadRequestOptions = {},
+): Promise<LegacyTeamSetupSummaryResponseV1> {
+	const init = options.signal ? { signal: options.signal } : undefined;
+	return legacyTeamSetupRequest(legacyTeamSetupPath(), isLegacyTeamSetupSummary, init);
 }
 
 export function loadLegacyTeamSetupDetail(
@@ -1757,12 +1764,19 @@ export class RecipientPolicyEdgesStaleError extends Error {
 	}
 }
 
-export function loadRecipientPolicyIntent(): Promise<RecipientPolicyIntentGraphV1> {
-	return fetchJson<RecipientPolicyIntentGraphV1>("/api/sync/recipient-policy/v1/intent");
+export function loadRecipientPolicyIntent(
+	options: ReadRequestOptions = {},
+): Promise<RecipientPolicyIntentGraphV1> {
+	return fetchJson<RecipientPolicyIntentGraphV1>("/api/sync/recipient-policy/v1/intent", options);
 }
 
-export function loadDeviceIdentityInventory(): Promise<DeviceIdentityInventoryV1> {
-	return fetchJson<DeviceIdentityInventoryV1>("/api/sync/recipient-policy/v1/device-inventory");
+export function loadDeviceIdentityInventory(
+	options: ReadRequestOptions = {},
+): Promise<DeviceIdentityInventoryV1> {
+	return fetchJson<DeviceIdentityInventoryV1>(
+		"/api/sync/recipient-policy/v1/device-inventory",
+		options,
+	);
 }
 
 async function deviceIdentityBindingRequest<T>(
@@ -1804,9 +1818,12 @@ export function commitDeviceIdentityBindings(
 	);
 }
 
-export function loadRecipientPolicyReconciliationStatus(): Promise<RecipientPolicyReconciliationStatusV1> {
+export function loadRecipientPolicyReconciliationStatus(
+	options: ReadRequestOptions = {},
+): Promise<RecipientPolicyReconciliationStatusV1> {
 	return fetchJson<RecipientPolicyReconciliationStatusV1>(
 		"/api/sync/recipient-policy/v1/reconciliation-status",
+		options,
 	);
 }
 
@@ -1886,13 +1903,15 @@ export function createRecipientInvite(
 	return recipientInviteRequest("/api/sync/recipient-policy/v1/invites", input);
 }
 
-export async function loadRecipientPolicyReview(): Promise<RecipientPolicyReviewListV1> {
+export async function loadRecipientPolicyReview(
+	options: ReadRequestOptions = {},
+): Promise<RecipientPolicyReviewListV1> {
 	const review = await fetchJson<
 		Omit<RecipientPolicyReviewListV1, "categoryCounts" | "continuity"> & {
 			categoryCounts?: RecipientPolicyReviewListV1["categoryCounts"];
 			continuity?: RecipientPolicyReviewListV1["continuity"];
 		}
-	>("/api/sync/recipient-policy/v1/review");
+	>("/api/sync/recipient-policy/v1/review", options);
 	const continuity = review.continuity ?? null;
 	if (review.categoryCounts) {
 		return {
@@ -1953,8 +1972,10 @@ export async function resolveRecipientPolicyReviewBulk(
 	return payload as RecipientPolicyReviewBulkResultV1;
 }
 
-export async function loadSharingDomainSettings(): Promise<SharingDomainSettings> {
-	return fetchJson<SharingDomainSettings>("/api/sync/sharing-domains/settings");
+export async function loadSharingDomainSettings(
+	options: ReadRequestOptions = {},
+): Promise<SharingDomainSettings> {
+	return fetchJson<SharingDomainSettings>("/api/sync/sharing-domains/settings", options);
 }
 
 export async function loadProjectScopeInventory(
@@ -1965,15 +1986,19 @@ export async function loadProjectScopeInventory(
 		q?: string;
 		scope_id?: string;
 		status?: string;
+		signal?: AbortSignal;
 	} = {},
 ): Promise<ProjectScopeInventoryResult> {
+	const { signal, ...queryInput } = input;
 	const params = new URLSearchParams();
-	for (const [key, value] of Object.entries(input)) {
+	for (const [key, value] of Object.entries(queryInput)) {
 		if (value == null || value === "") continue;
 		params.set(key, String(value));
 	}
 	const query = params.toString();
-	return fetchJson<ProjectScopeInventoryResult>(`/api/sync/projects${query ? `?${query}` : ""}`);
+	return fetchJson<ProjectScopeInventoryResult>(`/api/sync/projects${query ? `?${query}` : ""}`, {
+		signal,
+	});
 }
 
 async function projectInviteRequest<T>(
@@ -2005,8 +2030,8 @@ export function createProjectInvite(input: {
 	return projectInviteRequest("/api/sync/project-invites", input);
 }
 
-export function loadShareOperations(): Promise<ShareOperationList> {
-	return fetchJson<ShareOperationList>("/api/sync/share-operations");
+export function loadShareOperations(options: ReadRequestOptions = {}): Promise<ShareOperationList> {
+	return fetchJson<ShareOperationList>("/api/sync/share-operations", options);
 }
 
 export function loadShareOperation(operationId: string): Promise<ShareOperationReadModel> {

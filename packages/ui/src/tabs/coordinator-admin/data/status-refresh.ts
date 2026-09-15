@@ -1,4 +1,5 @@
 import * as api from "../../../lib/api";
+import type { ReadRequestOptions } from "../../../lib/read-request";
 import { state } from "../../../lib/state";
 import {
 	beginSurfaceRefresh,
@@ -49,9 +50,11 @@ export function beginStandaloneCoordinatorAdminStatusRefresh(): number {
 
 export async function refreshCoordinatorAdminStatusForGeneration(
 	generation: number,
+	options: ReadRequestOptions = {},
 ): Promise<CoordinatorAdminStatusRefreshResult> {
 	try {
-		const status = await api.loadCoordinatorAdminStatus();
+		const status = await api.loadCoordinatorAdminStatus(options);
+		if (options.signal?.aborted) return "superseded";
 		if (!isCurrentCoordinatorAdminLoadGeneration(generation)) return "superseded";
 		if (!status || typeof status !== "object") throw new Error("Invalid status payload");
 		const previousStatus = state.lastCoordinatorAdminStatus;
@@ -65,6 +68,7 @@ export async function refreshCoordinatorAdminStatusForGeneration(
 		completeSurfaceRefresh(coordinatorAdminState.recovery, "status");
 		return "fresh";
 	} catch {
+		if (options.signal?.aborted) return "superseded";
 		if (!isCurrentCoordinatorAdminLoadGeneration(generation)) return "superseded";
 		failSurfaceRefresh(coordinatorAdminState.recovery, "status");
 		return "failed";

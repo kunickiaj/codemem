@@ -3,14 +3,15 @@
  * keeps its own JSON-parse fallback so partial failures still surface
  * the raw response body as an error message. */
 
+import type { ReadRequestOptions } from "../read-request";
 import { fetchJson, payloadError } from "./internal";
 
-export async function loadObserverStatus(): Promise<unknown> {
-	return fetchJson("/api/observer-status");
+export async function loadObserverStatus(options: ReadRequestOptions = {}): Promise<unknown> {
+	return fetchJson("/api/observer-status", options);
 }
 
-export async function loadConfig(): Promise<unknown> {
-	return fetchJson("/api/config");
+export async function loadConfig(options: ReadRequestOptions = {}): Promise<unknown> {
+	return fetchJson("/api/config", options);
 }
 
 export async function saveConfig(payload: Record<string, unknown>): Promise<unknown> {

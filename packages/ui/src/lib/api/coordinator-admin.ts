@@ -3,11 +3,14 @@
  * through the viewer's /api/coordinator/admin/* proxy so the browser
  * never sees the admin secret directly. */
 
+import type { ReadRequestOptions } from "../read-request";
 import { fetchJson, payloadError, readJsonPayload } from "./internal";
 import type { CoordinatorInviteResult } from "./types";
 
-export async function loadCoordinatorAdminStatus(): Promise<unknown> {
-	return fetchJson("/api/coordinator/admin/status");
+export async function loadCoordinatorAdminStatus(
+	options: ReadRequestOptions = {},
+): Promise<unknown> {
+	return fetchJson("/api/coordinator/admin/status", options);
 }
 
 export async function loadCoordinatorAdminGroups(): Promise<unknown> {
@@ -16,9 +19,10 @@ export async function loadCoordinatorAdminGroups(): Promise<unknown> {
 
 export async function loadCoordinatorAdminGroupsFiltered(
 	includeArchived: boolean,
+	options: ReadRequestOptions = {},
 ): Promise<unknown> {
 	const suffix = includeArchived ? "?include_archived=1" : "";
-	return fetchJson(`/api/coordinator/admin/groups${suffix}`);
+	return fetchJson(`/api/coordinator/admin/groups${suffix}`, options);
 }
 
 export async function createCoordinatorAdminGroup(payload: {
@@ -188,22 +192,26 @@ export async function revokeCoordinatorAdminScopeMember(
 	return data;
 }
 
-export async function loadCoordinatorAdminJoinRequests(groupId?: string | null): Promise<unknown> {
+export async function loadCoordinatorAdminJoinRequests(
+	groupId?: string | null,
+	options: ReadRequestOptions = {},
+): Promise<unknown> {
 	const params = new URLSearchParams();
 	if (groupId) params.set("group_id", groupId);
 	const suffix = params.size ? `?${params.toString()}` : "";
-	return fetchJson(`/api/coordinator/admin/join-requests${suffix}`);
+	return fetchJson(`/api/coordinator/admin/join-requests${suffix}`, options);
 }
 
 export async function loadCoordinatorAdminDevices(
 	groupId?: string | null,
 	includeDisabled = true,
+	options: ReadRequestOptions = {},
 ): Promise<unknown> {
 	const params = new URLSearchParams();
 	if (groupId) params.set("group_id", groupId);
 	if (includeDisabled) params.set("include_disabled", "1");
 	const suffix = params.size ? `?${params.toString()}` : "";
-	return fetchJson(`/api/coordinator/admin/devices${suffix}`);
+	return fetchJson(`/api/coordinator/admin/devices${suffix}`, options);
 }
 
 export async function reviewCoordinatorAdminJoinRequest(

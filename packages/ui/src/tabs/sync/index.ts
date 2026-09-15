@@ -172,6 +172,7 @@ function hideStaleSyncSecondarySections() {
 export interface SyncDataLoadOptions {
 	requiredSurface?: "all" | "health" | "devices";
 	requireFreshSyncStatus?: boolean;
+	signal?: AbortSignal;
 }
 
 async function fetchSyncStatusPayload(
@@ -188,6 +189,7 @@ async function fetchSyncStatusPayload(
 	const includeDiagnostics = !isSyncRedactionEnabled();
 	const payload = await api.loadSyncStatus(includeDiagnostics, project, {
 		includeJoinRequests: false,
+		signal: options.signal,
 	});
 	return { payload, fetchedFreshSyncStatus: true };
 }
@@ -209,10 +211,60 @@ function didRequiredSyncSurfacesRefresh(input: {
 	return !input.requiresDeviceIdentityInventory || !input.deviceIdentityInventoryLoadError;
 }
 
+async function loadSyncAuxiliaryData(options: Required<SyncDataLoadOptions>) {
+	const duplicatePersonDecisions = readDuplicatePersonDecisions();
+	let actorsPayload: SyncActorListResponseLike | null = null;
+	let coordinatorAdminStatus: Record<string, unknown> | null = null;
+	let deviceIdentityInventory = state.lastDeviceIdentityInventory;
+	let shareOperations = state.lastShareOperations;
+	let actorLoadError = false;
+	let coordinatorAdminLoadError = false;
+	let deviceIdentityInventoryLoadError = state.deviceIdentityInventoryLoadError;
+	let shareOperationsLoadError = false;
+	try {
+		actorsPayload = await api.loadSyncActors({ signal: options.signal });
+	} catch {
+		actorLoadError = true;
+	}
+	try {
+		coordinatorAdminStatus = (await api.loadCoordinatorAdminStatus({
+			signal: options.signal,
+		})) as Record<string, unknown>;
+	} catch {
+		coordinatorAdminLoadError = true;
+	}
+	if (state.activeTab === "advanced") {
+		deviceIdentityInventoryLoadError = false;
+		try {
+			deviceIdentityInventory = await api.loadDeviceIdentityInventory({ signal: options.signal });
+		} catch {
+			deviceIdentityInventoryLoadError = true;
+		}
+	}
+	try {
+		const sharePayload = await api.loadShareOperations({ signal: options.signal });
+		shareOperations = Array.isArray(sharePayload.items) ? sharePayload.items : [];
+	} catch {
+		shareOperationsLoadError = true;
+	}
+	return {
+		actorsPayload,
+		coordinatorAdminStatus,
+		deviceIdentityInventory,
+		shareOperations,
+		actorLoadError,
+		coordinatorAdminLoadError,
+		deviceIdentityInventoryLoadError,
+		shareOperationsLoadError,
+		duplicatePersonDecisions,
+	};
+}
+
 export function loadSyncData(options: SyncDataLoadOptions = {}): Promise<boolean> {
 	const operation = runLoadSyncData(++latestSyncLoadRequestId, {
 		requiredSurface: options.requiredSurface ?? "all",
 		requireFreshSyncStatus: options.requireFreshSyncStatus ?? false,
+		signal: options.signal,
 	});
 	latestSyncLoad = operation;
 	return operation;
@@ -225,42 +277,22 @@ async function runLoadSyncData(
 	try {
 		const project = state.currentProject || "";
 		const { payload, fetchedFreshSyncStatus } = await fetchSyncStatusPayload(project, options);
+		if (options.signal?.aborted) return false;
 
-		let actorsPayload: SyncActorListResponseLike | null = null;
-		let coordinatorAdminStatus: Record<string, unknown> | null = null;
-		let deviceIdentityInventory = state.lastDeviceIdentityInventory;
-		let shareOperations = state.lastShareOperations;
-		let actorLoadError = false;
-		let coordinatorAdminLoadError = false;
-		let deviceIdentityInventoryLoadError = state.deviceIdentityInventoryLoadError;
-		let shareOperationsLoadError = false;
-		const duplicatePersonDecisions = readDuplicatePersonDecisions();
-		try {
-			actorsPayload = await api.loadSyncActors();
-		} catch {
-			actorLoadError = true;
-		}
-		try {
-			coordinatorAdminStatus = (await api.loadCoordinatorAdminStatus()) as Record<string, unknown>;
-		} catch {
-			coordinatorAdminLoadError = true;
-		}
-		if (state.activeTab === "advanced") {
-			deviceIdentityInventoryLoadError = false;
-			try {
-				deviceIdentityInventory = await api.loadDeviceIdentityInventory();
-			} catch {
-				deviceIdentityInventoryLoadError = true;
-			}
-		}
-		try {
-			const sharePayload = await api.loadShareOperations();
-			shareOperations = Array.isArray(sharePayload.items) ? sharePayload.items : [];
-		} catch {
-			shareOperationsLoadError = true;
-		}
+		const {
+			actorsPayload,
+			coordinatorAdminStatus,
+			deviceIdentityInventory,
+			shareOperations,
+			actorLoadError,
+			coordinatorAdminLoadError,
+			deviceIdentityInventoryLoadError,
+			shareOperationsLoadError,
+			duplicatePersonDecisions,
+		} = await loadSyncAuxiliaryData(options);
 
 		if (requestId !== latestSyncLoadRequestId) return latestSyncLoad ?? false;
+		if (options.signal?.aborted) return false;
 		const refreshSucceeded = didRequiredSyncSurfacesRefresh({
 			requiredSurface: options.requiredSurface,
 			actorLoadError,
@@ -361,6 +393,7 @@ async function runLoadSyncData(
 		}
 		return refreshSucceeded;
 	} catch {
+		if (options.signal?.aborted) return false;
 		if (requestId !== latestSyncLoadRequestId) return latestSyncLoad ?? false;
 		lastSyncHash = "";
 		state.deviceIdentityInventoryLoadError = true;
@@ -403,23 +436,25 @@ async function reloadSyncData(): Promise<void> {
 	await loadSyncData();
 }
 
-export function loadPairingData(): Promise<boolean> {
-	const operation = runLoadPairingData(++latestPairingLoadRequestId);
+export function loadPairingData(options: { signal?: AbortSignal } = {}): Promise<boolean> {
+	const operation = runLoadPairingData(++latestPairingLoadRequestId, options.signal);
 	latestPairingLoad = operation;
 	return operation;
 }
 
-async function runLoadPairingData(requestId: number): Promise<boolean> {
+async function runLoadPairingData(requestId: number, signal?: AbortSignal): Promise<boolean> {
 	try {
 		// Pairing payload is always returned in full — it's the actual
 		// command the user shares, not a diagnostic. The "Show pairing
 		// command" disclosure in the UI is the user-facing exposure gate.
-		const payload = await api.loadPairing();
+		const payload = await api.loadPairing(false, { signal });
+		if (signal?.aborted) return false;
 		if (requestId !== latestPairingLoadRequestId) return latestPairingLoad ?? false;
 		state.pairingPayloadRaw = payload || null;
 		renderPairing();
 		return true;
 	} catch {
+		if (signal?.aborted) return false;
 		if (requestId !== latestPairingLoadRequestId) return latestPairingLoad ?? false;
 		state.pairingPayloadRaw = null;
 		renderPairing();

@@ -4,19 +4,35 @@
  * every per-domain module can rely on payloadError + readJsonPayload
  * instead of hand-rolling the same try/catch. */
 
+import { createReadDeadline, DEFAULT_READ_DEADLINE_MS, waitForAbort } from "../read-request";
+
 export function payloadError(payload: unknown): string | undefined {
 	if (!payload || typeof payload !== "object") return undefined;
 	const maybeError = (payload as { error?: unknown }).error;
 	return typeof maybeError === "string" ? maybeError : undefined;
 }
 
+export interface FetchJsonOptions extends RequestInit {
+	deadlineMs?: number;
+}
+
 export async function fetchJson<T = Record<string, unknown>>(
 	url: string,
-	init?: RequestInit,
+	options: FetchJsonOptions = {},
 ): Promise<T> {
-	const resp = init ? await fetch(url, init) : await fetch(url);
-	if (!resp.ok) throw new Error(`${url}: ${resp.status} ${resp.statusText}`);
-	return resp.json() as Promise<T>;
+	const { deadlineMs = DEFAULT_READ_DEADLINE_MS, signal: parentSignal, ...init } = options;
+	const deadline = createReadDeadline(deadlineMs, parentSignal);
+	try {
+		await waitForAbort(Promise.resolve(), deadline.signal);
+		const resp = await waitForAbort(
+			fetch(url, { ...init, signal: deadline.signal }),
+			deadline.signal,
+		);
+		if (!resp.ok) throw new Error(`${url}: ${resp.status} ${resp.statusText}`);
+		return await waitForAbort(resp.json() as Promise<T>, deadline.signal);
+	} finally {
+		deadline.dispose();
+	}
 }
 
 export async function readJsonPayload<T = Record<string, unknown>>(

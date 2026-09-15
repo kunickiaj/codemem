@@ -12,7 +12,7 @@ export async function loadMemories(project: string): Promise<PaginatedResponse> 
 
 export async function loadMemoriesPage(
 	project: string,
-	options?: { limit?: number; offset?: number; scope?: string; q?: string },
+	options?: { limit?: number; offset?: number; scope?: string; q?: string; signal?: AbortSignal },
 ): Promise<PaginatedResponse> {
 	const query = buildProjectParams(
 		project,
@@ -21,7 +21,7 @@ export async function loadMemoriesPage(
 		options?.scope,
 		options?.q,
 	);
-	return fetchJson<PaginatedResponse>(`/api/observations?${query}`);
+	return fetchJson<PaginatedResponse>(`/api/observations?${query}`, { signal: options?.signal });
 }
 
 export async function updateMemoryVisibility(
@@ -73,7 +73,7 @@ export async function loadSummaries(project: string): Promise<PaginatedResponse>
 
 export async function loadSummariesPage(
 	project: string,
-	options?: { limit?: number; offset?: number; scope?: string; q?: string },
+	options?: { limit?: number; offset?: number; scope?: string; q?: string; signal?: AbortSignal },
 ): Promise<PaginatedResponse> {
 	const query = buildProjectParams(
 		project,
@@ -82,7 +82,7 @@ export async function loadSummariesPage(
 		options?.scope,
 		options?.q,
 	);
-	return fetchJson<PaginatedResponse>(`/api/summaries?${query}`);
+	return fetchJson<PaginatedResponse>(`/api/summaries?${query}`, { signal: options?.signal });
 }
 
 export async function tracePack(payload: {

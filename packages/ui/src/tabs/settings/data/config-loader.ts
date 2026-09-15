@@ -3,6 +3,7 @@
  * the result into settingsState + the Preact shell. */
 
 import * as api from "../../../lib/api";
+import type { ReadRequestOptions } from "../../../lib/read-request";
 import { state } from "../../../lib/state";
 import { collectSettingsPayload as collectSettingsPayloadRaw } from "./collect-payload";
 import { PROTECTED_VIEWER_CONFIG_KEYS } from "./constants";
@@ -80,13 +81,14 @@ export function renderConfigModal(payload: unknown) {
 	setDirty(false);
 }
 
-export async function loadConfigData() {
+export async function loadConfigData(options: ReadRequestOptions = {}) {
 	if (settingsState.open) return;
 	try {
 		const [payload, status] = await Promise.all([
-			api.loadConfig(),
-			api.loadObserverStatus().catch(() => null),
+			api.loadConfig(options),
+			api.loadObserverStatus(options).catch(() => null),
 		]);
+		if (options.signal?.aborted) return;
 		renderConfigModal(payload);
 		renderObserverStatusBanner(status);
 	} catch {}

@@ -23,6 +23,8 @@ import type { ProjectScopeInventoryProject } from "./lib/api/sync";
 import { coordinatorEnrollmentOpenIssueCount } from "./lib/coordinator-enrollment-attention";
 import { $, $button, $select } from "./lib/dom";
 import { handlePrimaryActionKeyboard } from "./lib/keyboard";
+import { isReadTimeout, type ReadRequestOptions, waitForAbort } from "./lib/read-request";
+import { createRefreshSessionOwner, type RefreshSession } from "./lib/refresh-session";
 import {
 	type AdvancedSection,
 	ALL_TAB_IDS,
@@ -89,6 +91,7 @@ async function loadRuntimeLabel() {
 type RefreshState = "idle" | "refreshing" | "paused" | "error";
 let lastAnnouncedRefreshState: RefreshState | null = null;
 const RECONNECT_POLL_MS = 1500;
+const refreshSessions = createRefreshSessionOwner();
 const LEGACY_UPGRADE_NOTICE_DISMISSED_KEY = "codemem-legacy-upgrade-notice-dismissed";
 
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -375,10 +378,21 @@ function setRefreshStatus(rs: RefreshState, detail?: string) {
 /* ── Polling ─────────────────────────────────────────────── */
 
 function stopPolling() {
+	refreshSessions.cancel();
+	if (refreshDebounceTimer) {
+		clearTimeout(refreshDebounceTimer);
+		refreshDebounceTimer = null;
+	}
+	state.refreshQueued = false;
 	if (state.refreshTimer) {
 		clearInterval(state.refreshTimer);
 		state.refreshTimer = null;
 	}
+}
+
+function pausePolling() {
+	stopPolling();
+	setRefreshStatus("paused");
 }
 
 function startPolling() {
@@ -449,6 +463,7 @@ function switchTab(
 	tab: TabId,
 	options: { canonicalHash?: boolean; advancedSection?: AdvancedSection } = {},
 ) {
+	refreshSessions.cancel();
 	const nextTab = resolveAccessibleTab(tab, state.lastCoordinatorAdminStatus);
 	if (nextTab === "advanced") {
 		setAdvancedSection(
@@ -562,11 +577,17 @@ let lastDevicesData: {
 	coordinatorEnrollmentIssueCount: number;
 } | null = null;
 
-async function loadRecipientPolicyProjects(): Promise<DevicesProjectInput[]> {
+async function loadRecipientPolicyProjects(
+	options: ReadRequestOptions = {},
+): Promise<DevicesProjectInput[]> {
 	const projects: ProjectScopeInventoryProject[] = [];
 	let offset = 0;
 	while (true) {
-		const page = await api.loadProjectScopeInventory({ limit: 250, offset });
+		const page = await api.loadProjectScopeInventory({
+			limit: 250,
+			offset,
+			signal: options.signal,
+		});
 		projects.push(...page.projects);
 		if (!page.has_more) break;
 		offset += page.limit;
@@ -623,16 +644,28 @@ function navigateFromDevices(target: DevicesNavigationTarget) {
 	queueMicrotask(() => document.getElementById(`tabBtn-${target}`)?.focus());
 }
 
-function loadDevicesData(): Promise<boolean> {
+function loadDevicesData(options: ReadRequestOptions = {}): Promise<boolean> {
 	const mount = document.getElementById("devicesMount");
 	if (!mount) return Promise.resolve(true);
 	const revision = ++devicesLoadRevision;
-	const operation = runLoadDevicesData(mount, revision);
+	const operation = runLoadDevicesData(mount, revision, options);
 	latestDevicesLoad = operation;
 	return operation;
 }
 
-async function runLoadDevicesData(mount: HTMLElement, revision: number): Promise<boolean> {
+async function refreshDevicesAfterCommit(): Promise<boolean> {
+	const [devicesRefreshed, sharingRefreshed] = await Promise.all([
+		loadDevicesData(),
+		loadRecipientPolicySharingData(),
+	]);
+	return devicesRefreshed && sharingRefreshed;
+}
+
+async function runLoadDevicesData(
+	mount: HTMLElement,
+	revision: number,
+	options: ReadRequestOptions,
+): Promise<boolean> {
 	if (!lastDevicesData) {
 		mountDevices(mount, emptyRecipientPolicyIntent, { version: 1, items: [] }, [], [], {
 			loading: true,
@@ -640,15 +673,16 @@ async function runLoadDevicesData(mount: HTMLElement, revision: number): Promise
 	}
 	try {
 		const [projects, intent, reconciliation, inventoryResult, syncRefreshed] = await Promise.all([
-			loadRecipientPolicyProjects(),
-			api.loadRecipientPolicyIntent(),
-			api.loadRecipientPolicyReconciliationStatus(),
+			loadRecipientPolicyProjects(options),
+			api.loadRecipientPolicyIntent(options),
+			api.loadRecipientPolicyReconciliationStatus(options),
 			api
-				.loadDeviceIdentityInventory()
+				.loadDeviceIdentityInventory(options)
 				.then((inventory) => ({ inventory, unavailable: false }))
 				.catch(() => ({ inventory: lastDevicesData?.inventory, unavailable: true })),
-			loadSyncData({ requiredSurface: "devices" }),
+			loadSyncData({ requiredSurface: "devices", signal: options.signal }),
 		]);
+		if (options.signal?.aborted) return false;
 		if (revision !== devicesLoadRevision) return latestDevicesLoad ?? false;
 		const availability = deriveDeviceAvailability();
 		const peerRuntimeMetadata = deriveDevicePeerRuntimeMetadata();
@@ -663,13 +697,7 @@ async function runLoadDevicesData(mount: HTMLElement, revision: number): Promise
 			inventory: inventoryResult.inventory,
 			inventoryUnavailable: inventoryResult.unavailable,
 			coordinatorEnrollmentIssueCount,
-			onCommitted: async () => {
-				const [devicesRefreshed, sharingRefreshed] = await Promise.all([
-					loadDevicesData(),
-					loadRecipientPolicySharingData(),
-				]);
-				return devicesRefreshed && sharingRefreshed;
-			},
+			onCommitted: refreshDevicesAfterCommit,
 			onNavigate: navigateFromDevices,
 			peerRuntimeMetadata,
 		});
@@ -685,6 +713,7 @@ async function runLoadDevicesData(mount: HTMLElement, revision: number): Promise
 		};
 		return syncRefreshed;
 	} catch {
+		if (options.signal?.aborted) return false;
 		if (revision !== devicesLoadRevision) return latestDevicesLoad ?? false;
 		if (lastDevicesData) {
 			mountDevices(
@@ -697,13 +726,7 @@ async function runLoadDevicesData(mount: HTMLElement, revision: number): Promise
 					coordinatorEnrollmentIssueCount: lastDevicesData.coordinatorEnrollmentIssueCount,
 					inventory: lastDevicesData.inventory,
 					inventoryUnavailable: lastDevicesData.inventoryUnavailable,
-					onCommitted: async () => {
-						const [devicesRefreshed, sharingRefreshed] = await Promise.all([
-							loadDevicesData(),
-							loadRecipientPolicySharingData(),
-						]);
-						return devicesRefreshed && sharingRefreshed;
-					},
+					onCommitted: refreshDevicesAfterCommit,
 					onNavigate: navigateFromDevices,
 					peerRuntimeMetadata: lastDevicesData.peerRuntimeMetadata,
 					refreshError: true,
@@ -719,6 +742,7 @@ async function runLoadDevicesData(mount: HTMLElement, revision: number): Promise
 }
 
 $select("projectFilter")?.addEventListener("change", () => {
+	refreshSessions.cancel();
 	state.currentProject = $select("projectFilter")?.value || "";
 	updateFeedView(true);
 	refresh();
@@ -728,10 +752,10 @@ $select("projectFilter")?.addEventListener("change", () => {
 
 let refreshDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-async function loadGlobalRefreshData(): Promise<void> {
+async function loadGlobalRefreshData(session: RefreshSession): Promise<void> {
 	await Promise.all([
-		loadHealthData(),
-		loadConfigData(),
+		loadHealthData({ signal: session.signal }),
+		loadConfigData({ signal: session.signal }),
 		coordinatedRefreshDiagnosticsDrawer().catch(() => undefined),
 	]);
 }
@@ -740,40 +764,44 @@ function appendTabRefreshTasks(
 	promises: Promise<unknown>[],
 	refreshTab: TabId,
 	recordBooleanResult: (succeeded: boolean) => void,
+	session: RefreshSession,
 ): void {
 	if (refreshTab === "feed") {
 		const coordinatorGeneration = beginStandaloneCoordinatorAdminStatusRefresh();
 		promises.push(
-			refreshCoordinatorAdminStatusForGeneration(coordinatorGeneration),
-			loadFeedData(),
+			refreshCoordinatorAdminStatusForGeneration(coordinatorGeneration, { signal: session.signal }),
+			loadFeedData({ signal: session.signal }),
 		);
 	}
 	if (refreshTab === "projects") {
-		promises.push(loadProjectsData().then(recordBooleanResult));
+		promises.push(loadProjectsData({ signal: session.signal }).then(recordBooleanResult));
 	}
 	if (refreshTab === "sharing") {
-		promises.push(loadRecipientPolicySharingData().then(recordBooleanResult));
+		promises.push(
+			loadRecipientPolicySharingData({ signal: session.signal }).then(recordBooleanResult),
+		);
 	}
 	if (refreshTab === "devices") {
-		promises.push(loadDevicesData().then(recordBooleanResult));
+		promises.push(loadDevicesData({ signal: session.signal }).then(recordBooleanResult));
 	}
 	if (refreshTab === "health") {
 		promises.push(
 			loadSyncData({
 				requiredSurface: "health",
 				requireFreshSyncStatus: viewerIncidentAwaitingRefresh,
+				signal: session.signal,
 			}).then(recordBooleanResult),
 		);
 	}
 	if (refreshTab === "advanced" && state.advancedSection === "sync") {
-		promises.push(loadSyncData().then(recordBooleanResult));
+		promises.push(loadSyncData({ signal: session.signal }).then(recordBooleanResult));
 	}
 	if (refreshTab === "advanced" && state.advancedSection === "teams") {
-		promises.push(loadCoordinatorAdminData().then(recordBooleanResult));
+		promises.push(loadCoordinatorAdminData({ signal: session.signal }).then(recordBooleanResult));
 	}
 	if (!state.syncPairingOpen) return;
 	const pairingVisible = refreshTab === "advanced" && state.advancedSection === "sync";
-	const pairingRefresh = loadPairingData();
+	const pairingRefresh = loadPairingData({ signal: session.signal });
 	promises.push(pairingVisible ? pairingRefresh.then(recordBooleanResult) : pairingRefresh);
 }
 
@@ -784,24 +812,50 @@ async function refresh() {
 	refreshDebounceTimer = setTimeout(() => doRefresh(), 80);
 }
 
+async function handleRefreshFailure(error: unknown, session: RefreshSession): Promise<void> {
+	if (!session.isCurrent() && !isReadTimeout(error)) return;
+	const ready = await isViewerReady();
+	if (!session.isOwned()) return;
+	if (!ready) scheduleReconnectLoop();
+	else setRefreshStatus("error");
+}
+
+function finishRefresh(session: RefreshSession): void {
+	refreshSessions.finish(session);
+	state.refreshInFlight = false;
+	if (!state.refreshQueued || reconnecting || !canResumeRefresh()) return;
+	state.refreshQueued = false;
+	void doRefresh();
+}
+
 async function doRefresh(): Promise<void> {
-	if (reconnecting) return;
+	if (reconnecting || !canResumeRefresh()) return;
 	if (state.refreshInFlight) {
 		state.refreshQueued = true;
 		return;
 	}
 	state.refreshInFlight = true;
+	const session = refreshSessions.begin();
 
 	try {
 		setRefreshStatus("refreshing");
 		const refreshTab = state.activeTab;
 		const surface = activeRefreshSurface();
-		const promises: Promise<unknown>[] = [loadGlobalRefreshData()];
+		const promises: Promise<unknown>[] = [loadGlobalRefreshData(session)];
 		let activeTabRefreshSucceeded = true;
-		appendTabRefreshTasks(promises, refreshTab, (succeeded) => {
-			activeTabRefreshSucceeded = activeTabRefreshSucceeded && succeeded;
-		});
-		await Promise.all(promises);
+		appendTabRefreshTasks(
+			promises,
+			refreshTab,
+			(succeeded) => {
+				activeTabRefreshSucceeded = activeTabRefreshSucceeded && succeeded;
+			},
+			session,
+		);
+		await waitForAbort(Promise.all(promises), session.signal);
+		if (!session.isCurrent()) {
+			if (isReadTimeout(session.signal.reason)) throw session.signal.reason;
+			return;
+		}
 		maybeShowLegacyUpgradeNotice(readLegacyUpgradeReviewSummary(state.lastSyncLegacySharedReview));
 		const nextTab = resolveAccessibleTab(state.activeTab, state.lastCoordinatorAdminStatus);
 		if (nextTab !== state.activeTab) {
@@ -813,19 +867,10 @@ async function doRefresh(): Promise<void> {
 			refreshSucceeded: activeTabRefreshSucceeded,
 			surface,
 		});
-	} catch {
-		const ready = await isViewerReady();
-		if (!ready) {
-			scheduleReconnectLoop();
-		} else {
-			setRefreshStatus("error");
-		}
+	} catch (error) {
+		await handleRefreshFailure(error, session);
 	} finally {
-		state.refreshInFlight = false;
-		if (state.refreshQueued && !reconnecting) {
-			state.refreshQueued = false;
-			doRefresh();
-		}
+		finishRefresh(session);
 	}
 }
 
@@ -871,7 +916,7 @@ initDiagnosticsEntryPoints();
 initProjectsTab(() => refresh(), { onOpenTeamSetup: openLegacyTeamSetup });
 initSyncTab(() => refresh());
 initCoordinatorAdminTab();
-initSettings(stopPolling, startPolling, () => refresh());
+initSettings(pausePolling, startPolling, () => refresh());
 
 // Projects
 loadProjects();

@@ -230,10 +230,13 @@ async function verifyHealthRestorationWaitsForSyncRefresh(): Promise<void> {
 	await act(async () => {
 		await vi.advanceTimersByTimeAsync(1_600);
 	});
-	expect(mocks.loadSyncData).toHaveBeenLastCalledWith({
-		requiredSurface: "health",
-		requireFreshSyncStatus: true,
-	});
+	expect(mocks.loadSyncData).toHaveBeenLastCalledWith(
+		expect.objectContaining({
+			requiredSurface: "health",
+			requireFreshSyncStatus: true,
+			signal: expect.any(AbortSignal),
+		}),
+	);
 	expect(connectionEvents.getViewerConnectionEvents().map((event) => event.code)).not.toContain(
 		"viewer_connection_restored",
 	);
@@ -338,7 +341,12 @@ async function verifyDevicesRestorationIgnoresAuxiliarySyncFailures(): Promise<v
 	await act(async () => {
 		await vi.advanceTimersByTimeAsync(1_600);
 	});
-	expect(mocks.loadSyncData).toHaveBeenLastCalledWith({ requiredSurface: "devices" });
+	expect(mocks.loadSyncData).toHaveBeenLastCalledWith(
+		expect.objectContaining({
+			requiredSurface: "devices",
+			signal: expect.any(AbortSignal),
+		}),
+	);
 	expect(connectionEvents.getViewerConnectionEvents().map((event) => event.code)).toContain(
 		"viewer_connection_restored",
 	);

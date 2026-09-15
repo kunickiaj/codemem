@@ -315,15 +315,44 @@ function latestCoordinatorAdminLoadResult(generation: number): boolean | Promise
 	return latestCoordinatorAdminLoad?.operation ?? false;
 }
 
-export function loadCoordinatorAdminData(): Promise<boolean> {
+export function loadCoordinatorAdminData(options: { signal?: AbortSignal } = {}): Promise<boolean> {
 	const generation = beginCoordinatorAdminLoadGeneration();
-	const operation = runCoordinatorAdminLoad(generation);
+	const operation = runCoordinatorAdminLoad(generation, options.signal);
 	latestCoordinatorAdminLoad = { generation, operation };
 	return operation;
 }
 
-async function runCoordinatorAdminLoad(generation: number): Promise<boolean> {
-	const isCurrent = () => isCurrentCoordinatorAdminLoadGeneration(generation);
+function refreshCoordinatorAdminDeviceNames(): void {
+	stableUnnamedDeviceAliases(
+		[
+			...state.lastCoordinatorAdminDevices,
+			...state.lastCoordinatorAdminJoinRequests.map((item) => ({
+				device_id:
+					String(item.device_id || "").trim() ||
+					`join-request:${String(item.request_id || "").trim()}`,
+				display_name: item.display_name,
+			})),
+		],
+		coordinatorAdminState.unnamedDeviceAliases,
+	);
+	stableDeviceDisplayNames(
+		state.lastCoordinatorAdminDevices,
+		coordinatorAdminState.unnamedDeviceAliases,
+	);
+}
+
+function coordinatorAdminRefreshAnnouncement(): string {
+	if (coordinatorAdminRecoveryNotice(coordinatorAdminState.recovery)) {
+		return "Retry finished, but some coordinator data still needs attention. Retained data remains unchanged.";
+	}
+	if (state.lastCoordinatorAdminStatus?.readiness === "ready") {
+		return "Coordinator data refreshed. Current data is available.";
+	}
+	return "Coordinator status refreshed. Complete setup to load administration data.";
+}
+
+async function runCoordinatorAdminLoad(generation: number, signal?: AbortSignal): Promise<boolean> {
+	const isCurrent = () => !signal?.aborted && isCurrentCoordinatorAdminLoadGeneration(generation);
 	if (!coordinatorAdminState.recoveryRetryRequested) {
 		coordinatorAdminState.recoveryAnnouncement = "";
 	}
@@ -332,7 +361,7 @@ async function runCoordinatorAdminLoad(generation: number): Promise<boolean> {
 	beginSurfaceRefresh(coordinatorAdminState.recovery, "joinRequests");
 	beginSurfaceRefresh(coordinatorAdminState.recovery, "devices");
 	renderShell();
-	const statusResult = await refreshCoordinatorAdminStatusForGeneration(generation);
+	const statusResult = await refreshCoordinatorAdminStatusForGeneration(generation, { signal });
 	if (statusResult === "superseded") return latestCoordinatorAdminLoadResult(generation);
 	const activeGroup = String(state.lastCoordinatorAdminStatus?.active_group || "").trim();
 	resolveAdminTargetGroup();
@@ -341,7 +370,7 @@ async function runCoordinatorAdminLoad(generation: number): Promise<boolean> {
 		surfacesAreFresh(coordinatorAdminState.recovery, "status")
 	) {
 		try {
-			const payload = await api.loadShareOperations();
+			const payload = await api.loadShareOperations({ signal });
 			if (!isCurrent()) return latestCoordinatorAdminLoadResult(generation);
 			state.lastShareOperations = Array.isArray(payload.items) ? payload.items : [];
 		} catch {
@@ -351,6 +380,7 @@ async function runCoordinatorAdminLoad(generation: number): Promise<boolean> {
 		try {
 			const groupsPayload = (await api.loadCoordinatorAdminGroupsFiltered(
 				coordinatorAdminState.showArchivedGroups,
+				{ signal },
 			)) as {
 				items?: typeof state.lastCoordinatorAdminGroups;
 			};
@@ -368,7 +398,9 @@ async function runCoordinatorAdminLoad(generation: number): Promise<boolean> {
 		const snapshotTarget = currentAdminSnapshotTarget();
 		try {
 			if (!snapshotTarget) throw new Error("Missing coordinator administration target");
-			const payload = (await api.loadCoordinatorAdminJoinRequests(targetGroup || activeGroup)) as {
+			const payload = (await api.loadCoordinatorAdminJoinRequests(targetGroup || activeGroup, {
+				signal,
+			})) as {
 				items?: typeof state.lastCoordinatorAdminJoinRequests;
 			};
 			if (!isCurrent()) return latestCoordinatorAdminLoadResult(generation);
@@ -389,6 +421,7 @@ async function runCoordinatorAdminLoad(generation: number): Promise<boolean> {
 			const devicesPayload = (await api.loadCoordinatorAdminDevices(
 				targetGroup || activeGroup,
 				true,
+				{ signal },
 			)) as {
 				items?: typeof state.lastCoordinatorAdminDevices;
 			};
@@ -407,7 +440,7 @@ async function runCoordinatorAdminLoad(generation: number): Promise<boolean> {
 			);
 		}
 		try {
-			const projects = await api.loadProjects();
+			const projects = await api.loadProjects({ signal });
 			if (!isCurrent()) return latestCoordinatorAdminLoadResult(generation);
 			coordinatorAdminState.availableProjects = projects;
 		} catch {
@@ -434,30 +467,9 @@ async function runCoordinatorAdminLoad(generation: number): Promise<boolean> {
 		);
 	}
 	if (!isCurrent()) return latestCoordinatorAdminLoadResult(generation);
-	stableUnnamedDeviceAliases(
-		[
-			...state.lastCoordinatorAdminDevices,
-			...state.lastCoordinatorAdminJoinRequests.map((item) => ({
-				device_id:
-					String(item.device_id || "").trim() ||
-					`join-request:${String(item.request_id || "").trim()}`,
-				display_name: item.display_name,
-			})),
-		],
-		coordinatorAdminState.unnamedDeviceAliases,
-	);
-	stableDeviceDisplayNames(
-		state.lastCoordinatorAdminDevices,
-		coordinatorAdminState.unnamedDeviceAliases,
-	);
+	refreshCoordinatorAdminDeviceNames();
 	if (coordinatorAdminState.recoveryRetryRequested) {
-		coordinatorAdminState.recoveryAnnouncement = coordinatorAdminRecoveryNotice(
-			coordinatorAdminState.recovery,
-		)
-			? "Retry finished, but some coordinator data still needs attention. Retained data remains unchanged."
-			: state.lastCoordinatorAdminStatus?.readiness === "ready"
-				? "Coordinator data refreshed. Current data is available."
-				: "Coordinator status refreshed. Complete setup to load administration data.";
+		coordinatorAdminState.recoveryAnnouncement = coordinatorAdminRefreshAnnouncement();
 		coordinatorAdminState.recoveryFocusPending = true;
 	}
 	coordinatorAdminState.recoveryRetryRequested = false;

@@ -2,6 +2,7 @@
 
 import { h } from "preact";
 import * as api from "../lib/api";
+import type { ReadRequestOptions } from "../lib/read-request";
 import { state } from "../lib/state";
 
 /* ── Types ───────────────────────────────────────────────── */
@@ -302,7 +303,28 @@ export function updateFeedView(force = false) {
 	maybeLoadMoreFeedPage();
 }
 
-export async function loadFeedData() {
+function isCurrentFeedLoad(
+	requestGeneration: number,
+	requestId: number,
+	project: string,
+	query: string,
+): boolean {
+	return (
+		ownsPrimaryFeedLoad(requestGeneration, requestId) &&
+		requestGeneration === feedProjectGeneration &&
+		project === (state.currentProject || "") &&
+		query === state.feedQuery.trim()
+	);
+}
+
+function ownsPrimaryFeedLoad(requestGeneration: number, requestId: number): boolean {
+	return (
+		primaryLoadInFlight?.generation === requestGeneration &&
+		primaryLoadInFlight.requestId === requestId
+	);
+}
+
+export async function loadFeedData(options: ReadRequestOptions = {}) {
 	const project = state.currentProject || "";
 	const scopeChanged = state.feedScopeFilter !== lastFeedScope;
 	const query = state.feedQuery.trim();
@@ -334,24 +356,18 @@ export async function loadFeedData() {
 				offset: 0,
 				scope: state.feedScopeFilter,
 				q: query || undefined,
+				signal: options.signal,
 			}),
 			api.loadSummariesPage(project, {
 				limit: summariesLimit,
 				offset: 0,
 				scope: state.feedScopeFilter,
 				q: query || undefined,
+				signal: options.signal,
 			}),
 		]);
-
-		if (
-			primaryLoadInFlight?.generation !== requestGeneration ||
-			primaryLoadInFlight.requestId !== requestId ||
-			requestGeneration !== feedProjectGeneration ||
-			project !== (state.currentProject || "") ||
-			query !== state.feedQuery.trim()
-		) {
+		if (options.signal?.aborted || !isCurrentFeedLoad(requestGeneration, requestId, project, query))
 			return;
-		}
 
 		const summaryItems = (summaries.items || []) as FeedItem[];
 		const observationItems = (observations.items || []) as FeedItem[];
@@ -396,13 +412,8 @@ export async function loadFeedData() {
 		}
 		updateFeedView(recoveringFromLoadError);
 	} catch (error) {
-		if (
-			primaryLoadInFlight?.generation === requestGeneration &&
-			primaryLoadInFlight.requestId === requestId &&
-			requestGeneration === feedProjectGeneration &&
-			project === (state.currentProject || "") &&
-			query === state.feedQuery.trim()
-		) {
+		if (options.signal?.aborted) return;
+		if (isCurrentFeedLoad(requestGeneration, requestId, project, query)) {
 			observationHasMore = false;
 			summaryHasMore = false;
 			feedLoadError = "Feed unavailable. Refresh and try again.";
@@ -410,10 +421,7 @@ export async function loadFeedData() {
 		}
 		throw error;
 	} finally {
-		if (
-			primaryLoadInFlight?.generation === requestGeneration &&
-			primaryLoadInFlight.requestId === requestId
-		) {
+		if (ownsPrimaryFeedLoad(requestGeneration, requestId)) {
 			primaryLoadInFlight = null;
 		}
 	}

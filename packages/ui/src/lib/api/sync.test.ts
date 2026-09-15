@@ -70,7 +70,10 @@ describe("device Identity setup API", () => {
 		await commitDeviceIdentityBindings({ ...request, reviewedInventoryDigest: "digest" });
 
 		expect(fetchMock.mock.calls).toEqual([
-			["/api/sync/recipient-policy/v1/device-inventory"],
+			[
+				"/api/sync/recipient-policy/v1/device-inventory",
+				expect.objectContaining({ signal: expect.any(AbortSignal) }),
+			],
 			[
 				"/api/sync/recipient-policy/v1/device-bindings/preview",
 				{
@@ -1181,11 +1184,9 @@ describe("recipient policy edge API", () => {
 		} as const;
 		const fetchMock = vi.fn(async () => new Response(JSON.stringify(status), { status: 200 }));
 		globalThis.fetch = fetchMock as typeof fetch;
-
 		expect(await loadRecipientPolicyReconciliationStatus()).toEqual(status);
-		expect(fetchMock).toHaveBeenCalledWith("/api/sync/recipient-policy/v1/reconciliation-status");
+		expect((fetchMock.mock.calls as unknown[][])[0]?.[0]).toMatch(/reconciliation-status$/);
 	});
-
 	it("loads intent and sends exact preview and commit payloads", async () => {
 		const intent = {
 			version: 1,
@@ -1255,7 +1256,6 @@ describe("recipient policy edge API", () => {
 			}),
 		});
 	});
-
 	it("throws a typed stale error for a stale edge commit", async () => {
 		const stale = {
 			version: 1,

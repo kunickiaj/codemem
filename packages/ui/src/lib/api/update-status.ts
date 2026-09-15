@@ -1,8 +1,9 @@
+import type { ReadRequestOptions } from "../read-request";
 import { fetchJson } from "./internal";
 import type { UpdateStatus } from "./types";
 
-export async function loadUpdateStatus(): Promise<UpdateStatus> {
-	return fetchJson<UpdateStatus>("/api/update-status");
+export async function loadUpdateStatus(options: ReadRequestOptions = {}): Promise<UpdateStatus> {
+	return fetchJson<UpdateStatus>("/api/update-status", options);
 }
 
 export function unavailableUpdateStatus(error: unknown): UpdateStatus {

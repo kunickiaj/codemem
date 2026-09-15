@@ -1,6 +1,7 @@
 import * as api from "./lib/api";
 import type { ProjectScopeInventoryProject } from "./lib/api/sync";
 import { coordinatorEnrollmentOpenIssueCount } from "./lib/coordinator-enrollment-attention";
+import type { ReadRequestOptions } from "./lib/read-request";
 import {
 	mountRecipientPolicyManagement,
 	type RecipientPolicyManagementProject,
@@ -29,11 +30,17 @@ interface RecipientPolicyProjectInventory {
 	received: ReceivedProjectShare[];
 }
 
-async function loadRecipientPolicyProjects(): Promise<RecipientPolicyProjectInventory> {
+async function loadRecipientPolicyProjects(
+	options: ReadRequestOptions = {},
+): Promise<RecipientPolicyProjectInventory> {
 	const projects: ProjectScopeInventoryProject[] = [];
 	let offset = 0;
 	while (true) {
-		const page = await api.loadProjectScopeInventory({ limit: 250, offset });
+		const page = await api.loadProjectScopeInventory({
+			limit: 250,
+			offset,
+			signal: options.signal,
+		});
 		projects.push(...page.projects);
 		if (!page.has_more) break;
 		offset += page.limit;
@@ -47,7 +54,7 @@ async function loadRecipientPolicyProjects(): Promise<RecipientPolicyProjectInve
 interface RecipientPolicySharingLoaderDependencies {
 	loadDeviceInventory: typeof api.loadDeviceIdentityInventory;
 	loadIntent: typeof api.loadRecipientPolicyIntent;
-	loadProjects: () => Promise<RecipientPolicyProjectInventory>;
+	loadProjects: (options?: ReadRequestOptions) => Promise<RecipientPolicyProjectInventory>;
 	loadSyncStatus: typeof api.loadSyncStatus;
 	loadTeamSetupSummary: typeof api.loadLegacyTeamSetupSummary;
 	mountManagement: typeof mountRecipientPolicyManagement;
@@ -63,6 +70,19 @@ const defaultDependencies: RecipientPolicySharingLoaderDependencies = {
 	mountManagement: mountRecipientPolicyManagement,
 	mountSharing: mountRecipientPolicySharing,
 };
+
+async function loadRecipientPolicyWithoutMount(
+	dependencies: RecipientPolicySharingLoaderDependencies,
+	options: RecipientPolicySharingRefreshOptions,
+): Promise<boolean> {
+	if (!options.requireTeamSetupSummary) return true;
+	try {
+		await dependencies.loadTeamSetupSummary({ signal: options.signal });
+		return true;
+	} catch {
+		return false;
+	}
+}
 
 export function createRecipientPolicySharingLoader(
 	overrides: Partial<RecipientPolicySharingLoaderDependencies> = {},
@@ -100,15 +120,8 @@ export function createRecipientPolicySharingLoader(
 		refreshOptions: RecipientPolicySharingRefreshOptions,
 	): Promise<boolean> {
 		const sharingMount = document.getElementById("recipientPolicySharingMount");
-		if (!sharingMount) {
-			if (!refreshOptions.requireTeamSetupSummary) return true;
-			try {
-				await dependencies.loadTeamSetupSummary();
-				return true;
-			} catch {
-				return false;
-			}
-		}
+		if (!sharingMount) return loadRecipientPolicyWithoutMount(dependencies, refreshOptions);
+		const isCurrent = () => !refreshOptions.signal?.aborted && revision === loadRevision;
 		const managementMount = document.getElementById("recipientPolicyManagementMount");
 		teamSetupLoading = true;
 		teamSetupUnavailable = false;
@@ -143,10 +156,10 @@ export function createRecipientPolicySharingLoader(
 		};
 		renderTeamSetupUpdate();
 		const teamSetupSummaryPromise = Promise.resolve()
-			.then(() => dependencies.loadTeamSetupSummary())
+			.then(() => dependencies.loadTeamSetupSummary({ signal: refreshOptions.signal }))
 			.then(
 				(summary) => {
-					if (revision !== loadRevision) return true;
+					if (!isCurrent()) return true;
 					teamSetupSummary = summary;
 					teamSetupLoading = false;
 					teamSetupUnavailable = false;
@@ -154,7 +167,7 @@ export function createRecipientPolicySharingLoader(
 					return true;
 				},
 				() => {
-					if (revision !== loadRevision) return false;
+					if (!isCurrent()) return false;
 					teamSetupLoading = false;
 					teamSetupUnavailable = true;
 					renderTeamSetupUpdate();
@@ -163,12 +176,15 @@ export function createRecipientPolicySharingLoader(
 			);
 		const [inventoryResult, intentResult, deviceInventoryResult, syncStatusResult] =
 			await Promise.allSettled([
-				dependencies.loadProjects(),
-				dependencies.loadIntent(),
-				dependencies.loadDeviceInventory(),
-				dependencies.loadSyncStatus(false, "", { includeJoinRequests: false }),
+				dependencies.loadProjects({ signal: refreshOptions.signal }),
+				dependencies.loadIntent({ signal: refreshOptions.signal }),
+				dependencies.loadDeviceInventory({ signal: refreshOptions.signal }),
+				dependencies.loadSyncStatus(false, "", {
+					includeJoinRequests: false,
+					signal: refreshOptions.signal,
+				}),
 			]);
-		if (revision !== loadRevision) {
+		if (!isCurrent()) {
 			if (!refreshOptions.requireTeamSetupSummary) return latestLoad ?? false;
 			await teamSetupSummaryPromise;
 			return false;
@@ -262,6 +278,7 @@ export function createRecipientPolicySharingLoader(
 
 export interface RecipientPolicySharingRefreshOptions {
 	requireTeamSetupSummary?: boolean;
+	signal?: AbortSignal;
 }
 
 export type RecipientPolicySharingRefresh = (
