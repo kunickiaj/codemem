@@ -537,6 +537,32 @@ describe("Biome policy bypass prevention", () => {
 		});
 	});
 
+	it("limits an ordinary JSX suppression to the annotated element", () => {
+		const beforeSource = [
+			"const view = <>",
+			"\t{/* biome-ignore lint/a: legacy */}",
+			'\t<div tabIndex="0">legacy</div>',
+			"\t<span>outside</span>",
+			"</>;",
+		].join("\n");
+		const insideEdit = beforeSource.replace("legacy</div>", "changed</div>");
+		const siblingEdit = beforeSource.replace("outside</span>", "changed</span>");
+
+		for (const [afterSource, expected] of [
+			[insideEdit, true],
+			[siblingEdit, false],
+		] as const) {
+			const violations = compareBiomePolicy(config(), config(), [
+				{ status: "modified", afterPath: "src/a.tsx", beforeSource, afterSource },
+			]);
+			expect(
+				violations.some(
+					(violation) => violation.message === "Code changed under an existing Biome suppression",
+				),
+			).toBe(expected);
+		}
+	});
+
 	it("requires review for changed language-level lint controls", () => {
 		const baseConfig = JSON.stringify({ javascript: { formatter: { quoteStyle: "double" } } });
 		const headConfig = JSON.stringify({
@@ -565,6 +591,26 @@ describe("Biome policy bypass prevention", () => {
 			kind: "coverage",
 			message: "Inherited Biome policy changed; explicit policy review required",
 			path: "config/biome-base.jsonc",
+		});
+	});
+
+	it("requires review for language-only changes behind transitive inheritance", () => {
+		const configWithExtends = JSON.stringify({ extends: ["./config/biome-base.jsonc"] });
+
+		expect(
+			compareBiomePolicy(configWithExtends, configWithExtends, [
+				{
+					status: "modified",
+					beforePath: "config/globals.json",
+					afterPath: "config/globals.json",
+					beforeSource: '{ "javascript": { "globals": [] } }',
+					afterSource: '{ "javascript": { "globals": ["hiddenGlobal"] } }',
+				},
+			]),
+		).toContainEqual({
+			kind: "coverage",
+			message: "Inherited Biome policy changed; explicit policy review required",
+			path: "config/globals.json",
 		});
 	});
 });

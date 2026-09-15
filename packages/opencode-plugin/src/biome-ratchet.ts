@@ -343,16 +343,76 @@ interface BroadSuppressionRange {
 	end: number;
 }
 
+interface JsxTag {
+	name: string;
+	closing: boolean;
+	selfClosing: boolean;
+	end: number;
+}
+
+function jsxTag(source: string, start: number): JsxTag | undefined {
+	const prefix = source.slice(start).match(/^<(\/)?([A-Za-z][\w:.-]*)/);
+	if (!prefix) return undefined;
+	const comments: SourceComment[] = [];
+	for (let index = start + prefix[0].length; index < source.length; index += 1) {
+		const current = source[index];
+		if (current === ">") {
+			return {
+				name: prefix[2] as string,
+				closing: Boolean(prefix[1]),
+				selfClosing: source.slice(start, index).trimEnd().endsWith("/"),
+				end: index + 1,
+			};
+		}
+		index = scanCodeToken(source, index, comments) - 1;
+	}
+	return undefined;
+}
+
+function jsxNodeEnd(source: string, start: number): number | undefined {
+	const root = jsxTag(source, start);
+	if (!root || root.closing || root.selfClosing) return root?.end;
+	let depth = 1;
+	for (let index = root.end; index < source.length; index += 1) {
+		if (source[index] === "{") {
+			index = scanCode(source, index + 1, [], { stopAtBrace: true }) - 1;
+			continue;
+		}
+		if (source[index] !== "<") continue;
+		const tag = jsxTag(source, index);
+		if (!tag) continue;
+		index = tag.end - 1;
+		if (tag.name !== root.name || tag.selfClosing) continue;
+		depth += tag.closing ? -1 : 1;
+		if (depth === 0) return tag.end;
+	}
+	return undefined;
+}
+
+function nextNodeStart(source: string, start: number): number {
+	for (let index = start; index < source.length; index += 1) {
+		if (/\s/u.test(source[index] ?? "")) continue;
+		if (source[index] !== "/" || !["/", "*"].includes(source[index + 1] ?? "")) return index;
+		index = scanComment(source, index, source[index + 1] === "*").end - 1;
+	}
+	return source.length;
+}
+
 function ordinarySuppressionRanges(source: string | undefined): BroadSuppressionRange[] {
 	if (!source) return [];
 	const ranges: BroadSuppressionRange[] = [];
 	for (const comment of sourceComments(source)) {
 		const directive = comment.text.match(/^(?:\/\/|\/\*)\s*(biome-ignore\b[^\n*]*)/)?.[1];
 		if (!directive) continue;
-		const start = comment.end;
+		const commentEndsJsxExpression =
+			comment.text.startsWith("/*") &&
+			source[comment.start - 1] === "{" &&
+			source[comment.end] === "}";
+		const start = nextNodeStart(source, comment.end + (commentEndsJsxExpression ? 1 : 0));
 		const comments: SourceComment[] = [];
-		let end = source.length;
-		for (let index = start; index < source.length; index += 1) {
+		const jsxEnd = jsxNodeEnd(source, start);
+		let end = jsxEnd ?? source.length;
+		for (let index = start; jsxEnd === undefined && index < source.length; index += 1) {
 			const current = source[index];
 			if (current === ";") {
 				end = index + 1;
@@ -704,10 +764,6 @@ function extendsPaths(config: UnknownRecord): string[] {
 	return values.filter((value) => value.startsWith(".")).map(normalizePath);
 }
 
-function looksLikeBiomeConfig(source: string | undefined): boolean {
-	return Boolean(source?.match(/biomejs\.dev\/schemas|"(?:extends|files|linter|vcs)"\s*:/));
-}
-
 function inheritedPolicyViolations(
 	base: UnknownRecord,
 	head: UnknownRecord,
@@ -718,13 +774,7 @@ function inheritedPolicyViolations(
 	return changes.flatMap((change) => {
 		const changedPath = normalizePath(change.afterPath ?? change.beforePath ?? "");
 		const isJsonConfig = changedPath.endsWith(".json") || changedPath.endsWith(".jsonc");
-		if (
-			!references.has(changedPath) &&
-			(!isJsonConfig ||
-				(!looksLikeBiomeConfig(change.beforeSource) && !looksLikeBiomeConfig(change.afterSource)))
-		) {
-			return [];
-		}
+		if (!references.has(changedPath) && !isJsonConfig) return [];
 		return [
 			{
 				kind: "coverage" as const,
