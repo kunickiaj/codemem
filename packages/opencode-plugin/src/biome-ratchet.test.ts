@@ -277,6 +277,57 @@ describe("Biome diagnostic ambiguity handling", () => {
 	});
 });
 
+describe("Biome diagnostic source comparison", () => {
+	it("retains source-paired regressions when measured diagnostics have no scope identity", () => {
+		const before = [
+			diagnostic("src/a.ts", 10, 100, "source A"),
+			diagnostic("src/a.ts", 30, 10, "source B"),
+		];
+		const regression = diagnostic("src/a.ts", 30, 90, "source B");
+		const after = [diagnostic("src/a.ts", 10, 10, "source A"), regression];
+
+		expect(
+			compareChangedDiagnostics(before, after, [
+				{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
+			]),
+		).toEqual([regression]);
+	});
+
+	it("does not let source text override a repeated scope identity", () => {
+		const before = [
+			{ ...diagnostic("src/a.ts", 10, 100, "source A"), scopeIdentity: ":binding:item" },
+			{ ...diagnostic("src/a.ts", 30, 10, "source B"), scopeIdentity: ":binding:item" },
+		];
+		const after = [
+			{ ...diagnostic("src/a.ts", 10, 10, "source A"), scopeIdentity: ":binding:item" },
+			{ ...diagnostic("src/a.ts", 30, 90, "source B"), scopeIdentity: ":binding:item" },
+		];
+
+		expect(
+			compareChangedDiagnostics(before, after, [
+				{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
+			]),
+		).toEqual([]);
+	});
+
+	it("does not source-pair diagnostics across conflicting repeated scopes", () => {
+		const before = [
+			{ ...diagnostic("src/a.ts", 10, 100, "source A"), scopeIdentity: ":binding:before" },
+			{ ...diagnostic("src/a.ts", 30, 10, "source B"), scopeIdentity: ":binding:before" },
+		];
+		const after = [
+			{ ...diagnostic("src/a.ts", 10, 10, "source A"), scopeIdentity: ":binding:after" },
+			{ ...diagnostic("src/a.ts", 30, 90, "source B"), scopeIdentity: ":binding:after" },
+		];
+
+		expect(
+			compareChangedDiagnostics(before, after, [
+				{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
+			]),
+		).toEqual([]);
+	});
+});
+
 describe("pinned Biome report schema", () => {
 	it("accepts the actual reporter output from the pinned binary", () => {
 		const entrypoint = createRequire(import.meta.url).resolve("@biomejs/biome/bin/biome");

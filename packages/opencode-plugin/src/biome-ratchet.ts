@@ -222,6 +222,51 @@ function withoutPairedScopes(
 	);
 }
 
+function sourceTextCounts(diagnostics: LintDiagnostic[]): Map<string, number> {
+	const counts = new Map<string, number>();
+	for (const diagnostic of diagnostics) {
+		if (!diagnostic.sourceText) continue;
+		counts.set(diagnostic.sourceText, (counts.get(diagnostic.sourceText) ?? 0) + 1);
+	}
+	return counts;
+}
+
+function uniquelyPairedSourceTexts(before: LintDiagnostic[], after: LintDiagnostic[]): Set<string> {
+	const beforeCounts = sourceTextCounts(before);
+	const afterCounts = sourceTextCounts(after);
+	return new Set(
+		[...beforeCounts].flatMap(([sourceText, count]) => {
+			if (count !== 1 || afterCounts.get(sourceText) !== 1) return [];
+			const previous = before.find((diagnostic) => diagnostic.sourceText === sourceText);
+			const current = after.find((diagnostic) => diagnostic.sourceText === sourceText);
+			if (!previous || !current) return [];
+			if (
+				previous.scopeIdentity &&
+				after.some((diagnostic) => diagnostic.scopeIdentity === previous.scopeIdentity)
+			) {
+				return [];
+			}
+			if (
+				previous.scopeIdentity &&
+				current.scopeIdentity &&
+				previous.scopeIdentity !== current.scopeIdentity
+			) {
+				return [];
+			}
+			return [sourceText];
+		}),
+	);
+}
+
+function withoutPairedSources(
+	diagnostics: LintDiagnostic[],
+	pairedSourceTexts: Set<string>,
+): LintDiagnostic[] {
+	return diagnostics.filter(
+		(diagnostic) => !diagnostic.sourceText || !pairedSourceTexts.has(diagnostic.sourceText),
+	);
+}
+
 function hasAmbiguousScopeIdentities(before: LintDiagnostic[], after: LintDiagnostic[]): boolean {
 	const beforeIdentities = before.map((diagnostic) => diagnostic.scopeIdentity);
 	const afterIdentities = after.map((diagnostic) => diagnostic.scopeIdentity);
@@ -264,9 +309,12 @@ function ambiguousMeasuredDiagnosticsToIgnore(
 		const categoryBefore = before.filter((diagnostic) => diagnostic.category === category);
 		const categoryAfter = after.filter((diagnostic) => diagnostic.category === category);
 		const pairedIdentities = uniquelyPairedScopeIdentities(categoryBefore, categoryAfter);
+		const unpairedScopeBefore = withoutPairedScopes(categoryBefore, pairedIdentities);
+		const unpairedScopeAfter = withoutPairedScopes(categoryAfter, pairedIdentities);
+		const pairedSourceTexts = uniquelyPairedSourceTexts(unpairedScopeBefore, unpairedScopeAfter);
 		ignoreSafeAmbiguousMeasuredResidual(
-			withoutPairedScopes(categoryBefore, pairedIdentities),
-			withoutPairedScopes(categoryAfter, pairedIdentities),
+			withoutPairedSources(unpairedScopeBefore, pairedSourceTexts),
+			withoutPairedSources(unpairedScopeAfter, pairedSourceTexts),
 			category,
 			path,
 			ignored,
