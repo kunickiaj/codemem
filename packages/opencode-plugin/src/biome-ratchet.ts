@@ -1181,47 +1181,8 @@ function ignoreFileViolations(changes: ChangedPath[]): PolicyViolation[] {
 	});
 }
 
-function unquoteYamlScalar(value: string): string {
-	const trimmed = value.trim();
-	if (
-		(trimmed.startsWith("'") && trimmed.endsWith("'")) ||
-		(trimmed.startsWith('"') && trimmed.endsWith('"'))
-	) {
-		return trimmed.slice(1, -1);
-	}
-	return trimmed;
-}
-
-function yamlSections(source: string, key: string, indentation: number): string[] {
-	const lines = source.split("\n");
-	const marker = `${" ".repeat(indentation)}${key}:`;
-	const sections: string[] = [];
-	for (let start = 0; start < lines.length; start += 1) {
-		if (lines[start] !== marker) continue;
-		let end = start + 1;
-		while (end < lines.length) {
-			const line = lines[end] ?? "";
-			const lineIndentation = line.length - line.trimStart().length;
-			if (line.trim() && lineIndentation <= indentation) break;
-			end += 1;
-		}
-		sections.push(lines.slice(start + 1, end).join("\n"));
-		start = end - 1;
-	}
-	return sections;
-}
-
 function biomeLockfileVersion(source: string): string | undefined {
-	for (const importers of yamlSections(source, "importers", 0)) {
-		const rootImporter = yamlSections(importers, ".", 2)[0];
-		if (!rootImporter) continue;
-		for (const key of ["'@biomejs/biome'", '"@biomejs/biome"']) {
-			const dependency = yamlSections(rootImporter, key, 6)[0];
-			const version = dependency?.split("\n").find((line) => line.startsWith("        version:"));
-			if (version) return unquoteYamlScalar(version.trim().slice("version:".length));
-		}
-	}
-	return undefined;
+	return biomeRootVersion(source);
 }
 
 function biomeDependencySelection(
