@@ -1,0 +1,15 @@
+{
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"strict": true
+	},
+	"files": [
+		"src/lib/api/stats.ts",
+		"src/lib/state.ts",
+		"src/tabs/health/lifecycle.ts",
+		"src/tabs/health/render/health-overview.ts",
+		"src/tabs/health/render/session-summary.ts",
+		"src/tabs/health/render/stats.ts"
+	],
+	"include": []
+}

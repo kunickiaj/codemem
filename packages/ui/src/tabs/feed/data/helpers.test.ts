@@ -4,7 +4,6 @@ import { state } from "../../../lib/state";
 import { authorLabel, deviceLabel, itemTags } from "./helpers";
 
 beforeEach(() => {
-	state.lastStatsPayload = null;
 	state.viewerActorId = null;
 });
 

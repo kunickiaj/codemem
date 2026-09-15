@@ -375,7 +375,7 @@ function reduceDrawerLocalAction(
 function showQueuedRows(state: DiagnosticsDrawerState): DiagnosticsDrawerState {
 	const mergedRows = mergeUnique([...state.queuedRows, ...state.rows], MAX_ROWS + 1);
 	const rowsWereTrimmed = mergedRows.length > MAX_ROWS;
-	const useQueuedCursor = rowsWereTrimmed && state.queuedNextCursor !== undefined;
+	const queuedNextCursor = state.queuedNextCursor;
 	return {
 		...state,
 		rows: mergedRows.slice(0, MAX_ROWS),
@@ -386,7 +386,8 @@ function showQueuedRows(state: DiagnosticsDrawerState): DiagnosticsDrawerState {
 		queuedSessionRows: [],
 		queuedRows: [],
 		queuedNextCursor: undefined,
-		nextCursor: useQueuedCursor ? state.queuedNextCursor : state.nextCursor,
+		nextCursor:
+			rowsWereTrimmed && queuedNextCursor !== undefined ? queuedNextCursor : state.nextCursor,
 		announcement: "",
 	};
 }

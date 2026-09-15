@@ -1,4 +1,4 @@
-import { Fragment, h } from "preact";
+import { Fragment, h, type TargetedInputEvent } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import * as api from "../../../lib/api";
 import { state } from "../../../lib/state";
@@ -163,10 +163,8 @@ export function ContextInspectorPanel({ open }: { open: boolean }) {
 							),
 							h("textarea", {
 								className: "feed-inspector-files",
-								onInput: (event) =>
-									setWorkingSetText(
-										String((event.currentTarget as HTMLTextAreaElement).value || ""),
-									),
+								onInput: (event: TargetedInputEvent<HTMLTextAreaElement>) =>
+									setWorkingSetText(String(event.currentTarget.value || "")),
 								placeholder: "Optional working-set files, one per line",
 								rows: 3,
 								value: workingSetText,

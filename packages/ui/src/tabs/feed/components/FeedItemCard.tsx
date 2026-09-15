@@ -1,4 +1,4 @@
-import { h } from "preact";
+import { h, type TargetedEvent } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { Chip } from "../../../components/primitives/chip";
 import { Tooltip } from "../../../components/primitives/tooltip";
@@ -146,7 +146,7 @@ export function FeedItemCard({
 		.join(" · ");
 	const metaText = [fileContent.trim(), provenanceDetails].filter(Boolean).join(" · ");
 
-	const canClamp = Boolean(observationData) && shouldClampBody(activeMode, observationData);
+	const canClamp = observationData ? shouldClampBody(activeMode, observationData) : false;
 	const bodyClassName = [
 		activeMode === "facts" ? "feed-body facts" : "feed-body",
 		activeMode === "narrative" ? "narrative" : "",
@@ -381,11 +381,9 @@ export function FeedItemCard({
 										"aria-label": `Visibility for ${String(item.title || "memory")}`,
 										className: "feed-visibility-select",
 										disabled: savingVisibility,
-										onChange: (event) => {
+										onChange: (event: TargetedEvent<HTMLSelectElement>) => {
 											const nextValue =
-												String((event.currentTarget as HTMLSelectElement).value) === "shared"
-													? "shared"
-													: "private";
+												String(event.currentTarget.value) === "shared" ? "shared" : "private";
 											void saveVisibility(nextValue);
 										},
 										value: currentVisibility,

@@ -1,9 +1,22 @@
 import { render } from "preact";
 import { act } from "preact/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { state } from "../lib/state";
+import type { UsageTotals } from "../lib/state";
+import { completeHealthLoad, state } from "../lib/state";
 
 const openDiagnosticsDrawer = vi.hoisted(() => vi.fn());
+const usageTotals: UsageTotals = {
+	tokens_read: 0,
+	tokens_written: 0,
+	tokens_saved: 0,
+	count: 0,
+	token_unit: "tokens",
+	measured_count: 0,
+	estimated_count: 0,
+	unavailable_count: 0,
+	legacy_text_length_count: 0,
+	legacy_unclassified_count: 0,
+};
 
 vi.mock("../components/diagnostics", () => ({ openDiagnosticsDrawer }));
 vi.mock("../components/primitives/tooltip", () => ({
@@ -32,9 +45,27 @@ beforeEach(() => {
 		<div id="healthActions"></div>
 		<div id="healthDot"></div>
 	`;
-	state.lastStatsPayload = {};
-	state.lastUsagePayload = {};
-	state.lastRawEventsPayload = {};
+	state.healthStats = completeHealthLoad({
+		automatic_recall: null,
+		database: {
+			path: "/data/codemem.db",
+			size_bytes: 0,
+			active_memory_items: 0,
+			vector_coverage: 0,
+			tags_coverage: 0,
+		},
+		maintenance_jobs: [],
+	});
+	state.healthUsage = completeHealthLoad({
+		events: [],
+		events_global: [],
+		events_filtered: null,
+		totals: usageTotals,
+		totals_global: usageTotals,
+		totals_filtered: null,
+		recent_packs: [],
+	});
+	state.healthRawEvents = completeHealthLoad({ pending: 0, sessions: 0 });
 	state.lastSyncStatus = { enabled: false, daemon_state: "disabled" };
 	state.lastSyncPeers = [];
 	openDiagnosticsDrawer.mockReset();
@@ -50,7 +81,7 @@ afterEach(() => {
 
 describe("Health diagnostics actions", () => {
 	it("opens capture diagnostics from the existing backlog threshold", () => {
-		state.lastRawEventsPayload = { pending: 200 };
+		state.healthRawEvents = completeHealthLoad({ pending: 200, sessions: 1 });
 		renderOverview();
 
 		const trigger = findDiagnosticsAction();
@@ -60,11 +91,26 @@ describe("Health diagnostics actions", () => {
 	});
 
 	it("opens error-filtered maintenance diagnostics for an existing failed job", () => {
-		state.lastStatsPayload = {
+		state.healthStats = completeHealthLoad({
+			automatic_recall: null,
+			database: {
+				path: "/data/codemem.db",
+				size_bytes: 0,
+				active_memory_items: 0,
+				vector_coverage: 0,
+				tags_coverage: 0,
+			},
 			maintenance_jobs: [
-				{ kind: "cleanup", title: "Cleanup", status: "failed", error: "private path" },
+				{
+					kind: "cleanup",
+					title: "Cleanup",
+					status: "failed",
+					message: null,
+					error: "private path",
+					progress: { current: 0, total: null, unit: "items" },
+				},
 			],
-		};
+		});
 		renderOverview();
 
 		const trigger = findDiagnosticsAction();

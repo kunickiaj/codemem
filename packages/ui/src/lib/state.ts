@@ -1,5 +1,6 @@
 /* Global application state — shared across tabs. */
 
+import type { FeedItem } from "../tabs/feed/types";
 import type {
 	TeamSyncDaemonState,
 	TeamSyncPresenceState,
@@ -34,76 +35,188 @@ export const LEGACY_TAB_IDS: LegacyTabId[] = ["sync", "coordinator-admin"];
  */
 
 export interface UsageTotals {
-	tokens_read?: number;
-	tokens_saved?: number;
-	work_investment_tokens?: number;
-	token_unit?: "tokens";
-	measured_count?: number;
-	estimated_count?: number;
-	unavailable_count?: number;
-	legacy_text_length_count?: number;
-	legacy_unclassified_count?: number;
+	tokens_read: number;
+	tokens_written: number;
+	tokens_saved: number;
+	count: number;
+	token_unit: "tokens";
+	measured_count: number;
+	estimated_count: number;
+	unavailable_count: number;
+	legacy_text_length_count: number;
+	legacy_unclassified_count: number;
+}
+
+export interface AutomaticRecallStats {
+	availability: "available" | "no_data" | "unavailable";
+	periodStart: string;
+	periodEnd: string;
+	windowLimit: number;
+	freshEvaluations: number;
+	evaluationsWithDuplicates: number;
+	candidateItems: number;
+	duplicatesOmitted: number;
+	beforeTokens: number;
+	afterTokens: number;
+	estimatedTokensAvoided: number;
+	missingRetainedMetadata: number;
+	invalidRetainedMetadata: number;
+	packMetadataGaps: number;
+	unmeasuredAttempts: number;
+	captureVersion: string;
 }
 
 export interface UsageEventSummary {
-	event?: string;
-	count?: number;
-	total_tokens_read?: number;
-	total_tokens_written?: number;
-	total_tokens_saved?: number;
-	token_unit?: "tokens";
-	measured_count?: number;
-	estimated_count?: number;
-	unavailable_count?: number;
-	legacy_text_length_count?: number;
-	legacy_unclassified_count?: number;
+	event: string;
+	count: number;
+	total_tokens_read: number;
+	total_tokens_written: number;
+	total_tokens_saved: number;
+	token_unit: "tokens";
+	measured_count: number;
+	estimated_count: number;
+	unavailable_count: number;
+	legacy_text_length_count: number;
+	legacy_unclassified_count: number;
 }
 
 export interface RecentPack {
-	created_at?: string;
-	tokens_read?: number;
-	tokens_saved?: number;
-	metadata_json?: {
+	created_at: string;
+	tokens_read: number;
+	tokens_saved: number;
+	metadata_json: {
 		exact_duplicates_collapsed?: number;
 		exact_dedupe_enabled?: boolean;
-	};
+	} | null;
+}
+
+export interface HealthMaintenanceJob {
+	kind: string;
+	title: string;
+	status: string;
+	message: string | null;
+	error: string | null;
+	progress: { current: number; total: number | null; unit: string };
 }
 
 export interface CachedStatsPayload {
-	automatic_recall?: unknown;
-	identity?: { actor_id?: string };
-	database?: {
-		path?: string;
-		size_bytes?: number;
-		active_memory_items?: number;
-		vector_coverage?: number;
-		tags_coverage?: number;
+	automatic_recall: AutomaticRecallStats | null;
+	database: {
+		path: string;
+		size_bytes: number;
+		active_memory_items: number;
+		vector_coverage: number;
+		tags_coverage: number;
 	};
-	usage?: { totals?: UsageTotals };
 	reliability?: {
-		counts?: { errored_batches?: number };
-		rates?: {
-			flush_success_rate?: number;
-			dropped_event_rate?: number;
+		counts: { errored_batches: number };
+		rates: {
+			flush_success_rate: number;
+			dropped_event_rate: number;
 		};
 	};
-	maintenance_jobs?: unknown[];
+	maintenance_jobs: HealthMaintenanceJob[];
 }
 
 export interface CachedUsagePayload {
-	events?: UsageEventSummary[];
-	events_global?: UsageEventSummary[];
-	events_filtered?: UsageEventSummary[] | null;
-	totals_global?: UsageTotals;
-	totals?: UsageTotals;
-	totals_filtered?: UsageTotals | null;
-	recent_packs?: RecentPack[];
+	events: UsageEventSummary[];
+	events_global: UsageEventSummary[];
+	events_filtered: UsageEventSummary[] | null;
+	totals_global: UsageTotals;
+	totals: UsageTotals;
+	totals_filtered: UsageTotals | null;
+	recent_packs: RecentPack[];
 }
 
 export interface CachedRawEventsPayload {
-	pending?: number;
-	sessions?: number;
-	events?: unknown;
+	pending: number;
+	sessions: number;
+}
+
+export interface CachedSessionPayload {
+	total: number;
+	memories: number;
+	artifacts: number;
+	prompts: number;
+	observations: number;
+}
+
+export interface HealthSnapshot<T> {
+	data: T;
+	loadedAt: number;
+	scopeKey: string;
+}
+
+export type HealthResourceState<T> =
+	| { status: "not_loaded" }
+	| {
+			status: "loading";
+			previous: HealthSnapshot<T> | null;
+			previousStatus: "available" | "stale" | null;
+	  }
+	| { status: "available"; snapshot: HealthSnapshot<T> }
+	| { status: "failed"; error: string }
+	| { status: "stale"; snapshot: HealthSnapshot<T>; error: string };
+
+export function healthNotLoaded<T>(): HealthResourceState<T> {
+	return { status: "not_loaded" };
+}
+
+export function beginHealthLoad<T>(
+	current: HealthResourceState<T>,
+	scopeKey = "",
+): HealthResourceState<T> {
+	if (current.status === "available" || current.status === "stale") {
+		const previous = current.snapshot.scopeKey === scopeKey ? current.snapshot : null;
+		const previousStatus = previous ? current.status : null;
+		return { status: "loading", previous, previousStatus };
+	}
+	if (current.status === "loading" && current.previous?.scopeKey === scopeKey) return current;
+	return { status: "loading", previous: null, previousStatus: null };
+}
+
+export function completeHealthLoad<T>(
+	data: T,
+	loadedAt = Date.now(),
+	scopeKey = "",
+): HealthResourceState<T> {
+	return { status: "available", snapshot: { data, loadedAt, scopeKey } };
+}
+
+export function failHealthLoad<T>(
+	current: HealthResourceState<T>,
+	error: string,
+): HealthResourceState<T> {
+	if (current.status === "loading" && current.previous) {
+		return { status: "stale", snapshot: current.previous, error };
+	}
+	if (current.status === "available" || current.status === "stale") {
+		return { status: "stale", snapshot: current.snapshot, error };
+	}
+	return { status: "failed", error };
+}
+
+export function healthData<T>(resource: HealthResourceState<T>, scopeKey?: string): T | null {
+	if (resource.status === "available" || resource.status === "stale") {
+		if (scopeKey !== undefined && resource.snapshot.scopeKey !== scopeKey) return null;
+		return resource.snapshot.data;
+	}
+	if (resource.status === "loading") {
+		if (scopeKey !== undefined && resource.previous?.scopeKey !== scopeKey) return null;
+		return resource.previous?.data ?? null;
+	}
+	return null;
+}
+
+export function healthResourceIsStale(
+	resource: HealthResourceState<unknown>,
+	scopeKey?: string,
+): boolean {
+	if (resource.status === "stale") {
+		return scopeKey === undefined || resource.snapshot.scopeKey === scopeKey;
+	}
+	if (resource.status !== "loading" || resource.previousStatus !== "stale") return false;
+	return scopeKey === undefined || resource.previous?.scopeKey === scopeKey;
 }
 
 export interface CachedSyncStatus {
@@ -283,7 +396,7 @@ export const state = {
 	feedTypeFilter: "all" as FeedFilter,
 	feedScopeFilter: "all" as FeedScope,
 	feedQuery: "",
-	lastFeedItems: [] as unknown[],
+	lastFeedItems: [] as FeedItem[],
 	lastFeedFilteredCount: 0,
 	lastFeedSignature: "",
 	pendingFeedItems: null as unknown[] | null,
@@ -294,10 +407,11 @@ export const state = {
 	newItemKeys: new Set<string>(),
 
 	/* Cached payloads */
-	lastStatsPayload: null as CachedStatsPayload | null,
+	healthStats: healthNotLoaded<CachedStatsPayload>(),
 	viewerActorId: null as string | null,
-	lastUsagePayload: null as CachedUsagePayload | null,
-	lastRawEventsPayload: null as CachedRawEventsPayload | null,
+	healthUsage: healthNotLoaded<CachedUsagePayload>(),
+	healthSession: healthNotLoaded<CachedSessionPayload>(),
+	healthRawEvents: healthNotLoaded<CachedRawEventsPayload>(),
 	lastUpdateStatus: null as UpdateStatus | null,
 	lastSyncStatus: null as CachedSyncStatus | null,
 	lastDeviceIdentityInventory: null as DeviceIdentityInventoryV1 | null,

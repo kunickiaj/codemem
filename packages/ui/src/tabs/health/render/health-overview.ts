@@ -13,7 +13,7 @@ import {
 	secondsSince,
 	titleCase,
 } from "../../../lib/format";
-import { state } from "../../../lib/state";
+import { healthData, healthResourceIsStale, state } from "../../../lib/state";
 import {
 	buildHealthCard,
 	renderActionList,
@@ -51,6 +51,33 @@ function appendFailedMaintenanceDiagnosticsAction(
 	});
 }
 
+function renderHealthMeta(healthMeta: HTMLElement, hasStaleData: boolean, drivers: string[]): void {
+	if (hasStaleData) {
+		healthMeta.textContent = drivers.length
+			? `Some Health data is stale. Last known risks: ${drivers.join(", ")}.`
+			: "Some Health data is stale. Showing the last successful snapshot.";
+		return;
+	}
+	if (drivers.length) {
+		healthMeta.textContent = `Why this status: ${drivers.join(", ")}.`;
+		return;
+	}
+	healthMeta.textContent = "Healthy right now. Diagnostics stay available if you want details.";
+}
+
+function healthStatus(
+	riskScore: number,
+	hasStaleData: boolean,
+): {
+	label: string;
+	className: string;
+} {
+	if (riskScore >= 60) return { label: "Attention", className: "status-attention" };
+	if (riskScore >= 25) return { label: "Degraded", className: "status-degraded" };
+	if (hasStaleData) return { label: "Stale", className: "status-unknown" };
+	return { label: "Healthy", className: "status-healthy" };
+}
+
 export function renderHealthOverview() {
 	const healthGrid = document.getElementById("healthGrid");
 	const healthMeta = document.getElementById("healthMeta");
@@ -59,42 +86,32 @@ export function renderHealthOverview() {
 	if (!healthGrid || !healthMeta) return;
 	renderUpdateBanner(document.getElementById("healthUpdateBanner"), state.lastUpdateStatus);
 
-	const stats = state.lastStatsPayload || {};
-	const usagePayload = state.lastUsagePayload || {};
-	const raw =
-		state.lastRawEventsPayload && typeof state.lastRawEventsPayload === "object"
-			? state.lastRawEventsPayload
-			: {};
+	const stats = healthData(state.healthStats);
+	const usagePayload = healthData(state.healthUsage, state.currentProject);
+	const raw = healthData(state.healthRawEvents);
+	if (!stats || !usagePayload || !raw) {
+		renderUnavailableOverview({ healthGrid, healthMeta, healthActions, healthDot });
+		return;
+	}
 	const syncStatus = state.lastSyncStatus || {};
-	const maintenanceJobs: Array<{
-		kind?: string;
-		title?: string;
-		status?: string;
-		message?: string | null;
-		error?: string | null;
-		progress?: { current?: number; total?: number | null; unit?: string };
-	}> = Array.isArray(stats.maintenance_jobs) ? stats.maintenance_jobs : [];
+	const maintenanceJobs = stats.maintenance_jobs;
 	const scopeBackfillJob = maintenanceJobs.find((job) => job.kind === SCOPE_BACKFILL_JOB);
 	const hasFailedMaintenance = maintenanceJobs.some((job) => job.status === "failed");
-	const reliability = stats.reliability || {};
-	const counts = reliability.counts || {};
-	const rates = reliability.rates || {};
-	const dbStats = stats.database || {};
-	const recentPacks = Array.isArray(usagePayload.recent_packs) ? usagePayload.recent_packs : [];
+	const dbStats = stats.database;
+	const recentPacks = usagePayload.recent_packs;
 	const packUsage = selectPackUsage(usagePayload, usagePayload.events_filtered != null);
 	const lastPackAt = recentPacks.length ? recentPacks[0]?.created_at : null;
 	const latestPackMeta = recentPacks.length ? recentPacks[0]?.metadata_json || {} : {};
 	const latestPackDeduped = Number(latestPackMeta?.exact_duplicates_collapsed || 0);
-	const rawPending = Number(raw.pending || 0);
-	const erroredBatches = Number(counts.errored_batches || 0);
-	const flushSuccessRate = Number(rates.flush_success_rate ?? 1);
-	const droppedRate = Number(rates.dropped_event_rate || 0);
-	const reductionLabel = formatReductionPercent(
-		packUsage.total_tokens_saved,
-		packUsage.total_tokens_read,
-	);
+	const rawPending = raw.pending;
+	const erroredBatches = stats.reliability?.counts.errored_batches ?? 0;
+	const flushSuccessRate = stats.reliability?.rates.flush_success_rate ?? 1;
+	const droppedRate = stats.reliability?.rates.dropped_event_rate ?? 0;
+	const reductionLabel = packUsage
+		? formatReductionPercent(packUsage.total_tokens_saved, packUsage.total_tokens_read)
+		: "n/a";
 	const reductionPercent = parsePercentValue(reductionLabel);
-	const tagCoverage = Number(dbStats.tags_coverage || 0);
+	const tagCoverage = dbStats.tags_coverage;
 	const syncState = String(syncStatus.daemon_state || "unknown");
 	const syncStateLabel =
 		syncState === "offline-peers"
@@ -183,15 +200,10 @@ export function renderHealthOverview() {
 		drivers.push("memory pack activity is old");
 	}
 
-	let statusLabel = "Healthy";
-	let statusClass = "status-healthy";
-	if (riskScore >= 60) {
-		statusLabel = "Attention";
-		statusClass = "status-attention";
-	} else if (riskScore >= 25) {
-		statusLabel = "Degraded";
-		statusClass = "status-degraded";
-	}
+	const hasStaleData = [state.healthStats, state.healthUsage, state.healthRawEvents].some(
+		(resource) => healthResourceIsStale(resource),
+	);
+	const { label: statusLabel, className: statusClass } = healthStatus(riskScore, hasStaleData);
 	const overallIsHealthy = statusClass === "status-healthy";
 
 	// Update header health dot
@@ -200,7 +212,9 @@ export function renderHealthOverview() {
 		healthDot.title = statusLabel;
 	}
 
-	const retrievalDetail = `${Number(packUsage.total_tokens_saved || 0).toLocaleString()} estimated saved tokens · ${latestPackDeduped.toLocaleString()} deduped in latest pack`;
+	const retrievalDetail = packUsage
+		? `${packUsage.total_tokens_saved.toLocaleString()} estimated saved tokens · ${latestPackDeduped.toLocaleString()} deduped in latest pack`
+		: "No pack usage is available";
 	const pipelineDetail = rawPending > 0 ? "Queue is actively draining" : "Queue is clear";
 	const syncDetail = syncDisabled
 		? "Sync disabled"
@@ -366,9 +380,49 @@ export function renderHealthOverview() {
 	}
 	renderActionList(healthActions, recommendations);
 
-	healthMeta.textContent = drivers.length
-		? `Why this status: ${drivers.join(", ")}.`
-		: "Healthy right now. Diagnostics stay available if you want details.";
+	renderHealthMeta(healthMeta, hasStaleData, drivers);
 
+	renderIcons();
+}
+
+function renderUnavailableOverview({
+	healthGrid,
+	healthMeta,
+	healthActions,
+	healthDot,
+}: {
+	healthGrid: HTMLElement;
+	healthMeta: HTMLElement;
+	healthActions: HTMLElement | null;
+	healthDot: HTMLElement | null;
+}): void {
+	const resources = [state.healthStats, state.healthUsage, state.healthRawEvents];
+	const failed = resources.some((resource) => resource.status === "failed");
+	const loading = resources.some((resource) => resource.status === "loading");
+	let value = "Not loaded";
+	let message = "Open or refresh Health to load status.";
+	if (failed) {
+		value = "Unavailable";
+		message = "Some health data failed to load. Refresh Health to try again.";
+	} else if (loading) {
+		value = "Loading";
+		message = "Loading health data…";
+	}
+	renderHealthCards(healthGrid, [
+		buildHealthCard({
+			key: "overall-health",
+			label: "Overall health",
+			value,
+			detail: "Health requires stats, usage, and queue data",
+			icon: failed ? "triangle-alert" : "loader",
+			className: "health-primary status-unknown",
+		}),
+	]);
+	renderActionList(healthActions, []);
+	renderText(healthMeta, message);
+	if (healthDot) {
+		healthDot.className = "health-dot status-unknown";
+		healthDot.title = value;
+	}
 	renderIcons();
 }

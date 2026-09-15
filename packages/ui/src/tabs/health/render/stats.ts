@@ -11,7 +11,8 @@ import {
 	formatReductionPercent,
 	formatTokenCount,
 } from "../../../lib/format";
-import { state } from "../../../lib/state";
+import type { CachedStatsPayload } from "../../../lib/state";
+import { healthData, healthResourceIsStale, state } from "../../../lib/state";
 import { renderIcons, renderStatBlocks, renderText } from "../components";
 import type { StatItem } from "../types";
 import { selectPackUsage } from "../usage";
@@ -41,84 +42,105 @@ export function renderStats() {
 	const metaLine = document.getElementById("metaLine");
 	if (!statsGrid) return;
 
-	const stats = state.lastStatsPayload || {};
-	const usagePayload = state.lastUsagePayload || {};
-	const raw =
-		state.lastRawEventsPayload && typeof state.lastRawEventsPayload === "object"
-			? state.lastRawEventsPayload
-			: {};
-	const db = stats.database || {};
+	const stats = healthData(state.healthStats);
+	const usagePayload = healthData(state.healthUsage, state.currentProject);
+	const raw = healthData(state.healthRawEvents);
+	const db = stats?.database;
 	const project = state.currentProject;
-	const totalsGlobal =
-		usagePayload?.totals_global || usagePayload?.totals || stats.usage?.totals || {};
-	const totalsFiltered = usagePayload?.totals_filtered || null;
+	const totalsFiltered = usagePayload?.totals_filtered ?? null;
 	const isFiltered = !!(project && totalsFiltered);
-	const usage = isFiltered ? totalsFiltered : totalsGlobal;
-	const globalPackUsage = selectPackUsage(usagePayload, false);
-	const packUsage = selectPackUsage(usagePayload, isFiltered);
-	const rawSessions = Number(raw.sessions || 0);
-	const rawPending = Number(raw.pending || 0);
+	const globalPackUsage = usagePayload ? selectPackUsage(usagePayload, false) : null;
+	const packUsage = usagePayload ? selectPackUsage(usagePayload, isFiltered) : null;
+	const rawSessions = raw?.sessions ?? 0;
+	const rawPending = raw?.pending ?? 0;
 
-	const globalLineWork = isFiltered
-		? `\nGlobal: ${Number(totalsGlobal.work_investment_tokens || 0).toLocaleString()} invested`
-		: "";
-	const globalLineRead = isFiltered
-		? `\nGlobal: ${Number(globalPackUsage?.total_tokens_read || 0).toLocaleString()} estimated injected`
-		: "";
-	const globalLineSaved = isFiltered
-		? `\nGlobal: ${Number(globalPackUsage?.total_tokens_saved || 0).toLocaleString()} estimated saved`
-		: "";
+	const globalLineRead =
+		isFiltered && globalPackUsage
+			? `\nGlobal: ${globalPackUsage.total_tokens_read.toLocaleString()} estimated injected`
+			: "";
+	const globalLineSaved =
+		isFiltered && globalPackUsage
+			? `\nGlobal: ${globalPackUsage.total_tokens_saved.toLocaleString()} estimated saved`
+			: "";
 
 	const items: StatItem[] = [
 		{
 			label: isFiltered ? "Savings (project)" : "Savings",
-			value: formatTokenCount(packUsage.total_tokens_saved || 0),
-			tooltip: `Estimated tokens saved by reusing compressed memories: ${Number(packUsage.total_tokens_saved || 0).toLocaleString()}${globalLineSaved}`,
+			value: packUsage ? formatTokenCount(packUsage.total_tokens_saved) : "n/a",
+			tooltip: packUsage
+				? `Estimated tokens saved by reusing compressed memories: ${packUsage.total_tokens_saved.toLocaleString()}${globalLineSaved}`
+				: "Usage data is unavailable",
 			icon: "trending-up",
 		},
 		{
 			label: isFiltered ? "Injected (project)" : "Injected",
-			value: formatTokenCount(packUsage.total_tokens_read || 0),
-			tooltip: `Estimated tokens injected into context (pack size): ${Number(packUsage.total_tokens_read || 0).toLocaleString()}${globalLineRead}`,
+			value: packUsage ? formatTokenCount(packUsage.total_tokens_read) : "n/a",
+			tooltip: packUsage
+				? `Estimated tokens injected into context (pack size): ${packUsage.total_tokens_read.toLocaleString()}${globalLineRead}`
+				: "Usage data is unavailable",
 			icon: "book-open",
 		},
 		{
 			label: isFiltered ? "Reduction (project)" : "Reduction",
-			value: formatReductionPercent(packUsage.total_tokens_saved, packUsage.total_tokens_read),
-			tooltip:
-				`Estimated percent reduction from reuse. Factor: ${formatMultiplier(packUsage.total_tokens_saved, packUsage.total_tokens_read)}.` +
-				globalLineRead +
-				globalLineSaved,
+			value: packUsage
+				? formatReductionPercent(packUsage.total_tokens_saved, packUsage.total_tokens_read)
+				: "n/a",
+			tooltip: packUsage
+				? `Estimated percent reduction from reuse. Factor: ${formatMultiplier(packUsage.total_tokens_saved, packUsage.total_tokens_read)}.${globalLineRead}${globalLineSaved}`
+				: "Usage data is unavailable",
 			icon: "percent",
 		},
 		{
 			label: isFiltered ? "Work investment (project)" : "Work investment",
-			value: formatTokenCount(usage.work_investment_tokens || 0),
-			tooltip: `Token cost of unique discovery groups. Exact: ${Number(usage.work_investment_tokens || 0).toLocaleString()} invested${globalLineWork}`,
+			value: "n/a",
+			tooltip: "Work-investment data is unavailable",
 			icon: "pencil",
 		},
-		{ label: "Active memories", value: db.active_memory_items || 0, icon: "check-circle" },
+		{ label: "Active memories", value: db?.active_memory_items ?? "n/a", icon: "check-circle" },
 		{
 			label: "Embedding coverage",
-			value: formatPercent(db.vector_coverage),
+			value: db ? formatPercent(db.vector_coverage) : "n/a",
 			tooltip: "Share of active memories with embeddings",
 			icon: "layers",
 		},
 		{
 			label: "Tag coverage",
-			value: formatPercent(db.tags_coverage),
+			value: db ? formatPercent(db.tags_coverage) : "n/a",
 			tooltip: "Share of active memories with tags",
 			icon: "tag",
 		},
 	];
-	appendRawEventStats(items, rawPending, rawSessions);
+	if (raw) appendRawEventStats(items, rawPending, rawSessions);
 
 	renderStatBlocks(statsGrid, items);
 
-	if (metaLine) {
-		const projectSuffix = project ? ` · project: ${project}` : "";
-		const dbPath = collapseHome(db.path || "unknown");
-		renderText(metaLine, `DB: ${dbPath} · ${formatBytes(db.size_bytes || 0)}${projectSuffix}`);
-	}
+	if (metaLine) renderStatsMeta(metaLine, db, project);
 	renderIcons();
+}
+
+function renderStatsMeta(
+	metaLine: HTMLElement,
+	db: CachedStatsPayload["database"] | null | undefined,
+	project: string,
+): void {
+	if (!db) {
+		renderText(metaLine, healthResourceMessage(state.healthStats, "Database metrics"));
+		return;
+	}
+	const projectSuffix = project ? ` · project: ${project}` : "";
+	const staleSuffix = healthResourceIsStale(state.healthStats) ? " · showing stale data" : "";
+	const dbPath = collapseHome(db.path);
+	renderText(
+		metaLine,
+		`DB: ${dbPath} · ${formatBytes(db.size_bytes)}${projectSuffix}${staleSuffix}`,
+	);
+}
+
+function healthResourceMessage(
+	resource: { status: "not_loaded" | "loading" | "available" | "failed" | "stale" },
+	label: string,
+): string {
+	if (resource.status === "loading") return `Loading ${label.toLowerCase()}…`;
+	if (resource.status === "failed") return `${label} failed to load`;
+	return `${label} not loaded`;
 }

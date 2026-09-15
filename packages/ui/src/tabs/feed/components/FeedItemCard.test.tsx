@@ -1,7 +1,6 @@
 import { h, render } from "preact";
 import { act } from "preact/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { state } from "../../../lib/state";
 import { FeedItemCard } from "./FeedItemCard";
 
 vi.mock("../../../components/primitives/tooltip", () => ({
@@ -12,7 +11,6 @@ vi.mock("../../../components/primitives/tooltip", () => ({
 let mount: HTMLDivElement;
 
 beforeEach(() => {
-	state.lastStatsPayload = null;
 	mount = document.createElement("div");
 	document.body.appendChild(mount);
 });

@@ -3,7 +3,8 @@
  * savings, and dedupe behavior, plus a scope/packs/last-pack meta line. */
 
 import { formatReductionPercent, formatTimestamp, formatTokenCount } from "../../../lib/format";
-import { state } from "../../../lib/state";
+import type { CachedSessionPayload, CachedUsagePayload, RecentPack } from "../../../lib/state";
+import { healthData, healthResourceIsStale, state } from "../../../lib/state";
 import { renderIcons, renderStatBlocks, renderText } from "../components";
 import type { StatItem, UsageEvent } from "../types";
 
@@ -12,29 +13,67 @@ export function renderSessionSummary() {
 	const sessionMeta = document.getElementById("sessionMeta");
 	if (!sessionGrid || !sessionMeta) return;
 
-	const usagePayload = state.lastUsagePayload || {};
-	const project = state.currentProject;
-	const _totalsGlobal = usagePayload?.totals_global || usagePayload?.totals || {};
-	const totalsFiltered = usagePayload?.totals_filtered || null;
-	const isFiltered = !!(project && totalsFiltered);
-
-	const events: UsageEvent[] = Array.isArray(usagePayload?.events) ? usagePayload.events : [];
-	const packEvent = events.find((event) => event.event === "pack") || null;
-	const recentPacks = Array.isArray(usagePayload?.recent_packs) ? usagePayload.recent_packs : [];
-	const latestPack = recentPacks.length ? recentPacks[0] : null;
-	const latestPackMeta = latestPack?.metadata_json || {};
+	const usagePayload = healthData(state.healthUsage, state.currentProject);
+	const sessionPayload = healthData(state.healthSession, state.currentProject);
+	const { latestPack, packCount, packLine } = summarizePacks(usagePayload);
 	const lastPackAt = latestPack?.created_at || "";
-	const packCount = Number(packEvent?.count || 0);
-	const packTokens = Number(latestPack?.tokens_read || 0);
-	const savedTokens = Number(latestPack?.tokens_saved || 0);
-	const dedupedCount = Number(latestPackMeta?.exact_duplicates_collapsed || 0);
-	const dedupeEnabled = !!latestPackMeta?.exact_dedupe_enabled;
-	const reductionPercent = formatReductionPercent(savedTokens, packTokens);
-
-	const packLine = packCount ? `${packCount} packs` : "No packs yet";
 	const lastPackLine = lastPackAt ? `Last pack: ${formatTimestamp(lastPackAt)}` : "";
-	const scopeLabel = isFiltered ? "Project" : "All projects";
-	const items: StatItem[] = [
+	const scopeLabel = state.currentProject ? "Project" : "All projects";
+	const sessionLine = summarizeStoredItems(sessionPayload, state.healthSession.status === "failed");
+	const items = buildSessionItems(latestPack, packCount);
+	const staleLine = healthSummaryIsStale(usagePayload, sessionPayload) ? "Showing stale data" : "";
+	renderText(
+		sessionMeta,
+		[scopeLabel, packLine, lastPackLine, sessionLine, staleLine].filter(Boolean).join(" · "),
+	);
+	renderStatBlocks(sessionGrid, items);
+	renderIcons();
+}
+
+function summarizePacks(usagePayload: CachedUsagePayload | null): {
+	latestPack: RecentPack | null;
+	packCount: number | null;
+	packLine: string;
+} {
+	if (!usagePayload) {
+		return { latestPack: null, packCount: null, packLine: "Pack totals unavailable" };
+	}
+	const events: UsageEvent[] = usagePayload.events;
+	const packCount = events.find((event) => event.event === "pack")?.count ?? 0;
+	return {
+		latestPack: usagePayload.recent_packs[0] ?? null,
+		packCount,
+		packLine: packCount ? `${packCount} packs` : "No packs yet",
+	};
+}
+
+function summarizeStoredItems(payload: CachedSessionPayload | null, failed: boolean): string {
+	if (payload) return `${payload.total.toLocaleString()} stored items`;
+	return failed ? "Stored-item totals unavailable" : "";
+}
+
+function healthSummaryIsStale(
+	usagePayload: CachedUsagePayload | null,
+	sessionPayload: CachedSessionPayload | null,
+): boolean {
+	return (
+		(!!usagePayload && healthResourceIsStale(state.healthUsage, state.currentProject)) ||
+		(!!sessionPayload && healthResourceIsStale(state.healthSession, state.currentProject))
+	);
+}
+
+function buildSessionItems(
+	latestPack: RecentPack | null | undefined,
+	packCount: number | null,
+): StatItem[] {
+	const latestPackMeta = latestPack?.metadata_json || {};
+	const packTokens = latestPack?.tokens_read ?? 0;
+	const savedTokens = latestPack?.tokens_saved ?? 0;
+	const dedupedCount = latestPackMeta.exact_duplicates_collapsed ?? 0;
+	const reductionPercent = formatReductionPercent(savedTokens, packTokens);
+	let dedupeValue = "n/a";
+	if (latestPack) dedupeValue = latestPackMeta.exact_dedupe_enabled ? "On" : "Off";
+	return [
 		{
 			label: "Last pack savings",
 			value: latestPack ? `${formatTokenCount(savedTokens)} (${reductionPercent})` : "n/a",
@@ -54,14 +93,9 @@ export function renderSessionSummary() {
 		},
 		{
 			label: "Exact dedupe",
-			value: latestPack ? (dedupeEnabled ? "On" : "Off") : "n/a",
+			value: dedupeValue,
 			icon: "shield-check",
 		},
-		{ label: "Packs", value: packCount || 0, icon: "archive" },
+		{ label: "Packs", value: packCount ?? "n/a", icon: "archive" },
 	];
-
-	renderText(sessionMeta, [scopeLabel, packLine, lastPackLine].filter(Boolean).join(" · "));
-	renderStatBlocks(sessionGrid, items);
-
-	renderIcons();
 }

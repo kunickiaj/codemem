@@ -2,7 +2,14 @@
 
 import * as api from "../../lib/api";
 import type { ReadRequestOptions } from "../../lib/read-request";
-import { state } from "../../lib/state";
+import type { HealthResourceState } from "../../lib/state";
+import {
+	beginHealthLoad,
+	completeHealthLoad,
+	failHealthLoad,
+	healthData,
+	state,
+} from "../../lib/state";
 import { updateFeedView } from "../feed";
 import { renderAutomaticRecall } from "./components";
 import { renderHealthOverview } from "./render/health-overview";
@@ -18,31 +25,62 @@ export async function refreshViewerStatus(options: ReadRequestOptions = {}) {
 }
 
 export async function loadHealthData(options: ReadRequestOptions = {}) {
+	const project = state.currentProject;
+	state.healthStats = beginHealthLoad(state.healthStats);
+	state.healthUsage = beginHealthLoad(state.healthUsage, project);
+	state.healthSession = beginHealthLoad(state.healthSession, project);
+	state.healthRawEvents = beginHealthLoad(state.healthRawEvents);
+	renderHealthSections();
+
 	const updateStatusPromise =
 		state.activeTab === "health" && !state.lastUpdateStatus
 			? api.loadUpdateStatus(options).catch(api.unavailableUpdateStatus)
 			: Promise.resolve(state.lastUpdateStatus);
-	const [statsPayload, usagePayload, _sessionsPayload, rawEventsPayload, updateStatus] =
+	const [statsResult, usageResult, sessionResult, rawEventsResult, updateStatus] =
 		await Promise.all([
-			api.loadStats(options),
-			api.loadUsage(state.currentProject, options),
-			api.loadSession(state.currentProject, options),
-			api.loadRawEvents(state.currentProject, options),
+			settleHealthRead(api.loadStats(options)),
+			settleHealthRead(api.loadUsage(project, options)),
+			settleHealthRead(api.loadSession(project, options)),
+			settleHealthRead(api.loadRawEvents(project, options)),
 			updateStatusPromise,
 		]);
 	if (options.signal?.aborted) return;
 
-	state.lastStatsPayload = statsPayload || {};
-	state.lastUsagePayload = usagePayload || {};
-	state.lastRawEventsPayload = rawEventsPayload || {};
+	state.healthStats = applyHealthResult(state.healthStats, statsResult);
+	state.healthUsage = applyHealthResult(state.healthUsage, usageResult, project);
+	state.healthSession = applyHealthResult(state.healthSession, sessionResult, project);
+	state.healthRawEvents = applyHealthResult(state.healthRawEvents, rawEventsResult);
 	state.lastUpdateStatus = updateStatus;
+	renderHealthSections();
+}
+
+function renderHealthSections(): void {
 	renderStats();
 	renderAutomaticRecall(
 		document.getElementById("automaticRecallStats"),
-		state.lastStatsPayload.automatic_recall,
+		healthData(state.healthStats)?.automatic_recall,
 	);
 	renderSessionSummary();
 	renderHealthOverview();
+}
+
+type HealthReadResult<T> = { ok: true; data: T } | { ok: false; error: string };
+
+async function settleHealthRead<T>(promise: Promise<T>): Promise<HealthReadResult<T>> {
+	try {
+		return { ok: true, data: await promise };
+	} catch (error) {
+		return { ok: false, error: error instanceof Error ? error.message : "Health request failed" };
+	}
+}
+
+function applyHealthResult<T>(
+	current: HealthResourceState<T>,
+	result: HealthReadResult<T>,
+	scopeKey = "",
+): HealthResourceState<T> {
+	if ("data" in result) return completeHealthLoad(result.data, Date.now(), scopeKey);
+	return failHealthLoad(current, result.error);
 }
 
 export function initHealthTab() {

@@ -28,7 +28,7 @@
     "lint": "pnpm exec biome check .",
     "lint:delta": "pnpm exec tsx packages/opencode-plugin/src/biome-ratchet-cli.ts",
     "format": "pnpm exec biome check --write packages/",
-    "tsc": "pnpm exec tsc --build",
+		"tsc": "pnpm exec tsc --build && pnpm --filter @codemem/ui typecheck:health-strict",
     "typecheck": "pnpm run tsc",
     "check": "pnpm run tsc && pnpm run lint && pnpm run test:release && pnpm run test:adapter-normalizers && pnpm run test:ci-workflow && pnpm run test",
     "codemem": "tsx --conditions source packages/cli/src/index.ts",
