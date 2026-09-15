@@ -613,7 +613,7 @@ function scanCodeToken(source: string, index: number, comments: SourceComment[])
 	if (current === '"' || current === "'") return skipQuotedString(source, index, current);
 	if (current === "`") return scanTemplate(source, index + 1, comments);
 	if (current === "{") return scanCode(source, index + 1, comments, { stopAtBrace: true });
-	if (current === "<") {
+	if (current === "<" && canStartRegex(source, index)) {
 		const end = jsxNodeEnd(source, index);
 		if (end !== undefined) {
 			scanJsxComments(source, index, end, comments);
