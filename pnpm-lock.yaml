@@ -298,6 +298,9 @@ importers:
       sqlite-vec:
         specifier: 0.1.9
         version: 0.1.9
+      zod:
+        specifier: 4.5.4
+        version: 4.5.4
     devDependencies:
       '@codemem/embeddings':
         specifier: workspace:^

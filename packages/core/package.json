@@ -37,7 +37,8 @@
 		"drizzle-orm": "catalog:",
 		"hono": "catalog:",
 		"limiter": "catalog:",
-		"sqlite-vec": "0.1.9"
+		"sqlite-vec": "0.1.9",
+		"zod": "4.5.4"
 	},
 	"peerDependencies": {
 		"@codemem/embeddings": "workspace:^"
