@@ -399,6 +399,11 @@ async function loadSnapshotInputs(root: string, baseSnapshot: Snapshot, headSnap
 		optionalFile(path.join(headSnapshot.directory, "pnpm-lock.yaml")),
 		listChanges(root, baseSnapshot.commit, headSnapshot.commit),
 	]);
+	const changesWithSources = await addSources(
+		changes,
+		baseSnapshot.directory,
+		headSnapshot.directory,
+	);
 	return {
 		baseConfigPath,
 		headConfigPath,
@@ -407,6 +412,7 @@ async function loadSnapshotInputs(root: string, baseSnapshot: Snapshot, headSnap
 		baseLockfile,
 		headLockfile,
 		changes,
+		changesWithSources,
 	};
 }
 
@@ -441,12 +447,8 @@ export async function runRatchet(
 			baseLockfile,
 			headLockfile,
 			changes,
+			changesWithSources,
 		} = await loadSnapshotInputs(root, baseSnapshot, headSnapshot);
-		const changesWithSources = await addSources(
-			changes,
-			baseSnapshot.directory,
-			headSnapshot.directory,
-		);
 		await copyFile(headConfigPath, baseConfigPath);
 		await applyHeadIgnorePolicy(changes, baseSnapshot.directory, headSnapshot.directory);
 		const [baseOutput, headOutput] = await Promise.all([
