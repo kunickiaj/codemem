@@ -9,7 +9,10 @@ import { formatDiagnostic } from "./lint-diagnostics.js";
 
 const HUMAN_DIAGNOSTIC_LIMIT = 10;
 const GITHUB_ANNOTATION_LIMIT = 10;
-const biomeEntrypoint = createRequire(import.meta.url).resolve("@biomejs/biome/bin/biome");
+
+export function resolveRootBiomeEntrypoint(root: string): string {
+	return createRequire(path.join(root, "package.json")).resolve("@biomejs/biome/bin/biome");
+}
 
 export interface CliOptions {
 	base: string;
@@ -263,18 +266,22 @@ async function applyHeadIgnorePolicy(
 	headDirectory: string,
 ): Promise<void> {
 	for (const change of changes) {
-		const ignorePath = change.afterPath ?? change.beforePath;
-		if (!ignorePath || (!ignorePath.endsWith(".gitignore") && !ignorePath.endsWith(".ignore"))) {
-			continue;
+		if (
+			change.beforePath &&
+			isIgnorePath(change.beforePath) &&
+			change.beforePath !== change.afterPath
+		) {
+			await rm(path.join(baseDirectory, change.beforePath), { force: true });
 		}
-		const basePath = path.join(baseDirectory, ignorePath);
-		if (!change.afterPath) {
-			await rm(basePath, { force: true });
-			continue;
-		}
+		if (!change.afterPath || !isIgnorePath(change.afterPath)) continue;
+		const basePath = path.join(baseDirectory, change.afterPath);
 		await mkdir(path.dirname(basePath), { recursive: true });
 		await copyFile(path.join(headDirectory, change.afterPath), basePath);
 	}
+}
+
+function isIgnorePath(filePath: string): boolean {
+	return filePath.endsWith(".gitignore") || filePath.endsWith(".ignore");
 }
 
 async function runBiome(directory: string, entrypoint: string): Promise<string> {
@@ -392,6 +399,11 @@ async function loadSnapshotInputs(root: string, baseSnapshot: Snapshot, headSnap
 		optionalFile(path.join(headSnapshot.directory, "pnpm-lock.yaml")),
 		listChanges(root, baseSnapshot.commit, headSnapshot.commit),
 	]);
+	const changesWithSources = await addSources(
+		changes,
+		baseSnapshot.directory,
+		headSnapshot.directory,
+	);
 	return {
 		baseConfigPath,
 		headConfigPath,
@@ -400,6 +412,7 @@ async function loadSnapshotInputs(root: string, baseSnapshot: Snapshot, headSnap
 		baseLockfile,
 		headLockfile,
 		changes,
+		changesWithSources,
 	};
 }
 
@@ -412,8 +425,8 @@ export async function runRatchet(
 	} = {},
 ) {
 	const cwd = dependencies.cwd ?? process.cwd();
-	const entrypoint = dependencies.biomeEntrypoint ?? biomeEntrypoint;
 	const root = (await git(cwd, ["rev-parse", "--show-toplevel"])).trim();
+	const entrypoint = dependencies.biomeEntrypoint ?? resolveRootBiomeEntrypoint(root);
 	const baseCommit = await resolveCommit(root, options.base);
 	const temporaryRoot = await mkdtemp(path.join(tmpdir(), "codemem-biome-ratchet-"));
 	let baseSnapshot: Snapshot | undefined;
@@ -434,12 +447,8 @@ export async function runRatchet(
 			baseLockfile,
 			headLockfile,
 			changes,
+			changesWithSources,
 		} = await loadSnapshotInputs(root, baseSnapshot, headSnapshot);
-		const changesWithSources = await addSources(
-			changes,
-			baseSnapshot.directory,
-			headSnapshot.directory,
-		);
 		await copyFile(headConfigPath, baseConfigPath);
 		await applyHeadIgnorePolicy(changes, baseSnapshot.directory, headSnapshot.directory);
 		const [baseOutput, headOutput] = await Promise.all([
@@ -453,7 +462,9 @@ export async function runRatchet(
 			headConfigText,
 			changes: changesWithSources,
 		});
-		comparison.policyViolations.push(...compareBiomeToolPolicy(baseLockfile, headLockfile));
+		comparison.policyViolations.push(
+			...compareBiomeToolPolicy(baseLockfile, headLockfile, changesWithSources),
+		);
 		return {
 			mode: options.head ? "refs" : "working-tree",
 			base: baseCommit,

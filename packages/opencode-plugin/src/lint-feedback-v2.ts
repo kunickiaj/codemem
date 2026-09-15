@@ -30,7 +30,7 @@ export function defineLintFeedbackV2Plugin(
 	return Plugin.define({
 		id: "codemem-lint-feedback",
 		async setup(context) {
-			const controller = dependencies.createController(context.location.directory);
+			const controller = dependencies.createController(context.location.project.directory);
 			if (!controller) return;
 
 			const registrations: Array<{ dispose(): Promise<void> }> = [];
