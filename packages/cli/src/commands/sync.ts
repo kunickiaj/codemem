@@ -1045,7 +1045,14 @@ const disableCmd = new Command("disable")
 	.description("Disable sync without deleting keys or peers");
 addConfigOption(disableCmd);
 disableCmd.action((opts: { config?: string }) => {
-	mutateCliConfig((config) => ({ ...config, sync_enabled: false }), opts.config);
+	try {
+		mutateCliConfig((config) => ({ ...config, sync_enabled: false }), opts.config);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : "Failed to disable sync";
+		p.log.error(message);
+		process.exitCode = 1;
+		return;
+	}
 	p.intro("codemem sync disable");
 	p.outro("Sync disabled — restart `codemem serve` to take effect");
 });
@@ -1407,11 +1414,18 @@ const connectCmd = new Command("connect")
 	.option("--group <group>", "sync group ID");
 addConfigOption(connectCmd);
 connectCmd.action((url: string, opts: { group?: string; config?: string }) => {
-	mutateCliConfig((config) => {
-		config.sync_coordinator_url = url.trim();
-		if (opts.group) config.sync_coordinator_group = opts.group.trim();
-		return config;
-	}, opts.config);
+	try {
+		mutateCliConfig((config) => {
+			config.sync_coordinator_url = url.trim();
+			if (opts.group) config.sync_coordinator_group = opts.group.trim();
+			return config;
+		}, opts.config);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : "Failed to configure coordinator sync";
+		p.log.error(message);
+		process.exitCode = 1;
+		return;
+	}
 	p.intro("codemem sync connect");
 	p.log.success(`Coordinator: ${url.trim()}`);
 	if (opts.group) p.log.info(`Group: ${opts.group.trim()}`);

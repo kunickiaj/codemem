@@ -190,6 +190,34 @@ export class RemoteCoordinatorRequestError extends Error {
 	}
 }
 
+function isAlreadyArchivedRemoteError(error: unknown): boolean {
+	return (
+		error instanceof RemoteCoordinatorRequestError &&
+		error.status === 404 &&
+		error.code === "group_not_found_or_already_archived"
+	);
+}
+
+function archivedGroupFromPayload(
+	payload: Record<string, unknown> | null,
+	groupId: string,
+): CoordinatorGroup {
+	const group = payload?.group;
+	const archivedAt =
+		group && typeof group === "object" && "archived_at" in group ? group.archived_at : null;
+	const archivedGroupId =
+		group && typeof group === "object" && "group_id" in group ? group.group_id : null;
+	if (
+		archivedGroupId !== groupId ||
+		typeof archivedAt !== "string" ||
+		!archivedAt.trim() ||
+		!Number.isFinite(Date.parse(archivedAt))
+	) {
+		throw new Error("Coordinator archive response missing group.");
+	}
+	return group as CoordinatorGroup;
+}
+
 async function remoteRequest(
 	method: string,
 	url: string,
@@ -430,12 +458,10 @@ export async function coordinatorArchiveGroupAction(opts: {
 				{ group_id: groupId },
 			);
 		} catch (error) {
-			if (error instanceof Error && error.message.includes("group_not_found_or_already_archived"))
-				return null;
+			if (isAlreadyArchivedRemoteError(error)) return null;
 			throw error;
 		}
-		const group = payload?.group;
-		return group && typeof group === "object" ? (group as CoordinatorGroup) : null;
+		return archivedGroupFromPayload(payload, groupId);
 	}
 	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
 	try {

@@ -7585,12 +7585,23 @@ export function syncRoutes(
 				remoteUrl: config.syncCoordinatorUrl || null,
 				adminSecret: config.syncCoordinatorAdminSecret || null,
 			});
-			if (!group) return c.json({ error: "group_not_found_or_already_archived", status }, 404);
 			const groups = removeConfiguredCoordinatorGroup(groupId);
+			const currentStatus = coordinatorAdminStatusPayload();
+			if (!group) {
+				return c.json(
+					{
+						error: "group_not_found_or_already_archived",
+						status: currentStatus,
+						disconnected_group_id: groupId,
+						groups,
+					},
+					404,
+				);
+			}
 			return c.json({
 				ok: true,
 				group,
-				status: coordinatorAdminStatusPayload(),
+				status: currentStatus,
 				disconnected_group_id: groupId,
 				groups,
 			});

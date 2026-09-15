@@ -1,6 +1,7 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as p from "@clack/prompts";
 import {
 	connect,
 	ensureDeviceIdentity,
@@ -21,6 +22,15 @@ import {
 	formatSyncOnceResult,
 	parseProjectList,
 } from "./sync-helpers.js";
+
+const configFailureFixtures = {
+	malformed: (configPath: string) => writeFileSync(configPath, "{", "utf8"),
+	unreadable: (configPath: string) => mkdirSync(configPath),
+	"active-lock": (configPath: string) => {
+		writeFileSync(configPath, '{"sync_enabled":true}\n', "utf8");
+		writeFileSync(`${configPath}.lock`, "active writer", "utf8");
+	},
+} satisfies Record<string, (configPath: string) => void>;
 
 describe("formatSyncAttempt", () => {
 	it("matches the compact Python-era output shape", () => {
@@ -692,4 +702,42 @@ describe("formatSyncAttempt", () => {
 			rmSync(tmpDbDir, { recursive: true, force: true });
 		}
 	});
+});
+
+describe("sync config mutation errors", () => {
+	for (const commandName of ["disable", "connect"] as const) {
+		it(`sync ${commandName} reports failures without success output`, async () => {
+			const tmpConfigDir = mkdtempSync(join(tmpdir(), `sync-${commandName}-config-failure-`));
+			const command = syncCommand.commands.find((candidate) => candidate.name() === commandName);
+			const logErrorSpy = vi.spyOn(p.log, "error").mockImplementation(() => {});
+			const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+			const prevExitCode = process.exitCode;
+			try {
+				for (const failure of ["malformed", "unreadable", "active-lock"] as const) {
+					const configPath = join(tmpConfigDir, `${failure}.json`);
+					configFailureFixtures[failure](configPath);
+					process.exitCode = undefined;
+					logErrorSpy.mockClear();
+					writeSpy.mockClear();
+					const args =
+						commandName === "connect"
+							? ["https://coord.example.test", "--config", configPath]
+							: ["--config", configPath];
+					await command?.parseAsync(args, { from: "user" });
+					const output = writeSpy.mock.calls.map((call) => String(call[0])).join("\n");
+					expect(process.exitCode).toBe(1);
+					expect(logErrorSpy).toHaveBeenCalledWith(
+						expect.stringContaining("Cannot update config because"),
+					);
+					expect(output).not.toContain("Sync disabled");
+					expect(output).not.toContain("Coordinator:");
+				}
+			} finally {
+				logErrorSpy.mockRestore();
+				writeSpy.mockRestore();
+				process.exitCode = prevExitCode;
+				rmSync(tmpConfigDir, { recursive: true, force: true });
+			}
+		});
+	}
 });
