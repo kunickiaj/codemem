@@ -55,6 +55,10 @@ export interface RuntimeInfo {
 	version: string;
 }
 
+export interface ViewerStatus {
+	identity: { actor_id: string };
+}
+
 /** Browser-side mirror of the additive /api/update-status wire contract. */
 export interface UpdateStatus {
 	current_version: string;

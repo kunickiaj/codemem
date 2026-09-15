@@ -15,6 +15,13 @@ function databaseReachable(getStore: StoreFactory): boolean {
 export function healthRoutes(getStore: StoreFactory) {
 	const app = new Hono();
 
+	app.get("/api/viewer-status", (c) => {
+		const store = getStore();
+		store.db.pragma("schema_version", { simple: true });
+		c.header("Cache-Control", "no-store");
+		return c.json({ identity: { actor_id: store.actorId } });
+	});
+
 	app.get("/api/health", (c) => {
 		const reachable = databaseReachable(getStore);
 		c.header("Cache-Control", "no-store");

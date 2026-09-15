@@ -24,7 +24,7 @@ function createStoreDouble(options?: { probeError?: Error }) {
 	const stats = vi.fn(() => {
 		throw new Error("health must not aggregate database stats");
 	});
-	const store = { db: { pragma }, stats } as unknown as MemoryStore;
+	const store = { actorId: "actor-local", db: { pragma }, stats } as unknown as MemoryStore;
 	return { store, pragma, stats };
 }
 
@@ -167,6 +167,25 @@ describe("GET /api/health", () => {
 			});
 			expect(JSON.stringify(body)).not.toContain(privateErrorDetail);
 			expect(pragma).toHaveBeenCalledOnce();
+			expect(stats).not.toHaveBeenCalled();
+		} finally {
+			cleanup();
+		}
+	});
+});
+
+describe("GET /api/viewer-status", () => {
+	it("returns only the current actor identity after a cheap database probe", async () => {
+		const { store, pragma, stats } = createStoreDouble();
+		const { app, cleanup } = createMountedApp(() => store);
+
+		try {
+			const response = await app.request("/api/viewer-status");
+
+			expect(response.status).toBe(200);
+			expect(await response.json()).toEqual({ identity: { actor_id: "actor-local" } });
+			expect(response.headers.get("cache-control")).toBe("no-store");
+			expect(pragma).toHaveBeenCalledWith("schema_version", { simple: true });
 			expect(stats).not.toHaveBeenCalled();
 		} finally {
 			cleanup();

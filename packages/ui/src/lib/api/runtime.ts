@@ -4,7 +4,7 @@
 
 import type { ReadRequestOptions } from "../read-request";
 import { fetchJson } from "./internal";
-import type { RuntimeInfo } from "./types";
+import type { RuntimeInfo, ViewerStatus } from "./types";
 
 export async function pingViewerReady(timeoutMs = 1200): Promise<void> {
 	const controller = new AbortController();
@@ -22,6 +22,10 @@ export async function pingViewerReady(timeoutMs = 1200): Promise<void> {
 
 export async function loadRuntimeInfo(): Promise<RuntimeInfo> {
 	return fetchJson("/api/runtime");
+}
+
+export function loadViewerStatus(options: ReadRequestOptions = {}): Promise<ViewerStatus> {
+	return fetchJson("/api/viewer-status", options);
 }
 
 export async function loadProjects(options: ReadRequestOptions = {}): Promise<string[]> {

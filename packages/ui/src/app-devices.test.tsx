@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
 	loadDeviceIdentityInventory: vi.fn(),
 	loadLegacyTeamSetupDetail: vi.fn(),
 	loadHealthData: vi.fn(),
+	refreshViewerStatus: vi.fn(),
 	loadProjectsData: vi.fn(),
 	loadRecipientPolicyIntent: vi.fn(),
 	loadRecipientPolicyReconciliationStatus: vi.fn(),
@@ -56,6 +57,8 @@ vi.mock("./tabs/feed", () => ({
 vi.mock("./tabs/health", () => ({
 	initHealthTab: vi.fn(),
 	loadHealthData: mocks.loadHealthData,
+	markHealthStatusUnchecked: vi.fn(),
+	refreshViewerStatus: mocks.refreshViewerStatus,
 }));
 vi.mock("./tabs/legacy-team-setup-dialog", () => ({
 	mountLegacyTeamSetupDialog: mocks.mountLegacyTeamSetupDialog,
@@ -167,7 +170,7 @@ async function verifyRestorationWaitsForQueuedActiveTabRefresh(): Promise<void> 
 	const { state } = await import("./lib/state");
 	const connectionEvents = await import("./components/diagnostics/viewer-connection-events");
 	connectionEvents.resetViewerConnectionEventsForTests();
-	mocks.loadHealthData.mockRejectedValueOnce(new Error("viewer unavailable"));
+	mocks.refreshViewerStatus.mockRejectedValueOnce(new Error("viewer unavailable"));
 	mocks.pingViewerReady.mockRejectedValueOnce(new Error("viewer unavailable"));
 
 	await act(async () => {
@@ -216,7 +219,7 @@ async function verifyHealthRestorationWaitsForSyncRefresh(): Promise<void> {
 	const connectionEvents = await import("./components/diagnostics/viewer-connection-events");
 	connectionEvents.resetViewerConnectionEventsForTests();
 	state.activeTab = "health";
-	mocks.loadHealthData.mockRejectedValueOnce(new Error("viewer unavailable"));
+	mocks.refreshViewerStatus.mockRejectedValueOnce(new Error("viewer unavailable"));
 	mocks.pingViewerReady.mockRejectedValueOnce(new Error("viewer unavailable"));
 
 	await act(async () => {
@@ -252,7 +255,7 @@ async function verifyHealthRestorationWaitsForSyncRefresh(): Promise<void> {
 async function verifyDevicesRestorationWaitsForSyncRefresh(): Promise<void> {
 	const connectionEvents = await import("./components/diagnostics/viewer-connection-events");
 	connectionEvents.resetViewerConnectionEventsForTests();
-	mocks.loadHealthData.mockRejectedValueOnce(new Error("viewer unavailable"));
+	mocks.refreshViewerStatus.mockRejectedValueOnce(new Error("viewer unavailable"));
 	mocks.pingViewerReady.mockRejectedValueOnce(new Error("viewer unavailable"));
 
 	await act(async () => {
@@ -285,7 +288,7 @@ async function verifyPairingRestorationWaitsForRefresh(): Promise<void> {
 	state.activeTab = "advanced";
 	state.advancedSection = "sync";
 	state.syncPairingOpen = true;
-	mocks.loadHealthData.mockRejectedValueOnce(new Error("viewer unavailable"));
+	mocks.refreshViewerStatus.mockRejectedValueOnce(new Error("viewer unavailable"));
 	mocks.pingViewerReady.mockRejectedValueOnce(new Error("viewer unavailable"));
 
 	await act(async () => {
@@ -312,7 +315,7 @@ async function verifyHiddenPairingFailureDoesNotBlockRestoration(): Promise<void
 	const connectionEvents = await import("./components/diagnostics/viewer-connection-events");
 	connectionEvents.resetViewerConnectionEventsForTests();
 	state.syncPairingOpen = true;
-	mocks.loadHealthData.mockRejectedValueOnce(new Error("viewer unavailable"));
+	mocks.refreshViewerStatus.mockRejectedValueOnce(new Error("viewer unavailable"));
 	mocks.pingViewerReady.mockRejectedValueOnce(new Error("viewer unavailable"));
 
 	await act(async () => {
@@ -332,7 +335,7 @@ async function verifyHiddenPairingFailureDoesNotBlockRestoration(): Promise<void
 async function verifyDevicesRestorationIgnoresAuxiliarySyncFailures(): Promise<void> {
 	const connectionEvents = await import("./components/diagnostics/viewer-connection-events");
 	connectionEvents.resetViewerConnectionEventsForTests();
-	mocks.loadHealthData.mockRejectedValueOnce(new Error("viewer unavailable"));
+	mocks.refreshViewerStatus.mockRejectedValueOnce(new Error("viewer unavailable"));
 	mocks.pingViewerReady.mockRejectedValueOnce(new Error("viewer unavailable"));
 
 	await act(async () => {
@@ -380,6 +383,7 @@ async function setupDevicesAppTest() {
 	mocks.loadCoordinatorAdminData.mockResolvedValue(true);
 	mocks.loadPairingData.mockResolvedValue(true);
 	mocks.loadHealthData.mockResolvedValue(undefined);
+	mocks.refreshViewerStatus.mockResolvedValue(undefined);
 	mocks.loadSyncStatus.mockResolvedValue({});
 	mocks.pingViewerReady.mockResolvedValue(true);
 	mocks.loadLegacyTeamSetupDetail.mockResolvedValue({
@@ -781,7 +785,7 @@ describe("Devices app integration", () => {
 	it("records restoration only after the active Devices refresh succeeds", async () => {
 		const connectionEvents = await import("./components/diagnostics/viewer-connection-events");
 		connectionEvents.resetViewerConnectionEventsForTests();
-		mocks.loadHealthData.mockRejectedValueOnce(new Error("viewer unavailable"));
+		mocks.refreshViewerStatus.mockRejectedValueOnce(new Error("viewer unavailable"));
 		mocks.pingViewerReady.mockRejectedValueOnce(new Error("viewer unavailable"));
 
 		await act(async () => {
@@ -829,7 +833,7 @@ describe("Devices app integration", () => {
 			connectionEvents.resetViewerConnectionEventsForTests();
 			state.activeTab = "advanced";
 			state.advancedSection = advancedSection;
-			mocks.loadHealthData.mockRejectedValueOnce(new Error("viewer unavailable"));
+			mocks.refreshViewerStatus.mockRejectedValueOnce(new Error("viewer unavailable"));
 			mocks.pingViewerReady.mockRejectedValueOnce(new Error("viewer unavailable"));
 
 			await act(async () => {

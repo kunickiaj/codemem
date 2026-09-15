@@ -9,7 +9,7 @@ import type { FeedItem, FeedItemMetadata } from "../types";
 function isOwnedBySelf(item: FeedItem): boolean {
 	if (item.owned_by_self === true) return true;
 	const actorId = String(item.actor_id || "").trim();
-	return Boolean(actorId && actorId === state.lastStatsPayload?.identity?.actor_id);
+	return Boolean(actorId && actorId === state.viewerActorId);
 }
 
 export function mergeMetadata(metadata: unknown): FeedItemMetadata {

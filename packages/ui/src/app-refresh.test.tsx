@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
 	loadCoordinatorAdminData: vi.fn(),
 	loadFeedData: vi.fn(),
 	loadHealthData: vi.fn(),
+	markHealthStatusUnchecked: vi.fn(),
+	refreshViewerStatus: vi.fn(),
 	loadPairingData: vi.fn(),
 	loadProjectsData: vi.fn(),
 	loadRecipientPolicySharingData: vi.fn(),
@@ -68,6 +70,8 @@ vi.mock("./tabs/feed", () => ({
 vi.mock("./tabs/health", () => ({
 	initHealthTab: vi.fn(),
 	loadHealthData: mocks.loadHealthData,
+	markHealthStatusUnchecked: mocks.markHealthStatusUnchecked,
+	refreshViewerStatus: mocks.refreshViewerStatus,
 }));
 vi.mock("./tabs/legacy-team-setup-dialog", () => ({
 	mountLegacyTeamSetupDialog: vi.fn(),
@@ -138,6 +142,7 @@ async function setupRefreshAppTest() {
 	mocks.loadCoordinatorAdminData.mockResolvedValue(true);
 	mocks.loadFeedData.mockResolvedValue(undefined);
 	mocks.loadHealthData.mockResolvedValue(undefined);
+	mocks.refreshViewerStatus.mockResolvedValue(undefined);
 	mocks.loadPairingData.mockResolvedValue(true);
 	mocks.loadProjectsData.mockResolvedValue(true);
 	mocks.loadRecipientPolicySharingData.mockResolvedValue(true);
@@ -149,6 +154,9 @@ async function setupRefreshAppTest() {
 		await vi.advanceTimersByTimeAsync(100);
 	});
 	mocks.loadProjectsData.mockClear();
+	mocks.loadHealthData.mockClear();
+	mocks.markHealthStatusUnchecked.mockClear();
+	mocks.refreshViewerStatus.mockClear();
 }
 
 describe("app refresh session wiring", () => {
@@ -406,5 +414,39 @@ describe("app refresh deadlines", () => {
 		// Assert
 		expect(document.getElementById("refreshStatus")?.dataset.refreshState).toBe("paused");
 		expect(document.getElementById("viewerReconnectOverlay")?.hidden).toBe(true);
+	});
+});
+
+describe("app Health polling", () => {
+	beforeEach(setupRefreshAppTest);
+	afterEach(() => {
+		vi.clearAllTimers();
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+		document.body.innerHTML = "";
+		window.location.hash = "";
+	});
+
+	it("polls lightweight status without loading detailed Health data off-tab", async () => {
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(5_100);
+		});
+
+		expect(mocks.refreshViewerStatus).toHaveBeenCalledOnce();
+		expect(mocks.loadHealthData).not.toHaveBeenCalled();
+		expect(mocks.markHealthStatusUnchecked).toHaveBeenCalled();
+	});
+
+	it("loads detailed Health data on a visible Health polling tick", async () => {
+		const { state } = await import("./lib/state");
+		state.activeTab = "health";
+
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(5_100);
+		});
+
+		expect(mocks.refreshViewerStatus).toHaveBeenCalledOnce();
+		expect(mocks.loadHealthData).toHaveBeenCalledOnce();
+		expect(mocks.markHealthStatusUnchecked).not.toHaveBeenCalled();
 	});
 });

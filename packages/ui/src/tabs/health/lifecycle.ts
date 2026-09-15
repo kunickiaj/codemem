@@ -1,7 +1,4 @@
-/* Health tab lifecycle — owns loadHealthData (stats, usage, sessions,
- * raw events fetch + renders) and initHealthTab. renderFeedView fires
- * if the actor id changed between loads so the feed refreshes after
- * an identity switch. */
+/* Health tab lifecycle — owns lightweight viewer status plus detailed Health loads. */
 
 import * as api from "../../lib/api";
 import type { ReadRequestOptions } from "../../lib/read-request";
@@ -12,8 +9,15 @@ import { renderHealthOverview } from "./render/health-overview";
 import { renderSessionSummary } from "./render/session-summary";
 import { renderStats } from "./render/stats";
 
+export async function refreshViewerStatus(options: ReadRequestOptions = {}) {
+	const previousActorId = state.viewerActorId;
+	const status = await api.loadViewerStatus(options);
+	if (options.signal?.aborted) return;
+	state.viewerActorId = status.identity.actor_id;
+	if (state.activeTab === "feed" && previousActorId !== state.viewerActorId) updateFeedView(true);
+}
+
 export async function loadHealthData(options: ReadRequestOptions = {}) {
-	const previousActorId = state.lastStatsPayload?.identity?.actor_id || null;
 	const updateStatusPromise =
 		state.activeTab === "health" && !state.lastUpdateStatus
 			? api.loadUpdateStatus(options).catch(api.unavailableUpdateStatus)
@@ -32,8 +36,6 @@ export async function loadHealthData(options: ReadRequestOptions = {}) {
 	state.lastUsagePayload = usagePayload || {};
 	state.lastRawEventsPayload = rawEventsPayload || {};
 	state.lastUpdateStatus = updateStatus;
-	const nextActorId = state.lastStatsPayload?.identity?.actor_id || null;
-
 	renderStats();
 	renderAutomaticRecall(
 		document.getElementById("automaticRecallStats"),
@@ -41,9 +43,6 @@ export async function loadHealthData(options: ReadRequestOptions = {}) {
 	);
 	renderSessionSummary();
 	renderHealthOverview();
-	if (state.activeTab === "feed" && previousActorId !== nextActorId) {
-		updateFeedView(true);
-	}
 }
 
 export function initHealthTab() {

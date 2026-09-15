@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UpdateStatus } from "../lib/api";
 import * as api from "../lib/api";
 import { state } from "../lib/state";
-import { renderHealthOverview, renderStats } from "./health";
+import { markHealthStatusUnchecked, renderHealthOverview, renderStats } from "./health";
 import { renderAutomaticRecall } from "./health/components";
 import { loadHealthData } from "./health/lifecycle";
 
@@ -58,6 +58,13 @@ beforeEach(() => {
 	state.lastRawEventsPayload = {};
 	state.lastSyncStatus = { enabled: false, daemon_state: "disabled" };
 	state.lastSyncPeers = [];
+});
+
+it("marks the global Health indicator as unchecked when details are not loading", () => {
+	markHealthStatusUnchecked();
+
+	expect(document.getElementById("healthDot")?.className).toBe("health-dot status-unknown");
+	expect(document.getElementById("healthDot")?.title).toBe("Open Health to check status");
 });
 
 describe("Usage metric provenance", () => {

@@ -295,6 +295,7 @@ export const state = {
 
 	/* Cached payloads */
 	lastStatsPayload: null as CachedStatsPayload | null,
+	viewerActorId: null as string | null,
 	lastUsagePayload: null as CachedUsagePayload | null,
 	lastRawEventsPayload: null as CachedRawEventsPayload | null,
 	lastUpdateStatus: null as UpdateStatus | null,

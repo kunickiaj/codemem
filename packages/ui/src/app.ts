@@ -54,7 +54,12 @@ import {
 	mountDevices,
 } from "./tabs/devices";
 import { initFeedTab, loadFeedData, updateFeedView } from "./tabs/feed";
-import { initHealthTab, loadHealthData } from "./tabs/health";
+import {
+	initHealthTab,
+	loadHealthData,
+	markHealthStatusUnchecked,
+	refreshViewerStatus,
+} from "./tabs/health";
 import { mountLegacyTeamSetupDialog, openLegacyTeamSetup } from "./tabs/legacy-team-setup-dialog";
 import { initProjectsTab, loadProjectsData } from "./tabs/projects";
 import { toRecipientPolicyManagementProjects } from "./tabs/recipient-policy-projects";
@@ -754,7 +759,7 @@ let refreshDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 async function loadGlobalRefreshData(session: RefreshSession): Promise<void> {
 	await Promise.all([
-		loadHealthData({ signal: session.signal }),
+		refreshViewerStatus({ signal: session.signal }),
 		loadConfigData({ signal: session.signal }),
 		coordinatedRefreshDiagnosticsDrawer().catch(() => undefined),
 	]);
@@ -766,6 +771,7 @@ function appendTabRefreshTasks(
 	recordBooleanResult: (succeeded: boolean) => void,
 	session: RefreshSession,
 ): void {
+	if (refreshTab !== "health") markHealthStatusUnchecked();
 	if (refreshTab === "feed") {
 		const coordinatorGeneration = beginStandaloneCoordinatorAdminStatusRefresh();
 		promises.push(
@@ -793,6 +799,7 @@ function appendTabRefreshTasks(
 	}
 	if (refreshTab === "health") {
 		promises.push(
+			loadHealthData({ signal: session.signal }),
 			loadSyncData({
 				requiredSurface: "health",
 				requireFreshSyncStatus: viewerIncidentAwaitingRefresh,

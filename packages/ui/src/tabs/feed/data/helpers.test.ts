@@ -5,6 +5,7 @@ import { authorLabel, deviceLabel, itemTags } from "./helpers";
 
 beforeEach(() => {
 	state.lastStatsPayload = null;
+	state.viewerActorId = null;
 });
 
 describe("itemTags", () => {
@@ -21,6 +22,13 @@ describe("itemTags", () => {
 });
 
 describe("Feed identity labels", () => {
+	it("uses the shared viewer identity without a Health stats load", () => {
+		state.viewerActorId = "actor-local";
+
+		expect(authorLabel({ actor_id: "actor-local" })).toBe("You");
+		expect(deviceLabel({ actor_id: "actor-local", origin_device_id: "device-local" })).toBe("");
+	});
+
 	it("prefers resolved actor and device labels", () => {
 		const item = {
 			actor_id: "local:0ea043cc-c61c-427d-8b77-572331b9855c",

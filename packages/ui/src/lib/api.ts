@@ -47,7 +47,7 @@ export {
 	tracePack,
 	updateMemoryVisibility,
 } from "./api/memories";
-export { loadProjects, loadRuntimeInfo, pingViewerReady } from "./api/runtime";
+export { loadProjects, loadRuntimeInfo, loadViewerStatus, pingViewerReady } from "./api/runtime";
 export { loadRawEvents, loadSession, loadStats, loadUsage } from "./api/stats";
 export type {
 	CreatedRecipientInvite,
@@ -192,5 +192,6 @@ export type {
 	SyncRunItem,
 	SyncRunResponse,
 	UpdateStatus,
+	ViewerStatus,
 } from "./api/types";
 export { loadUpdateStatus, unavailableUpdateStatus } from "./api/update-status";
