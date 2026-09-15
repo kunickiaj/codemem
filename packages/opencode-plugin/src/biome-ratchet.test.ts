@@ -16,6 +16,7 @@ import {
 	formatHumanResult,
 	parseArguments,
 	parseNameStatus,
+	resolveRootBiomeEntrypoint,
 	runRatchet,
 } from "./biome-ratchet-cli.js";
 import type { LintDiagnostic } from "./lint-diagnostics.js";
@@ -95,6 +96,77 @@ describe("Biome diagnostic comparison", () => {
 		).toEqual([added]);
 	});
 
+	it("preserves an unambiguous measured diagnostic when its scope is renamed", () => {
+		const before = {
+			...diagnostic("src/a.ts", 10, 18, "function beforeName"),
+			scopeIdentity: ":function:beforeName",
+		};
+		const after = {
+			...diagnostic("src/a.ts", 10, 18, "function afterName"),
+			scopeIdentity: ":function:afterName",
+		};
+
+		expect(
+			compareChangedDiagnostics(
+				[before],
+				[after],
+				[{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" }],
+			),
+		).toEqual([]);
+	});
+});
+
+describe("Biome diagnostic scope comparison", () => {
+	it("does not cross-pair a deleted measured scope with a remaining regression", () => {
+		const deleted = {
+			...diagnostic("src/a.ts", 10, 30, "deleted function"),
+			scopeIdentity: ":function:deleted",
+		};
+		const previous = {
+			...diagnostic("src/a.ts", 30, 10, "remaining function"),
+			scopeIdentity: ":function:remaining",
+		};
+		const regression = {
+			...diagnostic("src/a.ts", 30, 20, "remaining function changed"),
+			scopeIdentity: ":function:remaining",
+		};
+
+		expect(
+			compareChangedDiagnostics(
+				[deleted, previous],
+				[regression],
+				[{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" }],
+			),
+		).toEqual([regression]);
+	});
+
+	it("does not assign a preceding class to a later top-level diagnostic", () => {
+		const report = JSON.stringify({
+			summary: { errors: 0, warnings: 1, infos: 0, diagnosticsNotPrinted: 0 },
+			diagnostics: [
+				{
+					category: "lint/style/useConst",
+					description: "Use const instead",
+					location: {
+						path: "src/a.ts",
+						start: { line: 4, column: 1 },
+						end: { line: 4, column: 15 },
+					},
+				},
+			],
+		});
+		const source = (className: string) => `class ${className} {\n\tmethod() {}\n}\nlet value = 1;`;
+		const before = parsePinnedBiomeReport(report, () => source("Before"));
+		const after = parsePinnedBiomeReport(report, () => source("After"));
+
+		expect(before[0]?.scopeIdentity).toBe(":binding:value");
+		expect(
+			compareChangedDiagnostics(before, after, [
+				{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
+			]),
+		).toEqual([]);
+	});
+
 	it("maps renames and ignores diagnostics removed with deleted files", () => {
 		const before = [
 			diagnostic("src/old.ts", 4, 16, "same"),
@@ -110,6 +182,23 @@ describe("Biome diagnostic comparison", () => {
 					{ status: "renamed", beforePath: "src/old.ts", afterPath: "src/new.ts" },
 					{ status: "deleted", beforePath: "src/gone.ts" },
 				],
+			),
+		).toEqual([]);
+	});
+});
+
+describe("Biome diagnostic ambiguity handling", () => {
+	it("accepts complete removal of repeated measured diagnostics", () => {
+		const before = [
+			diagnostic("src/a.ts", 10, 30, "first legacy function"),
+			diagnostic("src/a.ts", 30, 20, "second legacy function"),
+		];
+
+		expect(
+			compareChangedDiagnostics(
+				before,
+				[],
+				[{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" }],
 			),
 		).toEqual([]);
 	});
@@ -208,7 +297,29 @@ describe("pinned Biome report schema", () => {
 
 describe("Biome policy comparison", () => {
 	it("requires an explicit policy migration when the pinned Biome version changes", () => {
-		const lockfile = (version: string) => `packages:\n\n  '@biomejs/biome@${version}':\n`;
+		const lockfile = (version: string, packageVersions = [version]) => `importers:
+
+  .:
+    devDependencies:
+      '@biomejs/biome':
+        specifier: 'catalog:'
+        version: ${version}
+${packageVersions
+	.slice(1)
+	.map(
+		(packageVersion, index) => `
+  packages/tool-${index}:
+    devDependencies:
+      '@biomejs/biome':
+        specifier: ${packageVersion}
+        version: ${packageVersion}`,
+	)
+	.join("")}
+
+packages:
+
+${packageVersions.map((packageVersion) => `  '@biomejs/biome@${packageVersion}':`).join("\n")}
+`;
 
 		expect(
 			compareBiomeToolPolicy(lockfile(SUPPORTED_BIOME_VERSION), lockfile("2.6.0")),
@@ -221,15 +332,59 @@ describe("Biome policy comparison", () => {
 		).toEqual([]);
 		expect(
 			compareBiomeToolPolicy(
-				lockfile(SUPPORTED_BIOME_VERSION).repeat(2),
-				lockfile(SUPPORTED_BIOME_VERSION).repeat(2),
+				lockfile(SUPPORTED_BIOME_VERSION),
+				lockfile(SUPPORTED_BIOME_VERSION, [SUPPORTED_BIOME_VERSION, "2.6.0"]),
 			),
 		).toEqual([]);
 		expect(compareBiomeToolPolicy(undefined, undefined)).toMatchObject([
 			{ kind: "coverage", path: "pnpm-lock.yaml" },
 		]);
 	});
+});
 
+describe("Biome dependency selection policy", () => {
+	it("requires review when dependency inputs select a different Biome binary", () => {
+		const lockfile = [
+			"importers:",
+			"",
+			"  .:",
+			"    devDependencies:",
+			"      '@biomejs/biome':",
+			"        specifier: 'catalog:'",
+			`        version: ${SUPPORTED_BIOME_VERSION}`,
+		].join("\n");
+		for (const [changedPath, beforeSource, afterSource] of [
+			[
+				"pnpm-workspace.yaml",
+				'catalog:\n  "@biomejs/biome": ^2.5.11\n',
+				'catalog:\n  "@biomejs/biome": ^2.6.0\n',
+			],
+			[
+				"package.json",
+				'{"devDependencies":{"@biomejs/biome":"catalog:"}}',
+				'{"devDependencies":{"@biomejs/biome":"2.6.0"}}',
+			],
+		] as const) {
+			expect(
+				compareBiomeToolPolicy(lockfile, lockfile, [
+					{
+						status: "modified",
+						beforePath: changedPath,
+						afterPath: changedPath,
+						beforeSource,
+						afterSource,
+					},
+				]),
+			).toContainEqual({
+				kind: "coverage",
+				message: expect.stringContaining("Biome dependency selection changed"),
+				path: changedPath,
+			});
+		}
+	});
+});
+
+describe("Biome policy comparison", () => {
 	it("fails coverage, severity, threshold, and suppression weakening", () => {
 		const violations = compareBiomePolicy(
 			config(),
@@ -252,7 +407,9 @@ describe("Biome policy comparison", () => {
 			"suppression",
 		]);
 	});
+});
 
+describe("Biome preset policy comparison", () => {
 	it("rejects a new explicit rule disable that could override a preset", () => {
 		const baseConfig = JSON.stringify({
 			linter: { enabled: true, rules: { preset: "recommended" } },
@@ -289,6 +446,71 @@ describe("Biome policy comparison", () => {
 		}
 	});
 
+	it("rejects newly weakened severities for all preset rules", () => {
+		const baseConfig = JSON.stringify({ linter: { rules: { preset: "all" } } });
+		const headConfig = JSON.stringify({
+			linter: { rules: { preset: "all", correctness: { noUnusedVariables: "warn" } } },
+		});
+
+		expect(compareBiomePolicy(baseConfig, headConfig, [])).toContainEqual({
+			kind: "rule-level",
+			message: "Biome preset rule weakened: correctness.noUnusedVariables",
+		});
+	});
+
+	it("requires review for options added to an implicitly enabled preset rule", () => {
+		const baseConfig = JSON.stringify({ linter: { rules: { preset: "all" } } });
+		const headConfig = JSON.stringify({
+			linter: {
+				rules: {
+					preset: "all",
+					complexity: {
+						noExcessiveLinesPerFunction: {
+							level: "error",
+							options: { maxLines: 1_000 },
+						},
+					},
+				},
+			},
+		});
+
+		expect(compareBiomePolicy(baseConfig, headConfig, [])).toContainEqual({
+			kind: "rule-level",
+			message:
+				"Biome rule options changed; explicit policy review required: complexity.noExcessiveLinesPerFunction",
+		});
+	});
+
+	it("rejects narrowing default coverage with explicit includes", () => {
+		expect(
+			compareBiomePolicy("{}", JSON.stringify({ files: { includes: ["src/**"] } }), []),
+		).toContainEqual({
+			kind: "coverage",
+			message: "Biome includes added to default coverage; explicit coverage review required",
+		});
+	});
+
+	it("rejects coverage-reducing include reorders", () => {
+		const baseConfig = JSON.stringify({ files: { includes: ["!legacy/**", "**"] } });
+		const headConfig = JSON.stringify({ files: { includes: ["**", "!legacy/**"] } });
+
+		expect(compareBiomePolicy(baseConfig, headConfig, [])).toContainEqual({
+			kind: "coverage",
+			message: "Biome include ordering changed; explicit coverage review required",
+		});
+	});
+
+	it("allows removal of an explicitly disabled rule", () => {
+		const baseConfig = JSON.stringify({
+			linter: { rules: { preset: "recommended", correctness: { noUnusedVariables: "off" } } },
+		});
+		const headConfig = JSON.stringify({ linter: { rules: { preset: "recommended" } } });
+
+		expect(compareBiomePolicy(baseConfig, headConfig, [])).toEqual([]);
+	});
+});
+
+describe("Biome suppression policy comparison", () => {
 	it("detects changed suppression identities even when the count is unchanged", () => {
 		expect(
 			compareBiomePolicy(config(), config(), [
@@ -324,7 +546,32 @@ describe("Biome policy comparison", () => {
 			{ kind: "threshold" },
 		]);
 	});
+});
 
+describe("Biome default threshold policy", () => {
+	it("requires review when an explicit threshold replaces the Biome default", () => {
+		const base = JSON.stringify({
+			linter: {
+				rules: {
+					complexity: {
+						noExcessiveLinesPerFunction: {
+							level: "warn",
+							options: { skipBlankLines: true },
+						},
+					},
+				},
+			},
+		});
+		const head = base.replace('skipBlankLines":true', 'skipBlankLines":true,"maxLines":1000');
+
+		expect(compareBiomePolicy(base, head, [])).toContainEqual({
+			kind: "threshold",
+			message: "Biome threshold increased: complexity.noExcessiveLinesPerFunction",
+		});
+	});
+});
+
+describe("Biome suppression policy comparison", () => {
 	it("does not treat suppression text inside a string as a directive", () => {
 		expect(
 			compareBiomePolicy(config(), config(), [
@@ -337,6 +584,113 @@ describe("Biome policy comparison", () => {
 				},
 			]),
 		).toEqual([]);
+	});
+
+	it("does not treat suppression-like JSX text as a directive", () => {
+		const tsxConfig = config({ include: ["src/**/*.tsx"] });
+		const jsxExamples = [
+			"const example = <code>// biome-ignore lint/suspicious/noExplicitAny</code>;",
+			"const example = <>// biome-ignore lint/suspicious/noExplicitAny</>;",
+		];
+
+		for (const afterSource of jsxExamples) {
+			expect(
+				compareBiomePolicy(tsxConfig, tsxConfig, [
+					{
+						status: "modified",
+						beforePath: "src/a.tsx",
+						afterPath: "src/a.tsx",
+						beforeSource: "",
+						afterSource,
+					},
+				]),
+			).toEqual([]);
+		}
+	});
+
+	it("still detects suppressions inside JSX attribute expressions", () => {
+		const tsxConfig = config({ include: ["src/**/*.tsx"] });
+		const afterSource = [
+			"const example = <Component value={(() => {",
+			"// biome-ignore lint/suspicious/noExplicitAny",
+			"const value: any = 1;",
+			"return value;",
+			"})()} />;",
+		].join("\n");
+
+		expect(
+			compareBiomePolicy(tsxConfig, tsxConfig, [
+				{ status: "modified", afterPath: "src/a.tsx", afterSource },
+			]),
+		).toContainEqual({
+			kind: "suppression",
+			message: "1 Biome suppression directive added or changed",
+			path: "src/a.tsx",
+		});
+	});
+});
+
+describe("Biome suppression coverage comparison", () => {
+	it("ignores suppression-like examples outside Biome lint coverage", () => {
+		expect(
+			compareBiomePolicy(config(), config(), [
+				{
+					status: "modified",
+					beforePath: "docs/example.md",
+					afterPath: "docs/example.md",
+					beforeSource: "Example:\n",
+					afterSource:
+						"Example:\n  // biome-ignore lint/suspicious/noExplicitAny\n  const value: any = 1;",
+				},
+			]),
+		).toEqual([]);
+	});
+
+	it("applies ordered file and linter include exceptions to suppression checks", () => {
+		const coverageConfig = JSON.stringify({
+			files: { includes: ["**", "!docs", "docs/linted.ts"] },
+			linter: { includes: ["**/*.ts", "!**/*.generated.ts"] },
+		});
+		const change = (pathValue: string) => ({
+			status: "modified" as const,
+			beforePath: pathValue,
+			afterPath: pathValue,
+			beforeSource: "",
+			afterSource: "// biome-ignore lint/suspicious/noExplicitAny\nconst value: any = 1;",
+		});
+
+		expect(compareBiomePolicy(coverageConfig, coverageConfig, [change("src/a.ts")])).toMatchObject([
+			{ kind: "suppression", path: "src/a.ts" },
+		]);
+		expect(
+			compareBiomePolicy(coverageConfig, coverageConfig, [change("src/a.generated.ts")]),
+		).toEqual([]);
+		expect(compareBiomePolicy(coverageConfig, coverageConfig, [change("docs/example.md")])).toEqual(
+			[],
+		);
+	});
+
+	it("treats regex metacharacters in include patterns as literal path characters", () => {
+		const coverageConfig = JSON.stringify({
+			files: { includes: ["src/(legacy)+.ts"] },
+		});
+		const source = "// biome-ignore lint/suspicious/noExplicitAny\nconst value: any = 1;";
+
+		expect(
+			compareBiomePolicy(coverageConfig, coverageConfig, [
+				{
+					status: "modified",
+					beforePath: "src/(legacy)+.ts",
+					afterPath: "src/(legacy)+.ts",
+					beforeSource: "",
+					afterSource: source,
+				},
+			]),
+		).toContainEqual({
+			kind: "suppression",
+			message: "1 Biome suppression directive added or changed",
+			path: "src/(legacy)+.ts",
+		});
 	});
 });
 
@@ -386,6 +740,200 @@ describe("Biome policy bypass prevention", () => {
 		});
 	});
 
+	it("detects suppressions after regex literals used as control-flow bodies", () => {
+		expect(
+			compareBiomePolicy(config(), config(), [
+				{
+					status: "modified",
+					afterPath: "src/a.ts",
+					afterSource:
+						'if (ready(")")) /"/.test(value);\n// biome-ignore lint/suspicious/noExplicitAny\nconst hidden: any = value;',
+				},
+			]),
+		).toContainEqual({
+			kind: "suppression",
+			message: "1 Biome suppression directive added or changed",
+			path: "src/a.ts",
+		});
+	});
+});
+
+describe("Biome suppressed-edit policy", () => {
+	it("rejects edits covered by existing broad suppressions", () => {
+		const fileWide = "// biome-ignore-all lint/a: legacy\nconst first = 1;";
+		const range = [
+			"const outside = 1;",
+			"// biome-ignore-start lint/a: legacy",
+			"const hidden = 1;",
+			"// biome-ignore-end lint/a: legacy",
+		].join("\n");
+
+		for (const [beforeSource, afterSource] of [
+			[fileWide, `${fileWide}\nconst hidden = 2;`],
+			[range, range.replace("const hidden = 1;", "const hidden = 2;")],
+		]) {
+			expect(
+				compareBiomePolicy(config(), config(), [
+					{ status: "modified", afterPath: "src/a.ts", beforeSource, afterSource },
+				]),
+			).toContainEqual({
+				kind: "suppression",
+				message: "Code changed under an existing broad Biome suppression",
+				path: "src/a.ts",
+			});
+		}
+
+		const outsideOnly = range
+			.replace("const outside = 1;", "const outside = 2;")
+			.concat("\nconst after = 1;");
+		expect(
+			compareBiomePolicy(config(), config(), [
+				{
+					status: "modified",
+					afterPath: "src/a.ts",
+					beforeSource: range,
+					afterSource: outsideOnly,
+				},
+			]),
+		).not.toContainEqual({
+			kind: "suppression",
+			message: "Code changed under an existing broad Biome suppression",
+			path: "src/a.ts",
+		});
+	});
+});
+
+describe("Biome ordinary suppression edit policy", () => {
+	it("rejects edits inside a node with an existing ordinary suppression", () => {
+		const beforeSource = [
+			"// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: legacy",
+			"function calculate(value: number) {",
+			"\tif (value > 0) return value;",
+			"\treturn 0;",
+			"}",
+			"const outside = 1;",
+		].join("\n");
+		const insideEdit = beforeSource.replace(
+			"\treturn 0;",
+			"\tif (value < 0) return -value;\n\treturn 0;",
+		);
+		const outsideEdit = beforeSource.replace("const outside = 1;", "const outside = 2;");
+
+		expect(
+			compareBiomePolicy(config(), config(), [
+				{
+					status: "modified",
+					afterPath: "src/a.ts",
+					beforeSource,
+					afterSource: insideEdit,
+				},
+			]),
+		).toContainEqual({
+			kind: "suppression",
+			message: "Code changed under an existing Biome suppression",
+			path: "src/a.ts",
+		});
+		expect(
+			compareBiomePolicy(config(), config(), [
+				{
+					status: "modified",
+					afterPath: "src/a.ts",
+					beforeSource,
+					afterSource: outsideEdit,
+				},
+			]),
+		).not.toContainEqual({
+			kind: "suppression",
+			message: "Code changed under an existing Biome suppression",
+			path: "src/a.ts",
+		});
+	});
+
+	it("limits an ordinary JSX suppression to the annotated element", () => {
+		const beforeSource = [
+			"const view = <>",
+			"\t{/* biome-ignore lint/a: legacy */}",
+			'\t<div tabIndex="0">legacy</div>',
+			"\t<span>outside</span>",
+			"</>;",
+		].join("\n");
+		const insideEdit = beforeSource.replace("legacy</div>", "changed</div>");
+		const siblingEdit = beforeSource.replace("outside</span>", "changed</span>");
+
+		for (const [afterSource, expected] of [
+			[insideEdit, true],
+			[siblingEdit, false],
+		] as const) {
+			const jsxConfig = config({ include: ["src/**/*.ts", "src/**/*.tsx"] });
+			const violations = compareBiomePolicy(jsxConfig, jsxConfig, [
+				{ status: "modified", afterPath: "src/a.tsx", beforeSource, afterSource },
+			]);
+			expect(
+				violations.some(
+					(violation) => violation.message === "Code changed under an existing Biome suppression",
+				),
+			).toBe(expected);
+		}
+	});
+});
+
+describe("Biome reviewed dependency and compound policy", () => {
+	it("covers every branch of a compound statement suppression", () => {
+		const beforeSource = [
+			"// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: legacy",
+			"if (enabled) {",
+			'\tlog("enabled");',
+			"} else {",
+			'\tlog("disabled");',
+			"}",
+			"const outside = 1;",
+		].join("\n");
+		const afterSource = beforeSource.replace('log("disabled");', 'log("changed");');
+
+		expect(
+			compareBiomePolicy(config(), config(), [
+				{ status: "modified", afterPath: "src/a.ts", beforeSource, afterSource },
+			]),
+		).toContainEqual({
+			kind: "suppression",
+			message: "Code changed under an existing Biome suppression",
+			path: "src/a.ts",
+		});
+	});
+
+	it("requires review when dependency inputs select a different Biome binary", () => {
+		for (const [changedPath, beforeSource, afterSource] of [
+			[
+				"pnpm-workspace.yaml",
+				'catalog:\n  "@biomejs/biome": ^2.5.11\n',
+				'catalog:\n  "@biomejs/biome": ^2.6.0\n',
+			],
+			[
+				"package.json",
+				'{"devDependencies":{"@biomejs/biome":"catalog:"}}',
+				'{"devDependencies":{"@biomejs/biome":"2.6.0"}}',
+			],
+		] as const) {
+			expect(
+				compareBiomePolicy(config(), config(), [
+					{
+						status: "modified",
+						beforePath: changedPath,
+						afterPath: changedPath,
+						beforeSource,
+						afterSource,
+					},
+				]),
+			).toContainEqual({
+				kind: "coverage",
+				message: expect.stringContaining("Pinned Biome tool changed"),
+				path: changedPath,
+			});
+		}
+	});
+});
+
+describe("Biome indirect policy controls", () => {
 	it("requires review for changed language-level lint controls", () => {
 		const baseConfig = JSON.stringify({ javascript: { formatter: { quoteStyle: "double" } } });
 		const headConfig = JSON.stringify({
@@ -414,6 +962,26 @@ describe("Biome policy bypass prevention", () => {
 			kind: "coverage",
 			message: "Inherited Biome policy changed; explicit policy review required",
 			path: "config/biome-base.jsonc",
+		});
+	});
+
+	it("requires review for language-only changes behind transitive inheritance", () => {
+		const configWithExtends = JSON.stringify({ extends: ["./config/biome-base.jsonc"] });
+
+		expect(
+			compareBiomePolicy(configWithExtends, configWithExtends, [
+				{
+					status: "modified",
+					beforePath: "config/globals.json",
+					afterPath: "config/globals.json",
+					beforeSource: '{ "javascript": { "globals": [] } }',
+					afterSource: '{ "javascript": { "globals": ["hiddenGlobal"] } }',
+				},
+			]),
+		).toContainEqual({
+			kind: "coverage",
+			message: "Inherited Biome policy changed; explicit policy review required",
+			path: "config/globals.json",
 		});
 	});
 });
@@ -462,6 +1030,21 @@ describe("Biome policy fail-closed controls", () => {
 				]),
 			).toMatchObject([{ kind: "coverage", path: ignorePath }]);
 		}
+		expect(
+			compareBiomePolicy(config(), config(), [
+				{
+					status: "renamed",
+					beforePath: ".gitignore",
+					afterPath: ".gitignore.disabled",
+					beforeSource: "dist/\n",
+					afterSource: "dist/\n",
+				},
+			]),
+		).toContainEqual({
+			kind: "coverage",
+			message: "Git ignore policy changed; explicit coverage review required",
+			path: ".gitignore",
+		});
 	});
 
 	it("fails closed when other Biome coverage controls change", () => {
@@ -483,6 +1066,28 @@ describe("Biome policy fail-closed controls", () => {
 		expect(
 			compareBiomePolicy(JSON.stringify(base), JSON.stringify(nestedPreset), []),
 		).toMatchObject([{ kind: "rule-level" }]);
+	});
+});
+
+describe("Biome root tool resolution", () => {
+	it("resolves the Biome binary from the workspace root", () => {
+		const root = mkdtempSync(path.join(tmpdir(), "codemem-biome-resolution-test-"));
+		temporaryDirectories.push(root);
+		const packageRoot = path.join(root, "node_modules/@biomejs/biome");
+		const nestedPackageRoot = path.join(root, "packages/tool/node_modules/@biomejs/biome");
+		for (const directory of [packageRoot, nestedPackageRoot]) {
+			mkdirSync(path.join(directory, "bin"), { recursive: true });
+			writeFileSync(path.join(directory, "package.json"), '{"name":"@biomejs/biome"}');
+			writeFileSync(path.join(directory, "bin/biome"), "");
+		}
+		writeFileSync(path.join(root, "package.json"), '{"private":true}');
+
+		expect(resolveRootBiomeEntrypoint(root)).toBe(path.join(packageRoot, "bin/biome"));
+		expect(
+			createRequire(path.join(root, "packages/tool/package.json")).resolve(
+				"@biomejs/biome/bin/biome",
+			),
+		).toBe(path.join(nestedPackageRoot, "bin/biome"));
 	});
 });
 
@@ -551,7 +1156,9 @@ describe("Biome ratchet CLI", () => {
 		expect(formatHumanResult(result)).toContain("…and 2 more regressions");
 		expect(JSON.parse(JSON.stringify(result)).regressions).toHaveLength(12);
 	});
+});
 
+describe("Biome ratchet CLI execution", () => {
 	it("includes an untracked maintained file and fails closed on missing refs or tool failure", async () => {
 		const root = mkdtempSync(path.join(tmpdir(), "codemem-biome-ratchet-test-"));
 		temporaryDirectories.push(root);
@@ -572,11 +1179,13 @@ describe("Biome ratchet CLI", () => {
 			cwd: root,
 			encoding: "utf8",
 		});
+		const entrypoint = createRequire(import.meta.url).resolve("@biomejs/biome/bin/biome");
 
 		const result = await runRatchet(
 			{ base: "HEAD", json: true },
 			{
 				cwd: root,
+				biomeEntrypoint: entrypoint,
 				afterSnapshot: () => {
 					writeFileSync(path.join(root, "src/late.ts"), "const late: any = 1;\n");
 				},

@@ -114,9 +114,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Biome check
-        run: pnpm run lint
-
       - name: Biome delta ratchet
         if: github.event_name == 'pull_request'
         env:
@@ -125,6 +122,9 @@ jobs:
         run: |
           mkdir -p .tmp/biome-delta
           pnpm --silent lint:delta -- --base "$BASE_SHA" --head "$MERGE_SHA" --json --github-annotations > .tmp/biome-delta/report.json
+
+      - name: Biome check
+        run: pnpm run lint
 
       - name: Upload Biome delta report
         if: always() && github.event_name == 'pull_request'

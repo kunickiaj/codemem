@@ -135,6 +135,10 @@ describe("normal CI workflow source contract", () => {
 		);
 		assert.match(lintJob, /uses: actions\/upload-artifact@v6/u);
 		assert.match(lintJob, /if-no-files-found: error/u);
+		assert.ok(
+			lintJob.indexOf("- name: Biome delta ratchet") < lintJob.indexOf("- name: Biome check"),
+			"expected the delta report before fail-fast ordinary lint",
+		);
 		assert.doesNotMatch(lintJob, /continue-on-error/u);
 		assert.doesNotMatch(lintJob, /github\.event\.pull_request\.head\.sha/u);
 		assert.doesNotMatch(lintJob, /--base (?:main|origin\/main)/u);
