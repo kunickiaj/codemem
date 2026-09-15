@@ -31,28 +31,66 @@ export interface RatchetComparison {
 	headDiagnosticCount: number;
 }
 
-function biomeLockVersions(lockfile: string | undefined): string[] {
-	if (!lockfile) return [];
-	return [
-		...new Set(
-			[...lockfile.matchAll(/^\s{2}'@biomejs\/biome@([^']+)':$/gm)]
-				.map((match) => match[1] ?? "")
-				.filter(Boolean),
-		),
-	].sort();
+function unquoteYamlScalar(value: string): string {
+	const trimmed = value.trim();
+	if (
+		(trimmed.startsWith("'") && trimmed.endsWith("'")) ||
+		(trimmed.startsWith('"') && trimmed.endsWith('"'))
+	) {
+		return trimmed.slice(1, -1);
+	}
+	return trimmed;
+}
+
+function yamlSections(source: string, key: string, indentation: number): string[] {
+	const lines = source.split("\n");
+	const marker = `${" ".repeat(indentation)}${key}:`;
+	const sections: string[] = [];
+	for (let start = 0; start < lines.length; start += 1) {
+		if (lines[start] !== marker) continue;
+		let end = start + 1;
+		while (end < lines.length) {
+			const line = lines[end] ?? "";
+			const lineIndentation = line.length - line.trimStart().length;
+			if (line.trim() && lineIndentation <= indentation) break;
+			end += 1;
+		}
+		sections.push(lines.slice(start + 1, end).join("\n"));
+		start = end - 1;
+	}
+	return sections;
+}
+
+function versionFromBiomeDependency(source: string): string | undefined {
+	const version = source.split("\n").find((line) => line.startsWith("        version:"));
+	return version ? unquoteYamlScalar(version.trim().slice("version:".length)) : undefined;
+}
+
+function biomeRootVersion(lockfile: string | undefined): string | undefined {
+	if (!lockfile) return undefined;
+	for (const importers of yamlSections(lockfile, "importers", 0)) {
+		const rootImporter = yamlSections(importers, ".", 2)[0];
+		if (!rootImporter) continue;
+		for (const key of ["'@biomejs/biome'", '"@biomejs/biome"']) {
+			const dependency = yamlSections(rootImporter, key, 6)[0];
+			if (!dependency) continue;
+			return versionFromBiomeDependency(dependency);
+		}
+	}
+	return undefined;
 }
 
 export function compareBiomeToolPolicy(
 	baseLockfile: string | undefined,
 	headLockfile: string | undefined,
 ): PolicyViolation[] {
-	const baseVersions = biomeLockVersions(baseLockfile);
-	const headVersions = biomeLockVersions(headLockfile);
-	if (headVersions.length === 1 && headVersions[0] === SUPPORTED_BIOME_VERSION) return [];
+	const baseVersion = biomeRootVersion(baseLockfile);
+	const headVersion = biomeRootVersion(headLockfile);
+	if (headVersion === SUPPORTED_BIOME_VERSION) return [];
 	return [
 		{
 			kind: "coverage",
-			message: `Pinned Biome tool changed (${baseVersions.join(", ") || "missing"} → ${headVersions.join(", ") || "missing"}); update SUPPORTED_BIOME_VERSION in the ratchet as an explicit policy migration`,
+			message: `Pinned Biome tool changed (${baseVersion ?? "missing"} → ${headVersion ?? "missing"}); update SUPPORTED_BIOME_VERSION in the ratchet as an explicit policy migration`,
 			path: "pnpm-lock.yaml",
 		},
 	];

@@ -278,7 +278,29 @@ describe("pinned Biome report schema", () => {
 
 describe("Biome policy comparison", () => {
 	it("requires an explicit policy migration when the pinned Biome version changes", () => {
-		const lockfile = (version: string) => `packages:\n\n  '@biomejs/biome@${version}':\n`;
+		const lockfile = (version: string, packageVersions = [version]) => `importers:
+
+  .:
+    devDependencies:
+      '@biomejs/biome':
+        specifier: 'catalog:'
+        version: ${version}
+${packageVersions
+	.slice(1)
+	.map(
+		(packageVersion, index) => `
+  packages/tool-${index}:
+    devDependencies:
+      '@biomejs/biome':
+        specifier: ${packageVersion}
+        version: ${packageVersion}`,
+	)
+	.join("")}
+
+packages:
+
+${packageVersions.map((packageVersion) => `  '@biomejs/biome@${packageVersion}':`).join("\n")}
+`;
 
 		expect(
 			compareBiomeToolPolicy(lockfile(SUPPORTED_BIOME_VERSION), lockfile("2.6.0")),
@@ -291,8 +313,8 @@ describe("Biome policy comparison", () => {
 		).toEqual([]);
 		expect(
 			compareBiomeToolPolicy(
-				lockfile(SUPPORTED_BIOME_VERSION).repeat(2),
-				lockfile(SUPPORTED_BIOME_VERSION).repeat(2),
+				lockfile(SUPPORTED_BIOME_VERSION),
+				lockfile(SUPPORTED_BIOME_VERSION, [SUPPORTED_BIOME_VERSION, "2.6.0"]),
 			),
 		).toEqual([]);
 		expect(compareBiomeToolPolicy(undefined, undefined)).toMatchObject([
