@@ -717,6 +717,115 @@ function acquireConfigLock(targetPath: string): { fd: number; path: string } {
 	}
 }
 
+function releaseConfigLock(lock: { fd: number; path: string }): void {
+	let firstError: unknown;
+	try {
+		closeSync(lock.fd);
+	} catch (error) {
+		firstError = error;
+	}
+	try {
+		unlinkIfPresent(lock.path, unlinkSync);
+	} catch (error) {
+		firstError ??= error;
+	}
+	if (firstError !== undefined) throw firstError;
+}
+
+function releaseConfigLocks(locks: Array<{ fd: number; path: string }>): void {
+	let firstError: unknown;
+	for (const lock of locks.reverse()) {
+		try {
+			releaseConfigLock(lock);
+		} catch (error) {
+			firstError ??= error;
+		}
+	}
+	if (firstError !== undefined) throw firstError;
+}
+
+function acquireConfigLocks(targetPaths: string[]): Array<{ fd: number; path: string }> {
+	const orderedPaths = [...new Set(targetPaths)].sort((left, right) => {
+		if (left < right) return -1;
+		if (left > right) return 1;
+		return 0;
+	});
+	const locks: Array<{ fd: number; path: string }> = [];
+	try {
+		for (const path of orderedPaths) {
+			mkdirSync(dirname(path), { recursive: true });
+			locks.push(acquireConfigLock(path));
+		}
+		return locks;
+	} catch (error) {
+		try {
+			releaseConfigLocks(locks);
+		} catch {
+			// Preserve the acquisition failure after attempting every cleanup.
+		}
+		throw error;
+	}
+}
+
+type ConfigMutationOptions = { expectedRevision?: string; fallbackReadPath?: string };
+
+function acquireConfigMutationLocks(
+	targetPath: string,
+	usesImplicitPath: boolean,
+	options: ConfigMutationOptions,
+): {
+	preliminaryTarget: CodememConfigReadOutcome;
+	fallbackReadPath: string | undefined;
+	targetMutationPath: string;
+	fallbackMutationPath: string | undefined;
+	locks: Array<{ fd: number; path: string }>;
+} {
+	for (let attempt = 0; attempt < 3; attempt += 1) {
+		const preliminaryTarget = readCodememConfigFileForMutation(targetPath);
+		const fallbackReadPath =
+			options.fallbackReadPath ?? (usesImplicitPath ? getCodememConfigPath() : undefined);
+		const targetMutationPath = resolveConfigMutationTarget(targetPath);
+		const fallbackMutationPath =
+			preliminaryTarget.status === "missing" && fallbackReadPath != null
+				? resolveConfigMutationTarget(expandUserPath(fallbackReadPath))
+				: undefined;
+		const locks = acquireConfigLocks(
+			fallbackMutationPath ? [targetMutationPath, fallbackMutationPath] : [targetMutationPath],
+		);
+		const targetIdentityStable = resolveConfigMutationTarget(targetPath) === targetMutationPath;
+		const fallbackIdentityStable =
+			fallbackMutationPath === undefined ||
+			resolveConfigMutationTarget(expandUserPath(fallbackReadPath ?? targetPath)) ===
+				fallbackMutationPath;
+		if (targetIdentityStable && fallbackIdentityStable) {
+			return {
+				preliminaryTarget,
+				fallbackReadPath,
+				targetMutationPath,
+				fallbackMutationPath,
+				locks,
+			};
+		}
+		releaseConfigLocks(locks);
+	}
+	throw new CodememConfigMutationError(
+		"changed",
+		`Cannot update config because ${targetPath} changed before the save. Retry the save.`,
+	);
+}
+
+function assertTargetDidNotDisappear(
+	preliminaryTarget: CodememConfigReadOutcome,
+	outcome: CodememConfigReadOutcome,
+	targetPath: string,
+): void {
+	if (preliminaryTarget.status === "missing" || outcome.status !== "missing") return;
+	throw new CodememConfigMutationError(
+		"changed",
+		`Cannot update config because ${targetPath} changed before the save. Retry the save.`,
+	);
+}
+
 function mutationInputOutcome(
 	target: CodememConfigReadOutcome,
 	targetPath: string,
@@ -734,16 +843,19 @@ export function mutateCodememConfigFile(
 		outcome: CodememConfigReadOutcome,
 	) => Record<string, unknown> | undefined,
 	configPath?: string,
-	options: { expectedRevision?: string; fallbackReadPath?: string } = {},
+	options: ConfigMutationOptions = {},
 ): CodememConfigMutationResult {
 	const targetPath = configPath ? expandUserPath(configPath) : getCodememConfigWritePath();
-	mkdirSync(dirname(targetPath), { recursive: true });
-	const lock = acquireConfigLock(resolveConfigMutationTarget(targetPath));
+	const { preliminaryTarget, fallbackReadPath, targetMutationPath, fallbackMutationPath, locks } =
+		acquireConfigMutationLocks(targetPath, configPath == null, options);
 	try {
-		const outcome = readCodememConfigFileForMutation(targetPath);
-		const fallbackReadPath =
-			options.fallbackReadPath ?? (configPath == null ? getCodememConfigPath() : undefined);
-		const inputOutcome = mutationInputOutcome(outcome, targetPath, fallbackReadPath);
+		const outcome = readCodememConfigFileForMutation(targetMutationPath);
+		assertTargetDidNotDisappear(preliminaryTarget, outcome, targetPath);
+		const inputOutcome = mutationInputOutcome(
+			outcome,
+			targetMutationPath,
+			fallbackMutationPath ?? fallbackReadPath,
+		);
 		const expectedRevision = outcome.status === "valid" ? outcome.revision : "missing";
 		if (options.expectedRevision != null && expectedRevision !== options.expectedRevision) {
 			throw new CodememConfigMutationError(
@@ -758,19 +870,32 @@ export function mutateCodememConfigFile(
 			inputOutcome.status === "valid" ? inputOutcome.revision : inputOutcome.status;
 		const text = `${JSON.stringify(data, null, 2)}\n`;
 		atomicReplaceConfigFile(
-			targetPath,
+			targetMutationPath,
 			text,
 			outcome.status === "valid" ? outcome.mode : undefined,
 			atomicConfigFileOperations,
 			() => {
-				if (currentRevision(targetPath) !== expectedRevision) {
+				if (
+					resolveConfigMutationTarget(targetPath) !== targetMutationPath ||
+					currentRevision(targetMutationPath) !== expectedRevision
+				) {
 					throw new CodememConfigMutationError(
 						"changed",
 						`Cannot update config because ${targetPath} changed during the save. Retry the save.`,
 					);
 				}
 				if (
-					inputOutcome.path !== targetPath &&
+					fallbackMutationPath !== undefined &&
+					resolveConfigMutationTarget(expandUserPath(fallbackReadPath ?? targetPath)) !==
+						fallbackMutationPath
+				) {
+					throw new CodememConfigMutationError(
+						"changed",
+						`Cannot update config because ${fallbackReadPath} changed during the save. Retry the save.`,
+					);
+				}
+				if (
+					inputOutcome.path !== targetMutationPath &&
 					currentRevision(inputOutcome.path) !== inputRevision
 				) {
 					throw new CodememConfigMutationError(
@@ -782,11 +907,7 @@ export function mutateCodememConfigFile(
 		);
 		return { path: targetPath, data, revision: configRevision(text) };
 	} finally {
-		try {
-			closeSync(lock.fd);
-		} finally {
-			unlinkIfPresent(lock.path, unlinkSync);
-		}
+		releaseConfigLocks(locks);
 	}
 }
 
