@@ -479,9 +479,21 @@ function editsCoveredByExistingBroadSuppression(change: ChangedPath): boolean {
 }
 
 function coverageViolations(base: UnknownRecord, head: UnknownRecord): PolicyViolation[] {
-	const baseFiles = isRecord(base.files) ? stringArray(base.files.includes) : [];
-	const headFiles = isRecord(head.files) ? stringArray(head.files.includes) : [];
+	const baseFileControls = isRecord(base.files) ? base.files : undefined;
+	const headFileControls = isRecord(head.files) ? head.files : undefined;
+	const baseFiles = stringArray(baseFileControls?.includes);
+	const headFiles = stringArray(headFileControls?.includes);
 	const violations: PolicyViolation[] = [];
+	if (
+		!Array.isArray(baseFileControls?.includes) &&
+		Array.isArray(headFileControls?.includes) &&
+		headFiles.some((include) => !include.startsWith("!"))
+	) {
+		violations.push({
+			kind: "coverage",
+			message: "Biome includes added to default coverage; explicit coverage review required",
+		});
+	}
 	for (const include of baseFiles) {
 		if (!headFiles.includes(include)) {
 			violations.push({ kind: "coverage", message: `Biome include removed: ${include}` });
@@ -524,6 +536,14 @@ function newRuleViolations(
 	});
 }
 
+function isRuleWeakening(
+	baseSeverity: number | undefined,
+	headSeverity: number | undefined,
+): boolean {
+	if (baseSeverity === 0 && headSeverity === undefined) return false;
+	return headSeverity === undefined || (baseSeverity !== undefined && headSeverity < baseSeverity);
+}
+
 function ruleViolations(base: UnknownRecord, head: UnknownRecord): PolicyViolation[] {
 	if (isLinterDisabled(base, head)) {
 		return [{ kind: "rule-level", message: "Biome linter disabled" }];
@@ -535,7 +555,7 @@ function ruleViolations(base: UnknownRecord, head: UnknownRecord): PolicyViolati
 		const headSetting = headRules.get(rule);
 		const baseSeverity = severity(baseSetting);
 		const headSeverity = severity(headSetting);
-		if (headSeverity === undefined || (baseSeverity !== undefined && headSeverity < baseSeverity)) {
+		if (isRuleWeakening(baseSeverity, headSeverity)) {
 			violations.push({ kind: "rule-level", message: `Biome rule weakened or removed: ${rule}` });
 			continue;
 		}

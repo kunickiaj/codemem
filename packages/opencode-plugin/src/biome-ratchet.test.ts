@@ -294,6 +294,24 @@ describe("Biome policy comparison", () => {
 		});
 	});
 
+	it("rejects narrowing default coverage with explicit includes", () => {
+		expect(
+			compareBiomePolicy("{}", JSON.stringify({ files: { includes: ["src/**"] } }), []),
+		).toContainEqual({
+			kind: "coverage",
+			message: "Biome includes added to default coverage; explicit coverage review required",
+		});
+	});
+
+	it("allows removal of an explicitly disabled rule", () => {
+		const baseConfig = JSON.stringify({
+			linter: { rules: { preset: "recommended", correctness: { noUnusedVariables: "off" } } },
+		});
+		const headConfig = JSON.stringify({ linter: { rules: { preset: "recommended" } } });
+
+		expect(compareBiomePolicy(baseConfig, headConfig, [])).toEqual([]);
+	});
+
 	it("detects changed suppression identities even when the count is unchanged", () => {
 		expect(
 			compareBiomePolicy(config(), config(), [
