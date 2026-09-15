@@ -6,12 +6,14 @@ import {
 	shouldRepairObserverResponse,
 } from "./ingest-xml-parser.js";
 import type {
+	ObserverCallOutcome,
 	ObserverClient,
 	ObserverResponse,
 	ObserverStatus,
 	ObserverStructuredJsonResponse,
 	ObserverTokenUsage,
 } from "./observer-client.js";
+import { ObserverAuthError } from "./observer-client.js";
 import {
 	normalizeObserverEnvelopeV1,
 	OBSERVER_ENVELOPE_JSON_SCHEMA,
@@ -27,7 +29,8 @@ export type ObserverOutputRetryReason =
 	| "structured_output_truncated"
 	| "rate_limited"
 	| "provider_request_failed"
-	| "observer_call_failed";
+	| "observer_call_failed"
+	| "observer_timeout";
 
 export type ObserverOutputCapabilityReason =
 	| "openai_responses_api_direct"
@@ -74,6 +77,7 @@ export interface NormalizedObserverOutput {
 	final: ObserverOutputAttempt;
 	repairApplied: boolean;
 	retryApplied: boolean;
+	repairFailureStatus: ObserverStatus | null;
 	diagnostics: ObserverOutputDiagnostics;
 }
 
@@ -86,17 +90,20 @@ export class ObserverOutputError extends Error {
 	readonly reason: ObserverEnvelopeFailureReason;
 	readonly diagnostics: ObserverOutputDiagnostics;
 	readonly telemetry: ObserverOutputFailureTelemetry;
+	readonly outcome: ObserverCallOutcome | null;
 
 	constructor(
 		reason: ObserverEnvelopeFailureReason,
 		diagnostics: ObserverOutputDiagnostics,
 		telemetry: ObserverOutputFailureTelemetry,
+		outcome: ObserverCallOutcome | null = null,
 	) {
 		super(`observer output failed validation (${reason})`);
 		this.name = "ObserverOutputError";
 		this.reason = reason;
 		this.diagnostics = diagnostics;
 		this.telemetry = telemetry;
+		this.outcome = outcome;
 	}
 }
 
@@ -104,27 +111,44 @@ export class ObserverOutputTransportError extends Error {
 	readonly code: string;
 	readonly diagnostics: ObserverOutputDiagnostics;
 	readonly telemetry: ObserverOutputFailureTelemetry;
+	readonly outcome: ObserverCallOutcome | null;
 
 	constructor(
 		code: string,
 		diagnostics: ObserverOutputDiagnostics,
 		telemetry: ObserverOutputFailureTelemetry,
+		outcome: ObserverCallOutcome | null = null,
 	) {
 		super(`observer request failed (${code})`);
 		this.name = "ObserverOutputTransportError";
 		this.code = code;
 		this.diagnostics = diagnostics;
 		this.telemetry = telemetry;
+		this.outcome = outcome;
 	}
 }
 
-function snapshotObserverStatus(observer: ObserverClient): ObserverStatus {
+function snapshotObserverStatus(
+	observer: ObserverClient,
+	response?: ObserverResponse,
+): ObserverStatus {
 	const status = observer.getStatus();
-	return {
+	const callError = response?.outcome?.error;
+	const fallbackError = response?.outcome ? null : status.lastError;
+	const snapshot: ObserverStatus = {
 		...status,
 		auth: { ...status.auth },
-		...(status.lastError ? { lastError: { ...status.lastError } } : {}),
 	};
+	if (callError) snapshot.lastError = { ...callError };
+	else if (fallbackError) snapshot.lastError = { ...fallbackError };
+	else delete snapshot.lastError;
+	return snapshot;
+}
+
+function snapshotObserverFailureStatus(observer: ObserverClient, error: unknown): ObserverStatus {
+	const status = snapshotObserverStatus(observer);
+	if (error instanceof ObserverAuthError) status.lastError = { ...error.detail };
+	return status;
 }
 
 function isDirectOpenAIResponses(observer: ObserverClient, status: ObserverStatus): boolean {
@@ -234,7 +258,7 @@ function toAttempt(
 		model: response.model,
 		elapsedMs: response.elapsedMs ?? null,
 		usage: response.usage ?? null,
-		status: snapshotObserverStatus(observer),
+		status: snapshotObserverStatus(observer, response),
 	};
 }
 
@@ -267,7 +291,8 @@ function observerOutputRetryReason(
 	}
 	if (
 		response.transportFailureCode === "rate_limited" ||
-		response.transportFailureCode === "observer_call_failed"
+		response.transportFailureCode === "observer_call_failed" ||
+		response.transportFailureCode === "observer_timeout"
 	) {
 		return response.transportFailureCode;
 	}
@@ -325,6 +350,45 @@ function failureTelemetry(
 	};
 }
 
+function structuredResponseFailure(
+	response: ObserverStructuredJsonResponse,
+	capability: ObserverOutputCapability,
+	retryDiagnostics: Pick<ObserverOutputDiagnostics, "retryAttempted" | "retryReason">,
+	telemetry: ObserverOutputFailureTelemetry,
+): ObserverOutputError | ObserverOutputTransportError | null {
+	if (response.transportFailureCode) {
+		return new ObserverOutputTransportError(
+			response.transportFailureCode,
+			buildDiagnostics(capability, { validation: "invalid", ...retryDiagnostics }),
+			telemetry,
+			response.outcome ?? null,
+		);
+	}
+	if (response.failureReason) {
+		return new ObserverOutputError(
+			response.failureReason,
+			buildDiagnostics(capability, {
+				validation: "invalid",
+				failureReason: response.failureReason,
+				...retryDiagnostics,
+			}),
+			telemetry,
+			response.outcome ?? null,
+		);
+	}
+	if (response.usedStructuredOutputs && response.raw != null) return null;
+	return new ObserverOutputError(
+		"structured_output_missing",
+		buildDiagnostics(capability, {
+			validation: "invalid",
+			failureReason: "structured_output_missing",
+			...retryDiagnostics,
+		}),
+		telemetry,
+		response.outcome ?? null,
+	);
+}
+
 async function observeJsonSchema(
 	observer: ObserverClient,
 	system: string,
@@ -347,40 +411,15 @@ async function observeJsonSchema(
 		retryReason,
 	};
 	const telemetry = failureTelemetry(firstResponse, retryResponse);
-	if (response.transportFailureCode) {
-		throw new ObserverOutputTransportError(
-			response.transportFailureCode,
-			buildDiagnostics(capability, {
-				validation: "invalid",
-				...retryDiagnostics,
-			}),
-			telemetry,
-		);
-	}
-	if (response.failureReason) {
-		throw new ObserverOutputError(
-			response.failureReason,
-			buildDiagnostics(capability, {
-				validation: "invalid",
-				failureReason: response.failureReason,
-				...retryDiagnostics,
-			}),
-			telemetry,
-		);
-	}
-	if (!response.usedStructuredOutputs || response.raw == null) {
-		throw new ObserverOutputError(
-			"structured_output_missing",
-			buildDiagnostics(capability, {
-				validation: "invalid",
-				failureReason: "structured_output_missing",
-				...retryDiagnostics,
-			}),
-			telemetry,
-		);
-	}
+	const responseFailure = structuredResponseFailure(
+		response,
+		capability,
+		retryDiagnostics,
+		telemetry,
+	);
+	if (responseFailure) throw responseFailure;
 
-	const parsedEnvelope = parseObserverEnvelopeV1(response.raw);
+	const parsedEnvelope = parseObserverEnvelopeV1(response.raw as string);
 	if (!parsedEnvelope.ok) {
 		throw new ObserverOutputError(
 			parsedEnvelope.reason,
@@ -390,6 +429,7 @@ async function observeJsonSchema(
 				...retryDiagnostics,
 			}),
 			telemetry,
+			response.outcome ?? null,
 		);
 	}
 
@@ -404,10 +444,30 @@ async function observeJsonSchema(
 		final: finalAttempt,
 		repairApplied: false,
 		retryApplied: retryReason != null,
+		repairFailureStatus: null,
 		diagnostics: buildDiagnostics(capability, {
 			validation: "valid",
 			retryAttempted: retryReason != null,
 			retryReason,
+		}),
+	};
+}
+
+function failedLegacyRepairOutput(
+	initial: ObserverOutputAttempt,
+	capability: ObserverOutputCapability,
+	repairFailureStatus: ObserverStatus,
+): NormalizedObserverOutput {
+	return {
+		initial,
+		repaired: null,
+		final: initial,
+		repairApplied: false,
+		retryApplied: false,
+		repairFailureStatus,
+		diagnostics: buildDiagnostics(capability, {
+			repairAttempted: true,
+			failureReason: "legacy_xml_lossy",
 		}),
 	};
 }
@@ -430,6 +490,7 @@ async function observeLegacyXml(
 			final: initial,
 			repairApplied: false,
 			retryApplied: false,
+			repairFailureStatus: null,
 			diagnostics: buildDiagnostics(capability, {}),
 		};
 	}
@@ -443,18 +504,12 @@ async function observeLegacyXml(
 	let repairResponse: ObserverResponse;
 	try {
 		repairResponse = await observer.observe(repairPrompt.system, repairPrompt.user);
-	} catch {
-		return {
+	} catch (error) {
+		return failedLegacyRepairOutput(
 			initial,
-			repaired: null,
-			final: initial,
-			repairApplied: false,
-			retryApplied: false,
-			diagnostics: buildDiagnostics(capability, {
-				repairAttempted: true,
-				failureReason: "legacy_xml_lossy",
-			}),
-		};
+			capability,
+			snapshotObserverFailureStatus(observer, error),
+		);
 	}
 	const repairedParsed = repairResponse.raw
 		? parseObserverResponse(repairResponse.raw)
@@ -476,8 +531,13 @@ async function observeLegacyXml(
 		final,
 		repairApplied,
 		retryApplied: false,
+		repairFailureStatus: null,
 		diagnostics: buildDiagnostics(capability, { repairAttempted: true, failureReason }),
 	};
+}
+
+export function observerOutputFailureStatus(output: NormalizedObserverOutput): ObserverStatus {
+	return output.repairFailureStatus ?? output.repaired?.status ?? output.final.status;
 }
 
 export async function observeAndNormalizeObserverOutput(

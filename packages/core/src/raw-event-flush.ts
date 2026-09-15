@@ -66,6 +66,9 @@ function summarizeObserverOutputFailure(exc: Error, providerTitle: string): stri
 		if (exc.code === "observer_auth_missing") {
 			return `${providerTitle} authentication is not configured for raw-event processing.`;
 		}
+		if (exc.code === "observer_timeout") {
+			return `${providerTitle} request timed out during raw-event processing.`;
+		}
 		return `${providerTitle} request failed during raw-event processing.`;
 	}
 	if (!(exc instanceof ObserverOutputError)) return null;
@@ -78,31 +81,29 @@ function summarizeObserverOutputFailure(exc: Error, providerTitle: string): stri
 	return `${providerTitle} structured response could not be processed.`;
 }
 
+function summarizeRawEventObserverFailure(
+	exc: RawEventObserverOutputError,
+	providerTitle: string,
+): string {
+	if (exc.reason === "lossy_repair") {
+		return `${providerTitle} returned structurally incomplete output that could not be repaired.`;
+	}
+	return `${providerTitle} returned no usable output for raw-event processing.`;
+}
+
 function summarizeFlushFailure(exc: Error, provider: string | null | undefined): string {
 	const providerTitle = providerDisplayName(provider);
-	const rawMessage = String(exc.message ?? "")
-		.trim()
-		.toLowerCase();
 
 	if (exc instanceof ObserverAuthError) {
 		return `${providerTitle} authentication failed. Refresh credentials and retry.`;
 	}
+	if (exc instanceof RawEventObserverOutputError) {
+		return summarizeRawEventObserverFailure(exc, providerTitle);
+	}
 	const observerOutputSummary = summarizeObserverOutputFailure(exc, providerTitle);
 	if (observerOutputSummary) return observerOutputSummary;
-	if (exc.name === "TimeoutError" || rawMessage.includes("timeout")) {
+	if (exc.name === "TimeoutError") {
 		return `${providerTitle} request timed out during raw-event processing.`;
-	}
-	if (
-		rawMessage === "observer failed during raw-event flush" ||
-		rawMessage === "observer produced no storable output for raw-event flush"
-	) {
-		return `${providerTitle} returned no usable output for raw-event processing.`;
-	}
-	if (rawMessage === "observer repair remained lossy during raw-event flush") {
-		return `${providerTitle} returned structurally incomplete output that could not be repaired.`;
-	}
-	if (/parse|xml|json/i.test(rawMessage)) {
-		return `${providerTitle} response could not be processed.`;
 	}
 	return `${providerTitle} processing failed during raw-event ingestion.`;
 }

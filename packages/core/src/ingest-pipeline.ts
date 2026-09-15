@@ -51,6 +51,7 @@ import type {
 import { hasMeaningfulObservation } from "./ingest-xml-parser.js";
 import { REMEMBER_MEMORY_KINDS } from "./memory-kinds.js";
 import {
+	ObserverAuthError,
 	type ObserverClient,
 	ObserverClient as ObserverClientImpl,
 	type ObserverTokenUsage,
@@ -61,6 +62,7 @@ import {
 	ObserverOutputTransportError,
 	observeAndNormalizeObserverOutput,
 	observerOutputAttemptCount,
+	observerOutputFailureStatus,
 	observerOutputMetadata,
 	observerOutputTotalUsage,
 	resolveObserverOutputCapability,
@@ -296,12 +298,15 @@ export class RawEventObserverOutputError extends Error {
 		message: string,
 		reason: RawEventObserverOutputFailureReason,
 		observer: ObserverClient,
-		options: { includeObserverError?: boolean } = {},
+		options: {
+			includeObserverError?: boolean;
+			observerStatus?: ReturnType<ObserverClient["getStatus"]>;
+		} = {},
 	) {
 		super(message);
 		this.name = "RawEventObserverOutputError";
 		this.reason = reason;
-		const observerStatus = observer.getStatus();
+		const observerStatus = options.observerStatus ?? observer.getStatus();
 		if (options.includeObserverError === false) {
 			const { lastError: _lastError, ...statusWithoutError } = observerStatus;
 			this.observerStatus = statusWithoutError;
@@ -319,6 +324,50 @@ export function rawEventObserverStatusFromError(
 	return observerFailureStatuses.get(error) ?? null;
 }
 
+function observerStatusForFailure(observer: ObserverClient, error: unknown) {
+	const status = observer.getStatus();
+	if (error instanceof ObserverAuthError) status.lastError = { ...error.detail };
+	if (!(error instanceof ObserverOutputError || error instanceof ObserverOutputTransportError)) {
+		return status;
+	}
+	const callError = error.outcome?.error;
+	if (error.outcome) delete status.lastError;
+	if (callError) status.lastError = { ...callError };
+	return status;
+}
+
+function recordObserverFailureUsage(
+	error: ObserverOutputError | ObserverOutputTransportError,
+	status: ReturnType<ObserverClient["getStatus"]>,
+	usageContext: { store: MemoryStore; sessionId: number; project: string | null },
+): void {
+	const usage = error.telemetry.totalUsage;
+	try {
+		recordObserverUsage(
+			usageContext.store,
+			usageContext.sessionId,
+			normalizedObserverTokenCounts(usage, status.provider),
+			{
+				project: usageContext.project,
+				token_usage: observerTokenUsageMetadata(
+					usage,
+					observerDiagnosticsAttemptCount(error.diagnostics),
+				),
+				provider: status.provider,
+				model: status.model,
+				runtime: status.runtime,
+				observer_output_failure_reason: error.diagnostics.failureReason,
+				observer_output_retry_attempted: error.diagnostics.retryAttempted,
+				observer_output_repair_attempted: error.diagnostics.repairAttempted,
+				observer_output_total_elapsed_ms: error.telemetry.totalElapsedMs,
+				observer_output_total_usage: usage,
+			},
+		);
+	} catch {
+		// Failure telemetry is best-effort and must not replace the observer cause.
+	}
+}
+
 async function observeRawEventOutput(
 	observer: ObserverClient,
 	system: string,
@@ -329,32 +378,12 @@ async function observeRawEventOutput(
 	try {
 		return await observeAndNormalizeObserverOutput(observer, system, user, capability);
 	} catch (error) {
-		const status = observer.getStatus();
+		const status = observerStatusForFailure(observer, error);
 		if ((typeof error === "object" || typeof error === "function") && error !== null) {
 			observerFailureStatuses.set(error, status);
 		}
 		if (error instanceof ObserverOutputError || error instanceof ObserverOutputTransportError) {
-			const usage = error.telemetry.totalUsage;
-			recordObserverUsage(
-				usageContext.store,
-				usageContext.sessionId,
-				normalizedObserverTokenCounts(usage, status.provider),
-				{
-					project: usageContext.project,
-					token_usage: observerTokenUsageMetadata(
-						usage,
-						observerDiagnosticsAttemptCount(error.diagnostics),
-					),
-					provider: status.provider,
-					model: status.model,
-					runtime: status.runtime,
-					observer_output_failure_reason: error.diagnostics.failureReason,
-					observer_output_retry_attempted: error.diagnostics.retryAttempted,
-					observer_output_repair_attempted: error.diagnostics.repairAttempted,
-					observer_output_total_elapsed_ms: error.telemetry.totalElapsedMs,
-					observer_output_total_usage: usage,
-				},
-			);
+			recordObserverFailureUsage(error, status, usageContext);
 		}
 		throw error;
 	}
@@ -982,6 +1011,7 @@ function resolveOutputDisposition(
 		"observer produced no storable output for raw-event flush",
 		"unstorable_observer_output",
 		inference.selection.observer,
+		{ observerStatus: inference.response.status },
 	);
 }
 
@@ -1355,6 +1385,7 @@ function handleObserverOutput(
 				"observer failed during raw-event flush",
 				"empty_observer_output",
 				inference.selection.observer,
+				{ observerStatus: inference.response.status },
 			);
 		}
 		const status = inference.selection.observer.getStatus();
@@ -1377,6 +1408,7 @@ function handleObserverOutput(
 		"observer repair remained lossy during raw-event flush",
 		"lossy_repair",
 		inference.selection.observer,
+		{ observerStatus: observerOutputFailureStatus(inference.output) },
 	);
 }
 
@@ -1405,7 +1437,11 @@ async function processIngestSession(
 		await storeVectorInputs(store, vectorWriteInputs);
 		endIngestSession(store, stage, persistence.plan.sessionMetadata);
 	} catch (error) {
-		recordCompletedObserverUsage(store, stage.sessionId, usageRecord);
+		try {
+			recordCompletedObserverUsage(store, stage.sessionId, usageRecord);
+		} catch {
+			// Failure telemetry is best-effort and must not replace the ingest cause.
+		}
 		throw error;
 	}
 }
