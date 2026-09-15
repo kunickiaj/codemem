@@ -24,7 +24,8 @@
 		"@hono/node-server": "catalog:",
 		"drizzle-orm": "catalog:",
 		"hono": "catalog:",
-		"limiter": "catalog:"
+		"limiter": "catalog:",
+		"zod": "4.5.4"
 	},
 	"devDependencies": {
 		"@types/better-sqlite3": "catalog:",
