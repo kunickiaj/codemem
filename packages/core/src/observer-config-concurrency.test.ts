@@ -1,5 +1,4 @@
 import {
-	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
@@ -28,27 +27,26 @@ describe("fallback config mutation concurrency", () => {
 	it.each([
 		["legacy lock sorts first", "a-legacy", "z-scoped"],
 		["target lock sorts first", "z-legacy", "a-scoped"],
-	])("prevents a stale scoped seed when the %s", (_scenario, legacyDir, targetDir) => {
+	])("seeds a scoped snapshot without acquiring the %s", (_scenario, legacyDir, targetDir) => {
 		const legacyPath = join(tmpHome, legacyDir, "config.json");
 		const targetPath = join(tmpHome, targetDir, "config.json");
 		mkdirSync(dirname(legacyPath), { recursive: true });
 		writeFileSync(legacyPath, '{"value":"before"}\n', "utf8");
-		let seedError: unknown;
+		let scopedSeed: Record<string, unknown> | undefined;
 
 		const legacyUpdate = mutateCodememConfigFile(() => {
-			try {
-				mutateCodememConfigFile((config) => ({ ...config, scoped: true }), targetPath, {
-					fallbackReadPath: legacyPath,
-				});
-			} catch (error) {
-				seedError = error;
-			}
+			scopedSeed = mutateCodememConfigFile((config) => ({ ...config, scoped: true }), targetPath, {
+				fallbackReadPath: legacyPath,
+			}).data;
 			return { value: "after" };
 		}, legacyPath);
 
-		expect(seedError).toEqual(expect.objectContaining({ code: "busy" }));
+		expect(scopedSeed).toEqual({ value: "before", scoped: true });
 		expect(legacyUpdate.data).toEqual({ value: "after" });
-		expect(existsSync(targetPath)).toBe(false);
+		expect(JSON.parse(readFileSync(targetPath, "utf8"))).toEqual({
+			value: "before",
+			scoped: true,
+		});
 		expect(JSON.parse(readFileSync(legacyPath, "utf8"))).toEqual({ value: "after" });
 		expect(
 			readdirSync(tmpHome, { recursive: true }).filter((name) => String(name).endsWith(".lock")),
