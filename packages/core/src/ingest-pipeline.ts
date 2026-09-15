@@ -651,38 +651,24 @@ export async function ingest(
 		});
 		const response = output.final;
 		const outputMetadata = observerOutputMetadata(output);
-		const observerUsage = observerOutputTotalUsage(output);
-		const observerTokenCounts = normalizedObserverTokenCounts(observerUsage, response.provider);
 		const observerStatus = selectedObserver.getStatus();
 		const usageTokenTotal = assistantUsageEvents.reduce(
 			(sum, event) => sum + (event.total_tokens ?? 0),
 			0,
 		);
-		completedObserverUsage = {
-			recorded: false,
-			tokens: observerTokenCounts,
-			metadata: {
-				project,
-				token_usage: observerTokenUsageMetadata(observerUsage, observerOutputAttemptCount(output)),
-				observation_count: 0,
-				has_summary: false,
-				...captureMetadata(captureRoutingEnabled, 0, 0),
-				observer_tier: selectedTier,
-				observer_tier_reasons: selectedTierReasons,
-				requested_provider: requestedObserverProvider,
-				requested_model: requestedObserverModel,
-				requested_runtime: requestedObserverRuntime,
-				requested_openai_responses: requestedObserverOpenAIResponses,
-				provider: response.provider,
-				model: response.model,
-				runtime: observerStatus.runtime,
-				openai_responses: selectedObserver.openaiUseResponses,
-				fallback_applied: observerFallbackApplied,
-				fallback_reason: observerFallbackReason,
-				...outputMetadata,
-				session_usage_tokens: usageTokenTotal,
-			},
-		};
+		completedObserverUsage = createObserverUsageRecord(output, selectedObserver, {
+			project,
+			captureRoutingEnabled,
+			selectedTier,
+			selectedTierReasons,
+			requestedObserverProvider,
+			requestedObserverModel,
+			requestedObserverRuntime,
+			requestedObserverOpenAIResponses,
+			observerFallbackApplied,
+			observerFallbackReason,
+			usageTokenTotal,
+		});
 
 		if (!response.raw) {
 			// Raw-event flushes must be lossless: if the observer returns no output,
@@ -883,13 +869,12 @@ export async function ingest(
 			}
 		}
 
+		const observerUsageRecord = completedObserverUsage;
 		const vectorWriteInputs: Array<{ memoryId: number; title: string; bodyText: string }> = [];
 		const flushBatchMetadata =
 			sessionContext.flushBatch && typeof sessionContext.flushBatch === "object"
 				? sessionContext.flushBatch
 				: null;
-		const observerUsageRecord = completedObserverUsage;
-
 		// Persist all observations, summary, and usage atomically
 		store.db.transaction(() => {
 			for (const obs of observationsToStore) {
@@ -1155,6 +1140,54 @@ interface ObserverUsageRecord {
 	recorded: boolean;
 	tokens: { inputTokens: number | null; outputTokens: number | null };
 	metadata: Record<string, unknown>;
+}
+
+interface ObserverUsageRecordContext {
+	project: string | null;
+	captureRoutingEnabled: boolean;
+	selectedTier: string | null;
+	selectedTierReasons: string[];
+	requestedObserverProvider: string | null;
+	requestedObserverModel: string | null;
+	requestedObserverRuntime: string | null;
+	requestedObserverOpenAIResponses: boolean | null;
+	observerFallbackApplied: boolean;
+	observerFallbackReason: string | null;
+	usageTokenTotal: number;
+}
+
+function createObserverUsageRecord(
+	output: Awaited<ReturnType<typeof observeAndNormalizeObserverOutput>>,
+	observer: ObserverClient,
+	context: ObserverUsageRecordContext,
+): ObserverUsageRecord {
+	const usage = observerOutputTotalUsage(output);
+	const response = output.final;
+	return {
+		recorded: false,
+		tokens: normalizedObserverTokenCounts(usage, response.provider),
+		metadata: {
+			project: context.project,
+			token_usage: observerTokenUsageMetadata(usage, observerOutputAttemptCount(output)),
+			observation_count: 0,
+			has_summary: false,
+			...captureMetadata(context.captureRoutingEnabled, 0, 0),
+			observer_tier: context.selectedTier,
+			observer_tier_reasons: context.selectedTierReasons,
+			requested_provider: context.requestedObserverProvider,
+			requested_model: context.requestedObserverModel,
+			requested_runtime: context.requestedObserverRuntime,
+			requested_openai_responses: context.requestedObserverOpenAIResponses,
+			provider: response.provider,
+			model: response.model,
+			runtime: observer.getStatus().runtime,
+			openai_responses: observer.openaiUseResponses,
+			fallback_applied: context.observerFallbackApplied,
+			fallback_reason: context.observerFallbackReason,
+			...observerOutputMetadata(output),
+			session_usage_tokens: context.usageTokenTotal,
+		},
+	};
 }
 
 function recordCompletedObserverUsage(
