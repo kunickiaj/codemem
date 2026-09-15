@@ -380,34 +380,101 @@ function broadSuppressionRanges(source: string | undefined): BroadSuppressionRan
 	return ranges;
 }
 
-function changedAfterSpan(
-	before: string | undefined,
-	after: string | undefined,
-): { start: number; end: number } | undefined {
-	if (before === undefined || after === undefined || before === after) return undefined;
-	let start = 0;
-	while (start < before.length && start < after.length && before[start] === after[start])
-		start += 1;
-	let beforeEnd = before.length;
-	let afterEnd = after.length;
-	while (beforeEnd > start && afterEnd > start && before[beforeEnd - 1] === after[afterEnd - 1]) {
-		beforeEnd -= 1;
-		afterEnd -= 1;
+function previousDiagonal(v: Map<number, number>, diagonal: number, distance: number): number {
+	if (
+		diagonal === -distance ||
+		(diagonal !== distance && (v.get(diagonal - 1) ?? -1) < (v.get(diagonal + 1) ?? -1))
+	) {
+		return diagonal + 1;
 	}
-	return afterEnd > start ? { start, end: afterEnd } : undefined;
+	return diagonal - 1;
+}
+
+function backtrackChangedLines(
+	trace: Array<Map<number, number>>,
+	before: string[],
+	after: string[],
+): boolean[] {
+	const changed = after.map(() => true);
+	let beforeIndex = before.length;
+	let afterIndex = after.length;
+	for (let distance = trace.length - 1; distance >= 0; distance -= 1) {
+		const diagonal = beforeIndex - afterIndex;
+		const previous = previousDiagonal(trace[distance] ?? new Map(), diagonal, distance);
+		const previousBefore = trace[distance]?.get(previous) ?? 0;
+		const previousAfter = previousBefore - previous;
+		while (beforeIndex > previousBefore && afterIndex > previousAfter) {
+			changed[afterIndex - 1] = false;
+			beforeIndex -= 1;
+			afterIndex -= 1;
+		}
+		if (distance === 0) break;
+		if (beforeIndex === previousBefore) afterIndex -= 1;
+		else beforeIndex -= 1;
+	}
+	return changed;
+}
+
+function changedLineFlags(before: string, after: string): boolean[] {
+	const beforeLines = before.split("\n");
+	const afterLines = after.split("\n");
+	let frontier = new Map<number, number>([[1, 0]]);
+	const trace: Array<Map<number, number>> = [];
+	for (let distance = 0; distance <= beforeLines.length + afterLines.length; distance += 1) {
+		trace.push(new Map(frontier));
+		const next = new Map<number, number>();
+		for (let diagonal = -distance; diagonal <= distance; diagonal += 2) {
+			const previous = previousDiagonal(frontier, diagonal, distance);
+			let beforeIndex = (frontier.get(previous) ?? 0) + (previous === diagonal - 1 ? 1 : 0);
+			let afterIndex = beforeIndex - diagonal;
+			while (
+				beforeIndex < beforeLines.length &&
+				afterIndex < afterLines.length &&
+				beforeLines[beforeIndex] === afterLines[afterIndex]
+			) {
+				beforeIndex += 1;
+				afterIndex += 1;
+			}
+			next.set(diagonal, beforeIndex);
+			if (beforeIndex >= beforeLines.length && afterIndex >= afterLines.length) {
+				return backtrackChangedLines(trace, beforeLines, afterLines);
+			}
+		}
+		frontier = next;
+	}
+	return afterLines.map(() => true);
+}
+
+function changedAfterRanges(before: string, after: string): Array<{ start: number; end: number }> {
+	const lines = after.split("\n");
+	const offsets: number[] = [];
+	let offset = 0;
+	for (const line of lines) {
+		offsets.push(offset);
+		offset += line.length + 1;
+	}
+	const ranges: Array<{ start: number; end: number }> = [];
+	const changed = changedLineFlags(before, after);
+	for (let index = 0; index < changed.length; index += 1) {
+		if (!changed[index]) continue;
+		const start = offsets[index] ?? after.length;
+		while (changed[index + 1]) index += 1;
+		const end = offsets[index + 1] ?? after.length;
+		if (end > start) ranges.push({ start, end });
+	}
+	return ranges;
 }
 
 function editsCoveredByExistingBroadSuppression(change: ChangedPath): boolean {
-	const changed = changedAfterSpan(change.beforeSource, change.afterSource);
-	if (!changed) return false;
+	if (change.beforeSource === undefined || change.afterSource === undefined) return false;
+	const changed = changedAfterRanges(change.beforeSource, change.afterSource);
 	const existing = new Set(
 		broadSuppressionRanges(change.beforeSource).map((suppression) => suppression.identity),
 	);
 	return broadSuppressionRanges(change.afterSource).some(
 		(suppression) =>
 			existing.has(suppression.identity) &&
-			changed.start < suppression.end &&
-			changed.end > suppression.start,
+			changed.some((range) => range.start < suppression.end && range.end > suppression.start),
 	);
 }
 
@@ -433,11 +500,11 @@ function isLinterDisabled(base: UnknownRecord, head: UnknownRecord): boolean {
 	return isRecord(head.linter) && head.linter.enabled === false;
 }
 
-function usesRecommendedPreset(config: UnknownRecord): boolean {
+function usesImplicitRulePreset(config: UnknownRecord): boolean {
 	return (
 		isRecord(config.linter) &&
 		isRecord(config.linter.rules) &&
-		config.linter.rules.preset === "recommended"
+		["all", "recommended"].includes(String(config.linter.rules.preset))
 	);
 }
 
@@ -452,7 +519,7 @@ function newRuleViolations(
 		if (headSeverity === 0) {
 			return [{ kind: "rule-level" as const, message: `Biome rule explicitly disabled: ${rule}` }];
 		}
-		if (!usesRecommendedPreset(base) || headSeverity === undefined || headSeverity >= 3) return [];
+		if (!usesImplicitRulePreset(base) || headSeverity === undefined || headSeverity >= 3) return [];
 		return [{ kind: "rule-level" as const, message: `Biome preset rule weakened: ${rule}` }];
 	});
 }

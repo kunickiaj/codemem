@@ -236,11 +236,13 @@ function candidateIndexes(previous: LintDiagnostic, diagnostics: LintDiagnostic[
 	const exactScope = diagnostics.flatMap((diagnostic, index) =>
 		diagnostic.scopeIdentity && diagnostic.scopeIdentity === previous.scopeIdentity ? [index] : [],
 	);
-	if (previous.scopeIdentity) return exactScope;
+	if (exactScope.length > 0) return exactScope;
 	const exactSource = diagnostics.flatMap((diagnostic, index) =>
 		diagnostic.sourceText && diagnostic.sourceText === previous.sourceText ? [index] : [],
 	);
-	if (exactSource.length > 0) return exactSource;
+	if (exactSource.length > 0 && (!previous.scopeIdentity || exactSource.length === 1))
+		return exactSource;
+	if (previous.scopeIdentity && diagnostics.length !== 1) return [];
 	return diagnostics.map((_, index) => index);
 }
 

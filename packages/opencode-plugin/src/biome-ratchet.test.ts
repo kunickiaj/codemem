@@ -92,6 +92,25 @@ describe("Biome diagnostic comparison", () => {
 		).toEqual([added]);
 	});
 
+	it("preserves an unambiguous measured diagnostic when its scope is renamed", () => {
+		const before = {
+			...diagnostic("src/a.ts", 10, 18, "function beforeName"),
+			scopeIdentity: ":function:beforeName",
+		};
+		const after = {
+			...diagnostic("src/a.ts", 10, 18, "function afterName"),
+			scopeIdentity: ":function:afterName",
+		};
+
+		expect(
+			compareChangedDiagnostics(
+				[before],
+				[after],
+				[{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" }],
+			),
+		).toEqual([]);
+	});
+
 	it("maps renames and ignores diagnostics removed with deleted files", () => {
 		const before = [
 			diagnostic("src/old.ts", 4, 16, "same"),
@@ -263,6 +282,18 @@ describe("Biome policy comparison", () => {
 		}
 	});
 
+	it("rejects newly weakened severities for all preset rules", () => {
+		const baseConfig = JSON.stringify({ linter: { rules: { preset: "all" } } });
+		const headConfig = JSON.stringify({
+			linter: { rules: { preset: "all", correctness: { noUnusedVariables: "warn" } } },
+		});
+
+		expect(compareBiomePolicy(baseConfig, headConfig, [])).toContainEqual({
+			kind: "rule-level",
+			message: "Biome preset rule weakened: correctness.noUnusedVariables",
+		});
+	});
+
 	it("detects changed suppression identities even when the count is unchanged", () => {
 		expect(
 			compareBiomePolicy(config(), config(), [
@@ -400,6 +431,24 @@ describe("Biome policy bypass prevention", () => {
 				path: "src/a.ts",
 			});
 		}
+
+		const outsideOnly = range
+			.replace("const outside = 1;", "const outside = 2;")
+			.concat("\nconst after = 1;");
+		expect(
+			compareBiomePolicy(config(), config(), [
+				{
+					status: "modified",
+					afterPath: "src/a.ts",
+					beforeSource: range,
+					afterSource: outsideOnly,
+				},
+			]),
+		).not.toContainEqual({
+			kind: "suppression",
+			message: "Code changed under an existing broad Biome suppression",
+			path: "src/a.ts",
+		});
 	});
 
 	it("requires review for changed language-level lint controls", () => {
