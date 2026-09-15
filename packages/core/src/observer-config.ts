@@ -6,8 +6,24 @@
  * environment variable / file placeholders in config values.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import {
+	closeSync,
+	existsSync,
+	fchmodSync,
+	fsyncSync,
+	lstatSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	readlinkSync,
+	realpathSync,
+	renameSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { codememHomeDir } from "./home.js";
 
 // ---------------------------------------------------------------------------
@@ -475,12 +491,331 @@ export function readCodememConfigFileAtPath(configPath: string): Record<string, 
 	}
 }
 
-/** Persist the codemem config file as normalized JSON. */
-export function writeCodememConfigFile(data: Record<string, unknown>, configPath?: string): string {
+export type CodememConfigReadOutcome =
+	| { status: "missing"; path: string; revision: "missing" }
+	| {
+			status: "valid";
+			path: string;
+			data: Record<string, unknown>;
+			revision: string;
+			mode: number;
+	  }
+	| { status: "invalid"; path: string; reason: "empty" | "non_object" | "parse_error" }
+	| { status: "unreadable"; path: string };
+
+export type CodememConfigMutationResult = {
+	path: string;
+	data: Record<string, unknown>;
+	revision: string;
+};
+
+export class CodememConfigMutationError extends Error {
+	readonly code: "busy" | "changed" | "invalid" | "unreadable";
+
+	constructor(code: CodememConfigMutationError["code"], message: string, options?: ErrorOptions) {
+		super(message, options);
+		this.name = "CodememConfigMutationError";
+		this.code = code;
+	}
+}
+
+type AtomicConfigFileOperations = {
+	open: typeof openSync;
+	close: typeof closeSync;
+	chmod: typeof fchmodSync;
+	sync: typeof fsyncSync;
+	write: typeof writeFileSync;
+	rename: typeof renameSync;
+	unlink: typeof unlinkSync;
+};
+
+const atomicConfigFileOperations: AtomicConfigFileOperations = {
+	open: openSync,
+	close: closeSync,
+	chmod: fchmodSync,
+	sync: fsyncSync,
+	write: writeFileSync,
+	rename: renameSync,
+	unlink: unlinkSync,
+};
+
+function configRevision(text: string): string {
+	return createHash("sha256").update(text).digest("hex");
+}
+
+function parseConfigText(
+	text: string,
+):
+	| { status: "valid"; data: Record<string, unknown> }
+	| { status: "invalid"; reason: "empty" | "non_object" | "parse_error" } {
+	if (!text.trim()) return { status: "invalid", reason: "empty" };
+	for (const candidate of [text, stripTrailingCommas(stripJsonComments(text))]) {
+		try {
+			const parsed = JSON.parse(candidate) as unknown;
+			if (parsed != null && typeof parsed === "object" && !Array.isArray(parsed)) {
+				return { status: "valid", data: parsed as Record<string, unknown> };
+			}
+			return { status: "invalid", reason: "non_object" };
+		} catch {
+			// Try JSONC before reporting invalid syntax.
+		}
+	}
+	return { status: "invalid", reason: "parse_error" };
+}
+
+/** Read a config for mutation without treating damaged input as an empty object. */
+export function readCodememConfigFileForMutation(configPath?: string): CodememConfigReadOutcome {
+	const path = configPath ? expandUserPath(configPath) : getCodememConfigWritePath();
+	if (!existsSync(path)) return { status: "missing", path, revision: "missing" };
+	let text: string;
+	let mode: number;
+	try {
+		text = readFileSync(path, "utf8");
+		mode = statSync(path).mode & 0o777;
+	} catch {
+		return { status: "unreadable", path };
+	}
+	const parsed = parseConfigText(text);
+	if (parsed.status === "invalid") return { ...parsed, path };
+	return { ...parsed, path, revision: configRevision(text), mode };
+}
+
+function unlinkIfPresent(path: string, unlink: typeof unlinkSync): void {
+	try {
+		unlink(path);
+	} catch (error) {
+		const code = error instanceof Error && "code" in error ? String(error.code) : "";
+		if (code !== "ENOENT") throw error;
+	}
+}
+
+function resolveConfigMutationTarget(path: string): string {
+	const seen = new Set<string>();
+	let current = path;
+	while (true) {
+		if (seen.has(current)) {
+			throw new CodememConfigMutationError(
+				"unreadable",
+				`Cannot update config because ${path} contains a symbolic-link cycle.`,
+			);
+		}
+		seen.add(current);
+		try {
+			return realpathSync(current);
+		} catch {
+			// Follow broken link chains until reaching the intended missing target.
+		}
+		try {
+			if (lstatSync(current).isSymbolicLink()) {
+				const target = readlinkSync(current);
+				current = isAbsolute(target) ? target : resolve(dirname(current), target);
+				continue;
+			}
+			return current;
+		} catch {
+			try {
+				return join(realpathSync(dirname(current)), basename(current));
+			} catch {
+				return current;
+			}
+		}
+	}
+}
+
+function syncConfigDirectory(targetPath: string, operations: AtomicConfigFileOperations): void {
+	let directoryFd: number | null = null;
+	try {
+		directoryFd = operations.open(dirname(targetPath), "r");
+		operations.sync(directoryFd);
+	} catch {
+		// The rename already committed. Directory sync is best-effort on filesystems
+		// that reject or fail it, so callers must not mistake this for an uncommitted save.
+	} finally {
+		if (directoryFd != null) {
+			try {
+				operations.close(directoryFd);
+			} catch {
+				// Closing after a committed rename cannot safely turn success into failure.
+			}
+		}
+	}
+}
+
+/** Internal fault-injection seam used by config persistence tests. */
+export function atomicReplaceConfigFile(
+	targetPath: string,
+	text: string,
+	mode: number | undefined,
+	operations: AtomicConfigFileOperations = atomicConfigFileOperations,
+	verifyBeforeRename?: () => void,
+): void {
+	const replacementPath = resolveConfigMutationTarget(targetPath);
+	const tempPath = `${replacementPath}.tmp-${process.pid}-${randomUUID()}`;
+	let tempFd: number | null = null;
+	try {
+		tempFd = operations.open(tempPath, "wx", mode ?? 0o600);
+		if (mode != null) operations.chmod(tempFd, mode);
+		operations.write(tempFd, text, "utf8");
+		operations.sync(tempFd);
+		const completedFd = tempFd;
+		tempFd = null;
+		operations.close(completedFd);
+		verifyBeforeRename?.();
+		operations.rename(tempPath, replacementPath);
+		syncConfigDirectory(replacementPath, operations);
+	} finally {
+		try {
+			if (tempFd != null) operations.close(tempFd);
+		} finally {
+			unlinkIfPresent(tempPath, operations.unlink);
+		}
+	}
+}
+
+function assertMutationInput(outcome: CodememConfigReadOutcome): Record<string, unknown> {
+	if (outcome.status === "missing") return {};
+	if (outcome.status === "valid") return outcome.data;
+	if (outcome.status === "unreadable") {
+		throw new CodememConfigMutationError(
+			"unreadable",
+			`Cannot update config because ${outcome.path} could not be read.`,
+		);
+	}
+	throw new CodememConfigMutationError(
+		"invalid",
+		`Cannot update config because ${outcome.path} is not a valid JSON object.`,
+	);
+}
+
+function currentRevision(path: string): string | "missing" | "unreadable" {
+	if (!existsSync(path)) return "missing";
+	try {
+		return configRevision(readFileSync(path, "utf8"));
+	} catch {
+		return "unreadable";
+	}
+}
+
+function acquireConfigLock(targetPath: string): { fd: number; path: string } {
+	const path = `${targetPath}.lock`;
+	try {
+		return { fd: openSync(path, "wx", 0o600), path };
+	} catch (error) {
+		const code = error instanceof Error && "code" in error ? String(error.code) : "";
+		if (code === "EEXIST") {
+			throw new CodememConfigMutationError(
+				"busy",
+				`Cannot update config because another writer is updating ${targetPath}. Retry the save; if no save is active, remove the stale lock at ${path}.`,
+				{ cause: error },
+			);
+		}
+		throw new CodememConfigMutationError(
+			"unreadable",
+			`Cannot update config because its writer lock could not be created at ${path}.`,
+			{ cause: error },
+		);
+	}
+}
+
+function mutationInputOutcome(
+	target: CodememConfigReadOutcome,
+	targetPath: string,
+	fallbackReadPath: string | undefined,
+): CodememConfigReadOutcome {
+	if (target.status !== "missing") return target;
+	const readPath = fallbackReadPath ?? targetPath;
+	return readPath === targetPath ? target : readCodememConfigFileForMutation(readPath);
+}
+
+/** Serialize a read-modify-write config update across cooperating processes. */
+export function mutateCodememConfigFile(
+	mutator: (
+		data: Record<string, unknown>,
+		outcome: CodememConfigReadOutcome,
+	) => Record<string, unknown> | undefined,
+	configPath?: string,
+	options: { expectedRevision?: string; fallbackReadPath?: string } = {},
+): CodememConfigMutationResult {
 	const targetPath = configPath ? expandUserPath(configPath) : getCodememConfigWritePath();
 	mkdirSync(dirname(targetPath), { recursive: true });
-	writeFileSync(targetPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
-	return targetPath;
+	const lock = acquireConfigLock(resolveConfigMutationTarget(targetPath));
+	try {
+		const outcome = readCodememConfigFileForMutation(targetPath);
+		const fallbackReadPath =
+			options.fallbackReadPath ?? (configPath == null ? getCodememConfigPath() : undefined);
+		const inputOutcome = mutationInputOutcome(outcome, targetPath, fallbackReadPath);
+		const expectedRevision = outcome.status === "valid" ? outcome.revision : "missing";
+		if (options.expectedRevision != null && expectedRevision !== options.expectedRevision) {
+			throw new CodememConfigMutationError(
+				"changed",
+				`Cannot update config because ${targetPath} changed before the save. Retry the save.`,
+			);
+		}
+		const current = { ...assertMutationInput(inputOutcome) };
+		const data = mutator(current, outcome);
+		if (data === undefined) return { path: targetPath, data: current, revision: expectedRevision };
+		const inputRevision =
+			inputOutcome.status === "valid" ? inputOutcome.revision : inputOutcome.status;
+		const text = `${JSON.stringify(data, null, 2)}\n`;
+		atomicReplaceConfigFile(
+			targetPath,
+			text,
+			outcome.status === "valid" ? outcome.mode : undefined,
+			atomicConfigFileOperations,
+			() => {
+				if (currentRevision(targetPath) !== expectedRevision) {
+					throw new CodememConfigMutationError(
+						"changed",
+						`Cannot update config because ${targetPath} changed during the save. Retry the save.`,
+					);
+				}
+				if (
+					inputOutcome.path !== targetPath &&
+					currentRevision(inputOutcome.path) !== inputRevision
+				) {
+					throw new CodememConfigMutationError(
+						"changed",
+						`Cannot update config because ${inputOutcome.path} changed during the save. Retry the save.`,
+					);
+				}
+			},
+		);
+		return { path: targetPath, data, revision: configRevision(text) };
+	} finally {
+		try {
+			closeSync(lock.fd);
+		} finally {
+			unlinkIfPresent(lock.path, unlinkSync);
+		}
+	}
+}
+
+/** Delete a config only when it still has the expected revision. */
+export function deleteCodememConfigFile(configPath: string, expectedRevision: string): void {
+	const targetPath = expandUserPath(configPath);
+	const replacementPath = resolveConfigMutationTarget(targetPath);
+	const lock = acquireConfigLock(replacementPath);
+	try {
+		if (currentRevision(targetPath) !== expectedRevision) {
+			throw new CodememConfigMutationError(
+				"changed",
+				`Cannot restore config because ${targetPath} changed after the save.`,
+			);
+		}
+		unlinkSync(replacementPath);
+		syncConfigDirectory(replacementPath, atomicConfigFileOperations);
+	} finally {
+		try {
+			closeSync(lock.fd);
+		} finally {
+			unlinkIfPresent(lock.path, unlinkSync);
+		}
+	}
+}
+
+/** Persist the codemem config file as normalized JSON using atomic replacement. */
+export function writeCodememConfigFile(data: Record<string, unknown>, configPath?: string): string {
+	return mutateCodememConfigFile(() => data, configPath).path;
 }
 
 export function writeWorkspaceCodememConfigFile(

@@ -1,15 +1,37 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+	closeSync,
+	existsSync,
+	fchmodSync,
+	fsyncSync,
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	atomicReplaceConfigFile,
+	CodememConfigMutationError,
+	deleteCodememConfigFile,
 	getCodememConfigPath,
 	getCodememEnvOverrides,
 	getProviderApiKey,
 	getWorkspaceCodememConfigPath,
 	getWorkspaceScopedCodememConfigPath,
 	loadOpenCodeConfig,
+	mutateCodememConfigFile,
 	readCodememConfigFileAtPath,
+	readCodememConfigFileForMutation,
 	readWorkspaceCodememConfigFile,
 	resolveCodememConfigPath,
 	resolveCustomProviderFromModel,
@@ -143,6 +165,283 @@ describe("codemem config path resolution", () => {
 		const configPath = join(tmpHome, "workspace-config.jsonc");
 		writeFileSync(configPath, '{\n  // comment\n  "sync_enabled": true,\n}\n', "utf8");
 		expect(readCodememConfigFileAtPath(configPath)).toEqual({ sync_enabled: true });
+	});
+});
+
+describe("codemem config mutation", () => {
+	let tmpHome: string;
+
+	beforeEach(() => {
+		tmpHome = mkdtempSync(join(tmpdir(), "codemem-config-mutation-"));
+	});
+
+	afterEach(() => {
+		rmSync(tmpHome, { recursive: true, force: true });
+	});
+
+	it("distinguishes missing, invalid, and valid mutation input", () => {
+		const configPath = join(tmpHome, "strict-config.json");
+		expect(readCodememConfigFileForMutation(configPath)).toMatchObject({ status: "missing" });
+
+		writeFileSync(configPath, "{ broken", "utf8");
+		expect(readCodememConfigFileForMutation(configPath)).toMatchObject({
+			status: "invalid",
+			reason: "parse_error",
+		});
+
+		writeFileSync(configPath, '{ "existing": true, }', "utf8");
+		expect(readCodememConfigFileForMutation(configPath)).toMatchObject({
+			status: "valid",
+			data: { existing: true },
+		});
+
+		const unreadablePath = join(tmpHome, "directory-instead-of-config");
+		mkdirSync(unreadablePath);
+		expect(readCodememConfigFileForMutation(unreadablePath)).toMatchObject({
+			status: "unreadable",
+		});
+	});
+
+	it("refuses to replace malformed config during mutation", () => {
+		const configPath = join(tmpHome, "malformed.json");
+		const original = "{ definitely-not-json";
+		writeFileSync(configPath, original, "utf8");
+
+		expect(() =>
+			mutateCodememConfigFile((config) => ({ ...config, sync_enabled: true }), configPath),
+		).toThrow(CodememConfigMutationError);
+		expect(readFileSync(configPath, "utf8")).toBe(original);
+		expect(
+			readdirSync(tmpHome).filter((name) => name.includes(".tmp-") || name.endsWith(".lock")),
+		).toEqual([]);
+	});
+});
+
+describe("atomic config replacement", () => {
+	let tmpHome: string;
+
+	beforeEach(() => {
+		tmpHome = mkdtempSync(join(tmpdir(), "codemem-config-replacement-"));
+	});
+
+	afterEach(() => {
+		rmSync(tmpHome, { recursive: true, force: true });
+	});
+
+	it("leaves original bytes intact and cleans the temporary file when rename fails", () => {
+		const configPath = join(tmpHome, "rename-failure.json");
+		const original = '{"existing":true}\n';
+		writeFileSync(configPath, original, "utf8");
+		const operations = {
+			open: openSync,
+			close: closeSync,
+			chmod: fchmodSync,
+			sync: fsyncSync,
+			write: writeFileSync,
+			rename: () => {
+				throw new Error("injected rename failure");
+			},
+			unlink: unlinkSync,
+		};
+
+		expect(() =>
+			atomicReplaceConfigFile(configPath, '{"replacement":true}\n', 0o640, operations),
+		).toThrow("injected rename failure");
+		expect(readFileSync(configPath, "utf8")).toBe(original);
+		expect(readdirSync(tmpHome).filter((name) => name.includes(".tmp-"))).toEqual([]);
+	});
+
+	it("leaves original bytes intact and cleans the temporary file when sync fails", () => {
+		const configPath = join(tmpHome, "sync-failure.json");
+		const original = '{"existing":true}\n';
+		writeFileSync(configPath, original, "utf8");
+		const operations = {
+			open: openSync,
+			close: closeSync,
+			chmod: fchmodSync,
+			sync: () => {
+				throw new Error("injected sync failure");
+			},
+			write: writeFileSync,
+			rename: renameSync,
+			unlink: unlinkSync,
+		};
+
+		expect(() =>
+			atomicReplaceConfigFile(configPath, '{"replacement":true}\n', 0o640, operations),
+		).toThrow("injected sync failure");
+		expect(readFileSync(configPath, "utf8")).toBe(original);
+		expect(readdirSync(tmpHome).filter((name) => name.includes(".tmp-"))).toEqual([]);
+	});
+
+	it("leaves original bytes intact and cleans the temporary file when write fails", () => {
+		const configPath = join(tmpHome, "write-failure.json");
+		const original = '{"existing":true}\n';
+		writeFileSync(configPath, original, "utf8");
+		const operations = {
+			open: openSync,
+			close: closeSync,
+			chmod: fchmodSync,
+			sync: fsyncSync,
+			write: () => {
+				throw new Error("injected write failure");
+			},
+			rename: renameSync,
+			unlink: unlinkSync,
+		};
+
+		expect(() =>
+			atomicReplaceConfigFile(configPath, '{"replacement":true}\n', 0o640, operations),
+		).toThrow("injected write failure");
+		expect(readFileSync(configPath, "utf8")).toBe(original);
+		expect(readdirSync(tmpHome).filter((name) => name.includes(".tmp-"))).toEqual([]);
+	});
+
+	it("returns success when directory sync fails after rename", () => {
+		const configPath = join(tmpHome, "directory-sync-failure.json");
+		writeFileSync(configPath, '{"existing":true}\n', "utf8");
+		let syncCalls = 0;
+		const operations = {
+			open: openSync,
+			close: closeSync,
+			chmod: fchmodSync,
+			sync: (fd: number) => {
+				syncCalls++;
+				if (syncCalls === 2) throw new Error("injected directory sync failure");
+				fsyncSync(fd);
+			},
+			write: writeFileSync,
+			rename: renameSync,
+			unlink: unlinkSync,
+		};
+
+		expect(() =>
+			atomicReplaceConfigFile(configPath, '{"replacement":true}\n', 0o640, operations),
+		).not.toThrow();
+		expect(readFileSync(configPath, "utf8")).toBe('{"replacement":true}\n');
+	});
+});
+
+describe("config mutation concurrency", () => {
+	let tmpHome: string;
+
+	beforeEach(() => {
+		tmpHome = mkdtempSync(join(tmpdir(), "codemem-config-concurrency-"));
+	});
+
+	afterEach(() => {
+		rmSync(tmpHome, { recursive: true, force: true });
+	});
+
+	it("preserves mode and unrelated fields during mutation", () => {
+		const configPath = join(tmpHome, "preserve.json");
+		writeFileSync(configPath, '{"unrelated":"keep","sync_enabled":false}\n', {
+			encoding: "utf8",
+			mode: 0o640,
+		});
+		const beforeMode = statSync(configPath).mode & 0o777;
+
+		const result = mutateCodememConfigFile(
+			(config) => ({ ...config, sync_enabled: true }),
+			configPath,
+		);
+
+		expect(result.data).toEqual({ unrelated: "keep", sync_enabled: true });
+		expect(statSync(configPath).mode & 0o777).toBe(beforeMode);
+	});
+
+	it("updates a symlink target without replacing the link", () => {
+		const targetPath = join(tmpHome, "target.json");
+		const configPath = join(tmpHome, "linked.json");
+		writeFileSync(targetPath, '{"unrelated":"keep"}\n', "utf8");
+		symlinkSync(targetPath, configPath);
+
+		mutateCodememConfigFile((config) => ({ ...config, sync_enabled: true }), configPath);
+
+		expect(lstatSync(configPath).isSymbolicLink()).toBe(true);
+		expect(JSON.parse(readFileSync(targetPath, "utf8"))).toEqual({
+			unrelated: "keep",
+			sync_enabled: true,
+		});
+	});
+
+	it("preserves a symlink chain when its final target is created and deleted", () => {
+		const targetPath = join(tmpHome, "missing-target.json");
+		const intermediatePath = join(tmpHome, "intermediate.json");
+		const configPath = join(tmpHome, "linked.json");
+		symlinkSync("missing-target.json", intermediatePath);
+		symlinkSync("intermediate.json", configPath);
+
+		const created = mutateCodememConfigFile(() => ({ created: true }), configPath);
+
+		expect(lstatSync(configPath).isSymbolicLink()).toBe(true);
+		expect(lstatSync(intermediatePath).isSymbolicLink()).toBe(true);
+		expect(JSON.parse(readFileSync(targetPath, "utf8"))).toEqual({ created: true });
+
+		deleteCodememConfigFile(configPath, created.revision);
+		expect(existsSync(targetPath)).toBe(false);
+		expect(lstatSync(configPath).isSymbolicLink()).toBe(true);
+		expect(lstatSync(intermediatePath).isSymbolicLink()).toBe(true);
+	});
+
+	it("deletes a newly created config only at its expected revision", () => {
+		const configPath = join(tmpHome, "created.json");
+		const created = mutateCodememConfigFile(() => ({ created: true }), configPath);
+
+		deleteCodememConfigFile(configPath, created.revision);
+
+		expect(existsSync(configPath)).toBe(false);
+		expect(readdirSync(tmpHome).filter((name) => name.endsWith(".lock"))).toEqual([]);
+	});
+
+	it("rejects cooperating and external concurrent writers", () => {
+		const configPath = join(tmpHome, "concurrent.json");
+		writeFileSync(configPath, '{"value":1}\n', "utf8");
+		let nestedError: unknown;
+
+		expect(() =>
+			mutateCodememConfigFile((config) => {
+				try {
+					mutateCodememConfigFile((nested) => nested, configPath);
+				} catch (error) {
+					nestedError = error;
+				}
+				writeFileSync(configPath, '{"external":true}\n', "utf8");
+				return { ...config, value: 2 };
+			}, configPath),
+		).toThrow(expect.objectContaining({ code: "changed" }));
+		expect(nestedError).toEqual(expect.objectContaining({ code: "busy" }));
+		expect(readFileSync(configPath, "utf8")).toBe('{"external":true}\n');
+	});
+
+	it("rejects changes to a legacy source while seeding a scoped config", () => {
+		const previousHome = process.env.HOME;
+		const previousWorkspaceId = process.env.CODEMEM_WORKSPACE_ID;
+		process.env.HOME = tmpHome;
+		process.env.CODEMEM_WORKSPACE_ID = "seeded-workspace";
+		const legacyPath = join(tmpHome, ".config", "codemem", "config.json");
+		const targetPath = getWorkspaceCodememConfigPath("seeded-workspace");
+		mkdirSync(dirname(legacyPath), { recursive: true });
+		writeFileSync(legacyPath, '{"legacy":true}\n', "utf8");
+		try {
+			expect(() =>
+				mutateCodememConfigFile(
+					(config) => {
+						writeFileSync(legacyPath, '{"external":true}\n', "utf8");
+						return { ...config, scoped: true };
+					},
+					targetPath,
+					{ fallbackReadPath: legacyPath },
+				),
+			).toThrow(expect.objectContaining({ code: "changed" }));
+			expect(readCodememConfigFileForMutation(targetPath).status).toBe("missing");
+			expect(readFileSync(legacyPath, "utf8")).toBe('{"external":true}\n');
+		} finally {
+			if (previousHome == null) delete process.env.HOME;
+			else process.env.HOME = previousHome;
+			if (previousWorkspaceId == null) delete process.env.CODEMEM_WORKSPACE_ID;
+			else process.env.CODEMEM_WORKSPACE_ID = previousWorkspaceId;
+		}
 	});
 });
 

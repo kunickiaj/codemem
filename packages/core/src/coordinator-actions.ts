@@ -49,9 +49,10 @@ import {
 import { connect, resolveDbPath } from "./db.js";
 import { initDatabase } from "./maintenance.js";
 import {
+	deleteCodememConfigFile,
+	mutateCodememConfigFile,
 	readCodememConfigFile,
 	readCodememConfigFileAtPath,
-	writeCodememConfigFile,
 } from "./observer-config.js";
 import {
 	PROJECT_INVITE_PENDING_STATUS,
@@ -116,6 +117,53 @@ function enableInviteSync(config: Record<string, unknown>): Record<string, unkno
 				? intervalS
 				: PROJECT_INVITE_SYNC_DEFAULTS.intervalS,
 	};
+}
+
+function configuredCoordinatorGroups(config: Record<string, unknown>): string[] {
+	const plural = config.sync_coordinator_groups;
+	if (Array.isArray(plural)) return plural.map((group) => String(group).trim()).filter(Boolean);
+	if (typeof plural === "string") {
+		return plural
+			.split(",")
+			.map((group) => group.trim())
+			.filter(Boolean);
+	}
+	const singular = config.sync_coordinator_group;
+	return typeof singular === "string" && singular.trim() ? [singular.trim()] : [];
+}
+
+function updateInviteConfig(opts: {
+	configPath?: string | null;
+	coordinatorUrl: string;
+	groupId: string;
+	enableSync: boolean;
+	identity?: { actorId: string; actorName: string; deviceName: string };
+}): {
+	path: string;
+	previous: Record<string, unknown>;
+	revision: string;
+	groups: string[];
+	created: boolean;
+} {
+	let previous: Record<string, unknown> = {};
+	let created = false;
+	let groups: string[] = [];
+	const result = mutateCodememConfigFile((current, outcome) => {
+		previous = { ...current };
+		created = outcome.status === "missing";
+		const next = opts.enableSync ? enableInviteSync({ ...current }) : { ...current };
+		next.sync_coordinator_url = opts.coordinatorUrl;
+		if (opts.identity) {
+			next.actor_id = opts.identity.actorId;
+			next.actor_display_name = opts.identity.actorName;
+			next.sync_device_name = opts.identity.deviceName;
+		}
+		groups = Array.from(new Set([...configuredCoordinatorGroups(next), opts.groupId]));
+		next.sync_coordinator_groups = groups;
+		next.sync_coordinator_group = groups[0] ?? opts.groupId;
+		return next;
+	}, opts.configPath ?? undefined);
+	return { path: result.path, previous, revision: result.revision, groups, created };
 }
 
 function coordinatorRemoteTarget(config = readCodememConfigFile()): {
@@ -2520,40 +2568,24 @@ export async function coordinatorImportInviteAction(opts: {
 			reviewedOnboardingDigest,
 		};
 	}
-	const previousConfig = opts.configPath
-		? readCodememConfigFileAtPath(opts.configPath)
-		: readCodememConfigFile();
-	let nextConfig = { ...previousConfig };
-	if (projectInvite || recipientInvite) nextConfig = enableInviteSync(nextConfig);
-	nextConfig.sync_coordinator_url = coordinatorUrl;
-	if (projectInvite || recipientInvite) {
-		nextConfig.actor_id = recipientActorId;
-		nextConfig.actor_display_name = persistedRecipientDisplayName;
-		nextConfig.sync_device_name = displayName;
-	}
-	// Append the new group to sync_coordinator_groups (dedup) instead of
-	// overwriting sync_coordinator_group. The runtime reads both the plural
-	// and singular forms; we keep singular pointing at the first group for
-	// legacy compatibility.
 	const newGroupId = String(payload.group_id);
-	const existingGroups = (() => {
-		const plural = nextConfig.sync_coordinator_groups;
-		if (Array.isArray(plural)) return plural.map((g) => String(g).trim()).filter(Boolean);
-		if (typeof plural === "string") {
-			return plural
-				.split(",")
-				.map((g) => g.trim())
-				.filter(Boolean);
-		}
-		const singular = nextConfig.sync_coordinator_group;
-		return typeof singular === "string" && singular.trim() ? [singular.trim()] : [];
-	})();
-	const mergedGroups = Array.from(new Set([...existingGroups, newGroupId]));
-	nextConfig.sync_coordinator_groups = mergedGroups;
-	nextConfig.sync_coordinator_group = mergedGroups[0] ?? newGroupId;
-	let configPath: string;
+	const configIdentity =
+		projectInvite || recipientInvite
+			? {
+					actorId: recipientActorId,
+					actorName: persistedRecipientDisplayName,
+					deviceName: displayName,
+				}
+			: undefined;
+	let configMutation: ReturnType<typeof updateInviteConfig>;
 	try {
-		configPath = writeCodememConfigFile(nextConfig, opts.configPath ?? undefined);
+		configMutation = updateInviteConfig({
+			configPath: opts.configPath,
+			coordinatorUrl,
+			groupId: newGroupId,
+			enableSync: projectInvite || recipientInvite,
+			identity: configIdentity,
+		});
 	} catch (error) {
 		if (projectInvite) {
 			throw new ProjectSyncEnablementError({ cause: error });
@@ -2565,7 +2597,13 @@ export async function coordinatorImportInviteAction(opts: {
 			persistRecipientInviteOnboarding(recipientOnboarding);
 		} catch (error) {
 			try {
-				writeCodememConfigFile(previousConfig, opts.configPath ?? undefined);
+				if (configMutation.created) {
+					deleteCodememConfigFile(configMutation.path, configMutation.revision);
+				} else {
+					mutateCodememConfigFile(() => configMutation.previous, opts.configPath ?? undefined, {
+						expectedRevision: configMutation.revision,
+					});
+				}
 			} catch (restoreError) {
 				throw new AggregateError([error, restoreError], "recipient_invite_config_restore_failed");
 			}
@@ -2613,8 +2651,8 @@ export async function coordinatorImportInviteAction(opts: {
 		trust_state: response?.trust_state ?? null,
 		bootstrap_grant_id: response?.bootstrap_grant_id ?? null,
 		inviter_device: response?.inviter_device ?? null,
-		config_path: configPath,
-		groups: mergedGroups,
+		config_path: configMutation.path,
+		groups: configMutation.groups,
 	};
 }
 

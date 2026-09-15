@@ -1,6 +1,6 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	buildWorkspaceConfigPatch,
@@ -69,6 +69,18 @@ describe("runWorkspaceConfigCommand", () => {
 		expect(result.config).toMatchObject({
 			sync_coordinator_group: "team-c",
 		});
+	});
+
+	it("does not overwrite malformed workspace config", () => {
+		const configPath = join(tmpHome, ".codemem", "workspaces", "pilot-4", "config", "codemem.json");
+		mkdirSync(dirname(configPath), { recursive: true });
+		const malformed = '{ "existing": true,';
+		writeFileSync(configPath, malformed, "utf8");
+
+		expect(() => runWorkspaceConfigCommand({ workspaceId: "pilot-4", enableSync: true })).toThrow(
+			"not a valid JSON object",
+		);
+		expect(readFileSync(configPath, "utf8")).toBe(malformed);
 	});
 
 	it("supports the commander command path with json output", async () => {

@@ -23,6 +23,7 @@ import {
 	loadPublicKey,
 	MemoryStore,
 	mdnsEnabled,
+	mutateCodememConfigFile,
 	readCodememConfigFile,
 	readCodememConfigFileAtPath,
 	readCoordinatorSyncConfig,
@@ -33,7 +34,6 @@ import {
 	setPeerProjectFilter,
 	syncPassPreflight,
 	updatePeerAddresses,
-	writeCodememConfigFile,
 } from "@codemem/core";
 import { Command, Option } from "commander";
 import { desc, eq } from "drizzle-orm";
@@ -63,8 +63,11 @@ function readCliConfig(configPath?: string): Record<string, unknown> {
 	return configPath ? readCodememConfigFileAtPath(configPath) : readCodememConfigFile();
 }
 
-function writeCliConfig(config: Record<string, unknown>, configPath?: string): string {
-	return writeCodememConfigFile(config, configPath || undefined);
+function mutateCliConfig(
+	mutator: (config: Record<string, unknown>) => Record<string, unknown>,
+	configPath?: string,
+): Record<string, unknown> {
+	return mutateCodememConfigFile(mutator, configPath || undefined).data;
 }
 
 function parseAttemptsLimit(value: string): number {
@@ -984,14 +987,15 @@ enableCmd.action(
 		try {
 			const keysDir = process.env.CODEMEM_KEYS_DIR?.trim() || undefined;
 			const [deviceId, fingerprint] = ensureDeviceIdentity(store.db, { keysDir });
-			const config = readCliConfig(opts.config);
-			config.sync_enabled = true;
-			if (effectiveHost) config.sync_host = effectiveHost;
 			const syncPort = parsePositiveIntegerOption(effectivePort, "--sync-port");
 			const syncInterval = parsePositiveIntegerOption(opts.interval, "--interval");
-			if (syncPort != null) config.sync_port = syncPort;
-			if (syncInterval != null) config.sync_interval_s = syncInterval;
-			writeCliConfig(config, opts.config);
+			const config = mutateCliConfig((current) => {
+				current.sync_enabled = true;
+				if (effectiveHost) current.sync_host = effectiveHost;
+				if (syncPort != null) current.sync_port = syncPort;
+				if (syncInterval != null) current.sync_interval_s = syncInterval;
+				return current;
+			}, opts.config);
 
 			if (opts.json) {
 				console.log(
@@ -1041,9 +1045,7 @@ const disableCmd = new Command("disable")
 	.description("Disable sync without deleting keys or peers");
 addConfigOption(disableCmd);
 disableCmd.action((opts: { config?: string }) => {
-	const config = readCliConfig(opts.config);
-	config.sync_enabled = false;
-	writeCliConfig(config, opts.config);
+	mutateCliConfig((config) => ({ ...config, sync_enabled: false }), opts.config);
 	p.intro("codemem sync disable");
 	p.outro("Sync disabled — restart `codemem serve` to take effect");
 });
@@ -1405,10 +1407,11 @@ const connectCmd = new Command("connect")
 	.option("--group <group>", "sync group ID");
 addConfigOption(connectCmd);
 connectCmd.action((url: string, opts: { group?: string; config?: string }) => {
-	const config = readCliConfig(opts.config);
-	config.sync_coordinator_url = url.trim();
-	if (opts.group) config.sync_coordinator_group = opts.group.trim();
-	writeCliConfig(config, opts.config);
+	mutateCliConfig((config) => {
+		config.sync_coordinator_url = url.trim();
+		if (opts.group) config.sync_coordinator_group = opts.group.trim();
+		return config;
+	}, opts.config);
 	p.intro("codemem sync connect");
 	p.log.success(`Coordinator: ${url.trim()}`);
 	if (opts.group) p.log.info(`Group: ${opts.group.trim()}`);

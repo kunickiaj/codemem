@@ -124,6 +124,7 @@ import {
 	lookupCoordinatorPeers,
 	mergeAddresses,
 	migrateRecipientPolicyIntent,
+	mutateCodememConfigFile,
 	negotiateSyncCapability,
 	normalizeAddress,
 	normalizeHumanPresentationName,
@@ -179,7 +180,6 @@ import {
 	verifyDirectPeerSignature,
 	verifyRecipientReviewedIntent,
 	verifySignature,
-	writeCodememConfigFile,
 } from "@codemem/core";
 import { and, count, desc, eq, max, ne } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
@@ -430,27 +430,36 @@ async function maybeGrantDefaultSpaceOnJoin(opts: {
 	});
 }
 
+function configuredGroups(config: Record<string, unknown>): string[] {
+	const rawGroups = config.sync_coordinator_groups;
+	if (Array.isArray(rawGroups)) {
+		return rawGroups.map((group) => String(group).trim()).filter(Boolean);
+	}
+	if (typeof rawGroups === "string") {
+		return rawGroups
+			.split(",")
+			.map((group) => group.trim())
+			.filter(Boolean);
+	}
+	if (typeof config.sync_coordinator_group === "string" && config.sync_coordinator_group.trim()) {
+		return [config.sync_coordinator_group.trim()];
+	}
+	return [];
+}
+
 function removeConfiguredCoordinatorGroup(groupId: string): string[] {
 	const targetGroup = groupId.trim();
 	if (!targetGroup) return [];
-	const config = readCodememConfigFile();
-	const rawGroups = config.sync_coordinator_groups;
-	const groups = Array.isArray(rawGroups)
-		? rawGroups.map((group) => String(group).trim()).filter(Boolean)
-		: typeof rawGroups === "string"
-			? rawGroups
-					.split(",")
-					.map((group) => group.trim())
-					.filter(Boolean)
-			: typeof config.sync_coordinator_group === "string" && config.sync_coordinator_group.trim()
-				? [config.sync_coordinator_group.trim()]
-				: [];
-	const nextGroups = groups.filter((group) => group !== targetGroup);
-	if (nextGroups.length === groups.length) return groups;
-	config.sync_coordinator_groups = nextGroups;
-	if (nextGroups.length) config.sync_coordinator_group = nextGroups[0];
-	else delete config.sync_coordinator_group;
-	writeCodememConfigFile(config);
+	let nextGroups: string[] = [];
+	mutateCodememConfigFile((config) => {
+		const groups = configuredGroups(config);
+		nextGroups = groups.filter((group) => group !== targetGroup);
+		if (nextGroups.length === groups.length) return undefined;
+		config.sync_coordinator_groups = nextGroups;
+		if (nextGroups.length) config.sync_coordinator_group = nextGroups[0];
+		else delete config.sync_coordinator_group;
+		return config;
+	});
 	return nextGroups;
 }
 

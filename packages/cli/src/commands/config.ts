@@ -1,11 +1,9 @@
-import { existsSync } from "node:fs";
 import {
 	type ConfigResolutionResult,
+	getCodememConfigPath,
 	getWorkspaceCodememConfigPath,
-	readCodememConfigFile,
-	readCodememConfigFileAtPath,
+	mutateCodememConfigFile,
 	resolveCodememConfigPath,
-	writeCodememConfigFile,
 } from "@codemem/core";
 import { Command, Option } from "commander";
 import { helpStyle } from "../help-style.js";
@@ -76,9 +74,6 @@ function runWorkspaceConfigCommand(
 	const configPath = getWorkspaceCodememConfigPath(workspaceId);
 	// Seeds new workspace config from legacy global config on first write,
 	// so existing settings are inherited.
-	const existingConfig = existsSync(configPath)
-		? readCodememConfigFileAtPath(configPath)
-		: readCodememConfigFile();
 	const patch = buildWorkspaceConfigPatch({
 		workspaceId,
 		syncEnabled: opts.enableSync ? true : opts.disableSync ? false : undefined,
@@ -92,8 +87,13 @@ function runWorkspaceConfigCommand(
 	if (Object.keys(patch).length === 0) {
 		throw new Error("Provide at least one config field to update");
 	}
-	const nextConfig = mergeWorkspaceConfig(existingConfig, patch);
-	const savedPath = writeCodememConfigFile(nextConfig, configPath);
+	const result = mutateCodememConfigFile(
+		(existingConfig) => mergeWorkspaceConfig(existingConfig, patch),
+		configPath,
+		{ fallbackReadPath: getCodememConfigPath() },
+	);
+	const nextConfig = result.data;
+	const savedPath = result.path;
 	return {
 		workspace_id: workspaceId,
 		config_path: savedPath,

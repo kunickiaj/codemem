@@ -625,13 +625,17 @@ export type {
 export { loadObserverConfig, ObserverAuthError, ObserverClient } from "./observer-client.js";
 export * from "./observer-concepts.js";
 export type {
+	CodememConfigMutationResult,
+	CodememConfigReadOutcome,
 	ConfigPathResolution,
 	ConfigPathSource,
 	ConfigResolutionResult,
 } from "./observer-config.js";
 export {
 	CODEMEM_CONFIG_ENV_OVERRIDES,
+	CodememConfigMutationError,
 	coerceObserverCommand,
+	deleteCodememConfigFile,
 	getCodememConfigPath,
 	getCodememEnvOverrides,
 	getOpenCodeProviderConfig,
@@ -645,8 +649,10 @@ export {
 	listCustomProviders,
 	listObserverProviderOptions,
 	loadOpenCodeConfig,
+	mutateCodememConfigFile,
 	readCodememConfigFile,
 	readCodememConfigFileAtPath,
+	readCodememConfigFileForMutation,
 	readWorkspaceCodememConfigFile,
 	resolveBuiltInProviderDefaultModel,
 	resolveBuiltInProviderFromModel,
