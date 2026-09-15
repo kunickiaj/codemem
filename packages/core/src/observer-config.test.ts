@@ -216,6 +216,31 @@ describe("codemem config mutation", () => {
 			readdirSync(tmpHome).filter((name) => name.includes(".tmp-") || name.endsWith(".lock")),
 		).toEqual([]);
 	});
+
+	it("returns the committed result when writer-lock cleanup fails", () => {
+		const configPath = join(tmpHome, "cleanup-failure.json");
+		writeFileSync(configPath, '{"existing":true}\n', "utf8");
+		const cleanupError = Object.assign(new Error("injected lock unlink failure"), {
+			code: "EACCES",
+		});
+
+		const result = mutateCodememConfigFile(
+			(config) => ({ ...config, committed: true }),
+			configPath,
+			{
+				lockCleanupOperations: {
+					close: closeSync,
+					unlink: () => {
+						throw cleanupError;
+					},
+				},
+			},
+		);
+
+		expect(result.data).toEqual({ existing: true, committed: true });
+		expect(readCodememConfigFileAtPath(configPath)).toEqual(result.data);
+		expect(existsSync(`${configPath}.lock`)).toBe(true);
+	});
 });
 
 describe("atomic config replacement", () => {
@@ -321,6 +346,27 @@ describe("atomic config replacement", () => {
 		).not.toThrow();
 		expect(readFileSync(configPath, "utf8")).toBe('{"replacement":true}\n');
 	});
+
+	it("returns success when temp cleanup fails after rename", () => {
+		const configPath = join(tmpHome, "post-rename-cleanup-failure.json");
+		writeFileSync(configPath, '{"existing":true}\n', "utf8");
+		const operations = {
+			open: openSync,
+			close: closeSync,
+			chmod: fchmodSync,
+			sync: fsyncSync,
+			write: writeFileSync,
+			rename: renameSync,
+			unlink: () => {
+				throw new Error("injected cleanup failure");
+			},
+		};
+
+		expect(() =>
+			atomicReplaceConfigFile(configPath, '{"replacement":true}\n', 0o640, operations),
+		).not.toThrow();
+		expect(readFileSync(configPath, "utf8")).toBe('{"replacement":true}\n');
+	});
 });
 
 describe("config mutation concurrency", () => {
@@ -393,6 +439,25 @@ describe("config mutation concurrency", () => {
 
 		expect(existsSync(configPath)).toBe(false);
 		expect(readdirSync(tmpHome).filter((name) => name.endsWith(".lock"))).toEqual([]);
+	});
+
+	it("returns success when lock cleanup fails after deletion", () => {
+		const configPath = join(tmpHome, "deleted-with-lock-cleanup-failure.json");
+		const created = mutateCodememConfigFile(() => ({ created: true }), configPath);
+		const cleanupError = Object.assign(new Error("injected lock unlink failure"), {
+			code: "EACCES",
+		});
+
+		expect(() =>
+			deleteCodememConfigFile(configPath, created.revision, undefined, {
+				close: closeSync,
+				unlink: () => {
+					throw cleanupError;
+				},
+			}),
+		).not.toThrow();
+		expect(existsSync(configPath)).toBe(false);
+		expect(existsSync(`${configPath}.lock`)).toBe(true);
 	});
 
 	it("rejects cooperating and external concurrent writers", () => {

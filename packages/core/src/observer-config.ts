@@ -11,6 +11,7 @@ import {
 	closeSync,
 	existsSync,
 	fchmodSync,
+	fchownSync,
 	fsyncSync,
 	lstatSync,
 	mkdirSync,
@@ -499,15 +500,20 @@ export type CodememConfigReadOutcome =
 			data: Record<string, unknown>;
 			revision: string;
 			mode: number;
+			uid: number;
+			gid: number;
 	  }
 	| { status: "invalid"; path: string; reason: "empty" | "non_object" | "parse_error" }
 	| { status: "unreadable"; path: string };
 
 export type CodememConfigMutationResult = {
 	path: string;
+	mutationPath: string;
 	data: Record<string, unknown>;
 	revision: string;
 };
+
+type ConfigFileMetadata = { mode: number; uid: number; gid: number };
 
 export class CodememConfigMutationError extends Error {
 	readonly code: "busy" | "changed" | "invalid" | "unreadable";
@@ -522,6 +528,7 @@ export class CodememConfigMutationError extends Error {
 type AtomicConfigFileOperations = {
 	open: typeof openSync;
 	close: typeof closeSync;
+	chown?: typeof fchownSync;
 	chmod: typeof fchmodSync;
 	sync: typeof fsyncSync;
 	write: typeof writeFileSync;
@@ -529,13 +536,21 @@ type AtomicConfigFileOperations = {
 	unlink: typeof unlinkSync;
 };
 
+type ConfigLockCleanupOperations = Pick<AtomicConfigFileOperations, "close" | "unlink">;
+
 const atomicConfigFileOperations: AtomicConfigFileOperations = {
 	open: openSync,
 	close: closeSync,
+	chown: fchownSync,
 	chmod: fchmodSync,
 	sync: fsyncSync,
 	write: writeFileSync,
 	rename: renameSync,
+	unlink: unlinkSync,
+};
+
+const configLockCleanupOperations: ConfigLockCleanupOperations = {
+	close: closeSync,
 	unlink: unlinkSync,
 };
 
@@ -568,16 +583,17 @@ export function readCodememConfigFileForMutation(configPath?: string): CodememCo
 	const path = configPath ? expandUserPath(configPath) : getCodememConfigWritePath();
 	if (!existsSync(path)) return { status: "missing", path, revision: "missing" };
 	let text: string;
-	let mode: number;
+	let metadata: { mode: number; uid: number; gid: number };
 	try {
 		text = readFileSync(path, "utf8");
-		mode = statSync(path).mode & 0o777;
+		const stats = statSync(path);
+		metadata = { mode: stats.mode & 0o777, uid: stats.uid, gid: stats.gid };
 	} catch {
 		return { status: "unreadable", path };
 	}
 	const parsed = parseConfigText(text);
 	if (parsed.status === "invalid") return { ...parsed, path };
-	return { ...parsed, path, revision: configRevision(text), mode };
+	return { ...parsed, path, revision: configRevision(text), ...metadata };
 }
 
 function unlinkIfPresent(path: string, unlink: typeof unlinkSync): void {
@@ -586,6 +602,18 @@ function unlinkIfPresent(path: string, unlink: typeof unlinkSync): void {
 	} catch (error) {
 		const code = error instanceof Error && "code" in error ? String(error.code) : "";
 		if (code !== "ENOENT") throw error;
+	}
+}
+
+function cleanupReplacementTempFile(
+	tempPath: string,
+	unlink: typeof unlinkSync,
+	renameCommitted: boolean,
+): void {
+	try {
+		unlinkIfPresent(tempPath, unlink);
+	} catch (error) {
+		if (!renameCommitted) throw error;
 	}
 }
 
@@ -645,15 +673,20 @@ function syncConfigDirectory(targetPath: string, operations: AtomicConfigFileOpe
 export function atomicReplaceConfigFile(
 	targetPath: string,
 	text: string,
-	mode: number | undefined,
+	metadata: ConfigFileMetadata | number | undefined,
 	operations: AtomicConfigFileOperations = atomicConfigFileOperations,
 	verifyBeforeRename?: () => void,
 ): void {
 	const replacementPath = resolveConfigMutationTarget(targetPath);
 	const tempPath = `${replacementPath}.tmp-${process.pid}-${randomUUID()}`;
 	let tempFd: number | null = null;
+	let renameCommitted = false;
 	try {
+		const mode = typeof metadata === "number" ? metadata : metadata?.mode;
 		tempFd = operations.open(tempPath, "wx", mode ?? 0o600);
+		if (typeof metadata === "object" && process.platform !== "win32") {
+			operations.chown?.(tempFd, metadata.uid, metadata.gid);
+		}
 		if (mode != null) operations.chmod(tempFd, mode);
 		operations.write(tempFd, text, "utf8");
 		operations.sync(tempFd);
@@ -662,12 +695,13 @@ export function atomicReplaceConfigFile(
 		operations.close(completedFd);
 		verifyBeforeRename?.();
 		operations.rename(tempPath, replacementPath);
+		renameCommitted = true;
 		syncConfigDirectory(replacementPath, operations);
 	} finally {
 		try {
 			if (tempFd != null) operations.close(tempFd);
 		} finally {
-			unlinkIfPresent(tempPath, operations.unlink);
+			cleanupReplacementTempFile(tempPath, operations.unlink, renameCommitted);
 		}
 	}
 }
@@ -696,13 +730,31 @@ function currentRevision(path: string): string | "missing" | "unreadable" {
 	}
 }
 
-function currentMode(path: string): number | "missing" | "unreadable" {
+function currentMetadata(path: string): ConfigFileMetadata | "missing" | "unreadable" {
 	if (!existsSync(path)) return "missing";
 	try {
-		return statSync(path).mode & 0o777;
+		const stats = statSync(path);
+		return { mode: stats.mode & 0o777, uid: stats.uid, gid: stats.gid };
 	} catch {
 		return "unreadable";
 	}
+}
+
+function configMetadataMatches(
+	current: ReturnType<typeof currentMetadata>,
+	expected: ConfigFileMetadata,
+): boolean {
+	return (
+		typeof current !== "string" &&
+		current.mode === expected.mode &&
+		current.uid === expected.uid &&
+		current.gid === expected.gid
+	);
+}
+
+function configMetadata(outcome: CodememConfigReadOutcome): ConfigFileMetadata | undefined {
+	if (outcome.status !== "valid") return undefined;
+	return { mode: outcome.mode, uid: outcome.uid, gid: outcome.gid };
 }
 
 function acquireConfigLock(targetPath: string): { fd: number; path: string } {
@@ -726,31 +778,49 @@ function acquireConfigLock(targetPath: string): { fd: number; path: string } {
 	}
 }
 
-function releaseConfigLock(lock: { fd: number; path: string }): void {
+function releaseConfigLock(
+	lock: { fd: number; path: string },
+	operations: ConfigLockCleanupOperations,
+): void {
 	let firstError: unknown;
 	try {
-		closeSync(lock.fd);
+		operations.close(lock.fd);
 	} catch (error) {
 		firstError = error;
 	}
 	try {
-		unlinkIfPresent(lock.path, unlinkSync);
+		unlinkIfPresent(lock.path, operations.unlink);
 	} catch (error) {
 		firstError ??= error;
 	}
 	if (firstError !== undefined) throw firstError;
 }
 
-function releaseConfigLocks(locks: Array<{ fd: number; path: string }>): void {
+function releaseConfigLocks(
+	locks: Array<{ fd: number; path: string }>,
+	operations: ConfigLockCleanupOperations = configLockCleanupOperations,
+): void {
 	let firstError: unknown;
 	for (const lock of locks.reverse()) {
 		try {
-			releaseConfigLock(lock);
+			releaseConfigLock(lock, operations);
 		} catch (error) {
 			firstError ??= error;
 		}
 	}
 	if (firstError !== undefined) throw firstError;
+}
+
+function releaseConfigLocksAfterMutation(
+	locks: Array<{ fd: number; path: string }>,
+	committed: boolean,
+	operations: ConfigLockCleanupOperations,
+): void {
+	try {
+		releaseConfigLocks(locks, operations);
+	} catch (error) {
+		if (!committed) throw error;
+	}
 }
 
 function acquireConfigLocks(targetPaths: string[]): Array<{ fd: number; path: string }> {
@@ -776,7 +846,12 @@ function acquireConfigLocks(targetPaths: string[]): Array<{ fd: number; path: st
 	}
 }
 
-type ConfigMutationOptions = { expectedRevision?: string; fallbackReadPath?: string };
+type ConfigMutationOptions = {
+	expectedMutationPath?: string;
+	expectedRevision?: string;
+	fallbackReadPath?: string;
+	lockCleanupOperations?: ConfigLockCleanupOperations;
+};
 
 function acquireConfigMutationLocks(
 	targetPath: string,
@@ -793,7 +868,9 @@ function acquireConfigMutationLocks(
 		const preliminaryTarget = readCodememConfigFileForMutation(targetPath);
 		const fallbackReadPath =
 			options.fallbackReadPath ?? (usesImplicitPath ? getCodememConfigPath() : undefined);
-		const targetMutationPath = resolveConfigMutationTarget(targetPath);
+		const targetMutationPath = options.expectedMutationPath
+			? expandUserPath(options.expectedMutationPath)
+			: resolveConfigMutationTarget(targetPath);
 		const fallbackMutationPath =
 			preliminaryTarget.status === "missing" && fallbackReadPath != null
 				? resolveConfigMutationTarget(expandUserPath(fallbackReadPath))
@@ -847,7 +924,7 @@ function verifyConfigMutation(input: {
 	targetPath: string;
 	targetMutationPath: string;
 	expectedRevision: string;
-	expectedMode: number | undefined;
+	expectedMetadata: ConfigFileMetadata | undefined;
 	fallbackReadPath: string | undefined;
 	fallbackMutationPath: string | undefined;
 	inputOutcome: CodememConfigReadOutcome;
@@ -856,8 +933,8 @@ function verifyConfigMutation(input: {
 	if (
 		resolveConfigMutationTarget(input.targetPath) !== input.targetMutationPath ||
 		currentRevision(input.targetMutationPath) !== input.expectedRevision ||
-		(input.expectedMode !== undefined &&
-			currentMode(input.targetMutationPath) !== input.expectedMode)
+		(input.expectedMetadata !== undefined &&
+			!configMetadataMatches(currentMetadata(input.targetMutationPath), input.expectedMetadata))
 	) {
 		throw new CodememConfigMutationError(
 			"changed",
@@ -885,6 +962,14 @@ function verifyConfigMutation(input: {
 	}
 }
 
+function assertExpectedRevision(targetPath: string, actual: string, expected?: string): void {
+	if (expected == null || actual === expected) return;
+	throw new CodememConfigMutationError(
+		"changed",
+		`Cannot update config because ${targetPath} changed before the save. Retry the save.`,
+	);
+}
+
 /** Serialize a read-modify-write config update across cooperating processes. */
 export function mutateCodememConfigFile(
 	mutator: (
@@ -897,70 +982,86 @@ export function mutateCodememConfigFile(
 	const targetPath = configPath ? expandUserPath(configPath) : getCodememConfigWritePath();
 	const { preliminaryTarget, fallbackReadPath, targetMutationPath, fallbackMutationPath, locks } =
 		acquireConfigMutationLocks(targetPath, configPath == null, options);
+	let committed = false;
 	try {
 		const outcome = readCodememConfigFileForMutation(targetMutationPath);
 		assertTargetDidNotDisappear(preliminaryTarget, outcome, targetPath);
-		const inputOutcome = mutationInputOutcome(
-			outcome,
-			targetMutationPath,
-			fallbackMutationPath ?? fallbackReadPath,
-		);
+		const readPath = fallbackMutationPath ?? fallbackReadPath;
+		const inputOutcome = mutationInputOutcome(outcome, targetMutationPath, readPath);
 		const expectedRevision = outcome.status === "valid" ? outcome.revision : "missing";
-		if (options.expectedRevision != null && expectedRevision !== options.expectedRevision) {
-			throw new CodememConfigMutationError(
-				"changed",
-				`Cannot update config because ${targetPath} changed before the save. Retry the save.`,
-			);
-		}
+		assertExpectedRevision(targetPath, expectedRevision, options.expectedRevision);
 		const current = { ...assertMutationInput(inputOutcome) };
 		const data = mutator(current, outcome);
-		if (data === undefined) return { path: targetPath, data: current, revision: expectedRevision };
+		if (data === undefined) {
+			return {
+				path: targetPath,
+				mutationPath: targetMutationPath,
+				data: current,
+				revision: expectedRevision,
+			};
+		}
 		const inputRevision =
 			inputOutcome.status === "valid" ? inputOutcome.revision : inputOutcome.status;
 		const text = `${JSON.stringify(data, null, 2)}\n`;
 		atomicReplaceConfigFile(
 			targetMutationPath,
 			text,
-			outcome.status === "valid" ? outcome.mode : undefined,
+			configMetadata(outcome),
 			atomicConfigFileOperations,
 			() =>
 				verifyConfigMutation({
 					targetPath,
 					targetMutationPath,
 					expectedRevision,
-					expectedMode: outcome.status === "valid" ? outcome.mode : undefined,
+					expectedMetadata: configMetadata(outcome),
 					fallbackReadPath,
 					fallbackMutationPath,
 					inputOutcome,
 					inputRevision,
 				}),
 		);
-		return { path: targetPath, data, revision: configRevision(text) };
+		committed = true;
+		return {
+			path: targetPath,
+			mutationPath: targetMutationPath,
+			data,
+			revision: configRevision(text),
+		};
 	} finally {
-		releaseConfigLocks(locks);
+		releaseConfigLocksAfterMutation(
+			locks,
+			committed,
+			options.lockCleanupOperations ?? configLockCleanupOperations,
+		);
 	}
 }
 
 /** Delete a config only when it still has the expected revision. */
-export function deleteCodememConfigFile(configPath: string, expectedRevision: string): void {
+export function deleteCodememConfigFile(
+	configPath: string,
+	expectedRevision: string,
+	expectedMutationPath?: string,
+	lockCleanupOperations: ConfigLockCleanupOperations = configLockCleanupOperations,
+): void {
 	const targetPath = expandUserPath(configPath);
-	const replacementPath = resolveConfigMutationTarget(targetPath);
+	const replacementPath = expectedMutationPath ?? resolveConfigMutationTarget(targetPath);
 	const lock = acquireConfigLock(replacementPath);
+	let committed = false;
 	try {
-		if (currentRevision(targetPath) !== expectedRevision) {
+		if (
+			resolveConfigMutationTarget(targetPath) !== replacementPath ||
+			currentRevision(replacementPath) !== expectedRevision
+		) {
 			throw new CodememConfigMutationError(
 				"changed",
 				`Cannot restore config because ${targetPath} changed after the save.`,
 			);
 		}
 		unlinkSync(replacementPath);
+		committed = true;
 		syncConfigDirectory(replacementPath, atomicConfigFileOperations);
 	} finally {
-		try {
-			closeSync(lock.fd);
-		} finally {
-			unlinkIfPresent(lock.path, unlinkSync);
-		}
+		releaseConfigLocksAfterMutation([lock], committed, lockCleanupOperations);
 	}
 }
 

@@ -132,14 +132,60 @@ function configuredCoordinatorGroups(config: Record<string, unknown>): string[] 
 	return typeof singular === "string" && singular.trim() ? [singular.trim()] : [];
 }
 
+function normalizeCoordinatorUrl(value: string): string {
+	return stripTrailingSlashes(value.trim());
+}
+
+function assertInviteConfigCompatibility(
+	config: Record<string, unknown>,
+	constraint: {
+		coordinatorUrl: string;
+		identity?: { actorId: string; compatibleExistingActorIds: readonly string[] };
+	},
+): void {
+	const existingCoordinator = normalizeCoordinatorUrl(String(config.sync_coordinator_url ?? ""));
+	const incomingCoordinator = normalizeCoordinatorUrl(constraint.coordinatorUrl);
+	if (existingCoordinator && existingCoordinator !== incomingCoordinator) {
+		throw new Error(
+			`This device is already enrolled with coordinator ${existingCoordinator}. Multi-team joining is only supported across groups on the same coordinator.`,
+		);
+	}
+	if (!constraint.identity) return;
+	const existingActorId = String(config.actor_id ?? "").trim();
+	if (
+		!existingActorId ||
+		existingActorId === constraint.identity.actorId ||
+		constraint.identity.compatibleExistingActorIds.includes(existingActorId)
+	) {
+		return;
+	}
+	throw new Error("invite_identity_conflict");
+}
+
+function inviteIdentityConstraint(
+	identity: { actorId: string } | undefined,
+	config: Record<string, unknown>,
+	payload: InvitePayload,
+	deviceId: string,
+) {
+	if (!identity) return undefined;
+	const compatibleExistingActorIds = [
+		String(config.actor_id ?? "").trim(),
+		payload.kind === "team_member" || payload.kind === "add_device" ? `local:${deviceId}` : "",
+	].filter(Boolean);
+	return { actorId: identity.actorId, compatibleExistingActorIds };
+}
+
 function updateInviteConfig(opts: {
 	configPath?: string | null;
 	coordinatorUrl: string;
 	groupId: string;
 	enableSync: boolean;
 	identity?: { actorId: string; actorName: string; deviceName: string };
+	identityConstraint?: { actorId: string; compatibleExistingActorIds: readonly string[] };
 }): {
 	path: string;
+	mutationPath: string;
 	previous: Record<string, unknown>;
 	revision: string;
 	groups: string[];
@@ -149,6 +195,10 @@ function updateInviteConfig(opts: {
 	let created = false;
 	let groups: string[] = [];
 	const result = mutateCodememConfigFile((current, outcome) => {
+		assertInviteConfigCompatibility(current, {
+			coordinatorUrl: opts.coordinatorUrl,
+			identity: opts.identityConstraint,
+		});
 		previous = { ...current };
 		created = outcome.status === "missing";
 		const next = opts.enableSync ? enableInviteSync({ ...current }) : { ...current };
@@ -163,7 +213,14 @@ function updateInviteConfig(opts: {
 		next.sync_coordinator_group = groups[0] ?? opts.groupId;
 		return next;
 	}, opts.configPath ?? undefined);
-	return { path: result.path, previous, revision: result.revision, groups, created };
+	return {
+		path: result.path,
+		mutationPath: result.mutationPath,
+		previous,
+		revision: result.revision,
+		groups,
+		created,
+	};
 }
 
 function coordinatorRemoteTarget(config = readCodememConfigFile()): {
@@ -2416,14 +2473,6 @@ export async function coordinatorImportInviteAction(opts: {
 					"device_display_name",
 				)
 			: recipientDisplayName;
-	// V1 of multi-team assumes one coordinator hosting multiple groups.
-	// If this device is already enrolled in a different coordinator, surface
-	// that as a hard error instead of silently overwriting the existing
-	// coordinator URL and orphaning the prior group memberships. Normalize
-	// trailing slashes before comparing so harmless formatting differences
-	// (e.g. `https://coord.example.com` vs. `…/`) don't reject valid same-
-	// coordinator invites.
-	const normalizeCoordinatorUrl = (value: string): string => stripTrailingSlashes(value.trim());
 	const existingCoordinator = normalizeCoordinatorUrl(String(config.sync_coordinator_url ?? ""));
 	const incomingCoordinator = normalizeCoordinatorUrl(coordinatorUrl);
 	if (existingCoordinator && existingCoordinator !== incomingCoordinator) {
@@ -2611,6 +2660,7 @@ export async function coordinatorImportInviteAction(opts: {
 			groupId: newGroupId,
 			enableSync: projectInvite || recipientInvite,
 			identity: configIdentity,
+			identityConstraint: inviteIdentityConstraint(configIdentity, config, payload, deviceId),
 		});
 	} catch (error) {
 		if (projectInvite) {
@@ -2624,9 +2674,14 @@ export async function coordinatorImportInviteAction(opts: {
 		} catch (error) {
 			try {
 				if (configMutation.created) {
-					deleteCodememConfigFile(configMutation.path, configMutation.revision);
+					deleteCodememConfigFile(
+						configMutation.path,
+						configMutation.revision,
+						configMutation.mutationPath,
+					);
 				} else {
-					mutateCodememConfigFile(() => configMutation.previous, opts.configPath ?? undefined, {
+					mutateCodememConfigFile(() => configMutation.previous, configMutation.mutationPath, {
+						expectedMutationPath: configMutation.mutationPath,
 						expectedRevision: configMutation.revision,
 					});
 				}

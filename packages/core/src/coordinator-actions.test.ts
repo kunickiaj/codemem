@@ -3391,3 +3391,104 @@ describe("coordinator local admin actions", () => {
 		]);
 	});
 });
+
+describe("overlapping invite config mutations", () => {
+	let tmpDir: string;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-invite-race-"));
+	});
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it.each([
+		{
+			label: "coordinator",
+			competingConfig: {
+				sync_coordinator_url: "https://other-coordinator.example.test",
+				actor_id: "identity-overlapping",
+			},
+			error: "already enrolled with coordinator https://other-coordinator.example.test",
+		},
+		{
+			label: "identity",
+			competingConfig: {
+				sync_coordinator_url: "https://coord.example.test",
+				actor_id: "identity-overlapping",
+			},
+			error: "invite_identity_conflict",
+		},
+	])("rejects a $label changed before the locked mutation", async (testCase) => {
+		const dbPath = join(tmpDir, `${testCase.label}.sqlite`);
+		const keysDir = join(tmpDir, `${testCase.label}-keys`);
+		const configPath = join(tmpDir, `${testCase.label}-config.json`);
+		const identityId = "identity-current";
+		const reviewedIntent = teamReviewedIntent("team-a");
+		const reviewedDigest = await recipientReviewedIntentDigest(reviewedIntent);
+		const token = `${testCase.label}-token`;
+		const invite = encodeInvitePayload({
+			v: 1,
+			kind: "team_member",
+			coordinator_url: "https://coord.example.test",
+			group_id: "coordinator-a",
+			policy: "auto_admit",
+			token,
+			expires_at: "2099-01-01T00:00:00.000Z",
+			team_name: null,
+			policy_team_id: "team-a",
+			assigned_identity_id: identityId,
+			reviewed_preview_digest: reviewedDigest,
+		});
+		const reviewedOnboardingDigest = reviewedOnboardingDigestForRecipientInvite({
+			dbPath,
+			keysDir,
+			invitationId: token,
+			identityId,
+			deviceDisplayName: "Recipient laptop",
+			reviewedIntent,
+		});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string) => {
+				if (url.endsWith("/v1/join")) writeCodememConfigFile(testCase.competingConfig, configPath);
+				return new Response(
+					JSON.stringify({
+						ok: true,
+						status: "accepted",
+						kind: "team_member",
+						group_id: "coordinator-a",
+						identity_id: identityId,
+						policy_team_id: "team-a",
+						assigned_identity_id: identityId,
+						reviewed_preview_digest: reviewedDigest,
+						reviewed_intent: reviewedIntent,
+					}),
+					{ status: 200 },
+				);
+			}),
+		);
+
+		await expect(
+			coordinatorImportInviteAction({
+				inviteValue: invite,
+				dbPath,
+				keysDir,
+				configPath,
+				recipientDisplayName: "Brian Example",
+				deviceDisplayName: "Recipient laptop",
+				reviewedOnboardingDigest,
+			}),
+		).rejects.toThrow(testCase.error);
+		expect(readCodememConfigFileAtPath(configPath)).toEqual(testCase.competingConfig);
+		const conn = connect(dbPath);
+		try {
+			expect(conn.prepare("SELECT COUNT(*) FROM actors").pluck().get()).toBe(0);
+			expect(conn.prepare("SELECT COUNT(*) FROM identity_devices").pluck().get()).toBe(0);
+		} finally {
+			conn.close();
+		}
+	});
+});

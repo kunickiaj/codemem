@@ -454,10 +454,15 @@ function removeConfiguredCoordinatorGroup(groupId: string): string[] {
 	mutateCodememConfigFile((config) => {
 		const groups = configuredGroups(config);
 		nextGroups = groups.filter((group) => group !== targetGroup);
-		if (nextGroups.length === groups.length) return undefined;
+		const configuredGroup = String(config.sync_coordinator_group ?? "").trim();
+		const removesPluralGroup = nextGroups.length !== groups.length;
+		const removesSingularGroup = configuredGroup === targetGroup;
+		if (!removesPluralGroup && !removesSingularGroup) return undefined;
 		config.sync_coordinator_groups = nextGroups;
-		if (nextGroups.length) config.sync_coordinator_group = nextGroups[0];
-		else delete config.sync_coordinator_group;
+		if (removesSingularGroup) {
+			if (nextGroups.length) config.sync_coordinator_group = nextGroups[0];
+			else delete config.sync_coordinator_group;
+		}
 		return config;
 	});
 	return nextGroups;

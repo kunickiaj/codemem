@@ -11,13 +11,13 @@ const CONFIG = {
 	sync_coordinator_admin_secret: "secret",
 };
 
-function createArchiveRouteFixture() {
+function createArchiveRouteFixture(config: Record<string, unknown> = CONFIG) {
 	const configDir = mkdtempSync(join(tmpdir(), "codemem-archive-route-test-"));
 	const configPath = join(configDir, "config.json");
 	const previousConfig = process.env.CODEMEM_CONFIG;
 	const previousFetch = globalThis.fetch;
 	process.env.CODEMEM_CONFIG = configPath;
-	writeFileSync(configPath, JSON.stringify(CONFIG));
+	writeFileSync(configPath, JSON.stringify(config));
 	const app = syncRoutes(() => {
 		throw new Error("archive route should not access the memory store");
 	});
@@ -132,6 +132,33 @@ describe("coordinator archive routes", () => {
 					sync_coordinator_groups: ["team-a", "team-b"],
 				});
 			}
+		} finally {
+			fixture.cleanup();
+		}
+	});
+
+	it("clears an archived singular group omitted from the plural list", async () => {
+		const fixture = createArchiveRouteFixture({
+			...CONFIG,
+			sync_coordinator_groups: ["team-b"],
+		});
+		try {
+			globalThis.fetch = vi.fn(
+				async () =>
+					new Response(JSON.stringify({ error: "group_not_found_or_already_archived" }), {
+						status: 404,
+					}),
+			) as typeof fetch;
+
+			const response = await fixture.app.request("/api/coordinator/admin/groups/team-a/archive", {
+				method: "POST",
+			});
+
+			expect(response.status).toBe(404);
+			expect(JSON.parse(readFileSync(fixture.configPath, "utf8"))).toMatchObject({
+				sync_coordinator_group: "team-b",
+				sync_coordinator_groups: ["team-b"],
+			});
 		} finally {
 			fixture.cleanup();
 		}
