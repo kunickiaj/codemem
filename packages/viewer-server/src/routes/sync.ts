@@ -3613,6 +3613,28 @@ function claimedLocalActorScopeStatus(
 	};
 }
 
+function archivedCoordinatorGroupResponse(
+	groupId: string,
+	group: NonNullable<Awaited<ReturnType<typeof coordinatorArchiveGroupAction>>>,
+	status: ReturnType<typeof coordinatorAdminStatusPayload>,
+	groups: ReturnType<typeof removeConfiguredCoordinatorGroup>,
+) {
+	return { ok: true, group, status, disconnected_group_id: groupId, groups };
+}
+
+function missingArchivedCoordinatorGroupResponse(
+	groupId: string,
+	status: ReturnType<typeof coordinatorAdminStatusPayload>,
+	groups: ReturnType<typeof removeConfiguredCoordinatorGroup>,
+) {
+	return {
+		error: "group_not_found_or_already_archived",
+		status,
+		disconnected_group_id: groupId,
+		groups,
+	};
+}
+
 /**
  * Map a raw sync_peers DB row to the API response shape.
  * When showDiag is false, sensitive fields (fingerprint, last_error, addresses)
@@ -7588,23 +7610,9 @@ export function syncRoutes(
 			const groups = removeConfiguredCoordinatorGroup(groupId);
 			const currentStatus = coordinatorAdminStatusPayload();
 			if (!group) {
-				return c.json(
-					{
-						error: "group_not_found_or_already_archived",
-						status: currentStatus,
-						disconnected_group_id: groupId,
-						groups,
-					},
-					404,
-				);
+				return c.json(missingArchivedCoordinatorGroupResponse(groupId, currentStatus, groups), 404);
 			}
-			return c.json({
-				ok: true,
-				group,
-				status: currentStatus,
-				disconnected_group_id: groupId,
-				groups,
-			});
+			return c.json(archivedCoordinatorGroupResponse(groupId, group, currentStatus, groups));
 		} catch (error) {
 			return c.json({ error: error instanceof Error ? error.message : String(error), status }, 400);
 		}

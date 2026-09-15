@@ -836,6 +836,45 @@ function mutationInputOutcome(
 	return readPath === targetPath ? target : readCodememConfigFileForMutation(readPath);
 }
 
+function verifyConfigMutation(input: {
+	targetPath: string;
+	targetMutationPath: string;
+	expectedRevision: string;
+	fallbackReadPath: string | undefined;
+	fallbackMutationPath: string | undefined;
+	inputOutcome: CodememConfigReadOutcome;
+	inputRevision: string;
+}): void {
+	if (
+		resolveConfigMutationTarget(input.targetPath) !== input.targetMutationPath ||
+		currentRevision(input.targetMutationPath) !== input.expectedRevision
+	) {
+		throw new CodememConfigMutationError(
+			"changed",
+			`Cannot update config because ${input.targetPath} changed during the save. Retry the save.`,
+		);
+	}
+	if (
+		input.fallbackMutationPath !== undefined &&
+		resolveConfigMutationTarget(expandUserPath(input.fallbackReadPath ?? input.targetPath)) !==
+			input.fallbackMutationPath
+	) {
+		throw new CodememConfigMutationError(
+			"changed",
+			`Cannot update config because ${input.fallbackReadPath} changed during the save. Retry the save.`,
+		);
+	}
+	if (
+		input.inputOutcome.path !== input.targetMutationPath &&
+		currentRevision(input.inputOutcome.path) !== input.inputRevision
+	) {
+		throw new CodememConfigMutationError(
+			"changed",
+			`Cannot update config because ${input.inputOutcome.path} changed during the save. Retry the save.`,
+		);
+	}
+}
+
 /** Serialize a read-modify-write config update across cooperating processes. */
 export function mutateCodememConfigFile(
 	mutator: (
@@ -874,36 +913,16 @@ export function mutateCodememConfigFile(
 			text,
 			outcome.status === "valid" ? outcome.mode : undefined,
 			atomicConfigFileOperations,
-			() => {
-				if (
-					resolveConfigMutationTarget(targetPath) !== targetMutationPath ||
-					currentRevision(targetMutationPath) !== expectedRevision
-				) {
-					throw new CodememConfigMutationError(
-						"changed",
-						`Cannot update config because ${targetPath} changed during the save. Retry the save.`,
-					);
-				}
-				if (
-					fallbackMutationPath !== undefined &&
-					resolveConfigMutationTarget(expandUserPath(fallbackReadPath ?? targetPath)) !==
-						fallbackMutationPath
-				) {
-					throw new CodememConfigMutationError(
-						"changed",
-						`Cannot update config because ${fallbackReadPath} changed during the save. Retry the save.`,
-					);
-				}
-				if (
-					inputOutcome.path !== targetMutationPath &&
-					currentRevision(inputOutcome.path) !== inputRevision
-				) {
-					throw new CodememConfigMutationError(
-						"changed",
-						`Cannot update config because ${inputOutcome.path} changed during the save. Retry the save.`,
-					);
-				}
-			},
+			() =>
+				verifyConfigMutation({
+					targetPath,
+					targetMutationPath,
+					expectedRevision,
+					fallbackReadPath,
+					fallbackMutationPath,
+					inputOutcome,
+					inputRevision,
+				}),
 		);
 		return { path: targetPath, data, revision: configRevision(text) };
 	} finally {
