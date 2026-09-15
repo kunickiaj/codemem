@@ -1017,11 +1017,13 @@ describe("Biome ratchet CLI", () => {
 			cwd: root,
 			encoding: "utf8",
 		});
+		const entrypoint = createRequire(import.meta.url).resolve("@biomejs/biome/bin/biome");
 
 		const result = await runRatchet(
 			{ base: "HEAD", json: true },
 			{
 				cwd: root,
+				biomeEntrypoint: entrypoint,
 				afterSnapshot: () => {
 					writeFileSync(path.join(root, "src/late.ts"), "const late: any = 1;\n");
 				},
