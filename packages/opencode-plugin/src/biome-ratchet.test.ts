@@ -450,6 +450,29 @@ describe("Biome policy comparison", () => {
 			[],
 		);
 	});
+
+	it("treats regex metacharacters in include patterns as literal path characters", () => {
+		const coverageConfig = JSON.stringify({
+			files: { includes: ["src/(legacy)+.ts"] },
+		});
+		const source = "// biome-ignore lint/suspicious/noExplicitAny\nconst value: any = 1;";
+
+		expect(
+			compareBiomePolicy(coverageConfig, coverageConfig, [
+				{
+					status: "modified",
+					beforePath: "src/(legacy)+.ts",
+					afterPath: "src/(legacy)+.ts",
+					beforeSource: "",
+					afterSource: source,
+				},
+			]),
+		).toContainEqual({
+			kind: "suppression",
+			message: "1 Biome suppression directive added or changed",
+			path: "src/(legacy)+.ts",
+		});
+	});
 });
 
 describe("Biome policy bypass prevention", () => {

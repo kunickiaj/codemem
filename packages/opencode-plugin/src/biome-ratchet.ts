@@ -177,7 +177,7 @@ function globToken(pattern: string, index: number): { source: string; end: numbe
 	if (current === "{") return globAlternatives(pattern, index);
 	if (current === "?") return { source: "[^/]", end: index };
 	if (current !== "*") {
-		return { source: current.replace(/[\\^$+.()|]/u, "\\$&"), end: index };
+		return { source: current.replace(/[\\^$+.()|]/gu, "\\$&"), end: index };
 	}
 	if (pattern[index + 1] !== "*") return { source: "[^/]*", end: index };
 	return pattern[index + 2] === "/"
