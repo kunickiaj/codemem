@@ -340,7 +340,51 @@ ${packageVersions.map((packageVersion) => `  '@biomejs/biome@${packageVersion}':
 			{ kind: "coverage", path: "pnpm-lock.yaml" },
 		]);
 	});
+});
 
+describe("Biome dependency selection policy", () => {
+	it("requires review when dependency inputs select a different Biome binary", () => {
+		const lockfile = [
+			"importers:",
+			"",
+			"  .:",
+			"    devDependencies:",
+			"      '@biomejs/biome':",
+			"        specifier: 'catalog:'",
+			`        version: ${SUPPORTED_BIOME_VERSION}`,
+		].join("\n");
+		for (const [changedPath, beforeSource, afterSource] of [
+			[
+				"pnpm-workspace.yaml",
+				'catalog:\n  "@biomejs/biome": ^2.5.11\n',
+				'catalog:\n  "@biomejs/biome": ^2.6.0\n',
+			],
+			[
+				"package.json",
+				'{"devDependencies":{"@biomejs/biome":"catalog:"}}',
+				'{"devDependencies":{"@biomejs/biome":"2.6.0"}}',
+			],
+		] as const) {
+			expect(
+				compareBiomeToolPolicy(lockfile, lockfile, [
+					{
+						status: "modified",
+						beforePath: changedPath,
+						afterPath: changedPath,
+						beforeSource,
+						afterSource,
+					},
+				]),
+			).toContainEqual({
+				kind: "coverage",
+				message: expect.stringContaining("Biome dependency selection changed"),
+				path: changedPath,
+			});
+		}
+	});
+});
+
+describe("Biome policy comparison", () => {
 	it("fails coverage, severity, threshold, and suppression weakening", () => {
 		const violations = compareBiomePolicy(
 			config(),
@@ -527,7 +571,7 @@ describe("Biome default threshold policy", () => {
 	});
 });
 
-describe("Biome policy comparison", () => {
+describe("Biome suppression policy comparison", () => {
 	it("does not treat suppression text inside a string as a directive", () => {
 		expect(
 			compareBiomePolicy(config(), config(), [

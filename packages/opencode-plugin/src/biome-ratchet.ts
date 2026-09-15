@@ -83,17 +83,50 @@ function biomeRootVersion(lockfile: string | undefined): string | undefined {
 export function compareBiomeToolPolicy(
 	baseLockfile: string | undefined,
 	headLockfile: string | undefined,
+	changes: ChangedPath[] = [],
 ): PolicyViolation[] {
 	const baseVersion = biomeRootVersion(baseLockfile);
 	const headVersion = biomeRootVersion(headLockfile);
-	if (headVersion === SUPPORTED_BIOME_VERSION) return [];
-	return [
-		{
+	const violations: PolicyViolation[] = [];
+	if (headVersion !== SUPPORTED_BIOME_VERSION) {
+		violations.push({
 			kind: "coverage",
 			message: `Pinned Biome tool changed (${baseVersion ?? "missing"} → ${headVersion ?? "missing"}); update SUPPORTED_BIOME_VERSION in the ratchet as an explicit policy migration`,
 			path: "pnpm-lock.yaml",
-		},
-	];
+		});
+	}
+	for (const change of changes) {
+		const changedPath = normalizePath(change.afterPath ?? change.beforePath ?? "");
+		if (changedPath !== "pnpm-workspace.yaml" && changedPath !== "package.json") continue;
+		const before = biomeDependencyReference(changedPath, change.beforeSource);
+		const after = biomeDependencyReference(changedPath, change.afterSource);
+		if (before === after) continue;
+		violations.push({
+			kind: "coverage",
+			message: `Biome dependency selection changed (${before ?? "missing"} → ${after ?? "missing"}); explicit policy review required`,
+			path: changedPath,
+		});
+	}
+	return violations;
+}
+
+function biomeDependencyReference(
+	pathValue: string,
+	source: string | undefined,
+): string | undefined {
+	if (!source) return undefined;
+	if (pathValue === "pnpm-workspace.yaml") {
+		return source.match(/^\s*["']?@biomejs\/biome["']?\s*:\s*(.+)$/mu)?.[1]?.trim();
+	}
+	const manifest: unknown = JSON.parse(source);
+	if (!isRecord(manifest)) return undefined;
+	for (const field of ["dependencies", "devDependencies"]) {
+		const dependencies = manifest[field];
+		if (isRecord(dependencies) && typeof dependencies["@biomejs/biome"] === "string") {
+			return dependencies["@biomejs/biome"];
+		}
+	}
+	return undefined;
 }
 
 function isRecord(value: unknown): value is UnknownRecord {

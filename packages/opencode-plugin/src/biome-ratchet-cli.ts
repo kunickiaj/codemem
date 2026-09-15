@@ -460,7 +460,9 @@ export async function runRatchet(
 			headConfigText,
 			changes: changesWithSources,
 		});
-		comparison.policyViolations.push(...compareBiomeToolPolicy(baseLockfile, headLockfile));
+		comparison.policyViolations.push(
+			...compareBiomeToolPolicy(baseLockfile, headLockfile, changesWithSources),
+		);
 		return {
 			mode: options.head ? "refs" : "working-tree",
 			base: baseCommit,
