@@ -259,6 +259,102 @@ describe("automatic request continuity", () => {
 		}
 	});
 });
+
+describe("pack transport schema validation", () => {
+	useTransportFixture();
+
+	it("keeps null limits on the default path", async () => {
+		const builder = vi.spyOn(store, "buildMemoryPackAsync");
+		const response = await post("/api/pack", {
+			context: "null limit compatibility",
+			all_projects: true,
+			limit: null,
+		});
+
+		expect(response.status).toBe(200);
+		expect(builder).toHaveBeenCalledWith(
+			"null limit compatibility",
+			10,
+			null,
+			{},
+			undefined,
+			undefined,
+		);
+	});
+
+	it("rejects unknown request fields without weakening nested validation", async () => {
+		const unsupported = await post("/api/pack", {
+			context: "future pack contract",
+			future_field: true,
+		});
+		expect(unsupported.status).toBe(409);
+		expect(await unsupported.json()).toMatchObject({
+			error: { code: "viewer_contract_unsupported" },
+		});
+
+		const nested = await post("/api/pack", {
+			context: "future automatic context",
+			automatic_context: {
+				source: "opencode",
+				host_session_id: "session-702",
+				future_field: true,
+			},
+		});
+		expect(nested.status).toBe(400);
+		expect(await nested.json()).toEqual({
+			error: {
+				code: "invalid_request",
+				message: "automatic_context contains unsupported field: future_field",
+			},
+		});
+	});
+
+	it("preserves attempt metadata size and path limits", async () => {
+		for (const [attempt, message] of [
+			[{ attempt_id: "a".repeat(513) }, "ledger metadata field attempt_id is invalid"],
+			[
+				{ attempt_id: attemptId, source_session_id: "/private/session" },
+				"ledger metadata rejects absolute paths in field: source_session_id",
+			],
+			[{ attempt_id: "a".repeat(17_000) }, "ledger metadata exceeds 16384 bytes"],
+		] as const) {
+			const response = await post("/api/pack", {
+				context: "attempt metadata limits",
+				attempt,
+			});
+			expect(response.status).toBe(400);
+			expect(await response.json()).toEqual({
+				error: { code: "invalid_request", message },
+			});
+		}
+	});
+
+	it("keeps ledger privacy and unknown-field failures distinct", async () => {
+		const sensitive = await post("/api/prompt-pack-ledger", {
+			action: "record",
+			attempt_id: attemptId,
+			prompt: "private prompt",
+		});
+		expect(sensitive.status).toBe(400);
+		expect(await sensitive.json()).toEqual({
+			error: {
+				code: "invalid_request",
+				message: "ledger metadata rejects sensitive field: prompt",
+			},
+		});
+
+		const unsupported = await post("/api/prompt-pack-ledger", {
+			action: "record",
+			attempt_id: attemptId,
+			future_field: true,
+		});
+		expect(unsupported.status).toBe(409);
+		expect(await unsupported.json()).toMatchObject({
+			error: { code: "viewer_contract_unsupported" },
+		});
+	});
+});
+
 describe("automatic recall transport validation", () => {
 	useTransportFixture();
 	it("records an empty evaluation without delivery and rejects spoofed counts or target mismatch", async () => {
