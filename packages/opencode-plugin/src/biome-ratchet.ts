@@ -151,6 +151,102 @@ function stringArray(value: unknown): string[] {
 		: [];
 }
 
+function globCharacterClass(pattern: string, index: number): { source: string; end: number } {
+	const closing = pattern.indexOf("]", index + 1);
+	if (closing === -1) return { source: "\\[", end: index };
+	const content = pattern.slice(index + 1, closing);
+	return {
+		source: `[${content.startsWith("!") ? `^${content.slice(1)}` : content}]`,
+		end: closing,
+	};
+}
+
+function globAlternatives(pattern: string, index: number): { source: string; end: number } {
+	const closing = pattern.indexOf("}", index + 1);
+	if (closing === -1) return { source: "\\{", end: index };
+	const alternatives = pattern
+		.slice(index + 1, closing)
+		.split(",")
+		.map((item) => globPatternSource(item));
+	return { source: `(?:${alternatives.join("|")})`, end: closing };
+}
+
+function globToken(pattern: string, index: number): { source: string; end: number } {
+	const current = pattern[index] ?? "";
+	if (current === "[") return globCharacterClass(pattern, index);
+	if (current === "{") return globAlternatives(pattern, index);
+	if (current === "?") return { source: "[^/]", end: index };
+	if (current !== "*") {
+		return { source: current.replace(/[\\^$+.()|]/u, "\\$&"), end: index };
+	}
+	if (pattern[index + 1] !== "*") return { source: "[^/]*", end: index };
+	return pattern[index + 2] === "/"
+		? { source: "(?:.*/)?", end: index + 2 }
+		: { source: ".*", end: index + 1 };
+}
+
+function globPatternSource(pattern: string): string {
+	let source = "";
+	for (let index = 0; index < pattern.length; index += 1) {
+		const token = globToken(pattern, index);
+		source += token.source;
+		index = token.end;
+	}
+	return source;
+}
+
+function globMatchesPath(pattern: string, path: string, foldersMatch: boolean): boolean {
+	const normalizedPattern = normalizePath(pattern);
+	const exact = new RegExp(`^${globPatternSource(normalizedPattern)}$`, "u");
+	if (exact.test(path)) return true;
+	if (!foldersMatch || /[*?[{]/u.test(normalizedPattern)) return false;
+	return path.startsWith(`${normalizedPattern.replace(/\/$/u, "")}/`);
+}
+
+function includedByPatterns(path: string, patterns: string[], foldersMatch: boolean): boolean {
+	if (patterns.length === 0) return false;
+	let included = false;
+	for (const original of patterns) {
+		const negated = original.startsWith("!");
+		const pattern = original.replace(/^!!?/u, "");
+		if (globMatchesPath(pattern, path, foldersMatch)) included = !negated;
+	}
+	return included;
+}
+
+function linterEnabledForPath(config: UnknownRecord, path: string): boolean {
+	const files = isRecord(config.files) ? config.files : undefined;
+	const linter = isRecord(config.linter) ? config.linter : undefined;
+	const fileIncludes = stringArray(files?.includes);
+	if (fileIncludes.length > 0 && !includedByPatterns(path, fileIncludes, true)) return false;
+	const linterIncludes = stringArray(linter?.includes);
+	if (linterIncludes.length > 0 && !includedByPatterns(path, linterIncludes, false)) return false;
+	if (linter?.enabled === false) return false;
+
+	let enabled = true;
+	for (const override of Array.isArray(config.overrides) ? config.overrides : []) {
+		if (!isRecord(override)) continue;
+		const includes = stringArray(override.includes);
+		if (includes.length === 0 || !includedByPatterns(path, includes, false)) continue;
+		if (isRecord(override.linter) && typeof override.linter.enabled === "boolean") {
+			enabled = override.linter.enabled;
+		}
+	}
+	return enabled;
+}
+
+function changeTouchesLintedPath(
+	change: ChangedPath,
+	base: UnknownRecord,
+	head: UnknownRecord,
+): boolean {
+	if (!change.beforePath && !change.afterPath) return true;
+	return Boolean(
+		(change.beforePath && linterEnabledForPath(base, normalizePath(change.beforePath))) ||
+			(change.afterPath && linterEnabledForPath(head, normalizePath(change.afterPath))),
+	);
+}
+
 function severity(value: unknown): number | undefined {
 	let level: unknown;
 	if (typeof value === "string") level = value;
@@ -851,8 +947,13 @@ function overrideViolations(base: UnknownRecord, head: UnknownRecord): PolicyVio
 	];
 }
 
-function suppressionViolations(changes: ChangedPath[]): PolicyViolation[] {
+function suppressionViolations(
+	changes: ChangedPath[],
+	base: UnknownRecord,
+	head: UnknownRecord,
+): PolicyViolation[] {
 	return changes.flatMap((change) => {
+		if (!changeTouchesLintedPath(change, base, head)) return [];
 		const violations: PolicyViolation[] = [];
 		const remaining = suppressionDirectives(change.afterSource);
 		for (const previous of suppressionDirectives(change.beforeSource)) {
@@ -933,7 +1034,7 @@ export function compareBiomePolicy(
 		...ruleViolations(base, head),
 		...overrideViolations(base, head),
 		...ignoreFileViolations(changes),
-		...suppressionViolations(changes),
+		...suppressionViolations(changes, base, head),
 	];
 }
 

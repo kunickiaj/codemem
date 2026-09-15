@@ -135,17 +135,110 @@ function sourceForPath(
 	return typeof source === "function" ? source(path) : source;
 }
 
+function skipQuotedSource(source: string, start: number, quote: string): number {
+	for (let index = start + 1; index < source.length; index += 1) {
+		if (source[index] === "\\") index += 1;
+		else if (source[index] === quote) return index + 1;
+	}
+	return source.length;
+}
+
+function skipSourceComment(source: string, start: number, multiline: boolean): number {
+	const closing = multiline ? source.indexOf("*/", start + 2) : source.indexOf("\n", start + 2);
+	if (closing === -1) return source.length;
+	return closing + (multiline ? 2 : 1);
+}
+
+function sourceTokenEnd(source: string, index: number): number | undefined {
+	const current = source[index] ?? "";
+	if (current === '"' || current === "'" || current === "`") {
+		return skipQuotedSource(source, index, current);
+	}
+	if (current !== "/" || !["/", "*"].includes(source[index + 1] ?? "")) return undefined;
+	return skipSourceComment(source, index, source[index + 1] === "*");
+}
+
+interface ClassScopeState {
+	classes: Array<{ name: string; depth: number }>;
+	pendingClass: { name: string; parentheses: number; brackets: number } | undefined;
+	braceDepth: number;
+	parentheses: number;
+	brackets: number;
+}
+
+function classDeclarationName(
+	source: string,
+	index: number,
+	identifier: string,
+): string | undefined {
+	if (identifier !== "class") return undefined;
+	const remainder = source.slice(index + identifier.length);
+	const name = remainder.match(/^\s+([A-Za-z_$][\w$]*)/u)?.[1];
+	return name === "extends" ? undefined : name;
+}
+
+function updateClassNesting(state: ClassScopeState, current: string): void {
+	if (current === "(") state.parentheses += 1;
+	else if (current === ")") state.parentheses = Math.max(0, state.parentheses - 1);
+	else if (current === "[") state.brackets += 1;
+	else if (current === "]") state.brackets = Math.max(0, state.brackets - 1);
+	else if (current === "{") {
+		state.braceDepth += 1;
+		if (
+			state.pendingClass?.parentheses === state.parentheses &&
+			state.pendingClass.brackets === state.brackets
+		) {
+			state.classes.push({ name: state.pendingClass.name, depth: state.braceDepth });
+			state.pendingClass = undefined;
+		}
+	} else if (current === "}") {
+		if (state.classes.at(-1)?.depth === state.braceDepth) state.classes.pop();
+		state.braceDepth = Math.max(0, state.braceDepth - 1);
+	}
+}
+
+function classNameAtLine(sourceCode: string, line: number): string {
+	const source = sourceCode.split("\n").slice(0, line).join("\n");
+	const state: ClassScopeState = {
+		classes: [],
+		pendingClass: undefined,
+		braceDepth: 0,
+		parentheses: 0,
+		brackets: 0,
+	};
+
+	for (let index = 0; index < source.length; index += 1) {
+		const current = source[index] ?? "";
+		const tokenEnd = sourceTokenEnd(source, index);
+		if (tokenEnd !== undefined) {
+			index = tokenEnd - 1;
+			continue;
+		}
+		if (/[A-Za-z_$]/u.test(current)) {
+			const identifier = source.slice(index).match(/^[A-Za-z_$][\w$]*/u)?.[0] ?? "";
+			const name = classDeclarationName(source, index, identifier);
+			if (name) {
+				state.pendingClass = {
+					name,
+					parentheses: state.parentheses,
+					brackets: state.brackets,
+				};
+			}
+			index += identifier.length - 1;
+			continue;
+		}
+		updateClassNesting(state, current);
+	}
+	return state.classes.at(-1)?.name ?? "";
+}
+
 export function getScopeIdentity(
 	sourceCode: string | undefined,
 	line: number | undefined,
 ): string | undefined {
 	if (!sourceCode || !line) return undefined;
 	const precedingLines = sourceCode.split("\n").slice(0, line);
-	let className = "";
-	for (const sourceLine of precedingLines) {
-		const classMatch = sourceLine.match(/\bclass\s+([\w$]+)/);
-		if (classMatch?.[1]) className = classMatch[1];
-	}
+	const className = classNameAtLine(sourceCode, line);
 	for (const sourceLine of precedingLines.reverse()) {
 		const functionMatch = sourceLine.match(/\bfunction\s+([\w$]+)/);
 		if (functionMatch?.[1]) return `${className}:function:${functionMatch[1]}`;

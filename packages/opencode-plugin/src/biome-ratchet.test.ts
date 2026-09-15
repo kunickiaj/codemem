@@ -111,6 +111,33 @@ describe("Biome diagnostic comparison", () => {
 		).toEqual([]);
 	});
 
+	it("does not assign a preceding class to a later top-level diagnostic", () => {
+		const report = JSON.stringify({
+			summary: { errors: 0, warnings: 1, infos: 0, diagnosticsNotPrinted: 0 },
+			diagnostics: [
+				{
+					category: "lint/style/useConst",
+					description: "Use const instead",
+					location: {
+						path: "src/a.ts",
+						start: { line: 4, column: 1 },
+						end: { line: 4, column: 15 },
+					},
+				},
+			],
+		});
+		const source = (className: string) => `class ${className} {\n\tmethod() {}\n}\nlet value = 1;`;
+		const before = parsePinnedBiomeReport(report, () => source("Before"));
+		const after = parsePinnedBiomeReport(report, () => source("After"));
+
+		expect(before[0]?.scopeIdentity).toBe(":binding:value");
+		expect(
+			compareChangedDiagnostics(before, after, [
+				{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
+			]),
+		).toEqual([]);
+	});
+
 	it("maps renames and ignores diagnostics removed with deleted files", () => {
 		const before = [
 			diagnostic("src/old.ts", 4, 16, "same"),
@@ -384,6 +411,45 @@ describe("Biome policy comparison", () => {
 			]),
 		).toEqual([]);
 	});
+
+	it("ignores suppression-like examples outside Biome lint coverage", () => {
+		expect(
+			compareBiomePolicy(config(), config(), [
+				{
+					status: "modified",
+					beforePath: "docs/example.md",
+					afterPath: "docs/example.md",
+					beforeSource: "Example:\n",
+					afterSource:
+						"Example:\n  // biome-ignore lint/suspicious/noExplicitAny\n  const value: any = 1;",
+				},
+			]),
+		).toEqual([]);
+	});
+
+	it("applies ordered file and linter include exceptions to suppression checks", () => {
+		const coverageConfig = JSON.stringify({
+			files: { includes: ["**", "!docs", "docs/linted.ts"] },
+			linter: { includes: ["**/*.ts", "!**/*.generated.ts"] },
+		});
+		const change = (pathValue: string) => ({
+			status: "modified" as const,
+			beforePath: pathValue,
+			afterPath: pathValue,
+			beforeSource: "",
+			afterSource: "// biome-ignore lint/suspicious/noExplicitAny\nconst value: any = 1;",
+		});
+
+		expect(compareBiomePolicy(coverageConfig, coverageConfig, [change("src/a.ts")])).toMatchObject([
+			{ kind: "suppression", path: "src/a.ts" },
+		]);
+		expect(
+			compareBiomePolicy(coverageConfig, coverageConfig, [change("src/a.generated.ts")]),
+		).toEqual([]);
+		expect(compareBiomePolicy(coverageConfig, coverageConfig, [change("docs/example.md")])).toEqual(
+			[],
+		);
+	});
 });
 
 describe("Biome policy bypass prevention", () => {
@@ -552,7 +618,8 @@ describe("Biome policy bypass prevention", () => {
 			[insideEdit, true],
 			[siblingEdit, false],
 		] as const) {
-			const violations = compareBiomePolicy(config(), config(), [
+			const jsxConfig = config({ include: ["src/**/*.ts", "src/**/*.tsx"] });
+			const violations = compareBiomePolicy(jsxConfig, jsxConfig, [
 				{ status: "modified", afterPath: "src/a.tsx", beforeSource, afterSource },
 			]);
 			expect(
