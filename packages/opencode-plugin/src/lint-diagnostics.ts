@@ -325,7 +325,11 @@ function diagnosticDistance(before: LintDiagnostic, after: LintDiagnostic): numb
 	return lineDistance * 1_000 + columnDistance;
 }
 
-function candidateIndexes(previous: LintDiagnostic, diagnostics: LintDiagnostic[]): number[] {
+function candidateIndexes(
+	previous: LintDiagnostic,
+	diagnostics: LintDiagnostic[],
+	allowRenameFallback: boolean,
+): number[] {
 	const exactScope = diagnostics.flatMap((diagnostic, index) =>
 		diagnostic.scopeIdentity && diagnostic.scopeIdentity === previous.scopeIdentity ? [index] : [],
 	);
@@ -335,15 +339,16 @@ function candidateIndexes(previous: LintDiagnostic, diagnostics: LintDiagnostic[
 	);
 	if (exactSource.length > 0 && (!previous.scopeIdentity || exactSource.length === 1))
 		return exactSource;
-	if (previous.scopeIdentity && diagnostics.length !== 1) return [];
+	if (!allowRenameFallback && previous.scopeIdentity) return [];
 	return diagnostics.map((_, index) => index);
 }
 
 function nearestCandidate(
 	previous: LintDiagnostic,
 	diagnostics: LintDiagnostic[],
+	allowRenameFallback: boolean,
 ): number | undefined {
-	const indexes = candidateIndexes(previous, diagnostics);
+	const indexes = candidateIndexes(previous, diagnostics, allowRenameFallback);
 	let nearest = indexes[0];
 	for (const index of indexes.slice(1)) {
 		if (nearest === undefined) return index;
@@ -363,8 +368,9 @@ function nearestCandidate(
 function compareMeasured(before: LintDiagnostic[], after: LintDiagnostic[]): LintDiagnostic[] {
 	const unmatched = [...after];
 	const regressions: LintDiagnostic[] = [];
+	const allowRenameFallback = before.length === 1 && after.length === 1;
 	for (const previous of before) {
-		const nearest = nearestCandidate(previous, unmatched);
+		const nearest = nearestCandidate(previous, unmatched, allowRenameFallback);
 		if (nearest === undefined) {
 			if (unmatched.length === 0) break;
 			continue;

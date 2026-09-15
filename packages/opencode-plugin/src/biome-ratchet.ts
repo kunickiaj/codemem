@@ -390,6 +390,13 @@ function scanCodeToken(source: string, index: number, comments: SourceComment[])
 	if (current === '"' || current === "'") return skipQuotedString(source, index, current);
 	if (current === "`") return scanTemplate(source, index + 1, comments);
 	if (current === "{") return scanCode(source, index + 1, comments, { stopAtBrace: true });
+	if (current === "<") {
+		const end = jsxNodeEnd(source, index);
+		if (end !== undefined) {
+			scanJsxComments(source, index, end, comments);
+			return end;
+		}
+	}
 	return index + 1;
 }
 
@@ -446,10 +453,18 @@ interface JsxTag {
 	end: number;
 }
 
-function jsxTag(source: string, start: number): JsxTag | undefined {
+function jsxTag(source: string, start: number, comments: SourceComment[] = []): JsxTag | undefined {
+	const fragment = source.slice(start).match(/^<(\/?)>/u);
+	if (fragment) {
+		return {
+			name: "",
+			closing: Boolean(fragment[1]),
+			selfClosing: false,
+			end: start + fragment[0].length,
+		};
+	}
 	const prefix = source.slice(start).match(/^<(\/)?([A-Za-z][\w:.-]*)/);
 	if (!prefix) return undefined;
-	const comments: SourceComment[] = [];
 	for (let index = start + prefix[0].length; index < source.length; index += 1) {
 		const current = source[index];
 		if (current === ">") {
@@ -483,6 +498,24 @@ function jsxNodeEnd(source: string, start: number): number | undefined {
 		if (depth === 0) return tag.end;
 	}
 	return undefined;
+}
+
+function scanJsxComments(
+	source: string,
+	start: number,
+	end: number,
+	comments: SourceComment[],
+): void {
+	for (let index = start; index < end; index += 1) {
+		if (source[index] === "<") {
+			const tag = jsxTag(source, index, comments);
+			if (tag) index = tag.end - 1;
+			continue;
+		}
+		if (source[index] === "{") {
+			index = scanCode(source, index + 1, comments, { stopAtBrace: true }) - 1;
+		}
+	}
 }
 
 function nextNodeStart(source: string, start: number): number {
@@ -706,6 +739,17 @@ function coverageViolations(base: UnknownRecord, head: UnknownRecord): PolicyVio
 		if (include.startsWith("!") && !baseFiles.includes(include)) {
 			violations.push({ kind: "coverage", message: `Biome exclusion added: ${include}` });
 		}
+	}
+	const sortedBaseFiles = [...baseFiles].sort();
+	const sortedHeadFiles = [...headFiles].sort();
+	const samePatterns =
+		sortedBaseFiles.length === sortedHeadFiles.length &&
+		sortedBaseFiles.every((include, index) => include === sortedHeadFiles[index]);
+	if (samePatterns && baseFiles.some((include, index) => include !== headFiles[index])) {
+		violations.push({
+			kind: "coverage",
+			message: "Biome include ordering changed; explicit coverage review required",
+		});
 	}
 	return violations;
 }

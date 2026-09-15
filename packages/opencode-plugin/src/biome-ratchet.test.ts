@@ -111,6 +111,29 @@ describe("Biome diagnostic comparison", () => {
 		).toEqual([]);
 	});
 
+	it("does not cross-pair a deleted measured scope with a remaining regression", () => {
+		const deleted = {
+			...diagnostic("src/a.ts", 10, 30, "deleted function"),
+			scopeIdentity: ":function:deleted",
+		};
+		const previous = {
+			...diagnostic("src/a.ts", 30, 10, "remaining function"),
+			scopeIdentity: ":function:remaining",
+		};
+		const regression = {
+			...diagnostic("src/a.ts", 30, 20, "remaining function changed"),
+			scopeIdentity: ":function:remaining",
+		};
+
+		expect(
+			compareChangedDiagnostics(
+				[deleted, previous],
+				[regression],
+				[{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" }],
+			),
+		).toEqual([regression]);
+	});
+
 	it("does not assign a preceding class to a later top-level diagnostic", () => {
 		const report = JSON.stringify({
 			summary: { errors: 0, warnings: 1, infos: 0, diagnosticsNotPrinted: 0 },
@@ -353,6 +376,16 @@ describe("Biome policy comparison", () => {
 		});
 	});
 
+	it("rejects coverage-reducing include reorders", () => {
+		const baseConfig = JSON.stringify({ files: { includes: ["!legacy/**", "**"] } });
+		const headConfig = JSON.stringify({ files: { includes: ["**", "!legacy/**"] } });
+
+		expect(compareBiomePolicy(baseConfig, headConfig, [])).toContainEqual({
+			kind: "coverage",
+			message: "Biome include ordering changed; explicit coverage review required",
+		});
+	});
+
 	it("allows removal of an explicitly disabled rule", () => {
 		const baseConfig = JSON.stringify({
 			linter: { rules: { preset: "recommended", correctness: { noUnusedVariables: "off" } } },
@@ -410,6 +443,49 @@ describe("Biome policy comparison", () => {
 				},
 			]),
 		).toEqual([]);
+	});
+
+	it("does not treat suppression-like JSX text as a directive", () => {
+		const tsxConfig = config({ include: ["src/**/*.tsx"] });
+		const jsxExamples = [
+			"const example = <code>// biome-ignore lint/suspicious/noExplicitAny</code>;",
+			"const example = <>// biome-ignore lint/suspicious/noExplicitAny</>;",
+		];
+
+		for (const afterSource of jsxExamples) {
+			expect(
+				compareBiomePolicy(tsxConfig, tsxConfig, [
+					{
+						status: "modified",
+						beforePath: "src/a.tsx",
+						afterPath: "src/a.tsx",
+						beforeSource: "",
+						afterSource,
+					},
+				]),
+			).toEqual([]);
+		}
+	});
+
+	it("still detects suppressions inside JSX attribute expressions", () => {
+		const tsxConfig = config({ include: ["src/**/*.tsx"] });
+		const afterSource = [
+			"const example = <Component value={(() => {",
+			"// biome-ignore lint/suspicious/noExplicitAny",
+			"const value: any = 1;",
+			"return value;",
+			"})()} />;",
+		].join("\n");
+
+		expect(
+			compareBiomePolicy(tsxConfig, tsxConfig, [
+				{ status: "modified", afterPath: "src/a.tsx", afterSource },
+			]),
+		).toContainEqual({
+			kind: "suppression",
+			message: "1 Biome suppression directive added or changed",
+			path: "src/a.tsx",
+		});
 	});
 
 	it("ignores suppression-like examples outside Biome lint coverage", () => {
