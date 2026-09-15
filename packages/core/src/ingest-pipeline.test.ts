@@ -2500,6 +2500,11 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 
 		expect(store.rawEventFlushState("sess-capture-suppressed")).toBe(1);
 		expect(store.recent(10)).toHaveLength(0);
+		expect(
+			store.db
+				.prepare("SELECT COUNT(*) AS count FROM usage_events WHERE event = 'observer_call'")
+				.get(),
+		).toEqual({ count: 1 });
 		const session = store.db
 			.prepare("SELECT ended_at, metadata_json FROM sessions ORDER BY id DESC LIMIT 1")
 			.get() as { ended_at: string | null; metadata_json: string };
@@ -2844,6 +2849,11 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 		await ingest(payload, store, { observer: lowSignalObserver } as unknown as IngestOptions);
 
 		expect(store.recent(10)).toHaveLength(0);
+		expect(
+			store.db
+				.prepare("SELECT COUNT(*) AS count FROM usage_events WHERE event = 'observer_call'")
+				.get(),
+		).toEqual({ count: 1 });
 		const session = store.db
 			.prepare("SELECT ended_at, metadata_json FROM sessions ORDER BY id DESC LIMIT 1")
 			.get() as { ended_at: string | null; metadata_json: string | null };
@@ -2972,6 +2982,11 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 		await ingest(payload, store, { observer: summaryOnlyObserver } as unknown as IngestOptions);
 
 		expect(store.recent(10)).toHaveLength(0);
+		expect(
+			store.db
+				.prepare("SELECT COUNT(*) AS count FROM usage_events WHERE event = 'observer_call'")
+				.get(),
+		).toEqual({ count: 1 });
 		const session = store.db
 			.prepare("SELECT ended_at FROM sessions ORDER BY id DESC LIMIT 1")
 			.get() as { ended_at: string | null };

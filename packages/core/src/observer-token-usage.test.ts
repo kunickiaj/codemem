@@ -32,14 +32,51 @@ function payload(): IngestPayload {
 	};
 }
 
-function observer(raw: string, usage: { inputTokens: number; outputTokens: number } | null) {
+function observer(
+	raw: string | null,
+	usage: {
+		inputTokens: number;
+		outputTokens: number;
+		cacheReadInputTokens?: number;
+		cacheCreationInputTokens?: number;
+	} | null,
+	provider = "test",
+) {
 	return {
-		observe: async () => ({ raw, parsed: null, provider: "test", model: "test-model", usage }),
+		observe: async () => ({ raw, parsed: null, provider, model: "test-model", usage }),
 		getStatus: () => ({
-			provider: "test",
+			provider,
 			model: "test-model",
 			runtime: "test",
 			auth: { source: "none", type: "none", hasToken: false },
+		}),
+	};
+}
+
+function structuredObserver(
+	observeStructuredJson: () => Promise<{
+		raw: string | null;
+		parsed: null;
+		provider: string;
+		model: string;
+		usage: { inputTokens: number; outputTokens: number } | null;
+		usedStructuredOutputs: boolean;
+		failureReason: null;
+		transportFailureCode: string | null;
+	}>,
+) {
+	return {
+		provider: "openai",
+		runtime: "api_http",
+		outputMode: "json_schema",
+		openaiUseResponses: true,
+		hasCustomBaseUrl: false,
+		observeStructuredJson,
+		getStatus: () => ({
+			provider: "openai",
+			model: "test-model",
+			runtime: "api_http",
+			auth: { source: "env", type: "api_direct", hasToken: true },
 		}),
 	};
 }
@@ -54,6 +91,13 @@ function latestUsage(store: MemoryStore) {
 		tokens_written: number | null;
 		metadata_json: string;
 	};
+}
+
+function usageCount(store: MemoryStore): number {
+	const row = store.db
+		.prepare("SELECT COUNT(*) AS count FROM usage_events WHERE event = 'observer_call'")
+		.get() as { count: number };
+	return row.count;
 }
 
 describe("observer token usage persistence", { timeout: 15_000 }, () => {
@@ -89,6 +133,39 @@ describe("observer token usage persistence", { timeout: 15_000 }, () => {
 			input_direction: "observer_input",
 			output_direction: "observer_output",
 			attempt_count: 1,
+		});
+		expect(usageCount(store)).toBe(1);
+	});
+
+	it.each([
+		{
+			provider: "anthropic",
+			expectedInput: 23,
+			description: "adds Anthropic cache token categories",
+		},
+		{
+			provider: "openai",
+			expectedInput: 10,
+			description: "does not double-count OpenAI cached input",
+		},
+	])("$description", async ({ provider, expectedInput }) => {
+		await ingest(payload(), store, {
+			observer: observer(
+				OBSERVATION,
+				{
+					inputTokens: 10,
+					outputTokens: 20,
+					cacheReadInputTokens: 8,
+					cacheCreationInputTokens: 5,
+				},
+				provider,
+			),
+			storeSummary: false,
+		} as unknown as IngestOptions);
+
+		expect(latestUsage(store)).toMatchObject({
+			tokens_read: expectedInput,
+			tokens_written: 20,
 		});
 	});
 
@@ -136,6 +213,130 @@ describe("observer token usage persistence", { timeout: 15_000 }, () => {
 			source: "provider",
 			attempt_count: 2,
 		});
+	});
+});
+
+describe("observer token usage terminal paths", { timeout: 15_000 }, () => {
+	let tmpDir: string;
+	let store: MemoryStore;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-token-usage-terminal-test-"));
+		const dbPath = join(tmpDir, "test.sqlite");
+		const setupDb = connect(dbPath);
+		initTestSchema(setupDb);
+		setupDb.close();
+		store = new MemoryStore(dbPath);
+	});
+
+	afterEach(() => {
+		store.close();
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("persists one usage row when a completed observer call returns empty output", async () => {
+		await ingest(payload(), store, {
+			observer: observer(null, { inputTokens: 4, outputTokens: 1 }),
+			storeSummary: false,
+		} as unknown as IngestOptions);
+
+		expect(latestUsage(store)).toMatchObject({ tokens_read: 4, tokens_written: 1 });
+		expect(usageCount(store)).toBe(1);
+	});
+
+	it("persists failure telemetry from an explicit observer output error", async () => {
+		const invalidObserver = structuredObserver(async () => ({
+			raw: "{}",
+			parsed: null,
+			provider: "openai",
+			model: "test-model",
+			usage: { inputTokens: 12, outputTokens: 3 },
+			usedStructuredOutputs: true,
+			failureReason: null,
+			transportFailureCode: null,
+		}));
+
+		await expect(
+			ingest(payload(), store, {
+				observer: invalidObserver,
+				storeSummary: false,
+			} as unknown as IngestOptions),
+		).rejects.toThrow("observer output failed validation");
+
+		const usage = latestUsage(store);
+		expect(usage).toMatchObject({ tokens_read: 12, tokens_written: 3 });
+		expect(JSON.parse(usage.metadata_json).token_usage.attempt_count).toBe(1);
+		expect(usageCount(store)).toBe(1);
+	});
+
+	it("persists null counts when observer output failure telemetry has no usage", async () => {
+		const invalidObserver = structuredObserver(async () => ({
+			raw: "{}",
+			parsed: null,
+			provider: "openai",
+			model: "test-model",
+			usage: null,
+			usedStructuredOutputs: true,
+			failureReason: null,
+			transportFailureCode: null,
+		}));
+
+		await expect(
+			ingest(payload(), store, {
+				observer: invalidObserver,
+				storeSummary: false,
+			} as unknown as IngestOptions),
+		).rejects.toThrow("observer output failed validation");
+
+		expect(latestUsage(store)).toMatchObject({
+			tokens_read: null,
+			tokens_written: null,
+		});
+		expect(usageCount(store)).toBe(1);
+	});
+
+	it("uses explicit retry diagnostics for failed observer attempt counts", async () => {
+		let calls = 0;
+		const failingObserver = structuredObserver(async () => {
+			calls += 1;
+			return {
+				raw: null,
+				parsed: null,
+				provider: "openai",
+				model: "test-model",
+				usage: { inputTokens: calls, outputTokens: calls + 1 },
+				usedStructuredOutputs: false,
+				failureReason: null,
+				transportFailureCode: "rate_limited",
+			};
+		});
+
+		await expect(
+			ingest(payload(), store, {
+				observer: failingObserver,
+				storeSummary: false,
+			} as unknown as IngestOptions),
+		).rejects.toThrow("observer request failed");
+
+		const usage = latestUsage(store);
+		expect(usage).toMatchObject({ tokens_read: 3, tokens_written: 5 });
+		expect(JSON.parse(usage.metadata_json).token_usage.attempt_count).toBe(2);
+		expect(usageCount(store)).toBe(1);
+	});
+
+	it("does not invent usage for arbitrary observer errors", async () => {
+		const failingObserver = structuredObserver(async () => {
+			throw new Error("unexpected observer bug");
+		});
+
+		await expect(
+			ingest(payload(), store, {
+				observer: failingObserver,
+				storeSummary: false,
+			} as unknown as IngestOptions),
+		).rejects.toThrow("unexpected observer bug");
+
+		expect(usageCount(store)).toBe(0);
 	});
 });
 
