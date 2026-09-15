@@ -25,9 +25,10 @@
     "test:adapter-normalizers": "node --test scripts/build-adapter-normalizers.test.mjs",
     "test:release-version": "node --test scripts/release-version.test.mjs",
     "test:release-tag-preflight": "node --test scripts/release-tag-preflight.test.mjs",
-    "lint": "pnpm exec biome check .",
-    "lint:delta": "pnpm exec tsx packages/opencode-plugin/src/biome-ratchet-cli.ts",
-    "format": "pnpm exec biome check --write packages/",
+    "lint": "biome check .",
+    "lint:delta": "tsx packages/opencode-plugin/src/biome-ratchet-cli.ts",
+    "fix": "biome check --write --files-ignore-unknown=true --no-errors-on-unmatched",
+    "format": "biome check --write packages/",
 		"tsc": "pnpm exec tsc --build && pnpm --filter @codemem/ui typecheck:health-strict",
     "typecheck": "pnpm run tsc",
     "check": "pnpm run tsc && pnpm run lint && pnpm run test:release && pnpm run test:adapter-normalizers && pnpm run test:ci-workflow && pnpm run test",
@@ -41,7 +42,7 @@
   },
   "lint-staged": {
     "*.{ts,tsx,js,jsx,json,md}": [
-      "pnpm exec biome check --write --files-ignore-unknown=true --no-errors-on-unmatched"
+      "biome check --write --files-ignore-unknown=true --no-errors-on-unmatched"
     ]
   },
   "devDependencies": {

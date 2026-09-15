@@ -37,6 +37,7 @@
 ## Workflow rules specific to this repo
 
 - Use `bd` for issue tracking, not markdown TODOs: `bd ready --json`, `bd create ... --json`, `bd close ... --json`.
+- After each stable edit, run `pnpm run fix -- <changed paths>` before manually fixing formatting, imports, or other safe Biome diagnostics. Keep paths scoped to the active task; pre-commit runs the same safe fixes on staged files.
 - If you change plugin behavior, update `README.md` and any affected docs under `docs/`.
 - If you change memory kinds or their presentation, update all three surfaces together: `packages/core/src/store.ts`, `packages/mcp-server/src/index.ts`, and `packages/ui/src/tabs/feed.ts`.
 
