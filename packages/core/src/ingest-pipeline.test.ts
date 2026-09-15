@@ -1955,6 +1955,13 @@ describe("ingest-sanitize", () => {
 // CI occasionally times out these sqlite-backed ingest integration tests on
 // shared runners. Keep the allowance scoped to this persistence-heavy suite
 // rather than changing Vitest's global timeout.
+function observerUsageCount(store: MemoryStore): number {
+	const row = store.db
+		.prepare("SELECT COUNT(*) AS count FROM usage_events WHERE event = 'observer_call'")
+		.get() as { count: number };
+	return row.count;
+}
+
 describe("ingest() integration", { timeout: 15_000 }, () => {
 	let tmpDir: string;
 	let store: MemoryStore;
@@ -2499,12 +2506,7 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 		).resolves.toEqual({ flushed: 2, updatedState: 1 });
 
 		expect(store.rawEventFlushState("sess-capture-suppressed")).toBe(1);
-		expect(store.recent(10)).toHaveLength(0);
-		expect(
-			store.db
-				.prepare("SELECT COUNT(*) AS count FROM usage_events WHERE event = 'observer_call'")
-				.get(),
-		).toEqual({ count: 1 });
+		expect([store.recent(10).length, observerUsageCount(store)]).toEqual([0, 1]);
 		const session = store.db
 			.prepare("SELECT ended_at, metadata_json FROM sessions ORDER BY id DESC LIMIT 1")
 			.get() as { ended_at: string | null; metadata_json: string };
@@ -2848,12 +2850,7 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 
 		await ingest(payload, store, { observer: lowSignalObserver } as unknown as IngestOptions);
 
-		expect(store.recent(10)).toHaveLength(0);
-		expect(
-			store.db
-				.prepare("SELECT COUNT(*) AS count FROM usage_events WHERE event = 'observer_call'")
-				.get(),
-		).toEqual({ count: 1 });
+		expect([store.recent(10).length, observerUsageCount(store)]).toEqual([0, 1]);
 		const session = store.db
 			.prepare("SELECT ended_at, metadata_json FROM sessions ORDER BY id DESC LIMIT 1")
 			.get() as { ended_at: string | null; metadata_json: string | null };
@@ -2981,12 +2978,7 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 
 		await ingest(payload, store, { observer: summaryOnlyObserver } as unknown as IngestOptions);
 
-		expect(store.recent(10)).toHaveLength(0);
-		expect(
-			store.db
-				.prepare("SELECT COUNT(*) AS count FROM usage_events WHERE event = 'observer_call'")
-				.get(),
-		).toEqual({ count: 1 });
+		expect([store.recent(10).length, observerUsageCount(store)]).toEqual([0, 1]);
 		const session = store.db
 			.prepare("SELECT ended_at FROM sessions ORDER BY id DESC LIMIT 1")
 			.get() as { ended_at: string | null };
