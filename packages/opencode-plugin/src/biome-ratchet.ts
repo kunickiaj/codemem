@@ -169,6 +169,7 @@ function assertUnambiguousMeasuredPairing(
 	for (const category of categories) {
 		const categoryBefore = before.filter((diagnostic) => diagnostic.category === category);
 		const categoryAfter = after.filter((diagnostic) => diagnostic.category === category);
+		if (categoryAfter.length === 0) continue;
 		if (categoryBefore.length <= 1 && categoryAfter.length <= 1) continue;
 		const identities = [...categoryBefore, ...categoryAfter].map(
 			(diagnostic) => diagnostic.scopeIdentity,

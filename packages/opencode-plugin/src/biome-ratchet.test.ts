@@ -183,6 +183,23 @@ describe("Biome diagnostic comparison", () => {
 			),
 		).toEqual([]);
 	});
+});
+
+describe("Biome diagnostic ambiguity handling", () => {
+	it("accepts complete removal of repeated measured diagnostics", () => {
+		const before = [
+			diagnostic("src/a.ts", 10, 30, "first legacy function"),
+			diagnostic("src/a.ts", 30, 20, "second legacy function"),
+		];
+
+		expect(
+			compareChangedDiagnostics(
+				before,
+				[],
+				[{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" }],
+			),
+		).toEqual([]);
+	});
 
 	it("fails closed when repeated measured scopes cannot be paired", () => {
 		const before = [
@@ -344,7 +361,9 @@ ${packageVersions.map((packageVersion) => `  '@biomejs/biome@${packageVersion}':
 			"suppression",
 		]);
 	});
+});
 
+describe("Biome preset policy comparison", () => {
 	it("rejects a new explicit rule disable that could override a preset", () => {
 		const baseConfig = JSON.stringify({
 			linter: { enabled: true, rules: { preset: "recommended" } },
@@ -689,7 +708,9 @@ describe("Biome policy bypass prevention", () => {
 			path: "src/a.ts",
 		});
 	});
+});
 
+describe("Biome suppressed-edit policy", () => {
 	it("rejects edits covered by existing broad suppressions", () => {
 		const fileWide = "// biome-ignore-all lint/a: legacy\nconst first = 1;";
 		const range = [
@@ -732,7 +753,9 @@ describe("Biome policy bypass prevention", () => {
 			path: "src/a.ts",
 		});
 	});
+});
 
+describe("Biome ordinary suppression edit policy", () => {
 	it("rejects edits inside a node with an existing ordinary suppression", () => {
 		const beforeSource = [
 			"// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: legacy",
@@ -862,7 +885,7 @@ describe("Biome reviewed dependency and compound policy", () => {
 	});
 });
 
-describe("Biome policy bypass prevention", () => {
+describe("Biome indirect policy controls", () => {
 	it("requires review for changed language-level lint controls", () => {
 		const baseConfig = JSON.stringify({ javascript: { formatter: { quoteStyle: "double" } } });
 		const headConfig = JSON.stringify({
@@ -1085,7 +1108,9 @@ describe("Biome ratchet CLI", () => {
 		expect(formatHumanResult(result)).toContain("…and 2 more regressions");
 		expect(JSON.parse(JSON.stringify(result)).regressions).toHaveLength(12);
 	});
+});
 
+describe("Biome ratchet CLI execution", () => {
 	it("includes an untracked maintained file and fails closed on missing refs or tool failure", async () => {
 		const root = mkdtempSync(path.join(tmpdir(), "codemem-biome-ratchet-test-"));
 		temporaryDirectories.push(root);
