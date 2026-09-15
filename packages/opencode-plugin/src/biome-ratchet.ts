@@ -1292,42 +1292,52 @@ function overrideViolations(base: UnknownRecord, head: UnknownRecord): PolicyVio
 	];
 }
 
+function changeContainsBiomeSuppression(change: ChangedPath): boolean {
+	return [change.beforeSource, change.afterSource].some((source) =>
+		source?.includes("biome-ignore"),
+	);
+}
+
+function suppressionViolationsForChange(change: ChangedPath): PolicyViolation[] {
+	const violations: PolicyViolation[] = [];
+	const remaining = suppressionDirectives(change.afterSource);
+	for (const previous of suppressionDirectives(change.beforeSource)) {
+		const match = remaining.indexOf(previous);
+		if (match !== -1) remaining.splice(match, 1);
+	}
+	if (remaining.length > 0) {
+		violations.push({
+			kind: "suppression",
+			message: `${remaining.length} Biome suppression directive${remaining.length === 1 ? "" : "s"} added or changed`,
+			path: change.afterPath,
+		});
+	}
+	if (editsCoveredByExistingBroadSuppression(change)) {
+		violations.push({
+			kind: "suppression",
+			message: "Code changed under an existing broad Biome suppression",
+			path: change.afterPath,
+		});
+	}
+	if (editsCoveredByExistingOrdinarySuppression(change)) {
+		violations.push({
+			kind: "suppression",
+			message: "Code changed under an existing Biome suppression",
+			path: change.afterPath,
+		});
+	}
+	return violations;
+}
+
 function suppressionViolations(
 	changes: ChangedPath[],
 	base: UnknownRecord,
 	head: UnknownRecord,
 ): PolicyViolation[] {
-	return changes.flatMap((change) => {
-		if (!changeTouchesLintedPath(change, base, head)) return [];
-		const violations: PolicyViolation[] = [];
-		const remaining = suppressionDirectives(change.afterSource);
-		for (const previous of suppressionDirectives(change.beforeSource)) {
-			const match = remaining.indexOf(previous);
-			if (match !== -1) remaining.splice(match, 1);
-		}
-		if (remaining.length > 0) {
-			violations.push({
-				kind: "suppression" as const,
-				message: `${remaining.length} Biome suppression directive${remaining.length === 1 ? "" : "s"} added or changed`,
-				path: change.afterPath,
-			});
-		}
-		if (editsCoveredByExistingBroadSuppression(change)) {
-			violations.push({
-				kind: "suppression",
-				message: "Code changed under an existing broad Biome suppression",
-				path: change.afterPath,
-			});
-		}
-		if (editsCoveredByExistingOrdinarySuppression(change)) {
-			violations.push({
-				kind: "suppression",
-				message: "Code changed under an existing Biome suppression",
-				path: change.afterPath,
-			});
-		}
-		return violations;
-	});
+	return changes
+		.filter((change) => changeTouchesLintedPath(change, base, head))
+		.filter(changeContainsBiomeSuppression)
+		.flatMap(suppressionViolationsForChange);
 }
 
 function ignoreFileViolations(changes: ChangedPath[]): PolicyViolation[] {
