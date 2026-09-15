@@ -1128,11 +1128,12 @@ function suppressionViolations(
 
 function ignoreFileViolations(changes: ChangedPath[]): PolicyViolation[] {
 	return changes.flatMap((change) => {
-		const changedPath = change.afterPath ?? change.beforePath;
+		const ignorePath = [change.beforePath, change.afterPath].find(
+			(candidate) => candidate?.endsWith(".gitignore") || candidate?.endsWith(".ignore"),
+		);
 		if (
-			!changedPath ||
-			(!changedPath.endsWith(".gitignore") && !changedPath.endsWith(".ignore")) ||
-			change.beforeSource === change.afterSource
+			!ignorePath ||
+			(change.beforePath === change.afterPath && change.beforeSource === change.afterSource)
 		) {
 			return [];
 		}
@@ -1140,7 +1141,7 @@ function ignoreFileViolations(changes: ChangedPath[]): PolicyViolation[] {
 			{
 				kind: "coverage" as const,
 				message: "Git ignore policy changed; explicit coverage review required",
-				path: changedPath,
+				path: ignorePath,
 			},
 		];
 	});

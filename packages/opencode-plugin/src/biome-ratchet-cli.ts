@@ -266,18 +266,22 @@ async function applyHeadIgnorePolicy(
 	headDirectory: string,
 ): Promise<void> {
 	for (const change of changes) {
-		const ignorePath = change.afterPath ?? change.beforePath;
-		if (!ignorePath || (!ignorePath.endsWith(".gitignore") && !ignorePath.endsWith(".ignore"))) {
-			continue;
+		if (
+			change.beforePath &&
+			isIgnorePath(change.beforePath) &&
+			change.beforePath !== change.afterPath
+		) {
+			await rm(path.join(baseDirectory, change.beforePath), { force: true });
 		}
-		const basePath = path.join(baseDirectory, ignorePath);
-		if (!change.afterPath) {
-			await rm(basePath, { force: true });
-			continue;
-		}
+		if (!change.afterPath || !isIgnorePath(change.afterPath)) continue;
+		const basePath = path.join(baseDirectory, change.afterPath);
 		await mkdir(path.dirname(basePath), { recursive: true });
 		await copyFile(path.join(headDirectory, change.afterPath), basePath);
 	}
+}
+
+function isIgnorePath(filePath: string): boolean {
+	return filePath.endsWith(".gitignore") || filePath.endsWith(".ignore");
 }
 
 async function runBiome(directory: string, entrypoint: string): Promise<string> {

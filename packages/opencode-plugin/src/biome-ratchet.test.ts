@@ -959,6 +959,21 @@ describe("Biome policy fail-closed controls", () => {
 				]),
 			).toMatchObject([{ kind: "coverage", path: ignorePath }]);
 		}
+		expect(
+			compareBiomePolicy(config(), config(), [
+				{
+					status: "renamed",
+					beforePath: ".gitignore",
+					afterPath: ".gitignore.disabled",
+					beforeSource: "dist/\n",
+					afterSource: "dist/\n",
+				},
+			]),
+		).toContainEqual({
+			kind: "coverage",
+			message: "Git ignore policy changed; explicit coverage review required",
+			path: ".gitignore",
+		});
 	});
 
 	it("fails closed when other Biome coverage controls change", () => {
