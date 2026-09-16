@@ -583,6 +583,26 @@ export interface ServeCoordinatorMaintenanceResult {
 	recipientPolicies: { processed: number; failed: number };
 }
 
+type ServeCoordinatorMaintenanceDependencies = Parameters<typeof runServeCoordinatorMaintenance>[1];
+
+function createServeCoordinatorMaintenanceDependencies(
+	server: typeof import("@codemem/server"),
+): ServeCoordinatorMaintenanceDependencies {
+	return {
+		advancePendingProjectShares: (store, options) =>
+			server.advancePendingProjectSharesOperation(store, {
+				...options,
+				advanceOperation: server.advanceProjectShareOperation,
+			}),
+		reconcileConfiguredCoordinatorEnrollment: server.reconcileConfiguredCoordinatorEnrollment,
+		reconcileRecipientPolicyProjects: (store, options) =>
+			server.reconcileRecipientPolicyProjectsOperation(store, {
+				...options,
+				effects: server.createRecipientPolicyReconcilerEffects(store),
+			}),
+	};
+}
+
 export async function runServeCoordinatorMaintenance(
 	store: MemoryStore,
 	dependencies: {
@@ -678,15 +698,10 @@ async function startBackgroundViewer(invocation: ResolvedServeInvocation): Promi
 }
 
 async function startForegroundViewer(invocation: ResolvedServeInvocation): Promise<void> {
-	const {
-		advancePendingProjectShares,
-		createApp,
-		createSyncApp,
-		closeStore,
-		getStore,
-		reconcileConfiguredCoordinatorEnrollment,
-		reconcileRecipientPolicyProjects,
-	} = await import("@codemem/server");
+	const serverModule = await import("@codemem/server");
+	const { createApp, createSyncApp, closeStore, getStore } = serverModule;
+	const coordinatorMaintenanceDependencies =
+		createServeCoordinatorMaintenanceDependencies(serverModule);
 	const { serve } = await import("@hono/node-server");
 
 	if (invocation.dbPath) process.env.CODEMEM_DB = invocation.dbPath;
@@ -805,11 +820,7 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 						// silently falling back to the built-in default ruleset.
 						scanner: store.scanner,
 						onAfterCoordinatorRefresh: async () => {
-							await runServeCoordinatorMaintenance(store, {
-								advancePendingProjectShares,
-								reconcileConfiguredCoordinatorEnrollment,
-								reconcileRecipientPolicyProjects,
-							});
+							await runServeCoordinatorMaintenance(store, coordinatorMaintenanceDependencies);
 						},
 						onPhaseChange: (phase) => {
 							if (phase === "running") {

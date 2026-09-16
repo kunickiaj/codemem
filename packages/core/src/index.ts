@@ -24,7 +24,6 @@ export {
 	buildRawEventEnvelopeFromHook,
 	MAPPABLE_CLAUDE_HOOK_EVENTS,
 	mapClaudeHookPayload,
-	normalizeProjectLabel,
 	resolveHookProject,
 	TRUSTED_HOOK_MAPPER_OPTIONS,
 } from "./claude-hooks.js";
@@ -752,6 +751,7 @@ export {
 	normalizeIdentityDisplayName,
 	normalizeProjectInviteSummaries,
 } from "./project-invite-identity.js";
+export { normalizeProjectLabel } from "./project-label.js";
 export type {
 	ProjectScopeCandidate,
 	ProjectScopeGuardrailCode,

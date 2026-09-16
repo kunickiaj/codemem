@@ -45,10 +45,16 @@ import { updateStatusRoutes } from "./routes/update-status.js";
 export type {
 	AdvancePendingProjectSharesResult,
 	AdvanceProjectShareOperationResult,
+	ReconcileRecipientPolicyProjectsResult,
+} from "./application/coordinator-maintenance.js";
+export {
+	advancePendingProjectSharesOperation,
+	reconcileRecipientPolicyProjectsOperation,
+} from "./application/coordinator-maintenance.js";
+export type {
 	RecipientPolicyReconciliationReadModel,
 	RecipientPolicyReconciliationReadState,
 	ReconcileConfiguredCoordinatorEnrollmentResult,
-	ReconcileRecipientPolicyProjectsResult,
 } from "./routes/sync.js";
 export {
 	advancePendingProjectShares,

@@ -218,6 +218,26 @@ function extractHookTranscriptWithOutcome(transcriptPath, options) {
 	return readTranscript(resolved.path, options);
 }
 //#endregion
+//#region packages/core/src/project-label.ts
+/** Normalize a raw label value to a plain project name (basename if path). */
+function normalizeProjectLabel(value) {
+	if (typeof value !== "string") return null;
+	const trimmed = value.trim();
+	let end = trimmed.length;
+	while (end > 0) {
+		const code = trimmed.charCodeAt(end - 1);
+		if (code === 47 || code === 92) end -= 1;
+		else break;
+	}
+	const cleaned = trimmed.slice(0, end);
+	if (!cleaned) return null;
+	if (cleaned.includes("/") || cleaned.includes("\\")) {
+		const parts = (cleaned.includes("\\") || cleaned.length >= 2 && cleaned[1] === ":" && /[a-zA-Z]/.test(cleaned[0] ?? "") ? cleaned.replaceAll("\\", "/") : cleaned).split("/");
+		return parts[parts.length - 1] || null;
+	}
+	return cleaned;
+}
+//#endregion
 //#region packages/core/src/claude-hooks.ts
 /**
 * Claude hook payload mapping.
@@ -280,28 +300,6 @@ function isoToWallMs(value) {
 function stableEventId(...parts) {
 	const joined = parts.join("|");
 	return `cld_evt_${createHash("sha256").update(joined, "utf-8").digest("hex").slice(0, 24)}`;
-}
-/** Normalize a raw label value to a plain project name (basename if path). */
-function normalizeProjectLabel(value) {
-	if (typeof value !== "string") return null;
-	const trimmed = value.trim();
-	let end = trimmed.length;
-	while (end > 0) {
-		const code = trimmed.charCodeAt(end - 1);
-		if (code === 47 || code === 92) end -= 1;
-		else break;
-	}
-	const cleaned = trimmed.slice(0, end);
-	if (!cleaned) return null;
-	if (cleaned.includes("/") || cleaned.includes("\\")) {
-		if (cleaned.includes("\\") || cleaned.length >= 2 && cleaned[1] === ":" && /[a-zA-Z]/.test(cleaned[0] ?? "")) {
-			const parts = cleaned.replaceAll("\\", "/").split("/");
-			return parts[parts.length - 1] || null;
-		}
-		const parts = cleaned.split("/");
-		return parts[parts.length - 1] || null;
-	}
-	return cleaned;
 }
 /**
 * Walk up from `cwd` looking for a .git marker, then return the basename of

@@ -15,7 +15,6 @@
 import { and, eq, isNull, lt } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { boundedDelegatedBriefs, partitionDelegatedBriefEvents } from "./capture-context.js";
-import { normalizeProjectLabel } from "./claude-hooks.js";
 import { fromJson, toJson } from "./db.js";
 import {
 	buildTieredObserverSelection,
@@ -68,6 +67,7 @@ import {
 	resolveObserverOutputCapability,
 } from "./observer-output.js";
 import { resolveProject } from "./project.js";
+import { normalizeProjectLabel } from "./project-label.js";
 import { resolveAdjacentDelegatedContext } from "./raw-event-context.js";
 import * as schema from "./schema.js";
 import { classifySessionForInjection, shouldSuppressSummaryOnlyOutput } from "./session-policy.js";

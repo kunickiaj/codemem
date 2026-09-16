@@ -13,12 +13,14 @@ import {
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-	advancePendingProjectShares,
+	advancePendingProjectSharesOperation as advancePendingProjectShares,
+	reconcileRecipientPolicyProjectsOperation as reconcileRecipientPolicyProjects,
+} from "./application/coordinator-maintenance.js";
+import {
 	createRecipientPolicyReconcilerEffects,
 	peerSupportsSyncRequirements,
 	recipientPolicyCapabilityFromStatus,
 	reconcileConfiguredCoordinatorEnrollment,
-	reconcileRecipientPolicyProjects,
 } from "./routes/sync.js";
 
 describe("reconcileConfiguredCoordinatorEnrollment", () => {

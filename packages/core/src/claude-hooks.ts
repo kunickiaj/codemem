@@ -21,6 +21,9 @@ import {
 	type HookTranscriptPolicy,
 	TRUSTED_HOOK_TRANSCRIPT_POLICY,
 } from "./hook-transcript.js";
+import { normalizeProjectLabel } from "./project-label.js";
+
+export { normalizeProjectLabel } from "./project-label.js";
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -121,37 +124,6 @@ function stableEventId(...parts: string[]): string {
 // Project inference (mirrors Python's _infer_project_from_cwd /
 // _resolve_hook_project / _resolve_hook_project_from_payload_paths)
 // ---------------------------------------------------------------------------
-
-/** Normalize a raw label value to a plain project name (basename if path). */
-export function normalizeProjectLabel(value: unknown): string | null {
-	if (typeof value !== "string") return null;
-	// Strip trailing path separators with a linear scan rather than a regex.
-	// The previous `/[\\/]+$/` pattern backtracks quadratically on adversarial
-	// inputs (a long run of separators followed by a non-separator), and this
-	// value can originate from uncontrolled hook payloads.
-	const trimmed = value.trim();
-	let end = trimmed.length;
-	while (end > 0) {
-		const code = trimmed.charCodeAt(end - 1);
-		if (code === 47 /* / */ || code === 92 /* \\ */) end -= 1;
-		else break;
-	}
-	const cleaned = trimmed.slice(0, end);
-	if (!cleaned) return null;
-	if (cleaned.includes("/") || cleaned.includes("\\")) {
-		// Windows-style path (drive letter or backslash)
-		const isWindows =
-			cleaned.includes("\\") ||
-			(cleaned.length >= 2 && cleaned[1] === ":" && /[a-zA-Z]/.test(cleaned[0] ?? ""));
-		if (isWindows) {
-			const parts = cleaned.replaceAll("\\", "/").split("/");
-			return parts[parts.length - 1] || null;
-		}
-		const parts = cleaned.split("/");
-		return parts[parts.length - 1] || null;
-	}
-	return cleaned;
-}
 
 /**
  * Walk up from `cwd` looking for a .git marker, then return the basename of

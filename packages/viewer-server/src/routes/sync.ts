@@ -23,7 +23,6 @@ import type {
 	RecipientPolicyCoordinatorEffectReceipt,
 	RecipientPolicyOnboardingPreviewV1,
 	RecipientPolicyPeerCapability,
-	RecipientPolicyReconcileResult,
 	RecipientPolicyReconcilerEffects,
 	RecipientPolicyReviewDecisionV1,
 	RecipientPolicyReviewResolveRequestV1,
@@ -151,7 +150,7 @@ import {
 	recipientInviteAuthoritativeIdentityId,
 	recipientReviewedIntentDigest,
 	reconcileCoordinatorEnrollmentSnapshot,
-	reconcileRecipientPolicyProject,
+	type reconcileRecipientPolicyProject,
 	reconcileShareOperationAcceptance,
 	recordHighestObservedDirectSignatureVersion,
 	recordNonce,
@@ -181,6 +180,21 @@ import {
 	verifyRecipientReviewedIntent,
 	verifySignature,
 } from "@codemem/core";
+import {
+	type AdvancePendingProjectSharesResult,
+	type AdvanceProjectShareOperationResult,
+	advancePendingProjectSharesOperation,
+	PROJECT_INVITE_OWNER_CONFLICT_ERRORS,
+	type ReconcileRecipientPolicyProjectsResult,
+	reconcileRecipientPolicyProjectsOperation,
+} from "../application/coordinator-maintenance.js";
+
+export type {
+	AdvancePendingProjectSharesResult,
+	AdvanceProjectShareOperationResult,
+	ReconcileRecipientPolicyProjectsResult,
+} from "../application/coordinator-maintenance.js";
+
 import { and, count, desc, eq, max, ne } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { type Context, Hono } from "hono";
@@ -1495,11 +1509,6 @@ async function executeProjectShareProvisioning(store: MemoryStore, operationId: 
 	);
 }
 
-export interface AdvanceProjectShareOperationResult {
-	advanced: boolean;
-	state: "active" | "waiting_for_acceptance" | "cancelled";
-}
-
 export async function advanceProjectShareOperation(
 	store: MemoryStore,
 	operationId: string,
@@ -1534,73 +1543,6 @@ export async function advanceProjectShareOperation(
 	return { advanced: true, state: "active" };
 }
 
-export interface AdvancePendingProjectSharesResult {
-	processed: number;
-	advanced: number;
-	waiting: number;
-	attention: number;
-	failed: number;
-	items: Array<{
-		operationId: string;
-		outcome:
-			| "advanced"
-			| "waiting_for_acceptance"
-			| "waiting_for_device"
-			| "retry_scheduled"
-			| "needs_attention"
-			| "superseded"
-			| "failed";
-		error?: string;
-	}>;
-}
-
-const AUTOMATIC_SHARE_OPERATION_STATES = [
-	"waiting_for_acceptance",
-	"accepted",
-	"provisioning",
-	"initial_sync",
-	"waiting_for_device",
-] as const;
-
-const AUTOMATIC_WAITING_ACCEPTANCE_RETRY_COOLDOWN_MS = 30 * 1000;
-const AUTOMATIC_WAITING_DEVICE_RETRY_COOLDOWN_MS = 5 * 60 * 1000;
-const TERMINAL_SHARE_MAINTENANCE_ERRORS = new Set([
-	"coordinator_not_configured",
-	"team_sharing_not_configured",
-	"team_selection_ambiguous",
-	"initiating_device_not_reviewed",
-	"inviter_project_access_ambiguous",
-	"managed_boundary_plan_missing",
-	"operation_device_binding_missing",
-	"operation_intent_invalid",
-	"provisioning_membership_plan_invalid",
-	"device_binding_conflict",
-	"intent_conflict",
-	"inviter_identity_conflict",
-]);
-const PROJECT_INVITE_OWNER_CONFLICT_ERRORS = new Set([
-	"operation_scope_mismatch",
-	"operation_state_invalid",
-	"operation_acceptance_invalid",
-	"operation_trust_state_invalid",
-	"operation_intent_invalid",
-	"operation_intent_mismatch",
-	"recipient_fingerprint_mismatch",
-	"recipient_device_identity_conflict",
-	"recipient_actor_conflict",
-	"pending_person_identity_conflict",
-	"device_binding_conflict",
-	"intent_conflict",
-	"inviter_identity_conflict",
-]);
-const TERMINAL_RECONCILIATION_ERRORS = new Set([
-	"coordinator_not_configured",
-	"team_sharing_not_configured",
-	"team_selection_ambiguous",
-	"operation_not_found",
-	...PROJECT_INVITE_OWNER_CONFLICT_ERRORS,
-]);
-
 function errorStatus(error: unknown): number | null {
 	const value = error && typeof error === "object" ? (error as { status?: unknown }).status : null;
 	return typeof value === "number" && Number.isInteger(value) && value >= 400 && value <= 599
@@ -1632,43 +1574,6 @@ function projectInviteOwnerErrorResponse(
 	return fallback;
 }
 
-function isRetryableReconciliationError(error: unknown): boolean {
-	const message = error instanceof Error ? error.message : String(error);
-	if (TERMINAL_RECONCILIATION_ERRORS.has(message)) return false;
-	const status = errorStatus(error);
-	return status == null || status === 408 || status === 429 || status >= 500;
-}
-
-function safeReconciliationErrorCode(error: unknown): string {
-	const message = error instanceof Error ? error.message : String(error);
-	return TERMINAL_RECONCILIATION_ERRORS.has(message) ? message : "operation_read_failed";
-}
-
-function recordInviteReconciliationFailure(
-	store: MemoryStore,
-	operationId: string,
-	error: unknown,
-	now: string,
-): "retry_scheduled" | "needs_attention" {
-	const safeErrorCode = safeReconciliationErrorCode(error);
-	const retryable = isRetryableReconciliationError(error);
-	store.db
-		.prepare(`UPDATE share_operation_steps SET
-			status = CASE WHEN ? = 1 THEN 'pending' ELSE 'failed' END,
-			attempt_count = attempt_count + 1, last_attempt_at = ?, safe_error_code = ?, updated_at = ?
-			WHERE operation_id = ? AND step_key = 'invite_consumption'`)
-		.run(retryable ? 1 : 0, now, safeErrorCode, now, operationId);
-	const outcome = retryable ? "retry_scheduled" : "needs_attention";
-	store.db
-		.prepare("UPDATE share_operations SET state = ?, updated_at = ? WHERE operation_id = ?")
-		.run(
-			outcome === "needs_attention" ? "needs_attention" : "waiting_for_acceptance",
-			now,
-			operationId,
-		);
-	return outcome;
-}
-
 export async function advancePendingProjectShares(
 	store: MemoryStore,
 	options: {
@@ -1680,158 +1585,10 @@ export async function advancePendingProjectShares(
 		) => Promise<AdvanceProjectShareOperationResult>;
 	} = {},
 ): Promise<AdvancePendingProjectSharesResult> {
-	const limit = Math.max(1, Math.min(Math.trunc(options.limit ?? 3), 10));
-	const placeholders = AUTOMATIC_SHARE_OPERATION_STATES.map(() => "?").join(", ");
-	const maintenanceNow = options.now ?? new Date();
-	const waitingAcceptanceRetryBefore = new Date(
-		maintenanceNow.getTime() - AUTOMATIC_WAITING_ACCEPTANCE_RETRY_COOLDOWN_MS,
-	).toISOString();
-	const waitingRetryBefore = new Date(
-		maintenanceNow.getTime() - AUTOMATIC_WAITING_DEVICE_RETRY_COOLDOWN_MS,
-	).toISOString();
-	// A later failed attempt supersedes older reachability evidence and keeps the cooldown in force.
-	const rows = store.db
-		.prepare(`SELECT operation.operation_id FROM share_operations AS operation
-		 WHERE operation.inviter_actor_id = ?
-		 AND operation.state IN (${placeholders})
-		 AND (operation.state <> 'waiting_for_acceptance' OR operation.updated_at <= ?)
-		 AND (
-			operation.state <> 'waiting_for_device'
-			OR operation.updated_at <= ?
-			OR (
-				NOT EXISTS (
-					SELECT 1 FROM share_operation_steps AS step
-					WHERE step.operation_id = operation.operation_id
-					AND step.step_key = 'capability_preflight'
-					AND step.status <> 'completed'
-					AND (
-						step.status = 'running'
-						OR step.safe_error_code IN (
-							'waiting_for_device', 'device_offline', 'recipient_offline'
-						)
-					)
-				)
-				AND EXISTS (
-					SELECT 1 FROM sync_attempts AS attempt
-					WHERE attempt.id = (
-						SELECT latest.id FROM sync_attempts AS latest
-						WHERE latest.peer_device_id = operation.recipient_device_id
-						ORDER BY latest.started_at DESC, latest.id DESC
-						LIMIT 1
-					)
-					AND attempt.ok = 1
-					AND julianday(COALESCE(attempt.finished_at, attempt.started_at)) >
-						julianday(operation.updated_at)
-				)
-			)
-		 )
-		 ORDER BY CASE WHEN operation.state IN ('accepted', 'provisioning', 'initial_sync') THEN 0 ELSE 1 END,
-			CASE WHEN operation.state IN ('waiting_for_acceptance', 'waiting_for_device')
-				THEN operation.updated_at ELSE operation.created_at END ASC,
-			operation.created_at ASC, operation.operation_id ASC
-		 LIMIT ?`)
-		.all(
-			store.actorId,
-			...AUTOMATIC_SHARE_OPERATION_STATES,
-			waitingAcceptanceRetryBefore,
-			waitingRetryBefore,
-			limit,
-		) as Array<{
-		operation_id: string;
-	}>;
-	const advanceOperation = options.advanceOperation ?? advanceProjectShareOperation;
-	const result: AdvancePendingProjectSharesResult = {
-		processed: 0,
-		advanced: 0,
-		waiting: 0,
-		attention: 0,
-		failed: 0,
-		items: [],
-	};
-	for (const row of rows) {
-		result.processed += 1;
-		try {
-			const advanced = await advanceOperation(store, row.operation_id);
-			if (!advanced.advanced) {
-				if (advanced.state === "cancelled") {
-					// Superseded by a duplicate that reached active first; terminal.
-					result.items.push({ operationId: row.operation_id, outcome: "superseded" });
-					continue;
-				}
-				store.db
-					.prepare("UPDATE share_operations SET updated_at = ? WHERE operation_id = ?")
-					.run(maintenanceNow.toISOString(), row.operation_id);
-				result.waiting += 1;
-				result.items.push({
-					operationId: row.operation_id,
-					outcome: "waiting_for_acceptance",
-				});
-				continue;
-			}
-			result.advanced += 1;
-			result.items.push({ operationId: row.operation_id, outcome: "advanced" });
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			const state = store.db
-				.prepare("SELECT state FROM share_operations WHERE operation_id = ?")
-				.pluck()
-				.get(row.operation_id);
-			if (state === "cancelled") {
-				// Superseded by a duplicate while a step was in flight; the stored
-				// state is terminal and benign, so the step's rejection must not be
-				// reported as a failure or push the daemon into an error phase.
-				result.items.push({ operationId: row.operation_id, outcome: "superseded" });
-				continue;
-			}
-			if (message === "waiting_for_device" || state === "waiting_for_device") {
-				result.waiting += 1;
-				result.items.push({ operationId: row.operation_id, outcome: "waiting_for_device" });
-				continue;
-			}
-			if (state === "needs_attention") {
-				result.attention += 1;
-				result.items.push({
-					operationId: row.operation_id,
-					outcome: "needs_attention",
-					error: message,
-				});
-				continue;
-			}
-			if (state === "waiting_for_acceptance") {
-				const outcome = recordInviteReconciliationFailure(
-					store,
-					row.operation_id,
-					error,
-					maintenanceNow.toISOString(),
-				);
-				if (outcome === "needs_attention") result.attention += 1;
-				else result.waiting += 1;
-				result.items.push({ operationId: row.operation_id, outcome, error: message });
-				continue;
-			}
-			if (TERMINAL_SHARE_MAINTENANCE_ERRORS.has(message)) {
-				store.db
-					.prepare(
-						"UPDATE share_operations SET state = 'needs_attention', updated_at = ? WHERE operation_id = ?",
-					)
-					.run(maintenanceNow.toISOString(), row.operation_id);
-				result.attention += 1;
-				result.items.push({
-					operationId: row.operation_id,
-					outcome: "needs_attention",
-					error: message,
-				});
-				continue;
-			}
-			result.failed += 1;
-			result.items.push({
-				operationId: row.operation_id,
-				outcome: "failed",
-				error: message,
-			});
-		}
-	}
-	return result;
+	return advancePendingProjectSharesOperation(store, {
+		...options,
+		advanceOperation: options.advanceOperation ?? advanceProjectShareOperation,
+	});
 }
 
 export interface ReconcileConfiguredCoordinatorEnrollmentResult {
@@ -1990,9 +1747,6 @@ export async function reconcileConfiguredCoordinatorEnrollment(
 	return total;
 }
 
-const RECIPIENT_POLICY_MAINTENANCE_MAX_LIMIT = 10;
-const RECIPIENT_POLICY_MAINTENANCE_DEFAULT_LIMIT = 3;
-const RECIPIENT_POLICY_MAINTENANCE_BACKOFF_MS = 60_000;
 const RECIPIENT_POLICY_WAITING_ERRORS = new Set([
 	"recipient_policy_capability_undetermined",
 	"recipient_policy_parity_incomplete",
@@ -2355,19 +2109,6 @@ export function createRecipientPolicyReconcilerEffects(
 	};
 }
 
-export interface ReconcileRecipientPolicyProjectsResult {
-	processed: number;
-	active: number;
-	waiting: number;
-	attention: number;
-	failed: number;
-	items: Array<{
-		canonicalProjectIdentity: string;
-		status: RecipientPolicyReconcileResult["status"] | "failed";
-		safeErrorCode: string | null;
-	}>;
-}
-
 export async function reconcileRecipientPolicyProjects(
 	store: MemoryStore,
 	options: {
@@ -2379,77 +2120,10 @@ export async function reconcileRecipientPolicyProjects(
 		reconcileProject?: typeof reconcileRecipientPolicyProject;
 	} = {},
 ): Promise<ReconcileRecipientPolicyProjectsResult> {
-	const limit = Math.max(
-		1,
-		Math.min(
-			Math.trunc(options.limit ?? RECIPIENT_POLICY_MAINTENANCE_DEFAULT_LIMIT),
-			RECIPIENT_POLICY_MAINTENANCE_MAX_LIMIT,
-		),
-	);
-	const maintenanceNow = options.now ?? new Date();
-	const backoffMs = Math.max(
-		0,
-		Math.trunc(options.backoffMs ?? RECIPIENT_POLICY_MAINTENANCE_BACKOFF_MS),
-	);
-	const retryBefore = new Date(maintenanceNow.getTime() - backoffMs).toISOString();
-	const rows = store.db
-		.prepare(
-			`WITH projects AS (
-				SELECT DISTINCT canonical_project_identity FROM project_recipients
-				UNION
-				SELECT canonical_project_identity FROM recipient_policy_authority_states
-			)
-			 SELECT projects.canonical_project_identity
-			 FROM projects
-			 LEFT JOIN recipient_policy_authority_states authority
-			  ON authority.canonical_project_identity = projects.canonical_project_identity
-			 WHERE authority.safe_error_code IS NULL OR authority.last_attempt_at IS NULL
-			  OR authority.last_attempt_at <= ?
-			 ORDER BY CASE WHEN authority.last_attempt_at IS NULL THEN 0 ELSE 1 END,
-			  authority.last_attempt_at, projects.canonical_project_identity
-			 LIMIT ?`,
-		)
-		.all(retryBefore, limit) as Array<{ canonical_project_identity: string }>;
-	const effects = options.effects ?? createRecipientPolicyReconcilerEffects(store);
-	const reconcileProject = options.reconcileProject ?? reconcileRecipientPolicyProject;
-	const result: ReconcileRecipientPolicyProjectsResult = {
-		processed: 0,
-		active: 0,
-		waiting: 0,
-		attention: 0,
-		failed: 0,
-		items: [],
-	};
-	for (const row of rows) {
-		result.processed += 1;
-		try {
-			const outcome = await reconcileProject(
-				store.db,
-				{
-					canonicalProjectIdentity: row.canonical_project_identity,
-					leaseOwner:
-						options.leaseOwner ?? `recipient-policy-maintenance:${store.deviceId || process.pid}`,
-				},
-				effects,
-			);
-			if (outcome.status === "active") result.active += 1;
-			else if (outcome.status === "needs_attention") result.attention += 1;
-			else result.waiting += 1;
-			result.items.push({
-				canonicalProjectIdentity: row.canonical_project_identity,
-				status: outcome.status,
-				safeErrorCode: outcome.safeErrorCode,
-			});
-		} catch {
-			result.failed += 1;
-			result.items.push({
-				canonicalProjectIdentity: row.canonical_project_identity,
-				status: "failed",
-				safeErrorCode: "recipient_policy_reconciliation_failed",
-			});
-		}
-	}
-	return result;
+	return reconcileRecipientPolicyProjectsOperation(store, {
+		...options,
+		effects: options.effects ?? createRecipientPolicyReconcilerEffects(store),
+	});
 }
 
 export type RecipientPolicyReconciliationReadState =

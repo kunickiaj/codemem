@@ -16,7 +16,8 @@
  */
 
 import { createHash } from "node:crypto";
-import { normalizeProjectLabel, resolveHookProject } from "./claude-hooks.js";
+import { resolveHookProject } from "./claude-hooks.js";
+import { normalizeProjectLabel } from "./project-label.js";
 
 // ---------------------------------------------------------------------------
 // Constants

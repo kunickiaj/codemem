@@ -9,10 +9,10 @@ import { createHash } from "node:crypto";
 import {
 	extractFromTranscript,
 	type HookMapperOptions,
-	normalizeProjectLabel,
 	resolveHookProject,
 	TRUSTED_HOOK_MAPPER_OPTIONS,
 } from "./claude-hooks.js";
+import { normalizeProjectLabel } from "./project-label.js";
 
 export { TRUSTED_HOOK_MAPPER_OPTIONS };
 

@@ -218,11 +218,7 @@ function extractHookTranscriptWithOutcome(transcriptPath, options) {
 	return readTranscript(resolved.path, options);
 }
 //#endregion
-//#region packages/core/src/claude-hooks.ts
-/** Expand `~/...` paths like Python's `Path(...).expanduser()`. */
-function expandUser(value) {
-	return value.startsWith("~/") ? resolve(homedir(), value.slice(2)) : value;
-}
+//#region packages/core/src/project-label.ts
 /** Normalize a raw label value to a plain project name (basename if path). */
 function normalizeProjectLabel(value) {
 	if (typeof value !== "string") return null;
@@ -236,14 +232,16 @@ function normalizeProjectLabel(value) {
 	const cleaned = trimmed.slice(0, end);
 	if (!cleaned) return null;
 	if (cleaned.includes("/") || cleaned.includes("\\")) {
-		if (cleaned.includes("\\") || cleaned.length >= 2 && cleaned[1] === ":" && /[a-zA-Z]/.test(cleaned[0] ?? "")) {
-			const parts = cleaned.replaceAll("\\", "/").split("/");
-			return parts[parts.length - 1] || null;
-		}
-		const parts = cleaned.split("/");
+		const parts = (cleaned.includes("\\") || cleaned.length >= 2 && cleaned[1] === ":" && /[a-zA-Z]/.test(cleaned[0] ?? "") ? cleaned.replaceAll("\\", "/") : cleaned).split("/");
 		return parts[parts.length - 1] || null;
 	}
 	return cleaned;
+}
+//#endregion
+//#region packages/core/src/claude-hooks.ts
+/** Expand `~/...` paths like Python's `Path(...).expanduser()`. */
+function expandUser(value) {
+	return value.startsWith("~/") ? resolve(homedir(), value.slice(2)) : value;
 }
 /**
 * Walk up from `cwd` looking for a .git marker, then return the basename of
