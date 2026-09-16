@@ -1304,6 +1304,36 @@ export class MemoryStore {
 		return rows.map(mapClassifiedUsageRow);
 	}
 
+	private visibleMemoryStats() {
+		const visibleFilter = buildFilterClausesWithContext(null, this.scopeVisibleFilterContext());
+		const counts = this.db
+			.prepare(
+				`SELECT
+				 COUNT(*) AS total_memories,
+				 COUNT(CASE WHEN memory_items.active = 1 THEN 1 END) AS active_memories,
+				 COUNT(DISTINCT CASE WHEN memory_items.active = 1 THEN memory_items.session_id END) AS sessions,
+				 COUNT(CASE WHEN memory_items.active = 1 AND TRIM(memory_items.tags_text) != '' THEN 1 END)
+				  AS tags_filled
+				 FROM memory_items
+				 WHERE ${visibleFilter.clauses.join(" AND ")}`,
+			)
+			.get(...visibleFilter.params) as
+			| {
+					total_memories: number;
+					active_memories: number;
+					sessions: number;
+					tags_filled: number;
+			  }
+			| undefined;
+		return {
+			visibleFilter,
+			totalMemories: counts?.total_memories ?? 0,
+			activeMemories: counts?.active_memories ?? 0,
+			sessions: counts?.sessions ?? 0,
+			tagsFilled: counts?.tags_filled ?? 0,
+		};
+	}
+
 	// stats
 
 	/**
@@ -1313,29 +1343,8 @@ export class MemoryStore {
 		// biome-ignore lint/suspicious/noExplicitAny: Drizzle table union type is unwieldy
 		const countRows = (tbl: any) =>
 			this.d.select({ c: sql<number>`COUNT(*)` }).from(tbl).get()?.c ?? 0;
-		const visibleFilter = buildFilterClausesWithContext(null, this.scopeVisibleFilterContext());
-		const countVisibleMemoryRows = (extraClauses: string[] = []): number => {
-			const clauses = [...extraClauses, ...visibleFilter.clauses];
-			const row = this.db
-				.prepare(`SELECT COUNT(*) AS c FROM memory_items WHERE ${clauses.join(" AND ")}`)
-				.get(...visibleFilter.params) as { c: number | null } | undefined;
-			return row?.c ?? 0;
-		};
-		const countVisibleMemorySessions = (): number => {
-			const clauses = ["memory_items.active = 1", ...visibleFilter.clauses];
-			const row = this.db
-				.prepare(
-					`SELECT COUNT(DISTINCT memory_items.session_id) AS c
-					 FROM memory_items
-					 WHERE ${clauses.join(" AND ")}`,
-				)
-				.get(...visibleFilter.params) as { c: number | null } | undefined;
-			return row?.c ?? 0;
-		};
-
-		const totalMemories = countVisibleMemoryRows();
-		const activeMemories = countVisibleMemoryRows(["memory_items.active = 1"]);
-		const sessions = countVisibleMemorySessions();
+		const { visibleFilter, totalMemories, activeMemories, sessions, tagsFilled } =
+			this.visibleMemoryStats();
 		const artifacts = countRows(schema.artifacts);
 		const rawEvents = countRows(schema.rawEvents);
 
@@ -1358,10 +1367,6 @@ export class MemoryStore {
 		}
 		const vectorCoverage = activeMemories > 0 ? Math.min(1, vectorCount / activeMemories) : 0;
 
-		const tagsFilled = countVisibleMemoryRows([
-			"memory_items.active = 1",
-			"TRIM(memory_items.tags_text) != ''",
-		]);
 		const tagsCoverage = activeMemories > 0 ? Math.min(1, tagsFilled / activeMemories) : 0;
 
 		let sizeBytes = 0;
