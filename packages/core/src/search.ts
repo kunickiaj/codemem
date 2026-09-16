@@ -442,10 +442,11 @@ function searchQueryLooksContinuationLike(query: string): boolean {
 	return false;
 }
 
-function qualityDimensionBoost(item: MemoryResult, query: string): number {
-	const decisionLike = searchQueryLooksDecisionLike(query);
-	const troubleshootingLike = searchQueryLooksTroubleshootingLike(query);
-	const continuationLike = searchQueryLooksContinuationLike(query);
+function qualityDimensionBoost(
+	item: MemoryResult,
+	context: Pick<PreparedScoringInputs, "decisionLike" | "troubleshootingLike" | "continuationLike">,
+): number {
+	const { decisionLike, troubleshootingLike, continuationLike } = context;
 	if (!decisionLike && !troubleshootingLike && !continuationLike) return 0.0;
 	let boost = 0.0;
 	if (decisionLike) {
@@ -637,26 +638,23 @@ function queryConceptHints(query: string): string[] {
 	return uniqueTokens.length === 1 ? uniqueTokens : [];
 }
 
-function queryPathOverlapBoost(item: MemoryResult, query: string): number {
-	const hintedPaths = queryPathHints(query)
-		.map((path) => canonicalPath(path))
-		.filter(Boolean);
-	if (hintedPaths.length === 0) return 0.0;
+function queryPathOverlapBoost(item: MemoryResult, context: PreparedScoringInputs): number {
+	if (context.queryPathSegments.length === 0) return 0.0;
 	const itemPaths = memoryFilesTouched(item);
 	if (itemPaths.length === 0) return 0.0;
 	const itemSegments = itemPaths.map((path) => pathSegments(path));
-	const hintedSegments = hintedPaths.map((path) => pathSegments(path));
 	let directHits = 0;
 	for (const itemSegment of itemSegments) {
-		if (hintedSegments.some((hintSegment) => pathSegmentsOverlap(itemSegment, hintSegment))) {
+		if (
+			context.queryPathSegments.some((hintSegment) => pathSegmentsOverlap(itemSegment, hintSegment))
+		) {
 			directHits += 1;
 		}
 	}
 	const itemBasenames = new Set(itemPaths.map((path) => pathBasename(path)).filter(Boolean));
-	const hintedBasenames = new Set(hintedPaths.map((path) => pathBasename(path)).filter(Boolean));
 	let basenameHits = 0;
 	for (const basename of itemBasenames) {
-		if (hintedBasenames.has(basename)) basenameHits += 1;
+		if (context.queryPathBasenames.has(basename)) basenameHits += 1;
 	}
 	const boost = directHits * 0.18 + basenameHits * 0.06;
 	return Math.min(0.18, boost);
@@ -749,28 +747,28 @@ function fetchResultsByIds(
  * in memories that FTS/vector search missed. This reranker then scores them
  * alongside all other candidates using the metadata they already carry.
  */
-function workingSetOverlapBoost(item: MemoryResult, workingSetPaths: string[]): number {
-	if (workingSetPaths.length === 0) return 0.0;
+function workingSetOverlapBoost(item: MemoryResult, context: PreparedScoringInputs): number {
+	if (context.workingSetPathSegments.length === 0) return 0.0;
 	const itemPaths = memoryFilesModified(item);
 	if (itemPaths.length === 0) return 0.0;
 
 	const itemPathSegments = [...new Set(itemPaths)].map((path) => pathSegments(path));
-	const workingSetSegments = [...new Set(workingSetPaths)].map((path) => pathSegments(path));
 	const itemBasenames = new Set(itemPaths.map((path) => pathBasename(path)).filter(Boolean));
-	const workingSetBasenames = new Set(
-		workingSetPaths.map((path) => pathBasename(path)).filter(Boolean),
-	);
 
 	let directHits = 0;
 	for (const itemSegment of itemPathSegments) {
-		if (workingSetSegments.some((wsSegment) => pathSegmentsOverlap(itemSegment, wsSegment))) {
+		if (
+			context.workingSetPathSegments.some((wsSegment) =>
+				pathSegmentsOverlap(itemSegment, wsSegment),
+			)
+		) {
 			directHits += 1;
 		}
 	}
 
 	let basenameHits = 0;
 	for (const basename of itemBasenames) {
-		if (workingSetBasenames.has(basename)) basenameHits += 1;
+		if (context.workingSetPathBasenames.has(basename)) basenameHits += 1;
 	}
 
 	const boost = directHits * 0.16 + basenameHits * 0.06;
@@ -794,6 +792,41 @@ function ownershipPredicateFor(
 	return (item) => store.memoryOwnedBySelf(item);
 }
 
+export interface PreparedScoringInputs {
+	readonly continuationLike: boolean;
+	readonly decisionLike: boolean;
+	readonly preferSummary: boolean;
+	readonly queryPathBasenames: ReadonlySet<string>;
+	readonly queryPathSegments: readonly string[][];
+	readonly taskLikeQuery: boolean;
+	readonly troubleshootingLike: boolean;
+	readonly workingSetPathBasenames: ReadonlySet<string>;
+	readonly workingSetPathSegments: readonly string[][];
+}
+
+export function prepareScoringInputs(
+	filters: MemoryFilters | undefined,
+	query: string,
+): PreparedScoringInputs {
+	const workingSetPaths = normalizeWorkingSetPaths(filters?.working_set_paths);
+	const queryPaths = queryPathHints(query)
+		.map((path) => canonicalPath(path))
+		.filter(Boolean);
+	return {
+		continuationLike: searchQueryLooksContinuationLike(query),
+		decisionLike: searchQueryLooksDecisionLike(query),
+		preferSummary: queryPrefersRecap(query),
+		queryPathBasenames: new Set(queryPaths.map((path) => pathBasename(path)).filter(Boolean)),
+		queryPathSegments: queryPaths.map((path) => pathSegments(path)),
+		taskLikeQuery: searchQueryLooksTaskLike(query),
+		troubleshootingLike: searchQueryLooksTroubleshootingLike(query),
+		workingSetPathBasenames: new Set(
+			workingSetPaths.map((path) => pathBasename(path)).filter(Boolean),
+		),
+		workingSetPathSegments: [...new Set(workingSetPaths)].map((path) => pathSegments(path)),
+	};
+}
+
 export function scoreResult(
 	store: StoreHandle,
 	item: MemoryResult,
@@ -801,26 +834,25 @@ export function scoreResult(
 	query = "",
 	referenceNow = new Date(),
 	ownedByOwner?: (item: MemoryResult) => boolean,
+	preparedInputs?: PreparedScoringInputs,
 ): PackTraceCandidateScores {
-	// Per-item rankers (personalBias / sharedTrustPenalty) check whether
-	// the result is owned by this device's actor. Building a fresh
-	// predicate here would re-query sync_peers per item; callers that
-	// already snapshotted the predicate (rerankResults) pass theirs in.
 	const ownership = ownedByOwner ?? ownershipPredicateFor(store);
-	const workingSetPaths = normalizeWorkingSetPaths(filters?.working_set_paths);
-	const preferSummary = queryPrefersRecap(query);
-	const taskLikeQuery = searchQueryLooksTaskLike(query);
+	const context = preparedInputs ?? prepareScoringInputs(filters, query);
 	const recency = recencyScore(item.created_at, referenceNow);
 	const kind = kindBonus(item.kind);
-	const qualityBoost = qualityDimensionBoost(item, query);
-	const roleAdjustment = roleAdjustmentForSearch(item, preferSummary, taskLikeQuery);
-	const workingSetOverlap = workingSetOverlapBoost(item, workingSetPaths);
-	const queryPathOverlap = queryPathOverlapBoost(item, query);
+	const qualityBoost = qualityDimensionBoost(item, context);
+	const roleAdjustment = roleAdjustmentForSearch(
+		item,
+		context.preferSummary,
+		context.taskLikeQuery,
+	);
+	const workingSetOverlap = workingSetOverlapBoost(item, context);
+	const queryPathOverlap = queryPathOverlapBoost(item, context);
 	const personalBiasValue = personalBias(ownership, item, filters);
 	const sharedTrustPenaltyValue = sharedTrustPenalty(ownership, item, filters);
-	const recapPenalty = recapPenaltyForSearch(item, preferSummary);
+	const recapPenalty = recapPenaltyForSearch(item, context.preferSummary);
 	const tasklikePenalty =
-		!taskLikeQuery && itemLooksTaskLikeForSearch(item) ? NON_TASK_TASKLIKE_PENALTY : 0.0;
+		!context.taskLikeQuery && itemLooksTaskLikeForSearch(item) ? NON_TASK_TASKLIKE_PENALTY : 0.0;
 	const baseScore = Number.isFinite(item.score) ? item.score : null;
 	const combinedScore =
 		baseScore == null
@@ -866,16 +898,18 @@ export function rerankResults(
 	filters?: MemoryFilters,
 	query = "",
 ): MemoryResult[] {
+	if (results.length === 0) return [];
 	const referenceNow = new Date();
 	// Snapshot ownership once per rerank pass so per-item scoring does not
 	// re-query sync_peers for every candidate.
 	const ownedByOwner = ownershipPredicateFor(store);
+	const preparedInputs = prepareScoringInputs(filters, query);
 
 	const scored = results.map((item) => ({
 		item,
 		combinedScore:
-			scoreResult(store, item, filters, query, referenceNow, ownedByOwner).combined_score ??
-			Number.NEGATIVE_INFINITY,
+			scoreResult(store, item, filters, query, referenceNow, ownedByOwner, preparedInputs)
+				.combined_score ?? Number.NEGATIVE_INFINITY,
 	}));
 
 	scored.sort((a, b) => b.combinedScore - a.combinedScore);

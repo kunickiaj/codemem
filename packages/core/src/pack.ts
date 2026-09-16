@@ -27,6 +27,7 @@ import { MAX_RETRIEVAL_DIAGNOSTIC_EXPOSURES } from "./retrieval-ledger.js";
 import type { StoreHandle } from "./search.js";
 import {
 	ownershipFilterContext,
+	prepareScoringInputs,
 	rerankResults,
 	rowToMemoryResult,
 	scoreResult,
@@ -52,6 +53,7 @@ import type {
 	PackResponse,
 	PackTrace,
 	PackTraceCandidate,
+	PackTraceCandidateScores,
 	PackTraceDisposition,
 	PackTraceMode,
 	PackTraceSection,
@@ -1378,12 +1380,20 @@ function mergeResults(
 	const referenceNow = new Date();
 	const ownership =
 		store.buildOwnershipPredicate?.() ?? ((item: MemoryResult) => store.memoryOwnedBySelf(item));
+	const preparedInputs = prepareScoringInputs(filters, query);
 	const ranked = fusePackCandidates(
 		ftsResults,
 		scopedSemanticResults,
 		(item) =>
-			scoreResult(store, { ...item, score: 0 }, filters, query, referenceNow, ownership)
-				.combined_score ?? 0,
+			scoreResult(
+				store,
+				{ ...item, score: 0 },
+				filters,
+				query,
+				referenceNow,
+				ownership,
+				preparedInputs,
+			).combined_score ?? 0,
 	);
 	const hybrid =
 		ranked.some(({ evidence }) => evidence.fts_rank != null) &&
@@ -2481,15 +2491,31 @@ function measurePackOutput(
 type PackTraceSections = Record<PackTraceSection, number[]>;
 
 interface PackTraceCandidateContext {
-	store: StoreHandle;
-	filters: MemoryFilters | undefined;
 	retrieval: PackRetrieval;
 	sectionsById: PackTraceSections;
 	dedupedIds: Set<number>;
 	compressedIds: Set<number>;
 	trimmedIds: Set<number>;
-	referenceNow: Date;
-	ownership: (item: MemoryResult) => boolean;
+	scorersByQuery: ReadonlyMap<string, (item: MemoryResult) => PackTraceCandidateScores>;
+}
+
+function prepareTraceScorers(
+	store: StoreHandle,
+	filters: MemoryFilters | undefined,
+	exposures: PackCandidateExposure[],
+	ownership: (item: MemoryResult) => boolean,
+): ReadonlyMap<string, (item: MemoryResult) => PackTraceCandidateScores> {
+	const referenceNow = new Date();
+	return new Map(
+		[...new Set(exposures.map(({ query }) => query))].map((query) => {
+			const preparedInputs = prepareScoringInputs(filters, query);
+			return [
+				query,
+				(item: MemoryResult) =>
+					scoreResult(store, item, filters, query, referenceNow, ownership, preparedInputs),
+			];
+		}),
+	);
 }
 
 function traceDisposition(
@@ -2512,14 +2538,9 @@ function buildTraceCandidate(
 	const { item, query } = exposure;
 	const section = traceSection(item.id, context.sectionsById);
 	const disposition = traceDisposition(item.id, section, context);
-	const baseScores = scoreResult(
-		context.store,
-		item,
-		context.filters,
-		query,
-		context.referenceNow,
-		context.ownership,
-	);
+	const score = context.scorersByQuery.get(query);
+	if (!score) throw new Error(`Missing prepared scorer for query: ${query}`);
+	const baseScores = score(item);
 	const scores = {
 		...withFusionScores(baseScores, context.retrieval.fusion.get(item.id)),
 		text_overlap: textOverlapScore(item, query),
@@ -2649,15 +2670,12 @@ function buildPackDiagnostics(
 		...exposePackCandidates(retrievalQuery, selectedItems),
 	]);
 	const candidateContext: PackTraceCandidateContext = {
-		store,
-		filters,
 		retrieval,
 		sectionsById,
 		dedupedIds: new Set(dedupedIds),
 		compressedIds: new Set(flattenCompressedIds(clusterState)),
 		trimmedIds: new Set(trimmedIds),
-		referenceNow: new Date(),
-		ownership,
+		scorersByQuery: prepareTraceScorers(store, filters, candidatePool, ownership),
 	};
 	const candidates = limitDiagnosticCandidates(
 		candidatePool.map((exposure, index) => buildTraceCandidate(exposure, index, candidateContext)),
