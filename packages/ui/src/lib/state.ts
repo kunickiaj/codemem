@@ -465,7 +465,6 @@ export const state = {
 	/* Config */
 	configDefaults: {} as Record<string, unknown>,
 	configPath: "",
-	settingsDirty: false,
 
 	/* Sync UI toggles */
 	syncDiagnosticsOpen: false,

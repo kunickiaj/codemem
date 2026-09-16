@@ -1,32 +1,34 @@
-/* State mutation helpers that dispatch through `settingsState.controller`
- * when the React shell is mounted, or update `settingsState` directly
- * when it is not. All of these read/write `settingsState` — they live
- * here rather than in settings.tsx so the lifecycle module, the modal
- * shell, and future slices can share them without a circular import. */
+/* Synchronous reads and narrow mutations for the settings view signal. */
 
-import { state } from "../../../lib/state";
-import { settingsState } from "./state";
-import type { SettingsFormState, SettingsRenderState, SettingsTabId } from "./types";
+import { settingsState, settingsView } from "./state";
+import type {
+	SettingsFormState,
+	SettingsRenderState,
+	SettingsTabId,
+	SettingsViewState,
+} from "./types";
+import { persistAdvancedPreference } from "./value-helpers";
+
+export function getSettingsViewState(): SettingsViewState {
+	return settingsView.value;
+}
+
+function updateSettingsView(patch: Partial<SettingsViewState>) {
+	settingsView.value = { ...settingsView.value, ...patch };
+}
 
 export function hideHelpTooltip() {
-	settingsState.controller?.hideTooltip();
+	settingsState.hideTooltip?.();
 }
 
 export function updateRenderState(patch: Partial<SettingsRenderState>) {
-	if (settingsState.controller) {
-		settingsState.controller.setRenderState(patch);
-		return;
-	}
-	settingsState.renderState = {
-		...settingsState.renderState,
-		...patch,
-	};
+	updateSettingsView({ renderState: { ...settingsView.value.renderState, ...patch } });
 }
 
 export function updateFormState(patch: Partial<SettingsFormState>) {
 	updateRenderState({
 		values: {
-			...settingsState.renderState.values,
+			...settingsView.value.renderState.values,
 			...patch,
 		},
 	});
@@ -36,16 +38,18 @@ export function setSettingsTab(tab: string) {
 	const nextTab: SettingsTabId = ["observer", "queue", "sync"].includes(tab)
 		? (tab as SettingsTabId)
 		: "observer";
-	settingsState.activeTab = nextTab;
-	settingsState.controller?.setActiveTab(nextTab);
+	updateSettingsView({ activeTab: nextTab });
 }
 
-export function setDirty(dirty: boolean, rerender = true) {
-	state.settingsDirty = dirty;
-	if (rerender) settingsState.controller?.setDirty(dirty);
+export function setDirty(dirty: boolean) {
+	updateSettingsView({ dirty });
+}
+
+export function setSettingsOpen(open: boolean) {
+	updateSettingsView({ open });
 }
 
 export function onAdvancedToggle(checked: boolean) {
-	settingsState.showAdvanced = checked;
-	settingsState.controller?.setShowAdvanced(checked);
+	persistAdvancedPreference(checked);
+	updateSettingsView({ showAdvanced: checked });
 }

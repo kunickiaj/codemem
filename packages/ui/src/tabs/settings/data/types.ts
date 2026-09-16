@@ -52,6 +52,14 @@ export type SettingsRenderState = {
 	values: SettingsFormState;
 };
 
+export type SettingsViewState = {
+	open: boolean;
+	activeTab: SettingsTabId;
+	dirty: boolean;
+	renderState: SettingsRenderState;
+	showAdvanced: boolean;
+};
+
 export type SettingsSectionIntroProps = {
 	title: string;
 	detail: string;
@@ -66,15 +74,6 @@ export type SettingsTooltipState = {
 	anchor: HTMLElement | null;
 	content: string;
 	visible: boolean;
-};
-
-export type SettingsController = {
-	hideTooltip: () => void;
-	setActiveTab: (tab: SettingsTabId) => void;
-	setDirty: (dirty: boolean) => void;
-	setOpen: (open: boolean) => void;
-	setRenderState: (patch: Partial<SettingsRenderState>) => void;
-	setShowAdvanced: (show: boolean) => void;
 };
 
 /** The bundle of callbacks + accessors each tab panel needs from the

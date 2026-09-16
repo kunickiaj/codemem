@@ -1,11 +1,9 @@
 import type { JSX } from "preact";
-import { useCallback, useEffect, useState } from "preact/hooks";
+import { useCallback, useEffect } from "preact/hooks";
 import { RadixDialog } from "../../../components/primitives/radix-dialog";
-import { state } from "../../../lib/state";
 import { focusSettingsDialog } from "../data/dom";
-import { settingsState } from "../data/state";
-import type { SettingsTabId } from "../data/types";
-import { persistAdvancedPreference } from "../data/value-helpers";
+import { settingsState, settingsView } from "../data/state";
+import { setSettingsOpen } from "../data/state-ops";
 import { useHelpTooltip } from "../hooks/use-help-tooltip";
 
 export interface SettingsDialogShellProps {
@@ -14,60 +12,15 @@ export interface SettingsDialogShellProps {
 }
 
 export function SettingsDialogShell({ DialogContent, onClose }: SettingsDialogShellProps) {
-	const [open, setOpen] = useState(settingsState.open);
-	const [activeTab, setActiveTabState] = useState<SettingsTabId>(
-		["observer", "queue", "sync"].includes(settingsState.activeTab)
-			? (settingsState.activeTab as SettingsTabId)
-			: "observer",
-	);
-	const [dirty, setDirtyState] = useState(state.settingsDirty);
-	const [renderState, setRenderStateState] = useState(settingsState.renderState);
-	const [showAdvanced, setShowAdvancedState] = useState(settingsState.showAdvanced);
+	const { open } = settingsView.value;
 	const { tooltipPortal, setTooltip } = useHelpTooltip();
 
-	settingsState.open = open;
-	settingsState.activeTab = activeTab;
-	state.settingsDirty = dirty;
-	settingsState.renderState = renderState;
-	settingsState.showAdvanced = showAdvanced;
-
 	useEffect(() => {
-		settingsState.controller = {
-			hideTooltip: () => {
-				setTooltip({ anchor: null, content: "", visible: false });
-			},
-			setActiveTab: (tab) => {
-				const nextTab = ["observer", "queue", "sync"].includes(tab) ? tab : "observer";
-				settingsState.activeTab = nextTab;
-				setActiveTabState(nextTab);
-			},
-			setDirty: (nextDirty) => {
-				state.settingsDirty = nextDirty;
-				setDirtyState(nextDirty);
-			},
-			setOpen: (nextOpen) => {
-				settingsState.open = nextOpen;
-				setOpen(nextOpen);
-			},
-			setRenderState: (patch) => {
-				const nextState = {
-					...settingsState.renderState,
-					...patch,
-				};
-				settingsState.renderState = nextState;
-				setRenderStateState(nextState);
-			},
-			setShowAdvanced: (nextShowAdvanced) => {
-				settingsState.showAdvanced = nextShowAdvanced;
-				persistAdvancedPreference(nextShowAdvanced);
-				setShowAdvancedState(nextShowAdvanced);
-			},
-		};
+		const hideTooltip = () => setTooltip({ anchor: null, content: "", visible: false });
+		settingsState.hideTooltip = hideTooltip;
 
 		return () => {
-			if (settingsState.controller) {
-				settingsState.controller = null;
-			}
+			if (settingsState.hideTooltip === hideTooltip) settingsState.hideTooltip = null;
 		};
 	}, []);
 
@@ -103,7 +56,7 @@ export function SettingsDialogShell({ DialogContent, onClose }: SettingsDialogSh
 				}}
 				onOpenChange={(nextOpen) => {
 					if (nextOpen) {
-						setOpen(true);
+						setSettingsOpen(true);
 						return;
 					}
 					close();

@@ -1,16 +1,13 @@
-/* Shared module state for the Settings modal — all mutable vars live
- * on a single exported object so any file in the split can read and
- * write them without running into ES-module `export let` reassignment
- * limits (imports of `let` bindings are read-only from other modules). */
+/* Non-render lifecycle metadata plus the authoritative reactive view state
+ * for the Settings modal. */
 
+import { signal } from "@preact/signals";
 import { EMPTY_FORM_STATE } from "./constants";
-import type { SettingsController, SettingsRenderState } from "./types";
+import type { SettingsViewState } from "./types";
 import { loadAdvancedPreference } from "./value-helpers";
 
 export interface SettingsState {
-	open: boolean;
 	previouslyFocused: HTMLElement | null;
-	activeTab: string;
 	baseline: Record<string, unknown>;
 	envOverrides: Record<string, unknown>;
 	touchedKeys: Set<string>;
@@ -18,15 +15,11 @@ export interface SettingsState {
 	protectedKeys: Set<string>;
 	startPolling: (() => void) | null;
 	refresh: (() => void) | null;
-	showAdvanced: boolean;
-	controller: SettingsController | null;
-	renderState: SettingsRenderState;
+	hideTooltip: (() => void) | null;
 }
 
 export const settingsState: SettingsState = {
-	open: false,
 	previouslyFocused: null,
-	activeTab: "observer",
 	baseline: {},
 	envOverrides: {},
 	touchedKeys: new Set<string>(),
@@ -34,8 +27,13 @@ export const settingsState: SettingsState = {
 	protectedKeys: new Set<string>(),
 	startPolling: null,
 	refresh: null,
-	showAdvanced: loadAdvancedPreference(),
-	controller: null,
+	hideTooltip: null,
+};
+
+export const settingsView = signal<SettingsViewState>({
+	open: false,
+	activeTab: "observer",
+	dirty: false,
 	renderState: {
 		effectiveText: "",
 		isSaving: false,
@@ -46,4 +44,5 @@ export const settingsState: SettingsState = {
 		statusText: "Ready",
 		values: { ...EMPTY_FORM_STATE },
 	},
-};
+	showAdvanced: loadAdvancedPreference(),
+});

@@ -25,11 +25,13 @@ import {
 	protectedConfigHelp,
 } from "./data/model-accessors";
 import { buildSettingsNotice } from "./data/notice";
-import { settingsState } from "./data/state";
+import { settingsState, settingsView } from "./data/state";
 import {
+	getSettingsViewState,
 	hideHelpTooltip,
 	onAdvancedToggle,
 	setDirty,
+	setSettingsOpen,
 	setSettingsTab,
 	updateFormState,
 	updateRenderState,
@@ -37,26 +39,27 @@ import {
 import type { SettingsPanelProps } from "./data/types";
 
 const getObserverModelHint = (): string =>
-	getObserverModelHintRaw(settingsState.renderState.values, settingsState.envOverrides);
+	getObserverModelHintRaw(getSettingsViewState().renderState.values, settingsState.envOverrides);
 const getTieredRoutingHelperText = (): string =>
-	getTieredRoutingHelperTextRaw(settingsState.renderState.values);
+	getTieredRoutingHelperTextRaw(getSettingsViewState().renderState.values);
 const getObserverModelLabel = (): string =>
-	getObserverModelLabelRaw(settingsState.renderState.values);
+	getObserverModelLabelRaw(getSettingsViewState().renderState.values);
 const getObserverModelTooltip = (): string =>
-	getObserverModelTooltipRaw(settingsState.renderState.values);
+	getObserverModelTooltipRaw(getSettingsViewState().renderState.values);
 const getObserverModelDescription = (): string =>
-	getObserverModelDescriptionRaw(settingsState.renderState.values);
-const hiddenUnlessAdvanced = (): boolean => hiddenUnlessAdvancedRaw(settingsState.showAdvanced);
+	getObserverModelDescriptionRaw(getSettingsViewState().renderState.values);
+const hiddenUnlessAdvanced = (): boolean =>
+	hiddenUnlessAdvancedRaw(getSettingsViewState().showAdvanced);
 
 const { onTextInput, onSelectValueChange, onSwitchInput } = createSettingsEventHandlers({
 	getTouchedKeys: () => settingsState.touchedKeys,
-	getValues: () => settingsState.renderState.values,
+	getValues: () => getSettingsViewState().renderState.values,
 	updateFormState,
 	setDirty: (dirty) => setDirty(dirty),
 });
 
 function ObserverStatusBanner() {
-	const status = settingsState.renderState.observerStatus as ObserverStatusShape | null;
+	const status = settingsView.value.renderState.observerStatus as ObserverStatusShape | null;
 	return (
 		<ObserverStatusBannerComponent
 			status={status}
@@ -71,22 +74,21 @@ export function openObserverDiagnosticsFromSettings(options: {
 }): void {
 	if (!settingsState.startPolling || !settingsState.refresh) return;
 	closeSettings(settingsState.startPolling, settingsState.refresh);
-	if (settingsState.open) return;
+	if (getSettingsViewState().open) return;
 	const trigger = $button("settingsButton");
 	queueMicrotask(() => openDiagnosticsDrawer({ ...options, trigger }));
 }
 
 function SettingsDialogContent() {
-	const values = settingsState.renderState.values;
+	const view = settingsView.value;
+	const values = view.renderState.values;
 	const observerMaxCharsDefault = String(state.configDefaults?.observer_max_chars || "");
 	const showAuthFile = values.observerAuthSource === "file";
 	const showAuthCommand = values.observerAuthSource === "command";
 	const showTieredRouting = values.observerTierRoutingEnabled;
 	const providerOptions = Array.from(
 		new Set(
-			settingsState.renderState.providers.concat(
-				values.observerProvider ? [values.observerProvider] : [],
-			),
+			view.renderState.providers.concat(values.observerProvider ? [values.observerProvider] : []),
 		),
 	)
 		.sort((left, right) => left.localeCompare(right))
@@ -114,10 +116,10 @@ function SettingsDialogContent() {
 	return (
 		<SettingsModalContent
 			panelProps={panelProps}
-			activeTab={settingsState.activeTab}
-			showAdvanced={settingsState.showAdvanced}
-			renderState={settingsState.renderState}
-			settingsDirty={state.settingsDirty}
+			activeTab={view.activeTab}
+			showAdvanced={view.showAdvanced}
+			renderState={view.renderState}
+			settingsDirty={view.dirty}
 			onClose={() => {
 				if (settingsState.startPolling && settingsState.refresh) {
 					closeSettings(settingsState.startPolling, settingsState.refresh);
@@ -160,21 +162,19 @@ export function openSettings(stopPolling: () => void) {
 	if (!settingsState.shellMounted) {
 		ensureSettingsShell();
 	}
-	settingsState.open = true;
+	setSettingsOpen(true);
 	settingsState.previouslyFocused = document.activeElement as HTMLElement | null;
 	stopPolling();
-	settingsState.controller?.setOpen(true);
 }
 
 export function closeSettings(startPolling: () => void, refreshCallback: () => void) {
-	if (state.settingsDirty) {
+	if (getSettingsViewState().dirty) {
 		if (!globalThis.confirm("Discard unsaved changes?")) {
-			settingsState.controller?.setOpen(true);
+			setSettingsOpen(true);
 			return;
 		}
 	}
-	settingsState.open = false;
-	settingsState.controller?.setOpen(false);
+	setSettingsOpen(false);
 	hideHelpTooltip();
 	const restoreTarget =
 		settingsState.previouslyFocused && typeof settingsState.previouslyFocused.focus === "function"
@@ -188,7 +188,7 @@ export function closeSettings(startPolling: () => void, refreshCallback: () => v
 }
 
 export async function saveSettings(startPolling: () => void, refreshCallback: () => void) {
-	if (settingsState.renderState.isSaving) return;
+	if (getSettingsViewState().renderState.isSaving) return;
 	updateRenderState({ isSaving: true, statusText: "Saving changes…" });
 
 	try {

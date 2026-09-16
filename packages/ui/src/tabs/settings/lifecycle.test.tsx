@@ -1,12 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { state } from "../../lib/state";
-import { settingsState } from "./data/state";
+import { settingsState, settingsView } from "./data/state";
 
 const openDiagnosticsDrawer = vi.hoisted(() => vi.fn());
+const saveConfig = vi.hoisted(() => vi.fn());
 
 vi.mock("../../components/diagnostics", () => ({ openDiagnosticsDrawer }));
+vi.mock("../../lib/api", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../lib/api")>()),
+	saveConfig,
+}));
 
-import { openObserverDiagnosticsFromSettings } from "./lifecycle";
+import { collectSettingsPayload } from "./data/config-loader";
+import { setDirty, updateFormState } from "./data/state-ops";
+import { closeSettings, openObserverDiagnosticsFromSettings, saveSettings } from "./lifecycle";
 
 const observerDiagnosticsOptions = {
 	severity: "error" as const,
@@ -15,22 +21,29 @@ const observerDiagnosticsOptions = {
 
 beforeEach(() => {
 	document.body.innerHTML = '<button id="settingsButton">Settings</button>';
-	state.settingsDirty = false;
-	settingsState.open = true;
+	settingsView.value = { ...settingsView.value, dirty: false, open: true };
 	settingsState.previouslyFocused = null;
 	settingsState.startPolling = vi.fn();
 	settingsState.refresh = vi.fn();
-	settingsState.controller = null;
+	settingsState.hideTooltip = null;
 	openDiagnosticsDrawer.mockReset();
+	saveConfig.mockReset();
 });
+
+function editSyncEnabled() {
+	const baseline = collectSettingsPayload({ allowUntouchedParseErrors: true });
+	settingsState.baseline = baseline;
+	settingsState.touchedKeys = new Set(["sync_enabled"]);
+	updateFormState({ syncEnabled: !baseline.sync_enabled });
+	setDirty(true);
+}
 
 afterEach(() => {
 	document.body.innerHTML = "";
-	settingsState.open = false;
+	settingsView.value = { ...settingsView.value, dirty: false, open: false };
 	settingsState.startPolling = null;
 	settingsState.refresh = null;
-	settingsState.controller = null;
-	state.settingsDirty = false;
+	settingsState.hideTooltip = null;
 	vi.restoreAllMocks();
 });
 
@@ -41,7 +54,7 @@ describe("Settings observer diagnostics handoff", () => {
 
 		openObserverDiagnosticsFromSettings(observerDiagnosticsOptions);
 
-		expect(settingsState.open).toBe(false);
+		expect(settingsView.value.open).toBe(false);
 		expect(startPolling).toHaveBeenCalledOnce();
 		expect(refresh).toHaveBeenCalledOnce();
 		expect(openDiagnosticsDrawer).not.toHaveBeenCalled();
@@ -55,15 +68,54 @@ describe("Settings observer diagnostics handoff", () => {
 	});
 
 	it("keeps Settings open when discarding dirty changes is declined", async () => {
-		state.settingsDirty = true;
+		settingsView.value = { ...settingsView.value, dirty: true };
 		vi.spyOn(globalThis, "confirm").mockReturnValue(false);
 
 		openObserverDiagnosticsFromSettings(observerDiagnosticsOptions);
 		await Promise.resolve();
 
-		expect(settingsState.open).toBe(true);
+		expect(settingsView.value.open).toBe(true);
 		expect(settingsState.startPolling).not.toHaveBeenCalled();
 		expect(settingsState.refresh).not.toHaveBeenCalled();
 		expect(openDiagnosticsDrawer).not.toHaveBeenCalled();
+	});
+
+	it("closes dirty settings and resumes polling when discard is confirmed", () => {
+		settingsView.value = { ...settingsView.value, dirty: true };
+		vi.spyOn(globalThis, "confirm").mockReturnValue(true);
+		const startPolling = vi.fn();
+		const refresh = vi.fn();
+
+		closeSettings(startPolling, refresh);
+
+		expect(settingsView.value.open).toBe(false);
+		expect(settingsState.touchedKeys).toEqual(new Set());
+		expect(startPolling).toHaveBeenCalledOnce();
+		expect(refresh).toHaveBeenCalledOnce();
+	});
+
+	it("keeps edits after a save failure and closes after a successful retry", async () => {
+		editSyncEnabled();
+		const startPolling = vi.fn();
+		const refresh = vi.fn();
+		saveConfig.mockRejectedValueOnce(new Error("network down"));
+
+		await saveSettings(startPolling, refresh);
+
+		expect(settingsView.value).toMatchObject({ dirty: true, open: true });
+		expect(settingsView.value.renderState).toMatchObject({
+			isSaving: false,
+			statusText: "Save failed: network down",
+		});
+		expect(startPolling).not.toHaveBeenCalled();
+		expect(refresh).not.toHaveBeenCalled();
+
+		saveConfig.mockResolvedValueOnce({});
+		await saveSettings(startPolling, refresh);
+
+		expect(saveConfig).toHaveBeenCalledTimes(2);
+		expect(settingsView.value).toMatchObject({ dirty: false, open: false });
+		expect(startPolling).toHaveBeenCalledOnce();
+		expect(refresh).toHaveBeenCalledOnce();
 	});
 });

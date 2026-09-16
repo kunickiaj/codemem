@@ -10,11 +10,11 @@ import { PROTECTED_VIEWER_CONFIG_KEYS } from "./constants";
 import { type ConfigPayload, formStateFromPayload } from "./form-state";
 import { isProtectedConfigKey as isProtectedConfigKeyRaw } from "./model-accessors";
 import { settingsState } from "./state";
-import { setDirty, updateRenderState } from "./state-ops";
+import { getSettingsViewState, setDirty, updateRenderState } from "./state-ops";
 import { mergeOverrideBaseline, toProviderList } from "./value-helpers";
 
 export function isSettingsOpen(): boolean {
-	return settingsState.open;
+	return getSettingsViewState().open;
 }
 
 export function isProtectedConfigKey(key: string): boolean {
@@ -25,7 +25,7 @@ export function collectSettingsPayload(
 	options: { allowUntouchedParseErrors?: boolean } = {},
 ): Record<string, unknown> {
 	return collectSettingsPayloadRaw({
-		values: settingsState.renderState.values,
+		values: getSettingsViewState().renderState.values,
 		touchedKeys: settingsState.touchedKeys,
 		baseline: settingsState.baseline,
 		allowUntouchedParseErrors: options.allowUntouchedParseErrors,
@@ -82,7 +82,7 @@ export function renderConfigModal(payload: unknown) {
 }
 
 export async function loadConfigData(options: ReadRequestOptions = {}) {
-	if (settingsState.open) return;
+	if (getSettingsViewState().open) return;
 	try {
 		const [payload, status] = await Promise.all([
 			api.loadConfig(options),
