@@ -19,4 +19,15 @@ describe("runtime import boundaries", () => {
 		expect(inventorySource).not.toMatch(/from ["']\.\/legacy-recipient-policy-projection\.js["']/);
 		expect(projectionSource).not.toMatch(/from ["']\.\/legacy-team-project-policy\.js["']/);
 	});
+
+	it("keeps coordinator config and peer storage below their consumers", () => {
+		const actionSource = readFileSync(new URL("coordinator-actions.ts", import.meta.url), "utf8");
+		const discoverySource = readFileSync(new URL("sync-discovery.ts", import.meta.url), "utf8");
+		const cacheSource = readFileSync(new URL("scope-membership-cache.ts", import.meta.url), "utf8");
+		const runtimeSource = readFileSync(new URL("coordinator-runtime.ts", import.meta.url), "utf8");
+		expect(actionSource).not.toMatch(/from ["']\.\/sync-discovery\.js["']/);
+		expect(discoverySource).not.toMatch(/from ["']\.\/coordinator-runtime\.js["']/);
+		expect(cacheSource).not.toMatch(/from ["']\.\/coordinator-runtime\.js["']/);
+		expect(runtimeSource).not.toMatch(/from ["']\.\/sync-discovery\.js["']/);
+	});
 });

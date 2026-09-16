@@ -82,10 +82,10 @@ import {
 	parseAcceptedProjectIntent,
 } from "./share-operation.js";
 import { buildAuthHeaders } from "./sync-auth.js";
-import { updatePeerAddresses } from "./sync-discovery.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { buildBaseUrl, requestJson } from "./sync-http-client.js";
 import { ensureDeviceIdentity, loadPublicKey } from "./sync-identity.js";
+import { updatePeerAddresses } from "./sync-peer-addresses.js";
 
 const VALID_INVITE_POLICIES = new Set(["auto_admit", "approval_required"]);
 const INVITE_IMPORT_TIMEOUT_S = 10;

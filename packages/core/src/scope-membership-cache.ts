@@ -2,12 +2,12 @@ import {
 	coordinatorListScopeMembershipsAction,
 	coordinatorListScopesAction,
 } from "./coordinator-actions.js";
+import type { CoordinatorScope, CoordinatorScopeMembership } from "./coordinator-store-contract.js";
 import {
 	type CoordinatorSyncConfig,
 	coordinatorEnabled,
 	readCoordinatorSyncConfig,
-} from "./coordinator-runtime.js";
-import type { CoordinatorScope, CoordinatorScopeMembership } from "./coordinator-store-contract.js";
+} from "./coordinator-sync-config.js";
 import type { Database } from "./db.js";
 import { getAnyRecipientPolicyDenyOverlayForScopeDevice } from "./recipient-policy-reconciliation.js";
 import {
