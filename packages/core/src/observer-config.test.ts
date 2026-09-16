@@ -16,6 +16,7 @@ import {
 	symlinkSync,
 	unlinkSync,
 	writeFileSync,
+	writeSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -263,7 +264,7 @@ describe("atomic config replacement", () => {
 			close: closeSync,
 			chmod: fchmodSync,
 			sync: fsyncSync,
-			write: writeFileSync,
+			write: writeSync,
 			rename: () => {
 				throw new Error("injected rename failure");
 			},
@@ -288,7 +289,7 @@ describe("atomic config replacement", () => {
 			sync: () => {
 				throw new Error("injected sync failure");
 			},
-			write: writeFileSync,
+			write: writeSync,
 			rename: renameSync,
 			unlink: unlinkSync,
 		};
@@ -336,7 +337,7 @@ describe("atomic config replacement", () => {
 				if (syncCalls === 2) throw new Error("injected directory sync failure");
 				fsyncSync(fd);
 			},
-			write: writeFileSync,
+			write: writeSync,
 			rename: renameSync,
 			unlink: unlinkSync,
 		};
@@ -355,7 +356,7 @@ describe("atomic config replacement", () => {
 			close: closeSync,
 			chmod: fchmodSync,
 			sync: fsyncSync,
-			write: writeFileSync,
+			write: writeSync,
 			rename: renameSync,
 			unlink: () => {
 				throw new Error("injected cleanup failure");
@@ -507,6 +508,26 @@ describe("config mutation concurrency", () => {
 			else process.env.HOME = previousHome;
 			if (previousWorkspaceId == null) delete process.env.CODEMEM_WORKSPACE_ID;
 			else process.env.CODEMEM_WORKSPACE_ID = previousWorkspaceId;
+		}
+	});
+});
+
+describe("config mutation identity capture", () => {
+	it("captures the existing inode with the mutation read", () => {
+		const directory = mkdtempSync(join(tmpdir(), "codemem-config-identity-"));
+		const configPath = join(directory, "identity.json");
+		try {
+			writeFileSync(configPath, '{"existing":true}\n', "utf8");
+			const stats = statSync(configPath, { bigint: true });
+
+			expect(readCodememConfigFileForMutation(configPath)).toMatchObject({
+				status: "valid",
+				ctimeNs: stats.ctimeNs,
+				dev: stats.dev,
+				ino: stats.ino,
+			});
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
 		}
 	});
 });

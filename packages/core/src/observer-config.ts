@@ -6,6 +6,7 @@
  * environment variable / file placeholders in config values.
  */
 
+import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
 	closeSync,
@@ -13,6 +14,7 @@ import {
 	fchmodSync,
 	fchownSync,
 	fsyncSync,
+	ftruncateSync,
 	lstatSync,
 	mkdirSync,
 	openSync,
@@ -22,7 +24,7 @@ import {
 	renameSync,
 	statSync,
 	unlinkSync,
-	writeFileSync,
+	writeSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { codememHomeDir } from "./home.js";
@@ -502,6 +504,9 @@ export type CodememConfigReadOutcome =
 			mode: number;
 			uid: number;
 			gid: number;
+			ctimeNs: bigint;
+			dev: bigint;
+			ino: bigint;
 	  }
 	| { status: "invalid"; path: string; reason: "empty" | "non_object" | "parse_error" }
 	| { status: "unreadable"; path: string };
@@ -514,6 +519,11 @@ export type CodememConfigMutationResult = {
 };
 
 type ConfigFileMetadata = { mode: number; uid: number; gid: number };
+type ConfigFileIdentity = ConfigFileMetadata & {
+	ctimeNs: bigint;
+	dev: bigint;
+	ino: bigint;
+};
 
 export class CodememConfigMutationError extends Error {
 	readonly code: "busy" | "changed" | "invalid" | "unreadable";
@@ -530,23 +540,93 @@ type AtomicConfigFileOperations = {
 	close: typeof closeSync;
 	chown?: typeof fchownSync;
 	chmod: typeof fchmodSync;
+	truncate?: typeof ftruncateSync;
 	sync: typeof fsyncSync;
-	write: typeof writeFileSync;
+	write: typeof writeSync;
 	rename: typeof renameSync;
 	unlink: typeof unlinkSync;
+	seedMetadata?: (sourcePath: string, destinationFd: number) => boolean;
 };
 
 type ConfigLockCleanupOperations = Pick<AtomicConfigFileOperations, "close" | "unlink">;
+
+let gnuCopyAvailable: boolean | undefined;
+
+function hasGnuCopy(): boolean {
+	if (gnuCopyAvailable !== undefined) return gnuCopyAvailable;
+	try {
+		execFileSync("/bin/cp", ["--version"], { stdio: "ignore" });
+		gnuCopyAvailable = true;
+	} catch (error) {
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+			gnuCopyAvailable = false;
+			return gnuCopyAvailable;
+		}
+		if (error instanceof Error && "status" in error && typeof error.status === "number") {
+			gnuCopyAvailable = false;
+			return gnuCopyAvailable;
+		}
+		throw new CodememConfigMutationError(
+			"unreadable",
+			"Cannot update config because extended access metadata support could not be checked.",
+			{ cause: error },
+		);
+	}
+	return gnuCopyAvailable;
+}
+
+function clearMacOsReplacementFlags(destinationFd: number): void {
+	execFileSync("/usr/bin/chflags", ["0", "/dev/fd/3"], {
+		stdio: ["ignore", "pipe", "pipe", destinationFd],
+	});
+}
+
+function seedConfigReplacementMetadata(sourcePath: string, destinationFd: number): boolean {
+	let args: string[] | undefined;
+	let env: NodeJS.ProcessEnv | undefined;
+	if (process.platform === "darwin") {
+		args = ["-p", sourcePath, "/dev/fd/3"];
+		env = { ...process.env };
+		delete env.COPYFILE_DISABLE;
+	} else if (process.platform === "linux" && hasGnuCopy()) {
+		args = ["--preserve=mode,ownership,xattr", "--", sourcePath, "/proc/self/fd/3"];
+	}
+	if (!args) return false;
+
+	try {
+		execFileSync("/bin/cp", args, {
+			env,
+			stdio: ["ignore", "pipe", "pipe", destinationFd],
+		});
+		if (process.platform === "darwin") clearMacOsReplacementFlags(destinationFd);
+		return true;
+	} catch (error) {
+		if (process.platform === "darwin") {
+			try {
+				clearMacOsReplacementFlags(destinationFd);
+			} catch {
+				// Preserve the metadata-copy failure; cleanup will retry unlinking the temp file.
+			}
+		}
+		throw new CodememConfigMutationError(
+			"unreadable",
+			`Cannot update config because extended access metadata from ${sourcePath} could not be preserved.`,
+			{ cause: error },
+		);
+	}
+}
 
 const atomicConfigFileOperations: AtomicConfigFileOperations = {
 	open: openSync,
 	close: closeSync,
 	chown: fchownSync,
 	chmod: fchmodSync,
+	truncate: ftruncateSync,
 	sync: fsyncSync,
-	write: writeFileSync,
+	write: writeSync,
 	rename: renameSync,
 	unlink: unlinkSync,
+	seedMetadata: seedConfigReplacementMetadata,
 };
 
 const configLockCleanupOperations: ConfigLockCleanupOperations = {
@@ -583,11 +663,18 @@ export function readCodememConfigFileForMutation(configPath?: string): CodememCo
 	const path = configPath ? expandUserPath(configPath) : getCodememConfigWritePath();
 	if (!existsSync(path)) return { status: "missing", path, revision: "missing" };
 	let text: string;
-	let metadata: { mode: number; uid: number; gid: number };
+	let metadata: ConfigFileIdentity;
 	try {
 		text = readFileSync(path, "utf8");
-		const stats = statSync(path);
-		metadata = { mode: stats.mode & 0o777, uid: stats.uid, gid: stats.gid };
+		const stats = statSync(path, { bigint: true });
+		metadata = {
+			mode: Number(stats.mode & 0o777n),
+			uid: Number(stats.uid),
+			gid: Number(stats.gid),
+			ctimeNs: stats.ctimeNs,
+			dev: stats.dev,
+			ino: stats.ino,
+		};
 	} catch {
 		return { status: "unreadable", path };
 	}
@@ -669,6 +756,20 @@ function syncConfigDirectory(targetPath: string, operations: AtomicConfigFileOpe
 	}
 }
 
+function writeCompleteConfig(
+	fd: number,
+	text: string,
+	write: AtomicConfigFileOperations["write"],
+): void {
+	const bytes = Buffer.from(text, "utf8");
+	let offset = 0;
+	while (offset < bytes.length) {
+		const written = write(fd, bytes, offset, bytes.length - offset, offset);
+		if (written === 0) throw new Error("Config replacement write made no progress");
+		offset += written;
+	}
+}
+
 /** Internal fault-injection seam used by config persistence tests. */
 export function atomicReplaceConfigFile(
 	targetPath: string,
@@ -684,11 +785,17 @@ export function atomicReplaceConfigFile(
 	try {
 		const mode = typeof metadata === "number" ? metadata : metadata?.mode;
 		tempFd = operations.open(tempPath, "wx", mode ?? 0o600);
+		const seededMetadata =
+			typeof metadata === "object" && operations.seedMetadata?.(replacementPath, tempFd) === true;
+		if (seededMetadata) {
+			if (!operations.truncate) throw new Error("Seeded config replacement requires truncate");
+			operations.truncate(tempFd, 0);
+		}
 		if (typeof metadata === "object" && process.platform !== "win32") {
 			operations.chown?.(tempFd, metadata.uid, metadata.gid);
 		}
 		if (mode != null) operations.chmod(tempFd, mode);
-		operations.write(tempFd, text, "utf8");
+		writeCompleteConfig(tempFd, text, operations.write);
 		operations.sync(tempFd);
 		const completedFd = tempFd;
 		tempFd = null;
@@ -730,14 +837,34 @@ function currentRevision(path: string): string | "missing" | "unreadable" {
 	}
 }
 
-function currentMetadata(path: string): ConfigFileMetadata | "missing" | "unreadable" {
+function currentMetadata(path: string): ConfigFileIdentity | "missing" | "unreadable" {
 	if (!existsSync(path)) return "missing";
 	try {
-		const stats = statSync(path);
-		return { mode: stats.mode & 0o777, uid: stats.uid, gid: stats.gid };
+		const stats = statSync(path, { bigint: true });
+		return {
+			mode: Number(stats.mode & 0o777n),
+			uid: Number(stats.uid),
+			gid: Number(stats.gid),
+			ctimeNs: stats.ctimeNs,
+			dev: stats.dev,
+			ino: stats.ino,
+		};
 	} catch {
 		return "unreadable";
 	}
+}
+
+function configIdentityMatches(
+	current: ReturnType<typeof currentMetadata>,
+	expected: ConfigFileIdentity,
+): boolean {
+	return (
+		typeof current !== "string" &&
+		configMetadataMatches(current, expected) &&
+		current.ctimeNs === expected.ctimeNs &&
+		current.dev === expected.dev &&
+		current.ino === expected.ino
+	);
 }
 
 function configMetadataMatches(
@@ -925,16 +1052,20 @@ function verifyConfigMutation(input: {
 	targetMutationPath: string;
 	expectedRevision: string;
 	expectedMetadata: ConfigFileMetadata | undefined;
+	expectedIdentity: ConfigFileIdentity | undefined;
 	fallbackReadPath: string | undefined;
 	fallbackMutationPath: string | undefined;
 	inputOutcome: CodememConfigReadOutcome;
 	inputRevision: string;
 }): void {
+	const observedMetadata = currentMetadata(input.targetMutationPath);
 	if (
 		resolveConfigMutationTarget(input.targetPath) !== input.targetMutationPath ||
 		currentRevision(input.targetMutationPath) !== input.expectedRevision ||
 		(input.expectedMetadata !== undefined &&
-			!configMetadataMatches(currentMetadata(input.targetMutationPath), input.expectedMetadata))
+			!configMetadataMatches(observedMetadata, input.expectedMetadata)) ||
+		(input.expectedIdentity !== undefined &&
+			!configIdentityMatches(observedMetadata, input.expectedIdentity))
 	) {
 		throw new CodememConfigMutationError(
 			"changed",
@@ -970,6 +1101,44 @@ function assertExpectedRevision(targetPath: string, actual: string, expected?: s
 	);
 }
 
+function expectedConfigState(
+	outcome: CodememConfigReadOutcome,
+	targetPath: string,
+	expectedRevisionOption?: string,
+): { expectedRevision: string; expectedIdentity: ConfigFileIdentity | undefined } {
+	const expectedRevision = outcome.status === "valid" ? outcome.revision : "missing";
+	assertExpectedRevision(targetPath, expectedRevision, expectedRevisionOption);
+	return {
+		expectedRevision,
+		expectedIdentity:
+			outcome.status === "valid"
+				? {
+						mode: outcome.mode,
+						uid: outcome.uid,
+						gid: outcome.gid,
+						ctimeNs: outcome.ctimeNs,
+						dev: outcome.dev,
+						ino: outcome.ino,
+					}
+				: undefined,
+	};
+}
+
+function commitConfigMutation(
+	input: Parameters<typeof verifyConfigMutation>[0] & {
+		metadata: ConfigFileMetadata | undefined;
+		text: string;
+	},
+): void {
+	atomicReplaceConfigFile(
+		input.targetMutationPath,
+		input.text,
+		input.metadata,
+		atomicConfigFileOperations,
+		() => verifyConfigMutation(input),
+	);
+}
+
 /** Serialize a read-modify-write config update across cooperating processes. */
 export function mutateCodememConfigFile(
 	mutator: (
@@ -988,8 +1157,11 @@ export function mutateCodememConfigFile(
 		assertTargetDidNotDisappear(preliminaryTarget, outcome, targetPath);
 		const readPath = fallbackMutationPath ?? fallbackReadPath;
 		const inputOutcome = mutationInputOutcome(outcome, targetMutationPath, readPath);
-		const expectedRevision = outcome.status === "valid" ? outcome.revision : "missing";
-		assertExpectedRevision(targetPath, expectedRevision, options.expectedRevision);
+		const { expectedRevision, expectedIdentity } = expectedConfigState(
+			outcome,
+			targetPath,
+			options.expectedRevision,
+		);
 		const current = { ...assertMutationInput(inputOutcome) };
 		const data = mutator(current, outcome);
 		if (data === undefined) {
@@ -1003,23 +1175,19 @@ export function mutateCodememConfigFile(
 		const inputRevision =
 			inputOutcome.status === "valid" ? inputOutcome.revision : inputOutcome.status;
 		const text = `${JSON.stringify(data, null, 2)}\n`;
-		atomicReplaceConfigFile(
+		commitConfigMutation({
+			targetPath,
 			targetMutationPath,
 			text,
-			configMetadata(outcome),
-			atomicConfigFileOperations,
-			() =>
-				verifyConfigMutation({
-					targetPath,
-					targetMutationPath,
-					expectedRevision,
-					expectedMetadata: configMetadata(outcome),
-					fallbackReadPath,
-					fallbackMutationPath,
-					inputOutcome,
-					inputRevision,
-				}),
-		);
+			metadata: configMetadata(outcome),
+			expectedRevision,
+			expectedMetadata: configMetadata(outcome),
+			expectedIdentity,
+			fallbackReadPath,
+			fallbackMutationPath,
+			inputOutcome,
+			inputRevision,
+		});
 		committed = true;
 		return {
 			path: targetPath,

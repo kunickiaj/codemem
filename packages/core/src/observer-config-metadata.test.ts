@@ -10,6 +10,7 @@ import {
 	symlinkSync,
 	unlinkSync,
 	writeFileSync,
+	writeSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -46,7 +47,7 @@ describe("config replacement metadata", () => {
 				chown,
 				chmod: fchmodSync,
 				sync: fsyncSync,
-				write: writeFileSync,
+				write: writeSync,
 				rename: renameSync,
 				unlink: unlinkSync,
 			},
