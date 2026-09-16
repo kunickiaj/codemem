@@ -2,7 +2,6 @@ import * as p from "@clack/prompts";
 import type { ExportPayload } from "@codemem/core";
 import { importMemories, readImportPayload, resolveDbPath } from "@codemem/core";
 import { Command } from "commander";
-import { invokedAsTopLevelAlias } from "../command-tree.js";
 import { helpStyle } from "../help-style.js";
 import {
 	addDbOption,
@@ -13,6 +12,7 @@ import {
 	type JsonOpts,
 	resolveDbOpt,
 } from "../shared-options.js";
+import { invokedAsTopLevelAlias } from "../top-level-alias.js";
 
 const cmd = new Command("import-memories")
 	.configureHelp(helpStyle)

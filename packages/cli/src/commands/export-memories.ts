@@ -4,7 +4,6 @@ import { join } from "node:path";
 import * as p from "@clack/prompts";
 import { exportMemories, resolveDbPath } from "@codemem/core";
 import { Command } from "commander";
-import { invokedAsTopLevelAlias } from "../command-tree.js";
 import { helpStyle } from "../help-style.js";
 import {
 	addDbOption,
@@ -12,6 +11,7 @@ import {
 	emitDeprecationWarning,
 	resolveDbOpt,
 } from "../shared-options.js";
+import { invokedAsTopLevelAlias } from "../top-level-alias.js";
 
 function expandUserPath(value: string): string {
 	return value.startsWith("~/") ? join(homedir(), value.slice(2)) : value;

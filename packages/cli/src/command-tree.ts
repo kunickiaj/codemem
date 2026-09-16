@@ -70,23 +70,6 @@ export const ROOT_COMPLETION_COMMANDS = [
 /** Completion entries that are not registered Commander commands. */
 export const COMPLETION_ONLY_TOKENS = ["--help", "--version"] as const;
 
-/**
- * True when the CLI process was invoked through the named top-level
- * compatibility alias (first non-flag token of the real argv). Forwarding
- * wrappers such as `memory export` re-parse the alias command with synthetic
- * argv, so this stays false for canonical invocations.
- */
-export function invokedAsTopLevelAlias(
-	name: string,
-	argv: readonly string[] = process.argv.slice(2),
-): boolean {
-	for (const token of argv) {
-		if (token === "--") return false;
-		if (!token.startsWith("-")) return token === name;
-	}
-	return false;
-}
-
 function registerMemoryGroupWrappers(): void {
 	// Idempotence guard: module singletons must not accumulate duplicate
 	// subcommands if the tree is assembled more than once (e.g. in tests).

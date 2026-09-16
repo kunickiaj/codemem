@@ -2,13 +2,13 @@ import { Command } from "commander";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	COMPLETION_ONLY_TOKENS,
-	invokedAsTopLevelAlias,
 	ROOT_COMPLETION_COMMANDS,
 	registerRootCommands,
 } from "./command-tree.js";
 import { memoryCommand } from "./commands/memory.js";
 import { syncCommand } from "./commands/sync.js";
 import { helpStyle } from "./help-style.js";
+import { invokedAsTopLevelAlias } from "./top-level-alias.js";
 
 const completionOnly = new Set<string>(["help", ...COMPLETION_ONLY_TOKENS]);
 
