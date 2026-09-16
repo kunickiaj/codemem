@@ -72,7 +72,6 @@ import {
 	coordinatorReviewJoinRequestAction,
 	coordinatorRevokeBootstrapGrantAction,
 	coordinatorRevokeScopeMembershipAction,
-	coordinatorStatusSnapshot,
 	coordinatorUnarchiveGroupAction,
 	coordinatorUpdateScopeAction,
 	countShareableProjectMemories,
@@ -91,10 +90,8 @@ import {
 	fingerprintPublicKey,
 	formatHostPort,
 	friendlyDeviceName,
-	getCoordinatorEnrollmentReconciliationIssueSummary,
 	getCoordinatorGroupPreference,
 	getRecipientPolicyAuthorityState,
-	getSemanticIndexDiagnostics,
 	getSyncResetState,
 	type InboundScopeRejectionPeerSummary,
 	inviteTokenDigest,
@@ -106,11 +103,9 @@ import {
 	LOCAL_SYNC_CAPABILITY,
 	LOCAL_SYNC_FEATURES,
 	listAuthorizedScopesForPeer,
-	listCoordinatorJoinRequests,
 	listDeviceIdentityInventory,
 	listInboundScopeRejections,
 	listLegacyRecipientPolicyProjections,
-	listMaintenanceJobs,
 	listPerPeerScopeSyncState,
 	listProjectScopeCandidates,
 	listProjectScopeInventory,
@@ -188,6 +183,7 @@ import {
 	type ReconcileRecipientPolicyProjectsResult,
 	reconcileRecipientPolicyProjectsOperation,
 } from "../application/coordinator-maintenance.js";
+import { buildSyncStatusResponse, type SyncRuntimeStatus } from "../application/sync-status.js";
 
 export type {
 	AdvancePendingProjectSharesResult,
@@ -195,7 +191,7 @@ export type {
 	ReconcileRecipientPolicyProjectsResult,
 } from "../application/coordinator-maintenance.js";
 
-import { and, count, desc, eq, max, ne } from "drizzle-orm";
+import { and, desc, eq, ne } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { type Context, Hono } from "hono";
 import { queryBool, queryInt, safeJsonList } from "../helpers.js";
@@ -211,19 +207,6 @@ export interface SyncRoutesOptions {
 	readCoordinatorConfig?: typeof readCoordinatorSyncConfig;
 	renameCoordinatorGroup?: typeof coordinatorRenameGroupAction;
 }
-type SyncRuntimeStatus = {
-	phase:
-		| "starting"
-		| "running"
-		| "stopping"
-		| "error"
-		| "disabled"
-		| "rebootstrapping"
-		| "needs_attention"
-		| null;
-	detail?: string | null;
-};
-
 type SafeSkippedSyncDetail = Pick<
 	FilterReplicationSkipped,
 	"reason" | "skipped_count" | "scope_id" | "project" | "visibility"
@@ -4842,351 +4825,29 @@ export function syncRoutes(
 
 	// GET /api/sync/status
 	app.get("/api/sync/status", async (c) => {
-		const store = getStore();
-		{
-			const traceSync = <T>(label: string, fn: () => T): T => {
-				if (process.env.CODEMEM_TRACE_SYNC_STATUS !== "1") return fn();
-				const startedAt = Date.now();
-				console.warn(`[codemem sync-status] ${label} start`);
-				try {
-					return fn();
-				} finally {
-					console.warn(`[codemem sync-status] ${label} ${Date.now() - startedAt}ms`);
-				}
-			};
-			const showDiag = queryBool(c.req.query("includeDiagnostics"));
-			const includeJoinRequests = queryBool(c.req.query("includeJoinRequests"));
-			const project = c.req.query("project") || null;
-			const config = traceSync("readCoordinatorSyncConfig", () => readCoordinatorSyncConfig());
-			const syncReset = traceSync("getSyncResetState", () => getSyncResetState(store.db));
-
-			const d = drizzle(store.db, { schema });
-
-			const deviceRow = traceSync("deviceRow", () =>
-				d
-					.select({
-						device_id: schema.syncDevice.device_id,
-						fingerprint: schema.syncDevice.fingerprint,
-					})
-					.from(schema.syncDevice)
-					.limit(1)
-					.get(),
-			);
-
-			const daemonState = traceSync("daemonState", () =>
-				d.select().from(schema.syncDaemonState).where(eq(schema.syncDaemonState.id, 1)).get(),
-			);
-
-			const peerCountRow = traceSync("peerCountRow", () =>
-				d.select({ total: count() }).from(schema.syncPeers).get(),
-			);
-			let retentionState:
-				| {
-						last_run_at?: string | null;
-						last_duration_ms?: number | null;
-						last_deleted_ops?: number | null;
-						last_estimated_bytes_before?: number | null;
-						last_estimated_bytes_after?: number | null;
-						retained_floor_cursor?: string | null;
-						last_error?: string | null;
-						last_error_at?: string | null;
-				  }
-				| undefined;
-			try {
-				retentionState = traceSync("retentionState", () =>
-					d
-						.select()
-						.from(schema.syncRetentionState)
-						.where(eq(schema.syncRetentionState.id, 1))
-						.get(),
-				);
-			} catch {
-				retentionState = undefined;
-			}
-
-			const lastSyncRow = traceSync("lastSyncRow", () =>
-				d
-					.select({ last_sync_at: max(schema.syncPeers.last_sync_at) })
-					.from(schema.syncPeers)
-					.get(),
-			);
-			// Always take the fast COUNT(DISTINCT) path. The slow
-			// per-memory vec0 probe blocks the event loop for seconds on
-			// larger DBs, which hangs every concurrent request — not
-			// acceptable from a status endpoint. See codemem-00jn.
-			const semanticIndex = traceSync("semanticIndex", () =>
-				redactSemanticIndexDiagnostics(getSemanticIndexDiagnostics(store.db), showDiag),
-			);
-			const enrollmentIssueSummary = traceSync("coordinatorEnrollmentIssues", () =>
-				getCoordinatorEnrollmentReconciliationIssueSummary(store.db),
-			);
-			const enrollmentIssueStatus = {
-				counts: enrollmentIssueSummary.counts,
-				...(showDiag
-					? {
-							issues: enrollmentIssueSummary.issues.map((issue) => ({
-								coordinator_id: issue.coordinatorId,
-								group_id: issue.groupId,
-								kind: issue.kind,
-								reference_id: issue.referenceId,
-								code: issue.code,
-								status: issue.status,
-								first_seen_at: issue.firstSeenAt,
-								last_seen_at: issue.lastSeenAt,
-								resolved_at: issue.resolvedAt,
-								occurrence_count: issue.occurrenceCount,
-								updated_at: issue.updatedAt,
-							})),
-						}
-					: {}),
-			};
-
-			const lastError = daemonState?.last_error as string | null;
-			const lastErrorAt = daemonState?.last_error_at as string | null;
-			const lastOkAt = daemonState?.last_ok_at as string | null;
-			const viewerBinding = traceSync("readViewerBinding", () => readViewerBinding(store.dbPath));
-			// The sync daemon runs inside the viewer-server process itself, so
-			// if this request is being served, the daemon is by definition
-			// running — the viewer is serving us right now. The prior
-			// `portOpen` self-probe occasionally timed out under GC / socket
-			// backlog pressure and mis-reported "stopped · unreachable" while
-			// every other request kept succeeding. Trust the pidfile's
-			// existence (a record was written at startup) and skip the loopback
-			// probe.
-			const daemonRunning = Boolean(viewerBinding);
-			const daemonDetail = viewerBinding
-				? `viewer pidfile at ${viewerBinding.host}:${viewerBinding.port}`
-				: null;
-
-			let daemonStateValue = "ok";
-			if (!config.syncEnabled) {
-				daemonStateValue = "disabled";
-			} else if (lastError && (!lastOkAt || String(lastOkAt) < String(lastErrorAt ?? ""))) {
-				daemonStateValue = "error";
-			} else if (!daemonRunning) {
-				daemonStateValue = "stopped";
-			}
-
-			const statusPayload: Record<string, unknown> = {
-				enabled: config.syncEnabled,
-				interval_s: config.syncIntervalS,
-				retention: {
-					enabled: config.syncRetentionEnabled,
-					max_age_days: config.syncRetentionMaxAgeDays,
-					max_size_mb: config.syncRetentionMaxSizeMb,
-					retained_floor_cursor:
-						syncReset.retained_floor_cursor ??
-						(retentionState?.retained_floor_cursor as string | null) ??
-						null,
-					last_run_at: (retentionState?.last_run_at as string | null) ?? null,
-					last_duration_ms:
-						typeof retentionState?.last_duration_ms === "number"
-							? retentionState.last_duration_ms
-							: null,
-					last_deleted_ops:
-						typeof retentionState?.last_deleted_ops === "number"
-							? retentionState.last_deleted_ops
-							: null,
-					last_estimated_bytes_before:
-						typeof retentionState?.last_estimated_bytes_before === "number"
-							? retentionState.last_estimated_bytes_before
-							: null,
-					last_estimated_bytes_after:
-						typeof retentionState?.last_estimated_bytes_after === "number"
-							? retentionState.last_estimated_bytes_after
-							: null,
-					last_error: (retentionState?.last_error as string | null) ?? null,
-					last_error_at: (retentionState?.last_error_at as string | null) ?? null,
-				},
-				semantic_index: semanticIndex,
-				coordinator_enrollment_reconciliation_issues: enrollmentIssueStatus,
-				peer_count: Number(peerCountRow?.total ?? 0),
-				last_sync_at: lastSyncRow?.last_sync_at ?? null,
-				daemon_state: daemonStateValue,
-				daemon_running: daemonRunning,
-				daemon_detail: daemonDetail,
-				project_filter_active:
-					config.syncProjectsInclude.length > 0 || config.syncProjectsExclude.length > 0,
-				project_filter: {
-					include: config.syncProjectsInclude,
-					exclude: config.syncProjectsExclude,
-				},
-				cleanup_diagnostics: cleanupDiagnostics(
-					store,
-					(deviceRow?.device_id as string | null | undefined) ?? null,
-					showDiag,
-				),
-				redacted: !showDiag,
-			};
-
-			if (showDiag) {
-				statusPayload.device_id = deviceRow?.device_id ?? null;
-				statusPayload.fingerprint = deviceRow?.fingerprint ?? null;
-				statusPayload.bind = `${config.syncHost}:${config.syncPort}`;
-				statusPayload.daemon_last_error = lastError;
-				statusPayload.daemon_last_error_at = lastErrorAt;
-				statusPayload.daemon_last_ok_at = lastOkAt;
-			}
-
-			const runtimeStatus = getSyncRuntimeStatus?.() ?? null;
-			if (runtimeStatus?.phase && runtimeStatus.phase !== "running") {
-				daemonStateValue = runtimeStatus.phase;
-				statusPayload.daemon_state = daemonStateValue;
-				statusPayload.daemon_running = runtimeStatus.phase === "starting" || daemonRunning;
-				statusPayload.daemon_detail = runtimeStatus.detail ?? daemonDetail;
-			}
-
-			const coordinatorSnapshot = await coordinatorStatusSnapshot(store, config);
-			const coordinator = traceSync("coordinator", () =>
-				redactCoordinatorStatus(coordinatorSnapshot, showDiag),
-			);
-
-			// Build peers list using deduplicated mapPeerRow
-			const peerRows = traceSync(
-				"peerRows",
-				() => store.db.prepare(PEERS_QUERY).all() as Record<string, unknown>[],
-			);
-			const recentOpsByPeer = traceSync("recentPeerOps", () => recentPeerOps(store));
-			const scopeRejectionsByPeer = traceSync("recentScopeRejectionsByPeer", () =>
-				recentScopeRejectionsByPeer(store),
-			);
-			const peersItems = peerRows.map((row) => {
-				const peer = mapPeerRow(
-					store,
-					row,
-					showDiag,
-					recentOpsByPeer,
-					scopeRejectionsByPeer,
-					(deviceRow?.device_id as string | null | undefined) ?? null,
-				);
-				peer.status = peerStatus(peer);
-				return peer;
-			});
-
-			const peersMap: Record<string, unknown> = {};
-			for (const peer of peersItems) {
-				peersMap[String(peer.peer_device_id)] = peer.status;
-			}
-
-			// Attempts
-			const attemptRows = traceSync("attemptRows", () =>
-				d
-					.select({
-						peer_device_id: schema.syncAttempts.peer_device_id,
-						ok: schema.syncAttempts.ok,
-						error: schema.syncAttempts.error,
-						started_at: schema.syncAttempts.started_at,
-						finished_at: schema.syncAttempts.finished_at,
-						ops_in: schema.syncAttempts.ops_in,
-						ops_out: schema.syncAttempts.ops_out,
-						local_sync_capability: schema.syncAttempts.local_sync_capability,
-						peer_sync_capability: schema.syncAttempts.peer_sync_capability,
-						negotiated_sync_capability: schema.syncAttempts.negotiated_sync_capability,
-					})
-					.from(schema.syncAttempts)
-					.orderBy(desc(schema.syncAttempts.finished_at))
-					.limit(25)
-					.all(),
-			);
-			const peerAddressMap = new Map<string, string[]>();
-			const peerAddressRows = traceSync(
-				"peerAddressRows",
-				() =>
-					store.db.prepare("SELECT peer_device_id, addresses_json FROM sync_peers").all() as Array<{
-						peer_device_id: string | null;
-						addresses_json: string | null;
-					}>,
-			);
-			peerAddressRows.forEach((peerRow) => {
-				const addrs = safeJsonList(peerRow.addresses_json as string | null);
-				if (addrs.length) peerAddressMap.set(String(peerRow.peer_device_id ?? ""), addrs);
-			});
-			const attemptsItems = attemptRows.map((row) => {
-				const addrs = showDiag ? peerAddressMap.get(String(row.peer_device_id ?? "")) : undefined;
-				return mapSyncAttemptRow(row, showDiag, addrs);
-			});
-			const latestAttemptError = String(attemptRows[0]?.error || "").trim();
-
-			const statusBlock: Record<string, unknown> = {
-				...statusPayload,
-				background_maintenance: summarizeMaintenanceJobs(listMaintenanceJobs(store.db), showDiag),
-				peers: peersMap,
-				pending: 0,
-				sync: {},
-				ping: {},
-			};
-			const legacyDevices = traceSync("legacyDevices", () => store.claimableLegacyDeviceIds());
-			const legacyReview = traceSync("legacySharedReview", () => legacySharedReviewSummary(store));
-			const sharingReview = traceSync("sharingReview", () => store.sharingReviewSummary(project));
-			const recipientPolicyReconciliation = traceSync("recipientPolicyReconciliation", () =>
-				listRecipientPolicyReconciliationStatus(store),
-			);
-			let joinRequests: Record<string, unknown>[] = [];
-			if (includeJoinRequests && showDiag && config.syncCoordinatorAdminSecret) {
-				try {
-					joinRequests = await listCoordinatorJoinRequests(config);
-				} catch {
-					joinRequests = [];
-				}
-			}
-
-			if (daemonStateValue === "ok" && latestAttemptError.startsWith("needs_attention:")) {
-				daemonStateValue = "needs_attention";
-				statusPayload.daemon_state = daemonStateValue;
-				statusPayload.daemon_detail = latestAttemptError.replace(/^needs_attention:/, "");
-				statusBlock.daemon_state = daemonStateValue;
-				statusBlock.daemon_detail = latestAttemptError.replace(/^needs_attention:/, "");
-			}
-
-			if (daemonStateValue === "ok") {
-				const peerStates = new Set(
-					peersItems.map((peer) =>
-						String((peer.status as Record<string, unknown> | undefined)?.peer_state ?? ""),
-					),
-				);
-				const latestFailedRecently = Boolean(
-					attemptsItems[0] &&
-						attemptsItems[0].status === "error" &&
-						isRecentIso(attemptsItems[0].finished_at),
-				);
-				const allOffline =
-					peersItems.length > 0 &&
-					peersItems.every(
-						(peer) =>
-							String((peer.status as Record<string, unknown>)?.peer_state ?? "") === "offline",
-					);
-				if (latestFailedRecently) {
-					const hasLivePeer = peerStates.has("online") || peerStates.has("degraded");
-					if (hasLivePeer) daemonStateValue = "degraded";
-					else if (allOffline) daemonStateValue = "offline-peers";
-					else if (peersItems.length > 0) daemonStateValue = "stale";
-				} else if (peerStates.has("degraded")) {
-					daemonStateValue = "degraded";
-				} else if (allOffline) {
-					daemonStateValue = "offline-peers";
-				} else if (peersItems.length > 0 && !peerStates.has("online")) {
-					daemonStateValue = "stale";
-				}
-				statusPayload.daemon_state = daemonStateValue;
-				statusBlock.daemon_state = daemonStateValue;
-			}
-
-			const responsePayload: Record<string, unknown> = {
-				...statusPayload,
-				status: statusBlock,
-				peers: peersItems,
-				attempts: attemptsItems.slice(0, 5),
-				legacy_devices: legacyDevices,
-				legacy_shared_review: legacyReview,
-				sharing_review: sharingReview,
-				recipient_policy_reconciliation: recipientPolicyReconciliation,
-				coordinator,
-			};
-			if (includeJoinRequests && showDiag) {
-				responsePayload.join_requests = joinRequests;
-			}
-			return c.json(responsePayload);
-		}
+		const response = await buildSyncStatusResponse({
+			store: getStore(),
+			showDiagnostics: queryBool(c.req.query("includeDiagnostics")),
+			includeJoinRequests: queryBool(c.req.query("includeJoinRequests")),
+			project: c.req.query("project") || null,
+			getSyncRuntimeStatus,
+			operations: {
+				cleanupDiagnostics,
+				isRecentIso,
+				legacySharedReviewSummary,
+				listRecipientPolicyReconciliationStatus,
+				mapPeerRow,
+				mapSyncAttemptRow,
+				peerStatus,
+				readViewerBinding,
+				recentPeerOps,
+				recentScopeRejectionsByPeer,
+				redactCoordinatorStatus,
+				redactSemanticIndexDiagnostics,
+				summarizeMaintenanceJobs,
+			},
+		});
+		return c.json(response);
 	});
 
 	// GET /api/sync/peers
