@@ -1,5 +1,8 @@
 import type { Database } from "./db.js";
-import { isFilesystemRootProjectIdentity } from "./legacy-team-project-policy.js";
+import {
+	isFilesystemRootProjectIdentity,
+	normalizeLegacyProjectMappingIdentity,
+} from "./legacy-project-identity.js";
 import { preferredActiveUnmergedLocalActorId } from "./recipient-policy-actor-eligibility.js";
 import {
 	RECIPIENT_POLICY_CONTRACT_VERSION,
@@ -19,6 +22,8 @@ import {
 } from "./scope-resolution.js";
 import { shareProjectSetDigest } from "./share-operation.js";
 import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap-constants.js";
+
+export { normalizeLegacyProjectMappingIdentity } from "./legacy-project-identity.js";
 
 export type LegacyRecipientPolicyConfidenceV1 = "high" | "medium" | "low";
 
@@ -207,13 +212,7 @@ function hasWildcard(value: string): boolean {
 	return /[*?]/u.test(value);
 }
 
-function normalizedIdentity(value: string): string {
-	return value.trim().replaceAll("\\", "/").replace(/\/+$/u, "");
-}
-
-export function normalizeLegacyProjectMappingIdentity(value: string): string {
-	return normalizedIdentity(value);
-}
+const normalizedIdentity = normalizeLegacyProjectMappingIdentity;
 
 function wildcardMatches(identity: string, pattern: string): boolean {
 	const normalizedPattern = normalizedIdentity(pattern);

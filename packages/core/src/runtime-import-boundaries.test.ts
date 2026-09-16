@@ -6,4 +6,17 @@ describe("runtime import boundaries", () => {
 		const source = readFileSync(new URL("recipient-policy-onboarding.ts", import.meta.url), "utf8");
 		expect(source).not.toMatch(/from ["']\.\/share-operation\.js["']/);
 	});
+
+	it("keeps legacy project identity rules below inventory and projection", () => {
+		const inventorySource = readFileSync(
+			new URL("local-project-inventory.ts", import.meta.url),
+			"utf8",
+		);
+		const projectionSource = readFileSync(
+			new URL("legacy-recipient-policy-projection.ts", import.meta.url),
+			"utf8",
+		);
+		expect(inventorySource).not.toMatch(/from ["']\.\/legacy-recipient-policy-projection\.js["']/);
+		expect(projectionSource).not.toMatch(/from ["']\.\/legacy-team-project-policy\.js["']/);
+	});
 });

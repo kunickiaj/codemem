@@ -1,5 +1,5 @@
 import type { Database } from "./db.js";
-import { normalizeLegacyProjectMappingIdentity } from "./legacy-recipient-policy-projection.js";
+import { normalizeLegacyProjectMappingIdentity } from "./legacy-project-identity.js";
 import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap-constants.js";
 
 export function hasLocalInventoryIdentity(db: Database, workspaceIdentity: string): boolean {
