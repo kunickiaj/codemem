@@ -164,6 +164,60 @@ describe("sync capability negotiation", () => {
 	it("downgrades scoped-to-aware sessions to aware", () => {
 		expect(negotiateSyncCapability("scoped", "aware")).toBe("aware");
 	});
+
+	it("records advertised capability diagnostics when negotiation fails after status", async () => {
+		const db = new Database(":memory:");
+		initTestSchema(db);
+		addSyncTables(db);
+		try {
+			db.prepare(
+				"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+			).run("peer-protocol-mismatch", "abc123", new Date().toISOString());
+			vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+				"local-device-id",
+				"ed25519 AAAA",
+			]);
+			vi.mocked(syncAuth.buildDirectPeerAuthHeaders).mockReturnValue({
+				"X-Codemem-Recipient": "peer-protocol-mismatch",
+				"X-Codemem-Signature": "v3:test-signature",
+			});
+			vi.spyOn(syncHttpClient, "requestJson").mockResolvedValueOnce([
+				200,
+				{
+					fingerprint: "abc123",
+					protocol_version: "1",
+					sync_capability: "scoped",
+					sync_reset: {
+						generation: 1,
+						snapshot_id: "snap-1",
+						baseline_cursor: null,
+						retained_floor_cursor: null,
+					},
+				},
+			]);
+
+			const result = await syncOnce(db, "peer-protocol-mismatch", ["http://127.0.0.1:9090"]);
+
+			expect(result.ok).toBe(false);
+			expect(result.error).toContain("peer protocol mismatch");
+			const attempt = db
+				.prepare(
+					`SELECT local_sync_capability, peer_sync_capability, negotiated_sync_capability
+					   FROM sync_attempts
+					  WHERE peer_device_id = ?
+					  ORDER BY id DESC
+					  LIMIT 1`,
+				)
+				.get("peer-protocol-mismatch") as Record<string, unknown>;
+			expect(attempt).toMatchObject({
+				local_sync_capability: "scoped",
+				peer_sync_capability: "scoped",
+				negotiated_sync_capability: "scoped",
+			});
+		} finally {
+			db.close();
+		}
+	});
 });
 
 // ---------------------------------------------------------------------------

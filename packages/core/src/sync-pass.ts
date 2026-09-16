@@ -1156,6 +1156,768 @@ export function syncPassPreflight(db: Database): void {
 	backfillReplicationOps(db, 200);
 }
 
+type PeerResetBoundary = NonNullable<ReturnType<typeof parsePeerResetBoundary>>;
+
+interface SyncExchangeContext {
+	db: Database;
+	peerDeviceId: string;
+	deviceId: string;
+	pinnedFingerprint: string;
+	pendingBootstrapGrantId: string | undefined;
+	limit: number;
+	keysDir: string | undefined;
+	dbPath: string | undefined;
+	scanner: SecretScanner | undefined;
+	refreshAuthorization: boolean;
+}
+
+interface SyncCursorState {
+	lastApplied: string | null;
+	lastAcked: string | null;
+}
+
+interface NegotiatedPeerExchange {
+	baseUrl: string;
+	statusPayload: Record<string, unknown>;
+	resetBoundary: PeerResetBoundary;
+	capabilities: SyncCapabilityDiagnostics;
+}
+
+class PeerNegotiationError extends Error {
+	readonly capabilities: SyncCapabilityDiagnostics;
+
+	constructor(message: string, capabilities: SyncCapabilityDiagnostics) {
+		super(message);
+		this.name = "PeerNegotiationError";
+		this.capabilities = capabilities;
+	}
+}
+
+async function negotiatePeerExchange(
+	context: SyncExchangeContext,
+	baseUrl: string,
+): Promise<NegotiatedPeerExchange> {
+	const statusUrl = `${baseUrl}/v1/status`;
+	const statusHeaders = {
+		...buildDirectPeerAuthHeaders({
+			deviceId: context.deviceId,
+			recipientId: context.peerDeviceId,
+			method: "GET",
+			url: statusUrl,
+			bodyBytes: Buffer.alloc(0),
+			keysDir: context.keysDir,
+			dbPath: context.dbPath,
+			bootstrapGrantId: context.pendingBootstrapGrantId,
+		}),
+		...capabilityHeader(),
+		...(context.refreshAuthorization ? { [SYNC_AUTHORIZATION_REFRESH_HEADER]: "1" } : {}),
+	};
+	const [statusCode, statusPayload] = await requestJson("GET", statusUrl, {
+		headers: statusHeaders,
+	});
+	if (statusCode !== 200 || !statusPayload) {
+		const detail = errorDetail(statusPayload);
+		const suffix = detail ? ` (${statusCode}: ${detail})` : ` (${statusCode})`;
+		throw new Error(`peer status failed${suffix}`);
+	}
+	if (statusPayload.fingerprint !== context.pinnedFingerprint) {
+		throw new Error("peer fingerprint mismatch");
+	}
+	persistPeerRuntimeVersion(context.db, context.peerDeviceId, statusPayload);
+	const capabilities = capabilityDiagnostics(statusPayload.sync_capability);
+	try {
+		if (String(statusPayload.protocol_version ?? "") !== EXPECTED_SYNC_PROTOCOL_VERSION) {
+			throw new Error(
+				`peer protocol mismatch (expected ${EXPECTED_SYNC_PROTOCOL_VERSION}, got ${String(statusPayload.protocol_version ?? "missing")})`,
+			);
+		}
+		const resetBoundary = parsePeerResetBoundary(statusPayload);
+		if (!resetBoundary) throw new Error("peer status missing sync_reset boundary");
+		await reconcilePeerRowsBeforeExchange(context.db, {
+			localDeviceId: context.deviceId,
+			peerDeviceId: context.peerDeviceId,
+		});
+		if (context.pendingBootstrapGrantId) {
+			context.db
+				.prepare(`UPDATE sync_peers SET pending_bootstrap_grant_id = NULL
+					WHERE peer_device_id = ? AND pending_bootstrap_grant_id = ?`)
+				.run(context.peerDeviceId, context.pendingBootstrapGrantId);
+		}
+		return { baseUrl, statusPayload, resetBoundary, capabilities };
+	} catch (error) {
+		const message =
+			error instanceof Error ? error.message.trim() || error.constructor.name : "unknown";
+		throw new PeerNegotiationError(message, capabilities);
+	}
+}
+
+function sharedMemoryCount(db: Database): number {
+	return Number(
+		(
+			db.prepare("SELECT count(*) as n FROM memory_items WHERE import_key IS NOT NULL").get() as {
+				n: number;
+			}
+		)?.n ?? 0,
+	);
+}
+
+function snapshotAccessDenied(
+	context: SyncExchangeContext,
+	peer: NegotiatedPeerExchange,
+	reset: SyncResetRequired,
+): SyncResult | null {
+	if (!reset.scope_id) return null;
+	const failure = scopedSnapshotAccessFailure(context.db, {
+		scopeId: reset.scope_id,
+		peerDeviceId: context.peerDeviceId,
+		localDeviceId: context.deviceId,
+	});
+	if (!failure) return null;
+	recordSyncAttempt(context.db, context.peerDeviceId, {
+		ok: false,
+		error: `reset_required:${failure}`,
+		capabilities: peer.capabilities,
+	});
+	return scopedSnapshotAccessDeniedResult(peer.baseUrl, reset, failure);
+}
+
+type SnapshotItems = Awaited<ReturnType<typeof fetchAllSnapshotPages>>["items"];
+
+async function finishInitialBootstrap(
+	context: SyncExchangeContext,
+	peer: NegotiatedPeerExchange,
+	resetInfo: SyncResetRequired,
+	items: SnapshotItems,
+): Promise<SyncResult> {
+	const bootstrap = applyBootstrapSnapshot(
+		context.db,
+		context.peerDeviceId,
+		items,
+		resetInfo,
+		context.scanner,
+	);
+	if (!bootstrap.ok) throw new Error("initial bootstrap apply failed");
+	const scoped =
+		peer.capabilities.negotiated === "scoped"
+			? await runScopedSync(context.db, {
+					peerDeviceId: context.peerDeviceId,
+					baseUrl: peer.baseUrl,
+					deviceId: context.deviceId,
+					statusPayload: peer.statusPayload,
+					keysDir: context.keysDir,
+					dbPath: context.dbPath,
+					scanner: context.scanner,
+					limit: context.limit,
+				})
+			: { results: [], totalOpsIn: 0 };
+	const ok = scoped.results.every((result) => result.ok);
+	const error = ok
+		? undefined
+		: `scoped sync incomplete: ${scoped.results
+				.filter((result) => !result.ok)
+				.map((result) => `${result.scope_id}=${result.error ?? "unknown"}`)
+				.join("; ")}`;
+	recordPeerSuccess(context.db, context.peerDeviceId, peer.baseUrl);
+	recordSyncAttempt(context.db, context.peerDeviceId, {
+		ok,
+		opsIn: bootstrap.applied + scoped.totalOpsIn,
+		opsOut: 0,
+		capabilities: peer.capabilities,
+		error,
+	});
+	return {
+		ok,
+		address: peer.baseUrl,
+		failureCategory: aggregateScopeFailureCategory(scoped.results),
+		opsIn: bootstrap.applied + scoped.totalOpsIn,
+		opsOut: 0,
+		addressErrors: [],
+		perScopeResults: scoped.results.length > 0 ? scoped.results : undefined,
+	};
+}
+
+async function performInitialBootstrap(
+	context: SyncExchangeContext,
+	peer: NegotiatedPeerExchange,
+): Promise<SyncResult> {
+	const resetInfo = {
+		scope_id: peer.resetBoundary.scope_id,
+		generation: peer.resetBoundary.generation,
+		snapshot_id: peer.resetBoundary.snapshot_id,
+		baseline_cursor: peer.resetBoundary.baseline_cursor ?? null,
+		retained_floor_cursor: peer.resetBoundary.retained_floor_cursor ?? null,
+		reset_required: true as const,
+		reason: "initial_bootstrap" as const,
+	};
+	const accessDenied = snapshotAccessDenied(context, peer, resetInfo);
+	if (accessDenied) return accessDenied;
+	const { items } = await fetchAllSnapshotPages(peer.baseUrl, resetInfo, context.deviceId, {
+		keysDir: context.keysDir,
+		dbPath: context.dbPath,
+		recipientId: context.peerDeviceId,
+		pageSize: BOOTSTRAP_PAGE_SIZE,
+		timeoutS: BOOTSTRAP_REQUEST_TIMEOUT_S,
+	});
+	const postFetchSharedCount = sharedMemoryCount(context.db);
+	if (postFetchSharedCount > 0) {
+		recordSyncAttempt(context.db, context.peerDeviceId, {
+			ok: false,
+			error: "needs_attention:shared_memories_appeared_during_bootstrap",
+			capabilities: peer.capabilities,
+		});
+		return {
+			ok: false,
+			address: peer.baseUrl,
+			error: `needs attention: ${postFetchSharedCount} shared memory change(s) appeared during initial bootstrap fetch`,
+			failureCategory: "other",
+			opsIn: 0,
+			opsOut: 0,
+			addressErrors: [],
+		};
+	}
+	return finishInitialBootstrap(context, peer, resetInfo, items);
+}
+
+async function tryInitialBootstrap(
+	context: SyncExchangeContext,
+	peer: NegotiatedPeerExchange,
+	cursors: SyncCursorState,
+): Promise<SyncResult | null> {
+	if (cursors.lastApplied !== null || cursors.lastAcked !== null) return null;
+	if (sharedMemoryCount(context.db) !== 0) return null;
+	try {
+		return await performInitialBootstrap(context, peer);
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error);
+		throw new Error(`initial bootstrap failed: ${detail}`);
+	}
+}
+
+function resetRequiredFromPayload(payload: Record<string, unknown>): SyncResetRequired {
+	const reason =
+		payload.reason === "generation_mismatch" ||
+		payload.reason === "boundary_mismatch" ||
+		payload.reason === "missing_scope" ||
+		payload.reason === "unsupported_scope"
+			? payload.reason
+			: "stale_cursor";
+	return {
+		reset_required: true,
+		reason,
+		scope_id: typeof payload.scope_id === "string" ? payload.scope_id : null,
+		generation: Number(payload.generation ?? 1),
+		snapshot_id: String(payload.snapshot_id ?? ""),
+		baseline_cursor: asOptionalCursor(payload.baseline_cursor),
+		retained_floor_cursor: asOptionalCursor(payload.retained_floor_cursor),
+	};
+}
+
+function resetBlockedResult(
+	baseUrl: string,
+	count: number,
+	resetRequired: SyncResetRequired,
+	when: "before" | "during",
+): SyncResult {
+	const timing = when === "during" ? " appeared during bootstrap fetch" : " block automatic reset";
+	return {
+		ok: false,
+		address: baseUrl,
+		error: `needs attention: ${count} unsynced shared memory change(s)${timing}`,
+		failureCategory: "other",
+		opsIn: 0,
+		opsOut: 0,
+		addressErrors: [],
+		resetRequired,
+	};
+}
+
+function failedResetBootstrap(
+	context: SyncExchangeContext,
+	peer: NegotiatedPeerExchange,
+	resetRequired: SyncResetRequired,
+	error: unknown,
+): SyncResult {
+	const detail = error instanceof Error ? error.message : String(error);
+	recordSyncAttempt(context.db, context.peerDeviceId, {
+		ok: false,
+		error: `bootstrap_failed:${detail}`,
+		capabilities: peer.capabilities,
+	});
+	return {
+		ok: false,
+		address: peer.baseUrl,
+		error: `bootstrap failed: ${detail}`,
+		failureCategory: "other",
+		opsIn: 0,
+		opsOut: 0,
+		addressErrors: [],
+		resetRequired,
+	};
+}
+
+async function performResetBootstrap(
+	context: SyncExchangeContext,
+	peer: NegotiatedPeerExchange,
+	resetRequired: SyncResetRequired,
+): Promise<SyncResult> {
+	const dirtyLocal = hasUnsyncedSharedMemoryChanges(context.db);
+	if (dirtyLocal.dirty) {
+		recordSyncAttempt(context.db, context.peerDeviceId, {
+			ok: false,
+			error: `needs_attention:local_unsynced_shared_memory:${dirtyLocal.count}`,
+			capabilities: peer.capabilities,
+		});
+		return resetBlockedResult(peer.baseUrl, dirtyLocal.count, resetRequired, "before");
+	}
+	try {
+		const accessDenied = snapshotAccessDenied(context, peer, resetRequired);
+		if (accessDenied) return accessDenied;
+		const { items } = await fetchAllSnapshotPages(peer.baseUrl, resetRequired, context.deviceId, {
+			keysDir: context.keysDir,
+			dbPath: context.dbPath,
+			recipientId: context.peerDeviceId,
+			timeoutS: BOOTSTRAP_REQUEST_TIMEOUT_S,
+		});
+		const dirtyAfterFetch = hasUnsyncedSharedMemoryChanges(context.db);
+		if (dirtyAfterFetch.dirty) {
+			recordSyncAttempt(context.db, context.peerDeviceId, {
+				ok: false,
+				error: `needs_attention:local_unsynced_shared_memory:${dirtyAfterFetch.count}`,
+				capabilities: peer.capabilities,
+			});
+			return resetBlockedResult(peer.baseUrl, dirtyAfterFetch.count, resetRequired, "during");
+		}
+		const bootstrapResult = applyBootstrapSnapshot(
+			context.db,
+			context.peerDeviceId,
+			items,
+			resetRequired,
+			context.scanner,
+		);
+		if (!bootstrapResult.ok) throw new Error("bootstrap apply failed");
+		recordPeerSuccess(context.db, context.peerDeviceId, peer.baseUrl);
+		recordSyncAttempt(context.db, context.peerDeviceId, {
+			ok: true,
+			opsIn: bootstrapResult.applied,
+			opsOut: 0,
+			capabilities: peer.capabilities,
+		});
+		return {
+			ok: true,
+			address: peer.baseUrl,
+			opsIn: bootstrapResult.applied,
+			opsOut: 0,
+			addressErrors: [],
+		};
+	} catch (error) {
+		return failedResetBootstrap(context, peer, resetRequired, error);
+	}
+}
+
+interface PulledDefaultOps {
+	kind: "ops";
+	payload: Record<string, unknown>;
+	ops: ReplicationOp[];
+}
+
+interface PulledResetResult {
+	kind: "result";
+	result: SyncResult;
+}
+
+async function pullDefaultScope(
+	context: SyncExchangeContext,
+	peer: NegotiatedPeerExchange,
+	lastApplied: string | null,
+): Promise<PulledDefaultOps | PulledResetResult> {
+	const queryParams = new URLSearchParams({
+		since: lastApplied ?? "",
+		limit: String(context.limit),
+		generation: String(peer.resetBoundary.generation),
+		snapshot_id: peer.resetBoundary.snapshot_id,
+	});
+	if (peer.resetBoundary.baseline_cursor) {
+		queryParams.set("baseline_cursor", peer.resetBoundary.baseline_cursor);
+	}
+	const getUrl = `${peer.baseUrl}/v1/ops?${queryParams.toString()}`;
+	const getHeaders = {
+		...buildDirectPeerAuthHeaders({
+			deviceId: context.deviceId,
+			recipientId: context.peerDeviceId,
+			method: "GET",
+			url: getUrl,
+			bodyBytes: Buffer.alloc(0),
+			keysDir: context.keysDir,
+			dbPath: context.dbPath,
+		}),
+		...capabilityHeader(),
+	};
+	const [status, payload] = await requestJson("GET", getUrl, { headers: getHeaders });
+	if (status === 409 && payload?.reset_required === true) {
+		return {
+			kind: "result",
+			result: await performResetBootstrap(context, peer, resetRequiredFromPayload(payload)),
+		};
+	}
+	if (status !== 200 || payload == null) {
+		const detail = errorDetail(payload);
+		const suffix = detail ? ` (${status}: ${detail})` : ` (${status})`;
+		throw new Error(`peer ops fetch failed${suffix}`);
+	}
+	if (!isValidIncrementalOpsResponse(payload)) throw new Error("invalid ops response");
+	const ops = extractReplicationOps(payload);
+	const mismatchedOp = ops.find(
+		(op) => op.device_id !== context.peerDeviceId || op.clock_device_id !== context.peerDeviceId,
+	);
+	if (mismatchedOp) throw new Error(`inbound op device mismatch:${mismatchedOp.op_id}`);
+	return { kind: "ops", payload, ops };
+}
+
+type AppliedReplicationOps = ReturnType<typeof applyReplicationOps>;
+
+async function applyPulledDefaultOps(
+	context: SyncExchangeContext,
+	peer: NegotiatedPeerExchange,
+	pulled: PulledDefaultOps,
+	lastApplied: string | null,
+): Promise<{ applied: AppliedReplicationOps; lastApplied: string | null }> {
+	const inboundScopeValidation =
+		peer.capabilities.negotiated === "unsupported"
+			? { peerDeviceId: context.peerDeviceId, enabled: false }
+			: { peerDeviceId: context.peerDeviceId };
+	const applied = applyReplicationOps(context.db, pulled.ops, context.deviceId, context.scanner, {
+		inboundScopeValidation,
+	});
+	if (applied.rejected > 0) {
+		const firstReason = applied.rejections[0]?.reason ?? "scope_rejected";
+		throw new Error(`inbound scope rejected:${firstReason}`);
+	}
+	const reconciliation = reconcileStalePeerReceivedRows(context.db, {
+		localDeviceId: context.deviceId,
+		peerDeviceId: context.peerDeviceId,
+	});
+	const vectorWork = {
+		upsertMemoryIds: applied.vectorWork.upsertMemoryIds,
+		deleteMemoryIds: [...applied.vectorWork.deleteMemoryIds, ...reconciliation.deleted_memory_ids],
+	};
+	try {
+		queueVectorBackfillForIncrementalSync(context.db, vectorWork);
+	} catch (queueError) {
+		const fallback = await bestEffortMaintainVectorsForSyncFallback(context.db, vectorWork);
+		if (fallback.errors.length > 0) {
+			const details = fallback.errors.join("; ");
+			throw new Error(
+				`vector catch-up queue failed: ${queueError instanceof Error ? queueError.message : String(queueError)}; fallback failed: ${details}`,
+			);
+		}
+	}
+	const inboundCursor = asOptionalCursor(pulled.payload.next_cursor);
+	if (applied.errors.length > 0) {
+		process.stderr.write(
+			`[codemem] sync: holding inbound cursor for peer ${context.peerDeviceId} — ${applied.errors.length} op(s) failed to apply and will be retried\n`,
+		);
+	}
+	if (applied.errors.length !== 0 || !cursorAdvances(lastApplied, inboundCursor)) {
+		return { applied, lastApplied };
+	}
+	setReplicationCursor(context.db, context.peerDeviceId, { lastApplied: inboundCursor });
+	return { applied, lastApplied: inboundCursor };
+}
+
+interface PushedDefaultOps {
+	outboundOps: ReplicationOp[];
+	skippedOutbound: FilterReplicationSkipped | null | undefined;
+	opsSkipped: number;
+	lastAcked: string | null;
+}
+
+async function pushDefaultScope(
+	context: SyncExchangeContext,
+	peer: NegotiatedPeerExchange,
+	lastAcked: string | null,
+): Promise<PushedDefaultOps> {
+	const [outboundWindow, outboundCursor] = loadLocalOpsSince(
+		context.db,
+		lastAcked,
+		context.deviceId,
+		context.limit,
+	);
+	const [outboundOps, filteredOutboundCursor, skippedOutbound] =
+		filterReplicationOpsForSyncWithStatus(context.db, outboundWindow, context.peerDeviceId, {
+			localDeviceId: context.deviceId,
+			supportsReassignScope: supportsSyncFeature(
+				peer.statusPayload.sync_features,
+				"reassign_scope",
+			),
+		});
+	const postUrl = `${peer.baseUrl}/v1/ops`;
+	for (const batch of chunkOpsBySize(outboundOps, MAX_SYNC_BODY_BYTES)) {
+		await pushOps(
+			postUrl,
+			context.deviceId,
+			context.peerDeviceId,
+			batch,
+			context.keysDir,
+			context.dbPath,
+		);
+	}
+	const ackCursor = filteredOutboundCursor ?? outboundCursor;
+	let nextLastAcked = lastAcked;
+	if (ackCursor && cursorAdvances(lastAcked, ackCursor)) {
+		setReplicationCursor(context.db, context.peerDeviceId, { lastAcked: ackCursor });
+		nextLastAcked = ackCursor;
+	}
+	return {
+		outboundOps,
+		skippedOutbound,
+		opsSkipped: skippedOutbound?.skipped_count ?? 0,
+		lastAcked: nextLastAcked,
+	};
+}
+
+async function finishIncrementalExchange(
+	context: SyncExchangeContext,
+	peer: NegotiatedPeerExchange,
+	applied: AppliedReplicationOps,
+	pushed: PushedDefaultOps,
+): Promise<SyncResult> {
+	const scoped =
+		peer.capabilities.negotiated === "scoped"
+			? await runScopedSync(context.db, {
+					peerDeviceId: context.peerDeviceId,
+					baseUrl: peer.baseUrl,
+					deviceId: context.deviceId,
+					statusPayload: peer.statusPayload,
+					keysDir: context.keysDir,
+					dbPath: context.dbPath,
+					scanner: context.scanner,
+					limit: context.limit,
+				})
+			: { results: [], totalOpsIn: 0 };
+	const allScopesOk = scoped.results.every((result) => result.ok);
+	const inboundIncomplete = applied.errors.length > 0;
+	const errors: string[] = [];
+	if (inboundIncomplete) {
+		errors.push(
+			`inbound apply incomplete: ${applied.errors.length} op(s) failed; cursor held for retry`,
+		);
+	}
+	if (!allScopesOk) {
+		errors.push(
+			`scoped sync incomplete: ${scoped.results
+				.filter((result) => !result.ok)
+				.map((result) => `${result.scope_id}=${result.error ?? "unknown"}`)
+				.join("; ")}`,
+		);
+	}
+	const ok = allScopesOk && !inboundIncomplete;
+	const error = errors.length > 0 ? errors.join("; ") : undefined;
+	if (!inboundIncomplete) recordPeerSuccess(context.db, context.peerDeviceId, peer.baseUrl);
+	recordSyncAttempt(context.db, context.peerDeviceId, {
+		ok,
+		opsIn: applied.applied + scoped.totalOpsIn,
+		opsOut: pushed.outboundOps.length,
+		capabilities: peer.capabilities,
+		error,
+	});
+	return {
+		ok,
+		address: peer.baseUrl,
+		error,
+		failureCategory: inboundIncomplete ? "other" : aggregateScopeFailureCategory(scoped.results),
+		opsIn: applied.applied + scoped.totalOpsIn,
+		opsOut: pushed.outboundOps.length,
+		opsSkipped: pushed.opsSkipped,
+		skippedOut: pushed.skippedOutbound ?? null,
+		addressErrors: [],
+		perScopeResults: scoped.results.length > 0 ? scoped.results : undefined,
+	};
+}
+
+type SyncAddressOutcome =
+	| { kind: "success"; result: SyncResult }
+	| {
+			kind: "failure";
+			error: unknown;
+			capabilities: SyncCapabilityDiagnostics | undefined;
+	  };
+
+async function syncAddress(
+	context: SyncExchangeContext,
+	baseUrl: string,
+	cursors: SyncCursorState,
+): Promise<SyncAddressOutcome> {
+	let peer: NegotiatedPeerExchange;
+	try {
+		peer = await negotiatePeerExchange(context, baseUrl);
+	} catch (error) {
+		return {
+			kind: "failure",
+			error,
+			capabilities: error instanceof PeerNegotiationError ? error.capabilities : undefined,
+		};
+	}
+	try {
+		const bootstrap = await tryInitialBootstrap(context, peer, cursors);
+		if (bootstrap) return { kind: "success", result: bootstrap };
+		const pulled = await pullDefaultScope(context, peer, cursors.lastApplied);
+		if (pulled.kind === "result") return { kind: "success", result: pulled.result };
+		const applied = await applyPulledDefaultOps(context, peer, pulled, cursors.lastApplied);
+		cursors.lastApplied = applied.lastApplied;
+		const pushed = await pushDefaultScope(context, peer, cursors.lastAcked);
+		cursors.lastAcked = pushed.lastAcked;
+		return {
+			kind: "success",
+			result: await finishIncrementalExchange(context, peer, applied.applied, pushed),
+		};
+	} catch (error) {
+		return { kind: "failure", error, capabilities: peer.capabilities };
+	}
+}
+
+function warnMissingSyncScanner(scanner: SecretScanner | undefined): void {
+	if (scanner || syncOnceScannerWarned) return;
+	syncOnceScannerWarned = true;
+	process.stderr.write(
+		"[codemem] sync apply running without explicit scanner — workspace-level secret rules will not apply to inbound peer content\n",
+	);
+}
+
+function peerPin(
+	db: Database,
+	peerDeviceId: string,
+): { pinnedFingerprint: string; pendingBootstrapGrantId: string | undefined } {
+	const d = drizzle(db, { schema });
+	const row = d
+		.select({
+			pinned_fingerprint: schema.syncPeers.pinned_fingerprint,
+			pending_bootstrap_grant_id: schema.syncPeers.pending_bootstrap_grant_id,
+		})
+		.from(schema.syncPeers)
+		.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
+		.get();
+	return {
+		pinnedFingerprint: row?.pinned_fingerprint ?? "",
+		pendingBootstrapGrantId: row?.pending_bootstrap_grant_id?.trim() || undefined,
+	};
+}
+
+function unavailableIdentityResult(db: Database, peerDeviceId: string, error: unknown): SyncResult {
+	const detail =
+		error instanceof Error ? error.message.trim() || error.constructor.name : "unknown";
+	const message = `device identity unavailable: ${detail}`;
+	recordSyncAttempt(db, peerDeviceId, { ok: false, error: message });
+	return {
+		ok: false,
+		error: message,
+		failureCategory: "other",
+		opsIn: 0,
+		opsOut: 0,
+		addressErrors: [],
+	};
+}
+
+type PreparedSyncExchange =
+	| { kind: "ready"; context: SyncExchangeContext; cursors: SyncCursorState }
+	| { kind: "result"; result: SyncResult };
+
+function prepareSyncExchange(
+	db: Database,
+	peerDeviceId: string,
+	options: SyncPassOptions | undefined,
+): PreparedSyncExchange {
+	ensureAdditiveSchemaCompatibility(db);
+	warnMissingSyncScanner(options?.scanner);
+	const { pinnedFingerprint, pendingBootstrapGrantId } = peerPin(db, peerDeviceId);
+	if (!pinnedFingerprint) {
+		return {
+			kind: "result",
+			result: {
+				ok: false,
+				error: "peer not pinned",
+				failureCategory: "trust",
+				opsIn: 0,
+				opsOut: 0,
+				addressErrors: [],
+			},
+		};
+	}
+	let deviceId: string;
+	try {
+		[deviceId] = ensureDeviceIdentity(db, { keysDir: options?.keysDir });
+	} catch (error) {
+		return { kind: "result", result: unavailableIdentityResult(db, peerDeviceId, error) };
+	}
+	const [lastApplied, lastAcked] = getReplicationCursor(db, peerDeviceId);
+	return {
+		kind: "ready",
+		context: {
+			db,
+			peerDeviceId,
+			deviceId,
+			pinnedFingerprint,
+			pendingBootstrapGrantId,
+			limit: options?.limit ?? DEFAULT_LIMIT,
+			keysDir: options?.keysDir,
+			dbPath: options?.dbPath,
+			scanner: options?.scanner,
+			refreshAuthorization: options?.refreshAuthorization ?? false,
+		},
+		cursors: { lastApplied, lastAcked },
+	};
+}
+
+function failedAddressResult(
+	db: Database,
+	peerDeviceId: string,
+	addressErrors: Array<{ address: string; error: string }>,
+	attemptedAny: boolean,
+	capabilities: SyncCapabilityDiagnostics | undefined,
+): SyncResult {
+	let error = summarizeAddressErrors(addressErrors);
+	if (!attemptedAny) error = "no dialable peer addresses";
+	if (!error) error = "sync failed without diagnostic detail";
+	recordSyncAttempt(db, peerDeviceId, { ok: false, error, capabilities });
+	return {
+		ok: false,
+		error,
+		failureCategory: categorizeSyncFailure(error),
+		opsIn: 0,
+		opsOut: 0,
+		addressErrors,
+	};
+}
+
+async function tryPeerAddresses(
+	context: SyncExchangeContext,
+	cursors: SyncCursorState,
+	addresses: string[],
+): Promise<SyncResult> {
+	const addressErrors: Array<{ address: string; error: string }> = [];
+	let attemptedAny = false;
+	let capabilities: SyncCapabilityDiagnostics | undefined;
+	for (const address of addresses) {
+		const baseUrl = buildBaseUrl(address);
+		if (!baseUrl) continue;
+		attemptedAny = true;
+		const exchange = await syncAddress(context, baseUrl, cursors);
+		if (exchange.kind === "success") return exchange.result;
+		if (exchange.capabilities) capabilities = exchange.capabilities;
+		const detail =
+			exchange.error instanceof Error
+				? exchange.error.message.trim() || exchange.error.constructor.name
+				: "unknown";
+		addressErrors.push({ address: baseUrl, error: detail });
+	}
+	return failedAddressResult(
+		context.db,
+		context.peerDeviceId,
+		addressErrors,
+		attemptedAny,
+		capabilities,
+	);
+}
+
 // ---------------------------------------------------------------------------
 // Main sync loop
 // ---------------------------------------------------------------------------
@@ -1172,590 +1934,9 @@ export async function syncOnce(
 	addresses: string[],
 	options?: SyncPassOptions,
 ): Promise<SyncResult> {
-	ensureAdditiveSchemaCompatibility(db);
-	const limit = options?.limit ?? DEFAULT_LIMIT;
-	const keysDir = options?.keysDir;
-	const dbPath = options?.dbPath;
-	const scanner = options?.scanner;
-	if (!scanner && !syncOnceScannerWarned) {
-		syncOnceScannerWarned = true;
-		process.stderr.write(
-			"[codemem] sync apply running without explicit scanner — workspace-level secret rules will not apply to inbound peer content\n",
-		);
-	}
-
-	// Look up pinned fingerprint
-	const d = drizzle(db, { schema });
-	const pinRow = d
-		.select({
-			pinned_fingerprint: schema.syncPeers.pinned_fingerprint,
-			pending_bootstrap_grant_id: schema.syncPeers.pending_bootstrap_grant_id,
-		})
-		.from(schema.syncPeers)
-		.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
-		.get();
-	const pinnedFingerprint = pinRow?.pinned_fingerprint ?? "";
-	const pendingBootstrapGrantId = pinRow?.pending_bootstrap_grant_id?.trim() || undefined;
-	if (!pinnedFingerprint) {
-		return {
-			ok: false,
-			error: "peer not pinned",
-			failureCategory: "trust",
-			opsIn: 0,
-			opsOut: 0,
-			addressErrors: [],
-		};
-	}
-
-	// Read cursors
-	let [lastApplied, lastAcked] = getReplicationCursor(db, peerDeviceId);
-
-	// Ensure local device identity
-	let deviceId: string;
-	try {
-		[deviceId] = ensureDeviceIdentity(db, { keysDir });
-	} catch (err: unknown) {
-		const detail = err instanceof Error ? err.message.trim() || err.constructor.name : "unknown";
-		const error = `device identity unavailable: ${detail}`;
-		recordSyncAttempt(db, peerDeviceId, { ok: false, error });
-		return { ok: false, error, failureCategory: "other", opsIn: 0, opsOut: 0, addressErrors: [] };
-	}
-
-	const addressErrors: Array<{ address: string; error: string }> = [];
-	let attemptedAny = false;
-	let lastCapabilityDiagnostics: SyncCapabilityDiagnostics | undefined;
-
-	for (const address of addresses) {
-		const baseUrl = buildBaseUrl(address);
-		if (!baseUrl) continue;
-		attemptedAny = true;
-
-		try {
-			// -- 1. Verify peer identity via /v1/status --
-			const statusUrl = `${baseUrl}/v1/status`;
-			const statusHeaders = {
-				...buildDirectPeerAuthHeaders({
-					deviceId,
-					recipientId: peerDeviceId,
-					method: "GET",
-					url: statusUrl,
-					bodyBytes: Buffer.alloc(0),
-					keysDir,
-					dbPath,
-					bootstrapGrantId: pendingBootstrapGrantId,
-				}),
-				...capabilityHeader(),
-				...(options?.refreshAuthorization ? { [SYNC_AUTHORIZATION_REFRESH_HEADER]: "1" } : {}),
-			};
-			const [statusCode, statusPayload] = await requestJson("GET", statusUrl, {
-				headers: statusHeaders,
-			});
-			if (statusCode !== 200 || !statusPayload) {
-				const detail = errorDetail(statusPayload);
-				const suffix = detail ? ` (${statusCode}: ${detail})` : ` (${statusCode})`;
-				throw new Error(`peer status failed${suffix}`);
-			}
-			if (statusPayload.fingerprint !== pinnedFingerprint) {
-				throw new Error("peer fingerprint mismatch");
-			}
-			persistPeerRuntimeVersion(db, peerDeviceId, statusPayload);
-			lastCapabilityDiagnostics = capabilityDiagnostics(statusPayload.sync_capability);
-			if (String(statusPayload.protocol_version ?? "") !== EXPECTED_SYNC_PROTOCOL_VERSION) {
-				throw new Error(
-					`peer protocol mismatch (expected ${EXPECTED_SYNC_PROTOCOL_VERSION}, got ${String(statusPayload.protocol_version ?? "missing")})`,
-				);
-			}
-			const peerResetBoundary = parsePeerResetBoundary(statusPayload);
-			if (!peerResetBoundary) {
-				throw new Error("peer status missing sync_reset boundary");
-			}
-			await reconcilePeerRowsBeforeExchange(db, {
-				localDeviceId: deviceId,
-				peerDeviceId,
-			});
-			if (pendingBootstrapGrantId) {
-				db.prepare(`UPDATE sync_peers SET pending_bootstrap_grant_id = NULL
-					WHERE peer_device_id = ? AND pending_bootstrap_grant_id = ?`).run(
-					peerDeviceId,
-					pendingBootstrapGrantId,
-				);
-			}
-
-			// -- 1b. Auto-bootstrap if local node is empty and has never synced --
-			// Only triggers when: (a) no cursor for this peer, AND (b) no shared
-			// memories exist locally.  If the node already has shared data from
-			// another peer, fall through to normal incremental sync so the server
-			// can decide whether a reset is needed without clobbering local state.
-			if (lastApplied === null && lastAcked === null) {
-				const localSharedCount = Number(
-					(
-						db
-							.prepare("SELECT count(*) as n FROM memory_items WHERE import_key IS NOT NULL")
-							.get() as { n: number }
-					)?.n ?? 0,
-				);
-				if (localSharedCount === 0) {
-					try {
-						const resetInfo = {
-							scope_id: peerResetBoundary.scope_id,
-							generation: peerResetBoundary.generation,
-							snapshot_id: peerResetBoundary.snapshot_id,
-							baseline_cursor: peerResetBoundary.baseline_cursor ?? null,
-							retained_floor_cursor: peerResetBoundary.retained_floor_cursor ?? null,
-							reset_required: true as const,
-							reason: "initial_bootstrap" as const,
-						};
-						if (resetInfo.scope_id) {
-							const accessFailure = scopedSnapshotAccessFailure(db, {
-								scopeId: resetInfo.scope_id,
-								peerDeviceId,
-								localDeviceId: deviceId,
-							});
-							if (accessFailure) {
-								recordSyncAttempt(db, peerDeviceId, {
-									ok: false,
-									error: `reset_required:${accessFailure}`,
-									capabilities: lastCapabilityDiagnostics,
-								});
-								return scopedSnapshotAccessDeniedResult(baseUrl, resetInfo, accessFailure);
-							}
-						}
-						const { items } = await fetchAllSnapshotPages(baseUrl, resetInfo, deviceId, {
-							keysDir,
-							dbPath,
-							recipientId: peerDeviceId,
-							pageSize: BOOTSTRAP_PAGE_SIZE,
-							timeoutS: BOOTSTRAP_REQUEST_TIMEOUT_S,
-						});
-
-						// Re-check after network fetch: another process (plugin, CLI, another
-						// sync pass) could have created shared memories while we were fetching
-						// pages.  Same TOCTOU guard as the re-bootstrap path.
-						const postFetchSharedCount = Number(
-							(
-								db
-									.prepare("SELECT count(*) as n FROM memory_items WHERE import_key IS NOT NULL")
-									.get() as { n: number }
-							)?.n ?? 0,
-						);
-						if (postFetchSharedCount > 0) {
-							recordSyncAttempt(db, peerDeviceId, {
-								ok: false,
-								error: "needs_attention:shared_memories_appeared_during_bootstrap",
-								capabilities: lastCapabilityDiagnostics,
-							});
-							return {
-								ok: false,
-								address: baseUrl,
-								error: `needs attention: ${postFetchSharedCount} shared memory change(s) appeared during initial bootstrap fetch`,
-								failureCategory: "other",
-								opsIn: 0,
-								opsOut: 0,
-								addressErrors: [],
-							};
-						}
-						const bootstrapResult = applyBootstrapSnapshot(
-							db,
-							peerDeviceId,
-							items,
-							resetInfo,
-							scanner,
-						);
-						if (!bootstrapResult.ok) {
-							throw new Error("initial bootstrap apply failed");
-						}
-						// Run scoped sync alongside the default-scope bootstrap so
-						// fresh peers receive every authorized Space on the FIRST
-						// sync pass, not on the second. Per-scope failures are
-						// reported per scope and downgrade the overall ok only
-						// when at least one scope fails.
-						const scopedAfterBootstrap =
-							lastCapabilityDiagnostics?.negotiated === "scoped"
-								? await runScopedSync(db, {
-										peerDeviceId,
-										baseUrl,
-										deviceId,
-										statusPayload,
-										keysDir,
-										dbPath,
-										scanner,
-										limit,
-									})
-								: { results: [], totalOpsIn: 0 };
-						const bootstrapAllOk = scopedAfterBootstrap.results.every((r) => r.ok);
-						recordPeerSuccess(db, peerDeviceId, baseUrl);
-						recordSyncAttempt(db, peerDeviceId, {
-							ok: bootstrapAllOk,
-							opsIn: bootstrapResult.applied + scopedAfterBootstrap.totalOpsIn,
-							opsOut: 0,
-							capabilities: lastCapabilityDiagnostics,
-							error: bootstrapAllOk
-								? undefined
-								: `scoped sync incomplete: ${scopedAfterBootstrap.results
-										.filter((r) => !r.ok)
-										.map((r) => `${r.scope_id}=${r.error ?? "unknown"}`)
-										.join("; ")}`,
-						});
-						return {
-							ok: bootstrapAllOk,
-							address: baseUrl,
-							failureCategory: aggregateScopeFailureCategory(scopedAfterBootstrap.results),
-							opsIn: bootstrapResult.applied + scopedAfterBootstrap.totalOpsIn,
-							opsOut: 0,
-							addressErrors: [],
-							perScopeResults:
-								scopedAfterBootstrap.results.length > 0 ? scopedAfterBootstrap.results : undefined,
-						};
-					} catch (bootstrapErr) {
-						const msg = bootstrapErr instanceof Error ? bootstrapErr.message : String(bootstrapErr);
-						// Don't record attempt here — let address fallback loop handle it
-						// to avoid inflating consecutive failure counts.
-						throw new Error(`initial bootstrap failed: ${msg}`);
-					}
-				}
-				// else: local node has shared data — fall through to incremental sync
-			}
-
-			// -- 2. Pull ops from peer --
-			const queryParams = new URLSearchParams({
-				since: lastApplied ?? "",
-				limit: String(limit),
-				generation: String(peerResetBoundary.generation),
-				snapshot_id: peerResetBoundary.snapshot_id,
-			});
-			if (peerResetBoundary.baseline_cursor) {
-				queryParams.set("baseline_cursor", peerResetBoundary.baseline_cursor);
-			}
-			const query = queryParams.toString();
-			const getUrl = `${baseUrl}/v1/ops?${query}`;
-			const getHeaders = {
-				...buildDirectPeerAuthHeaders({
-					deviceId,
-					recipientId: peerDeviceId,
-					method: "GET",
-					url: getUrl,
-					bodyBytes: Buffer.alloc(0),
-					keysDir,
-					dbPath,
-				}),
-				...capabilityHeader(),
-			};
-			const [getStatus, getPayload] = await requestJson("GET", getUrl, {
-				headers: getHeaders,
-			});
-			if (getStatus === 409 && getPayload?.reset_required === true) {
-				const dirtyLocal = hasUnsyncedSharedMemoryChanges(db);
-				const resetReason =
-					getPayload.reason === "generation_mismatch" ||
-					getPayload.reason === "boundary_mismatch" ||
-					getPayload.reason === "missing_scope" ||
-					getPayload.reason === "unsupported_scope"
-						? getPayload.reason
-						: "stale_cursor";
-				const resetRequired: SyncResult["resetRequired"] = {
-					reset_required: true,
-					reason: resetReason,
-					scope_id: typeof getPayload.scope_id === "string" ? getPayload.scope_id : null,
-					generation: Number(getPayload.generation ?? 1),
-					snapshot_id: String(getPayload.snapshot_id ?? ""),
-					baseline_cursor:
-						typeof getPayload.baseline_cursor === "string" && getPayload.baseline_cursor.trim()
-							? getPayload.baseline_cursor.trim()
-							: null,
-					retained_floor_cursor:
-						typeof getPayload.retained_floor_cursor === "string" &&
-						getPayload.retained_floor_cursor.trim()
-							? getPayload.retained_floor_cursor.trim()
-							: null,
-				};
-
-				if (dirtyLocal.dirty) {
-					recordSyncAttempt(db, peerDeviceId, {
-						ok: false,
-						error: `needs_attention:local_unsynced_shared_memory:${dirtyLocal.count}`,
-						capabilities: lastCapabilityDiagnostics,
-					});
-					return {
-						ok: false,
-						address: baseUrl,
-						error: `needs attention: ${dirtyLocal.count} unsynced shared memory change(s) block automatic reset`,
-						failureCategory: "other",
-						opsIn: 0,
-						opsOut: 0,
-						addressErrors: [],
-						resetRequired,
-					};
-				}
-
-				// No dirty local state — safe to auto-bootstrap from peer snapshot.
-				try {
-					if (resetRequired.scope_id) {
-						const accessFailure = scopedSnapshotAccessFailure(db, {
-							scopeId: resetRequired.scope_id,
-							peerDeviceId,
-							localDeviceId: deviceId,
-						});
-						if (accessFailure) {
-							recordSyncAttempt(db, peerDeviceId, {
-								ok: false,
-								error: `reset_required:${accessFailure}`,
-								capabilities: lastCapabilityDiagnostics,
-							});
-							return scopedSnapshotAccessDeniedResult(baseUrl, resetRequired, accessFailure);
-						}
-					}
-					const { items } = await fetchAllSnapshotPages(baseUrl, resetRequired, deviceId, {
-						keysDir,
-						dbPath,
-						recipientId: peerDeviceId,
-						timeoutS: BOOTSTRAP_REQUEST_TIMEOUT_S,
-					});
-
-					// Re-check dirty state after network fetch to close the TOCTOU window.
-					// A user may have created shared memories while we were fetching pages.
-					const dirtyAfterFetch = hasUnsyncedSharedMemoryChanges(db);
-					if (dirtyAfterFetch.dirty) {
-						recordSyncAttempt(db, peerDeviceId, {
-							ok: false,
-							error: `needs_attention:local_unsynced_shared_memory:${dirtyAfterFetch.count}`,
-							capabilities: lastCapabilityDiagnostics,
-						});
-						return {
-							ok: false,
-							address: baseUrl,
-							error: `needs attention: ${dirtyAfterFetch.count} unsynced shared memory change(s) appeared during bootstrap fetch`,
-							failureCategory: "other",
-							opsIn: 0,
-							opsOut: 0,
-							addressErrors: [],
-							resetRequired,
-						};
-					}
-
-					const bootstrapResult = applyBootstrapSnapshot(
-						db,
-						peerDeviceId,
-						items,
-						resetRequired,
-						scanner,
-					);
-					if (!bootstrapResult.ok) {
-						throw new Error("bootstrap apply failed");
-					}
-					recordPeerSuccess(db, peerDeviceId, baseUrl);
-					recordSyncAttempt(db, peerDeviceId, {
-						ok: true,
-						opsIn: bootstrapResult.applied,
-						opsOut: 0,
-						capabilities: lastCapabilityDiagnostics,
-					});
-					return {
-						ok: true,
-						address: baseUrl,
-						opsIn: bootstrapResult.applied,
-						opsOut: 0,
-						addressErrors: [],
-					};
-				} catch (bootstrapErr) {
-					const msg = bootstrapErr instanceof Error ? bootstrapErr.message : String(bootstrapErr);
-					recordSyncAttempt(db, peerDeviceId, {
-						ok: false,
-						error: `bootstrap_failed:${msg}`,
-						capabilities: lastCapabilityDiagnostics,
-					});
-					return {
-						ok: false,
-						address: baseUrl,
-						error: `bootstrap failed: ${msg}`,
-						failureCategory: "other",
-						opsIn: 0,
-						opsOut: 0,
-						addressErrors: [],
-						resetRequired,
-					};
-				}
-			}
-			if (getStatus !== 200 || getPayload == null) {
-				const detail = errorDetail(getPayload);
-				const suffix = detail ? ` (${getStatus}: ${detail})` : ` (${getStatus})`;
-				throw new Error(`peer ops fetch failed${suffix}`);
-			}
-			if (!isValidIncrementalOpsResponse(getPayload)) {
-				throw new Error("invalid ops response");
-			}
-			const ops = extractReplicationOps(getPayload);
-			const mismatchedOp = ops.find(
-				(op) => op.device_id !== peerDeviceId || op.clock_device_id !== peerDeviceId,
-			);
-			if (mismatchedOp) {
-				throw new Error(`inbound op device mismatch:${mismatchedOp.op_id}`);
-			}
-			const inboundScopeValidation =
-				lastCapabilityDiagnostics?.negotiated === "unsupported"
-					? { peerDeviceId, enabled: false }
-					: { peerDeviceId };
-
-			// -- 3. Apply incoming ops to local entities --
-			const applied = applyReplicationOps(db, ops, deviceId, scanner, { inboundScopeValidation });
-			if (applied.rejected > 0) {
-				const firstReason = applied.rejections[0]?.reason ?? "scope_rejected";
-				throw new Error(`inbound scope rejected:${firstReason}`);
-			}
-			const reconciliation = reconcileStalePeerReceivedRows(db, {
-				localDeviceId: deviceId,
-				peerDeviceId,
-			});
-			const vectorWork = {
-				upsertMemoryIds: applied.vectorWork.upsertMemoryIds,
-				deleteMemoryIds: [
-					...applied.vectorWork.deleteMemoryIds,
-					...reconciliation.deleted_memory_ids,
-				],
-			};
-			try {
-				queueVectorBackfillForIncrementalSync(db, vectorWork);
-			} catch (queueError) {
-				const fallback = await bestEffortMaintainVectorsForSyncFallback(db, vectorWork);
-				if (fallback.errors.length > 0) {
-					const details = fallback.errors.join("; ");
-					throw new Error(
-						`vector catch-up queue failed: ${queueError instanceof Error ? queueError.message : String(queueError)}; fallback failed: ${details}`,
-					);
-				}
-			}
-
-			const inboundCursorCandidate = asOptionalCursor(getPayload.next_cursor);
-			// Never advance the inbound cursor past a pass that had apply errors
-			// (see syncOneScope): advancing would skip the failed ops permanently.
-			// Do NOT clear a persistent stall by recording throwing ops.
-			if (applied.errors.length > 0) {
-				process.stderr.write(
-					`[codemem] sync: holding inbound cursor for peer ${peerDeviceId} — ${applied.errors.length} op(s) failed to apply and will be retried\n`,
-				);
-			}
-			if (applied.errors.length === 0 && cursorAdvances(lastApplied, inboundCursorCandidate)) {
-				setReplicationCursor(db, peerDeviceId, { lastApplied: inboundCursorCandidate });
-				lastApplied = inboundCursorCandidate;
-			}
-
-			// -- 5. Push local ops to peer --
-			const [outboundWindow, outboundCursor] = loadLocalOpsSince(db, lastAcked, deviceId, limit);
-			const [outboundOps, filteredOutboundCursor, skippedOutbound] =
-				filterReplicationOpsForSyncWithStatus(db, outboundWindow, peerDeviceId, {
-					localDeviceId: deviceId,
-					supportsReassignScope: supportsSyncFeature(statusPayload.sync_features, "reassign_scope"),
-				});
-			const opsSkipped = skippedOutbound?.skipped_count ?? 0;
-			const postUrl = `${baseUrl}/v1/ops`;
-			if (outboundOps.length > 0) {
-				const batches = chunkOpsBySize(outboundOps, MAX_SYNC_BODY_BYTES);
-				for (const batch of batches) {
-					await pushOps(postUrl, deviceId, peerDeviceId, batch, keysDir, dbPath);
-				}
-			}
-			const ackCursor = filteredOutboundCursor ?? outboundCursor;
-			if (ackCursor && cursorAdvances(lastAcked, ackCursor)) {
-				setReplicationCursor(db, peerDeviceId, { lastAcked: ackCursor });
-				lastAcked = ackCursor;
-			}
-
-			// -- 6. Per-Space scoped sync (additive; runs after legacy default
-			//       scope succeeded so the peer is already authenticated).
-			//
-			// Only iterates when both peers advertised the `scoped` capability
-			// AND the peer's /v1/status response carried an `authorized_scopes`
-			// array. Each scope is best-effort: a failure in one Space does not
-			// abort the others or roll back the default-scope pull/push that
-			// just succeeded. Top-level `ok` is downgraded to false only if
-			// at least one scope failed.
-			const scopedAfterIncremental =
-				lastCapabilityDiagnostics?.negotiated === "scoped"
-					? await runScopedSync(db, {
-							peerDeviceId,
-							baseUrl,
-							deviceId,
-							statusPayload,
-							keysDir,
-							dbPath,
-							scanner,
-							limit,
-						})
-					: { results: [], totalOpsIn: 0 };
-
-			const allScopesOk = scopedAfterIncremental.results.every((r) => r.ok);
-			// A held inbound cursor (default-scope apply errors) means inbound
-			// replication is incomplete and stalled on this window; report it as a
-			// failure so a persistent stall surfaces instead of masquerading as a
-			// healthy sync (and don't promote the peer as fully successful).
-			const inboundIncomplete = applied.errors.length > 0;
-			const ok = allScopesOk && !inboundIncomplete;
-			const errorParts: string[] = [];
-			if (inboundIncomplete) {
-				errorParts.push(
-					`inbound apply incomplete: ${applied.errors.length} op(s) failed; cursor held for retry`,
-				);
-			}
-			if (!allScopesOk) {
-				errorParts.push(
-					`scoped sync incomplete: ${scopedAfterIncremental.results
-						.filter((r) => !r.ok)
-						.map((r) => `${r.scope_id}=${r.error ?? "unknown"}`)
-						.join("; ")}`,
-				);
-			}
-			const combinedError = errorParts.length > 0 ? errorParts.join("; ") : undefined;
-
-			// -- 7. Record result --
-			if (!inboundIncomplete) recordPeerSuccess(db, peerDeviceId, baseUrl);
-			recordSyncAttempt(db, peerDeviceId, {
-				ok,
-				opsIn: applied.applied + scopedAfterIncremental.totalOpsIn,
-				opsOut: outboundOps.length,
-				capabilities: lastCapabilityDiagnostics,
-				error: combinedError,
-			});
-			return {
-				ok,
-				address: baseUrl,
-				error: combinedError,
-				failureCategory: inboundIncomplete
-					? "other"
-					: aggregateScopeFailureCategory(scopedAfterIncremental.results),
-				opsIn: applied.applied + scopedAfterIncremental.totalOpsIn,
-				opsOut: outboundOps.length,
-				opsSkipped,
-				skippedOut: skippedOutbound ?? null,
-				addressErrors: [],
-				perScopeResults:
-					scopedAfterIncremental.results.length > 0 ? scopedAfterIncremental.results : undefined,
-			};
-		} catch (err: unknown) {
-			const detail = err instanceof Error ? err.message.trim() || err.constructor.name : "unknown";
-			addressErrors.push({ address: baseUrl, error: detail });
-		}
-	}
-
-	// All addresses failed
-	let error = summarizeAddressErrors(addressErrors);
-	if (!attemptedAny) {
-		error = "no dialable peer addresses";
-	}
-	if (!error) {
-		error = "sync failed without diagnostic detail";
-	}
-	recordSyncAttempt(db, peerDeviceId, {
-		ok: false,
-		error,
-		capabilities: lastCapabilityDiagnostics,
-	});
-	return {
-		ok: false,
-		error,
-		failureCategory: categorizeSyncFailure(error),
-		opsIn: 0,
-		opsOut: 0,
-		addressErrors,
-	};
+	const prepared = prepareSyncExchange(db, peerDeviceId, options);
+	if (prepared.kind === "result") return prepared.result;
+	return tryPeerAddresses(prepared.context, prepared.cursors, addresses);
 }
 
 // ---------------------------------------------------------------------------
