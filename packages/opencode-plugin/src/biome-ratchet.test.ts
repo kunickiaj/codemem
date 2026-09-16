@@ -237,6 +237,27 @@ describe("Biome diagnostic ambiguity handling", () => {
 		).toEqual([]);
 	});
 
+	it("allows a unique deletion beside unchanged repeated scopes", () => {
+		const repeatedBefore = [
+			{ ...diagnostic("src/a.ts", 10, 30, "same body"), scopeIdentity: ":binding:handler" },
+			{ ...diagnostic("src/a.ts", 30, 20, "same body"), scopeIdentity: ":binding:handler" },
+		];
+		const repeatedAfter = [
+			{ ...diagnostic("src/a.ts", 20, 20, "same body"), scopeIdentity: ":binding:handler" },
+			{ ...diagnostic("src/a.ts", 40, 30, "same body"), scopeIdentity: ":binding:handler" },
+		];
+		const deleted = {
+			...diagnostic("src/a.ts", 50, 40, "deleted function"),
+			scopeIdentity: ":function:deleted",
+		};
+
+		expect(
+			compareChangedDiagnostics([...repeatedBefore, deleted], repeatedAfter, [
+				{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
+			]),
+		).toEqual([]);
+	});
+
 	it("retains uniquely paired regressions beside safe ambiguous diagnostics", () => {
 		const before = [
 			{ ...diagnostic("src/a.ts", 10, 100, "duplicate"), scopeIdentity: ":binding:handler" },

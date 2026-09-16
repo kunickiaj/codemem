@@ -277,6 +277,30 @@ function hasAmbiguousScopeIdentities(before: LintDiagnostic[], after: LintDiagno
 	);
 }
 
+function ignoreSafeRepeatedScopeGroups(
+	before: LintDiagnostic[],
+	after: LintDiagnostic[],
+	ignored: Set<LintDiagnostic>,
+): void {
+	const identities = new Set(
+		[...before, ...after].flatMap((diagnostic) =>
+			diagnostic.scopeIdentity ? [diagnostic.scopeIdentity] : [],
+		),
+	);
+	for (const identity of identities) {
+		const identityBefore = before.filter((diagnostic) => diagnostic.scopeIdentity === identity);
+		const identityAfter = after.filter((diagnostic) => diagnostic.scopeIdentity === identity);
+		if (identityBefore.length <= 1 && identityAfter.length <= 1) continue;
+		if (
+			identityBefore.length !== identityAfter.length ||
+			measuredValuesCouldRegress(identityBefore, identityAfter)
+		) {
+			continue;
+		}
+		for (const diagnostic of [...identityBefore, ...identityAfter]) ignored.add(diagnostic);
+	}
+}
+
 function ignoreSafeAmbiguousMeasuredResidual(
 	before: LintDiagnostic[],
 	after: LintDiagnostic[],
@@ -308,9 +332,12 @@ function ambiguousMeasuredDiagnosticsToIgnore(
 	for (const category of categories) {
 		const categoryBefore = before.filter((diagnostic) => diagnostic.category === category);
 		const categoryAfter = after.filter((diagnostic) => diagnostic.category === category);
-		const pairedIdentities = uniquelyPairedScopeIdentities(categoryBefore, categoryAfter);
-		const unpairedScopeBefore = withoutPairedScopes(categoryBefore, pairedIdentities);
-		const unpairedScopeAfter = withoutPairedScopes(categoryAfter, pairedIdentities);
+		ignoreSafeRepeatedScopeGroups(categoryBefore, categoryAfter, ignored);
+		const remainingBefore = categoryBefore.filter((diagnostic) => !ignored.has(diagnostic));
+		const remainingAfter = categoryAfter.filter((diagnostic) => !ignored.has(diagnostic));
+		const pairedIdentities = uniquelyPairedScopeIdentities(remainingBefore, remainingAfter);
+		const unpairedScopeBefore = withoutPairedScopes(remainingBefore, pairedIdentities);
+		const unpairedScopeAfter = withoutPairedScopes(remainingAfter, pairedIdentities);
 		const pairedSourceTexts = uniquelyPairedSourceTexts(unpairedScopeBefore, unpairedScopeAfter);
 		ignoreSafeAmbiguousMeasuredResidual(
 			withoutPairedSources(unpairedScopeBefore, pairedSourceTexts),
