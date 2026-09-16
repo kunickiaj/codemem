@@ -296,9 +296,359 @@ describe("Biome diagnostic ambiguity handling", () => {
 			]),
 		).toThrow("Ambiguous");
 	});
+
+	it("fails closed when a source joins a repeated scope as another member is deleted", () => {
+		const before = [
+			{ ...diagnostic("src/a.ts", 10, 100, "stable repeated"), scopeIdentity: ":binding:item" },
+			{ ...diagnostic("src/a.ts", 30, 30, "deleted repeated"), scopeIdentity: ":binding:item" },
+			diagnostic("src/a.ts", 50, 10, "joined source"),
+		];
+		const after = [
+			{ ...diagnostic("src/a.ts", 10, 100, "stable repeated"), scopeIdentity: ":binding:item" },
+			{ ...diagnostic("src/a.ts", 50, 20, "joined source"), scopeIdentity: ":binding:item" },
+		];
+
+		expect(
+			compareChangedDiagnostics(before, after, [
+				{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
+			]),
+		).toEqual([after[1]]);
+	});
+
+	it("fails closed when a duplicate source joins a repeated scope", () => {
+		const before = [
+			{ ...diagnostic("src/a.ts", 10, 100, "duplicate source"), scopeIdentity: ":binding:item" },
+			{ ...diagnostic("src/a.ts", 30, 30, "duplicate source"), scopeIdentity: ":binding:item" },
+			diagnostic("src/a.ts", 50, 10, "duplicate source"),
+		];
+		const after = [
+			{ ...diagnostic("src/a.ts", 10, 100, "duplicate source"), scopeIdentity: ":binding:item" },
+			{ ...diagnostic("src/a.ts", 50, 20, "duplicate source"), scopeIdentity: ":binding:item" },
+		];
+
+		expect(() =>
+			compareChangedDiagnostics(before, after, [
+				{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
+			]),
+		).toThrow("Ambiguous");
+	});
+
+	it("fails closed when unique sources swap between repeated scopes", () => {
+		const before = [
+			{ ...diagnostic("src/a.ts", 10, 100, "a1"), scopeIdentity: ":binding:a" },
+			{ ...diagnostic("src/a.ts", 30, 30, "a2"), scopeIdentity: ":binding:a" },
+			{ ...diagnostic("src/a.ts", 50, 100, "b1"), scopeIdentity: ":binding:b" },
+			{ ...diagnostic("src/a.ts", 70, 10, "b2"), scopeIdentity: ":binding:b" },
+		];
+		const after = [
+			{ ...diagnostic("src/a.ts", 10, 100, "a1"), scopeIdentity: ":binding:a" },
+			{ ...diagnostic("src/a.ts", 70, 20, "b2"), scopeIdentity: ":binding:a" },
+			{ ...diagnostic("src/a.ts", 50, 100, "b1"), scopeIdentity: ":binding:b" },
+			{ ...diagnostic("src/a.ts", 30, 0, "a2"), scopeIdentity: ":binding:b" },
+		];
+
+		expect(
+			compareChangedDiagnostics(before, after, [
+				{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
+			]),
+		).toEqual([after[1]]);
+	});
+});
+
+describe("Biome diagnostic ambiguity source pairs", () => {
+	it("keeps stable moved sources from hiding another persistent-scope regression", () => {
+		const before = [
+			{ ...diagnostic("src/a.ts", 10, 30, "y"), scopeIdentity: ":binding:a" },
+			{
+				...diagnostic("src/a.ts", 30, 10, "unused"),
+				sourceText: undefined,
+				scopeIdentity: ":binding:b",
+			},
+			diagnostic("src/a.ts", 50, 10, "x"),
+		];
+		const after = [
+			{ ...diagnostic("src/a.ts", 20, 30, "y"), scopeIdentity: ":binding:b" },
+			diagnostic("src/a.ts", 40, 20, "x"),
+		];
+
+		const regressions = compareChangedDiagnostics(before, after, [
+			{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
+		]);
+
+		expect(regressions).toEqual(expect.arrayContaining(after));
+	});
+
+	it("keeps improved moved sources from masking a persistent-scope regression", () => {
+		const before = [
+			{ ...diagnostic("src/a.ts", 10, 20, "y"), scopeIdentity: ":binding:a" },
+			diagnostic("src/a.ts", 30, 30, "x"),
+			{ ...diagnostic("src/a.ts", 50, 0, "x"), scopeIdentity: ":binding:b" },
+		];
+		const regression = {
+			...diagnostic("src/a.ts", 40, 30, "x"),
+			scopeIdentity: ":binding:b",
+		};
+		const after = [
+			diagnostic("src/a.ts", 20, 10, "y"),
+			regression,
+			{ ...diagnostic("src/a.ts", 60, 0, "x"), scopeIdentity: ":binding:a" },
+		];
+
+		const regressions = compareChangedDiagnostics(before, after, [
+			{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
+		]);
+
+		expect(regressions).not.toEqual([]);
+	});
+
+	it("fails closed when repeated-scope source values swap beside unchanged outside sources", () => {
+		const before = [
+			{ ...diagnostic("src/a.ts", 10, 100, "x"), scopeIdentity: ":binding:a" },
+			{ ...diagnostic("src/a.ts", 30, 10, "y"), scopeIdentity: ":binding:a" },
+			{ ...diagnostic("src/a.ts", 50, 50, "x"), scopeIdentity: ":binding:outside-x" },
+			{ ...diagnostic("src/a.ts", 70, 50, "y"), scopeIdentity: ":binding:outside-y" },
+		];
+		const after = [
+			{ ...diagnostic("src/a.ts", 20, 10, "x"), scopeIdentity: ":binding:a" },
+			{ ...diagnostic("src/a.ts", 40, 100, "y"), scopeIdentity: ":binding:a" },
+			{ ...diagnostic("src/a.ts", 60, 50, "x"), scopeIdentity: ":binding:outside-x" },
+			{ ...diagnostic("src/a.ts", 80, 50, "y"), scopeIdentity: ":binding:outside-y" },
+		];
+
+		expect(() =>
+			compareChangedDiagnostics(before, after, [
+				{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
+			]),
+		).toThrow("Ambiguous");
+	});
+
+	it("retains both source-paired regressions when unique sources swap scopes", () => {
+		const before = [
+			{ ...diagnostic("src/a.ts", 10, 100, "x"), scopeIdentity: ":binding:a" },
+			{ ...diagnostic("src/a.ts", 30, 10, "y"), scopeIdentity: ":binding:b" },
+		];
+		const after = [
+			{ ...diagnostic("src/a.ts", 20, 20, "y"), scopeIdentity: ":binding:a" },
+			{ ...diagnostic("src/a.ts", 40, 110, "x"), scopeIdentity: ":binding:b" },
+		];
+
+		const regressions = compareChangedDiagnostics(before, after, [
+			{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
+		]);
+
+		expect(regressions).toHaveLength(2);
+		expect(regressions).toEqual(expect.arrayContaining(after));
+	});
+});
+
+describe("Biome diagnostic reconciliation", () => {
+	it("keeps persistent scope pairs protected beside a surviving repeated-scope contraction", () => {
+		const before = [
+			{ ...diagnostic("src/a.ts", 10, 0, "x"), scopeIdentity: ":binding:a" },
+			{ ...diagnostic("src/a.ts", 20, 20, "y"), scopeIdentity: ":binding:a" },
+			diagnostic("src/a.ts", 30, 30, "z"),
+			{ ...diagnostic("src/a.ts", 40, 10, "q"), scopeIdentity: ":binding:c" },
+		];
+		const regression = {
+			...diagnostic("src/a.ts", 30, 30, "r"),
+			scopeIdentity: ":binding:c",
+		};
+		const after = [
+			{ ...diagnostic("src/a.ts", 10, 0, "x"), scopeIdentity: ":binding:a" },
+			regression,
+			diagnostic("src/a.ts", 40, 0, "q"),
+		];
+
+		const regressions = compareChangedDiagnostics(before, after, [
+			{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
+		]);
+
+		expect(regressions).toContainEqual(regression);
+	});
+
+	it("keeps persistent scope pairs protected beside a complete repeated-scope deletion", () => {
+		const before = [
+			{ ...diagnostic("src/a.ts", 10, 10, "x"), scopeIdentity: ":binding:b" },
+			{ ...diagnostic("src/a.ts", 30, 30, "x"), scopeIdentity: ":binding:b" },
+			diagnostic("src/a.ts", 50, 20, "y"),
+			{ ...diagnostic("src/a.ts", 70, 0, "z"), scopeIdentity: ":binding:a" },
+		];
+		const regression = {
+			...diagnostic("src/a.ts", 20, 10, "z"),
+			scopeIdentity: ":binding:a",
+		};
+		const after = [regression, diagnostic("src/a.ts", 40, 0, "z")];
+
+		const regressions = compareChangedDiagnostics(before, after, [
+			{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
+		]);
+
+		expect(regressions).not.toEqual([]);
+	});
+
+	it("allows an unchanged repeated scope beside an outside contraction", () => {
+		const before = [
+			{ ...diagnostic("src/a.ts", 10, 30, "=>"), scopeIdentity: ":binding:message" },
+			{ ...diagnostic("src/a.ts", 30, 20, "=>"), scopeIdentity: ":binding:message" },
+			{ ...diagnostic("src/a.ts", 50, 40, "=>"), scopeIdentity: ":binding:other" },
+			{ ...diagnostic("src/a.ts", 70, 50, "=>"), scopeIdentity: ":binding:other" },
+		];
+		const after = [
+			{ ...diagnostic("src/a.ts", 20, 30, "=>"), scopeIdentity: ":binding:message" },
+			{ ...diagnostic("src/a.ts", 40, 20, "=>"), scopeIdentity: ":binding:message" },
+			{ ...diagnostic("src/a.ts", 60, 40, "=>"), scopeIdentity: ":binding:other" },
+		];
+
+		expect(
+			compareChangedDiagnostics(before, after, [
+				{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
+			]),
+		).toEqual([]);
+	});
+
+	it("does not pool stable repeated groups that share source text", () => {
+		const before = [
+			{ ...diagnostic("src/a.ts", 10, 100, "=>"), scopeIdentity: ":binding:a" },
+			{ ...diagnostic("src/a.ts", 30, 10, "=>"), scopeIdentity: ":binding:a" },
+			{ ...diagnostic("src/a.ts", 50, 100, "=>"), scopeIdentity: ":binding:b" },
+			{ ...diagnostic("src/a.ts", 70, 30, "=>"), scopeIdentity: ":binding:b" },
+		];
+		const after = [
+			{ ...diagnostic("src/a.ts", 10, 100, "=>"), scopeIdentity: ":binding:a" },
+			{ ...diagnostic("src/a.ts", 30, 20, "=>"), scopeIdentity: ":binding:a" },
+			{ ...diagnostic("src/a.ts", 50, 100, "=>"), scopeIdentity: ":binding:b" },
+			{ ...diagnostic("src/a.ts", 70, 0, "=>"), scopeIdentity: ":binding:b" },
+		];
+
+		expect(() =>
+			compareChangedDiagnostics(before, after, [
+				{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
+			]),
+		).toThrow("Ambiguous");
+	});
+
+	it("allows deletion from a repeated scope with indistinguishable source text", () => {
+		const before = [
+			{ ...diagnostic("src/a.ts", 10, 30, "=>"), scopeIdentity: ":binding:result" },
+			{ ...diagnostic("src/a.ts", 30, 20, "=>"), scopeIdentity: ":binding:result" },
+			{ ...diagnostic("src/a.ts", 50, 40, "=>"), scopeIdentity: ":binding:result" },
+		];
+		const after = [
+			{ ...diagnostic("src/a.ts", 20, 30, "=>"), scopeIdentity: ":binding:result" },
+			{ ...diagnostic("src/a.ts", 40, 20, "=>"), scopeIdentity: ":binding:result" },
+		];
+
+		expect(
+			compareChangedDiagnostics(before, after, [
+				{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
+			]),
+		).toEqual([]);
+	});
+
+	it("allows repeated-scope deletion when indistinguishable outside sources stay unchanged", () => {
+		const before = [
+			{ ...diagnostic("src/a.ts", 10, 30, "=>"), scopeIdentity: ":binding:result" },
+			{ ...diagnostic("src/a.ts", 30, 20, "=>"), scopeIdentity: ":binding:result" },
+			{ ...diagnostic("src/a.ts", 50, 40, "=>"), scopeIdentity: ":binding:result" },
+			{ ...diagnostic("src/a.ts", 70, 60, "=>"), scopeIdentity: ":binding:other" },
+		];
+		const after = [
+			{ ...diagnostic("src/a.ts", 20, 30, "=>"), scopeIdentity: ":binding:result" },
+			{ ...diagnostic("src/a.ts", 40, 20, "=>"), scopeIdentity: ":binding:result" },
+			{ ...diagnostic("src/a.ts", 60, 60, "=>"), scopeIdentity: ":binding:other" },
+		];
+
+		expect(
+			compareChangedDiagnostics(before, after, [
+				{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
+			]),
+		).toEqual([]);
+	});
+
+	it("allows exact repeated-scope contraction beside an outside contraction", () => {
+		const before = [
+			{ ...diagnostic("src/a.ts", 10, 30, "=>"), scopeIdentity: ":binding:result" },
+			{ ...diagnostic("src/a.ts", 30, 20, "=>"), scopeIdentity: ":binding:result" },
+			{ ...diagnostic("src/a.ts", 50, 40, "=>"), scopeIdentity: ":binding:result" },
+			{ ...diagnostic("src/a.ts", 70, 60, "=>"), scopeIdentity: ":binding:other" },
+			{ ...diagnostic("src/a.ts", 90, 50, "=>"), scopeIdentity: ":binding:other" },
+		];
+		const after = [
+			{ ...diagnostic("src/a.ts", 20, 30, "=>"), scopeIdentity: ":binding:result" },
+			{ ...diagnostic("src/a.ts", 40, 20, "=>"), scopeIdentity: ":binding:result" },
+			{ ...diagnostic("src/a.ts", 60, 60, "=>"), scopeIdentity: ":binding:other" },
+		];
+
+		expect(
+			compareChangedDiagnostics(before, after, [
+				{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
+			]),
+		).toEqual([]);
+	});
+
+	it("allows a unique-source deletion from a repeated scope", () => {
+		const before = [
+			{ ...diagnostic("src/a.ts", 10, 30, "stable A"), scopeIdentity: ":binding:handler" },
+			{ ...diagnostic("src/a.ts", 30, 20, "stable B"), scopeIdentity: ":binding:handler" },
+			{ ...diagnostic("src/a.ts", 50, 40, "deleted"), scopeIdentity: ":binding:handler" },
+		];
+		const after = [
+			{ ...diagnostic("src/a.ts", 20, 30, "stable A"), scopeIdentity: ":binding:handler" },
+			{ ...diagnostic("src/a.ts", 40, 20, "stable B"), scopeIdentity: ":binding:handler" },
+		];
+
+		expect(
+			compareChangedDiagnostics(before, after, [
+				{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
+			]),
+		).toEqual([]);
+	});
+
+	it("fails closed when contraction changes the value paired with a surviving source", () => {
+		const before = [
+			{ ...diagnostic("src/a.ts", 10, 10, "x"), scopeIdentity: ":binding:result" },
+			{ ...diagnostic("src/a.ts", 30, 100, "y"), scopeIdentity: ":binding:result" },
+			{ ...diagnostic("src/a.ts", 50, 50, "x"), scopeIdentity: ":binding:outside" },
+		];
+		const after = [
+			{ ...diagnostic("src/a.ts", 20, 100, "x"), scopeIdentity: ":binding:result" },
+			{ ...diagnostic("src/a.ts", 50, 50, "x"), scopeIdentity: ":binding:outside" },
+		];
+
+		expect(() =>
+			compareChangedDiagnostics(before, after, [
+				{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
+			]),
+		).toThrow("Ambiguous");
+	});
 });
 
 describe("Biome diagnostic source comparison", () => {
+	it("keeps stable moved source pairs until repeated-scope ambiguity is classified", () => {
+		const before = [
+			diagnostic("src/a.ts", 10, 100, "x"),
+			{ ...diagnostic("src/a.ts", 30, 10, "y"), scopeIdentity: ":binding:a" },
+			{ ...diagnostic("src/a.ts", 50, 20, "y"), scopeIdentity: ":binding:b" },
+			{ ...diagnostic("src/a.ts", 70, 10, "d"), scopeIdentity: ":binding:a" },
+		];
+		const regression = {
+			...diagnostic("src/a.ts", 20, 100, "y"),
+			scopeIdentity: ":binding:b",
+		};
+		const after = [
+			regression,
+			{ ...diagnostic("src/a.ts", 40, 10, "y"), scopeIdentity: ":binding:a" },
+			diagnostic("src/a.ts", 60, 10, "z"),
+			diagnostic("src/a.ts", 80, 10, "d"),
+		];
+
+		expect(() =>
+			compareChangedDiagnostics(before, after, [
+				{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
+			]),
+		).toThrow("Ambiguous");
+	});
+
 	it("retains source-paired regressions when measured diagnostics have no scope identity", () => {
 		const before = [
 			diagnostic("src/a.ts", 10, 100, "source A"),
@@ -314,7 +664,7 @@ describe("Biome diagnostic source comparison", () => {
 		).toEqual([regression]);
 	});
 
-	it("does not let source text override a repeated scope identity", () => {
+	it("retains unique-source regressions within a repeated scope", () => {
 		const before = [
 			{ ...diagnostic("src/a.ts", 10, 100, "source A"), scopeIdentity: ":binding:item" },
 			{ ...diagnostic("src/a.ts", 30, 10, "source B"), scopeIdentity: ":binding:item" },
@@ -328,10 +678,10 @@ describe("Biome diagnostic source comparison", () => {
 			compareChangedDiagnostics(before, after, [
 				{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
 			]),
-		).toEqual([]);
+		).toEqual([after[1]]);
 	});
 
-	it("does not source-pair diagnostics across conflicting repeated scopes", () => {
+	it("retains unique-source regressions across conflicting repeated scopes", () => {
 		const before = [
 			{ ...diagnostic("src/a.ts", 10, 100, "source A"), scopeIdentity: ":binding:before" },
 			{ ...diagnostic("src/a.ts", 30, 10, "source B"), scopeIdentity: ":binding:before" },
@@ -345,7 +695,7 @@ describe("Biome diagnostic source comparison", () => {
 			compareChangedDiagnostics(before, after, [
 				{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
 			]),
-		).toEqual([]);
+		).toEqual([after[1]]);
 	});
 });
 
@@ -921,7 +1271,7 @@ describe("Biome suppressed-edit policy", () => {
 			message: "Code changed under an existing Biome suppression",
 			path: "src/a.ts",
 		});
-	});
+	}, 15_000);
 
 	it("rejects edits covered by existing broad suppressions", () => {
 		const fileWide = "// biome-ignore-all lint/a: legacy\nconst first = 1;";

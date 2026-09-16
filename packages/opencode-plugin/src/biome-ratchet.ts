@@ -222,6 +222,25 @@ function withoutPairedScopes(
 	);
 }
 
+function reconcileUniqueScopePairs(
+	before: LintDiagnostic[],
+	after: LintDiagnostic[],
+	ignored: Set<LintDiagnostic>,
+	regressions: LintDiagnostic[],
+	path: string,
+): void {
+	for (const identity of uniquelyPairedScopeIdentities(before, after)) {
+		const previous = before.find((diagnostic) => diagnostic.scopeIdentity === identity);
+		const current = after.find((diagnostic) => diagnostic.scopeIdentity === identity);
+		if (!previous || !current) continue;
+		if ((current.measuredValue ?? 0) > (previous.measuredValue ?? 0)) {
+			regressions.push({ ...current, path: normalizePath(path) });
+		}
+		ignored.add(previous);
+		ignored.add(current);
+	}
+}
+
 function sourceTextCounts(diagnostics: LintDiagnostic[]): Map<string, number> {
 	const counts = new Map<string, number>();
 	for (const diagnostic of diagnostics) {
@@ -229,6 +248,93 @@ function sourceTextCounts(diagnostics: LintDiagnostic[]): Map<string, number> {
 		counts.set(diagnostic.sourceText, (counts.get(diagnostic.sourceText) ?? 0) + 1);
 	}
 	return counts;
+}
+
+function hasSameSourceMembership(before: LintDiagnostic[], after: LintDiagnostic[]): boolean {
+	if (before.length !== after.length) return false;
+	const beforeCounts = sourceTextCounts(before);
+	const afterCounts = sourceTextCounts(after);
+	if (beforeCounts.size !== afterCounts.size) return false;
+	return [...beforeCounts].every(([sourceText, count]) => afterCounts.get(sourceText) === count);
+}
+
+function sourceValuePairCounts(diagnostics: LintDiagnostic[]): Map<string, number> {
+	const counts = new Map<string, number>();
+	for (const diagnostic of diagnostics) {
+		const pair = `${diagnostic.sourceText ?? ""}\0${diagnostic.measuredValue ?? 0}`;
+		counts.set(pair, (counts.get(pair) ?? 0) + 1);
+	}
+	return counts;
+}
+
+function hasSameSourceValuePairs(before: LintDiagnostic[], after: LintDiagnostic[]): boolean {
+	if (before.length !== after.length) return false;
+	const beforeCounts = sourceValuePairCounts(before);
+	const afterCounts = sourceValuePairCounts(after);
+	if (beforeCounts.size !== afterCounts.size) return false;
+	return [...beforeCounts].every(([pair, count]) => afterCounts.get(pair) === count);
+}
+
+function outsideSourceCountsDidNotIncrease(
+	before: LintDiagnostic[],
+	after: LintDiagnostic[],
+	allBefore: LintDiagnostic[],
+	allAfter: LintDiagnostic[],
+): boolean {
+	const beforeSources = sourceTextCounts(before);
+	const afterSources = sourceTextCounts(after);
+	const allBeforeSources = sourceTextCounts(allBefore);
+	const allAfterSources = sourceTextCounts(allAfter);
+	return [...new Set([...beforeSources.keys(), ...afterSources.keys()])].every((sourceText) => {
+		const outsideBefore =
+			(allBeforeSources.get(sourceText) ?? 0) - (beforeSources.get(sourceText) ?? 0);
+		const outsideAfter =
+			(allAfterSources.get(sourceText) ?? 0) - (afterSources.get(sourceText) ?? 0);
+		return outsideAfter <= outsideBefore;
+	});
+}
+
+function hasSafeRepeatedScopeContraction(
+	before: LintDiagnostic[],
+	after: LintDiagnostic[],
+	allBefore: LintDiagnostic[],
+	allAfter: LintDiagnostic[],
+): boolean {
+	if (after.length >= before.length) return false;
+	const remainingPairs = sourceValuePairCounts(before);
+	for (const diagnostic of after) {
+		const pair = `${diagnostic.sourceText ?? ""}\0${diagnostic.measuredValue ?? 0}`;
+		const count = remainingPairs.get(pair) ?? 0;
+		if (count === 0) return false;
+		remainingPairs.set(pair, count - 1);
+	}
+	return outsideSourceCountsDidNotIncrease(before, after, allBefore, allAfter);
+}
+
+function outsideSourceMembership(
+	group: LintDiagnostic[],
+	diagnostics: LintDiagnostic[],
+): Map<string, number> {
+	const groupCounts = sourceTextCounts(group);
+	const allCounts = sourceTextCounts(diagnostics);
+	const outsideCounts = new Map<string, number>();
+	for (const [sourceText, count] of groupCounts) {
+		const outsideCount = (allCounts.get(sourceText) ?? 0) - count;
+		if (outsideCount > 0) outsideCounts.set(sourceText, outsideCount);
+	}
+	return outsideCounts;
+}
+
+function hasSameOutsideSourceMembership(
+	beforeGroup: LintDiagnostic[],
+	before: LintDiagnostic[],
+	afterGroup: LintDiagnostic[],
+	after: LintDiagnostic[],
+): boolean {
+	const beforeCounts = outsideSourceMembership(beforeGroup, before);
+	const afterCounts = outsideSourceMembership(afterGroup, after);
+	if (beforeCounts.size !== afterCounts.size) return false;
+	return [...beforeCounts].every(([sourceText, count]) => afterCounts.get(sourceText) === count);
 }
 
 function uniquelyPairedSourceTexts(before: LintDiagnostic[], after: LintDiagnostic[]): Set<string> {
@@ -267,6 +373,45 @@ function withoutPairedSources(
 	);
 }
 
+function reconcileUniqueSourceRegressions(
+	before: LintDiagnostic[],
+	after: LintDiagnostic[],
+	ignored: Set<LintDiagnostic>,
+	regressions: LintDiagnostic[],
+	path: string,
+): void {
+	const beforeCounts = sourceTextCounts(before);
+	const afterCounts = sourceTextCounts(after);
+	for (const [sourceText, count] of beforeCounts) {
+		if (count !== 1 || afterCounts.get(sourceText) !== 1) continue;
+		const previous = before.find((diagnostic) => diagnostic.sourceText === sourceText);
+		const current = after.find((diagnostic) => diagnostic.sourceText === sourceText);
+		if (!previous || !current) continue;
+		if ((current.measuredValue ?? 0) <= (previous.measuredValue ?? 0)) continue;
+		regressions.push({ ...current, path: normalizePath(path) });
+		ignored.add(previous);
+		ignored.add(current);
+	}
+}
+
+function ignoreNonRegressedUniqueSourcePairs(
+	before: LintDiagnostic[],
+	after: LintDiagnostic[],
+	ignored: Set<LintDiagnostic>,
+): void {
+	const beforeCounts = sourceTextCounts(before);
+	const afterCounts = sourceTextCounts(after);
+	for (const [sourceText, count] of beforeCounts) {
+		if (count !== 1 || afterCounts.get(sourceText) !== 1) continue;
+		const previous = before.find((diagnostic) => diagnostic.sourceText === sourceText);
+		const current = after.find((diagnostic) => diagnostic.sourceText === sourceText);
+		if (!previous || !current) continue;
+		if ((current.measuredValue ?? 0) > (previous.measuredValue ?? 0)) continue;
+		ignored.add(previous);
+		ignored.add(current);
+	}
+}
+
 function hasAmbiguousScopeIdentities(before: LintDiagnostic[], after: LintDiagnostic[]): boolean {
 	const beforeIdentities = before.map((diagnostic) => diagnostic.scopeIdentity);
 	const afterIdentities = after.map((diagnostic) => diagnostic.scopeIdentity);
@@ -277,9 +422,91 @@ function hasAmbiguousScopeIdentities(before: LintDiagnostic[], after: LintDiagno
 	);
 }
 
+function ignoreSafeRepeatedScopeContraction(
+	before: LintDiagnostic[],
+	after: LintDiagnostic[],
+	allBefore: LintDiagnostic[],
+	allAfter: LintDiagnostic[],
+	ignored: Set<LintDiagnostic>,
+): boolean {
+	if (!hasSafeRepeatedScopeContraction(before, after, allBefore, allAfter)) return false;
+	for (const diagnostic of [...before, ...after]) ignored.add(diagnostic);
+	return true;
+}
+
+function ignoreUnchangedRepeatedScope(
+	before: LintDiagnostic[],
+	after: LintDiagnostic[],
+	ignored: Set<LintDiagnostic>,
+): boolean {
+	if (!hasSameSourceValuePairs(before, after)) return false;
+	for (const diagnostic of [...before, ...after]) ignored.add(diagnostic);
+	return true;
+}
+
+function repeatedScopeMembershipChanged(
+	before: LintDiagnostic[],
+	after: LintDiagnostic[],
+	outsideMembershipChanged: boolean,
+): boolean {
+	if (before.length === 0 || after.length === 0) return false;
+	return !hasSameSourceMembership(before, after) || outsideMembershipChanged;
+}
+
+function sourcePairedValuesCouldRegress(
+	before: LintDiagnostic[],
+	after: LintDiagnostic[],
+): boolean {
+	const sources = new Set(before.map((diagnostic) => diagnostic.sourceText ?? ""));
+	return [...sources].some((sourceText) =>
+		measuredValuesCouldRegress(
+			before.filter((diagnostic) => (diagnostic.sourceText ?? "") === sourceText),
+			after.filter((diagnostic) => (diagnostic.sourceText ?? "") === sourceText),
+		),
+	);
+}
+
+function reconcileRepeatedScopeGroup(
+	identityBefore: LintDiagnostic[],
+	identityAfter: LintDiagnostic[],
+	allBefore: LintDiagnostic[],
+	allAfter: LintDiagnostic[],
+	category: string,
+	path: string,
+	ignored: Set<LintDiagnostic>,
+): void {
+	const outsideMembershipChanged = !hasSameOutsideSourceMembership(
+		identityBefore,
+		allBefore,
+		identityAfter,
+		allAfter,
+	);
+	if (ignoreUnchangedRepeatedScope(identityBefore, identityAfter, ignored)) return;
+	if (
+		ignoreSafeRepeatedScopeContraction(identityBefore, identityAfter, allBefore, allAfter, ignored)
+	) {
+		return;
+	}
+	if (
+		repeatedScopeMembershipChanged(identityBefore, identityAfter, outsideMembershipChanged) ||
+		sourcePairedValuesCouldRegress(identityBefore, identityAfter)
+	) {
+		throw new Error(`Ambiguous ${category} function identity in ${path}`);
+	}
+	if (
+		identityBefore.length !== identityAfter.length ||
+		measuredValuesCouldRegress(identityBefore, identityAfter)
+	) {
+		return;
+	}
+	for (const diagnostic of [...identityBefore, ...identityAfter]) ignored.add(diagnostic);
+}
+
 function ignoreSafeRepeatedScopeGroups(
 	before: LintDiagnostic[],
 	after: LintDiagnostic[],
+	category: string,
+	path: string,
 	ignored: Set<LintDiagnostic>,
 ): void {
 	const identities = new Set(
@@ -291,13 +518,15 @@ function ignoreSafeRepeatedScopeGroups(
 		const identityBefore = before.filter((diagnostic) => diagnostic.scopeIdentity === identity);
 		const identityAfter = after.filter((diagnostic) => diagnostic.scopeIdentity === identity);
 		if (identityBefore.length <= 1 && identityAfter.length <= 1) continue;
-		if (
-			identityBefore.length !== identityAfter.length ||
-			measuredValuesCouldRegress(identityBefore, identityAfter)
-		) {
-			continue;
-		}
-		for (const diagnostic of [...identityBefore, ...identityAfter]) ignored.add(diagnostic);
+		reconcileRepeatedScopeGroup(
+			identityBefore,
+			identityAfter,
+			before,
+			after,
+			category,
+			path,
+			ignored,
+		);
 	}
 }
 
@@ -324,6 +553,7 @@ function ambiguousMeasuredDiagnosticsToIgnore(
 	before: LintDiagnostic[],
 	after: LintDiagnostic[],
 	path: string,
+	regressions: LintDiagnostic[],
 ): Set<LintDiagnostic> {
 	const ignored = new Set<LintDiagnostic>();
 	const categories = new Set(
@@ -332,12 +562,31 @@ function ambiguousMeasuredDiagnosticsToIgnore(
 	for (const category of categories) {
 		const categoryBefore = before.filter((diagnostic) => diagnostic.category === category);
 		const categoryAfter = after.filter((diagnostic) => diagnostic.category === category);
-		ignoreSafeRepeatedScopeGroups(categoryBefore, categoryAfter, ignored);
-		const remainingBefore = categoryBefore.filter((diagnostic) => !ignored.has(diagnostic));
-		const remainingAfter = categoryAfter.filter((diagnostic) => !ignored.has(diagnostic));
-		const pairedIdentities = uniquelyPairedScopeIdentities(remainingBefore, remainingAfter);
-		const unpairedScopeBefore = withoutPairedScopes(remainingBefore, pairedIdentities);
-		const unpairedScopeAfter = withoutPairedScopes(remainingAfter, pairedIdentities);
+		const regressionCount = regressions.length;
+		reconcileUniqueSourceRegressions(categoryBefore, categoryAfter, ignored, regressions, path);
+		let remainingBefore = categoryBefore.filter((diagnostic) => !ignored.has(diagnostic));
+		let remainingAfter = categoryAfter.filter((diagnostic) => !ignored.has(diagnostic));
+		if (regressions.length > regressionCount) {
+			const pairedIdentities = uniquelyPairedScopeIdentities(remainingBefore, remainingAfter);
+			ignoreNonRegressedUniqueSourcePairs(
+				withoutPairedScopes(remainingBefore, pairedIdentities),
+				withoutPairedScopes(remainingAfter, pairedIdentities),
+				ignored,
+			);
+			remainingBefore = remainingBefore.filter((diagnostic) => !ignored.has(diagnostic));
+			remainingAfter = remainingAfter.filter((diagnostic) => !ignored.has(diagnostic));
+		}
+		reconcileUniqueScopePairs(remainingBefore, remainingAfter, ignored, regressions, path);
+		remainingBefore = remainingBefore.filter((diagnostic) => !ignored.has(diagnostic));
+		remainingAfter = remainingAfter.filter((diagnostic) => !ignored.has(diagnostic));
+		ignoreSafeRepeatedScopeGroups(remainingBefore, remainingAfter, category, path, ignored);
+		remainingBefore = remainingBefore.filter((diagnostic) => !ignored.has(diagnostic));
+		remainingAfter = remainingAfter.filter((diagnostic) => !ignored.has(diagnostic));
+		let unpairedScopeBefore = remainingBefore;
+		let unpairedScopeAfter = remainingAfter;
+		ignoreNonRegressedUniqueSourcePairs(unpairedScopeBefore, unpairedScopeAfter, ignored);
+		unpairedScopeBefore = unpairedScopeBefore.filter((diagnostic) => !ignored.has(diagnostic));
+		unpairedScopeAfter = unpairedScopeAfter.filter((diagnostic) => !ignored.has(diagnostic));
 		const pairedSourceTexts = uniquelyPairedSourceTexts(unpairedScopeBefore, unpairedScopeAfter);
 		ignoreSafeAmbiguousMeasuredResidual(
 			withoutPairedSources(unpairedScopeBefore, pairedSourceTexts),
@@ -375,6 +624,7 @@ export function compareChangedDiagnostics(
 			before,
 			after,
 			change.afterPath,
+			regressions,
 		);
 		regressions.push(
 			...compareDiagnostics(
