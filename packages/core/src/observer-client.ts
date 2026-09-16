@@ -44,6 +44,7 @@ import {
 	stripTrailingCommas,
 } from "./observer-config.js";
 import type { ObserverEnvelopeFailureReason } from "./observer-output-schema.js";
+import { parseObserverSSE } from "./observer-sse.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1278,41 +1279,6 @@ function buildCodexPayload(
 // ---------------------------------------------------------------------------
 // SSE stream text extraction (shared for Codex and Anthropic OAuth)
 // ---------------------------------------------------------------------------
-
-function extractTextFromSSE(
-	rawText: string,
-	extractDelta: (event: Record<string, unknown>) => string | null,
-): ObserverCallResult {
-	const parts: string[] = [];
-	const usageFields: Record<string, unknown> = {};
-	for (const line of rawText.split("\n")) {
-		if (!line.startsWith("data:")) continue;
-		const payload = line.slice(5).trim();
-		if (!payload || payload === "[DONE]") continue;
-		try {
-			const event = JSON.parse(payload) as Record<string, unknown>;
-			const delta = extractDelta(event);
-			if (delta) parts.push(delta);
-			for (const candidate of [event, event.response, event.message]) {
-				if (typeof candidate !== "object" || candidate == null || Array.isArray(candidate))
-					continue;
-				const usage = (candidate as Record<string, unknown>).usage;
-				if (typeof usage === "object" && usage != null && !Array.isArray(usage)) {
-					Object.assign(usageFields, usage);
-				}
-			}
-		} catch {
-			// skip malformed events
-		}
-	}
-	return {
-		raw: parts.length > 0 ? parts.join("").trim() : null,
-		usage: normalizeObserverUsage({ usage: usageFields }),
-		error: null,
-		failureReason: null,
-		transportFailureCode: null,
-	};
-}
 
 function extractCodexDelta(event: Record<string, unknown>): string | null {
 	if (event.type === "response.output_text.delta") {
@@ -2777,10 +2743,16 @@ export class ObserverClient {
 				};
 			}
 
-			// Read full response body as text and parse SSE events. Token usage is
-			// collected only from parsed events, never inferred from response length.
-			const rawText = await response.text();
-			const result = extractTextFromSSE(rawText, extractDelta);
+			// Parse complete SSE events incrementally. Token usage is collected only
+			// from parsed events, never inferred from response length.
+			const parsed = await parseObserverSSE(response.body, extractDelta);
+			const result: ObserverCallResult = {
+				raw: parsed.raw,
+				usage: normalizeObserverUsage({ usage: parsed.usageFields }),
+				error: null,
+				failureReason: null,
+				transportFailureCode: null,
+			};
 			if (result.raw) return result;
 			result.error = this._setLastError(
 				`${opts.providerLabel} returned 200 but response contained no extractable text.`,

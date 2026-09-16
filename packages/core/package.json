@@ -40,6 +40,7 @@
 		"better-sqlite3": "13.0.3",
 		"bonjour-service": "^1.4.4",
 		"drizzle-orm": "catalog:",
+		"eventsource-parser": "4.1.0",
 		"hono": "catalog:",
 		"limiter": "catalog:",
 		"sqlite-vec": "0.1.9",
