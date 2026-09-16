@@ -1964,25 +1964,23 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	): Promise<CoordinatorScopeMembership> {
 		const effectId = normalizeMembershipEffectId(opts.effectId);
 		const requestJson = grantMembershipEffectRequestJson(opts);
-		return this.db
-			.transaction(() => {
-				const receipt = getMembershipEffectReceiptSync(this.db, effectId);
-				if (receipt) {
-					assertMatchingMembershipEffectReceipt(receipt, "grant", requestJson);
-					return membershipFromEffectReceipt(receipt);
-				}
-				const scopeId = clean(opts.scopeId);
-				const deviceId = clean(opts.deviceId);
-				const scope = scopeId ? this.getScopeSync(scopeId) : null;
-				if (!scope) throw new CoordinatorMembershipError("scope_not_found");
-				if (scope.status !== "active") throw new CoordinatorMembershipError("scope_inactive");
-				const existing =
-					scopeId && deviceId ? this.getScopeMembershipSync(scopeId, deviceId) : null;
-				const normalized = normalizeGrantInput(opts, scope, existing);
-				assertScopeMembershipDeviceEnrolled(this.db, normalized.groupId, normalized.deviceId);
-				const now = nowISO();
-				const result = this.db
-					.prepare(`INSERT INTO coordinator_scope_memberships(
+		const grantScopeMembershipTransaction = () => {
+			const receipt = getMembershipEffectReceiptSync(this.db, effectId);
+			if (receipt) {
+				assertMatchingMembershipEffectReceipt(receipt, "grant", requestJson);
+				return membershipFromEffectReceipt(receipt);
+			}
+			const scopeId = clean(opts.scopeId);
+			const deviceId = clean(opts.deviceId);
+			const scope = scopeId ? this.getScopeSync(scopeId) : null;
+			if (!scope) throw new CoordinatorMembershipError("scope_not_found");
+			if (scope.status !== "active") throw new CoordinatorMembershipError("scope_inactive");
+			const existing = scopeId && deviceId ? this.getScopeMembershipSync(scopeId, deviceId) : null;
+			const normalized = normalizeGrantInput(opts, scope, existing);
+			assertScopeMembershipDeviceEnrolled(this.db, normalized.groupId, normalized.deviceId);
+			const now = nowISO();
+			const result = this.db
+				.prepare(`INSERT INTO coordinator_scope_memberships(
 						scope_id, device_id, role, status, membership_epoch, coordinator_id, group_id,
 						manifest_issuer_device_id, manifest_hash, signed_manifest_json, updated_at
 					) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)
@@ -2001,50 +1999,50 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 						excluded.membership_epoch = coordinator_scope_memberships.membership_epoch
 						AND coordinator_scope_memberships.status != 'revoked'
 					   )`)
-					.run(
-						normalized.scopeId,
-						normalized.deviceId,
-						normalized.role,
-						normalized.membershipEpoch,
-						normalized.coordinatorId,
-						normalized.groupId,
-						normalized.manifestIssuerDeviceId,
-						normalized.manifestHash,
-						normalized.signedManifestJson,
-						now,
-					);
-				if (result.changes <= 0) {
-					throw new Error("scope membership grant was not applied.");
-				}
-				const row = this.db
-					.prepare(`SELECT scope_id, device_id, role, status, membership_epoch, coordinator_id, group_id,
+				.run(
+					normalized.scopeId,
+					normalized.deviceId,
+					normalized.role,
+					normalized.membershipEpoch,
+					normalized.coordinatorId,
+					normalized.groupId,
+					normalized.manifestIssuerDeviceId,
+					normalized.manifestHash,
+					normalized.signedManifestJson,
+					now,
+				);
+			if (result.changes <= 0) {
+				throw new Error("scope membership grant was not applied.");
+			}
+			const row = this.db
+				.prepare(`SELECT scope_id, device_id, role, status, membership_epoch, coordinator_id, group_id,
 						manifest_issuer_device_id, manifest_hash, signed_manifest_json, updated_at
 					 FROM coordinator_scope_memberships
 					 WHERE scope_id = ? AND device_id = ?`)
-					.get(normalized.scopeId, normalized.deviceId);
-				const membership = rowToRecord<CoordinatorScopeMembership>(row);
-				insertMembershipAuditSync(this.db, {
-					effectId,
-					action: "grant",
-					current: membership,
-					previous: existing,
-					actorType: normalized.actorType,
-					actorId: normalized.actorId,
-					createdAt: now,
-				});
-				insertMembershipEffectReceiptSync(this.db, {
-					effectId,
-					action: "grant",
-					requestJson,
-					applied: true,
-					scopeId: normalized.scopeId,
-					deviceId: normalized.deviceId,
-					membership,
-					createdAt: now,
-				});
-				return membership;
-			})
-			.immediate();
+				.get(normalized.scopeId, normalized.deviceId);
+			const membership = rowToRecord<CoordinatorScopeMembership>(row);
+			insertMembershipAuditSync(this.db, {
+				effectId,
+				action: "grant",
+				current: membership,
+				previous: existing,
+				actorType: normalized.actorType,
+				actorId: normalized.actorId,
+				createdAt: now,
+			});
+			insertMembershipEffectReceiptSync(this.db, {
+				effectId,
+				action: "grant",
+				requestJson,
+				applied: true,
+				scopeId: normalized.scopeId,
+				deviceId: normalized.deviceId,
+				membership,
+				createdAt: now,
+			});
+			return membership;
+		};
+		return this.db.transaction(grantScopeMembershipTransaction).immediate();
 	}
 
 	async revokeScopeMembership(opts: CoordinatorRevokeScopeMembershipInput): Promise<boolean> {
