@@ -17,6 +17,12 @@ import {
   DEFAULT_DRAIN_LIMIT,
   DEFAULT_MAX_ENTRIES,
 } from "./raw-event-spool.js";
+import {
+  createRecallLifecycle,
+  getSessionMessageInjectionCache,
+  MAX_MESSAGE_INJECTION_CACHE_ENTRIES,
+  setSessionMessageInjectionCacheEntry,
+} from "./recall-lifecycle.js";
 
 const TRUTHY_VALUES = ["1", "true", "yes"];
 const DISABLED_VALUES = ["0", "false", "off"];
@@ -29,8 +35,6 @@ const MAX_UPDATE_VERSION_CHARS = 128;
 const RELEASE_VERSION =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const CODEMEM_CONTEXT_PART_ID_PREFIX = "codemem-context-";
-const MAX_MESSAGE_INJECTION_CACHE_SESSIONS = 20;
-const MAX_MESSAGE_INJECTION_CACHE_ENTRIES = 100;
 const COMPACTION_INJECTION_SKIP_TTL_MS = 30 * 1000;
 const MAX_WORKING_SET_PATH_CHARS = 400;
 const VIEWER_HEALTH_CHECK_INTERVAL_MS = 60_000;
@@ -1207,67 +1211,7 @@ const consumeCompactionInjectionSkip = (compactionInjectionSkips, sessionID, now
 // session ID and a real message ID; unidentified messages still receive current
 // turn context, but are not cached because positional fallbacks can drift across
 // turns or sessions. Do not "simplify" this into recomputing previous turns.
-const getSessionMessageInjectionCache = (messageInjectionCache, sessionID) => {
-  if (!sessionID) {
-    return null;
-  }
-  const cacheKey = sessionID;
-  let sessionCache = messageInjectionCache.get(cacheKey);
-  if (sessionCache) {
-    // Refresh recency so the bounded cache behaves like a small LRU.
-    messageInjectionCache.delete(cacheKey);
-  } else {
-    sessionCache = new Map();
-  }
-  messageInjectionCache.set(cacheKey, sessionCache);
-  while (messageInjectionCache.size > MAX_MESSAGE_INJECTION_CACHE_SESSIONS) {
-    const oldestKey = messageInjectionCache.keys().next().value;
-    if (!oldestKey) break;
-    messageInjectionCache.delete(oldestKey);
-  }
-  return sessionCache;
-};
-
-const setSessionMessageInjectionCacheEntry = (
-  sessionCache,
-  messageID,
-  value,
-  { preserveMessageIDs = new Set(), evictionSnapshot = null } = {},
-) => {
-  sessionCache.delete(messageID);
-  sessionCache.set(messageID, value);
-  while (sessionCache.size > MAX_MESSAGE_INJECTION_CACHE_ENTRIES) {
-    // Protect host-visible blocks and entries published after this transform began.
-    const oldestMessageID = [...sessionCache.keys()].find((id) =>
-      !preserveMessageIDs.has(id)
-      && (!evictionSnapshot || (evictionSnapshot.has(id) && evictionSnapshot.get(id) === sessionCache.get(id))),
-    );
-    if (!oldestMessageID) break;
-    sessionCache.delete(oldestMessageID);
-  }
-};
-
 const commitImmediateDelivery = (commit) => commit();
-
-const createSessionFinalizationMutex = () => {
-  const tails = new Map();
-  return async (sessionID) => {
-    if (!sessionID) return () => {};
-    const key = String(sessionID);
-    const previous = tails.get(key) || Promise.resolve();
-    let releaseOwner = () => {};
-    const owner = new Promise((resolve) => { releaseOwner = resolve; });
-    tails.set(key, owner);
-    await previous;
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      releaseOwner();
-      if (tails.get(key) === owner) tails.delete(key);
-    };
-  };
-};
 
 const normalizeInjectedMessageParts = (
   messages,
@@ -2336,16 +2280,7 @@ export const createCodememRuntime = async ({ location, host }) => {
       }
     );
   }
-  const injectionToastShown = new Set();
-  const messageInjectionCache = new Map();
-  const emptyRecallCache = new Map();
-  const acquireSessionFinalization = createSessionFinalizationMutex();
   const compactionInjectionSkips = new Map();
-  const disabledInjectionRecorded = new Set();
-  const latestPolicySkips = new Map();
-  const attemptStartedAt = new Map();
-  const promptPackRetryCounts = new Map();
-  const successfulPromptPackArtifacts = new Map();
   let sessionStartedAt = null;
   let sessionStartSessionID = null;
   let activeSessionID = null;
@@ -2353,7 +2288,6 @@ export const createCodememRuntime = async ({ location, host }) => {
   let viewerStartInFlight = false;
   let compatibilityAutoUpdateAttempted = false;
   let promptCounter = 0;
-  let skippedAttemptCounter = 0;
   let lastPromptText = null;
   const capturedPrompts = new Set();
   const pendingPrompts = new Map();
@@ -3020,26 +2954,6 @@ export const createCodememRuntime = async ({ location, host }) => {
     return { ok: true, body };
   };
 
-  const attemptMetadata = (identity, sessionID = null, promptNumber = promptCounter) => ({
-    attempt_id: identity.attemptId,
-    started_at: (() => {
-      const existing = attemptStartedAt.get(identity.attemptId);
-      if (existing) return existing;
-      const created = new Date().toISOString();
-      attemptStartedAt.set(identity.attemptId, created);
-      while (attemptStartedAt.size > 2000) {
-        const oldest = attemptStartedAt.keys().next().value;
-        if (!oldest) break;
-        attemptStartedAt.delete(oldest);
-      }
-      return created;
-    })(),
-    source: "opencode",
-    ...(sessionID ? { stream_id: String(sessionID), source_session_id: String(sessionID) } : {}),
-    ...(promptNumber > 0 ? { prompt_number: promptNumber } : {}),
-    request_id: identity.requestId,
-  });
-
   const runPromptPackLedger = async (payload, { viewerOnly = false } = {}) => {
     const viewerPayload = {
       ...payload,
@@ -3079,152 +2993,28 @@ export const createCodememRuntime = async ({ location, host }) => {
     }
   };
 
-  const skippedIdentity = (failureCode, sessionID, surface, eventKey) =>
-    promptPackIdentity({
-      sessionID: sessionID || "unknown",
-      requestKey: `${failureCode}:${eventKey}`,
-      surface,
-      promptNumber: promptCounter,
-      queryHash: hashPromptPackQuery(""),
-    });
-
-  const recordSkippedPromptPack = (failureCode, sessionID = null, surface = injectSurface, requestKey = null) => {
-    const sessionKey = String(sessionID || "unknown");
-    const memoKey = `${surface}:${sessionKey}`;
-    if (requestKey) {
-      const signature = `${requestKey}:${failureCode}`;
-      if (latestPolicySkips.get(memoKey) === signature) return null;
-      latestPolicySkips.delete(memoKey);
-      latestPolicySkips.set(memoKey, signature);
-      while (latestPolicySkips.size > MAX_MESSAGE_INJECTION_CACHE_SESSIONS) {
-        latestPolicySkips.delete(latestPolicySkips.keys().next().value);
-      }
-    }
-    if (failureCode === "injection_disabled" && disabledInjectionRecorded.has(memoKey)) {
-      return null;
-    }
-    if (failureCode === "injection_disabled") disabledInjectionRecorded.add(memoKey);
-    const identity = skippedIdentity(
-      failureCode,
-      sessionID,
-      surface,
-      requestKey || (failureCode === "injection_disabled" ? "once" : `event-${++skippedAttemptCounter}`),
-    );
-    void runPromptPackLedger({
-      action: "record",
-      ...attemptMetadata(identity, sessionID),
-      retrieval_status: "skipped",
-      failure_code: failureCode,
-      failure_stage: "policy",
-    });
-    return identity.attemptId;
-  };
-
-  const recordCachedPromptPack = (cached, { messageId, sessionID, surface = "message" } = {}) => {
-    cached.reuseCount = (cached.reuseCount || 0) + 1;
-    const identity = promptPackIdentity({
-      sessionID: sessionID || "unknown",
-      requestKey: `${messageId || "unknown"}:cache:${cached.reuseCount}`,
-      surface,
-      promptNumber: cached.promptNumber || promptCounter,
-      queryHash: cached.queryHash || hashPromptPackQuery(""),
-    });
-    const ready = runPromptPackLedger({
-      action: "cache_reuse",
-      ...attemptMetadata(identity, sessionID, cached.promptNumber || promptCounter),
-      original_attempt_id: cached.attemptId,
-    });
-    return { attemptId: identity.attemptId, ready };
-  };
-
-  const confirmPromptPackDelivery = (attemptId, deliveryStatus = "handed_off", evaluation) => {
-    const delivery = {
-      action: "delivery", attempt_id: attemptId, delivery_status: deliveryStatus,
-    };
-    void runPromptPackLedger({
-      ...delivery,
-      ...evaluation,
-    }).then((result) => {
-      // Retry additive fields only after the transport identifies that exact compatibility case.
-      if (
-        evaluation
-        && result?.transport === "viewer"
-        && result.failureKind === "viewer_contract_unsupported"
-      ) {
-        return runPromptPackLedger(delivery, { viewerOnly: true });
-      }
-      // Older CLI fallbacks can reject optional fields. Preserve the original receipt;
-      // never retry a Viewer policy/auth rejection through a different transport.
-      if (evaluation && result?.transport === "cli" && result.exitCode !== 0) {
-        return runPromptPackLedger(delivery);
-      }
-    }).catch(() => {});
-  };
-
-  const createTransformDelivery = (deferred) => {
-    const recordMeasurement = (measurement) => logLine(`inject.recall ${JSON.stringify(measurement)}`);
-    if (!deferred) {
-      return {
-        complete: undefined,
-        finish: async () => {},
-        beginFinalization: async () => {},
-        confirm: confirmPromptPackDelivery,
-        recordMeasurement,
-      };
-    }
-    let completion = null;
-    let finalizationReady = null;
-    let releaseFinalization = null;
-    const pending = [];
-    const commits = [];
-    const measurements = [];
-    const dispatch = ([attemptId, status, evaluation]) => {
-      const deliveryStatus = completion === "failed" && (!status || status === "handed_off")
-        ? "failed"
-        : status;
-      confirmPromptPackDelivery(attemptId, deliveryStatus, evaluation);
-    };
-    const beginFinalization = async (sessionID) => {
-      if (!finalizationReady) {
-        finalizationReady = acquireSessionFinalization(sessionID).then((release) => {
-          releaseFinalization = release;
-        });
-      }
-      await finalizationReady;
-    };
-    const finish = async (status = "handed_off") => {
-      if (completion) return;
-      completion = status;
-      const tasks = [];
-      try {
-        for (const commit of commits.splice(0)) {
-          if (status === "handed_off") tasks.push(commit());
-        }
-        for (const confirmation of pending.splice(0)) dispatch(confirmation);
-        for (const measurement of measurements.splice(0)) {
-          const finalized = status === "handed_off" ? measurement : {
-            ...measurement, reason: "delivery_failed", new_tokens: 0, retained_tokens: 0,
-          };
-          tasks.push(recordMeasurement(finalized));
-        }
-        await Promise.all(tasks);
-      } finally {
-        releaseFinalization?.();
-        releaseFinalization = null;
-      }
-    };
-    return {
-      commit: (commit) => { commits.push(commit); },
-      recordMeasurement: (measurement) => { measurements.push(measurement); },
-      beginFinalization,
-      finish,
-      complete: finish,
-      confirm: (...confirmation) => {
-        if (completion) dispatch(confirmation);
-        else pending.push(confirmation);
-      },
-    };
-  };
+  const recallLifecycle = createRecallLifecycle({
+    createIdentity: promptPackIdentity,
+    emptyQueryHash: hashPromptPackQuery(""),
+    runPromptPackLedger,
+    logLine,
+    getPromptCounter: () => promptCounter,
+    defaultSurface: injectSurface,
+  });
+  const {
+    injectionToastShown,
+    messageInjectionCache,
+    emptyRecallCache,
+    attemptMetadata,
+    recordSkippedPromptPack,
+    recordCachedPromptPack,
+    confirmPromptPackDelivery,
+    createTransformDelivery,
+    advancePromptPackRetryIdentity,
+    getPromptPackRetryCount,
+    getSuccessfulPromptPackArtifact,
+    rememberSuccessfulPromptPackArtifact,
+  } = recallLifecycle;
 
   const showToast = async (message, variant = "warning") => {
     if (backendUpdatePolicy === "off") {
@@ -3513,35 +3303,6 @@ export const createCodememRuntime = async ({ location, host }) => {
     return masked.length > limit ? `${masked.slice(0, limit)}…` : masked;
   };
 
-  const advancePromptPackRetryIdentity = (attemptKey) => {
-    promptPackRetryCounts.set(
-      attemptKey,
-      (promptPackRetryCounts.get(attemptKey) || 0) + 1
-    );
-    while (promptPackRetryCounts.size > 2000) {
-      const oldest = promptPackRetryCounts.keys().next().value;
-      if (!oldest) break;
-      promptPackRetryCounts.delete(oldest);
-    }
-  };
-
-  const rememberSuccessfulPromptPackArtifact = (
-    attemptKey,
-    retryCount,
-    fingerprint
-  ) => {
-    successfulPromptPackArtifacts.delete(attemptKey);
-    successfulPromptPackArtifacts.set(attemptKey, {
-      retryCount,
-      fingerprint,
-    });
-    while (successfulPromptPackArtifacts.size > 2000) {
-      const oldest = successfulPromptPackArtifacts.keys().next().value;
-      if (!oldest) break;
-      successfulPromptPackArtifacts.delete(oldest);
-    }
-  };
-
   let fallbackEvaluationSessionId = nextEventId();
   const buildInjectedContext = async (query, context = {}) => {
     const requestPackBudget = reserveContextPrefixBudget(context.tokenBudget ?? injectTokenBudget);
@@ -3587,7 +3348,7 @@ export const createCodememRuntime = async ({ location, host }) => {
       promptCounter,
       queryHash,
     ]);
-    let retryCount = promptPackRetryCounts.get(attemptKey) || 0;
+    let retryCount = getPromptPackRetryCount(attemptKey);
     const resolveIdentity = () => promptPackIdentity({
       sessionID,
       requestKey: retryCount > 0
@@ -3696,7 +3457,7 @@ export const createCodememRuntime = async ({ location, host }) => {
           }
         : null;
       advancePromptPackRetryIdentity(attemptKey);
-      retryCount = promptPackRetryCounts.get(attemptKey) || 0;
+      retryCount = getPromptPackRetryCount(attemptKey);
       identity = resolveIdentity();
       metadata = attemptMetadata(identity, requesterHostSessionID);
       ({ packArgs, result } = await runPack());
@@ -3739,7 +3500,7 @@ export const createCodememRuntime = async ({ location, host }) => {
           });
         }
         advancePromptPackRetryIdentity(attemptKey);
-        retryCount = promptPackRetryCounts.get(attemptKey) || 0;
+        retryCount = getPromptPackRetryCount(attemptKey);
         ({
           packArgs,
           result,
@@ -3759,7 +3520,7 @@ export const createCodememRuntime = async ({ location, host }) => {
       }
     }
     if (packText) {
-      const previous = successfulPromptPackArtifacts.get(attemptKey);
+      const previous = getSuccessfulPromptPackArtifact(attemptKey);
       if (
         previous?.retryCount === retryCount
         && previous.fingerprint !== artifactFingerprint
@@ -3779,7 +3540,7 @@ export const createCodememRuntime = async ({ location, host }) => {
           ledgerConflict,
         };
         advancePromptPackRetryIdentity(attemptKey);
-        retryCount = promptPackRetryCounts.get(attemptKey) || 0;
+        retryCount = getPromptPackRetryCount(attemptKey);
         identity = resolveIdentity();
         metadata = attemptMetadata(identity, requesterHostSessionID);
         ({ packArgs, result } = await runPack());
@@ -4660,9 +4421,7 @@ export const createCodememRuntime = async ({ location, host }) => {
         sessionStartedAt = new Date().toISOString();
         promptCounter = 0;
         fallbackEvaluationSessionId = nextEventId();
-        skippedAttemptCounter = 0;
-        disabledInjectionRecorded.delete("message:unknown");
-        disabledInjectionRecorded.delete("system:unknown");
+        recallLifecycle.startSession();
         lastPromptText = null;
         if (sessionID) {
           await capturePendingPrompts({
@@ -4848,14 +4607,8 @@ export const createCodememRuntime = async ({ location, host }) => {
         }
         if (sessionID) {
           rawEventDelivery.clearSession(sessionID);
-          injectionToastShown.delete(sessionID);
-          messageInjectionCache.delete(sessionID);
-          emptyRecallCache.delete(sessionID);
+          recallLifecycle.clearSession(sessionID);
           compactionInjectionSkips.delete(sessionID);
-          disabledInjectionRecorded.delete(`message:${sessionID}`);
-          disabledInjectionRecorded.delete(`system:${sessionID}`);
-          latestPolicySkips.delete(`message:${sessionID}`);
-          latestPolicySkips.delete(`system:${sessionID}`);
           for (const key of failedToolCaptured) {
             if (key.startsWith(`${sessionID}:`)) {
               failedToolCaptured.delete(key);
