@@ -1,4 +1,4 @@
-import type { Database } from "./db.js";
+import type { Database } from "better-sqlite3";
 import {
 	getSchemaVersion,
 	IDENTITY_DEVICE_ASSIGNMENT_TRIGGERS_DDL,
@@ -6,7 +6,7 @@ import {
 	loadSqliteVec,
 	REQUIRED_BOOTSTRAPPED_TABLES,
 	SCHEMA_VERSION,
-} from "./db.js";
+} from "./database-runtime-primitives.js";
 import { TEST_SCHEMA_BASE_DDL } from "./test-schema.generated.js";
 
 const RETRIEVAL_EXPOSURE_DETACH_UNAVAILABLE_MEMORY_DDL = `

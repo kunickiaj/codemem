@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as databaseRuntimePrimitives from "./database-runtime-primitives.js";
 import * as dbModule from "./db.js";
 import type { EmbeddingClient, EmbeddingRuntimeIdentity } from "./embeddings.js";
 import * as embeddings from "./embeddings.js";
@@ -1882,12 +1883,13 @@ describe("memory_vectors bootstrap on fresh databases", () => {
 
 	it("bootstraps the core schema even when sqlite-vec cannot load", () => {
 		const scratch = new Database(":memory:");
-		const loadSpy = vi.spyOn(dbModule, "loadSqliteVec").mockImplementation(() => {
+		const loadSpy = vi.spyOn(databaseRuntimePrimitives, "loadSqliteVec").mockImplementation(() => {
 			throw new Error("vec unavailable");
 		});
 
 		try {
 			expect(() => ensureSchemaBootstrapped(scratch)).not.toThrow();
+			expect(loadSpy).toHaveBeenCalledOnce();
 			expect(() => scratch.prepare("SELECT COUNT(*) AS c FROM memory_items").get()).not.toThrow();
 			expect(() => resolveSemanticSearchModel(scratch, "test-model")).not.toThrow();
 			expect(resolveSemanticSearchModel(scratch, "test-model")).toBeNull();

@@ -24,7 +24,13 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { Database as DatabaseType } from "better-sqlite3";
 import Database from "better-sqlite3";
-import * as sqliteVec from "sqlite-vec";
+import {
+	getSchemaVersion,
+	IDENTITY_DEVICE_ASSIGNMENT_TRIGGERS_DDL,
+	REQUIRED_BOOTSTRAPPED_TABLES,
+	REQUIRED_TABLES,
+	SCHEMA_VERSION,
+} from "./database-runtime-primitives.js";
 import { expandUserPath } from "./observer-config.js";
 import {
 	canAutoBootstrapSchema,
@@ -35,11 +41,16 @@ import {
 	ensureSyncPeerSignatureStateSchema,
 } from "./schema-bootstrap.js";
 
+export {
+	getSchemaVersion,
+	IDENTITY_DEVICE_ASSIGNMENT_TRIGGERS_DDL,
+	isEmbeddingDisabled,
+	loadSqliteVec,
+	REQUIRED_BOOTSTRAPPED_TABLES,
+	SCHEMA_VERSION,
+} from "./database-runtime-primitives.js";
 // Re-export the Database type for consumers
 export type { DatabaseType as Database };
-
-/** Current schema version this TS runtime was built against. */
-export const SCHEMA_VERSION = 20;
 
 /**
  * Minimum schema version the TS runtime can operate with.
@@ -48,27 +59,6 @@ export const SCHEMA_VERSION = 20;
  * too old to have the tables/columns it needs.
  */
 export const MIN_COMPATIBLE_SCHEMA = 6;
-
-/** Required tables the TS runtime needs to function. */
-const REQUIRED_TABLES = [
-	"memory_items",
-	"sessions",
-	"artifacts",
-	"raw_events",
-	"raw_event_sessions",
-	"usage_events",
-] as const;
-
-export const REQUIRED_BOOTSTRAPPED_TABLES = [
-	...REQUIRED_TABLES,
-	"memory_fts",
-	"coordinator_enrollment_reconciliation_issues",
-	// The legacy_team_setup_* tables are deliberately NOT listed: they are
-	// created additively by `ensureLegacyTeamSetupDraftSchema` on every
-	// connection path. Listing them would make a valid older bootstrapped
-	// schema look partial and skip WAL/pragma connection setup for the first
-	// post-upgrade connection.
-] as const;
 
 /** Marker file written after the first successful TS access to a DB. */
 const TS_MARKER = ".codemem-ts-accessed";
@@ -352,43 +342,6 @@ export function ensurePlannerStats(db: DatabaseType): void {
 }
 
 /**
- * Load the sqlite-vec extension into an open database connection.
- *
- * Call this after connect() when vector operations are needed.
- * Skipped when CODEMEM_EMBEDDING_DISABLED=1.
- */
-export function loadSqliteVec(db: DatabaseType): void {
-	if (isEmbeddingDisabled()) {
-		return;
-	}
-
-	sqliteVec.load(db);
-
-	const row = db.prepare("SELECT vec_version() AS v").get() as { v: string } | undefined;
-	if (!row?.v) {
-		throw new Error("sqlite-vec loaded but version check failed");
-	}
-}
-
-/** Check if embeddings are disabled via environment variable. */
-export function isEmbeddingDisabled(): boolean {
-	const val = process.env.CODEMEM_EMBEDDING_DISABLED?.toLowerCase();
-	return val === "1" || val === "true" || val === "yes";
-}
-
-/**
- * Read the schema `user_version` pragma from the database.
- *
- * Returns `0` for a freshly-created or empty file, which is the signal
- * `MemoryStore` / `initDatabase` / `bootstrapSchema` use to decide whether to
- * run the initial DDL.
- */
-export function getSchemaVersion(db: DatabaseType): number {
-	const row = db.pragma("user_version", { simple: true });
-	return typeof row === "number" ? row : 0;
-}
-
-/**
  * Create a timestamped backup of the database on first TS access.
  *
  * The backup file is named `mem.sqlite.pre-ts-YYYYMMDDTHHMMSS.bak` and placed
@@ -602,24 +555,6 @@ function addColumnIfMissing(
 
 const RECIPIENT_POLICY_DEVICE_ELIGIBILITY_COMPATIBILITY_ERROR =
 	"recipient_policy_device_eligibility_schema_incompatible";
-
-export const IDENTITY_DEVICE_ASSIGNMENT_TRIGGERS_DDL = `
-	DROP TRIGGER IF EXISTS trg_identity_devices_assignment_version;
-	CREATE TRIGGER trg_identity_devices_assignment_version
-	AFTER UPDATE OF identity_id ON identity_devices
-	WHEN NEW.identity_id <> OLD.identity_id
-	BEGIN
-		UPDATE identity_devices
-		SET assignment_version = OLD.assignment_version + 1
-		WHERE device_id = NEW.device_id;
-	END;
-	DROP TRIGGER IF EXISTS trg_identity_devices_purge_decisions;
-	CREATE TRIGGER trg_identity_devices_purge_decisions
-	AFTER DELETE ON identity_devices
-	BEGIN
-		DELETE FROM policy_team_device_decisions WHERE device_id = OLD.device_id;
-	END;
-`;
 
 function ensureIdentityDeviceAssignmentVersionTriggers(db: DatabaseType): void {
 	if (

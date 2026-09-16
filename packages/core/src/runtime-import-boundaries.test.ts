@@ -30,4 +30,9 @@ describe("runtime import boundaries", () => {
 		expect(cacheSource).not.toMatch(/from ["']\.\/coordinator-runtime\.js["']/);
 		expect(runtimeSource).not.toMatch(/from ["']\.\/sync-discovery\.js["']/);
 	});
+
+	it("keeps schema bootstrap independent of database connection orchestration", () => {
+		const source = readFileSync(new URL("schema-bootstrap.ts", import.meta.url), "utf8");
+		expect(source).not.toMatch(/from ["']\.\/db\.js["']/);
+	});
 });
