@@ -3458,14 +3458,78 @@ function cleanupDiagnostics(
 	};
 }
 
-function legacySharedReviewSummary(store: MemoryStore): Record<string, unknown> {
-	const rows = legacySharedReviewRows(store);
-	const memoryCount = rows.length;
-	const lastUpdatedAt = rows.reduce<string | null>(
-		(current, row) =>
-			row.updated_at && (!current || row.updated_at > current) ? row.updated_at : current,
-		null,
-	);
+type LegacySharedReviewCandidate = ReturnType<typeof listProjectScopeCandidates>[number];
+
+interface LegacySharedReviewGroupAccumulator {
+	display_project: string;
+	identity_source: string;
+	last_updated_at: string | null;
+	memory_count: number;
+	memory_sample_rows: Array<{
+		is_owned_by_self: boolean;
+		row: LegacySharedReviewSummaryRow;
+	}>;
+	peer_owned_memory_count: number;
+	reassignable_memory_count: number;
+	suggested_scope_id: string | null;
+	suggestion_reason: string | null;
+	workspace_identity: string;
+}
+
+function legacySharedReviewSuggestedScope(candidate: LegacySharedReviewCandidate | undefined) {
+	const resolvedScope = candidate?.resolved_scope_id ?? null;
+	if (
+		resolvedScope &&
+		resolvedScope !== LOCAL_DEFAULT_SCOPE_ID &&
+		resolvedScope !== LEGACY_SHARED_REVIEW_SCOPE_ID
+	) {
+		return resolvedScope;
+	}
+	return candidate?.suggested_scope_id ?? null;
+}
+
+function addLegacySharedReviewRow(
+	groups: Map<string, LegacySharedReviewGroupAccumulator>,
+	row: LegacySharedReviewSummaryRow,
+	identity: ReturnType<typeof canonicalWorkspaceIdentity>,
+	candidate: LegacySharedReviewCandidate | undefined,
+	isOwnedBySelf: boolean,
+): void {
+	const existing = groups.get(identity.value);
+	if (existing) {
+		existing.memory_count += 1;
+		if (isOwnedBySelf) existing.reassignable_memory_count += 1;
+		else existing.peer_owned_memory_count += 1;
+		if (
+			row.updated_at &&
+			(!existing.last_updated_at || row.updated_at > existing.last_updated_at)
+		) {
+			existing.last_updated_at = row.updated_at;
+		}
+		if (existing.memory_sample_rows.length < LEGACY_SHARED_REVIEW_SAMPLE_LIMIT) {
+			existing.memory_sample_rows.push({ is_owned_by_self: isOwnedBySelf, row });
+		}
+		return;
+	}
+	const suggestedScope = legacySharedReviewSuggestedScope(candidate);
+	groups.set(identity.value, {
+		workspace_identity: identity.value,
+		identity_source: identity.source,
+		display_project: identity.displayProject ?? row.project ?? row.cwd ?? identity.value,
+		memory_count: 1,
+		reassignable_memory_count: isOwnedBySelf ? 1 : 0,
+		peer_owned_memory_count: isOwnedBySelf ? 0 : 1,
+		last_updated_at: row.updated_at ?? null,
+		memory_sample_rows: [{ is_owned_by_self: isOwnedBySelf, row }],
+		suggested_scope_id: suggestedScope,
+		suggestion_reason: suggestedScope
+			? (candidate?.suggestion_reason ??
+				"Existing project mapping can be reviewed as a destination, but legacy data is not promoted automatically.")
+			: null,
+	});
+}
+
+function collectLegacySharedReviewGroups(store: MemoryStore) {
 	const ownedBySelf = store.buildOwnershipPredicate();
 	const candidatesByIdentity = new Map(
 		listProjectScopeCandidates(store.db, { limit: null }).map((candidate) => [
@@ -3473,22 +3537,14 @@ function legacySharedReviewSummary(store: MemoryStore): Record<string, unknown> 
 			candidate,
 		]),
 	);
-	const groupsByIdentity = new Map<
-		string,
-		{
-			workspace_identity: string;
-			identity_source: string;
-			display_project: string;
-			memory_count: number;
-			reassignable_memory_count: number;
-			peer_owned_memory_count: number;
-			last_updated_at: string | null;
-			memory_samples: LegacySharedReviewMemorySample[];
-			suggested_scope_id: string | null;
-			suggestion_reason: string | null;
+	const groups = new Map<string, LegacySharedReviewGroupAccumulator>();
+	let memoryCount = 0;
+	let lastUpdatedAt: string | null = null;
+	for (const row of legacySharedReviewSummaryRows(store)) {
+		memoryCount += 1;
+		if (row.updated_at && (!lastUpdatedAt || row.updated_at > lastUpdatedAt)) {
+			lastUpdatedAt = row.updated_at;
 		}
-	>();
-	for (const row of rows) {
 		const identity = canonicalWorkspaceIdentity({
 			cwd: row.cwd,
 			gitBranch: row.git_branch,
@@ -3496,52 +3552,48 @@ function legacySharedReviewSummary(store: MemoryStore): Record<string, unknown> 
 			project: row.project,
 			workspaceId: row.workspace_id,
 		});
-		const candidate = candidatesByIdentity.get(identity.value);
-		const resolvedScope = candidate?.resolved_scope_id ?? null;
-		const suggestedScope =
-			resolvedScope &&
-			resolvedScope !== LOCAL_DEFAULT_SCOPE_ID &&
-			resolvedScope !== LEGACY_SHARED_REVIEW_SCOPE_ID
-				? resolvedScope
-				: candidate?.suggested_scope_id;
-		const existing = groupsByIdentity.get(identity.value);
-		const isOwnedBySelf = ownedBySelf(row as unknown as Record<string, unknown>);
-		const rowUpdatedAt = row.updated_at ?? null;
-		if (existing) {
-			existing.memory_count += 1;
-			if (isOwnedBySelf) existing.reassignable_memory_count += 1;
-			else existing.peer_owned_memory_count += 1;
-			if (rowUpdatedAt && (!existing.last_updated_at || rowUpdatedAt > existing.last_updated_at)) {
-				existing.last_updated_at = rowUpdatedAt;
-			}
-			if (existing.memory_samples.length < LEGACY_SHARED_REVIEW_SAMPLE_LIMIT) {
-				existing.memory_samples.push(legacySharedReviewMemorySample(row, isOwnedBySelf));
-			}
-			continue;
-		}
-		groupsByIdentity.set(identity.value, {
-			workspace_identity: identity.value,
-			identity_source: identity.source,
-			display_project: identity.displayProject ?? row.project ?? row.cwd ?? identity.value,
-			memory_count: 1,
-			reassignable_memory_count: isOwnedBySelf ? 1 : 0,
-			peer_owned_memory_count: isOwnedBySelf ? 0 : 1,
-			last_updated_at: rowUpdatedAt,
-			memory_samples: [legacySharedReviewMemorySample(row, isOwnedBySelf)],
-			suggested_scope_id: suggestedScope ?? null,
-			suggestion_reason: suggestedScope
-				? (candidate?.suggestion_reason ??
-					"Existing project mapping can be reviewed as a destination, but legacy data is not promoted automatically.")
-				: null,
-		});
+		addLegacySharedReviewRow(
+			groups,
+			row,
+			identity,
+			candidatesByIdentity.get(identity.value),
+			ownedBySelf(row as unknown as Record<string, unknown>),
+		);
 	}
-	const totalGroupCount = groupsByIdentity.size;
-	const groups = [...groupsByIdentity.values()].sort(
-		(left, right) =>
-			right.memory_count - left.memory_count ||
-			(right.last_updated_at ?? "").localeCompare(left.last_updated_at ?? "") ||
-			left.workspace_identity.localeCompare(right.workspace_identity),
+	return { groups, lastUpdatedAt, memoryCount };
+}
+
+function materializeLegacySharedReviewGroups(
+	store: MemoryStore,
+	groupsByIdentity: Map<string, LegacySharedReviewGroupAccumulator>,
+) {
+	const sampleBodies = legacySharedReviewSampleBodies(
+		store,
+		[...groupsByIdentity.values()].flatMap((group) =>
+			group.memory_sample_rows.map((sample) => sample.row.id),
+		),
 	);
+	return [...groupsByIdentity.values()]
+		.map(({ memory_sample_rows: sampleRows, ...group }) => ({
+			...group,
+			memory_samples: sampleRows.map(({ is_owned_by_self: isOwnedBySelf, row }) =>
+				legacySharedReviewMemorySample(
+					{ ...row, body_text: sampleBodies.get(row.id) ?? null },
+					isOwnedBySelf,
+				),
+			),
+		}))
+		.sort(
+			(left, right) =>
+				right.memory_count - left.memory_count ||
+				(right.last_updated_at ?? "").localeCompare(left.last_updated_at ?? "") ||
+				left.workspace_identity.localeCompare(right.workspace_identity),
+		);
+}
+
+function legacySharedReviewSummary(store: MemoryStore): Record<string, unknown> {
+	const collected = collectLegacySharedReviewGroups(store);
+	const groups = materializeLegacySharedReviewGroups(store, collected.groups);
 	const targetScopes = listSharingDomainSettingsScopes(store.db)
 		.filter(
 			(scope) =>
@@ -3555,11 +3607,11 @@ function legacySharedReviewSummary(store: MemoryStore): Record<string, unknown> 
 		}));
 	return {
 		scope_id: LEGACY_SHARED_REVIEW_SCOPE_ID,
-		memory_count: memoryCount,
-		has_data: memoryCount > 0,
-		last_updated_at: lastUpdatedAt,
+		memory_count: collected.memoryCount,
+		has_data: collected.memoryCount > 0,
+		last_updated_at: collected.lastUpdatedAt,
 		groups,
-		total_group_count: totalGroupCount,
+		total_group_count: collected.groups.size,
 		target_scopes: targetScopes,
 	};
 }
@@ -3585,8 +3637,26 @@ interface LegacySharedReviewReassignmentMemoryRow {
 	metadata_json: string | null;
 }
 
+type LegacySharedReviewSummaryRow = Pick<
+	LegacySharedReviewReassignmentMemoryRow,
+	| "actor_id"
+	| "created_at"
+	| "cwd"
+	| "git_branch"
+	| "git_remote"
+	| "id"
+	| "kind"
+	| "metadata_json"
+	| "origin_device_id"
+	| "project"
+	| "title"
+	| "updated_at"
+	| "workspace_id"
+>;
+
 const LEGACY_SHARED_REVIEW_SAMPLE_LIMIT = 3;
 const LEGACY_SHARED_REVIEW_BODY_PREVIEW_SQL_LIMIT = 360;
+const LEGACY_SHARED_REVIEW_SAMPLE_BODY_BATCH_SIZE = 500;
 
 interface LegacySharedReviewMemorySample {
 	id: number;
@@ -3608,7 +3678,7 @@ function previewText(value: string | null | undefined, limit = 180): string | nu
 }
 
 function legacySharedReviewMemorySample(
-	row: LegacySharedReviewReassignmentMemoryRow,
+	row: LegacySharedReviewSummaryRow & { body_text: string | null },
 	isOwnedBySelf: boolean,
 ): LegacySharedReviewMemorySample {
 	return {
@@ -3623,6 +3693,67 @@ function legacySharedReviewMemorySample(
 		cwd: row.cwd ?? null,
 		git_remote: row.git_remote ?? null,
 	};
+}
+
+function legacySharedReviewSummaryRows(store: MemoryStore): Iterable<LegacySharedReviewSummaryRow> {
+	return store.db
+		.prepare(
+			`SELECT m.id,
+			        m.created_at,
+			        m.updated_at,
+			        m.kind,
+			        m.title,
+			        s.project,
+			        s.cwd,
+			        s.git_remote,
+			        s.git_branch,
+			        m.workspace_id,
+			        m.actor_id,
+			        m.origin_device_id,
+			        m.metadata_json
+			 FROM memory_items m
+			 LEFT JOIN sessions s ON s.id = m.session_id
+			 WHERE m.scope_id = ?
+			   AND m.active = 1
+			   AND m.deleted_at IS NULL
+			 ORDER BY COALESCE(m.updated_at, m.created_at, '') DESC, m.id DESC`,
+		)
+		.iterate(LEGACY_SHARED_REVIEW_SCOPE_ID) as Iterable<LegacySharedReviewSummaryRow>;
+}
+
+function legacySharedReviewSampleBodies(
+	store: MemoryStore,
+	memoryIds: number[],
+): Map<number, string> {
+	const bodies = new Map<number, string>();
+	for (
+		let offset = 0;
+		offset < memoryIds.length;
+		offset += LEGACY_SHARED_REVIEW_SAMPLE_BODY_BATCH_SIZE
+	) {
+		const ids = memoryIds.slice(offset, offset + LEGACY_SHARED_REVIEW_SAMPLE_BODY_BATCH_SIZE);
+		const rows = store.db
+			.prepare(
+				`SELECT id, substr(body_text, 1, ?) AS body_text
+				 FROM memory_items
+				 WHERE id IN (${ids.map(() => "?").join(",")})
+				   AND scope_id = ?
+				   AND active = 1
+				   AND deleted_at IS NULL`,
+			)
+			.all(
+				LEGACY_SHARED_REVIEW_BODY_PREVIEW_SQL_LIMIT,
+				...ids,
+				LEGACY_SHARED_REVIEW_SCOPE_ID,
+			) as Array<{
+			body_text: string | null;
+			id: number;
+		}>;
+		for (const row of rows) {
+			if (row.body_text != null) bodies.set(row.id, row.body_text);
+		}
+	}
+	return bodies;
 }
 
 function legacySharedReviewRows(store: MemoryStore): LegacySharedReviewReassignmentMemoryRow[] {
