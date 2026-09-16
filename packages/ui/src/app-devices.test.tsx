@@ -25,6 +25,27 @@ const mocks = vi.hoisted(() => ({
 vi.mock("./app-sharing", () => ({
 	createRecipientPolicySharingLoader: vi.fn(() => mocks.loadRecipientPolicySharingData),
 }));
+vi.mock("./components/legacy-upgrade-dialog", () => {
+	let show: (() => void) | null = null;
+	return {
+		hideLegacyUpgradeDialog: vi.fn(),
+		mountLegacyUpgradeDialog: (
+			mount: HTMLElement,
+			actions: { onReviewGroups: () => void; onReviewProjects: () => void },
+		) => {
+			mount.innerHTML =
+				'<button id="legacyUpgradeReviewGroups">Start review</button><button id="legacyUpgradeReviewProjects">Manage all projects</button>';
+			mount
+				.querySelector("#legacyUpgradeReviewGroups")
+				?.addEventListener("click", actions.onReviewGroups);
+			mount
+				.querySelector("#legacyUpgradeReviewProjects")
+				?.addEventListener("click", actions.onReviewProjects);
+			show = () => undefined;
+		},
+		showLegacyUpgradeDialog: vi.fn(() => show?.()),
+	};
+});
 vi.mock("./components/primitives/toast", () => ({ mountToastHost: vi.fn() }));
 vi.mock("./lib/api", () => ({
 	clearLegacyTeamSetupDecision: vi.fn(),
@@ -970,10 +991,12 @@ describe("Viewer behavior contracts", () => {
 	});
 
 	it("routes legacy upgrade review actions to Advanced Sync and Projects", async () => {
+		const { showLegacyUpgradeDialog } = await import("./components/legacy-upgrade-dialog");
 		const sharingReview = document.getElementById("syncSharingReview") as HTMLElement | null;
 		if (!sharingReview) throw new Error("Legacy Sharing review destination missing");
 		sharingReview.scrollIntoView = vi.fn();
 
+		act(() => showLegacyUpgradeDialog({ groupCount: 2, memoryCount: 3 }));
 		act(() => document.getElementById("legacyUpgradeReviewGroups")?.click());
 		await act(async () => {
 			await vi.advanceTimersByTimeAsync(120);
@@ -982,6 +1005,7 @@ describe("Viewer behavior contracts", () => {
 		expect(document.getElementById("advancedSyncContent")?.hidden).toBe(false);
 		expect(sharingReview.scrollIntoView).toHaveBeenCalledWith({ block: "start" });
 
+		act(() => showLegacyUpgradeDialog({ groupCount: 2, memoryCount: 3 }));
 		act(() => document.getElementById("legacyUpgradeReviewProjects")?.click());
 		await act(async () => {
 			await vi.advanceTimersByTimeAsync(0);

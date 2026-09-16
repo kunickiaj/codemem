@@ -17,12 +17,17 @@ import {
 	mountDiagnosticsDrawer,
 	recordViewerConnectionEvent,
 } from "./components/diagnostics";
+import {
+	hideLegacyUpgradeDialog,
+	type LegacyUpgradeReviewSummary,
+	mountLegacyUpgradeDialog,
+	showLegacyUpgradeDialog,
+} from "./components/legacy-upgrade-dialog";
 import { mountToastHost } from "./components/primitives/toast";
 import * as api from "./lib/api";
 import type { ProjectScopeInventoryProject } from "./lib/api/sync";
 import { coordinatorEnrollmentOpenIssueCount } from "./lib/coordinator-enrollment-attention";
 import { $, $button, $select } from "./lib/dom";
-import { handlePrimaryActionKeyboard } from "./lib/keyboard";
 import { isReadTimeout, type ReadRequestOptions, waitForAbort } from "./lib/read-request";
 import { createRefreshSessionOwner, type RefreshSession } from "./lib/refresh-session";
 import {
@@ -103,12 +108,6 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnecting = false;
 let viewerIncidentAwaitingRefresh = false;
 let legacyUpgradeNoticeShown = false;
-let legacyUpgradeNoticePreviousFocus: HTMLElement | null = null;
-
-type LegacyUpgradeReviewSummary = {
-	groupCount: number;
-	memoryCount: number;
-};
 
 function readNonNegativeCount(value: unknown, fallback = 0): number {
 	const count = Number(value);
@@ -149,89 +148,9 @@ function dismissLegacyUpgradeNoticeIfRequested() {
 	} catch {}
 }
 
-function legacyUpgradeFocusableElements(): HTMLElement[] {
-	const modal = $("legacyUpgradeModal");
-	if (!modal || modal.hidden) return [];
-	return Array.from(
-		modal.querySelectorAll<HTMLElement>(
-			'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-		),
-	).filter((element) => !element.hidden && element.offsetParent !== null);
-}
-
-function focusLegacyUpgradeModal() {
-	const focusable = legacyUpgradeFocusableElements();
-	const primary = $("legacyUpgradeReviewGroups") as HTMLElement | null;
-	(primary && focusable.includes(primary) ? primary : focusable[0])?.focus();
-}
-
-function handleLegacyUpgradeModalKeydown(event: KeyboardEvent) {
-	const modal = $("legacyUpgradeModal");
-	if (!modal || modal.hidden) return;
-	if (event.key === "Escape") {
-		event.preventDefault();
-		dismissLegacyUpgradeNoticeIfRequested();
-		setLegacyUpgradeNotice(false);
-		return;
-	}
-	if (event.key === "Enter") {
-		const primary = $("legacyUpgradeReviewGroups") as HTMLButtonElement | null;
-		handlePrimaryActionKeyboard(event, {
-			onSubmit: () => primary?.click(),
-			disabled: !primary || primary.disabled,
-		});
-		return;
-	}
-	if (event.key !== "Tab") return;
-	const focusable = legacyUpgradeFocusableElements();
-	if (focusable.length === 0) return;
-	const first = focusable[0];
-	const last = focusable[focusable.length - 1];
-	if (event.shiftKey && document.activeElement === first) {
-		event.preventDefault();
-		last.focus();
-		return;
-	}
-	if (!event.shiftKey && document.activeElement === last) {
-		event.preventDefault();
-		first.focus();
-	}
-}
-
-function setLegacyUpgradeBackgroundInert(inert: boolean) {
-	for (const element of document.querySelectorAll<HTMLElement>(
-		"header, .tab-bar, .tab-panel, #toastRoot, #viewerReconnectOverlay, #settingsDialogMount",
-	)) {
-		if (element.id === "viewerReconnectOverlay" && element.hidden) continue;
-		element.inert = inert;
-		if (inert) element.setAttribute("aria-hidden", "true");
-		else element.removeAttribute("aria-hidden");
-	}
-}
-
 function setLegacyUpgradeNotice(open: boolean, summary?: LegacyUpgradeReviewSummary) {
-	const overlay = $("legacyUpgradeModalBackdrop");
-	const modal = $("legacyUpgradeModal");
-	const summaryEl = $("legacyUpgradeSummary");
-	if (!overlay || !modal || !summaryEl) return;
-	if (summary) {
-		summaryEl.textContent = `${summary.groupCount.toLocaleString()} older ${summary.groupCount === 1 ? "project needs" : "projects need"} a Sharing domain. They contain ${summary.memoryCount.toLocaleString()} older shared memories total; you will review the projects, not individual memories.`;
-	}
-	overlay.hidden = !open;
-	modal.hidden = !open;
-	if (open) {
-		legacyUpgradeNoticePreviousFocus = document.activeElement as HTMLElement | null;
-		document.addEventListener("keydown", handleLegacyUpgradeModalKeydown);
-		focusLegacyUpgradeModal();
-		setLegacyUpgradeBackgroundInert(true);
-		return;
-	}
-	setLegacyUpgradeBackgroundInert(false);
-	document.removeEventListener("keydown", handleLegacyUpgradeModalKeydown);
-	if (legacyUpgradeNoticePreviousFocus && document.contains(legacyUpgradeNoticePreviousFocus)) {
-		legacyUpgradeNoticePreviousFocus.focus();
-	}
-	legacyUpgradeNoticePreviousFocus = null;
+	if (open && summary) showLegacyUpgradeDialog(summary);
+	else hideLegacyUpgradeDialog();
 }
 
 function maybeShowLegacyUpgradeNotice(summary: LegacyUpgradeReviewSummary | null) {
@@ -915,6 +834,22 @@ if (legacyTeamSetupRoot) {
 		},
 	});
 }
+const legacyUpgradeDialogRoot = document.getElementById("legacyUpgradeDialogMount");
+if (legacyUpgradeDialogRoot) {
+	mountLegacyUpgradeDialog(legacyUpgradeDialogRoot, {
+		onDismiss: dismissLegacyUpgradeNoticeIfRequested,
+		onReviewGroups: () => {
+			window.location.hash = "sync";
+			setTimeout(
+				() => document.getElementById("syncSharingReview")?.scrollIntoView({ block: "start" }),
+				120,
+			);
+		},
+		onReviewProjects: () => {
+			window.location.hash = "projects";
+		},
+	});
+}
 
 // Theme
 initThemeToggle($button("themeToggle"));
@@ -958,27 +893,6 @@ $("viewerReconnectRetry")?.addEventListener("click", async () => {
 		// doRefresh handles its own failures
 	}
 	if (!reconnecting) setReconnectOverlay(false);
-});
-
-$("legacyUpgradeReviewGroups")?.addEventListener("click", () => {
-	dismissLegacyUpgradeNoticeIfRequested();
-	setLegacyUpgradeNotice(false);
-	window.location.hash = "sync";
-	setTimeout(
-		() => document.getElementById("syncSharingReview")?.scrollIntoView({ block: "start" }),
-		120,
-	);
-});
-
-$("legacyUpgradeReviewProjects")?.addEventListener("click", () => {
-	dismissLegacyUpgradeNoticeIfRequested();
-	setLegacyUpgradeNotice(false);
-	window.location.hash = "projects";
-});
-
-$("legacyUpgradeNotNow")?.addEventListener("click", () => {
-	dismissLegacyUpgradeNoticeIfRequested();
-	setLegacyUpgradeNotice(false);
 });
 
 // Version label

@@ -3414,7 +3414,9 @@
         .diagnostics-secondary-controls { align-items: flex-start; flex-direction: column; }
       }
 
-      .legacy-upgrade-modal .modal-card { width: min(620px, 100%); }
+      /* Radix sets pointer-events inline on modal content; keep backdrop clicks on the overlay. */
+      .legacy-upgrade-modal { pointer-events: none !important; }
+      .legacy-upgrade-modal .modal-card { width: min(620px, 100%); pointer-events: auto; }
       .legacy-upgrade-summary {
         padding: var(--sp-3);
         border: 1px solid color-mix(in srgb, var(--accent-warm) 28%, var(--border));
@@ -4287,48 +4289,7 @@
       </div>
     </div>
 
-    <div class="modal-backdrop" id="legacyUpgradeModalBackdrop" hidden></div>
-    <div
-      aria-describedby="legacyUpgradeDescription legacyUpgradeSummary"
-      aria-labelledby="legacyUpgradeTitle"
-      aria-modal="true"
-      class="modal legacy-upgrade-modal"
-      hidden
-      id="legacyUpgradeModal"
-      role="dialog"
-    >
-      <div class="modal-card">
-        <div class="modal-header">
-          <h2 id="legacyUpgradeTitle">Choose where older shared memories belong</h2>
-        </div>
-        <div class="modal-body">
-          <div class="small" id="legacyUpgradeDescription">
-            Some memories were shared before codemem had clear Sharing domains. We kept them out
-            of normal sync until you choose which project/domain they belong to.
-          </div>
-          <div class="legacy-upgrade-summary" id="legacyUpgradeSummary"></div>
-          <div class="small">
-            You’ll review projects, not individual memories. Nothing moves automatically, and this
-            will not erase copies another device may already have received.
-          </div>
-          <label class="field-checkbox" for="legacyUpgradeDontShow">
-            <input class="cm-checkbox" id="legacyUpgradeDontShow" type="checkbox" />
-            <span>Don’t show this again</span>
-          </label>
-        </div>
-        <div class="modal-footer">
-          <div class="legacy-upgrade-actions">
-            <button class="settings-button" id="legacyUpgradeReviewProjects" type="button">
-              Manage all projects
-            </button>
-            <button class="settings-button" id="legacyUpgradeNotNow" type="button">Not now</button>
-            <button class="settings-save" id="legacyUpgradeReviewGroups" type="button">
-              Start review
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+    <div id="legacyUpgradeDialogMount"></div>
 
     <!-- ── Settings modal ──────────────────────────────────── -->
     <div id="settingsDialogMount"></div>
