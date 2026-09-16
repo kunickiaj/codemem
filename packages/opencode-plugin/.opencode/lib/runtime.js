@@ -12,14 +12,10 @@ import {
   resolveUpgradeGuidance,
 } from "./compat.js";
 import { V2_ADAPTER_DIAGNOSTICS } from "./host-contract.js";
+import { createRawEventDelivery } from "./raw-event-delivery.js";
 import {
   DEFAULT_DRAIN_LIMIT,
   DEFAULT_MAX_ENTRIES,
-  loadRawEventSpoolEntries,
-  RAW_EVENT_SPOOL_FULL_CODE,
-  removeRawEventSpoolEntry,
-  resolveSpoolDirectory,
-  writeRawEventSpoolEntry,
 } from "./raw-event-spool.js";
 
 const TRUTHY_VALUES = ["1", "true", "yes"];
@@ -69,8 +65,6 @@ const claimPluginRegistration = (cwd) => {
     }
   };
 };
-const rawEventSpoolDrainsInFlight = new Map();
-
 // Release an unread response body without surfacing cancellation failures.
 const discardResponseBody = (response) => {
   try {
@@ -2405,228 +2399,20 @@ export const createCodememRuntime = async ({ location, host }) => {
     DEFAULT_MAX_ENTRIES,
   );
   const rawEventSpoolHome = process.env.HOME?.trim() || homedir();
-  const rawEventSpoolDirectory = resolveSpoolDirectory(rawEventSpoolHome);
-  // Memoize the exact serialized envelope by queued-object identity so retries
-  // cannot drift in timestamp, ID, property order, or bytes.
-  const rawEventEnvelopes = new WeakMap();
-  const rawEventCaptureContexts = new WeakMap();
+  let runtimeActive = true;
+  let rawEventDelivery = null;
   const rawEventPreparations = new WeakMap();
   const rawEventDeliveries = new WeakMap();
-  const rawEventStartedAts = new WeakMap();
   const capacityDeferredEvents = new Set();
-  let rawEventDeliveryCount = 0;
   let rawEventDeliveryTail = Promise.resolve();
+  let rawEventDeliveryCount = 0;
   let flushDeliveryTail = Promise.resolve();
-  let streamUnavailableUntil = 0;
-  let spoolPersistenceFailureNoted = null;
-  let spoolLoadFailureNoted = false;
-  let lastStatusCheckAt = 0;
-  let lastStatusAvailable = true;
   let promptPackTransportUnavailableUntil = 0;
-  const rawEventAbortController = new AbortController();
-  let runtimeActive = true;
-
   const nextEventId = () => {
     if (typeof crypto !== "undefined" && crypto.randomUUID) {
       return crypto.randomUUID();
     }
     return `${Date.now()}-${Math.random()}`;
-  };
-
-  const queueRawEventViaCli = async (body, serialized = JSON.stringify(body)) => {
-    const runFallback = () => runCli(["enqueue-raw-event"], {
-      stdinText: serialized,
-    });
-    let result = await runFallback();
-    let classification = classifyFallbackCommandResult(result);
-    let attemptedRetry = false;
-    if (result?.exitCode !== 0 && classification.retryable) {
-      attemptedRetry = true;
-      result = await runFallback();
-      classification = classifyFallbackCommandResult(result);
-    }
-    if (result?.exitCode !== 0) {
-      const retryExhausted = attemptedRetry && classification.retryable;
-      const error = new Error(
-        retryExhausted ? `${classification.cause} after retry` : classification.cause
-      );
-      error.retryable = classification.retryable;
-      throw error;
-    }
-    return true;
-  };
-
-  const lastToastAtBySession = new Map();
-  const shouldToast = (sessionID, category = "general") => {
-    const now = Date.now();
-    const key = `${sessionID || "unknown"}:${category}`;
-    const last = lastToastAtBySession.get(key) || 0;
-    if (now - last < 60000) {
-      return false;
-    }
-    lastToastAtBySession.set(key, now);
-    return true;
-  };
-
-  const warnSpoolPersistenceFailure = async (sessionID, reason) => {
-    const message = reason === "spool_full"
-      ? "codemem raw-event retry spool is full; repair Codemem, then archive retained entries"
-      : "codemem could not save a raw event for retry; it remains queued in memory";
-    try {
-      await hostLog({
-        service: "codemem",
-        level: "error",
-        message,
-        extra: { category: "persistence", reason },
-      });
-    } catch {
-      // Best-effort app logging only.
-    }
-    if (spoolPersistenceFailureNoted === reason) return;
-    spoolPersistenceFailureNoted = reason;
-    if (!hostNotify || !shouldToast(sessionID, `persistence:${reason}`)) return;
-    try {
-      await hostNotify({ message: `codemem: ${message}`, variant: "error" });
-    } catch {
-      // Best-effort toast only.
-    }
-  };
-
-  const persistRawEventForRetry = async ({ body, serialized, payload, sessionID }) => {
-    try {
-      await writeRawEventSpoolEntry({
-        envelope: body,
-        serialized,
-        homeDir: rawEventSpoolHome,
-        maxEntries: rawEventSpoolMaxEntries,
-      });
-      spoolPersistenceFailureNoted = null;
-      if (payload && typeof payload === "object") {
-        payload._raw_spooled = true;
-      }
-      return true;
-    } catch (error) {
-      const reason = error?.code === RAW_EVENT_SPOOL_FULL_CODE ? "spool_full" : "write_failed";
-      await logLine(`raw_events.spool.${reason} category=persistence`);
-      await warnSpoolPersistenceFailure(sessionID, reason);
-      return false;
-    }
-  };
-
-  const removeRawEventFromSpool = async ({ eventId, payload }) => {
-    try {
-      await removeRawEventSpoolEntry({ eventId, homeDir: rawEventSpoolHome });
-      if (payload && typeof payload === "object") {
-        payload._raw_spooled = false;
-      }
-    } catch {
-      await logLine("raw_events.spool.cleanup_failed category=persistence");
-    }
-  };
-
-  const notifyRawEventDelivery = async ({ category, delivered, durable, sessionID }) => {
-    const action = RAW_EVENT_FAILURE_ACTIONS[category] || RAW_EVENT_FAILURE_ACTIONS.connection;
-    let outcome = "was saved for retry";
-    if (delivered) {
-      outcome = "was queued via CLI";
-    } else if (!durable) {
-      outcome = "was not saved for retry; still queued in memory";
-    }
-    const message = `codemem raw event ${outcome}; ${action}`;
-    let delivery = "memory";
-    if (delivered) {
-      delivery = "cli";
-    } else if (durable) {
-      delivery = "spool";
-    }
-    try {
-      await hostLog({
-        service: "codemem",
-        level: delivered ? "warn" : "error",
-        message,
-        extra: {
-          category,
-          delivery,
-        },
-      });
-    } catch {
-      // Best-effort app logging only.
-    }
-    if (!hostNotify || !shouldToast(sessionID, `${category}:${delivery}`)) return;
-    try {
-      await hostNotify({ message: `codemem: ${message}`, variant: delivered ? "warning" : "error" });
-    } catch {
-      // Best-effort toast only.
-    }
-  };
-
-  const drainRawEventSpool = () => {
-    if (!rawEventsEnabled) {
-      return Promise.resolve();
-    }
-    const existingDrain = rawEventSpoolDrainsInFlight.get(rawEventSpoolDirectory);
-    if (existingDrain) {
-      return existingDrain;
-    }
-    const drainPromise = (async () => {
-      let loaded;
-      try {
-        loaded = await loadRawEventSpoolEntries({
-          homeDir: rawEventSpoolHome,
-          limit: rawEventSpoolDrainLimit,
-        });
-      } catch {
-        await logLine("raw_events.spool.load_failed category=persistence");
-        const message = "codemem could not read saved raw events; spool entries were left untouched";
-        try {
-          await hostLog({
-            service: "codemem",
-            level: "error",
-            message,
-            extra: { category: "persistence", delivery: "load" },
-          });
-        } catch {
-          // Best-effort app logging only.
-        }
-        if (!spoolLoadFailureNoted) {
-          spoolLoadFailureNoted = true;
-          if (hostNotify && shouldToast(null, "persistence:load")) {
-            try {
-              await hostNotify({ message: `codemem: ${message}`, variant: "error" });
-            } catch {
-              // Best-effort toast only.
-            }
-          }
-        }
-        return;
-      }
-      spoolLoadFailureNoted = false;
-      if (loaded.corruptCount > 0) {
-        await logLine(`raw_events.spool.corrupt_retained count=${loaded.corruptCount}`);
-      }
-      for (const entry of loaded.entries) {
-        try {
-          await queueRawEventViaCli(entry.envelope, entry.serialized);
-          await removeRawEventFromSpool({ eventId: entry.eventId });
-        } catch (error) {
-          await logLine("raw_events.spool.drain_deferred category=fallback");
-          if (error?.retryable === true) {
-            break;
-          }
-        }
-      }
-    })();
-    const trackedDrain = drainPromise
-      .catch(async () => {
-        await logLine("raw_events.spool.drain_failed category=persistence");
-      })
-      .finally(() => {
-        if (rawEventSpoolDrainsInFlight.get(rawEventSpoolDirectory) === trackedDrain) {
-          rawEventSpoolDrainsInFlight.delete(rawEventSpoolDirectory);
-        }
-      });
-    rawEventSpoolDrainsInFlight.set(rawEventSpoolDirectory, trackedDrain);
-    return trackedDrain;
   };
 
   const buildViewerCliArgs = (action) => {
@@ -2638,150 +2424,6 @@ export const createCodememRuntime = async ({ location, host }) => {
       args.push("--config", viewerConfigPath);
     }
     return args;
-  };
-
-  const deliverRawEvent = async ({ sessionID, type, payload }) => {
-    if (!rawEventsEnabled) {
-      return true;
-    }
-    if (!sessionID || !type) {
-      return false;
-    }
-    if (payload?._raw_enqueued) return true;
-    const now = Date.now();
-    let cachedEnvelope = payload && typeof payload === "object"
-      ? rawEventEnvelopes.get(payload)
-      : null;
-    if (!cachedEnvelope) {
-      const builtEnvelope = buildRawEventEnvelope({
-        sessionID,
-        type,
-        payload,
-        cwd,
-        project: resolveProjectName(project, cwd),
-        startedAt: rawEventStartedAts.has(payload)
-          ? rawEventStartedAts.get(payload)
-          : sessionStartedAt,
-        nowMs: now,
-        nowMono:
-          typeof performance !== "undefined" && performance.now
-            ? performance.now()
-            : null,
-        nextEventId,
-        captureContext: rawEventCaptureContexts.get(payload),
-      });
-      const serialized = JSON.stringify(builtEnvelope);
-      cachedEnvelope = { body: JSON.parse(serialized), serialized };
-      if (payload && typeof payload === "object") {
-        rawEventEnvelopes.set(payload, cachedEnvelope);
-      }
-    }
-    const { body, serialized } = cachedEnvelope;
-    if (!runtimeActive) {
-      return persistRawEventForRetry({ body, serialized, payload, sessionID });
-    }
-    if (now < streamUnavailableUntil) {
-      const durable = await persistRawEventForRetry({ body, serialized, payload, sessionID });
-      try {
-        await queueRawEventViaCli(body, serialized);
-        await removeRawEventFromSpool({ eventId: body.event_id, payload });
-        if (payload && typeof payload === "object") {
-          payload._raw_enqueued = true;
-        }
-        await notifyRawEventDelivery({
-          category: "connection",
-          delivered: true,
-          durable,
-          sessionID,
-        });
-        return true;
-      } catch {
-        await logLine("raw_events.fallback.error category=connection");
-        await notifyRawEventDelivery({
-          category: "connection",
-          delivered: false,
-          durable,
-          sessionID,
-        });
-        return false;
-      }
-    }
-    try {
-      if (now - lastStatusCheckAt >= Math.max(1000, rawEventsStatusCheckMs)) {
-        const statusResp = await fetchRawEventsStatus(rawEventsStatusUrl);
-        if (!statusResp.ok) {
-          // Release the unread body before bailing into the backoff path.
-          discardResponseBody(statusResp);
-          throw new Error(`raw-events status failed (${statusResp.status})`);
-        }
-        const statusJson = await statusResp.json();
-        lastStatusAvailable = statusJson?.ingest?.available !== false;
-        lastStatusCheckAt = now;
-      }
-      if (!lastStatusAvailable) {
-        throw new Error("raw-events ingest unavailable");
-      }
-
-      const postResp = await fetch(rawEventsUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: AbortSignal.any([
-          rawEventAbortController.signal,
-          AbortSignal.timeout(RAW_EVENTS_STATUS_TIMEOUT_MS),
-        ]),
-        body: JSON.stringify({
-          ...body,
-          db_path: promptPackDbPath,
-          identity_target: promptPackIdentityTarget,
-        }),
-      });
-      if (!postResp.ok) {
-        let responseBody = null;
-        try {
-          responseBody = await postResp.json();
-        } catch {
-          // Generic connection guidance below remains the safe fallback.
-        }
-        const postError = new Error(`raw-events post failed (${postResp.status})`);
-        postError.rawEventFailureCategory = classifyRawEventViewerFailure(responseBody);
-        throw postError;
-      }
-      streamUnavailableUntil = 0;
-      lastStatusAvailable = true;
-      await removeRawEventFromSpool({ eventId: body.event_id, payload });
-      if (payload && typeof payload === "object") {
-        payload._raw_enqueued = true;
-      }
-      return true;
-    } catch (err) {
-      if (!runtimeActive) {
-        return persistRawEventForRetry({ body, serialized, payload, sessionID });
-      }
-      const category = err?.rawEventFailureCategory || "connection";
-      streamUnavailableUntil = Date.now() + Math.max(1000, rawEventsBackoffMs);
-      await logLine(`raw_events.error category=${category}`);
-      const durable = await persistRawEventForRetry({ body, serialized, payload, sessionID });
-
-      let fallbackOk = false;
-      try {
-        await queueRawEventViaCli(body, serialized);
-        await removeRawEventFromSpool({ eventId: body.event_id, payload });
-        fallbackOk = true;
-      } catch {
-        await logLine(`raw_events.fallback.error category=${category}`);
-      }
-
-      if (fallbackOk) {
-        if (payload && typeof payload === "object") {
-          payload._raw_enqueued = true;
-        }
-        await notifyRawEventDelivery({ category, delivered: true, durable, sessionID });
-        return true;
-      }
-
-      await notifyRawEventDelivery({ category, delivered: false, durable, sessionID });
-      return false;
-    }
   };
 
   // Session context tracking for comprehensive memories
@@ -3214,6 +2856,35 @@ export const createCodememRuntime = async ({ location, host }) => {
 
   const runCli = async (args, options = {}) =>
     runCommand([runner, ...runnerArgs, ...args], options);
+
+  rawEventDelivery = createRawEventDelivery({
+    backoffMs: rawEventsBackoffMs,
+    buildEnvelope: buildRawEventEnvelope,
+    classifyFallbackResult: classifyFallbackCommandResult,
+    classifyViewerFailure: classifyRawEventViewerFailure,
+    cwd,
+    discardResponseBody,
+    enabled: rawEventsEnabled,
+    failureActions: RAW_EVENT_FAILURE_ACTIONS,
+    fetchRawEventsStatus,
+    hostLog,
+    hostNotify,
+    identityTarget: promptPackIdentityTarget,
+    isActive: () => runtimeActive,
+    logLine,
+    nextEventId,
+    projectName: resolveProjectName(project, cwd),
+    promptPackDbPath,
+    queueViaCli: (serialized) => runCli(["enqueue-raw-event"], { stdinText: serialized }),
+    rawEventsStatusTimeoutMs: RAW_EVENTS_STATUS_TIMEOUT_MS,
+    rawEventsStatusUrl,
+    rawEventsUrl,
+    sessionStartedAt: () => sessionStartedAt,
+    statusCheckMs: rawEventsStatusCheckMs,
+    spoolDrainLimit: rawEventSpoolDrainLimit,
+    spoolHome: rawEventSpoolHome,
+    spoolMaxEntries: rawEventSpoolMaxEntries,
+  });
 
   const postViewerJson = async ({ url, operation, payload, validate }) => {
     if (!viewerEnabled) {
@@ -4458,7 +4129,7 @@ export const createCodememRuntime = async ({ location, host }) => {
     rawEventDeliveryCount++;
     const delivery = rawEventDeliveryTail.then(async () => {
       await rawEventPreparations.get(input.payload);
-      return deliverRawEvent(input);
+      return rawEventDelivery.deliver(input);
     });
     rawEventDeliveries.set(input.payload, delivery);
     rawEventDeliveryTail = delivery.catch(() => {}).finally(() => {
@@ -4494,12 +4165,12 @@ export const createCodememRuntime = async ({ location, host }) => {
       _raw_event_id: rawEventId,
       _raw_session_id: resolvedSessionID,
     };
-    rawEventStartedAts.set(queuedEvent, sessionStartedAt);
+    rawEventDelivery.setStartedAt(queuedEvent, sessionStartedAt);
     recordEvent(queuedEvent);
     if (prompt && rawEventsEnabled && host.resolveCaptureContext) {
       const preparation = Promise.resolve().then(() => host.resolveCaptureContext(prompt))
         .then((context) => {
-          if (context) rawEventCaptureContexts.set(queuedEvent, context);
+          if (context) rawEventDelivery.setCaptureContext(queuedEvent, context);
         }).catch(() => {
           // Optional provenance must never discard an otherwise valid prompt.
         });
@@ -4621,7 +4292,7 @@ export const createCodememRuntime = async ({ location, host }) => {
         );
         await logLine(`flush.ok count=${batch.events.length} dropped=0`);
       }
-      if (runtimeActive) await drainRawEventSpool();
+      if (runtimeActive) await rawEventDelivery.drainSpool();
     } catch {
       // Flush delivery and diagnostics must not reject into OpenCode hooks.
     }
@@ -4654,7 +4325,7 @@ export const createCodememRuntime = async ({ location, host }) => {
 
   const flushEmptyQueue = async () => {
     try {
-      await drainRawEventSpool();
+      await rawEventDelivery.drainSpool();
       await logLine("flush.skip empty");
     } catch {
       // Empty flushes follow the same non-rejecting hook contract.
@@ -4733,14 +4404,14 @@ export const createCodememRuntime = async ({ location, host }) => {
     return scheduleQueuedEvents({ owner: activeSessionID });
   };
 
-  void drainRawEventSpool();
+  void rawEventDelivery.drainSpool();
 
   const deactivateRuntime = () => {
     if (!runtimeActive) return;
     runtimeActive = false;
     clearTimeout(updateCheckTimer);
     stopHealthCheck();
-    rawEventAbortController.abort();
+    rawEventDelivery.abort();
     releasePluginRegistration();
   };
 
@@ -5176,11 +4847,7 @@ export const createCodememRuntime = async ({ location, host }) => {
           sessionStartSessionID = null;
         }
         if (sessionID) {
-          for (const key of lastToastAtBySession.keys()) {
-            if (key.startsWith(`${sessionID}:`)) {
-              lastToastAtBySession.delete(key);
-            }
-          }
+          rawEventDelivery.clearSession(sessionID);
           injectionToastShown.delete(sessionID);
           messageInjectionCache.delete(sessionID);
           emptyRecallCache.delete(sessionID);
