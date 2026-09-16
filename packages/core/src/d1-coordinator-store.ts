@@ -40,7 +40,6 @@ import type {
 	CoordinatorGroup,
 	CoordinatorInspectRecipientInviteInput,
 	CoordinatorInvite,
-	CoordinatorInviteKind,
 	CoordinatorJoinRequest,
 	CoordinatorJoinRequestReviewResult,
 	CoordinatorListReciprocalApprovalsInput,
@@ -52,7 +51,6 @@ import type {
 	CoordinatorRecipientInviteAcceptance,
 	CoordinatorRecipientInviteInspection,
 	CoordinatorReciprocalApproval,
-	CoordinatorReviewJoinRequestBootstrapGrantInput,
 	CoordinatorReviewJoinRequestInput,
 	CoordinatorRevokeScopeMembershipInput,
 	CoordinatorScope,
@@ -64,16 +62,22 @@ import type {
 } from "./coordinator-store-contract.js";
 import {
 	CoordinatorReciprocalApprovalRequestChangedError,
-	isCoordinatorAssignedIdentityId,
 	normalizeInviteExpiresAt,
 	recipientInviteAuthoritativeIdentityId,
 } from "./coordinator-store-contract.js";
 import {
-	canonicalRecipientReviewedIntentJson,
-	parseStoredRecipientReviewedIntent,
-	type RecipientReviewedIntentTargetV1,
-	verifyRecipientReviewedIntent,
-} from "./recipient-reviewed-intent.js";
+	clean,
+	inspectCoordinatorRecipientInvite as inspectInvite,
+	mergeCoordinatorAddresses,
+	normalizeCoordinatorAuditLimit,
+	normalizeCoordinatorBootstrapGrantInput,
+	normalizeCoordinatorBootstrapGrantRequest,
+	normalizeCoordinatorCreateScopeInput,
+	normalizeCoordinatorGrantScopeMembershipInput,
+	normalizeCoordinatorInviteMetadata,
+	normalizeCoordinatorUpdateScopeInput,
+	normalizeEpoch,
+} from "./coordinator-store-input-rules.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 interface D1RunResultLike {
@@ -137,50 +141,6 @@ function rowToEnrollmentWithPresence(row: unknown): CoordinatorEnrollment {
 	}
 }
 
-function normalizeAddress(address: string): string {
-	const value = address.trim();
-	if (!value) return "";
-	const withScheme = value.includes("://") ? value : `http://${value}`;
-	try {
-		const url = new URL(withScheme);
-		if (!url.hostname) return "";
-		if (url.port && (Number(url.port) <= 0 || Number(url.port) > 65535)) return "";
-		return url.origin + url.pathname.replace(/\/+$/, "");
-	} catch {
-		return "";
-	}
-}
-
-function addressDedupeKey(address: string): string {
-	if (!address) return "";
-	try {
-		const parsed = new URL(address);
-		const host = parsed.hostname.toLowerCase();
-		if (
-			(parsed.protocol === "http:" || parsed.protocol === "") &&
-			host &&
-			parsed.port &&
-			parsed.pathname === "/"
-		) {
-			return `${host}:${parsed.port}`;
-		}
-	} catch {}
-	return address;
-}
-
-function mergeAddresses(existing: string[], candidates: string[]): string[] {
-	const normalized: string[] = [];
-	const seen = new Set<string>();
-	for (const address of [...existing, ...candidates]) {
-		const cleaned = normalizeAddress(address);
-		const key = addressDedupeKey(cleaned);
-		if (!cleaned || seen.has(key)) continue;
-		seen.add(key);
-		normalized.push(cleaned);
-	}
-	return normalized;
-}
-
 function nowISO(): string {
 	return new Date().toISOString();
 }
@@ -233,284 +193,6 @@ const ENROLLMENT_PRESENCE_COLUMNS = `enrolled_devices.group_id, enrolled_devices
 	enrolled_devices.display_name, enrolled_devices.enabled, enrolled_devices.created_at,
 	presence_records.expires_at AS presence_expires_at,
 	presence_records.capabilities_json AS presence_capabilities_json`;
-
-function requireTrimmedBootstrapGrantInput(opts: CoordinatorCreateBootstrapGrantInput): {
-	groupId: string;
-	seedDeviceId: string;
-	workerDeviceId: string;
-	expiresAt: string;
-	createdBy: string | null;
-} {
-	const groupId = String(opts.groupId ?? "").trim();
-	const seedDeviceId = String(opts.seedDeviceId ?? "").trim();
-	const workerDeviceId = String(opts.workerDeviceId ?? "").trim();
-	const expiresAt = String(opts.expiresAt ?? "").trim();
-	const createdBy = String(opts.createdBy ?? "").trim() || null;
-	if (!groupId || !seedDeviceId || !workerDeviceId || !expiresAt) {
-		throw new Error("groupId, seedDeviceId, workerDeviceId, and expiresAt are required.");
-	}
-	return { groupId, seedDeviceId, workerDeviceId, expiresAt, createdBy };
-}
-
-function clean(value: string | null | undefined): string | null {
-	const trimmed = value?.trim();
-	return trimmed ? trimmed : null;
-}
-
-async function normalizeInviteMetadata(opts: CoordinatorCreateInviteInput): Promise<{
-	inviteKind: CoordinatorInviteKind;
-	policyTeamId: string | null;
-	targetIdentityId: string | null;
-	reviewedPreviewDigest: string | null;
-	reviewedIntentJson: string | null;
-}> {
-	const inviteKind =
-		opts.inviteKind ?? (clean(opts.operationId) ? "project_share" : "legacy_enrollment");
-	const policyTeamId = clean(opts.policyTeamId);
-	const targetIdentityId = clean(opts.targetIdentityId);
-	const reviewedPreviewDigest = clean(opts.reviewedPreviewDigest);
-	if (
-		!(["legacy_enrollment", "project_share", "team_member", "add_device"] as const).includes(
-			inviteKind,
-		)
-	) {
-		throw new Error("inviteKind is invalid.");
-	}
-	if (
-		[policyTeamId, targetIdentityId]
-			.filter((value): value is string => Boolean(value))
-			.some((value) => value.length > 256 || /[\p{Cc}\p{Cf}]/u.test(value))
-	) {
-		throw new Error("recipient invite identifier is invalid.");
-	}
-	if (reviewedPreviewDigest && !/^[a-f0-9]{64}$/u.test(reviewedPreviewDigest)) {
-		throw new Error("reviewedPreviewDigest must be a SHA-256 digest.");
-	}
-	if (inviteKind === "project_share") {
-		if (!clean(opts.operationId)) throw new Error("project_share invite requires operationId.");
-		if (policyTeamId || targetIdentityId || reviewedPreviewDigest) {
-			throw new Error("recipient invite metadata requires a recipient invite kind.");
-		}
-	} else if (inviteKind === "legacy_enrollment") {
-		if (clean(opts.operationId))
-			throw new Error("legacy_enrollment invite cannot reference an operation.");
-		if (policyTeamId || targetIdentityId || reviewedPreviewDigest) {
-			throw new Error("recipient invite metadata requires a recipient invite kind.");
-		}
-	} else if (inviteKind === "team_member") {
-		if (!policyTeamId || !reviewedPreviewDigest || targetIdentityId || clean(opts.operationId)) {
-			throw new Error("team_member invite metadata is invalid.");
-		}
-	} else if (inviteKind === "add_device") {
-		if (!targetIdentityId || !reviewedPreviewDigest || policyTeamId || clean(opts.operationId)) {
-			throw new Error("add_device invite metadata is invalid.");
-		}
-	}
-	const reviewedIntentProvided = opts.reviewedIntent !== undefined && opts.reviewedIntent !== null;
-	if (!reviewedIntentProvided) {
-		if (inviteKind === "team_member" || inviteKind === "add_device") {
-			throw new Error("recipient_invite_review_unavailable");
-		}
-		return {
-			inviteKind,
-			policyTeamId,
-			targetIdentityId,
-			reviewedPreviewDigest,
-			reviewedIntentJson: null,
-		};
-	}
-	let target: RecipientReviewedIntentTargetV1;
-	if (inviteKind === "team_member" && policyTeamId && reviewedPreviewDigest) {
-		target = { kind: "team_member", policyTeamId };
-	} else if (inviteKind === "add_device" && targetIdentityId && reviewedPreviewDigest) {
-		target = { kind: "add_device", targetIdentityId };
-	} else {
-		throw new Error("recipient invite metadata requires a recipient invite kind.");
-	}
-	await verifyRecipientReviewedIntent(opts.reviewedIntent, {
-		target,
-		digest: reviewedPreviewDigest,
-	});
-	return {
-		inviteKind,
-		policyTeamId,
-		targetIdentityId,
-		reviewedPreviewDigest,
-		reviewedIntentJson: canonicalRecipientReviewedIntentJson(opts.reviewedIntent, target),
-	};
-}
-
-async function recipientInspection(
-	invite: CoordinatorInvite,
-): Promise<CoordinatorRecipientInviteInspection | null> {
-	if (invite.invite_kind === "team_member") {
-		if (
-			!invite.policy_team_id ||
-			!isCoordinatorAssignedIdentityId(invite.assigned_identity_id) ||
-			!invite.reviewed_preview_digest
-		)
-			throw new Error("invite_invalid");
-		const reviewedIntent = await parseStoredRecipientReviewedIntent(invite.reviewed_intent_json, {
-			target: { kind: "team_member", policyTeamId: invite.policy_team_id },
-			digest: invite.reviewed_preview_digest,
-		});
-		return {
-			kind: "team_member",
-			invite,
-			policy_team_id: invite.policy_team_id,
-			assigned_identity_id: invite.assigned_identity_id,
-			reviewed_preview_digest: invite.reviewed_preview_digest,
-			reviewed_intent: reviewedIntent,
-			bound: Boolean(invite.consumed_at),
-		};
-	}
-	if (invite.invite_kind === "add_device") {
-		if (!invite.target_identity_id || !invite.reviewed_preview_digest)
-			throw new Error("invite_invalid");
-		const reviewedIntent = await parseStoredRecipientReviewedIntent(invite.reviewed_intent_json, {
-			target: { kind: "add_device", targetIdentityId: invite.target_identity_id },
-			digest: invite.reviewed_preview_digest,
-		});
-		return {
-			kind: "add_device",
-			invite,
-			target_identity_id: invite.target_identity_id,
-			reviewed_preview_digest: invite.reviewed_preview_digest,
-			reviewed_intent: reviewedIntent,
-			bound: Boolean(invite.consumed_at),
-		};
-	}
-	return null;
-}
-
-function normalizeEpoch(value: number | null | undefined, fallback = 0): number {
-	if (value == null) return fallback;
-	if (!Number.isFinite(value) || value < 0)
-		throw new Error("membershipEpoch must be non-negative.");
-	return Math.trunc(value);
-}
-
-function normalizeCreateScopeInput(opts: CoordinatorCreateScopeInput) {
-	const scopeId = clean(opts.scopeId);
-	const label = clean(opts.label);
-	if (!scopeId || !label) throw new Error("scopeId and label are required.");
-	return {
-		scopeId,
-		label,
-		kind: clean(opts.kind) ?? "user",
-		authorityType: clean(opts.authorityType) ?? "coordinator",
-		coordinatorId: clean(opts.coordinatorId),
-		groupId: clean(opts.groupId),
-		manifestIssuerDeviceId: clean(opts.manifestIssuerDeviceId),
-		membershipEpoch: normalizeEpoch(opts.membershipEpoch),
-		manifestHash: clean(opts.manifestHash),
-		status: clean(opts.status) ?? "active",
-	};
-}
-
-function cleanRequiredUpdate(
-	value: string | null | undefined,
-	current: string,
-	fieldName: string,
-): string {
-	if (value === undefined) return current;
-	const cleaned = clean(value);
-	if (!cleaned) throw new Error(`${fieldName} must not be empty.`);
-	return cleaned;
-}
-
-function cleanNullableUpdate(
-	value: string | null | undefined,
-	current: string | null,
-): string | null {
-	return value === undefined ? current : clean(value);
-}
-
-function normalizeUpdateScopeInput(opts: CoordinatorUpdateScopeInput, existing: CoordinatorScope) {
-	const scopeId = clean(opts.scopeId);
-	if (!scopeId) throw new Error("scopeId is required.");
-	const requestedEpoch = opts.membershipEpoch == null ? null : normalizeEpoch(opts.membershipEpoch);
-	if (requestedEpoch != null && requestedEpoch < existing.membership_epoch) {
-		throw new Error("membershipEpoch must not move backwards.");
-	}
-	return {
-		scopeId,
-		label: cleanRequiredUpdate(opts.label, existing.label, "label"),
-		kind: cleanRequiredUpdate(opts.kind, existing.kind, "kind"),
-		authorityType: cleanRequiredUpdate(
-			opts.authorityType,
-			existing.authority_type,
-			"authorityType",
-		),
-		coordinatorId: cleanNullableUpdate(opts.coordinatorId, existing.coordinator_id),
-		groupId: cleanNullableUpdate(opts.groupId, existing.group_id),
-		manifestIssuerDeviceId: cleanNullableUpdate(
-			opts.manifestIssuerDeviceId,
-			existing.manifest_issuer_device_id,
-		),
-		membershipEpoch: requestedEpoch ?? existing.membership_epoch,
-		manifestHash: cleanNullableUpdate(opts.manifestHash, existing.manifest_hash),
-		status: cleanRequiredUpdate(opts.status, existing.status, "status"),
-	};
-}
-
-function normalizeGrantInput(
-	opts: CoordinatorGrantScopeMembershipInput,
-	scope: CoordinatorScope | null,
-	existing: CoordinatorScopeMembership | null,
-) {
-	const scopeId = clean(opts.scopeId);
-	const deviceId = clean(opts.deviceId);
-	if (!scopeId || !deviceId) throw new Error("scopeId and deviceId are required.");
-	const coordinatorId = clean(opts.coordinatorId);
-	const groupId = clean(opts.groupId);
-	if (coordinatorId && coordinatorId !== scope?.coordinator_id) {
-		throw new Error("membership coordinatorId must match the scope coordinatorId.");
-	}
-	if (groupId && groupId !== scope?.group_id) {
-		throw new CoordinatorMembershipError("scope_group_mismatch");
-	}
-	const requestedEpoch = opts.membershipEpoch == null ? null : normalizeEpoch(opts.membershipEpoch);
-	const inheritedEpoch = scope?.membership_epoch ?? 0;
-	if (requestedEpoch != null && requestedEpoch < inheritedEpoch) {
-		throw new Error("membershipEpoch must not be lower than the scope membershipEpoch.");
-	}
-	if (requestedEpoch != null && existing) {
-		const minimumEpoch =
-			existing.status === "revoked" ? existing.membership_epoch + 1 : existing.membership_epoch;
-		if (requestedEpoch < minimumEpoch) {
-			throw new Error("membershipEpoch must not move backwards.");
-		}
-	}
-	const membershipEpoch =
-		requestedEpoch ??
-		(existing
-			? Math.max(
-					inheritedEpoch,
-					existing.membership_epoch + (existing.status === "revoked" ? 1 : 0),
-				)
-			: inheritedEpoch);
-	return {
-		scopeId,
-		deviceId,
-		role: clean(opts.role) ?? "member",
-		membershipEpoch,
-		coordinatorId: scope?.coordinator_id ?? null,
-		groupId: scope?.group_id ?? null,
-		manifestIssuerDeviceId:
-			clean(opts.manifestIssuerDeviceId) ?? scope?.manifest_issuer_device_id ?? null,
-		manifestHash: clean(opts.manifestHash) ?? scope?.manifest_hash ?? null,
-		signedManifestJson: clean(opts.signedManifestJson),
-		actorType: clean(opts.actorType),
-		actorId: clean(opts.actorId),
-	};
-}
-
-function normalizeAuditLimit(limit: number | null | undefined): number {
-	if (limit == null) return 100;
-	if (!Number.isFinite(limit)) return 100;
-	return Math.max(1, Math.min(1000, Math.trunc(limit)));
-}
 
 function prepareMembershipAuditFromCurrentRow(
 	db: D1DatabaseLike,
@@ -659,25 +341,6 @@ async function runAuditedBatch(
 
 function batchResultChanges(result: unknown): number {
 	return Number((result as D1RunResultLike | undefined)?.meta?.changes ?? 0);
-}
-
-function normalizeBootstrapGrantRequest(
-	input: CoordinatorReviewJoinRequestBootstrapGrantInput | null | undefined,
-): CoordinatorCreateBootstrapGrantInput | null {
-	if (!input) return null;
-	const seedDeviceId = String(input.seedDeviceId ?? "").trim();
-	const expiresAt = String(input.expiresAt ?? "").trim();
-	const createdBy = String(input.createdBy ?? "").trim() || null;
-	if (!seedDeviceId || !expiresAt) {
-		throw new Error("bootstrapGrant.seedDeviceId and expiresAt are required.");
-	}
-	return {
-		groupId: "",
-		seedDeviceId,
-		workerDeviceId: "",
-		expiresAt,
-		createdBy,
-	};
 }
 
 async function allRows<T>(statement: D1PreparedStatementLike): Promise<T[]> {
@@ -906,7 +569,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		const group = await this.getGroup(_opts.groupId);
 		const operationId = String(_opts.operationId ?? "").trim() || null;
 		const reviewedProjectSetDigest = String(_opts.reviewedProjectSetDigest ?? "").trim() || null;
-		const metadata = await normalizeInviteMetadata(_opts);
+		const metadata = await normalizeCoordinatorInviteMetadata(_opts);
 		const assignedIdentityId =
 			metadata.inviteKind === "team_member" ? `identity:${tokenUrlSafe(18)}` : null;
 		if (Boolean(operationId) !== Boolean(reviewedProjectSetDigest)) {
@@ -1059,7 +722,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	): Promise<CoordinatorRecipientInviteInspection | null> {
 		const invite = await this.getInviteByTokenForInspection(_opts.token);
 		if (!invite) return null;
-		const inspection = await recipientInspection(invite);
+		const inspection = await inspectInvite(invite);
 		if (!inspection) return null;
 		if (invite.revoked_at) throw new Error("invite_invalid");
 		if (
@@ -1096,7 +759,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		}
 		const digest = await tokenDigest(_opts.token);
 		const initial = await this.getInviteByTokenForInspection(_opts.token);
-		const inspection = initial ? await recipientInspection(initial) : null;
+		const inspection = initial ? await inspectInvite(initial) : null;
 		if (!initial || !inspection || inspection.kind !== _opts.inviteKind || initial.revoked_at) {
 			throw new Error("invite_invalid");
 		}
@@ -1255,7 +918,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		) {
 			throw new Error("invite_invalid");
 		}
-		const savedInspection = await recipientInspection(saved);
+		const savedInspection = await inspectInvite(saved);
 		if (!savedInspection || savedInspection.kind !== _opts.inviteKind) {
 			throw new Error("invite_invalid");
 		}
@@ -1577,7 +1240,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		if (row.status !== "pending") {
 			return { ...rowToRecord<CoordinatorJoinRequest>(row), _no_transition: true };
 		}
-		const bootstrapGrantRequest = normalizeBootstrapGrantRequest(_opts.bootstrapGrant);
+		const bootstrapGrantRequest = normalizeCoordinatorBootstrapGrantRequest(_opts.bootstrapGrant);
 		const reviewedAt = nowISO();
 		const nextStatus = _opts.approved ? "approved" : "denied";
 		let bootstrapGrantInput: CoordinatorCreateBootstrapGrantInput | null = null;
@@ -1866,7 +1529,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	async createBootstrapGrant(
 		opts: CoordinatorCreateBootstrapGrantInput,
 	): Promise<CoordinatorBootstrapGrant> {
-		const normalized = requireTrimmedBootstrapGrantInput(opts);
+		const normalized = normalizeCoordinatorBootstrapGrantInput(opts);
 		const grantId = tokenUrlSafe(12);
 		const createdAt = nowISO();
 		await this.db
@@ -1919,7 +1582,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	}
 
 	async createScope(opts: CoordinatorCreateScopeInput): Promise<CoordinatorScope> {
-		const normalized = normalizeCreateScopeInput(opts);
+		const normalized = normalizeCoordinatorCreateScopeInput(opts);
 		if (await this.getScope(normalized.scopeId)) throw new Error("scopeId already exists.");
 		const now = nowISO();
 		await this.db
@@ -1951,7 +1614,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		const scopeId = clean(opts.scopeId);
 		const existing = scopeId ? await this.getScope(scopeId) : null;
 		if (!existing) return null;
-		const normalized = normalizeUpdateScopeInput(opts, existing);
+		const normalized = normalizeCoordinatorUpdateScopeInput(opts, existing);
 		await this.db
 			.prepare(`UPDATE coordinator_scopes
 				 SET label = ?,
@@ -2029,7 +1692,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		if (!scope) throw new CoordinatorMembershipError("scope_not_found");
 		if (scope.status !== "active") throw new CoordinatorMembershipError("scope_inactive");
 		const existing = scopeId && deviceId ? await this.getScopeMembership(scopeId, deviceId) : null;
-		const normalized = normalizeGrantInput(opts, scope, existing);
+		const normalized = normalizeCoordinatorGrantScopeMembershipInput(opts, scope, existing);
 		if (normalized.groupId) {
 			const enrollment = await this.getEnrollment(normalized.groupId, normalized.deviceId);
 			if (!enrollment) {
@@ -2237,7 +1900,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		const scopeId = clean(opts.scopeId);
 		if (!scopeId) throw new Error("scopeId is required.");
 		const deviceId = clean(opts.deviceId);
-		const limit = normalizeAuditLimit(opts.limit);
+		const limit = normalizeCoordinatorAuditLimit(opts.limit);
 		const where = deviceId ? "scope_id = ? AND device_id = ?" : "scope_id = ?";
 		const params = deviceId ? [scopeId, deviceId, limit] : [scopeId, limit];
 		return (
@@ -2552,7 +2215,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	async upsertPresence(_opts: CoordinatorUpsertPresenceInput): Promise<CoordinatorPresenceRecord> {
 		const now = new Date();
 		const expiresAt = new Date(now.getTime() + _opts.ttlS * 1000).toISOString();
-		const normalized = mergeAddresses([], _opts.addresses);
+		const normalized = mergeCoordinatorAddresses([], _opts.addresses);
 		await this.db
 			.prepare(`INSERT INTO presence_records(group_id, device_id, addresses_json, last_seen_at, expires_at, capabilities_json)
 				 VALUES (?, ?, ?, ?, ?, ?)
@@ -2607,7 +2270,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			}
 			const addresses = stale
 				? []
-				: mergeAddresses([], JSON.parse(String(row.addresses_json ?? "[]")) as string[]);
+				: mergeCoordinatorAddresses([], JSON.parse(String(row.addresses_json ?? "[]")) as string[]);
 			return {
 				device_id: String(row.device_id ?? ""),
 				public_key: String(row.public_key ?? ""),
