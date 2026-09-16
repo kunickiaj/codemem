@@ -2255,7 +2255,7 @@ export class ObserverClient {
 	// -----------------------------------------------------------------------
 
 	private _buildSidecarCommand(prompt: string, useModel: boolean): string[] {
-		const cmd = [
+		const claudeCommand = [
 			...this._claudeCommand,
 			"-p",
 			"--output-format",
@@ -2264,10 +2264,10 @@ export class ObserverClient {
 			"bypassPermissions",
 		];
 		if (useModel && this._sidecarModel) {
-			cmd.push("--model", this._sidecarModel);
+			claudeCommand.push("--model", this._sidecarModel);
 		}
-		cmd.push(prompt);
-		return cmd;
+		claudeCommand.push(prompt);
+		return claudeCommand;
 	}
 
 	private async _invokeSidecar(
@@ -2431,7 +2431,7 @@ export class ObserverClient {
 	 * the prompt is read from stdin (trailing `-`).
 	 */
 	private _buildCodexSidecarCommand(useModel: boolean, outputFile: string): string[] {
-		const cmd = [
+		const codexCommand = [
 			...this._codexCommand,
 			"exec",
 			"--ephemeral",
@@ -2441,10 +2441,10 @@ export class ObserverClient {
 			"read-only",
 		];
 		if (useModel && this._codexSidecarModel) {
-			cmd.push("-m", this._codexSidecarModel);
+			codexCommand.push("-m", this._codexSidecarModel);
 		}
-		cmd.push("-o", outputFile, "-");
-		return cmd;
+		codexCommand.push("-o", outputFile, "-");
+		return codexCommand;
 	}
 
 	private async _invokeCodexSidecar(
