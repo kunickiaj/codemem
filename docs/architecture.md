@@ -365,7 +365,7 @@ H --> J["Write to memory_fts and memory_vectors"]
 
 The OpenCode adapter streams each captured event to the viewer API (`captureEvent` -> `emitRawEvent`) and keeps an in-memory event list for session accounting and reset behavior.
 
-When stream delivery is unavailable, the adapter can enqueue raw events through the CLI fallback path (`enqueue-raw-event`) so events still enter durable queue processing.
+When Viewer delivery is unavailable, the adapter durably spools the normalized event and returns without starting a CLI process. Retained entries retry over HTTP at bounded startup or session boundaries with the same event ID.
 
 Claude detached hook ingest normalizes once and posts to canonical `POST /api/raw-events`; retryable
 delivery reuses the exact envelope for CLI enqueue fallback. The named `POST /api/claude-hooks` route
@@ -383,9 +383,10 @@ behavior and `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1` opt-in for `Stop` remain unch
 - 10+ minutes of continuous work
 
 ### OpenCode stream reliability
-- Preflight check: `GET /api/raw-events/status` with periodic re-checks (`CODEMEM_RAW_EVENTS_STATUS_CHECK_MS`), bounded by a 5-second timeout
-- Backoff on failure: configurable via `CODEMEM_RAW_EVENTS_BACKOFF_MS`; on stream failure the plugin can fall back to CLI enqueue for durable persistence
-- Once events are accepted by the viewer/store queue, each periodic sweep drains bounded work from active or idle sessions and retries failed batches
+- Preflight check: `GET /api/raw-events/status?limit=0` with periodic re-checks (`CODEMEM_RAW_EVENTS_STATUS_CHECK_MS`), bounded by a 5-second timeout
+- Backoff on failure: configurable via `CODEMEM_RAW_EVENTS_BACKOFF_MS`; failed delivery writes the exact envelope to the private OpenCode spool instead of invoking `enqueue-raw-event`
+- Retained spool entries retry over HTTP at bounded startup or session boundaries; successfully spooled events do not show a user warning
+- Once events are accepted by the Viewer inbox, its single drainer writes bounded batches to SQLite and retries failed batches outside the request path
 
 ### Claude hook flush boundaries
 - `SessionEnd` immediately flushes by default; `CODEMEM_CLAUDE_HOOK_FLUSH=0` disables the attempt
