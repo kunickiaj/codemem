@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -167,6 +175,31 @@ describe("Git repository identity", () => {
 });
 
 function unusualGitDirectoryTests(): void {
+	it("follows a .git directory symlink", () => {
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-project-test-"));
+		const repoRoot = join(tmpDir, "work", "repository");
+		const gitDirectory = join(tmpDir, "storage", "repository.git");
+		mkdirSync(repoRoot, { recursive: true });
+		mkdirSync(gitDirectory, { recursive: true });
+		symlinkSync(gitDirectory, join(repoRoot, ".git"), "dir");
+		writeFileSync(
+			join(gitDirectory, "config"),
+			'[remote "origin"]\n\turl = https://example.test/acme/repository.git\n',
+		);
+
+		expect(resolveGitRepositoryIdentity(repoRoot)).toEqual({
+			identity: "https://example.test/acme/repository.git",
+			root: repoRoot,
+			source: "git_remote",
+		});
+		unlinkSync(join(gitDirectory, "config"));
+		expect(resolveGitRepositoryIdentity(repoRoot)).toEqual({
+			identity: realpathSync(gitDirectory).replaceAll("\\", "/"),
+			root: repoRoot,
+			source: "git_common_dir",
+		});
+	});
+
 	it("anchors a separate Git directory to its checkout", () => {
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-project-test-"));
 		const repoRoot = join(tmpDir, "work", "repository");

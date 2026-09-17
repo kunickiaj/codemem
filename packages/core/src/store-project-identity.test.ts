@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { connect } from "./db.js";
+import { listProjectScopeInventory } from "./project-scope-settings.js";
 import { resolveSessionScopeId } from "./scope-stamping.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema } from "./test-utils.js";
@@ -76,5 +77,43 @@ describe("raw-event session repository identity", () => {
 		});
 
 		expect(resolveSessionScopeId(store.db, { sessionId })).toBe("existing-scope");
+	});
+
+	it("upgrades prior live sessions to one repository identity", () => {
+		const repoRoot = join(tmpDir, "upgraded-repository");
+		const missingRoot = join(tmpDir, "missing-repository");
+		mkdirSync(join(repoRoot, ".git"), { recursive: true });
+		writeFileSync(
+			join(repoRoot, ".git", "config"),
+			'[remote "origin"]\n\turl = https://example.test/acme/repository.git\n',
+		);
+		const historicalSessionId = store.startSession({ cwd: repoRoot, project: "repository" });
+		const missingSessionId = store.startSession({ cwd: missingRoot, project: "missing" });
+
+		store.getOrCreateSessionForOpencodeSession({
+			opencodeSessionId: "session-after-upgrade",
+			cwd: repoRoot,
+			project: "repository",
+		});
+
+		expect(
+			store.db
+				.prepare("SELECT git_remote FROM sessions WHERE id = ?")
+				.pluck()
+				.get(historicalSessionId),
+		).toBe("https://example.test/acme/repository.git");
+		expect(
+			store.db
+				.prepare("SELECT git_remote FROM sessions WHERE id = ?")
+				.pluck()
+				.get(missingSessionId),
+		).toBeNull();
+		const inventory = listProjectScopeInventory(store.db, { limit: 10 });
+		expect(inventory.projects).toHaveLength(2);
+		expect(
+			inventory.projects.find(
+				(project) => project.workspace_identity === "https://example.test/acme/repository.git",
+			),
+		).toMatchObject({ session_count: 2 });
 	});
 });

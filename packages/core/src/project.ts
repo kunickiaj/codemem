@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 
 export interface GitRepositoryIdentity {
@@ -101,7 +101,9 @@ function findGitAnchor(startCwd: string): string | null {
 
 function gitDirectoryFromMarker(repositoryRoot: string, gitPath: string): string | null {
 	try {
-		if (lstatSync(gitPath).isDirectory()) return gitPath;
+		const pathInfo = lstatSync(gitPath);
+		if (pathInfo.isDirectory()) return gitPath;
+		if (pathInfo.isSymbolicLink() && statSync(gitPath).isDirectory()) return realpathSync(gitPath);
 		const text = readFileSync(gitPath, "utf8").trim();
 		if (!text.startsWith("gitdir:")) return null;
 		return resolve(repositoryRoot, text.slice("gitdir:".length).trim());

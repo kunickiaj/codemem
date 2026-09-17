@@ -295,6 +295,39 @@ function parseMetadata(row: MemoryItem): MemoryItemResponse {
 	return { ...rest, metadata_json: fromJson(metadata_json) };
 }
 
+// Keep pre-repository-identity sessions aligned with new sessions without
+// guessing about historical paths that no longer exist.
+function backfillRepositoryIdentityForLiveSessions(db: Database, repositoryIdentity: string): void {
+	const rows = db
+		.prepare(
+			`SELECT DISTINCT cwd
+			 FROM sessions
+			 WHERE COALESCE(TRIM(git_remote), '') = ''
+			   AND cwd IS NOT NULL
+			   AND TRIM(cwd) <> ''`,
+		)
+		.all() as Array<{ cwd: string }>;
+	const matchingCwds = rows
+		.map((row) => row.cwd)
+		.filter((cwd) => resolveGitRepositoryIdentity(cwd)?.identity === repositoryIdentity);
+	if (matchingCwds.length === 0) return;
+	const update = db.prepare(
+		`UPDATE sessions
+		 SET git_remote = ?
+		 WHERE cwd = ? AND COALESCE(TRIM(git_remote), '') = ''`,
+	);
+	db.transaction(() => {
+		for (const cwd of matchingCwds) update.run(repositoryIdentity, cwd);
+	})();
+}
+
+function repositoryIdentityForNewSession(db: Database, cwd: string | null): string | null {
+	if (!cwd) return null;
+	const identity = resolveGitRepositoryIdentity(cwd)?.identity ?? null;
+	if (identity) backfillRepositoryIdentityForLiveSessions(db, identity);
+	return identity;
+}
+
 // MemoryStore
 
 export class MemoryStore {
@@ -750,7 +783,7 @@ export class MemoryStore {
 		const startedAt = opts.startedAt ?? nowIso();
 		const cwd = opts.cwd == null ? process.cwd() : cleanProjectIdentity(opts.cwd);
 		const project = cleanProjectIdentity(opts.project);
-		const repositoryIdentity = cwd ? resolveGitRepositoryIdentity(cwd)?.identity : null;
+		const repositoryIdentity = repositoryIdentityForNewSession(this.db, cwd);
 		const sessionRows = this.d
 			.insert(schema.sessions)
 			.values({
