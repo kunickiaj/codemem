@@ -736,6 +736,7 @@ function startRawEventProcessing(
 			observer,
 		},
 		stop: async () => {
+			rawEventTarget.stop();
 			await queue.stop();
 			await sweeper.stop();
 		},
@@ -743,26 +744,22 @@ function startRawEventProcessing(
 }
 
 export function createRawEventTargetState(
-	store: Pick<MemoryStore, "actorId" | "dbPath" | "deviceId" | "hasCurrentIdentity">,
+	store: Pick<MemoryStore, "dbPath" | "hasCurrentIdentity" | "onIdentityChanged">,
 ) {
 	let hasCurrentIdentity = false;
-	let actorId = store.actorId;
-	let deviceId = store.deviceId;
 	const refreshCurrentIdentity = () => {
 		try {
 			hasCurrentIdentity = store.hasCurrentIdentity();
 		} catch {
 			hasCurrentIdentity = false;
 		}
-		actorId = store.actorId;
-		deviceId = store.deviceId;
 	};
 	refreshCurrentIdentity();
+	const stop = store.onIdentityChanged(refreshCurrentIdentity);
 	return {
 		dbPath: store.dbPath,
-		hasCurrentIdentity: () =>
-			hasCurrentIdentity && actorId === store.actorId && deviceId === store.deviceId,
-		refreshCurrentIdentity,
+		hasCurrentIdentity: () => hasCurrentIdentity,
+		stop,
 	};
 }
 

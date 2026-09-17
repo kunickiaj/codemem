@@ -178,31 +178,6 @@ function registerStaticRoutes(app: Hono): void {
 	});
 }
 
-interface IdentitySnapshotStore {
-	actorId: string;
-	deviceId: string;
-}
-
-export function registerIdentityRefreshWatcher(
-	app: Hono,
-	storeFactory: () => IdentitySnapshotStore,
-	target?: ViewerTargetStore,
-): void {
-	if (!target?.refreshCurrentIdentity) return;
-	app.use("/api/sync/invites/import", async (_c, next) => {
-		const store = storeFactory();
-		const previousActorId = store.actorId;
-		const previousDeviceId = store.deviceId;
-		await next();
-		if (store.actorId === previousActorId && store.deviceId === previousDeviceId) return;
-		try {
-			target.refreshCurrentIdentity?.();
-		} catch {
-			// Do not replace a completed onboarding response with a cache-refresh error.
-		}
-	});
-}
-
 export function createApp(opts?: AppOptions) {
 	const storeFactory = opts?.storeFactory ?? getStore;
 	const sweeper = opts?.sweeper ?? null;
@@ -214,7 +189,6 @@ export function createApp(opts?: AppOptions) {
 	// CORS / origin guard
 	app.use("*", preflightHandler());
 	app.use("*", originGuard({ unsafeGetPathPrefixes: [TEAM_SETUP_ROUTE_PREFIX] }));
-	registerIdentityRefreshWatcher(app, storeFactory, opts?.rawEventTarget);
 
 	// API routes
 	app.route("/", healthRoutes(storeFactory));

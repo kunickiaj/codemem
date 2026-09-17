@@ -317,6 +317,7 @@ export class MemoryStore {
 	actorDisplayName: string;
 	readonly crossSessionDedupWindowMs: number;
 	private actorIdUsesDeviceFallback: boolean;
+	private readonly identityChangeListeners = new Set<() => void>();
 	/**
 	 * Per-store secret scanner. Lives on the instance (not as a module global)
 	 * so workspace-level rule overrides and allowlists can be wired without
@@ -413,6 +414,47 @@ export class MemoryStore {
 		return deviceId === this.deviceId && actorId === this.actorId;
 	}
 
+	onIdentityChanged(listener: () => void): () => void {
+		this.identityChangeListeners.add(listener);
+		return () => this.identityChangeListeners.delete(listener);
+	}
+
+	private notifyIdentityChanged(): void {
+		for (const listener of this.identityChangeListeners) {
+			try {
+				listener();
+			} catch {
+				// Identity persistence must not fail because an observer failed.
+			}
+		}
+	}
+
+	private publishEnsuredDeviceIdentity(
+		deviceId: string,
+		actor?: { id: string; displayName: string },
+	): void {
+		this.deviceId = deviceId;
+		if (actor) {
+			this.actorId = actor.id;
+			this.actorDisplayName = actor.displayName;
+		}
+		this.notifyIdentityChanged();
+	}
+
+	private fallbackActorForDeviceAdoption(
+		fallbackActorId: string,
+	): { display_name: string } | undefined {
+		if (!tableExists(this.db, "actors")) return undefined;
+		return this.db
+			.prepare(
+				`SELECT display_name FROM actors WHERE actor_id = ?
+				 AND (? = 1 OR (is_local = 1 AND status = 'active'))`,
+			)
+			.get(fallbackActorId, this.actorIdUsesDeviceFallback ? 1 : 0) as
+			| { display_name: string }
+			| undefined;
+	}
+
 	refreshPersistedLocalIdentity(expectedActorId: string): boolean {
 		const actorId = cleanStr(expectedActorId);
 		if (!actorId) return false;
@@ -430,6 +472,7 @@ export class MemoryStore {
 			this.actorId = actorId;
 			this.actorDisplayName = displayName;
 			this.actorIdUsesDeviceFallback = false;
+			this.notifyIdentityChanged();
 			return true;
 		} catch {
 			return false;
@@ -441,19 +484,9 @@ export class MemoryStore {
 		if (!normalizedDeviceId || normalizedDeviceId === "local" || this.deviceId !== "local") return;
 		const previousDeviceId = this.deviceId;
 		const fallbackActorId = `local:${previousDeviceId}`;
-		const hasActorsTable = tableExists(this.db, "actors");
-		const fallbackActor = hasActorsTable
-			? (this.db
-					.prepare(
-						`SELECT display_name FROM actors WHERE actor_id = ?
-						 AND (? = 1 OR (is_local = 1 AND status = 'active'))`,
-					)
-					.get(fallbackActorId, this.actorIdUsesDeviceFallback ? 1 : 0) as
-					| { display_name: string }
-					| undefined)
-			: undefined;
+		const fallbackActor = this.fallbackActorForDeviceAdoption(fallbackActorId);
 		if (!this.actorIdUsesDeviceFallback && !fallbackActor) {
-			this.deviceId = normalizedDeviceId;
+			this.publishEnsuredDeviceIdentity(normalizedDeviceId);
 			return;
 		}
 
@@ -510,11 +543,14 @@ export class MemoryStore {
 				.run(nextActorId, now, fallbackActorId);
 		})();
 		// Publish the new in-memory identity only after every persistence mutation commits.
-		this.deviceId = normalizedDeviceId;
 		if (this.actorIdUsesDeviceFallback) {
-			this.actorId = nextActorId;
-			this.actorDisplayName = nextActorDisplayName;
+			this.publishEnsuredDeviceIdentity(normalizedDeviceId, {
+				id: nextActorId,
+				displayName: nextActorDisplayName,
+			});
+			return;
 		}
+		this.publishEnsuredDeviceIdentity(normalizedDeviceId);
 	}
 
 	private findExistingDuplicateMemory(
@@ -3202,6 +3238,7 @@ export class MemoryStore {
 
 	/** Close the database connection. */
 	close(): void {
+		this.identityChangeListeners.clear();
 		this.db.pragma("optimize");
 		this.db.close();
 	}
