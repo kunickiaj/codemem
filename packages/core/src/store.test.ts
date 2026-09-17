@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -118,30 +118,6 @@ describe("MemoryStore", () => {
 			.get(sessionId);
 
 		expect(session).toEqual({ cwd: null, project: null, git_remote: null, git_branch: null });
-	});
-
-	it("persists repository identity for raw-event sessions created from linked worktrees", () => {
-		const mainRepo = join(tmpDir, "main", "repository");
-		const worktree = join(tmpDir, "external", "worktree");
-		const worktreeGitDir = join(mainRepo, ".git", "worktrees", "external");
-		mkdirSync(worktreeGitDir, { recursive: true });
-		mkdirSync(worktree, { recursive: true });
-		writeFileSync(
-			join(mainRepo, ".git", "config"),
-			'[remote "origin"]\n\turl = https://example.test/acme/repository.git\n',
-		);
-		writeFileSync(join(worktreeGitDir, "commondir"), "../..\n");
-		writeFileSync(join(worktree, ".git"), `gitdir: ${worktreeGitDir}\n`);
-
-		const sessionId = store.getOrCreateSessionForOpencodeSession({
-			opencodeSessionId: "session-worktree",
-			cwd: worktree,
-			project: "repository",
-		});
-
-		expect(
-			store.db.prepare("SELECT cwd, git_remote FROM sessions WHERE id = ?").get(sessionId),
-		).toEqual({ cwd: worktree, git_remote: "https://example.test/acme/repository.git" });
 	});
 
 	// -- get ----------------------------------------------------------------

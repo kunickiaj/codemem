@@ -330,15 +330,17 @@ function setupProjectsTest() {
 	});
 }
 
+function cleanupProjectsTest(): void {
+	vi.clearAllMocks();
+	state.lastProjectCoordinatorAdminGroups = [];
+	state.lastCoordinatorAdminStatus = null;
+	state.lastCoordinatorAdminGroups = [];
+	document.body.innerHTML = "";
+}
+
 describe("Projects tab", () => {
 	beforeEach(setupProjectsTest);
-	afterEach(() => {
-		vi.clearAllMocks();
-		state.lastProjectCoordinatorAdminGroups = [];
-		state.lastCoordinatorAdminStatus = null;
-		state.lastCoordinatorAdminGroups = [];
-		document.body.innerHTML = "";
-	});
+	afterEach(cleanupProjectsTest);
 
 	it("shows empty inventory without bogus pagination range", async () => {
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
@@ -391,6 +393,11 @@ describe("Projects tab", () => {
 		]);
 		expect(state.lastProjectCoordinatorAdminGroups).toEqual([]);
 	});
+});
+
+function projectsRecipientPolicyReviewSurfaceTests(): void {
+	beforeEach(setupProjectsTest);
+	afterEach(cleanupProjectsTest);
 
 	it("omits preserved continuity from mixed review and repair state", async () => {
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
@@ -446,6 +453,13 @@ describe("Projects tab", () => {
 		expect(document.querySelector(".recipient-policy-review-decisions button")).not.toBeNull();
 		expect(document.querySelector(".recipient-policy-review-continuity")).toBeNull();
 	});
+}
+
+describe("Projects recipient policy review surface", projectsRecipientPolicyReviewSurfaceTests);
+
+function projectsRecipientPolicyGroupedResolutionTests(): void {
+	beforeEach(setupProjectsTest);
+	afterEach(cleanupProjectsTest);
 
 	it("groups repository worktrees and applies one decision with every item fingerprint", async () => {
 		const first = reviewItem({
@@ -524,6 +538,16 @@ describe("Projects tab", () => {
 		]);
 		expect(document.querySelector(".recipient-policy-review-item")).toBeNull();
 	});
+}
+
+describe(
+	"Projects recipient policy grouped resolution",
+	projectsRecipientPolicyGroupedResolutionTests,
+);
+
+function projectsRecipientPolicyBulkTests(): void {
+	beforeEach(setupProjectsTest);
+	afterEach(cleanupProjectsTest);
 
 	it("chunks repository decisions to the bulk endpoint limit", async () => {
 		const reviewItems = Array.from({ length: 101 }, (_, index) =>
@@ -610,6 +634,13 @@ describe("Projects tab", () => {
 		expect(document.querySelectorAll(".recipient-policy-review-item")).toHaveLength(1);
 		expect(document.body.textContent).toContain("Second batch failed");
 	});
+}
+
+describe("Projects recipient policy bulk resolution", projectsRecipientPolicyBulkTests);
+
+function projectsRecipientPolicySafetyTests(): void {
+	beforeEach(setupProjectsTest);
+	afterEach(cleanupProjectsTest);
 
 	it("explains required recipient input without submitting an incomplete decision", async () => {
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
@@ -695,6 +726,13 @@ describe("Projects tab", () => {
 		expect(refreshed).not.toBe(original);
 		expect(document.activeElement).toBe(refreshed);
 	});
+}
+
+describe("Projects recipient policy safety", projectsRecipientPolicySafetyTests);
+
+describe("Projects tab interactions", () => {
+	beforeEach(setupProjectsTest);
+	afterEach(cleanupProjectsTest);
 
 	it("preserves a focused repair when only hidden continuity data changes", async () => {
 		const initialReviewItem = reviewItem();

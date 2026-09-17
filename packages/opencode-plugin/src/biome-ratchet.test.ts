@@ -1661,6 +1661,15 @@ describe("Biome ratchet CLI", () => {
 			json: false,
 			githubAnnotations: true,
 		});
+		expect(parseArguments(["--base", "main", "--staged"])).toEqual({
+			base: "main",
+			json: false,
+			githubAnnotations: false,
+			staged: true,
+		});
+		expect(() => parseArguments(["--base", "main", "--head", "HEAD", "--staged"])).toThrow(
+			"--staged cannot be combined with --head",
+		);
 	});
 
 	it("emits bounded escaped GitHub annotations while retaining the full result", () => {
@@ -1715,6 +1724,41 @@ describe("Biome ratchet CLI", () => {
 });
 
 describe("Biome ratchet CLI execution", () => {
+	it("checks the staged snapshot without including unstaged or untracked changes", async () => {
+		const root = mkdtempSync(path.join(tmpdir(), "codemem-biome-ratchet-staged-test-"));
+		temporaryDirectories.push(root);
+		mkdirSync(path.join(root, "src"));
+		writeFileSync(path.join(root, "biome.json"), config());
+		writeFileSync(path.join(root, ".gitignore"), "node_modules/\n");
+		writeFileSync(path.join(root, "src/staged.ts"), "export const staged = 1;\n");
+		writeFileSync(path.join(root, "src/unstaged.ts"), "export const unstaged = 1;\n");
+		execFileSync("git", ["init", "-q"], { cwd: root });
+		execFileSync("git", ["config", "user.email", "fixture@example.test"], { cwd: root });
+		execFileSync("git", ["config", "user.name", "Fixture"], { cwd: root });
+		execFileSync("git", ["add", "."], { cwd: root });
+		execFileSync("git", ["commit", "-qm", "base"], { cwd: root });
+		writeFileSync(
+			path.join(root, "src/staged.ts"),
+			"export function staged() {\n  let value = 0;\n  value += 1;\n  value += 2;\n  value += 3;\n  value += 4;\n  value += 5;\n  return value;\n}\n",
+		);
+		execFileSync("git", ["add", "src/staged.ts"], { cwd: root });
+		writeFileSync(path.join(root, "src/unstaged.ts"), "const unstaged: any = 1;\n");
+		writeFileSync(path.join(root, "src/untracked.ts"), "const untracked: any = 1;\n");
+
+		const result = await runRatchet(
+			{ base: "HEAD", json: true, staged: true },
+			{
+				cwd: root,
+				biomeEntrypoint: createRequire(import.meta.url).resolve("@biomejs/biome/bin/biome"),
+			},
+		);
+
+		expect(result.mode).toBe("staged");
+		expect(result.changedFiles).toBe(1);
+		expect(result.regressions).toHaveLength(1);
+		expect(result.regressions[0]?.path).toBe("src/staged.ts");
+	});
+
 	it("includes an untracked maintained file and fails closed on missing refs or tool failure", async () => {
 		const root = mkdtempSync(path.join(tmpdir(), "codemem-biome-ratchet-test-"));
 		temporaryDirectories.push(root);

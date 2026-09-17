@@ -5,6 +5,7 @@ import type {
 	ProjectScopeInventoryProject,
 	RecipientPolicyBlockedItemV1,
 	RecipientPolicyIntentGraphV1,
+	RecipientPolicyReviewListV1,
 	SharingDomainScope,
 } from "../lib/api/sync";
 import { showGlobalNotice } from "../lib/notice";
@@ -1665,6 +1666,29 @@ async function finishFailedProjectsLoad(
 	return false;
 }
 
+type RecipientPolicyReviewLoadResult =
+	| { ok: true; review: RecipientPolicyReviewListV1 }
+	| { ok: false; error: unknown };
+
+function renderProjectsRecipientPolicyReview(result: RecipientPolicyReviewLoadResult): void {
+	const reviewMount = el<HTMLDivElement>("recipientPolicyReviewMount");
+	if (!reviewMount) return;
+	const reviewContent = recipientPolicyReviewContentMount(reviewMount);
+	if ("review" in result) {
+		renderRecipientPolicyReview(reviewContent, result.review, {
+			isRepairAvailable: (repair) => !repair.projectIdentity.startsWith("unmapped:"),
+			onRefresh: async () => {
+				await loadProjectsData();
+			},
+			onRepair: repairRecipientPolicyItem,
+		});
+	} else {
+		renderRecipientPolicyReviewLoadError(reviewContent, result.error);
+	}
+	reviewMount.hidden =
+		reviewContent.hidden && !reviewMount.querySelector(".project-team-setup-entry");
+}
+
 async function loadProjectsDataOperation(options: ProjectsDataLoadOptions): Promise<boolean> {
 	const meta = el<HTMLDivElement>("projectsInventoryMeta");
 	const list = el<HTMLDivElement>("projectsInventoryList");
@@ -1720,23 +1744,7 @@ async function loadProjectsDataOperation(options: ProjectsDataLoadOptions): Prom
 				inventoryError: !shareInventory.ok,
 			});
 		}
-		const reviewMount = el<HTMLDivElement>("recipientPolicyReviewMount");
-		if (reviewMount) {
-			const reviewContent = recipientPolicyReviewContentMount(reviewMount);
-			if ("review" in recipientPolicyReview) {
-				renderRecipientPolicyReview(reviewContent, recipientPolicyReview.review, {
-					isRepairAvailable: (repair) => !repair.projectIdentity.startsWith("unmapped:"),
-					onRefresh: async () => {
-						await loadProjectsData();
-					},
-					onRepair: repairRecipientPolicyItem,
-				});
-			} else {
-				renderRecipientPolicyReviewLoadError(reviewContent, recipientPolicyReview.error);
-			}
-			reviewMount.hidden =
-				reviewContent.hidden && !reviewMount.querySelector(".project-team-setup-entry");
-		}
+		renderProjectsRecipientPolicyReview(recipientPolicyReview);
 		mountProjectRecipientManagement(
 			shareInventory.projects,
 			recipientPolicyIntent,

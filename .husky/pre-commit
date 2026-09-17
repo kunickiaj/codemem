@@ -1,2 +1,3 @@
 #!/usr/bin/env sh
 ./node_modules/.bin/lint-staged
+pnpm --silent lint:delta -- --base origin/main --staged

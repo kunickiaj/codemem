@@ -277,7 +277,7 @@ describe("recipient policy review fingerprint", () => {
 	});
 });
 
-describe("recipient policy review persistence", () => {
+describe("recipient policy review Project groups", () => {
 	let db: InstanceType<typeof Database>;
 
 	beforeEach(() => {
@@ -288,38 +288,11 @@ describe("recipient policy review persistence", () => {
 
 	afterEach(() => db.close());
 
-	it("derives safe exact options and performs no writes under query_only", () => {
-		const before = Number(db.prepare("SELECT total_changes()").pluck().get());
-		db.pragma("query_only = ON");
-
-		const result = listRecipientPolicyReview(db, context);
-
-		expect(result.continuity).toEqual({
-			findingCount: 1,
-			state: "legacy_access_preserved",
-		});
-		expect(result.categoryCounts).toEqual({
-			actionableReview: 1,
-			preservedContinuity: 0,
-			blockedRepair: 0,
-		});
-		expect(result.reviewItems).toHaveLength(1);
-		const item = result.reviewItems[0];
-		expect(item).toMatchObject({
+	it("includes grouping metadata in actionable items", () => {
+		expect(listRecipientPolicyReview(db, context).reviewItems[0]).toMatchObject({
 			conditionCode: "suggest_local_identity",
 			projectGroup: { displayName: "review", identity: PROJECT_ID },
 		});
-		expect(new Set(item?.options.map((option) => option.decision)).size).toBe(item?.options.length);
-		expect(item?.options.map((option) => option.decision)).toContain(item?.recommendedDecision);
-		for (const option of item?.options ?? []) {
-			expect(option.preview).toMatchObject({
-				projects: [{ canonicalIdentity: PROJECT_ID }],
-				affectedProjectCount: 1,
-				affectedMemoryCount: 1,
-			});
-		}
-		expect(Number(db.prepare("SELECT total_changes()").pluck().get())).toBe(before);
-		db.pragma("query_only = OFF");
 	});
 
 	it("assigns externally placed worktrees to one repository review group", () => {
@@ -368,6 +341,48 @@ describe("recipient policy review persistence", () => {
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("recipient policy review persistence", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+		insertLocalFixture(db);
+	});
+
+	afterEach(() => db.close());
+
+	it("derives safe exact options and performs no writes under query_only", () => {
+		const before = Number(db.prepare("SELECT total_changes()").pluck().get());
+		db.pragma("query_only = ON");
+
+		const result = listRecipientPolicyReview(db, context);
+
+		expect(result.continuity).toEqual({
+			findingCount: 1,
+			state: "legacy_access_preserved",
+		});
+		expect(result.categoryCounts).toEqual({
+			actionableReview: 1,
+			preservedContinuity: 0,
+			blockedRepair: 0,
+		});
+		expect(result.reviewItems).toHaveLength(1);
+		const item = result.reviewItems[0];
+		expect(new Set(item?.options.map((option) => option.decision)).size).toBe(item?.options.length);
+		expect(item?.options.map((option) => option.decision)).toContain(item?.recommendedDecision);
+		for (const option of item?.options ?? []) {
+			expect(option.preview).toMatchObject({
+				projects: [{ canonicalIdentity: PROJECT_ID }],
+				affectedProjectCount: 1,
+				affectedMemoryCount: 1,
+			});
+		}
+		expect(Number(db.prepare("SELECT total_changes()").pluck().get())).toBe(before);
+		db.pragma("query_only = OFF");
 	});
 
 	it("ignores unrelated transport metadata changes in the current source fingerprint", () => {

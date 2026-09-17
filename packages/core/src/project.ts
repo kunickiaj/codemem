@@ -12,6 +12,29 @@ function normalizePathLike(value: string): string {
 	return value.trim().replaceAll("\\", "/").replace(/\/+$/u, "") || value.trim();
 }
 
+function normalizeRemoteIdentity(value: string, repositoryRoot: string): string | null {
+	const remote = value.trim();
+	if (!remote) return null;
+	if (/^[a-z][a-z0-9+.-]*:\/\//iu.test(remote)) {
+		try {
+			const url = new URL(remote);
+			url.username = "";
+			url.password = "";
+			url.search = "";
+			url.hash = "";
+			return normalizePathLike(url.toString());
+		} catch {
+			return null;
+		}
+	}
+	if (/^[A-Za-z]:[\\/]/u.test(remote) || !remote.includes(":")) {
+		return normalizePathLike(resolve(repositoryRoot, remote));
+	}
+	const scpRemote = remote.match(/^(?:[^/@:]+@)?([^/:]+):(.+)$/u);
+	if (!scpRemote?.[1] || !scpRemote[2]) return null;
+	return `${scpRemote[1]}:${normalizePathLike(scpRemote[2])}`;
+}
+
 export function projectBasename(value: string): string {
 	let normalized = value.replaceAll("\\", "/");
 	while (normalized.endsWith("/")) normalized = normalized.slice(0, -1);
@@ -95,7 +118,7 @@ function commonGitDirectory(gitDirectory: string): string {
 	return gitDirectory;
 }
 
-function originRemote(commonDirectory: string): string | null {
+function originRemote(commonDirectory: string, repositoryRoot: string): string | null {
 	try {
 		const value = execFileSync(
 			"git",
@@ -109,7 +132,7 @@ function originRemote(commonDirectory: string): string | null {
 			],
 			{ encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 2_000 },
 		).trim();
-		return value ? normalizePathLike(value) : null;
+		return normalizeRemoteIdentity(value, repositoryRoot);
 	} catch {
 		return null;
 	}
@@ -125,8 +148,8 @@ export function resolveGitRepositoryIdentity(cwd: string): GitRepositoryIdentity
 			if (!gitDirectory) return null;
 			const commonDirectory = commonGitDirectory(gitDirectory);
 			const normalizedCommonDirectory = normalizePathLike(commonDirectory);
-			const remote = originRemote(commonDirectory);
 			const root = basename(normalizedCommonDirectory) === ".git" ? dirname(commonDirectory) : null;
+			const remote = originRemote(commonDirectory, root ?? current);
 			if (remote) return { identity: remote, root, source: "git_remote" };
 			return {
 				identity: normalizedCommonDirectory,

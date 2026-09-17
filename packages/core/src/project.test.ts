@@ -109,6 +109,45 @@ describe("Git repository identity", () => {
 		});
 	});
 
+	it("removes credentials and query secrets from HTTPS origin identities", () => {
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-project-test-"));
+		const repoRoot = join(tmpDir, "credentialed-repo");
+		mkdirSync(join(repoRoot, ".git"), { recursive: true });
+		writeFileSync(
+			join(repoRoot, ".git", "config"),
+			'[remote "origin"]\n\turl = https://deploy-user:secret-token@example.test/acme/repository.git?token=query-secret#fragment\n',
+		);
+
+		expect(resolveGitRepositoryIdentity(repoRoot)).toEqual({
+			identity: "https://example.test/acme/repository.git",
+			root: repoRoot,
+			source: "git_remote",
+		});
+	});
+
+	it("resolves relative filesystem origins against each repository root", () => {
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-project-test-"));
+		const firstRepo = join(tmpDir, "team-a", "repo");
+		const secondRepo = join(tmpDir, "team-b", "repo");
+		for (const repoRoot of [firstRepo, secondRepo]) {
+			mkdirSync(join(repoRoot, ".git"), { recursive: true });
+			writeFileSync(
+				join(repoRoot, ".git", "config"),
+				'[remote "origin"]\n\turl = ../upstream.git\n',
+			);
+		}
+
+		expect(resolveGitRepositoryIdentity(firstRepo)?.identity).toBe(
+			join(tmpDir, "team-a", "upstream.git").replaceAll("\\", "/"),
+		);
+		expect(resolveGitRepositoryIdentity(secondRepo)?.identity).toBe(
+			join(tmpDir, "team-b", "upstream.git").replaceAll("\\", "/"),
+		);
+		expect(resolveGitRepositoryIdentity(firstRepo)?.identity).not.toBe(
+			resolveGitRepositoryIdentity(secondRepo)?.identity,
+		);
+	});
+
 	it("groups worktrees without a remote by their common Git directory", () => {
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-project-test-"));
 		const mainRepo = join(tmpDir, "main-repo");

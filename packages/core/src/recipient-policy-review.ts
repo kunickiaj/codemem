@@ -376,6 +376,30 @@ function reviewProjectGroup(
 	};
 }
 
+function actionableReviewItem(
+	projection: LegacyRecipientPolicyProjectionV1,
+	condition: LegacyRecipientPolicyConditionV1,
+	memoryCount: number,
+	scope: { key: string | null; projection: LegacyRecipientPolicyProjectionV1 },
+): RecipientPolicyActionableReviewItemV1 {
+	return {
+		version: RECIPIENT_POLICY_CONTRACT_VERSION,
+		reviewItemId: digest("recipient-policy-review-v1", [
+			projection.project.canonicalIdentity,
+			condition.code,
+			...(scope.key ? [scope.key] : []),
+		]),
+		sourceFingerprint: recipientPolicyReviewSourceFingerprint(scope.projection, condition.code),
+		conditionCode: actionableConditionCode(condition.code),
+		projectGroup: reviewProjectGroup(scope.projection),
+		finding: condition.message,
+		reason: `Review the current recipient evidence for ${projection.project.displayName}.`,
+		...reviewOptions(scope.projection, condition, memoryCount),
+		state: "open",
+		resolution: null,
+	};
+}
+
 function blockedOwner(code: LegacyRecipientPolicyConditionCodeV1): {
 	ownerLabel: string;
 	repairAction: string;
@@ -489,27 +513,7 @@ export function deriveRecipientPolicyReviewState(
 							}))
 					: [{ key: null, projection }];
 			for (const scope of decisionScopes) {
-				const sourceFingerprint = recipientPolicyReviewSourceFingerprint(
-					scope.projection,
-					condition.code,
-				);
-				const choices = reviewOptions(scope.projection, condition, memoryCount);
-				allReviewItems.push({
-					version: RECIPIENT_POLICY_CONTRACT_VERSION,
-					reviewItemId: digest("recipient-policy-review-v1", [
-						projection.project.canonicalIdentity,
-						condition.code,
-						...(scope.key ? [scope.key] : []),
-					]),
-					sourceFingerprint,
-					conditionCode: actionableConditionCode(condition.code),
-					projectGroup: reviewProjectGroup(scope.projection),
-					finding: condition.message,
-					reason: `Review the current recipient evidence for ${projection.project.displayName}.`,
-					...choices,
-					state: "open",
-					resolution: null,
-				});
+				allReviewItems.push(actionableReviewItem(projection, condition, memoryCount, scope));
 			}
 		}
 	}
