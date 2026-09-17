@@ -307,6 +307,21 @@ function sessionMetadata(
 	return result;
 }
 
+interface NormalizedRawEventBatchItem {
+	captureContext: unknown;
+	eventId: string;
+	eventType: string;
+	payload: Record<string, unknown>;
+	tsWallMs: unknown;
+	tsMonoMs: unknown;
+}
+
+interface NormalizedRawEventBatch {
+	events: NormalizedRawEventBatchItem[];
+	skippedDuplicate: number;
+	skippedInvalid: number;
+}
+
 // MemoryStore
 
 export class MemoryStore {
@@ -2629,6 +2644,192 @@ export class MemoryStore {
 		})();
 	}
 
+	private ensureRawEventSession(source: string, streamId: string, updatedAt: string): void {
+		const exists = this.d
+			.select({ one: sql<number>`1` })
+			.from(schema.rawEventSessions)
+			.where(
+				and(
+					eq(schema.rawEventSessions.source, source),
+					eq(schema.rawEventSessions.stream_id, streamId),
+				),
+			)
+			.get();
+		if (exists != null) return;
+		this.d
+			.insert(schema.rawEventSessions)
+			.values({
+				opencode_session_id: streamId,
+				source,
+				stream_id: streamId,
+				updated_at: updatedAt,
+			})
+			.run();
+	}
+
+	private normalizeRawEventBatch(events: Record<string, unknown>[]): NormalizedRawEventBatch {
+		let skippedInvalid = 0;
+		let skippedDuplicate = 0;
+		const normalized: NormalizedRawEventBatchItem[] = [];
+		const seenIds = new Set<string>();
+		for (const event of events) {
+			const eventId = String(event.event_id ?? "");
+			const eventType = String(event.event_type ?? "");
+			if (!eventId || !eventType) {
+				skippedInvalid++;
+				continue;
+			}
+			if (seenIds.has(eventId)) {
+				skippedDuplicate++;
+				continue;
+			}
+			seenIds.add(eventId);
+			const rawPayload = event.payload;
+			const payload =
+				rawPayload != null && typeof rawPayload === "object" && !Array.isArray(rawPayload)
+					? (rawPayload as Record<string, unknown>)
+					: {};
+			normalized.push({
+				captureContext: event.capture_context,
+				eventId,
+				eventType,
+				payload,
+				tsWallMs: event.ts_wall_ms,
+				tsMonoMs: event.ts_mono_ms,
+			});
+		}
+		return { events: normalized, skippedDuplicate, skippedInvalid };
+	}
+
+	private newRawEventBatchItems(
+		source: string,
+		streamId: string,
+		events: NormalizedRawEventBatchItem[],
+	): { events: NormalizedRawEventBatchItem[]; skippedDuplicate: number } {
+		const existingIds = new Set<string>();
+		const chunkSize = 500;
+		for (let offset = 0; offset < events.length; offset += chunkSize) {
+			const eventIds = events.slice(offset, offset + chunkSize).map((event) => event.eventId);
+			const rows = this.d
+				.select({ event_id: schema.rawEvents.event_id })
+				.from(schema.rawEvents)
+				.where(
+					and(
+						eq(schema.rawEvents.source, source),
+						eq(schema.rawEvents.stream_id, streamId),
+						inArray(schema.rawEvents.event_id, eventIds),
+					),
+				)
+				.all();
+			for (const row of rows) {
+				if (row.event_id) existingIds.add(row.event_id);
+			}
+		}
+		const newEvents = events.filter((event) => !existingIds.has(event.eventId));
+		return { events: newEvents, skippedDuplicate: events.length - newEvents.length };
+	}
+
+	private allocateRawEventSeqRange(
+		source: string,
+		streamId: string,
+		count: number,
+		updatedAt: string,
+	): number {
+		const seqRow = this.d
+			.update(schema.rawEventSessions)
+			.set({
+				last_received_event_seq: sql`${schema.rawEventSessions.last_received_event_seq} + ${count}`,
+				updated_at: updatedAt,
+			})
+			.where(
+				and(
+					eq(schema.rawEventSessions.source, source),
+					eq(schema.rawEventSessions.stream_id, streamId),
+				),
+			)
+			.returning({ last_received_event_seq: schema.rawEventSessions.last_received_event_seq })
+			.get();
+		if (!seqRow) throw new Error("Failed to allocate raw event seq");
+		return Number(seqRow.last_received_event_seq) - count + 1;
+	}
+
+	private insertRawEventBatch(
+		source: string,
+		streamId: string,
+		events: NormalizedRawEventBatchItem[],
+		startSeq: number,
+		createdAt: string,
+	): number {
+		const rows = events.map((event, offset) => ({
+			source,
+			stream_id: streamId,
+			opencode_session_id: streamId,
+			event_id: event.eventId,
+			event_seq: startSeq + offset,
+			event_type: event.eventType,
+			ts_wall_ms: typeof event.tsWallMs === "number" ? event.tsWallMs : null,
+			ts_mono_ms: typeof event.tsMonoMs === "number" ? event.tsMonoMs : null,
+			payload_json: toJson(event.payload),
+			capture_context_json: toJsonNullable(
+				normalizeCaptureContext(event.captureContext, {
+					source,
+					streamId,
+					eventType: event.eventType,
+					payload: event.payload,
+				}),
+			),
+			created_at: createdAt,
+		}));
+		const result = this.d.insert(schema.rawEvents).values(rows).onConflictDoNothing().run();
+		return Number(result.changes ?? 0);
+	}
+
+	private reconcileRawSeq(
+		inserted: number,
+		attempted: number,
+		previousWatermark: number,
+		source: string,
+		streamId: string,
+		updatedAt: string,
+	): number {
+		const skippedConflict = attempted - inserted;
+		if (skippedConflict === 0) return 0;
+
+		// Retention may remove flushed rows, so reconciliation must never cross the prior watermark.
+		this.d
+			.update(schema.rawEventSessions)
+			.set({
+				last_received_event_seq: sql`MAX(
+					${previousWatermark},
+					COALESCE((
+						SELECT MAX(${schema.rawEvents.event_seq})
+						FROM ${schema.rawEvents}
+						WHERE ${schema.rawEvents.source} = ${source}
+							AND ${schema.rawEvents.stream_id} = ${streamId}
+					), -1)
+				)`,
+				updated_at: updatedAt,
+			})
+			.where(
+				and(
+					eq(schema.rawEventSessions.source, source),
+					eq(schema.rawEventSessions.stream_id, streamId),
+				),
+			)
+			.run();
+		return skippedConflict;
+	}
+
+	private completeRawEventBatch(
+		inserted: number,
+		skippedInvalid: number,
+		skippedDuplicate: number,
+		skippedConflict: number,
+	): { inserted: number; skipped: number } {
+		this.updateRawEventIngestStats(inserted, skippedInvalid, skippedDuplicate, skippedConflict);
+		return { inserted, skipped: skippedInvalid + skippedDuplicate + skippedConflict };
+	}
+
 	/**
 	 * Record a batch of raw events for a single session. Returns { inserted, skipped }.
 	 * Port of record_raw_events_batch().
@@ -2640,165 +2841,55 @@ export class MemoryStore {
 		if (!opencodeSessionId.trim()) throw new Error("opencode_session_id is required");
 		const [source, streamId] = this.normalizeStreamIdentity("opencode", opencodeSessionId);
 
-		return this.db.transaction(() => {
-			const now = nowIso();
-
-			// Ensure session row exists
-			const sessionRow = this.d
-				.select({ one: sql<number>`1` })
-				.from(schema.rawEventSessions)
-				.where(
-					and(
-						eq(schema.rawEventSessions.source, source),
-						eq(schema.rawEventSessions.stream_id, streamId),
-					),
-				)
-				.get();
-			if (sessionRow == null) {
-				this.d
-					.insert(schema.rawEventSessions)
-					.values({
-						opencode_session_id: streamId,
-						source,
-						stream_id: streamId,
-						updated_at: now,
-					})
-					.run();
-			}
-
-			// Normalize and validate events
-			let skippedInvalid = 0;
-			let skippedDuplicate = 0;
-			let skippedConflict = 0;
-
-			interface NormalizedEvent {
-				captureContext: unknown;
-				eventId: string;
-				eventType: string;
-				payload: Record<string, unknown>;
-				tsWallMs: unknown;
-				tsMonoMs: unknown;
-			}
-			const normalized: NormalizedEvent[] = [];
-			const seenIds = new Set<string>();
-
-			for (const event of events) {
-				const eventId = String(event.event_id ?? "");
-				const eventType = String(event.event_type ?? "");
-				let payload = event.payload;
-				if (payload == null || typeof payload !== "object" || Array.isArray(payload)) {
-					payload = {};
+		return this.db
+			.transaction(() => {
+				const now = nowIso();
+				this.ensureRawEventSession(source, streamId, now);
+				const normalized = this.normalizeRawEventBatch(events);
+				if (normalized.events.length === 0) {
+					return this.completeRawEventBatch(
+						0,
+						normalized.skippedInvalid,
+						normalized.skippedDuplicate,
+						0,
+					);
 				}
-				const tsWallMs = event.ts_wall_ms;
-				const tsMonoMs = event.ts_mono_ms;
 
-				if (!eventId || !eventType) {
-					skippedInvalid++;
-					continue;
+				const candidates = this.newRawEventBatchItems(source, streamId, normalized.events);
+				const skippedDuplicate = normalized.skippedDuplicate + candidates.skippedDuplicate;
+				if (candidates.events.length === 0) {
+					return this.completeRawEventBatch(0, normalized.skippedInvalid, skippedDuplicate, 0);
 				}
-				if (seenIds.has(eventId)) {
-					skippedDuplicate++;
-					continue;
-				}
-				seenIds.add(eventId);
-				normalized.push({
-					captureContext: event.capture_context,
-					eventId,
-					eventType,
-					payload: payload as Record<string, unknown>,
-					tsWallMs,
-					tsMonoMs,
-				});
-			}
 
-			if (normalized.length === 0) {
-				this.updateRawEventIngestStats(0, skippedInvalid, skippedDuplicate, skippedConflict);
-				return { inserted: 0, skipped: skippedInvalid + skippedDuplicate + skippedConflict };
-			}
-
-			// Check for existing event_ids in chunks
-			const existingIds = new Set<string>();
-			const chunkSize = 500;
-			for (let i = 0; i < normalized.length; i += chunkSize) {
-				const chunk = normalized.slice(i, i + chunkSize);
-				const chunkEventIds = chunk.map((e) => e.eventId);
-				const rows = this.d
-					.select({ event_id: schema.rawEvents.event_id })
-					.from(schema.rawEvents)
-					.where(
-						and(
-							eq(schema.rawEvents.source, source),
-							eq(schema.rawEvents.stream_id, streamId),
-							inArray(schema.rawEvents.event_id, chunkEventIds),
-						),
-					)
-					.all();
-				for (const row of rows) {
-					if (row.event_id) existingIds.add(row.event_id);
-				}
-			}
-
-			const newEvents = normalized.filter((e) => !existingIds.has(e.eventId));
-			skippedDuplicate += normalized.length - newEvents.length;
-
-			if (newEvents.length === 0) {
-				this.updateRawEventIngestStats(0, skippedInvalid, skippedDuplicate, skippedConflict);
-				return { inserted: 0, skipped: skippedInvalid + skippedDuplicate + skippedConflict };
-			}
-
-			// Allocate seq range
-			const seqRow = this.d
-				.update(schema.rawEventSessions)
-				.set({
-					last_received_event_seq: sql`${schema.rawEventSessions.last_received_event_seq} + ${newEvents.length}`,
-					updated_at: now,
-				})
-				.where(
-					and(
-						eq(schema.rawEventSessions.source, source),
-						eq(schema.rawEventSessions.stream_id, streamId),
-					),
-				)
-				.returning({
-					last_received_event_seq: schema.rawEventSessions.last_received_event_seq,
-				})
-				.get();
-			if (!seqRow) throw new Error("Failed to allocate raw event seq");
-			const endSeq = Number(seqRow.last_received_event_seq);
-			const startSeq = endSeq - newEvents.length + 1;
-
-			const insertRows = newEvents.map((event, offset) => {
-				const tsWallMs = typeof event.tsWallMs === "number" ? event.tsWallMs : null;
-				const tsMonoMs = typeof event.tsMonoMs === "number" ? event.tsMonoMs : null;
-				return {
+				const startSeq = this.allocateRawEventSeqRange(
 					source,
-					stream_id: streamId,
-					opencode_session_id: streamId,
-					event_id: event.eventId,
-					event_seq: startSeq + offset,
-					event_type: event.eventType,
-					ts_wall_ms: tsWallMs,
-					ts_mono_ms: tsMonoMs,
-					payload_json: toJson(event.payload),
-					capture_context_json: toJsonNullable(
-						normalizeCaptureContext(event.captureContext, {
-							source,
-							streamId,
-							eventType: event.eventType,
-							payload: event.payload,
-						}),
-					),
-					created_at: now,
-				};
-			});
-
-			const result = this.d.insert(schema.rawEvents).values(insertRows).onConflictDoNothing().run();
-			const inserted = Number(result.changes ?? 0);
-			skippedConflict += newEvents.length - inserted;
-
-			this.updateRawEventIngestStats(inserted, skippedInvalid, skippedDuplicate, skippedConflict);
-			return { inserted, skipped: skippedInvalid + skippedDuplicate + skippedConflict };
-		})();
+					streamId,
+					candidates.events.length,
+					now,
+				);
+				const inserted = this.insertRawEventBatch(
+					source,
+					streamId,
+					candidates.events,
+					startSeq,
+					now,
+				);
+				const skippedConflict = this.reconcileRawSeq(
+					inserted,
+					candidates.events.length,
+					startSeq - 1,
+					source,
+					streamId,
+					now,
+				);
+				return this.completeRawEventBatch(
+					inserted,
+					normalized.skippedInvalid,
+					skippedDuplicate,
+					skippedConflict,
+				);
+			})
+			.immediate();
 	}
 
 	/**

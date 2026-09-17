@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Worker } from "node:worker_threads";
 import { afterEach, describe, expect, it } from "vitest";
 import { connect } from "./db.js";
 import {
@@ -36,6 +37,40 @@ function persistedRows(store: MemoryStore): unknown[] {
 			 FROM raw_events ORDER BY source, stream_id, event_seq`,
 		)
 		.all();
+}
+
+function startCompetingRawEventBatch(dbPath: string, sessionId: string): Worker {
+	return new Worker(
+		`
+			const { parentPort, workerData } = require("node:worker_threads");
+			const Database = require("better-sqlite3");
+			const db = new Database(workerData.dbPath);
+			db.pragma("busy_timeout = 5000");
+			db.exec("BEGIN IMMEDIATE");
+			const now = new Date().toISOString();
+			db.prepare(
+				"INSERT INTO raw_event_sessions(source, stream_id, opencode_session_id, last_received_event_seq, updated_at) VALUES ('opencode', ?, ?, 1, ?)",
+			).run(workerData.sessionId, workerData.sessionId, now);
+			const insert = db.prepare(
+				"INSERT INTO raw_events(source, stream_id, opencode_session_id, event_id, event_seq, event_type, payload_json, created_at) VALUES ('opencode', ?, ?, ?, ?, 'prompt', '{}', ?)",
+			);
+			insert.run(workerData.sessionId, workerData.sessionId, "event-shared", 0, now);
+			insert.run(workerData.sessionId, workerData.sessionId, "event-worker", 1, now);
+			parentPort.postMessage("locked");
+			setTimeout(() => {
+				db.exec("COMMIT");
+				db.close();
+			}, 100);
+		`,
+		{ eval: true, workerData: { dbPath, sessionId } },
+	);
+}
+
+function waitForWorker(worker: Worker, event: "message" | "exit"): Promise<unknown[]> {
+	return new Promise((resolve, reject) => {
+		worker.once(event, (...args) => resolve(args));
+		worker.once("error", reject);
+	});
 }
 
 afterEach(() => {
@@ -97,6 +132,180 @@ describe("ingestRawEvents schema compatibility", () => {
 			});
 		} finally {
 			db.close();
+		}
+	});
+});
+
+describe("MemoryStore.recordRawEventsBatch", () => {
+	it("reconciles the session sequence inside the transaction after insert conflicts", () => {
+		const store = createStore();
+		const sessionId = "session-batch-conflict";
+		try {
+			store.db.exec(`
+				CREATE TRIGGER inject_raw_event_batch_conflict
+				AFTER UPDATE OF last_received_event_seq ON raw_event_sessions
+				WHEN NEW.source = 'opencode'
+					AND NEW.stream_id = '${sessionId}'
+					AND NEW.last_received_event_seq = 1
+				BEGIN
+					INSERT INTO raw_events(
+						source, stream_id, opencode_session_id, event_id, event_seq,
+						event_type, payload_json, created_at
+					) VALUES (
+						'opencode', '${sessionId}', '${sessionId}', 'event-tail-conflict', 0,
+						'prompt', '{}', '2026-09-17T00:00:00.000Z'
+					);
+				END
+			`);
+
+			const conflicted = store.recordRawEventsBatch(sessionId, [
+				{ event_id: "event-sequence-conflict", event_type: "prompt", payload: {} },
+				{ event_id: "event-tail-conflict", event_type: "prompt", payload: {} },
+			]);
+			expect(conflicted).toEqual({ inserted: 0, skipped: 2 });
+			expect(store.rawEventSessionMeta(sessionId)).toMatchObject({
+				last_received_event_seq: 0,
+			});
+
+			store.db.exec("DROP TRIGGER inject_raw_event_batch_conflict");
+			expect(
+				store.recordRawEventsBatch(sessionId, [
+					{ event_id: "event-after-conflict", event_type: "assistant", payload: {} },
+					{ event_id: "event-tail-conflict", event_type: "prompt", payload: {} },
+				]),
+			).toEqual({ inserted: 1, skipped: 1 });
+
+			const rows = store.db
+				.prepare("SELECT event_id, event_seq FROM raw_events ORDER BY event_seq")
+				.all();
+			expect(rows).toEqual([
+				{ event_id: "event-tail-conflict", event_seq: 0 },
+				{ event_id: "event-after-conflict", event_seq: 1 },
+			]);
+			store.updateRawEventSessionMeta({
+				opencodeSessionId: sessionId,
+				lastSeenTsWallMs: 1_789_603_200_000,
+			});
+			expect(store.rawEventSessionsPendingFlush()).toContainEqual({
+				source: "opencode",
+				streamId: sessionId,
+			});
+		} finally {
+			store.close();
+		}
+	});
+});
+
+describe("MemoryStore.recordRawEventsBatch retention", () => {
+	it("never reconciles below a pruned flush watermark", () => {
+		const store = createStore();
+		const sessionId = "session-pruned-watermark";
+		try {
+			const seeded = Array.from({ length: 6 }, (_, index) => ({
+				event_id: `event-seed-${index}`,
+				event_type: "prompt",
+				payload: {},
+			}));
+			expect(store.recordRawEventsBatch(sessionId, seeded)).toEqual({ inserted: 6, skipped: 0 });
+			store.updateRawEventFlushState(sessionId, 5);
+			store.db
+				.prepare("UPDATE raw_events SET ts_wall_ms = CASE WHEN event_seq = 0 THEN NULL ELSE 0 END")
+				.run();
+			expect(store.purgeRawEvents(1)).toBe(5);
+
+			store.db.exec(`
+				CREATE TRIGGER inject_pruned_watermark_conflict
+				AFTER UPDATE OF last_received_event_seq ON raw_event_sessions
+				WHEN NEW.stream_id = '${sessionId}' AND NEW.last_received_event_seq = 7
+				BEGIN
+					INSERT INTO raw_events(
+						source, stream_id, opencode_session_id, event_id, event_seq,
+						event_type, payload_json, created_at
+					) VALUES (
+						'opencode', '${sessionId}', '${sessionId}', 'event-pruned-tail', 1,
+						'prompt', '{}', '2026-09-17T00:00:00.000Z'
+					);
+				END
+			`);
+			expect(
+				store.recordRawEventsBatch(sessionId, [
+					{ event_id: "event-after-prune", event_type: "assistant", payload: {} },
+					{ event_id: "event-pruned-tail", event_type: "prompt", payload: {} },
+				]),
+			).toEqual({ inserted: 1, skipped: 1 });
+			expect(store.rawEventSessionMeta(sessionId)).toMatchObject({
+				last_flushed_event_seq: 5,
+				last_received_event_seq: 6,
+			});
+
+			store.db.exec("DROP TRIGGER inject_pruned_watermark_conflict");
+			expect(
+				store.recordRawEventsBatch(sessionId, [
+					{ event_id: "event-after-watermark", event_type: "assistant", payload: {} },
+				]),
+			).toEqual({ inserted: 1, skipped: 0 });
+			store.updateRawEventSessionMeta({
+				opencodeSessionId: sessionId,
+				lastSeenTsWallMs: Date.now(),
+			});
+
+			const pendingRows = store.db
+				.prepare(
+					"SELECT event_id, event_seq FROM raw_events WHERE event_seq > 5 ORDER BY event_seq",
+				)
+				.all();
+			expect(pendingRows).toEqual([
+				{ event_id: "event-after-prune", event_seq: 6 },
+				{ event_id: "event-after-watermark", event_seq: 7 },
+			]);
+			expect(store.rawEventSessionsPendingFlush()).toContainEqual({
+				source: "opencode",
+				streamId: sessionId,
+			});
+		} finally {
+			store.close();
+		}
+	});
+});
+
+describe("MemoryStore.recordRawEventsBatch concurrency", () => {
+	it("waits for an overlapping writer before deduplicating and allocating", async () => {
+		const dbPath = createDbPath();
+		const store = new MemoryStore(dbPath);
+		const sessionId = "session-overlapping-batches";
+		const worker = startCompetingRawEventBatch(dbPath, sessionId);
+		try {
+			const completed = waitForWorker(worker, "exit");
+			expect(await waitForWorker(worker, "message")).toEqual(["locked"]);
+			expect(
+				store.recordRawEventsBatch(sessionId, [
+					{ event_id: "event-shared", event_type: "prompt", payload: {} },
+					{ event_id: "event-second", event_type: "assistant", payload: {} },
+				]),
+			).toEqual({ inserted: 1, skipped: 1 });
+			expect(await completed).toEqual([0]);
+
+			const rows = store.db
+				.prepare("SELECT event_id, event_seq FROM raw_events ORDER BY event_seq")
+				.all();
+			expect(rows).toEqual([
+				{ event_id: "event-shared", event_seq: 0 },
+				{ event_id: "event-worker", event_seq: 1 },
+				{ event_id: "event-second", event_seq: 2 },
+			]);
+			expect(store.rawEventSessionMeta(sessionId)).toMatchObject({
+				last_received_event_seq: 2,
+			});
+			expect(
+				store.db
+					.prepare(
+						"SELECT inserted_events, skipped_duplicate, skipped_conflict FROM raw_event_ingest_stats WHERE id = 1",
+					)
+					.get(),
+			).toEqual({ inserted_events: 1, skipped_duplicate: 1, skipped_conflict: 0 });
+		} finally {
+			await worker.terminate();
+			store.close();
 		}
 	});
 });
