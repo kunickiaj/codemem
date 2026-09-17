@@ -43,6 +43,7 @@ import {
 	buildMemoryPackWithTrace,
 	buildMemoryPackWithTraceAsync,
 } from "./pack.js";
+import { resolveGitRepositoryIdentity } from "./project.js";
 import { cleanProjectIdentity } from "./project-identity.js";
 import { hydrateRawEvent, loadPriorDelegatedBriefEvents } from "./raw-event-context.js";
 import { populateMemoryRefs } from "./ref-populate.js";
@@ -749,13 +750,14 @@ export class MemoryStore {
 		const startedAt = opts.startedAt ?? nowIso();
 		const cwd = opts.cwd == null ? process.cwd() : cleanProjectIdentity(opts.cwd);
 		const project = cleanProjectIdentity(opts.project);
+		const repositoryIdentity = cwd ? resolveGitRepositoryIdentity(cwd)?.identity : null;
 		const sessionRows = this.d
 			.insert(schema.sessions)
 			.values({
 				started_at: startedAt,
 				cwd,
 				project,
-				git_remote: null,
+				git_remote: repositoryIdentity,
 				git_branch: null,
 				user: opts.user ?? process.env.USER ?? "unknown",
 				tool_version: opts.toolVersion ?? "raw_events",

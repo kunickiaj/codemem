@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import type { Database } from "./db.js";
 import {
 	isLegacyUmbrellaScopeKind,
@@ -9,16 +10,19 @@ import {
 } from "./legacy-recipient-policy-projection.js";
 import { isLegacyTeamCandidateSelectable } from "./legacy-team-candidate.js";
 import { isMigratableLegacyTeamProjectIdentity } from "./legacy-team-project-policy.js";
+import { resolveGitRepositoryIdentity } from "./project.js";
 import { isActiveUnmergedLocalActor } from "./recipient-policy-actor-eligibility.js";
 import {
 	isRecipientPolicyNoOpDecision,
 	RECIPIENT_POLICY_CONTRACT_VERSION,
 	type RecipientPolicyBlockedItemV1,
 	type RecipientPolicyContractVersion,
+	type RecipientPolicyReviewConditionCodeV1,
 	type RecipientPolicyReviewDecisionV1,
 	type RecipientPolicyReviewItemV1,
 	type RecipientPolicyReviewOptionV1,
 	type RecipientPolicyReviewPreviewV1,
+	type RecipientPolicyReviewProjectGroupV1,
 } from "./recipient-policy-contract.js";
 import {
 	canonicalRecipientPolicyJson,
@@ -153,6 +157,19 @@ function conditionPresentation(
 		return "preserved_continuity";
 	}
 	return CONDITION_PRESENTATION[condition.code];
+}
+
+function actionableConditionCode(
+	code: LegacyRecipientPolicyConditionCodeV1,
+): RecipientPolicyReviewConditionCodeV1 {
+	if (
+		code === "suggest_local_identity" ||
+		code === "suggest_team_candidate" ||
+		code === "unassigned_effective_device"
+	) {
+		return code;
+	}
+	throw new Error(`Condition ${code} is not actionable.`);
 }
 
 const canonicalJson = canonicalRecipientPolicyJson;
@@ -347,6 +364,18 @@ function reviewOptions(
 	};
 }
 
+function reviewProjectGroup(
+	projection: LegacyRecipientPolicyProjectionV1,
+): RecipientPolicyReviewProjectGroupV1 {
+	const repository = isAbsolute(projection.project.canonicalIdentity)
+		? resolveGitRepositoryIdentity(projection.project.canonicalIdentity)
+		: null;
+	return {
+		identity: repository?.identity ?? projection.project.canonicalIdentity,
+		displayName: projection.project.displayName,
+	};
+}
+
 function blockedOwner(code: LegacyRecipientPolicyConditionCodeV1): {
 	ownerLabel: string;
 	repairAction: string;
@@ -473,6 +502,8 @@ export function deriveRecipientPolicyReviewState(
 						...(scope.key ? [scope.key] : []),
 					]),
 					sourceFingerprint,
+					conditionCode: actionableConditionCode(condition.code),
+					projectGroup: reviewProjectGroup(scope.projection),
 					finding: condition.message,
 					reason: `Review the current recipient evidence for ${projection.project.displayName}.`,
 					...choices,

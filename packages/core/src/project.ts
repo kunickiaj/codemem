@@ -1,5 +1,16 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
+
+export interface GitRepositoryIdentity {
+	identity: string;
+	root: string | null;
+	source: "git_remote" | "git_common_dir";
+}
+
+function normalizePathLike(value: string): string {
+	return value.trim().replaceAll("\\", "/").replace(/\/+$/u, "") || value.trim();
+}
 
 export function projectBasename(value: string): string {
 	let normalized = value.replaceAll("\\", "/");
@@ -52,26 +63,76 @@ function findGitAnchor(startCwd: string): string | null {
 	while (true) {
 		const gitPath = resolve(current, ".git");
 		if (existsSync(gitPath)) {
-			try {
-				if (lstatSync(gitPath).isDirectory()) {
-					return current;
-				}
-				const text = readFileSync(gitPath, "utf8").trim();
-				if (text.startsWith("gitdir:")) {
-					const gitdir = resolve(current, text.slice("gitdir:".length).trim()).replaceAll(
-						"\\",
-						"/",
-					);
-					const worktreeMarker = "/.git/worktrees/";
-					const worktreeIndex = gitdir.indexOf(worktreeMarker);
-					if (worktreeIndex >= 0) {
-						return gitdir.slice(0, worktreeIndex);
-					}
-				}
-				return current;
-			} catch {
-				return current;
-			}
+			const gitDirectory = gitDirectoryFromMarker(current, gitPath);
+			if (!gitDirectory) return current;
+			const commonDirectory = commonGitDirectory(gitDirectory);
+			return basename(commonDirectory) === ".git" ? dirname(commonDirectory) : current;
+		}
+		const parent = dirname(current);
+		if (parent === current) return null;
+		current = parent;
+	}
+}
+
+function gitDirectoryFromMarker(repositoryRoot: string, gitPath: string): string | null {
+	try {
+		if (lstatSync(gitPath).isDirectory()) return gitPath;
+		const text = readFileSync(gitPath, "utf8").trim();
+		if (!text.startsWith("gitdir:")) return null;
+		return resolve(repositoryRoot, text.slice("gitdir:".length).trim());
+	} catch {
+		return null;
+	}
+}
+
+function commonGitDirectory(gitDirectory: string): string {
+	try {
+		const marker = readFileSync(resolve(gitDirectory, "commondir"), "utf8").trim();
+		if (marker) return resolve(gitDirectory, marker);
+	} catch {
+		// Normal repositories use their own .git directory as the common directory.
+	}
+	return gitDirectory;
+}
+
+function originRemote(commonDirectory: string): string | null {
+	try {
+		const value = execFileSync(
+			"git",
+			[
+				"config",
+				"--file",
+				resolve(commonDirectory, "config"),
+				"--includes",
+				"--get",
+				"remote.origin.url",
+			],
+			{ encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 2_000 },
+		).trim();
+		return value ? normalizePathLike(value) : null;
+	} catch {
+		return null;
+	}
+}
+
+/** Resolve a location-independent identity for a live Git repository or linked worktree. */
+export function resolveGitRepositoryIdentity(cwd: string): GitRepositoryIdentity | null {
+	let current = resolve(cwd);
+	while (true) {
+		const gitPath = resolve(current, ".git");
+		if (existsSync(gitPath)) {
+			const gitDirectory = gitDirectoryFromMarker(current, gitPath);
+			if (!gitDirectory) return null;
+			const commonDirectory = commonGitDirectory(gitDirectory);
+			const normalizedCommonDirectory = normalizePathLike(commonDirectory);
+			const remote = originRemote(commonDirectory);
+			const root = basename(normalizedCommonDirectory) === ".git" ? dirname(commonDirectory) : null;
+			if (remote) return { identity: remote, root, source: "git_remote" };
+			return {
+				identity: normalizedCommonDirectory,
+				root,
+				source: "git_common_dir",
+			};
 		}
 		const parent = dirname(current);
 		if (parent === current) return null;

@@ -102,6 +102,11 @@ const KEEP_CURRENT_REVIEW = {
 	version: RECIPIENT_POLICY_CONTRACT_VERSION,
 	reviewItemId: "review-1",
 	sourceFingerprint: "fingerprint-1",
+	conditionCode: "suggest_local_identity",
+	projectGroup: {
+		identity: "git:https://example.invalid/one/example.git",
+		displayName: "example",
+	},
 	finding: "Existing access cannot be mapped unambiguously.",
 	reason: "The legacy Space contains several Projects and device audiences.",
 	recommendedDecision: "keep_current_setup",

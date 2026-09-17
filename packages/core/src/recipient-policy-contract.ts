@@ -271,10 +271,22 @@ export interface RecipientPolicyReviewResolutionV1 {
 	resolvedAt: string;
 }
 
+export type RecipientPolicyReviewConditionCodeV1 =
+	| "suggest_local_identity"
+	| "suggest_team_candidate"
+	| "unassigned_effective_device";
+
+export interface RecipientPolicyReviewProjectGroupV1 {
+	identity: string;
+	displayName: string;
+}
+
 export interface RecipientPolicyReviewItemV1 {
 	version: RecipientPolicyContractVersion;
 	reviewItemId: string;
 	sourceFingerprint: string;
+	conditionCode: RecipientPolicyReviewConditionCodeV1;
+	projectGroup: RecipientPolicyReviewProjectGroupV1;
 	finding: string;
 	reason: string;
 	recommendedDecision: RecipientPolicyReviewDecisionV1;

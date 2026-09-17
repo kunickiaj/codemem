@@ -40,6 +40,7 @@ vi.mock("../lib/api", () => ({
 		}
 	},
 	resolveRecipientPolicyReview: vi.fn(),
+	resolveRecipientPolicyReviewBulk: vi.fn(),
 	saveSharingDomainProjectMappings: vi.fn(),
 	SharingDomainGuardrailConfirmationError: class SharingDomainGuardrailConfirmationError extends Error {
 		requiredGuardrailTokens: string[];
@@ -136,6 +137,7 @@ function reviewItem(
 		requiresDecisionInput: false,
 	};
 	return {
+		conditionCode: "suggest_local_identity",
 		finding: "Older project sharing needs a decision.",
 		options: [
 			{
@@ -167,6 +169,7 @@ function reviewItem(
 			},
 		],
 		reason: "Review current recipient evidence for Codemem.",
+		projectGroup: { displayName: "Codemem", identity: "private-project-id" },
 		recommendedDecision: "keep_current_setup",
 		resolution: null,
 		reviewItemId: "review-1",
@@ -308,6 +311,7 @@ function setupProjectsTest() {
 		sourceFingerprint: "fingerprint-1",
 		status: "applied",
 	});
+	vi.mocked(api.resolveRecipientPolicyReviewBulk).mockResolvedValue({ version: 1, results: [] });
 	vi.mocked(api.loadProjects).mockResolvedValue(["api", "codemem"]);
 	vi.mocked(api.reassignProjectInventoryProject).mockResolvedValue({
 		moved_memory_count: 1,
@@ -429,27 +433,271 @@ describe("Projects tab", () => {
 		expect(surface?.textContent).toContain("Blocked source repairs (1)");
 		expect(surface?.textContent).not.toContain("Preserved legacy continuity");
 		expect(surface?.textContent).not.toContain("preserved legacy findings");
-		expect(surface?.textContent).toContain("Action is required");
+		expect(surface?.textContent).toContain("Repair each source record");
 		const reviewCopy = surface?.querySelector(".recipient-policy-review-decisions")?.textContent;
-		expect(reviewCopy).toContain("These findings are informational");
-		expect(reviewCopy).toContain("this view has no decision controls");
-		expect(reviewCopy).toContain("those changes do not record a review decision");
+		expect(reviewCopy).toContain("Review each repository");
+		expect(reviewCopy).toContain("Access stays unchanged until you apply a decision");
 		expect(reviewCopy).not.toContain("Action is required");
 		expect(surface?.textContent).toContain("Assign a stable canonical Project identity");
 		expect(surface?.textContent).toContain("Owner: Project owner");
-		expect(surface?.querySelectorAll("button")).toHaveLength(1);
-		expect(surface?.querySelector("button")?.textContent).toBe("Repair Project identity…");
+		expect(surface?.querySelectorAll("button")).toHaveLength(2);
+		expect(surface?.textContent).toContain("Repair Project identity…");
 		expect(document.querySelectorAll(".recipient-policy-review-item")).toHaveLength(1);
-		expect(document.querySelector(".recipient-policy-review-decisions button")).toBeNull();
+		expect(document.querySelector(".recipient-policy-review-decisions button")).not.toBeNull();
 		expect(document.querySelector(".recipient-policy-review-continuity")).toBeNull();
+	});
+
+	it("groups repository worktrees and applies one decision with every item fingerprint", async () => {
+		const first = reviewItem({
+			projectGroup: { displayName: "Codemem", identity: "https://example.test/codemem.git" },
+		});
+		const second = reviewItem({
+			projectGroup: { displayName: "Codemem", identity: "https://example.test/codemem.git" },
+			reviewItemId: "review-2",
+			sourceFingerprint: "fingerprint-2",
+			options: first.options.map((option) => ({
+				...option,
+				preview: {
+					...option.preview,
+					affectedMemoryCount: 3,
+					projects: [{ canonicalIdentity: "/worktrees/second", displayName: "Codemem" }],
+				},
+			})),
+		});
+		first.options = first.options.map((option) => ({
+			...option,
+			preview: {
+				...option.preview,
+				projects: [{ canonicalIdentity: "/worktrees/first", displayName: "Codemem" }],
+			},
+		}));
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [],
+			total: 0,
+		});
+		vi.mocked(api.loadRecipientPolicyReview)
+			.mockResolvedValueOnce(recipientReview({ reviewItems: [first, second] }))
+			.mockResolvedValue(recipientReview({ reviewItems: [] }));
+		vi.mocked(api.resolveRecipientPolicyReviewBulk).mockResolvedValue({
+			version: 1,
+			results: [
+				{
+					errorCode: null,
+					idempotent: false,
+					reviewItemId: "review-1",
+					sourceFingerprint: "fingerprint-1",
+					status: "applied",
+				},
+				{
+					errorCode: null,
+					idempotent: false,
+					reviewItemId: "review-2",
+					sourceFingerprint: "fingerprint-2",
+					status: "applied",
+				},
+			],
+		});
+
+		await loadProjectsData();
+
+		expect(document.querySelectorAll(".recipient-policy-review-item")).toHaveLength(1);
+		expect(document.body.textContent).toContain("/worktrees/first");
+		expect(document.body.textContent).toContain("/worktrees/second");
+		expect(document.body.textContent).toContain("Affected: 2 Projects · 15 memories · 2 devices");
+		document.querySelector<HTMLButtonElement>(".recipient-policy-review-decisions button")?.click();
+		await flushAsyncWork();
+
+		expect(api.resolveRecipientPolicyReviewBulk).toHaveBeenCalledWith([
+			{
+				decision: "keep_current_setup",
+				reviewItemId: "review-1",
+				sourceFingerprint: "fingerprint-1",
+			},
+			{
+				decision: "keep_current_setup",
+				reviewItemId: "review-2",
+				sourceFingerprint: "fingerprint-2",
+			},
+		]);
+		expect(document.querySelector(".recipient-policy-review-item")).toBeNull();
+	});
+
+	it("chunks repository decisions to the bulk endpoint limit", async () => {
+		const reviewItems = Array.from({ length: 101 }, (_, index) =>
+			reviewItem({
+				projectGroup: {
+					displayName: "Codemem",
+					identity: "https://example.test/codemem.git",
+				},
+				reviewItemId: `review-${index}`,
+				sourceFingerprint: `fingerprint-${index}`,
+			}),
+		);
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [],
+			total: 0,
+		});
+		vi.mocked(api.loadRecipientPolicyReview)
+			.mockResolvedValueOnce(recipientReview({ reviewItems }))
+			.mockResolvedValue(recipientReview({ reviewItems: [] }));
+		vi.mocked(api.resolveRecipientPolicyReviewBulk).mockImplementation(async (requests) => ({
+			version: 1,
+			results: requests.map((request) => ({
+				errorCode: null,
+				idempotent: false,
+				reviewItemId: request.reviewItemId,
+				sourceFingerprint: request.sourceFingerprint,
+				status: "applied" as const,
+			})),
+		}));
+
+		await loadProjectsData();
+		document.querySelector<HTMLButtonElement>(".recipient-policy-review-decisions button")?.click();
+		await flushAsyncWork();
+
+		expect(api.resolveRecipientPolicyReviewBulk).toHaveBeenCalledTimes(2);
+		expect(vi.mocked(api.resolveRecipientPolicyReviewBulk).mock.calls[0]?.[0]).toHaveLength(100);
+		expect(vi.mocked(api.resolveRecipientPolicyReviewBulk).mock.calls[1]?.[0]).toHaveLength(1);
+	});
+
+	it("refreshes after a later repository decision batch fails", async () => {
+		const reviewItems = Array.from({ length: 101 }, (_, index) =>
+			reviewItem({
+				projectGroup: {
+					displayName: "Codemem",
+					identity: "https://example.test/codemem.git",
+				},
+				reviewItemId: `review-${index}`,
+				sourceFingerprint: `fingerprint-${index}`,
+			}),
+		);
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [],
+			total: 0,
+		});
+		vi.mocked(api.loadRecipientPolicyReview)
+			.mockResolvedValueOnce(recipientReview({ reviewItems }))
+			.mockResolvedValue(
+				recipientReview({ reviewItems: [reviewItems[100] as RecipientPolicyReviewItemV1] }),
+			);
+		vi.mocked(api.resolveRecipientPolicyReviewBulk)
+			.mockImplementationOnce(async (requests) => ({
+				version: 1,
+				results: requests.map((request) => ({
+					errorCode: null,
+					idempotent: false,
+					reviewItemId: request.reviewItemId,
+					sourceFingerprint: request.sourceFingerprint,
+					status: "applied" as const,
+				})),
+			}))
+			.mockRejectedValueOnce(new Error("Second batch failed"));
+
+		await loadProjectsData();
+		document.querySelector<HTMLButtonElement>(".recipient-policy-review-decisions button")?.click();
+		await flushAsyncWork();
+
+		expect(api.loadRecipientPolicyReview).toHaveBeenCalledTimes(2);
+		expect(document.querySelectorAll(".recipient-policy-review-item")).toHaveLength(1);
+		expect(document.body.textContent).toContain("Second batch failed");
+	});
+
+	it("explains required recipient input without submitting an incomplete decision", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [],
+			total: 0,
+		});
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(recipientReview());
+
+		await loadProjectsData();
+		const select = document.querySelector<HTMLSelectElement>(".recipient-policy-review-select");
+		const submit = document.querySelector<HTMLButtonElement>(
+			".recipient-policy-review-decisions button",
+		);
+		if (!select || !submit) throw new Error("review decision controls missing");
+		select.value = "choose_recipients";
+		select.dispatchEvent(new Event("change"));
+
+		expect(submit.disabled).toBe(true);
+		expect(document.body.textContent).toContain("Use the Project sharing controls below");
+		submit.click();
+		expect(api.resolveRecipientPolicyReview).not.toHaveBeenCalled();
+	});
+
+	it("keeps stale findings open and refreshes their fingerprints", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [],
+			total: 0,
+		});
+		vi.mocked(api.loadRecipientPolicyReview)
+			.mockResolvedValueOnce(recipientReview())
+			.mockResolvedValue(
+				recipientReview({
+					reviewItems: [reviewItem({ sourceFingerprint: "fingerprint-refreshed" })],
+				}),
+			);
+		vi.mocked(api.resolveRecipientPolicyReview).mockRejectedValueOnce(
+			new api.RecipientPolicyReviewStaleError({
+				errorCode: "source_fingerprint_stale",
+				idempotent: false,
+				reviewItemId: "review-1",
+				sourceFingerprint: "fingerprint-1",
+				status: "stale",
+			}),
+		);
+
+		await loadProjectsData();
+		document.querySelector<HTMLButtonElement>(".recipient-policy-review-decisions button")?.click();
+		await flushAsyncWork();
+
+		expect(document.querySelector(".recipient-policy-review-item")).not.toBeNull();
+		expect(document.body.textContent).toContain("Source state changed");
+		expect(api.loadRecipientPolicyReview).toHaveBeenCalledTimes(2);
+	});
+
+	it("restores review-control focus after source data refreshes", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [],
+			total: 0,
+		});
+		vi.mocked(api.loadRecipientPolicyReview)
+			.mockResolvedValueOnce(recipientReview())
+			.mockResolvedValueOnce(
+				recipientReview({
+					reviewItems: [reviewItem({ sourceFingerprint: "fingerprint-refreshed" })],
+				}),
+			);
+
+		await loadProjectsData();
+		const original = document.querySelector<HTMLSelectElement>(".recipient-policy-review-select");
+		original?.focus();
+		await loadProjectsData();
+
+		const refreshed = document.querySelector<HTMLSelectElement>(".recipient-policy-review-select");
+		expect(refreshed).not.toBe(original);
+		expect(document.activeElement).toBe(refreshed);
 	});
 
 	it("preserves a focused repair when only hidden continuity data changes", async () => {
 		const initialReviewItem = reviewItem();
-		const refreshedReviewItem = reviewItem({
-			reviewItemId: "review-2",
-			sourceFingerprint: "fingerprint-2",
-		});
 		const blockedItem = {
 			blockedItemId: "blocked-1",
 			finding: "Project identity is unstable.",
@@ -492,7 +740,7 @@ describe("Projects tab", () => {
 						preservedContinuity: 2,
 					},
 					continuity: { findingCount: 2, state: "legacy_access_preserved" },
-					reviewItems: [refreshedReviewItem],
+					reviewItems: [initialReviewItem],
 				}),
 			);
 
@@ -860,8 +1108,9 @@ describe("Projects tab", () => {
 		await loadProjectsData();
 		const firstSurface = document.querySelector(".recipient-policy-review");
 		expect(firstSurface?.textContent).toContain("Review findings (1)");
-		expect(firstSurface?.textContent).toContain("These findings are informational");
-		expect(firstSurface?.textContent).not.toContain("Action is required");
+		expect(firstSurface?.textContent).toContain(
+			"Access stays unchanged until you apply a decision",
+		);
 
 		await loadProjectsData();
 

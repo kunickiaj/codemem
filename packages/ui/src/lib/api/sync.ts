@@ -708,6 +708,14 @@ export interface RecipientPolicyReviewItemV1 {
 	version: 1;
 	reviewItemId: string;
 	sourceFingerprint: string;
+	conditionCode:
+		| "suggest_local_identity"
+		| "suggest_team_candidate"
+		| "unassigned_effective_device";
+	projectGroup: {
+		identity: string;
+		displayName: string;
+	};
 	finding: string;
 	reason: string;
 	recommendedDecision: RecipientPolicyReviewDecisionV1;

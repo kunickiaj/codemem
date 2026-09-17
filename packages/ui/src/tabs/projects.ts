@@ -1726,6 +1726,9 @@ async function loadProjectsDataOperation(options: ProjectsDataLoadOptions): Prom
 			if ("review" in recipientPolicyReview) {
 				renderRecipientPolicyReview(reviewContent, recipientPolicyReview.review, {
 					isRepairAvailable: (repair) => !repair.projectIdentity.startsWith("unmapped:"),
+					onRefresh: async () => {
+						await loadProjectsData();
+					},
 					onRepair: repairRecipientPolicyItem,
 				});
 			} else {
