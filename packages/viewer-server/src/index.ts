@@ -20,6 +20,7 @@ import { MemoryStore, type RawEventSweeper, resolveDbPath, VERSION } from "@code
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { originGuard, preflightHandler } from "./middleware.js";
+import type { RawEventInbox } from "./raw-event-inbox.js";
 import {
 	createInMemoryRequestRateLimiter,
 	type InMemoryRequestRateLimiter,
@@ -34,6 +35,7 @@ import { packTransportRoutes } from "./routes/pack.js";
 import { rawEventsRoutes } from "./routes/raw-events.js";
 import { statsRoutes } from "./routes/stats.js";
 import { type SyncRoutesOptions, syncProtocolRoutes, syncRoutes } from "./routes/sync.js";
+import type { ViewerTargetStore } from "./routes/target-validation.js";
 import {
 	type LegacyTeamCompletionDependencies,
 	type LegacyTeamConfiguredGroupSnapshotLoader,
@@ -51,6 +53,12 @@ export {
 	advancePendingProjectSharesOperation,
 	reconcileRecipientPolicyProjectsOperation,
 } from "./application/coordinator-maintenance.js";
+export type { RawEventInbox, RawEventInboxEntry, RawEventInboxStatus } from "./raw-event-inbox.js";
+export {
+	createViewerRawEventInbox,
+	FileRawEventInbox,
+	resolveRawEventInboxDirectory,
+} from "./raw-event-inbox.js";
 export type {
 	RecipientPolicyReconciliationReadModel,
 	RecipientPolicyReconciliationReadState,
@@ -81,7 +89,6 @@ export type {
 	LegacyTeamSetupViewerAccessDeltaV1,
 	LegacyTeamSetupViewV1,
 } from "./routes/team-setup.js";
-
 export { VERSION };
 
 /** Shared store instance — SQLite WAL mode handles concurrent reads safely. */
@@ -107,6 +114,8 @@ export function closeStore(): void {
  */
 export interface AppOptions {
 	storeFactory?: () => MemoryStore;
+	rawEventInbox?: RawEventInbox | null;
+	rawEventTarget?: ViewerTargetStore;
 	sweeper?: RawEventSweeper | null;
 	observer?: ObserverClient | null;
 	getUpdateStatus?: (options: GetUpdateStatusOptions) => Promise<UpdateStatus>;
@@ -197,7 +206,7 @@ export function createApp(opts?: AppOptions) {
 		}),
 	);
 	app.route("/", configRoutes({ getSweeper: () => sweeper }));
-	app.route("/", rawEventsRoutes(storeFactory, sweeper));
+	app.route("/", rawEventsRoutes(storeFactory, sweeper, opts?.rawEventInbox, opts?.rawEventTarget));
 	app.route(
 		"/",
 		syncRoutes(storeFactory, getSyncRuntimeStatus, {

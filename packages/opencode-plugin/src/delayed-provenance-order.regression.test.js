@@ -195,7 +195,8 @@ async function createDeferredBoundaryFailureFixture() {
 		{ started: Promise.withResolvers(), release: Promise.withResolvers() },
 		{ started: Promise.withResolvers(), release: Promise.withResolvers() },
 	];
-	stubBlockedDeliveries([], blocked, { failedPost: 2 });
+	const posted = [];
+	stubBlockedDeliveries(posted, blocked, { failedPost: 2 });
 	const runtime = await createRuntime(homeDir, undefined, "/usr/bin/false");
 	await runtime.handleEvent({ type: "session.created", sessionID: "session-a" });
 	await addToolResult(runtime, {
@@ -210,7 +211,7 @@ async function createDeferredBoundaryFailureFixture() {
 		path: "src/deferred-a.ts",
 		sessionID: "session-a",
 	});
-	return { activeFlush, blocked, homeDir, runtime };
+	return { activeFlush, blocked, homeDir, posted, runtime };
 }
 
 function createHangingDelegation() {
@@ -360,7 +361,12 @@ async function createPartialFailureFixture() {
 	const posted = [];
 	stubSecondDeliveryFailure(posted, blocked);
 	const runtime = await createRuntime(homeDir, undefined, "/usr/bin/false");
-	return { blocked, homeDir, runtime };
+	return { blocked, homeDir, posted, runtime };
+}
+
+async function spooledToolCallIds(homeDir) {
+	const spool = await loadRawEventSpoolEntries({ homeDir, limit: 10 });
+	return spool.entries.map((entry) => entry.envelope.payload.tool_call_id);
 }
 
 afterEach(() => {
@@ -864,10 +870,10 @@ describe("prompt-threshold flush ownership", () => {
 	});
 });
 
-describe("cross-session boundary failure", () => {
-	it("does not merge a failed prior-session boundary into the new session", async () => {
+describe("cross-session boundary spooling", () => {
+	it("does not merge a durably spooled prior-session boundary into the new session", async () => {
 		const fixture = await createDeferredBoundaryFailureFixture();
-		const { activeFlush, blocked, homeDir, runtime } = fixture;
+		const { activeFlush, blocked, homeDir, posted, runtime } = fixture;
 		let boundaryFlush;
 		try {
 			await addPromptMessage(runtime, "session-b-prompt", "Session B prompt", "session-b");
@@ -885,11 +891,6 @@ describe("cross-session boundary failure", () => {
 
 			expect(runtime.inspectQueuedEvents()).toEqual([
 				{
-					sessionID: "session-a",
-					toolCallID: "deferred-tool",
-					type: "tool.execute.after",
-				},
-				{
 					sessionID: "session-b",
 					toolCallID: null,
 					type: "user_prompt",
@@ -900,6 +901,8 @@ describe("cross-session boundary failure", () => {
 					type: "tool.execute.after",
 				},
 			]);
+			expect(posted.map((entry) => entry.payload.tool_call_id)).not.toContain("deferred-tool");
+			expect(await spooledToolCallIds(homeDir)).toContain("deferred-tool");
 			expect(runtime.inspectSessionContext()).toMatchObject({
 				firstPrompt: "Session B prompt",
 				promptCount: 1,
@@ -918,10 +921,10 @@ describe("cross-session boundary failure", () => {
 	});
 });
 
-describe("partial raw-event flush failure", () => {
-	it("contains partial delivery failure and restores its queue and context", async () => {
+describe("partial raw-event flush spooling", () => {
+	it("keeps durably spooled delivery out of the live queue and context", async () => {
 		const fixture = await createPartialFailureFixture();
-		const { blocked, homeDir, runtime } = fixture;
+		const { blocked, homeDir, posted, runtime } = fixture;
 		try {
 			await addPrompt(runtime);
 			await closePrompt(runtime, "prompt-boundary");
@@ -934,17 +937,15 @@ describe("partial raw-event flush failure", () => {
 			blocked.release.resolve();
 			await expect(flush).resolves.toBeUndefined();
 
-			expect(runtime.inspectQueuedEventTypes()).toEqual([
-				"tool.execute.after",
-				"user_prompt",
-				"tool.execute.after",
-			]);
+			expect(runtime.inspectQueuedEventTypes()).toEqual(["user_prompt", "tool.execute.after"]);
 			expect(runtime.inspectSessionContext()).toMatchObject({
-				firstPrompt: promptText,
-				promptCount: 2,
-				toolCount: 2,
-				filesRead: expect.arrayContaining(["src/old.ts", "src/new.ts"]),
+				firstPrompt: "Next context prompt",
+				promptCount: 1,
+				toolCount: 1,
+				filesRead: ["src/new.ts"],
 			});
+			expect(posted.map((entry) => entry.payload.tool_call_id)).not.toContain("old-tool");
+			expect(await spooledToolCallIds(homeDir)).toContain("old-tool");
 		} finally {
 			blocked.release.resolve();
 			await runtime.dispose();
@@ -953,10 +954,10 @@ describe("partial raw-event flush failure", () => {
 	});
 });
 
-describe("deleted-session raw-event flush failure", () => {
-	it("requeues deleted-session failures without merging stale context", async () => {
+describe("deleted-session raw-event flush spooling", () => {
+	it("keeps durably spooled deleted-session events outside the live context", async () => {
 		const fixture = await createPartialFailureFixture();
-		const { blocked, homeDir, runtime } = fixture;
+		const { blocked, homeDir, posted, runtime } = fixture;
 		try {
 			await runtime.handleEvent({ type: "session.created", sessionID: "session-a" });
 			await addPromptMessage(runtime, "old-prompt", "Session A prompt", "session-a");
@@ -981,16 +982,15 @@ describe("deleted-session raw-event flush failure", () => {
 			blocked.release.resolve();
 			await expect(boundary).resolves.toBeUndefined();
 
-			expect(runtime.inspectQueuedEventTypes()).toEqual([
-				"tool.execute.after",
-				"tool.execute.after",
-			]);
+			expect(runtime.inspectQueuedEventTypes()).toEqual(["tool.execute.after"]);
 			expect(runtime.inspectSessionContext()).toMatchObject({
 				firstPrompt: null,
 				promptCount: 0,
 				toolCount: 1,
 				filesRead: ["src/session-b.ts"],
 			});
+			expect(posted.map((entry) => entry.payload.tool_call_id)).not.toContain("old-tool");
+			expect(await spooledToolCallIds(homeDir)).toContain("old-tool");
 		} finally {
 			blocked.release.resolve();
 			await runtime.dispose();

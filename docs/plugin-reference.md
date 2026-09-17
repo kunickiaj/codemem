@@ -456,10 +456,10 @@ Command/file token cache behavior:
 Raw events preserve captured activity independently of observer extraction.
 
 Stream contract:
-- Preflight availability: `GET /api/raw-events/status`
+- Preflight availability: `GET /api/raw-events/status?limit=0` (memory-only on queue-capable Viewers)
 - Event streaming: `POST /api/raw-events`
 - Non-2xx and network failures are treated as stream failures.
-- Raw events are delivered through the viewer ingest API.
+- The Viewer durably appends accepted raw events to its filesystem inbox, returns `202`, and drains that inbox into SQLite outside the request path.
 - OpenCode 1.18.29 session IDs are read from each event's SDK-shaped `info` or
   `part` payload. Assistant messages and usage are captured after either
   `info.finish` or `info.time.completed`; current `info.tokens` and legacy usage
@@ -470,10 +470,11 @@ Stream contract:
   reported error. Repeated failure updates for the same session and call are
   captured once, and their deduplication state is cleared when the session is
   deleted.
-- Raw-event batches accepted by the viewer are retried by the sweeper flush workers.
-- After Viewer delivery fails, OpenCode writes the exact normalized envelope to `~/.codemem/opencode-raw-event-spool` before invoking the direct CLI fallback. A successful fallback removes the entry; missing runtimes, locks, timeouts, version skew, and validation failures remain on disk and retry at bounded startup or session boundaries with the same event ID.
-- Viewer fallback notices identify the failed `status`, `post`, or `backoff` stage and distinguish timeout, connection, HTTP-status, and ingest-unavailable causes. Structured app logs add `viewer_elapsed_ms`, `cli_elapsed_ms`, `cli_attempts`, and a sanitized CLI cause. The category-specific next action remains unchanged, and payloads, target values, subprocess output, paths, endpoints, and addresses are omitted.
-- Corrupt spool entries are retained for recovery. The spool accepts at most `CODEMEM_RAW_EVENT_SPOOL_MAX_ENTRIES` `.json` entries and rejects a new event when full without evicting existing entries; an existing event ID remains idempotent. If a private spool write fails or the spool is full, OpenCode warns that the event remains only in the bounded in-memory queue rather than claiming durable preservation. OpenCode drains retained entries through the installed CLI, so repair or update that CLI and restart OpenCode; restarting Viewer alone does not recover this spool. If specific entries remain rejected, stop OpenCode and move `~/.codemem/opencode-raw-event-spool` to a backup location for manual recovery; do not delete it until the events are delivered or intentionally discarded.
+- Raw-event batches accepted by the viewer are retried by the Viewer-owned inbox drainer before the sweeper processes persisted sessions.
+- The Viewer inbox survives restarts, accepts at most 2,000 retained entries, and reports bounded warnings for corrupt files or a sustained backlog. A full or unwritable inbox returns a safe `503` without exposing its path or event contents. For manual recovery, stop Viewer and inspect `~/.codemem/viewer-raw-event-inbox/<database-path-hash>`; archive retained `.json` entries before removing them, then restart Viewer.
+- After Viewer delivery fails, OpenCode writes the exact normalized envelope to `~/.codemem/opencode-raw-event-spool`. It does not start `enqueue-raw-event`; retained entries retry over HTTP at bounded startup or session boundaries with the same event ID.
+- Viewer degradation logs identify the failed `status`, `post`, or `backoff` stage and distinguish timeout, connection, HTTP-status, and ingest-unavailable causes. Successfully spooled events do not show a user-facing warning. Payloads, target values, subprocess output, paths, endpoints, and addresses remain omitted.
+- Corrupt spool entries are retained for recovery. The spool accepts at most `CODEMEM_RAW_EVENT_SPOOL_MAX_ENTRIES` `.json` entries and rejects a new event when full without evicting existing entries; an existing event ID remains idempotent. If a private spool write fails or the spool is full, OpenCode warns that the event remains only in the bounded in-memory queue rather than claiming durable preservation. Restart or repair Viewer and then restart or reach a session boundary in OpenCode to retry retained entries. If specific entries remain rejected, stop OpenCode and move `~/.codemem/opencode-raw-event-spool` to a backup location for manual recovery; do not delete it until the events are delivered or intentionally discarded.
 - `CODEMEM_RAW_EVENTS=0` pauses capture and every OpenCode spool drain. Existing spool files remain untouched until raw events are enabled again.
 
 ### Delegated brief capture (OpenCode 1)
@@ -616,7 +617,7 @@ Force-flush thresholds (immediate flush):
 
 Failure semantics:
 - Stream POST failures are backoff-gated in plugin runtime (`CODEMEM_RAW_EVENTS_BACKOFF_MS`).
-- Availability checks are rate-limited (`CODEMEM_RAW_EVENTS_STATUS_CHECK_MS`).
+- Availability checks are rate-limited (`CODEMEM_RAW_EVENTS_STATUS_CHECK_MS`) and use the queue-capable Viewer's memory-only readiness response.
 - Each periodic viewer sweep drains a bounded batch from accepted sessions, including sessions that remain active; failed batches are retried by viewer/store queue workers (`codemem db raw-events-retry`).
 
 ## Project label normalization

@@ -869,6 +869,11 @@ const classifyRawEventViewerFailure = (payload) => {
   if (isViewerDbMismatchPayload(payload)) return "database";
   if (isViewerIdentityMismatchPayload(payload)) return "identity";
   if (isViewerContractUnsupportedPayload(payload)) return "contract";
+  if (
+    isRecord(payload)
+    && isRecord(payload.error)
+    && ["raw_event_queue_full", "raw_event_queue_write_failed"].includes(payload.error.code)
+  ) return "queue";
   return "connection";
 };
 
@@ -876,6 +881,7 @@ const RAW_EVENT_FAILURE_ACTIONS = Object.freeze({
   database: "restart the viewer from the same workspace/config",
   identity: "restart Codemem and OpenCode with the same environment",
   contract: "update Codemem on the installed channel, then restart OpenCode",
+  queue: "repair or archive the viewer raw-event queue",
   connection: "check or restart the viewer",
 });
 
@@ -2310,7 +2316,7 @@ export const createCodememRuntime = async ({ location, host }) => {
     ? `[${viewerHost}]`
     : viewerHost;
   const rawEventsUrl = `http://${viewerUrlHost}:${viewerPort}/api/raw-events`;
-  const rawEventsStatusUrl = `http://${viewerUrlHost}:${viewerPort}/api/raw-events/status?limit=1`;
+  const rawEventsStatusUrl = `http://${viewerUrlHost}:${viewerPort}/api/raw-events/status?limit=0`;
   const packUrl = `http://${viewerUrlHost}:${viewerPort}/api/pack`;
   const promptPackProfileUrl = `http://${viewerUrlHost}:${viewerPort}/api/prompt-pack-profile`;
   const promptPackLedgerUrl = `http://${viewerUrlHost}:${viewerPort}/api/prompt-pack-ledger`;
@@ -2798,7 +2804,6 @@ export const createCodememRuntime = async ({ location, host }) => {
   rawEventDelivery = createRawEventDelivery({
     backoffMs: rawEventsBackoffMs,
     buildEnvelope: buildRawEventEnvelope,
-    classifyFallbackResult: classifyFallbackCommandResult,
     classifyViewerFailure: classifyRawEventViewerFailure,
     cwd,
     discardResponseBody,
@@ -2813,7 +2818,6 @@ export const createCodememRuntime = async ({ location, host }) => {
     nextEventId,
     projectName: resolveProjectName(project, cwd),
     promptPackDbPath,
-    queueViaCli: (serialized) => runCli(["enqueue-raw-event"], { stdinText: serialized }),
     rawEventsStatusTimeoutMs: RAW_EVENTS_STATUS_TIMEOUT_MS,
     rawEventsStatusUrl,
     rawEventsUrl,

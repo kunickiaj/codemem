@@ -3080,7 +3080,8 @@ describe("OpenCode transform-time injection", () => {
 			"update Codemem on the installed channel, then restart OpenCode",
 		],
 		["connection", 503, "other_failure", "check or restart the viewer"],
-	])("spools before fallback and reports bounded %s guidance", async (
+		["queue", 503, "raw_event_queue_full", "repair or archive the viewer raw-event queue"],
+	])("spools failed HTTP delivery and reports bounded %s guidance", async (
 		category,
 		status,
 		errorCode,
@@ -3098,8 +3099,6 @@ describe("OpenCode transform-time injection", () => {
 		process.env.CODEMEM_RAW_EVENTS = "1";
 		const spoolDirectory = join(home, ".codemem", "opencode-raw-event-spool");
 		const postedBodies = [];
-		const fallbackBytes = [];
-		const spooledBytesAtFallback = [];
 		const appLog = vi.fn().mockResolvedValue(undefined);
 		const showToast = vi.fn().mockResolvedValue(undefined);
 		vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
@@ -3117,18 +3116,6 @@ describe("OpenCode transform-time injection", () => {
 			}
 			return jsonResponse(200, {});
 		});
-		spawnMock.mockImplementation((_command, args) => {
-			const proc = makeProcess({ exitCode: 0 });
-			if (Array.isArray(args) && args.includes("enqueue-raw-event")) {
-				proc.stdin.write = vi.fn((value) => {
-					const spoolFiles = readdirSync(spoolDirectory).filter((name) => name.endsWith(".json"));
-					expect(spoolFiles).toHaveLength(1);
-					spooledBytesAtFallback.push(readFileSync(join(spoolDirectory, spoolFiles[0]), "utf8"));
-					fallbackBytes.push(String(value));
-				});
-			}
-			return proc;
-		});
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
 			project: { name: "greenroom" },
@@ -3141,21 +3128,20 @@ describe("OpenCode transform-time injection", () => {
 			{ tool: "read", args: { filePath: "src/raw-event.ts" }, sessionID: `sess-${category}` },
 			{},
 		);
-		await vi.waitFor(() => expect(fallbackBytes).toHaveLength(1));
 		await vi.waitFor(() =>
 			expect(appLog).toHaveBeenCalledWith({
 				body: expect.objectContaining({
 					message: expect.stringContaining(
-						`codemem raw event was queued via CLI after viewer post returned ${status}`,
+						`codemem raw event was saved for retry after viewer post returned ${status}`,
 					),
 					extra: expect.objectContaining({
 						category,
-						delivery: "cli",
+						delivery: "spool",
 						viewer_stage: "post",
 						viewer_cause: "http_status",
 						viewer_status: status,
 						viewer_elapsed_ms: expect.any(Number),
-						cli_attempts: 1,
+						cli_attempts: 0,
 						cli_elapsed_ms: expect.any(Number),
 					}),
 				}),
@@ -3166,11 +3152,14 @@ describe("OpenCode transform-time injection", () => {
 		const httpEnvelope = { ...postedBodies[0] };
 		delete httpEnvelope.db_path;
 		delete httpEnvelope.identity_target;
-		expect(JSON.stringify(httpEnvelope)).toBe(fallbackBytes[0]);
-		expect(spooledBytesAtFallback[0]).toBe(fallbackBytes[0]);
-		expect(JSON.parse(fallbackBytes[0])).not.toHaveProperty("db_path");
-		expect(JSON.parse(fallbackBytes[0])).not.toHaveProperty("identity_target");
-		expect(readdirSync(spoolDirectory).filter((name) => name.endsWith(".json"))).toEqual([]);
+		const spoolFiles = readdirSync(spoolDirectory).filter((name) => name.endsWith(".json"));
+		expect(spoolFiles).toHaveLength(1);
+		const spooledEnvelope = JSON.parse(readFileSync(join(spoolDirectory, spoolFiles[0]), "utf8"));
+		expect(spooledEnvelope).toEqual(httpEnvelope);
+		expect(spooledEnvelope).not.toHaveProperty("db_path");
+		expect(spooledEnvelope).not.toHaveProperty("identity_target");
+		expect(spawnMock.mock.calls.some(([, args]) => args?.includes("enqueue-raw-event"))).toBe(false);
+		expect(showToast).not.toHaveBeenCalled();
 		const notices = JSON.stringify([...appLog.mock.calls, ...showToast.mock.calls]);
 		for (const sensitive of [
 			"sensitive-host.invalid",
@@ -3183,53 +3172,26 @@ describe("OpenCode transform-time injection", () => {
 		}
 	});
 
-	test.each([
-		[
-			"validation",
-			{
-				exitCode: 1,
-				stdout: `${JSON.stringify({ error: "validation_error", message: "session id required" })}\n`,
-			},
-			1,
-			"enqueue-raw-event validation failed",
-		],
-		[
-			"unknown-command",
-			{ exitCode: 1, stderr: "error: unknown command 'enqueue-raw-event'" },
-			1,
-			"enqueue-raw-event command unavailable",
-		],
-		[
-			"locked",
-			{
-				exitCode: 1,
-				stdout: `${JSON.stringify({ error: "enqueue_error", message: "database is locked" })}\n`,
-			},
-			2,
-			"SQLite database is locked",
-		],
-	])("keeps a formerly terminal %s fallback retryable after session idle", async (
-		label,
-		failureResult,
-		initialAttempts,
-		expectedCliCause,
-	) => {
+	test("retries a retained event after transport backoff without spawning the CLI", async () => {
 		const home = mkdtempSync(join(tmpdir(), "codemem-opencode-terminal-spool-"));
 		tmpDirs.push(home);
 		process.env.HOME = home;
 		process.env.CODEMEM_RAW_EVENTS = "1";
 		process.env.CODEMEM_RAW_EVENTS_BACKOFF_MS = "1000";
-		const sessionID = `sess-terminal-${label}`;
-		const enqueueBytes = [];
+		const sessionID = "sess-http-retry";
+		let viewerAvailable = false;
+		const postedEventIds = [];
 		const appLog = vi.fn().mockResolvedValue(undefined);
-		vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("viewer unavailable"));
-		spawnMock.mockImplementation((_command, args) => {
-			if (Array.isArray(args) && args.includes("enqueue-raw-event")) {
-				const proc = makeProcess(failureResult);
-				proc.stdin.write = vi.fn((value) => enqueueBytes.push(String(value)));
-				return proc;
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+			if (!viewerAvailable) throw new Error("viewer unavailable");
+			if (String(url).includes("/api/raw-events/status")) {
+				return jsonResponse(200, { ingest: { available: true } });
 			}
-			return makeProcess({ stdout: "" });
+			if (String(url).endsWith("/api/raw-events") && init?.method === "POST") {
+				postedEventIds.push(JSON.parse(String(init.body)).event_id);
+				return jsonResponse(202, { accepted: 1, queued: 1 });
+			}
+			return jsonResponse(200, {});
 		});
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
@@ -3243,61 +3205,57 @@ describe("OpenCode transform-time injection", () => {
 			{ tool: "read", args: {}, sessionID },
 			{},
 		);
-		await vi.waitFor(() => expect(enqueueBytes).toHaveLength(initialAttempts));
 		await vi.waitFor(() =>
 			expect(appLog).toHaveBeenCalledWith({
 				body: expect.objectContaining({
 					message: expect.stringContaining(
 						"codemem raw event was saved for retry after viewer status connection",
 					),
-					extra: expect.objectContaining({
+						extra: expect.objectContaining({
 						category: "connection",
 						delivery: "spool",
 						viewer_stage: "status",
 						viewer_cause: "connection",
 						viewer_elapsed_ms: expect.any(Number),
-						cli_attempts: initialAttempts,
+						cli_attempts: 0,
 						cli_elapsed_ms: expect.any(Number),
-						cli_cause: expectedCliCause,
 					}),
 				}),
 			}),
 		);
-		await hooks.event({ event: { type: "session.idle", properties: { sessionID } } });
-
-		expect(enqueueBytes.length).toBeGreaterThan(1);
-		expect(new Set(enqueueBytes).size).toBe(1);
 		const spoolDirectory = join(home, ".codemem", "opencode-raw-event-spool");
 		expect(readdirSync(spoolDirectory).filter((name) => name.endsWith(".json"))).toHaveLength(1);
+		viewerAvailable = true;
+		const afterBackoff = Date.now() + 1_001;
+		vi.spyOn(Date, "now").mockReturnValue(afterBackoff);
+		await hooks.event({ event: { type: "session.idle", properties: { sessionID } } });
+
+		await vi.waitFor(() => expect(postedEventIds).toHaveLength(1));
+		await vi.waitFor(() =>
+			expect(readdirSync(spoolDirectory).filter((name) => name.endsWith(".json"))).toEqual([]),
+		);
+		expect(spawnMock.mock.calls.some(([, args]) => args?.includes("enqueue-raw-event"))).toBe(false);
 	});
 
-	test("recovers a failed fallback from disk after plugin module restart", async () => {
+	test("recovers a retained event over HTTP after plugin module restart", async () => {
 		const home = mkdtempSync(join(tmpdir(), "codemem-opencode-restart-spool-"));
 		tmpDirs.push(home);
 		process.env.HOME = home;
 		process.env.CODEMEM_RAW_EVENTS = "1";
 		process.env.CODEMEM_RAW_EVENTS_BACKOFF_MS = "1000";
 		const sessionID = "sess-spool-restart";
-		const enqueueBytes = [];
-		let fallbackSucceeds = false;
-		vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("viewer unavailable"));
-		spawnMock.mockImplementation((_command, args) => {
-			if (Array.isArray(args) && args.includes("enqueue-raw-event")) {
-				const proc = makeProcess(
-					fallbackSucceeds
-						? { exitCode: 0 }
-						: {
-								exitCode: 1,
-								stdout: `${JSON.stringify({
-									error: "validation_error",
-									message: "event type required",
-								})}\n`,
-							},
-				);
-				proc.stdin.write = vi.fn((value) => enqueueBytes.push(String(value)));
-				return proc;
+		let viewerAvailable = false;
+		const postedEventIds = [];
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+			if (!viewerAvailable) throw new Error("viewer unavailable");
+			if (String(url).includes("/api/raw-events/status")) {
+				return jsonResponse(200, { ingest: { available: true } });
 			}
-			return makeProcess({ stdout: "" });
+			if (String(url).endsWith("/api/raw-events") && init?.method === "POST") {
+				postedEventIds.push(JSON.parse(String(init.body)).event_id);
+				return jsonResponse(202, { accepted: 1, queued: 1 });
+			}
+			return jsonResponse(200, {});
 		});
 		let { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
@@ -3310,13 +3268,14 @@ describe("OpenCode transform-time injection", () => {
 			{ tool: "read", args: {}, sessionID },
 			{},
 		);
-		await vi.waitFor(() => expect(enqueueBytes).toHaveLength(1));
-		await hooks.event({ event: { type: "session.idle", properties: { sessionID } } });
-		const attemptsBeforeRestart = enqueueBytes.length;
 		const spoolDirectory = join(home, ".codemem", "opencode-raw-event-spool");
+		await vi.waitFor(() =>
+			expect(readdirSync(spoolDirectory).filter((name) => name.endsWith(".json"))).toHaveLength(1),
+		);
+		await hooks.event({ event: { type: "session.idle", properties: { sessionID } } });
 		expect(readdirSync(spoolDirectory).filter((name) => name.endsWith(".json"))).toHaveLength(1);
 
-		fallbackSucceeds = true;
+		viewerAvailable = true;
 		Reflect.deleteProperty(globalThis, pluginRegistrationsKey);
 		vi.resetModules();
 		({ OpencodeMemPlugin } = await import("../plugins/codemem.js"));
@@ -3327,11 +3286,11 @@ describe("OpenCode transform-time injection", () => {
 			worktree: "/tmp/greenroom",
 		});
 
-		await vi.waitFor(() => expect(enqueueBytes.length).toBeGreaterThan(attemptsBeforeRestart));
+		await vi.waitFor(() => expect(postedEventIds).toHaveLength(1));
 		await vi.waitFor(() =>
 			expect(readdirSync(spoolDirectory).filter((name) => name.endsWith(".json"))).toEqual([]),
 		);
-		expect(new Set(enqueueBytes).size).toBe(1);
+		expect(spawnMock.mock.calls.some(([, args]) => args?.includes("enqueue-raw-event"))).toBe(false);
 	});
 
 	test("preserves the retry spool across every drain trigger when raw events are disabled", async () => {
@@ -3392,16 +3351,15 @@ describe("OpenCode transform-time injection", () => {
 			utimesSync(join(spoolDirectory, filename), new Date(time), new Date(time));
 		}
 		const attemptedIds = [];
-		spawnMock.mockImplementation((_command, args) => {
-			const isEnqueue = Array.isArray(args) && args.includes("enqueue-raw-event");
-			const proc = makeProcess({ exitCode: isEnqueue && attemptedIds.length === 0 ? 1 : 0 });
-			if (isEnqueue) {
-				proc.stdin.write = vi.fn((value) => {
-					const eventId = JSON.parse(String(value)).event_id;
-					attemptedIds.push(eventId);
-				});
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+			if (String(url).endsWith("/api/raw-events") && init?.method === "POST") {
+				const eventId = JSON.parse(String(init.body)).event_id;
+				attemptedIds.push(eventId);
+				return eventId === "event-poisoned"
+					? jsonResponse(400, { error: "invalid raw event request" })
+					: jsonResponse(202, { accepted: 1, queued: 1 });
 			}
-			return proc;
+			return jsonResponse(200, { ingest: { available: true } });
 		});
 
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
@@ -3419,9 +3377,45 @@ describe("OpenCode transform-time injection", () => {
 			.map((name) => readFileSync(join(spoolDirectory, name), "utf8"));
 		expect(remaining).toHaveLength(1);
 		expect(remaining[0]).toContain("event-poisoned");
+		expect(spawnMock.mock.calls.some(([, args]) => args?.includes("enqueue-raw-event"))).toBe(false);
 	});
 
-	test("stops a drain after a retryable oldest entry exhausts its inline retry", async () => {
+	test("shows a bounded error when the retry spool contains a corrupt entry", async () => {
+		const home = mkdtempSync(join(tmpdir(), "codemem-opencode-corrupt-spool-"));
+		tmpDirs.push(home);
+		process.env.HOME = home;
+		process.env.CODEMEM_RAW_EVENTS = "1";
+		const spoolDirectory = join(home, ".codemem", "opencode-raw-event-spool");
+		mkdirSync(spoolDirectory, { recursive: true });
+		writeFileSync(join(spoolDirectory, "corrupt.json"), "private malformed payload", "utf8");
+		const appLog = vi.fn().mockResolvedValue(undefined);
+		const showToast = vi.fn().mockResolvedValue(undefined);
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			jsonResponse(200, { ingest: { available: true } }),
+		);
+
+		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+		await OpencodeMemPlugin({
+			project: { name: "greenroom" },
+			client: { app: { log: appLog }, tui: { showToast } },
+			directory: "/tmp/greenroom",
+			worktree: "/tmp/greenroom",
+		});
+
+		await vi.waitFor(() =>
+			expect(showToast).toHaveBeenCalledWith({
+				body: expect.objectContaining({
+					message: expect.stringContaining("contains 1 corrupt retained entry"),
+					variant: "error",
+				}),
+			}),
+		);
+		const notices = JSON.stringify([...appLog.mock.calls, ...showToast.mock.calls]);
+		expect(notices).not.toContain("private malformed payload");
+		expect(notices).not.toContain(spoolDirectory);
+	});
+
+	test("stops an HTTP drain after a transient failure without an inline retry", async () => {
 		const home = mkdtempSync(join(tmpdir(), "codemem-opencode-transient-spool-"));
 		tmpDirs.push(home);
 		process.env.HOME = home;
@@ -3437,14 +3431,12 @@ describe("OpenCode transform-time injection", () => {
 			utimesSync(join(spoolDirectory, filename), new Date(time), new Date(time));
 		}
 		const attemptedIds = [];
-		spawnMock.mockImplementation((_command, args) => {
-			const proc = makeProcess({ exitCode: null, stderr: "command timed out" });
-			if (Array.isArray(args) && args.includes("enqueue-raw-event")) {
-				proc.stdin.write = vi.fn((value) => {
-					attemptedIds.push(JSON.parse(String(value)).event_id);
-				});
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+			if (String(url).endsWith("/api/raw-events") && init?.method === "POST") {
+				attemptedIds.push(JSON.parse(String(init.body)).event_id);
+				throw new Error("viewer unavailable");
 			}
-			return proc;
+			return jsonResponse(200, { ingest: { available: true } });
 		});
 
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
@@ -3455,9 +3447,10 @@ describe("OpenCode transform-time injection", () => {
 			worktree: "/tmp/greenroom",
 		});
 
-		await vi.waitFor(() => expect(attemptedIds).toHaveLength(2));
-		expect(attemptedIds).toEqual(["event-transient", "event-transient"]);
+		await vi.waitFor(() => expect(attemptedIds).toHaveLength(1));
+		expect(attemptedIds).toEqual(["event-transient"]);
 		expect(readdirSync(spoolDirectory).filter((name) => name.endsWith(".json"))).toHaveLength(2);
+		expect(spawnMock.mock.calls.some(([, args]) => args?.includes("enqueue-raw-event"))).toBe(false);
 	});
 
 	test("resets the persistence warning latch after a successful spool write", async () => {

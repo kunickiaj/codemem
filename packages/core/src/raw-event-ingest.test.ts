@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { connect } from "./db.js";
-import { ingestRawEvents, RawEventIngestValidationError } from "./raw-event-ingest.js";
+import {
+	ingestRawEvents,
+	RawEventIngestValidationError,
+	validateRawEvents,
+} from "./raw-event-ingest.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema } from "./test-utils.js";
 
@@ -579,5 +583,32 @@ describe("ingestRawEvents", () => {
 		} finally {
 			store.close();
 		}
+	});
+});
+
+describe("validateRawEvents", () => {
+	it("returns a sanitized request for durable pre-ingest storage", () => {
+		const result = validateRawEvents({
+			source: "claude",
+			session_id: "session-private-queue",
+			event_id: "event-private-queue",
+			event_type: "assistant",
+			payload: {
+				text: "public <private>do not queue</private> visible",
+				api_key: "queue-secret",
+				nested: { password: "nested-secret" },
+			},
+		});
+
+		expect(result.request).toMatchObject({
+			payload: {
+				text: "public  visible",
+				api_key: "[REDACTED]",
+				nested: { password: "[REDACTED]" },
+			},
+		});
+		expect(JSON.stringify(result.request)).not.toContain("do not queue");
+		expect(JSON.stringify(result.request)).not.toContain("queue-secret");
+		expect(JSON.stringify(result.request)).not.toContain("nested-secret");
 	});
 });

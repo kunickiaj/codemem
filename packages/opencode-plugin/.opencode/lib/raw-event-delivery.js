@@ -47,35 +47,12 @@ const createDeliveryState = (options) => ({
   lastToastAtBySession: new Map(),
   options,
   spoolDirectory: resolveSpoolDirectory(options.spoolHome),
+  spoolCorruptionNoted: false,
   spoolLoadFailureNoted: false,
   spoolPersistenceFailureNoted: null,
   startedAts: new WeakMap(),
   streamUnavailableUntil: 0,
 });
-
-const runCliFallback = async (state, serialized) => {
-  const { classifyFallbackResult, queueViaCli } = state.options;
-  const startedAt = Date.now();
-  let result = await queueViaCli(serialized);
-  let classification = classifyFallbackResult(result);
-  let attempts = 1;
-  if (result?.exitCode !== 0 && classification.retryable) {
-    attempts += 1;
-    result = await queueViaCli(serialized);
-    classification = classifyFallbackResult(result);
-  }
-  const diagnostics = {
-    attempts,
-    elapsedMs: Math.max(0, Date.now() - startedAt),
-    cause: result?.exitCode === 0 ? null : classification.cause,
-  };
-  if (result?.exitCode === 0) return diagnostics;
-  const retryExhausted = attempts > 1 && classification.retryable;
-  const error = new Error(retryExhausted ? `${classification.cause} after retry` : classification.cause);
-  error.retryable = classification.retryable;
-  error.cliDiagnostics = diagnostics;
-  throw error;
-};
 
 const shouldToast = (state, sessionID, category = "general") => {
   const now = Date.now();
@@ -176,11 +153,6 @@ const viewerFailureLogFields = (failure) =>
   + `${Number.isInteger(failure.status) ? ` viewer_status=${failure.status}` : ""}`
   + ` viewer_elapsed_ms=${failure.elapsedMs}`;
 
-const cliFailureLogFields = (diagnostics) =>
-  `cli_attempts=${diagnostics?.attempts || 0}`
-  + ` cli_elapsed_ms=${diagnostics?.elapsedMs || 0}`
-  + ` cli_cause=${JSON.stringify(diagnostics?.cause || "unknown")}`;
-
 const backoffFailure = (latestFailure) => ({
   ...(latestFailure || { cause: "active" }),
   stage: "backoff",
@@ -201,12 +173,14 @@ const notifyDelivery = async (state, input) => {
   const action = state.options.failureActions[category] || state.options.failureActions.connection;
   const message = `codemem raw event ${deliveryOutcome(input)} after ${describeRawEventViewerFailure(viewerFailure)}; ${action}`;
   const delivery = deliveryKind(input);
+  const durable = input.durable === true;
   await bestEffortHostLog(state, {
     service: "codemem",
-    level: delivered ? "warn" : "error",
+    level: delivered || durable ? "warn" : "error",
     message,
     extra: deliveryExtra({ category, delivery, viewerFailure, cliDiagnostics }),
   });
+  if (durable) return;
   if (!state.options.hostNotify || !shouldToast(state, sessionID, `${category}:${delivery}`)) return;
   await bestEffortNotify(state, {
     message: `codemem: ${message}`,
@@ -229,6 +203,20 @@ const notifySpoolLoadFailure = async (state) => {
   await bestEffortNotify(state, { message: `codemem: ${message}`, variant: "error" });
 };
 
+const notifySpoolCorruption = async (state, count) => {
+  const message = `codemem raw-event retry spool contains ${count} corrupt retained ${count === 1 ? "entry" : "entries"}; repair or archive the retained entries`;
+  await bestEffortHostLog(state, {
+    service: "codemem",
+    level: "error",
+    message,
+    extra: { category: "persistence", delivery: "corrupt", count },
+  });
+  if (state.spoolCorruptionNoted) return;
+  state.spoolCorruptionNoted = true;
+  if (!state.options.hostNotify || !shouldToast(state, null, "persistence:corrupt")) return;
+  await bestEffortNotify(state, { message: `codemem: ${message}`, variant: "error" });
+};
+
 const loadSpool = async (state) => {
   try {
     const loaded = await loadRawEventSpoolEntries({
@@ -246,14 +234,18 @@ const loadSpool = async (state) => {
 const drainLoadedEntries = async (state, loaded) => {
   if (loaded.corruptCount > 0) {
     await state.options.logLine(`raw_events.spool.corrupt_retained count=${loaded.corruptCount}`);
+    await notifySpoolCorruption(state, loaded.corruptCount);
+  } else {
+    state.spoolCorruptionNoted = false;
   }
   for (const entry of loaded.entries) {
     try {
-      await runCliFallback(state, entry.serialized);
+      await postToViewer(state, entry.envelope);
       await removeFromSpool(state, { eventId: entry.eventId });
     } catch (error) {
       await state.options.logLine("raw_events.spool.drain_deferred category=fallback");
-      if (error?.retryable === true) break;
+      const status = error?.rawEventFailure?.status;
+      if (!Number.isInteger(status) || status >= 500 || status === 409) break;
     }
   }
 };
@@ -265,6 +257,7 @@ const runSpoolDrain = async (state) => {
 
 const drainSpool = (state) => {
   if (!state.options.enabled) return Promise.resolve();
+  if (Date.now() < state.streamUnavailableUntil) return Promise.resolve();
   const existingDrain = rawEventSpoolDrainsInFlight.get(state.spoolDirectory);
   if (existingDrain) return existingDrain;
   const drainPromise = runSpoolDrain(state);
@@ -304,35 +297,18 @@ const cachedEnvelope = (state, sessionID, type, payload, now) => {
 const deliverDuringBackoff = async (state, input) => {
   const viewerFailure = backoffFailure(state.latestViewerFailure);
   const durable = await persistForRetry(state, input);
-  try {
-    const cliDiagnostics = await runCliFallback(state, input.serialized);
-    await removeFromSpool(state, { eventId: input.body.event_id, payload: input.payload });
-    if (input.payload && typeof input.payload === "object") input.payload._raw_enqueued = true;
-    await notifyDelivery(state, {
-      category: "connection",
-      cliDiagnostics,
-      delivered: true,
-      durable,
-      sessionID: input.sessionID,
-      viewerFailure,
-    });
-    return true;
-  } catch (error) {
-    const cliDiagnostics = error?.cliDiagnostics || null;
-    await state.options.logLine(
-      `raw_events.fallback.error category=connection ${viewerFailureLogFields(viewerFailure)}`
-      + ` ${cliFailureLogFields(cliDiagnostics)}`
-    );
-    await notifyDelivery(state, {
-      category: "connection",
-      cliDiagnostics,
-      delivered: false,
-      durable,
-      sessionID: input.sessionID,
-      viewerFailure,
-    });
-    return false;
+  if (durable && input.payload && typeof input.payload === "object") {
+    input.payload._raw_spooled = true;
   }
+  await notifyDelivery(state, {
+    category: "connection",
+    cliDiagnostics: null,
+    delivered: false,
+    durable,
+    sessionID: input.sessionID,
+    viewerFailure,
+  });
+  return durable;
 };
 
 const ingestUnavailableError = () => {
@@ -374,7 +350,7 @@ const postToViewer = async (state, body) => {
     ]),
     body: JSON.stringify({ ...body, db_path: options.promptPackDbPath, identity_target: options.identityTarget }),
   });
-  if (response.ok) return;
+  if (response.ok) return response;
   let responseBody = null;
   try {
     responseBody = await response.json();
@@ -405,31 +381,18 @@ const handleViewerFailure = async (state, input, error, timing) => {
     `raw_events.error category=${category} ${viewerFailureLogFields(viewerFailure)}`
   );
   const durable = await persistForRetry(state, input);
-  let delivered = false;
-  let cliDiagnostics = null;
-  try {
-    cliDiagnostics = await runCliFallback(state, input.serialized);
-    await removeFromSpool(state, { eventId: input.body.event_id, payload: input.payload });
-    delivered = true;
-  } catch (fallbackError) {
-    cliDiagnostics = fallbackError?.cliDiagnostics || null;
-    await state.options.logLine(
-      `raw_events.fallback.error category=${category} ${viewerFailureLogFields(viewerFailure)}`
-      + ` ${cliFailureLogFields(cliDiagnostics)}`
-    );
-  }
-  if (delivered && input.payload && typeof input.payload === "object") {
-    input.payload._raw_enqueued = true;
+  if (durable && input.payload && typeof input.payload === "object") {
+    input.payload._raw_spooled = true;
   }
   await notifyDelivery(state, {
     category,
-    cliDiagnostics,
-    delivered,
+    cliDiagnostics: null,
+    delivered: false,
     durable,
     sessionID: input.sessionID,
     viewerFailure,
   });
-  return delivered;
+  return durable;
 };
 
 const deliver = async (state, { sessionID, type, payload }) => {

@@ -13,12 +13,19 @@ import {
 	ingestRawEvents,
 	RawEventIngestValidationError,
 	schema,
+	validateRawEvents,
 } from "@codemem/core";
 import { desc } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { parseJsonObjectBody, queryInt } from "../helpers.js";
-import { validateViewerTarget } from "./target-validation.js";
+import { RAW_EVENT_INBOX_FULL_CODE, type RawEventInbox } from "../raw-event-inbox.js";
+import {
+	flushRawEventBoundarySessions,
+	isClaudeBoundaryEnvelope,
+	nudgeRawEventSessions,
+} from "../raw-event-processing.js";
+import { type ViewerTargetStore, validateViewerTarget } from "./target-validation.js";
 
 type StoreFactory = () => MemoryStore;
 type JsonResponder = {
@@ -88,51 +95,6 @@ function codexTranscriptRoot(): string {
 	return join(process.env.CODEX_HOME?.trim() || join(homedir(), ".codex"), "sessions");
 }
 
-/** Nudge the sweeper safely — never crashes the caller. */
-function nudgeSweeper(
-	sweeper: RawEventSweeper | null | undefined,
-	sessions: Iterable<{ source: string; streamId: string }>,
-): void {
-	for (const session of sessions) {
-		try {
-			sweeper?.nudge(session.streamId, session.source);
-		} catch {
-			// A failed nudge must not block later validated sessions.
-		}
-	}
-}
-
-async function flushBoundarySessions(
-	sweeper: RawEventSweeper | null | undefined,
-	sessions: Iterable<{ source: string; streamId: string }>,
-): Promise<void> {
-	for (const session of sessions) {
-		try {
-			await sweeper?.flushBoundary(session.streamId, session.source);
-		} catch {
-			// Boundary extraction remains best-effort, matching the legacy CLI path.
-		}
-	}
-}
-
-function isClaudeBoundaryEnvelope(envelope: object): boolean {
-	const record = envelope as Record<string, unknown>;
-	if (
-		String(record.source ?? "")
-			.trim()
-			.toLowerCase() !== "claude"
-	)
-		return false;
-	const payload = record.payload;
-	if (payload == null || typeof payload !== "object" || Array.isArray(payload)) return false;
-	const adapter = (payload as Record<string, unknown>)._adapter;
-	if (adapter == null || typeof adapter !== "object" || Array.isArray(adapter)) return false;
-	const meta = (adapter as Record<string, unknown>).meta;
-	if (meta == null || typeof meta !== "object" || Array.isArray(meta)) return false;
-	const hookEventName = (meta as Record<string, unknown>).hook_event_name;
-	return hookEventName === "SessionEnd" || hookEventName === "Stop";
-}
-
 const SAFE_INGEST_VALIDATION_ERRORS = new Set([
 	"source must be string",
 	"source is required",
@@ -179,9 +141,88 @@ function boundedIngestErrorResponse(c: JsonResponder, error: unknown): Response 
 	return c.json(response, 500);
 }
 
+function boundedInboxErrorResponse(c: JsonResponder, error: unknown): Response {
+	const code = (error as NodeJS.ErrnoException)?.code;
+	if (code === RAW_EVENT_INBOX_FULL_CODE) {
+		return c.json(
+			{ error: { code: "raw_event_queue_full", message: "raw-event queue is full" } },
+			503,
+		);
+	}
+	return c.json(
+		{ error: { code: "raw_event_queue_write_failed", message: "raw-event queue write failed" } },
+		503,
+	);
+}
+
 function untargetedPayload(payload: Record<string, unknown>): Record<string, unknown> {
 	const { db_path: _dbPath, identity_target: _identityTarget, ...body } = payload;
 	return body;
+}
+
+async function enqueueRawEventRequest(options: {
+	c: JsonResponder;
+	getStore: StoreFactory;
+	inbox: RawEventInbox;
+	inboxTarget?: ViewerTargetStore;
+	payload: Record<string, unknown>;
+	request: Record<string, unknown>;
+	flushBoundary: boolean;
+}): Promise<Response> {
+	const target = validateViewerTarget(options.inboxTarget ?? options.getStore(), options.payload, {
+		requirePairedTargets: true,
+	});
+	if (!target.ok) return options.c.json(target.body, target.status);
+	const validation = validateRawEvents(options.request);
+	try {
+		await options.inbox.enqueue(validation.request, {
+			flushBoundary: options.flushBoundary,
+		});
+	} catch (error) {
+		return boundedInboxErrorResponse(options.c, error);
+	}
+	return options.c.json({ accepted: validation.received, queued: validation.received }, 202);
+}
+
+async function postRawEventRequest(
+	c: Context,
+	getStore: StoreFactory,
+	sweeper?: RawEventSweeper | null,
+	inbox?: RawEventInbox | null,
+	inboxTarget?: ViewerTargetStore,
+): Promise<Response> {
+	const result = await parseJsonObjectBody(c, MAX_RAW_EVENTS_BODY_BYTES);
+	if (result instanceof Response) return result;
+	try {
+		const request = untargetedPayload(result);
+		if (inbox) {
+			return enqueueRawEventRequest({
+				c,
+				getStore,
+				inbox,
+				inboxTarget,
+				payload: result,
+				request,
+				flushBoundary: c.req.header("x-codemem-boundary-flush") === "1",
+			});
+		}
+		const store = getStore();
+		const target = validateViewerTarget(store, result, { requirePairedTargets: true });
+		if (!target.ok) return c.json(target.body, target.status);
+		const ingestResult = await ingestNormalizedEnvelope(
+			store,
+			sweeper,
+			request,
+			c.req.header("x-codemem-boundary-flush") === "1",
+		);
+		return c.json({
+			inserted: ingestResult.inserted,
+			skipped: ingestResult.skipped,
+			received: ingestResult.received,
+		});
+	} catch (error) {
+		return boundedIngestErrorResponse(c, error);
+	}
 }
 
 async function ingestNormalizedEnvelope(
@@ -191,14 +232,19 @@ async function ingestNormalizedEnvelope(
 	flushBoundary = false,
 ) {
 	const result = ingestRawEvents(store, envelope);
-	nudgeSweeper(sweeper, result.sessions);
+	nudgeRawEventSessions(sweeper, result.sessions);
 	if (flushBoundary && isClaudeBoundaryEnvelope(envelope)) {
-		await flushBoundarySessions(sweeper, result.sessions);
+		await flushRawEventBoundarySessions(sweeper, result.sessions);
 	}
 	return result;
 }
 
-export function rawEventsRoutes(getStore: StoreFactory, sweeper?: RawEventSweeper | null) {
+export function rawEventsRoutes(
+	getStore: StoreFactory,
+	sweeper?: RawEventSweeper | null,
+	inbox?: RawEventInbox | null,
+	inboxTarget?: ViewerTargetStore,
+) {
 	const app = new Hono();
 	const transcriptDiagnostics = createTranscriptDiagnostics();
 
@@ -211,8 +257,19 @@ export function rawEventsRoutes(getStore: StoreFactory, sweeper?: RawEventSweepe
 
 	// GET /api/raw-events/status
 	app.get("/api/raw-events/status", (c) => {
-		const store = getStore();
 		const limit = queryInt(c.req.query("limit"), 25);
+		if (inbox && limit === 0) {
+			return c.json({
+				items: [],
+				ingest: {
+					available: true,
+					mode: "durable_queue",
+					max_body_bytes: MAX_RAW_EVENTS_BODY_BYTES,
+				},
+				transcript_diagnostics: transcriptDiagnostics.snapshot(),
+			});
+		}
+		const store = getStore();
 		const d = drizzle(store.db, { schema });
 		const rows = d
 			.select({
@@ -245,7 +302,7 @@ export function rawEventsRoutes(getStore: StoreFactory, sweeper?: RawEventSweepe
 			totals,
 			ingest: {
 				available: true,
-				mode: "stream_queue",
+				mode: inbox ? "durable_queue" : "stream_queue",
 				max_body_bytes: MAX_RAW_EVENTS_BODY_BYTES,
 			},
 			transcript_diagnostics: transcriptDiagnostics.snapshot(),
@@ -253,28 +310,7 @@ export function rawEventsRoutes(getStore: StoreFactory, sweeper?: RawEventSweepe
 	});
 
 	// POST /api/raw-events — ingest raw events from plugin
-	app.post("/api/raw-events", async (c) => {
-		const result = await parseJsonObjectBody(c, MAX_RAW_EVENTS_BODY_BYTES);
-		if (result instanceof Response) return result;
-		try {
-			const store = getStore();
-			const target = validateViewerTarget(store, result, { requirePairedTargets: true });
-			if (!target.ok) return c.json(target.body, target.status);
-			const ingestResult = await ingestNormalizedEnvelope(
-				store,
-				sweeper,
-				untargetedPayload(result),
-				c.req.header("x-codemem-boundary-flush") === "1",
-			);
-			return c.json({
-				inserted: ingestResult.inserted,
-				skipped: ingestResult.skipped,
-				received: ingestResult.received,
-			});
-		} catch (err) {
-			return boundedIngestErrorResponse(c, err);
-		}
-	});
+	app.post("/api/raw-events", (c) => postRawEventRequest(c, getStore, sweeper, inbox, inboxTarget));
 
 	// POST /api/claude-hooks — ingest Claude Code hook events
 	app.post("/api/claude-hooks", async (c) => {

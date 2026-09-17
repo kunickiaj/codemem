@@ -3,14 +3,14 @@ import {
   chmod,
   link,
   mkdir,
+  open,
   readdir,
   readFile,
   rm,
   stat,
-  writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const DEFAULT_DRAIN_LIMIT = 20;
 const DEFAULT_MAX_ENTRIES = 2000;
@@ -37,8 +37,42 @@ const requireEventId = (envelope) => {
 };
 
 const ensurePrivateDirectory = async (directory) => {
-  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const firstCreated = await mkdir(directory, { recursive: true, mode: 0o700 });
   await chmod(directory, 0o700);
+  if (!firstCreated) return;
+  const boundary = dirname(firstCreated);
+  let current = directory;
+  while (true) {
+    await syncDirectory(current);
+    if (current === boundary) return;
+    current = dirname(current);
+  }
+};
+
+const writeDurableFile = async (path, contents) => {
+  const handle = await open(path, "wx", 0o600);
+  try {
+    await handle.writeFile(contents, { encoding: "utf8" });
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+};
+
+const syncDirectory = async (path) => {
+  let handle;
+  try {
+    handle = await open(path, "r");
+    await handle.sync();
+  } catch (error) {
+    if (
+      process.platform === "win32"
+      && ["EISDIR", "EINVAL", "ENOTSUP", "EPERM"].includes(error?.code)
+    ) return;
+    throw error;
+  } finally {
+    await handle?.close();
+  }
 };
 
 const writeRawEventSpoolEntryUnlocked = async ({
@@ -66,6 +100,7 @@ const writeRawEventSpoolEntryUnlocked = async ({
       throw new Error("raw event spool entry conflicts with existing event_id");
     }
     await chmod(destination, 0o600);
+    await syncDirectory(directory);
     return { eventId, serialized: existing };
   } catch (error) {
     if (error?.code !== "ENOENT") {
@@ -84,7 +119,7 @@ const writeRawEventSpoolEntryUnlocked = async ({
   }
 
   try {
-    await writeFile(temporary, bytes, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    await writeDurableFile(temporary, bytes);
     try {
       await link(temporary, destination);
     } catch (error) {
@@ -96,12 +131,12 @@ const writeRawEventSpoolEntryUnlocked = async ({
         throw new Error("raw event spool entry conflicts with existing event_id");
       }
       await chmod(destination, 0o600);
-      return { eventId, serialized: existing };
     }
     await chmod(destination, 0o600);
   } finally {
     await rm(temporary, { force: true }).catch(() => {});
   }
+  await syncDirectory(directory);
 
   return { eventId, serialized: bytes };
 };

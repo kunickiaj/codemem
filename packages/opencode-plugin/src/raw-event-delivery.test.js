@@ -52,3 +52,45 @@ test("uses the delivery start time in the exact serialized envelope", async () =
 		await rm(home, { recursive: true, force: true });
 	}
 });
+
+test("does not drain retained events while viewer transport backoff is active", async () => {
+	const home = await mkdtemp(join(tmpdir(), "codemem-delivery-backoff-"));
+	const fetchMock = vi.fn(async () => {
+		throw new Error("viewer unavailable");
+	});
+	vi.stubGlobal("fetch", fetchMock);
+	const delivery = createRawEventDelivery({
+		backoffMs: 30_000,
+		buildEnvelope: () => ({ event_id: "event-backoff", payload: {} }),
+		classifyViewerFailure: () => "connection",
+		cwd: home,
+		discardResponseBody: () => {},
+		enabled: true,
+		failureActions: { connection: "restart" },
+		fetchRawEventsStatus: async () =>
+			new Response(JSON.stringify({ ingest: { available: true } }), { status: 200 }),
+		hostLog: async () => {},
+		hostNotify: null,
+		identityTarget: null,
+		isActive: () => true,
+		logLine: async () => {},
+		nextEventId: () => "event-backoff",
+		projectName: "project",
+		promptPackDbPath: join(home, "mem.sqlite"),
+		rawEventsStatusTimeoutMs: 5_000,
+		rawEventsStatusUrl: "http://viewer/status",
+		rawEventsUrl: "http://viewer/events",
+		sessionStartedAt: () => 50,
+		spoolHome: home,
+		statusCheckMs: 30_000,
+	});
+
+	try {
+		await delivery.deliver({ sessionID: "session-backoff", type: "prompt", payload: {} });
+		expect(fetchMock).toHaveBeenCalledOnce();
+		await delivery.drainSpool();
+		expect(fetchMock).toHaveBeenCalledOnce();
+	} finally {
+		await rm(home, { recursive: true, force: true });
+	}
+});

@@ -32,6 +32,11 @@ export interface RawEventIngestResult {
 	sessions: RawEventIngestSession[];
 }
 
+export interface RawEventValidationResult {
+	received: number;
+	request: Record<string, unknown>;
+}
+
 interface NormalizedEvent {
 	captureContext: DelegatedBriefContext | null;
 	streamId: string;
@@ -457,4 +462,10 @@ export function ingestRawEvents(store: RawEventIngestStore, request: object): Ra
 			};
 		})
 		.immediate();
+}
+
+export function validateRawEvents(request: object): RawEventValidationResult {
+	const sanitized = stripPrivateObj(request) as Record<string, unknown>;
+	const normalized = normalizeRequest(sanitized);
+	return { received: normalized.received, request: sanitized };
 }

@@ -1,5 +1,5 @@
 import { resolve as resolvePath } from "node:path";
-import type { MemoryStore, ViewerIdentityTarget } from "@codemem/core";
+import type { ViewerIdentityTarget } from "@codemem/core";
 import {
 	buildViewerIdentityTarget,
 	resolveDbPath,
@@ -17,6 +17,11 @@ export type ViewerTargetValidation =
 	| { ok: true }
 	| { ok: false; status: 400 | 409; body: { error: { code: string; message: string } } };
 
+export interface ViewerTargetStore {
+	dbPath: string;
+	hasCurrentIdentity(): boolean;
+}
+
 function invalidRequest(message: string): ViewerTargetValidation {
 	return { ok: false, status: 400, body: { error: { code: "invalid_request", message } } };
 }
@@ -33,7 +38,7 @@ export function currentIdentityTarget(): ViewerIdentityTarget {
 	return buildViewerIdentityTarget();
 }
 
-function requestedDbMatches(store: MemoryStore, value: unknown): boolean | null {
+function requestedDbMatches(store: ViewerTargetStore, value: unknown): boolean | null {
 	if (value == null) return true;
 	if (typeof value !== "string" || !value.trim()) return null;
 	return resolvePath(resolveDbPath(value.trim())) === resolvePath(store.dbPath);
@@ -61,7 +66,7 @@ function requestedIdentityMatches(value: unknown): boolean | null | "unsupported
 }
 
 export function validateViewerTarget(
-	store: MemoryStore,
+	store: ViewerTargetStore,
 	payload: Record<string, unknown>,
 	options: { requireCurrentIdentity?: boolean; requirePairedTargets?: boolean } = {},
 ): ViewerTargetValidation {
