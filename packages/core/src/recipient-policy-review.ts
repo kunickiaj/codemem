@@ -1,5 +1,4 @@
-import { isAbsolute } from "node:path";
-import type { Database } from "./db.js";
+import { type Database, fromJson } from "./db.js";
 import {
 	isLegacyUmbrellaScopeKind,
 	type LegacyRecipientPolicyConditionCodeV1,
@@ -10,7 +9,7 @@ import {
 } from "./legacy-recipient-policy-projection.js";
 import { isLegacyTeamCandidateSelectable } from "./legacy-team-candidate.js";
 import { isMigratableLegacyTeamProjectIdentity } from "./legacy-team-project-policy.js";
-import { resolveGitRepositoryIdentity } from "./project.js";
+import { REPOSITORY_IDENTITY_METADATA_KEY } from "./project.js";
 import { isActiveUnmergedLocalActor } from "./recipient-policy-actor-eligibility.js";
 import {
 	isRecipientPolicyNoOpDecision,
@@ -256,6 +255,42 @@ function memoryCountsByProject(db: Database): Map<string, number> {
 	return counts;
 }
 
+function repositoryIdentitiesByProject(db: Database): Map<string, string> {
+	const rows = db
+		.prepare(
+			`SELECT cwd, project, git_remote, git_branch, metadata_json
+			 FROM sessions
+			 WHERE COALESCE(tool_version, '') <> 'sync_replication'
+			 ORDER BY id`,
+		)
+		.all() as Array<{
+		cwd: string | null;
+		project: string | null;
+		git_remote: string | null;
+		git_branch: string | null;
+		metadata_json: string | null;
+	}>;
+	const evidence = new Map<string, string | null>();
+	for (const row of rows) {
+		const projectId = canonicalWorkspaceIdentity({
+			cwd: row.cwd,
+			project: row.project,
+			gitRemote: row.git_remote,
+			gitBranch: row.git_branch,
+		}).value;
+		const value = fromJson(row.metadata_json)[REPOSITORY_IDENTITY_METADATA_KEY];
+		const repositoryIdentity = typeof value === "string" && value.trim() ? value.trim() : null;
+		if (!evidence.has(projectId)) {
+			evidence.set(projectId, repositoryIdentity);
+			continue;
+		}
+		if (evidence.get(projectId) !== repositoryIdentity) evidence.set(projectId, null);
+	}
+	return new Map(
+		[...evidence].flatMap(([projectId, identity]) => (identity ? [[projectId, identity]] : [])),
+	);
+}
+
 function preview(
 	projection: LegacyRecipientPolicyProjectionV1,
 	memoryCount: number,
@@ -366,12 +401,10 @@ function reviewOptions(
 
 function reviewProjectGroup(
 	projection: LegacyRecipientPolicyProjectionV1,
+	repositoryIdentity: string | undefined,
 ): RecipientPolicyReviewProjectGroupV1 {
-	const repository = isAbsolute(projection.project.canonicalIdentity)
-		? resolveGitRepositoryIdentity(projection.project.canonicalIdentity)
-		: null;
 	return {
-		identity: repository?.identity ?? projection.project.canonicalIdentity,
+		identity: repositoryIdentity ?? projection.project.canonicalIdentity,
 		displayName: projection.project.displayName,
 	};
 }
@@ -381,6 +414,7 @@ function actionableReviewItem(
 	condition: LegacyRecipientPolicyConditionV1,
 	memoryCount: number,
 	scope: { key: string | null; projection: LegacyRecipientPolicyProjectionV1 },
+	repositoryIdentity: string | undefined,
 ): RecipientPolicyActionableReviewItemV1 {
 	return {
 		version: RECIPIENT_POLICY_CONTRACT_VERSION,
@@ -391,7 +425,7 @@ function actionableReviewItem(
 		]),
 		sourceFingerprint: recipientPolicyReviewSourceFingerprint(scope.projection, condition.code),
 		conditionCode: actionableConditionCode(condition.code),
-		projectGroup: reviewProjectGroup(scope.projection),
+		projectGroup: reviewProjectGroup(scope.projection, repositoryIdentity),
 		finding: condition.message,
 		reason: `Review the current recipient evidence for ${projection.project.displayName}.`,
 		...reviewOptions(scope.projection, condition, memoryCount),
@@ -450,6 +484,7 @@ export function deriveRecipientPolicyReviewState(
 	projections = listLegacyRecipientPolicyProjections(db, context),
 ): RecipientPolicyDerivedReviewState {
 	const memoryCounts = memoryCountsByProject(db);
+	const repositoryIdentities = repositoryIdentitiesByProject(db);
 	const allReviewItems: RecipientPolicyActionableReviewItemV1[] = [];
 	const blockedItems: RecipientPolicyBlockedItemV1[] = [];
 	const preservedDiagnosticFindings: RecipientPolicyDerivedReviewState["preservedDiagnosticFindings"] =
@@ -513,7 +548,15 @@ export function deriveRecipientPolicyReviewState(
 							}))
 					: [{ key: null, projection }];
 			for (const scope of decisionScopes) {
-				allReviewItems.push(actionableReviewItem(projection, condition, memoryCount, scope));
+				allReviewItems.push(
+					actionableReviewItem(
+						projection,
+						condition,
+						memoryCount,
+						scope,
+						repositoryIdentities.get(projection.project.canonicalIdentity),
+					),
+				);
 			}
 		}
 	}

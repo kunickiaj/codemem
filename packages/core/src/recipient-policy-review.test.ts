@@ -7,6 +7,7 @@ import {
 	type LegacyRecipientPolicyProjectionV1,
 	listLegacyRecipientPolicyProjections,
 } from "./legacy-recipient-policy-projection.js";
+import { REPOSITORY_IDENTITY_METADATA_KEY } from "./project.js";
 import { deterministicPolicyTeamId } from "./recipient-policy-identifiers.js";
 import {
 	deriveRecipientPolicyReviewState,
@@ -309,6 +310,20 @@ describe("recipient policy review Project groups", () => {
 			first.project = { ...first.project, canonicalIdentity: worktree };
 			const second = projection();
 			second.project = { ...second.project, canonicalIdentity: mainRepo };
+			for (const [cwd, id] of [
+				[worktree, 1001],
+				[mainRepo, 1002],
+			] as const) {
+				db.prepare(
+					`INSERT INTO sessions (id, started_at, cwd, metadata_json)
+					 VALUES (?, ?, ?, ?)`,
+				).run(
+					id,
+					"2026-09-16T00:00:00.000Z",
+					cwd,
+					JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: join(mainRepo, ".git") }),
+				);
+			}
 
 			const state = deriveRecipientPolicyReviewState(db, context, [first, second]);
 
@@ -319,6 +334,44 @@ describe("recipient policy review Project groups", () => {
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}
+	});
+
+	it("does not derive historical groups from current path contents", () => {
+		const directory = mkdtempSync(join(tmpdir(), "codemem-review-reused-path-"));
+		try {
+			mkdirSync(join(directory, ".git"));
+			writeFileSync(
+				join(directory, ".git", "config"),
+				'[remote "origin"]\n\turl = https://example.test/current/repository.git\n',
+			);
+			const historical = projection();
+			historical.project = { ...historical.project, canonicalIdentity: directory };
+
+			const state = deriveRecipientPolicyReviewState(db, context, [historical]);
+
+			expect(state.allReviewItems[0]?.projectGroup.identity).toBe(directory);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it("does not group mixed historical and recorded repository evidence", () => {
+		const projectPath = "/work/reused/project";
+		for (const [id, metadata] of [
+			[1001, {}],
+			[1002, { [REPOSITORY_IDENTITY_METADATA_KEY]: "https://example.test/new/repository.git" }],
+		] as const) {
+			db.prepare(
+				`INSERT INTO sessions (id, started_at, cwd, metadata_json)
+				 VALUES (?, ?, ?, ?)`,
+			).run(id, "2026-09-16T00:00:00.000Z", projectPath, JSON.stringify(metadata));
+		}
+		const historical = projection();
+		historical.project = { ...historical.project, canonicalIdentity: projectPath };
+
+		const state = deriveRecipientPolicyReviewState(db, context, [historical]);
+
+		expect(state.allReviewItems[0]?.projectGroup.identity).toBe(projectPath);
 	});
 
 	it("keeps non-Git and missing Project paths in separate review groups", () => {

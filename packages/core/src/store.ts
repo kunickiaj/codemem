@@ -43,6 +43,7 @@ import {
 	buildMemoryPackWithTrace,
 	buildMemoryPackWithTraceAsync,
 } from "./pack.js";
+import { REPOSITORY_IDENTITY_METADATA_KEY, resolveGitRepositoryIdentity } from "./project.js";
 import { cleanProjectIdentity } from "./project-identity.js";
 import { hydrateRawEvent, loadPriorDelegatedBriefEvents } from "./raw-event-context.js";
 import { populateMemoryRefs } from "./ref-populate.js";
@@ -292,6 +293,18 @@ function isSameSessionDedupConstraintError(error: unknown): boolean {
 function parseMetadata(row: MemoryItem): MemoryItemResponse {
 	const { metadata_json, ...rest } = row;
 	return { ...rest, metadata_json: fromJson(metadata_json) };
+}
+
+function sessionMetadata(
+	cwd: string | null,
+	metadata: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+	const result = { ...metadata };
+	delete result[REPOSITORY_IDENTITY_METADATA_KEY];
+	if (!cwd) return result;
+	const repositoryIdentity = resolveGitRepositoryIdentity(cwd)?.identity;
+	if (repositoryIdentity) result[REPOSITORY_IDENTITY_METADATA_KEY] = repositoryIdentity;
+	return result;
 }
 
 // MemoryStore
@@ -699,6 +712,7 @@ export class MemoryStore {
 	}): number {
 		const now = nowIso();
 		const cwd = opts.cwd == null ? process.cwd() : cleanProjectIdentity(opts.cwd);
+		const metadata = sessionMetadata(cwd, opts.metadata);
 		const rows = this.d
 			.insert(schema.sessions)
 			.values({
@@ -709,7 +723,7 @@ export class MemoryStore {
 				git_branch: cleanProjectIdentity(opts.gitBranch),
 				user: opts.user ?? process.env.USER ?? "unknown",
 				tool_version: opts.toolVersion ?? "manual",
-				metadata_json: toJson(opts.metadata ?? {}),
+				metadata_json: toJson(metadata),
 			})
 			.returning({ id: schema.sessions.id })
 			.all();
@@ -749,6 +763,7 @@ export class MemoryStore {
 		const startedAt = opts.startedAt ?? nowIso();
 		const cwd = opts.cwd == null ? process.cwd() : cleanProjectIdentity(opts.cwd);
 		const project = cleanProjectIdentity(opts.project);
+		const metadata = sessionMetadata(cwd, opts.metadata);
 		const sessionRows = this.d
 			.insert(schema.sessions)
 			.values({
@@ -759,7 +774,7 @@ export class MemoryStore {
 				git_branch: null,
 				user: opts.user ?? process.env.USER ?? "unknown",
 				tool_version: opts.toolVersion ?? "raw_events",
-				metadata_json: toJson(opts.metadata ?? {}),
+				metadata_json: toJson(metadata),
 			})
 			.returning({ id: schema.sessions.id })
 			.all();
@@ -801,7 +816,13 @@ export class MemoryStore {
 				.from(schema.sessions)
 				.where(eq(schema.sessions.id, sessionId))
 				.get();
-			const merged = { ...fromJson(existing?.metadata_json), ...metadata };
+			const existingMetadata = fromJson(existing?.metadata_json);
+			const repositoryIdentity = existingMetadata[REPOSITORY_IDENTITY_METADATA_KEY];
+			const merged = { ...existingMetadata, ...metadata };
+			delete merged[REPOSITORY_IDENTITY_METADATA_KEY];
+			if (typeof repositoryIdentity === "string" && repositoryIdentity) {
+				merged[REPOSITORY_IDENTITY_METADATA_KEY] = repositoryIdentity;
+			}
 			this.d
 				.update(schema.sessions)
 				.set({ ended_at: now, metadata_json: toJson(merged) })

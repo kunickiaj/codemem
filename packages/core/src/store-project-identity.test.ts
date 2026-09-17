@@ -3,10 +3,43 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { connect } from "./db.js";
+import { REPOSITORY_IDENTITY_METADATA_KEY } from "./project.js";
 import { listProjectScopeInventory } from "./project-scope-settings.js";
 import { resolveSessionScopeId } from "./scope-stamping.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema } from "./test-utils.js";
+
+function assertReusedCwdIdentity(store: MemoryStore, tmpDir: string): void {
+	const repoRoot = join(tmpDir, "upgraded-repository");
+	const missingRoot = join(tmpDir, "missing-repository");
+	mkdirSync(repoRoot, { recursive: true });
+	const historicalSessionId = store.startSession({ cwd: repoRoot, project: "repository" });
+	const missingSessionId = store.startSession({ cwd: missingRoot, project: "missing" });
+	mkdirSync(join(repoRoot, ".git"), { recursive: true });
+	writeFileSync(
+		join(repoRoot, ".git", "config"),
+		'[remote "origin"]\n\turl = https://example.test/acme/repository.git\n',
+	);
+	const currentSessionId = store.getOrCreateSessionForOpencodeSession({
+		opencodeSessionId: "session-after-upgrade",
+		cwd: repoRoot,
+		project: "repository",
+	});
+	const sessionValue = (column: string, sessionId: number): unknown =>
+		store.db.prepare(`SELECT ${column} FROM sessions WHERE id = ?`).pluck().get(sessionId);
+
+	expect(sessionValue("git_remote", historicalSessionId)).toBeNull();
+	expect(sessionValue("metadata_json", historicalSessionId)).toBe("{}");
+	expect(JSON.parse(String(sessionValue("metadata_json", currentSessionId)))).toMatchObject({
+		[REPOSITORY_IDENTITY_METADATA_KEY]: "https://example.test/acme/repository.git",
+	});
+	expect(sessionValue("git_remote", missingSessionId)).toBeNull();
+	const inventory = listProjectScopeInventory(store.db, { limit: 10 });
+	expect(inventory.projects).toHaveLength(2);
+	expect(
+		inventory.projects.find((project) => project.workspace_identity === repoRoot),
+	).toMatchObject({ session_count: 2 });
+}
 
 describe("raw-event session repository identity", () => {
 	let originalConfig: string | undefined;
@@ -48,11 +81,20 @@ describe("raw-event session repository identity", () => {
 			opencodeSessionId: "session-worktree",
 			cwd: worktree,
 			project: "repository",
+			metadata: { [REPOSITORY_IDENTITY_METADATA_KEY]: "untrusted-override" },
 		});
 
 		expect(
-			store.db.prepare("SELECT cwd, git_remote FROM sessions WHERE id = ?").get(sessionId),
-		).toEqual({ cwd: worktree, git_remote: null });
+			store.db
+				.prepare("SELECT cwd, git_remote, metadata_json FROM sessions WHERE id = ?")
+				.get(sessionId),
+		).toEqual({
+			cwd: worktree,
+			git_remote: null,
+			metadata_json: JSON.stringify({
+				[REPOSITORY_IDENTITY_METADATA_KEY]: "https://example.test/acme/repository.git",
+			}),
+		});
 	});
 
 	it("preserves an existing cwd scope mapping after repository identity is discovered", () => {
@@ -80,38 +122,6 @@ describe("raw-event session repository identity", () => {
 	});
 
 	it("keeps historical sessions stable when a cwd is reused", () => {
-		const repoRoot = join(tmpDir, "upgraded-repository");
-		const missingRoot = join(tmpDir, "missing-repository");
-		mkdirSync(join(repoRoot, ".git"), { recursive: true });
-		writeFileSync(
-			join(repoRoot, ".git", "config"),
-			'[remote "origin"]\n\turl = https://example.test/acme/repository.git\n',
-		);
-		const historicalSessionId = store.startSession({ cwd: repoRoot, project: "repository" });
-		const missingSessionId = store.startSession({ cwd: missingRoot, project: "missing" });
-
-		store.getOrCreateSessionForOpencodeSession({
-			opencodeSessionId: "session-after-upgrade",
-			cwd: repoRoot,
-			project: "repository",
-		});
-
-		expect(
-			store.db
-				.prepare("SELECT git_remote FROM sessions WHERE id = ?")
-				.pluck()
-				.get(historicalSessionId),
-		).toBeNull();
-		expect(
-			store.db
-				.prepare("SELECT git_remote FROM sessions WHERE id = ?")
-				.pluck()
-				.get(missingSessionId),
-		).toBeNull();
-		const inventory = listProjectScopeInventory(store.db, { limit: 10 });
-		expect(inventory.projects).toHaveLength(2);
-		expect(
-			inventory.projects.find((project) => project.workspace_identity === repoRoot),
-		).toMatchObject({ session_count: 2 });
+		assertReusedCwdIdentity(store, tmpDir);
 	});
 });

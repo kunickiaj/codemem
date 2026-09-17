@@ -8,6 +8,8 @@ export interface GitRepositoryIdentity {
 	source: "git_remote" | "git_common_dir";
 }
 
+export const REPOSITORY_IDENTITY_METADATA_KEY = "codemem_repository_identity";
+
 function normalizePathLike(value: string): string {
 	return value.trim().replaceAll("\\", "/").replace(/\/+$/u, "") || value.trim();
 }
