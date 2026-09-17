@@ -250,6 +250,41 @@ describe("resolveProjectScope", () => {
 });
 
 function repositoryIdentityCompatibilityTests(): void {
+	it("uses a cwd pattern after repository identity becomes available", () => {
+		expect(
+			resolveProjectScope({
+				cwd: "/work/acme/service",
+				gitRemote: "https://github.com/acme/service.git",
+				mappings: [mapping({ project_pattern: "/work/acme/*", scope_id: "existing-pattern" })],
+			}),
+		).toMatchObject({
+			reason: "pattern_mapping",
+			scopeId: "existing-pattern",
+			workspaceIdentity: { source: "git_remote" },
+		});
+	});
+
+	it("ranks repository and cwd pattern matches together", () => {
+		expect(
+			resolveProjectScope({
+				cwd: "/work/acme/service",
+				gitRemote: "https://github.com/acme/service.git",
+				mappings: [
+					mapping({
+						project_pattern: "https://github.com/*",
+						priority: 1,
+						scope_id: "remote-pattern",
+					}),
+					mapping({
+						project_pattern: "/work/acme/*",
+						priority: 10,
+						scope_id: "cwd-pattern",
+					}),
+				],
+			}),
+		).toMatchObject({ reason: "pattern_mapping", scopeId: "cwd-pattern" });
+	});
+
 	it("uses an existing cwd mapping when repository identity is newly available", () => {
 		expect(
 			resolveProjectScope({

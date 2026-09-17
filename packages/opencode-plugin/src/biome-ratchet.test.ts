@@ -1744,8 +1744,11 @@ describe("Biome ratchet CLI execution", () => {
 			["symbolic-ref", "refs/remotes/upstream/HEAD", "refs/remotes/upstream/main"],
 			{ cwd: root },
 		);
+		writeFileSync(path.join(root, "feature.ts"), "export const feature = 1;\n");
+		execFileSync("git", ["add", "."], { cwd: root });
+		execFileSync("git", ["commit", "-qm", "feature"], { cwd: root });
 
-		expect(await resolveAutomaticBaseReference(root)).toBe("refs/remotes/upstream/main");
+		expect(await resolveAutomaticBaseReference(root)).toBe(head);
 	});
 
 	it("checks the staged snapshot without including unstaged or untracked changes", async () => {

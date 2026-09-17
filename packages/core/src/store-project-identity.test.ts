@@ -31,7 +31,7 @@ describe("raw-event session repository identity", () => {
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
-	it("persists repository identity for sessions created from linked worktrees", () => {
+	it("keeps repository grouping separate from canonical session identity", () => {
 		const mainRepo = join(tmpDir, "main", "repository");
 		const worktree = join(tmpDir, "external", "worktree");
 		const worktreeGitDir = join(mainRepo, ".git", "worktrees", "external");
@@ -52,7 +52,7 @@ describe("raw-event session repository identity", () => {
 
 		expect(
 			store.db.prepare("SELECT cwd, git_remote FROM sessions WHERE id = ?").get(sessionId),
-		).toEqual({ cwd: worktree, git_remote: "https://example.test/acme/repository.git" });
+		).toEqual({ cwd: worktree, git_remote: null });
 	});
 
 	it("preserves an existing cwd scope mapping after repository identity is discovered", () => {
@@ -79,7 +79,7 @@ describe("raw-event session repository identity", () => {
 		expect(resolveSessionScopeId(store.db, { sessionId })).toBe("existing-scope");
 	});
 
-	it("upgrades prior live sessions to one repository identity", () => {
+	it("keeps historical sessions stable when a cwd is reused", () => {
 		const repoRoot = join(tmpDir, "upgraded-repository");
 		const missingRoot = join(tmpDir, "missing-repository");
 		mkdirSync(join(repoRoot, ".git"), { recursive: true });
@@ -101,7 +101,7 @@ describe("raw-event session repository identity", () => {
 				.prepare("SELECT git_remote FROM sessions WHERE id = ?")
 				.pluck()
 				.get(historicalSessionId),
-		).toBe("https://example.test/acme/repository.git");
+		).toBeNull();
 		expect(
 			store.db
 				.prepare("SELECT git_remote FROM sessions WHERE id = ?")
@@ -111,9 +111,7 @@ describe("raw-event session repository identity", () => {
 		const inventory = listProjectScopeInventory(store.db, { limit: 10 });
 		expect(inventory.projects).toHaveLength(2);
 		expect(
-			inventory.projects.find(
-				(project) => project.workspace_identity === "https://example.test/acme/repository.git",
-			),
+			inventory.projects.find((project) => project.workspace_identity === repoRoot),
 		).toMatchObject({ session_count: 2 });
 	});
 });

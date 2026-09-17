@@ -227,6 +227,28 @@ function bestExactMapping(mappings: ScopeMapping[], identities: string[]): Mappi
 	return null;
 }
 
+function bestPatternMapping(
+	mappings: ScopeMapping[],
+	identities: string[],
+): MappingCandidate | null {
+	return bestCandidate(
+		identities.flatMap((identity) =>
+			mappings.flatMap((mapping): MappingCandidate[] => {
+				if (clean(mapping.workspace_identity)) return [];
+				const projectPattern = clean(mapping.project_pattern);
+				if (!projectPattern || !matchesPattern(identity, projectPattern)) return [];
+				return [
+					{
+						mapping,
+						matchedPattern: normalizeSlash(projectPattern),
+						specificity: patternSpecificity(projectPattern),
+					},
+				];
+			}),
+		),
+	);
+}
+
 export function resolveProjectScope(input: ResolveProjectScopeInput): ScopeResolution {
 	const workspaceIdentity = canonicalWorkspaceIdentity(input);
 	const explicitScopeId = clean(input.explicitScopeId);
@@ -262,20 +284,7 @@ export function resolveProjectScope(input: ResolveProjectScopeInput): ScopeResol
 		};
 	}
 
-	const pattern = bestCandidate(
-		mappings.flatMap((mapping): MappingCandidate[] => {
-			if (clean(mapping.workspace_identity)) return [];
-			const projectPattern = clean(mapping.project_pattern);
-			if (!projectPattern || !matchesPattern(workspaceIdentity.value, projectPattern)) return [];
-			return [
-				{
-					mapping,
-					matchedPattern: normalizeSlash(projectPattern),
-					specificity: patternSpecificity(projectPattern),
-				},
-			];
-		}),
-	);
+	const pattern = bestPatternMapping(mappings, exactIdentities);
 	if (pattern) {
 		return {
 			scopeId: pattern.mapping.scope_id,

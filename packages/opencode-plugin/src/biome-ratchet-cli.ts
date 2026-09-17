@@ -154,7 +154,8 @@ export async function resolveAutomaticBaseReference(root: string): Promise<strin
 	for (const reference of preferredRemotes) {
 		try {
 			await resolveCommit(root, reference);
-			return reference;
+			const mergeBase = (await git(root, ["merge-base", "HEAD", reference])).trim();
+			return await resolveCommit(root, mergeBase);
 		} catch {
 			// Ignore stale symbolic remote HEAD refs and try the next local candidate.
 		}

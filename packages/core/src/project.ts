@@ -30,7 +30,7 @@ function normalizeRemoteIdentity(value: string, repositoryRoot: string): string 
 	if (/^[A-Za-z]:[\\/]/u.test(remote) || !remote.includes(":")) {
 		return normalizePathLike(resolve(repositoryRoot, remote));
 	}
-	const scpRemote = remote.match(/^(?:[^/@:]+@)?([^/:]+):(.+)$/u);
+	const scpRemote = remote.match(/^((?:[^/@:]+@)?[^/:]+):(.+)$/u);
 	if (!scpRemote?.[1] || !scpRemote[2]) return null;
 	return `${scpRemote[1]}:${normalizePathLike(scpRemote[2])}`;
 }

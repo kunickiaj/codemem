@@ -175,6 +175,25 @@ describe("Git repository identity", () => {
 });
 
 function unusualGitDirectoryTests(): void {
+	it("preserves usernames in scp-style origins", () => {
+		const baseDirectory = mkdtempSync(join(tmpdir(), "codemem-project-test-"));
+		tmpDir = baseDirectory;
+		const identities = ["alice", "bob"].map((username) => {
+			const repoRoot = join(baseDirectory, username, "repo");
+			mkdirSync(join(repoRoot, ".git"), { recursive: true });
+			writeFileSync(
+				join(repoRoot, ".git", "config"),
+				`[remote "origin"]\n\turl = ${username}@example.test:repository.git\n`,
+			);
+			return resolveGitRepositoryIdentity(repoRoot)?.identity;
+		});
+
+		expect(identities).toEqual([
+			"alice@example.test:repository.git",
+			"bob@example.test:repository.git",
+		]);
+	});
+
 	it("follows a .git directory symlink", () => {
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-project-test-"));
 		const repoRoot = join(tmpDir, "work", "repository");
