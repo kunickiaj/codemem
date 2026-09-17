@@ -2833,9 +2833,15 @@ function ensureStableStoreIdentity(store: MemoryStore): string {
 }
 
 function ensureStableStoreDeviceIdentity(store: MemoryStore): string {
-	const [deviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
-	store.adoptEnsuredDeviceIdentity(deviceId);
+	const [deviceId] = ensureStableStoreDeviceIdentityWithFingerprint(store);
 	return deviceId;
+}
+
+function ensureStableStoreDeviceIdentityWithFingerprint(store: MemoryStore): [string, string] {
+	const identity = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
+	const [deviceId] = identity;
+	store.adoptEnsuredDeviceIdentity(deviceId);
+	return identity;
 }
 
 function findPeerDeviceIdForAddress(store: MemoryStore, address: string): string | null {
@@ -5113,7 +5119,7 @@ export function syncRoutes(
 			let fingerprint: string | undefined;
 
 			try {
-				const [id, fp] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
+				const [id, fp] = ensureStableStoreDeviceIdentityWithFingerprint(store);
 				deviceId = id;
 				fingerprint = fp;
 				const row = d
