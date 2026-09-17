@@ -175,7 +175,9 @@ describe("recipient policy V1 contract", () => {
 	it("distinguishes direct Identity and Team recipients", () => {
 		expect(PROJECT_RECIPIENTS.map((item) => item.recipientKind)).toEqual(["identity", "team"]);
 	});
+});
 
+describe("recipient policy V1 boundaries", () => {
 	it("keeps authorization shortcuts out of recipient intent", () => {
 		type ForbiddenTeamKey = Extract<
 			keyof RecipientPolicyTeamV1,
