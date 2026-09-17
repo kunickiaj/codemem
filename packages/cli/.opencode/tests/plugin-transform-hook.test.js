@@ -3440,7 +3440,7 @@ describe("OpenCode transform-time injection", () => {
 		});
 
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
-		await OpencodeMemPlugin({
+		const hooks = await OpencodeMemPlugin({
 			project: { name: "greenroom" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
 			directory: "/tmp/greenroom",
@@ -3448,6 +3448,9 @@ describe("OpenCode transform-time injection", () => {
 		});
 
 		await vi.waitFor(() => expect(attemptedIds).toHaveLength(1));
+		await hooks.event({
+			event: { type: "session.idle", properties: { sessionID: "sess-transient-spool" } },
+		});
 		expect(attemptedIds).toEqual(["event-transient"]);
 		expect(readdirSync(spoolDirectory).filter((name) => name.endsWith(".json"))).toHaveLength(2);
 		expect(spawnMock.mock.calls.some(([, args]) => args?.includes("enqueue-raw-event"))).toBe(false);

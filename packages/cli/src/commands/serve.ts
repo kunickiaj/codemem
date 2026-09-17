@@ -727,11 +727,11 @@ function startRawEventProcessing(
 		},
 	});
 	queue.inbox.start();
-	const hasCurrentIdentity = store.hasCurrentIdentity();
+	const rawEventTarget = createRawEventTargetState(store);
 	return {
 		appOptions: {
 			rawEventInbox: queue.inbox,
-			rawEventTarget: { dbPath: store.dbPath, hasCurrentIdentity: () => hasCurrentIdentity },
+			rawEventTarget,
 			sweeper,
 			observer,
 		},
@@ -739,6 +739,30 @@ function startRawEventProcessing(
 			await queue.stop();
 			await sweeper.stop();
 		},
+	};
+}
+
+export function createRawEventTargetState(
+	store: Pick<MemoryStore, "actorId" | "dbPath" | "deviceId" | "hasCurrentIdentity">,
+) {
+	let hasCurrentIdentity = false;
+	let actorId = store.actorId;
+	let deviceId = store.deviceId;
+	const refreshCurrentIdentity = () => {
+		try {
+			hasCurrentIdentity = store.hasCurrentIdentity();
+		} catch {
+			hasCurrentIdentity = false;
+		}
+		actorId = store.actorId;
+		deviceId = store.deviceId;
+	};
+	refreshCurrentIdentity();
+	return {
+		dbPath: store.dbPath,
+		hasCurrentIdentity: () =>
+			hasCurrentIdentity && actorId === store.actorId && deviceId === store.deviceId,
+		refreshCurrentIdentity,
 	};
 }
 

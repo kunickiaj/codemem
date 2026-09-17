@@ -231,6 +231,13 @@ const loadSpool = async (state) => {
   }
 };
 
+const armViewerBackoff = (state, error, timing) => {
+  const viewerFailure = failureFromError({ error, ...timing });
+  state.latestViewerFailure = viewerFailure;
+  state.streamUnavailableUntil = Date.now() + Math.max(1000, state.options.backoffMs);
+  return viewerFailure;
+};
+
 const drainLoadedEntries = async (state, loaded) => {
   if (loaded.corruptCount > 0) {
     await state.options.logLine(`raw_events.spool.corrupt_retained count=${loaded.corruptCount}`);
@@ -239,13 +246,17 @@ const drainLoadedEntries = async (state, loaded) => {
     state.spoolCorruptionNoted = false;
   }
   for (const entry of loaded.entries) {
+    const viewerStartedAt = Date.now();
     try {
       await postToViewer(state, entry.envelope);
       await removeFromSpool(state, { eventId: entry.eventId });
     } catch (error) {
       await state.options.logLine("raw_events.spool.drain_deferred category=fallback");
       const status = error?.rawEventFailure?.status;
-      if (!Number.isInteger(status) || status >= 500 || status === 409) break;
+      if (!Number.isInteger(status) || status >= 500 || status === 409) {
+        armViewerBackoff(state, error, { stage: "post", startedAt: viewerStartedAt });
+        break;
+      }
     }
   }
 };
@@ -370,13 +381,7 @@ const postToViewer = async (state, body) => {
 const handleViewerFailure = async (state, input, error, timing) => {
   if (!state.options.isActive()) return persistForRetry(state, input);
   const category = error?.rawEventFailureCategory || "connection";
-  const viewerFailure = failureFromError({
-    error,
-    stage: timing.stage,
-    startedAt: timing.startedAt,
-  });
-  state.latestViewerFailure = viewerFailure;
-  state.streamUnavailableUntil = Date.now() + Math.max(1000, state.options.backoffMs);
+  const viewerFailure = armViewerBackoff(state, error, timing);
   await state.options.logLine(
     `raw_events.error category=${category} ${viewerFailureLogFields(viewerFailure)}`
   );

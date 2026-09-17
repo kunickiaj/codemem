@@ -20,6 +20,7 @@ export type ViewerTargetValidation =
 export interface ViewerTargetStore {
 	dbPath: string;
 	hasCurrentIdentity(): boolean;
+	refreshCurrentIdentity?(): void;
 }
 
 function invalidRequest(message: string): ViewerTargetValidation {

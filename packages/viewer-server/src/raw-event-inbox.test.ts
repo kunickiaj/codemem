@@ -247,6 +247,33 @@ describe("queue-first raw-event routes", () => {
 	});
 });
 
+describe("queued raw-event validation", () => {
+	it("maps validation failures to a bounded 400 response", async () => {
+		const inbox = {
+			enqueue: vi.fn().mockResolvedValue(undefined),
+			start: vi.fn(),
+			status: vi.fn(),
+			stop: vi.fn(),
+		};
+		const app = createApp({
+			storeFactory: vi.fn(),
+			rawEventInbox: inbox,
+			rawEventTarget: { dbPath: "/expected/memory.sqlite", hasCurrentIdentity: () => true },
+		});
+
+		const response = await postRawEvent(app, {
+			session_id: "session-invalid-queue",
+			event_id: "event-invalid-queue",
+			event_type: "prompt",
+			payload: ["invalid"],
+		});
+
+		expect(response.status).toBe(400);
+		expect(await response.json()).toEqual({ error: "payload must be an object" });
+		expect(inbox.enqueue).not.toHaveBeenCalled();
+	});
+});
+
 describe("FileRawEventInbox recovery", () => {
 	it("reports and clears a sustained backlog without exposing entries", async () => {
 		let available = false;

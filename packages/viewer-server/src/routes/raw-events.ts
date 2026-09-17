@@ -196,7 +196,7 @@ async function postRawEventRequest(
 	try {
 		const request = untargetedPayload(result);
 		if (inbox) {
-			return enqueueRawEventRequest({
+			return await enqueueRawEventRequest({
 				c,
 				getStore,
 				inbox,
