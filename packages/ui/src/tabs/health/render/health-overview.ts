@@ -52,17 +52,15 @@ function appendFailedMaintenanceDiagnosticsAction(
 }
 
 function renderHealthMeta(healthMeta: HTMLElement, hasStaleData: boolean, drivers: string[]): void {
+	let message = "Healthy right now. Diagnostics stay available if you want details.";
 	if (hasStaleData) {
-		healthMeta.textContent = drivers.length
+		message = drivers.length
 			? `Some Health data is stale. Last known risks: ${drivers.join(", ")}.`
 			: "Some Health data is stale. Showing the last successful snapshot.";
-		return;
+	} else if (drivers.length) {
+		message = `Why this status: ${drivers.join(", ")}.`;
 	}
-	if (drivers.length) {
-		healthMeta.textContent = `Why this status: ${drivers.join(", ")}.`;
-		return;
-	}
-	healthMeta.textContent = "Healthy right now. Diagnostics stay available if you want details.";
+	if (healthMeta.textContent !== message) healthMeta.textContent = message;
 }
 
 function healthStatus(
@@ -399,6 +397,7 @@ function renderUnavailableOverview({
 	const resources = [state.healthStats, state.healthUsage, state.healthRawEvents];
 	const failed = resources.some((resource) => resource.status === "failed");
 	const loading = resources.some((resource) => resource.status === "loading");
+	const showLoading = loading && !failed;
 	let value = "Not loaded";
 	let message = "Open or refresh Health to load status.";
 	if (failed) {
@@ -416,10 +415,11 @@ function renderUnavailableOverview({
 			detail: "Health requires stats, usage, and queue data",
 			icon: failed ? "triangle-alert" : "loader",
 			className: "health-primary status-unknown",
+			loading: showLoading,
 		}),
 	]);
 	renderActionList(healthActions, []);
-	renderText(healthMeta, message);
+	if (healthMeta.textContent !== message) renderText(healthMeta, message);
 	if (healthDot) {
 		healthDot.className = "health-dot status-unknown";
 		healthDot.title = value;

@@ -890,6 +890,9 @@
       .health-primary.status-healthy .value { color: var(--status-healthy); }
       .health-primary.status-degraded .value { color: var(--status-degraded); }
       .health-primary.status-attention .value { color: var(--status-attention); }
+      .health-loading-icon {
+        animation: viewerLoadingSpin var(--duration-attention) linear infinite;
+      }
 
       /* ── Buttons ───────────────────────────────────────────── */
 
@@ -3658,9 +3661,9 @@
         border-radius: 50%;
         border: 2px solid color-mix(in srgb, var(--accent) 22%, transparent);
         border-top-color: var(--accent);
-        animation: reconnectSpin var(--duration-attention) linear infinite;
+        animation: viewerLoadingSpin var(--duration-attention) linear infinite;
       }
-      @keyframes reconnectSpin {
+      @keyframes viewerLoadingSpin {
         from { transform: rotate(0deg); }
         to { transform: rotate(360deg); }
       }
@@ -4213,6 +4216,10 @@
       }
 
       @media (prefers-reduced-motion: reduce) {
+        .health-loading-icon,
+        .viewer-reconnect-spinner {
+          animation: none;
+        }
         *, *::before, *::after {
           animation-duration: 0.01ms !important;
           animation-iteration-count: 1 !important;
@@ -4506,7 +4513,7 @@
           <h2>System health</h2>
           <button class="settings-button" id="healthOpenDiagnostics" type="button">View diagnostics</button>
         </div>
-        <div class="section-meta" id="healthMeta">Assessing health signals…</div>
+        <div class="section-meta" id="healthMeta" role="status" aria-live="polite" aria-atomic="true">Assessing health signals…</div>
         <div class="health-actions" id="healthActions"></div>
         <div class="grid-2" id="healthGrid"></div>
       </div>

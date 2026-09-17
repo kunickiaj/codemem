@@ -258,7 +258,15 @@ export function renderUpdateBanner(container: HTMLElement | null, status: Update
 	render(status ? h(UpdateBanner, { status }) : null, container);
 }
 
-export function HealthCard({ label, value, detail, icon, className, title }: HealthCardInput) {
+export function HealthCard({
+	label,
+	value,
+	detail,
+	icon,
+	className,
+	title,
+	loading,
+}: HealthCardInput) {
 	const card = h(
 		"div",
 		{
@@ -267,8 +275,9 @@ export function HealthCard({ label, value, detail, icon, className, title }: Hea
 		},
 		icon
 			? h("i", {
+					"aria-hidden": "true",
 					"data-lucide": icon,
-					class: "stat-icon",
+					class: `stat-icon${loading ? " health-loading-icon" : ""}`,
 				})
 			: null,
 		h(

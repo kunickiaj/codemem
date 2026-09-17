@@ -135,7 +135,7 @@ beforeEach(() => {
 		<div id="healthUpdateBanner"></div>
 		<div id="healthGrid"></div>
 		<div id="automaticRecallStats"></div>
-		<div id="healthMeta"></div>
+		<div id="healthMeta" role="status" aria-live="polite" aria-atomic="true"></div>
 		<div id="healthActions"></div>
 		<div id="healthDot"></div>
 		<div id="statsGrid"></div>
@@ -179,6 +179,63 @@ it("marks the global Health indicator as unchecked when details are not loading"
 
 	renderStats();
 	expect(metaLine?.textContent).toContain("codemem.db");
+});
+
+it("animates loading while a stable announcer reports loading and completion", () => {
+	const announcer = document.getElementById("healthMeta");
+	state.healthStats = { status: "loading", previous: null, previousStatus: null };
+
+	renderOverview();
+
+	expect(document.getElementById("healthMeta")).toBe(announcer);
+	expect(announcer?.textContent).toBe("Loading health data…");
+	expect(announcer?.getAttribute("role")).toBe("status");
+	expect(announcer?.getAttribute("aria-live")).toBe("polite");
+	expect(announcer?.getAttribute("aria-atomic")).toBe("true");
+	expect(document.querySelector("#healthGrid [role='status']")).toBeNull();
+	const loadingIcon = document.querySelector("#healthGrid [data-lucide='loader']");
+	expect(loadingIcon?.classList.contains("health-loading-icon")).toBe(true);
+	expect(loadingIcon?.getAttribute("aria-hidden")).toBe("true");
+
+	state.healthStats = completeHealthLoad(statsPayload());
+	renderOverview();
+
+	expect(document.getElementById("healthMeta")).toBe(announcer);
+	expect(announcer?.textContent).toBe(
+		"Healthy right now. Diagnostics stay available if you want details.",
+	);
+	expect(document.querySelector("#healthGrid [role='status']")).toBeNull();
+});
+
+it("does not rewrite an unchanged Health announcement", () => {
+	const announcer = document.getElementById("healthMeta");
+
+	renderOverview();
+	const announcement = announcer?.firstChild;
+	renderOverview();
+
+	expect(announcer?.firstChild).toBe(announcement);
+});
+
+it("does not animate a failed Health state", () => {
+	state.healthStats = { status: "failed", error: "stats unavailable" };
+	state.healthRawEvents = { status: "loading", previous: null, previousStatus: null };
+
+	renderOverview();
+
+	expect(document.querySelector("#healthGrid .health-loading-icon")).toBeNull();
+	expect(document.querySelector("#healthGrid [role='status']")).toBeNull();
+	expect(document.querySelector("#healthGrid .value")?.textContent).toBe("Unavailable");
+});
+
+it("does not animate a not-loaded Health state", () => {
+	state.healthStats = healthNotLoaded();
+
+	renderOverview();
+
+	expect(document.querySelector("#healthGrid .health-loading-icon")).toBeNull();
+	expect(document.querySelector("#healthGrid [role='status']")).toBeNull();
+	expect(document.querySelector("#healthGrid .value")?.textContent).toBe("Not loaded");
 });
 
 it("keeps stale warnings visible while retrying a stale resource", () => {

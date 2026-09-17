@@ -19,6 +19,7 @@ export type HealthCardInput = {
 	icon?: string;
 	className?: string;
 	title?: string;
+	loading?: boolean;
 };
 
 export type HealthActionRowProps = {
