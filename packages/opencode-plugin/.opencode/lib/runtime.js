@@ -12,7 +12,11 @@ import {
   resolveUpgradeGuidance,
 } from "./compat.js";
 import { V2_ADAPTER_DIAGNOSTICS } from "./host-contract.js";
-import { createRawEventDelivery } from "./raw-event-delivery.js";
+import {
+  classifyRawEventTransportCause,
+  createRawEventDelivery,
+  describeRawEventViewerFailure,
+} from "./raw-event-delivery.js";
 import {
   DEFAULT_DRAIN_LIMIT,
   DEFAULT_MAX_ENTRIES,
@@ -4739,6 +4743,8 @@ export const __testUtils = {
   rejectsInternalLedgerFlag,
   classifyFallbackCommandResult,
   classifyRawEventViewerFailure,
+  classifyRawEventTransportCause,
+  describeRawEventViewerFailure,
   detectRunner,
   PROMPT_TRANSPORT_PROTOCOL_RANGE,
   normalizePromptTransportProtocolRange,

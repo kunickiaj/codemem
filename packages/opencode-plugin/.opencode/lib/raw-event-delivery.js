@@ -11,12 +11,39 @@ import {
 
 const rawEventSpoolDrainsInFlight = new Map();
 
+export const classifyRawEventTransportCause = (error) => {
+  const diagnostic = [
+    error?.name,
+    error?.code,
+    error?.cause?.code,
+    error?.message,
+  ].filter(Boolean).join(" ");
+  return /AbortError|TimeoutError|timeout|timed out|ETIMEDOUT/i.test(diagnostic)
+    ? "timeout"
+    : "connection";
+};
+
+export const describeRawEventViewerFailure = (failure) => {
+  if (!failure) return "viewer delivery failed";
+  if (failure.stage === "backoff") {
+    return `viewer transport remained in backoff after ${failure.triggerStage || "request"} ${failure.cause}`;
+  }
+  if (failure.cause === "http_status") {
+    return `viewer ${failure.stage} returned ${failure.status}`;
+  }
+  if (failure.cause === "ingest_unavailable") {
+    return "viewer status reported ingest unavailable";
+  }
+  return `viewer ${failure.stage} ${failure.cause}`;
+};
+
 const createDeliveryState = (options) => ({
   abortController: new AbortController(),
   captureContexts: new WeakMap(),
   envelopes: new WeakMap(),
   lastStatusAvailable: true,
   lastStatusCheckAt: 0,
+  latestViewerFailure: null,
   lastToastAtBySession: new Map(),
   options,
   spoolDirectory: resolveSpoolDirectory(options.spoolHome),
@@ -28,18 +55,25 @@ const createDeliveryState = (options) => ({
 
 const runCliFallback = async (state, serialized) => {
   const { classifyFallbackResult, queueViaCli } = state.options;
+  const startedAt = Date.now();
   let result = await queueViaCli(serialized);
   let classification = classifyFallbackResult(result);
-  let attemptedRetry = false;
+  let attempts = 1;
   if (result?.exitCode !== 0 && classification.retryable) {
-    attemptedRetry = true;
+    attempts += 1;
     result = await queueViaCli(serialized);
     classification = classifyFallbackResult(result);
   }
-  if (result?.exitCode === 0) return true;
-  const retryExhausted = attemptedRetry && classification.retryable;
+  const diagnostics = {
+    attempts,
+    elapsedMs: Math.max(0, Date.now() - startedAt),
+    cause: result?.exitCode === 0 ? null : classification.cause,
+  };
+  if (result?.exitCode === 0) return diagnostics;
+  const retryExhausted = attempts > 1 && classification.retryable;
   const error = new Error(retryExhausted ? `${classification.cause} after retry` : classification.cause);
   error.retryable = classification.retryable;
+  error.cliDiagnostics = diagnostics;
   throw error;
 };
 
@@ -124,16 +158,54 @@ const deliveryOutcome = ({ delivered, durable }) => {
   return "was saved for retry";
 };
 
+const deliveryExtra = ({ category, delivery, viewerFailure, cliDiagnostics }) => ({
+  category,
+  delivery,
+  viewer_stage: viewerFailure?.stage || "unknown",
+  viewer_cause: viewerFailure?.cause || "unknown",
+  ...(Number.isInteger(viewerFailure?.status) ? { viewer_status: viewerFailure.status } : {}),
+  ...(viewerFailure?.triggerStage ? { viewer_trigger_stage: viewerFailure.triggerStage } : {}),
+  viewer_elapsed_ms: Math.max(0, viewerFailure?.elapsedMs || 0),
+  cli_attempts: Math.max(0, cliDiagnostics?.attempts || 0),
+  cli_elapsed_ms: Math.max(0, cliDiagnostics?.elapsedMs || 0),
+  ...(cliDiagnostics?.cause ? { cli_cause: cliDiagnostics.cause } : {}),
+});
+
+const viewerFailureLogFields = (failure) =>
+  `viewer_stage=${failure.stage} viewer_cause=${failure.cause}`
+  + `${Number.isInteger(failure.status) ? ` viewer_status=${failure.status}` : ""}`
+  + ` viewer_elapsed_ms=${failure.elapsedMs}`;
+
+const cliFailureLogFields = (diagnostics) =>
+  `cli_attempts=${diagnostics?.attempts || 0}`
+  + ` cli_elapsed_ms=${diagnostics?.elapsedMs || 0}`
+  + ` cli_cause=${JSON.stringify(diagnostics?.cause || "unknown")}`;
+
+const backoffFailure = (latestFailure) => ({
+  ...(latestFailure || { cause: "active" }),
+  stage: "backoff",
+  ...(latestFailure?.stage ? { triggerStage: latestFailure.stage } : {}),
+  elapsedMs: 0,
+});
+
+const failureFromError = ({ error, stage, startedAt }) => ({
+  ...(error?.rawEventFailure || {
+    stage,
+    cause: classifyRawEventTransportCause(error),
+  }),
+  elapsedMs: Math.max(0, Date.now() - startedAt),
+});
+
 const notifyDelivery = async (state, input) => {
-  const { category, delivered, sessionID } = input;
+  const { category, cliDiagnostics, delivered, sessionID, viewerFailure } = input;
   const action = state.options.failureActions[category] || state.options.failureActions.connection;
-  const message = `codemem raw event ${deliveryOutcome(input)}; ${action}`;
+  const message = `codemem raw event ${deliveryOutcome(input)} after ${describeRawEventViewerFailure(viewerFailure)}; ${action}`;
   const delivery = deliveryKind(input);
   await bestEffortHostLog(state, {
     service: "codemem",
     level: delivered ? "warn" : "error",
     message,
-    extra: { category, delivery },
+    extra: deliveryExtra({ category, delivery, viewerFailure, cliDiagnostics }),
   });
   if (!state.options.hostNotify || !shouldToast(state, sessionID, `${category}:${delivery}`)) return;
   await bestEffortNotify(state, {
@@ -218,7 +290,7 @@ const cachedEnvelope = (state, sessionID, type, payload, now) => {
     cwd: options.cwd,
     project: options.projectName,
     startedAt: state.startedAts.has(payload) ? state.startedAts.get(payload) : options.sessionStartedAt(),
-		nowMs: now,
+    nowMs: now,
     nowMono: typeof performance !== "undefined" && performance.now ? performance.now() : null,
     nextEventId: options.nextEventId,
     captureContext: state.captureContexts.get(payload),
@@ -230,34 +302,65 @@ const cachedEnvelope = (state, sessionID, type, payload, now) => {
 };
 
 const deliverDuringBackoff = async (state, input) => {
+  const viewerFailure = backoffFailure(state.latestViewerFailure);
   const durable = await persistForRetry(state, input);
   try {
-    await runCliFallback(state, input.serialized);
+    const cliDiagnostics = await runCliFallback(state, input.serialized);
     await removeFromSpool(state, { eventId: input.body.event_id, payload: input.payload });
     if (input.payload && typeof input.payload === "object") input.payload._raw_enqueued = true;
-    await notifyDelivery(state, { category: "connection", delivered: true, durable, sessionID: input.sessionID });
+    await notifyDelivery(state, {
+      category: "connection",
+      cliDiagnostics,
+      delivered: true,
+      durable,
+      sessionID: input.sessionID,
+      viewerFailure,
+    });
     return true;
-  } catch {
-    await state.options.logLine("raw_events.fallback.error category=connection");
-    await notifyDelivery(state, { category: "connection", delivered: false, durable, sessionID: input.sessionID });
+  } catch (error) {
+    const cliDiagnostics = error?.cliDiagnostics || null;
+    await state.options.logLine(
+      `raw_events.fallback.error category=connection ${viewerFailureLogFields(viewerFailure)}`
+      + ` ${cliFailureLogFields(cliDiagnostics)}`
+    );
+    await notifyDelivery(state, {
+      category: "connection",
+      cliDiagnostics,
+      delivered: false,
+      durable,
+      sessionID: input.sessionID,
+      viewerFailure,
+    });
     return false;
   }
 };
 
+const ingestUnavailableError = () => {
+  const error = new Error("raw-events ingest unavailable");
+  error.rawEventFailure = { stage: "status", cause: "ingest_unavailable" };
+  return error;
+};
+
 const checkViewerAvailability = async (state, now) => {
   if (now - state.lastStatusCheckAt < Math.max(1000, state.options.statusCheckMs)) {
-    if (!state.lastStatusAvailable) throw new Error("raw-events ingest unavailable");
+    if (!state.lastStatusAvailable) throw ingestUnavailableError();
     return;
   }
   const response = await state.options.fetchRawEventsStatus(state.options.rawEventsStatusUrl);
   if (!response.ok) {
     state.options.discardResponseBody(response);
-    throw new Error(`raw-events status failed (${response.status})`);
+    const error = new Error(`raw-events status failed (${response.status})`);
+    error.rawEventFailure = {
+      stage: "status",
+      cause: "http_status",
+      status: response.status,
+    };
+    throw error;
   }
   const body = await response.json();
   state.lastStatusAvailable = body?.ingest?.available !== false;
   state.lastStatusCheckAt = now;
-  if (!state.lastStatusAvailable) throw new Error("raw-events ingest unavailable");
+  if (!state.lastStatusAvailable) throw ingestUnavailableError();
 };
 
 const postToViewer = async (state, body) => {
@@ -280,27 +383,52 @@ const postToViewer = async (state, body) => {
   }
   const error = new Error(`raw-events post failed (${response.status})`);
   error.rawEventFailureCategory = options.classifyViewerFailure(responseBody);
+  error.rawEventFailure = {
+    stage: "post",
+    cause: "http_status",
+    status: response.status,
+  };
   throw error;
 };
 
-const handleViewerFailure = async (state, input, error) => {
+const handleViewerFailure = async (state, input, error, timing) => {
   if (!state.options.isActive()) return persistForRetry(state, input);
   const category = error?.rawEventFailureCategory || "connection";
+  const viewerFailure = failureFromError({
+    error,
+    stage: timing.stage,
+    startedAt: timing.startedAt,
+  });
+  state.latestViewerFailure = viewerFailure;
   state.streamUnavailableUntil = Date.now() + Math.max(1000, state.options.backoffMs);
-  await state.options.logLine(`raw_events.error category=${category}`);
+  await state.options.logLine(
+    `raw_events.error category=${category} ${viewerFailureLogFields(viewerFailure)}`
+  );
   const durable = await persistForRetry(state, input);
   let delivered = false;
+  let cliDiagnostics = null;
   try {
-    await runCliFallback(state, input.serialized);
+    cliDiagnostics = await runCliFallback(state, input.serialized);
     await removeFromSpool(state, { eventId: input.body.event_id, payload: input.payload });
     delivered = true;
-  } catch {
-    await state.options.logLine(`raw_events.fallback.error category=${category}`);
+  } catch (fallbackError) {
+    cliDiagnostics = fallbackError?.cliDiagnostics || null;
+    await state.options.logLine(
+      `raw_events.fallback.error category=${category} ${viewerFailureLogFields(viewerFailure)}`
+      + ` ${cliFailureLogFields(cliDiagnostics)}`
+    );
   }
   if (delivered && input.payload && typeof input.payload === "object") {
     input.payload._raw_enqueued = true;
   }
-  await notifyDelivery(state, { category, delivered, durable, sessionID: input.sessionID });
+  await notifyDelivery(state, {
+    category,
+    cliDiagnostics,
+    delivered,
+    durable,
+    sessionID: input.sessionID,
+    viewerFailure,
+  });
   return delivered;
 };
 
@@ -309,20 +437,27 @@ const deliver = async (state, { sessionID, type, payload }) => {
   if (!sessionID || !type) return false;
   if (payload?._raw_enqueued) return true;
   const now = Date.now();
-	const envelope = cachedEnvelope(state, sessionID, type, payload, now);
+  const envelope = cachedEnvelope(state, sessionID, type, payload, now);
   const input = { ...envelope, payload, sessionID };
   if (!state.options.isActive()) return persistForRetry(state, input);
   if (now < state.streamUnavailableUntil) return deliverDuringBackoff(state, input);
+  const viewerStartedAt = Date.now();
+  let viewerStage = "status";
   try {
     await checkViewerAvailability(state, now);
+    viewerStage = "post";
     await postToViewer(state, envelope.body);
     state.streamUnavailableUntil = 0;
+    state.latestViewerFailure = null;
     state.lastStatusAvailable = true;
     await removeFromSpool(state, { eventId: envelope.body.event_id, payload });
     if (payload && typeof payload === "object") payload._raw_enqueued = true;
     return true;
   } catch (error) {
-    return handleViewerFailure(state, input, error);
+    return handleViewerFailure(state, input, error, {
+      stage: viewerStage,
+      startedAt: viewerStartedAt,
+    });
   }
 };
 

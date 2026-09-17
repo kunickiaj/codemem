@@ -3145,11 +3145,23 @@ describe("OpenCode transform-time injection", () => {
 		await vi.waitFor(() =>
 			expect(appLog).toHaveBeenCalledWith({
 				body: expect.objectContaining({
-					message: `codemem raw event was queued via CLI; ${nextAction}`,
-					extra: { category, delivery: "cli" },
+					message: expect.stringContaining(
+						`codemem raw event was queued via CLI after viewer post returned ${status}`,
+					),
+					extra: expect.objectContaining({
+						category,
+						delivery: "cli",
+						viewer_stage: "post",
+						viewer_cause: "http_status",
+						viewer_status: status,
+						viewer_elapsed_ms: expect.any(Number),
+						cli_attempts: 1,
+						cli_elapsed_ms: expect.any(Number),
+					}),
 				}),
 			}),
 		);
+		expect(appLog.mock.calls.some(([call]) => call.body.message.includes(nextAction))).toBe(true);
 
 		const httpEnvelope = { ...postedBodies[0] };
 		delete httpEnvelope.db_path;
@@ -3179,8 +3191,14 @@ describe("OpenCode transform-time injection", () => {
 				stdout: `${JSON.stringify({ error: "validation_error", message: "session id required" })}\n`,
 			},
 			1,
+			"enqueue-raw-event validation failed",
 		],
-		["unknown-command", { exitCode: 1, stderr: "error: unknown command 'enqueue-raw-event'" }, 1],
+		[
+			"unknown-command",
+			{ exitCode: 1, stderr: "error: unknown command 'enqueue-raw-event'" },
+			1,
+			"enqueue-raw-event command unavailable",
+		],
 		[
 			"locked",
 			{
@@ -3188,11 +3206,13 @@ describe("OpenCode transform-time injection", () => {
 				stdout: `${JSON.stringify({ error: "enqueue_error", message: "database is locked" })}\n`,
 			},
 			2,
+			"SQLite database is locked",
 		],
 	])("keeps a formerly terminal %s fallback retryable after session idle", async (
 		label,
 		failureResult,
 		initialAttempts,
+		expectedCliCause,
 	) => {
 		const home = mkdtempSync(join(tmpdir(), "codemem-opencode-terminal-spool-"));
 		tmpDirs.push(home);
@@ -3227,8 +3247,19 @@ describe("OpenCode transform-time injection", () => {
 		await vi.waitFor(() =>
 			expect(appLog).toHaveBeenCalledWith({
 				body: expect.objectContaining({
-					message: "codemem raw event was saved for retry; check or restart the viewer",
-					extra: { category: "connection", delivery: "spool" },
+					message: expect.stringContaining(
+						"codemem raw event was saved for retry after viewer status connection",
+					),
+					extra: expect.objectContaining({
+						category: "connection",
+						delivery: "spool",
+						viewer_stage: "status",
+						viewer_cause: "connection",
+						viewer_elapsed_ms: expect.any(Number),
+						cli_attempts: initialAttempts,
+						cli_elapsed_ms: expect.any(Number),
+						cli_cause: expectedCliCause,
+					}),
 				}),
 			}),
 		);

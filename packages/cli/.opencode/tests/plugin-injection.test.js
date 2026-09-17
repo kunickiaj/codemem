@@ -252,6 +252,25 @@ describe("fallback command-result classification", () => {
   });
 });
 
+describe("raw-event fallback diagnostics", () => {
+  test.each([
+    [new DOMException("request timed out", "TimeoutError"), "timeout"],
+    [new Error("connect ECONNREFUSED 127.0.0.1"), "connection"],
+  ])("classifies a bounded transport cause", (error, expected) => {
+    expect(__testUtils.classifyRawEventTransportCause(error)).toBe(expected);
+  });
+
+  test("describes an HTTP status without exposing endpoint details", () => {
+    expect(
+      __testUtils.describeRawEventViewerFailure({
+        stage: "post",
+        cause: "http_status",
+        status: 503,
+      }),
+    ).toBe("viewer post returned 503");
+  });
+});
+
 describe("prompt transport compatibility", () => {
   test("keeps the dependency-free plugin port aligned with core", () => {
     expect(__testUtils.PROMPT_TRANSPORT_PROTOCOL_RANGE).toEqual(
