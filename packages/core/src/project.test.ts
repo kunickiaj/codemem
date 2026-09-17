@@ -175,6 +175,25 @@ describe("Git repository identity", () => {
 });
 
 function unusualGitDirectoryTests(): void {
+	it("preserves usernames in URI-style SSH origins", () => {
+		const baseDirectory = mkdtempSync(join(tmpdir(), "codemem-project-test-"));
+		tmpDir = baseDirectory;
+		const identities = ["alice", "bob"].map((username) => {
+			const repoRoot = join(baseDirectory, username, "repo");
+			mkdirSync(join(repoRoot, ".git"), { recursive: true });
+			writeFileSync(
+				join(repoRoot, ".git", "config"),
+				`[remote "origin"]\n\turl = ssh://${username}:secret@example.test/~/repository.git?token=secret#fragment\n`,
+			);
+			return resolveGitRepositoryIdentity(repoRoot)?.identity;
+		});
+
+		expect(identities).toEqual([
+			"ssh://alice@example.test/~/repository.git",
+			"ssh://bob@example.test/~/repository.git",
+		]);
+	});
+
 	it("preserves usernames in scp-style origins", () => {
 		const baseDirectory = mkdtempSync(join(tmpdir(), "codemem-project-test-"));
 		tmpDir = baseDirectory;

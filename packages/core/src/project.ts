@@ -18,7 +18,7 @@ function normalizeRemoteIdentity(value: string, repositoryRoot: string): string 
 	if (/^[a-z][a-z0-9+.-]*:\/\//iu.test(remote)) {
 		try {
 			const url = new URL(remote);
-			url.username = "";
+			if (url.protocol === "http:" || url.protocol === "https:") url.username = "";
 			url.password = "";
 			url.search = "";
 			url.hash = "";
