@@ -66,6 +66,11 @@ const FETCH_TIMEOUT_MS = 60_000;
 const CLAUDE_SIDECAR_TIMEOUT_MS = 120_000;
 
 const CODEX_SIDECAR_TIMEOUT_MS = 120_000;
+const CLAUDE_SIDECAR_EXEC_OPTIONS = {
+	timeout: CLAUDE_SIDECAR_TIMEOUT_MS,
+	maxBuffer: 10 * 1024 * 1024,
+	windowsHide: true,
+} as const;
 
 function stripTrailingSlashes(value: string): string {
 	let end = value.length;
@@ -442,13 +447,14 @@ export function shouldAutoSelectCodexSidecar(opts: {
 }
 
 /** True when the `codex` CLI (or configured codex command) is resolvable on PATH. */
-function codexCliAvailable(command: string): boolean {
+export function codexCliAvailable(command: string): boolean {
 	const executable = validateSidecarExecutable(command);
 	if (!executable) return false;
 	if (isAbsolute(executable)) return existsSync(executable);
 	try {
 		execFileSync(process.platform === "win32" ? "where" : "which", [executable], {
 			stdio: "ignore",
+			windowsHide: true,
 		});
 		return true;
 	} catch {
@@ -2492,16 +2498,13 @@ export class ObserverClient {
 		delete env.CLAUDE_CODE_ENTRYPOINT;
 		delete env.CLAUDE_CODE_SESSION;
 		delete env.CLAUDECODE;
-
 		const execFileAsync = promisify(execFile);
 		try {
 			// lgtm[js/command-line-injection] execFile receives a constrained executable and argv vector; no shell is used.
 			const { stdout } = await execFileAsync(executable, args, {
 				env,
-				timeout: CLAUDE_SIDECAR_TIMEOUT_MS,
-				maxBuffer: 10 * 1024 * 1024,
+				...CLAUDE_SIDECAR_EXEC_OPTIONS,
 			});
-
 			const payload = extractClaudeResultPayload(stdout);
 			if (payload !== null) {
 				const message = String(payload.result ?? "").trim();
@@ -2770,7 +2773,11 @@ export class ObserverClient {
 		const MAX_BUFFER = 10 * 1024 * 1024;
 		return new Promise((resolve, reject) => {
 			// lgtm[js/command-line-injection] spawn receives a constrained executable and argv vector; no shell is used.
-			const child = spawn(executable, args, { env, stdio: ["pipe", "pipe", "pipe"] });
+			const child = spawn(executable, args, {
+				env,
+				stdio: ["pipe", "pipe", "pipe"],
+				windowsHide: true,
+			});
 			let stdout = "";
 			let stderr = "";
 			let stdoutBytes = 0;
