@@ -164,6 +164,26 @@ describe("Git repository identity", () => {
 			source: "git_common_dir",
 		});
 	});
+});
+
+function unusualGitDirectoryTests(): void {
+	it("anchors a separate Git directory to its checkout", () => {
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-project-test-"));
+		const repoRoot = join(tmpDir, "work", "repository");
+		const nested = join(repoRoot, "packages", "core");
+		const gitDirectory = join(tmpDir, "storage", "metadata-only", ".git");
+		mkdirSync(nested, { recursive: true });
+		mkdirSync(gitDirectory, { recursive: true });
+		writeFileSync(join(repoRoot, ".git"), `gitdir: ${gitDirectory}\n`);
+		writeFileSync(join(gitDirectory, "config"), '[remote "origin"]\n\turl = ../upstream.git\n');
+
+		expect(resolveProject(nested)).toBe("repository");
+		expect(resolveGitRepositoryIdentity(nested)).toEqual({
+			identity: join(tmpDir, "work", "upstream.git").replaceAll("\\", "/"),
+			root: repoRoot,
+			source: "git_remote",
+		});
+	});
 
 	it("does not invent repository identity for ordinary directories", () => {
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-project-test-"));
@@ -172,7 +192,9 @@ describe("Git repository identity", () => {
 
 		expect(resolveGitRepositoryIdentity(general)).toBeNull();
 	});
-});
+}
+
+describe("unusual Git directory layouts", unusualGitDirectoryTests);
 
 describe("project directory resolution", () => {
 	it("resolves the working-tree root from a subdirectory", () => {

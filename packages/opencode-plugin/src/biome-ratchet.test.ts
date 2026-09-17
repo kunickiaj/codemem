@@ -16,6 +16,7 @@ import {
 	formatHumanResult,
 	parseArguments,
 	parseNameStatus,
+	resolveAutomaticBaseReference,
 	resolveRootBiomeEntrypoint,
 	runRatchet,
 } from "./biome-ratchet-cli.js";
@@ -1724,6 +1725,29 @@ describe("Biome ratchet CLI", () => {
 });
 
 describe("Biome ratchet CLI execution", () => {
+	it("finds a renamed remote's default branch and falls back to HEAD", async () => {
+		const root = mkdtempSync(path.join(tmpdir(), "codemem-biome-ratchet-base-test-"));
+		temporaryDirectories.push(root);
+		execFileSync("git", ["init", "-q"], { cwd: root });
+		execFileSync("git", ["config", "user.email", "fixture@example.test"], { cwd: root });
+		execFileSync("git", ["config", "user.name", "Fixture"], { cwd: root });
+		writeFileSync(path.join(root, "base.ts"), "export const base = 1;\n");
+		execFileSync("git", ["add", "."], { cwd: root });
+		execFileSync("git", ["commit", "-qm", "base"], { cwd: root });
+		const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+
+		expect(await resolveAutomaticBaseReference(root)).toBe("HEAD");
+
+		execFileSync("git", ["update-ref", "refs/remotes/upstream/main", head], { cwd: root });
+		execFileSync(
+			"git",
+			["symbolic-ref", "refs/remotes/upstream/HEAD", "refs/remotes/upstream/main"],
+			{ cwd: root },
+		);
+
+		expect(await resolveAutomaticBaseReference(root)).toBe("refs/remotes/upstream/main");
+	});
+
 	it("checks the staged snapshot without including unstaged or untracked changes", async () => {
 		const root = mkdtempSync(path.join(tmpdir(), "codemem-biome-ratchet-staged-test-"));
 		temporaryDirectories.push(root);
@@ -1746,7 +1770,7 @@ describe("Biome ratchet CLI execution", () => {
 		writeFileSync(path.join(root, "src/untracked.ts"), "const untracked: any = 1;\n");
 
 		const result = await runRatchet(
-			{ base: "HEAD", json: true, staged: true },
+			{ base: "auto", json: true, staged: true },
 			{
 				cwd: root,
 				biomeEntrypoint: createRequire(import.meta.url).resolve("@biomejs/biome/bin/biome"),

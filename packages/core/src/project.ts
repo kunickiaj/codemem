@@ -88,8 +88,10 @@ function findGitAnchor(startCwd: string): string | null {
 		if (existsSync(gitPath)) {
 			const gitDirectory = gitDirectoryFromMarker(current, gitPath);
 			if (!gitDirectory) return current;
-			const commonDirectory = commonGitDirectory(gitDirectory);
-			return basename(commonDirectory) === ".git" ? dirname(commonDirectory) : current;
+			const layout = gitDirectoryLayout(gitDirectory);
+			return layout.isLinkedWorktree && basename(layout.commonDirectory) === ".git"
+				? dirname(layout.commonDirectory)
+				: current;
 		}
 		const parent = dirname(current);
 		if (parent === current) return null;
@@ -108,14 +110,17 @@ function gitDirectoryFromMarker(repositoryRoot: string, gitPath: string): string
 	}
 }
 
-function commonGitDirectory(gitDirectory: string): string {
+function gitDirectoryLayout(gitDirectory: string): {
+	commonDirectory: string;
+	isLinkedWorktree: boolean;
+} {
 	try {
 		const marker = readFileSync(resolve(gitDirectory, "commondir"), "utf8").trim();
-		if (marker) return resolve(gitDirectory, marker);
+		if (marker) return { commonDirectory: resolve(gitDirectory, marker), isLinkedWorktree: true };
 	} catch {
 		// Normal repositories use their own .git directory as the common directory.
 	}
-	return gitDirectory;
+	return { commonDirectory: gitDirectory, isLinkedWorktree: false };
 }
 
 function originRemote(commonDirectory: string, repositoryRoot: string): string | null {
@@ -146,10 +151,14 @@ export function resolveGitRepositoryIdentity(cwd: string): GitRepositoryIdentity
 		if (existsSync(gitPath)) {
 			const gitDirectory = gitDirectoryFromMarker(current, gitPath);
 			if (!gitDirectory) return null;
-			const commonDirectory = commonGitDirectory(gitDirectory);
+			const layout = gitDirectoryLayout(gitDirectory);
+			const { commonDirectory } = layout;
 			const normalizedCommonDirectory = normalizePathLike(commonDirectory);
-			const root = basename(normalizedCommonDirectory) === ".git" ? dirname(commonDirectory) : null;
-			const remote = originRemote(commonDirectory, root ?? current);
+			const root =
+				layout.isLinkedWorktree && basename(normalizedCommonDirectory) === ".git"
+					? dirname(commonDirectory)
+					: current;
+			const remote = originRemote(commonDirectory, root);
 			if (remote) return { identity: remote, root, source: "git_remote" };
 			return {
 				identity: normalizedCommonDirectory,

@@ -138,6 +138,31 @@ async function resolveCommit(root: string, reference: string): Promise<string> {
 	return commit;
 }
 
+export async function resolveAutomaticBaseReference(root: string): Promise<string> {
+	const symbolicRemotes = (
+		await git(root, ["for-each-ref", "--format=%(symref)", "refs/remotes/*/HEAD"])
+	)
+		.split("\n")
+		.map((reference) => reference.trim())
+		.filter(Boolean);
+	const preferredRemotes = symbolicRemotes.toSorted((left, right) => {
+		const leftIsOrigin = left.startsWith("refs/remotes/origin/");
+		const rightIsOrigin = right.startsWith("refs/remotes/origin/");
+		if (leftIsOrigin !== rightIsOrigin) return leftIsOrigin ? -1 : 1;
+		return left.localeCompare(right);
+	});
+	for (const reference of preferredRemotes) {
+		try {
+			await resolveCommit(root, reference);
+			return reference;
+		} catch {
+			// Ignore stale symbolic remote HEAD refs and try the next local candidate.
+		}
+	}
+	await resolveCommit(root, "HEAD");
+	return "HEAD";
+}
+
 async function addSnapshot(
 	root: string,
 	parent: string,
@@ -451,7 +476,9 @@ export async function runRatchet(
 	const cwd = dependencies.cwd ?? process.cwd();
 	const root = (await git(cwd, ["rev-parse", "--show-toplevel"])).trim();
 	const entrypoint = dependencies.biomeEntrypoint ?? resolveRootBiomeEntrypoint(root);
-	const baseCommit = await resolveCommit(root, options.base);
+	const baseReference =
+		options.base === "auto" ? await resolveAutomaticBaseReference(root) : options.base;
+	const baseCommit = await resolveCommit(root, baseReference);
 	const temporaryRoot = await mkdtemp(path.join(tmpdir(), "codemem-biome-ratchet-"));
 	let baseSnapshot: Snapshot | undefined;
 	let headSnapshot: Snapshot | undefined;
