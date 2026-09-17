@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { connect } from "./db.js";
+import { resolveSessionScopeId } from "./scope-stamping.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema } from "./test-utils.js";
 
@@ -51,5 +52,29 @@ describe("raw-event session repository identity", () => {
 		expect(
 			store.db.prepare("SELECT cwd, git_remote FROM sessions WHERE id = ?").get(sessionId),
 		).toEqual({ cwd: worktree, git_remote: "https://example.test/acme/repository.git" });
+	});
+
+	it("preserves an existing cwd scope mapping after repository identity is discovered", () => {
+		const repoRoot = join(tmpDir, "mapped-repository");
+		mkdirSync(join(repoRoot, ".git"), { recursive: true });
+		writeFileSync(
+			join(repoRoot, ".git", "config"),
+			'[remote "origin"]\n\turl = https://example.test/acme/repository.git\n',
+		);
+		store.db
+			.prepare(
+				`INSERT INTO project_scope_mappings(
+					workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+				 ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			)
+			.run(repoRoot, repoRoot, "existing-scope", 10, "user", "2026-09-17", "2026-09-17");
+
+		const sessionId = store.getOrCreateSessionForOpencodeSession({
+			opencodeSessionId: "session-mapped-repository",
+			cwd: repoRoot,
+			project: "mapped-repository",
+		});
+
+		expect(resolveSessionScopeId(store.db, { sessionId })).toBe("existing-scope");
 	});
 });

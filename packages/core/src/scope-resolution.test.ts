@@ -248,3 +248,40 @@ describe("resolveProjectScope", () => {
 		).toMatchObject({ reason: "local_default", scopeId: "local-only-custom" });
 	});
 });
+
+function repositoryIdentityCompatibilityTests(): void {
+	it("uses an existing cwd mapping when repository identity is newly available", () => {
+		expect(
+			resolveProjectScope({
+				cwd: "/work/acme/service",
+				gitRemote: "https://github.com/acme/service.git",
+				mappings: [mapping({ scope_id: "existing-cwd", workspace_identity: "/work/acme/service" })],
+			}),
+		).toMatchObject({
+			reason: "exact_mapping",
+			scopeId: "existing-cwd",
+			workspaceIdentity: {
+				source: "git_remote",
+				value: "https://github.com/acme/service.git",
+			},
+		});
+	});
+
+	it("prefers a repository mapping over its cwd compatibility mapping", () => {
+		expect(
+			resolveProjectScope({
+				cwd: "/work/acme/service",
+				gitRemote: "https://github.com/acme/service.git",
+				mappings: [
+					mapping({ scope_id: "existing-cwd", workspace_identity: "/work/acme/service" }),
+					mapping({
+						scope_id: "repository-scope",
+						workspace_identity: "https://github.com/acme/service.git",
+					}),
+				],
+			}),
+		).toMatchObject({ reason: "exact_mapping", scopeId: "repository-scope" });
+	});
+}
+
+describe("repository identity scope compatibility", repositoryIdentityCompatibilityTests);

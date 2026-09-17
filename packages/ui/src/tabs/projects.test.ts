@@ -730,6 +730,61 @@ function projectsRecipientPolicySafetyTests(): void {
 
 describe("Projects recipient policy safety", projectsRecipientPolicySafetyTests);
 
+function projectsRecipientPolicyResultEdgeCaseTests(): void {
+	beforeEach(setupProjectsTest);
+	afterEach(cleanupProjectsTest);
+
+	it("re-enables unchanged grouped controls after a non-applied bulk result", async () => {
+		const second = reviewItem({ reviewItemId: "review-2", sourceFingerprint: "fingerprint-2" });
+		const review = recipientReview({ reviewItems: [reviewItem(), second] });
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(review);
+		vi.mocked(api.resolveRecipientPolicyReviewBulk).mockResolvedValue({
+			version: 1,
+			results: [
+				{
+					errorCode: "resolution_conflict",
+					idempotent: false,
+					reviewItemId: "review-1",
+					sourceFingerprint: "fingerprint-1",
+					status: "conflict",
+				},
+			],
+		});
+
+		await loadProjectsData();
+		document.querySelector<HTMLButtonElement>(".recipient-policy-review-decisions button")?.click();
+		await flushAsyncWork();
+
+		expect(
+			document.querySelector<HTMLSelectElement>(".recipient-policy-review-select")?.disabled,
+		).toBe(false);
+		expect(
+			document.querySelector<HTMLButtonElement>(".recipient-policy-review-decisions button")
+				?.disabled,
+		).toBe(false);
+		expect(document.body.textContent).not.toContain("Applying…");
+	});
+
+	it("counts a project's memories once across device-scoped review items", async () => {
+		const first = reviewItem({ conditionCode: "unassigned_effective_device" });
+		const second = reviewItem({
+			conditionCode: "unassigned_effective_device",
+			reviewItemId: "review-2",
+			sourceFingerprint: "fingerprint-2",
+		});
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
+			recipientReview({ reviewItems: [first, second] }),
+		);
+
+		await loadProjectsData();
+
+		expect(document.body.textContent).toContain("Affected: 1 Project · 12 memories · 2 devices");
+		expect(document.body.textContent).not.toContain("24 memories");
+	});
+}
+
+describe("Projects recipient policy result edge cases", projectsRecipientPolicyResultEdgeCaseTests);
+
 describe("Projects tab interactions", () => {
 	beforeEach(setupProjectsTest);
 	afterEach(cleanupProjectsTest);

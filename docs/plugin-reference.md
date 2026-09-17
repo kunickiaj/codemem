@@ -102,10 +102,10 @@ Expanding coverage leaves the existing 1,592 warnings unchanged and exposes 63 w
 Run the same diagnostic comparison outside the editor with:
 
 ```text
-pnpm lint:delta -- --base <git-ref> [--head <git-ref>] [--json]
+pnpm lint:delta -- --base <git-ref> [--head <git-ref> | --staged] [--json]
 ```
 
-`--base` is required. Pass `--head` for a committed ref-to-ref comparison; omit it to freeze the current working tree, including untracked files that are not ignored. The command materializes detached temporary worktrees and never stashes, resets, or checks out over the active worktree. It runs the pinned Biome binary with the head snapshot's policy against both sides, then compares diagnostics only for added, modified, renamed, or deleted paths.
+`--base` is required. Pass `--head` for a committed ref-to-ref comparison, or pass `--staged` to compare only the Git index as the pre-commit hook does; those flags cannot be combined. Omit both to freeze the current working tree, including untracked files that are not ignored. The command materializes detached temporary worktrees and never stashes, resets, or checks out over the active worktree. It runs the pinned Biome binary with the head snapshot's policy against both sides, then compares diagnostics only for added, modified, renamed, or deleted paths.
 
 Exit code `0` means no new diagnostics or policy weakening, `1` means regressions were found, and `2` means the comparison could not be trusted. JSON output includes every regression; human output shows the first ten. Appending lint overrides is accepted only when every new override uses non-negated includes and adds error-only rules. Editing or removing existing overrides, adding exclusions or suppressions, weakening rule levels, removing includes, changing Git ignore policy, disabling linting, increasing thresholds, missing refs, tool failures, and malformed or incomplete Biome reports fail closed.
 

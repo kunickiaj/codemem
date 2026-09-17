@@ -88,6 +88,20 @@ function uniqueValues(values: Array<{ id: string; label: string }>): string[] {
 	return [...new Map(values.map((value) => [value.id, value.label])).values()];
 }
 
+function affectedMemoryCount(options: RecipientPolicyReviewOptionV1[]): number {
+	const countsByProject = new Map<string, number>();
+	for (const option of options) {
+		for (const project of option.preview.projects) {
+			const existing = countsByProject.get(project.canonicalIdentity) ?? 0;
+			countsByProject.set(
+				project.canonicalIdentity,
+				Math.max(existing, option.preview.affectedMemoryCount),
+			);
+		}
+	}
+	return [...countsByProject.values()].reduce((total, count) => total + count, 0);
+}
+
 function renderPreview(group: ReviewGroup, decision: RecipientPolicyReviewDecisionV1): HTMLElement {
 	const options = group.items.flatMap((item) => {
 		const selected = optionFor(item, decision);
@@ -109,10 +123,7 @@ function renderPreview(group: ReviewGroup, decision: RecipientPolicyReviewDecisi
 			})),
 		),
 	);
-	const memoryCount = options.reduce(
-		(total, option) => total + option.preview.affectedMemoryCount,
-		0,
-	);
+	const memoryCount = affectedMemoryCount(options);
 	const preview = document.createElement("div");
 	preview.className = "recipient-policy-preview settings-note";
 	const counts = document.createElement("strong");
@@ -206,6 +217,12 @@ function appliedGroupMessage(
 	return "Decision applied. Review items refreshed.";
 }
 
+function restoreGroupControls(group: ReviewGroup, controls: ReviewGroupControls): void {
+	controls.select.disabled = false;
+	controls.submit.textContent = applyButtonLabel(group);
+	updateGroupSelection(group, controls);
+}
+
 async function submitGroupDecision(
 	group: ReviewGroup,
 	controls: ReviewGroupControls,
@@ -224,14 +241,13 @@ async function submitGroupDecision(
 		surfaceMessage = appliedGroupMessage(group, result);
 		status.textContent = surfaceMessage;
 		pendingReviewGroups.delete(group.key);
+		if (result.failed || result.stale) restoreGroupControls(group, controls);
 		await options.onRefresh?.();
 	} catch (error) {
 		surfaceMessage = error instanceof Error ? error.message : "Unable to apply decision.";
 		status.textContent = surfaceMessage;
 		pendingReviewGroups.delete(group.key);
-		controls.select.disabled = false;
-		controls.submit.textContent = applyButtonLabel(group);
-		updateGroupSelection(group, controls);
+		restoreGroupControls(group, controls);
 		try {
 			await options.onRefresh?.();
 		} catch (refreshError) {
