@@ -59,6 +59,11 @@ interface NormalizedRequest {
 	requestMeta: Pick<NormalizedEvent, "cwd" | "project" | "startedAt">;
 }
 
+interface StreamIdResolution {
+	streamId: string | null;
+	error: RawEventIngestValidationError | null;
+}
+
 export class RawEventIngestValidationError extends Error {
 	constructor(message: string) {
 		super(message);
@@ -96,6 +101,27 @@ function resolveStreamId(value: Record<string, unknown>): string | null {
 	if (!streamId) return null;
 	if (streamId.startsWith("msg_")) validationError("invalid session id");
 	return streamId;
+}
+
+function resolveDefaultStreamId(value: Record<string, unknown>): StreamIdResolution {
+	try {
+		return { streamId: resolveStreamId(value), error: null };
+	} catch (error) {
+		if (!(error instanceof RawEventIngestValidationError)) throw error;
+		if (error.message !== "invalid session id") throw error;
+		return { streamId: null, error };
+	}
+}
+
+function resolveEventStreamId(
+	item: Record<string, unknown>,
+	defaultStreamId: StreamIdResolution,
+): string {
+	const eventStreamId = resolveStreamId(item);
+	if (eventStreamId) return eventStreamId;
+	if (defaultStreamId.error) throw defaultStreamId.error;
+	if (!defaultStreamId.streamId) validationError("session id required");
+	return defaultStreamId.streamId;
 }
 
 function optionalString(value: Record<string, unknown>, key: string): string | null {
@@ -194,14 +220,13 @@ function legacyStringSequenceEventId(
 
 function normalizeEvent(
 	item: Record<string, unknown>,
-	defaultStreamId: string | null,
+	defaultStreamId: StreamIdResolution,
 	source: string,
 ): NormalizedEvent {
 	if (item.source != null && normalizeSource(item.source) !== source) {
 		validationError("event source conflicts with request source");
 	}
-	const streamId = resolveStreamId(item) ?? defaultStreamId;
-	if (!streamId) validationError("session id required");
+	const streamId = resolveEventStreamId(item, defaultStreamId);
 	const eventType = validateEventField(item.event_type, "event_type");
 	const eventSeq = optionalEventSeq(item);
 	const tsWallMsValue = optionalNumber(item, "ts_wall_ms");
@@ -244,7 +269,7 @@ function normalizeEvent(
 
 function normalizeRequest(request: Record<string, unknown>): NormalizedRequest {
 	const source = normalizeSource(request.source);
-	const defaultStreamId = resolveStreamId(request);
+	const defaultStreamId = resolveDefaultStreamId(request);
 	const rawEvents = request.events == null ? [request] : request.events;
 	if (!Array.isArray(rawEvents)) validationError("events must be a list");
 	const events: NormalizedEvent[] = [];
@@ -256,7 +281,7 @@ function normalizeRequest(request: Record<string, unknown>): NormalizedRequest {
 	}
 	return {
 		source,
-		defaultStreamId,
+		defaultStreamId: defaultStreamId.streamId,
 		events,
 		received: rawEvents.length,
 		requestMeta: {

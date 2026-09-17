@@ -282,6 +282,36 @@ describe("queue-first raw-event routes", () => {
 });
 
 describe("queued raw-event validation", () => {
+	it("queues per-event streams when the unused request default is unusable", async () => {
+		const inbox = {
+			enqueue: vi.fn().mockResolvedValue(undefined),
+			start: vi.fn(),
+			status: vi.fn(),
+			stop: vi.fn(),
+		};
+		const app = createApp({
+			storeFactory: vi.fn(),
+			rawEventInbox: inbox,
+			rawEventTarget: { dbPath: "/expected/memory.sqlite", hasCurrentIdentity: () => true },
+		});
+
+		const response = await postRawEvent(app, {
+			session_id: "msg_request_default",
+			events: [
+				{
+					session_id: "session-event-queue",
+					event_id: "event-valid-queue",
+					event_type: "prompt",
+					payload: {},
+				},
+			],
+		});
+
+		expect(response.status).toBe(202);
+		expect(await response.json()).toEqual({ accepted: 1, queued: 1 });
+		expect(inbox.enqueue).toHaveBeenCalledOnce();
+	});
+
 	it("maps validation failures to a bounded 400 response", async () => {
 		const inbox = {
 			enqueue: vi.fn().mockResolvedValue(undefined),

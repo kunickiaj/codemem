@@ -586,6 +586,112 @@ describe("ingestRawEvents", () => {
 	});
 });
 
+describe("per-event stream resolution", () => {
+	it("ignores an unusable request stream when every event supplies a valid stream", () => {
+		const store = createStore();
+		try {
+			expect(
+				ingestRawEvents(store, {
+					source: "opencode",
+					session_id: "msg_request_default",
+					events: [
+						{
+							session_id: "session-event-one",
+							event_id: "event-valid-stream-one",
+							event_type: "prompt",
+							payload: {},
+						},
+						{
+							stream_id: "session-event-two",
+							event_id: "event-valid-stream-two",
+							event_type: "assistant",
+							payload: {},
+						},
+					],
+				}),
+			).toMatchObject({ inserted: 2, received: 2, skipped: 0 });
+
+			expect(persistedRows(store)).toEqual([
+				expect.objectContaining({ stream_id: "session-event-one" }),
+				expect.objectContaining({ stream_id: "session-event-two" }),
+			]);
+		} finally {
+			store.close();
+		}
+	});
+
+	it.each([
+		{
+			name: "an unusable request default needed by an event",
+			request: {
+				source: "opencode",
+				session_id: "msg_request_default",
+				events: [{ event_id: "event-needs-default", event_type: "prompt", payload: {} }],
+			},
+			error: "invalid session id",
+		},
+		{
+			name: "an invalid per-event stream",
+			request: {
+				source: "opencode",
+				session_id: "session-valid-default",
+				events: [
+					{
+						session_id: "msg_event_stream",
+						event_id: "event-invalid-stream",
+						event_type: "prompt",
+						payload: {},
+					},
+				],
+			},
+			error: "invalid session id",
+		},
+		{
+			name: "conflicting per-event aliases",
+			request: {
+				source: "opencode",
+				events: [
+					{
+						session_id: "session-one",
+						stream_id: "session-two",
+						event_id: "event-conflicting-stream",
+						event_type: "prompt",
+						payload: {},
+					},
+				],
+			},
+			error: "conflicting session id fields",
+		},
+		{
+			name: "conflicting request aliases even with a valid event stream",
+			request: {
+				source: "opencode",
+				session_id: "session-one",
+				stream_id: "session-two",
+				events: [
+					{
+						session_id: "session-event",
+						event_id: "event-valid-stream",
+						event_type: "prompt",
+						payload: {},
+					},
+				],
+			},
+			error: "conflicting session id fields",
+		},
+		{
+			name: "a missing request and event stream",
+			request: {
+				source: "opencode",
+				events: [{ event_id: "event-missing-stream", event_type: "prompt", payload: {} }],
+			},
+			error: "session id required",
+		},
+	])("rejects $name", ({ request, error }) => {
+		expect(() => validateRawEvents(request)).toThrow(error);
+	});
+});
+
 describe("validateRawEvents", () => {
 	it("returns a sanitized request for durable pre-ingest storage", () => {
 		const result = validateRawEvents({
