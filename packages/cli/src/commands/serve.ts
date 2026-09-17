@@ -744,21 +744,42 @@ function startRawEventProcessing(
 }
 
 export function createRawEventTargetState(
-	store: Pick<MemoryStore, "dbPath" | "hasCurrentIdentity" | "onIdentityChanged">,
+	store: Pick<
+		MemoryStore,
+		| "actorId"
+		| "dbPath"
+		| "deviceId"
+		| "hasCurrentConfiguredIdentity"
+		| "hasCurrentIdentity"
+		| "onIdentityChanged"
+	>,
 ) {
 	let hasCurrentIdentity = false;
+	let actorId = store.actorId;
+	let deviceId = store.deviceId;
 	const refreshCurrentIdentity = () => {
 		try {
 			hasCurrentIdentity = store.hasCurrentIdentity();
 		} catch {
 			hasCurrentIdentity = false;
 		}
+		actorId = store.actorId;
+		deviceId = store.deviceId;
 	};
 	refreshCurrentIdentity();
 	const stop = store.onIdentityChanged(refreshCurrentIdentity);
 	return {
 		dbPath: store.dbPath,
-		hasCurrentIdentity: () => hasCurrentIdentity,
+		hasCurrentIdentity: () => {
+			if (!hasCurrentIdentity || actorId !== store.actorId || deviceId !== store.deviceId) {
+				return false;
+			}
+			try {
+				return store.hasCurrentConfiguredIdentity();
+			} catch {
+				return false;
+			}
+		},
 		stop,
 	};
 }

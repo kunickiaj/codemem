@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ingestRawEvents, MemoryStore } from "@codemem/core";
@@ -88,6 +88,40 @@ describe("FileRawEventInbox", () => {
 		await vi.waitFor(() => expect(secondProcess).toHaveBeenCalledOnce());
 		await vi.waitFor(async () => expect((await second.status()).pending).toBe(0));
 		await second.stop();
+	});
+
+	it("preserves enqueue order when retained file timestamps collide", async () => {
+		const directory = testDirectory();
+		const writer = new FileRawEventInbox({
+			directory,
+			processEntry: vi.fn().mockResolvedValue(undefined),
+		});
+		await writer.stop();
+		await writer.enqueue({ event_id: "event-second" });
+		await writer.enqueue({ event_id: "event-first" });
+		const restartedWriter = new FileRawEventInbox({
+			directory,
+			processEntry: vi.fn().mockResolvedValue(undefined),
+		});
+		await restartedWriter.stop();
+		await restartedWriter.enqueue({ event_id: "event-third" });
+		const sameTimestamp = new Date("2026-09-17T12:00:00.000Z");
+		for (const name of readdirSync(directory).filter((entry) => entry.endsWith(".json"))) {
+			utimesSync(join(directory, name), sameTimestamp, sameTimestamp);
+		}
+
+		const processed: string[] = [];
+		const reader = new FileRawEventInbox({
+			directory,
+			processEntry: async ({ request }) => {
+				processed.push(String(request.event_id));
+			},
+		});
+		reader.start();
+
+		await vi.waitFor(async () => expect((await reader.status()).pending).toBe(0));
+		expect(processed).toEqual(["event-second", "event-first", "event-third"]);
+		await reader.stop();
 	});
 
 	it("enforces the entry limit across concurrent appends", async () => {

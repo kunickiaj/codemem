@@ -37,6 +37,7 @@ export interface RawEventInboxEntry {
 
 interface StoredRawEventInboxEntry {
 	version: 1;
+	enqueue_order: string;
 	request: Record<string, unknown>;
 	flush_boundary: boolean;
 }
@@ -44,13 +45,21 @@ interface StoredRawEventInboxEntry {
 interface LoadedRawEventInboxEntry {
 	id: string;
 	path: string;
+	enqueueOrder: bigint;
 	entry: RawEventInboxEntry;
 }
 
 interface RawEventInboxCandidate {
 	path: string;
-	name: string;
-	mtimeMs: number;
+	id: string;
+	enqueueOrder: bigint;
+}
+
+interface RawEventInboxScan {
+	candidates: RawEventInboxCandidate[];
+	corrupt: number;
+	oldestMtimeMs: number;
+	pending: number;
 }
 
 export interface RawEventInboxStatus {
@@ -94,11 +103,35 @@ export function resolveRawEventInboxDirectory(dbPath: string, homeDir: string = 
 	return join(homeDir, ".codemem", INBOX_DIRECTORY_NAME, target);
 }
 
+function entryContent(
+	request: Record<string, unknown>,
+	flushBoundary: boolean,
+): Omit<StoredRawEventInboxEntry, "enqueue_order"> {
+	return { version: 1, request, flush_boundary: flushBoundary };
+}
+
 function storedEntry(
 	request: Record<string, unknown>,
 	flushBoundary: boolean,
+	enqueueOrder: bigint,
 ): StoredRawEventInboxEntry {
-	return { version: 1, request, flush_boundary: flushBoundary };
+	return { ...entryContent(request, flushBoundary), enqueue_order: enqueueOrder.toString() };
+}
+
+function entryContentId(entry: RawEventInboxEntry): string {
+	return contentId(JSON.stringify(entryContent(entry.request, entry.flushBoundary)));
+}
+
+function inboxFileName(enqueueOrder: bigint, id: string): string {
+	return `${enqueueOrder.toString().padStart(24, "0")}-${id}.json`;
+}
+
+function parseInboxFileName(name: string): { id: string; enqueueOrder: bigint } | null {
+	const match = /^(\d+)-([a-f0-9]{64})\.json$/u.exec(name);
+	if (!match?.[1] || !match[2]) return null;
+	const enqueueOrder = BigInt(match[1]);
+	if (enqueueOrder < 1n) return null;
+	return { id: match[2], enqueueOrder };
 }
 
 async function writeDurableFile(path: string, contents: string): Promise<void> {
@@ -143,10 +176,15 @@ async function ensurePrivateDirectory(path: string): Promise<void> {
 	}
 }
 
-function parseStoredEntry(serialized: string): RawEventInboxEntry {
+function parseStoredEntry(serialized: string): {
+	entry: RawEventInboxEntry;
+	enqueueOrder: bigint;
+} {
 	const parsed = JSON.parse(serialized) as Partial<StoredRawEventInboxEntry>;
 	if (
 		parsed.version !== 1 ||
+		typeof parsed.enqueue_order !== "string" ||
+		!/^[1-9]\d*$/u.test(parsed.enqueue_order) ||
 		parsed.request == null ||
 		typeof parsed.request !== "object" ||
 		Array.isArray(parsed.request) ||
@@ -154,7 +192,10 @@ function parseStoredEntry(serialized: string): RawEventInboxEntry {
 	) {
 		throw new Error("invalid raw-event inbox entry");
 	}
-	return { request: parsed.request, flushBoundary: parsed.flush_boundary };
+	return {
+		entry: { request: parsed.request, flushBoundary: parsed.flush_boundary },
+		enqueueOrder: BigInt(parsed.enqueue_order),
+	};
 }
 
 export class FileRawEventInbox implements RawEventInbox {
@@ -176,6 +217,7 @@ export class FileRawEventInbox implements RawEventInbox {
 	private enqueueChain: Promise<void> = Promise.resolve();
 	private notedCorruptCount = 0;
 	private pendingDrainDelayMs: number | null = null;
+	private nextEnqueueOrder: bigint | null = null;
 	private retryCount = 0;
 	private timer: NodeJS.Timeout | null = null;
 	private stopped = false;
@@ -214,29 +256,39 @@ export class FileRawEventInbox implements RawEventInbox {
 		request: Record<string, unknown>,
 		options: { flushBoundary?: boolean },
 	): Promise<void> {
-		const serialized = JSON.stringify(storedEntry(request, options.flushBoundary === true));
-		const id = contentId(serialized);
-		const destination = join(this.directory, `${id}.json`);
-		const temporary = join(this.directory, `.${id}.${process.pid}.${randomUUID()}.tmp`);
+		const flushBoundary = options.flushBoundary === true;
+		const id = entryContentId({ request, flushBoundary });
 		await ensurePrivateDirectory(this.directory);
-		try {
-			const existing = await readFile(destination, "utf8");
-			if (existing !== serialized) throw new Error("raw-event inbox entry conflict");
-			await chmod(destination, 0o600);
+		const entries = await readdir(this.directory, { withFileTypes: true });
+		const existingEntry = entries.find(
+			(entry) => entry.isFile() && parseInboxFileName(entry.name)?.id === id,
+		);
+		if (existingEntry) {
+			const existing = await readFile(join(this.directory, existingEntry.name), "utf8");
+			const parsedExisting = parseStoredEntry(existing);
+			const existingName = parseInboxFileName(existingEntry.name);
+			if (
+				entryContentId(parsedExisting.entry) !== id ||
+				existingName?.enqueueOrder !== parsedExisting.enqueueOrder
+			) {
+				throw new Error("raw-event inbox entry conflict");
+			}
+			await chmod(join(this.directory, existingEntry.name), 0o600);
 			await syncDirectory(this.directory);
 			this.scheduleDrain();
 			return;
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 		}
 
-		const entries = await readdir(this.directory, { withFileTypes: true });
 		const count = entries.filter((entry) => entry.isFile() && entry.name.endsWith(".json")).length;
 		if (count >= this.maxEntries) {
 			const error = new Error("raw-event inbox is full") as Error & { code?: string };
 			error.code = RAW_EVENT_INBOX_FULL_CODE;
 			throw error;
 		}
+		const enqueueOrder = await this.allocateEnqueueOrder(entries);
+		const serialized = JSON.stringify(storedEntry(request, flushBoundary, enqueueOrder));
+		const destination = join(this.directory, inboxFileName(enqueueOrder, id));
+		const temporary = join(this.directory, `.${id}.${process.pid}.${randomUUID()}.tmp`);
 
 		try {
 			await writeDurableFile(temporary, serialized);
@@ -245,7 +297,13 @@ export class FileRawEventInbox implements RawEventInbox {
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 				const existing = await readFile(destination, "utf8");
-				if (existing !== serialized) throw new Error("raw-event inbox entry conflict");
+				const parsedExisting = parseStoredEntry(existing);
+				if (
+					entryContentId(parsedExisting.entry) !== id ||
+					parsedExisting.enqueueOrder !== enqueueOrder
+				) {
+					throw new Error("raw-event inbox entry conflict");
+				}
 			}
 			await chmod(destination, 0o600);
 		} finally {
@@ -253,6 +311,23 @@ export class FileRawEventInbox implements RawEventInbox {
 		}
 		await syncDirectory(this.directory);
 		this.scheduleDrain();
+	}
+
+	private async allocateEnqueueOrder(entries: Dirent[]): Promise<bigint> {
+		if (this.nextEnqueueOrder != null) {
+			const order = this.nextEnqueueOrder;
+			this.nextEnqueueOrder += 1n;
+			return order;
+		}
+		let highestOrder = 0n;
+		for (const entry of entries) {
+			if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+			const parsed = parseInboxFileName(entry.name);
+			if (parsed && parsed.enqueueOrder > highestOrder) highestOrder = parsed.enqueueOrder;
+		}
+		const order = highestOrder + 1n;
+		this.nextEnqueueOrder = order + 1n;
+		return order;
 	}
 
 	start(): void {
@@ -315,23 +390,15 @@ export class FileRawEventInbox implements RawEventInbox {
 			}
 			throw error;
 		}
-		const candidates: RawEventInboxCandidate[] = [];
-		for (const directoryEntry of directoryEntries) {
-			if (!directoryEntry.isFile() || !directoryEntry.name.endsWith(".json")) continue;
-			const path = join(this.directory, directoryEntry.name);
-			try {
-				const details = await stat(path);
-				candidates.push({ path, name: directoryEntry.name, mtimeMs: details.mtimeMs });
-			} catch {
-				// A concurrent drain removed the entry.
-			}
-		}
-		candidates.sort(
-			(left, right) => left.mtimeMs - right.mtimeMs || left.name.localeCompare(right.name),
-		);
+		const scan = await this.scanCandidates(directoryEntries);
+		scan.candidates.sort((left, right) => {
+			if (left.enqueueOrder < right.enqueueOrder) return -1;
+			if (left.enqueueOrder > right.enqueueOrder) return 1;
+			return left.id.localeCompare(right.id);
+		});
 		const entries: LoadedRawEventInboxEntry[] = [];
-		let corrupt = 0;
-		for (const candidate of candidates) {
+		let corrupt = scan.corrupt;
+		for (const candidate of scan.candidates) {
 			if (entries.length >= limit) break;
 			const loadedEntry = await this.loadEntry(candidate);
 			if (!loadedEntry) {
@@ -343,9 +410,39 @@ export class FileRawEventInbox implements RawEventInbox {
 		return {
 			entries,
 			corrupt,
-			oldestAgeMs: candidates[0] ? Math.max(0, Date.now() - candidates[0].mtimeMs) : 0,
-			pending: candidates.length,
+			oldestAgeMs: Number.isFinite(scan.oldestMtimeMs)
+				? Math.max(0, Date.now() - scan.oldestMtimeMs)
+				: 0,
+			pending: scan.pending,
 		};
+	}
+
+	private async scanCandidates(directoryEntries: Dirent[]): Promise<RawEventInboxScan> {
+		const candidates: RawEventInboxCandidate[] = [];
+		let corrupt = 0;
+		let oldestMtimeMs = Number.POSITIVE_INFINITY;
+		let pending = 0;
+		for (const directoryEntry of directoryEntries) {
+			if (!directoryEntry.isFile() || !directoryEntry.name.endsWith(".json")) continue;
+			const path = join(this.directory, directoryEntry.name);
+			try {
+				const details = await stat(path);
+				pending += 1;
+				oldestMtimeMs = Math.min(oldestMtimeMs, details.mtimeMs);
+				const parsed = parseInboxFileName(directoryEntry.name);
+				if (!parsed) {
+					corrupt += 1;
+					continue;
+				}
+				candidates.push({
+					path,
+					...parsed,
+				});
+			} catch {
+				// A concurrent drain removed the entry.
+			}
+		}
+		return { candidates, corrupt, oldestMtimeMs, pending };
 	}
 
 	private async loadEntry(
@@ -353,9 +450,10 @@ export class FileRawEventInbox implements RawEventInbox {
 	): Promise<LoadedRawEventInboxEntry | null> {
 		try {
 			const serialized = await readFile(candidate.path, "utf8");
-			const id = contentId(serialized);
-			if (candidate.name !== `${id}.json`) return null;
-			return { id, path: candidate.path, entry: parseStoredEntry(serialized) };
+			const { entry, enqueueOrder } = parseStoredEntry(serialized);
+			const id = entryContentId(entry);
+			if (candidate.id !== id || candidate.enqueueOrder !== enqueueOrder) return null;
+			return { id, path: candidate.path, entry, enqueueOrder };
 		} catch {
 			return null;
 		}

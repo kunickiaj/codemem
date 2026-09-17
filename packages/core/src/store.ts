@@ -406,6 +406,15 @@ export class MemoryStore {
 			}
 		}
 		const deviceId = envDeviceId || dbDeviceId || "local";
+		return this.configuredIdentityMatches(deviceId);
+	}
+
+	hasCurrentConfiguredIdentity(): boolean {
+		const deviceId = process.env.CODEMEM_DEVICE_ID?.trim() || this.deviceId;
+		return this.configuredIdentityMatches(deviceId);
+	}
+
+	private configuredIdentityMatches(deviceId: string): boolean {
 		const config = readCodememConfigFile();
 		const configActorId = Object.hasOwn(process.env, "CODEMEM_ACTOR_ID")
 			? cleanStr(process.env.CODEMEM_ACTOR_ID)

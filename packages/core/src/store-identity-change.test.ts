@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -51,5 +51,17 @@ describe("MemoryStore identity changes", () => {
 		store.adoptEnsuredDeviceIdentity("device-after-refresh");
 
 		expect(listener).toHaveBeenCalledTimes(2);
+	});
+
+	it("detects external actor configuration changes without reading persisted device state", () => {
+		const configPath = process.env.CODEMEM_CONFIG as string;
+		writeFileSync(configPath, JSON.stringify({ actor_id: "actor-before" }));
+		store.close();
+		store = new MemoryStore(store.dbPath);
+		expect(store.hasCurrentConfiguredIdentity()).toBe(true);
+
+		writeFileSync(configPath, JSON.stringify({ actor_id: "actor-after" }));
+
+		expect(store.hasCurrentConfiguredIdentity()).toBe(false);
 	});
 });
