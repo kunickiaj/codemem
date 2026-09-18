@@ -66,10 +66,11 @@ describe("codex-hook-ingest command", () => {
 			fetchCalls += 1;
 			return new Response(JSON.stringify({ inserted: 1, skipped: 0 }));
 		});
-		await expect(tryHttpIngest({}, "viewer.test", 38888)).resolves.toEqual({
+		await expect(tryHttpIngest({}, "viewer.test", 38888)).resolves.toMatchObject({
 			ok: false,
 			inserted: 0,
 			skipped: 0,
+			cause: "invalid_target",
 		});
 		expect(fetchCalls).toBe(0);
 	});
@@ -82,8 +83,8 @@ describe("codex-hook-ingest command", () => {
 		expect(longs).toContain("--port");
 
 		const help = codexHookIngestCommand.helpInformation();
-		expect(help).toContain("HTTP first");
-		expect(help).toContain("direct DB fallback");
+		expect(help).toContain("durable HTTP queue");
+		expect(help).toContain("local spool fallback");
 	});
 
 	it("returns HTTP result when viewer ingest succeeds", async () => {
@@ -96,9 +97,6 @@ describe("codex-hook-ingest command", () => {
 					httpPayload = request;
 					return { ok: true, inserted: 2, skipped: 1 };
 				},
-				directIngest: () => {
-					throw new Error("direct ingest should not be called");
-				},
 				resolveDb: () => "/tmp/resolved.sqlite",
 			},
 		);
@@ -110,9 +108,8 @@ describe("codex-hook-ingest command", () => {
 		});
 	});
 
-	it("falls back directly exactly once on a generic Viewer failure", async () => {
+	it("spools exactly once on a generic Viewer failure", async () => {
 		let httpCalls = 0;
-		let directCalls = 0;
 		const result = await ingestCodexHookPayload(
 			{ hook_event_name: "SessionStart", session_id: "sess-viewer-failure", cwd: "/tmp/demo" },
 			{ host: "127.0.0.1", port: 38888, db: "/tmp/custom.sqlite" },
@@ -121,33 +118,33 @@ describe("codex-hook-ingest command", () => {
 					httpCalls += 1;
 					return { ok: false, inserted: 0, skipped: 0 };
 				},
-				directIngest: () => {
-					directCalls += 1;
-					return { inserted: 1, skipped: 0 };
-				},
 				resolveDb: () => "/tmp/resolved.sqlite",
 			},
 		);
 
-		expect(result).toEqual({ inserted: 1, skipped: 0, via: "direct" });
-		expect({ httpCalls, directCalls }).toEqual({ httpCalls: 1, directCalls: 1 });
+		expect(result).toEqual({ inserted: 0, skipped: 0, via: "spool" });
+		expect(httpCalls).toBe(1);
+		expect(
+			readdirSync(join(hermeticDir, "spool")).filter((name) => name.endsWith(".json")),
+		).toHaveLength(1);
 	});
 
-	it("falls back to direct ingest when HTTP path fails", async () => {
+	it("does not open SQLite when HTTP fails", async () => {
+		const dbPath = join(hermeticDir, "must-remain-absent.sqlite");
 		const result = await ingestCodexHookPayload(
 			{ hook_event_name: "SessionStart", session_id: "sess-direct", cwd: "/tmp/demo" },
-			{ host: "127.0.0.1", port: 38888, db: "/tmp/custom.sqlite" },
+			{ host: "127.0.0.1", port: 38888, db: dbPath },
 			{
 				httpIngest: async () => ({ ok: false, inserted: 0, skipped: 0 }),
-				directIngest: () => ({ inserted: 1, skipped: 0 }),
-				resolveDb: () => "/tmp/resolved.sqlite",
+				resolveDb: () => dbPath,
 			},
 		);
 
-		expect(result).toEqual({ inserted: 1, skipped: 0, via: "direct" });
+		expect(result).toEqual({ inserted: 0, skipped: 0, via: "spool" });
+		expect(() => readFileSync(dbPath)).toThrow();
 	});
 
-	it("spools payloads when HTTP and direct ingest fail", async () => {
+	it("preserves a generated timestamp when HTTP fails", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "codemem-cli-codex-spool-"));
 		try {
 			setEnv("CODEMEM_CODEX_HOOK_LOCK_DIR", join(dir, "lock"));
@@ -157,9 +154,6 @@ describe("codex-hook-ingest command", () => {
 				{ host: "127.0.0.1", port: 38888, db: join(dir, "fallback.sqlite") },
 				{
 					httpIngest: async () => ({ ok: false, inserted: 0, skipped: 0 }),
-					directIngest: () => {
-						throw new Error("database locked");
-					},
 				},
 			);
 
@@ -175,8 +169,8 @@ describe("codex-hook-ingest command", () => {
 		}
 	});
 
-	it("does not collide repeated timestamp-less payloads", async () => {
-		const { dbPath, cleanup } = createTempDbPath();
+	it("does not collide repeated timestamp-less spooled payloads", async () => {
+		const dbPath = join(hermeticDir, "unused.sqlite");
 		vi.useFakeTimers();
 		try {
 			vi.setSystemTime(new Date("2026-05-29T01:00:00Z"));
@@ -191,20 +185,21 @@ describe("codex-hook-ingest command", () => {
 				{ httpIngest: async () => ({ ok: false, inserted: 0, skipped: 0 }) },
 			);
 
-			expect(first).toEqual({ inserted: 1, skipped: 0, via: "direct" });
-			expect(second).toEqual({ inserted: 1, skipped: 0, via: "direct" });
-			const db = connect(dbPath);
-			try {
-				const count = db.prepare("SELECT COUNT(*) AS count FROM raw_events").get() as {
-					count: number;
+			expect(first).toEqual({ inserted: 0, skipped: 0, via: "spool" });
+			expect(second).toEqual({ inserted: 0, skipped: 0, via: "spool" });
+			const entries = readdirSync(join(hermeticDir, "spool")).filter((name) =>
+				name.endsWith(".json"),
+			);
+			expect(entries).toHaveLength(2);
+			const nonces = entries.map((name) => {
+				const spooled = JSON.parse(readFileSync(join(hermeticDir, "spool", name), "utf8")) as {
+					codemem_generated_event_nonce?: string;
 				};
-				expect(count.count).toBe(2);
-			} finally {
-				db.close();
-			}
+				return spooled.codemem_generated_event_nonce;
+			});
+			expect(new Set(nonces).size).toBe(2);
 		} finally {
 			vi.useRealTimers();
-			cleanup();
 		}
 	});
 
@@ -225,21 +220,18 @@ describe("codex-hook-ingest command", () => {
 						seen.push(String(payload.session_id));
 						return { ok: true, inserted: 1, skipped: 0 };
 					},
-					directIngest: () => {
-						throw new Error("direct ingest should not be called");
-					},
 				},
 			);
 
 			expect(result).toEqual({ inserted: 1, skipped: 0, via: "http" });
-			expect(seen).toEqual(["current", "queued"]);
+			expect(seen).toEqual(["queued", "current"]);
 			expect(readdirSync(join(dir, "spool"))).toHaveLength(0);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 
-	it("drains queued spool entries via direct fallback when the viewer stays down", async () => {
+	it("retains queued spool entries when the viewer stays down", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "codemem-cli-codex-direct-drain-"));
 		const dbPath = join(dir, "fallback.sqlite");
 		const db = connect(dbPath);
@@ -262,16 +254,16 @@ describe("codex-hook-ingest command", () => {
 				{ httpIngest: async () => ({ ok: false, inserted: 0, skipped: 0 }) },
 			);
 
-			expect(result).toEqual({ inserted: 1, skipped: 0, via: "direct" });
+			expect(result).toEqual({ inserted: 0, skipped: 0, via: "spool" });
 			expect(readdirSync(join(dir, "spool")).filter((name) => name.endsWith(".json"))).toHaveLength(
-				0,
+				2,
 			);
 			const verify = connect(dbPath);
 			try {
 				const count = verify.prepare("SELECT COUNT(*) AS count FROM raw_events").get() as {
 					count: number;
 				};
-				expect(count.count).toBe(2);
+				expect(count.count).toBe(0);
 			} finally {
 				verify.close();
 			}

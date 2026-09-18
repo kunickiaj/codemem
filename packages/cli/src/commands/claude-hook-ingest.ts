@@ -2,9 +2,9 @@
  * codemem claude-hook-ingest — read a single Claude Code hook payload
  * from stdin and enqueue it for processing.
  *
- * HTTP-first strategy: POST to the running viewer's /api/claude-hooks
- * endpoint, then fall back to direct raw-event enqueue via the local
- * store when the viewer is unreachable.
+ * Queue-first strategy: POST to the running viewer's durable inbox. Ordinary
+ * failures spool locally; boundary events retain direct ingest as a final
+ * safeguard.
  *
  * Usage (from Claude hooks config):
  *   echo '{"hook_event_name":"Stop","session_id":"...","last_assistant_message":"..."}' \
@@ -41,7 +41,7 @@ import { logHookEvent } from "./claude-hook-plugin-log.js";
 import { trackHookSessionState } from "./claude-hook-session-state.js";
 import { isViewerTargetConflict, rawEventTarget } from "./raw-event-target.js";
 
-type IngestVia = "http" | "direct" | "spool" | "spool_lock_busy";
+type IngestVia = "http" | "direct" | "spool";
 
 type IngestResult = { inserted: number; skipped: number; via: IngestVia };
 
@@ -61,8 +61,76 @@ type HttpIngestResult = {
 	ok: boolean;
 	inserted: number;
 	skipped: number;
+	queued?: number;
 	targetMismatch?: boolean;
+	cause?: "timeout" | "connection" | "http_status" | "malformed_response";
+	status?: number;
+	elapsedMs?: number;
 };
+
+type HttpIngestOptions = { flushBoundary?: boolean };
+
+function elapsedSince(startedAt: number): number {
+	return Math.max(0, Date.now() - startedAt);
+}
+
+function errorName(error: unknown): string {
+	return error instanceof Error ? error.name : "unknown";
+}
+
+function transportCause(error: unknown): "timeout" | "connection" {
+	const diagnostic = error instanceof Error ? `${error.name} ${error.message}` : String(error);
+	return /AbortError|TimeoutError|timeout|timed out|ETIMEDOUT/i.test(diagnostic)
+		? "timeout"
+		: "connection";
+}
+
+function logHttpFailure(result: HttpIngestResult): void {
+	const fields = [
+		"codemem claude-hook-ingest HTTP failed",
+		`cause=${result.targetMismatch ? "target_mismatch" : (result.cause ?? "unknown")}`,
+		`elapsed_ms=${result.elapsedMs ?? 0}`,
+	];
+	if (result.status != null) fields.push(`status=${result.status}`);
+	logHookEvent(fields.join(" "));
+}
+
+function malformedHttpResult(startedAt: number): HttpIngestResult {
+	return {
+		ok: false,
+		inserted: 0,
+		skipped: 0,
+		cause: "malformed_response",
+		elapsedMs: elapsedSince(startedAt),
+	};
+}
+
+function acceptedHttpResult(body: unknown, startedAt: number): HttpIngestResult {
+	if (body == null || typeof body !== "object" || Array.isArray(body)) {
+		logHookEvent("codemem claude-hook-ingest HTTP accepted with invalid response type");
+		return malformedHttpResult(startedAt);
+	}
+	const result = body as Record<string, unknown>;
+	if (typeof result.accepted === "number" && typeof result.queued === "number") {
+		return {
+			ok: true,
+			inserted: 0,
+			skipped: 0,
+			queued: result.queued,
+			elapsedMs: elapsedSince(startedAt),
+		};
+	}
+	if (typeof result.inserted === "number" && typeof result.skipped === "number") {
+		return {
+			ok: true,
+			inserted: result.inserted,
+			skipped: result.skipped,
+			elapsedMs: elapsedSince(startedAt),
+		};
+	}
+	logHookEvent("codemem claude-hook-ingest HTTP accepted with unexpected response body");
+	return malformedHttpResult(startedAt);
+}
 
 function emitStructuredError(errorCode: string, message: string): void {
 	console.log(JSON.stringify({ error: errorCode, message }));
@@ -71,9 +139,9 @@ function emitStructuredError(errorCode: string, message: string): void {
 
 /** Try to POST the hook payload to the running viewer server.
  *
- * Returns `ok: true` whenever the viewer accepts the request and
- * returns a well-shaped JSON body with numeric `inserted` / `skipped`
- * fields. That includes the `{inserted: 0, skipped: 1}` response the
+ * Returns `ok: true` whenever the viewer accepts the request and returns
+ * either the durable queue response or the legacy synchronous response.
+ * The latter includes the `{inserted: 0, skipped: 1}` response the
  * viewer emits when the payload maps to a null envelope (Stop with no
  * assistant text, UserPromptSubmit with empty prompt, etc.) — that
  * determination is deterministic, so retrying via the direct fallback
@@ -85,18 +153,23 @@ function emitStructuredError(errorCode: string, message: string): void {
  * transient, we'll need a reason field in the response and updated
  * client handling — not an unconditional fail-over.
  */
-async function tryHttpIngest(
+export async function tryHttpIngest(
 	payload: Record<string, unknown>,
 	host: string,
 	port: number,
+	options: HttpIngestOptions = {},
 ): Promise<HttpIngestResult> {
 	const url = `http://${host}:${port}/api/claude-hooks`;
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), 5000);
+	const startedAt = Date.now();
 	try {
 		const res = await fetch(url, {
 			method: "POST",
-			headers: { "Content-Type": "application/json" },
+			headers: {
+				"Content-Type": "application/json",
+				...(options.flushBoundary ? { "X-Codemem-Boundary-Flush": "1" } : {}),
+			},
 			body: JSON.stringify(payload),
 			signal: controller.signal,
 		});
@@ -107,6 +180,9 @@ async function tryHttpIngest(
 				inserted: 0,
 				skipped: 0,
 				targetMismatch: isViewerTargetConflict(res.status, body),
+				cause: "http_status",
+				status: res.status,
+				elapsedMs: elapsedSince(startedAt),
 			};
 		}
 
@@ -115,20 +191,17 @@ async function tryHttpIngest(
 			body = await res.json();
 		} catch {
 			logHookEvent("codemem claude-hook-ingest HTTP accepted with invalid response body");
-			return { ok: false, inserted: 0, skipped: 0 };
+			return malformedHttpResult(startedAt);
 		}
-		if (body == null || typeof body !== "object" || Array.isArray(body)) {
-			logHookEvent("codemem claude-hook-ingest HTTP accepted with invalid response type");
-			return { ok: false, inserted: 0, skipped: 0 };
-		}
-		const obj = body as Record<string, unknown>;
-		if (typeof obj.inserted !== "number" || typeof obj.skipped !== "number") {
-			logHookEvent("codemem claude-hook-ingest HTTP accepted with unexpected response body");
-			return { ok: false, inserted: 0, skipped: 0 };
-		}
-		return { ok: true, inserted: obj.inserted, skipped: obj.skipped };
-	} catch {
-		return { ok: false, inserted: 0, skipped: 0 };
+		return acceptedHttpResult(body, startedAt);
+	} catch (error) {
+		return {
+			ok: false,
+			inserted: 0,
+			skipped: 0,
+			cause: transportCause(error),
+			elapsedMs: elapsedSince(startedAt),
+		};
 	} finally {
 		clearTimeout(timeout);
 	}
@@ -185,7 +258,7 @@ async function flushBoundaryRawEvents(
 		observer = new ObserverClient();
 	} catch (err) {
 		logHookEvent(
-			`codemem claude-hook-ingest boundary flush observer init failed: ${err instanceof Error ? err.message : String(err)}`,
+			`codemem claude-hook-ingest boundary flush observer init failed cause=${err instanceof Error ? err.name : "unknown"}`,
 		);
 		return;
 	}
@@ -195,7 +268,7 @@ async function flushBoundaryRawEvents(
 		store = new MemoryStore(dbPath);
 	} catch (err) {
 		logHookEvent(
-			`codemem claude-hook-ingest boundary flush store init failed: ${err instanceof Error ? err.message : String(err)}`,
+			`codemem claude-hook-ingest boundary flush store init failed cause=${err instanceof Error ? err.name : "unknown"}`,
 		);
 		return;
 	}
@@ -215,28 +288,152 @@ async function flushBoundaryRawEvents(
 		);
 	} catch (err) {
 		logHookEvent(
-			`codemem claude-hook-ingest boundary flush raw events failed: ${err instanceof Error ? err.message : String(err)}`,
+			`codemem claude-hook-ingest boundary flush raw events failed cause=${err instanceof Error ? err.name : "unknown"}`,
 		);
 	} finally {
 		store.close();
 	}
 }
 
+type ClaudeIngestRuntime = {
+	payload: Record<string, unknown>;
+	opts: IngestOpts;
+	port: number;
+	httpIngest: typeof tryHttpIngest;
+	directIngest: typeof directEnqueue;
+	boundaryFlush: (payload: Record<string, unknown>, dbPath: string) => Promise<void> | void;
+	getDbPath: () => string;
+	httpPayload: (payload: Record<string, unknown>) => Record<string, unknown>;
+};
+
+function createClaudeIngestRuntime(
+	payload: Record<string, unknown>,
+	opts: IngestOpts,
+	deps: IngestDeps,
+): ClaudeIngestRuntime {
+	const resolveDb = deps.resolveDb ?? resolveDbPath;
+	let cachedDbPath: string | null = null;
+	const getDbPath = (): string => {
+		if (cachedDbPath === null) cachedDbPath = resolveDb(resolveDbOpt(opts));
+		return cachedDbPath;
+	};
+	return {
+		payload,
+		opts,
+		port: typeof opts.port === "number" ? opts.port : Number.parseInt(opts.port, 10),
+		httpIngest: deps.httpIngest ?? tryHttpIngest,
+		directIngest: deps.directIngest ?? directEnqueue,
+		boundaryFlush: deps.boundaryFlush ?? flushBoundaryRawEvents,
+		getDbPath,
+		httpPayload: (queued) => ({ ...queued, ...rawEventTarget(getDbPath()) }),
+	};
+}
+
+function spoolClaudePayloadOrThrow(
+	payload: Record<string, unknown>,
+	message: string,
+): IngestResult {
+	if (spoolPayload(payload)) return { inserted: 0, skipped: 0, via: "spool" };
+	throw new Error(message);
+}
+
+function tryClaudeDirectFallback(
+	runtime: ClaudeIngestRuntime,
+	queued: Record<string, unknown>,
+): { ok: true; result: { inserted: number; skipped: number } } | { ok: false } {
+	const startedAt = Date.now();
+	try {
+		const result = runtime.directIngest(queued, runtime.getDbPath());
+		logHookEvent(
+			`codemem claude-hook-ingest direct fallback ok elapsed_ms=${elapsedSince(startedAt)}`,
+		);
+		return { ok: true, result };
+	} catch (error) {
+		logHookEvent(
+			`codemem claude-hook-ingest direct fallback failed elapsed_ms=${elapsedSince(startedAt)} cause=${error instanceof Error ? error.name : "unknown"}`,
+		);
+		return { ok: false };
+	}
+}
+
+async function flushClaudeBoundary(runtime: ClaudeIngestRuntime): Promise<void> {
+	const startedAt = Date.now();
+	try {
+		await runtime.boundaryFlush(runtime.payload, runtime.getDbPath());
+		logHookEvent(
+			`codemem claude-hook-ingest boundary flush ok elapsed_ms=${elapsedSince(startedAt)}`,
+		);
+	} catch (error) {
+		logHookEvent(
+			`codemem claude-hook-ingest boundary flush failed elapsed_ms=${elapsedSince(startedAt)} cause=${error instanceof Error ? error.name : "unknown"}`,
+		);
+	}
+}
+
+async function drainClaudeBacklog(runtime: ClaudeIngestRuntime): Promise<boolean> {
+	if (!hasSpooledEntries()) return true;
+	const startedAt = Date.now();
+	try {
+		await withClaudeHookIngestLock(async () => {
+			recoverStaleTmpSpool(lockTtlSeconds());
+			await drainSpool(async (queuedPayload) => {
+				const result = await runtime.httpIngest(
+					runtime.httpPayload(queuedPayload),
+					runtime.opts.host,
+					runtime.port,
+					{ flushBoundary: shouldForceBoundaryFlush(queuedPayload) },
+				);
+				if (!result.ok) logHttpFailure(result);
+				return result.ok;
+			});
+		});
+		logHookEvent(`codemem claude-hook-ingest spool drain elapsed_ms=${elapsedSince(startedAt)}`);
+		return !hasSpooledEntries();
+	} catch (error) {
+		const cause = error instanceof LockBusyError ? "lock_busy" : errorName(error);
+		logHookEvent(
+			`codemem claude-hook-ingest spool drain deferred cause=${cause} elapsed_ms=${elapsedSince(startedAt)}`,
+		);
+		return false;
+	}
+}
+
+async function ingestClaudeBoundaryFallback(runtime: ClaudeIngestRuntime): Promise<IngestResult> {
+	const startedAt = Date.now();
+	const ingestDirect = async (): Promise<IngestResult> => {
+		const direct = tryClaudeDirectFallback(runtime, runtime.payload);
+		if (!direct.ok) {
+			return spoolClaudePayloadOrThrow(
+				runtime.payload,
+				"claude-hook-ingest: fallback and spool both failed",
+			);
+		}
+		await flushClaudeBoundary(runtime);
+		return { ...direct.result, via: "direct" };
+	};
+	try {
+		return await withClaudeHookIngestLock(async () => {
+			recoverStaleTmpSpool(lockTtlSeconds());
+			return await ingestDirect();
+		});
+	} catch (error) {
+		if (!(error instanceof LockBusyError)) throw error;
+		logHookEvent(
+			`codemem claude-hook-ingest lock busy; trying unlocked fallback elapsed_ms=${elapsedSince(startedAt)}`,
+		);
+		return await ingestDirect();
+	}
+}
+
 /**
- * Ingest one Claude hook payload using the TS contract:
- * HTTP enqueue first, then locked drain + retry + direct fallback +
- * disk spool durability.
+ * Ingest one Claude hook payload through the Viewer queue or local spool.
+ * Boundary events retain locked direct ingestion as the terminal fallback.
  */
 export async function ingestClaudeHookPayload(
 	payload: Record<string, unknown>,
 	opts: IngestOpts,
 	deps: IngestDeps = {},
 ): Promise<IngestResult> {
-	const httpIngest = deps.httpIngest ?? tryHttpIngest;
-	const directIngest = deps.directIngest ?? directEnqueue;
-	const resolveDb = deps.resolveDb ?? resolveDbPath;
-	const boundaryFlush = deps.boundaryFlush ?? flushBoundaryRawEvents;
-
 	// Update per-session state alongside ingestion so claude-hook-inject's
 	// retrieval query can draw on prompts/files seen on the ingest path.
 	// Failures must never crash the hook command.
@@ -245,154 +442,38 @@ export async function ingestClaudeHookPayload(
 	} catch {
 		// best-effort
 	}
+	const runtime = createClaudeIngestRuntime(payload, opts, deps);
+	const boundaryRequested = shouldForceBoundaryFlush(payload);
+	if (!(await drainClaudeBacklog(runtime))) {
+		return spoolClaudePayloadOrThrow(
+			payload,
+			"claude-hook-ingest: backlog recovery and spool both failed",
+		);
+	}
 
-	const port = typeof opts.port === "number" ? opts.port : Number.parseInt(opts.port, 10);
-
-	// Resolve DB path lazily so the unlocked HTTP-success path doesn't
-	// touch the filesystem when the viewer is up.
-	let cachedDbPath: string | null = null;
-	const getDbPath = (): string => {
-		if (cachedDbPath === null) cachedDbPath = resolveDb(resolveDbOpt(opts));
-		return cachedDbPath;
-	};
-	const httpPayload = (queued: Record<string, unknown>): Record<string, unknown> => ({
-		...queued,
-		...rawEventTarget(getDbPath()),
-	});
-
-	const tryDirectFallback = (
-		queued: Record<string, unknown>,
-	): { ok: true; result: { inserted: number; skipped: number } } | { ok: false } => {
-		try {
-			return { ok: true, result: directIngest(queued, getDbPath()) };
-		} catch (err) {
-			logHookEvent(
-				`codemem claude-hook-ingest direct fallback failed: ${err instanceof Error ? err.message : String(err)}`,
-			);
-			return { ok: false };
-		}
-	};
-
-	const flushOnBoundaryIfRequested = async (): Promise<void> => {
-		if (!shouldForceBoundaryFlush(payload)) return;
-		// Best-effort write-through of the boundary payload to the local
-		// store, then a synchronous flushRawEvents pass so memory state
-		// is durable even when the viewer process is the one being shut
-		// down. Both halves are logged with a boundary-specific message
-		// so operators can distinguish them from regular fallback errors.
-		try {
-			directIngest(payload, getDbPath());
-		} catch (err) {
-			logHookEvent(
-				`codemem claude-hook-ingest boundary flush direct write failed: ${err instanceof Error ? err.message : String(err)}`,
-			);
-		}
-		try {
-			await boundaryFlush(payload, getDbPath());
-		} catch (err) {
-			logHookEvent(
-				`codemem claude-hook-ingest boundary flush failed: ${err instanceof Error ? err.message : String(err)}`,
-			);
-		}
-	};
-
-	// Drain any backlog spooled by previous failed invocations. Runs on
-	// every successful HTTP path so the queue is recovered as soon as
-	// the viewer comes back up; if a previous run had to spool because
-	// both HTTP and direct ingest failed, those payloads must not sit
-	// stranded just because the next call happens to hit a healthy
-	// viewer. Cheap pre-check avoids the lock acquisition cost on the
-	// fast path when the spool is empty (the common case).
-	const drainBacklogIfPresent = async (): Promise<void> => {
-		if (!hasSpooledEntries()) return;
-		try {
-			await withClaudeHookIngestLock(async () => {
-				recoverStaleTmpSpool(lockTtlSeconds());
-				await drainSpool(async (queuedPayload) => {
-					const queuedHttp = await httpIngest(httpPayload(queuedPayload), opts.host, port);
-					if (queuedHttp.ok) return true;
-					return tryDirectFallback(queuedPayload).ok;
-				});
-			});
-		} catch (err) {
-			if (err instanceof LockBusyError) {
-				// Another invocation is already draining; nothing to do.
-				return;
-			}
-			logHookEvent(
-				`codemem claude-hook-ingest backlog drain failed: ${err instanceof Error ? err.message : String(err)}`,
-			);
-		}
-	};
-
-	// 1. Unlocked HTTP attempt — fast path when the viewer is up.
-	const httpResult = await httpIngest(httpPayload(payload), opts.host, port);
+	// Unlocked HTTP attempt — fast path when the viewer is up.
+	const httpResult = await runtime.httpIngest(
+		runtime.httpPayload(payload),
+		opts.host,
+		runtime.port,
+		{
+			flushBoundary: boundaryRequested,
+		},
+	);
 	if (httpResult.ok) {
-		// Drain any spooled backlog before the boundary flush so the
-		// flush pass sees every queued payload of the session, not just
-		// this event.
-		await drainBacklogIfPresent();
-		await flushOnBoundaryIfRequested();
 		return { inserted: httpResult.inserted, skipped: httpResult.skipped, via: "http" };
 	}
+	logHttpFailure(httpResult);
 
-	// 2. Locked failure path: drain spool, retry HTTP, fall back to
-	//    direct, spool the payload as last resort.
-	try {
-		return await withClaudeHookIngestLock(async () => {
-			recoverStaleTmpSpool(lockTtlSeconds());
-
-			await drainSpool(async (queuedPayload) => {
-				if (httpResult.targetMismatch) return tryDirectFallback(queuedPayload).ok;
-				const queuedHttp = await httpIngest(httpPayload(queuedPayload), opts.host, port);
-				if (queuedHttp.ok) return true;
-				return tryDirectFallback(queuedPayload).ok;
-			});
-
-			const secondHttp = httpResult.targetMismatch
-				? null
-				: await httpIngest(httpPayload(payload), opts.host, port);
-			if (secondHttp?.ok) {
-				await flushOnBoundaryIfRequested();
-				return {
-					inserted: secondHttp.inserted,
-					skipped: secondHttp.skipped,
-					via: "http" as const,
-				};
-			}
-
-			const direct = tryDirectFallback(payload);
-			if (direct.ok) {
-				await flushOnBoundaryIfRequested();
-				return { ...direct.result, via: "direct" as const };
-			}
-
-			if (spoolPayload(payload)) {
-				return { inserted: 0, skipped: 0, via: "spool" as const };
-			}
-
-			logHookEvent("codemem claude-hook-ingest failed: fallback and spool failed");
-			throw new Error("claude-hook-ingest: fallback and spool both failed");
-		});
-	} catch (err) {
-		if (!(err instanceof LockBusyError)) throw err;
-
-		logHookEvent("codemem claude-hook-ingest lock busy; trying unlocked fallback");
-		const direct = tryDirectFallback(payload);
-		if (direct.ok) {
-			return { ...direct.result, via: "direct" };
-		}
-		if (spoolPayload(payload)) {
-			return { inserted: 0, skipped: 0, via: "spool_lock_busy" };
-		}
-		logHookEvent("codemem claude-hook-ingest failed: unlocked fallback and spool failed");
-		throw err;
+	if (!boundaryRequested) {
+		return spoolClaudePayloadOrThrow(payload, "claude-hook-ingest: HTTP and spool failed");
 	}
+	return await ingestClaudeBoundaryFallback(runtime);
 }
 
 const claudeHookCmd = new Command("claude-hook-ingest")
 	.configureHelp(helpStyle)
-	.description("Ingest Claude hook payload: HTTP first, direct DB fallback");
+	.description("Ingest Claude hook payload: durable HTTP queue with local spool fallback");
 
 addDbOption(claudeHookCmd);
 addViewerHostOptions(claudeHookCmd);

@@ -461,6 +461,7 @@ async function prepareCodexHookInjection(
 	const dbPath = resolve(resolveDb(resolveDbOpt(opts)));
 	let pack: CodexPackResult = EMPTY_PACK;
 	let origin: "viewer" | "local" | "none" = "none";
+	const packStartedAt = Date.now();
 	const viewer = envTruthy(process.env.CODEMEM_CODEX_LOCAL_PACK_ONLY)
 		? ({ ok: false, disposition: "fallback" } as const)
 		: await fetchViewerPack(query, project, payload, dbPath, deps);
@@ -489,6 +490,7 @@ async function prepareCodexHookInjection(
 		`query_len=${query.length}`,
 		`empty=${pack.packText ? "false" : "true"}`,
 		`transport=${viewer.ok ? "ok" : viewer.disposition}`,
+		`elapsed_ms=${Math.max(0, Date.now() - packStartedAt)}`,
 	];
 	if (project) fields.push(`project=${JSON.stringify(project)}`);
 	logHookEvent(fields.join(" "));

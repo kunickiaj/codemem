@@ -392,21 +392,34 @@ export interface ApiRawEventsStatusResponse {
 /**
  * POST /api/raw-events — response.
  */
-export interface ApiRawEventsPostResponse {
+export interface ApiQueuedRawEventsPostResponse {
+	accepted: number;
+	queued: number;
+}
+
+export interface ApiSynchronousRawEventsPostResponse {
 	inserted: number;
 	skipped: number;
 	received: number;
 }
 
+export type ApiRawEventsPostResponse =
+	| ApiQueuedRawEventsPostResponse
+	| ApiSynchronousRawEventsPostResponse;
+
 /**
  * POST /api/claude-hooks — response.
  */
-export interface ApiClaudeHooksPostResponse {
+export interface ApiSynchronousClaudeHooksPostResponse {
 	inserted: number;
 	skipped: number;
 	skip_reason?: "transcript_unavailable" | "unsupported_hook";
 	skip_detail?: Exclude<HookTranscriptOutcome, "ok">;
 }
+
+export type ApiClaudeHooksPostResponse =
+	| ApiQueuedRawEventsPostResponse
+	| ApiSynchronousClaudeHooksPostResponse;
 
 /** POST /api/codex-hooks — response. */
 export type ApiCodexHooksPostResponse = ApiClaudeHooksPostResponse;

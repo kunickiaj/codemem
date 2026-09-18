@@ -148,6 +148,84 @@ describe("FileRawEventInbox", () => {
 });
 
 describe("queue-first raw-event routes", () => {
+	it.each([
+		["Claude", "/api/claude-hooks", "claude"],
+		["Codex", "/api/codex-hooks", "codex"],
+	] as const)(
+		"durably queues normalized %s hook envelopes without opening SQLite",
+		async (_, route, source) => {
+			const storeFactory = vi.fn(() => {
+				throw new Error("queued hook request must not open SQLite");
+			});
+			const inbox = {
+				enqueue: vi.fn().mockResolvedValue(undefined),
+				start: vi.fn(),
+				status: vi.fn(),
+				stop: vi.fn(),
+			};
+			const app = createApp({
+				storeFactory,
+				rawEventInbox: inbox,
+				rawEventTarget: { dbPath: "/expected/memory.sqlite", hasCurrentIdentity: () => true },
+			});
+
+			const response = await app.request(route, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Origin: "http://127.0.0.1:38888",
+				},
+				body: JSON.stringify({
+					hook_event_name: "UserPromptSubmit",
+					session_id: `session-${source}-queued`,
+					prompt: "queue this prompt",
+					timestamp: "2026-09-17T12:00:00.000Z",
+				}),
+			});
+
+			expect(response.status).toBe(202);
+			expect(await response.json()).toEqual({ accepted: 1, queued: 1 });
+			expect(inbox.enqueue).toHaveBeenCalledWith(
+				expect.objectContaining({ source, session_stream_id: `session-${source}-queued` }),
+				{ flushBoundary: false },
+			);
+			expect(storeFactory).not.toHaveBeenCalled();
+		},
+	);
+
+	it("preserves the Claude boundary marker in the durable queue", async () => {
+		const inbox = {
+			enqueue: vi.fn().mockResolvedValue(undefined),
+			start: vi.fn(),
+			status: vi.fn(),
+			stop: vi.fn(),
+		};
+		const app = createApp({
+			storeFactory: vi.fn(),
+			rawEventInbox: inbox,
+			rawEventTarget: { dbPath: "/expected/memory.sqlite", hasCurrentIdentity: () => true },
+		});
+
+		const response = await app.request("/api/claude-hooks", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Origin: "http://127.0.0.1:38888",
+				"X-Codemem-Boundary-Flush": "1",
+			},
+			body: JSON.stringify({
+				hook_event_name: "SessionEnd",
+				session_id: "session-claude-boundary",
+				timestamp: "2026-09-17T12:00:00.000Z",
+			}),
+		});
+
+		expect(response.status).toBe(202);
+		expect(inbox.enqueue).toHaveBeenCalledWith(expect.any(Object), { flushBoundary: true });
+	});
+});
+
+describe("canonical queue route", () => {
 	it("returns 202 after a durable append without waiting for SQLite ingestion", async () => {
 		const root = testDirectory();
 		const store = new MemoryStore(join(root, "mem.sqlite"));

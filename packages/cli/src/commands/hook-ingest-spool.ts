@@ -305,6 +305,7 @@ export function createHookIngestSpool(cfg: HookIngestSpoolConfig): HookIngestSpo
 	 * true on success, false on any I/O failure.
 	 */
 	function spoolPayload(payload: Record<string, unknown>): boolean {
+		const startedAt = Date.now();
 		const dir = spoolDir();
 		try {
 			mkdirSync(dir, { recursive: true });
@@ -336,7 +337,7 @@ export function createHookIngestSpool(cfg: HookIngestSpoolConfig): HookIngestSpo
 			logHookEvent(`${cfg.logPrefix} failed to spool payload`);
 			return false;
 		}
-		logHookEvent(`${cfg.logPrefix} spooled payload: ${finalPath}`);
+		logHookEvent(`${cfg.logPrefix} spooled payload elapsed_ms=${Date.now() - startedAt}`);
 		return true;
 	}
 
@@ -378,7 +379,7 @@ export function createHookIngestSpool(cfg: HookIngestSpoolConfig): HookIngestSpo
 			const recoveredPath = join(dir, recoveredName);
 			try {
 				renameSync(tmpPath, recoveredPath);
-				logHookEvent(`${cfg.logPrefix} recovered stale temp spool payload: ${recoveredPath}`);
+				logHookEvent(`${cfg.logPrefix} recovered stale temp spool payload`);
 			} catch {
 				// best-effort
 			}
@@ -396,15 +397,13 @@ export function createHookIngestSpool(cfg: HookIngestSpoolConfig): HookIngestSpo
 		const quarantineName = `.bad-${reason}-${Date.now()}-${randomInt(1000, 10000)}-${name}`;
 		try {
 			renameSync(sourcePath, join(dir, quarantineName));
-			logHookEvent(
-				`${cfg.logPrefix} quarantined corrupt spool payload (${reason}): ${quarantineName}`,
-			);
+			logHookEvent(`${cfg.logPrefix} quarantined corrupt spool payload cause=${reason}`);
 		} catch {
 			// If rename fails, fall back to delete; either way the broken
 			// entry must not stay in the active queue.
 			try {
 				unlinkSync(sourcePath);
-				logHookEvent(`${cfg.logPrefix} dropped corrupt spool payload (${reason}): ${name}`);
+				logHookEvent(`${cfg.logPrefix} dropped corrupt spool payload cause=${reason}`);
 			} catch {
 				// best-effort
 			}
@@ -450,7 +449,7 @@ export function createHookIngestSpool(cfg: HookIngestSpoolConfig): HookIngestSpo
 			} catch {
 				// Genuine I/O failure — leave the file alone so the next drain
 				// can retry, and surface the failure to the plugin log.
-				logHookEvent(`${cfg.logPrefix} failed to read spooled payload: ${path}`);
+				logHookEvent(`${cfg.logPrefix} failed to read spooled payload`);
 				result.failed++;
 				continue;
 			}
@@ -487,8 +486,9 @@ export function createHookIngestSpool(cfg: HookIngestSpoolConfig): HookIngestSpo
 					// best-effort
 				}
 			} else {
-				logHookEvent(`${cfg.logPrefix} failed processing spooled payload: ${path}`);
+				logHookEvent(`${cfg.logPrefix} failed processing spooled payload`);
 				result.failed++;
+				break;
 			}
 		}
 		return result;

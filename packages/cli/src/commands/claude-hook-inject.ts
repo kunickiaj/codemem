@@ -182,6 +182,7 @@ export async function buildClaudeHookInjection(
 
 	let pack: PackResult = EMPTY_PACK;
 	let origin: "local" | "none" = "none";
+	const packStartedAt = Date.now();
 	try {
 		const dbPath = resolveDb(resolveDbOpt(opts));
 		pack = await buildPack(query, project, dbPath, workingSetPaths);
@@ -205,6 +206,7 @@ export async function buildClaudeHookInjection(
 		`pack_tokens=${pack.packTokens}`,
 		`query_len=${query.length}`,
 		`empty=${pack.packText ? "false" : "true"}`,
+		`elapsed_ms=${Math.max(0, Date.now() - packStartedAt)}`,
 	];
 	if (project) {
 		fields.push(`project=${JSON.stringify(project)}`);

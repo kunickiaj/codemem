@@ -239,6 +239,98 @@ async function ingestNormalizedEnvelope(
 	return result;
 }
 
+type TranscriptDiagnostics = ReturnType<typeof createTranscriptDiagnostics>;
+
+async function postClaudeHookRequest(
+	c: Context,
+	getStore: StoreFactory,
+	sweeper: RawEventSweeper | null | undefined,
+	inbox: RawEventInbox | null | undefined,
+	inboxTarget: ViewerTargetStore | undefined,
+	transcriptDiagnostics: TranscriptDiagnostics,
+): Promise<Response> {
+	const result = await parseJsonObjectBody(c, MAX_RAW_EVENTS_BODY_BYTES);
+	if (result instanceof Response) return result;
+	const payload = result;
+	try {
+		const targetStore = inbox && inboxTarget ? inboxTarget : getStore();
+		const target = validateViewerTarget(targetStore, payload, { requirePairedTargets: true });
+		if (!target.ok) return c.json(target.body, target.status);
+		let transcriptOutcome: HookTranscriptOutcome | null = null;
+		const envelope = buildRawEventEnvelopeFromHook(untargetedPayload(payload), {
+			transcriptPolicy: { trust: "restricted", approvedRoots: [claudeTranscriptRoot()] },
+			onTranscriptOutcome: (outcome) => {
+				transcriptOutcome = outcome;
+				transcriptDiagnostics.record("claude", outcome);
+			},
+		});
+		if (envelope === null) return c.json(transcriptSkipResponse(transcriptOutcome));
+		const flushBoundary = c.req.header("x-codemem-boundary-flush") === "1";
+		if (inbox) {
+			return await enqueueRawEventRequest({
+				c,
+				getStore,
+				inbox,
+				inboxTarget,
+				payload,
+				request: { ...envelope },
+				flushBoundary,
+			});
+		}
+		const ingestResult = await ingestNormalizedEnvelope(
+			getStore(),
+			sweeper,
+			envelope,
+			flushBoundary,
+		);
+		return c.json({ inserted: ingestResult.inserted, skipped: ingestResult.skipped });
+	} catch (error) {
+		return boundedIngestErrorResponse(c, error);
+	}
+}
+
+async function postCodexHookRequest(
+	c: Context,
+	getStore: StoreFactory,
+	sweeper: RawEventSweeper | null | undefined,
+	inbox: RawEventInbox | null | undefined,
+	inboxTarget: ViewerTargetStore | undefined,
+	transcriptDiagnostics: TranscriptDiagnostics,
+): Promise<Response> {
+	const result = await parseJsonObjectBody(c, MAX_RAW_EVENTS_BODY_BYTES);
+	if (result instanceof Response) return result;
+	const payload = result;
+	try {
+		const targetStore = inbox && inboxTarget ? inboxTarget : getStore();
+		const target = validateViewerTarget(targetStore, payload, { requirePairedTargets: true });
+		if (!target.ok) return c.json(target.body, target.status);
+		let transcriptOutcome: HookTranscriptOutcome | null = null;
+		const envelope = buildRawEventEnvelopeFromCodexHook(untargetedPayload(payload), {
+			transcriptPolicy: { trust: "restricted", approvedRoots: [codexTranscriptRoot()] },
+			onTranscriptOutcome: (outcome) => {
+				transcriptOutcome = outcome;
+				transcriptDiagnostics.record("codex", outcome);
+			},
+		});
+		if (envelope === null) return c.json(transcriptSkipResponse(transcriptOutcome));
+		if (inbox) {
+			return await enqueueRawEventRequest({
+				c,
+				getStore,
+				inbox,
+				inboxTarget,
+				payload,
+				request: { ...envelope },
+				flushBoundary: false,
+			});
+		}
+		const ingestResult = await ingestNormalizedEnvelope(getStore(), sweeper, envelope);
+		return c.json({ inserted: ingestResult.inserted, skipped: ingestResult.skipped });
+	} catch (error) {
+		return boundedIngestErrorResponse(c, error);
+	}
+}
+
 export function rawEventsRoutes(
 	getStore: StoreFactory,
 	sweeper?: RawEventSweeper | null,
@@ -313,65 +405,14 @@ export function rawEventsRoutes(
 	app.post("/api/raw-events", (c) => postRawEventRequest(c, getStore, sweeper, inbox, inboxTarget));
 
 	// POST /api/claude-hooks — ingest Claude Code hook events
-	app.post("/api/claude-hooks", async (c) => {
-		const result = await parseJsonObjectBody(c, MAX_RAW_EVENTS_BODY_BYTES);
-		if (result instanceof Response) return result;
-		const payload = result;
-
-		try {
-			const store = getStore();
-			const target = validateViewerTarget(store, payload, { requirePairedTargets: true });
-			if (!target.ok) return c.json(target.body, target.status);
-			let transcriptOutcome: HookTranscriptOutcome | null = null;
-			const envelope = buildRawEventEnvelopeFromHook(untargetedPayload(payload), {
-				transcriptPolicy: { trust: "restricted", approvedRoots: [claudeTranscriptRoot()] },
-				onTranscriptOutcome: (outcome) => {
-					transcriptOutcome = outcome;
-					transcriptDiagnostics.record("claude", outcome);
-				},
-			});
-			if (envelope === null) {
-				return c.json(transcriptSkipResponse(transcriptOutcome));
-			}
-			const ingestResult = await ingestNormalizedEnvelope(
-				store,
-				sweeper,
-				envelope,
-				c.req.header("x-codemem-boundary-flush") === "1",
-			);
-			return c.json({ inserted: ingestResult.inserted, skipped: ingestResult.skipped });
-		} catch (err) {
-			return boundedIngestErrorResponse(c, err);
-		}
-	});
+	app.post("/api/claude-hooks", (c) =>
+		postClaudeHookRequest(c, getStore, sweeper, inbox, inboxTarget, transcriptDiagnostics),
+	);
 
 	// POST /api/codex-hooks — ingest Codex hook events
-	app.post("/api/codex-hooks", async (c) => {
-		const result = await parseJsonObjectBody(c, MAX_RAW_EVENTS_BODY_BYTES);
-		if (result instanceof Response) return result;
-		const payload = result;
-
-		try {
-			const store = getStore();
-			const target = validateViewerTarget(store, payload, { requirePairedTargets: true });
-			if (!target.ok) return c.json(target.body, target.status);
-			let transcriptOutcome: HookTranscriptOutcome | null = null;
-			const envelope = buildRawEventEnvelopeFromCodexHook(untargetedPayload(payload), {
-				transcriptPolicy: { trust: "restricted", approvedRoots: [codexTranscriptRoot()] },
-				onTranscriptOutcome: (outcome) => {
-					transcriptOutcome = outcome;
-					transcriptDiagnostics.record("codex", outcome);
-				},
-			});
-			if (envelope === null) {
-				return c.json(transcriptSkipResponse(transcriptOutcome));
-			}
-			const ingestResult = await ingestNormalizedEnvelope(store, sweeper, envelope);
-			return c.json({ inserted: ingestResult.inserted, skipped: ingestResult.skipped });
-		} catch (err) {
-			return boundedIngestErrorResponse(c, err);
-		}
-	});
+	app.post("/api/codex-hooks", (c) =>
+		postCodexHookRequest(c, getStore, sweeper, inbox, inboxTarget, transcriptDiagnostics),
+	);
 
 	// POST /api/pi-hooks — ingest pi extension events (compat alias)
 	app.post("/api/pi-hooks", async (c) => {
