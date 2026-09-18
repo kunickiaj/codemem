@@ -612,11 +612,15 @@ function deleteProperty(text: string, path: string[]): string {
 	const property = listProperties(text, parent).find((candidate) => candidate.key === key);
 	if (!property) throw new Error(`Cannot locate JSONC property ${path.join(".")}`);
 	const preservedComments = jsoncComments(text, property.start, property.value.end);
+	const lineStart = text.lastIndexOf("\n", property.start) + 1;
+	const indent = text.slice(lineStart, property.start).match(/^\s*/)?.[0] ?? "";
+	const commentText =
+		preservedComments.length > 0 ? `${preservedComments.join(`\n${indent}`)}\n${indent}` : "";
 	const edits: TextEdit[] = [
 		{
 			start: property.start,
 			end: property.value.end,
-			replacement: preservedComments.join(" "),
+			replacement: commentText,
 		},
 	];
 	const comma = skipTrivia(text, property.value.end);

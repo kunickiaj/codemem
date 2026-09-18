@@ -438,6 +438,22 @@ describe("writeJsonConfig deletion comment placement", () => {
 		expect(loadJsoncConfig(configPath)).toEqual({ mcp: { codemem: { enabled: true } } });
 	});
 
+	it("keeps a newline after a retained line comment from a deleted property", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		writeFileSync(
+			configPath,
+			'{\n  "mcp": {\n    "codemem": {\n      "stale": // deployment note\n        true, "enabled": true\n    },\n  },\n}\n',
+			"utf-8",
+		);
+
+		writeJsonConfig(configPath, { mcp: { codemem: { enabled: true } } });
+
+		const updated = readFileSync(configPath, "utf-8");
+		expect(updated).toContain("// deployment note\n");
+		expect(loadJsoncConfig(configPath)).toEqual({ mcp: { codemem: { enabled: true } } });
+	});
+
 	it("preserves comments nested inside deleted property values", () => {
 		const dir = makeTempDir();
 		const configPath = join(dir, "opencode.jsonc");
