@@ -16,9 +16,11 @@ export function spoolLiveHookPayload(
 		return null;
 	}
 
+	const wallTime = Date.now().toString().padStart(13, "0");
+	const monotonicTime = process.hrtime.bigint().toString().padStart(20, "0");
 	const suffix = `${process.pid}-${randomInt(1000, 10000)}.json`;
-	const tmpName = `.hook-tmp-live-${Date.now()}-${suffix}`;
-	const finalName = `zz-hook-live-${Date.now()}-${suffix}`;
+	const tmpName = `.hook-tmp-live-${wallTime}-${monotonicTime}-${suffix}`;
+	const finalName = `zz-hook-live-${wallTime}-z${monotonicTime}-${suffix}`;
 	const tmpPath = join(dir, tmpName);
 	try {
 		writeFileSync(tmpPath, JSON.stringify(payload), { encoding: "utf8" });

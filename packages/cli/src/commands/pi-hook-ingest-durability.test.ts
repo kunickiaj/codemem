@@ -14,7 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildRawEventEnvelopeFromPiEvent, connect, initTestSchema } from "@codemem/core";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ingestPiHookPayload } from "./pi-hook-ingest.js";
 import { drainPiHookSpool, spoolPiHookPayload } from "./pi-hook-ingest-spool.js";
 
@@ -242,10 +242,12 @@ describe("pi-hook-ingest boundary replay on recovered spool", () => {
 		sandbox = installPiIngestSandbox();
 	});
 	afterEach(() => {
+		vi.restoreAllMocks();
 		sandbox.cleanup();
 	});
 
 	it("replays the boundary flush when a spooled session_before_compact is drained later", async () => {
+		vi.spyOn(Date, "now").mockReturnValue(1_799_712_000_000);
 		// Original invocation: viewer down and DB down — boundary payload spools
 		// without any flush (both flush writes fail).
 		const spooled = await ingestPiHookPayload(
