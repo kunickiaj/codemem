@@ -385,13 +385,6 @@ function isManagedPlugin(entry: unknown): boolean {
 	);
 }
 
-function isManagedPluginReconciliation(path: string[], before: unknown, after: unknown): boolean {
-	if (path.length !== 1 || path[0] !== "plugin") return false;
-	if (!Array.isArray(before) || !Array.isArray(after)) return false;
-	const expected = [...before.filter((entry) => !isManagedPlugin(entry)), OPENCODE_PLUGIN_SPEC];
-	return JSON.stringify(after) === JSON.stringify(expected);
-}
-
 interface TextEdit {
 	start: number;
 	end: number;
@@ -404,33 +397,6 @@ function applyTextEdits(text: string, edits: TextEdit[]): string {
 		updated = `${updated.slice(0, edit.start)}${edit.replacement}${updated.slice(edit.end)}`;
 	}
 	return updated;
-}
-
-function removeManagedPluginValues(text: string, array: ValueSpan, values: unknown[]): string {
-	const edits: TextEdit[] = [];
-	for (const [index, value] of values.entries()) {
-		if (!isManagedPlugin(value)) continue;
-		const element = findArrayElement(text, array, index);
-		if (!element) throw new Error("Cannot locate managed plugin entry in JSONC array");
-		edits.push({ start: element.start, end: element.end, replacement: "" });
-		const comma = skipTrivia(text, element.end);
-		if (text[comma] === ",") edits.push({ start: comma, end: comma + 1, replacement: "" });
-	}
-	return applyTextEdits(text, edits);
-}
-
-function reconcileManagedPluginText(
-	text: string,
-	path: string[],
-	array: ValueSpan,
-	before: unknown,
-	after: unknown,
-): string | undefined {
-	if (!isManagedPluginReconciliation(path, before, after)) return undefined;
-	const withoutManaged = removeManagedPluginValues(text, array, before as unknown[]);
-	const updatedArray = findPath(withoutManaged, path);
-	if (!updatedArray) throw new Error("Cannot relocate plugin array after JSONC edit");
-	return appendArrayValue(withoutManaged, updatedArray, OPENCODE_PLUGIN_SPEC);
 }
 
 function replaceArrayElement(
@@ -496,6 +462,53 @@ function arrayIndent(text: string, firstElement: ValueSpan): string {
 	return text.slice(firstLineStart, firstElement.start).match(/^\s*/)?.[0] ?? "";
 }
 
+function commentTargetIndex(
+	beforeIndex: number,
+	before: unknown[],
+	after: unknown[],
+	mapping: Map<number, number>,
+): number | undefined {
+	for (const [afterIndex, mappedBeforeIndex] of mapping) {
+		if (mappedBeforeIndex === beforeIndex) return afterIndex;
+	}
+	if (isManagedPlugin(before[beforeIndex])) {
+		const managedIndex = after.findIndex(isManagedPlugin);
+		if (managedIndex !== -1) return managedIndex;
+	}
+	const mappedEntries = [...mapping.entries()];
+	const next = mappedEntries.find(([, mappedBeforeIndex]) => mappedBeforeIndex > beforeIndex);
+	if (next) return next[0];
+	return mappedEntries.findLast(([, mappedBeforeIndex]) => mappedBeforeIndex < beforeIndex)?.[0];
+}
+
+function expandEmptyArray(text: string, array: ValueSpan, values: unknown[]): string {
+	let updated = text;
+	let currentArray = array;
+	for (const value of values) {
+		const expanded = appendArrayValue(updated, currentArray, value);
+		currentArray = {
+			start: currentArray.start,
+			end: currentArray.end + expanded.length - updated.length,
+		};
+		updated = expanded;
+	}
+	return updated;
+}
+
+function mapArrayComments(
+	before: unknown[],
+	after: unknown[],
+	mapping: Map<number, number>,
+	commentsByBeforeIndex: string[][],
+): string[][] {
+	const commentsByAfterIndex = after.map((): string[] => []);
+	for (const [beforeIndex, comments] of commentsByBeforeIndex.entries()) {
+		const targetIndex = commentTargetIndex(beforeIndex, before, after, mapping);
+		if (targetIndex !== undefined) commentsByAfterIndex[targetIndex]?.push(...comments);
+	}
+	return commentsByAfterIndex;
+}
+
 function reconcileArrayElements(
 	text: string,
 	array: ValueSpan,
@@ -505,19 +518,7 @@ function reconcileArrayElements(
 	if (!Array.isArray(before) || !Array.isArray(after)) return undefined;
 	const elements = listArrayValues(text, array);
 	if (elements.length !== before.length) return undefined;
-	if (elements.length === 0) {
-		let updated = text;
-		let currentArray = array;
-		for (const value of after) {
-			const expanded = appendArrayValue(updated, currentArray, value);
-			currentArray = {
-				start: currentArray.start,
-				end: currentArray.end + expanded.length - updated.length,
-			};
-			updated = expanded;
-		}
-		return updated;
-	}
+	if (elements.length === 0) return expandEmptyArray(text, array, after);
 	const multiline = text.slice(array.start, array.end).includes("\n");
 	const separator = multiline ? `\n${arrayIndent(text, elements[0] as ValueSpan)}` : " ";
 	const mapping = arrayValueMapping(before, after);
@@ -532,10 +533,11 @@ function reconcileArrayElements(
 			commentsByBeforeIndex[index]?.push(...comments.leading);
 		}
 	}
+	const commentsByAfterIndex = mapArrayComments(before, after, mapping, commentsByBeforeIndex);
 	const lastSuffix = text.slice((elements.at(-1) as ValueSpan).end, array.end - 1);
 	const keepTrailingComma = stripJsonComments(lastSuffix).includes(",");
 	const rendered = after.map((value, index) => {
-		const comments = commentsByBeforeIndex[mapping.get(index) ?? -1] ?? [];
+		const comments = commentsByAfterIndex[index] ?? [];
 		const comma = index < after.length - 1 || keepTrailingComma ? "," : "";
 		const commentText = comments.length > 0 ? ` ${comments.join(" ")}` : "";
 		return `${formatValue(value, "")}${comma}${commentText}`;
@@ -550,14 +552,11 @@ function reconcileArrayElements(
 
 function updateExistingValue(
 	text: string,
-	path: string[],
 	span: ValueSpan,
 	before: unknown,
 	after: unknown,
 ): string {
 	if (text[span.start] === "[") {
-		const reconciled = reconcileManagedPluginText(text, path, span, before, after);
-		if (reconciled !== undefined) return reconciled;
 		if (isSingleAppend(before, after)) return appendArrayValue(text, span, after.at(-1));
 		const replaced = replaceArrayElement(text, span, before, after);
 		if (replaced !== undefined) return replaced;
@@ -607,7 +606,7 @@ function updateJsoncText(
 		const value = valueAtPath(after, path);
 		if (span) {
 			const previous = valueAtPath(before, path);
-			updated = updateExistingValue(updated, path, span, previous, value);
+			updated = updateExistingValue(updated, span, previous, value);
 			continue;
 		}
 		const parent = findPath(updated, path.slice(0, -1));

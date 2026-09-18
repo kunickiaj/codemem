@@ -255,6 +255,24 @@ describe("writeJsonConfig comment placement", () => {
 		expect(readFileSync(configPath, "utf-8")).toBe(firstOutput);
 	});
 
+	it("moves a legacy managed-plugin comment to its canonical replacement", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		writeFileSync(
+			configPath,
+			'{\n  "plugin": [\n    "codemem", /* legacy note */\n    "other-plugin",\n  ],\n}\n',
+			"utf-8",
+		);
+		const current = loadJsoncConfig(configPath);
+		const reconciled = reconcileOpencodePluginConfig(current, { force: true });
+
+		writeJsonConfig(configPath, reconciled.config);
+
+		const updated = readFileSync(configPath, "utf-8");
+		expect(updated).toContain('"@codemem/opencode-plugin", /* legacy note */');
+		expect(updated).not.toContain('"other-plugin", /* legacy note */');
+	});
+
 	it("inserts into an object whose last property has a trailing line comment", () => {
 		const dir = makeTempDir();
 		const configPath = join(dir, "opencode.jsonc");
@@ -293,6 +311,24 @@ describe("writeJsonConfig comment placement", () => {
 });
 
 describe("writeJsonConfig array comment placement", () => {
+	it("keeps comments from removed launcher arguments during a shrinking migration", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		writeFileSync(
+			configPath,
+			'{\n  "mcp": {\n    "codemem": {\n      "command": [\n        "npx", // runner note\n        "-y", /* install note */\n        "codemem",\n        "mcp",\n      ],\n    },\n  },\n}\n',
+			"utf-8",
+		);
+
+		const command = ["codemem", "mcp"];
+		writeJsonConfig(configPath, { mcp: { codemem: { command } } });
+
+		const updated = readFileSync(configPath, "utf-8");
+		expect(updated).toContain("// runner note");
+		expect(updated).toContain("/* install note */");
+		expect(loadJsoncConfig(configPath)).toEqual({ mcp: { codemem: { command } } });
+	});
+
 	it("keeps comments while replacing and extending a managed command array", () => {
 		const dir = makeTempDir();
 		const configPath = join(dir, "opencode.jsonc");
