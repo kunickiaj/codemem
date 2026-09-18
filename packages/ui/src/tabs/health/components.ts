@@ -274,11 +274,15 @@ export function HealthCard({
 			style: title ? "cursor: help;" : undefined,
 		},
 		icon
-			? h("i", {
-					"aria-hidden": "true",
-					"data-lucide": icon,
-					class: `stat-icon${loading ? " health-loading-icon" : ""}`,
-				})
+			? h(
+					"span",
+					{ class: "health-icon-slot", key: `${icon}-${loading ? "loading" : "static"}` },
+					h("i", {
+						"aria-hidden": "true",
+						"data-lucide": icon,
+						class: `stat-icon${loading ? " health-loading-icon" : ""}`,
+					}),
+				)
 			: null,
 		h(
 			"div",

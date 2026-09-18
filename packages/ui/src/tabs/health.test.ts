@@ -228,6 +228,34 @@ it("does not animate a failed Health state", () => {
 	expect(document.querySelector("#healthGrid .value")?.textContent).toBe("Unavailable");
 });
 
+it("replaces a Lucide loading SVG when the initial Health load fails", () => {
+	const originalLucide = globalThis.lucide;
+	globalThis.lucide = {
+		createIcons: () => {
+			for (const placeholder of document.querySelectorAll<HTMLElement>("i[data-lucide]")) {
+				const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+				for (const attribute of placeholder.attributes) {
+					icon.setAttribute(attribute.name, attribute.value);
+				}
+				placeholder.replaceWith(icon);
+			}
+		},
+	};
+	try {
+		state.healthStats = { status: "loading", previous: null, previousStatus: null };
+		renderOverview();
+		expect(document.querySelector("#healthGrid svg.health-loading-icon")).not.toBeNull();
+
+		state.healthStats = { status: "failed", error: "stats unavailable" };
+		renderOverview();
+
+		expect(document.querySelector("#healthGrid .health-loading-icon")).toBeNull();
+		expect(document.querySelector("#healthGrid svg[data-lucide='triangle-alert']")).not.toBeNull();
+	} finally {
+		globalThis.lucide = originalLucide;
+	}
+});
+
 it("does not animate a not-loaded Health state", () => {
 	state.healthStats = healthNotLoaded();
 
