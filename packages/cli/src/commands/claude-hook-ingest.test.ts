@@ -8,7 +8,7 @@ import {
 	directEnqueue,
 	ingestClaudeHookPayload,
 } from "./claude-hook-ingest.js";
-import { spoolPayload } from "./claude-hook-ingest-spool.js";
+import { LockBusyError, spoolPayload } from "./claude-hook-ingest-spool.js";
 
 function createTempDbPath(): { dbPath: string; cleanup: () => void } {
 	const dir = mkdtempSync(join(tmpdir(), "codemem-cli-claude-hook-"));
@@ -401,6 +401,7 @@ describe("boundary fallback after backlog recovery", () => {
 	it("runs while an older backlog entry remains pending", async () => {
 		expect(spoolPayload({ hook_event_name: "SessionStart", session_id: "queued" })).toBe(true);
 		const actions: string[] = [];
+		let lockCalls = 0;
 		const result = await ingestClaudeHookPayload(
 			{ hook_event_name: "SessionEnd", session_id: "current-boundary" },
 			{ host: "127.0.0.1", port: 38888 },
@@ -413,13 +414,45 @@ describe("boundary fallback after backlog recovery", () => {
 				boundaryFlush: () => {
 					actions.push("flush");
 				},
+				withLock: async (fn) => {
+					lockCalls += 1;
+					return await fn();
+				},
 				resolveDb: () => join(sandboxDir, "fallback.sqlite"),
 			},
 		);
 
 		expect(result).toEqual({ inserted: 1, skipped: 0, via: "direct" });
 		expect(actions).toEqual(["direct", "flush"]);
+		expect(lockCalls).toBe(1);
 		expect(readdirSync(queueDir).filter((name) => name.endsWith(".json"))).toHaveLength(1);
+	});
+
+	it("leaves a pre-spooled boundary for the lock owner instead of ingesting it unlocked", async () => {
+		expect(spoolPayload({ hook_event_name: "SessionStart", session_id: "queued" })).toBe(true);
+		const actions: string[] = [];
+		const result = await ingestClaudeHookPayload(
+			{ hook_event_name: "SessionEnd", session_id: "current-boundary" },
+			{ host: "127.0.0.1", port: 38888 },
+			{
+				httpIngest: async () => ({ ok: false, inserted: 0, skipped: 0 }),
+				directIngest: () => {
+					actions.push("direct");
+					return { inserted: 1, skipped: 0 };
+				},
+				boundaryFlush: () => {
+					actions.push("flush");
+				},
+				withLock: async () => {
+					throw new LockBusyError();
+				},
+				resolveDb: () => join(sandboxDir, "fallback.sqlite"),
+			},
+		);
+
+		expect(result).toEqual({ inserted: 0, skipped: 0, via: "spool" });
+		expect(actions).toEqual([]);
+		expect(readdirSync(queueDir).filter((name) => name.endsWith(".json"))).toHaveLength(2);
 	});
 
 	it("removes the live spool only after direct ingest succeeds", async () => {

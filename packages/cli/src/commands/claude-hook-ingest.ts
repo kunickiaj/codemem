@@ -47,6 +47,8 @@ type IngestVia = "http" | "direct" | "spool";
 
 type IngestResult = { inserted: number; skipped: number; via: IngestVia };
 
+type IngestLock = <T>(fn: () => Promise<T> | T) => Promise<T>;
+
 type IngestOpts = {
 	host: string;
 	port: string | number;
@@ -57,6 +59,7 @@ type IngestDeps = {
 	directIngest?: typeof directEnqueue;
 	resolveDb?: typeof resolveDbPath;
 	boundaryFlush?: (payload: Record<string, unknown>, dbPath: string) => Promise<void> | void;
+	withLock?: IngestLock;
 };
 
 type HttpIngestResult = {
@@ -304,6 +307,7 @@ type ClaudeIngestRuntime = {
 	httpIngest: typeof tryHttpIngest;
 	directIngest: typeof directEnqueue;
 	boundaryFlush: (payload: Record<string, unknown>, dbPath: string) => Promise<void> | void;
+	withLock: IngestLock;
 	getDbPath: () => string;
 	httpPayload: (payload: Record<string, unknown>) => Record<string, unknown>;
 };
@@ -326,6 +330,7 @@ function createClaudeIngestRuntime(
 		httpIngest: deps.httpIngest ?? tryHttpIngest,
 		directIngest: deps.directIngest ?? directEnqueue,
 		boundaryFlush: deps.boundaryFlush ?? flushBoundaryRawEvents,
+		withLock: deps.withLock ?? withClaudeHookIngestLock,
 		getDbPath,
 		httpPayload: (queued) => ({ ...queued, ...rawEventTarget(getDbPath()) }),
 	};
@@ -372,13 +377,23 @@ async function flushClaudeBoundary(runtime: ClaudeIngestRuntime): Promise<void> 
 	}
 }
 
-type ClaudeBacklogDrain = { drained: boolean; lastResult: HttpIngestResult | null };
+type ClaudeBacklogDrain = {
+	drained: boolean;
+	lastResult: HttpIngestResult | null;
+	boundaryResult: IngestResult | null;
+};
 
-async function drainClaudeBacklog(runtime: ClaudeIngestRuntime): Promise<ClaudeBacklogDrain> {
+async function drainClaudeBacklog(
+	runtime: ClaudeIngestRuntime,
+	currentReceipt: string,
+	boundaryRequested: boolean,
+): Promise<ClaudeBacklogDrain> {
 	const startedAt = Date.now();
 	let lastResult: HttpIngestResult | null = null;
+	let drained = false;
+	let boundaryResult: IngestResult | null = null;
 	try {
-		await withClaudeHookIngestLock(async () => {
+		await runtime.withLock(async () => {
 			recoverStaleTmpSpool(lockTtlSeconds());
 			await drainSpool(async (queuedPayload) => {
 				lastResult = await runtime.httpIngest(
@@ -390,47 +405,52 @@ async function drainClaudeBacklog(runtime: ClaudeIngestRuntime): Promise<ClaudeB
 				if (!lastResult.ok) logHttpFailure(lastResult);
 				return lastResult.ok;
 			});
+			drained = !hasSpooledEntries();
+			if (!drained && boundaryRequested) {
+				boundaryResult = await ingestClaudeBoundaryDirect(runtime, currentReceipt);
+			}
 		});
 		logHookEvent(`codemem claude-hook-ingest spool drain elapsed_ms=${elapsedSince(startedAt)}`);
-		return { drained: !hasSpooledEntries(), lastResult };
+		return { drained, lastResult, boundaryResult };
 	} catch (error) {
 		const cause = error instanceof LockBusyError ? "lock_busy" : errorName(error);
 		logHookEvent(
 			`codemem claude-hook-ingest spool drain deferred cause=${cause} elapsed_ms=${elapsedSince(startedAt)}`,
 		);
-		return { drained: false, lastResult };
+		return { drained: false, lastResult, boundaryResult: null };
 	}
 }
 
-async function ingestClaudeBoundaryFallback(
+async function ingestClaudeBoundaryDirect(
 	runtime: ClaudeIngestRuntime,
 	currentReceipt: string | null,
 ): Promise<IngestResult> {
+	const direct = tryClaudeDirectFallback(runtime, runtime.payload);
+	if (!direct.ok) {
+		if (currentReceipt !== null) return { inserted: 0, skipped: 0, via: "spool" };
+		return spoolClaudePayloadOrThrow(
+			runtime.payload,
+			"claude-hook-ingest: fallback and spool both failed",
+		);
+	}
+	if (currentReceipt !== null) removeSpooledPayload(currentReceipt);
+	await flushClaudeBoundary(runtime);
+	return { ...direct.result, via: "direct" };
+}
+
+async function ingestClaudeBoundaryFallback(runtime: ClaudeIngestRuntime): Promise<IngestResult> {
 	const startedAt = Date.now();
-	const ingestDirect = async (): Promise<IngestResult> => {
-		const direct = tryClaudeDirectFallback(runtime, runtime.payload);
-		if (!direct.ok) {
-			if (currentReceipt !== null) return { inserted: 0, skipped: 0, via: "spool" };
-			return spoolClaudePayloadOrThrow(
-				runtime.payload,
-				"claude-hook-ingest: fallback and spool both failed",
-			);
-		}
-		if (currentReceipt !== null) removeSpooledPayload(currentReceipt);
-		await flushClaudeBoundary(runtime);
-		return { ...direct.result, via: "direct" };
-	};
 	try {
-		return await withClaudeHookIngestLock(async () => {
+		return await runtime.withLock(async () => {
 			recoverStaleTmpSpool(lockTtlSeconds());
-			return await ingestDirect();
+			return await ingestClaudeBoundaryDirect(runtime, null);
 		});
 	} catch (error) {
 		if (!(error instanceof LockBusyError)) throw error;
 		logHookEvent(
 			`codemem claude-hook-ingest lock busy; trying unlocked fallback elapsed_ms=${elapsedSince(startedAt)}`,
 		);
-		return await ingestDirect();
+		return await ingestClaudeBoundaryDirect(runtime, null);
 	}
 }
 
@@ -461,16 +481,14 @@ export async function ingestClaudeHookPayload(
 				"claude-hook-ingest: failed to spool current payload before backlog recovery",
 			);
 		}
-		const recovery = await drainClaudeBacklog(runtime);
+		const recovery = await drainClaudeBacklog(runtime, currentReceipt, boundaryRequested);
+		if (recovery.boundaryResult !== null) return recovery.boundaryResult;
 		if (recovery.drained && recovery.lastResult?.ok) {
 			return {
 				inserted: recovery.lastResult.inserted,
 				skipped: recovery.lastResult.skipped,
 				via: "http",
 			};
-		}
-		if (boundaryRequested) {
-			return await ingestClaudeBoundaryFallback(runtime, currentReceipt);
 		}
 		return { inserted: 0, skipped: 0, via: "spool" };
 	}
@@ -492,7 +510,7 @@ export async function ingestClaudeHookPayload(
 	if (!boundaryRequested) {
 		return spoolClaudePayloadOrThrow(payload, "claude-hook-ingest: HTTP and spool failed");
 	}
-	return await ingestClaudeBoundaryFallback(runtime, null);
+	return await ingestClaudeBoundaryFallback(runtime);
 }
 
 const claudeHookCmd = new Command("claude-hook-ingest")
