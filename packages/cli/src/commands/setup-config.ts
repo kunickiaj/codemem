@@ -153,13 +153,14 @@ function removePluginEntry(raw: string, index: number): string {
 	const pluginNode = tree ? findNodeAtLocation(tree, ["plugin"]) : undefined;
 	const entry = pluginNode?.children?.[index];
 	const nextEntry = pluginNode?.children?.[index + 1];
-	if (!entry || !nextEntry) {
+	if (!pluginNode || !entry) {
 		return applyChange(raw, { path: ["plugin", index], value: undefined }, { format: false });
 	}
 
 	const scanner = createScanner(raw);
 	scanner.setPosition(entry.offset + entry.length);
-	while (scanner.getPosition() < nextEntry.offset) {
+	const boundary = nextEntry?.offset ?? pluginNode.offset + pluginNode.length - 1;
+	while (scanner.getPosition() < boundary) {
 		scanner.scan();
 		const token = raw.slice(
 			scanner.getTokenOffset(),
@@ -169,7 +170,7 @@ function removePluginEntry(raw: string, index: number): string {
 		const end = scanner.getTokenOffset() + scanner.getTokenLength();
 		return applyEdits(raw, [{ offset: entry.offset, length: end - entry.offset, content: "" }]);
 	}
-	return applyChange(raw, { path: ["plugin", index], value: undefined }, { format: false });
+	return applyEdits(raw, [{ offset: entry.offset, length: entry.length, content: "" }]);
 }
 
 function hasCommaToken(raw: string, start: number, end: number): boolean {
@@ -236,7 +237,9 @@ function configMetadata(path: string): ConfigFileMetadata | undefined {
 }
 
 function backupConfig(path: string, raw: string): void {
-	atomicReplaceConfigFile(`${path}.codemem.bak`, raw, 0o600);
+	atomicReplaceConfigFile(`${path}.codemem.bak`, raw, 0o600, undefined, undefined, {
+		followSymlink: false,
+	});
 }
 
 export function writeJsonConfig(

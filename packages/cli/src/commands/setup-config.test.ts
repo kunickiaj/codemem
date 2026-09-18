@@ -138,7 +138,9 @@ describe("writeJsonConfig", () => {
 		expect(updated).toMatch(/"codemem"[\s\S]*"enabled": true/);
 		expect(updated).toContain("},\n}");
 	});
+});
 
+describe("writeJsonConfig plugin arrays", () => {
 	it("preserves unrelated plugin entries and their nested comments", () => {
 		const dir = makeTempDir();
 		const configPath = join(dir, "opencode.jsonc");
@@ -177,6 +179,23 @@ describe("writeJsonConfig", () => {
 		expect(readFileSync(configPath, "utf-8")).toContain(rationale);
 	});
 
+	it("preserves comments before a final managed plugin", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		const rationale = "// why other is required";
+		writeFileSync(
+			configPath,
+			`{\n  "plugin": [\n    "other-plugin", ${rationale}\n    "codemem"\n  ],\n}\n`,
+			"utf-8",
+		);
+
+		writeJsonConfig(configPath, {
+			plugin: ["other-plugin", "@codemem/opencode-plugin"],
+		});
+
+		expect(readFileSync(configPath, "utf-8")).toContain(`"other-plugin", ${rationale}\n`);
+	});
+
 	it("appends to an existing plugin array without rewriting its entries", () => {
 		const dir = makeTempDir();
 		const configPath = join(dir, "opencode.jsonc");
@@ -213,7 +232,9 @@ describe("writeJsonConfig", () => {
 		expect(updated).toContain(`"other-plugin", ${rationale}\n`);
 		expect(updated).toContain(`${rationale}\n    "@codemem/opencode-plugin"`);
 	});
+});
 
+describe("writeJsonConfig safety", () => {
 	it("is byte-for-byte idempotent after applying changes", () => {
 		const dir = makeTempDir();
 		const configPath = join(dir, "opencode.jsonc");
@@ -279,6 +300,23 @@ describe("writeJsonConfig backups and symlinks", () => {
 		);
 
 		expect(readFileSync(`${configPath}.codemem.bak`, "utf-8")).toBe(original);
+	});
+
+	it("replaces a backup symlink without overwriting its target", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		const backupPath = `${configPath}.codemem.bak`;
+		const unrelatedPath = join(dir, "unrelated.txt");
+		const original = '{\n  "plugin": [],\n}\n';
+		writeFileSync(configPath, original, "utf-8");
+		writeFileSync(unrelatedPath, "do not overwrite\n", "utf-8");
+		symlinkSync(unrelatedPath, backupPath);
+
+		writeJsonConfig(configPath, { plugin: ["@codemem/opencode-plugin"] });
+
+		expect(lstatSync(backupPath).isSymbolicLink()).toBe(false);
+		expect(readFileSync(backupPath, "utf-8")).toBe(original);
+		expect(readFileSync(unrelatedPath, "utf-8")).toBe("do not overwrite\n");
 	});
 
 	it("updates a symlink target without replacing the link", () => {
