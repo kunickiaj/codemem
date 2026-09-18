@@ -131,6 +131,10 @@ function applyChange(
 	change: ConfigChange,
 	{ format = true }: { format?: boolean } = {},
 ): string {
+	if (change.value !== undefined) {
+		const appended = appendObjectProperty(raw, change);
+		if (appended !== undefined) return appended;
+	}
 	const options = format ? { formattingOptions } : {};
 	return applyEdits(raw, modify(raw, change.path, change.value, options));
 }
@@ -183,6 +187,34 @@ function hasCommaToken(raw: string, start: number, end: number): boolean {
 		if (raw.slice(tokenStart, tokenStart + scanner.getTokenLength()) === ",") return true;
 	}
 	return false;
+}
+
+function appendObjectProperty(raw: string, change: ConfigChange): string | undefined {
+	const key = change.path.at(-1);
+	if (typeof key !== "string") return undefined;
+	const tree = parseTree(raw);
+	if (!tree || findNodeAtLocation(tree, change.path)) return undefined;
+	const parentNode = findNodeAtLocation(tree, change.path.slice(0, -1));
+	const lastProperty = parentNode?.children?.at(-1);
+	if (parentNode?.type !== "object" || !lastProperty) return undefined;
+	const serializedValue = JSON.stringify(change.value, null, formattingOptions.tabSize);
+	if (serializedValue === undefined) return undefined;
+
+	const propertyEnd = lastProperty.offset + lastProperty.length;
+	const closeOffset = parentNode.offset + parentNode.length - 1;
+	const hasTrailingComma = hasCommaToken(raw, propertyEnd, closeOffset);
+	const commaEdit = hasTrailingComma ? [] : [{ offset: propertyEnd, length: 0, content: "," }];
+	const lineStart = raw.lastIndexOf("\n", lastProperty.offset - 1) + 1;
+	const indent = raw.slice(lineStart, lastProperty.offset).match(/^[\t ]*/)?.[0] ?? "";
+	const eol = raw.includes("\r\n") ? "\r\n" : "\n";
+	const value = serializedValue.replaceAll("\n", `${eol}${indent}`);
+	const property = `${JSON.stringify(key)}: ${value}${hasTrailingComma ? "," : ""}`;
+	const closeLineStart = raw.lastIndexOf("\n", closeOffset - 1) + 1;
+	const closesOnOwnLine = raw.slice(closeLineStart, closeOffset).trim() === "";
+	const insertionEdit = closesOnOwnLine
+		? { offset: closeLineStart, length: 0, content: `${indent}${property}${eol}` }
+		: { offset: closeOffset, length: 0, content: ` ${property}` };
+	return applyEdits(raw, [...commaEdit, insertionEdit]);
 }
 
 function appendManagedPlugin(raw: string, pluginNode: Node, lastChild: Node): string {

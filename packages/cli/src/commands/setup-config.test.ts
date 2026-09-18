@@ -138,6 +138,28 @@ describe("writeJsonConfig", () => {
 		expect(updated).toMatch(/"codemem"[\s\S]*"enabled": true/);
 		expect(updated).toContain("},\n}");
 	});
+
+	it("keeps a trailing comment attached when adding a nested property", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		const rationale = "// why custom is needed";
+		writeFileSync(
+			configPath,
+			`{\n  "mcp": {\n    "custom": { "enabled": true } ${rationale}\n  },\n}\n`,
+			"utf-8",
+		);
+
+		writeJsonConfig(configPath, {
+			mcp: {
+				custom: { enabled: true },
+				codemem: { command: ["codemem", "mcp"] },
+			},
+		});
+
+		const updated = readFileSync(configPath, "utf-8");
+		expect(updated).toContain(`"custom": { "enabled": true }, ${rationale}\n`);
+		expect(updated).toContain(`${rationale}\n    "codemem":`);
+	});
 });
 
 describe("writeJsonConfig plugin arrays", () => {
