@@ -346,6 +346,55 @@ describe("writeJsonConfig array comment placement", () => {
 		expect(updated).toContain("/* installation note */");
 		expect(loadJsoncConfig(configPath)).toEqual({ mcp: { codemem: { command } } });
 	});
+
+	it("keeps a multiline block comment with the preceding array value", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		writeFileSync(
+			configPath,
+			'{\n  "mcp": {\n    "codemem": {\n      "command": [\n        "uvx", /* launcher\n          note */\n        "codemem",\n      ],\n    },\n  },\n}\n',
+			"utf-8",
+		);
+
+		const command = ["npx", "-y", "--package", "codemem", "codemem", "mcp"];
+		writeJsonConfig(configPath, { mcp: { codemem: { command } } });
+
+		const updated = readFileSync(configPath, "utf-8");
+		expect(updated).toContain('"npx", /* launcher\n          note */');
+		expect(loadJsoncConfig(configPath)).toEqual({ mcp: { codemem: { command } } });
+	});
+});
+
+describe("writeJsonConfig deletion comment placement", () => {
+	it("preserves a comment between a deleted property key and value", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		writeFileSync(
+			configPath,
+			'{\n  "mcp": {\n    "codemem": {\n      "stale": /* deployment note */ true,\n      "enabled": true,\n    },\n  },\n}\n',
+			"utf-8",
+		);
+
+		writeJsonConfig(configPath, { mcp: { codemem: { enabled: true } } });
+
+		const updated = readFileSync(configPath, "utf-8");
+		expect(updated).toContain("/* deployment note */");
+		expect(loadJsoncConfig(configPath)).toEqual({ mcp: { codemem: { enabled: true } } });
+	});
+
+	it("deletes stale own properties whose names exist on Object.prototype", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		writeFileSync(
+			configPath,
+			'{\n  "mcp": {\n    "codemem": {\n      "constructor": true,\n      "enabled": true,\n    },\n  },\n}\n',
+			"utf-8",
+		);
+
+		writeJsonConfig(configPath, { mcp: { codemem: { enabled: true } } });
+
+		expect(loadJsoncConfig(configPath)).toEqual({ mcp: { codemem: { enabled: true } } });
+	});
 });
 
 describe("writeJsonConfig safety", () => {

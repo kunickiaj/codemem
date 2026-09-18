@@ -289,7 +289,7 @@ function collectChanges(
 		changes.push({ path: [...prefix, key], deleted: false });
 	}
 	for (const key of Object.keys(before)) {
-		if (key in after) continue;
+		if (Object.hasOwn(after, key)) continue;
 		changes.push({ path: [...prefix, key], deleted: true });
 	}
 	return changes;
@@ -469,9 +469,14 @@ function trailingComments(text: string): string[] {
 function commentsAroundBoundary(text: string): { trailing: string[]; leading: string[] } {
 	const newline = text.search(/[\r\n]/);
 	if (newline === -1) return { trailing: trailingComments(text), leading: [] };
+	const comments = [...text.matchAll(/\/\/[^\r\n]*|\/\*[\s\S]*?\*\//g)];
 	return {
-		trailing: trailingComments(text.slice(0, newline)),
-		leading: trailingComments(text.slice(newline)),
+		trailing: comments
+			.filter((comment) => (comment.index ?? 0) < newline)
+			.map((comment) => comment[0]),
+		leading: comments
+			.filter((comment) => (comment.index ?? 0) >= newline)
+			.map((comment) => comment[0]),
 	};
 }
 
@@ -559,7 +564,14 @@ function deleteProperty(text: string, path: string[]): string {
 	const key = path.at(-1) ?? "";
 	const property = listProperties(text, parent).find((candidate) => candidate.key === key);
 	if (!property) throw new Error(`Cannot locate JSONC property ${path.join(".")}`);
-	const edits: TextEdit[] = [{ start: property.start, end: property.value.end, replacement: "" }];
+	const preservedComments = trailingComments(text.slice(property.start, property.value.start));
+	const edits: TextEdit[] = [
+		{
+			start: property.start,
+			end: property.value.end,
+			replacement: preservedComments.join(" "),
+		},
+	];
 	const comma = skipTrivia(text, property.value.end);
 	if (text[comma] === ",") edits.push({ start: comma, end: comma + 1, replacement: "" });
 	return applyTextEdits(text, edits);
