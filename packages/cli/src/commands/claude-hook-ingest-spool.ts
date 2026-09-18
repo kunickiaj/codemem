@@ -5,6 +5,11 @@
  * attempts, error name/message) and keeps the claude flush predicate.
  */
 
+import {
+	liveHookPayloadIsOnlyActiveEntry,
+	removeLiveHookPayload,
+	spoolLiveHookPayload,
+} from "./hook-ingest-live-spool.js";
 import { createHookIngestSpool, envTruthy } from "./hook-ingest-spool.js";
 
 export type { SpoolDrainResult, SpoolHandler } from "./hook-ingest-spool.js";
@@ -27,6 +32,12 @@ const spool = createHookIngestSpool({
 export const LockBusyError = spool.LockBusyError;
 export const withClaudeHookIngestLock = spool.withLock;
 export const spoolPayload = spool.spoolPayload;
+export const spoolPayloadWithReceipt = (payload: Record<string, unknown>): string | null =>
+	spoolLiveHookPayload(spool.spoolDir(), payload, "codemem claude-hook-ingest");
+export const removeSpooledPayload = (name: string): boolean =>
+	removeLiveHookPayload(spool.spoolDir(), name);
+export const currentPayloadIsOnlySpooledEntry = (name: string): boolean =>
+	liveHookPayloadIsOnlyActiveEntry(spool.spoolDir(), name);
 export const drainSpool = spool.drainSpool;
 export const hasSpooledEntries = spool.hasSpooledEntries;
 export const recoverStaleTmpSpool = spool.recoverStaleTmpSpool;

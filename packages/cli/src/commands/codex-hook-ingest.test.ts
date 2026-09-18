@@ -374,3 +374,54 @@ describe("codex-hook-ingest command", () => {
 		}
 	});
 });
+
+async function verifyCurrentPayloadIsSpooledBeforeRecovery(): Promise<void> {
+	expect(spoolCodexHookPayload({ hook_event_name: "SessionStart", session_id: "queued" })).toBe(
+		true,
+	);
+	let releaseBacklog: (() => void) | undefined;
+	let calls = 0;
+	const pending = ingestCodexHookPayload(
+		{ hook_event_name: "SessionStart", session_id: "current" },
+		{ host: "127.0.0.1", port: 38888, db: join(hermeticDir, "fallback.sqlite") },
+		{
+			httpIngest: async () => {
+				calls += 1;
+				if (calls === 1) {
+					await new Promise<void>((resolve) => {
+						releaseBacklog = resolve;
+					});
+				}
+				return { ok: true, inserted: 1, skipped: 0 };
+			},
+		},
+	);
+
+	expect(
+		readdirSync(join(hermeticDir, "spool")).filter((name) => name.endsWith(".json")),
+	).toHaveLength(2);
+	releaseBacklog?.();
+	await expect(pending).resolves.toMatchObject({ via: "http" });
+	expect(readdirSync(join(hermeticDir, "spool"))).toHaveLength(0);
+}
+
+describe("codex-hook-ingest live payload durability", () => {
+	beforeEach(() => {
+		hermeticDir = mkdtempSync(join(tmpdir(), "codemem-cli-codex-live-spool-"));
+		setEnv("CODEMEM_CODEX_HOOK_LOCK_DIR", join(hermeticDir, "lock"));
+		setEnv("CODEMEM_CODEX_HOOK_SPOOL_DIR", join(hermeticDir, "spool"));
+	});
+
+	afterEach(() => {
+		for (const [key, value] of Object.entries(savedEnv)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+			delete savedEnv[key];
+		}
+		rmSync(hermeticDir, { recursive: true, force: true });
+	});
+
+	it("persists the current payload before awaiting backlog recovery", async () => {
+		await verifyCurrentPayloadIsSpooledBeforeRecovery();
+	});
+});

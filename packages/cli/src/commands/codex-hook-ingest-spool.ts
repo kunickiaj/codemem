@@ -5,6 +5,7 @@
  * error name/message).
  */
 
+import { spoolLiveHookPayload } from "./hook-ingest-live-spool.js";
 import { createHookIngestSpool } from "./hook-ingest-spool.js";
 
 export type { SpoolDrainResult } from "./hook-ingest-spool.js";
@@ -27,6 +28,8 @@ const spool = createHookIngestSpool({
 export const CodexHookLockBusyError = spool.LockBusyError;
 export const withCodexHookIngestLock = spool.withLock;
 export const spoolCodexHookPayload = spool.spoolPayload;
+export const spoolCodexHookPayloadWithReceipt = (payload: Record<string, unknown>): string | null =>
+	spoolLiveHookPayload(spool.spoolDir(), payload, "codemem codex-hook-ingest");
 export const drainCodexHookSpool = spool.drainSpool;
 export const hasCodexHookSpooledEntries = spool.hasSpooledEntries;
 export const recoverStaleCodexHookTmpSpool = spool.recoverStaleTmpSpool;

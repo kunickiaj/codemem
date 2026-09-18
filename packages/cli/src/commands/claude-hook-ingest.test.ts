@@ -8,6 +8,7 @@ import {
 	directEnqueue,
 	ingestClaudeHookPayload,
 } from "./claude-hook-ingest.js";
+import { spoolPayload } from "./claude-hook-ingest-spool.js";
 
 function createTempDbPath(): { dbPath: string; cleanup: () => void } {
 	const dir = mkdtempSync(join(tmpdir(), "codemem-cli-claude-hook-"));
@@ -27,6 +28,37 @@ let lockDir: string;
 let queueDir: string;
 let pluginLogPath: string;
 const savedEnv: Record<string, string | undefined> = {};
+
+async function verifyCurrentPayloadIsSpooledBeforeRecovery(): Promise<void> {
+	expect(spoolPayload({ hook_event_name: "SessionStart", session_id: "previously-spooled" })).toBe(
+		true,
+	);
+	let releaseBacklog: (() => void) | undefined;
+	let calls = 0;
+	const pending = ingestClaudeHookPayload(
+		{ hook_event_name: "SessionStart", session_id: "current" },
+		{ host: "127.0.0.1", port: 38888 },
+		{
+			httpIngest: async () => {
+				calls += 1;
+				if (calls === 1) {
+					await new Promise<void>((resolve) => {
+						releaseBacklog = resolve;
+					});
+				}
+				return { ok: true, inserted: 1, skipped: 0 };
+			},
+			resolveDb: () => join(sandboxDir, "fallback.sqlite"),
+			directIngest: () => ({ inserted: 1, skipped: 0 }),
+			boundaryFlush: () => {},
+		},
+	);
+
+	expect(readdirSync(queueDir).filter((name) => name.endsWith(".json"))).toHaveLength(2);
+	releaseBacklog?.();
+	await expect(pending).resolves.toMatchObject({ via: "http" });
+	expect(readdirSync(queueDir)).toHaveLength(0);
+}
 
 const sandboxedEnvKeys = [
 	"CODEMEM_CLAUDE_HOOK_CONTEXT_DIR",
@@ -257,6 +289,10 @@ describe("durability layer", () => {
 		expect(readdirSync(queueDir)).toHaveLength(0);
 	});
 
+	it("persists the current payload before awaiting backlog recovery", async () => {
+		await verifyCurrentPayloadIsSpooledBeforeRecovery();
+	});
+
 	it("skips backlog drain on HTTP success when spool is empty (no extra HTTP calls)", async () => {
 		let httpCallCount = 0;
 		const result = await ingestClaudeHookPayload(
@@ -358,5 +394,37 @@ describe("durability layer", () => {
 		expect(httpOptions).toEqual([{ flushBoundary: true }]);
 		expect(directCalls).toEqual([]);
 		expect(boundaryFlushCalls).toEqual([]);
+	});
+});
+
+describe("boundary fallback after backlog recovery", () => {
+	it("removes the live spool only after direct ingest succeeds", async () => {
+		expect(spoolPayload({ hook_event_name: "SessionStart", session_id: "queued" })).toBe(true);
+		const actions: string[] = [];
+		let httpCalls = 0;
+		const result = await ingestClaudeHookPayload(
+			{ hook_event_name: "SessionEnd", session_id: "current-boundary" },
+			{ host: "127.0.0.1", port: 38888 },
+			{
+				httpIngest: async () => {
+					httpCalls += 1;
+					return httpCalls === 1
+						? { ok: true, inserted: 1, skipped: 0 }
+						: { ok: false, inserted: 0, skipped: 0 };
+				},
+				directIngest: () => {
+					actions.push("direct");
+					return { inserted: 1, skipped: 0 };
+				},
+				boundaryFlush: () => {
+					actions.push("flush");
+				},
+				resolveDb: () => join(sandboxDir, "fallback.sqlite"),
+			},
+		);
+
+		expect(result).toEqual({ inserted: 1, skipped: 0, via: "direct" });
+		expect(actions).toEqual(["direct", "flush"]);
+		expect(readdirSync(queueDir)).toHaveLength(0);
 	});
 });
