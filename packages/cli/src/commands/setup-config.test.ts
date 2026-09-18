@@ -95,6 +95,14 @@ describe("loadJsoncConfig", () => {
 			},
 		});
 	});
+
+	it("parses many consecutive comments without overflowing the stack", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		writeFileSync(configPath, `${"// generated comment\n".repeat(20_000)}{}\n`, "utf-8");
+
+		expect(loadJsoncConfig(configPath)).toEqual({});
+	});
 });
 
 describe("writeJsonConfig", () => {

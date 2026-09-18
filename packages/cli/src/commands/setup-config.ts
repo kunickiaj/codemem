@@ -78,11 +78,13 @@ function skipTrivia(text: string, offset: number): number {
 		}
 		if (text.startsWith("//", index)) {
 			const newline = text.indexOf("\n", index + 2);
-			return newline === -1 ? text.length : skipTrivia(text, newline + 1);
+			index = newline === -1 ? text.length : newline + 1;
+			continue;
 		}
 		if (text.startsWith("/*", index)) {
 			const close = text.indexOf("*/", index + 2);
-			return close === -1 ? text.length : skipTrivia(text, close + 2);
+			index = close === -1 ? text.length : close + 2;
+			continue;
 		}
 		break;
 	}
