@@ -28,6 +28,7 @@
 		"@hono/node-server": "catalog:",
 		"commander": "^15.0.0",
 		"drizzle-orm": "catalog:",
+		"jsonc-parser": "3.3.1",
 		"omelette": "^0.4.17"
 	},
 	"optionalDependencies": {

@@ -1,4 +1,13 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	lstatSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -6,6 +15,7 @@ import {
 	loadJsoncConfig,
 	reconcileOpencodePluginConfig,
 	resolveOpencodeConfigPath,
+	writeJsonConfig,
 } from "./setup-config.js";
 
 const tempDirs: string[] = [];
@@ -81,6 +91,135 @@ describe("loadJsoncConfig", () => {
 				},
 			},
 		});
+	});
+
+	it("rejects malformed JSONC", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		writeFileSync(configPath, '{ "plugin": [\n', "utf-8");
+
+		expect(() => loadJsoncConfig(configPath)).toThrow(/offset/);
+	});
+});
+
+describe("writeJsonConfig", () => {
+	it("preserves unrelated comments, settings, and trailing commas", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		writeFileSync(
+			configPath,
+			'{\n  // model note\n  "model": "example/model",\n  "mcp": {\n    // custom MCP note\n    "custom": { "enabled": false },\n    "codemem": { "enabled": false },\n  },\n}\n',
+			"utf-8",
+		);
+		const codemem = { type: "local", command: ["codemem", "mcp"], enabled: true };
+
+		writeJsonConfig(configPath, {
+			model: "example/model",
+			mcp: { custom: { enabled: false }, codemem },
+		});
+
+		const updated = readFileSync(configPath, "utf-8");
+		expect(updated).toContain("// model note");
+		expect(updated).toContain("// custom MCP note");
+		expect(updated).toContain('"custom": { "enabled": false }');
+		expect(updated).toMatch(/"codemem"[\s\S]*"enabled": true/);
+		expect(updated).toContain("},\n}");
+	});
+
+	it("preserves unrelated plugin entries and their nested comments", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		writeFileSync(
+			configPath,
+			'{\n  "plugin": [\n    "codemem",\n    { "name": "custom", /* option note */ "enabled": true },\n  ],\n}\n',
+			"utf-8",
+		);
+		const custom = { name: "custom", enabled: true };
+
+		writeJsonConfig(configPath, {
+			plugin: [custom, "@codemem/opencode-plugin"],
+		});
+
+		const updated = readFileSync(configPath, "utf-8");
+		expect(updated).toContain('{ "name": "custom", /* option note */ "enabled": true }');
+		expect(loadJsoncConfig(configPath)).toEqual({
+			plugin: [custom, "@codemem/opencode-plugin"],
+		});
+	});
+
+	it("appends to an existing plugin array without rewriting its entries", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		const customEntry = '{ "name": "custom", /* keep */ "enabled": true }';
+		writeFileSync(configPath, `{\n  "plugin": [\n    ${customEntry},\n  ],\n}\n`, "utf-8");
+		const custom = { name: "custom", enabled: true };
+
+		writeJsonConfig(configPath, {
+			plugin: [custom, "@codemem/opencode-plugin"],
+		});
+
+		const updated = readFileSync(configPath, "utf-8");
+		expect(updated).toContain(`    ${customEntry},\n`);
+		expect(loadJsoncConfig(configPath)).toEqual({
+			plugin: [custom, "@codemem/opencode-plugin"],
+		});
+	});
+
+	it("is byte-for-byte idempotent after applying changes", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		writeFileSync(configPath, '{\n  // keep\n  "plugin": [],\n}\n', "utf-8");
+		const config = { plugin: ["@codemem/opencode-plugin"] };
+
+		expect(writeJsonConfig(configPath, config)).toBe(true);
+		const first = readFileSync(configPath, "utf-8");
+		expect(writeJsonConfig(configPath, config)).toBe(false);
+		expect(readFileSync(configPath, "utf-8")).toBe(first);
+	});
+
+	it("does not overwrite malformed input", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		const malformed = '{ "plugin": [\n';
+		writeFileSync(configPath, malformed, "utf-8");
+
+		expect(() => writeJsonConfig(configPath, { plugin: [] })).toThrow(/offset/);
+		expect(readFileSync(configPath, "utf-8")).toBe(malformed);
+	});
+
+	it("preserves file mode through atomic replacement", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		writeFileSync(configPath, "{}\n", "utf-8");
+		chmodSync(configPath, 0o640);
+
+		writeJsonConfig(configPath, { plugin: ["@codemem/opencode-plugin"] });
+
+		expect(statSync(configPath).mode & 0o777).toBe(0o640);
+	});
+
+	it("backs up the original source before replacement", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		const original = '{\n  // keep in backup\n  "plugin": [],\n}\n';
+		writeFileSync(configPath, original, "utf-8");
+
+		writeJsonConfig(configPath, { plugin: ["@codemem/opencode-plugin"] });
+
+		expect(readFileSync(`${configPath}.codemem.bak`, "utf-8")).toBe(original);
+	});
+
+	it("updates a symlink target without replacing the link", () => {
+		const dir = makeTempDir();
+		const targetPath = join(dir, "managed-opencode.jsonc");
+		const configPath = join(dir, "opencode.jsonc");
+		writeFileSync(targetPath, "{}\n", "utf-8");
+		symlinkSync(targetPath, configPath);
+
+		writeJsonConfig(configPath, { plugin: ["@codemem/opencode-plugin"] });
+
+		expect(lstatSync(configPath).isSymbolicLink()).toBe(true);
+		expect(loadJsoncConfig(targetPath)).toEqual({ plugin: ["@codemem/opencode-plugin"] });
 	});
 });
 

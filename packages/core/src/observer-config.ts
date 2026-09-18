@@ -518,7 +518,7 @@ export type CodememConfigMutationResult = {
 	revision: string;
 };
 
-type ConfigFileMetadata = { mode: number; uid: number; gid: number };
+export type ConfigFileMetadata = { mode: number; uid: number; gid: number };
 type ConfigFileIdentity = ConfigFileMetadata & {
 	ctimeNs: bigint;
 	dev: bigint;
