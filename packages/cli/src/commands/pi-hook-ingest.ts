@@ -2,10 +2,10 @@
  * codemem pi-hook-ingest — read a single pi extension event JSON from stdin
  * and enqueue it for raw-event processing.
  *
- * HTTP-first strategy: POST to the running viewer's /api/pi-hooks endpoint,
- * then fall back to direct raw-event enqueue via the local store when the
- * viewer is unreachable. session_before_compact / session_shutdown trigger a
- * best-effort boundary flush with source "pi".
+ * Queue-first strategy: POST to the running viewer's /api/pi-hooks endpoint,
+ * then durably spool ordinary transport failures for ordered HTTP recovery.
+ * session_before_compact / session_shutdown retain serialized direct ingest
+ * and synchronous flush as their terminal safeguard.
  *
  * Usage (from the pi extension CLI fallback):
  *   echo '{"piEvent":"session_start","sessionId":"...","cwd":"..."}' \
@@ -31,11 +31,14 @@ import { logHookEvent } from "./claude-hook-plugin-log.js";
 import {
 	drainPiHookSpool,
 	hasPiHookSpooledEntries,
+	hasSpooledPiHookPayload,
 	PiHookLockBusyError,
 	piHookLockTtlSeconds,
 	recoverStalePiHookTmpSpool,
+	removeSpooledPiHookPayload,
 	shouldForcePiBoundaryFlush,
 	spoolPiHookPayload,
+	spoolPiHookPayloadWithReceipt,
 	withPiHookIngestLock,
 } from "./pi-hook-ingest-spool.js";
 import { isViewerTargetConflict, rawEventTarget } from "./raw-event-target.js";
@@ -46,8 +49,10 @@ type HttpIngestResult = {
 	ok: boolean;
 	inserted: number;
 	skipped: number;
+	queued?: number;
 	targetMismatch?: boolean;
 };
+type IngestLock = <T>(fn: () => Promise<T> | T) => Promise<T>;
 type IngestOpts = { host: string; port: string | number } & DbOpts;
 type BoundaryFlush = (
 	payload: Record<string, unknown>,
@@ -58,6 +63,7 @@ type IngestDeps = {
 	directIngest?: typeof directEnqueuePiHook;
 	resolveDb?: typeof resolveDbPath;
 	boundaryFlush?: BoundaryFlush;
+	withLock?: IngestLock;
 };
 
 const DEFAULT_HTTP_TIMEOUT_MS = 5000;
@@ -124,6 +130,9 @@ async function tryHttpIngest(
 			return { ok: false, inserted: 0, skipped: 0 };
 		}
 		const obj = body as Record<string, unknown>;
+		if (typeof obj.accepted === "number" && typeof obj.queued === "number") {
+			return { ok: true, inserted: 0, skipped: 0, queued: obj.queued };
+		}
 		if (typeof obj.inserted !== "number" || typeof obj.skipped !== "number") {
 			logHookEvent("codemem pi-hook-ingest HTTP accepted with unexpected response body");
 			return { ok: false, inserted: 0, skipped: 0 };
@@ -231,6 +240,18 @@ async function flushBoundaryRawEvents(
 
 type DirectFallback = { ok: true; result: { inserted: number; skipped: number } } | { ok: false };
 
+type PiIngestRuntime = {
+	payload: Record<string, unknown>;
+	opts: IngestOpts;
+	port: number;
+	httpIngest: typeof tryHttpIngest;
+	directIngest: typeof directEnqueuePiHook;
+	boundaryFlush: BoundaryFlush;
+	withLock: IngestLock;
+	getDbPath: () => string;
+	httpPayload: (payload: Record<string, unknown>) => Record<string, unknown>;
+};
+
 function dbPathGetter(resolveDb: typeof resolveDbPath, opts: IngestOpts): () => string {
 	let cached: string | null = null;
 	return () => {
@@ -240,12 +261,11 @@ function dbPathGetter(resolveDb: typeof resolveDbPath, opts: IngestOpts): () => 
 }
 
 function tryDirectFallback(
-	directIngest: typeof directEnqueuePiHook,
-	getDbPath: () => string,
+	runtime: PiIngestRuntime,
 	queued: Record<string, unknown>,
 ): DirectFallback {
 	try {
-		return { ok: true, result: directIngest(queued, getDbPath()) };
+		return { ok: true, result: runtime.directIngest(queued, runtime.getDbPath()) };
 	} catch (err) {
 		logHookEvent(
 			`codemem pi-hook-ingest direct fallback failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -254,62 +274,24 @@ function tryDirectFallback(
 	}
 }
 
-async function flushOnBoundaryIfRequested(
+async function writeAndFlushBoundary(
+	runtime: PiIngestRuntime,
 	payload: Record<string, unknown>,
-	directIngest: typeof directEnqueuePiHook,
-	boundaryFlush: BoundaryFlush,
-	getDbPath: () => string,
-): Promise<void> {
-	if (!shouldForcePiBoundaryFlush(payload)) return;
+): Promise<DirectFallback> {
+	const direct = tryDirectFallback(runtime, payload);
+	if (!direct.ok) return direct;
 	try {
-		directIngest(payload, getDbPath());
-	} catch (err) {
-		logHookEvent(
-			`codemem pi-hook-ingest boundary flush direct write failed: ${err instanceof Error ? err.message : String(err)}`,
-		);
-	}
-	try {
-		await boundaryFlush(payload, getDbPath());
-	} catch (err) {
-		logHookEvent(
-			`codemem pi-hook-ingest boundary flush failed: ${err instanceof Error ? err.message : String(err)}`,
-		);
-	}
-}
-
-/**
- * Replayed-variant of flushOnBoundaryIfRequested used on the spool drain
- * path: a boundary flush that still fails keeps the spooled payload alive
- * (caller reports failure so drainPiHookSpool does not delete the entry).
- * Observes flushBoundaryRawEvents' boolean result — the production helper
- * catches observer/store/extraction errors and returns false without throwing.
- */
-async function flushOnBoundaryForRecoveredPayload(
-	payload: Record<string, unknown>,
-	directIngest: typeof directEnqueuePiHook,
-	boundaryFlush: BoundaryFlush,
-	getDbPath: () => string,
-): Promise<boolean> {
-	if (!shouldForcePiBoundaryFlush(payload)) return true;
-	try {
-		directIngest(payload, getDbPath());
-	} catch (err) {
-		logHookEvent(
-			`codemem pi-hook-ingest boundary flush direct write failed: ${err instanceof Error ? err.message : String(err)}`,
-		);
-	}
-	try {
-		const flushed = await boundaryFlush(payload, getDbPath());
+		const flushed = await runtime.boundaryFlush(payload, runtime.getDbPath());
 		if (flushed === false) {
 			logHookEvent("codemem pi-hook-ingest boundary flush failed; keeping spooled payload");
-			return false;
+			return { ok: false };
 		}
-		return true;
+		return direct;
 	} catch (err) {
 		logHookEvent(
 			`codemem pi-hook-ingest boundary flush failed; keeping spooled payload: ${err instanceof Error ? err.message : String(err)}`,
 		);
-		return false;
+		return { ok: false };
 	}
 }
 
@@ -321,215 +303,180 @@ function targetedPiPayload(
 	return { ...payload, ...rawEventTarget(getDbPath()) };
 }
 
-/** Retry HTTP once more unless the first attempt proved a viewer target mismatch. */
-async function retryHttpUnlessMismatch(
-	first: HttpIngestResult,
-	httpIngest: typeof tryHttpIngest,
-	httpPayload: Record<string, unknown>,
-	host: string,
-	port: number,
-): Promise<HttpIngestResult> {
-	if (first.targetMismatch) return { ok: false, inserted: 0, skipped: 0, targetMismatch: true };
-	return httpIngest(httpPayload, host, port);
+function createPiIngestRuntime(
+	payload: Record<string, unknown>,
+	opts: IngestOpts,
+	deps: IngestDeps,
+): PiIngestRuntime {
+	const resolveDb = deps.resolveDb ?? resolveDbPath;
+	const getDbPath = dbPathGetter(resolveDb, opts);
+	return {
+		payload,
+		opts,
+		port: typeof opts.port === "number" ? opts.port : Number.parseInt(opts.port, 10),
+		httpIngest: deps.httpIngest ?? tryHttpIngest,
+		directIngest: deps.directIngest ?? directEnqueuePiHook,
+		boundaryFlush: deps.boundaryFlush ?? flushBoundaryRawEvents,
+		withLock: deps.withLock ?? withPiHookIngestLock,
+		getDbPath,
+		httpPayload: (queued) => targetedPiPayload(queued, getDbPath),
+	};
 }
 
-/**
- * Deliver one spooled payload durably, then replay boundary semantics when the
- * payload is session_before_compact / session_shutdown. A boundary spooled
- * while the viewer and DB were down is flush-only: enqueue alone would store
- * nothing (or skip the flush), so durability requires the full boundary path.
- */
+function spoolPiPayloadOrThrow(payload: Record<string, unknown>): IngestResult {
+	if (spoolPiHookPayload(payload)) return { inserted: 0, skipped: 0, via: "spool" };
+	throw new Error("pi-hook-ingest: HTTP and spool failed");
+}
+
 async function deliverQueuedPiHook(
+	runtime: PiIngestRuntime,
 	queuedPayload: Record<string, unknown>,
-	httpIngest: typeof tryHttpIngest,
-	host: string,
-	port: number,
-	directIngest: typeof directEnqueuePiHook,
-	boundaryFlush: BoundaryFlush,
-	getDbPath: () => string,
-): Promise<boolean> {
-	const queuedHttp = await httpIngest(targetedPiPayload(queuedPayload, getDbPath), host, port);
-	const delivered = queuedHttp.ok || tryDirectFallback(directIngest, getDbPath, queuedPayload).ok;
-	if (!delivered) return false;
-	// A recovered boundary whose flush still fails stays spooled (reported as
-	// undelivered) so a later invocation can retry the extraction instead of
-	// losing it. Non-boundary payloads are done once durably delivered.
-	return flushOnBoundaryForRecoveredPayload(queuedPayload, directIngest, boundaryFlush, getDbPath);
+): Promise<{
+	accepted: boolean;
+	httpResult: HttpIngestResult;
+	directResult: { inserted: number; skipped: number } | null;
+}> {
+	const result = await runtime.httpIngest(
+		runtime.httpPayload(queuedPayload),
+		runtime.opts.host,
+		runtime.port,
+	);
+	const boundaryRequested = shouldForcePiBoundaryFlush(queuedPayload);
+	if (result.ok && (result.queued !== undefined || !boundaryRequested)) {
+		return { accepted: true, httpResult: result, directResult: null };
+	}
+	if (!boundaryRequested) return { accepted: false, httpResult: result, directResult: null };
+	const boundary = await writeAndFlushBoundary(runtime, queuedPayload);
+	if (!boundary.ok) return { accepted: false, httpResult: result, directResult: null };
+	return {
+		accepted: true,
+		httpResult: result,
+		directResult: result.ok ? null : boundary.result,
+	};
 }
 
-async function drainBacklogIfPresent(
-	httpIngest: typeof tryHttpIngest,
-	host: string,
-	port: number,
-	directIngest: typeof directEnqueuePiHook,
-	boundaryFlush: BoundaryFlush,
-	getDbPath: () => string,
-): Promise<void> {
-	if (!hasPiHookSpooledEntries()) return;
+async function ingestPiBoundaryDirect(
+	runtime: PiIngestRuntime,
+	receipt: string,
+): Promise<IngestResult> {
+	const boundary = await writeAndFlushBoundary(runtime, runtime.payload);
+	if (!boundary.ok) return { inserted: 0, skipped: 0, via: "spool" };
+	removeSpooledPiHookPayload(receipt);
+	return { ...boundary.result, via: "direct" };
+}
+
+type PiBacklogDrain = {
+	currentHandled: boolean;
+	currentResult: HttpIngestResult | null;
+	boundaryResult: IngestResult | null;
+};
+
+async function drainPiBacklog(
+	runtime: PiIngestRuntime,
+	currentReceipt: string,
+	boundaryRequested: boolean,
+): Promise<PiBacklogDrain> {
+	let currentResult: HttpIngestResult | null = null;
+	let currentAccepted = false;
+	let currentHandled = false;
+	let boundaryResult: IngestResult | null = null;
 	try {
-		await withPiHookIngestLock(async () => {
+		await runtime.withLock(async () => {
 			recoverStalePiHookTmpSpool(piHookLockTtlSeconds());
-			await drainPiHookSpool((queuedPayload) =>
-				deliverQueuedPiHook(
-					queuedPayload,
-					httpIngest,
-					host,
-					port,
-					directIngest,
-					boundaryFlush,
-					getDbPath,
-				),
-			);
+			await drainPiHookSpool(async (queuedPayload, receipt) => {
+				const delivery = await deliverQueuedPiHook(runtime, queuedPayload);
+				if (receipt === currentReceipt) {
+					currentResult = delivery.httpResult;
+					currentAccepted = delivery.accepted;
+					if (delivery.directResult) {
+						boundaryResult = { ...delivery.directResult, via: "direct" };
+					}
+				}
+				return delivery.accepted;
+			});
+			currentHandled = currentAccepted || !hasSpooledPiHookPayload(currentReceipt);
+			if (!currentHandled && boundaryRequested) {
+				boundaryResult = await ingestPiBoundaryDirect(runtime, currentReceipt);
+			}
 		});
-	} catch (err) {
-		if (err instanceof PiHookLockBusyError) return;
-		logHookEvent(
-			`codemem pi-hook-ingest backlog drain failed: ${err instanceof Error ? err.message : String(err)}`,
-		);
+	} catch (error) {
+		if (!(error instanceof PiHookLockBusyError)) {
+			logHookEvent(
+				`codemem pi-hook-ingest backlog drain failed: ${error instanceof Error ? error.name : "unknown"}`,
+			);
+		}
 	}
+	return { currentHandled, currentResult, boundaryResult };
 }
-async function runLockedPiHookIngest(
-	payload: Record<string, unknown>,
-	httpPayload: Record<string, unknown>,
-	firstHttp: HttpIngestResult,
-	host: string,
-	port: number,
-	httpIngest: typeof tryHttpIngest,
-	directIngest: typeof directEnqueuePiHook,
-	boundaryFlush: BoundaryFlush,
-	getDbPath: () => string,
+
+async function processStandaloneBoundaryReceipt(
+	runtime: PiIngestRuntime,
+	receipt: string,
 ): Promise<IngestResult> {
-	recoverStalePiHookTmpSpool(piHookLockTtlSeconds());
-	await drainPiHookSpool((queuedPayload) =>
-		deliverQueuedPiHook(
-			queuedPayload,
-			httpIngest,
-			host,
-			port,
-			directIngest,
-			boundaryFlush,
-			getDbPath,
-		),
-	);
-	// A target-conflict 409 means the viewer on this port serves a different
-	// database/identity: go straight to the direct path instead of retrying.
-	const secondHttp = await retryHttpUnlessMismatch(firstHttp, httpIngest, httpPayload, host, port);
-	if (secondHttp.ok) {
-		await flushOnBoundaryIfRequested(payload, directIngest, boundaryFlush, getDbPath);
-		return { inserted: secondHttp.inserted, skipped: secondHttp.skipped, via: "http" };
-	}
-	const direct = tryDirectFallback(directIngest, getDbPath, payload);
-	if (direct.ok) {
-		await flushOnBoundaryIfRequested(payload, directIngest, boundaryFlush, getDbPath);
-		return { ...direct.result, via: "direct" };
-	}
-	if (spoolPiHookPayload(payload)) {
-		await flushOnBoundaryIfRequested(payload, directIngest, boundaryFlush, getDbPath);
-		return { inserted: 0, skipped: 0, via: "spool" };
-	}
-	logHookEvent("codemem pi-hook-ingest failed: fallback and spool failed");
-	throw new Error("pi-hook-ingest: fallback and spool both failed");
-}
-async function ingestPiHookLockBusyFallback(
-	payload: Record<string, unknown>,
-	directIngest: typeof directEnqueuePiHook,
-	boundaryFlush: BoundaryFlush,
-	getDbPath: () => string,
-	err: unknown,
-): Promise<IngestResult> {
-	logHookEvent("codemem pi-hook-ingest lock busy; trying unlocked fallback");
-	const direct = tryDirectFallback(directIngest, getDbPath, payload);
-	if (direct.ok) {
-		await flushOnBoundaryIfRequested(payload, directIngest, boundaryFlush, getDbPath);
-		return { ...direct.result, via: "direct" };
-	}
-	if (spoolPiHookPayload(payload)) {
-		await flushOnBoundaryIfRequested(payload, directIngest, boundaryFlush, getDbPath);
+	try {
+		return await runtime.withLock(async () => {
+			recoverStalePiHookTmpSpool(piHookLockTtlSeconds());
+			if (!hasSpooledPiHookPayload(receipt)) {
+				return { inserted: 0, skipped: 0, via: "spool" };
+			}
+			return await ingestPiBoundaryDirect(runtime, receipt);
+		});
+	} catch (error) {
+		if (!(error instanceof PiHookLockBusyError)) throw error;
 		return { inserted: 0, skipped: 0, via: "spool_lock_busy" };
 	}
-	logHookEvent("codemem pi-hook-ingest failed: unlocked fallback and spool failed");
-	throw err;
 }
 
-async function ingestLockedPiHookPayload(
-	payload: Record<string, unknown>,
-	httpPayload: Record<string, unknown>,
-	firstHttp: HttpIngestResult,
-	host: string,
-	port: number,
-	httpIngest: typeof tryHttpIngest,
-	directIngest: typeof directEnqueuePiHook,
-	boundaryFlush: BoundaryFlush,
-	getDbPath: () => string,
-): Promise<IngestResult> {
-	try {
-		return await withPiHookIngestLock(() =>
-			runLockedPiHookIngest(
-				payload,
-				httpPayload,
-				firstHttp,
-				host,
-				port,
-				httpIngest,
-				directIngest,
-				boundaryFlush,
-				getDbPath,
-			),
-		);
-	} catch (err) {
-		if (!(err instanceof PiHookLockBusyError)) throw err;
-		return ingestPiHookLockBusyFallback(payload, directIngest, boundaryFlush, getDbPath, err);
-	}
+async function retainAndProcessBoundary(runtime: PiIngestRuntime): Promise<IngestResult> {
+	const receipt = spoolPiHookPayloadWithReceipt(runtime.payload);
+	if (receipt === null) throw new Error("pi-hook-ingest: failed to spool boundary payload");
+	return await processStandaloneBoundaryReceipt(runtime, receipt);
 }
-/**
- * Ingest one pi extension event using the TS contract:
- * HTTP enqueue first, then locked drain + retry + direct fallback +
- * disk spool durability, with boundary flush on compact/shutdown.
- */
+
+/** Ingest one Pi event through the Viewer queue or local spool. */
 export async function ingestPiHookPayload(
 	payload: Record<string, unknown>,
 	opts: IngestOpts,
 	deps: IngestDeps = {},
 ): Promise<IngestResult> {
-	const httpIngest = deps.httpIngest ?? tryHttpIngest;
-	const directIngest = deps.directIngest ?? directEnqueuePiHook;
-	const resolveDb = deps.resolveDb ?? resolveDbPath;
-	const boundaryFlush = deps.boundaryFlush ?? flushBoundaryRawEvents;
-	const port = typeof opts.port === "number" ? opts.port : Number.parseInt(opts.port, 10);
-	const getDbPath = dbPathGetter(resolveDb, opts);
-	// Every HTTP attempt carries the requested db_path + identity_target so the
-	// viewer 409-conflicts when it serves a different database — including
-	// drained spool payloads, whose target is this invocation's target.
-	const httpPayload = targetedPiPayload(payload, getDbPath);
-	const httpResult = await httpIngest(httpPayload, opts.host, port);
+	const runtime = createPiIngestRuntime(payload, opts, deps);
+	const boundaryRequested = shouldForcePiBoundaryFlush(payload);
+	if (hasPiHookSpooledEntries()) {
+		const receipt = spoolPiHookPayloadWithReceipt(payload);
+		if (receipt === null) {
+			throw new Error("pi-hook-ingest: failed to spool current payload before backlog recovery");
+		}
+		const recovery = await drainPiBacklog(runtime, receipt, boundaryRequested);
+		if (recovery.boundaryResult !== null) return recovery.boundaryResult;
+		if (recovery.currentResult?.ok) {
+			return {
+				inserted: recovery.currentResult.inserted,
+				skipped: recovery.currentResult.skipped,
+				via: "http",
+			};
+		}
+		if (recovery.currentHandled) return { inserted: 0, skipped: 0, via: "spool" };
+		return { inserted: 0, skipped: 0, via: "spool" };
+	}
+
+	const httpResult = await runtime.httpIngest(
+		runtime.httpPayload(payload),
+		opts.host,
+		runtime.port,
+	);
 	if (httpResult.ok) {
-		await drainBacklogIfPresent(
-			httpIngest,
-			opts.host,
-			port,
-			directIngest,
-			boundaryFlush,
-			getDbPath,
-		);
-		await flushOnBoundaryIfRequested(payload, directIngest, boundaryFlush, getDbPath);
+		if (boundaryRequested && httpResult.queued === undefined) {
+			await retainAndProcessBoundary(runtime);
+		}
 		return { inserted: httpResult.inserted, skipped: httpResult.skipped, via: "http" };
 	}
-	return ingestLockedPiHookPayload(
-		payload,
-		httpPayload,
-		httpResult,
-		opts.host,
-		port,
-		httpIngest,
-		directIngest,
-		boundaryFlush,
-		getDbPath,
-	);
+	if (!boundaryRequested) return spoolPiPayloadOrThrow(payload);
+	return await retainAndProcessBoundary(runtime);
 }
 
 const piHookCmd = new Command("pi-hook-ingest")
 	.configureHelp(helpStyle)
-	.description("Ingest pi extension event: HTTP first, direct DB fallback");
+	.description("Ingest pi extension event: durable HTTP queue with local spool fallback");
 
 addDbOption(piHookCmd);
 addViewerHostOptions(piHookCmd);

@@ -1,7 +1,7 @@
 import { mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ingestRawEvents, MemoryStore } from "@codemem/core";
+import { ingestRawEvents, MemoryStore, type RawEventSweeper } from "@codemem/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "./index.js";
 import {
@@ -223,6 +223,62 @@ describe("queue-first raw-event routes", () => {
 		expect(response.status).toBe(202);
 		expect(inbox.enqueue).toHaveBeenCalledWith(expect.any(Object), { flushBoundary: true });
 	});
+
+	it.each([
+		["session_before_compact", true],
+		["session_shutdown", false],
+	] as const)(
+		"durably queues Pi %s with an ordered boundary directive",
+		async (piEvent, flushOnly) => {
+			const inbox = {
+				enqueue: vi.fn().mockResolvedValue(undefined),
+				start: vi.fn(),
+				status: vi.fn(),
+				stop: vi.fn(),
+			};
+			const storeFactory = vi.fn(() => {
+				throw new Error("queued Pi request must not open SQLite");
+			});
+			const app = createApp({
+				storeFactory,
+				rawEventInbox: inbox,
+				rawEventTarget: { dbPath: "/expected/memory.sqlite", hasCurrentIdentity: () => true },
+			});
+
+			const response = await app.request("/api/pi-hooks", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Origin: "http://127.0.0.1:38888",
+				},
+				body: JSON.stringify({
+					piEvent,
+					sessionId: "session-pi-boundary",
+					timestamp: "2026-09-18T12:00:00.000Z",
+				}),
+			});
+
+			expect(response.status).toBe(202);
+			expect(await response.json()).toEqual({ accepted: 1, queued: 1 });
+			expect(inbox.enqueue).toHaveBeenCalledWith(
+				flushOnly
+					? expect.objectContaining({
+							source: "pi",
+							session_stream_id: "session-pi-boundary",
+							events: [],
+						})
+					: expect.objectContaining({
+							source: "pi",
+							session_stream_id: "session-pi-boundary",
+						}),
+				{
+					flushBoundary: false,
+					boundary: { source: "pi", streamId: "session-pi-boundary" },
+				},
+			);
+			expect(storeFactory).not.toHaveBeenCalled();
+		},
+	);
 });
 
 describe("canonical queue route", () => {
@@ -413,6 +469,41 @@ describe("queued raw-event validation", () => {
 		expect(response.status).toBe(400);
 		expect(await response.json()).toEqual({ error: "payload must be an object" });
 		expect(inbox.enqueue).not.toHaveBeenCalled();
+	});
+});
+
+describe("viewer raw-event boundary drain", () => {
+	it("flushes an explicit Pi boundary after earlier queued events", async () => {
+		const root = testDirectory();
+		const actions: string[] = [];
+		const queue = createViewerRawEventInbox({
+			dbPath: join(root, "mem.sqlite"),
+			homeDir: root,
+			sweeper: {
+				nudge: (streamId: string, source: string) => {
+					actions.push(`nudge:${source}:${streamId}`);
+				},
+				flushBoundary: async (streamId: string, source: string) => {
+					actions.push(`flush:${source}:${streamId}`);
+				},
+			} as Partial<RawEventSweeper> as RawEventSweeper,
+		});
+		await queue.inbox.enqueue({
+			source: "pi",
+			session_stream_id: "session-pi-ordered",
+			event_id: "event-pi-ordered",
+			event_type: "pi.hook",
+			payload: { type: "pi.hook" },
+		});
+		await queue.inbox.enqueue(
+			{ source: "pi", session_stream_id: "session-pi-ordered", events: [] },
+			{ boundary: { source: "pi", streamId: "session-pi-ordered" } },
+		);
+		queue.inbox.start();
+
+		await vi.waitFor(async () => expect((await queue.inbox.status()).pending).toBe(0));
+		expect(actions).toEqual(["nudge:pi:session-pi-ordered", "flush:pi:session-pi-ordered"]);
+		await queue.stop();
 	});
 });
 

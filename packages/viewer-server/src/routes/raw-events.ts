@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { HookTranscriptOutcome, MemoryStore, RawEventSweeper } from "@codemem/core";
 import {
+	buildPiFlushSignalFromEvent,
 	buildRawEventEnvelopeFromCodexHook,
 	buildRawEventEnvelopeFromHook,
 	buildRawEventEnvelopeFromPiEvent,
@@ -19,7 +20,11 @@ import { desc } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { type Context, Hono } from "hono";
 import { parseJsonObjectBody, queryInt } from "../helpers.js";
-import { RAW_EVENT_INBOX_FULL_CODE, type RawEventInbox } from "../raw-event-inbox.js";
+import {
+	RAW_EVENT_INBOX_FULL_CODE,
+	type RawEventInbox,
+	type RawEventInboxBoundary,
+} from "../raw-event-inbox.js";
 import {
 	flushRawEventBoundarySessions,
 	isClaudeBoundaryEnvelope,
@@ -168,6 +173,8 @@ async function enqueueRawEventRequest(options: {
 	payload: Record<string, unknown>;
 	request: Record<string, unknown>;
 	flushBoundary: boolean;
+	boundary?: RawEventInboxBoundary;
+	acceptedCount?: number;
 }): Promise<Response> {
 	const target = validateViewerTarget(options.inboxTarget ?? options.getStore(), options.payload, {
 		requirePairedTargets: true,
@@ -175,13 +182,75 @@ async function enqueueRawEventRequest(options: {
 	if (!target.ok) return options.c.json(target.body, target.status);
 	const validation = validateRawEvents(options.request);
 	try {
-		await options.inbox.enqueue(validation.request, {
-			flushBoundary: options.flushBoundary,
-		});
+		await options.inbox.enqueue(
+			validation.request,
+			options.boundary
+				? { flushBoundary: options.flushBoundary, boundary: options.boundary }
+				: { flushBoundary: options.flushBoundary },
+		);
 	} catch (error) {
 		return boundedInboxErrorResponse(options.c, error);
 	}
-	return options.c.json({ accepted: validation.received, queued: validation.received }, 202);
+	const accepted = options.acceptedCount ?? validation.received;
+	return options.c.json({ accepted, queued: accepted }, 202);
+}
+
+function piEventName(payload: Record<string, unknown>): string {
+	for (const key of ["piEvent", "pi_event", "event", "type"] as const) {
+		const value = payload[key];
+		if (typeof value === "string" && value.trim()) return value.trim();
+	}
+	return "";
+}
+
+async function postPiHookRequest(
+	c: Context,
+	getStore: StoreFactory,
+	sweeper: RawEventSweeper | null | undefined,
+	inbox: RawEventInbox | null | undefined,
+	inboxTarget: ViewerTargetStore | undefined,
+): Promise<Response> {
+	const result = await parseJsonObjectBody(c, MAX_RAW_EVENTS_BODY_BYTES);
+	if (result instanceof Response) return result;
+	const payload = result;
+	try {
+		const targetStore = inbox && inboxTarget ? inboxTarget : getStore();
+		const target = validateViewerTarget(targetStore, payload, { requirePairedTargets: true });
+		if (!target.ok) return c.json(target.body, target.status);
+		const untargeted = untargetedPayload(payload);
+		const envelope = buildRawEventEnvelopeFromPiEvent(untargeted);
+		const signal = buildPiFlushSignalFromEvent(untargeted);
+		const boundaryRequested = ["session_before_compact", "session_shutdown"].includes(
+			piEventName(untargeted),
+		);
+		const streamId = envelope?.session_stream_id ?? signal?.session_id ?? null;
+		if (envelope === null && signal === null) return c.json({ inserted: 0, skipped: 1 });
+		if (inbox) {
+			const request = envelope
+				? { ...envelope, source: "pi" }
+				: { source: "pi", session_stream_id: signal?.session_id, events: [] };
+			return await enqueueRawEventRequest({
+				c,
+				getStore,
+				inbox,
+				inboxTarget,
+				payload,
+				request,
+				flushBoundary: false,
+				...(boundaryRequested && streamId
+					? { boundary: { source: "pi", streamId }, acceptedCount: 1 }
+					: {}),
+			});
+		}
+		if (envelope === null) return c.json({ inserted: 0, skipped: 1 });
+		const ingestResult = await ingestNormalizedEnvelope(getStore(), sweeper, {
+			...envelope,
+			source: "pi",
+		});
+		return c.json({ inserted: ingestResult.inserted, skipped: ingestResult.skipped });
+	} catch (error) {
+		return boundedIngestErrorResponse(c, error);
+	}
 }
 
 async function postRawEventRequest(
@@ -415,28 +484,7 @@ export function rawEventsRoutes(
 	);
 
 	// POST /api/pi-hooks — ingest pi extension events (compat alias)
-	app.post("/api/pi-hooks", async (c) => {
-		const result = await parseJsonObjectBody(c, MAX_RAW_EVENTS_BODY_BYTES);
-		if (result instanceof Response) return result;
-		const payload = result;
-
-		try {
-			const store = getStore();
-			const target = validateViewerTarget(store, payload, { requirePairedTargets: true });
-			if (!target.ok) return c.json(target.body, target.status);
-			const envelope = buildRawEventEnvelopeFromPiEvent(untargetedPayload(payload));
-			if (envelope === null) {
-				return c.json({ inserted: 0, skipped: 1 });
-			}
-			const ingestResult = await ingestNormalizedEnvelope(store, sweeper, {
-				...envelope,
-				source: "pi",
-			});
-			return c.json({ inserted: ingestResult.inserted, skipped: ingestResult.skipped });
-		} catch (err) {
-			return boundedIngestErrorResponse(c, err);
-		}
-	});
+	app.post("/api/pi-hooks", (c) => postPiHookRequest(c, getStore, sweeper, inbox, inboxTarget));
 
 	return app;
 }

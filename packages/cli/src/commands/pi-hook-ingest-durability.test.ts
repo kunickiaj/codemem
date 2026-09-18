@@ -2,13 +2,21 @@
  * Durability-layer tests for pi-hook-ingest. Kept in their own file so the
  * measured describe bodies stay under the test-file line ratchet.
  */
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, initTestSchema } from "@codemem/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ingestPiHookPayload } from "./pi-hook-ingest.js";
-import { spoolPiHookPayload } from "./pi-hook-ingest-spool.js";
+import { drainPiHookSpool, spoolPiHookPayload } from "./pi-hook-ingest-spool.js";
 
 const SANDBOX_ENV_KEYS = [
 	"CODEMEM_PI_HOOK_LOCK_DIR",
@@ -92,7 +100,7 @@ describe("pi-hook-ingest durability drain", () => {
 		);
 
 		expect(result).toEqual({ inserted: 1, skipped: 0, via: "http" });
-		expect(httpCalls.map((p) => p.tag)).toEqual(["fresh", "queued"]);
+		expect(httpCalls.map((p) => p.tag)).toEqual(["queued", "fresh"]);
 		expect(readdirSync(sandbox.queueDir)).toHaveLength(0);
 	});
 
@@ -221,10 +229,10 @@ describe("pi-hook-ingest durability queued drain", () => {
 			},
 		);
 
-		expect(result).toEqual({ inserted: 1, skipped: 0, via: "direct" });
-		expect(httpCalls.map((p) => p.tag)).toEqual(["fresh", "queued-1", "queued-2", "fresh"]);
-		expect(directCalls.map((p) => p.tag)).toEqual(["queued-1", "queued-2", "fresh"]);
-		expect(readdirSync(sandbox.queueDir)).toHaveLength(0);
+		expect(result).toEqual({ inserted: 0, skipped: 0, via: "spool" });
+		expect(httpCalls.map((p) => p.tag)).toEqual(["queued-1"]);
+		expect(directCalls).toEqual([]);
+		expect(readdirSync(sandbox.queueDir).filter((name) => name.endsWith(".json"))).toHaveLength(3);
 	});
 });
 
@@ -276,12 +284,9 @@ describe("pi-hook-ingest boundary replay on recovered spool", () => {
 			},
 		);
 
-		expect(result.via).toBe("direct");
-		expect(readdirSync(sandbox.queueDir).filter((n) => n.endsWith(".json"))).toHaveLength(0);
-		// Delivery write-through (best-effort enqueue; skip for flush-only) plus
-		// the boundary's own write-through both hit the boundary payload, then
-		// the current event lands. Deduplication makes the double write safe.
-		expect(directCalls.map((p) => p.tag)).toEqual(["boundary", "boundary", "later"]);
+		expect(result.via).toBe("spool");
+		expect(readdirSync(sandbox.queueDir).filter((n) => n.endsWith(".json"))).toHaveLength(1);
+		expect(directCalls.map((p) => p.tag)).toEqual(["boundary"]);
 		expect(flushes.map((p) => p.tag)).toEqual(["boundary"]);
 	});
 
@@ -351,15 +356,19 @@ describe("pi-hook-ingest boundary replay on recovered spool", () => {
 				resolveDb: () => notADb,
 			},
 		);
-		expect(readdirSync(sandbox.queueDir).filter((n) => n.endsWith(".json"))).toHaveLength(1);
+		expect(readdirSync(sandbox.queueDir).filter((n) => n.endsWith(".json"))).toHaveLength(2);
 
-		// Recovery pass 2: flush now succeeds; entry drains and is deleted.
+		// Recovery pass 2: the legacy boundary fallback succeeds, then the
+		// ordinary entries are accepted by the Viewer queue.
 		const secondFlushAttempts: Array<Record<string, unknown>> = [];
 		await ingestPiHookPayload(
 			{ piEvent: "session_start", sessionId: "sess-pass2", tag: "pass2" },
 			{ host: "127.0.0.1", port: 38888 },
 			{
-				httpIngest: async () => ({ ok: false, inserted: 0, skipped: 0 }),
+				httpIngest: async (payload) =>
+					payload.tag === "boundary"
+						? { ok: false, inserted: 0, skipped: 0 }
+						: { ok: true, inserted: 0, skipped: 0, queued: 1 },
 				directIngest: () => ({ inserted: 1, skipped: 0 }),
 				boundaryFlush: (payload) => {
 					secondFlushAttempts.push(payload);
@@ -412,7 +421,7 @@ describe("pi-hook-ingest durability boundary order", () => {
 			},
 		);
 		expect(result.via).toBe("http");
-		expect(events).toEqual(["http:fresh", "http:queued", "direct:fresh", "flush:fresh"]);
+		expect(events).toEqual(["http:queued", "http:fresh", "direct:fresh", "flush:fresh"]);
 		expect(readdirSync(sandbox.queueDir)).toHaveLength(0);
 	});
 
@@ -475,7 +484,7 @@ describe("pi-hook-ingest durability boundary compact", () => {
 		expect(boundaryFlushCalls[0]?.piEvent).toBe("session_before_compact");
 	});
 
-	it("force-flushes boundary payload on lock-busy unlocked direct path", async () => {
+	it("leaves a boundary queued when the ingest lock is busy", async () => {
 		mkdirSync(sandbox.lockDir);
 		writeFileSync(join(sandbox.lockDir, "pid"), String(process.pid), "utf8");
 		writeFileSync(join(sandbox.lockDir, "ts"), String(Math.floor(Date.now() / 1000)), "utf8");
@@ -495,9 +504,9 @@ describe("pi-hook-ingest durability boundary compact", () => {
 			},
 		);
 
-		expect(result.via).toBe("direct");
-		expect(boundaryFlushCalls).toHaveLength(1);
-		expect(boundaryFlushCalls[0]?.piEvent).toBe("session_before_compact");
+		expect(result.via).toBe("spool_lock_busy");
+		expect(boundaryFlushCalls).toHaveLength(0);
+		expect(readdirSync(sandbox.queueDir).filter((name) => name.endsWith(".json"))).toHaveLength(1);
 	});
 });
 
@@ -510,7 +519,7 @@ describe("pi-hook-ingest durability boundary spool", () => {
 		sandbox.cleanup();
 	});
 
-	it("force-flushes boundary payload on locked spool path when direct fails", async () => {
+	it("retains a boundary without flushing when its direct write fails", async () => {
 		const boundaryFlushCalls: Array<Record<string, unknown>> = [];
 		const result = await ingestPiHookPayload(
 			{ piEvent: "session_before_compact", sessionId: "sess-compact-spool" },
@@ -528,8 +537,8 @@ describe("pi-hook-ingest durability boundary spool", () => {
 		);
 
 		expect(result.via).toBe("spool");
-		expect(boundaryFlushCalls).toHaveLength(1);
-		expect(boundaryFlushCalls[0]?.piEvent).toBe("session_before_compact");
+		expect(boundaryFlushCalls).toHaveLength(0);
+		expect(readdirSync(sandbox.queueDir).filter((name) => name.endsWith(".json"))).toHaveLength(1);
 	});
 
 	it("does not boundary-flush ordinary transcript events", async () => {
@@ -567,7 +576,7 @@ describe("pi-hook-ingest durability viewer-down drain", () => {
 		sandbox.cleanup();
 	});
 
-	it("drains queued spool entries via direct fallback when the viewer stays down", async () => {
+	it("retains queued spool entries without direct fallback when the viewer stays down", async () => {
 		const dbPath = join(sandbox.sandboxDir, "fallback.sqlite");
 		const db = connect(dbPath);
 		initTestSchema(db);
@@ -594,20 +603,114 @@ describe("pi-hook-ingest durability viewer-down drain", () => {
 			{ httpIngest: async () => ({ ok: false, inserted: 0, skipped: 0 }) },
 		);
 
-		expect(result).toEqual({ inserted: 1, skipped: 0, via: "direct" });
-		expect(readdirSync(sandbox.queueDir).filter((name) => name.endsWith(".json"))).toHaveLength(0);
+		expect(result).toEqual({ inserted: 0, skipped: 0, via: "spool" });
+		expect(readdirSync(sandbox.queueDir).filter((name) => name.endsWith(".json"))).toHaveLength(2);
 		const verify = connect(dbPath);
 		try {
 			const count = verify.prepare("SELECT COUNT(*) AS count FROM raw_events").get() as {
 				count: number;
 			};
-			expect(count.count).toBe(2);
+			expect(count.count).toBe(0);
 			const sources = verify
 				.prepare("SELECT DISTINCT source AS source FROM raw_events")
 				.all() as Array<{ source: string }>;
-			expect(sources.map((r) => r.source)).toEqual(["pi"]);
+			expect(sources.map((r) => r.source)).toEqual([]);
 		} finally {
 			verify.close();
 		}
+	});
+});
+
+describe("pi-hook-ingest queue boundary races", () => {
+	let sandbox: ReturnType<typeof installPiIngestSandbox>;
+	beforeEach(() => {
+		sandbox = installPiIngestSandbox();
+	});
+	afterEach(() => {
+		sandbox.cleanup();
+	});
+
+	it("trusts a queued boundary without opening SQLite or flushing locally", async () => {
+		const directCalls: string[] = [];
+		const flushCalls: string[] = [];
+		const result = await ingestPiHookPayload(
+			{ piEvent: "session_shutdown", sessionId: "queued-boundary" },
+			{ host: "127.0.0.1", port: 38888 },
+			{
+				httpIngest: async () => ({ ok: true, inserted: 0, skipped: 0, queued: 1 }),
+				directIngest: () => {
+					directCalls.push("direct");
+					return { inserted: 1, skipped: 0 };
+				},
+				boundaryFlush: () => {
+					flushCalls.push("flush");
+				},
+				resolveDb: () => "/tmp/must-not-open.sqlite",
+			},
+		);
+
+		expect(result).toEqual({ inserted: 0, skipped: 0, via: "http" });
+		expect(directCalls).toEqual([]);
+		expect(flushCalls).toEqual([]);
+		expect(existsSync(sandbox.queueDir)).toBe(false);
+	});
+
+	it("does not replay a boundary drained by an earlier lock waiter", async () => {
+		expect(spoolPiHookPayload({ piEvent: "session_start", sessionId: "queued" })).toBe(true);
+		const directCalls: string[] = [];
+		const result = await ingestPiHookPayload(
+			{ piEvent: "session_shutdown", sessionId: "current-boundary" },
+			{ host: "127.0.0.1", port: 38888 },
+			{
+				httpIngest: async () => {
+					throw new Error("the earlier waiter already drained this receipt");
+				},
+				directIngest: () => {
+					directCalls.push("direct");
+					return { inserted: 1, skipped: 0 };
+				},
+				boundaryFlush: () => {},
+				withLock: async (fn) => {
+					await drainPiHookSpool(async () => true);
+					return await fn();
+				},
+				resolveDb: () => "/tmp/must-not-open.sqlite",
+			},
+		);
+
+		expect(result).toEqual({ inserted: 0, skipped: 0, via: "spool" });
+		expect(directCalls).toEqual([]);
+		expect(readdirSync(sandbox.queueDir).filter((name) => name.endsWith(".json"))).toHaveLength(0);
+	});
+
+	it("does not replay an accepted boundary when a concurrent receipt remains", async () => {
+		expect(spoolPiHookPayload({ piEvent: "session_start", sessionId: "queued" })).toBe(true);
+		let httpCalls = 0;
+		const directCalls: string[] = [];
+		const result = await ingestPiHookPayload(
+			{ piEvent: "session_shutdown", sessionId: "current-boundary" },
+			{ host: "127.0.0.1", port: 38888 },
+			{
+				httpIngest: async () => {
+					httpCalls += 1;
+					if (httpCalls === 2) {
+						expect(spoolPiHookPayload({ piEvent: "session_start", sessionId: "concurrent" })).toBe(
+							true,
+						);
+					}
+					return { ok: true, inserted: 0, skipped: 0, queued: 1 };
+				},
+				directIngest: () => {
+					directCalls.push("direct");
+					return { inserted: 1, skipped: 0 };
+				},
+				boundaryFlush: () => {},
+				resolveDb: () => "/tmp/must-not-open.sqlite",
+			},
+		);
+
+		expect(result).toEqual({ inserted: 0, skipped: 0, via: "http" });
+		expect(directCalls).toEqual([]);
+		expect(readdirSync(sandbox.queueDir).filter((name) => name.endsWith(".json"))).toHaveLength(1);
 	});
 });

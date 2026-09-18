@@ -4,7 +4,8 @@
  * wires the pi-specific config (dirs, TTL 300s, 20 acquire attempts,
  * error name/message) and keeps the pi flush predicate.
  */
-import { createHookIngestSpool } from "./hook-ingest-spool.js";
+import { removeLiveHookPayload, spoolLiveHookPayload } from "./hook-ingest-live-spool.js";
+import { createHookIngestSpool, hasHookIngestSpoolReceipt } from "./hook-ingest-spool.js";
 
 export type { SpoolDrainResult, SpoolHandler } from "./hook-ingest-spool.js";
 
@@ -26,8 +27,14 @@ const spool = createHookIngestSpool({
 export const PiHookLockBusyError = spool.LockBusyError;
 export const withPiHookIngestLock = spool.withLock;
 export const spoolPiHookPayload = spool.spoolPayload;
+export const spoolPiHookPayloadWithReceipt = (payload: Record<string, unknown>): string | null =>
+	spoolLiveHookPayload(spool.spoolDir(), payload, "codemem pi-hook-ingest");
+export const removeSpooledPiHookPayload = (name: string): boolean =>
+	removeLiveHookPayload(spool.spoolDir(), name);
 export const drainPiHookSpool = spool.drainSpool;
 export const hasPiHookSpooledEntries = spool.hasSpooledEntries;
+export const hasSpooledPiHookPayload = (receipt: string): boolean =>
+	hasHookIngestSpoolReceipt(spool.spoolDir(), receipt);
 export const recoverStalePiHookTmpSpool = spool.recoverStaleTmpSpool;
 export const piHookLockTtlSeconds = spool.lockTtlSeconds;
 export const piHookSpoolDir = spool.spoolDir;

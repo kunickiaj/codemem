@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, initTestSchema } from "@codemem/core";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { directEnqueuePiHook, ingestPiHookPayload, piHookIngestCommand } from "./pi-hook-ingest.js";
 
 function createTempDbPath(): { dbPath: string; cleanup: () => void } {
@@ -18,6 +18,24 @@ function createTempDbPath(): { dbPath: string; cleanup: () => void } {
 }
 
 describe("pi-hook-ingest command", () => {
+	let sandboxDir: string;
+	let savedSpoolDir: string | undefined;
+	let savedLockDir: string | undefined;
+	beforeEach(() => {
+		sandboxDir = mkdtempSync(join(tmpdir(), "codemem-cli-pi-command-"));
+		savedSpoolDir = process.env.CODEMEM_PI_HOOK_SPOOL_DIR;
+		savedLockDir = process.env.CODEMEM_PI_HOOK_LOCK_DIR;
+		process.env.CODEMEM_PI_HOOK_SPOOL_DIR = join(sandboxDir, "spool");
+		process.env.CODEMEM_PI_HOOK_LOCK_DIR = join(sandboxDir, "lock");
+	});
+	afterEach(() => {
+		if (savedSpoolDir === undefined) delete process.env.CODEMEM_PI_HOOK_SPOOL_DIR;
+		else process.env.CODEMEM_PI_HOOK_SPOOL_DIR = savedSpoolDir;
+		if (savedLockDir === undefined) delete process.env.CODEMEM_PI_HOOK_LOCK_DIR;
+		else process.env.CODEMEM_PI_HOOK_LOCK_DIR = savedLockDir;
+		rmSync(sandboxDir, { recursive: true, force: true });
+	});
+
 	it("registers expected options and help text", () => {
 		const longs = piHookIngestCommand.options.map((option) => option.long);
 		expect(longs).toContain("--db");
@@ -26,8 +44,8 @@ describe("pi-hook-ingest command", () => {
 		expect(longs).toContain("--port");
 
 		const help = piHookIngestCommand.helpInformation();
-		expect(help).toContain("HTTP first");
-		expect(help).toContain("direct DB fallback");
+		expect(help).toContain("durable HTTP queue");
+		expect(help).toContain("local spool fallback");
 	});
 
 	it("returns HTTP result when viewer ingest succeeds", async () => {
@@ -54,22 +72,28 @@ describe("pi-hook-ingest command", () => {
 		expect(httpPayloads[0]?.identity_target).toEqual(expect.any(Object));
 	});
 
-	it("falls back to direct ingest when HTTP path fails", async () => {
+	it("spools without direct ingest when HTTP transport fails", async () => {
+		let directCalls = 0;
 		const result = await ingestPiHookPayload(
 			{ piEvent: "session_start", sessionId: "sess-direct", cwd: "/tmp/demo" },
 			{ host: "127.0.0.1", port: 38888, db: "/tmp/custom.sqlite" },
 			{
 				httpIngest: async () => ({ ok: false, inserted: 0, skipped: 0 }),
-				directIngest: () => ({ inserted: 1, skipped: 0 }),
+				directIngest: () => {
+					directCalls += 1;
+					return { inserted: 1, skipped: 0 };
+				},
 				resolveDb: () => "/tmp/resolved.sqlite",
 			},
 		);
 
-		expect(result).toEqual({ inserted: 1, skipped: 0, via: "direct" });
+		expect(result).toEqual({ inserted: 0, skipped: 0, via: "spool" });
+		expect(directCalls).toBe(0);
 	});
 
-	it("goes straight to direct on a viewer target-conflict 409 without retrying HTTP", async () => {
+	it("spools a viewer target conflict without retry or direct ingest", async () => {
 		let httpCalls = 0;
+		let directCalls = 0;
 		const result = await ingestPiHookPayload(
 			{ piEvent: "session_start", sessionId: "sess-mismatch", cwd: "/tmp/demo" },
 			{ host: "127.0.0.1", port: 38888 },
@@ -78,14 +102,17 @@ describe("pi-hook-ingest command", () => {
 					httpCalls++;
 					return { ok: false, inserted: 0, skipped: 0, targetMismatch: true };
 				},
-				directIngest: () => ({ inserted: 1, skipped: 0 }),
+				directIngest: () => {
+					directCalls += 1;
+					return { inserted: 1, skipped: 0 };
+				},
 				resolveDb: () => "/tmp/resolved.sqlite",
 			},
 		);
 
-		expect(result).toEqual({ inserted: 1, skipped: 0, via: "direct" });
-		// First attempt + no locked second attempt once the target conflict is known.
+		expect(result).toEqual({ inserted: 0, skipped: 0, via: "spool" });
 		expect(httpCalls).toBe(1);
+		expect(directCalls).toBe(0);
 	});
 });
 

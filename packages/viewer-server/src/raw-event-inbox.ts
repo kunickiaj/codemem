@@ -30,9 +30,15 @@ const MAX_RETRY_DELAY_MS = 30_000;
 
 export const RAW_EVENT_INBOX_FULL_CODE = "raw_event_inbox_full";
 
+export interface RawEventInboxBoundary {
+	source: string;
+	streamId: string;
+}
+
 export interface RawEventInboxEntry {
 	request: Record<string, unknown>;
 	flushBoundary: boolean;
+	boundary?: RawEventInboxBoundary;
 }
 
 interface StoredRawEventInboxEntry {
@@ -40,6 +46,7 @@ interface StoredRawEventInboxEntry {
 	enqueue_order: string;
 	request: Record<string, unknown>;
 	flush_boundary: boolean;
+	boundary?: { source: string; stream_id: string };
 }
 
 interface LoadedRawEventInboxEntry {
@@ -84,7 +91,10 @@ export interface RawEventInboxOptions {
 }
 
 export interface RawEventInbox {
-	enqueue(request: Record<string, unknown>, options?: { flushBoundary?: boolean }): Promise<void>;
+	enqueue(
+		request: Record<string, unknown>,
+		options?: { flushBoundary?: boolean; boundary?: RawEventInboxBoundary },
+	): Promise<void>;
 	start(): void;
 	status(): Promise<RawEventInboxStatus>;
 	stop(): Promise<void>;
@@ -106,20 +116,32 @@ export function resolveRawEventInboxDirectory(dbPath: string, homeDir: string = 
 function entryContent(
 	request: Record<string, unknown>,
 	flushBoundary: boolean,
+	boundary?: RawEventInboxBoundary,
 ): Omit<StoredRawEventInboxEntry, "enqueue_order"> {
-	return { version: 1, request, flush_boundary: flushBoundary };
+	return {
+		version: 1,
+		request,
+		flush_boundary: flushBoundary,
+		...(boundary ? { boundary: { source: boundary.source, stream_id: boundary.streamId } } : {}),
+	};
 }
 
 function storedEntry(
 	request: Record<string, unknown>,
 	flushBoundary: boolean,
+	boundary: RawEventInboxBoundary | undefined,
 	enqueueOrder: bigint,
 ): StoredRawEventInboxEntry {
-	return { ...entryContent(request, flushBoundary), enqueue_order: enqueueOrder.toString() };
+	return {
+		...entryContent(request, flushBoundary, boundary),
+		enqueue_order: enqueueOrder.toString(),
+	};
 }
 
 function entryContentId(entry: RawEventInboxEntry): string {
-	return contentId(JSON.stringify(entryContent(entry.request, entry.flushBoundary)));
+	return contentId(
+		JSON.stringify(entryContent(entry.request, entry.flushBoundary, entry.boundary)),
+	);
 }
 
 function inboxFileName(enqueueOrder: bigint, id: string): string {
@@ -192,8 +214,24 @@ function parseStoredEntry(serialized: string): {
 	) {
 		throw new Error("invalid raw-event inbox entry");
 	}
+	const storedBoundary = parsed.boundary;
+	if (
+		storedBoundary !== undefined &&
+		(typeof storedBoundary.source !== "string" ||
+			storedBoundary.source.trim() === "" ||
+			typeof storedBoundary.stream_id !== "string" ||
+			storedBoundary.stream_id.trim() === "")
+	) {
+		throw new Error("invalid raw-event inbox boundary");
+	}
 	return {
-		entry: { request: parsed.request, flushBoundary: parsed.flush_boundary },
+		entry: {
+			request: parsed.request,
+			flushBoundary: parsed.flush_boundary,
+			...(storedBoundary
+				? { boundary: { source: storedBoundary.source, streamId: storedBoundary.stream_id } }
+				: {}),
+		},
 		enqueueOrder: BigInt(parsed.enqueue_order),
 	};
 }
@@ -245,7 +283,7 @@ export class FileRawEventInbox implements RawEventInbox {
 
 	async enqueue(
 		request: Record<string, unknown>,
-		options: { flushBoundary?: boolean } = {},
+		options: { flushBoundary?: boolean; boundary?: RawEventInboxBoundary } = {},
 	): Promise<void> {
 		const operation = this.enqueueChain.then(() => this.persist(request, options));
 		this.enqueueChain = operation.catch(() => {});
@@ -254,10 +292,11 @@ export class FileRawEventInbox implements RawEventInbox {
 
 	private async persist(
 		request: Record<string, unknown>,
-		options: { flushBoundary?: boolean },
+		options: { flushBoundary?: boolean; boundary?: RawEventInboxBoundary },
 	): Promise<void> {
 		const flushBoundary = options.flushBoundary === true;
-		const id = entryContentId({ request, flushBoundary });
+		const entry = { request, flushBoundary, boundary: options.boundary };
+		const id = entryContentId(entry);
 		await ensurePrivateDirectory(this.directory);
 		const entries = await readdir(this.directory, { withFileTypes: true });
 		const existingEntry = entries.find(
@@ -286,7 +325,9 @@ export class FileRawEventInbox implements RawEventInbox {
 			throw error;
 		}
 		const enqueueOrder = await this.allocateEnqueueOrder(entries);
-		const serialized = JSON.stringify(storedEntry(request, flushBoundary, enqueueOrder));
+		const serialized = JSON.stringify(
+			storedEntry(request, flushBoundary, options.boundary, enqueueOrder),
+		);
 		const destination = join(this.directory, inboxFileName(enqueueOrder, id));
 		const temporary = join(this.directory, `.${id}.${process.pid}.${randomUUID()}.tmp`);
 
@@ -517,10 +558,12 @@ export function createViewerRawEventInbox(options: {
 		onCorruptEntries: options.onCorruptEntries,
 		onBacklog: options.onBacklog,
 		onBacklogRecovered: options.onBacklogRecovered,
-		processEntry: async ({ request, flushBoundary }) => {
+		processEntry: async ({ request, flushBoundary, boundary }) => {
 			const result = ingestRawEvents(store, request);
 			nudgeRawEventSessions(options.sweeper, result.sessions);
-			if (flushBoundary && isClaudeBoundaryEnvelope(request)) {
+			if (boundary) {
+				await options.sweeper?.flushBoundary(boundary.streamId, boundary.source);
+			} else if (flushBoundary && isClaudeBoundaryEnvelope(request)) {
 				await flushRawEventBoundarySessions(options.sweeper, result.sessions);
 			}
 		},
