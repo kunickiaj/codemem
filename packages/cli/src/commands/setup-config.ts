@@ -8,6 +8,7 @@ import {
 	findNodeAtLocation,
 	type JSONPath,
 	modify,
+	type Node,
 	type ParseError,
 	parse,
 	parseTree,
@@ -62,6 +63,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function rejectDuplicateKeys(node: Node): void {
+	if (node.type === "object") {
+		const keys = new Set<string>();
+		for (const property of node.children ?? []) {
+			const keyNode = property.children?.[0];
+			const key = keyNode?.value;
+			if (!keyNode || typeof key !== "string") continue;
+			if (keys.has(key))
+				throw new Error(`Duplicate JSONC key "${key}" at offset ${keyNode.offset}`);
+			keys.add(key);
+		}
+	}
+	for (const child of node.children ?? []) rejectDuplicateKeys(child);
+}
+
 function parseJsoncConfig(raw: string): Record<string, unknown> {
 	const errors: ParseError[] = [];
 	const parsed: unknown = parse(raw, errors, { allowTrailingComma: true });
@@ -70,6 +86,8 @@ function parseJsoncConfig(raw: string): Record<string, unknown> {
 		throw new Error(`${printParseErrorCode(first.error)} at offset ${first.offset}`);
 	}
 	if (!isRecord(parsed)) throw new Error("OpenCode config must be a JSON object");
+	const tree = parseTree(raw, [], { allowTrailingComma: true });
+	if (tree) rejectDuplicateKeys(tree);
 	return parsed;
 }
 

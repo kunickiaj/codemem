@@ -100,6 +100,19 @@ describe("loadJsoncConfig", () => {
 
 		expect(() => loadJsoncConfig(configPath)).toThrow(/offset/);
 	});
+
+	it("rejects duplicate keys before edits can target a different occurrence", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		const original = '{\n  "plugin": ["other-plugin"],\n  "plugin": ["codemem"],\n}\n';
+		writeFileSync(configPath, original, "utf-8");
+
+		expect(() => loadJsoncConfig(configPath)).toThrow(/Duplicate JSONC key "plugin"/);
+		expect(() => writeJsonConfig(configPath, { plugin: ["@codemem/opencode-plugin"] })).toThrow(
+			/Duplicate JSONC key "plugin"/,
+		);
+		expect(readFileSync(configPath, "utf-8")).toBe(original);
+	});
 });
 
 describe("writeJsonConfig", () => {
@@ -214,7 +227,9 @@ describe("writeJsonConfig", () => {
 
 		expect(statSync(configPath).mode & 0o777).toBe(0o640);
 	});
+});
 
+describe("writeJsonConfig backups and symlinks", () => {
 	it("backs up the original source before replacement", () => {
 		const dir = makeTempDir();
 		const configPath = join(dir, "opencode.jsonc");
@@ -226,6 +241,25 @@ describe("writeJsonConfig", () => {
 
 		expect(readFileSync(`${configPath}.codemem.bak`, "utf-8")).toBe(original);
 		expect(statSync(`${configPath}.codemem.bak`).mode & 0o777).toBe(0o600);
+	});
+
+	it("retains the first backup when a setup run performs a second write", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		const original = '{\n  "plugin": ["codemem"],\n}\n';
+		writeFileSync(configPath, original, "utf-8");
+
+		writeJsonConfig(configPath, { plugin: ["@codemem/opencode-plugin"] });
+		writeJsonConfig(
+			configPath,
+			{
+				plugin: ["@codemem/opencode-plugin"],
+				mcp: { codemem: { command: ["codemem", "mcp"] } },
+			},
+			{ createBackup: false },
+		);
+
+		expect(readFileSync(`${configPath}.codemem.bak`, "utf-8")).toBe(original);
 	});
 
 	it("updates a symlink target without replacing the link", () => {
