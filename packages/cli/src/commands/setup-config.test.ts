@@ -419,6 +419,24 @@ describe("writeJsonConfig deletion comment placement", () => {
 		expect(loadJsoncConfig(configPath)).toEqual({ mcp: { codemem: { enabled: true } } });
 	});
 
+	it("preserves comments nested inside deleted property values", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		writeFileSync(
+			configPath,
+			'{\n  "mcp": {\n    "codemem": {\n      "staleObject": { /* object note */ "url": "https://example.test" },\n      "staleArray": ["legacy", /* array note */],\n      "enabled": true,\n    },\n  },\n}\n',
+			"utf-8",
+		);
+
+		writeJsonConfig(configPath, { mcp: { codemem: { enabled: true } } });
+
+		const updated = readFileSync(configPath, "utf-8");
+		expect(updated).toContain("/* object note */");
+		expect(updated).toContain("/* array note */");
+		expect(updated).not.toContain("example.test");
+		expect(loadJsoncConfig(configPath)).toEqual({ mcp: { codemem: { enabled: true } } });
+	});
+
 	it("deletes stale own properties whose names exist on Object.prototype", () => {
 		const dir = makeTempDir();
 		const configPath = join(dir, "opencode.jsonc");

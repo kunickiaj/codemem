@@ -443,6 +443,32 @@ function trailingComments(text: string): string[] {
 	return text.match(/\/\/[^\r\n]*|\/\*[\s\S]*?\*\//g) ?? [];
 }
 
+function jsoncComments(text: string, start: number, end: number): string[] {
+	const comments: string[] = [];
+	let index = start;
+	while (index < end) {
+		if (text[index] === '"') {
+			index = scanString(text, index);
+			continue;
+		}
+		if (text.startsWith("//", index)) {
+			const newline = text.indexOf("\n", index + 2);
+			const commentEnd = newline === -1 || newline > end ? end : newline;
+			comments.push(text.slice(index, commentEnd));
+			index = commentEnd;
+			continue;
+		}
+		if (text.startsWith("/*", index)) {
+			const commentEnd = text.indexOf("*/", index + 2) + 2;
+			comments.push(text.slice(index, Math.min(commentEnd, end)));
+			index = commentEnd;
+			continue;
+		}
+		index++;
+	}
+	return comments;
+}
+
 function commentsAroundBoundary(text: string): { trailing: string[]; leading: string[] } {
 	const newline = text.search(/[\r\n]/);
 	if (newline === -1) return { trailing: trailingComments(text), leading: [] };
@@ -574,7 +600,7 @@ function deleteProperty(text: string, path: string[]): string {
 	const key = path.at(-1) ?? "";
 	const property = listProperties(text, parent).find((candidate) => candidate.key === key);
 	if (!property) throw new Error(`Cannot locate JSONC property ${path.join(".")}`);
-	const preservedComments = trailingComments(text.slice(property.start, property.value.start));
+	const preservedComments = jsoncComments(text, property.start, property.value.end);
 	const edits: TextEdit[] = [
 		{
 			start: property.start,
