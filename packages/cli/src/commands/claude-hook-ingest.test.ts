@@ -455,6 +455,39 @@ describe("boundary fallback after backlog recovery", () => {
 		expect(readdirSync(queueDir).filter((name) => name.endsWith(".json"))).toHaveLength(2);
 	});
 
+	it("does not directly ingest an accepted boundary when a concurrent receipt remains", async () => {
+		expect(spoolPayload({ hook_event_name: "SessionStart", session_id: "queued" })).toBe(true);
+		const actions: string[] = [];
+		let httpCalls = 0;
+		const result = await ingestClaudeHookPayload(
+			{ hook_event_name: "SessionEnd", session_id: "current-boundary" },
+			{ host: "127.0.0.1", port: 38888 },
+			{
+				httpIngest: async () => {
+					httpCalls += 1;
+					if (httpCalls === 2) {
+						expect(
+							spoolPayload({ hook_event_name: "SessionStart", session_id: "concurrent" }),
+						).toBe(true);
+					}
+					return { ok: true, inserted: 1, skipped: 0 };
+				},
+				directIngest: () => {
+					actions.push("direct");
+					return { inserted: 1, skipped: 0 };
+				},
+				boundaryFlush: () => {
+					actions.push("flush");
+				},
+				resolveDb: () => join(sandboxDir, "fallback.sqlite"),
+			},
+		);
+
+		expect(result).toEqual({ inserted: 1, skipped: 0, via: "http" });
+		expect(actions).toEqual([]);
+		expect(readdirSync(queueDir).filter((name) => name.endsWith(".json"))).toHaveLength(1);
+	});
+
 	it("removes the live spool only after direct ingest succeeds", async () => {
 		expect(spoolPayload({ hook_event_name: "SessionStart", session_id: "queued" })).toBe(true);
 		const actions: string[] = [];

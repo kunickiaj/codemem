@@ -38,7 +38,10 @@ type LockConfig = {
 	graceSeconds: number;
 };
 
-export type SpoolHandler = (payload: Record<string, unknown>) => Promise<boolean> | boolean;
+export type SpoolHandler = (
+	payload: Record<string, unknown>,
+	receipt: string,
+) => Promise<boolean> | boolean;
 
 export type SpoolDrainResult = {
 	processed: number;
@@ -473,7 +476,7 @@ export function createHookIngestSpool(cfg: HookIngestSpoolConfig): HookIngestSpo
 
 			let ok = false;
 			try {
-				ok = await handler(parsed as Record<string, unknown>);
+				ok = await handler(parsed as Record<string, unknown>, name);
 			} catch {
 				ok = false;
 			}

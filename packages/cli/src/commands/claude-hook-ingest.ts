@@ -380,6 +380,7 @@ async function flushClaudeBoundary(runtime: ClaudeIngestRuntime): Promise<void> 
 type ClaudeBacklogDrain = {
 	drained: boolean;
 	lastResult: HttpIngestResult | null;
+	currentResult: HttpIngestResult | null;
 	boundaryResult: IngestResult | null;
 };
 
@@ -390,34 +391,36 @@ async function drainClaudeBacklog(
 ): Promise<ClaudeBacklogDrain> {
 	const startedAt = Date.now();
 	let lastResult: HttpIngestResult | null = null;
+	let currentResult: HttpIngestResult | null = null;
 	let drained = false;
 	let boundaryResult: IngestResult | null = null;
 	try {
 		await runtime.withLock(async () => {
 			recoverStaleTmpSpool(lockTtlSeconds());
-			await drainSpool(async (queuedPayload) => {
+			await drainSpool(async (queuedPayload, receipt) => {
 				lastResult = await runtime.httpIngest(
 					runtime.httpPayload(queuedPayload),
 					runtime.opts.host,
 					runtime.port,
 					{ flushBoundary: shouldForceBoundaryFlush(queuedPayload) },
 				);
+				if (receipt === currentReceipt) currentResult = lastResult;
 				if (!lastResult.ok) logHttpFailure(lastResult);
 				return lastResult.ok;
 			});
 			drained = !hasSpooledEntries();
-			if (!drained && boundaryRequested) {
+			if (!currentResult?.ok && boundaryRequested) {
 				boundaryResult = await ingestClaudeBoundaryDirect(runtime, currentReceipt);
 			}
 		});
 		logHookEvent(`codemem claude-hook-ingest spool drain elapsed_ms=${elapsedSince(startedAt)}`);
-		return { drained, lastResult, boundaryResult };
+		return { drained, lastResult, currentResult, boundaryResult };
 	} catch (error) {
 		const cause = error instanceof LockBusyError ? "lock_busy" : errorName(error);
 		logHookEvent(
 			`codemem claude-hook-ingest spool drain deferred cause=${cause} elapsed_ms=${elapsedSince(startedAt)}`,
 		);
-		return { drained: false, lastResult, boundaryResult: null };
+		return { drained: false, lastResult, currentResult, boundaryResult: null };
 	}
 }
 
@@ -483,6 +486,13 @@ export async function ingestClaudeHookPayload(
 		}
 		const recovery = await drainClaudeBacklog(runtime, currentReceipt, boundaryRequested);
 		if (recovery.boundaryResult !== null) return recovery.boundaryResult;
+		if (recovery.currentResult?.ok) {
+			return {
+				inserted: recovery.currentResult.inserted,
+				skipped: recovery.currentResult.skipped,
+				via: "http",
+			};
+		}
 		if (recovery.drained && recovery.lastResult?.ok) {
 			return {
 				inserted: recovery.lastResult.inserted,
