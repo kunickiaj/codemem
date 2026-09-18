@@ -309,6 +309,24 @@ describe("writeJsonConfig comment placement", () => {
 		expect(updated).not.toContain('"-y", /* package note */');
 		expect(loadJsoncConfig(configPath)).toEqual({ mcp: { codemem: { command } } });
 	});
+
+	it("keeps own-line comments with the following retained array value", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		writeFileSync(
+			configPath,
+			'{\n  "mcp": {\n    "codemem": {\n      "command": [\n        "uvx",\n        // package note\n        "codemem",\n      ],\n    },\n  },\n}\n',
+			"utf-8",
+		);
+
+		const command = ["npx", "-y", "--package", "codemem", "codemem", "mcp"];
+		writeJsonConfig(configPath, { mcp: { codemem: { command } } });
+
+		const updated = readFileSync(configPath, "utf-8");
+		expect(updated).toContain('"codemem", // package note');
+		expect(updated).not.toContain('"npx", // package note');
+		expect(loadJsoncConfig(configPath)).toEqual({ mcp: { codemem: { command } } });
+	});
 });
 
 describe("writeJsonConfig safety", () => {
@@ -403,6 +421,22 @@ describe("writeJsonConfig path safety", () => {
 		writeJsonConfig(configPath, { plugin: ["@codemem/opencode-plugin"] });
 
 		expect(statSync(configPath).mode & 0o777).toBe(0o640);
+	});
+
+	it("can preserve the first backup across multiple writes in one setup run", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		const original = "{}\n";
+		writeFileSync(configPath, original, "utf-8");
+
+		writeJsonConfig(configPath, { plugin: ["@codemem/opencode-plugin"] });
+		writeJsonConfig(
+			configPath,
+			{ plugin: ["@codemem/opencode-plugin"], mcp: {} },
+			{ createBackup: false },
+		);
+
+		expect(readFileSync(`${configPath}.codemem.bak`, "utf-8")).toBe(original);
 	});
 });
 

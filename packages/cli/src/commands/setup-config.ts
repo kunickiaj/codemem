@@ -466,6 +466,15 @@ function trailingComments(text: string): string[] {
 	return text.match(/\/\/[^\r\n]*|\/\*[\s\S]*?\*\//g) ?? [];
 }
 
+function commentsAroundBoundary(text: string): { trailing: string[]; leading: string[] } {
+	const newline = text.search(/[\r\n]/);
+	if (newline === -1) return { trailing: trailingComments(text), leading: [] };
+	return {
+		trailing: trailingComments(text.slice(0, newline)),
+		leading: trailingComments(text.slice(newline)),
+	};
+}
+
 function arrayIndent(text: string, firstElement: ValueSpan): string {
 	const firstLineStart = text.lastIndexOf("\n", firstElement.start) + 1;
 	return text.slice(firstLineStart, firstElement.start).match(/^\s*/)?.[0] ?? "";
@@ -483,10 +492,17 @@ function reconcileArrayElements(
 	const multiline = text.slice(array.start, array.end).includes("\n");
 	const separator = multiline ? `\n${arrayIndent(text, elements[0] as ValueSpan)}` : " ";
 	const mapping = arrayValueMapping(before, after);
-	const commentsByBeforeIndex = elements.map((element, index) => {
+	const commentsByBeforeIndex = elements.map((): string[] => []);
+	for (const [index, element] of elements.entries()) {
 		const nextStart = elements[index + 1]?.start ?? array.end - 1;
-		return trailingComments(text.slice(element.end, nextStart));
-	});
+		const comments = commentsAroundBoundary(text.slice(element.end, nextStart));
+		commentsByBeforeIndex[index]?.push(...comments.trailing);
+		if (index + 1 < elements.length) {
+			commentsByBeforeIndex[index + 1]?.push(...comments.leading);
+		} else {
+			commentsByBeforeIndex[index]?.push(...comments.leading);
+		}
+	}
 	const lastSuffix = text.slice((elements.at(-1) as ValueSpan).end, array.end - 1);
 	const keepTrailingComma = stripJsonComments(lastSuffix).includes(",");
 	const rendered = after.map((value, index) => {
@@ -565,7 +581,11 @@ function updateJsoncText(
 	return updated;
 }
 
-export function writeJsonConfig(path: string, data: Record<string, unknown>): void {
+export function writeJsonConfig(
+	path: string,
+	data: Record<string, unknown>,
+	{ createBackup = true }: { createBackup?: boolean } = {},
+): boolean {
 	mkdirSync(dirname(path), { recursive: true });
 	const pathStat = lstatSync(path, { throwIfNoEntry: false });
 	if (pathStat?.isSymbolicLink()) {
@@ -575,10 +595,11 @@ export function writeJsonConfig(path: string, data: Record<string, unknown>): vo
 	const raw = exists ? readFileSync(path, "utf-8") : "{}\n";
 	const before = exists ? loadJsoncConfig(path) : {};
 	const output = updateJsoncText(raw, before, data);
-	if (output === raw) return;
+	if (output === raw) return false;
 	parseJsoncConfig(output);
 
-	if (exists) copyFileSync(path, `${path}.codemem.bak`);
+	if (exists && createBackup) copyFileSync(path, `${path}.codemem.bak`);
 	const metadata = exists ? statSync(path) : undefined;
 	atomicReplaceConfigFile(path, output, metadata);
+	return true;
 }

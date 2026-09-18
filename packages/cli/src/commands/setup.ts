@@ -137,7 +137,7 @@ export function migrateLegacyClaudeMcp(settings: Record<string, unknown>): boole
 // Install functions
 // ---------------------------------------------------------------------------
 
-function installPlugin(force: boolean): boolean {
+function installPlugin(force: boolean, backedUpConfigs: Set<string>): boolean {
 	// Clean up legacy copied plugin files first.
 	migrateLegacyOpencodePlugin();
 
@@ -163,7 +163,10 @@ function installPlugin(force: boolean): boolean {
 	}
 
 	try {
-		writeJsonConfig(configPath, result.config);
+		const wroteConfig = writeJsonConfig(configPath, result.config, {
+			createBackup: !backedUpConfigs.has(configPath),
+		});
+		if (wroteConfig) backedUpConfigs.add(configPath);
 		p.log.success(`Plugin "${OPENCODE_PLUGIN_SPEC}" added to ${configPath}`);
 	} catch (err) {
 		p.log.error(
@@ -175,7 +178,7 @@ function installPlugin(force: boolean): boolean {
 	return true;
 }
 
-function installMcp(force: boolean): boolean {
+function installMcp(force: boolean, backedUpConfigs: Set<string>): boolean {
 	const configPath = resolveOpencodeConfigPath(opencodeConfigDir());
 	let config: Record<string, unknown>;
 	try {
@@ -211,7 +214,10 @@ function installMcp(force: boolean): boolean {
 	}
 
 	try {
-		writeJsonConfig(configPath, config);
+		const wroteConfig = writeJsonConfig(configPath, config, {
+			createBackup: !backedUpConfigs.has(configPath),
+		});
+		if (wroteConfig) backedUpConfigs.add(configPath);
 		p.log.success(`MCP entry installed: ${configPath}`);
 	} catch (err) {
 		p.log.error(
@@ -778,6 +784,7 @@ export const setupCommand = new Command("setup")
 			p.intro(`codemem setup v${VERSION}`);
 			const force = opts.force ?? false;
 			let ok = true;
+			const backedUpConfigs = new Set<string>();
 
 			const onlyFlag = Boolean(opts.opencodeOnly || opts.claudeOnly || opts.codexOnly);
 
@@ -788,9 +795,9 @@ export const setupCommand = new Command("setup")
 
 			if (doOpencode) {
 				p.log.step("Installing OpenCode plugin...");
-				ok = installPlugin(force) && ok;
+				ok = installPlugin(force, backedUpConfigs) && ok;
 				p.log.step("Installing OpenCode MCP config...");
-				ok = installMcp(force) && ok;
+				ok = installMcp(force, backedUpConfigs) && ok;
 			}
 
 			if (doClaude) {
