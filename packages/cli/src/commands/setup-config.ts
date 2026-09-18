@@ -1,18 +1,9 @@
-import { randomUUID } from "node:crypto";
-import {
-	constants,
-	copyFileSync,
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	renameSync,
-	rmSync,
-	statSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { atomicReplaceConfigFile, type ConfigFileMetadata } from "@codemem/core";
 import {
 	applyEdits,
+	createScanner,
 	type FormattingOptions,
 	findNodeAtLocation,
 	type JSONPath,
@@ -139,15 +130,35 @@ function isManagedPluginUpdate(before: unknown, after: unknown): after is unknow
 	return JSON.stringify(after) === JSON.stringify(expected);
 }
 
+function removePluginEntry(raw: string, index: number): string {
+	const tree = parseTree(raw);
+	const pluginNode = tree ? findNodeAtLocation(tree, ["plugin"]) : undefined;
+	const entry = pluginNode?.children?.[index];
+	const nextEntry = pluginNode?.children?.[index + 1];
+	if (!entry || !nextEntry) {
+		return applyChange(raw, { path: ["plugin", index], value: undefined }, { format: false });
+	}
+
+	const scanner = createScanner(raw);
+	scanner.setPosition(entry.offset + entry.length);
+	while (scanner.getPosition() < nextEntry.offset) {
+		scanner.scan();
+		const token = raw.slice(
+			scanner.getTokenOffset(),
+			scanner.getTokenOffset() + scanner.getTokenLength(),
+		);
+		if (token !== ",") continue;
+		const end = scanner.getTokenOffset() + scanner.getTokenLength();
+		return applyEdits(raw, [{ offset: entry.offset, length: end - entry.offset, content: "" }]);
+	}
+	return applyChange(raw, { path: ["plugin", index], value: undefined }, { format: false });
+}
+
 function updateManagedPlugins(raw: string, plugins: unknown[]): string {
 	let updated = raw;
 	for (let index = plugins.length - 1; index >= 0; index--) {
 		if (!isManagedPlugin(plugins[index])) continue;
-		updated = applyChange(
-			updated,
-			{ path: ["plugin", index], value: undefined },
-			{ format: false },
-		);
+		updated = removePluginEntry(updated, index);
 	}
 	const tree = parseTree(updated);
 	const pluginNode = tree ? findNodeAtLocation(tree, ["plugin"]) : undefined;
@@ -183,16 +194,8 @@ function configMetadata(path: string): ConfigFileMetadata | undefined {
 	return { mode: stats.mode & 0o777, uid: stats.uid, gid: stats.gid };
 }
 
-function backupConfig(path: string): void {
-	const backupPath = `${path}.codemem.bak`;
-	const temporaryPath = `${backupPath}.tmp-${process.pid}-${randomUUID()}`;
-	try {
-		copyFileSync(path, temporaryPath, constants.COPYFILE_EXCL);
-		renameSync(temporaryPath, backupPath);
-	} catch (error) {
-		rmSync(temporaryPath, { force: true });
-		throw error;
-	}
+function backupConfig(path: string, raw: string): void {
+	atomicReplaceConfigFile(`${path}.codemem.bak`, raw, 0o600);
 }
 
 export function writeJsonConfig(
@@ -213,7 +216,7 @@ export function writeJsonConfig(
 	}
 	if (output === raw) return false;
 	parseJsoncConfig(output);
-	if (exists && createBackup) backupConfig(path);
+	if (exists && createBackup) backupConfig(path, raw);
 	atomicReplaceConfigFile(path, output, configMetadata(path));
 	return true;
 }

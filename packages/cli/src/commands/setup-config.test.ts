@@ -147,6 +147,23 @@ describe("writeJsonConfig", () => {
 		});
 	});
 
+	it("preserves comments that lead the next unrelated plugin", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		const rationale = "// custom plugin rationale";
+		writeFileSync(
+			configPath,
+			`{\n  "plugin": [\n    "codemem", ${rationale}\n    "other-plugin",\n  ],\n}\n`,
+			"utf-8",
+		);
+
+		writeJsonConfig(configPath, {
+			plugin: ["other-plugin", "@codemem/opencode-plugin"],
+		});
+
+		expect(readFileSync(configPath, "utf-8")).toContain(rationale);
+	});
+
 	it("appends to an existing plugin array without rewriting its entries", () => {
 		const dir = makeTempDir();
 		const configPath = join(dir, "opencode.jsonc");
@@ -203,10 +220,12 @@ describe("writeJsonConfig", () => {
 		const configPath = join(dir, "opencode.jsonc");
 		const original = '{\n  // keep in backup\n  "plugin": [],\n}\n';
 		writeFileSync(configPath, original, "utf-8");
+		writeFileSync(`${configPath}.codemem.bak`, "stale backup\n", { mode: 0o644 });
 
 		writeJsonConfig(configPath, { plugin: ["@codemem/opencode-plugin"] });
 
 		expect(readFileSync(`${configPath}.codemem.bak`, "utf-8")).toBe(original);
+		expect(statSync(`${configPath}.codemem.bak`).mode & 0o777).toBe(0o600);
 	});
 
 	it("updates a symlink target without replacing the link", () => {
