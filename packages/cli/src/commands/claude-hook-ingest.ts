@@ -28,7 +28,6 @@ import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
 import { addDbOption, addViewerHostOptions, type DbOpts, resolveDbOpt } from "../shared-options.js";
 import {
-	currentPayloadIsOnlySpooledEntry,
 	drainSpool,
 	hasSpooledEntries,
 	LockBusyError,
@@ -470,7 +469,7 @@ export async function ingestClaudeHookPayload(
 				via: "http",
 			};
 		}
-		if (boundaryRequested && currentPayloadIsOnlySpooledEntry(currentReceipt)) {
+		if (boundaryRequested) {
 			return await ingestClaudeBoundaryFallback(runtime, currentReceipt);
 		}
 		return { inserted: 0, skipped: 0, via: "spool" };

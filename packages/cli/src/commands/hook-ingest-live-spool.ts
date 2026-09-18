@@ -1,5 +1,5 @@
 import { randomInt } from "node:crypto";
-import { mkdirSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { logHookEvent } from "./claude-hook-plugin-log.js";
 
@@ -41,18 +41,6 @@ export function removeLiveHookPayload(dir: string, name: string): boolean {
 	try {
 		unlinkSync(join(dir, name));
 		return true;
-	} catch {
-		return false;
-	}
-}
-
-export function liveHookPayloadIsOnlyActiveEntry(dir: string, name: string): boolean {
-	try {
-		const active = readdirSync(dir).filter(
-			(entry) =>
-				entry.endsWith(".json") && !entry.startsWith(".hook-tmp-") && !entry.startsWith(".bad-"),
-		);
-		return active.length === 1 && active[0] === name;
 	} catch {
 		return false;
 	}
