@@ -303,8 +303,10 @@ describe("writeJsonConfig comment placement", () => {
 		writeJsonConfig(configPath, { mcp: { codemem: { command } } });
 
 		const updated = readFileSync(configPath, "utf-8");
-		expect(updated).toContain("// launcher note");
-		expect(updated).toContain("/* package note */");
+		expect(updated).toContain('"npx", // launcher note');
+		expect(updated).toContain('"codemem", /* package note */');
+		expect(updated).not.toContain('"-y", // launcher note');
+		expect(updated).not.toContain('"-y", /* package note */');
 		expect(loadJsoncConfig(configPath)).toEqual({ mcp: { codemem: { command } } });
 	});
 });

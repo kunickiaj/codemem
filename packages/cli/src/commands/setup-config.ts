@@ -436,40 +436,71 @@ function replaceArrayElement(
 	return `${text.slice(0, element.start)}${replacement}${text.slice(element.end)}`;
 }
 
+function arrayValueMapping(before: unknown[], after: unknown[]): Map<number, number> {
+	const mapping = new Map<number, number>();
+	const matchedBefore = new Set<number>();
+	let afterStart = 0;
+	for (const [beforeIndex, value] of before.entries()) {
+		const afterIndex = after.findIndex(
+			(candidate, index) =>
+				index >= afterStart && JSON.stringify(candidate) === JSON.stringify(value),
+		);
+		if (afterIndex === -1) continue;
+		mapping.set(afterIndex, beforeIndex);
+		matchedBefore.add(beforeIndex);
+		afterStart = afterIndex + 1;
+	}
+	const unmatchedBefore = before
+		.map((_, index) => index)
+		.filter((index) => !matchedBefore.has(index));
+	const unmatchedAfter = after.map((_, index) => index).filter((index) => !mapping.has(index));
+	for (const afterIndex of unmatchedAfter) {
+		const beforeIndex = unmatchedBefore.shift();
+		if (beforeIndex === undefined) break;
+		mapping.set(afterIndex, beforeIndex);
+	}
+	return mapping;
+}
+
+function trailingComments(text: string): string[] {
+	return text.match(/\/\/[^\r\n]*|\/\*[\s\S]*?\*\//g) ?? [];
+}
+
+function arrayIndent(text: string, firstElement: ValueSpan): string {
+	const firstLineStart = text.lastIndexOf("\n", firstElement.start) + 1;
+	return text.slice(firstLineStart, firstElement.start).match(/^\s*/)?.[0] ?? "";
+}
+
 function reconcileArrayElements(
 	text: string,
-	path: string[],
 	array: ValueSpan,
 	before: unknown,
 	after: unknown,
 ): string | undefined {
 	if (!Array.isArray(before) || !Array.isArray(after)) return undefined;
 	const elements = listArrayValues(text, array);
-	if (elements.length !== before.length) return undefined;
-	const edits: TextEdit[] = [];
-	const retainedCount = Math.min(before.length, after.length);
-	for (let index = 0; index < retainedCount; index++) {
-		if (JSON.stringify(before[index]) === JSON.stringify(after[index])) continue;
-		const element = elements[index] as ValueSpan;
-		edits.push({
-			start: element.start,
-			end: element.end,
-			replacement: formatValue(after[index], ""),
-		});
-	}
-	for (let index = retainedCount; index < before.length; index++) {
-		const element = elements[index] as ValueSpan;
-		edits.push({ start: element.start, end: element.end, replacement: "" });
-		const comma = skipTrivia(text, element.end);
-		if (text[comma] === ",") edits.push({ start: comma, end: comma + 1, replacement: "" });
-	}
-	let updated = applyTextEdits(text, edits);
-	for (let index = retainedCount; index < after.length; index++) {
-		const updatedArray = findPath(updated, path);
-		if (!updatedArray) throw new Error("Cannot relocate JSONC array after element edit");
-		updated = appendArrayValue(updated, updatedArray, after[index]);
-	}
-	return updated;
+	if (elements.length !== before.length || elements.length === 0) return undefined;
+	const multiline = text.slice(array.start, array.end).includes("\n");
+	const separator = multiline ? `\n${arrayIndent(text, elements[0] as ValueSpan)}` : " ";
+	const mapping = arrayValueMapping(before, after);
+	const commentsByBeforeIndex = elements.map((element, index) => {
+		const nextStart = elements[index + 1]?.start ?? array.end - 1;
+		return trailingComments(text.slice(element.end, nextStart));
+	});
+	const lastSuffix = text.slice((elements.at(-1) as ValueSpan).end, array.end - 1);
+	const keepTrailingComma = stripJsonComments(lastSuffix).includes(",");
+	const rendered = after.map((value, index) => {
+		const comments = commentsByBeforeIndex[mapping.get(index) ?? -1] ?? [];
+		const comma = index < after.length - 1 || keepTrailingComma ? "," : "";
+		const commentText = comments.length > 0 ? ` ${comments.join(" ")}` : "";
+		return `${formatValue(value, "")}${comma}${commentText}`;
+	});
+	const firstElement = elements[0] as ValueSpan;
+	const leading = text.slice(array.start + 1, firstElement.start);
+	const lineStart = text.lastIndexOf("\n", array.start) + 1;
+	const parentIndent = text.slice(lineStart, array.start).match(/^\s*/)?.[0] ?? "";
+	const closing = multiline ? `\n${parentIndent}` : "";
+	return `${text.slice(0, array.start + 1)}${leading}${rendered.join(separator)}${closing}${text.slice(array.end - 1)}`;
 }
 
 function updateExistingValue(
@@ -485,7 +516,7 @@ function updateExistingValue(
 		if (isSingleAppend(before, after)) return appendArrayValue(text, span, after.at(-1));
 		const replaced = replaceArrayElement(text, span, before, after);
 		if (replaced !== undefined) return replaced;
-		const reconciledElements = reconcileArrayElements(text, path, span, before, after);
+		const reconciledElements = reconcileArrayElements(text, span, before, after);
 		if (reconciledElements !== undefined) return reconciledElements;
 	}
 	const lineStart = text.lastIndexOf("\n", span.start) + 1;
