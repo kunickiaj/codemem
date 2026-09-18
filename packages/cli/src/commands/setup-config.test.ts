@@ -289,7 +289,9 @@ describe("writeJsonConfig comment placement", () => {
 		expect(updated).toContain("true /* user note */");
 		expect(loadJsoncConfig(configPath)).toEqual({ mcp: { codemem: { enabled: true } } });
 	});
+});
 
+describe("writeJsonConfig array comment placement", () => {
 	it("keeps comments while replacing and extending a managed command array", () => {
 		const dir = makeTempDir();
 		const configPath = join(dir, "opencode.jsonc");
@@ -325,6 +327,23 @@ describe("writeJsonConfig comment placement", () => {
 		const updated = readFileSync(configPath, "utf-8");
 		expect(updated).toContain('"codemem", // package note');
 		expect(updated).not.toContain('"npx", // package note');
+		expect(loadJsoncConfig(configPath)).toEqual({ mcp: { codemem: { command } } });
+	});
+
+	it("keeps comments when expanding an empty managed command array", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		writeFileSync(
+			configPath,
+			'{\n  "mcp": {\n    "codemem": {\n      "command": [ /* installation note */ ],\n    },\n  },\n}\n',
+			"utf-8",
+		);
+
+		const command = ["npx", "-y", "codemem", "mcp"];
+		writeJsonConfig(configPath, { mcp: { codemem: { command } } });
+
+		const updated = readFileSync(configPath, "utf-8");
+		expect(updated).toContain("/* installation note */");
 		expect(loadJsoncConfig(configPath)).toEqual({ mcp: { codemem: { command } } });
 	});
 });

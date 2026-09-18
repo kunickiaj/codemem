@@ -488,7 +488,20 @@ function reconcileArrayElements(
 ): string | undefined {
 	if (!Array.isArray(before) || !Array.isArray(after)) return undefined;
 	const elements = listArrayValues(text, array);
-	if (elements.length !== before.length || elements.length === 0) return undefined;
+	if (elements.length !== before.length) return undefined;
+	if (elements.length === 0) {
+		let updated = text;
+		let currentArray = array;
+		for (const value of after) {
+			const expanded = appendArrayValue(updated, currentArray, value);
+			currentArray = {
+				start: currentArray.start,
+				end: currentArray.end + expanded.length - updated.length,
+			};
+			updated = expanded;
+		}
+		return updated;
+	}
 	const multiline = text.slice(array.start, array.end).includes("\n");
 	const separator = multiline ? `\n${arrayIndent(text, elements[0] as ValueSpan)}` : " ";
 	const mapping = arrayValueMapping(before, after);
