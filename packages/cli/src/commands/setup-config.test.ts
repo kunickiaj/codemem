@@ -141,6 +141,21 @@ describe("writeJsonConfig", () => {
 });
 
 describe("writeJsonConfig plugin arrays", () => {
+	it("leaves an unchanged canonical plugin array byte-for-byte intact", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		const pluginBlock =
+			'  "plugin": [\n\t\t"other-plugin", // keep this layout\n\t\t"@codemem/opencode-plugin",\n  ],';
+		writeFileSync(configPath, `{\n${pluginBlock}\n}\n`, "utf-8");
+
+		writeJsonConfig(configPath, {
+			plugin: ["other-plugin", "@codemem/opencode-plugin"],
+			mcp: { codemem: { command: ["codemem", "mcp"] } },
+		});
+
+		expect(readFileSync(configPath, "utf-8")).toContain(pluginBlock);
+	});
+
 	it("preserves unrelated plugin entries and their nested comments", () => {
 		const dir = makeTempDir();
 		const configPath = join(dir, "opencode.jsonc");

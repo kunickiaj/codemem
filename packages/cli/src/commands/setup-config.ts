@@ -144,6 +144,7 @@ function isManagedPlugin(entry: unknown): boolean {
 
 function isManagedPluginUpdate(before: unknown, after: unknown): after is unknown[] {
 	if (!Array.isArray(before) || !Array.isArray(after)) return false;
+	if (JSON.stringify(before) === JSON.stringify(after)) return false;
 	const expected = [...before.filter((entry) => !isManagedPlugin(entry)), OPENCODE_PLUGIN_SPEC];
 	return JSON.stringify(after) === JSON.stringify(expected);
 }
