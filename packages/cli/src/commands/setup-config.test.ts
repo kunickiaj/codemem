@@ -469,6 +469,24 @@ describe("writeJsonConfig path safety", () => {
 		expect(existsSync(`${configPath}.codemem.bak`)).toBe(false);
 	});
 
+	it("rejects symlink-managed backups without replacing the link or target", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		const backupTargetPath = join(dir, "backup-target.jsonc");
+		const backupPath = `${configPath}.codemem.bak`;
+		writeFileSync(configPath, "{}\n", "utf-8");
+		writeFileSync(backupTargetPath, '{"keep":true}\n', "utf-8");
+		symlinkSync(backupTargetPath, backupPath);
+
+		expect(() => writeJsonConfig(configPath, { plugin: ["@codemem/opencode-plugin"] })).toThrow(
+			"Refusing to replace symlink-managed backup",
+		);
+
+		expect(lstatSync(backupPath).isSymbolicLink()).toBe(true);
+		expect(readFileSync(backupTargetPath, "utf-8")).toBe('{"keep":true}\n');
+		expect(readFileSync(configPath, "utf-8")).toBe("{}\n");
+	});
+
 	it("writes a new config atomically with a trailing newline", () => {
 		const dir = makeTempDir();
 		const configPath = join(dir, "opencode.jsonc");

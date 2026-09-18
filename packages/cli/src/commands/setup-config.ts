@@ -623,7 +623,13 @@ export function writeJsonConfig(
 	if (output === raw) return false;
 	parseJsoncConfig(output);
 
-	if (exists && createBackup) copyFileSync(path, `${path}.codemem.bak`);
+	if (exists && createBackup) {
+		const backupPath = `${path}.codemem.bak`;
+		if (lstatSync(backupPath, { throwIfNoEntry: false })?.isSymbolicLink()) {
+			throw new Error(`Refusing to replace symlink-managed backup: ${backupPath}`);
+		}
+		copyFileSync(path, backupPath);
+	}
 	const metadata = exists ? statSync(path) : undefined;
 	atomicReplaceConfigFile(path, output, metadata);
 	return true;
