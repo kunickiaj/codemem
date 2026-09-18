@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
@@ -14,6 +15,8 @@ import { MemoryStore } from "./store.js";
 import { initTestSchema } from "./test-utils.js";
 
 const cleanupPaths: string[] = [];
+const requireFromCore = createRequire(import.meta.url);
+const betterSqlitePath = requireFromCore.resolve("better-sqlite3");
 
 function createStore(): MemoryStore {
 	return new MemoryStore(createDbPath());
@@ -43,7 +46,7 @@ function startCompetingRawEventBatch(dbPath: string, sessionId: string): Worker 
 	return new Worker(
 		`
 			const { parentPort, workerData } = require("node:worker_threads");
-			const Database = require("better-sqlite3");
+			const Database = require(workerData.betterSqlitePath);
 			const db = new Database(workerData.dbPath);
 			db.pragma("busy_timeout = 5000");
 			db.exec("BEGIN IMMEDIATE");
@@ -62,7 +65,7 @@ function startCompetingRawEventBatch(dbPath: string, sessionId: string): Worker 
 				db.close();
 			}, 100);
 		`,
-		{ eval: true, workerData: { dbPath, sessionId } },
+		{ eval: true, workerData: { betterSqlitePath, dbPath, sessionId } },
 	);
 }
 
