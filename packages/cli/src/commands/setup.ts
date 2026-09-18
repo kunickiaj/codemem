@@ -75,7 +75,10 @@ function isExactStringArray(value: unknown, expected: string[]): boolean {
 }
 
 /** Detect and upgrade legacy uvx/uv or managed single-package MCP entries in OpenCode config. */
-export function migrateLegacyOpencodeMcp(config: Record<string, unknown>): boolean {
+export function migrateLegacyOpencodeMcp(
+	config: Record<string, unknown>,
+	{ launcher }: { launcher?: ReturnType<typeof codememMcpLauncher> } = {},
+): boolean {
 	const mcpConfig = config.mcp as Record<string, unknown> | undefined;
 	if (!mcpConfig || typeof mcpConfig !== "object") return false;
 	const entry = mcpConfig.codemem as Record<string, unknown> | undefined;
@@ -92,10 +95,10 @@ export function migrateLegacyOpencodeMcp(config: Record<string, unknown>): boole
 
 	if (isLegacyUv || isManagedSinglePackageNpx) {
 		p.log.step("Upgrading managed MCP entry to the current npm launcher");
-		const launcher = codememMcpLauncher();
+		const resolvedLauncher = launcher ?? codememMcpLauncher();
 		mcpConfig.codemem = {
 			...entry,
-			command: [launcher.command, ...launcher.args],
+			command: [resolvedLauncher.command, ...resolvedLauncher.args],
 		};
 		return true;
 	}
@@ -103,7 +106,10 @@ export function migrateLegacyOpencodeMcp(config: Record<string, unknown>): boole
 }
 
 /** Detect and upgrade legacy uvx or managed single-package MCP entries in Claude settings. */
-export function migrateLegacyClaudeMcp(settings: Record<string, unknown>): boolean {
+export function migrateLegacyClaudeMcp(
+	settings: Record<string, unknown>,
+	{ launcher }: { launcher?: ReturnType<typeof codememMcpLauncher> } = {},
+): boolean {
 	const mcpServers = settings.mcpServers as Record<string, unknown> | undefined;
 	if (!mcpServers || typeof mcpServers !== "object") return false;
 	const entry = mcpServers.codemem as Record<string, unknown> | undefined;
@@ -122,11 +128,11 @@ export function migrateLegacyClaudeMcp(settings: Record<string, unknown>): boole
 
 	if (isLegacyUv || isManagedSinglePackageNpx) {
 		p.log.step("Upgrading managed Claude MCP entry to the current npm launcher");
-		const launcher = codememMcpLauncher();
+		const resolvedLauncher = launcher ?? codememMcpLauncher();
 		mcpServers.codemem = {
 			...entry,
-			command: launcher.command,
-			args: launcher.args,
+			command: resolvedLauncher.command,
+			args: resolvedLauncher.args,
 		};
 		return true;
 	}
@@ -296,8 +302,7 @@ function installClaudeMcp(force: boolean): boolean {
 // ---------------------------------------------------------------------------
 
 /** The MCP server table appended to Codex config.toml. */
-function codexMcpBlock(): string {
-	const launcher = codememMcpLauncher();
+function codexMcpBlock(launcher: ReturnType<typeof codememMcpLauncher>): string {
 	const args = launcher.args.map((arg) => JSON.stringify(arg)).join(", ");
 	return [
 		"[mcp_servers.codemem]",
@@ -314,7 +319,10 @@ function codexMcpBlock(): string {
 // symmetrically via the backreference, so `codemem` must be followed by `]`).
 const CODEX_MCP_TABLE_RE = /^[ \t]*\[[ \t]*mcp_servers[ \t]*\.[ \t]*("?)codemem\1[ \t]*\]/m;
 
-function migrateManagedCodexMcp(existing: string): string | null {
+function migrateManagedCodexMcp(
+	existing: string,
+	launcher: ReturnType<typeof codememMcpLauncher>,
+): string | null {
 	const tableMatch = CODEX_MCP_TABLE_RE.exec(existing);
 	if (!tableMatch || tableMatch.index == null) return null;
 	const blockStart = tableMatch.index;
@@ -328,7 +336,6 @@ function migrateManagedCodexMcp(existing: string): string | null {
 		/^([ \t]*args[ \t]*=[ \t]*)\[[ \t]*"-y"[ \t]*,[ \t]*"codemem"[ \t]*,[ \t]*"mcp"[ \t]*\]([ \t]*(?:#.*)?)$/m;
 	if (!commandPattern.test(block) || !argsPattern.test(block)) return null;
 
-	const launcher = codememMcpLauncher();
 	const args = launcher.args.map((arg) => JSON.stringify(arg)).join(", ");
 	const migrated = block
 		.replace(commandPattern, `$1${JSON.stringify(launcher.command)}$2`)
@@ -360,8 +367,8 @@ const CODEMEM_HOOK_MARKER = "codemem codex-hook-";
  * runtime keeps the local-store inject path (codex-hook-inject) able to embed
  * instead of degrading to FTS. Mirrors the MCP launcher's two-package model.
  */
-export function codememCodexHookBase(): string {
-	if (codememOnPath(true)) return "codemem";
+export function codememCodexHookBase(onPath = codememOnPath(true)): string {
+	if (onPath) return "codemem";
 	return "npx -y --package codemem --package @codemem/embeddings codemem";
 }
 
@@ -547,12 +554,16 @@ export function codememMcpLauncher(onPath = codememOnPath(true)): {
  * Append the codemem MCP server table to Codex config.toml without rewriting
  * unrelated content. Returns true on success.
  */
-function installCodexMcp(codexHome: string, force: boolean): boolean {
+function installCodexMcp(
+	codexHome: string,
+	force: boolean,
+	launcher: ReturnType<typeof codememMcpLauncher>,
+): boolean {
 	const configPath = join(codexHome, "config.toml");
 	const existing = existsSync(configPath) ? readFileSync(configPath, "utf-8") : "";
 
 	if (CODEX_MCP_TABLE_RE.test(existing)) {
-		const migrated = migrateManagedCodexMcp(existing);
+		const migrated = migrateManagedCodexMcp(existing, launcher);
 		if (migrated != null) {
 			try {
 				copyFileSync(configPath, `${configPath}.codemem.bak`);
@@ -593,7 +604,7 @@ function installCodexMcp(codexHome: string, force: boolean): boolean {
 	if (next.length > 0 && !next.endsWith("\n\n")) {
 		next += next.endsWith("\n") ? "\n" : "\n\n";
 	}
-	next += `${codexMcpBlock()}\n`;
+	next += `${codexMcpBlock(launcher)}\n`;
 
 	try {
 		writeFileSync(configPath, next, "utf-8");
@@ -611,7 +622,7 @@ function installCodexMcp(codexHome: string, force: boolean): boolean {
  * Write/merge codemem hook registrations into Codex hooks.json, preserving any
  * unrelated user hooks. Returns true on success.
  */
-function installCodexHooks(codexHome: string, force: boolean): boolean {
+function installCodexHooks(codexHome: string, force: boolean, hookBase: string): boolean {
 	const hooksPath = join(codexHome, "hooks.json");
 
 	let config: Record<string, unknown> = {};
@@ -634,7 +645,6 @@ function installCodexHooks(codexHome: string, force: boolean): boolean {
 		hooks = {};
 	}
 
-	const hookBase = codememCodexHookBase();
 	const ours = buildCodememCodexHookGroups(hookBase);
 	// The exact command strings the current base produces. A previously generated
 	// hook whose commands differ (e.g. an old single-package `npx -y codemem
@@ -734,7 +744,11 @@ function installCodexHooks(codexHome: string, force: boolean): boolean {
  * hooks.json) without relying on the Codex plugin marketplace. Idempotent;
  * honors CODEX_HOME. Returns true on success.
  */
-export function installCodex(force: boolean): boolean {
+interface InstallCodexOptions {
+	onPath?: boolean;
+}
+
+export function installCodex(force: boolean, options: InstallCodexOptions = {}): boolean {
 	const codexHome = codexConfigDir();
 	try {
 		mkdirSync(codexHome, { recursive: true });
@@ -745,7 +759,10 @@ export function installCodex(force: boolean): boolean {
 		return false;
 	}
 
-	if (codememOnPath(true)) {
+	const onPath = options.onPath ?? codememOnPath(true);
+	const launcher = codememMcpLauncher(onPath);
+	const hookBase = codememCodexHookBase(onPath);
+	if (onPath) {
 		p.log.info("Codex hooks will call `codemem` directly (found on PATH).");
 	} else {
 		const globalInstallCommand =
@@ -758,8 +775,8 @@ export function installCodex(force: boolean): boolean {
 	}
 
 	let ok = true;
-	ok = installCodexMcp(codexHome, force) && ok;
-	ok = installCodexHooks(codexHome, force) && ok;
+	ok = installCodexMcp(codexHome, force, launcher) && ok;
+	ok = installCodexHooks(codexHome, force, hookBase) && ok;
 	return ok;
 }
 

@@ -14,14 +14,18 @@ import {
 	setupCommand,
 } from "./setup.js";
 
-// Resolve the same command base the implementation will use in this environment
-// (direct `codemem` when on PATH, else `npx -y codemem`) so integration
-// assertions are deterministic across dev and CI.
-const HOOK_BASE = codememCodexHookBase();
+const CODEMEM_ON_PATH = false;
+const INSTALL_OPTIONS = { onPath: CODEMEM_ON_PATH };
+const HOOK_BASE = codememCodexHookBase(CODEMEM_ON_PATH);
+const MCP_LAUNCHER = codememMcpLauncher(CODEMEM_ON_PATH);
 const INGEST_CMD = `${HOOK_BASE} codex-hook-ingest`;
 const INJECT_CMD = `${HOOK_BASE} codex-hook-inject`;
 const INGEST_TIMEOUT = HOOK_BASE === "codemem" ? 10 : 30;
 const INJECT_TIMEOUT = HOOK_BASE === "codemem" ? 10 : 20;
+
+function installCodexForTest(force: boolean): boolean {
+	return installCodex(force, INSTALL_OPTIONS);
+}
 
 const savedCodexHome = process.env.CODEX_HOME;
 let codexHome: string;
@@ -71,10 +75,10 @@ describe("codexConfigDir", () => {
 
 describe("installCodex — fresh CODEX_HOME", () => {
 	it("writes the MCP block and all four hook events with correct schema", () => {
-		expect(installCodex(false)).toBe(true);
+		expect(installCodexForTest(false)).toBe(true);
 
 		const toml = readConfigToml();
-		const launcher = codememMcpLauncher();
+		const launcher = MCP_LAUNCHER;
 		expect(toml).toContain("[mcp_servers.codemem]");
 		expect(toml).toContain(`command = ${JSON.stringify(launcher.command)}`);
 		expect(toml).toContain(
@@ -131,7 +135,7 @@ describe("installCodex — fresh CODEX_HOME", () => {
 		process.env.CODEX_HOME = nested;
 		expect(existsSync(nested)).toBe(false);
 
-		expect(installCodex(false)).toBe(true);
+		expect(installCodexForTest(false)).toBe(true);
 
 		expect(existsSync(join(nested, "config.toml"))).toBe(true);
 		expect(existsSync(join(nested, "hooks.json"))).toBe(true);
@@ -172,9 +176,9 @@ describe("managed single-package MCP launcher migration", () => {
 			},
 		};
 
-		expect(migrateLegacyOpencodeMcp(opencode)).toBe(true);
-		expect(migrateLegacyClaudeMcp(claude)).toBe(true);
-		const launcher = codememMcpLauncher();
+		expect(migrateLegacyOpencodeMcp(opencode, { launcher: MCP_LAUNCHER })).toBe(true);
+		expect(migrateLegacyClaudeMcp(claude, { launcher: MCP_LAUNCHER })).toBe(true);
+		const launcher = MCP_LAUNCHER;
 		expect(opencode.mcp.codemem).toEqual({
 			type: "local",
 			command: [launcher.command, ...launcher.args],
@@ -192,8 +196,8 @@ describe("managed single-package MCP launcher migration", () => {
 			mcp: { codemem: { type: "local", command: ["npx", "codemem", "mcp"], enabled: true } },
 		};
 
-		expect(migrateLegacyOpencodeMcp(opencode)).toBe(true);
-		const launcher = codememMcpLauncher();
+		expect(migrateLegacyOpencodeMcp(opencode, { launcher: MCP_LAUNCHER })).toBe(true);
+		const launcher = MCP_LAUNCHER;
 		expect(opencode.mcp.codemem).toEqual({
 			type: "local",
 			command: [launcher.command, ...launcher.args],
@@ -209,8 +213,8 @@ describe("managed single-package MCP launcher migration", () => {
 			mcpServers: { codemem: { command: "npx", args: ["-y", "codemem", "custom"] } },
 		};
 
-		expect(migrateLegacyOpencodeMcp(opencode)).toBe(false);
-		expect(migrateLegacyClaudeMcp(claude)).toBe(false);
+		expect(migrateLegacyOpencodeMcp(opencode, { launcher: MCP_LAUNCHER })).toBe(false);
+		expect(migrateLegacyClaudeMcp(claude, { launcher: MCP_LAUNCHER })).toBe(false);
 		expect(opencode.mcp.codemem.command).toEqual(["npx", "-y", "codemem@next", "mcp"]);
 		expect(claude.mcpServers.codemem.args).toEqual(["-y", "codemem", "custom"]);
 	});
@@ -240,7 +244,7 @@ describe("installCodex — hook migration", () => {
 		};
 		writeFileSync(join(codexHome, "hooks.json"), `${JSON.stringify(legacy, null, 2)}\n`, "utf-8");
 
-		expect(installCodex(false)).toBe(true);
+		expect(installCodexForTest(false)).toBe(true);
 
 		const commands = groupsFor(readHooks(), "SessionStart").flatMap((g) =>
 			g.hooks.map((h) => h.command),
@@ -271,7 +275,7 @@ describe("installCodex — hook migration", () => {
 		};
 		writeFileSync(join(codexHome, "hooks.json"), `${JSON.stringify(legacy, null, 2)}\n`, "utf-8");
 
-		expect(installCodex(false)).toBe(true);
+		expect(installCodexForTest(false)).toBe(true);
 
 		const hooks = readHooks();
 		const commands = groupsFor(hooks, "SessionStart").flatMap((g) => g.hooks.map((h) => h.command));
@@ -283,8 +287,8 @@ describe("installCodex — hook migration", () => {
 
 describe("installCodex — idempotency", () => {
 	it("does not duplicate the MCP block or hook entries on re-run", () => {
-		expect(installCodex(false)).toBe(true);
-		expect(installCodex(false)).toBe(true);
+		expect(installCodexForTest(false)).toBe(true);
+		expect(installCodexForTest(false)).toBe(true);
 
 		const toml = readConfigToml();
 		const mcpOccurrences = toml.split("[mcp_servers.codemem]").length - 1;
@@ -300,8 +304,8 @@ describe("installCodex — idempotency", () => {
 	});
 
 	it("does not duplicate codemem hooks when run again with --force", () => {
-		expect(installCodex(false)).toBe(true);
-		expect(installCodex(true)).toBe(true);
+		expect(installCodexForTest(false)).toBe(true);
+		expect(installCodexForTest(true)).toBe(true);
 
 		const hooks = readHooks();
 		expect(groupsFor(hooks, "SessionStart")).toHaveLength(1);
@@ -326,9 +330,9 @@ describe("installCodex — non-destructive merge", () => {
 		].join("\n");
 		writeFileSync(join(codexHome, "config.toml"), original, "utf-8");
 
-		expect(installCodex(false)).toBe(true);
+		expect(installCodexForTest(false)).toBe(true);
 
-		const launcher = codememMcpLauncher();
+		const launcher = MCP_LAUNCHER;
 		const toml = readConfigToml();
 		expect(toml).toContain(`command = ${JSON.stringify(launcher.command)}`);
 		expect(toml).toContain(
@@ -348,7 +352,7 @@ describe("installCodex — non-destructive merge", () => {
 		].join("\n");
 		writeFileSync(join(codexHome, "config.toml"), original, "utf-8");
 
-		expect(installCodex(false)).toBe(true);
+		expect(installCodexForTest(false)).toBe(true);
 		expect(readConfigToml()).toBe(original);
 	});
 
@@ -362,7 +366,7 @@ describe("installCodex — non-destructive merge", () => {
 		].join("\n");
 		writeFileSync(join(codexHome, "config.toml"), original, "utf-8");
 
-		expect(installCodex(false)).toBe(true);
+		expect(installCodexForTest(false)).toBe(true);
 
 		const toml = readConfigToml();
 		expect(toml).toContain("# my codex config");
@@ -390,7 +394,7 @@ describe("installCodex — non-destructive merge", () => {
 		};
 		writeFileSync(join(codexHome, "hooks.json"), `${JSON.stringify(existing, null, 2)}\n`, "utf-8");
 
-		expect(installCodex(false)).toBe(true);
+		expect(installCodexForTest(false)).toBe(true);
 
 		const hooks = readHooks();
 		const sessionStart = groupsFor(hooks, "SessionStart");
@@ -415,8 +419,8 @@ describe("installCodex — non-destructive merge", () => {
 		writeFileSync(join(codexHome, "hooks.json"), `${JSON.stringify(existing, null, 2)}\n`, "utf-8");
 
 		// Seed codemem hooks, then re-run with --force.
-		expect(installCodex(false)).toBe(true);
-		expect(installCodex(true)).toBe(true);
+		expect(installCodexForTest(false)).toBe(true);
+		expect(installCodexForTest(true)).toBe(true);
 
 		const hooks = readHooks();
 		const ups = groupsFor(hooks, "UserPromptSubmit");
@@ -452,6 +456,16 @@ describe("setup command options", () => {
 		const longs = setupCommand.options.map((o) => o.long);
 		expect(longs).toContain("--codex-only");
 		expect(longs).not.toContain("--codex");
+	});
+});
+
+describe("installCodex — launcher resolution", () => {
+	it("uses one supplied PATH result for both MCP and hooks", () => {
+		expect(installCodex(false, { onPath: true })).toBe(true);
+		expect(readConfigToml()).toContain('command = "codemem"');
+		expect(groupsFor(readHooks(), "SessionStart")[0]?.hooks[0]?.command).toBe(
+			"codemem codex-hook-ingest",
+		);
 	});
 });
 
@@ -513,7 +527,7 @@ describe("installCodex — config.toml MCP detection edge cases", () => {
 			"utf-8",
 		);
 
-		expect(installCodex(false)).toBe(true);
+		expect(installCodexForTest(false)).toBe(true);
 
 		const toml = readConfigToml();
 		expect(toml).toContain("[mcp_servers.codemem-foo]");
@@ -528,7 +542,7 @@ describe("installCodex — config.toml MCP detection edge cases", () => {
 			"utf-8",
 		);
 
-		expect(installCodex(false)).toBe(true);
+		expect(installCodexForTest(false)).toBe(true);
 
 		const toml = readConfigToml();
 		// No unquoted duplicate appended.
@@ -542,7 +556,7 @@ describe("installCodex — config.toml MCP detection edge cases", () => {
 			"utf-8",
 		);
 
-		expect(installCodex(false)).toBe(true);
+		expect(installCodexForTest(false)).toBe(true);
 
 		const toml = readConfigToml();
 		expect(toml.split("[mcp_servers.codemem]").length - 1).toBe(0);
@@ -554,7 +568,7 @@ describe("installCodex — malformed hooks.json", () => {
 		const broken = "{ this is not valid json ";
 		writeFileSync(join(codexHome, "hooks.json"), broken, "utf-8");
 
-		expect(installCodex(false)).toBe(false);
+		expect(installCodexForTest(false)).toBe(false);
 		// File left untouched (no overwrite, no backup-then-replace).
 		expect(readFileSync(join(codexHome, "hooks.json"), "utf-8")).toBe(broken);
 	});
@@ -565,7 +579,7 @@ describe("installCodex — backups", () => {
 		const original = '[mcp_servers.other]\ncommand = "x"\n';
 		writeFileSync(join(codexHome, "config.toml"), original, "utf-8");
 
-		expect(installCodex(false)).toBe(true);
+		expect(installCodexForTest(false)).toBe(true);
 
 		const backup = join(codexHome, "config.toml.codemem.bak");
 		expect(existsSync(backup)).toBe(true);
@@ -583,7 +597,7 @@ describe("installCodex — backups", () => {
 		const serialized = `${JSON.stringify(existing, null, 2)}\n`;
 		writeFileSync(join(codexHome, "hooks.json"), serialized, "utf-8");
 
-		expect(installCodex(false)).toBe(true);
+		expect(installCodexForTest(false)).toBe(true);
 
 		const backup = join(codexHome, "hooks.json.codemem.bak");
 		expect(existsSync(backup)).toBe(true);
