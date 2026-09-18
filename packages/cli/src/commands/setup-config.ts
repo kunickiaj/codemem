@@ -591,7 +591,9 @@ function updateExistingValue(
 	}
 	const lineStart = text.lastIndexOf("\n", span.start) + 1;
 	const indent = text.slice(lineStart, span.start).match(/^\s*/)?.[0] ?? "";
-	return `${text.slice(0, span.start)}${formatValue(after, indent)}${text.slice(span.end)}`;
+	const comments = jsoncComments(text, span.start, span.end);
+	const preservedComments = comments.length > 0 ? `${comments.join(`\n${indent}`)}\n${indent}` : "";
+	return `${text.slice(0, span.start)}${preservedComments}${formatValue(after, indent)}${text.slice(span.end)}`;
 }
 
 function deleteProperty(text: string, path: string[]): string {

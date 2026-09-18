@@ -452,6 +452,25 @@ describe("writeJsonConfig deletion comment placement", () => {
 	});
 });
 
+describe("writeJsonConfig composite replacement comment placement", () => {
+	it("preserves nested comments when repairing a composite value with a different type", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		writeFileSync(
+			configPath,
+			'{\n  "mcp": {\n    "codemem": [\n      // legacy deployment note\n      "invalid",\n    ],\n  },\n}\n',
+			"utf-8",
+		);
+		const codemem = { command: ["codemem", "mcp"] };
+
+		writeJsonConfig(configPath, { mcp: { codemem } });
+
+		const updated = readFileSync(configPath, "utf-8");
+		expect(updated).toContain("// legacy deployment note");
+		expect(loadJsoncConfig(configPath)).toEqual({ mcp: { codemem } });
+	});
+});
+
 describe("writeJsonConfig safety", () => {
 	it("leaves malformed input and its backup untouched", () => {
 		const dir = makeTempDir();
