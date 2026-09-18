@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect, initTestSchema } from "@codemem/core";
+import { buildRawEventEnvelopeFromPiEvent, connect, initTestSchema } from "@codemem/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ingestPiHookPayload } from "./pi-hook-ingest.js";
 import { drainPiHookSpool, spoolPiHookPayload } from "./pi-hook-ingest-spool.js";
@@ -425,6 +425,38 @@ describe("pi-hook-ingest durability boundary order", () => {
 		expect(readdirSync(sandbox.queueDir)).toHaveLength(0);
 	});
 
+	it("keeps a boundary queued behind an older failed entry", async () => {
+		mkdirSync(sandbox.queueDir, { recursive: true });
+		writeFileSync(
+			join(sandbox.queueDir, "hook-0000000001-pid-1.json"),
+			JSON.stringify({ piEvent: "session_start", sessionId: "blocked", tag: "blocked" }),
+			"utf8",
+		);
+		const directCalls: Array<Record<string, unknown>> = [];
+		const flushCalls: Array<Record<string, unknown>> = [];
+
+		const result = await ingestPiHookPayload(
+			{ piEvent: "session_shutdown", sessionId: "sess-end", tag: "boundary" },
+			{ host: "127.0.0.1", port: 38888 },
+			{
+				httpIngest: async () => ({ ok: false, inserted: 0, skipped: 0 }),
+				directIngest: (payload) => {
+					directCalls.push(payload);
+					return { inserted: 1, skipped: 0 };
+				},
+				boundaryFlush: (payload) => {
+					flushCalls.push(payload);
+				},
+				resolveDb: () => "/tmp/must-not-open.sqlite",
+			},
+		);
+
+		expect(result).toEqual({ inserted: 0, skipped: 0, via: "spool" });
+		expect(directCalls).toEqual([]);
+		expect(flushCalls).toEqual([]);
+		expect(readdirSync(sandbox.queueDir).filter((name) => name.endsWith(".json"))).toHaveLength(2);
+	});
+
 	it("force-flushes session_shutdown via direct ingest + boundary flush even when HTTP succeeded", async () => {
 		const directCalls: Array<Record<string, unknown>> = [];
 		const boundaryFlushCalls: Array<Record<string, unknown>> = [];
@@ -448,6 +480,64 @@ describe("pi-hook-ingest durability boundary order", () => {
 		expect(directCalls[0]?.piEvent).toBe("session_shutdown");
 		expect(boundaryFlushCalls).toHaveLength(1);
 		expect(boundaryFlushCalls[0]?.piEvent).toBe("session_shutdown");
+	});
+});
+
+describe("pi-hook-ingest boundary retry identity", () => {
+	let sandbox: ReturnType<typeof installPiIngestSandbox>;
+	beforeEach(() => {
+		sandbox = installPiIngestSandbox();
+	});
+	afterEach(() => {
+		sandbox.cleanup();
+	});
+
+	it("reuses a generated shutdown identity when a failed flush is retried", async () => {
+		const directEventIds: string[] = [];
+		let flushAttempts = 0;
+		const directIngest = (payload: Record<string, unknown>) => {
+			const envelope = buildRawEventEnvelopeFromPiEvent(payload);
+			if (!envelope) throw new Error("expected shutdown envelope");
+			directEventIds.push(envelope.event_id);
+			return { inserted: 1, skipped: 0 };
+		};
+
+		const first = await ingestPiHookPayload(
+			{ piEvent: "session_shutdown", sessionId: "retry-stable", reason: "exit" },
+			{ host: "127.0.0.1", port: 38888 },
+			{
+				httpIngest: async () => ({ ok: false, inserted: 0, skipped: 0 }),
+				directIngest,
+				boundaryFlush: () => {
+					flushAttempts += 1;
+					return false;
+				},
+				resolveDb: () => "/tmp/test.sqlite",
+			},
+		);
+		expect(first.via).toBe("spool");
+
+		await ingestPiHookPayload(
+			{ piEvent: "session_start", sessionId: "later" },
+			{ host: "127.0.0.1", port: 38888 },
+			{
+				httpIngest: async (payload) =>
+					payload.piEvent === "session_shutdown"
+						? { ok: false, inserted: 0, skipped: 0 }
+						: { ok: true, inserted: 0, skipped: 0, queued: 1 },
+				directIngest,
+				boundaryFlush: () => {
+					flushAttempts += 1;
+					return true;
+				},
+				resolveDb: () => "/tmp/test.sqlite",
+			},
+		);
+
+		expect(flushAttempts).toBe(2);
+		expect(directEventIds).toHaveLength(2);
+		expect(directEventIds[0]).not.toBe("");
+		expect(directEventIds[1]).toBe(directEventIds[0]);
 	});
 });
 

@@ -323,6 +323,15 @@ function createPiIngestRuntime(
 	};
 }
 
+function stabilizePiBoundaryPayload(payload: Record<string, unknown>): Record<string, unknown> {
+	if (!shouldForcePiBoundaryFlush(payload)) return payload;
+	const envelope = buildRawEventEnvelopeFromPiEvent(payload);
+	const signal = envelope === null ? buildPiFlushSignalFromEvent(payload) : null;
+	const timestamp = envelope?.payload.timestamp ?? signal?.ts;
+	if (typeof timestamp !== "string") return payload;
+	return { ...payload, ts: timestamp };
+}
+
 function spoolPiPayloadOrThrow(payload: Record<string, unknown>): IngestResult {
 	if (spoolPiHookPayload(payload)) return { inserted: 0, skipped: 0, via: "spool" };
 	throw new Error("pi-hook-ingest: HTTP and spool failed");
@@ -374,7 +383,6 @@ type PiBacklogDrain = {
 async function drainPiBacklog(
 	runtime: PiIngestRuntime,
 	currentReceipt: string,
-	boundaryRequested: boolean,
 ): Promise<PiBacklogDrain> {
 	let currentResult: HttpIngestResult | null = null;
 	let currentAccepted = false;
@@ -395,9 +403,6 @@ async function drainPiBacklog(
 				return delivery.accepted;
 			});
 			currentHandled = currentAccepted || !hasSpooledPiHookPayload(currentReceipt);
-			if (!currentHandled && boundaryRequested) {
-				boundaryResult = await ingestPiBoundaryDirect(runtime, currentReceipt);
-			}
 		});
 	} catch (error) {
 		if (!(error instanceof PiHookLockBusyError)) {
@@ -439,14 +444,15 @@ export async function ingestPiHookPayload(
 	opts: IngestOpts,
 	deps: IngestDeps = {},
 ): Promise<IngestResult> {
-	const runtime = createPiIngestRuntime(payload, opts, deps);
-	const boundaryRequested = shouldForcePiBoundaryFlush(payload);
+	const stablePayload = stabilizePiBoundaryPayload(payload);
+	const runtime = createPiIngestRuntime(stablePayload, opts, deps);
+	const boundaryRequested = shouldForcePiBoundaryFlush(stablePayload);
 	if (hasPiHookSpooledEntries()) {
-		const receipt = spoolPiHookPayloadWithReceipt(payload);
+		const receipt = spoolPiHookPayloadWithReceipt(stablePayload);
 		if (receipt === null) {
 			throw new Error("pi-hook-ingest: failed to spool current payload before backlog recovery");
 		}
-		const recovery = await drainPiBacklog(runtime, receipt, boundaryRequested);
+		const recovery = await drainPiBacklog(runtime, receipt);
 		if (recovery.boundaryResult !== null) return recovery.boundaryResult;
 		if (recovery.currentResult?.ok) {
 			return {
@@ -460,7 +466,7 @@ export async function ingestPiHookPayload(
 	}
 
 	const httpResult = await runtime.httpIngest(
-		runtime.httpPayload(payload),
+		runtime.httpPayload(stablePayload),
 		opts.host,
 		runtime.port,
 	);
@@ -470,7 +476,7 @@ export async function ingestPiHookPayload(
 		}
 		return { inserted: httpResult.inserted, skipped: httpResult.skipped, via: "http" };
 	}
-	if (!boundaryRequested) return spoolPiPayloadOrThrow(payload);
+	if (!boundaryRequested) return spoolPiPayloadOrThrow(stablePayload);
 	return await retainAndProcessBoundary(runtime);
 }
 

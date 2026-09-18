@@ -12,6 +12,11 @@ import {
 import { currentIdentityTarget } from "./routes/target-validation.js";
 
 const cleanupDirectories: string[] = [];
+const PI_BOUNDARY = {
+	source: "pi",
+	streamId: "session-pi-boundary",
+	id: "2026-09-18T12:00:00.000000Z",
+};
 
 function testDirectory(): string {
 	const directory = mkdtempSync(join(tmpdir(), "codemem-raw-event-inbox-"));
@@ -59,7 +64,11 @@ describe("FileRawEventInbox", () => {
 	});
 
 	it("deduplicates identical queued requests", async () => {
-		const processEntry = vi.fn().mockResolvedValue(undefined);
+		let releaseProcessing: (() => void) | undefined;
+		const processingBlocked = new Promise<void>((resolve) => {
+			releaseProcessing = resolve;
+		});
+		const processEntry = vi.fn(async () => await processingBlocked);
 		const inbox = new FileRawEventInbox({
 			directory: testDirectory(),
 			processEntry,
@@ -68,8 +77,10 @@ describe("FileRawEventInbox", () => {
 
 		await inbox.enqueue(request);
 		await inbox.enqueue(request);
-		await vi.waitFor(() => expect(processEntry).toHaveBeenCalledOnce());
+		expect((await inbox.status()).pending).toBe(1);
+		releaseProcessing?.();
 		await vi.waitFor(async () => expect((await inbox.status()).pending).toBe(0));
+		expect(processEntry).toHaveBeenCalledOnce();
 		await inbox.stop();
 	});
 
@@ -143,6 +154,32 @@ describe("FileRawEventInbox", () => {
 			reason: { code: RAW_EVENT_INBOX_FULL_CODE },
 		});
 		expect((await inbox.status()).pending).toBe(1);
+		await inbox.stop();
+	});
+});
+
+describe("FileRawEventInbox boundary identity", () => {
+	it("keeps repeated boundaries distinct when their identities differ", async () => {
+		let releaseProcessing: (() => void) | undefined;
+		const processingBlocked = new Promise<void>((resolve) => {
+			releaseProcessing = resolve;
+		});
+		const inbox = new FileRawEventInbox({
+			directory: testDirectory(),
+			processEntry: async () => await processingBlocked,
+		});
+		const request = { source: "pi", session_stream_id: "session-repeat", events: [] };
+
+		await inbox.enqueue(request, {
+			boundary: { source: "pi", streamId: "session-repeat", id: "2026-09-18T12:00:00.000Z" },
+		});
+		await inbox.enqueue(request, {
+			boundary: { source: "pi", streamId: "session-repeat", id: "2026-09-18T12:01:00.000Z" },
+		});
+
+		expect((await inbox.status()).pending).toBe(2);
+		releaseProcessing?.();
+		await vi.waitFor(async () => expect((await inbox.status()).pending).toBe(0));
 		await inbox.stop();
 	});
 });
@@ -273,7 +310,7 @@ describe("queue-first raw-event routes", () => {
 						}),
 				{
 					flushBoundary: false,
-					boundary: { source: "pi", streamId: "session-pi-boundary" },
+					boundary: PI_BOUNDARY,
 				},
 			);
 			expect(storeFactory).not.toHaveBeenCalled();

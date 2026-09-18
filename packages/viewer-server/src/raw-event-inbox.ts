@@ -33,6 +33,7 @@ export const RAW_EVENT_INBOX_FULL_CODE = "raw_event_inbox_full";
 export interface RawEventInboxBoundary {
 	source: string;
 	streamId: string;
+	id?: string;
 }
 
 export interface RawEventInboxEntry {
@@ -46,7 +47,7 @@ interface StoredRawEventInboxEntry {
 	enqueue_order: string;
 	request: Record<string, unknown>;
 	flush_boundary: boolean;
-	boundary?: { source: string; stream_id: string };
+	boundary?: { source: string; stream_id: string; id?: string };
 }
 
 interface LoadedRawEventInboxEntry {
@@ -122,7 +123,15 @@ function entryContent(
 		version: 1,
 		request,
 		flush_boundary: flushBoundary,
-		...(boundary ? { boundary: { source: boundary.source, stream_id: boundary.streamId } } : {}),
+		...(boundary
+			? {
+					boundary: {
+						source: boundary.source,
+						stream_id: boundary.streamId,
+						...(boundary.id ? { id: boundary.id } : {}),
+					},
+				}
+			: {}),
 	};
 }
 
@@ -220,7 +229,9 @@ function parseStoredEntry(serialized: string): {
 		(typeof storedBoundary.source !== "string" ||
 			storedBoundary.source.trim() === "" ||
 			typeof storedBoundary.stream_id !== "string" ||
-			storedBoundary.stream_id.trim() === "")
+			storedBoundary.stream_id.trim() === "" ||
+			(storedBoundary.id !== undefined &&
+				(typeof storedBoundary.id !== "string" || storedBoundary.id.trim() === "")))
 	) {
 		throw new Error("invalid raw-event inbox boundary");
 	}
@@ -229,7 +240,13 @@ function parseStoredEntry(serialized: string): {
 			request: parsed.request,
 			flushBoundary: parsed.flush_boundary,
 			...(storedBoundary
-				? { boundary: { source: storedBoundary.source, streamId: storedBoundary.stream_id } }
+				? {
+						boundary: {
+							source: storedBoundary.source,
+							streamId: storedBoundary.stream_id,
+							...(storedBoundary.id ? { id: storedBoundary.id } : {}),
+						},
+					}
 				: {}),
 		},
 		enqueueOrder: BigInt(parsed.enqueue_order),

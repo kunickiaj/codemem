@@ -203,6 +203,19 @@ function piEventName(payload: Record<string, unknown>): string {
 	return "";
 }
 
+function piInboxBoundary(
+	payload: Record<string, unknown>,
+	envelope: ReturnType<typeof buildRawEventEnvelopeFromPiEvent>,
+	signal: ReturnType<typeof buildPiFlushSignalFromEvent>,
+): RawEventInboxBoundary | undefined {
+	if (!["session_before_compact", "session_shutdown"].includes(piEventName(payload))) return;
+	const streamId = envelope?.session_stream_id ?? signal?.session_id;
+	if (!streamId) return;
+	const envelopeTimestamp = envelope?.payload.timestamp;
+	const id = typeof envelopeTimestamp === "string" ? envelopeTimestamp : signal?.ts;
+	return { source: "pi", streamId, ...(id ? { id } : {}) };
+}
+
 async function postPiHookRequest(
 	c: Context,
 	getStore: StoreFactory,
@@ -220,10 +233,7 @@ async function postPiHookRequest(
 		const untargeted = untargetedPayload(payload);
 		const envelope = buildRawEventEnvelopeFromPiEvent(untargeted);
 		const signal = buildPiFlushSignalFromEvent(untargeted);
-		const boundaryRequested = ["session_before_compact", "session_shutdown"].includes(
-			piEventName(untargeted),
-		);
-		const streamId = envelope?.session_stream_id ?? signal?.session_id ?? null;
+		const boundary = piInboxBoundary(untargeted, envelope, signal);
 		if (envelope === null && signal === null) return c.json({ inserted: 0, skipped: 1 });
 		if (inbox) {
 			const request = envelope
@@ -237,9 +247,7 @@ async function postPiHookRequest(
 				payload,
 				request,
 				flushBoundary: false,
-				...(boundaryRequested && streamId
-					? { boundary: { source: "pi", streamId }, acceptedCount: 1 }
-					: {}),
+				...(boundary ? { boundary, acceptedCount: 1 } : {}),
 			});
 		}
 		if (envelope === null) return c.json({ inserted: 0, skipped: 1 });
