@@ -1,6 +1,7 @@
 import {
 	chmodSync,
 	existsSync,
+	linkSync,
 	lstatSync,
 	mkdtempSync,
 	readdirSync,
@@ -469,7 +470,7 @@ describe("writeJsonConfig path safety", () => {
 		expect(existsSync(`${configPath}.codemem.bak`)).toBe(false);
 	});
 
-	it("rejects symlink-managed backups without replacing the link or target", () => {
+	it("replaces a symlink-managed backup without modifying its target", () => {
 		const dir = makeTempDir();
 		const configPath = join(dir, "opencode.jsonc");
 		const backupTargetPath = join(dir, "backup-target.jsonc");
@@ -478,13 +479,29 @@ describe("writeJsonConfig path safety", () => {
 		writeFileSync(backupTargetPath, '{"keep":true}\n', "utf-8");
 		symlinkSync(backupTargetPath, backupPath);
 
-		expect(() => writeJsonConfig(configPath, { plugin: ["@codemem/opencode-plugin"] })).toThrow(
-			"Refusing to replace symlink-managed backup",
-		);
+		writeJsonConfig(configPath, { plugin: ["@codemem/opencode-plugin"] });
 
-		expect(lstatSync(backupPath).isSymbolicLink()).toBe(true);
+		expect(lstatSync(backupPath).isSymbolicLink()).toBe(false);
+		expect(readFileSync(backupPath, "utf-8")).toBe("{}\n");
 		expect(readFileSync(backupTargetPath, "utf-8")).toBe('{"keep":true}\n');
-		expect(readFileSync(configPath, "utf-8")).toBe("{}\n");
+		expect(loadJsoncConfig(configPath)).toEqual({ plugin: ["@codemem/opencode-plugin"] });
+	});
+
+	it("replaces a hard-linked backup without modifying its other inode link", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		const backupTargetPath = join(dir, "backup-target.jsonc");
+		const backupPath = `${configPath}.codemem.bak`;
+		writeFileSync(configPath, "{}\n", "utf-8");
+		writeFileSync(backupTargetPath, '{"keep":true}\n', "utf-8");
+		linkSync(backupTargetPath, backupPath);
+
+		writeJsonConfig(configPath, { plugin: ["@codemem/opencode-plugin"] });
+
+		expect(statSync(backupPath).ino).not.toBe(statSync(backupTargetPath).ino);
+		expect(readFileSync(backupPath, "utf-8")).toBe("{}\n");
+		expect(readFileSync(backupTargetPath, "utf-8")).toBe('{"keep":true}\n');
+		expect(loadJsoncConfig(configPath)).toEqual({ plugin: ["@codemem/opencode-plugin"] });
 	});
 
 	it("writes a new config atomically with a trailing newline", () => {

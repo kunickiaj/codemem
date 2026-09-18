@@ -1,4 +1,15 @@
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import {
+	constants,
+	copyFileSync,
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	statSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { atomicReplaceConfigFile, stripJsonComments, stripTrailingCommas } from "@codemem/core";
 
@@ -625,10 +636,14 @@ export function writeJsonConfig(
 
 	if (exists && createBackup) {
 		const backupPath = `${path}.codemem.bak`;
-		if (lstatSync(backupPath, { throwIfNoEntry: false })?.isSymbolicLink()) {
-			throw new Error(`Refusing to replace symlink-managed backup: ${backupPath}`);
+		const temporaryBackupPath = `${backupPath}.tmp-${process.pid}-${randomUUID()}`;
+		try {
+			copyFileSync(path, temporaryBackupPath, constants.COPYFILE_EXCL);
+			renameSync(temporaryBackupPath, backupPath);
+		} catch (error) {
+			rmSync(temporaryBackupPath, { force: true });
+			throw error;
 		}
-		copyFileSync(path, backupPath);
 	}
 	const metadata = exists ? statSync(path) : undefined;
 	atomicReplaceConfigFile(path, output, metadata);
