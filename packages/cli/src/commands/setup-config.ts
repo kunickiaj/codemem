@@ -549,6 +549,9 @@ function reconcileArrayElements(
 	const separator = multiline ? `\n${arrayIndent(text, elements[0] as ValueSpan)}` : " ";
 	const mapping = arrayValueMapping(before, after);
 	const commentsByBeforeIndex = elements.map((): string[] => []);
+	const firstElement = elements[0] as ValueSpan;
+	const leadingText = text.slice(array.start + 1, firstElement.start);
+	commentsByBeforeIndex[0]?.push(...jsoncComments(leadingText, 0, leadingText.length));
 	for (const [index, element] of elements.entries()) {
 		const nextStart = elements[index + 1]?.start ?? array.end - 1;
 		const comments = commentsAroundBoundary(text.slice(element.end, nextStart));
@@ -566,10 +569,16 @@ function reconcileArrayElements(
 		const comments = commentsByAfterIndex[index] ?? [];
 		const comma = index < after.length - 1 || keepTrailingComma ? "," : "";
 		const commentText = comments.length > 0 ? ` ${comments.join(" ")}` : "";
-		return `${formatValue(value, "")}${comma}${commentText}`;
+		const beforeIndex = mapping.get(index);
+		const retainedElement = beforeIndex === undefined ? undefined : elements[beforeIndex];
+		const retainedValue = beforeIndex === undefined ? undefined : before[beforeIndex];
+		const formattedValue =
+			retainedElement && JSON.stringify(retainedValue) === JSON.stringify(value)
+				? text.slice(retainedElement.start, retainedElement.end)
+				: formatValue(value, "");
+		return `${formattedValue}${comma}${commentText}`;
 	});
-	const firstElement = elements[0] as ValueSpan;
-	const leading = text.slice(array.start + 1, firstElement.start);
+	const leading = stripJsonComments(leadingText);
 	const lineStart = text.lastIndexOf("\n", array.start) + 1;
 	const parentIndent = text.slice(lineStart, array.start).match(/^\s*/)?.[0] ?? "";
 	const closing = multiline ? `\n${parentIndent}` : "";

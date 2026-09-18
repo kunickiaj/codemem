@@ -273,6 +273,25 @@ describe("writeJsonConfig comment placement", () => {
 		expect(updated).not.toContain('"other-plugin", /* legacy note */');
 	});
 
+	it("moves first-element comments and preserves nested comments when reordering plugins", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		writeFileSync(
+			configPath,
+			'{\n  "plugin": [\n    // Codemem note\n    "codemem",\n    { "name": "custom", /* option note */ "enabled": true },\n  ],\n}\n',
+			"utf-8",
+		);
+		const current = loadJsoncConfig(configPath);
+		const reconciled = reconcileOpencodePluginConfig(current, { force: true });
+
+		writeJsonConfig(configPath, reconciled.config);
+
+		const updated = readFileSync(configPath, "utf-8");
+		expect(updated).toContain('{ "name": "custom", /* option note */ "enabled": true }');
+		expect(updated.indexOf("custom")).toBeLessThan(updated.indexOf("// Codemem note"));
+		expect(loadJsoncConfig(configPath)).toEqual(reconciled.config);
+	});
+
 	it("inserts into an object whose last property has a trailing line comment", () => {
 		const dir = makeTempDir();
 		const configPath = join(dir, "opencode.jsonc");
