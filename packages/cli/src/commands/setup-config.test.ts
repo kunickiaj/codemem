@@ -195,6 +195,25 @@ describe("writeJsonConfig", () => {
 		});
 	});
 
+	it("keeps a trailing comment attached to the existing plugin", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		const rationale = "// why this plugin is needed";
+		writeFileSync(
+			configPath,
+			`{\n  "plugin": [\n    "other-plugin" ${rationale}\n  ],\n}\n`,
+			"utf-8",
+		);
+
+		writeJsonConfig(configPath, {
+			plugin: ["other-plugin", "@codemem/opencode-plugin"],
+		});
+
+		const updated = readFileSync(configPath, "utf-8");
+		expect(updated).toContain(`"other-plugin", ${rationale}\n`);
+		expect(updated).toContain(`${rationale}\n    "@codemem/opencode-plugin"`);
+	});
+
 	it("is byte-for-byte idempotent after applying changes", () => {
 		const dir = makeTempDir();
 		const configPath = join(dir, "opencode.jsonc");

@@ -172,6 +172,42 @@ function removePluginEntry(raw: string, index: number): string {
 	return applyChange(raw, { path: ["plugin", index], value: undefined }, { format: false });
 }
 
+function hasCommaToken(raw: string, start: number, end: number): boolean {
+	const scanner = createScanner(raw);
+	scanner.setPosition(start);
+	while (scanner.getPosition() < end) {
+		scanner.scan();
+		const tokenStart = scanner.getTokenOffset();
+		if (raw.slice(tokenStart, tokenStart + scanner.getTokenLength()) === ",") return true;
+	}
+	return false;
+}
+
+function appendManagedPlugin(raw: string, pluginNode: Node, lastChild: Node): string {
+	const childEnd = lastChild.offset + lastChild.length;
+	const closeOffset = pluginNode.offset + pluginNode.length - 1;
+	const hasTrailingComma = hasCommaToken(raw, childEnd, closeOffset);
+	const commaEdit = hasTrailingComma ? [] : [{ offset: childEnd, length: 0, content: "," }];
+	const serializedPlugin = JSON.stringify(OPENCODE_PLUGIN_SPEC);
+	const lineStart = raw.lastIndexOf("\n", lastChild.offset - 1) + 1;
+	const indent = raw.slice(lineStart, lastChild.offset).match(/^[\t ]*/)?.[0] ?? "";
+	const eol = raw.includes("\r\n") ? "\r\n" : "\n";
+	const closeLineStart = raw.lastIndexOf("\n", closeOffset - 1) + 1;
+	const closesOnOwnLine = raw.slice(closeLineStart, closeOffset).trim() === "";
+	const insertionEdit = closesOnOwnLine
+		? {
+				offset: closeLineStart,
+				length: 0,
+				content: `${indent}${serializedPlugin}${hasTrailingComma ? "," : ""}${eol}`,
+			}
+		: {
+				offset: closeOffset,
+				length: 0,
+				content: ` ${serializedPlugin}${hasTrailingComma ? "," : ""}`,
+			};
+	return applyEdits(raw, [...commaEdit, insertionEdit]);
+}
+
 function updateManagedPlugins(raw: string, plugins: unknown[]): string {
 	let updated = raw;
 	for (let index = plugins.length - 1; index >= 0; index--) {
@@ -181,29 +217,16 @@ function updateManagedPlugins(raw: string, plugins: unknown[]): string {
 	const tree = parseTree(updated);
 	const pluginNode = tree ? findNodeAtLocation(tree, ["plugin"]) : undefined;
 	const children = pluginNode?.children ?? [];
-	const edits = modify(updated, ["plugin", children.length], OPENCODE_PLUGIN_SPEC, {
-		isArrayInsertion: true,
-	});
 	const lastChild = children.at(-1);
-	if (
-		!pluginNode ||
-		!lastChild ||
-		!updated.slice(pluginNode.offset, lastChild.offset).includes("\n")
-	) {
-		return applyEdits(updated, edits);
+	if (!pluginNode || !lastChild) {
+		return applyEdits(
+			updated,
+			modify(updated, ["plugin", children.length], OPENCODE_PLUGIN_SPEC, {
+				isArrayInsertion: true,
+			}),
+		);
 	}
-	const lineStart = updated.lastIndexOf("\n", lastChild.offset - 1) + 1;
-	const indent = updated.slice(lineStart, lastChild.offset).match(/^[\t ]*/)?.[0] ?? "";
-	const eol = updated.includes("\r\n") ? "\r\n" : "\n";
-	return applyEdits(
-		updated,
-		edits.map((edit) => ({
-			...edit,
-			content: edit.content.startsWith(",")
-				? `,${eol}${indent}${edit.content.slice(1)}`
-				: edit.content,
-		})),
-	);
+	return appendManagedPlugin(updated, pluginNode, lastChild);
 }
 
 function configMetadata(path: string): ConfigFileMetadata | undefined {
