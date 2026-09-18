@@ -289,6 +289,24 @@ describe("writeJsonConfig comment placement", () => {
 		expect(updated).toContain("true /* user note */");
 		expect(loadJsoncConfig(configPath)).toEqual({ mcp: { codemem: { enabled: true } } });
 	});
+
+	it("keeps comments while replacing and extending a managed command array", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		writeFileSync(
+			configPath,
+			'{\n  "mcp": {\n    "codemem": {\n      "command": [\n        "uvx", // launcher note\n        "codemem", /* package note */\n      ],\n    },\n  },\n}\n',
+			"utf-8",
+		);
+
+		const command = ["npx", "-y", "--package", "codemem", "codemem", "mcp"];
+		writeJsonConfig(configPath, { mcp: { codemem: { command } } });
+
+		const updated = readFileSync(configPath, "utf-8");
+		expect(updated).toContain("// launcher note");
+		expect(updated).toContain("/* package note */");
+		expect(loadJsoncConfig(configPath)).toEqual({ mcp: { codemem: { command } } });
+	});
 });
 
 describe("writeJsonConfig safety", () => {
@@ -373,6 +391,16 @@ describe("writeJsonConfig path safety", () => {
 		expect(output.endsWith("\n")).toBe(true);
 		expect(loadJsoncConfig(configPath)).toEqual({ plugin: ["@codemem/opencode-plugin"] });
 		expect(existsSync(`${configPath}.codemem.bak`)).toBe(false);
+	});
+
+	it("preserves the mode of an atomically replaced config", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		writeFileSync(configPath, "{}\n", { mode: 0o640 });
+
+		writeJsonConfig(configPath, { plugin: ["@codemem/opencode-plugin"] });
+
+		expect(statSync(configPath).mode & 0o777).toBe(0o640);
 	});
 });
 

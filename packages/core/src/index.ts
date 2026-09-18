@@ -631,11 +631,13 @@ export * from "./observer-concepts.js";
 export type {
 	CodememConfigMutationResult,
 	CodememConfigReadOutcome,
+	ConfigFileMetadata,
 	ConfigPathResolution,
 	ConfigPathSource,
 	ConfigResolutionResult,
 } from "./observer-config.js";
 export {
+	atomicReplaceConfigFile,
 	CODEMEM_CONFIG_ENV_OVERRIDES,
 	CodememConfigMutationError,
 	coerceObserverCommand,

@@ -1,17 +1,6 @@
-import {
-	chmodSync,
-	copyFileSync,
-	existsSync,
-	lstatSync,
-	mkdirSync,
-	readFileSync,
-	renameSync,
-	rmSync,
-	statSync,
-	writeFileSync,
-} from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { stripJsonComments, stripTrailingCommas } from "@codemem/core";
+import { atomicReplaceConfigFile, stripJsonComments, stripTrailingCommas } from "@codemem/core";
 
 export const OPENCODE_PLUGIN_SPEC = "@codemem/opencode-plugin";
 const LEGACY_OPENCODE_PLUGIN_SPECS = ["codemem", "@kunickiaj/codemem"];
@@ -447,6 +436,42 @@ function replaceArrayElement(
 	return `${text.slice(0, element.start)}${replacement}${text.slice(element.end)}`;
 }
 
+function reconcileArrayElements(
+	text: string,
+	path: string[],
+	array: ValueSpan,
+	before: unknown,
+	after: unknown,
+): string | undefined {
+	if (!Array.isArray(before) || !Array.isArray(after)) return undefined;
+	const elements = listArrayValues(text, array);
+	if (elements.length !== before.length) return undefined;
+	const edits: TextEdit[] = [];
+	const retainedCount = Math.min(before.length, after.length);
+	for (let index = 0; index < retainedCount; index++) {
+		if (JSON.stringify(before[index]) === JSON.stringify(after[index])) continue;
+		const element = elements[index] as ValueSpan;
+		edits.push({
+			start: element.start,
+			end: element.end,
+			replacement: formatValue(after[index], ""),
+		});
+	}
+	for (let index = retainedCount; index < before.length; index++) {
+		const element = elements[index] as ValueSpan;
+		edits.push({ start: element.start, end: element.end, replacement: "" });
+		const comma = skipTrivia(text, element.end);
+		if (text[comma] === ",") edits.push({ start: comma, end: comma + 1, replacement: "" });
+	}
+	let updated = applyTextEdits(text, edits);
+	for (let index = retainedCount; index < after.length; index++) {
+		const updatedArray = findPath(updated, path);
+		if (!updatedArray) throw new Error("Cannot relocate JSONC array after element edit");
+		updated = appendArrayValue(updated, updatedArray, after[index]);
+	}
+	return updated;
+}
+
 function updateExistingValue(
 	text: string,
 	path: string[],
@@ -460,6 +485,8 @@ function updateExistingValue(
 		if (isSingleAppend(before, after)) return appendArrayValue(text, span, after.at(-1));
 		const replaced = replaceArrayElement(text, span, before, after);
 		if (replaced !== undefined) return replaced;
+		const reconciledElements = reconcileArrayElements(text, path, span, before, after);
+		if (reconciledElements !== undefined) return reconciledElements;
 	}
 	const lineStart = text.lastIndexOf("\n", span.start) + 1;
 	const indent = text.slice(lineStart, span.start).match(/^\s*/)?.[0] ?? "";
@@ -521,13 +548,6 @@ export function writeJsonConfig(path: string, data: Record<string, unknown>): vo
 	parseJsoncConfig(output);
 
 	if (exists) copyFileSync(path, `${path}.codemem.bak`);
-	const tempPath = `${path}.codemem.tmp-${process.pid}`;
-	try {
-		writeFileSync(tempPath, output, "utf-8");
-		if (exists) chmodSync(tempPath, statSync(path).mode);
-		renameSync(tempPath, path);
-	} catch (error) {
-		rmSync(tempPath, { force: true });
-		throw error;
-	}
+	const metadata = exists ? statSync(path) : undefined;
+	atomicReplaceConfigFile(path, output, metadata);
 }
