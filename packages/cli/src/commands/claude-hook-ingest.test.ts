@@ -8,7 +8,7 @@ import {
 	directEnqueue,
 	ingestClaudeHookPayload,
 } from "./claude-hook-ingest.js";
-import { LockBusyError, spoolPayload } from "./claude-hook-ingest-spool.js";
+import { drainSpool, LockBusyError, spoolPayload } from "./claude-hook-ingest-spool.js";
 
 function createTempDbPath(): { dbPath: string; cleanup: () => void } {
 	const dir = mkdtempSync(join(tmpdir(), "codemem-cli-claude-hook-"));
@@ -486,6 +486,36 @@ describe("boundary fallback after backlog recovery", () => {
 		expect(result).toEqual({ inserted: 1, skipped: 0, via: "http" });
 		expect(actions).toEqual([]);
 		expect(readdirSync(queueDir).filter((name) => name.endsWith(".json"))).toHaveLength(1);
+	});
+
+	it("does not replay a boundary drained by an earlier lock waiter", async () => {
+		expect(spoolPayload({ hook_event_name: "SessionStart", session_id: "queued" })).toBe(true);
+		const actions: string[] = [];
+		const result = await ingestClaudeHookPayload(
+			{ hook_event_name: "SessionEnd", session_id: "current-boundary" },
+			{ host: "127.0.0.1", port: 38888 },
+			{
+				httpIngest: async () => {
+					throw new Error("the earlier waiter already drained this receipt");
+				},
+				directIngest: () => {
+					actions.push("direct");
+					return { inserted: 1, skipped: 0 };
+				},
+				boundaryFlush: () => {
+					actions.push("flush");
+				},
+				withLock: async (fn) => {
+					await drainSpool(async () => true);
+					return await fn();
+				},
+				resolveDb: () => join(sandboxDir, "fallback.sqlite"),
+			},
+		);
+
+		expect(result).toEqual({ inserted: 0, skipped: 0, via: "spool" });
+		expect(actions).toEqual([]);
+		expect(readdirSync(queueDir).filter((name) => name.endsWith(".json"))).toHaveLength(0);
 	});
 
 	it("removes the live spool only after direct ingest succeeds", async () => {

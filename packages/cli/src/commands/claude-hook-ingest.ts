@@ -30,6 +30,7 @@ import { addDbOption, addViewerHostOptions, type DbOpts, resolveDbOpt } from "..
 import {
 	drainSpool,
 	hasSpooledEntries,
+	hasSpooledPayload,
 	LockBusyError,
 	lockTtlSeconds,
 	recoverStaleTmpSpool,
@@ -379,6 +380,7 @@ async function flushClaudeBoundary(runtime: ClaudeIngestRuntime): Promise<void> 
 
 type ClaudeBacklogDrain = {
 	drained: boolean;
+	currentHandled: boolean;
 	lastResult: HttpIngestResult | null;
 	currentResult: HttpIngestResult | null;
 	boundaryResult: IngestResult | null;
@@ -392,6 +394,7 @@ async function drainClaudeBacklog(
 	const startedAt = Date.now();
 	let lastResult: HttpIngestResult | null = null;
 	let currentResult: HttpIngestResult | null = null;
+	let currentHandled = false;
 	let drained = false;
 	let boundaryResult: IngestResult | null = null;
 	try {
@@ -409,18 +412,25 @@ async function drainClaudeBacklog(
 				return lastResult.ok;
 			});
 			drained = !hasSpooledEntries();
-			if (!currentResult?.ok && boundaryRequested) {
+			currentHandled = currentResult?.ok === true || !hasSpooledPayload(currentReceipt);
+			if (!currentHandled && boundaryRequested) {
 				boundaryResult = await ingestClaudeBoundaryDirect(runtime, currentReceipt);
 			}
 		});
 		logHookEvent(`codemem claude-hook-ingest spool drain elapsed_ms=${elapsedSince(startedAt)}`);
-		return { drained, lastResult, currentResult, boundaryResult };
+		return { drained, currentHandled, lastResult, currentResult, boundaryResult };
 	} catch (error) {
 		const cause = error instanceof LockBusyError ? "lock_busy" : errorName(error);
 		logHookEvent(
 			`codemem claude-hook-ingest spool drain deferred cause=${cause} elapsed_ms=${elapsedSince(startedAt)}`,
 		);
-		return { drained: false, lastResult, currentResult, boundaryResult: null };
+		return {
+			drained: false,
+			currentHandled,
+			lastResult,
+			currentResult,
+			boundaryResult: null,
+		};
 	}
 }
 
@@ -493,6 +503,7 @@ export async function ingestClaudeHookPayload(
 				via: "http",
 			};
 		}
+		if (recovery.currentHandled) return { inserted: 0, skipped: 0, via: "spool" };
 		if (recovery.drained && recovery.lastResult?.ok) {
 			return {
 				inserted: recovery.lastResult.inserted,

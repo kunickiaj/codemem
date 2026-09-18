@@ -101,6 +101,15 @@ function envInt(name: string, fallback: number): number {
 	return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+export function hasHookIngestSpoolReceipt(dir: string, receipt: string): boolean {
+	if (receipt.includes("/") || receipt.includes("\\") || !receipt.endsWith(".json")) return false;
+	try {
+		return statSync(join(dir, receipt)).isFile();
+	} catch {
+		return false;
+	}
+}
+
 export function createHookIngestSpool(cfg: HookIngestSpoolConfig): HookIngestSpool {
 	class LockBusyError extends Error {
 		constructor() {

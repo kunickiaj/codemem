@@ -6,7 +6,11 @@
  */
 
 import { removeLiveHookPayload, spoolLiveHookPayload } from "./hook-ingest-live-spool.js";
-import { createHookIngestSpool, envTruthy } from "./hook-ingest-spool.js";
+import {
+	createHookIngestSpool,
+	envTruthy,
+	hasHookIngestSpoolReceipt,
+} from "./hook-ingest-spool.js";
 
 export type { SpoolDrainResult, SpoolHandler } from "./hook-ingest-spool.js";
 
@@ -34,6 +38,8 @@ export const removeSpooledPayload = (name: string): boolean =>
 	removeLiveHookPayload(spool.spoolDir(), name);
 export const drainSpool = spool.drainSpool;
 export const hasSpooledEntries = spool.hasSpooledEntries;
+export const hasSpooledPayload = (receipt: string): boolean =>
+	hasHookIngestSpoolReceipt(spool.spoolDir(), receipt);
 export const recoverStaleTmpSpool = spool.recoverStaleTmpSpool;
 export const lockTtlSeconds = spool.lockTtlSeconds;
 export const spoolDir = spool.spoolDir;
