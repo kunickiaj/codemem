@@ -41,7 +41,7 @@ function findDiagnosticsAction(): HTMLButtonElement {
 beforeEach(() => {
 	document.body.innerHTML = `
 		<div id="healthGrid"></div>
-		<div id="healthMeta"></div>
+		<div id="healthStatus"><div id="healthMeta"></div></div>
 		<div id="healthActions"></div>
 		<div id="healthDot"></div>
 	`;
