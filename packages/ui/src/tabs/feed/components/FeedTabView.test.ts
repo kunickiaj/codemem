@@ -118,7 +118,9 @@ describe("FeedTabView accessibility primitives", () => {
 		if (!input) throw new Error("Feed search input missing");
 
 		input.value = "needle";
-		act(() => input.dispatchEvent(new InputEvent("input", { bubbles: true })));
+		act(() => {
+			input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+		});
 
 		expect(onQuery).toHaveBeenCalledWith("needle");
 		expect(readFirstRunGuideRecord().completed).not.toContain("find");
