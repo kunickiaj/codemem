@@ -4,14 +4,9 @@ import { Chip } from "../../../components/primitives/chip";
 import { Tooltip } from "../../../components/primitives/tooltip";
 import * as api from "../../../lib/api";
 import { highlightText } from "../../../lib/dom";
-import {
-	formatDate,
-	formatFileList,
-	formatRelativeTime,
-	parseJsonArray,
-} from "../../../lib/format";
+import { formatDate, formatRelativeTime } from "../../../lib/format";
 import { showGlobalNotice } from "../../../lib/notice";
-import { state } from "../../../lib/state";
+import { setPreferredFeedViewMode, state } from "../../../lib/state";
 import { openSyncConfirmDialog, openSyncInputDialog } from "../../sync/sync-dialogs";
 import {
 	renderFactsContent,
@@ -19,21 +14,18 @@ import {
 	renderSummarySections,
 } from "../data/body-renderers";
 import {
+	buildFeedCardViewModel,
+	type FeedCardMode,
+	hiddenSearchMatch,
+	preferredAvailableMode,
+} from "../data/card-view-model";
+import {
 	authorLabel,
 	deviceLabel,
-	itemKey,
-	itemTags,
 	mergeMetadata,
+	originSourceLabel,
 	trustStateLabel,
 } from "../data/helpers";
-import {
-	clampClass,
-	defaultObservationView,
-	observationViewData,
-	observationViewModes,
-	shouldClampBody,
-} from "../data/observation-view";
-import { canonicalKind, getSummaryObject, isSummaryLikeItem } from "../data/summary-extract";
 import type { FeedItem, ItemViewMode } from "../types";
 import { FeedItemMenu } from "./FeedItemMenu";
 import { FeedViewToggle } from "./FeedViewToggle";
@@ -48,6 +40,24 @@ export interface FeedItemCardProps {
 	onReload: () => Promise<void>;
 }
 
+function renderModeContent(mode: FeedCardMode) {
+	if (mode.content.type === "facts") return renderFactsContent(mode.content.facts);
+	if (mode.content.type === "sections") {
+		return h("div", { className: "feed-body facts" }, renderSummarySections(mode.content.sections));
+	}
+	const className = mode.id === "narrative" ? "feed-body narrative" : "feed-body";
+	return renderNarrativeContent(mode.content.text, className);
+}
+
+function shouldShowSearchMatch(
+	searchMatch: ReturnType<typeof hiddenSearchMatch>,
+	expanded: boolean,
+	activeMode: ItemViewMode,
+) {
+	if (!searchMatch) return false;
+	return !expanded || searchMatch.mode !== activeMode;
+}
+
 export function FeedItemCard({
 	item,
 	onReplace,
@@ -55,65 +65,53 @@ export function FeedItemCard({
 	onViewRefresh,
 	onReload,
 }: FeedItemCardProps) {
-	const metadata = mergeMetadata(item?.metadata_json);
-	const isSessionSummary = isSummaryLikeItem(item, metadata);
-	const displayKindValue = canonicalKind(item, metadata);
-	const rowKey = itemKey(item);
-	const defaultTitle = item.title || "(untitled)";
-	const displayTitle = isSessionSummary && metadata?.request ? metadata.request : defaultTitle;
-	const createdAtRaw = item.created_at || item.created_at_utc;
-	const relative = formatRelativeTime(createdAtRaw);
-	const tags = itemTags(item);
-	const files = parseJsonArray(item.files || []);
-	const project = item.project || "";
-	const actor = authorLabel(item);
-	const device = deviceLabel(item, metadata);
-	const visibility = String(item.visibility || metadata?.visibility || "private").trim();
-	const workspaceKind = String(item.workspace_kind || metadata?.workspace_kind || "").trim();
-	const originSource = String(item.origin_source || metadata?.origin_source || "").trim();
-	const trustState = String(item.trust_state || metadata?.trust_state || "").trim();
-	const fileContent = files.length ? ` · ${formatFileList(files)}` : "";
-	const memoryId = Number(item.id || 0);
-	const memoryIdLabel = memoryId > 0 ? `ID ${memoryId}` : "";
-	const [isNew, setIsNew] = useState(state.newItemKeys.has(rowKey));
-	const summaryObj = isSessionSummary
-		? getSummaryObject({ ...item, metadata_json: metadata })
-		: null;
-	const observationData = !isSessionSummary
-		? observationViewData({ ...item, metadata_json: metadata })
-		: null;
-	const modes = observationData ? observationViewModes(observationData) : [];
-	const fallbackMode = observationData ? defaultObservationView(observationData) : "summary";
-	const storedMode = state.itemViewState.get(rowKey) as ItemViewMode | undefined;
-	const initialMode =
-		observationData && storedMode && modes.some((mode) => mode.id === storedMode)
-			? storedMode
-			: (fallbackMode as ItemViewMode);
+	const model = buildFeedCardViewModel(item);
+	const metadata = mergeMetadata(item.metadata_json);
+	const modeIds = model.modes.map((mode) => mode.id);
+	const storedMode = state.itemViewState.get(model.rowKey) as ItemViewMode | undefined;
+	const preferredMode = storedMode || state.preferredFeedViewMode;
+	const initialMode = preferredAvailableMode(model.modes, preferredMode);
 	const [activeMode, setActiveMode] = useState<ItemViewMode>(initialMode);
-	const activeExpandKey = `${rowKey}:${activeMode}`;
+	const activeExpandKey = `${model.rowKey}:${activeMode}`;
 	const [expanded, setExpanded] = useState(state.itemExpandState.get(activeExpandKey) === true);
+	const [isNew, setIsNew] = useState(state.newItemKeys.has(model.rowKey));
+	const visibility = String(item.visibility || metadata.visibility || "private").trim();
 	const [selectedVisibility, setSelectedVisibility] = useState<"private" | "shared">(
 		visibility === "shared" ? "shared" : "private",
 	);
 	const [savingVisibility, setSavingVisibility] = useState(false);
 	const [deletingMemory, setDeletingMemory] = useState(false);
 	const [movingProject, setMovingProject] = useState(false);
-	const summarySections = summaryObj ? renderSummarySections(summaryObj) : [];
+	const createdAtRaw = item.created_at || item.created_at_utc;
+	const relative = formatRelativeTime(createdAtRaw);
+	const project = String(item.project || "").trim();
+	const actor = authorLabel(item);
+	const device = deviceLabel(item, metadata);
+	const workspaceKind = String(item.workspace_kind || metadata.workspace_kind || "").trim();
+	const originSource = originSourceLabel(item.origin_source || metadata.origin_source);
+	const trustState = String(item.trust_state || metadata.trust_state || "").trim();
+	const memoryId = Number(item.id || item.memory_id || 0);
+	const detailId = `feed-detail-${model.rowKey.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+	const activeModeData = model.modes.find((mode) => mode.id === activeMode);
+	const searchMatch = hiddenSearchMatch(model, state.feedQuery);
+	const ownedBySelf = item.owned_by_self === true || actor === "You";
+	let trustLabel = "";
+	if (!ownedBySelf && trustState !== "trusted") {
+		trustLabel = trustState ? trustStateLabel(trustState) : "Unknown trust";
+	}
 
 	useEffect(() => {
-		if (!observationData) return;
-		if (modes.some((mode) => mode.id === activeMode)) return;
-		setActiveMode(fallbackMode as ItemViewMode);
-	}, [activeMode, fallbackMode, modes, observationData]);
+		if (modeIds.includes(activeMode)) return;
+		setActiveMode(preferredAvailableMode(model.modes, state.preferredFeedViewMode));
+	}, [activeMode, modeIds, model.modes]);
 
 	useEffect(() => {
-		state.itemViewState.set(rowKey, activeMode);
-	}, [activeMode, rowKey]);
+		state.itemViewState.set(model.rowKey, activeMode);
+	}, [activeMode, model.rowKey]);
 
 	useEffect(() => {
-		const nextExpandKey = `${rowKey}:${activeMode}`;
-		setExpanded(state.itemExpandState.get(nextExpandKey) === true);
-	}, [activeMode, rowKey]);
+		setExpanded(state.itemExpandState.get(`${model.rowKey}:${activeMode}`) === true);
+	}, [activeMode, model.rowKey]);
 
 	useEffect(() => {
 		setSelectedVisibility(visibility === "shared" ? "shared" : "private");
@@ -122,54 +120,28 @@ export function FeedItemCard({
 	useEffect(() => {
 		if (!isNew) return;
 		const timer = window.setTimeout(() => {
-			state.newItemKeys.delete(rowKey);
+			state.newItemKeys.delete(model.rowKey);
 			setIsNew(false);
 		}, 700);
 		return () => window.clearTimeout(timer);
-	}, [isNew, rowKey]);
+	}, [isNew, model.rowKey]);
 
-	const currentVisibility = selectedVisibility;
-	const visibilityNote =
-		currentVisibility === "shared"
-			? "This memory can sync to peers allowed by your project filters."
-			: "This memory stays on this device unless a matching local assignment allows it to sync.";
-	const secondaryMeta = [project ? `Project ${project}` : "No project", relative]
-		.filter(Boolean)
-		.join(" · ");
-	const provenanceDetails = [
-		workspaceKind && workspaceKind !== visibility ? `Workspace ${workspaceKind}` : "",
-		originSource ? `From ${originSource}` : "",
-		device,
-		trustState && trustState !== "trusted" ? trustStateLabel(trustState) : "",
-	]
-		.filter(Boolean)
-		.join(" · ");
-	const metaText = [fileContent.trim(), provenanceDetails].filter(Boolean).join(" · ");
+	function selectMode(mode: ItemViewMode) {
+		state.itemExpandState.set(`${model.rowKey}:${mode}`, expanded);
+		state.itemViewState.set(model.rowKey, mode);
+		setPreferredFeedViewMode(mode);
+		setActiveMode(mode);
+	}
 
-	const canClamp = observationData ? shouldClampBody(activeMode, observationData) : false;
-	const bodyClassName = [
-		activeMode === "facts" ? "feed-body facts" : "feed-body",
-		activeMode === "narrative" ? "narrative" : "",
-		canClamp && !expanded ? clampClass(activeMode).join(" ") : "",
-	]
-		.filter(Boolean)
-		.join(" ");
-
-	const bodyContent = isSessionSummary
-		? summarySections.length
-			? h("div", { className: "feed-body facts" }, summarySections)
-			: renderNarrativeContent(String(item.body_text || "")) || h("div", { className: "feed-body" })
-		: observationData
-			? activeMode === "facts"
-				? renderFactsContent(observationData.facts) || h("div", { className: bodyClassName })
-				: renderNarrativeContent(
-						activeMode === "narrative" ? observationData.narrative : observationData.summary,
-						bodyClassName,
-					) || h("div", { className: bodyClassName })
-			: h("div", { className: "feed-body" });
+	function toggleDetail() {
+		if (!activeModeData) return;
+		const nextValue = !expanded;
+		state.itemExpandState.set(activeExpandKey, nextValue);
+		setExpanded(nextValue);
+	}
 
 	async function saveVisibility(nextVisibility: "private" | "shared") {
-		const previousVisibility = currentVisibility;
+		const previousVisibility = selectedVisibility;
 		setSelectedVisibility(nextVisibility);
 		setSavingVisibility(true);
 		try {
@@ -179,9 +151,7 @@ export function FeedItemCard({
 				onViewRefresh();
 			}
 			showGlobalNotice(
-				nextVisibility === "shared"
-					? "Memory will now sync as shared context."
-					: "Memory is private again.",
+				nextVisibility === "shared" ? "Shared with synced peers" : "Only you can see this",
 			);
 		} catch (error) {
 			setSelectedVisibility(previousVisibility);
@@ -196,8 +166,7 @@ export function FeedItemCard({
 
 	async function moveProject() {
 		const currentProject = String(item.project || "").trim();
-		const initialValue = currentProject;
-		const titleText = String(displayTitle || "this memory").trim();
+		const titleText = String(model.displayTitle || "this memory").trim();
 		const truncatedTitle =
 			titleText.length > 80 ? `${titleText.slice(0, 79).trimEnd()}…` : titleText;
 		const description = currentProject
@@ -206,14 +175,14 @@ export function FeedItemCard({
 		let suggestions: string[] = [];
 		try {
 			const all = await api.loadProjects();
-			suggestions = all.filter((p) => p && p !== currentProject);
+			suggestions = all.filter((candidate) => candidate && candidate !== currentProject);
 		} catch {
-			// Non-fatal — fall back to free-text entry without suggestions.
+			// Free-text project entry remains available when suggestions fail.
 		}
 		const nextProject = await openSyncInputDialog({
 			title: "Assign to project",
 			description,
-			initialValue,
+			initialValue: currentProject,
 			placeholder: "Pick one or type a new project name",
 			suggestions,
 			confirmLabel: "Move",
@@ -233,11 +202,11 @@ export function FeedItemCard({
 		try {
 			const result = await api.moveMemoryProject(memoryId, target);
 			const count = Number(result.moved_memory_count || 1);
-			const label =
+			showGlobalNotice(
 				count > 1
 					? `Moved ${count} memories from this session to "${result.project}".`
-					: `Moved to "${result.project}".`;
-			showGlobalNotice(label);
+					: `Moved to "${result.project}".`,
+			);
 			await onReload();
 			onViewRefresh();
 		} catch (error) {
@@ -251,7 +220,7 @@ export function FeedItemCard({
 	}
 
 	async function forgetMemory() {
-		const titleText = String(displayTitle || "this memory").trim();
+		const titleText = String(model.displayTitle || "this memory").trim();
 		const truncatedTitle =
 			titleText.length > 80 ? `${titleText.slice(0, 79).trimEnd()}…` : titleText;
 		const confirmed = await openSyncConfirmDialog({
@@ -281,141 +250,163 @@ export function FeedItemCard({
 		}
 	}
 
-	const kindChipLabel = displayKindValue.replace(/_/g, " ");
-	const filesRow = files.length
+	const filesRow = model.files.length
 		? h(
 				"div",
 				{ className: "feed-files" },
-				files.map((file, index) =>
+				model.files.map((file, index) =>
 					h("span", { className: "feed-file", key: `${String(file)}-${index}` }, String(file)),
 				),
 			)
 		: null;
+	const expandedProvenance = [
+		workspaceKind
+			? h(ProvenanceChip, { label: `Workspace ${workspaceKind}`, variant: "workspace" })
+			: null,
+		originSource ? h(ProvenanceChip, { label: `From ${originSource}`, variant: "source" }) : null,
+		device ? h(ProvenanceChip, { label: device, variant: "device" }) : null,
+	].filter(Boolean);
+
 	return h(
 		"article",
 		{
-			className: `feed-item ${displayKindValue}${isNew ? " new-item" : ""}`.trim(),
-			"data-key": rowKey,
+			className: `feed-item ${model.displayKind}${isNew ? " new-item" : ""}`.trim(),
+			"data-key": model.rowKey,
 		},
 		h(
 			"div",
-			{ className: "feed-kind-banner" },
-			h(Chip, { variant: "kind", tone: displayKindValue }, kindChipLabel),
+			{ className: "feed-kind-rail" },
+			h(Chip, { variant: "kind", tone: model.displayKind }, model.displayKind.replace(/_/g, " ")),
 		),
 		h(
 			"div",
 			{ className: "feed-card-body" },
-			h(
-				"div",
-				{ className: "feed-card-header" },
-				h(
-					"div",
-					{ className: "feed-header" },
-					h("div", {
+			activeModeData
+				? h("button", {
+						"aria-controls": detailId,
+						"aria-expanded": expanded,
 						className: "feed-title title",
-						dangerouslySetInnerHTML: { __html: highlightText(displayTitle, state.feedQuery) },
+						dangerouslySetInnerHTML: {
+							__html: highlightText(model.displayTitle, state.feedQuery),
+						},
+						onClick: toggleDetail,
+						type: "button",
+					})
+				: h("div", {
+						className: "feed-title title",
+						dangerouslySetInnerHTML: {
+							__html: highlightText(model.displayTitle, state.feedQuery),
+						},
 					}),
-					h("div", { className: "feed-card-subtitle small" }, secondaryMeta),
-				),
-				h(
-					"div",
-					{ className: "feed-actions" },
-					observationData
-						? h(FeedViewToggle, {
-								active: activeMode,
-								modes,
-								onSelect: (mode) => setActiveMode(mode),
-							})
-						: null,
-					h(
-						Tooltip,
-						{ label: formatDate(createdAtRaw), side: "left" },
-						h("div", { className: "small feed-age" }, relative),
-					),
-					item.owned_by_self && memoryId > 0
-						? h(FeedItemMenu, {
-								assignProjectDisabled: movingProject,
-								disabled: deletingMemory,
-								onAssignProject: () => void moveProject(),
-								onForget: () => void forgetMemory(),
-								title: String(displayTitle || "memory"),
-							})
-						: null,
-				),
-			),
+			model.skimSummary
+				? h("div", {
+						className: "feed-summary",
+						dangerouslySetInnerHTML: {
+							__html: highlightText(model.skimSummary, state.feedQuery),
+						},
+					})
+				: null,
+			searchMatch && shouldShowSearchMatch(searchMatch, expanded, activeMode)
+				? h(
+						"div",
+						{ className: "feed-search-match" },
+						h("span", { className: "feed-search-match-label" }, `${searchMatch.mode} match`),
+						h("span", {
+							dangerouslySetInnerHTML: {
+								__html: highlightText(searchMatch.excerpt, state.feedQuery),
+							},
+						}),
+					)
+				: null,
 			h(
 				"div",
-				{ className: "feed-provenance" },
+				{ className: "feed-meta-line" },
+				project ? h("span", { className: "feed-project" }, project) : h("span", null, "No project"),
 				h(ProvenanceChip, { label: actor, variant: actor === "You" ? "mine" : "author" }),
-				h(ProvenanceChip, { label: visibility || "private", variant: visibility || "private" }),
-				memoryIdLabel
+				h(ProvenanceChip, {
+					label: selectedVisibility,
+					variant: selectedVisibility,
+				}),
+				memoryId > 0
 					? h(
 							Tooltip,
 							{ label: `Memory database id ${memoryId}`, side: "top" },
-							h(ProvenanceChip, { label: memoryIdLabel, variant: "memory-id" }),
+							h(ProvenanceChip, { label: `#${memoryId}`, variant: "memory-id" }),
+						)
+					: null,
+				trustLabel ? h(ProvenanceChip, { label: trustLabel, variant: "trust" }) : null,
+				model.tags.map((tag, index) => h(TagChip, { key: `${String(tag)}-${index}`, tag })),
+			),
+			expanded && activeModeData
+				? h(
+						"section",
+						{
+							"aria-label": `${model.displayTitle} ${activeModeData.label}`,
+							className: "feed-detail",
+							id: detailId,
+						},
+						renderModeContent(activeModeData),
+						filesRow,
+						expandedProvenance
+							? h("div", { className: "feed-expanded-provenance" }, expandedProvenance)
+							: null,
+					)
+				: null,
+		),
+		h(
+			"div",
+			{ className: "feed-card-side" },
+			h(
+				"div",
+				{ className: "feed-card-side-top" },
+				h(
+					Tooltip,
+					{ label: formatDate(createdAtRaw), side: "left" },
+					h("span", { className: "feed-age mono" }, relative),
+				),
+				ownedBySelf && memoryId > 0
+					? h(FeedItemMenu, {
+							assignProjectDisabled: movingProject,
+							disabled: deletingMemory,
+							onAssignProject: () => void moveProject(),
+							onForget: () => void forgetMemory(),
+							title: model.displayTitle,
+						})
+					: null,
+			),
+			h(
+				"div",
+				{ className: "feed-card-side-bottom" },
+				h(FeedViewToggle, {
+					active: activeMode,
+					ariaLabel: `View for ${model.displayTitle}`,
+					modes: model.modes,
+					onSelect: selectMode,
+				}),
+				ownedBySelf && memoryId > 0
+					? h(
+							"label",
+							{ className: "feed-visibility-label" },
+							h("span", null, "Visible to"),
+							h(
+								"select",
+								{
+									"aria-label": `Who can see ${model.displayTitle}`,
+									className: "feed-visibility-select",
+									disabled: savingVisibility,
+									onChange: (event: TargetedEvent<HTMLSelectElement>) => {
+										const nextValue =
+											String(event.currentTarget.value) === "shared" ? "shared" : "private";
+										void saveVisibility(nextValue);
+									},
+									value: selectedVisibility,
+								},
+								h("option", { value: "private" }, "Only me"),
+								h("option", { value: "shared" }, "Synced peers"),
+							),
 						)
 					: null,
 			),
-			metaText ? h("div", { className: "feed-meta" }, metaText) : null,
-			bodyContent,
-			h(
-				"div",
-				{ className: "feed-footer" },
-				h(
-					"div",
-					{ className: "feed-footer-left" },
-					tags.length
-						? h(
-								"div",
-								{ className: "feed-tags" },
-								tags.map((tag, index) => h(TagChip, { key: `${String(tag)}-${index}`, tag })),
-							)
-						: null,
-					item.owned_by_self && memoryId > 0
-						? h(
-								"div",
-								{ className: "feed-visibility-controls" },
-								h(
-									"select",
-									{
-										"aria-label": `Visibility for ${String(item.title || "memory")}`,
-										className: "feed-visibility-select",
-										disabled: savingVisibility,
-										onChange: (event: TargetedEvent<HTMLSelectElement>) => {
-											const nextValue =
-												String(event.currentTarget.value) === "shared" ? "shared" : "private";
-											void saveVisibility(nextValue);
-										},
-										value: currentVisibility,
-									},
-									h("option", { value: "private" }, "Only me"),
-									h("option", { value: "shared" }, "Share with peers"),
-								),
-								h("div", { className: "feed-visibility-note" }, visibilityNote),
-							)
-						: null,
-				),
-				h(
-					"div",
-					{ className: "feed-footer-right" },
-					canClamp
-						? h(
-								"button",
-								{
-									className: "feed-expand",
-									onClick: () => {
-										const nextValue = !expanded;
-										state.itemExpandState.set(activeExpandKey, nextValue);
-										setExpanded(nextValue);
-									},
-									type: "button",
-								},
-								expanded ? "Collapse" : "Expand",
-							)
-						: null,
-				),
-			),
-			filesRow,
 		),
 	);
 }

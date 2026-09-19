@@ -3,15 +3,19 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
 	ALL_TAB_IDS,
 	type CachedCoordinatorAdminStatus,
+	FEED_VIEW_MODE_KEY,
 	getActiveAdvancedSection,
 	getActiveTab,
+	getPreferredFeedViewMode,
 	getVisibleTabs,
 	parseAdvancedSectionFromHash,
 	parseTabFromHash,
 	resolveAccessibleTab,
 	setActiveTab,
 	setAdvancedSection,
+	setPreferredFeedViewMode,
 	shouldShowCoordinatorAdminTab,
+	state,
 } from "./state";
 
 describe("Viewer tab routing", () => {
@@ -116,5 +120,18 @@ describe("Advanced access and Team admin gating", () => {
 		expect(resolveAccessibleTab("coordinator-admin", status)).toBe("advanced");
 		expect(resolveAccessibleTab("sharing", status)).toBe("sharing");
 		expect(resolveAccessibleTab("feed", status)).toBe("feed");
+	});
+});
+
+describe("Feed view preference", () => {
+	it("persists one versioned global mode and rejects unknown stored values", () => {
+		localStorage.clear();
+		setPreferredFeedViewMode("narrative");
+		expect(localStorage.getItem(FEED_VIEW_MODE_KEY)).toBe("narrative");
+		expect(getPreferredFeedViewMode()).toBe("narrative");
+		expect(state.preferredFeedViewMode).toBe("narrative");
+
+		localStorage.setItem(FEED_VIEW_MODE_KEY, "obsolete-mode");
+		expect(getPreferredFeedViewMode()).toBe("summary");
 	});
 });

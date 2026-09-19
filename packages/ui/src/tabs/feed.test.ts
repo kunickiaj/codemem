@@ -31,10 +31,10 @@ describe("observationViewData", () => {
 			metadata_json: {},
 		});
 
-		expect(data.summary).toBe("");
+		expect(data.summary).toBe("Legacy body text still available as the full observation detail.");
 		expect(data.narrative).toBe("Legacy body text still available as the full observation detail.");
-		expect(data.hasSummary).toBe(false);
-		expect(data.hasNarrative).toBe(true);
+		expect(data.hasSummary).toBe(true);
+		expect(data.hasNarrative).toBe(false);
 	});
 
 	it("does not treat identical subtitle and narrative as distinct narrative mode", () => {
@@ -47,6 +47,20 @@ describe("observationViewData", () => {
 		});
 
 		expect(data.hasSummary).toBe(true);
+		expect(data.hasNarrative).toBe(false);
+	});
+
+	it("does not duplicate a multiline narrative when no explicit summary exists", () => {
+		const data = observationViewData({
+			subtitle: null,
+			narrative: "First skim line.\nSecond detail line.",
+			body_text: null,
+			facts: [],
+			metadata_json: {},
+		});
+
+		expect(data.summary).toBe("First skim line.");
+		expect(data.summaryDetail).toBe("First skim line.\nSecond detail line.");
 		expect(data.hasNarrative).toBe(false);
 	});
 
