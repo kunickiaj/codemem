@@ -151,8 +151,13 @@ export function renderTeamSync() {
 	const coordinator = state.lastSyncCoordinator;
 	const syncView = currentSyncView();
 	renderAdvancedSyncStatus(syncView.primaryStatus);
+	const revealManualDeviceIdentityControls = () => {
+		const controls = document.getElementById("manualDeviceIdentityControls");
+		if (controls instanceof HTMLDetailsElement) controls.open = true;
+	};
 
 	const focusAttentionTarget = (item: { kind?: string; deviceId?: string }) => {
+		revealManualDeviceIdentityControls();
 		if (item.kind === "possible-duplicate-person") {
 			const actorList = document.getElementById("syncActorsList");
 			if (actorList instanceof HTMLElement) {
@@ -492,6 +497,7 @@ export function renderTeamSync() {
 			},
 			onDenyJoinRequest: async () => null,
 			onInspectConflict: (row) => {
+				revealManualDeviceIdentityControls();
 				const peerCard = document.querySelector(
 					`[data-peer-device-id="${CSS.escape(row.deviceId)}"]`,
 				);

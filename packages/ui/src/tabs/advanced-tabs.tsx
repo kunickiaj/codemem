@@ -28,4 +28,12 @@ export function mountAdvancedTabs(
 		/>,
 		mount,
 	);
+	const panelIds: Record<AdvancedTabValue, string> = {
+		sync: "advancedSyncContent",
+		teams: "advancedTeamsContent",
+	};
+	for (const tab of ADVANCED_TABS) {
+		const trigger = document.getElementById(tab.id);
+		trigger?.setAttribute("aria-controls", panelIds[tab.value as AdvancedTabValue]);
+	}
 }

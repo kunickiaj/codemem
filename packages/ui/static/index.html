@@ -5050,7 +5050,7 @@
       <h2 class="advanced-heading">Advanced</h2>
       <div id="advancedTabsMount"></div>
 
-      <div id="advancedSyncContent">
+      <div id="advancedSyncContent" role="tabpanel" aria-labelledby="advancedSyncButton">
 
       <!-- Sub-view: main Sync surface. Toggled by syncViewController and
            app compatibility routing for canonical and legacy hashes. -->
@@ -5122,7 +5122,7 @@
           <div class="actor-list" id="syncSharingReviewList"></div>
         </div>
 
-        <details class="project-inventory-details" style="margin-top: 20px">
+        <details class="project-inventory-details" id="manualDeviceIdentityControls" style="margin-top: 20px">
           <summary>Manual device and identity controls</summary>
 
         <h3 class="settings-group-title">People</h3>
@@ -5196,7 +5196,7 @@
       </div><!-- /#syncDiagnosticsView -->
       </div><!-- /#advancedSyncContent -->
 
-      <div id="advancedTeamsContent" hidden>
+      <div id="advancedTeamsContent" role="tabpanel" aria-labelledby="advancedTeamsButton" hidden>
         <div class="card">
           <div class="section-header">
             <h2 id="coordinatorAdminHeading" tabindex="-1">Coordinator administration</h2>
