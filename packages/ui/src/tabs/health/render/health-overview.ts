@@ -41,6 +41,7 @@ const SYNC_PROBLEM_STATES = new Set([
 	"needs_attention",
 	"stopped",
 	"degraded",
+	"stale",
 	"offline-peers",
 	"rebootstrapping",
 ]);
@@ -211,6 +212,7 @@ function applySyncStateRisk(result: RiskResult, signals: OverviewSignals): void 
 	if (signals.syncState === "error") addRisk(result, 36, "sync daemon reports errors");
 	if (signals.syncState === "needs_attention") addRisk(result, 40, "sync needs manual attention");
 	if (signals.syncState === "stopped") addRisk(result, 22, "sync daemon stopped");
+	if (signals.syncState === "stale") addRisk(result, 20, "sync daemon stale");
 	if (signals.syncState === "degraded" && !signals.syncRecentlyOk) {
 		addRisk(result, 20, "sync daemon degraded");
 	}

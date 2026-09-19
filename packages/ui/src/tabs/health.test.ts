@@ -357,6 +357,22 @@ it("does not report unknown, unconfigured, or stale sync as online", () => {
 	expect(staleSync?.querySelector(".presence-pip--degraded")).not.toBeNull();
 });
 
+it("treats an explicit stale daemon state as degraded even after a recent sync", () => {
+	state.lastSyncPeers = [{ peer_device_id: "peer-a" }];
+	state.lastSyncStatus = {
+		enabled: true,
+		daemon_state: "stale",
+		last_sync_at: new Date().toISOString(),
+	};
+
+	renderOverview();
+
+	const sync = document.querySelectorAll("#healthGrid .health-tile-value")[1];
+	expect(sync?.textContent).toBe("Stale");
+	expect(sync?.querySelector(".presence-pip--degraded")).not.toBeNull();
+	expect(document.getElementById("healthMeta")?.textContent).toContain("sync daemon stale");
+});
+
 it("counts detected health risks instead of remediation rows", () => {
 	state.lastSyncPeers = [{ peer_device_id: "peer-a" }];
 	state.lastSyncStatus = { enabled: true, daemon_state: "needs_attention" };
