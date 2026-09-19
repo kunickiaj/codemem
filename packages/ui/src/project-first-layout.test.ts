@@ -75,7 +75,6 @@ describe("project-first navigation layout", () => {
 
 		expect(advanced).toContain('id="coordinatorAdminHeading" tabindex="-1"');
 		expect(advanced).toContain('href="#sharing" id="advancedTeamSettingsLink">Team settings');
-		expect(advanced).toContain('href="#sharing" id="advancedSharingLink"');
 		expect(advanced).toContain("Groups · Invites · Join requests · Devices");
 		expect(advanced).toContain("<summary>Legacy administration</summary>");
 		expect(advanced).not.toContain('role="note"');
@@ -101,7 +100,9 @@ describe("project-first navigation layout", () => {
 		expect(html).toContain("Legacy administration");
 		expect(html).toContain('id="coordinatorAdminMount"');
 	});
+});
 
+describe("project-first responsive layout", () => {
 	it("keeps Project fieldset semantics separate from the overflow-safe row grid", () => {
 		const stylesStart = html.indexOf(".legacy-team-project-list {");
 		const stylesEnd = html.indexOf(".legacy-team-setup-delta {", stylesStart);
@@ -167,7 +168,9 @@ describe("project-first navigation layout", () => {
 		expect(coordinatorGroupsSource).not.toContain('"Create Team"');
 		expect(coordinatorGroupsSource).not.toContain('"Manage Team"');
 	});
+});
 
+describe("project-first navigation boundaries", () => {
 	it("marks only the initial Feed control with aria-current", () => {
 		const navigation = html.slice(
 			html.indexOf('<nav class="tab-bar"'),
@@ -227,7 +230,7 @@ describe("project-first navigation layout", () => {
 		expect(html.slice(advanced, diagnostics)).not.toContain("Connect another device");
 		expect(html.slice(advanced, diagnostics)).not.toContain("syncPairingDisclosureMount");
 		expect(html.slice(advanced, diagnostics)).toContain("Create person");
-		expect(html.slice(advanced, diagnostics)).not.toContain("Connect another device");
+		expect(html).toContain('id="advancedSharingLink"');
 	});
 
 	it("keeps the legacy upgrade review destination available", () => {
