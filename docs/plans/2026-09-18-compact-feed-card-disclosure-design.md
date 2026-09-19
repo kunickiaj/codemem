@@ -30,8 +30,8 @@ One mode vocabulary keeps keyboard behavior and user preference consistent acros
 
 | Mode | Observations and changes | Session summaries | Legacy records |
 | --- | --- | --- | --- |
-| Summary | `subtitle`, then semantic summary fallback | First non-duplicate outcome line | First non-empty `subtitle` or `body_text` line |
-| Facts | Explicit or derived facts | Structured REQUEST, COMPLETED, LEARNED, INVESTIGATED, NEXT STEPS, and NOTES sections | Derived facts when available |
+| Summary | `subtitle`, then semantic summary fallback | First non-duplicate outcome line | Collapsed: first non-empty `subtitle` or `body_text` line. Expanded: full `body_text` |
+| Facts | Explicit or derived facts | Structured REQUEST, OUTCOME, PLAN, COMPLETED, LEARNED, INVESTIGATED, NEXT STEPS, and NOTES sections | Derived facts when available |
 | Narrative | Distinct `narrative`, then `body_text` fallback | Distinct narrative or `body_text` | Full `body_text` |
 
 Unavailable modes are omitted. If only one mode exists, the mode control is omitted but the title still toggles that mode's detail region.
@@ -120,7 +120,7 @@ Expanded: selected content appears with resolved source and device detail. A mis
 
 Collapsed: kind · stored title or `(untitled)` · first `body_text` line · project and provenance.
 
-Expanded Summary or Narrative: full `body_text`. Facts appears only when facts can be derived without inventing content.
+Expanded Summary or Narrative: full `body_text`, not only the collapsed first-line skim. Facts appears only when facts can be derived without inventing content.
 
 ## Implementation Boundaries
 
