@@ -56,6 +56,7 @@ import {
 	type DevicePeerRuntimeMetadataInput,
 	type DevicesNavigationTarget,
 	type DevicesProjectInput,
+	type DevicesRendererOptions,
 	mountDevices,
 } from "./tabs/devices";
 import { initFeedTab, loadFeedData, updateFeedView } from "./tabs/feed";
@@ -585,6 +586,17 @@ async function refreshDevicesAfterCommit(): Promise<boolean> {
 	return devicesRefreshed && sharingRefreshed;
 }
 
+function deviceRendererActions(): Pick<
+	DevicesRendererOptions,
+	"onCommitted" | "onNavigate" | "onRetry"
+> {
+	return {
+		onCommitted: refreshDevicesAfterCommit,
+		onNavigate: navigateFromDevices,
+		onRetry: () => void loadDevicesData(),
+	};
+}
+
 async function runLoadDevicesData(
 	mount: HTMLElement,
 	revision: number,
@@ -618,11 +630,10 @@ async function runLoadDevicesData(
 		}
 		state.deviceIdentityInventoryLoadError = inventoryResult.unavailable;
 		mountDevices(mount, intent, reconciliation, projects, availability, {
+			...deviceRendererActions(),
 			inventory: inventoryResult.inventory,
 			inventoryUnavailable: inventoryResult.unavailable,
 			coordinatorEnrollmentIssueCount,
-			onCommitted: refreshDevicesAfterCommit,
-			onNavigate: navigateFromDevices,
 			peerRuntimeMetadata,
 		});
 		lastDevicesData = {
@@ -647,11 +658,10 @@ async function runLoadDevicesData(
 				lastDevicesData.projects,
 				lastDevicesData.availability,
 				{
+					...deviceRendererActions(),
 					coordinatorEnrollmentIssueCount: lastDevicesData.coordinatorEnrollmentIssueCount,
 					inventory: lastDevicesData.inventory,
 					inventoryUnavailable: lastDevicesData.inventoryUnavailable,
-					onCommitted: refreshDevicesAfterCommit,
-					onNavigate: navigateFromDevices,
 					peerRuntimeMetadata: lastDevicesData.peerRuntimeMetadata,
 					refreshError: true,
 				},

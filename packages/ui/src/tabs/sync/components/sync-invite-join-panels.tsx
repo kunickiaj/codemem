@@ -1,5 +1,4 @@
 import { useLayoutEffect, useRef } from "preact/hooks";
-import { copyToClipboard } from "../../../lib/dom";
 
 type ExistingElementSlotProps = {
 	element: HTMLElement | null;
@@ -67,31 +66,6 @@ function InviteToggleRow({
 	);
 }
 
-function PairingCopyRow() {
-	return (
-		<div className="sync-action">
-			<div className="sync-action-text">
-				Pair another device.
-				<span className="sync-action-command">
-					Copy a pairing command when you want to connect another one of your own devices.
-				</span>
-			</div>
-			<button
-				type="button"
-				className="settings-button sync-action-copy"
-				onClick={(event) =>
-					copyToClipboard(
-						"codemem sync pair --payload-only",
-						event.currentTarget as HTMLButtonElement,
-					)
-				}
-			>
-				Copy pairing command
-			</button>
-		</div>
-	);
-}
-
 function JoinToggleRow({
 	joinPanel,
 	joinPanelOpen,
@@ -137,7 +111,6 @@ export type SyncInviteJoinPanelsProps = {
 	joinRestoreParent: HTMLElement | null;
 	onToggleInvitePanel: () => void;
 	onToggleJoinPanel: () => void;
-	pairedPeerCount: number;
 	presenceStatus: string;
 };
 
@@ -150,7 +123,6 @@ export function SyncInviteJoinPanels({
 	joinRestoreParent,
 	onToggleInvitePanel,
 	onToggleJoinPanel,
-	pairedPeerCount,
 	presenceStatus,
 }: SyncInviteJoinPanelsProps) {
 	const notEnrolled = presenceStatus === "not_enrolled";
@@ -212,8 +184,6 @@ export function SyncInviteJoinPanels({
 					onToggle={onToggleInvitePanel}
 				/>
 			) : null}
-
-			{!pairedPeerCount && presenceStatus === "posted" ? <PairingCopyRow /> : null}
 		</>
 	);
 }

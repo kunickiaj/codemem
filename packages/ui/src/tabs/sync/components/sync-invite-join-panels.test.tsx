@@ -17,7 +17,6 @@ function renderPanels(overrides: Partial<Parameters<typeof SyncInviteJoinPanels>
 				joinPanel={null}
 				joinPanelOpen={false}
 				joinRestoreParent={null}
-				pairedPeerCount={1}
 				presenceStatus="posted"
 				onToggleInvitePanel={() => {}}
 				onToggleJoinPanel={() => {}}
@@ -49,5 +48,6 @@ describe("SyncInviteJoinPanels", () => {
 		expect(root.textContent).toContain("Invite a teammate");
 		expect(root.textContent).not.toContain("Set up an always-on peer");
 		expect(root.textContent).not.toContain("Open anchor-peer deployment guide");
+		expect(root.textContent).not.toContain("Copy pairing command");
 	});
 });
