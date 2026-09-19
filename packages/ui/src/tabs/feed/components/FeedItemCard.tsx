@@ -347,7 +347,9 @@ export function FeedItemCard({
 						},
 						renderModeContent(activeModeData),
 						filesRow,
-						expandedProvenance ? h("div", { className: "feed-meta" }, expandedProvenance) : null,
+						expandedProvenance
+							? h("div", { className: "feed-expanded-provenance" }, expandedProvenance)
+							: null,
 					)
 				: null,
 		),

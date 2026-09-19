@@ -3,7 +3,15 @@ import type { FeedItem, FeedSummary } from "../types";
 import { firstContentLine } from "./observation-view";
 import { getSummaryObject } from "./summary-extract";
 
-const OUTCOME_KEYS = ["completed", "learned", "investigated", "next_steps", "next", "notes"];
+const OUTCOME_KEYS = [
+	"outcome",
+	"completed",
+	"learned",
+	"investigated",
+	"next_steps",
+	"next",
+	"notes",
+];
 const FACT_KEYS = [
 	"request",
 	"outcome",
@@ -43,7 +51,7 @@ export function sessionSummaryViewData(item: FeedItem, displayedTitle: string) {
 	const metadata = item.metadata_json || {};
 	const explicitNarrative = String(item.narrative || metadata.narrative || "").trim();
 	const narrative = explicitNarrative || bodyText;
-	const summaryDetail = skimSummary;
+	const summaryDetail = summary ? skimSummary : bodyText || skimSummary;
 
 	return {
 		facts,

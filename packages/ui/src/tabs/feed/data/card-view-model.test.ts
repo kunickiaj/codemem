@@ -40,6 +40,34 @@ describe("feed card view model", () => {
 		expect(facts?.searchText).toContain("Retries can arrive");
 	});
 
+	it("uses a supported outcome when the request duplicates the title", () => {
+		const model = buildFeedCardViewModel({
+			kind: "session_summary",
+			summary: {
+				request: "Repair the watering controller",
+				outcome: "The controller now rejects duplicate commands",
+			},
+			title: "Stored title",
+		});
+
+		expect(model.displayTitle).toBe("Repair the watering controller");
+		expect(model.skimSummary).toBe("The controller now rejects duplicate commands");
+		expect(model.modes.map(({ id }) => id)).toContain("summary");
+	});
+
+	it("keeps the full legacy session body in expanded Summary", () => {
+		const model = buildFeedCardViewModel({
+			body_text: "First result line\nSecond result line",
+			kind: "session_summary",
+			title: "Legacy session",
+		});
+
+		expect(model.skimSummary).toBe("First result line");
+		expect(model.modes.find(({ id }) => id === "summary")?.searchText).toContain(
+			"Second result line",
+		);
+	});
+
 	it("keeps legacy body text as summary detail without inventing unavailable modes", () => {
 		const model = buildFeedCardViewModel({
 			body_text: "Legacy detail remains readable",
