@@ -32,10 +32,10 @@ function processingOutcome(controlId: string): SettingsOutcomeDetails {
 function packOutcome(controlId: string): SettingsOutcomeDetails {
 	return {
 		controlId,
-		existingData: "Stored memories and existing packs stay unchanged.",
-		scope: "New default context packs",
-		stage: "Context assembly",
-		timing: "For new packs after process restart",
+		existingData: "Stored memories and existing packs stay unchanged; the value is saved only.",
+		scope: "No current effect",
+		stage: "Saved setting",
+		timing: "Not used when Codemem creates context packs",
 	};
 }
 

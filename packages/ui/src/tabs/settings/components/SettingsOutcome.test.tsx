@@ -120,7 +120,7 @@ describe("settings outcomes", () => {
 		).toContain("After viewer restart");
 		expect(
 			root.querySelector('[data-settings-outcome-for="packObservationLimit"]')?.textContent,
-		).toContain("For new packs after process restart");
+		).toContain("Not used when Codemem creates context packs");
 		expect(root.querySelector('[data-settings-outcome-for="syncEnabled"]')?.textContent).toContain(
 			"After viewer restart",
 		);
