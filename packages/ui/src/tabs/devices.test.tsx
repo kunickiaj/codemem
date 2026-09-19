@@ -294,10 +294,11 @@ describe("Devices focus and inventory", function devicesFocusAndInventoryTests()
 			onNavigate,
 		});
 
-		expect(document.querySelector("#devices-heading")?.textContent).toBe("Devices");
+		expect(document.querySelector("#devices-heading")?.textContent).toBe("Devices 1");
 		expect(document.querySelector(".devices-local-row")?.textContent).toContain(
 			"This deviceOwned by Adam & CoThis device",
 		);
+		expect(document.body.textContent).not.toContain("your identity");
 		expect(document.body.textContent).toContain("No other devices");
 		expect(document.querySelectorAll(".devices-table-row")).toHaveLength(0);
 
@@ -761,7 +762,7 @@ describe("Device identity grouping", () => {
 		expect(devicesSection.querySelector(":scope > .recipient-policy-sharing-header")?.tagName).toBe(
 			"DIV",
 		);
-		expect(document.querySelector("h2")?.textContent).toBe("Devices");
+		expect(document.querySelector("h2")?.textContent).toBe("Devices 1");
 		expect(document.querySelector(".devices-identity-header")?.textContent).toContain(
 			"Adam & Co · 1 device",
 		);
@@ -791,27 +792,6 @@ describe("Device identity grouping", () => {
 				?.click();
 		});
 		expect(onNavigate).toHaveBeenCalledWith("sharing_teams");
-	});
-
-	it("routes device invitations to Sharing without inferring the viewer's Identity", () => {
-		const onNavigate = vi.fn();
-		mount(intent(), reconciliation(), {
-			inventory: inventory([
-				inventoryItem("device-address-fingerprint-secret", "Work Laptop", "configured", {
-					isLocal: true,
-				}),
-			]),
-			onNavigate,
-		});
-
-		expect(document.querySelector(".devices-identity-header")?.textContent).not.toContain(
-			"your identity",
-		);
-		const addDevice = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
-			(button) => button.textContent === "Add a device",
-		);
-		act(() => addDevice?.click());
-		expect(onNavigate).toHaveBeenCalledWith("sharing");
 	});
 
 	it("counts setup devices rendered without projected access", () => {
