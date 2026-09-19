@@ -30,7 +30,6 @@ export function FeedSearchInput({
 		id: "feedSearch",
 		onInput: (event) => {
 			const value = String((event.currentTarget as HTMLInputElement).value || "");
-			if (value.trim()) completeFirstRunStep("find");
 			onQuery(value);
 		},
 		placeholder: "Search title, body, tags…",

@@ -108,4 +108,19 @@ describe("FeedTabView accessibility primitives", () => {
 
 		expect(readFirstRunGuideRecord().completed).not.toContain("find");
 	});
+
+	it("does not complete Find it again while a search is only being typed", () => {
+		const onQuery = vi.fn();
+		const mount = document.createElement("div");
+		document.body.appendChild(mount);
+		act(() => render(h(FeedSearchInput, { onQuery, query: "" }), mount));
+		const input = mount.querySelector<HTMLInputElement>("input");
+		if (!input) throw new Error("Feed search input missing");
+
+		input.value = "needle";
+		act(() => input.dispatchEvent(new InputEvent("input", { bubbles: true })));
+
+		expect(onQuery).toHaveBeenCalledWith("needle");
+		expect(readFirstRunGuideRecord().completed).not.toContain("find");
+	});
 });
