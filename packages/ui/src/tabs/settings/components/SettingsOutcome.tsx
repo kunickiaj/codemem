@@ -42,7 +42,8 @@ function packOutcome(controlId: string): SettingsOutcomeDetails {
 function syncOutcome(controlId: string, scope: string): SettingsOutcomeDetails {
 	return {
 		controlId,
-		existingData: "Existing memories and sync history stay unchanged.",
+		existingData:
+			"Existing memories are not reprocessed locally, but eligible memories may be sent to or received from trusted peers.",
 		scope,
 		stage: "Device sync",
 		timing: "After viewer restart",

@@ -144,6 +144,16 @@ describe("settings outcomes", () => {
 		expect(root.querySelector('[data-settings-outcome-for="syncCoordinatorUrl"]')).toBeNull();
 	});
 
+	it("discloses the existing-memory effect of sync changes", () => {
+		const root = renderPanels();
+		const syncOutcome = root.querySelector(
+			'[data-settings-outcome-for="syncEnabled"]',
+		)?.textContent;
+
+		expect(syncOutcome).toContain("not reprocessed locally");
+		expect(syncOutcome).toContain("sent to or received from trusted peers");
+	});
+
 	it("names the environment override that must be removed", () => {
 		settingsState.envOverrides = { observer_model: "CODEMEM_OBSERVER_MODEL" };
 		const root = renderPanels();
