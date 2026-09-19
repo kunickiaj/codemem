@@ -13,6 +13,7 @@ import type {
 } from "../lib/api/sync";
 
 const pendingReviewGroups = new Set<string>();
+const pendingBlockedRepairs = new Set<string>();
 const staleReviewItems = new Set<string>();
 const MAX_BULK_REVIEW_ITEMS = 100;
 let surfaceMessage = "";
@@ -251,16 +252,18 @@ function useDecisionApplication(
 		surfaceMessage = "Applying…";
 		onStatus(surfaceMessage);
 		try {
-			const result = await applyGroupDecision(group, decision);
-			surfaceMessage = appliedGroupMessage(group, result);
-		} catch (error) {
-			surfaceMessage = errorMessage(error, "Unable to apply decision. Try again.");
+			try {
+				const result = await applyGroupDecision(group, decision);
+				surfaceMessage = appliedGroupMessage(group, result);
+			} catch (error) {
+				surfaceMessage = errorMessage(error, "Unable to apply decision. Try again.");
+			}
+			onStatus(surfaceMessage);
+			await refreshAfterApply(options, onStatus);
 		} finally {
 			pendingReviewGroups.delete(group.key);
 			setPending(false);
 		}
-		onStatus(surfaceMessage);
-		await refreshAfterApply(options, onStatus);
 	}
 
 	return { apply, pending };
@@ -461,17 +464,19 @@ function BlockedRow({
 	const detailsId = `recipient-policy-blocked-details-${useId()}`;
 	const helpId = `recipient-policy-repair-help-${useId()}`;
 	const [detailsOpen, setDetailsOpen] = useState(false);
-	const [pending, setPending] = useState(false);
+	const [pending, setPending] = useState(pendingBlockedRepairs.has(item.blockedItemId));
 	const repairAvailable = Boolean(
 		options.onRepair && (options.isRepairAvailable?.(item.repair) ?? true),
 	);
 
 	async function repair(): Promise<void> {
-		if (!options.onRepair || pending) return;
+		if (!options.onRepair || pendingBlockedRepairs.has(item.blockedItemId)) return;
+		pendingBlockedRepairs.add(item.blockedItemId);
 		setPending(true);
 		try {
 			await options.onRepair(item.repair);
 		} finally {
+			pendingBlockedRepairs.delete(item.blockedItemId);
 			setPending(false);
 		}
 	}
