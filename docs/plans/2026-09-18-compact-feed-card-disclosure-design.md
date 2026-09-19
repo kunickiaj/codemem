@@ -36,7 +36,7 @@ One mode vocabulary keeps keyboard behavior and user preference consistent acros
 
 Unavailable modes are omitted. If only one mode exists, the mode control is omitted but the title still toggles that mode's detail region.
 
-For a session summary, the collapsed skim line uses the first non-empty item from COMPLETED, LEARNED, INVESTIGATED, NEXT STEPS, then NOTES. If none exists, it uses a non-duplicate REQUEST line, then `body_text`. This order favors outcomes over a repetition of the request.
+For a session summary, the collapsed skim line uses the first non-empty item from OUTCOME, COMPLETED, LEARNED, INVESTIGATED, NEXT STEPS, PLAN, then NOTES. If none exists, it uses a non-duplicate REQUEST line, then `body_text`. This order favors outcomes and next actions over a repetition of the request.
 
 Telemetry-like records use their existing kind and source, the best available semantic summary, and the same provenance line. They do not synthesize narrative or facts solely to fill every mode.
 
