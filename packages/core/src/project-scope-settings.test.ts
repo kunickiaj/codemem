@@ -123,7 +123,7 @@ function seedManagedReceivedProjectOrigins(
 		project: "codemem",
 		toolVersion: "sync_replication",
 	});
-	for (const originDeviceId of ["owner-desktop", "", "owner-laptop"]) {
+	for (const originDeviceId of ["owner,desktop", "", "owner-laptop"]) {
 		insertMemory(db, replicationSession, {
 			originDeviceId,
 			project: "codemem",
@@ -146,7 +146,7 @@ function listsDistinctManagedReceivedProjectOrigins(): void {
 		expect(received[0]).toMatchObject({
 			display_project: "codemem",
 			memory_count: 4,
-			origin_devices: [{ device_id: "owner-desktop" }, { device_id: "owner-laptop" }],
+			origin_devices: [{ device_id: "owner-laptop" }, { device_id: "owner,desktop" }],
 			workspace_identity: `peer-received:scope:${scopeId}`,
 		});
 	} finally {
@@ -156,7 +156,7 @@ function listsDistinctManagedReceivedProjectOrigins(): void {
 
 describe("received project origin devices", () => {
 	it(
-		"groups distinct, known origin devices by managed scope",
+		"keeps distinct origin devices, including IDs containing commas",
 		listsDistinctManagedReceivedProjectOrigins,
 	);
 });

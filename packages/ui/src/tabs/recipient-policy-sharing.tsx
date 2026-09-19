@@ -1,4 +1,4 @@
-import { Fragment, render } from "preact";
+import { type ComponentChildren, h, render } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { LoadingCardList } from "../components/LoadingCardList";
 import type {
@@ -196,6 +196,88 @@ const SHARING_TABS: Array<{ id: SharingTab; label: string }> = [
 	{ id: "received", label: "Received" },
 	{ id: "invitations", label: "Invitations" },
 ];
+
+function SharingTabPanel({
+	children,
+	hidden,
+	tabId,
+}: {
+	children: ComponentChildren;
+	hidden: boolean;
+	tabId: SharingTab;
+}) {
+	// APG keeps tab panels keyboard-reachable when their content has no focusable control.
+	return h(
+		"div",
+		{
+			"aria-labelledby": `recipient-policy-sharing-tab-${tabId}`,
+			className: "recipient-policy-sharing-panel",
+			hidden,
+			id: `recipient-policy-sharing-panel-${tabId}`,
+			role: "tabpanel",
+			tabIndex: 0,
+		},
+		children,
+	);
+}
+
+function SharingTabPanelContent({
+	active,
+	intent,
+	options,
+	projects,
+	tabId,
+}: {
+	active: boolean;
+	intent: RecipientPolicyIntentGraphV1;
+	options: RecipientPolicySharingOptions;
+	projects: RecipientPolicyManagementProject[];
+	tabId: SharingTab;
+}) {
+	if (options.loading) {
+		if (!active) return null;
+		return <LoadingCardList detailRowCount={4} label="Loading Sharing details" />;
+	}
+	if (options.loadError) {
+		if (!active) return null;
+		return (
+			<p
+				aria-live="assertive"
+				className="recipient-policy-sharing-state recipient-policy-sharing-error"
+				role="alert"
+			>
+				Sharing details are unavailable. Refresh and try again.
+			</p>
+		);
+	}
+
+	switch (tabId) {
+		case "teams":
+			return (
+				<TeamsView
+					disableMutations={options.refreshError === true}
+					intent={intent}
+					onTeamRenamed={options.onTeamRenamed}
+					projects={projects}
+					renameTeam={options.renameTeam}
+				/>
+			);
+		case "identities":
+			return (
+				<IdentitiesView
+					disableMutations={options.refreshError === true}
+					intent={intent}
+					projects={projects}
+				/>
+			);
+		case "received":
+			return <ReceivedView received={options.received ?? []} />;
+		case "invitations":
+			return <RecipientPolicyInvitations intent={intent} />;
+		default:
+			return null;
+	}
+}
 
 function countLabel(count: number, singular: string, plural = `${singular}s`): string {
 	return `${count.toLocaleString()} ${count === 1 ? singular : plural}`;
@@ -592,12 +674,15 @@ function IdentitiesView({
 }
 
 function receivedFromLabel(originDevices: ReceivedProjectShare["originDevices"]): string {
-	const names = originDevices
+	const distinctOrigins = [
+		...new Map(originDevices.map((device) => [device.deviceId, device])).values(),
+	];
+	const names = distinctOrigins
 		.map((device) => device.displayName?.trim())
 		.filter((name): name is string => Boolean(name));
 	if (names.length === 0) return "Unknown device";
 	const visibleNames = names.slice(0, 2);
-	const hiddenCount = names.length - visibleNames.length;
+	const hiddenCount = distinctOrigins.length - visibleNames.length;
 	return hiddenCount > 0
 		? `${visibleNames.join(" · ")} · +${hiddenCount}`
 		: visibleNames.join(" · ");
@@ -821,49 +906,15 @@ function RecipientPolicySharing({
 				))}
 			</div>
 			{SHARING_TABS.map((tab) => (
-				<Fragment key={tab.id}>
-					<div
-						aria-labelledby={`recipient-policy-sharing-tab-${tab.id}`}
-						className="recipient-policy-sharing-panel"
-						hidden={activeTab !== tab.id}
-						id={`recipient-policy-sharing-panel-${tab.id}`}
-						role="tabpanel"
-					>
-						{options.loading ? (
-							activeTab === tab.id ? (
-								<LoadingCardList detailRowCount={4} label="Loading Sharing details" />
-							) : null
-						) : options.loadError ? (
-							activeTab === tab.id ? (
-								<p
-									aria-live="assertive"
-									className="recipient-policy-sharing-state recipient-policy-sharing-error"
-									role="alert"
-								>
-									Sharing details are unavailable. Refresh and try again.
-								</p>
-							) : null
-						) : tab.id === "teams" ? (
-							<TeamsView
-								disableMutations={options.refreshError === true}
-								intent={intent}
-								onTeamRenamed={options.onTeamRenamed}
-								projects={projects}
-								renameTeam={options.renameTeam}
-							/>
-						) : tab.id === "identities" ? (
-							<IdentitiesView
-								disableMutations={options.refreshError === true}
-								intent={intent}
-								projects={projects}
-							/>
-						) : tab.id === "received" ? (
-							<ReceivedView received={options.received ?? []} />
-						) : (
-							<RecipientPolicyInvitations intent={intent} />
-						)}
-					</div>
-				</Fragment>
+				<SharingTabPanel hidden={activeTab !== tab.id} key={tab.id} tabId={tab.id}>
+					<SharingTabPanelContent
+						active={activeTab === tab.id}
+						intent={intent}
+						options={options}
+						projects={projects}
+						tabId={tab.id}
+					/>
+				</SharingTabPanel>
 			))}
 		</section>
 	);

@@ -386,26 +386,33 @@ function authorizationReplicationSnapshot(store: MemoryStore): Record<string, un
 
 function seedReceivedProjectOriginDevices(store: MemoryStore): void {
 	const now = "2026-08-18T12:00:00.000Z";
-	store.db
-		.prepare(
-			`INSERT INTO identity_devices(
+	const insertIdentityDevice = store.db.prepare(
+		`INSERT INTO identity_devices(
 				device_id, identity_id, display_name, status, provenance, revision,
 				migration_state, assignment_version, source_fingerprint, idempotency_key,
 				created_at, updated_at
 			 ) VALUES (?, ?, ?, 'active', 'test', '1', 'user_managed', 1, NULL, ?, ?, ?)`,
-		)
-		.run("device-a", "identity-a", "Work Laptop", "origin-device-a", now, now);
-	store.db
-		.prepare(
-			`INSERT INTO sync_peers(peer_device_id, name, pinned_fingerprint, created_at)
+	);
+	insertIdentityDevice.run("device-a", "identity-a", "Work Laptop", "origin-device-a", now, now);
+	insertIdentityDevice.run(
+		"source identity",
+		"identity-d",
+		" source identity ",
+		"origin-device-d",
+		now,
+		now,
+	);
+	const insertPeer = store.db.prepare(
+		`INSERT INTO sync_peers(peer_device_id, name, pinned_fingerprint, created_at)
 			 VALUES (?, ?, ?, ?)`,
-		)
-		.run("device-b", "Desk Computer", "device-b-fingerprint", now);
+	);
+	insertPeer.run("device-b", "Desk Computer", "device-b-fingerprint", now);
+	insertPeer.run("source peer", " source peer ", "device-e-fingerprint", now);
 	const sessionId = insertTestSession(store.db);
 	store.db
 		.prepare("UPDATE sessions SET cwd = ?, project = NULL WHERE id = ?")
 		.run("__sync_bootstrap__/received-project", sessionId);
-	for (const deviceId of ["device-a", "device-b", "device-c"]) {
+	for (const deviceId of ["device-a", "device-b", "device-c", "source identity", "source peer"]) {
 		const memoryId = insertTestMemory(store, {
 			sessionId,
 			kind: "discovery",
@@ -437,6 +444,8 @@ async function resolvesReceivedProjectOriginDeviceNames(): Promise<void> {
 			{ device_id: "device-a", display_name: "Work Laptop" },
 			{ device_id: "device-b", display_name: "Desk Computer" },
 			{ device_id: "device-c", display_name: null },
+			{ device_id: "source identity", display_name: null },
+			{ device_id: "source peer", display_name: null },
 		]);
 	} finally {
 		cleanup();
@@ -449,7 +458,7 @@ async function resolvesReceivedProjectOriginDeviceNames(): Promise<void> {
 
 describe("GET /api/sync/projects origin devices", () => {
 	it(
-		"resolves received project origin device names with null for unknown devices",
+		"resolves safe names and rejects raw IDs from identity and peer records",
 		resolvesReceivedProjectOriginDeviceNames,
 	);
 });

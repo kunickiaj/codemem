@@ -4712,10 +4712,11 @@ async function loadConfiguredDeviceIdentityCoordinatorEvidence(): Promise<Device
 
 const ORIGIN_DEVICE_NAME_LOOKUP_BATCH_SIZE = 400;
 
-function originDeviceDisplayName(value: unknown): string | null {
+function originDeviceDisplayName(value: unknown, deviceId: string): string | null {
 	if (typeof value !== "string") return null;
 	try {
-		return normalizeHumanPresentationName(value, "display_name");
+		const displayName = normalizeHumanPresentationName(value, "display_name");
+		return displayName === deviceId ? null : displayName;
 	} catch {
 		return null;
 	}
@@ -4743,7 +4744,7 @@ function resolveOriginDeviceDisplayNames(
 			)
 			.all(...batch) as Array<{ device_id: string; display_name: string | null }>;
 		for (const peer of peers) {
-			const displayName = originDeviceDisplayName(peer.display_name);
+			const displayName = originDeviceDisplayName(peer.display_name, peer.device_id);
 			if (displayName) names.set(peer.device_id, displayName);
 		}
 		const devices = store.db
@@ -4754,7 +4755,7 @@ function resolveOriginDeviceDisplayNames(
 			)
 			.all(...batch) as Array<{ device_id: string; display_name: string | null }>;
 		for (const device of devices) {
-			const displayName = originDeviceDisplayName(device.display_name);
+			const displayName = originDeviceDisplayName(device.display_name, device.device_id);
 			if (displayName) names.set(device.device_id, displayName);
 		}
 	}
