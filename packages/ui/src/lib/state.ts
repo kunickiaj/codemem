@@ -376,6 +376,9 @@ export const FEED_FILTERS = ["all", "observations", "summaries"] as const;
 export type FeedFilter = (typeof FEED_FILTERS)[number];
 export const FEED_SCOPES = ["all", "mine", "theirs"] as const;
 export type FeedScope = (typeof FEED_SCOPES)[number];
+export type FeedProcessingStatus =
+	| { kind: "unknown" | "ready" | "paused" | "unavailable" }
+	| { kind: "pending"; count: number };
 
 /* ── Mutable application state ─────────────────────────────── */
 
@@ -402,6 +405,8 @@ export const state = {
 	lastFeedFilteredCount: 0,
 	lastFeedSignature: "",
 	pendingFeedItems: null as unknown[] | null,
+	feedProcessingStatus: { kind: "unknown" } as FeedProcessingStatus,
+	viewerReconnectOpen: false,
 
 	/* Feed item view state */
 	itemViewState: new Map<string, ItemViewMode>(),

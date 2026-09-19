@@ -2,12 +2,18 @@ import { Fragment, h, type TargetedInputEvent } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import * as api from "../../../lib/api";
 import { state } from "../../../lib/state";
+import { completeFirstRunStep } from "../data/first-run-guide";
 import {
 	packTraceContextKey,
 	parseInspectorWorkingSet,
 	syncInspectorQueryDraft,
 } from "../data/inspector-query";
 import { TraceCandidateGroup } from "./TraceCandidateGroup";
+
+function commitSuccessfulTrace(setTrace: (trace: api.PackTrace) => void, trace: api.PackTrace) {
+	setTrace(trace);
+	completeFirstRunStep("find");
+}
 
 export function ContextInspectorPanel({ open }: { open: boolean }) {
 	const [inspectorQuery, setInspectorQuery] = useState(() => String(state.feedQuery || ""));
@@ -94,7 +100,7 @@ export function ContextInspectorPanel({ open }: { open: boolean }) {
 			if (requestId !== latestTraceRequestId.current) {
 				return;
 			}
-			setTrace(nextTrace);
+			commitSuccessfulTrace(setTrace, nextTrace);
 		} catch (err) {
 			if (requestId !== latestTraceRequestId.current) {
 				return;

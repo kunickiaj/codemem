@@ -60,6 +60,7 @@ import {
 	mountDevices,
 } from "./tabs/devices";
 import { initFeedTab, loadFeedData, updateFeedView } from "./tabs/feed";
+import { completeFirstRunStep } from "./tabs/feed/data/first-run-guide";
 import {
 	initHealthTab,
 	loadHealthData,
@@ -170,11 +171,13 @@ async function checkLegacyUpgradeNotice() {
 }
 
 function setReconnectOverlay(open: boolean, detail?: string) {
+	state.viewerReconnectOpen = open;
 	const overlay = $("viewerReconnectOverlay");
 	const detailEl = $("viewerReconnectDetail");
 	if (!overlay || !detailEl) return;
 	overlay.hidden = !open;
 	detailEl.textContent = detail || "Trying again automatically while the viewer comes back.";
+	if (state.activeTab === "feed") updateFeedView(true);
 }
 
 async function isViewerReady() {
@@ -403,6 +406,7 @@ function switchTab(
 		);
 	}
 	setActiveTab(nextTab, options.canonicalHash ? { canonicalHash: true } : {});
+	if (nextTab === "health") completeFirstRunStep("settings-health");
 	renderTabs(nextTab);
 
 	// Refresh data for active tab
@@ -679,6 +683,7 @@ async function runLoadDevicesData(
 $select("projectFilter")?.addEventListener("change", () => {
 	refreshSessions.cancel();
 	state.currentProject = $select("projectFilter")?.value || "";
+	completeFirstRunStep("scope");
 	updateFeedView(true);
 	refresh();
 });
@@ -801,6 +806,7 @@ async function doRefresh(): Promise<void> {
 			return;
 		}
 		maybeShowLegacyUpgradeNotice(readLegacyUpgradeReviewSummary(state.lastSyncLegacySharedReview));
+		if (refreshTab === "feed") updateFeedView(true);
 		const nextTab = resolveAccessibleTab(state.activeTab, state.lastCoordinatorAdminStatus);
 		if (nextTab !== state.activeTab) {
 			setActiveTab(nextTab);

@@ -2668,6 +2668,55 @@
         line-height: 1.55;
         color: var(--text-secondary);
       }
+      .first-run-guide {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-3);
+        margin-bottom: var(--sp-4);
+        padding: var(--sp-4);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface-1);
+      }
+      .first-run-guide-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: var(--sp-3);
+      }
+      .first-run-guide h2 { margin: 0; font-size: var(--font-size-lg); }
+      .first-run-guide p { margin: 3px 0 0; color: var(--text-secondary); }
+      .first-run-guide-list {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: var(--sp-2);
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      .first-run-guide-list li {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--sp-2);
+        min-width: 0;
+        padding: var(--sp-2);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+      }
+      .first-run-guide-list li.is-complete { background: var(--surface-2); }
+      .first-run-guide-status { display: flex; align-items: flex-start; gap: var(--sp-2); min-width: 0; }
+      .first-run-guide-status > span:last-child { display: flex; flex-direction: column; min-width: 0; }
+      .first-run-guide-status .small { color: var(--text-tertiary); }
+      .feed-empty-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+
+      @media (max-width: 755px) {
+        .first-run-guide-header,
+        .first-run-guide-list li { align-items: stretch; flex-direction: column; }
+        .first-run-guide-list { grid-template-columns: 1fr; }
+        .first-run-guide button,
+        .feed-empty-actions .settings-button { width: 100%; }
+      }
       .feed-body.narrative { max-width: 88ch; }
       .feed-body.clamp { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
       .feed-body.clamp-3 { -webkit-line-clamp: 3; }
@@ -3910,6 +3959,18 @@
       }
       .modal-body { display: flex; flex-direction: column; gap: var(--sp-3); flex: 1; min-height: 0; overflow-y: auto; padding-right: 6px; }
       .modal-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); flex-shrink: 0; padding-top: var(--sp-2); border-top: 1px solid var(--border); }
+      .settings-footer-copy { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+      .settings-link-button {
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--text-secondary);
+        font: inherit;
+        font-size: var(--font-size-sm);
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+      .settings-link-button:hover { color: var(--text-primary); }
       /* ── Toast (Radix Toast-backed) ───────────────────────── */
       /* Fixed viewport anchored bottom-right. Each toast is a surface-card
          with a severity-tinted left accent keyed to .toast-{variant}. */
@@ -4955,7 +5016,7 @@
     <!-- ── Tab: Health ─────────────────────────────────────── -->
     <div class="tab-panel" id="tab-health" hidden>
       <div id="healthUpdateBanner" hidden></div>
-      <section class="card health-system-card" aria-label="System health">
+      <section class="card health-system-card" id="healthSystemCard" aria-label="System health" tabindex="-1">
         <div class="health-system-header">
           <div id="healthStatus">
             <div class="health-status-summary">

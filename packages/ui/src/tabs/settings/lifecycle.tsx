@@ -8,6 +8,11 @@ import * as api from "../../lib/api";
 import { $, $button } from "../../lib/dom";
 import { showGlobalNotice } from "../../lib/notice";
 import { state } from "../../lib/state";
+import {
+	completeFirstRunStep,
+	focusFirstRunGuide,
+	reopenFirstRunGuide,
+} from "../feed/data/first-run-guide";
 import type { ObserverStatusShape } from "./components/ObserverStatusBanner";
 import { ObserverStatusBanner as ObserverStatusBannerComponent } from "./components/ObserverStatusBanner";
 import { SettingsDialogShell } from "./components/SettingsDialogShell";
@@ -66,6 +71,15 @@ function ObserverStatusBanner() {
 			onOpenDiagnostics={openObserverDiagnosticsFromSettings}
 		/>
 	);
+}
+
+export function showGettingStartedFromSettings(): void {
+	if (!settingsState.startPolling || !settingsState.refresh) return;
+	closeSettings(settingsState.startPolling, settingsState.refresh);
+	if (getSettingsViewState().open) return;
+	reopenFirstRunGuide();
+	document.getElementById("tabBtn-feed")?.click();
+	focusFirstRunGuide();
 }
 
 export function openObserverDiagnosticsFromSettings(options: {
@@ -132,6 +146,7 @@ function SettingsDialogContent() {
 			}}
 			onActiveTabChange={setSettingsTab}
 			onAdvancedToggle={onAdvancedToggle}
+			onShowGettingStarted={showGettingStartedFromSettings}
 			observerStatusBannerSlot={<ObserverStatusBanner />}
 		/>
 	);
@@ -159,6 +174,7 @@ function ensureSettingsShell() {
 }
 
 export function openSettings(stopPolling: () => void) {
+	completeFirstRunStep("settings-health");
 	if (!settingsState.shellMounted) {
 		ensureSettingsShell();
 	}
