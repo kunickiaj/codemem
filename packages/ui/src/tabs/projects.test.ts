@@ -3925,6 +3925,45 @@ describe("Projects inventory controller subscriptions", () => {
 		await controller.callbacks.saveProjectScope(project().workspace_identity, "local-default");
 		expect(listener).toHaveBeenCalledTimes(3);
 	});
+
+	it("notifies subscribers for legacy cluster and project controls", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [
+				project({ cwd: "/workspace/a", workspace_identity: "project-a" }),
+				project({ cwd: "/workspace/b", workspace_identity: "project-b" }),
+			],
+			total: 2,
+		});
+		initProjectsTab(() => {});
+		await loadProjectsData();
+		const listener = vi.fn();
+		getProjectsInventoryController().subscribe(listener);
+
+		const cluster = document.querySelector<HTMLElement>(".project-inventory-cluster");
+		const details = cluster?.querySelector<HTMLDetailsElement>(":scope > details");
+		const selects = cluster?.querySelectorAll<HTMLSelectElement>(".project-domain-select");
+		const share = cluster?.querySelector<HTMLButtonElement>(
+			":scope > .project-inventory-row-header .project-recipient-action",
+		);
+		if (!details || !selects || selects.length < 2 || !share) {
+			throw new Error("legacy cluster controls missing");
+		}
+
+		details.open = true;
+		details.dispatchEvent(new Event("toggle"));
+		expect(listener).toHaveBeenCalledTimes(1);
+		selects[0].value = "exampleco-work";
+		selects[0].dispatchEvent(new Event("change"));
+		expect(listener).toHaveBeenCalledTimes(2);
+		selects[1].value = "exampleco-work";
+		selects[1].dispatchEvent(new Event("change"));
+		expect(listener).toHaveBeenCalledTimes(3);
+		share.click();
+		expect(listener).toHaveBeenCalledTimes(4);
+	});
 });
 
 describe("Projects inventory controller async state", () => {

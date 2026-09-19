@@ -381,6 +381,7 @@ function renderManageRecipientsAction(
 		button.addEventListener("click", () => {
 			for (const projectId of projectIds) selectedProjectIds.add(projectId);
 			updateSelectionControls();
+			notifyProjectInventoryChanged();
 			openRecipientPolicyManagement({
 				mode: "project-add",
 				projectIds: [...projectIds].sort(),
@@ -1042,6 +1043,7 @@ function appendProjectMappingControls(
 		actions.querySelector(".project-space-guardrail-confirmation")?.remove();
 		save.textContent = "Save Space";
 		save.disabled = !select.value;
+		notifyProjectInventoryChanged();
 		refreshProjects?.();
 	});
 	select.addEventListener("blur", refreshSkippedProjectDataAfterSelectBlur);
@@ -1454,6 +1456,7 @@ function renderClusterMappingActions(
 		if (select.value) draftClusterDomainSelections.set(clusterKey, select.value);
 		else draftClusterDomainSelections.delete(clusterKey);
 		save.disabled = !select.value || hasBlockingWarnings;
+		notifyProjectInventoryChanged();
 	});
 	select.addEventListener("blur", refreshSkippedProjectDataAfterSelectBlur);
 	actions.append(select, save);
@@ -1504,6 +1507,7 @@ function renderProjectClusterDetails(
 	details.addEventListener("toggle", () => {
 		if (details.open) openProjectClusters.add(clusterKey);
 		else openProjectClusters.delete(clusterKey);
+		notifyProjectInventoryChanged();
 	});
 	const summary = document.createElement("summary");
 	const warningCount = projects.reduce(
