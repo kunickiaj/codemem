@@ -87,7 +87,10 @@ const OUTCOMES_BY_CONTROL_ID: Record<string, SettingsOutcomeDetails> = Object.fr
 		syncOutcome("syncHost", "Incoming peer connections to this device"),
 		syncOutcome("syncPort", "Incoming peer connections to this device"),
 		syncOutcome("syncMdns", "Local-network peer discovery on this device"),
-		syncOutcome("syncCoordinatorGroup", "Future coordinator discovery for this device"),
+		syncOutcome(
+			"syncCoordinatorGroup",
+			"Fallback coordinator discovery when no coordinator group list is configured",
+		),
 		syncOutcome("syncCoordinatorTimeout", "Future coordinator requests"),
 		syncOutcome("syncCoordinatorPresenceTtl", "Future coordinator presence checks"),
 	].map((outcome) => [outcome.controlId, outcome]),

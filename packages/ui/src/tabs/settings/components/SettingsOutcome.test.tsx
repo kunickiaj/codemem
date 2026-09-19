@@ -154,6 +154,15 @@ describe("settings outcomes", () => {
 		expect(syncOutcome).toContain("sent to or received from trusted peers");
 	});
 
+	it("qualifies the singular coordinator group as a fallback", () => {
+		const root = renderPanels();
+		const outcome = root.querySelector(
+			'[data-settings-outcome-for="syncCoordinatorGroup"]',
+		)?.textContent;
+
+		expect(outcome).toContain("when no coordinator group list is configured");
+	});
+
 	it("names the environment override that must be removed", () => {
 		settingsState.envOverrides = { observer_model: "CODEMEM_OBSERVER_MODEL" };
 		const root = renderPanels();
