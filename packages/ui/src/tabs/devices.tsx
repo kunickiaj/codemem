@@ -1221,15 +1221,13 @@ function DeviceIdentityGroup({
 			device.directProjects.map((project) => project.canonicalProjectIdentity),
 		),
 	).size;
-	const local = devices.some((device) => inventoryItems.get(device.deviceId)?.isLocal);
 	return (
 		<section className="devices-identity-group">
 			<div className="devices-identity-header">
 				<strong>
 					{first.identityName}{" "}
 					<span>
-						· {local ? "your identity · " : ""}
-						{devices.length} {devices.length === 1 ? "device" : "devices"}
+						· {devices.length} {devices.length === 1 ? "device" : "devices"}
 					</span>
 				</strong>
 				<span className="small">
@@ -1498,6 +1496,23 @@ function DevicesRoot({
 	options: DevicesRendererOptions;
 	projection: DevicesProjection;
 }) {
+	const visibleProjectedDevices = projection.devices.filter(
+		(device) =>
+			!options.inventory?.items.some(
+				(item) => item.state !== "configured" && item.evidenceDeviceIds.includes(device.deviceId),
+			),
+	);
+	const projectedDeviceIds = new Set(visibleProjectedDevices.map((device) => device.deviceId));
+	const configuredFallbackCount =
+		options.inventory?.items.filter(
+			(item) =>
+				item.state === "configured" &&
+				!item.evidenceDeviceIds.some((deviceId) => projectedDeviceIds.has(deviceId)),
+		).length ?? 0;
+	const visibleDeviceCount =
+		visibleProjectedDevices.length +
+		deviceIdentityAttentionItems(options.inventory).length +
+		configuredFallbackCount;
 	return (
 		<section
 			aria-labelledby="devices-heading"
@@ -1505,12 +1520,12 @@ function DevicesRoot({
 		>
 			<div className="recipient-policy-sharing-header">
 				<h2 id="devices-heading" tabIndex={-1}>
-					Devices <span className="devices-heading-count">{projection.devices.length}</span>
+					Devices <span className="devices-heading-count">{visibleDeviceCount}</span>
 				</h2>
 				{options.onNavigate ? (
 					<button
 						className="settings-save"
-						onClick={() => options.onNavigate?.("advanced_sync")}
+						onClick={() => options.onNavigate?.("sharing")}
 						type="button"
 					>
 						Add a device

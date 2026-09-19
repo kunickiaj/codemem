@@ -608,6 +608,36 @@ describe("Device identity grouping", () => {
 		expect(onNavigate).not.toHaveBeenCalled();
 		expect(document.body.textContent).toContain("1 revoked device is not included");
 	});
+
+	it("routes device invitations to Sharing without inferring the viewer's Identity", () => {
+		const onNavigate = vi.fn();
+		mount(intent(), reconciliation(), {
+			inventory: inventory([
+				inventoryItem("device-address-fingerprint-secret", "Work Laptop", "configured", {
+					isLocal: true,
+				}),
+			]),
+			onNavigate,
+		});
+
+		expect(document.querySelector(".devices-identity-header")?.textContent).not.toContain(
+			"your identity",
+		);
+		const addDevice = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+			(button) => button.textContent === "Add a device",
+		);
+		act(() => addDevice?.click());
+		expect(onNavigate).toHaveBeenCalledWith("sharing");
+	});
+
+	it("counts setup devices rendered without projected access", () => {
+		mount(intent({ identityDevices: [] }), reconciliation(), {
+			inventory: inventory([inventoryItem("setup-device", "Setup device", "setup_required")]),
+		});
+
+		expect(document.querySelector("#devices-heading")?.textContent).toBe("Devices 1");
+		expect(document.body.textContent).toContain("Setup device");
+	});
 });
 describe("Device availability summary", () => {
 	it("summarizes available, offline, and unknown devices in one Identity group", () => {
