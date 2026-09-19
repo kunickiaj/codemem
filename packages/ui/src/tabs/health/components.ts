@@ -528,6 +528,7 @@ function HealthStatus({
 						"aria-atomic": "true",
 					},
 					message,
+					stale ? h("span", { class: "sr-only" }, " · Stale data") : null,
 				),
 				stale ? h(Chip, { variant: "badge" }, "Stale data") : null,
 			),
