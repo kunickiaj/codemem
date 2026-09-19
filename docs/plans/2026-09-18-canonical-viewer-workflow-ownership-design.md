@@ -58,7 +58,8 @@ State copy names the affected task, separates access from transport, and offers 
 
 | State | Required copy | Canonical action |
 | --- | --- | --- |
-| Actionable access review | `Project access update needs review.` Name the affected Project and safe failure reason when available. | `Review access` opens the focused Sharing target. |
+| Routine access-policy review | `Project access update needs review.` Name the affected Project and safe failure reason when available. | `Review access` opens the focused Sharing target. |
+| Actionable migration review | `Older sharing state needs a decision before Codemem can finish this migration.` Name the affected Project and safe failure reason when available. | `Review migration` opens the focused Projects review at `#projects/sharing-review/<encoded-review-id>`. |
 | Blocked migration repair | `Access has not changed. Repair this source record before Codemem can interpret its older sharing state.` | Use the specific repair label in Projects. |
 | Offline or stale device | `Offline — this device’s coordinator presence has expired. Pairing is unavailable until it checks in again.` | No pairing or review action. Optional `Check device health` opens Health. |
 | Unknown Team eligibility | `Team delivery eligibility is unavailable. Current Team membership does not confirm that this device receives the Team’s Projects.` | Refresh the owning surface; never show `No access`. |
