@@ -340,7 +340,7 @@ function testRecipientFocusedNavigation() {
 
 	it("opens Teams for canonical navigation from Devices", () => {
 		mount();
-		clickTab("Received");
+		clickTab("From other devices");
 
 		act(() => {
 			window.dispatchEvent(new CustomEvent("codemem:navigate-sharing", { detail: "teams" }));
