@@ -1,6 +1,8 @@
 import { type ComponentChildren, h, render } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { LoadingCardList } from "../components/LoadingCardList";
+import { Chip } from "../components/primitives/chip";
+import { TextInput } from "../components/primitives/text-input";
 import type {
 	DeviceIdentityInventoryV1,
 	LegacyTeamSetupPendingCandidateSummaryV1,
@@ -8,10 +10,9 @@ import type {
 	RecipientPolicyIntentGraphV1,
 } from "../lib/api/sync";
 import { deviceIdentityAttentionItems } from "../lib/device-identity-inventory";
-import {
-	type ProjectIdentityPresentationItem,
-	projectIdentitySummaryGroups,
-} from "../lib/project-identity-presentation";
+import { stableProjectPresentationLabels } from "../lib/project-identity-presentation";
+import { ProvenanceChip } from "./feed/components/ProvenanceChip";
+import { TagChip } from "./feed/components/TagChip";
 import { RecipientPolicyInvitations } from "./recipient-policy-invitations";
 import {
 	openRecipientPolicyManagement,
@@ -105,10 +106,7 @@ function TeamSetupOverview({
 			className="peer-card peer-card--padded recipient-policy-sharing-attention"
 		>
 			<h3 id="sharing-team-setup-heading">Legacy groups to migrate</h3>
-			<p>
-				Current devices are proposed for review. No Team membership or Project access changes happen
-				until you finish the migration.
-			</p>
+			<p>Review current devices before migrating Team membership or project access.</p>
 			<ul
 				{...EXPLICIT_LIST_ROLE}
 				className="recipient-policy-sharing-team-setup-list"
@@ -193,7 +191,7 @@ type SharingTab = "teams" | "identities" | "received" | "invitations";
 const SHARING_TABS: Array<{ id: SharingTab; label: string }> = [
 	{ id: "teams", label: "Teams" },
 	{ id: "identities", label: "Identities" },
-	{ id: "received", label: "Received" },
+	{ id: "received", label: "From other devices" },
 	{ id: "invitations", label: "Invitations" },
 ];
 
@@ -283,98 +281,50 @@ function countLabel(count: number, singular: string, plural = `${singular}s`): s
 	return `${count.toLocaleString()} ${count === 1 ? singular : plural}`;
 }
 
-function namesLabel(names: string[], empty: string): string {
-	return names.length ? names.join(", ") : empty;
-}
-
-const NAME_PREVIEW_LIMIT = 3;
-
-function BoundedNames({ empty, label, names }: { empty: string; label: string; names: string[] }) {
-	if (names.length === 0) return <>{empty}</>;
-	if (names.length <= NAME_PREVIEW_LIMIT) return <>{namesLabel(names, empty)}</>;
-	return (
-		<>
-			{names.slice(0, NAME_PREVIEW_LIMIT).join(", ")}
-			<span aria-hidden="true">, …</span>
-			<details className="recipient-policy-sharing-name-details">
-				<summary>View all {countLabel(names.length, label)}</summary>
-				<ul {...EXPLICIT_LIST_ROLE} aria-label={`All ${label}s`}>
-					{names.map((name, index) => (
-						<li {...EXPLICIT_LIST_ITEM_ROLE} key={`${index}-${name}`}>
-							{name}
-						</li>
-					))}
-				</ul>
-			</details>
-		</>
-	);
-}
-
-function activeProjectIdentities(
+function activeProjectNames(
 	projectIds: Iterable<string>,
 	projectsById: Map<string, RecipientPolicyManagementProject>,
-): ProjectIdentityPresentationItem[] {
-	return [...new Set(projectIds)].map((projectId) => {
-		const project = projectsById.get(projectId);
-		return {
-			canonicalId: projectId,
-			displayName: project?.displayName ?? "Unavailable Project",
-		};
-	});
+): string[] {
+	const projects = [...new Set(projectIds)].map((projectId) => ({
+		canonicalId: projectId,
+		displayName: projectsById.get(projectId)?.displayName ?? "Unavailable Project",
+	}));
+	const labels = stableProjectPresentationLabels(projects);
+	return projects
+		.map((project) => labels.get(project.canonicalId) ?? project.displayName)
+		.sort((left, right) => left.localeCompare(right));
 }
 
-const PROJECT_GROUP_PREVIEW_LIMIT = 3;
+const PROJECT_CHIP_LIMIT = 8;
 
-function ProjectIdentitySummary({
-	empty,
-	identities,
-	qualifier,
-}: {
-	empty: string;
-	identities: ProjectIdentityPresentationItem[];
-	qualifier: string;
-}) {
-	if (identities.length === 0) return <>{empty}</>;
-	const groups = projectIdentitySummaryGroups(identities);
-	const groupLabel = (group: (typeof groups)[number]) =>
-		group.identityCount > 1
-			? `${group.displayName} (${countLabel(group.identityCount, "identity", "identities")})`
-			: group.displayName;
-	const preview = groups.slice(0, PROJECT_GROUP_PREVIEW_LIMIT);
+function ProjectChips({ names }: { names: string[] }) {
+	const [expanded, setExpanded] = useState(false);
+	if (names.length === 0) return <>None</>;
+	const visibleNames = expanded ? names : names.slice(0, PROJECT_CHIP_LIMIT);
+	const hiddenCount = names.length - visibleNames.length;
 	return (
-		<>
-			{countLabel(
-				identities.length,
-				`${qualifier} Project identity`,
-				`${qualifier} Project identities`,
-			)}{" "}
-			— {preview.map(groupLabel).join(", ")}
-			{groups.length > PROJECT_GROUP_PREVIEW_LIMIT ? (
-				<>
-					<span aria-hidden="true">, …</span>
-					<details className="recipient-policy-sharing-project-details">
-						<summary>View all {countLabel(groups.length, "Project name group")}</summary>
-						<ul {...EXPLICIT_LIST_ROLE} aria-label={`All ${qualifier} Project identity groups`}>
-							{groups.map((group) => (
-								<li {...EXPLICIT_LIST_ITEM_ROLE} key={group.displayName}>
-									{groupLabel(group)}
-								</li>
-							))}
-						</ul>
-					</details>
-				</>
+		<div className="recipient-policy-sharing-chips">
+			{visibleNames.map((name) => (
+				<TagChip key={name} tag={name} />
+			))}
+			{hiddenCount > 0 ? (
+				<button
+					className="recipient-policy-sharing-more"
+					onClick={() => setExpanded(true)}
+					type="button"
+				>
+					+{hiddenCount} more
+				</button>
 			) : null}
-		</>
+		</div>
 	);
 }
 
 function RecipientActions({
-	descriptionId,
 	disabled,
 	displayName,
 	recipient,
 }: {
-	descriptionId: string;
 	disabled: boolean;
 	displayName: string;
 	recipient:
@@ -388,39 +338,30 @@ function RecipientActions({
 		openRecipientPolicyManagement({ mode: "recipient-add", recipient });
 	};
 	return (
-		<>
-			<div className="peer-actions recipient-policy-sharing-actions recipient-policy-sharing-responsive-actions">
-				<button
-					aria-describedby={descriptionId}
-					aria-disabled={disabled ? "true" : undefined}
-					aria-label={`Add projects for ${displayName}`}
-					className="settings-button recipient-policy-sharing-target recipient-policy-sharing-target-24"
-					onClick={() => {
-						if (!disabled) openAdd();
-					}}
-					type="button"
-				>
-					Add projects
-				</button>
-				<button
-					aria-describedby={descriptionId}
-					aria-disabled={disabled ? "true" : undefined}
-					aria-label={`Manage projects for ${displayName}`}
-					className="settings-button recipient-policy-sharing-target recipient-policy-sharing-target-24"
-					onClick={() => {
-						if (!disabled) openManagement();
-					}}
-					type="button"
-				>
-					Manage projects
-				</button>
-			</div>
-			<p className="small" id={descriptionId}>
-				{disabled
-					? "Team and Identity Project changes are disabled until a refresh succeeds."
-					: "Add projects only adds the selected Projects after you preview the exact changes."}
-			</p>
-		</>
+		<div className="peer-actions recipient-policy-sharing-actions recipient-policy-sharing-responsive-actions">
+			<button
+				aria-disabled={disabled ? "true" : undefined}
+				aria-label={`Add projects for ${displayName}`}
+				className="settings-save recipient-policy-sharing-target recipient-policy-sharing-target-24"
+				onClick={() => {
+					if (!disabled) openAdd();
+				}}
+				type="button"
+			>
+				Add projects
+			</button>
+			<button
+				aria-disabled={disabled ? "true" : undefined}
+				aria-label={`Manage projects for ${displayName}`}
+				className="settings-button recipient-policy-sharing-target recipient-policy-sharing-target-24"
+				onClick={() => {
+					if (!disabled) openManagement();
+				}}
+				type="button"
+			>
+				Manage projects
+			</button>
+		</div>
 	);
 }
 
@@ -446,6 +387,9 @@ function TeamsView({
 	const projectsById = new Map(
 		projects.map((project) => [project.canonicalProjectIdentity, project]),
 	);
+	const viewerIdentityId = intent.identities.find(
+		(identity) => identity.status === "active" && identity.verification === "local",
+	)?.identityId;
 
 	if (activeTeams.length === 0) {
 		return (
@@ -470,15 +414,16 @@ function TeamsView({
 							.map((membership) => membership.identityId),
 					),
 				];
-				const memberNames = memberIds.map(
-					(identityId) => activeIdentitiesById.get(identityId)?.displayName ?? "",
-				);
+				const memberNames = memberIds.map((identityId) => {
+					const name = activeIdentitiesById.get(identityId)?.displayName.trim() || "Unknown member";
+					return identityId === viewerIdentityId ? `${name} (you)` : name;
+				});
 				const activeDeviceCount = new Set(
 					intent.identityDevices
 						.filter((device) => device.status === "active" && memberIds.includes(device.identityId))
 						.map((device) => device.deviceId),
 				).size;
-				const projectIdentities = activeProjectIdentities(
+				const projectNames = activeProjectNames(
 					intent.projectRecipients
 						.filter(
 							(edge) =>
@@ -490,59 +435,57 @@ function TeamsView({
 					projectsById,
 				);
 				const titleId = `recipient-policy-sharing-team-title-${index}`;
-				const addDescriptionId = `recipient-policy-sharing-team-add-description-${index}`;
 				return (
 					<article
 						aria-labelledby={titleId}
 						className="peer-card peer-card--padded recipient-policy-sharing-card recipient-policy-sharing-team-card"
 						key={team.teamId}
 					>
-						<div className="peer-title recipient-policy-sharing-card-title">
-							<h3 id={titleId}>{team.displayName}</h3>
-							<span className="badge actor-badge">Team</span>
+						<div className="recipient-policy-sharing-card-header">
+							<div className="peer-title recipient-policy-sharing-card-title">
+								<h3 id={titleId}>{team.displayName}</h3>
+								<Chip tone="actor-badge" variant="badge">
+									Team
+								</Chip>
+								<Chip tone="badge-online" variant="badge">
+									Auto-shares with new members
+								</Chip>
+							</div>
+							<div className="recipient-policy-sharing-card-actions">
+								<RecipientActions
+									disabled={disableMutations}
+									displayName={team.displayName}
+									recipient={{ recipientKind: "team", teamId: team.teamId }}
+								/>
+								<RecipientPolicyTeamSettings
+									disabled={disableMutations}
+									displayName={team.displayName}
+									onRenamed={onTeamRenamed}
+									renameTeam={renameTeam}
+									teamId={team.teamId}
+								/>
+							</div>
 						</div>
-						<dl className="recipient-policy-sharing-details">
+						<div className="recipient-policy-sharing-stats">
 							<div>
-								<dt>Current members</dt>
-								<dd>
-									{countLabel(memberNames.length, "active member")} —{` `}
-									<BoundedNames empty="No active members" label="member" names={memberNames} />
-								</dd>
+								<strong>{memberNames.length}</strong>
+								<span>
+									{memberNames.length === 1 ? "Member" : "Members"} ·{" "}
+									{memberNames.join(", ") || "None"}
+								</span>
 							</div>
 							<div>
-								<dt>Registered devices</dt>
-								<dd>{countLabel(activeDeviceCount, "active registered device")}</dd>
+								<strong>{activeDeviceCount}</strong>
+								<span>Registered devices</span>
 							</div>
 							<div>
-								<dt>Shared projects</dt>
-								<dd>
-									<ProjectIdentitySummary
-										empty="No Projects shared"
-										identities={projectIdentities}
-										qualifier="active shared"
-									/>
-								</dd>
+								<strong>{projectNames.length}</strong>
+								<span>Shared projects · {projectNames.join(", ") || "None"}</span>
 							</div>
-							<div>
-								<dt>Future Team members</dt>
-								<dd>Yes — future Team members inherit the Team’s shared Projects.</dd>
-							</div>
-						</dl>
-						<RecipientActions
-							descriptionId={addDescriptionId}
-							disabled={disableMutations}
-							displayName={team.displayName}
-							recipient={{ recipientKind: "team", teamId: team.teamId }}
-						/>
-						<div className="peer-actions recipient-policy-sharing-actions recipient-policy-sharing-responsive-actions">
-							<RecipientPolicyTeamSettings
-								descriptionId={addDescriptionId}
-								disabled={disableMutations}
-								displayName={team.displayName}
-								onRenamed={onTeamRenamed}
-								renameTeam={renameTeam}
-								teamId={team.teamId}
-							/>
+						</div>
+						<div className="recipient-policy-sharing-projects">
+							<strong>Shared projects</strong>
+							<ProjectChips names={projectNames} />
 						</div>
 					</article>
 				);
@@ -595,7 +538,7 @@ function IdentitiesView({
 					),
 				];
 				const teamNames = teamIds.map((teamId) => activeTeamsById.get(teamId)?.displayName ?? "");
-				const directProjectIdentities = activeProjectIdentities(
+				const directProjectNames = activeProjectNames(
 					intent.projectRecipients
 						.filter(
 							(edge) =>
@@ -607,65 +550,51 @@ function IdentitiesView({
 					projectsById,
 				);
 				const titleId = `recipient-policy-sharing-identity-title-${index}`;
-				const addDescriptionId = `recipient-policy-sharing-identity-add-description-${index}`;
 				return (
 					<article
 						aria-labelledby={titleId}
 						className="peer-card peer-card--padded recipient-policy-sharing-card recipient-policy-sharing-identity-card"
 						key={identity.identityId}
 					>
-						<div className="peer-title recipient-policy-sharing-card-title">
-							<h3 id={titleId}>{identity.displayName}</h3>
-							<span className="badge actor-badge local">Local identity</span>
+						<div className="recipient-policy-sharing-card-header">
+							<div className="peer-title recipient-policy-sharing-card-title">
+								<h3 id={titleId}>{identity.displayName}</h3>
+								<Chip tone="actor-badge local" variant="badge">
+									Local identity
+								</Chip>
+							</div>
+							<RecipientActions
+								disabled={disableMutations}
+								displayName={identity.displayName}
+								recipient={{ recipientKind: "identity", identityId: identity.identityId }}
+							/>
 						</div>
-						<dl className="recipient-policy-sharing-details">
+						<div className="recipient-policy-sharing-identity-rows">
 							<div>
-								<dt>Verification</dt>
-								<dd>Local identity</dd>
+								<strong>Devices · {activeDevices.length}</strong>
+								<div className="recipient-policy-sharing-chips">
+									{activeDevices.map((device) => (
+										<ProvenanceChip
+											key={device.deviceId}
+											label={device.displayName}
+											variant="device"
+										/>
+									))}
+								</div>
 							</div>
 							<div>
-								<dt>Registered devices</dt>
-								<dd>
-									{countLabel(activeDevices.length, "active registered device")} —{` `}
-									<BoundedNames
-										empty="No active devices"
-										label="device"
-										names={activeDevices.map((device) => device.displayName)}
-									/>
-								</dd>
+								<strong>Teams · {teamNames.length}</strong>
+								<div className="recipient-policy-sharing-chips">
+									{teamNames.map((name) => (
+										<ProvenanceChip key={name} label={name} variant="workspace" />
+									))}
+								</div>
 							</div>
 							<div>
-								<dt>Team memberships</dt>
-								<dd>
-									{countLabel(teamNames.length, "active Team membership")} —{` `}
-									<BoundedNames
-										empty="No active Team memberships"
-										label="Team membership"
-										names={teamNames}
-									/>
-								</dd>
+								<strong>Shared directly</strong>
+								<ProjectChips names={directProjectNames} />
 							</div>
-							<div>
-								<dt>Directly shared projects</dt>
-								<dd>
-									<ProjectIdentitySummary
-										empty="No Projects shared directly"
-										identities={directProjectIdentities}
-										qualifier="directly shared active"
-									/>
-								</dd>
-							</div>
-						</dl>
-						<p className="small">
-							Team Projects are shown on Team cards because per-device eligibility cannot be
-							inferred from Identity membership alone.
-						</p>
-						<RecipientActions
-							descriptionId={addDescriptionId}
-							disabled={disableMutations}
-							displayName={identity.displayName}
-							recipient={{ recipientKind: "identity", identityId: identity.identityId }}
-						/>
+						</div>
 					</article>
 				);
 			})}
@@ -693,54 +622,157 @@ function receivedFromLabel(originDevices: ReceivedProjectShare["originDevices"])
 }
 
 function ReceivedView({ received }: { received: ReceivedProjectShare[] }) {
+	const [query, setQuery] = useState("");
+	const normalizedQuery = query.trim().toLocaleLowerCase();
+	const visibleShares = received.filter((share) =>
+		share.displayName.toLocaleLowerCase().includes(normalizedQuery),
+	);
 	if (received.length === 0) {
 		return (
 			<p className="small recipient-policy-sharing-empty" role="status">
-				No received Projects on this device. Accepted invitations appear here once their first sync
-				completes.
+				No projects from other devices yet
 			</p>
 		);
 	}
 	return (
-		<div className="recipient-policy-sharing-grid recipient-policy-sharing-responsive-grid">
-			{received.map((share, index) => {
-				const titleId = `recipient-policy-sharing-received-title-${index}`;
-				return (
-					<article
-						aria-labelledby={titleId}
-						className="peer-card peer-card--padded recipient-policy-sharing-card recipient-policy-sharing-received-card"
-						key={share.canonicalProjectIdentity}
-					>
-						<div className="peer-title recipient-policy-sharing-card-title">
-							<h3 id={titleId}>{share.displayName}</h3>
-							<span className="badge actor-badge">Received</span>
-						</div>
-						<dl className="recipient-policy-sharing-details">
-							<div>
-								<dt>From</dt>
-								<dd>{receivedFromLabel(share.originDevices)}</dd>
-							</div>
-							<div>
-								<dt>Memories on this device</dt>
-								<dd>{countLabel(share.existingMemoryCount, "memory", "memories")}</dd>
-							</div>
-							<div>
-								<dt>Latest activity</dt>
-								<dd>
-									{share.latestSessionAt
-										? new Date(share.latestSessionAt).toLocaleString()
-										: "No recent sessions"}
-								</dd>
-							</div>
-						</dl>
-						<p className="small">
-							This Project is received from another device. Access is managed where the Project is
-							shared from; this device keeps it read-only.
-						</p>
-					</article>
-				);
-			})}
+		<div className="recipient-policy-sharing-received">
+			<div className="recipient-policy-sharing-toolbar">
+				<label htmlFor="recipient-policy-sharing-search">
+					<span className="sr-only">Search projects</span>
+					<TextInput
+						id="recipient-policy-sharing-search"
+						onInput={(event) => setQuery(event.currentTarget.value)}
+						placeholder="Search…"
+						type="search"
+						value={query}
+					/>
+				</label>
+				<Chip tone="actor-badge" variant="badge">
+					Read-only
+				</Chip>
+			</div>
+			<table className="recipient-policy-sharing-received-table">
+				<thead>
+					<tr className="recipient-policy-sharing-received-head">
+						<th scope="col">Project</th>
+						<th scope="col">From</th>
+						<th scope="col">Memories on this device</th>
+						<th scope="col">Last session</th>
+					</tr>
+				</thead>
+				<tbody>
+					{visibleShares.map((share) => (
+						<tr
+							className="recipient-policy-sharing-received-row"
+							key={share.canonicalProjectIdentity}
+						>
+							<td>
+								<strong>{share.displayName}</strong>
+							</td>
+							<td data-label="From">{receivedFromLabel(share.originDevices)}</td>
+							<td data-label="Memories on this device">
+								{share.existingMemoryCount.toLocaleString()}
+							</td>
+							<td data-label="Last session">
+								{share.latestSessionAt
+									? new Date(share.latestSessionAt).toLocaleString()
+									: "No recent sessions"}
+							</td>
+						</tr>
+					))}
+				</tbody>
+			</table>
+			{visibleShares.length === 0 ? (
+				<p className="small recipient-policy-sharing-empty" role="status">
+					No matching projects
+				</p>
+			) : null}
 		</div>
+	);
+}
+
+function TeamSetupStatus({ options }: { options: RecipientPolicySharingOptions }) {
+	return (
+		<>
+			<TeamSetupOverview
+				candidates={options.teamSetupSummary?.candidates ?? []}
+				onOpenTeamSetup={options.onOpenTeamSetup}
+			/>
+			{options.teamSetupLoading && !options.teamSetupSummary ? (
+				<p aria-live="polite" className="small recipient-policy-sharing-empty" role="status">
+					Team setup status is loading.
+				</p>
+			) : null}
+			{options.teamSetupUnavailable ? (
+				<p aria-live="polite" className="small recipient-policy-sharing-empty" role="status">
+					{options.teamSetupSummary
+						? "Team setup status is temporarily unavailable. The previous Team setup status is being shown."
+						: "Team setup status is temporarily unavailable."}
+				</p>
+			) : null}
+		</>
+	);
+}
+
+function DeviceSetupStatus({ options }: { options: RecipientPolicySharingOptions }) {
+	if (options.deviceInventoryUnavailable) {
+		return (
+			<p aria-live="polite" className="small recipient-policy-sharing-empty" role="status">
+				Device Identity information is unavailable. Devices needing setup or review cannot be shown
+				until a refresh succeeds.
+			</p>
+		);
+	}
+	const items = deviceIdentityAttentionItems(options.deviceInventory);
+	if (items.length === 0) return null;
+	return (
+		<aside
+			aria-labelledby="sharing-device-setup-heading"
+			className="peer-card peer-card--padded recipient-policy-sharing-attention"
+		>
+			<h3 id="sharing-device-setup-heading">Identity setup needed</h3>
+			<p>
+				{items.length.toLocaleString()} {items.length === 1 ? "device needs" : "devices need"}{" "}
+				setup, pairing, or review before ownership can be shown.
+			</p>
+			{options.onReviewDevices ? (
+				<button
+					className="settings-button recipient-policy-sharing-target-24"
+					onClick={() => options.onReviewDevices?.(items[0]?.deviceId)}
+					type="button"
+				>
+					Review devices
+				</button>
+			) : null}
+		</aside>
+	);
+}
+
+function ReconciliationStatus({ options }: { options: RecipientPolicySharingOptions }) {
+	const count = options.coordinatorEnrollmentIssueCount ?? 0;
+	if (count === 0) return null;
+	return (
+		<aside
+			aria-labelledby="sharing-coordinator-reconciliation-heading"
+			className="peer-card peer-card--padded recipient-policy-sharing-attention"
+		>
+			<h3 id="sharing-coordinator-reconciliation-heading">
+				Device setup reconciliation needs attention
+			</h3>
+			<p>
+				{count.toLocaleString()} coordinator enrollment{count === 1 ? " needs" : "s need"} device
+				review.
+			</p>
+			{options.onReviewDevices ? (
+				<button
+					className="settings-button recipient-policy-sharing-target-24"
+					onClick={() => options.onReviewDevices?.()}
+					type="button"
+				>
+					Review devices
+				</button>
+			) : null}
+		</aside>
 	);
 }
 
@@ -758,10 +790,12 @@ function RecipientPolicySharing({
 	);
 	const initialSelectionPending = useRef(options.loading === true || options.loadError === true);
 	const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
-	const setupAttentionItems = deviceIdentityAttentionItems(options.deviceInventory);
-	const setupAttentionCount = setupAttentionItems.length;
-	const reconciliationIssueCount = options.coordinatorEnrollmentIssueCount ?? 0;
 	const hasActiveTeams = intent.teams.some((team) => team.status === "active");
+	const tabCounts: Partial<Record<SharingTab, number>> = {
+		teams: intent.teams.filter((team) => team.status === "active").length,
+		identities: intent.identities.filter((identity) => identity.status === "active").length,
+		received: options.received?.length ?? 0,
+	};
 	useEffect(() => {
 		if (initialSelectionPending.current && !options.loading && !options.loadError) {
 			initialSelectionPending.current = false;
@@ -793,87 +827,10 @@ function RecipientPolicySharing({
 		<section className="recipient-policy-sharing recipient-policy-sharing-responsive-surface">
 			<header className="recipient-policy-sharing-header">
 				<h2>Sharing</h2>
-				<p className="small">
-					See who receives Projects, how Team membership carries Project access, and where to make
-					changes.
-				</p>
 			</header>
-			<TeamSetupOverview
-				candidates={options.teamSetupSummary?.candidates ?? []}
-				onOpenTeamSetup={options.onOpenTeamSetup}
-			/>
-			{options.teamSetupLoading && !options.teamSetupSummary ? (
-				<p aria-live="polite" className="small recipient-policy-sharing-empty" role="status">
-					Team setup status is loading.
-				</p>
-			) : null}
-			{options.teamSetupUnavailable ? (
-				<p aria-live="polite" className="small recipient-policy-sharing-empty" role="status">
-					{options.teamSetupSummary
-						? "Team setup status is temporarily unavailable. The previous Team setup status is being shown."
-						: "Team setup status is temporarily unavailable."}
-				</p>
-			) : null}
-			{options.deviceInventoryUnavailable ? (
-				<p aria-live="polite" className="small recipient-policy-sharing-empty" role="status">
-					Device Identity information is unavailable. Devices needing setup or review cannot be
-					shown until a refresh succeeds.
-				</p>
-			) : null}
-			{setupAttentionCount > 0 && !options.deviceInventoryUnavailable ? (
-				<aside
-					aria-labelledby="sharing-device-setup-heading"
-					className="peer-card peer-card--padded recipient-policy-sharing-attention"
-				>
-					<h3 id="sharing-device-setup-heading">Identity setup needed</h3>
-					<p>
-						{setupAttentionCount.toLocaleString()}{" "}
-						{setupAttentionCount === 1 ? "device needs" : "devices need"} setup, pairing, or review
-						before ownership can be shown accurately.
-					</p>
-					<p className="small">
-						Identity setup records device ownership only. It does not grant Projects, Team
-						membership, or sync access.
-					</p>
-					{options.onReviewDevices ? (
-						<button
-							className="settings-button recipient-policy-sharing-target-24"
-							onClick={() => options.onReviewDevices?.(setupAttentionItems[0]?.deviceId)}
-							type="button"
-						>
-							Review devices
-						</button>
-					) : null}
-				</aside>
-			) : null}
-			{reconciliationIssueCount > 0 ? (
-				<aside
-					aria-labelledby="sharing-coordinator-reconciliation-heading"
-					className="peer-card peer-card--padded recipient-policy-sharing-attention"
-				>
-					<h3 id="sharing-coordinator-reconciliation-heading">
-						Device setup reconciliation needs attention
-					</h3>
-					<p>
-						{reconciliationIssueCount.toLocaleString()} coordinator enrollment
-						{reconciliationIssueCount === 1 ? " could" : "s could"} not be safely reconciled.
-						Sharing remains unchanged until the device evidence is valid.
-					</p>
-					<p className="small">
-						Coordinator groups are discovery boundaries, not policy Teams, and do not prove device
-						ownership.
-					</p>
-					{options.onReviewDevices ? (
-						<button
-							className="settings-button recipient-policy-sharing-target-24"
-							onClick={() => options.onReviewDevices?.()}
-							type="button"
-						>
-							Review devices
-						</button>
-					) : null}
-				</aside>
-			) : null}
+			<TeamSetupStatus options={options} />
+			<DeviceSetupStatus options={options} />
+			<ReconciliationStatus options={options} />
 			{options.refreshError ? (
 				<p
 					aria-live="assertive"
@@ -906,6 +863,9 @@ function RecipientPolicySharing({
 						type="button"
 					>
 						{tab.label}
+						{tabCounts[tab.id] === undefined ? null : (
+							<span className="tertiary"> {tabCounts[tab.id]}</span>
+						)}
 					</button>
 				))}
 			</div>

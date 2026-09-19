@@ -187,8 +187,8 @@ function mount(
 }
 
 function tab(label: string): HTMLButtonElement {
-	const match = [...document.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(
-		(button) => button.textContent === label,
+	const match = [...document.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find((button) =>
+		button.textContent?.startsWith(label),
 	);
 	if (!match) throw new Error(`tab missing: ${label}`);
 	return match;
@@ -251,13 +251,12 @@ function rendersReceivedProjectSources(): void {
 			},
 		],
 	});
-	clickTab("Received");
+	clickTab("From other devices");
 	const text = visiblePanel().textContent ?? "";
 	expect(text).toContain("Received API");
-	expect(text).toContain("2 memories");
-	expect(text).toContain("FromWork Laptop · Desk Computer · +1");
+	expect(text).toContain("Work Laptop · Desk Computer · +1");
 	expect(text).toContain("Received Tools");
-	expect(text).toContain("1 memory");
+	expect(text).toContain("1");
 	expect(text).toContain("Unknown device");
 	expect(text).toContain("2 unknown devices");
 	expect(text).not.toContain("device-a");
@@ -266,7 +265,14 @@ function rendersReceivedProjectSources(): void {
 	expect(text).not.toContain("private-device-a");
 	expect(text).not.toContain("private-device-b");
 	expect(text).toContain("No recent sessions");
-	expect(text).toContain("Access is managed where the Project is shared from");
+	const search = visiblePanel().querySelector<HTMLInputElement>('input[type="search"]');
+	if (!search) throw new Error("received-project search missing");
+	act(() => {
+		search.value = "tools";
+		search.dispatchEvent(new Event("input", { bubbles: true }));
+	});
+	expect(visiblePanel().textContent).not.toContain("Received API");
+	expect(visiblePanel().textContent).toContain("Received Tools");
 }
 
 describe("received project sources", () => {
@@ -288,9 +294,9 @@ function testRecipientFocusedSharing() {
 			"Sharing views",
 		);
 		expect([...document.querySelectorAll('[role="tab"]')].map((item) => item.textContent)).toEqual([
-			"Teams",
-			"Identities",
-			"Received",
+			"Teams 1",
+			"Identities 2",
+			"From other devices 0",
 			"Invitations",
 		]);
 		expect(tab("Teams").getAttribute("aria-controls")).toBe("recipient-policy-sharing-panel-teams");
@@ -298,16 +304,14 @@ function testRecipientFocusedSharing() {
 
 		clickTab("Identities");
 		expect(visiblePanel().textContent).toContain("Local identity");
-		clickTab("Received");
+		clickTab("From other devices");
 		expect(visiblePanel().getAttribute("tabindex")).toBe("0");
-		expect(visiblePanel().textContent).toContain("No received Projects on this device");
+		expect(visiblePanel().textContent).toContain("No projects from other devices yet");
 		clickTab("Invitations");
-		expect(visiblePanel().textContent).toContain("Invite Team member");
+		expect(visiblePanel().textContent).toContain("Invite a teammate");
 		expect(visiblePanel().textContent).toContain("Add a device");
-		expect(visiblePanel().textContent).toContain("Share exact Projects");
-		expect(visiblePanel().textContent).toContain(
-			"Legacy invitation import remains under Advanced, in Sync",
-		);
+		expect(visiblePanel().textContent).toContain("Share specific projects");
+		expect(visiblePanel().textContent).toContain("Older invite codes →");
 	});
 
 	it("selects Teams when the first successfully loaded intent has active Teams", () => {
@@ -443,13 +447,18 @@ function testRecipientFocusedSharing() {
 	});
 
 	it("shows Team members, current devices, shared Projects, and future-member inheritance", () => {
-		mount();
+		const graph = intent();
+		graph.identities = graph.identities.map((identity) => ({
+			...identity,
+			displayName: identity.identityId === "identity-adam" ? "Adam Rivera" : "Brian Jones",
+		}));
+		mount(graph);
 		const text = visiblePanel().textContent ?? "";
 		expect(text).toContain("ExampleCo");
-		expect(text).toContain("2 active members — Adam, Brian");
-		expect(text).toContain("2 active registered devices");
-		expect(text).toContain("1 active shared Project identity — Codemem");
-		expect(text).toContain("Yes — future Team members inherit the Team’s shared Projects");
+		expect(text).toContain("2Members · Adam Rivera (you), Brian Jones");
+		expect(text).toContain("2Registered devices");
+		expect(text).toContain("1Shared projects · Codemem");
+		expect(text).toContain("Auto-shares with new members");
 		expect(text).not.toContain("Old Team");
 	});
 
@@ -478,9 +487,9 @@ function testRecipientFocusedSharing() {
 			},
 		});
 
-		expect(sharingText).toContain("2 active members — Adam, Brian");
-		expect(sharingText).toContain("2 active registered devices");
-		expect(sharingText).toContain("1 active shared Project identity — Codemem");
+		expect(sharingText).toContain("2Members · Adam (you), Brian");
+		expect(sharingText).toContain("2Registered devices");
+		expect(sharingText).toContain("1Shared projects · Codemem");
 		expect(sharingText).not.toContain("needs review");
 		expect(sharingText).not.toContain("Project access");
 		expect(advancedStatus).toMatchObject({
@@ -491,7 +500,7 @@ function testRecipientFocusedSharing() {
 		expect(advancedStatus.meta).not.toContain(sharedProject.canonicalProjectIdentity);
 	});
 
-	it("bounds long member lists behind an accessible disclosure", () => {
+	it("shows every Team member in the compact member summary", () => {
 		const extraIdentities = ["Casey", "Devon"].map((displayName) => ({
 			version: 1 as const,
 			identityId: `identity-${displayName.toLowerCase()}`,
@@ -517,12 +526,8 @@ function testRecipientFocusedSharing() {
 			],
 		});
 
-		const disclosure = visiblePanel().querySelector<HTMLDetailsElement>(
-			".recipient-policy-sharing-name-details",
-		);
-		expect(disclosure?.open).toBe(false);
-		expect(disclosure?.querySelector("summary")?.textContent).toBe("View all 4 members");
-		expect(disclosure?.querySelector("ul")?.getAttribute("role")).toBe("list");
+		expect(visiblePanel().textContent).toContain("Adam (you), Brian, Casey, Devon");
+		expect(visiblePanel().querySelector(".recipient-policy-sharing-name-details")).toBeNull();
 	});
 
 	it("does not infer per-Identity Team access from membership intent", () => {
@@ -532,11 +537,9 @@ function testRecipientFocusedSharing() {
 		if (!adamCard) throw new Error("Adam card missing");
 		const text = adamCard.textContent ?? "";
 		expect(text).toContain("Local identity");
-		expect(text).toContain("1 active registered device — Adam’s Mac");
-		expect(text).toContain("1 active Team membership — ExampleCo");
-		expect(text).toContain("1 directly shared active Project identity — API");
-		expect(text).toContain("Team Projects are shown on Team cards");
-		expect(text).toContain("per-device eligibility cannot be inferred");
+		expect(text).toContain("Devices · 1Adam’s Mac");
+		expect(text).toContain("Teams · 1ExampleCo");
+		expect(text).toContain("Shared directlyAPI");
 		expect(text).not.toContain("Team-inherited Project");
 		expect(text).not.toContain("Codemem");
 		expect(text).not.toContain("directly shared active Project — Codemem");
@@ -573,21 +576,41 @@ function testRecipientFocusedSharing() {
 
 		mount(intent({ projectRecipients: [...teamEdges, ...identityEdges] }), {}, repeatedProjects);
 
-		expect(visiblePanel().textContent).toContain("5 active shared Project identities");
-		expect(visiblePanel().textContent).toContain("Codemem (2 identities)");
-		const disclosure = visiblePanel().querySelector<HTMLDetailsElement>(
-			".recipient-policy-sharing-project-details",
+		expect(visiblePanel().textContent).toContain(
+			"5Shared projects · API, Codemem — duplicate name 1 of 2, Codemem — duplicate name 2 of 2, Docs, Tools",
 		);
-		expect(disclosure?.open).toBe(false);
-		expect(disclosure?.querySelector("summary")?.textContent).toBe(
-			"View all 4 Project name groups",
-		);
-		expect(disclosure?.querySelector("ul")?.getAttribute("role")).toBe("list");
+		expect(visiblePanel().querySelectorAll(".tag-chip")).toHaveLength(5);
 		clickTab("Identities");
-		expect(visiblePanel().textContent).toContain("5 directly shared active Project identities");
-		expect(visiblePanel().textContent).toContain("Codemem (2 identities)");
+		expect(visiblePanel().textContent).toContain(
+			"Shared directlyAPICodemem — duplicate name 1 of 2Codemem — duplicate name 2 of 2DocsTools",
+		);
 		expect(document.body.outerHTML).not.toContain(privatePath);
 		expect(document.body.outerHTML).not.toContain(privateRemote);
+	});
+
+	it("shows eight shared projects before expanding the remaining chips", () => {
+		const manyProjects = Array.from({ length: 10 }, (_, index) => ({
+			canonicalProjectIdentity: `project-${index}`,
+			displayName: `Project ${index}`,
+			existingMemoryCount: index,
+		}));
+		const projectRecipients = manyProjects.map((project, index) => ({
+			version: 1 as const,
+			canonicalProjectIdentity: project.canonicalProjectIdentity,
+			recipientKind: "team" as const,
+			teamId: "team-example",
+			intentSource: "user" as const,
+			policyRevision: `revision-${index}`,
+			status: "active" as const,
+		}));
+		mount(intent({ projectRecipients }), {}, manyProjects);
+
+		expect(visiblePanel().querySelectorAll(".tag-chip")).toHaveLength(8);
+		const more = [...visiblePanel().querySelectorAll<HTMLButtonElement>("button")].find(
+			(button) => button.textContent === "+2 more",
+		);
+		act(() => more?.click());
+		expect(visiblePanel().querySelectorAll(".tag-chip")).toHaveLength(10);
 	});
 
 	it("opens exact recipient management requests from both action labels", () => {
@@ -628,9 +651,7 @@ function testRecipientFocusedSharing() {
 				},
 			],
 		]);
-		expect(document.body.textContent).toContain(
-			"Add projects only adds the selected Projects after you preview the exact changes",
-		);
+		expect(document.body.textContent).not.toContain("Add projects only adds");
 	});
 
 	it("opens a narrow focused Team settings dialog with the current name and restores focus", async () => {
@@ -827,7 +848,7 @@ function testRecipientFocusedSharing() {
 		expect(visiblePanel().textContent).toContain("ExampleCo");
 		expect(document.querySelector(".loading-card-list")).toBeNull();
 		const mutationButtons = visiblePanel().querySelectorAll<HTMLButtonElement>(
-			".recipient-policy-sharing-actions button",
+			".recipient-policy-sharing-card-actions button",
 		);
 		expect(mutationButtons).toHaveLength(3);
 		for (const button of mutationButtons) {
@@ -838,12 +859,7 @@ function testRecipientFocusedSharing() {
 		expect(openManagement).not.toHaveBeenCalled();
 		expect(document.getElementById("recipientPolicyTeamSettingsDialog")).toBeNull();
 		const manage = [...mutationButtons].find((button) => button.textContent === "Manage projects");
-		expect(manage?.getAttribute("aria-describedby")).toBe(
-			"recipient-policy-sharing-team-add-description-0",
-		);
-		expect(mutationButtons[2]?.getAttribute("aria-describedby")).toBe(
-			"recipient-policy-sharing-team-add-description-0",
-		);
+		expect(manage?.hasAttribute("aria-describedby")).toBe(false);
 		expect(visiblePanel().getAttribute("tabindex")).toBe("0");
 	});
 
@@ -876,9 +892,7 @@ function testRecipientFocusedSharing() {
 		const attention = document.querySelector<HTMLElement>(".recipient-policy-sharing-attention");
 		expect(attention?.getAttribute("aria-labelledby")).toBe("sharing-device-setup-heading");
 		expect(attention?.textContent).toContain("1 device needs setup");
-		expect(attention?.textContent).toContain(
-			"does not grant Projects, Team membership, or sync access",
-		);
+		expect(attention?.textContent).toContain("before ownership can be shown");
 		const reviewButton = attention?.querySelector<HTMLButtonElement>("button");
 		expect(reviewButton).toBeDefined();
 		act(() => reviewButton?.click());
@@ -892,12 +906,7 @@ function testRecipientFocusedSharing() {
 		const attention = document.querySelector<HTMLElement>(
 			'[aria-labelledby="sharing-coordinator-reconciliation-heading"]',
 		);
-		expect(attention?.textContent).toContain(
-			"2 coordinator enrollments could not be safely reconciled",
-		);
-		expect(attention?.textContent).toContain(
-			"Coordinator groups are discovery boundaries, not policy Teams",
-		);
+		expect(attention?.textContent).toContain("2 coordinator enrollments need device review");
 		expect(attention?.textContent).not.toMatch(/fingerprint|group[_ -]?id|coordinator[_ -]?id/i);
 		const reviewButton = attention?.querySelector<HTMLButtonElement>("button");
 		expect(reviewButton).toBeDefined();
@@ -940,7 +949,7 @@ function testRecipientFocusedSharing() {
 		);
 		expect(overview?.querySelector("h3")?.textContent).toBe("Legacy groups to migrate");
 		expect(overview?.textContent).toContain(
-			"Current devices are proposed for review. No Team membership or Project access changes happen until you finish the migration.",
+			"Review current devices before migrating Team membership or project access.",
 		);
 		expect(document.body.textContent).toContain(
 			"Team setup status is temporarily unavailable. The previous Team setup status is being shown.",

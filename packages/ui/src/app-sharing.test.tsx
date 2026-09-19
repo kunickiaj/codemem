@@ -56,8 +56,8 @@ const intent: RecipientPolicyIntentGraphV1 = {
 };
 
 function button(label: string): HTMLButtonElement {
-	const match = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
-		(candidate) => candidate.textContent === label,
+	const match = [...document.querySelectorAll<HTMLButtonElement>("button")].find((candidate) =>
+		candidate.textContent?.startsWith(label),
 	);
 	if (!match) throw new Error(`button missing: ${label}`);
 	return match;

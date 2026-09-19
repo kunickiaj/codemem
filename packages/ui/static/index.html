@@ -1707,6 +1707,89 @@
         gap: var(--sp-3);
       }
       .recipient-policy-sharing-card-title h3 { margin: 0; }
+      .recipient-policy-sharing-card-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: var(--sp-4);
+      }
+      .recipient-policy-sharing-card-title { justify-content: flex-start; flex-wrap: wrap; }
+      .recipient-policy-sharing-card-actions,
+      .recipient-policy-sharing-card-actions .recipient-policy-sharing-actions {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: var(--sp-2);
+        flex-wrap: wrap;
+      }
+      .recipient-policy-sharing-card-actions .settings-button { margin-top: 0; }
+      .recipient-policy-sharing-stats {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: var(--sp-2);
+        margin-top: var(--sp-4);
+      }
+      .recipient-policy-sharing-stats > div {
+        display: grid;
+        gap: var(--sp-1);
+        min-width: 0;
+        padding: var(--sp-3);
+        border-radius: var(--radius-sm);
+        background: var(--surface-2);
+      }
+      .recipient-policy-sharing-stats strong { font-size: var(--font-size-lg); }
+      .recipient-policy-sharing-stats span { color: var(--text-secondary); overflow-wrap: anywhere; }
+      .recipient-policy-sharing-projects,
+      .recipient-policy-sharing-identity-rows,
+      .recipient-policy-sharing-identity-rows > div { display: grid; gap: var(--sp-2); }
+      .recipient-policy-sharing-projects,
+      .recipient-policy-sharing-identity-rows { margin-top: var(--sp-4); }
+      .recipient-policy-sharing-identity-rows > div + div { padding-top: var(--sp-3); border-top: 1px solid var(--border); }
+      .recipient-policy-sharing-chips { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+      .recipient-policy-sharing-more {
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--accent);
+        font: inherit;
+        cursor: pointer;
+      }
+      .recipient-policy-sharing-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--sp-3);
+        margin-bottom: var(--sp-3);
+      }
+      .recipient-policy-sharing-toolbar label { flex: 1; }
+      .recipient-policy-sharing-toolbar input { width: 100%; }
+      .recipient-policy-sharing-received-table { display: block; width: 100%; overflow: hidden; border: 1px solid var(--border); border-spacing: 0; border-radius: var(--radius-md); }
+      .recipient-policy-sharing-received-table thead,
+      .recipient-policy-sharing-received-table tbody { display: block; }
+      .recipient-policy-sharing-received-head,
+      .recipient-policy-sharing-received-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 180px 190px 170px;
+        gap: var(--sp-4);
+        align-items: center;
+        padding: var(--sp-3) var(--sp-4);
+      }
+      .recipient-policy-sharing-received-head {
+        background: var(--surface-2);
+        color: var(--text-tertiary);
+        font-size: var(--font-size-2xs);
+        font-weight: var(--font-weight-semibold);
+        letter-spacing: var(--letter-spacing-wide);
+        text-transform: uppercase;
+      }
+      .recipient-policy-sharing-received-row { border-top: 1px solid var(--border); background: var(--surface-1); }
+      .recipient-policy-sharing-received-row > * { min-width: 0; overflow-wrap: anywhere; }
+      .recipient-policy-sharing-received-row td { min-width: 0; padding: 0; color: var(--text-secondary); text-align: left; }
+      .recipient-policy-sharing-received-row td:first-child { color: var(--text-primary); }
+      .recipient-policy-sharing-received-head th { min-width: 0; padding: 0; text-align: left; }
+      .recipient-policy-sharing-received-head th:nth-child(n + 3),
+      .recipient-policy-sharing-received-row td:nth-child(n + 3) { text-align: right; }
+      .recipient-policy-sharing-pointer { display: inline-block; margin-top: var(--sp-3); }
       .recipient-policy-sharing-card,
       .recipient-policy-sharing-card-title,
       .recipient-policy-sharing-details dd { min-width: 0; overflow-wrap: anywhere; }
@@ -1740,10 +1823,6 @@
       }
       .recipient-policy-sharing-details dt { color: var(--text-secondary); }
       .recipient-policy-sharing-details dd { margin: 0; color: var(--text-primary); }
-      .recipient-policy-sharing-team-card > .recipient-policy-sharing-actions + .recipient-policy-sharing-actions {
-        margin-top: var(--sp-2);
-      }
-
       .loading-card-list { display: grid; gap: var(--sp-3); }
       .loading-card {
         padding: var(--sp-4);
@@ -1961,6 +2040,19 @@
       .devices-delivered-copy-warning { margin-top: var(--sp-3); color: var(--text-secondary); }
 
       @media (max-width: 900px) {
+        .recipient-policy-sharing-card-header { align-items: stretch; flex-direction: column; }
+        .recipient-policy-sharing-card-actions { justify-content: flex-start; }
+        .recipient-policy-sharing-stats { grid-template-columns: 1fr; }
+        .recipient-policy-sharing-received-head { display: none; }
+        .recipient-policy-sharing-received-row { grid-template-columns: 1fr 1fr; }
+        .recipient-policy-sharing-received-row > td:not(:first-child)::before {
+          content: attr(data-label) " ";
+          display: block;
+          color: var(--text-tertiary);
+          font-size: var(--font-size-2xs);
+          text-transform: uppercase;
+        }
+        .recipient-policy-sharing-received-row td:nth-child(n + 3) { text-align: left; }
         .project-inventory-table-header { display: none; }
         .project-inventory-table-row { grid-template-columns: 28px minmax(0, 1fr) auto; row-gap: var(--sp-3); }
         .project-inventory-select-cell { grid-column: 1; grid-row: 1; }
@@ -1986,6 +2078,8 @@
       }
 
       @media (max-width: 720px) {
+        .recipient-policy-sharing-toolbar { align-items: stretch; flex-direction: column; }
+        .recipient-policy-sharing-received-row { grid-template-columns: 1fr; }
         .project-inventory-row-header { grid-template-columns: 28px minmax(0, 1fr); }
         .project-inventory-row-actions { grid-column: 2; grid-row: 2; justify-content: flex-start; }
         .project-inventory-table-row > :nth-child(3) { grid-column: 2; grid-row: 3; }
