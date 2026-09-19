@@ -658,6 +658,7 @@ describe("Device availability summary", () => {
 		});
 		const element = document.getElementById("mount");
 		if (!element) throw new Error("mount missing");
+		const onNavigate = vi.fn();
 		act(() =>
 			mountDevices(
 				element,
@@ -674,6 +675,7 @@ describe("Device availability summary", () => {
 							isLocal: true,
 						}),
 					]),
+					onNavigate,
 				},
 			),
 		);
@@ -684,9 +686,11 @@ describe("Device availability summary", () => {
 		expect(summary).toContain("1 unknown");
 		expect(document.querySelectorAll(".devices-table-row")).toHaveLength(3);
 		expect(document.querySelector(".devices-table-device .local")?.textContent).toBe("This device");
-		expect(document.querySelector<HTMLAnchorElement>(".devices-identity-header a")?.hash).toBe(
-			"#sharing",
+		const sharingButton = document.querySelector<HTMLButtonElement>(
+			".devices-identity-header .sync-subview-link",
 		);
+		act(() => sharingButton?.click());
+		expect(onNavigate).toHaveBeenCalledWith("sharing");
 	});
 
 	it("renders loading, error, and active-device empty states with live-region semantics", () => {

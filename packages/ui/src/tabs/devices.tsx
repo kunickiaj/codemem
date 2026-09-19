@@ -1,4 +1,4 @@
-import { render } from "preact";
+import { type RefObject, render } from "preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { LoadingCardList } from "../components/LoadingCardList";
 import { Chip } from "../components/primitives/chip";
@@ -789,19 +789,53 @@ function SetupWorkflow({
 	);
 }
 
-function ConfiguredRebind({
-	intent,
-	inventory,
-	item,
-	options,
-	previousIdentityName,
-}: {
+type ConfiguredRebindProps = {
+	controlKey: string;
 	intent: RecipientPolicyIntentGraphV1;
 	inventory: DeviceIdentityInventoryV1;
 	item: DeviceIdentityInventoryItemV1;
 	options: DevicesRendererOptions;
 	previousIdentityName: string;
+	triggerRef?: RefObject<HTMLButtonElement>;
+};
+
+function RebindTrigger({
+	blocked,
+	id,
+	onClick,
+	open,
+	triggerRef,
+}: {
+	blocked: boolean;
+	id: string;
+	onClick: () => void;
+	open: boolean;
+	triggerRef?: RefObject<HTMLButtonElement>;
 }) {
+	return (
+		<button
+			aria-expanded={open}
+			className="settings-button"
+			disabled={blocked}
+			id={id}
+			onClick={onClick}
+			ref={triggerRef}
+			type="button"
+		>
+			Change Identity…
+		</button>
+	);
+}
+
+function ConfiguredRebind({
+	controlKey,
+	intent,
+	inventory,
+	item,
+	options,
+	previousIdentityName,
+	triggerRef,
+}: ConfiguredRebindProps) {
 	const identities = intent.identities.filter(
 		(identity) =>
 			identity.status === "active" &&
@@ -832,7 +866,7 @@ function ConfiguredRebind({
 		previewMatchesBindings(reviewed.preview, reviewed.request, [item], "rebind");
 	const gate = deviceIdentitySetupGate(inventory, item);
 	const rebindBlocked = gate.blocked || identityMutationsBlocked(options);
-	const triggerId = `configured-rebind-trigger-${item.deviceId}`;
+	const triggerId = `configured-rebind-trigger-${controlKey}`;
 	const targetIdentity =
 		identities.find((identity) => identity.identityId === targetIdentityId)?.displayName ?? "";
 	const identitySignature = identities
@@ -909,13 +943,7 @@ function ConfiguredRebind({
 			setReviewConfirmed(false);
 			setDeviceCommitStatus("Identity reassignment completed.");
 			const refreshed = await options.onCommitted?.();
-			setDeviceCommitStatus(
-				refreshed === false
-					? "Identity reassignment completed, but refreshing Devices and Sharing failed. Refresh to see current state."
-					: refreshed === true
-						? "Identity reassignment completed. Devices and Sharing were refreshed."
-						: "Identity reassignment completed.",
-			);
+			setDeviceCommitStatus(rebindCommitStatus(refreshed));
 			(document.getElementById(triggerId) ?? document.getElementById("devices-heading"))?.focus();
 		} catch (caught) {
 			setError(deviceIdentitySetupError(caught));
@@ -924,10 +952,8 @@ function ConfiguredRebind({
 	};
 	return (
 		<div className="device-identity-rebind">
-			<button
-				aria-expanded={open}
-				className="settings-button"
-				disabled={rebindBlocked}
+			<RebindTrigger
+				blocked={rebindBlocked}
 				id={triggerId}
 				onClick={() => {
 					reviewRevision.current += 1;
@@ -938,10 +964,9 @@ function ConfiguredRebind({
 					setError("");
 					setDeviceCommitStatus("");
 				}}
-				type="button"
-			>
-				Change Identity…
-			</button>
+				open={open}
+				triggerRef={triggerRef}
+			/>
 			{gate.recovery ? <p className="small">{gate.recovery}</p> : null}
 			{open ? (
 				<fieldset>
@@ -949,10 +974,10 @@ function ConfiguredRebind({
 					<p>
 						<strong>Suggested current Identity (unconfirmed):</strong> {previousIdentity}
 					</p>
-					<label htmlFor={`configured-rebind-${item.deviceId}`}>Target Identity</label>
+					<label htmlFor={`configured-rebind-${controlKey}`}>Target Identity</label>
 					<select
 						disabled={rebindBlocked}
-						id={`configured-rebind-${item.deviceId}`}
+						id={`configured-rebind-${controlKey}`}
 						onInput={(event) => {
 							reviewRevision.current += 1;
 							setBusy(false);
@@ -1038,6 +1063,16 @@ function ConfiguredRebind({
 			) : null}
 		</div>
 	);
+}
+
+function rebindCommitStatus(refreshed: boolean | undefined): string {
+	if (refreshed === false) {
+		return "Identity reassignment completed, but refreshing Devices and Sharing failed. Refresh to see current state.";
+	}
+	if (refreshed === true) {
+		return "Identity reassignment completed. Devices and Sharing were refreshed.";
+	}
+	return "Identity reassignment completed.";
 }
 
 function availabilityPipState(availability: DeviceAvailabilityState) {
@@ -1126,6 +1161,7 @@ function DeviceTableRow({
 	options: DevicesRendererOptions;
 }) {
 	const [detailsOpen, setDetailsOpen] = useState(false);
+	const rebindTriggerRef = useRef<HTMLButtonElement>(null);
 	const detailsId = `device-details-${device.deviceId}`;
 	return (
 		<>
@@ -1162,11 +1198,7 @@ function DeviceTableRow({
 						onDetails={() => setDetailsOpen((open) => !open)}
 						onRebind={() => {
 							setDetailsOpen(true);
-							queueMicrotask(() =>
-								document
-									.getElementById(`configured-rebind-trigger-${inventoryItem?.deviceId}`)
-									?.click(),
-							);
+							queueMicrotask(() => rebindTriggerRef.current?.click());
 						}}
 						options={options}
 					/>
@@ -1185,11 +1217,13 @@ function DeviceTableRow({
 					) : null}
 					{inventoryItem && options.inventory ? (
 						<ConfiguredRebind
+							controlKey={device.deviceId}
 							intent={intent}
 							inventory={options.inventory}
 							item={inventoryItem}
 							options={options}
 							previousIdentityName={device.identityName}
+							triggerRef={rebindTriggerRef}
 						/>
 					) : null}
 				</td>
@@ -1231,7 +1265,14 @@ function DeviceIdentityGroup({
 					</span>
 				</strong>
 				<span className="small">
-					Direct shares: {directShares || "none"} · <a href="#sharing">Team projects →</a>
+					Direct shares: {directShares || "none"} ·{" "}
+					<button
+						className="sync-subview-link"
+						onClick={() => options.onNavigate?.("sharing")}
+						type="button"
+					>
+						Team projects →
+					</button>
 				</span>
 			</div>
 			<table aria-label={`${first.identityName} devices`} className="devices-table">
@@ -1389,6 +1430,7 @@ function DevicesView({
 								<strong>Owning Identity:</strong> {previousIdentityName}
 							</p>
 							<ConfiguredRebind
+								controlKey={item.deviceId}
 								intent={intent}
 								inventory={options.inventory}
 								item={item}
