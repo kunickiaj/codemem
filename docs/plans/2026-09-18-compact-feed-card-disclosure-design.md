@@ -84,7 +84,7 @@ The title and mode controls provide separate, explicit keyboard operations.
 - Preserve focus on the title, selected mode, visibility control, and item menu across polling rerenders.
 - The detail region has an accessible name derived from the card title and selected mode.
 - Reduced-motion mode removes the new-item pulse and disclosure animation.
-- Search highlighting remains in the title and skim line. For records returned by the existing Feed search contract, if the matched text is only in hidden detail, show and highlight the matching mode excerpt so the result explains the match without permanently expanding it. Expanding server-side search to additional structured metadata fields is outside this UI-only change.
+- Search highlighting remains in the title and skim line. For records returned by the existing Feed search contract, if the matched text is only in hidden detail, show and highlight the matching mode excerpt so the result explains the match without permanently expanding it. When indexed legacy `body_text` differs from every rendered mode, show a separate Body match excerpt. Expanding server-side search to additional structured metadata fields is outside this UI-only change.
 
 ## Narrow, Print, and Copy Behavior
 
