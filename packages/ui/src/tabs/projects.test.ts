@@ -344,10 +344,10 @@ function cleanupProjectsTest(): void {
 	document.body.innerHTML = "";
 }
 
-describe("Projects tab", () => {
-	beforeEach(setupProjectsTest);
-	afterEach(cleanupProjectsTest);
+beforeEach(setupProjectsTest);
+afterEach(cleanupProjectsTest);
 
+describe("Projects tab", () => {
 	it("shows empty inventory without bogus pagination range", async () => {
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
 			has_more: false,
@@ -402,9 +402,6 @@ describe("Projects tab", () => {
 });
 
 function projectsRecipientPolicyReviewSurfaceTests(): void {
-	beforeEach(setupProjectsTest);
-	afterEach(cleanupProjectsTest);
-
 	it("omits preserved continuity from mixed review and repair state", async () => {
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
 			has_more: false,
@@ -463,14 +460,28 @@ function projectsRecipientPolicyReviewSurfaceTests(): void {
 		expect(buttonNamed("Apply")).toBeDefined();
 		expect(document.querySelector(".recipient-policy-review-continuity")).toBeNull();
 	});
+
+	it("renders sharing-decision load errors", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [],
+			total: 0,
+		});
+		vi.mocked(api.loadRecipientPolicyReview).mockRejectedValue(new Error("Review unavailable"));
+
+		await loadProjectsData();
+
+		const surface = document.querySelector(".recipient-policy-review");
+		expect(surface?.querySelector("h2")?.textContent).toBe("Sharing decisions");
+		expect(surface?.querySelector('[role="status"]')?.textContent).toContain("Review unavailable");
+	});
 }
 
 describe("Projects recipient policy review surface", projectsRecipientPolicyReviewSurfaceTests);
 
 function projectsRecipientPolicyGroupedResolutionTests(): void {
-	beforeEach(setupProjectsTest);
-	afterEach(cleanupProjectsTest);
-
 	it("groups repository worktrees and applies one decision with every item fingerprint", async () => {
 		const first = reviewItem({
 			projectGroup: { displayName: "Codemem", identity: "https://example.test/codemem.git" },
@@ -563,9 +574,6 @@ describe(
 );
 
 function projectsRecipientPolicyBulkTests(): void {
-	beforeEach(setupProjectsTest);
-	afterEach(cleanupProjectsTest);
-
 	it("chunks repository decisions to the bulk endpoint limit", async () => {
 		const reviewItems = Array.from({ length: 101 }, (_, index) =>
 			reviewItem({
@@ -656,9 +664,6 @@ function projectsRecipientPolicyBulkTests(): void {
 describe("Projects recipient policy bulk resolution", projectsRecipientPolicyBulkTests);
 
 function projectsRecipientPolicySafetyTests(): void {
-	beforeEach(setupProjectsTest);
-	afterEach(cleanupProjectsTest);
-
 	it("explains required recipient input without submitting an incomplete decision", async () => {
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
 			has_more: false,
@@ -752,9 +757,6 @@ function projectsRecipientPolicySafetyTests(): void {
 describe("Projects recipient policy safety", projectsRecipientPolicySafetyTests);
 
 function projectsRecipientPolicyResultEdgeCaseTests(): void {
-	beforeEach(setupProjectsTest);
-	afterEach(cleanupProjectsTest);
-
 	it("re-enables unchanged grouped controls after a non-applied bulk result", async () => {
 		const second = reviewItem({ reviewItemId: "review-2", sourceFingerprint: "fingerprint-2" });
 		const review = recipientReview({ reviewItems: [reviewItem(), second] });
@@ -803,9 +805,12 @@ function projectsRecipientPolicyResultEdgeCaseTests(): void {
 
 describe("Projects recipient policy result edge cases", projectsRecipientPolicyResultEdgeCaseTests);
 
-describe("Projects tab interactions", () => {
-	beforeEach(setupProjectsTest);
-	afterEach(cleanupProjectsTest);
+{
+	function blockedRepairButton(): HTMLButtonElement | null {
+		return document.querySelector<HTMLButtonElement>(
+			".recipient-policy-blocked-item button[aria-describedby]",
+		);
+	}
 
 	it("preserves a focused repair when only hidden continuity data changes", async () => {
 		const initialReviewItem = reviewItem();
@@ -1360,9 +1365,7 @@ describe("Projects tab interactions", () => {
 		);
 
 		await loadProjectsData();
-		document
-			.querySelector<HTMLButtonElement>(".recipient-policy-blocked-item button[aria-describedby]")
-			?.click();
+		blockedRepairButton()?.click();
 
 		await vi.waitFor(() => expect(status.value).toBe(""));
 		expect(document.getElementById("projectsSearch")).toHaveProperty(
@@ -1557,9 +1560,7 @@ describe("Projects tab interactions", () => {
 		activeSelect.className = "project-domain-select";
 		document.body.appendChild(activeSelect);
 		activeSelect.focus();
-		document
-			.querySelector<HTMLButtonElement>(".recipient-policy-blocked-item button[aria-describedby]")
-			?.click();
+		blockedRepairButton()?.click();
 
 		await vi.waitFor(() =>
 			expect(showGlobalNotice).toHaveBeenCalledWith(
@@ -1622,9 +1623,7 @@ describe("Projects tab interactions", () => {
 		);
 
 		await loadProjectsData();
-		document
-			.querySelector<HTMLButtonElement>(".recipient-policy-blocked-item button[aria-describedby]")
-			?.click();
+		blockedRepairButton()?.click();
 		await vi.waitFor(() => expect(repairQueryCount).toBe(2));
 
 		const search = document.getElementById("projectsSearch") as HTMLInputElement;
@@ -1686,9 +1685,7 @@ describe("Projects tab interactions", () => {
 		);
 
 		await loadProjectsData();
-		document
-			.querySelector<HTMLButtonElement>(".recipient-policy-blocked-item button[aria-describedby]")
-			?.click();
+		blockedRepairButton()?.click();
 		await vi.waitFor(() => expect(repairQueryCount).toBe(1));
 
 		const search = document.getElementById("projectsSearch") as HTMLInputElement;
@@ -1758,9 +1755,7 @@ describe("Projects tab interactions", () => {
 		);
 
 		await loadProjectsData();
-		document
-			.querySelector<HTMLButtonElement>(".recipient-policy-blocked-item button[aria-describedby]")
-			?.click();
+		blockedRepairButton()?.click();
 		await vi.waitFor(() => expect(repairQueryCount).toBe(1));
 		await loadProjectsData();
 		resolveLookup({
@@ -1848,9 +1843,7 @@ describe("Projects tab interactions", () => {
 		);
 
 		await loadProjectsData();
-		document
-			.querySelector<HTMLButtonElement>(".recipient-policy-blocked-item button[aria-describedby]")
-			?.click();
+		blockedRepairButton()?.click();
 
 		await vi.waitFor(() =>
 			expect(
@@ -1911,9 +1904,7 @@ describe("Projects tab interactions", () => {
 		);
 
 		await loadProjectsData();
-		document
-			.querySelector<HTMLButtonElement>(".recipient-policy-blocked-item button[aria-describedby]")
-			?.click();
+		blockedRepairButton()?.click();
 
 		await vi.waitFor(() =>
 			expect(showGlobalNotice).toHaveBeenCalledWith(
@@ -1971,9 +1962,7 @@ describe("Projects tab interactions", () => {
 		);
 
 		await loadProjectsData();
-		document
-			.querySelector<HTMLButtonElement>(".recipient-policy-blocked-item button[aria-describedby]")
-			?.click();
+		blockedRepairButton()?.click();
 
 		const currentRows = () => [
 			...document.querySelectorAll<HTMLElement>(
@@ -2058,9 +2047,7 @@ describe("Projects tab interactions", () => {
 		);
 		expect(clusterDetails?.open).toBe(false);
 
-		document
-			.querySelector<HTMLButtonElement>(".recipient-policy-blocked-item button[aria-describedby]")
-			?.click();
+		blockedRepairButton()?.click();
 
 		await vi.waitFor(() =>
 			expect(
@@ -2431,9 +2418,7 @@ describe("Projects tab interactions", () => {
 		await loadProjectsData();
 		failNextPrimaryLoad = true;
 		await loadProjectsData();
-		document
-			.querySelector<HTMLButtonElement>(".recipient-policy-blocked-item button[aria-describedby]")
-			?.click();
+		blockedRepairButton()?.click();
 
 		await vi.waitFor(() =>
 			expect(showGlobalNotice).toHaveBeenCalledWith(
@@ -3821,18 +3806,9 @@ describe("Projects tab interactions", () => {
 			projectIds: ["project-alpha", "project-zeta"],
 		});
 	});
-});
+}
 
 describe("Projects refresh cancellation", () => {
-	beforeEach(setupProjectsTest);
-	afterEach(() => {
-		vi.clearAllMocks();
-		state.lastProjectCoordinatorAdminGroups = [];
-		state.lastCoordinatorAdminStatus = null;
-		state.lastCoordinatorAdminGroups = [];
-		document.body.innerHTML = "";
-	});
-
 	it("does not mark retained Team setup status unavailable after cancellation", async () => {
 		const summary = {
 			version: 1 as const,
