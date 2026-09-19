@@ -2,6 +2,7 @@ import { render } from "preact";
 import { act } from "preact/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EMPTY_FORM_STATE } from "../data/constants";
+import { settingsState } from "../data/state";
 import type { SettingsPanelProps } from "../data/types";
 import { ObserverPanel } from "./ObserverPanel";
 import { ProcessingPanel } from "./ProcessingPanel";
@@ -90,6 +91,7 @@ function renderPanels() {
 
 afterEach(() => {
 	document.body.innerHTML = "";
+	settingsState.envOverrides = {};
 });
 
 describe("settings outcomes", () => {
@@ -124,5 +126,17 @@ describe("settings outcomes", () => {
 		);
 		expect(root.querySelector('[data-settings-outcome-for="observerAuthFile"]')).toBeNull();
 		expect(root.querySelector('[data-settings-outcome-for="syncCoordinatorUrl"]')).toBeNull();
+	});
+
+	it("names the environment override that must be removed", () => {
+		settingsState.envOverrides = { observer_model: "CODEMEM_OBSERVER_MODEL" };
+		const root = renderPanels();
+
+		expect(
+			root.querySelector('[data-settings-outcome-for="observerModel"]')?.textContent,
+		).toContain("After removing CODEMEM_OBSERVER_MODEL and restarting the viewer");
+		expect(
+			root.querySelector('[data-settings-outcome-for="observerProvider"]')?.textContent,
+		).toContain("After viewer restart");
 	});
 });

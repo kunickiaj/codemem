@@ -124,7 +124,7 @@ const DEFAULTS: ConfigData = {
 	sync_host: "0.0.0.0",
 	sync_port: 7337,
 	sync_interval_s: 120,
-	sync_mdns: true,
+	sync_mdns: false,
 	sync_coordinator_timeout_s: 3,
 	sync_coordinator_presence_ttl_s: 180,
 	raw_events_sweeper_interval_s: 30,
