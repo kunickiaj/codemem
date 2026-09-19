@@ -895,6 +895,24 @@ function projectsInventoryTablePresentationTests(): void {
 		expect(row.querySelector('[role="menu"]')).toBeNull();
 		expect(document.activeElement).toBe(menuTrigger);
 
+		for (const shiftKey of [false, true]) {
+			menuTrigger.click();
+			await flushAsyncWork();
+			const firstItem = row.querySelector<HTMLButtonElement>('[role="menuitem"]');
+			firstItem?.focus();
+			const tab = new KeyboardEvent("keydown", {
+				bubbles: true,
+				cancelable: true,
+				key: "Tab",
+				shiftKey,
+			});
+			firstItem?.dispatchEvent(tab);
+			await flushAsyncWork();
+			expect(tab.defaultPrevented).toBe(false);
+			expect(row.querySelector('[role="menu"]')).toBeNull();
+			expect(document.activeElement).not.toBe(menuTrigger);
+		}
+
 		row.querySelector<HTMLButtonElement>(".project-recipient-action")?.click();
 		expect(recipientPolicyManagement.openRecipientPolicyManagement).toHaveBeenCalledWith({
 			mode: "project-manage",
@@ -3075,7 +3093,7 @@ describe("Projects inventory table presentation", projectsInventoryTablePresenta
 			"Blocked identity: https://git.example.invalid/exampleco/api.git:worktree",
 		);
 		expect(document.body.textContent).toContain("Another project is also named api.");
-		expect(document.body.textContent).toContain("Bulk Space details");
+		expect(document.body.textContent).toContain("Bulk details");
 	});
 
 	it("does not block cluster bulk assignment for informational guardrail warnings", async () => {

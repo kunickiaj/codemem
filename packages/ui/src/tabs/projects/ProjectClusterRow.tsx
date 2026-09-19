@@ -237,7 +237,7 @@ function ClusterDetails(props: ClusterDetailsProps) {
 					open={open}
 				>
 					<summary>
-						<span>Bulk Space details</span>
+						<span>Bulk details</span>
 						{summary.warningTotal > 0 ? (
 							<span className="badge badge-offline">Needs attention · {summary.warningTotal}</span>
 						) : null}
