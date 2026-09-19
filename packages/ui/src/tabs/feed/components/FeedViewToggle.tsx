@@ -9,11 +9,13 @@ export function FeedViewToggle({
 	active,
 	ariaLabel,
 	onSelect,
+	onModeFocus,
 }: {
 	modes: Array<{ id: ItemViewMode; label: string }>;
 	active: ItemViewMode;
 	ariaLabel: string;
 	onSelect: (mode: ItemViewMode) => void;
+	onModeFocus?: (mode: ItemViewMode) => void;
 }) {
 	if (modes.length <= 1) return null;
 
@@ -49,6 +51,7 @@ export function FeedViewToggle({
 					className: "toggle-button",
 					key: mode.id,
 					onClick: () => onSelect(mode.id),
+					onFocus: () => onModeFocus?.(mode.id),
 					onKeyDown: (event: TargetedKeyboardEvent<HTMLButtonElement>) =>
 						moveSelection(event, index),
 					role: "radio",

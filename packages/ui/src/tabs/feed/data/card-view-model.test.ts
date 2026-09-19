@@ -144,3 +144,18 @@ describe("feed card view model", () => {
 		});
 	});
 });
+
+describe("feed card clipped search matches", () => {
+	it("explains a title or skim match beyond the visible compact prefix", () => {
+		const prefix =
+			"A compact result with enough leading context to be clipped before the matching text ";
+		const titleModel = buildFeedCardViewModel({ title: `${prefix}orchard` });
+		const summaryModel = buildFeedCardViewModel({
+			subtitle: `${prefix}coordinator`,
+			title: "Memory",
+		});
+
+		expect(hiddenSearchMatch(titleModel, "orchard")).toMatchObject({ label: "Title" });
+		expect(hiddenSearchMatch(summaryModel, "coordinator")).toMatchObject({ label: "Summary" });
+	});
+});

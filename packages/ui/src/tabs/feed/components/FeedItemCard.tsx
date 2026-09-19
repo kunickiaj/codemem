@@ -1,5 +1,5 @@
 import { h, type TargetedEvent } from "preact";
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { Chip } from "../../../components/primitives/chip";
 import { Tooltip } from "../../../components/primitives/tooltip";
 import * as api from "../../../lib/api";
@@ -85,6 +85,9 @@ export function FeedItemCard({
 	const [savingVisibility, setSavingVisibility] = useState(false);
 	const [deletingMemory, setDeletingMemory] = useState(false);
 	const [movingProject, setMovingProject] = useState(false);
+	const cardRef = useRef<HTMLElement | null>(null);
+	const focusedModeRef = useRef<ItemViewMode | null>(null);
+	const restoreModeFocusRef = useRef(false);
 	const createdAtRaw = item.created_at || item.created_at_utc;
 	const relative = formatRelativeTime(createdAtRaw);
 	const project = String(item.project || "").trim();
@@ -109,8 +112,21 @@ export function FeedItemCard({
 
 	useEffect(() => {
 		if (modeIds.includes(activeMode)) return;
+		restoreModeFocusRef.current =
+			focusedModeRef.current === activeMode && document.activeElement === document.body;
 		setActiveMode(preferredAvailableMode(model.modes, state.preferredFeedViewMode));
 	}, [activeMode, modeIds, model.modes]);
+
+	useEffect(() => {
+		if (!restoreModeFocusRef.current) return;
+		const activeRadio = cardRef.current?.querySelector<HTMLButtonElement>(
+			'[role="radio"][aria-checked="true"]',
+		);
+		if (!activeRadio) return;
+		restoreModeFocusRef.current = false;
+		focusedModeRef.current = activeMode;
+		activeRadio.focus();
+	}, [activeMode]);
 
 	useEffect(() => {
 		state.itemViewState.set(model.rowKey, activeMode);
@@ -274,6 +290,7 @@ export function FeedItemCard({
 		{
 			className: `feed-item ${model.displayKind}${isNew ? " new-item" : ""}`.trim(),
 			"data-key": model.rowKey,
+			ref: cardRef,
 		},
 		h(
 			"div",
@@ -383,6 +400,9 @@ export function FeedItemCard({
 					active: activeMode,
 					ariaLabel: `View for ${model.displayTitle}`,
 					modes: model.modes,
+					onModeFocus: (mode) => {
+						focusedModeRef.current = mode;
+					},
 					onSelect: selectMode,
 				}),
 				ownedBySelf && memoryId > 0

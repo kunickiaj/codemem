@@ -135,17 +135,26 @@ function excerptAroundMatch(text: string, query: string): string {
 	return `${start > 0 ? "…" : ""}${collapsed.slice(start, end)}${end < collapsed.length ? "…" : ""}`;
 }
 
+const VISIBLE_SKIM_PREFIX_LENGTH = 80;
+
+function clippedSkimMatch(text: string, query: string, label: string) {
+	const collapsed = text.replace(/\s+/g, " ").trim();
+	const index = collapsed.toLocaleLowerCase().indexOf(query.toLocaleLowerCase());
+	if (index < VISIBLE_SKIM_PREFIX_LENGTH) return null;
+	return { excerpt: excerptAroundMatch(collapsed, query), label, mode: null };
+}
+
 export function hiddenSearchMatch(
 	model: FeedCardViewModel,
 	query: string,
 ): { excerpt: string; label: string; mode: ItemViewMode | null } | null {
 	const trimmedQuery = query.trim();
 	if (!trimmedQuery) return null;
-	if (
-		includesQuery(model.displayTitle, trimmedQuery) ||
-		includesQuery(model.skimSummary, trimmedQuery)
-	) {
-		return null;
+	if (includesQuery(model.displayTitle, trimmedQuery)) {
+		return clippedSkimMatch(model.displayTitle, trimmedQuery, "Title");
+	}
+	if (includesQuery(model.skimSummary, trimmedQuery)) {
+		return clippedSkimMatch(model.skimSummary, trimmedQuery, "Summary");
 	}
 	for (const mode of model.modes) {
 		if (!includesQuery(mode.searchText, trimmedQuery)) continue;

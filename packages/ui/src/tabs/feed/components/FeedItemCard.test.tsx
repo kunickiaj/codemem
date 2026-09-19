@@ -159,21 +159,6 @@ describe("FeedItemCard", () => {
 		expect(mount.querySelector(".feed-detail")?.textContent).toContain("One durable fact");
 	});
 
-	it("keeps an expanded card open when polling removes its active mode", () => {
-		renderCard(observation());
-		act(() => titleButton().click());
-		const narrative = Array.from(mount.querySelectorAll<HTMLButtonElement>('[role="radio"]')).find(
-			(radio) => radio.textContent === "Narrative",
-		);
-		act(() => narrative?.click());
-
-		renderCard(observation({ body_text: "Short summary.", narrative: "Short summary." }));
-
-		expect(titleButton().getAttribute("aria-expanded")).toBe("true");
-		expect(mount.querySelector('[role="radio"][aria-checked="true"]')?.textContent).toBe("Summary");
-		expect(mount.querySelector(".feed-detail")?.textContent).toContain("Short summary");
-	});
-
 	it("prevents Home and End defaults when selection is already at the boundary", () => {
 		renderCard(observation());
 		const radios = mount.querySelectorAll<HTMLButtonElement>('[role="radio"]');
@@ -211,6 +196,26 @@ describe("FeedItemCard", () => {
 		act(() => render(null, mount));
 		renderCard(observation({ id: 999, title: "Different memory" }));
 		expect(mount.querySelector(".feed-detail")).toBeNull();
+	});
+});
+
+describe("FeedItemCard polling fallback", () => {
+	it("keeps the card open and restores mode focus when polling removes the active mode", () => {
+		renderCard(observation());
+		act(() => titleButton().click());
+		const narrative = Array.from(mount.querySelectorAll<HTMLButtonElement>('[role="radio"]')).find(
+			(radio) => radio.textContent === "Narrative",
+		);
+		act(() => narrative?.click());
+		narrative?.focus();
+
+		renderCard(observation({ body_text: "Short summary.", narrative: "Short summary." }));
+
+		const fallback = mount.querySelector<HTMLButtonElement>('[role="radio"][aria-checked="true"]');
+		expect(titleButton().getAttribute("aria-expanded")).toBe("true");
+		expect(fallback?.textContent).toBe("Summary");
+		expect(document.activeElement).toBe(fallback);
+		expect(mount.querySelector(".feed-detail")?.textContent).toContain("Short summary");
 	});
 });
 
