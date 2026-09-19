@@ -42,7 +42,7 @@ export function ProjectInventory({ callbacks, error, view }: ProjectInventoryPro
 				row.kind === "cluster" ? (
 					<ProjectClusterRow callbacks={callbacks} key={row.key} model={row} view={view} />
 				) : (
-					<ProjectRow callbacks={callbacks} key={row.key} model={row} view={view} />
+					<ProjectRow callbacks={callbacks} key={row.detailKey} model={row} view={view} />
 				),
 			)}
 		</table>

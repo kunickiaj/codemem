@@ -735,6 +735,7 @@ function projectViewModel(project: ProjectScopeInventoryProject): ProjectInvento
 	return {
 		kind: "project",
 		key: detailKey,
+		detailKey,
 		project,
 		manageable,
 		selected: manageable && selectedProjectIds.has(project.workspace_identity),
@@ -1244,12 +1245,6 @@ function inventoryProject(projectIdentity: string): ProjectScopeInventoryProject
 	);
 }
 
-function inventoryProjectByRowKey(rowKey: string): ProjectScopeInventoryProject | null {
-	return (
-		latestInventoryResult.projects.find((project) => projectRowKey(project) === rowKey) ?? null
-	);
-}
-
 const projectInventoryCallbacks: ProjectInventoryCallbacks = {
 	toggleSelection(projectIds) {
 		setProjectSelection(projectIds);
@@ -1272,11 +1267,8 @@ const projectInventoryCallbacks: ProjectInventoryCallbacks = {
 		openRecipientPolicyManagement({ mode: "project-add", projectIds: sortedProjectIds });
 	},
 	setProjectDetailsOpen(key, open) {
-		const project = inventoryProjectByRowKey(key);
-		if (!project) return;
-		const detailKey = projectRowKey(project);
-		if (open) openProjectDetails.add(detailKey);
-		else openProjectDetails.delete(detailKey);
+		if (open) openProjectDetails.add(key);
+		else openProjectDetails.delete(key);
 		notifyProjectInventoryChanged();
 	},
 	setClusterDetailsOpen(key, open) {

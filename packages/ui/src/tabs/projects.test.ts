@@ -3954,6 +3954,7 @@ describe("Projects inventory controller", () => {
 		expect(viewModel.rows[0]).toMatchObject({
 			kind: "project",
 			key: `local:${project().workspace_identity}`,
+			detailKey: `local:${project().workspace_identity}`,
 			shareEligible: true,
 			shareReady: true,
 		});
@@ -4154,6 +4155,77 @@ describe("Projects inventory controller subscriptions", () => {
 		expect(listener).toHaveBeenCalledTimes(3);
 		share.click();
 		expect(listener).toHaveBeenCalledTimes(4);
+	});
+
+	it("keeps colliding local and peer row state source-qualified", async () => {
+		const identity = project().workspace_identity;
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [
+				project(),
+				project({
+					cwd: null,
+					git_branch: null,
+					git_remote: null,
+					identity_source: "workspace_id",
+					read_only: true,
+					read_only_reason: "peer_received",
+					statuses: ["received"],
+					workspace_identity: identity,
+				}),
+			],
+			total: 2,
+		});
+		vi.mocked(api.saveSharingDomainProjectMapping).mockRejectedValueOnce(
+			new api.SharingDomainGuardrailConfirmationError({
+				required_guardrail_tokens: ["confirm-scope"],
+				guardrail_warnings: [
+					{
+						code: "scope_reassignment_old_copies",
+						message: "Confirm this Space.",
+						requires_confirmation: true,
+						severity: "warning",
+					},
+				],
+			}),
+		);
+		vi.mocked(api.forgetProjectInventoryMemories).mockRejectedValueOnce(
+			new api.ProjectForgetConfirmationError({
+				confirmation_token: "forget-local",
+				local_owned_memory_count: 1,
+				peer_owned_memory_count: 1,
+				workspace_identity: identity,
+			}),
+		);
+		initProjectsTab(() => {});
+		await loadProjectsData();
+		const controller = getProjectsInventoryController();
+		const projectRows = () =>
+			controller
+				.getViewModel()
+				.rows.flatMap((row) => (row.kind === "project" ? [row] : row.projects));
+		const peer = projectRows().find((row) => row.project.read_only === true);
+		if (!peer) throw new Error("peer project row missing");
+
+		controller.callbacks.setProjectDetailsOpen(peer.detailKey, true);
+		await controller.callbacks.saveProjectScope(identity, "exampleco-work");
+		await controller.callbacks.forgetProject(identity);
+
+		const rows = projectRows();
+		const local = rows.find((row) => row.project.read_only !== true);
+		const refreshedPeer = rows.find((row) => row.project.read_only === true);
+		expect(local).toMatchObject({
+			detailsOpen: true,
+			pendingConfirmation: expect.any(Object),
+			pendingForgetConfirmation: expect.any(Object),
+		});
+		expect(refreshedPeer).toMatchObject({
+			detailsOpen: true,
+			pendingConfirmation: null,
+			pendingForgetConfirmation: null,
+		});
 	});
 });
 
