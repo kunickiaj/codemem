@@ -1584,6 +1584,7 @@ function DevicesRoot({
 		visibleProjectedDevices.length +
 		deviceIdentityAttentionItems(options.inventory).length +
 		configuredFallbackCount;
+	const showDeviceCount = !options.loading && !options.loadError;
 	return (
 		<section
 			aria-labelledby="devices-heading"
@@ -1591,7 +1592,10 @@ function DevicesRoot({
 		>
 			<div className="recipient-policy-sharing-header">
 				<h2 id="devices-heading" tabIndex={-1}>
-					Devices <span className="devices-heading-count">{visibleDeviceCount}</span>
+					Devices{" "}
+					{showDeviceCount ? (
+						<span className="devices-heading-count">{visibleDeviceCount}</span>
+					) : null}
 				</h2>
 				{options.onNavigate ? (
 					<button

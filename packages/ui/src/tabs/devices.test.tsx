@@ -752,6 +752,7 @@ describe("Device availability summary", () => {
 			(status) => status.textContent === "Loading Devices",
 		);
 		const skeleton = document.querySelector<HTMLElement>(".loading-card-list");
+		expect(document.querySelector(".devices-heading-count")).toBeNull();
 		expect(loading?.textContent).toBe("Loading Devices");
 		expect(loading?.hasAttribute("aria-busy")).toBe(false);
 		expect(skeleton?.getAttribute("aria-busy")).toBe("true");
@@ -760,6 +761,7 @@ describe("Device availability summary", () => {
 
 		mount(intent(), reconciliation(), { loadError: true });
 		expect(document.querySelector(".loading-card-list")).toBeNull();
+		expect(document.querySelector(".devices-heading-count")).toBeNull();
 		expect(document.querySelector('[role="alert"]')?.textContent).toContain(
 			"Devices are unavailable",
 		);
