@@ -276,7 +276,9 @@ describe("Devices focus and inventory", function devicesFocusAndInventoryTests()
 		expect(document.body.textContent).not.toContain("No configured devices are registered.");
 		expect(document.body.textContent).not.toContain("No other devices");
 	});
+});
 
+describe("Device pairing entry point", () => {
 	it("keeps pairing on Devices and explains it in place", () => {
 		const joinHost = document.createElement("div");
 		joinHost.id = "syncJoinSection";
