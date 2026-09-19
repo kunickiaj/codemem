@@ -322,6 +322,17 @@ it("shows a recently successful degraded daemon as syncing", () => {
 	expect(document.getElementById("healthMeta")?.textContent).toContain("0 issues");
 });
 
+it.each(["starting", "stopping"] as const)("preserves the %s sync transition", (daemonState) => {
+	state.lastSyncPeers = [{ peer_device_id: "peer-a" }];
+	state.lastSyncStatus = { daemon_state: daemonState, enabled: true };
+
+	renderOverview();
+
+	const sync = document.querySelectorAll("#healthGrid .health-tile-value")[1];
+	expect(sync?.textContent).toBe(daemonState === "starting" ? "Starting" : "Stopping");
+	expect(sync?.querySelector(".presence-pip--unknown")).not.toBeNull();
+});
+
 it("describes issue drivers below the degraded status threshold", () => {
 	state.healthRawEvents = completeHealthLoad({ pending: 200, sessions: 1 });
 

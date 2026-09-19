@@ -45,6 +45,7 @@ const SYNC_PROBLEM_STATES = new Set([
 	"offline-peers",
 	"rebootstrapping",
 ]);
+const SYNC_TRANSITION_STATES = new Set(["starting", "stopping"]);
 const SYNC_STATE_LABELS: Record<string, string> = {
 	"offline-peers": "Offline peers",
 	needs_attention: "Needs attention",
@@ -352,6 +353,9 @@ function syncTile(signals: OverviewSignals): HealthTileInput {
 	}
 	if (signals.syncNoPeers) {
 		return tile("sync", "Sync", "No peers", "unknown", "Daemon state and sync recency");
+	}
+	if (SYNC_TRANSITION_STATES.has(signals.syncState)) {
+		return tile("sync", "Sync", signals.syncStateLabel, "unknown", "Daemon state and sync recency");
 	}
 	if (signals.syncLooksStale) {
 		return tile("sync", "Sync", "Stale", "degraded", "Daemon state and sync recency");
