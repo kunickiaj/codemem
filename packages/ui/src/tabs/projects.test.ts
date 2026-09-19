@@ -884,6 +884,9 @@ function projectsInventoryTablePresentationTests(): void {
 		expect(document.activeElement).toBe(menuItems[0]);
 		menuItems[0]?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowDown" }));
 		expect(document.activeElement).toBe(menuItems[1]);
+		await loadProjectsData();
+		await flushAsyncWork();
+		expect(document.activeElement?.textContent).toBe(menuItems[1]?.textContent);
 		menuItems[1]?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowUp" }));
 		expect(document.activeElement).toBe(menuItems[0]);
 		menuItems[0]?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "End" }));
