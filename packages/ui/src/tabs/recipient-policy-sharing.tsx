@@ -681,7 +681,7 @@ function receivedFromLabel(originDevices: ReceivedProjectShare["originDevices"])
 		.map((device) => device.displayName?.trim())
 		.filter((name): name is string => Boolean(name));
 	if (names.length === 0) {
-		return distinctOrigins.length === 1
+		return distinctOrigins.length <= 1
 			? "Unknown device"
 			: `${distinctOrigins.length.toLocaleString()} unknown devices`;
 	}

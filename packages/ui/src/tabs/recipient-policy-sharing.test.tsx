@@ -249,6 +249,13 @@ function rendersReceivedProjectSources(): void {
 					{ deviceId: "private-device-b", displayName: null },
 				],
 			},
+			{
+				canonicalProjectIdentity: "git:received-legacy",
+				displayName: "Received Legacy",
+				existingMemoryCount: 1,
+				latestSessionAt: null,
+				originDevices: [],
+			},
 		],
 	});
 	clickTab("Received");
@@ -260,6 +267,7 @@ function rendersReceivedProjectSources(): void {
 	expect(text).toContain("1 memory");
 	expect(text).toContain("Unknown device");
 	expect(text).toContain("2 unknown devices");
+	expect(text).not.toContain("0 unknown devices");
 	expect(text).not.toContain("device-a");
 	expect(text).not.toContain("device-c");
 	expect(text).not.toContain("private-device-id");
