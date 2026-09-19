@@ -20,14 +20,19 @@ function nextMenuIndex(key: string, current: number, enabled: number[]): number 
 interface MenuItemsProps {
 	actions: MenuAction[];
 	close: () => void;
+	dismiss: () => void;
 	enabled: number[];
 	itemRefs: { current: Array<HTMLButtonElement | null> };
 	label: string;
 	menuId: string;
 }
 
-function MenuItems({ actions, close, enabled, itemRefs, label, menuId }: MenuItemsProps) {
+function MenuItems({ actions, close, dismiss, enabled, itemRefs, label, menuId }: MenuItemsProps) {
 	const onKeyDown = (event: KeyboardEvent) => {
+		if (event.key === "Tab") {
+			dismiss();
+			return;
+		}
 		if (event.key === "Escape") {
 			event.preventDefault();
 			close();
@@ -82,6 +87,7 @@ function MenuSurface({ actions, label }: { actions: MenuAction[]; label: string 
 		setOpen(false);
 		queueMicrotask(() => triggerRef.current?.focus());
 	};
+	const dismiss = () => setOpen(false);
 	useEffect(() => {
 		if (!open) return;
 		const index = initialFocus.current === "last" ? enabled.at(-1) : enabled[0];
@@ -121,6 +127,7 @@ function MenuSurface({ actions, label }: { actions: MenuAction[]; label: string 
 				<MenuItems
 					actions={actions}
 					close={close}
+					dismiss={dismiss}
 					enabled={enabled}
 					itemRefs={itemRefs}
 					label={label}
