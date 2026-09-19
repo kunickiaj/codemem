@@ -8,17 +8,22 @@ describe("config mutation routes", () => {
 	let configDir: string;
 	let configPath: string;
 	let previousConfigPath: string | undefined;
+	let previousSyncMdns: string | undefined;
 
 	beforeEach(() => {
 		configDir = mkdtempSync(join(tmpdir(), "codemem-config-route-"));
 		configPath = join(configDir, "config.json");
 		previousConfigPath = process.env.CODEMEM_CONFIG;
+		previousSyncMdns = process.env.CODEMEM_SYNC_MDNS;
 		process.env.CODEMEM_CONFIG = configPath;
+		delete process.env.CODEMEM_SYNC_MDNS;
 	});
 
 	afterEach(() => {
 		if (previousConfigPath == null) delete process.env.CODEMEM_CONFIG;
 		else process.env.CODEMEM_CONFIG = previousConfigPath;
+		if (previousSyncMdns == null) delete process.env.CODEMEM_SYNC_MDNS;
+		else process.env.CODEMEM_SYNC_MDNS = previousSyncMdns;
 		rmSync(configDir, { recursive: true, force: true });
 	});
 
@@ -37,5 +42,17 @@ describe("config mutation routes", () => {
 		expect(body.error).toContain("not a valid JSON object");
 		expect(body.error).not.toContain("fixture-value");
 		expect(readFileSync(configPath, "utf8")).toBe(malformed);
+	});
+
+	it("reports the runtime mDNS default as disabled", async () => {
+		const response = await configRoutes().request("/api/config");
+
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as {
+			defaults: { sync_mdns: boolean };
+			effective: { sync_mdns: boolean };
+		};
+		expect(body.defaults.sync_mdns).toBe(false);
+		expect(body.effective.sync_mdns).toBe(false);
 	});
 });

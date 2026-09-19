@@ -39,6 +39,21 @@ export function renderObserverStatusBanner(status: unknown) {
 	});
 }
 
+export function describeEffectiveSettings(
+	effective: ConfigPayload["effective"],
+	hasEnvironmentOverrides: boolean,
+): string {
+	const hasEffectiveValues =
+		effective && typeof effective === "object" && Object.keys(effective).length > 0;
+	if (!hasEffectiveValues) {
+		return "Effective values are unavailable. Reload Settings; if this persists, restart the viewer and inspect its configuration.";
+	}
+	if (hasEnvironmentOverrides) {
+		return "Fields show resolved configuration values. Environment settings manage some fields.";
+	}
+	return "Fields show resolved configuration values. Restart-dependent changes are labeled below.";
+}
+
 export function renderConfigModal(payload: unknown) {
 	if (!payload || typeof payload !== "object") return;
 	const data = payload as ConfigPayload;
@@ -59,10 +74,7 @@ export function renderConfigModal(payload: unknown) {
 	state.configPath = data.path || "";
 
 	updateRenderState({
-		effectiveText:
-			Object.keys(envOverrides).length > 0
-				? "Some fields are managed by environment settings."
-				: "",
+		effectiveText: describeEffectiveSettings(data.effective, Object.keys(envOverrides).length > 0),
 		overridesVisible: Object.keys(envOverrides).length > 0,
 		pathText: state.configPath ? `Config path: ${state.configPath}` : "Config path: n/a",
 		providers: toProviderList(data.providers),
