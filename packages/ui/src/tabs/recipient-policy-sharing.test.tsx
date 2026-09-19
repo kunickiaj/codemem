@@ -506,9 +506,9 @@ function testRecipientFocusedTeamViews() {
 		mount(graph);
 		const text = visiblePanel().textContent ?? "";
 		expect(text).toContain("ExampleCo");
-		expect(text).toContain("2Members · Adam Rivera (you), Brian Jones");
+		expect(text).toContain("2Members · Adam Rivera, Brian Jones");
 		expect(text).toContain("2Registered devices");
-		expect(text).toContain("1Shared projects · Codemem");
+		expect(text).toContain("1Shared projects");
 		expect(text).toContain("Auto-shares with new members");
 		expect(text).not.toContain("Old Team");
 	});
@@ -538,9 +538,9 @@ function testRecipientFocusedTeamViews() {
 			},
 		});
 
-		expect(sharingText).toContain("2Members · Adam (you), Brian");
+		expect(sharingText).toContain("2Members · Adam, Brian");
 		expect(sharingText).toContain("2Registered devices");
-		expect(sharingText).toContain("1Shared projects · Codemem");
+		expect(sharingText).toContain("1Shared projects");
 		expect(sharingText).not.toContain("needs review");
 		expect(sharingText).not.toContain("Project access");
 		expect(advancedStatus).toMatchObject({
@@ -577,7 +577,7 @@ function testRecipientFocusedTeamViews() {
 			],
 		});
 
-		expect(visiblePanel().textContent).toContain("Adam (you), Brian, Casey, Devon");
+		expect(visiblePanel().textContent).toContain("Adam, Brian, Casey, Devon");
 		expect(visiblePanel().querySelector(".recipient-policy-sharing-name-details")).toBeNull();
 	});
 }
@@ -633,9 +633,7 @@ function testRecipientFocusedIdentityViews() {
 
 		mount(intent({ projectRecipients: [...teamEdges, ...identityEdges] }), {}, repeatedProjects);
 
-		expect(visiblePanel().textContent).toContain(
-			"5Shared projects · API, Codemem — duplicate name 1 of 2, Codemem — duplicate name 2 of 2, Docs, Tools",
-		);
+		expect(visiblePanel().textContent).toContain("5Shared projects");
 		expect(visiblePanel().querySelectorAll(".tag-chip")).toHaveLength(5);
 		clickTab("Identities");
 		expect(visiblePanel().textContent).toContain(
@@ -672,8 +670,11 @@ function testRecipientFocusedRecipientActions() {
 		const more = [...visiblePanel().querySelectorAll<HTMLButtonElement>("button")].find(
 			(button) => button.textContent === "+2 more",
 		);
+		more?.focus();
 		act(() => more?.click());
 		expect(visiblePanel().querySelectorAll(".tag-chip")).toHaveLength(10);
+		expect(more?.textContent).toBe("Show fewer");
+		expect(document.activeElement).toBe(more);
 	});
 
 	it("opens exact recipient management requests from both action labels", () => {

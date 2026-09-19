@@ -326,7 +326,7 @@ function ProjectChips({ names }: { names: string[] }) {
 	const [expanded, setExpanded] = useState(false);
 	if (names.length === 0) return <>None</>;
 	const visibleNames = expanded ? names : names.slice(0, PROJECT_CHIP_LIMIT);
-	const hiddenCount = names.length - visibleNames.length;
+	const hiddenCount = Math.max(0, names.length - PROJECT_CHIP_LIMIT);
 	return (
 		<div className="recipient-policy-sharing-chips">
 			{visibleNames.map((name) => (
@@ -334,11 +334,12 @@ function ProjectChips({ names }: { names: string[] }) {
 			))}
 			{hiddenCount > 0 ? (
 				<button
+					aria-expanded={expanded}
 					className="recipient-policy-sharing-more"
-					onClick={() => setExpanded(true)}
+					onClick={() => setExpanded((current) => !current)}
 					type="button"
 				>
-					+{hiddenCount} more
+					{expanded ? "Show fewer" : `+${hiddenCount} more`}
 				</button>
 			) : null}
 		</div>
@@ -412,10 +413,6 @@ function TeamsView({
 	const projectsById = new Map(
 		projects.map((project) => [project.canonicalProjectIdentity, project]),
 	);
-	const viewerIdentityId = intent.identities.find(
-		(identity) => identity.status === "active" && identity.verification === "local",
-	)?.identityId;
-
 	if (activeTeams.length === 0) {
 		return (
 			<p className="small recipient-policy-sharing-empty" role="status">
@@ -439,10 +436,10 @@ function TeamsView({
 							.map((membership) => membership.identityId),
 					),
 				];
-				const memberNames = memberIds.map((identityId) => {
-					const name = activeIdentitiesById.get(identityId)?.displayName.trim() || "Unknown member";
-					return identityId === viewerIdentityId ? `${name} (you)` : name;
-				});
+				const memberNames = memberIds.map(
+					(identityId) =>
+						activeIdentitiesById.get(identityId)?.displayName.trim() || "Unknown member",
+				);
 				const activeDeviceCount = new Set(
 					intent.identityDevices
 						.filter((device) => device.status === "active" && memberIds.includes(device.identityId))
@@ -505,7 +502,7 @@ function TeamsView({
 							</div>
 							<div>
 								<strong>{projectNames.length}</strong>
-								<span>Shared projects · {projectNames.join(", ") || "None"}</span>
+								<span>Shared projects</span>
 							</div>
 						</div>
 						<div className="recipient-policy-sharing-projects">
