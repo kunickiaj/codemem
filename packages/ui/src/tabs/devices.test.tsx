@@ -279,6 +279,11 @@ describe("Devices focus and inventory", function devicesFocusAndInventoryTests()
 	});
 
 	it("keeps pairing on Devices and explains it in place", () => {
+		const joinHost = document.createElement("div");
+		joinHost.id = "syncJoinSection";
+		joinHost.innerHTML =
+			'<div id="syncJoinPanel" hidden><textarea aria-label="Invite or pairing code"></textarea><button>Review invite</button></div>';
+		document.body.appendChild(joinHost);
 		const onNavigate = vi.fn();
 		mount(intent(), reconciliation(), {
 			inventory: inventory([
@@ -291,7 +296,7 @@ describe("Devices focus and inventory", function devicesFocusAndInventoryTests()
 
 		expect(document.querySelector("#devices-heading")?.textContent).toBe("Devices");
 		expect(document.querySelector(".devices-local-row")?.textContent).toContain(
-			"This devicePaired · Adam & CoThis device",
+			"This deviceOwned by Adam & CoThis device",
 		);
 		expect(document.body.textContent).toContain("No other devices");
 		expect(document.querySelectorAll(".devices-table-row")).toHaveLength(0);
@@ -306,7 +311,28 @@ describe("Devices focus and inventory", function devicesFocusAndInventoryTests()
 		expect(document.getElementById("devices-pairing-panel")?.textContent).toContain(
 			"codemem sync pair --payload-only",
 		);
+		expect(document.getElementById("devices-pairing-panel")?.textContent).toContain(
+			"Accept a pairing payload",
+		);
+		expect(document.getElementById("syncJoinPanel")?.hidden).toBe(false);
+		expect(
+			document
+				.getElementById("syncJoinPanel")
+				?.parentElement?.classList.contains("devices-pairing-accept"),
+		).toBe(true);
 		expect(onNavigate).not.toHaveBeenCalled();
+	});
+
+	it("keeps the availability summary when no coordinator is configured", () => {
+		const localInventory = inventory([]);
+		localInventory.coordinatorEvidence = {
+			availability: "unavailable",
+			safeErrorCode: "coordinator_not_configured",
+		};
+		mount(intent({ identityDevices: [] }), reconciliation(), { inventory: localInventory });
+
+		expect(document.querySelector(".devices-summary-bar")).not.toBeNull();
+		expect(document.body.textContent).not.toContain("Coordinator unreachable");
 	});
 
 	it("replaces the summary with a retryable coordinator status while unreachable", () => {

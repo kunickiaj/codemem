@@ -1,5 +1,5 @@
 import { type RefObject, render } from "preact";
-import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { LoadingCardList } from "../components/LoadingCardList";
 import { Chip } from "../components/primitives/chip";
 import { PresencePip } from "../components/primitives/presence-pip";
@@ -1502,14 +1502,13 @@ function ThisDeviceRow({
 	const identityName = intent.identities.find(
 		(identity) => identity.identityId === localDevice?.identityId && identity.status === "active",
 	)?.displayName;
-	const pairedLabel =
-		localDevice?.state === "configured" && identityName ? `Paired · ${identityName}` : "Not paired";
+	const ownershipLabel = identityName ? `Owned by ${identityName}` : "Identity not set";
 	return (
 		<div className="devices-local-row">
 			<PresencePip aria-label="This device online" state="online" />
 			<div className="devices-local-copy">
 				<strong>This device</strong>
-				<span className="small">{pairedLabel}</span>
+				<span className="small">{ownershipLabel}</span>
 			</div>
 			<Chip tone="actor-badge local" variant="badge">
 				This device
@@ -1519,6 +1518,24 @@ function ThisDeviceRow({
 }
 
 type PairingEntryHandler = (trigger: HTMLElement, showExplanation?: boolean) => void;
+
+function PairingAcceptancePanel() {
+	const hostRef = useRef<HTMLDivElement>(null);
+	useLayoutEffect(() => {
+		const host = hostRef.current;
+		const panel = document.getElementById("syncJoinPanel");
+		if (!host || !panel) return;
+		const restoreParent = panel.parentElement;
+		const wasHidden = panel.hidden;
+		host.appendChild(panel);
+		panel.hidden = false;
+		return () => {
+			panel.hidden = wasHidden;
+			if (restoreParent) restoreParent.appendChild(panel);
+		};
+	}, []);
+	return <div className="devices-pairing-accept" ref={hostRef} />;
+}
 
 function DevicesEmptyState({ onOpenPairing }: { onOpenPairing: PairingEntryHandler }) {
 	return (
@@ -1584,6 +1601,11 @@ function PairingPanel({
 				>
 					Copy pairing command
 				</button>
+			</div>
+			<div className="devices-pairing-acceptance">
+				<h4>Accept a pairing payload</h4>
+				<p className="small">Paste the payload from the other device, then review it here.</p>
+				<PairingAcceptancePanel />
 			</div>
 		</aside>
 	);
@@ -1738,7 +1760,8 @@ function DevicesView({
 	) : null;
 	const hasOtherInventoryItems = (options.inventory?.items ?? []).some((item) => !item.isLocal);
 	const coordinatorUnavailable =
-		options.inventory?.coordinatorEvidence.availability === "unavailable";
+		options.inventory?.coordinatorEvidence.availability === "unavailable" &&
+		options.inventory.coordinatorEvidence.safeErrorCode !== "coordinator_not_configured";
 	const connectivityStatus = coordinatorUnavailable ? (
 		<CoordinatorStatus options={options} />
 	) : (
