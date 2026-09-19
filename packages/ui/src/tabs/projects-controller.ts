@@ -91,6 +91,7 @@ const emptyRecipientPolicyIntent: RecipientPolicyIntentGraphV1 = {
 };
 let recipientPolicyIntent = emptyRecipientPolicyIntent;
 let recipientPolicyIntentReady = false;
+let recipientPolicyIntentDisplayReady = false;
 let openTeamSetup: ((candidateRef: string) => void) | undefined;
 let latestInventoryResult: {
 	projects: ProjectScopeInventoryProject[];
@@ -198,7 +199,6 @@ function setProjectSelection(projectIds: string[]) {
 type RecipientChip = { key: string; kind: "Team" | "Identity"; displayName: string };
 
 function recipientChips(projectIds: string[]): RecipientChip[] {
-	if (!recipientPolicyIntentReady) return [];
 	const projectIdSet = new Set(projectIds);
 	const teams = new Map(
 		recipientPolicyIntent.teams
@@ -780,7 +780,7 @@ function projectsInventoryViewModel(): ProjectsInventoryViewModel {
 	const selectedIds = [...selectedProjectIds].sort();
 	return {
 		rows: projectClusters(latestInventoryResult.projects).map(inventoryRowViewModel),
-		recipientPolicyReady: recipientPolicyIntentReady,
+		recipientPolicyReady: recipientPolicyIntentDisplayReady,
 		shareInventoryReady: projectShareInventoryReady,
 		scopeLabels: Object.fromEntries(
 			scopes.map((scope) => [scope.scope_id, scopeDisplayLabel(scope)]),
@@ -1124,6 +1124,7 @@ function renderLoadedProjectResources(
 	scopes = settings.scopes;
 	projectShareInventoryReady = shareInventory.ok;
 	recipientPolicyIntentReady = intentResult.ok;
+	recipientPolicyIntentDisplayReady = intentResult.ok;
 	recipientPolicyIntent = intentResult.ok ? intentResult.intent : emptyRecipientPolicyIntent;
 	reconcileSelectedProjects(shareInventory);
 	const shareMount = el<HTMLDivElement>("projectShareFlowMount");
@@ -1170,6 +1171,7 @@ function renderProjectsLoadFailure(error: unknown, meta: HTMLElement): void {
 	latestInventoryResult = { projects: [], total: 0, offset: currentOffset, has_more: false };
 	projectShareInventoryReady = false;
 	recipientPolicyIntentReady = false;
+	recipientPolicyIntentDisplayReady = false;
 	recipientPolicyIntent = emptyRecipientPolicyIntent;
 	const shareMount = el<HTMLDivElement>("projectShareFlowMount");
 	if (shareMount) renderProjectShareFlow(shareMount, [], { inventoryError: true });

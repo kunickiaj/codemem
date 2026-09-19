@@ -926,6 +926,28 @@ function projectsInventoryTablePresentationTests(): void {
 
 describe("Projects inventory table presentation", projectsInventoryTablePresentationTests);
 
+describe("Projects cached recipient presentation", () => {
+	beforeEach(setupProjectsTest);
+	afterEach(cleanupProjectsTest);
+
+	it("keeps a loaded empty recipient state visible while a refresh is pending", async () => {
+		await loadProjectsData();
+		expect(document.querySelector(".project-recipient-status")?.textContent).toBe("Not shared");
+		let releaseIntent: ((value: ReturnType<typeof recipientIntent>) => void) | undefined;
+		vi.mocked(api.loadRecipientPolicyIntent).mockReturnValueOnce(
+			new Promise((resolve) => {
+				releaseIntent = resolve;
+			}),
+		);
+
+		const refresh = loadProjectsData();
+
+		expect(document.querySelector(".project-recipient-status")?.textContent).toBe("Not shared");
+		releaseIntent?.(recipientIntent());
+		await refresh;
+	});
+});
+
 {
 	function blockedRepairButton(): HTMLButtonElement | null {
 		return document.querySelector<HTMLButtonElement>(

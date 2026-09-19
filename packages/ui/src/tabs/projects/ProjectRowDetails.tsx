@@ -54,7 +54,7 @@ function ProjectSharingSummary({ model }: Pick<ProjectRowDetailsProps, "model">)
 			<strong>Project sharing</strong>
 			<ul aria-label={`People sharing ${project.display_project}`}>
 				{project.sharing.map((summary) => (
-					<li key={`${summary.person.display_name}:${summary.lifecycle.state}`}>
+					<li key={summary.person.actor_id}>
 						<strong>{relationshipLabel(summary)}</strong> — {summary.lifecycle.label}.{" "}
 						{summary.lifecycle.explanation}
 					</li>
