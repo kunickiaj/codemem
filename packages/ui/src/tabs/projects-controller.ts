@@ -1312,6 +1312,7 @@ function renderProjectDetails(
 	detail.addEventListener("toggle", () => {
 		if (detail.open) openProjectDetails.add(detailKey);
 		else openProjectDetails.delete(detailKey);
+		notifyProjectInventoryChanged();
 	});
 	const summary = document.createElement("summary");
 	summary.dataset.projectFocusKey = `admin:${repairable}:${project.workspace_identity}`;

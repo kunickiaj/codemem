@@ -3894,6 +3894,14 @@ describe("Projects inventory controller subscriptions", () => {
 			notifications.push(viewModel);
 		});
 		const unsubscribe = controller.subscribe(listener);
+		const legacyDetails = document.querySelector<HTMLDetailsElement>(".project-inventory-details");
+		if (!legacyDetails) throw new Error("legacy project details missing");
+		legacyDetails.open = true;
+		legacyDetails.dispatchEvent(new Event("toggle"));
+		expect(listener).toHaveBeenLastCalledWith(
+			expect.objectContaining({ rows: [expect.objectContaining({ detailsOpen: true })] }),
+		);
+		listener.mockClear();
 
 		controller.callbacks.toggleSelection([project().workspace_identity]);
 		controller.callbacks.setProjectDetailsOpen(project().workspace_identity, true);
