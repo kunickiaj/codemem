@@ -300,6 +300,7 @@ describe("Devices focus and inventory", function devicesFocusAndInventoryTests()
 		);
 		expect(document.body.textContent).not.toContain("your identity");
 		expect(document.body.textContent).toContain("No other devices");
+		expect(document.body.textContent).not.toContain("1 unknown");
 		expect(document.querySelectorAll(".devices-table-row")).toHaveLength(0);
 
 		const howPairingWorks = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
@@ -845,7 +846,7 @@ describe("Device availability summary", () => {
 		);
 
 		const summary = document.querySelector(".devices-summary-counts")?.textContent;
-		expect(summary).toContain("1 available");
+		expect(summary).toContain("0 available");
 		expect(summary).toContain("1 offline");
 		expect(summary).toContain("1 unknown");
 		expect(document.querySelectorAll(".devices-table-row")).toHaveLength(3);

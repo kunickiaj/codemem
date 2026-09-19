@@ -1765,7 +1765,7 @@ function DevicesView({
 	const connectivityStatus = coordinatorUnavailable ? (
 		<CoordinatorStatus options={options} />
 	) : (
-		<DevicesSummaryBar devices={visibleProjectedDevices} options={options} />
+		<DevicesSummaryBar devices={otherProjectedDevices} options={options} />
 	);
 	if (otherProjectedDevices.length === 0) {
 		return (
