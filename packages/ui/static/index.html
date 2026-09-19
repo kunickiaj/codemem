@@ -2181,11 +2181,22 @@
 
       .feed-kind-rail { align-self: start; min-width: 0; }
       .feed-card-body {
+        padding: var(--sp-4) var(--sp-5);
         display: flex;
         flex-direction: column;
-        min-width: 0;
         gap: var(--sp-2);
       }
+      .feed-item > .feed-card-body {
+        padding: 0;
+        min-width: 0;
+      }
+      .feed-card-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: var(--sp-3);
+      }
+      .feed-card-header > .feed-header { flex: 1; overflow: hidden; }
       .feed-card-side {
         display: flex;
         flex-direction: column;
@@ -4316,7 +4327,7 @@
         .feed-kind-rail { grid-column: 1; grid-row: 1; align-self: center; }
         .feed-card-side { display: contents; }
         .feed-card-side-top { grid-column: 2; grid-row: 1; }
-        .feed-card-body { grid-column: 1 / -1; grid-row: 2; }
+        .feed-item > .feed-card-body { grid-column: 1 / -1; grid-row: 2; }
         .feed-card-side-bottom {
           grid-column: 1 / -1;
           grid-row: 3;

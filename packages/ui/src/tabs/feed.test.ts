@@ -50,6 +50,20 @@ describe("observationViewData", () => {
 		expect(data.hasNarrative).toBe(false);
 	});
 
+	it("does not duplicate a multiline narrative when no explicit summary exists", () => {
+		const data = observationViewData({
+			subtitle: null,
+			narrative: "First skim line.\nSecond detail line.",
+			body_text: null,
+			facts: [],
+			metadata_json: {},
+		});
+
+		expect(data.summary).toBe("First skim line.");
+		expect(data.summaryDetail).toBe("First skim line.\nSecond detail line.");
+		expect(data.hasNarrative).toBe(false);
+	});
+
 	it("derives sentence facts from full narrative before skim summary", () => {
 		const data = observationViewData({
 			subtitle: "Short skim line",
