@@ -259,6 +259,7 @@ describe("Devices focus and inventory", () => {
 		});
 
 		expect(document.body.textContent).toContain("Configured fallback");
+		expect(document.querySelector(".devices-summary-counts")?.textContent).toContain("1 unknown");
 		expect(document.body.textContent).toContain("No additional active devices are registered.");
 		expect(document.body.textContent).not.toContain("No configured devices are registered.");
 	});
@@ -325,6 +326,45 @@ describe("Devices reconciliation focus", () => {
 			document.getElementById("device-identity-card-device-address-fingerprint-secret"),
 		);
 		expect(state.pendingDeviceIdentityFocus).toBeUndefined();
+	});
+
+	it("keeps an open rebind form open when Change Identity is chosen again", async () => {
+		mount(intent(), reconciliation(), {
+			inventory: inventory([
+				inventoryItem("canonical-alias", "Work Laptop", "configured", {
+					evidenceDeviceIds: ["canonical-alias", "device-address-fingerprint-secret"],
+				}),
+			]),
+		});
+		const menu = document.querySelector<HTMLDetailsElement>(
+			'[aria-label="Actions for Work Laptop"]',
+		)?.parentElement;
+		if (!(menu instanceof HTMLDetailsElement)) throw new Error("Work Laptop menu missing");
+		const changeIdentity = () =>
+			[...menu.querySelectorAll<HTMLButtonElement>("button")].find(
+				(button) => button.textContent === "Change Identity…",
+			);
+
+		await act(async () => {
+			menu.open = true;
+			changeIdentity()?.click();
+			await Promise.resolve();
+		});
+		const trigger = document.getElementById(
+			"configured-rebind-trigger-device-address-fingerprint-secret",
+		);
+		expect(trigger?.getAttribute("aria-expanded")).toBe("true");
+
+		await act(async () => {
+			menu.open = true;
+			changeIdentity()?.click();
+			await Promise.resolve();
+		});
+
+		expect(trigger?.getAttribute("aria-expanded")).toBe("true");
+		expect(document.activeElement).toBe(
+			document.getElementById("configured-rebind-device-address-fingerprint-secret"),
+		);
 	});
 
 	it("does not apply delayed setup focus after the user moves focus within Devices", () => {

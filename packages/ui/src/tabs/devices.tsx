@@ -1198,7 +1198,14 @@ function DeviceTableRow({
 						onDetails={() => setDetailsOpen((open) => !open)}
 						onRebind={() => {
 							setDetailsOpen(true);
-							queueMicrotask(() => rebindTriggerRef.current?.click());
+							queueMicrotask(() => {
+								const trigger = rebindTriggerRef.current;
+								if (trigger?.getAttribute("aria-expanded") !== "true") {
+									trigger?.click();
+									return;
+								}
+								document.getElementById(`configured-rebind-${device.deviceId}`)?.focus();
+							});
 						}}
 						options={options}
 					/>
@@ -1301,49 +1308,66 @@ function DeviceIdentityGroup({
 	);
 }
 
+function deviceSummaryCounts(devices: DeviceProjection[], unknownFallbackCount: number) {
+	return {
+		available: devices.filter((device) => device.availability === "available").length,
+		offline: devices.filter((device) => device.availability === "offline").length,
+		unknown:
+			devices.filter((device) => device.availability === "unknown").length + unknownFallbackCount,
+	};
+}
+
+function DeviceSummaryBar({
+	counts,
+	onNavigate,
+}: {
+	counts: ReturnType<typeof deviceSummaryCounts>;
+	onNavigate?: DevicesRendererOptions["onNavigate"];
+}) {
+	return (
+		<div className="devices-summary-bar">
+			<div className="devices-summary-counts">
+				{(["available", "offline", "unknown"] as const).map((availability) => (
+					<span key={availability}>
+						<PresencePip
+							aria-label={`${counts[availability]} ${availability}`}
+							size={6}
+							state={availabilityPipState(availability)}
+						/>
+						{counts[availability]} {availability}
+					</span>
+				))}
+			</div>
+			{onNavigate ? (
+				<button className="settings-button" onClick={() => onNavigate("health")} type="button">
+					Check device health
+				</button>
+			) : null}
+		</div>
+	);
+}
+
 function ConfiguredDeviceInventory({
 	devices,
 	intent,
 	options,
+	unknownFallbackCount,
 }: {
 	devices: DeviceProjection[];
 	intent: RecipientPolicyIntentGraphV1;
 	options: DevicesRendererOptions;
+	unknownFallbackCount: number;
 }) {
 	const groups = new Map<string, DeviceProjection[]>();
 	for (const device of devices) {
 		groups.set(device.identityId, [...(groups.get(device.identityId) ?? []), device]);
 	}
-	const counts = {
-		available: devices.filter((device) => device.availability === "available").length,
-		offline: devices.filter((device) => device.availability === "offline").length,
-		unknown: devices.filter((device) => device.availability === "unknown").length,
-	};
 	return (
 		<>
-			<div className="devices-summary-bar">
-				<div className="devices-summary-counts">
-					{(["available", "offline", "unknown"] as const).map((availability) => (
-						<span key={availability}>
-							<PresencePip
-								aria-label={`${counts[availability]} ${availability}`}
-								size={6}
-								state={availabilityPipState(availability)}
-							/>
-							{counts[availability]} {availability}
-						</span>
-					))}
-				</div>
-				{options.onNavigate ? (
-					<button
-						className="settings-button"
-						onClick={() => options.onNavigate?.("health")}
-						type="button"
-					>
-						Check device health
-					</button>
-				) : null}
-			</div>
+			<DeviceSummaryBar
+				counts={deviceSummaryCounts(devices, unknownFallbackCount)}
+				onNavigate={options.onNavigate}
+			/>
 			{[...groups.values()].map((group) => (
 				<DeviceIdentityGroup
 					devices={group}
@@ -1492,6 +1516,10 @@ function DevicesView({
 				{inventoryUnavailable}
 				{coordinatorAttention}
 				{inventoryWorkflow}
+				<DeviceSummaryBar
+					counts={deviceSummaryCounts([], configuredFallbackItems.length)}
+					onNavigate={options.onNavigate}
+				/>
 				{configuredFallbackWorkflow}
 				<p className="small" role="status">
 					{configuredFallbackItems.length > 0
@@ -1517,6 +1545,7 @@ function DevicesView({
 				devices={visibleProjectedDevices}
 				intent={intent}
 				options={options}
+				unknownFallbackCount={configuredFallbackItems.length}
 			/>
 			{projection.revokedDeviceCount > 0 ? (
 				<p className="small" role="status">
