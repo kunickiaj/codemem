@@ -354,6 +354,11 @@ export function renderTeamSync() {
 			Number.isFinite(rawHiddenAddressCount) && rawHiddenAddressCount > 0
 				? rawHiddenAddressCount
 				: 0;
+		const waitState = deviceWaitState(
+			Boolean(pairedPeer),
+			Boolean(device.stale),
+			addresses.length + hiddenAddressCount,
+		);
 		const addressLabel = addresses.length
 			? addresses
 					.map((address) =>
@@ -369,7 +374,6 @@ export function renderTeamSync() {
 		let actionMessage: string | null = null;
 		let mode: TeamSyncDiscoveredRow["mode"] = canAccept ? "accept" : "none";
 		let pairedMessage: string | null = null;
-
 		if (hasConflict) {
 			mode = "conflict";
 		} else if (approvalPending) {
@@ -392,26 +396,20 @@ export function renderTeamSync() {
 		} else if (pairedPeer?.status?.peer_state) {
 			noteParts.push(`status: ${String(pairedPeer.status.peer_state)}`);
 			if (!canAccept) mode = "paired";
-		} else if (!pairedPeer && device.stale) {
-			actionMessage =
-				"Wait for a fresh coordinator presence update, then review this device again here.";
-			mode = "stale";
+		} else if (waitState) {
+			actionMessage = waitState.actionMessage;
+			mode = waitState.mode;
 		} else if (pairedPeer && !canAccept) {
 			mode = "paired";
 		}
 		if (mode === "paired") {
-			pairedMessage =
-				approvalSummary.state === "waiting-for-other-device"
-					? approvalSummary.description || "Waiting on the other device."
-					: String(pairedPeer?.last_error || "")
-								.toLowerCase()
-								.includes("401") &&
-							String(pairedPeer?.last_error || "")
-								.toLowerCase()
-								.includes("unauthorized")
-						? "Waiting for the other device to trust this one before sync can work."
-						: null;
+			pairedMessage = pairedDeviceMessage(
+				approvalSummary.state,
+				approvalSummary.description,
+				pairedPeer?.last_error,
+			);
 		}
+		const connectionLabel = deviceConnectionLabel(hasConflict, Boolean(pairedPeer));
 
 		return {
 			actionMessage,
@@ -423,11 +421,7 @@ export function renderTeamSync() {
 			approvalBadgeLabel: approvalPending ? "Approval sent" : approvalSummary.badgeLabel,
 			approvalState,
 			availabilityLabel: device.stale ? "Offline" : "Available",
-			connectionLabel: hasConflict
-				? SYNC_TERMINOLOGY.conflicts
-				: pairedPeer
-					? SYNC_TERMINOLOGY.pairedLocally
-					: "Not connected on this device",
+			connectionLabel,
 			coordinatorUrl,
 			deviceId,
 			displayName,
@@ -678,4 +672,45 @@ export async function submitDiscoveredDeviceReview(
 		state.syncDiscoveredFeedback = feedback;
 	}
 	return feedback;
+}
+
+function deviceWaitState(
+	pairedLocally: boolean,
+	stale: boolean,
+	addressCount: number,
+): Pick<TeamSyncDiscoveredRow, "actionMessage" | "mode"> | null {
+	if (pairedLocally) return null;
+	if (stale) {
+		return {
+			actionMessage:
+				"Wait for a fresh coordinator presence update, then review this device again here.",
+			mode: "stale",
+		};
+	}
+	if (addressCount > 0) return null;
+	return {
+		actionMessage: "Wait for this device to publish a fresh address, then refresh and review it.",
+		mode: "waiting-address",
+	};
+}
+
+function pairedDeviceMessage(
+	approvalState: string,
+	approvalDescription: string | null,
+	lastError: unknown,
+): string | null {
+	if (approvalState === "waiting-for-other-device") {
+		return approvalDescription || "Waiting on the other device.";
+	}
+	const normalizedError = String(lastError || "").toLowerCase();
+	if (normalizedError.includes("401") && normalizedError.includes("unauthorized")) {
+		return "Waiting for the other device to trust this one before sync can work.";
+	}
+	return null;
+}
+
+function deviceConnectionLabel(hasConflict: boolean, pairedLocally: boolean): string {
+	if (hasConflict) return SYNC_TERMINOLOGY.conflicts;
+	if (pairedLocally) return SYNC_TERMINOLOGY.pairedLocally;
+	return "Not connected on this device";
 }

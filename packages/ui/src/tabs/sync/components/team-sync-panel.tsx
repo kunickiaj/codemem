@@ -3,12 +3,10 @@ import { createPortal } from "preact/compat";
 import { useState } from "preact/hooks";
 import { state } from "../../../lib/state";
 import type { UiSyncAttentionItem, UiTeamSyncPrimaryStatus } from "../view-model";
-import type { SyncActionFeedback } from "./sync-inline-feedback";
-import { SyncInlineFeedback } from "./sync-inline-feedback";
+import { type SyncActionFeedback, SyncInlineFeedback } from "./sync-inline-feedback";
 
-export interface TeamSyncDiscoveredRow {
-	actionMessage: string | null;
-	actionLabel: string | null;
+export interface TeamSyncDiscoveredRow
+	extends Record<"actionMessage" | "actionLabel", string | null> {
 	approvalState: "needs-local-approval" | "approval-pending" | "not-required";
 	approvalBadgeLabel: string | null;
 	availabilityLabel: string;
@@ -28,7 +26,8 @@ export interface TeamSyncDiscoveredRow {
 		| "paired"
 		| "scope-pending"
 		| "setup-blocked"
-		| "stale";
+		| "stale"
+		| "waiting-address";
 	note: string;
 	pairedMessage: string | null;
 	connectionLabel: string;
@@ -172,6 +171,103 @@ function PendingJoinRequestRow({
 	);
 }
 
+function ReviewDeviceAction({
+	onReview,
+	row,
+}: {
+	onReview: (row: TeamSyncDiscoveredRow) => Promise<SyncActionFeedback | null>;
+	row: TeamSyncDiscoveredRow;
+}) {
+	const [busy, setBusy] = useState(false);
+	const [feedback, setFeedback] = useState<SyncActionFeedback | null>(null);
+	const defaultReviewLabel = row.actionLabel || "Pair with this device";
+	const [reviewLabel, setReviewLabel] = useState(defaultReviewLabel);
+	return (
+		<>
+			<button
+				aria-label={`${reviewLabel} for ${row.displayName}`}
+				className="settings-button"
+				disabled={busy}
+				onClick={async () => {
+					setBusy(true);
+					setReviewLabel("Pairing…");
+					setFeedback({
+						message: `Pairing ${row.displayName}. Keep this page open while the device is approved and refreshed.`,
+						tone: "success",
+					});
+					try {
+						const nextFeedback = (await onReview(row)) || null;
+						setFeedback(nextFeedback);
+						setReviewLabel(
+							nextFeedback?.tone === "warning" ? "Retry" : row.actionLabel || defaultReviewLabel,
+						);
+					} catch {
+						setFeedback({
+							message: `Pairing ${row.displayName} failed. Try again.`,
+							tone: "warning",
+						});
+						setReviewLabel("Retry");
+					} finally {
+						setBusy(false);
+					}
+				}}
+				type="button"
+			>
+				{reviewLabel}
+			</button>
+			<SyncInlineFeedback feedback={feedback} />
+		</>
+	);
+}
+
+function ConflictDeviceActions({
+	onInspect,
+	onRemove,
+	row,
+}: {
+	onInspect: (row: TeamSyncDiscoveredRow) => void;
+	onRemove: (row: TeamSyncDiscoveredRow) => Promise<SyncActionFeedback | null>;
+	row: TeamSyncDiscoveredRow;
+}) {
+	const [busy, setBusy] = useState(false);
+	const [feedback, setFeedback] = useState<SyncActionFeedback | null>(null);
+	const [removeLabel, setRemoveLabel] = useState("Remove broken device record");
+	return (
+		<>
+			<button
+				aria-label={`Open details for ${row.displayName}`}
+				className="settings-button"
+				disabled={busy}
+				onClick={() => onInspect(row)}
+				type="button"
+			>
+				Open device details
+			</button>
+			<button
+				aria-label={`${removeLabel} for ${row.displayName}`}
+				className="settings-button danger"
+				disabled={busy}
+				onClick={async () => {
+					setBusy(true);
+					setRemoveLabel("Removing…");
+					try {
+						setFeedback((await onRemove(row)) || null);
+						setRemoveLabel("Remove broken device record");
+					} catch {
+						setRemoveLabel("Retry");
+					} finally {
+						setBusy(false);
+					}
+				}}
+				type="button"
+			>
+				{removeLabel}
+			</button>
+			<SyncInlineFeedback feedback={feedback} />
+		</>
+	);
+}
+
 function DiscoveredDeviceRow({
 	row,
 	onInspectConflict,
@@ -183,12 +279,6 @@ function DiscoveredDeviceRow({
 	onRemoveConflict: (row: TeamSyncDiscoveredRow) => Promise<SyncActionFeedback | null>;
 	onReview: (row: TeamSyncDiscoveredRow) => Promise<SyncActionFeedback | null>;
 }) {
-	const [busy, setBusy] = useState<"remove" | "review" | null>(null);
-	const [feedback, setFeedback] = useState<SyncActionFeedback | null>(null);
-	const defaultReviewLabel = row.actionLabel || "Pair with this device";
-	const [reviewLabel, setReviewLabel] = useState(defaultReviewLabel);
-	const [removeLabel, setRemoveLabel] = useState("Remove broken device record");
-
 	return (
 		<div className="peer-card peer-card--padded" data-discovered-device-id={row.deviceId}>
 			<div className="peer-title">
@@ -203,87 +293,19 @@ function DiscoveredDeviceRow({
 			</div>
 			<div className="peer-meta">{row.note}</div>
 			<div className="peer-actions">
-				{row.mode === "accept" ? (
-					<button
-						type="button"
-						className="settings-button"
-						aria-label={`${reviewLabel} for ${row.displayName}`}
-						disabled={busy !== null}
-						onClick={async () => {
-							setBusy("review");
-							setReviewLabel("Pairing…");
-							setFeedback({
-								message: `Pairing ${row.displayName}. Keep this page open while the device is approved and refreshed.`,
-								tone: "success",
-							});
-							try {
-								const nextFeedback = (await onReview(row)) || null;
-								setFeedback(nextFeedback);
-								setReviewLabel(
-									nextFeedback?.tone === "warning"
-										? "Retry"
-										: row.actionLabel || defaultReviewLabel,
-								);
-							} catch {
-								setFeedback({
-									message: `Pairing ${row.displayName} failed. Try again.`,
-									tone: "warning",
-								});
-								setReviewLabel("Retry");
-							} finally {
-								setBusy(null);
-							}
-						}}
-					>
-						{reviewLabel}
-					</button>
-				) : null}
-				{(row.mode === "stale" ||
-					row.mode === "approval-pending" ||
-					row.mode === "ambiguous" ||
-					row.mode === "scope-pending" ||
-					row.mode === "setup-blocked") &&
-				row.actionMessage ? (
-					<div className="peer-meta">{row.actionMessage}</div>
-				) : null}
+				{row.mode === "accept" ? <ReviewDeviceAction onReview={onReview} row={row} /> : null}
+				{row.actionMessage ? <div className="peer-meta">{row.actionMessage}</div> : null}
 				{row.mode === "paired" && row.pairedMessage ? (
 					<div className="peer-meta">{row.pairedMessage}</div>
 				) : null}
 				{row.mode === "conflict" ? (
-					<>
-						<button
-							type="button"
-							className="settings-button"
-							aria-label={`Open details for ${row.displayName}`}
-							disabled={busy !== null}
-							onClick={() => onInspectConflict(row)}
-						>
-							Open device details
-						</button>
-						<button
-							type="button"
-							className="settings-button danger"
-							aria-label={`${removeLabel} for ${row.displayName}`}
-							disabled={busy !== null}
-							onClick={async () => {
-								setBusy("remove");
-								setRemoveLabel("Removing…");
-								try {
-									setFeedback((await onRemoveConflict(row)) || null);
-									setRemoveLabel("Remove broken device record");
-								} catch {
-									setRemoveLabel("Retry");
-								} finally {
-									setBusy(null);
-								}
-							}}
-						>
-							{removeLabel}
-						</button>
-					</>
+					<ConflictDeviceActions
+						onInspect={onInspectConflict}
+						onRemove={onRemoveConflict}
+						row={row}
+					/>
 				) : null}
 			</div>
-			<SyncInlineFeedback feedback={feedback} />
 		</div>
 	);
 }

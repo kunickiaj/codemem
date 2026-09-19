@@ -303,8 +303,8 @@ describe("renderTeamSync discovered-device state", () => {
 
 		const actions = document.getElementById("syncTeamActions") as HTMLElement;
 		const discovered = document.getElementById("syncCoordinatorDiscoveredList") as HTMLElement;
-		expect(actions.textContent).toContain("Desk Mini is available to review");
-		expect(actions.textContent).toContain("Open device");
+		expect(actions.textContent).not.toContain("Desk Mini is available to review");
+		expect(actions.textContent).not.toContain("Open device");
 		expect(discovered.textContent).toContain("Offline");
 		expect(discovered.textContent).toContain("No fresh addresses");
 		expect(discovered.textContent).toContain(
@@ -312,7 +312,56 @@ describe("renderTeamSync discovered-device state", () => {
 		);
 		expect(discovered.querySelector("button")).toBeNull();
 	});
+});
 
+describe("renderTeamSync missing-address state", () => {
+	it("keeps a fresh device without a usable address visible and non-actionable", () => {
+		document.body.innerHTML = `
+			<div id="syncTeamMeta"></div>
+			<div id="syncSetupPanel"></div>
+			<div id="syncTeamActions"></div>
+			<div id="syncCoordinatorDiscovered"></div>
+			<div id="syncCoordinatorDiscoveredMeta"></div>
+			<div id="syncCoordinatorDiscoveredList"></div>
+		`;
+		state.lastSyncStatus = { enabled: true, daemon_state: "ok", daemon_running: true };
+		state.lastSyncPeers = [];
+		state.lastSyncCoordinator = {
+			configured: true,
+			coordinator_url: "https://coord.example.test",
+			sync_enabled: true,
+			groups: ["Acme"],
+			presence_status: "posted",
+			discovered_devices: [
+				{
+					device_id: "device-no-address",
+					display_name: "Desk Mini",
+					fingerprint: "fingerprint-no-address",
+					groups: ["Acme"],
+					addresses: [],
+					address_count: 0,
+					stale: false,
+				},
+			],
+		};
+		state.lastSyncViewModel = deriveSyncViewModel({
+			coordinator: state.lastSyncCoordinator,
+			peers: state.lastSyncPeers,
+			status: state.lastSyncStatus,
+		});
+
+		act(() => renderTeamSync());
+
+		const discovered = document.getElementById("syncCoordinatorDiscoveredList") as HTMLElement;
+		expect(discovered.textContent).toContain("No fresh addresses");
+		expect(discovered.textContent).toContain(
+			"Wait for this device to publish a fresh address, then refresh and review it.",
+		);
+		expect(discovered.querySelector("button")).toBeNull();
+	});
+});
+
+describe("renderTeamSync coordinator approval state", () => {
 	it("keeps a stale authoritative approval row visible without counting it as actionable", () => {
 		document.body.innerHTML = `
 			<div id="syncTeamMeta"></div>
