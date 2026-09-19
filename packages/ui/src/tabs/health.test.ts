@@ -124,9 +124,10 @@ function updateBannerText(): string {
 }
 
 function expectStaleHealthMeta(): void {
-	const text = document.getElementById("healthMeta")?.textContent;
-	expect(text).toBe("Some Health data is stale. Showing the last successful snapshot.");
-	expect(text).not.toContain("Healthy right now");
+	const healthMeta = document.getElementById("healthMeta");
+	expect(healthMeta?.textContent).toContain("Stale data");
+	const staleBadge = document.querySelector("#healthStatus .badge");
+	expect(staleBadge?.textContent).toBe("Stale data");
 }
 
 beforeEach(() => {
@@ -135,7 +136,7 @@ beforeEach(() => {
 		<div id="healthUpdateBanner"></div>
 		<div id="healthGrid"></div>
 		<div id="automaticRecallStats"></div>
-		<div id="healthMeta" role="status" aria-live="polite" aria-atomic="true"></div>
+		<div id="healthStatus"><div id="healthMeta" role="status" aria-live="polite" aria-atomic="true"></div></div>
 		<div id="healthActions"></div>
 		<div id="healthDot"></div>
 		<div id="statsGrid"></div>
@@ -182,29 +183,132 @@ it("marks the global Health indicator as unchecked when details are not loading"
 });
 
 it("animates loading while a stable announcer reports loading and completion", () => {
-	const announcer = document.getElementById("healthMeta");
 	state.healthStats = { status: "loading", previous: null, previousStatus: null };
 
 	renderOverview();
-
-	expect(document.getElementById("healthMeta")).toBe(announcer);
+	const announcer = document.getElementById("healthMeta");
 	expect(announcer?.textContent).toBe("Loading health data…");
 	expect(announcer?.getAttribute("role")).toBe("status");
 	expect(announcer?.getAttribute("aria-live")).toBe("polite");
 	expect(announcer?.getAttribute("aria-atomic")).toBe("true");
 	expect(document.querySelector("#healthGrid [role='status']")).toBeNull();
-	const loadingIcon = document.querySelector("#healthGrid [data-lucide='loader']");
-	expect(loadingIcon?.classList.contains("health-loading-icon")).toBe(true);
-	expect(loadingIcon?.getAttribute("aria-hidden")).toBe("true");
+	expect(document.querySelector("#healthStatus .presence-pip--syncing")).not.toBeNull();
 
 	state.healthStats = completeHealthLoad(statsPayload());
 	renderOverview();
 
 	expect(document.getElementById("healthMeta")).toBe(announcer);
-	expect(announcer?.textContent).toBe(
-		"Healthy right now. Diagnostics stay available if you want details.",
-	);
+	expect(announcer?.textContent).toBe("0 issues");
 	expect(document.querySelector("#healthGrid [role='status']")).toBeNull();
+});
+
+it("renders the four compact health tiles in contract order", () => {
+	renderOverview();
+
+	const tiles = [...document.querySelectorAll("#healthGrid .health-tile")];
+	expect(tiles.map((tile) => tile.querySelector(".health-tile-label")?.textContent)).toEqual([
+		"Pipeline",
+		"Sync",
+		"Retrieval",
+		"Data freshness",
+	]);
+	expect(tiles.map((tile) => tile.querySelector(".health-tile-value")?.textContent)).toEqual([
+		"Queue clear",
+		"Off",
+		"No packs yet",
+		"No packs yet",
+	]);
+	expect(
+		tiles.every(
+			(tile) =>
+				(tile
+					.querySelector<HTMLElement>(".presence-pip")
+					?.style.getPropertyValue("--presence-pip-size") ?? "") === "6px",
+		),
+	).toBe(true);
+	expect(
+		document
+			.querySelector<HTMLElement>("#healthStatus .presence-pip")
+			?.style.getPropertyValue("--presence-pip-size"),
+	).toBe("8px");
+	expect(document.querySelector("#healthGrid .stat")).toBeNull();
+});
+
+it("marks pending pipeline work and the current sync problem as degraded", () => {
+	state.healthRawEvents = completeHealthLoad({ pending: 3, sessions: 1 });
+	state.lastSyncStatus = { enabled: true, daemon_state: "stopped" };
+
+	renderOverview();
+
+	const values = [...document.querySelectorAll("#healthGrid .health-tile-value")];
+	expect(values[0]?.textContent).toBe("3 pending");
+	expect(values[0]?.querySelector(".presence-pip--degraded")).not.toBeNull();
+	expect(values[1]?.textContent).toBe("Stopped");
+	expect(values[1]?.querySelector(".presence-pip--degraded")).not.toBeNull();
+});
+
+it("marks pipeline reliability failures when the queue is clear", () => {
+	state.healthStats = completeHealthLoad(
+		statsPayload({
+			reliability: {
+				counts: { errored_batches: 0 },
+				rates: { flush_success_rate: 0.8, dropped_event_rate: 0.03 },
+			},
+		}),
+	);
+	state.healthRawEvents = completeHealthLoad({ pending: 0, sessions: 0 });
+
+	renderOverview();
+
+	const pipeline = document.querySelectorAll("#healthGrid .health-tile-value")[0];
+	expect(pipeline?.textContent).toBe("Events dropped");
+	expect(pipeline?.querySelector(".presence-pip--attention")).not.toBeNull();
+});
+
+it("describes issue drivers below the degraded status threshold", () => {
+	state.healthRawEvents = completeHealthLoad({ pending: 200, sessions: 1 });
+
+	renderOverview();
+
+	expect(document.getElementById("healthMeta")?.textContent).toContain(
+		"1 issue · growing raw-event backlog",
+	);
+});
+
+it("does not report unknown, unconfigured, or stale sync as online", () => {
+	state.lastSyncStatus = { enabled: true };
+	renderOverview();
+	expect(document.querySelectorAll("#healthGrid .health-tile-value")[1]?.textContent).toBe(
+		"Unknown",
+	);
+
+	state.lastSyncStatus = { enabled: true, daemon_state: "ok" };
+	renderOverview();
+	expect(document.querySelectorAll("#healthGrid .health-tile-value")[1]?.textContent).toBe(
+		"No peers",
+	);
+
+	state.lastSyncPeers = [{ peer_device_id: "peer-a" }];
+	state.lastSyncStatus = {
+		enabled: true,
+		daemon_state: "ok",
+		last_sync_at: "2020-01-01T00:00:00.000Z",
+	};
+	renderOverview();
+	const staleSync = document.querySelectorAll("#healthGrid .health-tile-value")[1];
+	expect(staleSync?.textContent).toBe("Stale");
+	expect(staleSync?.querySelector(".presence-pip--degraded")).not.toBeNull();
+});
+
+it("counts detected health risks instead of remediation rows", () => {
+	state.lastSyncPeers = [{ peer_device_id: "peer-a" }];
+	state.lastSyncStatus = { enabled: true, daemon_state: "needs_attention" };
+
+	renderOverview();
+
+	expect(document.getElementById("healthMeta")?.textContent).toMatch(
+		/^1 issue · sync needs manual attention/,
+	);
 });
 
 it("does not rewrite an unchanged Health announcement", () => {
@@ -225,35 +329,21 @@ it("does not animate a failed Health state", () => {
 
 	expect(document.querySelector("#healthGrid .health-loading-icon")).toBeNull();
 	expect(document.querySelector("#healthGrid [role='status']")).toBeNull();
-	expect(document.querySelector("#healthGrid .value")?.textContent).toBe("Unavailable");
+	expect(document.querySelector("#healthStatus .health-status-word")?.textContent).toBe(
+		"Unavailable",
+	);
 });
 
-it("replaces a Lucide loading SVG when the initial Health load fails", () => {
-	const originalLucide = globalThis.lucide;
-	globalThis.lucide = {
-		createIcons: () => {
-			for (const placeholder of document.querySelectorAll<HTMLElement>("i[data-lucide]")) {
-				const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-				for (const attribute of placeholder.attributes) {
-					icon.setAttribute(attribute.name, attribute.value);
-				}
-				placeholder.replaceWith(icon);
-			}
-		},
-	};
-	try {
-		state.healthStats = { status: "loading", previous: null, previousStatus: null };
-		renderOverview();
-		expect(document.querySelector("#healthGrid svg.health-loading-icon")).not.toBeNull();
+it("replaces loading presence when the initial Health load fails", () => {
+	state.healthStats = { status: "loading", previous: null, previousStatus: null };
+	renderOverview();
+	expect(document.querySelector("#healthStatus .presence-pip--syncing")).not.toBeNull();
 
-		state.healthStats = { status: "failed", error: "stats unavailable" };
-		renderOverview();
+	state.healthStats = { status: "failed", error: "stats unavailable" };
+	renderOverview();
 
-		expect(document.querySelector("#healthGrid .health-loading-icon")).toBeNull();
-		expect(document.querySelector("#healthGrid svg[data-lucide='triangle-alert']")).not.toBeNull();
-	} finally {
-		globalThis.lucide = originalLucide;
-	}
+	expect(document.querySelector("#healthStatus .presence-pip--syncing")).toBeNull();
+	expect(document.querySelector("#healthStatus .presence-pip--unknown")).not.toBeNull();
 });
 
 it("does not animate a not-loaded Health state", () => {
@@ -263,7 +353,9 @@ it("does not animate a not-loaded Health state", () => {
 
 	expect(document.querySelector("#healthGrid .health-loading-icon")).toBeNull();
 	expect(document.querySelector("#healthGrid [role='status']")).toBeNull();
-	expect(document.querySelector("#healthGrid .value")?.textContent).toBe("Not loaded");
+	expect(document.querySelector("#healthStatus .health-status-word")?.textContent).toBe(
+		"Not loaded",
+	);
 });
 
 it("keeps stale warnings visible while retrying a stale resource", () => {
@@ -316,7 +408,7 @@ it("keeps last known critical risks visible when their snapshots are stale", () 
 
 	expect(document.getElementById("healthDot")?.title).toBe("Attention");
 	expect(document.getElementById("healthMeta")?.textContent).toMatch(
-		/^Some Health data is stale\. Last known risks:/,
+		/^4 issues · high raw-event backlog/,
 	);
 });
 
@@ -346,12 +438,46 @@ describe("Usage metric provenance", () => {
 		expect(injected?.parentElement?.getAttribute("data-tooltip")).toContain(
 			"Estimated tokens injected",
 		);
-		const healthCards = [...document.querySelectorAll("#healthGrid .stat")];
-		const retrieval = healthCards.find(
-			(node) => node.querySelector(".label")?.textContent === "Retrieval impact",
+		const retrieval = [...document.querySelectorAll("#healthGrid .health-tile")].find(
+			(node) => node.querySelector(".health-tile-label")?.textContent === "Retrieval",
 		);
 		expect(retrieval?.textContent).toContain("80%");
-		expect(retrieval?.textContent).toContain("40 estimated saved tokens");
+		expect(retrieval?.getAttribute("title")).toContain("memory reuse");
+	});
+
+	it("renders unknown retrieval health when pack reduction is unavailable", () => {
+		state.healthUsage = completeHealthLoad(
+			usagePayload({
+				events_global: [usageEvent({ event: "pack", total_tokens_read: 0, total_tokens_saved: 0 })],
+			}),
+		);
+
+		renderHealthOverview();
+
+		const retrieval = [...document.querySelectorAll("#healthGrid .health-tile")].find(
+			(node) => node.querySelector(".health-tile-label")?.textContent === "Retrieval",
+		);
+		expect(retrieval?.textContent).toContain("Unknown");
+		expect(retrieval?.querySelector(".presence-pip--unknown")).not.toBeNull();
+	});
+
+	it("renders unknown freshness for an invalid pack timestamp", () => {
+		state.healthUsage = completeHealthLoad(
+			usagePayload({
+				events_global: [usageEvent({ event: "pack", total_tokens_read: 10 })],
+				recent_packs: [
+					{ created_at: "not-a-date", metadata_json: null, tokens_read: 10, tokens_saved: 5 },
+				],
+			}),
+		);
+
+		renderHealthOverview();
+
+		const freshness = [...document.querySelectorAll("#healthGrid .health-tile")].find(
+			(node) => node.querySelector(".health-tile-label")?.textContent === "Data freshness",
+		);
+		expect(freshness?.textContent).toContain("Unknown");
+		expect(freshness?.querySelector(".presence-pip--unknown")).not.toBeNull();
 	});
 
 	it("keeps global pack values distinct in project tooltips", () => {
@@ -396,8 +522,8 @@ describe("Health resource load outcomes", () => {
 			snapshot: { data: { total: 5 } },
 		});
 		expect(state.healthRawEvents.status).toBe("available");
-		expect(document.getElementById("healthGrid")?.textContent).toContain("Unavailable");
-		expect(document.getElementById("healthGrid")?.textContent).not.toContain("Healthy");
+		expect(document.getElementById("healthStatus")?.textContent).toContain("Unavailable");
+		expect(document.getElementById("healthStatus")?.textContent).not.toContain("Healthy");
 		expect(document.getElementById("sessionGrid")?.textContent).toContain("n/a");
 		expect(document.getElementById("sessionMeta")?.textContent).toContain(
 			"Pack totals unavailable",
@@ -439,7 +565,7 @@ describe("Health resource load outcomes", () => {
 				scopeKey: "",
 			},
 		});
-		expect(document.getElementById("healthGrid")?.textContent).toContain("Stale");
+		expect(document.getElementById("healthStatus")?.textContent).toContain("Stale");
 		expectStaleHealthMeta();
 		expect(document.getElementById("metaLine")?.textContent).toContain("showing stale data");
 	});
@@ -479,7 +605,7 @@ describe("Health resource load outcomes", () => {
 		await loadHealthData();
 
 		expect(state.healthUsage).toEqual({ status: "failed", error: "usage unavailable" });
-		expect(document.getElementById("healthGrid")?.textContent).toContain("Unavailable");
+		expect(document.getElementById("healthStatus")?.textContent).toContain("Unavailable");
 	});
 
 	it("clears prior-project values before the new project requests settle", async () => {
@@ -678,7 +804,7 @@ describe("Health update banner", () => {
 		renderOverview();
 
 		// Assert
-		expect(updateBannerText()).toMatch(/0\.40\.2.*up to date/i);
+		expect(updateBannerText()).toBe("Up to date · 0.40.2");
 		expect(updateBannerText()).not.toContain("npm install");
 		const banner = document.querySelector("#healthUpdateBanner [role='status']");
 		expect(banner?.getAttribute("aria-label")).toBe("Codemem update status");
@@ -702,11 +828,14 @@ describe("Health update banner", () => {
 
 		renderOverview();
 
-		const banner = updateBannerText();
-		expect(banner).toContain("Running from repository source");
-		expect(banner).toContain("Package metadata version: 0.44.0");
-		expect(banner).toContain("git pull, pnpm install, and pnpm build");
-		expect(banner).not.toMatch(/up to date|outdated|cached update|0\.44\.2 is available/i);
+		const banner = document.querySelector("#healthUpdateBanner .badge");
+		expect(banner?.textContent).toBe("Source build · 0.44.0");
+		expect(banner?.getAttribute("title")).toContain("Package metadata version: 0.44.0");
+		expect(banner?.getAttribute("title")).toContain("git pull, pnpm install, and pnpm build");
+		expect(
+			document.querySelector("#healthUpdateBanner .health-update-detail")?.textContent,
+		).toContain("git pull, pnpm install, and pnpm build");
+		expect(updateBannerText()).not.toMatch(/up to date|outdated|0\.44\.2 is available/i);
 	});
 
 	it("shows unavailable status for an unsupported installed version", () => {
@@ -725,8 +854,13 @@ describe("Health update banner", () => {
 		renderOverview();
 
 		// Assert
-		expect(updateBannerText()).toMatch(/update check unavailable/i);
-		expect(updateBannerText()).toContain("Verify the current codemem version and try again.");
+		expect(updateBannerText()).toContain("Unsupported channel");
+		expect(
+			document.querySelector("#healthUpdateBanner .health-update-detail")?.textContent,
+		).toContain("Verify the current codemem version and try again.");
+		expect(document.querySelector("#healthUpdateBanner .badge")?.getAttribute("title")).toContain(
+			"Verify the current codemem version and try again.",
+		);
 		expect(updateBannerText()).not.toMatch(/up to date|latest stable release/i);
 	});
 });
@@ -744,7 +878,9 @@ describe("Health update banner channels and guidance", () => {
 
 		renderOverview();
 
-		expect(updateBannerText()).toMatch(/latest rc release/i);
+		expect(document.querySelector("#healthUpdateBanner .badge")?.getAttribute("title")).toMatch(
+			/latest rc release/i,
+		);
 		expect(updateBannerText()).not.toMatch(/latest stable release/i);
 	});
 
@@ -760,7 +896,9 @@ describe("Health update banner channels and guidance", () => {
 
 		renderOverview();
 
-		expect(updateBannerText()).toMatch(/latest alpha release/i);
+		expect(document.querySelector("#healthUpdateBanner .badge")?.getAttribute("title")).toMatch(
+			/latest alpha release/i,
+		);
 		expect(updateBannerText()).not.toMatch(/latest stable release/i);
 	});
 
@@ -772,9 +910,10 @@ describe("Health update banner channels and guidance", () => {
 		renderOverview();
 
 		// Assert
-		expect(updateBannerText()).toContain("0.41.0");
-		expect(updateBannerText()).toContain("0.40.2");
-		expect(updateBannerText()).toContain("npm install -g codemem@0.41.0");
+		expect(updateBannerText()).toBe("Update available · 0.41.0Copy command");
+		expect(document.querySelector("#healthUpdateBanner .badge-online")).not.toBeNull();
+		const copy = document.querySelector<HTMLButtonElement>("#healthUpdateBanner button");
+		expect(copy?.title).toBe(availableStatus.recommended_action);
 	});
 
 	it("qualifies stale release guidance as cached instead of presenting it as fresh", () => {
@@ -786,8 +925,12 @@ describe("Health update banner channels and guidance", () => {
 
 		// Assert
 		expect(updateBannerText()).toMatch(/cached|stale/i);
-		expect(updateBannerText()).toContain("registry offline");
-		expect(updateBannerText()).toContain(availableStatus.recommended_action);
+		expect(
+			document.querySelector("#healthUpdateBanner .badge[title*='stale']")?.getAttribute("title"),
+		).toContain("registry offline");
+		expect(document.querySelector<HTMLButtonElement>("#healthUpdateBanner button")?.title).toBe(
+			availableStatus.recommended_action,
+		);
 	});
 
 	it("shows a recoverable unavailable state without claiming the installation is current", () => {
@@ -808,8 +951,15 @@ describe("Health update banner channels and guidance", () => {
 
 		// Assert
 		expect(updateBannerText()).toMatch(/unavailable|could not check|couldn't check/i);
-		expect(updateBannerText()).toContain("registry request timed out");
-		expect(updateBannerText()).toContain("Check network access and try again.");
+		expect(document.querySelector("#healthUpdateBanner .badge")?.getAttribute("title")).toContain(
+			"registry request timed out",
+		);
+		expect(document.querySelector("#healthUpdateBanner .badge")?.getAttribute("title")).toContain(
+			"Check network access and try again.",
+		);
+		expect(
+			document.querySelector("#healthUpdateBanner .health-update-detail")?.textContent,
+		).toContain("Check network access and try again.");
 		expect(updateBannerText()).not.toMatch(/up to date/i);
 	});
 
@@ -826,10 +976,10 @@ describe("Health update banner channels and guidance", () => {
 		renderOverview();
 
 		// Assert
-		const banner = updateBannerText();
-		expect(banner).toContain("CODEMEM_VERSION=0.41.0");
-		expect(banner).toContain("docker compose build --pull");
-		expect(banner).toContain("docker compose up -d");
-		expect(banner).not.toMatch(/npm install|codemem update install|self-update/i);
+		const guidance = document.querySelector<HTMLButtonElement>("#healthUpdateBanner button")?.title;
+		expect(guidance).toContain("CODEMEM_VERSION=0.41.0");
+		expect(guidance).toContain("docker compose build --pull");
+		expect(guidance).toContain("docker compose up -d");
+		expect(guidance).not.toMatch(/npm install|codemem update install|self-update/i);
 	});
 });

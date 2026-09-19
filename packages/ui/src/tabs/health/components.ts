@@ -6,6 +6,8 @@
  * HealthCardInput[] at the call site. */
 
 import { Fragment, h, render } from "preact";
+import { Chip } from "../../components/primitives/chip";
+import { PresencePip, type PresenceState } from "../../components/primitives/presence-pip";
 import { Tooltip, TooltipProvider } from "../../components/primitives/tooltip";
 import type { UpdateStatus } from "../../lib/api";
 import { type AutomaticRecallStats, parseAutomaticRecallStats } from "../../lib/api/stats";
@@ -18,11 +20,6 @@ import type {
 	LucideRuntime,
 	StatItem,
 } from "./types";
-
-function releaseChannelLabel(status: UpdateStatus): string | null {
-	if (status.channel === "latest") return "stable";
-	return status.channel;
-}
 
 export function buildHealthCard(input: HealthCardInput): HealthCardInput {
 	return input;
@@ -159,73 +156,91 @@ export function renderAutomaticRecall(container: HTMLElement | null, payload: un
 	renderIcons();
 }
 
-function updateBannerCopy(status: UpdateStatus) {
+type UpdateBannerCopy = {
+	label: string;
+	title: string;
+	tone?: string;
+	showCopy?: boolean;
+};
+
+function withUpdateError(title: string, status: UpdateStatus): string {
+	if (!status.error) return title;
+	return `${title} ${status.error}`;
+}
+
+function withUpdateGuidance(title: string, status: UpdateStatus): string {
+	if (!status.recommended_action) return title;
+	return `${title} ${status.recommended_action}`;
+}
+
+function updateBannerCopy(status: UpdateStatus): UpdateBannerCopy {
 	if (status.install_kind === "repo-dev") {
 		return {
-			title: "Running from repository source",
-			detail: `Package metadata version: ${status.current_version}. Registry releases do not describe the checked-out source revision.`,
-			tone: "current",
+			label: `Source build · ${status.current_version}`,
+			title: withUpdateGuidance(
+				`Running from repository source. Package metadata version: ${status.current_version}. Registry releases do not describe the checked-out source revision.`,
+				status,
+			),
+			tone: "health-update-source",
+		};
+	}
+
+	if (!status.channel) {
+		return {
+			label: "Unsupported channel",
+			title: withUpdateGuidance(
+				withUpdateError("The installed version is not on a supported release channel.", status),
+				status,
+			),
+			tone: "badge-offline",
 		};
 	}
 
 	if (!status.latest_version) {
 		return {
-			title: "Update check unavailable",
-			detail: status.error
-				? `Could not check for updates: ${status.error}`
-				: "Could not check for updates.",
-			tone: "unavailable",
-		};
-	}
-
-	if (status.stale) {
-		return {
-			title: status.update_available
-				? `Cached update status: Codemem ${status.latest_version} is available`
-				: `Cached update status for Codemem ${status.current_version}`,
-			detail: status.error
-				? `This result is stale because a fresh check failed: ${status.error}`
-				: "This result is cached and may be stale.",
-			tone: "stale",
+			label: "Update check unavailable",
+			title: withUpdateGuidance(withUpdateError("Could not check for updates.", status), status),
+			tone: "badge-offline",
 		};
 	}
 
 	if (status.update_available) {
 		return {
-			title: `Codemem ${status.latest_version} is available`,
-			detail: `Installed version: ${status.current_version}.`,
-			tone: "available",
-		};
-	}
-
-	const channelLabel = releaseChannelLabel(status);
-	if (!channelLabel) {
-		return {
-			title: `Unable to compare Codemem ${status.current_version} with ${status.latest_version}`,
-			detail: "The installed version is not on a supported release channel.",
-			tone: "unavailable",
+			label: `Update available · ${status.latest_version}`,
+			title: withUpdateError(
+				`Codemem ${status.latest_version} is available. Installed version: ${status.current_version}.`,
+				status,
+			),
+			tone: "badge-online",
+			showCopy: Boolean(status.recommended_action),
 		};
 	}
 
 	return {
-		title: `Codemem ${status.current_version} is up to date`,
-		detail: `You are running the latest ${channelLabel} release.`,
-		tone: "current",
+		label: `Up to date · ${status.current_version}`,
+		title: withUpdateError(
+			`Codemem ${status.current_version} is up to date. You are running the latest ${status.channel === "latest" ? "stable" : status.channel} release.`,
+			status,
+		),
+		tone: "badge-online",
 	};
 }
 
 function UpdateBanner({ status }: { status: UpdateStatus }) {
 	const copy = updateBannerCopy(status);
-	const showGuidance =
-		status.install_kind === "repo-dev" ||
-		status.update_available ||
-		status.stale ||
-		!status.latest_version ||
-		!status.channel;
+	const showDetail = copy.tone !== "badge-online" || status.stale;
+	const detail = status.stale
+		? `${copy.title} ${status.error ? `This result is stale because a fresh check failed: ${status.error}` : "This result is cached and may be stale."}`
+		: copy.title;
+	let copyButton: HTMLButtonElement | null = null;
+	function handleCopy() {
+		if (!status.recommended_action || !copyButton) return;
+		copyToClipboard(status.recommended_action, copyButton);
+	}
 	return h(
 		"section",
 		{
-			class: `health-update-banner health-update-banner--${copy.tone}`,
+			class: "health-update-banner",
 			role: "status",
 			"aria-atomic": "true",
 			"aria-label": "Codemem update status",
@@ -235,20 +250,35 @@ function UpdateBanner({ status }: { status: UpdateStatus }) {
 			"data-lucide": "circle-arrow-up",
 			class: "health-update-icon",
 		}),
-		h(
-			"div",
-			{ class: "health-update-copy" },
-			h("h2", null, copy.title),
-			h("p", null, copy.detail),
-			showGuidance && status.recommended_action
-				? h(
-						"p",
-						{ class: "health-update-guidance" },
-						h("span", { class: "health-update-guidance-label" }, "Recommended action"),
-						h("code", null, status.recommended_action),
-					)
-				: null,
-		),
+		h(Chip, { variant: "badge", tone: copy.tone, title: copy.title }, copy.label),
+		showDetail ? h("span", { class: "health-update-detail" }, detail) : null,
+		status.stale
+			? h(
+					Chip,
+					{
+						variant: "badge",
+						title: status.error
+							? `This result is stale because a fresh check failed: ${status.error}`
+							: "This result is cached and may be stale.",
+					},
+					"Cached",
+				)
+			: null,
+		copy.showCopy && status.recommended_action
+			? h(
+					"button",
+					{
+						class: "settings-button health-update-copy-button",
+						onClick: handleCopy,
+						ref: (node: HTMLButtonElement | null) => {
+							copyButton = node;
+						},
+						title: status.recommended_action,
+						type: "button",
+					},
+					"Copy command",
+				)
+			: null,
 	);
 }
 
@@ -270,8 +300,7 @@ export function HealthCard({
 	const card = h(
 		"div",
 		{
-			class: `stat${className ? ` ${className}` : ""}`,
-			style: title ? "cursor: help;" : undefined,
+			class: `stat${className ? ` ${className}` : ""}${title ? " has-tooltip" : ""}`,
 		},
 		icon
 			? h(
@@ -368,8 +397,7 @@ export function StatBlock({ label, value, icon, tooltip }: StatItem) {
 	const card = h(
 		"div",
 		{
-			class: "stat",
-			style: tooltip ? "cursor: help;" : undefined,
+			class: `stat${tooltip ? " has-tooltip" : ""}`,
 			tabIndex: tooltip ? 0 : undefined,
 		},
 		h("i", {
@@ -418,6 +446,104 @@ export function renderHealthCards(container: HTMLElement | null, cards: HealthCa
 		),
 		container,
 	);
+}
+
+export type HealthTileInput = {
+	key: string;
+	label: string;
+	value: string;
+	state: PresenceState;
+	title: string;
+};
+
+function HealthTile({ label, value, state: presenceState, title }: HealthTileInput) {
+	return h(
+		"div",
+		{ class: "health-tile", title },
+		h("span", { class: "health-tile-label" }, label),
+		h(
+			"span",
+			{ class: "health-tile-value" },
+			h(PresencePip, { state: presenceState, size: 6 }),
+			value,
+		),
+	);
+}
+
+export function renderHealthOverviewGrid(
+	container: HTMLElement | null,
+	tiles: HealthTileInput[],
+	maintenanceCards: HealthCardInput[],
+) {
+	if (!container) return;
+	render(
+		h(
+			TooltipProvider,
+			null,
+			h(
+				"div",
+				{ class: "health-tile-grid" },
+				tiles.map((tile) => h(HealthTile, { ...tile, key: tile.key })),
+			),
+			maintenanceCards.length
+				? h(
+						"div",
+						{ class: "grid-2 health-maintenance-grid" },
+						maintenanceCards.map((card) => h(HealthCard, { ...card, key: card.key ?? card.label })),
+					)
+				: null,
+		),
+		container,
+	);
+}
+
+type HealthStatusInput = {
+	label: string;
+	message: string;
+	stale: boolean;
+	state: PresenceState;
+	statusClass: string;
+};
+
+function HealthStatus({
+	label,
+	message,
+	stale,
+	state: presenceState,
+	statusClass,
+}: HealthStatusInput) {
+	return h(
+		"div",
+		{ class: "health-status-summary" },
+		h(PresencePip, { state: presenceState, size: 8 }),
+		h(
+			"div",
+			{ class: "health-status-copy" },
+			h("strong", { class: `health-status-word ${statusClass}` }, label),
+			h(
+				"div",
+				{ class: "health-status-meta" },
+				h(
+					"div",
+					{
+						class: "section-meta",
+						id: "healthMeta",
+						role: "status",
+						"aria-live": "polite",
+						"aria-atomic": "true",
+					},
+					message,
+					stale ? h("span", { class: "sr-only" }, " · Stale data") : null,
+				),
+				stale ? h(Chip, { variant: "badge" }, "Stale data") : null,
+			),
+		),
+	);
+}
+
+export function renderHealthStatus(container: HTMLElement | null, input: HealthStatusInput) {
+	if (!container) return;
+	render(h(HealthStatus, input), container);
 }
 
 export function renderActionList(container: HTMLElement | null, actions: HealthAction[]) {
