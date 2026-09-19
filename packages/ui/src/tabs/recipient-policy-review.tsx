@@ -323,7 +323,7 @@ function DecisionControls(props: DecisionControlsProps) {
 		<>
 			<select
 				aria-label={`Decision for ${props.group.displayName}`}
-				className="project-domain-select recipient-policy-review-select"
+				className="recipient-policy-review-select"
 				data-review-control="decision"
 				disabled={props.pending}
 				onChange={(event) =>

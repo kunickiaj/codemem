@@ -117,6 +117,7 @@ describe("recipient policy review pending guards", () => {
 		renderRecipientPolicyReview(mount, review(), { onRefresh });
 		const apply = mount.querySelector<HTMLButtonElement>('[data-review-control="apply"]');
 		const select = mount.querySelector<HTMLSelectElement>(".recipient-policy-review-select");
+		expect(select?.classList.contains("project-domain-select")).toBe(false);
 		if (!apply || !select) throw new Error("review controls missing");
 
 		await act(async () => {
