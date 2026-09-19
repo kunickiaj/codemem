@@ -1,3 +1,4 @@
+export type { ProjectsDataLoadOptions } from "./projects-controller";
 export {
 	getProjectsInventoryController,
 	initProjectsTab,
@@ -7,7 +8,6 @@ export type {
 	ProjectInventoryCallbacks,
 	ProjectInventoryClusterViewModel,
 	ProjectInventoryProjectViewModel,
-	ProjectsDataLoadOptions,
 	ProjectsInventoryController,
 	ProjectsInventoryViewModel,
-} from "./projects-controller";
+} from "./projects-inventory-model";

@@ -999,28 +999,6 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 		);
 	});
 
-	it("exposes a serializable inventory view model for component renderers", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [project()],
-			total: 1,
-		});
-
-		initProjectsTab(() => {});
-		await loadProjectsData();
-		const controller = getProjectsInventoryController();
-		const viewModel = controller.getViewModel();
-
-		expect(viewModel.rows).toHaveLength(1);
-		expect(viewModel.rows[0]).toMatchObject({ kind: "project", key: project().workspace_identity });
-		expect(viewModel.pagination).toEqual({ hasMore: false, limit: 250, offset: 0, total: 1 });
-		expect(viewModel.selection).toMatchObject({ count: 0, projectIds: [] });
-		expect(() => JSON.stringify(viewModel)).not.toThrow();
-		expect(controller.callbacks.toggleSelection).toEqual(expect.any(Function));
-	});
-
 	it("renders Projects before optional Team setup discovery finishes", async () => {
 		let resolveTeamSetup!: (value: { version: 1; candidates: [] }) => void;
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
@@ -2272,49 +2250,6 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 		);
 		expect(document.body.textContent).toContain("new filtered");
 		expect(document.body.textContent).not.toContain("old filtered");
-	});
-
-	it("does not render a completed load after the user changes filters", async () => {
-		let resolveOldFiltered: (value: ProjectScopeInventoryResult) => void = () => {};
-		const oldFiltered = new Promise<ProjectScopeInventoryResult>((resolve) => {
-			resolveOldFiltered = resolve;
-		});
-		let unfilteredCallCount = 0;
-		vi.mocked(api.loadProjectScopeInventory).mockImplementation(async (input) => {
-			if (input.q === "new") {
-				return {
-					has_more: false,
-					limit: 250,
-					offset: 0,
-					projects: [project({ display_project: "new result", workspace_identity: "new-result" })],
-					total: 1,
-				};
-			}
-			unfilteredCallCount += 1;
-			if (unfilteredCallCount === 1) return oldFiltered;
-			return { has_more: false, limit: 250, offset: 0, projects: [], total: 0 };
-		});
-
-		initProjectsTab(() => {
-			void loadProjectsData();
-		});
-		const olderLoad = loadProjectsData();
-		const search = document.getElementById("projectsSearch") as HTMLInputElement;
-		search.value = "new";
-		search.dispatchEvent(new Event("input"));
-		await vi.waitFor(() => expect(document.body.textContent).toContain("new result"));
-
-		resolveOldFiltered({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [project({ display_project: "old result", workspace_identity: "old-result" })],
-			total: 1,
-		});
-		await olderLoad;
-
-		expect(document.body.textContent).toContain("new result");
-		expect(document.body.textContent).not.toContain("old result");
 	});
 
 	it("does not let an older coordinator refresh redraw stale project rows", async () => {
@@ -3872,6 +3807,76 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 		});
 	});
 }
+
+describe("Projects inventory controller", () => {
+	beforeEach(setupProjectsTest);
+	afterEach(cleanupProjectsTest);
+
+	it("exposes a serializable inventory view model for component renderers", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [project()],
+			total: 1,
+		});
+
+		initProjectsTab(() => {});
+		await loadProjectsData();
+		const controller = getProjectsInventoryController();
+		const viewModel = controller.getViewModel();
+
+		expect(viewModel.rows).toHaveLength(1);
+		expect(viewModel.rows[0]).toMatchObject({ kind: "project", key: project().workspace_identity });
+		expect(viewModel.pagination).toEqual({ hasMore: false, limit: 250, offset: 0, total: 1 });
+		expect(viewModel.selection).toMatchObject({ count: 0, projectIds: [] });
+		expect(() => JSON.stringify(viewModel)).not.toThrow();
+		expect(controller.callbacks.toggleSelection).toEqual(expect.any(Function));
+	});
+
+	it("does not render a completed load after the user changes filters", async () => {
+		let resolveOldFiltered: (value: ProjectScopeInventoryResult) => void = () => {};
+		const oldFiltered = new Promise<ProjectScopeInventoryResult>((resolve) => {
+			resolveOldFiltered = resolve;
+		});
+		let unfilteredCallCount = 0;
+		vi.mocked(api.loadProjectScopeInventory).mockImplementation(async (input) => {
+			if (input.q === "new") {
+				return {
+					has_more: false,
+					limit: 250,
+					offset: 0,
+					projects: [project({ display_project: "new result", workspace_identity: "new-result" })],
+					total: 1,
+				};
+			}
+			unfilteredCallCount += 1;
+			if (unfilteredCallCount === 1) return oldFiltered;
+			return { has_more: false, limit: 250, offset: 0, projects: [], total: 0 };
+		});
+
+		initProjectsTab(() => {
+			void loadProjectsData();
+		});
+		const olderLoad = loadProjectsData();
+		const search = document.getElementById("projectsSearch") as HTMLInputElement;
+		search.value = "new";
+		search.dispatchEvent(new Event("input"));
+		await vi.waitFor(() => expect(document.body.textContent).toContain("new result"));
+
+		resolveOldFiltered({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [project({ display_project: "old result", workspace_identity: "old-result" })],
+			total: 1,
+		});
+		await olderLoad;
+
+		expect(document.body.textContent).toContain("new result");
+		expect(document.body.textContent).not.toContain("old result");
+	});
+});
 
 describe("Projects refresh cancellation", () => {
 	it("does not mark retained Team setup status unavailable after cancellation", async () => {
