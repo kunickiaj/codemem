@@ -21,26 +21,31 @@ export function ProjectInventory({ callbacks, error, view }: ProjectInventoryPro
 		);
 	if (view.rows.length === 0) return <div className="settings-note">No matching projects</div>;
 	return (
-		<section className="project-inventory-table" aria-label="Projects">
-			<div className="project-inventory-table-header project-inventory-table-row">
-				<span aria-hidden="true" />
-				<span>Project</span>
-				<span>Memories</span>
-				<span>Sessions</span>
-				<span>Last activity</span>
-				<span>Shared with</span>
-				<span aria-hidden="true" />
-			</div>
-			<div className="project-inventory-table-body">
-				{view.rows.map((row) =>
-					row.kind === "cluster" ? (
-						<ProjectClusterRow callbacks={callbacks} key={row.key} model={row} view={view} />
-					) : (
-						<ProjectRow callbacks={callbacks} key={row.key} model={row} view={view} />
-					),
-				)}
-			</div>
-		</section>
+		<table className="project-inventory-table">
+			<caption className="sr-only">Projects</caption>
+			<thead>
+				<tr className="project-inventory-table-header project-inventory-table-row">
+					<th scope="col">
+						<span className="sr-only">Select</span>
+					</th>
+					<th scope="col">Project</th>
+					<th scope="col">Memories</th>
+					<th scope="col">Sessions</th>
+					<th scope="col">Last activity</th>
+					<th scope="col">Shared with</th>
+					<th scope="col">
+						<span className="sr-only">Actions</span>
+					</th>
+				</tr>
+			</thead>
+			{view.rows.map((row) =>
+				row.kind === "cluster" ? (
+					<ProjectClusterRow callbacks={callbacks} key={row.key} model={row} view={view} />
+				) : (
+					<ProjectRow callbacks={callbacks} key={row.key} model={row} view={view} />
+				),
+			)}
+		</table>
 	);
 }
 

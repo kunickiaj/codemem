@@ -21,6 +21,7 @@ import {
 
 interface ProjectRowDetailsProps {
 	callbacks: ProjectInventoryCallbacks;
+	confirmationActionRef: RefObject<HTMLButtonElement>;
 	model: ProjectInventoryProjectViewModel;
 	onOpenChange: (open: boolean) => void;
 	open: boolean;
@@ -208,7 +209,11 @@ function ProjectSecondaryActions({
 	);
 }
 
-function SpaceConfirmation({ callbacks, model }: Pick<DetailsContentProps, "callbacks" | "model">) {
+function SpaceConfirmation({
+	callbacks,
+	confirmationActionRef,
+	model,
+}: Pick<DetailsContentProps, "callbacks" | "confirmationActionRef" | "model">) {
 	const confirmation = model.pendingConfirmation;
 	if (!confirmation) return null;
 	return (
@@ -232,6 +237,7 @@ function SpaceConfirmation({ callbacks, model }: Pick<DetailsContentProps, "call
 			<button
 				className="settings-button"
 				onClick={() => void callbacks.confirmProjectScope(model.project.workspace_identity)}
+				ref={confirmationActionRef}
 				type="button"
 			>
 				I understand, save Space
@@ -249,8 +255,9 @@ function SpaceConfirmation({ callbacks, model }: Pick<DetailsContentProps, "call
 
 function ForgetConfirmation({
 	callbacks,
+	confirmationActionRef,
 	model,
-}: Pick<DetailsContentProps, "callbacks" | "model">) {
+}: Pick<DetailsContentProps, "callbacks" | "confirmationActionRef" | "model">) {
 	const confirmation = model.pendingForgetConfirmation;
 	if (!confirmation) return null;
 	const localLabel = confirmation.localOwnedMemoryCount === 1 ? "memory" : "memories";
@@ -270,6 +277,7 @@ function ForgetConfirmation({
 			<button
 				className="settings-button danger"
 				onClick={() => void callbacks.forgetProject(model.project.workspace_identity, true)}
+				ref={confirmationActionRef}
 				type="button"
 			>
 				I understand, forget local memories
@@ -312,8 +320,16 @@ function ProjectDetailsActions(props: DetailsContentProps) {
 					<ProjectSecondaryActions callbacks={callbacks} model={model} />
 				</>
 			) : null}
-			<SpaceConfirmation callbacks={callbacks} model={model} />
-			<ForgetConfirmation callbacks={callbacks} model={model} />
+			<SpaceConfirmation
+				callbacks={callbacks}
+				confirmationActionRef={props.confirmationActionRef}
+				model={model}
+			/>
+			<ForgetConfirmation
+				callbacks={callbacks}
+				confirmationActionRef={props.confirmationActionRef}
+				model={model}
+			/>
 		</div>
 	);
 }
@@ -332,26 +348,30 @@ export function ProjectRowDetails(props: ProjectRowDetailsProps) {
 		group.scopes.some((scope) => scope.scope_id === project.resolved_scope_id),
 	);
 	return (
-		<details
-			className="project-inventory-details"
-			onToggle={(event) => onOpenChange(event.currentTarget.open)}
-			open={open}
-		>
-			<summary data-project-focus-key={`admin:${assignable}:${project.workspace_identity}`}>
-				<span>Space assignment</span>
-				{warningCount(project) > 0 ? (
-					<span className="badge badge-offline">Needs attention · {warningCount(project)}</span>
-				) : null}
-			</summary>
-			<div className="project-inventory-details-body">
-				<ProjectDetailsOverview model={model} view={view} />
-				<ProjectDetailsActions
-					{...props}
-					currentAssignable={currentAssignable}
-					scopeId={scopeId}
-					setScopeId={setScopeId}
-				/>
-			</div>
-		</details>
+		<tr className="project-inventory-details-row">
+			<td className="project-inventory-details-cell" colSpan={7}>
+				<details
+					className="project-inventory-details"
+					onToggle={(event) => onOpenChange(event.currentTarget.open)}
+					open={open}
+				>
+					<summary data-project-focus-key={`admin:${assignable}:${project.workspace_identity}`}>
+						<span>Details</span>
+						{warningCount(project) > 0 ? (
+							<span className="badge badge-offline">Needs attention · {warningCount(project)}</span>
+						) : null}
+					</summary>
+					<div className="project-inventory-details-body">
+						<ProjectDetailsOverview model={model} view={view} />
+						<ProjectDetailsActions
+							{...props}
+							currentAssignable={currentAssignable}
+							scopeId={scopeId}
+							setScopeId={setScopeId}
+						/>
+					</div>
+				</details>
+			</td>
+		</tr>
 	);
 }

@@ -63,24 +63,24 @@ function useClusterCheckbox(model: ProjectInventoryClusterViewModel) {
 
 function ClusterStats({ model, summary, view }: ClusterContentProps) {
 	return (
-		<div className="project-inventory-row-stats">
-			<span className="project-inventory-cell project-inventory-number" data-label="Memories">
+		<>
+			<td className="project-inventory-cell project-inventory-number" data-label="Memories">
 				{summary.memoryCount.toLocaleString()}
-			</span>
-			<span className="project-inventory-cell project-inventory-number" data-label="Sessions">
+			</td>
+			<td className="project-inventory-cell project-inventory-number" data-label="Sessions">
 				{summary.sessionCount.toLocaleString()}
-			</span>
-			<span className="project-inventory-cell project-inventory-latest" data-label="Last activity">
+			</td>
+			<td className="project-inventory-cell project-inventory-latest" data-label="Last activity">
 				—
-			</span>
-			<div className="project-inventory-cell project-inventory-shared" data-label="Shared with">
+			</td>
+			<td className="project-inventory-cell project-inventory-shared" data-label="Shared with">
 				<RecipientSummary
 					available={view.recipientPolicyReady}
 					cluster
 					recipients={model.recipients}
 				/>
-			</div>
-		</div>
+			</td>
+		</>
 	);
 }
 
@@ -88,7 +88,7 @@ type ClusterHeaderProps = ClusterContentProps & { onOpenAssignment: () => void; 
 
 function ClusterActions({ callbacks, model, onOpenAssignment, summary, view }: ClusterHeaderProps) {
 	return (
-		<div className="project-inventory-cell project-inventory-row-actions">
+		<td className="project-inventory-cell project-inventory-row-actions">
 			{model.projectIds.length > 0 ? (
 				<button
 					aria-label={`Add Teams or Identities for ${model.label}`}
@@ -103,7 +103,7 @@ function ClusterActions({ callbacks, model, onOpenAssignment, summary, view }: C
 			{summary.assignable.length > 0 ? (
 				<ProjectClusterMenu label={model.label} onOpenSpaceAssignment={onOpenAssignment} />
 			) : null}
-		</div>
+		</td>
 	);
 }
 
@@ -113,8 +113,8 @@ function ClusterHeader(props: ClusterHeaderProps) {
 	const allSelected =
 		model.projectIds.length > 0 && model.selectedProjectIds.length === model.projectIds.length;
 	return (
-		<div className="project-inventory-row-header project-inventory-table-row">
-			<div className="project-inventory-cell project-inventory-select-cell">
+		<tr className="project-inventory-row-header project-inventory-table-row">
+			<td className="project-inventory-cell project-inventory-select-cell">
 				{model.projectIds.length > 0 ? (
 					<label className="project-selection-control project-selection-target">
 						<input
@@ -128,8 +128,8 @@ function ClusterHeader(props: ClusterHeaderProps) {
 						<span className="sr-only">Select all identities for {model.label}</span>
 					</label>
 				) : null}
-			</div>
-			<div className="project-inventory-cell project-inventory-project-cell">
+			</td>
+			<td className="project-inventory-cell project-inventory-project-cell">
 				<strong className="project-inventory-title" id={titleId}>
 					{model.label}
 				</strong>
@@ -141,10 +141,10 @@ function ClusterHeader(props: ClusterHeaderProps) {
 						</Chip>
 					) : null}
 				</div>
-			</div>
+			</td>
 			<ClusterStats {...props} />
 			<ClusterActions {...props} />
-		</div>
+		</tr>
 	);
 }
 
@@ -227,31 +227,30 @@ function ClusterWarnings({ summary }: Pick<ClusterContentProps, "summary">) {
 }
 
 function ClusterDetails(props: ClusterDetailsProps) {
-	const { callbacks, model, onOpenChange, open, summary, view } = props;
+	const { onOpenChange, open, summary } = props;
 	return (
-		<details
-			className="project-inventory-details"
-			onToggle={(event) => onOpenChange(event.currentTarget.open)}
-			open={open}
-		>
-			<summary>
-				<span>Space assignment</span>
-				{summary.warningTotal > 0 ? (
-					<span className="badge badge-offline">Needs attention · {summary.warningTotal}</span>
-				) : null}
-			</summary>
-			<div className="project-inventory-details-body">
-				<div className="project-inventory-actions">
-					<ClusterAssignmentControls {...props} />
-					<ClusterWarnings summary={summary} />
-				</div>
-			</div>
-			<div className="project-inventory-cluster-children">
-				{model.projects.map((project) => (
-					<ProjectRow callbacks={callbacks} child key={project.key} model={project} view={view} />
-				))}
-			</div>
-		</details>
+		<tr className="project-inventory-details-row project-inventory-cluster-details-row">
+			<td className="project-inventory-details-cell" colSpan={7}>
+				<details
+					className="project-inventory-details"
+					onToggle={(event) => onOpenChange(event.currentTarget.open)}
+					open={open}
+				>
+					<summary>
+						<span>Bulk Space details</span>
+						{summary.warningTotal > 0 ? (
+							<span className="badge badge-offline">Needs attention · {summary.warningTotal}</span>
+						) : null}
+					</summary>
+					<div className="project-inventory-details-body">
+						<div className="project-inventory-actions">
+							<ClusterAssignmentControls {...props} />
+							<ClusterWarnings summary={summary} />
+						</div>
+					</div>
+				</details>
+			</td>
+		</tr>
 	);
 }
 
@@ -275,26 +274,38 @@ export function ProjectClusterRow(props: ProjectClusterRowProps) {
 	};
 	const titleId = `project-cluster-title-${model.key.replace(/[^a-z0-9_-]/gi, "-")}`;
 	return (
-		<article
-			aria-labelledby={titleId}
-			className="project-inventory-row project-inventory-cluster"
-			data-project-cluster-key={model.key}
-		>
-			<ClusterHeader
-				{...props}
-				onOpenAssignment={openAssignment}
-				summary={summary}
-				titleId={titleId}
-			/>
-			<ClusterDetails
-				{...props}
-				onOpenChange={setDetailsOpen}
-				open={open}
-				scopeId={scopeId}
-				selectRef={selectRef}
-				setScopeId={setScopeId}
-				summary={summary}
-			/>
-		</article>
+		<>
+			<tbody
+				aria-labelledby={titleId}
+				className="project-inventory-row project-inventory-cluster"
+				data-project-cluster-key={model.key}
+			>
+				<ClusterHeader
+					{...props}
+					onOpenAssignment={openAssignment}
+					summary={summary}
+					titleId={titleId}
+				/>
+				<ClusterDetails
+					{...props}
+					onOpenChange={setDetailsOpen}
+					open={open}
+					scopeId={scopeId}
+					selectRef={selectRef}
+					setScopeId={setScopeId}
+					summary={summary}
+				/>
+			</tbody>
+			{model.projects.map((project) => (
+				<ProjectRow
+					callbacks={callbacks}
+					child
+					clusterKey={model.key}
+					key={project.key}
+					model={project}
+					view={props.view}
+				/>
+			))}
+		</>
 	);
 }

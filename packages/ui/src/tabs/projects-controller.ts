@@ -382,6 +382,7 @@ async function saveProjectMapping(
 				scopeId,
 				warnings: error.guardrailWarnings,
 			});
+			renderCurrentProjectInventory();
 			notifyProjectInventoryChanged();
 			refreshProjects?.();
 			return;
@@ -467,6 +468,7 @@ async function forgetProjectMemories(project: ProjectScopeInventoryProject, conf
 				localOwnedMemoryCount: error.preview.local_owned_memory_count,
 				peerOwnedMemoryCount: error.preview.peer_owned_memory_count,
 			});
+			renderCurrentProjectInventory();
 			notifyProjectInventoryChanged();
 			refreshProjects?.();
 			return;
@@ -559,10 +561,13 @@ function focusProjectAdministration(projectIdentity: string): boolean {
 	if (!row) return false;
 	const details = row.querySelector<HTMLDetailsElement>(".project-inventory-details");
 	if (!details) return false;
-	const cluster = row.closest<HTMLElement>(".project-inventory-cluster");
-	const clusterDetails = cluster?.querySelector<HTMLDetailsElement>(
-		":scope > .project-inventory-details",
-	);
+	const clusterKey = row.dataset.projectClusterKey;
+	const cluster = clusterKey
+		? [...document.querySelectorAll<HTMLElement>(".project-inventory-cluster")].find(
+				(candidate) => candidate.dataset.projectClusterKey === clusterKey,
+			)
+		: null;
+	const clusterDetails = cluster?.querySelector<HTMLDetailsElement>(".project-inventory-details");
 	if (clusterDetails) {
 		clusterDetails.open = true;
 		const clusterKey = cluster?.dataset.projectClusterKey;
