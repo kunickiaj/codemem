@@ -220,7 +220,7 @@ describe("project-first navigation layout", () => {
 		expect(primary).not.toContain("Space");
 	});
 
-	it("keeps legacy device controls available but outside the primary project-sharing flow", () => {
+	it("keeps legacy identity controls available without a second pairing workflow", () => {
 		const primary = html.indexOf('id="syncProjectShareOperations"');
 		const advanced = html.indexOf("Manual device and identity controls");
 		const assignment = html.indexOf('id="syncActorCreateButton"');
@@ -230,7 +230,8 @@ describe("project-first navigation layout", () => {
 		expect(advanced).toBeGreaterThan(primary);
 		expect(assignment).toBeGreaterThan(advanced);
 		expect(diagnostics).toBeGreaterThan(assignment);
-		expect(html.slice(advanced, diagnostics)).toContain("Connect another device");
+		expect(html.slice(advanced, diagnostics)).not.toContain("Connect another device");
+		expect(html.slice(advanced, diagnostics)).not.toContain("syncPairingDisclosureMount");
 		expect(html.slice(advanced, diagnostics)).toContain("Create person");
 	});
 
