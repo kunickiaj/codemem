@@ -74,7 +74,7 @@ describe("project-first navigation layout", () => {
 		const advanced = html.slice(advancedStart, advancedEnd);
 
 		expect(advanced).toContain('id="coordinatorAdminHeading" tabindex="-1"');
-		expect(advanced).toContain('href="#sharing">Team settings');
+		expect(advanced).toContain('href="#sharing" id="advancedTeamSettingsLink">Team settings');
 		expect(advanced).toContain("Groups · Invites · Join requests · Devices");
 		expect(advanced).toContain("<summary>Legacy administration</summary>");
 		expect(advanced).not.toContain('role="note"');
@@ -246,6 +246,17 @@ describe("Projects inventory overlays", () => {
 		const tableRule = html.match(/\.project-inventory-table \{([^}]*)\}/)?.[1] ?? "";
 		expect(tableRule).toContain("overflow: visible");
 		expect(html).toContain(".project-row-menu-panel { position: absolute;");
+	});
+});
+
+describe("legacy sharing review layout", () => {
+	it("keeps review visible outside collapsed manual controls", () => {
+		const panelStart = html.indexOf("<h2>People and devices</h2>");
+		const review = html.indexOf('id="syncSharingReview"', panelStart);
+		const disclosure = html.indexOf('<details class="project-inventory-details"', panelStart);
+
+		expect(review).toBeGreaterThan(panelStart);
+		expect(review).toBeLessThan(disclosure);
 	});
 });
 

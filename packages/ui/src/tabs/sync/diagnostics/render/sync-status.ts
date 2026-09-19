@@ -35,6 +35,44 @@ export function cleanupDiagnosticLabel(cleanup: SyncCleanupDiagnostics | undefin
 	return "Clear";
 }
 
+function activeSyncStatItems(input: {
+	daemonStateLabel: string;
+	lastPing: string | null;
+	lastSync: string | null;
+	pending: number;
+	retentionDeleted: number;
+	retentionEnabled: boolean;
+	retentionLastRunAt: string | null;
+	syncNoPeers: boolean;
+}): SyncStatItem[] {
+	if (input.syncNoPeers) {
+		return [
+			{ label: "State", value: "No peers" },
+			{ label: "Mode", value: "Ready to pair" },
+			{ label: "Pending events", value: input.pending },
+			{ label: "Last sync", value: "Waiting for first peer" },
+		];
+	}
+	let retention = "Disabled";
+	if (input.retentionEnabled) retention = "Enabled";
+	if (input.retentionEnabled && input.retentionLastRunAt) {
+		retention = `${input.retentionDeleted.toLocaleString()} ops last run (approx)`;
+	}
+	return [
+		{ label: "State", value: input.daemonStateLabel },
+		{ label: "Pending events", value: input.pending },
+		{
+			label: "Last sync",
+			value: input.lastSync ? `${formatAgeShort(secondsSince(input.lastSync))} ago` : "never",
+		},
+		{
+			label: "Last peer ping",
+			value: input.lastPing ? `${formatAgeShort(secondsSince(input.lastPing))} ago` : "never",
+		},
+		{ label: "Retention", value: retention },
+	];
+}
+
 export function renderSyncStatus() {
 	const syncStatusGrid = document.getElementById("syncStatusGrid");
 	const syncMeta = document.getElementById("syncMeta");
@@ -83,23 +121,24 @@ export function renderSyncStatus() {
 	const syncNoPeers = !syncDisabled && peerCount === 0;
 
 	if (syncMeta) {
-		const parts = syncDisabled
-			? [
-					"Advanced sync is off on this device",
-					"Turn on sync in Settings → Device Sync when you want pairing payloads, peer status, and recent attempt details here",
-				]
-			: syncNoPeers
-				? [
-						"Advanced sync is ready but idle",
-						"Use Show pairing command under People & devices to connect another device, then this panel will start showing live peer status and recent attempts",
-					]
-				: [
-						`Advanced state: ${daemonStateLabel}`,
-						`Peers: ${peerCount}`,
-						lastSync
-							? `Last sync: ${formatAgeShort(secondsSince(lastSync))} ago`
-							: "Last sync: never",
-					];
+		let parts: string[];
+		if (syncDisabled) {
+			parts = [
+				"Advanced sync is off on this device",
+				"Turn on sync in Settings → Device Sync when you want pairing payloads, peer status, and recent attempt details here",
+			];
+		} else if (syncNoPeers) {
+			parts = [
+				"Advanced sync is ready but idle",
+				"Use Pair a device in Devices to connect another device, then this panel will start showing live peer status and recent attempts",
+			];
+		} else {
+			parts = [
+				`Advanced state: ${daemonStateLabel}`,
+				`Peers: ${peerCount}`,
+				lastSync ? `Last sync: ${formatAgeShort(secondsSince(lastSync))} ago` : "Last sync: never",
+			];
+		}
 		if (daemonState === "offline-peers") {
 			parts.push("All peers are currently offline; sync will resume automatically");
 		}
@@ -134,33 +173,16 @@ export function renderSyncStatus() {
 				{ label: "Pending events", value: pending },
 				{ label: "Last sync", value: "Not running" },
 			]
-		: syncNoPeers
-			? [
-					{ label: "State", value: "No peers" },
-					{ label: "Mode", value: "Ready to pair" },
-					{ label: "Pending events", value: pending },
-					{ label: "Last sync", value: "Waiting for first peer" },
-				]
-			: [
-					{ label: "State", value: daemonStateLabel },
-					{ label: "Pending events", value: pending },
-					{
-						label: "Last sync",
-						value: lastSync ? `${formatAgeShort(secondsSince(lastSync))} ago` : "never",
-					},
-					{
-						label: "Last peer ping",
-						value: lastPing ? `${formatAgeShort(secondsSince(lastPing))} ago` : "never",
-					},
-					{
-						label: "Retention",
-						value: retentionEnabled
-							? retentionLastRunAt
-								? `${retentionDeleted.toLocaleString()} ops last run (approx)`
-								: "Enabled"
-							: "Disabled",
-					},
-				];
+		: activeSyncStatItems({
+				daemonStateLabel,
+				lastPing,
+				lastSync,
+				pending,
+				retentionDeleted,
+				retentionEnabled,
+				retentionLastRunAt,
+				syncNoPeers,
+			});
 
 	if (!syncDisabled && !syncNoPeers && (syncError || pingError)) {
 		items.push({

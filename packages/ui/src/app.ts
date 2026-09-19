@@ -426,6 +426,11 @@ function initTabs() {
 		setSettingsTab("sync");
 		openSettings(pausePolling);
 	});
+	$("advancedTeamSettingsLink")?.addEventListener("click", (event) => {
+		event.preventDefault();
+		switchTab("sharing", { canonicalHash: true });
+		queueMicrotask(() => document.getElementById("tabBtn-sharing")?.focus());
+	});
 
 	// Listen for hash changes (back/forward navigation). Hashes may include a
 	// sub-view segment (e.g. `#sync/diagnostics`) — parse with the shared

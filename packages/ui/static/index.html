@@ -5115,6 +5115,12 @@
           <a class="sync-subview-link" href="#sharing">Invite someone via Sharing &rarr;</a>
         </div>
 
+        <div id="syncSharingReview" hidden>
+          <h3 class="settings-group-title" style="margin-top: 20px">What teammates will receive</h3>
+          <div class="section-meta" id="syncSharingReviewMeta"></div>
+          <div class="actor-list" id="syncSharingReviewList"></div>
+        </div>
+
         <details class="project-inventory-details" style="margin-top: 20px">
           <summary>Manual device and identity controls</summary>
 
@@ -5141,12 +5147,6 @@
           <div class="device-row-skeleton"><span class="skel-pip"></span><span class="skel-name"></span><span class="skel-chip"></span></div>
         </div>
         </details>
-
-        <div id="syncSharingReview" hidden>
-          <h3 class="settings-group-title" style="margin-top: 20px">What teammates will receive</h3>
-          <div class="section-meta" id="syncSharingReviewMeta"></div>
-          <div class="actor-list" id="syncSharingReviewList"></div>
-        </div>
 
         <div id="syncLegacyClaims" hidden>
           <h3 class="settings-group-title" style="margin-top: 20px">Legacy device history</h3>
@@ -5200,7 +5200,7 @@
         <div class="card">
           <div class="section-header">
             <h2 id="coordinatorAdminHeading" tabindex="-1">Coordinator administration</h2>
-            <a class="sync-subview-link" href="#sharing">Team settings &rarr;</a>
+            <a class="sync-subview-link" href="#sharing" id="advancedTeamSettingsLink">Team settings &rarr;</a>
           </div>
           <div class="section-meta advanced-administration-sections">Groups · Invites · Join requests · Devices</div>
           <details class="advanced-administration-disclosure">
