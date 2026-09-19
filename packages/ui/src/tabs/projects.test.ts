@@ -3883,7 +3883,14 @@ describe("Projects inventory controller collision keys", () => {
 		vi.mocked(api.saveSharingDomainProjectMapping).mockRejectedValueOnce(
 			new api.SharingDomainGuardrailConfirmationError({
 				required_guardrail_tokens: ["confirm-scope"],
-				guardrail_warnings: [{ message: "Confirm this Space." }],
+				guardrail_warnings: [
+					{
+						code: "scope_change",
+						message: "Confirm this Space.",
+						requires_confirmation: true,
+						severity: "warning",
+					},
+				],
 			}),
 		);
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
