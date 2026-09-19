@@ -115,7 +115,7 @@ function healthOverviewMounts(): HealthOverviewMounts | null {
 }
 
 function healthMetaMessage(issueCount: number, drivers: string[], statusClass: string): string {
-	const parts = [`${issueCount} issues`];
+	const parts = [`${issueCount} ${issueCount === 1 ? "issue" : "issues"}`];
 	if ((statusClass === "status-degraded" || statusClass === "status-attention") && drivers.length) {
 		parts.push(drivers.join(", "));
 	}
@@ -312,6 +312,9 @@ function pipelineTile(signals: OverviewSignals): HealthTileInput {
 function syncTile(signals: OverviewSignals): HealthTileInput {
 	if (signals.syncDisabled)
 		return tile("sync", "Sync", "Off", "unknown", "Daemon state and sync recency");
+	if (signals.syncState === "unknown") {
+		return tile("sync", "Sync", "Unknown", "unknown", "Daemon state and sync recency");
+	}
 	if (SYNC_PROBLEM_STATES.has(signals.syncState)) {
 		return tile(
 			"sync",
@@ -320,6 +323,12 @@ function syncTile(signals: OverviewSignals): HealthTileInput {
 			"degraded",
 			"Daemon state and sync recency",
 		);
+	}
+	if (signals.syncNoPeers) {
+		return tile("sync", "Sync", "No peers", "unknown", "Daemon state and sync recency");
+	}
+	if (signals.syncLooksStale) {
+		return tile("sync", "Sync", "Stale", "degraded", "Daemon state and sync recency");
 	}
 	return tile("sync", "Sync", "On", "online", "Daemon state and sync recency");
 }
@@ -492,7 +501,7 @@ function commitHealthOverview(
 	renderActionList(mounts.healthActions, recommendations);
 	renderHealthStatus(mounts.healthStatus, {
 		label: status.label,
-		message: healthMetaMessage(recommendations.length, risk.drivers, status.className),
+		message: healthMetaMessage(risk.drivers.length, risk.drivers, status.className),
 		stale: hasStaleData,
 		state: healthPresenceState(status.className),
 		statusClass: status.className,

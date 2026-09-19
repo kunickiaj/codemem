@@ -125,7 +125,7 @@ function updateBannerText(): string {
 
 function expectStaleHealthMeta(): void {
 	const healthMeta = document.getElementById("healthMeta");
-	expect(healthMeta?.textContent).not.toContain("Stale data");
+	expect(healthMeta?.textContent).toContain("Stale data");
 	const staleBadge = document.querySelector("#healthStatus .badge");
 	expect(staleBadge?.textContent).toBe("Stale data");
 }
@@ -247,6 +247,42 @@ it("marks pending pipeline work and the current sync problem as degraded", () =>
 	expect(values[1]?.querySelector(".presence-pip--degraded")).not.toBeNull();
 });
 
+it("does not report unknown, unconfigured, or stale sync as online", () => {
+	state.lastSyncStatus = { enabled: true };
+	renderOverview();
+	expect(document.querySelectorAll("#healthGrid .health-tile-value")[1]?.textContent).toBe(
+		"Unknown",
+	);
+
+	state.lastSyncStatus = { enabled: true, daemon_state: "ok" };
+	renderOverview();
+	expect(document.querySelectorAll("#healthGrid .health-tile-value")[1]?.textContent).toBe(
+		"No peers",
+	);
+
+	state.lastSyncPeers = [{ peer_device_id: "peer-a" }];
+	state.lastSyncStatus = {
+		enabled: true,
+		daemon_state: "ok",
+		last_sync_at: "2020-01-01T00:00:00.000Z",
+	};
+	renderOverview();
+	const staleSync = document.querySelectorAll("#healthGrid .health-tile-value")[1];
+	expect(staleSync?.textContent).toBe("Stale");
+	expect(staleSync?.querySelector(".presence-pip--degraded")).not.toBeNull();
+});
+
+it("counts detected health risks instead of remediation rows", () => {
+	state.lastSyncPeers = [{ peer_device_id: "peer-a" }];
+	state.lastSyncStatus = { enabled: true, daemon_state: "needs_attention" };
+
+	renderOverview();
+
+	expect(document.getElementById("healthMeta")?.textContent).toMatch(
+		/^1 issue · sync needs manual attention/,
+	);
+});
+
 it("does not rewrite an unchanged Health announcement", () => {
 	const announcer = document.getElementById("healthMeta");
 
@@ -344,7 +380,7 @@ it("keeps last known critical risks visible when their snapshots are stale", () 
 
 	expect(document.getElementById("healthDot")?.title).toBe("Attention");
 	expect(document.getElementById("healthMeta")?.textContent).toMatch(
-		/^2 issues · high raw-event backlog/,
+		/^4 issues · high raw-event backlog/,
 	);
 });
 
