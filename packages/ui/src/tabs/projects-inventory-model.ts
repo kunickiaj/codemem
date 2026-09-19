@@ -16,6 +16,8 @@ export interface ProjectInventoryProjectViewModel {
 	project: ProjectScopeInventoryProject;
 	manageable: boolean;
 	selected: boolean;
+	shareEligible: boolean;
+	shareReady: boolean;
 	detailsOpen: boolean;
 	draftScopeId: string | null;
 	pendingConfirmation: {
@@ -62,6 +64,7 @@ export interface ProjectsInventoryViewModel {
 
 export interface ProjectInventoryCallbacks {
 	toggleSelection(projectIds: string[]): void;
+	shareProject(projectIdentity: string): void;
 	manageRecipients(projectIds: string[]): void;
 	setProjectDetailsOpen(key: string, open: boolean): void;
 	setClusterDetailsOpen(key: string, open: boolean): void;
@@ -81,5 +84,6 @@ export interface ProjectInventoryCallbacks {
 
 export interface ProjectsInventoryController {
 	getViewModel(): ProjectsInventoryViewModel;
+	subscribe(listener: (viewModel: ProjectsInventoryViewModel) => void): () => void;
 	callbacks: ProjectInventoryCallbacks;
 }
