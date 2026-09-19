@@ -330,6 +330,17 @@ function testRecipientFocusedSharing() {
 		expect(tab("Identities").getAttribute("aria-selected")).toBe("true");
 	});
 
+	it("opens Teams for canonical navigation from Devices", () => {
+		mount();
+		clickTab("Received");
+
+		act(() => {
+			window.dispatchEvent(new CustomEvent("codemem:navigate-sharing", { detail: "teams" }));
+		});
+
+		expect(tab("Teams").getAttribute("aria-selected")).toBe("true");
+	});
+
 	it("discloses when device setup attention cannot be loaded", () => {
 		mount(intent(), {
 			deviceInventory: {

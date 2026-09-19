@@ -197,6 +197,17 @@ const SHARING_TABS: Array<{ id: SharingTab; label: string }> = [
 	{ id: "invitations", label: "Invitations" },
 ];
 
+function useSharingNavigation(setActiveTab: (tab: SharingTab) => void): void {
+	useEffect(() => {
+		const navigate = (event: Event) => {
+			const tab = (event as CustomEvent<SharingTab>).detail;
+			if (SHARING_TABS.some((candidate) => candidate.id === tab)) setActiveTab(tab);
+		};
+		window.addEventListener("codemem:navigate-sharing", navigate);
+		return () => window.removeEventListener("codemem:navigate-sharing", navigate);
+	}, [setActiveTab]);
+}
+
 function SharingTabPanel({
 	children,
 	hidden,
@@ -756,6 +767,7 @@ function RecipientPolicySharing({
 	const [activeTab, setActiveTab] = useState<SharingTab>(() =>
 		intent.teams.some((team) => team.status === "active") ? "teams" : "identities",
 	);
+	useSharingNavigation(setActiveTab);
 	const initialSelectionPending = useRef(options.loading === true || options.loadError === true);
 	const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
 	const setupAttentionItems = deviceIdentityAttentionItems(options.deviceInventory);

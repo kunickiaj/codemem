@@ -564,6 +564,12 @@ function navigateFromDevices(target: DevicesNavigationTarget) {
 		queueMicrotask(() => document.getElementById("tabBtn-advanced")?.focus());
 		return;
 	}
+	if (target === "sharing_teams") {
+		switchTab("sharing", { canonicalHash: true });
+		window.dispatchEvent(new CustomEvent("codemem:navigate-sharing", { detail: "teams" }));
+		queueMicrotask(() => document.getElementById("tabBtn-sharing")?.focus());
+		return;
+	}
 	switchTab(target, { canonicalHash: true });
 	queueMicrotask(() => document.getElementById(`tabBtn-${target}`)?.focus());
 }

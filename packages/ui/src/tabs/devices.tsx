@@ -24,7 +24,12 @@ import {
 import { state } from "../lib/state";
 
 export type DeviceAvailabilityState = "available" | "offline" | "unknown";
-export type DevicesNavigationTarget = "advanced" | "advanced_sync" | "health" | "sharing";
+export type DevicesNavigationTarget =
+	| "advanced"
+	| "advanced_sync"
+	| "health"
+	| "sharing"
+	| "sharing_teams";
 
 export interface DeviceAvailabilityInput {
 	deviceId: string;
@@ -95,6 +100,7 @@ export interface DevicesProjection {
 }
 
 type DeviceActionFocusIdentity = {
+	control: "action" | "menu";
 	deviceId: string;
 	target: DevicesNavigationTarget;
 };
@@ -1084,12 +1090,16 @@ function DeviceRowMenu({
 	device,
 	inventoryItem,
 	onDetails,
+	detailsId,
+	detailsOpen,
 	onRebind,
 	options,
 }: {
 	device: DeviceProjection;
 	inventoryItem?: DeviceIdentityInventoryItemV1;
 	onDetails: () => void;
+	detailsId: string;
+	detailsOpen: boolean;
 	onRebind: () => void;
 	options: DevicesRendererOptions;
 }) {
@@ -1112,6 +1122,7 @@ function DeviceRowMenu({
 				ref={(element) => {
 					if (element && device.action) {
 						deviceActionFocusIdentities.set(element, {
+							control: "menu",
 							deviceId: device.deviceId,
 							target: device.action.target,
 						});
@@ -1126,12 +1137,27 @@ function DeviceRowMenu({
 						aria-label={`${device.action.label} for ${device.displayName}`}
 						className="feed-menu-item"
 						onClick={() => select(() => options.onNavigate?.(device.action?.target ?? "health"))}
+						ref={(element) => {
+							if (element && device.action) {
+								deviceActionFocusIdentities.set(element, {
+									control: "action",
+									deviceId: device.deviceId,
+									target: device.action.target,
+								});
+							}
+						}}
 						type="button"
 					>
 						{device.action.label}
 					</button>
 				) : null}
-				<button className="feed-menu-item" onClick={() => select(onDetails)} type="button">
+				<button
+					aria-controls={detailsId}
+					aria-expanded={detailsOpen}
+					className="feed-menu-item"
+					onClick={() => select(onDetails)}
+					type="button"
+				>
 					Details
 				</button>
 				{inventoryItem ? (
@@ -1194,6 +1220,8 @@ function DeviceTableRow({
 				<td>
 					<DeviceRowMenu
 						device={device}
+						detailsId={detailsId}
+						detailsOpen={detailsOpen}
 						inventoryItem={inventoryItem}
 						onDetails={() => setDetailsOpen((open) => !open)}
 						onRebind={() => {
@@ -1275,7 +1303,7 @@ function DeviceIdentityGroup({
 					Direct shares: {directShares || "none"} ·{" "}
 					<button
 						className="sync-subview-link"
-						onClick={() => options.onNavigate?.("sharing")}
+						onClick={() => options.onNavigate?.("sharing_teams")}
 						type="button"
 					>
 						Team projects →
@@ -1613,6 +1641,28 @@ function DevicesRoot({
 	);
 }
 
+function restoreDeviceActionFocus(
+	mount: HTMLElement,
+	focusedAction: DeviceActionFocusIdentity,
+): void {
+	const focusTargets = [
+		...mount.querySelectorAll<HTMLElement>(".feed-menu-trigger, .feed-menu-item"),
+	];
+	const matchingAction = focusTargets.find((element) => {
+		const identity = deviceActionFocusIdentities.get(element);
+		return (
+			identity?.control === focusedAction.control &&
+			identity.deviceId === focusedAction.deviceId &&
+			identity.target === focusedAction.target
+		);
+	});
+	const fallbackMenu = focusTargets.find((element) => {
+		const identity = deviceActionFocusIdentities.get(element);
+		return identity?.control === "menu" && identity.deviceId === focusedAction.deviceId;
+	});
+	(matchingAction ?? fallbackMenu ?? document.getElementById("tabBtn-devices"))?.focus();
+}
+
 export function mountDevices(
 	mount: HTMLElement,
 	intent: RecipientPolicyIntentGraphV1,
@@ -1664,13 +1714,5 @@ export function mountDevices(
 		}
 	}
 	if (!focusedAction) return;
-	const matchingAction = [...mount.querySelectorAll<HTMLElement>(".feed-menu-trigger")].find(
-		(element) => {
-			const identity = deviceActionFocusIdentities.get(element);
-			return (
-				identity?.deviceId === focusedAction.deviceId && identity.target === focusedAction.target
-			);
-		},
-	);
-	(matchingAction ?? document.getElementById("tabBtn-devices"))?.focus();
+	restoreDeviceActionFocus(mount, focusedAction);
 }

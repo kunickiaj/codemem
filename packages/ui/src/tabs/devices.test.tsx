@@ -406,6 +406,32 @@ describe("Devices reconciliation focus", () => {
 		);
 		expect(state.pendingDeviceIdentityFocus).toBeUndefined();
 	});
+
+	it("restores focus when a conditional row action disappears", () => {
+		document.body.insertAdjacentHTML("beforeend", '<button id="tabBtn-devices">Devices</button>');
+		const element = document.getElementById("mount");
+		if (!element) throw new Error("mount missing");
+		act(() =>
+			mountDevices(
+				element,
+				intent(),
+				reconciliation(),
+				projects,
+				[{ deviceId: "device-address-fingerprint-secret", state: "offline" }],
+				{ onNavigate: vi.fn() },
+			),
+		);
+		const action = [...element.querySelectorAll<HTMLButtonElement>(".feed-menu-item")].find(
+			(button) => button.textContent === "Check device health",
+		);
+		action?.focus();
+
+		mount(intent(), reconciliation(), { onNavigate: vi.fn() });
+
+		expect(document.activeElement).toBe(
+			document.querySelector('[aria-label="Actions for Work Laptop"]'),
+		);
+	});
 });
 describe("Device access projection", () => {
 	it("retains requested device focus while a refresh is showing stale inventory", () => {
@@ -649,17 +675,25 @@ describe("Device identity grouping", () => {
 		expect(table.querySelectorAll(".devices-table-row")).toHaveLength(1);
 		const detailsRow = table.querySelector<HTMLElement>(".devices-table-details");
 		expect(detailsRow?.hidden).toBe(true);
+		const detailsButton = [...table.querySelectorAll<HTMLButtonElement>("button")].find(
+			(button) => button.textContent === "Details",
+		);
+		expect(detailsButton?.getAttribute("aria-expanded")).toBe("false");
+		expect(detailsButton?.getAttribute("aria-controls")).toBe(detailsRow?.id);
 		act(() => {
-			(
-				[...table.querySelectorAll<HTMLButtonElement>("button")].find(
-					(button) => button.textContent === "Details",
-				) as HTMLButtonElement
-			).click();
+			detailsButton?.click();
 		});
 		expect(detailsRow?.hidden).toBe(false);
+		expect(detailsButton?.getAttribute("aria-expanded")).toBe("true");
 		expect(detailsRow?.textContent).toContain("API — Up to date");
 		expect(onNavigate).not.toHaveBeenCalled();
 		expect(document.body.textContent).toContain("1 revoked device is not included");
+		act(() => {
+			[...document.querySelectorAll<HTMLButtonElement>("button")]
+				.find((button) => button.textContent === "Team projects →")
+				?.click();
+		});
+		expect(onNavigate).toHaveBeenCalledWith("sharing_teams");
 	});
 
 	it("routes device invitations to Sharing without inferring the viewer's Identity", () => {
@@ -743,7 +777,7 @@ describe("Device availability summary", () => {
 			".devices-identity-header .sync-subview-link",
 		);
 		act(() => sharingButton?.click());
-		expect(onNavigate).toHaveBeenCalledWith("sharing");
+		expect(onNavigate).toHaveBeenCalledWith("sharing_teams");
 	});
 
 	it("renders loading, error, and active-device empty states with live-region semantics", () => {
