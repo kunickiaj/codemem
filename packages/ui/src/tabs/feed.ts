@@ -61,8 +61,6 @@ function resetPagination(project: string) {
 	state.lastFeedFilteredCount = 0;
 	state.lastFeedSignature = "";
 	state.newItemKeys.clear();
-	state.itemViewState.clear();
-	state.itemExpandState.clear();
 }
 
 function hasMorePages(): boolean {
@@ -186,6 +184,7 @@ async function loadMoreFeedPage() {
 
 export const __feedSearchTestHooks = {
 	loadMoreFeedPage,
+	resetPagination,
 	maybeLoadMoreFeedPage,
 	pagination: () => ({
 		observationOffset,

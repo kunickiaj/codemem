@@ -2085,7 +2085,9 @@
         transition: background-color var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard);
       }
       .toggle-button:hover { background: var(--toggle-hover-bg); color: var(--text-primary); }
-      .toggle-button.active {
+      .toggle-button.active,
+      .toggle-button[data-state="checked"],
+      .toggle-button[aria-checked="true"] {
         background: var(--accent-subtle);
         color: var(--accent);
         box-shadow: inset 0 0 0 1px var(--accent-strong);
@@ -2160,18 +2162,14 @@
       .feed-skeleton-chip.w-56 { width: 56px; }
 
       /* ── Feed items ────────────────────────────────────────── */
-      /* Design-handoff clarification (2026-04-19): feed items render with
-         a full-width top banner in the kind's tint, not a 4px left rail.
-         Banner ~28px tall, --accent-subtle bg per kind, 1px accent-strong
-         bottom border; kind chip sits inset left inside the banner. */
-
       .feed-item {
+        display: grid;
+        grid-template-columns: 104px minmax(0, 1fr) auto;
+        column-gap: var(--sp-4);
+        padding: var(--sp-4) var(--sp-5);
         border: 1px solid var(--border);
-        border-radius: var(--radius-md);
+        border-radius: var(--radius-lg);
         background: var(--surface-1);
-        overflow: hidden;
-        display: flex;
-        flex-direction: column;
         box-shadow: var(--shadow-sm);
         transition: transform var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard);
       }
@@ -2181,53 +2179,30 @@
         border-color: var(--border-hover);
       }
 
-      /* Kind banner — defaults to mint (feature). Per-kind overrides below. */
-      .feed-kind-banner {
-        padding: 7px var(--sp-5);
-        background: var(--accent-subtle);
-        border-bottom: 1px solid var(--accent-strong);
-      }
-      .feed-item.change .feed-kind-banner { background: var(--accent-cool-subtle); border-bottom-color: color-mix(in srgb, var(--accent-cool) 30%, transparent); }
-      .feed-item.bugfix .feed-kind-banner { background: var(--accent-warm-subtle); border-bottom-color: color-mix(in srgb, var(--accent-warm) 30%, transparent); }
-      .feed-item.refactor .feed-kind-banner { background: var(--accent-violet-subtle); border-bottom-color: color-mix(in srgb, var(--accent-violet) 30%, transparent); }
-      .feed-item.discovery .feed-kind-banner { background: var(--accent-steel-subtle); border-bottom-color: color-mix(in srgb, var(--accent-steel) 30%, transparent); }
-      .feed-item.docs .feed-kind-banner { background: var(--accent-ochre-subtle); border-bottom-color: color-mix(in srgb, var(--accent-ochre) 30%, transparent); }
-      .feed-item.test .feed-kind-banner { background: var(--accent-neutral-subtle); border-bottom-color: color-mix(in srgb, var(--accent-neutral) 30%, transparent); }
-      /* Core emits 'decision' / 'exploration' / 'session_summary' too — preserve
-         neutral treatments so those items aren't unstyled. */
-      .feed-item.decision .feed-kind-banner { background: var(--accent-neutral-subtle); border-bottom-color: color-mix(in srgb, var(--accent-neutral) 30%, transparent); }
-      .feed-item.exploration .feed-kind-banner { background: color-mix(in srgb, var(--text-tertiary) 12%, transparent); border-bottom-color: color-mix(in srgb, var(--text-tertiary) 24%, transparent); }
-      .feed-item.session_summary .feed-kind-banner { background: color-mix(in srgb, var(--accent-cool) 10%, transparent); border-bottom-color: color-mix(in srgb, var(--accent-cool) 22%, transparent); }
-
+      .feed-kind-rail { align-self: start; min-width: 0; }
       .feed-card-body {
-        padding: var(--sp-4) var(--sp-5);
         display: flex;
         flex-direction: column;
+        min-width: 0;
         gap: var(--sp-2);
       }
-
-      .feed-card-header {
+      .feed-card-side {
         display: flex;
-        align-items: flex-start;
+        flex-direction: column;
+        align-items: flex-end;
         justify-content: space-between;
+        min-width: 0;
         gap: var(--sp-3);
       }
-      .feed-card-header > .feed-header { flex: 1; overflow: hidden; }
-
-      .feed-header {
+      .feed-card-side-top,
+      .feed-card-side-bottom {
         display: flex;
         align-items: center;
-        gap: var(--sp-2);
-        flex-wrap: wrap;
+        justify-content: flex-end;
         min-width: 0;
-      }
-
-      .feed-actions {
-        display: flex;
-        align-items: center;
         gap: var(--sp-2);
-        flex-shrink: 0;
       }
+      .feed-card-side-bottom { flex-wrap: wrap; }
 
       .feed-menu-panel {
         min-width: 180px;
@@ -2287,24 +2262,84 @@
       }
 
       .feed-title {
-        font-weight: var(--font-weight-semibold);
-        font-size: var(--font-size-lg);
-        flex: 1;
-        min-width: 0;
-        display: -webkit-box;
-        -webkit-box-orient: vertical;
-        -webkit-line-clamp: 2;
-        overflow: hidden;
-        overflow-wrap: anywhere;
-        word-break: break-word;
-      }
-      .feed-card-subtitle {
+        display: block;
         width: 100%;
-        color: var(--text-tertiary);
+        min-width: 0;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--text-primary);
+        font-family: var(--font-sans);
+        font-size: var(--font-size-lg);
+        font-weight: var(--font-weight-semibold);
+        line-height: 1.35;
+        overflow: hidden;
+        text-align: left;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
+      button.feed-title { cursor: pointer; }
+      button.feed-title:hover { color: var(--accent); }
+      button.feed-title:focus-visible {
+        border-radius: var(--radius-sm);
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+      .feed-summary {
+        min-width: 0;
+        overflow: hidden;
+        color: var(--text-secondary);
+        font-size: var(--font-size-md);
+        line-height: 1.4;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .feed-meta-line {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        min-width: 0;
+        gap: 6px;
+        color: var(--text-tertiary);
+        font-size: var(--font-size-sm);
+      }
+      .feed-project { color: var(--text-secondary); }
       .feed-meta {
         color: var(--text-tertiary);
         font-size: var(--font-size-sm);
+      }
+      .feed-expanded-provenance {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .feed-search-match {
+        display: flex;
+        min-width: 0;
+        gap: var(--sp-2);
+        padding: var(--sp-2) var(--sp-3);
+        border-left: 2px solid var(--accent);
+        background: var(--accent-subtle);
+        color: var(--text-secondary);
+        font-size: var(--font-size-sm);
+      }
+      .feed-search-match-label {
+        flex-shrink: 0;
+        color: var(--accent);
+        font-family: var(--font-mono);
+        text-transform: capitalize;
+      }
+      .feed-detail {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-2);
+        padding-top: var(--sp-2);
+        border-top: 1px solid var(--border);
+        animation: feedDisclosure var(--duration-fast) var(--ease-out);
+      }
+      @keyframes feedDisclosure {
+        from { opacity: 0; transform: translateY(-4px); }
+        to { opacity: 1; transform: translateY(0); }
       }
       /* Empty state renders as a terminal-output block — mono surface,
          blinking mint cursor — to match the codemem "warm local journal"
@@ -2341,12 +2376,6 @@
       @keyframes cursorBlink {
         0%, 100% { opacity: 1; }
         50% { opacity: 0; }
-      }
-
-      .feed-provenance {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
       }
 
       /* ── Chip base ─────────────────────────────────────────── */
@@ -2428,16 +2457,15 @@
       .summary-section-label { font-size: var(--font-size-xs); font-weight: var(--font-weight-semibold); text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-tertiary); }
       .summary-section-content { font-size: var(--font-size-md); line-height: 1.5; color: var(--text-primary); }
 
-      .feed-footer {
+      .feed-visibility-label {
         display: flex;
-        flex-wrap: wrap;
-        gap: var(--sp-2);
-        align-items: flex-start;
-        justify-content: space-between;
+        flex-direction: column;
+        gap: 3px;
+        color: var(--text-tertiary);
+        font-size: var(--font-size-2xs);
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
       }
-      .feed-footer-left { display: flex; flex-direction: column; gap: 6px; }
-      .feed-footer-right { display: flex; align-items: center; gap: var(--sp-2); flex-shrink: 0; }
-      .feed-visibility-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
       .feed-visibility-select {
         min-width: 180px;
         padding: 6px 10px;
@@ -2447,22 +2475,8 @@
         color: var(--text-primary);
         font-family: var(--font-sans);
         font-size: var(--font-size-sm);
-      }
-      .feed-visibility-note { width: 100%; max-width: 60ch; font-size: var(--font-size-sm); color: var(--text-tertiary); }
-
-      .feed-expand {
-        border: 1px solid var(--border);
-        background: transparent;
-        color: var(--text-tertiary);
-        padding: 3px 10px;
-        font-size: var(--font-size-xs);
-        transition: background var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard);
-      }
-      .feed-expand:hover { background: var(--accent-subtle); color: var(--accent); }
-      .feed-expand:focus-visible {
-        outline: 2px solid var(--accent);
-        outline-offset: 2px;
-        box-shadow: 0 0 0 4px var(--focus-ring);
+        letter-spacing: normal;
+        text-transform: none;
       }
 
       .feed-tags { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -2483,7 +2497,7 @@
 
       /* ── Pills & badges ────────────────────────────────────── */
 
-      /* Kind chip — lives inside .feed-kind-banner. Tint + colored border
+      /* Kind chip — lives inside .feed-kind-rail. Tint + colored border
          match the banner per kind so the chip reads as part of the strip. */
       .kind-chip {
         padding: 2px 10px;
@@ -4244,8 +4258,8 @@
         50% { transform: scale(1.3); opacity: 0.5; }
       }
 
-      /* newPulse: fresh feed items pulse their kind-banner bottom border
-         from accent-strong to transparent once on mount. The class is
+      /* newPulse: fresh feed items pulse the card outline from accent-strong
+         to transparent once on mount. The class is
          applied by feed.ts only while state.newItemKeys holds the item's
          key (700ms useEffect then clears it). Skipped entirely under
          prefers-reduced-motion so the ambient accessibility pass still
@@ -4283,18 +4297,49 @@
         .tab-panel { padding: var(--sp-4); }
         .summary-row { grid-template-columns: 1fr; }
         .health-tile-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-        .feed-card-header { flex-wrap: wrap; }
-        .feed-actions { width: 100%; justify-content: flex-end; }
         .actor-row { align-items: stretch; flex-direction: column; }
         .peer-scope-row { grid-template-columns: 1fr; }
-        .feed-visibility-controls { align-items: stretch; }
-        .feed-visibility-select { width: 100%; }
         .actor-actions { justify-content: flex-start; }
         .legacy-review-header { flex-direction: column; }
         .legacy-review-group-main { grid-template-columns: 1fr; }
         .legacy-review-count { justify-self: start; }
         .legacy-review-actions { justify-content: flex-start; }
         .legacy-review-bulk-row .settings-save { width: 100%; }
+      }
+
+      @media (max-width: 755px) {
+        .feed-item {
+          grid-template-columns: minmax(0, 1fr) auto;
+          row-gap: var(--sp-3);
+          padding: var(--sp-4);
+        }
+        .feed-kind-rail { grid-column: 1; grid-row: 1; align-self: center; }
+        .feed-card-side { display: contents; }
+        .feed-card-side-top { grid-column: 2; grid-row: 1; }
+        .feed-card-body { grid-column: 1 / -1; grid-row: 2; }
+        .feed-card-side-bottom {
+          grid-column: 1 / -1;
+          grid-row: 3;
+          justify-content: space-between;
+          flex-wrap: wrap;
+        }
+        .feed-toggle { max-width: 100%; }
+        .toggle-button { padding-inline: var(--sp-2); }
+        .feed-visibility-label { flex: 1 1 180px; }
+        .feed-visibility-select { box-sizing: border-box; width: 100%; min-width: 0; }
+        .feed-meta-line { max-width: 100%; }
+        .feed-file { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+      }
+
+      @media print {
+        .feed-menu-trigger,
+        .feed-card-side-bottom { display: none !important; }
+        .feed-item {
+          break-inside: avoid;
+          grid-template-columns: 104px minmax(0, 1fr) auto;
+          box-shadow: none;
+        }
+        .feed-item:hover { transform: none; box-shadow: none; }
       }
 
       @media (max-width: 720px) {
@@ -4347,7 +4392,9 @@
 
       @media (prefers-reduced-motion: reduce) {
         .health-loading-icon,
-        .viewer-reconnect-spinner {
+        .viewer-reconnect-spinner,
+        .feed-detail,
+        .feed-item.new-item {
           animation: none;
         }
         *, *::before, *::after {
