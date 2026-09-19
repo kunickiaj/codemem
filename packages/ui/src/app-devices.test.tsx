@@ -685,17 +685,17 @@ describe("Devices app integration", () => {
 	});
 
 	it("joins runtime metadata only from the matched paired peer", () => {
-		const cards = [...document.querySelectorAll<HTMLElement>("#tab-devices article")];
+		const cards = [...document.querySelectorAll<HTMLElement>("#tab-devices .devices-table-row")];
 		const workLaptop = cards.find(
-			(card) => card.querySelector("h3")?.textContent === "Work Laptop",
+			(card) => card.querySelector("strong")?.textContent === "Work Laptop",
 		);
 		const coordinatorTablet = cards.find(
-			(card) => card.querySelector("h3")?.textContent === "Coordinator Tablet",
+			(card) => card.querySelector("strong")?.textContent === "Coordinator Tablet",
 		);
 		if (!workLaptop || !coordinatorTablet) throw new Error("Expected device cards missing");
 
-		expect(workLaptop.textContent).toContain("Codemem version0.42.0");
-		expect(coordinatorTablet.textContent).not.toContain("Codemem version");
+		expect(workLaptop.querySelector(".devices-table-version")?.textContent).toBe("0.42.0");
+		expect(coordinatorTablet.querySelector(".devices-table-version")?.textContent).toBe("—");
 		expect(document.getElementById("tab-devices")?.textContent).not.toContain("9.9.9");
 	});
 
@@ -944,7 +944,7 @@ describe("Devices app integration", () => {
 			await vi.advanceTimersByTimeAsync(5_100);
 		});
 
-		expect(document.querySelector("#tab-devices article")).toBeNull();
+		expect(document.querySelector("#tab-devices .devices-table-row")).toBeNull();
 		expect(document.activeElement).toBe(document.getElementById("tabBtn-devices"));
 	});
 

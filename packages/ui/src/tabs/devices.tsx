@@ -1091,6 +1091,14 @@ function DeviceRowMenu({
 						aria-label={`${device.action.label} for ${device.displayName}`}
 						className="feed-menu-item"
 						onClick={() => select(() => options.onNavigate?.(device.action?.target ?? "health"))}
+						ref={(element) => {
+							if (element && device.action) {
+								deviceActionFocusIdentities.set(element, {
+									deviceId: device.deviceId,
+									target: device.action.target,
+								});
+							}
+						}}
 						type="button"
 					>
 						{device.action.label}
@@ -1538,6 +1546,25 @@ function DevicesRoot({
 	);
 }
 
+function restoreDeviceActionFocus(
+	mount: HTMLElement,
+	focusedElement: HTMLElement,
+	focusedAction: DeviceActionFocusIdentity,
+): void {
+	const matchingActions = [
+		...mount.querySelectorAll<HTMLElement>(".feed-menu-trigger, .feed-menu-item"),
+	].filter((element) => {
+		const identity = deviceActionFocusIdentities.get(element);
+		return (
+			identity?.deviceId === focusedAction.deviceId && identity.target === focusedAction.target
+		);
+	});
+	const matchingAction =
+		matchingActions.find((element) => element.tagName === focusedElement.tagName) ??
+		matchingActions[0];
+	(matchingAction ?? document.getElementById("tabBtn-devices"))?.focus();
+}
+
 export function mountDevices(
 	mount: HTMLElement,
 	intent: RecipientPolicyIntentGraphV1,
@@ -1589,13 +1616,5 @@ export function mountDevices(
 		}
 	}
 	if (!focusedAction) return;
-	const matchingAction = [...mount.querySelectorAll<HTMLElement>(".feed-menu-trigger")].find(
-		(element) => {
-			const identity = deviceActionFocusIdentities.get(element);
-			return (
-				identity?.deviceId === focusedAction.deviceId && identity.target === focusedAction.target
-			);
-		},
-	);
-	(matchingAction ?? document.getElementById("tabBtn-devices"))?.focus();
+	restoreDeviceActionFocus(mount, focusedElement as HTMLElement, focusedAction);
 }

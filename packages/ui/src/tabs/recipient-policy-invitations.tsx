@@ -691,11 +691,10 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 	return (
 		<div className="recipient-policy-sharing-grid recipient-policy-sharing-responsive-grid">
 			<article className="peer-card peer-card--padded recipient-policy-sharing-card">
-				<h3>Create an invitation</h3>
-				<p>Invite a Team member, add a device, or share an exact set of Projects.</p>
+				<h3>Invite someone</h3>
 				<div className="peer-actions recipient-policy-sharing-responsive-actions">
 					<button
-						className="settings-button recipient-policy-sharing-target-24"
+						className="settings-save recipient-policy-sharing-target-24"
 						disabled={teams.length === 0}
 						onClick={(event) => {
 							chooseKind("team_member");
@@ -703,7 +702,7 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 						}}
 						type="button"
 					>
-						Invite Team member
+						Invite a teammate
 					</button>
 					<button
 						className="settings-button recipient-policy-sharing-target-24"
@@ -721,7 +720,7 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 						onClick={() => openProjectShareFlow()}
 						type="button"
 					>
-						Share exact Projects
+						Share specific projects
 					</button>
 				</div>
 				{teams.length === 0 && identities.length === 0 ? (
@@ -731,16 +730,17 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 				) : null}
 			</article>
 			<article className="peer-card peer-card--padded recipient-policy-sharing-card">
-				<h3>Accept an invitation</h3>
-				<p>Review Team membership, device access, or exact Project access before accepting.</p>
+				<h3>Accept an invite</h3>
 				<button
 					className="settings-button recipient-policy-sharing-target-24"
 					onClick={(event) => open("accept", event.currentTarget)}
 					type="button"
 				>
-					Review invitation
+					Review an invite
 				</button>
-				<p className="small">Legacy invitation import remains under Advanced, in Sync.</p>
+				<a className="recipient-policy-sharing-pointer" href="#advanced/sync">
+					Older invite codes →
+				</a>
 			</article>
 			{mode ? (
 				<RadixDialog

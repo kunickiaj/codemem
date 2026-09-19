@@ -264,7 +264,7 @@ describe("submitDiscoveredDeviceReview", () => {
 });
 
 describe("renderTeamSync discovered-device state", () => {
-	it("presents a stale unpaired device as attention-visible but not reviewable", () => {
+	it("keeps a stale unpaired device visible without creating a duplicate attention task", () => {
 		document.body.innerHTML = `
 			<div id="syncTeamMeta"></div>
 			<div id="syncSetupPanel"></div>
@@ -303,8 +303,8 @@ describe("renderTeamSync discovered-device state", () => {
 
 		const actions = document.getElementById("syncTeamActions") as HTMLElement;
 		const discovered = document.getElementById("syncCoordinatorDiscoveredList") as HTMLElement;
-		expect(actions.textContent).toContain("Desk Mini is available to review");
-		expect(actions.textContent).toContain("Open device");
+		expect(actions.textContent).not.toContain("Desk Mini is available to review");
+		expect(actions.textContent).not.toContain("Open device");
 		expect(discovered.textContent).toContain("Offline");
 		expect(discovered.textContent).toContain("No fresh addresses");
 		expect(discovered.textContent).toContain(
