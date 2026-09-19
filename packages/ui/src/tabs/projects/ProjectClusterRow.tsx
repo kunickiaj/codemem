@@ -301,7 +301,7 @@ export function ProjectClusterRow(props: ProjectClusterRowProps) {
 					callbacks={callbacks}
 					child
 					clusterKey={model.key}
-					key={project.key}
+					key={`${project.project.read_only ? "received" : "local"}:${project.key}`}
 					model={project}
 					view={props.view}
 				/>

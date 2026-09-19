@@ -97,7 +97,7 @@ function MenuSurface({ actions, label }: { actions: MenuAction[]; label: string 
 		};
 		document.addEventListener("pointerdown", outside);
 		return () => document.removeEventListener("pointerdown", outside);
-	}, [enabled, open]);
+	}, [open]);
 	const openFromKeyboard = (event: KeyboardEvent) => {
 		if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
 		event.preventDefault();
