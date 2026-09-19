@@ -228,7 +228,7 @@ function updateBannerCopy(status: UpdateStatus): UpdateBannerCopy {
 
 function UpdateBanner({ status }: { status: UpdateStatus }) {
 	const copy = updateBannerCopy(status);
-	const showDetail = copy.tone !== "badge-online" || status.stale;
+	const showDetail = copy.tone !== "badge-online" || status.stale || Boolean(status.error);
 	const detail = status.stale
 		? `${copy.title} ${status.error ? `This result is stale because a fresh check failed: ${status.error}` : "This result is cached and may be stale."}`
 		: copy.title;

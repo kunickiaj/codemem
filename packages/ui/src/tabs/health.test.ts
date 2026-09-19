@@ -1017,6 +1017,17 @@ describe("Health update banner channels and guidance", () => {
 		);
 	});
 
+	it("shows a fresh cache-write error in the live update status", () => {
+		setUpdateStatus({ ...availableStatus, error: "release cache is read-only" });
+
+		renderOverview();
+
+		expect(
+			document.querySelector("#healthUpdateBanner .health-update-detail")?.textContent,
+		).toContain("release cache is read-only");
+		expect(document.querySelector("#healthUpdateBanner .badge-online")).not.toBeNull();
+	});
+
 	it("shows a recoverable unavailable state without claiming the installation is current", () => {
 		// Arrange
 		setUpdateStatus({
