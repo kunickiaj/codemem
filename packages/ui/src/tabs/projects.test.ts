@@ -3880,6 +3880,12 @@ describe("Projects inventory controller collision keys", () => {
 
 	it("keys colliding local and peer rows independently", async () => {
 		const workspaceIdentity = "peer-received:controller-collision";
+		vi.mocked(api.saveSharingDomainProjectMapping).mockRejectedValueOnce(
+			new api.SharingDomainGuardrailConfirmationError({
+				required_guardrail_tokens: ["confirm-scope"],
+				guardrail_warnings: [{ message: "Confirm this Space." }],
+			}),
+		);
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
 			has_more: false,
 			limit: 250,
@@ -3915,6 +3921,20 @@ describe("Projects inventory controller collision keys", () => {
 		expect(
 			refreshedRow.projects.find((entry) => entry.project.read_only !== true)?.detailsOpen,
 		).toBe(false);
+
+		await controller.callbacks.saveProjectScope(workspaceIdentity, "exampleco-work");
+		const confirmationRow = controller.getViewModel().rows[0];
+		if (confirmationRow?.kind !== "cluster") {
+			throw new Error("confirmation project cluster missing");
+		}
+		expect(
+			confirmationRow.projects.find((entry) => entry.project.read_only !== true)
+				?.pendingConfirmation,
+		).not.toBeNull();
+		expect(
+			confirmationRow.projects.find((entry) => entry.project.read_only === true)
+				?.pendingConfirmation,
+		).toBeNull();
 	});
 });
 

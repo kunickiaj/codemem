@@ -1098,6 +1098,7 @@ function appendProjectScopeConfirmation(
 	cancel.textContent = "Cancel";
 	cancel.addEventListener("click", () => {
 		pendingConfirmations.delete(project.workspace_identity);
+		notifyProjectInventoryChanged();
 		refreshProjects?.();
 	});
 	warningBox.append(title, intro, list, confirm, cancel);
@@ -1131,6 +1132,7 @@ function appendProjectForgetConfirmation(
 	cancel.textContent = "Cancel";
 	cancel.addEventListener("click", () => {
 		pendingForgetConfirmations.delete(project.workspace_identity);
+		notifyProjectInventoryChanged();
 		refreshProjects?.();
 	});
 	warningBox.append(title, intro, detail, confirm, cancel);
@@ -1563,9 +1565,14 @@ function projectClusters(
 
 function projectViewModel(project: ProjectScopeInventoryProject): ProjectInventoryProjectViewModel {
 	const manageable = isRecipientPolicyManageableProject(project);
+	const locallyAssignable = isLocallyAssignableProject(project);
 	const detailKey = projectRowKey(project);
-	const pending = pendingConfirmations.get(project.workspace_identity);
-	const pendingForget = pendingForgetConfirmations.get(project.workspace_identity);
+	const pending = locallyAssignable
+		? pendingConfirmations.get(project.workspace_identity)
+		: undefined;
+	const pendingForget = locallyAssignable
+		? pendingForgetConfirmations.get(project.workspace_identity)
+		: undefined;
 	return {
 		kind: "project",
 		key: detailKey,
