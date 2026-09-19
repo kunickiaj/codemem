@@ -15,11 +15,9 @@ function renderPanels(overrides: Partial<Parameters<typeof SyncInviteJoinPanels>
 				invitePanelOpen={false}
 				inviteRestoreParent={null}
 				joinPanel={null}
-				joinPanelOpen={false}
 				joinRestoreParent={null}
 				presenceStatus="posted"
 				onToggleInvitePanel={() => {}}
-				onToggleJoinPanel={() => {}}
 				{...overrides}
 			/>,
 			mount as HTMLDivElement,
@@ -44,10 +42,19 @@ describe("SyncInviteJoinPanels", () => {
 	it("keeps anchor-peer setup out of the primary invite/join flow", () => {
 		const root = renderPanels();
 
-		expect(root.textContent).toContain("Accept an invite or pairing");
-		expect(root.textContent).toContain("Invite a teammate");
+		expect(root.textContent).toContain("Set up a new team instead");
 		expect(root.textContent).not.toContain("Set up an always-on peer");
 		expect(root.textContent).not.toContain("Open anchor-peer deployment guide");
 		expect(root.textContent).not.toContain("Copy pairing command");
+	});
+
+	it("shows the invite review form without an extra disclosure", () => {
+		const joinPanel = document.createElement("div");
+		joinPanel.textContent = "Invite or pairing code";
+		joinPanel.hidden = true;
+		const root = renderPanels({ joinPanel });
+
+		expect(root.textContent).toContain("Invite or pairing code");
+		expect(joinPanel.hidden).toBe(false);
 	});
 });

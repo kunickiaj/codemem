@@ -65,10 +65,6 @@ function SectionHeading({ count, label }: { count?: number; label: string }) {
 	);
 }
 
-function SectionNote({ children }: { children: ComponentChildren }) {
-	return <div className="section-meta sync-section-note">{children}</div>;
-}
-
 function AttentionRow({
 	item,
 	onAction,
@@ -319,9 +315,6 @@ function ActionContent(props: TeamSyncPanelProps) {
 	return (
 		<>
 			{showNextStepsLabel ? <SectionHeading label="Needs attention" /> : null}
-			{showNextStepsLabel ? (
-				<SectionNote>Start here when something needs review, re-pairing, or approval.</SectionNote>
-			) : null}
 			{props.primaryStatus.nextAction ? (
 				<div className="sync-action" data-primary-sync-state={props.primaryStatus.state}>
 					<div className="sync-action-text">
@@ -340,13 +333,6 @@ function ActionContent(props: TeamSyncPanelProps) {
 					<div className="sync-action-text">No urgent team work right now.</div>
 				</div>
 			) : null}
-			{!hasAttentionItems && hasOtherActionableWork ? (
-				<div className="sync-action">
-					<div className="sync-action-text">
-						More team follow-up is listed below when you are ready.
-					</div>
-				</div>
-			) : null}
 		</>
 	);
 }
@@ -356,9 +342,6 @@ function TeamActionsContent({ children }: { children?: ComponentChildren }) {
 	return (
 		<>
 			<SectionHeading label="Add devices & teammates" />
-			<SectionNote>
-				Use these flows when you are enrolling, inviting, or pairing something new.
-			</SectionNote>
 			{children}
 		</>
 	);
@@ -381,10 +364,6 @@ function DiscoveredPortal({
 	return createPortal(
 		<>
 			<SectionHeading count={rows.length || undefined} label="Devices waiting for review" />
-			<SectionNote>
-				Review team devices here when they still need trust, re-pairing, or approval on this
-				machine.
-			</SectionNote>
 			<SyncInlineFeedback feedback={state.syncDiscoveredFeedback} />
 			{rows.map((row) => (
 				<DiscoveredDeviceRow
@@ -415,9 +394,6 @@ function PendingRequestsPortal({
 	return createPortal(
 		<>
 			<SectionHeading count={requests.length || undefined} label="Join requests to review" />
-			<SectionNote>
-				Approve or deny requests here before those devices become part of the team.
-			</SectionNote>
 			<SyncInlineFeedback feedback={state.syncJoinRequestsFeedback} />
 			{requests.map((request) => (
 				<PendingJoinRequestRow

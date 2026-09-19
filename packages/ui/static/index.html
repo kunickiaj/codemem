@@ -4092,6 +4092,23 @@
         color: var(--accent);
         background: var(--accent-subtle);
       }
+      .advanced-heading { margin: 0 0 var(--sp-4); font-size: var(--font-size-2xl); }
+      #advancedTabsMount .settings-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .advanced-sync-status,
+      .advanced-sync-status-label {
+        display: flex;
+        align-items: center;
+      }
+      .advanced-sync-status { justify-content: space-between; gap: var(--sp-4); }
+      .advanced-sync-status-label { gap: var(--sp-3); }
+      .advanced-sync-status-label .xl { font-size: var(--font-size-xl); }
+      .advanced-administration-sections { margin-bottom: var(--sp-3); }
+
+      @media (max-width: 720px) {
+        .advanced-sync-status { align-items: stretch; flex-direction: column; }
+        .advanced-sync-status .section-actions { align-items: stretch; flex-direction: column; }
+        .advanced-sync-status .settings-save { width: 100%; }
+      }
       .settings-panel { display: flex; flex-direction: column; gap: var(--sp-3); }
       .settings-panel[data-state="inactive"] { display: none; }
       .settings-panel[hidden] { display: none; }
@@ -5030,18 +5047,8 @@
 
     <!-- ── Tab: Advanced ───────────────────────────────────── -->
     <div class="tab-panel" id="tab-advanced" hidden>
-      <div class="card">
-        <div class="section-header advanced-legacy-header">
-          <div>
-            <h2>Advanced</h2>
-            <div class="section-meta">Device sync, legacy Team and Space setup, and coordinator administration.</div>
-          </div>
-          <div class="section-actions" aria-label="Advanced sections" role="group">
-            <button class="settings-button" id="advancedSyncButton" type="button" aria-pressed="true">Sync</button>
-            <button class="settings-button" id="advancedTeamsButton" type="button" aria-pressed="false">Coordinator Administration</button>
-          </div>
-        </div>
-      </div>
+      <h2 class="advanced-heading">Advanced</h2>
+      <div id="advancedTabsMount"></div>
 
       <div id="advancedSyncContent">
 
@@ -5049,20 +5056,23 @@
            app compatibility routing for canonical and legacy hashes. -->
       <div id="syncMainView">
 
+      <section class="card advanced-sync-status">
+        <div id="syncAdvancedStatusMount"></div>
+        <div class="section-actions">
+          <a class="sync-subview-link" href="#advanced/sync/diagnostics">View diagnostics &rarr;</a>
+          <button class="settings-save" id="syncTurnOnButton" type="button" hidden>Turn on sync</button>
+        </div>
+      </section>
+
       <!-- 1. Needs attention + team setup/status -->
       <div class="card" id="syncTeamCard">
         <div class="section-header">
           <div class="section-header-title">
-            <h2>Team sync</h2>
+            <h2>Join a team</h2>
             <span class="sync-online-badge" id="syncOnlineBadge" hidden role="status" aria-live="polite"></span>
           </div>
-          <div class="section-actions">
-            <button class="settings-button" id="syncShareProjectsButton" type="button">Share projects</button>
-            <button class="settings-button" id="syncNowButton">Sync now</button>
-            <a class="sync-subview-link" href="#advanced/sync/diagnostics">View diagnostics &rarr;</a>
-          </div>
         </div>
-        <div class="section-meta" id="syncTeamMeta">Start with the next step below, then review team status and device details.</div>
+        <div class="section-meta" id="syncTeamMeta" hidden></div>
         <div class="sync-skeleton" id="syncTeamSkeleton" role="status" aria-label="Loading team sync">
           <div class="sync-skeleton-line medium"></div>
           <div class="sync-skeleton-block"></div>
@@ -5072,10 +5082,9 @@
         <div id="syncSetupPanel">
           <div id="syncJoinSection">
             <h3 class="settings-group-title">Join a team</h3>
-            <div class="section-meta">Have an invite? Paste it here.</div>
             <div class="actor-create-row" id="syncJoinPanel">
-              <label for="syncJoinInvite" class="sr-only">Team invite or pairing payload</label>
-              <textarea class="feed-search" id="syncJoinInvite" placeholder="Paste a team invite or device pairing payload"></textarea>
+              <label for="syncJoinInvite" class="sr-only">Invite or pairing code</label>
+              <textarea class="feed-search" id="syncJoinInvite" placeholder="Invite or pairing code" rows="2"></textarea>
               <div id="syncProjectInviteReview" role="region" aria-labelledby="syncProjectInviteReviewHeading" hidden>
                 <h4 id="syncProjectInviteReviewHeading" tabindex="-1">Review project invitation</h4>
                 <div class="section-meta" id="syncProjectInviteContext"></div>
@@ -5099,19 +5108,18 @@
         </div>
       </div>
 
-      <!-- 2. People & devices -->
+      <!-- 2. People and devices -->
       <div class="card" style="animation-delay: 0.04s">
-        <h2>People &amp; devices</h2>
-
-        <h3 class="settings-group-title">Project sharing</h3>
-        <div class="section-meta" id="syncProjectShareOperationsMeta">Loading project sharing status…</div>
-        <div class="actor-list" id="syncProjectShareOperations" aria-live="polite"></div>
+        <div class="section-header">
+          <h2>People and devices</h2>
+          <a class="sync-subview-link" href="#sharing">Invite someone via Sharing &rarr;</a>
+        </div>
 
         <details class="project-inventory-details" style="margin-top: 20px">
           <summary>Manual device and identity controls</summary>
 
         <h3 class="settings-group-title">People</h3>
-        <div class="section-meta" id="syncActorsMeta">Create and rename people here. Assign each device below.</div>
+        <div class="section-meta" id="syncActorsMeta"></div>
         <div class="actor-create-row">
           <div class="sync-labeled-field">
             <label for="syncActorCreateInput" class="sync-labeled-field-caption">Person name</label>
@@ -5149,6 +5157,7 @@
             <button class="sync-legacy-button" id="syncLegacyClaimButton">Attach device history</button>
           </div>
         </div>
+        </details>
       </div>
 
       </div><!-- /#syncMainView -->
@@ -5163,6 +5172,7 @@
             <h2>Sync diagnostics</h2>
           </div>
           <div class="section-actions">
+            <button class="settings-button" id="syncNowButton">Sync now</button>
             <button class="settings-button" id="syncOpenDiagnostics" type="button">Recent sync events</button>
             <label class="small sync-redact-control">
               <span id="syncRedactMount"></span>
@@ -5170,7 +5180,8 @@
             </label>
           </div>
         </div>
-        <div class="section-meta" id="syncMeta">Use this surface for sync debugging and recent attempt details.</div>
+        <div class="section-meta" id="syncPrimaryStatusDetail"></div>
+        <div class="section-meta" id="syncMeta"></div>
         <div class="sync-skeleton" id="syncDiagSkeleton" role="status" aria-label="Loading diagnostics">
           <div class="sync-skeleton-line long"></div>
           <div class="sync-skeleton-line medium"></div>
@@ -5187,22 +5198,13 @@
 
       <div id="advancedTeamsContent" hidden>
         <div class="card">
-          <aside
-            aria-labelledby="coordinatorAdminLegacyNoticeTitle"
-            class="coordinator-admin-inline-warning coordinator-admin-legacy-notice"
-            role="note"
-          >
-            <div class="coordinator-admin-legacy-notice-copy">
-              <h3 id="coordinatorAdminLegacyNoticeTitle" tabindex="-1">Looking for Team settings?</h3>
-              <div class="peer-submeta">
-                Manage Team members, names, and Project access in Sharing. Use this page only for older coordinator groups and Spaces.
-              </div>
-            </div>
-            <button class="settings-button" id="coordinatorAdminOpenSharing" type="button">Open Sharing</button>
-          </aside>
-          <details class="advanced-administration-disclosure" open>
-            <summary>Coordinator Administration</summary>
-            <div class="section-meta">Technical coordinator groups, Spaces, enrollment, and recovery controls.</div>
+          <div class="section-header">
+            <h2 id="coordinatorAdminHeading" tabindex="-1">Coordinator administration</h2>
+            <a class="sync-subview-link" href="#sharing">Team settings &rarr;</a>
+          </div>
+          <div class="section-meta advanced-administration-sections">Groups · Invites · Join requests · Devices</div>
+          <details class="advanced-administration-disclosure">
+            <summary>Legacy administration</summary>
             <div id="coordinatorAdminMount"></div>
           </details>
         </div>

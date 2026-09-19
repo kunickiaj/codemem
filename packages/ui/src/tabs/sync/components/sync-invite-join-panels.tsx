@@ -45,14 +45,8 @@ function InviteToggleRow({
 	return (
 		<>
 			<div className="sync-action">
-				<div className="sync-action-text">
-					Invite a teammate.
-					<span className="sync-action-command">
-						Generate an invite when you want someone else to join this team from their device.
-					</span>
-				</div>
 				<button type="button" className="settings-button" onClick={onToggle}>
-					{invitePanelOpen ? "Hide invite form" : "Invite a teammate"}
+					{invitePanelOpen ? "Hide team setup" : "Set up a new team instead"}
 				</button>
 			</div>
 			{invitePanel ? (
@@ -66,51 +60,13 @@ function InviteToggleRow({
 	);
 }
 
-function JoinToggleRow({
-	joinPanel,
-	joinPanelOpen,
-	joinRestoreParent,
-	onToggle,
-}: {
-	joinPanel: HTMLElement | null;
-	joinPanelOpen: boolean;
-	joinRestoreParent: HTMLElement | null;
-	onToggle: () => void;
-}) {
-	return (
-		<>
-			<div className="sync-action">
-				<div className="sync-action-text">
-					Accept an invite or pairing.
-					<span className="sync-action-command">
-						Paste a team invite to join another team, or a pairing payload to connect another
-						device.
-					</span>
-				</div>
-				<button type="button" className="settings-button" onClick={onToggle}>
-					{joinPanelOpen ? "Hide paste form" : "Paste invite or pairing"}
-				</button>
-			</div>
-			{joinPanel ? (
-				<ExistingElementSlot
-					element={joinPanel}
-					hidden={!joinPanelOpen}
-					restoreParent={joinRestoreParent}
-				/>
-			) : null}
-		</>
-	);
-}
-
 export type SyncInviteJoinPanelsProps = {
 	invitePanel: HTMLElement | null;
 	invitePanelOpen: boolean;
 	inviteRestoreParent: HTMLElement | null;
 	joinPanel: HTMLElement | null;
-	joinPanelOpen: boolean;
 	joinRestoreParent: HTMLElement | null;
 	onToggleInvitePanel: () => void;
-	onToggleJoinPanel: () => void;
 	presenceStatus: string;
 };
 
@@ -119,10 +75,8 @@ export function SyncInviteJoinPanels({
 	invitePanelOpen,
 	inviteRestoreParent,
 	joinPanel,
-	joinPanelOpen,
 	joinRestoreParent,
 	onToggleInvitePanel,
-	onToggleJoinPanel,
 	presenceStatus,
 }: SyncInviteJoinPanelsProps) {
 	const notEnrolled = presenceStatus === "not_enrolled";
@@ -133,13 +87,7 @@ export function SyncInviteJoinPanels({
 			{notEnrolled ? (
 				<>
 					<div className="sync-action">
-						<div className="sync-action-text">
-							Join this device.
-							<span className="sync-action-command">
-								Paste a team invite or pairing payload below to join an existing team or connect
-								another of your devices.
-							</span>
-						</div>
+						<div className="sync-action-text">Join this device</div>
 					</div>
 					{joinPanel ? (
 						<ExistingElementSlot
@@ -149,23 +97,16 @@ export function SyncInviteJoinPanels({
 						/>
 					) : null}
 					<div className="peer-meta" id="syncJoinFeedback" hidden />
-					<div className="sync-action">
-						<div className="sync-action-text">
-							This device is not on the team yet.
-							<span className="sync-action-command">
-								Use Join this device above, or ask an admin to enroll it first.
-							</span>
-						</div>
-					</div>
 				</>
 			) : (
 				<>
-					<JoinToggleRow
-						joinPanel={joinPanel}
-						joinPanelOpen={joinPanelOpen}
-						joinRestoreParent={joinRestoreParent}
-						onToggle={onToggleJoinPanel}
-					/>
+					{joinPanel ? (
+						<ExistingElementSlot
+							element={joinPanel}
+							hidden={false}
+							restoreParent={joinRestoreParent}
+						/>
+					) : null}
 					{/* The join handler writes into state.syncJoinFlowFeedback and
 					    calls setJoinFeedbackVisibility(); that helper exits early
 					    if #syncJoinFeedback is missing from the DOM, so we must
