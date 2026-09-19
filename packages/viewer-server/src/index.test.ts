@@ -407,7 +407,7 @@ function seedReceivedProjectOriginDevices(store: MemoryStore): void {
 			 VALUES (?, ?, ?, ?)`,
 	);
 	insertPeer.run("device-b", "Desk Computer", "device-b-fingerprint", now);
-	insertPeer.run("source  peer", " source  peer ", "device-e-fingerprint", now);
+	insertPeer.run("source  peer", " Source  Peer ", "device-e-fingerprint", now);
 	const sessionId = insertTestSession(store.db);
 	store.db
 		.prepare("UPDATE sessions SET cwd = ?, project = NULL WHERE id = ?")

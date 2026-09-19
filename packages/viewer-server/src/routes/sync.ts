@@ -4722,7 +4722,9 @@ function originDeviceDisplayName(value: unknown, deviceId: string): string | nul
 		} catch {
 			// Opaque device IDs are intentionally not valid human presentation names.
 		}
-		return displayName === normalizedDeviceId ? null : displayName;
+		return displayName.toLocaleLowerCase() === normalizedDeviceId.toLocaleLowerCase()
+			? null
+			: displayName;
 	} catch {
 		return null;
 	}
