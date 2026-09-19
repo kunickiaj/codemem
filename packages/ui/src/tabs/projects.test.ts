@@ -3886,6 +3886,8 @@ describe("Projects inventory controller collision keys", () => {
 					{
 						version: 1,
 						canonicalProjectIdentity: workspaceIdentity,
+						intentSource: "user",
+						policyRevision: "revision-1",
 						recipientKind: "team",
 						teamId: "team-example",
 						status: "active",
