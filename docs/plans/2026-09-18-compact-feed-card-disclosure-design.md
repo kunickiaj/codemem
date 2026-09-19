@@ -49,6 +49,7 @@ Duplicate suppression uses semantic fields and normalized full values, not trunc
 - The collapsed summary omits any candidate line equal to the displayed title or an already selected line.
 - Normalization trims whitespace, folds repeated whitespace, and compares case-insensitively; it does not remove punctuation or truncate text.
 - Missing structured fields never erase legacy content. `body_text` remains the final summary and narrative fallback.
+- Generated markdown section headings are not content candidates. When a generated `body_text` contains only headings and lines that duplicate the title or structured summary, it does not create a separate Summary or Narrative mode.
 
 ## Provenance and Safety
 
@@ -56,7 +57,7 @@ Safety-relevant context remains visible before expansion.
 
 - Actor is always visible: `You` for self-owned items, otherwise the resolved author label.
 - Visibility is always visible as `private` or `shared` provenance.
-- A non-self-owned item always shows its trust-state chip unless the state is the ordinary trusted state.
+- A non-self-owned item always shows its trust-state chip unless the state is the ordinary trusted state. A missing legacy trust state renders `Trust unknown` rather than omitting the chip.
 - Project and `#memoryId` remain visible; the ID tooltip reads `Memory database id N`.
 - Raw device or internal source identifiers never replace a missing display label.
 - Workspace kind, origin source, resolved device detail, files, and extended provenance move to the expanded region.
@@ -71,6 +72,7 @@ The remembered preference controls presentation defaults, while item identity co
 - Expansion is keyed only by stable item identity in in-memory UI state. Active mode is stored separately so changing mode replaces detail in place without collapsing an open card.
 - Feed cards are an explicit exception to the viewer's one-open-row inline-expand default: opening one card does not collapse another. This supports comparing memory evidence while preserving each card's polling state.
 - Polling with the same identity preserves expansion and the active mode while that mode remains available. If refreshed content removes the active mode, select the supported Summary, Facts, then Narrative fallback and replace the detail inside the still-open region.
+- If polling leaves an expanded card with no content modes, clear its active mode. Keep a mode-independent Details region open when files or detailed provenance remain; otherwise collapse the card and remove its disclosure controls.
 - Pagination, filters, and project changes may temporarily remove a card but do not transfer its state to another item.
 - A full page reload preserves only the global preferred mode, not individual expanded cards.
 - A new-item pulse does not expand a card or replace its remembered mode.
@@ -83,7 +85,7 @@ The title and mode controls provide separate, explicit keyboard operations.
 - Render available modes as a labeled radiogroup with one radio per mode. Arrow keys move and select according to the radio pattern.
 - Changing mode on a collapsed card does not force it open. Changing mode on an expanded card replaces the detail in place.
 - Preserve focus on the title, selected mode, visibility control, and item menu across polling rerenders.
-- The detail region has an accessible name derived from the card title and selected mode.
+- A mode detail region has an accessible name derived from the card title and selected mode. A provenance-only region uses `<title> details` so it never depends on a missing mode.
 - Reduced-motion mode removes the new-item pulse and disclosure animation.
 - Search highlighting remains in the title and skim line. For records returned by the existing Feed search contract, if the matched text is only in hidden detail, show and highlight the matching mode excerpt so the result explains the match without permanently expanding it. When indexed legacy `body_text` differs from every rendered mode, show a separate Body match excerpt. Expanding server-side search to additional structured metadata fields is outside this UI-only change.
 
