@@ -103,11 +103,13 @@ export function trustStateLabel(trustState: string): string {
 const ORIGIN_SOURCE_LABELS: Readonly<Record<string, string>> = {
 	claude: "Claude Code",
 	codex: "Codex",
+	"derive-batch": "Derived memory",
 	mcp: "MCP",
 	observer: "Observer",
 	observer_summary: "Session summary",
 	opencode: "OpenCode",
 	pi: "Pi",
+	plugin: "Plugin",
 };
 
 export function originSourceLabel(value: unknown): string {
