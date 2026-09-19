@@ -8,6 +8,7 @@ import {
 	getActiveTab,
 	getPreferredFeedViewMode,
 	getVisibleTabs,
+	initState,
 	parseAdvancedSectionFromHash,
 	parseTabFromHash,
 	resolveAccessibleTab,
@@ -26,6 +27,16 @@ describe("Viewer tab routing", () => {
 
 	it("orders canonical tabs around the promoted project workflow", () => {
 		expect(ALL_TAB_IDS).toEqual(["feed", "projects", "sharing", "devices", "health", "advanced"]);
+	});
+
+	it("clears the retired persisted pairing disclosure", () => {
+		localStorage.setItem("codemem-sync-pairing", "1");
+		state.syncPairingOpen = true;
+
+		initState();
+
+		expect(state.syncPairingOpen).toBe(false);
+		expect(localStorage.getItem("codemem-sync-pairing")).toBeNull();
 	});
 
 	it.each(["feed", "projects", "sharing", "devices", "health", "advanced"])(

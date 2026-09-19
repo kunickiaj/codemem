@@ -49,6 +49,15 @@ describe("project-first navigation layout", () => {
 		expect(coordinatorMount).toBeGreaterThan(advancedDisclosure);
 	});
 
+	it("keeps resumable Project sharing operations in Sharing", () => {
+		const sharingStart = html.indexOf('id="tab-sharing"');
+		const sharingEnd = html.indexOf('id="tab-devices"', sharingStart);
+		const sharing = html.slice(sharingStart, sharingEnd);
+
+		expect(sharing).toContain('id="syncProjectShareOperationsMeta"');
+		expect(sharing).toContain('id="syncProjectShareOperations"');
+	});
+
 	it("reuses Sync and coordinator administration DOM inside the Advanced panel", () => {
 		const advancedStart = html.indexOf('id="tab-advanced"');
 		const advancedEnd = html.indexOf('<script src="/assets/app.js">', advancedStart);
