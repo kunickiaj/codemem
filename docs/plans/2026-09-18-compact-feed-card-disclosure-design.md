@@ -68,7 +68,7 @@ The remembered preference controls presentation defaults, while item identity co
 - Store one global preferred mode in local storage under a versioned feed-view key.
 - Selecting a mode updates the global preference and that card's active mode.
 - A card that lacks the preferred mode chooses Summary, then Facts, then Narrative without overwriting the preference.
-- Expansion is keyed by stable item identity plus active mode in in-memory UI state.
+- Expansion is keyed only by stable item identity in in-memory UI state. Active mode is stored separately so changing mode replaces detail in place without collapsing an open card.
 - Polling with the same identity preserves active mode and expansion. New content for that identity updates inside the open region.
 - Pagination, filters, and project changes may temporarily remove a card but do not transfer its state to another item.
 - A full page reload preserves only the global preferred mode, not individual expanded cards.
