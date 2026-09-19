@@ -234,6 +234,7 @@ function applySyncRecencyRisk(result: RiskResult, signals: OverviewSignals): voi
 function calculateRisk(signals: OverviewSignals): RiskResult {
 	const result: RiskResult = { score: 0, drivers: [] };
 	applyPipelineRisk(result, signals);
+	if (signals.hasFailedMaintenance) addRisk(result, 30, "maintenance job failed");
 	if (!signals.syncDisabled && !signals.syncNoPeers) {
 		applySyncStateRisk(result, signals);
 		applySyncRecencyRisk(result, signals);
@@ -301,15 +302,25 @@ function pipelineTile(signals: OverviewSignals): HealthTileInput {
 			"Raw-event queue pressure and flush reliability",
 		);
 	}
-	if (signals.rawPending === 0) {
+	const pendingLabel =
+		signals.rawPending > 0 ? `${signals.rawPending.toLocaleString()} pending · ` : "";
+	if (signals.droppedRate > 0.02) {
 		return tile(
 			"pipeline",
 			"Pipeline",
-			signals.droppedRate > 0.02 ? "Events dropped" : "Reliability degraded",
-			signals.droppedRate > 0.02 ? "attention" : "degraded",
+			`${pendingLabel}Events dropped`,
+			"attention",
 			"Raw-event queue pressure and flush reliability",
 		);
 	}
+	if (reliabilityDegraded)
+		return tile(
+			"pipeline",
+			"Pipeline",
+			`${pendingLabel}Reliability degraded`,
+			"degraded",
+			"Raw-event queue pressure and flush reliability",
+		);
 	return tile(
 		"pipeline",
 		"Pipeline",
@@ -324,6 +335,9 @@ function syncTile(signals: OverviewSignals): HealthTileInput {
 		return tile("sync", "Sync", "Off", "unknown", "Daemon state and sync recency");
 	if (signals.syncState === "unknown") {
 		return tile("sync", "Sync", "Unknown", "unknown", "Daemon state and sync recency");
+	}
+	if (signals.syncState === "degraded" && signals.syncRecentlyOk) {
+		return tile("sync", "Sync", "Syncing", "online", "Daemon state and sync recency");
 	}
 	if (SYNC_PROBLEM_STATES.has(signals.syncState)) {
 		return tile(

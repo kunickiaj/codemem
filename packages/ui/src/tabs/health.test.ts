@@ -265,6 +265,63 @@ it("marks pipeline reliability failures when the queue is clear", () => {
 	expect(pipeline?.querySelector(".presence-pip--attention")).not.toBeNull();
 });
 
+it("keeps reliability severity visible when events are also pending", () => {
+	state.healthStats = completeHealthLoad(
+		statsPayload({
+			reliability: {
+				counts: { errored_batches: 0 },
+				rates: { flush_success_rate: 0.8, dropped_event_rate: 0.03 },
+			},
+		}),
+	);
+	state.healthRawEvents = completeHealthLoad({ pending: 1_000, sessions: 1 });
+
+	renderOverview();
+
+	const pipeline = document.querySelectorAll("#healthGrid .health-tile-value")[0];
+	expect(pipeline?.textContent).toBe("1,000 pending · Events dropped");
+	expect(pipeline?.querySelector(".presence-pip--attention")).not.toBeNull();
+});
+
+it("counts failed maintenance in the headline", () => {
+	state.healthStats = completeHealthLoad(
+		statsPayload({
+			maintenance_jobs: [
+				{
+					error: "Retry the maintenance job.",
+					kind: "vector-backfill",
+					message: "Search index build failed",
+					progress: { current: 2, total: 10, unit: "items" },
+					status: "failed",
+					title: "Build search index",
+				},
+			],
+		}),
+	);
+
+	renderOverview();
+
+	expect(document.getElementById("healthMeta")?.textContent).toContain(
+		"1 issue · maintenance job failed",
+	);
+});
+
+it("shows a recently successful degraded daemon as syncing", () => {
+	state.lastSyncPeers = [{ peer_device_id: "peer-a" }];
+	state.lastSyncStatus = {
+		daemon_state: "degraded",
+		enabled: true,
+		last_sync_at: new Date().toISOString(),
+	};
+
+	renderOverview();
+
+	const sync = document.querySelectorAll("#healthGrid .health-tile-value")[1];
+	expect(sync?.textContent).toBe("Syncing");
+	expect(sync?.querySelector(".presence-pip--online")).not.toBeNull();
+	expect(document.getElementById("healthMeta")?.textContent).toContain("0 issues");
+});
+
 it("describes issue drivers below the degraded status threshold", () => {
 	state.healthRawEvents = completeHealthLoad({ pending: 200, sessions: 1 });
 
