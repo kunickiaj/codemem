@@ -20,9 +20,8 @@ export function RecipientSummary({
 	recipients: ProjectInventoryRecipientViewModel[];
 }) {
 	if (!available) return <span className="project-recipient-status tertiary">Unavailable</span>;
-	if (recipients.length === 0) {
+	if (recipients.length === 0)
 		return <span className="project-recipient-status tertiary">Not shared</span>;
-	}
 	const visible = recipients.slice(0, 2);
 	const remaining = recipients.length - visible.length;
 	return (
@@ -48,45 +47,39 @@ export function RecipientSummary({
 interface ProjectRowProps {
 	callbacks: ProjectInventoryCallbacks;
 	child?: boolean;
+	clusterKey?: string;
 	model: ProjectInventoryProjectViewModel;
 	view: ProjectsInventoryViewModel;
 }
 
-type ProjectRowHeaderProps = ProjectRowProps & {
-	onOpenSpaceAssignment: () => void;
-	titleId: string;
-};
+type ProjectRowHeaderProps = ProjectRowProps & { onOpenDetails: () => void; titleId: string };
 
 function ProjectRowStats({ model, view }: Pick<ProjectRowProps, "model" | "view">) {
 	const { project } = model;
 	return (
-		<div className="project-inventory-row-stats">
-			<span className="project-inventory-cell project-inventory-number" data-label="Memories">
+		<>
+			<td className="project-inventory-cell project-inventory-number" data-label="Memories">
 				{(project.memory_count ?? 0).toLocaleString()}
-			</span>
-			<span className="project-inventory-cell project-inventory-number" data-label="Sessions">
+			</td>
+			<td className="project-inventory-cell project-inventory-number" data-label="Sessions">
 				{project.session_count.toLocaleString()}
-			</span>
-			<span className="project-inventory-cell project-inventory-latest" data-label="Last activity">
+			</td>
+			<td className="project-inventory-cell project-inventory-latest" data-label="Last activity">
 				{latestLabel(project.latest_session_at)}
-			</span>
-			<div className="project-inventory-cell project-inventory-shared" data-label="Shared with">
+			</td>
+			<td className="project-inventory-cell project-inventory-shared" data-label="Shared with">
 				<RecipientSummary available={view.recipientPolicyReady} recipients={model.recipients} />
-			</div>
-		</div>
+			</td>
+		</>
 	);
 }
 
-function ProjectRowActions({
-	callbacks,
-	model,
-	onOpenSpaceAssignment,
-	view,
-}: ProjectRowHeaderProps) {
+function ProjectRowActions({ callbacks, model, onOpenDetails, view }: ProjectRowHeaderProps) {
 	const { project } = model;
-	const assignable = isAssignable(project);
+	if (!isAssignable(project) && !model.manageable)
+		return <td className="project-inventory-cell project-inventory-row-actions" />;
 	return (
-		<div className="project-inventory-cell project-inventory-row-actions">
+		<td className="project-inventory-cell project-inventory-row-actions">
 			{model.manageable ? (
 				<button
 					aria-label={`Update sharing for ${project.display_project}`}
@@ -99,7 +92,7 @@ function ProjectRowActions({
 					Update sharing
 				</button>
 			) : null}
-			{assignable ? (
+			{isAssignable(project) ? (
 				<ProjectRowMenu
 					canAssign
 					canChangeProject={project.session_count > 0}
@@ -111,21 +104,23 @@ function ProjectRowActions({
 					onChangeProject={() => void callbacks.reassignProject(project.workspace_identity)}
 					onForget={() => void callbacks.forgetProject(project.workspace_identity)}
 					onKeepLocal={() => void callbacks.keepProjectLocal(project.workspace_identity)}
-					onOpenSpaceAssignment={onOpenSpaceAssignment}
+					onOpenSpaceAssignment={onOpenDetails}
 					onRemoveMapping={() => void callbacks.removeProjectScope(project.workspace_identity)}
 				/>
 			) : null}
-		</div>
+		</td>
 	);
 }
 
 function ProjectRowHeader(props: ProjectRowHeaderProps) {
-	const { callbacks, model, titleId, view } = props;
+	const { callbacks, child, model, titleId, view } = props;
 	const { project } = model;
 	const signal = projectSignal(project);
 	return (
-		<div className="project-inventory-row-header project-inventory-table-row">
-			<div className="project-inventory-cell project-inventory-select-cell">
+		<tr
+			className={`project-inventory-row-header project-inventory-table-row${child ? " project-inventory-child-row" : ""}`}
+		>
+			<td className="project-inventory-cell project-inventory-select-cell">
 				{model.manageable ? (
 					<label className="project-selection-control project-selection-target">
 						<input
@@ -139,8 +134,8 @@ function ProjectRowHeader(props: ProjectRowHeaderProps) {
 						<span className="sr-only">Select {project.display_project} for recipient sharing</span>
 					</label>
 				) : null}
-			</div>
-			<div className="project-inventory-cell project-inventory-project-cell">
+			</td>
+			<td className="project-inventory-cell project-inventory-project-cell">
 				<strong className="project-inventory-title" id={titleId}>
 					{project.display_project}
 				</strong>
@@ -154,53 +149,63 @@ function ProjectRowHeader(props: ProjectRowHeaderProps) {
 						</Chip>
 					))}
 				</div>
-			</div>
+			</td>
 			<ProjectRowStats model={model} view={view} />
 			<ProjectRowActions {...props} />
-		</div>
+		</tr>
 	);
 }
 
-export function ProjectRow({ callbacks, child = false, model, view }: ProjectRowProps) {
+export function ProjectRow({ callbacks, child = false, clusterKey, model, view }: ProjectRowProps) {
 	const { project } = model;
-	const assignable = isAssignable(project);
 	const [open, setOpen] = useState(model.detailsOpen);
 	const selectRef = useRef<HTMLSelectElement>(null);
-	useEffect(() => {
-		if (model.detailsOpen) setOpen(true);
-	}, [model.detailsOpen]);
+	const confirmationActionRef = useRef<HTMLButtonElement>(null);
 	const setDetailsOpen = (nextOpen: boolean) => {
 		setOpen(nextOpen);
 		callbacks.setProjectDetailsOpen(model.key, nextOpen);
 	};
-	const openSpaceAssignment = () => {
+	useEffect(() => {
+		if (model.detailsOpen) setOpen(true);
+	}, [model.detailsOpen]);
+	const hasPendingConfirmation = Boolean(
+		model.pendingConfirmation || model.pendingForgetConfirmation,
+	);
+	useEffect(() => {
+		if (!hasPendingConfirmation) return;
+		setDetailsOpen(true);
+		queueMicrotask(() => confirmationActionRef.current?.focus());
+	}, [hasPendingConfirmation]);
+	const openDetails = () => {
 		setDetailsOpen(true);
 		queueMicrotask(() => selectRef.current?.focus());
 	};
 	const titleId = `project-title-${project.workspace_identity.replace(/[^a-z0-9_-]/gi, "-")}`;
 	return (
-		<article
+		<tbody
 			aria-labelledby={titleId}
-			className={`project-inventory-row${child ? " project-inventory-child-row" : ""}`}
-			data-project-repairable={String(assignable)}
+			className={`project-inventory-row${child ? " project-inventory-child" : ""}`}
+			data-project-cluster-key={clusterKey}
+			data-project-repairable={String(isAssignable(project))}
 			data-project-workspace-identity={project.workspace_identity}
 		>
 			<ProjectRowHeader
 				callbacks={callbacks}
 				child={child}
 				model={model}
-				onOpenSpaceAssignment={openSpaceAssignment}
+				onOpenDetails={openDetails}
 				titleId={titleId}
 				view={view}
 			/>
 			<ProjectRowDetails
 				callbacks={callbacks}
+				confirmationActionRef={confirmationActionRef}
 				model={model}
 				onOpenChange={setDetailsOpen}
 				open={open}
 				selectRef={selectRef}
 				view={view}
 			/>
-		</article>
+		</tbody>
 	);
 }

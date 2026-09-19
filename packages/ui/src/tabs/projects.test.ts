@@ -854,6 +854,10 @@ function projectsInventoryTablePresentationTests(): void {
 
 		const row = document.querySelector<HTMLElement>(".project-inventory-row");
 		if (!row) throw new Error("project row missing");
+		const table = document.querySelector("table.project-inventory-table");
+		expect(table?.querySelectorAll("thead th")).toHaveLength(7);
+		expect(table?.querySelector("th:nth-child(2)")?.textContent).toBe("Project");
+		expect(row.querySelectorAll(":scope > tr:first-child > td")).toHaveLength(7);
 		expect(row.querySelector(".project-recipient-status")).toBeNull();
 		expect(
 			[...row.querySelectorAll(".project-recipient-chip")].map((chip) => chip.textContent),
@@ -862,12 +866,34 @@ function projectsInventoryTablePresentationTests(): void {
 			'button[aria-label="Update sharing for codemem"]',
 		);
 		expect(updateSharing?.textContent).toBe("Update sharing");
-		expect(row.querySelector('button[aria-label="More actions for codemem"]')).not.toBeNull();
-		expect(row.querySelector("details")?.textContent).toContain("Share");
-		const normalCopy = row.cloneNode(true) as HTMLElement;
-		normalCopy.querySelector("details")?.remove();
-		expect(normalCopy.textContent).not.toContain(selected.workspace_identity);
-		expect(normalCopy.textContent).not.toContain("Space");
+		const menuTrigger = row.querySelector<HTMLButtonElement>(
+			'button[aria-label="More actions for codemem"]',
+		);
+		if (!menuTrigger) throw new Error("project menu trigger missing");
+		const details = row.querySelector("details");
+		expect(details?.open).toBe(false);
+		expect(details?.querySelector(":scope > summary")?.textContent).toBe("Details");
+		expect(details?.querySelector(".project-inventory-details-body")).not.toBeNull();
+		const closedRow = row.querySelector(":scope > tr:first-child");
+		expect(closedRow?.textContent).not.toContain(selected.workspace_identity);
+		expect(closedRow?.textContent).not.toContain("Space");
+
+		menuTrigger.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowDown" }));
+		await flushAsyncWork();
+		const menuItems = [...row.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+		expect(document.activeElement).toBe(menuItems[0]);
+		menuItems[0]?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowDown" }));
+		expect(document.activeElement).toBe(menuItems[1]);
+		menuItems[1]?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowUp" }));
+		expect(document.activeElement).toBe(menuItems[0]);
+		menuItems[0]?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "End" }));
+		expect(document.activeElement).toBe(menuItems.at(-1));
+		menuItems.at(-1)?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Home" }));
+		expect(document.activeElement).toBe(menuItems[0]);
+		menuItems[0]?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
+		await flushAsyncWork();
+		expect(row.querySelector('[role="menu"]')).toBeNull();
+		expect(document.activeElement).toBe(menuTrigger);
 
 		row.querySelector<HTMLButtonElement>(".project-recipient-action")?.click();
 		expect(recipientPolicyManagement.openRecipientPolicyManagement).toHaveBeenCalledWith({
@@ -2117,7 +2143,7 @@ describe("Projects inventory table presentation", projectsInventoryTablePresenta
 
 		await loadProjectsData();
 		const clusterDetails = document.querySelector<HTMLDetailsElement>(
-			".project-inventory-cluster > .project-inventory-details",
+			".project-inventory-cluster .project-inventory-details",
 		);
 		expect(clusterDetails?.open).toBe(false);
 
@@ -2126,7 +2152,7 @@ describe("Projects inventory table presentation", projectsInventoryTablePresenta
 		await vi.waitFor(() =>
 			expect(
 				document.querySelector<HTMLDetailsElement>(
-					".project-inventory-cluster > .project-inventory-details",
+					".project-inventory-cluster .project-inventory-details",
 				)?.open,
 			).toBe(true),
 		);
@@ -2152,7 +2178,7 @@ describe("Projects inventory table presentation", projectsInventoryTablePresenta
 		);
 		expect(
 			document.querySelector<HTMLDetailsElement>(
-				".project-inventory-cluster > .project-inventory-details",
+				".project-inventory-cluster .project-inventory-details",
 			)?.open,
 		).toBe(true);
 		expect(
@@ -2547,7 +2573,7 @@ describe("Projects inventory table presentation", projectsInventoryTablePresenta
 
 		await loadProjectsData();
 
-		const rows = [...document.querySelectorAll<HTMLElement>(".project-inventory-row")];
+		const rows = [...document.querySelectorAll<HTMLElement>("[data-project-workspace-identity]")];
 		const selectedRow = rows.find(
 			(row) => row.querySelector(".project-inventory-title")?.textContent === "codemem",
 		);
@@ -2695,7 +2721,7 @@ describe("Projects inventory table presentation", projectsInventoryTablePresenta
 		await loadProjectsData();
 		await flushAsyncWork();
 		const select = document.querySelector(
-			".project-inventory-cluster > details > .project-inventory-details-body .project-domain-select",
+			".project-inventory-cluster .project-inventory-details-body .project-domain-select",
 		) as HTMLSelectElement | null;
 		if (!select) throw new Error("cluster Space select missing");
 		select.focus();
@@ -2730,7 +2756,7 @@ describe("Projects inventory table presentation", projectsInventoryTablePresenta
 		});
 		await loadProjectsData();
 		const select = document.querySelector(
-			".project-inventory-cluster > details > .project-inventory-details-body .project-domain-select",
+			".project-inventory-cluster .project-inventory-details-body .project-domain-select",
 		) as HTMLSelectElement | null;
 		if (!select) throw new Error("cluster Space select missing");
 		select.value = "exampleco-work";
@@ -2739,7 +2765,7 @@ describe("Projects inventory table presentation", projectsInventoryTablePresenta
 		await loadProjectsData();
 
 		const rerenderedSelect = document.querySelector(
-			".project-inventory-cluster > details > .project-inventory-details-body .project-domain-select",
+			".project-inventory-cluster .project-inventory-details-body .project-domain-select",
 		) as HTMLSelectElement | null;
 		if (!rerenderedSelect) throw new Error("cluster Space select missing after refresh");
 		expect(rerenderedSelect.value).toBe("exampleco-work");
@@ -2761,7 +2787,7 @@ describe("Projects inventory table presentation", projectsInventoryTablePresenta
 		expect(refresh).toHaveBeenCalled();
 		await loadProjectsData();
 		const clearedSelect = document.querySelector(
-			".project-inventory-cluster > details > .project-inventory-details-body .project-domain-select",
+			".project-inventory-cluster .project-inventory-details-body .project-domain-select",
 		) as HTMLSelectElement | null;
 		expect(clearedSelect?.value).toBe("");
 	});
@@ -2879,7 +2905,13 @@ describe("Projects inventory table presentation", projectsInventoryTablePresenta
 		await loadProjectsData();
 
 		const cluster = document.querySelector<HTMLElement>(".project-inventory-cluster");
-		expect(cluster?.textContent).toContain("2 worktrees");
+		if (!cluster) throw new Error("project cluster missing");
+		expect(cluster.textContent).toContain("2 worktrees");
+		expect(cluster.querySelector("details")?.open).toBe(false);
+		const childRows = [...document.querySelectorAll<HTMLElement>(".project-inventory-child")];
+		expect(childRows).toHaveLength(2);
+		expect(childRows.every((row) => !cluster.contains(row))).toBe(true);
+		expect(childRows[0]?.previousElementSibling).toBe(cluster);
 		expect(cluster?.querySelector('[data-label="Memories"]')?.textContent).toBe("5");
 		expect(cluster?.querySelector('[data-label="Sessions"]')?.textContent).toBe("3");
 		expect(document.body.textContent).toContain("Save Space for 2 identities");
@@ -3043,7 +3075,7 @@ describe("Projects inventory table presentation", projectsInventoryTablePresenta
 			"Blocked identity: https://git.example.invalid/exampleco/api.git:worktree",
 		);
 		expect(document.body.textContent).toContain("Another project is also named api.");
-		expect(document.body.textContent).toContain("Space assignment");
+		expect(document.body.textContent).toContain("Bulk Space details");
 	});
 
 	it("does not block cluster bulk assignment for informational guardrail warnings", async () => {
@@ -3379,16 +3411,30 @@ describe("Projects inventory table presentation", projectsInventoryTablePresenta
 
 		initProjectsTab(refresh);
 		await loadProjectsData();
-		const select = document.querySelector(".project-domain-select") as HTMLSelectElement | null;
-		if (!select) throw new Error("select missing");
-		select.value = "exampleco-work";
-		select.dispatchEvent(new Event("change", { bubbles: true }));
-		const save = Array.from(document.querySelectorAll("button")).find(
-			(button) => button.textContent === "Save Space",
-		) as HTMLButtonElement | undefined;
-		save?.click();
-		await new Promise((resolve) => setTimeout(resolve, 0));
-		await loadProjectsData();
+		const row = document.querySelector<HTMLElement>("[data-project-workspace-identity]");
+		const menuTrigger = row?.querySelector<HTMLButtonElement>(".feed-menu-trigger");
+		menuTrigger?.click();
+		await flushAsyncWork();
+		const keepLocal = document.querySelector<HTMLButtonElement>('[role="menuitem"]:nth-child(3)');
+		expect(keepLocal?.textContent).toBe("Keep local-only");
+		expect(keepLocal?.disabled).toBe(false);
+		keepLocal?.click();
+		await vi.waitFor(() => expect(api.saveSharingDomainProjectMapping).toHaveBeenCalled());
+		await vi.waitFor(() =>
+			expect(document.body.textContent).toContain(
+				"Confirmation required before saving this Space.",
+			),
+		);
+		const updatedRow = document.querySelector<HTMLElement>("[data-project-workspace-identity]");
+		const details = updatedRow?.querySelector<HTMLDetailsElement>("details");
+		const confirm = [...(updatedRow?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find(
+			(button) => button.textContent === "I understand, save Space",
+		);
+		expect(api.saveSharingDomainProjectMapping).toHaveBeenCalledWith(
+			expect.objectContaining({ scope_id: "local-default" }),
+		);
+		await vi.waitFor(() => expect(details?.open).toBe(true));
+		expect(document.activeElement).toBe(confirm);
 
 		expect(document.body.textContent).toContain("Confirmation required before saving this Space.");
 		expect(document.body.textContent).toContain(
@@ -3572,19 +3618,29 @@ describe("Projects inventory table presentation", projectsInventoryTablePresenta
 
 		initProjectsTab(refresh);
 		await loadProjectsData();
-		const forget = Array.from(document.querySelectorAll("button")).find(
+		const row = document.querySelector<HTMLElement>("[data-project-workspace-identity]");
+		row?.querySelector<HTMLButtonElement>(".feed-menu-trigger")?.click();
+		await flushAsyncWork();
+		const forget = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(
 			(button) => button.textContent === "Forget local memories…",
-		) as HTMLButtonElement | undefined;
+		);
+		expect(forget?.disabled).toBe(false);
 		forget?.click();
-		await new Promise((resolve) => setTimeout(resolve, 0));
-		await loadProjectsData();
+		await vi.waitFor(() => expect(api.forgetProjectInventoryMemories).toHaveBeenCalled());
+		await vi.waitFor(() =>
+			expect(document.body.textContent).toContain("Confirm project memory cleanup"),
+		);
 
+		const updatedRow = document.querySelector<HTMLElement>("[data-project-workspace-identity]");
+		const details = updatedRow?.querySelector<HTMLDetailsElement>("details");
+		await vi.waitFor(() => expect(details?.open).toBe(true));
 		expect(document.body.textContent).toContain("Confirm project memory cleanup");
 		expect(document.body.textContent).toContain("5 locally owned memories will be forgotten");
 		expect(document.body.textContent).toContain("2 peer-owned memories will be left unchanged");
-		const confirm = Array.from(document.querySelectorAll("button")).find(
+		const confirm = [...(updatedRow?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find(
 			(button) => button.textContent === "I understand, forget local memories",
-		) as HTMLButtonElement | undefined;
+		);
+		expect(document.activeElement).toBe(confirm);
 		confirm?.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 
