@@ -1517,7 +1517,7 @@ function DevicesView({
 				{coordinatorAttention}
 				{inventoryWorkflow}
 				<DeviceSummaryBar
-					counts={deviceSummaryCounts([], configuredFallbackItems.length)}
+					counts={deviceSummaryCounts([], configuredFallbackItems.length + setupItems.length)}
 					onNavigate={options.onNavigate}
 				/>
 				{configuredFallbackWorkflow}
@@ -1545,7 +1545,7 @@ function DevicesView({
 				devices={visibleProjectedDevices}
 				intent={intent}
 				options={options}
-				unknownFallbackCount={configuredFallbackItems.length}
+				unknownFallbackCount={configuredFallbackItems.length + setupItems.length}
 			/>
 			{projection.revokedDeviceCount > 0 ? (
 				<p className="small" role="status">

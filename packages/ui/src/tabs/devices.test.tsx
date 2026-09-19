@@ -217,6 +217,19 @@ describe("Devices focus and inventory", () => {
 		expect(state.pendingDeviceIdentityFocus).toBeUndefined();
 	});
 
+	it("counts visible setup devices as availability unknown", () => {
+		mount(intent({ identityDevices: [] }), reconciliation(), {
+			inventory: inventory([
+				inventoryItem("setup-device", "Setup device", "setup_required"),
+				inventoryItem("pair-device", "Pair device", "pairing_required"),
+			]),
+		});
+
+		expect(document.body.textContent).toContain("Setup device");
+		expect(document.body.textContent).toContain("Pair device");
+		expect(document.querySelector(".devices-summary-counts")?.textContent).toContain("2 unknown");
+	});
+
 	it("does not render conflicted binding evidence as a configured device", () => {
 		state.pendingDeviceIdentityFocus = "device-address-fingerprint-secret";
 		mount(intent(), reconciliation(), {
