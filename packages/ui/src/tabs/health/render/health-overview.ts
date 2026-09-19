@@ -214,6 +214,9 @@ function applySyncStateRisk(result: RiskResult, signals: OverviewSignals): void 
 	if (signals.syncState === "needs_attention") addRisk(result, 40, "sync needs manual attention");
 	if (signals.syncState === "stopped") addRisk(result, 22, "sync daemon stopped");
 	if (signals.syncState === "stale") addRisk(result, 20, "sync daemon stale");
+	if (signals.syncState === "rebootstrapping") {
+		addRisk(result, 20, "sync daemon rebootstrapping");
+	}
 	if (signals.syncState === "degraded" && !signals.syncRecentlyOk) {
 		addRisk(result, 20, "sync daemon degraded");
 	}

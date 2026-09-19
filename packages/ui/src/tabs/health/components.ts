@@ -226,6 +226,10 @@ function updateBannerCopy(status: UpdateStatus): UpdateBannerCopy {
 	};
 }
 
+function UpdateCommand({ command }: { command: string }) {
+	return h("code", { class: "health-update-command", id: "healthUpdateCommand" }, command);
+}
+
 function UpdateBanner({ status }: { status: UpdateStatus }) {
 	const copy = updateBannerCopy(status);
 	const showDetail = copy.tone !== "badge-online" || status.stale || Boolean(status.error);
@@ -252,6 +256,9 @@ function UpdateBanner({ status }: { status: UpdateStatus }) {
 		}),
 		h(Chip, { variant: "badge", tone: copy.tone, title: copy.title }, copy.label),
 		showDetail ? h("span", { class: "health-update-detail" }, detail) : null,
+		copy.showCopy && status.recommended_action
+			? h(UpdateCommand, { command: status.recommended_action })
+			: null,
 		status.stale
 			? h(
 					Chip,
@@ -268,6 +275,7 @@ function UpdateBanner({ status }: { status: UpdateStatus }) {
 			? h(
 					"button",
 					{
+						"aria-describedby": "healthUpdateCommand",
 						class: "settings-button health-update-copy-button",
 						onClick: handleCopy,
 						ref: (node: HTMLButtonElement | null) => {

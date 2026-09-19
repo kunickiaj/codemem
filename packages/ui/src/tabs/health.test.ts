@@ -384,6 +384,17 @@ it("treats an explicit stale daemon state as degraded even after a recent sync",
 	expect(document.getElementById("healthMeta")?.textContent).toContain("sync daemon stale");
 });
 
+it("counts rebootstrapping as a health issue", () => {
+	state.lastSyncPeers = [{ peer_device_id: "peer-a" }];
+	state.lastSyncStatus = { enabled: true, daemon_state: "rebootstrapping" };
+
+	renderOverview();
+
+	expect(document.getElementById("healthMeta")?.textContent).toContain(
+		"1 issue · sync daemon rebootstrapping",
+	);
+});
+
 it("counts detected health risks instead of remediation rows", () => {
 	state.lastSyncPeers = [{ peer_device_id: "peer-a" }];
 	state.lastSyncStatus = { enabled: true, daemon_state: "needs_attention" };
@@ -994,10 +1005,14 @@ describe("Health update banner channels and guidance", () => {
 		renderOverview();
 
 		// Assert
-		expect(updateBannerText()).toBe("Update available · 0.41.0Copy command");
+		expect(updateBannerText()).toContain("Update available · 0.41.0");
+		expect(document.getElementById("healthUpdateCommand")?.textContent).toBe(
+			availableStatus.recommended_action,
+		);
 		expect(document.querySelector("#healthUpdateBanner .badge-online")).not.toBeNull();
 		const copy = document.querySelector<HTMLButtonElement>("#healthUpdateBanner button");
 		expect(copy?.title).toBe(availableStatus.recommended_action);
+		expect(copy?.getAttribute("aria-describedby")).toBe("healthUpdateCommand");
 	});
 
 	it("qualifies stale release guidance as cached instead of presenting it as fresh", () => {
