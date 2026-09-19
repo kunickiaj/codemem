@@ -539,6 +539,18 @@ describe("Devices app integration", () => {
 		expect(sharingLink?.textContent).toContain("Team settings");
 	});
 
+	it("moves focus to Sharing after following the Advanced invitation link", async () => {
+		act(() => document.getElementById("tabBtn-advanced")?.click());
+		const link = document.getElementById("advancedSharingLink");
+		if (!(link instanceof HTMLAnchorElement)) throw new Error("Advanced Sharing link missing");
+
+		act(() => link.click());
+		await Promise.resolve();
+
+		expect(window.location.hash).toBe("#sharing");
+		expect(document.activeElement).toBe(document.getElementById("tabBtn-sharing"));
+	});
+
 	it("focuses coordinator administration when switching sections", async () => {
 		act(() => document.getElementById("tabBtn-advanced")?.click());
 		await Promise.resolve();

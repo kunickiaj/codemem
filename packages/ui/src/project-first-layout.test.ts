@@ -75,6 +75,7 @@ describe("project-first navigation layout", () => {
 
 		expect(advanced).toContain('id="coordinatorAdminHeading" tabindex="-1"');
 		expect(advanced).toContain('href="#sharing" id="advancedTeamSettingsLink">Team settings');
+		expect(advanced).toContain('href="#sharing" id="advancedSharingLink"');
 		expect(advanced).toContain("Groups · Invites · Join requests · Devices");
 		expect(advanced).toContain("<summary>Legacy administration</summary>");
 		expect(advanced).not.toContain('role="note"');
