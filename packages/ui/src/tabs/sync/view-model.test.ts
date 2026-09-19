@@ -112,20 +112,20 @@ describe("deriveCoordinatorSetupBlocker", () => {
 	});
 });
 
-describe("deriveTeamSyncPrimaryStatus", () => {
-	const healthyPeer = {
-		peer_device_id: "peer-healthy",
-		status: { peer_state: "online", sync_status: "ok" },
-	};
-	const postedCoordinator: NonNullable<
-		Parameters<typeof deriveTeamSyncPrimaryStatus>[0]["coordinator"]
-	> = {
-		configured: true,
-		sync_enabled: true,
-		groups: ["Acme"],
-		presence_status: "posted",
-	};
+const healthyPeer = {
+	peer_device_id: "peer-healthy",
+	status: { peer_state: "online", sync_status: "ok" },
+};
+const postedCoordinator: NonNullable<
+	Parameters<typeof deriveTeamSyncPrimaryStatus>[0]["coordinator"]
+> = {
+	configured: true,
+	sync_enabled: true,
+	groups: ["Acme"],
+	presence_status: "posted",
+};
 
+describe("deriveTeamSyncPrimaryStatus policy precedence", () => {
 	it("keeps sync disabled above posted presence and every lower-priority signal", () => {
 		const view = deriveTeamSyncPrimaryStatus({
 			status: { enabled: false, daemon_state: "disabled" },
@@ -208,13 +208,15 @@ describe("deriveTeamSyncPrimaryStatus", () => {
 		expect(view).toMatchObject({
 			state: "needs-attention",
 			badgeLabel: "Needs attention",
-			meta: "Team: Acme. Team access needs review before it can continue.",
-			nextAction: "Open Sharing, review Project access, then sync again.",
+			meta: "Team: Acme. A Project access reconciliation needs review.",
+			nextAction: "Open Sharing, review this Project's access decision, then sync again.",
 		});
 		expect(view.nextAction).not.toContain("Project sharing below");
 		expect(view.nextAction).not.toContain("git:roadmap");
 	});
+});
 
+describe("deriveTeamSyncPrimaryStatus pending work", () => {
 	it("keeps pending setup above trust blockers, healthy peers, and posted presence", () => {
 		const view = deriveTeamSyncPrimaryStatus({
 			status: { enabled: true, daemon_state: "ok" },
@@ -293,7 +295,9 @@ describe("deriveTeamSyncPrimaryStatus", () => {
 			}),
 		).toMatchObject({ state: "healthy", badgeLabel: "Healthy", nextAction: null });
 	});
+});
 
+describe("deriveTeamSyncPrimaryStatus reachability", () => {
 	it("keeps a trusted peer with pending Space delivery out of Healthy", () => {
 		const view = deriveTeamSyncPrimaryStatus({
 			status: { enabled: true, daemon_state: "ok", daemon_running: true },
@@ -365,7 +369,9 @@ describe("deriveTeamSyncPrimaryStatus", () => {
 			nextAction: expect.stringMatching(/Refresh.*retry/),
 		});
 	});
+});
 
+describe("deriveTeamSyncPrimaryStatus operations", () => {
 	it("tells the owner to send a pending invitation", () => {
 		const view = deriveTeamSyncPrimaryStatus({
 			status: { enabled: true, daemon_state: "ok", daemon_running: true },
@@ -437,7 +443,9 @@ describe("deriveTeamSyncPrimaryStatus", () => {
 		});
 		expect(view.nextAction).not.toContain("Pair and approve");
 	});
+});
 
+describe("deriveTeamSyncPrimaryStatus trust", () => {
 	it("routes unauthorized peer errors to re-pairing guidance", () => {
 		const view = deriveTeamSyncPrimaryStatus({
 			status: { enabled: true, daemon_state: "ok", daemon_running: true },
@@ -498,7 +506,9 @@ describe("deriveTeamSyncPrimaryStatus", () => {
 		});
 		expect(view.nextAction).not.toContain("Pair and approve");
 	});
+});
 
+describe("deriveTeamSyncPrimaryStatus fail-closed states", () => {
 	it("fails closed when daemon_state is unavailable", () => {
 		const view = deriveTeamSyncPrimaryStatus({
 			status: { enabled: true, daemon_state: undefined },
@@ -973,6 +983,7 @@ describe("shouldShowCoordinatorReviewAction", () => {
 		expect(
 			shouldShowCoordinatorReviewAction({
 				device: {
+					addresses: ["http://peer-a.local"],
 					device_id: "peer-a",
 					fingerprint: "fp-a",
 					needs_local_approval: true,
@@ -996,7 +1007,7 @@ describe("shouldShowCoordinatorReviewAction", () => {
 	});
 });
 
-describe("summarizeSyncRunResult", () => {
+describe("summarizeSyncRunResult trust failures", () => {
 	it("summarizes mixed failures without pretending they are all one-way trust", () => {
 		expect(
 			summarizeSyncRunResult({
@@ -1072,7 +1083,9 @@ describe("summarizeSyncRunResult", () => {
 			warning: true,
 		});
 	});
+});
 
+describe("summarizeSyncRunResult scope failures", () => {
 	it("routes scope_rejected failures to the legacy coordinator Space-access message", () => {
 		expect(
 			summarizeSyncRunResult({
@@ -1163,7 +1176,9 @@ describe("summarizeSyncRunResult", () => {
 			warning: true,
 		});
 	});
+});
 
+describe("summarizeSyncRunResult mixed failures", () => {
 	it("keeps non-membership scoped sync incomplete failures generic", () => {
 		expect(
 			summarizeSyncRunResult({
@@ -1256,7 +1271,9 @@ describe("summarizeSyncRunResult", () => {
 			warning: true,
 		});
 	});
+});
 
+describe("summarizeSyncRunResult filtered operations", () => {
 	it("surfaces outbound filter diagnostics without treating them as failed sync", () => {
 		expect(
 			summarizeSyncRunResult({
@@ -1474,15 +1491,41 @@ describe("deriveSyncViewModel", () => {
 			offlineTeamDeviceCount: 0,
 		});
 	});
+
+	it("keeps stale and ambiguous unpaired devices out of the separate attention list", () => {
+		const view = deriveSyncViewModel({
+			coordinator: {
+				discovered_devices: [
+					{ device_id: "stale-peer", display_name: "Old laptop", stale: true },
+					{
+						device_id: "ambiguous-peer",
+						display_name: "Shared desktop",
+						groups: ["team-a", "team-b"],
+					},
+				],
+			},
+		});
+
+		expect(view.attentionItems).toEqual([]);
+	});
 });
 
 describe("shouldShowCoordinatorReviewAction", () => {
-	it("allows fresh unpaired discovered devices without a visible fingerprint", () => {
+	it("allows fresh unpaired discovered devices with a usable address", () => {
+		expect(
+			shouldShowCoordinatorReviewAction({
+				device: { addresses: ["http://peer-1.local"], device_id: "peer-1", stale: false },
+				pairedLocally: false,
+			}),
+		).toBe(true);
+	});
+
+	it("blocks review until a fresh device has a usable address", () => {
 		expect(
 			shouldShowCoordinatorReviewAction({
 				device: { device_id: "peer-1", stale: false },
 				pairedLocally: false,
 			}),
-		).toBe(true);
+		).toBe(false);
 	});
 });

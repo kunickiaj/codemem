@@ -26,6 +26,25 @@ type SyncStatusLike = {
 	daemon_running?: boolean;
 };
 
+type PrimaryStatusInput = {
+	status?: SyncStatusLike | null;
+	coordinator?: CoordinatorLike | null;
+	peers?: PeerLike[];
+	shareOperations?: ProjectShareOperationLike[];
+	shareOperationsLoadError?: boolean;
+	reconciliation?: RecipientPolicyReconciliationLike | null;
+};
+
+type NormalizedPrimaryStatusInput = {
+	status?: SyncStatusLike | null;
+	coordinator?: CoordinatorLike | null;
+	peers: PeerLike[];
+	operations: ProjectShareOperationLike[];
+	reconciliationItems: NonNullable<RecipientPolicyReconciliationLike["items"]>;
+	shareOperationsLoadError: boolean;
+	label: string;
+};
+
 const PENDING_OPERATION_STATES: ReadonlySet<TeamSyncProjectOperationState> = new Set([
 	"pending_setup",
 	"waiting_for_acceptance",
@@ -119,52 +138,48 @@ function hasDaemonAttention(status?: SyncStatusLike | null): boolean {
 	);
 }
 
-export function deriveTeamSyncPrimaryStatus(input: {
-	status?: SyncStatusLike | null;
-	coordinator?: CoordinatorLike | null;
-	peers?: PeerLike[];
-	shareOperations?: ProjectShareOperationLike[];
-	shareOperationsLoadError?: boolean;
-	reconciliation?: RecipientPolicyReconciliationLike | null;
-}): UiTeamSyncPrimaryStatus {
-	const coordinator = input.coordinator;
-	const peers = Array.isArray(input.peers) ? input.peers : [];
-	const operations = Array.isArray(input.shareOperations) ? input.shareOperations : [];
-	const reconciliationItems = Array.isArray(input.reconciliation?.items)
-		? input.reconciliation.items
-		: [];
-	const label = teamLabel(coordinator);
-	const syncDisabled = input.status?.enabled === false || coordinator?.sync_enabled === false;
+function normalizeInput(input: PrimaryStatusInput): NormalizedPrimaryStatusInput {
+	return {
+		status: input.status,
+		coordinator: input.coordinator,
+		peers: Array.isArray(input.peers) ? input.peers : [],
+		operations: Array.isArray(input.shareOperations) ? input.shareOperations : [],
+		reconciliationItems: Array.isArray(input.reconciliation?.items)
+			? input.reconciliation.items
+			: [],
+		shareOperationsLoadError: input.shareOperationsLoadError === true,
+		label: teamLabel(input.coordinator),
+	};
+}
 
-	if (syncDisabled) {
+function derivePolicyStatus(input: NormalizedPrimaryStatusInput): UiTeamSyncPrimaryStatus | null {
+	if (input.status?.enabled === false || input.coordinator?.sync_enabled === false) {
 		return {
 			state: "disabled",
 			badgeLabel: "Sync off",
-			meta: `Team: ${label}. Coordinator presence does not move Project data while sync is off.`,
+			meta: `Team: ${input.label}. Coordinator presence does not move Project data while sync is off.`,
 			nextAction: "Open Settings and turn on sync before expecting Team or Project data to update.",
 		};
 	}
-
 	if (input.shareOperationsLoadError) {
 		return {
 			state: "needs-attention",
 			badgeLabel: "Refresh needed",
-			meta: `Team: ${label}. Device diagnostics are available, but Project sharing status could not be refreshed.`,
+			meta: `Team: ${input.label}. Device diagnostics are available, but Project sharing status could not be refreshed.`,
 			nextAction: "Refresh Team sync to retry loading Project sharing status.",
 		};
 	}
-
-	const operationAttention = operations.find(
+	const operationAttention = input.operations.find(
 		(operation) => operation.lifecycle?.state === "needs_attention",
 	);
-	const reconciliationAttention = reconciliationItems.find(
+	const reconciliationAttention = input.reconciliationItems.find(
 		(item) => item.state === "needs_attention",
 	);
 	if (operationAttention) {
 		return {
 			state: "needs-attention",
 			badgeLabel: "Needs attention",
-			meta: `Team: ${label}. A Project access update stopped and needs a retry.`,
+			meta: `Team: ${input.label}. A Project access update stopped and needs a retry.`,
 			nextAction: "Retry the stopped Project access update below.",
 		};
 	}
@@ -172,103 +187,120 @@ export function deriveTeamSyncPrimaryStatus(input: {
 		return {
 			state: "needs-attention",
 			badgeLabel: "Needs attention",
-			meta: `Team: ${label}. Team access needs review before it can continue.`,
-			nextAction: "Open Sharing, review Project access, then sync again.",
+			meta: `Team: ${input.label}. A Project access reconciliation needs review.`,
+			nextAction: "Open Sharing, review this Project's access decision, then sync again.",
 		};
 	}
+	return null;
+}
 
-	const pendingOperation = operations.find((operation) => {
+function pendingNextAction(
+	operation: ProjectShareOperationLike | undefined,
+	project: string,
+): string {
+	if (operation?.lifecycle?.state === "revoking") {
+		return `Keep both devices online, then sync again to finish removing future access for ${project}.`;
+	}
+	const action = operation?.lifecycle?.primary_action?.kind;
+	if (action === "retry_setup") return `Open Project sharing below and retry setup for ${project}.`;
+	if (action === "copy_invite") {
+		return `Copy the invitation for ${project} and send it to the recipient.`;
+	}
+	return `Keep both devices online, then sync again to finish setup for ${project}.`;
+}
+
+function derivePendingStatus(input: NormalizedPrimaryStatusInput): UiTeamSyncPrimaryStatus | null {
+	const pendingOperation = input.operations.find((operation) => {
 		const state = operation.lifecycle?.state;
 		return state !== undefined && PENDING_OPERATION_STATES.has(state);
 	});
-	const pendingReconciliation = reconciliationItems.find((item) => {
+	const pendingReconciliation = input.reconciliationItems.find((item) => {
 		const state = item.state;
 		return state !== undefined && PENDING_RECONCILIATION_STATES.has(state);
 	});
-	if (pendingOperation || pendingReconciliation) {
-		const project = pendingOperation ? projectLabel(pendingOperation) : "the shared Project";
-		const primaryAction = pendingOperation?.lifecycle?.primary_action?.kind;
-		const revoking = pendingOperation?.lifecycle?.state === "revoking";
-		return {
-			state: "pending-setup",
-			badgeLabel: revoking ? "Removal pending" : "Setup pending",
-			meta: revoking
-				? `Team: ${label}. Future access removal for ${project} is still pending.`
-				: `Team: ${label}. Exact-Project setup is still pending and data delivery is not confirmed.`,
-			nextAction: revoking
-				? `Keep both devices online, then sync again to finish removing future access for ${project}.`
-				: primaryAction === "retry_setup"
-					? `Open Project sharing below and retry setup for ${project}.`
-					: primaryAction === "copy_invite"
-						? `Copy the invitation for ${project} and send it to the recipient.`
-						: `Keep both devices online, then sync again to finish setup for ${project}.`,
-		};
-	}
+	if (!pendingOperation && !pendingReconciliation) return null;
+	const project = pendingOperation ? projectLabel(pendingOperation) : "the shared Project";
+	const revoking = pendingOperation?.lifecycle?.state === "revoking";
+	return {
+		state: "pending-setup",
+		badgeLabel: revoking ? "Removal pending" : "Setup pending",
+		meta: revoking
+			? `Team: ${input.label}. Future access removal for ${project} is still pending.`
+			: `Team: ${input.label}. Exact-Project setup is still pending and data delivery is not confirmed.`,
+		nextAction: pendingNextAction(pendingOperation, project),
+	};
+}
 
+function deriveRuntimeStatus(input: NormalizedPrimaryStatusInput): UiTeamSyncPrimaryStatus | null {
 	if (hasDaemonAttention(input.status)) {
 		return {
 			state: "needs-attention",
 			badgeLabel: "Sync needs attention",
-			meta: `Team: ${label}. The local sync service is not healthy, so Project data delivery is not confirmed.`,
+			meta: `Team: ${input.label}. The local sync service is not healthy, so Project data delivery is not confirmed.`,
 			nextAction:
 				"Review the sync status below, restart codemem if needed, then run Sync now again.",
 		};
 	}
-
-	if (hasTrustBlocker(peers, coordinator)) {
+	if (hasTrustBlocker(input.peers, input.coordinator)) {
 		return {
 			state: "trust-blocked",
 			badgeLabel: "Pairing needed",
-			meta: `Team: ${label}. A device still needs two-way trust before Project data can sync.`,
+			meta: `Team: ${input.label}. A device still needs two-way trust before Project data can sync.`,
 			nextAction: "Review the device below and finish pairing or approval on both devices.",
 		};
 	}
+	return null;
+}
 
-	const presence = cleanText(coordinator?.presence_status);
+function derivePresenceStatus(input: NormalizedPrimaryStatusInput): UiTeamSyncPrimaryStatus | null {
+	const presence = cleanText(input.coordinator?.presence_status);
 	if (presence === "not_enrolled") {
 		return {
 			state: "not-enrolled",
 			badgeLabel: "Not enrolled",
-			meta: `Team: ${label}. This device is not enrolled with the coordinator.`,
+			meta: `Team: ${input.label}. This device is not enrolled with the coordinator.`,
 			nextAction: "Paste a Team invite below, or ask a Team admin to enroll this device.",
 		};
 	}
 	if (presence !== "posted") {
+		const configured = input.coordinator?.configured === true;
 		return {
 			state: "unreachable",
-			badgeLabel: coordinator?.configured ? "Unreachable" : "Setup needed",
-			meta: coordinator?.configured
-				? `Team: ${label}. The coordinator is not currently reachable and no healthy data-plane sync is confirmed.`
+			badgeLabel: configured ? "Unreachable" : "Setup needed",
+			meta: configured
+				? `Team: ${input.label}. The coordinator is not currently reachable and no healthy data-plane sync is confirmed.`
 				: "Configure or join a Team before expecting Project data to sync.",
-			nextAction: coordinator?.configured
+			nextAction: configured
 				? "Check the coordinator connection, then refresh Team sync."
 				: "Paste a Team invite below, or set a coordinator URL in Settings → Device Sync.",
 		};
 	}
+	return null;
+}
 
-	if (hasDeviceConnectivityProblem(peers, input.status)) {
+function deriveDataPlaneStatus(input: NormalizedPrimaryStatusInput): UiTeamSyncPrimaryStatus {
+	if (hasDeviceConnectivityProblem(input.peers, input.status)) {
 		return {
 			state: "reachable",
 			badgeLabel: "Check devices",
-			meta: `Team: ${label}. The coordinator is reachable, but one or more paired devices are offline or degraded.`,
+			meta: `Team: ${input.label}. The coordinator is reachable, but one or more paired devices are offline or degraded.`,
 			nextAction:
 				"Bring the paired devices online, check their sync errors, then run Sync now again.",
 		};
 	}
-
-	if (coordinator?.sync_enabled === true && hasHealthyDataPlane(peers, input.status)) {
+	if (input.coordinator?.sync_enabled === true && hasHealthyDataPlane(input.peers, input.status)) {
 		return {
 			state: "healthy",
 			badgeLabel: "Healthy",
-			meta: `Team: ${label}. Sync is enabled and a trusted device has a healthy data-plane connection.`,
+			meta: `Team: ${input.label}. Sync is enabled and a trusted device has a healthy data-plane connection.`,
 			nextAction: null,
 		};
 	}
-	if (hasReachableTrustedPeer(peers)) {
+	if (hasReachableTrustedPeer(input.peers)) {
 		return {
 			state: "reachable",
 			badgeLabel: "Reachable",
-			meta: `Team: ${label}. The coordinator and a paired device are reachable, but successful Project sync is not confirmed.`,
+			meta: `Team: ${input.label}. The coordinator and a paired device are reachable, but successful Project sync is not confirmed.`,
 			nextAction:
 				"Run Sync now, then review the device sync status below if delivery is still pending.",
 		};
@@ -277,7 +309,18 @@ export function deriveTeamSyncPrimaryStatus(input: {
 	return {
 		state: "reachable",
 		badgeLabel: "Reachable",
-		meta: `Team: ${label}. The coordinator is reachable, but healthy Project data sync is not confirmed.`,
+		meta: `Team: ${input.label}. The coordinator is reachable, but healthy Project data sync is not confirmed.`,
 		nextAction: "Pair and approve a device, then run Sync now to confirm data delivery.",
 	};
+}
+
+export function deriveTeamSyncPrimaryStatus(input: PrimaryStatusInput): UiTeamSyncPrimaryStatus {
+	const normalized = normalizeInput(input);
+	return (
+		derivePolicyStatus(normalized) ??
+		derivePendingStatus(normalized) ??
+		deriveRuntimeStatus(normalized) ??
+		derivePresenceStatus(normalized) ??
+		deriveDataPlaneStatus(normalized)
+	);
 }
