@@ -355,6 +355,11 @@ function renderAdvancedSection() {
 	if (tabsMount) mountAdvancedTabs(tabsMount, state.advancedSection, selectAdvancedSection);
 	queueMicrotask(() => {
 		const hash = window.location.hash.replace(/^#/, "");
+		if (!isSync && hash === "advanced/teams/administration") {
+			const disclosure = document.getElementById("advancedAdministrationDisclosure");
+			if (disclosure instanceof HTMLDetailsElement) disclosure.open = true;
+			document.getElementById("coordinatorAdminHeading")?.focus();
+		}
 		applySyncSubView(
 			hash === "sync/diagnostics" || hash === "advanced/sync/diagnostics" ? "diagnostics" : "main",
 		);

@@ -5059,6 +5059,7 @@
       <section class="card advanced-sync-status">
         <div id="syncAdvancedStatusMount"></div>
         <div class="section-actions">
+          <button class="settings-button" id="syncNowButton">Sync now</button>
           <a class="sync-subview-link" href="#advanced/sync/diagnostics">View diagnostics &rarr;</a>
           <button class="settings-save" id="syncTurnOnButton" type="button" hidden>Turn on sync</button>
         </div>
@@ -5172,7 +5173,6 @@
             <h2>Sync diagnostics</h2>
           </div>
           <div class="section-actions">
-            <button class="settings-button" id="syncNowButton">Sync now</button>
             <button class="settings-button" id="syncOpenDiagnostics" type="button">Recent sync events</button>
             <label class="small sync-redact-control">
               <span id="syncRedactMount"></span>
@@ -5203,7 +5203,7 @@
             <a class="sync-subview-link" href="#sharing" id="advancedTeamSettingsLink">Team settings &rarr;</a>
           </div>
           <div class="section-meta advanced-administration-sections">Groups · Invites · Join requests · Devices</div>
-          <details class="advanced-administration-disclosure">
+          <details class="advanced-administration-disclosure" id="advancedAdministrationDisclosure">
             <summary>Legacy administration</summary>
             <div id="coordinatorAdminMount"></div>
           </details>

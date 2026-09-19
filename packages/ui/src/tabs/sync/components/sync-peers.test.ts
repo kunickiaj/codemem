@@ -180,7 +180,7 @@ describe("Advanced device Identity ownership", () => {
 
 		act(() => adminButton.click());
 
-		expect(window.location.hash).toBe("#advanced/teams");
+		expect(window.location.hash).toBe("#advanced/teams/administration");
 		expect(mount.textContent).not.toContain("Manage Spaces in Teams");
 	});
 });

@@ -229,7 +229,7 @@ function claimedLocalActorScopeMessage(
 }
 
 function openLegacyCoordinatorAdministration(): void {
-	window.location.hash = "advanced/teams";
+	window.location.hash = "advanced/teams/administration";
 }
 
 export function canManageLegacyCoordinatorSpaces(
