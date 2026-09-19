@@ -81,6 +81,7 @@ export interface ProjectScopeCandidate {
 	guardrail_warnings: ProjectScopeGuardrailWarning[];
 	read_only: boolean;
 	read_only_reason: "peer_received" | null;
+	origin_devices: Array<{ device_id: string }>;
 }
 
 export type ProjectScopeInventoryStatus =
@@ -158,6 +159,7 @@ interface ProjectScopeCandidateRow {
 	git_remote: string | null;
 	git_branch: string | null;
 	workspace_id: string | null;
+	origin_device_ids?: string | null;
 	memory_count?: number | null;
 	session_count?: number | null;
 }
@@ -165,6 +167,14 @@ interface ProjectScopeCandidateRow {
 function clean(value: string | null | undefined): string | null {
 	const trimmed = value?.trim();
 	return trimmed ? trimmed : null;
+}
+
+function originDevicesForCandidate(row: ProjectScopeCandidateRow): Array<{ device_id: string }> {
+	if (row.inventory_source !== "peer_received") return [];
+	return [...new Set((row.origin_device_ids ?? "").split(",").map((deviceId) => deviceId.trim()))]
+		.filter((deviceId) => deviceId.length > 0 && deviceId !== "unknown")
+		.toSorted((left, right) => left.localeCompare(right))
+		.map((deviceId) => ({ device_id: deviceId }));
 }
 
 function inventoryMergeKey(
@@ -493,6 +503,7 @@ function buildProjectScopeCandidate(
 		matched_pattern: resolution.matchedPattern,
 		read_only: false,
 		read_only_reason: null,
+		origin_devices: originDevicesForCandidate(row),
 		suggested_scope_id: null,
 		suggestion_reason: null,
 		suggestion_signal: null,
@@ -1127,6 +1138,10 @@ export function listProjectScopeInventory(
 					WHEN mi.scope_id LIKE 'managed-project:%' THEN 'scope:' || mi.scope_id
 					ELSE COALESCE(NULLIF(TRIM(mi.origin_device_id), ''), 'unknown') || ':project:' || TRIM(mi.project)
 				END AS workspace_id,
+				GROUP_CONCAT(DISTINCT CASE
+					WHEN TRIM(COALESCE(mi.origin_device_id, '')) NOT IN ('', 'unknown')
+					THEN TRIM(mi.origin_device_id)
+				END) AS origin_device_ids,
 				0 AS session_count,
 				COUNT(mi.id) AS memory_count
 			 FROM memory_items mi
@@ -1205,6 +1220,7 @@ export function listProjectScopeInventory(
 			matched_pattern: null,
 			read_only: false,
 			read_only_reason: null,
+			origin_devices: [],
 			suggested_scope_id: null,
 			suggestion_reason: null,
 			suggestion_signal: null,

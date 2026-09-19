@@ -19,6 +19,7 @@ import type {
 	MaintenanceJobSnapshot,
 	MemoryStore,
 	ProjectScopeGuardrailWarning,
+	ProjectScopeInventoryProject,
 	ReassignScopeCapability,
 	RecipientPolicyCoordinatorEffectReceipt,
 	RecipientPolicyOnboardingPreviewV1,
@@ -4709,6 +4710,57 @@ async function loadConfiguredDeviceIdentityCoordinatorEvidence(): Promise<Device
 	}
 }
 
+const ORIGIN_DEVICE_NAME_LOOKUP_BATCH_SIZE = 400;
+
+function originDeviceDisplayName(value: unknown): string | null {
+	if (typeof value !== "string") return null;
+	try {
+		return normalizeHumanPresentationName(value, "display_name");
+	} catch {
+		return null;
+	}
+}
+
+function resolveOriginDeviceDisplayNames(
+	store: MemoryStore,
+	projects: ProjectScopeInventoryProject[],
+): Map<string, string> {
+	const deviceIds = [
+		...new Set(
+			projects.flatMap((project) => project.origin_devices.map((device) => device.device_id)),
+		),
+	];
+	const names = new Map<string, string>();
+	for (let offset = 0; offset < deviceIds.length; offset += ORIGIN_DEVICE_NAME_LOOKUP_BATCH_SIZE) {
+		const batch = deviceIds.slice(offset, offset + ORIGIN_DEVICE_NAME_LOOKUP_BATCH_SIZE);
+		const placeholders = batch.map(() => "?").join(", ");
+		const peers = store.db
+			.prepare(
+				`SELECT peer_device_id AS device_id, name AS display_name
+				 FROM sync_peers
+				 WHERE peer_device_id IN (${placeholders})
+				   AND TRIM(COALESCE(pinned_fingerprint, '')) <> ''`,
+			)
+			.all(...batch) as Array<{ device_id: string; display_name: string | null }>;
+		for (const peer of peers) {
+			const displayName = originDeviceDisplayName(peer.display_name);
+			if (displayName) names.set(peer.device_id, displayName);
+		}
+		const devices = store.db
+			.prepare(
+				`SELECT device_id, display_name
+				 FROM identity_devices
+				 WHERE device_id IN (${placeholders}) AND status = 'active'`,
+			)
+			.all(...batch) as Array<{ device_id: string; display_name: string | null }>;
+		for (const device of devices) {
+			const displayName = originDeviceDisplayName(device.display_name);
+			if (displayName) names.set(device.device_id, displayName);
+		}
+	}
+	return names;
+}
+
 /**
  * Viewer-facing sync management routes (/api/sync/*).
  *
@@ -5611,6 +5663,7 @@ export function syncRoutes(
 			scopeId: c.req.query("scope_id"),
 			status: c.req.query("status"),
 		});
+		const originDeviceNames = resolveOriginDeviceDisplayNames(store, inventory.projects);
 		const operations = await shareOperationReadModels(store, undefined, false);
 		const operationById = new Map(
 			operations.map((operation) => [operation.operation_id, operation]),
@@ -5640,6 +5693,10 @@ export function syncRoutes(
 			...inventory,
 			projects: inventory.projects.map((project) => ({
 				...project,
+				origin_devices: project.origin_devices.map(({ device_id }) => ({
+					device_id,
+					display_name: originDeviceNames.get(device_id) ?? null,
+				})),
 				sharing: sharingByProject.get(project.workspace_identity) ?? [],
 			})),
 		});
