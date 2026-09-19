@@ -6,7 +6,7 @@ import { humanPresentationLabel } from "../../../lib/identity-presentation";
 import { state } from "../../../lib/state";
 import type { FeedItem, FeedItemMetadata } from "../types";
 
-function isOwnedBySelf(item: FeedItem): boolean {
+export function isOwnedBySelf(item: FeedItem): boolean {
 	if (item.owned_by_self === true) return true;
 	const actorId = String(item.actor_id || "").trim();
 	return Boolean(actorId && actorId === state.viewerActorId);

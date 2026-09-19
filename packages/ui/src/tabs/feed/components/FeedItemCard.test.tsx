@@ -214,7 +214,46 @@ describe("FeedItemCard", () => {
 	});
 });
 
+describe("FeedItemCard fallback disclosure", () => {
+	it("keeps supplemental provenance reachable when no content mode exists", () => {
+		renderCard(
+			observation({
+				body_text: "",
+				facts: [],
+				narrative: "",
+				subtitle: "",
+				workspace_kind: "repository",
+			}),
+		);
+
+		const button = titleButton();
+		act(() => button.click());
+
+		expect(mount.querySelector(".feed-detail")?.getAttribute("aria-label")).toBe(
+			"Diagnostic memory Details",
+		);
+		expect(mount.querySelector(".feed-detail")?.textContent).toContain("Workspace repository");
+		expect(mount.querySelectorAll('[role="radio"]')).toHaveLength(0);
+	});
+});
+
 describe("FeedItemCard content and actions", () => {
+	it("does not grant self-owned actions to a peer whose display name is You", () => {
+		renderCard(
+			observation({
+				actor_id: "peer-id",
+				owned_by_self: false,
+				resolved_actor_display_name: "You",
+				trust_state: "unreviewed",
+			}),
+		);
+
+		expect(mount.querySelector(".provenance-chip.author")?.textContent).toBe("You");
+		expect(mount.textContent).toContain("unreviewed");
+		expect(mount.querySelector(".feed-menu-trigger")).toBeNull();
+		expect(mount.querySelector(".feed-visibility-select")).toBeNull();
+	});
+
 	it("shows a highlighted excerpt when search matches only hidden detail", () => {
 		state.feedQuery = "coordinator";
 		renderCard(observation({ facts: ["Coordinator routing changed"], subtitle: "Visible skim" }));

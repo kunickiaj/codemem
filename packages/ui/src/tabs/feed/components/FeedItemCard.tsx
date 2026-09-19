@@ -22,6 +22,7 @@ import {
 import {
 	authorLabel,
 	deviceLabel,
+	isOwnedBySelf,
 	mergeMetadata,
 	originSourceLabel,
 	trustStateLabel,
@@ -96,7 +97,11 @@ export function FeedItemCard({
 	const detailId = `feed-detail-${model.rowKey.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
 	const activeModeData = model.modes.find((mode) => mode.id === activeMode);
 	const searchMatch = hiddenSearchMatch(model, state.feedQuery);
-	const ownedBySelf = item.owned_by_self === true || actor === "You";
+	const ownedBySelf = isOwnedBySelf(item);
+	const hasSupplementalDetail = Boolean(
+		model.files.length || workspaceKind || originSource || device,
+	);
+	const hasDisclosure = Boolean(activeModeData || hasSupplementalDetail);
 	let trustLabel = "";
 	if (!ownedBySelf && trustState !== "trusted") {
 		trustLabel = trustState ? trustStateLabel(trustState) : "Unknown trust";
@@ -131,7 +136,7 @@ export function FeedItemCard({
 	}
 
 	function toggleDetail() {
-		if (!activeModeData) return;
+		if (!hasDisclosure) return;
 		const nextValue = !expanded;
 		state.itemExpandState.set(model.rowKey, nextValue);
 		setExpanded(nextValue);
@@ -278,7 +283,7 @@ export function FeedItemCard({
 		h(
 			"div",
 			{ className: "feed-card-body" },
-			activeModeData
+			hasDisclosure
 				? h("button", {
 						"aria-controls": detailId,
 						"aria-expanded": expanded,
@@ -319,7 +324,7 @@ export function FeedItemCard({
 				"div",
 				{ className: "feed-meta-line" },
 				project ? h("span", { className: "feed-project" }, project) : h("span", null, "No project"),
-				h(ProvenanceChip, { label: actor, variant: actor === "You" ? "mine" : "author" }),
+				h(ProvenanceChip, { label: actor, variant: ownedBySelf ? "mine" : "author" }),
 				h(ProvenanceChip, {
 					label: selectedVisibility,
 					variant: selectedVisibility,
@@ -334,17 +339,17 @@ export function FeedItemCard({
 				trustLabel ? h(ProvenanceChip, { label: trustLabel, variant: "trust" }) : null,
 				model.tags.map((tag, index) => h(TagChip, { key: `${String(tag)}-${index}`, tag })),
 			),
-			expanded && activeModeData
+			expanded && hasDisclosure
 				? h(
 						"section",
 						{
-							"aria-label": `${model.displayTitle} ${activeModeData.label}`,
+							"aria-label": `${model.displayTitle} ${activeModeData?.label ?? "Details"}`,
 							className: "feed-detail",
 							id: detailId,
 						},
-						renderModeContent(activeModeData),
+						activeModeData ? renderModeContent(activeModeData) : null,
 						filesRow,
-						expandedProvenance
+						expandedProvenance.length > 0
 							? h("div", { className: "feed-expanded-provenance" }, expandedProvenance)
 							: null,
 					)
