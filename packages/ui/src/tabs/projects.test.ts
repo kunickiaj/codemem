@@ -3880,6 +3880,20 @@ describe("Projects inventory controller collision keys", () => {
 
 	it("keys colliding local and peer rows independently", async () => {
 		const workspaceIdentity = "peer-received:controller-collision";
+		vi.mocked(api.loadRecipientPolicyIntent).mockResolvedValue(
+			recipientIntent({
+				projectRecipients: [
+					{
+						version: 1,
+						canonicalProjectIdentity: workspaceIdentity,
+						recipientKind: "team",
+						teamId: "team-example",
+						identityId: null,
+						status: "active",
+					},
+				],
+			}),
+		);
 		vi.mocked(api.saveSharingDomainProjectMapping).mockRejectedValueOnce(
 			new api.SharingDomainGuardrailConfirmationError({
 				required_guardrail_tokens: ["confirm-scope"],
@@ -3942,6 +3956,15 @@ describe("Projects inventory controller collision keys", () => {
 			confirmationRow.projects.find((entry) => entry.project.read_only === true)
 				?.pendingConfirmation,
 		).toBeNull();
+		controller.callbacks.setProjectScopeDraft(workspaceIdentity, "exampleco-work");
+		const draftRow = controller.getViewModel().rows[0];
+		if (draftRow?.kind !== "cluster") throw new Error("draft project cluster missing");
+		const localProject = draftRow.projects.find((entry) => entry.project.read_only !== true);
+		const peerProject = draftRow.projects.find((entry) => entry.project.read_only === true);
+		expect(localProject?.draftScopeId).toBe("exampleco-work");
+		expect(localProject?.recipients).toHaveLength(1);
+		expect(peerProject?.draftScopeId).toBeNull();
+		expect(peerProject?.recipients).toEqual([]);
 	});
 });
 

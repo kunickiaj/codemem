@@ -1586,7 +1586,9 @@ function projectViewModel(project: ProjectScopeInventoryProject): ProjectInvento
 		shareEligible: isProjectShareEligible(project),
 		shareReady: projectShareInventoryReady,
 		detailsOpen: openProjectDetails.has(detailKey),
-		draftScopeId: draftDomainSelections.get(project.workspace_identity) ?? null,
+		draftScopeId: locallyAssignable
+			? (draftDomainSelections.get(project.workspace_identity) ?? null)
+			: null,
 		pendingConfirmation: pending
 			? {
 					requiredGuardrailTokens: [...pending.requiredGuardrailTokens],
@@ -1595,7 +1597,7 @@ function projectViewModel(project: ProjectScopeInventoryProject): ProjectInvento
 				}
 			: null,
 		pendingForgetConfirmation: pendingForget ? { ...pendingForget } : null,
-		recipients: recipientChips([project.workspace_identity]),
+		recipients: locallyAssignable ? recipientChips([project.workspace_identity]) : [],
 	};
 }
 
