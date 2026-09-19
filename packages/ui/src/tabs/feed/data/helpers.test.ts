@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { MACHINE_PRESENTATION_LABEL_FIXTURES } from "../../../lib/identity-presentation";
 import { state } from "../../../lib/state";
-import { authorLabel, deviceLabel, itemTags } from "./helpers";
+import { authorLabel, deviceLabel, itemTags, originSourceLabel } from "./helpers";
 
 beforeEach(() => {
 	state.viewerActorId = null;
@@ -67,5 +67,13 @@ describe("Feed identity labels", () => {
 
 	it("uses unknown author when no actor provenance exists", () => {
 		expect(authorLabel({})).toBe("Unknown author");
+	});
+});
+
+describe("originSourceLabel", () => {
+	it("allowlists human-readable sources and neutralizes opaque values", () => {
+		expect(originSourceLabel("opencode")).toBe("OpenCode");
+		expect(originSourceLabel("internal://tenant/device-81f6d8")).toBe("Other source");
+		expect(originSourceLabel("")).toBe("");
 	});
 });

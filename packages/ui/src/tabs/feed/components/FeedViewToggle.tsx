@@ -18,13 +18,19 @@ export function FeedViewToggle({
 	if (modes.length <= 1) return null;
 
 	function moveSelection(event: TargetedKeyboardEvent<HTMLButtonElement>, index: number) {
+		const supported =
+			PREVIOUS_KEYS.has(event.key) ||
+			NEXT_KEYS.has(event.key) ||
+			event.key === "Home" ||
+			event.key === "End";
+		if (!supported) return;
+		event.preventDefault();
+
 		let nextIndex = index;
 		if (PREVIOUS_KEYS.has(event.key)) nextIndex = (index - 1 + modes.length) % modes.length;
 		if (NEXT_KEYS.has(event.key)) nextIndex = (index + 1) % modes.length;
 		if (event.key === "Home") nextIndex = 0;
 		if (event.key === "End") nextIndex = modes.length - 1;
-		if (nextIndex === index && !PREVIOUS_KEYS.has(event.key) && !NEXT_KEYS.has(event.key)) return;
-		event.preventDefault();
 		const nextMode = modes[nextIndex];
 		if (!nextMode) return;
 		onSelect(nextMode.id);

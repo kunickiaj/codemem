@@ -147,6 +147,49 @@ describe("FeedItemCard", () => {
 		expect(document.activeElement).toBe(focused);
 	});
 
+	it("does not reopen a previously expanded mode when switching back from a collapsed mode", () => {
+		renderCard(observation());
+		act(() => titleButton().click());
+
+		const radios = Array.from(mount.querySelectorAll<HTMLButtonElement>('[role="radio"]'));
+		const summary = radios.find((radio) => radio.textContent === "Summary");
+		const facts = radios.find((radio) => radio.textContent === "Facts");
+		act(() => facts?.click());
+		expect(mount.querySelector(".feed-detail")).not.toBeNull();
+
+		act(() => titleButton().click());
+		expect(mount.querySelector(".feed-detail")).toBeNull();
+		act(() => summary?.click());
+
+		expect(titleButton().getAttribute("aria-expanded")).toBe("false");
+		expect(mount.querySelector(".feed-detail")).toBeNull();
+	});
+
+	it("prevents Home and End defaults when selection is already at the boundary", () => {
+		renderCard(observation());
+		const radios = mount.querySelectorAll<HTMLButtonElement>('[role="radio"]');
+		const first = radios[0];
+		const last = radios[radios.length - 1];
+		first?.focus();
+		const home = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Home" });
+		act(() => {
+			first?.dispatchEvent(home);
+		});
+		expect(home.defaultPrevented).toBe(true);
+		expect(document.activeElement).toBe(first);
+		expect(first?.getAttribute("aria-checked")).toBe("true");
+
+		act(() => last?.click());
+		last?.focus();
+		const end = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "End" });
+		act(() => {
+			last?.dispatchEvent(end);
+		});
+		expect(end.defaultPrevented).toBe(true);
+		expect(document.activeElement).toBe(last);
+		expect(last?.getAttribute("aria-checked")).toBe("true");
+	});
+
 	it("keeps expansion for the same identity through removal and return without transferring it", () => {
 		renderCard(observation());
 		act(() => titleButton().click());
@@ -170,6 +213,29 @@ describe("FeedItemCard content and actions", () => {
 		expect(mount.querySelector(".feed-search-match")?.textContent).toContain("Coordinator");
 		expect(mount.querySelector(".feed-search-match mark.match")?.textContent).toBe("Coordinator");
 		expect(mount.querySelector(".feed-detail")).toBeNull();
+	});
+
+	it("keeps a hidden Facts match visible while expanded Summary is active", () => {
+		state.feedQuery = "coordinator";
+		renderCard(observation({ facts: ["Coordinator routing changed"], subtitle: "Visible skim" }));
+		act(() => titleButton().click());
+
+		expect(mount.querySelector(".feed-search-match")?.textContent).toContain("Coordinator");
+
+		const facts = Array.from(mount.querySelectorAll<HTMLButtonElement>('[role="radio"]')).find(
+			(radio) => radio.textContent === "Facts",
+		);
+		act(() => facts?.click());
+		expect(mount.querySelector(".feed-search-match")).toBeNull();
+	});
+
+	it("never exposes opaque origin source identifiers", () => {
+		const rawSource = "internal://tenant/device-81f6d8";
+		renderCard(observation({ origin_source: rawSource }));
+		act(() => titleButton().click());
+
+		expect(mount.textContent).toContain("From Other source");
+		expect(mount.textContent).not.toContain(rawSource);
 	});
 
 	it("keeps files and resolved device detail behind disclosure", () => {

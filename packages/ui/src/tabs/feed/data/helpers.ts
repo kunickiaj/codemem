@@ -100,6 +100,24 @@ export function trustStateLabel(trustState: string): string {
 	return trustState.replace(/_/g, " ");
 }
 
+const ORIGIN_SOURCE_LABELS: Readonly<Record<string, string>> = {
+	claude: "Claude Code",
+	codex: "Codex",
+	mcp: "MCP",
+	observer: "Observer",
+	observer_summary: "Session summary",
+	opencode: "OpenCode",
+	pi: "Pi",
+};
+
+export function originSourceLabel(value: unknown): string {
+	const source = String(value || "")
+		.trim()
+		.toLowerCase();
+	if (!source) return "";
+	return ORIGIN_SOURCE_LABELS[source] || "Other source";
+}
+
 export function authorLabel(item: FeedItem): string {
 	if (isOwnedBySelf(item)) return "You";
 	const actorId = String(item.actor_id || "").trim();
