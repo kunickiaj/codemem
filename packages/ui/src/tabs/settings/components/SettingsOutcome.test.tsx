@@ -94,6 +94,22 @@ afterEach(() => {
 	settingsState.envOverrides = {};
 });
 
+describe("inactive pack setting outcomes", () => {
+	it("keeps no-effect timing under environment overrides", () => {
+		settingsState.envOverrides = {
+			pack_observation_limit: "CODEMEM_PACK_OBSERVATION_LIMIT",
+			pack_session_limit: "CODEMEM_PACK_SESSION_LIMIT",
+		};
+		const root = renderPanels();
+
+		for (const controlId of ["packObservationLimit", "packSessionLimit"]) {
+			const outcome = root.querySelector(`[data-settings-outcome-for="${controlId}"]`)?.textContent;
+			expect(outcome).toContain("Not used when Codemem creates context packs");
+			expect(outcome).not.toContain("After removing");
+		}
+	});
+});
+
 describe("settings outcomes", () => {
 	it("identifies the stage, scope, timing, and existing-data effect for every editable setting", () => {
 		const root = renderPanels();

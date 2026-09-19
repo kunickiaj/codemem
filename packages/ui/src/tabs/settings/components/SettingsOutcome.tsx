@@ -95,6 +95,7 @@ const OUTCOMES_BY_CONTROL_ID: Record<string, SettingsOutcomeDetails> = Object.fr
 export function settingsOutcomeFor(controlId: string): SettingsOutcomeDetails | undefined {
 	const outcome = OUTCOMES_BY_CONTROL_ID[controlId];
 	if (!outcome) return undefined;
+	if (outcome.scope === "No current effect") return outcome;
 	const configKey = INPUT_TO_CONFIG_KEY[controlId as keyof typeof INPUT_TO_CONFIG_KEY];
 	const override = configKey ? settingsState.envOverrides[configKey] : undefined;
 	if (typeof override !== "string" || !override.trim()) return outcome;
