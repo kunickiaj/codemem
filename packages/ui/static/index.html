@@ -2047,7 +2047,18 @@
         .recipient-policy-sharing-card-header { align-items: stretch; flex-direction: column; }
         .recipient-policy-sharing-card-actions { justify-content: flex-start; }
         .recipient-policy-sharing-stats { grid-template-columns: 1fr; }
-        .recipient-policy-sharing-received-head { display: none; }
+        .recipient-policy-sharing-received-head {
+          position: absolute;
+          width: 1px;
+          height: 1px;
+          padding: 0;
+          margin: -1px;
+          overflow: hidden;
+          clip: rect(0, 0, 0, 0);
+          clip-path: inset(50%);
+          white-space: nowrap;
+          border: 0;
+        }
         .recipient-policy-sharing-received-row { grid-template-columns: 1fr 1fr; }
         .recipient-policy-sharing-received-row > td:not(:first-child)::before {
           content: attr(data-label) " ";

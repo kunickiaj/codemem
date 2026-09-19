@@ -155,6 +155,7 @@ export function createRecipientPolicySharingLoader(
 							coordinatorEnrollmentIssueCount,
 							deviceInventory: lastDeviceInventory,
 							deviceInventoryUnavailable: lastDeviceInventoryUnavailable,
+							onNavigateAdvancedSync: options.onNavigateAdvancedSync,
 							onOpenTeamSetup: options.onOpenTeamSetup,
 							onReviewDevices: options.onReviewDevices,
 							onTeamRenamed: () =>
@@ -167,6 +168,7 @@ export function createRecipientPolicySharingLoader(
 						}
 					: {
 							loading: true,
+							onNavigateAdvancedSync: options.onNavigateAdvancedSync,
 							teamSetupSummary,
 							teamSetupLoading,
 							teamSetupUnavailable,

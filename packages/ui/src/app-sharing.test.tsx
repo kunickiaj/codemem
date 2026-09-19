@@ -341,6 +341,24 @@ describe("Sharing app data refresh", () => {
 		await expect(retry).resolves.toBe(true);
 	});
 
+	it("keeps Advanced Sync navigation available during the first loading render", () => {
+		document.body.innerHTML = '<div id="recipientPolicySharingMount"></div>';
+		const pendingProjects = deferred<{ manageable: typeof projects; received: [] }>();
+		const onNavigateAdvancedSync = vi.fn();
+		const mountSharing = vi.fn();
+		createRecipientPolicySharingLoader(
+			{
+				loadProjects: vi.fn(() => pendingProjects.promise),
+				mountSharing,
+			},
+			{ onNavigateAdvancedSync },
+		)();
+
+		expect(mountSharing.mock.calls.at(-1)?.[3]).toEqual(
+			expect.objectContaining({ loading: true, onNavigateAdvancedSync }),
+		);
+	});
+
 	it("waits for delayed device inventory failure before rendering a broader load error", async () => {
 		document.body.innerHTML =
 			'<div id="recipientPolicySharingMount"></div><div id="recipientPolicyManagementMount"></div>';
