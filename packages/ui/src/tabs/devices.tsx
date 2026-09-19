@@ -21,6 +21,7 @@ import {
 	deviceIdentityAttentionItems,
 	deviceIdentitySetupGate,
 } from "../lib/device-identity-inventory";
+import { copyToClipboard } from "../lib/dom";
 import { state } from "../lib/state";
 
 export type DeviceAvailabilityState = "available" | "offline" | "unknown";
@@ -53,6 +54,7 @@ export interface DevicesRendererOptions {
 	refreshError?: boolean;
 	inventoryUnavailable?: boolean;
 	onNavigate?: (target: DevicesNavigationTarget) => void;
+	onRetry?: () => void | Promise<void>;
 	peerRuntimeMetadata?: DevicePeerRuntimeMetadataInput[];
 	inventory?: DeviceIdentityInventoryV1;
 	onCommitted?: () => boolean | undefined | Promise<boolean | undefined>;
@@ -389,15 +391,61 @@ function setDeviceCommitStatus(message: string): void {
 	if (status) status.textContent = message;
 }
 
+function SetupRecoveryAction({
+	item,
+	onNavigate,
+	onOpenPairing,
+}: {
+	item: DeviceIdentityInventoryItemV1;
+	onNavigate?: (target: DevicesNavigationTarget) => void;
+	onOpenPairing: PairingEntryHandler;
+}) {
+	if (item.state === "pairing_required") {
+		return (
+			<>
+				<p>Pair this device first. Pairing establishes trust but does not choose its Identity.</p>
+				<div className="device-identity-card-actions">
+					<button
+						aria-label={`Pair ${item.displayName}`}
+						className="settings-button"
+						onClick={(event) => onOpenPairing(event.currentTarget)}
+						type="button"
+					>
+						Pair a device
+					</button>
+				</div>
+			</>
+		);
+	}
+	if (item.state !== "conflicted") return null;
+	return (
+		<>
+			<p>Device evidence conflicts. Review and repair it before assigning an Identity.</p>
+			<div className="device-identity-card-actions">
+				<button
+					aria-label={`Open Advanced review for ${item.displayName}`}
+					className="settings-button"
+					onClick={() => onNavigate?.("advanced_sync")}
+					type="button"
+				>
+					Open Advanced review
+				</button>
+			</div>
+		</>
+	);
+}
+
 function SetupWorkflow({
 	intent,
 	inventory,
 	items,
+	onOpenPairing,
 	options,
 }: {
 	intent: RecipientPolicyIntentGraphV1;
 	inventory: DeviceIdentityInventoryV1;
 	items: DeviceIdentityInventoryItemV1[];
+	onOpenPairing: PairingEntryHandler;
 	options: DevicesRendererOptions;
 }) {
 	const identities = intent.identities.filter(
@@ -696,40 +744,13 @@ function SetupWorkflow({
 											</button>
 										</div>
 									</>
-								) : item.state === "pairing_required" ? (
-									<>
-										<p>
-											Pair this device first. Pairing establishes trust but does not choose its
-											Identity.
-										</p>
-										<div className="device-identity-card-actions">
-											<button
-												aria-label={`Go to pairing for ${item.displayName}`}
-												className="settings-button"
-												onClick={() => options.onNavigate?.("advanced_sync")}
-												type="button"
-											>
-												Go to pairing
-											</button>
-										</div>
-									</>
-								) : item.state === "conflicted" ? (
-									<>
-										<p>
-											Device evidence conflicts. Review and repair it before assigning an Identity.
-										</p>
-										<div className="device-identity-card-actions">
-											<button
-												aria-label={`Open Advanced review for ${item.displayName}`}
-												className="settings-button"
-												onClick={() => options.onNavigate?.("advanced_sync")}
-												type="button"
-											>
-												Open Advanced review
-											</button>
-										</div>
-									</>
-								) : null}
+								) : (
+									<SetupRecoveryAction
+										item={item}
+										onNavigate={options.onNavigate}
+										onOpenPairing={onOpenPairing}
+									/>
+								)}
 							</article>
 						</li>
 					);
@@ -1395,10 +1416,6 @@ function ConfiguredDeviceInventory({
 	}
 	return (
 		<>
-			<DeviceSummaryBar
-				counts={deviceSummaryCounts(devices, unknownFallbackCount)}
-				onNavigate={options.onNavigate}
-			/>
 			{[...groups.values()].map((group) => (
 				<DeviceIdentityGroup
 					devices={group}
@@ -1417,12 +1434,218 @@ function ConfiguredDeviceInventory({
 	);
 }
 
+function DevicesSummaryBar({
+	devices,
+	options,
+}: {
+	devices: DeviceProjection[];
+	options: DevicesRendererOptions;
+}) {
+	const counts = {
+		available: devices.filter((device) => device.availability === "available").length,
+		offline: devices.filter((device) => device.availability === "offline").length,
+		unknown: devices.filter((device) => device.availability === "unknown").length,
+	};
+	return (
+		<div className="devices-summary-bar">
+			<div className="devices-summary-counts">
+				{(["available", "offline", "unknown"] as const).map((availability) => (
+					<span key={availability}>
+						<PresencePip
+							aria-label={`${counts[availability]} ${availability}`}
+							size={6}
+							state={availabilityPipState(availability)}
+						/>
+						{counts[availability]} {availability}
+					</span>
+				))}
+			</div>
+			{options.onNavigate ? (
+				<button
+					className="settings-button"
+					onClick={() => options.onNavigate?.("health")}
+					type="button"
+				>
+					Check device health
+				</button>
+			) : null}
+		</div>
+	);
+}
+
+function CoordinatorStatus({ options }: { options: DevicesRendererOptions }) {
+	if (options.inventory?.coordinatorEvidence.availability !== "unavailable") return null;
+	return (
+		<div className="devices-coordinator-status">
+			<PresencePip aria-label="Coordinator unreachable" size={6} state="degraded" />
+			<Chip tone="badge-offline" variant="badge">
+				Coordinator unreachable
+			</Chip>
+			<span className="devices-coordinator-status-spacer" />
+			{options.onRetry ? (
+				<button className="settings-button" onClick={() => options.onRetry?.()} type="button">
+					Retry
+				</button>
+			) : null}
+		</div>
+	);
+}
+
+function ThisDeviceRow({
+	intent,
+	inventory,
+}: {
+	intent: RecipientPolicyIntentGraphV1;
+	inventory?: DeviceIdentityInventoryV1;
+}) {
+	const localDevice = inventory?.items.find((item) => item.isLocal);
+	const identityName = intent.identities.find(
+		(identity) => identity.identityId === localDevice?.identityId && identity.status === "active",
+	)?.displayName;
+	const pairedLabel =
+		localDevice?.state === "configured" && identityName ? `Paired · ${identityName}` : "Not paired";
+	return (
+		<div className="devices-local-row">
+			<PresencePip aria-label="This device online" state="online" />
+			<div className="devices-local-copy">
+				<strong>This device</strong>
+				<span className="small">{pairedLabel}</span>
+			</div>
+			<Chip tone="actor-badge local" variant="badge">
+				This device
+			</Chip>
+		</div>
+	);
+}
+
+type PairingEntryHandler = (trigger: HTMLElement, showExplanation?: boolean) => void;
+
+function DevicesEmptyState({ onOpenPairing }: { onOpenPairing: PairingEntryHandler }) {
+	return (
+		<div className="devices-empty-state">
+			<strong>No other devices</strong>
+			<div className="devices-empty-actions">
+				<button
+					className="settings-save"
+					onClick={(event) => onOpenPairing(event.currentTarget)}
+					type="button"
+				>
+					Pair a device
+				</button>
+				<button
+					className="settings-button"
+					onClick={(event) => onOpenPairing(event.currentTarget, true)}
+					type="button"
+				>
+					How pairing works
+				</button>
+			</div>
+		</div>
+	);
+}
+
+function PairingPanel({
+	onClose,
+	showExplanation,
+}: {
+	onClose: () => void;
+	showExplanation: boolean;
+}) {
+	const headingRef = useRef<HTMLHeadingElement>(null);
+	useEffect(() => headingRef.current?.focus(), []);
+	return (
+		<aside
+			aria-labelledby="devices-pairing-heading"
+			className="devices-pairing-panel"
+			id="devices-pairing-panel"
+		>
+			<div className="devices-pairing-header">
+				<h3 id="devices-pairing-heading" ref={headingRef} tabIndex={-1}>
+					Pair a device
+				</h3>
+				<button className="settings-button" onClick={onClose} type="button">
+					Close
+				</button>
+			</div>
+			{showExplanation ? (
+				<p>Run the pairing command on the device you want to connect, then review it here.</p>
+			) : null}
+			<div className="devices-pairing-command">
+				<code>codemem sync pair --payload-only</code>
+				<button
+					className="settings-save"
+					onClick={(event) =>
+						copyToClipboard(
+							"codemem sync pair --payload-only",
+							event.currentTarget as HTMLButtonElement,
+						)
+					}
+					type="button"
+				>
+					Copy pairing command
+				</button>
+			</div>
+		</aside>
+	);
+}
+
+function ConfiguredFallbackInventory({
+	intent,
+	inventory,
+	items,
+	options,
+}: {
+	intent: RecipientPolicyIntentGraphV1;
+	inventory: DeviceIdentityInventoryV1;
+	items: DeviceIdentityInventoryItemV1[];
+	options: DevicesRendererOptions;
+}) {
+	return (
+		<ul className="recipient-policy-sharing-grid recipient-policy-sharing-responsive-grid">
+			{items.map((item, index) => {
+				const titleId = `configured-inventory-title-${index}`;
+				const previousIdentityName =
+					intent.identities.find((identity) => identity.identityId === item.identityId)
+						?.displayName ?? "Unavailable Identity";
+				return (
+					<li key={item.deviceId}>
+						<article
+							aria-labelledby={titleId}
+							className="peer-card peer-card--padded recipient-policy-sharing-card"
+							id={`device-identity-card-${item.deviceId}`}
+							tabIndex={-1}
+						>
+							<div className="peer-title recipient-policy-sharing-card-title">
+								<h3 id={titleId}>{item.displayName}</h3>
+								<span className="badge actor-badge">Configured · Availability unknown</span>
+							</div>
+							<p>
+								<strong>Owning Identity:</strong> {previousIdentityName}
+							</p>
+							<ConfiguredRebind
+								controlKey={item.deviceId}
+								intent={intent}
+								inventory={inventory}
+								item={item}
+								options={options}
+								previousIdentityName={previousIdentityName}
+							/>
+						</article>
+					</li>
+				);
+			})}
+		</ul>
+	);
+}
+
 function DevicesView({
 	intent,
+	onOpenPairing,
 	options,
 	projection,
 }: {
 	intent: RecipientPolicyIntentGraphV1;
+	onOpenPairing: PairingEntryHandler;
 	options: DevicesRendererOptions;
 	projection: DevicesProjection;
 }) {
@@ -1448,7 +1671,12 @@ function DevicesView({
 				(item) => item.state !== "configured" && item.evidenceDeviceIds.includes(device.deviceId),
 			),
 	);
-	const projectedDeviceIds = new Set(visibleProjectedDevices.map((device) => device.deviceId));
+	const localDevice = options.inventory?.items.find((item) => item.isLocal);
+	const localEvidenceDeviceIds = new Set(localDevice?.evidenceDeviceIds ?? []);
+	const otherProjectedDevices = visibleProjectedDevices.filter(
+		(device) => !localEvidenceDeviceIds.has(device.deviceId),
+	);
+	const projectedDeviceIds = new Set(otherProjectedDevices.map((device) => device.deviceId));
 	const inventoryUnavailable = options.inventoryUnavailable ? (
 		<p aria-live="polite" className="small" role="status">
 			Device ownership information is temporarily unavailable. Existing device details remain
@@ -1460,43 +1688,16 @@ function DevicesView({
 		options.inventory?.items.filter(
 			(item) =>
 				item.state === "configured" &&
+				!item.isLocal &&
 				!item.evidenceDeviceIds.some((deviceId) => projectedDeviceIds.has(deviceId)),
 		) ?? [];
 	const configuredFallbackWorkflow = options.inventory ? (
-		<ul className="recipient-policy-sharing-grid recipient-policy-sharing-responsive-grid">
-			{configuredFallbackItems.map((item, index) => {
-				const titleId = `configured-inventory-title-${index}`;
-				const previousIdentityName =
-					intent.identities.find((identity) => identity.identityId === item.identityId)
-						?.displayName ?? "Unavailable Identity";
-				return (
-					<li key={item.deviceId}>
-						<article
-							aria-labelledby={titleId}
-							className="peer-card peer-card--padded recipient-policy-sharing-card"
-							id={`device-identity-card-${item.deviceId}`}
-							tabIndex={-1}
-						>
-							<div className="peer-title recipient-policy-sharing-card-title">
-								<h3 id={titleId}>{item.displayName}</h3>
-								<span className="badge actor-badge">Configured · Availability unknown</span>
-							</div>
-							<p>
-								<strong>Owning Identity:</strong> {previousIdentityName}
-							</p>
-							<ConfiguredRebind
-								controlKey={item.deviceId}
-								intent={intent}
-								inventory={options.inventory}
-								item={item}
-								options={options}
-								previousIdentityName={previousIdentityName}
-							/>
-						</article>
-					</li>
-				);
-			})}
-		</ul>
+		<ConfiguredFallbackInventory
+			intent={intent}
+			inventory={options.inventory}
+			items={configuredFallbackItems}
+			options={options}
+		/>
 	) : null;
 	const coordinatorAttention =
 		(options.coordinatorEnrollmentIssueCount ?? 0) > 0 ? (
@@ -1526,25 +1727,30 @@ function DevicesView({
 					succeeds.
 				</p>
 			) : null}
-			{options.inventory.coordinatorEvidence.availability === "unavailable" ? (
-				<p className="small" role="status">
-					Coordinator device information is temporarily unavailable. Local devices remain visible,
-					but some setup actions may require a refresh.
-				</p>
-			) : null}
 			<SetupWorkflow
 				intent={intent}
 				inventory={options.inventory}
 				items={setupItems}
+				onOpenPairing={onOpenPairing}
 				options={options}
 			/>
 		</>
 	) : null;
-	if (visibleProjectedDevices.length === 0) {
+	const hasOtherInventoryItems = (options.inventory?.items ?? []).some((item) => !item.isLocal);
+	const coordinatorUnavailable =
+		options.inventory?.coordinatorEvidence.availability === "unavailable";
+	const connectivityStatus = coordinatorUnavailable ? (
+		<CoordinatorStatus options={options} />
+	) : (
+		<DevicesSummaryBar devices={visibleProjectedDevices} options={options} />
+	);
+	if (otherProjectedDevices.length === 0) {
 		return (
 			<>
 				{refreshError}
 				{inventoryUnavailable}
+				{connectivityStatus}
+				<ThisDeviceRow intent={intent} inventory={options.inventory} />
 				{coordinatorAttention}
 				{inventoryWorkflow}
 				<DeviceSummaryBar
@@ -1552,16 +1758,14 @@ function DevicesView({
 					onNavigate={options.onNavigate}
 				/>
 				{configuredFallbackWorkflow}
-				<p className="small" role="status">
-					{configuredFallbackItems.length > 0
-						? "No additional active devices are registered."
-						: setupItems.length > 0
-							? "No configured devices are registered."
-							: "No active devices are registered."}
-					{projection.revokedDeviceCount > 0
-						? ` ${projection.revokedDeviceCount.toLocaleString()} revoked ${projection.revokedDeviceCount === 1 ? "device is" : "devices are"} not shown.`
-						: ""}
-				</p>
+				{hasOtherInventoryItems ? null : <DevicesEmptyState onOpenPairing={onOpenPairing} />}
+				{projection.revokedDeviceCount > 0 ? (
+					<p className="small" role="status">
+						{projection.revokedDeviceCount.toLocaleString()} revoked{" "}
+						{projection.revokedDeviceCount === 1 ? "device is" : "devices are"} not included in the
+						active list.
+					</p>
+				) : null}
 			</>
 		);
 	}
@@ -1569,6 +1773,7 @@ function DevicesView({
 		<>
 			{refreshError}
 			{inventoryUnavailable}
+			{connectivityStatus}
 			{coordinatorAttention}
 			{inventoryWorkflow}
 			{configuredFallbackWorkflow}
@@ -1616,6 +1821,18 @@ function DevicesRoot({
 		deviceIdentityAttentionItems(options.inventory).length +
 		configuredFallbackCount;
 	const showDeviceCount = !options.loading && !options.loadError;
+	const [pairingOpen, setPairingOpen] = useState(false);
+	const [showPairingExplanation, setShowPairingExplanation] = useState(false);
+	const pairingTrigger = useRef<HTMLElement | null>(null);
+	const openPairing: PairingEntryHandler = (trigger, showExplanation = false) => {
+		pairingTrigger.current = trigger;
+		setShowPairingExplanation(showExplanation);
+		setPairingOpen(true);
+	};
+	const closePairing = () => {
+		setPairingOpen(false);
+		queueMicrotask(() => pairingTrigger.current?.focus());
+	};
 	return (
 		<section
 			aria-labelledby="devices-heading"
@@ -1628,17 +1845,25 @@ function DevicesRoot({
 						<span className="devices-heading-count">{visibleDeviceCount}</span>
 					) : null}
 				</h2>
-				{options.onNavigate ? (
-					<button
-						className="settings-save"
-						onClick={() => options.onNavigate?.("sharing")}
-						type="button"
-					>
-						Add a device
-					</button>
-				) : null}
+				<button
+					aria-controls="devices-pairing-panel"
+					aria-expanded={pairingOpen}
+					className="settings-save"
+					onClick={(event) => openPairing(event.currentTarget)}
+					type="button"
+				>
+					Pair a device
+				</button>
 			</div>
-			<DevicesView intent={intent} options={options} projection={projection} />
+			{pairingOpen ? (
+				<PairingPanel onClose={closePairing} showExplanation={showPairingExplanation} />
+			) : null}
+			<DevicesView
+				intent={intent}
+				onOpenPairing={openPairing}
+				options={options}
+				projection={projection}
+			/>
 			<p aria-live="polite" id={DEVICE_COMMIT_STATUS_ID} role="status" />
 		</section>
 	);
