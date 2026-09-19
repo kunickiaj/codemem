@@ -431,7 +431,13 @@ function request(kind: CreateKind, targetId: string): RecipientInvitePreviewRequ
 		: { kind, target_identity_id: targetId };
 }
 
-export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicyIntentGraphV1 }) {
+export function RecipientPolicyInvitations({
+	intent,
+	onNavigateAdvancedSync,
+}: {
+	intent: RecipientPolicyIntentGraphV1;
+	onNavigateAdvancedSync?: () => void;
+}) {
 	const teams = intent.teams.filter((team) => team.status === "active");
 	const identities = intent.identities.filter((identity) => identity.status === "active");
 	const [mode, setMode] = useState<DialogMode | null>(null);
@@ -738,9 +744,13 @@ export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicy
 				>
 					Review an invite
 				</button>
-				<a className="recipient-policy-sharing-pointer" href="#advanced/sync">
+				<button
+					className="recipient-policy-sharing-pointer sync-subview-link"
+					onClick={() => onNavigateAdvancedSync?.()}
+					type="button"
+				>
 					Older invite codes →
-				</a>
+				</button>
 			</article>
 			{mode ? (
 				<RadixDialog

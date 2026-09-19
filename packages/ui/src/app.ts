@@ -474,9 +474,15 @@ function reviewDevicesFromSharing(deviceId?: string) {
 	switchTab("devices", { canonicalHash: true });
 }
 
+function navigateToAdvancedSyncFromSharing() {
+	switchTab("advanced", { canonicalHash: true, advancedSection: "sync" });
+	queueMicrotask(() => document.getElementById("advancedSyncButton")?.focus());
+}
+
 const loadRecipientPolicySharingData = createRecipientPolicySharingLoader(
 	{},
 	{
+		onNavigateAdvancedSync: navigateToAdvancedSyncFromSharing,
 		onOpenTeamSetup: openLegacyTeamSetup,
 		onReviewDevices: reviewDevicesFromSharing,
 	},

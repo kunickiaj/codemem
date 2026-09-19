@@ -172,6 +172,25 @@ describe("recipient-policy invitations", () => {
 		document.body.innerHTML = "";
 	});
 
+	it("uses the Advanced Sync navigation callback for older invite codes", () => {
+		const element = document.getElementById("mount");
+		if (!element) throw new Error("mount missing");
+		const onNavigateAdvancedSync = vi.fn();
+		act(() =>
+			render(
+				<RecipientPolicyInvitations
+					intent={intent}
+					onNavigateAdvancedSync={onNavigateAdvancedSync}
+				/>,
+				element,
+			),
+		);
+
+		act(() => button("Older invite codes →").click());
+
+		expect(onNavigateAdvancedSync).toHaveBeenCalledOnce();
+	});
+
 	it("previews and creates a Team-member invitation with the exact reviewed request", async () => {
 		vi.mocked(api.previewRecipientInvite).mockResolvedValue({
 			kind: "team_member",

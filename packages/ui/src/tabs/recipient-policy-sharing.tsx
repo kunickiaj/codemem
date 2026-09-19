@@ -30,6 +30,7 @@ export interface RecipientPolicySharingOptions {
 	deviceInventory?: DeviceIdentityInventoryV1;
 	onOpenTeamSetup?: (candidateRef: string) => void;
 	onReviewDevices?: (deviceId?: string) => void;
+	onNavigateAdvancedSync?: () => void;
 	onTeamRenamed?: () => Promise<unknown> | unknown;
 	renameTeam?: typeof import("../lib/api/sync").renameRecipientPolicyTeam;
 	coordinatorEnrollmentIssueCount?: number;
@@ -296,7 +297,12 @@ function SharingTabPanelContent({
 		case "received":
 			return <ReceivedView received={options.received ?? []} />;
 		case "invitations":
-			return <RecipientPolicyInvitations intent={intent} />;
+			return (
+				<RecipientPolicyInvitations
+					intent={intent}
+					onNavigateAdvancedSync={options.onNavigateAdvancedSync}
+				/>
+			);
 		default:
 			return null;
 	}

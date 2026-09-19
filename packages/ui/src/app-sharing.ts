@@ -105,6 +105,7 @@ function waitsForTeamSetupSummary(options: RecipientPolicySharingRefreshOptions)
 export function createRecipientPolicySharingLoader(
 	overrides: Partial<RecipientPolicySharingLoaderDependencies> = {},
 	options: {
+		onNavigateAdvancedSync?: () => void;
 		onOpenTeamSetup?: (candidateRef: string) => void;
 		onReviewDevices?: (deviceId?: string) => void;
 	} = {},
@@ -273,6 +274,7 @@ export function createRecipientPolicySharingLoader(
 		const renderSharing = () => {
 			dependencies.mountSharing(sharingMount, sharingProjects, sharingIntent, {
 				...sharingOptions,
+				onNavigateAdvancedSync: options.onNavigateAdvancedSync,
 				teamSetupSummary,
 				teamSetupLoading,
 				teamSetupUnavailable,
