@@ -19,7 +19,13 @@ import {
 	hiddenSearchMatch,
 	preferredAvailableMode,
 } from "../data/card-view-model";
-import { authorLabel, deviceLabel, mergeMetadata, trustStateLabel } from "../data/helpers";
+import {
+	authorLabel,
+	deviceLabel,
+	mergeMetadata,
+	originSourceLabel,
+	trustStateLabel,
+} from "../data/helpers";
 import type { FeedItem, ItemViewMode } from "../types";
 import { FeedItemMenu } from "./FeedItemMenu";
 import { FeedViewToggle } from "./FeedViewToggle";
@@ -41,6 +47,15 @@ function renderModeContent(mode: FeedCardMode) {
 	}
 	const className = mode.id === "narrative" ? "feed-body narrative" : "feed-body";
 	return renderNarrativeContent(mode.content.text, className);
+}
+
+function shouldShowSearchMatch(
+	searchMatch: ReturnType<typeof hiddenSearchMatch>,
+	expanded: boolean,
+	activeMode: ItemViewMode,
+) {
+	if (!searchMatch) return false;
+	return !expanded || searchMatch.mode !== activeMode;
 }
 
 export function FeedItemCard({
@@ -73,7 +88,7 @@ export function FeedItemCard({
 	const actor = authorLabel(item);
 	const device = deviceLabel(item, metadata);
 	const workspaceKind = String(item.workspace_kind || metadata.workspace_kind || "").trim();
-	const originSource = String(item.origin_source || metadata.origin_source || "").trim();
+	const originSource = originSourceLabel(item.origin_source || metadata.origin_source);
 	const trustState = String(item.trust_state || metadata.trust_state || "").trim();
 	const memoryId = Number(item.id || item.memory_id || 0);
 	const detailId = `feed-detail-${model.rowKey.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
@@ -112,7 +127,7 @@ export function FeedItemCard({
 	}, [isNew, model.rowKey]);
 
 	function selectMode(mode: ItemViewMode) {
-		if (expanded) state.itemExpandState.set(`${model.rowKey}:${mode}`, true);
+		state.itemExpandState.set(`${model.rowKey}:${mode}`, expanded);
 		state.itemViewState.set(model.rowKey, mode);
 		setPreferredFeedViewMode(mode);
 		setActiveMode(mode);
@@ -291,7 +306,7 @@ export function FeedItemCard({
 						},
 					})
 				: null,
-			searchMatch && !expanded
+			shouldShowSearchMatch(searchMatch, expanded, activeMode)
 				? h(
 						"div",
 						{ className: "feed-search-match" },
