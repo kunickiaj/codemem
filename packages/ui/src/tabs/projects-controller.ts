@@ -98,6 +98,13 @@ let latestInventoryResult: {
 	offset: number;
 	has_more: boolean;
 } = { projects: [], total: 0, offset: 0, has_more: false };
+const projectInventoryListeners = new Set<(viewModel: ProjectsInventoryViewModel) => void>();
+
+function notifyProjectInventoryChanged(): void {
+	if (projectInventoryListeners.size === 0) return;
+	const viewModel = projectsInventoryViewModel();
+	for (const listener of projectInventoryListeners) listener(viewModel);
+}
 
 function loadTeamSetupSummaryOnce(
 	forceFresh = false,
@@ -151,6 +158,14 @@ function isPeerReceivedProject(project: ProjectScopeInventoryProject): boolean {
 
 function isLocallyAssignableProject(project: ProjectScopeInventoryProject): boolean {
 	return project.identity_source !== "unmapped" && !isPeerReceivedProject(project);
+}
+
+function isProjectShareEligible(project: ProjectScopeInventoryProject): boolean {
+	return (
+		isLocallyAssignableProject(project) &&
+		project.memory_count != null &&
+		project.guardrail_warnings.every((warning) => !warning.requires_confirmation)
+	);
 }
 
 function cacheProjectInventoryProject(project: ProjectScopeInventoryProject): void {
@@ -244,6 +259,7 @@ function setProjectSelection(projectIds: string[]) {
 		else selectedProjectIds.add(projectId);
 	}
 	updateSelectionControls();
+	notifyProjectInventoryChanged();
 }
 
 function renderProjectSelection(
@@ -583,6 +599,7 @@ async function saveProjectMapping(
 		});
 		pendingConfirmations.delete(project.workspace_identity);
 		draftDomainSelections.delete(project.workspace_identity);
+		notifyProjectInventoryChanged();
 		showGlobalNotice("Project Space assignment updated. Device access grants are unchanged.");
 		refreshProjects?.();
 	} catch (error) {
@@ -592,6 +609,7 @@ async function saveProjectMapping(
 				scopeId,
 				warnings: error.guardrailWarnings,
 			});
+			notifyProjectInventoryChanged();
 			refreshProjects?.();
 			return;
 		}
@@ -623,6 +641,7 @@ async function saveProjectClusterMapping(
 			`Updated ${assignable.length} project identit${assignable.length === 1 ? "y" : "ies"}. Device access grants are unchanged.`,
 		);
 		draftClusterDomainSelections.delete(projectClusterKey(assignable[0]));
+		notifyProjectInventoryChanged();
 		refreshProjects?.();
 	} catch (error) {
 		showGlobalNotice(projectClusterMappingError(error), "warning");
@@ -643,6 +662,7 @@ async function removeProjectMapping(project: ProjectScopeInventoryProject) {
 		await api.deleteSharingDomainProjectMapping(project.mapping_id);
 		pendingConfirmations.delete(project.workspace_identity);
 		draftDomainSelections.delete(project.workspace_identity);
+		notifyProjectInventoryChanged();
 		showGlobalNotice("Project Space assignment removed. The next fallback now applies.");
 		refreshProjects?.();
 	} catch (error) {
@@ -662,6 +682,7 @@ async function forgetProjectMemories(project: ProjectScopeInventoryProject, conf
 			workspace_identity: project.workspace_identity,
 		});
 		pendingForgetConfirmations.delete(project.workspace_identity);
+		notifyProjectInventoryChanged();
 		showGlobalNotice(
 			`Forgot ${result.forgotten_memory_count.toLocaleString()} local memor${result.forgotten_memory_count === 1 ? "y" : "ies"}. ${result.peer_owned_memory_count.toLocaleString()} peer-owned memor${result.peer_owned_memory_count === 1 ? "y was" : "ies were"} left unchanged.`,
 		);
@@ -673,6 +694,7 @@ async function forgetProjectMemories(project: ProjectScopeInventoryProject, conf
 				localOwnedMemoryCount: error.preview.local_owned_memory_count,
 				peerOwnedMemoryCount: error.preview.peer_owned_memory_count,
 			});
+			notifyProjectInventoryChanged();
 			refreshProjects?.();
 			return;
 		}
@@ -906,12 +928,7 @@ function appendProjectShareAction(
 	actions: HTMLElement,
 	project: ProjectScopeInventoryProject,
 ): void {
-	if (
-		!isLocallyAssignableProject(project) ||
-		project.memory_count == null ||
-		project.guardrail_warnings.some((warning) => warning.requires_confirmation)
-	)
-		return;
+	if (!isProjectShareEligible(project)) return;
 	const share = document.createElement("button");
 	share.className = "settings-button";
 	share.type = "button";
@@ -1439,7 +1456,11 @@ function renderClusterMappingActions(
 	});
 	select.addEventListener("blur", refreshSkippedProjectDataAfterSelectBlur);
 	actions.append(select, save);
-	const suggestedScopes = new Set(assignableProjects.map((project) => project.suggested_scope_id));
+	const suggestedScopes = new Set(
+		assignableProjects
+			.map((project) => project.suggested_scope_id)
+			.filter((scopeId): scopeId is string => Boolean(scopeId)),
+	);
 	const resolvedScopes = new Set(assignableProjects.map((project) => project.resolved_scope_id));
 	appendClusterAttention(
 		actions,
@@ -1540,6 +1561,8 @@ function projectViewModel(project: ProjectScopeInventoryProject): ProjectInvento
 		project,
 		manageable,
 		selected: manageable && selectedProjectIds.has(project.workspace_identity),
+		shareEligible: isProjectShareEligible(project),
+		shareReady: projectShareInventoryReady,
 		detailsOpen: openProjectDetails.has(detailKey),
 		draftScopeId: draftDomainSelections.get(project.workspace_identity) ?? null,
 		pendingConfirmation: pending
@@ -1664,6 +1687,7 @@ function renderProjectInventory(result: {
 		);
 		nextFocused?.focus();
 	}
+	notifyProjectInventoryChanged();
 }
 
 function refreshProjectCoordinatorGroupNamesInBackground(
@@ -1705,18 +1729,24 @@ async function loadAllProjectShareChoices(
 interface ProjectInventoryFilters {
 	query: string;
 	status: string;
+	offset: number;
 }
 
 function readProjectInventoryFilters(): ProjectInventoryFilters {
 	return {
 		query: el<HTMLInputElement>("projectsSearch")?.value.trim() ?? "",
 		status: el<HTMLSelectElement>("projectsStatusFilter")?.value ?? "",
+		offset: currentOffset,
 	};
 }
 
 function projectInventoryFiltersAreCurrent(filters: ProjectInventoryFilters): boolean {
 	const current = readProjectInventoryFilters();
-	return current.query === filters.query && current.status === filters.status;
+	return (
+		current.query === filters.query &&
+		current.status === filters.status &&
+		current.offset === filters.offset
+	);
 }
 
 function loadProjectInventoryPage(
@@ -1725,7 +1755,7 @@ function loadProjectInventoryPage(
 ) {
 	return api.loadProjectScopeInventory({
 		limit: lastLimit,
-		offset: currentOffset,
+		offset: filters.offset,
 		q: filters.query || undefined,
 		status: filters.status || undefined,
 		signal: options.signal,
@@ -1744,6 +1774,7 @@ function mountProjectRecipientManagement(
 		onCommitted: (result) => {
 			if (result.status === "applied") selectedProjectIds.clear();
 			updateSelectionControls();
+			notifyProjectInventoryChanged();
 			refreshProjects?.();
 		},
 	});
@@ -1979,6 +2010,7 @@ function renderProjectsLoadFailure(error: unknown, meta: HTMLElement): void {
 	if (shareMount) renderProjectShareFlow(shareMount, [], { inventoryError: true });
 	mountProjectRecipientManagement([], emptyRecipientPolicyIntent, true);
 	updateSelectionControls();
+	notifyProjectInventoryChanged();
 	hideProjectInventorySkeleton();
 	meta.textContent = "Project inventory failed to load.";
 	renderEmpty(error instanceof Error ? error.message : "Unable to load project inventory.");
@@ -1995,6 +2027,7 @@ async function loadProjectsDataOperation(options: ProjectsDataLoadOptions): Prom
 	projectShareInventoryReady = false;
 	recipientPolicyIntentReady = false;
 	updateSelectionControls();
+	notifyProjectInventoryChanged();
 	meta.textContent = "Loading project inventory…";
 	let teamSetupSummaryPromise: Promise<TeamSetupSummaryResult> | null = null;
 	try {
@@ -2029,6 +2062,7 @@ async function loadProjectsDataOperation(options: ProjectsDataLoadOptions): Prom
 		if (!isCurrentProjectsLoad(loadGeneration, options)) {
 			return supersededProjectsLoad(options, teamSetupSummaryPromise);
 		}
+		if (!projectInventoryFiltersAreCurrent(requestedFilters)) return false;
 		renderProjectsLoadFailure(error, meta);
 		return finishFailedProjectsLoad(options, teamSetupSummaryPromise);
 	}
@@ -2048,6 +2082,11 @@ const projectInventoryCallbacks: ProjectInventoryCallbacks = {
 	toggleSelection(projectIds) {
 		setProjectSelection(projectIds);
 	},
+	shareProject(projectIdentity) {
+		const project = inventoryProject(projectIdentity);
+		if (!project || !isProjectShareEligible(project) || !projectShareInventoryReady) return;
+		openProjectShareFlow([project.workspace_identity]);
+	},
 	manageRecipients(projectIds) {
 		const sortedProjectIds = [...new Set(projectIds)].sort();
 		if (sortedProjectIds.length === 0) return;
@@ -2057,6 +2096,7 @@ const projectInventoryCallbacks: ProjectInventoryCallbacks = {
 		}
 		for (const projectId of sortedProjectIds) selectedProjectIds.add(projectId);
 		updateSelectionControls();
+		notifyProjectInventoryChanged();
 		openRecipientPolicyManagement({ mode: "project-add", projectIds: sortedProjectIds });
 	},
 	setProjectDetailsOpen(key, open) {
@@ -2065,19 +2105,23 @@ const projectInventoryCallbacks: ProjectInventoryCallbacks = {
 		const detailKey = `${isLocallyAssignableProject(project)}:${project.workspace_identity}`;
 		if (open) openProjectDetails.add(detailKey);
 		else openProjectDetails.delete(detailKey);
+		notifyProjectInventoryChanged();
 	},
 	setClusterDetailsOpen(key, open) {
 		if (open) openProjectClusters.add(key);
 		else openProjectClusters.delete(key);
+		notifyProjectInventoryChanged();
 	},
 	setProjectScopeDraft(projectIdentity, scopeId) {
 		draftDomainSelections.set(projectIdentity, scopeId);
 		pendingConfirmations.delete(projectIdentity);
+		notifyProjectInventoryChanged();
 		refreshProjects?.();
 	},
 	setClusterScopeDraft(clusterKey, scopeId) {
 		if (scopeId) draftClusterDomainSelections.set(clusterKey, scopeId);
 		else draftClusterDomainSelections.delete(clusterKey);
+		notifyProjectInventoryChanged();
 	},
 	async saveProjectScope(projectIdentity, scopeId) {
 		const project = inventoryProject(projectIdentity);
@@ -2113,10 +2157,12 @@ const projectInventoryCallbacks: ProjectInventoryCallbacks = {
 	},
 	cancelProjectScopeConfirmation(projectIdentity) {
 		pendingConfirmations.delete(projectIdentity);
+		notifyProjectInventoryChanged();
 		refreshProjects?.();
 	},
 	cancelProjectForgetConfirmation(projectIdentity) {
 		pendingForgetConfirmations.delete(projectIdentity);
+		notifyProjectInventoryChanged();
 		refreshProjects?.();
 	},
 	onSpaceSelectBlur() {
@@ -2127,6 +2173,12 @@ const projectInventoryCallbacks: ProjectInventoryCallbacks = {
 export function getProjectsInventoryController(): ProjectsInventoryController {
 	return {
 		getViewModel: projectsInventoryViewModel,
+		subscribe(listener) {
+			projectInventoryListeners.add(listener);
+			return () => {
+				projectInventoryListeners.delete(listener);
+			};
+		},
 		callbacks: projectInventoryCallbacks,
 	};
 }

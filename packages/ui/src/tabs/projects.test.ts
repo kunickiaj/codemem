@@ -80,7 +80,12 @@ import type {
 import { showGlobalNotice } from "../lib/notice";
 import { state } from "../lib/state";
 import * as projectSharing from "./project-sharing";
-import { getProjectsInventoryController, initProjectsTab, loadProjectsData } from "./projects";
+import {
+	getProjectsInventoryController,
+	initProjectsTab,
+	loadProjectsData,
+	type ProjectsInventoryViewModel,
+} from "./projects";
 import * as recipientPolicyManagement from "./recipient-policy-management";
 import { openSyncInputDialog } from "./sync/sync-dialogs";
 
@@ -3808,6 +3813,31 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 	});
 }
 
+describe("Projects cluster suggestions", () => {
+	beforeEach(setupProjectsTest);
+	afterEach(cleanupProjectsTest);
+
+	it("does not classify a missing suggestion as a mixed cluster suggestion", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [
+				project({ suggested_scope_id: "exampleco-work" }),
+				project({
+					suggested_scope_id: null,
+					workspace_identity: "https://git.example.invalid/exampleco/api.git:worktree",
+				}),
+			],
+			total: 2,
+		});
+
+		await loadProjectsData();
+
+		expect(document.body.textContent).not.toContain("mixed suggestions or current Spaces");
+	});
+});
+
 describe("Projects inventory controller", () => {
 	beforeEach(setupProjectsTest);
 	afterEach(cleanupProjectsTest);
@@ -3827,12 +3857,196 @@ describe("Projects inventory controller", () => {
 		const viewModel = controller.getViewModel();
 
 		expect(viewModel.rows).toHaveLength(1);
-		expect(viewModel.rows[0]).toMatchObject({ kind: "project", key: project().workspace_identity });
+		expect(viewModel.rows[0]).toMatchObject({
+			kind: "project",
+			key: project().workspace_identity,
+			shareEligible: true,
+			shareReady: true,
+		});
 		expect(viewModel.pagination).toEqual({ hasMore: false, limit: 250, offset: 0, total: 1 });
 		expect(viewModel.selection).toMatchObject({ count: 0, projectIds: [] });
 		expect(() => JSON.stringify(viewModel)).not.toThrow();
 		expect(controller.callbacks.toggleSelection).toEqual(expect.any(Function));
+		controller.callbacks.shareProject(project().workspace_identity);
+		expect(projectSharing.openProjectShareFlow).toHaveBeenCalledWith([
+			project().workspace_identity,
+		]);
 	});
+});
+
+describe("Projects inventory controller subscriptions", () => {
+	beforeEach(setupProjectsTest);
+	afterEach(cleanupProjectsTest);
+
+	it("notifies component subscribers and stops after unsubscribe", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [project()],
+			total: 1,
+		});
+		initProjectsTab(() => {});
+		await loadProjectsData();
+		const controller = getProjectsInventoryController();
+		const notifications: ProjectsInventoryViewModel[] = [];
+		const listener = vi.fn((viewModel: ProjectsInventoryViewModel) => {
+			notifications.push(viewModel);
+		});
+		const unsubscribe = controller.subscribe(listener);
+
+		controller.callbacks.toggleSelection([project().workspace_identity]);
+		controller.callbacks.setProjectDetailsOpen(project().workspace_identity, true);
+		controller.callbacks.setProjectScopeDraft(project().workspace_identity, "exampleco-work");
+
+		expect(listener).toHaveBeenCalledTimes(3);
+		expect(listener).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				selection: expect.objectContaining({ count: 1 }),
+			}),
+		);
+		const row = notifications.at(-1)?.rows[0];
+		expect(row).toMatchObject({
+			detailsOpen: true,
+			draftScopeId: "exampleco-work",
+		});
+
+		unsubscribe();
+		controller.callbacks.toggleSelection([project().workspace_identity]);
+		controller.callbacks.setProjectDetailsOpen(project().workspace_identity, false);
+		await controller.callbacks.saveProjectScope(project().workspace_identity, "local-default");
+		expect(listener).toHaveBeenCalledTimes(3);
+	});
+});
+
+describe("Projects inventory controller async state", () => {
+	beforeEach(setupProjectsTest);
+	afterEach(cleanupProjectsTest);
+
+	it("notifies subscribers when an async save requires confirmation", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [project()],
+			total: 1,
+		});
+		vi.mocked(api.saveSharingDomainProjectMapping).mockRejectedValueOnce(
+			new api.SharingDomainGuardrailConfirmationError({
+				required_guardrail_tokens: ["confirm-scope"],
+				guardrail_warnings: [
+					{
+						code: "scope_reassignment_old_copies",
+						message: "Confirm this Space.",
+						requires_confirmation: true,
+						severity: "warning",
+					},
+				],
+			}),
+		);
+		initProjectsTab(() => {});
+		await loadProjectsData();
+		const controller = getProjectsInventoryController();
+		const notifications: ProjectsInventoryViewModel[] = [];
+		const listener = vi.fn((viewModel: ProjectsInventoryViewModel) => {
+			notifications.push(viewModel);
+		});
+		const unsubscribe = controller.subscribe(listener);
+
+		await controller.callbacks.saveProjectScope(project().workspace_identity, "exampleco-work");
+
+		expect(listener).toHaveBeenCalled();
+		expect(notifications.at(-1)?.rows[0]).toMatchObject({
+			pendingConfirmation: {
+				requiredGuardrailTokens: ["confirm-scope"],
+				scopeId: "exampleco-work",
+			},
+		});
+		unsubscribe();
+		controller.callbacks.cancelProjectScopeConfirmation(project().workspace_identity);
+	});
+});
+
+describe("Projects inventory controller page snapshots", () => {
+	beforeEach(setupProjectsTest);
+	afterEach(cleanupProjectsTest);
+
+	it("does not render a previous page after the requested offset changes", async () => {
+		let resolvePreviousPage: (value: ProjectScopeInventoryResult) => void = () => {};
+		const previousPage = new Promise<ProjectScopeInventoryResult>((resolve) => {
+			resolvePreviousPage = resolve;
+		});
+		let callCount = 0;
+		vi.mocked(api.loadProjectScopeInventory).mockImplementation(async () => {
+			callCount += 1;
+			if (callCount === 1) return previousPage;
+			return { has_more: false, limit: 250, offset: 0, projects: [], total: 0 };
+		});
+		initProjectsTab(() => {});
+		const status = document.getElementById("projectsStatusFilter") as HTMLSelectElement;
+		status.dispatchEvent(new Event("change"));
+		const previousLoad = loadProjectsData();
+		document.getElementById("projectsNextPage")?.click();
+		resolvePreviousPage({
+			has_more: true,
+			limit: 250,
+			offset: 0,
+			projects: [project({ display_project: "previous page" })],
+			total: 251,
+		});
+
+		expect(await previousLoad).toBe(false);
+		expect(document.body.textContent).not.toContain("previous page");
+	});
+});
+
+describe("Projects inventory controller coordinator refresh", () => {
+	beforeEach(setupProjectsTest);
+	afterEach(cleanupProjectsTest);
+
+	it("does not redraw a previous page after coordinator names load", async () => {
+		let resolveCoordinatorStatus: (value: {
+			has_admin_secret: boolean;
+			readiness: "ready";
+		}) => void = () => {};
+		vi.mocked(api.loadCoordinatorAdminStatus).mockImplementationOnce(
+			async () =>
+				new Promise<{ has_admin_secret: boolean; readiness: "ready" }>((resolve) => {
+					resolveCoordinatorStatus = resolve;
+				}),
+		);
+		vi.mocked(api.loadProjectScopeInventory)
+			.mockResolvedValueOnce({
+				has_more: true,
+				limit: 250,
+				offset: 0,
+				projects: [project({ display_project: "previous page" })],
+				total: 251,
+			})
+			.mockResolvedValue({
+				has_more: false,
+				limit: 250,
+				offset: 0,
+				projects: [project({ display_project: "previous page" })],
+				total: 1,
+			});
+		initProjectsTab(() => {});
+		const status = document.getElementById("projectsStatusFilter") as HTMLSelectElement;
+		status.dispatchEvent(new Event("change"));
+		await loadProjectsData();
+		const previousRow = document.querySelector(".project-inventory-row");
+
+		document.getElementById("projectsNextPage")?.click();
+		resolveCoordinatorStatus({ has_admin_secret: true, readiness: "ready" });
+		await flushAsyncWork();
+
+		expect(document.querySelector(".project-inventory-row")).toBe(previousRow);
+	});
+});
+
+describe("Projects inventory controller filter snapshots", () => {
+	beforeEach(setupProjectsTest);
+	afterEach(cleanupProjectsTest);
 
 	it("does not render a completed load after the user changes filters", async () => {
 		let resolveOldFiltered: (value: ProjectScopeInventoryResult) => void = () => {};
