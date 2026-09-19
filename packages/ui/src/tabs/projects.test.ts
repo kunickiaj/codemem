@@ -361,6 +361,9 @@ describe("Projects tab", () => {
 
 		expect(document.getElementById("projectsInventorySkeleton")).not.toBeNull();
 		expect(document.body.textContent).not.toContain("No matching projects");
+		expect(document.querySelector("option[value='needs_attention']")?.textContent).toBe(
+			"Needs attention",
+		);
 	});
 
 	it("shows empty inventory without bogus pagination range", async () => {

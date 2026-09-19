@@ -41,7 +41,7 @@ type RefreshFn = () => void;
 
 const STATUS_OPTIONS = [
 	["", "All projects"],
-	["needs_attention", "Sharing undecided"],
+	["needs_attention", "Needs attention"],
 	["suggested", "Has suggestion"],
 	["local_only", "Stays on this device"],
 	["received", "From other devices"],
