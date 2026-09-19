@@ -680,7 +680,11 @@ function receivedFromLabel(originDevices: ReceivedProjectShare["originDevices"])
 	const names = distinctOrigins
 		.map((device) => device.displayName?.trim())
 		.filter((name): name is string => Boolean(name));
-	if (names.length === 0) return "Unknown device";
+	if (names.length === 0) {
+		return distinctOrigins.length === 1
+			? "Unknown device"
+			: `${distinctOrigins.length.toLocaleString()} unknown devices`;
+	}
 	const visibleNames = names.slice(0, 2);
 	const hiddenCount = distinctOrigins.length - visibleNames.length;
 	return hiddenCount > 0

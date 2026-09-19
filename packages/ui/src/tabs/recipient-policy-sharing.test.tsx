@@ -239,6 +239,16 @@ function rendersReceivedProjectSources(): void {
 				latestSessionAt: null,
 				originDevices: [{ deviceId: "private-device-id", displayName: null }],
 			},
+			{
+				canonicalProjectIdentity: "git:received-private",
+				displayName: "Received Private",
+				existingMemoryCount: 3,
+				latestSessionAt: null,
+				originDevices: [
+					{ deviceId: "private-device-a", displayName: null },
+					{ deviceId: "private-device-b", displayName: null },
+				],
+			},
 		],
 	});
 	clickTab("Received");
@@ -249,9 +259,12 @@ function rendersReceivedProjectSources(): void {
 	expect(text).toContain("Received Tools");
 	expect(text).toContain("1 memory");
 	expect(text).toContain("Unknown device");
+	expect(text).toContain("2 unknown devices");
 	expect(text).not.toContain("device-a");
 	expect(text).not.toContain("device-c");
 	expect(text).not.toContain("private-device-id");
+	expect(text).not.toContain("private-device-a");
+	expect(text).not.toContain("private-device-b");
 	expect(text).toContain("No recent sessions");
 	expect(text).toContain("Access is managed where the Project is shared from");
 }
