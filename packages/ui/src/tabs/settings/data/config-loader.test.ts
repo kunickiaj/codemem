@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeEffectiveSettings } from "./config-loader";
+import { deriveFeedProcessingStatus, describeEffectiveSettings } from "./config-loader";
 
 describe("describeEffectiveSettings", () => {
 	it("identifies current effective values and environment ownership", () => {
@@ -17,5 +17,25 @@ describe("describeEffectiveSettings", () => {
 		expect(message).toContain("Effective values are unavailable");
 		expect(message).toContain("Reload Settings");
 		expect(message).toContain("restart the viewer");
+	});
+});
+
+describe("deriveFeedProcessingStatus", () => {
+	it("uses explicit capture and queue evidence", () => {
+		expect(deriveFeedProcessingStatus({ capture_enabled: false, queue: { pending: 4 } })).toEqual({
+			kind: "paused",
+		});
+		expect(deriveFeedProcessingStatus({ capture_enabled: true, queue: { pending: 4 } })).toEqual({
+			kind: "pending",
+			count: 4,
+		});
+		expect(deriveFeedProcessingStatus({ capture_enabled: true, queue: { pending: 0 } })).toEqual({
+			kind: "ready",
+		});
+	});
+
+	it("does not infer paused capture from missing status", () => {
+		expect(deriveFeedProcessingStatus(null)).toEqual({ kind: "unavailable" });
+		expect(deriveFeedProcessingStatus({ active: null })).toEqual({ kind: "ready" });
 	});
 });

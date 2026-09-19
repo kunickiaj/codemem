@@ -262,6 +262,7 @@ export interface ApiObserverQueue {
 export interface ApiObserverStatusResponse {
 	active: ApiObserverActiveStatus | null;
 	available_credentials: ApiAvailableCredentials;
+	capture_enabled: boolean | null;
 	latest_failure: ApiFlushFailure | null;
 	queue: ApiObserverQueue;
 }

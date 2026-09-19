@@ -1,6 +1,7 @@
 import { formatAuthMethod, formatCredentialSources, formatFailureTimestamp } from "../data/format";
 
 export type ObserverStatusShape = {
+	capture_enabled?: boolean | null;
 	active?: {
 		provider?: string;
 		model?: string;
@@ -19,6 +20,9 @@ export type ObserverStatusShape = {
 		attempt_count?: number;
 		impact?: string;
 	} | null;
+	queue?: {
+		pending?: number;
+	};
 };
 
 type ObserverDiagnosticsActionProps = {
