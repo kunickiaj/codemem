@@ -398,9 +398,11 @@ Legacy `#sync` and `#sync/diagnostics` viewer links remain valid Advanced routes
 
 Use manual pairing for same-person devices, existing integrations, or compatibility—not normal teammate sharing.
 
-1. In **Advanced**, open the Sync panel and scan/copy the QR payload (recommended).
-2. Or run `codemem sync pair` and copy the payload.
-3. On the other device, run `codemem sync pair --accept '<payload>'`.
+1. In **Devices**, choose **Pair a device** and copy the displayed `codemem sync pair --payload-only` command.
+2. Run that command on the device you want to connect, then copy its pairing payload.
+3. Back in **Devices**, paste the payload under **Accept a pairing payload** and review the device before accepting it.
+
+For a CLI-only compatibility flow, generate a payload with `codemem sync pair` on one device and accept it with `codemem sync pair --accept '<payload>'` on the other.
 
 Optional legacy filters can narrow an already-authorized peer's data; they cannot grant project access:
 

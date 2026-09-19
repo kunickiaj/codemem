@@ -512,11 +512,13 @@ Use **Health** for the current status. Globally revoked identity devices are omi
 
 ### Advanced and compatibility
 
-Manual pairing, actor assignment, Spaces, grants, project mappings, and coordinator administration remain available for same-person devices, existing integrations, and diagnostics. They are not required for normal teammate sharing. Existing `#sync` and `#sync/diagnostics` links remain supported as Advanced compatibility routes. See [the user guide](docs/user-guide.md#advanced-operator-and-compatibility-guidance).
+Pair devices from **Devices**. Actor assignment, Spaces, grants, project mappings, and coordinator administration remain available in **Advanced** for existing integrations and diagnostics. They are not required for normal teammate sharing. Existing `#sync` and `#sync/diagnostics` links remain supported as Advanced compatibility routes. See [the user guide](docs/user-guide.md#advanced-operator-and-compatibility-guidance).
 
-### Advanced and legacy device pairing
+### Device pairing and compatibility
 
-Use manual pairing only for a same-person device, an existing integration, or a compatibility workflow:
+For a same-person device or compatibility workflow, open **Devices**, choose **Pair a device**, and copy the displayed command. Run it on the device you want to connect, copy that device's payload, then paste and review the payload back in **Devices**.
+
+The equivalent CLI-only flow remains available:
 
 ```text
 codemem sync enable        # generate device keys
