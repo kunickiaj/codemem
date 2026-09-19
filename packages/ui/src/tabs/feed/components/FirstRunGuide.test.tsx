@@ -64,6 +64,28 @@ describe("FirstRunGuide", () => {
 		expect(document.activeElement).toBe(title);
 	});
 
+	it("opens Context Inspector and focuses its query for Find it again", async () => {
+		const toggle = document.createElement("button");
+		toggle.id = "contextInspectorToggle";
+		toggle.setAttribute("aria-expanded", "false");
+		const click = vi.spyOn(toggle, "click");
+		const panel = document.createElement("div");
+		panel.id = "contextInspectorPanel";
+		const query = document.createElement("input");
+		query.className = "feed-search";
+		panel.appendChild(query);
+		document.body.append(toggle, panel);
+		act(() => render(<FirstRunGuide hasMemories hasQueuedEvents={false} />, mount));
+
+		const action = Array.from(mount.querySelectorAll("button")).find(
+			(button) => button.textContent === "Open Context Inspector",
+		);
+		await act(async () => action?.click());
+
+		expect(click).toHaveBeenCalledOnce();
+		expect(document.activeElement).toBe(query);
+	});
+
 	it("stacks checklist rows at the approved narrow width", () => {
 		const css = staticHtml.replace(/\s+/g, " ");
 		expect(css).toContain("@media (max-width: 755px)");

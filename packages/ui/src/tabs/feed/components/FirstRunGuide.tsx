@@ -36,6 +36,12 @@ function inspectFirstMemory(): void {
 	title?.focus();
 }
 
+function openContextInspector(): void {
+	const toggle = document.getElementById("contextInspectorToggle");
+	if (toggle?.getAttribute("aria-expanded") !== "true") toggle?.click();
+	queueMicrotask(() => focusElement("#contextInspectorPanel input.feed-search"));
+}
+
 function guideSteps(hasMemories: boolean): GuideStep[] {
 	return [
 		{
@@ -54,8 +60,8 @@ function guideSteps(hasMemories: boolean): GuideStep[] {
 		{
 			id: "find",
 			label: "Find it again",
-			actionLabel: "Focus memory search",
-			action: () => focusElement("#feedSearch"),
+			actionLabel: "Open Context Inspector",
+			action: openContextInspector,
 		},
 		{
 			id: "scope",

@@ -1,7 +1,6 @@
 import { Fragment, h } from "preact";
 import { useState } from "preact/hooks";
 import { setFeedScopeFilter, setFeedTypeFilter, state } from "../../../lib/state";
-import { completeFirstRunStep } from "../data/first-run-guide";
 import { feedMetaText } from "../data/meta";
 import type { FeedItem, FeedViewOps } from "../types";
 import { ContextInspectorPanel } from "./ContextInspectorPanel";
@@ -68,7 +67,6 @@ function FeedControls({
 				id: "feedScopeToggle",
 				onSelect: (value) => {
 					if (value === state.feedScopeFilter) return;
-					completeFirstRunStep("scope");
 					setFeedScopeFilter(value);
 					void ops.loadFeedData().catch(() => undefined);
 				},
@@ -98,6 +96,7 @@ function FeedControls({
 					"aria-controls": "contextInspectorPanel",
 					"aria-expanded": inspectorOpen,
 					className: "settings-button feed-inspector-button",
+					id: "contextInspectorToggle",
 					onClick: onInspectorToggle,
 					type: "button",
 				},

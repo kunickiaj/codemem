@@ -125,4 +125,18 @@ describe("FeedTabView accessibility primitives", () => {
 		expect(onQuery).toHaveBeenCalledWith("needle");
 		expect(readFirstRunGuideRecord().completed).not.toContain("find");
 	});
+
+	it("does not complete project scope from the ownership toggle", () => {
+		state.feedScopeFilter = "all";
+		const mount = document.createElement("div");
+		document.body.appendChild(mount);
+		act(() => render(h(FeedTabView, { items: [], ops: feedOps() }), mount));
+		const mine = [...mount.querySelectorAll<HTMLButtonElement>("button")].find(
+			(button) => button.textContent === "My memories",
+		);
+
+		act(() => mine?.click());
+
+		expect(readFirstRunGuideRecord().completed).not.toContain("scope");
+	});
 });
