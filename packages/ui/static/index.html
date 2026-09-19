@@ -1263,22 +1263,62 @@
         margin-top: var(--sp-2);
       }
       .projects-pagination { margin-top: var(--sp-4); }
-      .recipient-policy-review-section + .recipient-policy-review-section { margin-top: var(--sp-5); }
-      .recipient-policy-review-heading { margin-bottom: var(--sp-2); }
-      .recipient-policy-review-status:empty { display: none; }
-      .recipient-policy-review-list { margin-top: var(--sp-3); }
-      .recipient-policy-review-item .project-inventory-actions label {
-        color: var(--text-secondary);
-        font-size: var(--font-size-sm);
-        font-weight: var(--font-weight-semibold);
+      .recipient-policy-review-header {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: var(--sp-4);
       }
-      .recipient-policy-review-select { min-width: min(100%, 280px); }
-      .recipient-policy-deferred { margin-top: var(--sp-3); }
-      .recipient-policy-preview { margin-top: var(--sp-3); }
+      .recipient-policy-review-count {
+        color: var(--text-tertiary);
+        font-weight: var(--font-weight-regular);
+      }
+      .recipient-policy-review-status:empty { display: none; }
+      .recipient-policy-review-list {
+        margin-top: var(--sp-3);
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+      }
+      .recipient-policy-review-item {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 260px auto;
+        align-items: center;
+        column-gap: var(--sp-4);
+        padding: var(--sp-3) var(--sp-4);
+        background: var(--surface-1);
+      }
+      .recipient-policy-review-item + .recipient-policy-review-item { border-top: 1px solid var(--border); }
+      .recipient-policy-review-name,
+      .recipient-policy-review-actions {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: var(--sp-2);
+      }
+      .recipient-policy-review-name > strong { font-size: var(--font-size-lg); }
+      .recipient-policy-review-identity { color: var(--text-tertiary); overflow-wrap: anywhere; }
+      .recipient-policy-review-meta {
+        color: var(--text-secondary);
+        margin-top: var(--sp-1);
+      }
+      .recipient-policy-review-meta .badge { margin-left: var(--sp-2); }
+      .recipient-policy-review-select { min-width: 0; width: 100%; }
+      .recipient-policy-review-details {
+        grid-column: 1 / -1;
+        padding: var(--sp-3) 0 var(--sp-1);
+      }
+      .recipient-policy-deferred,
+      .recipient-policy-preview { margin-top: var(--sp-2); }
       .recipient-policy-preview-list { margin-top: var(--sp-2); }
       .recipient-policy-preview-list ul {
         margin-top: var(--sp-1);
         padding-left: var(--sp-5);
+      }
+      .recipient-policy-review-section { margin-top: var(--sp-5); }
+      @media (max-width: 900px) {
+        .recipient-policy-review-item { grid-template-columns: minmax(0, 1fr); row-gap: var(--sp-3); }
+        .recipient-policy-review-details { grid-column: 1; }
       }
       .project-selection-actions,
       .recipient-policy-management-actions,
