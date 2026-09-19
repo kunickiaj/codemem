@@ -228,6 +228,10 @@ function updateBannerCopy(status: UpdateStatus): UpdateBannerCopy {
 
 function UpdateBanner({ status }: { status: UpdateStatus }) {
 	const copy = updateBannerCopy(status);
+	const showDetail = copy.tone !== "badge-online" || status.stale;
+	const detail = status.stale
+		? `${copy.title} ${status.error ? `This result is stale because a fresh check failed: ${status.error}` : "This result is cached and may be stale."}`
+		: copy.title;
 	let copyButton: HTMLButtonElement | null = null;
 	function handleCopy() {
 		if (!status.recommended_action || !copyButton) return;
@@ -247,6 +251,7 @@ function UpdateBanner({ status }: { status: UpdateStatus }) {
 			class: "health-update-icon",
 		}),
 		h(Chip, { variant: "badge", tone: copy.tone, title: copy.title }, copy.label),
+		showDetail ? h("span", { class: "health-update-detail" }, detail) : null,
 		status.stale
 			? h(
 					Chip,

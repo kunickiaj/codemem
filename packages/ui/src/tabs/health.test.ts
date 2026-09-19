@@ -247,6 +247,34 @@ it("marks pending pipeline work and the current sync problem as degraded", () =>
 	expect(values[1]?.querySelector(".presence-pip--degraded")).not.toBeNull();
 });
 
+it("marks pipeline reliability failures when the queue is clear", () => {
+	state.healthStats = completeHealthLoad(
+		statsPayload({
+			reliability: {
+				counts: { errored_batches: 0 },
+				rates: { flush_success_rate: 0.8, dropped_event_rate: 0.03 },
+			},
+		}),
+	);
+	state.healthRawEvents = completeHealthLoad({ pending: 0, sessions: 0 });
+
+	renderOverview();
+
+	const pipeline = document.querySelectorAll("#healthGrid .health-tile-value")[0];
+	expect(pipeline?.textContent).toBe("Events dropped");
+	expect(pipeline?.querySelector(".presence-pip--attention")).not.toBeNull();
+});
+
+it("describes issue drivers below the degraded status threshold", () => {
+	state.healthRawEvents = completeHealthLoad({ pending: 200, sessions: 1 });
+
+	renderOverview();
+
+	expect(document.getElementById("healthMeta")?.textContent).toContain(
+		"1 issue · growing raw-event backlog",
+	);
+});
+
 it("does not report unknown, unconfigured, or stale sync as online", () => {
 	state.lastSyncStatus = { enabled: true };
 	renderOverview();
@@ -415,6 +443,41 @@ describe("Usage metric provenance", () => {
 		);
 		expect(retrieval?.textContent).toContain("80%");
 		expect(retrieval?.getAttribute("title")).toContain("memory reuse");
+	});
+
+	it("renders unknown retrieval health when pack reduction is unavailable", () => {
+		state.healthUsage = completeHealthLoad(
+			usagePayload({
+				events_global: [usageEvent({ event: "pack", total_tokens_read: 0, total_tokens_saved: 0 })],
+			}),
+		);
+
+		renderHealthOverview();
+
+		const retrieval = [...document.querySelectorAll("#healthGrid .health-tile")].find(
+			(node) => node.querySelector(".health-tile-label")?.textContent === "Retrieval",
+		);
+		expect(retrieval?.textContent).toContain("Unknown");
+		expect(retrieval?.querySelector(".presence-pip--unknown")).not.toBeNull();
+	});
+
+	it("renders unknown freshness for an invalid pack timestamp", () => {
+		state.healthUsage = completeHealthLoad(
+			usagePayload({
+				events_global: [usageEvent({ event: "pack", total_tokens_read: 10 })],
+				recent_packs: [
+					{ created_at: "not-a-date", metadata_json: null, tokens_read: 10, tokens_saved: 5 },
+				],
+			}),
+		);
+
+		renderHealthOverview();
+
+		const freshness = [...document.querySelectorAll("#healthGrid .health-tile")].find(
+			(node) => node.querySelector(".health-tile-label")?.textContent === "Data freshness",
+		);
+		expect(freshness?.textContent).toContain("Unknown");
+		expect(freshness?.querySelector(".presence-pip--unknown")).not.toBeNull();
 	});
 
 	it("keeps global pack values distinct in project tooltips", () => {
@@ -769,6 +832,9 @@ describe("Health update banner", () => {
 		expect(banner?.textContent).toBe("Source build · 0.44.0");
 		expect(banner?.getAttribute("title")).toContain("Package metadata version: 0.44.0");
 		expect(banner?.getAttribute("title")).toContain("git pull, pnpm install, and pnpm build");
+		expect(
+			document.querySelector("#healthUpdateBanner .health-update-detail")?.textContent,
+		).toContain("git pull, pnpm install, and pnpm build");
 		expect(updateBannerText()).not.toMatch(/up to date|outdated|0\.44\.2 is available/i);
 	});
 
@@ -788,7 +854,10 @@ describe("Health update banner", () => {
 		renderOverview();
 
 		// Assert
-		expect(updateBannerText()).toBe("Unsupported channel");
+		expect(updateBannerText()).toContain("Unsupported channel");
+		expect(
+			document.querySelector("#healthUpdateBanner .health-update-detail")?.textContent,
+		).toContain("Verify the current codemem version and try again.");
 		expect(document.querySelector("#healthUpdateBanner .badge")?.getAttribute("title")).toContain(
 			"Verify the current codemem version and try again.",
 		);
@@ -888,6 +957,9 @@ describe("Health update banner channels and guidance", () => {
 		expect(document.querySelector("#healthUpdateBanner .badge")?.getAttribute("title")).toContain(
 			"Check network access and try again.",
 		);
+		expect(
+			document.querySelector("#healthUpdateBanner .health-update-detail")?.textContent,
+		).toContain("Check network access and try again.");
 		expect(updateBannerText()).not.toMatch(/up to date/i);
 	});
 
