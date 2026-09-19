@@ -108,18 +108,15 @@ export function renderSyncStatus() {
 	const retentionDeleted = Number(retention.last_deleted_ops || 0);
 	const retentionLastRunAt = retention.last_run_at || null;
 	const retentionLastError = String(retention.last_error || "");
-	const daemonStateLabel =
-		daemonState === "offline-peers"
-			? "Offline peers"
-			: daemonState === "needs_attention"
-				? "Needs attention"
-				: daemonState === "rebootstrapping"
-					? "Rebootstrapping"
-					: titleCase(daemonState);
+	const daemonStateLabels: Record<string, string> = {
+		needs_attention: "Needs attention",
+		"offline-peers": "Offline peers",
+		rebootstrapping: "Rebootstrapping",
+	};
+	const daemonStateLabel = daemonStateLabels[daemonState] ?? titleCase(daemonState);
 	const syncDisabled = daemonState === "disabled" || status.enabled === false;
 	const peerCount = Object.keys(peers).length;
 	const syncNoPeers = !syncDisabled && peerCount === 0;
-
 	if (syncMeta) {
 		let parts: string[];
 		if (syncDisabled) {
