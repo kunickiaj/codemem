@@ -13828,6 +13828,61 @@ describe("viewer-server", () => {
 			}
 		});
 
+		it("resolves received project origin device names with null for unknown devices", async () => {
+			const { app, getStore, cleanup } = createTestApp();
+			try {
+				await app.request("/api/stats");
+				const store = getStore();
+				if (!store) throw new Error("store not initialized");
+				const now = "2026-08-18T12:00:00.000Z";
+				store.db
+					.prepare(
+						`INSERT INTO identity_devices(
+							device_id, identity_id, display_name, status, provenance, revision,
+							migration_state, assignment_version, source_fingerprint, idempotency_key,
+							created_at, updated_at
+						 ) VALUES (?, ?, ?, 'active', 'test', '1', 'user_managed', 1, NULL, ?, ?, ?)`,
+					)
+					.run("device-a", "identity-a", "Work Laptop", "origin-device-a", now, now);
+				store.db
+					.prepare(
+						`INSERT INTO sync_peers(peer_device_id, name, pinned_fingerprint, created_at)
+						 VALUES (?, ?, ?, ?)`,
+					)
+					.run("device-b", "Desk Computer", "device-b-fingerprint", now);
+				const sessionId = insertTestSession(store.db);
+				store.db
+					.prepare("UPDATE sessions SET cwd = ?, project = NULL WHERE id = ?")
+					.run("__sync_bootstrap__/received-project", sessionId);
+				for (const deviceId of ["device-a", "device-b", "device-c"]) {
+					const memoryId = insertTestMemory(store, {
+						sessionId,
+						kind: "discovery",
+						title: `received from ${deviceId}`,
+						originDeviceId: deviceId,
+						scopeId: "managed-project:received",
+					});
+					store.db.prepare("UPDATE memory_items SET project = ? WHERE id = ?").run("viewer", memoryId);
+				}
+
+				const response = await app.request("/api/sync/projects?status=received");
+				expect(response.status).toBe(200);
+				const inventory = (await response.json()) as {
+					projects: Array<{
+						origin_devices: Array<{ device_id: string; display_name: string | null }>;
+					}>;
+				};
+				expect(inventory.projects).toHaveLength(1);
+				expect(inventory.projects[0]?.origin_devices).toEqual([
+					{ device_id: "device-a", display_name: "Work Laptop" },
+					{ device_id: "device-b", display_name: "Desk Computer" },
+					{ device_id: "device-c", display_name: null },
+				]);
+			} finally {
+				cleanup();
+			}
+		});
+
 		it("reassigns a project inventory row to the corrected project", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {

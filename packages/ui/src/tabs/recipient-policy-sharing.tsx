@@ -592,6 +592,18 @@ function IdentitiesView({
 	);
 }
 
+function receivedFromLabel(originDevices: ReceivedProjectShare["originDevices"]): string {
+	const names = originDevices
+		.map((device) => device.displayName?.trim())
+		.filter((name): name is string => Boolean(name));
+	if (names.length === 0) return "Unknown device";
+	const visibleNames = names.slice(0, 2);
+	const hiddenCount = names.length - visibleNames.length;
+	return hiddenCount > 0
+		? `${visibleNames.join(" · ")} · +${hiddenCount}`
+		: visibleNames.join(" · ");
+}
+
 function ReceivedView({ received }: { received: ReceivedProjectShare[] }) {
 	if (received.length === 0) {
 		return (
@@ -616,6 +628,10 @@ function ReceivedView({ received }: { received: ReceivedProjectShare[] }) {
 							<span className="badge actor-badge">Received</span>
 						</div>
 						<dl className="recipient-policy-sharing-details">
+							<div>
+								<dt>From</dt>
+								<dd>{receivedFromLabel(share.originDevices)}</dd>
+							</div>
 							<div>
 								<dt>Memories on this device</dt>
 								<dd>{countLabel(share.existingMemoryCount, "memory", "memories")}</dd>

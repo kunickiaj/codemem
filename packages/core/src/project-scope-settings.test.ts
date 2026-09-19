@@ -1459,6 +1459,18 @@ describe("project scope settings", () => {
 			scopeId,
 			workspaceId: "shared:default",
 		});
+		insertMemory(db, replicationSession, {
+			originDeviceId: "",
+			project: "codemem",
+			scopeId,
+			workspaceId: "shared:default",
+		});
+		insertMemory(db, replicationSession, {
+			originDeviceId: "owner-laptop",
+			project: "codemem",
+			scopeId,
+			workspaceId: "shared:default",
+		});
 
 		const inventory = listProjectScopeInventory(db);
 		const received = inventory.projects.filter(
@@ -1468,7 +1480,8 @@ describe("project scope settings", () => {
 		expect(received).toHaveLength(1);
 		expect(received[0]).toMatchObject({
 			display_project: "codemem",
-			memory_count: 2,
+			memory_count: 4,
+			origin_devices: [{ device_id: "owner-desktop" }, { device_id: "owner-laptop" }],
 			workspace_identity: `peer-received:scope:${scopeId}`,
 		});
 	});

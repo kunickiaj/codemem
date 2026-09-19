@@ -343,12 +343,18 @@ describe("recipient-focused Sharing", () => {
 					displayName: "Received API",
 					existingMemoryCount: 2,
 					latestSessionAt: "2026-07-25T12:00:00.000Z",
+					originDevices: [
+						{ deviceId: "device-a", displayName: "Work Laptop" },
+						{ deviceId: "device-b", displayName: "Desk Computer" },
+						{ deviceId: "device-c", displayName: "Travel Laptop" },
+					],
 				},
 				{
 					canonicalProjectIdentity: "git:received-tools",
 					displayName: "Received Tools",
 					existingMemoryCount: 1,
 					latestSessionAt: null,
+					originDevices: [{ deviceId: "private-device-id", displayName: null }],
 				},
 			],
 		});
@@ -356,8 +362,12 @@ describe("recipient-focused Sharing", () => {
 		const text = visiblePanel().textContent ?? "";
 		expect(text).toContain("Received API");
 		expect(text).toContain("2 memories");
+		expect(text).toContain("FromWork Laptop · Desk Computer · +1");
 		expect(text).toContain("Received Tools");
 		expect(text).toContain("1 memory");
+		expect(text).toContain("Unknown device");
+		expect(text).not.toContain("device-a");
+		expect(text).not.toContain("private-device-id");
 		expect(text).toContain("No recent sessions");
 		expect(text).toContain("Access is managed where the Project is shared from");
 	});
