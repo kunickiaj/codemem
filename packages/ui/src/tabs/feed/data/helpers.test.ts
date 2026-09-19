@@ -73,6 +73,8 @@ describe("Feed identity labels", () => {
 describe("originSourceLabel", () => {
 	it("allowlists human-readable sources and neutralizes opaque values", () => {
 		expect(originSourceLabel("opencode")).toBe("OpenCode");
+		expect(originSourceLabel("plugin")).toBe("Plugin");
+		expect(originSourceLabel("derive-batch")).toBe("Derived memory");
 		expect(originSourceLabel("internal://tenant/device-81f6d8")).toBe("Other source");
 		expect(originSourceLabel("")).toBe("");
 	});
