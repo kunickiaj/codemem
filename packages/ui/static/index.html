@@ -887,16 +887,73 @@
         line-height: 1.5;
       }
 
-      .health-primary {
-        border-width: 2px;
-      }
-      .health-primary .value { font-size: var(--font-size-3xl); letter-spacing: 0.2px; }
-      .health-primary.status-healthy .value { color: var(--status-healthy); }
-      .health-primary.status-degraded .value { color: var(--status-degraded); }
-      .health-primary.status-attention .value { color: var(--status-attention); }
+      .has-tooltip { cursor: help; }
       .health-loading-icon {
         animation: viewerLoadingSpin var(--duration-attention) linear infinite;
       }
+
+      .health-system-card {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-4);
+      }
+      .health-system-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--sp-4);
+      }
+      .health-status-summary {
+        display: flex;
+        align-items: center;
+        gap: var(--sp-3);
+        min-width: 0;
+      }
+      .health-status-copy {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .health-status-word {
+        font-size: var(--font-size-3xl);
+        font-weight: var(--font-weight-semibold);
+        line-height: 1.15;
+      }
+      .health-status-word.status-healthy { color: var(--status-healthy); }
+      .health-status-word.status-degraded { color: var(--status-degraded); }
+      .health-status-word.status-attention { color: var(--status-attention); }
+      .health-status-word.status-unknown { color: var(--text-tertiary); }
+      .health-status-copy .section-meta { margin: 0; }
+      .health-tile-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: var(--sp-3);
+      }
+      .health-tile {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-1);
+        min-width: 0;
+        padding: var(--sp-3) var(--sp-4);
+        border-radius: var(--radius-sm);
+        background: var(--surface-2);
+      }
+      .health-tile-label {
+        color: var(--text-tertiary);
+        font-size: var(--font-size-2xs);
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      .health-tile-value {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+        color: var(--text-secondary);
+        font-size: var(--font-size-md);
+      }
+      .health-maintenance-grid { margin-top: var(--sp-3); }
 
       /* ── Buttons ───────────────────────────────────────────── */
 
@@ -2520,55 +2577,26 @@
 
       .health-update-banner {
         display: flex;
-        align-items: flex-start;
-        gap: var(--sp-3);
-        padding: var(--sp-4);
+        align-items: center;
+        flex-wrap: wrap;
+        gap: var(--sp-2);
+        padding: 10px var(--sp-4);
         border: 1px solid var(--border);
-        border-radius: var(--radius-lg);
+        border-radius: var(--radius-md);
         background: var(--surface-1);
-        box-shadow: var(--shadow-sm);
-      }
-      .health-update-banner--current {
-        border-color: color-mix(in srgb, var(--status-healthy) 34%, var(--border));
-        background: color-mix(in srgb, var(--status-healthy) 7%, var(--surface-1));
-      }
-      .health-update-banner--available,
-      .health-update-banner--stale {
-        border-color: color-mix(in srgb, var(--accent-warm) 34%, var(--border));
-        background: color-mix(in srgb, var(--accent-warm-subtle) 34%, var(--surface-1));
-      }
-      .health-update-banner--unavailable {
-        border-color: color-mix(in srgb, var(--status-attention) 34%, var(--border));
-        background: color-mix(in srgb, var(--status-attention) 7%, var(--surface-1));
+        color: var(--text-secondary);
       }
       .health-update-icon {
-        width: 20px;
-        height: 20px;
-        flex: 0 0 20px;
-        margin-top: 2px;
+        width: 16px;
+        height: 16px;
+        flex: 0 0 16px;
         color: var(--accent);
       }
-      .health-update-banner--current .health-update-icon { color: var(--status-healthy); }
-      .health-update-banner--available .health-update-icon,
-      .health-update-banner--stale .health-update-icon { color: var(--accent-warm); }
-      .health-update-banner--unavailable .health-update-icon { color: var(--status-attention); }
-      .health-update-copy { min-width: 0; }
-      .health-update-copy h2 { font-size: var(--font-size-lg); line-height: 1.3; }
-      .health-update-copy p { margin-top: var(--sp-1); color: var(--text-secondary); }
-      .health-update-guidance { display: grid; gap: 3px; }
-      .health-update-guidance-label {
-        color: var(--text-tertiary);
-        font-size: var(--font-size-xs);
-        font-weight: var(--font-weight-semibold);
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
+      .health-update-source {
+        background: var(--accent-cool-subtle);
+        color: var(--accent-cool);
       }
-      .health-update-guidance code {
-        color: var(--text-primary);
-        font-family: var(--font-mono);
-        font-size: var(--font-size-sm);
-        overflow-wrap: anywhere;
-      }
+      .health-update-copy-button { margin-left: auto; }
 
       .health-actions, .sync-actions {
         display: grid;
@@ -4247,6 +4275,7 @@
         .tab-btn { flex-shrink: 0; }
         .tab-panel { padding: var(--sp-4); }
         .summary-row { grid-template-columns: 1fr; }
+        .health-tile-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .feed-card-header { flex-wrap: wrap; }
         .feed-actions { width: 100%; justify-content: flex-end; }
         .actor-row { align-items: stretch; flex-direction: column; }
@@ -4602,15 +4631,21 @@
     <!-- ── Tab: Health ─────────────────────────────────────── -->
     <div class="tab-panel" id="tab-health" hidden>
       <div id="healthUpdateBanner" hidden></div>
-      <div class="card" style="animation-delay: 0s">
-        <div class="section-header">
-          <h2>System health</h2>
+      <section class="card health-system-card" aria-label="System health">
+        <div class="health-system-header">
+          <div id="healthStatus">
+            <div class="health-status-summary">
+              <div class="health-status-copy">
+                <strong class="health-status-word status-unknown">Assessing</strong>
+                <div class="section-meta" id="healthMeta" role="status" aria-live="polite" aria-atomic="true">Assessing health signals…</div>
+              </div>
+            </div>
+          </div>
           <button class="settings-button" id="healthOpenDiagnostics" type="button">View diagnostics</button>
         </div>
-        <div class="section-meta" id="healthMeta" role="status" aria-live="polite" aria-atomic="true">Assessing health signals…</div>
         <div class="health-actions" id="healthActions"></div>
-        <div class="grid-2" id="healthGrid"></div>
-      </div>
+        <div id="healthGrid"></div>
+      </section>
 
       <div class="summary-row">
         <div class="card" style="animation-delay: 0.05s">
