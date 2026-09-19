@@ -201,7 +201,7 @@ afterEach(() => {
 	state.pendingDeviceIdentityFocus = undefined;
 });
 
-describe("Devices focus and inventory", () => {
+describe("Devices focus and inventory", function devicesFocusAndInventoryTests() {
 	it("focuses a requested setup card only after inventory content renders", () => {
 		state.pendingDeviceIdentityFocus = "setup-device";
 		mount(intent(), reconciliation(), { loading: true });
@@ -277,7 +277,7 @@ describe("Devices focus and inventory", () => {
 		expect(document.body.textContent).not.toContain("No configured devices are registered.");
 	});
 });
-describe("Devices reconciliation focus", () => {
+describe("Devices reconciliation focus", function devicesReconciliationFocusTests() {
 	it("surfaces safe coordinator reconciliation attention without inferring ownership", () => {
 		mount(intent(), reconciliation(), {
 			coordinatorEnrollmentIssueCount: 1,
