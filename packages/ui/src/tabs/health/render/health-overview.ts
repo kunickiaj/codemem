@@ -114,14 +114,8 @@ function healthOverviewMounts(): HealthOverviewMounts | null {
 	};
 }
 
-function healthMetaMessage(
-	issueCount: number,
-	hasStaleData: boolean,
-	drivers: string[],
-	statusClass: string,
-): string {
+function healthMetaMessage(issueCount: number, drivers: string[], statusClass: string): string {
 	const parts = [`${issueCount} issues`];
-	if (hasStaleData) parts.push("Stale data");
 	if ((statusClass === "status-degraded" || statusClass === "status-attention") && drivers.length) {
 		parts.push(drivers.join(", "));
 	}
@@ -498,12 +492,8 @@ function commitHealthOverview(
 	renderActionList(mounts.healthActions, recommendations);
 	renderHealthStatus(mounts.healthStatus, {
 		label: status.label,
-		message: healthMetaMessage(
-			recommendations.length,
-			hasStaleData,
-			risk.drivers,
-			status.className,
-		),
+		message: healthMetaMessage(recommendations.length, risk.drivers, status.className),
+		stale: hasStaleData,
 		state: healthPresenceState(status.className),
 		statusClass: status.className,
 	});
@@ -548,6 +538,7 @@ function renderUnavailableOverview(mounts: HealthOverviewMounts): void {
 	renderHealthStatus(mounts.healthStatus, {
 		label: value,
 		message,
+		stale: false,
 		state: showLoading ? "syncing" : "unknown",
 		statusClass: "status-unknown",
 	});

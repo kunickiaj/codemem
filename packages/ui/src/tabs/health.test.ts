@@ -124,7 +124,10 @@ function updateBannerText(): string {
 }
 
 function expectStaleHealthMeta(): void {
-	expect(document.getElementById("healthMeta")?.textContent).toContain("Stale data");
+	const healthMeta = document.getElementById("healthMeta");
+	expect(healthMeta?.textContent).not.toContain("Stale data");
+	const staleBadge = document.querySelector("#healthStatus .badge");
+	expect(staleBadge?.textContent).toBe("Stale data");
 }
 
 beforeEach(() => {
@@ -341,7 +344,7 @@ it("keeps last known critical risks visible when their snapshots are stale", () 
 
 	expect(document.getElementById("healthDot")?.title).toBe("Attention");
 	expect(document.getElementById("healthMeta")?.textContent).toMatch(
-		/^2 issues · Stale data · high raw-event backlog/,
+		/^2 issues · high raw-event backlog/,
 	);
 });
 

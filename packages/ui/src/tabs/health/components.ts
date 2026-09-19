@@ -495,11 +495,18 @@ export function renderHealthOverviewGrid(
 type HealthStatusInput = {
 	label: string;
 	message: string;
+	stale: boolean;
 	state: PresenceState;
 	statusClass: string;
 };
 
-function HealthStatus({ label, message, state: presenceState, statusClass }: HealthStatusInput) {
+function HealthStatus({
+	label,
+	message,
+	stale,
+	state: presenceState,
+	statusClass,
+}: HealthStatusInput) {
 	return h(
 		"div",
 		{ class: "health-status-summary" },
@@ -510,14 +517,19 @@ function HealthStatus({ label, message, state: presenceState, statusClass }: Hea
 			h("strong", { class: `health-status-word ${statusClass}` }, label),
 			h(
 				"div",
-				{
-					class: "section-meta",
-					id: "healthMeta",
-					role: "status",
-					"aria-live": "polite",
-					"aria-atomic": "true",
-				},
-				message,
+				{ class: "health-status-meta" },
+				h(
+					"div",
+					{
+						class: "section-meta",
+						id: "healthMeta",
+						role: "status",
+						"aria-live": "polite",
+						"aria-atomic": "true",
+					},
+					message,
+				),
+				stale ? h(Chip, { variant: "badge" }, "Stale data") : null,
 			),
 		),
 	);
