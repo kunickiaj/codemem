@@ -13,6 +13,14 @@ describe("compact feed card layout contract", () => {
 		expect(css).toContain("background: var(--surface-1)");
 	});
 
+	it("preserves shared card spacing while removing it only from compact feed items", () => {
+		expect(css).toContain(".feed-card-body { padding: var(--sp-4) var(--sp-5)");
+		expect(css).toContain(".feed-item > .feed-card-body { padding: 0; min-width: 0;");
+		expect(css).toContain(
+			".feed-card-header { display: flex; align-items: flex-start; justify-content: space-between;",
+		);
+	});
+
 	it("stacks at 755px without forcing fixed-width controls", () => {
 		const narrow = css.slice(css.indexOf("@media (max-width: 755px)"));
 		expect(narrow).toContain("grid-template-columns: minmax(0, 1fr) auto");

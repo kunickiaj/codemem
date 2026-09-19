@@ -306,7 +306,7 @@ export function FeedItemCard({
 						},
 					})
 				: null,
-			shouldShowSearchMatch(searchMatch, expanded, activeMode)
+			searchMatch && shouldShowSearchMatch(searchMatch, expanded, activeMode)
 				? h(
 						"div",
 						{ className: "feed-search-match" },

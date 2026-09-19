@@ -26,9 +26,9 @@ export function observationViewData(item: FeedItem) {
 	const narrative = String(item?.narrative || metadata?.narrative || item?.body_text || "").trim();
 	const summary = explicitSummary || firstContentLine(narrative);
 	const summaryDetail = explicitSummary || narrative;
-	const normSummary = normalize(summary);
+	const normSummaryDetail = normalize(summaryDetail);
 	const normNarrative = normalize(narrative);
-	const narrativeDistinct = Boolean(narrative) && normNarrative !== normSummary;
+	const narrativeDistinct = Boolean(narrative) && normNarrative !== normSummaryDetail;
 	const explicitFacts = parseJsonArray(item?.facts || metadata?.facts || []);
 	const fallbackFacts = explicitFacts.length
 		? explicitFacts
