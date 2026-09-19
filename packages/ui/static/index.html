@@ -1166,16 +1166,10 @@
         font-family: var(--font-sans);
         font-size: var(--font-size-md);
       }
-      .project-inventory-list {
-        display: grid;
-        gap: var(--sp-3);
-        margin-top: var(--sp-4);
-      }
-      .project-inventory-skeleton {
-        display: grid;
-        gap: var(--sp-3);
-        margin-top: var(--sp-4);
-      }
+      .projects-toolbar #projectsStatusFilter { flex: 0 1 220px; min-width: 0; }
+      #projectsInventoryMeta { color: var(--text-tertiary); white-space: nowrap; }
+      .project-inventory-list { margin-top: var(--sp-3); min-width: 0; }
+      .project-inventory-skeleton { display: grid; gap: var(--sp-3); margin-top: var(--sp-4); }
       .project-inventory-skeleton-row {
         padding: var(--sp-4);
         border: 1px solid var(--border);
@@ -1193,81 +1187,109 @@
       .project-inventory-skeleton-line.title { width: 42%; height: 16px; }
       .project-inventory-skeleton-line.meta { width: 68%; }
       .project-inventory-skeleton-line.signal { width: 86%; }
-      .project-inventory-row {
-        padding: var(--sp-4);
+      .project-inventory-table {
+        min-width: 0;
+        overflow: hidden;
         border: 1px solid var(--border);
         border-radius: var(--radius-md);
+      }
+      .project-inventory-table-row {
+        display: grid;
+        grid-template-columns: 28px minmax(0, 1fr) 96px 96px 160px 130px 150px;
+        align-items: center;
+        column-gap: var(--sp-3);
+        min-width: 0;
+      }
+      .project-inventory-table-header {
+        padding: var(--sp-2) var(--sp-4);
+        background: var(--surface-2);
+        color: var(--text-tertiary);
+        font-size: var(--font-size-2xs);
+        font-weight: var(--font-weight-medium);
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      .project-inventory-row {
+        min-width: 0;
+        border-top: 1px solid var(--border);
         background: var(--surface-1);
       }
-      .project-inventory-row-header {
-        display: flex;
-        justify-content: space-between;
-        gap: var(--sp-3);
-        align-items: flex-start;
-      }
-      .project-inventory-title { font-size: var(--font-size-lg); font-weight: 650; color: var(--text-primary); }
-      .project-inventory-domain { font-family: var(--font-mono); font-size: var(--font-size-sm); color: var(--accent); }
-      .project-inventory-meta, .project-inventory-signal {
-        margin-top: var(--sp-2);
-        color: var(--text-secondary);
-        font-size: var(--font-size-sm);
-      }
-      .project-inventory-signal { overflow-wrap: anywhere; }
-      .project-inventory-badges {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--sp-2);
-        margin-top: var(--sp-3);
-      }
-      .project-status-badge {
-        padding: 2px 8px;
-        border-radius: var(--radius-pill);
-        background: var(--surface-2);
-        color: var(--text-secondary);
-        font-size: var(--font-size-xs);
-        border: 1px solid var(--border);
-      }
-      .project-status-badge.needs_attention,
-      .project-status-badge.legacy_review { color: var(--accent-warm); background: var(--accent-warm-subtle); }
-      .project-status-badge.suggested { color: var(--accent); background: var(--accent-subtle); }
-      .project-inventory-details { margin-top: var(--sp-3); }
-      .project-inventory-details summary { cursor: pointer; color: var(--text-secondary); font-size: var(--font-size-sm); }
-      .project-detail-grid {
-        display: grid;
-        grid-template-columns: minmax(130px, max-content) 1fr;
-        gap: var(--sp-2) var(--sp-3);
-        margin-top: var(--sp-3);
-        font-size: var(--font-size-sm);
-      }
-      .project-detail-grid dt { color: var(--text-tertiary); }
-      .project-detail-grid dd { margin: 0; overflow-wrap: anywhere; color: var(--text-primary); }
-      .project-inventory-actions {
+      .project-inventory-row-header { padding: var(--sp-3) var(--sp-4); }
+      .project-inventory-row-stats { display: contents; }
+      .project-inventory-cell { min-width: 0; }
+      .project-inventory-project-cell { display: flex; flex-direction: column; gap: var(--sp-1); }
+      .project-inventory-title { overflow-wrap: anywhere; color: var(--text-primary); font-size: var(--font-size-md); font-weight: var(--font-weight-semibold); }
+      .project-inventory-signal { overflow: hidden; color: var(--text-tertiary); font-size: var(--font-size-xs); text-overflow: ellipsis; white-space: nowrap; }
+      .project-inventory-number { font-variant-numeric: tabular-nums; }
+      .project-inventory-latest { color: var(--text-secondary); }
+      .project-inventory-badges { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
+      .project-inventory-badges:empty { display: none; }
+      .project-inventory-row-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--sp-2); }
+      .project-inventory-row-actions .settings-button { min-width: 0; }
+      .project-row-menu { position: relative; }
+      .project-row-menu-panel { position: absolute; top: calc(100% + var(--sp-1)); right: 0; }
+      button.feed-menu-item { border: 0; background: transparent; font-family: inherit; text-align: left; }
+      button.feed-menu-item:hover,
+      button.feed-menu-item:focus-visible { background: var(--surface-2); }
+      button.feed-menu-item:disabled { color: var(--text-tertiary); cursor: default; }
+      .project-inventory-details { background: var(--surface-2); }
+      .project-inventory-details > summary {
         display: flex;
         align-items: center;
-        flex-wrap: wrap;
         gap: var(--sp-2);
-        margin-top: var(--sp-4);
+        padding: var(--sp-3) var(--sp-4) var(--sp-3) 44px;
+        cursor: pointer;
+        color: var(--text-secondary);
+        font-size: var(--font-size-sm);
       }
+      .project-inventory-details-body { padding: 0 var(--sp-4) var(--sp-4) 44px; }
+      .project-inventory-domain { color: var(--accent); font-family: var(--font-mono); font-size: var(--font-size-sm); }
+      .project-inventory-meta { margin-top: var(--sp-2); color: var(--text-secondary); font-size: var(--font-size-sm); }
+      .project-detail-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: var(--sp-2) var(--sp-4);
+        margin-top: var(--sp-3);
+        font-size: var(--font-size-sm);
+      }
+      .project-detail-pair { display: grid; grid-template-columns: minmax(130px, max-content) minmax(0, 1fr); gap: var(--sp-3); }
+      .project-detail-grid dt { color: var(--text-tertiary); }
+      .project-detail-grid dd { margin: 0; overflow-wrap: anywhere; color: var(--text-primary); }
+      .project-inventory-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-4); }
       .project-domain-select {
         min-width: min(100%, 260px);
         padding: var(--sp-2) var(--sp-3);
-        border-radius: var(--radius-sm);
         border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
         background: var(--input-bg);
         color: var(--text-primary);
         font-family: var(--font-sans);
         font-size: var(--font-size-md);
       }
-      .project-guardrail-confirmation {
-        flex-basis: 100%;
-        margin-top: var(--sp-2);
-      }
+      .project-guardrail-confirmation { flex-basis: 100%; margin-top: var(--sp-2); }
       .projects-pagination { margin-top: var(--sp-4); }
+      .project-selection-control { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; min-height: 24px; cursor: pointer; }
+      .project-selection-checkbox { width: 18px; height: 18px; }
+      .project-recipient-summary { min-width: 0; }
+      .project-recipient-status { color: var(--text-secondary); font-size: var(--font-size-sm); }
+      .project-recipient-chips { display: flex; flex-wrap: wrap; gap: var(--sp-1); padding: 0; margin: 0; list-style: none; }
+      .project-recipient-chip { overflow: hidden; padding: 2px var(--sp-2); border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--surface-2); color: var(--text-primary); font-size: var(--font-size-2xs); text-overflow: ellipsis; white-space: nowrap; }
+      .project-inventory-cluster-children { border-top: 1px solid var(--border); }
+      .project-inventory-child-row { margin-left: var(--sp-5); }
+      .project-inventory-child-row:first-child { border-top: 0; }
+      .recipient-policy-review-section + .recipient-policy-review-section { margin-top: var(--sp-5); }
+      .recipient-policy-review-heading { margin-bottom: var(--sp-2); }
+      .recipient-policy-review-item .project-inventory-actions label {
+        color: var(--text-secondary);
+        font-size: var(--font-size-sm);
+        font-weight: var(--font-weight-semibold);
+      }
       .recipient-policy-review-header {
         display: flex;
         align-items: baseline;
         justify-content: space-between;
         gap: var(--sp-4);
+      }
       }
       .recipient-policy-review-count {
         color: var(--text-tertiary);
@@ -1800,10 +1822,23 @@
       .device-identity-review-panel ul { margin: var(--sp-3) 0; padding-left: var(--sp-5); }
       .device-identity-review-panel .peer-actions { margin-top: var(--sp-4); }
 
+      @media (max-width: 900px) {
+        .project-inventory-table-header { display: none; }
+        .project-inventory-table-row { grid-template-columns: 28px minmax(0, 1fr) auto; row-gap: var(--sp-3); }
+        .project-inventory-select-cell { grid-column: 1; grid-row: 1; }
+        .project-inventory-project-cell { grid-column: 2; grid-row: 1; }
+        .project-inventory-row-actions { grid-column: 3; grid-row: 1; flex-wrap: wrap; }
+        .project-inventory-row-stats { display: flex; grid-column: 2 / -1; grid-row: 2; align-items: center; flex-wrap: wrap; gap: var(--sp-2) var(--sp-4); min-width: 0; }
+        .project-inventory-row-stats .project-inventory-cell::before { content: attr(data-label) " "; color: var(--text-tertiary); font-size: var(--font-size-2xs); text-transform: uppercase; }
+        .project-inventory-shared { flex: 1 1 160px; }
+        .project-detail-grid { grid-template-columns: 1fr; }
+      }
+
       @media (max-width: 720px) {
-        .project-inventory-row-header { align-items: center; flex-wrap: wrap; }
-        .project-inventory-title { flex: 1 1 calc(100% - 48px); }
-        .project-recipient-action { width: 100%; }
+        .project-inventory-row-header { grid-template-columns: 28px minmax(0, 1fr); }
+        .project-inventory-row-actions { grid-column: 2; grid-row: 2; justify-content: flex-start; }
+        .project-inventory-row-stats { grid-row: 3; }
+        .project-recipient-action { width: auto; }
         .recipient-policy-management-dialog .modal-card { width: calc(100vw - 16px); }
         .recipient-policy-management-actions,
         .recipient-policy-sharing-responsive-actions { display: grid; grid-template-columns: 1fr; }
@@ -4581,20 +4616,17 @@
       <div id="recipientPolicyReviewMount" hidden></div>
       <div class="card" style="animation-delay: 0s">
         <div class="section-header">
-          <div>
-            <h2>Projects</h2>
-            <div class="section-meta">Choose exact Projects, then share them with Teams or Identities.</div>
-          </div>
+          <h2>Projects</h2>
           <div class="section-actions project-selection-actions">
             <span class="section-meta" id="projectsSelectionStatus" role="status" aria-live="polite">0 Projects selected.</span>
-            <button class="settings-button project-selection-target" id="projectsShareSelected" type="button" disabled>Share selected</button>
+            <button class="settings-button project-selection-target" id="projectsShareSelected" type="button" disabled>Add Teams or Identities</button>
           </div>
         </div>
         <div class="projects-toolbar">
-          <input class="feed-search" id="projectsSearch" placeholder="Search project, path, git remote, or workspace id…" />
-          <select id="projectsStatusFilter" aria-label="Project status filter"></select>
+          <input class="feed-search" id="projectsSearch" placeholder="Search by name, path, or git remote…" />
+          <select id="projectsStatusFilter" aria-label="Filter projects"></select>
+          <span class="small" id="projectsInventoryMeta">Loading project inventory…</span>
         </div>
-        <div class="section-meta" id="projectsInventoryMeta">Loading project inventory…</div>
         <div class="project-inventory-skeleton" id="projectsInventorySkeleton" role="status" aria-label="Loading project inventory" aria-busy="true">
           <div class="project-inventory-skeleton-row">
             <div class="project-inventory-skeleton-line title"></div>
@@ -4614,8 +4646,7 @@
         </div>
       </div>
       <details class="card project-advanced-surface">
-        <summary>Advanced Project invitations</summary>
-        <div class="section-meta">Use the legacy invitation flow when the recipient does not have an Identity yet.</div>
+        <summary>Invite someone</summary>
         <div class="section-actions" id="projectShareFlowMount"></div>
       </details>
     </div>
