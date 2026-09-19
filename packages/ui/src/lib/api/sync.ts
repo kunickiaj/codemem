@@ -459,7 +459,7 @@ export interface ProjectScopeCandidate {
 	latest_session_at: string | null;
 	read_only?: boolean;
 	read_only_reason?: "peer_received" | null;
-	origin_devices: Array<{ device_id: string }>;
+	origin_devices?: Array<{ device_id: string }>;
 	resolved_scope_id: string;
 	resolution_reason: string;
 	mapping_id: number | null;
@@ -481,7 +481,7 @@ export type ProjectScopeInventoryStatus =
 
 export interface ProjectScopeInventoryProject extends ProjectScopeCandidate {
 	memory_count: number | null;
-	origin_devices: Array<{ device_id: string; display_name: string | null }>;
+	origin_devices?: Array<{ device_id: string; display_name: string | null }>;
 	session_count: number;
 	statuses: ProjectScopeInventoryStatus[];
 	sharing?: ProjectSharingSummary[];

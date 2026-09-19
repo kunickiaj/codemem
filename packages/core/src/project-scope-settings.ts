@@ -81,7 +81,7 @@ export interface ProjectScopeCandidate {
 	guardrail_warnings: ProjectScopeGuardrailWarning[];
 	read_only: boolean;
 	read_only_reason: "peer_received" | null;
-	origin_devices: Array<{ device_id: string }>;
+	origin_devices?: Array<{ device_id: string }>;
 }
 
 export type ProjectScopeInventoryStatus =
@@ -95,6 +95,7 @@ export type ProjectScopeInventoryStatus =
 
 export interface ProjectScopeInventoryProject extends ProjectScopeCandidate {
 	memory_count: number | null;
+	origin_devices: Array<{ device_id: string }>;
 	session_count: number;
 	statuses: ProjectScopeInventoryStatus[];
 }
@@ -159,10 +160,14 @@ interface ProjectScopeCandidateRow {
 	git_remote: string | null;
 	git_branch: string | null;
 	workspace_id: string | null;
-	origin_device_ids?: string | null;
+	origin_devices?: Array<{ device_id: string }>;
 	memory_count?: number | null;
 	session_count?: number | null;
 }
+
+type ProjectScopeCandidateWithOrigins = ProjectScopeCandidate & {
+	origin_devices: Array<{ device_id: string }>;
+};
 
 function clean(value: string | null | undefined): string | null {
 	const trimmed = value?.trim();
@@ -171,8 +176,7 @@ function clean(value: string | null | undefined): string | null {
 
 function originDevicesForCandidate(row: ProjectScopeCandidateRow): Array<{ device_id: string }> {
 	if (row.inventory_source !== "peer_received") return [];
-	return [...new Set((row.origin_device_ids ?? "").split(",").map((deviceId) => deviceId.trim()))]
-		.filter((deviceId) => deviceId.length > 0 && deviceId !== "unknown")
+	return [...new Set((row.origin_devices ?? []).map((device) => device.device_id))]
 		.toSorted((left, right) => left.localeCompare(right))
 		.map((deviceId) => ({ device_id: deviceId }));
 }
@@ -418,7 +422,7 @@ function projectScopeCandidateGuardrailWarnings(
 	return warnings.map(withGuardrailConfirmationToken);
 }
 
-function withCandidateGuardrails(candidates: ProjectScopeCandidate[]): ProjectScopeCandidate[] {
+function withCandidateGuardrails<T extends ProjectScopeCandidate>(candidates: T[]): T[] {
 	const collisions = candidateCollisionMap(candidates);
 	return candidates.map((candidate) => ({
 		...candidate,
@@ -468,7 +472,7 @@ function buildProjectScopeCandidate(
 	row: ProjectScopeCandidateRow,
 	mappings: ProjectScopeSettingsMapping[],
 	scopes: SharingDomainSettingsScope[],
-): ProjectScopeCandidate {
+): ProjectScopeCandidateWithOrigins {
 	const project = cleanProjectIdentity(row.project);
 	const cwd = cleanProjectIdentity(row.cwd);
 	const gitRemote = cleanProjectIdentity(row.git_remote);
@@ -508,7 +512,7 @@ function buildProjectScopeCandidate(
 		suggestion_reason: null,
 		suggestion_signal: null,
 		guardrail_warnings: [],
-	} satisfies ProjectScopeCandidate;
+	} satisfies ProjectScopeCandidateWithOrigins;
 	const suggestion = suggestProjectScope(baseCandidate, scopes);
 	return {
 		...baseCandidate,
@@ -1105,7 +1109,7 @@ function listLocalProjectScopeInventoryRows(db: Database): ProjectScopeCandidate
 		.all(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX) as ProjectScopeCandidateRow[];
 }
 
-function listPeerReceivedProjectScopeInventoryRows(db: Database): ProjectScopeCandidateRow[] {
+function listPeerReceivedProjectAggregateRows(db: Database): ProjectScopeCandidateRow[] {
 	// Peer-received rows cover both bootstrap snapshot sessions (marked by the
 	// bootstrap cwd prefix) and sessions minted by incremental replication
 	// (tool_version 'sync_replication', no cwd). Both hold peer-owned content
@@ -1130,10 +1134,6 @@ function listPeerReceivedProjectScopeInventoryRows(db: Database): ProjectScopeCa
 					WHEN mi.scope_id LIKE 'managed-project:%' THEN 'scope:' || mi.scope_id
 					ELSE COALESCE(NULLIF(TRIM(mi.origin_device_id), ''), 'unknown') || ':project:' || TRIM(mi.project)
 				END AS workspace_id,
-				GROUP_CONCAT(DISTINCT CASE
-					WHEN TRIM(COALESCE(mi.origin_device_id, '')) NOT IN ('', 'unknown')
-					THEN TRIM(mi.origin_device_id)
-				END) AS origin_device_ids,
 				0 AS session_count,
 				COUNT(mi.id) AS memory_count
 			 FROM memory_items mi
@@ -1152,6 +1152,48 @@ function listPeerReceivedProjectScopeInventoryRows(db: Database): ProjectScopeCa
 			 ORDER BY MAX(COALESCE(mi.updated_at, s.started_at)) DESC, TRIM(mi.project) ASC`,
 		)
 		.all(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX) as ProjectScopeCandidateRow[];
+}
+
+interface PeerReceivedOriginDeviceRow {
+	workspace_id: string;
+	device_id: string;
+}
+
+function listPeerReceivedOriginDeviceRows(db: Database): PeerReceivedOriginDeviceRow[] {
+	return db
+		.prepare(
+			`SELECT DISTINCT
+				'peer-received:' || CASE
+					WHEN mi.scope_id LIKE 'managed-project:%' THEN 'scope:' || mi.scope_id
+					ELSE TRIM(mi.origin_device_id) || ':project:' || TRIM(mi.project)
+				END AS workspace_id,
+				TRIM(mi.origin_device_id) AS device_id
+			 FROM memory_items mi
+			 JOIN sessions s ON s.id = mi.session_id
+			 WHERE mi.active = 1
+			   AND mi.project IS NOT NULL
+			   AND TRIM(mi.project) <> ''
+			   AND TRIM(COALESCE(mi.origin_device_id, '')) NOT IN ('', 'unknown')
+			   AND (
+			         (s.cwd IS NOT NULL AND substr(s.cwd, 1, length(?)) = ?)
+			      OR (s.cwd IS NULL AND s.tool_version = 'sync_replication')
+			       )
+			 ORDER BY workspace_id, device_id`,
+		)
+		.all(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX) as PeerReceivedOriginDeviceRow[];
+}
+
+function listPeerReceivedProjectScopeInventoryRows(db: Database): ProjectScopeCandidateRow[] {
+	const originsByWorkspace = new Map<string, Array<{ device_id: string }>>();
+	for (const origin of listPeerReceivedOriginDeviceRows(db)) {
+		const origins = originsByWorkspace.get(origin.workspace_id) ?? [];
+		origins.push({ device_id: origin.device_id });
+		originsByWorkspace.set(origin.workspace_id, origins);
+	}
+	return listPeerReceivedProjectAggregateRows(db).map((row) => ({
+		...row,
+		origin_devices: originsByWorkspace.get(row.workspace_id ?? "") ?? [],
+	}));
 }
 
 interface BuiltProjectScopeInventory {
@@ -1227,7 +1269,7 @@ export function listProjectScopeInventory(
 	for (const mapping of mappings) {
 		if (!mapping.workspace_identity || byIdentity.has(`local:${mapping.workspace_identity}`))
 			continue;
-		const candidate: ProjectScopeCandidate = {
+		const candidate: ProjectScopeCandidateWithOrigins = {
 			workspace_identity: mapping.workspace_identity,
 			identity_source: "workspace_id",
 			display_project: mapping.project_pattern || mapping.workspace_identity,

@@ -228,7 +228,8 @@ function rendersReceivedProjectSources(): void {
 				originDevices: [
 					{ deviceId: "device-a", displayName: "Work Laptop" },
 					{ deviceId: "device-b", displayName: "Desk Computer" },
-					{ deviceId: "device-c", displayName: "Travel Laptop" },
+					{ deviceId: "device-c", displayName: null },
+					{ deviceId: "device-a", displayName: "Work Laptop" },
 				],
 			},
 			{
@@ -249,6 +250,7 @@ function rendersReceivedProjectSources(): void {
 	expect(text).toContain("1 memory");
 	expect(text).toContain("Unknown device");
 	expect(text).not.toContain("device-a");
+	expect(text).not.toContain("device-c");
 	expect(text).not.toContain("private-device-id");
 	expect(text).toContain("No recent sessions");
 	expect(text).toContain("Access is managed where the Project is shared from");
@@ -257,7 +259,10 @@ function rendersReceivedProjectSources(): void {
 describe("received project sources", () => {
 	beforeEach(setupSharingMount);
 	afterEach(cleanupSharingMount);
-	it("shows bounded device names without raw identifiers", rendersReceivedProjectSources);
+	it(
+		"counts distinct unresolved origins without showing raw identifiers",
+		rendersReceivedProjectSources,
+	);
 });
 
 describe("recipient-focused Sharing", () => {
