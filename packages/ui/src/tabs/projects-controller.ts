@@ -11,6 +11,17 @@ import type {
 import { showGlobalNotice } from "../lib/notice";
 import { state } from "../lib/state";
 import { openProjectShareFlow, renderProjectShareFlow } from "./project-sharing";
+import type {
+	ProjectInventoryCallbacks,
+	ProjectInventoryClusterViewModel,
+	ProjectInventoryProjectViewModel,
+	ProjectsInventoryController,
+	ProjectsInventoryViewModel,
+} from "./projects-inventory-model";
+import {
+	markProjectTeamSetupEntryUnavailable,
+	renderProjectTeamSetupEntry as renderProjectTeamSetupEntryView,
+} from "./projects-team-setup-view";
 import {
 	mountRecipientPolicyManagement,
 	openRecipientPolicyManagement,
@@ -26,86 +37,6 @@ import {
 import { openSyncInputDialog } from "./sync/sync-dialogs";
 
 type RefreshFn = () => void;
-
-export interface ProjectInventoryRecipientViewModel {
-	key: string;
-	kind: "Team" | "Identity";
-	displayName: string;
-}
-
-export interface ProjectInventoryProjectViewModel {
-	kind: "project";
-	key: string;
-	project: ProjectScopeInventoryProject;
-	manageable: boolean;
-	selected: boolean;
-	detailsOpen: boolean;
-	draftScopeId: string | null;
-	pendingConfirmation: {
-		requiredGuardrailTokens: string[];
-		scopeId: string;
-		warnings: ProjectScopeGuardrailWarning[];
-	} | null;
-	pendingForgetConfirmation: {
-		confirmationToken: string;
-		localOwnedMemoryCount: number;
-		peerOwnedMemoryCount: number;
-	} | null;
-	recipients: ProjectInventoryRecipientViewModel[];
-}
-
-export interface ProjectInventoryClusterViewModel {
-	kind: "cluster";
-	key: string;
-	label: string;
-	projects: ProjectInventoryProjectViewModel[];
-	projectIds: string[];
-	selectedProjectIds: string[];
-	detailsOpen: boolean;
-	draftScopeId: string | null;
-	recipients: ProjectInventoryRecipientViewModel[];
-}
-
-export interface ProjectsInventoryViewModel {
-	rows: Array<ProjectInventoryProjectViewModel | ProjectInventoryClusterViewModel>;
-	selection: {
-		projectIds: string[];
-		count: number;
-		ready: boolean;
-	};
-	pagination: {
-		offset: number;
-		limit: number;
-		total: number;
-		hasMore: boolean;
-	};
-	scopeGroups: Array<{ label: string; scopes: SharingDomainScope[] }>;
-	statusOptions: Array<{ label: string; value: string }>;
-}
-
-export interface ProjectInventoryCallbacks {
-	toggleSelection(projectIds: string[]): void;
-	manageRecipients(projectIds: string[]): void;
-	setProjectDetailsOpen(key: string, open: boolean): void;
-	setClusterDetailsOpen(key: string, open: boolean): void;
-	setProjectScopeDraft(projectIdentity: string, scopeId: string): void;
-	setClusterScopeDraft(clusterKey: string, scopeId: string): void;
-	saveProjectScope(projectIdentity: string, scopeId: string): Promise<void>;
-	saveClusterScope(clusterKey: string, scopeId: string): Promise<void>;
-	removeProjectScope(projectIdentity: string): Promise<void>;
-	keepProjectLocal(projectIdentity: string): Promise<void>;
-	reassignProject(projectIdentity: string): Promise<void>;
-	forgetProject(projectIdentity: string, confirmed?: boolean): Promise<void>;
-	confirmProjectScope(projectIdentity: string): Promise<void>;
-	cancelProjectScopeConfirmation(projectIdentity: string): void;
-	cancelProjectForgetConfirmation(projectIdentity: string): void;
-	onSpaceSelectBlur(): void;
-}
-
-export interface ProjectsInventoryController {
-	getViewModel(): ProjectsInventoryViewModel;
-	callbacks: ProjectInventoryCallbacks;
-}
 
 const STATUS_OPTIONS = [
 	["", "All projects"],
@@ -338,6 +269,16 @@ function renderProjectSelection(
 
 type RecipientChip = { key: string; kind: "Team" | "Identity"; displayName: string };
 
+function recipientSummaryText(projectCount: number, recipientCount: number): string {
+	if (!recipientPolicyIntentReady) return "Recipient access is unavailable.";
+	if (recipientCount === 0) return "Not shared with any recipients.";
+	const recipientLabel = `recipient${recipientCount === 1 ? "" : "s"}`;
+	if (projectCount === 1) {
+		return `Shared with ${recipientCount.toLocaleString()} ${recipientLabel}.`;
+	}
+	return `${recipientCount.toLocaleString()} ${recipientLabel} across these Project identities.`;
+}
+
 function recipientChips(projectIds: string[]): RecipientChip[] {
 	if (!recipientPolicyIntentReady) return [];
 	const projectIdSet = new Set(projectIds);
@@ -385,13 +326,7 @@ function renderRecipientSummary(projectIds: string[]): HTMLElement {
 	const chips = recipientChips(projectIds);
 	const status = document.createElement("div");
 	status.className = "project-recipient-status";
-	status.textContent = !recipientPolicyIntentReady
-		? "Recipient access is unavailable."
-		: chips.length === 0
-			? "Not shared with any recipients."
-			: projectIds.length === 1
-				? `Shared with ${chips.length.toLocaleString()} recipient${chips.length === 1 ? "" : "s"}.`
-				: `${chips.length.toLocaleString()} recipient${chips.length === 1 ? "" : "s"} across these Project identities.`;
+	status.textContent = recipientSummaryText(projectIds.length, chips.length);
 	container.appendChild(status);
 	if (chips.length > 0) {
 		const list = document.createElement("ul");
@@ -690,15 +625,16 @@ async function saveProjectClusterMapping(
 		draftClusterDomainSelections.delete(projectClusterKey(assignable[0]));
 		refreshProjects?.();
 	} catch (error) {
-		showGlobalNotice(
-			error instanceof api.SharingDomainGuardrailConfirmationError
-				? "One or more identities in this group need review before bulk assignment. Expand the group and save those identities directly."
-				: error instanceof Error
-					? error.message
-					: "Unable to update project Spaces.",
-			"warning",
-		);
+		showGlobalNotice(projectClusterMappingError(error), "warning");
 	}
+}
+
+function projectClusterMappingError(error: unknown): string {
+	if (error instanceof api.SharingDomainGuardrailConfirmationError) {
+		return "One or more identities in this group need review before bulk assignment. Expand the group and save those identities directly.";
+	}
+	if (error instanceof Error) return error.message;
+	return "Unable to update project Spaces.";
 }
 
 async function removeProjectMapping(project: ProjectScopeInventoryProject) {
@@ -844,6 +780,65 @@ function focusProjectAdministration(projectIdentity: string): boolean {
 	return true;
 }
 
+interface ProjectNavigationSnapshot {
+	generation: number;
+	search: string;
+	status: string;
+	offset: number;
+}
+
+function projectNavigationSnapshot(): ProjectNavigationSnapshot {
+	return {
+		generation: projectsUserNavigationGeneration,
+		search: el<HTMLInputElement>("projectsSearch")?.value ?? "",
+		status: el<HTMLSelectElement>("projectsStatusFilter")?.value ?? "",
+		offset: currentOffset,
+	};
+}
+
+function projectNavigationChanged(snapshot: ProjectNavigationSnapshot): boolean {
+	return (
+		projectsUserNavigationGeneration !== snapshot.generation ||
+		(el<HTMLInputElement>("projectsSearch")?.value ?? "") !== snapshot.search ||
+		(el<HTMLSelectElement>("projectsStatusFilter")?.value ?? "") !== snapshot.status ||
+		currentOffset !== snapshot.offset
+	);
+}
+
+async function openProjectAdministrationFromRepair(target: {
+	offset: number;
+	project: ProjectScopeInventoryProject;
+}): Promise<void> {
+	const { project } = target;
+	if (focusProjectAdministration(project.workspace_identity)) return;
+	const search = el<HTMLInputElement>("projectsSearch");
+	const status = el<HTMLSelectElement>("projectsStatusFilter");
+	const previous = projectNavigationSnapshot();
+	const repairSearch = project.workspace_identity;
+	if (search) search.value = repairSearch;
+	if (status) status.value = "";
+	currentOffset = target.offset;
+	const repairGeneration = projectsUserNavigationGeneration;
+	await loadProjectsData();
+	if (focusProjectAdministration(project.workspace_identity)) return;
+	if (
+		projectsUserNavigationGeneration !== repairGeneration ||
+		(search && search.value !== repairSearch) ||
+		(status && status.value !== "") ||
+		currentOffset !== target.offset
+	) {
+		return;
+	}
+	if (search) search.value = previous.search;
+	if (status) status.value = previous.status;
+	currentOffset = previous.offset;
+	await loadProjectsData();
+	showGlobalNotice(
+		"Project administration could not be opened. Refresh Projects and try again.",
+		"warning",
+	);
+}
+
 async function performRecipientPolicyRepair(
 	repair: RecipientPolicyBlockedItemV1["repair"],
 ): Promise<void> {
@@ -851,19 +846,9 @@ async function performRecipientPolicyRepair(
 		showGlobalNotice("Finish the open Space assignment, then try Repair again.", "warning");
 		return;
 	}
-	const lookupUserNavigationGeneration = projectsUserNavigationGeneration;
-	const lookupSearch = el<HTMLInputElement>("projectsSearch")?.value ?? "";
-	const lookupStatus = el<HTMLSelectElement>("projectsStatusFilter")?.value ?? "";
-	const lookupOffset = currentOffset;
+	const navigation = projectNavigationSnapshot();
 	const target = await projectForRepair(repair.projectIdentity);
-	if (
-		projectsUserNavigationGeneration !== lookupUserNavigationGeneration ||
-		(el<HTMLInputElement>("projectsSearch")?.value ?? "") !== lookupSearch ||
-		(el<HTMLSelectElement>("projectsStatusFilter")?.value ?? "") !== lookupStatus ||
-		currentOffset !== lookupOffset
-	) {
-		return;
-	}
+	if (projectNavigationChanged(navigation)) return;
 	if (isProjectSpaceSelectActive()) {
 		showGlobalNotice("Finish the open Space assignment, then try Repair again.", "warning");
 		return;
@@ -887,39 +872,7 @@ async function performRecipientPolicyRepair(
 		await reassignInventoryProject(project);
 		return;
 	}
-	if (!focusProjectAdministration(project.workspace_identity)) {
-		const search = el<HTMLInputElement>("projectsSearch");
-		const previousSearch = search?.value ?? "";
-		const repairSearch = project.workspace_identity;
-		if (search) search.value = repairSearch;
-		const status = el<HTMLSelectElement>("projectsStatusFilter");
-		const previousStatus = status?.value ?? "";
-		const repairStatus = "";
-		if (status) status.value = repairStatus;
-		const previousOffset = currentOffset;
-		currentOffset = target.offset;
-		const repairUserNavigationGeneration = projectsUserNavigationGeneration;
-		const repairLoad = loadProjectsData();
-		await repairLoad;
-		if (!focusProjectAdministration(project.workspace_identity)) {
-			if (
-				projectsUserNavigationGeneration !== repairUserNavigationGeneration ||
-				(search && search.value !== repairSearch) ||
-				(status && status.value !== repairStatus) ||
-				currentOffset !== target.offset
-			) {
-				return;
-			}
-			if (search) search.value = previousSearch;
-			if (status) status.value = previousStatus;
-			currentOffset = previousOffset;
-			await loadProjectsData();
-			showGlobalNotice(
-				"Project administration could not be opened. Refresh Projects and try again.",
-				"warning",
-			);
-		}
-	}
+	await openProjectAdministrationFromRepair(target);
 }
 
 function repairRecipientPolicyItem(repair: RecipientPolicyBlockedItemV1["repair"]): Promise<void> {
@@ -949,39 +902,51 @@ function repairRecipientPolicyItem(repair: RecipientPolicyBlockedItemV1["repair"
 	return operation;
 }
 
-function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElement {
-	const actions = document.createElement("div");
-	actions.className = "project-inventory-actions";
+function appendProjectShareAction(
+	actions: HTMLElement,
+	project: ProjectScopeInventoryProject,
+): void {
 	if (
-		isLocallyAssignableProject(project) &&
-		project.memory_count != null &&
-		project.guardrail_warnings.every((warning) => !warning.requires_confirmation)
-	) {
-		const share = document.createElement("button");
-		share.className = "settings-button";
-		share.type = "button";
-		share.textContent = "Share";
-		share.disabled = !projectShareInventoryReady;
-		if (!projectShareInventoryReady) share.title = "The complete project list is unavailable.";
-		share.addEventListener("click", () => openProjectShareFlow([project.workspace_identity]));
-		actions.appendChild(share);
-	}
+		!isLocallyAssignableProject(project) ||
+		project.memory_count == null ||
+		project.guardrail_warnings.some((warning) => warning.requires_confirmation)
+	)
+		return;
+	const share = document.createElement("button");
+	share.className = "settings-button";
+	share.type = "button";
+	share.textContent = "Share";
+	share.disabled = !projectShareInventoryReady;
+	if (!projectShareInventoryReady) share.title = "The complete project list is unavailable.";
+	share.addEventListener("click", () => openProjectShareFlow([project.workspace_identity]));
+	actions.appendChild(share);
+}
+
+function appendReadOnlyProjectAction(
+	actions: HTMLElement,
+	project: ProjectScopeInventoryProject,
+): boolean {
+	let message: string | null = null;
 	if (isPeerReceivedProject(project)) {
-		const note = document.createElement("div");
-		note.className = "settings-note";
-		note.textContent =
+		message =
 			"This project was received from a peer. Change its project or Space on the source device; this node keeps the received identity read-only.";
-		actions.appendChild(note);
-		return actions;
-	}
-	if (project.identity_source === "unmapped") {
-		const note = document.createElement("div");
-		note.className = "settings-note";
-		note.textContent =
+	} else if (project.identity_source === "unmapped") {
+		message =
 			"This project is missing a stable path, git remote, or workspace id. It stays Local only until it has a stable identity.";
-		actions.appendChild(note);
-		return actions;
 	}
+	if (!message) return false;
+	const note = document.createElement("div");
+	note.className = "settings-note";
+	note.textContent = message;
+	actions.appendChild(note);
+	return true;
+}
+
+function createProjectScopeSelect(project: ProjectScopeInventoryProject): {
+	currentAssignable: boolean;
+	label: HTMLLabelElement;
+	select: HTMLSelectElement;
+} {
 	const label = document.createElement("label");
 	label.className = "sr-only";
 	const selectId = `project-domain-${project.workspace_identity.replace(/[^a-z0-9_-]/gi, "-")}`;
@@ -1006,7 +971,44 @@ function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElemen
 		project.suggested_scope_id,
 		project.resolved_scope_id,
 	);
+	return { currentAssignable, label, select };
+}
 
+function projectMappingActionButtons(project: ProjectScopeInventoryProject): HTMLButtonElement[] {
+	const keepLocal = document.createElement("button");
+	keepLocal.className = "settings-button";
+	keepLocal.type = "button";
+	keepLocal.textContent = "Keep local-only";
+	keepLocal.addEventListener("click", () => void saveProjectMapping(project, "local-default"));
+	const remove = document.createElement("button");
+	remove.className = "settings-button";
+	remove.type = "button";
+	remove.textContent = "Remove mapping";
+	remove.disabled = project.mapping_id == null || project.resolution_reason !== "exact_mapping";
+	remove.addEventListener("click", () => void removeProjectMapping(project));
+	const changeProject = document.createElement("button");
+	changeProject.className = "settings-button";
+	changeProject.type = "button";
+	changeProject.textContent = "Change project…";
+	changeProject.disabled = project.session_count === 0;
+	if (changeProject.disabled) {
+		changeProject.title = "No sessions are available to reassign for this saved mapping.";
+	}
+	changeProject.addEventListener("click", () => void reassignInventoryProject(project));
+	const forget = document.createElement("button");
+	forget.className = "settings-button danger";
+	forget.type = "button";
+	forget.textContent = "Forget local memories…";
+	forget.disabled = (project.memory_count ?? 0) === 0;
+	forget.addEventListener("click", () => void forgetProjectMemories(project));
+	return [keepLocal, remove, changeProject, forget];
+}
+
+function appendProjectMappingControls(
+	actions: HTMLElement,
+	project: ProjectScopeInventoryProject,
+): HTMLSelectElement {
+	const { currentAssignable, label, select } = createProjectScopeSelect(project);
 	const save = document.createElement("button");
 	save.className = "settings-button";
 	save.type = "button";
@@ -1027,176 +1029,153 @@ function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElemen
 	});
 	select.addEventListener("blur", refreshSkippedProjectDataAfterSelectBlur);
 
-	const keepLocal = document.createElement("button");
-	keepLocal.className = "settings-button";
-	keepLocal.type = "button";
-	keepLocal.textContent = "Keep local-only";
-	keepLocal.addEventListener("click", () => void saveProjectMapping(project, "local-default"));
+	actions.append(label, select, save, ...projectMappingActionButtons(project));
+	return select;
+}
 
-	const remove = document.createElement("button");
-	remove.className = "settings-button";
-	remove.type = "button";
-	remove.textContent = "Remove mapping";
-	remove.disabled = project.mapping_id == null || project.resolution_reason !== "exact_mapping";
-	remove.addEventListener("click", () => void removeProjectMapping(project));
-
-	const changeProject = document.createElement("button");
-	changeProject.className = "settings-button";
-	changeProject.type = "button";
-	changeProject.textContent = "Change project…";
-	changeProject.disabled = project.session_count === 0;
-	if (changeProject.disabled) {
-		changeProject.title = "No sessions are available to reassign for this saved mapping.";
-	}
-	changeProject.addEventListener("click", () => void reassignInventoryProject(project));
-	const forget = document.createElement("button");
-	forget.className = "settings-button danger";
-	forget.type = "button";
-	forget.textContent = "Forget local memories…";
-	forget.disabled = (project.memory_count ?? 0) === 0;
-	forget.addEventListener("click", () => void forgetProjectMemories(project));
-
-	actions.append(label, select, save, keepLocal, remove, changeProject, forget);
+function appendProjectScopeConfirmation(
+	actions: HTMLElement,
+	project: ProjectScopeInventoryProject,
+	select: HTMLSelectElement,
+): void {
 	const pending = pendingConfirmations.get(project.workspace_identity);
-	if (pending) {
-		const warningBox = document.createElement("div");
-		warningBox.className =
-			"settings-note project-guardrail-confirmation project-space-guardrail-confirmation";
-		warningBox.setAttribute("role", "alert");
-		const title = document.createElement("strong");
-		title.textContent = "Confirmation required before saving this Space.";
-		const intro = document.createElement("p");
-		intro.textContent =
-			"Codemem can save this change after you acknowledge the checks below. Verify the workspace details, then confirm to complete the save.";
-		const list = document.createElement("ul");
-		for (const warning of pending.warnings) {
-			const item = document.createElement("li");
-			const itemTitle = document.createElement("strong");
-			itemTitle.textContent = `${guardrailHeading(warning)}: `;
-			const message = document.createElement("span");
-			message.textContent = warning.message;
-			item.append(itemTitle, message);
-			list.appendChild(item);
-		}
-		const confirm = document.createElement("button");
-		confirm.className = "settings-button";
-		confirm.type = "button";
-		confirm.textContent = "I understand, save Space";
-		confirm.addEventListener("click", () => {
-			const currentPending = pendingConfirmations.get(project.workspace_identity);
-			if (!currentPending || currentPending.scopeId !== select.value) return;
-			void saveProjectMapping(
-				project,
-				currentPending.scopeId,
-				currentPending.requiredGuardrailTokens,
-			);
-		});
-		const cancel = document.createElement("button");
-		cancel.className = "settings-button";
-		cancel.type = "button";
-		cancel.textContent = "Cancel";
-		cancel.addEventListener("click", () => {
-			pendingConfirmations.delete(project.workspace_identity);
-			refreshProjects?.();
-		});
-		warningBox.append(title, intro, list, confirm, cancel);
-		actions.appendChild(warningBox);
+	if (!pending) return;
+	const warningBox = document.createElement("div");
+	warningBox.className =
+		"settings-note project-guardrail-confirmation project-space-guardrail-confirmation";
+	warningBox.setAttribute("role", "alert");
+	const title = document.createElement("strong");
+	title.textContent = "Confirmation required before saving this Space.";
+	const intro = document.createElement("p");
+	intro.textContent =
+		"Codemem can save this change after you acknowledge the checks below. Verify the workspace details, then confirm to complete the save.";
+	const list = document.createElement("ul");
+	for (const warning of pending.warnings) {
+		const item = document.createElement("li");
+		const itemTitle = document.createElement("strong");
+		itemTitle.textContent = `${guardrailHeading(warning)}: `;
+		const message = document.createElement("span");
+		message.textContent = warning.message;
+		item.append(itemTitle, message);
+		list.appendChild(item);
 	}
+	const confirm = document.createElement("button");
+	confirm.className = "settings-button";
+	confirm.type = "button";
+	confirm.textContent = "I understand, save Space";
+	confirm.addEventListener("click", () => {
+		const current = pendingConfirmations.get(project.workspace_identity);
+		if (!current || current.scopeId !== select.value) return;
+		void saveProjectMapping(project, current.scopeId, current.requiredGuardrailTokens);
+	});
+	const cancel = document.createElement("button");
+	cancel.className = "settings-button";
+	cancel.type = "button";
+	cancel.textContent = "Cancel";
+	cancel.addEventListener("click", () => {
+		pendingConfirmations.delete(project.workspace_identity);
+		refreshProjects?.();
+	});
+	warningBox.append(title, intro, list, confirm, cancel);
+	actions.appendChild(warningBox);
+}
+
+function appendProjectForgetConfirmation(
+	actions: HTMLElement,
+	project: ProjectScopeInventoryProject,
+): void {
 	const pendingForget = pendingForgetConfirmations.get(project.workspace_identity);
-	if (pendingForget) {
-		const warningBox = document.createElement("div");
-		warningBox.className = "settings-note project-guardrail-confirmation";
-		warningBox.setAttribute("role", "alert");
-		const title = document.createElement("strong");
-		title.textContent = "Confirm project memory cleanup.";
-		const intro = document.createElement("p");
-		intro.textContent = `${pendingForget.localOwnedMemoryCount.toLocaleString()} locally owned memor${pendingForget.localOwnedMemoryCount === 1 ? "y" : "ies"} will be forgotten. ${pendingForget.peerOwnedMemoryCount.toLocaleString()} peer-owned memor${pendingForget.peerOwnedMemoryCount === 1 ? "y" : "ies"} will be left unchanged.`;
-		const detail = document.createElement("p");
-		detail.textContent =
-			"Use this only to clean up wrongly attributed local project inventory; it forgets actual local memories on this device.";
-		const confirm = document.createElement("button");
-		confirm.className = "settings-button danger";
-		confirm.type = "button";
-		confirm.textContent = "I understand, forget local memories";
-		confirm.addEventListener("click", () => void forgetProjectMemories(project, true));
-		const cancel = document.createElement("button");
-		cancel.className = "settings-button";
-		cancel.type = "button";
-		cancel.textContent = "Cancel";
-		cancel.addEventListener("click", () => {
-			pendingForgetConfirmations.delete(project.workspace_identity);
-			refreshProjects?.();
-		});
-		warningBox.append(title, intro, detail, confirm, cancel);
-		actions.appendChild(warningBox);
-	}
+	if (!pendingForget) return;
+	const warningBox = document.createElement("div");
+	warningBox.className = "settings-note project-guardrail-confirmation";
+	warningBox.setAttribute("role", "alert");
+	const title = document.createElement("strong");
+	title.textContent = "Confirm project memory cleanup.";
+	const intro = document.createElement("p");
+	intro.textContent = `${pendingForget.localOwnedMemoryCount.toLocaleString()} locally owned memor${pendingForget.localOwnedMemoryCount === 1 ? "y" : "ies"} will be forgotten. ${pendingForget.peerOwnedMemoryCount.toLocaleString()} peer-owned memor${pendingForget.peerOwnedMemoryCount === 1 ? "y" : "ies"} will be left unchanged.`;
+	const detail = document.createElement("p");
+	detail.textContent =
+		"Use this only to clean up wrongly attributed local project inventory; it forgets actual local memories on this device.";
+	const confirm = document.createElement("button");
+	confirm.className = "settings-button danger";
+	confirm.type = "button";
+	confirm.textContent = "I understand, forget local memories";
+	confirm.addEventListener("click", () => void forgetProjectMemories(project, true));
+	const cancel = document.createElement("button");
+	cancel.className = "settings-button";
+	cancel.type = "button";
+	cancel.textContent = "Cancel";
+	cancel.addEventListener("click", () => {
+		pendingForgetConfirmations.delete(project.workspace_identity);
+		refreshProjects?.();
+	});
+	warningBox.append(title, intro, detail, confirm, cancel);
+	actions.appendChild(warningBox);
+}
+
+function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElement {
+	const actions = document.createElement("div");
+	actions.className = "project-inventory-actions";
+	appendProjectShareAction(actions, project);
+	if (appendReadOnlyProjectAction(actions, project)) return actions;
+	const select = appendProjectMappingControls(actions, project);
+	appendProjectScopeConfirmation(actions, project, select);
+	appendProjectForgetConfirmation(actions, project);
 	return actions;
 }
 
-function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
-	const row = document.createElement("article");
-	row.className = "project-inventory-row";
-	row.dataset.projectWorkspaceIdentity = project.workspace_identity;
-	row.dataset.projectRepairable = String(isLocallyAssignableProject(project));
-	const titleId = `project-title-${project.workspace_identity.replace(/[^a-z0-9_-]/gi, "-")}`;
-	row.setAttribute("aria-labelledby", titleId);
+function renderProjectRowHeader(
+	project: ProjectScopeInventoryProject,
+	titleId: string,
+): HTMLElement {
 	const header = document.createElement("div");
 	header.className = "project-inventory-row-header";
-	if (isRecipientPolicyManageableProject(project)) {
+	const manageable = isRecipientPolicyManageableProject(project);
+	if (manageable) {
 		header.appendChild(
 			renderProjectSelection([project], `Select ${project.display_project} for recipient sharing`),
 		);
 	}
-
 	const title = document.createElement("h3");
 	title.className = "project-inventory-title";
 	title.id = titleId;
 	title.textContent = project.display_project;
 	header.appendChild(title);
-	if (isRecipientPolicyManageableProject(project)) {
+	if (manageable) {
 		header.appendChild(
 			renderManageRecipientsAction([project.workspace_identity], project.display_project),
 		);
 	}
-	row.appendChild(header);
+	return header;
+}
 
-	const meta = document.createElement("div");
-	meta.className = "project-inventory-meta";
-	meta.textContent = `${(project.memory_count ?? 0).toLocaleString()} memories · ${project.session_count.toLocaleString()} sessions · ${formatLatest(project.latest_session_at)}`;
-	row.appendChild(meta);
-	row.appendChild(renderRecipientSummary([project.workspace_identity]));
-
-	const advanced = document.createElement("div");
-	advanced.className = "project-advanced-administration";
-	const domain = document.createElement("div");
-	domain.className = "project-inventory-domain";
-	domain.textContent = projectDomainLabel(project);
-	advanced.appendChild(domain);
-	const resolution = document.createElement("div");
-	resolution.className = "project-inventory-meta";
-	resolution.textContent = `${projectResolutionLabel(project)} · ${project.identity_source} · ${formatLatest(project.latest_session_at)}`;
-	advanced.appendChild(resolution);
-
-	if (project.sharing && project.sharing.length > 0) {
-		const sharing = document.createElement("div");
-		sharing.className = "settings-note project-sharing-summary";
-		const title = document.createElement("strong");
-		title.textContent = "Project sharing";
-		const list = document.createElement("ul");
-		list.setAttribute("aria-label", `People sharing ${project.display_project}`);
-		for (const summary of project.sharing) {
-			const item = document.createElement("li");
-			const person = document.createElement("strong");
-			person.textContent = projectSharingRelationshipLabel(summary);
-			const status = document.createElement("span");
-			status.textContent = ` — ${summary.lifecycle.label}. ${summary.lifecycle.explanation}`;
-			item.append(person, status);
-			list.appendChild(item);
-		}
-		sharing.append(title, list);
-		advanced.appendChild(sharing);
+function renderProjectSharingSummary(project: ProjectScopeInventoryProject): HTMLElement | null {
+	if (!project.sharing || project.sharing.length === 0) return null;
+	const sharing = document.createElement("div");
+	sharing.className = "settings-note project-sharing-summary";
+	const title = document.createElement("strong");
+	title.textContent = "Project sharing";
+	const list = document.createElement("ul");
+	list.setAttribute("aria-label", `People sharing ${project.display_project}`);
+	for (const summary of project.sharing) {
+		const item = document.createElement("li");
+		const person = document.createElement("strong");
+		person.textContent = projectSharingRelationshipLabel(summary);
+		const status = document.createElement("span");
+		status.textContent = ` — ${summary.lifecycle.label}. ${summary.lifecycle.explanation}`;
+		item.append(person, status);
+		list.appendChild(item);
 	}
+	sharing.append(title, list);
+	return sharing;
+}
 
+function appendProjectAdvancedNotes(
+	advanced: HTMLElement,
+	project: ProjectScopeInventoryProject,
+): ProjectScopeGuardrailWarning[] {
+	const sharing = renderProjectSharingSummary(project);
+	if (sharing) advanced.appendChild(sharing);
 	if (isPeerReceivedProject(project)) {
 		const receivedNote = document.createElement("div");
 		receivedNote.className = "settings-note";
@@ -1204,21 +1183,19 @@ function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 			"Received memories keep the source device's project and Space assignment. Local reassignment controls are disabled here to avoid split-brain sync state.";
 		advanced.appendChild(receivedNote);
 	}
-
 	const signal = document.createElement("div");
 	signal.className = "project-inventory-signal mono";
 	signal.textContent = strongestSignal(project);
 	advanced.appendChild(signal);
-
 	if (project.suggested_scope_id && project.suggested_scope_id !== project.resolved_scope_id) {
 		const suggestion = document.createElement("div");
 		suggestion.className = "settings-note project-suggestion-note";
+		const fallback = `Suggestion: assign this project to ${scopeSummary(project.suggested_scope_id)}.`;
 		suggestion.textContent = project.suggestion_reason
 			? `Suggestion: ${project.suggestion_reason}`
-			: `Suggestion: assign this project to ${scopeSummary(project.suggested_scope_id)}.`;
+			: fallback;
 		advanced.appendChild(suggestion);
 	}
-
 	const warnings = (project.guardrail_warnings ?? []).filter(
 		(warning) => warning.severity === "warning",
 	);
@@ -1228,38 +1205,47 @@ function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 		warningBox.textContent = `Needs attention: ${warnings.map((warning) => warning.message).join(" ")}`;
 		advanced.appendChild(warningBox);
 	}
+	return warnings;
+}
 
-	if (project.statuses.length > 0) {
-		const badges = document.createElement("div");
-		badges.className = "project-inventory-badges";
-		for (const status of project.statuses) {
-			const badge = document.createElement("span");
-			badge.className = `project-status-badge ${status}`;
-			badge.textContent = formatStatus(status);
-			badges.appendChild(badge);
-		}
-		advanced.appendChild(badges);
+function appendProjectStatusBadges(
+	advanced: HTMLElement,
+	project: ProjectScopeInventoryProject,
+): void {
+	if (project.statuses.length === 0) return;
+	const badges = document.createElement("div");
+	badges.className = "project-inventory-badges";
+	for (const status of project.statuses) {
+		const badge = document.createElement("span");
+		badge.className = `project-status-badge ${status}`;
+		badge.textContent = formatStatus(status);
+		badges.appendChild(badge);
 	}
+	advanced.appendChild(badges);
+}
 
-	const detail = document.createElement("details");
-	detail.className = "project-inventory-details";
-	const detailKey = `${row.dataset.projectRepairable}:${project.workspace_identity}`;
-	detail.open = openProjectDetails.has(detailKey);
-	detail.addEventListener("toggle", () => {
-		if (detail.open) openProjectDetails.add(detailKey);
-		else openProjectDetails.delete(detailKey);
-	});
-	const summary = document.createElement("summary");
-	summary.dataset.projectFocusKey = `admin:${row.dataset.projectRepairable}:${project.workspace_identity}`;
-	summary.textContent =
-		warnings.length > 0
-			? `Advanced Project administration — ${warnings.length.toLocaleString()} item${warnings.length === 1 ? "" : "s"} need attention`
-			: "Advanced Project administration";
-	detail.appendChild(summary);
-	detail.appendChild(advanced);
-	const list = document.createElement("dl");
-	list.className = "project-detail-grid";
-	const fields: Array<[string, string | number | null | undefined]> = [
+function renderProjectAdvancedAdministration(project: ProjectScopeInventoryProject): {
+	advanced: HTMLElement;
+	warnings: ProjectScopeGuardrailWarning[];
+} {
+	const advanced = document.createElement("div");
+	advanced.className = "project-advanced-administration";
+	const domain = document.createElement("div");
+	domain.className = "project-inventory-domain";
+	domain.textContent = projectDomainLabel(project);
+	const resolution = document.createElement("div");
+	resolution.className = "project-inventory-meta";
+	resolution.textContent = `${projectResolutionLabel(project)} · ${project.identity_source} · ${formatLatest(project.latest_session_at)}`;
+	advanced.append(domain, resolution);
+	const warnings = appendProjectAdvancedNotes(advanced, project);
+	appendProjectStatusBadges(advanced, project);
+	return { advanced, warnings };
+}
+
+function projectDetailFields(
+	project: ProjectScopeInventoryProject,
+): Array<[string, string | number | null | undefined]> {
+	return [
 		["Workspace identity", project.workspace_identity],
 		["Project", project.project],
 		["CWD", project.cwd],
@@ -1276,16 +1262,61 @@ function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 		["Sessions", project.session_count],
 		["Memories", project.memory_count ?? "count unavailable"],
 	];
-	for (const [label, value] of fields) {
+}
+
+function renderProjectDetailList(project: ProjectScopeInventoryProject): HTMLElement {
+	const list = document.createElement("dl");
+	list.className = "project-detail-grid";
+	for (const [label, value] of projectDetailFields(project)) {
 		const dt = document.createElement("dt");
 		dt.textContent = label;
 		const dd = document.createElement("dd");
 		dd.textContent = value == null || value === "" ? "—" : String(value);
 		list.append(dt, dd);
 	}
-	detail.appendChild(list);
-	detail.appendChild(renderProjectActions(project));
-	row.appendChild(detail);
+	return list;
+}
+
+function projectDetailsSummary(warningCount: number): string {
+	if (warningCount === 0) return "Advanced Project administration";
+	const itemLabel = `item${warningCount === 1 ? "" : "s"}`;
+	return `Advanced Project administration — ${warningCount.toLocaleString()} ${itemLabel} need attention`;
+}
+
+function renderProjectDetails(
+	project: ProjectScopeInventoryProject,
+	repairable: boolean,
+): HTMLDetailsElement {
+	const { advanced, warnings } = renderProjectAdvancedAdministration(project);
+	const detail = document.createElement("details");
+	detail.className = "project-inventory-details";
+	const detailKey = `${repairable}:${project.workspace_identity}`;
+	detail.open = openProjectDetails.has(detailKey);
+	detail.addEventListener("toggle", () => {
+		if (detail.open) openProjectDetails.add(detailKey);
+		else openProjectDetails.delete(detailKey);
+	});
+	const summary = document.createElement("summary");
+	summary.dataset.projectFocusKey = `admin:${repairable}:${project.workspace_identity}`;
+	summary.textContent = projectDetailsSummary(warnings.length);
+	detail.append(summary, advanced, renderProjectDetailList(project), renderProjectActions(project));
+	return detail;
+}
+
+function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
+	const repairable = isLocallyAssignableProject(project);
+	const row = document.createElement("article");
+	row.className = "project-inventory-row";
+	row.dataset.projectWorkspaceIdentity = project.workspace_identity;
+	row.dataset.projectRepairable = String(repairable);
+	const titleId = `project-title-${project.workspace_identity.replace(/[^a-z0-9_-]/gi, "-")}`;
+	row.setAttribute("aria-labelledby", titleId);
+	row.appendChild(renderProjectRowHeader(project, titleId));
+	const meta = document.createElement("div");
+	meta.className = "project-inventory-meta";
+	meta.textContent = `${(project.memory_count ?? 0).toLocaleString()} memories · ${project.session_count.toLocaleString()} sessions · ${formatLatest(project.latest_session_at)}`;
+	row.append(meta, renderRecipientSummary([project.workspace_identity]));
+	row.appendChild(renderProjectDetails(project, repairable));
 	return row;
 }
 
@@ -1294,26 +1325,18 @@ function clusterDomainLabel(projects: ProjectScopeInventoryProject[]): string {
 	return uniqueLabels.length === 1 ? uniqueLabels[0] : "Mixed Spaces";
 }
 
-function renderProjectCluster(projects: ProjectScopeInventoryProject[]): HTMLElement {
-	if (projects.length === 1) return renderProjectRow(projects[0]);
-	const clusterKey = projectClusterKey(projects[0]);
+function renderProjectClusterHeader(
+	projects: ProjectScopeInventoryProject[],
+	clusterLabel: string,
+	titleId: string,
+): HTMLElement {
 	const manageableProjects = projects.filter(isRecipientPolicyManageableProject);
 	const projectIds = uniqueProjectIds(manageableProjects);
-	const row = document.createElement("article");
-	row.className = "project-inventory-row project-inventory-cluster";
-	row.dataset.projectClusterKey = clusterKey;
-	const clusterLabel = projectClusterLabel(projects[0]);
-	const titleId = `project-cluster-title-${clusterKey.replace(/[^a-z0-9_-]/gi, "-")}`;
-	row.setAttribute("aria-labelledby", titleId);
-
 	const header = document.createElement("div");
 	header.className = "project-inventory-row-header";
 	if (manageableProjects.length > 0) {
 		header.appendChild(
-			renderProjectSelection(
-				manageableProjects,
-				`Select all identities for ${projectClusterLabel(projects[0])}`,
-			),
+			renderProjectSelection(manageableProjects, `Select all identities for ${clusterLabel}`),
 		);
 	}
 	const title = document.createElement("h3");
@@ -1324,100 +1347,135 @@ function renderProjectCluster(projects: ProjectScopeInventoryProject[]): HTMLEle
 	if (projectIds.length > 0) {
 		header.appendChild(renderManageRecipientsAction(projectIds, clusterLabel));
 	}
-	row.appendChild(header);
+	return header;
+}
 
-	const advanced = document.createElement("div");
-	advanced.className = "project-advanced-administration";
-	const domain = document.createElement("div");
-	domain.className = "project-inventory-domain";
-	domain.textContent = clusterDomainLabel(projects);
-	advanced.appendChild(domain);
+function projectClusterUnavailableMessage(projects: ProjectScopeInventoryProject[]): string {
+	if (projects.every(isPeerReceivedProject)) {
+		return "These project identities were received from peers. Change project or Space assignments on their source devices.";
+	}
+	return "These project identities cannot be bulk assigned until they have stable local identities. Expand each identity for details.";
+}
 
-	const memoryCount = projects.reduce((total, project) => total + (project.memory_count ?? 0), 0);
-	const sessionCount = projects.reduce((total, project) => total + project.session_count, 0);
-	const meta = document.createElement("div");
-	meta.className = "project-inventory-meta";
-	meta.textContent = `${projects.length} identities · ${sessionCount.toLocaleString()} sessions · ${memoryCount.toLocaleString()} memories`;
-	row.appendChild(meta);
-	row.appendChild(renderRecipientSummary(projectIds));
+type ProjectBlockingWarnings = Array<{
+	project: ProjectScopeInventoryProject;
+	warnings: ProjectScopeGuardrailWarning[];
+}>;
 
+function appendClusterBlockingWarnings(
+	note: HTMLElement,
+	projectsWithBlockingWarnings: ProjectBlockingWarnings,
+): void {
+	const blockers = document.createElement("ul");
+	for (const { project, warnings } of projectsWithBlockingWarnings) {
+		if (warnings.length === 0) continue;
+		const item = document.createElement("li");
+		const label = document.createElement("strong");
+		label.textContent = `Blocked identity: ${project.workspace_identity}`;
+		const detail = document.createElement("span");
+		detail.textContent = ` — ${warnings.map((warning) => warning.message).join(" ")}`;
+		item.append(label, detail);
+		blockers.appendChild(item);
+	}
+	note.appendChild(blockers);
+}
+
+function appendClusterAttention(
+	actions: HTMLElement,
+	projectsWithBlockingWarnings: ProjectBlockingWarnings,
+	hasMixedSuggestions: boolean,
+	hasMixedScopes: boolean,
+): void {
+	const hasBlockingWarnings = projectsWithBlockingWarnings.some(
+		({ warnings }) => warnings.length > 0,
+	);
+	if (!hasMixedSuggestions && !hasMixedScopes && !hasBlockingWarnings) return;
+	const note = document.createElement("div");
+	note.className = "settings-note project-attention-note";
+	if (hasBlockingWarnings) {
+		note.textContent =
+			"One or more identities in this group need individual review before bulk assignment.";
+		appendClusterBlockingWarnings(note, projectsWithBlockingWarnings);
+	} else {
+		note.textContent =
+			"This group has mixed suggestions or current Spaces. Choose a Space explicitly before bulk assignment.";
+	}
+	actions.appendChild(note);
+}
+
+function renderClusterMappingActions(
+	projects: ProjectScopeInventoryProject[],
+	clusterKey: string,
+): HTMLElement {
 	const actions = document.createElement("div");
 	actions.className = "project-inventory-actions";
 	const assignableProjects = projects.filter(isLocallyAssignableProject);
 	if (assignableProjects.length === 0) {
 		const note = document.createElement("div");
 		note.className = "settings-note";
-		note.textContent = projects.every(isPeerReceivedProject)
-			? "These project identities were received from peers. Change project or Space assignments on their source devices."
-			: "These project identities cannot be bulk assigned until they have stable local identities. Expand each identity for details.";
+		note.textContent = projectClusterUnavailableMessage(projects);
 		actions.appendChild(note);
-		advanced.appendChild(actions);
-	} else {
-		const projectsWithBlockingWarnings = assignableProjects.map((project) => ({
-			project,
-			warnings: (project.guardrail_warnings ?? []).filter(
-				(warning) => warning.requires_confirmation,
-			),
-		}));
-		const hasBlockingGuardrailWarnings = projectsWithBlockingWarnings.some(
-			({ warnings }) => warnings.length > 0,
-		);
-		const suggestedScopes = new Set(
-			assignableProjects
-				.map((project) => project.suggested_scope_id)
-				.filter((scopeId): scopeId is string => Boolean(scopeId)),
-		);
-		const resolvedScopes = new Set(assignableProjects.map((project) => project.resolved_scope_id));
-		const select = document.createElement("select");
-		select.className = "project-domain-select";
-		select.setAttribute("aria-label", `Space for ${projectClusterLabel(projects[0])} group`);
-		const placeholder = document.createElement("option");
-		placeholder.value = "";
-		placeholder.textContent = "Choose Space…";
-		select.appendChild(placeholder);
-		appendAssignableScopeOptions(select);
-		select.value = firstSafeSelection(draftClusterDomainSelections.get(clusterKey));
-		const save = document.createElement("button");
-		save.className = "settings-button";
-		save.type = "button";
-		save.textContent = `Save Space for ${assignableProjects.length} identit${assignableProjects.length === 1 ? "y" : "ies"}`;
-		save.disabled = !select.value || hasBlockingGuardrailWarnings;
-		save.addEventListener(
-			"click",
-			() => void saveProjectClusterMapping(assignableProjects, select.value),
-		);
-		select.addEventListener("change", () => {
-			if (select.value) draftClusterDomainSelections.set(clusterKey, select.value);
-			else draftClusterDomainSelections.delete(clusterKey);
-			save.disabled = !select.value || hasBlockingGuardrailWarnings;
-		});
-		select.addEventListener("blur", refreshSkippedProjectDataAfterSelectBlur);
-		actions.append(select, save);
-		if (suggestedScopes.size > 1 || resolvedScopes.size > 1 || hasBlockingGuardrailWarnings) {
-			const note = document.createElement("div");
-			note.className = "settings-note project-attention-note";
-			note.textContent = hasBlockingGuardrailWarnings
-				? "One or more identities in this group need individual review before bulk assignment."
-				: "This group has mixed suggestions or current Spaces. Choose a Space explicitly before bulk assignment.";
-			if (hasBlockingGuardrailWarnings) {
-				const blockers = document.createElement("ul");
-				for (const { project, warnings } of projectsWithBlockingWarnings) {
-					if (warnings.length === 0) continue;
-					const item = document.createElement("li");
-					const label = document.createElement("strong");
-					label.textContent = `Blocked identity: ${project.workspace_identity}`;
-					const detail = document.createElement("span");
-					detail.textContent = ` — ${warnings.map((warning) => warning.message).join(" ")}`;
-					item.append(label, detail);
-					blockers.appendChild(item);
-				}
-				note.appendChild(blockers);
-			}
-			actions.appendChild(note);
-		}
-		advanced.appendChild(actions);
+		return actions;
 	}
+	const blockingWarnings = assignableProjects.map((project) => ({
+		project,
+		warnings: (project.guardrail_warnings ?? []).filter((warning) => warning.requires_confirmation),
+	}));
+	const hasBlockingWarnings = blockingWarnings.some(({ warnings }) => warnings.length > 0);
+	const select = document.createElement("select");
+	select.className = "project-domain-select";
+	select.setAttribute("aria-label", `Space for ${projectClusterLabel(projects[0])} group`);
+	const placeholder = document.createElement("option");
+	placeholder.value = "";
+	placeholder.textContent = "Choose Space…";
+	select.appendChild(placeholder);
+	appendAssignableScopeOptions(select);
+	select.value = firstSafeSelection(draftClusterDomainSelections.get(clusterKey));
+	const save = clusterSaveButton(assignableProjects, select, hasBlockingWarnings);
+	select.addEventListener("change", () => {
+		if (select.value) draftClusterDomainSelections.set(clusterKey, select.value);
+		else draftClusterDomainSelections.delete(clusterKey);
+		save.disabled = !select.value || hasBlockingWarnings;
+	});
+	select.addEventListener("blur", refreshSkippedProjectDataAfterSelectBlur);
+	actions.append(select, save);
+	const suggestedScopes = new Set(assignableProjects.map((project) => project.suggested_scope_id));
+	const resolvedScopes = new Set(assignableProjects.map((project) => project.resolved_scope_id));
+	appendClusterAttention(
+		actions,
+		blockingWarnings,
+		suggestedScopes.size > 1,
+		resolvedScopes.size > 1,
+	);
+	return actions;
+}
 
+function clusterSaveButton(
+	projects: ProjectScopeInventoryProject[],
+	select: HTMLSelectElement,
+	hasBlockingWarnings: boolean,
+): HTMLButtonElement {
+	const save = document.createElement("button");
+	save.className = "settings-button";
+	save.type = "button";
+	const identityLabel = `identit${projects.length === 1 ? "y" : "ies"}`;
+	save.textContent = `Save Space for ${projects.length} ${identityLabel}`;
+	save.disabled = !select.value || hasBlockingWarnings;
+	save.addEventListener("click", () => void saveProjectClusterMapping(projects, select.value));
+	return save;
+}
+
+function renderProjectClusterDetails(
+	projects: ProjectScopeInventoryProject[],
+	clusterKey: string,
+): HTMLDetailsElement {
+	const advanced = document.createElement("div");
+	advanced.className = "project-advanced-administration";
+	const domain = document.createElement("div");
+	domain.className = "project-inventory-domain";
+	domain.textContent = clusterDomainLabel(projects);
+	advanced.appendChild(domain);
+	advanced.appendChild(renderClusterMappingActions(projects, clusterKey));
 	const details = document.createElement("details");
 	details.className = "project-inventory-details";
 	details.open = openProjectClusters.has(clusterKey);
@@ -1432,14 +1490,31 @@ function renderProjectCluster(projects: ProjectScopeInventoryProject[]): HTMLEle
 			(project.guardrail_warnings ?? []).filter((warning) => warning.severity === "warning").length,
 		0,
 	);
-	summary.textContent =
-		warningCount > 0
-			? `Advanced Project administration — ${warningCount.toLocaleString()} item${warningCount === 1 ? "" : "s"} need attention`
-			: "Advanced Project administration";
+	summary.textContent = projectDetailsSummary(warningCount);
 	details.appendChild(summary);
 	details.appendChild(advanced);
 	for (const project of projects) details.appendChild(renderProjectRow(project));
-	row.appendChild(details);
+	return details;
+}
+
+function renderProjectCluster(projects: ProjectScopeInventoryProject[]): HTMLElement {
+	if (projects.length === 1) return renderProjectRow(projects[0]);
+	const clusterKey = projectClusterKey(projects[0]);
+	const clusterLabel = projectClusterLabel(projects[0]);
+	const projectIds = uniqueProjectIds(projects.filter(isRecipientPolicyManageableProject));
+	const row = document.createElement("article");
+	row.className = "project-inventory-row project-inventory-cluster";
+	row.dataset.projectClusterKey = clusterKey;
+	const titleId = `project-cluster-title-${clusterKey.replace(/[^a-z0-9_-]/gi, "-")}`;
+	row.setAttribute("aria-labelledby", titleId);
+	row.appendChild(renderProjectClusterHeader(projects, clusterLabel, titleId));
+	const memoryCount = projects.reduce((total, project) => total + (project.memory_count ?? 0), 0);
+	const sessionCount = projects.reduce((total, project) => total + project.session_count, 0);
+	const meta = document.createElement("div");
+	meta.className = "project-inventory-meta";
+	meta.textContent = `${projects.length} identities · ${sessionCount.toLocaleString()} sessions · ${memoryCount.toLocaleString()} memories`;
+	row.append(meta, renderRecipientSummary(projectIds));
+	row.appendChild(renderProjectClusterDetails(projects, clusterKey));
 	return row;
 }
 
@@ -1535,6 +1610,17 @@ function hideProjectInventorySkeleton() {
 	document.getElementById("projectsInventorySkeleton")?.remove();
 }
 
+function projectInventoryMetaText(result: {
+	projects: ProjectScopeInventoryProject[];
+	total: number;
+	offset: number;
+}): string {
+	if (result.total === 0) return "0 project identities found";
+	const identityLabel = `identit${result.total === 1 ? "y" : "ies"}`;
+	const lastVisible = Math.min(result.offset + result.projects.length, result.total);
+	return `${result.total} project ${identityLabel} found · showing ${result.offset + 1}-${lastVisible}`;
+}
+
 function renderProjectInventory(result: {
 	projects: ProjectScopeInventoryProject[];
 	total: number;
@@ -1566,10 +1652,7 @@ function renderProjectInventory(result: {
 		for (const cluster of projectClusters(result.projects))
 			list.appendChild(renderProjectCluster(cluster));
 	}
-	meta.textContent =
-		result.total === 0
-			? "0 project identities found"
-			: `${result.total} project identit${result.total === 1 ? "y" : "ies"} found · showing ${result.offset + 1}-${Math.min(result.offset + result.projects.length, result.total)}`;
+	meta.textContent = projectInventoryMetaText(result);
 	const prev = el<HTMLButtonElement>("projectsPrevPage");
 	const next = el<HTMLButtonElement>("projectsNextPage");
 	if (prev) prev.disabled = result.offset === 0;
@@ -1666,93 +1749,6 @@ function mountProjectRecipientManagement(
 	});
 }
 
-function renderProjectTeamSetupEntry(
-	mount: HTMLElement,
-	summary: LegacyTeamSetupSummaryResponseV1 | undefined,
-) {
-	const candidates = summary?.candidates ?? [];
-	const existingEntry = mount.querySelector<HTMLElement>(":scope > .project-team-setup-entry");
-	existingEntry?.querySelector(".project-team-setup-status")?.remove();
-	const focusedCandidateRef = existingEntry?.contains(document.activeElement)
-		? document.activeElement instanceof HTMLButtonElement
-			? document.activeElement.dataset.teamSetupCandidateRef
-			: undefined
-		: undefined;
-	if (candidates.length === 0) {
-		existingEntry?.remove();
-		const reviewContent = mount.querySelector<HTMLElement>(
-			":scope > .project-recipient-policy-review-content",
-		);
-		mount.hidden = reviewContent?.hidden !== false;
-		if (focusedCandidateRef) el<HTMLInputElement>("projectsSearch")?.focus();
-		return;
-	}
-	const signature = JSON.stringify(
-		candidates.map((candidate) => [candidate.candidateRef, candidate.displayName]),
-	);
-	if (existingEntry?.dataset.teamSetupSignature === signature) {
-		mount.hidden = false;
-		return;
-	}
-	existingEntry?.remove();
-	mount.hidden = false;
-	const surface = document.createElement("section");
-	surface.className = "card project-team-setup-entry";
-	surface.dataset.teamSetupSignature = signature;
-	const heading = document.createElement("h2");
-	heading.textContent = "Finish setting up this Team";
-	const detail = document.createElement("p");
-	detail.className = "section-meta";
-	detail.textContent =
-		"Tell Codemem who uses each device before using this Team for Project sharing.";
-	surface.append(heading, detail);
-	for (const candidate of candidates) {
-		const row = document.createElement("div");
-		row.className = "project-inventory-actions";
-		const label = document.createElement("strong");
-		label.textContent = candidate.displayName;
-		row.appendChild(label);
-		if (openTeamSetup) {
-			const button = document.createElement("button");
-			button.setAttribute("aria-label", `Finish setting up ${candidate.displayName}`);
-			button.className = "settings-button";
-			button.type = "button";
-			button.textContent = "Finish setting up this Team";
-			button.dataset.teamSetupCandidateRef = candidate.candidateRef;
-			button.addEventListener("click", () => openTeamSetup?.(candidate.candidateRef));
-			row.appendChild(button);
-		}
-		surface.appendChild(row);
-	}
-	mount.appendChild(surface);
-	if (focusedCandidateRef) {
-		let restored = false;
-		for (const button of surface.querySelectorAll<HTMLButtonElement>("button")) {
-			if (button.dataset.teamSetupCandidateRef === focusedCandidateRef) {
-				button.focus();
-				restored = true;
-				break;
-			}
-		}
-		if (!restored) el<HTMLInputElement>("projectsSearch")?.focus();
-	}
-}
-
-function markProjectTeamSetupEntryUnavailable(mount: HTMLElement) {
-	const existingEntry = mount.querySelector<HTMLElement>(":scope > .project-team-setup-entry");
-	if (!existingEntry) return;
-	let status = existingEntry.querySelector<HTMLElement>(".project-team-setup-status");
-	if (!status) {
-		status = document.createElement("p");
-		status.className = "section-meta project-team-setup-status";
-		status.setAttribute("role", "status");
-		existingEntry.appendChild(status);
-	}
-	status.textContent =
-		"Team setup status is temporarily unavailable. The previous Team setup status is being shown.";
-	mount.hidden = false;
-}
-
 function recipientPolicyReviewContentMount(mount: HTMLElement): HTMLElement {
 	const existing = mount.querySelector<HTMLElement>(
 		":scope > .project-recipient-policy-review-content",
@@ -1762,6 +1758,16 @@ function recipientPolicyReviewContentMount(mount: HTMLElement): HTMLElement {
 	content.className = "project-recipient-policy-review-content";
 	mount.prepend(content);
 	return content;
+}
+
+function renderProjectTeamSetupEntry(
+	mount: HTMLElement,
+	summary: LegacyTeamSetupSummaryResponseV1 | undefined,
+): void {
+	renderProjectTeamSetupEntryView(mount, summary, {
+		onOpenTeamSetup: openTeamSetup,
+		onFocusFallback: () => el<HTMLInputElement>("projectsSearch")?.focus(),
+	});
 }
 
 export interface ProjectsDataLoadOptions {
@@ -1870,6 +1876,114 @@ function renderProjectsRecipientPolicyReview(result: RecipientPolicyReviewLoadRe
 		reviewContent.hidden && !reviewMount.querySelector(".project-team-setup-entry");
 }
 
+type ProjectShareInventoryLoadResult =
+	| { ok: true; projects: ProjectScopeInventoryProject[] }
+	| { ok: false; projects: ProjectScopeInventoryProject[] };
+type RecipientPolicyIntentLoadResult =
+	| { ok: true; intent: RecipientPolicyIntentGraphV1 }
+	| { ok: false; error: unknown };
+
+async function loadProjectsResources(
+	options: ProjectsDataLoadOptions,
+	filters: ProjectInventoryFilters,
+) {
+	const [result, settings, shareInventory, recipientPolicyReview, intentResult] = await Promise.all(
+		[
+			loadProjectInventoryPage(options, filters),
+			api.loadSharingDomainSettings(options),
+			loadAllProjectShareChoices(options)
+				.then((projects): ProjectShareInventoryLoadResult => ({ ok: true, projects }))
+				.catch((): ProjectShareInventoryLoadResult => ({ ok: false, projects: [] })),
+			api
+				.loadRecipientPolicyReview(options)
+				.then((review): RecipientPolicyReviewLoadResult => ({ ok: true, review }))
+				.catch((error: unknown): RecipientPolicyReviewLoadResult => ({ ok: false, error })),
+			api
+				.loadRecipientPolicyIntent(options)
+				.then((intent): RecipientPolicyIntentLoadResult => ({ ok: true, intent }))
+				.catch((error: unknown): RecipientPolicyIntentLoadResult => ({ ok: false, error })),
+		],
+	);
+	return { intentResult, recipientPolicyReview, result, settings, shareInventory };
+}
+
+function reconcileSelectedProjects(shareInventory: ProjectShareInventoryLoadResult): void {
+	if (!shareInventory.ok) return;
+	const availableProjectIds = new Set(
+		toRecipientPolicyManagementProjects(shareInventory.projects).map(
+			(project) => project.canonicalProjectIdentity,
+		),
+	);
+	for (const selectedProjectId of selectedProjectIds) {
+		if (!availableProjectIds.has(selectedProjectId)) selectedProjectIds.delete(selectedProjectId);
+	}
+}
+
+function renderLoadedProjectResources(
+	resources: Awaited<ReturnType<typeof loadProjectsResources>>,
+	loadGeneration: number,
+	filters: ProjectInventoryFilters,
+): boolean {
+	const { intentResult, recipientPolicyReview, result, settings, shareInventory } = resources;
+	scopes = settings.scopes;
+	projectShareInventoryReady = shareInventory.ok;
+	recipientPolicyIntentReady = intentResult.ok;
+	recipientPolicyIntent = intentResult.ok ? intentResult.intent : emptyRecipientPolicyIntent;
+	reconcileSelectedProjects(shareInventory);
+	const shareMount = el<HTMLDivElement>("projectShareFlowMount");
+	if (shareMount) {
+		renderProjectShareFlow(shareMount, shareInventory.projects, {
+			inventoryError: !shareInventory.ok,
+		});
+	}
+	renderProjectsRecipientPolicyReview(recipientPolicyReview);
+	mountProjectRecipientManagement(
+		shareInventory.projects,
+		recipientPolicyIntent,
+		!shareInventory.ok || !intentResult.ok,
+	);
+	renderProjectInventory(result);
+	refreshProjectCoordinatorGroupNamesInBackground(result, loadGeneration, filters);
+	return shareInventory.ok && "review" in recipientPolicyReview && intentResult.ok;
+}
+
+function updateProjectTeamSetupAfterLoad(input: {
+	entryLoadGeneration: number;
+	loadGeneration: number;
+	options: ProjectsDataLoadOptions;
+	teamSetupSummaryPromise: Promise<TeamSetupSummaryResult>;
+}): void {
+	void input.teamSetupSummaryPromise.then((teamSetupSummary) => {
+		if (
+			!isCurrentProjectsLoad(input.loadGeneration, input.options) ||
+			input.entryLoadGeneration !== teamSetupEntryLoadGeneration
+		)
+			return;
+		const reviewMount = el<HTMLDivElement>("recipientPolicyReviewMount");
+		if (!reviewMount) return;
+		if (!teamSetupSummary.ok) {
+			markProjectTeamSetupEntryUnavailable(reviewMount);
+			return;
+		}
+		renderProjectTeamSetupEntry(reviewMount, teamSetupSummary.summary);
+	});
+}
+
+function renderProjectsLoadFailure(error: unknown, meta: HTMLElement): void {
+	projectInventoryByIdentity.clear();
+	latestInventoryResult = { projects: [], total: 0, offset: currentOffset, has_more: false };
+	projectShareInventoryReady = false;
+	recipientPolicyIntentReady = false;
+	recipientPolicyIntent = emptyRecipientPolicyIntent;
+	const shareMount = el<HTMLDivElement>("projectShareFlowMount");
+	if (shareMount) renderProjectShareFlow(shareMount, [], { inventoryError: true });
+	mountProjectRecipientManagement([], emptyRecipientPolicyIntent, true);
+	updateSelectionControls();
+	hideProjectInventorySkeleton();
+	meta.textContent = "Project inventory failed to load.";
+	renderEmpty(error instanceof Error ? error.message : "Unable to load project inventory.");
+}
+
 async function loadProjectsDataOperation(options: ProjectsDataLoadOptions): Promise<boolean> {
 	const meta = el<HTMLDivElement>("projectsInventoryMeta");
 	const list = el<HTMLDivElement>("projectsInventoryList");
@@ -1886,73 +2000,24 @@ async function loadProjectsDataOperation(options: ProjectsDataLoadOptions): Prom
 	try {
 		const entryLoadGeneration = ++teamSetupEntryLoadGeneration;
 		teamSetupSummaryPromise = loadRequiredTeamSetupSummary(options);
-		const [result, settings, shareInventory, recipientPolicyReview, intentResult] =
-			await Promise.all([
-				loadProjectInventoryPage(options, requestedFilters),
-				api.loadSharingDomainSettings(options),
-				loadAllProjectShareChoices(options)
-					.then((projects) => ({ ok: true as const, projects }))
-					.catch(() => ({ ok: false as const, projects: [] as ProjectScopeInventoryProject[] })),
-				api
-					.loadRecipientPolicyReview(options)
-					.then((review) => ({ ok: true as const, review }))
-					.catch((error: unknown) => ({ ok: false as const, error })),
-				api
-					.loadRecipientPolicyIntent(options)
-					.then((intent) => ({ ok: true as const, intent }))
-					.catch((error: unknown) => ({ ok: false as const, error })),
-			]);
+		const resources = await loadProjectsResources(options, requestedFilters);
 		if (!isCurrentProjectsLoad(loadGeneration, options)) {
 			return supersededProjectsLoad(options, teamSetupSummaryPromise);
 		}
 		if (!projectInventoryFiltersAreCurrent(requestedFilters)) return false;
-		scopes = settings.scopes;
-		projectShareInventoryReady = shareInventory.ok;
-		recipientPolicyIntentReady = intentResult.ok;
-		recipientPolicyIntent = intentResult.ok ? intentResult.intent : emptyRecipientPolicyIntent;
-		if (shareInventory.ok) {
-			const availableProjectIds = new Set(
-				toRecipientPolicyManagementProjects(shareInventory.projects).map(
-					(project) => project.canonicalProjectIdentity,
-				),
-			);
-			for (const selectedProjectId of selectedProjectIds) {
-				if (!availableProjectIds.has(selectedProjectId))
-					selectedProjectIds.delete(selectedProjectId);
-			}
-		}
-		const shareMount = el<HTMLDivElement>("projectShareFlowMount");
-		if (shareMount) {
-			renderProjectShareFlow(shareMount, shareInventory.projects, {
-				inventoryError: !shareInventory.ok,
-			});
-		}
-		renderProjectsRecipientPolicyReview(recipientPolicyReview);
-		mountProjectRecipientManagement(
-			shareInventory.projects,
-			recipientPolicyIntent,
-			!shareInventory.ok || !intentResult.ok,
+		const requiredLoadSucceeded = renderLoadedProjectResources(
+			resources,
+			loadGeneration,
+			requestedFilters,
 		);
-		renderProjectInventory(result);
-		refreshProjectCoordinatorGroupNamesInBackground(result, loadGeneration, requestedFilters);
 		// Register the DOM update before the strict await below: callers use the
 		// resolved promise as proof that a completed setup card has disappeared.
-		void teamSetupSummaryPromise.then((teamSetupSummary) => {
-			if (
-				!isCurrentProjectsLoad(loadGeneration, options) ||
-				entryLoadGeneration !== teamSetupEntryLoadGeneration
-			)
-				return;
-			const currentReviewMount = el<HTMLDivElement>("recipientPolicyReviewMount");
-			if (!currentReviewMount) return;
-			if (!teamSetupSummary.ok) {
-				markProjectTeamSetupEntryUnavailable(currentReviewMount);
-				return;
-			}
-			renderProjectTeamSetupEntry(currentReviewMount, teamSetupSummary.summary);
+		updateProjectTeamSetupAfterLoad({
+			entryLoadGeneration,
+			loadGeneration,
+			options,
+			teamSetupSummaryPromise,
 		});
-		const requiredLoadSucceeded =
-			shareInventory.ok && "review" in recipientPolicyReview && intentResult.ok;
 		return finishProjectsLoad({
 			entryLoadGeneration,
 			loadGeneration,
@@ -1964,18 +2029,7 @@ async function loadProjectsDataOperation(options: ProjectsDataLoadOptions): Prom
 		if (!isCurrentProjectsLoad(loadGeneration, options)) {
 			return supersededProjectsLoad(options, teamSetupSummaryPromise);
 		}
-		projectInventoryByIdentity.clear();
-		latestInventoryResult = { projects: [], total: 0, offset: currentOffset, has_more: false };
-		projectShareInventoryReady = false;
-		recipientPolicyIntentReady = false;
-		recipientPolicyIntent = emptyRecipientPolicyIntent;
-		const shareMount = el<HTMLDivElement>("projectShareFlowMount");
-		if (shareMount) renderProjectShareFlow(shareMount, [], { inventoryError: true });
-		mountProjectRecipientManagement([], emptyRecipientPolicyIntent, true);
-		updateSelectionControls();
-		hideProjectInventorySkeleton();
-		meta.textContent = "Project inventory failed to load.";
-		renderEmpty(error instanceof Error ? error.message : "Unable to load project inventory.");
+		renderProjectsLoadFailure(error, meta);
 		return finishFailedProjectsLoad(options, teamSetupSummaryPromise);
 	}
 }
