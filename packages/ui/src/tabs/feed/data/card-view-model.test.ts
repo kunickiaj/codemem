@@ -55,6 +55,20 @@ describe("feed card view model", () => {
 		expect(model.modes.map(({ id }) => id)).toContain("summary");
 	});
 
+	it("uses a supported plan when no completed outcome is available", () => {
+		const model = buildFeedCardViewModel({
+			kind: "session_summary",
+			summary: {
+				request: "Repair the watering controller",
+				plan: "Add a bounded retry before the next release",
+			},
+			title: "Stored title",
+		});
+
+		expect(model.displayTitle).toBe("Repair the watering controller");
+		expect(model.skimSummary).toBe("Add a bounded retry before the next release");
+	});
+
 	it("keeps the full legacy session body in expanded Summary", () => {
 		const model = buildFeedCardViewModel({
 			body_text: "First result line\nSecond result line",
