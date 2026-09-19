@@ -49,9 +49,9 @@ export function describeEffectiveSettings(
 		return "Effective values are unavailable. Reload Settings; if this persists, restart the viewer and inspect its configuration.";
 	}
 	if (hasEnvironmentOverrides) {
-		return "Fields show current effective values. Environment settings manage some fields.";
+		return "Fields show resolved configuration values. Environment settings manage some fields.";
 	}
-	return "Fields show current effective values for this viewer.";
+	return "Fields show resolved configuration values. Restart-dependent changes are labeled below.";
 }
 
 export function renderConfigModal(payload: unknown) {

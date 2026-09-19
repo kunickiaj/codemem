@@ -4,7 +4,7 @@ import { describeEffectiveSettings } from "./config-loader";
 describe("describeEffectiveSettings", () => {
 	it("identifies current effective values and environment ownership", () => {
 		expect(describeEffectiveSettings({ observer_model: "fixture" }, false)).toBe(
-			"Fields show current effective values for this viewer.",
+			"Fields show resolved configuration values. Restart-dependent changes are labeled below.",
 		);
 		expect(describeEffectiveSettings({ observer_model: "fixture" }, true)).toContain(
 			"Environment settings manage some fields",
