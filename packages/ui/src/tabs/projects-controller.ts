@@ -11,6 +11,7 @@ import type {
 import { showGlobalNotice } from "../lib/notice";
 import { state } from "../lib/state";
 import { openProjectShareFlow, renderProjectShareFlow } from "./project-sharing";
+import { renderProjectInventory as renderProjectInventoryView } from "./projects/ProjectInventory";
 import type {
 	ProjectInventoryCallbacks,
 	ProjectInventoryClusterViewModel,
@@ -40,10 +41,10 @@ type RefreshFn = () => void;
 
 const STATUS_OPTIONS = [
 	["", "All projects"],
-	["needs_attention", "Needs review"],
+	["needs_attention", "Sharing undecided"],
 	["suggested", "Has suggestion"],
 	["local_only", "Stays on this device"],
-	["received", "Received from peers"],
+	["received", "From other devices"],
 	["explicitly_mapped", "Already assigned"],
 	["legacy_review", "Older shared data"],
 	["unmapped", "Missing project identity"],
@@ -80,7 +81,6 @@ type TeamSetupSummaryResult =
 	| { ok: false };
 let teamSetupSummaryInFlight: Promise<TeamSetupSummaryResult> | null = null;
 const selectedProjectIds = new Set<string>();
-const selectionIdsByCheckbox = new WeakMap<HTMLInputElement, string[]>();
 const emptyRecipientPolicyIntent: RecipientPolicyIntentGraphV1 = {
 	version: 1,
 	identities: [],
@@ -135,23 +135,6 @@ function el<T extends HTMLElement>(id: string): T | null {
 	return document.getElementById(id) as T | null;
 }
 
-function formatStatus(status: string): string {
-	return STATUS_OPTIONS.find(([value]) => value === status)?.[1] ?? status.replaceAll("_", " ");
-}
-
-function formatResolution(reason: string): string {
-	switch (reason) {
-		case "exact_mapping":
-			return "assigned to a Space";
-		case "pattern_mapping":
-			return "assigned by matching rule";
-		case "explicit_override":
-			return "manually assigned";
-		default:
-			return "stays on this device";
-	}
-}
-
 function isPeerReceivedProject(project: ProjectScopeInventoryProject): boolean {
 	return project.read_only === true && project.read_only_reason === "peer_received";
 }
@@ -175,49 +158,6 @@ function cacheProjectInventoryProject(project: ProjectScopeInventoryProject): vo
 	}
 }
 
-function projectDomainLabel(project: ProjectScopeInventoryProject): string {
-	return isPeerReceivedProject(project)
-		? "Received from peers"
-		: scopeSummary(project.resolved_scope_id);
-}
-
-function projectResolutionLabel(project: ProjectScopeInventoryProject): string {
-	return isPeerReceivedProject(project)
-		? "source-owned project"
-		: formatResolution(project.resolution_reason);
-}
-
-function projectSharingRelationshipLabel(
-	summary: NonNullable<ProjectScopeInventoryProject["sharing"]>[number],
-): string {
-	const personName = summary.person.display_name;
-	switch (summary.lifecycle.state) {
-		case "waiting_for_acceptance":
-			return `Invitation sent to ${personName}`;
-		case "active":
-			return `Shared with ${personName}`;
-		case "waiting_for_device":
-			return `Sharing with ${personName}`;
-		case "needs_attention":
-			return `Sharing with ${personName} needs attention`;
-		case "revoking":
-			return `Removing sharing with ${personName}`;
-		case "revoked":
-			return `Previously shared with ${personName}`;
-		case "cancelled":
-			return `Invitation to ${personName} cancelled`;
-		default:
-			return `Setting up sharing with ${personName}`;
-	}
-}
-
-function formatLatest(value: string | null): string {
-	if (!value) return "No recent sessions";
-	const date = new Date(value);
-	if (Number.isNaN(date.getTime())) return value;
-	return date.toLocaleString();
-}
-
 function uniqueProjectIds(projects: ProjectScopeInventoryProject[]): string[] {
 	return [...new Set(projects.map((project) => project.workspace_identity))].sort();
 }
@@ -226,7 +166,8 @@ function updateSelectionControls() {
 	const count = selectedProjectIds.size;
 	const shareSelected = el<HTMLButtonElement>("projectsShareSelected");
 	if (shareSelected) {
-		shareSelected.textContent = count === 0 ? "Share selected" : `Share selected (${count})`;
+		shareSelected.textContent =
+			count === 0 ? "Add Teams or Identities" : `Add Teams or Identities (${count})`;
 		shareSelected.disabled =
 			count === 0 || !projectShareInventoryReady || !recipientPolicyIntentReady;
 		shareSelected.classList.add("project-selection-target");
@@ -237,19 +178,7 @@ function updateSelectionControls() {
 		status.setAttribute("aria-live", "polite");
 		status.textContent = `${count.toLocaleString()} Project${count === 1 ? "" : "s"} selected.`;
 	}
-	for (const checkbox of document.querySelectorAll<HTMLInputElement>(
-		".project-selection-checkbox",
-	)) {
-		const projectIds = selectionIdsByCheckbox.get(checkbox) ?? [];
-		const selectedCount = projectIds.filter((projectId) =>
-			selectedProjectIds.has(projectId),
-		).length;
-		checkbox.checked = projectIds.length > 0 && selectedCount === projectIds.length;
-		checkbox.indeterminate = selectedCount > 0 && selectedCount < projectIds.length;
-	}
-	for (const action of document.querySelectorAll<HTMLButtonElement>(".project-recipient-action")) {
-		action.disabled = !projectShareInventoryReady || !recipientPolicyIntentReady;
-	}
+	renderCurrentProjectInventory();
 }
 
 function setProjectSelection(projectIds: string[]) {
@@ -262,38 +191,7 @@ function setProjectSelection(projectIds: string[]) {
 	notifyProjectInventoryChanged();
 }
 
-function renderProjectSelection(
-	projects: ProjectScopeInventoryProject[],
-	label: string,
-): HTMLElement {
-	const projectIds = uniqueProjectIds(projects);
-	const wrapper = document.createElement("label");
-	wrapper.className = "project-selection-control project-selection-target";
-	const checkbox = document.createElement("input");
-	checkbox.className = "project-selection-checkbox";
-	checkbox.dataset.projectFocusKey = `select:${projectIds.join("|")}`;
-	checkbox.type = "checkbox";
-	checkbox.setAttribute("aria-label", label);
-	selectionIdsByCheckbox.set(checkbox, projectIds);
-	checkbox.addEventListener("change", () => setProjectSelection(projectIds));
-	const text = document.createElement("span");
-	text.className = "sr-only";
-	text.textContent = label;
-	wrapper.append(checkbox, text);
-	return wrapper;
-}
-
 type RecipientChip = { key: string; kind: "Team" | "Identity"; displayName: string };
-
-function recipientSummaryText(projectCount: number, recipientCount: number): string {
-	if (!recipientPolicyIntentReady) return "Recipient access is unavailable.";
-	if (recipientCount === 0) return "Not shared with any recipients.";
-	const recipientLabel = `recipient${recipientCount === 1 ? "" : "s"}`;
-	if (projectCount === 1) {
-		return `Shared with ${recipientCount.toLocaleString()} ${recipientLabel}.`;
-	}
-	return `${recipientCount.toLocaleString()} ${recipientLabel} across these Project identities.`;
-}
 
 function recipientChips(projectIds: string[]): RecipientChip[] {
 	if (!recipientPolicyIntentReady) return [];
@@ -334,67 +232,6 @@ function recipientChips(projectIds: string[]): RecipientChip[] {
 	return [...chips.values()].sort((left, right) =>
 		`${left.kind}:${left.displayName}`.localeCompare(`${right.kind}:${right.displayName}`),
 	);
-}
-
-function renderRecipientSummary(projectIds: string[]): HTMLElement {
-	const container = document.createElement("div");
-	container.className = "project-recipient-summary";
-	const chips = recipientChips(projectIds);
-	const status = document.createElement("div");
-	status.className = "project-recipient-status";
-	status.textContent = recipientSummaryText(projectIds.length, chips.length);
-	container.appendChild(status);
-	if (chips.length > 0) {
-		const list = document.createElement("ul");
-		list.className = "project-recipient-chips";
-		list.setAttribute("aria-label", "Active recipients");
-		for (const chip of chips) {
-			const item = document.createElement("li");
-			item.className = `project-recipient-chip project-recipient-chip-${chip.kind.toLowerCase()}`;
-			item.textContent = `${chip.kind}: ${chip.displayName}`;
-			list.appendChild(item);
-		}
-		container.appendChild(list);
-	}
-	return container;
-}
-
-function renderManageRecipientsAction(
-	projectIds: string[],
-	projectLabel: string,
-): HTMLButtonElement {
-	const button = document.createElement("button");
-	button.className = "settings-button project-recipient-action project-selection-target";
-	button.type = "button";
-	button.disabled = !projectShareInventoryReady || !recipientPolicyIntentReady;
-	if (projectIds.length === 1) {
-		button.textContent = "Manage recipients";
-		button.setAttribute("aria-label", `Manage recipients for ${projectLabel}`);
-		button.dataset.projectFocusKey = `manage:${projectIds[0]}`;
-		button.addEventListener("click", () => {
-			openRecipientPolicyManagement({ mode: "project-manage", projectId: projectIds[0] });
-		});
-	} else {
-		button.textContent = "Share selected";
-		button.setAttribute("aria-label", `Share selected identities for ${projectLabel}`);
-		button.dataset.projectFocusKey = `share:${projectIds.join("|")}`;
-		button.addEventListener("click", () => {
-			for (const projectId of projectIds) selectedProjectIds.add(projectId);
-			updateSelectionControls();
-			notifyProjectInventoryChanged();
-			openRecipientPolicyManagement({
-				mode: "project-add",
-				projectIds: [...projectIds].sort(),
-			});
-		});
-	}
-	return button;
-}
-
-function strongestSignal(project: ProjectScopeInventoryProject): string {
-	if (project.git_remote) return project.git_remote;
-	if (project.cwd) return project.cwd;
-	return project.workspace_identity;
 }
 
 function projectClusterKey(project: ProjectScopeInventoryProject): string {
@@ -473,40 +310,16 @@ async function refreshProjectCoordinatorGroupNames(): Promise<void> {
 	}
 }
 
-function isDefaultTeamSpace(scope: SharingDomainScope): boolean {
-	return scope.kind === "team_default";
-}
-
-function spaceName(scope: SharingDomainScope): string {
-	const label = scope.label || "Untitled Space";
-	return isDefaultTeamSpace(scope) ? `${label} (default)` : label;
-}
-
-function spaceOptionName(scope: SharingDomainScope, siblingScopes: SharingDomainScope[]): string {
-	const label = spaceName(scope);
-	const duplicateLabel = siblingScopes.some(
-		(sibling) => sibling.scope_id !== scope.scope_id && spaceName(sibling) === label,
-	);
-	return duplicateLabel ? `${label} · Space ID ${scope.scope_id}` : label;
-}
-
-function spaceOwner(scope: SharingDomainScope): string {
+function scopeDisplayLabel(scope: SharingDomainScope): string {
+	const name =
+		scope.kind === "team_default"
+			? `${scope.label || "Untitled Space"} (default)`
+			: scope.label || "Untitled Space";
 	const team = teamName(scope.group_id);
-	if (team) return `Team: ${team}`;
-	if (scope.authority_type === "local") return "Local device";
-	if (scope.authority_type === "coordinator") return "Coordinator Space";
-	return `${scope.authority_type || "Other"} Space`;
-}
-
-function scopeById(scopeId: string | null | undefined): SharingDomainScope | null {
-	if (!scopeId) return null;
-	return scopes.find((item) => item.scope_id === scopeId) ?? null;
-}
-
-function scopeSummary(scopeId: string | null | undefined): string {
-	const scope = scopeById(scopeId);
-	if (!scopeId) return "—";
-	return scope ? `${spaceName(scope)} · ${spaceOwner(scope)}` : "Unknown Space";
+	if (team) return `${name} · Team: ${team}`;
+	if (scope.authority_type === "local") return `${name} · Local device`;
+	if (scope.authority_type === "coordinator") return `${name} · Coordinator Space`;
+	return `${name} · ${scope.authority_type || "Other"} Space`;
 }
 
 function assignableScopes(): SharingDomainScope[] {
@@ -514,17 +327,6 @@ function assignableScopes(): SharingDomainScope[] {
 		(scope) =>
 			scope.scope_id !== "legacy-shared-review" && !isFromKnownInactiveCoordinatorGroup(scope),
 	);
-}
-
-function isAssignableScopeId(scopeId: string | null | undefined): boolean {
-	return assignableScopes().some((scope) => scope.scope_id === scopeId);
-}
-
-function firstSafeSelection(...scopeIds: Array<string | null | undefined>): string {
-	for (const scopeId of scopeIds) {
-		if (scopeId && isAssignableScopeId(scopeId)) return scopeId;
-	}
-	return scopeIds.find((scopeId): scopeId is string => Boolean(scopeId)) ?? "";
 }
 
 function scopeGroupLabel(scope: SharingDomainScope): string {
@@ -551,36 +353,6 @@ function groupedAssignableScopes(): Array<{ label: string; scopes: SharingDomain
 	return [...groups.values()];
 }
 
-function appendAssignableScopeOptions(select: HTMLSelectElement) {
-	for (const group of groupedAssignableScopes()) {
-		const optgroup = document.createElement("optgroup");
-		optgroup.label = group.label;
-		for (const scope of group.scopes) {
-			const option = document.createElement("option");
-			option.value = scope.scope_id;
-			option.textContent = spaceOptionName(scope, group.scopes);
-			optgroup.appendChild(option);
-		}
-		select.appendChild(optgroup);
-	}
-}
-
-function guardrailHeading(warning: ProjectScopeGuardrailWarning): string {
-	switch (warning.code) {
-		case "unknown_project_local_only":
-			return "Current behavior";
-		case "basename_collision_review":
-			return "Name collision";
-		case "scope_reassignment_old_copies":
-			return "Previous copies";
-		case "broad_org_domain_pattern":
-		case "home_directory_org_domain_pattern":
-			return "Broad mapping";
-		default:
-			return "Review item";
-	}
-}
-
 async function saveProjectMapping(
 	project: ProjectScopeInventoryProject,
 	scopeId: string,
@@ -601,7 +373,7 @@ async function saveProjectMapping(
 		pendingConfirmations.delete(project.workspace_identity);
 		draftDomainSelections.delete(project.workspace_identity);
 		notifyProjectInventoryChanged();
-		showGlobalNotice("Project Space assignment updated. Device access grants are unchanged.");
+		showGlobalNotice("Space assignment updated. Device access unchanged.");
 		refreshProjects?.();
 	} catch (error) {
 		if (error instanceof api.SharingDomainGuardrailConfirmationError) {
@@ -639,7 +411,7 @@ async function saveProjectClusterMapping(
 			})),
 		});
 		showGlobalNotice(
-			`Updated ${assignable.length} project identit${assignable.length === 1 ? "y" : "ies"}. Device access grants are unchanged.`,
+			`Updated ${assignable.length} project identit${assignable.length === 1 ? "y" : "ies"}. Device access unchanged.`,
 		);
 		draftClusterDomainSelections.delete(projectClusterKey(assignable[0]));
 		notifyProjectInventoryChanged();
@@ -925,625 +697,6 @@ function repairRecipientPolicyItem(repair: RecipientPolicyBlockedItemV1["repair"
 	return operation;
 }
 
-function appendProjectShareAction(
-	actions: HTMLElement,
-	project: ProjectScopeInventoryProject,
-): void {
-	if (!isProjectShareEligible(project)) return;
-	const share = document.createElement("button");
-	share.className = "settings-button";
-	share.type = "button";
-	share.textContent = "Share";
-	share.disabled = !projectShareInventoryReady;
-	if (!projectShareInventoryReady) share.title = "The complete project list is unavailable.";
-	share.addEventListener("click", () => openProjectShareFlow([project.workspace_identity]));
-	actions.appendChild(share);
-}
-
-function appendReadOnlyProjectAction(
-	actions: HTMLElement,
-	project: ProjectScopeInventoryProject,
-): boolean {
-	let message: string | null = null;
-	if (isPeerReceivedProject(project)) {
-		message =
-			"This project was received from a peer. Change its project or Space on the source device; this node keeps the received identity read-only.";
-	} else if (project.identity_source === "unmapped") {
-		message =
-			"This project is missing a stable path, git remote, or workspace id. It stays Local only until it has a stable identity.";
-	}
-	if (!message) return false;
-	const note = document.createElement("div");
-	note.className = "settings-note";
-	note.textContent = message;
-	actions.appendChild(note);
-	return true;
-}
-
-function createProjectScopeSelect(project: ProjectScopeInventoryProject): {
-	currentAssignable: boolean;
-	label: HTMLLabelElement;
-	select: HTMLSelectElement;
-} {
-	const label = document.createElement("label");
-	label.className = "sr-only";
-	const selectId = `project-domain-${project.workspace_identity.replace(/[^a-z0-9_-]/gi, "-")}`;
-	label.htmlFor = selectId;
-	label.textContent = `Space for ${project.display_project}`;
-	const select = document.createElement("select");
-	select.id = selectId;
-	select.className = "project-domain-select";
-	const currentAssignable = assignableScopes().some(
-		(scope) => scope.scope_id === project.resolved_scope_id,
-	);
-	if (!currentAssignable && project.resolved_scope_id) {
-		const current = document.createElement("option");
-		current.value = project.resolved_scope_id;
-		current.textContent = `${scopeSummary(project.resolved_scope_id)} — not assignable`;
-		current.disabled = true;
-		select.appendChild(current);
-	}
-	appendAssignableScopeOptions(select);
-	select.value = firstSafeSelection(
-		draftDomainSelections.get(project.workspace_identity),
-		project.suggested_scope_id,
-		project.resolved_scope_id,
-	);
-	return { currentAssignable, label, select };
-}
-
-function projectMappingActionButtons(project: ProjectScopeInventoryProject): HTMLButtonElement[] {
-	const keepLocal = document.createElement("button");
-	keepLocal.className = "settings-button";
-	keepLocal.type = "button";
-	keepLocal.textContent = "Keep local-only";
-	keepLocal.addEventListener("click", () => void saveProjectMapping(project, "local-default"));
-	const remove = document.createElement("button");
-	remove.className = "settings-button";
-	remove.type = "button";
-	remove.textContent = "Remove mapping";
-	remove.disabled = project.mapping_id == null || project.resolution_reason !== "exact_mapping";
-	remove.addEventListener("click", () => void removeProjectMapping(project));
-	const changeProject = document.createElement("button");
-	changeProject.className = "settings-button";
-	changeProject.type = "button";
-	changeProject.textContent = "Change project…";
-	changeProject.disabled = project.session_count === 0;
-	if (changeProject.disabled) {
-		changeProject.title = "No sessions are available to reassign for this saved mapping.";
-	}
-	changeProject.addEventListener("click", () => void reassignInventoryProject(project));
-	const forget = document.createElement("button");
-	forget.className = "settings-button danger";
-	forget.type = "button";
-	forget.textContent = "Forget local memories…";
-	forget.disabled = (project.memory_count ?? 0) === 0;
-	forget.addEventListener("click", () => void forgetProjectMemories(project));
-	return [keepLocal, remove, changeProject, forget];
-}
-
-function appendProjectMappingControls(
-	actions: HTMLElement,
-	project: ProjectScopeInventoryProject,
-): HTMLSelectElement {
-	const { currentAssignable, label, select } = createProjectScopeSelect(project);
-	const save = document.createElement("button");
-	save.className = "settings-button";
-	save.type = "button";
-	save.textContent =
-		project.suggested_scope_id && select.value === project.suggested_scope_id
-			? "Confirm suggestion"
-			: "Save Space";
-	save.disabled =
-		!select.value || (select.value === project.resolved_scope_id && !currentAssignable);
-	save.addEventListener("click", () => void saveProjectMapping(project, select.value));
-	select.addEventListener("change", () => {
-		draftDomainSelections.set(project.workspace_identity, select.value);
-		pendingConfirmations.delete(project.workspace_identity);
-		actions.querySelector(".project-space-guardrail-confirmation")?.remove();
-		save.textContent = "Save Space";
-		save.disabled = !select.value;
-		notifyProjectInventoryChanged();
-		refreshProjects?.();
-	});
-	select.addEventListener("blur", refreshSkippedProjectDataAfterSelectBlur);
-
-	actions.append(label, select, save, ...projectMappingActionButtons(project));
-	return select;
-}
-
-function appendProjectScopeConfirmation(
-	actions: HTMLElement,
-	project: ProjectScopeInventoryProject,
-	select: HTMLSelectElement,
-): void {
-	const pending = pendingConfirmations.get(project.workspace_identity);
-	if (!pending) return;
-	const warningBox = document.createElement("div");
-	warningBox.className =
-		"settings-note project-guardrail-confirmation project-space-guardrail-confirmation";
-	warningBox.setAttribute("role", "alert");
-	const title = document.createElement("strong");
-	title.textContent = "Confirmation required before saving this Space.";
-	const intro = document.createElement("p");
-	intro.textContent =
-		"Codemem can save this change after you acknowledge the checks below. Verify the workspace details, then confirm to complete the save.";
-	const list = document.createElement("ul");
-	for (const warning of pending.warnings) {
-		const item = document.createElement("li");
-		const itemTitle = document.createElement("strong");
-		itemTitle.textContent = `${guardrailHeading(warning)}: `;
-		const message = document.createElement("span");
-		message.textContent = warning.message;
-		item.append(itemTitle, message);
-		list.appendChild(item);
-	}
-	const confirm = document.createElement("button");
-	confirm.className = "settings-button";
-	confirm.type = "button";
-	confirm.textContent = "I understand, save Space";
-	confirm.addEventListener("click", () => {
-		const current = pendingConfirmations.get(project.workspace_identity);
-		if (!current || current.scopeId !== select.value) return;
-		void saveProjectMapping(project, current.scopeId, current.requiredGuardrailTokens);
-	});
-	const cancel = document.createElement("button");
-	cancel.className = "settings-button";
-	cancel.type = "button";
-	cancel.textContent = "Cancel";
-	cancel.addEventListener("click", () => {
-		pendingConfirmations.delete(project.workspace_identity);
-		refreshProjects?.();
-	});
-	warningBox.append(title, intro, list, confirm, cancel);
-	actions.appendChild(warningBox);
-}
-
-function appendProjectForgetConfirmation(
-	actions: HTMLElement,
-	project: ProjectScopeInventoryProject,
-): void {
-	const pendingForget = pendingForgetConfirmations.get(project.workspace_identity);
-	if (!pendingForget) return;
-	const warningBox = document.createElement("div");
-	warningBox.className = "settings-note project-guardrail-confirmation";
-	warningBox.setAttribute("role", "alert");
-	const title = document.createElement("strong");
-	title.textContent = "Confirm project memory cleanup.";
-	const intro = document.createElement("p");
-	intro.textContent = `${pendingForget.localOwnedMemoryCount.toLocaleString()} locally owned memor${pendingForget.localOwnedMemoryCount === 1 ? "y" : "ies"} will be forgotten. ${pendingForget.peerOwnedMemoryCount.toLocaleString()} peer-owned memor${pendingForget.peerOwnedMemoryCount === 1 ? "y" : "ies"} will be left unchanged.`;
-	const detail = document.createElement("p");
-	detail.textContent =
-		"Use this only to clean up wrongly attributed local project inventory; it forgets actual local memories on this device.";
-	const confirm = document.createElement("button");
-	confirm.className = "settings-button danger";
-	confirm.type = "button";
-	confirm.textContent = "I understand, forget local memories";
-	confirm.addEventListener("click", () => void forgetProjectMemories(project, true));
-	const cancel = document.createElement("button");
-	cancel.className = "settings-button";
-	cancel.type = "button";
-	cancel.textContent = "Cancel";
-	cancel.addEventListener("click", () => {
-		pendingForgetConfirmations.delete(project.workspace_identity);
-		refreshProjects?.();
-	});
-	warningBox.append(title, intro, detail, confirm, cancel);
-	actions.appendChild(warningBox);
-}
-
-function renderProjectActions(project: ProjectScopeInventoryProject): HTMLElement {
-	const actions = document.createElement("div");
-	actions.className = "project-inventory-actions";
-	appendProjectShareAction(actions, project);
-	if (appendReadOnlyProjectAction(actions, project)) return actions;
-	const select = appendProjectMappingControls(actions, project);
-	appendProjectScopeConfirmation(actions, project, select);
-	appendProjectForgetConfirmation(actions, project);
-	return actions;
-}
-
-function renderProjectRowHeader(
-	project: ProjectScopeInventoryProject,
-	titleId: string,
-): HTMLElement {
-	const header = document.createElement("div");
-	header.className = "project-inventory-row-header";
-	const manageable = isRecipientPolicyManageableProject(project);
-	if (manageable) {
-		header.appendChild(
-			renderProjectSelection([project], `Select ${project.display_project} for recipient sharing`),
-		);
-	}
-	const title = document.createElement("h3");
-	title.className = "project-inventory-title";
-	title.id = titleId;
-	title.textContent = project.display_project;
-	header.appendChild(title);
-	if (manageable) {
-		header.appendChild(
-			renderManageRecipientsAction([project.workspace_identity], project.display_project),
-		);
-	}
-	return header;
-}
-
-function renderProjectSharingSummary(project: ProjectScopeInventoryProject): HTMLElement | null {
-	if (!project.sharing || project.sharing.length === 0) return null;
-	const sharing = document.createElement("div");
-	sharing.className = "settings-note project-sharing-summary";
-	const title = document.createElement("strong");
-	title.textContent = "Project sharing";
-	const list = document.createElement("ul");
-	list.setAttribute("aria-label", `People sharing ${project.display_project}`);
-	for (const summary of project.sharing) {
-		const item = document.createElement("li");
-		const person = document.createElement("strong");
-		person.textContent = projectSharingRelationshipLabel(summary);
-		const status = document.createElement("span");
-		status.textContent = ` — ${summary.lifecycle.label}. ${summary.lifecycle.explanation}`;
-		item.append(person, status);
-		list.appendChild(item);
-	}
-	sharing.append(title, list);
-	return sharing;
-}
-
-function appendProjectAdvancedNotes(
-	advanced: HTMLElement,
-	project: ProjectScopeInventoryProject,
-): ProjectScopeGuardrailWarning[] {
-	const sharing = renderProjectSharingSummary(project);
-	if (sharing) advanced.appendChild(sharing);
-	if (isPeerReceivedProject(project)) {
-		const receivedNote = document.createElement("div");
-		receivedNote.className = "settings-note";
-		receivedNote.textContent =
-			"Received memories keep the source device's project and Space assignment. Local reassignment controls are disabled here to avoid split-brain sync state.";
-		advanced.appendChild(receivedNote);
-	}
-	const signal = document.createElement("div");
-	signal.className = "project-inventory-signal mono";
-	signal.textContent = strongestSignal(project);
-	advanced.appendChild(signal);
-	if (project.suggested_scope_id && project.suggested_scope_id !== project.resolved_scope_id) {
-		const suggestion = document.createElement("div");
-		suggestion.className = "settings-note project-suggestion-note";
-		const fallback = `Suggestion: assign this project to ${scopeSummary(project.suggested_scope_id)}.`;
-		suggestion.textContent = project.suggestion_reason
-			? `Suggestion: ${project.suggestion_reason}`
-			: fallback;
-		advanced.appendChild(suggestion);
-	}
-	const warnings = (project.guardrail_warnings ?? []).filter(
-		(warning) => warning.severity === "warning",
-	);
-	if (warnings.length > 0) {
-		const warningBox = document.createElement("div");
-		warningBox.className = "settings-note project-attention-note";
-		warningBox.textContent = `Needs attention: ${warnings.map((warning) => warning.message).join(" ")}`;
-		advanced.appendChild(warningBox);
-	}
-	return warnings;
-}
-
-function appendProjectStatusBadges(
-	advanced: HTMLElement,
-	project: ProjectScopeInventoryProject,
-): void {
-	if (project.statuses.length === 0) return;
-	const badges = document.createElement("div");
-	badges.className = "project-inventory-badges";
-	for (const status of project.statuses) {
-		const badge = document.createElement("span");
-		badge.className = `project-status-badge ${status}`;
-		badge.textContent = formatStatus(status);
-		badges.appendChild(badge);
-	}
-	advanced.appendChild(badges);
-}
-
-function renderProjectAdvancedAdministration(project: ProjectScopeInventoryProject): {
-	advanced: HTMLElement;
-	warnings: ProjectScopeGuardrailWarning[];
-} {
-	const advanced = document.createElement("div");
-	advanced.className = "project-advanced-administration";
-	const domain = document.createElement("div");
-	domain.className = "project-inventory-domain";
-	domain.textContent = projectDomainLabel(project);
-	const resolution = document.createElement("div");
-	resolution.className = "project-inventory-meta";
-	resolution.textContent = `${projectResolutionLabel(project)} · ${project.identity_source} · ${formatLatest(project.latest_session_at)}`;
-	advanced.append(domain, resolution);
-	const warnings = appendProjectAdvancedNotes(advanced, project);
-	appendProjectStatusBadges(advanced, project);
-	return { advanced, warnings };
-}
-
-function projectDetailFields(
-	project: ProjectScopeInventoryProject,
-): Array<[string, string | number | null | undefined]> {
-	return [
-		["Workspace identity", project.workspace_identity],
-		["Project", project.project],
-		["CWD", project.cwd],
-		["Git remote", project.git_remote],
-		["Git branch", project.git_branch],
-		["Current Space", projectDomainLabel(project)],
-		[
-			"Suggested Space",
-			project.suggested_scope_id ? scopeSummary(project.suggested_scope_id) : null,
-		],
-		["Advanced: current Space ID", project.resolved_scope_id],
-		["Advanced: suggested Space ID", project.suggested_scope_id],
-		["Suggestion reason", project.suggestion_reason],
-		["Sessions", project.session_count],
-		["Memories", project.memory_count ?? "count unavailable"],
-	];
-}
-
-function renderProjectDetailList(project: ProjectScopeInventoryProject): HTMLElement {
-	const list = document.createElement("dl");
-	list.className = "project-detail-grid";
-	for (const [label, value] of projectDetailFields(project)) {
-		const dt = document.createElement("dt");
-		dt.textContent = label;
-		const dd = document.createElement("dd");
-		dd.textContent = value == null || value === "" ? "—" : String(value);
-		list.append(dt, dd);
-	}
-	return list;
-}
-
-function projectDetailsSummary(warningCount: number): string {
-	if (warningCount === 0) return "Advanced Project administration";
-	const itemLabel = `item${warningCount === 1 ? "" : "s"}`;
-	return `Advanced Project administration — ${warningCount.toLocaleString()} ${itemLabel} need attention`;
-}
-
-function renderProjectDetails(
-	project: ProjectScopeInventoryProject,
-	repairable: boolean,
-): HTMLDetailsElement {
-	const { advanced, warnings } = renderProjectAdvancedAdministration(project);
-	const detail = document.createElement("details");
-	detail.className = "project-inventory-details";
-	const detailKey = `${repairable}:${project.workspace_identity}`;
-	detail.open = openProjectDetails.has(detailKey);
-	detail.addEventListener("toggle", () => {
-		if (detail.open) openProjectDetails.add(detailKey);
-		else openProjectDetails.delete(detailKey);
-		notifyProjectInventoryChanged();
-	});
-	const summary = document.createElement("summary");
-	summary.dataset.projectFocusKey = `admin:${repairable}:${project.workspace_identity}`;
-	summary.textContent = projectDetailsSummary(warnings.length);
-	detail.append(summary, advanced, renderProjectDetailList(project), renderProjectActions(project));
-	return detail;
-}
-
-function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
-	const repairable = isLocallyAssignableProject(project);
-	const row = document.createElement("article");
-	row.className = "project-inventory-row";
-	row.dataset.projectWorkspaceIdentity = project.workspace_identity;
-	row.dataset.projectRepairable = String(repairable);
-	const titleId = `project-title-${project.workspace_identity.replace(/[^a-z0-9_-]/gi, "-")}`;
-	row.setAttribute("aria-labelledby", titleId);
-	row.appendChild(renderProjectRowHeader(project, titleId));
-	const meta = document.createElement("div");
-	meta.className = "project-inventory-meta";
-	meta.textContent = `${(project.memory_count ?? 0).toLocaleString()} memories · ${project.session_count.toLocaleString()} sessions · ${formatLatest(project.latest_session_at)}`;
-	row.append(meta, renderRecipientSummary([project.workspace_identity]));
-	row.appendChild(renderProjectDetails(project, repairable));
-	return row;
-}
-
-function clusterDomainLabel(projects: ProjectScopeInventoryProject[]): string {
-	const uniqueLabels = [...new Set(projects.map((project) => projectDomainLabel(project)))];
-	return uniqueLabels.length === 1 ? uniqueLabels[0] : "Mixed Spaces";
-}
-
-function renderProjectClusterHeader(
-	projects: ProjectScopeInventoryProject[],
-	clusterLabel: string,
-	titleId: string,
-): HTMLElement {
-	const manageableProjects = projects.filter(isRecipientPolicyManageableProject);
-	const projectIds = uniqueProjectIds(manageableProjects);
-	const header = document.createElement("div");
-	header.className = "project-inventory-row-header";
-	if (manageableProjects.length > 0) {
-		header.appendChild(
-			renderProjectSelection(manageableProjects, `Select all identities for ${clusterLabel}`),
-		);
-	}
-	const title = document.createElement("h3");
-	title.className = "project-inventory-title";
-	title.id = titleId;
-	title.textContent = clusterLabel;
-	header.appendChild(title);
-	if (projectIds.length > 0) {
-		header.appendChild(renderManageRecipientsAction(projectIds, clusterLabel));
-	}
-	return header;
-}
-
-function projectClusterUnavailableMessage(projects: ProjectScopeInventoryProject[]): string {
-	if (projects.every(isPeerReceivedProject)) {
-		return "These project identities were received from peers. Change project or Space assignments on their source devices.";
-	}
-	return "These project identities cannot be bulk assigned until they have stable local identities. Expand each identity for details.";
-}
-
-type ProjectBlockingWarnings = Array<{
-	project: ProjectScopeInventoryProject;
-	warnings: ProjectScopeGuardrailWarning[];
-}>;
-
-function appendClusterBlockingWarnings(
-	note: HTMLElement,
-	projectsWithBlockingWarnings: ProjectBlockingWarnings,
-): void {
-	const blockers = document.createElement("ul");
-	for (const { project, warnings } of projectsWithBlockingWarnings) {
-		if (warnings.length === 0) continue;
-		const item = document.createElement("li");
-		const label = document.createElement("strong");
-		label.textContent = `Blocked identity: ${project.workspace_identity}`;
-		const detail = document.createElement("span");
-		detail.textContent = ` — ${warnings.map((warning) => warning.message).join(" ")}`;
-		item.append(label, detail);
-		blockers.appendChild(item);
-	}
-	note.appendChild(blockers);
-}
-
-function appendClusterAttention(
-	actions: HTMLElement,
-	projectsWithBlockingWarnings: ProjectBlockingWarnings,
-	hasMixedSuggestions: boolean,
-	hasMixedScopes: boolean,
-): void {
-	const hasBlockingWarnings = projectsWithBlockingWarnings.some(
-		({ warnings }) => warnings.length > 0,
-	);
-	if (!hasMixedSuggestions && !hasMixedScopes && !hasBlockingWarnings) return;
-	const note = document.createElement("div");
-	note.className = "settings-note project-attention-note";
-	if (hasBlockingWarnings) {
-		note.textContent =
-			"One or more identities in this group need individual review before bulk assignment.";
-		appendClusterBlockingWarnings(note, projectsWithBlockingWarnings);
-	} else {
-		note.textContent =
-			"This group has mixed suggestions or current Spaces. Choose a Space explicitly before bulk assignment.";
-	}
-	actions.appendChild(note);
-}
-
-function renderClusterMappingActions(
-	projects: ProjectScopeInventoryProject[],
-	clusterKey: string,
-): HTMLElement {
-	const actions = document.createElement("div");
-	actions.className = "project-inventory-actions";
-	const assignableProjects = projects.filter(isLocallyAssignableProject);
-	if (assignableProjects.length === 0) {
-		const note = document.createElement("div");
-		note.className = "settings-note";
-		note.textContent = projectClusterUnavailableMessage(projects);
-		actions.appendChild(note);
-		return actions;
-	}
-	const blockingWarnings = assignableProjects.map((project) => ({
-		project,
-		warnings: (project.guardrail_warnings ?? []).filter((warning) => warning.requires_confirmation),
-	}));
-	const hasBlockingWarnings = blockingWarnings.some(({ warnings }) => warnings.length > 0);
-	const select = document.createElement("select");
-	select.className = "project-domain-select";
-	select.setAttribute("aria-label", `Space for ${projectClusterLabel(projects[0])} group`);
-	const placeholder = document.createElement("option");
-	placeholder.value = "";
-	placeholder.textContent = "Choose Space…";
-	select.appendChild(placeholder);
-	appendAssignableScopeOptions(select);
-	select.value = firstSafeSelection(draftClusterDomainSelections.get(clusterKey));
-	const save = clusterSaveButton(assignableProjects, select, hasBlockingWarnings);
-	select.addEventListener("change", () => {
-		if (select.value) draftClusterDomainSelections.set(clusterKey, select.value);
-		else draftClusterDomainSelections.delete(clusterKey);
-		save.disabled = !select.value || hasBlockingWarnings;
-		notifyProjectInventoryChanged();
-	});
-	select.addEventListener("blur", refreshSkippedProjectDataAfterSelectBlur);
-	actions.append(select, save);
-	const suggestedScopes = new Set(
-		assignableProjects
-			.map((project) => project.suggested_scope_id)
-			.filter((scopeId): scopeId is string => Boolean(scopeId)),
-	);
-	const resolvedScopes = new Set(assignableProjects.map((project) => project.resolved_scope_id));
-	appendClusterAttention(
-		actions,
-		blockingWarnings,
-		suggestedScopes.size > 1,
-		resolvedScopes.size > 1,
-	);
-	return actions;
-}
-
-function clusterSaveButton(
-	projects: ProjectScopeInventoryProject[],
-	select: HTMLSelectElement,
-	hasBlockingWarnings: boolean,
-): HTMLButtonElement {
-	const save = document.createElement("button");
-	save.className = "settings-button";
-	save.type = "button";
-	const identityLabel = `identit${projects.length === 1 ? "y" : "ies"}`;
-	save.textContent = `Save Space for ${projects.length} ${identityLabel}`;
-	save.disabled = !select.value || hasBlockingWarnings;
-	save.addEventListener("click", () => void saveProjectClusterMapping(projects, select.value));
-	return save;
-}
-
-function renderProjectClusterDetails(
-	projects: ProjectScopeInventoryProject[],
-	clusterKey: string,
-): HTMLDetailsElement {
-	const advanced = document.createElement("div");
-	advanced.className = "project-advanced-administration";
-	const domain = document.createElement("div");
-	domain.className = "project-inventory-domain";
-	domain.textContent = clusterDomainLabel(projects);
-	advanced.appendChild(domain);
-	advanced.appendChild(renderClusterMappingActions(projects, clusterKey));
-	const details = document.createElement("details");
-	details.className = "project-inventory-details";
-	details.open = openProjectClusters.has(clusterKey);
-	details.addEventListener("toggle", () => {
-		if (details.open) openProjectClusters.add(clusterKey);
-		else openProjectClusters.delete(clusterKey);
-		notifyProjectInventoryChanged();
-	});
-	const summary = document.createElement("summary");
-	const warningCount = projects.reduce(
-		(total, project) =>
-			total +
-			(project.guardrail_warnings ?? []).filter((warning) => warning.severity === "warning").length,
-		0,
-	);
-	summary.textContent = projectDetailsSummary(warningCount);
-	details.appendChild(summary);
-	details.appendChild(advanced);
-	for (const project of projects) details.appendChild(renderProjectRow(project));
-	return details;
-}
-
-function renderProjectCluster(projects: ProjectScopeInventoryProject[]): HTMLElement {
-	if (projects.length === 1) return renderProjectRow(projects[0]);
-	const clusterKey = projectClusterKey(projects[0]);
-	const clusterLabel = projectClusterLabel(projects[0]);
-	const projectIds = uniqueProjectIds(projects.filter(isRecipientPolicyManageableProject));
-	const row = document.createElement("article");
-	row.className = "project-inventory-row project-inventory-cluster";
-	row.dataset.projectClusterKey = clusterKey;
-	const titleId = `project-cluster-title-${clusterKey.replace(/[^a-z0-9_-]/gi, "-")}`;
-	row.setAttribute("aria-labelledby", titleId);
-	row.appendChild(renderProjectClusterHeader(projects, clusterLabel, titleId));
-	const memoryCount = projects.reduce((total, project) => total + (project.memory_count ?? 0), 0);
-	const sessionCount = projects.reduce((total, project) => total + project.session_count, 0);
-	const meta = document.createElement("div");
-	meta.className = "project-inventory-meta";
-	meta.textContent = `${projects.length} identities · ${sessionCount.toLocaleString()} sessions · ${memoryCount.toLocaleString()} memories`;
-	row.append(meta, renderRecipientSummary(projectIds));
-	row.appendChild(renderProjectClusterDetails(projects, clusterKey));
-	return row;
-}
-
 function projectClusters(
 	projects: ProjectScopeInventoryProject[],
 ): ProjectScopeInventoryProject[][] {
@@ -1605,6 +758,11 @@ function projectsInventoryViewModel(): ProjectsInventoryViewModel {
 	const selectedIds = [...selectedProjectIds].sort();
 	return {
 		rows: projectClusters(latestInventoryResult.projects).map(inventoryRowViewModel),
+		recipientPolicyReady: recipientPolicyIntentReady,
+		shareInventoryReady: projectShareInventoryReady,
+		scopeLabels: Object.fromEntries(
+			scopes.map((scope) => [scope.scope_id, scopeDisplayLabel(scope)]),
+		),
 		selection: {
 			projectIds: selectedIds,
 			count: selectedIds.length,
@@ -1624,16 +782,6 @@ function projectsInventoryViewModel(): ProjectsInventoryViewModel {
 	};
 }
 
-function renderEmpty(message: string) {
-	const list = el<HTMLDivElement>("projectsInventoryList");
-	if (!list) return;
-	list.textContent = "";
-	const empty = document.createElement("div");
-	empty.className = "settings-note";
-	empty.textContent = message;
-	list.appendChild(empty);
-}
-
 function hideProjectInventorySkeleton() {
 	document.getElementById("projectsInventorySkeleton")?.remove();
 }
@@ -1643,10 +791,15 @@ function projectInventoryMetaText(result: {
 	total: number;
 	offset: number;
 }): string {
-	if (result.total === 0) return "0 project identities found";
-	const identityLabel = `identit${result.total === 1 ? "y" : "ies"}`;
+	if (result.total === 0) return "0 projects";
 	const lastVisible = Math.min(result.offset + result.projects.length, result.total);
-	return `${result.total} project ${identityLabel} found · showing ${result.offset + 1}-${lastVisible}`;
+	return `${result.total.toLocaleString()} projects · ${result.offset + 1}–${lastVisible}`;
+}
+
+function renderCurrentProjectInventory(error?: string): void {
+	const list = el<HTMLDivElement>("projectsInventoryList");
+	if (!list) return;
+	renderProjectInventoryView(list, projectsInventoryViewModel(), projectInventoryCallbacks, error);
 }
 
 function renderProjectInventory(result: {
@@ -1664,34 +817,16 @@ function renderProjectInventory(result: {
 	const meta = el<HTMLDivElement>("projectsInventoryMeta");
 	const list = el<HTMLDivElement>("projectsInventoryList");
 	if (!meta || !list) return;
-	const focusedKey =
-		document.activeElement instanceof HTMLElement
-			? document.activeElement.dataset.projectFocusKey
-			: undefined;
 	hideProjectInventorySkeleton();
 	projectInventoryByIdentity.clear();
-	for (const project of result.projects) {
-		cacheProjectInventoryProject(project);
-	}
-	list.textContent = "";
-	if (result.projects.length === 0) {
-		renderEmpty("No projects match those filters.");
-	} else {
-		for (const cluster of projectClusters(result.projects))
-			list.appendChild(renderProjectCluster(cluster));
-	}
+	for (const project of result.projects) cacheProjectInventoryProject(project);
+	renderCurrentProjectInventory();
 	meta.textContent = projectInventoryMetaText(result);
 	const prev = el<HTMLButtonElement>("projectsPrevPage");
 	const next = el<HTMLButtonElement>("projectsNextPage");
 	if (prev) prev.disabled = result.offset === 0;
 	if (next) next.disabled = !result.has_more;
 	updateSelectionControls();
-	if (focusedKey) {
-		const nextFocused = [...list.querySelectorAll<HTMLElement>("[data-project-focus-key]")].find(
-			(element) => element.dataset.projectFocusKey === focusedKey,
-		);
-		nextFocused?.focus();
-	}
 	notifyProjectInventoryChanged();
 }
 
@@ -2018,7 +1153,9 @@ function renderProjectsLoadFailure(error: unknown, meta: HTMLElement): void {
 	notifyProjectInventoryChanged();
 	hideProjectInventorySkeleton();
 	meta.textContent = "Project inventory failed to load.";
-	renderEmpty(error instanceof Error ? error.message : "Unable to load project inventory.");
+	renderCurrentProjectInventory(
+		error instanceof Error ? error.message : "Unable to load project inventory.",
+	);
 }
 
 async function loadProjectsDataOperation(options: ProjectsDataLoadOptions): Promise<boolean> {
@@ -2120,6 +1257,7 @@ const projectInventoryCallbacks: ProjectInventoryCallbacks = {
 	setProjectScopeDraft(projectIdentity, scopeId) {
 		draftDomainSelections.set(projectIdentity, scopeId);
 		pendingConfirmations.delete(projectIdentity);
+		renderCurrentProjectInventory();
 		notifyProjectInventoryChanged();
 		refreshProjects?.();
 	},
@@ -2195,14 +1333,15 @@ export function initProjectsTab(
 	refreshProjects = refresh;
 	openTeamSetup = options.onOpenTeamSetup;
 	selectedProjectIds.clear();
+	openProjectDetails.clear();
+	openProjectClusters.clear();
+	draftDomainSelections.clear();
+	draftClusterDomainSelections.clear();
+	pendingConfirmations.clear();
+	pendingForgetConfirmations.clear();
 	const status = el<HTMLSelectElement>("projectsStatusFilter");
 	if (status && status.options.length === 0) {
-		for (const [value, label] of STATUS_OPTIONS) {
-			const option = document.createElement("option");
-			option.value = value;
-			option.textContent = label;
-			status.appendChild(option);
-		}
+		status.append(...STATUS_OPTIONS.map(([value, label]) => new Option(label, value)));
 	}
 	const requestRefresh = () => {
 		projectsUserNavigationGeneration += 1;

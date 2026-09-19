@@ -365,9 +365,7 @@ describe("Projects tab", () => {
 		initProjectsTab(() => {});
 		await loadProjectsData();
 
-		expect(document.getElementById("projectsInventoryMeta")?.textContent).toBe(
-			"0 project identities found",
-		);
+		expect(document.getElementById("projectsInventoryMeta")?.textContent).toBe("0 projects");
 		expect(document.body.textContent).not.toContain("showing 1-0");
 		expect(api.loadProjectScopeInventory).toHaveBeenCalledWith(
 			expect.objectContaining({ limit: 250 }),
@@ -684,7 +682,7 @@ function projectsRecipientPolicySafetyTests(): void {
 		const submit = buttonNamed("Apply");
 		if (!select || !submit) throw new Error("review decision controls missing");
 		select.value = "choose_recipients";
-		select.dispatchEvent(new Event("change"));
+		select.dispatchEvent(new Event("change", { bubbles: true }));
 		buttonNamed("Details")?.click();
 
 		expect(submit.disabled).toBe(true);
@@ -809,6 +807,77 @@ function projectsRecipientPolicyResultEdgeCaseTests(): void {
 }
 
 describe("Projects recipient policy result edge cases", projectsRecipientPolicyResultEdgeCaseTests);
+
+function projectsInventoryTablePresentationTests(): void {
+	beforeEach(setupProjectsTest);
+	afterEach(cleanupProjectsTest);
+
+	it("renders active Team and Identity recipients with only recipient management primary", async () => {
+		const selected = project({
+			display_project: "codemem",
+			workspace_identity: "project-codemem",
+			git_remote: "https://git.example.invalid/exampleco/codemem.git",
+		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [selected],
+			total: 1,
+		});
+		vi.mocked(api.loadRecipientPolicyIntent).mockResolvedValue(
+			recipientIntent({
+				projectRecipients: [
+					{
+						version: 1,
+						canonicalProjectIdentity: "project-codemem",
+						recipientKind: "team",
+						teamId: "team-example",
+						intentSource: "user",
+						policyRevision: "one",
+						status: "active",
+					},
+					{
+						version: 1,
+						canonicalProjectIdentity: "project-codemem",
+						recipientKind: "identity",
+						identityId: "identity-adam",
+						intentSource: "user",
+						policyRevision: "two",
+						status: "active",
+					},
+				],
+			}),
+		);
+
+		await loadProjectsData();
+
+		const row = document.querySelector<HTMLElement>(".project-inventory-row");
+		if (!row) throw new Error("project row missing");
+		expect(row.querySelector(".project-recipient-status")).toBeNull();
+		expect(
+			[...row.querySelectorAll(".project-recipient-chip")].map((chip) => chip.textContent),
+		).toEqual(["Identity: Adam", "Team: ExampleCo"]);
+		const updateSharing = row.querySelector<HTMLButtonElement>(
+			'button[aria-label="Update sharing for codemem"]',
+		);
+		expect(updateSharing?.textContent).toBe("Update sharing");
+		expect(row.querySelector('button[aria-label="More actions for codemem"]')).not.toBeNull();
+		expect(row.querySelector("details")?.textContent).toContain("Share");
+		const normalCopy = row.cloneNode(true) as HTMLElement;
+		normalCopy.querySelector("details")?.remove();
+		expect(normalCopy.textContent).not.toContain(selected.workspace_identity);
+		expect(normalCopy.textContent).not.toContain("Space");
+
+		row.querySelector<HTMLButtonElement>(".project-recipient-action")?.click();
+		expect(recipientPolicyManagement.openRecipientPolicyManagement).toHaveBeenCalledWith({
+			mode: "project-manage",
+			projectId: "project-codemem",
+		});
+	});
+}
+
+describe("Projects inventory table presentation", projectsInventoryTablePresentationTests);
 
 {
 	function blockedRepairButton(): HTMLButtonElement | null {
@@ -1000,7 +1069,7 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 		expect(document.body.textContent).toContain("api");
 		expect(document.querySelector(".project-team-setup-entry")).toBeNull();
 		expect(document.getElementById("projectsInventoryMeta")?.textContent).toContain(
-			"1 project identity found",
+			"1 projects · 1–1",
 		);
 	});
 
@@ -1023,7 +1092,7 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 		const loading = loadProjectsData();
 		await vi.waitFor(() =>
 			expect(document.getElementById("projectsInventoryMeta")?.textContent).toContain(
-				"1 project identity found",
+				"1 projects · 1–1",
 			),
 		);
 		await loading;
@@ -1051,7 +1120,7 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 		const loading = loadProjectsData({ requireTeamSetupSummary: true });
 		await vi.waitFor(() =>
 			expect(document.getElementById("projectsInventoryMeta")?.textContent).toContain(
-				"1 project identity found",
+				"1 projects · 1–1",
 			),
 		);
 		let settled = false;
@@ -1172,7 +1241,7 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 		});
 		await expect(inventoryLoad).resolves.toBe(true);
 		expect(document.getElementById("projectsInventoryMeta")?.textContent).toContain(
-			"1 project identity found",
+			"1 projects · 1–1",
 		);
 		resolveBackgroundSummary({ version: 1, candidates: [] });
 	});
@@ -2571,8 +2640,8 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 		initProjectsTab(() => {});
 		await loadProjectsData();
 
-		expect(document.body.textContent).toContain("Received from peers");
-		expect(document.body.textContent).toContain("Change its project or Space on the source device");
+		expect(document.body.textContent).toContain("From other devices");
+		expect(document.body.textContent).toContain("Read-only here. Change it on the source device.");
 		expect(document.querySelector(".project-domain-select")).toBeNull();
 		expect(document.body.textContent).not.toContain("Change project…");
 	});
@@ -2626,7 +2695,7 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 		await loadProjectsData();
 		await flushAsyncWork();
 		const select = document.querySelector(
-			".project-inventory-cluster > details > .project-advanced-administration .project-domain-select",
+			".project-inventory-cluster > details > .project-inventory-details-body .project-domain-select",
 		) as HTMLSelectElement | null;
 		if (!select) throw new Error("cluster Space select missing");
 		select.focus();
@@ -2661,16 +2730,16 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 		});
 		await loadProjectsData();
 		const select = document.querySelector(
-			".project-inventory-cluster > details > .project-advanced-administration .project-domain-select",
+			".project-inventory-cluster > details > .project-inventory-details-body .project-domain-select",
 		) as HTMLSelectElement | null;
 		if (!select) throw new Error("cluster Space select missing");
 		select.value = "exampleco-work";
-		select.dispatchEvent(new Event("change"));
+		select.dispatchEvent(new Event("change", { bubbles: true }));
 
 		await loadProjectsData();
 
 		const rerenderedSelect = document.querySelector(
-			".project-inventory-cluster > details > .project-advanced-administration .project-domain-select",
+			".project-inventory-cluster > details > .project-inventory-details-body .project-domain-select",
 		) as HTMLSelectElement | null;
 		if (!rerenderedSelect) throw new Error("cluster Space select missing after refresh");
 		expect(rerenderedSelect.value).toBe("exampleco-work");
@@ -2692,7 +2761,7 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 		expect(refresh).toHaveBeenCalled();
 		await loadProjectsData();
 		const clearedSelect = document.querySelector(
-			".project-inventory-cluster > details > .project-advanced-administration .project-domain-select",
+			".project-inventory-cluster > details > .project-inventory-details-body .project-domain-select",
 		) as HTMLSelectElement | null;
 		expect(clearedSelect?.value).toBe("");
 	});
@@ -2780,7 +2849,7 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 		await loadProjectsData();
 
 		expect(document.getElementById("projectsInventoryMeta")?.textContent).toContain(
-			"1 project identity found",
+			"1 projects · 1–1",
 		);
 		expect(api.loadCoordinatorAdminGroupsFiltered).not.toHaveBeenCalled();
 
@@ -2809,7 +2878,10 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 
 		await loadProjectsData();
 
-		expect(document.body.textContent).toContain("2 identities · 3 sessions · 5 memories");
+		const cluster = document.querySelector<HTMLElement>(".project-inventory-cluster");
+		expect(cluster?.textContent).toContain("2 worktrees");
+		expect(cluster?.querySelector('[data-label="Memories"]')?.textContent).toBe("5");
+		expect(cluster?.querySelector('[data-label="Sessions"]')?.textContent).toBe("3");
 		expect(document.body.textContent).toContain("Save Space for 2 identities");
 		const select = document.querySelector(
 			".project-inventory-cluster select",
@@ -2821,7 +2893,7 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 		const save = Array.from(document.querySelectorAll("button")).find(
 			(button) => button.textContent === "Save Space for 2 identities",
 		) as HTMLButtonElement | undefined;
-		expect(save?.disabled).toBe(false);
+		await vi.waitFor(() => expect(save?.disabled).toBe(false));
 		save?.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -2879,7 +2951,10 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 
 		await loadProjectsData();
 
-		expect(document.body.textContent).toContain("2 identities · 1 sessions · 6 memories");
+		const cluster = document.querySelector<HTMLElement>(".project-inventory-cluster");
+		expect(cluster?.textContent).toContain("2 worktrees");
+		expect(cluster?.querySelector('[data-label="Memories"]')?.textContent).toBe("6");
+		expect(cluster?.querySelector('[data-label="Sessions"]')?.textContent).toBe("1");
 		expect(document.body.textContent).toContain("Save Space for 1 identity");
 		const select = document.querySelector(
 			".project-inventory-cluster select",
@@ -2890,7 +2965,7 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 		const save = Array.from(document.querySelectorAll("button")).find(
 			(button) => button.textContent === "Save Space for 1 identity",
 		) as HTMLButtonElement | undefined;
-		expect(save?.disabled).toBe(false);
+		await vi.waitFor(() => expect(save?.disabled).toBe(false));
 		save?.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -2968,7 +3043,7 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 			"Blocked identity: https://git.example.invalid/exampleco/api.git:worktree",
 		);
 		expect(document.body.textContent).toContain("Another project is also named api.");
-		expect(document.body.textContent).toContain("Advanced Project administration");
+		expect(document.body.textContent).toContain("Space assignment");
 	});
 
 	it("does not block cluster bulk assignment for informational guardrail warnings", async () => {
@@ -3003,7 +3078,7 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 		const save = Array.from(document.querySelectorAll("button")).find(
 			(button) => button.textContent === "Save Space for 2 identities",
 		) as HTMLButtonElement | undefined;
-		expect(save?.disabled).toBe(false);
+		await vi.waitFor(() => expect(save?.disabled).toBe(false));
 		expect(document.body.textContent).not.toContain("Blocked identity:");
 
 		save?.click();
@@ -3079,6 +3154,7 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 		const save = Array.from(document.querySelectorAll("button")).find(
 			(button) => button.textContent === "Save Space for 2 identities",
 		) as HTMLButtonElement | undefined;
+		await vi.waitFor(() => expect(save?.disabled).toBe(false));
 		save?.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -3103,7 +3179,9 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 
 		await loadProjectsData();
 
-		expect(document.body.textContent).toContain("missing a stable path");
+		expect(document.body.textContent).toContain(
+			"Stays on this device until it has a path, git remote, or workspace id.",
+		);
 		expect(document.querySelector(".project-domain-select")).toBeNull();
 	});
 
@@ -3216,7 +3294,7 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 			(button) => button.textContent === "Save Space",
 		) as HTMLButtonElement | undefined;
 		expect(select?.value).toBe("local-default");
-		expect(save?.disabled).toBe(false);
+		await vi.waitFor(() => expect(save?.disabled).toBe(false));
 		save?.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -3259,7 +3337,7 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 		expect(select).not.toBeNull();
 		if (!select) throw new Error("select missing");
 		select.value = "exampleco-work";
-		select.dispatchEvent(new Event("change"));
+		select.dispatchEvent(new Event("change", { bubbles: true }));
 
 		await loadProjectsData();
 
@@ -3304,7 +3382,7 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 		const select = document.querySelector(".project-domain-select") as HTMLSelectElement | null;
 		if (!select) throw new Error("select missing");
 		select.value = "exampleco-work";
-		select.dispatchEvent(new Event("change"));
+		select.dispatchEvent(new Event("change", { bubbles: true }));
 		const save = Array.from(document.querySelectorAll("button")).find(
 			(button) => button.textContent === "Save Space",
 		) as HTMLButtonElement | undefined;
@@ -3351,7 +3429,7 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 		const select = document.querySelector(".project-domain-select") as HTMLSelectElement | null;
 		if (!select) throw new Error("select missing");
 		select.value = "exampleco-work";
-		select.dispatchEvent(new Event("change"));
+		select.dispatchEvent(new Event("change", { bubbles: true }));
 		const save = Array.from(document.querySelectorAll("button")).find(
 			(button) => button.textContent === "Save Space",
 		) as HTMLButtonElement | undefined;
@@ -3368,8 +3446,10 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 		if (!nextSelect) throw new Error("select missing after refresh");
 		nextSelect.focus();
 		nextSelect.value = "local-default";
-		nextSelect.dispatchEvent(new Event("change"));
-		expect(document.body.textContent).not.toContain("I understand, save Space");
+		nextSelect.dispatchEvent(new Event("change", { bubbles: true }));
+		await vi.waitFor(() =>
+			expect(document.body.textContent).not.toContain("I understand, save Space"),
+		);
 		staleConfirm?.click();
 		expect(api.saveSharingDomainProjectMapping).toHaveBeenCalledTimes(1);
 		await loadProjectsData();
@@ -3515,71 +3595,6 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 		});
 	});
 
-	it("renders active Team and Identity recipients with only recipient management primary", async () => {
-		const selected = project({
-			display_project: "codemem",
-			workspace_identity: "project-codemem",
-			git_remote: "https://git.example.invalid/exampleco/codemem.git",
-		});
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [selected],
-			total: 1,
-		});
-		vi.mocked(api.loadRecipientPolicyIntent).mockResolvedValue(
-			recipientIntent({
-				projectRecipients: [
-					{
-						version: 1,
-						canonicalProjectIdentity: "project-codemem",
-						recipientKind: "team",
-						teamId: "team-example",
-						intentSource: "user",
-						policyRevision: "one",
-						status: "active",
-					},
-					{
-						version: 1,
-						canonicalProjectIdentity: "project-codemem",
-						recipientKind: "identity",
-						identityId: "identity-adam",
-						intentSource: "user",
-						policyRevision: "two",
-						status: "active",
-					},
-				],
-			}),
-		);
-
-		await loadProjectsData();
-
-		const row = document.querySelector<HTMLElement>(".project-inventory-row");
-		if (!row) throw new Error("project row missing");
-		expect(row.querySelector(".project-recipient-status")?.textContent).toBe(
-			"Shared with 2 recipients.",
-		);
-		expect(
-			[...row.querySelectorAll(".project-recipient-chip")].map((chip) => chip.textContent),
-		).toEqual(["Identity: Adam", "Team: ExampleCo"]);
-		const primaryButtons = [
-			...row.querySelectorAll<HTMLButtonElement>(":scope > .project-inventory-row-header button"),
-		].map((button) => button.textContent);
-		expect(primaryButtons).toEqual(["Manage recipients"]);
-		expect(row.querySelector("details")?.textContent).toContain("Share");
-		const normalCopy = row.cloneNode(true) as HTMLElement;
-		normalCopy.querySelector("details")?.remove();
-		expect(normalCopy.textContent).not.toContain(selected.workspace_identity);
-		expect(normalCopy.textContent).not.toContain("Space");
-
-		row.querySelector<HTMLButtonElement>(".project-recipient-action")?.click();
-		expect(recipientPolicyManagement.openRecipientPolicyManagement).toHaveBeenCalledWith({
-			mode: "project-manage",
-			projectId: "project-codemem",
-		});
-	});
-
 	it("bulk-selects exact canonical Projects and opens sorted recipient sharing", async () => {
 		const alpha = project({
 			display_project: "alpha",
@@ -3611,7 +3626,7 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 			?.click();
 
 		const shareSelected = document.getElementById("projectsShareSelected") as HTMLButtonElement;
-		expect(shareSelected.textContent).toBe("Share selected (2)");
+		expect(shareSelected.textContent).toBe("Add Teams or Identities (2)");
 		expect(shareSelected.disabled).toBe(false);
 		expect(document.getElementById("projectsSelectionStatus")?.textContent).toBe(
 			"2 Projects selected.",
@@ -3686,7 +3701,7 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 		initProjectsTab(() => {});
 		await loadProjectsData();
 
-		expect(document.body.textContent).toContain("Recipient access is unavailable.");
+		expect(document.body.textContent).toContain("Unavailable");
 		expect(document.querySelector<HTMLButtonElement>(".project-recipient-action")?.disabled).toBe(
 			true,
 		);
@@ -3790,14 +3805,16 @@ describe("Projects recipient policy result edge cases", projectsRecipientPolicyR
 		if (!cluster) throw new Error("project cluster missing");
 		expect(
 			[
-				...cluster.querySelectorAll(":scope > .project-recipient-summary .project-recipient-chip"),
+				...cluster.querySelectorAll(
+					":scope > .project-inventory-row-header .project-recipient-chip",
+				),
 			].map((chip) => chip.textContent),
 		).toEqual(["Identity: Adam", "Team: ExampleCo"]);
 		const action = cluster.querySelector<HTMLButtonElement>(
 			":scope > .project-inventory-row-header .project-recipient-action",
 		);
-		expect(action?.textContent).toBe("Share selected");
-		expect(action?.getAttribute("aria-label")).toBe("Share selected identities for api");
+		expect(action?.textContent).toBe("Add Teams or Identities");
+		expect(action?.getAttribute("aria-label")).toBe("Add Teams or Identities for api");
 		const clusterSelection = cluster.querySelector<HTMLInputElement>(
 			':scope > .project-inventory-row-header input[aria-label="Select all identities for api"]',
 		);
