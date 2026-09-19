@@ -10,6 +10,7 @@ import type {
 	RecipientPolicyIntentGraphV1,
 } from "../lib/api/sync";
 import { deviceIdentityAttentionItems } from "../lib/device-identity-inventory";
+import { stableProjectPresentationLabels } from "../lib/project-identity-presentation";
 import { ProvenanceChip } from "./feed/components/ProvenanceChip";
 import { TagChip } from "./feed/components/TagChip";
 import { RecipientPolicyInvitations } from "./recipient-policy-invitations";
@@ -309,17 +310,14 @@ function activeProjectNames(
 	projectIds: Iterable<string>,
 	projectsById: Map<string, RecipientPolicyManagementProject>,
 ): string[] {
-	return [
-		...new Set(
-			[...new Set(projectIds)].map(
-				(projectId) => projectsById.get(projectId)?.displayName ?? "Unavailable Project",
-			),
-		),
-	].sort((left, right) => left.localeCompare(right));
-}
-
-function firstName(displayName: string): string {
-	return displayName.trim().split(/\s+/)[0] || "Unknown member";
+	const projects = [...new Set(projectIds)].map((projectId) => ({
+		canonicalId: projectId,
+		displayName: projectsById.get(projectId)?.displayName ?? "Unavailable Project",
+	}));
+	const labels = stableProjectPresentationLabels(projects);
+	return projects
+		.map((project) => labels.get(project.canonicalId) ?? project.displayName)
+		.sort((left, right) => left.localeCompare(right));
 }
 
 const PROJECT_CHIP_LIMIT = 8;
@@ -442,7 +440,7 @@ function TeamsView({
 					),
 				];
 				const memberNames = memberIds.map((identityId) => {
-					const name = firstName(activeIdentitiesById.get(identityId)?.displayName ?? "");
+					const name = activeIdentitiesById.get(identityId)?.displayName.trim() || "Unknown member";
 					return identityId === viewerIdentityId ? `${name} (you)` : name;
 				});
 				const activeDeviceCount = new Set(
