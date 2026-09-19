@@ -678,7 +678,11 @@ async function removeProjectMapping(project: ProjectScopeInventoryProject) {
 	}
 }
 
-async function forgetProjectMemories(project: ProjectScopeInventoryProject, confirmed = false) {
+async function forgetProjectMemories(
+	project: ProjectScopeInventoryProject,
+	options: { confirmed?: boolean } = {},
+) {
+	const confirmed = options.confirmed === true;
 	try {
 		const pending = pendingForgetConfirmations.get(project.workspace_identity);
 		const result = await api.forgetProjectInventoryMemories({
@@ -1125,7 +1129,7 @@ function appendProjectForgetConfirmation(
 	confirm.className = "settings-button danger";
 	confirm.type = "button";
 	confirm.textContent = "I understand, forget local memories";
-	confirm.addEventListener("click", () => void forgetProjectMemories(project, true));
+	confirm.addEventListener("click", () => void forgetProjectMemories(project, { confirmed: true }));
 	const cancel = document.createElement("button");
 	cancel.className = "settings-button";
 	cancel.type = "button";
@@ -2169,9 +2173,9 @@ const projectInventoryCallbacks: ProjectInventoryCallbacks = {
 		const project = inventoryProject(projectIdentity);
 		if (project) await reassignInventoryProject(project);
 	},
-	async forgetProject(projectIdentity, confirmed = false) {
+	async forgetProject(projectIdentity, options = {}) {
 		const project = inventoryProject(projectIdentity);
-		if (project) await forgetProjectMemories(project, confirmed);
+		if (project) await forgetProjectMemories(project, options);
 	},
 	async confirmProjectScope(projectIdentity) {
 		const project = inventoryProject(projectIdentity);

@@ -75,7 +75,7 @@ export interface ProjectInventoryCallbacks {
 	removeProjectScope(projectIdentity: string): Promise<void>;
 	keepProjectLocal(projectIdentity: string): Promise<void>;
 	reassignProject(projectIdentity: string): Promise<void>;
-	forgetProject(projectIdentity: string, confirmed?: boolean): Promise<void>;
+	forgetProject(projectIdentity: string, options?: { confirmed?: boolean }): Promise<void>;
 	confirmProjectScope(projectIdentity: string): Promise<void>;
 	cancelProjectScopeConfirmation(projectIdentity: string): void;
 	cancelProjectForgetConfirmation(projectIdentity: string): void;
