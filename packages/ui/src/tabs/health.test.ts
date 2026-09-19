@@ -265,6 +265,17 @@ it("marks pipeline reliability failures when the queue is clear", () => {
 	expect(pipeline?.querySelector(".presence-pip--attention")).not.toBeNull();
 });
 
+it("keeps missing pipeline reliability unknown", () => {
+	state.healthStats = completeHealthLoad(statsPayload({ reliability: undefined }));
+	state.healthRawEvents = completeHealthLoad({ pending: 0, sessions: 0 });
+
+	renderOverview();
+
+	const pipeline = document.querySelectorAll("#healthGrid .health-tile-value")[0];
+	expect(pipeline?.textContent).toBe("Reliability unknown");
+	expect(pipeline?.querySelector(".presence-pip--unknown")).not.toBeNull();
+});
+
 it("keeps reliability severity visible when events are also pending", () => {
 	state.healthStats = completeHealthLoad(
 		statsPayload({
@@ -351,6 +362,12 @@ it("does not report unknown, unconfigured, or stale sync as online", () => {
 	);
 
 	state.lastSyncStatus = { enabled: true, daemon_state: "ok" };
+	renderOverview();
+	expect(document.querySelectorAll("#healthGrid .health-tile-value")[1]?.textContent).toBe(
+		"No peers",
+	);
+
+	state.lastSyncStatus = { enabled: true, daemon_state: "stopped" };
 	renderOverview();
 	expect(document.querySelectorAll("#healthGrid .health-tile-value")[1]?.textContent).toBe(
 		"No peers",

@@ -71,6 +71,7 @@ type OverviewSignals = {
 	tagCoverage: number;
 	rawPending: number;
 	erroredBatches: number;
+	hasReliability: boolean;
 	flushSuccessRate: number;
 	droppedRate: number;
 	reductionLabel: string;
@@ -167,6 +168,7 @@ function deriveOverviewSignals(
 		tagCoverage: stats.database.tags_coverage,
 		rawPending: raw.pending,
 		erroredBatches: stats.reliability?.counts.errored_batches ?? 0,
+		hasReliability: stats.reliability !== undefined,
 		flushSuccessRate: stats.reliability?.rates.flush_success_rate ?? 1,
 		droppedRate: stats.reliability?.rates.dropped_event_rate ?? 0,
 		reductionLabel,
@@ -298,6 +300,15 @@ function maintenanceCard(job: HealthMaintenanceJob): HealthCardInput {
 }
 
 function pipelineTile(signals: OverviewSignals): HealthTileInput {
+	if (signals.rawPending === 0 && !signals.hasReliability) {
+		return tile(
+			"pipeline",
+			"Pipeline",
+			"Reliability unknown",
+			"unknown",
+			"Raw-event queue pressure and flush reliability",
+		);
+	}
 	const reliabilityDegraded = signals.flushSuccessRate < 0.95 || signals.droppedRate > 0.005;
 	if (signals.rawPending === 0 && !reliabilityDegraded) {
 		return tile(
@@ -342,6 +353,9 @@ function syncTile(signals: OverviewSignals): HealthTileInput {
 	if (signals.syncState === "unknown") {
 		return tile("sync", "Sync", "Unknown", "unknown", "Daemon state and sync recency");
 	}
+	if (signals.syncNoPeers) {
+		return tile("sync", "Sync", "No peers", "unknown", "Daemon state and sync recency");
+	}
 	if (signals.syncState === "degraded" && signals.syncRecentlyOk) {
 		return tile("sync", "Sync", "Syncing", "online", "Daemon state and sync recency");
 	}
@@ -353,9 +367,6 @@ function syncTile(signals: OverviewSignals): HealthTileInput {
 			"degraded",
 			"Daemon state and sync recency",
 		);
-	}
-	if (signals.syncNoPeers) {
-		return tile("sync", "Sync", "No peers", "unknown", "Daemon state and sync recency");
 	}
 	if (SYNC_TRANSITION_STATES.has(signals.syncState)) {
 		return tile("sync", "Sync", signals.syncStateLabel, "unknown", "Daemon state and sync recency");
