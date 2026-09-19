@@ -9,6 +9,7 @@ import { state } from "../lib/state";
 
 export type { FeedItem, FeedItemMetadata } from "./feed/types";
 
+import { completeFirstRunStep } from "./feed/data/first-run-guide";
 import {
 	isLowSignalObservation,
 	itemKey,
@@ -36,6 +37,7 @@ let loadMoreInFlightGeneration: number | null = null;
 let primaryLoadRequestSequence = 0;
 let primaryLoadInFlight: { generation: number; requestId: number } | null = null;
 let feedScrollHandlerBound = false;
+let feedInspectHandlerBound = false;
 let feedProjectGeneration = 0;
 let lastFeedScope = "all";
 let lastFeedQuery = "";
@@ -260,6 +262,14 @@ export function initFeedTab() {
 		);
 		feedScrollHandlerBound = true;
 	}
+	if (!feedInspectHandlerBound) {
+		document.getElementById("tab-feed")?.addEventListener("click", (event) => {
+			if ((event.target as Element | null)?.closest(".feed-item button.feed-title")) {
+				completeFirstRunStep("inspect");
+			}
+		});
+		feedInspectHandlerBound = true;
+	}
 }
 
 export function updateFeedTypeToggle() {
@@ -300,7 +310,7 @@ export function updateFeedView(force = false) {
 	}
 
 	window.scrollTo({ top: scrollY });
-	maybeLoadMoreFeedPage();
+	if (!state.viewerReconnectOpen) maybeLoadMoreFeedPage();
 }
 
 function isCurrentFeedLoad(

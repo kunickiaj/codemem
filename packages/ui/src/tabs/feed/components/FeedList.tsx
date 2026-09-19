@@ -1,9 +1,127 @@
 import { Fragment, h } from "preact";
-import { state } from "../../../lib/state";
+import { setFeedScopeFilter, setFeedTypeFilter, state } from "../../../lib/state";
 import { itemKey } from "../data/helpers";
 import type { FeedItem, FeedViewOps } from "../types";
 import { FeedItemCard } from "./FeedItemCard";
 import { FeedSkeletonItem } from "./FeedSkeletonItem";
+
+function clickElement(id: string): void {
+	document.getElementById(id)?.click();
+}
+
+function openHealth(): void {
+	clickElement("tabBtn-health");
+	queueMicrotask(() => document.getElementById("healthSystemCard")?.focus());
+}
+
+function clearFeedFilters(ops: FeedViewOps): void {
+	setFeedTypeFilter("all");
+	setFeedScopeFilter("all");
+	const projectFilter = document.getElementById("projectFilter") as HTMLSelectElement | null;
+	if (projectFilter) {
+		projectFilter.value = "";
+		projectFilter.dispatchEvent(new Event("change", { bubbles: true }));
+		queueMicrotask(() => projectFilter.focus());
+		return;
+	}
+	state.currentProject = "";
+	ops.updateFeedView(true);
+	void ops.loadFeedData().catch(() => undefined);
+}
+
+type EmptyStateModel = {
+	actions: Array<{ label: string; run: () => void }>;
+	detail: string;
+	status?: boolean;
+	title: string;
+};
+
+function deriveProcessingEmptyState(): EmptyStateModel {
+	const status = state.feedProcessingStatus;
+	if (status.kind === "pending") {
+		const noun = status.count === 1 ? "event" : "events";
+		return {
+			actions: [{ label: "Open Health", run: openHealth }],
+			detail: "Captured work is queued. Memories will appear after processing finishes.",
+			status: true,
+			title: `Processing ${status.count} ${noun}.`,
+		};
+	}
+	if (status.kind === "paused") {
+		return {
+			actions: [{ label: "Open Health", run: openHealth }],
+			detail: "New activity will not be captured until raw-event capture is enabled.",
+			status: true,
+			title: "Capture is paused.",
+		};
+	}
+	if (status.kind === "unavailable") {
+		return {
+			actions: [{ label: "Open Health", run: openHealth }],
+			detail: "The Feed is connected, but processing status could not be checked.",
+			status: true,
+			title: "Processing status is unavailable.",
+		};
+	}
+	return {
+		actions: [
+			{ label: "Open Settings", run: () => clickElement("settingsButton") },
+			{ label: "Open Health", run: openHealth },
+		],
+		detail: "Use codemem while you work. Captured memories and session summaries will appear here.",
+		title: "No memories yet.",
+	};
+}
+
+function deriveEmptyState(ops: FeedViewOps): EmptyStateModel {
+	const query = state.feedQuery.trim();
+	if (query) {
+		return {
+			actions: [
+				{
+					label: "Clear search",
+					run: () => {
+						ops.updateFeedQuery("");
+						queueMicrotask(() => document.getElementById("feedSearch")?.focus());
+					},
+				},
+			],
+			detail: "Try a broader search or clear the search to see all memories.",
+			title: `No memories match “${query}”.`,
+		};
+	}
+	const hasFilters =
+		state.feedTypeFilter !== "all" ||
+		state.feedScopeFilter !== "all" ||
+		Boolean(state.currentProject);
+	if (!hasFilters) return deriveProcessingEmptyState();
+	return {
+		actions: [{ label: "Clear filters", run: () => clearFeedFilters(ops) }],
+		detail: "Clear the Feed and project filters to see memories from every scope.",
+		title: "No memories match the current filters.",
+	};
+}
+
+export function FeedEmptyState({ ops }: { ops: FeedViewOps }) {
+	const model = deriveEmptyState(ops);
+	return h(
+		"div",
+		{ className: "small feed-empty-state", role: model.status ? "status" : undefined },
+		h("strong", null, model.title),
+		h("div", null, model.detail),
+		h(
+			"div",
+			{ className: "feed-empty-actions" },
+			model.actions.map((action) =>
+				h(
+					"button",
+					{ className: "settings-button", key: action.label, onClick: action.run, type: "button" },
+					action.label,
+				),
+			),
+		),
+	);
+}
 
 export function FeedList({
 	items,
@@ -26,22 +144,7 @@ export function FeedList({
 		);
 	}
 	if (!items.length) {
-		const hasFilters =
-			Boolean(state.feedQuery.trim()) ||
-			state.feedTypeFilter !== "all" ||
-			state.feedScopeFilter !== "all";
-		return h(
-			"div",
-			{ className: "small feed-empty-state" },
-			h("strong", null, hasFilters ? "No memories match the current filters." : "No memories yet."),
-			h(
-				"div",
-				null,
-				hasFilters
-					? "Try clearing filters, changing the scope, or using a broader search."
-					: "Memories and session summaries will appear here once codemem has something worth keeping.",
-			),
-		);
+		return h(FeedEmptyState, { ops });
 	}
 	return h(
 		Fragment,

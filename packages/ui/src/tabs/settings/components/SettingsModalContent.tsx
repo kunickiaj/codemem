@@ -20,6 +20,7 @@ export interface SettingsModalContentProps {
 	onSave: () => void;
 	onActiveTabChange: (tab: string) => void;
 	onAdvancedToggle: (checked: boolean) => void;
+	onShowGettingStarted: () => void;
 	observerStatusBannerSlot: ComponentChildren;
 }
 
@@ -33,12 +34,12 @@ export function SettingsModalContent({
 	onSave,
 	onActiveTabChange,
 	onAdvancedToggle,
+	onShowGettingStarted,
 	observerStatusBannerSlot,
 }: SettingsModalContentProps) {
 	const saveDisabled = !settingsDirty || renderState.isSaving;
 	return (
-		// biome-ignore lint/a11y/noStaticElementInteractions: delegated keydown for primary-action handling; the actual interactive element is the Save button below, which is announced semantically. Radix Dialog handles Escape itself.
-		<div
+		<form
 			className="modal-card"
 			onKeyDown={(event) =>
 				handlePrimaryActionKeyboard(event, {
@@ -46,6 +47,7 @@ export function SettingsModalContent({
 					disabled: saveDisabled,
 				})
 			}
+			onSubmit={(event) => event.preventDefault()}
 		>
 			<div className="modal-header">
 				<h2 id="settingsTitle">Settings</h2>
@@ -119,8 +121,13 @@ export function SettingsModalContent({
 				</div>
 			</div>
 			<div className="modal-footer">
-				<div className="small" id="settingsStatus">
-					{renderState.statusText}
+				<div className="settings-footer-copy">
+					<div className="small" id="settingsStatus">
+						{renderState.statusText}
+					</div>
+					<button className="settings-link-button" onClick={onShowGettingStarted} type="button">
+						Show getting started
+					</button>
 				</div>
 				<button
 					className="settings-save"
@@ -133,6 +140,6 @@ export function SettingsModalContent({
 					{renderState.isSaving ? "Saving…" : "Save changes"}
 				</button>
 			</div>
-		</div>
+		</form>
 	);
 }

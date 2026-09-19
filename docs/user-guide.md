@@ -112,6 +112,12 @@ codemem status --db-path ./codemem.sqlite --config ./codemem.json
 - Rebuild UI assets after frontend changes: `pnpm --filter @codemem/ui build`.
 - Restart the viewer after updates: `codemem serve restart`.
 
+## Getting started in the viewer
+- New browser profiles show a non-blocking checklist in Feed until its five jobs are completed or dismissed: capture a memory, inspect its details, find it again, choose project scope, and check Settings or Health.
+- Steps complete from real data and actions rather than manual checkboxes. Completion and dismissal stay in versioned browser-local storage for that viewer profile.
+- Reopen the checklist with **Show getting started** in Settings. Completed steps remain completed.
+- Empty Feed messages distinguish no data, queued processing, paused capture, unavailable processing status, search with no matches, and filters with no matches. Use the action in the message to clear the active constraint or open the existing recovery surface.
+
 ## Settings modal
 - Open via the Settings button in the header.
 - Shows effective values (configured or default) to avoid blank/ambiguous fields.

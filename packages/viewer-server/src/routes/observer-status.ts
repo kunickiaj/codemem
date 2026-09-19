@@ -44,6 +44,13 @@ function buildFailureImpact(
 	return "Failed flush batches are pending retry.";
 }
 
+function readCaptureEnabled(): boolean | null {
+	const value = process.env.CODEMEM_RAW_EVENTS?.trim();
+	if (value === "0") return false;
+	if (value === "1") return true;
+	return null;
+}
+
 export function observerStatusRoutes(deps?: ObserverStatusDeps) {
 	const app = new Hono();
 
@@ -57,6 +64,7 @@ export function observerStatusRoutes(deps?: ObserverStatusDeps) {
 			return c.json({
 				active: null,
 				available_credentials: {},
+				capture_enabled: readCaptureEnabled(),
 				latest_failure: null,
 				queue: {
 					pending: 0,
@@ -83,6 +91,7 @@ export function observerStatusRoutes(deps?: ObserverStatusDeps) {
 		return c.json({
 			active,
 			available_credentials: availableCredentials,
+			capture_enabled: readCaptureEnabled(),
 			latest_failure: failureWithImpact,
 			queue: {
 				...queueTotals,

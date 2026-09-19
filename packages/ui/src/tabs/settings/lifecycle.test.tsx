@@ -10,9 +10,19 @@ vi.mock("../../lib/api", async (importOriginal) => ({
 	saveConfig,
 }));
 
+import {
+	completeFirstRunStep,
+	dismissFirstRunGuide,
+	readFirstRunGuideRecord,
+} from "../feed/data/first-run-guide";
 import { collectSettingsPayload } from "./data/config-loader";
 import { setDirty, updateFormState } from "./data/state-ops";
-import { closeSettings, openObserverDiagnosticsFromSettings, saveSettings } from "./lifecycle";
+import {
+	closeSettings,
+	openObserverDiagnosticsFromSettings,
+	saveSettings,
+	showGettingStartedFromSettings,
+} from "./lifecycle";
 
 const observerDiagnosticsOptions = {
 	severity: "error" as const,
@@ -48,6 +58,30 @@ afterEach(() => {
 });
 
 describe("Settings observer diagnostics handoff", () => {
+	it("reopens getting started with prior completion and moves focus to Feed guidance", async () => {
+		localStorage.clear();
+		completeFirstRunStep("capture");
+		dismissFirstRunGuide();
+		document.body.insertAdjacentHTML(
+			"beforeend",
+			'<button id="tabBtn-feed">Feed</button><section id="firstRunGuide" tabindex="-1"></section>',
+		);
+		const feedButton = document.getElementById("tabBtn-feed") as HTMLButtonElement;
+		const click = vi.spyOn(feedButton, "click");
+
+		showGettingStartedFromSettings();
+		await Promise.resolve();
+
+		expect(settingsView.value.open).toBe(false);
+		expect(click).toHaveBeenCalledOnce();
+		expect(document.activeElement?.id).toBe("firstRunGuide");
+		expect(readFirstRunGuideRecord()).toMatchObject({
+			completed: ["capture"],
+			dismissed: false,
+			showCompleted: true,
+		});
+	});
+
 	it("closes Settings before opening diagnostics in a microtask", async () => {
 		const startPolling = settingsState.startPolling;
 		const refresh = settingsState.refresh;

@@ -4,7 +4,7 @@
 
 import * as api from "../../../lib/api";
 import type { ReadRequestOptions } from "../../../lib/read-request";
-import { state } from "../../../lib/state";
+import { type FeedProcessingStatus, state } from "../../../lib/state";
 import { collectSettingsPayload as collectSettingsPayloadRaw } from "./collect-payload";
 import { PROTECTED_VIEWER_CONFIG_KEYS } from "./constants";
 import { type ConfigPayload, formStateFromPayload } from "./form-state";
@@ -33,10 +33,25 @@ export function collectSettingsPayload(
 }
 
 export function renderObserverStatusBanner(status: unknown) {
+	state.feedProcessingStatus = deriveFeedProcessingStatus(status);
 	updateRenderState({
 		observerStatus:
 			status && typeof status === "object" ? (status as Record<string, unknown>) : null,
 	});
+}
+
+export function deriveFeedProcessingStatus(status: unknown): FeedProcessingStatus {
+	if (!status || typeof status !== "object") return { kind: "unavailable" };
+	const observerStatus = status as {
+		capture_enabled?: unknown;
+		queue?: { pending?: unknown };
+	};
+	if (observerStatus.capture_enabled === false) return { kind: "paused" };
+	const pending = Number(observerStatus.queue?.pending);
+	if (Number.isFinite(pending) && pending > 0) {
+		return { kind: "pending", count: Math.floor(pending) };
+	}
+	return { kind: "ready" };
 }
 
 export function describeEffectiveSettings(
@@ -95,13 +110,11 @@ export function renderConfigModal(payload: unknown) {
 
 export async function loadConfigData(options: ReadRequestOptions = {}) {
 	if (getSettingsViewState().open) return;
-	try {
-		const [payload, status] = await Promise.all([
-			api.loadConfig(options),
-			api.loadObserverStatus(options).catch(() => null),
-		]);
-		if (options.signal?.aborted) return;
-		renderConfigModal(payload);
-		renderObserverStatusBanner(status);
-	} catch {}
+	const [configResult, statusResult] = await Promise.allSettled([
+		api.loadConfig(options),
+		api.loadObserverStatus(options),
+	]);
+	if (options.signal?.aborted) return;
+	if (configResult.status === "fulfilled") renderConfigModal(configResult.value);
+	renderObserverStatusBanner(statusResult.status === "fulfilled" ? statusResult.value : null);
 }

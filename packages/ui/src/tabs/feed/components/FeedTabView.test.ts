@@ -2,7 +2,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import staticHtml from "../../../../static/index.html?raw";
-import { FeedSearchInput, FeedStatus } from "./FeedTabView";
+import { FeedSearchInput, FeedStatus, shouldRenderFirstRunGuide } from "./FeedTabView";
 
 describe("FeedTabView accessibility primitives", () => {
 	it("describes the controlled Feed search input without mounting the full Feed", () => {
@@ -37,5 +37,11 @@ describe("FeedTabView accessibility primitives", () => {
 		expect(input?.getAttribute("aria-label")).toBe("Search memories");
 		expect(status?.getAttribute("role")).toBe("status");
 		expect(status?.getAttribute("aria-live")).toBe("polite");
+	});
+
+	it("does not render first-run guidance while loading or disconnected", () => {
+		expect(shouldRenderFirstRunGuide("Loading memories…", false)).toBe(false);
+		expect(shouldRenderFirstRunGuide(undefined, true)).toBe(false);
+		expect(shouldRenderFirstRunGuide(undefined, false)).toBe(true);
 	});
 });
