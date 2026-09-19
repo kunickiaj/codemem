@@ -10,6 +10,7 @@ const OUTCOME_KEYS = [
 	"investigated",
 	"next_steps",
 	"next",
+	"plan",
 	"notes",
 ];
 const FACT_KEYS = [
