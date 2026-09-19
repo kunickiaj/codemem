@@ -168,6 +168,10 @@ function isProjectShareEligible(project: ProjectScopeInventoryProject): boolean 
 	);
 }
 
+function projectRowKey(project: ProjectScopeInventoryProject): string {
+	return `${isPeerReceivedProject(project) ? "peer-received" : "local"}:${project.workspace_identity}`;
+}
+
 function cacheProjectInventoryProject(project: ProjectScopeInventoryProject): void {
 	const existing = projectInventoryByIdentity.get(project.workspace_identity);
 	if (!existing || (isPeerReceivedProject(existing) && !isPeerReceivedProject(project))) {
@@ -797,7 +801,8 @@ function focusProjectAdministration(projectIdentity: string): boolean {
 		if (clusterKey) openProjectClusters.add(clusterKey);
 	}
 	details.open = true;
-	openProjectDetails.add(`${row.dataset.projectRepairable}:${projectIdentity}`);
+	const rowKey = row.dataset.projectRowKey;
+	if (rowKey) openProjectDetails.add(rowKey);
 	details.scrollIntoView?.({ block: "center", behavior: "smooth" });
 	details.querySelector<HTMLElement>("summary")?.focus();
 	return true;
@@ -1309,7 +1314,7 @@ function renderProjectDetails(
 	const { advanced, warnings } = renderProjectAdvancedAdministration(project);
 	const detail = document.createElement("details");
 	detail.className = "project-inventory-details";
-	const detailKey = `${repairable}:${project.workspace_identity}`;
+	const detailKey = projectRowKey(project);
 	detail.open = openProjectDetails.has(detailKey);
 	detail.addEventListener("toggle", () => {
 		if (detail.open) openProjectDetails.add(detailKey);
@@ -1327,6 +1332,7 @@ function renderProjectRow(project: ProjectScopeInventoryProject): HTMLElement {
 	const repairable = isLocallyAssignableProject(project);
 	const row = document.createElement("article");
 	row.className = "project-inventory-row";
+	row.dataset.projectRowKey = projectRowKey(project);
 	row.dataset.projectWorkspaceIdentity = project.workspace_identity;
 	row.dataset.projectRepairable = String(repairable);
 	const titleId = `project-title-${project.workspace_identity.replace(/[^a-z0-9_-]/gi, "-")}`;
@@ -1557,12 +1563,12 @@ function projectClusters(
 
 function projectViewModel(project: ProjectScopeInventoryProject): ProjectInventoryProjectViewModel {
 	const manageable = isRecipientPolicyManageableProject(project);
-	const detailKey = `${isLocallyAssignableProject(project)}:${project.workspace_identity}`;
+	const detailKey = projectRowKey(project);
 	const pending = pendingConfirmations.get(project.workspace_identity);
 	const pendingForget = pendingForgetConfirmations.get(project.workspace_identity);
 	return {
 		kind: "project",
-		key: project.workspace_identity,
+		key: detailKey,
 		project,
 		manageable,
 		selected: manageable && selectedProjectIds.has(project.workspace_identity),
@@ -2083,6 +2089,12 @@ function inventoryProject(projectIdentity: string): ProjectScopeInventoryProject
 	);
 }
 
+function inventoryProjectByRowKey(rowKey: string): ProjectScopeInventoryProject | null {
+	return (
+		latestInventoryResult.projects.find((project) => projectRowKey(project) === rowKey) ?? null
+	);
+}
+
 const projectInventoryCallbacks: ProjectInventoryCallbacks = {
 	toggleSelection(projectIds) {
 		setProjectSelection(projectIds);
@@ -2105,9 +2117,9 @@ const projectInventoryCallbacks: ProjectInventoryCallbacks = {
 		openRecipientPolicyManagement({ mode: "project-add", projectIds: sortedProjectIds });
 	},
 	setProjectDetailsOpen(key, open) {
-		const project = inventoryProject(key);
+		const project = inventoryProjectByRowKey(key);
 		if (!project) return;
-		const detailKey = `${isLocallyAssignableProject(project)}:${project.workspace_identity}`;
+		const detailKey = projectRowKey(project);
 		if (open) openProjectDetails.add(detailKey);
 		else openProjectDetails.delete(detailKey);
 		notifyProjectInventoryChanged();

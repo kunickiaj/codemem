@@ -3859,7 +3859,7 @@ describe("Projects inventory controller", () => {
 		expect(viewModel.rows).toHaveLength(1);
 		expect(viewModel.rows[0]).toMatchObject({
 			kind: "project",
-			key: project().workspace_identity,
+			key: `local:${project().workspace_identity}`,
 			shareEligible: true,
 			shareReady: true,
 		});
@@ -3871,6 +3871,50 @@ describe("Projects inventory controller", () => {
 		expect(projectSharing.openProjectShareFlow).toHaveBeenCalledWith([
 			project().workspace_identity,
 		]);
+	});
+});
+
+describe("Projects inventory controller collision keys", () => {
+	beforeEach(setupProjectsTest);
+	afterEach(cleanupProjectsTest);
+
+	it("keys colliding local and peer rows independently", async () => {
+		const workspaceIdentity = "peer-received:controller-collision";
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [
+				project({ workspace_identity: workspaceIdentity }),
+				project({
+					read_only: true,
+					read_only_reason: "peer_received",
+					workspace_identity: workspaceIdentity,
+				}),
+			],
+			total: 2,
+		});
+		initProjectsTab(() => {});
+		await loadProjectsData();
+		const controller = getProjectsInventoryController();
+		const row = controller.getViewModel().rows[0];
+		if (row?.kind !== "cluster") throw new Error("colliding project cluster missing");
+		expect(new Set(row.projects.map((entry) => entry.key)).size).toBe(2);
+		const peerRow = row.projects.find((entry) => entry.project.read_only === true);
+		if (!peerRow) throw new Error("peer project row missing");
+
+		controller.callbacks.setProjectDetailsOpen(peerRow.key, true);
+
+		const refreshedRow = controller.getViewModel().rows[0];
+		if (refreshedRow?.kind !== "cluster") {
+			throw new Error("refreshed colliding project cluster missing");
+		}
+		expect(refreshedRow.projects.find((entry) => entry.key === peerRow.key)?.detailsOpen).toBe(
+			true,
+		);
+		expect(
+			refreshedRow.projects.find((entry) => entry.project.read_only !== true)?.detailsOpen,
+		).toBe(false);
 	});
 });
 
@@ -3904,7 +3948,9 @@ describe("Projects inventory controller subscriptions", () => {
 		listener.mockClear();
 
 		controller.callbacks.toggleSelection([project().workspace_identity]);
-		controller.callbacks.setProjectDetailsOpen(project().workspace_identity, true);
+		const projectRow = controller.getViewModel().rows[0];
+		if (projectRow?.kind !== "project") throw new Error("project row missing");
+		controller.callbacks.setProjectDetailsOpen(projectRow.key, true);
 		controller.callbacks.setProjectScopeDraft(project().workspace_identity, "exampleco-work");
 
 		expect(listener).toHaveBeenCalledTimes(3);
@@ -3921,7 +3967,7 @@ describe("Projects inventory controller subscriptions", () => {
 
 		unsubscribe();
 		controller.callbacks.toggleSelection([project().workspace_identity]);
-		controller.callbacks.setProjectDetailsOpen(project().workspace_identity, false);
+		controller.callbacks.setProjectDetailsOpen(projectRow.key, false);
 		await controller.callbacks.saveProjectScope(project().workspace_identity, "local-default");
 		expect(listener).toHaveBeenCalledTimes(3);
 	});
