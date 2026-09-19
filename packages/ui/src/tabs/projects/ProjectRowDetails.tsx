@@ -318,18 +318,18 @@ function ProjectDetailsActions(props: DetailsContentProps) {
 				<>
 					<ProjectSpaceSelect {...props} />
 					<ProjectSecondaryActions callbacks={callbacks} model={model} />
+					<SpaceConfirmation
+						callbacks={callbacks}
+						confirmationActionRef={props.confirmationActionRef}
+						model={model}
+					/>
+					<ForgetConfirmation
+						callbacks={callbacks}
+						confirmationActionRef={props.confirmationActionRef}
+						model={model}
+					/>
 				</>
 			) : null}
-			<SpaceConfirmation
-				callbacks={callbacks}
-				confirmationActionRef={props.confirmationActionRef}
-				model={model}
-			/>
-			<ForgetConfirmation
-				callbacks={callbacks}
-				confirmationActionRef={props.confirmationActionRef}
-				model={model}
-			/>
 		</div>
 	);
 }

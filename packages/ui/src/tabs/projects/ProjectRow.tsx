@@ -163,7 +163,7 @@ export function ProjectRow({ callbacks, child = false, clusterKey, model, view }
 	const confirmationActionRef = useRef<HTMLButtonElement>(null);
 	const setDetailsOpen = (nextOpen: boolean) => {
 		setOpen(nextOpen);
-		callbacks.setProjectDetailsOpen(model.key, nextOpen);
+		callbacks.setProjectDetailsOpen(model.detailKey, nextOpen);
 	};
 	useEffect(() => {
 		if (model.detailsOpen) setOpen(true);

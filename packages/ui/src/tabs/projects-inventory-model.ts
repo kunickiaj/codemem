@@ -13,6 +13,7 @@ export interface ProjectInventoryRecipientViewModel {
 export interface ProjectInventoryProjectViewModel {
 	kind: "project";
 	key: string;
+	detailKey: string;
 	project: ProjectScopeInventoryProject;
 	manageable: boolean;
 	selected: boolean;

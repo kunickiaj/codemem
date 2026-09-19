@@ -715,12 +715,18 @@ function projectClusters(
 
 function projectViewModel(project: ProjectScopeInventoryProject): ProjectInventoryProjectViewModel {
 	const manageable = isRecipientPolicyManageableProject(project);
-	const detailKey = `${isLocallyAssignableProject(project)}:${project.workspace_identity}`;
-	const pending = pendingConfirmations.get(project.workspace_identity);
-	const pendingForget = pendingForgetConfirmations.get(project.workspace_identity);
+	const locallyAssignable = isLocallyAssignableProject(project);
+	const detailKey = `${locallyAssignable}:${project.workspace_identity}`;
+	const pending = locallyAssignable
+		? pendingConfirmations.get(project.workspace_identity)
+		: undefined;
+	const pendingForget = locallyAssignable
+		? pendingForgetConfirmations.get(project.workspace_identity)
+		: undefined;
 	return {
 		kind: "project",
 		key: project.workspace_identity,
+		detailKey,
 		project,
 		manageable,
 		selected: manageable && selectedProjectIds.has(project.workspace_identity),
@@ -1247,11 +1253,8 @@ const projectInventoryCallbacks: ProjectInventoryCallbacks = {
 		openRecipientPolicyManagement({ mode: "project-add", projectIds: sortedProjectIds });
 	},
 	setProjectDetailsOpen(key, open) {
-		const project = inventoryProject(key);
-		if (!project) return;
-		const detailKey = `${isLocallyAssignableProject(project)}:${project.workspace_identity}`;
-		if (open) openProjectDetails.add(detailKey);
-		else openProjectDetails.delete(detailKey);
+		if (open) openProjectDetails.add(key);
+		else openProjectDetails.delete(key);
 		notifyProjectInventoryChanged();
 	},
 	setClusterDetailsOpen(key, open) {
