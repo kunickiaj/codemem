@@ -31,10 +31,29 @@ function sectionText(summary: FeedSummary | null, key: string): string {
 
 function firstDistinctContentLine(value: string, normalizedTitle: string): string {
 	for (const line of value.split("\n")) {
+		if (/^\s*#{1,6}\s+/.test(line)) continue;
 		const candidate = firstContentLine(line);
 		if (candidate && normalize(candidate) !== normalizedTitle) return candidate;
 	}
 	return "";
+}
+
+function distinctBodyNarrative(
+	bodyText: string,
+	normalizedTitle: string,
+	summary: FeedSummary | null,
+): string {
+	if (!bodyText) return "";
+	const duplicateLines = new Set([
+		normalizedTitle,
+		...Object.values(summary ?? {}).map((value) => normalize(String(value || ""))),
+	]);
+	const hasDistinctContent = bodyText.split("\n").some((line) => {
+		if (/^\s*#{1,6}\s+/.test(line)) return false;
+		const content = firstContentLine(line);
+		return Boolean(content) && !duplicateLines.has(normalize(content));
+	});
+	return hasDistinctContent ? bodyText : "";
 }
 
 export function sessionSummaryViewData(item: FeedItem, displayedTitle: string) {
@@ -59,7 +78,7 @@ export function sessionSummaryViewData(item: FeedItem, displayedTitle: string) {
 
 	const metadata = item.metadata_json || {};
 	const explicitNarrative = String(item.narrative || metadata.narrative || "").trim();
-	const narrative = explicitNarrative || bodyText;
+	const narrative = explicitNarrative || distinctBodyNarrative(bodyText, normalizedTitle, summary);
 	const summaryDetail = summary ? skimSummary : bodyText || skimSummary;
 
 	return {

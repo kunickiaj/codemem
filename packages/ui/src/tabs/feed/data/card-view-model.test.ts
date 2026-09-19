@@ -38,6 +38,7 @@ describe("feed card view model", () => {
 		const facts = model.modes.find(({ id }) => id === "facts");
 		expect(facts?.searchText).not.toContain("Add retry-safe watering");
 		expect(facts?.searchText).toContain("Retries can arrive");
+		expect(facts?.searchText).toContain("Learned");
 	});
 
 	it("uses a supported outcome when the request duplicates the title", () => {
@@ -142,6 +143,21 @@ describe("feed card view model", () => {
 			label: "Body",
 			mode: null,
 		});
+	});
+});
+
+describe("session card generated body fallbacks", () => {
+	it("does not expose generated request headings as session content", () => {
+		const model = buildFeedCardViewModel({
+			body_text: "## Request\nRepair the watering controller",
+			kind: "session_summary",
+			summary: { request: "Repair the watering controller" },
+			title: "Stored title",
+		});
+
+		expect(model.displayTitle).toBe("Repair the watering controller");
+		expect(model.skimSummary).toBe("");
+		expect(model.modes).toEqual([]);
 	});
 });
 

@@ -217,6 +217,18 @@ describe("FeedItemCard polling fallback", () => {
 		expect(document.activeElement).toBe(fallback);
 		expect(mount.querySelector(".feed-detail")?.textContent).toContain("Short summary");
 	});
+
+	it("collapses when polling removes every mode and supplemental detail", () => {
+		renderCard(observation());
+		act(() => titleButton().click());
+
+		renderCard(observation({ body_text: "", facts: [], narrative: "", subtitle: "" }));
+
+		expect(mount.querySelector(".feed-title")?.tagName).toBe("DIV");
+		expect(mount.querySelector(".feed-detail")).toBeNull();
+		expect(state.itemExpandState.has("change:1234")).toBe(false);
+		expect(state.itemViewState.has("change:1234")).toBe(false);
+	});
 });
 
 describe("FeedItemCard fallback disclosure", () => {
@@ -235,7 +247,7 @@ describe("FeedItemCard fallback disclosure", () => {
 		act(() => button.click());
 
 		expect(mount.querySelector(".feed-detail")?.getAttribute("aria-label")).toBe(
-			"Diagnostic memory Details",
+			"Diagnostic memory details",
 		);
 		expect(mount.querySelector(".feed-detail")?.textContent).toContain("Workspace repository");
 		expect(mount.querySelectorAll('[role="radio"]')).toHaveLength(0);
@@ -257,6 +269,12 @@ describe("FeedItemCard content and actions", () => {
 		expect(mount.textContent).toContain("unreviewed");
 		expect(mount.querySelector(".feed-menu-trigger")).toBeNull();
 		expect(mount.querySelector(".feed-visibility-select")).toBeNull();
+	});
+
+	it("labels missing peer trust state explicitly", () => {
+		renderCard(observation({ actor_id: "peer-id", owned_by_self: false, trust_state: null }));
+
+		expect(mount.querySelector(".provenance-chip.trust")?.textContent).toBe("Trust unknown");
 	});
 
 	it("shows a highlighted excerpt when search matches only hidden detail", () => {

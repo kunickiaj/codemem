@@ -1,4 +1,4 @@
-import { normalize, parseJsonArray } from "../../../lib/format";
+import { normalize, parseJsonArray, toTitleLabel } from "../../../lib/format";
 import type { FeedItem, FeedSummary, ItemViewMode } from "../types";
 import { itemKey, itemTags, mergeMetadata } from "./helpers";
 import { observationViewData } from "./observation-view";
@@ -57,7 +57,9 @@ function sessionFactsMode(sections: FeedSummary): FeedCardMode {
 		content: { type: "sections", sections },
 		id: "facts",
 		label: "Facts",
-		searchText: Object.values(sections).join("\n"),
+		searchText: Object.entries(sections)
+			.map(([key, value]) => `${toTitleLabel(key)}\n${String(value)}`)
+			.join("\n"),
 	};
 }
 

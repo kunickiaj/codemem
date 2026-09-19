@@ -1,10 +1,23 @@
 import { describe, expect, it } from "vitest";
+import { state } from "../lib/state";
 import {
 	observationViewData,
 	packTraceContextKey,
 	parseInspectorWorkingSet,
+	removeFeedItem,
 	syncInspectorQueryDraft,
 } from "./feed";
+
+describe("feed item removal", () => {
+	it("clears the exact row expansion key", () => {
+		state.lastFeedItems = [{ id: 7, kind: "change" }];
+		state.itemExpandState.set("change:7", true);
+
+		removeFeedItem(7);
+
+		expect(state.itemExpandState.has("change:7")).toBe(false);
+	});
+});
 
 describe("observationViewData", () => {
 	it("uses subtitle as summary and narrative as full text when both exist", () => {

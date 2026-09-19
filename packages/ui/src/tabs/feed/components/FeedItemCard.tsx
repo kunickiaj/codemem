@@ -50,6 +50,53 @@ function renderModeContent(mode: FeedCardMode) {
 	return renderNarrativeContent(mode.content.text, className);
 }
 
+function usePollingModeState(input: {
+	activeMode: ItemViewMode;
+	cardRef: { current: HTMLElement | null };
+	expanded: boolean;
+	focusedModeRef: { current: ItemViewMode | null };
+	hasSupplementalDetail: boolean;
+	modeIds: ItemViewMode[];
+	modes: FeedCardMode[];
+	restoreModeFocusRef: { current: boolean };
+	rowKey: string;
+	setActiveMode: (mode: ItemViewMode) => void;
+	setExpanded: (expanded: boolean) => void;
+}) {
+	useEffect(() => {
+		if (input.modeIds.length === 0) {
+			input.restoreModeFocusRef.current = false;
+			state.itemViewState.delete(input.rowKey);
+			if (!input.hasSupplementalDetail && input.expanded) {
+				state.itemExpandState.delete(input.rowKey);
+				input.setExpanded(false);
+			}
+			return;
+		}
+		if (input.modeIds.includes(input.activeMode)) return;
+		input.restoreModeFocusRef.current =
+			input.focusedModeRef.current === input.activeMode && document.activeElement === document.body;
+		input.setActiveMode(preferredAvailableMode(input.modes, state.preferredFeedViewMode));
+	}, [input]);
+
+	useEffect(() => {
+		if (!input.restoreModeFocusRef.current) return;
+		const activeRadio = input.cardRef.current?.querySelector<HTMLButtonElement>(
+			'[role="radio"][aria-checked="true"]',
+		);
+		if (!activeRadio) return;
+		input.restoreModeFocusRef.current = false;
+		input.focusedModeRef.current = input.activeMode;
+		activeRadio.focus();
+	}, [input]);
+
+	useEffect(() => {
+		if (input.modeIds.includes(input.activeMode)) {
+			state.itemViewState.set(input.rowKey, input.activeMode);
+		} else state.itemViewState.delete(input.rowKey);
+	}, [input]);
+}
+
 function shouldShowSearchMatch(
 	searchMatch: ReturnType<typeof hiddenSearchMatch>,
 	expanded: boolean,
@@ -107,30 +154,22 @@ export function FeedItemCard({
 	const hasDisclosure = Boolean(activeModeData || hasSupplementalDetail);
 	let trustLabel = "";
 	if (!ownedBySelf && trustState !== "trusted") {
-		trustLabel = trustState ? trustStateLabel(trustState) : "Unknown trust";
+		trustLabel = trustState ? trustStateLabel(trustState) : "Trust unknown";
 	}
 
-	useEffect(() => {
-		if (modeIds.includes(activeMode)) return;
-		restoreModeFocusRef.current =
-			focusedModeRef.current === activeMode && document.activeElement === document.body;
-		setActiveMode(preferredAvailableMode(model.modes, state.preferredFeedViewMode));
-	}, [activeMode, modeIds, model.modes]);
-
-	useEffect(() => {
-		if (!restoreModeFocusRef.current) return;
-		const activeRadio = cardRef.current?.querySelector<HTMLButtonElement>(
-			'[role="radio"][aria-checked="true"]',
-		);
-		if (!activeRadio) return;
-		restoreModeFocusRef.current = false;
-		focusedModeRef.current = activeMode;
-		activeRadio.focus();
-	}, [activeMode]);
-
-	useEffect(() => {
-		state.itemViewState.set(model.rowKey, activeMode);
-	}, [activeMode, model.rowKey]);
+	usePollingModeState({
+		activeMode,
+		cardRef,
+		expanded,
+		focusedModeRef,
+		hasSupplementalDetail,
+		modeIds,
+		modes: model.modes,
+		restoreModeFocusRef,
+		rowKey: model.rowKey,
+		setActiveMode,
+		setExpanded,
+	});
 
 	useEffect(() => {
 		setSelectedVisibility(visibility === "shared" ? "shared" : "private");
@@ -360,7 +399,9 @@ export function FeedItemCard({
 				? h(
 						"section",
 						{
-							"aria-label": `${model.displayTitle} ${activeModeData?.label ?? "Details"}`,
+							"aria-label": activeModeData
+								? `${model.displayTitle} ${activeModeData.label}`
+								: `${model.displayTitle} details`,
 							className: "feed-detail",
 							id: detailId,
 						},

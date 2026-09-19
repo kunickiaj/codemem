@@ -80,7 +80,7 @@ function replaceFeedItem(updatedItem: FeedItem) {
 	);
 }
 
-function removeFeedItem(memoryId: number) {
+export function removeFeedItem(memoryId: number) {
 	const removedKeys = new Set<string>();
 	const keepItem = (item: FeedItem) => {
 		const itemMemoryId = Number(item.id || item.memory_id || 0);
@@ -95,6 +95,7 @@ function removeFeedItem(memoryId: number) {
 	for (const key of removedKeys) {
 		state.newItemKeys.delete(key);
 		state.itemViewState.delete(key);
+		state.itemExpandState.delete(key);
 		for (const expandKey of Array.from(state.itemExpandState.keys())) {
 			if (expandKey.startsWith(`${key}:`)) state.itemExpandState.delete(expandKey);
 		}
