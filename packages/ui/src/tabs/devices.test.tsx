@@ -359,6 +359,28 @@ describe("Devices focus and inventory", function devicesFocusAndInventoryTests()
 		expect(onRetry).toHaveBeenCalledOnce();
 	});
 });
+describe("Devices coordinator evidence status", () => {
+	it("distinguishes oversized coordinator evidence from an outage", () => {
+		const onNavigate = vi.fn();
+		const oversizedInventory = inventory([]);
+		oversizedInventory.coordinatorEvidence = {
+			availability: "unavailable",
+			safeErrorCode: "coordinator_evidence_too_large",
+		};
+		mount(intent({ identityDevices: [] }), reconciliation(), {
+			inventory: oversizedInventory,
+			onNavigate,
+		});
+
+		expect(document.body.textContent).toContain("Coordinator data too large");
+		expect(document.body.textContent).not.toContain("Coordinator unreachable");
+		const health = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+			(button) => button.textContent === "Check device health",
+		);
+		act(() => health?.click());
+		expect(onNavigate).toHaveBeenCalledWith("health");
+	});
+});
 describe("Devices reconciliation focus", function devicesReconciliationFocusTests() {
 	it("surfaces safe coordinator reconciliation attention without inferring ownership", () => {
 		mount(intent(), reconciliation(), {

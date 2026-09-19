@@ -1441,6 +1441,32 @@ function DevicesSummaryBar({
 
 function CoordinatorStatus({ options }: { options: DevicesRendererOptions }) {
 	if (options.inventory?.coordinatorEvidence.availability !== "unavailable") return null;
+	const evidenceTooLarge =
+		options.inventory.coordinatorEvidence.safeErrorCode === "coordinator_evidence_too_large";
+	if (evidenceTooLarge) {
+		return (
+			<div className="devices-coordinator-status">
+				<PresencePip
+					aria-label="Coordinator data exceeds safety limits"
+					size={6}
+					state="degraded"
+				/>
+				<Chip tone="badge-offline" variant="badge">
+					Coordinator data too large
+				</Chip>
+				<span className="devices-coordinator-status-spacer" />
+				{options.onNavigate ? (
+					<button
+						className="settings-button"
+						onClick={() => options.onNavigate?.("health")}
+						type="button"
+					>
+						Check device health
+					</button>
+				) : null}
+			</div>
+		);
+	}
 	return (
 		<div className="devices-coordinator-status">
 			<PresencePip aria-label="Coordinator unreachable" size={6} state="degraded" />
