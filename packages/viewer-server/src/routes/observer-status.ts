@@ -45,10 +45,9 @@ function buildFailureImpact(
 }
 
 function readCaptureEnabled(): boolean | null {
-	const value = process.env.CODEMEM_RAW_EVENTS?.trim();
-	if (value === "0") return false;
-	if (value === "1") return true;
-	return null;
+	const value = process.env.CODEMEM_RAW_EVENTS?.trim().toLowerCase();
+	if (!value) return null;
+	return !["0", "false", "off"].includes(value);
 }
 
 export function observerStatusRoutes(deps?: ObserverStatusDeps) {

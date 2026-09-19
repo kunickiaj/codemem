@@ -119,22 +119,25 @@ function FeedContent({
 	loadingText?: string;
 	ops: FeedViewOps;
 }) {
-	if (!errorText || items.length > 0) return h(FeedList, { items, loadingText, ops });
-	return h(
-		"div",
-		{ className: "small feed-empty-state", role: "alert" },
-		h("strong", null, errorText),
-		h("div", null, "Check the viewer connection, then retry the Feed."),
-		h(
-			"button",
-			{
-				className: "settings-button",
-				onClick: () => void ops.loadFeedData().catch(() => undefined),
-				type: "button",
-			},
-			"Retry",
-		),
-	);
+	const errorNotice = errorText
+		? h(
+				"div",
+				{ className: "small feed-empty-state", role: "alert" },
+				h("strong", null, errorText),
+				h("div", null, "Check the viewer connection, then retry the Feed."),
+				h(
+					"button",
+					{
+						className: "settings-button",
+						onClick: () => void ops.loadFeedData().catch(() => undefined),
+						type: "button",
+					},
+					"Retry",
+				),
+			)
+		: null;
+	if (items.length === 0 && errorNotice) return errorNotice;
+	return h(Fragment, null, errorNotice, h(FeedList, { items, loadingText, ops }));
 }
 
 export function FeedTabView({
@@ -150,7 +153,6 @@ export function FeedTabView({
 }) {
 	const [inspectorOpen, setInspectorOpen] = useState(false);
 	const onInspectorToggle = () => {
-		completeFirstRunStep("find");
 		setInspectorOpen((current) => !current);
 	};
 	return h(
