@@ -1052,22 +1052,11 @@ export function listProjectScopeCandidates(
 	return limit == null ? sorted : sorted.slice(0, limit);
 }
 
-export function listProjectScopeInventory(
-	db: Database,
-	options: ProjectScopeInventoryOptions = {},
-): ProjectScopeInventoryResult {
-	ensureScopeBackfillScopes(db);
-	const limit = Math.max(1, Math.min(options.limit ?? 50, 250));
-	const offset = Math.max(0, options.offset ?? 0);
-	const mappings = listProjectScopeSettingsMappings(db);
-	const scopes = listSharingDomainSettingsScopes(db);
-	// Bootstrap sessions get a placeholder cwd (see SYNC_BOOTSTRAP_CWD_PREFIX
-	// in sync-bootstrap.ts) to satisfy the NOT NULL FK on memory_items.
-	// They represent inbound memories from peers and should not surface as
-	// distinct projects in the inventory. Match the prefix literally with
-	// substr — SQLite LIKE would treat the underscores in `__sync_bootstrap__`
-	// as wildcards and exclude unrelated cwds.
-	const rows = db
+// Bootstrap sessions use a placeholder cwd to satisfy the memory_items FK. They
+// represent inbound memories and must not surface as local projects. Match the
+// prefix with substr because SQLite LIKE treats its underscores as wildcards.
+function listLocalProjectScopeInventoryRows(db: Database): ProjectScopeCandidateRow[] {
+	return db
 		.prepare(
 			`SELECT
 				s.id,
@@ -1114,6 +1103,9 @@ export function listProjectScopeInventory(
 			 ORDER BY MAX(s.started_at) DESC, s.id DESC`,
 		)
 		.all(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX) as ProjectScopeCandidateRow[];
+}
+
+function listPeerReceivedProjectScopeInventoryRows(db: Database): ProjectScopeCandidateRow[] {
 	// Peer-received rows cover both bootstrap snapshot sessions (marked by the
 	// bootstrap cwd prefix) and sessions minted by incremental replication
 	// (tool_version 'sync_replication', no cwd). Both hold peer-owned content
@@ -1124,7 +1116,7 @@ export function listProjectScopeInventory(
 	// MAX(project) makes the displayed name deterministic when scope members
 	// briefly disagree (renames converge as replication upserts rewrite the
 	// project on existing rows).
-	const bootstrapRows = db
+	return db
 		.prepare(
 			`SELECT
 				MIN(s.id) AS id,
@@ -1160,10 +1152,21 @@ export function listProjectScopeInventory(
 			 ORDER BY MAX(COALESCE(mi.updated_at, s.started_at)) DESC, TRIM(mi.project) ASC`,
 		)
 		.all(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX) as ProjectScopeCandidateRow[];
+}
 
+interface BuiltProjectScopeInventory {
+	byIdentity: Map<string, ProjectScopeInventoryProject>;
+	inventory: ProjectScopeInventoryProject[];
+}
+
+function buildProjectScopeInventory(
+	rows: ProjectScopeCandidateRow[],
+	mappings: ProjectScopeSettingsMapping[],
+	scopes: SharingDomainSettingsScope[],
+): BuiltProjectScopeInventory {
 	const byIdentity = new Map<string, ProjectScopeInventoryProject>();
 	const inventory: ProjectScopeInventoryProject[] = [];
-	for (const row of [...rows, ...bootstrapRows]) {
+	for (const row of rows) {
 		const readOnly = row.inventory_source === "peer_received";
 		const candidate = {
 			...buildProjectScopeCandidate(row, mappings, scopes),
@@ -1201,6 +1204,25 @@ export function listProjectScopeInventory(
 		byIdentity.set(key, project);
 		inventory.push(project);
 	}
+	return { byIdentity, inventory };
+}
+
+export function listProjectScopeInventory(
+	db: Database,
+	options: ProjectScopeInventoryOptions = {},
+): ProjectScopeInventoryResult {
+	ensureScopeBackfillScopes(db);
+	const limit = Math.max(1, Math.min(options.limit ?? 50, 250));
+	const offset = Math.max(0, options.offset ?? 0);
+	const mappings = listProjectScopeSettingsMappings(db);
+	const scopes = listSharingDomainSettingsScopes(db);
+	const rows = listLocalProjectScopeInventoryRows(db);
+	const bootstrapRows = listPeerReceivedProjectScopeInventoryRows(db);
+	const { byIdentity, inventory } = buildProjectScopeInventory(
+		[...rows, ...bootstrapRows],
+		mappings,
+		scopes,
+	);
 
 	for (const mapping of mappings) {
 		if (!mapping.workspace_identity || byIdentity.has(`local:${mapping.workspace_identity}`))
