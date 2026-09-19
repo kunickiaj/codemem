@@ -75,6 +75,14 @@ describe("native control styles", () => {
 		);
 	});
 
+	it("uses one geometry for sibling Sharing decision actions", () => {
+		const normalizedHtml = html.replace(/\s+/g, " ");
+
+		expect(normalizedHtml).toContain(
+			".recipient-policy-review-actions > :is(.settings-save, .settings-button) { min-height: 32px; padding-block: 5px; border-radius: var(--radius-md); }",
+		);
+	});
+
 	it("precompresses every linked static stylesheet", () => {
 		const stylesheets = [...html.matchAll(/href="\/assets\/([^"?]+\.css)"/g)].map(
 			([, filename]) => filename,
