@@ -1369,46 +1369,14 @@ function deviceSummaryCounts(devices: DeviceProjection[], unknownFallbackCount: 
 	};
 }
 
-function DeviceSummaryBar({
-	counts,
-	onNavigate,
-}: {
-	counts: ReturnType<typeof deviceSummaryCounts>;
-	onNavigate?: DevicesRendererOptions["onNavigate"];
-}) {
-	return (
-		<div className="devices-summary-bar">
-			<div className="devices-summary-counts">
-				{(["available", "offline", "unknown"] as const).map((availability) => (
-					<span key={availability}>
-						<PresencePip
-							aria-label={`${counts[availability]} ${availability}`}
-							size={6}
-							state={availabilityPipState(availability)}
-						/>
-						{counts[availability]} {availability}
-					</span>
-				))}
-			</div>
-			{onNavigate ? (
-				<button className="settings-button" onClick={() => onNavigate("health")} type="button">
-					Check device health
-				</button>
-			) : null}
-		</div>
-	);
-}
-
 function ConfiguredDeviceInventory({
 	devices,
 	intent,
 	options,
-	unknownFallbackCount,
 }: {
 	devices: DeviceProjection[];
 	intent: RecipientPolicyIntentGraphV1;
 	options: DevicesRendererOptions;
-	unknownFallbackCount: number;
 }) {
 	const groups = new Map<string, DeviceProjection[]>();
 	for (const device of devices) {
@@ -1437,15 +1405,13 @@ function ConfiguredDeviceInventory({
 function DevicesSummaryBar({
 	devices,
 	options,
+	unknownFallbackCount,
 }: {
 	devices: DeviceProjection[];
 	options: DevicesRendererOptions;
+	unknownFallbackCount: number;
 }) {
-	const counts = {
-		available: devices.filter((device) => device.availability === "available").length,
-		offline: devices.filter((device) => device.availability === "offline").length,
-		unknown: devices.filter((device) => device.availability === "unknown").length,
-	};
+	const counts = deviceSummaryCounts(devices, unknownFallbackCount);
 	return (
 		<div className="devices-summary-bar">
 			<div className="devices-summary-counts">
@@ -1765,7 +1731,11 @@ function DevicesView({
 	const connectivityStatus = coordinatorUnavailable ? (
 		<CoordinatorStatus options={options} />
 	) : (
-		<DevicesSummaryBar devices={otherProjectedDevices} options={options} />
+		<DevicesSummaryBar
+			devices={otherProjectedDevices}
+			options={options}
+			unknownFallbackCount={configuredFallbackItems.length + setupItems.length}
+		/>
 	);
 	if (otherProjectedDevices.length === 0) {
 		return (
@@ -1776,10 +1746,6 @@ function DevicesView({
 				<ThisDeviceRow intent={intent} inventory={options.inventory} />
 				{coordinatorAttention}
 				{inventoryWorkflow}
-				<DeviceSummaryBar
-					counts={deviceSummaryCounts([], configuredFallbackItems.length + setupItems.length)}
-					onNavigate={options.onNavigate}
-				/>
 				{configuredFallbackWorkflow}
 				{hasOtherInventoryItems ? null : <DevicesEmptyState onOpenPairing={onOpenPairing} />}
 				{projection.revokedDeviceCount > 0 ? (
@@ -1804,7 +1770,6 @@ function DevicesView({
 				devices={visibleProjectedDevices}
 				intent={intent}
 				options={options}
-				unknownFallbackCount={configuredFallbackItems.length + setupItems.length}
 			/>
 			{projection.revokedDeviceCount > 0 ? (
 				<p className="small" role="status">

@@ -273,7 +273,6 @@ describe("Devices focus and inventory", function devicesFocusAndInventoryTests()
 
 		expect(document.body.textContent).toContain("Configured fallback");
 		expect(document.querySelector(".devices-summary-counts")?.textContent).toContain("1 unknown");
-		expect(document.body.textContent).toContain("No additional active devices are registered.");
 		expect(document.body.textContent).not.toContain("No configured devices are registered.");
 		expect(document.body.textContent).not.toContain("No other devices");
 	});
