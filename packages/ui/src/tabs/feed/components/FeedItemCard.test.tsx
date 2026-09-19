@@ -254,6 +254,7 @@ describe("FeedItemCard content and actions", () => {
 
 		act(() => titleButton().click());
 		expect(mount.textContent).toContain("Device Ada's MacBook");
+		expect(mount.querySelector(".feed-expanded-provenance")).not.toBeNull();
 		expect(mount.querySelector(".feed-files")?.textContent).toContain("src/retry.ts");
 		expect(mount.textContent).not.toContain("raw-device-id");
 	});
