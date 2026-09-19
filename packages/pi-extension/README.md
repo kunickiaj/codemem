@@ -33,7 +33,7 @@ Build first so `dist/index.js` exists (`pnpm --filter @codemem/pi-extension buil
 
 - **Ingest** — captures pi session events (`session_start`/`session_shutdown`, user/assistant messages, tool calls/results) into codemem with `source: "pi"` via `POST /api/pi-hooks`, falling back to `codemem pi-hook-ingest` (spool when offline).
 - **Injection** — on `before_agent_start`, appends a `## codemem memories` block to the **turn-local** `systemPrompt` (never the persistent `message` channel).
-- **Tools** — not registered in this package slice (follow-up).
+- **Tools** — registers the 14 `memory_*` tools natively (HTTP preferred, CLI fallback). No `pi-mcp-adapter` needed. Skipped when `pi.tools_mode` is `mcp-adapter`.
 - **Compaction** — pi-only observe-only boundary: `session_before_compact` flushes extraction; never returns a custom compaction summary.
 - **Fork/resume** — re-keys stream identity on every `session_start`; durable cursors via `pi.appendEntry`.
 - **Cross-agent** — one shared, project-scoped store. Memories from OpenCode/Claude/Codex inject into pi and the reverse.

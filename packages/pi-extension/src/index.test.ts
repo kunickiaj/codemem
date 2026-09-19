@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { mapPiEventPayload } from "@codemem/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CLI_PACK_TIMEOUT_MS } from "./client.js";
@@ -5,6 +8,7 @@ import type { PiExtensionConfig } from "./config.js";
 import { defaultPiExtensionConfig } from "./config.js";
 import codememPiExtension, {
 	__setTestExecImpl,
+	expectedToolNames,
 	formatPiInjectionBlock,
 	stableMessageEntryId,
 } from "./index.js";
@@ -91,7 +95,7 @@ describe("extension factory lifecycle", () => {
 	afterEach(resetPiExtensionTest);
 
 	it("registers session + agent + tool handlers without starting daemons", () => {
-		const { pi, handlers } = createMockPi();
+		const { pi, handlers, tools } = createMockPi();
 		codememPiExtension(pi as never);
 
 		const expectedEvents = [
@@ -106,6 +110,13 @@ describe("extension factory lifecycle", () => {
 		for (const name of expectedEvents) {
 			expect(handlers.has(name), `missing handler for ${name}`).toBe(true);
 		}
+		expect(tools.map((t) => t.name).toSorted()).toEqual(expectedToolNames().toSorted());
+	});
+	it("skips native tools when tools_mode is mcp-adapter", () => {
+		vi.stubEnv("CODEMEM_PI_TOOLS_MODE", "mcp-adapter");
+		const { pi, tools } = createMockPi();
+		codememPiExtension(pi as never);
+		expect(tools).toHaveLength(0);
 	});
 
 	it("session_start re-keys state and persists cursor after ingest attempt", async () => {
@@ -825,6 +836,99 @@ describe("file-context pack budget", () => {
 		expect(timeouts[0]).not.toBe(3_000);
 		expect(result?.content).toHaveLength(2);
 		expect(String(result?.content?.[1]?.text ?? "")).toContain("## codemem memories");
+	});
+});
+
+describe("file-context string content", () => {
+	afterEach(resetPiExtensionTest);
+
+	it("file-context appends (never replaces) string tool_result content", async () => {
+		__setTestExecImpl(async (args) => {
+			if (args[0] === "claude-hook-file-context") {
+				return {
+					stdout: JSON.stringify({
+						hookSpecificOutput: { additionalContext: "per-file context" },
+					}),
+					stderr: "",
+				};
+			}
+			return { stdout: JSON.stringify({ inserted: 1, skipped: 0 }), stderr: "" };
+		});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				throw new Error("offline");
+			}),
+		);
+
+		const { pi, handlers } = createMockPi();
+		codememPiExtension(pi as never);
+		const ctx = createMockCtx();
+		await handlers.get("session_start")?.[0]?.({ type: "session_start", reason: "startup" }, ctx);
+
+		const result = (await handlers.get("tool_result")?.[0]?.(
+			{
+				type: "tool_result",
+				toolCallId: "tc-file-ctx-string",
+				toolName: "read",
+				input: { path: "src/a.ts" },
+				content: "original file text",
+				isError: false,
+			},
+			ctx,
+		)) as { content?: Array<{ type: string; text: string }> } | undefined;
+
+		expect(result?.content).toHaveLength(2);
+		expect(String(result?.content?.[0]?.text ?? "")).toContain("original file text");
+		expect(String(result?.content?.[1]?.text ?? "")).toContain("## codemem memories");
+	});
+});
+
+describe("memory_search git-root project", () => {
+	afterEach(resetPiExtensionTest);
+
+	it("memory_search tool scopes to the git-root project from a nested cwd", async () => {
+		vi.stubEnv("CODEMEM_PROJECT", "");
+		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-pi-tool-scope-"));
+		const repoRoot = join(tmpDir, "scoped-repo");
+		const nested = join(repoRoot, "packages", "core");
+		mkdirSync(join(repoRoot, ".git"), { recursive: true });
+		mkdirSync(nested, { recursive: true });
+
+		try {
+			const cliArgs: string[][] = [];
+			__setTestExecImpl(async (args) => {
+				cliArgs.push(args);
+				if (args[0] === "pi-hook-ingest") {
+					return { stdout: JSON.stringify({ inserted: 1, skipped: 0 }), stderr: "" };
+				}
+				return { stdout: JSON.stringify({ items: [{ id: 1, title: "hit" }] }), stderr: "" };
+			});
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async () => {
+					throw new Error("offline");
+				}),
+			);
+
+			const { pi, handlers, tools } = createMockPi();
+			codememPiExtension(pi as never);
+			const ctx = createMockCtx({ cwd: nested });
+			await handlers.get("session_start")?.[0]?.({ type: "session_start", reason: "startup" }, ctx);
+
+			const searchTool = tools.find((t) => t.name === "memory_search");
+			expect(searchTool).toBeDefined();
+			await searchTool?.execute("tc-scope-1", { query: "recall" }, ctx.signal);
+
+			const searchCall = cliArgs.find((args) => args[0] === "search");
+			expect(searchCall).toBeDefined();
+			expect(searchCall).toContain("--project");
+			const projectIndex = searchCall?.indexOf("--project") ?? -1;
+			expect(searchCall?.[projectIndex + 1]).toBe("scoped-repo");
+			expect(searchCall?.[projectIndex + 1]).not.toBe("core");
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true });
+		}
 	});
 });
 
