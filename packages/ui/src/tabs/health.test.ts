@@ -187,7 +187,7 @@ it("animates loading while a stable announcer reports loading and completion", (
 
 	renderOverview();
 	const announcer = document.getElementById("healthMeta");
-	expect(announcer?.textContent).toBe("Loading health data…");
+	expect(announcer?.textContent).toBe("Loading · Loading health data…");
 	expect(announcer?.getAttribute("role")).toBe("status");
 	expect(announcer?.getAttribute("aria-live")).toBe("polite");
 	expect(announcer?.getAttribute("aria-atomic")).toBe("true");
@@ -198,7 +198,7 @@ it("animates loading while a stable announcer reports loading and completion", (
 	renderOverview();
 
 	expect(document.getElementById("healthMeta")).toBe(announcer);
-	expect(announcer?.textContent).toBe("0 issues");
+	expect(announcer?.textContent).toBe("Healthy · 0 issues");
 	expect(document.querySelector("#healthGrid [role='status']")).toBeNull();
 });
 
@@ -364,7 +364,7 @@ it("counts detected health risks instead of remediation rows", () => {
 	renderOverview();
 
 	expect(document.getElementById("healthMeta")?.textContent).toMatch(
-		/^1 issue · sync needs manual attention/,
+		/^Degraded · 1 issue · sync needs manual attention/,
 	);
 });
 
@@ -465,7 +465,7 @@ it("keeps last known critical risks visible when their snapshots are stale", () 
 
 	expect(document.getElementById("healthDot")?.title).toBe("Attention");
 	expect(document.getElementById("healthMeta")?.textContent).toMatch(
-		/^4 issues · high raw-event backlog/,
+		/^Attention · 4 issues · high raw-event backlog/,
 	);
 });
 

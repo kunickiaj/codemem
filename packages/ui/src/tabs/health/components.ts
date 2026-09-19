@@ -532,6 +532,7 @@ function HealthStatus({
 						"aria-live": "polite",
 						"aria-atomic": "true",
 					},
+					h("span", { class: "sr-only" }, `${label} · `),
 					message,
 					stale ? h("span", { class: "sr-only" }, " · Stale data") : null,
 				),
