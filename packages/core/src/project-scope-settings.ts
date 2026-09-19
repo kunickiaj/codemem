@@ -81,6 +81,7 @@ export interface ProjectScopeCandidate {
 	guardrail_warnings: ProjectScopeGuardrailWarning[];
 	read_only: boolean;
 	read_only_reason: "peer_received" | null;
+	origin_devices?: Array<{ device_id: string }>;
 }
 
 export type ProjectScopeInventoryStatus =
@@ -94,6 +95,7 @@ export type ProjectScopeInventoryStatus =
 
 export interface ProjectScopeInventoryProject extends ProjectScopeCandidate {
 	memory_count: number | null;
+	origin_devices: Array<{ device_id: string }>;
 	session_count: number;
 	statuses: ProjectScopeInventoryStatus[];
 }
@@ -158,13 +160,25 @@ interface ProjectScopeCandidateRow {
 	git_remote: string | null;
 	git_branch: string | null;
 	workspace_id: string | null;
+	origin_devices?: Array<{ device_id: string }>;
 	memory_count?: number | null;
 	session_count?: number | null;
 }
 
+type ProjectScopeCandidateWithOrigins = ProjectScopeCandidate & {
+	origin_devices: Array<{ device_id: string }>;
+};
+
 function clean(value: string | null | undefined): string | null {
 	const trimmed = value?.trim();
 	return trimmed ? trimmed : null;
+}
+
+function originDevicesForCandidate(row: ProjectScopeCandidateRow): Array<{ device_id: string }> {
+	if (row.inventory_source !== "peer_received") return [];
+	return [...new Set((row.origin_devices ?? []).map((device) => device.device_id))]
+		.toSorted((left, right) => left.localeCompare(right))
+		.map((deviceId) => ({ device_id: deviceId }));
 }
 
 function inventoryMergeKey(
@@ -408,7 +422,7 @@ function projectScopeCandidateGuardrailWarnings(
 	return warnings.map(withGuardrailConfirmationToken);
 }
 
-function withCandidateGuardrails(candidates: ProjectScopeCandidate[]): ProjectScopeCandidate[] {
+function withCandidateGuardrails<T extends ProjectScopeCandidate>(candidates: T[]): T[] {
 	const collisions = candidateCollisionMap(candidates);
 	return candidates.map((candidate) => ({
 		...candidate,
@@ -458,7 +472,7 @@ function buildProjectScopeCandidate(
 	row: ProjectScopeCandidateRow,
 	mappings: ProjectScopeSettingsMapping[],
 	scopes: SharingDomainSettingsScope[],
-): ProjectScopeCandidate {
+): ProjectScopeCandidateWithOrigins {
 	const project = cleanProjectIdentity(row.project);
 	const cwd = cleanProjectIdentity(row.cwd);
 	const gitRemote = cleanProjectIdentity(row.git_remote);
@@ -493,11 +507,12 @@ function buildProjectScopeCandidate(
 		matched_pattern: resolution.matchedPattern,
 		read_only: false,
 		read_only_reason: null,
+		origin_devices: originDevicesForCandidate(row),
 		suggested_scope_id: null,
 		suggestion_reason: null,
 		suggestion_signal: null,
 		guardrail_warnings: [],
-	} satisfies ProjectScopeCandidate;
+	} satisfies ProjectScopeCandidateWithOrigins;
 	const suggestion = suggestProjectScope(baseCandidate, scopes);
 	return {
 		...baseCandidate,
@@ -1041,22 +1056,11 @@ export function listProjectScopeCandidates(
 	return limit == null ? sorted : sorted.slice(0, limit);
 }
 
-export function listProjectScopeInventory(
-	db: Database,
-	options: ProjectScopeInventoryOptions = {},
-): ProjectScopeInventoryResult {
-	ensureScopeBackfillScopes(db);
-	const limit = Math.max(1, Math.min(options.limit ?? 50, 250));
-	const offset = Math.max(0, options.offset ?? 0);
-	const mappings = listProjectScopeSettingsMappings(db);
-	const scopes = listSharingDomainSettingsScopes(db);
-	// Bootstrap sessions get a placeholder cwd (see SYNC_BOOTSTRAP_CWD_PREFIX
-	// in sync-bootstrap.ts) to satisfy the NOT NULL FK on memory_items.
-	// They represent inbound memories from peers and should not surface as
-	// distinct projects in the inventory. Match the prefix literally with
-	// substr — SQLite LIKE would treat the underscores in `__sync_bootstrap__`
-	// as wildcards and exclude unrelated cwds.
-	const rows = db
+// Bootstrap sessions use a placeholder cwd to satisfy the memory_items FK. They
+// represent inbound memories and must not surface as local projects. Match the
+// prefix with substr because SQLite LIKE treats its underscores as wildcards.
+function listLocalProjectScopeInventoryRows(db: Database): ProjectScopeCandidateRow[] {
+	return db
 		.prepare(
 			`SELECT
 				s.id,
@@ -1103,6 +1107,9 @@ export function listProjectScopeInventory(
 			 ORDER BY MAX(s.started_at) DESC, s.id DESC`,
 		)
 		.all(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX) as ProjectScopeCandidateRow[];
+}
+
+function listPeerReceivedProjectAggregateRows(db: Database): ProjectScopeCandidateRow[] {
 	// Peer-received rows cover both bootstrap snapshot sessions (marked by the
 	// bootstrap cwd prefix) and sessions minted by incremental replication
 	// (tool_version 'sync_replication', no cwd). Both hold peer-owned content
@@ -1113,7 +1120,7 @@ export function listProjectScopeInventory(
 	// MAX(project) makes the displayed name deterministic when scope members
 	// briefly disagree (renames converge as replication upserts rewrite the
 	// project on existing rows).
-	const bootstrapRows = db
+	return db
 		.prepare(
 			`SELECT
 				MIN(s.id) AS id,
@@ -1145,10 +1152,63 @@ export function listProjectScopeInventory(
 			 ORDER BY MAX(COALESCE(mi.updated_at, s.started_at)) DESC, TRIM(mi.project) ASC`,
 		)
 		.all(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX) as ProjectScopeCandidateRow[];
+}
 
+interface PeerReceivedOriginDeviceRow {
+	workspace_id: string;
+	device_id: string;
+}
+
+function listPeerReceivedOriginDeviceRows(db: Database): PeerReceivedOriginDeviceRow[] {
+	return db
+		.prepare(
+			`SELECT DISTINCT
+				'peer-received:' || CASE
+					WHEN mi.scope_id LIKE 'managed-project:%' THEN 'scope:' || mi.scope_id
+					ELSE TRIM(mi.origin_device_id) || ':project:' || TRIM(mi.project)
+				END AS workspace_id,
+				TRIM(mi.origin_device_id) AS device_id
+			 FROM memory_items mi
+			 JOIN sessions s ON s.id = mi.session_id
+			 WHERE mi.active = 1
+			   AND mi.project IS NOT NULL
+			   AND TRIM(mi.project) <> ''
+			   AND TRIM(COALESCE(mi.origin_device_id, '')) NOT IN ('', 'unknown')
+			   AND (
+			         (s.cwd IS NOT NULL AND substr(s.cwd, 1, length(?)) = ?)
+			      OR (s.cwd IS NULL AND s.tool_version = 'sync_replication')
+			       )
+			 ORDER BY workspace_id, device_id`,
+		)
+		.all(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX) as PeerReceivedOriginDeviceRow[];
+}
+
+function listPeerReceivedProjectScopeInventoryRows(db: Database): ProjectScopeCandidateRow[] {
+	const originsByWorkspace = new Map<string, Array<{ device_id: string }>>();
+	for (const origin of listPeerReceivedOriginDeviceRows(db)) {
+		const origins = originsByWorkspace.get(origin.workspace_id) ?? [];
+		origins.push({ device_id: origin.device_id });
+		originsByWorkspace.set(origin.workspace_id, origins);
+	}
+	return listPeerReceivedProjectAggregateRows(db).map((row) => ({
+		...row,
+		origin_devices: originsByWorkspace.get(row.workspace_id ?? "") ?? [],
+	}));
+}
+
+interface BuiltProjectScopeInventory {
+	byIdentity: Map<string, ProjectScopeInventoryProject>;
+	inventory: ProjectScopeInventoryProject[];
+}
+
+function buildProjectScopeInventory(
+	rows: ProjectScopeCandidateRow[],
+	mappings: ProjectScopeSettingsMapping[],
+	scopes: SharingDomainSettingsScope[],
+): BuiltProjectScopeInventory {
 	const byIdentity = new Map<string, ProjectScopeInventoryProject>();
 	const inventory: ProjectScopeInventoryProject[] = [];
-	for (const row of [...rows, ...bootstrapRows]) {
+	for (const row of rows) {
 		const readOnly = row.inventory_source === "peer_received";
 		const candidate = {
 			...buildProjectScopeCandidate(row, mappings, scopes),
@@ -1186,11 +1246,30 @@ export function listProjectScopeInventory(
 		byIdentity.set(key, project);
 		inventory.push(project);
 	}
+	return { byIdentity, inventory };
+}
+
+export function listProjectScopeInventory(
+	db: Database,
+	options: ProjectScopeInventoryOptions = {},
+): ProjectScopeInventoryResult {
+	ensureScopeBackfillScopes(db);
+	const limit = Math.max(1, Math.min(options.limit ?? 50, 250));
+	const offset = Math.max(0, options.offset ?? 0);
+	const mappings = listProjectScopeSettingsMappings(db);
+	const scopes = listSharingDomainSettingsScopes(db);
+	const rows = listLocalProjectScopeInventoryRows(db);
+	const bootstrapRows = listPeerReceivedProjectScopeInventoryRows(db);
+	const { byIdentity, inventory } = buildProjectScopeInventory(
+		[...rows, ...bootstrapRows],
+		mappings,
+		scopes,
+	);
 
 	for (const mapping of mappings) {
 		if (!mapping.workspace_identity || byIdentity.has(`local:${mapping.workspace_identity}`))
 			continue;
-		const candidate: ProjectScopeCandidate = {
+		const candidate: ProjectScopeCandidateWithOrigins = {
 			workspace_identity: mapping.workspace_identity,
 			identity_source: "workspace_id",
 			display_project: mapping.project_pattern || mapping.workspace_identity,
@@ -1205,6 +1284,7 @@ export function listProjectScopeInventory(
 			matched_pattern: null,
 			read_only: false,
 			read_only_reason: null,
+			origin_devices: [],
 			suggested_scope_id: null,
 			suggestion_reason: null,
 			suggestion_signal: null,

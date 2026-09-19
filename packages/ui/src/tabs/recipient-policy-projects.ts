@@ -10,6 +10,7 @@ export interface ReceivedProjectShare {
 	displayName: string;
 	existingMemoryCount: number;
 	latestSessionAt: string | null;
+	originDevices: Array<{ deviceId: string; displayName: string | null }>;
 }
 
 /**
@@ -28,6 +29,10 @@ export function toReceivedProjectShares(
 			displayName: project.display_project,
 			existingMemoryCount: project.memory_count ?? 0,
 			latestSessionAt: project.latest_session_at ?? null,
+			originDevices: (project.origin_devices ?? []).map((device) => ({
+				deviceId: device.device_id,
+				displayName: device.display_name,
+			})),
 		});
 	}
 	return [...byId.values()].sort(

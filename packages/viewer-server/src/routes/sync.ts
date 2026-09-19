@@ -19,6 +19,7 @@ import type {
 	MaintenanceJobSnapshot,
 	MemoryStore,
 	ProjectScopeGuardrailWarning,
+	ProjectScopeInventoryProject,
 	ReassignScopeCapability,
 	RecipientPolicyCoordinatorEffectReceipt,
 	RecipientPolicyOnboardingPreviewV1,
@@ -4709,6 +4710,83 @@ async function loadConfiguredDeviceIdentityCoordinatorEvidence(): Promise<Device
 	}
 }
 
+const ORIGIN_DEVICE_NAME_LOOKUP_BATCH_SIZE = 400;
+
+function originDeviceDisplayName(value: unknown, deviceId: string): string | null {
+	if (typeof value !== "string") return null;
+	try {
+		const displayName = normalizeHumanPresentationName(value, "display_name");
+		let normalizedDeviceId = deviceId;
+		try {
+			normalizedDeviceId = normalizeHumanPresentationName(deviceId, "device_id");
+		} catch {
+			// Opaque device IDs are intentionally not valid human presentation names.
+		}
+		return displayName === normalizedDeviceId ? null : displayName;
+	} catch {
+		return null;
+	}
+}
+
+function resolveOriginDeviceDisplayNames(
+	store: MemoryStore,
+	projects: ProjectScopeInventoryProject[],
+): Map<string, string> {
+	const deviceIds = [
+		...new Set(
+			projects.flatMap((project) => project.origin_devices.map((device) => device.device_id)),
+		),
+	];
+	const names = new Map<string, string>();
+	for (let offset = 0; offset < deviceIds.length; offset += ORIGIN_DEVICE_NAME_LOOKUP_BATCH_SIZE) {
+		const batch = deviceIds.slice(offset, offset + ORIGIN_DEVICE_NAME_LOOKUP_BATCH_SIZE);
+		const placeholders = batch.map(() => "?").join(", ");
+		const peers = store.db
+			.prepare(
+				`SELECT peer_device_id AS device_id, name AS display_name
+				 FROM sync_peers
+				 WHERE peer_device_id IN (${placeholders})
+				   AND TRIM(COALESCE(pinned_fingerprint, '')) <> ''`,
+			)
+			.all(...batch) as Array<{ device_id: string; display_name: string | null }>;
+		for (const peer of peers) {
+			const displayName = originDeviceDisplayName(peer.display_name, peer.device_id);
+			if (displayName) names.set(peer.device_id, displayName);
+		}
+		const devices = store.db
+			.prepare(
+				`SELECT device_id, display_name
+				 FROM identity_devices
+				 WHERE device_id IN (${placeholders}) AND status = 'active'`,
+			)
+			.all(...batch) as Array<{ device_id: string; display_name: string | null }>;
+		for (const device of devices) {
+			const displayName = originDeviceDisplayName(device.display_name, device.device_id);
+			if (displayName) names.set(device.device_id, displayName);
+		}
+	}
+	return names;
+}
+
+function serializeProjectScopeInventory(
+	store: MemoryStore,
+	inventory: ReturnType<typeof listProjectScopeInventory>,
+	sharingByProject: Map<string, Array<Record<string, unknown>>>,
+) {
+	const originDeviceNames = resolveOriginDeviceDisplayNames(store, inventory.projects);
+	return {
+		...inventory,
+		projects: inventory.projects.map((project) => ({
+			...project,
+			origin_devices: project.origin_devices.map(({ device_id }) => ({
+				device_id,
+				display_name: originDeviceNames.get(device_id) ?? null,
+			})),
+			sharing: sharingByProject.get(project.workspace_identity) ?? [],
+		})),
+	};
+}
+
 /**
  * Viewer-facing sync management routes (/api/sync/*).
  *
@@ -5636,13 +5714,7 @@ export function syncRoutes(
 			});
 			sharingByProject.set(item.canonical_project_identity, current);
 		}
-		return c.json({
-			...inventory,
-			projects: inventory.projects.map((project) => ({
-				...project,
-				sharing: sharingByProject.get(project.workspace_identity) ?? [],
-			})),
-		});
+		return c.json(serializeProjectScopeInventory(store, inventory, sharingByProject));
 	});
 
 	app.post("/api/sync/projects/reassign-project", async (c) => {

@@ -54,6 +54,7 @@ const project: ProjectScopeInventoryProject = {
 	project: "codemem",
 	read_only: false,
 	read_only_reason: null,
+	origin_devices: [],
 	resolution_reason: "local_default",
 	resolved_scope_id: "private-internal-value",
 	session_count: 4,

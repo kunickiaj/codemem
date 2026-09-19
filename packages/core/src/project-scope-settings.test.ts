@@ -102,6 +102,65 @@ function insertScope(
 	);
 }
 
+function seedManagedReceivedProjectOrigins(
+	db: InstanceType<typeof Database>,
+	scopeId: string,
+): void {
+	const bootstrapSession = insertSession(db, {
+		cwd: "__sync_bootstrap__:codemem",
+		gitRemote: null,
+		project: "codemem",
+	});
+	insertMemory(db, bootstrapSession, {
+		originDeviceId: "owner-laptop",
+		project: "codemem",
+		scopeId,
+		workspaceId: "shared:default",
+	});
+	const replicationSession = insertSession(db, {
+		cwd: null,
+		gitRemote: null,
+		project: "codemem",
+		toolVersion: "sync_replication",
+	});
+	for (const originDeviceId of ["owner,desktop", "", "owner-laptop"]) {
+		insertMemory(db, replicationSession, {
+			originDeviceId,
+			project: "codemem",
+			scopeId,
+			workspaceId: "shared:default",
+		});
+	}
+}
+
+function listsDistinctManagedReceivedProjectOrigins(): void {
+	const db = new Database(":memory:");
+	try {
+		initTestSchema(db);
+		const scopeId = "managed-project:abc123";
+		seedManagedReceivedProjectOrigins(db, scopeId);
+		const received = listProjectScopeInventory(db).projects.filter(
+			(project) => project.read_only_reason === "peer_received",
+		);
+		expect(received).toHaveLength(1);
+		expect(received[0]).toMatchObject({
+			display_project: "codemem",
+			memory_count: 4,
+			origin_devices: [{ device_id: "owner-laptop" }, { device_id: "owner,desktop" }],
+			workspace_identity: `peer-received:scope:${scopeId}`,
+		});
+	} finally {
+		db.close();
+	}
+}
+
+describe("received project origin devices", () => {
+	it(
+		"keeps distinct origin devices, including IDs containing commas",
+		listsDistinctManagedReceivedProjectOrigins,
+	);
+});
+
 describe("project scope settings", () => {
 	let db: InstanceType<typeof Database>;
 
@@ -1432,45 +1491,6 @@ describe("project scope settings", () => {
 		expect(
 			inventory.projects.filter((project) => project.display_project === "codemem"),
 		).toHaveLength(1);
-	});
-
-	it("groups peer-received memories from multiple origin devices by their managed scope", () => {
-		const scopeId = "managed-project:abc123";
-		const bootstrapSession = insertSession(db, {
-			cwd: "__sync_bootstrap__:codemem",
-			gitRemote: null,
-			project: "codemem",
-		});
-		insertMemory(db, bootstrapSession, {
-			originDeviceId: "owner-laptop",
-			project: "codemem",
-			scopeId,
-			workspaceId: "shared:default",
-		});
-		const replicationSession = insertSession(db, {
-			cwd: null,
-			gitRemote: null,
-			project: "codemem",
-			toolVersion: "sync_replication",
-		});
-		insertMemory(db, replicationSession, {
-			originDeviceId: "owner-desktop",
-			project: "codemem",
-			scopeId,
-			workspaceId: "shared:default",
-		});
-
-		const inventory = listProjectScopeInventory(db);
-		const received = inventory.projects.filter(
-			(project) => project.read_only_reason === "peer_received",
-		);
-		// One card for the Project despite two authoring devices.
-		expect(received).toHaveLength(1);
-		expect(received[0]).toMatchObject({
-			display_project: "codemem",
-			memory_count: 2,
-			workspace_identity: `peer-received:scope:${scopeId}`,
-		});
 	});
 
 	it("does not double-list a replicated session whose memories gained a project later", () => {
