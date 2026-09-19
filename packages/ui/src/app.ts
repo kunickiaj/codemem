@@ -358,7 +358,7 @@ function renderAdvancedSection() {
 	if (tabsMount) mountAdvancedTabs(tabsMount, state.advancedSection, selectAdvancedSection);
 	queueMicrotask(() => {
 		const hash = window.location.hash.replace(/^#/, "");
-		if (!isSync && (revealCoordinatorAdministration || isCoordinatorAdministrationRoute())) {
+		if (!isSync && revealCoordinatorAdministration) {
 			revealCoordinatorAdministration = false;
 			const disclosure = document.getElementById("advancedAdministrationDisclosure");
 			if (disclosure instanceof HTMLDetailsElement) disclosure.open = true;
@@ -454,6 +454,7 @@ function initTabs() {
 		const top = parseTabFromHash();
 		if (top) {
 			const advancedSection = parseAdvancedSectionFromHash();
+			revealCoordinatorAdministration = isCoordinatorAdministrationRoute();
 			switchTab(top, advancedSection ? { advancedSection } : {});
 			if (top === "advanced" && advancedSection === "teams") {
 				queueMicrotask(() => document.getElementById("coordinatorAdminHeading")?.focus());
