@@ -141,7 +141,7 @@ function ProjectSpaceSelect(props: DetailsContentProps) {
 					</option>
 				) : null}
 				{view.scopeGroups.map((group) => (
-					<optgroup key={group.label} label={group.label}>
+					<optgroup key={group.key} label={group.label}>
 						{group.scopes.map((scope) => (
 							<option key={scope.scope_id} value={scope.scope_id}>
 								{scopeOptionLabel(scope, group.scopes)}

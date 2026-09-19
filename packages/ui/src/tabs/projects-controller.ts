@@ -92,6 +92,7 @@ const emptyRecipientPolicyIntent: RecipientPolicyIntentGraphV1 = {
 let recipientPolicyIntent = emptyRecipientPolicyIntent;
 let recipientPolicyIntentReady = false;
 let recipientPolicyIntentDisplayReady = false;
+let hasProjectInventoryResult = false;
 let openTeamSetup: ((candidateRef: string) => void) | undefined;
 let latestInventoryResult: {
 	projects: ProjectScopeInventoryProject[];
@@ -346,7 +347,11 @@ function scopeGroupKey(scope: SharingDomainScope): string {
 	return `${scope.authority_type || "other"}:${scope.kind || "space"}`;
 }
 
-function groupedAssignableScopes(): Array<{ label: string; scopes: SharingDomainScope[] }> {
+function groupedAssignableScopes(): Array<{
+	key: string;
+	label: string;
+	scopes: SharingDomainScope[];
+}> {
 	const groups = new Map<string, { label: string; scopes: SharingDomainScope[] }>();
 	for (const scope of assignableScopes()) {
 		const key = scopeGroupKey(scope);
@@ -354,7 +359,7 @@ function groupedAssignableScopes(): Array<{ label: string; scopes: SharingDomain
 		const current = groups.get(key) ?? { label, scopes: [] };
 		groups.set(key, { label: current.label, scopes: [...current.scopes, scope] });
 	}
-	return [...groups.values()];
+	return [...groups.entries()].map(([key, group]) => ({ key, ...group }));
 }
 
 async function saveProjectMapping(
@@ -797,6 +802,7 @@ function projectsInventoryViewModel(): ProjectsInventoryViewModel {
 			hasMore: latestInventoryResult.has_more,
 		},
 		scopeGroups: groupedAssignableScopes().map((group) => ({
+			key: group.key,
 			label: group.label,
 			scopes: [...group.scopes],
 		})),
@@ -819,6 +825,7 @@ function projectInventoryMetaText(result: {
 }
 
 function renderCurrentProjectInventory(error?: string): void {
+	if (!hasProjectInventoryResult) return;
 	const list = el<HTMLDivElement>("projectsInventoryList");
 	if (!list) return;
 	renderProjectInventoryView(list, projectsInventoryViewModel(), projectInventoryCallbacks, error);
@@ -830,6 +837,7 @@ function renderProjectInventory(result: {
 	offset: number;
 	has_more: boolean;
 }) {
+	hasProjectInventoryResult = true;
 	latestInventoryResult = {
 		projects: [...result.projects],
 		total: result.total,
@@ -1167,6 +1175,7 @@ function updateProjectTeamSetupAfterLoad(input: {
 }
 
 function renderProjectsLoadFailure(error: unknown, meta: HTMLElement): void {
+	hasProjectInventoryResult = true;
 	projectInventoryByIdentity.clear();
 	latestInventoryResult = { projects: [], total: 0, offset: currentOffset, has_more: false };
 	projectShareInventoryReady = false;
@@ -1363,6 +1372,7 @@ export function initProjectsTab(
 	draftClusterDomainSelections.clear();
 	pendingConfirmations.clear();
 	pendingForgetConfirmations.clear();
+	hasProjectInventoryResult = false;
 	const status = el<HTMLSelectElement>("projectsStatusFilter");
 	if (status && status.options.length === 0) {
 		status.append(...STATUS_OPTIONS.map(([value, label]) => new Option(label, value)));

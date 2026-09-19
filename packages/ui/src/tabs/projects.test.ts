@@ -353,6 +353,16 @@ beforeEach(setupProjectsTest);
 afterEach(cleanupProjectsTest);
 
 describe("Projects tab", () => {
+	it("keeps the empty state hidden until inventory resolves", () => {
+		vi.mocked(api.loadProjectScopeInventory).mockReturnValueOnce(new Promise(() => {}));
+
+		initProjectsTab(() => {});
+		void loadProjectsData();
+
+		expect(document.getElementById("projectsInventorySkeleton")).not.toBeNull();
+		expect(document.body.textContent).not.toContain("No matching projects");
+	});
+
 	it("shows empty inventory without bogus pagination range", async () => {
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
 			has_more: false,
@@ -3299,6 +3309,10 @@ describe("Projects cached recipient presentation", () => {
 			{ label: "Team: ExampleCo Team", options: ["ExampleCo Work (default)"] },
 		]);
 		expect(document.body.textContent).toContain("ExampleCo Work (default) · Team: ExampleCo Team");
+		const keys = getProjectsInventoryController()
+			.getViewModel()
+			.scopeGroups.map((group) => group.key);
+		expect(keys).toEqual(["local:system", "team:exampleco"]);
 	});
 
 	it("disambiguates duplicate Space names in assignment options", async () => {
@@ -4139,6 +4153,11 @@ describe("Projects inventory controller subscriptions", () => {
 		await controller.callbacks.saveProjectScope(project().workspace_identity, "local-default");
 		expect(listener).toHaveBeenCalledTimes(3);
 	});
+});
+
+describe("Projects inventory controller collision subscriptions", () => {
+	beforeEach(setupProjectsTest);
+	afterEach(cleanupProjectsTest);
 
 	it("keeps colliding local and peer row state source-qualified", async () => {
 		const identity = project().workspace_identity;
