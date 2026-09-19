@@ -64,9 +64,9 @@ export function shouldShowCoordinatorReviewAction(input: {
 			input.device.addresses.some((address) => cleanText(address))) ||
 		(Number.isFinite(addressCount) && addressCount > 0);
 	if (!deviceId) return false;
-	if (input.device?.stale || !hasUsableAddress || input.hasAmbiguousCoordinatorGroup) return false;
-	if (!input.pairedLocally) return true;
-	return approvalSummary.state === "needs-your-approval";
+	if (input.device?.stale || input.hasAmbiguousCoordinatorGroup) return false;
+	if (input.pairedLocally) return approvalSummary.state === "needs-your-approval";
+	return hasUsableAddress;
 }
 
 export function summarizeSyncRunResult(payload: UiSyncRunResponse): {

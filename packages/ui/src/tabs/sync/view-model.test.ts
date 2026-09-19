@@ -993,6 +993,32 @@ describe("shouldShowCoordinatorReviewAction", () => {
 		).toBe(true);
 	});
 
+	it("keeps addressless existing peers actionable for reciprocal approval", () => {
+		expect(
+			shouldShowCoordinatorReviewAction({
+				device: {
+					device_id: "peer-a",
+					fingerprint: "fp-a",
+					needs_local_approval: true,
+				},
+				pairedLocally: true,
+			}),
+		).toBe(true);
+	});
+
+	it("keeps addressless new devices non-actionable", () => {
+		expect(
+			shouldShowCoordinatorReviewAction({
+				device: {
+					device_id: "peer-a",
+					fingerprint: "fp-a",
+					needs_local_approval: true,
+				},
+				pairedLocally: false,
+			}),
+		).toBe(false);
+	});
+
 	it("keeps already-paired devices hidden when they are only waiting on the other side", () => {
 		expect(
 			shouldShowCoordinatorReviewAction({
