@@ -29,6 +29,14 @@ function sectionText(summary: FeedSummary | null, key: string): string {
 	return String(summary?.[key] || "").trim();
 }
 
+function firstDistinctContentLine(value: string, normalizedTitle: string): string {
+	for (const line of value.split("\n")) {
+		const candidate = firstContentLine(line);
+		if (candidate && normalize(candidate) !== normalizedTitle) return candidate;
+	}
+	return "";
+}
+
 export function sessionSummaryViewData(item: FeedItem, displayedTitle: string) {
 	const summary = getSummaryObject(item);
 	const normalizedTitle = normalize(displayedTitle);
@@ -38,8 +46,8 @@ export function sessionSummaryViewData(item: FeedItem, displayedTitle: string) {
 	const skimCandidates = [...outcomeCandidates, request, bodyText];
 	const skimSummary =
 		skimCandidates
-			.map(firstContentLine)
-			.find((candidate) => Boolean(candidate) && normalize(candidate) !== normalizedTitle) || "";
+			.map((candidate) => firstDistinctContentLine(candidate, normalizedTitle))
+			.find(Boolean) || "";
 
 	const facts: FeedSummary = {};
 	for (const key of FACT_KEYS) {

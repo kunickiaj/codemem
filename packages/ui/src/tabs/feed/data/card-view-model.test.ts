@@ -55,6 +55,20 @@ describe("feed card view model", () => {
 		expect(model.modes.map(({ id }) => id)).toContain("summary");
 	});
 
+	it("uses a later outcome line when its first line duplicates the title", () => {
+		const model = buildFeedCardViewModel({
+			kind: "session_summary",
+			summary: {
+				request: "Deploy release",
+				completed: "Deploy release\nFixed the migration",
+			},
+			title: "Stored title",
+		});
+
+		expect(model.displayTitle).toBe("Deploy release");
+		expect(model.skimSummary).toBe("Fixed the migration");
+	});
+
 	it("uses a supported plan when no completed outcome is available", () => {
 		const model = buildFeedCardViewModel({
 			kind: "session_summary",
