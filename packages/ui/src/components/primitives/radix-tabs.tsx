@@ -3,6 +3,7 @@ import type { ComponentChildren } from "preact";
 
 export type RadixTabOption = {
 	disabled?: boolean;
+	id?: string;
 	label: string;
 	value: string;
 };
@@ -40,6 +41,7 @@ export function RadixTabs({
 					<Tabs.Trigger
 						className={triggerClassName}
 						disabled={tab.disabled}
+						id={tab.id}
 						key={tab.value}
 						value={tab.value}
 					>

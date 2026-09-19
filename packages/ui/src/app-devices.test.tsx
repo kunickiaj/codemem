@@ -532,26 +532,26 @@ describe("Devices app integration", () => {
 		expect(document.activeElement).toBe(document.getElementById("tabBtn-sharing"));
 	});
 
-	it("opens Sharing from the legacy coordinator notice and moves focus to its navigation control", async () => {
-		act(() => document.getElementById("coordinatorAdminOpenSharing")?.click());
-		await Promise.resolve();
-
-		expect(window.location.hash).toBe("#sharing");
-		expect(document.getElementById("tab-sharing")?.hidden).toBe(false);
-		expect(document.activeElement).toBe(document.getElementById("tabBtn-sharing"));
+	it("links coordinator administration back to Team settings in Sharing", () => {
+		const sharingLink = document.querySelector<HTMLAnchorElement>(
+			'#advancedTeamsContent a[href="#sharing"]',
+		);
+		expect(sharingLink?.textContent).toContain("Team settings");
 	});
 
-	it("focuses the legacy notice when switching into coordinator administration", async () => {
+	it("focuses coordinator administration when switching sections", async () => {
 		act(() => document.getElementById("tabBtn-advanced")?.click());
 		await Promise.resolve();
-		act(() => document.getElementById("advancedTeamsButton")?.click());
+		act(() => {
+			document
+				.getElementById("advancedTeamsButton")
+				?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+		});
 		await Promise.resolve();
 
 		expect(window.location.hash).toBe("#advanced/teams");
 		expect(document.getElementById("advancedTeamsContent")?.hidden).toBe(false);
-		expect(document.activeElement).toBe(
-			document.getElementById("coordinatorAdminLegacyNoticeTitle"),
-		);
+		expect(document.activeElement).toBe(document.getElementById("coordinatorAdminHeading"));
 	});
 
 	it("refreshes Sharing and Projects with the active surface mounting last", async () => {

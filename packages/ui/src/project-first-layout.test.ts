@@ -37,7 +37,7 @@ describe("project-first navigation layout", () => {
 		const advancedTab = html.indexOf('id="tabBtn-advanced"');
 		const sharingMount = html.indexOf('id="recipientPolicySharingMount"');
 		const devicesMount = html.indexOf('id="devicesMount"');
-		const advancedDisclosure = html.indexOf("Coordinator Administration");
+		const advancedDisclosure = html.indexOf("Legacy administration");
 		const coordinatorMount = html.indexOf('id="coordinatorAdminMount"');
 
 		expect(sharingTab).toBeGreaterThan(-1);
@@ -61,48 +61,43 @@ describe("project-first navigation layout", () => {
 		expect(advanced).toContain('id="coordinatorAdminMount"');
 		expect(advanced).toContain('href="#advanced/sync/diagnostics"');
 		expect(advanced).toContain('href="#advanced/sync"');
-		expect(advanced).toContain("<h2>Advanced</h2>");
-		expect(advanced).toContain(">Coordinator Administration</button>");
-		expect(advanced).toContain("<summary>Coordinator Administration</summary>");
+		expect(advanced).toContain(">Review invite</button>");
+		expect(advanced).toContain('<h2 class="advanced-heading">Advanced</h2>');
+		expect(advanced).toContain('id="advancedTabsMount"');
+		expect(advanced).toContain("<summary>Legacy administration</summary>");
 		expect(advanced).not.toMatch(/(?:Advanced|Coordinator Administration) \(legacy\)/i);
 	});
 
-	it("bounds legacy Team and Space controls and directs ordinary Team work to Sharing", () => {
+	it("bounds legacy Team and Space controls and links Team work to Sharing", () => {
 		const advancedStart = html.indexOf('id="advancedTeamsContent"');
 		const advancedEnd = html.indexOf("</details>", advancedStart);
 		const advanced = html.slice(advancedStart, advancedEnd);
 
-		expect(advanced).toContain('role="note"');
-		expect(advanced).toContain('aria-labelledby="coordinatorAdminLegacyNoticeTitle"');
-		expect(advanced).toContain("Looking for Team settings?");
-		expect(advanced).toContain("Manage Team members, names, and Project access in Sharing.");
-		expect(advanced).toContain('id="coordinatorAdminOpenSharing"');
-		expect(advanced).toContain(">Open Sharing</button>");
-		expect(html).toContain('aria-label="Advanced sections" role="group"');
-		expect(advanced).toContain('id="coordinatorAdminLegacyNoticeTitle" tabindex="-1"');
+		expect(advanced).toContain('id="coordinatorAdminHeading" tabindex="-1"');
+		expect(advanced).toContain('href="#sharing">Team settings');
+		expect(advanced).toContain("Groups · Invites · Join requests · Devices");
+		expect(advanced).toContain("<summary>Legacy administration</summary>");
+		expect(advanced).not.toContain('role="note"');
 	});
 
-	it("keeps the legacy notice visible when technical controls are collapsed", () => {
+	it("keeps coordinator guidance visible when legacy controls are collapsed", () => {
 		const panelStart = html.indexOf('id="advancedTeamsContent"');
 		const disclosureStart = html.indexOf("<details", panelStart);
-		const noticeStart = html.indexOf('class="coordinator-admin-inline-warning', panelStart);
-		const noticeEnd = html.indexOf("</aside>", noticeStart);
+		const headingStart = html.indexOf('id="coordinatorAdminHeading"', panelStart);
+		const guidanceStart = html.indexOf("Groups · Invites · Join requests · Devices", panelStart);
 		const coordinatorMount = html.indexOf('id="coordinatorAdminMount"', disclosureStart);
 
-		expect(noticeStart).toBeGreaterThan(panelStart);
-		expect(noticeEnd).toBeLessThan(disclosureStart);
+		expect(headingStart).toBeGreaterThan(panelStart);
+		expect(guidanceStart).toBeLessThan(disclosureStart);
 		expect(coordinatorMount).toBeGreaterThan(disclosureStart);
 	});
 
-	it("keeps the legacy notice responsive without removing recovery controls", () => {
-		expect(html).toContain(".coordinator-admin-legacy-notice");
+	it("keeps the Advanced status responsive without removing recovery controls", () => {
+		expect(html).toContain(".advanced-sync-status");
 		expect(html).toMatch(
-			/@media \(max-width: 720px\)[\s\S]*\.coordinator-admin-legacy-notice[\s\S]*flex-direction: column/,
+			/@media \(max-width: 720px\)[\s\S]*\.advanced-sync-status[\s\S]*flex-direction: column/,
 		);
-		expect(html).toContain("Looking for Team settings?");
-		expect(html).toContain(
-			"Manage Team members, names, and Project access in Sharing. Use this page only for older coordinator groups and Spaces.",
-		);
+		expect(html).toContain("Legacy administration");
 		expect(html).toContain('id="coordinatorAdminMount"');
 	});
 
@@ -210,10 +205,10 @@ describe("project-first navigation layout", () => {
 		expect(html).not.toContain(".recipient-policy-sharing-responsive-tabs { overflow-x: auto; }");
 	});
 
-	it("keeps normal Projects controls recipient-focused and moves invitations to Advanced", () => {
+	it("keeps normal Projects controls recipient-focused and moves invitations to Sharing", () => {
 		const projects = html.indexOf('id="tab-projects"');
-		const advanced = html.indexOf("Invite someone", projects);
-		const primary = html.slice(projects, advanced);
+		const sharing = html.indexOf('id="tab-sharing"', projects);
+		const primary = html.slice(projects, sharing);
 
 		expect(primary).toContain('id="projectsShareSelected"');
 		expect(primary).not.toContain("Sharing domain");
@@ -221,17 +216,15 @@ describe("project-first navigation layout", () => {
 	});
 
 	it("keeps legacy device controls available but outside the primary project-sharing flow", () => {
-		const primary = html.indexOf('id="syncProjectShareOperations"');
 		const advanced = html.indexOf("Manual device and identity controls");
 		const assignment = html.indexOf('id="syncActorCreateButton"');
 		const diagnostics = html.indexOf("Advanced diagnostics");
 
-		expect(primary).toBeGreaterThan(-1);
-		expect(advanced).toBeGreaterThan(primary);
+		expect(advanced).toBeGreaterThan(-1);
 		expect(assignment).toBeGreaterThan(advanced);
 		expect(diagnostics).toBeGreaterThan(assignment);
-		expect(html.slice(advanced, diagnostics)).toContain("Connect another device");
 		expect(html.slice(advanced, diagnostics)).toContain("Create person");
+		expect(html.slice(advanced, diagnostics)).not.toContain("Connect another device");
 	});
 
 	it("keeps the legacy upgrade review destination available", () => {

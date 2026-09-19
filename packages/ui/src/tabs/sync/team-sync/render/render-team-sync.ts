@@ -9,6 +9,7 @@ import * as api from "../../../../lib/api";
 import { friendlyError } from "../../../../lib/form";
 import { showGlobalNotice } from "../../../../lib/notice";
 import { isSyncRedactionEnabled, state } from "../../../../lib/state";
+import { AdvancedSyncStatus } from "../../components/advanced-sync-status";
 import { clearSyncMount, renderIntoSyncMount } from "../../components/render-root";
 import type { SyncActionFeedback } from "../../components/sync-inline-feedback";
 import { SyncInviteJoinPanels } from "../../components/sync-invite-join-panels";
@@ -25,9 +26,7 @@ import {
 	requestPeerScopeReview,
 	saveDuplicatePersonDecision,
 	setTeamInvitePanelOpen,
-	setTeamJoinPanelOpen,
 	teamInvitePanelOpen,
-	teamJoinPanelOpen,
 } from "../../helpers";
 import {
 	openDuplicatePersonDialog,
@@ -150,18 +149,8 @@ export function renderTeamSync() {
 	ensureJoinPanelInSetupSection();
 
 	const coordinator = state.lastSyncCoordinator;
-	const syncView = state.lastSyncViewModel || {
-		primaryStatus: deriveTeamSyncPrimaryStatus({
-			status: state.lastSyncStatus,
-			coordinator,
-			peers: state.lastSyncPeers,
-			shareOperations: state.lastShareOperations,
-			shareOperationsLoadError: state.shareOperationsLoadError,
-		}),
-		summary: { connectedDeviceCount: 0, seenOnTeamCount: 0, offlineTeamDeviceCount: 0 },
-		duplicatePeople: [],
-		attentionItems: [],
-	};
+	const syncView = currentSyncView();
+	renderAdvancedSyncStatus(syncView.primaryStatus);
 
 	const focusAttentionTarget = (item: { kind?: string; deviceId?: string }) => {
 		if (item.kind === "possible-duplicate-person") {
@@ -488,16 +477,10 @@ export function renderTeamSync() {
 				invitePanelOpen: teamInvitePanelOpen,
 				inviteRestoreParent,
 				joinPanel,
-				joinPanelOpen: teamJoinPanelOpen,
 				joinRestoreParent,
 				onToggleInvitePanel: () => {
 					if (!invitePanel) return;
 					setTeamInvitePanelOpen(!teamInvitePanelOpen);
-					renderTeamSync();
-				},
-				onToggleJoinPanel: () => {
-					if (!joinPanel) return;
-					setTeamJoinPanelOpen(!teamJoinPanelOpen);
 					renderTeamSync();
 				},
 				presenceStatus,
@@ -579,6 +562,34 @@ export function renderTeamSync() {
 			presenceStatus,
 			primaryStatus: syncView.primaryStatus,
 		}),
+	);
+}
+
+function renderAdvancedSyncStatus(primaryStatus: UiTeamSyncPrimaryStatus) {
+	const mount = document.getElementById("syncAdvancedStatusMount");
+	if (mount) renderIntoSyncMount(mount, h(AdvancedSyncStatus, { status: primaryStatus }));
+	const toggle = document.getElementById("syncTurnOnButton");
+	if (toggle) {
+		toggle.hidden = primaryStatus.state !== "disabled";
+	}
+	const detail = document.getElementById("syncPrimaryStatusDetail");
+	if (detail) detail.textContent = primaryStatus.meta;
+}
+
+function currentSyncView() {
+	return (
+		state.lastSyncViewModel || {
+			primaryStatus: deriveTeamSyncPrimaryStatus({
+				status: state.lastSyncStatus,
+				coordinator: state.lastSyncCoordinator,
+				peers: state.lastSyncPeers,
+				shareOperations: state.lastShareOperations,
+				shareOperationsLoadError: state.shareOperationsLoadError,
+			}),
+			summary: { connectedDeviceCount: 0, seenOnTeamCount: 0, offlineTeamDeviceCount: 0 },
+			duplicatePeople: [],
+			attentionItems: [],
+		}
 	);
 }
 
