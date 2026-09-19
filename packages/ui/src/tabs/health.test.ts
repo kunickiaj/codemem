@@ -213,7 +213,7 @@ it("renders the four compact health tiles in contract order", () => {
 		"Data freshness",
 	]);
 	expect(tiles.map((tile) => tile.querySelector(".health-tile-value")?.textContent)).toEqual([
-		"Queue clear",
+		"Reliability unknown",
 		"Off",
 		"No packs yet",
 		"No packs yet",
@@ -236,6 +236,7 @@ it("renders the four compact health tiles in contract order", () => {
 
 it("marks pending pipeline work and the current sync problem as degraded", () => {
 	state.healthRawEvents = completeHealthLoad({ pending: 3, sessions: 1 });
+	state.lastSyncPeers = [{ peer_device_id: "peer-a" }];
 	state.lastSyncStatus = { enabled: true, daemon_state: "stopped" };
 
 	renderOverview();
