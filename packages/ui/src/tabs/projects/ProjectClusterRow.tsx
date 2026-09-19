@@ -7,7 +7,7 @@ import type {
 } from "../projects-inventory-model";
 import { ProjectRow, RecipientSummary } from "./ProjectRow";
 import { ProjectClusterMenu } from "./ProjectRowMenu";
-import { isAssignable, scopeOptionLabel } from "./project-view";
+import { isAssignable, scopeIsAvailable, scopeOptionLabel } from "./project-view";
 
 interface ProjectClusterRowProps {
 	callbacks: ProjectInventoryCallbacks;
@@ -164,6 +164,7 @@ function ClusterAssignmentControls(props: ClusterDetailsProps) {
 			: "These project identities cannot be bulk assigned until they have stable local identities. Expand each identity for details.";
 		return <div className="settings-note">{message}</div>;
 	}
+	const scopeAvailable = scopeIsAvailable(scopeId, view);
 	return (
 		<>
 			<select
@@ -190,7 +191,7 @@ function ClusterAssignmentControls(props: ClusterDetailsProps) {
 			</select>
 			<button
 				className="settings-button"
-				disabled={!scopeId || summary.blocking.length > 0}
+				disabled={!scopeAvailable || summary.blocking.length > 0}
 				onClick={() => void callbacks.saveClusterScope(model.key, scopeId)}
 				type="button"
 			>

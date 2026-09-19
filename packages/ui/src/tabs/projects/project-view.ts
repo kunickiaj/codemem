@@ -48,18 +48,23 @@ export function scopeSummary(
 	return "Unknown Space";
 }
 
+export function scopeIsAvailable(
+	scopeId: string | null | undefined,
+	view: ProjectsInventoryViewModel,
+): boolean {
+	if (!scopeId) return false;
+	return view.scopeGroups.some((group) => group.scopes.some((scope) => scope.scope_id === scopeId));
+}
+
 export function firstScopeSelection(
 	project: ProjectScopeInventoryProject,
 	draftScopeId: string | null,
 	view: ProjectsInventoryViewModel,
 ): string {
-	const available = new Set(
-		view.scopeGroups.flatMap((group) => group.scopes.map((scope) => scope.scope_id)),
-	);
 	for (const candidate of [draftScopeId, project.suggested_scope_id, project.resolved_scope_id]) {
-		if (candidate && available.has(candidate)) return candidate;
+		if (scopeIsAvailable(candidate, view)) return candidate ?? "";
 	}
-	return draftScopeId || project.suggested_scope_id || project.resolved_scope_id || "";
+	return project.resolved_scope_id || "";
 }
 
 export function projectDomainLabel(
