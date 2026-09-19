@@ -114,9 +114,9 @@ function healthOverviewMounts(): HealthOverviewMounts | null {
 	};
 }
 
-function healthMetaMessage(issueCount: number, drivers: string[], statusClass: string): string {
+function healthMetaMessage(issueCount: number, drivers: string[]): string {
 	const parts = [`${issueCount} ${issueCount === 1 ? "issue" : "issues"}`];
-	if ((statusClass === "status-degraded" || statusClass === "status-attention") && drivers.length) {
+	if (issueCount > 0 && drivers.length > 0) {
 		parts.push(drivers.join(", "));
 	}
 	return parts.join(" · ");
@@ -291,12 +291,22 @@ function maintenanceCard(job: HealthMaintenanceJob): HealthCardInput {
 }
 
 function pipelineTile(signals: OverviewSignals): HealthTileInput {
-	if (signals.rawPending === 0) {
+	const reliabilityDegraded = signals.flushSuccessRate < 0.95 || signals.droppedRate > 0.005;
+	if (signals.rawPending === 0 && !reliabilityDegraded) {
 		return tile(
 			"pipeline",
 			"Pipeline",
 			"Queue clear",
 			"online",
+			"Raw-event queue pressure and flush reliability",
+		);
+	}
+	if (signals.rawPending === 0) {
+		return tile(
+			"pipeline",
+			"Pipeline",
+			signals.droppedRate > 0.02 ? "Events dropped" : "Reliability degraded",
+			signals.droppedRate > 0.02 ? "attention" : "degraded",
 			"Raw-event queue pressure and flush reliability",
 		);
 	}
@@ -343,6 +353,15 @@ function retrievalTile(signals: OverviewSignals): HealthTileInput {
 			"Reduction from memory reuse across recent usage",
 		);
 	}
+	if (signals.reductionPercent === null) {
+		return tile(
+			"retrieval",
+			"Retrieval",
+			"Unknown",
+			"unknown",
+			"Reduction is unavailable for the recorded pack usage",
+		);
+	}
 	const isDegraded = signals.reductionPercent !== null && signals.reductionPercent < 10;
 	return tile(
 		"retrieval",
@@ -361,6 +380,15 @@ function freshnessTile(signals: OverviewSignals): HealthTileInput {
 			"No packs yet",
 			"unknown",
 			"Recency of last memory pack activity",
+		);
+	}
+	if (signals.packAgeSeconds === null) {
+		return tile(
+			"freshness",
+			"Data freshness",
+			"Unknown",
+			"unknown",
+			"The last memory pack timestamp is unavailable",
 		);
 	}
 	const isDegraded = signals.packAgeSeconds !== null && signals.packAgeSeconds > 86400;
@@ -501,7 +529,7 @@ function commitHealthOverview(
 	renderActionList(mounts.healthActions, recommendations);
 	renderHealthStatus(mounts.healthStatus, {
 		label: status.label,
-		message: healthMetaMessage(risk.drivers.length, risk.drivers, status.className),
+		message: healthMetaMessage(risk.drivers.length, risk.drivers),
 		stale: hasStaleData,
 		state: healthPresenceState(status.className),
 		statusClass: status.className,
