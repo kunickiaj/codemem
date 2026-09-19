@@ -23,7 +23,8 @@ export function firstContentLine(value: unknown): string {
 export function observationViewData(item: FeedItem) {
 	const metadata = mergeMetadata(item?.metadata_json);
 	const explicitSummary = String(item?.subtitle || metadata?.subtitle || "").trim();
-	const narrative = String(item?.narrative || metadata?.narrative || item?.body_text || "").trim();
+	const legacyBody = String(item?.body_text || "").trim();
+	const narrative = String(item?.narrative || metadata?.narrative || legacyBody).trim();
 	const summary = explicitSummary || firstContentLine(narrative);
 	const summaryDetail = explicitSummary || narrative;
 	const normSummaryDetail = normalize(summaryDetail);
@@ -39,6 +40,7 @@ export function observationViewData(item: FeedItem) {
 		summaryDetail,
 		narrative,
 		facts: derivedFacts,
+		legacyBody,
 		hasSummary: Boolean(summary),
 		hasFacts: derivedFacts.length > 0,
 		hasNarrative: narrativeDistinct,

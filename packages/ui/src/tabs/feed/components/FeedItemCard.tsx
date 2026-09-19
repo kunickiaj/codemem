@@ -55,6 +55,7 @@ function shouldShowSearchMatch(
 	activeMode: ItemViewMode,
 ) {
 	if (!searchMatch) return false;
+	if (searchMatch.mode === null) return true;
 	return !expanded || searchMatch.mode !== activeMode;
 }
 
@@ -310,7 +311,7 @@ export function FeedItemCard({
 				? h(
 						"div",
 						{ className: "feed-search-match" },
-						h("span", { className: "feed-search-match-label" }, `${searchMatch.mode} match`),
+						h("span", { className: "feed-search-match-label" }, `${searchMatch.label} match`),
 						h("span", {
 							dangerouslySetInnerHTML: {
 								__html: highlightText(searchMatch.excerpt, state.feedQuery),

@@ -122,7 +122,25 @@ describe("feed card view model", () => {
 			title: "Searchable memory",
 		});
 
-		expect(hiddenSearchMatch(model, "coordinator")).toMatchObject({ mode: "facts" });
+		expect(hiddenSearchMatch(model, "coordinator")).toMatchObject({
+			label: "Facts",
+			mode: "facts",
+		});
 		expect(hiddenSearchMatch(model, "Visible")).toBeNull();
+	});
+
+	it("explains a match found only in indexed legacy body text", () => {
+		const model = buildFeedCardViewModel({
+			body_text: "Legacy body contains the searchable orchard token",
+			facts: ["Structured fact"],
+			narrative: "Current narrative omits the legacy body",
+			subtitle: "Visible skim",
+			title: "Searchable memory",
+		});
+
+		expect(hiddenSearchMatch(model, "orchard")).toMatchObject({
+			label: "Body",
+			mode: null,
+		});
 	});
 });

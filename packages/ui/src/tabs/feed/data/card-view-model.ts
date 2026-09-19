@@ -24,6 +24,7 @@ export interface FeedCardViewModel {
 	isSessionSummary: boolean;
 	modes: FeedCardMode[];
 	rowKey: string;
+	searchOnlyText: string;
 	skimSummary: string;
 	tags: unknown[];
 }
@@ -38,6 +39,7 @@ function markdownMode(id: ItemViewMode, text: string): FeedCardMode {
 
 interface ContentView {
 	modes: FeedCardMode[];
+	searchOnlyText: string;
 	skimSummary: string;
 }
 
@@ -66,7 +68,13 @@ function buildObservationContent(item: FeedItem, displayTitle: string): ContentV
 	if (data.hasFacts) modes.push(factsMode(data.facts));
 	if (data.hasNarrative) modes.push(markdownMode("narrative", data.narrative));
 	const skimSummary = normalize(data.summary) === normalize(displayTitle) ? "" : data.summary;
-	return { modes, skimSummary };
+	const normalizedLegacyBody = normalize(data.legacyBody);
+	const searchOnlyText =
+		normalizedLegacyBody &&
+		!modes.some((mode) => normalize(mode.searchText) === normalizedLegacyBody)
+			? data.legacyBody
+			: "";
+	return { modes, searchOnlyText, skimSummary };
 }
 
 function buildSessionContent(item: FeedItem, displayTitle: string): ContentView {
@@ -75,7 +83,7 @@ function buildSessionContent(item: FeedItem, displayTitle: string): ContentView 
 	if (data.hasSummary) modes.push(markdownMode("summary", data.summaryDetail));
 	if (data.hasFacts) modes.push(sessionFactsMode(data.facts));
 	if (data.hasNarrative) modes.push(markdownMode("narrative", data.narrative));
-	return { modes, skimSummary: data.skimSummary };
+	return { modes, searchOnlyText: "", skimSummary: data.skimSummary };
 }
 
 export function buildFeedCardViewModel(item: FeedItem): FeedCardViewModel {
@@ -97,6 +105,7 @@ export function buildFeedCardViewModel(item: FeedItem): FeedCardViewModel {
 		isSessionSummary,
 		modes: content.modes,
 		rowKey: itemKey(item),
+		searchOnlyText: content.searchOnlyText,
 		skimSummary: content.skimSummary,
 		tags: itemTags(item),
 	};
@@ -129,7 +138,7 @@ function excerptAroundMatch(text: string, query: string): string {
 export function hiddenSearchMatch(
 	model: FeedCardViewModel,
 	query: string,
-): { excerpt: string; mode: ItemViewMode } | null {
+): { excerpt: string; label: string; mode: ItemViewMode | null } | null {
 	const trimmedQuery = query.trim();
 	if (!trimmedQuery) return null;
 	if (
@@ -140,7 +149,18 @@ export function hiddenSearchMatch(
 	}
 	for (const mode of model.modes) {
 		if (!includesQuery(mode.searchText, trimmedQuery)) continue;
-		return { excerpt: excerptAroundMatch(mode.searchText, trimmedQuery), mode: mode.id };
+		return {
+			excerpt: excerptAroundMatch(mode.searchText, trimmedQuery),
+			label: mode.label,
+			mode: mode.id,
+		};
+	}
+	if (includesQuery(model.searchOnlyText, trimmedQuery)) {
+		return {
+			excerpt: excerptAroundMatch(model.searchOnlyText, trimmedQuery),
+			label: "Body",
+			mode: null,
+		};
 	}
 	return null;
 }
