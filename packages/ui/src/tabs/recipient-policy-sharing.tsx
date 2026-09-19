@@ -1,4 +1,3 @@
-// biome-ignore-all lint/a11y/noNoninteractiveTabindex: APG requires empty tab panels to remain keyboard-reachable.
 import { Fragment, render } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { LoadingCardList } from "../components/LoadingCardList";
@@ -829,7 +828,6 @@ function RecipientPolicySharing({
 						hidden={activeTab !== tab.id}
 						id={`recipient-policy-sharing-panel-${tab.id}`}
 						role="tabpanel"
-						tabIndex={0}
 					>
 						{options.loading ? (
 							activeTab === tab.id ? (

@@ -103,6 +103,7 @@ function project(
 		mapping_id: null,
 		matched_pattern: null,
 		memory_count: 1,
+		origin_devices: [],
 		project: "api",
 		resolution_reason: "local_default",
 		resolved_scope_id: "local-default",

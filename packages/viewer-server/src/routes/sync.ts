@@ -4761,6 +4761,25 @@ function resolveOriginDeviceDisplayNames(
 	return names;
 }
 
+function serializeProjectScopeInventory(
+	store: MemoryStore,
+	inventory: ReturnType<typeof listProjectScopeInventory>,
+	sharingByProject: Map<string, Array<Record<string, unknown>>>,
+) {
+	const originDeviceNames = resolveOriginDeviceDisplayNames(store, inventory.projects);
+	return {
+		...inventory,
+		projects: inventory.projects.map((project) => ({
+			...project,
+			origin_devices: project.origin_devices.map(({ device_id }) => ({
+				device_id,
+				display_name: originDeviceNames.get(device_id) ?? null,
+			})),
+			sharing: sharingByProject.get(project.workspace_identity) ?? [],
+		})),
+	};
+}
+
 /**
  * Viewer-facing sync management routes (/api/sync/*).
  *
@@ -5663,7 +5682,6 @@ export function syncRoutes(
 			scopeId: c.req.query("scope_id"),
 			status: c.req.query("status"),
 		});
-		const originDeviceNames = resolveOriginDeviceDisplayNames(store, inventory.projects);
 		const operations = await shareOperationReadModels(store, undefined, false);
 		const operationById = new Map(
 			operations.map((operation) => [operation.operation_id, operation]),
@@ -5689,17 +5707,7 @@ export function syncRoutes(
 			});
 			sharingByProject.set(item.canonical_project_identity, current);
 		}
-		return c.json({
-			...inventory,
-			projects: inventory.projects.map((project) => ({
-				...project,
-				origin_devices: project.origin_devices.map(({ device_id }) => ({
-					device_id,
-					display_name: originDeviceNames.get(device_id) ?? null,
-				})),
-				sharing: sharingByProject.get(project.workspace_identity) ?? [],
-			})),
-		});
+		return c.json(serializeProjectScopeInventory(store, inventory, sharingByProject));
 	});
 
 	app.post("/api/sync/projects/reassign-project", async (c) => {

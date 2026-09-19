@@ -206,17 +206,63 @@ function visiblePanel(): HTMLElement {
 	return panel;
 }
 
-describe("recipient-focused Sharing", () => {
-	beforeEach(() => {
-		document.body.innerHTML = '<div id="mount"></div>';
-	});
+function setupSharingMount(): void {
+	document.body.innerHTML = '<div id="mount"></div>';
+}
 
-	afterEach(() => {
-		const element = document.getElementById("mount");
-		if (element) act(() => render(null, element));
-		openManagement.mockReset();
-		document.body.innerHTML = "";
+function cleanupSharingMount(): void {
+	const element = document.getElementById("mount");
+	if (element) act(() => render(null, element));
+	openManagement.mockReset();
+	document.body.innerHTML = "";
+}
+
+function rendersReceivedProjectSources(): void {
+	mount(intent(), {
+		received: [
+			{
+				canonicalProjectIdentity: "git:received-api",
+				displayName: "Received API",
+				existingMemoryCount: 2,
+				latestSessionAt: "2026-07-25T12:00:00.000Z",
+				originDevices: [
+					{ deviceId: "device-a", displayName: "Work Laptop" },
+					{ deviceId: "device-b", displayName: "Desk Computer" },
+					{ deviceId: "device-c", displayName: "Travel Laptop" },
+				],
+			},
+			{
+				canonicalProjectIdentity: "git:received-tools",
+				displayName: "Received Tools",
+				existingMemoryCount: 1,
+				latestSessionAt: null,
+				originDevices: [{ deviceId: "private-device-id", displayName: null }],
+			},
+		],
 	});
+	clickTab("Received");
+	const text = visiblePanel().textContent ?? "";
+	expect(text).toContain("Received API");
+	expect(text).toContain("2 memories");
+	expect(text).toContain("FromWork Laptop · Desk Computer · +1");
+	expect(text).toContain("Received Tools");
+	expect(text).toContain("1 memory");
+	expect(text).toContain("Unknown device");
+	expect(text).not.toContain("device-a");
+	expect(text).not.toContain("private-device-id");
+	expect(text).toContain("No recent sessions");
+	expect(text).toContain("Access is managed where the Project is shared from");
+}
+
+describe("received project sources", () => {
+	beforeEach(setupSharingMount);
+	afterEach(cleanupSharingMount);
+	it("shows bounded device names without raw identifiers", rendersReceivedProjectSources);
+});
+
+describe("recipient-focused Sharing", () => {
+	beforeEach(setupSharingMount);
+	afterEach(cleanupSharingMount);
 
 	it("renders all four accessible views and recipient-aware invitation controls", () => {
 		mount();
@@ -333,43 +379,6 @@ describe("recipient-focused Sharing", () => {
 			).click(),
 		);
 		expect(onReviewDevices).toHaveBeenCalledWith("setup");
-	});
-
-	it("lists received Projects with counts, activity, and read-only guidance", () => {
-		mount(intent(), {
-			received: [
-				{
-					canonicalProjectIdentity: "git:received-api",
-					displayName: "Received API",
-					existingMemoryCount: 2,
-					latestSessionAt: "2026-07-25T12:00:00.000Z",
-					originDevices: [
-						{ deviceId: "device-a", displayName: "Work Laptop" },
-						{ deviceId: "device-b", displayName: "Desk Computer" },
-						{ deviceId: "device-c", displayName: "Travel Laptop" },
-					],
-				},
-				{
-					canonicalProjectIdentity: "git:received-tools",
-					displayName: "Received Tools",
-					existingMemoryCount: 1,
-					latestSessionAt: null,
-					originDevices: [{ deviceId: "private-device-id", displayName: null }],
-				},
-			],
-		});
-		clickTab("Received");
-		const text = visiblePanel().textContent ?? "";
-		expect(text).toContain("Received API");
-		expect(text).toContain("2 memories");
-		expect(text).toContain("FromWork Laptop · Desk Computer · +1");
-		expect(text).toContain("Received Tools");
-		expect(text).toContain("1 memory");
-		expect(text).toContain("Unknown device");
-		expect(text).not.toContain("device-a");
-		expect(text).not.toContain("private-device-id");
-		expect(text).toContain("No recent sessions");
-		expect(text).toContain("Access is managed where the Project is shared from");
 	});
 
 	it("supports automatic keyboard tab activation, wraparound, Home, End, and focus", () => {
