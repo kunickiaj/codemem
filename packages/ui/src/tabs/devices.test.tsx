@@ -324,7 +324,9 @@ describe("Devices reconciliation focus", function devicesReconciliationFocusTest
 			"Review the affected device setup or pairing state here",
 		);
 	});
+});
 
+describe("Device row focus restoration", () => {
 	it("focuses a projected configured-device card from its canonical inventory ID", () => {
 		state.pendingDeviceIdentityFocus = "canonical-alias";
 		mount(intent(), reconciliation(), {
