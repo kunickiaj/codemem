@@ -246,6 +246,14 @@ describe("project-first navigation layout", () => {
 	});
 });
 
+describe("Projects inventory overlays", () => {
+	it("lets project row menus escape the inventory table", () => {
+		const tableRule = html.match(/\.project-inventory-table \{([^}]*)\}/)?.[1] ?? "";
+		expect(tableRule).toContain("overflow: visible");
+		expect(html).toContain(".project-row-menu-panel { position: absolute;");
+	});
+});
+
 describe("split-pane shell layout", () => {
 	it("keeps controls bounded across responsive breakpoints", () => {
 		const normalized = html.replace(/\s+/g, " ");

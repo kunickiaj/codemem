@@ -276,7 +276,9 @@ function ForgetConfirmation({
 			</p>
 			<button
 				className="settings-button danger"
-				onClick={() => void callbacks.forgetProject(model.project.workspace_identity, true)}
+				onClick={() =>
+					void callbacks.forgetProject(model.project.workspace_identity, { confirmed: true })
+				}
 				ref={confirmationActionRef}
 				type="button"
 			>
