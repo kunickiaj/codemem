@@ -34,7 +34,7 @@ One mode vocabulary keeps keyboard behavior and user preference consistent acros
 | Facts | Explicit or derived facts | Structured REQUEST, OUTCOME, PLAN, COMPLETED, LEARNED, INVESTIGATED, NEXT STEPS, and NOTES sections | Derived facts when available |
 | Narrative | Distinct `narrative`, then `body_text` fallback | Distinct narrative or `body_text` | Full `body_text` |
 
-Unavailable modes are omitted. If only one mode exists, the mode control is omitted but the title still toggles that mode's detail region.
+Unavailable modes are omitted. If only one mode exists, the mode control is omitted but the title still toggles that mode's detail region. If no content mode exists, the title toggles a detail region only when files or detailed workspace, source, or device provenance remain; otherwise it is non-disclosure text.
 
 For a session summary, the collapsed skim line uses the first non-empty item from OUTCOME, COMPLETED, LEARNED, INVESTIGATED, NEXT STEPS, PLAN, then NOTES. If none exists, it uses a non-duplicate REQUEST line, then `body_text`. This order favors outcomes and next actions over a repetition of the request.
 
