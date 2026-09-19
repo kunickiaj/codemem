@@ -1516,14 +1516,18 @@ function PairingAcceptancePanel() {
 	useLayoutEffect(() => {
 		const host = hostRef.current;
 		const panel = document.getElementById("syncJoinPanel");
-		if (!host || !panel) return;
+		const feedback = document.getElementById("syncJoinFeedback");
+		if (!host || !panel || !feedback) return;
 		const restoreParent = panel.parentElement;
+		const feedbackRestoreParent = feedback.parentElement;
 		const wasHidden = panel.hidden;
 		host.appendChild(panel);
+		host.appendChild(feedback);
 		panel.hidden = false;
 		return () => {
 			panel.hidden = wasHidden;
 			if (restoreParent) restoreParent.appendChild(panel);
+			if (feedbackRestoreParent) feedbackRestoreParent.appendChild(feedback);
 		};
 	}, []);
 	return <div className="devices-pairing-accept" ref={hostRef} />;

@@ -283,7 +283,7 @@ describe("Device pairing entry point", () => {
 		const joinHost = document.createElement("div");
 		joinHost.id = "syncJoinSection";
 		joinHost.innerHTML =
-			'<div id="syncJoinPanel" hidden><textarea aria-label="Invite or pairing code"></textarea><button>Review invite</button></div>';
+			'<div id="syncJoinPanel" hidden><textarea aria-label="Invite or pairing code"></textarea><button>Review invite</button></div><div id="syncJoinFeedback" role="alert">Pairing failed. Check the payload.</div>';
 		document.body.appendChild(joinHost);
 		const onNavigate = vi.fn();
 		mount(intent(), reconciliation(), {
@@ -323,6 +323,14 @@ describe("Device pairing entry point", () => {
 				.getElementById("syncJoinPanel")
 				?.parentElement?.classList.contains("devices-pairing-accept"),
 		).toBe(true);
+		expect(
+			document
+				.getElementById("syncJoinFeedback")
+				?.parentElement?.classList.contains("devices-pairing-accept"),
+		).toBe(true);
+		expect(document.getElementById("devices-pairing-panel")?.textContent).toContain(
+			"Pairing failed. Check the payload.",
+		);
 		expect(onNavigate).not.toHaveBeenCalled();
 	});
 
