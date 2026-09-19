@@ -69,6 +69,7 @@ The remembered preference controls presentation defaults, while item identity co
 - Selecting a mode updates the global preference and that card's active mode.
 - A card that lacks the preferred mode chooses Summary, then Facts, then Narrative without overwriting the preference.
 - Expansion is keyed only by stable item identity in in-memory UI state. Active mode is stored separately so changing mode replaces detail in place without collapsing an open card.
+- Feed cards are an explicit exception to the viewer's one-open-row inline-expand default: opening one card does not collapse another. This supports comparing memory evidence while preserving each card's polling state.
 - Polling with the same identity preserves expansion and the active mode while that mode remains available. If refreshed content removes the active mode, select the supported Summary, Facts, then Narrative fallback and replace the detail inside the still-open region.
 - Pagination, filters, and project changes may temporarily remove a card but do not transfer its state to another item.
 - A full page reload preserves only the global preferred mode, not individual expanded cards.

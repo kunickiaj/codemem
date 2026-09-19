@@ -29,6 +29,8 @@ Mechanics:
 - Collapsing the previous row and expanding the new one happens
   atomically via the setter.
 
+Feed memory cards are the exception: users may keep multiple cards open to compare evidence, and each card keys its ephemeral disclosure state by stable memory identity. Any other exception must document why comparison or independent live updates outweigh the one-open-row default.
+
 ```
 .list
 ├── .row (aria-expanded=false)           ← clickable header
