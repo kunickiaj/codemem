@@ -13,6 +13,7 @@ export interface ProjectInventoryRecipientViewModel {
 export interface ProjectInventoryProjectViewModel {
 	kind: "project";
 	key: string;
+	detailKey: string;
 	project: ProjectScopeInventoryProject;
 	manageable: boolean;
 	selected: boolean;
@@ -47,6 +48,9 @@ export interface ProjectInventoryClusterViewModel {
 
 export interface ProjectsInventoryViewModel {
 	rows: Array<ProjectInventoryProjectViewModel | ProjectInventoryClusterViewModel>;
+	recipientPolicyReady: boolean;
+	shareInventoryReady: boolean;
+	scopeLabels: Record<string, string>;
 	selection: {
 		projectIds: string[];
 		count: number;

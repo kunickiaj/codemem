@@ -212,11 +212,10 @@ describe("project-first navigation layout", () => {
 
 	it("keeps normal Projects controls recipient-focused and moves invitations to Advanced", () => {
 		const projects = html.indexOf('id="tab-projects"');
-		const advanced = html.indexOf("Advanced Project invitations", projects);
+		const advanced = html.indexOf("Invite someone", projects);
 		const primary = html.slice(projects, advanced);
 
 		expect(primary).toContain('id="projectsShareSelected"');
-		expect(primary).toContain("Choose exact Projects");
 		expect(primary).not.toContain("Sharing domain");
 		expect(primary).not.toContain("Space");
 	});
