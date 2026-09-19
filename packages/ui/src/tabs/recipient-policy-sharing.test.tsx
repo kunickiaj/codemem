@@ -286,6 +286,7 @@ describe("recipient-focused Sharing", () => {
 		clickTab("Identities");
 		expect(visiblePanel().textContent).toContain("Local identity");
 		clickTab("Received");
+		expect(visiblePanel().getAttribute("tabindex")).toBe("0");
 		expect(visiblePanel().textContent).toContain("No received Projects on this device");
 		clickTab("Invitations");
 		expect(visiblePanel().textContent).toContain("Invite Team member");
