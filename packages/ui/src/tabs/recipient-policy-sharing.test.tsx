@@ -455,7 +455,7 @@ function testRecipientFocusedSharing() {
 		mount(graph);
 		const text = visiblePanel().textContent ?? "";
 		expect(text).toContain("ExampleCo");
-		expect(text).toContain("2Members · Adam (you), Brian");
+		expect(text).toContain("2Members · Adam Rivera (you), Brian Jones");
 		expect(text).toContain("2Registered devices");
 		expect(text).toContain("1Shared projects · Codemem");
 		expect(text).toContain("Auto-shares with new members");
@@ -576,10 +576,14 @@ function testRecipientFocusedSharing() {
 
 		mount(intent({ projectRecipients: [...teamEdges, ...identityEdges] }), {}, repeatedProjects);
 
-		expect(visiblePanel().textContent).toContain("4Shared projects · API, Codemem, Docs, Tools");
-		expect(visiblePanel().querySelectorAll(".tag-chip")).toHaveLength(4);
+		expect(visiblePanel().textContent).toContain(
+			"5Shared projects · API, Codemem — duplicate name 1 of 2, Codemem — duplicate name 2 of 2, Docs, Tools",
+		);
+		expect(visiblePanel().querySelectorAll(".tag-chip")).toHaveLength(5);
 		clickTab("Identities");
-		expect(visiblePanel().textContent).toContain("Shared directlyAPICodememDocsTools");
+		expect(visiblePanel().textContent).toContain(
+			"Shared directlyAPICodemem — duplicate name 1 of 2Codemem — duplicate name 2 of 2DocsTools",
+		);
 		expect(document.body.outerHTML).not.toContain(privatePath);
 		expect(document.body.outerHTML).not.toContain(privateRemote);
 	});
