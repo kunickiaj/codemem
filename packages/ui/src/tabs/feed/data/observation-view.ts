@@ -5,10 +5,27 @@ import { normalize, parseJsonArray } from "../../../lib/format";
 import type { FeedItem, ItemViewMode } from "../types";
 import { extractFactsFromBody, mergeMetadata, sentenceFacts } from "./helpers";
 
+export function firstContentLine(value: unknown): string {
+	return (
+		String(value || "")
+			.split("\n")
+			.map((line) =>
+				line
+					.trim()
+					.replace(/^#{1,6}\s+/, "")
+					.replace(/^[-*•]\s+/, "")
+					.replace(/^\d+\.\s+/, ""),
+			)
+			.find(Boolean) || ""
+	);
+}
+
 export function observationViewData(item: FeedItem) {
 	const metadata = mergeMetadata(item?.metadata_json);
-	const summary = String(item?.subtitle || metadata?.subtitle || "").trim();
+	const explicitSummary = String(item?.subtitle || metadata?.subtitle || "").trim();
 	const narrative = String(item?.narrative || metadata?.narrative || item?.body_text || "").trim();
+	const summary = explicitSummary || firstContentLine(narrative);
+	const summaryDetail = explicitSummary || narrative;
 	const normSummary = normalize(summary);
 	const normNarrative = normalize(narrative);
 	const narrativeDistinct = Boolean(narrative) && normNarrative !== normSummary;
@@ -19,6 +36,7 @@ export function observationViewData(item: FeedItem) {
 	const derivedFacts = fallbackFacts.length ? fallbackFacts : sentenceFacts(narrative || summary);
 	return {
 		summary,
+		summaryDetail,
 		narrative,
 		facts: derivedFacts,
 		hasSummary: Boolean(summary),

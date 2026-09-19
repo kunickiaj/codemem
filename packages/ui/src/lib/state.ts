@@ -1,6 +1,6 @@
 /* Global application state — shared across tabs. */
 
-import type { FeedItem } from "../tabs/feed/types";
+import type { FeedItem, ItemViewMode } from "../tabs/feed/types";
 import type {
 	TeamSyncDaemonState,
 	TeamSyncPresenceState,
@@ -366,6 +366,7 @@ const TAB_KEY = "codemem-tab";
 const ADVANCED_SECTION_KEY = "codemem-advanced-section";
 const FEED_FILTER_KEY = "codemem-feed-filter";
 const FEED_SCOPE_KEY = "codemem-feed-scope";
+export const FEED_VIEW_MODE_KEY = "codemem-feed-view-v1";
 const DETAILS_OPEN_KEY = "codemem-details-open";
 const SYNC_DIAGNOSTICS_KEY = "codemem-sync-diagnostics";
 const SYNC_PAIRING_KEY = "codemem-sync-pairing";
@@ -396,13 +397,14 @@ export const state = {
 	feedTypeFilter: "all" as FeedFilter,
 	feedScopeFilter: "all" as FeedScope,
 	feedQuery: "",
+	preferredFeedViewMode: "summary" as ItemViewMode,
 	lastFeedItems: [] as FeedItem[],
 	lastFeedFilteredCount: 0,
 	lastFeedSignature: "",
 	pendingFeedItems: null as unknown[] | null,
 
 	/* Feed item view state */
-	itemViewState: new Map<string, string>(),
+	itemViewState: new Map<string, ItemViewMode>(),
 	itemExpandState: new Map<string, boolean>(),
 	newItemKeys: new Set<string>(),
 
@@ -580,6 +582,17 @@ export function setFeedScopeFilter(value: string) {
 	localStorage.setItem(FEED_SCOPE_KEY, state.feedScopeFilter);
 }
 
+export function getPreferredFeedViewMode(): ItemViewMode {
+	const saved = localStorage.getItem(FEED_VIEW_MODE_KEY);
+	if (saved === "facts" || saved === "narrative") return saved;
+	return "summary";
+}
+
+export function setPreferredFeedViewMode(mode: ItemViewMode) {
+	state.preferredFeedViewMode = mode;
+	localStorage.setItem(FEED_VIEW_MODE_KEY, mode);
+}
+
 export function isSyncDiagnosticsOpen(): boolean {
 	return localStorage.getItem(SYNC_DIAGNOSTICS_KEY) === "1";
 }
@@ -623,6 +636,7 @@ export function initState() {
 	state.advancedSection = getActiveAdvancedSection();
 	state.feedTypeFilter = getFeedTypeFilter();
 	state.feedScopeFilter = getFeedScopeFilter();
+	state.preferredFeedViewMode = getPreferredFeedViewMode();
 	state.syncDiagnosticsOpen = isSyncDiagnosticsOpen();
 	try {
 		state.syncPairingOpen = localStorage.getItem(SYNC_PAIRING_KEY) === "1";

@@ -1,124 +1,226 @@
 import { h, render } from "preact";
 import { act } from "preact/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FEED_VIEW_MODE_KEY, state } from "../../../lib/state";
+import type { FeedItem } from "../types";
 import { FeedItemCard } from "./FeedItemCard";
+
+const noticeMock = vi.hoisted(() => vi.fn());
+const updateVisibilityMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../../../lib/notice", () => ({ showGlobalNotice: noticeMock }));
+vi.mock("../../../lib/api", () => ({
+	updateMemoryVisibility: updateVisibilityMock,
+}));
 
 vi.mock("../../../components/primitives/tooltip", () => ({
 	Tooltip: ({ children }: { children?: unknown }) => children,
 	TooltipProvider: ({ children }: { children?: unknown }) => children,
 }));
+vi.mock("./FeedItemMenu", () => ({
+	FeedItemMenu: () => h("button", { className: "feed-menu-trigger", type: "button" }, "Menu"),
+}));
 
 let mount: HTMLDivElement;
 
 beforeEach(() => {
+	localStorage.clear();
+	state.feedQuery = "";
+	state.itemExpandState.clear();
+	state.itemViewState.clear();
+	state.newItemKeys.clear();
+	state.preferredFeedViewMode = "summary";
+	noticeMock.mockReset();
+	updateVisibilityMock.mockReset();
+	updateVisibilityMock.mockResolvedValue({});
 	mount = document.createElement("div");
 	document.body.appendChild(mount);
 });
 
 afterEach(() => {
-	act(() => {
-		render(null, mount);
-	});
+	act(() => render(null, mount));
 	mount.remove();
 });
 
+function renderCard(item: FeedItem): void {
+	act(() => {
+		render(
+			h(FeedItemCard, {
+				item,
+				onReload: async () => {},
+				onRemove: () => {},
+				onReplace: () => {},
+				onViewRefresh: () => {},
+			}),
+			mount,
+		);
+	});
+}
+
+function observation(overrides: FeedItem = {}): FeedItem {
+	return {
+		body_text: "A longer fallback narrative.",
+		created_at: "2026-05-26T23:30:00.000Z",
+		facts: ["One durable fact"],
+		id: 1234,
+		kind: "discovery",
+		metadata_json: {},
+		narrative: "A longer narrative with enough detail to differ from the summary.",
+		owned_by_self: true,
+		project: "garden-api",
+		subtitle: "Short summary.",
+		title: "Diagnostic memory",
+		visibility: "private",
+		...overrides,
+	};
+}
+
+function titleButton(): HTMLButtonElement {
+	const button = mount.querySelector<HTMLButtonElement>("button.feed-title");
+	if (!button) throw new Error("Expected title disclosure button");
+	return button;
+}
+
 describe("FeedItemCard", () => {
-	function renderCard(item: Parameters<typeof FeedItemCard>[0]["item"]): void {
-		act(() => {
-			render(
-				h(FeedItemCard, {
-					item,
-					onReload: async () => {},
-					onRemove: () => {},
-					onReplace: () => {},
-					onViewRefresh: () => {},
-				}),
-				mount,
-			);
-		});
-	}
+	it("renders the collapsed compact skim with mandatory provenance", () => {
+		renderCard(
+			observation({
+				actor_id: "peer-id",
+				owned_by_self: false,
+				resolved_actor_display_name: "Ada Lovelace",
+				tags: ["retries", "watering"],
+				trust_state: "unreviewed",
+				visibility: "shared",
+			}),
+		);
 
-	it("shows the memory database id as quiet provenance", () => {
-		renderCard({
-			body_text: "A diagnostic memory body.",
-			created_at: "2026-05-26T23:30:00.000Z",
-			id: 1234,
-			kind: "discovery",
-			metadata_json: {},
-			owned_by_self: false,
-			project: "btha",
-			title: "BTHA diagnostic memory",
-			visibility: "shared",
-		});
-
-		expect(mount.textContent).toContain("ID 1234");
-		const chip = mount.querySelector(".provenance-chip.memory-id");
-		expect(chip?.textContent).toBe("ID 1234");
-	});
-
-	it("renders resolved identity labels without raw provenance ids", () => {
-		const actorId = "local:0ea043cc-c61c-427d-8b77-572331b9855c";
-		const deviceId = "0ea043cc-c61c-427d-8b77-572331b9855c";
-		renderCard({
-			actor_id: actorId,
-			origin_device_id: deviceId,
-			resolved_actor_display_name: "Ada Lovelace",
-			resolved_device_display_name: "Ada's MacBook",
-			title: "Shared memory",
-		});
-
-		expect(mount.textContent).toContain("Ada Lovelace");
-		expect(mount.textContent).toContain("Device Ada's MacBook");
-		expect(mount.textContent).not.toContain(actorId);
-		expect(mount.textContent).not.toContain(deviceId);
-	});
-
-	it("renders neutral legacy fallbacks without stored machine labels or raw ids", () => {
-		const actorId = "local:0ea043cc-c61c-427d-8b77-572331b9855c";
-		const deviceId = "0ea043cc-c61c-427d-8b77-572331b9855c";
-		renderCard({
-			actor_display_name: actorId,
-			actor_id: actorId,
-			origin_device_id: deviceId,
-			resolved_actor_display_name: actorId,
-			resolved_device_display_name: deviceId,
-			title: "Legacy shared memory",
-		});
-
-		expect(mount.textContent).toContain("Teammate");
-		expect(mount.textContent).toContain("Shared device");
-		expect(mount.textContent).not.toContain(actorId);
-		expect(mount.textContent).not.toContain(deviceId);
-	});
-
-	it("renders tags only as chips", () => {
-		renderCard({
-			body_text: "A tagged memory body.",
-			tags_text: "searchable-tag second-tag",
-			title: "Tagged memory",
-		});
-
-		expect(mount.querySelector(".feed-meta")).toBeNull();
-		expect(mount.querySelector(".feed-tags")?.textContent).toContain("searchable-tag");
+		expect(mount.querySelector(".feed-summary")?.textContent).toBe("Short summary.");
+		expect(mount.querySelector(".feed-meta-line")?.textContent).toContain("garden-api");
+		expect(mount.querySelector(".feed-meta-line")?.textContent).toContain("Ada Lovelace");
+		expect(mount.querySelector(".feed-meta-line")?.textContent).toContain("shared");
+		expect(mount.querySelector(".feed-meta-line")?.textContent).toContain("unreviewed");
+		expect(mount.querySelector(".provenance-chip.memory-id")?.textContent).toBe("#1234");
 		expect(mount.querySelectorAll(".tag-chip")).toHaveLength(2);
+		expect(mount.querySelector(".feed-detail")).toBeNull();
 	});
 
-	it("applies readable measure to narrative view", () => {
-		renderCard({
-			body_text: "A longer narrative with enough detail to differ from the summary.",
-			metadata_json: {
-				narrative: "A longer narrative with enough detail to differ from the summary.",
-				subtitle: "Short summary.",
-			},
-			title: "Narrative memory",
-		});
+	it("uses the title button to disclose an accessibly named mode region", () => {
+		renderCard(observation());
+		const button = titleButton();
+		expect(button.getAttribute("aria-expanded")).toBe("false");
 
-		const narrativeButton = Array.from(mount.querySelectorAll("button")).find(
+		act(() => button.click());
+
+		expect(button.getAttribute("aria-expanded")).toBe("true");
+		expect(mount.querySelector(".feed-detail")?.getAttribute("aria-label")).toBe(
+			"Diagnostic memory Summary",
+		);
+	});
+
+	it("switches Facts and Narrative in place and remembers the global preference", () => {
+		renderCard(observation());
+		act(() => titleButton().click());
+		const narrative = Array.from(mount.querySelectorAll<HTMLButtonElement>('[role="radio"]')).find(
 			(button) => button.textContent === "Narrative",
 		);
-		expect(narrativeButton).toBeDefined();
-		act(() => narrativeButton?.click());
+		expect(narrative).toBeDefined();
+		act(() => narrative?.click());
 
+		expect(mount.querySelector(".feed-detail")?.textContent).toContain("longer narrative");
 		expect(mount.querySelector(".feed-body")?.classList.contains("narrative")).toBe(true);
+		expect(localStorage.getItem(FEED_VIEW_MODE_KEY)).toBe("narrative");
+	});
+
+	it("supports arrow-key radio selection and preserves focused controls across polling", () => {
+		renderCard(observation());
+		const radios = mount.querySelectorAll<HTMLButtonElement>('[role="radio"]');
+		radios[0]?.focus();
+		act(() => {
+			radios[0]?.dispatchEvent(
+				new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ArrowRight" }),
+			);
+		});
+		expect(mount.querySelector('[role="radio"][aria-checked="true"]')?.textContent).toBe("Facts");
+
+		const focused = document.activeElement;
+		renderCard(observation({ subtitle: "Updated during polling." }));
+		expect(document.activeElement).toBe(focused);
+	});
+
+	it("keeps expansion for the same identity through removal and return without transferring it", () => {
+		renderCard(observation());
+		act(() => titleButton().click());
+		expect(mount.querySelector(".feed-detail")).not.toBeNull();
+
+		act(() => render(null, mount));
+		renderCard(observation({ subtitle: "Updated after filtering." }));
+		expect(mount.querySelector(".feed-detail")?.textContent).toContain("Updated after filtering.");
+
+		act(() => render(null, mount));
+		renderCard(observation({ id: 999, title: "Different memory" }));
+		expect(mount.querySelector(".feed-detail")).toBeNull();
+	});
+});
+
+describe("FeedItemCard content and actions", () => {
+	it("shows a highlighted excerpt when search matches only hidden detail", () => {
+		state.feedQuery = "coordinator";
+		renderCard(observation({ facts: ["Coordinator routing changed"], subtitle: "Visible skim" }));
+
+		expect(mount.querySelector(".feed-search-match")?.textContent).toContain("Coordinator");
+		expect(mount.querySelector(".feed-search-match mark.match")?.textContent).toBe("Coordinator");
+		expect(mount.querySelector(".feed-detail")).toBeNull();
+	});
+
+	it("keeps files and resolved device detail behind disclosure", () => {
+		renderCard(
+			observation({
+				actor_id: "peer-id",
+				files: ["src/retry.ts"],
+				origin_device_id: "raw-device-id",
+				owned_by_self: false,
+				resolved_actor_display_name: "Ada",
+				resolved_device_display_name: "Ada's MacBook",
+			}),
+		);
+		expect(mount.textContent).not.toContain("Ada's MacBook");
+		expect(mount.querySelector(".feed-files")).toBeNull();
+
+		act(() => titleButton().click());
+		expect(mount.textContent).toContain("Device Ada's MacBook");
+		expect(mount.querySelector(".feed-files")?.textContent).toContain("src/retry.ts");
+		expect(mount.textContent).not.toContain("raw-device-id");
+	});
+
+	it("uses the approved visibility outcome notices", async () => {
+		renderCard(observation());
+		const select = mount.querySelector<HTMLSelectElement>(".feed-visibility-select");
+		if (!select) throw new Error("Expected visibility select");
+		select.value = "shared";
+		await act(async () => {
+			select.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+		expect(noticeMock).toHaveBeenLastCalledWith("Shared with synced peers");
+
+		select.value = "private";
+		await act(async () => {
+			select.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+		expect(noticeMock).toHaveBeenLastCalledWith("Only you can see this");
+	});
+
+	it("preserves visibility, item-menu, and new-item behavior with exact copy", () => {
+		const item = observation();
+		state.newItemKeys.add("discovery:1234");
+		renderCard(item);
+
+		expect(mount.querySelector(".feed-item")?.classList.contains("new-item")).toBe(true);
+		expect(mount.querySelector(".feed-menu-trigger")).not.toBeNull();
+		const select = mount.querySelector<HTMLSelectElement>(".feed-visibility-select");
+		expect(select?.getAttribute("aria-label")).toBe("Who can see Diagnostic memory");
+		expect(Array.from(select?.options || []).map((option) => option.textContent)).toEqual([
+			"Only me",
+			"Synced peers",
+		]);
 	});
 });
