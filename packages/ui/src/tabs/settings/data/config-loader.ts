@@ -5,6 +5,7 @@
 import * as api from "../../../lib/api";
 import type { ReadRequestOptions } from "../../../lib/read-request";
 import { type FeedProcessingStatus, state } from "../../../lib/state";
+import { updateFeedView } from "../../feed";
 import { collectSettingsPayload as collectSettingsPayloadRaw } from "./collect-payload";
 import { PROTECTED_VIEWER_CONFIG_KEYS } from "./constants";
 import { type ConfigPayload, formStateFromPayload } from "./form-state";
@@ -33,7 +34,17 @@ export function collectSettingsPayload(
 }
 
 export function renderObserverStatusBanner(status: unknown) {
-	state.feedProcessingStatus = deriveFeedProcessingStatus(status);
+	const previousStatus = state.feedProcessingStatus;
+	const nextStatus = deriveFeedProcessingStatus(status);
+	state.feedProcessingStatus = nextStatus;
+	if (
+		previousStatus.kind !== nextStatus.kind ||
+		(previousStatus.kind === "pending" &&
+			nextStatus.kind === "pending" &&
+			previousStatus.count !== nextStatus.count)
+	) {
+		updateFeedView(true);
+	}
 	updateRenderState({
 		observerStatus:
 			status && typeof status === "object" ? (status as Record<string, unknown>) : null,

@@ -1,5 +1,19 @@
-import { describe, expect, it } from "vitest";
-import { deriveFeedProcessingStatus, describeEffectiveSettings } from "./config-loader";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { state } from "../../../lib/state";
+import {
+	deriveFeedProcessingStatus,
+	describeEffectiveSettings,
+	renderObserverStatusBanner,
+} from "./config-loader";
+
+const mocks = vi.hoisted(() => ({ updateFeedView: vi.fn() }));
+
+vi.mock("../../feed", () => ({ updateFeedView: mocks.updateFeedView }));
+
+beforeEach(() => {
+	mocks.updateFeedView.mockReset();
+	state.feedProcessingStatus = { kind: "ready" };
+});
 
 describe("describeEffectiveSettings", () => {
 	it("describes configuration-resolved values without claiming they match runtime resolution", () => {
@@ -37,5 +51,20 @@ describe("deriveFeedProcessingStatus", () => {
 	it("does not infer paused capture from missing status", () => {
 		expect(deriveFeedProcessingStatus(null)).toEqual({ kind: "unavailable" });
 		expect(deriveFeedProcessingStatus({ active: null })).toEqual({ kind: "ready" });
+	});
+});
+
+describe("renderObserverStatusBanner", () => {
+	it("forces a Feed render when processing status changes", () => {
+		renderObserverStatusBanner({ capture_enabled: false });
+
+		expect(state.feedProcessingStatus).toEqual({ kind: "paused" });
+		expect(mocks.updateFeedView).toHaveBeenCalledWith(true);
+	});
+
+	it("does not rerender the Feed for equivalent status", () => {
+		renderObserverStatusBanner({ capture_enabled: true, queue: { pending: 0 } });
+
+		expect(mocks.updateFeedView).not.toHaveBeenCalled();
 	});
 });
