@@ -52,11 +52,13 @@ function renderModeContent(mode: FeedCardMode) {
 function shouldShowSearchMatch(
 	searchMatch: ReturnType<typeof hiddenSearchMatch>,
 	expanded: boolean,
-	activeMode: ItemViewMode,
+	activeMode: FeedCardMode | undefined,
+	query: string,
 ) {
 	if (!searchMatch) return false;
 	if (searchMatch.mode === null) return true;
-	return !expanded || searchMatch.mode !== activeMode;
+	if (!expanded || !activeMode) return true;
+	return !activeMode.searchText.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
 }
 
 export function FeedItemCard({
@@ -73,8 +75,7 @@ export function FeedItemCard({
 	const preferredMode = storedMode || state.preferredFeedViewMode;
 	const initialMode = preferredAvailableMode(model.modes, preferredMode);
 	const [activeMode, setActiveMode] = useState<ItemViewMode>(initialMode);
-	const activeExpandKey = `${model.rowKey}:${activeMode}`;
-	const [expanded, setExpanded] = useState(state.itemExpandState.get(activeExpandKey) === true);
+	const [expanded, setExpanded] = useState(state.itemExpandState.get(model.rowKey) === true);
 	const [isNew, setIsNew] = useState(state.newItemKeys.has(model.rowKey));
 	const visibility = String(item.visibility || metadata.visibility || "private").trim();
 	const [selectedVisibility, setSelectedVisibility] = useState<"private" | "shared">(
@@ -111,10 +112,6 @@ export function FeedItemCard({
 	}, [activeMode, model.rowKey]);
 
 	useEffect(() => {
-		setExpanded(state.itemExpandState.get(`${model.rowKey}:${activeMode}`) === true);
-	}, [activeMode, model.rowKey]);
-
-	useEffect(() => {
 		setSelectedVisibility(visibility === "shared" ? "shared" : "private");
 	}, [visibility]);
 
@@ -128,7 +125,6 @@ export function FeedItemCard({
 	}, [isNew, model.rowKey]);
 
 	function selectMode(mode: ItemViewMode) {
-		state.itemExpandState.set(`${model.rowKey}:${mode}`, expanded);
 		state.itemViewState.set(model.rowKey, mode);
 		setPreferredFeedViewMode(mode);
 		setActiveMode(mode);
@@ -137,7 +133,7 @@ export function FeedItemCard({
 	function toggleDetail() {
 		if (!activeModeData) return;
 		const nextValue = !expanded;
-		state.itemExpandState.set(activeExpandKey, nextValue);
+		state.itemExpandState.set(model.rowKey, nextValue);
 		setExpanded(nextValue);
 	}
 
@@ -307,7 +303,7 @@ export function FeedItemCard({
 						},
 					})
 				: null,
-			searchMatch && shouldShowSearchMatch(searchMatch, expanded, activeMode)
+			searchMatch && shouldShowSearchMatch(searchMatch, expanded, activeModeData, state.feedQuery)
 				? h(
 						"div",
 						{ className: "feed-search-match" },

@@ -147,22 +147,31 @@ describe("FeedItemCard", () => {
 		expect(document.activeElement).toBe(focused);
 	});
 
-	it("does not reopen a previously expanded mode when switching back from a collapsed mode", () => {
+	it("keeps an expanded card open while switching modes", () => {
 		renderCard(observation());
 		act(() => titleButton().click());
 
 		const radios = Array.from(mount.querySelectorAll<HTMLButtonElement>('[role="radio"]'));
-		const summary = radios.find((radio) => radio.textContent === "Summary");
 		const facts = radios.find((radio) => radio.textContent === "Facts");
 		act(() => facts?.click());
-		expect(mount.querySelector(".feed-detail")).not.toBeNull();
 
+		expect(titleButton().getAttribute("aria-expanded")).toBe("true");
+		expect(mount.querySelector(".feed-detail")?.textContent).toContain("One durable fact");
+	});
+
+	it("keeps an expanded card open when polling removes its active mode", () => {
+		renderCard(observation());
 		act(() => titleButton().click());
-		expect(mount.querySelector(".feed-detail")).toBeNull();
-		act(() => summary?.click());
+		const narrative = Array.from(mount.querySelectorAll<HTMLButtonElement>('[role="radio"]')).find(
+			(radio) => radio.textContent === "Narrative",
+		);
+		act(() => narrative?.click());
 
-		expect(titleButton().getAttribute("aria-expanded")).toBe("false");
-		expect(mount.querySelector(".feed-detail")).toBeNull();
+		renderCard(observation({ body_text: "Short summary.", narrative: "Short summary." }));
+
+		expect(titleButton().getAttribute("aria-expanded")).toBe("true");
+		expect(mount.querySelector('[role="radio"][aria-checked="true"]')?.textContent).toBe("Summary");
+		expect(mount.querySelector(".feed-detail")?.textContent).toContain("Short summary");
 	});
 
 	it("prevents Home and End defaults when selection is already at the boundary", () => {
@@ -226,6 +235,24 @@ describe("FeedItemCard content and actions", () => {
 			(radio) => radio.textContent === "Facts",
 		);
 		act(() => facts?.click());
+		expect(mount.querySelector(".feed-search-match")).toBeNull();
+	});
+
+	it("hides the search excerpt when the active mode also contains the query", () => {
+		state.feedQuery = "coordinator";
+		renderCard(
+			observation({
+				facts: ["Coordinator routing changed"],
+				narrative: "The coordinator now routes through the approved peer.",
+				subtitle: "Visible skim",
+			}),
+		);
+		act(() => titleButton().click());
+		const narrative = Array.from(mount.querySelectorAll<HTMLButtonElement>('[role="radio"]')).find(
+			(radio) => radio.textContent === "Narrative",
+		);
+		act(() => narrative?.click());
+
 		expect(mount.querySelector(".feed-search-match")).toBeNull();
 	});
 
