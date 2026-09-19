@@ -1,4 +1,5 @@
 import { RadixSwitch } from "../../../components/primitives/radix-switch";
+import { SettingsOutcome, settingsOutcomeFor } from "./SettingsOutcome";
 
 export type SettingsSwitchRowProps = {
 	checked: boolean;
@@ -20,6 +21,7 @@ export function SettingsSwitchRow({
 	onCheckedChange,
 }: SettingsSwitchRowProps) {
 	const labelId = `${id}Label`;
+	const outcome = settingsOutcomeFor(id);
 	return (
 		<div
 			className={
@@ -41,6 +43,7 @@ export function SettingsSwitchRow({
 				onCheckedChange={onCheckedChange}
 				thumbClassName="settings-switch-thumb"
 			/>
+			{outcome ? <SettingsOutcome {...outcome} /> : null}
 		</div>
 	);
 }

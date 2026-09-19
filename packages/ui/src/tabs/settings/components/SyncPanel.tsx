@@ -1,5 +1,6 @@
 import { TextInput } from "../../../components/primitives/text-input";
 import type { SettingsPanelProps } from "../data/types";
+import { Field } from "./Field";
 import { SettingsHint } from "./SettingsHint";
 import { SettingsSectionIntro } from "./SettingsSectionIntro";
 import { SettingsSwitchRow } from "./SettingsSwitchRow";
@@ -26,7 +27,7 @@ export function SyncPanel({
 					label="Enable sync"
 					onCheckedChange={onSwitchInput("syncEnabled")}
 				/>
-				<div className="field">
+				<Field>
 					<label htmlFor="syncInterval">Sync interval (seconds)</label>
 					<TextInput
 						id="syncInterval"
@@ -38,8 +39,8 @@ export function SyncPanel({
 					<div className="small">
 						How often this device checks for sync work when sync is enabled.
 					</div>
-				</div>
-				<div className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
+				</Field>
+				<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
 					<label htmlFor="syncHost">Sync host</label>
 					<TextInput
 						id="syncHost"
@@ -47,8 +48,8 @@ export function SyncPanel({
 						placeholder="127.0.0.1"
 						value={values.syncHost}
 					/>
-				</div>
-				<div className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
+				</Field>
+				<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
 					<label htmlFor="syncPort">Sync port</label>
 					<TextInput
 						id="syncPort"
@@ -57,7 +58,7 @@ export function SyncPanel({
 						type="number"
 						value={values.syncPort}
 					/>
-				</div>
+				</Field>
 				<SettingsSwitchRow
 					checked={values.syncMdns}
 					className="field settings-advanced"
@@ -76,7 +77,7 @@ export function SyncPanel({
 					/>
 					<div className="small">{protectedConfigHelp("sync_coordinator_url")}</div>
 				</div>
-				<div className="field">
+				<Field>
 					<label htmlFor="syncCoordinatorGroup">Coordinator group</label>
 					<TextInput
 						id="syncCoordinatorGroup"
@@ -85,14 +86,14 @@ export function SyncPanel({
 						value={values.syncCoordinatorGroup}
 					/>
 					<div className="small">Discovery namespace for peers using the same coordinator.</div>
-				</div>
+				</Field>
 				<div className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
 					<SettingsHint hidden={hiddenUnlessAdvanced()}>
 						These network overrides are for unusual local-network setups. Leave them alone unless
 						you know this device needs non-default sync discovery or coordinator timing.
 					</SettingsHint>
 				</div>
-				<div className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
+				<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
 					<label htmlFor="syncCoordinatorTimeout">Coordinator timeout (seconds)</label>
 					<TextInput
 						id="syncCoordinatorTimeout"
@@ -101,8 +102,8 @@ export function SyncPanel({
 						type="number"
 						value={values.syncCoordinatorTimeout}
 					/>
-				</div>
-				<div className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
+				</Field>
+				<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
 					<label htmlFor="syncCoordinatorPresenceTtl">Presence TTL (seconds)</label>
 					<TextInput
 						id="syncCoordinatorPresenceTtl"
@@ -111,7 +112,7 @@ export function SyncPanel({
 						type="number"
 						value={values.syncCoordinatorPresenceTtl}
 					/>
-				</div>
+				</Field>
 			</div>
 		</>
 	);

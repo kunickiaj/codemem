@@ -116,6 +116,7 @@ codemem status --db-path ./codemem.sqlite --config ./codemem.json
 - Open via the Settings button in the header.
 - Shows effective values (configured or default) to avoid blank/ambiguous fields.
 - Persists only changed settings on save (unchanged effective defaults are not rewritten to config).
+- Each editable field states which stage and scope it affects, when the change takes effect, and whether existing data is reprocessed. Fields show the viewer's current effective values; environment-managed values remain identified as overrides.
 - Uses task-oriented sections: `Connection`, `Processing`, and `Device Sync`.
 - Includes a `Show advanced controls` toggle for technical tuning fields (JSON headers, cache/timeout, tier-routing tuning, network overrides, and pack limits).
 - Connection/auth settings map to `claude_command`, `observer_runtime`, `observer_provider`, `observer_model`, `observer_base_url`, `observer_auth_source`, `observer_auth_file`, `observer_auth_command`, `observer_auth_timeout_ms`, `observer_auth_cache_ttl_s`, and `observer_headers`.
