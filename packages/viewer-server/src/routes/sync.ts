@@ -4716,7 +4716,13 @@ function originDeviceDisplayName(value: unknown, deviceId: string): string | nul
 	if (typeof value !== "string") return null;
 	try {
 		const displayName = normalizeHumanPresentationName(value, "display_name");
-		return displayName === deviceId ? null : displayName;
+		let normalizedDeviceId = deviceId;
+		try {
+			normalizedDeviceId = normalizeHumanPresentationName(deviceId, "device_id");
+		} catch {
+			// Opaque device IDs are intentionally not valid human presentation names.
+		}
+		return displayName === normalizedDeviceId ? null : displayName;
 	} catch {
 		return null;
 	}
