@@ -500,7 +500,6 @@ export function renderTeamSync() {
 					setTeamJoinPanelOpen(!teamJoinPanelOpen);
 					renderTeamSync();
 				},
-				pairedPeerCount: Number(coordinator.paired_peer_count || 0),
 				presenceStatus,
 			}),
 			discoveredListMount: discoveredList,

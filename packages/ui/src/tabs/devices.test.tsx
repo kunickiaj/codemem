@@ -259,8 +259,88 @@ describe("Devices focus and inventory", () => {
 		});
 
 		expect(document.body.textContent).toContain("Configured fallback");
-		expect(document.body.textContent).toContain("No additional active devices are registered.");
-		expect(document.body.textContent).not.toContain("No configured devices are registered.");
+		expect(document.body.textContent).not.toContain("No other devices");
+	});
+
+	it("keeps pairing on Devices and explains it in place", () => {
+		const joinHost = document.createElement("div");
+		joinHost.id = "syncJoinSection";
+		joinHost.innerHTML =
+			'<div id="syncJoinPanel" hidden><textarea aria-label="Invite or pairing code"></textarea><button>Review invite</button></div>';
+		document.body.appendChild(joinHost);
+		const onNavigate = vi.fn();
+		mount(intent(), reconciliation(), {
+			inventory: inventory([
+				inventoryItem("device-address-fingerprint-secret", "Work Laptop", "configured", {
+					isLocal: true,
+				}),
+			]),
+			onNavigate,
+		});
+
+		expect(document.querySelector("#devices-heading")?.textContent).toBe("Devices 1");
+		expect(document.querySelector(".devices-local-row")?.textContent).toContain(
+			"This deviceOwned by Adam & CoThis device",
+		);
+		expect(document.body.textContent).not.toContain("your identity");
+		expect(document.body.textContent).toContain("No other devices");
+		expect(document.querySelectorAll(".devices-table-row")).toHaveLength(0);
+
+		const howPairingWorks = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+			(button) => button.textContent === "How pairing works",
+		);
+		act(() => howPairingWorks?.click());
+		expect(document.getElementById("devices-pairing-panel")?.textContent).toContain(
+			"Run the pairing command on the device you want to connect, then review it here.",
+		);
+		expect(document.getElementById("devices-pairing-panel")?.textContent).toContain(
+			"codemem sync pair --payload-only",
+		);
+		expect(document.getElementById("devices-pairing-panel")?.textContent).toContain(
+			"Accept a pairing payload",
+		);
+		expect(document.getElementById("syncJoinPanel")?.hidden).toBe(false);
+		expect(
+			document
+				.getElementById("syncJoinPanel")
+				?.parentElement?.classList.contains("devices-pairing-accept"),
+		).toBe(true);
+		expect(onNavigate).not.toHaveBeenCalled();
+	});
+
+	it("keeps the availability summary when no coordinator is configured", () => {
+		const localInventory = inventory([]);
+		localInventory.coordinatorEvidence = {
+			availability: "unavailable",
+			safeErrorCode: "coordinator_not_configured",
+		};
+		mount(intent({ identityDevices: [] }), reconciliation(), { inventory: localInventory });
+
+		expect(document.querySelector(".devices-summary-bar")).not.toBeNull();
+		expect(document.body.textContent).not.toContain("Coordinator unreachable");
+	});
+
+	it("replaces the summary with a retryable coordinator status while unreachable", () => {
+		const onRetry = vi.fn();
+		const unavailableInventory = inventory([]);
+		unavailableInventory.coordinatorEvidence = {
+			availability: "unavailable",
+			safeErrorCode: "coordinator_unreachable",
+		};
+		mount(intent({ identityDevices: [] }), reconciliation(), {
+			inventory: unavailableInventory,
+			onRetry,
+		});
+
+		expect(document.querySelector(".devices-summary-bar")).toBeNull();
+		expect(document.querySelector(".devices-coordinator-status")?.textContent).toContain(
+			"Coordinator unreachable",
+		);
+		const retry = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+			(button) => button.textContent === "Retry",
+		);
+		act(() => retry?.click());
+		expect(onRetry).toHaveBeenCalledOnce();
 	});
 });
 describe("Devices reconciliation focus", () => {
@@ -609,27 +689,6 @@ describe("Device identity grouping", () => {
 		expect(document.body.textContent).toContain("1 revoked device is not included");
 	});
 
-	it("routes device invitations to Sharing without inferring the viewer's Identity", () => {
-		const onNavigate = vi.fn();
-		mount(intent(), reconciliation(), {
-			inventory: inventory([
-				inventoryItem("device-address-fingerprint-secret", "Work Laptop", "configured", {
-					isLocal: true,
-				}),
-			]),
-			onNavigate,
-		});
-
-		expect(document.querySelector(".devices-identity-header")?.textContent).not.toContain(
-			"your identity",
-		);
-		const addDevice = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
-			(button) => button.textContent === "Add a device",
-		);
-		act(() => addDevice?.click());
-		expect(onNavigate).toHaveBeenCalledWith("sharing");
-	});
-
 	it("counts setup devices rendered without projected access", () => {
 		mount(intent({ identityDevices: [] }), reconciliation(), {
 			inventory: inventory([inventoryItem("setup-device", "Setup device", "setup_required")]),
@@ -720,8 +779,9 @@ describe("Device availability summary", () => {
 				],
 			}),
 		);
-		expect(document.querySelector('[role="status"]')?.textContent).toContain(
-			"No active devices are registered. 1 revoked device is not shown.",
+		expect(document.body.textContent).toContain("No other devices");
+		expect(document.body.textContent).toContain(
+			"1 revoked device is not included in the active list.",
 		);
 		expect(document.body.textContent).not.toContain("Old Laptop");
 	});
@@ -859,9 +919,11 @@ describe("Device safe rendering", () => {
 		expect(text).toContain("Pair this device first");
 		expect(text).toContain("Device evidence conflicts");
 		expect(document.querySelectorAll(".device-identity-setup-card select")).toHaveLength(1);
-		for (const label of ["Review this device", "Go to pairing", "Open Advanced review"]) {
-			const action = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
-				(button) => button.textContent === label,
+		for (const label of ["Review this device", "Pair Tablet", "Open Advanced review"]) {
+			const action = [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+				label === "Pair Tablet"
+					? button.getAttribute("aria-label") === label
+					: button.textContent === label,
 			);
 			expect(action?.parentElement?.classList.contains("device-identity-card-actions")).toBe(true);
 			expect(action?.closest(".device-identity-setup-card")).not.toBeNull();
@@ -877,16 +939,19 @@ describe("Device safe rendering", () => {
 		).toBe("Choose an Identity for Home Laptop");
 		expect(text).not.toContain("Confirm Home Laptop belongs");
 		expect([...document.querySelectorAll("button")].map((button) => button.textContent)).toContain(
-			"Go to pairing",
+			"Pair a device",
 		);
 		act(() =>
 			(
 				[...document.querySelectorAll<HTMLButtonElement>("button")].find(
-					(button) => button.textContent === "Go to pairing",
+					(button) => button.getAttribute("aria-label") === "Pair Tablet",
 				) as HTMLButtonElement
 			).click(),
 		);
-		expect(onNavigate).toHaveBeenCalledWith("advanced_sync");
+		expect(document.getElementById("devices-pairing-panel")?.textContent).toContain(
+			"Copy pairing command",
+		);
+		expect(onNavigate).not.toHaveBeenCalled();
 		act(() =>
 			(
 				[...document.querySelectorAll<HTMLButtonElement>("button")].find(
@@ -894,7 +959,7 @@ describe("Device safe rendering", () => {
 				) as HTMLButtonElement
 			).click(),
 		);
-		expect(onNavigate).toHaveBeenNthCalledWith(2, "advanced_sync");
+		expect(onNavigate).toHaveBeenNthCalledWith(1, "advanced_sync");
 		expect(text).not.toContain("Confirm Tablet belongs");
 	});
 });

@@ -585,6 +585,11 @@ describe("Devices app integration", () => {
 			requireTeamSetupSummary: true,
 		});
 	});
+});
+
+describe("Devices app inventory recovery", () => {
+	beforeEach(setupDevicesAppTest);
+	afterEach(teardownDevicesAppTest);
 
 	it("reports a partial Team setup completion refresh failure", async () => {
 		const options = mocks.mountLegacyTeamSetupDialog.mock.calls[0]?.[1];
@@ -683,6 +688,11 @@ describe("Devices app integration", () => {
 		);
 		expect(panel?.textContent).toContain("Device ownership information is temporarily unavailable");
 	});
+});
+
+describe("Devices app pairing and refresh", () => {
+	beforeEach(setupDevicesAppTest);
+	afterEach(teardownDevicesAppTest);
 
 	it("joins runtime metadata only from the matched paired peer", () => {
 		const cards = [...document.querySelectorAll<HTMLElement>("#tab-devices .devices-table-row")];
@@ -699,7 +709,7 @@ describe("Devices app integration", () => {
 		expect(document.getElementById("tab-devices")?.textContent).not.toContain("9.9.9");
 	});
 
-	it("routes pairing recovery to Advanced Sync even when Teams was selected", async () => {
+	it("opens pairing recovery in Devices even when Teams was selected", async () => {
 		const { state } = await import("./lib/state");
 		state.advancedSection = "teams";
 		mocks.loadDeviceIdentityInventory.mockResolvedValueOnce({
@@ -726,16 +736,17 @@ describe("Devices app integration", () => {
 			await vi.advanceTimersByTimeAsync(5_100);
 		});
 		const pairingAction = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
-			(button) => button.textContent === "Go to pairing",
+			(button) => button.getAttribute("aria-label") === "Pair Pairing laptop",
 		);
 		if (!pairingAction) throw new Error("Pairing action missing");
 
 		act(() => pairingAction.click());
 		await Promise.resolve();
 
-		expect(window.location.hash).toBe("#advanced/sync");
-		expect(document.getElementById("advancedSyncContent")?.hidden).toBe(false);
-		expect(document.getElementById("advancedTeamsContent")?.hidden).toBe(true);
+		expect(window.location.hash).toBe("#devices");
+		expect(document.getElementById("devices-pairing-panel")?.textContent).toContain(
+			"Copy pairing command",
+		);
 	});
 
 	it("preserves stale cards, announces post-load failures, and marks refresh aggregation failed", async () => {
@@ -758,6 +769,11 @@ describe("Devices app integration", () => {
 		expect(document.getElementById("refreshAnnouncer")?.textContent).toBe("Refresh failed.");
 		expect(document.getElementById("refreshStatus")?.textContent).not.toContain("updated");
 	});
+});
+
+describe("Devices app refresh recovery", () => {
+	beforeEach(setupDevicesAppTest);
+	afterEach(teardownDevicesAppTest);
 
 	it("keeps Projects refresh failed until a later Projects load succeeds", async () => {
 		const { state } = await import("./lib/state");
@@ -819,6 +835,11 @@ describe("Devices app integration", () => {
 			"viewer_connection_restored",
 		);
 	});
+});
+
+describe("Devices app restoration routing", () => {
+	beforeEach(setupDevicesAppTest);
+	afterEach(teardownDevicesAppTest);
 
 	it(
 		"waits for a queued new-tab refresh before recording restoration",
@@ -881,6 +902,11 @@ describe("Devices app integration", () => {
 		"scopes the Devices sync refresh to the Devices surface",
 		verifyDevicesRestorationIgnoresAuxiliarySyncFailures,
 	);
+});
+
+describe("Devices app inventory refresh", () => {
+	beforeEach(setupDevicesAppTest);
+	afterEach(teardownDevicesAppTest);
 
 	it("uses a fresh Devices inventory instead of accepting cached Sync ownership", async () => {
 		const { state } = await import("./lib/state");
