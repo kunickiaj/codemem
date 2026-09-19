@@ -264,7 +264,7 @@ describe("submitDiscoveredDeviceReview", () => {
 });
 
 describe("renderTeamSync discovered-device state", () => {
-	it("presents a stale unpaired device as attention-visible but not reviewable", () => {
+	it("keeps a stale unpaired device visible without creating a duplicate attention task", () => {
 		document.body.innerHTML = `
 			<div id="syncTeamMeta"></div>
 			<div id="syncSetupPanel"></div>

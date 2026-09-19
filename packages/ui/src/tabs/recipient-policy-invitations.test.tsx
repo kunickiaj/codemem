@@ -139,8 +139,16 @@ const projectShareInspection = {
 };
 
 function button(label: string, root: ParentNode = document): HTMLButtonElement {
+	const landingLabel =
+		root === document
+			? new Map([
+					["Invite Team member", "Invite a teammate"],
+					["Review invitation", "Review an invite"],
+					["Share exact Projects", "Share specific projects"],
+				]).get(label)
+			: undefined;
 	const match = [...root.querySelectorAll<HTMLButtonElement>("button")].find(
-		(item) => item.textContent?.trim() === label,
+		(item) => item.textContent?.trim() === (landingLabel ?? label),
 	);
 	if (!match) throw new Error(`button missing: ${label}`);
 	return match;
