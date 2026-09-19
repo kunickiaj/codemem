@@ -121,8 +121,10 @@ describe("recipient policy review pending guards", () => {
 		if (!apply || !select) throw new Error("review controls missing");
 
 		await act(async () => {
-			apply.click();
-			apply.click();
+			act(() => {
+				apply.click();
+				apply.click();
+			});
 			await Promise.resolve();
 		});
 
@@ -132,14 +134,21 @@ describe("recipient policy review pending guards", () => {
 		expect(select.disabled).toBe(true);
 		apply.click();
 		expect(api.resolveRecipientPolicyReview).toHaveBeenCalledTimes(1);
+		act(() => renderRecipientPolicyReview(mount, review(), { onRefresh }));
+		const remountedApply = mount.querySelector<HTMLButtonElement>('[data-review-control="apply"]');
+		const remountedSelect = mount.querySelector<HTMLSelectElement>(
+			".recipient-policy-review-select",
+		);
+		expect(remountedApply?.disabled).toBe(true);
+		expect(remountedSelect?.disabled).toBe(true);
 
 		await act(async () => {
 			refresh.resolve();
 			await refresh.promise;
 		});
 
-		expect(apply.disabled).toBe(false);
-		expect(select.disabled).toBe(false);
+		expect(remountedApply?.disabled).toBe(false);
+		expect(remountedSelect?.disabled).toBe(false);
 	});
 
 	it("runs a blocked repair once for same-turn clicks", async () => {
@@ -160,19 +169,33 @@ describe("recipient policy review pending guards", () => {
 		if (!button) throw new Error("repair control missing");
 
 		await act(async () => {
-			button.click();
-			button.click();
+			act(() => {
+				button.click();
+				button.click();
+			});
 			await Promise.resolve();
 		});
 
 		expect(onRepair).toHaveBeenCalledTimes(1);
-		expect(button.disabled).toBe(true);
+		act(() =>
+			renderRecipientPolicyReview(
+				mount,
+				review({
+					blockedItems: [blockedItem()],
+					categoryCounts: { actionableReview: 0, blockedRepair: 1, preservedContinuity: 0 },
+					reviewItems: [],
+				}),
+				{ onRepair },
+			),
+		);
+		const remountedButton = mount.querySelector<HTMLButtonElement>("button[aria-describedby]");
+		expect(remountedButton?.disabled).toBe(true);
 
 		await act(async () => {
 			repair.resolve();
 			await repair.promise;
 		});
 
-		expect(button.disabled).toBe(false);
+		expect(remountedButton?.disabled).toBe(false);
 	});
 });
