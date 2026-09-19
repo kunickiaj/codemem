@@ -1,5 +1,5 @@
 import { type RefObject, render } from "preact";
-import { useId, useRef, useState } from "preact/hooks";
+import { useEffect, useId, useRef, useState } from "preact/hooks";
 import { Chip } from "../components/primitives/chip";
 import * as api from "../lib/api";
 import type {
@@ -14,9 +14,27 @@ import type {
 
 const pendingReviewGroups = new Set<string>();
 const pendingBlockedRepairs = new Set<string>();
+const pendingStateEvents = new EventTarget();
 const staleReviewItems = new Set<string>();
 const MAX_BULK_REVIEW_ITEMS = 100;
 let surfaceMessage = "";
+
+function setPendingEntry(entries: Set<string>, key: string, pending: boolean): void {
+	if (pending) entries.add(key);
+	else entries.delete(key);
+	pendingStateEvents.dispatchEvent(new Event("change"));
+}
+
+function usePendingEntry(entries: Set<string>, key: string): boolean {
+	const [pending, setPending] = useState(entries.has(key));
+	useEffect(() => {
+		const update = () => setPending(entries.has(key));
+		pendingStateEvents.addEventListener("change", update);
+		update();
+		return () => pendingStateEvents.removeEventListener("change", update);
+	}, [entries, key]);
+	return pending;
+}
 
 interface ReviewGroup {
 	key: string;
@@ -242,13 +260,12 @@ function useDecisionApplication(
 	onStatus: (message: string) => void,
 	options: RecipientPolicyReviewRenderOptions,
 ) {
-	const [pending, setPending] = useState(pendingReviewGroups.has(group.key));
+	const pending = usePendingEntry(pendingReviewGroups, group.key);
 
 	async function apply(): Promise<void> {
 		const decision = decisionRef.current;
 		if (pending || isDecisionBlocked(group, decision) || pendingReviewGroups.has(group.key)) return;
-		pendingReviewGroups.add(group.key);
-		setPending(true);
+		setPendingEntry(pendingReviewGroups, group.key, true);
 		surfaceMessage = "Applying…";
 		onStatus(surfaceMessage);
 		try {
@@ -261,8 +278,7 @@ function useDecisionApplication(
 			onStatus(surfaceMessage);
 			await refreshAfterApply(options, onStatus);
 		} finally {
-			pendingReviewGroups.delete(group.key);
-			setPending(false);
+			setPendingEntry(pendingReviewGroups, group.key, false);
 		}
 	}
 
@@ -464,20 +480,18 @@ function BlockedRow({
 	const detailsId = `recipient-policy-blocked-details-${useId()}`;
 	const helpId = `recipient-policy-repair-help-${useId()}`;
 	const [detailsOpen, setDetailsOpen] = useState(false);
-	const [pending, setPending] = useState(pendingBlockedRepairs.has(item.blockedItemId));
+	const pending = usePendingEntry(pendingBlockedRepairs, item.blockedItemId);
 	const repairAvailable = Boolean(
 		options.onRepair && (options.isRepairAvailable?.(item.repair) ?? true),
 	);
 
 	async function repair(): Promise<void> {
 		if (!options.onRepair || pendingBlockedRepairs.has(item.blockedItemId)) return;
-		pendingBlockedRepairs.add(item.blockedItemId);
-		setPending(true);
+		setPendingEntry(pendingBlockedRepairs, item.blockedItemId, true);
 		try {
 			await options.onRepair(item.repair);
 		} finally {
-			pendingBlockedRepairs.delete(item.blockedItemId);
-			setPending(false);
+			setPendingEntry(pendingBlockedRepairs, item.blockedItemId, false);
 		}
 	}
 
