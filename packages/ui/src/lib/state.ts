@@ -638,9 +638,8 @@ export function initState() {
 	state.feedScopeFilter = getFeedScopeFilter();
 	state.preferredFeedViewMode = getPreferredFeedViewMode();
 	state.syncDiagnosticsOpen = isSyncDiagnosticsOpen();
+	state.syncPairingOpen = false;
 	try {
-		state.syncPairingOpen = localStorage.getItem(SYNC_PAIRING_KEY) === "1";
-	} catch {
-		state.syncPairingOpen = false;
-	}
+		localStorage.removeItem(SYNC_PAIRING_KEY);
+	} catch {}
 }

@@ -38,6 +38,29 @@ const uiAliases = {
 	"react-dom/test-utils": "preact/test-utils",
 	"react/jsx-runtime": "preact/jsx-runtime",
 };
+const radixTestDependencies = [
+	"@radix-ui/react-collapsible",
+	"@radix-ui/react-collection",
+	"@radix-ui/react-compose-refs",
+	"@radix-ui/react-context",
+	"@radix-ui/react-dialog",
+	"@radix-ui/react-direction",
+	"@radix-ui/react-dismissable-layer",
+	"@radix-ui/react-focus-guards",
+	"@radix-ui/react-focus-scope",
+	"@radix-ui/react-id",
+	"@radix-ui/react-portal",
+	"@radix-ui/react-presence",
+	"@radix-ui/react-primitive",
+	"@radix-ui/react-roving-focus",
+	"@radix-ui/react-slot",
+	"@radix-ui/react-tabs",
+	"@radix-ui/react-use-callback-ref",
+	"@radix-ui/react-use-controllable-state",
+	"@radix-ui/react-use-effect-event",
+	"@radix-ui/react-use-is-hydrated",
+	"@radix-ui/react-use-layout-effect",
+];
 
 export default defineConfig(({ command, mode }) => {
 	const isDevServer = command === "serve";
@@ -107,25 +130,7 @@ export default defineConfig(({ command, mode }) => {
 			name: "ui",
 			server: {
 				deps: {
-					inline: [
-						"@radix-ui/react-collapsible",
-						"@radix-ui/react-compose-refs",
-						"@radix-ui/react-context",
-						"@radix-ui/react-dialog",
-						"@radix-ui/react-dismissable-layer",
-						"@radix-ui/react-focus-guards",
-						"@radix-ui/react-focus-scope",
-						"@radix-ui/react-id",
-						"@radix-ui/react-portal",
-						"@radix-ui/react-presence",
-						"@radix-ui/react-primitive",
-						"@radix-ui/react-slot",
-						"@radix-ui/react-use-callback-ref",
-						"@radix-ui/react-use-controllable-state",
-						"@radix-ui/react-use-effect-event",
-						"@radix-ui/react-use-is-hydrated",
-						"@radix-ui/react-use-layout-effect",
-					],
+					inline: radixTestDependencies,
 				},
 			},
 		},
