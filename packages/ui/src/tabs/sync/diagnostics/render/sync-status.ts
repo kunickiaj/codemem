@@ -127,7 +127,7 @@ export function renderSyncStatus() {
 		} else if (syncNoPeers) {
 			parts = [
 				"Advanced sync is ready but idle",
-				"Use Pair a device in Devices to connect another device, then this panel will start showing live peer status and recent attempts",
+				"Pair another device from Devices, then return here for live peer status and recent attempts",
 			];
 		} else {
 			parts = [
