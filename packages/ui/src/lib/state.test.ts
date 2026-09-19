@@ -8,6 +8,8 @@ import {
 	getActiveTab,
 	getPreferredFeedViewMode,
 	getVisibleTabs,
+	initState,
+	isCoordinatorAdministrationRoute,
 	parseAdvancedSectionFromHash,
 	parseTabFromHash,
 	resolveAccessibleTab,
@@ -28,6 +30,16 @@ describe("Viewer tab routing", () => {
 		expect(ALL_TAB_IDS).toEqual(["feed", "projects", "sharing", "devices", "health", "advanced"]);
 	});
 
+	it("clears the retired persisted pairing disclosure", () => {
+		localStorage.setItem("codemem-sync-pairing", "1");
+		state.syncPairingOpen = true;
+
+		initState();
+
+		expect(state.syncPairingOpen).toBe(false);
+		expect(localStorage.getItem("codemem-sync-pairing")).toBeNull();
+	});
+
 	it.each(["feed", "projects", "sharing", "devices", "health", "advanced"])(
 		"recognizes #%s as a canonical route",
 		(tab) => {
@@ -44,6 +56,18 @@ describe("Viewer tab routing", () => {
 	] as const)("maps compatibility route %s into Advanced %s content", (hash, section) => {
 		expect(parseTabFromHash(hash)).toBe("advanced");
 		expect(parseAdvancedSectionFromHash(hash)).toBe(section);
+	});
+
+	it.each([
+		["#coordinator-admin", null],
+		["#advanced/teams/administration", null],
+		["", "coordinator-admin"],
+	] as const)("recognizes administration route %s with saved tab %s", (hash, savedTab) => {
+		expect(isCoordinatorAdministrationRoute(hash, savedTab)).toBe(true);
+	});
+
+	it("does not let a saved legacy tab override an explicit route", () => {
+		expect(isCoordinatorAdministrationRoute("#feed", "coordinator-admin")).toBe(false);
 	});
 
 	it("falls back to feed for an unknown hash", () => {

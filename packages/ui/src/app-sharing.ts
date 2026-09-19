@@ -72,7 +72,6 @@ const defaultDependencies: RecipientPolicySharingLoaderDependencies = {
 };
 
 interface RecipientPolicySharingLoaderOptions {
-	onNavigateAdvancedSync?: () => void;
 	onOpenTeamSetup?: (candidateRef: string) => void;
 	onReviewDevices?: (deviceId?: string) => void;
 }
@@ -134,7 +133,6 @@ function createInitialTeamSetupRenderer(
 					coordinatorEnrollmentIssueCount: state.coordinatorEnrollmentIssueCount,
 					deviceInventory: state.lastDeviceInventory,
 					deviceInventoryUnavailable: state.lastDeviceInventoryUnavailable,
-					onNavigateAdvancedSync: options.onNavigateAdvancedSync,
 					onOpenTeamSetup: options.onOpenTeamSetup,
 					onReviewDevices: options.onReviewDevices,
 					onTeamRenamed: () => refresh({ requireTeamSetupSummary: true }),
@@ -146,7 +144,6 @@ function createInitialTeamSetupRenderer(
 				}
 			: {
 					loading: true,
-					onNavigateAdvancedSync: options.onNavigateAdvancedSync,
 					teamSetupSummary: state.teamSetupSummary,
 					teamSetupLoading: state.teamSetupLoading,
 					teamSetupUnavailable: state.teamSetupUnavailable,
@@ -286,7 +283,7 @@ function renderSharingLoad(
 	managementMount: HTMLElement | null,
 	data: SharingLoadData,
 ): () => void {
-	const { dependencies, options, state } = context;
+	const { dependencies, state } = context;
 	if (data.loadSucceeded && managementMount) {
 		dependencies.mountManagement(managementMount, data.projects, data.intent, {
 			onCommitted: async () => {
@@ -297,7 +294,6 @@ function renderSharingLoad(
 	const renderSharing = () => {
 		dependencies.mountSharing(sharingMount, data.projects, data.intent, {
 			...data.options,
-			onNavigateAdvancedSync: options.onNavigateAdvancedSync,
 			teamSetupSummary: state.teamSetupSummary,
 			teamSetupLoading: state.teamSetupLoading,
 			teamSetupUnavailable: state.teamSetupUnavailable,

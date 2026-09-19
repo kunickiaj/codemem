@@ -448,6 +448,22 @@ function request(kind: CreateKind, targetId: string): RecipientInvitePreviewRequ
 		: { kind, target_identity_id: targetId };
 }
 
+function requestAdvancedSyncNavigation(): void {
+	window.dispatchEvent(new CustomEvent("codemem:navigate-advanced-sync"));
+}
+
+function OlderInviteCodesButton() {
+	return (
+		<button
+			className="recipient-policy-sharing-pointer sync-subview-link"
+			onClick={requestAdvancedSyncNavigation}
+			type="button"
+		>
+			Older invite codes →
+		</button>
+	);
+}
+
 function useInvitationResultFocus(
 	inspected: InspectInviteResult | null,
 	projectAcceptance: ProjectShareAcceptance | null,
@@ -798,13 +814,11 @@ function InvitationLanding({
 	teams,
 	identities,
 	controls,
-	onNavigateAdvancedSync,
 	dialog,
 }: {
 	teams: RecipientPolicyIntentGraphV1["teams"];
 	identities: RecipientPolicyIntentGraphV1["identities"];
 	controls: InvitationControls;
-	onNavigateAdvancedSync?: () => void;
 	dialog: ComponentChildren;
 }) {
 	return (
@@ -857,13 +871,7 @@ function InvitationLanding({
 				>
 					Review an invite
 				</button>
-				<button
-					className="recipient-policy-sharing-pointer sync-subview-link"
-					onClick={() => onNavigateAdvancedSync?.()}
-					type="button"
-				>
-					Older invite codes →
-				</button>
+				<OlderInviteCodesButton />
 			</article>
 			{dialog}
 		</div>
@@ -1231,13 +1239,7 @@ function InvitationDialog({
 	);
 }
 
-export function RecipientPolicyInvitations({
-	intent,
-	onNavigateAdvancedSync,
-}: {
-	intent: RecipientPolicyIntentGraphV1;
-	onNavigateAdvancedSync?: () => void;
-}) {
+export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicyIntentGraphV1 }) {
 	const teams = intent.teams.filter((team) => team.status === "active");
 	const identities = intent.identities.filter((identity) => identity.status === "active");
 	const state = useInvitationState(teams);
@@ -1253,12 +1255,6 @@ export function RecipientPolicyInvitations({
 		/>
 	) : null;
 	return (
-		<InvitationLanding
-			controls={controls}
-			dialog={dialog}
-			identities={identities}
-			onNavigateAdvancedSync={onNavigateAdvancedSync}
-			teams={teams}
-		/>
+		<InvitationLanding controls={controls} dialog={dialog} identities={identities} teams={teams} />
 	);
 }

@@ -35,6 +35,7 @@ import {
 	ALL_TAB_IDS,
 	getVisibleTabs,
 	initState,
+	isCoordinatorAdministrationRoute,
 	parseAdvancedSectionFromHash,
 	parseTabFromHash,
 	resolveAccessibleTab,
@@ -345,6 +346,8 @@ document.addEventListener("visibilitychange", () => {
 
 /* ── Tab routing ─────────────────────────────────────────── */
 
+let revealCoordinatorAdministration = false;
+
 function renderAdvancedSection() {
 	const isSync = state.advancedSection === "sync";
 	const syncContent = $("advancedSyncContent");
@@ -355,7 +358,8 @@ function renderAdvancedSection() {
 	if (tabsMount) mountAdvancedTabs(tabsMount, state.advancedSection, selectAdvancedSection);
 	queueMicrotask(() => {
 		const hash = window.location.hash.replace(/^#/, "");
-		if (!isSync && hash === "advanced/teams/administration") {
+		if (!isSync && (revealCoordinatorAdministration || isCoordinatorAdministrationRoute())) {
+			revealCoordinatorAdministration = false;
 			const disclosure = document.getElementById("advancedAdministrationDisclosure");
 			if (disclosure instanceof HTMLDetailsElement) disclosure.open = true;
 			document.getElementById("coordinatorAdminHeading")?.focus();
@@ -416,6 +420,7 @@ function switchTab(
 }
 
 function initTabs() {
+	window.addEventListener("codemem:navigate-advanced-sync", navigateToAdvancedSyncFromSharing);
 	ALL_TAB_IDS.forEach((id) => {
 		const btn = $(`tabBtn-${id}`);
 		btn?.addEventListener("click", () =>
@@ -457,6 +462,7 @@ function initTabs() {
 	});
 
 	// Set initial tab
+	revealCoordinatorAdministration = isCoordinatorAdministrationRoute();
 	switchTab(state.activeTab);
 }
 
@@ -499,7 +505,6 @@ function navigateToAdvancedSyncFromSharing() {
 const loadRecipientPolicySharingData = createRecipientPolicySharingLoader(
 	{},
 	{
-		onNavigateAdvancedSync: navigateToAdvancedSyncFromSharing,
 		onOpenTeamSetup: openLegacyTeamSetup,
 		onReviewDevices: reviewDevicesFromSharing,
 	},

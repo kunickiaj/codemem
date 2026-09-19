@@ -566,16 +566,19 @@ describe("Devices app integration", () => {
 		expect(document.activeElement).toBe(document.getElementById("coordinatorAdminHeading"));
 	});
 
-	it("opens legacy administration for its direct route", async () => {
-		window.location.hash = "#advanced/teams/administration";
-		window.dispatchEvent(new HashChangeEvent("hashchange"));
-		await Promise.resolve();
+	it.each(["#advanced/teams/administration", "#coordinator-admin"])(
+		"opens legacy administration for direct route %s",
+		async (route) => {
+			window.location.hash = route;
+			window.dispatchEvent(new HashChangeEvent("hashchange"));
+			await Promise.resolve();
 
-		const disclosure = document.getElementById("advancedAdministrationDisclosure");
-		expect(disclosure).toBeInstanceOf(HTMLDetailsElement);
-		expect((disclosure as HTMLDetailsElement).open).toBe(true);
-		expect(document.activeElement).toBe(document.getElementById("coordinatorAdminHeading"));
-	});
+			const disclosure = document.getElementById("advancedAdministrationDisclosure");
+			expect(disclosure).toBeInstanceOf(HTMLDetailsElement);
+			expect((disclosure as HTMLDetailsElement).open).toBe(true);
+			expect(document.activeElement).toBe(document.getElementById("coordinatorAdminHeading"));
+		},
+	);
 
 	it("refreshes Sharing and Projects with the active surface mounting last", async () => {
 		const options = mocks.mountLegacyTeamSetupDialog.mock.calls[0]?.[1];
