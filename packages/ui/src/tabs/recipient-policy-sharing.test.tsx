@@ -286,7 +286,7 @@ describe("received project sources", () => {
 	);
 });
 
-describe("recipient-focused Sharing", () => {
+function testRecipientFocusedSharing() {
 	beforeEach(setupSharingMount);
 	afterEach(cleanupSharingMount);
 
@@ -493,8 +493,8 @@ describe("recipient-focused Sharing", () => {
 		expect(sharingText).not.toContain("Project access");
 		expect(advancedStatus).toMatchObject({
 			state: "needs-attention",
-			meta: "Team: ExampleCo. Team access needs review before it can continue.",
-			nextAction: "Open Sharing, review Project access, then sync again.",
+			meta: "Team: ExampleCo. A Project access reconciliation needs review.",
+			nextAction: "Open Sharing, review this Project's access decision, then sync again.",
 		});
 		expect(advancedStatus.meta).not.toContain(sharedProject.canonicalProjectIdentity);
 	});
@@ -1174,4 +1174,6 @@ describe("recipient-focused Sharing", () => {
 			/\b(scope|grant|actor|peer|filter|epoch|cursor)\b/i,
 		);
 	});
-});
+}
+
+describe("recipient-focused Sharing", testRecipientFocusedSharing);

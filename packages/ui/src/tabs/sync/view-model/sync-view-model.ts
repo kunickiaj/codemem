@@ -155,6 +155,96 @@ function mergeDevices(
 	return [...devices.values()];
 }
 
+function duplicateAttentionItems(
+	duplicatePeople: ReturnType<typeof deriveDuplicatePeople>,
+): UiSyncAttentionItem[] {
+	return duplicatePeople.map((candidate) => ({
+		id: `duplicate:${candidate.actorIds.join(":")}`,
+		kind: "possible-duplicate-person",
+		priority: candidate.includesLocal ? 5 : 15,
+		title: `Possible duplicate person: ${candidate.displayName}`,
+		summary: candidate.includesLocal
+			? "At least one entry is marked as you. Confirm whether these records represent the same person."
+			: "Multiple people share this name. Confirm whether they should stay separate or be combined.",
+		actionLabel: "Go to people",
+		actorIds: candidate.actorIds,
+	}));
+}
+
+function identityConflictItem(device: MergedDevice, name: string): UiSyncAttentionItem | null {
+	const discoveredFingerprint = cleanText(device.discovered?.fingerprint);
+	const peerFingerprint = cleanText(device.peer?.fingerprint);
+	if (!device.peer || !discoveredFingerprint || !peerFingerprint) return null;
+	if (discoveredFingerprint === peerFingerprint) return null;
+	return createRepairItem({
+		id: device.deviceId,
+		name,
+		title: `${name} needs review`,
+		summary: "This device identity changed. Remove the older local record before reconnecting it.",
+	});
+}
+
+function peerAttentionItems(device: MergedDevice, name: string): UiSyncAttentionItem[] {
+	if (!device.peer) return [];
+	const items: UiSyncAttentionItem[] = [];
+	const peerStatus = derivePeerUiStatus(device.peer);
+	const trustSummary = derivePeerTrustSummary(device.peer);
+	if (peerStatus === "needs-repair") {
+		items.push(
+			createRepairItem({
+				id: device.deviceId,
+				name,
+				title:
+					trustSummary.state === "needs-repairing"
+						? `${name} needs re-pairing`
+						: `${name} needs review`,
+				summary:
+					trustSummary.description || cleanText(device.peer.last_error) || "Sync needs review.",
+			}),
+		);
+	}
+	if (trustSummary.state === "trusted-by-you") {
+		items.push(
+			createReviewItem({
+				id: device.deviceId,
+				key: "other-device-trust",
+				name,
+				summary:
+					"You accepted this device. Finish onboarding on the other device so it trusts this one too.",
+			}),
+		);
+	}
+	if (
+		deviceNeedsFriendlyName({
+			localName: device.localName,
+			coordinatorName: device.coordinatorName,
+			deviceId: device.deviceId,
+		})
+	) {
+		items.push(
+			createNamingItem({
+				id: device.deviceId,
+				name,
+				summary: "Give this device a friendly name so it is easier to recognize later.",
+			}),
+		);
+	}
+	return items;
+}
+
+function deviceAttentionItems(device: MergedDevice): UiSyncAttentionItem[] {
+	const name = resolveFriendlyDeviceName({
+		localName: device.localName,
+		coordinatorName: device.coordinatorName,
+		deviceId: device.deviceId,
+	});
+	const conflict = identityConflictItem(device, name);
+	if (conflict) return [conflict];
+	// Offline devices remain visible in their device row without becoming a
+	// second task. Only repair, trust, and naming work belongs in attention.
+	return peerAttentionItems(device, name);
+}
+
 export function deriveSyncViewModel(input: {
 	actors?: ActorLike[];
 	peers?: PeerLike[];
@@ -185,129 +275,10 @@ export function deriveSyncViewModel(input: {
 	const duplicatePeople = deriveDuplicatePeople(actors).filter(
 		(candidate) => !duplicateDecisions[[...candidate.actorIds].sort().join("::")],
 	);
-	const attentionItems: UiSyncAttentionItem[] = [];
-
-	duplicatePeople.forEach((candidate) => {
-		attentionItems.push({
-			id: `duplicate:${candidate.actorIds.join(":")}`,
-			kind: "possible-duplicate-person",
-			priority: candidate.includesLocal ? 5 : 15,
-			title: `Possible duplicate person: ${candidate.displayName}`,
-			summary: candidate.includesLocal
-				? "At least one entry is marked as you. Confirm whether these records represent the same person."
-				: "Multiple people share this name. Confirm whether they should stay separate or be combined.",
-			actionLabel: "Go to people",
-			actorIds: candidate.actorIds,
-		});
-	});
-
-	mergedDevices.forEach((device) => {
-		const name = resolveFriendlyDeviceName({
-			localName: device.localName,
-			coordinatorName: device.coordinatorName,
-			deviceId: device.deviceId,
-		});
-		const peerStatus = device.peer ? derivePeerUiStatus(device.peer) : "waiting";
-		const trustSummary = device.peer ? derivePeerTrustSummary(device.peer) : null;
-		const discoveredFingerprint = cleanText(device.discovered?.fingerprint);
-		const peerFingerprint = cleanText(device.peer?.fingerprint);
-		const hasConflict =
-			Boolean(device.peer) &&
-			Boolean(discoveredFingerprint) &&
-			Boolean(peerFingerprint) &&
-			discoveredFingerprint !== peerFingerprint;
-
-		if (hasConflict) {
-			attentionItems.push(
-				createRepairItem({
-					id: device.deviceId,
-					name,
-					title: `${name} needs review`,
-					summary:
-						"This device identity changed. Remove the older local record before reconnecting it.",
-				}),
-			);
-			return;
-		}
-
-		if (device.peer && peerStatus === "needs-repair") {
-			const detail =
-				trustSummary?.description || cleanText(device.peer?.last_error) || "Sync needs review.";
-			attentionItems.push(
-				createRepairItem({
-					id: device.deviceId,
-					name,
-					title:
-						trustSummary?.state === "needs-repairing"
-							? `${name} needs re-pairing`
-							: `${name} needs review`,
-					summary: detail,
-				}),
-			);
-		}
-		// Peers that are merely offline are NOT pushed into Needs attention.
-		// Device rows already surface the offline state via their presence pip
-		// and the "Offline" badge, which is enough signal — computers turn off
-		// and on regularly and this doesn't warrant a separate action item.
-		// Auth/trust/repair failures (handled in the branch above) still do.
-
-		if (device.peer && trustSummary?.state === "trusted-by-you") {
-			attentionItems.push(
-				createReviewItem({
-					id: device.deviceId,
-					key: "other-device-trust",
-					name,
-					summary:
-						"You accepted this device. Finish onboarding on the other device so it trusts this one too.",
-				}),
-			);
-		}
-
-		if (!device.peer && device.discovered?.stale) {
-			attentionItems.push(
-				createReviewItem({
-					id: device.deviceId,
-					key: "stale-discovery",
-					name,
-					summary:
-						"This device is no longer advertising fresh coordinator presence. Wait for it to check in again before connecting it here.",
-				}),
-			);
-		}
-
-		if (
-			!device.peer &&
-			Array.isArray(device.discovered?.groups) &&
-			device.discovered.groups.length > 1
-		) {
-			attentionItems.push(
-				createReviewItem({
-					id: device.deviceId,
-					key: "ambiguous-groups",
-					name,
-					summary:
-						"This device appears in multiple coordinator groups. Review the team setup before approving it here.",
-				}),
-			);
-		}
-
-		if (
-			device.peer &&
-			deviceNeedsFriendlyName({
-				localName: device.localName,
-				coordinatorName: device.coordinatorName,
-				deviceId: device.deviceId,
-			})
-		) {
-			attentionItems.push(
-				createNamingItem({
-					id: device.deviceId,
-					name,
-					summary: "Give this device a friendly name so it is easier to recognize later.",
-				}),
-			);
-		}
-	});
+	const attentionItems = [
+		...duplicateAttentionItems(duplicatePeople),
+		...mergedDevices.flatMap(deviceAttentionItems),
+	];
 
 	return {
 		primaryStatus: deriveTeamSyncPrimaryStatus({
