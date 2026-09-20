@@ -1542,8 +1542,8 @@ function PairingAcceptancePanel() {
 			panel.hidden = false;
 			const feedback = document.getElementById("syncJoinFeedback");
 			if (!feedback || feedback.parentElement === host) return;
+			if (movedFeedback !== feedback) feedbackRestoreParent = feedback.parentElement;
 			movedFeedback = feedback;
-			feedbackRestoreParent ??= feedback.parentElement;
 			host.appendChild(feedback);
 		};
 		mountPairingControls();
@@ -1612,8 +1612,13 @@ function PairingPanel({
 				</button>
 			</div>
 			{showExplanation ? (
-				<p>Run the pairing command on the device you want to connect, then review it here.</p>
+				<p>Generate a pairing payload on the device you want to connect, then accept it here.</p>
 			) : null}
+			<p className="small">
+				On the other device, run <code>codemem sync enable</code>, then{" "}
+				<code>codemem serve restart</code> before generating the payload below. Both devices need
+				sync enabled to exchange memories.
+			</p>
 			<div className="devices-pairing-command">
 				<code>codemem sync pair --payload-only</code>
 				<button
@@ -1631,7 +1636,9 @@ function PairingPanel({
 			</div>
 			<div className="devices-pairing-acceptance">
 				<h4>Accept a pairing payload</h4>
-				<p className="small">Paste the payload from the other device, then review it here.</p>
+				<p className="small">
+					Paste a payload from a device you trust. Accepting it trusts that device.
+				</p>
 				<PairingAcceptancePanel />
 			</div>
 		</aside>
@@ -1795,7 +1802,9 @@ function DevicesView({
 		<DevicesSummaryBar
 			devices={otherProjectedDevices}
 			options={options}
-			unknownFallbackCount={configuredFallbackItems.length + setupItems.length}
+			unknownFallbackCount={
+				configuredFallbackItems.length + setupItems.filter((item) => !item.isLocal).length
+			}
 		/>
 	);
 	if (otherProjectedDevices.length === 0) {

@@ -309,7 +309,7 @@ describe("Device pairing entry point", () => {
 		);
 		act(() => howPairingWorks?.click());
 		expect(document.getElementById("devices-pairing-panel")?.textContent).toContain(
-			"Run the pairing command on the device you want to connect, then review it here.",
+			"Generate a pairing payload on the device you want to connect, then accept it here.",
 		);
 		expect(document.getElementById("devices-pairing-panel")?.textContent).toContain(
 			"codemem sync pair --payload-only",
