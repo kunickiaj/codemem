@@ -967,7 +967,9 @@ describe("Viewer behavior contracts", () => {
 		const { initProjectsTab } = await import("./tabs/projects");
 		const { openLegacyTeamSetup } = await import("./tabs/legacy-team-setup-dialog");
 		const projectOptions = vi.mocked(initProjectsTab).mock.calls[0]?.[1];
-		const sharingOptions = vi.mocked(createRecipientPolicySharingLoader).mock.calls[0]?.[1];
+		const sharingOptions = vi.mocked(createRecipientPolicySharingLoader).mock.calls[0]?.[1] as
+			| { onNavigateAdvancedSync?: () => void }
+			| undefined;
 		expect(projectOptions?.onOpenTeamSetup).toEqual(expect.any(Function));
 		expect(sharingOptions?.onOpenTeamSetup).toEqual(expect.any(Function));
 
