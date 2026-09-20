@@ -355,6 +355,47 @@ describe("FeedItemCard content and actions", () => {
 });
 
 describe("FeedItemCard search refresh", () => {
+	it.each([
+		{ name: "Facts list items", mode: "facts" as const, facts: ["one", "two"], narrative: "" },
+		{ name: "Markdown paragraphs", mode: "narrative" as const, facts: [], narrative: "one\n\ntwo" },
+		{
+			name: "Markdown heading and paragraph",
+			mode: "narrative" as const,
+			facts: [],
+			narrative: "# one\n\ntwo",
+		},
+		{
+			name: "Markdown list items",
+			mode: "narrative" as const,
+			facts: [],
+			narrative: "- one\n- two",
+		},
+		{ name: "Markdown line break", mode: "narrative" as const, facts: [], narrative: "one  \ntwo" },
+	])("retains an excerpt across $name", ({ mode, facts, narrative }) => {
+		state.feedQuery = "onetwo";
+		state.preferredFeedViewMode = mode;
+		renderCard(
+			observation({
+				facts: mode === "facts" ? facts : ["onetwo"],
+				narrative: mode === "facts" ? "onetwo" : narrative,
+			}),
+		);
+		act(() => titleButton().click());
+		expect(mount.querySelector(".feed-body")).not.toBeNull();
+		expect(mount.querySelector(".feed-search-match mark.match")?.textContent).toBe("onetwo");
+	});
+	it.each(["one**two**", "one*two*", "one`two`", "one[two](https://example.com)"])(
+		"hides an excerpt for a visible word split by inline formatting: %s",
+		(narrative) => {
+			state.feedQuery = "onetwo";
+			state.preferredFeedViewMode = "narrative";
+			renderCard(observation({ narrative, facts: ["onetwo"] }));
+			expect(mount.querySelector(".feed-search-match")).not.toBeNull();
+			act(() => titleButton().click());
+			expect(mount.querySelector(".feed-body")?.textContent).toContain("onetwo");
+			expect(mount.querySelector(".feed-search-match")).toBeNull();
+		},
+	);
 	it("restores focus when polling removes the title disclosure", () => {
 		renderCard(observation());
 		titleButton().focus();

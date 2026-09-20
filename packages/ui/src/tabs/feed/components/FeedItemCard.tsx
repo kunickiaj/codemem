@@ -122,11 +122,27 @@ function usePollingModeState(input: {
 	}, [input]);
 }
 
+function renderedSearchText(node: Node): string {
+	if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
+	if (!(node instanceof Element)) return "";
+	const text = Array.from(node.childNodes, renderedSearchText).join("");
+	// Keep inline words intact, but never join text across rendered blocks or breaks.
+	if (
+		node.matches(
+			"p, div, li, ul, ol, blockquote, pre, h1, h2, h3, h4, h5, h6, table, tr, th, td, hr, br",
+		)
+	) {
+		return `\n${text}\n`;
+	}
+	return text;
+}
+
 function useRenderedSearchMatch(cardRef: { current: HTMLElement | null }) {
 	const [visible, setVisible] = useState(false);
 	useLayoutEffect(() => {
 		const query = normalizeFeedQuery(state.feedQuery);
-		const text = cardRef.current?.querySelector(".feed-detail .feed-body")?.textContent ?? "";
+		const body = cardRef.current?.querySelector(".feed-detail .feed-body");
+		const text = body ? renderedSearchText(body) : "";
 		setVisible(Boolean(query && text.toLowerCase().includes(query)));
 	});
 	return visible;
