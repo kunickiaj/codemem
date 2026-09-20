@@ -1541,6 +1541,7 @@ function restorePairingControls(
 	visibility: { host: HTMLElement; wasHidden: HTMLElement["hidden"] },
 ): void {
 	if (panel.parentElement === visibility.host) panel.hidden = visibility.wasHidden;
+	else if (panel.parentElement?.isConnected) restoreParent = panel.parentElement;
 	const liveParent = restoreParent?.isConnected
 		? restoreParent
 		: document.getElementById("syncJoinSection");
@@ -1558,7 +1559,7 @@ function PairingAcceptancePanel() {
 		const panel = document.getElementById("syncJoinPanel");
 		if (!host || !panel) return;
 		let restoreParent = panel.parentElement;
-		const wasHidden = panel.hidden;
+		let wasHidden = panel.hidden;
 		let movedFeedback: HTMLElement | null = null;
 		let feedbackRestoreParent: HTMLElement | null = null;
 		const mountPairingControls = () => {
@@ -1571,6 +1572,7 @@ function PairingAcceptancePanel() {
 			}
 			if (panel.parentElement !== host) {
 				restoreParent = panel.parentElement;
+				wasHidden = panel.hidden;
 				host.appendChild(panel);
 			}
 			panel.hidden = false;
@@ -1590,7 +1592,6 @@ function PairingAcceptancePanel() {
 		});
 		return () => {
 			observer.disconnect();
-			panel.hidden = wasHidden;
 			restorePairingControls(panel, restoreParent, movedFeedback, feedbackRestoreParent, {
 				host,
 				wasHidden,
