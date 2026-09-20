@@ -5,9 +5,8 @@ import html from "../../../../static/index.html?raw";
 
 describe("project invite acceptance copy", () => {
 	it("asks for Person and friendly device identity without internal access language", () => {
-		const start = html.indexOf('id="syncProjectInviteReview"');
-		const end = html.indexOf('id="syncJoinButton"', start);
-		const acceptance = html.slice(start, end);
+		const page = new DOMParser().parseFromString(html, "text/html");
+		const acceptance = page.getElementById("syncProjectInviteReview")?.textContent;
 
 		expect(acceptance).toContain("Your name");
 		expect(acceptance).toContain("This device");
