@@ -274,10 +274,17 @@ function SharingTabPanelContent({
 		);
 	}
 
+	const devices = sharingDevices(
+		intent,
+		options.refreshError || options.deviceInventoryUnavailable
+			? undefined
+			: options.deviceInventory,
+	);
 	switch (tabId) {
 		case "teams":
 			return (
 				<TeamsView
+					devices={devices}
 					disableMutations={options.refreshError === true}
 					intent={intent}
 					onTeamRenamed={options.onTeamRenamed}
@@ -288,12 +295,8 @@ function SharingTabPanelContent({
 		case "identities":
 			return (
 				<IdentitiesView
+					devices={devices}
 					disableMutations={options.refreshError === true}
-					inventory={
-						options.refreshError || options.deviceInventoryUnavailable
-							? undefined
-							: options.deviceInventory
-					}
 					intent={intent}
 					projects={projects}
 				/>
@@ -397,12 +400,14 @@ function RecipientActions({
 }
 
 function TeamsView({
+	devices,
 	disableMutations,
 	intent,
 	onTeamRenamed,
 	projects,
 	renameTeam,
 }: {
+	devices: SharingDevice[];
 	disableMutations: boolean;
 	intent: RecipientPolicyIntentGraphV1;
 	onTeamRenamed?: () => Promise<unknown> | unknown;
@@ -445,11 +450,9 @@ function TeamsView({
 					(identityId) =>
 						activeIdentitiesById.get(identityId)?.displayName.trim() || "Unknown member",
 				);
-				const activeDeviceCount = new Set(
-					intent.identityDevices
-						.filter((device) => device.status === "active" && memberIds.includes(device.identityId))
-						.map((device) => device.deviceId),
-				).size;
+				const activeDeviceCount = devices.filter((device) =>
+					memberIds.includes(device.identityId),
+				).length;
 				const projectNames = activeProjectNames(
 					intent.projectRecipients
 						.filter(
@@ -536,33 +539,43 @@ function MemberNames({ names }: { names: string[] }) {
 	);
 }
 
-function identityDevices(
+type SharingDevice = { deviceId: string; displayName: string; identityId: string };
+
+function sharingDevices(
 	intent: RecipientPolicyIntentGraphV1,
-	identityId: string,
 	inventory?: DeviceIdentityInventoryV1,
-) {
-	const devices = intent.identityDevices.filter(
-		(device) => device.status === "active" && device.identityId === identityId,
-	);
-	const result = devices.map(({ deviceId, displayName }) => ({ deviceId, displayName }));
-	const known = new Set(devices.map((device) => device.deviceId));
+): SharingDevice[] {
+	const result: SharingDevice[] = [];
+	const known = new Set<string>();
+	for (const device of intent.identityDevices) {
+		if (device.status !== "active" || known.has(device.deviceId)) continue;
+		result.push(device);
+		known.add(device.deviceId);
+	}
+	// Intent ownership wins even when successful requests straddle a reassignment.
 	for (const item of inventory?.items ?? []) {
-		if (item.state !== "configured" || item.identityId !== identityId) continue;
-		if ([item.deviceId, ...item.evidenceDeviceIds].some((id) => known.has(id))) continue;
-		result.push({ deviceId: item.deviceId, displayName: item.displayName });
-		for (const id of [item.deviceId, ...item.evidenceDeviceIds]) known.add(id);
+		if (item.state !== "configured" || !item.identityId) continue;
+		const aliases = [item.deviceId, ...item.evidenceDeviceIds];
+		const alreadyKnown = aliases.some((id) => known.has(id));
+		for (const id of aliases) known.add(id);
+		if (alreadyKnown) continue;
+		result.push({
+			deviceId: item.deviceId,
+			displayName: item.displayName,
+			identityId: item.identityId,
+		});
 	}
 	return result;
 }
 
 function IdentitiesView({
+	devices,
 	disableMutations,
-	inventory,
 	intent,
 	projects,
 }: {
+	devices: SharingDevice[];
 	disableMutations: boolean;
-	inventory?: DeviceIdentityInventoryV1;
 	intent: RecipientPolicyIntentGraphV1;
 	projects: RecipientPolicyManagementProject[];
 }) {
@@ -585,7 +598,7 @@ function IdentitiesView({
 	return (
 		<div className="recipient-policy-sharing-grid recipient-policy-sharing-responsive-grid">
 			{activeIdentities.map((identity, index) => {
-				const activeDevices = identityDevices(intent, identity.identityId, inventory);
+				const activeDevices = devices.filter((device) => device.identityId === identity.identityId);
 				const teamIds = [
 					...new Set(
 						intent.teamMemberships
