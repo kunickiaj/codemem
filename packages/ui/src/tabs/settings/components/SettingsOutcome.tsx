@@ -1,5 +1,6 @@
 import { INPUT_TO_CONFIG_KEY } from "../data/constants";
 import { settingsState, settingsView } from "../data/state";
+import { asBooleanValue } from "../data/value-helpers";
 
 export type SettingsOutcomeDetails = {
 	controlId: string;
@@ -172,15 +173,9 @@ function conditionalOutcome(
 ): SettingsOutcomeDetails | undefined {
 	const sidecar = isSidecarRuntime(runtime);
 	const provider = String(effectiveSetting("observerProvider"));
-	const routing = effectiveSetting("observerTierRoutingEnabled") === true;
 	if (controlId === "observerProvider" && sidecar)
 		return inactiveOutcome(controlId, "Local Claude and Codex sessions select their own provider");
-	if (controlId === "observerModel" && routing && tierModelsOverrideBase(runtime, provider)) {
-		return inactiveOutcome(
-			controlId,
-			"Tier models or built-in tier defaults take precedence over the base model",
-		);
-	}
+	if (controlId === "observerModel") return baseModelOutcome(runtime, provider);
 	const authSource = String(effectiveSetting("observerAuthSource"));
 	if (controlId === "observerAuthTimeoutMs" && !["auto", "command"].includes(authSource))
 		return inactiveOutcome(controlId, "Only command authentication uses this timeout");
@@ -193,7 +188,7 @@ function conditionalOutcome(
 		return temperatureOutcome(controlId, runtime, tierProvider(controlId, provider));
 	if (/Reasoning(Effort|Summary)$/.test(controlId) || controlId === "observerRichMaxOutputTokens")
 		return tuningOutcome(controlId, sidecar);
-	if (controlId === "syncEnabled" && effectiveSetting(controlId) === false)
+	if (controlId === "syncEnabled" && !asBooleanValue(effectiveSetting(controlId)))
 		return {
 			...syncOutcome(controlId, "Stop future peer transfers on this device"),
 			existingData:
@@ -206,6 +201,27 @@ function conditionalOutcome(
 				"Pairing payloads change immediately after save; restart the viewer before sharing or using them so the listener uses the new address",
 		};
 	return undefined;
+}
+
+function baseModelOutcome(runtime: string, provider: string): SettingsOutcomeDetails {
+	const controlId = "observerModel";
+	const routingValue = effectiveSetting("observerTierRoutingEnabled");
+	// ObserverClient accepts only these environment strings, unlike general UI booleans.
+	const routing = routingValue === true || routingValue === "true" || routingValue === "1";
+	if (routing && tierModelsOverrideBase(runtime, provider)) {
+		return inactiveOutcome(
+			controlId,
+			"Tier models or built-in tier defaults take precedence over the base model",
+		);
+	}
+	// /api/config does not resolve automatic routing/provider defaults. Describe the
+	// actual fallback condition instead of treating its default false as explicit opt-out.
+	return {
+		...observationOutcome(controlId),
+		scope: "Requests that use the base model, including tiers that fall back to it",
+		timing:
+			"After viewer restart, only where no tier model or built-in tier default takes precedence",
+	};
 }
 
 function tierProvider(controlId: string, baseProvider: string): string {

@@ -16,6 +16,66 @@ afterEach(() => {
 });
 
 describe("effective Settings outcomes", () => {
+	it.each(["true", "1"])("honors raw routing environment value %s", (routing) => {
+		values({ observerProvider: "openai", observerTierRoutingEnabled: false });
+		settingsState.envOverrides = {
+			observer_tier_routing_enabled: "CODEMEM_OBSERVER_TIER_ROUTING_ENABLED",
+		};
+		settingsState.effectiveConfig = { observer_tier_routing_enabled: routing };
+		expect(settingsOutcomeFor("observerModel")?.scope).toBe("No current effect");
+	});
+	it.each(["false", "0", "TRUE", "yes"])(
+		"does not enable routing for runtime-disabled environment value %s",
+		(routing) => {
+			values({ observerProvider: "openai", observerTierRoutingEnabled: true });
+			settingsState.envOverrides = {
+				observer_tier_routing_enabled: "CODEMEM_OBSERVER_TIER_ROUTING_ENABLED",
+			};
+			settingsState.effectiveConfig = { observer_tier_routing_enabled: routing };
+			expect(settingsOutcomeFor("observerModel")?.scope).toContain(
+				"Requests that use the base model",
+			);
+		},
+	);
+	it.each(["false", "0"])("honors raw disabled sync environment value %s", (sync) => {
+		values({ syncEnabled: true });
+		settingsState.envOverrides = { sync_enabled: "CODEMEM_SYNC_ENABLED" };
+		settingsState.effectiveConfig = { sync_enabled: sync };
+		expect(settingsOutcomeFor("syncEnabled")?.scope).toContain("Stop future peer transfers");
+		expect(settingsOutcomeFor("syncEnabled")?.existingData).toContain("does not retract");
+	});
+	it.each(["true", "1"])("honors raw enabled sync environment value %s", (sync) => {
+		values({ syncEnabled: false });
+		settingsState.envOverrides = { sync_enabled: "CODEMEM_SYNC_ENABLED" };
+		settingsState.effectiveConfig = { sync_enabled: sync };
+		expect(settingsOutcomeFor("syncEnabled")?.scope).toBe("Future sync cycles on this device");
+	});
+	it.each([
+		{ observerRuntime: "api_http", observerProvider: "" },
+		{ observerRuntime: "api_http", observerProvider: "openai" },
+		{ observerRuntime: "api_http", observerProvider: "anthropic" },
+		{ observerRuntime: "api_http", observerProvider: "custom" },
+		{ observerRuntime: "claude_sidecar", observerProvider: "" },
+		{ observerRuntime: "codex_sidecar", observerProvider: "" },
+	])("qualifies base-model use when routing is omitted or false: %j", (config) => {
+		// /api/config supplies false for omitted routing even when ObserverClient auto-enables it.
+		values({ ...config, observerTierRoutingEnabled: false });
+		const outcome = settingsOutcomeFor("observerModel");
+		expect(outcome?.scope).toBe(
+			"Requests that use the base model, including tiers that fall back to it",
+		);
+		expect(outcome?.timing).toContain(
+			"only where no tier model or built-in tier default takes precedence",
+		);
+	});
+	it("does not guess a provider when explicit routing uses automatic provider resolution", () => {
+		values({ observerProvider: "", observerTierRoutingEnabled: true });
+		expect(settingsOutcomeFor("observerModel")?.scope).toContain("tiers that fall back to it");
+		expect(settingsOutcomeFor("observerModel")?.timing).toContain("built-in tier default");
+	});
+});
+
+describe("transport-specific Settings outcomes", () => {
 	it.each(["claude_sidecar", "codex_sidecar"])(
 		"marks the base model inactive when %s uses tier models",
 		(runtime) => {
