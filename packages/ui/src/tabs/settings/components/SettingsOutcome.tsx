@@ -175,7 +175,7 @@ function conditionalOutcome(
 	const routing = effectiveSetting("observerTierRoutingEnabled") === true;
 	if (controlId === "observerProvider" && sidecar)
 		return inactiveOutcome(controlId, "Local Claude and Codex sessions select their own provider");
-	if (controlId === "observerModel" && routing && ["openai", "anthropic"].includes(provider)) {
+	if (controlId === "observerModel" && routing && !sidecar && hasBuiltInTierModels(provider)) {
 		return inactiveOutcome(
 			controlId,
 			"Tier models or built-in tier defaults take precedence over the base model",
@@ -189,7 +189,8 @@ function conditionalOutcome(
 			controlId,
 			"Only explicit file or command authentication uses this cache",
 		);
-	if (/Temperature$/.test(controlId)) return temperatureOutcome(controlId, runtime, provider);
+	if (/Temperature$/.test(controlId))
+		return temperatureOutcome(controlId, runtime, tierProvider(controlId, provider));
 	if (/Reasoning(Effort|Summary)$/.test(controlId) || controlId === "observerRichMaxOutputTokens")
 		return tuningOutcome(controlId, sidecar);
 	if (controlId === "syncEnabled" && effectiveSetting(controlId) === false)
@@ -205,6 +206,21 @@ function conditionalOutcome(
 				"Pairing payloads change immediately after save; restart the viewer before sharing or using them so the listener uses the new address",
 		};
 	return undefined;
+}
+
+function tierProvider(controlId: string, baseProvider: string): string {
+	const key = controlId.startsWith("observerSimple")
+		? "observer_simple_provider"
+		: "observer_rich_provider";
+	return String(settingsState.effectiveConfig[key] || baseProvider)
+		.trim()
+		.toLowerCase();
+}
+
+function hasBuiltInTierModels(baseProvider: string): boolean {
+	return ["observerSimpleModel", "observerRichModel"].every((controlId) =>
+		["openai", "anthropic"].includes(tierProvider(controlId, baseProvider)),
+	);
 }
 
 function temperatureOutcome(

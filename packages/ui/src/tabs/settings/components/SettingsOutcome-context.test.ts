@@ -16,6 +16,26 @@ afterEach(() => {
 });
 
 describe("effective Settings outcomes", () => {
+	it("keeps the Codex base model active when tier models fall back to it", () => {
+		values({
+			observerRuntime: "codex_sidecar",
+			observerProvider: "openai",
+			observerTierRoutingEnabled: true,
+			observerSimpleModel: "",
+			observerRichModel: "",
+		});
+		expect(settingsOutcomeFor("observerModel")?.scope).not.toBe("No current effect");
+	});
+	it("uses the temperature control's tier provider instead of the base provider", () => {
+		values({
+			observerRuntime: "api_http",
+			observerProvider: "anthropic",
+			observerTierRoutingEnabled: true,
+		});
+		settingsState.effectiveConfig = { observer_simple_provider: "openai" };
+		expect(settingsOutcomeFor("observerSimpleTemperature")?.scope).not.toBe("No current effect");
+		expect(settingsOutcomeFor("observerRichTemperature")?.scope).toBe("No current effect");
+	});
 	it.each(["claude_sidecar", "codex_sidecar"])(
 		"uses effective %s despite a draft API runtime",
 		(runtime) => {
