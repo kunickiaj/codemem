@@ -35,11 +35,15 @@ describe("FirstRunGuide", () => {
 			expect(() =>
 				act(() => render(<FirstRunGuide hasMemories hasQueuedEvents={false} />, mount)),
 			).not.toThrow();
-			expect(() => completeFirstRunStep("inspect")).not.toThrow();
-			expect(() => dismissFirstRunGuide()).not.toThrow();
-			expect(() => reopenFirstRunGuide()).not.toThrow();
+			act(() => completeFirstRunStep("inspect"));
+			act(() => dismissFirstRunGuide());
+			expect(mount.querySelector("section")).toBeNull();
+			act(() => reopenFirstRunGuide());
+			expect(mount.querySelector("section")).not.toBeNull();
+			expect(readFirstRunGuideRecord().completed).toEqual(["capture", "inspect"]);
 		} finally {
 			getter.mockRestore();
+			reopenFirstRunGuide();
 		}
 	});
 	it("offers inspection only when a disclosure exists", () => {

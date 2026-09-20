@@ -15,28 +15,34 @@ const EMPTY_RECORD: FirstRunGuideRecord = {
 	showCompleted: false,
 };
 
+let memoryRecord: FirstRunGuideRecord = { ...EMPTY_RECORD };
+let hasUnpersistedRecord = false;
+
 function isFirstRunStep(value: unknown): value is FirstRunStep {
 	return ["capture", "inspect", "find", "scope", "settings-health"].includes(String(value));
 }
 
 export function readFirstRunGuideRecord(storage?: Storage): FirstRunGuideRecord {
+	// A readable but unwritable store can still contain an older record.
+	if (hasUnpersistedRecord) return { ...memoryRecord, completed: [...memoryRecord.completed] };
 	try {
 		const raw = (storage ?? window.localStorage).getItem(FIRST_RUN_GUIDE_STORAGE_KEY);
-		if (!raw) return { ...EMPTY_RECORD };
-		const parsed = JSON.parse(raw) as Partial<FirstRunGuideRecord>;
-		return {
+		const parsed = (raw ? JSON.parse(raw) : EMPTY_RECORD) as Partial<FirstRunGuideRecord>;
+		memoryRecord = {
 			completed: Array.isArray(parsed.completed) ? parsed.completed.filter(isFirstRunStep) : [],
 			dismissed: parsed.dismissed === true,
 			showCompleted: parsed.showCompleted === true,
 		};
-	} catch {
-		return { ...EMPTY_RECORD };
-	}
+	} catch {}
+	return { ...memoryRecord, completed: [...memoryRecord.completed] };
 }
 
 function writeFirstRunGuideRecord(record: FirstRunGuideRecord, storage?: Storage): void {
+	memoryRecord = { ...record, completed: [...record.completed] };
+	hasUnpersistedRecord = true;
 	try {
 		(storage ?? window.localStorage).setItem(FIRST_RUN_GUIDE_STORAGE_KEY, JSON.stringify(record));
+		hasUnpersistedRecord = false;
 	} catch {}
 	window.dispatchEvent(new CustomEvent(FIRST_RUN_GUIDE_CHANGED_EVENT));
 }

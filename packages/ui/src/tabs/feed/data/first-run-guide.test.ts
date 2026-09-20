@@ -11,6 +11,35 @@ import {
 beforeEach(() => localStorage.clear());
 
 describe("first-run guide persistence", () => {
+	it.each(["getter", "getItem", "setItem"] as const)(
+		"preserves progress, dismissal and reopening when %s throws",
+		async (failure) => {
+			vi.resetModules();
+			const guide = await import("./first-run-guide");
+			guide.completeFirstRunStep("capture");
+			const fail = () => {
+				throw new DOMException("blocked", "SecurityError");
+			};
+			const spy =
+				failure === "getter"
+					? vi.spyOn(window, "localStorage", "get").mockImplementation(fail)
+					: vi.spyOn(Storage.prototype, failure).mockImplementation(fail);
+			try {
+				guide.completeFirstRunStep("inspect");
+				guide.completeFirstRunStep("find");
+				guide.dismissFirstRunGuide();
+				expect(guide.shouldShowFirstRunGuide(guide.readFirstRunGuideRecord())).toBe(false);
+				guide.reopenFirstRunGuide();
+				expect(guide.readFirstRunGuideRecord()).toEqual({
+					completed: ["capture", "inspect", "find"],
+					dismissed: false,
+					showCompleted: true,
+				});
+			} finally {
+				spy.mockRestore();
+			}
+		},
+	);
 	it("records real actions without losing prior completion", () => {
 		completeFirstRunStep("capture");
 		completeFirstRunStep("inspect");
@@ -32,9 +61,11 @@ describe("first-run guide persistence", () => {
 		});
 	});
 
-	it("fails open when browser storage is unavailable or malformed", () => {
+	it("fails open when browser storage is unavailable or malformed", async () => {
+		vi.resetModules();
+		const guide = await import("./first-run-guide");
 		localStorage.setItem(FIRST_RUN_GUIDE_STORAGE_KEY, "not-json");
-		expect(readFirstRunGuideRecord()).toMatchObject({ completed: [], dismissed: false });
+		expect(guide.readFirstRunGuideRecord()).toMatchObject({ completed: [], dismissed: false });
 
 		const storage = {
 			getItem: vi.fn(() => null),
@@ -42,7 +73,7 @@ describe("first-run guide persistence", () => {
 				throw new Error("blocked");
 			}),
 		} as unknown as Storage;
-		expect(() => completeFirstRunStep("find", storage)).not.toThrow();
+		expect(() => guide.completeFirstRunStep("find", storage)).not.toThrow();
 	});
 
 	it("hides after all jobs complete unless the user explicitly reopens it", () => {
