@@ -606,6 +606,34 @@ describe("recipient-focused Sharing Team views", testRecipientFocusedTeamViews);
 
 function testRecipientFocusedIdentityViews() {
 	registerRecipientFocusedSharingLifecycle();
+	it("does not add cached configured devices after inventory refresh fails", () => {
+		mount(intent({ identityDevices: [] }), {
+			deviceInventoryUnavailable: true,
+			deviceInventory: {
+				version: 1,
+				truncated: false,
+				coordinatorEvidence: { availability: "available", safeErrorCode: null },
+				items: [
+					{
+						version: 1,
+						deviceId: "removed-device",
+						evidenceDeviceIds: ["removed-device"],
+						displayName: "Removed laptop",
+						state: "configured",
+						identityId: "identity-adam",
+						suggestedIdentityId: null,
+						validatedFingerprint: null,
+						isLocal: false,
+						sources: ["sync_peer"],
+						conflictCodes: [],
+					},
+				],
+			},
+		});
+		act(() => tab("Identities").click());
+		expect(visiblePanel().textContent).toContain("Devices · 0");
+		expect(visiblePanel().textContent).not.toContain("Removed laptop");
+	});
 
 	it("does not infer per-Identity Team access from membership intent", () => {
 		mount();

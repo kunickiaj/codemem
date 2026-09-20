@@ -1690,6 +1690,14 @@
       .recipient-policy-management-details li { overflow-wrap: anywhere; }
       .recipient-policy-management-status:empty { display: none; }
       .recipient-policy-sharing-header { margin-bottom: var(--sp-4); }
+      .sharing-member-preview {
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        overflow: hidden;
+        overflow-wrap: anywhere;
+      }
+      .sharing-member-names p { overflow-wrap: anywhere; }
       .recipient-policy-sharing-tabs {
         position: static;
         display: flex;
@@ -2561,14 +2569,6 @@
         font-size: var(--font-size-sm);
       }
       .feed-project { color: var(--text-secondary); }
-      .sharing-member-preview {
-        display: -webkit-box;
-        -webkit-box-orient: vertical;
-        -webkit-line-clamp: 2;
-        overflow: hidden;
-        overflow-wrap: anywhere;
-      }
-      .sharing-member-names p { overflow-wrap: anywhere; }
       .feed-meta {
         color: var(--text-tertiary);
         font-size: var(--font-size-sm);
