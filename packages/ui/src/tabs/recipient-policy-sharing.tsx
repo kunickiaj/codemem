@@ -289,7 +289,11 @@ function SharingTabPanelContent({
 			return (
 				<IdentitiesView
 					disableMutations={options.refreshError === true}
-					inventory={options.deviceInventoryUnavailable ? undefined : options.deviceInventory}
+					inventory={
+						options.refreshError || options.deviceInventoryUnavailable
+							? undefined
+							: options.deviceInventory
+					}
 					intent={intent}
 					projects={projects}
 				/>

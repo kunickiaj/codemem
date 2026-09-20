@@ -606,6 +606,40 @@ describe("recipient-focused Sharing Team views", testRecipientFocusedTeamViews);
 
 function testRecipientFocusedIdentityViews() {
 	registerRecipientFocusedSharingLifecycle();
+	it("does not combine cached intent with fresh reassigned inventory after a required refresh fails", () => {
+		const graph = intent();
+		mount(graph);
+		clickTab("Identities");
+		mount(graph, {
+			refreshError: true,
+			deviceInventoryUnavailable: false,
+			deviceInventory: {
+				version: 1,
+				truncated: false,
+				coordinatorEvidence: { availability: "available", safeErrorCode: null },
+				items: [
+					{
+						version: 1,
+						deviceId: "device-adam-1",
+						evidenceDeviceIds: ["device-adam-1"],
+						displayName: "Reassigned laptop",
+						state: "configured",
+						identityId: "identity-brian",
+						suggestedIdentityId: null,
+						validatedFingerprint: null,
+						isLocal: false,
+						sources: ["sync_peer"],
+						conflictCodes: [],
+					},
+				],
+			},
+		});
+		const cards = [...visiblePanel().querySelectorAll(".recipient-policy-sharing-identity-card")];
+		expect(cards[0]?.textContent).toContain("Devices · 1Adam’s Mac");
+		expect(cards[1]?.textContent).toContain("Devices · 1");
+		expect(cards[1]?.textContent).not.toContain("Devices · 2");
+		expect(visiblePanel().textContent).not.toContain("Reassigned laptop");
+	});
 	it("does not add cached configured devices after inventory refresh fails", () => {
 		mount(intent({ identityDevices: [] }), {
 			deviceInventoryUnavailable: true,
