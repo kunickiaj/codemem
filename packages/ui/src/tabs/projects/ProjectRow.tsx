@@ -180,7 +180,7 @@ export function ProjectRow({ callbacks, child = false, clusterKey, model, view }
 		setDetailsOpen(true);
 		queueMicrotask(() => selectRef.current?.focus());
 	};
-	const titleId = `project-title-${project.workspace_identity.replace(/[^a-z0-9_-]/gi, "-")}`;
+	const titleId = `project-title-${model.detailKey.replace(/[^a-z0-9_-]/gi, "-")}`;
 	return (
 		<tbody
 			aria-labelledby={titleId}
