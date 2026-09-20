@@ -4722,7 +4722,8 @@ function originDeviceDisplayName(value: unknown, deviceId: string): string | nul
 		} catch {
 			// Opaque device IDs are intentionally not valid human presentation names.
 		}
-		return displayName.toLocaleLowerCase() === normalizedDeviceId.toLocaleLowerCase()
+		return displayName.normalize("NFC").toLocaleLowerCase() ===
+			normalizedDeviceId.normalize("NFC").toLocaleLowerCase()
 			? null
 			: displayName;
 	} catch {
