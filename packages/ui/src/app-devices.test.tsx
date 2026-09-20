@@ -1049,7 +1049,9 @@ describe("Viewer behavior contracts", () => {
 	});
 
 	it("encodes the Advanced Sync target from Sharing", async () => {
-		act(() => window.dispatchEvent(new CustomEvent("codemem:navigate-advanced-sync")));
+		act(() => {
+			window.dispatchEvent(new CustomEvent("codemem:navigate-advanced-sync"));
+		});
 		await Promise.resolve();
 
 		expect(window.location.hash).toBe("#advanced/sync");
