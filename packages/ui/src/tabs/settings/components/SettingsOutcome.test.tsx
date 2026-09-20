@@ -2,7 +2,7 @@ import { render } from "preact";
 import { act } from "preact/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EMPTY_FORM_STATE } from "../data/constants";
-import { settingsState } from "../data/state";
+import { settingsState, settingsView } from "../data/state";
 import type { SettingsPanelProps } from "../data/types";
 import { ObserverPanel } from "./ObserverPanel";
 import { ProcessingPanel } from "./ProcessingPanel";
@@ -47,11 +47,11 @@ const EDITABLE_SETTING_IDS = [
 	"syncCoordinatorPresenceTtl",
 ];
 
-function panelProps(): SettingsPanelProps {
+function panelProps(observerRuntime = "api_http"): SettingsPanelProps {
 	return {
 		values: {
 			...EMPTY_FORM_STATE,
-			observerRuntime: "api_http",
+			observerRuntime,
 			observerTierRoutingEnabled: true,
 		},
 		observerMaxCharsDefault: "12000",
@@ -72,10 +72,17 @@ function panelProps(): SettingsPanelProps {
 	};
 }
 
-function renderPanels() {
+function renderPanels(observerRuntime = "api_http") {
 	const mount = document.createElement("div");
 	document.body.appendChild(mount);
-	const props = panelProps();
+	settingsView.value = {
+		...settingsView.value,
+		renderState: {
+			...settingsView.value.renderState,
+			values: { ...settingsView.value.renderState.values, observerRuntime },
+		},
+	};
+	const props = panelProps(observerRuntime);
 	act(() => {
 		render(
 			<>
@@ -92,6 +99,13 @@ function renderPanels() {
 afterEach(() => {
 	document.body.innerHTML = "";
 	settingsState.envOverrides = {};
+	settingsView.value = {
+		...settingsView.value,
+		renderState: {
+			...settingsView.value.renderState,
+			values: { ...settingsView.value.renderState.values, observerRuntime: "api_http" },
+		},
+	};
 });
 
 describe("inactive pack setting outcomes", () => {
@@ -174,4 +188,25 @@ describe("settings outcomes", () => {
 			root.querySelector('[data-settings-outcome-for="observerProvider"]')?.textContent,
 		).toContain("After viewer restart");
 	});
+
+	it.each(["claude_sidecar", "codex_sidecar"])(
+		"marks API authentication controls inactive for %s",
+		(runtime) => {
+			const root = renderPanels(runtime);
+
+			for (const controlId of [
+				"observerAuthSource",
+				"observerAuthTimeoutMs",
+				"observerAuthCacheTtlS",
+			]) {
+				const outcome = root.querySelector(
+					`[data-settings-outcome-for="${controlId}"]`,
+				)?.textContent;
+				expect(outcome).toContain(
+					"No effect while Connection mode uses a local Claude or Codex session",
+				);
+				expect(outcome).toContain("Not used by local Claude or Codex sessions");
+			}
+		},
+	);
 });

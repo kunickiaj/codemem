@@ -1,5 +1,5 @@
 import { INPUT_TO_CONFIG_KEY } from "../data/constants";
-import { settingsState } from "../data/state";
+import { settingsState, settingsView } from "../data/state";
 
 export type SettingsOutcomeDetails = {
 	controlId: string;
@@ -7,6 +7,10 @@ export type SettingsOutcomeDetails = {
 	scope: string;
 	stage: string;
 	timing: string;
+};
+
+export type SettingsOutcomeContext = {
+	observerRuntime?: string;
 };
 
 function observationOutcome(controlId: string): SettingsOutcomeDetails {
@@ -48,6 +52,27 @@ function syncOutcome(controlId: string, scope: string): SettingsOutcomeDetails {
 		stage: "Device sync",
 		timing: "After viewer restart",
 	};
+}
+
+function sidecarAuthOutcome(controlId: string): SettingsOutcomeDetails {
+	return {
+		controlId,
+		existingData:
+			"Stored memories stay unchanged. Local Claude and Codex sessions authenticate through their CLI logins instead.",
+		scope: "No effect while Connection mode uses a local Claude or Codex session",
+		stage: "Sidecar authentication",
+		timing: "Not used by local Claude or Codex sessions",
+	};
+}
+
+const SIDECAR_AUTH_CONTROL_IDS = new Set([
+	"observerAuthSource",
+	"observerAuthTimeoutMs",
+	"observerAuthCacheTtlS",
+]);
+
+function isSidecarRuntime(runtime: string | undefined): boolean {
+	return runtime === "claude_sidecar" || runtime === "codex_sidecar";
 }
 
 const OUTCOMES_BY_CONTROL_ID: Record<string, SettingsOutcomeDetails> = Object.fromEntries(
@@ -96,9 +121,17 @@ const OUTCOMES_BY_CONTROL_ID: Record<string, SettingsOutcomeDetails> = Object.fr
 	].map((outcome) => [outcome.controlId, outcome]),
 );
 
-export function settingsOutcomeFor(controlId: string): SettingsOutcomeDetails | undefined {
+export function settingsOutcomeFor(
+	controlId: string,
+	context: SettingsOutcomeContext = {},
+): SettingsOutcomeDetails | undefined {
 	const outcome = OUTCOMES_BY_CONTROL_ID[controlId];
 	if (!outcome) return undefined;
+	const observerRuntime =
+		context.observerRuntime ?? settingsView.value.renderState.values.observerRuntime;
+	if (SIDECAR_AUTH_CONTROL_IDS.has(controlId) && isSidecarRuntime(observerRuntime)) {
+		return sidecarAuthOutcome(controlId);
+	}
 	if (outcome.scope === "No current effect") return outcome;
 	const configKey = INPUT_TO_CONFIG_KEY[controlId as keyof typeof INPUT_TO_CONFIG_KEY];
 	const override = configKey ? settingsState.envOverrides[configKey] : undefined;
