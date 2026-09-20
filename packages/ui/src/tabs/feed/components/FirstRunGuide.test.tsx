@@ -52,9 +52,9 @@ describe("FirstRunGuide", () => {
 			JSON.stringify({ completed: [], dismissed: true, showCompleted: false }),
 		);
 
-		act(() =>
-			window.dispatchEvent(new StorageEvent("storage", { key: FIRST_RUN_GUIDE_STORAGE_KEY })),
-		);
+		act(() => {
+			window.dispatchEvent(new StorageEvent("storage", { key: FIRST_RUN_GUIDE_STORAGE_KEY }));
+		});
 
 		expect(mount.querySelector("section")).toBeNull();
 	});
