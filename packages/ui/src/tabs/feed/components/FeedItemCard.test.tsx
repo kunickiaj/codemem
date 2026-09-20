@@ -355,6 +355,14 @@ describe("FeedItemCard content and actions", () => {
 });
 
 describe("FeedItemCard search refresh", () => {
+	it.each(["K", "İ"])("highlights original Unicode text for query %s", (query) => {
+		state.feedQuery = `  ${query}  `;
+		renderCard(observation({ title: query, subtitle: `Summary ${query}` }));
+		expect(mount.querySelector(".feed-title mark.match")?.textContent).toBe(query);
+		expect(mount.querySelector(".feed-summary mark.match")?.textContent).toBe(query);
+		renderCard(observation({ facts: [`${"x".repeat(100)} ${query}`] }));
+		expect(mount.querySelector(".feed-search-match mark.match")?.textContent).toBe(query);
+	});
 	it.each([
 		{ name: "Facts list items", mode: "facts" as const, facts: ["one", "two"], narrative: "" },
 		{ name: "Markdown paragraphs", mode: "narrative" as const, facts: [], narrative: "one\n\ntwo" },

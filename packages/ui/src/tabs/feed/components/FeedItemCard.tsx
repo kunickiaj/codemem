@@ -3,7 +3,6 @@ import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { Chip } from "../../../components/primitives/chip";
 import { Tooltip } from "../../../components/primitives/tooltip";
 import * as api from "../../../lib/api";
-import { highlightText } from "../../../lib/dom";
 import { formatDate, formatRelativeTime } from "../../../lib/format";
 import { showGlobalNotice } from "../../../lib/notice";
 import { setPreferredFeedViewMode, state } from "../../../lib/state";
@@ -17,6 +16,7 @@ import {
 	buildFeedCardViewModel,
 	type FeedCardMode,
 	hiddenSearchMatch,
+	highlightFeedText,
 	normalizeFeedQuery,
 	preferredAvailableMode,
 	visibleSkimPrefixLength,
@@ -508,7 +508,7 @@ function renderFeedCardTitle(input: FeedCardRenderInput) {
 	const titleProps = {
 		className: "feed-title title",
 		dangerouslySetInnerHTML: {
-			__html: highlightText(input.model.displayTitle, normalizeFeedQuery(state.feedQuery)),
+			__html: highlightFeedText(input.model.displayTitle, state.feedQuery),
 		},
 	};
 	if (!input.hasDisclosure) return h("div", titleProps);
@@ -531,7 +531,7 @@ function renderFeedSearchMatch(input: FeedCardRenderInput) {
 		h("span", { className: "feed-search-match-label" }, `${input.searchMatch.label} match`),
 		h("span", {
 			dangerouslySetInnerHTML: {
-				__html: highlightText(input.searchMatch.excerpt, normalizeFeedQuery(state.feedQuery)),
+				__html: highlightFeedText(input.searchMatch.excerpt, state.feedQuery),
 			},
 		}),
 	);
@@ -622,7 +622,7 @@ function renderFeedCardBody(input: FeedCardRenderInput) {
 			? h("div", {
 					className: "feed-summary",
 					dangerouslySetInnerHTML: {
-						__html: highlightText(input.model.skimSummary, normalizeFeedQuery(state.feedQuery)),
+						__html: highlightFeedText(input.model.skimSummary, state.feedQuery),
 					},
 				})
 			: null,

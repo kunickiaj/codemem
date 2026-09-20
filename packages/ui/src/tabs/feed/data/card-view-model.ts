@@ -1,3 +1,4 @@
+import { escapeHtml } from "../../../lib/dom";
 import { normalize, parseJsonArray, toTitleLabel } from "../../../lib/format";
 import type { FeedItem, FeedSummary, ItemViewMode } from "../types";
 import { itemKey, itemTags, mergeMetadata } from "./helpers";
@@ -181,12 +182,45 @@ function includesQuery(value: string, query: string): boolean {
 	return value.toLowerCase().includes(query.toLowerCase());
 }
 
+function feedMatchRanges(text: string, query: string): { start: number; end: number }[] {
+	if (!query) return [];
+	const offsets: { start: number; end: number }[] = [];
+	let sourceOffset = 0;
+	for (const character of text) {
+		const span = { start: sourceOffset, end: sourceOffset + character.length };
+		for (let unit = 0; unit < character.toLowerCase().length; unit++) offsets.push(span);
+		sourceOffset = span.end;
+	}
+	// Lowercase the whole string to retain contextual casing (for example Greek sigma).
+	const folded = text.toLowerCase();
+	const ranges: { start: number; end: number }[] = [];
+	let index = folded.indexOf(query);
+	while (index !== -1) {
+		const start = offsets[index]?.start;
+		const end = offsets[index + query.length - 1]?.end;
+		if (start !== undefined && end !== undefined) ranges.push({ start, end });
+		index = folded.indexOf(query, index + query.length);
+	}
+	return ranges;
+}
+
+export function highlightFeedText(text: string, query: string): string {
+	let cursor = 0;
+	let result = "";
+	for (const { start, end } of feedMatchRanges(text, normalizeFeedQuery(query))) {
+		if (start < cursor) continue;
+		result += `${escapeHtml(text.slice(cursor, start))}<mark class="match">${escapeHtml(text.slice(start, end))}</mark>`;
+		cursor = end;
+	}
+	return result + escapeHtml(text.slice(cursor));
+}
+
 function excerptAroundMatch(text: string, query: string): string {
 	const collapsed = text.replace(/\s+/g, " ").trim();
-	const index = collapsed.toLowerCase().indexOf(query.toLowerCase());
-	if (index < 0) return "";
-	const start = Math.max(0, index - 70);
-	const end = Math.min(collapsed.length, index + query.length + 90);
+	const match = feedMatchRanges(collapsed, query.toLowerCase())[0];
+	if (!match) return "";
+	const start = Math.max(0, match.start - 70);
+	const end = Math.min(collapsed.length, match.end + 90);
 	return `${start > 0 ? "…" : ""}${collapsed.slice(start, end)}${end < collapsed.length ? "…" : ""}`;
 }
 
