@@ -1,6 +1,5 @@
 import { INPUT_TO_CONFIG_KEY } from "../data/constants";
 import { settingsState, settingsView } from "../data/state";
-import { asBooleanValue } from "../data/value-helpers";
 
 export type SettingsOutcomeDetails = {
 	controlId: string;
@@ -188,7 +187,7 @@ function conditionalOutcome(
 		return temperatureOutcome(controlId, runtime, tierProvider(controlId, provider));
 	if (/Reasoning(Effort|Summary)$/.test(controlId) || controlId === "observerRichMaxOutputTokens")
 		return tuningOutcome(controlId, sidecar);
-	if (controlId === "syncEnabled" && !asBooleanValue(effectiveSetting(controlId)))
+	if (controlId === "syncEnabled" && !syncEnabled(effectiveSetting(controlId)))
 		return {
 			...syncOutcome(controlId, "Stop future peer transfers on this device"),
 			existingData:
@@ -201,6 +200,13 @@ function conditionalOutcome(
 				"Pairing payloads change immediately after save; restart the viewer before sharing or using them so the listener uses the new address",
 		};
 	return undefined;
+}
+
+function syncEnabled(value: unknown): boolean {
+	// Match readCoordinatorSyncConfig: unknown values fall back to disabled.
+	if (typeof value === "boolean") return value;
+	if (typeof value !== "string") return false;
+	return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
 }
 
 function baseModelOutcome(runtime: string, provider: string): SettingsOutcomeDetails {

@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
+import { readCoordinatorSyncConfig } from "./coordinator-sync-config.js";
 import { buildTieredObserverConfig } from "./extraction-tier-routing.js";
 import { loadObserverConfig, ObserverClient } from "./observer-client.js";
 
@@ -15,6 +16,15 @@ beforeEach(() => {
 afterEach(() => {
 	process.env = env;
 	rmSync(home, { recursive: true, force: true });
+});
+
+it.each([
+	["disabled", false],
+	[" YES ", true],
+	["On", true],
+] as const)("backs Settings sync outcome for environment value %s", (value, enabled) => {
+	process.env.CODEMEM_SYNC_ENABLED = value;
+	expect(readCoordinatorSyncConfig({ sync_enabled: true }).syncEnabled).toBe(enabled);
 });
 
 it("resolves omitted provider, model, and routing before applying built-in tier defaults", () => {

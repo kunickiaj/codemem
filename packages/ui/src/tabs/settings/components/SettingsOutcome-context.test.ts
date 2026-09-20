@@ -37,14 +37,14 @@ describe("effective Settings outcomes", () => {
 			);
 		},
 	);
-	it.each(["false", "0"])("honors raw disabled sync environment value %s", (sync) => {
+	it.each(["false", "0", "disabled"])("honors raw disabled sync environment value %s", (sync) => {
 		values({ syncEnabled: true });
 		settingsState.envOverrides = { sync_enabled: "CODEMEM_SYNC_ENABLED" };
 		settingsState.effectiveConfig = { sync_enabled: sync };
 		expect(settingsOutcomeFor("syncEnabled")?.scope).toContain("Stop future peer transfers");
 		expect(settingsOutcomeFor("syncEnabled")?.existingData).toContain("does not retract");
 	});
-	it.each(["true", "1"])("honors raw enabled sync environment value %s", (sync) => {
+	it.each(["true", "1", " YES ", "On"])("honors raw enabled sync environment value %s", (sync) => {
 		values({ syncEnabled: false });
 		settingsState.envOverrides = { sync_enabled: "CODEMEM_SYNC_ENABLED" };
 		settingsState.effectiveConfig = { sync_enabled: sync };
