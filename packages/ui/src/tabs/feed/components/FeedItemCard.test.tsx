@@ -200,6 +200,31 @@ describe("FeedItemCard", () => {
 });
 
 describe("FeedItemCard polling fallback", () => {
+	it.each([false, true])("restores sole-mode focus once (expanded: %s)", async (expanded) => {
+		renderCard(observation());
+		if (expanded) act(() => titleButton().click());
+		const summary = mount.querySelector<HTMLButtonElement>('[role="radio"][aria-checked="true"]');
+		expect(summary?.textContent).toBe("Summary");
+		summary?.focus();
+		const singleMode = observation({
+			facts: [],
+			body_text: "Short summary.",
+			narrative: "Short summary.",
+		});
+		renderCard(singleMode);
+		await act(async () => {
+			await Promise.resolve();
+		});
+		expect(mount.querySelector('[role="radiogroup"]')).toBeNull();
+		const card = mount.querySelector<HTMLElement>(".feed-item");
+		expect(document.activeElement).toBe(card);
+		card?.blur();
+		renderCard(singleMode);
+		await act(async () => {
+			await Promise.resolve();
+		});
+		expect(document.activeElement).toBe(document.body);
+	});
 	it("uses the stable fallback order instead of another card's preference", async () => {
 		renderCard(observation());
 		act(() => titleButton().click());

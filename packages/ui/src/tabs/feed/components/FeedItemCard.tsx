@@ -51,6 +51,22 @@ function renderModeContent(mode: FeedCardMode) {
 	return renderNarrativeContent(mode.content.text, className);
 }
 
+function useSingleModeFocus(input: {
+	modeIds: ItemViewMode[];
+	focusedModeRef: { current: ItemViewMode | null };
+	cardRef: { current: HTMLElement | null };
+}) {
+	const previousModeCount = useRef(input.modeIds.length);
+	useEffect(() => {
+		const toggleDisappeared = previousModeCount.current > 1 && input.modeIds.length === 1;
+		previousModeCount.current = input.modeIds.length;
+		if (!toggleDisappeared) return;
+		const hadModeFocus = input.focusedModeRef.current !== null;
+		input.focusedModeRef.current = null;
+		if (hadModeFocus && document.activeElement === document.body) input.cardRef.current?.focus();
+	}, [input]);
+}
+
 function usePollingModeState(input: {
 	activeMode: ItemViewMode;
 	cardRef: { current: HTMLElement | null };
@@ -64,6 +80,7 @@ function usePollingModeState(input: {
 	setActiveMode: (mode: ItemViewMode) => void;
 	setExpanded: (expanded: boolean) => void;
 }) {
+	useSingleModeFocus(input);
 	useEffect(() => {
 		if (input.modeIds.length === 0) {
 			const shouldRestoreCardFocus =
