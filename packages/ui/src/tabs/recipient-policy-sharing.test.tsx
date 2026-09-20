@@ -1,7 +1,9 @@
+/// <reference types="vite/client" />
 import { type ComponentChildren, render } from "preact";
 import { useEffect, useRef } from "preact/hooks";
 import { act } from "preact/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import html from "../../static/index.html?raw";
 
 const openManagement = vi.hoisted(() => vi.fn());
 
@@ -510,9 +512,50 @@ function testRecipientFocusedSetupAndKeyboard() {
 
 describe("recipient-focused Sharing setup", testRecipientFocusedSetupAndKeyboard);
 
+describe("Sharing long member names", () => {
+	registerRecipientFocusedSharingLifecycle();
+	it.each([1, 2, 3])("keeps %i long member names accessible", (count) => {
+		const graph = intent();
+		const names = Array.from({ length: count }, (_, index) =>
+			`Member ${index} ${"Long name ".repeat(30)}`.trim(),
+		);
+		graph.identities = names.map((displayName, index) => ({
+			...graph.identities[0],
+			displayName,
+			identityId: `identity-${index}`,
+		}));
+		graph.teamMemberships = graph.identities.map(({ identityId }) => ({
+			version: 1,
+			teamId: "team-example",
+			identityId,
+			role: "member",
+			status: "active",
+		}));
+		mount(graph);
+		const preview = visiblePanel().querySelector(".sharing-member-preview");
+		const disclosure = preview?.closest("details");
+		if (count <= 2) {
+			expect(disclosure).toBeNull();
+			for (const name of names) expect(preview?.textContent).toContain(name);
+		} else {
+			expect(disclosure?.querySelector("summary")?.textContent).toContain("+1 more");
+			for (const name of names) expect(disclosure?.querySelector("p")?.textContent).toContain(name);
+		}
+		const rules = [...html.matchAll(/([^{}]+)\{([^{}]+)\}/g)];
+		const previewRules = rules.filter((rule) => rule[1].includes(".sharing-member-preview"));
+		expect(previewRules).toHaveLength(2);
+		for (const rule of previewRules) {
+			if (!rule[2].includes("line-clamp")) continue;
+			expect(rule[1].trim()).toBe(".sharing-member-names .sharing-member-preview");
+		}
+		expect(
+			previewRules.find((rule) => rule[1].trim() === ".sharing-member-preview")?.[2],
+		).toContain("overflow-wrap: anywhere");
+	});
+});
+
 function testRecipientFocusedTeamViews() {
 	registerRecipientFocusedSharingLifecycle();
-
 	it("shows Team members, current devices, shared Projects, and future-member inheritance", () => {
 		const graph = intent();
 		graph.identities = graph.identities.map((identity) => ({
