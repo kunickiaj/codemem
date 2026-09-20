@@ -289,6 +289,7 @@ function SharingTabPanelContent({
 			return (
 				<IdentitiesView
 					disableMutations={options.refreshError === true}
+					inventory={options.deviceInventory}
 					intent={intent}
 					projects={projects}
 				/>
@@ -491,10 +492,7 @@ function TeamsView({
 						<div className="recipient-policy-sharing-stats">
 							<div>
 								<strong>{memberNames.length}</strong>
-								<span>
-									{memberNames.length === 1 ? "Member" : "Members"} ·{" "}
-									{memberNames.join(", ") || "None"}
-								</span>
+								<MemberNames names={memberNames} />
 							</div>
 							<div>
 								<strong>{activeDeviceCount}</strong>
@@ -516,12 +514,51 @@ function TeamsView({
 	);
 }
 
+function MemberNames({ names }: { names: string[] }) {
+	if (names.length <= 2)
+		return (
+			<span className="sharing-member-preview">
+				{names.length === 1 ? "Member" : "Members"} · {names.join(", ") || "None"}
+			</span>
+		);
+	return (
+		<details className="sharing-member-names">
+			<summary>
+				<span className="sharing-member-preview">Members · {names.slice(0, 2).join(", ")}</span> +
+				{names.length - 2} more
+			</summary>
+			<p>{names.join(", ")}</p>
+		</details>
+	);
+}
+
+function identityDevices(
+	intent: RecipientPolicyIntentGraphV1,
+	identityId: string,
+	inventory?: DeviceIdentityInventoryV1,
+) {
+	const devices = intent.identityDevices.filter(
+		(device) => device.status === "active" && device.identityId === identityId,
+	);
+	const result = devices.map(({ deviceId, displayName }) => ({ deviceId, displayName }));
+	const known = new Set(devices.map((device) => device.deviceId));
+	for (const item of inventory?.items ?? []) {
+		if (item.state !== "configured" || item.identityId !== identityId) continue;
+		if ([item.deviceId, ...item.evidenceDeviceIds].some((id) => known.has(id))) continue;
+		result.push({ deviceId: item.deviceId, displayName: item.displayName });
+		for (const id of [item.deviceId, ...item.evidenceDeviceIds]) known.add(id);
+	}
+	return result;
+}
+
 function IdentitiesView({
 	disableMutations,
+	inventory,
 	intent,
 	projects,
 }: {
 	disableMutations: boolean;
+	inventory?: DeviceIdentityInventoryV1;
 	intent: RecipientPolicyIntentGraphV1;
 	projects: RecipientPolicyManagementProject[];
 }) {
@@ -544,9 +581,7 @@ function IdentitiesView({
 	return (
 		<div className="recipient-policy-sharing-grid recipient-policy-sharing-responsive-grid">
 			{activeIdentities.map((identity, index) => {
-				const activeDevices = intent.identityDevices.filter(
-					(device) => device.status === "active" && device.identityId === identity.identityId,
-				);
+				const activeDevices = identityDevices(intent, identity.identityId, inventory);
 				const teamIds = [
 					...new Set(
 						intent.teamMemberships

@@ -457,6 +457,12 @@ function testRecipientFocusedSetupAndKeyboard() {
 			).click(),
 		);
 		expect(onReviewDevices).toHaveBeenCalledWith("setup");
+		act(() => tab("Identities").click());
+		const adam = [...visiblePanel().querySelectorAll("article")].find(
+			(card) => card.querySelector("h3")?.textContent === "Adam",
+		);
+		expect(adam?.textContent).toContain("Devices · 2");
+		expect(adam?.textContent).toContain("configured");
 	});
 
 	it("supports automatic keyboard tab activation, wraparound, Home, End, and focus", () => {
@@ -588,6 +594,10 @@ function testRecipientFocusedTeamViews() {
 		});
 
 		expect(visiblePanel().textContent).toContain("Adam, Brian, Casey, Devon");
+		const disclosure = visiblePanel().querySelector<HTMLDetailsElement>(".sharing-member-names");
+		expect(disclosure?.open).toBe(false);
+		expect(disclosure?.querySelector("summary")?.textContent).toContain("+2 more");
+		expect(disclosure?.querySelector("summary")?.textContent).not.toContain("Devon");
 		expect(visiblePanel().querySelector(".recipient-policy-sharing-name-details")).toBeNull();
 	});
 }
