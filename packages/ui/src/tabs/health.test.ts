@@ -234,6 +234,28 @@ it("renders the four compact health tiles in contract order", () => {
 	expect(document.querySelector("#healthGrid .stat")).toBeNull();
 });
 
+it("counts low tag coverage as an issue", () => {
+	const stats = statsPayload();
+	stats.database.tags_coverage = 0.5;
+	state.healthStats = completeHealthLoad(stats);
+	renderHealthOverview();
+	expect(document.getElementById("healthMeta")?.textContent).toContain("1 issue");
+});
+
+it("does not claim no packs when aggregate usage has no recent timestamp", () => {
+	state.healthUsage = completeHealthLoad(
+		usagePayload({
+			events_global: [usageEvent({ event: "pack", total_tokens_read: 10 })],
+			recent_packs: [],
+		}),
+	);
+	renderHealthOverview();
+	const freshness = [...document.querySelectorAll("#healthGrid .health-tile")].find(
+		(node) => node.querySelector(".health-tile-label")?.textContent === "Data freshness",
+	);
+	expect(freshness?.textContent).toContain("Unknown");
+});
+
 it("marks pending pipeline work and the current sync problem as degraded", () => {
 	state.healthRawEvents = completeHealthLoad({ pending: 3, sessions: 1 });
 	state.lastSyncPeers = [{ peer_device_id: "peer-a" }];

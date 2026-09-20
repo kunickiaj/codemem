@@ -242,6 +242,7 @@ function applySyncRecencyRisk(result: RiskResult, signals: OverviewSignals): voi
 function calculateRisk(signals: OverviewSignals): RiskResult {
 	const result: RiskResult = { score: 0, drivers: [] };
 	applyPipelineRisk(result, signals);
+	if (signals.tagCoverage > 0 && signals.tagCoverage < 0.7) addRisk(result, 8, "low tag coverage");
 	if (signals.hasFailedMaintenance) addRisk(result, 30, "maintenance job failed");
 	if (!signals.syncDisabled && !signals.syncNoPeers) {
 		applySyncStateRisk(result, signals);
@@ -413,9 +414,9 @@ function freshnessTile(signals: OverviewSignals): HealthTileInput {
 		return tile(
 			"freshness",
 			"Data freshness",
-			"No packs yet",
+			signals.hasPackUsage ? "Unknown" : "No packs yet",
 			"unknown",
-			"Recency of last memory pack activity",
+			"Recency is unknown when pack usage exists outside the recent activity window",
 		);
 	}
 	if (signals.packAgeSeconds === null) {
