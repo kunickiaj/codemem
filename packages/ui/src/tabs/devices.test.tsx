@@ -506,6 +506,23 @@ describe("Device pairing availability", () => {
 		expect(document.body.textContent).not.toContain("Coordinator unreachable");
 	});
 
+	it("shows setup guidance instead of Retry for incomplete coordinator settings", () => {
+		const setupInventory = inventory([]);
+		setupInventory.coordinatorEvidence = {
+			availability: "unavailable",
+			safeErrorCode: "coordinator_configuration_required",
+		};
+		mount(intent(), reconciliation(), { inventory: setupInventory, onRetry: vi.fn() });
+		expect(document.body.textContent).toContain("Complete coordinator setup");
+		expect(document.body.textContent).toContain(
+			"URL, administrator secret, and at least one group",
+		);
+		expect(document.body.textContent).not.toContain("Coordinator unreachable");
+		expect(
+			[...document.querySelectorAll("button")].some((button) => button.textContent === "Retry"),
+		).toBe(false);
+	});
+
 	it("replaces the summary with a retryable coordinator status while unreachable", () => {
 		const onRetry = vi.fn();
 		const unavailableInventory = inventory([]);

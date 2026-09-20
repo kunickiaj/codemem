@@ -1462,6 +1462,21 @@ function DevicesSummaryBar({
 
 function CoordinatorStatus({ options }: { options: DevicesRendererOptions }) {
 	if (options.inventory?.coordinatorEvidence.availability !== "unavailable") return null;
+	if (
+		options.inventory.coordinatorEvidence.safeErrorCode === "coordinator_configuration_required"
+	) {
+		return (
+			<div className="devices-coordinator-status" role="status">
+				<Chip tone="badge-offline" variant="badge">
+					Complete coordinator setup
+				</Chip>
+				<span className="small">
+					Configure a coordinator URL, administrator secret, and at least one group locally, then
+					refresh Devices. Identity setup remains disabled until setup is complete.
+				</span>
+			</div>
+		);
+	}
 	const evidenceTooLarge =
 		options.inventory.coordinatorEvidence.safeErrorCode === "coordinator_evidence_too_large";
 	if (evidenceTooLarge) {

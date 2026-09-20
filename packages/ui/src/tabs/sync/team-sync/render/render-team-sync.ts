@@ -8,7 +8,7 @@ import { h } from "preact";
 import * as api from "../../../../lib/api";
 import { friendlyError } from "../../../../lib/form";
 import { showGlobalNotice } from "../../../../lib/notice";
-import { isSyncRedactionEnabled, state } from "../../../../lib/state";
+import { type DiscoveredDevice, isSyncRedactionEnabled, state } from "../../../../lib/state";
 import { AdvancedSyncStatus } from "../../components/advanced-sync-status";
 import { clearSyncMount, renderIntoSyncMount } from "../../components/render-root";
 import type { SyncActionFeedback } from "../../components/sync-inline-feedback";
@@ -365,11 +365,11 @@ export function renderTeamSync() {
 			Number.isFinite(rawHiddenAddressCount) && rawHiddenAddressCount > 0
 				? rawHiddenAddressCount
 				: 0;
-		const waitState = deviceWaitState(
-			Boolean(pairedPeer),
-			Boolean(device.stale),
-			addresses.length + hiddenAddressCount,
-		);
+		const waitState = deviceWaitState({
+			pairedLocally: Boolean(pairedPeer),
+			device,
+			addressCount: addresses.length + hiddenAddressCount,
+		});
 		const addressLabel = addresses.length
 			? addresses
 					.map((address) =>
@@ -397,6 +397,9 @@ export function renderTeamSync() {
 			actionMessage =
 				"This device appears in multiple coordinator groups. Review legacy Team/Space setup before approving it here.";
 			mode = "ambiguous";
+		} else if (waitState) {
+			actionMessage = waitState.actionMessage;
+			mode = waitState.mode;
 		} else if (pairedPeer && isPeerScopeReviewPending(deviceId)) {
 			actionMessage =
 				"Review this device's legacy Space access and advanced rules in Coordinator Administration before you sync it.";
@@ -407,9 +410,6 @@ export function renderTeamSync() {
 		} else if (pairedPeer?.status?.peer_state) {
 			noteParts.push(`status: ${String(pairedPeer.status.peer_state)}`);
 			if (!canAccept) mode = "paired";
-		} else if (waitState) {
-			actionMessage = waitState.actionMessage;
-			mode = waitState.mode;
 		} else if (pairedPeer && !canAccept) {
 			mode = "paired";
 		}
@@ -707,20 +707,24 @@ export async function submitDiscoveredDeviceReview(
 	return feedback;
 }
 
-function deviceWaitState(
-	pairedLocally: boolean,
-	stale: boolean,
-	addressCount: number,
-): Pick<TeamSyncDiscoveredRow, "actionMessage" | "mode"> | null {
-	if (pairedLocally) return null;
-	if (stale) {
+function deviceWaitState({
+	pairedLocally,
+	device,
+	addressCount,
+}: {
+	pairedLocally: boolean;
+	device: DiscoveredDevice;
+	addressCount: number;
+}): Pick<TeamSyncDiscoveredRow, "actionMessage" | "mode"> | null {
+	if (pairedLocally && device.needs_local_approval !== true) return null;
+	if (device.stale) {
 		return {
 			actionMessage:
 				"Wait for a fresh coordinator presence update, then review this device again here.",
 			mode: "stale",
 		};
 	}
-	if (addressCount > 0) return null;
+	if (pairedLocally || addressCount > 0) return null;
 	return {
 		actionMessage: "Wait for this device to publish a fresh address, then refresh and review it.",
 		mode: "waiting-address",

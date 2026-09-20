@@ -4653,7 +4653,9 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 async function loadConfiguredDeviceIdentityCoordinatorEvidence(): Promise<DeviceIdentityCoordinatorEvidence> {
 	const config = readCoordinatorSyncConfig();
 	const hasCoordinatorConfiguration =
-		config.syncCoordinatorUrl.length > 0 || config.syncCoordinatorGroups.length > 0;
+		config.syncCoordinatorUrl.length > 0 ||
+		config.syncCoordinatorGroups.length > 0 ||
+		config.syncCoordinatorAdminSecret.length > 0;
 	const remoteUrl = config.syncCoordinatorUrl.trim();
 	const adminSecret = config.syncCoordinatorAdminSecret.trim();
 	const groupIds = [
@@ -4669,7 +4671,7 @@ async function loadConfiguredDeviceIdentityCoordinatorEvidence(): Promise<Device
 	if (!remoteUrl || !adminSecret || groupIds.length === 0) {
 		return {
 			availability: "unavailable",
-			safeErrorCode: "coordinator_unavailable",
+			safeErrorCode: "coordinator_configuration_required",
 			enrollments: [],
 		};
 	}
