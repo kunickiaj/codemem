@@ -4712,6 +4712,12 @@ async function loadConfiguredDeviceIdentityCoordinatorEvidence(): Promise<Device
 
 const ORIGIN_DEVICE_NAME_LOOKUP_BATCH_SIZE = 400;
 
+function originDeviceNameKey(value: string): string {
+	// Lower first so capital sharp S joins sharp s before the uppercase SS expansion.
+	// The final lowercase also unifies the sigma forms using Unicode case mappings.
+	return value.normalize("NFKC").toLowerCase().toUpperCase().toLowerCase();
+}
+
 function originDeviceDisplayName(value: unknown, deviceId: string): string | null {
 	if (typeof value !== "string") return null;
 	try {
@@ -4722,8 +4728,7 @@ function originDeviceDisplayName(value: unknown, deviceId: string): string | nul
 		} catch {
 			// Opaque device IDs are intentionally not valid human presentation names.
 		}
-		return displayName.normalize("NFKC").toUpperCase().toLowerCase() ===
-			normalizedDeviceId.normalize("NFKC").toUpperCase().toLowerCase()
+		return originDeviceNameKey(displayName) === originDeviceNameKey(normalizedDeviceId)
 			? null
 			: displayName;
 	} catch {

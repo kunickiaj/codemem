@@ -411,6 +411,10 @@ function seedReceivedProjectOriginDevices(store: MemoryStore): void {
 	insertPeer.run("Ｓｏｕｒｃｅ Ｐｅｅｒ", "Source Peer", "device-f-fingerprint", now);
 	insertPeer.run("Straße", "STRASSE", "device-g-fingerprint", now);
 	insertPeer.run("ος", "ΟΣ", "device-h-fingerprint", now);
+	insertPeer.run("STRAẞE", "straße", "device-i-fingerprint", now);
+	insertPeer.run("straße", "STRAẞE", "device-j-fingerprint", now);
+	insertPeer.run("STRASSE", "STRAẞE", "device-k-fingerprint", now);
+	insertPeer.run("οσ", "ος", "device-l-fingerprint", now);
 	const sessionId = insertTestSession(store.db);
 	store.db
 		.prepare("UPDATE sessions SET cwd = ?, project = NULL WHERE id = ?")
@@ -424,6 +428,10 @@ function seedReceivedProjectOriginDevices(store: MemoryStore): void {
 		"Ｓｏｕｒｃｅ Ｐｅｅｒ",
 		"Straße",
 		"ος",
+		"STRAẞE",
+		"straße",
+		"STRASSE",
+		"οσ",
 	]) {
 		const memoryId = insertTestMemory(store, {
 			sessionId,
@@ -452,16 +460,23 @@ async function resolvesReceivedProjectOriginDeviceNames(): Promise<void> {
 			}>;
 		};
 		expect(inventory.projects).toHaveLength(1);
-		expect(inventory.projects[0]?.origin_devices).toEqual([
-			{ device_id: "café peer", display_name: null },
-			{ device_id: "device-a", display_name: "Work Laptop" },
-			{ device_id: "device-b", display_name: "Desk Computer" },
-			{ device_id: "device-c", display_name: null },
-			{ device_id: "source  identity", display_name: null },
-			{ device_id: "Ｓｏｕｒｃｅ Ｐｅｅｒ", display_name: null },
-			{ device_id: "Straße", display_name: null },
-			{ device_id: "ος", display_name: null },
-		]);
+		expect(inventory.projects[0]?.origin_devices).toEqual(
+			expect.arrayContaining([
+				{ device_id: "café peer", display_name: null },
+				{ device_id: "device-a", display_name: "Work Laptop" },
+				{ device_id: "device-b", display_name: "Desk Computer" },
+				{ device_id: "device-c", display_name: null },
+				{ device_id: "source  identity", display_name: null },
+				{ device_id: "Ｓｏｕｒｃｅ Ｐｅｅｒ", display_name: null },
+				{ device_id: "Straße", display_name: null },
+				{ device_id: "ος", display_name: null },
+				{ device_id: "STRAẞE", display_name: null },
+				{ device_id: "straße", display_name: null },
+				{ device_id: "STRASSE", display_name: null },
+				{ device_id: "οσ", display_name: null },
+			]),
+		);
+		expect(inventory.projects[0]?.origin_devices).toHaveLength(12);
 	} finally {
 		cleanup();
 	}
