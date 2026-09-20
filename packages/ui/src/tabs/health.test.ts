@@ -1064,6 +1064,7 @@ describe("Health update banner channels and guidance", () => {
 	it("shows a recoverable unavailable state without claiming the installation is current", () => {
 		// Arrange
 		setUpdateStatus({
+			unavailable: true,
 			...availableStatus,
 			latest_version: null,
 			update_available: false,

@@ -174,6 +174,14 @@ function withUpdateGuidance(title: string, status: UpdateStatus): string {
 }
 
 function updateBannerCopy(status: UpdateStatus): UpdateBannerCopy {
+	if (status.unavailable) {
+		return {
+			label: "Update check unavailable",
+			title: withUpdateGuidance(withUpdateError("Could not check for updates.", status), status),
+			tone: "badge-offline",
+		};
+	}
+
 	if (status.install_kind === "repo-dev") {
 		return {
 			label: `Source build · ${status.current_version}`,

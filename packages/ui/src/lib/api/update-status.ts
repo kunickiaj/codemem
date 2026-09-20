@@ -8,6 +8,7 @@ export async function loadUpdateStatus(options: ReadRequestOptions = {}): Promis
 
 export function unavailableUpdateStatus(error: unknown): UpdateStatus {
 	return {
+		unavailable: true,
 		current_version: "unknown",
 		channel: null,
 		latest_version: null,

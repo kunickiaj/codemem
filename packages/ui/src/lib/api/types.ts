@@ -61,6 +61,8 @@ export interface ViewerStatus {
 
 /** Browser-side mirror of the additive /api/update-status wire contract. */
 export interface UpdateStatus {
+	/** Browser-only marker for a failed request fallback; absent in wire responses. */
+	unavailable?: boolean;
 	current_version: string;
 	channel: "alpha" | "beta" | "rc" | "latest" | null;
 	latest_version: string | null;
