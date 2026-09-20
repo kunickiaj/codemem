@@ -346,22 +346,17 @@ describe("Sharing app data refresh", () => {
 	});
 });
 describe("Sharing app data refresh", () => {
-	it("keeps Advanced Sync navigation available during the first loading render", () => {
+	it("preserves the Sharing loading state without legacy navigation plumbing", () => {
 		document.body.innerHTML = '<div id="recipientPolicySharingMount"></div>';
 		const pendingProjects = deferred<{ manageable: typeof projects; received: [] }>();
-		const onNavigateAdvancedSync = vi.fn();
 		const mountSharing = vi.fn();
-		createRecipientPolicySharingLoader(
-			{
-				loadProjects: vi.fn(() => pendingProjects.promise),
-				mountSharing,
-			},
-			{ onNavigateAdvancedSync },
-		)();
+		createRecipientPolicySharingLoader({
+			loadProjects: vi.fn(() => pendingProjects.promise),
+			mountSharing,
+		})();
 
-		expect(mountSharing.mock.calls.at(-1)?.[3]).toEqual(
-			expect.objectContaining({ loading: true, onNavigateAdvancedSync }),
-		);
+		expect(mountSharing.mock.calls.at(-1)?.[3]).toEqual(expect.objectContaining({ loading: true }));
+		expect(mountSharing.mock.calls.at(-1)?.[3]).not.toHaveProperty("onNavigateAdvancedSync");
 	});
 });
 describe("Sharing app data refresh", () => {
