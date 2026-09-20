@@ -685,17 +685,14 @@ describe("Devices app integration", () => {
 	});
 
 	it("joins runtime metadata only from the matched paired peer", () => {
-		const cards = [...document.querySelectorAll<HTMLElement>("#tab-devices article")];
-		const workLaptop = cards.find(
-			(card) => card.querySelector("h3")?.textContent === "Work Laptop",
+		const workLaptop = document.getElementById("device-identity-card-device-private");
+		const coordinatorTablet = document.getElementById(
+			"device-identity-card-coordinator-only-device",
 		);
-		const coordinatorTablet = cards.find(
-			(card) => card.querySelector("h3")?.textContent === "Coordinator Tablet",
-		);
-		if (!workLaptop || !coordinatorTablet) throw new Error("Expected device cards missing");
+		if (!workLaptop || !coordinatorTablet) throw new Error("Expected device rows missing");
 
-		expect(workLaptop.textContent).toContain("Codemem version0.42.0");
-		expect(coordinatorTablet.textContent).not.toContain("Codemem version");
+		expect(workLaptop.querySelector(".devices-table-version")?.textContent).toBe("0.42.0");
+		expect(coordinatorTablet.querySelector(".devices-table-version")?.textContent).toBe("—");
 		expect(document.getElementById("tab-devices")?.textContent).not.toContain("9.9.9");
 	});
 

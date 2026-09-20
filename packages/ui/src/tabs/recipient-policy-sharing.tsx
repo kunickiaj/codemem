@@ -769,68 +769,71 @@ function ReceivedView({ received }: { received: ReceivedProjectShare[] }) {
 	);
 }
 
-function RecipientPolicySharing({
-	intent,
-	options,
-	projects,
-}: {
-	intent: RecipientPolicyIntentGraphV1;
-	options: RecipientPolicySharingOptions;
-	projects: RecipientPolicyManagementProject[];
-}) {
-	const [activeTab, setActiveTab] = useState<SharingTab>(() =>
-		intent.teams.some((team) => team.status === "active") ? "teams" : "identities",
-	);
-	const explicitSelection = useRef(false);
-	useSharingNavigation((tab) => {
-		explicitSelection.current = true;
-		setActiveTab(tab);
-	});
-	const initialSelectionPending = useRef(options.loading === true || options.loadError === true);
-	const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
-	const setupAttentionItems = deviceIdentityAttentionItems(options.deviceInventory);
-	const setupAttentionCount = setupAttentionItems.length;
-	const reconciliationIssueCount = options.coordinatorEnrollmentIssueCount ?? 0;
-	const hasActiveTeams = intent.teams.some((team) => team.status === "active");
-	useEffect(() => {
-		if (initialSelectionPending.current && !options.loading && !options.loadError) {
-			initialSelectionPending.current = false;
-			setActiveTab(hasActiveTeams ? "teams" : "identities");
-			return;
-		}
-		if (!hasActiveTeams && !explicitSelection.current) {
-			setActiveTab((current) => (current === "teams" ? "identities" : current));
-		}
-	}, [hasActiveTeams, options.loadError, options.loading]);
-
-	const activateTab = (index: number) => {
-		const tab = SHARING_TABS[index];
-		if (!tab) return;
-		explicitSelection.current = true;
-		setActiveTab(tab.id);
-		tabRefs.current[index]?.focus();
-	};
-	const handleTabKeyDown = (event: KeyboardEvent, index: number) => {
-		let nextIndex: number | null = null;
-		if (event.key === "ArrowRight") nextIndex = (index + 1) % SHARING_TABS.length;
-		else if (event.key === "ArrowLeft") {
-			nextIndex = (index - 1 + SHARING_TABS.length) % SHARING_TABS.length;
-		} else if (event.key === "Home") nextIndex = 0;
-		else if (event.key === "End") nextIndex = SHARING_TABS.length - 1;
-		if (nextIndex === null) return;
-		event.preventDefault();
-		activateTab(nextIndex);
-	};
-
+function SharingDeviceAttention({ options }: { options: RecipientPolicySharingOptions }) {
+	const items = deviceIdentityAttentionItems(options.deviceInventory);
+	if (items.length === 0 || options.deviceInventoryUnavailable) return null;
 	return (
-		<section className="recipient-policy-sharing recipient-policy-sharing-responsive-surface">
-			<header className="recipient-policy-sharing-header">
-				<h2>Sharing</h2>
-				<p className="small">
-					See who receives Projects, how Team membership carries Project access, and where to make
-					changes.
-				</p>
-			</header>
+		<aside
+			aria-labelledby="sharing-device-setup-heading"
+			className="peer-card peer-card--padded recipient-policy-sharing-attention"
+		>
+			<h3 id="sharing-device-setup-heading">Identity setup needed</h3>
+			<p>
+				{items.length.toLocaleString()} {items.length === 1 ? "device needs" : "devices need"}{" "}
+				setup, pairing, or review before ownership can be shown accurately.
+			</p>
+			<p className="small">
+				Identity setup records device ownership only. It does not grant Projects, Team membership,
+				or sync access.
+			</p>
+			{options.onReviewDevices ? (
+				<button
+					className="settings-button recipient-policy-sharing-target-24"
+					onClick={() => options.onReviewDevices?.(items[0]?.deviceId)}
+					type="button"
+				>
+					Review devices
+				</button>
+			) : null}
+		</aside>
+	);
+}
+
+function SharingCoordinatorAttention({ options }: { options: RecipientPolicySharingOptions }) {
+	const count = options.coordinatorEnrollmentIssueCount ?? 0;
+	if (count <= 0) return null;
+	return (
+		<aside
+			aria-labelledby="sharing-coordinator-reconciliation-heading"
+			className="peer-card peer-card--padded recipient-policy-sharing-attention"
+		>
+			<h3 id="sharing-coordinator-reconciliation-heading">
+				Device setup reconciliation needs attention
+			</h3>
+			<p>
+				{count.toLocaleString()} coordinator enrollment{count === 1 ? " could" : "s could"} not be
+				safely reconciled. Sharing remains unchanged until the device evidence is valid.
+			</p>
+			<p className="small">
+				Coordinator groups are discovery boundaries, not policy Teams, and do not prove device
+				ownership.
+			</p>
+			{options.onReviewDevices ? (
+				<button
+					className="settings-button recipient-policy-sharing-target-24"
+					onClick={() => options.onReviewDevices?.()}
+					type="button"
+				>
+					Review devices
+				</button>
+			) : null}
+		</aside>
+	);
+}
+
+function SharingStatusNotices({ options }: { options: RecipientPolicySharingOptions }) {
+	return (
+		<>
 			<TeamSetupOverview
 				candidates={options.teamSetupSummary?.candidates ?? []}
 				onOpenTeamSetup={options.onOpenTeamSetup}
@@ -853,60 +856,8 @@ function RecipientPolicySharing({
 					shown until a refresh succeeds.
 				</p>
 			) : null}
-			{setupAttentionCount > 0 && !options.deviceInventoryUnavailable ? (
-				<aside
-					aria-labelledby="sharing-device-setup-heading"
-					className="peer-card peer-card--padded recipient-policy-sharing-attention"
-				>
-					<h3 id="sharing-device-setup-heading">Identity setup needed</h3>
-					<p>
-						{setupAttentionCount.toLocaleString()}{" "}
-						{setupAttentionCount === 1 ? "device needs" : "devices need"} setup, pairing, or review
-						before ownership can be shown accurately.
-					</p>
-					<p className="small">
-						Identity setup records device ownership only. It does not grant Projects, Team
-						membership, or sync access.
-					</p>
-					{options.onReviewDevices ? (
-						<button
-							className="settings-button recipient-policy-sharing-target-24"
-							onClick={() => options.onReviewDevices?.(setupAttentionItems[0]?.deviceId)}
-							type="button"
-						>
-							Review devices
-						</button>
-					) : null}
-				</aside>
-			) : null}
-			{reconciliationIssueCount > 0 ? (
-				<aside
-					aria-labelledby="sharing-coordinator-reconciliation-heading"
-					className="peer-card peer-card--padded recipient-policy-sharing-attention"
-				>
-					<h3 id="sharing-coordinator-reconciliation-heading">
-						Device setup reconciliation needs attention
-					</h3>
-					<p>
-						{reconciliationIssueCount.toLocaleString()} coordinator enrollment
-						{reconciliationIssueCount === 1 ? " could" : "s could"} not be safely reconciled.
-						Sharing remains unchanged until the device evidence is valid.
-					</p>
-					<p className="small">
-						Coordinator groups are discovery boundaries, not policy Teams, and do not prove device
-						ownership.
-					</p>
-					{options.onReviewDevices ? (
-						<button
-							className="settings-button recipient-policy-sharing-target-24"
-							onClick={() => options.onReviewDevices?.()}
-							type="button"
-						>
-							Review devices
-						</button>
-					) : null}
-				</aside>
-			) : null}
+			<SharingDeviceAttention options={options} />
+			<SharingCoordinatorAttention options={options} />
 			{options.refreshError ? (
 				<p
 					aria-live="assertive"
@@ -917,6 +868,45 @@ function RecipientPolicySharing({
 					disabled until a refresh succeeds.
 				</p>
 			) : null}
+		</>
+	);
+}
+
+function SharingNavigation({
+	activeTab,
+	intent,
+	onActivateTab,
+	onSelectTab,
+	options,
+	projects,
+}: {
+	activeTab: SharingTab;
+	intent: RecipientPolicyIntentGraphV1;
+	onActivateTab: (tab: SharingTab) => void;
+	onSelectTab: (tab: SharingTab) => void;
+	options: RecipientPolicySharingOptions;
+	projects: RecipientPolicyManagementProject[];
+}) {
+	const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+	const activateTab = (index: number) => {
+		const tab = SHARING_TABS[index];
+		if (!tab) return;
+		onActivateTab(tab.id);
+		tabRefs.current[index]?.focus();
+	};
+	const handleTabKeyDown = (event: KeyboardEvent, index: number) => {
+		let nextIndex: number | null = null;
+		if (event.key === "ArrowRight") nextIndex = (index + 1) % SHARING_TABS.length;
+		else if (event.key === "ArrowLeft")
+			nextIndex = (index - 1 + SHARING_TABS.length) % SHARING_TABS.length;
+		else if (event.key === "Home") nextIndex = 0;
+		else if (event.key === "End") nextIndex = SHARING_TABS.length - 1;
+		if (nextIndex === null) return;
+		event.preventDefault();
+		activateTab(nextIndex);
+	};
+	return (
+		<>
 			<div
 				aria-label="Sharing views"
 				className="recipient-policy-sharing-tabs recipient-policy-sharing-responsive-tabs"
@@ -929,7 +919,7 @@ function RecipientPolicySharing({
 						className={`tab-btn recipient-policy-sharing-tab recipient-policy-sharing-target recipient-policy-sharing-target-24${activeTab === tab.id ? " active" : ""}`}
 						id={`recipient-policy-sharing-tab-${tab.id}`}
 						key={tab.id}
-						onClick={() => setActiveTab(tab.id)}
+						onClick={() => onSelectTab(tab.id)}
 						onKeyDown={(event) => handleTabKeyDown(event, index)}
 						ref={(element) => {
 							tabRefs.current[index] = element;
@@ -953,6 +943,63 @@ function RecipientPolicySharing({
 					/>
 				</SharingTabPanel>
 			))}
+		</>
+	);
+}
+
+function RecipientPolicySharing({
+	intent,
+	options,
+	projects,
+}: {
+	intent: RecipientPolicyIntentGraphV1;
+	options: RecipientPolicySharingOptions;
+	projects: RecipientPolicyManagementProject[];
+}) {
+	const [activeTab, setActiveTab] = useState<SharingTab>(() =>
+		intent.teams.some((team) => team.status === "active") ? "teams" : "identities",
+	);
+	const explicitSelection = useRef(false);
+	useSharingNavigation((tab) => {
+		explicitSelection.current = true;
+		setActiveTab(tab);
+	});
+	const initialSelectionPending = useRef(options.loading === true || options.loadError === true);
+	const hasActiveTeams = intent.teams.some((team) => team.status === "active");
+	useEffect(() => {
+		if (initialSelectionPending.current && !options.loading && !options.loadError) {
+			initialSelectionPending.current = false;
+			setActiveTab(hasActiveTeams ? "teams" : "identities");
+			return;
+		}
+		if (!hasActiveTeams && !explicitSelection.current) {
+			setActiveTab((current) => (current === "teams" ? "identities" : current));
+		}
+	}, [hasActiveTeams, options.loadError, options.loading]);
+
+	const activateTab = (tab: SharingTab) => {
+		explicitSelection.current = true;
+		setActiveTab(tab);
+	};
+
+	return (
+		<section className="recipient-policy-sharing recipient-policy-sharing-responsive-surface">
+			<header className="recipient-policy-sharing-header">
+				<h2>Sharing</h2>
+				<p className="small">
+					See who receives Projects, how Team membership carries Project access, and where to make
+					changes.
+				</p>
+			</header>
+			<SharingStatusNotices options={options} />
+			<SharingNavigation
+				activeTab={activeTab}
+				intent={intent}
+				onActivateTab={activateTab}
+				onSelectTab={setActiveTab}
+				options={options}
+				projects={projects}
+			/>
 		</section>
 	);
 }

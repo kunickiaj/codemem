@@ -286,9 +286,13 @@ describe("received project sources", () => {
 	);
 });
 
-function testRecipientFocusedSharing() {
+function registerRecipientFocusedSharingLifecycle(): void {
 	beforeEach(setupSharingMount);
 	afterEach(cleanupSharingMount);
+}
+
+function testRecipientFocusedNavigation() {
+	registerRecipientFocusedSharingLifecycle();
 
 	it("renders all four accessible views and recipient-aware invitation controls", () => {
 		mount();
@@ -381,6 +385,12 @@ function testRecipientFocusedSharing() {
 		expect(document.body.textContent).not.toContain("Identity setup needed");
 		expect(document.body.textContent).not.toContain("Review Devices");
 	});
+}
+
+describe("recipient-focused Sharing navigation", testRecipientFocusedNavigation);
+
+function testRecipientFocusedSetupAndKeyboard() {
+	registerRecipientFocusedSharingLifecycle();
 
 	it("counts only the same nonconfigured inventory states that Devices sends to setup", () => {
 		const item = (
@@ -467,6 +477,12 @@ function testRecipientFocusedSharing() {
 		});
 		expect(document.activeElement).toBe(tab("Teams"));
 	});
+}
+
+describe("recipient-focused Sharing setup", testRecipientFocusedSetupAndKeyboard);
+
+function testRecipientFocusedTeamViews() {
+	registerRecipientFocusedSharingLifecycle();
 
 	it("shows Team members, current devices, shared Projects, and future-member inheritance", () => {
 		mount();
@@ -550,6 +566,12 @@ function testRecipientFocusedSharing() {
 		expect(disclosure?.querySelector("summary")?.textContent).toBe("View all 4 members");
 		expect(disclosure?.querySelector("ul")?.getAttribute("role")).toBe("list");
 	});
+}
+
+describe("recipient-focused Sharing Team views", testRecipientFocusedTeamViews);
+
+function testRecipientFocusedIdentityViews() {
+	registerRecipientFocusedSharingLifecycle();
 
 	it("does not infer per-Identity Team access from membership intent", () => {
 		mount();
@@ -615,6 +637,12 @@ function testRecipientFocusedSharing() {
 		expect(document.body.outerHTML).not.toContain(privatePath);
 		expect(document.body.outerHTML).not.toContain(privateRemote);
 	});
+}
+
+describe("recipient-focused Sharing Identity views", testRecipientFocusedIdentityViews);
+
+function testRecipientFocusedRecipientActions() {
+	registerRecipientFocusedSharingLifecycle();
 
 	it("opens exact recipient management requests from both action labels", () => {
 		mount();
@@ -710,6 +738,12 @@ function testRecipientFocusedSharing() {
 		act(() => done?.click());
 		await vi.waitFor(() => expect(document.activeElement).toBe(trigger));
 	});
+}
+
+describe("recipient-focused Sharing recipient actions", testRecipientFocusedRecipientActions);
+
+function testRecipientFocusedTeamValidation() {
+	registerRecipientFocusedSharingLifecycle();
 
 	it("validates Team names before save without exposing identifiers", () => {
 		const renameTeam = vi.fn();
@@ -806,6 +840,12 @@ function testRecipientFocusedSharing() {
 		);
 		expect(document.body.textContent).not.toContain("team_link_ambiguous");
 	});
+}
+
+describe("recipient-focused Sharing Team validation", testRecipientFocusedTeamValidation);
+
+function testRecipientFocusedStates() {
+	registerRecipientFocusedSharingLifecycle();
 
 	it("renders loading, error, and empty states with live-region semantics", () => {
 		mount(intent(), { loading: true });
@@ -872,6 +912,12 @@ function testRecipientFocusedSharing() {
 		);
 		expect(visiblePanel().getAttribute("tabindex")).toBe("0");
 	});
+}
+
+describe("recipient-focused Sharing states", testRecipientFocusedStates);
+
+function testRecipientFocusedAttention() {
+	registerRecipientFocusedSharingLifecycle();
 
 	it("surfaces device setup attention without implying access and links to Devices", () => {
 		const onReviewDevices = vi.fn();
@@ -930,6 +976,12 @@ function testRecipientFocusedSharing() {
 		act(() => reviewButton?.click());
 		expect(onReviewDevices).toHaveBeenCalledOnce();
 	});
+}
+
+describe("recipient-focused Sharing attention", testRecipientFocusedAttention);
+
+function testRecipientFocusedMigration() {
+	registerRecipientFocusedSharingLifecycle();
 
 	it("renders migration-specific statuses and opens the selected opaque candidate", () => {
 		const onOpenTeamSetup = vi.fn();
@@ -1001,6 +1053,12 @@ function testRecipientFocusedSharing() {
 		act(() => buttons[1]?.click());
 		expect(onOpenTeamSetup).toHaveBeenCalledWith("candidate-progress");
 	});
+}
+
+describe("recipient-focused Sharing migration", testRecipientFocusedMigration);
+
+function testRecipientFocusedMigrationGroups() {
+	registerRecipientFocusedSharingLifecycle();
 
 	it("groups duplicate Team labels into compact rows with unique safe setup actions", () => {
 		// Arrange
@@ -1090,6 +1148,12 @@ function testRecipientFocusedSharing() {
 		expect(document.body.textContent).not.toContain("Team setup status is being refreshed");
 		expect(document.body.textContent).not.toContain("previous Team setup status");
 	});
+}
+
+describe("recipient-focused Sharing migration groups", testRecipientFocusedMigrationGroups);
+
+function testRecipientFocusedMigrationFallbacks() {
+	registerRecipientFocusedSharingLifecycle();
 
 	it("labels first-load Team setup discovery as loading without claiming stale status", () => {
 		mount(intent(), { teamSetupLoading: true });
@@ -1194,4 +1258,4 @@ function testRecipientFocusedSharing() {
 	});
 }
 
-describe("recipient-focused Sharing", testRecipientFocusedSharing);
+describe("recipient-focused Sharing migration fallbacks", testRecipientFocusedMigrationFallbacks);
