@@ -170,6 +170,18 @@ describe("session card generated body fallbacks", () => {
 
 		expect(model.modes.map((mode) => mode.id)).not.toContain("narrative");
 	});
+
+	it("keeps unmatched imported body text available to search", () => {
+		const model = buildFeedCardViewModel({
+			body_text: "Imported orchard detail",
+			kind: "session_summary",
+			narrative: "Explicit session narrative",
+			summary: { outcome: "Completed migration" },
+			title: "Migration work",
+		});
+
+		expect(hiddenSearchMatch(model, "orchard")).toMatchObject({ label: "Body" });
+	});
 });
 
 describe("feed card clipped search matches", () => {
@@ -184,5 +196,13 @@ describe("feed card clipped search matches", () => {
 
 		expect(hiddenSearchMatch(titleModel, "orchard")).toMatchObject({ label: "Title" });
 		expect(hiddenSearchMatch(summaryModel, "coordinator")).toMatchObject({ label: "Summary" });
+	});
+
+	it("uses a narrower visible prefix at phone widths", () => {
+		const model = buildFeedCardViewModel({
+			title: "A moderately long title whose orchard match clips on a phone",
+		});
+
+		expect(hiddenSearchMatch(model, "orchard", 24)).toMatchObject({ label: "Title" });
 	});
 });

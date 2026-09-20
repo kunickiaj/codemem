@@ -18,6 +18,7 @@ import {
 	type FeedCardMode,
 	hiddenSearchMatch,
 	preferredAvailableMode,
+	visibleSkimPrefixLength,
 } from "../data/card-view-model";
 import {
 	authorLabel,
@@ -151,7 +152,11 @@ export function FeedItemCard({
 	const memoryId = Number(item.id || item.memory_id || 0);
 	const detailId = `feed-detail-${model.rowKey.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
 	const activeModeData = model.modes.find((mode) => mode.id === activeMode);
-	const searchMatch = hiddenSearchMatch(model, state.feedQuery);
+	const searchMatch = hiddenSearchMatch(
+		model,
+		state.feedQuery,
+		visibleSkimPrefixLength(globalThis.innerWidth),
+	);
 	const ownedBySelf = isOwnedBySelf(item);
 	const hasSupplementalDetail = Boolean(
 		model.files.length || workspaceKind || originSource || device,

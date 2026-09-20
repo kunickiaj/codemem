@@ -85,7 +85,18 @@ function buildSessionContent(item: FeedItem, displayTitle: string): ContentView 
 	if (data.hasSummary) modes.push(markdownMode("summary", data.summaryDetail));
 	if (data.hasFacts) modes.push(sessionFactsMode(data.facts));
 	if (data.hasNarrative) modes.push(markdownMode("narrative", data.narrative));
-	return { modes, searchOnlyText: "", skimSummary: data.skimSummary };
+	const bodyText = String(item.body_text || "").trim();
+	const renderedSearchText = normalize(modes.map((mode) => mode.searchText).join("\n"));
+	const hasUnrenderedBodyLine = bodyText
+		.split("\n")
+		.map((line) => line.trim())
+		.filter((line) => line && !/^#{1,6}\s+/.test(line))
+		.some((line) => !renderedSearchText.includes(normalize(line)));
+	return {
+		modes,
+		searchOnlyText: hasUnrenderedBodyLine ? bodyText : "",
+		skimSummary: data.skimSummary,
+	};
 }
 
 export function buildFeedCardViewModel(item: FeedItem): FeedCardViewModel {
@@ -137,26 +148,31 @@ function excerptAroundMatch(text: string, query: string): string {
 	return `${start > 0 ? "…" : ""}${collapsed.slice(start, end)}${end < collapsed.length ? "…" : ""}`;
 }
 
-const VISIBLE_SKIM_PREFIX_LENGTH = 80;
+export function visibleSkimPrefixLength(viewportWidth: number): number {
+	if (viewportWidth <= 520) return 24;
+	if (viewportWidth <= 755) return 40;
+	return 80;
+}
 
-function clippedSkimMatch(text: string, query: string, label: string) {
+function clippedSkimMatch(text: string, query: string, label: string, visiblePrefixLength: number) {
 	const collapsed = text.replace(/\s+/g, " ").trim();
 	const index = collapsed.toLocaleLowerCase().indexOf(query.toLocaleLowerCase());
-	if (index < VISIBLE_SKIM_PREFIX_LENGTH) return null;
+	if (index < visiblePrefixLength) return null;
 	return { excerpt: excerptAroundMatch(collapsed, query), label, mode: null };
 }
 
 export function hiddenSearchMatch(
 	model: FeedCardViewModel,
 	query: string,
+	visiblePrefixLength = 80,
 ): { excerpt: string; label: string; mode: ItemViewMode | null } | null {
 	const trimmedQuery = query.trim();
 	if (!trimmedQuery) return null;
 	if (includesQuery(model.displayTitle, trimmedQuery)) {
-		return clippedSkimMatch(model.displayTitle, trimmedQuery, "Title");
+		return clippedSkimMatch(model.displayTitle, trimmedQuery, "Title", visiblePrefixLength);
 	}
 	if (includesQuery(model.skimSummary, trimmedQuery)) {
-		return clippedSkimMatch(model.skimSummary, trimmedQuery, "Summary");
+		return clippedSkimMatch(model.skimSummary, trimmedQuery, "Summary", visiblePrefixLength);
 	}
 	for (const mode of model.modes) {
 		if (!includesQuery(mode.searchText, trimmedQuery)) continue;
