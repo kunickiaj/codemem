@@ -47,6 +47,22 @@ describe("needsCoordinatorGroupReview", () => {
 	});
 });
 
+it("reveals the initially hidden join controls without coordinator configuration", () => {
+	document.body.innerHTML = `
+		<div id="syncTeamMeta"></div>
+		<div id="syncSetupPanel" hidden><div id="syncJoinSection">
+			<div id="syncJoinPanel" hidden><textarea id="syncJoinInvite"></textarea><button id="syncJoinButton">Review invite</button></div>
+		</div></div>
+		<div id="syncTeamActions"></div>`;
+	state.lastSyncCoordinator = { configured: false };
+	state.lastSyncStatus = { enabled: true };
+	state.lastSyncPeers = [];
+	act(() => renderTeamSync());
+	expect(document.getElementById("syncSetupPanel")?.hidden).toBe(false);
+	expect(document.getElementById("syncJoinPanel")?.hidden).toBe(false);
+	expect(document.getElementById("syncJoinInvite")?.isConnected).toBe(true);
+});
+
 function renderStatus(primaryStatus: UiTeamSyncPrimaryStatus) {
 	const badge = document.createElement("span");
 	const meta = document.createElement("div");

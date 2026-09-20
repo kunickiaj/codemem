@@ -124,6 +124,24 @@ function teardownTeamSyncRender(actions: HTMLElement | null, targets: Array<HTML
 	});
 }
 
+function renderUnconfiguredSetup(input: {
+	actions: HTMLElement;
+	setupPanel: HTMLElement;
+	primaryStatus: UiTeamSyncPrimaryStatus;
+}) {
+	const joinPanel = document.getElementById("syncJoinPanel");
+	const joinRequests = document.getElementById("syncJoinRequests");
+	const discoveredPanel = document.getElementById("syncCoordinatorDiscovered");
+	const discoveredList = document.getElementById("syncCoordinatorDiscoveredList");
+	teardownTeamSyncRender(input.actions, [joinRequests, discoveredList]);
+	input.setupPanel.hidden = false;
+	if (joinPanel) joinPanel.hidden = false;
+	input.actions.hidden = false;
+	renderPrimaryActionOnly(input.actions, input.primaryStatus);
+	if (joinRequests) joinRequests.hidden = true;
+	if (discoveredPanel) discoveredPanel.hidden = true;
+}
+
 export function renderTeamSync() {
 	const meta = document.getElementById("syncTeamMeta");
 	const setupPanel = document.getElementById("syncSetupPanel");
@@ -276,12 +294,11 @@ export function renderTeamSync() {
 	}
 
 	if (!configured) {
-		teardownTeamSyncRender(actions, [joinRequests, discoveredList]);
-		setupPanel.hidden = false;
-		actions.hidden = false;
-		renderPrimaryActionOnly(actions, syncView.primaryStatus);
-		if (joinRequests) joinRequests.hidden = true;
-		if (discoveredPanel) discoveredPanel.hidden = true;
+		renderUnconfiguredSetup({
+			actions,
+			setupPanel,
+			primaryStatus: syncView.primaryStatus,
+		});
 		return;
 	}
 
