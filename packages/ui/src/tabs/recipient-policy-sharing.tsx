@@ -761,7 +761,11 @@ function DeviceSetupStatus({ options }: { options: RecipientPolicySharingOptions
 			<h3 id="sharing-device-setup-heading">Identity setup needed</h3>
 			<p>
 				{items.length.toLocaleString()} {items.length === 1 ? "device needs" : "devices need"}{" "}
-				setup, pairing, or review before ownership can be shown.
+				setup, pairing, or review before ownership can be shown accurately.
+			</p>
+			<p className="small">
+				Identity setup records device ownership only. It does not grant Projects, Team membership,
+				or sync access.
 			</p>
 			{options.onReviewDevices ? (
 				<button
@@ -789,7 +793,11 @@ function ReconciliationStatus({ options }: { options: RecipientPolicySharingOpti
 			</h3>
 			<p>
 				{count.toLocaleString()} coordinator enrollment{count === 1 ? " needs" : "s need"} device
-				review.
+				review. Sharing remains unchanged until the device evidence is valid.
+			</p>
+			<p className="small">
+				Coordinator groups are discovery boundaries, not policy Teams, and do not prove device
+				ownership.
 			</p>
 			{options.onReviewDevices ? (
 				<button
@@ -832,7 +840,7 @@ function RecipientPolicySharing({
 	useEffect(() => {
 		if (initialSelectionPending.current && !options.loading && !options.loadError) {
 			initialSelectionPending.current = false;
-			setActiveTab(hasActiveTeams ? "teams" : "identities");
+			if (!explicitSelection.current) setActiveTab(hasActiveTeams ? "teams" : "identities");
 			return;
 		}
 		if (!hasActiveTeams && !explicitSelection.current) {

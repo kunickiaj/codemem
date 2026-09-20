@@ -777,10 +777,10 @@ function testRecipientFocusedRecipientActionsAndDialog() {
 	});
 }
 
-	describe(
-		"recipient-focused Sharing recipient actions",
-		testRecipientFocusedRecipientActionsAndDialog,
-	);
+describe(
+	"recipient-focused Sharing recipient actions",
+	testRecipientFocusedRecipientActionsAndDialog,
+);
 
 function testRecipientFocusedTeamValidation() {
 	registerRecipientFocusedSharingLifecycle();
@@ -1292,4 +1292,4 @@ function testRecipientFocusedMigrationSurface() {
 	});
 }
 
-	describe("recipient-focused Sharing migration surface", testRecipientFocusedMigrationSurface);
+describe("recipient-focused Sharing migration surface", testRecipientFocusedMigrationSurface);
