@@ -1094,19 +1094,7 @@ describe("recipient-policy invitations", () => {
 		expect(dialog.textContent).not.toContain(code);
 	});
 
-	it("uses the shared labelled close-button structure", () => {
-		mount();
-		act(() => button("Review invitation").click());
-		const dialog = document.querySelector('[role="dialog"]');
-		const closeButton = dialog?.querySelector<HTMLButtonElement>(".modal-close-button");
-		if (!closeButton) throw new Error("shared close button missing");
-		expect(closeButton.getAttribute("aria-label")).toBe("Close invitation");
-		expect(closeButton.querySelector(".modal-close-button-icon")?.getAttribute("data-lucide")).toBe(
-			"x",
-		);
-		expect(closeButton.querySelector(".modal-close-button-label")?.textContent).toBe("Close");
-		expect(closeButton.textContent).not.toContain("×");
-	});
+	it("uses the shared labelled close-button structure", verifiesCloseButtonStructure);
 
 	it("moves focus to the heading and restores it after Radix keyboard close", () => {
 		mount();
@@ -1157,4 +1145,18 @@ async function verifiesLegacyImportRouting() {
 	);
 	expect(dialog.textContent).not.toContain("coordinator administration");
 	expect(api.importCoordinatorInvite).not.toHaveBeenCalled();
+}
+
+function verifiesCloseButtonStructure() {
+	mount();
+	act(() => button("Review invitation").click());
+	const dialog = document.querySelector('[role="dialog"]');
+	const closeButton = dialog?.querySelector<HTMLButtonElement>(".modal-close-button");
+	if (!closeButton) throw new Error("shared close button missing");
+	expect(closeButton.getAttribute("aria-label")).toBe("Close invitation");
+	expect(closeButton.querySelector(".modal-close-button-icon")?.getAttribute("data-lucide")).toBe(
+		"x",
+	);
+	expect(closeButton.querySelector(".modal-close-button-label")?.textContent).toBe("Close");
+	expect(closeButton.textContent).not.toContain("×");
 }
