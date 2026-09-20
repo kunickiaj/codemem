@@ -190,6 +190,13 @@ function TeamSetupOverview({
 
 type SharingTab = "teams" | "identities" | "received" | "invitations";
 
+let pendingSharingTab: SharingTab | null = null;
+
+export function requestSharingNavigation(tab: SharingTab): void {
+	pendingSharingTab = tab;
+	window.dispatchEvent(new CustomEvent("codemem:navigate-sharing", { detail: tab }));
+}
+
 const SHARING_TABS: Array<{ id: SharingTab; label: string }> = [
 	{ id: "teams", label: "Teams" },
 	{ id: "identities", label: "Identities" },
@@ -201,9 +208,16 @@ function useSharingNavigation(setActiveTab: (tab: SharingTab) => void): void {
 	useEffect(() => {
 		const navigate = (event: Event) => {
 			const tab = (event as CustomEvent<SharingTab>).detail;
-			if (SHARING_TABS.some((candidate) => candidate.id === tab)) setActiveTab(tab);
+			if (!SHARING_TABS.some((candidate) => candidate.id === tab)) return;
+			pendingSharingTab = null;
+			setActiveTab(tab);
 		};
 		window.addEventListener("codemem:navigate-sharing", navigate);
+		if (pendingSharingTab) {
+			const tab = pendingSharingTab;
+			pendingSharingTab = null;
+			setActiveTab(tab);
+		}
 		return () => window.removeEventListener("codemem:navigate-sharing", navigate);
 	}, [setActiveTab]);
 }
@@ -767,7 +781,11 @@ function RecipientPolicySharing({
 	const [activeTab, setActiveTab] = useState<SharingTab>(() =>
 		intent.teams.some((team) => team.status === "active") ? "teams" : "identities",
 	);
-	useSharingNavigation(setActiveTab);
+	const explicitSelection = useRef(false);
+	useSharingNavigation((tab) => {
+		explicitSelection.current = true;
+		setActiveTab(tab);
+	});
 	const initialSelectionPending = useRef(options.loading === true || options.loadError === true);
 	const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
 	const setupAttentionItems = deviceIdentityAttentionItems(options.deviceInventory);
@@ -780,12 +798,15 @@ function RecipientPolicySharing({
 			setActiveTab(hasActiveTeams ? "teams" : "identities");
 			return;
 		}
-		if (!hasActiveTeams) setActiveTab((current) => (current === "teams" ? "identities" : current));
+		if (!hasActiveTeams && !explicitSelection.current) {
+			setActiveTab((current) => (current === "teams" ? "identities" : current));
+		}
 	}, [hasActiveTeams, options.loadError, options.loading]);
 
 	const activateTab = (index: number) => {
 		const tab = SHARING_TABS[index];
 		if (!tab) return;
+		explicitSelection.current = true;
 		setActiveTab(tab.id);
 		tabRefs.current[index]?.focus();
 	};

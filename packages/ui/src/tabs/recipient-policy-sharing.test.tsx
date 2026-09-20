@@ -57,7 +57,7 @@ import type {
 } from "../lib/api/sync";
 import { RecipientPolicyTeamRenameApiError } from "../lib/api/sync";
 import type { RecipientPolicyManagementProject } from "./recipient-policy-management";
-import { mountRecipientPolicySharing } from "./recipient-policy-sharing";
+import { mountRecipientPolicySharing, requestSharingNavigation } from "./recipient-policy-sharing";
 import { deriveTeamSyncPrimaryStatus } from "./sync/view-model";
 
 const projects: RecipientPolicyManagementProject[] = [
@@ -337,6 +337,13 @@ function testRecipientFocusedSharing() {
 		act(() => {
 			window.dispatchEvent(new CustomEvent("codemem:navigate-sharing", { detail: "teams" }));
 		});
+
+		expect(tab("Teams").getAttribute("aria-selected")).toBe("true");
+	});
+
+	it("keeps a Teams request made before Sharing mounts", () => {
+		requestSharingNavigation("teams");
+		mount(intent({ teams: [] }));
 
 		expect(tab("Teams").getAttribute("aria-selected")).toBe("true");
 	});

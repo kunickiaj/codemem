@@ -1956,9 +1956,7 @@ it.each([
 				(status) => status.textContent === expectedStatus,
 			),
 		).toBe(true);
-		expect(document.activeElement?.id).toBe(
-			"configured-rebind-trigger-device-address-fingerprint-secret",
-		);
+		expect(document.activeElement?.id).toBe("device-actions-device-address-fingerprint-secret");
 		expect(document.querySelector(".device-identity-rebind fieldset")).toBeNull();
 	},
 );
