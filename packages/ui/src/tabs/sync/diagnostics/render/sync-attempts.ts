@@ -100,6 +100,8 @@ export function renderSyncAttempts() {
 }
 
 export function renderSyncDiagnosticsUnavailable() {
+	const primaryDetail = document.getElementById("syncPrimaryStatusDetail");
+	if (primaryDetail) primaryDetail.textContent = "";
 	const syncStatusGrid = document.getElementById("syncStatusGrid");
 	const syncAttempts = document.getElementById("syncAttempts");
 	const syncMeta = document.getElementById("syncMeta");

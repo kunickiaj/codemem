@@ -5,7 +5,11 @@ const openDiagnosticsDrawer = vi.hoisted(() => vi.fn());
 
 vi.mock("../../../../components/diagnostics", () => ({ openDiagnosticsDrawer }));
 
-import { renderSyncAttempts, shouldShowSyncAttemptRedactionHint } from "./sync-attempts";
+import {
+	renderSyncAttempts,
+	renderSyncDiagnosticsUnavailable,
+	shouldShowSyncAttemptRedactionHint,
+} from "./sync-attempts";
 
 afterEach(() => {
 	document.body.innerHTML = "";
@@ -49,6 +53,11 @@ describe("shouldShowSyncAttemptRedactionHint", () => {
 });
 
 describe("renderSyncAttempts", () => {
+	it("clears stale primary status details after diagnostics fail", () => {
+		document.body.innerHTML = '<div id="syncPrimaryStatusDetail">Previously connected</div>';
+		renderSyncDiagnosticsUnavailable();
+		expect(document.getElementById("syncPrimaryStatusDetail")?.textContent).toBe("");
+	});
 	it("links redacted failed attempts to the Advanced diagnostics redaction setting", () => {
 		document.body.innerHTML = `<div id="syncAttempts"></div>`;
 		state.lastSyncAttempts = [
