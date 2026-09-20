@@ -175,7 +175,7 @@ function conditionalOutcome(
 	const routing = effectiveSetting("observerTierRoutingEnabled") === true;
 	if (controlId === "observerProvider" && sidecar)
 		return inactiveOutcome(controlId, "Local Claude and Codex sessions select their own provider");
-	if (controlId === "observerModel" && routing && !sidecar && hasBuiltInTierModels(provider)) {
+	if (controlId === "observerModel" && routing && tierModelsOverrideBase(runtime, provider)) {
 		return inactiveOutcome(
 			controlId,
 			"Tier models or built-in tier defaults take precedence over the base model",
@@ -217,10 +217,13 @@ function tierProvider(controlId: string, baseProvider: string): string {
 		.toLowerCase();
 }
 
-function hasBuiltInTierModels(baseProvider: string): boolean {
-	return ["observerSimpleModel", "observerRichModel"].every((controlId) =>
-		["openai", "anthropic"].includes(tierProvider(controlId, baseProvider)),
-	);
+function tierModelsOverrideBase(runtime: string, baseProvider: string): boolean {
+	if (runtime === "claude_sidecar") return true;
+	return ["observerSimpleModel", "observerRichModel"].every((controlId) => {
+		if (String(effectiveSetting(controlId) ?? "").trim()) return true;
+		if (runtime === "codex_sidecar") return false;
+		return ["openai", "anthropic"].includes(tierProvider(controlId, baseProvider));
+	});
 }
 
 function temperatureOutcome(

@@ -16,6 +16,29 @@ afterEach(() => {
 });
 
 describe("effective Settings outcomes", () => {
+	it.each(["claude_sidecar", "codex_sidecar"])(
+		"marks the base model inactive when %s uses tier models",
+		(runtime) => {
+			values({
+				observerRuntime: runtime,
+				observerProvider: "anthropic",
+				observerTierRoutingEnabled: true,
+				observerSimpleModel: "simple-model",
+				observerRichModel: "rich-model",
+			});
+			expect(settingsOutcomeFor("observerModel")?.scope).toBe("No current effect");
+		},
+	);
+	it("uses built-in Claude tier models when both overrides are empty", () => {
+		values({
+			observerRuntime: "claude_sidecar",
+			observerProvider: "anthropic",
+			observerTierRoutingEnabled: true,
+			observerSimpleModel: "",
+			observerRichModel: "",
+		});
+		expect(settingsOutcomeFor("observerModel")?.scope).toBe("No current effect");
+	});
 	it("keeps the Codex base model active when tier models fall back to it", () => {
 		values({
 			observerRuntime: "codex_sidecar",
