@@ -75,13 +75,14 @@ function searchableValue(value: unknown): string {
 	return value == null ? "" : String(value).trim();
 }
 
-function indexedSessionSearchText(item: FeedItem, renderedSearchText: string): string {
+function indexedMetadataSearchText(item: FeedItem, renderedSearchText: string): string {
 	const candidates = [
 		item.subtitle,
 		item.metadata_json?.subtitle,
 		searchableValue(item.facts),
 		searchableValue(item.metadata_json?.facts),
 		searchableValue(item.metadata_json?.summary),
+		searchableValue(item.metadata_json?.request),
 	];
 	return candidates
 		.map((candidate) => String(candidate || "").trim())
@@ -102,7 +103,15 @@ function buildObservationContent(item: FeedItem, displayTitle: string): ContentV
 		!modes.some((mode) => normalize(mode.searchText) === normalizedLegacyBody)
 			? data.legacyBody
 			: "";
-	return { modes, searchOnlyText, skimSummary };
+	const indexedSearchText = indexedMetadataSearchText(
+		item,
+		normalize(modes.map((mode) => mode.searchText).join("\n")),
+	);
+	return {
+		modes,
+		searchOnlyText: [searchOnlyText, indexedSearchText].filter(Boolean).join("\n"),
+		skimSummary,
+	};
 }
 
 function buildSessionContent(item: FeedItem, displayTitle: string): ContentView {
@@ -113,7 +122,7 @@ function buildSessionContent(item: FeedItem, displayTitle: string): ContentView 
 	if (data.hasNarrative) modes.push(markdownMode("narrative", data.narrative));
 	const bodyText = String(item.body_text || "").trim();
 	const renderedSearchText = normalize(modes.map((mode) => mode.searchText).join("\n"));
-	const indexedSearchText = indexedSessionSearchText(item, renderedSearchText);
+	const indexedSearchText = indexedMetadataSearchText(item, renderedSearchText);
 	const hasUnrenderedBodyLine = bodyText
 		.split("\n")
 		.map((line) => line.trim())

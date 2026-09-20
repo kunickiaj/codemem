@@ -253,6 +253,12 @@ describe("FeedItemCard polling fallback", () => {
 			expect(document.activeElement).toBe(mount.querySelector(".feed-item"));
 			expect(state.itemExpandState.has("change:1234")).toBe(false);
 			expect(state.itemViewState.has("change:1234")).toBe(false);
+			mount.querySelector<HTMLElement>(".feed-item")?.blur();
+			renderCard(observation({ body_text: "", facts: [], narrative: "", subtitle: "" }));
+			await act(async () => {
+				await Promise.resolve();
+			});
+			expect(document.activeElement).toBe(document.body);
 		},
 	);
 });
@@ -321,7 +327,33 @@ describe("FeedItemCard content and actions", () => {
 		expect(mount.querySelector(".feed-search-match mark.match")?.textContent).toBe("Coordinator");
 		expect(mount.querySelector(".feed-detail")).toBeNull();
 	});
+});
 
+describe("FeedItemCard search refresh", () => {
+	it("updates clipped matches after resizing without a poll", () => {
+		const originalWidth = window.innerWidth;
+		try {
+			window.innerWidth = 1000;
+			state.feedQuery = "needle";
+			renderCard(observation({ title: `${"Long title ".repeat(3)}needle` }));
+			expect(mount.querySelector(".feed-search-match")).toBeNull();
+			act(() => {
+				window.innerWidth = 500;
+				window.dispatchEvent(new Event("resize"));
+			});
+			expect(mount.querySelector(".feed-search-match mark.match")?.textContent).toBe("needle");
+		} finally {
+			window.innerWidth = originalWidth;
+		}
+	});
+	it("explains observation matches in indexed request metadata", () => {
+		state.feedQuery = "needle";
+		renderCard(observation({ metadata_json: { request: "needle" } }));
+		expect(mount.querySelector(".feed-search-match mark.match")?.textContent).toBe("needle");
+	});
+});
+
+describe("FeedItemCard search disclosure and actions", () => {
 	it("keeps a hidden Facts match visible while expanded Summary is active", () => {
 		state.feedQuery = "coordinator";
 		renderCard(observation({ facts: ["Coordinator routing changed"], subtitle: "Visible skim" }));

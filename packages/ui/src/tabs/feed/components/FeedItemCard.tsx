@@ -70,6 +70,7 @@ function usePollingModeState(input: {
 				input.focusedModeRef.current === input.activeMode &&
 				document.activeElement === document.body;
 			input.restoreModeFocusRef.current = false;
+			input.focusedModeRef.current = null;
 			state.itemViewState.delete(input.rowKey);
 			if (!input.hasSupplementalDetail && input.expanded) {
 				state.itemExpandState.delete(input.rowKey);
@@ -675,8 +676,16 @@ function renderFeedCard(input: FeedCardRenderInput) {
 	);
 }
 
-function feedSearchMatch(model: ReturnType<typeof buildFeedCardViewModel>) {
-	return hiddenSearchMatch(model, state.feedQuery, visibleSkimPrefixLength(globalThis.innerWidth));
+function useFeedSearchMatch(model: ReturnType<typeof buildFeedCardViewModel>) {
+	const [prefixLength, setPrefixLength] = useState(() =>
+		visibleSkimPrefixLength(globalThis.innerWidth),
+	);
+	useEffect(() => {
+		const update = () => setPrefixLength(visibleSkimPrefixLength(globalThis.innerWidth));
+		window.addEventListener("resize", update);
+		return () => window.removeEventListener("resize", update);
+	}, []);
+	return hiddenSearchMatch(model, state.feedQuery, prefixLength);
 }
 
 function useFeedCardVisibilityState(visibility: string) {
@@ -701,6 +710,7 @@ export function FeedItemCard({
 	onReload,
 }: FeedItemCardProps) {
 	const model = buildFeedCardViewModel(item);
+	const searchMatch = useFeedSearchMatch(model);
 	const metadata = mergeMetadata(item.metadata_json);
 	const details = buildFeedCardDetails(item, model, metadata);
 	const disclosure = useFeedCardDisclosureState(model, details.hasSupplementalDetail);
@@ -747,7 +757,7 @@ export function FeedItemCard({
 		onSelectMode: selectMode,
 		onToggleDetail: toggleDetail,
 		savingVisibility: actions.savingVisibility,
-		searchMatch: feedSearchMatch(model),
+		searchMatch,
 		selectedVisibility: visibility.selectedVisibility,
 		visibilityKnown: visibility.visibilityKnown,
 	});
