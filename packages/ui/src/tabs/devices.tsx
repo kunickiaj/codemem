@@ -950,7 +950,10 @@ function ConfiguredRebind({
 			setDeviceCommitStatus("Identity reassignment completed.");
 			const refreshed = await options.onCommitted?.();
 			setDeviceCommitStatus(rebindCommitStatus(refreshed));
-			(document.getElementById(triggerId) ?? document.getElementById("devices-heading"))?.focus();
+			(
+				document.getElementById(`device-actions-${item.deviceId}`) ??
+				document.getElementById("devices-heading")
+			)?.focus();
 		} catch (caught) {
 			setError(deviceIdentitySetupError(caught));
 		}
