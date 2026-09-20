@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { readCoordinatorSyncConfig } from "./coordinator-sync-config.js";
 import { buildTieredObserverConfig } from "./extraction-tier-routing.js";
+import { ObserverAuthAdapter } from "./observer-auth.js";
 import { loadObserverConfig, ObserverClient } from "./observer-client.js";
 
 let home: string;
@@ -25,6 +26,39 @@ it.each([
 ] as const)("backs Settings sync outcome for environment value %s", (value, enabled) => {
 	process.env.CODEMEM_SYNC_ENABLED = value;
 	expect(readCoordinatorSyncConfig({ sync_enabled: true }).syncEnabled).toBe(enabled);
+});
+
+it.each([
+	["COMMAND", "command"],
+	["  FiLe  ", "file"],
+	[" EnV ", "env"],
+	[" NONE ", "none"],
+	["", "explicit"],
+	["   ", "explicit"],
+	["invalid", "explicit"],
+] as const)("backs Settings auth outcome normalization for %j", (source, resolvedSource) => {
+	const filePath = join(home, "auth.txt");
+	writeFileSync(filePath, "fixture-file-token");
+	writeFileSync(
+		join(home, "config.json"),
+		JSON.stringify({
+			observer_runtime: "api_http",
+			observer_auth_source: source,
+		}),
+	);
+	for (const useEnv of [false, true]) {
+		if (useEnv) process.env.CODEMEM_OBSERVER_AUTH_SOURCE = source;
+		const config = loadObserverConfig();
+		const adapter = new ObserverAuthAdapter({
+			source: config.observerAuthSource,
+			filePath,
+			command: [process.execPath, "-e", "process.stdout.write('fixture-command-token')"],
+		});
+		expect(
+			adapter.resolve({ explicitToken: "fixture-explicit-token", envTokens: ["fixture-env-token"] })
+				.source,
+		).toBe(resolvedSource);
+	}
 });
 
 it("resolves omitted provider, model, and routing before applying built-in tier defaults", () => {

@@ -75,6 +75,31 @@ describe("effective Settings outcomes", () => {
 	});
 });
 
+describe.each(["config", "environment"])("normalized %s auth outcomes", (source) => {
+	it.each([
+		["COMMAND", true, true],
+		["  FiLe  ", false, true],
+		[" EnV ", false, false],
+		[" NONE ", false, false],
+		["", true, false],
+		["   ", true, false],
+		["invalid", true, false],
+	] as const)("handles auth source %j", (authSource, timeoutActive, cacheActive) => {
+		values({ observerRuntime: "api_http", observerAuthSource: authSource });
+		if (source === "environment") {
+			values({ observerRuntime: "api_http", observerAuthSource: "none" });
+			settingsState.envOverrides = { observer_auth_source: "CODEMEM_OBSERVER_AUTH_SOURCE" };
+			settingsState.effectiveConfig = { observer_auth_source: authSource };
+		}
+		expect(settingsOutcomeFor("observerAuthTimeoutMs")?.scope !== "No current effect").toBe(
+			timeoutActive,
+		);
+		expect(settingsOutcomeFor("observerAuthCacheTtlS")?.scope !== "No current effect").toBe(
+			cacheActive,
+		);
+	});
+});
+
 describe("transport-specific Settings outcomes", () => {
 	it.each(["claude_sidecar", "codex_sidecar"])(
 		"marks the base model inactive when %s uses tier models",

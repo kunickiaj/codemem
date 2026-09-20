@@ -175,7 +175,7 @@ function conditionalOutcome(
 	if (controlId === "observerProvider" && sidecar)
 		return inactiveOutcome(controlId, "Local Claude and Codex sessions select their own provider");
 	if (controlId === "observerModel") return baseModelOutcome(runtime, provider);
-	const authSource = String(effectiveSetting("observerAuthSource"));
+	const authSource = normalizedAuthSource(effectiveSetting("observerAuthSource"));
 	if (controlId === "observerAuthTimeoutMs" && !["auto", "command"].includes(authSource))
 		return inactiveOutcome(controlId, "Only command authentication uses this timeout");
 	if (controlId === "observerAuthCacheTtlS" && !["file", "command"].includes(authSource))
@@ -200,6 +200,12 @@ function conditionalOutcome(
 				"Pairing payloads change immediately after save; restart the viewer before sharing or using them so the listener uses the new address",
 		};
 	return undefined;
+}
+
+function normalizedAuthSource(value: unknown): string {
+	// Match ObserverAuthAdapter.resolve(), including its automatic-source fallback.
+	const source = typeof value === "string" ? value.trim().toLowerCase() : "";
+	return ["auto", "env", "file", "command", "none"].includes(source) ? source : "auto";
 }
 
 function syncEnabled(value: unknown): boolean {
