@@ -30,7 +30,7 @@ One mode vocabulary keeps keyboard behavior and user preference consistent acros
 
 | Mode | Observations and changes | Session summaries | Legacy records |
 | --- | --- | --- | --- |
-| Summary | `subtitle`, then semantic summary fallback | First non-duplicate outcome line | Collapsed: first non-empty `subtitle` or `body_text` line. Expanded: full `body_text` |
+| Summary | `subtitle`, then semantic summary fallback | First non-duplicate outcome line | Collapsed: first non-empty `subtitle` or `body_text` line. Expanded: full `body_text`, falling back to `subtitle` when the body is empty |
 | Facts | Explicit or derived facts | Structured REQUEST, OUTCOME, PLAN, COMPLETED, LEARNED, INVESTIGATED, NEXT STEPS, and NOTES sections | Derived facts when available |
 | Narrative | Distinct `narrative`, then `body_text` fallback | Distinct narrative or `body_text` | Full `body_text` |
 
