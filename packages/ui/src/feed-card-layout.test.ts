@@ -19,6 +19,9 @@ describe("compact feed card layout contract", () => {
 		expect(css).toContain(
 			".feed-card-header { display: flex; align-items: flex-start; justify-content: space-between;",
 		);
+		expect(css).toContain(
+			".feed-search-match > span:last-child { min-width: 0; overflow-wrap: anywhere;",
+		);
 	});
 
 	it("stacks at 755px without forcing fixed-width controls", () => {

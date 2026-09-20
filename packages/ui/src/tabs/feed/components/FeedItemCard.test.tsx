@@ -218,14 +218,20 @@ describe("FeedItemCard polling fallback", () => {
 		expect(mount.querySelector(".feed-detail")?.textContent).toContain("Short summary");
 	});
 
-	it("collapses when polling removes every mode and supplemental detail", () => {
+	it("collapses when polling removes every mode and supplemental detail", async () => {
 		renderCard(observation());
 		act(() => titleButton().click());
+		const summary = mount.querySelector<HTMLButtonElement>('[role="radio"][aria-checked="true"]');
+		summary?.focus();
 
 		renderCard(observation({ body_text: "", facts: [], narrative: "", subtitle: "" }));
+		await act(async () => {
+			await Promise.resolve();
+		});
 
 		expect(mount.querySelector(".feed-title")?.tagName).toBe("DIV");
 		expect(mount.querySelector(".feed-detail")).toBeNull();
+		expect(document.activeElement).toBe(mount.querySelector(".feed-item"));
 		expect(state.itemExpandState.has("change:1234")).toBe(false);
 		expect(state.itemViewState.has("change:1234")).toBe(false);
 	});

@@ -63,6 +63,31 @@ function sessionFactsMode(sections: FeedSummary): FeedCardMode {
 	};
 }
 
+function searchableValue(value: unknown): string {
+	if (typeof value === "string") return value.trim();
+	if (Array.isArray(value)) return value.map(searchableValue).filter(Boolean).join("\n");
+	if (value && typeof value === "object") {
+		return Object.entries(value)
+			.map(([key, entry]) => `${key}\n${searchableValue(entry)}`)
+			.filter((entry) => entry.trim())
+			.join("\n");
+	}
+	return value == null ? "" : String(value).trim();
+}
+
+function indexedSessionSearchText(item: FeedItem, renderedSearchText: string): string {
+	const candidates = [
+		item.subtitle,
+		item.metadata_json?.subtitle,
+		searchableValue(item.facts),
+		searchableValue(item.metadata_json?.facts),
+	];
+	return candidates
+		.map((candidate) => String(candidate || "").trim())
+		.filter((candidate) => candidate && !renderedSearchText.includes(normalize(candidate)))
+		.join("\n");
+}
+
 function buildObservationContent(item: FeedItem, displayTitle: string): ContentView {
 	const data = observationViewData(item);
 	const modes: FeedCardMode[] = [];
@@ -87,6 +112,7 @@ function buildSessionContent(item: FeedItem, displayTitle: string): ContentView 
 	if (data.hasNarrative) modes.push(markdownMode("narrative", data.narrative));
 	const bodyText = String(item.body_text || "").trim();
 	const renderedSearchText = normalize(modes.map((mode) => mode.searchText).join("\n"));
+	const indexedSearchText = indexedSessionSearchText(item, renderedSearchText);
 	const hasUnrenderedBodyLine = bodyText
 		.split("\n")
 		.map((line) => line.trim())
@@ -94,7 +120,9 @@ function buildSessionContent(item: FeedItem, displayTitle: string): ContentView 
 		.some((line) => !renderedSearchText.includes(normalize(line)));
 	return {
 		modes,
-		searchOnlyText: hasUnrenderedBodyLine ? bodyText : "",
+		searchOnlyText: [hasUnrenderedBodyLine ? bodyText : "", indexedSearchText]
+			.filter(Boolean)
+			.join("\n"),
 		skimSummary: data.skimSummary,
 	};
 }

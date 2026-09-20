@@ -182,6 +182,20 @@ describe("session card generated body fallbacks", () => {
 
 		expect(hiddenSearchMatch(model, "orchard")).toMatchObject({ label: "Body" });
 	});
+
+	it("keeps indexed session subtitle and facts available to search", () => {
+		const model = buildFeedCardViewModel({
+			facts: ["Imported orchard fact"],
+			kind: "session_summary",
+			metadata_json: { facts: { source_note: "Coordinator handoff" } },
+			subtitle: "Indexed session subtitle",
+			title: "Session record",
+		});
+
+		expect(hiddenSearchMatch(model, "subtitle")).toMatchObject({ label: "Body" });
+		expect(hiddenSearchMatch(model, "orchard")).toMatchObject({ label: "Body" });
+		expect(hiddenSearchMatch(model, "handoff")).toMatchObject({ label: "Body" });
+	});
 });
 
 describe("feed card clipped search matches", () => {
