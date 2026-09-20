@@ -958,6 +958,12 @@ describe("Devices app integration", () => {
 	});
 });
 
+type SharingNavigationCallbacks = {
+	onNavigateAdvancedSync?: () => void;
+	onOpenTeamSetup?: (candidateRef: string) => void;
+	onReviewDevices?: (deviceId?: string) => void;
+};
+
 describe("Viewer behavior contracts", () => {
 	beforeEach(setupDevicesAppTest);
 	afterEach(teardownDevicesAppTest);
@@ -968,7 +974,7 @@ describe("Viewer behavior contracts", () => {
 		const { openLegacyTeamSetup } = await import("./tabs/legacy-team-setup-dialog");
 		const projectOptions = vi.mocked(initProjectsTab).mock.calls[0]?.[1];
 		const sharingOptions = vi.mocked(createRecipientPolicySharingLoader).mock.calls[0]?.[1] as
-			| { onNavigateAdvancedSync?: () => void }
+			| SharingNavigationCallbacks
 			| undefined;
 		expect(projectOptions?.onOpenTeamSetup).toEqual(expect.any(Function));
 		expect(sharingOptions?.onOpenTeamSetup).toEqual(expect.any(Function));
@@ -991,7 +997,9 @@ describe("Viewer behavior contracts", () => {
 
 	it("encodes the Advanced Sync target from Sharing", async () => {
 		const { createRecipientPolicySharingLoader } = await import("./app-sharing");
-		const sharingOptions = vi.mocked(createRecipientPolicySharingLoader).mock.calls[0]?.[1];
+		const sharingOptions = vi.mocked(createRecipientPolicySharingLoader).mock.calls[0]?.[1] as
+			| SharingNavigationCallbacks
+			| undefined;
 
 		act(() => sharingOptions?.onNavigateAdvancedSync?.());
 		await Promise.resolve();
