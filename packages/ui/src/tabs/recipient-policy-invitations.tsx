@@ -1095,7 +1095,12 @@ function acceptInvitationActionButton(
 	const recipientPreview =
 		state.inspected?.kind === "team_member" || state.inspected?.kind === "add_device";
 	const projectShareInvite = state.inspected?.kind === "project_share_invite";
-	if (state.recipientAcceptance || (!recipientPreview && !projectShareInvite)) return null;
+	if (
+		state.recipientAcceptance ||
+		state.projectAcceptance ||
+		(!recipientPreview && !projectShareInvite)
+	)
+		return null;
 	const recipientNameError =
 		state.inspected?.kind === "team_member"
 			? displayNameError(state.recipientName, "Identity display name")

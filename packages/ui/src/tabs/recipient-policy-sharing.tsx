@@ -812,10 +812,9 @@ function ReconciliationStatus({ options }: { options: RecipientPolicySharingOpti
 	);
 }
 
-function RecipientPolicySharing({
+function useSharingTabs({
 	intent,
 	options,
-	projects,
 }: {
 	intent: RecipientPolicyIntentGraphV1;
 	options: RecipientPolicySharingOptions;
@@ -867,6 +866,16 @@ function RecipientPolicySharing({
 		activateTab(nextIndex);
 	};
 
+	return { activeTab, setActiveTab, tabRefs, tabCounts, handleTabKeyDown };
+}
+
+function RecipientPolicySharing(props: {
+	intent: RecipientPolicyIntentGraphV1;
+	options: RecipientPolicySharingOptions;
+	projects: RecipientPolicyManagementProject[];
+}) {
+	const { intent, options, projects } = props;
+	const { activeTab, setActiveTab, tabRefs, tabCounts, handleTabKeyDown } = useSharingTabs(props);
 	return (
 		<section className="recipient-policy-sharing recipient-policy-sharing-responsive-surface">
 			<header className="recipient-policy-sharing-header">
