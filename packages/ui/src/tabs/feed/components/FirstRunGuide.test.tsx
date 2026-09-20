@@ -45,6 +45,20 @@ describe("FirstRunGuide", () => {
 		expect(localStorage.getItem(FIRST_RUN_GUIDE_STORAGE_KEY)).toContain('"showCompleted":true');
 	});
 
+	it("updates when another tab changes guide storage", () => {
+		act(() => render(<FirstRunGuide hasMemories={false} hasQueuedEvents={false} />, mount));
+		localStorage.setItem(
+			FIRST_RUN_GUIDE_STORAGE_KEY,
+			JSON.stringify({ completed: [], dismissed: true, showCompleted: false }),
+		);
+
+		act(() =>
+			window.dispatchEvent(new StorageEvent("storage", { key: FIRST_RUN_GUIDE_STORAGE_KEY })),
+		);
+
+		expect(mount.querySelector("section")).toBeNull();
+	});
+
 	it("uses the real disclosure control to inspect the first memory", () => {
 		const card = document.createElement("article");
 		card.className = "feed-item";

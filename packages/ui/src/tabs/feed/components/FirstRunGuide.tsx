@@ -3,6 +3,7 @@ import {
 	completeFirstRunStep,
 	dismissFirstRunGuide,
 	FIRST_RUN_GUIDE_CHANGED_EVENT,
+	FIRST_RUN_GUIDE_STORAGE_KEY,
 	type FirstRunStep,
 	readFirstRunGuideRecord,
 	shouldShowFirstRunGuide,
@@ -128,8 +129,15 @@ export function FirstRunGuide({
 			setRecord(next);
 			setAnnouncement(`${next.completed.length} of 5 getting started steps completed.`);
 		};
+		const refreshFromStorage = (event: StorageEvent) => {
+			if (event.key === FIRST_RUN_GUIDE_STORAGE_KEY) refresh();
+		};
 		window.addEventListener(FIRST_RUN_GUIDE_CHANGED_EVENT, refresh);
-		return () => window.removeEventListener(FIRST_RUN_GUIDE_CHANGED_EVENT, refresh);
+		window.addEventListener("storage", refreshFromStorage);
+		return () => {
+			window.removeEventListener(FIRST_RUN_GUIDE_CHANGED_EVENT, refresh);
+			window.removeEventListener("storage", refreshFromStorage);
+		};
 	}, []);
 
 	useEffect(() => {
