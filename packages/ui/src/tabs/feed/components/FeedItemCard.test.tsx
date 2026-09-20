@@ -200,6 +200,23 @@ describe("FeedItemCard", () => {
 });
 
 describe("FeedItemCard polling fallback", () => {
+	it("uses the stable fallback order instead of another card's preference", async () => {
+		renderCard(observation());
+		act(() => titleButton().click());
+		const narrative = Array.from(mount.querySelectorAll<HTMLButtonElement>('[role="radio"]')).find(
+			(radio) => radio.textContent === "Narrative",
+		);
+		act(() => narrative?.click());
+		state.preferredFeedViewMode = "facts";
+
+		renderCard(observation({ body_text: "Short summary.", narrative: "" }));
+		await act(async () => {
+			await Promise.resolve();
+		});
+
+		expect(mount.querySelector('[role="radio"][aria-checked="true"]')?.textContent).toBe("Summary");
+	});
+
 	it("keeps the card open and restores mode focus when polling removes the active mode", () => {
 		renderCard(observation());
 		act(() => titleButton().click());
@@ -287,6 +304,10 @@ describe("FeedItemCard content and actions", () => {
 		renderCard(observation({ visibility: null }));
 
 		expect(mount.querySelector(".provenance-chip.unknown")?.textContent).toBe("Visibility unknown");
+		const select = mount.querySelector<HTMLSelectElement>(".feed-visibility-select");
+		expect(select?.disabled).toBe(true);
+		expect(select?.value).toBe("unknown");
+		expect(select?.querySelector("option[value='unknown']")?.textContent).toBe("Unknown");
 	});
 
 	it("shows a highlighted excerpt when search matches only hidden detail", () => {
