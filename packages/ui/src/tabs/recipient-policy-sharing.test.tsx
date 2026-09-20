@@ -724,6 +724,56 @@ describe("Sharing merged device summaries", () => {
 	);
 });
 
+describe("Sharing intent aliases", () => {
+	registerRecipientFocusedSharingLifecycle();
+	it.each(["identity-adam", "identity-brian"])(
+		"collapses same-owner intent aliases without adopting inventory owner %s",
+		(identityId) => {
+			const graph = intent();
+			graph.identityDevices.push({
+				...graph.identityDevices[0],
+				deviceId: "adam-alias",
+				displayName: "Alias laptop",
+			});
+			mount(graph, {
+				deviceInventory: configuredInventory([
+					{ deviceId: "canonical", identityId, evidenceDeviceIds: ["device-adam-1", "adam-alias"] },
+				]),
+			});
+			expect(visiblePanel().textContent).toContain("2Registered devices");
+			clickTab("Identities");
+			const cards = [...visiblePanel().querySelectorAll(".recipient-policy-sharing-identity-card")];
+			expect(cards[0]?.textContent).toContain("Devices · 1Adam’s Mac");
+			expect(cards[1]?.textContent).toContain("Devices · 1Brian’s PC");
+			expect(visiblePanel().textContent).not.toContain("Alias laptop");
+			expect(visiblePanel().textContent).not.toContain("Inventory canonical");
+		},
+	);
+	it("retains conflicting intent owners without adding the inventory owner", () => {
+		const graph = intent();
+		graph.identities.push({
+			...graph.identities[0],
+			identityId: "identity-casey",
+			displayName: "Casey",
+		});
+		const activeDeviceIds = graph.identityDevices
+			.filter((device) => device.status === "active")
+			.map((device) => device.deviceId);
+		mount(graph, {
+			deviceInventory: configuredInventory([
+				{ deviceId: "canonical", identityId: "identity-casey", evidenceDeviceIds: activeDeviceIds },
+			]),
+		});
+		expect(visiblePanel().textContent).toContain("2Registered devices");
+		clickTab("Identities");
+		const cards = [...visiblePanel().querySelectorAll(".recipient-policy-sharing-identity-card")];
+		expect(cards[0]?.textContent).toContain("Devices · 1Adam’s Mac");
+		expect(cards[1]?.textContent).toContain("Devices · 1Brian’s PC");
+		expect(cards[2]?.textContent).toContain("Devices · 0");
+		expect(visiblePanel().textContent).not.toContain("Inventory canonical");
+	});
+});
+
 function testRecipientFocusedIdentityViews() {
 	registerRecipientFocusedSharingLifecycle();
 	it("does not combine cached intent with fresh reassigned inventory after a required refresh fails", () => {

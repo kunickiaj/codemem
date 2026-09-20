@@ -545,7 +545,7 @@ function sharingDevices(
 	intent: RecipientPolicyIntentGraphV1,
 	inventory?: DeviceIdentityInventoryV1,
 ): SharingDevice[] {
-	const result: SharingDevice[] = [];
+	let result: SharingDevice[] = [];
 	const known = new Set<string>();
 	for (const device of intent.identityDevices) {
 		if (device.status !== "active" || known.has(device.deviceId)) continue;
@@ -558,7 +558,17 @@ function sharingDevices(
 		const aliases = [item.deviceId, ...item.evidenceDeviceIds];
 		const alreadyKnown = aliases.some((id) => known.has(id));
 		for (const id of aliases) known.add(id);
-		if (alreadyKnown) continue;
+		if (alreadyKnown) {
+			// Alias evidence deduplicates devices, but cannot choose between intent owners.
+			const owners = new Set<string>();
+			result = result.filter((device) => {
+				if (!aliases.includes(device.deviceId)) return true;
+				if (owners.has(device.identityId)) return false;
+				owners.add(device.identityId);
+				return true;
+			});
+			continue;
+		}
 		result.push({
 			deviceId: item.deviceId,
 			displayName: item.displayName,
