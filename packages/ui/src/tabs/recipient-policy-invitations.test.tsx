@@ -256,6 +256,9 @@ it("inspects and accepts add-device access with direct, inherited, and excluded 
 	);
 
 	await vi.waitFor(() => expect(dialog.textContent).toContain("Direct Projects"));
+	expect(dialog.querySelector('[role="status"]')?.textContent).toBe(
+		"Review ready. Existing shared Projects sync to the invited device only after the owner’s device completes access setup. Confirm before accepting.",
+	);
 	expect(dialog.textContent).toContain("Direct work — 3 existing memories");
 	expect(dialog.textContent).toContain("Team work — 7 existing memories");
 	expect(dialog.textContent).toContain("through Example Team");
@@ -315,6 +318,9 @@ it("omits the delivery expectation when an add-device invitation shares no Proje
 	act(() => button("Review invitation", dialog).click());
 	await vi.waitFor(() => expect(api.inspectCoordinatorInvite).toHaveBeenCalledOnce());
 	await vi.waitFor(() => expect(dialog.textContent).toContain("No Projects are shared directly"));
+	expect(dialog.querySelector('[role="status"]')?.textContent).toBe(
+		"Review ready. Confirm before accepting.",
+	);
 	expect(dialog.textContent).not.toContain("describe access, not delivery");
 
 	act(() => button("Accept invitation", dialog).click());
@@ -342,6 +348,9 @@ it("persists a Team completion, prevents repeat acceptance, and resets after clo
 	});
 	act(() => button("Review invitation", dialog).click());
 	await vi.waitFor(() => expect(dialog.textContent).toContain("Current Projects for"));
+	expect(dialog.querySelector('[role="status"]')?.textContent).toBe(
+		"Review ready. Confirm before accepting.",
+	);
 	const acceptButton = button("Accept invitation", dialog);
 	act(() => {
 		acceptButton.click();
@@ -568,6 +577,9 @@ it("reviews and accepts direct exact-Project access in the same dialog without r
 		),
 	);
 	expect(dialog.textContent).toContain("Invitation from Adam");
+	expect(dialog.querySelector('[role="status"]')?.textContent).toBe(
+		"Review ready. Confirm the exact Projects before accepting.",
+	);
 	expect(dialog.textContent).toContain("direct access only");
 	expect(dialog.textContent).toContain("Codemem — 41 existing memories and future activity");
 	expect(dialog.textContent).toContain("Viewer — 1 existing memory and future activity");
@@ -1130,6 +1142,10 @@ async function verifiesLegacyImportRouting() {
 		),
 	);
 	expect(dialog.textContent).not.toContain("coordinator administration");
+	expect(dialog.querySelector('[role="status"]')?.textContent).toBe(
+		"Open Advanced, then Sync, to review and import this legacy invitation.",
+	);
+	expect(dialog.textContent).not.toContain("Open Devices");
 	expect(api.importCoordinatorInvite).not.toHaveBeenCalled();
 }
 
@@ -1154,6 +1170,10 @@ it("routes manual pairing to Devices without enabling invitation acceptance", as
 	await vi.waitFor(() =>
 		expect(dialog.textContent).toContain("Open Devices, then Accept a pairing payload"),
 	);
+	expect(dialog.querySelector('[role="status"]')?.textContent).toBe(
+		"Open Devices, then Accept a pairing payload, to review and accept this device.",
+	);
+	expect(dialog.textContent).not.toMatch(/Open Advanced|legacy invitation/);
 	expect(
 		Array.from(dialog.querySelectorAll("button")).some(
 			(item) => !item.disabled && item.textContent?.startsWith("Accept"),

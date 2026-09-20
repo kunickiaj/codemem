@@ -635,6 +635,9 @@ async function createRecipientInvitation(state: InvitationState): Promise<void> 
 }
 
 function inspectionStatus(result: InspectInviteResult): string {
+	if (result.kind === "pair") {
+		return "Open Devices, then Accept a pairing payload, to review and accept this device.";
+	}
 	if (result.kind === "add_device") {
 		if ((result.onboarding?.projects?.length ?? 0) > 0) {
 			return "Review ready. Existing shared Projects sync to the invited device only after the owner’s device completes access setup. Confirm before accepting.";
