@@ -1516,7 +1516,7 @@ function restorePairingControls(
 	restoreParent: HTMLElement | null,
 	movedFeedback: HTMLElement | null,
 	feedbackRestoreParent: HTMLElement | null,
-	visibility: { host: HTMLElement; wasHidden: boolean },
+	visibility: { host: HTMLElement; wasHidden: HTMLElement["hidden"] },
 ): void {
 	if (panel.parentElement === visibility.host) panel.hidden = visibility.wasHidden;
 	if (restoreParent && panel.parentElement !== restoreParent) restoreParent.appendChild(panel);
