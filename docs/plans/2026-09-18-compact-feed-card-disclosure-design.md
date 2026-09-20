@@ -30,7 +30,7 @@ One mode vocabulary keeps keyboard behavior and user preference consistent acros
 
 | Mode | Observations and changes | Session summaries | Legacy records |
 | --- | --- | --- | --- |
-| Summary | `subtitle`, then semantic summary fallback | First non-duplicate outcome line | Collapsed: first non-empty `subtitle` or `body_text` line. Expanded: full `body_text`, falling back to `subtitle` when the body is empty |
+| Summary | `subtitle`, then semantic summary fallback | First non-duplicate outcome line | Collapsed: first body line. Expanded: full body; an explicit subtitle instead follows the observation rule |
 | Facts | Explicit or derived facts | Structured REQUEST, OUTCOME, PLAN, COMPLETED, LEARNED, INVESTIGATED, NEXT STEPS, and NOTES sections | Derived facts when available |
 | Narrative | Distinct `narrative`, then `body_text` fallback | Distinct narrative or `body_text` | Full `body_text` |
 
@@ -43,6 +43,8 @@ Telemetry-like records use their existing kind and source, the best available se
 ## Duplicate and Legacy Rules
 
 Duplicate suppression uses semantic fields and normalized full values, not truncation or visual comparison.
+
+“Legacy” describes the body-only observation fallback, not a persisted kind or age threshold. Session-summary classification takes precedence: `kind === "session_summary"`, `metadata_json.is_summary === true`, or normalized `metadata_json.source === "observer_summary"`. Other records use the observation selector; the body-only fallback applies when neither the item nor merged metadata supplies a non-empty subtitle or narrative. Explicit facts remain usable in this fallback. A subtitle-only record follows the observation Summary rule, with distinct body text still reachable as Narrative; it is not reclassified from timestamps or missing schema-version metadata.
 
 - A session title continues to use REQUEST when present, otherwise the stored title.
 - The Facts view omits REQUEST when its normalized text equals the normalized displayed title.

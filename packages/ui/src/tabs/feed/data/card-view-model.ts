@@ -173,13 +173,17 @@ export function preferredAvailableMode(
 	return "summary";
 }
 
+export function normalizeFeedQuery(query: string): string {
+	return query.trim().toLowerCase().slice(0, 256);
+}
+
 function includesQuery(value: string, query: string): boolean {
-	return value.toLocaleLowerCase().includes(query.toLocaleLowerCase());
+	return value.toLowerCase().includes(query.toLowerCase());
 }
 
 function excerptAroundMatch(text: string, query: string): string {
 	const collapsed = text.replace(/\s+/g, " ").trim();
-	const index = collapsed.toLocaleLowerCase().indexOf(query.toLocaleLowerCase());
+	const index = collapsed.toLowerCase().indexOf(query.toLowerCase());
 	if (index < 0) return "";
 	const start = Math.max(0, index - 70);
 	const end = Math.min(collapsed.length, index + query.length + 90);
@@ -194,7 +198,7 @@ export function visibleSkimPrefixLength(viewportWidth: number): number {
 
 function clippedSkimMatch(text: string, query: string, label: string, visiblePrefixLength: number) {
 	const collapsed = text.replace(/\s+/g, " ").trim();
-	const index = collapsed.toLocaleLowerCase().indexOf(query.toLocaleLowerCase());
+	const index = collapsed.toLowerCase().indexOf(query.toLowerCase());
 	if (index < visiblePrefixLength) return null;
 	return { excerpt: excerptAroundMatch(collapsed, query), label, mode: null };
 }
@@ -204,7 +208,7 @@ export function hiddenSearchMatch(
 	query: string,
 	visiblePrefixLength = 80,
 ): { excerpt: string; label: string; mode: ItemViewMode | null } | null {
-	const trimmedQuery = query.trim();
+	const trimmedQuery = normalizeFeedQuery(query);
 	if (!trimmedQuery) return null;
 	if (includesQuery(model.displayTitle, trimmedQuery)) {
 		return clippedSkimMatch(model.displayTitle, trimmedQuery, "Title", visiblePrefixLength);

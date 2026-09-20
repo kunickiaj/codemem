@@ -355,6 +355,37 @@ describe("FeedItemCard content and actions", () => {
 });
 
 describe("FeedItemCard search refresh", () => {
+	it("restores focus when polling removes the title disclosure", () => {
+		renderCard(observation());
+		titleButton().focus();
+		renderCard(observation({ body_text: "", narrative: "", facts: [], subtitle: "" }));
+		expect(document.activeElement).toBe(mount.querySelector(".feed-item"));
+	});
+	it("does not restore radio focus after an explicit blur", async () => {
+		renderCard(observation());
+		const radio = mount.querySelector<HTMLButtonElement>('[role="radio"]');
+		radio?.focus();
+		radio?.blur();
+		renderCard(observation({ body_text: "", narrative: "", facts: [], subtitle: "" }));
+		await act(async () => {
+			await Promise.resolve();
+		});
+		expect(document.activeElement).toBe(document.body);
+	});
+	it("highlights the trimmed query truncated to the server limit", () => {
+		const needle = "A".repeat(256);
+		state.feedQuery = `  ${needle}ignored  `;
+		renderCard(observation({ narrative: `Prefix ${needle} suffix` }));
+		expect(mount.querySelector(".feed-search-match mark.match")?.textContent).toBe(needle);
+	});
+	it("retains an excerpt when Markdown renders a matching destination as a link", () => {
+		state.feedQuery = "needle";
+		state.preferredFeedViewMode = "narrative";
+		renderCard(observation({ narrative: "Visit [documentation](https://example.com/needle)." }));
+		act(() => titleButton().click());
+		expect(mount.querySelector(".feed-detail")?.textContent).not.toContain("needle");
+		expect(mount.querySelector(".feed-search-match mark.match")?.textContent).toBe("needle");
+	});
 	it("updates clipped matches after resizing without a poll", () => {
 		const originalWidth = window.innerWidth;
 		try {
