@@ -20,6 +20,14 @@ beforeEach(() => {
 });
 
 describe("computeSignature", () => {
+	it.each(["subtitle", "narrative", "facts", "body_text", "metadata_json"])(
+		"changes when polling updates %s without changing identity",
+		(field) => {
+			expect(computeSignature([{ ...feedItem, [field]: "updated" }])).not.toBe(
+				computeSignature([feedItem]),
+			);
+		},
+	);
 	it("changes when refreshed ownership fields replace stale values", () => {
 		const staleSignature = computeSignature([{ ...feedItem, owned_by_self: true }]);
 		const refreshedSignature = computeSignature([{ ...feedItem, owned_by_self: false }]);

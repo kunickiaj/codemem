@@ -74,8 +74,8 @@ function usePollingModeState(input: {
 			if (!input.hasSupplementalDetail && input.expanded) {
 				state.itemExpandState.delete(input.rowKey);
 				input.setExpanded(false);
-				if (shouldRestoreCardFocus) queueMicrotask(() => input.cardRef.current?.focus());
 			}
+			if (shouldRestoreCardFocus) queueMicrotask(() => input.cardRef.current?.focus());
 			return;
 		}
 		if (input.modeIds.includes(input.activeMode)) return;
@@ -89,10 +89,11 @@ function usePollingModeState(input: {
 		const activeRadio = input.cardRef.current?.querySelector<HTMLButtonElement>(
 			'[role="radio"][aria-checked="true"]',
 		);
-		if (!activeRadio) return;
+		if (!activeRadio && input.modeIds.length > 1) return;
 		input.restoreModeFocusRef.current = false;
 		input.focusedModeRef.current = input.activeMode;
-		activeRadio.focus();
+		if (activeRadio) activeRadio.focus();
+		else input.cardRef.current?.focus();
 	}, [input]);
 
 	useEffect(() => {

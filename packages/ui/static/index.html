@@ -2499,6 +2499,9 @@
          filename is informative and earns its horizontal space. */
       .feed-files { display: flex; flex-wrap: wrap; gap: 6px; }
       .feed-file {
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
         padding: 2px 8px;
         border-radius: var(--radius-sm);
         background: var(--surface-2);

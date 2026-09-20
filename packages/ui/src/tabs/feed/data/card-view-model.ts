@@ -81,6 +81,7 @@ function indexedSessionSearchText(item: FeedItem, renderedSearchText: string): s
 		item.metadata_json?.subtitle,
 		searchableValue(item.facts),
 		searchableValue(item.metadata_json?.facts),
+		searchableValue(item.metadata_json?.summary),
 	];
 	return candidates
 		.map((candidate) => String(candidate || "").trim())
