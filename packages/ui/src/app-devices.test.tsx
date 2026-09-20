@@ -1049,13 +1049,7 @@ describe("Viewer behavior contracts", () => {
 	});
 
 	it("encodes the Advanced Sync target from Sharing", async () => {
-		const { createRecipientPolicySharingLoader } = await import("./app-sharing");
-		const sharingOptions = vi
-			.mocked(createRecipientPolicySharingLoader)
-			.mock.calls.map((call) => call[1] as SharingNavigationCallbacks | undefined)
-			.find((options) => options?.onNavigateAdvancedSync);
-
-		act(() => sharingOptions?.onNavigateAdvancedSync?.());
+		act(() => window.dispatchEvent(new CustomEvent("codemem:navigate-advanced-sync")));
 		await Promise.resolve();
 
 		expect(window.location.hash).toBe("#advanced/sync");
