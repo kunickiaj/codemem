@@ -279,11 +279,11 @@ describe("Devices focus and inventory", function devicesFocusAndInventoryTests()
 });
 
 describe("Device pairing entry point", () => {
-	it("keeps pairing on Devices and explains it in place", () => {
+	it("keeps pairing on Devices and explains it in place", async () => {
 		const joinHost = document.createElement("div");
 		joinHost.id = "syncJoinSection";
 		joinHost.innerHTML =
-			'<div id="syncJoinPanel" hidden><textarea aria-label="Invite or pairing code"></textarea><button>Review invite</button></div><div id="syncJoinFeedback" role="alert">Pairing failed. Check the payload.</div>';
+			'<div id="syncJoinPanel" hidden><textarea aria-label="Invite or pairing code"></textarea><button>Review invite</button></div>';
 		document.body.appendChild(joinHost);
 		const onNavigate = vi.fn();
 		mount(intent(), reconciliation(), {
@@ -323,6 +323,14 @@ describe("Device pairing entry point", () => {
 				.getElementById("syncJoinPanel")
 				?.parentElement?.classList.contains("devices-pairing-accept"),
 		).toBe(true);
+		const feedback = document.createElement("div");
+		feedback.id = "syncJoinFeedback";
+		feedback.setAttribute("role", "alert");
+		feedback.textContent = "Pairing failed. Check the payload.";
+		joinHost.appendChild(feedback);
+		await act(async () => {
+			await Promise.resolve();
+		});
 		expect(
 			document
 				.getElementById("syncJoinFeedback")

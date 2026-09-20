@@ -1516,18 +1516,28 @@ function PairingAcceptancePanel() {
 	useLayoutEffect(() => {
 		const host = hostRef.current;
 		const panel = document.getElementById("syncJoinPanel");
-		const feedback = document.getElementById("syncJoinFeedback");
-		if (!host || !panel || !feedback) return;
+		if (!host || !panel) return;
 		const restoreParent = panel.parentElement;
-		const feedbackRestoreParent = feedback.parentElement;
 		const wasHidden = panel.hidden;
-		host.appendChild(panel);
-		host.appendChild(feedback);
-		panel.hidden = false;
+		let movedFeedback: HTMLElement | null = null;
+		let feedbackRestoreParent: HTMLElement | null = null;
+		const mountPairingControls = () => {
+			if (panel.parentElement !== host) host.appendChild(panel);
+			panel.hidden = false;
+			const feedback = document.getElementById("syncJoinFeedback");
+			if (!feedback || feedback.parentElement === host) return;
+			movedFeedback = feedback;
+			feedbackRestoreParent ??= feedback.parentElement;
+			host.appendChild(feedback);
+		};
+		mountPairingControls();
+		const observer = new MutationObserver(mountPairingControls);
+		observer.observe(document.body, { childList: true, subtree: true });
 		return () => {
+			observer.disconnect();
 			panel.hidden = wasHidden;
 			if (restoreParent) restoreParent.appendChild(panel);
-			if (feedbackRestoreParent) feedbackRestoreParent.appendChild(feedback);
+			if (movedFeedback && feedbackRestoreParent) feedbackRestoreParent.appendChild(movedFeedback);
 		};
 	}, []);
 	return <div className="devices-pairing-accept" ref={hostRef} />;

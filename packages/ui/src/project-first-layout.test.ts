@@ -81,7 +81,9 @@ describe("project-first navigation layout", () => {
 		expect(html).toContain('aria-label="Advanced sections" role="group"');
 		expect(advanced).toContain('id="coordinatorAdminLegacyNoticeTitle" tabindex="-1"');
 	});
+});
 
+describe("project-first navigation layout", () => {
 	it("keeps the legacy notice visible when technical controls are collapsed", () => {
 		const panelStart = html.indexOf('id="advancedTeamsContent"');
 		const disclosureStart = html.indexOf("<details", panelStart);
@@ -171,7 +173,9 @@ describe("project-first navigation layout", () => {
 		expect(coordinatorGroupsSource).not.toContain('"Create Team"');
 		expect(coordinatorGroupsSource).not.toContain('"Manage Team"');
 	});
+});
 
+describe("project-first navigation layout", () => {
 	it("marks only the initial Feed control with aria-current", () => {
 		const navigation = html.slice(
 			html.indexOf('<nav class="tab-bar"'),
@@ -234,7 +238,9 @@ describe("project-first navigation layout", () => {
 		expect(html.slice(advanced, diagnostics)).not.toContain("syncPairingDisclosureMount");
 		expect(html.slice(advanced, diagnostics)).toContain("Create person");
 	});
+});
 
+describe("project-first navigation layout", () => {
 	it("keeps the legacy upgrade review destination available", () => {
 		expect(html).toContain('id="syncSharingReview"');
 	});
