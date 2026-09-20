@@ -57,11 +57,11 @@ export function deriveFeedProcessingStatus(status: unknown): FeedProcessingStatu
 		capture_enabled?: unknown;
 		queue?: { pending?: unknown };
 	};
-	if (observerStatus.capture_enabled === false) return { kind: "paused" };
 	const pending = Number(observerStatus.queue?.pending);
 	if (Number.isFinite(pending) && pending > 0) {
 		return { kind: "pending", count: Math.floor(pending) };
 	}
+	if (observerStatus.capture_enabled === false) return { kind: "paused" };
 	return { kind: "ready" };
 }
 

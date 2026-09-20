@@ -37,7 +37,8 @@ describe("describeEffectiveSettings", () => {
 describe("deriveFeedProcessingStatus", () => {
 	it("uses explicit capture and queue evidence", () => {
 		expect(deriveFeedProcessingStatus({ capture_enabled: false, queue: { pending: 4 } })).toEqual({
-			kind: "paused",
+			kind: "pending",
+			count: 4,
 		});
 		expect(deriveFeedProcessingStatus({ capture_enabled: true, queue: { pending: 4 } })).toEqual({
 			kind: "pending",

@@ -5,6 +5,7 @@ import { act } from "preact/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import staticHtml from "../../../../static/index.html?raw";
 import {
+	completeFirstRunStep,
 	dismissFirstRunGuide,
 	FIRST_RUN_GUIDE_STORAGE_KEY,
 	readFirstRunGuideRecord,
@@ -26,6 +27,34 @@ afterEach(() => {
 });
 
 describe("FirstRunGuide", () => {
+	it("tolerates a throwing localStorage getter for reads and writes", () => {
+		const getter = vi.spyOn(window, "localStorage", "get").mockImplementation(() => {
+			throw new DOMException("blocked", "SecurityError");
+		});
+		try {
+			expect(() =>
+				act(() => render(<FirstRunGuide hasMemories hasQueuedEvents={false} />, mount)),
+			).not.toThrow();
+			expect(() => completeFirstRunStep("inspect")).not.toThrow();
+			expect(() => dismissFirstRunGuide()).not.toThrow();
+			expect(() => reopenFirstRunGuide()).not.toThrow();
+		} finally {
+			getter.mockRestore();
+		}
+	});
+	it("offers inspection only when a disclosure exists", () => {
+		document.body.insertAdjacentHTML(
+			"beforeend",
+			'<article class="feed-item"><div class="feed-title">Minimal</div></article>',
+		);
+		act(() => render(<FirstRunGuide hasMemories hasQueuedEvents={false} />, mount));
+		expect(mount.textContent).not.toContain("Inspect first memory");
+		const card = document.querySelector(".feed-item");
+		if (!card) throw new Error("card missing");
+		card.innerHTML = '<button class="feed-title">Details</button>';
+		act(() => render(<FirstRunGuide hasMemories hasQueuedEvents={false} />, mount));
+		expect(mount.textContent).toContain("Inspect first memory");
+	});
 	it("renders semantic status rows and completes capture from real data", () => {
 		act(() => render(<FirstRunGuide hasMemories hasQueuedEvents={false} />, mount));
 

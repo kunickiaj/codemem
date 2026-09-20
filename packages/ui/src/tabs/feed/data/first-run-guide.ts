@@ -19,9 +19,9 @@ function isFirstRunStep(value: unknown): value is FirstRunStep {
 	return ["capture", "inspect", "find", "scope", "settings-health"].includes(String(value));
 }
 
-export function readFirstRunGuideRecord(storage: Storage = localStorage): FirstRunGuideRecord {
+export function readFirstRunGuideRecord(storage?: Storage): FirstRunGuideRecord {
 	try {
-		const raw = storage.getItem(FIRST_RUN_GUIDE_STORAGE_KEY);
+		const raw = (storage ?? window.localStorage).getItem(FIRST_RUN_GUIDE_STORAGE_KEY);
 		if (!raw) return { ...EMPTY_RECORD };
 		const parsed = JSON.parse(raw) as Partial<FirstRunGuideRecord>;
 		return {
@@ -34,17 +34,14 @@ export function readFirstRunGuideRecord(storage: Storage = localStorage): FirstR
 	}
 }
 
-function writeFirstRunGuideRecord(
-	record: FirstRunGuideRecord,
-	storage: Storage = localStorage,
-): void {
+function writeFirstRunGuideRecord(record: FirstRunGuideRecord, storage?: Storage): void {
 	try {
-		storage.setItem(FIRST_RUN_GUIDE_STORAGE_KEY, JSON.stringify(record));
+		(storage ?? window.localStorage).setItem(FIRST_RUN_GUIDE_STORAGE_KEY, JSON.stringify(record));
 	} catch {}
 	window.dispatchEvent(new CustomEvent(FIRST_RUN_GUIDE_CHANGED_EVENT));
 }
 
-export function completeFirstRunStep(step: FirstRunStep, storage: Storage = localStorage): void {
+export function completeFirstRunStep(step: FirstRunStep, storage?: Storage): void {
 	const record = readFirstRunGuideRecord(storage);
 	if (record.completed.includes(step)) return;
 	writeFirstRunGuideRecord(
@@ -53,11 +50,11 @@ export function completeFirstRunStep(step: FirstRunStep, storage: Storage = loca
 	);
 }
 
-export function dismissFirstRunGuide(storage: Storage = localStorage): void {
+export function dismissFirstRunGuide(storage?: Storage): void {
 	writeFirstRunGuideRecord({ ...readFirstRunGuideRecord(storage), dismissed: true }, storage);
 }
 
-export function reopenFirstRunGuide(storage: Storage = localStorage): void {
+export function reopenFirstRunGuide(storage?: Storage): void {
 	writeFirstRunGuideRecord(
 		{ ...readFirstRunGuideRecord(storage), dismissed: false, showCompleted: true },
 		storage,

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useLayoutEffect, useState } from "preact/hooks";
 import {
 	completeFirstRunStep,
 	dismissFirstRunGuide,
@@ -122,6 +122,10 @@ export function FirstRunGuide({
 }) {
 	const [record, setRecord] = useState(readFirstRunGuideRecord);
 	const [announcement, setAnnouncement] = useState("");
+	const [hasInspectableMemory, setHasInspectableMemory] = useState(false);
+	useLayoutEffect(() => {
+		setHasInspectableMemory(document.querySelector(".feed-item button.feed-title") !== null);
+	});
 
 	useEffect(() => {
 		const refresh = () => {
@@ -170,7 +174,7 @@ export function FirstRunGuide({
 			</div>
 			<GuideChecklist
 				completed={completed}
-				hasMemories={hasMemories}
+				hasMemories={hasInspectableMemory}
 				onAction={(step) => {
 					step.action();
 					setAnnouncement(`Ready: ${step.actionLabel}.`);
