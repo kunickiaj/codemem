@@ -347,9 +347,14 @@ describe("Device pairing entry point", () => {
 });
 
 describe("Device pairing live portal restoration", () => {
-	it.each([false, true])(
-		"preserves visibility after initial sync reveals the form (observer ran: %s)",
-		async (observerRan) => {
+	it.each([
+		[false, "live-portal"],
+		[true, "live-portal"],
+		[false, "syncJoinSection"],
+		[true, "syncJoinSection"],
+	] as const)(
+		"preserves visibility after initial sync reveals the form (observer ran: %s, parent: %s)",
+		async (observerRan, parentId) => {
 			document.body.insertAdjacentHTML(
 				"beforeend",
 				'<div id="syncJoinSection"><div id="syncJoinPanel" hidden><button>Review invite</button></div></div><div id="live-portal"></div>',
@@ -361,7 +366,7 @@ describe("Device pairing live portal restoration", () => {
 					?.click(),
 			);
 			const panel = document.getElementById("syncJoinPanel");
-			const portal = document.getElementById("live-portal");
+			const portal = document.getElementById(parentId);
 			if (!panel || !portal) throw new Error("pairing fixture missing");
 			portal.appendChild(panel);
 			panel.hidden = false;

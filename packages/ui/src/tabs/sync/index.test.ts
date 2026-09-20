@@ -102,6 +102,49 @@ async function resetSyncTestState(activeTab: "advanced" | "devices") {
 	state.deviceIdentityInventoryLoadError = false;
 }
 
+describe("initial sync import availability", () => {
+	beforeEach(() => resetSyncTestState("advanced"));
+
+	it.each(["syncJoinSection", "devices-pairing-accept"])(
+		"reveals import controls after initial failure with the panel in %s and recovers",
+		async (parentId) => {
+			const api = await import("../../lib/api");
+			const { loadSyncData } = await import("./index");
+			const { renderTeamSync } = await import("./team-sync");
+			document.body.innerHTML = `
+				<div id="syncSetupPanel" hidden><div id="syncJoinSection"></div></div>
+				<div id="devices-pairing-accept"></div>`;
+			const panel = document.createElement("div");
+			panel.id = "syncJoinPanel";
+			panel.hidden = true;
+			panel.innerHTML = "<textarea>pending invite</textarea><button>Review invite</button>";
+			document.getElementById(parentId)?.appendChild(panel);
+			const request = deferred<never>();
+			vi.mocked(api.loadSyncStatus).mockReturnValueOnce(request.promise);
+			const initialLoad = loadSyncData();
+			expect(panel.hidden).toBe(true);
+			request.reject(new Error("status unavailable"));
+			await expect(initialLoad).resolves.toBe(false);
+			expect(panel.hidden).toBe(false);
+			expect(document.getElementById("syncSetupPanel")?.hidden).toBe(false);
+			expect(panel.parentElement?.id).toBe("syncJoinSection");
+			expect(panel.querySelector("textarea")?.value).toBe("pending invite");
+			expect(panel.querySelector("button")?.disabled).toBe(false);
+			expect(renderTeamSync).not.toHaveBeenCalled();
+
+			vi.mocked(api.loadSyncStatus).mockResolvedValueOnce({ peers: [] } as never);
+			vi.mocked(api.loadSyncActors).mockResolvedValue({ items: [] });
+			vi.mocked(api.loadCoordinatorAdminStatus).mockResolvedValue({});
+			vi.mocked(api.loadShareOperations).mockResolvedValue({ items: [] });
+			vi.mocked(api.loadDeviceIdentityInventory).mockResolvedValue({} as never);
+			await expect(loadSyncData()).resolves.toBe(true);
+			expect(renderTeamSync).toHaveBeenCalledOnce();
+			expect(panel.hidden).toBe(false);
+			document.body.innerHTML = "";
+		},
+	);
+});
+
 describe("loadSyncData", () => {
 	beforeEach(() => resetSyncTestState("advanced"));
 
