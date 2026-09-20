@@ -409,6 +409,8 @@ function seedReceivedProjectOriginDevices(store: MemoryStore): void {
 	insertPeer.run("device-b", "Desk Computer", "device-b-fingerprint", now);
 	insertPeer.run("café peer", " CAFÉ PEER ", "device-e-fingerprint", now);
 	insertPeer.run("Ｓｏｕｒｃｅ Ｐｅｅｒ", "Source Peer", "device-f-fingerprint", now);
+	insertPeer.run("Straße", "STRASSE", "device-g-fingerprint", now);
+	insertPeer.run("ος", "ΟΣ", "device-h-fingerprint", now);
 	const sessionId = insertTestSession(store.db);
 	store.db
 		.prepare("UPDATE sessions SET cwd = ?, project = NULL WHERE id = ?")
@@ -420,6 +422,8 @@ function seedReceivedProjectOriginDevices(store: MemoryStore): void {
 		"source  identity",
 		"café peer",
 		"Ｓｏｕｒｃｅ Ｐｅｅｒ",
+		"Straße",
+		"ος",
 	]) {
 		const memoryId = insertTestMemory(store, {
 			sessionId,
@@ -455,6 +459,8 @@ async function resolvesReceivedProjectOriginDeviceNames(): Promise<void> {
 			{ device_id: "device-c", display_name: null },
 			{ device_id: "source  identity", display_name: null },
 			{ device_id: "Ｓｏｕｒｃｅ Ｐｅｅｒ", display_name: null },
+			{ device_id: "Straße", display_name: null },
+			{ device_id: "ος", display_name: null },
 		]);
 	} finally {
 		cleanup();

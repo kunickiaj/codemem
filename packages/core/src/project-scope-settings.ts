@@ -1162,18 +1162,23 @@ interface PeerReceivedOriginDeviceRow {
 function listPeerReceivedOriginDeviceRows(db: Database): PeerReceivedOriginDeviceRow[] {
 	return db
 		.prepare(
-			`SELECT DISTINCT
+			`WITH received AS (
+				SELECT memory_items.*,
+				COALESCE(NULLIF(TRIM(origin_device_id), ''),
+					CASE WHEN json_valid(metadata_json) THEN NULLIF(TRIM(json_extract(metadata_json, '$.origin_device_id')), '') END) AS effective_origin
+				FROM memory_items
+			) SELECT DISTINCT
 				'peer-received:' || CASE
 					WHEN mi.scope_id LIKE 'managed-project:%' THEN 'scope:' || mi.scope_id
-					ELSE TRIM(mi.origin_device_id) || ':project:' || TRIM(mi.project)
+					ELSE COALESCE(NULLIF(TRIM(mi.origin_device_id), ''), 'unknown') || ':project:' || TRIM(mi.project)
 				END AS workspace_id,
-				TRIM(mi.origin_device_id) AS device_id
-			 FROM memory_items mi
+				mi.effective_origin AS device_id
+			 FROM received mi
 			 JOIN sessions s ON s.id = mi.session_id
 			 WHERE mi.active = 1
 			   AND mi.project IS NOT NULL
 			   AND TRIM(mi.project) <> ''
-			   AND TRIM(COALESCE(mi.origin_device_id, '')) NOT IN ('', 'unknown')
+			   AND COALESCE(mi.effective_origin, '') NOT IN ('', 'unknown')
 			   AND (
 			         (s.cwd IS NOT NULL AND substr(s.cwd, 1, length(?)) = ?)
 			      OR (s.cwd IS NULL AND s.tool_version = 'sync_replication')

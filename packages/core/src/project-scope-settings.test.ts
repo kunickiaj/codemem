@@ -139,6 +139,9 @@ function listsDistinctManagedReceivedProjectOrigins(): void {
 		initTestSchema(db);
 		const scopeId = "managed-project:abc123";
 		seedManagedReceivedProjectOrigins(db, scopeId);
+		db.prepare(
+			"UPDATE memory_items SET metadata_json = ?, origin_device_id = NULL WHERE origin_device_id = ?",
+		).run(JSON.stringify({ origin_device_id: "owner-laptop" }), "owner-laptop");
 		const received = listProjectScopeInventory(db).projects.filter(
 			(project) => project.read_only_reason === "peer_received",
 		);
