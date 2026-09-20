@@ -144,6 +144,7 @@ codemem status --db-path ./codemem.sqlite --config ./codemem.json
 - If a selected tier path cannot honor the requested settings, codemem records the requested versus actual provider/model/runtime details and surfaces a visible fallback reason.
 - Sync settings can also be updated here (`sync_enabled`, `sync_host`, `sync_port`, `sync_interval_s`, `sync_mdns`).
 - Environment variables still override file values.
+- Connection mode and its outcome labels use the backend's resolved observer runtime, including automatic Claude/Codex session detection and normalized environment values. An explicit mode edit previews the saved choice unless an environment override controls it; reading Settings does not start a model request or authenticate a client.
 - Config resolution supports JSON and JSONC with this precedence:
   1. explicit `CODEMEM_CONFIG`
   2. workspace-scoped config derived from `CODEMEM_RUNTIME_ROOT` or `CODEMEM_WORKSPACE_ID`

@@ -554,13 +554,37 @@ function finalizeLoadedObserverConfig(
 	return cfg;
 }
 
+function readObserverConfigData(): Record<string, unknown> {
+	const configDir = join(codememHomeDir(), ".config", "codemem");
+	const envPath = process.env.CODEMEM_CONFIG;
+	const candidates = [join(configDir, "config.json"), join(configDir, "config.jsonc")];
+	const configPath = envPath
+		? envPath.replace(/^~/, codememHomeDir())
+		: candidates.find((p) => existsSync(p));
+	if (!configPath || !existsSync(configPath)) return {};
+	try {
+		const text = readFileSync(configPath, "utf-8");
+		if (!text.trim()) return {};
+		let data: unknown;
+		try {
+			data = JSON.parse(text);
+		} catch {
+			data = JSON.parse(stripTrailingCommas(stripJsonComments(text)));
+		}
+		if (typeof data !== "object" || data == null || Array.isArray(data)) return {};
+		return data as Record<string, unknown>;
+	} catch {
+		return {};
+	}
+}
+
 /**
- * Load observer config from `~/.config/codemem/config.json{c}`.
+ * Load observer config from `~/.config/codemem/config.json{c}` or supplied file data.
  *
  * Reads the codemem config file (not OpenCode's) and extracts observer-related
  * fields with environment variable overrides.
  */
-export function loadObserverConfig(): ObserverConfig {
+export function loadObserverConfig(configData?: Record<string, unknown>): ObserverConfig {
 	const defaults: ObserverConfig = {
 		observerProvider: null,
 		observerModel: null,
@@ -593,36 +617,7 @@ export function loadObserverConfig(): ObserverConfig {
 		observerAuthCacheTtlS: 300,
 	};
 
-	// Read config file
-	const configDir = join(codememHomeDir(), ".config", "codemem");
-	const envPath = process.env.CODEMEM_CONFIG;
-	let configPath: string | null = null;
-	if (envPath) {
-		configPath = envPath.replace(/^~/, codememHomeDir());
-	} else {
-		const candidates = [join(configDir, "config.json"), join(configDir, "config.jsonc")];
-		configPath = candidates.find((p) => existsSync(p)) ?? null;
-	}
-
-	let data: Record<string, unknown> = {};
-	if (configPath && existsSync(configPath)) {
-		try {
-			let text = readFileSync(configPath, "utf-8");
-			if (text.trim()) {
-				try {
-					data = JSON.parse(text) as Record<string, unknown>;
-				} catch {
-					text = stripTrailingCommas(stripJsonComments(text));
-					data = JSON.parse(text) as Record<string, unknown>;
-				}
-				if (typeof data !== "object" || data == null || Array.isArray(data)) {
-					data = {};
-				}
-			}
-		} catch {
-			data = {};
-		}
-	}
+	const data = configData ?? readObserverConfigData();
 
 	// Apply config file values
 	const cfg = { ...defaults };
@@ -846,6 +841,18 @@ export function loadObserverConfig(): ObserverConfig {
 	}
 
 	return finalizeLoadedObserverConfig(cfg, data);
+}
+
+/** Normalize the runtime exactly as ObserverClient does after automatic selection. */
+export function normalizeObserverRuntime(value: unknown): string {
+	const runtime = typeof value === "string" ? value.trim().toLowerCase() : "";
+	if (runtime === "claude_sidecar" || runtime === "codex_sidecar") return runtime;
+	return "api_http";
+}
+
+/** Resolve only safe runtime metadata, without constructing a client or resolving auth. */
+export function resolveObserverRuntime(configData: Record<string, unknown>): string {
+	return normalizeObserverRuntime(loadObserverConfig(configData).observerRuntime);
 }
 
 // ---------------------------------------------------------------------------
@@ -1595,14 +1602,7 @@ export class ObserverClient {
 		this.provider = resolved;
 
 		// Resolve runtime
-		const runtimeRaw = cfg.observerRuntime;
-		const runtime = typeof runtimeRaw === "string" ? runtimeRaw.trim().toLowerCase() : "api_http";
-		this.runtime =
-			runtime === "claude_sidecar"
-				? "claude_sidecar"
-				: runtime === "codex_sidecar"
-					? "codex_sidecar"
-					: "api_http";
+		this.runtime = normalizeObserverRuntime(cfg.observerRuntime);
 
 		// Resolve model
 		if (model) {

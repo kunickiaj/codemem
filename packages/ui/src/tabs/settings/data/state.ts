@@ -10,6 +10,7 @@ export interface SettingsState {
 	previouslyFocused: HTMLElement | null;
 	baseline: Record<string, unknown>;
 	effectiveConfig: Record<string, unknown>;
+	resolvedObserverRuntime: string | null;
 	envOverrides: Record<string, unknown>;
 	touchedKeys: Set<string>;
 	shellMounted: boolean;
@@ -23,6 +24,7 @@ export const settingsState: SettingsState = {
 	previouslyFocused: null,
 	baseline: {},
 	effectiveConfig: {},
+	resolvedObserverRuntime: null,
 	envOverrides: {},
 	touchedKeys: new Set<string>(),
 	shellMounted: false,

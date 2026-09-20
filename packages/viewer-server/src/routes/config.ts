@@ -15,6 +15,7 @@ import {
 	mutateCodememConfigFile,
 	type RawEventSweeper,
 	readCodememConfigFile,
+	resolveObserverRuntime,
 } from "@codemem/core";
 import { type Context, Hono } from "hono";
 
@@ -155,7 +156,7 @@ function getEffectiveConfig(configData: ConfigData): ConfigData {
 		[string, string]
 	>) {
 		const val = process.env[envVar];
-		if (val == null || val === "") continue;
+		if (val == null || (val === "" && key !== "observer_runtime")) continue;
 		if (key === "claude_command" || key === "codex_command") {
 			effective[key] = coerceObserverCommand(val) ?? effective[key];
 		} else {
@@ -163,6 +164,15 @@ function getEffectiveConfig(configData: ConfigData): ConfigData {
 		}
 	}
 	return effective;
+}
+
+function getViewerEnvOverrides(): Record<string, string> {
+	const overrides = getCodememEnvOverrides();
+	// The observer loader treats even an empty runtime env value as an override.
+	if (process.env.CODEMEM_OBSERVER_RUNTIME !== undefined) {
+		overrides.observer_runtime = "CODEMEM_OBSERVER_RUNTIME";
+	}
+	return overrides;
 }
 
 function redactConfigValue(key: string, value: unknown): unknown {
@@ -477,7 +487,7 @@ function viewerConfigSavePayload(
 	const effectiveChangedKeys = ALLOWED_KEYS.filter(
 		(key) => !configValuesEqual(beforeEffective[key], afterEffective[key]),
 	);
-	const envOverrides = getCodememEnvOverrides();
+	const envOverrides = getViewerEnvOverrides();
 	const ignoredByEnvKeys = savedChangedKeys.filter(
 		(key) => !effectiveChangedKeys.includes(key) && key in envOverrides,
 	);
@@ -488,6 +498,7 @@ function viewerConfigSavePayload(
 		path: savedPath,
 		config: sanitizeConfigForResponse(nextConfig),
 		effective: sanitizeConfigForResponse(afterEffective),
+		resolved_observer_runtime: resolveObserverRuntime(nextConfig),
 		protected_keys: [...PROTECTED_WRITE_KEYS].sort(),
 		effects: {
 			saved_keys: savedChangedKeys,
@@ -534,7 +545,8 @@ export function configRoutes(opts: ConfigRouteOptions = {}) {
 			config: sanitizeConfigForResponse(configData),
 			defaults: DEFAULTS,
 			effective: sanitizeConfigForResponse(effective),
-			env_overrides: getCodememEnvOverrides(),
+			resolved_observer_runtime: resolveObserverRuntime(configData),
+			env_overrides: getViewerEnvOverrides(),
 			protected_keys: [...PROTECTED_WRITE_KEYS].sort(),
 			providers: loadProviderOptions(),
 		});

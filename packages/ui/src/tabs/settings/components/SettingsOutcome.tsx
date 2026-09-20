@@ -130,7 +130,7 @@ export function settingsOutcomeFor(
 ): SettingsOutcomeDetails | undefined {
 	let outcome = OUTCOMES_BY_CONTROL_ID[controlId];
 	if (!outcome) return undefined;
-	const observerRuntime = String(effectiveSetting("observerRuntime", context.observerRuntime));
+	const observerRuntime = effectiveObserverRuntime(context.observerRuntime);
 	if (SIDECAR_AUTH_CONTROL_IDS.has(controlId) && isSidecarRuntime(observerRuntime)) {
 		return sidecarAuthOutcome(controlId);
 	}
@@ -143,6 +143,18 @@ export function settingsOutcomeFor(
 		...outcome,
 		timing: `After removing ${override.trim()} and restarting the viewer`,
 	};
+}
+
+function effectiveObserverRuntime(draft?: string): string {
+	const overridden = settingsState.envOverrides.observer_runtime;
+	const touched = settingsState.touchedKeys.has("observer_runtime");
+	if (settingsState.resolvedObserverRuntime && (overridden || !touched)) {
+		return settingsState.resolvedObserverRuntime;
+	}
+	const runtime = String(effectiveSetting("observerRuntime", draft) ?? "")
+		.trim()
+		.toLowerCase();
+	return isSidecarRuntime(runtime) ? runtime : "api_http";
 }
 
 function effectiveSetting(controlId: string, draft?: unknown): unknown {

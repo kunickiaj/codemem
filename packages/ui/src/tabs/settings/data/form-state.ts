@@ -7,11 +7,20 @@ import { asBooleanValue, asInputString, effectiveOrConfigured } from "./value-he
 export interface ConfigPayload {
 	config?: Record<string, unknown>;
 	effective?: Record<string, unknown>;
+	resolved_observer_runtime?: string;
 	defaults?: Record<string, unknown>;
 	env_overrides?: Record<string, unknown>;
 	protected_keys?: unknown;
 	providers?: unknown;
 	path?: string;
+}
+
+function runtimeFromPayload(payload: ConfigPayload): string {
+	return (
+		payload.resolved_observer_runtime ||
+		asInputString(effectiveOrConfigured(payload.config, payload.effective, "observer_runtime")) ||
+		"api_http"
+	);
 }
 
 export function formStateFromPayload(payload: ConfigPayload): SettingsFormState {
@@ -76,8 +85,7 @@ export function formStateFromPayload(payload: ConfigPayload): SettingsFormState 
 		observerRichMaxOutputTokens: asInputString(
 			effectiveOrConfigured(config, effective, "observer_rich_max_output_tokens"),
 		),
-		observerRuntime:
-			asInputString(effectiveOrConfigured(config, effective, "observer_runtime")) || "api_http",
+		observerRuntime: runtimeFromPayload(payload),
 		observerAuthSource:
 			asInputString(effectiveOrConfigured(config, effective, "observer_auth_source")) || "auto",
 		observerAuthFile: asInputString(effectiveOrConfigured(config, effective, "observer_auth_file")),

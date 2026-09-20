@@ -96,9 +96,11 @@ export function renderConfigModal(payload: unknown) {
 
 	settingsState.envOverrides = envOverrides;
 	settingsState.effectiveConfig = { ...config, ...data.effective };
+	settingsState.resolvedObserverRuntime = data.resolved_observer_runtime ?? null;
 	settingsState.protectedKeys = new Set(protectedKeys);
 	state.configDefaults = defaults;
 	state.configPath = data.path || "";
+	settingsState.touchedKeys = new Set<string>();
 
 	updateRenderState({
 		effectiveText: describeEffectiveSettings(data.effective, Object.keys(envOverrides).length > 0),
@@ -109,7 +111,6 @@ export function renderConfigModal(payload: unknown) {
 		values,
 	});
 
-	settingsState.touchedKeys = new Set<string>();
 	try {
 		const baseline = collectSettingsPayload({ allowUntouchedParseErrors: true });
 		settingsState.baseline = mergeOverrideBaseline(baseline, config, envOverrides);
