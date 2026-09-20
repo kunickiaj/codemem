@@ -951,6 +951,21 @@ describe("Health update banner", () => {
 		expect(updateBannerText()).not.toMatch(/up to date|outdated|0\.44\.2 is available/i);
 	});
 
+	it("includes fresh repository-source errors in the update status", () => {
+		setUpdateStatus({
+			...availableStatus,
+			current_version: "0.44.0",
+			install_kind: "repo-dev",
+			error: "release cache is read-only",
+		});
+
+		renderOverview();
+
+		expect(
+			document.querySelector("#healthUpdateBanner .health-update-detail")?.textContent,
+		).toContain("release cache is read-only");
+	});
+
 	it("shows unavailable status for an unsupported installed version", () => {
 		// Arrange
 		setUpdateStatus({

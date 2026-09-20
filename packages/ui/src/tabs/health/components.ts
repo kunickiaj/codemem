@@ -186,7 +186,10 @@ function updateBannerCopy(status: UpdateStatus): UpdateBannerCopy {
 		return {
 			label: `Source build · ${status.current_version}`,
 			title: withUpdateGuidance(
-				`Running from repository source. Package metadata version: ${status.current_version}. Registry releases do not describe the checked-out source revision.`,
+				withUpdateError(
+					`Running from repository source. Package metadata version: ${status.current_version}. Registry releases do not describe the checked-out source revision.`,
+					status,
+				),
 				status,
 			),
 			tone: "health-update-source",
