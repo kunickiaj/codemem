@@ -676,6 +676,12 @@ function testRecipientFocusedRecipientActions() {
 		expect(more?.textContent).toBe("Show fewer");
 		expect(document.activeElement).toBe(more);
 	});
+}
+
+describe("recipient-focused Sharing Identity projects", testRecipientFocusedRecipientActions);
+
+function testRecipientFocusedRecipientActionsAndDialog() {
+	registerRecipientFocusedSharingLifecycle();
 
 	it("opens exact recipient management requests from both action labels", () => {
 		mount();
@@ -771,7 +777,10 @@ function testRecipientFocusedRecipientActions() {
 	});
 }
 
-describe("recipient-focused Sharing recipient actions", testRecipientFocusedRecipientActions);
+	describe(
+		"recipient-focused Sharing recipient actions",
+		testRecipientFocusedRecipientActionsAndDialog,
+	);
 
 function testRecipientFocusedTeamValidation() {
 	registerRecipientFocusedSharingLifecycle();
@@ -1209,6 +1218,12 @@ function testRecipientFocusedMigrationFallbacks() {
 			"Legacy groups to migrate",
 		);
 	});
+}
+
+describe("recipient-focused Sharing migration fallbacks", testRecipientFocusedMigrationFallbacks);
+
+function testRecipientFocusedMigrationSurface() {
+	registerRecipientFocusedSharingLifecycle();
 
 	it("offers six current SRE devices for review without implying canonical Team access", () => {
 		const onOpenTeamSetup = vi.fn();
@@ -1277,4 +1292,4 @@ function testRecipientFocusedMigrationFallbacks() {
 	});
 }
 
-describe("recipient-focused Sharing migration fallbacks", testRecipientFocusedMigrationFallbacks);
+	describe("recipient-focused Sharing migration surface", testRecipientFocusedMigrationSurface);

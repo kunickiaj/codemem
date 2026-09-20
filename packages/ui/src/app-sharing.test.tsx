@@ -141,7 +141,8 @@ describe("Sharing app data refresh", () => {
 			expect.objectContaining({ teamSetupSummary: newSummary }),
 		);
 	});
-
+});
+describe("Sharing app data refresh", () => {
 	it("keeps stale Sharing cards after a refresh failure and restores fresh state after recovery", async () => {
 		document.body.innerHTML =
 			'<div id="recipientPolicySharingMount"></div><div id="recipientPolicyManagementMount"></div>';
@@ -217,7 +218,8 @@ describe("Sharing app data refresh", () => {
 			"The previous Team setup status is being shown.",
 		);
 	});
-
+});
+describe("Sharing app data refresh", () => {
 	it("keeps Sharing usable when only device inventory is unavailable", async () => {
 		document.body.innerHTML =
 			'<div id="recipientPolicySharingMount"></div><div id="recipientPolicyManagementMount"></div>';
@@ -250,7 +252,8 @@ describe("Sharing app data refresh", () => {
 		expect(document.body.textContent).toContain("Manage projects");
 		expect(document.body.textContent).toContain("Device Identity information is unavailable");
 	});
-
+});
+describe("Sharing app data refresh", () => {
 	it("uses current inventory availability while preserving stale Sharing content", async () => {
 		document.body.innerHTML = '<div id="recipientPolicySharingMount"></div>';
 		const firstInventory = {
@@ -292,7 +295,8 @@ describe("Sharing app data refresh", () => {
 			mountSharing.mock.calls.filter((call) => call[3]?.loading === true).length,
 		).toBeGreaterThanOrEqual(1);
 	});
-
+});
+describe("Sharing app data refresh", () => {
 	it("preserves failed-refresh guards while a retry is pending", async () => {
 		document.body.innerHTML = '<div id="recipientPolicySharingMount"></div>';
 		const inventory = {
@@ -340,7 +344,8 @@ describe("Sharing app data refresh", () => {
 		pendingInventory.resolve(inventory);
 		await expect(retry).resolves.toBe(true);
 	});
-
+});
+describe("Sharing app data refresh", () => {
 	it("keeps Advanced Sync navigation available during the first loading render", () => {
 		document.body.innerHTML = '<div id="recipientPolicySharingMount"></div>';
 		const pendingProjects = deferred<{ manageable: typeof projects; received: [] }>();
@@ -358,7 +363,8 @@ describe("Sharing app data refresh", () => {
 			expect.objectContaining({ loading: true, onNavigateAdvancedSync }),
 		);
 	});
-
+});
+describe("Sharing app data refresh", () => {
 	it("waits for delayed device inventory failure before rendering a broader load error", async () => {
 		document.body.innerHTML =
 			'<div id="recipientPolicySharingMount"></div><div id="recipientPolicyManagementMount"></div>';
@@ -379,7 +385,8 @@ describe("Sharing app data refresh", () => {
 		expect(document.body.textContent).toContain("Device Identity information is unavailable");
 		expect(document.body.textContent).toContain("Team setup status is temporarily unavailable.");
 	});
-
+});
+describe("Sharing app data refresh", () => {
 	it("forwards a successful Team summary through first-load required-data failure", async () => {
 		document.body.innerHTML = '<div id="recipientPolicySharingMount"></div>';
 		const teamSetupSummary: LegacyTeamSetupSummaryResponseV1 = {
@@ -418,7 +425,8 @@ describe("Sharing app data refresh", () => {
 			}),
 		);
 	});
-
+});
+describe("Sharing app data refresh", () => {
 	it("lets the newest overlapping refresh own the final mount and result", async () => {
 		document.body.innerHTML =
 			'<div id="recipientPolicySharingMount"></div><div id="recipientPolicyManagementMount"></div>';
@@ -451,7 +459,8 @@ describe("Sharing app data refresh", () => {
 		expect(completedMounts).toHaveLength(1);
 		expect(completedMounts[0]?.[2]).toBe(newestIntent);
 	});
-
+});
+describe("Sharing app data refresh", () => {
 	it("loads the redacted coordinator reconciliation count into normal Sharing", async () => {
 		document.body.innerHTML = '<div id="recipientPolicySharingMount"></div>';
 		const mountSharing = vi.fn();
@@ -485,7 +494,8 @@ describe("Sharing app data refresh", () => {
 		);
 		expect(JSON.stringify(mountSharing.mock.calls.at(-1)?.[3])).not.toContain("coordinator_id");
 	});
-
+});
+describe("Sharing app data refresh", () => {
 	it("preserves reconciliation attention across a transient sync-status failure", async () => {
 		document.body.innerHTML = '<div id="recipientPolicySharingMount"></div>';
 		const mountSharing = vi.fn();
@@ -520,7 +530,8 @@ describe("Sharing app data refresh", () => {
 			expect.objectContaining({ coordinatorEnrollmentIssueCount: 2 }),
 		);
 	});
-
+});
+describe("Sharing app data refresh", () => {
 	it("loads Team setup independently and keeps Sharing usable when that optional request fails", async () => {
 		document.body.innerHTML = '<div id="recipientPolicySharingMount"></div>';
 		const onOpenTeamSetup = vi.fn();
@@ -573,7 +584,8 @@ describe("Sharing app data refresh", () => {
 		);
 		expect(mountSharing.mock.calls.at(-1)?.[3]?.refreshError).toBeUndefined();
 	});
-
+});
+describe("Sharing app data refresh", () => {
 	it("renders required Sharing data before optional Team setup discovery settles", async () => {
 		document.body.innerHTML = '<div id="recipientPolicySharingMount"></div>';
 		const teamSetupResult = deferred<LegacyTeamSetupSummaryResponseV1>();
@@ -606,7 +618,8 @@ describe("Sharing app data refresh", () => {
 			}),
 		);
 	});
-
+});
+describe("Sharing app data refresh", () => {
 	it("renders required Sharing data but reports strict refresh failure after Team setup discovery fails", async () => {
 		document.body.innerHTML = '<div id="recipientPolicySharingMount"></div>';
 		const teamSetupResult = deferred<LegacyTeamSetupSummaryResponseV1>();
@@ -641,7 +654,8 @@ describe("Sharing app data refresh", () => {
 			expect.objectContaining({ teamSetupLoading: false, teamSetupUnavailable: true }),
 		);
 	});
-
+});
+describe("Sharing app data refresh", () => {
 	it("renders fresh Team setup status before a required Sharing refresh settles", async () => {
 		document.body.innerHTML = '<div id="recipientPolicySharingMount"></div>';
 		const projectRefresh = deferred<{ manageable: typeof projects; received: [] }>();
@@ -689,7 +703,8 @@ describe("Sharing app data refresh", () => {
 		projectRefresh.resolve({ manageable: projects, received: [] });
 		await expect(refresh).resolves.toBe(true);
 	});
-
+});
+describe("Sharing app data refresh", () => {
 	it("marks a cached Team setup summary as previous while its refresh is pending", async () => {
 		document.body.innerHTML = '<div id="recipientPolicySharingMount"></div>';
 		const refreshResult = deferred<LegacyTeamSetupSummaryResponseV1>();
@@ -728,7 +743,8 @@ describe("Sharing app data refresh", () => {
 
 		refreshResult.resolve({ version: 1, candidates: [] });
 	});
-
+});
+describe("Sharing app data refresh", () => {
 	it("reports first-load Team setup unavailability without inventing candidates", async () => {
 		document.body.innerHTML = '<div id="recipientPolicySharingMount"></div>';
 		const mountSharing = vi.fn();
@@ -751,7 +767,8 @@ describe("Sharing app data refresh", () => {
 			}),
 		);
 	});
-
+});
+describe("Sharing app data refresh", () => {
 	it("does not let an older Team summary refresh replace the newest unavailable state", async () => {
 		document.body.innerHTML = '<div id="recipientPolicySharingMount"></div>';
 		const initialSummary: LegacyTeamSetupSummaryResponseV1 = {
