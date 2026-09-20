@@ -364,6 +364,16 @@ function testRecipientFocusedNavigation() {
 		mount(intent({ teams: [] }), { loading: false });
 		expect(tab("Teams").getAttribute("aria-selected")).toBe("true");
 	});
+	it("keeps a clicked tab when the first successful load supplies Teams", () => {
+		mount(intent({ teams: [] }), { loading: true });
+		act(() => document.getElementById("recipient-policy-sharing-tab-invitations")?.click());
+		mount(intent(), { loading: false });
+		expect(
+			document
+				.getElementById("recipient-policy-sharing-tab-invitations")
+				?.getAttribute("aria-selected"),
+		).toBe("true");
+	});
 
 	it("discloses when device setup attention cannot be loaded", () => {
 		mount(intent(), {

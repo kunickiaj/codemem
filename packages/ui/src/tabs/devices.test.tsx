@@ -490,6 +490,44 @@ describe("Devices reconciliation focus", function devicesReconciliationFocusTest
 });
 
 describe("Device row focus restoration", () => {
+	it("restores details-panel focus to the device menu after regrouping", () => {
+		mount(intent(), reconciliation());
+		const graph = intent();
+		const device = graph.identityDevices[0];
+		const identity = graph.identities[0];
+		if (!device || !identity) throw new Error("fixture missing");
+		const details = document.getElementById(`device-details-${device.deviceId}`);
+		if (!details) throw new Error("details missing");
+		details.hidden = false;
+		const control = document.createElement("button");
+		control.textContent = "Details control";
+		details.appendChild(control);
+		control.focus();
+		graph.identities.push({ ...identity, identityId: "other-owner", displayName: "Other owner" });
+		device.identityId = "other-owner";
+		mount(graph, reconciliation());
+		expect(document.activeElement).toBe(
+			document.getElementById(`device-actions-${device.deviceId}`),
+		);
+	});
+	it("omits Team navigation without a handler and counts unavailable direct projects", () => {
+		const graph = intent();
+		const edge = graph.projectRecipients.find((edge) => edge.recipientKind === "identity");
+		if (!edge) throw new Error("direct share missing");
+		graph.projectRecipients.push({ ...edge, canonicalProjectIdentity: "unavailable-project" });
+		mount(graph, reconciliation());
+		expect(document.querySelector(".devices-identity-header")?.textContent).toContain(
+			"Direct shares: 2",
+		);
+		expect(
+			[...document.querySelectorAll("button")].some(
+				(button) => button.textContent === "Team projects →",
+			),
+		).toBe(false);
+	});
+});
+
+describe("Device row focus restoration across inventory refresh", () => {
 	it("focuses a projected configured-device card from its canonical inventory ID", () => {
 		state.pendingDeviceIdentityFocus = "canonical-alias";
 		mount(intent(), reconciliation(), {

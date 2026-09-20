@@ -860,7 +860,11 @@ function useSharingTabs({
 		activateTab(nextIndex);
 	};
 
-	return { activeTab, setActiveTab, tabRefs, tabCounts, handleTabKeyDown };
+	const selectTab = (tab: SharingTab) => {
+		explicitSelection.current = true;
+		setActiveTab(tab);
+	};
+	return { activeTab, selectTab, tabRefs, tabCounts, handleTabKeyDown };
 }
 
 function RecipientPolicySharing(props: {
@@ -869,7 +873,7 @@ function RecipientPolicySharing(props: {
 	projects: RecipientPolicyManagementProject[];
 }) {
 	const { intent, options, projects } = props;
-	const { activeTab, setActiveTab, tabRefs, tabCounts, handleTabKeyDown } = useSharingTabs(props);
+	const { activeTab, selectTab, tabRefs, tabCounts, handleTabKeyDown } = useSharingTabs(props);
 	return (
 		<section className="recipient-policy-sharing recipient-policy-sharing-responsive-surface">
 			<header className="recipient-policy-sharing-header">
@@ -900,7 +904,7 @@ function RecipientPolicySharing(props: {
 						className={`tab-btn recipient-policy-sharing-tab recipient-policy-sharing-target recipient-policy-sharing-target-24${activeTab === tab.id ? " active" : ""}`}
 						id={`recipient-policy-sharing-tab-${tab.id}`}
 						key={tab.id}
-						onClick={() => setActiveTab(tab.id)}
+						onClick={() => selectTab(tab.id)}
 						onKeyDown={(event) => handleTabKeyDown(event, index)}
 						ref={(element) => {
 							tabRefs.current[index] = element;

@@ -1199,6 +1199,12 @@ function DeviceRowMenu({
 	);
 }
 
+function rememberDetailsFocus(deviceId: string) {
+	return (element: HTMLTableRowElement | null) => {
+		if (element) deviceActionFocusIdentities.set(element, { control: "menu", deviceId });
+	};
+}
+
 function DeviceTableRow({
 	device,
 	intent,
@@ -1263,7 +1269,12 @@ function DeviceTableRow({
 					/>
 				</td>
 			</tr>
-			<tr className="devices-table-details" hidden={!detailsOpen} id={detailsId}>
+			<tr
+				className="devices-table-details"
+				hidden={!detailsOpen}
+				id={detailsId}
+				ref={rememberDetailsFocus(device.deviceId)}
+			>
 				<td colSpan={5}>
 					<p>
 						<strong>{device.statusLabel}</strong> — {device.statusCopy}
@@ -1310,9 +1321,14 @@ function DeviceIdentityGroup({
 		),
 	);
 	const directShares = new Set(
-		devices.flatMap((device) =>
-			device.directProjects.map((project) => project.canonicalProjectIdentity),
-		),
+		intent.projectRecipients
+			.filter(
+				(edge) =>
+					edge.status === "active" &&
+					edge.recipientKind === "identity" &&
+					edge.identityId === first.identityId,
+			)
+			.map((edge) => edge.canonicalProjectIdentity),
 	).size;
 	return (
 		<section className="devices-identity-group">
@@ -1324,14 +1340,19 @@ function DeviceIdentityGroup({
 					</span>
 				</strong>
 				<span className="small">
-					Direct shares: {directShares || "none"} ·{" "}
-					<button
-						className="sync-subview-link"
-						onClick={() => options.onNavigate?.("sharing_teams")}
-						type="button"
-					>
-						Team projects →
-					</button>
+					Direct shares: {directShares || "none"}
+					{options.onNavigate ? (
+						<>
+							{" · "}
+							<button
+								className="sync-subview-link"
+								onClick={() => options.onNavigate?.("sharing_teams")}
+								type="button"
+							>
+								Team projects →
+							</button>
+						</>
+					) : null}
 				</span>
 			</div>
 			<table aria-label={`${first.identityName} devices`} className="devices-table">
@@ -1960,6 +1981,8 @@ function restoreDeviceActionFocus(
 function deviceFocusIdentity(element: Element): DeviceActionFocusIdentity | undefined {
 	const direct = deviceActionFocusIdentities.get(element as HTMLElement);
 	if (direct) return direct;
+	const details = element.closest<HTMLElement>(".devices-table-details");
+	if (details) return deviceActionFocusIdentities.get(details);
 	const summary = element.closest(".devices-row-menu")?.querySelector<HTMLElement>("summary");
 	return summary ? deviceActionFocusIdentities.get(summary) : undefined;
 }
