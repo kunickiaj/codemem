@@ -352,6 +352,15 @@ function testRecipientFocusedNavigation() {
 		expect(tab("Teams").getAttribute("aria-selected")).toBe("true");
 	});
 
+	it("keeps a requested Teams tab through the initial loading transition", () => {
+		requestSharingNavigation("teams");
+		mount(intent({ teams: [] }), { loading: true });
+		expect(tab("Teams").getAttribute("aria-selected")).toBe("true");
+
+		mount(intent({ teams: [] }), { loading: false });
+		expect(tab("Teams").getAttribute("aria-selected")).toBe("true");
+	});
+
 	it("discloses when device setup attention cannot be loaded", () => {
 		mount(intent(), {
 			deviceInventory: {

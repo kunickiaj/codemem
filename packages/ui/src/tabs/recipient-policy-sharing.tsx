@@ -969,7 +969,7 @@ function RecipientPolicySharing({
 	useEffect(() => {
 		if (initialSelectionPending.current && !options.loading && !options.loadError) {
 			initialSelectionPending.current = false;
-			setActiveTab(hasActiveTeams ? "teams" : "identities");
+			if (!explicitSelection.current) setActiveTab(hasActiveTeams ? "teams" : "identities");
 			return;
 		}
 		if (!hasActiveTeams && !explicitSelection.current) {
