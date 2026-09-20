@@ -553,6 +553,12 @@ describe("Devices app integration", () => {
 		expect(requestSharingNavigation).toHaveBeenCalledWith("invitations");
 		expect(document.activeElement).toBe(document.getElementById("tabBtn-sharing"));
 	});
+	it("selects Teams when following Advanced Team settings", async () => {
+		const { requestSharingNavigation } = await import("./tabs/recipient-policy-sharing");
+		act(() => document.getElementById("advancedTeamSettingsLink")?.click());
+		expect(requestSharingNavigation).toHaveBeenCalledWith("teams");
+		expect(window.location.hash).toBe("#sharing");
+	});
 
 	it("focuses coordinator administration when switching sections", async () => {
 		act(() => document.getElementById("tabBtn-advanced")?.click());

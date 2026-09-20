@@ -441,6 +441,7 @@ function initTabs() {
 	});
 	$("advancedTeamSettingsLink")?.addEventListener("click", (event) => {
 		event.preventDefault();
+		requestSharingNavigation("teams");
 		switchTab("sharing", { canonicalHash: true });
 		queueMicrotask(() => document.getElementById("tabBtn-sharing")?.focus());
 	});
