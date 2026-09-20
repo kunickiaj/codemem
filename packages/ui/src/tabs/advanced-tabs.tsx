@@ -2,6 +2,7 @@ import { render } from "preact";
 import { RadixTabs } from "../components/primitives/radix-tabs";
 
 export type AdvancedTabValue = "sync" | "teams";
+export type AdvancedTabChangeOptions = { focusContent: boolean };
 
 const ADVANCED_TABS = [
 	{ id: "advancedSyncButton", label: "Sync", value: "sync" },
@@ -15,13 +16,24 @@ const ADVANCED_TABS = [
 export function mountAdvancedTabs(
 	mount: HTMLElement,
 	value: AdvancedTabValue,
-	onValueChange: (value: AdvancedTabValue) => void,
+	onValueChange: (value: AdvancedTabValue, options: AdvancedTabChangeOptions) => void,
 ) {
+	let pointerActivation = false;
 	render(
 		<RadixTabs
 			ariaLabel="Advanced sections"
 			listClassName="settings-tabs"
-			onValueChange={(nextValue) => onValueChange(nextValue as AdvancedTabValue)}
+			onTriggerKeyDown={() => {
+				pointerActivation = false;
+			}}
+			onTriggerMouseDown={() => {
+				pointerActivation = true;
+			}}
+			onValueChange={(nextValue) => {
+				const focusContent = pointerActivation;
+				pointerActivation = false;
+				onValueChange(nextValue as AdvancedTabValue, { focusContent });
+			}}
 			tabs={ADVANCED_TABS}
 			triggerClassName="settings-tab"
 			value={value}

@@ -24,6 +24,6 @@ describe("mountAdvancedTabs", () => {
 		document
 			.getElementById("advancedTeamsButton")
 			?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
-		expect(onValueChange).toHaveBeenCalledWith("teams");
+		expect(onValueChange).toHaveBeenCalledWith("teams", { focusContent: true });
 	});
 });

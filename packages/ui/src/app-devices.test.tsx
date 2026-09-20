@@ -613,6 +613,23 @@ describe("Devices app integration", () => {
 	});
 });
 
+describe("Advanced keyboard focus", () => {
+	beforeEach(setupDevicesAppTest);
+	afterEach(teardownDevicesAppTest);
+
+	it("keeps keyboard section activation in the Advanced tablist", async () => {
+		act(() => document.getElementById("tabBtn-advanced")?.click());
+		await Promise.resolve();
+		const teamsButton = document.getElementById("advancedTeamsButton");
+		if (!(teamsButton instanceof HTMLButtonElement)) throw new Error("Advanced Teams tab missing");
+		act(() => teamsButton.focus());
+		await Promise.resolve();
+
+		expect(window.location.hash).toBe("#advanced/teams");
+		expect(document.activeElement).toBe(teamsButton);
+	});
+});
+
 describe("Devices app inventory recovery", () => {
 	beforeEach(setupDevicesAppTest);
 	afterEach(teardownDevicesAppTest);

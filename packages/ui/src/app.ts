@@ -370,10 +370,13 @@ function renderAdvancedSection() {
 	});
 }
 
-function selectAdvancedSection(section: AdvancedTabValue) {
+function selectAdvancedSection(
+	section: AdvancedTabValue,
+	options: { focusContent?: boolean } = {},
+) {
 	setAdvancedSection(section, true);
 	renderAdvancedSection();
-	if (section === "teams") {
+	if (section === "teams" && options.focusContent) {
 		queueMicrotask(() => document.getElementById("coordinatorAdminHeading")?.focus());
 	}
 }
