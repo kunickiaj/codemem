@@ -1647,7 +1647,9 @@ function DevicesRoot({
 function restoreDeviceActionFocus(
 	mount: HTMLElement,
 	focusedAction: DeviceActionFocusIdentity,
+	focusedElement: Element | null,
 ): void {
+	if (focusedElement?.isConnected && document.activeElement === focusedElement) return;
 	const focusTargets = [
 		...mount.querySelectorAll<HTMLElement>(".feed-menu-trigger, .feed-menu-item"),
 	];
@@ -1666,6 +1668,13 @@ function restoreDeviceActionFocus(
 	(matchingAction ?? fallbackMenu ?? document.getElementById("tabBtn-devices"))?.focus();
 }
 
+function deviceFocusIdentity(element: Element): DeviceActionFocusIdentity | undefined {
+	const direct = deviceActionFocusIdentities.get(element as HTMLElement);
+	if (direct) return direct;
+	const summary = element.closest(".devices-row-menu")?.querySelector<HTMLElement>("summary");
+	return summary ? deviceActionFocusIdentities.get(summary) : undefined;
+}
+
 export function mountDevices(
 	mount: HTMLElement,
 	intent: RecipientPolicyIntentGraphV1,
@@ -1676,9 +1685,7 @@ export function mountDevices(
 ): void {
 	const focusedElement = document.activeElement;
 	const hadDevicesFocus = focusedElement instanceof HTMLElement && mount.contains(focusedElement);
-	const focusedAction = hadDevicesFocus
-		? deviceActionFocusIdentities.get(focusedElement)
-		: undefined;
+	const focusedAction = hadDevicesFocus ? deviceFocusIdentity(focusedElement) : undefined;
 	const projection = projectDevices(
 		intent,
 		reconciliation,
@@ -1717,5 +1724,5 @@ export function mountDevices(
 		}
 	}
 	if (!focusedAction) return;
-	restoreDeviceActionFocus(mount, focusedAction);
+	restoreDeviceActionFocus(mount, focusedAction, focusedElement);
 }

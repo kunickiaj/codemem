@@ -435,6 +435,20 @@ describe("Device row focus restoration", () => {
 		);
 	});
 });
+it("restores focus from Details after its device is removed", () => {
+	document.body.insertAdjacentHTML("beforeend", '<button id="tabBtn-devices">Devices</button>');
+	mount(intent(), reconciliation(), { onNavigate: vi.fn() });
+	const details = [...document.querySelectorAll<HTMLButtonElement>(".feed-menu-item")].find(
+		(button) => button.textContent === "Details",
+	);
+	expect(details).toBeDefined();
+	details?.focus();
+	const graph = intent();
+	graph.identityDevices = [];
+	mount(graph, reconciliation(), { onNavigate: vi.fn() });
+	expect(document.activeElement).toBe(document.getElementById("tabBtn-devices"));
+});
+
 describe("Device access projection", () => {
 	it("retains requested device focus while a refresh is showing stale inventory", () => {
 		state.pendingDeviceIdentityFocus = "new-device";
