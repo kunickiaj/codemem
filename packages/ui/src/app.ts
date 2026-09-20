@@ -475,7 +475,7 @@ function reviewDevicesFromSharing(deviceId?: string) {
 }
 
 function navigateToAdvancedSyncFromSharing() {
-	switchTab("advanced", { canonicalHash: true, advancedSection: "sync" });
+	switchTab("advanced", { advancedSection: "sync" });
 	queueMicrotask(() => document.getElementById("advancedSyncButton")?.focus());
 }
 

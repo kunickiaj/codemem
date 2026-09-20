@@ -987,6 +987,16 @@ describe("Viewer behavior contracts", () => {
 		expect(openLegacyTeamSetup).toHaveBeenNthCalledWith(2, "project-candidate-ref");
 	});
 
+	it("encodes the Advanced Sync target from Sharing", async () => {
+		const { createRecipientPolicySharingLoader } = await import("./app-sharing");
+		const sharingOptions = vi.mocked(createRecipientPolicySharingLoader).mock.calls[0]?.[1];
+
+		act(() => sharingOptions?.onNavigateAdvancedSync?.());
+		await Promise.resolve();
+
+		expect(window.location.hash).toBe("#advanced/sync");
+	});
+
 	it("routes legacy upgrade review actions to Advanced Sync and Projects", async () => {
 		const { showLegacyUpgradeDialog } = await import("./components/legacy-upgrade-dialog");
 		const sharingReview = document.getElementById("syncSharingReview") as HTMLElement | null;
