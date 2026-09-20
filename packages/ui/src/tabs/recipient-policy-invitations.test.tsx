@@ -1129,28 +1129,32 @@ describe("recipient-policy invitations", () => {
 		expect(document.activeElement).toBe(trigger);
 	});
 
-	it("keeps direct Project review and legacy import routed to their established journeys", async () => {
-		vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue({ kind: "legacy_team_invite" });
-		mount();
-		act(() => button("Share exact Projects").click());
-		expect(openProjectShare).toHaveBeenCalledOnce();
-
-		act(() => button("Review invitation").click());
-		const textarea = document.querySelector<HTMLTextAreaElement>("textarea");
-		if (!textarea) throw new Error("textarea missing");
-		act(() => {
-			textarea.value = "legacy";
-			textarea.dispatchEvent(new Event("input", { bubbles: true }));
-		});
-		const dialog = document.querySelector('[role="dialog"]');
-		if (!dialog) throw new Error("dialog missing");
-		act(() => button("Review invitation", dialog).click());
-		await vi.waitFor(() =>
-			expect(dialog.textContent).toContain(
-				"Open Advanced, then Sync, to review and import this legacy invitation",
-			),
-		);
-		expect(dialog.textContent).not.toContain("coordinator administration");
-		expect(api.importCoordinatorInvite).not.toHaveBeenCalled();
-	});
+	it(
+		"keeps direct Project review and legacy import routed to their established journeys",
+		verifiesLegacyImportRouting,
+	);
 });
+
+async function verifiesLegacyImportRouting() {
+	vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue({ kind: "legacy_team_invite" });
+	mount();
+	act(() => button("Share exact Projects").click());
+	expect(openProjectShare).toHaveBeenCalledOnce();
+	act(() => button("Review invitation").click());
+	const textarea = document.querySelector<HTMLTextAreaElement>("textarea");
+	if (!textarea) throw new Error("textarea missing");
+	act(() => {
+		textarea.value = "legacy";
+		textarea.dispatchEvent(new Event("input", { bubbles: true }));
+	});
+	const dialog = document.querySelector('[role="dialog"]');
+	if (!dialog) throw new Error("dialog missing");
+	act(() => button("Review invitation", dialog).click());
+	await vi.waitFor(() =>
+		expect(dialog.textContent).toContain(
+			"Open Advanced, then Sync, to review and import this legacy invitation",
+		),
+	);
+	expect(dialog.textContent).not.toContain("coordinator administration");
+	expect(api.importCoordinatorInvite).not.toHaveBeenCalled();
+}

@@ -446,6 +446,7 @@ function initTabs() {
 	});
 	$("advancedSharingLink")?.addEventListener("click", (event) => {
 		event.preventDefault();
+		requestSharingNavigation("invitations");
 		switchTab("sharing", { canonicalHash: true });
 		queueMicrotask(() => document.getElementById("tabBtn-sharing")?.focus());
 	});

@@ -93,6 +93,7 @@ vi.mock("./tabs/recipient-policy-management", () => ({
 	mountRecipientPolicyManagement: vi.fn(),
 }));
 vi.mock("./tabs/recipient-policy-sharing", () => ({
+	requestSharingNavigation: vi.fn(),
 	mountRecipientPolicySharing: vi.fn(),
 }));
 vi.mock("./tabs/settings", () => ({
@@ -540,6 +541,7 @@ describe("Devices app integration", () => {
 	});
 
 	it("moves focus to Sharing after following the Advanced invitation link", async () => {
+		const { requestSharingNavigation } = await import("./tabs/recipient-policy-sharing");
 		act(() => document.getElementById("tabBtn-advanced")?.click());
 		const link = document.getElementById("advancedSharingLink");
 		if (!(link instanceof HTMLAnchorElement)) throw new Error("Advanced Sharing link missing");
@@ -548,6 +550,7 @@ describe("Devices app integration", () => {
 		await Promise.resolve();
 
 		expect(window.location.hash).toBe("#sharing");
+		expect(requestSharingNavigation).toHaveBeenCalledWith("invitations");
 		expect(document.activeElement).toBe(document.getElementById("tabBtn-sharing"));
 	});
 
