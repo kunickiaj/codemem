@@ -102,7 +102,7 @@ export interface DevicesProjection {
 type DeviceActionFocusIdentity = {
 	control: "action" | "menu";
 	deviceId: string;
-	target: DevicesNavigationTarget;
+	target?: DevicesNavigationTarget;
 };
 
 const deviceActionFocusIdentities = new WeakMap<HTMLElement, DeviceActionFocusIdentity>();
@@ -1123,11 +1123,11 @@ function DeviceRowMenu({
 				className="feed-menu-trigger"
 				id={`device-actions-${device.deviceId}`}
 				ref={(element) => {
-					if (element && device.action) {
+					if (element) {
 						deviceActionFocusIdentities.set(element, {
 							control: "menu",
 							deviceId: device.deviceId,
-							target: device.action.target,
+							target: device.action?.target,
 						});
 					}
 				}}
