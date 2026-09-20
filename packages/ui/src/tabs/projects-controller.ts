@@ -1727,7 +1727,10 @@ function refreshProjectCoordinatorGroupNamesInBackground(
 	void refreshProjectCoordinatorGroupNames().then(() => {
 		if (loadGeneration !== projectsLoadGeneration) return;
 		if (!projectInventoryFiltersAreCurrent(filters)) return;
-		if (isProjectSpaceSelectActive()) return;
+		if (isProjectSpaceSelectActive()) {
+			notifyProjectInventoryChanged();
+			return;
+		}
 		renderProjectInventory(result);
 	});
 }
