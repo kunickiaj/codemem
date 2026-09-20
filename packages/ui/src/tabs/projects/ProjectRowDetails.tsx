@@ -12,6 +12,7 @@ import {
 	isPeerReceived,
 	latestLabel,
 	projectDomainLabel,
+	projectDomId,
 	relationshipLabel,
 	resolutionLabel,
 	scopeOptionLabel,
@@ -113,7 +114,7 @@ function ProjectDetailsOverview({ model, view }: Pick<ProjectRowDetailsProps, "m
 function ProjectSpaceSelect(props: DetailsContentProps) {
 	const { callbacks, currentAssignable, model, scopeId, selectRef, setScopeId, view } = props;
 	const { project } = model;
-	const selectId = `project-domain-${model.key.replace(/[^a-z0-9_-]/gi, "-")}`;
+	const selectId = projectDomId("project-domain", model.key);
 	const saveDisabled = !scopeId || (scopeId === project.resolved_scope_id && !currentAssignable);
 	const saveLabel =
 		project.suggested_scope_id && scopeId === project.suggested_scope_id
