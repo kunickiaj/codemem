@@ -1511,6 +1511,18 @@ function ThisDeviceRow({
 
 type PairingEntryHandler = (trigger: HTMLElement, showExplanation?: boolean) => void;
 
+function restorePairingControls(
+	panel: HTMLElement,
+	restoreParent: HTMLElement | null,
+	movedFeedback: HTMLElement | null,
+	feedbackRestoreParent: HTMLElement | null,
+): void {
+	if (restoreParent && panel.parentElement !== restoreParent) restoreParent.appendChild(panel);
+	if (!movedFeedback || !feedbackRestoreParent) return;
+	if (movedFeedback.parentElement === feedbackRestoreParent) return;
+	feedbackRestoreParent.appendChild(movedFeedback);
+}
+
 function PairingAcceptancePanel() {
 	const hostRef = useRef<HTMLDivElement>(null);
 	useLayoutEffect(() => {
@@ -1522,6 +1534,10 @@ function PairingAcceptancePanel() {
 		let movedFeedback: HTMLElement | null = null;
 		let feedbackRestoreParent: HTMLElement | null = null;
 		const mountPairingControls = () => {
+			if (host.closest("[hidden]")) {
+				restorePairingControls(panel, restoreParent, movedFeedback, feedbackRestoreParent);
+				return;
+			}
 			if (panel.parentElement !== host) host.appendChild(panel);
 			panel.hidden = false;
 			const feedback = document.getElementById("syncJoinFeedback");
@@ -1532,7 +1548,12 @@ function PairingAcceptancePanel() {
 		};
 		mountPairingControls();
 		const observer = new MutationObserver(mountPairingControls);
-		observer.observe(document.body, { childList: true, subtree: true });
+		observer.observe(document.body, {
+			attributeFilter: ["hidden"],
+			attributes: true,
+			childList: true,
+			subtree: true,
+		});
 		return () => {
 			observer.disconnect();
 			panel.hidden = wasHidden;

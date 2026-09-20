@@ -341,7 +341,47 @@ describe("Device pairing entry point", () => {
 		);
 		expect(onNavigate).not.toHaveBeenCalled();
 	});
+});
 
+describe("Device pairing ownership", () => {
+	it("leaves the pairing form with Advanced while Devices is hidden", async () => {
+		const devicesTab = document.createElement("div");
+		devicesTab.id = "tab-devices";
+		const mountElement = document.getElementById("mount");
+		if (!mountElement) throw new Error("mount missing");
+		devicesTab.appendChild(mountElement);
+		document.body.appendChild(devicesTab);
+
+		const joinHost = document.createElement("div");
+		joinHost.id = "syncJoinSection";
+		joinHost.innerHTML = '<div id="syncJoinPanel" hidden><button>Review invite</button></div>';
+		document.body.appendChild(joinHost);
+		mount(intent(), reconciliation(), {
+			inventory: inventory([
+				inventoryItem("device-address-fingerprint-secret", "Work Laptop", "configured", {
+					isLocal: true,
+				}),
+			]),
+		});
+
+		const pairButton = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+			(button) => button.textContent === "Pair a device",
+		);
+		act(() => pairButton?.click());
+		const panel = document.getElementById("syncJoinPanel");
+		if (!panel) throw new Error("pairing panel missing");
+		expect(panel.parentElement?.classList.contains("devices-pairing-accept")).toBe(true);
+
+		devicesTab.hidden = true;
+		await act(async () => {
+			await Promise.resolve();
+		});
+
+		expect(panel.parentElement).toBe(joinHost);
+	});
+});
+
+describe("Device pairing availability", () => {
 	it("keeps the availability summary when no coordinator is configured", () => {
 		const localInventory = inventory([]);
 		localInventory.coordinatorEvidence = {
