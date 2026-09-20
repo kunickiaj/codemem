@@ -46,7 +46,13 @@ function distinctBodyNarrative(
 	if (!bodyText) return "";
 	const duplicateLines = new Set([
 		normalizedTitle,
-		...Object.values(summary ?? {}).map((value) => normalize(String(value || ""))),
+		...Object.values(summary ?? {}).flatMap((value) => {
+			const text = String(value || "");
+			return [
+				normalize(text),
+				...text.split("\n").map((line) => normalize(firstContentLine(line))),
+			];
+		}),
 	]);
 	const hasDistinctContent = bodyText.split("\n").some((line) => {
 		if (/^\s*#{1,6}\s+/.test(line)) return false;

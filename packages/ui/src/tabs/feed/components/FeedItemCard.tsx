@@ -65,11 +65,15 @@ function usePollingModeState(input: {
 }) {
 	useEffect(() => {
 		if (input.modeIds.length === 0) {
+			const shouldRestoreCardFocus =
+				input.focusedModeRef.current === input.activeMode &&
+				document.activeElement === document.body;
 			input.restoreModeFocusRef.current = false;
 			state.itemViewState.delete(input.rowKey);
 			if (!input.hasSupplementalDetail && input.expanded) {
 				state.itemExpandState.delete(input.rowKey);
 				input.setExpanded(false);
+				if (shouldRestoreCardFocus) queueMicrotask(() => input.cardRef.current?.focus());
 			}
 			return;
 		}
@@ -125,7 +129,8 @@ export function FeedItemCard({
 	const [activeMode, setActiveMode] = useState<ItemViewMode>(initialMode);
 	const [expanded, setExpanded] = useState(state.itemExpandState.get(model.rowKey) === true);
 	const [isNew, setIsNew] = useState(state.newItemKeys.has(model.rowKey));
-	const visibility = String(item.visibility || metadata.visibility || "private").trim();
+	const visibility = String(item.visibility || metadata.visibility || "").trim();
+	const visibilityKnown = visibility === "private" || visibility === "shared";
 	const [selectedVisibility, setSelectedVisibility] = useState<"private" | "shared">(
 		visibility === "shared" ? "shared" : "private",
 	);
@@ -330,6 +335,7 @@ export function FeedItemCard({
 			className: `feed-item ${model.displayKind}${isNew ? " new-item" : ""}`.trim(),
 			"data-key": model.rowKey,
 			ref: cardRef,
+			tabIndex: -1,
 		},
 		h(
 			"div",
@@ -382,8 +388,8 @@ export function FeedItemCard({
 				project ? h("span", { className: "feed-project" }, project) : h("span", null, "No project"),
 				h(ProvenanceChip, { label: actor, variant: ownedBySelf ? "mine" : "author" }),
 				h(ProvenanceChip, {
-					label: selectedVisibility,
-					variant: selectedVisibility,
+					label: visibilityKnown ? selectedVisibility : "Visibility unknown",
+					variant: visibilityKnown ? selectedVisibility : "unknown",
 				}),
 				memoryId > 0
 					? h(

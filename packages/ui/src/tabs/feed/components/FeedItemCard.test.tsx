@@ -277,6 +277,12 @@ describe("FeedItemCard content and actions", () => {
 		expect(mount.querySelector(".provenance-chip.trust")?.textContent).toBe("Trust unknown");
 	});
 
+	it("labels missing legacy visibility explicitly", () => {
+		renderCard(observation({ visibility: null }));
+
+		expect(mount.querySelector(".provenance-chip.unknown")?.textContent).toBe("Visibility unknown");
+	});
+
 	it("shows a highlighted excerpt when search matches only hidden detail", () => {
 		state.feedQuery = "coordinator";
 		renderCard(observation({ facts: ["Coordinator routing changed"], subtitle: "Visible skim" }));

@@ -159,6 +159,17 @@ describe("session card generated body fallbacks", () => {
 		expect(model.skimSummary).toBe("");
 		expect(model.modes).toEqual([]);
 	});
+
+	it("does not expose multiline generated Facts as a Narrative", () => {
+		const model = buildFeedCardViewModel({
+			body_text: "## Completed\n- Fixed migration\n- Added tests",
+			kind: "session_summary",
+			summary: { completed: "Fixed migration\nAdded tests" },
+			title: "Migration work",
+		});
+
+		expect(model.modes.map((mode) => mode.id)).not.toContain("narrative");
+	});
 });
 
 describe("feed card clipped search matches", () => {
