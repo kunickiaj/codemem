@@ -68,7 +68,7 @@ type OverviewSignals = {
 	maintenanceJobs: HealthMaintenanceJob[];
 	scopeBackfillJob: HealthMaintenanceJob | undefined;
 	hasFailedMaintenance: boolean;
-	tagCoverage: number;
+	hasLowTagCoverage: boolean;
 	rawPending: number;
 	erroredBatches: number;
 	hasReliability: boolean;
@@ -165,7 +165,7 @@ function deriveOverviewSignals(
 		maintenanceJobs,
 		scopeBackfillJob: maintenanceJobs.find((job) => job.kind === SCOPE_BACKFILL_JOB),
 		hasFailedMaintenance: maintenanceJobs.some((job) => job.status === "failed"),
-		tagCoverage: stats.database.tags_coverage,
+		hasLowTagCoverage: stats.database.active_memory_items > 0 && stats.database.tags_coverage < 0.7,
 		rawPending: raw.pending,
 		erroredBatches: stats.reliability?.counts.errored_batches ?? 0,
 		hasReliability: stats.reliability !== undefined,
@@ -242,7 +242,7 @@ function applySyncRecencyRisk(result: RiskResult, signals: OverviewSignals): voi
 function calculateRisk(signals: OverviewSignals): RiskResult {
 	const result: RiskResult = { score: 0, drivers: [] };
 	applyPipelineRisk(result, signals);
-	if (signals.tagCoverage > 0 && signals.tagCoverage < 0.7) addRisk(result, 8, "low tag coverage");
+	if (signals.hasLowTagCoverage) addRisk(result, 8, "low tag coverage");
 	if (signals.hasFailedMaintenance) addRisk(result, 30, "maintenance job failed");
 	if (!signals.syncDisabled && !signals.syncNoPeers) {
 		applySyncStateRisk(result, signals);
@@ -529,7 +529,7 @@ function appendMaintenanceRecommendation(
 function buildRecommendations(signals: OverviewSignals, overallIsHealthy: boolean): HealthAction[] {
 	const recommendations = primaryRecommendations(signals, overallIsHealthy);
 	appendMaintenanceRecommendation(recommendations, signals.hasFailedMaintenance);
-	if (signals.tagCoverage > 0 && signals.tagCoverage < 0.7 && recommendations.length < 2) {
+	if (signals.hasLowTagCoverage && recommendations.length < 2) {
 		recommendations.push({
 			label: "Tag coverage is low. Preview backfill impact.",
 			command: "codemem db backfill-tags --dry-run",

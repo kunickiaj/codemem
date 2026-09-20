@@ -234,12 +234,25 @@ it("renders the four compact health tiles in contract order", () => {
 	expect(document.querySelector("#healthGrid .stat")).toBeNull();
 });
 
-it("counts low tag coverage as an issue", () => {
+it.each([0, 0.5])("counts tag coverage %s with active memories as an issue", (coverage) => {
 	const stats = statsPayload();
-	stats.database.tags_coverage = 0.5;
+	stats.database.active_memory_items = 10;
+	stats.database.tags_coverage = coverage;
 	state.healthStats = completeHealthLoad(stats);
 	renderHealthOverview();
 	expect(document.getElementById("healthMeta")?.textContent).toContain("1 issue");
+	expect(document.getElementById("healthMeta")?.textContent).toContain("low tag coverage");
+	expect(document.getElementById("healthActions")?.textContent).toContain(
+		"backfill-tags --dry-run",
+	);
+});
+
+it("does not recommend tag backfill for an empty database", () => {
+	state.healthStats = completeHealthLoad(statsPayload());
+	renderHealthOverview();
+	expect(document.getElementById("healthMeta")?.textContent).toContain("0 issues");
+	expect(document.getElementById("healthMeta")?.textContent).not.toContain("low tag coverage");
+	expect(document.getElementById("healthActions")?.textContent).not.toContain("backfill-tags");
 });
 
 it("does not claim no packs when aggregate usage has no recent timestamp", () => {
