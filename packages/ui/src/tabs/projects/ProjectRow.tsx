@@ -8,7 +8,13 @@ import type {
 } from "../projects-inventory-model";
 import { ProjectRowDetails } from "./ProjectRowDetails";
 import { ProjectRowMenu } from "./ProjectRowMenu";
-import { isAssignable, latestLabel, projectBadges, projectSignal } from "./project-view";
+import {
+	isAssignable,
+	latestLabel,
+	projectBadges,
+	projectDomId,
+	projectSignal,
+} from "./project-view";
 
 export function RecipientSummary({
 	available,
@@ -135,7 +141,7 @@ function ProjectRowHeader(props: ProjectRowHeaderProps) {
 					</label>
 				) : null}
 			</td>
-			<td className="project-inventory-cell project-inventory-project-cell">
+			<th className="project-inventory-cell project-inventory-project-cell" scope="row">
 				<strong className="project-inventory-title" id={titleId}>
 					{project.display_project}
 				</strong>
@@ -149,7 +155,7 @@ function ProjectRowHeader(props: ProjectRowHeaderProps) {
 						</Chip>
 					))}
 				</div>
-			</td>
+			</th>
 			<ProjectRowStats model={model} view={view} />
 			<ProjectRowActions {...props} />
 		</tr>
@@ -180,7 +186,7 @@ export function ProjectRow({ callbacks, child = false, clusterKey, model, view }
 		setDetailsOpen(true);
 		queueMicrotask(() => selectRef.current?.focus());
 	};
-	const titleId = `project-title-${model.detailKey.replace(/[^a-z0-9_-]/gi, "-")}`;
+	const titleId = projectDomId("project-title", model.detailKey);
 	return (
 		<tbody
 			aria-labelledby={titleId}

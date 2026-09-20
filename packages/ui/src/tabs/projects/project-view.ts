@@ -1,6 +1,13 @@
 import type { ProjectScopeInventoryProject, SharingDomainScope } from "../../lib/api/sync";
 import type { ProjectsInventoryViewModel } from "../projects-inventory-model";
 
+export function projectDomId(prefix: string, value: string): string {
+	const encoded = Array.from(value, (character) =>
+		(character.codePointAt(0) ?? 0).toString(16).padStart(6, "0"),
+	).join("");
+	return `${prefix}-${encoded || "empty"}`;
+}
+
 export function isPeerReceived(project: ProjectScopeInventoryProject): boolean {
 	return project.read_only === true && project.read_only_reason === "peer_received";
 }

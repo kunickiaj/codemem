@@ -7,7 +7,7 @@ import type {
 } from "../projects-inventory-model";
 import { ProjectRow, RecipientSummary } from "./ProjectRow";
 import { ProjectClusterMenu } from "./ProjectRowMenu";
-import { isAssignable, scopeIsAvailable, scopeOptionLabel } from "./project-view";
+import { isAssignable, projectDomId, scopeIsAvailable, scopeOptionLabel } from "./project-view";
 
 interface ProjectClusterRowProps {
 	callbacks: ProjectInventoryCallbacks;
@@ -129,7 +129,7 @@ function ClusterHeader(props: ClusterHeaderProps) {
 					</label>
 				) : null}
 			</td>
-			<td className="project-inventory-cell project-inventory-project-cell">
+			<th className="project-inventory-cell project-inventory-project-cell" scope="row">
 				<strong className="project-inventory-title" id={titleId}>
 					{model.label}
 				</strong>
@@ -141,7 +141,7 @@ function ClusterHeader(props: ClusterHeaderProps) {
 						</Chip>
 					) : null}
 				</div>
-			</td>
+			</th>
 			<ClusterStats {...props} />
 			<ClusterActions {...props} />
 		</tr>
@@ -273,7 +273,7 @@ export function ProjectClusterRow(props: ProjectClusterRowProps) {
 		setDetailsOpen(true);
 		queueMicrotask(() => selectRef.current?.focus());
 	};
-	const titleId = `project-cluster-title-${model.key.replace(/[^a-z0-9_-]/gi, "-")}`;
+	const titleId = projectDomId("project-cluster-title", model.key);
 	return (
 		<>
 			<tbody

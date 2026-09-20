@@ -870,7 +870,8 @@ function projectsInventoryTablePresentationTests(): void {
 		const table = document.querySelector("table.project-inventory-table");
 		expect(table?.querySelectorAll("thead th")).toHaveLength(7);
 		expect(table?.querySelector("th:nth-child(2)")?.textContent).toBe("Project");
-		expect(row.querySelectorAll(":scope > tr:first-child > td")).toHaveLength(7);
+		expect(row.querySelectorAll(":scope > tr:first-child > *")).toHaveLength(7);
+		expect(row.querySelector('th[scope="row"]')?.textContent).toContain("codemem");
 		expect(row.querySelector(".project-recipient-status")).toBeNull();
 		expect(
 			[...row.querySelectorAll(".project-recipient-chip")].map((chip) => chip.textContent),

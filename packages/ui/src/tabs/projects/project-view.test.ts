@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ProjectScopeInventoryProject } from "../../lib/api/sync";
 import type { ProjectsInventoryViewModel } from "../projects-inventory-model";
-import { firstScopeSelection, scopeIsAvailable } from "./project-view";
+import { firstScopeSelection, projectDomId, scopeIsAvailable } from "./project-view";
 
 const view = {
 	scopeGroups: [
@@ -31,5 +31,14 @@ describe("project Space selection", () => {
 
 		expect(scopeIsAvailable("active-space", view)).toBe(true);
 		expect(firstScopeSelection(project, "active-space", view)).toBe("active-space");
+	});
+});
+
+describe("project DOM IDs", () => {
+	it("keeps punctuation-only identity differences unique", () => {
+		const left = projectDomId("project-title", "cwd:/work/foo.bar");
+		const right = projectDomId("project-title", "cwd:/work/foo/bar");
+
+		expect(left).not.toBe(right);
 	});
 });
