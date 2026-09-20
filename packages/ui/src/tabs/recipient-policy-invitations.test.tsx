@@ -1133,6 +1133,35 @@ async function verifiesLegacyImportRouting() {
 	expect(api.importCoordinatorInvite).not.toHaveBeenCalled();
 }
 
+it("routes manual pairing to Devices without enabling invitation acceptance", async () => {
+	vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue({
+		kind: "pair",
+		device_id: "peer",
+		fingerprint: "fingerprint",
+		addresses: ["http://peer.example.test"],
+	});
+	mount();
+	act(() => button("Review invitation").click());
+	const textarea = document.querySelector<HTMLTextAreaElement>("textarea");
+	if (!textarea) throw new Error("textarea missing");
+	act(() => {
+		textarea.value = "pairing";
+		textarea.dispatchEvent(new Event("input", { bubbles: true }));
+	});
+	const dialog = document.querySelector('[role="dialog"]');
+	if (!dialog) throw new Error("dialog missing");
+	act(() => button("Review invitation", dialog).click());
+	await vi.waitFor(() =>
+		expect(dialog.textContent).toContain("Open Devices, then Accept a pairing payload"),
+	);
+	expect(
+		Array.from(dialog.querySelectorAll("button")).some(
+			(item) => !item.disabled && item.textContent?.startsWith("Accept"),
+		),
+	).toBe(false);
+	expect(api.importCoordinatorInvite).not.toHaveBeenCalled();
+});
+
 function verifiesCloseButtonStructure() {
 	mount();
 	act(() => button("Review invitation").click());

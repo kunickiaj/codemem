@@ -76,6 +76,7 @@ export interface RecipientOnboardingPreviewV1 {
 }
 
 export type InspectInviteResult =
+	| { kind: "pair"; device_id: string; fingerprint: string; addresses: string[] }
 	| { kind: "legacy_team_invite" }
 	| {
 			kind: "project_share_invite";

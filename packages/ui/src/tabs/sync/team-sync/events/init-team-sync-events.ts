@@ -21,6 +21,69 @@ import {
 	setJoinFeedbackVisibility,
 } from "../helpers/invite-panel-dom";
 
+function projectInviteSummary(
+	inspected: Extract<api.InspectInviteResult, { kind: "project_share_invite" }>,
+) {
+	const projectNames = (inspected.projects ?? [])
+		.map(
+			(project) =>
+				`${project.display_name} (${project.existing_memory_count} existing ${project.existing_memory_count === 1 ? "memory" : "memories"})`,
+		)
+		.join(", ");
+	return `${inspected.inviter_name || "A teammate"} invited you${inspected.team_name ? ` through ${inspected.team_name}` : ""} to share ${projectNames || "selected projects"}.`;
+}
+
+function showInviteCreatedNotice(warnings: unknown[]) {
+	if (!warnings.length) {
+		showGlobalNotice(
+			"Invite created. Copy the text above and share it with your teammate.",
+			"success",
+		);
+		return;
+	}
+	const count = warnings.length === 1 ? "1 warning" : `${warnings.length} warnings`;
+	showGlobalNotice(`Invite created. Copy it above and review ${count}.`, "warning");
+}
+
+type JoinResult = Awaited<ReturnType<typeof api.importCoordinatorInvite>>;
+
+function projectJoinFeedback(result: JoinResult): SyncActionFeedback {
+	const fields = result as { detail?: unknown; restart_required?: unknown; setup_state?: unknown };
+	const pending =
+		fields.restart_required === true ||
+		fields.setup_state === "pending_inviter" ||
+		result.status === "pending_setup";
+	if (!pending) return { message: "Project invitation accepted.", tone: "success" };
+	const detail = typeof fields.detail === "string" ? fields.detail.trim() : "";
+	let message = "Project invitation accepted. Setup is still pending.";
+	if (fields.restart_required === true)
+		message = "Project invitation accepted. Restart codemem to finish setup.";
+	else if (fields.setup_state === "pending_inviter")
+		message = "Project invitation accepted. Waiting for the inviter to finish setup.";
+	return { message: detail || message, tone: "warning" };
+}
+
+function joinFeedback(result: JoinResult): SyncActionFeedback {
+	const fields = result as { type?: unknown; peer_device_id?: unknown };
+	if (fields.type === "project_share") return projectJoinFeedback(result);
+	if (fields.type === "pair") {
+		const peerId = String(fields.peer_device_id ?? "").trim();
+		return {
+			message: peerId
+				? `Paired with device ${peerId.slice(0, 8)}. It will appear in People & devices.`
+				: "Paired the device. It will appear in People & devices.",
+			tone: "success",
+		};
+	}
+	return {
+		message:
+			result.status === "pending"
+				? "Join request sent. Waiting for admin approval."
+				: "Joined the team.",
+		tone: "success",
+	};
+}
+
 export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: () => Promise<void>) {
 	renderAdminSetupDisclosure();
 	renderInvitePolicySelect();
@@ -55,6 +118,29 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 	let inspectedInviteValue = "";
 	let inspectedInviteKind: api.InspectInviteResult["kind"] | undefined;
 	let inviteInputRevision = 0;
+	const pairingReview = document.getElementById("syncPairingReview");
+	const pairingFields = [
+		"syncPairingDeviceId",
+		"syncPairingFingerprint",
+		"syncPairingAddresses",
+	].map((id) => document.getElementById(id));
+	const clearPairingReview = () => {
+		if (pairingReview) pairingReview.hidden = true;
+		for (const field of pairingFields) if (field) field.textContent = "";
+	};
+	const renderPairingReview = (inspected: Extract<api.InspectInviteResult, { kind: "pair" }>) => {
+		if (!pairingReview || pairingFields.some((field) => !field)) {
+			throw new Error("Pairing review unavailable. Refresh and try again.");
+		}
+		const values = [inspected.device_id, inspected.fingerprint, inspected.addresses.join("\n")];
+		pairingFields.forEach((field, index) => {
+			if (field) field.textContent = values[index] ?? "";
+		});
+		pairingReview.hidden = false;
+		document.getElementById("syncPairingReviewHeading")?.focus();
+	};
+	const isCurrentInvite = (value: string, revision: number) =>
+		revision === inviteInputRevision && syncJoinInvite?.value.trim() === value;
 
 	syncShareProjectsButton?.addEventListener("click", () => {
 		if (!openProjectShareFlow()) {
@@ -69,21 +155,19 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 		inviteValue: string,
 		inputRevision: number,
 	): Promise<"project" | "other" | "stale"> => {
-		if (!projectInviteReview || !recipientName || !recipientDeviceName) return "other";
 		const inspected = await api.inspectCoordinatorInvite(inviteValue);
-		if (inputRevision !== inviteInputRevision || syncJoinInvite?.value.trim() !== inviteValue) {
+		if (!isCurrentInvite(inviteValue, inputRevision)) {
 			return "stale";
 		}
 		inspectedInviteKind = inspected.kind;
+		if (inspected.kind === "pair") {
+			renderPairingReview(inspected);
+			return "other";
+		}
 		if (inspected.kind !== "project_share_invite") return "other";
-		const projectNames = (inspected.projects ?? [])
-			.map(
-				(project) =>
-					`${project.display_name} (${project.existing_memory_count} existing ${project.existing_memory_count === 1 ? "memory" : "memories"})`,
-			)
-			.join(", ");
+		if (!projectInviteReview || !recipientName || !recipientDeviceName) return "other";
 		if (projectInviteContext) {
-			projectInviteContext.textContent = `${inspected.inviter_name || "A teammate"} invited you${inspected.team_name ? ` through ${inspected.team_name}` : ""} to share ${projectNames || "selected projects"}.`;
+			projectInviteContext.textContent = projectInviteSummary(inspected);
 		}
 		recipientName.value = humanPresentationLabel(inspected.recipient_name);
 		recipientDeviceName.value = humanPresentationLabel(inspected.device_name);
@@ -100,6 +184,7 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 		inspectedInviteValue = "";
 		inspectedInviteKind = undefined;
 		if (projectInviteReview) projectInviteReview.hidden = true;
+		clearPairingReview();
 		if (syncJoinButton) syncJoinButton.textContent = "Review invite";
 	});
 
@@ -135,12 +220,7 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 			syncInviteOutput.focus();
 			syncInviteOutput.select();
 			const warnings = Array.isArray(result.warnings) ? result.warnings : [];
-			showGlobalNotice(
-				warnings.length
-					? `Invite created. Copy it above and review ${warnings.length === 1 ? "1 warning" : `${warnings.length} warnings`}.`
-					: "Invite created. Copy the text above and share it with your teammate.",
-				warnings.length ? "warning" : "success",
-			);
+			showInviteCreatedNotice(warnings);
 		} catch (error) {
 			showGlobalNotice(
 				friendlyError(
@@ -172,6 +252,7 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 
 	syncJoinButton?.addEventListener("click", async () => {
 		if (!syncJoinButton || !syncJoinInvite) return;
+		if (syncJoinButton.disabled) return;
 		const inviteValue = syncJoinInvite.value.trim();
 		if (!inviteValue) {
 			markFieldError(syncJoinInvite, "Paste a team invite or pairing payload.");
@@ -180,13 +261,24 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 		clearFieldError(syncJoinInvite);
 		if (inspectedInviteValue !== inviteValue) {
 			const inputRevision = inviteInputRevision;
+			syncJoinButton.disabled = true;
 			try {
 				const reviewOutcome = await reviewProjectInvite(inviteValue, inputRevision);
 				if (reviewOutcome === "project" || reviewOutcome === "stale") return;
-			} catch {
-				// Pairing payloads and legacy envelopes continue through the existing importer.
+			} catch (error) {
+				if (!isCurrentInvite(inviteValue, inputRevision)) return;
+				markFieldError(
+					syncJoinInvite,
+					friendlyError(
+						error,
+						"Could not review this invite or pairing payload. Check the pasted text and try again.",
+					),
+				);
+				return;
+			} finally {
+				syncJoinButton.disabled = false;
 			}
-			if (inputRevision !== inviteInputRevision || syncJoinInvite.value.trim() !== inviteValue) {
+			if (!isCurrentInvite(inviteValue, inputRevision)) {
 				return;
 			}
 			inspectedInviteValue = inviteValue;
@@ -224,53 +316,14 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 		try {
 			const result = await api.importCoordinatorInvite(inviteValue, identity, inspectedInviteKind);
 			state.lastTeamJoin = result;
-			const resultFields = result as {
-				detail?: unknown;
-				restart_required?: unknown;
-				setup_state?: unknown;
-				type?: unknown;
-			};
-			const resultType = typeof resultFields.type === "string" ? resultFields.type : "team_join";
-			let feedback: SyncActionFeedback;
-			if (resultType === "pair") {
-				const peerId = String((result as { peer_device_id?: unknown }).peer_device_id ?? "").trim();
-				feedback = {
-					message: peerId
-						? `Paired with device ${peerId.slice(0, 8)}. It will appear in People & devices.`
-						: "Paired the device. It will appear in People & devices.",
-					tone: "success",
-				};
-			} else if (resultType === "project_share") {
-				const pendingSetup =
-					resultFields.restart_required === true ||
-					resultFields.setup_state === "pending_inviter" ||
-					result.status === "pending_setup";
-				const detail = typeof resultFields.detail === "string" ? resultFields.detail.trim() : "";
-				feedback = pendingSetup
-					? {
-							message:
-								detail ||
-								(resultFields.restart_required === true
-									? "Project invitation accepted. Restart codemem to finish setup."
-									: resultFields.setup_state === "pending_inviter"
-										? "Project invitation accepted. Waiting for the inviter to finish setup."
-										: "Project invitation accepted. Setup is still pending."),
-							tone: "warning",
-						}
-					: { message: "Project invitation accepted.", tone: "success" };
-			} else {
-				feedback = {
-					message:
-						result.status === "pending"
-							? "Join request sent. Waiting for admin approval."
-							: "Joined the team.",
-					tone: "success",
-				};
-			}
+			let feedback = joinFeedback(result);
 			state.syncJoinFlowFeedback = feedback;
 			setJoinFeedbackVisibility();
 			syncJoinInvite.value = "";
+			inviteInputRevision += 1;
 			inspectedInviteValue = "";
+			inspectedInviteKind = undefined;
+			clearPairingReview();
 			if (projectInviteReview) projectInviteReview.hidden = true;
 			try {
 				await loadSyncData();

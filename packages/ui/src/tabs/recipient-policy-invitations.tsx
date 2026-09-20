@@ -687,14 +687,19 @@ async function inspectRecipientInvitation(state: InvitationState): Promise<void>
 	}
 }
 
-type AcceptableInspection = Exclude<InspectInviteResult, { kind: "legacy_team_invite" }>;
+type AcceptableInspection = Exclude<InspectInviteResult, { kind: "legacy_team_invite" | "pair" }>;
 
 function canAcceptInvitation(
 	state: InvitationState,
 	inspected: InspectInviteResult,
 ): inspected is AcceptableInspection {
 	if (state.busy || state.accepting.current) return false;
-	if (state.recipientAcceptance || inspected.kind === "legacy_team_invite") return false;
+	if (
+		state.recipientAcceptance ||
+		inspected.kind === "legacy_team_invite" ||
+		inspected.kind === "pair"
+	)
+		return false;
 	if (inspected.kind === "project_share_invite" && !(inspected.projects?.length ?? 0)) return false;
 	if (
 		inspected.kind === "project_share_invite" &&
@@ -1010,6 +1015,9 @@ function InvitationDialogMessages({
 			) : null}
 			{state.inspected?.kind === "legacy_team_invite" ? (
 				<p>Open Advanced, then Sync, to review and import this legacy invitation.</p>
+			) : null}
+			{state.inspected?.kind === "pair" ? (
+				<p>Open Devices, then Accept a pairing payload, to review and accept this device.</p>
 			) : null}
 			<p aria-live="polite" className="small" role="status">
 				{state.status}

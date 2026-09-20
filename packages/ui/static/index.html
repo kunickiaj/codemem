@@ -5189,6 +5189,15 @@
                 <label for="syncRecipientDeviceName">This device</label>
                 <input class="feed-search" id="syncRecipientDeviceName" maxlength="120" />
               </div>
+              <div id="syncPairingReview" role="region" aria-labelledby="syncPairingReviewHeading" hidden>
+                <h4 id="syncPairingReviewHeading" tabindex="-1">Review device pairing</h4>
+                <p>Check these details with the other device. Accept only a device you trust.</p>
+                <dl>
+                  <dt>Device ID</dt><dd id="syncPairingDeviceId" style="overflow-wrap: anywhere"></dd>
+                  <dt>Fingerprint</dt><dd id="syncPairingFingerprint" style="overflow-wrap: anywhere"></dd>
+                  <dt>Addresses</dt><dd id="syncPairingAddresses" style="white-space: pre-wrap; overflow-wrap: anywhere"></dd>
+                </dl>
+              </div>
               <button class="settings-button" id="syncJoinButton">Review invite</button>
             </div>
           </div>

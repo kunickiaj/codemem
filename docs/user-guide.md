@@ -407,7 +407,7 @@ Use manual pairing for same-person devices, existing integrations, or compatibil
 
 1. In **Devices**, choose **Pair a device** and copy the displayed `codemem sync pair --payload-only` command.
 2. On the device you want to connect, run `codemem sync enable` and `codemem serve restart` before running the copied command. Both devices need sync enabled to exchange memories.
-3. Copy the generated payload and paste it under **Accept a pairing payload** in **Devices**. Accept only a payload from a device you trust; acceptance trusts that device. The form does not currently show a pairing-specific identity preview.
+3. Copy the generated payload and paste it under **Accept a pairing payload** in **Devices**. Choose **Review invite** to check the device ID, fingerprint, and addresses against the other device, then choose **Accept invite**. Accept only a payload from a device you trust; acceptance trusts that device.
 
 For a CLI-only compatibility flow, generate a payload with `codemem sync pair` on one device and accept it with `codemem sync pair --accept '<payload>'` on the other.
 

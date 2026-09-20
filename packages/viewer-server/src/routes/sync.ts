@@ -316,6 +316,30 @@ function tryParsePairingPayload(value: string):
 	};
 }
 
+async function inspectPairingInvite(c: Context, next: () => Promise<void>) {
+	const body = await parseViewerJsonBody(c);
+	if (typeof body?.invite !== "string") return c.json({ error: "invite_invalid" }, 400);
+	try {
+		const shellMatch = body.invite.match(
+			/echo\s+['"]([A-Za-z0-9+/=]+)['"]\s*\|\s*base64\s+-d\s*\|\s*codemem/,
+		);
+		const pairing = tryParsePairingPayload(shellMatch?.[1]?.trim() || body.invite.trim());
+		if (pairing?.kind === "invalid-pair") return c.json({ error: pairing.error }, 400);
+		if (pairing?.kind !== "pair") {
+			decodeInvitePayload(extractInvitePayload(body.invite));
+			return next();
+		}
+		return c.json({
+			kind: "pair",
+			device_id: pairing.device_id,
+			fingerprint: pairing.fingerprint,
+			addresses: pairing.addresses,
+		});
+	} catch (error) {
+		return c.json({ error: safeRecipientInviteError(error) }, 400);
+	}
+}
+
 type CoordinatorAdminReadiness = "not_configured" | "partial" | "ready";
 
 function coordinatorAdminStatusPayload(config = readCoordinatorSyncConfig()) {
@@ -4807,7 +4831,7 @@ export function syncRoutes(
 	getSyncRuntimeStatus?: () => SyncRuntimeStatus | null,
 	options: SyncRoutesOptions = {},
 ) {
-	const app = new Hono();
+	const app = new Hono().post("/api/sync/invites/inspect", inspectPairingInvite);
 	const readCoordinatorConfig = options.readCoordinatorConfig ?? readCoordinatorSyncConfig;
 	const renameCoordinatorGroup = options.renameCoordinatorGroup ?? coordinatorRenameGroupAction;
 	const loadCoordinatorEvidence =
