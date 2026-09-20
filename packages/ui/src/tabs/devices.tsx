@@ -1541,8 +1541,11 @@ function restorePairingControls(
 	visibility: { host: HTMLElement; wasHidden: HTMLElement["hidden"] },
 ): void {
 	if (panel.parentElement === visibility.host) panel.hidden = visibility.wasHidden;
-	if (restoreParent && panel.parentElement !== restoreParent) restoreParent.appendChild(panel);
-	const feedbackParent = feedbackRestoreParent?.isConnected ? feedbackRestoreParent : restoreParent;
+	const liveParent = restoreParent?.isConnected
+		? restoreParent
+		: document.getElementById("syncJoinSection");
+	if (liveParent && panel.parentElement !== liveParent) liveParent.appendChild(panel);
+	const feedbackParent = feedbackRestoreParent?.isConnected ? feedbackRestoreParent : liveParent;
 	if (!movedFeedback || !feedbackParent) return;
 	if (movedFeedback.parentElement === feedbackParent) return;
 	feedbackParent.appendChild(movedFeedback);
@@ -1554,7 +1557,7 @@ function PairingAcceptancePanel() {
 		const host = hostRef.current;
 		const panel = document.getElementById("syncJoinPanel");
 		if (!host || !panel) return;
-		const restoreParent = document.getElementById("syncJoinSection") ?? panel.parentElement;
+		let restoreParent = panel.parentElement;
 		const wasHidden = panel.hidden;
 		let movedFeedback: HTMLElement | null = null;
 		let feedbackRestoreParent: HTMLElement | null = null;
@@ -1566,7 +1569,10 @@ function PairingAcceptancePanel() {
 				});
 				return;
 			}
-			if (panel.parentElement !== host) host.appendChild(panel);
+			if (panel.parentElement !== host) {
+				restoreParent = panel.parentElement;
+				host.appendChild(panel);
+			}
 			panel.hidden = false;
 			const feedback = document.getElementById("syncJoinFeedback");
 			if (!feedback || feedback.parentElement === host) return;

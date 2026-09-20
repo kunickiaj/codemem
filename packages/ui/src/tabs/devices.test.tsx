@@ -346,6 +346,45 @@ describe("Device pairing entry point", () => {
 	});
 });
 
+describe("Device pairing live portal restoration", () => {
+	it.each([false, true])(
+		"returns to the live configured portal (replaced: %s)",
+		async (replaced) => {
+			document.body.insertAdjacentHTML(
+				"beforeend",
+				'<div id="syncSetupPanel" hidden><div id="syncJoinSection"></div></div><div id="live-portal"><div id="syncJoinPanel"><button>Review invite</button></div></div>',
+			);
+			mount(intent(), reconciliation());
+			const panel = document.getElementById("syncJoinPanel");
+			act(() =>
+				[...document.querySelectorAll<HTMLButtonElement>("button")]
+					.find((button) => button.textContent === "Pair a device")
+					?.click(),
+			);
+			expect(panel?.closest(".devices-pairing-accept")).not.toBeNull();
+			if (replaced) {
+				document.getElementById("live-portal")?.remove();
+				const nextPortal = document.createElement("div");
+				nextPortal.id = "live-portal";
+				document.body.appendChild(nextPortal);
+				if (!panel) throw new Error("pairing panel missing");
+				nextPortal.appendChild(panel);
+				await act(async () => {
+					await Promise.resolve();
+				});
+				expect(panel.closest(".devices-pairing-accept")).not.toBeNull();
+			}
+			act(() =>
+				[...document.querySelectorAll<HTMLButtonElement>("button")]
+					.find((button) => button.textContent === "Close")
+					?.click(),
+			);
+			expect(panel?.parentElement).toBe(document.getElementById("live-portal"));
+			expect(panel?.closest("[hidden]")).toBeNull();
+		},
+	);
+});
+
 describe("Device pairing ownership", () => {
 	it("returns the form to a connected host after the sync action slot is replaced", async () => {
 		const section = document.createElement("div");
