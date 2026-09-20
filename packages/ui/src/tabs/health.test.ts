@@ -242,7 +242,7 @@ it("marks pending pipeline work and the current sync problem as degraded", () =>
 	renderOverview();
 
 	const values = [...document.querySelectorAll("#healthGrid .health-tile-value")];
-	expect(values[0]?.textContent).toBe("3 pending");
+	expect(values[0]?.textContent).toBe("3 pending · Reliability unknown");
 	expect(values[0]?.querySelector(".presence-pip--degraded")).not.toBeNull();
 	expect(values[1]?.textContent).toBe("Stopped");
 	expect(values[1]?.querySelector(".presence-pip--degraded")).not.toBeNull();
@@ -266,15 +266,19 @@ it("marks pipeline reliability failures when the queue is clear", () => {
 	expect(pipeline?.querySelector(".presence-pip--attention")).not.toBeNull();
 });
 
-it("keeps missing pipeline reliability unknown", () => {
+it.each([0, 1])("keeps missing pipeline reliability unknown with %i pending", (pending) => {
 	state.healthStats = completeHealthLoad(statsPayload({ reliability: undefined }));
-	state.healthRawEvents = completeHealthLoad({ pending: 0, sessions: 0 });
+	state.healthRawEvents = completeHealthLoad({ pending, sessions: 0 });
 
 	renderOverview();
 
 	const pipeline = document.querySelectorAll("#healthGrid .health-tile-value")[0];
-	expect(pipeline?.textContent).toBe("Reliability unknown");
-	expect(pipeline?.querySelector(".presence-pip--unknown")).not.toBeNull();
+	expect(pipeline?.textContent).toBe(
+		pending ? "1 pending · Reliability unknown" : "Reliability unknown",
+	);
+	expect(
+		pipeline?.querySelector(pending ? ".presence-pip--degraded" : ".presence-pip--unknown"),
+	).not.toBeNull();
 });
 
 it("keeps reliability severity visible when events are also pending", () => {

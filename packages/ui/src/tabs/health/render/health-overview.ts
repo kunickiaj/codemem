@@ -300,12 +300,14 @@ function maintenanceCard(job: HealthMaintenanceJob): HealthCardInput {
 }
 
 function pipelineTile(signals: OverviewSignals): HealthTileInput {
-	if (signals.rawPending === 0 && !signals.hasReliability) {
+	if (!signals.hasReliability) {
+		const pendingLabel =
+			signals.rawPending > 0 ? `${signals.rawPending.toLocaleString()} pending · ` : "";
 		return tile(
 			"pipeline",
 			"Pipeline",
-			"Reliability unknown",
-			"unknown",
+			`${pendingLabel}Reliability unknown`,
+			signals.rawPending > 0 ? "degraded" : "unknown",
 			"Raw-event queue pressure and flush reliability",
 		);
 	}
