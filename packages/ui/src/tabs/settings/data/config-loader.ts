@@ -95,6 +95,7 @@ export function renderConfigModal(payload: unknown) {
 	const values = formStateFromPayload(data);
 
 	settingsState.envOverrides = envOverrides;
+	settingsState.effectiveConfig = { ...config, ...data.effective };
 	settingsState.protectedKeys = new Set(protectedKeys);
 	state.configDefaults = defaults;
 	state.configPath = data.path || "";

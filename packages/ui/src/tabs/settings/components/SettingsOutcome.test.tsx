@@ -159,6 +159,13 @@ describe("settings outcomes", () => {
 	});
 
 	it("discloses the existing-memory effect of sync changes", () => {
+		settingsView.value = {
+			...settingsView.value,
+			renderState: {
+				...settingsView.value.renderState,
+				values: { ...settingsView.value.renderState.values, syncEnabled: true },
+			},
+		};
 		const root = renderPanels();
 		const syncOutcome = root.querySelector(
 			'[data-settings-outcome-for="syncEnabled"]',
