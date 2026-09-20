@@ -378,6 +378,7 @@ describe("Device pairing ownership", () => {
 		});
 
 		expect(panel.parentElement).toBe(joinHost);
+		expect(panel.hidden).toBe(true);
 	});
 });
 
@@ -928,8 +929,11 @@ describe("Device availability summary", () => {
 		expect(summary).toContain("0 available");
 		expect(summary).toContain("1 offline");
 		expect(summary).toContain("1 unknown");
-		expect(document.querySelectorAll(".devices-table-row")).toHaveLength(3);
-		expect(document.querySelector(".devices-table-device .local")?.textContent).toBe("This device");
+		expect(document.querySelectorAll(".devices-table-row")).toHaveLength(2);
+		expect(document.querySelector(".devices-table-device .local")).toBeNull();
+		expect(
+			document.querySelector('.devices-local-row [aria-label="This device online"]'),
+		).not.toBeNull();
 		const sharingButton = document.querySelector<HTMLButtonElement>(
 			".devices-identity-header .sync-subview-link",
 		);

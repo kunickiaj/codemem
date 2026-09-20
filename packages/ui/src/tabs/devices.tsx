@@ -1516,7 +1516,9 @@ function restorePairingControls(
 	restoreParent: HTMLElement | null,
 	movedFeedback: HTMLElement | null,
 	feedbackRestoreParent: HTMLElement | null,
+	visibility: { host: HTMLElement; wasHidden: boolean },
 ): void {
+	if (panel.parentElement === visibility.host) panel.hidden = visibility.wasHidden;
 	if (restoreParent && panel.parentElement !== restoreParent) restoreParent.appendChild(panel);
 	if (!movedFeedback || !feedbackRestoreParent) return;
 	if (movedFeedback.parentElement === feedbackRestoreParent) return;
@@ -1535,7 +1537,10 @@ function PairingAcceptancePanel() {
 		let feedbackRestoreParent: HTMLElement | null = null;
 		const mountPairingControls = () => {
 			if (host.closest("[hidden]")) {
-				restorePairingControls(panel, restoreParent, movedFeedback, feedbackRestoreParent);
+				restorePairingControls(panel, restoreParent, movedFeedback, feedbackRestoreParent, {
+					host,
+					wasHidden,
+				});
 				return;
 			}
 			if (panel.parentElement !== host) host.appendChild(panel);
@@ -1836,8 +1841,9 @@ function DevicesView({
 			{coordinatorAttention}
 			{inventoryWorkflow}
 			{configuredFallbackWorkflow}
+			<ThisDeviceRow intent={intent} inventory={options.inventory} />
 			<ConfiguredDeviceInventory
-				devices={visibleProjectedDevices}
+				devices={otherProjectedDevices}
 				intent={intent}
 				options={options}
 			/>
