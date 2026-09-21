@@ -32,6 +32,7 @@ Unrelated identities retain their existing legacy behavior, while valid unretire
 Filtering still advances content cursors; it does not deliver retirement controls or prove that an offline recipient has cleaned up.
 
 Local reassignment rejects a destination that the same identity previously retired.
+An exact retry with both completed reassignment sides returns the original result without writes, even if an onward move has since retired that destination; new mutations still check the fence inside the write transaction.
 The fence is specific to the entity and old scope; unrelated memories and scopes continue through existing authorization checks.
 Retirement adds no membership or destination grant and contains no destination content or recipient list.
 
