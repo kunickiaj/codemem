@@ -38,7 +38,8 @@ Retirement adds no membership or destination grant and contains no destination c
 ## Activation dependencies
 
 The ledger is not a complete retirement protocol and must remain inactive until the dependent stack is finished.
-The next units must supply separately negotiated payload-free control delivery, independent replay/acknowledgements, snapshot and reset enforcement, and cross-process export admission/drain.
+The internal [control delivery prerequisite](memory-retirement-delivery.md) supplies separately negotiated payload-free replay and acknowledgements without activation.
+The next units must supply snapshot and reset enforcement and cross-process export admission/drain.
 Snapshot enforcement is not implemented here, and a batch admitted before retirement can still contain previously selected bytes until the admission unit closes that race.
 
 Offline peers can retain originals until they receive and apply authenticated controls; unsupported peers require explicit pending status and later replay after upgrade.

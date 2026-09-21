@@ -12,8 +12,9 @@ export const SYNC_CAPABILITY_HEADER = "X-Codemem-Sync-Capability";
 
 export const SYNC_FEATURES_HEADER = "X-Codemem-Sync-Features";
 export const SYNC_AUTHORIZATION_REFRESH_HEADER = "X-Codemem-Refresh-Authorization";
-export const SYNC_FEATURES = ["reassign_scope"] as const;
-export const LOCAL_SYNC_FEATURES: readonly SyncFeature[] = SYNC_FEATURES;
+export const SYNC_FEATURES = ["reassign_scope", "memory_scope_retirement_v1"] as const;
+// Retirement is recognized but not advertised until snapshot and admission gates are complete.
+export const LOCAL_SYNC_FEATURES: readonly SyncFeature[] = ["reassign_scope"];
 
 export type SyncCapability = (typeof SYNC_CAPABILITIES)[number];
 export type SyncFeature = (typeof SYNC_FEATURES)[number];
