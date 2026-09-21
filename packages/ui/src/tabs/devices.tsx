@@ -161,7 +161,7 @@ function actionForDevice(
 }
 
 function deviceDisplayName(name: string, inventoryItem?: DeviceIdentityInventoryItemV1): string {
-	if (name !== "Canonical device" && name !== "Unnamed device") return name;
+	if (name.trim() && name !== "Canonical device" && name !== "Unnamed device") return name;
 	const resolved = inventoryItem?.displayName ?? "Unnamed device";
 	return resolved === "Canonical device" ? "Unnamed device" : resolved;
 }
@@ -183,9 +183,7 @@ export function projectDevices(
 		projects.map((item) => [item.canonicalProjectIdentity, item.displayName]),
 	);
 	const availability = new Map(availabilityInput.map((item) => [item.deviceId, item.state]));
-	const peerRuntimeMetadata = new Map(
-		peerRuntimeMetadataInput.map((item) => [item.deviceId, item]),
-	);
+	const peerMetadata = new Map(peerRuntimeMetadataInput.map((item) => [item.deviceId, item]));
 	const statuses = new Map(
 		reconciliation.items.map((item) => [item.canonicalProjectIdentity, item]),
 	);
@@ -194,7 +192,7 @@ export function projectDevices(
 		.filter((device) => device.status === "active" && identityNames.has(device.identityId))
 		.map((device): DeviceProjection => {
 			const presentation = devicePresentation(device, inventory, availability);
-			const runtimeMetadata = peerRuntimeMetadata.get(device.deviceId);
+			const runtimeMetadata = deviceRuntimeMetadata(device.deviceId, inventory, peerMetadata);
 			const directProjectIds = uniqueSorted(
 				intent.projectRecipients
 					.filter(
@@ -264,14 +262,34 @@ function devicePresentation(
 	availabilityByDevice: Map<string, DeviceAvailabilityState>,
 ) {
 	const item = inventory?.items.find((item) => item.evidenceDeviceIds.includes(device.deviceId));
-	const availability = item?.isLocal
-		? "available"
-		: (availabilityByDevice.get(device.deviceId) ?? "unknown");
+	const states = deviceEvidenceIds(device.deviceId, inventory).map((id) =>
+		availabilityByDevice.get(id),
+	);
+	let availability: DeviceAvailabilityState = "unknown";
+	if (states.includes("offline")) availability = "offline";
+	if (item?.isLocal || states.includes("available")) availability = "available";
 	return {
 		displayName: deviceDisplayName(device.displayName, item),
 		availability,
 		availabilityLabel: AVAILABILITY_LABELS[availability],
 	};
+}
+
+function deviceRuntimeMetadata(
+	deviceId: string,
+	inventory: DeviceIdentityInventoryV1 | undefined,
+	peers: Map<string, DevicePeerRuntimeMetadataInput>,
+) {
+	return deviceEvidenceIds(deviceId, inventory)
+		.map((id) => peers.get(id))
+		.find((item) => item !== undefined);
+}
+
+function deviceEvidenceIds(deviceId: string, inventory?: DeviceIdentityInventoryV1): string[] {
+	const item = inventory?.items.find((item) => item.evidenceDeviceIds.includes(deviceId));
+	if (item?.state !== "configured" || !item.validatedFingerprint || item.conflictCodes.length > 0)
+		return [deviceId];
+	return [deviceId, ...item.evidenceDeviceIds.filter((id) => id !== deviceId).sort()];
 }
 
 function ProjectList({ empty, projects }: { empty: string; projects: DeviceProjectProjection[] }) {

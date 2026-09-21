@@ -42,6 +42,54 @@ function snapshot(
 	};
 }
 
+describe("device inventory missing-name provenance", () => {
+	it.each([null, "Enrolled device", "Peer device", "Registered device"])(
+		"preserves an explicit label %s but skips a missing enrollment label",
+		(displayName) => {
+			const rows = [
+				enrollment("device-a", "key-a", { display_name: displayName }),
+				enrollment("device-b", "key-a", { display_name: "Studio laptop" }),
+			];
+			for (const enrollments of [rows, [...rows].reverse()]) {
+				const result = projectDeviceIdentityInventory(
+					snapshot({
+						coordinator: { availability: "available", safeErrorCode: null, enrollments },
+					}),
+				);
+				expect(result.items[0]?.displayName).toBe(displayName ?? "Studio laptop");
+			}
+		},
+	);
+	it("does not turn missing database names into higher-priority labels", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			db.prepare(
+				"INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at) VALUES ('identity-a', 'Example', 0, 'active', ?, ?)",
+			).run(NOW, NOW);
+			db.prepare(
+				"INSERT INTO sync_peers(peer_device_id, name, public_key, pinned_fingerprint, created_at) VALUES ('device-a', NULL, 'key-a', ?, ?)",
+			).run(fingerprintPublicKey("key-a"), NOW);
+			db.prepare(
+				"INSERT INTO identity_devices(device_id, identity_id, display_name, status, provenance, revision, migration_state, source_fingerprint, idempotency_key, created_at, updated_at) VALUES ('device-a', 'identity-a', '', 'active', 'coordinator_enrollment', 'rev-a', 'user_managed', 'source-a', 'key-a', ?, ?)",
+			).run(NOW, NOW);
+			const loaded = loadDeviceIdentityInventorySnapshot(db, {
+				localDeviceId: "missing",
+				coordinator: {
+					availability: "available",
+					safeErrorCode: null,
+					enrollments: [enrollment("device-a", "key-a", { display_name: "Studio laptop" })],
+				},
+			});
+			expect(loaded.peers[0]?.displayName).toBe("");
+			expect(loaded.bindings[0]?.displayName).toBe("");
+			expect(projectDeviceIdentityInventory(loaded).items[0]?.displayName).toBe("Studio laptop");
+		} finally {
+			db.close();
+		}
+	});
+});
+
 describe("device inventory display names", () => {
 	it.each([
 		{

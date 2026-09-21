@@ -861,6 +861,67 @@ describe("Device access projection", () => {
 		});
 	});
 });
+describe("Device runtime aliases", () => {
+	it.each([
+		{ validated: true, displayName: "Canonical device" },
+		{ validated: true, displayName: "" },
+		{ validated: false, displayName: "Canonical device" },
+	])(
+		"uses only validated aliases for runtime and rename controls: $validated / $displayName",
+		({ validated, displayName }) => {
+			const graph = intent();
+			graph.identityDevices = graph.identityDevices.map((device) => ({
+				...device,
+				displayName,
+			}));
+			const bindingId = "device-address-fingerprint-secret";
+			const deviceInventory = inventory([
+				inventoryItem(bindingId, "Studio laptop", "configured", {
+					evidenceDeviceIds: [bindingId, "peer-b", "peer-a"],
+					validatedFingerprint: validated ? "validated-test-key" : null,
+				}),
+			]);
+			const onNavigate = vi.fn();
+			const mount = document.getElementById("mount");
+			if (!mount) throw new Error("Missing mount");
+			for (const ids of [
+				["peer-b", "peer-a"],
+				["peer-a", "peer-b"],
+			]) {
+				act(() =>
+					mountDevices(
+						mount,
+						graph,
+						reconciliation(),
+						projects,
+						[{ deviceId: "peer-a", state: "available" }],
+						{
+							inventory: deviceInventory,
+							onNavigate,
+							peerRuntimeMetadata: ids.map((deviceId) => ({
+								deviceId,
+								runtimeVersion: deviceId === "peer-a" ? "0.42.0" : "0.43.0",
+								runtimeVersionObservedAt: null,
+							})),
+						},
+					),
+				);
+				const row = mount.querySelector(".devices-table-row");
+				expect(row?.textContent).toContain("Studio laptop");
+				expect(row?.textContent).toContain(validated ? "Available" : "Presence unavailable");
+				expect(row?.textContent?.includes("0.42.0")).toBe(validated);
+				const action = [...mount.querySelectorAll<HTMLButtonElement>("button")].find(
+					(button) => button.textContent === "Identify or rename in Sync…",
+				);
+				expect(Boolean(action)).toBe(validated);
+				if (action) act(() => action.click());
+			}
+			if (validated) expect(onNavigate).toHaveBeenCalledWith("advanced_sync");
+			else expect(onNavigate).not.toHaveBeenCalled();
+		},
+	);
+});
+
 describe("Device runtime metadata", () => {
 	it("presents paired-peer runtime metadata without changing device behavior", () => {
 		const baseline = projectDevices(

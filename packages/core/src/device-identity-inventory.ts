@@ -177,7 +177,7 @@ function enrollmentEvidence(value: CoordinatorEnrollment): Evidence {
 	const validated = fingerprint(clean(value.public_key), clean(value.fingerprint));
 	return {
 		deviceId: value.device_id,
-		displayName: clean(value.display_name) ?? "Enrolled device",
+		displayName: clean(value.display_name) ?? "",
 		source: "coordinator_enrollment",
 		fingerprint: validated.value,
 		fingerprintConflict: validated.conflict,
@@ -247,13 +247,20 @@ function preferred(group: Evidence[], source: DeviceIdentityInventorySource): Ev
 }
 
 function preferredDisplayName(group: Evidence[]): string {
+	// Keep missing source labels empty until projection so generated copy cannot outrank real names.
 	for (const source of SOURCE_ORDER) {
-		const named = group.find(
-			(item) =>
-				item.source === source &&
-				item.displayName.length > 0 &&
-				!["Canonical device", "Unnamed device"].includes(item.displayName),
-		);
+		const named = group
+			.filter(
+				(item) =>
+					item.source === source &&
+					item.displayName.length > 0 &&
+					!["Canonical device", "Unnamed device"].includes(item.displayName),
+			)
+			.toSorted(
+				(left, right) =>
+					left.deviceId.localeCompare(right.deviceId) ||
+					left.displayName.localeCompare(right.displayName),
+			)[0];
 		if (named) return named.displayName;
 	}
 	return "Unnamed device";
@@ -393,7 +400,7 @@ export function loadDeviceIdentityInventorySnapshot(
 			const value = row as Record<string, unknown>;
 			return {
 				deviceId: String(value.peer_device_id ?? ""),
-				displayName: clean(value.name) ?? "Peer device",
+				displayName: clean(value.name) ?? "",
 				publicKey: clean(value.public_key),
 				pinnedFingerprint: clean(value.pinned_fingerprint),
 				suggestedIdentityId: clean(value.actor_id),
@@ -422,7 +429,7 @@ export function loadDeviceIdentityInventorySnapshot(
 			const value = row as Record<string, unknown>;
 			return {
 				deviceId: String(value.device_id ?? ""),
-				displayName: clean(value.display_name) ?? "Registered device",
+				displayName: clean(value.display_name) ?? "",
 				identityId: String(value.identity_id ?? ""),
 				status: String(value.status ?? ""),
 				identityStatus: clean(value.identity_status),
@@ -432,7 +439,7 @@ export function loadDeviceIdentityInventorySnapshot(
 		localDevice: localRow
 			? {
 					deviceId: localRow.device_id,
-					displayName: clean(input.localDisplayName) ?? "This device",
+					displayName: clean(input.localDisplayName) ?? "",
 					publicKey: localRow.public_key,
 					fingerprint: localRow.fingerprint,
 				}
