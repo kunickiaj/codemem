@@ -44,13 +44,20 @@ function request(value: unknown): RecoveryRequest {
 function readableRows(store: MemoryStore, input: RecoveryRequest): Row[] {
 	const filter = buildFilterClausesWithContext(null, store.ownershipFilterContext());
 	const rows = store.db
-		.prepare(`SELECT memory_items.* FROM memory_items
+		.prepare(`SELECT memory_items.*,
+		(SELECT project FROM sessions WHERE sessions.id = memory_items.session_id) AS source_session_project
+		FROM memory_items
 		WHERE memory_items.id IN (${input.memoryIds.map(() => "?").join(",")})
 		AND active = 1 AND deleted_at IS NULL
 		${filter.clauses.map((clause) => `AND (${clause})`).join(" ")} ORDER BY id`)
-		.all(...input.memoryIds, ...filter.params) as Row[];
+		.all(...input.memoryIds, ...filter.params) as (Row & {
+		source_session_project: string | null;
+	})[];
 	if (rows.length !== input.memoryIds.length) fail("ownership_records_unavailable", 404);
-	return rows;
+	return rows.map(({ source_session_project, ...row }) => ({
+		...row,
+		project: row.project ?? source_session_project,
+	}));
 }
 
 function privacySignals(row: Row): string[] {
@@ -107,6 +114,7 @@ function evidence(store: MemoryStore, row: Row) {
 	return {
 		memoryId: row.id,
 		title: row.title,
+		project: row.project,
 		originalIdentity: row.import_key,
 		verification: binding ? ("verified" as const) : ("unverified" as const),
 		verifiedSourceDeviceId: binding?.sourceDeviceId ?? null,
@@ -219,13 +227,13 @@ function recoveredMetadata(
 
 function copyRow(store: MemoryStore, original: Row, operationId: string, now: string) {
 	const binding = allocateLocalMemorySource(store.db);
+	const { id: _id, ...content } = original;
+	const scanned = store.scanner.redactValue(content).value as typeof content;
 	const session = store.db
 		.prepare(`INSERT INTO sessions(started_at, project, tool_version, metadata_json)
 		VALUES (?, ?, 'memory_recovery', ?)`)
-		.run(now, original.project, JSON.stringify({ recovery_operation_id: operationId }));
+		.run(now, scanned.project, JSON.stringify({ recovery_operation_id: operationId }));
 	const metadata = recoveredMetadata(store, original, operationId, binding.entityId);
-	const { id: _id, ...content } = original;
-	const scanned = store.scanner.redactValue(content).value as typeof content;
 	const inserted = drizzle(store.db)
 		.insert(schema.memoryItems)
 		.values({

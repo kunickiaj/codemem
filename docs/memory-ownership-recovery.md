@@ -20,7 +20,7 @@ Selections contain at most 100 positive safe-integer IDs; duplicates are normali
 Generate an operation ID once per confirmation, using 16–128 ASCII letters, digits, underscores, or hyphens, and retain it across timeout/restart retries.
 Changing the selection requires a new preview and operation ID.
 
-Each preview record includes its title, original identity, `verification`, `verifiedSourceDeviceId`, exact `missingEvidence`, source scope, original and recovered visibility, destination scope, recipient device IDs, and `originalRetained`.
+Each preview record includes its title, effective `project`, original identity, `verification`, `verifiedSourceDeviceId`, exact `missingEvidence`, source scope, original and recovered visibility, destination scope, recipient device IDs, and `originalRetained`.
 Unverified UUIDs report `immutable_source_binding` as missing evidence and offer the working `recover_local_copy` action regardless of source availability.
 Existing verified bindings report `verified`; caller-supplied device IDs, signatures, and mutable origin fields cannot create that status.
 
@@ -29,6 +29,8 @@ Existing verified bindings report `verified`; caller-supplied device IDs, signat
 Recovery copies initially use `local-default`, which the current peer export and snapshot paths exclude; their recipient list is empty.
 The preview must say **Create local copies**, **Originals remain**, and **Duplicates will be visible**, rather than promising remote erasure or completed Project convergence.
 The later repository repair must separately preview and apply the main Project policy before sharing eligible copies.
+Recovery uses the memory row's project first, falling back to its source session's project only when the row value is null; if both are absent, the project stays null.
+The effective project participates in the reviewed digest and is redacted before being persisted on both the new session and memory, preserving project-filtered reads and later policy association without granting sharing access.
 
 Copies preserve private restrictions, and personal/private indicators in historical metadata or scope conservatively produce private copies.
 The preview exposes any resulting visibility change explicitly; this never broadens access.
