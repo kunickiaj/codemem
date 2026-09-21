@@ -18,6 +18,7 @@ import {
 } from "./memory-retirement-reset.js";
 import { isMemoryScopeRetired } from "./memory-scope-retirement.js";
 import { getVerifiedMemorySource } from "./memory-source-identity.js";
+import { populateMemoryRefs } from "./ref-populate.js";
 import { buildDirectPeerCanonicalRequest } from "./sync-auth.js";
 import { applyBootstrapSnapshot, mergeBootstrapSnapshot } from "./sync-bootstrap.js";
 import { getSyncResetState, loadMemorySnapshotPageForPeer } from "./sync-replication.js";
@@ -193,6 +194,77 @@ beforeEach(() => {
 afterEach(() => {
 	sender.close();
 	receiver.close();
+});
+
+function seedDuplicateSnapshotRows() {
+	applyBootstrapSnapshot(receiver, "source", [snapshot(1), snapshot(1), snapshot(2)], info);
+	applyBootstrapSnapshot(receiver, "source", [snapshot(1, "new"), snapshot(1, "new")], {
+		...info,
+		scope_id: "new",
+	});
+	const rows = receiver
+		.prepare("SELECT id, import_key, scope_id FROM memory_items ORDER BY id")
+		.all() as Array<{ id: number; import_key: string; scope_id: string }>;
+	for (const row of rows) {
+		populateMemoryRefs(receiver, row.id, [`file-${row.id}.ts`], null, [`concept-${row.id}`]);
+		receiver
+			.prepare(`INSERT INTO memory_vectors(memory_id, embedding, chunk_index, content_hash, model)
+			VALUES (CAST(? AS INTEGER), ?, 0, 'fixture', 'fixture')`)
+			.run(row.id, Buffer.from(new Float32Array(384).fill(1).buffer));
+	}
+	expect(
+		rows.filter((row) => row.import_key === qualified(1) && row.scope_id === "old"),
+	).toHaveLength(2);
+	return rows
+		.filter((row) => row.import_key !== qualified(1) || row.scope_id !== "old")
+		.map((row) => row.id);
+}
+
+function expectRemainingCopies(ids: number[]) {
+	expect(receiver.prepare("SELECT id FROM memory_items ORDER BY id").pluck().all()).toEqual(ids);
+	for (const table of ["memory_file_refs", "memory_concept_refs", "memory_vectors"]) {
+		expect(
+			receiver.prepare(`SELECT memory_id FROM ${table} ORDER BY memory_id`).pluck().all(),
+		).toEqual(ids);
+	}
+}
+
+it("cleans every destructively imported duplicate before reset completion and protected merge retries", () => {
+	const retained = seedDuplicateSnapshotRows();
+	queue(1);
+	const request = start();
+	const page = exchange(request);
+	expect(retirementResetProgress(receiver, request.resetId).complete).toBe(true);
+	expectRemainingCopies(retained);
+	expect(protectedApply(request.resetId, "merge", [snapshot(1), snapshot(1)]).applied).toBe(0);
+	expectRemainingCopies(retained);
+	const beforeRetry = receiver.serialize();
+	receiveRetirementResetPage(
+		receiver,
+		signed(page, source, recipient.deviceId, RETIREMENT_RESET_PAGE_PATH),
+		receiverOptions(),
+	);
+	expect(receiver.serialize().equals(beforeRetry)).toBe(true);
+	expect(protectedApply(request.resetId, "merge", [snapshot(1)]).applied).toBe(0);
+	expectRemainingCopies(retained);
+});
+
+it("rolls back all duplicate cleanup and reset state when a later copy cannot be deleted", () => {
+	const retained = seedDuplicateSnapshotRows();
+	queue(1);
+	const request = start();
+	receiver.exec(`CREATE TRIGGER fail_last_duplicate BEFORE DELETE ON memory_items
+		WHEN OLD.scope_id = 'old' AND (SELECT COUNT(*) FROM memory_items WHERE import_key = OLD.import_key AND scope_id = OLD.scope_id) = 1
+		BEGIN SELECT RAISE(ABORT, 'duplicate_delete_failed'); END`);
+	const before = receiver.serialize();
+	expect(() => exchange(request)).toThrow("duplicate_delete_failed");
+	expect(receiver.serialize().equals(before)).toBe(true);
+	expect(retirementResetProgress(receiver, request.resetId).complete).toBe(false);
+	expect(isMemoryScopeRetired(receiver, qualified(1), "old")).toBe(false);
+	receiver.exec("DROP TRIGGER fail_last_duplicate");
+	exchange(request);
+	expectRemainingCopies(retained);
+	expect(retirementResetProgress(receiver, request.resetId).complete).toBe(true);
 });
 
 it.each(["replace", "merge"] as const)(

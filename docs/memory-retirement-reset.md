@@ -18,6 +18,8 @@ The source signs each returned page for `POST /v1/memory-scope-retirements/reset
 `receiveRetirementResetPage` verifies the pinned source/key, recipient, random challenge, boundary and page offset, then atomically commits the controls, cleanup, receipts, nonce and reset checkpoint.
 These paths are signature domains for internal adapters, not mounted server endpoints.
 
+Cleanup removes every row matching the exact retired identity and scope, including duplicate snapshot imports and each copy's file/concept references and vectors; destination-scope copies and unrelated rows remain intact.
+
 Pages contain at most 100 payload-free controls and a signed completion flag.
 The source manifest is immutable for that reset attempt, bounded to 100,000 controls, and retained through restart and log compaction.
 New controls queued after manifest capture remain in normal durable delivery state; the admission dependency must coordinate that boundary before content can ship.
