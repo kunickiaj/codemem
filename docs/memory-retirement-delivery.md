@@ -24,7 +24,8 @@ The feature must be explicitly negotiated, and unsupported peers leave all deliv
 The caller obtains `RetirementPeer` from `getRetirementPeer(db, { localDeviceId, peerDeviceId })` in `memory-retirement-trust.ts`, never from body fields; signatures authenticate the complete body and recipient.
 The authenticated peer must own every control's qualified namespace, so forwarded claims and unverified historical UUIDs fail.
 
-The receiver commits the ledger fence, exact identity/retired-scope row cleanup, file/concept references, vectors when present, receipt, and nonce in one transaction.
+The receiver commits the ledger fence, cleanup of every row matching the exact identity/retired scope (including duplicate copies), file/concept references, vectors when present, receipt, and nonce in one transaction.
+Failure to delete any copy rolls back the entire batch, including earlier controls and the nonce, so the same signed request can retry without acknowledging partial cleanup.
 A moved destination row and unrelated rows survive; an absent row still gains an authenticated fence.
 An acknowledgement is returned only after commit, and caller-owned outer transactions are rejected to prevent acknowledging uncommitted state.
 
