@@ -42,6 +42,159 @@ function snapshot(
 	};
 }
 
+describe("device inventory missing-name provenance", () => {
+	it.each([null, "Enrolled device", "Peer device", "Registered device"])(
+		"preserves an explicit label %s but skips a missing enrollment label",
+		(displayName) => {
+			const rows = [
+				enrollment("device-a", "key-a", { display_name: displayName }),
+				enrollment("device-b", "key-a", { display_name: "Studio laptop" }),
+			];
+			for (const enrollments of [rows, [...rows].reverse()]) {
+				const result = projectDeviceIdentityInventory(
+					snapshot({
+						coordinator: { availability: "available", safeErrorCode: null, enrollments },
+					}),
+				);
+				expect(result.items[0]?.displayName).toBe(displayName ?? "Studio laptop");
+			}
+		},
+	);
+	it("does not turn missing database names into higher-priority labels", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			db.prepare(
+				"INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at) VALUES ('identity-a', 'Example', 0, 'active', ?, ?)",
+			).run(NOW, NOW);
+			db.prepare(
+				"INSERT INTO sync_peers(peer_device_id, name, public_key, pinned_fingerprint, created_at) VALUES ('device-a', NULL, 'key-a', ?, ?)",
+			).run(fingerprintPublicKey("key-a"), NOW);
+			db.prepare(
+				"INSERT INTO identity_devices(device_id, identity_id, display_name, status, provenance, revision, migration_state, source_fingerprint, idempotency_key, created_at, updated_at) VALUES ('device-a', 'identity-a', '', 'active', 'coordinator_enrollment', 'rev-a', 'user_managed', 'source-a', 'key-a', ?, ?)",
+			).run(NOW, NOW);
+			const loaded = loadDeviceIdentityInventorySnapshot(db, {
+				localDeviceId: "missing",
+				coordinator: {
+					availability: "available",
+					safeErrorCode: null,
+					enrollments: [enrollment("device-a", "key-a", { display_name: "Studio laptop" })],
+				},
+			});
+			expect(loaded.peers[0]?.displayName).toBe("");
+			expect(loaded.bindings[0]?.displayName).toBe("");
+			expect(projectDeviceIdentityInventory(loaded).items[0]?.displayName).toBe("Studio laptop");
+		} finally {
+			db.close();
+		}
+	});
+});
+
+describe("device inventory display names", () => {
+	it.each([
+		{
+			source: "coordinator",
+			localName: "Unnamed device",
+			bindingName: "Canonical device",
+			peerName: "Unnamed device",
+			expected: "Studio laptop",
+		},
+		{
+			source: "peer",
+			localName: "Unnamed device",
+			bindingName: "Canonical device",
+			peerName: "Peer laptop",
+			expected: "Peer laptop",
+		},
+		{
+			source: "binding",
+			localName: "Unnamed device",
+			bindingName: "Personal laptop",
+			peerName: "Peer laptop",
+			expected: "Personal laptop",
+		},
+		{
+			source: "local",
+			localName: "This laptop",
+			bindingName: "Personal laptop",
+			peerName: "Peer laptop",
+			expected: "This laptop",
+		},
+	])(
+		"searches aliases for names while preserving $source priority",
+		({ localName, bindingName, peerName, expected }) => {
+			const input = snapshot({
+				localDevice: {
+					deviceId: "device-a",
+					displayName: localName,
+					publicKey: "key-a",
+					fingerprint: fingerprintPublicKey("key-a"),
+				},
+				bindings: [
+					{
+						deviceId: "device-a",
+						displayName: bindingName,
+						identityId: "identity-a",
+						status: "active",
+						identityStatus: "active",
+					},
+				],
+				peers: [
+					{
+						deviceId: "device-a",
+						displayName: peerName,
+						publicKey: "key-a",
+						pinnedFingerprint: fingerprintPublicKey("key-a"),
+						suggestedIdentityId: null,
+						trustProvenance: null,
+						claimedLocalActor: false,
+					},
+				],
+				coordinator: {
+					availability: "available",
+					safeErrorCode: null,
+					enrollments: [
+						enrollment("device-a", "key-a", { display_name: "Unnamed device" }),
+						enrollment("device-alias", "key-a", { display_name: "Studio laptop" }),
+						enrollment("device-other-alias", "key-a", { display_name: "Other laptop" }),
+					],
+				},
+			});
+			const result = projectDeviceIdentityInventory(input);
+			expect(result.items).toHaveLength(1);
+			expect(result.items[0]?.displayName).toBe(expected);
+			expect(result.items[0]?.deviceId).toBe("device-a");
+		},
+	);
+
+	it.each(["Canonical device", "Unnamed device", "Travel laptop"])(
+		"prefers a real enrollment name over placeholder %s without changing bindings",
+		(displayName) => {
+			const input = snapshot({
+				bindings: [
+					{
+						deviceId: "device-a",
+						displayName,
+						identityId: "identity-a",
+						status: "active",
+						identityStatus: "active",
+					},
+				],
+				coordinator: {
+					availability: "available",
+					safeErrorCode: null,
+					enrollments: [enrollment("device-a", "key-a", { display_name: "Studio laptop" })],
+				},
+			});
+			const result = projectDeviceIdentityInventory(input);
+			expect(result.items[0]?.displayName).toBe(
+				displayName === "Travel laptop" ? displayName : "Studio laptop",
+			);
+			expect(input.bindings[0]?.displayName).toBe(displayName);
+		},
+	);
+});
+
 describe("device Identity inventory projection", () => {
 	it("classifies local and peer evidence as setup_required without binding identities", () => {
 		const result = projectDeviceIdentityInventory(

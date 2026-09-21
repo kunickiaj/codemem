@@ -15,6 +15,7 @@ const publishedPackages = [
 	["@codemem/server", "packages/viewer-server"],
 	["codemem", "packages/cli"],
 	["@codemem/opencode-plugin", "packages/opencode-plugin"],
+	["@codemem/pi-extension", "packages/pi-extension"],
 ];
 
 describe("release npm dist-tag routing", () => {

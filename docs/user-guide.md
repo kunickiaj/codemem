@@ -171,6 +171,7 @@ has no evaluated runs and null rates, rather than a quality pass.
 ## Observer auth configuration
 
 - Runtime choices are `api_http`, `claude_sidecar`, and `codex_sidecar`.
+- Pi users stay on `api_http`. `codemem setup` can derive unset `observer_provider` / `observer_model` from pi API-key providers (cheap-model-first) without copying secrets. OAuth-only pi installs stay explicitly `unconfigured (oauth-only)` in v1 — set observer settings manually.
 - `claude_sidecar` runs observer calls through the local Claude runtime (subscription/session auth) and does not require `ANTHROPIC_API_KEY`.
 - `claude_command` controls how `claude_sidecar` invokes Claude CLI (default `["claude"]`).
   - Wrapper example: `"claude_command": ["wrapper", "claude", "--"]`

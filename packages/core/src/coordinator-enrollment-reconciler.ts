@@ -350,7 +350,7 @@ export async function reconcileCoordinatorEnrollmentSnapshot(
 				enrollment.display_name,
 				"device_display_name",
 			);
-			const displayName = normalizedDisplayName ?? "Enrolled device";
+			const displayName = normalizedDisplayName ?? "Unnamed device";
 			const existing = db
 				.prepare(
 					`SELECT identity_id, display_name, status, provenance, assignment_version

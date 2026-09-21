@@ -40,6 +40,10 @@ function makeRepo(version = "0.16.0") {
 \t"version": "${version}"
 }
 `);
+	write(join(root, "packages/pi-extension/package.json"), `{
+\t"version": "${version}"
+}
+`);
 	write(join(root, "packages/core/src/index.ts"), `export const VERSION = "${version}";\n`);
 	write(join(root, "packages/core/src/index.test.ts"), `expect(VERSION).toBe("${version}");\n`);
 	write(
@@ -145,6 +149,7 @@ describe("release-version script", () => {
 			"packages/mcp-server/package.json",
 			"packages/opencode-plugin/.opencode/lib/runtime.js",
 			"packages/opencode-plugin/package.json",
+			"packages/pi-extension/package.json",
 			"packages/viewer-server/package.json",
 			"plugins/claude/.claude-plugin/plugin.json",
 			"plugins/codex/.codex-plugin/plugin.json",
@@ -155,7 +160,7 @@ describe("release-version script", () => {
 	it("supports dry run without writing", () => {
 		const root = makeRepo("1.0.0");
 		const changed = setVersion(root, "1.0.1", { dryRun: true });
-		assert.equal(changed.length, 13);
+		assert.equal(changed.length, 14);
 		assert.deepEqual(new Set(Object.values(readVersions(root))), new Set(["1.0.0"]));
 	});
 

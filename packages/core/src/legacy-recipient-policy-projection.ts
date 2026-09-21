@@ -1006,7 +1006,7 @@ function loadSnapshot(
 			const record = row as Record<string, unknown>;
 			return {
 				deviceId: String(record.peer_device_id ?? ""),
-				displayName: clean(record.name) ?? "Peer device",
+				displayName: clean(record.name) ?? "Unnamed device",
 				identityId: clean(record.actor_id),
 			};
 		});

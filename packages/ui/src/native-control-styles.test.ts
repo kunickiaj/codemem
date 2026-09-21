@@ -77,9 +77,15 @@ describe("native control styles", () => {
 
 	it("uses one geometry for sibling Sharing decision actions", () => {
 		const normalizedHtml = html.replace(/\s+/g, " ");
-
-		expect(normalizedHtml).toContain(
-			".recipient-policy-review-actions > :is(.settings-save, .settings-button) { min-height: 32px; padding-block: 5px; border-radius: var(--radius-md); }",
+		const sharedGeometry = normalizedHtml.match(
+			/\.settings-button, \.settings-save \{([^}]+)\}/,
+		)?.[1];
+		expect(sharedGeometry).toContain("min-height: 36px;");
+		expect(sharedGeometry).toContain("padding: 8px 12px;");
+		expect(sharedGeometry).toContain("border-radius: var(--radius-md);");
+		expect(tokens).toMatch(/--radius-md:\s*12px/);
+		expect(normalizedHtml).not.toContain(
+			".recipient-policy-review-actions > :is(.settings-save, .settings-button)",
 		);
 	});
 

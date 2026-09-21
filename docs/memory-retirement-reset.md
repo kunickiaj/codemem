@@ -8,7 +8,11 @@ Cross-process admission remains required before production activation.
 
 The receiver starts with `beginRetirementReset`, which persists a random reset ID, the pinned source device and public key, the local recipient, and a digest of the exact snapshot boundary.
 The boundary includes scope, generation, snapshot ID, and baseline content cursor; that cursor never determines which retirement controls replay.
-The caller must obtain the peer/key from trusted pairing state and use an authenticated content transport to that same source.
+The caller must obtain `options.peer` from `getRetirementPeer(db, { localDeviceId, peerDeviceId })` and use the actual local device identity.
+
+Begin, serve, receive and protected-apply entry points independently check that supplied peer/key against `getRetirementPeer`; an unknown, inconsistent or replaced pin fails with `retirement_peer_untrusted` before state changes.
+This lookup retains retirement-only authority after final coordinator-scope revocation on either side; it does not restore scope membership or content authentication through `sync_peers`.
+Snapshot content still requires its own currently authorized authenticated transport to the same source; retirement-only pins cannot authorize fetching content after revocation.
 
 The recipient signs each request for `POST /v1/memory-scope-retirements/reset` using recipient-bound v3 authentication.
 `serveRetirementReset` verifies it and snapshots the recipient's complete retained delivery manifest, including already acknowledged controls, into durable reset storage.
@@ -45,7 +49,7 @@ For an identity with retirement history, missing/blank payload scope, a retired 
 Valid unretired destinations and unrelated identities retain their existing behavior.
 
 Snapshot export applies the same history-aware filter and continues scanning past filtered rows.
-Destructive and additive bootstrap preserve source bindings, retirement fences, delivery acknowledgements, receipts, source manifests and receiver checkpoints; none of these tables is content-cursor or memory-row state.
+Destructive and additive bootstrap preserve source bindings, retirement fences, retirement-only peer pins, delivery acknowledgements, receipts, source manifests and receiver checkpoints; none of these tables is content-cursor or memory-row state.
 The low-level bootstrap functions enforce already-known fences but do not perform control exchange: any future negotiated retirement caller must use the protected handshake and wrapper.
 
 ## Remaining admission gate

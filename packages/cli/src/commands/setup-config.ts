@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { atomicReplaceConfigFile, type ConfigFileMetadata } from "@codemem/core";
 import {
@@ -296,4 +296,19 @@ export function writeJsonConfig(
 	if (exists && createBackup) backupConfig(path, raw);
 	atomicReplaceConfigFile(path, output, configMetadata(path));
 	return true;
+}
+
+/**
+ * Write JSON config after copying any existing file to `<path>.codemem.bak`.
+ * Backup failure is non-fatal (write still proceeds).
+ */
+export function writeJsonConfigWithBackup(path: string, data: Record<string, unknown>): void {
+	if (existsSync(path)) {
+		try {
+			copyFileSync(path, `${path}.codemem.bak`);
+		} catch {
+			// Non-fatal: continue without a backup rather than blocking install.
+		}
+	}
+	writeJsonConfig(path, data);
 }

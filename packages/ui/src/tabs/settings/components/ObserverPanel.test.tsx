@@ -71,4 +71,15 @@ describe("ObserverPanel", () => {
 		expect(mount.querySelector<HTMLTextAreaElement>("#codexCommand")).not.toBeNull();
 		expect(mount.textContent).toContain("codex_command is protected");
 	});
+
+	it("mentions pi in observer connection copy", () => {
+		mount = document.createElement("div");
+		document.body.appendChild(mount);
+		act(() => render(<ObserverPanel {...props()} />, mount as HTMLDivElement));
+
+		expect(mount.textContent).toContain("opencode, claude, codex, and pi");
+		expect(mount.textContent).toMatch(/pi setup can derive Direct API/i);
+		const runtimeHelp = mount.querySelector('[aria-label="About connection mode"]');
+		expect(runtimeHelp?.getAttribute("data-tooltip") ?? "").toMatch(/pi API-key providers/i);
+	});
 });

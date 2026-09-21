@@ -92,6 +92,23 @@ function refreshManifestDigests(
 	};
 }
 
+function expectDeviceLabel(db: InstanceType<typeof Database>, attemptId: string, expected: string) {
+	expect(
+		db
+			.prepare(
+				"SELECT display_name FROM legacy_team_setup_draft_devices WHERE attempt_id = ? AND device_id = 'device-a'",
+			)
+			.pluck()
+			.get(attemptId),
+	).toBe(expected);
+	expect(
+		db
+			.prepare("SELECT display_name FROM identity_devices WHERE device_id = 'device-a'")
+			.pluck()
+			.get(),
+	).toBe(expected);
+}
+
 describe("legacy Team setup completion manifests", () => {
 	let db: InstanceType<typeof Database>;
 
@@ -598,46 +615,39 @@ describe("legacy Team setup completion manifests", () => {
 		).toBe("excluded");
 	});
 
-	it("refreshes an existing draft device label from the live roster", async () => {
-		const draft = readyDraft();
-		const manifest = deriveLegacyTeamSetupCompletionManifest(db, {
-			candidateRef: draft.candidateRef,
-			attemptId: draft.attemptId,
-			completedAt: NOW,
-		});
-		db.prepare(
-			"UPDATE legacy_team_setup_draft_devices SET display_name = ? WHERE attempt_id = ?",
-		).run("Stale laptop", draft.attemptId);
+	it.each([
+		{ displayName: "  Renamed laptop  ", expected: "Renamed laptop" },
+		{ displayName: "", expected: "Unnamed device" },
+	])(
+		"refreshes a draft device label from the live roster: $expected",
+		async ({ displayName, expected }) => {
+			const draft = readyDraft();
+			const manifest = deriveLegacyTeamSetupCompletionManifest(db, {
+				candidateRef: draft.candidateRef,
+				attemptId: draft.attemptId,
+				completedAt: NOW,
+			});
+			db.prepare(
+				"UPDATE legacy_team_setup_draft_devices SET display_name = ? WHERE attempt_id = ?",
+			).run("Stale laptop", draft.attemptId);
 
-		await applyLegacyTeamSetupCompletionManifest(db, {
-			coordinatorId: COORDINATOR_ID,
-			groupId: GROUP_ID,
-			freshRoster: [
-				{
-					deviceId: "device-a",
-					fingerprint: KEY_A,
-					displayName: "  Renamed laptop  ",
-					enabled: true,
-				},
-			],
-			manifest,
-		});
+			await applyLegacyTeamSetupCompletionManifest(db, {
+				coordinatorId: COORDINATOR_ID,
+				groupId: GROUP_ID,
+				freshRoster: [
+					{
+						deviceId: "device-a",
+						fingerprint: KEY_A,
+						displayName,
+						enabled: true,
+					},
+				],
+				manifest,
+			});
 
-		expect(
-			db
-				.prepare(
-					"SELECT display_name FROM legacy_team_setup_draft_devices WHERE attempt_id = ? AND device_id = 'device-a'",
-				)
-				.pluck()
-				.get(draft.attemptId),
-		).toBe("Renamed laptop");
-		expect(
-			db
-				.prepare("SELECT display_name FROM identity_devices WHERE device_id = 'device-a'")
-				.pluck()
-				.get(),
-		).toBe("Renamed laptop");
-	});
+			expectDeviceLabel(db, draft.attemptId, expected);
+		},
+	);
 
 	it("applies a canonical completion over a stale local draft", async () => {
 		const draft = readyDraft();

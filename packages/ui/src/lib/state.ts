@@ -220,6 +220,7 @@ export function healthResourceIsStale(
 }
 
 export interface CachedSyncStatus {
+	device_id?: string | null;
 	daemon_state?: TeamSyncDaemonState;
 	daemon_running?: boolean;
 	enabled?: boolean;

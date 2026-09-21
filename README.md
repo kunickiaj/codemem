@@ -13,6 +13,7 @@ codemem is persistent coding memory across sessions, machines, and teammates for
 - **Hybrid retrieval** — FTS5 BM25 lexical search + sqlite-vec semantic search, merged and re-ranked
 - **Automatic injection for OpenCode 1 and 2** — the plugin injects context into every prompt, no manual steps; the OpenCode 2 integration is beta
 - **Claude Code plugin support** — install from the codemem marketplace source
+- **Multi-agent** — OpenCode, Claude Code, Codex, and pi share one project-scoped store
 - **Built-in viewer** — browse memories, sessions, and observer output in a local web UI
 - **Remote MCP access** — advanced single-user self-hosting can expose an OAuth-protected Streamable HTTP MCP endpoint to configured remote clients; keep the localhost viewer private ([guide](docs/remote-mcp-oauth.md))
 
@@ -227,14 +228,53 @@ Codex hook ingestion shares the same raw-event pipeline as Claude and OpenCode t
 
 > Was this repository previously installed as `opencode-mem`? See the [rename migration guide](docs/rename-migration.md). It covers this repository's former name, not importing data from [`tickernelz/opencode-mem`](https://github.com/tickernelz/opencode-mem).
 
-## How it works
+### Pi
 
-Adapters hook into runtime event systems (the OpenCode 1 plugin and Claude hooks). They capture tool calls and conversation messages, flush them through an observer pipeline that produces typed memories, and surface retrieval context for future prompts.
+Pi support ships as the `@codemem/pi-extension` pi-package. Install the CLI, then let setup wire the extension:
+
+```text
+npm i -g codemem
+codemem setup
+```
+
+`codemem setup` auto-detects pi (`pi` on PATH or the agent dir; honors `PI_CODING_AGENT_DIR`) and appends `npm:@codemem/pi-extension@<version>` to `~/.pi/agent/settings.json` `packages`. Flags:
+
+| Flag | Purpose |
+|------|---------|
+| `--pi-only` | Only configure pi |
+| `--pi-mcp` | Opt into MCP via third-party `pi-mcp-adapter` (writes `mcp.json` only when the adapter is detected) |
+| `--pi-extension-path <path>` | Dev: write a local-path `packages` entry instead of the npm pin |
+
+Uninstall: remove the `@codemem/pi-extension` entry from pi's `packages` list and restart pi. The shared memory store is left intact.
+
+What you get:
+
+- **Ingest** — extension POSTs to `POST /api/pi-hooks` (a compatibility alias that normalizes the payload once and runs it through the canonical ingest envelope with `source: "pi"`, the same event identity as `POST /api/raw-events`), with `codemem pi-hook-ingest` CLI fallback (spool when offline)
+- **Injection** — turn-local `systemPrompt` append on `before_agent_start` (`## codemem memories`); never the persistent `message` channel
+- **Tools** — all 14 `memory_*` tools registered natively via `pi.registerTool` (HTTP preferred, CLI fallback). No `pi-mcp-adapter` required for tools
+- **Compaction** — pi-only observe-only boundary: `session_before_compact` flushes extraction before pi discards context; never replaces pi's summarizer
+- **Fork/resume** — stream identity re-keys on every `session_start`
+- **Project identity** — the extension resolves the project from the nearest Git root (same walk as the other adapters)
+- **Dashboard** — pi rows appear in the source-agnostic feed/sessions/projects tabs with no extra setup
+
+Cross-agent: one shared store. Memories from OpenCode/Claude/Codex sessions inject into pi (and the reverse) because packs are project-scoped, never agent-scoped.
+
+Caveats (v1):
+
+- Observer extraction from pi config supports **API-key providers only**. OAuth-only installs get an explicit `unconfigured (oauth-only)` status — never a silent 401. Set `observer_provider` / `observer_model` explicitly when needed. Selection is cheap-model-first.
+- The preferred HTTP pack path — prove `GET /api/prompt-pack-profile`, then a targeted `POST /api/pack` — is unledgered: pi injection does not write an opencode retrieval-ledger row.
+- `--pi-mcp` requires the third-party `pi-mcp-adapter` package; without it setup writes nothing MCP-related and explains the prerequisite. Native tools remain the default surface (`pi.tools_mode: native`).
+
+See [`packages/pi-extension/README.md`](packages/pi-extension/README.md) and [docs/plugin-reference.md](docs/plugin-reference.md) for config knobs and lifecycle details.
+
 
 > The workflow below illustrates the OpenCode 1 hook names. OpenCode 2.0.2 uses
 > `session.context` for the same automatic recall behavior, with the latest
 > user-message ID required for safe turn identity.
 
+## How it works
+
+Adapters hook into runtime event systems (OpenCode plugin, Claude/Codex hooks, and the pi extension). They capture tool calls and conversation messages, flush them through an observer pipeline that produces typed memories, and surface retrieval context for future prompts.
 ```mermaid
 sequenceDiagram
 participant OC as OpenCode 1
@@ -327,7 +367,7 @@ For architecture details, see [docs/architecture.md](docs/architecture.md).
 | **Plumbing** | `codemem mcp` | MCP stdio server; best-effort starts the local viewer unless `CODEMEM_VIEWER=0` or `CODEMEM_VIEWER_AUTO=0` is set |
 | | `codemem mcp http` | Local Streamable HTTP MCP server (`POST /mcp`, loopback-only by default) |
 
-Run `codemem --help` for the human-facing command list. Adapter plumbing commands (`claude-hook-*`, `codex-hook-*`, `enqueue-raw-event`, and `prompt-pack-ledger`) remain executable for packaged-plugin and stale-client compatibility but are hidden from help and shell completion. `show`, `forget`, and `remember` still work as hidden top-level aliases. `export-memories` and `import-memories` remain visible but are deprecated — they warn on stderr and will be hidden from help and completion in a future release; use `codemem memory export` / `codemem memory import`.
+Run `codemem --help` for the human-facing command list. Adapter plumbing commands (`claude-hook-*`, `codex-hook-*`, `pi-hook-*`, `enqueue-raw-event`, and `prompt-pack-ledger`) remain executable for packaged-plugin and stale-client compatibility but are hidden from help and shell completion. `show`, `forget`, and `remember` still work as hidden top-level aliases. `export-memories` and `import-memories` remain visible but are deprecated — they warn on stderr and will be hidden from help and completion in a future release; use `codemem memory export` / `codemem memory import`.
 
 Use `codemem status` to answer whether the local database, viewer, sync, maintenance,
 semantic index, raw-event ingestion, and observer need attention. It is observational:
@@ -507,6 +547,14 @@ Disabling a device's enrollment for one coordinator group revokes future deliver
 - **Team** — the Identity receives the Project through a Team policy.
 - **Waiting** — acceptance, setup, or delivery is waiting; an offline device resumes on reconnect.
 - **Needs attention** — setup reached a terminal failure; use the displayed retry action.
+
+**Presence unavailable** means there is no current presence evidence, including when a coordinator announcement has expired; it does not mean the machine is powered off. A live paired connection or this viewer's local device is shown as **Available**, while an explicitly offline peer remains **Offline**. Devices without a known name appear as **Unnamed device**. Paired devices offer **Identify or rename in Sync…** in their action menu, using the existing Advanced controls.
+
+Older coordinator and migration records may contain generated labels such as **Enrolled device** or **Peer device**. For those source-tagged records, Devices prefers a name from current inventory evidence. Historical records did not track whether those exact labels were generated or entered by a person, so that distinction cannot always be recovered. This display fallback does not rename stored devices. If inventory refresh fails, cached aliases cannot supply fresh peer status, versions, or rename actions; direct device-ID matches still work.
+
+The viewer retains its canonical local device identity during inventory outages; aliases do not inherit **This device** status. Among validated peer aliases, Devices prefers a nonempty runtime version with the newest valid observation timestamp. Equal or missing timestamps prefer the direct device ID, then aliases sorted by ID; an undated version does not imply a fresh observation.
+
+If the entire Devices refresh fails, the viewer keeps the previous snapshot and its alias evidence while disabling Identity changes. A snapshot that already had unavailable inventory keeps alias joins disabled until inventory refresh succeeds.
 
 Use **Health** for the current status. Globally revoked identity devices are omitted from the active Devices list. A device disabled only for one coordinator group remains listed; use **Advanced → Team administration** to review or re-enable that group enrollment. Removing access prevents future delivery, but cannot erase a copy already delivered to another device.
 

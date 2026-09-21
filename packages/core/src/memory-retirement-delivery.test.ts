@@ -2,6 +2,10 @@ import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import {
+	revokeUnauthorizedCoordinatorPeerTrust,
+	trustCoordinatorPeersWithSharedManagedScopes,
+} from "./coordinator-runtime.js";
+import {
 	MEMORY_RETIREMENT_ACK_PATH,
 	MEMORY_RETIREMENT_FEATURE,
 	MEMORY_RETIREMENT_PATH,
@@ -12,10 +16,14 @@ import {
 	replayMemoryRetirements,
 	type SignedRetirementPacket,
 } from "./memory-retirement-delivery.js";
+import { ensureMemoryRetirementDeliverySchema } from "./memory-retirement-delivery-schema.js";
+import { getRetirementPeer } from "./memory-retirement-trust.js";
 import { isMemoryScopeRetired } from "./memory-scope-retirement.js";
 import { populateMemoryRefs } from "./ref-populate.js";
+import { getCachedScopeAuthorization } from "./scope-membership-cache.js";
 import { buildDirectPeerCanonicalRequest } from "./sync-auth.js";
 import { LOCAL_SYNC_FEATURES, supportsSyncFeature } from "./sync-capability.js";
+import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { initTestSchema } from "./test-utils.js";
 
 function identity(deviceId: string) {
@@ -126,6 +134,274 @@ beforeEach(() => {
 afterEach(() => {
 	sender.close();
 	receiver.close();
+});
+
+function coordinatorPair(db: InstanceType<typeof Database>, local: string, peer: typeof source) {
+	const fresh = new Date().toISOString();
+	db.prepare(`INSERT OR REPLACE INTO replication_scopes
+		(scope_id, label, kind, authority_type, coordinator_id, group_id, membership_epoch, status, created_at, updated_at)
+		VALUES ('old', 'Old', 'managed_project', 'coordinator', 'https://coord.example.test', 'group', 1, 'active', ?, ?)`).run(
+		fresh,
+		fresh,
+	);
+	for (const device of [local, peer.deviceId]) {
+		db.prepare(`INSERT OR REPLACE INTO scope_memberships
+			(scope_id, device_id, role, status, membership_epoch, updated_at)
+			VALUES ('old', ?, 'member', 'active', 1, ?)`).run(device, fresh);
+	}
+	db.prepare(`INSERT INTO scope_membership_cache_state
+		(coordinator_id, group_id, last_refresh_at, last_success_at, last_error, updated_at)
+		VALUES ('https://coord.example.test', 'group', ?, ?, NULL, ?)`).run(fresh, fresh, fresh);
+	expect(
+		trustCoordinatorPeersWithSharedManagedScopes(db, local, [
+			{
+				device_id: peer.deviceId,
+				public_key: peer.publicKey,
+				fingerprint: fingerprintPublicKey(peer.publicKey),
+				coordinator_id: "https://coord.example.test",
+				groups: ["group"],
+			},
+		]),
+	).toBe(1);
+}
+
+function revokePair() {
+	coordinatorPair(sender, source.deviceId, recipient);
+	coordinatorPair(receiver, recipient.deviceId, source);
+	for (const [db, local, peer] of [
+		[sender, source, recipient],
+		[receiver, recipient, source],
+	] as const) {
+		db.prepare(
+			"UPDATE scope_memberships SET status = 'revoked' WHERE device_id = 'recipient'",
+		).run();
+		expect(revokeUnauthorizedCoordinatorPeerTrust(db, local.deviceId)).toBe(1);
+		expect(db.prepare("SELECT * FROM sync_peers").all()).toEqual([]);
+		expect(
+			getRetirementPeer(db, { localDeviceId: local.deviceId, peerDeviceId: peer.deviceId }),
+		).toEqual({ deviceId: peer.deviceId, publicKey: peer.publicKey });
+		expect(
+			getRetirementPeer(db, { localDeviceId: "different-local", peerDeviceId: peer.deviceId }),
+		).toBeNull();
+		expect(
+			getCachedScopeAuthorization(db, {
+				deviceId: recipient.deviceId,
+				scopeId: "old",
+				authority: { coordinatorId: "https://coord.example.test", groupId: "group" },
+			}),
+		).toMatchObject({ authorized: false, freshness: "fresh" });
+	}
+}
+
+function retainedPeer(db: InstanceType<typeof Database>, local: string, peer: string) {
+	const pairing = getRetirementPeer(db, { localDeviceId: local, peerDeviceId: peer });
+	if (!pairing) throw new Error("retirement_pairing_missing");
+	return pairing;
+}
+
+it.each(["before", "after"])(
+	"replays offline retirement queued %s final-scope revocation using only retained pins",
+	async (timing) => {
+		if (timing === "after") sender.prepare("DELETE FROM memory_retirement_deliveries").run();
+		seedMemory();
+		revokePair();
+		if (timing === "after") {
+			sender.transaction(() =>
+				queueMemoryRetirement(sender, control, { localDeviceId: source.deviceId, now }),
+			)();
+		}
+		const senderBytes = sender.serialize();
+		const receiverBytes = receiver.serialize();
+		sender.close();
+		receiver.close();
+		sender = new Database(senderBytes);
+		receiver = new Database(receiverBytes);
+		initTestSchema(sender);
+		initTestSchema(receiver);
+		sender.prepare("DELETE FROM replication_ops").run();
+		receiver.prepare("DELETE FROM replication_ops").run();
+		const senderOptions = {
+			localDeviceId: source.deviceId,
+			peer: retainedPeer(sender, source.deviceId, recipient.deviceId),
+			peerFeatures: features,
+			now,
+		};
+		const receiverOptions = {
+			localDeviceId: recipient.deviceId,
+			peer: retainedPeer(receiver, recipient.deviceId, source.deviceId),
+			peerFeatures: features,
+			now,
+		};
+		await expect(
+			replayMemoryRetirements(sender, {
+				...senderOptions,
+				exchange: async (outbound) => {
+					receiveRetirementBatch(receiver, packet(outbound), receiverOptions);
+					throw new Error("lost_ack");
+				},
+			}),
+		).rejects.toThrow("lost_ack");
+		expect(batch().controls).toHaveLength(1);
+		await expect(
+			replayMemoryRetirements(sender, {
+				...senderOptions,
+				exchange: async (outbound) => {
+					const ack = receiveRetirementBatch(receiver, packet(outbound), receiverOptions);
+					return packet(ack, recipient, source.deviceId, MEMORY_RETIREMENT_ACK_PATH);
+				},
+			}),
+		).resolves.toEqual({ acknowledged: 1, status: "acknowledged" });
+		expect(receiver.prepare("SELECT id FROM memory_items").all()).toEqual([]);
+		expect(isMemoryScopeRetired(receiver, control.entityId, "old")).toBe(true);
+		for (const [db, local, peer] of [
+			[sender, source, recipient],
+			[receiver, recipient, source],
+		] as const) {
+			expect(db.prepare("SELECT * FROM sync_peers").all()).toEqual([]);
+			expect(retainedPeer(db, local.deviceId, peer.deviceId).publicKey).toBe(peer.publicKey);
+		}
+	},
+);
+
+it("rejects forged keys and foreign namespaces after revocation without consuming pending deliveries", async () => {
+	revokePair();
+	const options = {
+		localDeviceId: recipient.deviceId,
+		peer: retainedPeer(receiver, recipient.deviceId, source.deviceId),
+		peerFeatures: features,
+		now,
+	};
+	const before = receiver.serialize();
+	expect(() => receiveRetirementBatch(receiver, packet(batch(), attacker), options)).toThrow(
+		"retirement_authentication_failed",
+	);
+	const foreign = {
+		...control,
+		entityId: "memory-source-v1:YXR0YWNrZXI:00000000-0000-4000-8000-000000000001",
+	};
+	const controlId = createHash("sha256")
+		.update(
+			JSON.stringify([
+				MEMORY_RETIREMENT_FEATURE,
+				foreign.entityId,
+				foreign.sourceDeviceId,
+				foreign.retiredScopeId,
+			]),
+		)
+		.digest("hex");
+	expect(() =>
+		receiveRetirementBatch(
+			receiver,
+			packet({ ...batch(), controls: [{ ...foreign, controlId }] }),
+			options,
+		),
+	).toThrow("memory_source_sender_mismatch");
+	expect(receiver.serialize().equals(before)).toBe(true);
+	await expect(
+		replayMemoryRetirements(sender, {
+			localDeviceId: source.deviceId,
+			peer: retainedPeer(sender, source.deviceId, recipient.deviceId),
+			peerFeatures: features,
+			now,
+			exchange: async (outbound) =>
+				packet(
+					receiveRetirementBatch(receiver, packet(outbound), options),
+					attacker,
+					source.deviceId,
+					MEMORY_RETIREMENT_ACK_PATH,
+				),
+		}),
+	).rejects.toThrow("retirement_authentication_failed");
+	expect(batch().controls).toHaveLength(1);
+});
+
+it("rolls back retained trust together with a failed policy revocation", () => {
+	coordinatorPair(sender, source.deviceId, recipient);
+	sender
+		.prepare("UPDATE scope_memberships SET status = 'revoked' WHERE device_id = 'recipient'")
+		.run();
+	sender.exec(
+		"CREATE TRIGGER fail_revoke BEFORE DELETE ON sync_peers BEGIN SELECT RAISE(ABORT, 'revoke_failed'); END",
+	);
+	const before = sender.serialize();
+	expect(() => revokeUnauthorizedCoordinatorPeerTrust(sender, source.deviceId)).toThrow(
+		"revoke_failed",
+	);
+	expect(sender.serialize().equals(before)).toBe(true);
+	expect(sender.prepare("SELECT * FROM memory_retirement_peer_trust").all()).toEqual([]);
+});
+
+it("does not replace historical retirement authority when a device ID is later paired with a new key", () => {
+	revokePair();
+	sender
+		.prepare(`INSERT INTO sync_peers(peer_device_id, public_key, pinned_fingerprint, created_at,
+		trust_provenance, discovered_via_coordinator_id, discovered_via_group_id)
+		VALUES (?, ?, ?, ?, 'coordinator_policy', 'https://coord.example.test', 'group')`)
+		.run(recipient.deviceId, attacker.publicKey, fingerprintPublicKey(attacker.publicKey), now);
+	expect(retainedPeer(sender, source.deviceId, recipient.deviceId).publicKey).toBe(
+		recipient.publicKey,
+	);
+	expect(revokeUnauthorizedCoordinatorPeerTrust(sender, source.deviceId)).toBe(1);
+	expect(retainedPeer(sender, source.deviceId, recipient.deviceId).publicKey).toBe(
+		recipient.publicKey,
+	);
+	expect(
+		getRetirementPeer(sender, { localDeviceId: source.deviceId, peerDeviceId: "never-paired" }),
+	).toBeNull();
+});
+
+it.each([null, "mismatched"])(
+	"does not retain an incomplete or inconsistent fingerprint (%s)",
+	(fingerprint) => {
+		coordinatorPair(sender, source.deviceId, recipient);
+		expect(retainedPeer(sender, source.deviceId, recipient.deviceId).publicKey).toBe(
+			recipient.publicKey,
+		);
+		sender.prepare("UPDATE sync_peers SET pinned_fingerprint = ?").run(fingerprint);
+		expect(
+			getRetirementPeer(sender, {
+				localDeviceId: source.deviceId,
+				peerDeviceId: recipient.deviceId,
+			}),
+		).toBeNull();
+		sender
+			.prepare("UPDATE scope_memberships SET status = 'revoked' WHERE device_id = 'recipient'")
+			.run();
+		expect(revokeUnauthorizedCoordinatorPeerTrust(sender, source.deviceId)).toBe(1);
+		expect(
+			getRetirementPeer(sender, {
+				localDeviceId: source.deviceId,
+				peerDeviceId: recipient.deviceId,
+			}),
+		).toBeNull();
+	},
+);
+
+it("uses the peer/source/ack index for bounded pending polls amid retained acknowledged history", () => {
+	sender.exec("DROP INDEX idx_memory_retirement_deliveries_pending");
+	const insert = sender.prepare(`INSERT INTO memory_retirement_deliveries
+		(control_id, peer_device_id, entity_id, source_device_id, retired_scope_id, acknowledged_at)
+		VALUES (?, ?, 'entity', ?, 'old', ?)`);
+	sender.transaction(() => {
+		for (let index = 0; index < 10_000; index++) {
+			insert.run(`acked-${index}`, "recipient", "source", now);
+			insert.run(`other-peer-${index}`, "other", "source", null);
+			insert.run(`other-source-${index}`, "recipient", "other-source", null);
+		}
+	})();
+	ensureMemoryRetirementDeliverySchema(sender);
+	ensureMemoryRetirementDeliverySchema(sender);
+	sender.exec("ANALYZE");
+	const plan = sender
+		.prepare(`EXPLAIN QUERY PLAN SELECT control_id, entity_id, source_device_id, retired_scope_id
+		FROM memory_retirement_deliveries WHERE peer_device_id = ? AND source_device_id = ?
+		AND acknowledged_at IS NULL ORDER BY control_id LIMIT ?`)
+		.all("recipient", "source", 100) as { detail: string }[];
+	expect(plan.map((row) => row.detail).join("\n")).toContain(
+		"USING INDEX idx_memory_retirement_deliveries_pending (peer_device_id=? AND source_device_id=? AND acknowledged_at=?)",
+	);
+	expect(plan.some((row) => /SCAN|TEMP B-TREE/.test(row.detail))).toBe(false);
+	expect(batch().controls).toHaveLength(1);
 });
 
 it("recognizes retirement separately but never advertises the unfinished feature", () => {

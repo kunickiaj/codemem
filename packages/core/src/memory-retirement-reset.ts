@@ -9,6 +9,7 @@ import {
 	type RetirementPeer,
 	type SignedRetirementPacket,
 } from "./memory-retirement-delivery.js";
+import { getRetirementPeer } from "./memory-retirement-trust.js";
 import {
 	memorySourceNamespace,
 	verifyAuthenticatedMemorySource,
@@ -58,10 +59,16 @@ function digest(value: unknown): string {
 function boundaryDigest(info: SyncResetRequired): string {
 	return digest([info.scope_id ?? null, info.generation, info.snapshot_id, info.baseline_cursor]);
 }
-function requireInternalReset(db: Database, features: unknown): void {
+function requireInternalReset(db: Database, options: ResetPeerOptions): void {
 	if (db.inTransaction) throw new Error("retirement_outer_transaction_forbidden");
-	if (!supportsSyncFeature(features, MEMORY_RETIREMENT_FEATURE))
+	if (!supportsSyncFeature(options.peerFeatures, MEMORY_RETIREMENT_FEATURE))
 		throw new Error("retirement_feature_required");
+	const peer = getRetirementPeer(db, {
+		localDeviceId: options.localDeviceId,
+		peerDeviceId: options.peer.deviceId,
+	});
+	if (!peer || peer.publicKey !== options.peer.publicKey)
+		throw new Error("retirement_peer_untrusted");
 }
 function resetState(db: Database, resetId: string): ResetState {
 	const row = db
@@ -84,7 +91,7 @@ export function beginRetirementReset(
 	db: Database,
 	options: ResetPeerOptions & { resetInfo: SyncResetRequired },
 ): RetirementResetRequest {
-	requireInternalReset(db, options.peerFeatures);
+	requireInternalReset(db, options);
 	const resetId = randomUUID();
 	db.prepare(`INSERT INTO memory_retirement_reset_receivers(reset_id, source_device_id, source_public_key, local_device_id, boundary)
 		VALUES (?, ?, ?, ?, ?)`).run(
@@ -165,7 +172,7 @@ export function serveRetirementReset(
 	packet: SignedRetirementPacket,
 	options: ResetPeerOptions,
 ): RetirementResetPage {
-	requireInternalReset(db, options.peerFeatures);
+	requireInternalReset(db, options);
 	authenticateRetirementPacket(packet, { ...options, path: RETIREMENT_RESET_REQUEST_PATH });
 	const request = JSON.parse(packet.body) as RetirementResetRequest;
 	validateRequest(request);
@@ -236,7 +243,7 @@ export function receiveRetirementResetPage(
 	packet: SignedRetirementPacket,
 	options: ResetPeerOptions,
 ): void {
-	requireInternalReset(db, options.peerFeatures);
+	requireInternalReset(db, options);
 	const page = validatedPage(packet, options);
 	db.transaction(() => {
 		const state = resetState(db, page.resetId);
@@ -270,7 +277,7 @@ export function applyRetirementProtectedSnapshot(
 		scanner?: SecretScanner;
 	},
 ) {
-	requireInternalReset(db, options.peerFeatures);
+	requireInternalReset(db, options);
 	return db
 		.transaction(() => {
 			const state = resetState(db, options.resetId);

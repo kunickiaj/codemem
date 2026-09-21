@@ -19,6 +19,7 @@ Trusted publishing must be configured for every package the workflow publishes:
 - `@codemem/server`
 - `codemem`
 - `@codemem/opencode-plugin`
+- `@codemem/pi-extension`
 
 Before the first tagged release that includes a new npm package, publish a
 distinct bootstrap prerelease such as `0.0.0-alpha.0` with authenticated
@@ -26,6 +27,14 @@ maintainer credentials and a non-latest dist-tag such as `bootstrap`. Do not use
 the intended release version for this bootstrap. Then configure the trusted
 publisher above; npm requires the package to exist first. Do not use a release
 tag until this setup is complete.
+
+## Bootstrap status
+
+`@codemem/pi-extension` is pending bootstrap: `npm view @codemem/pi-extension`
+returns E404 and no trusted-publisher configuration exists for it yet. The release
+workflow publishes it through OIDC only (no `NODE_AUTH_TOKEN`), which cannot create
+a new package — complete the bootstrap prerelease and trusted-publisher setup above
+before the first `v*` tag that includes it. Update this section once both are done.
 
 ## GitHub workflow behavior
 
@@ -45,7 +54,7 @@ dependency order:
 4. `@codemem/server`
 5. `codemem`
 6. `@codemem/opencode-plugin`
-
+7. `@codemem/pi-extension`
 Publish command shape:
 
 - `pnpm --filter <package> publish --provenance --access public --tag <dist-tag>`
@@ -81,7 +90,7 @@ on one package), use the `workflow_dispatch` path instead of retagging:
 ## Verification checklist
 
 - Tag push `vX.Y.Z` runs `Release` and `publish-npm` succeeds
-- All six package versions on npm match the release tag
+- All seven package versions on npm match the release tag
 - npm provenance attestation is present for published artifacts
 - For recovery: `workflow_dispatch` rerun completes with `skip:` lines for
   packages already at the tag's version and `publish:` lines for any that

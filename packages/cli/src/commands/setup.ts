@@ -7,16 +7,33 @@
  * 1. Adds "@codemem/opencode-plugin" to the plugin array in ~/.config/opencode/opencode.jsonc
  * 2. Adds/updates the MCP entry in ~/.config/opencode/opencode.jsonc
  * 3. For Claude Code: installs MCP config and guides marketplace plugin install
+ * 4. For Codex: MCP + hooks via CODEX_HOME
+ * 5. For pi: packages entry + observer derivation + optional MCP adapter surface
  *
  * Designed to be safe to run repeatedly (idempotent unless --force).
  */
 
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	copyFileSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import * as p from "@clack/prompts";
-import { VERSION } from "@codemem/core";
+import {
+	describePiObserverStatus,
+	readCodememConfigFile,
+	resolvePiAgentDir,
+	resolvePiObserverConfig,
+	VERSION,
+	writeCodememConfigFile,
+} from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
 import {
@@ -25,6 +42,7 @@ import {
 	reconcileOpencodePluginConfig,
 	resolveOpencodeConfigPath,
 	writeJsonConfig,
+	writeJsonConfigWithBackup,
 } from "./setup-config.js";
 
 function opencodeConfigDir(): string {
@@ -39,6 +57,22 @@ function claudeConfigDir(): string {
 export function codexConfigDir(): string {
 	return process.env.CODEX_HOME?.trim() || join(homedir(), ".codex");
 }
+
+/** Resolve the pi agent directory, honoring PI_CODING_AGENT_DIR. */
+export function piConfigDir(): string {
+	return resolvePiAgentDir();
+}
+
+/** npm packages: entry prefix for the pi extension (version is appended). */
+const PI_EXTENSION_NPM_NAME = "@codemem/pi-extension";
+const PI_EXTENSION_NPM_PREFIX = `npm:${PI_EXTENSION_NPM_NAME}@`;
+const PI_MCP_ADAPTER_MARKER = "pi-mcp-adapter";
+
+/** Codemem stdio MCP server entry written to pi's mcp.json under --pi-mcp. */
+const PI_MCP_CODEMEM_ENTRY = {
+	command: "npx",
+	args: ["-y", "codemem", "mcp"],
+} as const;
 
 // ---------------------------------------------------------------------------
 // Legacy migration helpers
@@ -780,58 +814,573 @@ export function installCodex(force: boolean, options: InstallCodexOptions = {}):
 	return ok;
 }
 
+// ---------------------------------------------------------------------------
+// Pi install (packages entry + observer derivation + optional MCP adapter)
+// ---------------------------------------------------------------------------
+
+export type InstallPiOptions = {
+	force?: boolean;
+	/** Opt into writing pi mcp.json + flipping pi.tools_mode to mcp-adapter. */
+	piMcp?: boolean;
+	/** Absolute (or cwd-resolved) local path written instead of the npm packages spec. */
+	piExtensionPath?: string;
+};
+
+/** Build the packages: entry for the pi extension (npm pin or local path). */
+export function buildPiExtensionPackageSpec(
+	extensionPath?: string,
+	version: string = VERSION,
+): string {
+	if (extensionPath?.trim()) {
+		const raw = extensionPath.trim();
+		return isAbsolute(raw) ? raw : resolve(raw);
+	}
+	return `${PI_EXTENSION_NPM_PREFIX}${version}`;
+}
+
+/** True when a packages: entry refers to @codemem/pi-extension (any version/path form). */
+export function isPiExtensionPackageEntry(entry: unknown): boolean {
+	if (typeof entry !== "string" || !entry.trim()) return false;
+	const value = entry.trim();
+	if (value === `npm:${PI_EXTENSION_NPM_NAME}` || value.startsWith(PI_EXTENSION_NPM_PREFIX)) {
+		return true;
+	}
+	if (value === PI_EXTENSION_NPM_NAME || value.startsWith(`${PI_EXTENSION_NPM_NAME}@`)) {
+		return true;
+	}
+	// Local-path dogfood entries end with the package folder name.
+	return (
+		/(?:^|[/\\])@codemem[/\\]pi-extension(?:[/\\]|$)/.test(value) ||
+		/(?:^|[/\\])packages[/\\]pi-extension(?:[/\\]|$)/.test(value)
+	);
+}
+
+/** True when entry is an npm: pin for @codemem/pi-extension (versioned or bare). */
+function isNpmPiExtensionPackageEntry(entry: unknown): boolean {
+	if (typeof entry !== "string" || !entry.trim()) return false;
+	const value = entry.trim();
+	return value === `npm:${PI_EXTENSION_NPM_NAME}` || value.startsWith(PI_EXTENSION_NPM_PREFIX);
+}
+
+function piBinaryOnPath(): boolean {
+	try {
+		const out = execFileSync(process.platform === "win32" ? "where" : "which", ["pi"], {
+			encoding: "utf-8",
+		});
+		return Boolean(
+			out
+				.split(/\r?\n/)
+				.map((line) => line.trim())
+				.find(Boolean),
+		);
+	} catch {
+		return false;
+	}
+}
+
+/** True when path exists and has non-whitespace content (real install marker). */
+function isNonEmptyFile(path: string): boolean {
+	try {
+		if (!existsSync(path)) return false;
+		return readFileSync(path, "utf-8").trim().length > 0;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Detect pi via `pi` on PATH, or an agent dir that contains real install
+ * markers (non-empty settings.json or auth.json). A bare empty ~/.pi/agent
+ * directory must not count — users (and tests) create that path incidentally.
+ * Honors PI_CODING_AGENT_DIR.
+ */
+export function isPiDetected(): boolean {
+	if (piBinaryOnPath()) return true;
+	const dir = piConfigDir();
+	if (!existsSync(dir)) return false;
+	return isNonEmptyFile(join(dir, "settings.json")) || isNonEmptyFile(join(dir, "auth.json"));
+}
+
+/** Detect pi-mcp-adapter via packages: entry or extensions/ directory name. */
+export function isPiMcpAdapterDetected(piDir: string = piConfigDir()): boolean {
+	const settingsPath = join(piDir, "settings.json");
+	if (existsSync(settingsPath)) {
+		try {
+			const settings = loadJsoncConfig(settingsPath);
+			const packages = settings.packages;
+			if (Array.isArray(packages)) {
+				const found = packages.some(
+					(entry) => typeof entry === "string" && entry.includes(PI_MCP_ADAPTER_MARKER),
+				);
+				if (found) return true;
+			}
+		} catch {
+			// Fall through to extensions/ probe; parse failure is handled at write time.
+		}
+	}
+
+	const extensionsDir = join(piDir, "extensions");
+	if (!existsSync(extensionsDir)) return false;
+	try {
+		const entries = readdirSync(extensionsDir, { withFileTypes: true });
+		return entries.some((entry) => {
+			if (!entry.isDirectory() && !entry.isSymbolicLink()) return false;
+			const name = entry.name.toLowerCase();
+			return name.includes("mcp-adapter") || name.includes("mcp_adapter");
+		});
+	} catch {
+		return false;
+	}
+}
+
+function readPiJsoncOrAbort(path: string, untouchedHint: string): Record<string, unknown> | null {
+	if (!existsSync(path)) return {};
+	try {
+		return loadJsoncConfig(path);
+	} catch (err) {
+		p.log.error(`Failed to parse ${path}: ${err instanceof Error ? err.message : String(err)}`);
+		p.log.info(`Leaving ${path} untouched. ${untouchedHint}`);
+		return null;
+	}
+}
+
+function shouldKeepExistingPiExtension(
+	existing: unknown,
+	force: boolean,
+	desired: string,
+): boolean {
+	if (existing == null || force) return false;
+	// Equal pin → keep. Stale npm version pin → upgrade. Local-path / non-npm
+	// entries are never touched without --force.
+	return !(isNpmPiExtensionPackageEntry(existing) && existing !== desired);
+}
+
+function writePiExtensionSettings(
+	piDir: string,
+	settingsPath: string,
+	settings: Record<string, unknown>,
+	existing: unknown,
+	desired: string,
+): boolean {
+	try {
+		mkdirSync(piDir, { recursive: true });
+		writeJsonConfigWithBackup(settingsPath, settings);
+		p.log.success(
+			existing != null
+				? `Pi extension package updated: ${desired}`
+				: `Pi extension package added: ${desired}`,
+		);
+	} catch (err) {
+		p.log.error(
+			`Failed to write ${settingsPath}: ${err instanceof Error ? err.message : String(err)}`,
+		);
+		return false;
+	}
+	return true;
+}
+
+/**
+ * Idempotently ensure the pi extension packages: entry is present in
+ * settings.json. Backs up before write; aborts on parse failure.
+ */
+function installPiExtensionPackage(piDir: string, force: boolean, extensionPath?: string): boolean {
+	const settingsPath = join(piDir, "settings.json");
+	const desired = buildPiExtensionPackageSpec(extensionPath);
+	const settings = readPiJsoncOrAbort(
+		settingsPath,
+		"Fix or remove the file, then re-run `codemem setup --pi-only`.",
+	);
+	if (settings == null) return false;
+
+	const list = Array.isArray(settings.packages) ? [...settings.packages] : [];
+	const existing = list.find((entry) => isPiExtensionPackageEntry(entry));
+	if (shouldKeepExistingPiExtension(existing, force, desired)) {
+		p.log.info(`Pi extension package already configured in ${settingsPath}`);
+		return true;
+	}
+
+	settings.packages = [...list.filter((entry) => !isPiExtensionPackageEntry(entry)), desired];
+	return writePiExtensionSettings(piDir, settingsPath, settings, existing, desired);
+}
+
+function isOfficialObserverBaseUrl(url: string): boolean {
+	const normalized = url.trim().replace(/\/+$/, "").toLowerCase();
+	return (
+		normalized === "https://api.openai.com" ||
+		normalized === "https://api.openai.com/v1" ||
+		normalized === "https://api.anthropic.com" ||
+		normalized === "https://api.anthropic.com/v1"
+	);
+}
+
+function nextPiToolsBlock(
+	existing: Record<string, unknown>,
+	toolsMode: "native" | "mcp-adapter",
+): { piBlock: Record<string, unknown>; toolsModeUpdated: boolean } {
+	const existingPi =
+		existing.pi != null && typeof existing.pi === "object" && !Array.isArray(existing.pi)
+			? { ...(existing.pi as Record<string, unknown>) }
+			: {};
+	const piBlock = { ...existingPi };
+	if (toolsMode === "mcp-adapter") {
+		if (piBlock.tools_mode === "mcp-adapter") return { piBlock, toolsModeUpdated: false };
+		piBlock.tools_mode = "mcp-adapter";
+		return { piBlock, toolsModeUpdated: true };
+	}
+	if (piBlock.tools_mode == null || piBlock.tools_mode === "") {
+		piBlock.tools_mode = "native";
+		return { piBlock, toolsModeUpdated: true };
+	}
+	return { piBlock, toolsModeUpdated: false };
+}
+
+function applyResolvedPiObserver(
+	resolved: {
+		provider: unknown;
+		model: unknown;
+		baseUrl?: string | null;
+		openAIUseResponses?: boolean;
+	},
+	needs: {
+		provider: boolean;
+		model: boolean;
+		baseUrl: boolean;
+		useResponses: boolean;
+		fileProvider: string;
+		fileModel: string;
+		envProvider: string | undefined;
+		envModel: string | undefined;
+	},
+	next: Record<string, unknown>,
+	updated: string[],
+): void {
+	// Tuple rule (mirrors core applyPiDerivedObserverFields): derive the full
+	// provider/model/endpoint set only when both identity fields are unset, or
+	// fill a missing model only when the explicit provider matches pi. Never
+	// combine pi's model or endpoint with a different explicit provider.
+	// Env overrides are temporary and, unlike core (which re-derives in
+	// memory per run), setup persists: never write pi-derived identity while
+	// a provider/model env override is active — it would strand the persisted
+	// tuple next to the override's provider once the env is removed.
+	if (needs.envProvider || needs.envModel) return;
+	const explicitProvider = needs.fileProvider;
+	if (explicitProvider) {
+		if (needs.model && explicitProvider.toLowerCase() === String(resolved.provider).toLowerCase()) {
+			next.observer_model = resolved.model;
+			updated.push("observer_model");
+		}
+		return;
+	}
+	// Model set without a provider: leave provider unset so the client infers
+	// it from the model instead of routing that model through pi.
+	if (needs.fileModel) return;
+	next.observer_provider = resolved.provider;
+	updated.push("observer_provider");
+	next.observer_model = resolved.model;
+	updated.push("observer_model");
+	// Official OpenAI/Anthropic URLs must stay unset: any non-empty
+	// observer_base_url is treated as a custom gateway (disables default
+	// Responses + tier routing). Persist only a real custom URL, and the
+	// use_responses flag only then.
+	const customBaseUrl =
+		resolved.baseUrl && !isOfficialObserverBaseUrl(resolved.baseUrl) ? resolved.baseUrl : undefined;
+	if (needs.baseUrl && customBaseUrl) {
+		next.observer_base_url = customBaseUrl;
+		updated.push("observer_base_url");
+	}
+	if (needs.useResponses && customBaseUrl) {
+		next.observer_openai_use_responses = resolved.openAIUseResponses;
+		updated.push("observer_openai_use_responses");
+	}
+}
+
+function unsetObserverSlots(existing: Record<string, unknown>): {
+	provider: boolean;
+	model: boolean;
+	baseUrl: boolean;
+	useResponses: boolean;
+	fileProvider: string;
+	fileModel: string;
+	envProvider: string | undefined;
+	envModel: string | undefined;
+} {
+	const envProvider = process.env.CODEMEM_OBSERVER_PROVIDER?.trim();
+	const envModel = process.env.CODEMEM_OBSERVER_MODEL?.trim();
+	const envBaseUrl = process.env.CODEMEM_OBSERVER_BASE_URL?.trim();
+	const envUseResponses = process.env.CODEMEM_OBSERVER_OPENAI_USE_RESPONSES?.trim();
+	const fileProvider =
+		typeof existing.observer_provider === "string" ? existing.observer_provider.trim() : "";
+	const fileModel =
+		typeof existing.observer_model === "string" ? existing.observer_model.trim() : "";
+	const fileBaseUrl =
+		typeof existing.observer_base_url === "string" ? existing.observer_base_url.trim() : "";
+	return {
+		provider: !envProvider && !fileProvider,
+		model: !envModel && !fileModel,
+		baseUrl: !envBaseUrl && !fileBaseUrl,
+		useResponses: !envUseResponses && existing.observer_openai_use_responses == null,
+		fileProvider,
+		fileModel,
+		envProvider,
+		envModel,
+	};
+}
+
+function fillUnsetObserverFromPi(
+	existing: Record<string, unknown>,
+	next: Record<string, unknown>,
+	updated: string[],
+): void {
+	const needs = unsetObserverSlots(existing);
+	if (!(needs.provider || needs.model || needs.baseUrl || needs.useResponses)) {
+		p.log.info("Existing codemem observer config left unchanged");
+		return;
+	}
+	const resolved = resolvePiObserverConfig();
+	p.log.info(`Pi observer: ${describePiObserverStatus(resolved)}`);
+	if (resolved.ok) {
+		applyResolvedPiObserver(resolved, needs, next, updated);
+		return;
+	}
+	if (!needs.fileProvider && !needs.fileModel && !needs.envProvider && !needs.envModel) {
+		p.log.info(
+			"Extraction model left unconfigured — set observer_provider/observer_model when ready.",
+		);
+	}
+}
+
+function writeUpdatedCodememConfig(next: Record<string, unknown>, updated: string[]): boolean {
+	if (updated.length === 0) return true;
+	try {
+		const saved = writeCodememConfigFile(next);
+		p.log.success(`Codemem config updated (${updated.join(", ")}): ${saved}`);
+	} catch (err) {
+		p.log.error(
+			`Failed to write codemem config: ${err instanceof Error ? err.message : String(err)}`,
+		);
+		return false;
+	}
+	return true;
+}
+
+/**
+ * Derive unset observer_* keys from pi config and ensure pi.tools_mode default.
+ * Never persists API keys or tokens from pi auth.
+ */
+function wirePiCodememConfig(opts: { toolsMode: "native" | "mcp-adapter" }): boolean {
+	let existing: Record<string, unknown>;
+	try {
+		existing = readCodememConfigFile();
+	} catch (err) {
+		p.log.error(
+			`Failed to read codemem config: ${err instanceof Error ? err.message : String(err)}`,
+		);
+		return false;
+	}
+
+	const next: Record<string, unknown> = { ...existing };
+	const updated: string[] = [];
+	const { piBlock, toolsModeUpdated } = nextPiToolsBlock(existing, opts.toolsMode);
+	if (toolsModeUpdated) updated.push("pi.tools_mode");
+	next.pi = piBlock;
+	// Never introduce credentials. `next` started as a shallow copy of `existing`,
+	// so a pre-existing user-supplied observer_api_key is preserved untouched;
+	// resolvePiObserverConfig's apiKey is intentionally never copied here.
+	fillUnsetObserverFromPi(existing, next, updated);
+	return writeUpdatedCodememConfig(next, updated);
+}
+
+/**
+ * Opt-in MCP surface for pi via pi-mcp-adapter. Writes mcp.json only when the
+ * adapter is detected; otherwise explains the prerequisite and writes nothing.
+ */
+function installPiMcp(
+	piDir: string,
+	force: boolean,
+): {
+	ok: boolean;
+	wrote: boolean;
+	adapterPresent: boolean;
+} {
+	const adapterPresent = isPiMcpAdapterDetected(piDir);
+	if (!adapterPresent) {
+		p.log.warn(
+			"MCP in pi requires the pi-mcp-adapter package. Install it (e.g. `pi install npm:pi-mcp-adapter`), then re-run `codemem setup --pi-only --pi-mcp`.",
+		);
+		return { ok: true, wrote: false, adapterPresent: false };
+	}
+
+	const mcpPath = join(piDir, "mcp.json");
+	let mcp: Record<string, unknown>;
+	if (existsSync(mcpPath)) {
+		try {
+			mcp = loadJsoncConfig(mcpPath);
+		} catch (err) {
+			p.log.error(
+				`Failed to parse ${mcpPath}: ${err instanceof Error ? err.message : String(err)}`,
+			);
+			p.log.info(
+				`Leaving ${mcpPath} untouched. Fix or remove the file, then re-run with --pi-mcp.`,
+			);
+			return { ok: false, wrote: false, adapterPresent: true };
+		}
+	} else {
+		mcp = {};
+	}
+
+	let servers = mcp.mcpServers as Record<string, unknown> | undefined;
+	if (servers == null || typeof servers !== "object" || Array.isArray(servers)) {
+		servers = {};
+	}
+
+	if ("codemem" in servers && !force) {
+		p.log.info(`Pi MCP entry already exists in ${mcpPath}`);
+		return { ok: true, wrote: false, adapterPresent: true };
+	}
+
+	servers.codemem = { ...PI_MCP_CODEMEM_ENTRY };
+	mcp.mcpServers = servers;
+
+	try {
+		mkdirSync(piDir, { recursive: true });
+		writeJsonConfigWithBackup(mcpPath, mcp);
+		p.log.success(`Pi MCP entry installed: ${mcpPath}`);
+	} catch (err) {
+		p.log.error(`Failed to write ${mcpPath}: ${err instanceof Error ? err.message : String(err)}`);
+		return { ok: false, wrote: false, adapterPresent: true };
+	}
+	return { ok: true, wrote: true, adapterPresent: true };
+}
+
+/**
+ * Configure pi: packages entry, observer derivation, optional MCP adapter surface.
+ * Idempotent; honors PI_CODING_AGENT_DIR. Returns true on success.
+ */
+export function installPi(options: InstallPiOptions = {}): boolean {
+	const force = options.force ?? false;
+	const piDir = piConfigDir();
+
+	try {
+		mkdirSync(piDir, { recursive: true });
+	} catch (err) {
+		p.log.error(
+			`Failed to create pi agent dir ${piDir}: ${err instanceof Error ? err.message : String(err)}`,
+		);
+		return false;
+	}
+
+	p.log.info(`Pi agent directory: ${piDir}`);
+
+	// Packages entry is required; abort the rest on parse/write failure so we
+	// never partially configure observer/MCP against a broken settings.json.
+	if (!installPiExtensionPackage(piDir, force, options.piExtensionPath)) {
+		return false;
+	}
+
+	let ok = true;
+	let toolsMode: "native" | "mcp-adapter" = "native";
+	if (options.piMcp) {
+		const mcpResult = installPiMcp(piDir, force);
+		ok = mcpResult.ok && ok;
+		if (mcpResult.adapterPresent && mcpResult.ok) {
+			// Adapter present: flip tools_mode even when the mcp entry was already there.
+			toolsMode = "mcp-adapter";
+		}
+	}
+	// Default run writes no MCP config (spec: opt-in only).
+
+	ok = wirePiCodememConfig({ toolsMode }) && ok;
+
+	if (ok) {
+		p.log.info("Pi next steps:");
+		p.log.info("  - Start (or restart) pi to load the extension package");
+		if (!options.piMcp) {
+			p.log.info("  - Optional MCP surface: install pi-mcp-adapter, then re-run with --pi-mcp");
+		}
+		p.log.info(
+			"  - To disable: remove the @codemem/pi-extension entry from pi settings.json packages",
+		);
+	}
+
+	return ok;
+}
+
+type SetupCommandOpts = {
+	force?: boolean;
+	opencodeOnly?: boolean;
+	claudeOnly?: boolean;
+	codexOnly?: boolean;
+	piOnly?: boolean;
+	piMcp?: boolean;
+	piExtensionPath?: string;
+};
+
+function maybeInstallPi(opts: SetupCommandOpts, onlyFlag: boolean, force: boolean): boolean {
+	if (!(opts.piOnly || (!onlyFlag && isPiDetected()))) return true;
+	p.log.step("Configuring pi (extension package + observer)...");
+	return installPi({
+		force,
+		piMcp: opts.piMcp,
+		piExtensionPath: opts.piExtensionPath,
+	});
+}
+
+function installOpencodeSetup(force: boolean): boolean {
+	p.log.step("Installing OpenCode plugin...");
+	const pluginResult = installPlugin(force);
+	p.log.step("Installing OpenCode MCP config...");
+	return pluginResult.ok && installMcp(force, { createBackup: !pluginResult.wrote });
+}
+
+function installClaudeSetup(force: boolean): boolean {
+	p.log.step("Installing Claude Code MCP config...");
+	return installClaudeMcp(force);
+}
+
+function installCodexSetup(force: boolean): boolean {
+	p.log.step("Configuring Codex (MCP + hooks)...");
+	const ok = installCodex(force);
+	p.log.info("Codex next steps:");
+	p.log.info("  - Restart Codex to load the new configuration");
+	p.log.info("  - On first run, approve the one-time prompt to trust the codemem hooks");
+	p.log.info("  - MCP recall works immediately (no trust prompt required)");
+	return ok;
+}
+
+function runSetupInstalls(opts: SetupCommandOpts, force: boolean): boolean {
+	const onlyFlag = Boolean(opts.opencodeOnly || opts.claudeOnly || opts.codexOnly || opts.piOnly);
+	let ok = true;
+	if (opts.opencodeOnly || !onlyFlag) ok = installOpencodeSetup(force) && ok;
+	if (opts.claudeOnly || !onlyFlag) ok = installClaudeSetup(force) && ok;
+	if (opts.codexOnly || (!onlyFlag && existsSync(codexConfigDir()))) {
+		ok = installCodexSetup(force) && ok;
+	}
+	return maybeInstallPi(opts, onlyFlag, force) && ok;
+}
+
+function runSetup(opts: SetupCommandOpts): void {
+	p.intro(`codemem setup v${VERSION}`);
+	if (runSetupInstalls(opts, opts.force ?? false)) {
+		p.outro("Setup complete — restart your editor to load the plugin");
+		return;
+	}
+	p.outro("Setup completed with warnings");
+	process.exitCode = 1;
+}
+
 export const setupCommand = new Command("setup")
 	.configureHelp(helpStyle)
-	.description("Install codemem plugin + MCP config for OpenCode and Claude Code")
+	.description("Install codemem plugin + MCP config for OpenCode, Claude Code, Codex, and pi")
 	.option("--force", "overwrite existing installations")
 	.option("--opencode-only", "only install for OpenCode")
 	.option("--claude-only", "only install for Claude Code")
 	.option("--codex-only", "only install for Codex")
-	.action(
-		(opts: {
-			force?: boolean;
-			opencodeOnly?: boolean;
-			claudeOnly?: boolean;
-			codexOnly?: boolean;
-		}) => {
-			p.intro(`codemem setup v${VERSION}`);
-			const force = opts.force ?? false;
-			let ok = true;
-
-			const onlyFlag = Boolean(opts.opencodeOnly || opts.claudeOnly || opts.codexOnly);
-
-			const doOpencode = opts.opencodeOnly || !onlyFlag;
-			const doClaude = opts.claudeOnly || !onlyFlag;
-			// With no only-flag, Codex runs only when a Codex home is detected.
-			const doCodex = opts.codexOnly || (!onlyFlag && existsSync(codexConfigDir()));
-
-			if (doOpencode) {
-				p.log.step("Installing OpenCode plugin...");
-				const pluginResult = installPlugin(force);
-				ok = pluginResult.ok && ok;
-				p.log.step("Installing OpenCode MCP config...");
-				ok = installMcp(force, { createBackup: !pluginResult.wrote }) && ok;
-			}
-
-			if (doClaude) {
-				p.log.step("Installing Claude Code MCP config...");
-				ok = installClaudeMcp(force) && ok;
-			}
-
-			if (doCodex) {
-				p.log.step("Configuring Codex (MCP + hooks)...");
-				ok = installCodex(force) && ok;
-				p.log.info("Codex next steps:");
-				p.log.info("  - Restart Codex to load the new configuration");
-				p.log.info("  - On first run, approve the one-time prompt to trust the codemem hooks");
-				p.log.info("  - MCP recall works immediately (no trust prompt required)");
-			}
-
-			if (ok) {
-				p.outro("Setup complete — restart your editor to load the plugin");
-			} else {
-				p.outro("Setup completed with warnings");
-				process.exitCode = 1;
-			}
-		},
-	);
+	.option("--pi-only", "only install for pi")
+	.option("--pi-mcp", "opt into pi MCP adapter surface (requires pi-mcp-adapter)")
+	.option(
+		"--pi-extension-path <path>",
+		"dev: write a local path packages entry instead of the npm pin",
+	)
+	.action((opts: SetupCommandOpts) => {
+		runSetup(opts);
+	});
