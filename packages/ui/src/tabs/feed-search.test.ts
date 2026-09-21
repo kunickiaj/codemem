@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { state } from "../lib/state";
 import { readFirstRunGuideRecord } from "./feed/data/first-run-guide";
+import type { FeedItem } from "./feed/types";
 
 const apiMocks = vi.hoisted(() => ({
 	loadMemoriesPage: vi.fn(),
@@ -146,6 +147,59 @@ describe("Feed first-run search completion", () => {
 		await pending;
 		expect(readFirstRunGuideRecord().completed).not.toContain("find");
 	});
+});
+
+describe("Feed first-run indexed field matches", () => {
+	setupFeedSearchTests();
+
+	it.each<{ query: string; item: FeedItem; expected: boolean }>([
+		{ query: " 314 ", item: { id: 314 }, expected: true },
+		{ query: "314", item: { id: undefined, memory_id: "314" }, expected: true },
+		{ query: "31", item: { id: 314 }, expected: false },
+		{ query: "315", item: { id: 314 }, expected: false },
+		{ query: "0314", item: { id: 314 }, expected: false },
+		{ query: "+314", item: { id: 314 }, expected: false },
+		{ query: "3.14e2", item: { id: 314 }, expected: false },
+		{ query: "0", item: { id: 0 }, expected: false },
+		{
+			query: "9007199254740992",
+			item: { memory_id: "9007199254740992", id: undefined },
+			expected: false,
+		},
+		{ query: "  ORCHARD  ", item: { project: "sample-orchard" }, expected: true },
+		{ query: "  BUGFIX  ", item: { kind: "bugfix" }, expected: true },
+		{ query: "change", item: { kind: "" }, expected: true },
+		{
+			query: "SESSION_SUMMARY",
+			item: { kind: "change", metadata_json: { is_summary: true } },
+			expected: true,
+		},
+		{
+			query: "change",
+			item: { kind: "change", metadata_json: { is_summary: true } },
+			expected: false,
+		},
+	])(
+		"matches normalized query $query against indexed fields $item",
+		async ({ query, item, expected }) => {
+			state.feedQuery = query;
+			apiMocks.loadMemoriesPage.mockResolvedValue({
+				items: [
+					{
+						id: 987,
+						title: "Stored note",
+						body_text: "A durable detail.",
+						kind: "discovery",
+						...item,
+					},
+				],
+				pagination: { has_more: false, next_offset: null },
+			});
+			apiMocks.loadSummariesPage.mockResolvedValue({ ...page(2), items: [] });
+			await loadFeedData();
+			expect(readFirstRunGuideRecord().completed.includes("find")).toBe(expected);
+		},
+	);
 });
 
 describe("Feed global search controller", () => {
