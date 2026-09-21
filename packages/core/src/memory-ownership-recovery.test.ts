@@ -257,17 +257,114 @@ it("rejects an outer transaction before creating copies or scheduling embeddings
 	expect(vectors.storeVectors).not.toHaveBeenCalled();
 });
 
-it("rechecks permission on retry and rejects operation id reuse with another request", () => {
+it("rejects operation id reuse with another readable request", () => {
 	const id = memory();
 	const input = confirmed([id]);
 	commitMemoryOwnershipRecovery(store, input);
 	expect(() => commitMemoryOwnershipRecovery(store, confirmed([memory()]))).toThrow(
 		"ownership_recovery_operation_conflict",
 	);
-	store.db.prepare("UPDATE memory_items SET scope_id = 'inaccessible' WHERE id = ?").run(id);
-	expect(() => commitMemoryOwnershipRecovery(store, input)).toThrow(
-		"ownership_records_unavailable",
+});
+
+function revokeRecoveryAccess(id: number, access: string) {
+	if (access === "unreadable") {
+		store.db.prepare("UPDATE memory_items SET scope_id = 'inaccessible' WHERE id = ?").run(id);
+		return;
+	}
+	store.db
+		.prepare("UPDATE memory_items SET visibility = 'private', actor_id = 'peer' WHERE id = ?")
+		.run(id);
+}
+
+function recoveryState() {
+	return [
+		"memory_items",
+		"sessions",
+		"memory_source_bindings",
+		"memory_ownership_recoveries",
+		"memory_file_refs",
+		"memory_concept_refs",
+		"replication_ops",
+	].map((table) => store.db.prepare(`SELECT * FROM ${table}`).all());
+}
+
+it.each(
+	["unreadable", "private"].flatMap((access) =>
+		["selection", "digest", "actor", "device"].map((conflict) => ({ access, conflict })),
+	),
+)(
+	"returns only operation conflict for $conflict reuse with $access records",
+	async ({ access, conflict }) => {
+		const id = memory();
+		const input = confirmed([id]);
+		commitMemoryOwnershipRecovery(store, input);
+		await store.flushPendingVectorWrites();
+		vi.mocked(vectors.storeVectors).mockClear();
+		const enqueue = vi.spyOn(store, "enqueueVectorWrite");
+		const retry = { ...input };
+		let deniedId = id;
+		if (conflict === "selection") {
+			deniedId = memory();
+			retry.memoryIds = [deniedId];
+		} else if (conflict === "digest") {
+			retry.reviewedDigest = `ownership-recovery-v1:${"0".repeat(64)}`;
+		} else if (conflict === "actor") {
+			store.db.prepare("UPDATE memory_ownership_recoveries SET actor_id = 'other-actor'").run();
+		} else {
+			store.db.prepare("UPDATE memory_ownership_recoveries SET device_id = 'other-device'").run();
+		}
+		revokeRecoveryAccess(deniedId, access);
+		const before = recoveryState();
+		expect(() => commitMemoryOwnershipRecovery(store, retry)).toThrow(
+			expect.objectContaining({ code: "ownership_recovery_operation_conflict", status: 409 }),
+		);
+		const app = memoryOwnershipRoutes(() => store);
+		const response = await app.request("/api/memories/ownership/commit", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(retry),
+		});
+		expect(response.status).toBe(409);
+		expect(await response.json()).toEqual({
+			error: "ownership_recovery_operation_conflict",
+			nextAction: "start_new_preview",
+		});
+		expect(store.db.inTransaction).toBe(false);
+		expect(recoveryState()).toEqual(before);
+		expect(enqueue).not.toHaveBeenCalled();
+		expect(vectors.storeVectors).not.toHaveBeenCalled();
+	},
+);
+
+it.each([
+	{ access: "unreadable", error: "ownership_records_unavailable", status: 404 },
+	{ access: "private", error: "ownership_private_record_not_owned", status: 403 },
+])(
+	"still denies a matching receipt retry after $access access revocation",
+	({ access, error, status }) => {
+		const id = memory();
+		const input = confirmed([id]);
+		commitMemoryOwnershipRecovery(store, input);
+		vi.mocked(vectors.storeVectors).mockClear();
+		revokeRecoveryAccess(id, access);
+		const before = recoveryState();
+		expect(() => commitMemoryOwnershipRecovery(store, input)).toThrow(
+			expect.objectContaining({ message: error, code: error, status }),
+		);
+		expect(recoveryState()).toEqual(before);
+		expect(vectors.storeVectors).not.toHaveBeenCalled();
+	},
+);
+
+it("validates request structure before comparing an existing receipt", () => {
+	const input = confirmed([memory()]);
+	commitMemoryOwnershipRecovery(store, input);
+	expect(() => commitMemoryOwnershipRecovery(store, { ...input, memoryIds: [] })).toThrow(
+		expect.objectContaining({ code: "ownership_request_invalid", status: 400 }),
 	);
+	expect(() =>
+		commitMemoryOwnershipRecovery(store, { ...input, reviewedDigest: "invalid" }),
+	).toThrow(expect.objectContaining({ code: "ownership_confirmation_required", status: 400 }));
 });
 
 it("rejects a concurrent capture edit observed through a second database connection", () => {
