@@ -147,14 +147,25 @@ export function settingsOutcomeFor(
 
 function effectiveObserverRuntime(draft?: string): string {
 	const overridden = settingsState.envOverrides.observer_runtime;
-	const touched = settingsState.touchedKeys.has("observer_runtime");
-	if (settingsState.resolvedObserverRuntime && (overridden || !touched)) {
-		return settingsState.resolvedObserverRuntime;
+	const runtimeValue = effectiveSetting("observerRuntime", draft);
+	const runtimeChanged =
+		settingsState.touchedKeys.has("observer_runtime") &&
+		runtimeValue !== settingsState.baseline.observer_runtime;
+	if (overridden || !runtimeChanged) {
+		const preview = draftAuthRuntime();
+		if (preview) return preview;
+		if (settingsState.resolvedObserverRuntime) return settingsState.resolvedObserverRuntime;
 	}
-	const runtime = String(effectiveSetting("observerRuntime", draft) ?? "")
+	const runtime = String(runtimeValue ?? "")
 		.trim()
 		.toLowerCase();
 	return isSidecarRuntime(runtime) ? runtime : "api_http";
+}
+
+function draftAuthRuntime(): string | undefined {
+	if (!settingsState.touchedKeys.has("observer_auth_source")) return undefined;
+	const source = String(effectiveSetting("observerAuthSource"));
+	return settingsState.observerRuntimeByAuthSource[source];
 }
 
 function effectiveSetting(controlId: string, draft?: unknown): unknown {

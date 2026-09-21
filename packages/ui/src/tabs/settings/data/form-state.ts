@@ -8,6 +8,7 @@ export interface ConfigPayload {
 	config?: Record<string, unknown>;
 	effective?: Record<string, unknown>;
 	resolved_observer_runtime?: string;
+	observer_runtime_by_auth_source?: Record<string, string>;
 	defaults?: Record<string, unknown>;
 	env_overrides?: Record<string, unknown>;
 	protected_keys?: unknown;

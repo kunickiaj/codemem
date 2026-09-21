@@ -11,6 +11,7 @@ export interface SettingsState {
 	baseline: Record<string, unknown>;
 	effectiveConfig: Record<string, unknown>;
 	resolvedObserverRuntime: string | null;
+	observerRuntimeByAuthSource: Record<string, string>;
 	envOverrides: Record<string, unknown>;
 	touchedKeys: Set<string>;
 	shellMounted: boolean;
@@ -25,6 +26,7 @@ export const settingsState: SettingsState = {
 	baseline: {},
 	effectiveConfig: {},
 	resolvedObserverRuntime: null,
+	observerRuntimeByAuthSource: {},
 	envOverrides: {},
 	touchedKeys: new Set<string>(),
 	shellMounted: false,

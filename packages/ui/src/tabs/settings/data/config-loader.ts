@@ -97,6 +97,7 @@ export function renderConfigModal(payload: unknown) {
 	settingsState.envOverrides = envOverrides;
 	settingsState.effectiveConfig = { ...config, ...data.effective };
 	settingsState.resolvedObserverRuntime = data.resolved_observer_runtime ?? null;
+	settingsState.observerRuntimeByAuthSource = data.observer_runtime_by_auth_source ?? {};
 	settingsState.protectedKeys = new Set(protectedKeys);
 	state.configDefaults = defaults;
 	state.configPath = data.path || "";

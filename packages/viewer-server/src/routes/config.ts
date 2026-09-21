@@ -175,6 +175,21 @@ function getViewerEnvOverrides(): Record<string, string> {
 	return overrides;
 }
 
+function observerRuntimeMetadata(configData: ConfigData) {
+	// Runtime and auth source are the only editable auto-selection inputs. Resolve
+	// every auth-source draft against the full saved config and server environment,
+	// including protected commands/files and credential availability, without auth.
+	return {
+		resolved_observer_runtime: resolveObserverRuntime(configData),
+		observer_runtime_by_auth_source: Object.fromEntries(
+			[...AUTH_SOURCES].map((source) => [
+				source,
+				resolveObserverRuntime({ ...configData, observer_auth_source: source }),
+			]),
+		),
+	};
+}
+
 function redactConfigValue(key: string, value: unknown): unknown {
 	if (value == null || !SECRET_CONFIG_KEYS.has(key)) return value;
 	if (Array.isArray(value)) return value.length > 0 ? REDACTED_VALUE : [];
@@ -498,7 +513,7 @@ function viewerConfigSavePayload(
 		path: savedPath,
 		config: sanitizeConfigForResponse(nextConfig),
 		effective: sanitizeConfigForResponse(afterEffective),
-		resolved_observer_runtime: resolveObserverRuntime(nextConfig),
+		...observerRuntimeMetadata(nextConfig),
 		protected_keys: [...PROTECTED_WRITE_KEYS].sort(),
 		effects: {
 			saved_keys: savedChangedKeys,
@@ -545,7 +560,7 @@ export function configRoutes(opts: ConfigRouteOptions = {}) {
 			config: sanitizeConfigForResponse(configData),
 			defaults: DEFAULTS,
 			effective: sanitizeConfigForResponse(effective),
-			resolved_observer_runtime: resolveObserverRuntime(configData),
+			...observerRuntimeMetadata(configData),
 			env_overrides: getViewerEnvOverrides(),
 			protected_keys: [...PROTECTED_WRITE_KEYS].sort(),
 			providers: loadProviderOptions(),
