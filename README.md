@@ -514,6 +514,8 @@ Older coordinator and migration records may contain generated labels such as **E
 
 The viewer retains its canonical local device identity during inventory outages; aliases do not inherit **This device** status. Among validated peer aliases, Devices prefers a nonempty runtime version with the newest valid observation timestamp. Equal or missing timestamps prefer the direct device ID, then aliases sorted by ID; an undated version does not imply a fresh observation.
 
+If the entire Devices refresh fails, the viewer keeps the previous snapshot and its alias evidence while disabling Identity changes. A snapshot that already had unavailable inventory keeps alias joins disabled until inventory refresh succeeds.
+
 Use **Health** for the current status. Globally revoked identity devices are omitted from the active Devices list. A device disabled only for one coordinator group remains listed; use **Advanced → Team administration** to review or re-enable that group enrollment. Removing access prevents future delivery, but cannot erase a copy already delivered to another device.
 
 ### Advanced and compatibility

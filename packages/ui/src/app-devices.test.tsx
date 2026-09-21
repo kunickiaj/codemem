@@ -671,6 +671,79 @@ describe("Devices direct local evidence", () => {
 	);
 });
 
+async function loadAliasedDeviceSnapshot() {
+	const inventory = configuredDeviceInventory();
+	inventory.items = inventory.items.map((item) => ({
+		...item,
+		displayName: "Studio laptop",
+		evidenceDeviceIds: [item.deviceId, "peer-alias"],
+		validatedFingerprint: "validated-test-key",
+	}));
+	mocks.loadRecipientPolicyIntent.mockResolvedValue({
+		...intent,
+		identityDevices: intent.identityDevices.map((device) => ({
+			...device,
+			displayName: "Unnamed device",
+		})),
+	});
+	mocks.loadDeviceIdentityInventory.mockResolvedValue(inventory);
+	mocks.loadSyncData.mockImplementation(async () => {
+		const { state } = await import("./lib/state");
+		state.lastSyncPeers = [
+			{
+				peer_device_id: "peer-alias",
+				runtime_version: "0.42.0",
+				status: { peer_state: "online", fresh: true },
+			},
+		];
+		state.lastSyncCoordinator = { discovered_devices: [] };
+		return true;
+	});
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(5_100);
+	});
+}
+
+describe("Devices cached snapshot aliases", () => {
+	beforeEach(setupDevicesAppTest);
+	afterEach(teardownDevicesAppTest);
+	it.each([false, true])(
+		"preserves snapshot evidence and mutation restrictions after full failure (mixed outage: %s)",
+		async (mixed) => {
+			await loadAliasedDeviceSnapshot();
+			const deviceRow = () => document.getElementById("device-identity-card-device-private");
+			expect(deviceRow()?.textContent).toContain("Studio laptop");
+			expect(deviceRow()?.textContent).toContain("0.42.0");
+			expect(deviceRow()?.textContent).toContain("Available");
+			expect(deviceRow()?.textContent).toContain("Identify or rename in Sync");
+			if (mixed) {
+				mocks.loadDeviceIdentityInventory.mockRejectedValueOnce(new Error("inventory unavailable"));
+				await act(async () => {
+					await vi.advanceTimersByTimeAsync(5_100);
+				});
+				expect(deviceRow()?.textContent).toContain("Presence unavailable");
+				expect(deviceRow()?.textContent).not.toContain("0.42.0");
+				expect(deviceRow()?.textContent).not.toContain("Identify or rename in Sync");
+			}
+			const before = deviceRow()?.textContent;
+			mocks.loadRecipientPolicyIntent.mockRejectedValueOnce(new Error("intent unavailable"));
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(5_100);
+			});
+			expect(deviceRow()?.textContent).toBe(before);
+			const panel = document.getElementById("tab-devices");
+			expect(panel?.textContent).toContain("Refresh failed; showing previous device information");
+			expect(
+				panel?.textContent?.includes("Device ownership information is temporarily unavailable"),
+			).toBe(mixed);
+			const rebind = [...(panel?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find(
+				(button) => button.textContent === "Change Identity…",
+			);
+			expect(rebind?.disabled).toBe(true);
+		},
+	);
+});
+
 describe("Devices unavailable inventory aliases", () => {
 	beforeEach(setupDevicesAppTest);
 	afterEach(teardownDevicesAppTest);

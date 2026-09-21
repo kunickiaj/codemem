@@ -69,7 +69,8 @@ function identityMutationsBlocked(options: DevicesRendererOptions): boolean {
 }
 
 function currentDeviceInventory(options: DevicesRendererOptions) {
-	if (identityMutationsBlocked(options)) return undefined;
+	// Full refresh failures retain a consistent snapshot; inventory-only failures mix evidence.
+	if (options.inventoryUnavailable === true) return undefined;
 	return options.inventory;
 }
 
