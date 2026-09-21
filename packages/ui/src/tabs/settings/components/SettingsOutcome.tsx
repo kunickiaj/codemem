@@ -325,20 +325,29 @@ export function SettingsOutcome({
 	stage,
 	timing,
 }: SettingsOutcomeDetails) {
+	let summary = timing;
+	if (timing === "After viewer restart") summary = "Restart required";
+	else if (timing.startsWith("After removing ")) summary = `Environment-controlled · ${timing}`;
+	else if (scope === "No current effect" || stage === "Sidecar authentication")
+		summary = `Inactive · ${timing}`;
+	else if (timing.startsWith("After viewer restart,")) summary = "Restart required · Conditional";
 	return (
-		<p className="settings-outcome" data-settings-outcome-for={controlId}>
-			<span>
-				<strong>Affects:</strong> {stage}
-			</span>
-			<span>
-				<strong>Scope:</strong> {scope}
-			</span>
-			<span>
-				<strong>Takes effect:</strong> {timing}
-			</span>
-			<span>
-				<strong>Existing data:</strong> {existingData}
-			</span>
-		</p>
+		<details className="settings-outcome" data-settings-outcome-for={controlId}>
+			<summary>{summary}</summary>
+			<div className="settings-outcome-details">
+				<span>
+					<strong>Affects:</strong> {stage}
+				</span>
+				<span>
+					<strong>Scope:</strong> {scope}
+				</span>
+				<span>
+					<strong>Takes effect:</strong> {timing}
+				</span>
+				<span>
+					<strong>Existing data:</strong> {existingData}
+				</span>
+			</div>
+		</details>
 	);
 }

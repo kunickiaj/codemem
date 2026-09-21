@@ -3931,8 +3931,8 @@ describe("Projects cached recipient presentation", () => {
 		const action = cluster.querySelector<HTMLButtonElement>(
 			":scope > .project-inventory-row-header .project-recipient-action",
 		);
-		expect(action?.textContent).toBe("Add Teams or Identities");
-		expect(action?.getAttribute("aria-label")).toBe("Add Teams or Identities for api");
+		expect(action?.textContent).toBe("Manage sharing");
+		expect(action?.getAttribute("aria-label")).toBe("Manage sharing for api");
 		const clusterSelection = cluster.querySelector<HTMLInputElement>(
 			':scope > .project-inventory-row-header input[aria-label="Select all identities for api"]',
 		);

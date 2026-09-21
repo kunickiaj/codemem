@@ -103,22 +103,19 @@ export function SettingsModalContent({
 					</RadixTabsContent>
 				</RadixTabs>
 
-				<div className="small mono" id="settingsPath">
-					{renderState.pathText}
-				</div>
-				<div className="small" id="settingsEffective">
-					{renderState.effectiveText}
-				</div>
-				<div
-					className="settings-note"
-					hidden={!renderState.overridesVisible}
-					id="settingsOverrides"
-				>
-					Some values are controlled outside this screen and take priority.
-				</div>
-				<div className="settings-note" hidden={showAdvanced}>
-					Advanced controls are hidden right now to keep this screen focused on everyday settings.
-				</div>
+				<details className="settings-config-details">
+					<summary>Configuration details</summary>
+					<div className="small mono" id="settingsPath">
+						{renderState.pathText}
+					</div>
+					<div
+						className="settings-note"
+						hidden={!renderState.overridesVisible}
+						id="settingsOverrides"
+					>
+						Some values are controlled outside this screen and take priority.
+					</div>
+				</details>
 			</div>
 			<div className="modal-footer">
 				<div className="settings-footer-copy">
