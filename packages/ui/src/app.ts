@@ -566,7 +566,8 @@ function deriveDeviceAvailability(): DeviceAvailabilityInput[] {
 		availability.set(deviceId, next);
 	};
 	for (const device of state.lastSyncCoordinator?.discovered_devices ?? []) {
-		record(String(device.device_id ?? "").trim(), device.stale ? "offline" : "available");
+		// Expired coordinator presence does not prove the machine is offline.
+		record(String(device.device_id ?? "").trim(), device.stale ? "unknown" : "available");
 	}
 	for (const peer of state.lastSyncPeers) {
 		const deviceId = String(peer.peer_device_id ?? "").trim();

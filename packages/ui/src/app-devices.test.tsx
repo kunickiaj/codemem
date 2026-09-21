@@ -495,7 +495,6 @@ function teardownDevicesAppTest() {
 describe("Devices app integration", () => {
 	beforeEach(setupDevicesAppTest);
 	afterEach(teardownDevicesAppTest);
-
 	it("refreshes read-only inputs, routes actions canonically, and preserves polling focus", async () => {
 		const panel = document.getElementById("tab-devices");
 		expect(panel?.hidden).toBe(false);
@@ -620,6 +619,54 @@ describe("Devices app integration", () => {
 			requireTeamSetupSummary: true,
 		});
 	});
+});
+
+describe("Devices presence evidence", () => {
+	beforeEach(setupDevicesAppTest);
+	afterEach(teardownDevicesAppTest);
+	it.each([
+		{ peer: false, local: false, expected: "Presence unavailable" },
+		{ peer: true, local: false, expected: "Available" },
+		{ peer: false, local: true, expected: "Available" },
+	])(
+		"uses presence evidence for stale enrollment ($peer peer, $local local)",
+		async ({ peer, local, expected }) => {
+			const nextIntent = {
+				...intent,
+				identityDevices: intent.identityDevices.map((device) => ({
+					...device,
+					displayName: "Canonical device",
+				})),
+			};
+			mocks.loadRecipientPolicyIntent.mockResolvedValue(nextIntent);
+			const inventory = configuredDeviceInventory();
+			inventory.items = inventory.items.map((item) => ({
+				...item,
+				displayName: "Studio laptop",
+				isLocal: local,
+			}));
+			mocks.loadDeviceIdentityInventory.mockResolvedValue(inventory);
+			mocks.loadSyncData.mockImplementation(async () => {
+				const { state } = await import("./lib/state");
+				state.lastSyncPeers = peer
+					? [{ peer_device_id: "device-private", status: { peer_state: "online", fresh: true } }]
+					: [];
+				state.lastSyncCoordinator = {
+					discovered_devices: [{ device_id: "device-private", stale: true }],
+				};
+				return true;
+			});
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(5_100);
+			});
+			const row = document.querySelector(".devices-table-row");
+			expect(row?.textContent).toContain(expected);
+			expect(row?.textContent).toContain("Studio laptop");
+			expect(row?.textContent).not.toContain("Canonical device");
+			expect(row?.textContent).not.toContain("Offline");
+			expect(row?.textContent?.includes("Identify or rename in Sync")).toBe(peer);
+		},
+	);
 });
 
 describe("Advanced keyboard focus", () => {
