@@ -512,6 +512,8 @@ Disabling a device's enrollment for one coordinator group revokes future deliver
 
 Older coordinator and migration records may contain generated labels such as **Enrolled device** or **Peer device**. For those source-tagged records, Devices prefers a name from current inventory evidence. Historical records did not track whether those exact labels were generated or entered by a person, so that distinction cannot always be recovered. This display fallback does not rename stored devices. If inventory refresh fails, cached aliases cannot supply fresh peer status, versions, or rename actions; direct device-ID matches still work.
 
+The viewer retains its canonical local device identity during inventory outages; aliases do not inherit **This device** status. Among validated peer aliases, Devices prefers a nonempty runtime version with the newest valid observation timestamp. Equal or missing timestamps prefer the direct device ID, then aliases sorted by ID; an undated version does not imply a fresh observation.
+
 Use **Health** for the current status. Globally revoked identity devices are omitted from the active Devices list. A device disabled only for one coordinator group remains listed; use **Advanced → Team administration** to review or re-enable that group enrollment. Removing access prevents future delivery, but cannot erase a copy already delivered to another device.
 
 ### Advanced and compatibility

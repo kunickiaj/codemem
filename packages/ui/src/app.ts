@@ -633,9 +633,10 @@ async function refreshDevicesAfterCommit(): Promise<boolean> {
 
 function deviceRendererActions(): Pick<
 	DevicesRendererOptions,
-	"onCommitted" | "onNavigate" | "onRetry"
+	"onCommitted" | "onNavigate" | "onRetry" | "localDeviceId"
 > {
 	return {
+		localDeviceId: state.lastSyncStatus?.device_id ?? undefined,
 		onCommitted: refreshDevicesAfterCommit,
 		onNavigate: navigateFromDevices,
 		onRetry: () => void loadDevicesData(),

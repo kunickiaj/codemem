@@ -922,6 +922,120 @@ describe("Device runtime aliases", () => {
 	);
 });
 
+describe("Device runtime observation ordering", () => {
+	const oldAt = "2026-08-01T00:00:00.000Z";
+	const newAt = "2026-08-02T00:00:00.000Z";
+	it.each([
+		{
+			label: "missing direct version",
+			directVersion: null,
+			directAt: newAt,
+			aliasAt: oldAt,
+			expected: "0.43.0",
+			outage: false,
+		},
+		{
+			label: "newer alias",
+			directVersion: "0.42.0",
+			directAt: oldAt,
+			aliasAt: newAt,
+			expected: "0.43.0",
+			outage: false,
+		},
+		{
+			label: "untimed direct",
+			directVersion: "0.42.0",
+			directAt: null,
+			aliasAt: newAt,
+			expected: "0.43.0",
+			outage: false,
+		},
+		{
+			label: "invalid direct timestamp",
+			directVersion: "0.42.0",
+			directAt: "invalid",
+			aliasAt: newAt,
+			expected: "0.43.0",
+			outage: false,
+		},
+		{
+			label: "newer direct",
+			directVersion: "0.42.0",
+			directAt: newAt,
+			aliasAt: oldAt,
+			expected: "0.42.0",
+			outage: false,
+		},
+		{
+			label: "timestamp ties",
+			directVersion: "0.42.0",
+			directAt: newAt,
+			aliasAt: newAt,
+			expected: "0.42.0",
+			outage: false,
+		},
+		{
+			label: "no observation times",
+			directVersion: "0.42.0",
+			directAt: null,
+			aliasAt: null,
+			expected: "0.42.0",
+			outage: false,
+		},
+		{
+			label: "unavailable aliases",
+			directVersion: "0.42.0",
+			directAt: oldAt,
+			aliasAt: newAt,
+			expected: "0.42.0",
+			outage: true,
+		},
+	])(
+		"renders the best supported observation: $label",
+		({ directVersion, directAt, aliasAt, expected, outage }) => {
+			const deviceId = "device-address-fingerprint-secret";
+			const deviceInventory = inventory([
+				inventoryItem(deviceId, "Work Laptop", "configured", {
+					evidenceDeviceIds: [deviceId, "peer-b", "peer-a"],
+					validatedFingerprint: "validated-test-key",
+				}),
+			]);
+			const metadata = [
+				{ deviceId, runtimeVersion: directVersion, runtimeVersionObservedAt: directAt },
+				{ deviceId: "peer-b", runtimeVersion: "0.44.0", runtimeVersionObservedAt: aliasAt },
+				{ deviceId: "peer-a", runtimeVersion: "0.43.0", runtimeVersionObservedAt: aliasAt },
+			];
+			const mount = document.getElementById("mount");
+			if (!mount) throw new Error("Missing mount");
+			for (const peerRuntimeMetadata of [metadata, [...metadata].reverse()]) {
+				act(() =>
+					mountDevices(mount, intent(), reconciliation(), projects, [], {
+						inventory: deviceInventory,
+						inventoryUnavailable: outage,
+						peerRuntimeMetadata,
+						onNavigate: vi.fn(),
+					}),
+				);
+				expect(mount.querySelector(".devices-table-version")?.textContent).toBe(expected);
+				expect(mount.textContent).toContain("Identify or rename in Sync");
+			}
+			if (!outage) {
+				const result = projectDevices(
+					intent(),
+					reconciliation(),
+					projects,
+					[],
+					metadata,
+					deviceInventory,
+				);
+				expect(result.devices[0]?.runtimeVersionObservedAt).toBe(
+					expected === "0.42.0" ? directAt : aliasAt,
+				);
+			}
+		},
+	);
+});
+
 describe("Device runtime metadata", () => {
 	it("presents paired-peer runtime metadata without changing device behavior", () => {
 		const baseline = projectDevices(

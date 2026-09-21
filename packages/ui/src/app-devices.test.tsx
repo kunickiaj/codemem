@@ -621,6 +621,56 @@ describe("Devices app integration", () => {
 	});
 });
 
+describe("Devices direct local evidence", () => {
+	beforeEach(setupDevicesAppTest);
+	afterEach(teardownDevicesAppTest);
+	it.each([
+		{ canonicalId: "device-private", syncLocalId: undefined, local: true },
+		{ canonicalId: "other-local", syncLocalId: undefined, local: false },
+		{ canonicalId: "other-local", syncLocalId: "device-private", local: true },
+	])(
+		"retains direct local evidence during outages: $canonicalId / $syncLocalId",
+		async ({ canonicalId, syncLocalId, local }) => {
+			const inventory = configuredDeviceInventory();
+			inventory.items = inventory.items.map((item) => {
+				if (item.deviceId !== "device-private") return item;
+				return {
+					...item,
+					deviceId: canonicalId,
+					evidenceDeviceIds: ["device-private", canonicalId],
+					isLocal: true,
+				};
+			});
+			mocks.loadDeviceIdentityInventory.mockResolvedValue(inventory);
+			mocks.loadSyncData.mockImplementation(async () => {
+				const { state } = await import("./lib/state");
+				state.lastSyncStatus = { device_id: syncLocalId };
+				state.lastSyncPeers = [];
+				state.lastSyncCoordinator = { discovered_devices: [] };
+				return true;
+			});
+			for (const unavailable of [false, true]) {
+				if (unavailable)
+					mocks.loadDeviceIdentityInventory.mockRejectedValue(new Error("inventory unavailable"));
+				await act(async () => {
+					await vi.advanceTimersByTimeAsync(5_100);
+				});
+				const row = document.getElementById("device-identity-card-device-private");
+				if (local) {
+					expect(row).toBeNull();
+					expect(document.querySelector('[aria-label="This device online"]')).not.toBeNull();
+					expect(document.querySelector(".devices-local-row")?.textContent).toContain(
+						"This device",
+					);
+				} else {
+					expect(row?.textContent).toContain("Presence unavailable");
+					expect(row?.textContent).not.toContain("This device");
+				}
+			}
+		},
+	);
+});
+
 describe("Devices unavailable inventory aliases", () => {
 	beforeEach(setupDevicesAppTest);
 	afterEach(teardownDevicesAppTest);
@@ -705,7 +755,7 @@ describe("Devices presence evidence", () => {
 			inventory.items = inventory.items.map((item) => ({
 				...item,
 				displayName: "Studio laptop",
-				isLocal: local,
+				isLocal: local && item.deviceId === "device-private",
 			}));
 			mocks.loadDeviceIdentityInventory.mockResolvedValue(inventory);
 			mocks.loadSyncData.mockImplementation(async () => {
@@ -721,7 +771,11 @@ describe("Devices presence evidence", () => {
 			await act(async () => {
 				await vi.advanceTimersByTimeAsync(5_100);
 			});
-			const row = document.querySelector(".devices-table-row");
+			if (local) {
+				expect(document.querySelector(".devices-local-row")?.textContent).toContain("This device");
+				return;
+			}
+			const row = document.getElementById("device-identity-card-device-private");
 			expect(row?.textContent).toContain(expected);
 			expect(row?.textContent).toContain("Studio laptop");
 			expect(row?.textContent).not.toContain("Canonical device");

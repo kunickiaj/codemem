@@ -49,6 +49,7 @@ export interface DevicesProjectInput {
 }
 
 export interface DevicesRendererOptions {
+	localDeviceId?: string;
 	loading?: boolean;
 	loadError?: boolean;
 	refreshError?: boolean;
@@ -70,6 +71,10 @@ function identityMutationsBlocked(options: DevicesRendererOptions): boolean {
 function currentDeviceInventory(options: DevicesRendererOptions) {
 	if (identityMutationsBlocked(options)) return undefined;
 	return options.inventory;
+}
+
+function directLocalDeviceId(options: DevicesRendererOptions): string | undefined {
+	return options.localDeviceId || options.inventory?.items.find((item) => item.isLocal)?.deviceId;
 }
 
 export interface DeviceProjectProjection {
@@ -180,6 +185,7 @@ export function projectDevices(
 	availabilityInput: DeviceAvailabilityInput[],
 	peerRuntimeMetadataInput: DevicePeerRuntimeMetadataInput[] = [],
 	inventory?: DeviceIdentityInventoryV1,
+	localDeviceId = inventory?.items.find((item) => item.isLocal)?.deviceId,
 ): DevicesProjection {
 	const identityNames = new Map(
 		intent.identities
@@ -198,7 +204,7 @@ export function projectDevices(
 	const devices = intent.identityDevices
 		.filter((device) => device.status === "active" && identityNames.has(device.identityId))
 		.map((device): DeviceProjection => {
-			const presentation = devicePresentation(device, inventory, availability);
+			const presentation = devicePresentation(device, inventory, availability, localDeviceId);
 			const runtimeMetadata = deviceRuntimeMetadata(device.deviceId, inventory, peerMetadata);
 			const directProjectIds = uniqueSorted(
 				intent.projectRecipients
@@ -267,6 +273,7 @@ function devicePresentation(
 	device: { deviceId: string; displayName: string },
 	inventory: DeviceIdentityInventoryV1 | undefined,
 	availabilityByDevice: Map<string, DeviceAvailabilityState>,
+	localDeviceId: string | undefined,
 ) {
 	const item = inventory?.items.find((item) => item.evidenceDeviceIds.includes(device.deviceId));
 	const states = deviceEvidenceIds(device.deviceId, inventory).map((id) =>
@@ -274,7 +281,7 @@ function devicePresentation(
 	);
 	let availability: DeviceAvailabilityState = "unknown";
 	if (states.includes("offline")) availability = "offline";
-	if (item?.isLocal || states.includes("available")) availability = "available";
+	if (device.deviceId === localDeviceId || states.includes("available")) availability = "available";
 	return {
 		displayName: deviceDisplayName(device.displayName, item),
 		availability,
@@ -287,9 +294,20 @@ function deviceRuntimeMetadata(
 	inventory: DeviceIdentityInventoryV1 | undefined,
 	peers: Map<string, DevicePeerRuntimeMetadataInput>,
 ) {
-	return deviceEvidenceIds(deviceId, inventory)
+	const candidates = deviceEvidenceIds(deviceId, inventory)
 		.map((id) => peers.get(id))
-		.find((item) => item !== undefined);
+		.filter((item): item is DevicePeerRuntimeMetadataInput => item !== undefined);
+	const usable = candidates.filter((item) => item.runtimeVersion?.trim());
+	if (usable.length === 0) return candidates[0];
+	// Candidate order is direct ID, then sorted aliases; retain that order on timestamp ties.
+	return usable.reduce((current, candidate) =>
+		runtimeObservationTime(candidate) > runtimeObservationTime(current) ? candidate : current,
+	);
+}
+
+function runtimeObservationTime(metadata: DevicePeerRuntimeMetadataInput): number {
+	const timestamp = Date.parse(metadata.runtimeVersionObservedAt ?? "");
+	return Number.isFinite(timestamp) ? timestamp : Number.NEGATIVE_INFINITY;
 }
 
 function deviceEvidenceIds(deviceId: string, inventory?: DeviceIdentityInventoryV1): string[] {
@@ -1303,7 +1321,7 @@ function DeviceTableRow({
 				</td>
 				<td className="devices-table-device">
 					<strong>{device.displayName}</strong>
-					{inventoryItem?.isLocal ? (
+					{directLocalDeviceId(options) === device.deviceId ? (
 						<Chip tone="actor-badge local" variant="badge">
 							This device
 						</Chip>
@@ -1594,15 +1612,19 @@ function CoordinatorStatus({ options }: { options: DevicesRendererOptions }) {
 
 function ThisDeviceRow({
 	intent,
-	inventory,
+	options,
 }: {
 	intent: RecipientPolicyIntentGraphV1;
-	inventory?: DeviceIdentityInventoryV1;
+	options: DevicesRendererOptions;
 }) {
-	const localDevice = inventory?.items.find((item) => item.isLocal);
-	if (!localDevice) return null;
+	const localDeviceId = directLocalDeviceId(options);
+	if (!localDeviceId) return null;
+	const localDevice = options.inventory?.items.find((item) => item.deviceId === localDeviceId);
+	const localBinding = intent.identityDevices.find((item) => item.deviceId === localDeviceId);
 	const identityName = intent.identities.find(
-		(identity) => identity.identityId === localDevice?.identityId && identity.status === "active",
+		(identity) =>
+			identity.identityId === (localBinding?.identityId ?? localDevice?.identityId) &&
+			identity.status === "active",
 	)?.displayName;
 	const ownershipLabel = identityName ? `Owned by ${identityName}` : "Identity not set";
 	return (
@@ -1861,10 +1883,9 @@ function DevicesView({
 				(item) => item.state !== "configured" && item.evidenceDeviceIds.includes(device.deviceId),
 			),
 	);
-	const localDevice = options.inventory?.items.find((item) => item.isLocal);
-	const localEvidenceDeviceIds = new Set(localDevice?.evidenceDeviceIds ?? []);
+	const localDeviceId = directLocalDeviceId(options);
 	const otherProjectedDevices = visibleProjectedDevices.filter(
-		(device) => !localEvidenceDeviceIds.has(device.deviceId),
+		(device) => device.deviceId !== localDeviceId,
 	);
 	const projectedDeviceIds = new Set(otherProjectedDevices.map((device) => device.deviceId));
 	const inventoryUnavailable = options.inventoryUnavailable ? (
@@ -1947,7 +1968,7 @@ function DevicesView({
 				{refreshError}
 				{inventoryUnavailable}
 				{connectivityStatus}
-				<ThisDeviceRow intent={intent} inventory={options.inventory} />
+				<ThisDeviceRow intent={intent} options={options} />
 				{coordinatorAttention}
 				{inventoryWorkflow}
 				{configuredFallbackWorkflow}
@@ -1970,7 +1991,7 @@ function DevicesView({
 			{coordinatorAttention}
 			{inventoryWorkflow}
 			{configuredFallbackWorkflow}
-			<ThisDeviceRow intent={intent} inventory={options.inventory} />
+			<ThisDeviceRow intent={intent} options={options} />
 			<ConfiguredDeviceInventory
 				devices={otherProjectedDevices}
 				intent={intent}
@@ -2113,6 +2134,7 @@ export function mountDevices(
 		availability,
 		options.peerRuntimeMetadata,
 		currentDeviceInventory(options),
+		directLocalDeviceId(options),
 	);
 	render(<DevicesRoot intent={intent} options={options} projection={projection} />, mount);
 	setDeviceCommitStatus("");
