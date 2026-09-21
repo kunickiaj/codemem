@@ -552,6 +552,8 @@ function sharingDevices(
 		result.push(device);
 		known.add(device.deviceId);
 	}
+	// Revoked intent also blocks fallback, without hiding an active binding for the same ID.
+	for (const device of intent.identityDevices) known.add(device.deviceId);
 	// Intent ownership wins even when successful requests straddle a reassignment.
 	for (const item of inventory?.items ?? []) {
 		if (item.state !== "configured" || !item.identityId) continue;

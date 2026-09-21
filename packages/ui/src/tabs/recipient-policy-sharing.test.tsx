@@ -724,6 +724,53 @@ describe("Sharing merged device summaries", () => {
 	);
 });
 
+describe("Sharing revoked intent devices", () => {
+	registerRecipientFocusedSharingLifecycle();
+	it.each(["device-adam-old", "stale-alias"])(
+		"does not restore revoked intent from successful stale inventory for %s",
+		(deviceId) => {
+			mount(intent(), {
+				refreshError: false,
+				deviceInventoryUnavailable: false,
+				deviceInventory: configuredInventory([
+					{ deviceId, identityId: "identity-adam", evidenceDeviceIds: ["device-adam-old"] },
+				]),
+			});
+			expect(visiblePanel().textContent).toContain("2Registered devices");
+			clickTab("Identities");
+			const cards = [...visiblePanel().querySelectorAll(".recipient-policy-sharing-identity-card")];
+			expect(cards[0]?.textContent).toContain("Devices · 1Adam’s Mac");
+			expect(cards[1]?.textContent).toContain("Devices · 1Brian’s PC");
+			expect(visiblePanel().textContent).not.toContain(`Inventory ${deviceId}`);
+		},
+	);
+	it("retains active intent when inventory groups active and revoked aliases", () => {
+		mount(intent(), {
+			deviceInventory: configuredInventory([
+				{
+					deviceId: "stale-alias",
+					identityId: "identity-brian",
+					evidenceDeviceIds: ["device-adam-old", "device-adam-1"],
+				},
+			]),
+		});
+		expect(visiblePanel().textContent).toContain("2Registered devices");
+		clickTab("Identities");
+		const cards = [...visiblePanel().querySelectorAll(".recipient-policy-sharing-identity-card")];
+		expect(cards[0]?.textContent).toContain("Devices · 1Adam’s Mac");
+		expect(cards[1]?.textContent).toContain("Devices · 1Brian’s PC");
+		expect(visiblePanel().textContent).not.toContain("Inventory stale-alias");
+	});
+	it("does not let an earlier revoked binding hide an active binding for the same ID", () => {
+		const graph = intent();
+		graph.identityDevices.unshift({ ...graph.identityDevices[0], status: "revoked" });
+		mount(graph);
+		expect(visiblePanel().textContent).toContain("2Registered devices");
+		clickTab("Identities");
+		expect(visiblePanel().textContent).toContain("Devices · 1Adam’s Mac");
+	});
+});
+
 describe("Sharing intent aliases", () => {
 	registerRecipientFocusedSharingLifecycle();
 	it.each(["identity-adam", "identity-brian"])(
