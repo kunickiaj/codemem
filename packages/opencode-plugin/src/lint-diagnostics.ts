@@ -232,21 +232,55 @@ function classNameAtLine(sourceCode: string, line: number): string {
 	return state.classes.at(-1)?.name ?? "";
 }
 
+/** Recognize literal route handlers; other call shapes retain the conservative fallback. */
+function routeScopeAtLine(source: string, lineStart: number, lineEnd: number) {
+	const braces: Array<{ identity: string; start: number } | undefined> = [];
+	for (let index = 0; index < lineEnd; index += 1) {
+		const tokenEnd = sourceTokenEnd(source, index);
+		if (tokenEnd !== undefined) {
+			index = tokenEnd - 1;
+			continue;
+		}
+		const route = source
+			.slice(index)
+			.match(
+				/^([\w$]+)\.(get|post|put|patch|delete|options|head|all)\(\s*(["'])([^"'\\\r\n]*)\3\s*,\s*(?:async\s+)?(?:\([^)]*\)\s*=>|function\s*[\w$]*\s*\([^)]*\))\s*\{/,
+			);
+		if (route) {
+			const owner = { identity: `route:${route[1]}.${route[2]}:${route[4]}`, start: index };
+			if (index >= lineStart) return { ...owner, direct: true };
+			braces.push(owner);
+			index += route[0].length - 1;
+			continue;
+		}
+		if (source[index] === "{") braces.push(undefined);
+		if (source[index] === "}") braces.pop();
+	}
+	const owner = braces.findLast((entry) => entry !== undefined);
+	return owner ? { ...owner, direct: false } : undefined;
+}
+
 export function getScopeIdentity(
 	sourceCode: string | undefined,
 	line: number | undefined,
 ): string | undefined {
 	if (!sourceCode || !line) return undefined;
-	const precedingLines = sourceCode.split("\n").slice(0, line);
+	let precedingLines = sourceCode.split("\n").slice(0, line);
+	const lineEnd = precedingLines.join("\n").length;
+	const lineStart = lineEnd - (precedingLines.at(-1)?.length ?? 0);
+	const route = routeScopeAtLine(sourceCode, lineStart, lineEnd);
+	if (route?.direct) return `${route.identity}:handler`;
+	if (route) precedingLines = sourceCode.slice(route.start, lineEnd).split("\n");
 	const className = classNameAtLine(sourceCode, line);
+	const prefix = route?.identity ?? className;
 	for (const sourceLine of precedingLines.reverse()) {
 		const functionMatch = sourceLine.match(/\bfunction\s+([\w$]+)/);
-		if (functionMatch?.[1]) return `${className}:function:${functionMatch[1]}`;
+		if (functionMatch?.[1]) return `${prefix}:function:${functionMatch[1]}`;
 		const bindingMatch = sourceLine.match(/\b(?:const|let|var)\s+([\w$]+)\s*=/);
-		if (bindingMatch?.[1]) return `${className}:binding:${bindingMatch[1]}`;
+		if (bindingMatch?.[1]) return `${prefix}:binding:${bindingMatch[1]}`;
 		const methodMatch = sourceLine.match(/^\s*(?:async\s+)?(?:get\s+|set\s+)?([\w$]+)\s*\(/);
 		if (methodMatch?.[1] && !["if", "for", "switch", "while"].includes(methodMatch[1])) {
-			return `${className}:method:${methodMatch[1]}`;
+			return `${prefix}:method:${methodMatch[1]}`;
 		}
 	}
 	return undefined;
