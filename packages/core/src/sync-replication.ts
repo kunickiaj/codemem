@@ -977,10 +977,8 @@ function deterministicReassignOpId(
 		.digest("hex")}`;
 }
 
-function reassignmentEntityId(db: Database, existing: MemoryItemRow, newScopeId: string): string {
-	const entityId = existing.import_key ?? String(existing.id);
-	assertMemoryScopeNotRetired(db, entityId, newScopeId);
-	return entityId;
+function reassignmentEntityId(existing: MemoryItemRow): string {
+	return existing.import_key ?? String(existing.id);
 }
 
 function writeUnretiredReassignment(
@@ -1028,7 +1026,7 @@ export function recordScopeReassignment(
 		.where(eq(schema.memoryItems.id, opts.memoryId))
 		.get();
 	if (!existing) throw new Error("reassign_memory_not_found");
-	const memoryId = reassignmentEntityId(db, existing, newScopeId);
+	const memoryId = reassignmentEntityId(existing);
 	const oldOpId = deterministicReassignOpId(operationId, memoryId, oldScopeId, newScopeId, "old");
 	const newOpId = deterministicReassignOpId(operationId, memoryId, oldScopeId, newScopeId, "new");
 	const existingOps = db

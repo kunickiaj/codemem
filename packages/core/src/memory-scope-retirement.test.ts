@@ -418,6 +418,90 @@ it("rejects retired-scope replay before clocks and prevents resurrection after r
 	expect(db.prepare("SELECT COUNT(*) FROM memory_items").pluck().get()).toBe(0);
 });
 
+it("replays a completed move without writes after its destination is retired by an onward move", () => {
+	const request = {
+		operationId: "first-move",
+		memoryId,
+		oldScopeId: "old",
+		newScopeId: "middle",
+		deviceId: "source",
+		createdAt: now,
+	};
+	const completed = recordScopeReassignment(db, request);
+	db.transaction(() => {
+		recordScopeReassignment(db, {
+			...request,
+			operationId: "onward-move",
+			oldScopeId: "middle",
+			newScopeId: "final",
+		});
+		recordMemoryScopeRetirement(
+			db,
+			{
+				...retirement,
+				retiredScopeId: "middle",
+			},
+			{ authenticatedSourceDeviceId: "source", now },
+		);
+	})();
+	const before = db.serialize();
+	const changes = db.prepare("SELECT total_changes()").pluck().get();
+	expect(recordScopeReassignment(db, request)).toEqual(completed);
+	expect(() => recordScopeReassignment(db, { ...request, newScopeId: "different" })).toThrow(
+		"reassign_old_scope_mismatch",
+	);
+	expect(() =>
+		recordScopeReassignment(db, {
+			...request,
+			operationId: "new-move",
+			oldScopeId: "final",
+		}),
+	).toThrow("memory_scope_retired");
+	expect(db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").pluck().get(memoryId)).toBe(
+		"final",
+	);
+	expect(db.prepare("SELECT total_changes()").pluck().get()).toBe(changes);
+	expect(db.serialize().equals(before)).toBe(true);
+});
+
+it.each(["missing", "revision mismatch"])(
+	"rejects a %s replay side even when the destination is retired",
+	(inconsistency) => {
+		const request = {
+			operationId: "move",
+			memoryId,
+			oldScopeId: "old",
+			newScopeId: "middle",
+			deviceId: "source",
+			createdAt: now,
+		};
+		const completed = recordScopeReassignment(db, request);
+		db.transaction(() => {
+			recordScopeReassignment(db, {
+				...request,
+				operationId: "onward",
+				oldScopeId: "middle",
+				newScopeId: "final",
+			});
+			recordMemoryScopeRetirement(
+				db,
+				{ ...retirement, retiredScopeId: "middle" },
+				{ authenticatedSourceDeviceId: "source", now },
+			);
+		})();
+		if (inconsistency === "missing") {
+			db.prepare("DELETE FROM replication_ops WHERE op_id = ?").run(completed.newOpId);
+		} else {
+			db.prepare("UPDATE replication_ops SET clock_rev = clock_rev + 1 WHERE op_id = ?").run(
+				completed.newOpId,
+			);
+		}
+		const before = db.serialize();
+		expect(() => recordScopeReassignment(db, request)).toThrow("reassign_replay_conflict");
+		expect(db.serialize().equals(before)).toBe(true);
+	},
+);
+
 it("rolls back bindings and fences with a failed move and prohibits reassignment into a retired scope", () => {
 	expect(() =>
 		db.transaction(() => {
