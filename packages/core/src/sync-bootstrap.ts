@@ -16,6 +16,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { ApiSyncMemorySnapshotPageResponse } from "./api-types.js";
 import type { Database } from "./db.js";
 import { toJson } from "./db.js";
+import { retirementAllowsSnapshot } from "./memory-retirement-snapshot-guard.js";
 import * as schema from "./schema.js";
 import { redactMemoryFields, SecretScanner } from "./secret-scanner.js";
 import { buildAuthHeaders, buildDirectPeerAuthHeaders } from "./sync-auth.js";
@@ -55,6 +56,8 @@ interface ExistingSnapshotRow {
 }
 
 export interface BootstrapOptions {
+	/** Source-only snapshots require recipient-bound transport and additive application. */
+	sourceDeviceId?: string;
 	keysDir?: string;
 	dbPath?: string;
 	bootstrapGrantId?: string;
@@ -73,6 +76,51 @@ export interface BootstrapOptions {
 // ---------------------------------------------------------------------------
 
 type SnapshotPageResponse = ApiSyncMemorySnapshotPageResponse;
+
+function checkedSnapshotBoundary(
+	page: SnapshotPageResponse & { source_device_id?: unknown },
+	expected: SyncResetRequired,
+	sourceDeviceId?: string,
+) {
+	if (sourceDeviceId && page.source_device_id !== sourceDeviceId)
+		throw new Error("retirement_snapshot_source_required");
+	if (
+		page.generation !== expected.generation ||
+		page.snapshot_id !== expected.snapshot_id ||
+		page.baseline_cursor !== expected.baseline_cursor
+	)
+		throw new Error("snapshot_boundary_mismatch");
+	return {
+		generation: page.generation,
+		snapshot_id: page.snapshot_id,
+		baseline_cursor: page.baseline_cursor,
+	};
+}
+
+function snapshotPageParams(
+	resetInfo: SyncResetRequired,
+	pageSize: number,
+	pageToken: string | null,
+	sourceDeviceId?: string,
+) {
+	const params = new URLSearchParams({
+		generation: String(resetInfo.generation),
+		snapshot_id: resetInfo.snapshot_id,
+		limit: String(pageSize),
+	});
+	if (sourceDeviceId) params.set("source_device_id", sourceDeviceId);
+	if (resetInfo.baseline_cursor) params.set("baseline_cursor", resetInfo.baseline_cursor);
+	if (resetInfo.scope_id) params.set("scope_id", resetInfo.scope_id);
+	if (pageToken) params.set("page_token", pageToken);
+	return params;
+}
+
+function checkedSnapshotSource(options?: BootstrapOptions): string | undefined {
+	const source = options?.sourceDeviceId;
+	if (source !== undefined && (!source || source !== options?.recipientId?.trim()))
+		throw new Error("retirement_snapshot_source_required");
+	return source;
+}
 
 /**
  * Fetch all snapshot pages from a peer's /v1/snapshot endpoint.
@@ -96,6 +144,7 @@ export async function fetchAllSnapshotPages(
 	const bootstrapGrantId = options?.bootstrapGrantId?.trim() || undefined;
 	const recipientId = options?.recipientId?.trim() || undefined;
 	const maxItems = options?.maxItems ?? 100_000;
+	const sourceDeviceId = checkedSnapshotSource(options);
 
 	const allItems: SyncMemorySnapshotItem[] = [];
 	let pageToken: string | null = null;
@@ -103,20 +152,7 @@ export async function fetchAllSnapshotPages(
 		null;
 
 	for (;;) {
-		const params = new URLSearchParams({
-			generation: String(resetInfo.generation),
-			snapshot_id: resetInfo.snapshot_id,
-			limit: String(pageSize),
-		});
-		if (resetInfo.baseline_cursor) {
-			params.set("baseline_cursor", resetInfo.baseline_cursor);
-		}
-		if (resetInfo.scope_id) {
-			params.set("scope_id", resetInfo.scope_id);
-		}
-		if (pageToken) {
-			params.set("page_token", pageToken);
-		}
+		const params = snapshotPageParams(resetInfo, pageSize, pageToken, sourceDeviceId);
 
 		const url = `${baseUrl}/v1/snapshot?${params.toString()}`;
 		const authOptions = {
@@ -150,11 +186,7 @@ export async function fetchAllSnapshotPages(
 			throw new Error("invalid snapshot response shape");
 		}
 
-		boundary = {
-			generation: page.generation,
-			snapshot_id: page.snapshot_id,
-			baseline_cursor: page.baseline_cursor,
-		};
+		boundary = checkedSnapshotBoundary(page, resetInfo, sourceDeviceId);
 		allItems.push(...page.items);
 
 		if (allItems.length > maxItems) {
@@ -199,6 +231,17 @@ function isEmbeddableSnapshotPayload(payload: Record<string, unknown>): boolean 
 	const title = typeof payload.title === "string" ? payload.title : "";
 	const bodyText = typeof payload.body_text === "string" ? payload.body_text : "";
 	return `${title}\n${bodyText}`.trim().length > 0;
+}
+
+function retirementSnapshotItems(
+	db: Database,
+	items: SyncMemorySnapshotItem[],
+	scope: string | null,
+): SyncMemorySnapshotItem[] {
+	return items.filter((item) => {
+		const payload = parseSnapshotPayload(item);
+		return payload && retirementAllowsSnapshot(db, item.entity_id, payload, scope);
+	});
 }
 
 function normalizeBootstrapScopeId(scopeId: unknown): string | null {
@@ -438,7 +481,7 @@ export function applyBootstrapSnapshot(
 		// 2. Insert snapshot items, grouping by project.
 		bootstrapSessionCache.clear();
 
-		for (const item of items) {
+		for (const item of retirementSnapshotItems(db, items, bootstrapScopeId)) {
 			const inserted = insertSnapshotItem(d, item, bootstrapScopeId, activeScanner);
 			if (!inserted.applied) continue;
 			if (inserted.embeddable) embeddableApplied++;
@@ -488,6 +531,41 @@ export function applyBootstrapSnapshot(
 	return result;
 }
 
+function advanceMergedSnapshotBoundary(
+	db: Database,
+	peerDeviceId: string,
+	resetInfo: SyncResetRequired,
+	options?: { cursorPolicy: "preserve" },
+): void {
+	if (options?.cursorPolicy === "preserve") return;
+	if (resetInfo.baseline_cursor || resetInfo.scope_id) {
+		if (resetInfo.scope_id && !resetInfo.baseline_cursor)
+			clearReplicationCursorLastApplied(db, peerDeviceId, resetInfo.scope_id);
+		if (resetInfo.scope_id && resetInfo.baseline_cursor)
+			clearScopedAckedCursor(db, peerDeviceId, resetInfo.scope_id);
+		setReplicationCursor(
+			db,
+			peerDeviceId,
+			{
+				lastApplied: resetInfo.baseline_cursor,
+				lastAcked: resetInfo.baseline_cursor
+					? undefined
+					: SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER,
+			},
+			resetInfo.scope_id,
+		);
+	}
+	setSyncResetState(
+		db,
+		{
+			generation: resetInfo.generation,
+			snapshot_id: resetInfo.snapshot_id,
+			baseline_cursor: resetInfo.baseline_cursor,
+		},
+		resetInfo.scope_id,
+	);
+}
+
 /**
  * Additively merge a peer snapshot into an already-populated scope.
  *
@@ -496,6 +574,7 @@ export function applyBootstrapSnapshot(
  * or replaces stale copies of the same snapshot entity. Use this when a scoped
  * peer has no cursor yet but the receiver already has rows in that scope from
  * another source, making destructive bootstrap unsafe.
+ * Source subsets must preserve the whole-scope cursor and reset boundary.
  */
 export function mergeBootstrapSnapshot(
 	db: Database,
@@ -503,6 +582,7 @@ export function mergeBootstrapSnapshot(
 	items: SyncMemorySnapshotItem[],
 	resetInfo: SyncResetRequired,
 	scanner?: SecretScanner,
+	options?: { cursorPolicy: "preserve" },
 ): BootstrapResult {
 	const result: BootstrapResult = { ok: false, applied: 0, deleted: 0 };
 	const activeScanner = scanner ?? new SecretScanner();
@@ -520,7 +600,7 @@ export function mergeBootstrapSnapshot(
 		let embeddableApplied = 0;
 		bootstrapSessionCache.clear();
 
-		for (const item of items) {
+		for (const item of retirementSnapshotItems(db, items, bootstrapScopeId)) {
 			if (!parseSnapshotPayload(item)) continue;
 			const existingRows = d
 				.select({
@@ -556,35 +636,7 @@ export function mergeBootstrapSnapshot(
 			result.applied++;
 		}
 
-		if (resetInfo.baseline_cursor || resetInfo.scope_id) {
-			if (resetInfo.scope_id && !resetInfo.baseline_cursor) {
-				clearReplicationCursorLastApplied(db, peerDeviceId, resetInfo.scope_id);
-			}
-			if (resetInfo.scope_id && resetInfo.baseline_cursor) {
-				clearScopedAckedCursor(db, peerDeviceId, resetInfo.scope_id);
-			}
-			setReplicationCursor(
-				db,
-				peerDeviceId,
-				{
-					lastApplied: resetInfo.baseline_cursor,
-					lastAcked: resetInfo.baseline_cursor
-						? undefined
-						: SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER,
-				},
-				resetInfo.scope_id,
-			);
-		}
-
-		setSyncResetState(
-			db,
-			{
-				generation: resetInfo.generation,
-				snapshot_id: resetInfo.snapshot_id,
-				baseline_cursor: resetInfo.baseline_cursor,
-			},
-			resetInfo.scope_id,
-		);
+		advanceMergedSnapshotBoundary(db, peerDeviceId, resetInfo, options);
 
 		queueVectorBackfillForSyncBootstrap(db, { embeddableTotal: embeddableApplied });
 		result.ok = true;

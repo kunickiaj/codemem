@@ -102,7 +102,7 @@ export function pendingRetirementBatch(
 	return { feature: MEMORY_RETIREMENT_FEATURE, recipientDeviceId: options.peerDeviceId, controls };
 }
 
-function authenticatePacket(
+export function authenticateRetirementPacket(
 	packet: SignedRetirementPacket,
 	options: {
 		peer: RetirementPeer;
@@ -125,7 +125,7 @@ function authenticatePacket(
 	if (verified.status !== "valid") throw new Error("retirement_authentication_failed");
 }
 
-function parseBatch(body: string, recipient: string): RetirementBatch {
+export function parseRetirementBatch(body: string, recipient: string): RetirementBatch {
 	const value = JSON.parse(body) as RetirementBatch;
 	if (
 		value?.feature !== MEMORY_RETIREMENT_FEATURE ||
@@ -165,6 +165,23 @@ function cleanupRetiredMemory(db: Database, control: RetirementControl): void {
 	}
 }
 
+/** Internal transaction stage shared by live delivery and authenticated reset pages. */
+export function applyAuthenticatedRetirementControls(
+	db: Database,
+	controls: RetirementControl[],
+	sourceDeviceId: string,
+	now: string,
+): void {
+	if (!db.inTransaction) throw new Error("memory_retirement_transaction_required");
+	for (const control of controls) {
+		recordMemoryScopeRetirement(db, control, { authenticatedSourceDeviceId: sourceDeviceId, now });
+		cleanupRetiredMemory(db, control);
+		db.prepare(
+			"INSERT OR IGNORE INTO memory_retirement_receipts(control_id, source_device_id, received_at) VALUES (?, ?, ?)",
+		).run(control.controlId, sourceDeviceId, now);
+	}
+}
+
 /** Internal receiver adapter: direct-source v3 signature is mandatory, even for absent rows. */
 export function receiveRetirementBatch(
 	db: Database,
@@ -179,21 +196,12 @@ export function receiveRetirementBatch(
 	if (db.inTransaction) throw new Error("retirement_outer_transaction_forbidden");
 	if (!supportsSyncFeature(options.peerFeatures, MEMORY_RETIREMENT_FEATURE))
 		throw new Error("retirement_feature_required");
-	authenticatePacket(packet, { ...options, path: MEMORY_RETIREMENT_PATH });
-	const batch = parseBatch(packet.body, options.localDeviceId);
+	authenticateRetirementPacket(packet, { ...options, path: MEMORY_RETIREMENT_PATH });
+	const batch = parseRetirementBatch(packet.body, options.localDeviceId);
 	db.transaction(() => {
 		if (!recordNonce(db, options.peer.deviceId, packet.nonce, options.now))
 			throw new Error("retirement_nonce_replayed");
-		for (const control of batch.controls) {
-			recordMemoryScopeRetirement(db, control, {
-				authenticatedSourceDeviceId: options.peer.deviceId,
-				now: options.now,
-			});
-			cleanupRetiredMemory(db, control);
-			db.prepare(
-				"INSERT OR IGNORE INTO memory_retirement_receipts(control_id, source_device_id, received_at) VALUES (?, ?, ?)",
-			).run(control.controlId, options.peer.deviceId, options.now);
-		}
+		applyAuthenticatedRetirementControls(db, batch.controls, options.peer.deviceId, options.now);
 	}).immediate();
 	return { feature: MEMORY_RETIREMENT_FEATURE, batchDigest: batchDigest(batch) };
 }
@@ -209,7 +217,7 @@ function acknowledgeBatch(
 	},
 ): void {
 	if (db.inTransaction) throw new Error("retirement_outer_transaction_forbidden");
-	authenticatePacket(packet, { ...options, path: MEMORY_RETIREMENT_ACK_PATH });
+	authenticateRetirementPacket(packet, { ...options, path: MEMORY_RETIREMENT_ACK_PATH });
 	const ack = JSON.parse(packet.body) as RetirementAck;
 	if (ack.feature !== MEMORY_RETIREMENT_FEATURE || ack.batchDigest !== batchDigest(batch))
 		throw new Error("retirement_ack_mismatch");
