@@ -621,6 +621,68 @@ describe("Devices app integration", () => {
 	});
 });
 
+describe("Devices unavailable inventory aliases", () => {
+	beforeEach(setupDevicesAppTest);
+	afterEach(teardownDevicesAppTest);
+	it.each([false, true])(
+		"drops cached aliases after inventory failure and retains direct IDs: %s",
+		async (direct) => {
+			const inventory = configuredDeviceInventory();
+			inventory.items = inventory.items.map((item) => {
+				if (item.deviceId !== "device-private") return item;
+				return {
+					...item,
+					evidenceDeviceIds: [item.deviceId, "peer-alias"],
+					validatedFingerprint: "validated-test-key",
+				};
+			});
+			mocks.loadDeviceIdentityInventory.mockResolvedValue(inventory);
+			mocks.loadSyncData.mockImplementation(async () => {
+				const { state } = await import("./lib/state");
+				state.lastSyncPeers = [
+					{
+						peer_device_id: "peer-alias",
+						fingerprint: "validated-test-key",
+						runtime_version: "0.42.0",
+						status: { peer_state: "online", fresh: true },
+					},
+				];
+				state.lastSyncCoordinator = { discovered_devices: [] };
+				return true;
+			});
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(5_100);
+			});
+			expect(document.getElementById("device-identity-card-device-private")?.textContent).toContain(
+				"0.42.0",
+			);
+			expect(document.getElementById("device-identity-card-device-private")?.textContent).toContain(
+				"Identify or rename in Sync",
+			);
+			mocks.loadDeviceIdentityInventory.mockRejectedValue(new Error("inventory unavailable"));
+			mocks.loadSyncData.mockImplementation(async () => {
+				const { state } = await import("./lib/state");
+				state.lastSyncPeers = [
+					{
+						peer_device_id: direct ? "device-private" : "peer-alias",
+						fingerprint: "replacement-test-key",
+						runtime_version: "0.99.0",
+						status: { peer_state: "online", fresh: true },
+					},
+				];
+				return true;
+			});
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(5_100);
+			});
+			const row = document.getElementById("device-identity-card-device-private");
+			expect(row?.textContent?.includes("0.99.0")).toBe(direct);
+			expect(row?.textContent?.includes("Identify or rename in Sync")).toBe(direct);
+			expect(row?.textContent).toContain(direct ? "Available" : "Presence unavailable");
+		},
+	);
+});
+
 describe("Devices presence evidence", () => {
 	beforeEach(setupDevicesAppTest);
 	afterEach(teardownDevicesAppTest);

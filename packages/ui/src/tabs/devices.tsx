@@ -67,6 +67,11 @@ function identityMutationsBlocked(options: DevicesRendererOptions): boolean {
 	return options.inventoryUnavailable === true || options.refreshError === true;
 }
 
+function currentDeviceInventory(options: DevicesRendererOptions) {
+	if (identityMutationsBlocked(options)) return undefined;
+	return options.inventory;
+}
+
 export interface DeviceProjectProjection {
 	canonicalProjectIdentity: string;
 	displayName: string;
@@ -161,6 +166,8 @@ function actionForDevice(
 }
 
 function deviceDisplayName(name: string, inventoryItem?: DeviceIdentityInventoryItemV1): string {
+	if (inventoryItem && ["Enrolled device", "Peer device"].includes(name))
+		return inventoryItem.displayName;
 	if (name.trim() && name !== "Canonical device" && name !== "Unnamed device") return name;
 	const resolved = inventoryItem?.displayName ?? "Unnamed device";
 	return resolved === "Canonical device" ? "Unnamed device" : resolved;
@@ -2105,7 +2112,7 @@ export function mountDevices(
 		projects,
 		availability,
 		options.peerRuntimeMetadata,
-		options.inventory,
+		currentDeviceInventory(options),
 	);
 	render(<DevicesRoot intent={intent} options={options} projection={projection} />, mount);
 	setDeviceCommitStatus("");

@@ -375,6 +375,18 @@ export function projectDeviceIdentityInventory(
 	};
 }
 
+function bindingDisplayName(value: Record<string, unknown>): string {
+	const name = clean(value.display_name) ?? "";
+	// Historical rows record assignment provenance, not whether the label was generated.
+	if (value.provenance === "coordinator_enrollment" && name === "Enrolled device") return "";
+	if (
+		["managed_exact_project", "review_resolution"].includes(String(value.provenance)) &&
+		name === "Peer device"
+	)
+		return "";
+	return name;
+}
+
 export function loadDeviceIdentityInventorySnapshot(
 	db: Database,
 	input: DeviceIdentityInventoryInput,
@@ -410,7 +422,7 @@ export function loadDeviceIdentityInventorySnapshot(
 		});
 	const bindingRows = db
 		.prepare(
-			`SELECT device.device_id, device.display_name, device.identity_id, device.status,
+			`SELECT device.device_id, device.display_name, device.identity_id, device.status, device.provenance,
 			 actor.status AS identity_status
 			 FROM identity_devices device
 			 LEFT JOIN actors actor ON actor.actor_id = device.identity_id
@@ -429,7 +441,7 @@ export function loadDeviceIdentityInventorySnapshot(
 			const value = row as Record<string, unknown>;
 			return {
 				deviceId: String(value.device_id ?? ""),
-				displayName: clean(value.display_name) ?? "",
+				displayName: bindingDisplayName(value),
 				identityId: String(value.identity_id ?? ""),
 				status: String(value.status ?? ""),
 				identityStatus: clean(value.identity_status),
