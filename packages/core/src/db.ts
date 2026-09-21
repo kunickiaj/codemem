@@ -31,7 +31,7 @@ import {
 	REQUIRED_TABLES,
 	SCHEMA_VERSION,
 } from "./database-runtime-primitives.js";
-import { ensureMemorySourceIdentitySchema } from "./memory-source-identity.js";
+import { ensureMemoryOwnershipSchemas } from "./memory-ownership-recovery-schema.js";
 import { expandUserPath } from "./observer-config.js";
 import {
 	canAutoBootstrapSchema,
@@ -932,7 +932,7 @@ function ensureOptionalRetrievalLedgerSchema(db: DatabaseType): void {
 }
 
 export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
-	ensureMemorySourceIdentitySchema(db);
+	ensureMemoryOwnershipSchemas(db);
 	ensureOptionalRetrievalLedgerSchema(db);
 	// Always run: current-marker databases may predate these no-version-bump
 	// columns, so the schema_compat_state gate cannot prove they exist.

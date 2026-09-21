@@ -583,6 +583,12 @@ export {
 } from "./maintenance-jobs.js";
 export * from "./memory-filter-schema.js";
 export * from "./memory-kinds.js";
+export {
+	commitMemoryOwnershipRecovery,
+	MemoryOwnershipRecoveryError,
+	previewMemoryOwnershipRecovery,
+	verifyMemoryOwnership,
+} from "./memory-ownership-recovery.js";
 export type {
 	DerivedMemoryRole,
 	DerivedMemoryRoleResult,
