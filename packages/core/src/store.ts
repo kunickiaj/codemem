@@ -691,7 +691,8 @@ export class MemoryStore {
 		}
 	}
 
-	private enqueueVectorWrite(memoryId: number, title: string, bodyText: string): void {
+	/** Queue best-effort embeddings after a caller-owned creation transaction commits. */
+	enqueueVectorWrite(memoryId: number, title: string, bodyText: string): void {
 		if (this.db.inTransaction) return;
 		let op: Promise<void> | null = null;
 		op = storeVectors(this.db, memoryId, title, bodyText)

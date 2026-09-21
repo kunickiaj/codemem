@@ -7,7 +7,7 @@ import {
 	REQUIRED_BOOTSTRAPPED_TABLES,
 	SCHEMA_VERSION,
 } from "./database-runtime-primitives.js";
-import { ensureMemorySourceIdentitySchema } from "./memory-source-identity.js";
+import { ensureMemoryOwnershipSchemas } from "./memory-ownership-recovery-schema.js";
 import { TEST_SCHEMA_BASE_DDL } from "./test-schema.generated.js";
 
 const RETRIEVAL_EXPOSURE_DETACH_UNAVAILABLE_MEMORY_DDL = `
@@ -825,7 +825,7 @@ export function bootstrapSchema(db: Database): void {
 		ensureSyncPeerSignatureStateSchema(db);
 		ensureRetrievalAttemptColumns(db);
 		ensureOutcomeEvidenceColumns(db);
-		ensureMemorySourceIdentitySchema(db);
+		ensureMemoryOwnershipSchemas(db);
 		assertBootstrapTablesCreated(db);
 		db.pragma(`user_version = ${SCHEMA_VERSION}`);
 	}).immediate();
