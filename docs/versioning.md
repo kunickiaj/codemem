@@ -51,13 +51,13 @@ Keep `.opencode/.npmrc` pinned to the public npm registry:
 
 npm sets `latest` on a package's first-ever version regardless of `--tag`. A new package whose debut is a prerelease therefore exposes that prerelease to untagged installs (`npm install <pkg>`).
 
-The release workflow cannot fix this automatically: OIDC trusted publishing grants `publish` only, not dist-tag mutation. Instead, a post-publish step runs `scripts/release-latest-guard.mjs` in verify mode and reports any package whose `latest` points at a prerelease. Fix it once, by hand, from a machine with an npm login:
+The release workflow cannot fix this automatically: OIDC trusted publishing grants `publish` only, not dist-tag mutation. Instead, a post-publish step runs `scripts/release-latest-guard.mjs` in verify mode and reports any package whose `latest` points at a prerelease. Attempt the cleanup from a machine with an npm login:
 
 ```fish
 node scripts/release-latest-guard.mjs --apply <package>
 ```
 
-The guard only removes; it never adds or moves `latest`, so an established package's stable `latest` is untouched. Until a package's first stable release, untagged installs of it correctly fail with "no matching version". The verify step is `continue-on-error` while any package is still dirty; flip it to a hard gate once the guard reports clean.
+The guard only removes; it never adds or moves `latest`, so an established package's stable `latest` is untouched. npm may reject removal when the prerelease is the package's only `latest` version; in that case, keep prerelease installs on explicit channel tags until the first stable release moves `latest`. The verify step is `continue-on-error` while any package is still dirty; flip it to a hard gate once the guard reports clean.
 
 ## Release tag preflight
 

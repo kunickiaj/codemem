@@ -30,11 +30,14 @@ tag until this setup is complete.
 
 ## Bootstrap status
 
-`@codemem/pi-extension` is pending bootstrap: `npm view @codemem/pi-extension`
-returns E404 and no trusted-publisher configuration exists for it yet. The release
-workflow publishes it through OIDC only (no `NODE_AUTH_TOKEN`), which cannot create
-a new package — complete the bootstrap prerelease and trusted-publisher setup above
-before the first `v*` tag that includes it. Update this section once both are done.
+`@codemem/pi-extension@0.0.0-alpha.0` was published with the `bootstrap` tag, and
+trusted publishing is configured for `release.yml`. The package is ready for the
+first tagged release through OIDC.
+
+npm also assigned `latest` to the bootstrap version during first publication and
+rejects removing the package's only `latest` tag. Install prereleases through their
+explicit channel tag; the first stable release will move `latest` to the stable
+version.
 
 ## GitHub workflow behavior
 
