@@ -20,8 +20,15 @@ Identical controls are idempotent; transaction rollback removes both newly creat
 
 ## Incremental enforcement
 
-Incremental apply skips retired-scope memory mutations before clock comparison, including absent rows and higher-clock replay; existing batch authorization preflight still runs first.
-The peer operation loader and outbound filter remove retired-scope operations before parsing content, including old full-content reassignment operations and deletes.
+Incremental apply skips retired-scope memory mutations before clock comparison, including absent rows and higher-clock replay.
+For identities with retirement history, missing/blank envelope scopes and contradictory payload or metadata scopes are skipped even when optional membership validation is disabled.
+These operations are excluded from membership preflight and checked again in the apply transaction, without recording the rejected content or changing clocks.
+
+The peer operation loader and outbound filter use the same guard, including for deletes, reassignment sides, and legacy cleanup targets.
+Reassignment validates the envelope against its declared side; a retired old scope is legitimate on a valid unretired destination-side operation.
+Newly generated reassignment content stamps the destination into metadata as well as the payload so stale metadata cannot contradict the envelope.
+
+Unrelated identities retain their existing legacy behavior, while valid unretired destination operations remain eligible for normal authorization checks.
 Filtering still advances content cursors; it does not deliver retirement controls or prove that an offline recipient has cleaned up.
 
 Local reassignment rejects a destination that the same identity previously retired.

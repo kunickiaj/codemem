@@ -13,7 +13,11 @@ import { and, desc, eq, gt, isNotNull, isNull, like, or, sql } from "drizzle-orm
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { fromJson, fromJsonStrict, toJson, toJsonNullable } from "./db.js";
-import { assertMemoryScopeNotRetired, isMemoryScopeRetired } from "./memory-scope-retirement.js";
+import {
+	assertMemoryScopeNotRetired,
+	hasMemoryScopeRetirement,
+	isMemoryScopeRetired,
+} from "./memory-scope-retirement.js";
 import { readCodememConfigFile } from "./observer-config.js";
 import { projectBasename } from "./project.js";
 import { getAnyRecipientPolicyDenyOverlayForScopeDevice } from "./recipient-policy-reconciliation.js";
@@ -1045,7 +1049,7 @@ export function recordScopeReassignment(
 	const revision = Number(existing.rev ?? 0) + 1;
 	const createdAt = opts.createdAt ?? new Date().toISOString();
 	const metadata = fromJson(existing.metadata_json);
-	metadata.clock_device_id = deviceId;
+	Object.assign(metadata, { clock_device_id: deviceId, scope_id: newScopeId });
 	metadata.last_scope_reassignment = {
 		operation_id: operationId,
 		old_scope_id: oldScopeId,
@@ -1311,7 +1315,7 @@ export function loadReplicationOpsForPeer(
 	);
 	const peerBoundaryOps = ops.filter((op) => {
 		if (op.entity_type !== "memory_item") return true;
-		if (isMemoryScopeRetired(db, op.entity_id, cleanText(op.scope_id))) return false;
+		if (retirementBlocksMemoryOp(db, op)) return false;
 		if (op.op_type === ACCESS_CLEANUP_OP_TYPE || op.op_type === REASSIGN_SCOPE_OP_TYPE) {
 			return true;
 		}
@@ -2300,10 +2304,7 @@ export function filterReplicationOpsForSyncWithStatus(
 	const skipped = { count: 0, first: null as FilterReplicationSkipped | null };
 	const applyScopeFilter = options.applyScopeFilter !== false;
 	for (const op of ops) {
-		if (
-			op.entity_type === "memory_item" &&
-			isMemoryScopeRetired(db, op.entity_id, cleanText(op.scope_id))
-		) {
+		if (retirementBlocksMemoryOp(db, op)) {
 			addSkipped(skipped, op, { reason: "scope_filter", scope_id: cleanText(op.scope_id) });
 			nextCursor = computeCursor(op.created_at, op.op_id);
 			continue;
@@ -2448,10 +2449,42 @@ export function filterReplicationOpsForSync(
 
 function skipOwnOrRetiredMemoryOp(db: Database, op: ReplicationOp, localDeviceId: string): boolean {
 	if (op.device_id === localDeviceId) return true;
-	return (
-		op.entity_type === "memory_item" &&
-		isMemoryScopeRetired(db, op.entity_id, cleanText(op.scope_id))
-	);
+	return retirementBlocksMemoryOp(db, op);
+}
+
+function retirementPayloadContradictsScope(
+	op: ReplicationOp,
+	scopeId: string,
+	payload: Record<string, unknown> | null,
+): boolean {
+	const scopes = [payload?.scope_id, metadataRecord(payload).scope_id];
+	if (op.op_type === ACCESS_CLEANUP_OP_TYPE) {
+		const cleanupScope = cleanText(payload?.cleanup_scope_id ?? payload?.scope_id);
+		if (!cleanupScope) return true;
+		if (scopeId !== DEFAULT_SYNC_SCOPE_ID && scopeId !== cleanupScope) return true;
+		return scopes.some((value) => value != null && cleanText(value) !== cleanupScope);
+	}
+	return scopes.some((value) => value != null && cleanText(value) !== scopeId);
+}
+
+/** History makes missing/contradictory scope unsafe even without optional membership validation. */
+function retirementBlocksMemoryOp(db: Database, op: ReplicationOp): boolean {
+	if (op.entity_type !== "memory_item" || !hasMemoryScopeRetirement(db, op.entity_id)) return false;
+	const scopeId = cleanText(op.scope_id);
+	if (!scopeId || isMemoryScopeRetired(db, op.entity_id, scopeId)) return true;
+	const payload = parsePayload(op.payload_json);
+	if (op.payload_json != null && !payload) return true;
+	if (retirementPayloadContradictsScope(op, scopeId, payload)) return true;
+	if (op.op_type === ACCESS_CLEANUP_OP_TYPE) {
+		return isMemoryScopeRetired(db, op.entity_id, parseAccessCleanupPayload(op).cleanup_scope_id);
+	}
+	if (op.op_type !== REASSIGN_SCOPE_OP_TYPE) return false;
+	try {
+		const reassignment = parseReassignScopePayload(op);
+		return isMemoryScopeRetired(db, op.entity_id, reassignment.new_scope_id);
+	} catch {
+		return true;
+	}
 }
 
 export interface ApplyResult {
@@ -3474,6 +3507,18 @@ function buildPayloadFromMemoryRow(row: MemoryItemRow): MemoryPayload {
  * - For delete: soft-deletes (active=0, deleted_at) by import_key
  * - Records the applied op in replication_ops
  */
+function rejectUnretiredScopeFailures(
+	db: Database,
+	ops: ReplicationOp[],
+	localDeviceId: string,
+	options: InboundScopeValidationOptions,
+): ApplyResult | null {
+	const eligible = ops.filter((op) => !retirementBlocksMemoryOp(db, op));
+	const rejected = rejectInboundScopeFailures(db, eligible, localDeviceId, options);
+	if (rejected) rejected.skipped += ops.length - eligible.length;
+	return rejected;
+}
+
 export function applyReplicationOps(
 	db: Database,
 	ops: ReplicationOp[],
@@ -3490,7 +3535,7 @@ export function applyReplicationOps(
 	const result: ApplyResult = emptyApplyResult();
 	const inboundScopeValidation = options.inboundScopeValidation;
 	if (inboundScopeValidation) {
-		const rejected = rejectInboundScopeFailures(db, ops, localDeviceId, inboundScopeValidation);
+		const rejected = rejectUnretiredScopeFailures(db, ops, localDeviceId, inboundScopeValidation);
 		if (rejected) return rejected;
 	}
 	const upsertMemoryIds = new Set<number>();

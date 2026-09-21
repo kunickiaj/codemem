@@ -34,6 +34,185 @@ beforeEach(() => {
 });
 afterEach(() => db.close());
 
+it.each([false, true])(
+	"rejects ambiguous history-scoped operations without writes (membership validation %s)",
+	(validate) => {
+		const original = queued();
+		db.transaction(() => retire())();
+		db.prepare("DELETE FROM replication_ops").run();
+		const payload = JSON.parse(original.payload_json ?? "{}");
+		const cases = [
+			{ scope: null, payload: { ...payload, scope_id: null } },
+			{ scope: "", payload: { ...payload, scope_id: "" } },
+			{ scope: "  ", payload: { ...payload, scope_id: "new" } },
+			{ scope: "new", payload: { ...payload, scope_id: "old" } },
+			{
+				scope: "new",
+				payload: { ...payload, scope_id: "new", metadata_json: { scope_id: "old" } },
+			},
+		];
+		for (const erased of [false, true]) {
+			if (erased) db.prepare("DELETE FROM memory_items").run();
+			for (const opType of ["upsert", "delete"]) {
+				for (const test of cases) {
+					const op = {
+						...original,
+						op_id: "ambiguous",
+						scope_id: test.scope,
+						op_type: opType,
+						clock_rev: 99999,
+						payload_json: JSON.stringify(test.payload),
+					};
+					const before = db.serialize();
+					const result = applyReplicationOps(
+						db,
+						[op],
+						"receiver",
+						undefined,
+						validate ? { inboundScopeValidation: { enabled: true, peerDeviceId: "source" } } : {},
+					);
+					expect(result).toMatchObject({
+						applied: 0,
+						skipped: 1,
+						rejected: 0,
+						conflicts: 0,
+						errors: [],
+					});
+					expect(db.serialize().equals(before)).toBe(true);
+					const filtered = filterReplicationOpsForSyncWithStatus(db, [op], "peer", {
+						applyScopeFilter: false,
+						supportsReassignScope: true,
+					});
+					expect(filtered[0]).toEqual([]);
+					expect(filtered[2]?.skipped_count).toBe(1);
+				}
+			}
+			for (const scope of [null, ""]) {
+				const before = db.serialize();
+				const result = applyReplicationOps(
+					db,
+					[
+						{
+							...original,
+							op_id: "payload-free-delete",
+							op_type: "delete",
+							scope_id: scope,
+							clock_rev: 99999,
+							payload_json: null,
+						},
+					],
+					"receiver",
+				);
+				expect(result.skipped).toBe(1);
+				expect(db.serialize().equals(before)).toBe(true);
+			}
+		}
+	},
+);
+
+it("preserves unrelated unscoped legacy apply and valid destination mutations", () => {
+	const original = queued();
+	db.transaction(() => retire())();
+	db.prepare("DELETE FROM replication_ops").run();
+	const payload = JSON.parse(original.payload_json ?? "{}");
+	const legacy = {
+		...original,
+		op_id: "legacy-unrelated",
+		entity_id: "legacy-unrelated",
+		scope_id: null,
+		clock_rev: 99999,
+		payload_json: JSON.stringify({ ...payload, import_key: "legacy-unrelated", scope_id: null }),
+	};
+	expect(applyReplicationOps(db, [legacy], "receiver").applied).toBe(1);
+	grantScope("new", ["source", "receiver"]);
+	const destination = {
+		...original,
+		op_id: "destination",
+		scope_id: "new",
+		clock_rev: 99999,
+		payload_json: JSON.stringify({
+			...payload,
+			scope_id: "new",
+			metadata_json: { scope_id: "new" },
+		}),
+	};
+	expect(
+		applyReplicationOps(db, [destination], "receiver", undefined, {
+			inboundScopeValidation: { enabled: true, peerDeviceId: "source" },
+		}).applied,
+	).toBe(1);
+	expect(
+		db.prepare("SELECT scope_id FROM memory_items WHERE import_key = ?").pluck().get(qualified),
+	).toBe("new");
+});
+
+it("checks reassignment sides and cleanup targets without denying a valid destination side", () => {
+	grantScope("old", ["source", "receiver"]);
+	grantScope("new", ["source", "receiver"]);
+	db.prepare("UPDATE memory_items SET metadata_json = ?").run(JSON.stringify({ scope_id: "old" }));
+	db.transaction(() => {
+		retire();
+		recordScopeReassignment(db, {
+			operationId: "guarded-move",
+			memoryId,
+			oldScopeId: "old",
+			newScopeId: "new",
+			deviceId: "source",
+			createdAt: now,
+		});
+	})();
+	const destination = db
+		.prepare("SELECT * FROM replication_ops WHERE scope_id = 'new'")
+		.get() as ReplicationOp;
+	const payload = JSON.parse(destination.payload_json ?? "{}");
+	expect(payload.metadata_json.scope_id).toBe("new");
+	db.prepare("DELETE FROM memory_items").run();
+	db.prepare("DELETE FROM replication_ops").run();
+	const invalid = [
+		{ ...destination, scope_id: null },
+		{ ...destination, scope_id: "" },
+		{ ...destination, payload_json: JSON.stringify({ ...payload, side: "old" }) },
+		{
+			...destination,
+			payload_json: JSON.stringify({ ...payload, metadata_json: { scope_id: "old" } }),
+		},
+		{
+			...destination,
+			op_type: "access_cleanup",
+			scope_id: "local-default",
+			payload_json: JSON.stringify({ cleanup_scope_id: "old" }),
+		},
+		{
+			...destination,
+			op_type: "access_cleanup",
+			scope_id: "new",
+			payload_json: JSON.stringify({ cleanup_scope_id: "different" }),
+		},
+	];
+	for (const op of invalid) {
+		const before = db.serialize();
+		expect(applyReplicationOps(db, [op], "receiver").skipped).toBe(1);
+		expect(db.serialize().equals(before)).toBe(true);
+		expect(
+			filterReplicationOpsForSyncWithStatus(db, [op], "receiver", {
+				applyScopeFilter: false,
+				supportsReassignScope: true,
+			})[0],
+		).toEqual([]);
+	}
+	expect(
+		filterReplicationOpsForSyncWithStatus(db, [destination], "receiver", {
+			supportsReassignScope: true,
+			localDeviceId: "source",
+		})[0],
+	).toHaveLength(1);
+	expect(
+		applyReplicationOps(db, [destination], "receiver", undefined, {
+			inboundScopeValidation: { enabled: true, peerDeviceId: "source" },
+		}).applied,
+	).toBe(1);
+});
+
 function retire(input = retirement, sender = "source") {
 	recordMemoryScopeRetirement(db, input, { authenticatedSourceDeviceId: sender, now });
 }

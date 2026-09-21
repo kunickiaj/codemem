@@ -65,6 +65,12 @@ export function assertMemoryScopeNotRetired(db: Database, entityId: string, scop
 	if (isMemoryScopeRetired(db, entityId, scopeId)) throw new Error("memory_scope_retired");
 }
 
+export function hasMemoryScopeRetirement(db: Database, entityId: string): boolean {
+	return Boolean(
+		db.prepare("SELECT 1 FROM memory_scope_retirements WHERE entity_id = ? LIMIT 1").get(entityId),
+	);
+}
+
 /**
  * Caller MUST supply a successfully authenticated transport device identity (or the
  * actual local device for a local move), never an op sender, payload origin or form field.
