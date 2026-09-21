@@ -11,8 +11,14 @@ import {
 } from "./memory-ownership-recovery.js";
 import { getVerifiedMemorySource } from "./memory-source-identity.js";
 import { MemoryStore } from "./store.js";
-import { getSyncResetState, loadMemorySnapshotPageForPeer } from "./sync-replication.js";
+import {
+	backfillReplicationOps,
+	getSyncResetState,
+	loadMemorySnapshotPageForPeer,
+	loadReplicationOpsForPeer,
+} from "./sync-replication.js";
 import { initTestSchema } from "./test-utils.js";
+import * as vectors from "./vectors.js";
 
 let store: MemoryStore;
 let directory: string;
@@ -28,9 +34,12 @@ beforeEach(() => {
 	vi.stubEnv("CODEMEM_DEVICE_ID", "fixture-device");
 	db.close();
 	store = new MemoryStore(join(directory, "test.sqlite"));
+	vi.spyOn(vectors, "storeVectors").mockResolvedValue(undefined);
 });
-afterEach(() => {
+afterEach(async () => {
+	await store.flushPendingVectorWrites();
 	store.close();
+	vi.restoreAllMocks();
 	vi.unstubAllEnvs();
 	rmSync(directory, { recursive: true, force: true });
 });
@@ -74,7 +83,20 @@ it("recovers unavailable-source peer content as new local copies while retaining
 	);
 	expect(store.db.prepare("SELECT * FROM memory_items WHERE id = ?").get(id)).toEqual(original);
 	expect(count("replication_ops")).toBe(0);
+	expect(backfillReplicationOps(store.db)).toBeGreaterThan(0);
+	expect(count("replication_ops")).toBeGreaterThan(0);
 	const boundary = getSyncResetState(store.db, "local-default");
+	const exported = loadReplicationOpsForPeer(store.db, {
+		since: null,
+		deviceId: store.deviceId,
+		scopeId: "local-default",
+		generation: boundary.generation,
+		snapshotId: boundary.snapshot_id,
+		baselineCursor: boundary.baseline_cursor,
+	});
+	expect(exported.reset_required).toBe(false);
+	if (exported.reset_required) throw new Error("unexpected reset");
+	expect(exported.ops).toEqual([]);
 	expect(
 		loadMemorySnapshotPageForPeer(store.db, {
 			generation: boundary.generation,
@@ -150,6 +172,9 @@ it("rejects stale reviewed content and identity changes", () => {
 
 it("rolls back copies, identities, sessions and receipts together after a write failure", () => {
 	const ids = [memory(), memory()];
+	store.db
+		.prepare("UPDATE memory_items SET files_read = ?, concepts = ?")
+		.run('["src/rollback.ts"]', '["rollback"]');
 	const input = confirmed(ids);
 	store.db.exec(
 		"CREATE TRIGGER fail_receipt BEFORE INSERT ON memory_ownership_recoveries BEGIN SELECT RAISE(ABORT, 'fixture_crash'); END;",
@@ -159,8 +184,77 @@ it("rolls back copies, identities, sessions and receipts together after a write 
 	expect(count("sessions")).toBe(2);
 	expect(count("memory_source_bindings")).toBe(0);
 	expect(count("memory_ownership_recoveries")).toBe(0);
+	expect(count("memory_file_refs")).toBe(0);
+	expect(count("memory_concept_refs")).toBe(0);
+	expect(vectors.storeVectors).not.toHaveBeenCalled();
 	store.db.exec("DROP TRIGGER fail_receipt");
 	expect(commitMemoryOwnershipRecovery(store, input).copies).toHaveLength(2);
+});
+
+it("indexes redacted copied refs for file and concept retrieval", () => {
+	const id = memory();
+	store.db
+		.prepare(
+			"UPDATE memory_items SET files_read = ?, files_modified = ?, concepts = ? WHERE id = ?",
+		)
+		.run('["src/old.ts"]', '["src/modified.ts"]', '["Old Concept"]', id);
+	const redact = store.scanner.redactValue.bind(store.scanner);
+	vi.spyOn(store.scanner, "redactValue").mockImplementation((value) => {
+		const result = redact(value);
+		if (result.value && typeof result.value === "object" && "files_read" in result.value) {
+			Object.assign(result.value, {
+				files_read: '["src/redacted.ts"]',
+				concepts: '["Redacted Concept"]',
+			});
+		}
+		return result;
+	});
+	const result = commitMemoryOwnershipRecovery(store, confirmed([id]));
+	const copy = result.copies[0]?.recoveredMemoryId;
+	expect(store.findByFile("src/redacted.ts").map((row) => row.id)).toContain(copy);
+	expect(store.findByFile("src/modified.ts").map((row) => row.id)).toContain(copy);
+	expect(store.findByConcept("redacted concept").map((row) => row.id)).toContain(copy);
+	expect(store.findByFile("src/old.ts").map((row) => row.id)).not.toContain(copy);
+	expect(store.findByConcept("old concept").map((row) => row.id)).not.toContain(copy);
+});
+
+it("queues embeddings after commit using stored text, drains best-effort failures and skips receipt replay", async () => {
+	const input = confirmed([memory()]);
+	const observations: unknown[] = [];
+	const write = vi.mocked(vectors.storeVectors).mockImplementation(async (db, id, title, body) => {
+		observations.push({
+			inTransaction: db.inTransaction,
+			receipts: count("memory_ownership_recoveries"),
+			row: db.prepare("SELECT title, body_text FROM memory_items WHERE id = ?").get(id),
+			title,
+			body,
+		});
+		throw new Error("embedding runtime unavailable");
+	});
+	const result = commitMemoryOwnershipRecovery(store, input);
+	expect(observations).toEqual([
+		{
+			inTransaction: false,
+			receipts: 1,
+			row: { title: "Fixture title", body_text: "Fixture body" },
+			title: "Fixture title",
+			body: "Fixture body",
+		},
+	]);
+	expect(write).toHaveBeenCalledTimes(1);
+	expect(write.mock.calls[0]?.[1]).toBe(result.copies[0]?.recoveredMemoryId);
+	await expect(store.flushPendingVectorWrites()).resolves.toBeUndefined();
+	expect(commitMemoryOwnershipRecovery(store, input).idempotent).toBe(true);
+	expect(write).toHaveBeenCalledTimes(1);
+});
+
+it("rejects an outer transaction before creating copies or scheduling embeddings", () => {
+	const input = confirmed([memory()]);
+	expect(() => store.db.transaction(() => commitMemoryOwnershipRecovery(store, input))()).toThrow(
+		"ownership_outer_transaction_not_supported",
+	);
+	expect(count("memory_items")).toBe(1);
+	expect(vectors.storeVectors).not.toHaveBeenCalled();
 });
 
 it("rechecks permission on retry and rejects operation id reuse with another request", () => {

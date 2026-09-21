@@ -42,7 +42,12 @@ New source bindings prove only who created the recovered copy, not who created i
 
 Commit acquires an immediate SQLite transaction, rechecks access and identity, and rejects changed content or evidence with `ownership_preview_stale`.
 Copies, source bindings, new sessions, and the receipt commit together; a failed write rolls them all back.
+File and concept lookup refs are populated from redacted copied values in that same transaction.
 No network call occurs inside this transaction.
+
+After a successful new commit, the store queues best-effort embeddings using the persisted copy text; rollback and receipt replay do not enqueue embeddings.
+Callers must invoke commit outside any existing SQLite transaction so that vector work cannot start before the outer transaction finishes.
+An embedding failure leaves the committed copy and its indexed file/concept refs intact, following the normal store creation behavior.
 
 A matching retry returns the original receipt with `idempotent: true`, after checking current access to the original selection.
 It does not recreate copies that were subsequently removed, and operation-ID reuse with another request returns `ownership_recovery_operation_conflict`.

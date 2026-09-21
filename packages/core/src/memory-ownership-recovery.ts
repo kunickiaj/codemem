@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { buildFilterClausesWithContext } from "./filters.js";
 import { allocateLocalMemorySource, getVerifiedMemorySource } from "./memory-source-identity.js";
+import { populateMemoryRefs } from "./ref-populate.js";
 import * as schema from "./schema.js";
 import type { MemoryStore } from "./store.js";
 
@@ -177,14 +178,25 @@ function commitRequest(value: unknown) {
 	return { input, operationId: body.operationId, reviewedDigest: body.reviewedDigest };
 }
 
-function copyRow(store: MemoryStore, original: Row, operationId: string, now: string) {
-	const binding = allocateLocalMemorySource(store.db);
-	const session = store.db
-		.prepare(`INSERT INTO sessions(started_at, project, tool_version, metadata_json)
-		VALUES (?, ?, 'memory_recovery', ?)`)
-		.run(now, original.project, JSON.stringify({ recovery_operation_id: operationId }));
-	const metadata = {
-		import_key: binding.entityId,
+function refValues(value: string | null): string[] | null {
+	if (!value) return null;
+	try {
+		const parsed: unknown = JSON.parse(value);
+		if (!Array.isArray(parsed)) return null;
+		return parsed.filter((item): item is string => typeof item === "string");
+	} catch {
+		return null;
+	}
+}
+
+function recoveredMetadata(
+	store: MemoryStore,
+	original: Row,
+	operationId: string,
+	entityId: string,
+) {
+	return {
+		import_key: entityId,
 		actor_id: store.actorId,
 		origin_device_id: store.deviceId,
 		clock_device_id: store.deviceId,
@@ -203,6 +215,15 @@ function copyRow(store: MemoryStore, original: Row, operationId: string, now: st
 			source_verification: "not_asserted",
 		},
 	};
+}
+
+function copyRow(store: MemoryStore, original: Row, operationId: string, now: string) {
+	const binding = allocateLocalMemorySource(store.db);
+	const session = store.db
+		.prepare(`INSERT INTO sessions(started_at, project, tool_version, metadata_json)
+		VALUES (?, ?, 'memory_recovery', ?)`)
+		.run(now, original.project, JSON.stringify({ recovery_operation_id: operationId }));
+	const metadata = recoveredMetadata(store, original, operationId, binding.entityId);
 	const { id: _id, ...content } = original;
 	const scanned = store.scanner.redactValue(content).value as typeof content;
 	const inserted = drizzle(store.db)
@@ -227,6 +248,13 @@ function copyRow(store: MemoryStore, original: Row, operationId: string, now: st
 		})
 		.returning({ id: schema.memoryItems.id })
 		.get();
+	populateMemoryRefs(
+		store.db,
+		inserted.id,
+		refValues(scanned.files_read),
+		refValues(scanned.files_modified),
+		refValues(scanned.concepts),
+	);
 	return {
 		originalMemoryId: original.id,
 		recoveredMemoryId: inserted.id,
@@ -245,8 +273,9 @@ type RecoveryResult = {
 };
 
 export function commitMemoryOwnershipRecovery(store: MemoryStore, value: unknown): RecoveryResult {
+	if (store.db.inTransaction) fail("ownership_outer_transaction_not_supported", 409);
 	const { input, operationId, reviewedDigest } = commitRequest(value);
-	return store.db
+	const committed = store.db
 		.transaction(() => {
 			// Recheck access even on retries; a receipt is not a bypass for revoked read authority.
 			const current = previewState(store, input);
@@ -290,4 +319,14 @@ export function commitMemoryOwnershipRecovery(store: MemoryStore, value: unknown
 			return result;
 		})
 		.immediate();
+	if (!committed.idempotent) scheduleRecoveredVectors(store, committed);
+	return committed;
+}
+
+function scheduleRecoveredVectors(store: MemoryStore, result: RecoveryResult): void {
+	const query = store.db.prepare("SELECT title, body_text FROM memory_items WHERE id = ?");
+	for (const copy of result.copies) {
+		const row = query.get(copy.recoveredMemoryId) as { title: string; body_text: string };
+		store.enqueueVectorWrite(copy.recoveredMemoryId, row.title, row.body_text);
+	}
 }
