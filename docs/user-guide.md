@@ -2,18 +2,11 @@
 
 ## Explore the viewer
 
-The Feed shows captured memories with full titles and the complete selected Summary, Facts, or Narrative open by default. Select a title to collapse or reopen its content and supplemental provenance; use search to narrow the list.
+The Feed shows captured memories in the same order used when packing context: the full title, narrative, then every fact. Cards open by default; use **Collapse memory** or **Expand memory** to hide or reveal content and supplemental provenance, and use search to narrow the list.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/docs-feed-dark.png">
   <img alt="Feed showing captured memories" src="images/docs-feed-light.png">
-</picture>
-
-Select **Facts** on a memory to review its extracted facts without leaving the Feed.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="images/docs-memory-facts-dark.png">
-  <img alt="Extracted facts for a memory in the Feed" src="images/docs-memory-facts.png">
 </picture>
 
 Optionally, use **Projects** to review project-level information. This example uses synthetic fixture data: its two Sharing review findings are informational, show no recipients, and do not show a successful sharing or sync flow.

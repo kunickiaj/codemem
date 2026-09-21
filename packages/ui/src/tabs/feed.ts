@@ -97,15 +97,12 @@ export function removeFeedItem(memoryId: number) {
 	}
 	for (const key of removedKeys) {
 		state.newItemKeys.delete(key);
-		state.itemViewState.delete(key);
 		state.itemExpandState.delete(key);
 		for (const expandKey of Array.from(state.itemExpandState.keys())) {
 			if (expandKey.startsWith(`${key}:`)) state.itemExpandState.delete(expandKey);
 		}
 	}
 }
-
-export { observationViewData } from "./feed/data/observation-view";
 
 import { FeedTabView } from "./feed/components/FeedTabView";
 import type { FeedViewOps } from "./feed/types";

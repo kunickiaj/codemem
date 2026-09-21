@@ -59,18 +59,15 @@ type FeedPageOptions = { limit?: number; offset?: number; scope?: string; q?: st
 
 describe("Feed disclosure persistence", () => {
 	afterEach(() => {
-		state.itemViewState.delete("change:7");
-		state.itemExpandState.delete("change:7:facts");
+		state.itemExpandState.delete("change:7");
 	});
 
 	it("preserves per-item disclosure when project, filter, or pagination state resets", () => {
-		state.itemViewState.set("change:7", "facts");
-		state.itemExpandState.set("change:7:facts", true);
+		state.itemExpandState.set("change:7", false);
 
 		__feedSearchTestHooks.resetPagination("another-project");
 
-		expect(state.itemViewState.get("change:7")).toBe("facts");
-		expect(state.itemExpandState.get("change:7:facts")).toBe(true);
+		expect(state.itemExpandState.get("change:7")).toBe(false);
 	});
 });
 

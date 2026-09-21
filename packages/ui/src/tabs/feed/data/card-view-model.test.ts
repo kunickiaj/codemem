@@ -1,12 +1,8 @@
 import { describe, expect, it } from "vitest";
-import {
-	buildFeedCardViewModel,
-	hiddenSearchMatch,
-	preferredAvailableMode,
-} from "./card-view-model";
+import { buildFeedCardViewModel, hiddenSearchMatch } from "./card-view-model";
 
 describe("feed card view model", () => {
-	it("builds the compact observation skim and all distinct modes", () => {
+	it("composes structured content in pack order without rendering legacy body text", () => {
 		const model = buildFeedCardViewModel({
 			body_text: "Longer legacy detail.",
 			facts: ["Retry storage is idempotent"],
@@ -16,12 +12,19 @@ describe("feed card view model", () => {
 			title: "Reject duplicate commands",
 		});
 
-		expect(model.skimSummary).toBe("Retries reuse the existing record");
-		expect(model.modes.map(({ id }) => id)).toEqual(["summary", "facts", "narrative"]);
+		expect(model.content).toEqual({
+			body: "",
+			facts: ["Retry storage is idempotent"],
+			narrative: "Longer narrative explaining the retry behavior.",
+			searchText: "Longer narrative explaining the retry behavior.\nRetry storage is idempotent",
+		});
+		expect(model.searchOnlyText).toContain("Longer legacy detail.");
+		expect(model.searchOnlyText).toContain("Retries reuse the existing record");
 	});
 
-	it("uses session outcomes before request and removes a duplicate request from facts", () => {
+	it("uses the stored title and structured fields for session summaries", () => {
 		const model = buildFeedCardViewModel({
+			facts: ["Retries can arrive after the first response"],
 			kind: "session_summary",
 			narrative: "The session delivered retry-safe watering without duplicate commands.",
 			summary: {
@@ -32,88 +35,34 @@ describe("feed card view model", () => {
 			title: "Stored session title",
 		});
 
-		expect(model.displayTitle).toBe("Add retry-safe watering");
-		expect(model.skimSummary).toBe("Completed idempotency storage and retry tests");
-		expect(model.modes.map(({ id }) => id)).toEqual(["summary", "facts", "narrative"]);
-		const facts = model.modes.find(({ id }) => id === "facts");
-		expect(facts?.searchText).not.toContain("Add retry-safe watering");
-		expect(facts?.searchText).toContain("Retries can arrive");
-		expect(facts?.searchText).toContain("Learned");
+		expect(model.displayTitle).toBe("Stored session title");
+		expect(model.content.narrative).toContain("retry-safe watering");
+		expect(model.content.facts).toEqual(["Retries can arrive after the first response"]);
+		expect(model.searchOnlyText).toContain("Add retry-safe watering");
+		expect(model.searchOnlyText).toContain("Completed idempotency storage and retry tests");
 	});
 
-	it("uses a supported outcome when the request duplicates the title", () => {
-		const model = buildFeedCardViewModel({
-			kind: "session_summary",
-			summary: {
-				request: "Repair the watering controller",
-				outcome: "The controller now rejects duplicate commands",
-			},
-			title: "Stored title",
-		});
-
-		expect(model.displayTitle).toBe("Repair the watering controller");
-		expect(model.skimSummary).toBe("The controller now rejects duplicate commands");
-		expect(model.modes.map(({ id }) => id)).toContain("summary");
-	});
-
-	it("uses a later outcome line when its first line duplicates the title", () => {
-		const model = buildFeedCardViewModel({
-			kind: "session_summary",
-			summary: {
-				request: "Deploy release",
-				completed: "Deploy release\nFixed the migration",
-			},
-			title: "Stored title",
-		});
-
-		expect(model.displayTitle).toBe("Deploy release");
-		expect(model.skimSummary).toBe("Fixed the migration");
-	});
-
-	it("uses a supported plan when no completed outcome is available", () => {
-		const model = buildFeedCardViewModel({
-			kind: "session_summary",
-			summary: {
-				request: "Repair the watering controller",
-				plan: "Add a bounded retry before the next release",
-			},
-			title: "Stored title",
-		});
-
-		expect(model.displayTitle).toBe("Repair the watering controller");
-		expect(model.skimSummary).toBe("Add a bounded retry before the next release");
-	});
-
-	it("keeps the full legacy session body in expanded Summary", () => {
-		const model = buildFeedCardViewModel({
-			body_text: "First result line\nSecond result line",
-			kind: "session_summary",
-			title: "Legacy session",
-		});
-
-		expect(model.skimSummary).toBe("First result line");
-		expect(model.modes.find(({ id }) => id === "summary")?.searchText).toContain(
-			"Second result line",
-		);
-	});
-
-	it("keeps legacy body text as summary detail without inventing unavailable modes", () => {
+	it("falls back to body text only when structured fields are absent", () => {
 		const model = buildFeedCardViewModel({
 			body_text: "Legacy detail remains readable",
 			kind: "discovery",
 			title: "Legacy record",
 		});
 
-		expect(model.skimSummary).toBe("Legacy detail remains readable");
-		expect(model.modes.map(({ id }) => id)).toEqual(["summary", "facts"]);
+		expect(model.content).toEqual({
+			body: "Legacy detail remains readable",
+			facts: [],
+			narrative: "",
+			searchText: "Legacy detail remains readable",
+		});
 	});
 
-	it("falls back by Summary, Facts, Narrative without changing the preferred value", () => {
+	it("keeps only string facts, matching pack serialization", () => {
 		const model = buildFeedCardViewModel({
-			body_text: "Legacy detail remains readable",
-			title: "Legacy",
+			facts: ["Stored fact", 42, null],
+			title: "Mixed facts",
 		});
-		expect(preferredAvailableMode(model.modes, "narrative")).toBe("summary");
+		expect(model.content.facts).toEqual(["Stored fact"]);
 	});
 
 	it("explains a search match found only in hidden detail", () => {
@@ -124,10 +73,9 @@ describe("feed card view model", () => {
 		});
 
 		expect(hiddenSearchMatch(model, "coordinator")).toMatchObject({
-			label: "Facts",
-			mode: "facts",
+			label: "Content",
 		});
-		expect(hiddenSearchMatch(model, "Visible")).toBeNull();
+		expect(hiddenSearchMatch(model, "Visible")).toMatchObject({ label: "Body" });
 	});
 
 	it("explains a match found only in indexed legacy body text", () => {
@@ -141,13 +89,21 @@ describe("feed card view model", () => {
 
 		expect(hiddenSearchMatch(model, "orchard")).toMatchObject({
 			label: "Body",
-			mode: null,
 		});
+	});
+
+	it("explains a match found only in a metadata narrative", () => {
+		const model = buildFeedCardViewModel({
+			metadata_json: { narrative: "Metadata-only orchard detail" },
+			title: "Imported memory",
+		});
+
+		expect(hiddenSearchMatch(model, "orchard")).toMatchObject({ label: "Body" });
 	});
 });
 
 describe("session card generated body fallbacks", () => {
-	it("does not expose generated request headings as session content", () => {
+	it("keeps generated body text when that is what the pack falls back to", () => {
 		const model = buildFeedCardViewModel({
 			body_text: "## Request\nRepair the watering controller",
 			kind: "session_summary",
@@ -155,20 +111,8 @@ describe("session card generated body fallbacks", () => {
 			title: "Stored title",
 		});
 
-		expect(model.displayTitle).toBe("Repair the watering controller");
-		expect(model.skimSummary).toBe("");
-		expect(model.modes).toEqual([]);
-	});
-
-	it("does not expose multiline generated Facts as a Narrative", () => {
-		const model = buildFeedCardViewModel({
-			body_text: "## Completed\n- Fixed migration\n- Added tests",
-			kind: "session_summary",
-			summary: { completed: "Fixed migration\nAdded tests" },
-			title: "Migration work",
-		});
-
-		expect(model.modes.map((mode) => mode.id)).not.toContain("narrative");
+		expect(model.displayTitle).toBe("Stored title");
+		expect(model.content.body).toBe("## Request\nRepair the watering controller");
 	});
 
 	it("keeps unmatched imported body text available to search", () => {
@@ -193,30 +137,14 @@ describe("session card generated body fallbacks", () => {
 		});
 
 		expect(hiddenSearchMatch(model, "subtitle")).toMatchObject({ label: "Body" });
-		expect(hiddenSearchMatch(model, "orchard")).toMatchObject({ label: "Body" });
+		expect(hiddenSearchMatch(model, "orchard")).toMatchObject({ label: "Content" });
 		expect(hiddenSearchMatch(model, "handoff")).toMatchObject({ label: "Body" });
 	});
 });
 
-describe("feed card clipped search matches", () => {
-	it("explains a title or skim match beyond the visible compact prefix", () => {
-		const prefix =
-			"A compact result with enough leading context to be clipped before the matching text ";
-		const titleModel = buildFeedCardViewModel({ title: `${prefix}orchard` });
-		const summaryModel = buildFeedCardViewModel({
-			subtitle: `${prefix}coordinator`,
-			title: "Memory",
-		});
-
-		expect(hiddenSearchMatch(titleModel, "orchard")).toMatchObject({ label: "Title" });
-		expect(hiddenSearchMatch(summaryModel, "coordinator")).toMatchObject({ label: "Summary" });
-	});
-
-	it("uses a narrower visible prefix at phone widths", () => {
-		const model = buildFeedCardViewModel({
-			title: "A moderately long title whose orchard match clips on a phone",
-		});
-
-		expect(hiddenSearchMatch(model, "orchard", 24)).toMatchObject({ label: "Title" });
+describe("feed card visible search matches", () => {
+	it("does not duplicate a match in the fully wrapped title", () => {
+		const model = buildFeedCardViewModel({ title: "A memory about the orchard" });
+		expect(hiddenSearchMatch(model, "orchard")).toBeNull();
 	});
 });

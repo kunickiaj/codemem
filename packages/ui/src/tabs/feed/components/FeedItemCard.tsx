@@ -1,25 +1,19 @@
-import { h, type TargetedEvent } from "preact";
+import { h } from "preact";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { Chip } from "../../../components/primitives/chip";
+import { RadixSelect } from "../../../components/primitives/radix-select";
 import { Tooltip } from "../../../components/primitives/tooltip";
 import * as api from "../../../lib/api";
 import { formatDate, formatRelativeTime } from "../../../lib/format";
 import { showGlobalNotice } from "../../../lib/notice";
-import { setPreferredFeedViewMode, state } from "../../../lib/state";
+import { state } from "../../../lib/state";
 import { openSyncConfirmDialog, openSyncInputDialog } from "../../sync/sync-dialogs";
-import {
-	renderFactsContent,
-	renderNarrativeContent,
-	renderSummarySections,
-} from "../data/body-renderers";
+import { renderFactsContent, renderNarrativeContent } from "../data/body-renderers";
 import {
 	buildFeedCardViewModel,
-	type FeedCardMode,
 	hiddenSearchMatch,
 	highlightFeedText,
 	normalizeFeedQuery,
-	preferredAvailableMode,
-	visibleSkimPrefixLength,
 } from "../data/card-view-model";
 import {
 	authorLabel,
@@ -29,9 +23,8 @@ import {
 	originSourceLabel,
 	trustStateLabel,
 } from "../data/helpers";
-import type { FeedItem, ItemViewMode } from "../types";
+import type { FeedItem } from "../types";
 import { FeedItemMenu } from "./FeedItemMenu";
-import { FeedViewToggle } from "./FeedViewToggle";
 import { ProvenanceChip } from "./ProvenanceChip";
 import { TagChip } from "./TagChip";
 
@@ -41,85 +34,6 @@ export interface FeedItemCardProps {
 	onRemove: (memoryId: number) => void;
 	onViewRefresh: () => void;
 	onReload: () => Promise<void>;
-}
-
-function renderModeContent(mode: FeedCardMode) {
-	if (mode.content.type === "facts") return renderFactsContent(mode.content.facts);
-	if (mode.content.type === "sections") {
-		return h("div", { className: "feed-body facts" }, renderSummarySections(mode.content.sections));
-	}
-	const className = mode.id === "narrative" ? "feed-body narrative" : "feed-body";
-	return renderNarrativeContent(mode.content.text, className);
-}
-
-function useSingleModeFocus(input: {
-	modeIds: ItemViewMode[];
-	focusedModeRef: { current: ItemViewMode | null };
-	cardRef: { current: HTMLElement | null };
-}) {
-	const previousModeCount = useRef(input.modeIds.length);
-	useEffect(() => {
-		const toggleDisappeared = previousModeCount.current > 1 && input.modeIds.length === 1;
-		previousModeCount.current = input.modeIds.length;
-		if (!toggleDisappeared) return;
-		const hadModeFocus = input.focusedModeRef.current !== null;
-		input.focusedModeRef.current = null;
-		if (hadModeFocus && document.activeElement === document.body) input.cardRef.current?.focus();
-	}, [input]);
-}
-
-function usePollingModeState(input: {
-	activeMode: ItemViewMode;
-	cardRef: { current: HTMLElement | null };
-	expanded: boolean;
-	focusedModeRef: { current: ItemViewMode | null };
-	hasSupplementalDetail: boolean;
-	modeIds: ItemViewMode[];
-	modes: FeedCardMode[];
-	restoreModeFocusRef: { current: boolean };
-	rowKey: string;
-	setActiveMode: (mode: ItemViewMode) => void;
-	setExpanded: (expanded: boolean) => void;
-}) {
-	useSingleModeFocus(input);
-	useEffect(() => {
-		if (input.modeIds.length === 0) {
-			const shouldRestoreCardFocus =
-				input.focusedModeRef.current === input.activeMode &&
-				document.activeElement === document.body;
-			input.restoreModeFocusRef.current = false;
-			input.focusedModeRef.current = null;
-			state.itemViewState.delete(input.rowKey);
-			if (!input.hasSupplementalDetail && input.expanded) {
-				state.itemExpandState.delete(input.rowKey);
-				input.setExpanded(false);
-			}
-			if (shouldRestoreCardFocus) queueMicrotask(() => input.cardRef.current?.focus());
-			return;
-		}
-		if (input.modeIds.includes(input.activeMode)) return;
-		input.restoreModeFocusRef.current =
-			input.focusedModeRef.current === input.activeMode && document.activeElement === document.body;
-		input.setActiveMode(preferredAvailableMode(input.modes, "summary"));
-	}, [input]);
-
-	useEffect(() => {
-		if (!input.restoreModeFocusRef.current) return;
-		const activeRadio = input.cardRef.current?.querySelector<HTMLButtonElement>(
-			'[role="radio"][aria-checked="true"]',
-		);
-		if (!activeRadio && input.modeIds.length > 1) return;
-		input.restoreModeFocusRef.current = false;
-		input.focusedModeRef.current = input.activeMode;
-		if (activeRadio) activeRadio.focus();
-		else input.cardRef.current?.focus();
-	}, [input]);
-
-	useEffect(() => {
-		if (input.modeIds.includes(input.activeMode)) {
-			state.itemViewState.set(input.rowKey, input.activeMode);
-		} else state.itemViewState.delete(input.rowKey);
-	}, [input]);
 }
 
 function renderedSearchText(node: Node): string {
@@ -141,7 +55,7 @@ function useRenderedSearchMatch(cardRef: { current: HTMLElement | null }) {
 	const [visible, setVisible] = useState(false);
 	useLayoutEffect(() => {
 		const query = normalizeFeedQuery(state.feedQuery);
-		const body = cardRef.current?.querySelector(".feed-detail .feed-body");
+		const body = cardRef.current?.querySelector(".feed-detail");
 		const text = body ? renderedSearchText(body) : "";
 		setVisible(Boolean(query && text.toLowerCase().includes(query)));
 	});
@@ -181,7 +95,8 @@ function buildFeedCardDetails(
 	const ownedBySelf = isOwnedBySelf(item);
 	const trustState = String(item.trust_state || metadata.trust_state || "").trim();
 	const workspaceKind = String(item.workspace_kind || metadata.workspace_kind || "").trim();
-	const originSource = originSourceLabel(item.origin_source || metadata.origin_source);
+	const sourceLabel = originSourceLabel(item.origin_source || metadata.origin_source);
+	const originSource = ["Observer", "Session summary"].includes(sourceLabel) ? "" : sourceLabel;
 	const device = deviceLabel(item, metadata);
 	let trustLabel = "";
 	if (!ownedBySelf && trustState !== "trusted") {
@@ -217,70 +132,35 @@ function useNewItemState(rowKey: string): boolean {
 	return isNew;
 }
 
-function useTitleFocusRecovery(cardRef: { current: HTMLElement | null }) {
-	const titleWasFocused =
-		cardRef.current?.querySelector("button.feed-title") === document.activeElement;
-	useLayoutEffect(() => {
-		if (
-			titleWasFocused &&
-			document.activeElement === document.body &&
-			!cardRef.current?.querySelector("button.feed-title")
-		) {
-			cardRef.current?.focus();
-		}
-	});
-}
-
 type FeedCardDisclosureState = {
-	activeMode: ItemViewMode;
 	cardRef: { current: HTMLElement | null };
 	expanded: boolean;
-	focusedModeRef: { current: ItemViewMode | null };
 	isNew: boolean;
-	restoreModeFocusRef: { current: boolean };
-	setActiveMode: (mode: ItemViewMode) => void;
 	setExpanded: (expanded: boolean) => void;
 };
 
-function useFeedCardDisclosureState(
-	model: ReturnType<typeof buildFeedCardViewModel>,
-	hasSupplementalDetail: boolean,
-): FeedCardDisclosureState {
-	const modeIds = model.modes.map((mode) => mode.id);
-	const storedMode = state.itemViewState.get(model.rowKey) as ItemViewMode | undefined;
-	const initialMode = preferredAvailableMode(
-		model.modes,
-		storedMode || state.preferredFeedViewMode,
-	);
-	const [activeMode, setActiveMode] = useState<ItemViewMode>(initialMode);
-	const [expanded, setExpanded] = useState(state.itemExpandState.get(model.rowKey) !== false);
+function useFeedCardDisclosureState(rowKey: string): FeedCardDisclosureState {
+	const [expanded, setExpanded] = useState(state.itemExpandState.get(rowKey) !== false);
 	const cardRef = useRef<HTMLElement | null>(null);
-	useTitleFocusRecovery(cardRef);
-	const focusedModeRef = useRef<ItemViewMode | null>(null);
-	const restoreModeFocusRef = useRef(false);
-	usePollingModeState({
-		activeMode,
-		cardRef,
-		expanded,
-		focusedModeRef,
-		hasSupplementalDetail,
-		modeIds,
-		modes: model.modes,
-		restoreModeFocusRef,
-		rowKey: model.rowKey,
-		setActiveMode,
-		setExpanded,
-	});
 	return {
-		activeMode,
 		cardRef,
 		expanded,
-		focusedModeRef,
-		isNew: useNewItemState(model.rowKey),
-		restoreModeFocusRef,
-		setActiveMode,
+		isNew: useNewItemState(rowKey),
 		setExpanded,
 	};
+}
+
+function useDisclosureFocusRecovery(
+	cardRef: { current: HTMLElement | null },
+	hasDisclosure: boolean,
+) {
+	const disclosureWasFocused =
+		cardRef.current?.querySelector(".feed-disclosure") === document.activeElement;
+	useLayoutEffect(() => {
+		if (disclosureWasFocused && !hasDisclosure && document.activeElement === document.body) {
+			cardRef.current?.focus();
+		}
+	}, [cardRef, disclosureWasFocused, hasDisclosure]);
 }
 
 type SaveVisibilityInput = {
@@ -481,13 +361,10 @@ function useFeedCardActions(input: FeedCardActionsInput): FeedCardActions {
 }
 
 type FeedCardRenderInput = {
-	activeMode: ItemViewMode;
-	activeModeData: FeedCardMode | undefined;
 	cardRef: { current: HTMLElement | null };
 	deletingMemory: boolean;
 	details: FeedCardDetails;
 	expanded: boolean;
-	focusedModeRef: { current: ItemViewMode | null };
 	hasDisclosure: boolean;
 	isNew: boolean;
 	model: ReturnType<typeof buildFeedCardViewModel>;
@@ -495,7 +372,6 @@ type FeedCardRenderInput = {
 	onForget: () => Promise<void>;
 	onMoveProject: () => Promise<void>;
 	onSaveVisibility: (visibility: "private" | "shared") => Promise<void>;
-	onSelectMode: (mode: ItemViewMode) => void;
 	onToggleDetail: () => void;
 	savingVisibility: boolean;
 	searchMatch: ReturnType<typeof hiddenSearchMatch>;
@@ -505,19 +381,11 @@ type FeedCardRenderInput = {
 };
 
 function renderFeedCardTitle(input: FeedCardRenderInput) {
-	const titleProps = {
+	return h("div", {
 		className: "feed-title title",
 		dangerouslySetInnerHTML: {
 			__html: highlightFeedText(input.model.displayTitle, state.feedQuery),
 		},
-	};
-	if (!input.hasDisclosure) return h("div", titleProps);
-	return h("button", {
-		...titleProps,
-		"aria-controls": input.details.detailId,
-		"aria-expanded": input.expanded,
-		onClick: input.onToggleDetail,
-		type: "button",
 	});
 }
 
@@ -538,7 +406,7 @@ function renderFeedSearchMatch(input: FeedCardRenderInput) {
 }
 
 function renderFeedCardMeta(input: FeedCardRenderInput) {
-	const { details, model } = input;
+	const { details } = input;
 	const memoryId =
 		details.memoryId > 0
 			? h(
@@ -553,6 +421,11 @@ function renderFeedCardMeta(input: FeedCardRenderInput) {
 		details.project
 			? h("span", { className: "feed-project" }, details.project)
 			: h("span", null, "No project"),
+		h(
+			Tooltip,
+			{ label: formatDate(details.createdAtRaw), side: "top" },
+			h("span", { className: "feed-age mono" }, details.relative),
+		),
 		h(ProvenanceChip, {
 			label: details.actor,
 			variant: details.ownedBySelf ? "mine" : "author",
@@ -563,7 +436,6 @@ function renderFeedCardMeta(input: FeedCardRenderInput) {
 		}),
 		memoryId,
 		details.trustLabel ? h(ProvenanceChip, { label: details.trustLabel, variant: "trust" }) : null,
-		model.tags.map((tag, index) => h(TagChip, { key: `${String(tag)}-${index}`, tag })),
 	);
 }
 
@@ -587,7 +459,7 @@ function renderExpandedProvenance(details: FeedCardDetails) {
 				})
 			: null,
 		details.originSource
-			? h(ProvenanceChip, { label: `From ${details.originSource}`, variant: "source" })
+			? h(ProvenanceChip, { label: details.originSource, variant: "source" })
 			: null,
 		details.device ? h(ProvenanceChip, { label: details.device, variant: "device" }) : null,
 	].filter(Boolean);
@@ -597,17 +469,27 @@ function renderExpandedProvenance(details: FeedCardDetails) {
 
 function renderFeedCardDetail(input: FeedCardRenderInput) {
 	if (!input.expanded || !input.hasDisclosure) return null;
-	const label = input.activeModeData
-		? `${input.model.displayTitle} ${input.activeModeData.label}`
-		: `${input.model.displayTitle} details`;
 	return h(
 		"section",
 		{
-			"aria-label": label,
+			"aria-label": `${input.model.displayTitle} content`,
 			className: "feed-detail",
 			id: input.details.detailId,
 		},
-		input.activeModeData ? renderModeContent(input.activeModeData) : null,
+		input.model.content.narrative
+			? renderNarrativeContent(input.model.content.narrative, "feed-body narrative")
+			: null,
+		input.model.content.body
+			? renderNarrativeContent(input.model.content.body, "feed-body narrative")
+			: null,
+		input.model.content.facts.length
+			? h(
+					"div",
+					{ className: "feed-pack-facts" },
+					h("div", { className: "feed-pack-facts-label" }, "Facts included in pack"),
+					renderFactsContent(input.model.content.facts),
+				)
+			: null,
 		renderFeedFiles(input.model.files),
 		renderExpandedProvenance(input.details),
 	);
@@ -618,42 +500,60 @@ function renderFeedCardBody(input: FeedCardRenderInput) {
 		"div",
 		{ className: "feed-card-body" },
 		renderFeedCardTitle(input),
-		!input.expanded && input.model.skimSummary
-			? h("div", {
-					className: "feed-summary",
-					dangerouslySetInnerHTML: {
-						__html: highlightFeedText(input.model.skimSummary, state.feedQuery),
-					},
-				})
+		!input.expanded && input.hasDisclosure
+			? h("div", { className: "feed-collapsed-note" }, "Memory content collapsed")
 			: null,
 		renderFeedSearchMatch(input),
 		renderFeedCardMeta(input),
 		renderFeedCardDetail(input),
+		renderFeedCardFooter(input),
 	);
 }
 
 function renderFeedVisibilityControl(input: FeedCardRenderInput) {
 	if (!input.details.ownedBySelf || input.details.memoryId <= 0) return null;
+	const selectId = `feed-visibility-${input.details.memoryId}`;
+	const options = [
+		...(input.visibilityKnown ? [] : [{ disabled: true, label: "Unknown", value: "unknown" }]),
+		{ label: "Only me", value: "private" },
+		{ label: "Synced peers", value: "shared" },
+	];
 	return h(
 		"label",
-		{ className: "feed-visibility-label" },
+		{ className: "feed-visibility-label", htmlFor: selectId },
 		h("span", null, "Visible to"),
-		h(
-			"select",
-			{
-				"aria-label": `Who can see ${input.model.displayTitle}`,
-				className: "feed-visibility-select",
-				disabled: input.savingVisibility || !input.visibilityKnown,
-				onChange: (event: TargetedEvent<HTMLSelectElement>) => {
-					const visibility = String(event.currentTarget.value) === "shared" ? "shared" : "private";
-					void input.onSaveVisibility(visibility);
-				},
-				value: input.visibilityKnown ? input.selectedVisibility : "unknown",
+		h(RadixSelect, {
+			ariaLabel: `Who can see ${input.model.displayTitle}`,
+			contentClassName: "sync-radix-select-content feed-visibility-content",
+			disabled: input.savingVisibility || !input.visibilityKnown,
+			id: selectId,
+			itemClassName: "sync-radix-select-item",
+			onValueChange: (value) => {
+				const visibility = value === "shared" ? "shared" : "private";
+				void input.onSaveVisibility(visibility);
 			},
-			!input.visibilityKnown ? h("option", { value: "unknown" }, "Unknown") : null,
-			h("option", { value: "private" }, "Only me"),
-			h("option", { value: "shared" }, "Synced peers"),
-		),
+			options,
+			triggerClassName: "sync-radix-select-trigger feed-visibility-select",
+			value: input.visibilityKnown ? input.selectedVisibility : "unknown",
+			viewportClassName: "sync-radix-select-viewport",
+		}),
+	);
+}
+
+function renderFeedCardFooter(input: FeedCardRenderInput) {
+	const visibility = renderFeedVisibilityControl(input);
+	if (!input.model.tags.length && !visibility) return null;
+	return h(
+		"footer",
+		{ className: "feed-card-footer" },
+		input.model.tags.length
+			? h(
+					"div",
+					{ "aria-label": "Tags", className: "feed-tags" },
+					input.model.tags.map((tag, index) => h(TagChip, { key: `${String(tag)}-${index}`, tag })),
+				)
+			: null,
+		visibility,
 	);
 }
 
@@ -674,26 +574,40 @@ function renderFeedCardSide(input: FeedCardRenderInput) {
 		h(
 			"div",
 			{ className: "feed-card-side-top" },
-			h(
-				Tooltip,
-				{ label: formatDate(input.details.createdAtRaw), side: "left" },
-				h("span", { className: "feed-age mono" }, input.details.relative),
-			),
+			input.hasDisclosure
+				? h(
+						"button",
+						{
+							"aria-controls": input.details.detailId,
+							"aria-expanded": input.expanded,
+							className: "feed-disclosure",
+							onClick: input.onToggleDetail,
+							type: "button",
+						},
+						h(
+							"svg",
+							{
+								"aria-hidden": "true",
+								className: "feed-disclosure-icon",
+								viewBox: "0 0 16 16",
+							},
+							h("path", {
+								d: "m3.5 6 4.5 4 4.5-4",
+								fill: "none",
+								stroke: "currentColor",
+								"stroke-linecap": "round",
+								"stroke-linejoin": "round",
+								"stroke-width": "1.7",
+							}),
+						),
+						h(
+							"span",
+							{ className: "feed-disclosure-label" },
+							input.expanded ? "Collapse memory" : "Expand memory",
+						),
+					)
+				: null,
 			menu,
-		),
-		h(
-			"div",
-			{ className: "feed-card-side-bottom" },
-			h(FeedViewToggle, {
-				active: input.activeMode,
-				ariaLabel: `View for ${input.model.displayTitle}`,
-				modes: input.model.modes,
-				onModeFocus: (mode) => {
-					input.focusedModeRef.current = mode;
-				},
-				onSelect: input.onSelectMode,
-			}),
-			renderFeedVisibilityControl(input),
 		),
 	);
 }
@@ -721,26 +635,13 @@ function renderFeedCard(input: FeedCardRenderInput) {
 	);
 }
 
-function useFeedSearchMatch(model: ReturnType<typeof buildFeedCardViewModel>, expanded: boolean) {
-	const [prefixLength, setPrefixLength] = useState(() =>
-		visibleSkimPrefixLength(globalThis.innerWidth),
-	);
-	useEffect(() => {
-		const update = () => setPrefixLength(visibleSkimPrefixLength(globalThis.innerWidth));
-		window.addEventListener("resize", update);
-		return () => window.removeEventListener("resize", update);
-	}, []);
-	// Titles wrap in full; only the optional collapsed summary can be clipped.
+function useFeedSearchMatch(model: ReturnType<typeof buildFeedCardViewModel>) {
 	if (
 		normalizeFeedQuery(state.feedQuery) &&
 		model.displayTitle.toLowerCase().includes(normalizeFeedQuery(state.feedQuery))
 	)
 		return null;
-	return hiddenSearchMatch(
-		expanded ? { ...model, skimSummary: "" } : model,
-		state.feedQuery,
-		prefixLength,
-	);
+	return hiddenSearchMatch(model, state.feedQuery);
 }
 
 function useFeedCardVisibilityState(visibility: string) {
@@ -767,8 +668,8 @@ export function FeedItemCard({
 	const model = buildFeedCardViewModel(item);
 	const metadata = mergeMetadata(item.metadata_json);
 	const details = buildFeedCardDetails(item, model, metadata);
-	const disclosure = useFeedCardDisclosureState(model, details.hasSupplementalDetail);
-	const searchMatch = useFeedSearchMatch(model, disclosure.expanded);
+	const disclosure = useFeedCardDisclosureState(model.rowKey);
+	const searchMatch = useFeedSearchMatch(model);
 	const renderedSearchMatch = useRenderedSearchMatch(disclosure.cardRef);
 	const visibility = useFeedCardVisibilityState(details.visibility);
 	const actions = useFeedCardActions({
@@ -782,13 +683,8 @@ export function FeedItemCard({
 		selectedVisibility: visibility.selectedVisibility,
 		setSelectedVisibility: visibility.setSelectedVisibility,
 	});
-	const activeModeData = model.modes.find((mode) => mode.id === disclosure.activeMode);
-	const hasDisclosure = Boolean(activeModeData || details.hasSupplementalDetail);
-	const selectMode = (mode: ItemViewMode) => {
-		state.itemViewState.set(model.rowKey, mode);
-		setPreferredFeedViewMode(mode);
-		disclosure.setActiveMode(mode);
-	};
+	const hasDisclosure = Boolean(model.content.searchText || details.hasSupplementalDetail);
+	useDisclosureFocusRecovery(disclosure.cardRef, hasDisclosure);
 	const toggleDetail = () => {
 		if (!hasDisclosure) return;
 		const nextValue = !disclosure.expanded;
@@ -796,13 +692,10 @@ export function FeedItemCard({
 		disclosure.setExpanded(nextValue);
 	};
 	return renderFeedCard({
-		activeMode: disclosure.activeMode,
-		activeModeData,
 		cardRef: disclosure.cardRef,
 		deletingMemory: actions.deletingMemory,
 		details,
 		expanded: disclosure.expanded,
-		focusedModeRef: disclosure.focusedModeRef,
 		hasDisclosure,
 		isNew: disclosure.isNew,
 		model,
@@ -810,7 +703,6 @@ export function FeedItemCard({
 		onForget: actions.forget,
 		onMoveProject: actions.moveProject,
 		onSaveVisibility: actions.saveVisibility,
-		onSelectMode: selectMode,
 		onToggleDetail: toggleDetail,
 		savingVisibility: actions.savingVisibility,
 		searchMatch,

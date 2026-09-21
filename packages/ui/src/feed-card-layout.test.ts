@@ -12,6 +12,15 @@ describe("compact feed card layout contract", () => {
 		expect(title).toContain("overflow-wrap: anywhere");
 		expect(title).not.toContain("ellipsis");
 		expect(title).not.toContain("overflow: hidden");
+		expect(css).not.toContain("button.feed-title");
+	});
+
+	it("keeps an explicit disclosure control in the fixed card action column", () => {
+		expect(css).toContain(".feed-card-side { display: flex; align-items: flex-end;");
+		expect(css).toContain(".feed-disclosure { display: inline-flex;");
+		expect(css).toContain(
+			'.feed-disclosure[aria-expanded="false"] .feed-disclosure-icon { transform: rotate(-90deg);',
+		);
 	});
 
 	it("uses the approved token-based three-column compact grid", () => {
@@ -35,6 +44,8 @@ describe("compact feed card layout contract", () => {
 	it("stacks at 755px without forcing fixed-width controls", () => {
 		const narrow = css.slice(css.indexOf("@media (max-width: 755px)"));
 		expect(narrow).toContain("grid-template-columns: minmax(0, 1fr) auto");
+		expect(narrow).toContain(".feed-card-side-top { grid-column: 2; grid-row: 1; }");
+		expect(narrow).toContain(".feed-card-footer { align-items: stretch; flex-direction: column; }");
 		expect(narrow).toContain(
 			".feed-visibility-select { box-sizing: border-box; width: 100%; min-width: 0; }",
 		);
@@ -50,9 +61,7 @@ describe("compact feed card layout contract", () => {
 
 	it("prints visible content without menus or editable card controls", () => {
 		const print = css.slice(css.indexOf("@media print"));
-		expect(print).toContain(
-			".feed-menu-trigger, .feed-card-side-bottom { display: none !important; }",
-		);
+		expect(print).toContain(".feed-menu-trigger, .feed-disclosure { display: none !important; }");
 		expect(print).toContain("break-inside: avoid");
 	});
 });

@@ -1,67 +1,25 @@
 import { escapeHtml } from "../../../lib/dom";
-import { normalize, parseJsonArray, toTitleLabel } from "../../../lib/format";
-import type { FeedItem, FeedSummary, ItemViewMode } from "../types";
+import { normalize, parseJsonArray } from "../../../lib/format";
+import type { FeedItem } from "../types";
 import { itemKey, itemTags, mergeMetadata } from "./helpers";
-import { observationViewData } from "./observation-view";
-import { sessionSummaryViewData } from "./session-summary-view";
-import { canonicalKind, getSummaryObject, isSummaryLikeItem } from "./summary-extract";
+import { canonicalKind, isSummaryLikeItem } from "./summary-extract";
 
-export type FeedModeContent =
-	| { type: "markdown"; text: string }
-	| { type: "facts"; facts: unknown[] }
-	| { type: "sections"; sections: FeedSummary };
-
-export interface FeedCardMode {
-	content: FeedModeContent;
-	id: ItemViewMode;
-	label: string;
+export interface FeedCardContent {
+	body: string;
+	facts: string[];
+	narrative: string;
 	searchText: string;
 }
 
 export interface FeedCardViewModel {
+	content: FeedCardContent;
 	displayKind: string;
 	displayTitle: string;
 	files: unknown[];
 	isSessionSummary: boolean;
-	modes: FeedCardMode[];
 	rowKey: string;
 	searchOnlyText: string;
-	skimSummary: string;
 	tags: unknown[];
-}
-
-function modeLabel(mode: ItemViewMode): string {
-	return mode.charAt(0).toUpperCase() + mode.slice(1);
-}
-
-function markdownMode(id: ItemViewMode, text: string): FeedCardMode {
-	return { content: { type: "markdown", text }, id, label: modeLabel(id), searchText: text };
-}
-
-interface ContentView {
-	modes: FeedCardMode[];
-	searchOnlyText: string;
-	skimSummary: string;
-}
-
-function factsMode(facts: unknown[]): FeedCardMode {
-	return {
-		content: { type: "facts", facts },
-		id: "facts",
-		label: "Facts",
-		searchText: facts.map(String).join("\n"),
-	};
-}
-
-function sessionFactsMode(sections: FeedSummary): FeedCardMode {
-	return {
-		content: { type: "sections", sections },
-		id: "facts",
-		label: "Facts",
-		searchText: Object.entries(sections)
-			.map(([key, value]) => `${toTitleLabel(key)}\n${String(value)}`)
-			.join("\n"),
-	};
 }
 
 function searchableValue(value: unknown): string {
@@ -80,7 +38,9 @@ function indexedMetadataSearchText(item: FeedItem, renderedSearchText: string): 
 	const candidates = [
 		item.subtitle,
 		item.metadata_json?.subtitle,
+		item.metadata_json?.narrative,
 		searchableValue(item.facts),
+		searchableValue(item.summary),
 		searchableValue(item.metadata_json?.facts),
 		searchableValue(item.metadata_json?.summary),
 		searchableValue(item.metadata_json?.request),
@@ -91,50 +51,21 @@ function indexedMetadataSearchText(item: FeedItem, renderedSearchText: string): 
 		.join("\n");
 }
 
-function buildObservationContent(item: FeedItem, displayTitle: string): ContentView {
-	const data = observationViewData(item);
-	const modes: FeedCardMode[] = [];
-	if (data.hasSummary) modes.push(markdownMode("summary", data.summaryDetail));
-	if (data.hasFacts) modes.push(factsMode(data.facts));
-	if (data.hasNarrative) modes.push(markdownMode("narrative", data.narrative));
-	const skimSummary = normalize(data.summary) === normalize(displayTitle) ? "" : data.summary;
-	const normalizedLegacyBody = normalize(data.legacyBody);
-	const searchOnlyText =
-		normalizedLegacyBody &&
-		!modes.some((mode) => normalize(mode.searchText) === normalizedLegacyBody)
-			? data.legacyBody
-			: "";
-	const indexedSearchText = indexedMetadataSearchText(
-		item,
-		normalize(modes.map((mode) => mode.searchText).join("\n")),
+function buildPackContent(item: FeedItem): { content: FeedCardContent; searchOnlyText: string } {
+	const narrative = String(item.narrative || "").trim();
+	const facts = parseJsonArray(item.facts).filter(
+		(fact): fact is string => typeof fact === "string",
 	);
+	const legacyBody = String(item.body_text || "").trim();
+	const hasStructuredContent = Boolean(narrative || facts.length);
+	const body = hasStructuredContent ? "" : legacyBody;
+	const searchText = [narrative, ...facts, body].filter(Boolean).join("\n");
+	const indexedSearchText = indexedMetadataSearchText(item, normalize(searchText));
 	return {
-		modes,
-		searchOnlyText: [searchOnlyText, indexedSearchText].filter(Boolean).join("\n"),
-		skimSummary,
-	};
-}
-
-function buildSessionContent(item: FeedItem, displayTitle: string): ContentView {
-	const data = sessionSummaryViewData(item, displayTitle);
-	const modes: FeedCardMode[] = [];
-	if (data.hasSummary) modes.push(markdownMode("summary", data.summaryDetail));
-	if (data.hasFacts) modes.push(sessionFactsMode(data.facts));
-	if (data.hasNarrative) modes.push(markdownMode("narrative", data.narrative));
-	const bodyText = String(item.body_text || "").trim();
-	const renderedSearchText = normalize(modes.map((mode) => mode.searchText).join("\n"));
-	const indexedSearchText = indexedMetadataSearchText(item, renderedSearchText);
-	const hasUnrenderedBodyLine = bodyText
-		.split("\n")
-		.map((line) => line.trim())
-		.filter((line) => line && !/^#{1,6}\s+/.test(line))
-		.some((line) => !renderedSearchText.includes(normalize(line)));
-	return {
-		modes,
-		searchOnlyText: [hasUnrenderedBodyLine ? bodyText : "", indexedSearchText]
+		content: { body, facts, narrative, searchText },
+		searchOnlyText: [hasStructuredContent ? legacyBody : "", indexedSearchText]
 			.filter(Boolean)
 			.join("\n"),
-		skimSummary: data.skimSummary,
 	};
 }
 
@@ -142,36 +73,19 @@ export function buildFeedCardViewModel(item: FeedItem): FeedCardViewModel {
 	const metadata = mergeMetadata(item.metadata_json);
 	const normalizedItem = { ...item, metadata_json: metadata };
 	const isSessionSummary = isSummaryLikeItem(item, metadata);
-	const summaryRequest = isSessionSummary
-		? String(getSummaryObject(normalizedItem)?.request || "").trim()
-		: "";
-	const displayTitle = String(summaryRequest || item.title || "(untitled)").trim();
-	const content = isSessionSummary
-		? buildSessionContent(normalizedItem, displayTitle)
-		: buildObservationContent(normalizedItem, displayTitle);
+	const displayTitle = String(item.title || "(untitled)").trim();
+	const content = buildPackContent(normalizedItem);
 
 	return {
+		content: content.content,
 		displayKind: canonicalKind(item, metadata),
 		displayTitle: displayTitle || "(untitled)",
 		files: parseJsonArray(item.files || []),
 		isSessionSummary,
-		modes: content.modes,
 		rowKey: itemKey(item),
 		searchOnlyText: content.searchOnlyText,
-		skimSummary: content.skimSummary,
 		tags: itemTags(item),
 	};
-}
-
-export function preferredAvailableMode(
-	modes: FeedCardMode[],
-	preferred: ItemViewMode,
-): ItemViewMode {
-	if (modes.some((mode) => mode.id === preferred)) return preferred;
-	for (const fallback of ["summary", "facts", "narrative"] as const) {
-		if (modes.some((mode) => mode.id === fallback)) return fallback;
-	}
-	return "summary";
 }
 
 export function normalizeFeedQuery(query: string): string {
@@ -192,7 +106,7 @@ export function feedItemMatchesQuery(item: FeedItem, query: string): boolean {
 		model.displayKind,
 		String(item.project || ""),
 		model.searchOnlyText,
-		...model.modes.map((mode) => mode.searchText),
+		model.content.searchText,
 		...model.tags.map(String),
 	].some((text) => text.toLowerCase().includes(normalizedQuery));
 }
@@ -243,45 +157,23 @@ function excerptAroundMatch(text: string, query: string): string {
 	return `${start > 0 ? "…" : ""}${collapsed.slice(start, end)}${end < collapsed.length ? "…" : ""}`;
 }
 
-export function visibleSkimPrefixLength(viewportWidth: number): number {
-	if (viewportWidth <= 520) return 24;
-	if (viewportWidth <= 755) return 40;
-	return 80;
-}
-
-function clippedSkimMatch(text: string, query: string, label: string, visiblePrefixLength: number) {
-	const collapsed = text.replace(/\s+/g, " ").trim();
-	const index = collapsed.toLowerCase().indexOf(query.toLowerCase());
-	if (index < visiblePrefixLength) return null;
-	return { excerpt: excerptAroundMatch(collapsed, query), label, mode: null };
-}
-
 export function hiddenSearchMatch(
 	model: FeedCardViewModel,
 	query: string,
-	visiblePrefixLength = 80,
-): { excerpt: string; label: string; mode: ItemViewMode | null } | null {
+): { excerpt: string; label: string } | null {
 	const trimmedQuery = normalizeFeedQuery(query);
 	if (!trimmedQuery) return null;
-	if (includesQuery(model.displayTitle, trimmedQuery)) {
-		return clippedSkimMatch(model.displayTitle, trimmedQuery, "Title", visiblePrefixLength);
-	}
-	if (includesQuery(model.skimSummary, trimmedQuery)) {
-		return clippedSkimMatch(model.skimSummary, trimmedQuery, "Summary", visiblePrefixLength);
-	}
-	for (const mode of model.modes) {
-		if (!includesQuery(mode.searchText, trimmedQuery)) continue;
+	if (includesQuery(model.displayTitle, trimmedQuery)) return null;
+	if (includesQuery(model.content.searchText, trimmedQuery)) {
 		return {
-			excerpt: excerptAroundMatch(mode.searchText, trimmedQuery),
-			label: mode.label,
-			mode: mode.id,
+			excerpt: excerptAroundMatch(model.content.searchText, trimmedQuery),
+			label: "Content",
 		};
 	}
 	if (includesQuery(model.searchOnlyText, trimmedQuery)) {
 		return {
 			excerpt: excerptAroundMatch(model.searchOnlyText, trimmedQuery),
 			label: "Body",
-			mode: null,
 		};
 	}
 	return null;

@@ -53,9 +53,6 @@ export interface FeedItem {
 	summary?: unknown;
 }
 
-/** Which view mode a feed-item body is rendering in (toggled by FeedViewToggle). */
-export type ItemViewMode = "summary" | "facts" | "narrative";
-
 /** Summary payload attached to observations / session summaries. Open shape. */
 export type FeedSummary = Record<string, unknown>;
 
