@@ -132,11 +132,26 @@ describe("settings outcomes", () => {
 			expect(root.querySelector(`#${id}`), `${id} control`).not.toBeNull();
 			const outcome = root.querySelector(`[data-settings-outcome-for="${id}"]`);
 			expect(outcome, `${id} outcome`).not.toBeNull();
+			expect(outcome?.tagName).toBe("DETAILS");
+			expect(outcome?.hasAttribute("open")).toBe(false);
+			expect(outcome?.firstElementChild?.tagName).toBe("SUMMARY");
 			expect(outcome?.textContent).toContain("Affects:");
 			expect(outcome?.textContent).toContain("Scope:");
 			expect(outcome?.textContent).toContain("Takes effect:");
 			expect(outcome?.textContent).toContain("Existing data:");
 		}
+	});
+
+	it("keeps actionable timing visible while collapsing the full explanation", () => {
+		const root = renderPanels();
+		const summaryFor = (id: string) =>
+			root.querySelector(`[data-settings-outcome-for="${id}"] > summary`)?.textContent;
+		expect(summaryFor("observerProvider")).toBe("Restart required");
+		expect(summaryFor("rawEventsSweeperIntervalS")).toBe("Immediately after save");
+		expect(summaryFor("packObservationLimit")).toBe(
+			"Inactive · Not used when Codemem creates context packs",
+		);
+		expect(summaryFor("syncHost")).toContain("restart the viewer before sharing or using them");
 	});
 
 	it("distinguishes live, restart, and future-pack timing without annotating protected values", () => {
