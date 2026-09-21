@@ -682,160 +682,191 @@ describe("applyBootstrapSnapshot", () => {
 	});
 });
 
-describe("fetchAllSnapshotPages", () => {
-	it("preserves v2 auth for public callers that omit recipientId", async () => {
-		const db = new Database(":memory:");
-		initTestSchema(db);
-		const keysDir = mkdtempSync(join(tmpdir(), "codemem-bootstrap-keys-"));
-		const [deviceId] = ensureDeviceIdentity(db, { keysDir });
-		const prevFetch = globalThis.fetch;
-		try {
-			globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-				expect(init?.headers).toMatchObject({
-					"X-Opencode-Device": deviceId,
-					"X-Opencode-Signature": expect.stringMatching(/^v2:/),
-					[SYNC_CAPABILITY_HEADER]: "scoped",
-				});
-				expect(init?.headers).not.toHaveProperty("X-Codemem-Recipient");
-				expect(init?.headers).not.toHaveProperty("X-Codemem-Signature");
-				return new Response(
-					JSON.stringify({
-						generation: 2,
-						snapshot_id: "snap-2",
-						baseline_cursor: null,
-						retained_floor_cursor: null,
-						items: [],
-						next_page_token: null,
-						has_more: false,
-					}),
-					{ status: 200 },
-				);
-			}) as typeof fetch;
-
-			const result = await fetchAllSnapshotPages(
-				"http://peer.example.test:47337",
-				makeResetInfo(),
-				deviceId,
-				{ keysDir },
+it("rejects a stale or mixed-generation page before returning snapshot content", async () => {
+	const db = new Database(":memory:");
+	initTestSchema(db);
+	const keysDir = mkdtempSync(join(tmpdir(), "codemem-bootstrap-boundary-"));
+	const [deviceId] = ensureDeviceIdentity(db, { keysDir });
+	const previous = globalThis.fetch;
+	let calls = 0;
+	try {
+		globalThis.fetch = (async () => {
+			calls++;
+			return new Response(
+				JSON.stringify({
+					...makeResetInfo(),
+					generation: calls === 1 ? 2 : 1,
+					items: [makeSnapshotItem(`page-${calls}`)],
+					next_page_token: calls === 1 ? "next" : null,
+					has_more: calls === 1,
+				}),
+				{ status: 200 },
 			);
+		}) as typeof fetch;
+		await expect(
+			fetchAllSnapshotPages("http://peer.example.test:47337", makeResetInfo(), deviceId, {
+				keysDir,
+			}),
+		).rejects.toThrow("snapshot_boundary_mismatch");
+		expect(calls).toBe(2);
+	} finally {
+		globalThis.fetch = previous;
+		db.close();
+		rmSync(keysDir, { recursive: true, force: true });
+	}
+});
+it("preserves v2 auth for public callers that omit recipientId", async () => {
+	const db = new Database(":memory:");
+	initTestSchema(db);
+	const keysDir = mkdtempSync(join(tmpdir(), "codemem-bootstrap-keys-"));
+	const [deviceId] = ensureDeviceIdentity(db, { keysDir });
+	const prevFetch = globalThis.fetch;
+	try {
+		globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+			expect(init?.headers).toMatchObject({
+				"X-Opencode-Device": deviceId,
+				"X-Opencode-Signature": expect.stringMatching(/^v2:/),
+				[SYNC_CAPABILITY_HEADER]: "scoped",
+			});
+			expect(init?.headers).not.toHaveProperty("X-Codemem-Recipient");
+			expect(init?.headers).not.toHaveProperty("X-Codemem-Signature");
+			return new Response(
+				JSON.stringify({
+					generation: 2,
+					snapshot_id: "snap-2",
+					baseline_cursor: null,
+					retained_floor_cursor: null,
+					items: [],
+					next_page_token: null,
+					has_more: false,
+				}),
+				{ status: 200 },
+			);
+		}) as typeof fetch;
 
-			expect(result.snapshot_id).toBe("snap-2");
-		} finally {
-			globalThis.fetch = prevFetch;
-			db.close();
-			rmSync(keysDir, { recursive: true, force: true });
-		}
-	});
-
-	it("uses recipient-bound v3 auth for the upgraded call shape", async () => {
-		const db = new Database(":memory:");
-		initTestSchema(db);
-		const keysDir = mkdtempSync(join(tmpdir(), "codemem-bootstrap-keys-"));
-		const [deviceId] = ensureDeviceIdentity(db, { keysDir });
-		const resetInfo = makeResetInfo();
-		const snapshotItems = Array.from({ length: 5 }, (_, index) =>
-			makeSnapshotItem(`scoped-key-${index + 1}`),
+		const result = await fetchAllSnapshotPages(
+			"http://peer.example.test:47337",
+			makeResetInfo({ baseline_cursor: null }),
+			deviceId,
+			{ keysDir },
 		);
-		const requestedPageTokens: Array<string | null> = [];
-		const prevFetch = globalThis.fetch;
-		try {
-			expect(
-				db.prepare("SELECT COUNT(*) FROM memory_items WHERE import_key IS NOT NULL").pluck().get(),
-			).toBe(0);
-			expect(getReplicationCursor(db, "peer-1", "acme-work")).toEqual([null, null]);
 
-			globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-				const url = new URL(String(input));
-				expect(url.searchParams.get("scope_id")).toBe("acme-work");
-				expect(url.searchParams.get("limit")).toBe("2");
-				expect(init?.headers).toMatchObject({
-					"X-Codemem-Recipient": "peer-1",
-					"X-Codemem-Signature": expect.stringMatching(/^v3:/),
-				});
-				const pageToken = url.searchParams.get("page_token");
-				requestedPageTokens.push(pageToken);
-				const pageIndex = pageToken === null ? 0 : Number(pageToken.replace("page-", "")) - 1;
-				const items = snapshotItems.slice(pageIndex * 2, pageIndex * 2 + 2);
-				const hasMore = pageIndex * 2 + items.length < snapshotItems.length;
-				return new Response(
-					JSON.stringify({
-						generation: resetInfo.generation,
-						snapshot_id: resetInfo.snapshot_id,
-						baseline_cursor: resetInfo.baseline_cursor,
-						retained_floor_cursor: null,
-						items,
-						next_page_token: hasMore ? `page-${pageIndex + 2}` : null,
-						has_more: hasMore,
-					}),
-					{ status: 200 },
-				);
-			}) as typeof fetch;
+		expect(result.snapshot_id).toBe("snap-2");
+	} finally {
+		globalThis.fetch = prevFetch;
+		db.close();
+		rmSync(keysDir, { recursive: true, force: true });
+	}
+});
 
-			const snapshot = await fetchAllSnapshotPages(
-				"http://peer.example.test:47337",
-				resetInfo,
-				deviceId,
-				{ keysDir, recipientId: "peer-1", pageSize: 2 },
+it("uses recipient-bound v3 auth for the upgraded call shape", async () => {
+	const db = new Database(":memory:");
+	initTestSchema(db);
+	const keysDir = mkdtempSync(join(tmpdir(), "codemem-bootstrap-keys-"));
+	const [deviceId] = ensureDeviceIdentity(db, { keysDir });
+	const resetInfo = makeResetInfo();
+	const snapshotItems = Array.from({ length: 5 }, (_, index) =>
+		makeSnapshotItem(`scoped-key-${index + 1}`),
+	);
+	const requestedPageTokens: Array<string | null> = [];
+	const prevFetch = globalThis.fetch;
+	try {
+		expect(
+			db.prepare("SELECT COUNT(*) FROM memory_items WHERE import_key IS NOT NULL").pluck().get(),
+		).toBe(0);
+		expect(getReplicationCursor(db, "peer-1", "acme-work")).toEqual([null, null]);
+
+		globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = new URL(String(input));
+			expect(url.searchParams.get("scope_id")).toBe("acme-work");
+			expect(url.searchParams.get("limit")).toBe("2");
+			expect(init?.headers).toMatchObject({
+				"X-Codemem-Recipient": "peer-1",
+				"X-Codemem-Signature": expect.stringMatching(/^v3:/),
+			});
+			const pageToken = url.searchParams.get("page_token");
+			requestedPageTokens.push(pageToken);
+			const pageIndex = pageToken === null ? 0 : Number(pageToken.replace("page-", "")) - 1;
+			const items = snapshotItems.slice(pageIndex * 2, pageIndex * 2 + 2);
+			const hasMore = pageIndex * 2 + items.length < snapshotItems.length;
+			return new Response(
+				JSON.stringify({
+					generation: resetInfo.generation,
+					snapshot_id: resetInfo.snapshot_id,
+					baseline_cursor: resetInfo.baseline_cursor,
+					retained_floor_cursor: null,
+					items,
+					next_page_token: hasMore ? `page-${pageIndex + 2}` : null,
+					has_more: hasMore,
+				}),
+				{ status: 200 },
 			);
-			const result = applyBootstrapSnapshot(db, "peer-1", snapshot.items, resetInfo);
+		}) as typeof fetch;
 
-			expect(requestedPageTokens).toEqual([null, "page-2", "page-3"]);
-			expect(snapshot.items).toHaveLength(5);
-			expect(result).toMatchObject({ ok: true, applied: 5, deleted: 0 });
-			expect(
-				db
-					.prepare("SELECT import_key FROM memory_items WHERE scope_id = ? ORDER BY import_key")
-					.all("acme-work"),
-			).toEqual(snapshotItems.map((item) => ({ import_key: item.entity_id })));
-			expect(getReplicationCursor(db, "peer-1", "acme-work")[0]).toBe(resetInfo.baseline_cursor);
-		} finally {
-			globalThis.fetch = prevFetch;
-			db.close();
-			rmSync(keysDir, { recursive: true, force: true });
-		}
-	});
+		const snapshot = await fetchAllSnapshotPages(
+			"http://peer.example.test:47337",
+			resetInfo,
+			deviceId,
+			{ keysDir, recipientId: "peer-1", pageSize: 2 },
+		);
+		const result = applyBootstrapSnapshot(db, "peer-1", snapshot.items, resetInfo);
 
-	it("forwards bootstrap grant id as an auth header", async () => {
-		const db = new Database(":memory:");
-		initTestSchema(db);
-		const keysDir = mkdtempSync(join(tmpdir(), "codemem-bootstrap-keys-"));
-		const [deviceId] = ensureDeviceIdentity(db, { keysDir });
-		const prevFetch = globalThis.fetch;
-		try {
-			globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-				expect(String(_input)).toContain("scope_id=acme-work");
-				expect(init?.headers).toMatchObject({
-					"X-Codemem-Bootstrap-Grant": "grant-1",
-					"X-Codemem-Recipient": "peer-1",
-					"X-Codemem-Signature": expect.stringMatching(/^v3:/),
-					[SYNC_CAPABILITY_HEADER]: "scoped",
-					"X-Opencode-Device": deviceId,
-				});
-				return new Response(
-					JSON.stringify({
-						generation: 2,
-						snapshot_id: "snap-2",
-						baseline_cursor: null,
-						retained_floor_cursor: null,
-						items: [],
-						next_page_token: null,
-						has_more: false,
-					}),
-					{ status: 200 },
-				);
-			}) as typeof fetch;
+		expect(requestedPageTokens).toEqual([null, "page-2", "page-3"]);
+		expect(snapshot.items).toHaveLength(5);
+		expect(result).toMatchObject({ ok: true, applied: 5, deleted: 0 });
+		expect(
+			db
+				.prepare("SELECT import_key FROM memory_items WHERE scope_id = ? ORDER BY import_key")
+				.all("acme-work"),
+		).toEqual(snapshotItems.map((item) => ({ import_key: item.entity_id })));
+		expect(getReplicationCursor(db, "peer-1", "acme-work")[0]).toBe(resetInfo.baseline_cursor);
+	} finally {
+		globalThis.fetch = prevFetch;
+		db.close();
+		rmSync(keysDir, { recursive: true, force: true });
+	}
+});
 
-			const result = await fetchAllSnapshotPages(
-				"http://peer.example.test:47337",
-				makeResetInfo({ scope_id: "acme-work" }),
-				deviceId,
-				{ keysDir, bootstrapGrantId: "grant-1", recipientId: "peer-1" },
+it("forwards bootstrap grant id as an auth header", async () => {
+	const db = new Database(":memory:");
+	initTestSchema(db);
+	const keysDir = mkdtempSync(join(tmpdir(), "codemem-bootstrap-keys-"));
+	const [deviceId] = ensureDeviceIdentity(db, { keysDir });
+	const prevFetch = globalThis.fetch;
+	try {
+		globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+			expect(String(_input)).toContain("scope_id=acme-work");
+			expect(init?.headers).toMatchObject({
+				"X-Codemem-Bootstrap-Grant": "grant-1",
+				"X-Codemem-Recipient": "peer-1",
+				"X-Codemem-Signature": expect.stringMatching(/^v3:/),
+				[SYNC_CAPABILITY_HEADER]: "scoped",
+				"X-Opencode-Device": deviceId,
+			});
+			return new Response(
+				JSON.stringify({
+					generation: 2,
+					snapshot_id: "snap-2",
+					baseline_cursor: null,
+					retained_floor_cursor: null,
+					items: [],
+					next_page_token: null,
+					has_more: false,
+				}),
+				{ status: 200 },
 			);
-			expect(result.snapshot_id).toBe("snap-2");
-		} finally {
-			globalThis.fetch = prevFetch;
-			db.close();
-			rmSync(keysDir, { recursive: true, force: true });
-		}
-	});
+		}) as typeof fetch;
+
+		const result = await fetchAllSnapshotPages(
+			"http://peer.example.test:47337",
+			makeResetInfo({ scope_id: "acme-work", baseline_cursor: null }),
+			deviceId,
+			{ keysDir, bootstrapGrantId: "grant-1", recipientId: "peer-1" },
+		);
+		expect(result.snapshot_id).toBe("snap-2");
+	} finally {
+		globalThis.fetch = prevFetch;
+		db.close();
+		rmSync(keysDir, { recursive: true, force: true });
+	}
 });

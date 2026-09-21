@@ -13,6 +13,7 @@ import { and, desc, eq, gt, isNotNull, isNull, like, or, sql } from "drizzle-orm
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { fromJson, fromJsonStrict, toJson, toJsonNullable } from "./db.js";
+import { retirementAllowsSnapshot } from "./memory-retirement-snapshot-guard.js";
 import {
 	assertMemoryScopeNotRetired,
 	hasMemoryScopeRetirement,
@@ -1328,6 +1329,27 @@ export function loadReplicationOpsForPeer(
 	};
 }
 
+function snapshotClockDeviceId(payload: MemoryPayload, row: MemoryItemRow): string {
+	const metadata = payload.metadata_json;
+	if (typeof metadata?.clock_device_id === "string" && metadata.clock_device_id.trim())
+		return metadata.clock_device_id.trim();
+	return String(row.origin_device_id ?? "local");
+}
+
+function unretiredSnapshotPayload(db: Database, row: MemoryItemRow): MemoryPayload | null {
+	const payload = buildPayloadFromMemoryRow(row);
+	if (
+		!retirementAllowsSnapshot(
+			db,
+			String(row.import_key ?? ""),
+			payload as unknown as Record<string, unknown>,
+			cleanText(row.scope_id),
+		)
+	)
+		return null;
+	return payload;
+}
+
 export function loadMemorySnapshotPageForPeer(
 	db: Database,
 	options: LoadMemorySnapshotPageForPeerOptions,
@@ -1417,7 +1439,8 @@ export function loadMemorySnapshotPageForPeer(
 			lastScannedToken = makeSnapshotPageToken(importKey, Number(row.memory.id));
 			nextScanToken = { importKey, id: Number(row.memory.id) };
 
-			const payload = buildPayloadFromMemoryRow(row.memory);
+			const payload = unretiredSnapshotPayload(db, row.memory);
+			if (!payload) continue;
 			if (
 				(replicationOpRequiresPersonalScopeAuthorization(
 					{ scope_id: row.memory.scope_id },
@@ -1434,14 +1457,7 @@ export function loadMemorySnapshotPageForPeer(
 				continue;
 			}
 			if (!syncProjectAllowed(db, row.sessionProject, options.peerDeviceId ?? null)) continue;
-			const metadata =
-				payload.metadata_json && typeof payload.metadata_json === "object"
-					? payload.metadata_json
-					: {};
-			const clockDeviceId =
-				typeof metadata.clock_device_id === "string" && metadata.clock_device_id.trim()
-					? metadata.clock_device_id.trim()
-					: String(row.memory.origin_device_id ?? "local");
+			const clockDeviceId = snapshotClockDeviceId(payload, row.memory);
 			// Include session project in the payload so targets can associate
 			// replicated memories with the correct project.
 			const payloadWithProject = { ...payload, project: row.sessionProject ?? null };

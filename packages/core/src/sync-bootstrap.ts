@@ -16,6 +16,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { ApiSyncMemorySnapshotPageResponse } from "./api-types.js";
 import type { Database } from "./db.js";
 import { toJson } from "./db.js";
+import { retirementAllowsSnapshot } from "./memory-retirement-snapshot-guard.js";
 import * as schema from "./schema.js";
 import { redactMemoryFields, SecretScanner } from "./secret-scanner.js";
 import { buildAuthHeaders, buildDirectPeerAuthHeaders } from "./sync-auth.js";
@@ -73,6 +74,20 @@ export interface BootstrapOptions {
 // ---------------------------------------------------------------------------
 
 type SnapshotPageResponse = ApiSyncMemorySnapshotPageResponse;
+
+function checkedSnapshotBoundary(page: SnapshotPageResponse, expected: SyncResetRequired) {
+	if (
+		page.generation !== expected.generation ||
+		page.snapshot_id !== expected.snapshot_id ||
+		page.baseline_cursor !== expected.baseline_cursor
+	)
+		throw new Error("snapshot_boundary_mismatch");
+	return {
+		generation: page.generation,
+		snapshot_id: page.snapshot_id,
+		baseline_cursor: page.baseline_cursor,
+	};
+}
 
 /**
  * Fetch all snapshot pages from a peer's /v1/snapshot endpoint.
@@ -150,11 +165,7 @@ export async function fetchAllSnapshotPages(
 			throw new Error("invalid snapshot response shape");
 		}
 
-		boundary = {
-			generation: page.generation,
-			snapshot_id: page.snapshot_id,
-			baseline_cursor: page.baseline_cursor,
-		};
+		boundary = checkedSnapshotBoundary(page, resetInfo);
 		allItems.push(...page.items);
 
 		if (allItems.length > maxItems) {
@@ -199,6 +210,17 @@ function isEmbeddableSnapshotPayload(payload: Record<string, unknown>): boolean 
 	const title = typeof payload.title === "string" ? payload.title : "";
 	const bodyText = typeof payload.body_text === "string" ? payload.body_text : "";
 	return `${title}\n${bodyText}`.trim().length > 0;
+}
+
+function retirementSnapshotItems(
+	db: Database,
+	items: SyncMemorySnapshotItem[],
+	scope: string | null,
+): SyncMemorySnapshotItem[] {
+	return items.filter((item) => {
+		const payload = parseSnapshotPayload(item);
+		return payload && retirementAllowsSnapshot(db, item.entity_id, payload, scope);
+	});
 }
 
 function normalizeBootstrapScopeId(scopeId: unknown): string | null {
@@ -438,7 +460,7 @@ export function applyBootstrapSnapshot(
 		// 2. Insert snapshot items, grouping by project.
 		bootstrapSessionCache.clear();
 
-		for (const item of items) {
+		for (const item of retirementSnapshotItems(db, items, bootstrapScopeId)) {
 			const inserted = insertSnapshotItem(d, item, bootstrapScopeId, activeScanner);
 			if (!inserted.applied) continue;
 			if (inserted.embeddable) embeddableApplied++;
@@ -520,7 +542,7 @@ export function mergeBootstrapSnapshot(
 		let embeddableApplied = 0;
 		bootstrapSessionCache.clear();
 
-		for (const item of items) {
+		for (const item of retirementSnapshotItems(db, items, bootstrapScopeId)) {
 			if (!parseSnapshotPayload(item)) continue;
 			const existingRows = d
 				.select({

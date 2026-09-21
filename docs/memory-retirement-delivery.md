@@ -44,6 +44,6 @@ Peers that later upgrade replay their retained pending controls; historical UUID
 
 ## Remaining activation work
 
-The dependent snapshot unit must preserve fences and control state through destructive reset and apply controls before stale snapshot content in both import modes.
-It must also request replay of acknowledged controls when rebuilding a receiver; a content cursor reset alone cannot recover control state.
+The [snapshot/reset prerequisite](memory-retirement-reset.md) preserves fences and control state, filters both import modes, and supplies an authenticated replay handshake for already acknowledged controls.
+A content cursor reset alone still cannot recover control state; negotiated callers must use the protected reset entry point.
 The admission unit must coordinate already-selected content across processes before any repair caller or advertised capability activates this protocol.
