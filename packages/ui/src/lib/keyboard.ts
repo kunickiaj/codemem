@@ -26,9 +26,9 @@
  *     the focused element. Useful for multi-line composers or Radix
  *     listbox options that need their own Enter semantics.
  *
- * The helper does NOT intercept Enter on buttons, anchors, or selects: those
+ * The helper does NOT intercept Enter on buttons, anchors, selects, or summaries: those
  * controls have well-defined native Enter behavior (click self, navigate,
- * open picker) and stealing it would be surprising.
+ * open picker, toggle disclosure) and stealing it would be surprising.
  */
 
 export interface PrimaryActionKeyboardOptions {
@@ -50,7 +50,7 @@ export interface PrimaryActionKeyboardOptions {
 	disabled?: boolean;
 }
 
-const FORM_CONTROL_TAGS = new Set(["BUTTON", "A", "SELECT"]);
+const FORM_CONTROL_TAGS = new Set(["BUTTON", "A", "SELECT", "SUMMARY"]);
 const INPUT_TYPES_WITH_NATIVE_ENTER = new Set([
 	"button",
 	"checkbox",
@@ -116,7 +116,7 @@ export function handlePrimaryActionKeyboard(
 	}
 
 	// Enter — skip when focus is on a control with its own native Enter
-	// semantics. Buttons/links/selects all do something useful on Enter
+	// semantics. Buttons/links/selects/summaries all do something useful on Enter
 	// already and intercepting would be surprising.
 	if (hasNativeEnterBehavior(target)) return;
 
