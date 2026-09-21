@@ -10,6 +10,7 @@ import {
 	verifyMemoryOwnership,
 } from "./memory-ownership-recovery.js";
 import { getVerifiedMemorySource } from "./memory-source-identity.js";
+import { listProjectScopeInventory } from "./project-scope-settings.js";
 import { MemoryStore } from "./store.js";
 import {
 	backfillReplicationOps,
@@ -68,6 +69,82 @@ function confirmed(ids: number[]) {
 function count(table: string) {
 	return store.db.prepare(`SELECT COUNT(*) FROM ${table}`).pluck().get();
 }
+
+it.each([
+	{ rowProject: null, sessionProject: "fixture", expected: "fixture" },
+	{ rowProject: "row-project", sessionProject: "fixture", expected: "row-project" },
+	{ rowProject: null, sessionProject: null, expected: null },
+])(
+	"preserves effective project and private local policy: $expected",
+	({ rowProject, sessionProject, expected }) => {
+		const id = memory("private");
+		store.db.prepare("UPDATE memory_items SET project = ? WHERE id = ?").run(rowProject, id);
+		store.db.prepare("UPDATE sessions SET project = ?").run(sessionProject);
+		expect(
+			previewMemoryOwnershipRecovery(store, { version: 1, memoryIds: [id] }).records[0]?.project,
+		).toBe(expected);
+		const result = commitMemoryOwnershipRecovery(store, confirmed([id]));
+		const copyId = result.copies[0]?.recoveredMemoryId;
+		expect(
+			store.db
+				.prepare(`SELECT m.project, s.project AS session_project, m.scope_id, m.visibility
+		FROM memory_items m JOIN sessions s ON s.id = m.session_id WHERE m.id = ?`)
+				.get(copyId),
+		).toEqual({
+			project: expected,
+			session_project: expected,
+			scope_id: "local-default",
+			visibility: "private",
+		});
+		if (expected !== null) {
+			expect(store.recent(10, { project: expected }).map((row) => row.id)).toContain(copyId);
+			expect(listProjectScopeInventory(store.db).projects).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						project: expected,
+						read_only: false,
+						resolved_scope_id: "local-default",
+					}),
+				]),
+			);
+		}
+		expect(count("replication_ops")).toBe(0);
+	},
+);
+
+it.each(["session", "row"])("rejects changed %s project after preview without writes", (source) => {
+	const id = memory();
+	const input = confirmed([id]);
+	if (source === "session") store.db.prepare("UPDATE sessions SET project = 'changed'").run();
+	else store.db.prepare("UPDATE memory_items SET project = 'changed' WHERE id = ?").run(id);
+	expect(() => commitMemoryOwnershipRecovery(store, input)).toThrow("ownership_preview_stale");
+	expect(count("memory_items")).toBe(1);
+	expect(count("sessions")).toBe(1);
+	expect(count("memory_source_bindings")).toBe(0);
+	expect(count("memory_ownership_recoveries")).toBe(0);
+});
+
+it("redacts the fallback project consistently on the copied memory and session", () => {
+	const id = memory();
+	const redact = store.scanner.redactValue.bind(store.scanner);
+	vi.spyOn(store.scanner, "redactValue").mockImplementation((value) => {
+		const result = redact(value);
+		if (result.value && typeof result.value === "object" && "project" in result.value) {
+			Object.assign(result.value, { project: "redacted-project" });
+		}
+		return result;
+	});
+	const result = commitMemoryOwnershipRecovery(store, confirmed([id]));
+	expect(
+		store.db
+			.prepare(`SELECT m.project, s.project AS session_project
+		FROM memory_items m JOIN sessions s ON s.id = m.session_id WHERE m.id = ?`)
+			.get(result.copies[0]?.recoveredMemoryId),
+	).toEqual({
+		project: "redacted-project",
+		session_project: "redacted-project",
+	});
+});
 
 it("recovers unavailable-source peer content as new local copies while retaining originals", () => {
 	const id = memory("shared", "peer-actor");
