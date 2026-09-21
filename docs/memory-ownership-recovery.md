@@ -49,8 +49,12 @@ After a successful new commit, the store queues best-effort embeddings using the
 Callers must invoke commit outside any existing SQLite transaction so that vector work cannot start before the outer transaction finishes.
 An embedding failure leaves the committed copy and its indexed file/concept refs intact, following the normal store creation behavior.
 
-A matching retry returns the original receipt with `idempotent: true`, after checking current access to the original selection.
-It does not recreate copies that were subsequently removed, and operation-ID reuse with another request returns `ownership_recovery_operation_conflict`.
+After validating request structure, commit checks any existing operation receipt before inspecting selected records.
+Reusing an operation ID with a different actor, device, normalized selection, or reviewed digest returns `ownership_recovery_operation_conflict` (409), even when the selection is now unreadable or private; the error contains no record content or receipt result.
+Malformed requests still return 400 before receipt comparison.
+
+A matching retry returns the original receipt with `idempotent: true` only after checking current identity, read access, and private-record ownership for the original selection.
+Revoked access still denies a matching retry; it never returns the receipt or recreates copies that were subsequently removed.
 HTTP errors return `{error, nextAction}` with a 400, 403, 404, or 409 status.
 
 | Error | UI action |

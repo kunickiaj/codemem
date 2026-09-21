@@ -277,19 +277,20 @@ export function commitMemoryOwnershipRecovery(store: MemoryStore, value: unknown
 	const { input, operationId, reviewedDigest } = commitRequest(value);
 	const committed = store.db
 		.transaction(() => {
-			// Recheck access even on retries; a receipt is not a bypass for revoked read authority.
-			const current = previewState(store, input);
 			const receipt = store.db
 				.prepare("SELECT * FROM memory_ownership_recoveries WHERE operation_id = ?")
 				.get(operationId) as Record<string, string> | undefined;
-			if (receipt) {
-				if (
-					receipt.actor_id !== store.actorId ||
+			if (
+				receipt &&
+				(receipt.actor_id !== store.actorId ||
 					receipt.device_id !== store.deviceId ||
 					receipt.request_json !== JSON.stringify(input) ||
-					receipt.reviewed_digest !== reviewedDigest
-				)
-					fail("ownership_recovery_operation_conflict", 409);
+					receipt.reviewed_digest !== reviewedDigest)
+			)
+				fail("ownership_recovery_operation_conflict", 409);
+			// Matching receipts still require current access; conflicting reuse never inspects records.
+			const current = previewState(store, input);
+			if (receipt) {
 				return { ...JSON.parse(receipt.result_json ?? "{}"), idempotent: true } as RecoveryResult;
 			}
 			if (current.preview.reviewedDigest !== reviewedDigest) fail("ownership_preview_stale", 409);
