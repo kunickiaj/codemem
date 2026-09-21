@@ -20,9 +20,10 @@
 # codemem uses Dolt as the Beads collaboration source of truth; issues.jsonl
 # is treated as a local backup/export artifact and is intentionally gitignored.
 no-auto-flush: true
-
 # Disable auto-import from JSONL when it's newer than database.
 no-auto-import: true
+sync:
+    remote: "https://github.com/kunickiaj/codemem.git"
 
 # Enable JSON output by default
 # json: false
