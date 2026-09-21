@@ -3,8 +3,8 @@
 Persistent memory plugin for [OpenCode](https://opencode.ai).
 
 Requires OpenCode 1.18.29 or newer. The same package also runs on OpenCode 2,
-validated against the exact stable `@opencode/cli@2.0.2` and
-`@opencode/plugin@2.0.2` releases. Codemem's OpenCode 2 integration is beta.
+validated against the exact stable `@opencode/cli@2.0.12` and
+`@opencode/plugin@2.0.12` releases. Codemem's OpenCode 2 integration is beta.
 
 ## Install
 
@@ -58,7 +58,7 @@ The package default export is one dual-host object. OpenCode 1 calls its
 setup captures conversation, tool, usage, and lifecycle activity and disposes its
 host registrations on unload. It exposes the manual `mem-status`, `mem-recent`,
 and `mem-stats` tools through `tool.transform` with `codemode: false`, keeping
-the hyphenated IDs. OpenCode 2.0.2 automatic recall runs through
+the hyphenated IDs. OpenCode 2.0.12 automatic recall runs through
 `session.context` when the latest user message has a non-empty ID. Each identified turn performs one fresh retrieval, while
 retries and tool continuations replay retained context. Missing or blank identity
 skips recall safely, and auxiliary hooks remain isolated.

@@ -171,27 +171,31 @@ npm install --prefix .opencode --save-exact @opencode-ai/plugin@1.18.29
 ```
 
 The same 0.45 package also runs on OpenCode 2 through its `setup()` entrypoint.
-Codemem validates that path against the exact stable `@opencode/cli@2.0.2` and
-`@opencode/plugin@2.0.2` releases and labels its OpenCode 2 integration beta.
+Codemem validates that path against the exact stable `@opencode/cli@2.0.12` and
+`@opencode/plugin@2.0.12` releases and labels its OpenCode 2 integration beta.
 `codemem setup --opencode-only` keeps writing the singular `plugin` key because
 OpenCode 1 requires it and OpenCode 2 translates it. Required CI gates run only
-against the 1.18.29 floor and the exact 2.0.2 pin; any compatibility run against
+against the 1.18.29 floor and the exact 2.0.12 pin; any compatibility run against
 a newer or moving OpenCode release is advisory and never blocks a Codemem change
 until the pin moves in its own reviewed PR. Rollback is a host-edge change:
 disable the V2 path with `CODEMEM_PLUGIN_IGNORE=1` or return to OpenCode 1
 without any database migration.
 
-The OpenCode 2 contract separately pins matching `@opencode/cli@2.0.2` and
-`@opencode/plugin@2.0.2` development dependencies. The workspace
+The OpenCode 2 contract separately pins matching `@opencode/cli@2.0.12` and
+`@opencode/plugin@2.0.12` packages. The workspace
 allows the CLI package's postinstall because it installs the matching platform
-binary used by the packed-host smoke test. For 2.0.2, the independently reviewed
-postinstall selects an exact optional platform package, detects AVX2 support with
+binary used by the packed-host smoke test. The 2.0.12 postinstall is byte-identical
+to the independently reviewed 2.0.2 script. It selects an exact optional platform package, detects AVX2 support with
 `sysctl` on macOS or PowerShell on Windows, and hard-links or copies its binary.
 If the optional package is absent, it installs that exact package in a temporary
 directory before copying and verifying the binary. Re-review the postinstall
 whenever the exact pin changes. Update both revisions together and rerun the
 executable checks documented in [the OpenCode 2 contract](opencode-v2-contract.md);
 do not replace these pins with a moving tag or semver range.
+
+The approved minimum-release-age exception covers only the exact OpenCode 2.0.12
+packages listed in `pnpm-workspace.yaml`. Remove those exceptions once the
+versions clear the configured release-age window.
 
 Override for testing:
 

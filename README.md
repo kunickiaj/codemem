@@ -37,8 +37,8 @@ covers macOS x64/arm64, Linux x64/arm64 (glibc 2.34+ or musl), and Windows x64.
 Codemem requires OpenCode 1.18.29 or newer. One installed
 `@codemem/opencode-plugin` package serves both host generations: OpenCode 1 calls
 its `server()` entrypoint and OpenCode 2 calls its `setup()` entrypoint. OpenCode 2
-support is validated against the exact stable `@opencode/cli@2.0.2` and
-`@opencode/plugin@2.0.2` releases; Codemem labels its OpenCode 2 integration
+support is validated against the exact stable `@opencode/cli@2.0.12` and
+`@opencode/plugin@2.0.12` releases; Codemem labels its OpenCode 2 integration
 **beta** until it has shipped through a full release cycle.
 
 On OpenCode 2 the plugin captures user and assistant messages, terminal usage,
@@ -268,7 +268,7 @@ Caveats (v1):
 See [`packages/pi-extension/README.md`](packages/pi-extension/README.md) and [docs/plugin-reference.md](docs/plugin-reference.md) for config knobs and lifecycle details.
 
 
-> The workflow below illustrates the OpenCode 1 hook names. OpenCode 2.0.2 uses
+> The workflow below illustrates the OpenCode 1 hook names. OpenCode 2.0.12 uses
 > `session.context` for the same automatic recall behavior, with the latest
 > user-message ID required for safe turn identity.
 

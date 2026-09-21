@@ -10,8 +10,8 @@ This page covers advanced plugin behavior, environment variables, and stream rel
 
 One `@codemem/opencode-plugin` package serves OpenCode 1.18.29+ through its
 `server()` entrypoint and OpenCode 2 through its `setup()` entrypoint. OpenCode 2
-support is validated against the exact stable `@opencode/cli@2.0.2` and
-`@opencode/plugin@2.0.2` releases; Codemem labels its OpenCode 2 integration
+support is validated against the exact stable `@opencode/cli@2.0.12` and
+`@opencode/plugin@2.0.12` releases; Codemem labels its OpenCode 2 integration
 beta. OpenCode 1 supports the capture and recall behavior below. On OpenCode 2
 the plugin captures user and assistant messages, terminal usage, tool results,
 and session lifecycle events. Its automatic recall uses `session.context` only:
@@ -35,7 +35,7 @@ Host support at a glance:
 | Host | Requirement | Status |
 | --- | --- | --- |
 | OpenCode 1 | 1.18.29 or newer (`engines.opencode`) | Supported |
-| OpenCode 2 | validated on exact `@opencode/cli@2.0.2` and `@opencode/plugin@2.0.2` | Beta integration |
+| OpenCode 2 | validated on exact `@opencode/cli@2.0.12` and `@opencode/plugin@2.0.12` | Beta integration |
 
 Install on either host with `codemem setup --opencode-only` (or `npx -y codemem setup --opencode-only`). Setup writes the singular `plugin` key on purpose: OpenCode 1 requires it, and OpenCode 2 translates it into its native `plugins` configuration, so one entry serves both hosts. The manual `mem-status`, `mem-recent`, and `mem-stats` tools keep their hyphenated IDs on both hosts.
 
@@ -56,7 +56,7 @@ Rollback:
 
 When OpenCode runs from a codemem source checkout, `.opencode/plugins/lint-feedback.js` auto-loads repository-owned OpenCode 1 and OpenCode 2 adapters backed by `packages/opencode-plugin/src/lint-feedback-core.ts`. Both run the installed Biome launcher through Node without a shell and check JavaScript or TypeScript paths included by `biome.json` when handled by `edit`, `write`, `apply_patch`, or `patch`, including move destinations; paths outside that configured Biome scope are ignored. They append at most 10 new or worsened diagnostics and leave the edit intact when Biome fails or exceeds its 10-second timeout. Existing diagnostics are a warning-level ratchet rather than a cleanup mandate.
 
-OpenCode 2 support is pinned and host-tested against 2.0.2. Its tool hooks make feedback visible in the successful tool result and isolate overlapping calls by session and call ID. OpenCode 2 exposes no shell post-execution hook, so shell-driven file changes bypass immediate feedback; run `pnpm lint:delta -- --base <ref>` at a stable checkpoint. Hook limitations never replace or disable the required CI ratchet.
+OpenCode 2 support is pinned and host-tested against 2.0.12. Its tool hooks make feedback visible in the successful tool result and isolate overlapping calls by session and call ID. OpenCode 2 exposes no shell post-execution hook, so shell-driven file changes bypass immediate feedback; run `pnpm lint:delta -- --base <ref>` at a stable checkpoint. Hook limitations never replace or disable the required CI ratchet.
 
 This hook is contributor tooling only. Neither the repository wrapper nor `src/lint-feedback.ts` is included in the published `@codemem/opencode-plugin` package, so installing codemem does not activate it. Restart OpenCode after changing the checkout's plugin configuration.
 

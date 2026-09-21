@@ -380,12 +380,12 @@ importers:
         specifier: 1.18.31
         version: 1.18.31
       '@opencode/plugin':
-        specifier: 2.0.2
-        version: 2.0.2(@opentelemetry/api-logs@0.214.0)(@opentelemetry/resources@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-logs@0.214.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-metrics@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/semantic-conventions@1.43.0)(redis@6.2.1(@opentelemetry/api@1.9.0))(supports-color@10.2.2)
+        specifier: 2.0.12
+        version: 2.0.12(@opentelemetry/api-logs@0.214.0)(@opentelemetry/resources@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-logs@0.214.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-metrics@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/semantic-conventions@1.43.0)(redis@6.2.1(@opentelemetry/api@1.9.0))(supports-color@10.2.2)
     devDependencies:
       '@opencode/cli':
-        specifier: 2.0.2
-        version: 2.0.2
+        specifier: 2.0.12
+        version: 2.0.12
       '@types/node':
         specifier: ^24.12.4
         version: 24.13.3
@@ -1642,77 +1642,77 @@ packages:
   '@opencode-ai/sdk@1.18.31':
     resolution: {integrity: sha512-Raouthf8Lhe9edjvYeeSK7SgvdoU6bBjH9qV3f70dHoa6h+z0X2TMz/e22/wKp/StlFUZ4kIRpYYxFnY8/k01w==}
 
-  '@opencode/ai@2.0.2':
-    resolution: {integrity: sha512-Byq9c3kRdIl+AfGidPkd3JUC6DnjaNXGem77sAFRSxYwA0AMJMImPm+ua6ibnRqJ+6HlEq9JSh+Z1nQ8s8xzrQ==}
+  '@opencode/ai@2.0.12':
+    resolution: {integrity: sha512-3ODFv7a3mKHZ92uUgJDKUM8wY2akNwpvC6YDck0U2gwkc6zfXwNXXpWAEjhdlHPujmQub6dNb0FS5St4oKpSNQ==}
 
-  '@opencode/cli-darwin-arm64@2.0.2':
-    resolution: {integrity: sha512-JgCEsOQ/GxrhXFB5UG3nVw43iuFKiCc3LMDvck6T42e2X1MGP/tH3bdaPYQdtKHdh6kXr82qD0uYVvNYaIxGtw==}
+  '@opencode/cli-darwin-arm64@2.0.12':
+    resolution: {integrity: sha512-oX4ziMcV3/itJNcpjD+dPyO7STRq/o9UVKpKiQM1yX9PLiUoIdFQSjzkv77zLCW0pHiQCOaEYlI1JJr+BFbFdQ==}
     cpu: [arm64]
     os: [darwin]
 
-  '@opencode/cli-darwin-x64-baseline@2.0.2':
-    resolution: {integrity: sha512-sQmjh9r3Lbkx7adlGcSFsNOQrMMqWpnkYipsUjOj5P40iiN8uetTHl6LrnpaGDEQI+mVChfffRL5DZO5y0amqg==}
+  '@opencode/cli-darwin-x64-baseline@2.0.12':
+    resolution: {integrity: sha512-fRTOtXjHGGhY59fBNwIWVQ6G3P+KngRi6ifKo0JA5f5baIB1/7uKFBnL5yCiWjuF7ePw8IgIts/ukI1kiPoVdA==}
     cpu: [x64]
     os: [darwin]
 
-  '@opencode/cli-darwin-x64@2.0.2':
-    resolution: {integrity: sha512-GF3SjNVJwdYhwEJHdlw6mIrezmuaaoy4Ol+7bg5fSKZ/u2Cd/SPKE/wGNOgsyjPEW7GPhjWd39pxcCzgvl6aYw==}
+  '@opencode/cli-darwin-x64@2.0.12':
+    resolution: {integrity: sha512-w2/x2nYzMJmD51Ua3j++BjYCWAls41jyIVv/EdL444h/3sEE/58XJpV/JssEHtYTDd6Weza5pLX/M4lK4KQXaw==}
     cpu: [x64]
     os: [darwin]
 
-  '@opencode/cli-linux-arm64-musl@2.0.2':
-    resolution: {integrity: sha512-hwCrSEMQMr/ABkVZb2pzP7oMpFwllhPLQxKprIv/0zd6766LhY1pIw4W2o0Q4G9hBCpKzTk9Hx88ThE1burMGA==}
+  '@opencode/cli-linux-arm64-musl@2.0.12':
+    resolution: {integrity: sha512-cwIjhO/XtnMXATT+Knm5lTtBVXyUqY/i8BM9kQpKE4YJbpLOdErpWwhTgk20RWdzGx3U8LNjfu9vdH3CD35Vfg==}
     cpu: [arm64]
     os: [linux]
 
-  '@opencode/cli-linux-arm64@2.0.2':
-    resolution: {integrity: sha512-9NUcKcihSNRd4ofy/lRamaOop6A/REQPyGEvfV/1OsyiRR9WGkAiJoyZ0fO0gS9RonQlxDyI9IBxlF7HRQwHNA==}
+  '@opencode/cli-linux-arm64@2.0.12':
+    resolution: {integrity: sha512-fdLUINi36iqYeHUs+GppVh1Bgkhj0/uvk+BvOkH7xqEVZNIbSTlXtkvnkBBKNb3cjwhOZX1n8KMjCem2M50PQw==}
     cpu: [arm64]
     os: [linux]
 
-  '@opencode/cli-linux-x64-baseline-musl@2.0.2':
-    resolution: {integrity: sha512-LjHsVgO5Py/0oDCIYPD3tN6V4Cuv1SGM+oPEt9aoFDMft5/+rCxwf9RN1w053OoF8UpdE70Ed6jtK0AYcqpICQ==}
+  '@opencode/cli-linux-x64-baseline-musl@2.0.12':
+    resolution: {integrity: sha512-0rmSygkr5sSsD1oIHXGW5v02SOy0LQ9tlngu4ivDfGaRU/7y02Ktce0sYlP6lysCM+DFJ6TdeVwcr+6vW52rIw==}
     cpu: [x64]
     os: [linux]
 
-  '@opencode/cli-linux-x64-baseline@2.0.2':
-    resolution: {integrity: sha512-QnxTyLDrIWbKDnHO1q8glguu/neWaPSTBMQNsNN9cspswZ3m4cMy+ZGaR4lbOyaSlBdkQIQB2SJUwqmSAH7vZg==}
+  '@opencode/cli-linux-x64-baseline@2.0.12':
+    resolution: {integrity: sha512-FZ1FifxC26VXi5fpk2ujWgGR5WTIQSPemofKKztZRdJ6rvOVW/eCChCuQmMGHRltxyUdAuSuD/YdikOU+YQTcQ==}
     cpu: [x64]
     os: [linux]
 
-  '@opencode/cli-linux-x64-musl@2.0.2':
-    resolution: {integrity: sha512-AHcFjD57HJgJ+dZCxt1aahnIOgWw6kbUbnzjoKM/X60UlGdXt7hfAN8fF8SsFxbh3TKLi952UJemn1M6cjh1YA==}
+  '@opencode/cli-linux-x64-musl@2.0.12':
+    resolution: {integrity: sha512-sjC0nhr0oqchD7bes6021iSmjVWZarMm4SIO7gN2cOKW98WZ2BS8GylsohRzuSDQ9NljDa2d7K1RVwEU3LcPBA==}
     cpu: [x64]
     os: [linux]
 
-  '@opencode/cli-linux-x64@2.0.2':
-    resolution: {integrity: sha512-huhUQIpjj7g+ZMnjTNa4PApZ3cFEAno8F0OXv3KQbZZVP9Xa7JgSg0iOZ8H8iiNkaPUZpmzwX4DXyuyRCQhO4A==}
+  '@opencode/cli-linux-x64@2.0.12':
+    resolution: {integrity: sha512-/h+IXHYYdXLMhUXC/ll8x6oZoQILCKHI0xkbS1z+bZuJSc/Kv6D0sAF5ES2T87DQBrFmJwyV8XQqhCspy8SKyg==}
     cpu: [x64]
     os: [linux]
 
-  '@opencode/cli-windows-arm64@2.0.2':
-    resolution: {integrity: sha512-AzpKajNpEmQu9ziGhpJlmrXTMwHshwE7e/q/YVWHbg1cFmEOPcneBbpBfoa98+ohRNRL7Nn9IecgHsX6+eKRSQ==}
+  '@opencode/cli-windows-arm64@2.0.12':
+    resolution: {integrity: sha512-ixY4x527UvK0YJM0w9LNNV1OQv3+jBghBF0lpnnO6q9S8Kmbe2CXVmXnOBKt1fTH6TxUBJs3+7xM3VxFxTo5yQ==}
     cpu: [arm64]
     os: [win32]
 
-  '@opencode/cli-windows-x64-baseline@2.0.2':
-    resolution: {integrity: sha512-ZpmS0Odywn3qoDSYXJEVUX0gjlVgGGICRKttV8tKUwKkyS3OrZcdbPQ7Y0cvXN+tb/YX2qL2QHGwJSBNj1LpNw==}
+  '@opencode/cli-windows-x64-baseline@2.0.12':
+    resolution: {integrity: sha512-vaEFy0MhY7/EvkDiafRU7KiEBss2oLZR5vPLvEHSqnjGMoL0mXJm/5Nig9FkPt614W1Ojv9b/wuYUKVUqkGtIA==}
     cpu: [x64]
     os: [win32]
 
-  '@opencode/cli-windows-x64@2.0.2':
-    resolution: {integrity: sha512-ddOKVlEQP8OY7rjIAPYVUcdAWljaAqogTysDIcb35PnLYcnTE6xzcPN+yBr+8xOtqXuEnq3z+y2glrxm2PEudg==}
+  '@opencode/cli-windows-x64@2.0.12':
+    resolution: {integrity: sha512-/UWgL0F+eopid4+cLOdzhJ0FPgbQdJ+AMEzKUTMeDZs9GUL33UvNlxYGPH2SfZzdCHNx2svqevekb9JtmfVvAw==}
     cpu: [x64]
     os: [win32]
 
-  '@opencode/cli@2.0.2':
-    resolution: {integrity: sha512-O18TgC5bpNkJHNrGYxXEAi7Qw4y1j2XYLYqyV9YnkLyaZRfuxeCM3QBGTfbJc0GHbJIjQKDvOxo9yEBkohfYLA==}
+  '@opencode/cli@2.0.12':
+    resolution: {integrity: sha512-LwB0LD7LXZbfFDU12KwiUq5nPcjW1BzYpp81UPzEBpeZSNvszKXnTUa3l8JmLi6I6/WtQx/Z/8n2743FyY6lpg==}
     cpu: [arm64, x64]
     os: [darwin, linux, win32]
     hasBin: true
 
-  '@opencode/client@2.0.2':
-    resolution: {integrity: sha512-w8rrSsxY9qnuFrsQAHdLDE6mrEqUKQeo7fNsw2i/tFtimgspT53/8/3ckEVRuRUM5k6v68KiU2deG0W2gEIVDQ==}
+  '@opencode/client@2.0.12':
+    resolution: {integrity: sha512-WxZLWIv0Sx9NwoCDmkEqKPnn+NOpk3Kt9FWh5gMgrl1mDbCI+6EQtFOsgrhqJSrFZXMzFqgLMAiTTIYD7wZWpA==}
     peerDependencies:
       effect: 4.0.0-rc.112
       solid-js: '>=1.9.0'
@@ -1722,10 +1722,10 @@ packages:
       solid-js:
         optional: true
 
-  '@opencode/plugin@2.0.2':
-    resolution: {integrity: sha512-lFXcsyg1fhzCpzuMqBhb2yNddMeynXZwXL3aHs1T9ftbFu4buFAdtE9ox09Q+CL/r7yGbbX4mdtjKYdnt0dn5Q==}
+  '@opencode/plugin@2.0.12':
+    resolution: {integrity: sha512-eUO61AEruyxK6wrL82XhjRuZ5zvoWpLdhzAWbFgoLe3/8IgwrY/4SUKGEou5WgXtzh0zWNDQQqMpaVMe66n8cQ==}
     peerDependencies:
-      '@opencode/theme': 2.0.2
+      '@opencode/theme': 2.0.12
       '@opentui/core': '>=0.5.10'
       '@opentui/solid': '>=0.5.10'
       solid-js: '>=1.9.0'
@@ -1739,14 +1739,14 @@ packages:
       solid-js:
         optional: true
 
-  '@opencode/protocol@2.0.2':
-    resolution: {integrity: sha512-FxTxdHPNz46NkG8ZBB2S60QzXbZDlVEyZ6KeYTt2G7hcWB5JlMYBh8jeqHlsLbquKinvMKA2iuEsA1NaccN+YQ==}
+  '@opencode/protocol@2.0.12':
+    resolution: {integrity: sha512-YYp9ElZMW8UG7cV9kSd9j3svPTEt0sTP7G4tXeQ2icbCIwFki28x+fCiuF8wBGcpYMEcLg1GrF3aEqxPAZOpWA==}
 
-  '@opencode/schema@2.0.2':
-    resolution: {integrity: sha512-jF23H41j6zM2Az1pYLD6NFfzpoQ79CX0AxRkfNxTZFbPfjGGc+EPSOzVQP/r4Y/5bkSSqVga0Vn7MyoP8QhwDQ==}
+  '@opencode/schema@2.0.12':
+    resolution: {integrity: sha512-T3RJb371gH813pdaWpAvXAgZ3GSHpPcHSkP8nRbPsSKYOlfmNId2s8Js9aLCJHeVfIKmW3+I9poa3Bx+aiiROQ==}
 
-  '@opencode/util@2.0.2':
-    resolution: {integrity: sha512-AKnFr44s1Q7/Ud+Pl4QMCEJoIp33xyDiTi693BofXn+HBDHdJmKrwq87YpG+Kwt9t48gVv6Cx1glmqJ4lVJpHg==}
+  '@opencode/util@2.0.12':
+    resolution: {integrity: sha512-LgecrvN4dhsbdgG7Lt6+Cp/+0+VswyV8RJsE/mjjJ6Ns39EwFVTnZYMHT4bkR+vRL/w3IF0VCFg8Ohnfwkn3lw==}
 
   '@opentelemetry/api-logs@0.214.0':
     resolution: {integrity: sha512-40lSJeqYO8Uz2Yj7u94/SJWE/wONa7rmMKjI1ZcIjgf3MHNHv1OZUCrCETGuaRF62d5pQD1wKIW+L4lmSMTzZA==}
@@ -4935,7 +4935,7 @@ snapshots:
     dependencies:
       '@aws-crypto/sha256-browser': 5.2.0
       '@aws-crypto/sha256-js': 5.2.0
-      '@aws-sdk/core': 3.977.9
+      '@aws-sdk/core': 3.978.0
       '@aws-sdk/credential-provider-node': 3.972.82
       '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
@@ -4976,7 +4976,7 @@ snapshots:
 
   '@aws-sdk/credential-provider-env@3.972.70':
     dependencies:
-      '@aws-sdk/core': 3.977.9
+      '@aws-sdk/core': 3.978.0
       '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
       '@smithy/types': 4.18.0
@@ -4984,7 +4984,7 @@ snapshots:
 
   '@aws-sdk/credential-provider-http@3.972.72':
     dependencies:
-      '@aws-sdk/core': 3.977.9
+      '@aws-sdk/core': 3.978.0
       '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
       '@smithy/fetch-http-handler': 5.8.0
@@ -4994,7 +4994,7 @@ snapshots:
 
   '@aws-sdk/credential-provider-ini@3.973.15':
     dependencies:
-      '@aws-sdk/core': 3.977.9
+      '@aws-sdk/core': 3.978.0
       '@aws-sdk/credential-provider-env': 3.972.70
       '@aws-sdk/credential-provider-http': 3.972.72
       '@aws-sdk/credential-provider-login': 3.972.77
@@ -5010,7 +5010,7 @@ snapshots:
 
   '@aws-sdk/credential-provider-login@3.972.77':
     dependencies:
-      '@aws-sdk/core': 3.977.9
+      '@aws-sdk/core': 3.978.0
       '@aws-sdk/nested-clients': 3.997.44
       '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
@@ -5033,7 +5033,7 @@ snapshots:
 
   '@aws-sdk/credential-provider-process@3.972.70':
     dependencies:
-      '@aws-sdk/core': 3.977.9
+      '@aws-sdk/core': 3.978.0
       '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
       '@smithy/types': 4.18.0
@@ -5041,7 +5041,7 @@ snapshots:
 
   '@aws-sdk/credential-provider-sso@3.973.14':
     dependencies:
-      '@aws-sdk/core': 3.977.9
+      '@aws-sdk/core': 3.978.0
       '@aws-sdk/nested-clients': 3.997.44
       '@aws-sdk/token-providers': 3.1116.0
       '@aws-sdk/types': 3.974.5
@@ -5051,7 +5051,7 @@ snapshots:
 
   '@aws-sdk/credential-provider-web-identity@3.972.76':
     dependencies:
-      '@aws-sdk/core': 3.977.9
+      '@aws-sdk/core': 3.978.0
       '@aws-sdk/nested-clients': 3.997.44
       '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
@@ -5061,7 +5061,7 @@ snapshots:
   '@aws-sdk/credential-providers@3.1057.0':
     dependencies:
       '@aws-sdk/client-cognito-identity': 3.1057.0
-      '@aws-sdk/core': 3.977.9
+      '@aws-sdk/core': 3.978.0
       '@aws-sdk/credential-provider-cognito-identity': 3.972.69
       '@aws-sdk/credential-provider-env': 3.972.70
       '@aws-sdk/credential-provider-http': 3.972.72
@@ -5104,7 +5104,7 @@ snapshots:
 
   '@aws-sdk/nested-clients@3.997.44':
     dependencies:
-      '@aws-sdk/core': 3.977.9
+      '@aws-sdk/core': 3.978.0
       '@aws-sdk/signature-v4-multi-region': 3.996.46
       '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
@@ -5131,7 +5131,7 @@ snapshots:
 
   '@aws-sdk/token-providers@3.1116.0':
     dependencies:
-      '@aws-sdk/core': 3.977.9
+      '@aws-sdk/core': 3.978.0
       '@aws-sdk/nested-clients': 3.997.44
       '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.33.3
@@ -6066,10 +6066,10 @@ snapshots:
     dependencies:
       cross-spawn: 7.0.6
 
-  '@opencode/ai@2.0.2(supports-color@10.2.2)':
+  '@opencode/ai@2.0.12(supports-color@10.2.2)':
     dependencies:
       '@aws-sdk/credential-providers': 3.1057.0
-      '@opencode/schema': 2.0.2
+      '@opencode/schema': 2.0.12
       '@smithy/eventstream-codec': 4.2.14
       '@smithy/util-utf8': 4.2.2
       aws4fetch: 1.0.20
@@ -6078,72 +6078,72 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@opencode/cli-darwin-arm64@2.0.2':
+  '@opencode/cli-darwin-arm64@2.0.12':
     optional: true
 
-  '@opencode/cli-darwin-x64-baseline@2.0.2':
+  '@opencode/cli-darwin-x64-baseline@2.0.12':
     optional: true
 
-  '@opencode/cli-darwin-x64@2.0.2':
+  '@opencode/cli-darwin-x64@2.0.12':
     optional: true
 
-  '@opencode/cli-linux-arm64-musl@2.0.2':
+  '@opencode/cli-linux-arm64-musl@2.0.12':
     optional: true
 
-  '@opencode/cli-linux-arm64@2.0.2':
+  '@opencode/cli-linux-arm64@2.0.12':
     optional: true
 
-  '@opencode/cli-linux-x64-baseline-musl@2.0.2':
+  '@opencode/cli-linux-x64-baseline-musl@2.0.12':
     optional: true
 
-  '@opencode/cli-linux-x64-baseline@2.0.2':
+  '@opencode/cli-linux-x64-baseline@2.0.12':
     optional: true
 
-  '@opencode/cli-linux-x64-musl@2.0.2':
+  '@opencode/cli-linux-x64-musl@2.0.12':
     optional: true
 
-  '@opencode/cli-linux-x64@2.0.2':
+  '@opencode/cli-linux-x64@2.0.12':
     optional: true
 
-  '@opencode/cli-windows-arm64@2.0.2':
+  '@opencode/cli-windows-arm64@2.0.12':
     optional: true
 
-  '@opencode/cli-windows-x64-baseline@2.0.2':
+  '@opencode/cli-windows-x64-baseline@2.0.12':
     optional: true
 
-  '@opencode/cli-windows-x64@2.0.2':
+  '@opencode/cli-windows-x64@2.0.12':
     optional: true
 
-  '@opencode/cli@2.0.2':
+  '@opencode/cli@2.0.12':
     optionalDependencies:
-      '@opencode/cli-darwin-arm64': 2.0.2
-      '@opencode/cli-darwin-x64': 2.0.2
-      '@opencode/cli-darwin-x64-baseline': 2.0.2
-      '@opencode/cli-linux-arm64': 2.0.2
-      '@opencode/cli-linux-arm64-musl': 2.0.2
-      '@opencode/cli-linux-x64': 2.0.2
-      '@opencode/cli-linux-x64-baseline': 2.0.2
-      '@opencode/cli-linux-x64-baseline-musl': 2.0.2
-      '@opencode/cli-linux-x64-musl': 2.0.2
-      '@opencode/cli-windows-arm64': 2.0.2
-      '@opencode/cli-windows-x64': 2.0.2
-      '@opencode/cli-windows-x64-baseline': 2.0.2
+      '@opencode/cli-darwin-arm64': 2.0.12
+      '@opencode/cli-darwin-x64': 2.0.12
+      '@opencode/cli-darwin-x64-baseline': 2.0.12
+      '@opencode/cli-linux-arm64': 2.0.12
+      '@opencode/cli-linux-arm64-musl': 2.0.12
+      '@opencode/cli-linux-x64': 2.0.12
+      '@opencode/cli-linux-x64-baseline': 2.0.12
+      '@opencode/cli-linux-x64-baseline-musl': 2.0.12
+      '@opencode/cli-linux-x64-musl': 2.0.12
+      '@opencode/cli-windows-arm64': 2.0.12
+      '@opencode/cli-windows-x64': 2.0.12
+      '@opencode/cli-windows-x64-baseline': 2.0.12
 
-  '@opencode/client@2.0.2(effect@4.0.0-rc.112)':
+  '@opencode/client@2.0.12(effect@4.0.0-rc.112)':
     dependencies:
-      '@opencode/protocol': 2.0.2
-      '@opencode/schema': 2.0.2
+      '@opencode/protocol': 2.0.12
+      '@opencode/schema': 2.0.12
     optionalDependencies:
       effect: 4.0.0-rc.112
 
-  '@opencode/plugin@2.0.2(@opentelemetry/api-logs@0.214.0)(@opentelemetry/resources@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-logs@0.214.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-metrics@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/semantic-conventions@1.43.0)(redis@6.2.1(@opentelemetry/api@1.9.0))(supports-color@10.2.2)':
+  '@opencode/plugin@2.0.12(@opentelemetry/api-logs@0.214.0)(@opentelemetry/resources@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-logs@0.214.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-metrics@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/semantic-conventions@1.43.0)(redis@6.2.1(@opentelemetry/api@1.9.0))(supports-color@10.2.2)':
     dependencies:
       '@ai-sdk/provider': 3.0.8
-      '@opencode/ai': 2.0.2(supports-color@10.2.2)
-      '@opencode/client': 2.0.2(effect@4.0.0-rc.112)
-      '@opencode/protocol': 2.0.2
-      '@opencode/schema': 2.0.2
-      '@opencode/util': 2.0.2(@opentelemetry/api-logs@0.214.0)(@opentelemetry/resources@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-logs@0.214.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-metrics@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/semantic-conventions@1.43.0)(redis@6.2.1(@opentelemetry/api@1.9.0))(supports-color@10.2.2)
+      '@opencode/ai': 2.0.12(supports-color@10.2.2)
+      '@opencode/client': 2.0.12(effect@4.0.0-rc.112)
+      '@opencode/protocol': 2.0.12
+      '@opencode/schema': 2.0.12
+      '@opencode/util': 2.0.12(@opentelemetry/api-logs@0.214.0)(@opentelemetry/resources@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-logs@0.214.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-metrics@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/semantic-conventions@1.43.0)(redis@6.2.1(@opentelemetry/api@1.9.0))(supports-color@10.2.2)
       '@standard-schema/spec': 1.1.0
       effect: 4.0.0-rc.112
       zod: 4.1.8
@@ -6159,17 +6159,17 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@opencode/protocol@2.0.2':
+  '@opencode/protocol@2.0.12':
     dependencies:
-      '@opencode/schema': 2.0.2
+      '@opencode/schema': 2.0.12
       effect: 4.0.0-rc.112
 
-  '@opencode/schema@2.0.2':
+  '@opencode/schema@2.0.12':
     dependencies:
       '@standard-schema/spec': 1.1.0
       effect: 4.0.0-rc.112
 
-  '@opencode/util@2.0.2(@opentelemetry/api-logs@0.214.0)(@opentelemetry/resources@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-logs@0.214.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-metrics@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/semantic-conventions@1.43.0)(redis@6.2.1(@opentelemetry/api@1.9.0))(supports-color@10.2.2)':
+  '@opencode/util@2.0.12(@opentelemetry/api-logs@0.214.0)(@opentelemetry/resources@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-logs@0.214.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-metrics@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/semantic-conventions@1.43.0)(redis@6.2.1(@opentelemetry/api@1.9.0))(supports-color@10.2.2)':
     dependencies:
       '@effect/opentelemetry': 4.0.0-rc.112(@opentelemetry/api-logs@0.214.0)(@opentelemetry/api@1.9.0)(@opentelemetry/resources@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-logs@0.214.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-metrics@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-trace-base@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-trace-node@2.6.1(@opentelemetry/api@1.9.0))(@opentelemetry/semantic-conventions@1.43.0)(effect@4.0.0-rc.112)
       '@effect/platform-node': 4.0.0-rc.112(effect@4.0.0-rc.112)(redis@6.2.1(@opentelemetry/api@1.9.0))

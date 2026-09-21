@@ -4,7 +4,7 @@ import { Plugin } from "@opencode/plugin";
 const SYSTEM_PART_CONTRACT_TEXT = "codemem-v2-system-part-contract";
 const MESSAGE_PART_CONTRACT_TEXT = "codemem-v2-message-part-contract";
 
-export const OPEN_CODE_V2_CONTRACT_VERSION = "2.0.2";
+export const OPEN_CODE_V2_CONTRACT_VERSION = "2.0.12";
 export const OPEN_CODE_V2_CONTEXT_MARKER = "codemem-v2-context-hook-applied";
 
 export type ContractRecord = Readonly<Record<string, unknown>>;

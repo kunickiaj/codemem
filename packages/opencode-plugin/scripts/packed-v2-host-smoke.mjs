@@ -17,7 +17,7 @@ import { join, resolve } from "node:path";
 
 const packageRoot = process.cwd();
 const workspaceRoot = resolve(packageRoot, "..", "..");
-const pinnedVersion = "2.0.2";
+const pinnedVersion = "2.0.12";
 const hostVersion = process.env.CODEMEM_OPENCODE_V2_VERSION ?? pinnedVersion;
 const exactVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\+[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*)?$/u;
 if (hostVersion.trim() !== hostVersion || !exactVersion.test(hostVersion)) {
@@ -68,7 +68,7 @@ function readPluginEntries(result) {
 
 function assertActiveLocalPlugin(entries, id, pathSuffix) {
 	const plugin = entries.find((entry) => entry.id === id);
-	assert(plugin, `Pinned host did not register checkout plugin ${id}`);
+	assert(plugin, `Pinned host did not register checkout plugin ${id}: ${JSON.stringify(entries)}`);
 	assert(plugin.state?.status === "active", `Checkout plugin ${id} did not activate`);
 	assert(
 		plugin.source?.type === "local" && plugin.source.path?.endsWith(pathSuffix),
@@ -332,6 +332,42 @@ async function startProvider(projectDir) {
 	};
 }
 
+async function waitForPlugins(host, directory, env, expectedIDs) {
+	let entries = [];
+	for (let attempt = 0; attempt < 200; attempt += 1) {
+		const url = new URL("/api/plugin", host.baseURL);
+		url.searchParams.set("location[directory]", directory);
+		const response = await fetch(url, {
+			headers: {
+				Authorization: `Basic ${Buffer.from(`opencode:${env.OPENCODE_SERVER_PASSWORD}`).toString("base64")}`,
+			},
+		});
+		assert(response.ok, `Plugin inventory returned HTTP ${response.status}`);
+		entries = (await response.json()).data;
+		assert(Array.isArray(entries), "Pinned host returned an invalid plugin registry response");
+		assert(
+			!entries.some((entry) => entry.state?.status === "failed"),
+			`Plugin activation failed: ${JSON.stringify(entries)}`,
+		);
+		if (expectedIDs.every((id) => entries.some(
+			(entry) => entry.id === id && entry.state?.status === "active",
+		))) return;
+		await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+	}
+	throw new Error(`Plugin activation timed out: ${JSON.stringify(entries)}\n${host.output()}`);
+}
+
+async function inspectStandalonePlugins(opencode2, directory, env, expectedIDs) {
+	const isolatedHost = await startHost(opencode2, directory, env);
+	try {
+		await waitForPlugins(isolatedHost, directory, env, expectedIDs);
+	} finally {
+		await stopHost(isolatedHost.child);
+		hostProcess = undefined;
+	}
+	return { stdout: isolatedHost.output(), stderr: "" };
+}
+
 function closeServer(server) {
 	return new Promise((resolvePromise, reject) => {
 		server.close((error) => {
@@ -342,7 +378,7 @@ function closeServer(server) {
 }
 
 async function startHost(opencode2, projectDir, env) {
-	const child = spawn(opencode2, ["serve", "--hostname", "127.0.0.1"], {
+	const child = spawn(opencode2, ["serve", "--hostname", "127.0.0.1", "--port", "0", "--print-logs"], {
 		cwd: projectDir,
 		env,
 	});
@@ -365,7 +401,7 @@ async function startHost(opencode2, projectDir, env) {
 		}
 		const baseURL = match[1];
 		try {
-			const response = await fetch(`${baseURL}/api/health`, {
+			const response = await fetch(`${baseURL}/api/info`, {
 				headers: {
 					Authorization: `Basic ${Buffer.from(`opencode:${env.OPENCODE_SERVER_PASSWORD}`).toString("base64")}`,
 				},
@@ -401,7 +437,7 @@ async function promptHost(opencode2, host, sessionID, text, options) {
 	if (options.waitForIdle === false) return;
 	await runAsync(
 		opencode2,
-		["api", "--server", host.baseURL, "POST", `/api/session/${sessionID}/wait`],
+		["api", "--server", host.baseURL, "POST", `/api/experimental/session/${sessionID}/wait`],
 		options,
 	);
 }
@@ -422,7 +458,7 @@ async function generateHost(opencode2, host, sessionID, options) {
 	);
 	await runAsync(
 		opencode2,
-		["api", "--server", host.baseURL, "POST", `/api/session/${sessionID}/wait`],
+		["api", "--server", host.baseURL, "POST", `/api/experimental/session/${sessionID}/wait`],
 		options,
 	);
 }
@@ -443,7 +479,7 @@ async function compactHost(opencode2, host, sessionID, options) {
 	);
 	await runAsync(
 		opencode2,
-		["api", "--server", host.baseURL, "POST", `/api/session/${sessionID}/wait`],
+		["api", "--server", host.baseURL, "POST", `/api/experimental/session/${sessionID}/wait`],
 		options,
 	);
 }
@@ -655,18 +691,9 @@ try {
 		checkoutLintFixtureCreated = true;
 		provider.setLintTarget(checkoutLintFixture);
 		checkoutHost = await startHost(opencode2, workspaceRoot, checkoutEnv);
-		run(opencode2, [
-			"api",
-			"--server",
-			checkoutHost.baseURL,
-			"POST",
-			"/api/plugin/await-activation",
-			"--param",
-			`location=${workspaceRoot}`,
-		], {
-			cwd: workspaceRoot,
-			env: checkoutEnv,
-		});
+		await waitForPlugins(checkoutHost, workspaceRoot, checkoutEnv, [
+			"codemem-source-checkout-v1", "codemem", "codemem-lint-feedback",
+		]);
 		const pluginResult = run(opencode2, [
 			"api",
 			"--server",
@@ -784,18 +811,8 @@ try {
 		env: gitEnv,
 	});
 	mkdirSync(worktreeActiveDirectory, { recursive: true });
-	const worktreeResult = run(
-		opencode2,
-		[
-			"api",
-			"--standalone",
-			"POST",
-			"/api/plugin/await-activation",
-			"--param",
-			`location=${worktreeActiveDirectory}`,
-			"--print-logs",
-		],
-		{ cwd: worktreeActiveDirectory, env },
+	const worktreeResult = await inspectStandalonePlugins(
+		opencode2, worktreeActiveDirectory, env, ["codemem-v2-contract"],
 	);
 	const worktreeRecords = readContractRecords(reportPath, worktreeResult);
 	assert(
@@ -829,18 +846,9 @@ try {
 		configResult.stdout.includes(JSON.stringify(packedFixtureTarget)),
 		"Pinned host did not report the configured project plugin target",
 	);
-	const hostResult = run(opencode2, [
-		"api",
-		"--standalone",
-		"POST",
-		"/api/plugin/await-activation",
-		"--param",
-		`location=${projectDir}`,
-		"--print-logs",
-	], {
-		cwd: projectDir,
-		env,
-	});
+	const hostResult = await inspectStandalonePlugins(
+		opencode2, projectDir, env, ["codemem", "codemem-v2-contract"],
+	);
 	const hostLogLines = `${hostResult.stdout}\n${hostResult.stderr}`.split(/\r?\n/u);
 	const installedPluginPath = "node_modules/@codemem/opencode-plugin";
 	assert(
@@ -908,7 +916,7 @@ try {
 	}
 	await runAsync(
 		opencode2,
-		["api", "--server", host.baseURL, "POST", `/api/session/${sessionID}/wait`],
+		["api", "--server", host.baseURL, "POST", `/api/experimental/session/${sessionID}/wait`],
 		{ cwd: projectDir, env },
 	);
 	const liveHostResult = {
@@ -967,8 +975,8 @@ try {
 			"api",
 			"--server",
 			host.baseURL,
-			"POST",
-			"/api/plugin/await-activation",
+			"GET",
+			"/api/plugin",
 			"--param",
 			`location=${projectDir}`,
 		],

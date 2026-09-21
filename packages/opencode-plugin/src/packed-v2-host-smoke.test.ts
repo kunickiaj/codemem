@@ -33,11 +33,13 @@ function installForVersion(override: string | undefined, installs: string[][]) {
 }
 
 describe("packed OpenCode 2 version selection", () => {
-	it("keeps 2.0.2 as the exact default SDK and host version", () => {
+	it("keeps 2.0.12 as the exact default SDK and host version", () => {
 		const installs: string[][] = [];
 		installForVersion(undefined, installs);
-		expect(smokeSource).toContain('const pinnedVersion = "2.0.2";');
-		expect(installs).toEqual([["npm", "install", "/fixture/plugin.tgz", "@opencode/plugin@2.0.2"]]);
+		expect(smokeSource).toContain('const pinnedVersion = "2.0.12";');
+		expect(installs).toEqual([
+			["npm", "install", "/fixture/plugin.tgz", "@opencode/plugin@2.0.12"],
+		]);
 	});
 
 	it.each(["2.0.3", "2.0.3-beta.7", "2.0.3-beta-branch.0", "2.0.3-0", "2.0.3-beta.7+build.4"])(
@@ -83,6 +85,52 @@ describe("packed OpenCode 2 version selection", () => {
 	});
 });
 
+describe("packed OpenCode 2 plugin readiness", () => {
+	function waitWithInventories(inventories: unknown[][]) {
+		let requests = 0;
+		const wait = new Script(
+			`${smokeSection("async function waitForPlugins(", "async function inspectStandalonePlugins(")}\nwaitForPlugins`,
+		).runInNewContext({
+			URL,
+			Buffer,
+			assert: ok,
+			setTimeout: (callback: () => void) => callback(),
+			fetch: async (url: URL) => {
+				expect(url.searchParams.get("location[directory]")).toBe("/fixture");
+				const data = inventories[Math.min(requests++, inventories.length - 1)];
+				return { ok: true, json: async () => ({ data }) };
+			},
+		});
+		return {
+			result: wait(
+				{ baseURL: "http://localhost", output: () => "host log" },
+				"/fixture",
+				{ OPENCODE_SERVER_PASSWORD: "test" },
+				["codemem"],
+			),
+			requests: () => requests,
+		};
+	}
+
+	it("waits past empty inventory until the expected plugin is active", async () => {
+		const probe = waitWithInventories([[], [{ id: "codemem", state: { status: "active" } }]]);
+		await probe.result;
+		expect(probe.requests()).toBe(2);
+	});
+
+	it("fails immediately when setup fails", async () => {
+		const probe = waitWithInventories([[{ id: "codemem", state: { status: "failed" } }]]);
+		await expect(probe.result).rejects.toThrow("Plugin activation failed");
+		expect(probe.requests()).toBe(1);
+	});
+
+	it("bounds waiting when the expected plugin never appears", async () => {
+		const probe = waitWithInventories([[]]);
+		await expect(probe.result).rejects.toThrow("Plugin activation timed out");
+		expect(probe.requests()).toBe(200);
+	});
+});
+
 describe("packed OpenCode 2 host config", () => {
 	it("uses setup's singular plugin key alongside the native fixture configuration", () => {
 		const configs: unknown[] = [];
@@ -122,7 +170,7 @@ describe("packed OpenCode 2 host config", () => {
 	it.each([undefined, "2.0.3-beta.7"])(
 		"requires the binary to match the selected version %s",
 		(override) => {
-			const selected = override ?? "2.0.2";
+			const selected = override ?? "2.0.12";
 			const checkVersion = (reported: string) =>
 				new Script(
 					`${smokeSection("const pinnedVersion =", "const contextMarker =")}

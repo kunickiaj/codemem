@@ -1,6 +1,6 @@
 # OpenCode 2 contract
 
-OpenCode 2.0.2 provides the hook separation Codemem uses for safe recall
+OpenCode 2.0.12 provides the hook separation Codemem uses for safe recall
 correlation. Automatic recall runs only through `session.context` and requires a
 non-empty, non-whitespace latest user-message ID. The installed schema permits
 missing IDs, so missing or blank identities skip safely rather than inferring
@@ -11,9 +11,9 @@ identity.
 The executable contract uses matching exact versions; moving tags and semver
 ranges are intentionally unsupported.
 
-- `@opencode/cli@2.0.2`
-- `@opencode/plugin@2.0.2`
-- CLI identity: `opencode v2.0.2`
+- `@opencode/cli@2.0.12`
+- `@opencode/plugin@2.0.12`
+- CLI identity: `opencode v2.0.12`
 
 Both packages are stable, published releases. Codemem still labels its own
 OpenCode 2 integration beta; see the
@@ -30,7 +30,7 @@ consumer API.
 
 ## Verified request contract
 
-OpenCode 2.0.2 separates primary context mutation from auxiliary model work:
+OpenCode 2.0.12 separates primary context mutation from auxiliary model work:
 
 - `session.context` handles primary agent-loop requests.
 - `session.compaction`, `session.generate`, and `session.title` handle auxiliary
@@ -66,7 +66,7 @@ fresh primary inputs without contacting a hosted model.
 
 The earlier `0.0.0-dev-19439` probe found that assigning `input.result` in the
 compaction and title hooks did not suppress the corresponding model requests.
-The 2.0.2 fixture does not test that short-circuit behavior, so its status on the
+The 2.0.12 fixture does not test that short-circuit behavior, so its status on the
 pinned release remains unverified.
 
 ## Other verified surfaces
@@ -89,13 +89,13 @@ pinned release remains unverified.
 
 ## Automatic recall gate
 
-The 2.0.2 host contract removes the earlier auxiliary-request ambiguity. When the
+The 2.0.12 host contract removes the earlier auxiliary-request ambiguity. When the
 latest user-message ID is non-empty and non-whitespace, it can identify a
 deliberately coalesced model turn across retries and continuations. Dedicated
 hooks keep compaction, title, and transient generation away from primary recall
 injection.
 
-Codemem translates the 2.0.2 message shape and performs one fresh retrieval per
+Codemem translates the 2.0.12 message shape and performs one fresh retrieval per
 identified turn. Retries and tool continuations replay retained context
 byte-for-byte without another retrieval. The default message surface and legacy
 system surface both work; missing or blank latest-user identity skips safely.

@@ -1,7 +1,7 @@
 # OpenCode Retained Recall
 
 This retained-recall contract applies to the OpenCode message surface. OpenCode
-2.0.2 runs automatic recall through `session.context` only: it requires a
+2.0.12 runs automatic recall through `session.context` only: it requires a
 non-empty, non-whitespace latest user-message ID and skips safely when that
 identity is missing or blank. Retries and tool continuations replay retained
 context byte-for-byte; compaction, title, and generate hooks stay isolated.

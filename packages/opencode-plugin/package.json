@@ -41,10 +41,10 @@
 	},
 	"dependencies": {
 		"@opencode-ai/plugin": "1.18.31",
-		"@opencode/plugin": "2.0.2"
+		"@opencode/plugin": "2.0.12"
 	},
 	"devDependencies": {
-		"@opencode/cli": "2.0.2",
+		"@opencode/cli": "2.0.12",
 		"@types/node": "^24.12.4",
 		"vitest": "catalog:"
 	},
