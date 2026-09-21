@@ -27,6 +27,8 @@ beforeEach(() => {
 	localStorage.clear();
 	state.feedQuery = "";
 	state.itemExpandState.clear();
+	// Exercise explicit collapse/disclosure separately from the full-content default below.
+	state.itemExpandState.set("discovery:1234", false);
 	state.itemViewState.clear();
 	state.newItemKeys.clear();
 	state.preferredFeedViewMode = "summary";
@@ -80,6 +82,69 @@ function titleButton(): HTMLButtonElement {
 	if (!button) throw new Error("Expected title disclosure button");
 	return button;
 }
+
+describe("FeedItemCard full-content default", () => {
+	beforeEach(() => state.itemExpandState.clear());
+
+	it("shows full multiline content and title once without an expansion action", () => {
+		const title = `A detailed memory title ${"with more context ".repeat(20)}`;
+		const subtitle = `First summary paragraph.\n\n${"More detail. ".repeat(100)}Final summary line.`;
+		renderCard(observation({ title, subtitle }));
+		expect(mount.querySelector(".feed-title")?.textContent).toBe(title.trim());
+		expect(mount.querySelector(".feed-body")?.textContent).toContain("Final summary line.");
+		expect(mount.querySelector(".feed-summary")).toBeNull();
+		expect(mount.querySelector(".clamp")).toBeNull();
+		expect(mount.textContent?.match(/First summary paragraph\./g)).toHaveLength(1);
+		expect(mount.textContent).not.toContain("Read more");
+	});
+
+	it("keeps all lines of a structured session summary and Facts separately selectable", () => {
+		renderCard({
+			id: 4321,
+			kind: "session_summary",
+			title: "Session title",
+			summary: {
+				request: "Improve the sample queue",
+				completed: "First result.\n\nLast result remains visible.",
+				learned: "Queue order matters.",
+			},
+		});
+		expect(mount.querySelector(".feed-body")?.textContent).toContain(
+			"Last result remains visible.",
+		);
+		expect(mount.querySelector(".feed-body")?.textContent).not.toContain("Queue order matters.");
+		const facts = Array.from(mount.querySelectorAll<HTMLButtonElement>('[role="radio"]')).find(
+			(button) => button.textContent === "Facts",
+		);
+		act(() => facts?.click());
+		expect(mount.querySelector(".feed-body")?.textContent).toContain("Queue order matters.");
+		expect(mount.querySelector(".feed-summary")).toBeNull();
+	});
+
+	it("shows the complete legacy body and preferred narrative immediately", () => {
+		const body = "Opening paragraph.\n\nFinal legacy paragraph.";
+		renderCard(observation({ subtitle: "", narrative: "", body_text: body }));
+		expect(mount.querySelector(".feed-body")?.textContent).toContain("Final legacy paragraph.");
+		act(() => render(null, mount));
+		state.itemViewState.clear();
+		state.preferredFeedViewMode = "narrative";
+		renderCard(observation({ narrative: "Opening narrative.\n\nFinal narrative paragraph." }));
+		expect(mount.querySelector(".feed-body")?.textContent).toContain("Final narrative paragraph.");
+		expect(mount.querySelector(".feed-summary")).toBeNull();
+	});
+
+	it("explains a Summary match when Facts is selected without repeating visible Summary matches", () => {
+		state.feedQuery = "summary";
+		renderCard(observation());
+		expect(mount.querySelector(".feed-search-match")).toBeNull();
+		const facts = Array.from(mount.querySelectorAll<HTMLButtonElement>('[role="radio"]')).find(
+			(button) => button.textContent === "Facts",
+		);
+		act(() => facts?.click());
+		expect(mount.querySelector(".feed-body")?.textContent).toContain("One durable fact");
+		expect(mount.querySelector(".feed-search-match")?.textContent).toContain("Summary match");
+	});
+});
 
 describe("FeedItemCard", () => {
 	it("renders the collapsed compact skim with mandatory provenance", () => {
@@ -195,7 +260,8 @@ describe("FeedItemCard", () => {
 
 		act(() => render(null, mount));
 		renderCard(observation({ id: 999, title: "Different memory" }));
-		expect(mount.querySelector(".feed-detail")).toBeNull();
+		expect(mount.querySelector(".feed-detail")).not.toBeNull();
+		expect(state.itemExpandState.has("discovery:999")).toBe(false);
 	});
 });
 
@@ -276,8 +342,7 @@ describe("FeedItemCard polling fallback", () => {
 			expect(mount.querySelector(".feed-title")?.tagName).toBe("DIV");
 			expect(mount.querySelector(".feed-detail")).toBeNull();
 			expect(document.activeElement).toBe(mount.querySelector(".feed-item"));
-			expect(state.itemExpandState.has("change:1234")).toBe(false);
-			expect(state.itemViewState.has("change:1234")).toBe(false);
+			expect(state.itemViewState.has("discovery:1234")).toBe(false);
 			mount.querySelector<HTMLElement>(".feed-item")?.blur();
 			renderCard(observation({ body_text: "", facts: [], narrative: "", subtitle: "" }));
 			await act(async () => {
@@ -435,7 +500,7 @@ describe("FeedItemCard search refresh", () => {
 		expect(mount.querySelector(".feed-detail")?.textContent).not.toContain("needle");
 		expect(mount.querySelector(".feed-search-match mark.match")?.textContent).toBe("needle");
 	});
-	it("updates clipped matches after resizing without a poll", () => {
+	it("does not duplicate a fully visible title match after resizing", () => {
 		const originalWidth = window.innerWidth;
 		try {
 			window.innerWidth = 1000;
@@ -446,7 +511,7 @@ describe("FeedItemCard search refresh", () => {
 				window.innerWidth = 500;
 				window.dispatchEvent(new Event("resize"));
 			});
-			expect(mount.querySelector(".feed-search-match mark.match")?.textContent).toBe("needle");
+			expect(mount.querySelector(".feed-search-match")).toBeNull();
 		} finally {
 			window.innerWidth = originalWidth;
 		}

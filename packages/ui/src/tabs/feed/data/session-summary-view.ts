@@ -85,7 +85,9 @@ export function sessionSummaryViewData(item: FeedItem, displayedTitle: string) {
 	const metadata = item.metadata_json || {};
 	const explicitNarrative = String(item.narrative || metadata.narrative || "").trim();
 	const narrative = explicitNarrative || distinctBodyNarrative(bodyText, normalizedTitle, summary);
-	const summaryDetail = summary ? skimSummary : bodyText || skimSummary;
+	const summaryDetail = summary
+		? skimCandidates.find((candidate) => firstDistinctContentLine(candidate, normalizedTitle)) || ""
+		: bodyText || skimSummary;
 
 	return {
 		facts,

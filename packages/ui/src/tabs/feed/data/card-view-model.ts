@@ -178,6 +178,18 @@ export function normalizeFeedQuery(query: string): string {
 	return query.trim().toLowerCase().slice(0, 256);
 }
 
+export function feedItemMatchesQuery(item: FeedItem, query: string): boolean {
+	const normalizedQuery = normalizeFeedQuery(query);
+	if (!normalizedQuery) return false;
+	const model = buildFeedCardViewModel(item);
+	return [
+		model.displayTitle,
+		model.searchOnlyText,
+		...model.modes.map((mode) => mode.searchText),
+		...model.tags.map(String),
+	].some((text) => text.toLowerCase().includes(normalizedQuery));
+}
+
 function includesQuery(value: string, query: string): boolean {
 	return value.toLowerCase().includes(query.toLowerCase());
 }

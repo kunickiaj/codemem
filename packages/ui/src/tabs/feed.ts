@@ -9,6 +9,7 @@ import { state } from "../lib/state";
 
 export type { FeedItem, FeedItemMetadata } from "./feed/types";
 
+import { feedItemMatchesQuery } from "./feed/data/card-view-model";
 import { completeFirstRunStep } from "./feed/data/first-run-guide";
 import {
 	isLowSignalObservation,
@@ -113,6 +114,15 @@ import type { FeedViewOps } from "./feed/types";
 
 import { computeSignature, filterByType } from "./feed/data/filter";
 
+function prepareFeedResults(items: FeedItem[], query: string): FeedItem[] {
+	if (filterByType(items).some((item) => feedItemMatchesQuery(item, query))) {
+		completeFirstRunStep("find");
+	}
+	return items.sort((a, b) => {
+		return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
+	});
+}
+
 async function loadMoreFeedPage() {
 	if (!hasMorePages()) return;
 	const requestGeneration = feedProjectGeneration;
@@ -171,7 +181,7 @@ async function loadMoreFeedPage() {
 			startObservationOffset + observationItems.length,
 		);
 
-		const incoming = [...summaryItems, ...filtered];
+		const incoming = prepareFeedResults([...summaryItems, ...filtered], requestQuery);
 		const feedItems = mergeFeedItems(state.lastFeedItems as FeedItem[], incoming);
 		// Pagination loads OLDER items, not fresh arrivals — skip the newPulse
 		// bookkeeping so scrolling doesn't flash historical cards.
@@ -385,9 +395,7 @@ export async function loadFeedData(options: ReadRequestOptions = {}) {
 			? observationItems
 			: observationItems.filter((i) => !isLowSignalObservation(i));
 		const filteredCount = observationItems.length - filtered.length;
-		const firstPageFeedItems = [...summaryItems, ...filtered].sort((a, b) => {
-			return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
-		});
+		const firstPageFeedItems = prepareFeedResults([...summaryItems, ...filtered], query);
 		const feedItems = mergeRefreshFeedItems(state.lastFeedItems as FeedItem[], firstPageFeedItems);
 
 		// Only flag newPulse on genuine incremental arrivals. First-time load has

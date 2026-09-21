@@ -68,14 +68,23 @@ describe("FirstRunGuide", () => {
 		expect(readFirstRunGuideRecord().completed).toContain("capture");
 	});
 
-	it("stays hidden after dismissal and can be reopened", () => {
-		dismissFirstRunGuide();
+	it("skips persistently without completing pending steps and can be reopened from Settings", () => {
+		completeFirstRunStep("scope");
+		act(() => render(<FirstRunGuide hasMemories={false} hasQueuedEvents={false} />, mount));
+		const skip = Array.from(mount.querySelectorAll("button")).find(
+			(button) => button.textContent === "Skip getting started",
+		);
+		expect(skip).toBeDefined();
+		act(() => skip?.click());
+		act(() => render(null, mount));
 		act(() => render(<FirstRunGuide hasMemories={false} hasQueuedEvents={false} />, mount));
 		expect(mount.querySelector("section")).toBeNull();
+		expect(readFirstRunGuideRecord()).toMatchObject({ dismissed: true, completed: ["scope"] });
 
 		act(() => reopenFirstRunGuide());
 		expect(mount.querySelector("section")).not.toBeNull();
 		expect(localStorage.getItem(FIRST_RUN_GUIDE_STORAGE_KEY)).toContain('"showCompleted":true');
+		expect(readFirstRunGuideRecord().completed).toEqual(["scope"]);
 	});
 
 	it("updates when another tab changes guide storage", () => {
@@ -91,27 +100,34 @@ describe("FirstRunGuide", () => {
 
 		expect(mount.querySelector("section")).toBeNull();
 	});
+});
 
-	it("uses the real disclosure control to inspect the first memory", () => {
-		const card = document.createElement("article");
-		card.className = "feed-item";
-		const title = document.createElement("button");
-		title.className = "feed-title";
-		const click = vi.spyOn(title, "click");
-		card.appendChild(title);
-		document.body.appendChild(card);
-		act(() => render(<FirstRunGuide hasMemories hasQueuedEvents={false} />, mount));
+describe("FirstRunGuide actions", () => {
+	it.each([false, true])(
+		"inspects the first memory without closing it (already open: %s)",
+		(expanded) => {
+			const card = document.createElement("article");
+			card.className = "feed-item";
+			const title = document.createElement("button");
+			title.className = "feed-title";
+			title.setAttribute("aria-expanded", String(expanded));
+			const click = vi.spyOn(title, "click");
+			card.appendChild(title);
+			document.body.appendChild(card);
+			act(() => render(<FirstRunGuide hasMemories hasQueuedEvents={false} />, mount));
 
-		const action = Array.from(mount.querySelectorAll("button")).find(
-			(button) => button.textContent === "Inspect first memory",
-		);
-		act(() => action?.click());
+			const action = Array.from(mount.querySelectorAll("button")).find(
+				(button) => button.textContent === "Inspect first memory",
+			);
+			act(() => action?.click());
 
-		expect(click).toHaveBeenCalledOnce();
-		expect(document.activeElement).toBe(title);
-	});
+			expect(click).toHaveBeenCalledTimes(expanded ? 0 : 1);
+			expect(document.activeElement).toBe(title);
+			expect(readFirstRunGuideRecord().completed).toContain("inspect");
+		},
+	);
 
-	it("opens Context Inspector and focuses its query for Find it again", async () => {
+	it("focuses normal Feed search without opening Context Inspector or completing Find it again", async () => {
 		const toggle = document.createElement("button");
 		toggle.id = "contextInspectorToggle";
 		toggle.setAttribute("aria-expanded", "false");
@@ -121,16 +137,19 @@ describe("FirstRunGuide", () => {
 		const query = document.createElement("input");
 		query.className = "feed-search";
 		panel.appendChild(query);
-		document.body.append(toggle, panel);
+		const feedSearch = document.createElement("input");
+		feedSearch.id = "feedSearch";
+		document.body.append(toggle, panel, feedSearch);
 		act(() => render(<FirstRunGuide hasMemories hasQueuedEvents={false} />, mount));
 
 		const action = Array.from(mount.querySelectorAll("button")).find(
-			(button) => button.textContent === "Open Context Inspector",
+			(button) => button.textContent === "Search memories",
 		);
 		await act(async () => action?.click());
 
-		expect(click).toHaveBeenCalledOnce();
-		expect(document.activeElement).toBe(query);
+		expect(click).not.toHaveBeenCalled();
+		expect(document.activeElement).toBe(feedSearch);
+		expect(readFirstRunGuideRecord().completed).not.toContain("find");
 	});
 
 	it("stacks checklist rows at the approved narrow width", () => {

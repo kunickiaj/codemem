@@ -2,7 +2,7 @@
 
 ## Explore the viewer
 
-The Feed shows captured memories; use the theme control to switch appearance and search to narrow the list.
+The Feed shows captured memories with full titles and the complete selected Summary, Facts, or Narrative open by default. Select a title to collapse or reopen its content and supplemental provenance; use search to narrow the list.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/docs-feed-dark.png">
@@ -113,9 +113,10 @@ codemem status --db-path ./codemem.sqlite --config ./codemem.json
 - Restart the viewer after updates: `codemem serve restart`.
 
 ## Getting started in the viewer
-- New browser profiles show a non-blocking checklist in Feed until its five jobs are completed or dismissed: capture a memory, inspect its details, find it again, choose project scope, and check Settings or Health.
+- New browser profiles show a non-blocking checklist in Feed until its five jobs are completed or skipped: capture a memory, inspect its details, find it again, choose project scope, and check Settings or Health.
+- **Search memories** focuses the normal Feed search. **Find it again** completes after a successful search returns a visible result matching the query.
 - Steps complete from real data and actions rather than manual checkboxes. Completion and dismissal stay in versioned browser-local storage for that viewer profile.
-- Reopen the checklist with **Show getting started** in Settings. Completed steps remain completed.
+- **Skip getting started** hides the checklist without completing pending steps. Reopen it with **Show getting started** in Settings; completed steps remain completed.
 - Empty Feed messages distinguish no data, queued processing, paused capture, unavailable processing status, search with no matches, and filters with no matches. Use the action in the message to clear the active constraint or open the existing recovery surface.
 
 ## Settings modal

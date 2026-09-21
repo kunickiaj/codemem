@@ -253,7 +253,7 @@ function useFeedCardDisclosureState(
 		storedMode || state.preferredFeedViewMode,
 	);
 	const [activeMode, setActiveMode] = useState<ItemViewMode>(initialMode);
-	const [expanded, setExpanded] = useState(state.itemExpandState.get(model.rowKey) === true);
+	const [expanded, setExpanded] = useState(state.itemExpandState.get(model.rowKey) !== false);
 	const cardRef = useRef<HTMLElement | null>(null);
 	useTitleFocusRecovery(cardRef);
 	const focusedModeRef = useRef<ItemViewMode | null>(null);
@@ -522,7 +522,7 @@ function renderFeedCardTitle(input: FeedCardRenderInput) {
 }
 
 function renderFeedSearchMatch(input: FeedCardRenderInput) {
-	if (!input.searchMatch || (input.searchMatch.mode !== null && input.renderedSearchMatch)) {
+	if (!input.searchMatch || input.renderedSearchMatch) {
 		return null;
 	}
 	return h(
@@ -618,7 +618,7 @@ function renderFeedCardBody(input: FeedCardRenderInput) {
 		"div",
 		{ className: "feed-card-body" },
 		renderFeedCardTitle(input),
-		input.model.skimSummary
+		!input.expanded && input.model.skimSummary
 			? h("div", {
 					className: "feed-summary",
 					dangerouslySetInnerHTML: {
@@ -721,7 +721,7 @@ function renderFeedCard(input: FeedCardRenderInput) {
 	);
 }
 
-function useFeedSearchMatch(model: ReturnType<typeof buildFeedCardViewModel>) {
+function useFeedSearchMatch(model: ReturnType<typeof buildFeedCardViewModel>, expanded: boolean) {
 	const [prefixLength, setPrefixLength] = useState(() =>
 		visibleSkimPrefixLength(globalThis.innerWidth),
 	);
@@ -730,7 +730,17 @@ function useFeedSearchMatch(model: ReturnType<typeof buildFeedCardViewModel>) {
 		window.addEventListener("resize", update);
 		return () => window.removeEventListener("resize", update);
 	}, []);
-	return hiddenSearchMatch(model, state.feedQuery, prefixLength);
+	// Titles wrap in full; only the optional collapsed summary can be clipped.
+	if (
+		normalizeFeedQuery(state.feedQuery) &&
+		model.displayTitle.toLowerCase().includes(normalizeFeedQuery(state.feedQuery))
+	)
+		return null;
+	return hiddenSearchMatch(
+		expanded ? { ...model, skimSummary: "" } : model,
+		state.feedQuery,
+		prefixLength,
+	);
 }
 
 function useFeedCardVisibilityState(visibility: string) {
@@ -755,10 +765,10 @@ export function FeedItemCard({
 	onReload,
 }: FeedItemCardProps) {
 	const model = buildFeedCardViewModel(item);
-	const searchMatch = useFeedSearchMatch(model);
 	const metadata = mergeMetadata(item.metadata_json);
 	const details = buildFeedCardDetails(item, model, metadata);
 	const disclosure = useFeedCardDisclosureState(model, details.hasSupplementalDetail);
+	const searchMatch = useFeedSearchMatch(model, disclosure.expanded);
 	const renderedSearchMatch = useRenderedSearchMatch(disclosure.cardRef);
 	const visibility = useFeedCardVisibilityState(details.visibility);
 	const actions = useFeedCardActions({
