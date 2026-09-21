@@ -33,14 +33,13 @@ function openHealth(): void {
 
 function inspectFirstMemory(): void {
 	const title = document.querySelector<HTMLButtonElement>(".feed-item button.feed-title");
-	title?.click();
+	if (title?.getAttribute("aria-expanded") !== "true") title?.click();
 	title?.focus();
+	if (title) completeFirstRunStep("inspect");
 }
 
-function openContextInspector(): void {
-	const toggle = document.getElementById("contextInspectorToggle");
-	if (toggle?.getAttribute("aria-expanded") !== "true") toggle?.click();
-	queueMicrotask(() => focusElement("#contextInspectorPanel input.feed-search"));
+function focusFeedSearch(): void {
+	focusElement("#feedSearch");
 }
 
 function guideSteps(hasMemories: boolean): GuideStep[] {
@@ -61,8 +60,8 @@ function guideSteps(hasMemories: boolean): GuideStep[] {
 		{
 			id: "find",
 			label: "Find it again",
-			actionLabel: "Open Context Inspector",
-			action: openContextInspector,
+			actionLabel: "Search memories",
+			action: focusFeedSearch,
 		},
 		{
 			id: "scope",
@@ -163,13 +162,8 @@ export function FirstRunGuide({
 					<h2 id="firstRunGuideTitle">Getting started</h2>
 					<p>Confirm capture works, then learn where to inspect and find memories.</p>
 				</div>
-				<button
-					aria-label="Dismiss getting started"
-					className="settings-button"
-					onClick={() => dismissFirstRunGuide()}
-					type="button"
-				>
-					Dismiss
+				<button className="settings-button" onClick={() => dismissFirstRunGuide()} type="button">
+					Skip getting started
 				</button>
 			</div>
 			<GuideChecklist

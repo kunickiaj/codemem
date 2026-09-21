@@ -6,6 +6,14 @@ import html from "../static/index.html?raw";
 describe("compact feed card layout contract", () => {
 	const css = html.replace(/\s+/g, " ");
 
+	it("wraps full titles instead of clipping them at any viewport width", () => {
+		const title = css.match(/\.feed-title \{([^}]+)\}/)?.[1] || "";
+		expect(title).toContain("white-space: normal");
+		expect(title).toContain("overflow-wrap: anywhere");
+		expect(title).not.toContain("ellipsis");
+		expect(title).not.toContain("overflow: hidden");
+	});
+
 	it("uses the approved token-based three-column compact grid", () => {
 		expect(css).toContain("grid-template-columns: 104px minmax(0, 1fr) auto");
 		expect(css).toContain("padding: var(--sp-4) var(--sp-5)");

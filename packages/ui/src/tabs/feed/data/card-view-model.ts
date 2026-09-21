@@ -178,6 +178,25 @@ export function normalizeFeedQuery(query: string): string {
 	return query.trim().toLowerCase().slice(0, 256);
 }
 
+export function feedItemMatchesQuery(item: FeedItem, query: string): boolean {
+	const normalizedQuery = normalizeFeedQuery(query);
+	if (!normalizedQuery) return false;
+	const memoryId = Number(item.id || item.memory_id || 0);
+	// The API accepts only canonical positive integer queries for ID matching.
+	if (Number.isSafeInteger(memoryId) && memoryId > 0 && normalizedQuery === String(memoryId)) {
+		return true;
+	}
+	const model = buildFeedCardViewModel(item);
+	return [
+		model.displayTitle,
+		model.displayKind,
+		String(item.project || ""),
+		model.searchOnlyText,
+		...model.modes.map((mode) => mode.searchText),
+		...model.tags.map(String),
+	].some((text) => text.toLowerCase().includes(normalizedQuery));
+}
+
 function includesQuery(value: string, query: string): boolean {
 	return value.toLowerCase().includes(query.toLowerCase());
 }

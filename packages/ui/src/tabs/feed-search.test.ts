@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { state } from "../lib/state";
+import { readFirstRunGuideRecord } from "./feed/data/first-run-guide";
+import type { FeedItem } from "./feed/types";
 
 const apiMocks = vi.hoisted(() => ({
 	loadMemoriesPage: vi.fn(),
@@ -72,8 +74,9 @@ describe("Feed disclosure persistence", () => {
 	});
 });
 
-describe("Feed global search controller", () => {
+function setupFeedSearchTests() {
 	beforeEach(() => {
+		localStorage.clear();
 		vi.useFakeTimers();
 		document.body.innerHTML = "";
 		window.scrollTo = vi.fn();
@@ -93,6 +96,114 @@ describe("Feed global search controller", () => {
 		vi.clearAllTimers();
 		vi.useRealTimers();
 	});
+}
+
+describe("Feed first-run search completion", () => {
+	setupFeedSearchTests();
+
+	it.each([
+		{ query: "needle", title: "A needle result", expected: true },
+		{ query: "  NEEDLE  ", title: "A needle result", expected: true },
+		{ query: "needle", title: "Unrelated result", expected: false },
+		{ query: "", title: "A needle result", expected: false },
+	])(
+		"completes Find it again only for a current matching result: $query / $title",
+		async ({ query, title, expected }) => {
+			state.feedQuery = query;
+			apiMocks.loadMemoriesPage.mockResolvedValue(shortPage(1, false, null, title));
+			apiMocks.loadSummariesPage.mockResolvedValue({ ...page(2), items: [] });
+			await loadFeedData();
+			expect(readFirstRunGuideRecord().completed.includes("find")).toBe(expected);
+		},
+	);
+
+	it("does not complete Find it again for empty, failed, or filtered-out results", async () => {
+		state.feedQuery = "needle";
+		apiMocks.loadMemoriesPage.mockResolvedValue({ ...page(1), items: [] });
+		apiMocks.loadSummariesPage.mockResolvedValue({ ...page(2), items: [] });
+		await loadFeedData();
+		expect(readFirstRunGuideRecord().completed).not.toContain("find");
+		apiMocks.loadMemoriesPage.mockRejectedValueOnce(new Error("Search unavailable"));
+		await expect(loadFeedData()).rejects.toThrow("Search unavailable");
+		expect(readFirstRunGuideRecord().completed).not.toContain("find");
+		state.feedTypeFilter = "summaries";
+		apiMocks.loadMemoriesPage.mockResolvedValue(shortPage(1, false, null, "needle"));
+		await loadFeedData();
+		expect(readFirstRunGuideRecord().completed).not.toContain("find");
+	});
+
+	it("does not complete Find it again from a stale matching result", async () => {
+		let resolveOld: (value: TestPage) => void = () => {};
+		apiMocks.loadMemoriesPage.mockReturnValueOnce(
+			new Promise<TestPage>((resolve) => {
+				resolveOld = resolve;
+			}),
+		);
+		apiMocks.loadSummariesPage.mockResolvedValue({ ...page(2), items: [] });
+		state.feedQuery = "needle";
+		const pending = loadFeedData();
+		state.feedQuery = "another query";
+		resolveOld(shortPage(1, false, null, "needle"));
+		await pending;
+		expect(readFirstRunGuideRecord().completed).not.toContain("find");
+	});
+});
+
+describe("Feed first-run indexed field matches", () => {
+	setupFeedSearchTests();
+
+	it.each<{ query: string; item: FeedItem; expected: boolean }>([
+		{ query: " 314 ", item: { id: 314 }, expected: true },
+		{ query: "314", item: { id: undefined, memory_id: "314" }, expected: true },
+		{ query: "31", item: { id: 314 }, expected: false },
+		{ query: "315", item: { id: 314 }, expected: false },
+		{ query: "0314", item: { id: 314 }, expected: false },
+		{ query: "+314", item: { id: 314 }, expected: false },
+		{ query: "3.14e2", item: { id: 314 }, expected: false },
+		{ query: "0", item: { id: 0 }, expected: false },
+		{
+			query: "9007199254740992",
+			item: { memory_id: "9007199254740992", id: undefined },
+			expected: false,
+		},
+		{ query: "  ORCHARD  ", item: { project: "sample-orchard" }, expected: true },
+		{ query: "  BUGFIX  ", item: { kind: "bugfix" }, expected: true },
+		{ query: "change", item: { kind: "" }, expected: true },
+		{
+			query: "SESSION_SUMMARY",
+			item: { kind: "change", metadata_json: { is_summary: true } },
+			expected: true,
+		},
+		{
+			query: "change",
+			item: { kind: "change", metadata_json: { is_summary: true } },
+			expected: false,
+		},
+	])(
+		"matches normalized query $query against indexed fields $item",
+		async ({ query, item, expected }) => {
+			state.feedQuery = query;
+			apiMocks.loadMemoriesPage.mockResolvedValue({
+				items: [
+					{
+						id: 987,
+						title: "Stored note",
+						body_text: "A durable detail.",
+						kind: "discovery",
+						...item,
+					},
+				],
+				pagination: { has_more: false, next_offset: null },
+			});
+			apiMocks.loadSummariesPage.mockResolvedValue({ ...page(2), items: [] });
+			await loadFeedData();
+			expect(readFirstRunGuideRecord().completed.includes("find")).toBe(expected);
+		},
+	);
+});
+
+describe("Feed global search controller", () => {
+	setupFeedSearchTests();
 
 	it("debounces resets with q, ignores older responses, and omits q when cleared", async () => {
 		let resolveOldObservations: (value: ReturnType<typeof page>) => void = () => undefined;
