@@ -3,6 +3,7 @@ import { RadixSelect } from "../../../components/primitives/radix-select";
 import { TextArea } from "../../../components/primitives/text-area";
 import { TextInput } from "../../../components/primitives/text-input";
 import type { SettingsPanelProps } from "../data/types";
+import { formatAgentClientList } from "../data/value-helpers";
 import { Field } from "./Field";
 import { SettingsHint } from "./SettingsHint";
 import { SettingsSectionIntro } from "./SettingsSectionIntro";
@@ -26,7 +27,7 @@ export function ObserverPanel({
 	return (
 		<>
 			<SettingsSectionIntro
-				detail="Set how codemem reaches your model provider and where it should look for credentials."
+				detail={`Set how codemem reaches your model provider and where it should look for credentials. Shared across ${formatAgentClientList()}.`}
 				title="Connection and credentials"
 			/>
 			{observerStatusBannerSlot}
@@ -56,7 +57,10 @@ export function ObserverPanel({
 						value={values.observerProvider}
 						viewportClassName="settings-select-viewport"
 					/>
-					<div className="small">Use `auto` unless you need to pin a specific provider.</div>
+					<div className="small">
+						Use `auto` unless you need to pin a specific provider. Pi setup can derive Direct API
+						provider/model from API-key providers only.
+					</div>
 				</Field>
 				<Field>
 					<div className="field-label">
@@ -87,7 +91,7 @@ export function ObserverPanel({
 						<button
 							aria-label="About connection mode"
 							className="help-icon"
-							data-tooltip="Direct API uses provider credentials. Local sessions use the selected Claude or Codex CLI login."
+							data-tooltip="Direct API uses provider credentials, including cheap-model-first settings derived from pi API-key providers. Local sessions use the selected Claude or Codex CLI login."
 							type="button"
 						>
 							?
@@ -109,7 +113,8 @@ export function ObserverPanel({
 						viewportClassName="settings-select-viewport"
 					/>
 					<div className="small">
-						Switch between provider API credentials and local Claude or Codex CLI auth.
+						Switch between provider API credentials (OpenCode, Claude, Codex, pi) and local Claude
+						or Codex CLI auth.
 					</div>
 				</Field>
 				<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>

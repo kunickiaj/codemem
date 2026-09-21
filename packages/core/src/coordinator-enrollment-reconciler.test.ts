@@ -636,7 +636,7 @@ describe("reconcileCoordinatorEnrollmentSnapshot", () => {
 				.prepare("SELECT display_name FROM identity_devices WHERE device_id = 'device-legacy'")
 				.pluck()
 				.get(),
-		).toBe("Enrolled device");
+		).toBe("Unnamed device");
 	});
 
 	it("uses neutral fallbacks when optional presentation names are malformed", async () => {
@@ -686,7 +686,7 @@ describe("reconcileCoordinatorEnrollmentSnapshot", () => {
 				)
 				.pluck()
 				.get(),
-		).toBe("Enrolled device");
+		).toBe("Unnamed device");
 	});
 
 	it("refreshes coordinator-managed device names without overwriting local names", async () => {

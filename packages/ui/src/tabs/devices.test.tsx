@@ -778,6 +778,18 @@ it("restores focus from Details after its device is removed", () => {
 	expect(document.activeElement).toBe(document.getElementById("tabBtn-devices"));
 });
 
+it.each(["Canonical device", "Unnamed device", "Canonical device lab", "Travel laptop"])(
+	"normalizes only exact system placeholder %s",
+	(displayName) => {
+		const graph = intent();
+		graph.identityDevices = graph.identityDevices.map((device) => ({ ...device, displayName }));
+		const projected = projectDevices(graph, reconciliation(), projects, []);
+		expect(projected.devices[0]?.displayName).toBe(
+			displayName === "Canonical device" ? "Unnamed device" : displayName,
+		);
+	},
+);
+
 describe("Device access projection", () => {
 	it("retains requested device focus while a refresh is showing stale inventory", () => {
 		state.pendingDeviceIdentityFocus = "new-device";
@@ -849,6 +861,181 @@ describe("Device access projection", () => {
 		});
 	});
 });
+describe("Device runtime aliases", () => {
+	it.each([
+		{ validated: true, displayName: "Canonical device" },
+		{ validated: true, displayName: "" },
+		{ validated: false, displayName: "Canonical device" },
+	])(
+		"uses only validated aliases for runtime and rename controls: $validated / $displayName",
+		({ validated, displayName }) => {
+			const graph = intent();
+			graph.identityDevices = graph.identityDevices.map((device) => ({
+				...device,
+				displayName,
+			}));
+			const bindingId = "device-address-fingerprint-secret";
+			const deviceInventory = inventory([
+				inventoryItem(bindingId, "Studio laptop", "configured", {
+					evidenceDeviceIds: [bindingId, "peer-b", "peer-a"],
+					validatedFingerprint: validated ? "validated-test-key" : null,
+				}),
+			]);
+			const onNavigate = vi.fn();
+			const mount = document.getElementById("mount");
+			if (!mount) throw new Error("Missing mount");
+			for (const ids of [
+				["peer-b", "peer-a"],
+				["peer-a", "peer-b"],
+			]) {
+				act(() =>
+					mountDevices(
+						mount,
+						graph,
+						reconciliation(),
+						projects,
+						[{ deviceId: "peer-a", state: "available" }],
+						{
+							inventory: deviceInventory,
+							onNavigate,
+							peerRuntimeMetadata: ids.map((deviceId) => ({
+								deviceId,
+								runtimeVersion: deviceId === "peer-a" ? "0.42.0" : "0.43.0",
+								runtimeVersionObservedAt: null,
+							})),
+						},
+					),
+				);
+				const row = mount.querySelector(".devices-table-row");
+				expect(row?.textContent).toContain("Studio laptop");
+				expect(row?.textContent).toContain(validated ? "Available" : "Presence unavailable");
+				expect(row?.textContent?.includes("0.42.0")).toBe(validated);
+				const action = [...mount.querySelectorAll<HTMLButtonElement>("button")].find(
+					(button) => button.textContent === "Identify or rename in Sync…",
+				);
+				expect(Boolean(action)).toBe(validated);
+				if (action) act(() => action.click());
+			}
+			if (validated) expect(onNavigate).toHaveBeenCalledWith("advanced_sync");
+			else expect(onNavigate).not.toHaveBeenCalled();
+		},
+	);
+});
+
+describe("Device runtime observation ordering", () => {
+	const oldAt = "2026-08-01T00:00:00.000Z";
+	const newAt = "2026-08-02T00:00:00.000Z";
+	it.each([
+		{
+			label: "missing direct version",
+			directVersion: null,
+			directAt: newAt,
+			aliasAt: oldAt,
+			expected: "0.43.0",
+			outage: false,
+		},
+		{
+			label: "newer alias",
+			directVersion: "0.42.0",
+			directAt: oldAt,
+			aliasAt: newAt,
+			expected: "0.43.0",
+			outage: false,
+		},
+		{
+			label: "untimed direct",
+			directVersion: "0.42.0",
+			directAt: null,
+			aliasAt: newAt,
+			expected: "0.43.0",
+			outage: false,
+		},
+		{
+			label: "invalid direct timestamp",
+			directVersion: "0.42.0",
+			directAt: "invalid",
+			aliasAt: newAt,
+			expected: "0.43.0",
+			outage: false,
+		},
+		{
+			label: "newer direct",
+			directVersion: "0.42.0",
+			directAt: newAt,
+			aliasAt: oldAt,
+			expected: "0.42.0",
+			outage: false,
+		},
+		{
+			label: "timestamp ties",
+			directVersion: "0.42.0",
+			directAt: newAt,
+			aliasAt: newAt,
+			expected: "0.42.0",
+			outage: false,
+		},
+		{
+			label: "no observation times",
+			directVersion: "0.42.0",
+			directAt: null,
+			aliasAt: null,
+			expected: "0.42.0",
+			outage: false,
+		},
+		{
+			label: "unavailable aliases",
+			directVersion: "0.42.0",
+			directAt: oldAt,
+			aliasAt: newAt,
+			expected: "0.42.0",
+			outage: true,
+		},
+	])(
+		"renders the best supported observation: $label",
+		({ directVersion, directAt, aliasAt, expected, outage }) => {
+			const deviceId = "device-address-fingerprint-secret";
+			const deviceInventory = inventory([
+				inventoryItem(deviceId, "Work Laptop", "configured", {
+					evidenceDeviceIds: [deviceId, "peer-b", "peer-a"],
+					validatedFingerprint: "validated-test-key",
+				}),
+			]);
+			const metadata = [
+				{ deviceId, runtimeVersion: directVersion, runtimeVersionObservedAt: directAt },
+				{ deviceId: "peer-b", runtimeVersion: "0.44.0", runtimeVersionObservedAt: aliasAt },
+				{ deviceId: "peer-a", runtimeVersion: "0.43.0", runtimeVersionObservedAt: aliasAt },
+			];
+			const mount = document.getElementById("mount");
+			if (!mount) throw new Error("Missing mount");
+			for (const peerRuntimeMetadata of [metadata, [...metadata].reverse()]) {
+				act(() =>
+					mountDevices(mount, intent(), reconciliation(), projects, [], {
+						inventory: deviceInventory,
+						inventoryUnavailable: outage,
+						peerRuntimeMetadata,
+						onNavigate: vi.fn(),
+					}),
+				);
+				expect(mount.querySelector(".devices-table-version")?.textContent).toBe(expected);
+				expect(mount.textContent).toContain("Identify or rename in Sync");
+			}
+			if (!outage) {
+				const result = projectDevices(
+					intent(),
+					reconciliation(),
+					projects,
+					[],
+					metadata,
+					deviceInventory,
+				);
+				expect(result.devices[0]?.runtimeVersionObservedAt).toBe(
+					expected === "0.42.0" ? directAt : aliasAt,
+				);
+			}
+		},
+	);
+});
+
 describe("Device runtime metadata", () => {
 	it("presents paired-peer runtime metadata without changing device behavior", () => {
 		const baseline = projectDevices(
@@ -1258,7 +1445,7 @@ describe("Device safe rendering", () => {
 		act(() => mountDevices(element, intent(), reconciliation(), projects, []));
 
 		const row = document.querySelector(".devices-table-row");
-		expect(row?.textContent).toContain("Unknown");
+		expect(row?.textContent).toContain("Presence unavailable");
 		expect(row?.querySelector('.feed-menu-item[aria-label^="Check device health"]')).toBeNull();
 	});
 

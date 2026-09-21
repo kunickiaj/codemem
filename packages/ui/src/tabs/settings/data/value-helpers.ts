@@ -1,6 +1,15 @@
 /* Pure helpers for reading + normalizing settings form values. */
 
 import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_OPENAI_MODEL, SETTINGS_ADVANCED_KEY } from "./constants";
+import { joinPhrases } from "./format";
+
+/** Agent clients that write into the shared raw-event / memory store. */
+export const AGENT_CLIENT_SOURCES = ["opencode", "claude", "codex", "pi"] as const;
+
+/** Human-readable client list for observer/health copy (includes pi). */
+export function formatAgentClientList(): string {
+	return joinPhrases([...AGENT_CLIENT_SOURCES]);
+}
 
 export function loadAdvancedPreference(): boolean {
 	try {
@@ -79,6 +88,7 @@ export function inferObserverModel(
 	if (provider && provider !== "openai") {
 		return { model: "provider default", source: "Recommended (provider default)" };
 	}
+	// Direct API default also covers pi-derived observer settings (API-key providers only).
 	return { model: DEFAULT_OPENAI_MODEL, source: "Recommended (direct API)" };
 }
 

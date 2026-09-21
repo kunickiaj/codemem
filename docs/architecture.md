@@ -6,7 +6,7 @@ codemem has five main pieces: **adapters** that capture shell/runtime activity, 
 
 | Component | What it does | Key files |
 |-----------|-------------|-----------|
-| Adapters | Capture and normalize agent events before enqueueing raw events | `packages/opencode-plugin/.opencode/plugins/codemem.js`, `packages/opencode-plugin/.opencode/lib/runtime.js`, `plugins/claude/scripts/ingest-hook.mjs`, `plugins/codex/scripts/ingest-hook.mjs`, `packages/core/src/claude-hooks.ts`, `packages/core/src/codex-hooks.ts` |
+| Adapters | Capture and normalize agent events before enqueueing raw events | `packages/opencode-plugin/.opencode/plugins/codemem.js`, `packages/opencode-plugin/.opencode/lib/runtime.js`, `plugins/claude/scripts/ingest-hook.mjs`, `plugins/codex/scripts/ingest-hook.mjs`, `packages/core/src/claude-hooks.ts`, `packages/core/src/codex-hooks.ts`, `packages/core/src/pi-hooks.ts`, `packages/pi-extension/` |
 | Ingest pipeline | Extracts tool events, builds transcripts, runs the observer | `packages/core/src/ingest-pipeline.ts`, `packages/core/src/ingest-events.ts` |
 | Observer | Produces typed observations and session summaries from transcripts | `packages/core/src/observer-output.ts`, `packages/core/src/observer-output-schema.ts`, `packages/core/src/ingest-xml-parser.ts` |
 | Store | SQLite persistence for sessions, memories, artifacts, embeddings | `packages/core/src/store.ts`, `packages/core/src/schema.ts` |
@@ -29,6 +29,8 @@ flowchart LR
     CH -->|same envelope: enqueue-raw-event| DB
     CX["Codex hooks"] -->|normalize once; POST /api/raw-events| VW
     CX -->|same envelope: enqueue-raw-event/spool| DB
+    PI["pi extension"] -->|POST /api/pi-hooks (alias)| VW
+    PI -->|fallback: pi-hook-ingest direct enqueue/spool| DB
     VW --> DB["SQLite"]
     DB -->|flush batch claimed| IN["Ingest pipeline"]
     IN --> OB["Observer"]
@@ -40,7 +42,7 @@ flowchart LR
 
 1. Adapters capture tool/conversation lifecycle events and normalize them into raw events with optional `_adapter` envelopes.
 2. OpenCode streams raw events to the viewer ingest API (`POST /api/raw-events`) with preflight checks (`GET /api/raw-events/status`) and can fall back to CLI queue enqueue when stream writes fail. Prompt-time packs and prompt-pack ledger transitions also use viewer POST APIs first, with CLI fallback only for retryable transport or version failures.
-3. Claude and Codex use checked-in, dependency-free normalizers generated from their core TypeScript implementations. Each detached event wrapper normalizes once, posts the exact envelope to `POST /api/raw-events`, and reuses that serialization for `enqueue-raw-event` or durable spool fallback. The canonical endpoint accepts additive adapter metadata. Named hook routes remain compatibility aliases used by older packaged or plugin-free CLI paths; the current packaged-wrapper audit found no named-route strings, so the aliases are not primary but cannot be removed yet.
+3. Claude and Codex use checked-in, dependency-free normalizers generated from their core TypeScript implementations. Each detached event wrapper normalizes once, posts the exact envelope to `POST /api/raw-events`, and reuses that serialization for `enqueue-raw-event` or durable spool fallback. The canonical endpoint accepts additive adapter metadata. Named hook routes remain compatibility aliases used by older packaged or plugin-free CLI paths; the current packaged-wrapper audit found no named-route strings, so the aliases are not primary but cannot be removed yet. The pi extension posts pi lifecycle payloads to `POST /api/pi-hooks`, a compatibility alias that maps the payload through `buildRawEventEnvelopeFromPiEvent` and runs `ingestNormalizedEnvelope` with `source: "pi"` — the same event identity as `POST /api/raw-events` with `source: "pi"` — with `codemem pi-hook-ingest` (plus spool) as the fallback.
 4. The viewer/store persists raw events and queues durable flush batches.
 5. Idle and sweeper workers claim batches and run them through ingest.
 6. Before building session context, raw events are passed through `normalizeEventsForSessionContext` (in `ingest-transcript.ts`) which projects adapter-enveloped events (`_adapter` schema v1.0) into the flat `user_prompt` / `tool.execute.after` shapes that `buildSessionContext` scans. This is critical for Claude Code hook events which always arrive wrapped in the adapter envelope.
@@ -63,6 +65,7 @@ Support tiers describe operational expectations for each adapter path:
 | OpenCode 1 plugin | Supported | Primary reference adapter for lifecycle events and injection behavior. Minimum host 1.18.29. |
 | OpenCode 2 plugin | Beta | Same package, `setup()` entrypoint, validated on the exact stable `@opencode/cli@2.0.2` and `@opencode/plugin@2.0.2` releases. Captures conversation, tool, terminal usage, and lifecycle activity with bounded cleanup and keeps the hyphenated `mem-status`, `mem-recent`, and `mem-stats` tool IDs. `session.context` performs automatic recall only when the latest user message has a non-empty, non-whitespace ID; retries and tool continuations replay retained context byte-for-byte, while compaction, title, and generate hooks stay isolated. Disable with `CODEMEM_PLUGIN_IGNORE=1` or return to OpenCode 1 without a database migration. |
 | Claude hooks/plugin | Supported | Hook-first queue path with CLI/runtime fallback and parity slices tracked in adapter stack PRs. |
+| pi extension | Supported | Thin pi-package (`packages/pi-extension`, `packages/core/src/pi-hooks.ts`): extension → `POST /api/pi-hooks` alias → canonical ingest envelope (`source: "pi"`) → observer → memories; turn-local `systemPrompt` injection; 14 native `memory_*` tools; observe-only compaction boundary; fork/resume-aware streams; Git-root project identity. Observer derivation from pi config is API-key-only in v1 (OAuth → explicit `unconfigured (oauth-only)`). |
 | Codex plugin (hooks + MCP) | Supported | Functional capture pipeline (`plugins/codex/`, `packages/core/src/codex-hooks.ts`) dogfooded end-to-end: edge normalization → `POST /api/raw-events` → observer → memories. Prompt-time injection is present and env-gated but not fully validated on strict models. |
 | Windsurf integration | Experimental | Planned via shared adapter contract after OpenCode/Claude stabilization. |
 | Cursor integration | Experimental | Planned via shared adapter contract after OpenCode/Claude stabilization. |
@@ -371,6 +374,15 @@ Claude detached hook ingest normalizes once and posts to canonical `POST /api/ra
 delivery reuses the exact envelope for CLI enqueue fallback. The named `POST /api/claude-hooks` route
 remains a compatibility alias/caller for older packaged or plugin-free CLI paths. The queue/sweeper
 behavior and `CODEMEM_CLAUDE_HOOK_FLUSH_ON_STOP=1` opt-in for `Stop` remain unchanged.
+
+Pi extension ingest posts pi lifecycle payloads to the `POST /api/pi-hooks` compatibility alias, which
+normalizes them through `buildRawEventEnvelopeFromPiEvent` and runs `ingestNormalizedEnvelope` with
+`source: "pi"` (same event identity as canonical `POST /api/raw-events`); retryable delivery reuses the
+payload for `codemem pi-hook-ingest` plus a pi-specific spool. Boundary flush events
+(`session_before_compact`, `session_shutdown`) always go through the CLI so extraction actually runs
+before pi discards context. The preferred HTTP pack path — prove `GET /api/prompt-pack-profile`, then
+targeted `POST /api/pack` — is unledgered (no opencode retrieval-ledger row). The queue/sweeper
+behavior is shared with the other adapters.
 
 ### OpenCode session finalization triggers
 - `session.idle` — finalizes current local buffer

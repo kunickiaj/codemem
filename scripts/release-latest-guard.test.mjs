@@ -20,6 +20,7 @@ const PUBLISHED_PACKAGES = [
 	"@codemem/server",
 	"codemem",
 	"@codemem/opencode-plugin",
+	"@codemem/pi-extension",
 ];
 
 /** Build a fake `spawnSync` that answers `npm view <pkg> dist-tags --json`. */
@@ -173,7 +174,7 @@ describe("release latest-tag guard: workflow wiring", () => {
 			assert.ok(step.includes(packageName), `verify step must cover ${packageName}`);
 		}
 		assert.ok(
-			releaseWorkflow.indexOf('publish_if_missing "@codemem/opencode-plugin"') < stepStart,
+			releaseWorkflow.indexOf('publish_if_missing "@codemem/pi-extension"') < stepStart,
 			"verify must run after the last publish",
 		);
 	});

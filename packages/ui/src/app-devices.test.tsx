@@ -495,7 +495,6 @@ function teardownDevicesAppTest() {
 describe("Devices app integration", () => {
 	beforeEach(setupDevicesAppTest);
 	afterEach(teardownDevicesAppTest);
-
 	it("refreshes read-only inputs, routes actions canonically, and preserves polling focus", async () => {
 		const panel = document.getElementById("tab-devices");
 		expect(panel?.hidden).toBe(false);
@@ -620,6 +619,243 @@ describe("Devices app integration", () => {
 			requireTeamSetupSummary: true,
 		});
 	});
+});
+
+describe("Devices direct local evidence", () => {
+	beforeEach(setupDevicesAppTest);
+	afterEach(teardownDevicesAppTest);
+	it.each([
+		{ canonicalId: "device-private", syncLocalId: undefined, local: true },
+		{ canonicalId: "other-local", syncLocalId: undefined, local: false },
+		{ canonicalId: "other-local", syncLocalId: "device-private", local: true },
+	])(
+		"retains direct local evidence during outages: $canonicalId / $syncLocalId",
+		async ({ canonicalId, syncLocalId, local }) => {
+			const inventory = configuredDeviceInventory();
+			inventory.items = inventory.items.map((item) => {
+				if (item.deviceId !== "device-private") return item;
+				return {
+					...item,
+					deviceId: canonicalId,
+					evidenceDeviceIds: ["device-private", canonicalId],
+					isLocal: true,
+				};
+			});
+			mocks.loadDeviceIdentityInventory.mockResolvedValue(inventory);
+			mocks.loadSyncData.mockImplementation(async () => {
+				const { state } = await import("./lib/state");
+				state.lastSyncStatus = { device_id: syncLocalId };
+				state.lastSyncPeers = [];
+				state.lastSyncCoordinator = { discovered_devices: [] };
+				return true;
+			});
+			for (const unavailable of [false, true]) {
+				if (unavailable)
+					mocks.loadDeviceIdentityInventory.mockRejectedValue(new Error("inventory unavailable"));
+				await act(async () => {
+					await vi.advanceTimersByTimeAsync(5_100);
+				});
+				const row = document.getElementById("device-identity-card-device-private");
+				if (local) {
+					expect(row).toBeNull();
+					expect(document.querySelector('[aria-label="This device online"]')).not.toBeNull();
+					expect(document.querySelector(".devices-local-row")?.textContent).toContain(
+						"This device",
+					);
+				} else {
+					expect(row?.textContent).toContain("Presence unavailable");
+					expect(row?.textContent).not.toContain("This device");
+				}
+			}
+		},
+	);
+});
+
+async function loadAliasedDeviceSnapshot() {
+	const inventory = configuredDeviceInventory();
+	inventory.items = inventory.items.map((item) => ({
+		...item,
+		displayName: "Studio laptop",
+		evidenceDeviceIds: [item.deviceId, "peer-alias"],
+		validatedFingerprint: "validated-test-key",
+	}));
+	mocks.loadRecipientPolicyIntent.mockResolvedValue({
+		...intent,
+		identityDevices: intent.identityDevices.map((device) => ({
+			...device,
+			displayName: "Unnamed device",
+		})),
+	});
+	mocks.loadDeviceIdentityInventory.mockResolvedValue(inventory);
+	mocks.loadSyncData.mockImplementation(async () => {
+		const { state } = await import("./lib/state");
+		state.lastSyncPeers = [
+			{
+				peer_device_id: "peer-alias",
+				runtime_version: "0.42.0",
+				status: { peer_state: "online", fresh: true },
+			},
+		];
+		state.lastSyncCoordinator = { discovered_devices: [] };
+		return true;
+	});
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(5_100);
+	});
+}
+
+describe("Devices cached snapshot aliases", () => {
+	beforeEach(setupDevicesAppTest);
+	afterEach(teardownDevicesAppTest);
+	it.each([false, true])(
+		"preserves snapshot evidence and mutation restrictions after full failure (mixed outage: %s)",
+		async (mixed) => {
+			await loadAliasedDeviceSnapshot();
+			const deviceRow = () => document.getElementById("device-identity-card-device-private");
+			expect(deviceRow()?.textContent).toContain("Studio laptop");
+			expect(deviceRow()?.textContent).toContain("0.42.0");
+			expect(deviceRow()?.textContent).toContain("Available");
+			expect(deviceRow()?.textContent).toContain("Identify or rename in Sync");
+			if (mixed) {
+				mocks.loadDeviceIdentityInventory.mockRejectedValueOnce(new Error("inventory unavailable"));
+				await act(async () => {
+					await vi.advanceTimersByTimeAsync(5_100);
+				});
+				expect(deviceRow()?.textContent).toContain("Presence unavailable");
+				expect(deviceRow()?.textContent).not.toContain("0.42.0");
+				expect(deviceRow()?.textContent).not.toContain("Identify or rename in Sync");
+			}
+			const before = deviceRow()?.textContent;
+			mocks.loadRecipientPolicyIntent.mockRejectedValueOnce(new Error("intent unavailable"));
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(5_100);
+			});
+			expect(deviceRow()?.textContent).toBe(before);
+			const panel = document.getElementById("tab-devices");
+			expect(panel?.textContent).toContain("Refresh failed; showing previous device information");
+			expect(
+				panel?.textContent?.includes("Device ownership information is temporarily unavailable"),
+			).toBe(mixed);
+			const rebind = [...(panel?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find(
+				(button) => button.textContent === "Change Identity…",
+			);
+			expect(rebind?.disabled).toBe(true);
+		},
+	);
+});
+
+describe("Devices unavailable inventory aliases", () => {
+	beforeEach(setupDevicesAppTest);
+	afterEach(teardownDevicesAppTest);
+	it.each([false, true])(
+		"drops cached aliases after inventory failure and retains direct IDs: %s",
+		async (direct) => {
+			const inventory = configuredDeviceInventory();
+			inventory.items = inventory.items.map((item) => {
+				if (item.deviceId !== "device-private") return item;
+				return {
+					...item,
+					evidenceDeviceIds: [item.deviceId, "peer-alias"],
+					validatedFingerprint: "validated-test-key",
+				};
+			});
+			mocks.loadDeviceIdentityInventory.mockResolvedValue(inventory);
+			mocks.loadSyncData.mockImplementation(async () => {
+				const { state } = await import("./lib/state");
+				state.lastSyncPeers = [
+					{
+						peer_device_id: "peer-alias",
+						fingerprint: "validated-test-key",
+						runtime_version: "0.42.0",
+						status: { peer_state: "online", fresh: true },
+					},
+				];
+				state.lastSyncCoordinator = { discovered_devices: [] };
+				return true;
+			});
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(5_100);
+			});
+			expect(document.getElementById("device-identity-card-device-private")?.textContent).toContain(
+				"0.42.0",
+			);
+			expect(document.getElementById("device-identity-card-device-private")?.textContent).toContain(
+				"Identify or rename in Sync",
+			);
+			mocks.loadDeviceIdentityInventory.mockRejectedValue(new Error("inventory unavailable"));
+			mocks.loadSyncData.mockImplementation(async () => {
+				const { state } = await import("./lib/state");
+				state.lastSyncPeers = [
+					{
+						peer_device_id: direct ? "device-private" : "peer-alias",
+						fingerprint: "replacement-test-key",
+						runtime_version: "0.99.0",
+						status: { peer_state: "online", fresh: true },
+					},
+				];
+				return true;
+			});
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(5_100);
+			});
+			const row = document.getElementById("device-identity-card-device-private");
+			expect(row?.textContent?.includes("0.99.0")).toBe(direct);
+			expect(row?.textContent?.includes("Identify or rename in Sync")).toBe(direct);
+			expect(row?.textContent).toContain(direct ? "Available" : "Presence unavailable");
+		},
+	);
+});
+
+describe("Devices presence evidence", () => {
+	beforeEach(setupDevicesAppTest);
+	afterEach(teardownDevicesAppTest);
+	it.each([
+		{ peer: false, local: false, expected: "Presence unavailable" },
+		{ peer: true, local: false, expected: "Available" },
+		{ peer: false, local: true, expected: "Available" },
+	])(
+		"uses presence evidence for stale enrollment ($peer peer, $local local)",
+		async ({ peer, local, expected }) => {
+			const nextIntent = {
+				...intent,
+				identityDevices: intent.identityDevices.map((device) => ({
+					...device,
+					displayName: "Canonical device",
+				})),
+			};
+			mocks.loadRecipientPolicyIntent.mockResolvedValue(nextIntent);
+			const inventory = configuredDeviceInventory();
+			inventory.items = inventory.items.map((item) => ({
+				...item,
+				displayName: "Studio laptop",
+				isLocal: local && item.deviceId === "device-private",
+			}));
+			mocks.loadDeviceIdentityInventory.mockResolvedValue(inventory);
+			mocks.loadSyncData.mockImplementation(async () => {
+				const { state } = await import("./lib/state");
+				state.lastSyncPeers = peer
+					? [{ peer_device_id: "device-private", status: { peer_state: "online", fresh: true } }]
+					: [];
+				state.lastSyncCoordinator = {
+					discovered_devices: [{ device_id: "device-private", stale: true }],
+				};
+				return true;
+			});
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(5_100);
+			});
+			if (local) {
+				expect(document.querySelector(".devices-local-row")?.textContent).toContain("This device");
+				return;
+			}
+			const row = document.getElementById("device-identity-card-device-private");
+			expect(row?.textContent).toContain(expected);
+			expect(row?.textContent).toContain("Studio laptop");
+			expect(row?.textContent).not.toContain("Canonical device");
+			expect(row?.textContent).not.toContain("Offline");
+			expect(row?.textContent?.includes("Identify or rename in Sync")).toBe(peer);
+		},
+	);
 });
 
 describe("Advanced keyboard focus", () => {

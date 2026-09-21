@@ -168,6 +168,7 @@ jobs:
           publish_if_missing "@codemem/server" "packages/viewer-server"
           publish_if_missing "codemem" "packages/cli"
           publish_if_missing "@codemem/opencode-plugin" "packages/opencode-plugin"
+          publish_if_missing "@codemem/pi-extension" "packages/pi-extension"
 
       - name: Verify latest dist-tag is absent or stable
         # npm assigns `latest` to a package's first-ever version regardless of
@@ -181,7 +182,7 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/release-latest-guard.mjs \
-            @codemem/embeddings @codemem/core @codemem/mcp @codemem/server codemem @codemem/opencode-plugin
+            @codemem/embeddings @codemem/core @codemem/mcp @codemem/server codemem @codemem/opencode-plugin @codemem/pi-extension
 
   release:
     name: Create GitHub Release

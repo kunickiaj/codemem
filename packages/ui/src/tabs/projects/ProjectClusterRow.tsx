@@ -91,13 +91,13 @@ function ClusterActions({ callbacks, model, onOpenAssignment, summary, view }: C
 		<td className="project-inventory-cell project-inventory-row-actions">
 			{model.projectIds.length > 0 ? (
 				<button
-					aria-label={`Add Teams or Identities for ${model.label}`}
+					aria-label={`Manage sharing for ${model.label}`}
 					className="settings-button project-recipient-action project-selection-target"
 					disabled={!view.selection.ready}
 					onClick={() => callbacks.manageRecipients(model.projectIds)}
 					type="button"
 				>
-					Add Teams or Identities
+					Manage sharing
 				</button>
 			) : null}
 			{summary.assignable.length > 0 ? (

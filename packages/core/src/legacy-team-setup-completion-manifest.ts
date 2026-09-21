@@ -653,7 +653,7 @@ function rewriteDraftFromManifest(
 		const assignment = assignmentsByDeviceId.get(decision.device_id);
 		const freshDevice = freshDeviceById.get(decision.device_id);
 		const displayName = freshDevice
-			? safeLabel(freshDevice.displayName, "Canonical device", forbiddenLabelIds)
+			? safeLabel(freshDevice.displayName, "Unnamed device", forbiddenLabelIds)
 			: null;
 		if (!draftDeviceIds.includes(decision.device_id)) {
 			insertDevice.run(
@@ -661,7 +661,7 @@ function rewriteDraftFromManifest(
 				decision.device_id,
 				legacyTeamDeviceRef(draft.candidate_id, decision.device_id),
 				decision.key_fingerprint,
-				displayName ?? "Canonical device",
+				displayName ?? "Unnamed device",
 				decision.enabled ? 1 : 0,
 				assignment?.identity_id ?? null,
 				assignment?.assignment_version ?? null,
