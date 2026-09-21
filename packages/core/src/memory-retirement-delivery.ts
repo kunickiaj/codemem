@@ -153,15 +153,16 @@ function parseBatch(body: string, recipient: string): RetirementBatch {
 }
 
 function cleanupRetiredMemory(db: Database, control: RetirementControl): void {
-	const row = db
+	const rows = db
 		.prepare("SELECT id FROM memory_items WHERE import_key = ? AND scope_id = ?")
-		.get(control.entityId, control.retiredScopeId) as { id: number } | undefined;
-	if (!row) return;
-	clearMemoryRefs(db, row.id);
-	if (db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'memory_vectors'").get()) {
-		db.prepare("DELETE FROM memory_vectors WHERE memory_id = ?").run(row.id);
+		.all(control.entityId, control.retiredScopeId) as Array<{ id: number }>;
+	for (const row of rows) {
+		clearMemoryRefs(db, row.id);
+		if (db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'memory_vectors'").get()) {
+			db.prepare("DELETE FROM memory_vectors WHERE memory_id = ?").run(row.id);
+		}
+		db.prepare("DELETE FROM memory_items WHERE id = ?").run(row.id);
 	}
-	db.prepare("DELETE FROM memory_items WHERE id = ?").run(row.id);
 }
 
 /** Internal receiver adapter: direct-source v3 signature is mandatory, even for absent rows. */

@@ -114,6 +114,90 @@ function seedMemory(scope = "old", entityId = control.entityId): number {
 			.run(session.lastInsertRowid, now, now, entityId, scope).lastInsertRowid,
 	);
 }
+
+function seedIndexedMemory(scope = "old", entityId = control.entityId): number {
+	const id = seedMemory(scope, entityId);
+	populateMemoryRefs(receiver, id, [`file-${id}.ts`], null, [`concept-${id}`]);
+	receiver
+		.prepare(`INSERT INTO memory_vectors(memory_id, embedding, chunk_index, content_hash, model)
+		VALUES (CAST(? AS INTEGER), ?, 0, 'fixture', 'fixture')`)
+		.run(id, Buffer.from(new Float32Array(384).fill(id).buffer));
+	return id;
+}
+
+function expectIndexedMemories(ids: number[]) {
+	expect(receiver.prepare("SELECT id FROM memory_items ORDER BY id").pluck().all()).toEqual(ids);
+	for (const table of ["memory_file_refs", "memory_concept_refs", "memory_vectors"]) {
+		expect(
+			receiver.prepare(`SELECT memory_id FROM ${table} ORDER BY memory_id`).pluck().all(),
+		).toEqual(ids);
+	}
+}
+
+it("acknowledges duplicate retirement copies only after all matching content and indexes are removed", async () => {
+	seedIndexedMemory();
+	seedIndexedMemory();
+	const destination = seedIndexedMemory("new");
+	const unrelated = seedIndexedMemory("old", "unrelated");
+	await expect(
+		replay(async (outbound) => {
+			const ack = receive(outbound);
+			expectIndexedMemories([destination, unrelated]);
+			expect(receiver.inTransaction).toBe(false);
+			expect(
+				receiver.prepare("SELECT COUNT(*) FROM memory_retirement_receipts").pluck().get(),
+			).toBe(1);
+			return packet(ack, recipient, source.deviceId, MEMORY_RETIREMENT_ACK_PATH);
+		}),
+	).resolves.toEqual({ acknowledged: 1, status: "acknowledged" });
+	expect(
+		sender.prepare("SELECT acknowledged_at FROM memory_retirement_deliveries").pluck().get(),
+	).toBe(now);
+});
+
+it("rolls back the whole delivery when the final duplicate deletion fails and permits the same packet retry", async () => {
+	const second = {
+		...control,
+		entityId: "memory-source-v1:c291cmNl:00000000-0000-4000-8000-000000000002",
+	};
+	sender.transaction(() =>
+		queueMemoryRetirement(sender, second, { localDeviceId: source.deviceId, now }),
+	)();
+	const offered = batch();
+	for (const item of offered.controls) {
+		seedIndexedMemory("old", item.entityId);
+		seedIndexedMemory("old", item.entityId);
+	}
+	const destination = seedIndexedMemory("new");
+	const unrelated = seedIndexedMemory("old", "unrelated");
+	const last = offered.controls.at(-1);
+	if (!last) throw new Error("missing control");
+	receiver.exec(`CREATE TRIGGER fail_final_copy BEFORE DELETE ON memory_items
+		WHEN OLD.import_key = '${last.entityId}' AND OLD.scope_id = 'old'
+		AND (SELECT COUNT(*) FROM memory_items WHERE import_key = OLD.import_key AND scope_id = 'old') = 1
+		BEGIN SELECT RAISE(ABORT, 'final_copy_failed'); END`);
+	const signed = packet(offered);
+	const exchange = async () => {
+		const ack = receiveRetirementBatch(receiver, signed, {
+			localDeviceId: recipient.deviceId,
+			peer: source,
+			peerFeatures: features,
+			now,
+		});
+		return packet(ack, recipient, source.deviceId, MEMORY_RETIREMENT_ACK_PATH);
+	};
+	const before = receiver.serialize();
+	await expect(replay(exchange)).rejects.toThrow("final_copy_failed");
+	expect(receiver.serialize().equals(before)).toBe(true);
+	expect(batch()).toEqual(offered);
+	expect(receiver.prepare("SELECT COUNT(*) FROM memory_retirement_receipts").pluck().get()).toBe(0);
+	for (const item of offered.controls)
+		expect(isMemoryScopeRetired(receiver, item.entityId, "old")).toBe(false);
+	receiver.exec("DROP TRIGGER fail_final_copy");
+	await expect(replay(exchange)).resolves.toEqual({ acknowledged: 2, status: "acknowledged" });
+	expectIndexedMemories([destination, unrelated]);
+	expect(receiver.prepare("SELECT COUNT(*) FROM memory_retirement_receipts").pluck().get()).toBe(2);
+});
 beforeEach(() => {
 	sender = new Database(":memory:");
 	receiver = new Database(":memory:");
