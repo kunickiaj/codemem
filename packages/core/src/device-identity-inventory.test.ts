@@ -43,6 +43,82 @@ function snapshot(
 }
 
 describe("device inventory display names", () => {
+	it.each([
+		{
+			source: "coordinator",
+			localName: "Unnamed device",
+			bindingName: "Canonical device",
+			peerName: "Unnamed device",
+			expected: "Studio laptop",
+		},
+		{
+			source: "peer",
+			localName: "Unnamed device",
+			bindingName: "Canonical device",
+			peerName: "Peer laptop",
+			expected: "Peer laptop",
+		},
+		{
+			source: "binding",
+			localName: "Unnamed device",
+			bindingName: "Personal laptop",
+			peerName: "Peer laptop",
+			expected: "Personal laptop",
+		},
+		{
+			source: "local",
+			localName: "This laptop",
+			bindingName: "Personal laptop",
+			peerName: "Peer laptop",
+			expected: "This laptop",
+		},
+	])(
+		"searches aliases for names while preserving $source priority",
+		({ localName, bindingName, peerName, expected }) => {
+			const input = snapshot({
+				localDevice: {
+					deviceId: "device-a",
+					displayName: localName,
+					publicKey: "key-a",
+					fingerprint: fingerprintPublicKey("key-a"),
+				},
+				bindings: [
+					{
+						deviceId: "device-a",
+						displayName: bindingName,
+						identityId: "identity-a",
+						status: "active",
+						identityStatus: "active",
+					},
+				],
+				peers: [
+					{
+						deviceId: "device-a",
+						displayName: peerName,
+						publicKey: "key-a",
+						pinnedFingerprint: fingerprintPublicKey("key-a"),
+						suggestedIdentityId: null,
+						trustProvenance: null,
+						claimedLocalActor: false,
+					},
+				],
+				coordinator: {
+					availability: "available",
+					safeErrorCode: null,
+					enrollments: [
+						enrollment("device-a", "key-a", { display_name: "Unnamed device" }),
+						enrollment("device-alias", "key-a", { display_name: "Studio laptop" }),
+						enrollment("device-other-alias", "key-a", { display_name: "Other laptop" }),
+					],
+				},
+			});
+			const result = projectDeviceIdentityInventory(input);
+			expect(result.items).toHaveLength(1);
+			expect(result.items[0]?.displayName).toBe(expected);
+			expect(result.items[0]?.deviceId).toBe("device-a");
+		},
+	);
+
 	it.each(["Canonical device", "Unnamed device", "Travel laptop"])(
 		"prefers a real enrollment name over placeholder %s without changing bindings",
 		(displayName) => {

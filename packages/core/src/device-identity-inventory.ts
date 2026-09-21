@@ -247,10 +247,16 @@ function preferred(group: Evidence[], source: DeviceIdentityInventorySource): Ev
 }
 
 function preferredDisplayName(group: Evidence[]): string {
-	const named = SOURCE_ORDER.map((source) => preferred(group, source)).find(
-		(item) => item && !["Canonical device", "Unnamed device"].includes(item.displayName),
-	);
-	return named?.displayName || "Unnamed device";
+	for (const source of SOURCE_ORDER) {
+		const named = group.find(
+			(item) =>
+				item.source === source &&
+				item.displayName.length > 0 &&
+				!["Canonical device", "Unnamed device"].includes(item.displayName),
+		);
+		if (named) return named.displayName;
+	}
+	return "Unnamed device";
 }
 
 function projectGroup(group: Evidence[]): DeviceIdentityInventoryItemV1 {
