@@ -47,6 +47,22 @@ describe("needsCoordinatorGroupReview", () => {
 	});
 });
 
+it("reveals the initially hidden join controls without coordinator configuration", () => {
+	document.body.innerHTML = `
+		<div id="syncTeamMeta"></div>
+		<div id="syncSetupPanel" hidden><div id="syncJoinSection">
+			<div id="syncJoinPanel" hidden><textarea id="syncJoinInvite"></textarea><button id="syncJoinButton">Review invite</button></div>
+		</div></div>
+		<div id="syncTeamActions"></div>`;
+	state.lastSyncCoordinator = { configured: false };
+	state.lastSyncStatus = { enabled: true };
+	state.lastSyncPeers = [];
+	act(() => renderTeamSync());
+	expect(document.getElementById("syncSetupPanel")?.hidden).toBe(false);
+	expect(document.getElementById("syncJoinPanel")?.hidden).toBe(false);
+	expect(document.getElementById("syncJoinInvite")?.isConnected).toBe(true);
+});
+
 function renderStatus(primaryStatus: UiTeamSyncPrimaryStatus) {
 	const badge = document.createElement("span");
 	const meta = document.createElement("div");
@@ -362,6 +378,60 @@ describe("renderTeamSync missing-address state", () => {
 });
 
 describe("renderTeamSync coordinator approval state", () => {
+	it.each([
+		{ status: { peer_state: "online", sync_status: "ok" } },
+		{ last_error: "401 unauthorized" },
+		{},
+	])("retains stale paired approvals with wait guidance: %j", (peerDetails) => {
+		document.body.innerHTML = `
+			<div id="syncTeamMeta"></div><div id="syncSetupPanel"></div>
+			<div id="syncTeamActions"></div><div id="syncCoordinatorDiscovered"></div>
+			<div id="syncCoordinatorDiscoveredMeta"></div><div id="syncCoordinatorDiscoveredList"></div>
+		`;
+		state.lastSyncStatus = { enabled: true, daemon_state: "ok", daemon_running: true };
+		state.lastSyncPeers = [
+			{ peer_device_id: "device-stale", fingerprint: "fingerprint-a", ...peerDetails },
+		];
+		state.lastSyncCoordinator = {
+			configured: true,
+			coordinator_url: "https://coord.example.test",
+			sync_enabled: true,
+			groups: ["team-a"],
+			presence_status: "posted",
+			discovered_devices: [
+				{
+					device_id: "device-stale",
+					display_name: "Desk Mini",
+					fingerprint: "fingerprint-a",
+					groups: ["team-a"],
+					needs_local_approval: true,
+					incoming_reciprocal_request_id: "request-a",
+					stale: true,
+				},
+			],
+		};
+		state.lastSyncViewModel = deriveSyncViewModel({
+			coordinator: state.lastSyncCoordinator,
+			peers: state.lastSyncPeers,
+			status: state.lastSyncStatus,
+		});
+		act(() => renderTeamSync());
+		const discovered = document.getElementById("syncCoordinatorDiscoveredList") as HTMLElement;
+		expect(discovered.textContent).toContain("Desk Mini");
+		expect(discovered.textContent).toContain("Wait for a fresh coordinator presence update");
+		expect(discovered.querySelector("button")).toBeNull();
+		expect(document.getElementById("syncCoordinatorDiscovered")?.hidden).toBe(false);
+		const device = state.lastSyncCoordinator.discovered_devices?.[0];
+		if (!device) throw new Error("missing discovered device");
+		device.stale = false;
+		act(() => renderTeamSync());
+		expect(document.body.textContent).not.toContain("Wait for a fresh coordinator presence update");
+		expect(
+			document.querySelector('button[aria-label="Approve on this device for Desk Mini"]'),
+			document.body.innerHTML,
+		).not.toBeNull();
+	});
+
 	it("keeps a stale authoritative approval row visible without counting it as actionable", () => {
 		document.body.innerHTML = `
 			<div id="syncTeamMeta"></div>

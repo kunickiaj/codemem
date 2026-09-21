@@ -340,10 +340,121 @@ describe("Device pairing entry point", () => {
 			"Pairing failed. Check the payload.",
 		);
 		expect(onNavigate).not.toHaveBeenCalled();
+		expect(document.getElementById("devices-pairing-panel")?.textContent).toContain(
+			"Each device must accept the other’s payload",
+		);
 	});
 });
 
+describe("Device pairing live portal restoration", () => {
+	it.each([
+		[false, "live-portal"],
+		[true, "live-portal"],
+		[false, "syncJoinSection"],
+		[true, "syncJoinSection"],
+	] as const)(
+		"preserves visibility after initial sync reveals the form (observer ran: %s, parent: %s)",
+		async (observerRan, parentId) => {
+			document.body.insertAdjacentHTML(
+				"beforeend",
+				'<div id="syncJoinSection"><div id="syncJoinPanel" hidden><button>Review invite</button></div></div><div id="live-portal"></div>',
+			);
+			mount(intent(), reconciliation());
+			act(() =>
+				[...document.querySelectorAll<HTMLButtonElement>("button")]
+					.find((button) => button.textContent === "Pair a device")
+					?.click(),
+			);
+			const panel = document.getElementById("syncJoinPanel");
+			const portal = document.getElementById(parentId);
+			if (!panel || !portal) throw new Error("pairing fixture missing");
+			portal.appendChild(panel);
+			panel.hidden = false;
+			if (observerRan)
+				await act(async () => {
+					await Promise.resolve();
+				});
+			act(() =>
+				[...document.querySelectorAll<HTMLButtonElement>("button")]
+					.find((button) => button.textContent === "Close")
+					?.click(),
+			);
+			expect(panel.parentElement).toBe(portal);
+			expect(panel.hidden).toBe(false);
+		},
+	);
+	it.each([false, true])(
+		"returns to the live configured portal (replaced: %s)",
+		async (replaced) => {
+			document.body.insertAdjacentHTML(
+				"beforeend",
+				'<div id="syncSetupPanel" hidden><div id="syncJoinSection"></div></div><div id="live-portal"><div id="syncJoinPanel"><button>Review invite</button></div></div>',
+			);
+			mount(intent(), reconciliation());
+			const panel = document.getElementById("syncJoinPanel");
+			act(() =>
+				[...document.querySelectorAll<HTMLButtonElement>("button")]
+					.find((button) => button.textContent === "Pair a device")
+					?.click(),
+			);
+			expect(panel?.closest(".devices-pairing-accept")).not.toBeNull();
+			if (replaced) {
+				document.getElementById("live-portal")?.remove();
+				const nextPortal = document.createElement("div");
+				nextPortal.id = "live-portal";
+				document.body.appendChild(nextPortal);
+				if (!panel) throw new Error("pairing panel missing");
+				nextPortal.appendChild(panel);
+				await act(async () => {
+					await Promise.resolve();
+				});
+				expect(panel.closest(".devices-pairing-accept")).not.toBeNull();
+			}
+			act(() =>
+				[...document.querySelectorAll<HTMLButtonElement>("button")]
+					.find((button) => button.textContent === "Close")
+					?.click(),
+			);
+			expect(panel?.parentElement).toBe(document.getElementById("live-portal"));
+			expect(panel?.closest("[hidden]")).toBeNull();
+		},
+	);
+});
+
 describe("Device pairing ownership", () => {
+	it("returns the form to a connected host after the sync action slot is replaced", async () => {
+		const section = document.createElement("div");
+		section.id = "syncJoinSection";
+		section.innerHTML =
+			'<div id="old-slot"><div id="syncJoinPanel" hidden><textarea></textarea></div></div>';
+		document.body.appendChild(section);
+		mount(intent(), reconciliation());
+		const pair = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+			(button) => button.textContent === "Pair a device",
+		);
+		act(() => pair?.click());
+		const panel = document.getElementById("syncJoinPanel");
+		expect(panel?.closest(".devices-pairing-accept")).not.toBeNull();
+		document.getElementById("old-slot")?.remove();
+		await act(async () => {
+			await Promise.resolve();
+		});
+		act(() =>
+			[...document.querySelectorAll<HTMLButtonElement>("button")]
+				.find((button) => button.textContent === "Close")
+				?.click(),
+		);
+		expect(document.getElementById("syncJoinPanel")).toBe(panel);
+		expect(panel?.parentElement).toBe(section);
+		expect(panel?.hidden).toBe(true);
+		act(() => pair?.click());
+		expect(panel?.closest(".devices-pairing-accept")).not.toBeNull();
+	});
+	it("does not invent a local row when inventory is unavailable", () => {
+		mount(intent(), reconciliation(), { inventoryUnavailable: true });
+		expect(document.querySelector(".devices-local-row")).toBeNull();
+		expect(document.body.textContent).toContain("Work Laptop");
+	});
 	it("leaves the pairing form with Advanced while Devices is hidden", async () => {
 		const devicesTab = document.createElement("div");
 		devicesTab.id = "tab-devices";
@@ -393,6 +504,23 @@ describe("Device pairing availability", () => {
 
 		expect(document.querySelector(".devices-summary-bar")).not.toBeNull();
 		expect(document.body.textContent).not.toContain("Coordinator unreachable");
+	});
+
+	it("shows setup guidance instead of Retry for incomplete coordinator settings", () => {
+		const setupInventory = inventory([]);
+		setupInventory.coordinatorEvidence = {
+			availability: "unavailable",
+			safeErrorCode: "coordinator_configuration_required",
+		};
+		mount(intent(), reconciliation(), { inventory: setupInventory, onRetry: vi.fn() });
+		expect(document.body.textContent).toContain("Complete coordinator setup");
+		expect(document.body.textContent).toContain(
+			"URL, administrator secret, and at least one group",
+		);
+		expect(document.body.textContent).not.toContain("Coordinator unreachable");
+		expect(
+			[...document.querySelectorAll("button")].some((button) => button.textContent === "Retry"),
+		).toBe(false);
 	});
 
 	it("replaces the summary with a retryable coordinator status while unreachable", () => {

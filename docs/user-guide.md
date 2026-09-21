@@ -371,6 +371,10 @@ Changing a configured device's Identity is a separate rebind flow. It shows both
 
 The **Sharing** tab shows an attention notice while device setup, pairing, repair, or coordinator enrollment reconciliation remains. **Review Devices** focuses the authoritative ownership workflow. Devices and Sharing show only a safe affected-enrollment count. Identity setup records ownership only: it does not grant Projects, add Team membership, change recipient policy, or enable sync access. When no policy Teams exist, Sharing opens the Identities view rather than implying that coordinator groups are Teams.
 
+Devices shows **Complete coordinator setup** when coordinator settings are incomplete. Configure the coordinator URL, administrator secret, and at least one group locally, then refresh Devices; Identity setup stays disabled until coordinator evidence is available. An actual coordinator outage instead shows **Coordinator unreachable** with **Retry**.
+
+Already-paired devices that still need approval on this device remain visible when coordinator presence is stale. Wait for a fresh presence update before reviewing approval; stale rows do not offer an approval action.
+
 **Availability** tells you whether the device can currently receive work. It does not change ownership or Project access:
 
 | Status | Meaning | What to do |
@@ -408,8 +412,9 @@ Use manual pairing for same-person devices, existing integrations, or compatibil
 1. In **Devices**, choose **Pair a device** and copy the displayed `codemem sync pair --payload-only` command.
 2. On the device you want to connect, run `codemem sync enable` and `codemem serve restart` before running the copied command. Both devices need sync enabled to exchange memories.
 3. Copy the generated payload and paste it under **Accept a pairing payload** in **Devices**. Choose **Review invite** to check the device ID, fingerprint, and addresses against the other device, then choose **Accept invite**. Accept only a payload from a device you trust; acceptance trusts that device.
+4. Repeat in the other direction: enable sync and restart this device, generate its payload, then accept that payload on the other device. Each device must accept the other's payload; one-way acceptance does not complete pairing.
 
-For a CLI-only compatibility flow, generate a payload with `codemem sync pair` on one device and accept it with `codemem sync pair --accept '<payload>'` on the other.
+For a CLI-only compatibility flow, generate a payload with `codemem sync pair` on one device and accept it with `codemem sync pair --accept '<payload>'` on the other. Repeat with the devices reversed.
 
 Optional legacy filters can narrow an already-authorized peer's data; they cannot grant project access:
 

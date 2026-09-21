@@ -37,6 +37,7 @@ import {
 	renderTeamSync,
 	setLoadSyncData as setTeamSyncLoadData,
 } from "./team-sync";
+import { ensureJoinPanelInSetupSection } from "./team-sync/helpers/invite-panel-dom";
 import { deriveSyncViewModel, type TeamSyncReconciliationState } from "./view-model";
 
 /* ── Re-exports consumed by app.ts ───────────────────────── */
@@ -397,16 +398,27 @@ async function runLoadSyncData(
 		if (requestId !== latestSyncLoadRequestId) return latestSyncLoad ?? false;
 		lastSyncHash = "";
 		state.deviceIdentityInventoryLoadError = true;
-		// Clear all skeletons so the error state is visible, not masked by loading placeholders
-		hideSkeleton("syncTeamSkeleton");
-		hideSkeleton("syncActorsSkeleton");
-		hideSkeleton("syncPeersSkeleton");
-		hideSkeleton("syncDiagSkeleton");
-		hideStaleSyncSecondarySections();
-		renderSyncPeopleUnavailable();
-		renderSyncDiagnosticsUnavailable();
+		renderSyncLoadFailure();
 		return false;
 	}
+}
+
+function renderSyncLoadFailure(): void {
+	// Clear all skeletons so the error state is visible, not masked by loading placeholders
+	hideSkeleton("syncTeamSkeleton");
+	hideSkeleton("syncActorsSkeleton");
+	hideSkeleton("syncPeersSkeleton");
+	hideSkeleton("syncDiagSkeleton");
+	hideStaleSyncSecondarySections();
+	// Import does not require status. Return the panel through the same handoff as a
+	// successful render so Devices observes its updated restore visibility.
+	ensureJoinPanelInSetupSection();
+	const setupPanel = document.getElementById("syncSetupPanel");
+	const joinPanel = document.getElementById("syncJoinPanel");
+	if (setupPanel) setupPanel.hidden = false;
+	if (joinPanel) joinPanel.hidden = false;
+	renderSyncPeopleUnavailable();
+	renderSyncDiagnosticsUnavailable();
 }
 
 function refreshHealthStatusAfterSync(): void {

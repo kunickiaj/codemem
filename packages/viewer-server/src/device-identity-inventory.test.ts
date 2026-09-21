@@ -246,8 +246,19 @@ describe("device Identity binding routes", () => {
 			rmSync(directory, { recursive: true, force: true });
 		}
 	});
+});
 
-	it("fails closed for partial coordinator config instead of treating it as absent", async () => {
+describe("device Identity binding configuration", () => {
+	it.each([
+		{ sync_coordinator_admin_secret: "test-secret" },
+		{ sync_coordinator_url: "https://coord.example.test", sync_coordinator_group: "team-a" },
+		{ sync_coordinator_admin_secret: "test-secret", sync_coordinator_group: "team-a" },
+		{
+			sync_coordinator_url: "https://coord.example.test",
+			sync_coordinator_admin_secret: "test-secret",
+		},
+		{ sync_coordinator_url: " ", sync_coordinator_group: "team-a" },
+	])("fails closed with setup guidance for partial coordinator config %j", async (config) => {
 		const fixture = testStore();
 		const configDirectory = mkdtempSync(join(tmpdir(), "codemem-binding-config-test-"));
 		const configPath = join(configDirectory, "config.json");
@@ -262,13 +273,7 @@ describe("device Identity binding routes", () => {
 			delete process.env.CODEMEM_SYNC_COORDINATOR_GROUP;
 			delete process.env.CODEMEM_SYNC_COORDINATOR_GROUPS;
 			delete process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
-			writeFileSync(
-				configPath,
-				JSON.stringify({
-					sync_coordinator_url: "https://coord.example.test",
-					sync_coordinator_group: "team-a",
-				}),
-			);
+			writeFileSync(configPath, JSON.stringify(config));
 			const app = createApp({ storeFactory: () => fixture.store });
 
 			const inventoryResponse = await app.request("/api/sync/recipient-policy/v1/device-inventory");
@@ -276,10 +281,11 @@ describe("device Identity binding routes", () => {
 			expect(inventoryBody).toMatchObject({
 				coordinatorEvidence: {
 					availability: "unavailable",
-					safeErrorCode: "coordinator_unavailable",
+					safeErrorCode: "coordinator_configuration_required",
 				},
 			});
 			expect(JSON.stringify(inventoryBody)).not.toContain("coord.example.test");
+			expect(JSON.stringify(inventoryBody)).not.toContain("test-secret");
 
 			const previewResponse = await app.request(
 				"/api/sync/recipient-policy/v1/device-bindings/preview",
@@ -319,7 +325,9 @@ describe("device Identity binding routes", () => {
 			rmSync(configDirectory, { recursive: true, force: true });
 		}
 	});
+});
 
+describe("device Identity binding writes", () => {
 	it("returns Retry-After when preview evidence is SQLite-busy", async () => {
 		const fixture = testStore();
 		let competing: InstanceType<typeof Database> | null = null;
