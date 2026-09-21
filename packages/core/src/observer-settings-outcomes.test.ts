@@ -6,6 +6,7 @@ import { readCoordinatorSyncConfig } from "./coordinator-sync-config.js";
 import { buildTieredObserverConfig } from "./extraction-tier-routing.js";
 import { ObserverAuthAdapter } from "./observer-auth.js";
 import { loadObserverConfig, ObserverClient } from "./observer-client.js";
+import { CODEMEM_CONFIG_ENV_OVERRIDES, getCodememEnvOverrides } from "./observer-config.js";
 
 let home: string;
 let env: NodeJS.ProcessEnv;
@@ -18,6 +19,49 @@ afterEach(() => {
 	process.env = env;
 	rmSync(home, { recursive: true, force: true });
 });
+
+it.each(["simple", "rich"] as const)(
+	"backs effective %s provider outcome precedence with tier selection",
+	(tier) => {
+		const key = `observer_${tier}_provider`;
+		const envKey = `CODEMEM_OBSERVER_${tier.toUpperCase()}_PROVIDER`;
+		expect(CODEMEM_CONFIG_ENV_OVERRIDES[key]).toBe(envKey);
+		for (const [base, envProvider, expected] of [
+			["openai", " AnThRoPiC ", "anthropic"],
+			["anthropic", " OPENAI ", "openai"],
+			["anthropic", "", "anthropic"],
+			["anthropic", "   ", "anthropic"],
+			["anthropic", "custom", "anthropic"],
+			["opencode", "anthropic", "anthropic"],
+			["opencode", "openai", "openai"],
+			["opencode", "custom", "custom"],
+			["opencode", "", "opencode"],
+		] as const) {
+			process.env[envKey] = envProvider;
+			if (envProvider) expect(getCodememEnvOverrides()[key]).toBe(envKey);
+			const client = new ObserverClient(
+				loadObserverConfig({
+					observer_runtime: "api_http",
+					observer_provider: base,
+					[key]: "openai",
+					observer_model: "base-model",
+					observer_base_url: "https://gateway.example/v1",
+					observer_auth_source: "none",
+					observer_tier_routing_enabled: true,
+				}),
+			);
+			const selected = buildTieredObserverConfig(client.toConfig(), {
+				tier,
+				reasons: [],
+				observer: {},
+			});
+			expect(selected.observerProvider).toBe(expected);
+			expect(selected.observerModel !== "base-model").toBe(
+				["openai", "anthropic"].includes(expected),
+			);
+		}
+	},
+);
 
 it.each([
 	["disabled", false],

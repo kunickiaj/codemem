@@ -25,6 +25,11 @@ const REDACTED_VALUE = "[redacted]";
 
 const RUNTIMES = new Set(["api_http", "claude_sidecar", "codex_sidecar"]);
 const AUTH_SOURCES = new Set(["auto", "env", "file", "command", "none"]);
+const OBSERVER_EMPTY_ENV_OVERRIDE_KEYS = new Set([
+	"observer_runtime",
+	"observer_simple_provider",
+	"observer_rich_provider",
+]);
 const HOT_RELOAD_KEYS = new Set(["raw_events_sweeper_interval_s"]);
 const EXECUTABLE_ARGV_KEYS = new Set(["claude_command", "codex_command", "observer_auth_command"]);
 const BOOLEAN_KEYS = new Set([
@@ -156,7 +161,7 @@ function getEffectiveConfig(configData: ConfigData): ConfigData {
 		[string, string]
 	>) {
 		const val = process.env[envVar];
-		if (val == null || (val === "" && key !== "observer_runtime")) continue;
+		if (val == null || (val === "" && !OBSERVER_EMPTY_ENV_OVERRIDE_KEYS.has(key))) continue;
 		if (key === "claude_command" || key === "codex_command") {
 			effective[key] = coerceObserverCommand(val) ?? effective[key];
 		} else {
@@ -168,9 +173,10 @@ function getEffectiveConfig(configData: ConfigData): ConfigData {
 
 function getViewerEnvOverrides(): Record<string, string> {
 	const overrides = getCodememEnvOverrides();
-	// The observer loader treats even an empty runtime env value as an override.
-	if (process.env.CODEMEM_OBSERVER_RUNTIME !== undefined) {
-		overrides.observer_runtime = "CODEMEM_OBSERVER_RUNTIME";
+	// These observer fields use nullish env precedence, including empty values.
+	for (const key of OBSERVER_EMPTY_ENV_OVERRIDE_KEYS) {
+		const envVar = CODEMEM_CONFIG_ENV_OVERRIDES[key];
+		if (envVar && process.env[envVar] !== undefined) overrides[key] = envVar;
 	}
 	return overrides;
 }

@@ -263,9 +263,14 @@ function tierProvider(controlId: string, baseProvider: string): string {
 	const key = controlId.startsWith("observerSimple")
 		? "observer_simple_provider"
 		: "observer_rich_provider";
-	return String(settingsState.effectiveConfig[key] || baseProvider)
+	const tier = String(settingsState.effectiveConfig[key] ?? "")
 		.trim()
 		.toLowerCase();
+	const base = baseProvider.trim().toLowerCase();
+	// Tier selection prefers a known tier provider, then a known base provider.
+	if (["openai", "anthropic"].includes(tier)) return tier;
+	if (["openai", "anthropic"].includes(base)) return base;
+	return tier || base;
 }
 
 function tierModelsOverrideBase(runtime: string, baseProvider: string): boolean {

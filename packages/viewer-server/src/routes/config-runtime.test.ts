@@ -82,6 +82,25 @@ async function runtimePreview(config: Record<string, unknown> = {}) {
 	return response.json();
 }
 
+it.each(["simple", "rich"])(
+	"exposes %s provider environment overrides over saved values",
+	async (tier) => {
+		const key = `observer_${tier}_provider`;
+		const envKey = `CODEMEM_OBSERVER_${tier.toUpperCase()}_PROVIDER`;
+		for (const value of [" AnThRoPiC ", "OPENAI", "custom", "", "   "]) {
+			process.env[envKey] = value;
+			const body = await runtimePreview({ observer_runtime: "api_http", [key]: "saved-provider" });
+			expect(body.effective[key]).toBe(value);
+			expect(body.env_overrides[key]).toBe(envKey);
+			expect(body.config[key]).toBe("saved-provider");
+			const loaded = loadObserverConfig();
+			expect(tier === "simple" ? loaded.observerSimpleProvider : loaded.observerRichProvider).toBe(
+				value,
+			);
+		}
+	},
+);
+
 it("previews auth changes through the shared resolver and preserves omitted runtime on save", async () => {
 	const body = await runtimePreview();
 	expect(body.observer_runtime_by_auth_source).toEqual({
