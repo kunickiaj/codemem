@@ -275,9 +275,13 @@ export function applyRetirementProtectedSnapshot(
 		items: SyncMemorySnapshotItem[];
 		mode: "replace" | "merge";
 		scanner?: SecretScanner;
+		/** Filtered direct-source snapshots cannot replace a multi-author scope or advance its cursor. */
+		contentMode?: "source-only";
 	},
 ) {
 	requireInternalReset(db, options);
+	if (options.contentMode === "source-only" && options.mode !== "merge")
+		throw new Error("retirement_snapshot_merge_required");
 	return db
 		.transaction(() => {
 			const state = resetState(db, options.resetId);
@@ -300,7 +304,14 @@ export function applyRetirementProtectedSnapshot(
 				});
 			}
 			const apply = options.mode === "replace" ? applyBootstrapSnapshot : mergeBootstrapSnapshot;
-			return apply(db, options.peer.deviceId, options.items, options.resetInfo, options.scanner);
+			return apply(
+				db,
+				options.peer.deviceId,
+				options.items,
+				options.resetInfo,
+				options.scanner,
+				options.contentMode === "source-only" ? { cursorPolicy: "preserve" } : undefined,
+			);
 		})
 		.immediate();
 }

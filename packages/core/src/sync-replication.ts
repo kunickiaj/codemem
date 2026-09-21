@@ -19,6 +19,7 @@ import {
 	hasMemoryScopeRetirement,
 	isMemoryScopeRetired,
 } from "./memory-scope-retirement.js";
+import { memorySourceNamespace } from "./memory-source-identity.js";
 import { readCodememConfigFile } from "./observer-config.js";
 import { projectBasename } from "./project.js";
 import { getAnyRecipientPolicyDenyOverlayForScopeDevice } from "./recipient-policy-reconciliation.js";
@@ -93,6 +94,8 @@ export type LoadReplicationOpsForPeerResult =
 	  };
 
 export interface LoadMemorySnapshotPageForPeerOptions {
+	/** Direct-source reset lane; the HTTP caller must require its own local device ID. */
+	sourceDeviceId?: string;
 	limit?: number;
 	pageToken?: string | null;
 	peerDeviceId?: string | null;
@@ -1336,7 +1339,12 @@ function snapshotClockDeviceId(payload: MemoryPayload, row: MemoryItemRow): stri
 	return String(row.origin_device_id ?? "local");
 }
 
-function unretiredSnapshotPayload(db: Database, row: MemoryItemRow): MemoryPayload | null {
+function unretiredSnapshotPayload(
+	db: Database,
+	row: MemoryItemRow,
+	sourceDeviceId?: string,
+): MemoryPayload | null {
+	if (sourceDeviceId && memorySourceNamespace(row.import_key ?? "") !== sourceDeviceId) return null;
 	const payload = buildPayloadFromMemoryRow(row);
 	if (
 		!retirementAllowsSnapshot(
@@ -1438,8 +1446,7 @@ export function loadMemorySnapshotPageForPeer(
 			if (!importKey) continue;
 			lastScannedToken = makeSnapshotPageToken(importKey, Number(row.memory.id));
 			nextScanToken = { importKey, id: Number(row.memory.id) };
-
-			const payload = unretiredSnapshotPayload(db, row.memory);
+			const payload = unretiredSnapshotPayload(db, row.memory, options.sourceDeviceId);
 			if (!payload) continue;
 			if (
 				(replicationOpRequiresPersonalScopeAuthorization(

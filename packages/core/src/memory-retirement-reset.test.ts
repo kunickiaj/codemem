@@ -28,7 +28,11 @@ import { getCachedScopeAuthorization } from "./scope-membership-cache.js";
 import { buildDirectPeerCanonicalRequest } from "./sync-auth.js";
 import { applyBootstrapSnapshot, mergeBootstrapSnapshot } from "./sync-bootstrap.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
-import { getSyncResetState, loadMemorySnapshotPageForPeer } from "./sync-replication.js";
+import {
+	getReplicationCursor,
+	getSyncResetState,
+	loadMemorySnapshotPageForPeer,
+} from "./sync-replication.js";
 import { initTestSchema } from "./test-utils.js";
 import type { SyncMemorySnapshotItem, SyncResetRequired } from "./types.js";
 
@@ -267,6 +271,65 @@ beforeEach(() => {
 		.prepare(`INSERT INTO scope_memberships(scope_id, device_id, role, status, membership_epoch, updated_at)
 		VALUES ('old', 'recipient', 'member', 'revoked', 1, ?)`)
 		.run(now);
+});
+
+it("paginates a direct-source subset and merges it without deleting other authors or advancing their scope cursor", () => {
+	const foreign = (name: string, n: number) => ({
+		...snapshot(n),
+		entity_id: `memory-source-v1:${Buffer.from(name).toString("base64url")}:00000000-0000-4000-8000-${String(n).padStart(12, "0")}`,
+	});
+	const otherAuthors = [foreign("recipient", 1), foreign("aaa", 2), foreign("zzz", 3)];
+	mergeBootstrapSnapshot(
+		sender,
+		"fixture",
+		[snapshot(1), ...otherAuthors, snapshot(2), snapshot(3)],
+		info,
+	);
+	mergeBootstrapSnapshot(receiver, "fixture", otherAuthors, info);
+	const boundaryBefore = getSyncResetState(receiver, "old");
+	const cursorBefore = getReplicationCursor(receiver, "source", "old");
+	const request = start();
+	exchange(request);
+	const items: SyncMemorySnapshotItem[] = [];
+	let pageToken: string | null = null;
+	const seen = new Set<string>();
+	do {
+		const page = loadMemorySnapshotPageForPeer(sender, {
+			scopeId: "old",
+			sourceDeviceId: "source",
+			generation: info.generation,
+			snapshotId: info.snapshot_id,
+			baselineCursor: info.baseline_cursor,
+			pageToken,
+			limit: 1,
+		});
+		items.push(...page.items);
+		pageToken = page.nextPageToken;
+		if (pageToken) {
+			expect(seen.has(pageToken)).toBe(false);
+			seen.add(pageToken);
+		}
+	} while (pageToken);
+	expect(items.map((item) => item.entity_id)).toEqual([qualified(1), qualified(2), qualified(3)]);
+	const options = {
+		...receiverOptions(),
+		resetId: request.resetId,
+		resetInfo: info,
+		items,
+		contentMode: "source-only" as const,
+	};
+	const before = receiver.serialize();
+	expect(() => applyRetirementProtectedSnapshot(receiver, { ...options, mode: "replace" })).toThrow(
+		"retirement_snapshot_merge_required",
+	);
+	expect(receiver.serialize().equals(before)).toBe(true);
+	expect(applyRetirementProtectedSnapshot(receiver, { ...options, mode: "merge" }).applied).toBe(3);
+	expect(receiver.prepare("SELECT COUNT(*) FROM memory_items").pluck().get()).toBe(6);
+	expect(getSyncResetState(receiver, "old")).toEqual(boundaryBefore);
+	expect(getReplicationCursor(receiver, "source", "old")).toEqual(cursorBefore);
+	expect(() =>
+		applyRetirementProtectedSnapshot(receiver, { ...options, mode: "merge", items: otherAuthors }),
+	).toThrow("retirement_snapshot_source_required");
 });
 afterEach(() => {
 	sender.close();

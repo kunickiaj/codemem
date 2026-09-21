@@ -715,6 +715,62 @@ it("rejects a stale or mixed-generation page before returning snapshot content",
 		rmSync(keysDir, { recursive: true, force: true });
 	}
 });
+it("binds every source-only page request and response to the authenticated source", async () => {
+	const db = new Database(":memory:");
+	initTestSchema(db);
+	const keysDir = mkdtempSync(join(tmpdir(), "codemem-source-pages-"));
+	const [deviceId] = ensureDeviceIdentity(db, { keysDir });
+	const previous = globalThis.fetch;
+	const urls: URL[] = [];
+	let echoSource = "source";
+	try {
+		globalThis.fetch = (async (input: RequestInfo | URL) => {
+			const url = new URL(String(input));
+			urls.push(url);
+			return new Response(
+				JSON.stringify({
+					...makeResetInfo(),
+					source_device_id: echoSource,
+					items: [],
+					has_more: !url.searchParams.has("page_token"),
+					next_page_token: "next",
+				}),
+				{ status: 200 },
+			);
+		}) as typeof fetch;
+		const options = { keysDir, recipientId: "source", sourceDeviceId: "source" };
+		expect(
+			(
+				await fetchAllSnapshotPages(
+					"http://peer.example.test:47337",
+					makeResetInfo(),
+					deviceId,
+					options,
+				)
+			).items,
+		).toEqual([]);
+		expect(urls.map((url) => url.searchParams.get("source_device_id"))).toEqual([
+			"source",
+			"source",
+		]);
+		expect(urls[1]?.searchParams.get("page_token")).toBe("next");
+		echoSource = "different";
+		await expect(
+			fetchAllSnapshotPages("http://peer.example.test:47337", makeResetInfo(), deviceId, options),
+		).rejects.toThrow("retirement_snapshot_source_required");
+		await expect(
+			fetchAllSnapshotPages("http://peer.example.test:47337", makeResetInfo(), deviceId, {
+				...options,
+				recipientId: undefined,
+			}),
+		).rejects.toThrow("retirement_snapshot_source_required");
+	} finally {
+		globalThis.fetch = previous;
+		db.close();
+		rmSync(keysDir, { recursive: true, force: true });
+	}
+});
+
 it("preserves v2 auth for public callers that omit recipientId", async () => {
 	const db = new Database(":memory:");
 	initTestSchema(db);

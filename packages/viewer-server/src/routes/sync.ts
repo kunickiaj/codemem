@@ -185,6 +185,7 @@ import {
 	reconcileRecipientPolicyProjectsOperation,
 } from "../application/coordinator-maintenance.js";
 import { buildSyncStatusResponse, type SyncRuntimeStatus } from "../application/sync-status.js";
+import { snapshotErrorStatus, snapshotPageRequest } from "../snapshot-source.js";
 
 export type {
 	AdvancePendingProjectSharesResult,
@@ -4229,6 +4230,52 @@ function negotiatedSyncCapability(c: Context) {
  * network-accessible. All requests are auth-gated via signature
  * verification so unauthenticated callers are rejected.
  */
+function serveAuthorizedSnapshot(c: Context, store: MemoryStore, peerDeviceId: string) {
+	try {
+		const rawScopeId = c.req.query(SYNC_SCOPE_QUERY_PARAM);
+		const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
+		const scopeRequest = parseSyncScopeRequest(rawScopeId, rawScopeId !== undefined, {
+			db: store.db,
+			localDeviceId,
+			negotiatedCapability: negotiatedSyncCapability(c),
+			peerDeviceId,
+		});
+		if (!scopeRequest.ok)
+			return c.json(
+				syncScopeResetRequiredPayload(
+					getSyncResetState(store.db),
+					scopeRequest.reason,
+					LOCAL_SYNC_CAPABILITY,
+					null,
+				),
+				409,
+			);
+		const pageRequest = snapshotPageRequest((name) => c.req.query(name), localDeviceId);
+		const result = loadMemorySnapshotPageForPeer(store.db, {
+			...pageRequest,
+			peerDeviceId,
+			scopeId: scopeRequest.mode === "scoped" ? scopeRequest.scope_id : undefined,
+		});
+		return c.json({
+			source_device_id: pageRequest.sourceDeviceId,
+			scope_id: scopeRequest.scope_id,
+			generation: result.boundary.generation,
+			snapshot_id: result.boundary.snapshot_id,
+			baseline_cursor: result.boundary.baseline_cursor,
+			retained_floor_cursor: result.boundary.retained_floor_cursor,
+			sync_capability: LOCAL_SYNC_CAPABILITY,
+			items: result.items,
+			next_page_token: result.nextPageToken,
+			has_more: result.hasMore,
+		});
+	} catch (err) {
+		const message = err instanceof Error ? err.message : "";
+		const status = snapshotErrorStatus(message);
+		if (status) return c.json({ error: message }, status);
+		return c.json({ error: "internal_error" }, 500);
+	}
+}
+
 export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRouteOptions = {}) {
 	const app = new Hono();
 	const routeRateLimit = opts.routeRateLimit ?? null;
@@ -4481,75 +4528,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			}
 			const limited = rateLimitedResponse(c, auth.deviceId, true);
 			if (limited) return limited;
-
-			try {
-				const rawScopeId = c.req.query(SYNC_SCOPE_QUERY_PARAM);
-				const negotiated = negotiatedSyncCapability(c);
-				const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
-				const scopeRequest = parseSyncScopeRequest(rawScopeId, rawScopeId !== undefined, {
-					db: store.db,
-					localDeviceId,
-					negotiatedCapability: negotiated,
-					peerDeviceId: auth.deviceId,
-				});
-				if (!scopeRequest.ok) {
-					return c.json(
-						syncScopeResetRequiredPayload(
-							getSyncResetState(store.db),
-							scopeRequest.reason,
-							LOCAL_SYNC_CAPABILITY,
-							null,
-						),
-						409,
-					);
-				}
-				const rawGeneration = c.req.query("generation");
-				const generation =
-					rawGeneration != null && rawGeneration.trim().length > 0
-						? Number.parseInt(rawGeneration, 10)
-						: null;
-				const snapshotId = c.req.query("snapshot_id") ?? null;
-				const baselineCursor = c.req.query("baseline_cursor") ?? null;
-				const pageToken = c.req.query("page_token") ?? null;
-				const rawLimit = Number.parseInt(c.req.query("limit") ?? "200", 10);
-				// Cap raised to 5000 to support elevated bootstrap page sizes (default 2000).
-				const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 5000)) : 200;
-
-				if (generation == null || !Number.isFinite(generation)) {
-					return c.json({ error: "missing_generation" }, 400);
-				}
-				if (!snapshotId) {
-					return c.json({ error: "missing_snapshot_id" }, 400);
-				}
-
-				const result = loadMemorySnapshotPageForPeer(store.db, {
-					generation,
-					snapshotId,
-					baselineCursor,
-					pageToken,
-					limit,
-					peerDeviceId: auth.deviceId,
-					scopeId: scopeRequest.mode === "scoped" ? scopeRequest.scope_id : undefined,
-				});
-
-				return c.json({
-					scope_id: scopeRequest.scope_id,
-					generation: result.boundary.generation,
-					snapshot_id: result.boundary.snapshot_id,
-					baseline_cursor: result.boundary.baseline_cursor,
-					retained_floor_cursor: result.boundary.retained_floor_cursor,
-					sync_capability: LOCAL_SYNC_CAPABILITY,
-					items: result.items,
-					next_page_token: result.nextPageToken,
-					has_more: result.hasMore,
-				});
-			} catch (err) {
-				const message = err instanceof Error ? err.message : "";
-				if (message === "generation_mismatch" || message === "boundary_mismatch") {
-					return c.json({ error: message }, 409);
-				}
-				return c.json({ error: "internal_error" }, 500);
-			}
+			return serveAuthorizedSnapshot(c, store, auth.deviceId);
 		})();
 	});
 

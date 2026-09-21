@@ -4,6 +4,16 @@ This internal prerequisite replays authenticated retirement history before a dir
 It does not advertise `memory_scope_retirement_v1`, mount its reserved signed paths, or activate repository repair.
 Cross-process admission remains required before production activation.
 
+## Mixed-author scopes
+
+Direct-source reset uses the source-only additive lane so other authors survive.
+Request `/v1/snapshot` with `source_device_id` equal to the authenticated server device; `fetchAllSnapshotPages` accepts `sourceDeviceId` only when it equals the v3 `recipientId` and requires the server to echo that source on every page.
+The exporter advances its keyset token across excluded authors and historical unqualified rows, including pages with no matching content.
+Apply this filtered result with `contentMode: "source-only", mode: "merge"`; the protected importer still rejects foreign/unqualified identities and requires the completed pinned-source retirement handshake.
+This lane preserves absent rows, other authors, and the shared content cursor/generation; it cannot claim that a source subset completed a whole-scope bootstrap.
+`mode: "replace"` with `contentMode: "source-only"` fails before mutation. Never feed filtered pages into destructive bootstrap.
+Each other original source requires its own handshake and source-only merge; unavailable sources retain their rows and need explicit recovery. Production multi-source scheduling and admission remain activation gates.
+
 ## Reset handshake
 
 The receiver starts with `beginRetirementReset`, which persists a random reset ID, the pinned source device and public key, the local recipient, and a digest of the exact snapshot boundary.
