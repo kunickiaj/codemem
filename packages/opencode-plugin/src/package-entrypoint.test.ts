@@ -30,15 +30,16 @@ it("exports one typed dual-host object while retaining V1 compatibility names", 
 	expect(entrypoint.setup).toBeTypeOf("function");
 });
 
-it("keeps the OpenCode 1 SDK manifests aligned with the supported host floor", async () => {
+it("keeps OpenCode 1 SDK pins aligned and the supported host floor explicit", async () => {
 	const packageManifest = await readJson("packages/opencode-plugin/package.json");
 	const pluginRuntimeManifest = await readJson("packages/opencode-plugin/.opencode/package.json");
 	const cliRuntimeManifest = await readJson("packages/cli/.opencode/package.json");
 
-	expect(packageManifest.dependencies["@opencode-ai/plugin"]).toBe(minimumOpenCodeVersion);
+	const sdkVersion = packageManifest.dependencies["@opencode-ai/plugin"];
+	expect(sdkVersion).toMatch(/^1\.\d+\.\d+$/);
 	expect(packageManifest.engines.opencode).toBe(`>=${minimumOpenCodeVersion}`);
-	expect(pluginRuntimeManifest.dependencies["@opencode-ai/plugin"]).toBe(minimumOpenCodeVersion);
-	expect(cliRuntimeManifest.dependencies["@opencode-ai/plugin"]).toBe(minimumOpenCodeVersion);
+	expect(pluginRuntimeManifest.dependencies["@opencode-ai/plugin"]).toBe(sdkVersion);
+	expect(cliRuntimeManifest.dependencies["@opencode-ai/plugin"]).toBe(sdkVersion);
 	expect(packageManifest.dependencies["@opencode/plugin"]).toBe(pinnedOpenCodeV2Version);
 	expect(packageManifest.devDependencies["@opencode/plugin"]).toBeUndefined();
 	expect(packageManifest.files).not.toContain("src/lint-feedback.ts");

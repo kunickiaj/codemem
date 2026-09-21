@@ -158,7 +158,7 @@ describe("required OpenCode host workflow contract", () => {
 			/npm install --prefix packages\/opencode-plugin\/\.opencode --no-save @opencode-ai\/plugin@1\.18\.29/u,
 		);
 		assert.match(pluginJob, /pnpm --filter @codemem\/opencode-plugin test &&/u);
-		assert.equal(pluginPackage.dependencies["@opencode-ai/plugin"], "1.18.29");
+		assert.equal(pluginPackage.engines.opencode, ">=1.18.29");
 		assert.doesNotMatch(pluginJob, /^ {4}(?:if|continue-on-error):/m);
 	});
 

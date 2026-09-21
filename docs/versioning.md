@@ -158,7 +158,10 @@ This is a breaking host-compatibility change from Codemem 0.44; upgrade OpenCode
 before installing the 0.45 plugin.
 
 Dependabot continues to propose SDK updates, but accepting one requires updating
-all checked-in runtime pins together. CI keeps the minimum host gate fixed at
+all checked-in SDK pins together. The published dependency and both nested
+runtime manifests use the same exact SDK version; that version can be newer
+than the supported host floor. CI explicitly installs the minimum SDK with
+`--no-save` and keeps the minimum host gate and `engines.opencode` fixed at
 1.18.29 until the documented compatibility floor changes. The ignored
 `.opencode/package.json` is only a local contributor runtime and is not a release
 pin. Refresh it when testing the minimum host locally:
