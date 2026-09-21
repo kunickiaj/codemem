@@ -127,7 +127,7 @@ const PENDING_STATUS = {
 const AVAILABILITY_LABELS: Record<DeviceAvailabilityState, string> = {
 	available: "Available",
 	offline: "Offline",
-	unknown: "Unknown",
+	unknown: "Presence unavailable",
 };
 
 function uniqueSorted(values: Iterable<string>): string[] {
@@ -160,12 +160,19 @@ function actionForDevice(
 	return null;
 }
 
+function deviceDisplayName(name: string, inventoryItem?: DeviceIdentityInventoryItemV1): string {
+	if (name !== "Canonical device" && name !== "Unnamed device") return name;
+	const resolved = inventoryItem?.displayName ?? "Unnamed device";
+	return resolved === "Canonical device" ? "Unnamed device" : resolved;
+}
+
 export function projectDevices(
 	intent: RecipientPolicyIntentGraphV1,
 	reconciliation: RecipientPolicyReconciliationStatusV1,
 	projects: DevicesProjectInput[],
 	availabilityInput: DeviceAvailabilityInput[],
 	peerRuntimeMetadataInput: DevicePeerRuntimeMetadataInput[] = [],
+	inventory?: DeviceIdentityInventoryV1,
 ): DevicesProjection {
 	const identityNames = new Map(
 		intent.identities
@@ -186,6 +193,7 @@ export function projectDevices(
 	const devices = intent.identityDevices
 		.filter((device) => device.status === "active" && identityNames.has(device.identityId))
 		.map((device): DeviceProjection => {
+			const presentation = devicePresentation(device, inventory, availability);
 			const runtimeMetadata = peerRuntimeMetadata.get(device.deviceId);
 			const directProjectIds = uniqueSorted(
 				intent.projectRecipients
@@ -219,14 +227,11 @@ export function projectDevices(
 			const inheritedProjects: DeviceProjectProjection[] = [];
 			const allProjects = [...directProjects, ...inheritedProjects];
 			const status = overallStatus(allProjects);
-			const deviceAvailability = availability.get(device.deviceId) ?? "unknown";
 			return {
 				deviceId: device.deviceId,
-				displayName: device.displayName,
+				...presentation,
 				identityId: device.identityId,
 				identityName: identityNames.get(device.identityId) ?? "Identity unavailable",
-				availability: deviceAvailability,
-				availabilityLabel: AVAILABILITY_LABELS[deviceAvailability],
 				isPairedPeer: runtimeMetadata !== undefined,
 				reportedRuntimeVersion: runtimeMetadata?.runtimeVersion ?? null,
 				runtimeVersionObservedAt: runtimeMetadata?.runtimeVersionObservedAt ?? null,
@@ -237,7 +242,7 @@ export function projectDevices(
 				statusLabel: status?.statusLabel ?? "Team access unknown",
 				statusCopy: status?.statusCopy ?? "Open Team projects to review shared Project access.",
 				deliveredCopiesMayRemain: allProjects.some((project) => project.deliveredCopiesMayRemain),
-				action: actionForDevice(deviceAvailability, status?.state ?? "no_projects"),
+				action: actionForDevice(presentation.availability, status?.state ?? "no_projects"),
 			};
 		})
 		.sort(
@@ -250,6 +255,22 @@ export function projectDevices(
 		revokedDeviceCount: intent.identityDevices.filter(
 			(device) => device.status === "revoked" && identityNames.has(device.identityId),
 		).length,
+	};
+}
+
+function devicePresentation(
+	device: { deviceId: string; displayName: string },
+	inventory: DeviceIdentityInventoryV1 | undefined,
+	availabilityByDevice: Map<string, DeviceAvailabilityState>,
+) {
+	const item = inventory?.items.find((item) => item.evidenceDeviceIds.includes(device.deviceId));
+	const availability = item?.isLocal
+		? "available"
+		: (availabilityByDevice.get(device.deviceId) ?? "unknown");
+	return {
+		displayName: deviceDisplayName(device.displayName, item),
+		availability,
+		availabilityLabel: AVAILABILITY_LABELS[availability],
 	};
 }
 
@@ -1156,6 +1177,7 @@ function DeviceRowMenu({
 				⋯
 			</summary>
 			<div className="feed-menu-panel">
+				<IdentifyDeviceAction device={device} options={options} select={select} />
 				{device.action && options.onNavigate ? (
 					<button
 						aria-label={`${device.action.label} for ${device.displayName}`}
@@ -1196,6 +1218,27 @@ function DeviceRowMenu({
 				) : null}
 			</div>
 		</details>
+	);
+}
+
+function IdentifyDeviceAction({
+	device,
+	options,
+	select,
+}: {
+	device: DeviceProjection;
+	options: DevicesRendererOptions;
+	select: (action: () => void) => void;
+}) {
+	if (!device.isPairedPeer || !options.onNavigate) return null;
+	return (
+		<button
+			className="feed-menu-item"
+			onClick={() => select(() => options.onNavigate?.("advanced_sync"))}
+			type="button"
+		>
+			Identify or rename in Sync…
+		</button>
 	);
 }
 
@@ -1276,6 +1319,11 @@ function DeviceTableRow({
 				ref={rememberDetailsFocus(device.deviceId)}
 			>
 				<td colSpan={5}>
+					{device.availability === "unknown" ? (
+						<p className="small">
+							No current presence is available. This does not mean the machine is powered off.
+						</p>
+					) : null}
 					<p>
 						<strong>{device.statusLabel}</strong> — {device.statusCopy}
 					</p>
@@ -2039,6 +2087,7 @@ export function mountDevices(
 		projects,
 		availability,
 		options.peerRuntimeMetadata,
+		options.inventory,
 	);
 	render(<DevicesRoot intent={intent} options={options} projection={projection} />, mount);
 	setDeviceCommitStatus("");

@@ -508,6 +508,8 @@ Disabling a device's enrollment for one coordinator group revokes future deliver
 - **Waiting** — acceptance, setup, or delivery is waiting; an offline device resumes on reconnect.
 - **Needs attention** — setup reached a terminal failure; use the displayed retry action.
 
+**Presence unavailable** means there is no current presence evidence, including when a coordinator announcement has expired; it does not mean the machine is powered off. A live paired connection or this viewer's local device is shown as **Available**, while an explicitly offline peer remains **Offline**. Devices without a known name appear as **Unnamed device**. Paired devices offer **Identify or rename in Sync…** in their action menu, using the existing Advanced controls.
+
 Use **Health** for the current status. Globally revoked identity devices are omitted from the active Devices list. A device disabled only for one coordinator group remains listed; use **Advanced → Team administration** to review or re-enable that group enrollment. Removing access prevents future delivery, but cannot erase a copy already delivered to another device.
 
 ### Advanced and compatibility
