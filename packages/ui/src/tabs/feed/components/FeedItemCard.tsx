@@ -521,7 +521,7 @@ function renderFeedVisibilityControl(input: FeedCardRenderInput) {
 	return h(
 		"label",
 		{ className: "feed-visibility-label", htmlFor: selectId },
-		h("span", null, "Visible to"),
+		h("span", { className: "sr-only" }, "Visible to"),
 		h(RadixSelect, {
 			ariaLabel: `Who can see ${input.model.displayTitle}`,
 			contentClassName: "sync-radix-select-content feed-visibility-content",
@@ -541,23 +541,20 @@ function renderFeedVisibilityControl(input: FeedCardRenderInput) {
 }
 
 function renderFeedCardFooter(input: FeedCardRenderInput) {
-	const visibility = renderFeedVisibilityControl(input);
-	if (!input.model.tags.length && !visibility) return null;
+	if (!input.model.tags.length) return null;
 	return h(
 		"footer",
 		{ className: "feed-card-footer" },
-		input.model.tags.length
-			? h(
-					"div",
-					{ "aria-label": "Tags", className: "feed-tags" },
-					input.model.tags.map((tag, index) => h(TagChip, { key: `${String(tag)}-${index}`, tag })),
-				)
-			: null,
-		visibility,
+		h(
+			"div",
+			{ "aria-label": "Tags", className: "feed-tags" },
+			input.model.tags.map((tag, index) => h(TagChip, { key: `${String(tag)}-${index}`, tag })),
+		),
 	);
 }
 
 function renderFeedCardSide(input: FeedCardRenderInput) {
+	const visibility = renderFeedVisibilityControl(input);
 	const menu =
 		input.details.ownedBySelf && input.details.memoryId > 0
 			? h(FeedItemMenu, {
@@ -574,36 +571,40 @@ function renderFeedCardSide(input: FeedCardRenderInput) {
 		h(
 			"div",
 			{ className: "feed-card-side-top" },
+			visibility,
 			input.hasDisclosure
 				? h(
-						"button",
+						Tooltip,
 						{
-							"aria-controls": input.details.detailId,
-							"aria-expanded": input.expanded,
-							className: "feed-disclosure",
-							onClick: input.onToggleDetail,
-							type: "button",
+							label: input.expanded ? "Collapse memory" : "Expand memory",
+							side: "top",
 						},
 						h(
-							"svg",
+							"button",
 							{
-								"aria-hidden": "true",
-								className: "feed-disclosure-icon",
-								viewBox: "0 0 16 16",
+								"aria-controls": input.details.detailId,
+								"aria-expanded": input.expanded,
+								"aria-label": input.expanded ? "Collapse memory" : "Expand memory",
+								className: "feed-disclosure",
+								onClick: input.onToggleDetail,
+								type: "button",
 							},
-							h("path", {
-								d: "m3.5 6 4.5 4 4.5-4",
-								fill: "none",
-								stroke: "currentColor",
-								"stroke-linecap": "round",
-								"stroke-linejoin": "round",
-								"stroke-width": "1.7",
-							}),
-						),
-						h(
-							"span",
-							{ className: "feed-disclosure-label" },
-							input.expanded ? "Collapse memory" : "Expand memory",
+							h(
+								"svg",
+								{
+									"aria-hidden": "true",
+									className: "feed-disclosure-icon",
+									viewBox: "0 0 16 16",
+								},
+								h("path", {
+									d: "m3.5 6 4.5 4 4.5-4",
+									fill: "none",
+									stroke: "currentColor",
+									"stroke-linecap": "round",
+									"stroke-linejoin": "round",
+									"stroke-width": "1.7",
+								}),
+							),
 						),
 					)
 				: null,

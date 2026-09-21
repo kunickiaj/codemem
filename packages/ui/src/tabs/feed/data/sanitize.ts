@@ -53,6 +53,31 @@ const ALLOWED_ATTR = ["href", "title"];
  * SVG — mutating sanitized content and bypassing this allowlist. */
 const SANITIZE_OPTIONS = { ALLOWED_TAGS, ALLOWED_ATTR, ALLOW_DATA_ATTR: false };
 
+const SEMANTIC_SECTION_HEADINGS = new Map([
+	["request", "request"],
+	["completed", "completed"],
+	["learned", "learned"],
+	["investigated", "investigated"],
+	["next steps", "next-steps"],
+	["notes", "notes"],
+]);
+
+function classifySemanticSectionHeadings(html: string): string {
+	const template = document.createElement("template");
+	template.innerHTML = html;
+	for (const heading of template.content.querySelectorAll("h1, h2, h3, h4, h5, h6")) {
+		const label = String(heading.textContent || "")
+			.trim()
+			.replace(/:\s*$/, "")
+			.replace(/\s+/g, " ")
+			.toLowerCase();
+		const tone = SEMANTIC_SECTION_HEADINGS.get(label);
+		if (!tone) continue;
+		heading.classList.add("feed-section-heading", `feed-section-${tone}`);
+	}
+	return template.innerHTML;
+}
+
 export function isSafeHref(value: string): boolean {
 	const href = String(value || "").trim();
 	if (!href) return false;
@@ -82,5 +107,6 @@ export function sanitizeHtml(html: string): string {
 
 export function renderMarkdownSafe(value: string): string {
 	const rawHtml = marked.parse(String(value || ""), { async: false });
-	return DOMPurify.sanitize(rawHtml, SANITIZE_OPTIONS);
+	const sanitized = DOMPurify.sanitize(rawHtml, SANITIZE_OPTIONS);
+	return classifySemanticSectionHeadings(sanitized);
 }

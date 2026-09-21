@@ -175,7 +175,8 @@ describe("FeedItemCard disclosure", () => {
 	it("uses a fixed explicit control instead of making the title interactive", () => {
 		renderCard(observation());
 		const button = disclosureButton();
-		expect(button.textContent).toContain("Collapse memory");
+		expect(button.getAttribute("aria-label")).toBe("Collapse memory");
+		expect(button.textContent).toBe("");
 		expect(button.getAttribute("aria-expanded")).toBe("true");
 		expect(button.getAttribute("aria-controls")).toBe(
 			mount.querySelector(".feed-detail")?.getAttribute("id"),
@@ -185,7 +186,7 @@ describe("FeedItemCard disclosure", () => {
 		act(() => button.click());
 
 		expect(document.activeElement).toBe(button);
-		expect(button.textContent).toContain("Expand memory");
+		expect(button.getAttribute("aria-label")).toBe("Expand memory");
 		expect(button.getAttribute("aria-expanded")).toBe("false");
 		expect(mount.querySelector(".feed-detail")).toBeNull();
 		expect(mount.querySelector(".feed-collapsed-note")?.textContent).toBe(
@@ -204,13 +205,13 @@ describe("FeedItemCard disclosure", () => {
 		expect(mount.querySelector(".feed-detail")).toBeNull();
 	});
 
-	it("keeps tags and visibility controls available while content is collapsed", () => {
+	it("keeps top actions and footer tags available while content is collapsed", () => {
 		renderCard(observation());
 		act(() => disclosureButton().click());
 
 		expect(mount.querySelector(".feed-detail")).toBeNull();
 		expect(mount.querySelectorAll(".feed-card-footer .tag-chip")).toHaveLength(2);
-		expect(mount.querySelector(".feed-visibility-select")).not.toBeNull();
+		expect(mount.querySelector(".feed-card-side-top .feed-visibility-select")).not.toBeNull();
 	});
 
 	it("keeps supplemental details reachable when content is empty", () => {
@@ -262,6 +263,17 @@ describe("FeedItemCard metadata and controls", () => {
 		expect(mount.querySelectorAll(".feed-card-footer .tag-chip")).toHaveLength(2);
 		expect(mount.querySelector(".feed-menu-trigger")).toBeNull();
 		expect(mount.querySelector(".feed-visibility-select")).toBeNull();
+	});
+
+	it("orders visibility, disclosure, and overflow actions at the top right", () => {
+		renderCard(observation());
+		const actions = mount.querySelector(".feed-card-side-top");
+		expect(Array.from(actions?.children || []).map((element) => element.className)).toEqual([
+			"feed-visibility-label",
+			"feed-disclosure",
+			"feed-menu-trigger",
+		]);
+		expect(mount.querySelector(".feed-card-footer .feed-visibility-select")).toBeNull();
 	});
 
 	it.each(["observer", "observer_summary"])("omits redundant %s provenance", (source) => {

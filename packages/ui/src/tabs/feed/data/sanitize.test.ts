@@ -127,6 +127,25 @@ describe("renderMarkdownSafe — safe content survives", () => {
 		expect(out).toContain("<h2>Subtitle</h2>");
 	});
 
+	it("classifies standardized summary headings after sanitization", () => {
+		const out = renderMarkdownSafe(
+			"## Request\n\nOne\n\n## Completed:\n\nTwo\n\n## Next steps\n\nThree",
+		);
+		expect(out).toContain('<h2 class="feed-section-heading feed-section-request">Request</h2>');
+		expect(out).toContain(
+			'<h2 class="feed-section-heading feed-section-completed">Completed:</h2>',
+		);
+		expect(out).toContain(
+			'<h2 class="feed-section-heading feed-section-next-steps">Next steps</h2>',
+		);
+	});
+
+	it("replaces peer-supplied heading classes with controlled semantic classes", () => {
+		const out = renderMarkdownSafe('<h2 class="malicious">Request</h2>');
+		expect(out).toBe('<h2 class="feed-section-heading feed-section-request">Request</h2>');
+		expect(out).not.toContain("malicious");
+	});
+
 	it("renders unordered lists", () => {
 		const out = renderMarkdownSafe("- one\n- two");
 		expect(out).toContain("<ul>");

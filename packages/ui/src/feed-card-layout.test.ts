@@ -15,16 +15,20 @@ describe("compact feed card layout contract", () => {
 		expect(css).not.toContain("button.feed-title");
 	});
 
-	it("keeps an explicit disclosure control in the fixed card action column", () => {
-		expect(css).toContain(".feed-card-side { display: flex; align-items: flex-end;");
+	it("keeps compact pill controls in the fixed top action column", () => {
+		expect(css).toContain(".feed-card-side { display: flex; align-items: flex-start;");
 		expect(css).toContain(".feed-disclosure { display: inline-flex;");
+		expect(css).toContain("width: 30px; height: 30px; min-height: 30px; padding: 0;");
+		expect(css).toContain(
+			".feed-menu-trigger { width: 30px; height: 30px; border: 1px solid var(--border); border-radius: var(--radius-pill);",
+		);
 		expect(css).toContain(
 			'.feed-disclosure[aria-expanded="false"] .feed-disclosure-icon { transform: rotate(-90deg);',
 		);
 	});
 
-	it("uses the approved token-based three-column compact grid", () => {
-		expect(css).toContain("grid-template-columns: 104px minmax(0, 1fr) auto");
+	it("sizes the kind rail to its content in the token-based compact grid", () => {
+		expect(css).toContain("grid-template-columns: max-content minmax(0, 1fr) auto");
 		expect(css).toContain("padding: var(--sp-4) var(--sp-5)");
 		expect(css).toContain("border-radius: var(--radius-lg)");
 		expect(css).toContain("background: var(--surface-1)");
@@ -45,11 +49,29 @@ describe("compact feed card layout contract", () => {
 		const narrow = css.slice(css.indexOf("@media (max-width: 755px)"));
 		expect(narrow).toContain("grid-template-columns: minmax(0, 1fr) auto");
 		expect(narrow).toContain(".feed-card-side-top { grid-column: 2; grid-row: 1; }");
-		expect(narrow).toContain(".feed-card-footer { align-items: stretch; flex-direction: column; }");
-		expect(narrow).toContain(
-			".feed-visibility-select { box-sizing: border-box; width: 100%; min-width: 0; }",
-		);
 		expect(narrow).toContain(".feed-meta-line { max-width: 100%; }");
+	});
+
+	it("styles semantic summary sections without promoting body contrast", () => {
+		expect(css).toContain(
+			".feed-body.narrative { max-width: 76ch; line-height: 1.65; color: var(--text-secondary); }",
+		);
+		expect(css).toContain(
+			".feed-body .feed-section-heading { --feed-section-color: var(--accent);",
+		);
+		expect(css).toContain("border-left: 3px solid var(--feed-section-color)");
+		expect(css).toContain(
+			".feed-body .feed-section-next-steps { --feed-section-color: var(--accent-ochre);",
+		);
+	});
+
+	it("gives long kind labels and top actions separate rows on small screens", () => {
+		const small = css.slice(css.indexOf("@media (max-width: 520px)"));
+		expect(small).toContain(".feed-item { grid-template-columns: minmax(0, 1fr); }");
+		expect(small).toContain(
+			".feed-card-side-top { grid-column: 1; grid-row: 2; justify-self: end; }",
+		);
+		expect(small).toContain(".feed-item > .feed-card-body { grid-column: 1; grid-row: 3; }");
 	});
 
 	it("removes feed motion for reduced-motion users", () => {
