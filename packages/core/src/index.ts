@@ -646,6 +646,7 @@ export {
 	deleteCodememConfigFile,
 	getCodememConfigPath,
 	getCodememEnvOverrides,
+	getCodememEnvOverrideValues,
 	getOpenCodeProviderConfig,
 	getProviderApiKey,
 	getProviderBaseUrl,

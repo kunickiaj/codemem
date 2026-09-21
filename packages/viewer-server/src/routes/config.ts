@@ -6,11 +6,11 @@
  */
 
 import {
-	CODEMEM_CONFIG_ENV_OVERRIDES,
 	CodememConfigMutationError,
 	coerceObserverCommand,
 	getCodememConfigPath,
 	getCodememEnvOverrides,
+	getCodememEnvOverrideValues,
 	listObserverProviderOptions,
 	mutateCodememConfigFile,
 	type RawEventSweeper,
@@ -25,11 +25,6 @@ const REDACTED_VALUE = "[redacted]";
 
 const RUNTIMES = new Set(["api_http", "claude_sidecar", "codex_sidecar"]);
 const AUTH_SOURCES = new Set(["auto", "env", "file", "command", "none"]);
-const OBSERVER_EMPTY_ENV_OVERRIDE_KEYS = new Set([
-	"observer_runtime",
-	"observer_simple_provider",
-	"observer_rich_provider",
-]);
 const HOT_RELOAD_KEYS = new Set(["raw_events_sweeper_interval_s"]);
 const EXECUTABLE_ARGV_KEYS = new Set(["claude_command", "codex_command", "observer_auth_command"]);
 const BOOLEAN_KEYS = new Set([
@@ -157,28 +152,8 @@ function getEffectiveConfig(configData: ConfigData): ConfigData {
 	for (const key of ["claude_command", "codex_command"] as const) {
 		effective[key] = coerceObserverCommand(effective[key]) ?? DEFAULTS[key];
 	}
-	for (const [key, envVar] of Object.entries(CODEMEM_CONFIG_ENV_OVERRIDES) as Array<
-		[string, string]
-	>) {
-		const val = process.env[envVar];
-		if (val == null || (val === "" && !OBSERVER_EMPTY_ENV_OVERRIDE_KEYS.has(key))) continue;
-		if (key === "claude_command" || key === "codex_command") {
-			effective[key] = coerceObserverCommand(val) ?? effective[key];
-		} else {
-			effective[key] = val;
-		}
-	}
+	Object.assign(effective, getCodememEnvOverrideValues());
 	return effective;
-}
-
-function getViewerEnvOverrides(): Record<string, string> {
-	const overrides = getCodememEnvOverrides();
-	// These observer fields use nullish env precedence, including empty values.
-	for (const key of OBSERVER_EMPTY_ENV_OVERRIDE_KEYS) {
-		const envVar = CODEMEM_CONFIG_ENV_OVERRIDES[key];
-		if (envVar && process.env[envVar] !== undefined) overrides[key] = envVar;
-	}
-	return overrides;
 }
 
 function observerRuntimeMetadata(configData: ConfigData) {
@@ -508,7 +483,7 @@ function viewerConfigSavePayload(
 	const effectiveChangedKeys = ALLOWED_KEYS.filter(
 		(key) => !configValuesEqual(beforeEffective[key], afterEffective[key]),
 	);
-	const envOverrides = getViewerEnvOverrides();
+	const envOverrides = getCodememEnvOverrides();
 	const ignoredByEnvKeys = savedChangedKeys.filter(
 		(key) => !effectiveChangedKeys.includes(key) && key in envOverrides,
 	);
@@ -567,7 +542,7 @@ export function configRoutes(opts: ConfigRouteOptions = {}) {
 			defaults: DEFAULTS,
 			effective: sanitizeConfigForResponse(effective),
 			...observerRuntimeMetadata(configData),
-			env_overrides: getViewerEnvOverrides(),
+			env_overrides: getCodememEnvOverrides(),
 			protected_keys: [...PROTECTED_WRITE_KEYS].sort(),
 			providers: loadProviderOptions(),
 		});

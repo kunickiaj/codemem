@@ -208,6 +208,8 @@ export const CODEMEM_CONFIG_ENV_OVERRIDES: Record<string, string> = {
 	observer_provider: "CODEMEM_OBSERVER_PROVIDER",
 	observer_model: "CODEMEM_OBSERVER_MODEL",
 	observer_temperature: "CODEMEM_OBSERVER_TEMPERATURE",
+	observer_openai_use_responses: "CODEMEM_OBSERVER_OPENAI_USE_RESPONSES",
+	observer_max_output_tokens: "CODEMEM_OBSERVER_MAX_OUTPUT_TOKENS",
 	observer_reasoning_effort: "CODEMEM_OBSERVER_REASONING_EFFORT",
 	observer_reasoning_summary: "CODEMEM_OBSERVER_REASONING_SUMMARY",
 	observer_tier_routing_enabled: "CODEMEM_OBSERVER_TIER_ROUTING_ENABLED",
@@ -230,6 +232,7 @@ export const CODEMEM_CONFIG_ENV_OVERRIDES: Record<string, string> = {
 	observer_auth_cache_ttl_s: "CODEMEM_OBSERVER_AUTH_CACHE_TTL_S",
 	observer_headers: "CODEMEM_OBSERVER_HEADERS",
 	observer_max_chars: "CODEMEM_OBSERVER_MAX_CHARS",
+	observer_max_tokens: "CODEMEM_OBSERVER_MAX_TOKENS",
 	pack_observation_limit: "CODEMEM_PACK_OBSERVATION_LIMIT",
 	pack_session_limit: "CODEMEM_PACK_SESSION_LIMIT",
 	sync_enabled: "CODEMEM_SYNC_ENABLED",
@@ -1248,12 +1251,92 @@ export function writeWorkspaceCodememConfigFile(
 	return writeCodememConfigFile(data, getWorkspaceCodememConfigPath(workspaceId));
 }
 
-/** Return active env overrides for codemem config keys. */
+// Match loadObserverConfig's nullish string precedence, including empty strings.
+const OBSERVER_STRING_ENV_KEYS = new Set([
+	"observer_provider",
+	"observer_model",
+	"observer_runtime",
+	"observer_base_url",
+	"observer_simple_provider",
+	"observer_simple_model",
+	"observer_rich_provider",
+	"observer_rich_model",
+	"observer_reasoning_effort",
+	"observer_reasoning_summary",
+	"observer_rich_reasoning_effort",
+	"observer_rich_reasoning_summary",
+	"observer_auth_source",
+	"observer_auth_file",
+]);
+
+function parseObserverJsonEnv(key: string, value: string): unknown {
+	const isCommand = key === "observer_auth_command";
+	if (!value.trim()) return isCommand ? [] : {};
+	try {
+		const parsed: unknown = JSON.parse(value);
+		if (isCommand) {
+			if (Array.isArray(parsed) && parsed.every((item) => typeof item === "string")) return parsed;
+			return undefined;
+		}
+		if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+	} catch {
+		// Invalid values retain the saved configuration, so do not claim env control.
+	}
+	return undefined;
+}
+
+function parseConfigEnvOverride(key: string, value: string): unknown {
+	if (OBSERVER_STRING_ENV_KEYS.has(key)) return value;
+	switch (key) {
+		case "observer_temperature":
+		case "observer_simple_temperature":
+		case "observer_rich_temperature":
+		case "observer_rich_max_output_tokens":
+		case "observer_max_output_tokens": {
+			const number = Number(value);
+			return Number.isFinite(number) ? number : undefined;
+		}
+		case "observer_max_chars":
+		case "observer_max_tokens":
+		case "observer_auth_timeout_ms":
+		case "observer_auth_cache_ttl_s": {
+			const number = Number.parseInt(value, 10);
+			return Number.isFinite(number) ? number : undefined;
+		}
+		case "observer_tier_routing_enabled":
+		case "observer_openai_use_responses":
+			return value === "1" || value === "true";
+		case "observer_output_mode":
+			return ["auto", "json_schema", "legacy_xml"].includes(value) ? value : undefined;
+		case "claude_command":
+		case "codex_command":
+			return coerceObserverCommand(value) ?? undefined;
+		case "observer_headers":
+		case "observer_auth_command":
+			return parseObserverJsonEnv(key, value);
+		default:
+			return value === "" ? undefined : value;
+	}
+}
+
+/** Parsed active overrides; omitted entries fall back to saved configuration. */
+export function getCodememEnvOverrideValues(): Record<string, unknown> {
+	const values: Record<string, unknown> = {};
+	for (const [key, envVar] of Object.entries(CODEMEM_CONFIG_ENV_OVERRIDES)) {
+		const raw = process.env[envVar];
+		if (raw === undefined) continue;
+		const value = parseConfigEnvOverride(key, raw);
+		if (value !== undefined) values[key] = value;
+	}
+	return values;
+}
+
+/** Return env vars that actually override saved codemem config values. */
 export function getCodememEnvOverrides(): Record<string, string> {
 	const overrides: Record<string, string> = {};
-	for (const [key, envVar] of Object.entries(CODEMEM_CONFIG_ENV_OVERRIDES)) {
-		const val = process.env[envVar];
-		if (val != null && val !== "") overrides[key] = envVar;
+	for (const key of Object.keys(getCodememEnvOverrideValues())) {
+		const envVar = CODEMEM_CONFIG_ENV_OVERRIDES[key];
+		if (envVar) overrides[key] = envVar;
 	}
 	return overrides;
 }
