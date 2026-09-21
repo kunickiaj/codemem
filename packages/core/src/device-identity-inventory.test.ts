@@ -42,6 +42,35 @@ function snapshot(
 	};
 }
 
+describe("device inventory display names", () => {
+	it.each(["Canonical device", "Unnamed device", "Travel laptop"])(
+		"prefers a real enrollment name over placeholder %s without changing bindings",
+		(displayName) => {
+			const input = snapshot({
+				bindings: [
+					{
+						deviceId: "device-a",
+						displayName,
+						identityId: "identity-a",
+						status: "active",
+						identityStatus: "active",
+					},
+				],
+				coordinator: {
+					availability: "available",
+					safeErrorCode: null,
+					enrollments: [enrollment("device-a", "key-a", { display_name: "Studio laptop" })],
+				},
+			});
+			const result = projectDeviceIdentityInventory(input);
+			expect(result.items[0]?.displayName).toBe(
+				displayName === "Travel laptop" ? displayName : "Studio laptop",
+			);
+			expect(input.bindings[0]?.displayName).toBe(displayName);
+		},
+	);
+});
+
 describe("device Identity inventory projection", () => {
 	it("classifies local and peer evidence as setup_required without binding identities", () => {
 		const result = projectDeviceIdentityInventory(

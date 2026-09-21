@@ -246,6 +246,13 @@ function preferred(group: Evidence[], source: DeviceIdentityInventorySource): Ev
 	return group.find((item) => item.source === source) ?? null;
 }
 
+function preferredDisplayName(group: Evidence[]): string {
+	const named = SOURCE_ORDER.map((source) => preferred(group, source)).find(
+		(item) => item && !["Canonical device", "Unnamed device"].includes(item.displayName),
+	);
+	return named?.displayName || "Unnamed device";
+}
+
 function projectGroup(group: Evidence[]): DeviceIdentityInventoryItemV1 {
 	const deviceIds = [...new Set(group.map((item) => item.deviceId))].toSorted();
 	const fingerprints = new Set(
@@ -314,7 +321,7 @@ function projectGroup(group: Evidence[]): DeviceIdentityInventoryItemV1 {
 		version: DEVICE_IDENTITY_INVENTORY_VERSION,
 		deviceId: selected?.deviceId ?? deviceIds[0] ?? "",
 		evidenceDeviceIds: deviceIds,
-		displayName: selected?.displayName || "Device",
+		displayName: preferredDisplayName(group),
 		state,
 		identityId:
 			state === "configured" && bindingIdentityIds.size === 1

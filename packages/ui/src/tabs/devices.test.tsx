@@ -778,6 +778,18 @@ it("restores focus from Details after its device is removed", () => {
 	expect(document.activeElement).toBe(document.getElementById("tabBtn-devices"));
 });
 
+it.each(["Canonical device", "Unnamed device", "Canonical device lab", "Travel laptop"])(
+	"normalizes only exact system placeholder %s",
+	(displayName) => {
+		const graph = intent();
+		graph.identityDevices = graph.identityDevices.map((device) => ({ ...device, displayName }));
+		const projected = projectDevices(graph, reconciliation(), projects, []);
+		expect(projected.devices[0]?.displayName).toBe(
+			displayName === "Canonical device" ? "Unnamed device" : displayName,
+		);
+	},
+);
+
 describe("Device access projection", () => {
 	it("retains requested device focus while a refresh is showing stale inventory", () => {
 		state.pendingDeviceIdentityFocus = "new-device";
@@ -1258,7 +1270,7 @@ describe("Device safe rendering", () => {
 		act(() => mountDevices(element, intent(), reconciliation(), projects, []));
 
 		const row = document.querySelector(".devices-table-row");
-		expect(row?.textContent).toContain("Unknown");
+		expect(row?.textContent).toContain("Presence unavailable");
 		expect(row?.querySelector('.feed-menu-item[aria-label^="Check device health"]')).toBeNull();
 	});
 
