@@ -15,6 +15,7 @@ import {
 	readCoordinatorSyncConfig,
 } from "./coordinator-sync-config.js";
 import type { Database } from "./db.js";
+import { retainRetirementPeerTrust } from "./memory-retirement-trust.js";
 import { getCachedScopeAuthorization } from "./scope-membership-cache.js";
 import type { MemoryStore } from "./store.js";
 import { buildAuthHeaders } from "./sync-auth.js";
@@ -613,6 +614,10 @@ export function revokeUnauthorizedCoordinatorPeerTrust(
 	db: Database,
 	localDeviceId: string,
 ): number {
+	return db.transaction(() => revokeCoordinatorPeerTrust(db, localDeviceId)).immediate();
+}
+
+function revokeCoordinatorPeerTrust(db: Database, localDeviceId: string): number {
 	const peers = db
 		.prepare(
 			`SELECT peer_device_id, discovered_via_coordinator_id, discovered_via_group_id
@@ -640,6 +645,7 @@ export function revokeUnauthorizedCoordinatorPeerTrust(
 			groupId,
 		]);
 		if (sharedScope.state !== "not_authorized") continue;
+		retainRetirementPeerTrust(db, { localDeviceId, peerDeviceId });
 		const result = db
 			.prepare(
 				`DELETE FROM sync_peers

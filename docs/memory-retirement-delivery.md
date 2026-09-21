@@ -21,7 +21,7 @@ The feature must be explicitly negotiated, and unsupported peers leave all deliv
 ## Authentication and atomic acknowledgement
 
 `receiveRetirementBatch` requires a recipient-bound v3 signature verified with the peer's independently pinned public key.
-The caller obtains `RetirementPeer` from trusted pairing state, never from body fields; signatures authenticate the complete body and recipient.
+The caller obtains `RetirementPeer` from `getRetirementPeer(db, { localDeviceId, peerDeviceId })` in `memory-retirement-trust.ts`, never from body fields; signatures authenticate the complete body and recipient.
 The authenticated peer must own every control's qualified namespace, so forwarded claims and unverified historical UUIDs fail.
 
 The receiver commits the ledger fence, exact identity/retired-scope row cleanup, file/concept references, vectors when present, receipt, and nonce in one transaction.
@@ -32,9 +32,25 @@ An acknowledgement is returned only after commit, and caller-owned outer transac
 The acknowledgement contains a digest of the exact batch, including its recipient; a wrong peer or changed batch cannot advance delivery state.
 All per-control acknowledgements and the acknowledgement nonce commit atomically, without changing content cursors.
 
+## Retirement-only pairing retention
+
+Final coordinator-scope revocation preserves the independently pinned peer key before deleting content trust.
+`revokeUnauthorizedCoordinatorPeerTrust` copies the matching public key and fingerprint into `memory_retirement_peer_trust` in the same immediate transaction as deleting `sync_peers`.
+Each database retains its own local-device/peer binding: the receiver needs the source key for controls, and the sender needs the recipient key for acknowledgements and reset requests.
+
+Retention does not depend on a queued control or active membership, so a source can enqueue after revocation using the stored former membership rows.
+The lookup prefers the retained binding, otherwise uses the current independently pinned `sync_peers` binding, and returns `null` for unknown, incomplete, or inconsistent keys.
+The first retained binding wins; subsequent discovery or re-pairing does not silently replace historical authority. Key replacement requires a separate explicit recovery design.
+
+This lookup authorizes only the payload-free retirement protocol; normal sync authentication continues to require `sync_peers`, and scope authorization continues to require active memberships.
+No retained pin restores content access, accepts a key carried by a packet, or changes namespace ownership checks.
+Already-deleted keys cannot be reconstructed from a device ID or membership row; those cases fail closed rather than trusting discovery after revocation.
+
 ## Retry and retention
 
 Delivery rows, receipts, and fences survive memory deletion and content-log compaction.
+Retirement pins also survive acknowledgement and compaction; do not prune them when a queue becomes empty, because offline reset replay and later retirement may still need them.
+Pending polling uses the peer/source/acknowledgement/control index to skip retained acknowledged history while returning controls in stable order.
 If a response is lost, the source sends the same controls with a fresh signed nonce; the receiver repeats narrow cleanup and returns the same batch digest.
 Identical controls are idempotent, while reuse of a request nonce fails.
 
@@ -45,5 +61,6 @@ Peers that later upgrade replay their retained pending controls; historical UUID
 ## Remaining activation work
 
 The dependent snapshot unit must preserve fences and control state through destructive reset and apply controls before stale snapshot content in both import modes.
+It must also preserve `memory_retirement_peer_trust` and obtain the caller-pinned `options.peer` from `getRetirementPeer` on both sides of reset/replay, using the actual local device identity.
 It must also request replay of acknowledged controls when rebuilding a receiver; a content cursor reset alone cannot recover control state.
 The admission unit must coordinate already-selected content across processes before any repair caller or advertised capability activates this protocol.
