@@ -31,6 +31,7 @@ import {
 	REQUIRED_TABLES,
 	SCHEMA_VERSION,
 } from "./database-runtime-primitives.js";
+import { ensureMemorySourceIdentitySchema } from "./memory-source-identity.js";
 import { expandUserPath } from "./observer-config.js";
 import {
 	canAutoBootstrapSchema,
@@ -913,7 +914,7 @@ function repairShareOperationEffectIdIndex(db: DatabaseType): void {
 
 let retrievalLedgerSchemaWarningEmitted = false;
 
-export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
+function ensureOptionalRetrievalLedgerSchema(db: DatabaseType): void {
 	// This remains outside the compatibility marker gate so a partial legacy
 	// database can gain its base tables before a later open creates the ledger.
 	try {
@@ -928,6 +929,11 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 			);
 		}
 	}
+}
+
+export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
+	ensureMemorySourceIdentitySchema(db);
+	ensureOptionalRetrievalLedgerSchema(db);
 	// Always run: current-marker databases may predate these no-version-bump
 	// columns, so the schema_compat_state gate cannot prove they exist.
 	ensureSyncPeerRuntimeVersionColumns(db);
