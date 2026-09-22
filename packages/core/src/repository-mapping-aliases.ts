@@ -42,12 +42,15 @@ export function repositoryIdentitiesByWorkspace(db: Database): Map<string, strin
 export function repositoryIdentityForWorkspace(
 	repositoryIdentities: ReadonlyMap<string, string>,
 	input: {
-		cwd: string | null | undefined;
-		gitRemote?: string | null;
+		cwd?: string | null;
+		gitRemote: string | null;
 		metadataJson?: string | null;
+		repositoryIdentity?: string | null;
 	},
 ): string | null {
-	const recorded = normalizeIdentity(repositoryIdentityFromMetadata(input.metadataJson));
+	const recorded =
+		normalizeIdentity(input.repositoryIdentity) ??
+		normalizeIdentity(repositoryIdentityFromMetadata(input.metadataJson));
 	if (recorded || normalizeIdentity(input.gitRemote)) return recorded;
 	const cwd = normalizeIdentity(input.cwd);
 	return cwd ? (repositoryIdentities.get(cwd) ?? null) : null;

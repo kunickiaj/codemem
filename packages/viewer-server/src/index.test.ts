@@ -20301,3 +20301,105 @@ describe("viewer-server", () => {
 		});
 	});
 });
+
+describe("repository Project cleanup inference", () => {
+	it("does not infer a reused checkout over an explicit historical remote", async () => {
+		const { app, getStore, cleanup } = createTestApp();
+		try {
+			await app.request("/api/stats");
+			const store = getStore();
+			if (!store) throw new Error("store not initialized");
+			const cwd = "/workspace/reused-api";
+			const oldRepository = "https://git.example.invalid/tmp/old-api.git";
+			const newRepository = "https://git.example.invalid/tmp/new-api.git";
+			const historicalSessionId = insertTestSession(store.db);
+			store.db
+				.prepare("UPDATE sessions SET cwd = ?, git_remote = ?, metadata_json = '{}' WHERE id = ?")
+				.run(cwd, oldRepository, historicalSessionId);
+			insertTestMemory(store, {
+				kind: "discovery",
+				sessionId: historicalSessionId,
+				title: "old repository memory",
+			});
+			const discoveredSessionId = insertTestSession(store.db);
+			store.db
+				.prepare("UPDATE sessions SET cwd = ?, git_remote = NULL, metadata_json = ? WHERE id = ?")
+				.run(
+					cwd,
+					JSON.stringify({ codemem_repository_identity: newRepository }),
+					discoveredSessionId,
+				);
+
+			const previewRes = await app.request("/api/sync/projects/forget", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ workspace_identity: newRepository }),
+			});
+
+			expect(previewRes.status).toBe(404);
+			expect(
+				store.db
+					.prepare("SELECT active FROM memory_items WHERE session_id = ?")
+					.pluck()
+					.get(historicalSessionId),
+			).toBe(1);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("forgets historical cwd-only memories in an inferred repository Project", async () => {
+		const { app, getStore, cleanup } = createTestApp();
+		try {
+			await app.request("/api/stats");
+			const store = getStore();
+			if (!store) throw new Error("store not initialized");
+			const cwd = "/workspace/historical-api";
+			const repositoryIdentity = "https://git.example.invalid/tmp/historical-api.git";
+			const historicalSessionId = insertTestSession(store.db);
+			store.db
+				.prepare(
+					"UPDATE sessions SET cwd = ?, git_remote = NULL, metadata_json = '{}' WHERE id = ?",
+				)
+				.run(cwd, historicalSessionId);
+			insertTestMemory(store, {
+				kind: "discovery",
+				sessionId: historicalSessionId,
+				title: "historical repository memory",
+			});
+			const discoveredSessionId = insertTestSession(store.db);
+			store.db
+				.prepare("UPDATE sessions SET cwd = ?, git_remote = NULL, metadata_json = ? WHERE id = ?")
+				.run(
+					cwd,
+					JSON.stringify({ codemem_repository_identity: repositoryIdentity }),
+					discoveredSessionId,
+				);
+
+			const previewRes = await app.request("/api/sync/projects/forget", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ workspace_identity: repositoryIdentity }),
+			});
+			expect(previewRes.status).toBe(409);
+			const preview = (await previewRes.json()) as {
+				preview: { confirmation_token: string; local_owned_memory_count: number };
+			};
+			expect(preview.preview.local_owned_memory_count).toBe(1);
+
+			const forgetRes = await app.request("/api/sync/projects/forget", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					confirmation_token: preview.preview.confirmation_token,
+					confirmed: true,
+					workspace_identity: repositoryIdentity,
+				}),
+			});
+			expect(forgetRes.status).toBe(200);
+			expect(await forgetRes.json()).toMatchObject({ forgotten_memory_count: 1 });
+		} finally {
+			cleanup();
+		}
+	});
+});

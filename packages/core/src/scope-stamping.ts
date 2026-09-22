@@ -74,7 +74,7 @@ export function resolveSessionScopeId(db: Database, options: ResolveSessionScope
 		gitBranch: session?.git_branch ?? null,
 		repositoryIdentity: repositoryIdentityForWorkspace(context.repositoryIdentities, {
 			cwd: session?.cwd,
-			gitRemote: session?.git_remote,
+			gitRemote: session?.git_remote ?? null,
 			metadataJson: session?.metadata_json,
 		}),
 		cwd: session?.cwd ?? null,

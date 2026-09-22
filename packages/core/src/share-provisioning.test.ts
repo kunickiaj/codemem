@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { REPOSITORY_IDENTITY_METADATA_KEY } from "./project.js";
 import { getCachedScopeAuthorization } from "./scope-membership-cache.js";
 import {
 	inviteTokenDigest,
@@ -19,10 +20,46 @@ import { initTestSchema } from "./test-utils.js";
 const createdAt = "2026-07-20T12:00:00.000Z";
 const remote = "https://example.invalid/acme/api.git";
 
+function includeHistoricalRepositoryMemory(
+	db: InstanceType<typeof Database>,
+	operationId: string,
+): void {
+	const cwd = "/workspace/api";
+	const historicalSessionId = Number(
+		db
+			.prepare(
+				"INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, ?, 'api', '{}')",
+			)
+			.run(createdAt, cwd).lastInsertRowid,
+	);
+	db.prepare(
+		"INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, ?, 'api', ?)",
+	).run(createdAt, cwd, JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: remote }));
+	const historicalMemoryId = Number(
+		db
+			.prepare(`INSERT INTO memory_items(
+				session_id, kind, title, body_text, confidence, tags_text, active, created_at,
+				updated_at, metadata_json, import_key, rev, visibility, scope_id
+			 ) VALUES (?, 'discovery', 'historical', 'body', 0.8, '', 1, ?, ?, '{}',
+				'historical:api', 1, 'shared', 'source-space')`)
+			.run(historicalSessionId, createdAt, createdAt).lastInsertRowid,
+	);
+	expect(
+		countShareableProjectMemories(db, {
+			canonicalIdentity: remote,
+			initiatingDeviceId: "owner",
+		}),
+	).toBe(1);
+	const project = planShareProvisioning(db, {
+		operationId,
+		initiatingDeviceId: "owner",
+	}).projects[0];
+	expect(project?.memoryIds).toContain(historicalMemoryId);
+}
+
 describe("exact project share provisioning", () => {
 	let db: InstanceType<typeof Database>;
 	let operationId: string;
-
 	beforeEach(() => {
 		db = new Database(":memory:");
 		initTestSchema(db);
@@ -147,7 +184,6 @@ describe("exact project share provisioning", () => {
 			projects: [{ canonical_identity: remote, display_name: "api", existing_memory_count: 2 }],
 		});
 	});
-
 	afterEach(() => db.close());
 
 	it("includes locally authored legacy origins without adopting replicated local sentinels", () => {
@@ -1077,5 +1113,39 @@ describe("exact project share provisioning", () => {
 			step_key: `space_grant:${remote}:owner`,
 			safe_error_code: "recipient_policy_legacy_grant_blocked",
 		});
+	});
+});
+
+describe("historical repository share provisioning", () => {
+	it("includes inferred cwd-only memories", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			db.prepare(`INSERT INTO actors(
+				actor_id, display_name, is_local, status, created_at, updated_at
+			 ) VALUES ('actor-owner', 'Owner', 1, 'active', ?, ?)`).run(createdAt, createdAt);
+			db.prepare(`INSERT INTO share_operations(
+				operation_id, state, inviter_actor_id, inviter_device_ids_json, person_id,
+				person_kind, teammate_name, history_policy, reviewed_project_set_digest,
+				coordinator_group_id, invite_token_digest, invite_expires_at,
+				recipient_actor_id, recipient_device_id, acceptance_consumed_at, created_at, updated_at
+			 ) VALUES ('share-historical', 'accepted', 'actor-owner', '["owner"]',
+				'actor-recipient', 'existing', 'Recipient', 'existing_and_future', 'digest',
+				'team', 'invite-digest', '2099-01-01T00:00:00.000Z', 'actor-recipient',
+				'recipient', ?, ?, ?)`).run(createdAt, createdAt, createdAt);
+			db.prepare(`INSERT INTO share_operation_projects(
+				operation_id, canonical_project_identity, display_name, identity_source,
+				existing_memory_count, ordinal
+			 ) VALUES ('share-historical', ?, 'api', 'git_remote', 1, 0)`).run(remote);
+			db.prepare(`INSERT INTO share_operation_steps(
+				operation_id, step_key, effect_id, status, updated_at
+			 ) VALUES ('share-historical', ?, 'managed-project:historical', 'pending', ?)`).run(
+				`managed_boundary:${remote}`,
+				createdAt,
+			);
+			includeHistoricalRepositoryMemory(db, "share-historical");
+		} finally {
+			db.close();
+		}
 	});
 });

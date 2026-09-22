@@ -5,6 +5,7 @@ import { repositoryIdentityFromMetadata } from "./project.js";
 import { cleanProjectIdentity } from "./project-identity.js";
 import {
 	repositoryIdentitiesByWorkspace,
+	repositoryIdentityForWorkspace,
 	withRepositoryMappingAliases,
 } from "./repository-mapping-aliases.js";
 import { ensureScopeBackfillScopes, LEGACY_SHARED_REVIEW_SCOPE_ID } from "./scope-backfill.js";
@@ -853,11 +854,16 @@ interface SourceOwnedMemoryScopeRow {
 function resolveSourceOwnedMemoryScope(
 	row: SourceOwnedMemoryScopeRow,
 	mappings: ProjectScopeSettingsMapping[],
+	repositoryIdentities: ReadonlyMap<string, string>,
 ) {
 	return resolveProjectScope({
 		gitBranch: row.git_branch,
 		gitRemote: row.git_remote,
-		repositoryIdentity: repositoryIdentityFromMetadata(row.session_metadata_json),
+		repositoryIdentity: repositoryIdentityForWorkspace(repositoryIdentities, {
+			cwd: row.cwd,
+			gitRemote: row.git_remote,
+			metadataJson: row.session_metadata_json,
+		}),
 		cwd: row.cwd,
 		project: row.project,
 		workspaceId: row.workspace_id,
@@ -896,6 +902,59 @@ function sourceOwnedMemoryRowsForScopePropagation(
 		) as SourceOwnedMemoryScopeRow[];
 }
 
+function recordSourceOwnedMemoryScopeMove(
+	db: Database,
+	row: SourceOwnedMemoryScopeRow,
+	input: {
+		deviceId: string;
+		mappingId: number;
+		newScopeId: string;
+		now: string;
+		oldScopeId: string;
+	},
+): void {
+	const oldRev = Number(row.rev ?? 0);
+	const tombstoneRev = oldRev + 1;
+	const upsertRev = oldRev + 2;
+	const metadata = fromJson(row.metadata_json);
+	metadata.clock_device_id = input.deviceId;
+	metadata.last_project_scope_mapping = {
+		mapping_id: input.mappingId,
+		old_scope_id: input.oldScopeId,
+		new_scope_id: input.newScopeId,
+		updated_at: input.now,
+	};
+	db.prepare(
+		`UPDATE memory_items SET scope_id = ?, updated_at = ?, metadata_json = ?, rev = ? WHERE id = ?`,
+	).run(input.newScopeId, input.now, toJson(metadata), upsertRev, row.id);
+	for (const [opType, scopeId, clockRev] of [
+		["delete", input.oldScopeId, tombstoneRev],
+		["upsert", input.newScopeId, upsertRev],
+	] as const) {
+		recordReplicationOp(db, {
+			memoryId: row.id,
+			opType,
+			deviceId: input.deviceId,
+			scopeId,
+			clockRev,
+			clockUpdatedAt: input.now,
+			clockDeviceId: input.deviceId,
+			createdAt: input.now,
+		});
+	}
+	if (!row.import_key) return;
+	recordAccessCleanupOp(db, {
+		importKey: row.import_key,
+		deviceId: input.deviceId,
+		cleanupScopeId: input.oldScopeId,
+		clockRev: tombstoneRev,
+		clockUpdatedAt: input.now,
+		clockDeviceId: input.deviceId,
+		createdAt: input.now,
+		reason: "project_scope_reassignment",
+	});
+}
+
 function propagateProjectScopeMappingToSourceOwnedMemories(
 	db: Database,
 	mapping: ProjectScopeSettingsMapping,
@@ -908,63 +967,27 @@ function propagateProjectScopeMappingToSourceOwnedMemories(
 		? withRepositoryMappingAliases(db, previousMappings)
 		: mappings;
 	const now = new Date().toISOString();
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
 	let moved = 0;
 	for (const row of sourceOwnedMemoryRowsForScopePropagation(db, deviceId)) {
-		const previousResolution = resolveSourceOwnedMemoryScope(row, oldMappings);
-		const resolution = resolveSourceOwnedMemoryScope(row, mappings);
+		const previousResolution = resolveSourceOwnedMemoryScope(
+			row,
+			oldMappings,
+			repositoryIdentities,
+		);
+		const resolution = resolveSourceOwnedMemoryScope(row, mappings, repositoryIdentities);
 		if (previousResolution.mapping?.id !== mapping.id && resolution.mapping?.id !== mapping.id) {
 			continue;
 		}
 		const oldScopeId = clean(row.scope_id) ?? LOCAL_DEFAULT_SCOPE_ID;
 		const newScopeId = resolution.scopeId;
 		if (oldScopeId === newScopeId) continue;
-		const oldRev = Number(row.rev ?? 0);
-		const tombstoneRev = oldRev + 1;
-		const upsertRev = oldRev + 2;
-		const metadata = fromJson(row.metadata_json);
-		metadata.clock_device_id = deviceId;
-		metadata.last_project_scope_mapping = {
-			mapping_id: mapping.id,
-			old_scope_id: oldScopeId,
-			new_scope_id: newScopeId,
-			updated_at: now,
-		};
-		db.prepare(
-			`UPDATE memory_items
-			 SET scope_id = ?, updated_at = ?, metadata_json = ?, rev = ?
-			 WHERE id = ?`,
-		).run(newScopeId, now, toJson(metadata), upsertRev, row.id);
-		recordReplicationOp(db, {
-			memoryId: row.id,
-			opType: "delete",
+		recordSourceOwnedMemoryScopeMove(db, row, {
 			deviceId,
-			scopeId: oldScopeId,
-			clockRev: tombstoneRev,
-			clockUpdatedAt: now,
-			clockDeviceId: deviceId,
-			createdAt: now,
-		});
-		if (row.import_key) {
-			recordAccessCleanupOp(db, {
-				importKey: row.import_key,
-				deviceId,
-				cleanupScopeId: oldScopeId,
-				clockRev: tombstoneRev,
-				clockUpdatedAt: now,
-				clockDeviceId: deviceId,
-				createdAt: now,
-				reason: "project_scope_reassignment",
-			});
-		}
-		recordReplicationOp(db, {
-			memoryId: row.id,
-			opType: "upsert",
-			deviceId,
-			scopeId: newScopeId,
-			clockRev: upsertRev,
-			clockUpdatedAt: now,
-			clockDeviceId: deviceId,
-			createdAt: now,
+			mappingId: mapping.id,
+			newScopeId,
+			now,
+			oldScopeId,
 		});
 		moved += 1;
 	}
@@ -1508,38 +1531,17 @@ export function listProjectScopeInventory(
 	};
 }
 
-export function reassignProjectScopeInventoryProject(
-	db: Database,
-	input: { deviceId: string; workspaceIdentity: string; project: string },
-): ReassignProjectScopeInventoryProjectResult {
-	ensureScopeBackfillScopes(db);
-	const deviceId = clean(input.deviceId);
-	if (!deviceId) throw new Error("device_id must be a non-empty string");
-	const workspaceIdentity = normalizeWorkspaceIdentity(input.workspaceIdentity);
-	if (!workspaceIdentity) throw new Error("workspace_identity must be a non-empty string");
-	if (workspaceIdentity.startsWith("unmapped:")) {
-		throw new Error("unmapped projects cannot be reassigned until they have a stable identity");
-	}
-	const project = clean(input.project);
-	if (!project) throw new Error("project must be a non-empty string");
-	const rows = db
+function projectRowsForScopeReassignment(db: Database): ProjectScopeCandidateRow[] {
+	return db
 		.prepare(
-			`SELECT
-				s.id,
-				s.started_at,
-				s.cwd,
-				s.project,
-				s.git_remote,
-				s.git_branch,
+			`SELECT s.id, s.started_at, s.cwd, s.project, s.git_remote, s.git_branch,
 				s.metadata_json,
 				(
-					SELECT mi.workspace_id
-					FROM memory_items mi
+					SELECT mi.workspace_id FROM memory_items mi
 					WHERE mi.session_id = s.id
 					  AND mi.workspace_id IS NOT NULL
 					  AND TRIM(mi.workspace_id) <> ''
-					ORDER BY mi.id DESC
-					LIMIT 1
+					ORDER BY mi.id DESC LIMIT 1
 				) AS workspace_id,
 				COUNT(mi_count.id) AS memory_count
 			 FROM sessions s
@@ -1549,6 +1551,52 @@ export function reassignProjectScopeInventoryProject(
 			 GROUP BY s.id`,
 		)
 		.all() as ProjectScopeCandidateRow[];
+}
+
+function sourceOwnedMemoriesForSessions(
+	db: Database,
+	sessionIds: number[],
+	deviceId: string,
+): Array<{ id: number; project: string | null; session_id: number }> {
+	const placeholders = sessionIds.map(() => "?").join(", ");
+	return db
+		.prepare(
+			`SELECT id, session_id, project FROM memory_items
+			 WHERE session_id IN (${placeholders})
+			   AND active = 1
+			   AND (origin_device_id IS NULL OR TRIM(origin_device_id) = '' OR origin_device_id = ?)`,
+		)
+		.all(...sessionIds, deviceId) as Array<{
+		id: number;
+		project: string | null;
+		session_id: number;
+	}>;
+}
+
+function validatedReassignmentInput(input: {
+	deviceId: string;
+	workspaceIdentity: string;
+	project: string;
+}): { deviceId: string; workspaceIdentity: string; project: string } {
+	const deviceId = clean(input.deviceId);
+	if (!deviceId) throw new Error("device_id must be a non-empty string");
+	const workspaceIdentity = normalizeWorkspaceIdentity(input.workspaceIdentity);
+	if (!workspaceIdentity) throw new Error("workspace_identity must be a non-empty string");
+	if (workspaceIdentity.startsWith("unmapped:")) {
+		throw new Error("unmapped projects cannot be reassigned until they have a stable identity");
+	}
+	const project = clean(input.project);
+	if (!project) throw new Error("project must be a non-empty string");
+	return { deviceId, workspaceIdentity, project };
+}
+
+export function reassignProjectScopeInventoryProject(
+	db: Database,
+	input: { deviceId: string; workspaceIdentity: string; project: string },
+): ReassignProjectScopeInventoryProjectResult {
+	ensureScopeBackfillScopes(db);
+	const { deviceId, workspaceIdentity, project } = validatedReassignmentInput(input);
+	const rows = projectRowsForScopeReassignment(db);
 	const repositoryIdentityByCwd = repositoryIdentitiesByCwd(db, rows);
 	const matched = rows
 		.map((row) => identifyRepositoryRow(row, repositoryIdentityByCwd))
@@ -1559,20 +1607,7 @@ export function reassignProjectScopeInventoryProject(
 	if (matched.length === 0) throw new Error("project identity not found");
 	const now = new Date().toISOString();
 	const sessionIds = matched.map((row) => row.id);
-	const sessionPlaceholders = sessionIds.map(() => "?").join(", ");
-	const sourceOwnedMemories = db
-		.prepare(
-			`SELECT id, session_id, project
-			 FROM memory_items
-			 WHERE session_id IN (${sessionPlaceholders})
-			   AND active = 1
-			   AND (origin_device_id IS NULL OR TRIM(origin_device_id) = '' OR origin_device_id = ?)`,
-		)
-		.all(...sessionIds, deviceId) as Array<{
-		id: number;
-		project: string | null;
-		session_id: number;
-	}>;
+	const sourceOwnedMemories = sourceOwnedMemoriesForSessions(db, sessionIds, deviceId);
 	const sourceOwnedSessionIds = new Set(sourceOwnedMemories.map((memory) => memory.session_id));
 	const matchedSourceRows = matched.filter(
 		(row) => sourceOwnedSessionIds.has(row.id) || Number(row.memory_count ?? 0) === 0,
