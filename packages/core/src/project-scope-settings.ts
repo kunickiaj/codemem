@@ -559,6 +559,7 @@ function projectMatchesInventoryQuery(
 		project.workspace_identity,
 		project.resolved_scope_id,
 		project.suggested_scope_id,
+		...project.worktrees.map((worktree) => worktree.cwd),
 	]
 		.filter((value): value is string => typeof value === "string" && value.length > 0)
 		.some((value) => value.toLowerCase().includes(normalized));

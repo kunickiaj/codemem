@@ -3,7 +3,6 @@ import {
 	isFilesystemRootProjectIdentity,
 	normalizeLegacyProjectMappingIdentity,
 } from "./legacy-project-identity.js";
-import { repositoryIdentityFromMetadata } from "./project.js";
 import { preferredActiveUnmergedLocalActorId } from "./recipient-policy-actor-eligibility.js";
 import {
 	RECIPIENT_POLICY_CONTRACT_VERSION,
@@ -16,7 +15,11 @@ import {
 	legacyTeamCandidateId,
 	recipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
-import { withRepositoryMappingAliases } from "./repository-mapping-aliases.js";
+import {
+	repositoryIdentitiesByWorkspace,
+	repositoryIdentityForWorkspace,
+	withRepositoryMappingAliases,
+} from "./repository-mapping-aliases.js";
 import {
 	canonicalWorkspaceIdentity,
 	LOCAL_DEFAULT_SCOPE_ID,
@@ -883,6 +886,7 @@ function loadSnapshot(
 			 ORDER BY s.id, mi.id`,
 		)
 		.all(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX) as LegacyProjectRow[];
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
 	const mappings = loadProjectScopeMappings(db);
 	// Guided setup materializes an explicit Project resolution as a mapping
 	// whose pattern is the original `unmapped:` identity and whose workspace
@@ -926,7 +930,10 @@ function loadSnapshot(
 			project: row.project,
 			gitRemote: row.git_remote,
 			gitBranch: row.git_branch,
-			repositoryIdentity: repositoryIdentityFromMetadata(row.metadata_json),
+			repositoryIdentity: repositoryIdentityForWorkspace(repositoryIdentities, {
+				cwd: row.cwd,
+				metadataJson: row.metadata_json,
+			}),
 			workspaceId: row.workspace_id,
 		});
 		const resolvedIdentity =

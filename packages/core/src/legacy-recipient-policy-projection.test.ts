@@ -4,6 +4,7 @@ import {
 	listLegacyRecipientPolicyProjections,
 	listLegacyTeamProjectEvidence,
 } from "./legacy-recipient-policy-projection.js";
+import { REPOSITORY_IDENTITY_METADATA_KEY } from "./project.js";
 import { shareProjectSetDigest } from "./share-operation.js";
 import { initTestSchema } from "./test-utils.js";
 
@@ -588,5 +589,34 @@ describe("legacy recipient-policy projection", () => {
 			}),
 		]);
 		expect(after).toBe(before);
+	});
+});
+
+describe("legacy recipient-policy repository inference", () => {
+	it("merges historical cwd-only rows into their repository Project", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			db.prepare(
+				`INSERT INTO actors(
+					actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
+				 ) VALUES (?, 'Local Person', 1, 'active', NULL, ?, ?)`,
+			).run(LOCAL_ACTOR_ID, NOW, NOW);
+			const cwd = "/workspace/acme/api";
+			const repositoryIdentity = "https://git.example.invalid/acme/api.git";
+			insertProject(db, { cwd, project: "api", remote: null });
+			insertProject(db, { cwd, project: "api", remote: null });
+			db.prepare(
+				"UPDATE sessions SET metadata_json = ? WHERE id = (SELECT MAX(id) FROM sessions)",
+			).run(JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: repositoryIdentity }));
+
+			expect(projections(db)).toEqual([
+				expect.objectContaining({
+					project: expect.objectContaining({ canonicalIdentity: repositoryIdentity }),
+				}),
+			]);
+		} finally {
+			db.close();
+		}
 	});
 });
