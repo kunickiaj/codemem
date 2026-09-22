@@ -23,7 +23,9 @@ function deferred() {
 	return { promise, resolve };
 }
 
-function reviewItem(): RecipientPolicyReviewItemV1 {
+function reviewItem(
+	overrides: Partial<RecipientPolicyReviewItemV1> = {},
+): RecipientPolicyReviewItemV1 {
 	const preview = {
 		affectedDeviceCount: 1,
 		affectedMemoryCount: 3,
@@ -62,7 +64,30 @@ function reviewItem(): RecipientPolicyReviewItemV1 {
 		sourceFingerprint: "fingerprint-fixture",
 		state: "open",
 		version: 1,
+		...overrides,
 	};
+}
+
+function itemWithChoices(
+	id: string,
+	displayName: string,
+	requiresDecisionInput = false,
+): RecipientPolicyReviewItemV1 {
+	const item = reviewItem({
+		projectGroup: { displayName, identity: `project-${id}` },
+		reviewItemId: `review-${id}`,
+		sourceFingerprint: `fingerprint-${id}`,
+	});
+	item.options = [
+		...item.options,
+		{
+			...item.options[0],
+			decision: "reject_suggestion",
+			label: "Reject suggestion",
+			preview: { ...item.options[0].preview, requiresDecisionInput },
+		},
+	];
+	return item;
 }
 
 function review(overrides: Partial<RecipientPolicyReviewListV1> = {}): RecipientPolicyReviewListV1 {
@@ -197,5 +222,131 @@ describe("recipient policy review pending guards", () => {
 		});
 
 		expect(remountedButton?.disabled).toBe(false);
+	});
+});
+
+describe("recipient policy review bulk actions", () => {
+	beforeEach(() => {
+		document.body.innerHTML = '<div id="mount"></div>';
+		vi.mocked(api.resolveRecipientPolicyReviewBulk).mockImplementation(async (requests) => ({
+			results: requests.map((request) => ({
+				errorCode: null,
+				idempotent: false,
+				reviewItemId: request.reviewItemId,
+				sourceFingerprint: request.sourceFingerprint,
+				status: "applied" as const,
+			})),
+			version: 1,
+		}));
+	});
+
+	afterEach(() => {
+		vi.clearAllMocks();
+		document.body.innerHTML = "";
+	});
+
+	it("applies each selected row's current decision in one request", async () => {
+		const first = itemWithChoices("first", "First project");
+		const second = itemWithChoices("second", "Second project");
+		const onRefresh = vi.fn();
+		const mount = document.getElementById("mount");
+		if (!mount) throw new Error("review mount missing");
+		renderRecipientPolicyReview(mount, review({ reviewItems: [first, second] }), {
+			onRefresh,
+		});
+		const selects = mount.querySelectorAll<HTMLSelectElement>(".recipient-policy-review-select");
+		act(() => {
+			selects[1].value = "reject_suggestion";
+			selects[1].dispatchEvent(new Event("change", { bubbles: true }));
+			mount.querySelector<HTMLInputElement>('input[aria-label^="Select First project:"]')?.click();
+			mount.querySelector<HTMLInputElement>('input[aria-label^="Select Second project:"]')?.click();
+		});
+
+		await act(async () => {
+			const apply = [...mount.querySelectorAll("button")].find((button) =>
+				button.textContent?.startsWith("Apply selected"),
+			);
+			apply?.click();
+			await Promise.resolve();
+		});
+
+		expect(api.resolveRecipientPolicyReviewBulk).toHaveBeenCalledWith([
+			{
+				decision: "keep_current_setup",
+				reviewItemId: "review-first",
+				sourceFingerprint: "fingerprint-first",
+			},
+			{
+				decision: "reject_suggestion",
+				reviewItemId: "review-second",
+				sourceFingerprint: "fingerprint-second",
+			},
+		]);
+		expect(onRefresh).toHaveBeenCalledTimes(1);
+	});
+
+	it("applies all actionable rows and skips choices requiring input", async () => {
+		const actionable = itemWithChoices("ready", "Ready project");
+		const blocked = itemWithChoices("blocked", "Blocked project", true);
+		blocked.recommendedDecision = "reject_suggestion";
+		const mount = document.getElementById("mount");
+		if (!mount) throw new Error("review mount missing");
+		renderRecipientPolicyReview(mount, review({ reviewItems: [actionable, blocked] }));
+
+		await act(async () => {
+			const applyAll = [...mount.querySelectorAll("button")].find(
+				(button) => button.textContent === "Apply all (1)",
+			);
+			applyAll?.click();
+			await Promise.resolve();
+		});
+
+		expect(api.resolveRecipientPolicyReviewBulk).toHaveBeenCalledWith([
+			{
+				decision: "keep_current_setup",
+				reviewItemId: "review-ready",
+				sourceFingerprint: "fingerprint-ready",
+			},
+		]);
+		expect(
+			mount.querySelector<HTMLInputElement>('input[aria-label^="Select Blocked project:"]')
+				?.disabled,
+		).toBe(true);
+	});
+
+	it("does not bulk-submit a row already applying individually", async () => {
+		const pending = deferred();
+		vi.mocked(api.resolveRecipientPolicyReview).mockReturnValueOnce(
+			pending.promise.then(() => ({
+				errorCode: null,
+				idempotent: false,
+				reviewItemId: "review-ready",
+				sourceFingerprint: "fingerprint-ready",
+				status: "applied" as const,
+			})),
+		);
+		const mount = document.getElementById("mount");
+		if (!mount) throw new Error("review mount missing");
+		renderRecipientPolicyReview(
+			mount,
+			review({ reviewItems: [itemWithChoices("ready", "Ready project")] }),
+		);
+
+		await act(async () => {
+			mount.querySelector<HTMLButtonElement>('[data-review-control="apply"]')?.click();
+			await Promise.resolve();
+		});
+		const applyAll = [...mount.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+			button.textContent?.startsWith("Apply all"),
+		);
+		expect(applyAll?.disabled).toBe(true);
+		applyAll?.click();
+		expect(api.resolveRecipientPolicyReview).toHaveBeenCalledTimes(1);
+		expect(api.resolveRecipientPolicyReviewBulk).not.toHaveBeenCalled();
+
+		await act(async () => {
+			pending.resolve();
+			await pending.promise;
+		});
 	});
 });

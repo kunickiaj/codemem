@@ -1372,6 +1372,28 @@
         font-weight: var(--font-weight-regular);
       }
       .recipient-policy-review-status:empty { display: none; }
+      .recipient-policy-review-bulk {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        align-items: center;
+        gap: var(--sp-3);
+        margin: var(--sp-3) 0;
+        padding: var(--sp-3);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface-2);
+      }
+      .recipient-policy-review-select-all,
+      .recipient-policy-review-selection {
+        display: inline-flex;
+        align-items: center;
+        gap: var(--sp-2);
+        cursor: pointer;
+      }
+      .recipient-policy-review-select-all input,
+      .recipient-policy-review-selection input { width: 18px; height: 18px; }
+      .recipient-policy-review-selection-count { color: var(--text-secondary); }
+      .recipient-policy-review-bulk-actions { display: flex; gap: var(--sp-2); }
       .recipient-policy-review-list {
         margin-top: var(--sp-3);
         overflow: hidden;
@@ -1415,6 +1437,8 @@
       }
       .recipient-policy-review-section { margin-top: var(--sp-5); }
       @media (max-width: 900px) {
+        .recipient-policy-review-bulk { grid-template-columns: minmax(0, 1fr); }
+        .recipient-policy-review-bulk-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .recipient-policy-review-item { grid-template-columns: minmax(0, 1fr); row-gap: var(--sp-3); }
         .recipient-policy-review-details { grid-column: 1; }
       }

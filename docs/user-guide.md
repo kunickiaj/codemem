@@ -300,6 +300,8 @@ The normal flow is **Projects → Sharing → Devices → Health**, not manual p
 
 Team membership organizes people and devices, but it is not permission to every Project—only Projects explicitly assigned to that Team. Project access remains explicit and uses canonical Project identity.
 
+When **Projects** shows sharing decisions, review each row's choice before applying it. Use the row checkboxes and **Apply selected** for a subset, or **Apply all** to apply every choice that is ready; choices that still require recipient input remain unapplied.
+
 **Advanced → Coordinator Administration** keeps the last successfully loaded coordinator groups, Spaces, join requests, devices, and status visible if a refresh fails. A bounded notice names stale or unavailable sections and provides **Retry**. Mutations that require current coordinator state remain disabled until refresh succeeds; retained rows and counts do not imply deletion, and a section that has never loaded is shown as unavailable rather than empty.
 
 To rename an active Team, open **Sharing → Teams**, choose **Team settings**, and save a human-readable Team name. For Teams completed through legacy setup and still linked to the configured coordinator group, this one action updates both names; local Teams update only their policy metadata. If that exact Team and coordinator group has repeated completed setup records, all of those historical summaries receive the new name while remaining completed. Renaming never changes Team membership, device decisions, or Project access. If the connected service cannot be updated, the local name remains unchanged; retry the same name after the connection recovers.

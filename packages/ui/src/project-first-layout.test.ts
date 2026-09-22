@@ -103,6 +103,14 @@ describe("project-first navigation layout", () => {
 });
 
 describe("project-first responsive layout", () => {
+	it("stacks sharing-decision bulk controls at narrow widths", () => {
+		expect(html).toContain(".recipient-policy-review-bulk {");
+		expect(html).toContain("grid-template-columns: auto minmax(0, 1fr) auto");
+		expect(html).toMatch(
+			/@media \(max-width: 900px\)[\s\S]*\.recipient-policy-review-bulk \{ grid-template-columns: minmax\(0, 1fr\); \}/,
+		);
+	});
+
 	it("keeps Project fieldset semantics separate from the overflow-safe row grid", () => {
 		const stylesStart = html.indexOf(".legacy-team-project-list {");
 		const stylesEnd = html.indexOf(".legacy-team-setup-delta {", stylesStart);

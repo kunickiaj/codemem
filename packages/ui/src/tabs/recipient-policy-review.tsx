@@ -36,6 +36,17 @@ function usePendingEntry(entries: Set<string>, key: string): boolean {
 	return pending;
 }
 
+function usePendingReviewGroupKeys(): Set<string> {
+	const [keys, setKeys] = useState(() => new Set(pendingReviewGroups));
+	useEffect(() => {
+		const update = () => setKeys(new Set(pendingReviewGroups));
+		pendingStateEvents.addEventListener("change", update);
+		update();
+		return () => pendingStateEvents.removeEventListener("change", update);
+	}, []);
+	return keys;
+}
+
 interface ReviewGroup {
 	key: string;
 	displayName: string;
@@ -179,14 +190,21 @@ async function applyGroupDecision(
 	group: ReviewGroup,
 	decision: RecipientPolicyReviewDecisionV1,
 ): Promise<ApplyResult> {
-	const requests = group.items.map((item) => ({
+	const requests = requestsForGroup(group, decision);
+	const firstRequest = requests[0];
+	if (requests.length === 1 && firstRequest) return applySingleDecision(firstRequest);
+	return applyBulkDecisions(requests);
+}
+
+function requestsForGroup(
+	group: ReviewGroup,
+	decision: RecipientPolicyReviewDecisionV1,
+): RecipientPolicyReviewResolveRequestV1[] {
+	return group.items.map((item) => ({
 		decision,
 		reviewItemId: item.reviewItemId,
 		sourceFingerprint: item.sourceFingerprint,
 	}));
-	const firstRequest = requests[0];
-	if (requests.length === 1 && firstRequest) return applySingleDecision(firstRequest);
-	return applyBulkDecisions(requests);
 }
 
 function appliedGroupMessage(
@@ -297,11 +315,35 @@ function reviewGroupMeta(group: ReviewGroup): string {
 	return values.join(" · ");
 }
 
-function DecisionSummary({ group, stale }: { group: ReviewGroup; stale: boolean }) {
+function DecisionSummary({
+	blocked,
+	group,
+	onSelectedChange,
+	pending,
+	selected,
+	stale,
+}: {
+	blocked: boolean;
+	group: ReviewGroup;
+	onSelectedChange: (selected: boolean) => void;
+	pending: boolean;
+	selected: boolean;
+	stale: boolean;
+}) {
 	const first = group.items[0];
+	const selectionLabel = `Select ${group.displayName}: ${first.finding} (${first.projectGroup.identity})`;
 	return (
 		<div className="recipient-policy-review-summary">
 			<div className="recipient-policy-review-name">
+				<label className="recipient-policy-review-selection">
+					<input
+						aria-label={selectionLabel}
+						checked={selected}
+						disabled={pending || blocked}
+						onChange={(event) => onSelectedChange(event.currentTarget.checked)}
+						type="checkbox"
+					/>
+				</label>
 				<strong>{group.displayName}</strong>
 				{first.projectGroup.identity !== group.displayName ? (
 					<span className="mono small recipient-policy-review-identity">
@@ -408,36 +450,29 @@ function DecisionDetails({
 	);
 }
 
-function useDecisionSelection(group: ReviewGroup) {
-	const [decision, setDecision] = useState(group.items[0].recommendedDecision);
-	const decisionRef = useRef(decision);
-	const applyButtonRef = useRef<HTMLButtonElement>(null);
-	const selected = selectedOptions(group, decision);
-
-	function selectDecision(nextDecision: RecipientPolicyReviewDecisionV1): void {
-		decisionRef.current = nextDecision;
-		setDecision(nextDecision);
-		if (applyButtonRef.current) {
-			applyButtonRef.current.disabled = isDecisionBlocked(group, nextDecision);
-		}
-	}
-
-	return { applyButtonRef, decision, decisionRef, selectDecision, selected };
-}
-
 function DecisionRow({
+	decision,
 	group,
+	onDecisionChange,
+	onSelectedChange,
 	onStatus,
 	options,
+	selected: rowSelected,
 }: {
+	decision: RecipientPolicyReviewDecisionV1;
 	group: ReviewGroup;
+	onDecisionChange: (decision: RecipientPolicyReviewDecisionV1) => void;
+	onSelectedChange: (selected: boolean) => void;
 	onStatus: (message: string) => void;
 	options: RecipientPolicyReviewRenderOptions;
+	selected: boolean;
 }) {
 	const detailsId = `recipient-policy-details-${useId()}`;
 	const [detailsOpen, setDetailsOpen] = useState(false);
-	const selection = useDecisionSelection(group);
-	const { applyButtonRef, decision, decisionRef, selectDecision, selected } = selection;
+	const decisionRef = useRef(decision);
+	const applyButtonRef = useRef<HTMLButtonElement>(null);
+	decisionRef.current = decision;
+	const selected = selectedOptions(group, decision);
 	const { apply, pending } = useDecisionApplication(group, decisionRef, onStatus, options);
 	const blocked = isDecisionBlocked(group, decision);
 	const requiresInput = selected.some((option) => option.preview.requiresDecisionInput);
@@ -445,7 +480,14 @@ function DecisionRow({
 
 	return (
 		<article className="recipient-policy-review-item" data-review-group={group.key}>
-			<DecisionSummary group={group} stale={stale} />
+			<DecisionSummary
+				blocked={blocked}
+				group={group}
+				onSelectedChange={onSelectedChange}
+				pending={pending}
+				selected={rowSelected}
+				stale={stale}
+			/>
 			<DecisionControls
 				applyButtonRef={applyButtonRef}
 				blocked={blocked}
@@ -454,7 +496,13 @@ function DecisionRow({
 				detailsOpen={detailsOpen}
 				group={group}
 				onApply={() => void apply()}
-				onDecisionChange={selectDecision}
+				onDecisionChange={(nextDecision) => {
+					decisionRef.current = nextDecision;
+					if (applyButtonRef.current) {
+						applyButtonRef.current.disabled = isDecisionBlocked(group, nextDecision);
+					}
+					onDecisionChange(nextDecision);
+				}}
 				onDetailsToggle={() => setDetailsOpen((open) => !open)}
 				pending={pending}
 			/>
@@ -468,6 +516,86 @@ function DecisionRow({
 			/>
 		</article>
 	);
+}
+
+interface BulkControlsProps {
+	actionableCount: number;
+	allSelected: boolean;
+	applyAllBlocked: boolean;
+	applySelectedBlocked: boolean;
+	applying: boolean;
+	onApplyAll: () => void;
+	onApplySelected: () => void;
+	onSelectAll: (selected: boolean) => void;
+	selectedCount: number;
+}
+
+function BulkControls(props: BulkControlsProps) {
+	const selectAllRef = useRef<HTMLInputElement>(null);
+	useEffect(() => {
+		if (!selectAllRef.current) return;
+		selectAllRef.current.indeterminate = props.selectedCount > 0 && !props.allSelected;
+	}, [props.allSelected, props.selectedCount]);
+	return (
+		<div className="recipient-policy-review-bulk">
+			<label className="recipient-policy-review-select-all">
+				<input
+					aria-label="Select all actionable sharing decisions"
+					checked={props.allSelected}
+					disabled={props.applying || props.actionableCount === 0}
+					onChange={(event) => props.onSelectAll(event.currentTarget.checked)}
+					ref={selectAllRef}
+					type="checkbox"
+				/>
+				<span>Select all actionable</span>
+			</label>
+			<span className="small recipient-policy-review-selection-count">
+				{props.selectedCount} selected · {props.actionableCount} actionable
+			</span>
+			<div className="recipient-policy-review-bulk-actions">
+				<button
+					className="settings-button"
+					disabled={props.applying || props.applySelectedBlocked || props.selectedCount === 0}
+					onClick={props.onApplySelected}
+					type="button"
+				>
+					{props.applying ? "Applying…" : `Apply selected (${props.selectedCount})`}
+				</button>
+				<button
+					className="settings-save"
+					disabled={props.applying || props.applyAllBlocked || props.actionableCount === 0}
+					onClick={props.onApplyAll}
+					type="button"
+				>
+					{props.applying ? "Applying…" : `Apply all (${props.actionableCount})`}
+				</button>
+			</div>
+		</div>
+	);
+}
+
+function initialDecisions(groups: ReviewGroup[]): Record<string, RecipientPolicyReviewDecisionV1> {
+	return Object.fromEntries(groups.map((group) => [group.key, group.items[0].recommendedDecision]));
+}
+
+function bulkResultMessage(groups: ReviewGroup[], result: ApplyResult): string {
+	if (result.failed)
+		return "Some decisions did not update. Check the refreshed list and try again.";
+	if (result.stale) return "Some decisions changed since loaded. Check the refreshed choices.";
+	for (const group of groups) {
+		for (const item of group.items) staleReviewItems.delete(item.reviewItemId);
+	}
+	return `Applied ${countLabel(groups.length, "decision")}`;
+}
+
+async function applyReviewGroups(
+	groups: ReviewGroup[],
+	decisions: Record<string, RecipientPolicyReviewDecisionV1>,
+): Promise<ApplyResult> {
+	const requests = groups.flatMap((group) =>
+		requestsForGroup(group, decisions[group.key] ?? group.items[0].recommendedDecision),
+	);
+	return applyBulkDecisions(requests);
 }
 
 function BlockedRow({
@@ -543,6 +671,97 @@ function BlockedRow({
 	);
 }
 
+function useDecisionChoices(groups: ReviewGroup[]) {
+	const [decisions, setDecisions] = useState(() => initialDecisions(groups));
+	const decisionsRef = useRef(decisions);
+	const [selectedKeys, setSelectedKeys] = useState<Set<string>>(() => new Set());
+	const decisionFor = (group: ReviewGroup) =>
+		decisions[group.key] ?? group.items[0].recommendedDecision;
+	const actionableGroups = groups.filter((group) => !isDecisionBlocked(group, decisionFor(group)));
+	const selectedGroups = actionableGroups.filter((group) => selectedKeys.has(group.key));
+
+	function setDecision(group: ReviewGroup, decision: RecipientPolicyReviewDecisionV1): void {
+		decisionsRef.current = { ...decisionsRef.current, [group.key]: decision };
+		setDecisions(decisionsRef.current);
+		if (isDecisionBlocked(group, decision)) setGroupSelected(group.key, false);
+	}
+
+	function setGroupSelected(key: string, selected: boolean): void {
+		setSelectedKeys((current) => {
+			const next = new Set(current);
+			if (selected) next.add(key);
+			else next.delete(key);
+			return next;
+		});
+	}
+
+	function selectAll(selected: boolean): void {
+		setSelectedKeys(selected ? new Set(actionableGroups.map((group) => group.key)) : new Set());
+	}
+
+	function clearSelected(groupsToClear: ReviewGroup[]): void {
+		setSelectedKeys((current) => {
+			const next = new Set(current);
+			for (const group of groupsToClear) next.delete(group.key);
+			return next;
+		});
+	}
+
+	return {
+		actionableGroups,
+		allSelected: actionableGroups.length > 0 && selectedGroups.length === actionableGroups.length,
+		clearSelected,
+		decisionFor,
+		decisionsRef,
+		selectAll,
+		selectedGroups,
+		selectedKeys,
+		setDecision,
+		setGroupSelected,
+	};
+}
+
+function useBulkDecisionApplication(
+	decisionsRef: RefObject<Record<string, RecipientPolicyReviewDecisionV1>>,
+	options: RecipientPolicyReviewRenderOptions,
+	setStatus: (message: string) => void,
+	clearSelected: (groups: ReviewGroup[]) => void,
+) {
+	const [applying, setApplying] = useState(false);
+	const applyingRef = useRef(false);
+
+	async function apply(groups: ReviewGroup[]): Promise<void> {
+		if (
+			applyingRef.current ||
+			groups.length === 0 ||
+			groups.some((group) => pendingReviewGroups.has(group.key))
+		)
+			return;
+		applyingRef.current = true;
+		setApplying(true);
+		for (const group of groups) setPendingEntry(pendingReviewGroups, group.key, true);
+		surfaceMessage = `Applying ${countLabel(groups.length, "decision")}…`;
+		setStatus(surfaceMessage);
+		try {
+			try {
+				const result = await applyReviewGroups(groups, decisionsRef.current);
+				surfaceMessage = bulkResultMessage(groups, result);
+				if (!result.failed && !result.stale) clearSelected(groups);
+			} catch (error) {
+				surfaceMessage = errorMessage(error, "Unable to apply decisions. Try again.");
+			}
+			setStatus(surfaceMessage);
+			await refreshAfterApply(options, setStatus);
+		} finally {
+			for (const group of groups) setPendingEntry(pendingReviewGroups, group.key, false);
+			applyingRef.current = false;
+			setApplying(false);
+		}
+	}
+
+	return { apply, applying };
+}
+
 export function SharingDecisions({
 	options,
 	review,
@@ -552,6 +771,15 @@ export function SharingDecisions({
 }) {
 	const groups = groupReviewItems(review.reviewItems);
 	const [status, setStatus] = useState(surfaceMessage);
+	const choices = useDecisionChoices(groups);
+	const pendingGroupKeys = usePendingReviewGroupKeys();
+	const bulk = useBulkDecisionApplication(
+		choices.decisionsRef,
+		options,
+		setStatus,
+		choices.clearSelected,
+	);
+
 	return (
 		<section className="card recipient-policy-review" aria-labelledby="recipientPolicyReviewTitle">
 			<div className="recipient-policy-review-header">
@@ -566,11 +794,37 @@ export function SharingDecisions({
 				{status}
 			</div>
 			{groups.length > 0 ? (
-				<div className="recipient-policy-review-list recipient-policy-review-decisions">
-					{groups.map((group) => (
-						<DecisionRow group={group} key={group.key} onStatus={setStatus} options={options} />
-					))}
-				</div>
+				<>
+					<BulkControls
+						actionableCount={choices.actionableGroups.length}
+						allSelected={choices.allSelected}
+						applyAllBlocked={choices.actionableGroups.some((group) =>
+							pendingGroupKeys.has(group.key),
+						)}
+						applySelectedBlocked={choices.selectedGroups.some((group) =>
+							pendingGroupKeys.has(group.key),
+						)}
+						applying={bulk.applying}
+						onApplyAll={() => void bulk.apply(choices.actionableGroups)}
+						onApplySelected={() => void bulk.apply(choices.selectedGroups)}
+						onSelectAll={choices.selectAll}
+						selectedCount={choices.selectedGroups.length}
+					/>
+					<div className="recipient-policy-review-list recipient-policy-review-decisions">
+						{groups.map((group) => (
+							<DecisionRow
+								decision={choices.decisionFor(group)}
+								group={group}
+								key={group.key}
+								onDecisionChange={(decision) => choices.setDecision(group, decision)}
+								onSelectedChange={(selected) => choices.setGroupSelected(group.key, selected)}
+								onStatus={setStatus}
+								options={options}
+								selected={choices.selectedKeys.has(group.key)}
+							/>
+						))}
+					</div>
+				</>
 			) : null}
 			{review.blockedItems.length > 0 ? (
 				<section className="recipient-policy-review-section recipient-policy-review-blocked">

@@ -467,7 +467,7 @@ function projectsRecipientPolicyReviewSurfaceTests(): void {
 		);
 		expect(reviewCopy).not.toContain("Action is required");
 		expect(surface?.textContent).toContain("Owner: Project owner");
-		expect(surface?.querySelectorAll("button")).toHaveLength(4);
+		expect(surface?.querySelectorAll("button")).toHaveLength(6);
 		expect(surface?.textContent).toContain("Repair Project identity…");
 		expect(
 			document.querySelectorAll(
