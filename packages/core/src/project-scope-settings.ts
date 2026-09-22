@@ -1,7 +1,12 @@
 import { createHash } from "node:crypto";
 import { type Database, fromJson, toJson } from "./db.js";
 import { hasLocalInventoryIdentity } from "./local-project-inventory.js";
+import { repositoryIdentityFromMetadata } from "./project.js";
 import { cleanProjectIdentity } from "./project-identity.js";
+import {
+	repositoryIdentitiesByWorkspace,
+	withRepositoryMappingAliases,
+} from "./repository-mapping-aliases.js";
 import { ensureScopeBackfillScopes, LEGACY_SHARED_REVIEW_SCOPE_ID } from "./scope-backfill.js";
 import {
 	canonicalWorkspaceIdentity,
@@ -70,6 +75,7 @@ export interface ProjectScopeCandidate {
 	cwd: string | null;
 	git_remote: string | null;
 	git_branch: string | null;
+	repository_identity?: string | null;
 	latest_session_at: string | null;
 	resolved_scope_id: string;
 	resolution_reason: ScopeResolutionReason;
@@ -98,6 +104,14 @@ export interface ProjectScopeInventoryProject extends ProjectScopeCandidate {
 	origin_devices: Array<{ device_id: string }>;
 	session_count: number;
 	statuses: ProjectScopeInventoryStatus[];
+	worktrees: ProjectScopeInventoryWorktree[];
+}
+
+export interface ProjectScopeInventoryWorktree {
+	cwd: string;
+	latest_session_at: string | null;
+	memory_count: number;
+	session_count: number;
 }
 
 export interface ProjectScopeInventoryOptions {
@@ -159,6 +173,8 @@ interface ProjectScopeCandidateRow {
 	project: string | null;
 	git_remote: string | null;
 	git_branch: string | null;
+	metadata_json?: string | null;
+	repository_identity?: string | null;
 	workspace_id: string | null;
 	origin_devices?: Array<{ device_id: string }>;
 	memory_count?: number | null;
@@ -179,6 +195,85 @@ function originDevicesForCandidate(row: ProjectScopeCandidateRow): Array<{ devic
 	return [...new Set((row.origin_devices ?? []).map((device) => device.device_id))]
 		.toSorted((left, right) => left.localeCompare(right))
 		.map((deviceId) => ({ device_id: deviceId }));
+}
+
+function repositoryIdentityForRow(row: ProjectScopeCandidateRow): string | null {
+	return (
+		cleanProjectIdentity(row.repository_identity) ??
+		repositoryIdentityFromMetadata(row.metadata_json)
+	);
+}
+
+function workspaceIdentityForRow(row: ProjectScopeCandidateRow) {
+	return canonicalWorkspaceIdentity({
+		gitRemote: row.git_remote,
+		gitBranch: row.git_branch,
+		repositoryIdentity: repositoryIdentityForRow(row),
+		cwd: row.cwd,
+		project: row.project,
+		workspaceId: row.workspace_id,
+	});
+}
+
+function identifyRepositoryRow(
+	row: ProjectScopeCandidateRow,
+	repositoryIdentityByCwd: Map<string, string>,
+): ProjectScopeCandidateRow {
+	const discoveredRepositoryIdentity = repositoryIdentityForRow(row);
+	const cwd = cleanProjectIdentity(row.cwd);
+	if (discoveredRepositoryIdentity && cwd) {
+		repositoryIdentityByCwd.set(cwd, discoveredRepositoryIdentity);
+	}
+	return {
+		...row,
+		repository_identity:
+			discoveredRepositoryIdentity ?? (cwd ? repositoryIdentityByCwd.get(cwd) : null),
+	};
+}
+
+function repositoryIdentitiesByCwd(
+	db: Database,
+	rows: ProjectScopeCandidateRow[],
+): Map<string, string> {
+	const identities = repositoryIdentitiesByWorkspace(db);
+	for (const row of rows) {
+		const repositoryIdentity = repositoryIdentityForRow(row);
+		const cwd = cleanProjectIdentity(row.cwd);
+		if (repositoryIdentity && cwd) identities.set(cwd, repositoryIdentity);
+	}
+	return identities;
+}
+
+function mergeWorktree(project: ProjectScopeInventoryProject, row: ProjectScopeCandidateRow): void {
+	const cwd = cleanProjectIdentity(row.cwd);
+	if (!cwd) return;
+	const memoryCount = Number(row.memory_count ?? 0);
+	const sessionCount = Number(row.session_count ?? 1);
+	const existing = project.worktrees.find((member) => member.cwd === cwd);
+	if (existing) {
+		existing.memory_count += memoryCount;
+		existing.session_count += sessionCount;
+		return;
+	}
+	project.worktrees.push({
+		cwd,
+		latest_session_at: row.started_at,
+		memory_count: memoryCount,
+		session_count: sessionCount,
+	});
+}
+
+function worktreesForRow(row: ProjectScopeCandidateRow): ProjectScopeInventoryWorktree[] {
+	const cwd = cleanProjectIdentity(row.cwd);
+	if (!cwd) return [];
+	return [
+		{
+			cwd,
+			latest_session_at: row.started_at,
+			memory_count: Number(row.memory_count ?? 0),
+			session_count: Number(row.session_count ?? 1),
+		},
+	];
 }
 
 function inventoryMergeKey(
@@ -477,16 +572,12 @@ function buildProjectScopeCandidate(
 	const cwd = cleanProjectIdentity(row.cwd);
 	const gitRemote = cleanProjectIdentity(row.git_remote);
 	const gitBranch = cleanProjectIdentity(row.git_branch);
-	const identity = canonicalWorkspaceIdentity({
-		gitRemote: row.git_remote,
-		gitBranch: row.git_branch,
-		cwd: row.cwd,
-		project: row.project,
-		workspaceId: row.workspace_id,
-	});
+	const repositoryIdentity = repositoryIdentityForRow(row);
+	const identity = workspaceIdentityForRow(row);
 	const resolution = resolveProjectScope({
 		gitRemote: row.git_remote,
 		gitBranch: row.git_branch,
+		repositoryIdentity,
 		cwd: row.cwd,
 		project: row.project,
 		workspaceId: row.workspace_id,
@@ -500,6 +591,7 @@ function buildProjectScopeCandidate(
 		cwd,
 		git_remote: gitRemote,
 		git_branch: gitBranch,
+		repository_identity: repositoryIdentity,
 		latest_session_at: row.started_at,
 		resolved_scope_id: resolution.scopeId,
 		resolution_reason: resolution.reason,
@@ -702,11 +794,27 @@ interface SourceOwnedMemoryScopeRow {
 	rev: number | null;
 	scope_id: string | null;
 	metadata_json: string | null;
+	session_metadata_json: string | null;
 	workspace_id: string | null;
 	cwd: string | null;
 	git_branch: string | null;
 	git_remote: string | null;
 	project: string | null;
+}
+
+function resolveSourceOwnedMemoryScope(
+	row: SourceOwnedMemoryScopeRow,
+	mappings: ProjectScopeSettingsMapping[],
+) {
+	return resolveProjectScope({
+		gitBranch: row.git_branch,
+		gitRemote: row.git_remote,
+		repositoryIdentity: repositoryIdentityFromMetadata(row.session_metadata_json),
+		cwd: row.cwd,
+		project: row.project,
+		workspaceId: row.workspace_id,
+		mappings,
+	});
 }
 
 function sourceOwnedMemoryRowsForScopePropagation(
@@ -722,6 +830,7 @@ function sourceOwnedMemoryRowsForScopePropagation(
 				mi.scope_id,
 				mi.metadata_json,
 				mi.workspace_id,
+				s.metadata_json AS session_metadata_json,
 				s.cwd,
 				s.git_branch,
 				s.git_remote,
@@ -746,27 +855,15 @@ function propagateProjectScopeMappingToSourceOwnedMemories(
 	previousMappings?: ProjectScopeSettingsMapping[],
 ): number {
 	if (!deviceId) return 0;
-	const mappings = listProjectScopeSettingsMappings(db);
-	const oldMappings = previousMappings ?? mappings;
+	const mappings = withRepositoryMappingAliases(db, listProjectScopeSettingsMappings(db));
+	const oldMappings = previousMappings
+		? withRepositoryMappingAliases(db, previousMappings)
+		: mappings;
 	const now = new Date().toISOString();
 	let moved = 0;
 	for (const row of sourceOwnedMemoryRowsForScopePropagation(db, deviceId)) {
-		const previousResolution = resolveProjectScope({
-			gitBranch: row.git_branch,
-			gitRemote: row.git_remote,
-			cwd: row.cwd,
-			project: row.project,
-			workspaceId: row.workspace_id,
-			mappings: oldMappings,
-		});
-		const resolution = resolveProjectScope({
-			gitBranch: row.git_branch,
-			gitRemote: row.git_remote,
-			cwd: row.cwd,
-			project: row.project,
-			workspaceId: row.workspace_id,
-			mappings,
-		});
+		const previousResolution = resolveSourceOwnedMemoryScope(row, oldMappings);
+		const resolution = resolveSourceOwnedMemoryScope(row, mappings);
 		if (previousResolution.mapping?.id !== mapping.id && resolution.mapping?.id !== mapping.id) {
 			continue;
 		}
@@ -938,7 +1035,10 @@ export function listProjectScopeCandidates(
 	// limit is applied after the overflow check, never before it.
 	const candidateCeiling = candidateWalkCeiling(limit, maxScannedRows);
 	const scopes = listSharingDomainSettingsScopes(db);
-	const mappings = listProjectScopeSettingsMappingsForScopes(db, scopes);
+	const mappings = withRepositoryMappingAliases(
+		db,
+		listProjectScopeSettingsMappingsForScopes(db, scopes),
+	);
 	const excludePeerReceived = options.excludePeerReceived === true;
 	// Newest-first by started_at so the first row seen per identity carries the
 	// true latest_session_at; id is only a tiebreaker. sessions.id and
@@ -965,6 +1065,7 @@ export function listProjectScopeCandidates(
 				s.project,
 				s.git_remote,
 				s.git_branch,
+				s.metadata_json,
 				(
 					SELECT mi.workspace_id
 					FROM memory_items mi
@@ -1000,6 +1101,7 @@ export function listProjectScopeCandidates(
 			 ORDER BY started_at DESC, id DESC
 			 LIMIT ?`);
 	const seen = new Set<string>();
+	const repositoryIdentityByCwd = repositoryIdentitiesByWorkspace(db);
 	const candidates: ProjectScopeCandidate[] = [];
 	let cursor: { startedAt: string; id: number } | null = null;
 	const ceilingReached = () => candidateCeiling != null && candidates.length >= candidateCeiling;
@@ -1023,16 +1125,11 @@ export function listProjectScopeCandidates(
 		) as ProjectScopeCandidateRow[];
 		if (rows.length === 0) break;
 		for (const row of rows) {
-			const identity = canonicalWorkspaceIdentity({
-				gitRemote: row.git_remote,
-				gitBranch: row.git_branch,
-				cwd: row.cwd,
-				project: row.project,
-				workspaceId: row.workspace_id,
-			});
-			if (seen.has(identity.value)) continue;
-			seen.add(identity.value);
-			candidates.push(buildProjectScopeCandidate(row, mappings, scopes));
+			const identifiedRow = identifyRepositoryRow(row, repositoryIdentityByCwd);
+			const candidate = buildProjectScopeCandidate(identifiedRow, mappings, scopes);
+			if (seen.has(candidate.workspace_identity)) continue;
+			seen.add(candidate.workspace_identity);
+			candidates.push(candidate);
 			if (ceilingReached()) break pages;
 		}
 		if (rows.length < pageSize) break;
@@ -1070,6 +1167,7 @@ function listLocalProjectScopeInventoryRows(db: Database): ProjectScopeCandidate
 				s.project,
 				s.git_remote,
 				s.git_branch,
+				s.metadata_json,
 				(
 					SELECT mi.workspace_id
 					FROM memory_items mi
@@ -1130,6 +1228,7 @@ function listPeerReceivedProjectAggregateRows(db: Database): ProjectScopeCandida
 				MAX(TRIM(mi.project)) AS project,
 				NULL AS git_remote,
 				NULL AS git_branch,
+				NULL AS metadata_json,
 				'peer-received:' || CASE
 					WHEN mi.scope_id LIKE 'managed-project:%' THEN 'scope:' || mi.scope_id
 					ELSE COALESCE(NULLIF(TRIM(mi.origin_device_id), ''), 'unknown') || ':project:' || TRIM(mi.project)
@@ -1206,17 +1305,72 @@ interface BuiltProjectScopeInventory {
 	inventory: ProjectScopeInventoryProject[];
 }
 
+function mappingOnlyProject(mapping: ProjectScopeSettingsMapping): ProjectScopeInventoryProject {
+	return {
+		workspace_identity: mapping.workspace_identity ?? "",
+		identity_source: "workspace_id",
+		display_project: mapping.project_pattern || mapping.workspace_identity || "",
+		project: mapping.project_pattern || null,
+		cwd: null,
+		git_remote: null,
+		git_branch: null,
+		repository_identity: null,
+		latest_session_at: null,
+		resolved_scope_id: mapping.scope_id,
+		resolution_reason: "exact_mapping",
+		mapping_id: mapping.id,
+		matched_pattern: null,
+		read_only: false,
+		read_only_reason: null,
+		origin_devices: [],
+		suggested_scope_id: null,
+		suggestion_reason: null,
+		suggestion_signal: null,
+		guardrail_warnings: [],
+		memory_count: 0,
+		session_count: 0,
+		statuses: [],
+		worktrees: [],
+	};
+}
+
+function appendMappingOnlyProjects(
+	db: Database,
+	mappings: ProjectScopeSettingsMapping[],
+	byIdentity: Map<string, ProjectScopeInventoryProject>,
+	inventory: ProjectScopeInventoryProject[],
+): void {
+	const repositoryIdentityByWorkspace = repositoryIdentitiesByWorkspace(db);
+	for (const mapping of mappings) {
+		if (!mapping.workspace_identity) continue;
+		const normalized = normalizeWorkspaceIdentity(mapping.workspace_identity) ?? "";
+		const repositoryIdentity = repositoryIdentityByWorkspace.get(normalized);
+		if (
+			byIdentity.has(`local:${mapping.workspace_identity}`) ||
+			(repositoryIdentity != null && byIdentity.has(`local:${repositoryIdentity}`))
+		) {
+			continue;
+		}
+		const project = mappingOnlyProject(mapping);
+		byIdentity.set(`local:${mapping.workspace_identity}`, project);
+		inventory.push(project);
+	}
+}
+
 function buildProjectScopeInventory(
+	db: Database,
 	rows: ProjectScopeCandidateRow[],
 	mappings: ProjectScopeSettingsMapping[],
 	scopes: SharingDomainSettingsScope[],
 ): BuiltProjectScopeInventory {
 	const byIdentity = new Map<string, ProjectScopeInventoryProject>();
 	const inventory: ProjectScopeInventoryProject[] = [];
+	const repositoryIdentityByCwd = repositoryIdentitiesByCwd(db, rows);
 	for (const row of rows) {
+		const identifiedRow = identifyRepositoryRow(row, repositoryIdentityByCwd);
 		const readOnly = row.inventory_source === "peer_received";
 		const candidate = {
-			...buildProjectScopeCandidate(row, mappings, scopes),
+			...buildProjectScopeCandidate(identifiedRow, mappings, scopes),
 			read_only: readOnly,
 			read_only_reason: readOnly ? "peer_received" : null,
 			...(readOnly
@@ -1231,11 +1385,12 @@ function buildProjectScopeInventory(
 					}
 				: {}),
 		} satisfies ProjectScopeCandidate;
-		const key = inventoryMergeKey(row, candidate);
+		const key = inventoryMergeKey(identifiedRow, candidate);
 		const existing = byIdentity.get(key);
 		if (existing) {
 			existing.memory_count = (existing.memory_count ?? 0) + Number(row.memory_count ?? 0);
 			existing.session_count += Number(row.session_count ?? 1);
+			mergeWorktree(existing, row);
 			if (!readOnly) {
 				existing.read_only = false;
 				existing.read_only_reason = null;
@@ -1247,6 +1402,7 @@ function buildProjectScopeInventory(
 			memory_count: Number(row.memory_count ?? 0),
 			session_count: Number(row.session_count ?? 1),
 			statuses: [],
+			worktrees: worktreesForRow(row),
 		};
 		byIdentity.set(key, project);
 		inventory.push(project);
@@ -1261,44 +1417,18 @@ export function listProjectScopeInventory(
 	ensureScopeBackfillScopes(db);
 	const limit = Math.max(1, Math.min(options.limit ?? 50, 250));
 	const offset = Math.max(0, options.offset ?? 0);
-	const mappings = listProjectScopeSettingsMappings(db);
+	const mappings = withRepositoryMappingAliases(db, listProjectScopeSettingsMappings(db));
 	const scopes = listSharingDomainSettingsScopes(db);
 	const rows = listLocalProjectScopeInventoryRows(db);
 	const bootstrapRows = listPeerReceivedProjectScopeInventoryRows(db);
 	const { byIdentity, inventory } = buildProjectScopeInventory(
+		db,
 		[...rows, ...bootstrapRows],
 		mappings,
 		scopes,
 	);
 
-	for (const mapping of mappings) {
-		if (!mapping.workspace_identity || byIdentity.has(`local:${mapping.workspace_identity}`))
-			continue;
-		const candidate: ProjectScopeCandidateWithOrigins = {
-			workspace_identity: mapping.workspace_identity,
-			identity_source: "workspace_id",
-			display_project: mapping.project_pattern || mapping.workspace_identity,
-			project: mapping.project_pattern || null,
-			cwd: null,
-			git_remote: null,
-			git_branch: null,
-			latest_session_at: null,
-			resolved_scope_id: mapping.scope_id,
-			resolution_reason: "exact_mapping",
-			mapping_id: mapping.id,
-			matched_pattern: null,
-			read_only: false,
-			read_only_reason: null,
-			origin_devices: [],
-			suggested_scope_id: null,
-			suggestion_reason: null,
-			suggestion_signal: null,
-			guardrail_warnings: [],
-		};
-		const project = { ...candidate, memory_count: 0, session_count: 0, statuses: [] };
-		byIdentity.set(`local:${mapping.workspace_identity}`, project);
-		inventory.push(project);
-	}
+	appendMappingOnlyProjects(db, mappings, byIdentity, inventory);
 
 	const withGuardrails = withCandidateGuardrails(inventory).map((project, index) => {
 		const original = inventory[index];
@@ -1359,6 +1489,7 @@ export function reassignProjectScopeInventoryProject(
 				s.project,
 				s.git_remote,
 				s.git_branch,
+				s.metadata_json,
 				(
 					SELECT mi.workspace_id
 					FROM memory_items mi
@@ -1377,13 +1508,7 @@ export function reassignProjectScopeInventoryProject(
 		)
 		.all() as ProjectScopeCandidateRow[];
 	const matched = rows.filter((row) => {
-		const identity = canonicalWorkspaceIdentity({
-			gitRemote: row.git_remote,
-			gitBranch: row.git_branch,
-			cwd: row.cwd,
-			project: row.project,
-			workspaceId: row.workspace_id,
-		});
+		const identity = workspaceIdentityForRow(row);
 		return identity.value === workspaceIdentity;
 	});
 	if (matched.length === 0) throw new Error("project identity not found");

@@ -822,6 +822,23 @@ function projectsRecipientPolicyResultEdgeCaseTests(): void {
 
 describe("Projects recipient policy result edge cases", projectsRecipientPolicyResultEdgeCaseTests);
 
+function repositoryWorktreeDetails() {
+	return [
+		{
+			cwd: "/workspace/codemem",
+			latest_session_at: "2026-05-06T00:00:00Z",
+			memory_count: 1,
+			session_count: 1,
+		},
+		{
+			cwd: "/private/tmp/codemem-worktree",
+			latest_session_at: "2026-05-05T00:00:00Z",
+			memory_count: 2,
+			session_count: 1,
+		},
+	];
+}
+
 function projectsInventoryTablePresentationTests(): void {
 	beforeEach(setupProjectsTest);
 	afterEach(cleanupProjectsTest);
@@ -831,6 +848,7 @@ function projectsInventoryTablePresentationTests(): void {
 			display_project: "codemem",
 			workspace_identity: "project-codemem",
 			git_remote: "https://git.example.invalid/exampleco/codemem.git",
+			worktrees: repositoryWorktreeDetails(),
 		});
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
 			has_more: false,
@@ -889,6 +907,8 @@ function projectsInventoryTablePresentationTests(): void {
 		expect(details?.open).toBe(false);
 		expect(details?.querySelector(":scope > summary")?.textContent).toBe("Details");
 		expect(details?.querySelector(".project-inventory-details-body")).not.toBeNull();
+		expect(details?.textContent).toContain("/workspace/codemem");
+		expect(details?.textContent).toContain("/private/tmp/codemem-worktree");
 		const closedRow = row.querySelector(":scope > tr:first-child");
 		expect(closedRow?.textContent).not.toContain(selected.workspace_identity);
 		expect(closedRow?.textContent).not.toContain("Space");

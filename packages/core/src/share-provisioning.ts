@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { CoordinatorScope, CoordinatorScopeMembership } from "./coordinator-store-contract.js";
 import { type Database, fromJson } from "./db.js";
+import { repositoryIdentityFromMetadata } from "./project.js";
 import { assertLegacyShareGrantAllowed } from "./recipient-policy-reconciler.js";
 import { canonicalWorkspaceIdentity } from "./scope-resolution.js";
 import {
@@ -77,6 +78,7 @@ interface MemoryCandidateRow {
 	origin_device_id: string | null;
 	session_user: string | null;
 	session_tool_version: string | null;
+	session_metadata_json: string | null;
 }
 
 function clean(value: unknown): string | null {
@@ -125,7 +127,8 @@ function memoryCandidates(db: Database): MemoryCandidateRow[] {
 	return db
 		.prepare(`SELECT mi.id, mi.import_key, mi.visibility, mi.scope_id, mi.origin_device_id,
 			COALESCE(mi.project, s.project) AS project, s.cwd, s.git_remote, s.git_branch,
-			mi.workspace_id, s.user AS session_user, s.tool_version AS session_tool_version
+			mi.workspace_id, s.user AS session_user, s.tool_version AS session_tool_version,
+			s.metadata_json AS session_metadata_json
 		 FROM memory_items mi
 		 JOIN sessions s ON s.id = mi.session_id
 		 WHERE mi.active = 1`)
@@ -155,6 +158,17 @@ function isInitiatingDeviceMemory(row: MemoryCandidateRow, initiatingDeviceId: s
 	);
 }
 
+function memoryCandidateIdentity(row: MemoryCandidateRow): string {
+	return canonicalWorkspaceIdentity({
+		gitRemote: row.git_remote,
+		gitBranch: row.git_branch,
+		repositoryIdentity: repositoryIdentityFromMetadata(row.session_metadata_json),
+		cwd: row.cwd,
+		project: row.project,
+		workspaceId: row.workspace_id,
+	}).value;
+}
+
 export function countShareableProjectMemories(
 	db: Database,
 	input: { canonicalIdentity: string; initiatingDeviceId: string },
@@ -162,15 +176,7 @@ export function countShareableProjectMemories(
 	return memoryCandidates(db).filter((row) => {
 		if (!shareableForManagedProject(row)) return false;
 		if (!isInitiatingDeviceMemory(row, input.initiatingDeviceId)) return false;
-		return (
-			canonicalWorkspaceIdentity({
-				gitRemote: row.git_remote,
-				gitBranch: row.git_branch,
-				cwd: row.cwd,
-				project: row.project,
-				workspaceId: row.workspace_id,
-			}).value === input.canonicalIdentity
-		);
+		return memoryCandidateIdentity(row) === input.canonicalIdentity;
 	}).length;
 }
 
@@ -294,14 +300,7 @@ export function planShareProvisioning(
 		const matched = candidates.filter((row) => {
 			if (!shareableForManagedProject(row)) return false;
 			if (!isInitiatingDeviceMemory(row, initiatingDeviceId)) return false;
-			const identity = canonicalWorkspaceIdentity({
-				gitRemote: row.git_remote,
-				gitBranch: row.git_branch,
-				cwd: row.cwd,
-				project: row.project,
-				workspaceId: row.workspace_id,
-			});
-			return identity.value === project.canonical_project_identity;
+			return memoryCandidateIdentity(row) === project.canonical_project_identity;
 		});
 		const sourceScopeIds = [
 			...new Set(matched.map((row) => clean(row.scope_id) ?? "local-default")),

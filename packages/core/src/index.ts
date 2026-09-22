@@ -744,6 +744,7 @@ export {
 	projectClause,
 	projectColumnClause,
 	projectMatchesFilter,
+	repositoryIdentityFromMetadata,
 	resolveProject,
 	resolveProjectRoot,
 } from "./project.js";

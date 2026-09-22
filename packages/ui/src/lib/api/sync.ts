@@ -457,6 +457,7 @@ export interface ProjectScopeCandidate {
 	cwd: string | null;
 	git_remote: string | null;
 	git_branch: string | null;
+	repository_identity?: string | null;
 	latest_session_at: string | null;
 	read_only?: boolean;
 	read_only_reason?: "peer_received" | null;
@@ -485,6 +486,12 @@ export interface ProjectScopeInventoryProject extends ProjectScopeCandidate {
 	origin_devices?: Array<{ device_id: string; display_name: string | null }>;
 	session_count: number;
 	statuses: ProjectScopeInventoryStatus[];
+	worktrees?: Array<{
+		cwd: string;
+		latest_session_at: string | null;
+		memory_count: number;
+		session_count: number;
+	}>;
 	sharing?: ProjectSharingSummary[];
 }
 

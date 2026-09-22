@@ -428,7 +428,7 @@ Optional legacy filters can narrow an already-authorized peer's data; they canno
 Normal sharing uses product terms:
 
 - A **Team** organizes collaborating people and their devices. Team membership can supply inherited access only to Projects explicitly shared with that Team.
-- A **Project** is the exact canonical workspace selected for sharing, not every workspace with a similar display name.
+- A **Project** is the canonical repository selected for sharing. Linked worktrees are member paths of that Project, while unrelated repositories with similar names remain separate.
 - A **Space** is the user-facing access boundary that groups related Projects.
 
 Advanced screens and diagnostics may call a Space a **Sharing domain**, a coordinator group an administrative container, and the stored boundary a `scope_id`. Those internal terms explain enforcement; users do not need them to share a Project or add a device. Coordinator-group membership alone never grants Project access.

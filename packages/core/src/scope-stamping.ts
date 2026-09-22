@@ -1,4 +1,6 @@
 import type { Database } from "./db.js";
+import { repositoryIdentityFromMetadata } from "./project.js";
+import { withRepositoryMappingAliases } from "./repository-mapping-aliases.js";
 import {
 	LOCAL_DEFAULT_SCOPE_ID,
 	resolveProjectScope,
@@ -10,6 +12,7 @@ interface SessionScopeRow {
 	project: string | null;
 	git_remote: string | null;
 	git_branch: string | null;
+	metadata_json: string | null;
 }
 
 interface MemoryScopeRow extends SessionScopeRow {
@@ -32,7 +35,7 @@ function clean(value: string | null | undefined): string | null {
 }
 
 function loadProjectScopeMappings(db: Database): ScopeMapping[] {
-	return db
+	const mappings = db
 		.prepare(
 			`SELECT id, workspace_identity, project_pattern, scope_id, priority, source, updated_at
 			 FROM project_scope_mappings
@@ -40,11 +43,14 @@ function loadProjectScopeMappings(db: Database): ScopeMapping[] {
 			 ORDER BY priority DESC, id ASC`,
 		)
 		.all() as ScopeMapping[];
+	return withRepositoryMappingAliases(db, mappings);
 }
 
 function loadSessionScopeRow(db: Database, sessionId: number): SessionScopeRow | null {
 	const row = db
-		.prepare("SELECT cwd, project, git_remote, git_branch FROM sessions WHERE id = ? LIMIT 1")
+		.prepare(
+			"SELECT cwd, project, git_remote, git_branch, metadata_json FROM sessions WHERE id = ? LIMIT 1",
+		)
 		.get(sessionId) as SessionScopeRow | undefined;
 	return row ?? null;
 }
@@ -54,6 +60,7 @@ export function resolveSessionScopeId(db: Database, options: ResolveSessionScope
 	const result = resolveProjectScope({
 		gitRemote: session?.git_remote ?? null,
 		gitBranch: session?.git_branch ?? null,
+		repositoryIdentity: repositoryIdentityFromMetadata(session?.metadata_json),
 		cwd: session?.cwd ?? null,
 		project: session?.project ?? null,
 		workspaceId: options.workspaceId ?? null,
@@ -75,7 +82,8 @@ function loadMemoryScopeRow(db: Database, memoryId: number): MemoryScopeRow | nu
 				s.cwd,
 				s.project,
 				s.git_remote,
-				s.git_branch
+				s.git_branch,
+				s.metadata_json
 			 FROM memory_items mi
 			 LEFT JOIN sessions s ON s.id = mi.session_id
 			 WHERE mi.id = ?
@@ -94,6 +102,7 @@ export function ensureMemoryScopeId(db: Database, memoryId: number): string | nu
 	const result = resolveProjectScope({
 		gitRemote: row.git_remote,
 		gitBranch: row.git_branch,
+		repositoryIdentity: repositoryIdentityFromMetadata(row.metadata_json),
 		cwd: row.cwd,
 		project: row.project,
 		workspaceId: row.workspace_id,

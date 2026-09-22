@@ -43,6 +43,20 @@ describe("canonicalWorkspaceIdentity", () => {
 		).toBe("https://github.com/kunickiaj/codemem.git:feature/scope");
 	});
 
+	it("uses discovered repository identity before a worktree cwd", () => {
+		expect(
+			canonicalWorkspaceIdentity({
+				cwd: "/private/tmp/worktree",
+				project: "codemem",
+				repositoryIdentity: "https://github.com/kunickiaj/codemem.git",
+			}),
+		).toEqual({
+			displayProject: "codemem",
+			source: "git_repository",
+			value: "https://github.com/kunickiaj/codemem.git",
+		});
+	});
+
 	it("falls through malformed higher-priority identity to a valid cwd", () => {
 		expect(
 			canonicalWorkspaceIdentity({

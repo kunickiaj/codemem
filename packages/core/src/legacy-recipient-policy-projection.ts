@@ -3,6 +3,7 @@ import {
 	isFilesystemRootProjectIdentity,
 	normalizeLegacyProjectMappingIdentity,
 } from "./legacy-project-identity.js";
+import { repositoryIdentityFromMetadata } from "./project.js";
 import { preferredActiveUnmergedLocalActorId } from "./recipient-policy-actor-eligibility.js";
 import {
 	RECIPIENT_POLICY_CONTRACT_VERSION,
@@ -15,6 +16,7 @@ import {
 	legacyTeamCandidateId,
 	recipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
+import { withRepositoryMappingAliases } from "./repository-mapping-aliases.js";
 import {
 	canonicalWorkspaceIdentity,
 	LOCAL_DEFAULT_SCOPE_ID,
@@ -248,24 +250,31 @@ function bestMapping(
 }
 
 function loadProjectScopeMappings(db: Database): LegacyMappingSnapshot[] {
-	return db
+	const rows = db
 		.prepare(
-			`SELECT id, workspace_identity, project_pattern, scope_id, priority, updated_at
+			`SELECT id, workspace_identity, project_pattern, scope_id, priority, source, updated_at
 			 FROM project_scope_mappings
 			 ORDER BY priority DESC, updated_at DESC, id DESC`,
 		)
-		.all()
-		.map((row) => {
-			const record = row as Record<string, unknown>;
-			return {
-				id: Number(record.id ?? 0),
-				workspaceIdentity: clean(record.workspace_identity),
-				projectPattern: String(record.project_pattern ?? ""),
-				scopeId: String(record.scope_id ?? ""),
-				priority: Number(record.priority ?? 0),
-				updatedAt: clean(record.updated_at),
-			};
-		});
+		.all() as Array<{
+		id: number;
+		workspace_identity: string | null;
+		project_pattern: string;
+		scope_id: string;
+		priority: number;
+		source: string;
+		updated_at: string | null;
+	}>;
+	return withRepositoryMappingAliases(db, rows).map((record) => {
+		return {
+			id: Number(record.id ?? 0),
+			workspaceIdentity: clean(record.workspace_identity),
+			projectPattern: String(record.project_pattern ?? ""),
+			scopeId: String(record.scope_id ?? ""),
+			priority: Number(record.priority ?? 0),
+			updatedAt: clean(record.updated_at),
+		};
+	});
 }
 
 /**
@@ -846,13 +855,24 @@ export function projectLegacyRecipientPolicyProjections(
 		);
 }
 
+interface LegacyProjectRow {
+	cwd: string | null;
+	project: string | null;
+	git_remote: string | null;
+	git_branch: string | null;
+	metadata_json: string | null;
+	memory_id: number | null;
+	workspace_id: string | null;
+	scope_id: string | null;
+}
+
 function loadSnapshot(
 	db: Database,
 	options: ListLegacyRecipientPolicyProjectionsOptions,
 ): LegacyRecipientPolicySnapshot {
 	const projectRows = db
 		.prepare(
-			`SELECT s.cwd, s.project, s.git_remote, s.git_branch,
+			`SELECT s.cwd, s.project, s.git_remote, s.git_branch, s.metadata_json,
 				mi.id AS memory_id, mi.workspace_id, mi.scope_id
 			 FROM sessions s
 			 LEFT JOIN memory_items mi ON mi.session_id = s.id
@@ -862,15 +882,7 @@ function loadSnapshot(
 			   AND COALESCE(s.tool_version, '') <> 'sync_replication'
 			 ORDER BY s.id, mi.id`,
 		)
-		.all(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX) as Array<{
-		cwd: string | null;
-		project: string | null;
-		git_remote: string | null;
-		git_branch: string | null;
-		memory_id: number | null;
-		workspace_id: string | null;
-		scope_id: string | null;
-	}>;
+		.all(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX) as LegacyProjectRow[];
 	const mappings = loadProjectScopeMappings(db);
 	// Guided setup materializes an explicit Project resolution as a mapping
 	// whose pattern is the original `unmapped:` identity and whose workspace
@@ -914,6 +926,7 @@ function loadSnapshot(
 			project: row.project,
 			gitRemote: row.git_remote,
 			gitBranch: row.git_branch,
+			repositoryIdentity: repositoryIdentityFromMetadata(row.metadata_json),
 			workspaceId: row.workspace_id,
 		});
 		const resolvedIdentity =
