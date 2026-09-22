@@ -964,7 +964,7 @@ describe("project scope settings", () => {
 		});
 
 		const inventory = listProjectScopeInventory(db, {
-			query: "exampleco",
+			query: "api-old",
 			status: "explicitly_mapped",
 		});
 

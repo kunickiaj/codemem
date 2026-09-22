@@ -869,17 +869,6 @@ interface LegacyProjectRow {
 	scope_id: string | null;
 }
 
-function repositoryIdentityForLegacyProjectRow(
-	row: LegacyProjectRow,
-	repositoryIdentities: ReadonlyMap<string, string>,
-): string | null {
-	return repositoryIdentityForWorkspace(repositoryIdentities, {
-		cwd: row.cwd,
-		gitRemote: row.git_remote,
-		metadataJson: row.metadata_json,
-	});
-}
-
 function canonicalLegacyMappingIdentity(
 	workspaceIdentity: string,
 	repositoryIdentities: ReadonlyMap<string, string>,
@@ -907,6 +896,24 @@ function appendLegacyMappingProject(
 	});
 }
 
+function legacyProjectContext(db: Database): {
+	mappings: ReturnType<typeof loadProjectScopeMappings>;
+	repositoryIdentities: ReadonlyMap<string, string>;
+	repositoryIdentityForRow: (row: LegacyProjectRow) => string | null;
+} {
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
+	return {
+		mappings: loadProjectScopeMappings(db),
+		repositoryIdentities,
+		repositoryIdentityForRow: (row) =>
+			repositoryIdentityForWorkspace(repositoryIdentities, {
+				cwd: row.cwd,
+				gitRemote: row.git_remote,
+				metadataJson: row.metadata_json,
+			}),
+	};
+}
+
 function loadSnapshot(
 	db: Database,
 	options: ListLegacyRecipientPolicyProjectionsOptions,
@@ -924,8 +931,7 @@ function loadSnapshot(
 			 ORDER BY s.id, mi.id`,
 		)
 		.all(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX) as LegacyProjectRow[];
-	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
-	const mappings = loadProjectScopeMappings(db);
+	const { mappings, repositoryIdentities, repositoryIdentityForRow } = legacyProjectContext(db);
 	// Guided setup materializes an explicit Project resolution as a mapping
 	// whose pattern is the original `unmapped:` identity and whose workspace
 	// identity is the reviewed target. Session rows still canonicalize to the
@@ -968,7 +974,7 @@ function loadSnapshot(
 			project: row.project,
 			gitRemote: row.git_remote,
 			gitBranch: row.git_branch,
-			repositoryIdentity: repositoryIdentityForLegacyProjectRow(row, repositoryIdentities),
+			repositoryIdentity: repositoryIdentityForRow(row),
 			workspaceId: row.workspace_id,
 		});
 		const resolvedIdentity =
