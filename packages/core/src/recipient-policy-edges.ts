@@ -954,6 +954,25 @@ function isSqliteBusy(error: unknown): boolean {
 	);
 }
 
+function commitChangedRecipientPolicies(
+	db: Database,
+	outcomes: RecipientPolicyEdgeCommitOutcomeV1[],
+	now: string,
+): void {
+	const changedProjects = new Set(
+		outcomes
+			.filter((outcome) => outcome.outcome === "added" || outcome.outcome === "removed")
+			.map((outcome) => outcome.change.canonicalProjectIdentity),
+	);
+	const wake = db.prepare(
+		`UPDATE recipient_policy_authority_states
+		 SET last_attempt_at = NULL, updated_at = ?
+		 WHERE canonical_project_identity = ?`,
+	);
+	for (const project of changedProjects) wake.run(now, project);
+	db.exec("COMMIT");
+}
+
 export function commitRecipientPolicyEdges(
 	db: Database,
 	value: unknown,
@@ -1038,7 +1057,7 @@ export function commitRecipientPolicyEdges(
 				writeCount += 1;
 				outcomes.push({ change, outcome: "removed" });
 			}
-			db.exec("COMMIT");
+			commitChangedRecipientPolicies(db, outcomes, now);
 			return {
 				version: 1,
 				status: "applied",

@@ -1117,6 +1117,19 @@ async function applyGrantSteps(
 	}
 }
 
+function stageGrantRefresh(run: RecipientPolicyReconciliationRun, input: GrantEffectInput): void {
+	if (input.grantDeviceIds.length === 0) return;
+	ensureRecipientPolicyReconciliationStep(run.db, {
+		canonicalProjectIdentity: run.projectId,
+		generation: run.activeGeneration,
+		stepKey: `refresh:${input.passKey}`,
+		payloadDigest: digest("recipient-policy-step-payload-v1", {
+			canonicalProjectIdentity: run.projectId,
+		}),
+		now: run.effects.now(),
+	});
+}
+
 async function checkCapabilitiesAndApplyGrants(
 	run: RecipientPolicyReconciliationRun,
 	input: GrantEffectInput,
@@ -1125,6 +1138,7 @@ async function checkCapabilitiesAndApplyGrants(
 	if (capabilityOutcome) return capabilityOutcome;
 	const staleOutcome = await staleGrantEnrollment(run, input);
 	if (staleOutcome) return staleOutcome;
+	stageGrantRefresh(run, input);
 	await applyGrantSteps(run, input);
 	return null;
 }
@@ -1198,13 +1212,7 @@ async function refreshAfterGrantEffects(
 		lease: run.lease,
 		effects: run.effects,
 	});
-	if (
-		replayedRefresh ||
-		(input.grantDeviceIds.length === 0 &&
-			(input.revocations.length > 0 || input.replayedRevocationRefresh))
-	) {
-		return;
-	}
+	if (replayedRefresh || input.grantDeviceIds.length === 0) return;
 	await step(
 		run.db,
 		{

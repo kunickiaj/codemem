@@ -425,6 +425,51 @@ function writeBinding(
 	);
 }
 
+export function wakeRecipientPoliciesForIdentities(
+	db: Database,
+	identityIds: Iterable<string>,
+	now: string,
+): void {
+	const wake = db.prepare(
+		`UPDATE recipient_policy_authority_states
+		 SET last_attempt_at = NULL, updated_at = ?
+		 WHERE canonical_project_identity IN (
+		  SELECT recipient.canonical_project_identity
+		  FROM project_recipients recipient
+		  WHERE recipient.status = 'active'
+		   AND (
+		    (recipient.recipient_kind = 'identity' AND recipient.recipient_id = ?)
+		    OR (recipient.recipient_kind = 'team' AND recipient.recipient_id IN (
+		     SELECT membership.team_id
+		     FROM policy_team_memberships membership
+		     JOIN policy_teams team ON team.team_id = membership.team_id
+		     WHERE membership.identity_id = ? AND team.status = 'active'
+		      AND (
+		       (team.device_eligibility_mode = 'person_all_devices' AND membership.status = 'active')
+		       OR (team.device_eligibility_mode = 'reviewed_allowlist'
+		        AND membership.status = 'reviewed_active')
+		      )
+		    ))
+		   )
+		 )`,
+	);
+	for (const identityId of new Set(identityIds)) wake.run(now, identityId, identityId);
+}
+
+function wakePoliciesForBindingChanges(
+	db: Database,
+	outcomes: DeviceIdentityBindingOutcomeV1[],
+	now: string,
+): void {
+	const changedIdentities = new Set<string>();
+	for (const outcome of outcomes) {
+		if (outcome.action === "unchanged") continue;
+		if (outcome.previousIdentityId) changedIdentities.add(outcome.previousIdentityId);
+		changedIdentities.add(outcome.targetIdentityId);
+	}
+	wakeRecipientPoliciesForIdentities(db, changedIdentities, now);
+}
+
 function commitInTransaction(
 	db: Database,
 	context: DeviceIdentityBindingContext,
@@ -484,6 +529,7 @@ function commitInTransaction(
 		now,
 	);
 	for (const item of preview.outcomes) writeBinding(db, context, commitDigest, item, now);
+	wakePoliciesForBindingChanges(db, preview.outcomes, now);
 	return {
 		...preview,
 		status: "applied",

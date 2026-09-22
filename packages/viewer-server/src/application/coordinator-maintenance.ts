@@ -338,7 +338,8 @@ export async function reconcileRecipientPolicyProjectsOperation(
 			 FROM projects
 			 LEFT JOIN recipient_policy_authority_states authority
 			  ON authority.canonical_project_identity = projects.canonical_project_identity
-			 WHERE authority.safe_error_code IS NULL OR authority.last_attempt_at IS NULL
+			 WHERE authority.last_attempt_at IS NULL
+			  OR (authority.safe_error_code IS NULL AND authority.authority_state <> 'active')
 			  OR authority.last_attempt_at <= ?
 			 ORDER BY CASE WHEN authority.last_attempt_at IS NULL THEN 0 ELSE 1 END,
 			  authority.last_attempt_at, projects.canonical_project_identity

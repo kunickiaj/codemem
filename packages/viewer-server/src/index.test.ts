@@ -546,6 +546,133 @@ describe("GET /api/sync/projects origin devices", () => {
 	);
 });
 
+it("wakes affected recipient policies after an actor merge", async () => {
+	const { app, getStore, cleanup } = createTestApp();
+	try {
+		await app.request("/api/sync/actors");
+		const store = getStore();
+		if (!store) throw new Error("store not initialized");
+		const createdResponse = await app.request("/api/sync/actors", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ display_name: "Merge wake actor" }),
+		});
+		const secondaryActorId = ((await createdResponse.json()) as { actor_id: string }).actor_id;
+		const now = new Date().toISOString();
+		store.db
+			.prepare(`INSERT INTO project_recipients(
+			canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+			policy_revision, migration_state, idempotency_key, created_at, updated_at
+		) VALUES ('merge-wake-project', 'identity', ?, 'active', 'test', '1', 'native',
+		'merge-wake-recipient', ?, ?)`)
+			.run(secondaryActorId, now, now);
+		store.db
+			.prepare(`INSERT INTO recipient_policy_authority_states(
+			canonical_project_identity, authority_state, generation, state_changed_at,
+			last_attempt_at, created_at, updated_at
+		) VALUES ('merge-wake-project', 'active', 1, ?, ?, ?, ?)`)
+			.run(now, now, now, now);
+		const mergeResponse = await app.request("/api/sync/actors/merge", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				primary_actor_id: store.actorId,
+				secondary_actor_id: secondaryActorId,
+			}),
+		});
+		expect(mergeResponse.status).toBe(200);
+		expect(
+			store.db
+				.prepare(
+					"SELECT last_attempt_at FROM recipient_policy_authority_states WHERE canonical_project_identity = 'merge-wake-project'",
+				)
+				.pluck()
+				.get(),
+		).toBeNull();
+	} finally {
+		cleanup();
+	}
+});
+
+it("wakes recipient policies after single and bulk Project remaps", async () => {
+	const { app, getStore, cleanup } = createTestApp();
+	try {
+		await app.request("/api/stats");
+		const store = getStore();
+		if (!store) throw new Error("store not initialized");
+		const now = new Date().toISOString();
+		for (const scopeId of ["mapping-wake-a", "mapping-wake-b"]) {
+			store.db
+				.prepare(`INSERT INTO replication_scopes(
+				scope_id, label, kind, authority_type, coordinator_id, group_id,
+				membership_epoch, status, created_at, updated_at
+			) VALUES (?, ?, 'managed_project', 'coordinator', 'coordinator', 'group',
+			1, 'active', ?, ?)`)
+				.run(scopeId, scopeId, now, now);
+		}
+		const projects = ["https://example.test/acme/single.git", "https://example.test/acme/bulk.git"];
+		const insertAuthority = store.db.prepare(`INSERT INTO recipient_policy_authority_states(
+			canonical_project_identity, authority_state, generation, state_changed_at,
+			last_attempt_at, created_at, updated_at
+		) VALUES (?, 'active', 1, ?, ?, ?, ?)`);
+		for (const project of projects) insertAuthority.run(project, now, now, now, now);
+		const request = (path: string, mappings: unknown) =>
+			app.request(path, {
+				method: "PUT",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(mappings),
+			});
+		const singleResponse = await request("/api/sync/sharing-domains/project-mappings", {
+			workspace_identity: projects[0],
+			project_pattern: projects[0],
+			scope_id: "mapping-wake-a",
+		});
+		expect(singleResponse.status).toBe(200);
+		const singleMapping = (await singleResponse.json()) as { mapping: { id: number } };
+		expect(
+			(
+				await request("/api/sync/sharing-domains/project-mappings/bulk", {
+					mappings: [
+						{
+							workspace_identity: projects[1],
+							project_pattern: projects[1],
+							scope_id: "mapping-wake-b",
+						},
+					],
+				})
+			).status,
+		).toBe(200);
+		expect(
+			store.db
+				.prepare(
+					"SELECT last_attempt_at FROM recipient_policy_authority_states ORDER BY canonical_project_identity",
+				)
+				.pluck()
+				.all(),
+		).toEqual([null, null]);
+		store.db
+			.prepare(
+				"UPDATE recipient_policy_authority_states SET last_attempt_at = ? WHERE canonical_project_identity = ?",
+			)
+			.run(now, projects[0]);
+		const deleteResponse = await app.request(
+			`/api/sync/sharing-domains/project-mappings/${singleMapping.mapping.id}`,
+			{ method: "DELETE" },
+		);
+		expect(deleteResponse.status).toBe(200);
+		expect(
+			store.db
+				.prepare(
+					"SELECT last_attempt_at FROM recipient_policy_authority_states WHERE canonical_project_identity = ?",
+				)
+				.pluck()
+				.get(projects[0]),
+		).toBeNull();
+	} finally {
+		cleanup();
+	}
+});
+
 describe("viewer-server", () => {
 	it("serves viewer shell and app bundle with cache-safe headers", async () => {
 		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-viewer-static-cache-"));

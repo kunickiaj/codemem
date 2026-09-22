@@ -25,6 +25,86 @@ function enrollment(deviceId: string): CoordinatorEnrollment {
 	};
 }
 
+function insertBindingWakePolicies(db: InstanceType<typeof Database>): string[] {
+	const projects = [
+		"https://git.example.invalid/acme/binding-wake-direct.git",
+		"https://git.example.invalid/acme/binding-wake-team.git",
+	];
+	db.prepare(
+		`INSERT INTO policy_teams(
+		 team_id, display_name, status, device_eligibility_mode, provenance, revision,
+		 migration_state, idempotency_key, created_at, updated_at
+		 ) VALUES ('team-other', 'Other Team', 'active', 'person_all_devices', 'test', '1',
+		 'native', 'team-wake', ?, ?)`,
+	).run(NOW, NOW);
+	db.prepare(
+		`INSERT INTO policy_team_memberships(
+		 team_id, identity_id, role, status, provenance, revision, migration_state,
+		 idempotency_key, created_at, updated_at
+		 ) VALUES ('team-other', 'identity-other', 'member', 'active', 'test', '1', 'native',
+		 'membership-wake', ?, ?)`,
+	).run(NOW, NOW);
+	const insertRecipient = db.prepare(
+		`INSERT INTO project_recipients(
+		 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+		 policy_revision, migration_state, idempotency_key, created_at, updated_at
+		 ) VALUES (?, ?, ?, 'active', 'test', '1', 'native', ?, ?, ?)`,
+	);
+	insertRecipient.run(projects[0], "identity", "identity-other", "edge-wake-direct", NOW, NOW);
+	insertRecipient.run(projects[1], "team", "team-other", "edge-wake-team", NOW, NOW);
+	const insertAuthority = db.prepare(
+		`INSERT INTO recipient_policy_authority_states(
+		 canonical_project_identity, authority_state, generation, state_changed_at,
+		 last_attempt_at, created_at, updated_at
+		 ) VALUES (?, 'active', 1, ?, ?, ?, ?)`,
+	);
+	for (const project of projects) insertAuthority.run(project, NOW, NOW, NOW, NOW);
+	return projects;
+}
+
+it("wakes recipient policies affected by a changed device binding", () => {
+	const db = new Database(":memory:");
+	try {
+		initTestSchema(db);
+		db.prepare(
+			`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+			 VALUES ('identity-local', 'Local', 1, 'active', ?, ?),
+			 ('identity-other', 'Other', 0, 'active', ?, ?)`,
+		).run(NOW, NOW, NOW, NOW);
+		db.prepare(
+			`INSERT INTO sync_peers(peer_device_id, name, public_key, pinned_fingerprint, created_at)
+			 VALUES ('device-peer', 'Peer', 'peer-key', ?, ?)`,
+		).run(fingerprintPublicKey("peer-key"), NOW);
+		const projects = insertBindingWakePolicies(db);
+		const inventoryInput: DeviceIdentityInventoryInput = {
+			localDeviceId: "device-local",
+			coordinator: { availability: "available", safeErrorCode: null, enrollments: [] },
+		};
+		const request = {
+			bindings: [{ deviceId: "device-peer", targetIdentityId: "identity-other", confirmed: true }],
+		};
+		const preview = previewDeviceIdentityBindings(db, inventoryInput, request);
+		const result = commitDeviceIdentityBindings(
+			db,
+			{ localActorId: "identity-local", localDeviceId: "device-local", now: () => NOW },
+			inventoryInput,
+			{ ...request, reviewedInventoryDigest: preview.reviewedInventoryDigest },
+		);
+		expect(result).toMatchObject({ status: "applied", writeCount: 1 });
+		expect(
+			db
+				.prepare(
+					`SELECT last_attempt_at FROM recipient_policy_authority_states
+					 WHERE canonical_project_identity IN (?, ?) ORDER BY canonical_project_identity`,
+				)
+				.pluck()
+				.all(...projects),
+		).toEqual([null, null]);
+	} finally {
+		db.close();
+	}
+});
+
 describe("device Identity binding", () => {
 	let db: InstanceType<typeof Database>;
 	let inventoryInput: DeviceIdentityInventoryInput;

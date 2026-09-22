@@ -649,7 +649,8 @@ function summary(store: MemoryStore): Record<string, unknown> {
 		policy: {
 			authority_states: store.db
 				.prepare(
-					`SELECT canonical_project_identity, authority_state, attempt_count
+					`SELECT canonical_project_identity, authority_state, generation, safe_error_code,
+					        attempt_count
 					 FROM recipient_policy_authority_states ORDER BY canonical_project_identity`,
 				)
 				.all(),

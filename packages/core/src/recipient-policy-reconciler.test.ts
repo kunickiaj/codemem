@@ -125,26 +125,17 @@ function insertActiveAuthority(db: InstanceType<typeof Database>): void {
 	).run(PROJECT, now, now, now);
 }
 
-describe("recipient-policy reconciler executor", () => {
-	let db: InstanceType<typeof Database>;
-
-	beforeEach(() => {
-		db = new Database(":memory:");
-		initTestSchema(db);
-		insertPolicyGraph(db);
-	});
-
-	afterEach(() => db.close());
-
-	it("revokes before grants, verifies parity, and activates only on a later no-op pass", async () => {
-		const { calls, effects } = harness(["device-keep", "device-old"]);
-
+it("revokes before grants, verifies parity, and activates without a no-op refresh", async () => {
+	const db = new Database(":memory:");
+	initTestSchema(db);
+	insertPolicyGraph(db);
+	const { calls, effects } = harness(["device-keep", "device-old"]);
+	try {
 		const first = await reconcileRecipientPolicyProject(
 			db,
 			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-a" },
 			effects,
 		);
-
 		expect(first).toMatchObject({
 			status: "parity_pending",
 			revokedDeviceIds: ["device-old"],
@@ -163,21 +154,68 @@ describe("recipient-policy reconciler executor", () => {
 		]);
 		expect(getRecipientPolicyAuthorityState(db, PROJECT)?.authorityState).toBe("eligible");
 		expect(listRecipientPolicyDenyOverlays(db, PROJECT)).toEqual([]);
-
+		vi.mocked(effects.refresh).mockRejectedValue(new Error("unnecessary_refresh_failed"));
 		const second = await reconcileRecipientPolicyProject(
 			db,
 			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-b" },
 			effects,
 		);
-
 		expect(second.status).toBe("active");
 		expect(second.revokedDeviceIds).toEqual([]);
 		expect(second.grantedDeviceIds).toEqual([]);
 		expect(vi.mocked(effects.revoke)).toHaveBeenCalledTimes(1);
 		expect(vi.mocked(effects.grant)).toHaveBeenCalledTimes(1);
-		expect(vi.mocked(effects.refresh)).toHaveBeenCalledTimes(3);
+		expect(vi.mocked(effects.refresh)).toHaveBeenCalledTimes(2);
 		expect(getRecipientPolicyAuthorityState(db, PROJECT)?.authorityState).toBe("active");
+	} finally {
+		db.close();
+	}
+});
+
+it("persists grant refresh recovery before calling the coordinator", async () => {
+	const db = new Database(":memory:");
+	initTestSchema(db);
+	insertPolicyGraph(db);
+	const { effects, members } = harness(["device-keep"]);
+	vi.mocked(effects.grant).mockImplementation(async (input) => {
+		const pendingRefresh = db
+			.prepare(
+				`SELECT 1 FROM recipient_policy_reconciliation_steps
+				 WHERE canonical_project_identity = ? AND step_key GLOB 'refresh:*' AND status = 'pending'`,
+			)
+			.get(PROJECT);
+		expect(pendingRefresh).toBeDefined();
+		members.add(input.deviceId);
+		return {
+			effectId: input.effectId,
+			scopeId: input.scopeId,
+			deviceId: input.deviceId,
+			status: "active",
+		};
 	});
+	try {
+		const outcome = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-grant-recovery" },
+			effects,
+		);
+		expect(outcome.status).toBe("parity_pending");
+		expect(effects.refresh).toHaveBeenCalledTimes(1);
+	} finally {
+		db.close();
+	}
+});
+
+describe("recipient-policy reconciler executor", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+		insertPolicyGraph(db);
+	});
+
+	afterEach(() => db.close());
 
 	it.each([
 		["oversized", "x".repeat(257)],

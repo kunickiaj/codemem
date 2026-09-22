@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
+import { wakeRecipientPoliciesForIdentities } from "./device-identity-binding.js";
 import { managedProjectScopeId } from "./managed-project-scope.js";
 import {
 	isHumanPresentationName,
@@ -473,6 +474,36 @@ function inviterDeviceDisplayName(db: Database, deviceId: string): string {
 	return validInviterDeviceDisplayName(peerName) ?? "Existing device";
 }
 
+function commitAcceptedDirectProjectPolicy(
+	db: Database,
+	options: {
+		input: ShareOperationAcceptanceInput;
+		acceptedProjects: AcceptedProjectIntent[];
+		inviterIdentityId: string;
+		inviterDevices: Array<{ deviceId: string; displayName: string }>;
+	},
+): void {
+	const { input } = options;
+	commitDirectProjectSharePolicyInTransaction(db, {
+		operationId: input.operationId,
+		inviterIdentityId: options.inviterIdentityId,
+		inviterDevices: options.inviterDevices,
+		recipientIdentityId: input.recipientActorId,
+		recipientDeviceId: input.recipientDeviceId,
+		recipientDevicePublicKey: input.recipientPublicKey,
+		recipientDeviceDisplayName: input.recipientDeviceDisplayName,
+		canonicalProjectIdentities: options.acceptedProjects.map(
+			(project) => project.canonical_identity,
+		),
+		now: input.consumedAt,
+	});
+	wakeRecipientPoliciesForIdentities(
+		db,
+		[input.recipientActorId, options.inviterIdentityId],
+		input.consumedAt,
+	);
+}
+
 export function reconcileShareOperationAcceptance(
 	db: Database,
 	input: ShareOperationAcceptanceInput,
@@ -644,16 +675,11 @@ export function reconcileShareOperationAcceptance(
 			deviceId,
 			displayName: inviterDeviceDisplayName(db, deviceId),
 		}));
-		commitDirectProjectSharePolicyInTransaction(db, {
-			operationId: operation.operation_id,
+		commitAcceptedDirectProjectPolicy(db, {
+			input,
+			acceptedProjects,
 			inviterIdentityId: operation.inviter_actor_id,
 			inviterDevices,
-			recipientIdentityId: input.recipientActorId,
-			recipientDeviceId: input.recipientDeviceId,
-			recipientDevicePublicKey: input.recipientPublicKey,
-			recipientDeviceDisplayName: input.recipientDeviceDisplayName,
-			canonicalProjectIdentities: acceptedProjects.map((project) => project.canonical_identity),
-			now: input.consumedAt,
 		});
 		for (const stepKey of ["invite_consumption", "person_device_link"]) {
 			db.prepare(`UPDATE share_operation_steps SET status = 'completed', attempt_count = 1,

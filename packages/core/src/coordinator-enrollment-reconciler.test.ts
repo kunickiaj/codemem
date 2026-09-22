@@ -13,6 +13,80 @@ import { claimRecipientPolicyPublicationMutation } from "./recipient-policy-team
 
 const NOW = "2026-07-26T00:00:00.000Z";
 
+async function expectEnrollmentChangesWakePolicies(): Promise<void> {
+	const dir = mkdtempSync(join(tmpdir(), "coordinator-enrollment-wake-"));
+	const db = connect(join(dir, "test.sqlite"));
+	try {
+		db.prepare(`INSERT INTO policy_teams(
+			team_id, display_name, status, provenance, revision, migration_state,
+			idempotency_key, created_at, updated_at
+		) VALUES ('team-a', 'Team A', 'active', 'test', 'r1', 'user_managed', 'i1', ?, ?)`).run(
+			NOW,
+			NOW,
+		);
+		db.prepare(`INSERT INTO actors(
+			actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
+		) VALUES ('identity-direct', 'Direct recipient', 0, 'active', NULL, ?, ?)`).run(NOW, NOW);
+		db.prepare(`INSERT INTO project_recipients(
+			canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+			policy_revision, migration_state, idempotency_key, created_at, updated_at
+		) VALUES ('direct-project', 'identity', 'identity-direct', 'active', 'test', '1',
+		'native', 'direct-recipient', ?, ?),
+		('team-project', 'team', 'team-a', 'active', 'test', '1', 'native',
+		'team-recipient', ?, ?)`).run(NOW, NOW, NOW, NOW);
+		const insertAuthority = db.prepare(`INSERT INTO recipient_policy_authority_states(
+			canonical_project_identity, authority_state, generation, state_changed_at,
+			last_attempt_at, created_at, updated_at
+		) VALUES (?, 'active', 1, ?, ?, ?, ?)`);
+		for (const project of ["direct-project", "team-project"]) {
+			insertAuthority.run(project, NOW, NOW, NOW, NOW);
+		}
+		await reconcileCoordinatorEnrollmentSnapshot(db, {
+			coordinatorId: "https://coord.example.test",
+			groupId: "group-a",
+			now: NOW,
+			consumedTeamInvites: [
+				{
+					invite_id: "invite-team-wake",
+					group_id: "group-a",
+					policy_team_id: "team-a",
+					assigned_identity_id: "identity-team-wake",
+					recipient_actor_id: "identity-team-wake",
+					recipient_display_name: "Team recipient",
+					bound_device_id: "device-team-wake",
+					consumed_at: NOW,
+				},
+			],
+			enrollments: [
+				{
+					group_id: "group-a",
+					device_id: "device-direct-wake",
+					public_key: "pk-direct-wake",
+					fingerprint: "fp-direct-wake",
+					identity_id: "identity-direct",
+					display_name: "Direct device",
+					enabled: 1,
+					created_at: NOW,
+				},
+			],
+		});
+		expect(
+			db
+				.prepare("SELECT last_attempt_at FROM recipient_policy_authority_states ORDER BY 1")
+				.pluck()
+				.all(),
+		).toEqual([null, null]);
+	} finally {
+		db.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+it(
+	"wakes policies when enrollment adds devices and Team members",
+	expectEnrollmentChangesWakePolicies,
+);
+
 describe("reconcileCoordinatorEnrollmentSnapshot", () => {
 	let dir: string;
 	let db: DatabaseType;
