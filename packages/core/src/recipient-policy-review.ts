@@ -9,7 +9,7 @@ import {
 } from "./legacy-recipient-policy-projection.js";
 import { isLegacyTeamCandidateSelectable } from "./legacy-team-candidate.js";
 import { isMigratableLegacyTeamProjectIdentity } from "./legacy-team-project-policy.js";
-import { REPOSITORY_IDENTITY_METADATA_KEY, repositoryIdentityFromMetadata } from "./project.js";
+import { REPOSITORY_IDENTITY_METADATA_KEY } from "./project.js";
 import { isActiveUnmergedLocalActor } from "./recipient-policy-actor-eligibility.js";
 import {
 	isRecipientPolicyNoOpDecision,
@@ -29,6 +29,10 @@ import {
 	deterministicPolicyTeamId,
 	legacyRecipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
+import {
+	repositoryIdentitiesByWorkspace,
+	repositoryIdentityForWorkspace,
+} from "./repository-mapping-aliases.js";
 import { canonicalWorkspaceIdentity } from "./scope-resolution.js";
 
 export interface RecipientPolicyReviewContext {
@@ -227,6 +231,7 @@ export function recipientPolicyReviewSourceFingerprint(
 }
 
 function memoryCountsByProject(db: Database): Map<string, number> {
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
 	const rows = db
 		.prepare(
 			`SELECT s.cwd, s.project, s.git_remote, s.git_branch, s.metadata_json, mi.workspace_id
@@ -249,7 +254,11 @@ function memoryCountsByProject(db: Database): Map<string, number> {
 			project: row.project,
 			gitRemote: row.git_remote,
 			gitBranch: row.git_branch,
-			repositoryIdentity: repositoryIdentityFromMetadata(row.metadata_json),
+			repositoryIdentity: repositoryIdentityForWorkspace(repositoryIdentities, {
+				cwd: row.cwd,
+				gitRemote: row.git_remote,
+				metadataJson: row.metadata_json,
+			}),
 			workspaceId: row.workspace_id,
 		}).value;
 		counts.set(projectId, (counts.get(projectId) ?? 0) + 1);

@@ -4,7 +4,6 @@ import {
 	type PolicyTeamDeviceEligibilityBlock,
 	type PolicyTeamDeviceEligibilityIdentity,
 } from "./policy-team-device-eligibility.js";
-import { repositoryIdentityFromMetadata } from "./project.js";
 import type {
 	RecipientPolicyEdgeChangeV1,
 	RecipientPolicyEdgeCommitOutcomeV1,
@@ -23,7 +22,10 @@ import {
 	isStrictRecipientPolicyProjectIdentity,
 	legacyRecipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
-import { repositoryIdentitiesByWorkspace } from "./repository-mapping-aliases.js";
+import {
+	repositoryIdentitiesByWorkspace,
+	repositoryIdentityForWorkspace,
+} from "./repository-mapping-aliases.js";
 import { canonicalWorkspaceIdentity } from "./scope-resolution.js";
 import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap-constants.js";
 
@@ -254,6 +256,7 @@ function mappedProjectRows(db: Database): Array<{ displayName: unknown; projectI
 }
 
 function projectFacts(db: Database): Map<string, ProjectFact> {
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
 	const rows = db
 		.prepare(
 			`SELECT s.id, s.cwd, s.project, s.git_remote, s.git_branch, s.metadata_json,
@@ -276,7 +279,11 @@ function projectFacts(db: Database): Map<string, ProjectFact> {
 			project: row.project,
 			gitRemote: row.git_remote,
 			gitBranch: row.git_branch,
-			repositoryIdentity: repositoryIdentityFromMetadata(row.metadata_json),
+			repositoryIdentity: repositoryIdentityForWorkspace(repositoryIdentities, {
+				cwd: row.cwd,
+				gitRemote: row.git_remote,
+				metadataJson: row.metadata_json,
+			}),
 			workspaceId: row.workspace_id,
 		});
 		if (identity.value.startsWith("unmapped:")) continue;

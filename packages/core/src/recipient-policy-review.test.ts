@@ -1423,3 +1423,54 @@ describe("recipient policy review persistence", () => {
 		).toBe(1);
 	});
 });
+
+describe("recipient policy review repository inference", () => {
+	it("counts historical cwd-only memories in the canonical repository review", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			insertLocalFixture(db);
+			db.prepare("UPDATE sessions SET metadata_json = ? WHERE cwd = '/workspace/review'").run(
+				JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: PROJECT_ID }),
+			);
+			const historicalSessionId = Number(
+				db
+					.prepare(
+						`INSERT INTO sessions(started_at, cwd, project)
+						 VALUES (?, '/workspace/review', 'review')`,
+					)
+					.run(NOW).lastInsertRowid,
+			);
+			db.prepare(
+				`INSERT INTO memory_items(
+					session_id, kind, title, body_text, active, created_at, updated_at,
+					visibility, project, scope_id
+				 ) VALUES (?, 'discovery', 'Historical fixture', 'body', 1, ?, ?, 'private', 'review', 'local-default')`,
+			).run(historicalSessionId, NOW, NOW);
+			const reusedCwdSessionId = Number(
+				db
+					.prepare(
+						`INSERT INTO sessions(started_at, cwd, project, git_remote)
+						 VALUES (?, '/workspace/review', 'older-review', 'https://example.test/older/review.git')`,
+					)
+					.run(NOW).lastInsertRowid,
+			);
+			db.prepare(
+				`INSERT INTO memory_items(
+					session_id, kind, title, body_text, active, created_at, updated_at,
+					visibility, project, scope_id
+				 ) VALUES (?, 'discovery', 'Older checkout', 'body', 1, ?, ?, 'private', 'older-review', 'local-default')`,
+			).run(reusedCwdSessionId, NOW, NOW);
+
+			const item = listRecipientPolicyReview(db, context).reviewItems.find(
+				(candidate) => candidate.projectGroup.identity === PROJECT_ID,
+			);
+			expect(item?.projectGroup.identity).toBe(PROJECT_ID);
+			for (const option of item?.options ?? []) {
+				expect(option.preview.affectedMemoryCount).toBe(2);
+			}
+		} finally {
+			db.close();
+		}
+	});
+});

@@ -5,7 +5,6 @@ import {
 } from "./identity-device-assignment.js";
 import { managedProjectScopeId } from "./managed-project-scope.js";
 import { derivePolicyTeamDeviceEligibility } from "./policy-team-device-eligibility.js";
-import { repositoryIdentityFromMetadata } from "./project.js";
 import { normalizeIdentityDisplayName } from "./project-invite-identity.js";
 import {
 	isStrictRecipientPolicyId,
@@ -16,6 +15,10 @@ import {
 	normalizeRecipientReviewedIntent,
 	type RecipientReviewedIntentV1,
 } from "./recipient-reviewed-intent.js";
+import {
+	repositoryIdentitiesByWorkspace,
+	repositoryIdentityForWorkspace,
+} from "./repository-mapping-aliases.js";
 import { canonicalWorkspaceIdentity } from "./scope-resolution.js";
 import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap-constants.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
@@ -276,7 +279,19 @@ interface ProjectFactRow {
 	memory_count: number;
 }
 
+function repositoryIdentityForProjectFact(
+	repositoryIdentities: ReadonlyMap<string, string>,
+	row: ProjectFactRow,
+): string | null {
+	return repositoryIdentityForWorkspace(repositoryIdentities, {
+		cwd: row.cwd,
+		gitRemote: row.git_remote,
+		metadataJson: row.metadata_json,
+	});
+}
+
 function projectFacts(db: Database): Map<string, ProjectFact> {
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
 	const rows = db
 		.prepare(
 			`SELECT s.id, s.cwd, s.project, s.git_remote, s.git_branch, s.metadata_json,
@@ -299,7 +314,7 @@ function projectFacts(db: Database): Map<string, ProjectFact> {
 			project: row.project,
 			gitRemote: row.git_remote,
 			gitBranch: row.git_branch,
-			repositoryIdentity: repositoryIdentityFromMetadata(row.metadata_json),
+			repositoryIdentity: repositoryIdentityForProjectFact(repositoryIdentities, row),
 			workspaceId: row.workspace_id,
 		});
 		if (identity.value.startsWith("unmapped:")) continue;

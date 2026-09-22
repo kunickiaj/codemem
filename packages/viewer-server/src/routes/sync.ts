@@ -156,7 +156,6 @@ import {
 	renameRecipientPolicyTeam,
 	repositoryIdentitiesByWorkspace,
 	repositoryIdentityForWorkspace,
-	repositoryIdentityFromMetadata,
 	requestJson,
 	resolveRecipientPolicyReview,
 	resolveRecipientPolicyReviewBulk,
@@ -3566,6 +3565,7 @@ function addLegacySharedReviewRow(
 
 function collectLegacySharedReviewGroups(store: MemoryStore) {
 	const ownedBySelf = store.buildOwnershipPredicate();
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(store.db);
 	const candidatesByIdentity = new Map(
 		listProjectScopeCandidates(store.db, { limit: null }).map((candidate) => [
 			candidate.workspace_identity,
@@ -3584,7 +3584,11 @@ function collectLegacySharedReviewGroups(store: MemoryStore) {
 			cwd: row.cwd,
 			gitBranch: row.git_branch,
 			gitRemote: row.git_remote,
-			repositoryIdentity: repositoryIdentityFromMetadata(row.session_metadata_json),
+			repositoryIdentity: repositoryIdentityForWorkspace(repositoryIdentities, {
+				cwd: row.cwd,
+				gitRemote: row.git_remote,
+				metadataJson: row.session_metadata_json,
+			}),
 			project: row.project,
 			workspaceId: row.workspace_id,
 		});
@@ -3984,12 +3988,17 @@ function legacySharedReviewRowsForWorkspace(
 	store: MemoryStore,
 	workspaceIdentity: string,
 ): LegacySharedReviewReassignmentMemoryRow[] {
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(store.db);
 	return legacySharedReviewRows(store).filter((row) => {
 		const identity = canonicalWorkspaceIdentity({
 			cwd: row.cwd,
 			gitBranch: row.git_branch,
 			gitRemote: row.git_remote,
-			repositoryIdentity: repositoryIdentityFromMetadata(row.session_metadata_json),
+			repositoryIdentity: repositoryIdentityForWorkspace(repositoryIdentities, {
+				cwd: row.cwd,
+				gitRemote: row.git_remote,
+				metadataJson: row.session_metadata_json,
+			}),
 			project: row.project,
 			workspaceId: row.workspace_id,
 		});

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
+import { REPOSITORY_IDENTITY_METADATA_KEY } from "./project.js";
 import {
 	commitRecipientPolicyEdges,
 	parseRecipientPolicyEdgeCommitRequest,
@@ -1243,5 +1244,54 @@ describe("recipient-policy edge changes", () => {
 		).toMatchObject({ status: "conflict", writeCount: 0 });
 		expect(rowSnapshot(db)).toEqual([]);
 		expect(snapshot()).toBe(before);
+	});
+});
+
+describe("recipient-policy edge repository inference", () => {
+	it("counts historical cwd-only memories in repository Project facts", () => {
+		const db = seedGraph();
+		db.prepare("UPDATE sessions SET metadata_json = ? WHERE cwd = '/workspace/alpha'").run(
+			JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: PROJECT_A }),
+		);
+		const historicalSessionId = Number(
+			db
+				.prepare(
+					`INSERT INTO sessions(started_at, cwd, project)
+					 VALUES (?, '/workspace/alpha', 'alpha')`,
+				)
+				.run(NOW).lastInsertRowid,
+		);
+		db.prepare(
+			`INSERT INTO memory_items(
+				session_id, kind, title, body_text, active, created_at, updated_at,
+				visibility, project, scope_id
+			 ) VALUES (?, 'discovery', 'historical', 'body', 1, ?, ?, 'shared', 'alpha', 'local-default')`,
+		).run(historicalSessionId, NOW, NOW);
+		const reusedCwdSessionId = Number(
+			db
+				.prepare(
+					`INSERT INTO sessions(started_at, cwd, project, git_remote)
+					 VALUES (?, '/workspace/alpha', 'older-alpha', 'https://example.test/older/alpha.git')`,
+				)
+				.run(NOW).lastInsertRowid,
+		);
+		db.prepare(
+			`INSERT INTO memory_items(
+				session_id, kind, title, body_text, active, created_at, updated_at,
+				visibility, project, scope_id
+			 ) VALUES (?, 'discovery', 'older checkout', 'body', 1, ?, ?, 'shared', 'older-alpha', 'local-default')`,
+		).run(reusedCwdSessionId, NOW, NOW);
+
+		expect(
+			previewRecipientPolicyEdges(db, {
+				version: 1,
+				changes: [identityChange(PROJECT_A, "identity-a")],
+			}).projects,
+		).toEqual([
+			expect.objectContaining({
+				canonicalProjectIdentity: PROJECT_A,
+				existingMemoryCount: 3,
+			}),
+		]);
 	});
 });
