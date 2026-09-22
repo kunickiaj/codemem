@@ -1,8 +1,8 @@
 import type { Database } from "./db.js";
 import {
-	repositoryIdentitiesByWorkspace,
+	recordedRepositoryIdentitiesByWorkspace,
 	repositoryIdentityForWorkspace,
-	withRepositoryMappingAliases,
+	withRepositoryMappingAliasesFromIdentities,
 } from "./repository-mapping-aliases.js";
 import {
 	LOCAL_DEFAULT_SCOPE_ID,
@@ -37,11 +37,8 @@ function clean(value: string | null | undefined): string | null {
 	return trimmed ? trimmed : null;
 }
 
-function loadProjectScopeMappings(db: Database): {
-	mappings: ScopeMapping[];
-	repositoryIdentities: ReadonlyMap<string, string>;
-} {
-	const mappings = db
+function loadProjectScopeMappings(db: Database): ScopeMapping[] {
+	return db
 		.prepare(
 			`SELECT id, workspace_identity, project_pattern, scope_id, priority, source, updated_at
 			 FROM project_scope_mappings
@@ -49,11 +46,39 @@ function loadProjectScopeMappings(db: Database): {
 			 ORDER BY priority DESC, id ASC`,
 		)
 		.all() as ScopeMapping[];
-	if (mappings.length === 0) return { mappings, repositoryIdentities: new Map() };
-	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
+}
+
+function repositoryScopeContext(
+	db: Database,
+	row: SessionScopeRow | null,
+	mappings: ScopeMapping[],
+): { mappings: ScopeMapping[]; repositoryIdentity: string | null } {
+	if (mappings.length === 0) {
+		return {
+			mappings,
+			repositoryIdentity: repositoryIdentityForWorkspace(new Map(), {
+				cwd: row?.cwd,
+				gitRemote: row?.git_remote ?? null,
+				metadataJson: row?.metadata_json,
+			}),
+		};
+	}
+	const repositoryIdentities = recordedRepositoryIdentitiesByWorkspace(
+		db,
+		[row?.cwd, ...mappings.map((mapping) => mapping.workspace_identity)],
+		{
+			freshWorkspaces: [row?.cwd],
+		},
+	);
 	return {
-		mappings: withRepositoryMappingAliases(db, mappings, repositoryIdentities),
-		repositoryIdentities,
+		mappings: withRepositoryMappingAliasesFromIdentities(mappings, repositoryIdentities, {
+			discoverFilesystem: true,
+		}),
+		repositoryIdentity: repositoryIdentityForWorkspace(repositoryIdentities, {
+			cwd: row?.cwd,
+			gitRemote: row?.git_remote ?? null,
+			metadataJson: row?.metadata_json,
+		}),
 	};
 }
 
@@ -67,20 +92,17 @@ function loadSessionScopeRow(db: Database, sessionId: number): SessionScopeRow |
 }
 
 export function resolveSessionScopeId(db: Database, options: ResolveSessionScopeOptions): string {
+	const explicitScopeId = clean(options.explicitScopeId);
+	if (explicitScopeId) return explicitScopeId;
 	const session = loadSessionScopeRow(db, options.sessionId);
-	const context = loadProjectScopeMappings(db);
+	const context = repositoryScopeContext(db, session, loadProjectScopeMappings(db));
 	const result = resolveProjectScope({
 		gitRemote: session?.git_remote ?? null,
 		gitBranch: session?.git_branch ?? null,
-		repositoryIdentity: repositoryIdentityForWorkspace(context.repositoryIdentities, {
-			cwd: session?.cwd,
-			gitRemote: session?.git_remote ?? null,
-			metadataJson: session?.metadata_json,
-		}),
+		repositoryIdentity: context.repositoryIdentity,
 		cwd: session?.cwd ?? null,
 		project: session?.project ?? null,
 		workspaceId: options.workspaceId ?? null,
-		explicitScopeId: options.explicitScopeId ?? null,
 		localDefaultScopeId: options.localDefaultScopeId ?? LOCAL_DEFAULT_SCOPE_ID,
 		mappings: context.mappings,
 	});
@@ -114,16 +136,11 @@ export function ensureMemoryScopeId(db: Database, memoryId: number): string | nu
 	if (!row) return null;
 	const existingScopeId = clean(row.scope_id);
 	if (existingScopeId) return existingScopeId;
-
-	const context = loadProjectScopeMappings(db);
+	const context = repositoryScopeContext(db, row, loadProjectScopeMappings(db));
 	const result = resolveProjectScope({
 		gitRemote: row.git_remote,
 		gitBranch: row.git_branch,
-		repositoryIdentity: repositoryIdentityForWorkspace(context.repositoryIdentities, {
-			cwd: row.cwd,
-			gitRemote: row.git_remote,
-			metadataJson: row.metadata_json,
-		}),
+		repositoryIdentity: context.repositoryIdentity,
 		cwd: row.cwd,
 		project: row.project,
 		workspaceId: row.workspace_id,

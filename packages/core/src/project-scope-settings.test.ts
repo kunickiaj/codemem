@@ -1911,3 +1911,58 @@ describe("historical repository scope propagation", () => {
 		}
 	});
 });
+
+describe("historical repository project reassignment", () => {
+	it("renames inferred cwd-only members", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const cwd = "/workspace/work/exampleco/historical-rename";
+			const repositoryIdentity = "https://git.example.invalid/exampleco/historical-rename.git";
+			const historicalSession = insertSession(db, {
+				cwd,
+				gitBranch: null,
+				gitRemote: null,
+				project: "old-name",
+			});
+			insertMemory(db, historicalSession, {
+				originDeviceId: "source-device",
+				project: "old-name",
+			});
+			const discoveredSession = insertSession(db, {
+				cwd,
+				gitBranch: null,
+				gitRemote: null,
+				project: "old-name",
+			});
+			db.prepare("UPDATE sessions SET metadata_json = ? WHERE id = ?").run(
+				toJson({ [REPOSITORY_IDENTITY_METADATA_KEY]: repositoryIdentity }),
+				discoveredSession,
+			);
+			insertMemory(db, discoveredSession, {
+				originDeviceId: "source-device",
+				project: "old-name",
+			});
+
+			expect(
+				reassignProjectScopeInventoryProject(db, {
+					deviceId: "source-device",
+					project: "new-name",
+					workspaceIdentity: repositoryIdentity,
+				}),
+			).toMatchObject({
+				moved_memory_count: 2,
+				moved_session_count: 2,
+				previous_projects: ["old-name"],
+			});
+			expect(db.prepare("SELECT DISTINCT project FROM sessions").pluck().all()).toEqual([
+				"new-name",
+			]);
+			expect(db.prepare("SELECT DISTINCT project FROM memory_items").pluck().all()).toEqual([
+				"new-name",
+			]);
+		} finally {
+			db.close();
+		}
+	});
+});
