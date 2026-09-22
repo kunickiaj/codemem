@@ -1517,8 +1517,9 @@ export function reassignProjectScopeInventoryProject(
 			 GROUP BY s.id`,
 		)
 		.all() as ProjectScopeCandidateRow[];
+	const repositoryIdentityByCwd = repositoryIdentitiesByCwd(db, rows);
 	const matched = rows.filter((row) => {
-		const identity = workspaceIdentityForRow(row);
+		const identity = workspaceIdentityForRow(identifyRepositoryRow(row, repositoryIdentityByCwd));
 		return identity.value === workspaceIdentity;
 	});
 	if (matched.length === 0) throw new Error("project identity not found");

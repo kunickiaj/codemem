@@ -41,6 +41,16 @@ function assertReusedCwdIdentity(store: MemoryStore, tmpDir: string): void {
 			(project) => project.workspace_identity === "https://example.test/acme/repository.git",
 		),
 	).toMatchObject({ session_count: 2 });
+	store.db
+		.prepare(
+			`INSERT INTO project_scope_mappings(
+				workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+			 ) VALUES (?, 'repository', 'repository-scope', 10, 'user', '2026-09-22', '2026-09-22')`,
+		)
+		.run("https://example.test/acme/repository.git");
+	expect(resolveSessionScopeId(store.db, { sessionId: historicalSessionId })).toBe(
+		"repository-scope",
+	);
 }
 
 describe("raw-event session repository identity", () => {

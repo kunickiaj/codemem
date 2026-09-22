@@ -1,6 +1,9 @@
 import type { Database } from "./db.js";
-import { repositoryIdentityFromMetadata } from "./project.js";
-import { withRepositoryMappingAliases } from "./repository-mapping-aliases.js";
+import {
+	recordedRepositoryIdentitiesByWorkspace,
+	repositoryIdentityForWorkspace,
+	withRepositoryMappingAliasesFromIdentities,
+} from "./repository-mapping-aliases.js";
 import {
 	LOCAL_DEFAULT_SCOPE_ID,
 	resolveProjectScope,
@@ -35,7 +38,7 @@ function clean(value: string | null | undefined): string | null {
 }
 
 function loadProjectScopeMappings(db: Database): ScopeMapping[] {
-	const mappings = db
+	return db
 		.prepare(
 			`SELECT id, workspace_identity, project_pattern, scope_id, priority, source, updated_at
 			 FROM project_scope_mappings
@@ -43,7 +46,35 @@ function loadProjectScopeMappings(db: Database): ScopeMapping[] {
 			 ORDER BY priority DESC, id ASC`,
 		)
 		.all() as ScopeMapping[];
-	return withRepositoryMappingAliases(db, mappings);
+}
+
+function repositoryScopeContext(
+	db: Database,
+	row: SessionScopeRow | null,
+	mappings: ScopeMapping[],
+): { mappings: ScopeMapping[]; repositoryIdentity: string | null } {
+	if (mappings.length === 0) {
+		return {
+			mappings,
+			repositoryIdentity: repositoryIdentityForWorkspace(new Map(), {
+				cwd: row?.cwd,
+				metadataJson: row?.metadata_json,
+			}),
+		};
+	}
+	const repositoryIdentities = recordedRepositoryIdentitiesByWorkspace(db, [
+		row?.cwd,
+		...mappings.map((mapping) => mapping.workspace_identity),
+	]);
+	return {
+		mappings: withRepositoryMappingAliasesFromIdentities(mappings, repositoryIdentities, {
+			discoverFilesystem: true,
+		}),
+		repositoryIdentity: repositoryIdentityForWorkspace(repositoryIdentities, {
+			cwd: row?.cwd,
+			metadataJson: row?.metadata_json,
+		}),
+	};
 }
 
 function loadSessionScopeRow(db: Database, sessionId: number): SessionScopeRow | null {
@@ -56,17 +87,19 @@ function loadSessionScopeRow(db: Database, sessionId: number): SessionScopeRow |
 }
 
 export function resolveSessionScopeId(db: Database, options: ResolveSessionScopeOptions): string {
+	const explicitScopeId = clean(options.explicitScopeId);
+	if (explicitScopeId) return explicitScopeId;
 	const session = loadSessionScopeRow(db, options.sessionId);
+	const context = repositoryScopeContext(db, session, loadProjectScopeMappings(db));
 	const result = resolveProjectScope({
 		gitRemote: session?.git_remote ?? null,
 		gitBranch: session?.git_branch ?? null,
-		repositoryIdentity: repositoryIdentityFromMetadata(session?.metadata_json),
+		repositoryIdentity: context.repositoryIdentity,
 		cwd: session?.cwd ?? null,
 		project: session?.project ?? null,
 		workspaceId: options.workspaceId ?? null,
-		explicitScopeId: options.explicitScopeId ?? null,
 		localDefaultScopeId: options.localDefaultScopeId ?? LOCAL_DEFAULT_SCOPE_ID,
-		mappings: loadProjectScopeMappings(db),
+		mappings: context.mappings,
 	});
 	return result.scopeId;
 }
@@ -98,16 +131,17 @@ export function ensureMemoryScopeId(db: Database, memoryId: number): string | nu
 	if (!row) return null;
 	const existingScopeId = clean(row.scope_id);
 	if (existingScopeId) return existingScopeId;
+	const context = repositoryScopeContext(db, row, loadProjectScopeMappings(db));
 
 	const result = resolveProjectScope({
 		gitRemote: row.git_remote,
 		gitBranch: row.git_branch,
-		repositoryIdentity: repositoryIdentityFromMetadata(row.metadata_json),
+		repositoryIdentity: context.repositoryIdentity,
 		cwd: row.cwd,
 		project: row.project,
 		workspaceId: row.workspace_id,
 		localDefaultScopeId: LOCAL_DEFAULT_SCOPE_ID,
-		mappings: loadProjectScopeMappings(db),
+		mappings: context.mappings,
 	});
 	db.prepare(
 		`UPDATE memory_items
