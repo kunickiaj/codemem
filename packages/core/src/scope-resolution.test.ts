@@ -43,6 +43,20 @@ describe("canonicalWorkspaceIdentity", () => {
 		).toBe("https://github.com/kunickiaj/codemem.git:feature/scope");
 	});
 
+	it("uses discovered repository identity before a worktree cwd", () => {
+		expect(
+			canonicalWorkspaceIdentity({
+				cwd: "/private/tmp/worktree",
+				project: "codemem",
+				repositoryIdentity: "https://github.com/kunickiaj/codemem.git",
+			}),
+		).toEqual({
+			displayProject: "codemem",
+			source: "git_repository",
+			value: "https://github.com/kunickiaj/codemem.git",
+		});
+	});
+
 	it("falls through malformed higher-priority identity to a valid cwd", () => {
 		expect(
 			canonicalWorkspaceIdentity({
@@ -254,14 +268,25 @@ function repositoryIdentityCompatibilityTests(): void {
 		expect(
 			resolveProjectScope({
 				cwd: "/work/acme/service",
-				gitRemote: "https://github.com/acme/service.git",
+				repositoryIdentity: "https://github.com/acme/service.git",
 				mappings: [mapping({ project_pattern: "/work/acme/*", scope_id: "existing-pattern" })],
 			}),
 		).toMatchObject({
 			reason: "pattern_mapping",
 			scopeId: "existing-pattern",
-			workspaceIdentity: { source: "git_remote" },
+			workspaceIdentity: { source: "git_repository" },
 		});
+	});
+
+	it("does not use a cwd pattern when repository fallback is disabled", () => {
+		expect(
+			resolveProjectScope({
+				allowRepositoryCwdFallback: false,
+				cwd: "/work/acme/service",
+				repositoryIdentity: "https://github.com/acme/service.git",
+				mappings: [mapping({ project_pattern: "/work/acme/*", scope_id: "existing-pattern" })],
+			}),
+		).toMatchObject({ reason: "local_default", scopeId: LOCAL_DEFAULT_SCOPE_ID });
 	});
 
 	it("ranks repository and cwd pattern matches together", () => {

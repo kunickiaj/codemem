@@ -25,6 +25,7 @@ export const MAX_SCOPE_IN_PARAMS = 500;
 export type WorkspaceIdentitySource =
 	| "git_remote"
 	| "git_remote_branch"
+	| "git_repository"
 	| "cwd"
 	| "workspace_id"
 	| "unmapped";
@@ -32,6 +33,7 @@ export type WorkspaceIdentitySource =
 export interface WorkspaceIdentityInput {
 	gitRemote?: string | null;
 	gitBranch?: string | null;
+	repositoryIdentity?: string | null;
 	cwd?: string | null;
 	workspaceId?: string | null;
 	project?: string | null;
@@ -69,6 +71,7 @@ export interface ScopeResolution {
 }
 
 export interface ResolveProjectScopeInput extends WorkspaceIdentityInput {
+	allowRepositoryCwdFallback?: boolean;
 	explicitScopeId?: string | null;
 	mappings?: ScopeMapping[];
 	localDefaultScopeId?: string;
@@ -125,9 +128,18 @@ export function canonicalWorkspaceIdentity(
 ): CanonicalWorkspaceIdentity {
 	const gitRemote = cleanProjectIdentity(input.gitRemote);
 	const gitBranch = cleanProjectIdentity(input.gitBranch);
+	const repositoryIdentity = cleanProjectIdentity(input.repositoryIdentity);
 	const cwd = cleanProjectIdentity(input.cwd);
 	const workspaceId = cleanProjectIdentity(input.workspaceId);
 	const project = cleanProjectIdentity(input.project);
+
+	if (repositoryIdentity && !input.branchScoped) {
+		return {
+			value: normalizeSlash(repositoryIdentity),
+			source: "git_repository",
+			displayProject: project,
+		};
+	}
 
 	if (gitRemote) {
 		const normalizedRemote = normalizeSlash(gitRemote);
@@ -139,6 +151,14 @@ export function canonicalWorkspaceIdentity(
 			};
 		}
 		return { value: normalizedRemote, source: "git_remote", displayProject: project };
+	}
+
+	if (repositoryIdentity) {
+		return {
+			value: normalizeSlash(repositoryIdentity),
+			source: "git_repository",
+			displayProject: project,
+		};
 	}
 
 	if (cwd) {
@@ -204,7 +224,28 @@ function exactMappingIdentities(
 	workspaceIdentity: CanonicalWorkspaceIdentity,
 ): string[] {
 	const identities = [workspaceIdentity.value];
+	if (workspaceIdentity.source === "git_repository") return identities;
 	if (
+		workspaceIdentity.source !== "git_remote" &&
+		workspaceIdentity.source !== "git_remote_branch"
+	) {
+		return identities;
+	}
+	const cwd = cleanProjectIdentity(input.cwd);
+	if (cwd) identities.push(normalizeCwd(cwd));
+	return identities;
+}
+
+function patternMappingIdentities(
+	input: ResolveProjectScopeInput,
+	workspaceIdentity: CanonicalWorkspaceIdentity,
+): string[] {
+	const identities = [workspaceIdentity.value];
+	if (workspaceIdentity.source === "git_repository" && input.allowRepositoryCwdFallback === false) {
+		return identities;
+	}
+	if (
+		workspaceIdentity.source !== "git_repository" &&
 		workspaceIdentity.source !== "git_remote" &&
 		workspaceIdentity.source !== "git_remote_branch"
 	) {
@@ -284,7 +325,7 @@ export function resolveProjectScope(input: ResolveProjectScopeInput): ScopeResol
 		};
 	}
 
-	const pattern = bestPatternMapping(mappings, exactIdentities);
+	const pattern = bestPatternMapping(mappings, patternMappingIdentities(input, workspaceIdentity));
 	if (pattern) {
 		return {
 			scopeId: pattern.mapping.scope_id,

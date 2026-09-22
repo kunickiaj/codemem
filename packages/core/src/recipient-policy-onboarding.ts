@@ -5,6 +5,7 @@ import {
 } from "./identity-device-assignment.js";
 import { managedProjectScopeId } from "./managed-project-scope.js";
 import { derivePolicyTeamDeviceEligibility } from "./policy-team-device-eligibility.js";
+import { repositoryIdentityFromMetadata } from "./project.js";
 import { normalizeIdentityDisplayName } from "./project-invite-identity.js";
 import {
 	isStrictRecipientPolicyId,
@@ -265,10 +266,20 @@ function normalizeRequest(request: RecipientPolicyOnboardingPreviewRequestV1): N
 	throw new RecipientPolicyOnboardingRequestError("invalid", "journey_invalid");
 }
 
+interface ProjectFactRow {
+	cwd: string | null;
+	project: string | null;
+	git_remote: string | null;
+	git_branch: string | null;
+	metadata_json: string | null;
+	workspace_id: string | null;
+	memory_count: number;
+}
+
 function projectFacts(db: Database): Map<string, ProjectFact> {
 	const rows = db
 		.prepare(
-			`SELECT s.id, s.cwd, s.project, s.git_remote, s.git_branch,
+			`SELECT s.id, s.cwd, s.project, s.git_remote, s.git_branch, s.metadata_json,
 			 (SELECT mi.workspace_id FROM memory_items mi
 			  WHERE mi.session_id = s.id AND mi.workspace_id IS NOT NULL AND TRIM(mi.workspace_id) <> ''
 			  ORDER BY mi.id DESC LIMIT 1) AS workspace_id,
@@ -280,14 +291,7 @@ function projectFacts(db: Database): Map<string, ProjectFact> {
 			  AND (s.cwd IS NULL OR substr(s.cwd, 1, length(?)) <> ?)
 			 GROUP BY s.id ORDER BY s.id`,
 		)
-		.all(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX) as Array<{
-		cwd: string | null;
-		project: string | null;
-		git_remote: string | null;
-		git_branch: string | null;
-		workspace_id: string | null;
-		memory_count: number;
-	}>;
+		.all(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX) as ProjectFactRow[];
 	const projects = new Map<string, ProjectFact>();
 	for (const row of rows) {
 		const identity = canonicalWorkspaceIdentity({
@@ -295,6 +299,7 @@ function projectFacts(db: Database): Map<string, ProjectFact> {
 			project: row.project,
 			gitRemote: row.git_remote,
 			gitBranch: row.git_branch,
+			repositoryIdentity: repositoryIdentityFromMetadata(row.metadata_json),
 			workspaceId: row.workspace_id,
 		});
 		if (identity.value.startsWith("unmapped:")) continue;

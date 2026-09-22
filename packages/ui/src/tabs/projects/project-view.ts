@@ -23,7 +23,12 @@ export function latestLabel(value: string | null): string {
 }
 
 export function projectSignal(project: ProjectScopeInventoryProject): string {
-	return project.git_remote || project.cwd || "";
+	return project.git_remote || project.repository_identity || project.cwd || "";
+}
+
+export function identitySourceLabel(source: string): string {
+	if (source === "git_repository") return "git repository";
+	return source.replaceAll("_", " ");
 }
 
 export function scopeOptionLabel(
@@ -146,6 +151,7 @@ export function detailFields(
 ): Array<[string, string | number | null | undefined]> {
 	return [
 		["Workspace identity", project.workspace_identity],
+		["Repository identity", project.repository_identity],
 		["Project", project.project],
 		["CWD", project.cwd],
 		["Git remote", project.git_remote],

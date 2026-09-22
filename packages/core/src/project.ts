@@ -10,6 +10,19 @@ export interface GitRepositoryIdentity {
 
 export const REPOSITORY_IDENTITY_METADATA_KEY = "codemem_repository_identity";
 
+export function repositoryIdentityFromMetadata(
+	metadataJson: string | null | undefined,
+): string | null {
+	if (!metadataJson) return null;
+	try {
+		const metadata = JSON.parse(metadataJson) as Record<string, unknown>;
+		const value = metadata[REPOSITORY_IDENTITY_METADATA_KEY];
+		return typeof value === "string" && value.trim() ? value.trim() : null;
+	} catch {
+		return null;
+	}
+}
+
 function normalizePathLike(value: string): string {
 	return value.trim().replaceAll("\\", "/").replace(/\/+$/u, "") || value.trim();
 }

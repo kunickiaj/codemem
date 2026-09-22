@@ -4,6 +4,7 @@ import {
 	type PolicyTeamDeviceEligibilityBlock,
 	type PolicyTeamDeviceEligibilityIdentity,
 } from "./policy-team-device-eligibility.js";
+import { repositoryIdentityFromMetadata } from "./project.js";
 import type {
 	RecipientPolicyEdgeChangeV1,
 	RecipientPolicyEdgeCommitOutcomeV1,
@@ -22,6 +23,7 @@ import {
 	isStrictRecipientPolicyProjectIdentity,
 	legacyRecipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
+import { repositoryIdentitiesByWorkspace } from "./repository-mapping-aliases.js";
 import { canonicalWorkspaceIdentity } from "./scope-resolution.js";
 import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap-constants.js";
 
@@ -219,10 +221,42 @@ export function parseRecipientPolicyEdgeCommitRequest(
 		: null;
 }
 
+interface ProjectFactRow {
+	cwd: string | null;
+	project: string | null;
+	git_remote: string | null;
+	git_branch: string | null;
+	metadata_json: string | null;
+	workspace_id: string | null;
+	memory_count: number;
+}
+
+function mappedProjectRows(db: Database): Array<{ displayName: unknown; projectId: unknown }> {
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
+	return (
+		db
+			.prepare(
+				`SELECT workspace_identity, project_pattern FROM project_scope_mappings
+				 WHERE workspace_identity IS NOT NULL AND TRIM(workspace_identity) <> '' ORDER BY id`,
+			)
+			.all() as Array<Record<string, unknown>>
+	).map((row) => {
+		const workspaceIdentity = row.workspace_identity;
+		const normalized =
+			typeof workspaceIdentity === "string"
+				? workspaceIdentity.trim().replaceAll("\\", "/").replace(/\/+$/u, "")
+				: "";
+		return {
+			displayName: row.project_pattern,
+			projectId: repositoryIdentities.get(normalized) ?? workspaceIdentity,
+		};
+	});
+}
+
 function projectFacts(db: Database): Map<string, ProjectFact> {
 	const rows = db
 		.prepare(
-			`SELECT s.id, s.cwd, s.project, s.git_remote, s.git_branch,
+			`SELECT s.id, s.cwd, s.project, s.git_remote, s.git_branch, s.metadata_json,
 				(SELECT mi.workspace_id FROM memory_items mi
 				 WHERE mi.session_id = s.id AND mi.workspace_id IS NOT NULL AND TRIM(mi.workspace_id) <> ''
 				 ORDER BY mi.id DESC LIMIT 1) AS workspace_id,
@@ -234,14 +268,7 @@ function projectFacts(db: Database): Map<string, ProjectFact> {
 			   AND (s.cwd IS NULL OR substr(s.cwd, 1, length(?)) <> ?)
 			 GROUP BY s.id ORDER BY s.id`,
 		)
-		.all(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX) as Array<{
-		cwd: string | null;
-		project: string | null;
-		git_remote: string | null;
-		git_branch: string | null;
-		workspace_id: string | null;
-		memory_count: number;
-	}>;
+		.all(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX) as ProjectFactRow[];
 	const projects = new Map<string, ProjectFact>();
 	for (const row of rows) {
 		const identity = canonicalWorkspaceIdentity({
@@ -249,6 +276,7 @@ function projectFacts(db: Database): Map<string, ProjectFact> {
 			project: row.project,
 			gitRemote: row.git_remote,
 			gitBranch: row.git_branch,
+			repositoryIdentity: repositoryIdentityFromMetadata(row.metadata_json),
 			workspaceId: row.workspace_id,
 		});
 		if (identity.value.startsWith("unmapped:")) continue;
@@ -271,13 +299,8 @@ function projectFacts(db: Database): Map<string, ProjectFact> {
 			futureMemoriesShared: true,
 		});
 	};
-	for (const row of db
-		.prepare(
-			`SELECT workspace_identity, project_pattern FROM project_scope_mappings
-			 WHERE workspace_identity IS NOT NULL AND TRIM(workspace_identity) <> '' ORDER BY id`,
-		)
-		.all() as Array<Record<string, unknown>>) {
-		addProjection(row.workspace_identity, row.project_pattern);
+	for (const row of mappedProjectRows(db)) {
+		addProjection(row.projectId, row.displayName);
 	}
 	for (const row of db
 		.prepare(

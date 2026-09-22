@@ -8,6 +8,7 @@ import type {
 import {
 	detailFields,
 	firstScopeSelection,
+	identitySourceLabel,
 	isAssignable,
 	isPeerReceived,
 	latestLabel,
@@ -65,6 +66,21 @@ function ProjectSharingSummary({ model }: Pick<ProjectRowDetailsProps, "model">)
 	);
 }
 
+function ProjectWorktrees({ model }: Pick<ProjectRowDetailsProps, "model">) {
+	const worktrees = model.project.worktrees ?? [];
+	if (worktrees.length < 2) return null;
+	return (
+		<div className="settings-note">
+			<strong>Worktrees</strong>
+			<ul aria-label={`Worktrees for ${model.project.display_project}`}>
+				{worktrees.map((worktree) => (
+					<li key={worktree.cwd}>{worktree.cwd}</li>
+				))}
+			</ul>
+		</div>
+	);
+}
+
 function ProjectDetailsOverview({ model, view }: Pick<ProjectRowDetailsProps, "model" | "view">) {
 	const { project } = model;
 	const peerReceived = isPeerReceived(project);
@@ -76,9 +92,10 @@ function ProjectDetailsOverview({ model, view }: Pick<ProjectRowDetailsProps, "m
 			<div className="project-inventory-domain">{projectDomainLabel(project, view)}</div>
 			<div className="project-inventory-meta">
 				{peerReceived ? "source-owned project" : resolutionLabel(project.resolution_reason)} ·{" "}
-				{project.identity_source} · {latestLabel(project.latest_session_at)}
+				{identitySourceLabel(project.identity_source)} · {latestLabel(project.latest_session_at)}
 			</div>
 			<ProjectSharingSummary model={model} />
+			<ProjectWorktrees model={model} />
 			{peerReceived ? (
 				<div className="settings-note">Read-only here. Change it on the source device.</div>
 			) : null}

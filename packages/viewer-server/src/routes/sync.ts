@@ -154,6 +154,9 @@ import {
 	refreshConfiguredScopeMembershipCache,
 	rejectInboundScopeFailures,
 	renameRecipientPolicyTeam,
+	repositoryIdentitiesByWorkspace,
+	repositoryIdentityForWorkspace,
+	repositoryIdentityFromMetadata,
 	requestJson,
 	resolveRecipientPolicyReview,
 	resolveRecipientPolicyReviewBulk,
@@ -3581,6 +3584,7 @@ function collectLegacySharedReviewGroups(store: MemoryStore) {
 			cwd: row.cwd,
 			gitBranch: row.git_branch,
 			gitRemote: row.git_remote,
+			repositoryIdentity: repositoryIdentityFromMetadata(row.session_metadata_json),
 			project: row.project,
 			workspaceId: row.workspace_id,
 		});
@@ -3667,6 +3671,7 @@ interface LegacySharedReviewReassignmentMemoryRow {
 	actor_id: string | null;
 	origin_device_id: string | null;
 	metadata_json: string | null;
+	session_metadata_json: string | null;
 }
 
 type LegacySharedReviewSummaryRow = Pick<
@@ -3681,6 +3686,7 @@ type LegacySharedReviewSummaryRow = Pick<
 	| "metadata_json"
 	| "origin_device_id"
 	| "project"
+	| "session_metadata_json"
 	| "title"
 	| "updated_at"
 	| "workspace_id"
@@ -3742,7 +3748,8 @@ function legacySharedReviewSummaryRows(store: MemoryStore): Iterable<LegacyShare
 			        m.workspace_id,
 			        m.actor_id,
 			        m.origin_device_id,
-			        m.metadata_json
+			        m.metadata_json,
+			        s.metadata_json AS session_metadata_json
 			 FROM memory_items m
 			 LEFT JOIN sessions s ON s.id = m.session_id
 			 WHERE m.scope_id = ?
@@ -3808,7 +3815,8 @@ function legacySharedReviewRows(store: MemoryStore): LegacySharedReviewReassignm
 			        m.workspace_id,
 			        m.actor_id,
 			        m.origin_device_id,
-			        m.metadata_json
+			        m.metadata_json,
+			        s.metadata_json AS session_metadata_json
 			 FROM memory_items m
 			 LEFT JOIN sessions s ON s.id = m.session_id
 			 WHERE m.scope_id = ?
@@ -3854,7 +3862,7 @@ interface LegacySharedReviewReassignmentPreview {
 	warning: string;
 }
 
-interface ProjectInventoryMemoryRow {
+export interface ProjectInventoryMemoryRow {
 	id: number;
 	rev: number | null;
 	project: string | null;
@@ -3865,9 +3873,10 @@ interface ProjectInventoryMemoryRow {
 	actor_id: string | null;
 	origin_device_id: string | null;
 	metadata_json: string | null;
+	session_metadata_json: string | null;
 }
 
-function projectInventoryRowsForWorkspace(
+export function projectInventoryRowsForWorkspace(
 	store: MemoryStore,
 	workspaceIdentity: string,
 ): ProjectInventoryMemoryRow[] {
@@ -3882,18 +3891,25 @@ function projectInventoryRowsForWorkspace(
 			        m.workspace_id,
 			        m.actor_id,
 			        m.origin_device_id,
-			        m.metadata_json
+			        m.metadata_json,
+			        s.metadata_json AS session_metadata_json
 			 FROM memory_items m
 			 LEFT JOIN sessions s ON s.id = m.session_id
 			 WHERE m.active = 1
 			   AND m.deleted_at IS NULL`,
 		)
 		.all() as ProjectInventoryMemoryRow[];
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(store.db);
 	return rows.filter((row) => {
 		const identity = canonicalWorkspaceIdentity({
 			cwd: row.cwd,
 			gitBranch: row.git_branch,
 			gitRemote: row.git_remote,
+			repositoryIdentity: repositoryIdentityForWorkspace(repositoryIdentities, {
+				cwd: row.cwd,
+				gitRemote: row.git_remote,
+				metadataJson: row.session_metadata_json,
+			}),
 			project: row.project,
 			workspaceId: row.workspace_id,
 		});
@@ -3973,6 +3989,7 @@ function legacySharedReviewRowsForWorkspace(
 			cwd: row.cwd,
 			gitBranch: row.git_branch,
 			gitRemote: row.git_remote,
+			repositoryIdentity: repositoryIdentityFromMetadata(row.session_metadata_json),
 			project: row.project,
 			workspaceId: row.workspace_id,
 		});
