@@ -57,8 +57,12 @@ describe("compact feed card layout contract", () => {
 			".feed-body.narrative { max-width: 76ch; line-height: 1.65; color: var(--text-secondary); }",
 		);
 		expect(css).toContain(
-			".feed-body .feed-section-heading { --feed-section-color: var(--accent);",
+			".feed-body .feed-semantic-section { --feed-section-color: var(--accent);",
 		);
+		expect(css).toContain(
+			"background: color-mix(in srgb, var(--feed-section-color) 6%, transparent)",
+		);
+		expect(css).toContain(".feed-body .feed-semantic-section > :not(.feed-section-heading)");
 		expect(css).toContain("border-left: 3px solid var(--feed-section-color)");
 		expect(css).toContain(
 			".feed-body .feed-section-next-steps { --feed-section-color: var(--accent-ochre);",
