@@ -482,6 +482,55 @@ async function resolvesReceivedProjectOriginDeviceNames(): Promise<void> {
 	}
 }
 
+async function aliasesPreUpgradeSharesToRepositoryProjects(): Promise<void> {
+	const { app, getStore, cleanup } = createTestApp();
+	try {
+		await app.request("/api/stats");
+		const store = getStore();
+		if (!store) throw new Error("store not initialized");
+		const cwd = "/workspace/repository";
+		const repositoryIdentity = "https://example.test/acme/repository.git";
+		const sessionId = insertTestSession(store.db);
+		store.db
+			.prepare(
+				"UPDATE sessions SET cwd = ?, project = 'repository', metadata_json = ? WHERE id = ?",
+			)
+			.run(cwd, JSON.stringify({ codemem_repository_identity: repositoryIdentity }), sessionId);
+		insertTestMemory(store, { sessionId, kind: "discovery", title: "repository memory" });
+		store.db
+			.prepare(`INSERT INTO share_operations(
+				operation_id, state, inviter_actor_id, inviter_device_ids_json, person_id,
+				person_kind, teammate_name, history_policy, reviewed_project_set_digest,
+				coordinator_group_id, invite_token_digest, invite_expires_at,
+				recipient_actor_id, recipient_device_id, acceptance_consumed_at, created_at, updated_at
+			 ) VALUES ('share-pre-upgrade', 'active', ?, ?, 'actor-recipient', 'existing',
+				'Recipient', 'existing_and_future', 'digest', 'team', 'invite-digest',
+				'2099-01-01T00:00:00.000Z', 'actor-recipient', 'recipient-device',
+				'2026-09-22T00:00:00.000Z', '2026-09-22T00:00:00.000Z',
+				'2026-09-22T00:00:00.000Z')`)
+			.run(store.actorId, JSON.stringify([store.deviceId]));
+		store.db
+			.prepare(`INSERT INTO share_operation_projects(
+				operation_id, canonical_project_identity, display_name, identity_source,
+				existing_memory_count, ordinal
+			 ) VALUES ('share-pre-upgrade', ?, 'repository', 'cwd', 1, 0)`)
+			.run(cwd);
+
+		const response = await app.request("/api/sync/projects");
+		const inventory = (await response.json()) as {
+			projects: Array<{ workspace_identity: string; sharing: unknown[] }>;
+		};
+		expect(inventory.projects).toEqual([
+			expect.objectContaining({
+				workspace_identity: repositoryIdentity,
+				sharing: [expect.anything()],
+			}),
+		]);
+	} finally {
+		cleanup();
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -490,6 +539,10 @@ describe("GET /api/sync/projects origin devices", () => {
 	it(
 		"resolves safe names and rejects raw IDs from identity and peer records",
 		resolvesReceivedProjectOriginDeviceNames,
+	);
+	it(
+		"attaches pre-upgrade cwd shares to repository Projects",
+		aliasesPreUpgradeSharesToRepositoryProjects,
 	);
 });
 

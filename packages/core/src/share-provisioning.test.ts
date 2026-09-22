@@ -1148,4 +1148,52 @@ describe("historical repository share provisioning", () => {
 			db.close();
 		}
 	});
+
+	it("matches a pre-upgrade cwd share to its repository memories", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			db.prepare(`INSERT INTO actors(
+				actor_id, display_name, is_local, status, created_at, updated_at
+			 ) VALUES ('actor-owner', 'Owner', 1, 'active', ?, ?)`).run(createdAt, createdAt);
+			db.prepare(`INSERT INTO share_operations(
+				operation_id, state, inviter_actor_id, inviter_device_ids_json, person_id,
+				person_kind, teammate_name, history_policy, reviewed_project_set_digest,
+				coordinator_group_id, invite_token_digest, invite_expires_at,
+				recipient_actor_id, recipient_device_id, acceptance_consumed_at, created_at, updated_at
+			 ) VALUES ('share-pre-upgrade', 'accepted', 'actor-owner', '["owner"]',
+				'actor-recipient', 'existing', 'Recipient', 'existing_and_future', 'digest',
+				'team', 'invite-digest', '2099-01-01T00:00:00.000Z', 'actor-recipient',
+				'recipient', ?, ?, ?)`).run(createdAt, createdAt, createdAt);
+			db.prepare(`INSERT INTO share_operation_projects(
+				operation_id, canonical_project_identity, display_name, identity_source,
+				existing_memory_count, ordinal
+			 ) VALUES ('share-pre-upgrade', '/workspace/api', 'api', 'cwd', 1, 0)`).run();
+			db.prepare(`INSERT INTO share_operation_steps(
+				operation_id, step_key, effect_id, status, updated_at
+			 ) VALUES ('share-pre-upgrade', 'managed_boundary:/workspace/api',
+				'managed-project:pre-upgrade', 'pending', ?)`).run(createdAt);
+
+			includeHistoricalRepositoryMemory(db, "share-pre-upgrade");
+			db.prepare(
+				"INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, '/workspace/api-worktree', 'api', ?)",
+			).run(createdAt, JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: remote }));
+			db.prepare(`INSERT INTO share_operation_projects(
+				operation_id, canonical_project_identity, display_name, identity_source,
+				existing_memory_count, ordinal
+			 ) VALUES ('share-pre-upgrade', '/workspace/api-worktree', 'api worktree', 'cwd', 1, 1)`).run();
+			db.prepare(`INSERT INTO share_operation_steps(
+				operation_id, step_key, effect_id, status, updated_at
+			 ) VALUES ('share-pre-upgrade', 'managed_boundary:/workspace/api-worktree',
+				'managed-project:pre-upgrade-worktree', 'pending', ?)`).run(createdAt);
+			expect(() =>
+				planShareProvisioning(db, {
+					operationId: "share-pre-upgrade",
+					initiatingDeviceId: "owner",
+				}),
+			).toThrow("operation_intent_invalid");
+		} finally {
+			db.close();
+		}
+	});
 });

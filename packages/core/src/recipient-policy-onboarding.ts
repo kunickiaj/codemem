@@ -16,6 +16,7 @@ import {
 	type RecipientReviewedIntentV1,
 } from "./recipient-reviewed-intent.js";
 import {
+	canonicalRepositoryProjectIdentity,
 	repositoryIdentitiesByWorkspace,
 	repositoryIdentityForWorkspace,
 } from "./repository-mapping-aliases.js";
@@ -279,6 +280,28 @@ interface ProjectFactRow {
 	memory_count: number;
 }
 
+function addPersistedProjectFact(
+	projects: Map<string, ProjectFact>,
+	repositoryIdentities: ReadonlyMap<string, string>,
+	projectId: unknown,
+	displayName: unknown,
+): void {
+	if (typeof projectId !== "string" || !projectId || projectId.startsWith("unmapped:")) return;
+	const canonicalProjectIdentity = canonicalRepositoryProjectIdentity(
+		repositoryIdentities,
+		projectId,
+	);
+	if (projects.has(canonicalProjectIdentity)) return;
+	projects.set(canonicalProjectIdentity, {
+		canonicalProjectIdentity,
+		displayName:
+			typeof displayName === "string" && displayName.trim()
+				? displayName.trim()
+				: canonicalProjectIdentity,
+		existingMemoryCount: 0,
+	});
+}
+
 function projectFacts(db: Database): Map<string, ProjectFact> {
 	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
 	const rows = db
@@ -317,16 +340,8 @@ function projectFacts(db: Database): Map<string, ProjectFact> {
 			existingMemoryCount: (existing?.existingMemoryCount ?? 0) + Number(row.memory_count ?? 0),
 		});
 	}
-	const add = (projectId: unknown, displayName: unknown): void => {
-		if (typeof projectId !== "string" || !projectId || projectId.startsWith("unmapped:")) return;
-		if (projects.has(projectId)) return;
-		projects.set(projectId, {
-			canonicalProjectIdentity: projectId,
-			displayName:
-				typeof displayName === "string" && displayName.trim() ? displayName.trim() : projectId,
-			existingMemoryCount: 0,
-		});
-	};
+	const add = (projectId: unknown, displayName: unknown): void =>
+		addPersistedProjectFact(projects, repositoryIdentities, projectId, displayName);
 	for (const row of db
 		.prepare(
 			`SELECT canonical_project_identity, display_name
@@ -416,6 +431,15 @@ function addSource(
 	sources.set(projectId, current);
 }
 
+function addCanonicalSource(
+	sources: Map<string, RecipientPolicyOnboardingProjectSourceV1[]>,
+	repositoryIdentities: ReadonlyMap<string, string>,
+	projectId: string,
+	source: RecipientPolicyOnboardingProjectSourceV1,
+): void {
+	addSource(sources, canonicalRepositoryProjectIdentity(repositoryIdentities, projectId), source);
+}
+
 function teamFact(db: Database, teamId: string): { teamId: string; displayName: string } {
 	const row = db
 		.prepare(
@@ -431,6 +455,7 @@ function teamSources(
 	team: { teamId: string; displayName: string },
 ): Map<string, RecipientPolicyOnboardingProjectSourceV1[]> {
 	const result = new Map<string, RecipientPolicyOnboardingProjectSourceV1[]>();
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
 	for (const row of db
 		.prepare(
 			`SELECT canonical_project_identity FROM project_recipients
@@ -438,7 +463,7 @@ function teamSources(
 			 ORDER BY canonical_project_identity`,
 		)
 		.all(team.teamId) as Array<{ canonical_project_identity: string }>) {
-		addSource(result, row.canonical_project_identity, {
+		addCanonicalSource(result, repositoryIdentities, row.canonical_project_identity, {
 			kind: "team",
 			teamId: team.teamId,
 			displayName: team.displayName,
@@ -452,22 +477,35 @@ function sameCoordinatorBoundary(...values: Array<string | null>): boolean {
 	return normalized[0] !== "" && normalized.every((value) => value === normalized[0]);
 }
 
+function directIdentitySources(
+	db: Database,
+	identityId: string,
+	repositoryIdentities: ReadonlyMap<string, string>,
+): Map<string, RecipientPolicyOnboardingProjectSourceV1[]> {
+	const result = new Map<string, RecipientPolicyOnboardingProjectSourceV1[]>();
+	const rows = db
+		.prepare(
+			`SELECT canonical_project_identity FROM project_recipients
+			 WHERE recipient_kind = 'identity' AND recipient_id = ? AND status = 'active'
+			 ORDER BY canonical_project_identity`,
+		)
+		.all(identityId) as Array<{ canonical_project_identity: string }>;
+	for (const row of rows) {
+		addCanonicalSource(result, repositoryIdentities, row.canonical_project_identity, {
+			kind: "direct",
+		});
+	}
+	return result;
+}
+
 function inheritedSources(
 	db: Database,
 	identityId: string,
 	deviceId: string,
 	options: { addDeviceTeamEligibility?: "binding_device" | "prospective_device" } = {},
 ): Map<string, RecipientPolicyOnboardingProjectSourceV1[]> {
-	const result = new Map<string, RecipientPolicyOnboardingProjectSourceV1[]>();
-	for (const row of db
-		.prepare(
-			`SELECT canonical_project_identity FROM project_recipients
-			 WHERE recipient_kind = 'identity' AND recipient_id = ? AND status = 'active'
-			 ORDER BY canonical_project_identity`,
-		)
-		.all(identityId) as Array<{ canonical_project_identity: string }>) {
-		addSource(result, row.canonical_project_identity, { kind: "direct" });
-	}
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
+	const result = directIdentitySources(db, identityId, repositoryIdentities);
 	for (const row of db
 		.prepare(
 			`SELECT projection.canonical_project_identity, projection.managed_scope_id,
@@ -511,7 +549,9 @@ function inheritedSources(
 		) {
 			continue;
 		}
-		addSource(result, row.canonical_project_identity, { kind: "direct" });
+		addCanonicalSource(result, repositoryIdentities, row.canonical_project_identity, {
+			kind: "direct",
+		});
 	}
 	for (const row of db
 		.prepare(
@@ -553,7 +593,9 @@ function inheritedSources(
 		) {
 			continue;
 		}
-		addSource(result, row.canonical_project_identity, { kind: "direct" });
+		addCanonicalSource(result, repositoryIdentities, row.canonical_project_identity, {
+			kind: "direct",
+		});
 	}
 	const teamProjectRows = db
 		.prepare(
@@ -733,7 +775,7 @@ function inheritedSources(
 	}
 	for (const row of teamProjectRows) {
 		if (!inheritableTeamIds.has(row.team_id)) continue;
-		addSource(result, row.canonical_project_identity, {
+		addCanonicalSource(result, repositoryIdentities, row.canonical_project_identity, {
 			kind: "team",
 			teamId: row.team_id,
 			displayName: row.display_name,

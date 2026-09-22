@@ -1280,4 +1280,56 @@ describe("recipient-policy edge repository inference", () => {
 			}),
 		]);
 	});
+
+	it("updates a pre-upgrade cwd edge through its repository identity", () => {
+		const db = seedGraph();
+		db.prepare("UPDATE sessions SET metadata_json = ? WHERE cwd = '/workspace/alpha'").run(
+			JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: PROJECT_A }),
+		);
+		insertProjectRecipient(db, "/workspace/alpha", "identity-a");
+		insertProjectRecipient(db, PROJECT_A, "identity-a");
+		const change = identityChange(PROJECT_A, "identity-a", "remove");
+		const preview = previewRecipientPolicyEdges(db, { version: 1, changes: [change] });
+
+		expect(
+			commitRecipientPolicyEdges(db, {
+				version: 1,
+				changes: [change],
+				reviewedPolicyDigest: preview.reviewedPolicyDigest,
+			}),
+		).toMatchObject({ status: "applied", writeCount: 1 });
+		expect(
+			db
+				.prepare(
+					`SELECT status FROM project_recipients
+					 WHERE recipient_id = 'identity-a' ORDER BY canonical_project_identity`,
+				)
+				.pluck()
+				.all(),
+		).toEqual(["revoked", "revoked"]);
+	});
+
+	it("combines cwd and repository recipient edges for intent and reconciliation", () => {
+		const db = seedGraph();
+		db.prepare("UPDATE sessions SET metadata_json = ? WHERE cwd = '/workspace/alpha'").run(
+			JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: PROJECT_A }),
+		);
+		insertProjectRecipient(db, "/workspace/alpha", "identity-a");
+		insertProjectRecipient(db, PROJECT_A, "identity-b");
+
+		expect(
+			listRecipientPolicyIntent(db).projectRecipients.map((recipient) => ({
+				project: recipient.canonicalProjectIdentity,
+				recipient: recipient.recipientKind === "identity" ? recipient.identityId : recipient.teamId,
+			})),
+		).toEqual([
+			{ project: PROJECT_A, recipient: "identity-a" },
+			{ project: PROJECT_A, recipient: "identity-b" },
+		]);
+		expect(
+			deriveRecipientPolicyEffectiveDevicesFromDatabase(db, PROJECT_A).devices.map(
+				(device) => device.deviceId,
+			),
+		).toEqual(["device-a", "device-b"]);
+	});
 });

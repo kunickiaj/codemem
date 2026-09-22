@@ -1,6 +1,9 @@
 import type { Database } from "./db.js";
 import {
-	recordedRepositoryIdentitiesByWorkspace,
+	discoverKnownRepositoryIdentity,
+	hasConflictingRepositoryMappings,
+	recordedRepositoryIdentityEvidenceByWorkspace,
+	recordedWorkspacesForRepositoryIdentity,
 	repositoryIdentityForWorkspace,
 	withRepositoryMappingAliasesFromIdentities,
 } from "./repository-mapping-aliases.js";
@@ -32,6 +35,12 @@ export interface ResolveSessionScopeOptions {
 	localDefaultScopeId?: string;
 }
 
+interface RepositoryScopeContext {
+	allowRepositoryCwdFallback: boolean;
+	mappings: ScopeMapping[];
+	repositoryIdentity: string | null;
+}
+
 function clean(value: string | null | undefined): string | null {
 	const trimmed = value?.trim();
 	return trimmed ? trimmed : null;
@@ -48,32 +57,89 @@ function loadProjectScopeMappings(db: Database): ScopeMapping[] {
 		.all() as ScopeMapping[];
 }
 
+function hasRepositoryConflict(
+	mappings: ScopeMapping[],
+	repositoryIdentities: ReadonlyMap<string, string>,
+	repositoryIdentity: string | null,
+): boolean {
+	return Boolean(
+		repositoryIdentity &&
+			hasConflictingRepositoryMappings(mappings, repositoryIdentities, repositoryIdentity),
+	);
+}
+
+function emptyRepositoryScopeContext(
+	row: SessionScopeRow | null,
+	mappings: ScopeMapping[],
+): RepositoryScopeContext {
+	return {
+		allowRepositoryCwdFallback: true,
+		mappings,
+		repositoryIdentity: repositoryIdentityForWorkspace(new Map(), {
+			cwd: row?.cwd,
+			metadataJson: row?.metadata_json,
+		}),
+	};
+}
+
 function repositoryScopeContext(
 	db: Database,
 	row: SessionScopeRow | null,
 	mappings: ScopeMapping[],
-): { mappings: ScopeMapping[]; repositoryIdentity: string | null } {
-	if (mappings.length === 0) {
-		return {
-			mappings,
-			repositoryIdentity: repositoryIdentityForWorkspace(new Map(), {
-				cwd: row?.cwd,
-				metadataJson: row?.metadata_json,
-			}),
-		};
-	}
-	const repositoryIdentities = recordedRepositoryIdentitiesByWorkspace(db, [
+): RepositoryScopeContext {
+	if (mappings.length === 0) return emptyRepositoryScopeContext(row, mappings);
+	const mappedWorkspaces = mappings.map((mapping) => mapping.workspace_identity);
+	const evidence = recordedRepositoryIdentityEvidenceByWorkspace(db, [
 		row?.cwd,
-		...mappings.map((mapping) => mapping.workspace_identity),
+		...mappedWorkspaces,
 	]);
+	const repositoryIdentities = evidence.byWorkspace;
+	const cwd = clean(row?.cwd);
+	const rowRepositoryIdentity = repositoryIdentityForWorkspace(new Map(), {
+		metadataJson: row?.metadata_json,
+	});
+	const ambiguousCwd = Boolean(
+		cwd &&
+			!rowRepositoryIdentity &&
+			evidence.recordedWorkspaces.has(cwd) &&
+			!repositoryIdentities.has(cwd),
+	);
+	if (cwd && !evidence.recordedWorkspaces.has(cwd)) {
+		const knownRepositoryIdentities = new Set(
+			[
+				...repositoryIdentities.values(),
+				...mappedWorkspaces.map((identity) => clean(identity)),
+			].filter((identity): identity is string => identity != null),
+		);
+		const repositoryIdentity = discoverKnownRepositoryIdentity(cwd, knownRepositoryIdentities);
+		if (repositoryIdentity) repositoryIdentities.set(cwd, repositoryIdentity);
+	}
+	const repositoryIdentity = repositoryIdentityForWorkspace(repositoryIdentities, {
+		cwd: row?.cwd,
+		metadataJson: row?.metadata_json,
+	});
+	if (repositoryIdentity) {
+		for (const [workspace, identity] of recordedWorkspacesForRepositoryIdentity(
+			db,
+			repositoryIdentity,
+		)) {
+			repositoryIdentities.set(workspace, identity);
+		}
+	}
+	const repositoryConflict = hasRepositoryConflict(
+		mappings,
+		repositoryIdentities,
+		repositoryIdentity,
+	);
 	return {
-		mappings: withRepositoryMappingAliasesFromIdentities(mappings, repositoryIdentities, {
-			discoverFilesystem: true,
-		}),
-		repositoryIdentity: repositoryIdentityForWorkspace(repositoryIdentities, {
-			cwd: row?.cwd,
-			metadataJson: row?.metadata_json,
-		}),
+		allowRepositoryCwdFallback: !ambiguousCwd && !repositoryConflict,
+		mappings:
+			ambiguousCwd || repositoryConflict
+				? []
+				: withRepositoryMappingAliasesFromIdentities(mappings, repositoryIdentities, {
+						discoverFilesystem: true,
+					}),
+		repositoryIdentity,
 	};
 }
 
@@ -92,6 +158,7 @@ export function resolveSessionScopeId(db: Database, options: ResolveSessionScope
 	const session = loadSessionScopeRow(db, options.sessionId);
 	const context = repositoryScopeContext(db, session, loadProjectScopeMappings(db));
 	const result = resolveProjectScope({
+		allowRepositoryCwdFallback: context.allowRepositoryCwdFallback,
 		gitRemote: session?.git_remote ?? null,
 		gitBranch: session?.git_branch ?? null,
 		repositoryIdentity: context.repositoryIdentity,
@@ -134,6 +201,7 @@ export function ensureMemoryScopeId(db: Database, memoryId: number): string | nu
 	const context = repositoryScopeContext(db, row, loadProjectScopeMappings(db));
 
 	const result = resolveProjectScope({
+		allowRepositoryCwdFallback: context.allowRepositoryCwdFallback,
 		gitRemote: row.git_remote,
 		gitBranch: row.git_branch,
 		repositoryIdentity: context.repositoryIdentity,

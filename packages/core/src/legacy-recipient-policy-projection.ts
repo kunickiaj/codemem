@@ -16,6 +16,7 @@ import {
 	recipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
 import {
+	canonicalRepositoryProjectIdentity,
 	repositoryIdentitiesByWorkspace,
 	repositoryIdentityForWorkspace,
 	withRepositoryMappingAliases,
@@ -1098,7 +1099,10 @@ function loadSnapshot(
 					// at share time.
 					canonicalProjectIdentity: row.canonicalProjectIdentity.startsWith("unmapped:")
 						? (explicitResolutionFor(row.canonicalProjectIdentity) ?? row.canonicalProjectIdentity)
-						: row.canonicalProjectIdentity,
+						: canonicalRepositoryProjectIdentity(
+								repositoryIdentities,
+								row.canonicalProjectIdentity,
+							),
 					displayName: row.displayName,
 					identityId: row.identityId,
 					coordinatorGroupId: row.coordinatorGroupId,

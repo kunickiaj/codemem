@@ -268,13 +268,13 @@ function repositoryIdentityCompatibilityTests(): void {
 		expect(
 			resolveProjectScope({
 				cwd: "/work/acme/service",
-				gitRemote: "https://github.com/acme/service.git",
+				repositoryIdentity: "https://github.com/acme/service.git",
 				mappings: [mapping({ project_pattern: "/work/acme/*", scope_id: "existing-pattern" })],
 			}),
 		).toMatchObject({
 			reason: "pattern_mapping",
 			scopeId: "existing-pattern",
-			workspaceIdentity: { source: "git_remote" },
+			workspaceIdentity: { source: "git_repository" },
 		});
 	});
 

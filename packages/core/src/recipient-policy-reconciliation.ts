@@ -5,6 +5,10 @@ import {
 	isStrictRecipientPolicyProjectIdentity,
 	legacyRecipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
+import {
+	canonicalRepositoryProjectIdentity,
+	repositoryIdentitiesByWorkspace,
+} from "./repository-mapping-aliases.js";
 
 // Preserve the established module-level import path while sharing one grammar.
 export { isStrictRecipientPolicyId };
@@ -525,22 +529,41 @@ export function deriveRecipientPolicyEffectiveDevices(
 	};
 }
 
+interface StoredProjectRecipientRow {
+	canonical_project_identity: string;
+	recipient_kind: string;
+	recipient_id: string;
+	status: string;
+}
+
+function canonicalProjectRecipientRows(
+	db: Database,
+	canonicalProjectIdentity: string,
+): StoredProjectRecipientRow[] {
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
+	const rows = db
+		.prepare(
+			`SELECT canonical_project_identity, recipient_kind, recipient_id, status
+			 FROM project_recipients
+			 ORDER BY recipient_kind, recipient_id`,
+		)
+		.all() as StoredProjectRecipientRow[];
+	return rows
+		.map((row) => ({
+			...row,
+			canonical_project_identity: canonicalRepositoryProjectIdentity(
+				repositoryIdentities,
+				row.canonical_project_identity,
+			),
+		}))
+		.filter((row) => row.canonical_project_identity === canonicalProjectIdentity);
+}
+
 export function deriveRecipientPolicyEffectiveDevicesFromDatabase(
 	db: Database,
 	canonicalProjectIdentity: string,
 ): StrictRecipientPolicyEffectiveDeviceDerivation {
-	const projectRecipients = db
-		.prepare(
-			`SELECT canonical_project_identity, recipient_kind, recipient_id, status
-			 FROM project_recipients WHERE canonical_project_identity = ?
-			 ORDER BY recipient_kind, recipient_id`,
-		)
-		.all(canonicalProjectIdentity) as Array<{
-		canonical_project_identity: string;
-		recipient_kind: string;
-		recipient_id: string;
-		status: string;
-	}>;
+	const projectRecipients = canonicalProjectRecipientRows(db, canonicalProjectIdentity);
 	const identities = db
 		.prepare("SELECT actor_id, status, merged_into_actor_id FROM actors ORDER BY actor_id")
 		.all() as Array<{ actor_id: string; status: string; merged_into_actor_id: string | null }>;

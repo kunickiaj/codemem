@@ -9,6 +9,10 @@ import {
 	type RecipientPolicyTeamMembershipV1,
 	type RecipientPolicyTeamV1,
 } from "./recipient-policy-contract.js";
+import {
+	canonicalRepositoryProjectIdentity,
+	repositoryIdentitiesByWorkspace,
+} from "./repository-mapping-aliases.js";
 
 export interface RecipientPolicyIntentGraphV1 {
 	version: RecipientPolicyContractVersion;
@@ -35,6 +39,61 @@ function membershipStatus(
 	if (value === "pending" || value === "revoked") return value;
 	if (isPolicyTeamMembershipActiveForMode(deviceEligibilityMode, value)) return "active";
 	return "revoked";
+}
+
+function recipientIntentSource(
+	provenance: unknown,
+): RecipientPolicyProjectRecipientV1["intentSource"] {
+	if (provenance === "user") return "user";
+	if (provenance === "exact_project_invite") return "legacy_project_invite";
+	return "migration";
+}
+
+function projectRecipientFromRow(
+	value: Record<string, unknown>,
+	repositoryIdentities: ReadonlyMap<string, string>,
+): RecipientPolicyProjectRecipientV1 {
+	const base = {
+		version: RECIPIENT_POLICY_CONTRACT_VERSION,
+		canonicalProjectIdentity: canonicalRepositoryProjectIdentity(
+			repositoryIdentities,
+			String(value.canonical_project_identity ?? ""),
+		),
+		intentSource: recipientIntentSource(value.provenance),
+		policyRevision: String(value.policy_revision ?? ""),
+		status: value.status === "active" ? ("active" as const) : ("revoked" as const),
+	};
+	if (value.recipient_kind === "team") {
+		return { ...base, recipientKind: "team", teamId: String(value.recipient_id ?? "") };
+	}
+	return { ...base, recipientKind: "identity", identityId: String(value.recipient_id ?? "") };
+}
+
+function projectRecipientKey(recipient: RecipientPolicyProjectRecipientV1): string {
+	const recipientId = recipient.recipientKind === "team" ? recipient.teamId : recipient.identityId;
+	return `${recipient.canonicalProjectIdentity}\u0000${recipient.recipientKind}\u0000${recipientId}`;
+}
+
+function projectRecipientIntent(db: Database): RecipientPolicyProjectRecipientV1[] {
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
+	const rows = db
+		.prepare(
+			`SELECT canonical_project_identity, recipient_kind, recipient_id, status,
+			 provenance, policy_revision
+			 FROM project_recipients
+			 ORDER BY canonical_project_identity, recipient_kind, recipient_id`,
+		)
+		.all() as Array<Record<string, unknown>>;
+	const recipients = new Map<string, RecipientPolicyProjectRecipientV1>();
+	for (const value of rows) {
+		const recipient = projectRecipientFromRow(value, repositoryIdentities);
+		const key = projectRecipientKey(recipient);
+		const current = recipients.get(key);
+		if (!current || (current.status !== "active" && recipient.status === "active")) {
+			recipients.set(key, recipient);
+		}
+	}
+	return [...recipients.values()];
 }
 
 export function listRecipientPolicyIntent(db: Database): RecipientPolicyIntentGraphV1 {
@@ -112,32 +171,7 @@ export function listRecipientPolicyIntent(db: Database): RecipientPolicyIntentGr
 				status: value.status === "active" ? "active" : "revoked",
 			};
 		});
-	const projectRecipients = db
-		.prepare(
-			`SELECT canonical_project_identity, recipient_kind, recipient_id, status,
-				provenance, policy_revision
-			 FROM project_recipients
-			 ORDER BY canonical_project_identity, recipient_kind, recipient_id`,
-		)
-		.all()
-		.map((row): RecipientPolicyProjectRecipientV1 => {
-			const value = row as Record<string, unknown>;
-			const base = {
-				version: RECIPIENT_POLICY_CONTRACT_VERSION,
-				canonicalProjectIdentity: String(value.canonical_project_identity ?? ""),
-				intentSource:
-					value.provenance === "user"
-						? ("user" as const)
-						: value.provenance === "exact_project_invite"
-							? ("legacy_project_invite" as const)
-							: ("migration" as const),
-				policyRevision: String(value.policy_revision ?? ""),
-				status: value.status === "active" ? ("active" as const) : ("revoked" as const),
-			};
-			return value.recipient_kind === "team"
-				? { ...base, recipientKind: "team", teamId: String(value.recipient_id ?? "") }
-				: { ...base, recipientKind: "identity", identityId: String(value.recipient_id ?? "") };
-		});
+	const projectRecipients = projectRecipientIntent(db);
 	return {
 		version: RECIPIENT_POLICY_CONTRACT_VERSION,
 		identities,

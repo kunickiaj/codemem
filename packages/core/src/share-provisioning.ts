@@ -3,6 +3,7 @@ import type { CoordinatorScope, CoordinatorScopeMembership } from "./coordinator
 import { type Database, fromJson } from "./db.js";
 import { assertLegacyShareGrantAllowed } from "./recipient-policy-reconciler.js";
 import {
+	canonicalRepositoryProjectIdentity,
 	repositoryIdentitiesByWorkspace,
 	repositoryIdentityForWorkspace,
 } from "./repository-mapping-aliases.js";
@@ -272,6 +273,19 @@ function projectAllowedPeerDeviceIds(db: Database, projectValues: Array<string |
 		.toSorted();
 }
 
+function assertValidProvisioningProjects(
+	projects: ProjectRow[],
+	repositoryIdentities: ReadonlyMap<string, string>,
+): void {
+	if (projects.length === 0) throw new Error("operation_intent_invalid");
+	const canonicalIdentities = projects.map((project) =>
+		canonicalRepositoryProjectIdentity(repositoryIdentities, project.canonical_project_identity),
+	);
+	if (new Set(canonicalIdentities).size !== canonicalIdentities.length) {
+		throw new Error("operation_intent_invalid");
+	}
+}
+
 export function planShareProvisioning(
 	db: Database,
 	input: { operationId: string; initiatingDeviceId: string },
@@ -304,16 +318,18 @@ export function planShareProvisioning(
 		.prepare(`SELECT canonical_project_identity, display_name FROM share_operation_projects
 		 WHERE operation_id = ? ORDER BY ordinal`)
 		.all(operation.operation_id) as ProjectRow[];
-	if (projects.length === 0) throw new Error("operation_intent_invalid");
-	const candidates = memoryCandidates(db);
 	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
+	assertValidProvisioningProjects(projects, repositoryIdentities);
+	const candidates = memoryCandidates(db);
 	const plans = projects.map((project): ManagedProjectPlan => {
+		const canonicalProjectIdentity = canonicalRepositoryProjectIdentity(
+			repositoryIdentities,
+			project.canonical_project_identity,
+		);
 		const matched = candidates.filter((row) => {
 			if (!shareableForManagedProject(row)) return false;
 			if (!isInitiatingDeviceMemory(row, initiatingDeviceId)) return false;
-			return (
-				memoryCandidateIdentity(row, repositoryIdentities) === project.canonical_project_identity
-			);
+			return memoryCandidateIdentity(row, repositoryIdentities) === canonicalProjectIdentity;
 		});
 		const sourceScopeIds = [
 			...new Set(matched.map((row) => clean(row.scope_id) ?? "local-default")),

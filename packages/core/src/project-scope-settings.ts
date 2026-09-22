@@ -4,6 +4,9 @@ import { hasLocalInventoryIdentity } from "./local-project-inventory.js";
 import { repositoryIdentityFromMetadata } from "./project.js";
 import { cleanProjectIdentity } from "./project-identity.js";
 import {
+	discoverKnownRepositoryIdentity,
+	hasConflictingRepositoryMappings,
+	recordedRepositoryIdentityEvidence,
 	repositoryIdentitiesByWorkspace,
 	repositoryIdentityForWorkspace,
 	withRepositoryMappingAliases,
@@ -47,6 +50,7 @@ export interface ProjectScopeSettingsMapping extends ScopeMapping {
 export type ProjectScopeGuardrailCode =
 	| "unknown_project_local_only"
 	| "basename_collision_review"
+	| "conflicting_repository_mappings"
 	| "broad_org_domain_pattern"
 	| "home_directory_org_domain_pattern"
 	| "scope_reassignment_old_copies";
@@ -219,11 +223,28 @@ function workspaceIdentityForRow(row: ProjectScopeCandidateRow) {
 function identifyRepositoryRow(
 	row: ProjectScopeCandidateRow,
 	repositoryIdentityByCwd: Map<string, string>,
+	discovery?: {
+		knownRepositoryIdentities: ReadonlySet<string>;
+		recordedWorkspaces: ReadonlySet<string>;
+		attemptedWorkspaces: Set<string>;
+	},
 ): ProjectScopeCandidateRow {
 	const discoveredRepositoryIdentity = repositoryIdentityForRow(row);
-	const cwd = cleanProjectIdentity(row.cwd);
-	if (discoveredRepositoryIdentity && cwd) {
-		repositoryIdentityByCwd.set(cwd, discoveredRepositoryIdentity);
+	const cwd = normalizeWorkspaceIdentity(row.cwd);
+	if (
+		!discoveredRepositoryIdentity &&
+		cwd &&
+		discovery &&
+		!repositoryIdentityByCwd.has(cwd) &&
+		!discovery.recordedWorkspaces.has(cwd) &&
+		!discovery.attemptedWorkspaces.has(cwd)
+	) {
+		discovery.attemptedWorkspaces.add(cwd);
+		const repositoryIdentity = discoverKnownRepositoryIdentity(
+			row.cwd ?? "",
+			discovery.knownRepositoryIdentities,
+		);
+		if (repositoryIdentity) repositoryIdentityByCwd.set(cwd, repositoryIdentity);
 	}
 	return {
 		...row,
@@ -232,17 +253,22 @@ function identifyRepositoryRow(
 	};
 }
 
-function repositoryIdentitiesByCwd(
-	db: Database,
-	rows: ProjectScopeCandidateRow[],
-): Map<string, string> {
-	const identities = repositoryIdentitiesByWorkspace(db);
-	for (const row of rows) {
-		const repositoryIdentity = repositoryIdentityForRow(row);
-		const cwd = cleanProjectIdentity(row.cwd);
-		if (repositoryIdentity && cwd) identities.set(cwd, repositoryIdentity);
-	}
-	return identities;
+function repositoryIdentitiesByCwd(db: Database): Map<string, string> {
+	return repositoryIdentitiesByWorkspace(db);
+}
+
+function candidateRepositoryRowIdentifier(db: Database) {
+	const evidence = recordedRepositoryIdentityEvidence(db);
+	const discovery = {
+		knownRepositoryIdentities: evidence.known,
+		recordedWorkspaces: evidence.recordedWorkspaces,
+		attemptedWorkspaces: new Set<string>(),
+	};
+	return {
+		identify: (row: ProjectScopeCandidateRow) =>
+			identifyRepositoryRow(row, evidence.byWorkspace, discovery),
+		repositoryIdentities: evidence.byWorkspace,
+	};
 }
 
 function mergeWorktree(project: ProjectScopeInventoryProject, row: ProjectScopeCandidateRow): void {
@@ -518,11 +544,31 @@ function projectScopeCandidateGuardrailWarnings(
 	return warnings.map(withGuardrailConfirmationToken);
 }
 
+function repositoryMappingConflictWarnings(
+	workspaceIdentity: string,
+	conflicting: boolean,
+): ProjectScopeGuardrailWarning[] {
+	if (!conflicting) return [];
+	return [
+		{
+			code: "conflicting_repository_mappings",
+			severity: "warning",
+			message:
+				"Linked checkouts map this repository to different Sharing domains. Resolve the conflicting mappings before sharing this Project.",
+			requires_confirmation: true,
+			workspace_identity: workspaceIdentity,
+		},
+	];
+}
+
 function withCandidateGuardrails<T extends ProjectScopeCandidate>(candidates: T[]): T[] {
 	const collisions = candidateCollisionMap(candidates);
 	return candidates.map((candidate) => ({
 		...candidate,
-		guardrail_warnings: projectScopeCandidateGuardrailWarnings(candidate, collisions),
+		guardrail_warnings: dedupeGuardrailWarnings([
+			...candidate.guardrail_warnings,
+			...projectScopeCandidateGuardrailWarnings(candidate, collisions),
+		]),
 	}));
 }
 
@@ -569,6 +615,7 @@ function buildProjectScopeCandidate(
 	row: ProjectScopeCandidateRow,
 	mappings: ProjectScopeSettingsMapping[],
 	scopes: SharingDomainSettingsScope[],
+	options: { allowRepositoryCwdFallback?: boolean; conflictingRepositoryMappings?: boolean } = {},
 ): ProjectScopeCandidateWithOrigins {
 	const project = cleanProjectIdentity(row.project);
 	const cwd = cleanProjectIdentity(row.cwd);
@@ -584,6 +631,7 @@ function buildProjectScopeCandidate(
 		project: row.project,
 		workspaceId: row.workspace_id,
 		mappings,
+		allowRepositoryCwdFallback: options.allowRepositoryCwdFallback,
 	});
 	const baseCandidate = {
 		workspace_identity: identity.value,
@@ -605,7 +653,10 @@ function buildProjectScopeCandidate(
 		suggested_scope_id: null,
 		suggestion_reason: null,
 		suggestion_signal: null,
-		guardrail_warnings: [],
+		guardrail_warnings: repositoryMappingConflictWarnings(
+			identity.value,
+			options.conflictingRepositoryMappings === true,
+		),
 	} satisfies ProjectScopeCandidateWithOrigins;
 	const suggestion = suggestProjectScope(baseCandidate, scopes);
 	return {
@@ -804,23 +855,32 @@ interface SourceOwnedMemoryScopeRow {
 	project: string | null;
 }
 
-function resolveSourceOwnedMemoryScope(
+function resolvePropagationScope(
 	row: SourceOwnedMemoryScopeRow,
 	mappings: ProjectScopeSettingsMapping[],
 	repositoryIdentities: ReadonlyMap<string, string>,
 ) {
-	return resolveProjectScope({
-		gitBranch: row.git_branch,
-		gitRemote: row.git_remote,
-		repositoryIdentity: repositoryIdentityForWorkspace(repositoryIdentities, {
-			cwd: row.cwd,
-			metadataJson: row.session_metadata_json,
-		}),
+	const repositoryIdentity = repositoryIdentityForWorkspace(repositoryIdentities, {
 		cwd: row.cwd,
-		project: row.project,
-		workspaceId: row.workspace_id,
-		mappings,
+		metadataJson: row.session_metadata_json,
 	});
+	const repositoryConflict =
+		repositoryIdentity != null &&
+		hasConflictingRepositoryMappings(mappings, repositoryIdentities, repositoryIdentity);
+	const effectiveMappings = repositoryConflict ? [] : mappings;
+	return {
+		...resolveProjectScope({
+			allowRepositoryCwdFallback: !repositoryConflict,
+			gitBranch: row.git_branch,
+			gitRemote: row.git_remote,
+			repositoryIdentity,
+			cwd: row.cwd,
+			project: row.project,
+			workspaceId: row.workspace_id,
+			mappings: effectiveMappings,
+		}),
+		repositoryConflict,
+	};
 }
 
 function sourceOwnedMemoryRowsForScopePropagation(
@@ -854,6 +914,15 @@ function sourceOwnedMemoryRowsForScopePropagation(
 		) as SourceOwnedMemoryScopeRow[];
 }
 
+function shouldPropagateSourceOwnedMemory(
+	mappingId: number,
+	previousResolution: ReturnType<typeof resolvePropagationScope>,
+	resolution: ReturnType<typeof resolvePropagationScope>,
+): boolean {
+	if (previousResolution.repositoryConflict || resolution.repositoryConflict) return true;
+	return previousResolution.mapping?.id === mappingId || resolution.mapping?.id === mappingId;
+}
+
 function propagateProjectScopeMappingToSourceOwnedMemories(
 	db: Database,
 	mapping: ProjectScopeSettingsMapping,
@@ -869,15 +938,9 @@ function propagateProjectScopeMappingToSourceOwnedMemories(
 	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
 	let moved = 0;
 	for (const row of sourceOwnedMemoryRowsForScopePropagation(db, deviceId)) {
-		const previousResolution = resolveSourceOwnedMemoryScope(
-			row,
-			oldMappings,
-			repositoryIdentities,
-		);
-		const resolution = resolveSourceOwnedMemoryScope(row, mappings, repositoryIdentities);
-		if (previousResolution.mapping?.id !== mapping.id && resolution.mapping?.id !== mapping.id) {
-			continue;
-		}
+		const previousResolution = resolvePropagationScope(row, oldMappings, repositoryIdentities);
+		const resolution = resolvePropagationScope(row, mappings, repositoryIdentities);
+		if (!shouldPropagateSourceOwnedMemory(mapping.id, previousResolution, resolution)) continue;
 		const oldScopeId = clean(row.scope_id) ?? LOCAL_DEFAULT_SCOPE_ID;
 		const newScopeId = resolution.scopeId;
 		if (oldScopeId === newScopeId) continue;
@@ -1011,6 +1074,41 @@ function candidateWalkCeiling(limit: number | null, maxScannedRows: number | nul
 	return limit;
 }
 
+function buildConflictAwareCandidate(
+	row: ProjectScopeCandidateRow,
+	mappings: ProjectScopeSettingsMapping[],
+	scopes: SharingDomainSettingsScope[],
+	repositoryRows: ReturnType<typeof candidateRepositoryRowIdentifier>,
+): ProjectScopeCandidateWithOrigins {
+	const identifiedRow = repositoryRows.identify(row);
+	const repositoryIdentity = repositoryIdentityForRow(identifiedRow);
+	const conflicting = repositoryIdentity
+		? hasConflictingRepositoryMappings(
+				mappings,
+				repositoryRows.repositoryIdentities,
+				repositoryIdentity,
+			)
+		: false;
+	return buildProjectScopeCandidate(identifiedRow, conflicting ? [] : mappings, scopes, {
+		allowRepositoryCwdFallback: !conflicting,
+		conflictingRepositoryMappings: conflicting,
+	});
+}
+
+function finalizeProjectScopeCandidates(
+	candidates: ProjectScopeCandidate[],
+	limit: number | null,
+): ProjectScopeCandidate[] {
+	const sorted = withCandidateGuardrails(
+		candidates.toSorted(
+			(left, right) =>
+				left.display_project.localeCompare(right.display_project) ||
+				left.workspace_identity.localeCompare(right.workspace_identity),
+		),
+	);
+	return limit == null ? sorted : sorted.slice(0, limit);
+}
+
 export function listProjectScopeCandidates(
 	db: Database,
 	options: {
@@ -1112,7 +1210,7 @@ export function listProjectScopeCandidates(
 			 ORDER BY started_at DESC, id DESC
 			 LIMIT ?`);
 	const seen = new Set<string>();
-	const repositoryIdentityByCwd = repositoryIdentitiesByWorkspace(db);
+	const candidateRepositoryRows = candidateRepositoryRowIdentifier(db);
 	const candidates: ProjectScopeCandidate[] = [];
 	let cursor: { startedAt: string; id: number } | null = null;
 	const ceilingReached = () => candidateCeiling != null && candidates.length >= candidateCeiling;
@@ -1136,8 +1234,7 @@ export function listProjectScopeCandidates(
 		) as ProjectScopeCandidateRow[];
 		if (rows.length === 0) break;
 		for (const row of rows) {
-			const identifiedRow = identifyRepositoryRow(row, repositoryIdentityByCwd);
-			const candidate = buildProjectScopeCandidate(identifiedRow, mappings, scopes);
+			const candidate = buildConflictAwareCandidate(row, mappings, scopes, candidateRepositoryRows);
 			if (seen.has(candidate.workspace_identity)) continue;
 			seen.add(candidate.workspace_identity);
 			candidates.push(candidate);
@@ -1154,14 +1251,7 @@ export function listProjectScopeCandidates(
 		throw new Error("project_scope_candidate_scan_too_large");
 	}
 
-	const sorted = withCandidateGuardrails(
-		candidates.toSorted(
-			(left, right) =>
-				left.display_project.localeCompare(right.display_project) ||
-				left.workspace_identity.localeCompare(right.workspace_identity),
-		),
-	);
-	return limit == null ? sorted : sorted.slice(0, limit);
+	return finalizeProjectScopeCandidates(candidates, limit);
 }
 
 // Bootstrap sessions use a placeholder cwd to satisfy the memory_items FK. They
@@ -1368,6 +1458,49 @@ function appendMappingOnlyProjects(
 	}
 }
 
+function inventoryCandidate(
+	row: ProjectScopeCandidateRow,
+	repositoryIdentityByCwd: Map<string, string>,
+	mappings: ProjectScopeSettingsMapping[],
+	scopes: SharingDomainSettingsScope[],
+): {
+	candidate: ProjectScopeCandidateWithOrigins;
+	identifiedRow: ProjectScopeCandidateRow;
+	readOnly: boolean;
+} {
+	const identifiedRow = identifyRepositoryRow(row, repositoryIdentityByCwd);
+	const repositoryIdentity = repositoryIdentityForRow(identifiedRow);
+	const conflictingRepositoryMappings = repositoryIdentity
+		? hasConflictingRepositoryMappings(mappings, repositoryIdentityByCwd, repositoryIdentity)
+		: false;
+	const readOnly = row.inventory_source === "peer_received";
+	const candidate = {
+		...buildProjectScopeCandidate(
+			identifiedRow,
+			conflictingRepositoryMappings ? [] : mappings,
+			scopes,
+			{
+				allowRepositoryCwdFallback: !conflictingRepositoryMappings,
+				conflictingRepositoryMappings,
+			},
+		),
+		read_only: readOnly,
+		read_only_reason: readOnly ? "peer_received" : null,
+		...(readOnly
+			? {
+					mapping_id: null,
+					matched_pattern: null,
+					resolution_reason: "local_default" as const,
+					resolved_scope_id: LOCAL_DEFAULT_SCOPE_ID,
+					suggested_scope_id: null,
+					suggestion_reason: null,
+					suggestion_signal: null,
+				}
+			: {}),
+	} satisfies ProjectScopeCandidateWithOrigins;
+	return { candidate, identifiedRow, readOnly };
+}
+
 function buildProjectScopeInventory(
 	db: Database,
 	rows: ProjectScopeCandidateRow[],
@@ -1376,26 +1509,14 @@ function buildProjectScopeInventory(
 ): BuiltProjectScopeInventory {
 	const byIdentity = new Map<string, ProjectScopeInventoryProject>();
 	const inventory: ProjectScopeInventoryProject[] = [];
-	const repositoryIdentityByCwd = repositoryIdentitiesByCwd(db, rows);
+	const repositoryIdentityByCwd = repositoryIdentitiesByCwd(db);
 	for (const row of rows) {
-		const identifiedRow = identifyRepositoryRow(row, repositoryIdentityByCwd);
-		const readOnly = row.inventory_source === "peer_received";
-		const candidate = {
-			...buildProjectScopeCandidate(identifiedRow, mappings, scopes),
-			read_only: readOnly,
-			read_only_reason: readOnly ? "peer_received" : null,
-			...(readOnly
-				? {
-						mapping_id: null,
-						matched_pattern: null,
-						resolution_reason: "local_default" as const,
-						resolved_scope_id: LOCAL_DEFAULT_SCOPE_ID,
-						suggested_scope_id: null,
-						suggestion_reason: null,
-						suggestion_signal: null,
-					}
-				: {}),
-		} satisfies ProjectScopeCandidate;
+		const { candidate, identifiedRow, readOnly } = inventoryCandidate(
+			row,
+			repositoryIdentityByCwd,
+			mappings,
+			scopes,
+		);
 		const key = inventoryMergeKey(identifiedRow, candidate);
 		const existing = byIdentity.get(key);
 		if (existing) {
@@ -1518,7 +1639,7 @@ export function reassignProjectScopeInventoryProject(
 			 GROUP BY s.id`,
 		)
 		.all() as ProjectScopeCandidateRow[];
-	const repositoryIdentityByCwd = repositoryIdentitiesByCwd(db, rows);
+	const repositoryIdentityByCwd = repositoryIdentitiesByCwd(db);
 	const matched = rows.filter((row) => {
 		const identity = workspaceIdentityForRow(identifyRepositoryRow(row, repositoryIdentityByCwd));
 		return identity.value === workspaceIdentity;

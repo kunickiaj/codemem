@@ -2439,4 +2439,29 @@ describe("recipient-policy onboarding repository inference", () => {
 			db.close();
 		}
 	});
+
+	it("aliases pre-upgrade cwd recipient edges to the repository Project", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			insertActor(db, "identity-a", "Ada");
+			insertProject(db, PROJECT_A, "alpha", 2);
+			insertTeam(db, "team-a", "Core Team");
+			insertRecipient(db, "/workspace/alpha", "team", "team-a");
+			insertMembership(db, "team-a", "identity-a");
+			db.prepare("UPDATE sessions SET metadata_json = ? WHERE cwd = '/workspace/alpha'").run(
+				JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: PROJECT_A }),
+			);
+
+			const preview = previewRecipientPolicyOnboarding(
+				db,
+				baseRequest({ journey: "team", invitationId: "invite-team", teamId: "team-a" }),
+			);
+			expect(preview.projects).toEqual([
+				expect.objectContaining({ canonicalProjectIdentity: PROJECT_A, existingMemoryCount: 2 }),
+			]);
+		} finally {
+			db.close();
+		}
+	});
 });

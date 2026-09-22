@@ -23,6 +23,7 @@ import {
 	legacyRecipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
 import {
+	canonicalRepositoryProjectIdentity,
 	repositoryIdentitiesByWorkspace,
 	repositoryIdentityForWorkspace,
 } from "./repository-mapping-aliases.js";
@@ -82,6 +83,7 @@ interface DeviceFact {
 
 interface StoredEdge {
 	canonicalProjectIdentity: string;
+	persistedProjectIdentities: string[];
 	recipientKind: "identity" | "team";
 	recipientId: string;
 	status: string;
@@ -296,11 +298,17 @@ function projectFacts(db: Database): Map<string, ProjectFact> {
 	}
 	const addProjection = (projectId: unknown, displayName: unknown, memoryCount = 0): void => {
 		if (typeof projectId !== "string" || !projectId || projectId.startsWith("unmapped:")) return;
-		if (projects.has(projectId)) return;
-		projects.set(projectId, {
-			canonicalProjectIdentity: projectId,
+		const canonicalProjectIdentity = canonicalRepositoryProjectIdentity(
+			repositoryIdentities,
+			projectId,
+		);
+		if (projects.has(canonicalProjectIdentity)) return;
+		projects.set(canonicalProjectIdentity, {
+			canonicalProjectIdentity,
 			displayName:
-				typeof displayName === "string" && displayName.trim() ? displayName.trim() : projectId,
+				typeof displayName === "string" && displayName.trim()
+					? displayName.trim()
+					: canonicalProjectIdentity,
 			existingMemoryCount: memoryCount,
 			futureMemoriesShared: true,
 		});
@@ -481,26 +489,72 @@ function loadDeviceFacts(db: Database, identities: Map<string, IdentityFact>): D
 }
 
 function loadEdges(db: Database, projectIds: string[]): Map<string, StoredEdge> {
-	const placeholders = projectIds.map(() => "?").join(",");
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
+	const projectIdSet = new Set(projectIds);
+	const persistedProjectIds = [
+		...new Set(
+			[...projectIds, ...repositoryIdentities.keys()].filter((identity) =>
+				projectIdSet.has(canonicalRepositoryProjectIdentity(repositoryIdentities, identity)),
+			),
+		),
+	];
+	const placeholders = persistedProjectIds.map(() => "?").join(",");
 	const rows = db
 		.prepare(
 			`SELECT canonical_project_identity, recipient_kind, recipient_id, status
 			 FROM project_recipients WHERE canonical_project_identity IN (${placeholders})
 			 ORDER BY canonical_project_identity, recipient_kind, recipient_id`,
 		)
-		.all(...projectIds) as Array<Record<string, unknown>>;
+		.all(...persistedProjectIds) as Array<Record<string, unknown>>;
 	const result = new Map<string, StoredEdge>();
 	for (const row of rows) {
 		const recipientKind = row.recipient_kind === "team" ? "team" : "identity";
+		const persistedProjectIdentity = String(row.canonical_project_identity ?? "");
 		const edge = {
-			canonicalProjectIdentity: String(row.canonical_project_identity ?? ""),
+			canonicalProjectIdentity: canonicalRepositoryProjectIdentity(
+				repositoryIdentities,
+				persistedProjectIdentity,
+			),
+			persistedProjectIdentities: [persistedProjectIdentity],
 			recipientKind,
 			recipientId: String(row.recipient_id ?? ""),
 			status: String(row.status ?? ""),
 		} satisfies StoredEdge;
-		result.set(edgeKey(edge.canonicalProjectIdentity, edge.recipientKind, edge.recipientId), edge);
+		const key = edgeKey(edge.canonicalProjectIdentity, edge.recipientKind, edge.recipientId);
+		const current = result.get(key);
+		if (!current) {
+			result.set(key, edge);
+			continue;
+		}
+		current.persistedProjectIdentities.push(persistedProjectIdentity);
+		if (edge.status === "active") current.status = "active";
 	}
 	return result;
+}
+
+function reactivateStoredEdge(db: Database, edge: StoredEdge, revision: string, now: string): void {
+	const persistedProjectIdentity = edge.persistedProjectIdentities.includes(
+		edge.canonicalProjectIdentity,
+	)
+		? edge.canonicalProjectIdentity
+		: edge.persistedProjectIdentities[0];
+	db.prepare(
+		`UPDATE project_recipients SET status = 'active', provenance = 'user',
+		 policy_revision = ?, migration_state = 'user_managed', source_fingerprint = NULL,
+		 updated_at = ?
+		 WHERE canonical_project_identity = ? AND recipient_kind = ? AND recipient_id = ?`,
+	).run(revision, now, persistedProjectIdentity, edge.recipientKind, edge.recipientId);
+}
+
+function revokeStoredEdge(db: Database, edge: StoredEdge, revision: string, now: string): void {
+	const placeholders = edge.persistedProjectIdentities.map(() => "?").join(",");
+	db.prepare(
+		`UPDATE project_recipients SET status = 'revoked', provenance = 'user',
+		 policy_revision = ?, migration_state = 'user_managed', source_fingerprint = NULL,
+		 updated_at = ?
+		 WHERE canonical_project_identity IN (${placeholders})
+		  AND recipient_kind = ? AND recipient_id = ?`,
+	).run(revision, now, ...edge.persistedProjectIdentities, edge.recipientKind, edge.recipientId);
 }
 
 function selectedRecipients(
@@ -619,6 +673,7 @@ function desiredActiveEdges(
 		else {
 			desired.set(key, {
 				canonicalProjectIdentity: change.canonicalProjectIdentity,
+				persistedProjectIdentities: [change.canonicalProjectIdentity],
 				recipientKind: change.recipient.recipientKind,
 				recipientId: id,
 				status: "active",
@@ -757,6 +812,16 @@ function selectedRecipientDigestFacts(
 		.map(([, fact]) => fact);
 }
 
+function edgeDigestFact(
+	edge: StoredEdge,
+): Omit<StoredEdge, "persistedProjectIdentities" | "status"> {
+	return {
+		canonicalProjectIdentity: edge.canonicalProjectIdentity,
+		recipientKind: edge.recipientKind,
+		recipientId: edge.recipientId,
+	};
+}
+
 function buildPreview(db: Database, request: RecipientPolicyEdgePreviewRequestV1): PreviewState {
 	const projectsById = projectFacts(db);
 	const projectIds = [
@@ -832,7 +897,7 @@ function buildPreview(db: Database, request: RecipientPolicyEdgePreviewRequestV1
 			teams,
 			devices,
 		),
-		desiredActiveEdges: desiredEdges.map(({ status: _status, ...edge }) => edge),
+		desiredActiveEdges: desiredEdges.map(edgeDigestFact),
 		effectiveDevices: resultingDevices,
 	});
 	return {
@@ -928,18 +993,7 @@ export function commitRecipientPolicyEdges(
 						request.reviewedPolicyDigest,
 					]);
 					if (current) {
-						db.prepare(
-							`UPDATE project_recipients SET status = 'active', provenance = 'user',
-							 policy_revision = ?, migration_state = 'user_managed', source_fingerprint = NULL,
-							 updated_at = ?
-							 WHERE canonical_project_identity = ? AND recipient_kind = ? AND recipient_id = ?`,
-						).run(
-							revision,
-							now,
-							change.canonicalProjectIdentity,
-							change.recipient.recipientKind,
-							id,
-						);
+						reactivateStoredEdge(db, current, revision, now);
 					} else {
 						db.prepare(
 							`INSERT INTO project_recipients(
@@ -969,12 +1023,9 @@ export function commitRecipientPolicyEdges(
 					outcomes.push({ change, outcome: "already_absent" });
 					continue;
 				}
-				db.prepare(
-					`UPDATE project_recipients SET status = 'revoked', provenance = 'user',
-					 policy_revision = ?, migration_state = 'user_managed', source_fingerprint = NULL,
-					 updated_at = ?
-					 WHERE canonical_project_identity = ? AND recipient_kind = ? AND recipient_id = ?`,
-				).run(
+				revokeStoredEdge(
+					db,
+					current,
 					digest("edge-policy-revision-v1", [
 						change.canonicalProjectIdentity,
 						change.recipient.recipientKind,
@@ -983,9 +1034,6 @@ export function commitRecipientPolicyEdges(
 						request.reviewedPolicyDigest,
 					]),
 					now,
-					change.canonicalProjectIdentity,
-					change.recipient.recipientKind,
-					id,
 				);
 				writeCount += 1;
 				outcomes.push({ change, outcome: "removed" });
