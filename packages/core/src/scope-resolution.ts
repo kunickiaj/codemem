@@ -38,6 +38,7 @@ export interface WorkspaceIdentityInput {
 	workspaceId?: string | null;
 	project?: string | null;
 	branchScoped?: boolean;
+	allowRepositoryCwdFallback?: boolean;
 }
 
 export interface CanonicalWorkspaceIdentity {
@@ -224,8 +225,11 @@ function exactMappingIdentities(
 	workspaceIdentity: CanonicalWorkspaceIdentity,
 ): string[] {
 	const identities = [workspaceIdentity.value];
-	if (workspaceIdentity.source === "git_repository") return identities;
+	if (workspaceIdentity.source === "git_repository" && input.allowRepositoryCwdFallback === false) {
+		return identities;
+	}
 	if (
+		workspaceIdentity.source !== "git_repository" &&
 		workspaceIdentity.source !== "git_remote" &&
 		workspaceIdentity.source !== "git_remote_branch"
 	) {
@@ -288,6 +292,26 @@ function bestPatternMapping(
 			}),
 		),
 	);
+}
+
+export function scopeIdsMatchingProjectPatterns(
+	mappings: ScopeMapping[],
+	workspaceIdentities: Iterable<string>,
+): Set<string> {
+	const identities = [...workspaceIdentities].map(normalizeSlash);
+	const scopeIds = new Set<string>();
+	for (const mapping of mappings) {
+		if (clean(mapping.workspace_identity)) continue;
+		const projectPattern = clean(mapping.project_pattern);
+		if (
+			!projectPattern ||
+			!identities.some((identity) => matchesPattern(identity, projectPattern))
+		) {
+			continue;
+		}
+		scopeIds.add(mapping.scope_id);
+	}
+	return scopeIds;
 }
 
 export function resolveProjectScope(input: ResolveProjectScopeInput): ScopeResolution {

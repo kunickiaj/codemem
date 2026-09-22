@@ -82,21 +82,22 @@ describe("raw-event session repository identity", () => {
 		const worktreeGitDir = join(mainRepo, ".git", "worktrees", "external");
 		mkdirSync(worktreeGitDir, { recursive: true });
 		mkdirSync(worktree, { recursive: true });
+		writeFileSync(join(worktreeGitDir, "commondir"), "../..\n");
+		writeFileSync(join(worktree, ".git"), `gitdir: ${worktreeGitDir}\n`);
+		const sessionId = Number(
+			store.db
+				.prepare(
+					"INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, ?, 'repository', '{}')",
+				)
+				.run("2026-09-21T00:00:00.000Z", worktree).lastInsertRowid,
+		);
 		writeFileSync(
 			join(mainRepo, ".git", "config"),
 			'[remote "origin"]\n\turl = https://example.test/acme/repository.git\n',
 		);
-		writeFileSync(join(worktreeGitDir, "commondir"), "../..\n");
-		writeFileSync(join(worktree, ".git"), `gitdir: ${worktreeGitDir}\n`);
-
 		const mainSessionId = store.getOrCreateSessionForOpencodeSession({
 			opencodeSessionId: "session-main",
 			cwd: mainRepo,
-			project: "repository",
-		});
-		const sessionId = store.getOrCreateSessionForOpencodeSession({
-			opencodeSessionId: "session-worktree",
-			cwd: worktree,
 			project: "repository",
 			metadata: { [REPOSITORY_IDENTITY_METADATA_KEY]: "untrusted-override" },
 		});
@@ -104,9 +105,9 @@ describe("raw-event session repository identity", () => {
 		expect(
 			store.db
 				.prepare("SELECT cwd, git_remote, metadata_json FROM sessions WHERE id = ?")
-				.get(sessionId),
+				.get(mainSessionId),
 		).toEqual({
-			cwd: worktree,
+			cwd: mainRepo,
 			git_remote: null,
 			metadata_json: JSON.stringify({
 				[REPOSITORY_IDENTITY_METADATA_KEY]: "https://example.test/acme/repository.git",

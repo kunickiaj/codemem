@@ -1,16 +1,36 @@
 import { isAbsolute } from "node:path";
 import type { Database } from "./db.js";
 import { repositoryIdentityFromMetadata, resolveGitRepositoryIdentity } from "./project.js";
-import type { ScopeMapping } from "./scope-resolution.js";
+import {
+	LOCAL_DEFAULT_SCOPE_ID,
+	resolveProjectScope,
+	type ScopeMapping,
+} from "./scope-resolution.js";
 
 const GIT_IDENTITY_CACHE_TTL_MS = 5_000;
 const GIT_IDENTITY_CACHE_MAX_ENTRIES = 256;
 const gitIdentityCache = new Map<string, { expiresAt: number; identity: string }>();
+const syntheticRepositoryAliases = new WeakSet<object>();
+const recordedWorkspacesByIdentityMap = new WeakMap<object, ReadonlySet<string>>();
 
-function normalizeIdentity(value: string | null | undefined): string | null {
+export function normalizeRepositoryWorkspaceIdentity(
+	value: string | null | undefined,
+): string | null {
 	const cleaned = value?.trim();
 	if (!cleaned) return null;
 	return cleaned.replaceAll("\\", "/").replace(/\/+$/u, "") || cleaned;
+}
+
+const normalizeIdentity = normalizeRepositoryWorkspaceIdentity;
+
+export function hasRecordedRepositoryWorkspace(
+	repositoryIdentities: ReadonlyMap<string, string>,
+	workspace: string | null | undefined,
+): boolean {
+	const normalized = normalizeIdentity(workspace);
+	return Boolean(
+		normalized && recordedWorkspacesByIdentityMap.get(repositoryIdentities)?.has(normalized),
+	);
 }
 
 function cachedGitRepositoryIdentity(cwd: string): string | null {
@@ -41,34 +61,93 @@ function gitRepositoryIdentity(cwd: string, bypassCache: boolean): string | null
 	return normalizeIdentity(resolveGitRepositoryIdentity(cwd)?.identity);
 }
 
-export function repositoryIdentitiesByWorkspace(db: Database): Map<string, string> {
-	const identities = new Map<string, string>();
+function recordedRepositoryIdentities(rows: Array<{ cwd: string; repository_identity: string }>): {
+	byWorkspace: Map<string, Set<string>>;
+	known: Set<string>;
+} {
+	const byWorkspace = new Map<string, Set<string>>();
+	const known = new Set<string>();
+	for (const row of rows) {
+		const cwd = normalizeIdentity(row.cwd);
+		const repositoryIdentity = normalizeIdentity(row.repository_identity);
+		if (repositoryIdentity) known.add(repositoryIdentity);
+		if (!cwd || !repositoryIdentity) continue;
+		const recorded = byWorkspace.get(cwd) ?? new Set<string>();
+		recorded.add(repositoryIdentity);
+		byWorkspace.set(cwd, recorded);
+	}
+	return { byWorkspace, known };
+}
+
+export function recordedRepositoryIdentityEvidence(db: Database): {
+	byWorkspace: Map<string, string>;
+	known: Set<string>;
+	recordedWorkspaces: Set<string>;
+} {
 	const rows = db
 		.prepare(
-			`SELECT cwd, metadata_json
+			`SELECT DISTINCT cwd,
+			        json_extract(metadata_json, '$.codemem_repository_identity') AS repository_identity
 			 FROM sessions
 			 WHERE cwd IS NOT NULL AND TRIM(cwd) <> ''
-			 ORDER BY id DESC`,
+			   AND json_valid(metadata_json)
+			   AND json_type(metadata_json, '$.codemem_repository_identity') = 'text'`,
 		)
-		.all() as Array<{ cwd: string; metadata_json: string | null }>;
-	const knownRepositoryIdentities = new Set<string>();
-	for (const row of rows) {
-		const cwd = normalizeIdentity(row.cwd);
-		const repositoryIdentity = normalizeIdentity(repositoryIdentityFromMetadata(row.metadata_json));
-		if (cwd && repositoryIdentity && !identities.has(cwd)) identities.set(cwd, repositoryIdentity);
-		if (repositoryIdentity) knownRepositoryIdentities.add(repositoryIdentity);
+		.all() as Array<{ cwd: string; repository_identity: string }>;
+	const recorded = recordedRepositoryIdentities(rows);
+	const byWorkspace = new Map<string, string>();
+	const recordedWorkspaces = new Set(recorded.byWorkspace.keys());
+	recordedWorkspacesByIdentityMap.set(byWorkspace, recordedWorkspaces);
+	for (const [cwd, identities] of recorded.byWorkspace) {
+		if (identities.size !== 1) continue;
+		const [repositoryIdentity] = identities;
+		if (repositoryIdentity) byWorkspace.set(cwd, repositoryIdentity);
 	}
-	const attemptedCwds = new Set<string>();
+	return {
+		byWorkspace,
+		known: recorded.known,
+		recordedWorkspaces,
+	};
+}
+
+export function discoverKnownRepositoryIdentity(
+	cwd: string,
+	knownRepositoryIdentities: ReadonlySet<string>,
+): string | null {
+	if (!isAbsolute(cwd)) return null;
+	const repositoryIdentity = cachedGitRepositoryIdentity(cwd);
+	return repositoryIdentity && knownRepositoryIdentities.has(repositoryIdentity)
+		? repositoryIdentity
+		: null;
+}
+
+export function repositoryIdentitiesByWorkspace(db: Database): Map<string, string> {
+	const recorded = recordedRepositoryIdentityEvidence(db);
+	const identities = recorded.byWorkspace;
+	const rows = db
+		.prepare(
+			`SELECT DISTINCT cwd
+			 FROM sessions
+			 WHERE cwd IS NOT NULL AND TRIM(cwd) <> ''
+			 ORDER BY cwd`,
+		)
+		.all() as Array<{ cwd: string }>;
 	for (const row of rows) {
 		const cwd = normalizeIdentity(row.cwd);
-		if (!cwd || identities.has(cwd) || attemptedCwds.has(cwd) || !isAbsolute(row.cwd)) continue;
-		attemptedCwds.add(cwd);
-		const repositoryIdentity = cachedGitRepositoryIdentity(row.cwd);
-		if (repositoryIdentity && knownRepositoryIdentities.has(repositoryIdentity)) {
-			identities.set(cwd, repositoryIdentity);
-		}
+		if (!cwd || identities.has(cwd) || recorded.recordedWorkspaces.has(cwd)) continue;
+		const repositoryIdentity = discoverKnownRepositoryIdentity(row.cwd, recorded.known);
+		if (repositoryIdentity) identities.set(cwd, repositoryIdentity);
 	}
 	return identities;
+}
+
+export function canonicalRepositoryProjectIdentity(
+	repositoryIdentities: ReadonlyMap<string, string>,
+	value: string,
+): string {
+	const identity = normalizeIdentity(value);
+	if (!identity) return value;
+	return repositoryIdentities.get(identity) ?? identity;
 }
 
 export function repositoryIdentityForWorkspace(
@@ -93,7 +172,72 @@ export function recordedRepositoryIdentitiesByWorkspace(
 	workspaceIdentities: Iterable<string | null | undefined>,
 	options: { freshWorkspaces?: Iterable<string | null | undefined> } = {},
 ): Map<string, string> {
+	return recordedRepositoryIdentityEvidenceByWorkspace(db, workspaceIdentities, options)
+		.byWorkspace;
+}
+
+function collectRecordedRepositoryEvidence(
+	rows: Array<{ cwd: string; metadata_json: string | null }>,
+	requested: ReadonlySet<string>,
+): { known: Set<string>; recordedByWorkspace: Map<string, Set<string>> } {
+	const known = new Set<string>();
+	const recordedByWorkspace = new Map<string, Set<string>>();
+	for (const row of rows) {
+		const cwd = normalizeIdentity(row.cwd);
+		const repositoryIdentity = normalizeIdentity(repositoryIdentityFromMetadata(row.metadata_json));
+		if (!repositoryIdentity) continue;
+		known.add(repositoryIdentity);
+		if (!cwd || !requested.has(cwd)) continue;
+		const recorded = recordedByWorkspace.get(cwd) ?? new Set<string>();
+		recorded.add(repositoryIdentity);
+		recordedByWorkspace.set(cwd, recorded);
+	}
+	return { known, recordedByWorkspace };
+}
+
+function addUnambiguousRecordedEvidence(
+	identities: Map<string, string>,
+	recordedWorkspaces: Set<string>,
+	recordedByWorkspace: ReadonlyMap<string, ReadonlySet<string>>,
+): void {
+	for (const [workspaceIdentity, recorded] of recordedByWorkspace) {
+		recordedWorkspaces.add(workspaceIdentity);
+		if (recorded.size !== 1) continue;
+		const [repositoryIdentity] = recorded;
+		if (repositoryIdentity) identities.set(workspaceIdentity, repositoryIdentity);
+	}
+}
+
+function addDiscoveredRepositoryEvidence(
+	identities: Map<string, string>,
+	recordedWorkspaces: ReadonlySet<string>,
+	workspaceIdentities: string[],
+	knownRepositoryIdentities: ReadonlySet<string>,
+	freshWorkspaces: ReadonlySet<string>,
+): void {
+	for (const workspaceIdentity of workspaceIdentities) {
+		if (recordedWorkspaces.has(workspaceIdentity) || !isAbsolute(workspaceIdentity)) continue;
+		const discovered = gitRepositoryIdentity(
+			workspaceIdentity,
+			freshWorkspaces.has(workspaceIdentity),
+		);
+		if (discovered && knownRepositoryIdentities.has(discovered)) {
+			identities.set(workspaceIdentity, discovered);
+		}
+	}
+}
+
+export function recordedRepositoryIdentityEvidenceByWorkspace(
+	db: Database,
+	workspaceIdentities: Iterable<string | null | undefined>,
+	options: { freshWorkspaces?: Iterable<string | null | undefined> } = {},
+): {
+	byWorkspace: Map<string, string>;
+	recordedWorkspaces: Set<string>;
+} {
 	const identities = new Map<string, string>();
+	const recordedWorkspaces = new Set<string>();
+	recordedWorkspacesByIdentityMap.set(identities, recordedWorkspaces);
 	const normalizedWorkspaces = [
 		...new Set(
 			[...workspaceIdentities]
@@ -107,31 +251,48 @@ export function recordedRepositoryIdentitiesByWorkspace(
 			.filter((identity): identity is string => identity != null),
 	);
 	const requested = new Set(normalizedWorkspaces);
-	const knownRepositoryIdentities = new Set<string>();
 	const rows = db
 		.prepare(
 			`SELECT cwd, metadata_json FROM sessions
 			 WHERE cwd IS NOT NULL AND TRIM(cwd) <> '' ORDER BY id DESC`,
 		)
 		.all() as Array<{ cwd: string; metadata_json: string | null }>;
-	for (const row of rows) {
-		const cwd = normalizeIdentity(row.cwd);
-		const repositoryIdentity = normalizeIdentity(repositoryIdentityFromMetadata(row.metadata_json));
-		if (!repositoryIdentity) continue;
-		knownRepositoryIdentities.add(repositoryIdentity);
-		if (cwd && requested.has(cwd) && !identities.has(cwd)) identities.set(cwd, repositoryIdentity);
-	}
-	for (const workspaceIdentity of normalizedWorkspaces) {
-		if (identities.has(workspaceIdentity) || !isAbsolute(workspaceIdentity)) continue;
-		const discovered = gitRepositoryIdentity(
-			workspaceIdentity,
-			freshWorkspaces.has(workspaceIdentity),
-		);
-		if (discovered && knownRepositoryIdentities.has(discovered)) {
-			identities.set(workspaceIdentity, discovered);
-		}
-	}
-	return identities;
+	const evidence = collectRecordedRepositoryEvidence(rows, requested);
+	addUnambiguousRecordedEvidence(identities, recordedWorkspaces, evidence.recordedByWorkspace);
+	addDiscoveredRepositoryEvidence(
+		identities,
+		recordedWorkspaces,
+		normalizedWorkspaces,
+		evidence.known,
+		freshWorkspaces,
+	);
+	return { byWorkspace: identities, recordedWorkspaces };
+}
+
+export function recordedWorkspacesForRepositoryIdentity(
+	db: Database,
+	repositoryIdentity: string,
+): Map<string, string> {
+	const normalizedRepositoryIdentity = normalizeIdentity(repositoryIdentity);
+	if (!normalizedRepositoryIdentity) return new Map();
+	const rows = db
+		.prepare(
+			`SELECT DISTINCT cwd
+			 FROM sessions
+			 WHERE cwd IS NOT NULL AND TRIM(cwd) <> ''
+			   AND json_valid(metadata_json)
+			   AND json_type(metadata_json, '$.codemem_repository_identity') = 'text'
+			   AND RTRIM(REPLACE(TRIM(json_extract(metadata_json, '$.codemem_repository_identity')), char(92), '/'), '/') = ?
+			 ORDER BY cwd`,
+		)
+		.all(normalizedRepositoryIdentity) as Array<{ cwd: string }>;
+	const evidence = recordedRepositoryIdentityEvidenceByWorkspace(
+		db,
+		rows.map((row) => row.cwd),
+	);
+	return new Map(
+		[...evidence.byWorkspace].filter(([, identity]) => identity === normalizedRepositoryIdentity),
+	);
 }
 
 function compareMappingPrecedence(left: ScopeMapping, right: ScopeMapping): number {
@@ -146,12 +307,13 @@ function compareMappingPrecedence(left: ScopeMapping, right: ScopeMapping): numb
 
 function mappedRepositoryIdentity(
 	identity: string,
-	repositoryIdentities: Map<string, string>,
+	repositoryIdentities: ReadonlyMap<string, string>,
 	knownRepositoryIdentities: Set<string>,
 	discoverFilesystem: boolean,
 ): string | null {
 	const recorded = repositoryIdentities.get(identity);
 	if (recorded) return recorded;
+	if (recordedWorkspacesByIdentityMap.get(repositoryIdentities)?.has(identity)) return null;
 	if (!discoverFilesystem || !isAbsolute(identity)) return null;
 	const discovered = cachedGitRepositoryIdentity(identity);
 	return discovered && knownRepositoryIdentities.has(discovered) ? discovered : null;
@@ -159,7 +321,7 @@ function mappedRepositoryIdentity(
 
 function mappingsGroupedByRepository<T extends ScopeMapping>(
 	mappings: T[],
-	repositoryIdentities: Map<string, string>,
+	repositoryIdentities: ReadonlyMap<string, string>,
 	discoverFilesystem: boolean,
 ): Map<string, T[]> {
 	const grouped = new Map<string, T[]>();
@@ -183,7 +345,7 @@ function mappingsGroupedByRepository<T extends ScopeMapping>(
 
 export function withRepositoryMappingAliasesFromIdentities<T extends ScopeMapping>(
 	mappings: T[],
-	repositoryIdentities: Map<string, string>,
+	repositoryIdentities: ReadonlyMap<string, string>,
 	options: { discoverFilesystem?: boolean } = {},
 ): T[] {
 	if (mappings.length === 0) return mappings;
@@ -203,10 +365,93 @@ export function withRepositoryMappingAliasesFromIdentities<T extends ScopeMappin
 		const scopeIds = new Set(repositoryMappings.map((mapping) => mapping.scope_id));
 		if (scopeIds.size !== 1) continue;
 		const mapping = repositoryMappings.toSorted(compareMappingPrecedence)[0];
-		if (mapping)
-			aliases.set(repositoryIdentity, { ...mapping, workspace_identity: repositoryIdentity });
+		if (mapping) {
+			const alias = { ...mapping, workspace_identity: repositoryIdentity };
+			syntheticRepositoryAliases.add(alias);
+			aliases.set(repositoryIdentity, alias);
+		}
 	}
 	return [...mappings, ...aliases.values()];
+}
+
+function repositoryWorkspacesForMappings(
+	mappings: ScopeMapping[],
+	repositoryIdentities: ReadonlyMap<string, string>,
+	repositoryIdentity: string,
+): Set<string> {
+	const workspaces = new Set(
+		[...repositoryIdentities]
+			.filter(([, identity]) => identity === repositoryIdentity)
+			.map(([workspace]) => workspace),
+	);
+	const knownRepositoryIdentities = new Set(repositoryIdentities.values());
+	knownRepositoryIdentities.add(repositoryIdentity);
+	for (const mapping of mappings) {
+		const identity = normalizeIdentity(mapping.workspace_identity);
+		if (!identity || identity === repositoryIdentity) continue;
+		if (
+			mappedRepositoryIdentity(identity, repositoryIdentities, knownRepositoryIdentities, true) ===
+			repositoryIdentity
+		) {
+			workspaces.add(identity);
+		}
+	}
+	return workspaces;
+}
+
+function repositoryScopeResolutions(
+	mappings: ScopeMapping[],
+	repositoryIdentity: string,
+	workspaces: ReadonlySet<string>,
+): { explicitLocalWinner: boolean; scopeIds: Set<string> } {
+	const scopeIds = new Set<string>();
+	let explicitLocalWinner = false;
+	const candidateWorkspaces = workspaces.size > 0 ? workspaces : [null];
+	for (const cwd of candidateWorkspaces) {
+		const resolution = resolveProjectScope({ repositoryIdentity, cwd, mappings });
+		scopeIds.add(resolution.scopeId);
+		if (resolution.scopeId === LOCAL_DEFAULT_SCOPE_ID && resolution.mapping) {
+			explicitLocalWinner = true;
+		}
+	}
+	return { explicitLocalWinner, scopeIds };
+}
+
+export function hasConflictingRepositoryMappings(
+	mappings: ScopeMapping[],
+	repositoryIdentities: ReadonlyMap<string, string>,
+	repositoryIdentity: string,
+): boolean {
+	const normalizedRepositoryIdentity = normalizeIdentity(repositoryIdentity);
+	if (!normalizedRepositoryIdentity) return false;
+	const effectiveMappings = mappings.filter((mapping) => !syntheticRepositoryAliases.has(mapping));
+	const repositoryWorkspaces = repositoryWorkspacesForMappings(
+		effectiveMappings,
+		repositoryIdentities,
+		normalizedRepositoryIdentity,
+	);
+	const { explicitLocalWinner, scopeIds } = repositoryScopeResolutions(
+		effectiveMappings,
+		normalizedRepositoryIdentity,
+		repositoryWorkspaces,
+	);
+	if (scopeIds.size <= 1) return false;
+	if (explicitLocalWinner) return true;
+	const sharedScopes = new Set(
+		[...scopeIds].filter((scopeId) => scopeId !== LOCAL_DEFAULT_SCOPE_ID),
+	);
+	if (sharedScopes.size !== 1 || !scopeIds.has(LOCAL_DEFAULT_SCOPE_ID)) return true;
+	const mappingsWithAliases = withRepositoryMappingAliasesFromIdentities(
+		effectiveMappings,
+		repositoryIdentities,
+		{ discoverFilesystem: true },
+	);
+	const fallback = resolveProjectScope({
+		repositoryIdentity: normalizedRepositoryIdentity,
+		mappings: mappingsWithAliases,
+		allowRepositoryCwdFallback: false,
+	});
+	return !fallback.mapping || !sharedScopes.has(fallback.scopeId);
 }
 
 /**
