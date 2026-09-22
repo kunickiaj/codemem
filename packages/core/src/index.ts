@@ -1005,6 +1005,10 @@ export { clearMemoryRefs, normalizeConcept, populateMemoryRefs } from "./ref-pop
 export type { RefQueryOptions, RefQueryResult } from "./ref-queries.js";
 export { findByConcept, findByFile } from "./ref-queries.js";
 export * from "./release-discovery.js";
+export {
+	repositoryIdentitiesByWorkspace,
+	repositoryIdentityForWorkspace,
+} from "./repository-mapping-aliases.js";
 export * from "./retrieval-ledger.js";
 export * from "./retrieval-surface-ledger.js";
 export type {

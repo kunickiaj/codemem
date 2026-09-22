@@ -5,6 +5,7 @@ import { repositoryIdentityFromMetadata } from "./project.js";
 import { cleanProjectIdentity } from "./project-identity.js";
 import {
 	repositoryIdentitiesByWorkspace,
+	repositoryIdentityForWorkspace,
 	withRepositoryMappingAliases,
 } from "./repository-mapping-aliases.js";
 import { ensureScopeBackfillScopes, LEGACY_SHARED_REVIEW_SCOPE_ID } from "./scope-backfill.js";
@@ -805,11 +806,15 @@ interface SourceOwnedMemoryScopeRow {
 function resolveSourceOwnedMemoryScope(
 	row: SourceOwnedMemoryScopeRow,
 	mappings: ProjectScopeSettingsMapping[],
+	repositoryIdentities: ReadonlyMap<string, string>,
 ) {
 	return resolveProjectScope({
 		gitBranch: row.git_branch,
 		gitRemote: row.git_remote,
-		repositoryIdentity: repositoryIdentityFromMetadata(row.session_metadata_json),
+		repositoryIdentity: repositoryIdentityForWorkspace(repositoryIdentities, {
+			cwd: row.cwd,
+			metadataJson: row.session_metadata_json,
+		}),
 		cwd: row.cwd,
 		project: row.project,
 		workspaceId: row.workspace_id,
@@ -860,10 +865,15 @@ function propagateProjectScopeMappingToSourceOwnedMemories(
 		? withRepositoryMappingAliases(db, previousMappings)
 		: mappings;
 	const now = new Date().toISOString();
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
 	let moved = 0;
 	for (const row of sourceOwnedMemoryRowsForScopePropagation(db, deviceId)) {
-		const previousResolution = resolveSourceOwnedMemoryScope(row, oldMappings);
-		const resolution = resolveSourceOwnedMemoryScope(row, mappings);
+		const previousResolution = resolveSourceOwnedMemoryScope(
+			row,
+			oldMappings,
+			repositoryIdentities,
+		);
+		const resolution = resolveSourceOwnedMemoryScope(row, mappings, repositoryIdentities);
 		if (previousResolution.mapping?.id !== mapping.id && resolution.mapping?.id !== mapping.id) {
 			continue;
 		}

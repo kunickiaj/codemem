@@ -154,6 +154,8 @@ import {
 	refreshConfiguredScopeMembershipCache,
 	rejectInboundScopeFailures,
 	renameRecipientPolicyTeam,
+	repositoryIdentitiesByWorkspace,
+	repositoryIdentityForWorkspace,
 	repositoryIdentityFromMetadata,
 	requestJson,
 	resolveRecipientPolicyReview,
@@ -3897,12 +3899,16 @@ function projectInventoryRowsForWorkspace(
 			   AND m.deleted_at IS NULL`,
 		)
 		.all() as ProjectInventoryMemoryRow[];
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(store.db);
 	return rows.filter((row) => {
 		const identity = canonicalWorkspaceIdentity({
 			cwd: row.cwd,
 			gitBranch: row.git_branch,
 			gitRemote: row.git_remote,
-			repositoryIdentity: repositoryIdentityFromMetadata(row.session_metadata_json),
+			repositoryIdentity: repositoryIdentityForWorkspace(repositoryIdentities, {
+				cwd: row.cwd,
+				metadataJson: row.session_metadata_json,
+			}),
 			project: row.project,
 			workspaceId: row.workspace_id,
 		});

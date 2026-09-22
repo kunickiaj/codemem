@@ -39,6 +39,22 @@ export function repositoryIdentitiesByWorkspace(db: Database): Map<string, strin
 	return identities;
 }
 
+export function repositoryIdentityForWorkspace(
+	repositoryIdentities: ReadonlyMap<string, string>,
+	input: {
+		cwd?: string | null;
+		metadataJson?: string | null;
+		repositoryIdentity?: string | null;
+	},
+): string | null {
+	const recordedIdentity =
+		normalizeIdentity(input.repositoryIdentity) ??
+		normalizeIdentity(repositoryIdentityFromMetadata(input.metadataJson));
+	if (recordedIdentity) return recordedIdentity;
+	const cwd = normalizeIdentity(input.cwd);
+	return cwd ? (repositoryIdentities.get(cwd) ?? null) : null;
+}
+
 function compareMappingPrecedence(left: ScopeMapping, right: ScopeMapping): number {
 	const leftUpdatedAt = Date.parse(left.updated_at ?? "") || 0;
 	const rightUpdatedAt = Date.parse(right.updated_at ?? "") || 0;

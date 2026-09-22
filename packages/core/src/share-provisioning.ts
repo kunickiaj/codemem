@@ -1,8 +1,11 @@
 import { createHash } from "node:crypto";
 import type { CoordinatorScope, CoordinatorScopeMembership } from "./coordinator-store-contract.js";
 import { type Database, fromJson } from "./db.js";
-import { repositoryIdentityFromMetadata } from "./project.js";
 import { assertLegacyShareGrantAllowed } from "./recipient-policy-reconciler.js";
+import {
+	repositoryIdentitiesByWorkspace,
+	repositoryIdentityForWorkspace,
+} from "./repository-mapping-aliases.js";
 import { canonicalWorkspaceIdentity } from "./scope-resolution.js";
 import {
 	DEFAULT_SYNC_SCOPE_ID,
@@ -158,11 +161,17 @@ function isInitiatingDeviceMemory(row: MemoryCandidateRow, initiatingDeviceId: s
 	);
 }
 
-function memoryCandidateIdentity(row: MemoryCandidateRow): string {
+function memoryCandidateIdentity(
+	row: MemoryCandidateRow,
+	repositoryIdentities: ReadonlyMap<string, string>,
+): string {
 	return canonicalWorkspaceIdentity({
 		gitRemote: row.git_remote,
 		gitBranch: row.git_branch,
-		repositoryIdentity: repositoryIdentityFromMetadata(row.session_metadata_json),
+		repositoryIdentity: repositoryIdentityForWorkspace(repositoryIdentities, {
+			cwd: row.cwd,
+			metadataJson: row.session_metadata_json,
+		}),
 		cwd: row.cwd,
 		project: row.project,
 		workspaceId: row.workspace_id,
@@ -173,10 +182,11 @@ export function countShareableProjectMemories(
 	db: Database,
 	input: { canonicalIdentity: string; initiatingDeviceId: string },
 ): number {
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
 	return memoryCandidates(db).filter((row) => {
 		if (!shareableForManagedProject(row)) return false;
 		if (!isInitiatingDeviceMemory(row, input.initiatingDeviceId)) return false;
-		return memoryCandidateIdentity(row) === input.canonicalIdentity;
+		return memoryCandidateIdentity(row, repositoryIdentities) === input.canonicalIdentity;
 	}).length;
 }
 
@@ -296,11 +306,14 @@ export function planShareProvisioning(
 		.all(operation.operation_id) as ProjectRow[];
 	if (projects.length === 0) throw new Error("operation_intent_invalid");
 	const candidates = memoryCandidates(db);
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
 	const plans = projects.map((project): ManagedProjectPlan => {
 		const matched = candidates.filter((row) => {
 			if (!shareableForManagedProject(row)) return false;
 			if (!isInitiatingDeviceMemory(row, initiatingDeviceId)) return false;
-			return memoryCandidateIdentity(row) === project.canonical_project_identity;
+			return (
+				memoryCandidateIdentity(row, repositoryIdentities) === project.canonical_project_identity
+			);
 		});
 		const sourceScopeIds = [
 			...new Set(matched.map((row) => clean(row.scope_id) ?? "local-default")),

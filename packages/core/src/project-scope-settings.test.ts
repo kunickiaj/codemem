@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { toJson } from "./db.js";
+import { REPOSITORY_IDENTITY_METADATA_KEY } from "./project.js";
 import {
 	analyzeProjectScopeMappingChangeGuardrails,
 	listProjectScopeCandidates,
@@ -157,6 +158,42 @@ function listsDistinctManagedReceivedProjectOrigins(): void {
 	}
 }
 
+function propagateHistoricalRepositoryMapping(db: InstanceType<typeof Database>): void {
+	insertScope(db, { scopeId: "acme-work", label: "Acme Work" });
+	const cwd = "/workspace/work/exampleco/historical-api";
+	const repositoryIdentity = "https://git.example.invalid/exampleco/historical-api.git";
+	const historicalSession = insertSession(db, {
+		cwd,
+		gitBranch: null,
+		gitRemote: null,
+		project: "api",
+	});
+	const historicalMemoryId = insertMemory(db, historicalSession, {
+		originDeviceId: "source-device",
+		project: "api",
+		scopeId: LOCAL_DEFAULT_SCOPE_ID,
+	});
+	const discoveredSession = insertSession(db, {
+		cwd,
+		gitBranch: null,
+		gitRemote: null,
+		project: "api",
+	});
+	db.prepare("UPDATE sessions SET metadata_json = ? WHERE id = ?").run(
+		toJson({ [REPOSITORY_IDENTITY_METADATA_KEY]: repositoryIdentity }),
+		discoveredSession,
+	);
+	upsertProjectScopeSettingsMapping(db, {
+		deviceId: "source-device",
+		workspace_identity: repositoryIdentity,
+		project_pattern: "api",
+		scope_id: "acme-work",
+	});
+	expect(
+		db.prepare("SELECT scope_id, rev FROM memory_items WHERE id = ?").get(historicalMemoryId),
+	).toMatchObject({ rev: 2, scope_id: "acme-work" });
+}
+
 describe("received project origin devices", () => {
 	it(
 		"keeps distinct origin devices, including IDs containing commas",
@@ -166,12 +203,10 @@ describe("received project origin devices", () => {
 
 describe("project scope settings", () => {
 	let db: InstanceType<typeof Database>;
-
 	beforeEach(() => {
 		db = new Database(":memory:");
 		initTestSchema(db);
 	});
-
 	afterEach(() => {
 		db.close();
 	});
@@ -1848,5 +1883,17 @@ describe("project scope settings", () => {
 
 		const inventory = listProjectScopeInventory(db);
 		expect(inventory.projects.map((project) => project.cwd ?? "")).toContain("xxsyncXbootstrapYY");
+	});
+});
+
+describe("historical repository scope propagation", () => {
+	it("propagates repository mappings to cwd-only memories", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			propagateHistoricalRepositoryMapping(db);
+		} finally {
+			db.close();
+		}
 	});
 });
