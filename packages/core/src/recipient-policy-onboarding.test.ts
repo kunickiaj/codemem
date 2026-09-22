@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { REPOSITORY_IDENTITY_METADATA_KEY } from "./project.js";
 import { listRecipientPolicyIntent } from "./recipient-policy-intent.js";
 import {
 	commitDirectProjectSharePolicyInTransaction,
@@ -2392,5 +2393,50 @@ describe("recipient-policy onboarding", () => {
 			}),
 		).toBe(intentBefore);
 		expect(protectedSnapshot(db)).toBe(protectedBefore);
+	});
+});
+
+describe("recipient-policy onboarding repository inference", () => {
+	it("includes historical cwd-only memories without a duplicate excluded Project", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			insertActor(db, "identity-a", "Ada");
+			insertProject(db, PROJECT_A, "alpha", 2);
+			insertTeam(db, "team-a", "Core Team");
+			insertRecipient(db, PROJECT_A, "team", "team-a");
+			insertMembership(db, "team-a", "identity-a");
+			db.prepare("UPDATE sessions SET metadata_json = ? WHERE cwd = '/workspace/alpha'").run(
+				JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: PROJECT_A }),
+			);
+			const historicalSessionId = Number(
+				db
+					.prepare(
+						`INSERT INTO sessions(started_at, cwd, project)
+						 VALUES (?, '/workspace/alpha', 'alpha')`,
+					)
+					.run(NOW).lastInsertRowid,
+			);
+			db.prepare(
+				`INSERT INTO memory_items(
+					session_id, kind, title, body_text, active, created_at, updated_at,
+					visibility, project, scope_id
+				 ) VALUES (?, 'discovery', 'historical', 'body', 1, ?, ?, 'shared', 'alpha', 'local-default')`,
+			).run(historicalSessionId, NOW, NOW);
+
+			const preview = previewRecipientPolicyOnboarding(
+				db,
+				baseRequest({ journey: "team", invitationId: "invite-team", teamId: "team-a" }),
+			);
+			expect(preview.projects).toEqual([
+				expect.objectContaining({
+					canonicalProjectIdentity: PROJECT_A,
+					existingMemoryCount: 3,
+				}),
+			]);
+			expect(preview.excludedProjects).toEqual([]);
+		} finally {
+			db.close();
+		}
 	});
 });

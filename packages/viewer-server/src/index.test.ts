@@ -20358,3 +20358,82 @@ describe("repository Project cleanup inference", () => {
 		}
 	});
 });
+
+describe("legacy shared review repository inference", () => {
+	it("groups and reassigns historical cwd-only repository memories", async () => {
+		const { app, getStore, cleanup } = createTestApp();
+		try {
+			await app.request("/api/stats");
+			const store = getStore();
+			if (!store) throw new Error("store not initialized");
+			const now = new Date().toISOString();
+			store.db
+				.prepare(
+					`INSERT INTO replication_scopes(
+						scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+					 ) VALUES ('oss', 'OSS', 'team', 'coordinator', 1, 'active', ?, ?)`,
+				)
+				.run(now, now);
+			grantSyncScopeToDevices(store, "oss", [store.deviceId]);
+			const cwd = "/workspace/oss/inferred";
+			const repositoryIdentity = "https://git.example.invalid/oss/inferred.git";
+			const historicalSessionId = insertTestSession(store.db);
+			store.db
+				.prepare("UPDATE sessions SET cwd = ?, project = ?, metadata_json = '{}' WHERE id = ?")
+				.run(cwd, "oss-inferred", historicalSessionId);
+			insertTestMemory(store, {
+				kind: "discovery",
+				scopeId: "legacy-shared-review",
+				sessionId: historicalSessionId,
+				title: "historical local shared",
+			});
+			const discoveredSessionId = insertTestSession(store.db);
+			store.db
+				.prepare("UPDATE sessions SET cwd = ?, project = ?, metadata_json = ? WHERE id = ?")
+				.run(
+					cwd,
+					"oss-inferred",
+					JSON.stringify({ codemem_repository_identity: repositoryIdentity }),
+					discoveredSessionId,
+				);
+			insertTestMemory(store, {
+				actorId: "remote-actor",
+				kind: "discovery",
+				originDeviceId: "peer-device",
+				scopeId: "legacy-shared-review",
+				sessionId: discoveredSessionId,
+				title: "repository peer shared",
+			});
+
+			const previewRes = await app.request("/api/sync/legacy-shared-review/reassign", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ scope_id: "oss", workspace_identity: repositoryIdentity }),
+			});
+			expect(previewRes.status).toBe(409);
+			const preview = (await previewRes.json()) as {
+				preview: {
+					confirmation_token: string;
+					memory_count: number;
+					reassignable_memory_count: number;
+				};
+			};
+			expect(preview.preview).toMatchObject({ memory_count: 2, reassignable_memory_count: 1 });
+
+			const applyRes = await app.request("/api/sync/legacy-shared-review/reassign", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					confirmation_token: preview.preview.confirmation_token,
+					confirmed_old_copies: true,
+					scope_id: "oss",
+					workspace_identity: repositoryIdentity,
+				}),
+			});
+			expect(applyRes.status).toBe(200);
+			expect(await applyRes.json()).toMatchObject({ reassigned_memory_count: 1 });
+		} finally {
+			cleanup();
+		}
+	});
+});
