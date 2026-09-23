@@ -97,3 +97,18 @@ it("ends route ownership at its closing brace and ignores route-like strings and
 	const source = `${snapshot}\n// app.post('/fake', () => {\nfunction outside() {\nreturn 1;\n}`;
 	expect(getScopeIdentity(source, source.split("\n").length - 2)).toBe(":function:outside");
 });
+
+it("identifies literal test callbacks by their names", () => {
+	const source = `it("first case", async () => {
+  expect(value).toBe(200);
+});
+it("second case", async () => {
+  expect(value).toBe(200);
+});
+// it("not a test", async () => {
+function outside() { return 1; }`;
+	expect(getScopeIdentity(source, 1)).toBe(":it:first case");
+	expect(getScopeIdentity(source, 4)).toBe(":it:second case");
+	expect(getScopeIdentity('describe("suite", () => {', 1)).toBe(":describe:suite");
+	expect(getScopeIdentity(source, 8)).toBe(":function:outside");
+});

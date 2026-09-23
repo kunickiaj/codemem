@@ -10,6 +10,7 @@ import {
 	repositoryIdentitiesByWorkspace,
 	repositoryIdentityForWorkspace,
 	withRepositoryMappingAliases,
+	withRepositoryMappingAliasesFromIdentities,
 } from "./repository-mapping-aliases.js";
 import { ensureScopeBackfillScopes, LEGACY_SHARED_REVIEW_SCOPE_ID } from "./scope-backfill.js";
 import {
@@ -72,6 +73,7 @@ export interface ProjectScopeGuardrailWarning {
 	related_workspace_identities?: string[];
 	related_projects?: string[];
 	confirmation_token?: string;
+	conflict_state?: string;
 }
 
 export interface ProjectScopeCandidate {
@@ -463,6 +465,7 @@ function isHomeDirectoryRootPattern(pattern: string): boolean {
 function guardrailConfirmationToken(warning: ProjectScopeGuardrailWarning): string {
 	const payload = JSON.stringify({
 		code: warning.code,
+		conflict_state: warning.conflict_state ?? null,
 		mapping_id: warning.mapping_id ?? null,
 		project_pattern: warning.project_pattern ?? null,
 		previous_scope_id: warning.previous_scope_id ?? null,
@@ -1176,6 +1179,115 @@ function propagateProjectScopeMappingToSourceOwnedMemories(
 	return moved;
 }
 
+function changedScopesAfterMappingDeletion(
+	db: Database,
+	id: number,
+	deviceId: string,
+	oldMappings: ProjectScopeSettingsMapping[],
+): Set<string> {
+	const remaining = oldMappings.filter((row) => row.id !== id);
+	const identities = repositoryIdentitiesByWorkspace(db, {
+		knownRepositoryIdentities: knownRepositoryIdentitiesForMappings(oldMappings),
+	});
+	const oldAliases = withRepositoryMappingAliasesFromIdentities(oldMappings, identities, {
+		discoverFilesystem: true,
+	});
+	const newAliases = withRepositoryMappingAliasesFromIdentities(remaining, identities, {
+		discoverFilesystem: true,
+	});
+	const oldConflicts = new Map<string, boolean>();
+	const newConflicts = new Map<string, boolean>();
+	const changes = new Set<string>();
+	for (const row of sourceOwnedMemoryRowsForScopePropagation(db, deviceId)) {
+		const oldScopeId = clean(row.scope_id) ?? LOCAL_DEFAULT_SCOPE_ID;
+		const before = resolveSourceOwnedMemoryScope(row, oldAliases, identities, oldConflicts);
+		const after = resolveSourceOwnedMemoryScope(row, newAliases, identities, newConflicts);
+		const repository = repositoryIdentityForWorkspace(identities, {
+			cwd: row.cwd,
+			gitRemote: row.git_remote,
+			metadataJson: row.session_metadata_json,
+		});
+		if (
+			!mappingChangeAffectsSourceOwnedMemory(
+				id,
+				repository,
+				before,
+				after,
+				oldConflicts,
+				newConflicts,
+			)
+		)
+			continue;
+		if (after.scopeId !== oldScopeId) changes.add(JSON.stringify([oldScopeId, after.scopeId]));
+	}
+	return changes;
+}
+
+function mappingConfirmationState(mappings: ProjectScopeSettingsMapping[]): string {
+	const state = JSON.stringify(
+		mappings
+			.map((row) => [
+				row.id,
+				row.workspace_identity,
+				row.project_pattern,
+				row.scope_id,
+				row.priority,
+			])
+			.toSorted((left, right) => Number(left[0]) - Number(right[0])),
+	);
+	return createHash("sha256").update(state).digest("hex");
+}
+
+function deletionConfirmationState(
+	db: Database,
+	deviceId: string,
+	mappings: ProjectScopeSettingsMapping[],
+): string {
+	const memories = sourceOwnedMemoryRowsForScopePropagation(db, deviceId)
+		.toSorted((left, right) => left.id - right.id)
+		.map((row) => [
+			row.id,
+			row.scope_id,
+			row.cwd,
+			row.git_remote,
+			row.session_metadata_json,
+			row.workspace_id,
+		]);
+	return createHash("sha256")
+		.update(JSON.stringify([mappingConfirmationState(mappings), memories]))
+		.digest("hex");
+}
+
+export function analyzeProjectScopeMappingDeletionGuardrails(
+	db: Database,
+	id: number,
+	deviceId: string | null,
+): ProjectScopeGuardrailWarning[] {
+	if (!Number.isInteger(id) || id <= 0) throw new Error("id must be a positive integer");
+	const mapping = getProjectScopeSettingsMappingById(db, id);
+	if (!mapping || !deviceId) return [];
+	const oldMappings = listProjectScopeSettingsMappings(db);
+	const changes = changedScopesAfterMappingDeletion(db, id, deviceId, oldMappings);
+	return [...changes].sort().map((change) => {
+		const [previousScopeId, scopeId] = JSON.parse(change) as [string, string];
+		return withGuardrailConfirmationToken({
+			code: "scope_reassignment_old_copies",
+			severity: "warning",
+			message:
+				previousScopeId === LOCAL_DEFAULT_SCOPE_ID
+					? "Removing this Local assignment shares existing memories through the fallback Sharing domain. Review access before continuing; old copies may remain on devices and backups."
+					: "Removing this assignment moves existing memories into a fallback scope. Review access before continuing; old copies may remain on devices and backups.",
+			requires_confirmation: true,
+			mapping_id: id,
+			previous_scope_id: previousScopeId,
+			scope_id: scopeId,
+			workspace_identity: mapping.workspace_identity,
+			project_pattern: mapping.project_pattern,
+			conflict_state: deletionConfirmationState(db, deviceId, oldMappings),
+		});
+	});
+}
+
 function projectScopeMappingFromDraft(
 	draft: ProjectScopeMappingDraft,
 	syntheticId: number,
@@ -1295,6 +1407,21 @@ function candidatesForProjectScopeDraft(
 	);
 }
 
+function bindDraftConflictWarning(
+	warning: ProjectScopeGuardrailWarning,
+	draft: ProjectScopeMappingDraft,
+	conflictState: string,
+): ProjectScopeGuardrailWarning {
+	if (warning.code !== "conflicting_repository_mappings") return warning;
+	return {
+		...warning,
+		mapping_id: draft.existing?.id ?? null,
+		project_pattern: draft.projectPattern,
+		scope_id: draft.scopeId,
+		conflict_state: conflictState,
+	};
+}
+
 function analyzeProjectScopeMappingDraftGuardrails(
 	db: Database,
 	draft: ProjectScopeMappingDraft,
@@ -1317,11 +1444,15 @@ function analyzeProjectScopeMappingDraftGuardrails(
 		);
 	}
 	const requestedScope = scopesById.get(draft.scopeId);
+	const conflictState = mappingConfirmationState(mappings);
 	for (const candidate of candidatesForProjectScopeDraft(db, draft, scopes, mappings)) {
 		warnings.push(
-			...candidate.guardrail_warnings.filter(
-				(warning) => warning.code !== "basename_collision_review" || isOrgLikeScope(requestedScope),
-			),
+			...candidate.guardrail_warnings
+				.filter(
+					(warning) =>
+						warning.code !== "basename_collision_review" || isOrgLikeScope(requestedScope),
+				)
+				.map((warning) => bindDraftConflictWarning(warning, draft, conflictState)),
 		);
 	}
 	if (draft.scopeId && draft.existing && draft.existing.scope_id !== draft.scopeId) {
@@ -2035,22 +2166,33 @@ export function upsertProjectScopeSettingsMapping(
 export function deleteProjectScopeSettingsMapping(
 	db: Database,
 	id: number,
-	options: { deviceId?: string | null } = {},
+	options: { deviceId?: string | null; confirmedGuardrailTokens?: string[] } = {},
 ): boolean {
 	if (!Number.isInteger(id) || id <= 0) throw new Error("id must be a positive integer");
-	const mapping = getProjectScopeSettingsMappingById(db, id);
-	if (!mapping) return false;
-	const previousMappings = listProjectScopeSettingsMappings(db);
-	persistMappedRepositoryIdentityEvidence(db, previousMappings);
-	const result = db.prepare("DELETE FROM project_scope_mappings WHERE id = ?").run(id);
-	const deleted = Number(result.changes ?? 0) > 0;
-	if (deleted) {
-		propagateProjectScopeMappingToSourceOwnedMemories(
-			db,
-			mapping,
-			clean(options.deviceId),
-			previousMappings,
-		);
-	}
-	return deleted;
+	return db.transaction(() => {
+		const mapping = getProjectScopeSettingsMappingById(db, id);
+		if (!mapping) return false;
+		const warnings = analyzeProjectScopeMappingDeletionGuardrails(db, id, clean(options.deviceId));
+		const confirmed = new Set(options.confirmedGuardrailTokens ?? []);
+		if (
+			warnings.some(
+				(warning) => !warning.confirmation_token || !confirmed.has(warning.confirmation_token),
+			)
+		) {
+			throw new Error("guardrail_confirmation_required");
+		}
+		const previousMappings = listProjectScopeSettingsMappings(db);
+		persistMappedRepositoryIdentityEvidence(db, previousMappings);
+		const result = db.prepare("DELETE FROM project_scope_mappings WHERE id = ?").run(id);
+		const deleted = Number(result.changes ?? 0) > 0;
+		if (deleted) {
+			propagateProjectScopeMappingToSourceOwnedMemories(
+				db,
+				mapping,
+				clean(options.deviceId),
+				previousMappings,
+			);
+		}
+		return deleted;
+	})();
 }

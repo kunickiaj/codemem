@@ -2056,12 +2056,28 @@ export async function saveSharingDomainProjectMappings(input: {
 	return payload.mappings;
 }
 
-export async function deleteSharingDomainProjectMapping(id: number): Promise<boolean> {
+export async function deleteSharingDomainProjectMapping(
+	id: number,
+	confirmedGuardrailTokens: string[] = [],
+): Promise<boolean> {
 	const resp = await fetch(`/api/sync/sharing-domains/project-mappings/${encodeURIComponent(id)}`, {
 		method: "DELETE",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ confirmed_guardrail_tokens: confirmedGuardrailTokens }),
 	});
-	const { text, payload } = await readJsonPayload<{ deleted?: boolean }>(resp);
-	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
+	const { text, payload } = await readJsonPayload<{
+		deleted?: boolean;
+		error?: string;
+		required_guardrails?: string[];
+		required_guardrail_tokens?: string[];
+		guardrail_warnings?: ProjectScopeGuardrailWarning[];
+	}>(resp);
+	if (!resp.ok) {
+		if (payload?.error === "guardrail_confirmation_required") {
+			throw new SharingDomainGuardrailConfirmationError(payload);
+		}
+		throw new Error(payloadError(payload) || text || "request failed");
+	}
 	return Boolean(payload?.deleted);
 }
 

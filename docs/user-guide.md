@@ -455,6 +455,9 @@ Safe defaults:
 - Broad mappings or basename collisions should be reviewed before you rely on
   them. If `codemem` exists under both work and personal paths, map the canonical
   workspace path/remote instead of trusting the basename.
+- Removing a Local-only project mapping can expose existing memories through a
+  fallback Sharing domain. Review the access warning and select Remove again to
+  confirm; if mappings change in between, review the new warning first.
 
 For a mixed personal/work laptop, start conservatively:
 

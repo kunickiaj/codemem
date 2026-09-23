@@ -63,6 +63,7 @@ const pendingConfirmations = new Map<
 	string,
 	{ requiredGuardrailTokens: string[]; scopeId: string; warnings: ProjectScopeGuardrailWarning[] }
 >();
+const pendingRemovalConfirmations = new Map<number, string[]>();
 const pendingForgetConfirmations = new Map<
 	string,
 	{ confirmationToken: string; localOwnedMemoryCount: number; peerOwnedMemoryCount: number }
@@ -442,13 +443,26 @@ function projectClusterMappingError(error: unknown): string {
 async function removeProjectMapping(project: ProjectScopeInventoryProject) {
 	if (project.mapping_id == null) return;
 	try {
-		await api.deleteSharingDomainProjectMapping(project.mapping_id);
+		await api.deleteSharingDomainProjectMapping(
+			project.mapping_id,
+			pendingRemovalConfirmations.get(project.mapping_id) ?? [],
+		);
+		pendingRemovalConfirmations.delete(project.mapping_id);
 		pendingConfirmations.delete(project.workspace_identity);
 		draftDomainSelections.delete(project.workspace_identity);
 		notifyProjectInventoryChanged();
 		showGlobalNotice("Project Space assignment removed. The next fallback now applies.");
 		refreshProjects?.();
 	} catch (error) {
+		if (error instanceof api.SharingDomainGuardrailConfirmationError) {
+			pendingRemovalConfirmations.set(project.mapping_id, error.requiredGuardrailTokens);
+			showGlobalNotice(
+				`${error.guardrailWarnings[0]?.message ?? "Review the fallback access change."} Select Remove again to confirm.`,
+				"warning",
+			);
+			return;
+		}
+		pendingRemovalConfirmations.delete(project.mapping_id);
 		showGlobalNotice(
 			error instanceof Error ? error.message : "Unable to remove project Space assignment.",
 			"warning",
@@ -1371,6 +1385,7 @@ export function initProjectsTab(
 	draftDomainSelections.clear();
 	draftClusterDomainSelections.clear();
 	pendingConfirmations.clear();
+	pendingRemovalConfirmations.clear();
 	pendingForgetConfirmations.clear();
 	hasProjectInventoryResult = false;
 	const status = el<HTMLSelectElement>("projectsStatusFilter");

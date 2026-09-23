@@ -782,6 +782,7 @@ export type {
 export {
 	analyzeProjectScopeMappingChangeGuardrails,
 	analyzeProjectScopeMappingChangesGuardrails,
+	analyzeProjectScopeMappingDeletionGuardrails,
 	deleteProjectScopeSettingsMapping,
 	listProjectScopeCandidates,
 	listProjectScopeInventory,

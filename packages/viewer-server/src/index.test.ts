@@ -12650,7 +12650,7 @@ describe("viewer-server", () => {
 						method: "DELETE",
 					}),
 				);
-				expect(deleteRes.status).toBe(200);
+				expect(deleteRes.status).toBe(409);
 			} finally {
 				cleanup();
 			}

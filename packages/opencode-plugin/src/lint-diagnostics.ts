@@ -260,20 +260,15 @@ function routeScopeAtLine(source: string, lineStart: number, lineEnd: number) {
 	return owner ? { ...owner, direct: false } : undefined;
 }
 
-export function getScopeIdentity(
-	sourceCode: string | undefined,
-	line: number | undefined,
-): string | undefined {
-	if (!sourceCode || !line) return undefined;
-	let precedingLines = sourceCode.split("\n").slice(0, line);
-	const lineEnd = precedingLines.join("\n").length;
-	const lineStart = lineEnd - (precedingLines.at(-1)?.length ?? 0);
-	const route = routeScopeAtLine(sourceCode, lineStart, lineEnd);
-	if (route?.direct) return `${route.identity}:handler`;
-	if (route) precedingLines = sourceCode.slice(route.start, lineEnd).split("\n");
-	const className = classNameAtLine(sourceCode, line);
-	const prefix = route?.identity ?? className;
-	for (const sourceLine of precedingLines.reverse()) {
+function testCallbackScopeAtLine(line: string): string | undefined {
+	const match = line.match(
+		/^\s*(it|test|describe)(?:\.(?:only|skip))?\(\s*(["'`])([^"'`\\\r\n]+)\2\s*,\s*(?:async\s*)?(?:\([^)]*\)|[\w$]+)\s*=>\s*\{/,
+	);
+	return match ? `:${match[1]}:${match[3]}` : undefined;
+}
+
+function nearestScopeIdentity(lines: string[], prefix: string): string | undefined {
+	for (const sourceLine of lines.toReversed()) {
 		const functionMatch = sourceLine.match(/\bfunction\s+([\w$]+)/);
 		if (functionMatch?.[1]) return `${prefix}:function:${functionMatch[1]}`;
 		const bindingMatch = sourceLine.match(/\b(?:const|let|var)\s+([\w$]+)\s*=/);
@@ -284,6 +279,26 @@ export function getScopeIdentity(
 		}
 	}
 	return undefined;
+}
+
+export function getScopeIdentity(
+	sourceCode: string | undefined,
+	line: number | undefined,
+): string | undefined {
+	if (!sourceCode || !line) return undefined;
+	let precedingLines = sourceCode.split("\n").slice(0, line);
+	const lineEnd = precedingLines.join("\n").length;
+	const lineStart = lineEnd - (precedingLines.at(-1)?.length ?? 0);
+	const route = routeScopeAtLine(sourceCode, lineStart, lineEnd);
+	if (route?.direct) return `${route.identity}:handler`;
+	if (!route) {
+		const test = testCallbackScopeAtLine(precedingLines.at(-1) ?? "");
+		if (test) return test;
+	}
+	if (route) precedingLines = sourceCode.slice(route.start, lineEnd).split("\n");
+	const className = classNameAtLine(sourceCode, line);
+	const prefix = route?.identity ?? className;
+	return nearestScopeIdentity(precedingLines, prefix);
 }
 
 export function parseMeasuredValue(category: string, text: string): number | undefined {

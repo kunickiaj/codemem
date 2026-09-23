@@ -7,6 +7,7 @@ import { REPOSITORY_IDENTITY_METADATA_KEY } from "./project.js";
 import {
 	analyzeProjectScopeMappingChangeGuardrails,
 	analyzeProjectScopeMappingChangesGuardrails,
+	analyzeProjectScopeMappingDeletionGuardrails,
 	deleteProjectScopeSettingsMapping,
 	listProjectScopeCandidates,
 	listProjectScopeInventory,
@@ -357,6 +358,7 @@ function expectRequestedConflictWarning(store: MemoryStore, tmpDir: string): voi
 	);
 	insertScope(store, "requested-a");
 	insertScope(store, "requested-b");
+	insertScope(store, "requested-c");
 	store.startSession({ cwd: mainRepo, project: "requested-conflict" });
 	store.startSession({ cwd: worktree, project: "requested-conflict" });
 	insertMapping(store, mainRepo, "requested-a");
@@ -375,6 +377,30 @@ function expectRequestedConflictWarning(store: MemoryStore, tmpDir: string): voi
 			}),
 		]),
 	);
+	const token = analysis.warnings.find(
+		(warning) => warning.code === "conflicting_repository_mappings",
+	)?.confirmation_token;
+	const changedRequest = analyzeProjectScopeMappingChangeGuardrails(store.db, {
+		workspace_identity: worktree,
+		project_pattern: worktree,
+		scope_id: "requested-c",
+	});
+	expect(
+		changedRequest.warnings.find((warning) => warning.code === "conflicting_repository_mappings")
+			?.confirmation_token,
+	).not.toBe(token);
+	store.db
+		.prepare("UPDATE project_scope_mappings SET priority = 11 WHERE workspace_identity = ?")
+		.run(mainRepo);
+	const changedConflict = analyzeProjectScopeMappingChangeGuardrails(store.db, {
+		workspace_identity: worktree,
+		project_pattern: worktree,
+		scope_id: "requested-b",
+	});
+	expect(
+		changedConflict.warnings.find((warning) => warning.code === "conflicting_repository_mappings")
+			?.confirmation_token,
+	).not.toBe(token);
 }
 
 function expectRequestedPatternConflictWarning(store: MemoryStore, tmpDir: string): void {
@@ -577,6 +603,58 @@ function expectBulkNormalizedLookupMatchesPersistence(store: MemoryStore): void 
 	).toBe(1);
 }
 
+function expectDeleteLocalOverrideRequiresConfirmation(store: MemoryStore, tmpDir: string): void {
+	const cwd = join(tmpDir, "delete-local-override");
+	insertScope(store, "delete-fallback-shared");
+	insertPatternMapping(store, `${tmpDir}/delete-local-*`, "delete-fallback-shared");
+	insertMapping(store, cwd, "local-default");
+	const id = Number(
+		store.db
+			.prepare("SELECT id FROM project_scope_mappings WHERE workspace_identity = ?")
+			.pluck()
+			.get(cwd),
+	);
+	const sessionId = store.startSession({ cwd, project: "delete-local-override" });
+	const memoryId = store.remember(sessionId, "discovery", "local override", "local override");
+	const warnings = analyzeProjectScopeMappingDeletionGuardrails(store.db, id, store.deviceId);
+	expect(warnings).toEqual([
+		expect.objectContaining({
+			code: "scope_reassignment_old_copies",
+			scope_id: "delete-fallback-shared",
+			requires_confirmation: true,
+			confirmation_token: expect.any(String),
+		}),
+	]);
+	expect(() =>
+		deleteProjectScopeSettingsMapping(store.db, id, { deviceId: store.deviceId }),
+	).toThrow("guardrail_confirmation_required");
+	expect(
+		store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").pluck().get(memoryId),
+	).toBe("local-default");
+	store.remember(sessionId, "discovery", "new Local memory", "new Local memory");
+	expect(() =>
+		deleteProjectScopeSettingsMapping(store.db, id, {
+			deviceId: store.deviceId,
+			confirmedGuardrailTokens: [warnings[0]?.confirmation_token ?? ""],
+		}),
+	).toThrow("guardrail_confirmation_required");
+	const refreshedWarnings = analyzeProjectScopeMappingDeletionGuardrails(
+		store.db,
+		id,
+		store.deviceId,
+	);
+	expect(refreshedWarnings[0]?.confirmation_token).not.toBe(warnings[0]?.confirmation_token);
+	expect(
+		deleteProjectScopeSettingsMapping(store.db, id, {
+			deviceId: store.deviceId,
+			confirmedGuardrailTokens: [refreshedWarnings[0]?.confirmation_token ?? ""],
+		}),
+	).toBe(true);
+	expect(
+		store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").pluck().get(memoryId),
+	).toBe("delete-fallback-shared");
+}
+
 function expectMappedRepositorySeedsCandidateDiscovery(store: MemoryStore, tmpDir: string): void {
 	const remote = "https://example.test/acme/mapping-seeded-candidate.git";
 	const { mainRepo, worktree } = createLinkedWorktree(tmpDir, "mapping-seeded-candidate", remote);
@@ -626,9 +704,17 @@ function expectMappedRepositorySeedsCandidateDiscovery(store: MemoryStore, tmpDi
 			.pluck()
 			.get("mapping-seeded-candidate"),
 	);
-	expect(deleteProjectScopeSettingsMapping(store.db, mappingId, { deviceId: store.deviceId })).toBe(
-		true,
+	const deletionWarnings = analyzeProjectScopeMappingDeletionGuardrails(
+		store.db,
+		mappingId,
+		store.deviceId,
 	);
+	expect(
+		deleteProjectScopeSettingsMapping(store.db, mappingId, {
+			deviceId: store.deviceId,
+			confirmedGuardrailTokens: deletionWarnings.map((warning) => warning.confirmation_token ?? ""),
+		}),
+	).toBe(true);
 	expect(
 		store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").pluck().get(memoryId),
 	).toBe("local-default");
@@ -738,8 +824,17 @@ function expectDeleteConflictPropagation(store: MemoryStore, tmpDir: string): vo
 		project_pattern: worktree,
 		scope_id: "delete-b",
 	});
+	const warnings = analyzeProjectScopeMappingDeletionGuardrails(
+		store.db,
+		conflicting.id,
+		store.deviceId,
+	);
+	expect(warnings.some((warning) => warning.code === "scope_reassignment_old_copies")).toBe(true);
 	expect(
-		deleteProjectScopeSettingsMapping(store.db, conflicting.id, { deviceId: store.deviceId }),
+		deleteProjectScopeSettingsMapping(store.db, conflicting.id, {
+			deviceId: store.deviceId,
+			confirmedGuardrailTokens: warnings.map((warning) => warning.confirmation_token ?? ""),
+		}),
 	).toBe(true);
 	for (const memoryId of memoryIds) {
 		expect(
@@ -1287,6 +1382,7 @@ describe("repository mapping aliases", () => {
 		expectBulkSimulationGuardrails(store, tmpDir);
 		expectBulkSimulationPreservesNormalizedDuplicates(store);
 		expectBulkNormalizedLookupMatchesPersistence(store);
+		expectDeleteLocalOverrideRequiresConfirmation(store, tmpDir);
 		expectDeleteConflictPropagation(store, tmpDir);
 		expectMappedRepositorySeedsCandidateDiscovery(store, tmpDir);
 		expectDiscoveredSiblingDraftRequiresConflictConfirmation(store, tmpDir);
