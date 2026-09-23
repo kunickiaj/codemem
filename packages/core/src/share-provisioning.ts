@@ -523,6 +523,7 @@ export function planShareProvisioning(
 	);
 	if (plans.some((project) => !clean(project.boundaryId)))
 		throw new Error("managed_boundary_plan_missing");
+	for (const project of plans) assertCompatibleExactMapping(db, project);
 	return {
 		operationId: context.operation.operation_id,
 		groupId: context.operation.coordinator_group_id,
@@ -722,14 +723,18 @@ function localReassign(db: Database, memoryIds: number[], scopeId: string, devic
 	})();
 }
 
-function exactMapping(db: Database, project: ManagedProjectPlan): void {
+function assertCompatibleExactMapping(db: Database, project: ManagedProjectPlan): boolean {
 	const existing = db
 		.prepare(`SELECT id, scope_id FROM project_scope_mappings
 		 WHERE workspace_identity = ? ORDER BY priority DESC, updated_at DESC, id DESC LIMIT 1`)
 		.get(project.canonicalIdentity) as { id: number; scope_id: string } | undefined;
 	if (existing && existing.scope_id !== project.boundaryId)
 		throw new Error("project_mapping_conflict");
-	if (existing) return;
+	return existing != null;
+}
+
+function exactMapping(db: Database, project: ManagedProjectPlan): void {
+	if (assertCompatibleExactMapping(db, project)) return;
 	const now = new Date().toISOString();
 	db.prepare(`INSERT INTO project_scope_mappings(
 		workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at

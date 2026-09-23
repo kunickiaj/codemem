@@ -460,6 +460,8 @@ Safe defaults:
   confirm; if mappings change in between, review the new warning first.
 - Assigning a shared mapping to a Project with existing Local memories also
   requires reviewing and confirming the access change before those memories move.
+- Sharing a Project stops before granting access if its repository is already
+  assigned to a different Space; resolve that mapping conflict first.
 
 For a mixed personal/work laptop, start conservatively:
 
