@@ -308,6 +308,19 @@ function expectLegacyRemoteConflictsFailClosed(store: MemoryStore): void {
 			store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").pluck().get(memoryId),
 		).toBe("legacy-remote-a");
 	}
+	const analysis = analyzeProjectScopeMappingChangeGuardrails(store.db, {
+		workspace_identity: worktree,
+		project_pattern: worktree,
+		scope_id: "legacy-remote-b",
+	});
+	expect(analysis.warnings).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({
+				code: "conflicting_repository_mappings",
+				requires_confirmation: true,
+			}),
+		]),
+	);
 
 	upsertProjectScopeSettingsMapping(store.db, {
 		deviceId: store.deviceId,

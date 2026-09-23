@@ -208,7 +208,8 @@ function originDevicesForCandidate(row: ProjectScopeCandidateRow): Array<{ devic
 function repositoryIdentityForRow(row: ProjectScopeCandidateRow): string | null {
 	return normalizeRepositoryWorkspaceIdentity(
 		cleanProjectIdentity(row.repository_identity) ??
-			repositoryIdentityFromMetadata(row.metadata_json),
+			repositoryIdentityFromMetadata(row.metadata_json) ??
+			cleanProjectIdentity(row.git_remote),
 	);
 }
 
