@@ -781,6 +781,7 @@ export type {
 } from "./project-scope-settings.js";
 export {
 	analyzeProjectScopeMappingChangeGuardrails,
+	analyzeProjectScopeMappingChangesGuardrails,
 	deleteProjectScopeSettingsMapping,
 	listProjectScopeCandidates,
 	listProjectScopeInventory,

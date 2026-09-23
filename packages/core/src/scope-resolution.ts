@@ -225,9 +225,7 @@ function exactMappingIdentities(
 	workspaceIdentity: CanonicalWorkspaceIdentity,
 ): string[] {
 	const identities = [workspaceIdentity.value];
-	if (workspaceIdentity.source === "git_repository" && input.allowRepositoryCwdFallback === false) {
-		return identities;
-	}
+	if (input.allowRepositoryCwdFallback === false) return identities;
 	if (
 		workspaceIdentity.source !== "git_repository" &&
 		workspaceIdentity.source !== "git_remote" &&
@@ -245,9 +243,7 @@ function patternMappingIdentities(
 	workspaceIdentity: CanonicalWorkspaceIdentity,
 ): string[] {
 	const identities = [workspaceIdentity.value];
-	if (workspaceIdentity.source === "git_repository" && input.allowRepositoryCwdFallback === false) {
-		return identities;
-	}
+	if (input.allowRepositoryCwdFallback === false) return identities;
 	if (
 		workspaceIdentity.source !== "git_repository" &&
 		workspaceIdentity.source !== "git_remote" &&

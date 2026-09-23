@@ -6,6 +6,7 @@ import { connect } from "./db.js";
 import { REPOSITORY_IDENTITY_METADATA_KEY } from "./project.js";
 import {
 	analyzeProjectScopeMappingChangeGuardrails,
+	analyzeProjectScopeMappingChangesGuardrails,
 	listProjectScopeCandidates,
 	listProjectScopeInventory,
 	upsertProjectScopeSettingsMapping,
@@ -261,6 +262,59 @@ function expectRequestedConflictWarning(store: MemoryStore, tmpDir: string): voi
 	);
 }
 
+function expectRequestedPatternConflictWarning(store: MemoryStore, tmpDir: string): void {
+	const { mainRepo, worktree } = createLinkedWorktree(
+		tmpDir,
+		"requested-pattern-conflict",
+		"https://example.test/acme/requested-pattern-conflict.git",
+	);
+	insertScope(store, "requested-pattern-a");
+	insertScope(store, "requested-pattern-b");
+	store.startSession({ cwd: mainRepo, project: "requested-pattern-conflict" });
+	store.startSession({ cwd: worktree, project: "requested-pattern-conflict" });
+	insertPatternMapping(store, mainRepo, "requested-pattern-a");
+
+	const analysis = analyzeProjectScopeMappingChangeGuardrails(store.db, {
+		project_pattern: worktree,
+		scope_id: "requested-pattern-b",
+	});
+
+	expect(analysis.warnings).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({
+				code: "conflicting_repository_mappings",
+				requires_confirmation: true,
+			}),
+		]),
+	);
+}
+
+function expectBulkRequestedConflictWarning(store: MemoryStore, tmpDir: string): void {
+	const { mainRepo, worktree } = createLinkedWorktree(
+		tmpDir,
+		"bulk-requested-conflict",
+		"https://example.test/acme/bulk-requested-conflict.git",
+	);
+	insertScope(store, "bulk-requested-a");
+	insertScope(store, "bulk-requested-b");
+	store.startSession({ cwd: mainRepo, project: "bulk-requested-conflict" });
+	store.startSession({ cwd: worktree, project: "bulk-requested-conflict" });
+
+	const analyses = analyzeProjectScopeMappingChangesGuardrails(store.db, [
+		{ project_pattern: mainRepo, scope_id: "bulk-requested-a" },
+		{ project_pattern: worktree, scope_id: "bulk-requested-b" },
+	]);
+
+	expect(analyses.flatMap((analysis) => analysis.warnings)).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({
+				code: "conflicting_repository_mappings",
+				requires_confirmation: true,
+			}),
+		]),
+	);
+}
+
 function expectPartialPatternMappingFailsClosed(store: MemoryStore, tmpDir: string): void {
 	const { mainRepo, worktree } = createLinkedWorktree(
 		tmpDir,
@@ -412,7 +466,9 @@ function expectReusedCheckoutHistoryRemainsAmbiguous(store: MemoryStore, tmpDir:
 	const firstRepository = "https://example.test/acme/first.git";
 	const secondRepository = "https://example.test/acme/second.git";
 	insertScope(store, "first-scope");
+	insertScope(store, "second-scope");
 	insertMapping(store, cwd, "first-scope");
+	insertMapping(store, secondRepository, "second-scope");
 	for (const repositoryIdentity of [firstRepository, secondRepository]) {
 		store.db
 			.prepare("INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, ?, ?, ?)")
@@ -438,9 +494,9 @@ function expectReusedCheckoutHistoryRemainsAmbiguous(store: MemoryStore, tmpDir:
 		project_pattern: string;
 		scope_id: string;
 	}>;
-	expect(withRepositoryMappingAliases(store.db, mappings)).toHaveLength(1);
+	expect(withRepositoryMappingAliases(store.db, mappings)).toHaveLength(2);
 	const identifiedSessionId = sessionIdForRepository(store, cwd, secondRepository);
-	expect(resolveSessionScopeId(store.db, { sessionId: identifiedSessionId })).toBe("local-default");
+	expect(resolveSessionScopeId(store.db, { sessionId: identifiedSessionId })).toBe("second-scope");
 	expect(resolveSessionScopeId(store.db, { sessionId: metadataLessSessionId })).toBe(
 		"local-default",
 	);
@@ -450,7 +506,7 @@ function expectReusedCheckoutHistoryRemainsAmbiguous(store: MemoryStore, tmpDir:
 	);
 	expect(
 		candidates.find((candidate) => candidate.workspace_identity === secondRepository),
-	).toMatchObject({ resolved_scope_id: "local-default" });
+	).toMatchObject({ resolved_scope_id: "second-scope" });
 	expect(candidates.find((candidate) => candidate.workspace_identity === cwd)).toMatchObject({
 		mapping_id: null,
 		resolved_scope_id: "local-default",
@@ -478,10 +534,10 @@ function expectReusedCheckoutHistoryRemainsAmbiguous(store: MemoryStore, tmpDir:
 	});
 	expect(
 		store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").pluck().get(memoryId),
-	).toBe("local-default");
+	).toBe("second-scope");
 	expect(
 		store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").pluck().get(remoteMemoryId),
-	).toBe("local-default");
+	).toBe("second-scope");
 }
 
 function expectRecordedSiblingEvidence(store: MemoryStore, tmpDir: string): void {
@@ -597,6 +653,14 @@ describe("repository mapping aliases", () => {
 
 	it("warns before a requested mapping creates a repository conflict", () => {
 		expectRequestedConflictWarning(store, tmpDir);
+	});
+
+	it("warns before a requested pattern creates a repository conflict", () => {
+		expectRequestedPatternConflictWarning(store, tmpDir);
+	});
+
+	it("evaluates bulk mapping drafts as one requested state", () => {
+		expectBulkRequestedConflictWarning(store, tmpDir);
 	});
 
 	it("fails closed when worktrees match conflicting Space patterns", () => {

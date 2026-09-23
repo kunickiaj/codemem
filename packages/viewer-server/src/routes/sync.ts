@@ -39,6 +39,7 @@ import {
 	ACCESS_CLEANUP_OP_TYPE,
 	addSyncScopeToBoundary,
 	analyzeProjectScopeMappingChangeGuardrails,
+	analyzeProjectScopeMappingChangesGuardrails,
 	applyReplicationOps,
 	buildAuthHeaders,
 	buildBaseUrl,
@@ -6145,9 +6146,7 @@ export function syncRoutes(
 				return parseViewerProjectMappingInput(raw as Record<string, unknown>);
 			});
 			releasePublicationMutation = await claimRecipientPolicyPublicationMutation(store.db);
-			const analyses = mappingInputs.map((mappingInput) =>
-				analyzeProjectScopeMappingChangeGuardrails(store.db, mappingInput),
-			);
+			const analyses = analyzeProjectScopeMappingChangesGuardrails(store.db, mappingInputs);
 			const unmapped = analyses.find((analysis) =>
 				analysis.requested_workspace_identity?.startsWith("unmapped:"),
 			);

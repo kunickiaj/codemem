@@ -7,6 +7,7 @@ import {
 	hasConflictingRepositoryMappings,
 	hasRecordedRepositoryWorkspace,
 	normalizeRepositoryWorkspaceIdentity,
+	recordedWorkspacesForRepositoryIdentity,
 	repositoryIdentitiesByWorkspace,
 	repositoryIdentityForWorkspace,
 	withRepositoryMappingAliases,
@@ -18,6 +19,7 @@ import {
 	resolveProjectScope,
 	type ScopeMapping,
 	type ScopeResolutionReason,
+	scopeIdsMatchingProjectPatterns,
 	type WorkspaceIdentitySource,
 } from "./scope-resolution.js";
 import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap-constants.js";
@@ -1119,16 +1121,15 @@ function propagateProjectScopeMappingToSourceOwnedMemories(
 	return moved;
 }
 
-function mappingsWithProjectScopeDraft(
-	db: Database,
-	scopes: SharingDomainSettingsScope[],
+function applyProjectScopeDraft(
+	mappings: ProjectScopeSettingsMapping[],
 	draft: ProjectScopeMappingDraft,
+	syntheticId: number,
 ): ProjectScopeSettingsMapping[] {
-	const mappings = listProjectScopeSettingsMappingsForScopes(db, scopes);
 	if (!draft.projectPattern || !draft.scopeId) return mappings;
 	const now = new Date().toISOString();
 	const requested: ProjectScopeSettingsMapping = {
-		id: draft.existing?.id ?? 0,
+		id: draft.existing?.id ?? syntheticId,
 		workspace_identity: draft.workspaceIdentity,
 		project_pattern: draft.projectPattern,
 		scope_id: draft.scopeId,
@@ -1138,49 +1139,113 @@ function mappingsWithProjectScopeDraft(
 		updated_at: now,
 		guardrail_warnings: [],
 	};
-	return draft.existing
-		? mappings.map((mapping) => (mapping.id === draft.existing?.id ? requested : mapping))
-		: [...mappings, requested];
+	const requestedWorkspace = normalizeRepositoryWorkspaceIdentity(draft.workspaceIdentity);
+	const replaced = mappings.some(
+		(mapping) =>
+			(draft.existing && mapping.id === draft.existing.id) ||
+			(requestedWorkspace != null &&
+				normalizeRepositoryWorkspaceIdentity(mapping.workspace_identity) === requestedWorkspace),
+	);
+	if (!replaced) return [...mappings, requested];
+	return mappings.map((mapping) => {
+		if (draft.existing && mapping.id === draft.existing.id) return requested;
+		if (
+			requestedWorkspace != null &&
+			normalizeRepositoryWorkspaceIdentity(mapping.workspace_identity) === requestedWorkspace
+		) {
+			return requested;
+		}
+		return mapping;
+	});
 }
 
-function candidateForProjectScopeDraft(
+function mappingsWithProjectScopeDrafts(
+	db: Database,
+	scopes: SharingDomainSettingsScope[],
+	drafts: ProjectScopeMappingDraft[],
+): ProjectScopeSettingsMapping[] {
+	return drafts.reduce(
+		(mappings, draft, index) => applyProjectScopeDraft(mappings, draft, -(index + 1)),
+		listProjectScopeSettingsMappingsForScopes(db, scopes),
+	);
+}
+
+function candidateMatchesProjectScopeDraft(
+	db: Database,
+	candidate: ProjectScopeCandidate,
+	draft: ProjectScopeMappingDraft,
+	requested: ProjectScopeSettingsMapping,
+	repositoryIdentities: ReadonlyMap<string, string>,
+	workspacesByRepository: Map<string, ReadonlySet<string>>,
+): boolean {
+	const normalizedWorkspace = normalizeRepositoryWorkspaceIdentity(draft.workspaceIdentity);
+	if (normalizedWorkspace) {
+		const candidateWorkspace = normalizeRepositoryWorkspaceIdentity(candidate.workspace_identity);
+		if (candidateWorkspace === normalizedWorkspace) return true;
+		const repositoryIdentity = repositoryIdentities.get(normalizedWorkspace);
+		return repositoryIdentity != null && candidate.repository_identity === repositoryIdentity;
+	}
+	const identities = new Set(
+		[
+			candidate.workspace_identity,
+			candidate.cwd,
+			candidate.git_remote,
+			candidate.repository_identity,
+		].filter((identity): identity is string => identity != null),
+	);
+	if (candidate.repository_identity) {
+		let repositoryWorkspaces = workspacesByRepository.get(candidate.repository_identity);
+		if (!repositoryWorkspaces) {
+			repositoryWorkspaces = new Set(
+				recordedWorkspacesForRepositoryIdentity(db, candidate.repository_identity).keys(),
+			);
+			workspacesByRepository.set(candidate.repository_identity, repositoryWorkspaces);
+		}
+		for (const workspace of repositoryWorkspaces) {
+			identities.add(workspace);
+		}
+	}
+	return scopeIdsMatchingProjectPatterns([requested], identities).size > 0;
+}
+
+function candidatesForProjectScopeDraft(
 	db: Database,
 	draft: ProjectScopeMappingDraft,
 	scopes: SharingDomainSettingsScope[],
-): ProjectScopeCandidate | null {
-	if (!draft.workspaceIdentity) return null;
-	const mappings = withRepositoryMappingAliases(
-		db,
-		mappingsWithProjectScopeDraft(db, scopes, draft),
-	);
+	mappings: ProjectScopeSettingsMapping[],
+): ProjectScopeCandidate[] {
+	if (!draft.projectPattern || !draft.scopeId) return [];
+	const requested = applyProjectScopeDraft([], draft, -1)[0];
+	if (!requested) return [];
+	const effectiveMappings = withRepositoryMappingAliases(db, mappings);
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
+	const workspacesByRepository = new Map<string, ReadonlySet<string>>();
 	const candidates = withCandidateGuardrails(
 		collectProjectScopeCandidates(db, {
 			candidateCeiling: null,
 			excludePeerReceived: false,
-			mappings,
+			mappings: effectiveMappings,
 			scopes,
 		}),
 	);
-	const normalizedWorkspace = normalizeRepositoryWorkspaceIdentity(draft.workspaceIdentity);
-	const repositoryIdentity = normalizedWorkspace
-		? repositoryIdentitiesByWorkspace(db).get(normalizedWorkspace)
-		: null;
-	return (
-		candidates.find(
-			(candidate) =>
-				candidate.workspace_identity === draft.workspaceIdentity ||
-				(repositoryIdentity != null && candidate.repository_identity === repositoryIdentity),
-		) ?? null
+	return candidates.filter((candidate) =>
+		candidateMatchesProjectScopeDraft(
+			db,
+			candidate,
+			draft,
+			requested,
+			repositoryIdentities,
+			workspacesByRepository,
+		),
 	);
 }
 
-export function analyzeProjectScopeMappingChangeGuardrails(
+function analyzeProjectScopeMappingDraftGuardrails(
 	db: Database,
-	input: UpsertProjectScopeMappingInput,
+	draft: ProjectScopeMappingDraft,
+	scopes: SharingDomainSettingsScope[],
+	mappings: ProjectScopeSettingsMapping[],
 ): ProjectScopeMappingChangeGuardrailAnalysis {
-	ensureScopeBackfillScopes(db);
-	const draft = resolveProjectScopeMappingDraft(db, input);
-	const scopes = listSharingDomainSettingsScopes(db);
 	const scopesById = scopeLookup(scopes);
 	const warnings: ProjectScopeGuardrailWarning[] = [];
 	if (draft.projectPattern && draft.scopeId) {
@@ -1196,9 +1261,8 @@ export function analyzeProjectScopeMappingChangeGuardrails(
 			),
 		);
 	}
-	const candidate = candidateForProjectScopeDraft(db, draft, scopes);
 	const requestedScope = scopesById.get(draft.scopeId);
-	if (candidate) {
+	for (const candidate of candidatesForProjectScopeDraft(db, draft, scopes, mappings)) {
 		warnings.push(
 			...candidate.guardrail_warnings.filter(
 				(warning) => warning.code !== "basename_collision_review" || isOrgLikeScope(requestedScope),
@@ -1230,6 +1294,28 @@ export function analyzeProjectScopeMappingChangeGuardrails(
 		requested_project_pattern: draft.projectPattern,
 		warnings: dedupeGuardrailWarnings(warnings),
 	};
+}
+
+export function analyzeProjectScopeMappingChangesGuardrails(
+	db: Database,
+	inputs: UpsertProjectScopeMappingInput[],
+): ProjectScopeMappingChangeGuardrailAnalysis[] {
+	ensureScopeBackfillScopes(db);
+	const scopes = listSharingDomainSettingsScopes(db);
+	const drafts = inputs.map((input) => resolveProjectScopeMappingDraft(db, input));
+	const mappings = mappingsWithProjectScopeDrafts(db, scopes, drafts);
+	return drafts.map((draft) =>
+		analyzeProjectScopeMappingDraftGuardrails(db, draft, scopes, mappings),
+	);
+}
+
+export function analyzeProjectScopeMappingChangeGuardrails(
+	db: Database,
+	input: UpsertProjectScopeMappingInput,
+): ProjectScopeMappingChangeGuardrailAnalysis {
+	const analysis = analyzeProjectScopeMappingChangesGuardrails(db, [input])[0];
+	if (!analysis) throw new Error("project_scope_mapping_analysis_missing");
+	return analysis;
 }
 
 /**
