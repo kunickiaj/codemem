@@ -1,6 +1,7 @@
 import { isAbsolute } from "node:path";
 import type { Database } from "./db.js";
 import { repositoryIdentityFromMetadata, resolveGitRepositoryIdentity } from "./project.js";
+import { cleanProjectIdentity } from "./project-identity.js";
 import {
 	LOCAL_DEFAULT_SCOPE_ID,
 	resolveProjectScope,
@@ -61,20 +62,75 @@ function gitRepositoryIdentity(cwd: string, bypassCache: boolean): string | null
 	return normalizeIdentity(resolveGitRepositoryIdentity(cwd)?.identity);
 }
 
-function recordedRepositoryIdentities(rows: Array<{ cwd: string; repository_identity: string }>): {
+function recordedRepositoryIdentity(row: {
+	git_remote?: string | null;
+	metadata_json?: string | null;
+	repository_identity?: string | null;
+}): string | null {
+	return normalizeIdentity(
+		cleanProjectIdentity(row.repository_identity) ??
+			repositoryIdentityFromMetadata(row.metadata_json) ??
+			cleanProjectIdentity(row.git_remote),
+	);
+}
+
+function recordedRepositoryEvidence(row: {
+	cwd: string;
+	git_remote?: string | null;
+	metadata_json?: string | null;
+	repository_identity?: string | null;
+}): { cwd: string; fromMetadata: boolean; repositoryIdentity: string } | null {
+	const cwd = normalizeIdentity(row.cwd);
+	if (!cwd) return null;
+	const metadataIdentity = normalizeIdentity(
+		cleanProjectIdentity(row.repository_identity) ??
+			repositoryIdentityFromMetadata(row.metadata_json),
+	);
+	const repositoryIdentity =
+		metadataIdentity ?? normalizeIdentity(cleanProjectIdentity(row.git_remote));
+	if (!repositoryIdentity) return null;
+	return { cwd, fromMetadata: metadataIdentity != null, repositoryIdentity };
+}
+
+function addRecordedRepositoryIdentity(
+	identities: Map<string, Set<string>>,
+	cwd: string,
+	repositoryIdentity: string,
+): void {
+	const recorded = identities.get(cwd) ?? new Set<string>();
+	recorded.add(repositoryIdentity);
+	identities.set(cwd, recorded);
+}
+
+function recordedRepositoryIdentities(
+	rows: Array<{
+		cwd: string;
+		git_remote?: string | null;
+		metadata_json?: string | null;
+		repository_identity?: string | null;
+	}>,
+): {
 	byWorkspace: Map<string, Set<string>>;
 	known: Set<string>;
 } {
-	const byWorkspace = new Map<string, Set<string>>();
+	const metadataByWorkspace = new Map<string, Set<string>>();
+	const remoteByWorkspace = new Map<string, Set<string>>();
 	const known = new Set<string>();
 	for (const row of rows) {
-		const cwd = normalizeIdentity(row.cwd);
-		const repositoryIdentity = normalizeIdentity(row.repository_identity);
-		if (repositoryIdentity) known.add(repositoryIdentity);
-		if (!cwd || !repositoryIdentity) continue;
-		const recorded = byWorkspace.get(cwd) ?? new Set<string>();
-		recorded.add(repositoryIdentity);
+		const evidence = recordedRepositoryEvidence(row);
+		if (!evidence) continue;
+		addRecordedRepositoryIdentity(
+			evidence.fromMetadata ? metadataByWorkspace : remoteByWorkspace,
+			evidence.cwd,
+			evidence.repositoryIdentity,
+		);
+	}
+	const byWorkspace = new Map<string, Set<string>>();
+	for (const cwd of new Set([...metadataByWorkspace.keys(), ...remoteByWorkspace.keys()])) {
+		const recorded = metadataByWorkspace.get(cwd) ?? remoteByWorkspace.get(cwd);
+		if (!recorded) continue;
 		byWorkspace.set(cwd, recorded);
+		for (const repositoryIdentity of recorded) known.add(repositoryIdentity);
 	}
 	return { byWorkspace, known };
 }
@@ -86,14 +142,14 @@ export function recordedRepositoryIdentityEvidence(db: Database): {
 } {
 	const rows = db
 		.prepare(
-			`SELECT DISTINCT cwd,
-			        json_extract(metadata_json, '$.codemem_repository_identity') AS repository_identity
+			`SELECT DISTINCT cwd, git_remote, metadata_json
 			 FROM sessions
 			 WHERE cwd IS NOT NULL AND TRIM(cwd) <> ''
-			   AND json_valid(metadata_json)
-			   AND json_type(metadata_json, '$.codemem_repository_identity') = 'text'`,
+			   AND ((json_valid(metadata_json)
+			         AND json_type(metadata_json, '$.codemem_repository_identity') = 'text')
+			        OR (git_remote IS NOT NULL AND TRIM(git_remote) <> ''))`,
 		)
-		.all() as Array<{ cwd: string; repository_identity: string }>;
+		.all() as Array<{ cwd: string; git_remote: string | null; metadata_json: string | null }>;
 	const recorded = recordedRepositoryIdentities(rows);
 	const byWorkspace = new Map<string, string>();
 	const recordedWorkspaces = new Set(recorded.byWorkspace.keys());
@@ -162,7 +218,9 @@ export function repositoryIdentityForWorkspace(
 	const recorded =
 		normalizeIdentity(input.repositoryIdentity) ??
 		normalizeIdentity(repositoryIdentityFromMetadata(input.metadataJson));
-	if (recorded || normalizeIdentity(input.gitRemote)) return recorded;
+	if (recorded) return recorded;
+	const gitRemote = normalizeIdentity(cleanProjectIdentity(input.gitRemote));
+	if (gitRemote) return gitRemote;
 	const cwd = normalizeIdentity(input.cwd);
 	return cwd ? (repositoryIdentities.get(cwd) ?? null) : null;
 }
@@ -177,22 +235,16 @@ export function recordedRepositoryIdentitiesByWorkspace(
 }
 
 function collectRecordedRepositoryEvidence(
-	rows: Array<{ cwd: string; metadata_json: string | null }>,
+	rows: Array<{ cwd: string; git_remote: string | null; metadata_json: string | null }>,
 	requested: ReadonlySet<string>,
 ): { known: Set<string>; recordedByWorkspace: Map<string, Set<string>> } {
-	const known = new Set<string>();
-	const recordedByWorkspace = new Map<string, Set<string>>();
-	for (const row of rows) {
-		const cwd = normalizeIdentity(row.cwd);
-		const repositoryIdentity = normalizeIdentity(repositoryIdentityFromMetadata(row.metadata_json));
-		if (!repositoryIdentity) continue;
-		known.add(repositoryIdentity);
-		if (!cwd || !requested.has(cwd)) continue;
-		const recorded = recordedByWorkspace.get(cwd) ?? new Set<string>();
-		recorded.add(repositoryIdentity);
-		recordedByWorkspace.set(cwd, recorded);
-	}
-	return { known, recordedByWorkspace };
+	const recorded = recordedRepositoryIdentities(rows);
+	return {
+		known: recorded.known,
+		recordedByWorkspace: new Map(
+			[...recorded.byWorkspace].filter(([workspace]) => requested.has(workspace)),
+		),
+	};
 }
 
 function addUnambiguousRecordedEvidence(
@@ -253,10 +305,10 @@ export function recordedRepositoryIdentityEvidenceByWorkspace(
 	const requested = new Set(normalizedWorkspaces);
 	const rows = db
 		.prepare(
-			`SELECT cwd, metadata_json FROM sessions
+			`SELECT cwd, git_remote, metadata_json FROM sessions
 			 WHERE cwd IS NOT NULL AND TRIM(cwd) <> '' ORDER BY id DESC`,
 		)
-		.all() as Array<{ cwd: string; metadata_json: string | null }>;
+		.all() as Array<{ cwd: string; git_remote: string | null; metadata_json: string | null }>;
 	const evidence = collectRecordedRepositoryEvidence(rows, requested);
 	addUnambiguousRecordedEvidence(identities, recordedWorkspaces, evidence.recordedByWorkspace);
 	addDiscoveredRepositoryEvidence(
@@ -277,18 +329,26 @@ export function recordedWorkspacesForRepositoryIdentity(
 	if (!normalizedRepositoryIdentity) return new Map();
 	const rows = db
 		.prepare(
-			`SELECT DISTINCT cwd
+			`SELECT DISTINCT cwd, git_remote, metadata_json
 			 FROM sessions
 			 WHERE cwd IS NOT NULL AND TRIM(cwd) <> ''
-			   AND json_valid(metadata_json)
-			   AND json_type(metadata_json, '$.codemem_repository_identity') = 'text'
-			   AND RTRIM(REPLACE(TRIM(json_extract(metadata_json, '$.codemem_repository_identity')), char(92), '/'), '/') = ?
+			   AND (RTRIM(REPLACE(TRIM(git_remote), char(92), '/'), '/') = ?
+			        OR (json_valid(metadata_json)
+			            AND json_type(metadata_json, '$.codemem_repository_identity') = 'text'
+			            AND RTRIM(REPLACE(TRIM(json_extract(metadata_json, '$.codemem_repository_identity')), char(92), '/'), '/') = ?))
 			 ORDER BY cwd`,
 		)
-		.all(normalizedRepositoryIdentity) as Array<{ cwd: string }>;
+		.all(normalizedRepositoryIdentity, normalizedRepositoryIdentity) as Array<{
+		cwd: string;
+		git_remote: string | null;
+		metadata_json: string | null;
+	}>;
+	const matchingRows = rows.filter(
+		(row) => recordedRepositoryIdentity(row) === normalizedRepositoryIdentity,
+	);
 	const evidence = recordedRepositoryIdentityEvidenceByWorkspace(
 		db,
-		rows.map((row) => row.cwd),
+		matchingRows.map((row) => row.cwd),
 	);
 	return new Map(
 		[...evidence.byWorkspace].filter(([, identity]) => identity === normalizedRepositoryIdentity),

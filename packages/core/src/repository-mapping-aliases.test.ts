@@ -234,6 +234,69 @@ function expectConflictPropagationFailsClosed(store: MemoryStore, tmpDir: string
 	}
 }
 
+function expectLegacyRemoteConflictsFailClosed(store: MemoryStore): void {
+	const repositoryIdentity = "https://example.test/acme/legacy-remote-conflict.git";
+	const main = "/workspace/legacy-remote-main";
+	const worktree = "/workspace/legacy-remote-worktree";
+	insertScope(store, "legacy-remote-a");
+	insertScope(store, "legacy-remote-b");
+	const sessionIds = [main, worktree].map((cwd, index) =>
+		Number(
+			store.db
+				.prepare(
+					`INSERT INTO sessions(started_at, cwd, project, git_remote, metadata_json)
+					 VALUES (?, ?, 'legacy-remote-conflict', ?, '{}')`,
+				)
+				.run(
+					`2026-09-23T0${index}:00:00.000Z`,
+					cwd,
+					index === 0 ? repositoryIdentity : `${repositoryIdentity}/`,
+				).lastInsertRowid,
+		),
+	);
+	const memoryIds = sessionIds.map((sessionId, index) =>
+		store.remember(sessionId, "discovery", `legacy remote ${index}`, `legacy remote ${index}`),
+	);
+
+	upsertProjectScopeSettingsMapping(store.db, {
+		deviceId: store.deviceId,
+		workspace_identity: main,
+		project_pattern: main,
+		scope_id: "legacy-remote-a",
+	});
+	for (const memoryId of memoryIds) {
+		expect(
+			store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").pluck().get(memoryId),
+		).toBe("legacy-remote-a");
+	}
+
+	upsertProjectScopeSettingsMapping(store.db, {
+		deviceId: store.deviceId,
+		workspace_identity: worktree,
+		project_pattern: worktree,
+		scope_id: "legacy-remote-b",
+	});
+	for (const sessionId of sessionIds) {
+		expect(resolveSessionScopeId(store.db, { sessionId })).toBe("local-default");
+	}
+	for (const memoryId of memoryIds) {
+		expect(
+			store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").pluck().get(memoryId),
+		).toBe("local-default");
+	}
+	const project = listProjectScopeInventory(store.db, { limit: 10 }).projects.find(
+		(item) => item.workspace_identity === repositoryIdentity,
+	);
+	expect(project).toMatchObject({
+		resolved_scope_id: "local-default",
+		session_count: 2,
+		statuses: expect.arrayContaining(["needs_attention"]),
+		guardrail_warnings: expect.arrayContaining([
+			expect.objectContaining({ code: "conflicting_repository_mappings" }),
+		]),
+	});
+}
+
 function expectRequestedConflictWarning(store: MemoryStore, tmpDir: string): void {
 	const { mainRepo, worktree } = createLinkedWorktree(
 		tmpDir,
@@ -682,6 +745,10 @@ describe("repository mapping aliases", () => {
 
 	it("moves historical memories local when a mapping creates a repository conflict", () => {
 		expectConflictPropagationFailsClosed(store, tmpDir);
+	});
+
+	it("fails closed for conflicting worktrees recorded only by git remote", () => {
+		expectLegacyRemoteConflictsFailClosed(store);
 	});
 
 	it("warns before a requested mapping creates a repository conflict", () => {
