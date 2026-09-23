@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { type Database, fromJson, toJson } from "./db.js";
 import { hasLocalInventoryIdentity } from "./local-project-inventory.js";
-import { repositoryIdentityFromMetadata } from "./project.js";
+import { REPOSITORY_IDENTITY_METADATA_KEY, repositoryIdentityFromMetadata } from "./project.js";
 import { cleanProjectIdentity } from "./project-identity.js";
 import {
 	hasConflictingRepositoryMappings,
@@ -269,6 +269,34 @@ function knownRepositoryIdentitiesForMappings(
 	mappings: ProjectScopeSettingsMapping[],
 ): Array<string | null> {
 	return mappings.flatMap((mapping) => [mapping.workspace_identity, mapping.project_pattern]);
+}
+
+function persistMappedRepositoryIdentityEvidence(
+	db: Database,
+	mappings: ProjectScopeSettingsMapping[],
+): void {
+	const identities = repositoryIdentitiesByWorkspace(db, {
+		knownRepositoryIdentities: knownRepositoryIdentitiesForMappings(mappings),
+	});
+	const rows = db
+		.prepare(
+			"SELECT id, cwd, metadata_json FROM sessions WHERE cwd IS NOT NULL AND TRIM(cwd) <> ''",
+		)
+		.all() as Array<{ id: number; cwd: string; metadata_json: string | null }>;
+	const update = db.prepare("UPDATE sessions SET metadata_json = ? WHERE id = ?");
+	for (const row of rows) {
+		const cwd = normalizeRepositoryWorkspaceIdentity(row.cwd);
+		const repositoryIdentity = cwd ? identities.get(cwd) : null;
+		if (!repositoryIdentity) continue;
+		const metadata = fromJson(row.metadata_json);
+		if (cleanProjectIdentity(metadata[REPOSITORY_IDENTITY_METADATA_KEY] as string | undefined)) {
+			continue;
+		}
+		update.run(
+			toJson({ ...metadata, [REPOSITORY_IDENTITY_METADATA_KEY]: repositoryIdentity }),
+			row.id,
+		);
+	}
 }
 
 function mergeWorktree(project: ProjectScopeInventoryProject, row: ProjectScopeCandidateRow): void {
@@ -2030,6 +2058,7 @@ export function deleteProjectScopeSettingsMapping(
 	const mapping = getProjectScopeSettingsMappingById(db, id);
 	if (!mapping) return false;
 	const previousMappings = listProjectScopeSettingsMappings(db);
+	persistMappedRepositoryIdentityEvidence(db, previousMappings);
 	const result = db.prepare("DELETE FROM project_scope_mappings WHERE id = ?").run(id);
 	const deleted = Number(result.changes ?? 0) > 0;
 	if (deleted) {

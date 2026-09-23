@@ -558,7 +558,7 @@ function expectBulkSimulationPreservesNormalizedDuplicates(store: MemoryStore): 
 
 function expectMappedRepositorySeedsCandidateDiscovery(store: MemoryStore, tmpDir: string): void {
 	const remote = "https://example.test/acme/mapping-seeded-candidate.git";
-	const { mainRepo } = createLinkedWorktree(tmpDir, "mapping-seeded-candidate", remote);
+	const { mainRepo, worktree } = createLinkedWorktree(tmpDir, "mapping-seeded-candidate", remote);
 	insertScope(store, "mapping-seeded-candidate");
 	insertMapping(store, remote, "mapping-seeded-candidate");
 	const sessionId = Number(
@@ -600,6 +600,18 @@ function expectMappedRepositorySeedsCandidateDiscovery(store: MemoryStore, tmpDi
 	expect(
 		store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").pluck().get(memoryId),
 	).toBe("local-default");
+	insertScope(store, "mapping-seeded-conflict");
+	insertPatternMapping(store, mainRepo, "mapping-seeded-candidate");
+	insertPatternMapping(store, worktree, "mapping-seeded-conflict");
+	const worktreeSessionId = Number(
+		store.db
+			.prepare(
+				"INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, ?, ?, '{}')",
+			)
+			.run("2026-09-25T00:00:00.000Z", worktree, "mapping-seeded-candidate").lastInsertRowid,
+	);
+	expect(resolveSessionScopeId(store.db, { sessionId })).toBe("local-default");
+	expect(resolveSessionScopeId(store.db, { sessionId: worktreeSessionId })).toBe("local-default");
 }
 
 function expectMovedMappingAnalyzesPreviousRepository(store: MemoryStore, tmpDir: string): void {
