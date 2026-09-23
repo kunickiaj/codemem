@@ -1286,37 +1286,43 @@ describe("historical repository share safeguards", () => {
 	});
 
 	it("rejects an existing canonical mapping before provisioning effects", async () => {
-		const db = new Database(":memory:");
-		try {
-			initTestSchema(db);
-			const operationId = "share-canonical-mapping-conflict";
-			insertAcceptedLegacyCwdOperation(db, operationId);
-			includeHistoricalRepositoryMemory(db, operationId);
-			const boundaryId =
-				planShareProvisioning(db, { operationId, initiatingDeviceId: "owner" }).projects[0]
-					?.boundaryId ?? "missing";
-			const deps = successfulProvisioningDependencies(boundaryId);
-			db.prepare(`INSERT INTO project_scope_mappings(
-				workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
-			 ) VALUES (?, ?, 'other-scope', 1000, 'user', ?, ?)`).run(
-				remote,
-				remote,
-				createdAt,
-				createdAt,
-			);
-			await expect(
-				executeShareProvisioning(db, { operationId, initiatingDeviceId: "owner" }, deps),
-			).rejects.toThrow("project_mapping_conflict");
-			expect(deps.createOrGetBoundary).not.toHaveBeenCalled();
-			expect(deps.grantMembership).not.toHaveBeenCalled();
-			expect(
-				db
-					.prepare("SELECT scope_id FROM memory_items WHERE import_key = 'historical:api'")
-					.pluck()
-					.get(),
-			).toBe("source-space");
-		} finally {
-			db.close();
+		for (const [workspaceIdentity, pattern] of [
+			[remote, remote],
+			[null, remote],
+			[`${remote}/`, `${remote}/`],
+		] as const) {
+			const db = new Database(":memory:");
+			try {
+				initTestSchema(db);
+				const operationId = "share-canonical-mapping-conflict";
+				insertAcceptedLegacyCwdOperation(db, operationId);
+				includeHistoricalRepositoryMemory(db, operationId);
+				const boundaryId =
+					planShareProvisioning(db, { operationId, initiatingDeviceId: "owner" }).projects[0]
+						?.boundaryId ?? "missing";
+				const deps = successfulProvisioningDependencies(boundaryId);
+				db.prepare(`INSERT INTO project_scope_mappings(
+					workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+				 ) VALUES (?, ?, 'other-scope', 1000, 'user', ?, ?)`).run(
+					workspaceIdentity,
+					pattern,
+					createdAt,
+					createdAt,
+				);
+				await expect(
+					executeShareProvisioning(db, { operationId, initiatingDeviceId: "owner" }, deps),
+				).rejects.toThrow("project_mapping_conflict");
+				expect(deps.createOrGetBoundary).not.toHaveBeenCalled();
+				expect(deps.grantMembership).not.toHaveBeenCalled();
+				expect(
+					db
+						.prepare("SELECT scope_id FROM memory_items WHERE import_key = 'historical:api'")
+						.pluck()
+						.get(),
+				).toBe("source-space");
+			} finally {
+				db.close();
+			}
 		}
 	});
 });

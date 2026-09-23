@@ -48,6 +48,7 @@ const AUTOMATIC_WAITING_DEVICE_RETRY_COOLDOWN_MS = 5 * 60 * 1000;
 const TERMINAL_SHARE_MAINTENANCE_ERRORS = new Set([
 	"coordinator_not_configured",
 	"conflicting_repository_mappings",
+	"project_mapping_conflict",
 	"team_sharing_not_configured",
 	"team_selection_ambiguous",
 	"initiating_device_not_reviewed",
