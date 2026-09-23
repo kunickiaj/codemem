@@ -258,8 +258,17 @@ function identifyRepositoryRow(
 function repositoryIdentitiesByCwd(
 	db: Database,
 	_rows: ProjectScopeCandidateRow[],
+	mappings: ProjectScopeSettingsMapping[] = [],
 ): Map<string, string> {
-	return repositoryIdentitiesByWorkspace(db);
+	return repositoryIdentitiesByWorkspace(db, {
+		knownRepositoryIdentities: knownRepositoryIdentitiesForMappings(mappings),
+	});
+}
+
+function knownRepositoryIdentitiesForMappings(
+	mappings: ProjectScopeSettingsMapping[],
+): Array<string | null> {
+	return mappings.flatMap((mapping) => [mapping.workspace_identity, mapping.project_pattern]);
 }
 
 function mergeWorktree(project: ProjectScopeInventoryProject, row: ProjectScopeCandidateRow): void {
@@ -1106,7 +1115,9 @@ function propagateProjectScopeMappingToSourceOwnedMemories(
 		? withRepositoryMappingAliases(db, previousMappings)
 		: mappings;
 	const now = new Date().toISOString();
-	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db, {
+		knownRepositoryIdentities: knownRepositoryIdentitiesForMappings([...oldMappings, ...mappings]),
+	});
 	const oldConflictsByRepository = new Map<string, boolean>();
 	const conflictsByRepository = new Map<string, boolean>();
 	let moved = 0;
@@ -1400,10 +1411,7 @@ function collectProjectScopeCandidates(
 	const queries = candidatePageQueries(db, input.excludePeerReceived);
 	const seen = new Set<string>();
 	const repositories = repositoryIdentitiesByWorkspace(db, {
-		knownRepositoryIdentities: input.mappings.flatMap((mapping) => [
-			mapping.workspace_identity,
-			mapping.project_pattern,
-		]),
+		knownRepositoryIdentities: knownRepositoryIdentitiesForMappings(input.mappings),
 	});
 	const conflictsByRepository = new Map<string, boolean>();
 	const candidates: ProjectScopeCandidate[] = [];
@@ -1689,12 +1697,11 @@ function mappingOnlyProject(mapping: ProjectScopeSettingsMapping): ProjectScopeI
 }
 
 function appendMappingOnlyProjects(
-	db: Database,
 	mappings: ProjectScopeSettingsMapping[],
 	byIdentity: Map<string, ProjectScopeInventoryProject>,
 	inventory: ProjectScopeInventoryProject[],
+	repositoryIdentityByWorkspace: Map<string, string>,
 ): void {
-	const repositoryIdentityByWorkspace = repositoryIdentitiesByWorkspace(db);
 	for (const mapping of mappings) {
 		if (!mapping.workspace_identity) continue;
 		const normalized = normalizeWorkspaceIdentity(mapping.workspace_identity) ?? "";
@@ -1719,7 +1726,7 @@ function buildProjectScopeInventory(
 ): BuiltProjectScopeInventory {
 	const byIdentity = new Map<string, ProjectScopeInventoryProject>();
 	const inventory: ProjectScopeInventoryProject[] = [];
-	const repositoryIdentityByCwd = repositoryIdentitiesByCwd(db, rows);
+	const repositoryIdentityByCwd = repositoryIdentitiesByCwd(db, rows, mappings);
 	const conflictsByRepository = new Map<string, boolean>();
 	for (const row of rows) {
 		const identifiedRow = identifyRepositoryRow(row, repositoryIdentityByCwd);
@@ -1783,7 +1790,12 @@ export function listProjectScopeInventory(
 		scopes,
 	);
 
-	appendMappingOnlyProjects(db, mappings, byIdentity, inventory);
+	const repositoryIdentityByWorkspace = repositoryIdentitiesByCwd(
+		db,
+		[...rows, ...bootstrapRows],
+		mappings,
+	);
+	appendMappingOnlyProjects(mappings, byIdentity, inventory, repositoryIdentityByWorkspace);
 
 	const withGuardrails = withCandidateGuardrails(inventory).map((project, index) => {
 		const original = inventory[index];

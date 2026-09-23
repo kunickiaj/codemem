@@ -561,15 +561,45 @@ function expectMappedRepositorySeedsCandidateDiscovery(store: MemoryStore, tmpDi
 	const { mainRepo } = createLinkedWorktree(tmpDir, "mapping-seeded-candidate", remote);
 	insertScope(store, "mapping-seeded-candidate");
 	insertMapping(store, remote, "mapping-seeded-candidate");
-	store.db
-		.prepare("INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, ?, ?, '{}')")
-		.run("2026-09-24T00:00:00.000Z", mainRepo, "mapping-seeded-candidate");
+	const sessionId = Number(
+		store.db
+			.prepare(
+				"INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, ?, ?, '{}')",
+			)
+			.run("2026-09-24T00:00:00.000Z", mainRepo, "mapping-seeded-candidate").lastInsertRowid,
+	);
 
 	expect(
 		listProjectScopeCandidates(store.db).find(
 			(candidate) => candidate.workspace_identity === remote,
 		),
 	).toMatchObject({ repository_identity: remote, resolved_scope_id: "mapping-seeded-candidate" });
+	const inventory = listProjectScopeInventory(store.db, { limit: 10 });
+	const matchingProjects = inventory.projects.filter((project) =>
+		[remote, mainRepo].includes(project.workspace_identity),
+	);
+	expect(matchingProjects).toHaveLength(1);
+	expect(matchingProjects[0]).toMatchObject({
+		workspace_identity: remote,
+		resolved_scope_id: "mapping-seeded-candidate",
+	});
+
+	const memoryId = store.remember(sessionId, "discovery", "mapped legacy", "mapped legacy");
+	expect(
+		store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").pluck().get(memoryId),
+	).toBe("mapping-seeded-candidate");
+	const mappingId = Number(
+		store.db
+			.prepare("SELECT id FROM project_scope_mappings WHERE scope_id = ?")
+			.pluck()
+			.get("mapping-seeded-candidate"),
+	);
+	expect(deleteProjectScopeSettingsMapping(store.db, mappingId, { deviceId: store.deviceId })).toBe(
+		true,
+	);
+	expect(
+		store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").pluck().get(memoryId),
+	).toBe("local-default");
 }
 
 function expectDeleteConflictPropagation(store: MemoryStore, tmpDir: string): void {
