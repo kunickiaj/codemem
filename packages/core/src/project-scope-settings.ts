@@ -7,7 +7,6 @@ import {
 	hasConflictingRepositoryMappings,
 	hasRecordedRepositoryWorkspace,
 	normalizeRepositoryWorkspaceIdentity,
-	recordedWorkspacesForRepositoryIdentity,
 	repositoryIdentitiesByWorkspace,
 	repositoryIdentityForWorkspace,
 	withRepositoryMappingAliases,
@@ -1225,7 +1224,6 @@ function resolveProjectScopeMappingDrafts(
 }
 
 function candidateMatchesProjectScopeDraft(
-	db: Database,
 	candidate: ProjectScopeCandidate,
 	mapping: ProjectScopeSettingsMapping,
 	repositoryIdentities: ReadonlyMap<string, string>,
@@ -1247,14 +1245,7 @@ function candidateMatchesProjectScopeDraft(
 		].filter((identity): identity is string => identity != null),
 	);
 	if (candidate.repository_identity) {
-		let repositoryWorkspaces = workspacesByRepository.get(candidate.repository_identity);
-		if (!repositoryWorkspaces) {
-			repositoryWorkspaces = new Set(
-				recordedWorkspacesForRepositoryIdentity(db, candidate.repository_identity).keys(),
-			);
-			workspacesByRepository.set(candidate.repository_identity, repositoryWorkspaces);
-		}
-		for (const workspace of repositoryWorkspaces) {
+		for (const workspace of workspacesByRepository.get(candidate.repository_identity) ?? []) {
 			identities.add(workspace);
 		}
 	}
@@ -1271,8 +1262,19 @@ function candidatesForProjectScopeDraft(
 	const requested = projectScopeMappingFromDraft(draft, -1);
 	if (!requested) return [];
 	const effectiveMappings = withRepositoryMappingAliases(db, mappings);
-	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
-	const workspacesByRepository = new Map<string, ReadonlySet<string>>();
+	const affectedMappings = draft.existing ? [requested, draft.existing] : [requested];
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db, {
+		knownRepositoryIdentities: knownRepositoryIdentitiesForMappings([
+			...effectiveMappings,
+			...affectedMappings,
+		]),
+	});
+	const workspacesByRepository = new Map<string, Set<string>>();
+	for (const [workspace, repository] of repositoryIdentities) {
+		const workspaces = workspacesByRepository.get(repository) ?? new Set<string>();
+		workspaces.add(workspace);
+		workspacesByRepository.set(repository, workspaces);
+	}
 	const candidates = withCandidateGuardrails(
 		collectProjectScopeCandidates(db, {
 			candidateCeiling: null,
@@ -1281,11 +1283,9 @@ function candidatesForProjectScopeDraft(
 			scopes,
 		}),
 	);
-	const affectedMappings = draft.existing ? [requested, draft.existing] : [requested];
 	return candidates.filter((candidate) =>
 		affectedMappings.some((mapping) =>
 			candidateMatchesProjectScopeDraft(
-				db,
 				candidate,
 				mapping,
 				repositoryIdentities,

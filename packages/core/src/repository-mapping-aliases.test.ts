@@ -310,7 +310,6 @@ function expectLegacyRemoteConflictsFailClosed(store: MemoryStore): void {
 		).toBe("legacy-remote-a");
 	}
 	const analysis = analyzeProjectScopeMappingChangeGuardrails(store.db, {
-		workspace_identity: worktree,
 		project_pattern: worktree,
 		scope_id: "legacy-remote-b",
 	});
@@ -645,6 +644,34 @@ function expectMappedRepositorySeedsCandidateDiscovery(store: MemoryStore, tmpDi
 	);
 	expect(resolveSessionScopeId(store.db, { sessionId })).toBe("local-default");
 	expect(resolveSessionScopeId(store.db, { sessionId: worktreeSessionId })).toBe("local-default");
+}
+
+function expectDiscoveredSiblingDraftRequiresConflictConfirmation(
+	store: MemoryStore,
+	tmpDir: string,
+): void {
+	const remote = "https://example.test/acme/discovered-draft-sibling.git";
+	const { mainRepo, worktree } = createLinkedWorktree(tmpDir, "discovered-draft-sibling", remote);
+	insertScope(store, "discovered-draft-a");
+	insertScope(store, "discovered-draft-b");
+	insertPatternMapping(store, mainRepo, "discovered-draft-a");
+	for (const cwd of [worktree, mainRepo]) {
+		store.db
+			.prepare("INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, ?, ?, ?)")
+			.run(
+				"2026-09-24T00:00:00.000Z",
+				cwd,
+				"discovered-draft-sibling",
+				cwd === mainRepo ? JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: remote }) : "{}",
+			);
+	}
+	const analysis = analyzeProjectScopeMappingChangeGuardrails(store.db, {
+		project_pattern: worktree,
+		scope_id: "discovered-draft-b",
+	});
+	expect(analysis.warnings).toEqual(
+		expect.arrayContaining([expect.objectContaining({ code: "conflicting_repository_mappings" })]),
+	);
 }
 
 function expectMovedMappingAnalyzesPreviousRepository(store: MemoryStore, tmpDir: string): void {
@@ -1262,6 +1289,7 @@ describe("repository mapping aliases", () => {
 		expectBulkNormalizedLookupMatchesPersistence(store);
 		expectDeleteConflictPropagation(store, tmpDir);
 		expectMappedRepositorySeedsCandidateDiscovery(store, tmpDir);
+		expectDiscoveredSiblingDraftRequiresConflictConfirmation(store, tmpDir);
 		expectMovedMappingAnalyzesPreviousRepository(store, tmpDir);
 	});
 
