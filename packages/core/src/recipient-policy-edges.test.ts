@@ -1290,7 +1290,7 @@ describe("recipient-policy edge repository inference", () => {
 		).toEqual([
 			expect.objectContaining({
 				canonicalProjectIdentity: PROJECT_A,
-				existingMemoryCount: 3,
+				existingMemoryCount: 2,
 			}),
 		]);
 	});

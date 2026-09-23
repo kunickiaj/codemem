@@ -2445,10 +2445,14 @@ describe("recipient-policy onboarding repository inference", () => {
 			expect(preview.projects).toEqual([
 				expect.objectContaining({
 					canonicalProjectIdentity: PROJECT_A,
-					existingMemoryCount: 3,
+					existingMemoryCount: 2,
 				}),
 			]);
 			expect(preview.excludedProjects).toEqual([
+				expect.objectContaining({
+					canonicalProjectIdentity: "/workspace/alpha",
+					existingMemoryCount: 1,
+				}),
 				expect.objectContaining({
 					canonicalProjectIdentity: "https://example.test/older/alpha.git",
 					existingMemoryCount: 1,

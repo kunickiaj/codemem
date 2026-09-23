@@ -916,6 +916,9 @@ function resolveProjectScopeMappingDraft(
 	mappings?: ProjectScopeSettingsMapping[],
 ): ProjectScopeMappingDraft {
 	const id = input.id == null ? null : Number(input.id);
+	if (id != null && (!Number.isSafeInteger(id) || id <= 0)) {
+		throw new Error("id must be a positive integer");
+	}
 	const byId = projectScopeMappingById(db, mappings, id);
 	const workspaceIdentity =
 		normalizeWorkspaceIdentity(input.workspace_identity) ?? byId?.workspace_identity ?? null;
@@ -1197,10 +1200,12 @@ function resolveProjectScopeMappingDrafts(
 ): { drafts: ProjectScopeMappingDraft[]; mappings: ProjectScopeSettingsMapping[] } {
 	let mappings = listProjectScopeSettingsMappingsForScopes(db, scopes);
 	const drafts: ProjectScopeMappingDraft[] = [];
-	for (const [index, input] of inputs.entries()) {
+	let nextSyntheticId = Math.max(0, ...mappings.map((mapping) => mapping.id)) + 1;
+	for (const input of inputs) {
 		const draft = resolveProjectScopeMappingDraft(db, input, mappings);
 		drafts.push(draft);
-		mappings = applyProjectScopeDraft(mappings, draft, -(index + 1));
+		mappings = applyProjectScopeDraft(mappings, draft, nextSyntheticId);
+		if (!draft.existing) nextSyntheticId += 1;
 	}
 	return { drafts, mappings };
 }

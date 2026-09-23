@@ -473,6 +473,49 @@ function expectSequentialBulkMoveConflictWarning(store: MemoryStore, tmpDir: str
 	);
 }
 
+function expectBulkInsertionOrderConflictWarning(store: MemoryStore, tmpDir: string): void {
+	const { mainRepo, worktree } = createLinkedWorktree(
+		tmpDir,
+		"bulk-insertion-order-conflict",
+		"https://example.test/acme/bulk-insertion-order-conflict.git",
+	);
+	insertScope(store, "bulk-insertion-order-a");
+	insertScope(store, "bulk-insertion-order-b");
+	store.startSession({ cwd: mainRepo, project: "bulk-insertion-order-conflict" });
+	store.startSession({ cwd: worktree, project: "bulk-insertion-order-conflict" });
+	insertMapping(store, mainRepo, "bulk-insertion-order-a");
+
+	const analyses = analyzeProjectScopeMappingChangesGuardrails(store.db, [
+		{ project_pattern: worktree, scope_id: "bulk-insertion-order-a" },
+		{ project_pattern: worktree, scope_id: "bulk-insertion-order-b" },
+	]);
+
+	expect(analyses.flatMap((analysis) => analysis.warnings)).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({
+				code: "conflicting_repository_mappings",
+				requires_confirmation: true,
+			}),
+		]),
+	);
+}
+
+function expectBulkRejectsNonPositiveIds(store: MemoryStore): void {
+	insertScope(store, "bulk-invalid-id");
+	expect(() =>
+		analyzeProjectScopeMappingChangesGuardrails(store.db, [
+			{ project_pattern: "/workspace/first", scope_id: "bulk-invalid-id" },
+			{ id: -1, project_pattern: "/workspace/second", scope_id: "bulk-invalid-id" },
+		]),
+	).toThrow("id must be a positive integer");
+}
+
+function expectBulkSimulationGuardrails(store: MemoryStore, tmpDir: string): void {
+	expectSequentialBulkMoveConflictWarning(store, tmpDir);
+	expectBulkInsertionOrderConflictWarning(store, tmpDir);
+	expectBulkRejectsNonPositiveIds(store);
+}
+
 function expectEquivalentRepositoryIdentityConflict(store: MemoryStore): void {
 	const repositoryIdentity = "https://example.test/acme/equivalent-conflict.git";
 	const main = "/workspace/equivalent-conflict-main";
@@ -893,7 +936,7 @@ describe("repository mapping aliases", () => {
 	});
 
 	it("resolves each bulk draft against preceding identity moves", () => {
-		expectSequentialBulkMoveConflictWarning(store, tmpDir);
+		expectBulkSimulationGuardrails(store, tmpDir);
 	});
 
 	it("normalizes equivalent repository evidence before candidate conflict checks", () => {

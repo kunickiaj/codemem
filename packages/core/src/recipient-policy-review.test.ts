@@ -1467,7 +1467,7 @@ describe("recipient policy review repository inference", () => {
 			);
 			expect(item?.projectGroup.identity).toBe(PROJECT_ID);
 			for (const option of item?.options ?? []) {
-				expect(option.preview.affectedMemoryCount).toBe(2);
+				expect(option.preview.affectedMemoryCount).toBe(1);
 			}
 		} finally {
 			db.close();
