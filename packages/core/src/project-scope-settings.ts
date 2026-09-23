@@ -878,17 +878,41 @@ interface ProjectScopeMappingDraft {
 	source: string;
 }
 
+function projectScopeMappingById(
+	db: Database,
+	mappings: ProjectScopeSettingsMapping[] | undefined,
+	id: number | null,
+): ProjectScopeSettingsMapping | null {
+	if (!id || !Number.isInteger(id)) return null;
+	if (mappings) return mappings.find((mapping) => mapping.id === id) ?? null;
+	return getProjectScopeSettingsMappingById(db, id);
+}
+
+function projectScopeMappingByWorkspace(
+	db: Database,
+	mappings: ProjectScopeSettingsMapping[] | undefined,
+	workspaceIdentity: string | null,
+): ProjectScopeSettingsMapping | null {
+	if (!workspaceIdentity) return null;
+	if (!mappings) return getProjectScopeSettingsMappingByWorkspaceIdentity(db, workspaceIdentity);
+	return (
+		mappings.find(
+			(mapping) =>
+				normalizeRepositoryWorkspaceIdentity(mapping.workspace_identity) === workspaceIdentity,
+		) ?? null
+	);
+}
+
 function resolveProjectScopeMappingDraft(
 	db: Database,
 	input: UpsertProjectScopeMappingInput,
+	mappings?: ProjectScopeSettingsMapping[],
 ): ProjectScopeMappingDraft {
 	const id = input.id == null ? null : Number(input.id);
-	const byId = id && Number.isInteger(id) ? getProjectScopeSettingsMappingById(db, id) : null;
+	const byId = projectScopeMappingById(db, mappings, id);
 	const workspaceIdentity =
 		normalizeWorkspaceIdentity(input.workspace_identity) ?? byId?.workspace_identity ?? null;
-	const byWorkspace = workspaceIdentity
-		? getProjectScopeSettingsMappingByWorkspaceIdentity(db, workspaceIdentity)
-		: null;
+	const byWorkspace = projectScopeMappingByWorkspace(db, mappings, workspaceIdentity);
 	const existing = byId ?? byWorkspace;
 	const projectPattern =
 		clean(input.project_pattern) ?? existing?.project_pattern ?? workspaceIdentity;
@@ -1159,15 +1183,19 @@ function applyProjectScopeDraft(
 	});
 }
 
-function mappingsWithProjectScopeDrafts(
+function resolveProjectScopeMappingDrafts(
 	db: Database,
 	scopes: SharingDomainSettingsScope[],
-	drafts: ProjectScopeMappingDraft[],
-): ProjectScopeSettingsMapping[] {
-	return drafts.reduce(
-		(mappings, draft, index) => applyProjectScopeDraft(mappings, draft, -(index + 1)),
-		listProjectScopeSettingsMappingsForScopes(db, scopes),
-	);
+	inputs: UpsertProjectScopeMappingInput[],
+): { drafts: ProjectScopeMappingDraft[]; mappings: ProjectScopeSettingsMapping[] } {
+	let mappings = listProjectScopeSettingsMappingsForScopes(db, scopes);
+	const drafts: ProjectScopeMappingDraft[] = [];
+	for (const [index, input] of inputs.entries()) {
+		const draft = resolveProjectScopeMappingDraft(db, input, mappings);
+		drafts.push(draft);
+		mappings = applyProjectScopeDraft(mappings, draft, -(index + 1));
+	}
+	return { drafts, mappings };
 }
 
 function candidateMatchesProjectScopeDraft(
@@ -1302,8 +1330,7 @@ export function analyzeProjectScopeMappingChangesGuardrails(
 ): ProjectScopeMappingChangeGuardrailAnalysis[] {
 	ensureScopeBackfillScopes(db);
 	const scopes = listSharingDomainSettingsScopes(db);
-	const drafts = inputs.map((input) => resolveProjectScopeMappingDraft(db, input));
-	const mappings = mappingsWithProjectScopeDrafts(db, scopes, drafts);
+	const { drafts, mappings } = resolveProjectScopeMappingDrafts(db, scopes, inputs);
 	return drafts.map((draft) =>
 		analyzeProjectScopeMappingDraftGuardrails(db, draft, scopes, mappings),
 	);

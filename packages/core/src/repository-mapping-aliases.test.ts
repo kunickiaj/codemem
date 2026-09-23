@@ -417,6 +417,49 @@ function expectBulkRequestedConflictWarning(store: MemoryStore, tmpDir: string):
 	);
 }
 
+function expectSequentialBulkMoveConflictWarning(store: MemoryStore, tmpDir: string): void {
+	const { mainRepo, worktree } = createLinkedWorktree(
+		tmpDir,
+		"sequential-bulk-move-conflict",
+		"https://example.test/acme/sequential-bulk-move-conflict.git",
+	);
+	insertScope(store, "sequential-bulk-move-a");
+	insertScope(store, "sequential-bulk-move-b");
+	store.startSession({ cwd: mainRepo, project: "sequential-bulk-move-conflict" });
+	store.startSession({ cwd: worktree, project: "sequential-bulk-move-conflict" });
+	insertMapping(store, mainRepo, "sequential-bulk-move-a");
+	const mappingId = Number(
+		store.db
+			.prepare("SELECT id FROM project_scope_mappings WHERE workspace_identity = ?")
+			.pluck()
+			.get(mainRepo),
+	);
+
+	const analyses = analyzeProjectScopeMappingChangesGuardrails(store.db, [
+		{
+			id: mappingId,
+			workspace_identity: worktree,
+			project_pattern: worktree,
+			scope_id: "sequential-bulk-move-a",
+		},
+		{
+			workspace_identity: mainRepo,
+			project_pattern: mainRepo,
+			scope_id: "sequential-bulk-move-b",
+		},
+	]);
+
+	expect(analyses[1]?.existing_mapping).toBeNull();
+	expect(analyses.flatMap((analysis) => analysis.warnings)).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({
+				code: "conflicting_repository_mappings",
+				requires_confirmation: true,
+			}),
+		]),
+	);
+}
+
 function expectEquivalentRepositoryIdentityConflict(store: MemoryStore): void {
 	const repositoryIdentity = "https://example.test/acme/equivalent-conflict.git";
 	const main = "/workspace/equivalent-conflict-main";
@@ -804,6 +847,10 @@ describe("repository mapping aliases", () => {
 
 	it("evaluates bulk mapping drafts as one requested state", () => {
 		expectBulkRequestedConflictWarning(store, tmpDir);
+	});
+
+	it("resolves each bulk draft against preceding identity moves", () => {
+		expectSequentialBulkMoveConflictWarning(store, tmpDir);
 	});
 
 	it("normalizes equivalent repository evidence before candidate conflict checks", () => {
