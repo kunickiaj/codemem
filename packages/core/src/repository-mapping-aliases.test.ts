@@ -681,6 +681,57 @@ function expectPartialPatternMappingFailsClosed(store: MemoryStore, tmpDir: stri
 	expect(resolveSessionScopeId(store.db, { sessionId: worktreeSessionId })).toBe("local-default");
 }
 
+function expectDiscoveredSiblingConflictFailsClosed(store: MemoryStore, tmpDir: string): void {
+	const remote = "https://example.test/acme/discovered-sibling-conflict.git";
+	const { mainRepo, worktree } = createLinkedWorktree(
+		tmpDir,
+		"discovered-sibling-conflict",
+		remote,
+	);
+	insertScope(store, "discovered-main");
+	insertScope(store, "discovered-sibling");
+	insertPatternMapping(store, mainRepo, "discovered-main");
+	insertPatternMapping(store, worktree, "discovered-sibling");
+	const mainSessionId = store.getOrCreateSessionForOpencodeSession({
+		opencodeSessionId: "session-discovered-main",
+		cwd: mainRepo,
+		project: "discovered-sibling-conflict",
+		metadata: { [REPOSITORY_IDENTITY_METADATA_KEY]: remote },
+	});
+	store.db
+		.prepare("INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, ?, ?, '{}')")
+		.run("2026-09-24T00:00:00.000Z", worktree, "discovered-sibling-conflict");
+
+	expect(resolveSessionScopeId(store.db, { sessionId: mainSessionId })).toBe("local-default");
+}
+
+function expectMalformedMetadataDoesNotCreateAmbiguity(store: MemoryStore): void {
+	const cwd = "/workspace/malformed-metadata";
+	const remote = "https://example.test/acme/malformed-metadata.git";
+	insertScope(store, "malformed-metadata");
+	insertPatternMapping(store, cwd, "malformed-metadata");
+	store.db
+		.prepare("INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, ?, ?, ?)")
+		.run(
+			"2026-09-23T00:00:00.000Z",
+			cwd,
+			"malformed-metadata",
+			JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: "fatal: not a git repository" }),
+		);
+	const validSessionId = Number(
+		store.db
+			.prepare("INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, ?, ?, ?)")
+			.run(
+				"2026-09-24T00:00:00.000Z",
+				cwd,
+				"malformed-metadata",
+				JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: remote }),
+			).lastInsertRowid,
+	);
+
+	expect(resolveSessionScopeId(store.db, { sessionId: validSessionId })).toBe("malformed-metadata");
+}
+
 function expectConflictingAliasIsDropped(store: MemoryStore, tmpDir: string): void {
 	const { mainRepo, worktree } = createLinkedWorktree(
 		tmpDir,
@@ -1132,6 +1183,8 @@ describe("repository mapping aliases", () => {
 
 	it("fails closed when worktrees match conflicting Space patterns", () => {
 		expectPatternConflictsFailClosed(store, tmpDir);
+		expectDiscoveredSiblingConflictFailsClosed(store, tmpDir);
+		expectMalformedMetadataDoesNotCreateAmbiguity(store);
 	});
 
 	it("fails closed when one mapped worktree has an unmatched sibling", () => {

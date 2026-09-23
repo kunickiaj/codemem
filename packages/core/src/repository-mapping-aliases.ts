@@ -69,7 +69,7 @@ function recordedRepositoryIdentity(row: {
 }): string | null {
 	return normalizeIdentity(
 		cleanProjectIdentity(row.repository_identity) ??
-			repositoryIdentityFromMetadata(row.metadata_json) ??
+			cleanProjectIdentity(repositoryIdentityFromMetadata(row.metadata_json)) ??
 			cleanProjectIdentity(row.git_remote),
 	);
 }
@@ -84,7 +84,7 @@ function recordedRepositoryEvidence(row: {
 	if (!cwd) return null;
 	const metadataIdentity = normalizeIdentity(
 		cleanProjectIdentity(row.repository_identity) ??
-			repositoryIdentityFromMetadata(row.metadata_json),
+			cleanProjectIdentity(repositoryIdentityFromMetadata(row.metadata_json)),
 	);
 	const repositoryIdentity =
 		metadataIdentity ?? normalizeIdentity(cleanProjectIdentity(row.git_remote));

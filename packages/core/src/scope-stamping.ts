@@ -4,7 +4,7 @@ import {
 	hasConflictingRepositoryMappings,
 	normalizeRepositoryWorkspaceIdentity,
 	recordedRepositoryIdentityEvidenceByWorkspace,
-	recordedWorkspacesForRepositoryIdentity,
+	repositoryIdentitiesByWorkspace,
 	repositoryIdentityForWorkspace,
 	withRepositoryMappingAliasesFromIdentities,
 } from "./repository-mapping-aliases.js";
@@ -84,6 +84,20 @@ function emptyRepositoryScopeContext(
 	};
 }
 
+function addDiscoveredRepositoryWorkspaces(
+	db: Database,
+	repositoryIdentities: Map<string, string>,
+	repositoryIdentity: string,
+	mappedWorkspaces: Array<string | null | undefined>,
+): void {
+	const discoveredWorkspaces = repositoryIdentitiesByWorkspace(db, {
+		knownRepositoryIdentities: [repositoryIdentity, ...mappedWorkspaces],
+	});
+	for (const [workspace, identity] of discoveredWorkspaces) {
+		if (identity === repositoryIdentity) repositoryIdentities.set(workspace, identity);
+	}
+}
+
 function repositoryScopeContext(
 	db: Database,
 	row: SessionScopeRow | null,
@@ -117,12 +131,12 @@ function repositoryScopeContext(
 		metadataJson: row?.metadata_json,
 	});
 	if (repositoryIdentity) {
-		for (const [workspace, identity] of recordedWorkspacesForRepositoryIdentity(
+		addDiscoveredRepositoryWorkspaces(
 			db,
+			repositoryIdentities,
 			repositoryIdentity,
-		)) {
-			repositoryIdentities.set(workspace, identity);
-		}
+			mappedWorkspaces,
+		);
 	}
 	const repositoryConflict = hasRepositoryConflict(
 		mappings,
