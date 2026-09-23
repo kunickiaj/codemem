@@ -315,6 +315,39 @@ function expectBulkRequestedConflictWarning(store: MemoryStore, tmpDir: string):
 	);
 }
 
+function expectEquivalentRepositoryIdentityConflict(store: MemoryStore): void {
+	const repositoryIdentity = "https://example.test/acme/equivalent-conflict.git";
+	const main = "/workspace/equivalent-conflict-main";
+	const worktree = "/workspace/equivalent-conflict-worktree";
+	insertScope(store, "equivalent-conflict-a");
+	insertScope(store, "equivalent-conflict-b");
+	insertPatternMapping(store, main, "equivalent-conflict-a");
+	insertPatternMapping(store, worktree, "equivalent-conflict-b");
+	for (const [startedAt, cwd, recordedIdentity] of [
+		["2026-09-22T00:00:00.000Z", main, repositoryIdentity],
+		["2026-09-23T00:00:00.000Z", worktree, `${repositoryIdentity}/`],
+	]) {
+		store.db
+			.prepare("INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, ?, ?, ?)")
+			.run(
+				startedAt,
+				cwd,
+				"equivalent-conflict",
+				JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: recordedIdentity }),
+			);
+	}
+
+	const candidate = listProjectScopeCandidates(store.db, { limit: null }).find(
+		(project) => project.workspace_identity === repositoryIdentity,
+	);
+	expect(candidate).toMatchObject({
+		resolved_scope_id: "local-default",
+		guardrail_warnings: expect.arrayContaining([
+			expect.objectContaining({ code: "conflicting_repository_mappings" }),
+		]),
+	});
+}
+
 function expectPartialPatternMappingFailsClosed(store: MemoryStore, tmpDir: string): void {
 	const { mainRepo, worktree } = createLinkedWorktree(
 		tmpDir,
@@ -661,6 +694,10 @@ describe("repository mapping aliases", () => {
 
 	it("evaluates bulk mapping drafts as one requested state", () => {
 		expectBulkRequestedConflictWarning(store, tmpDir);
+	});
+
+	it("normalizes equivalent repository evidence before candidate conflict checks", () => {
+		expectEquivalentRepositoryIdentityConflict(store);
 	});
 
 	it("fails closed when worktrees match conflicting Space patterns", () => {
