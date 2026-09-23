@@ -2011,8 +2011,24 @@ export function upsertProjectScopeSettingsMapping(
 	return saved;
 }
 
-export function deleteProjectScopeSettingsMapping(db: Database, id: number): boolean {
+export function deleteProjectScopeSettingsMapping(
+	db: Database,
+	id: number,
+	options: { deviceId?: string | null } = {},
+): boolean {
 	if (!Number.isInteger(id) || id <= 0) throw new Error("id must be a positive integer");
+	const mapping = getProjectScopeSettingsMappingById(db, id);
+	if (!mapping) return false;
+	const previousMappings = listProjectScopeSettingsMappings(db);
 	const result = db.prepare("DELETE FROM project_scope_mappings WHERE id = ?").run(id);
-	return Number(result.changes ?? 0) > 0;
+	const deleted = Number(result.changes ?? 0) > 0;
+	if (deleted) {
+		propagateProjectScopeMappingToSourceOwnedMemories(
+			db,
+			mapping,
+			clean(options.deviceId),
+			previousMappings,
+		);
+	}
+	return deleted;
 }

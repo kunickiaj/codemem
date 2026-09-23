@@ -4827,6 +4827,11 @@ function serializeProjectScopeInventory(
 	};
 }
 
+function deleteProjectScopeMapping(store: MemoryStore, id: number): boolean {
+	const [deviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
+	return deleteProjectScopeSettingsMapping(store.db, id, { deviceId });
+}
+
 /**
  * Viewer-facing sync management routes (/api/sync/*).
  *
@@ -6203,7 +6208,7 @@ export function syncRoutes(
 		let releasePublicationMutation: (() => void) | undefined;
 		try {
 			releasePublicationMutation = await claimRecipientPolicyPublicationMutation(store.db);
-			const deleted = deleteProjectScopeSettingsMapping(store.db, id);
+			const deleted = deleteProjectScopeMapping(store, id);
 			return c.json({ ok: true, deleted });
 		} catch (error) {
 			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);

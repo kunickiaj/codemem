@@ -129,7 +129,7 @@ function repositoryScopeContext(
 		repositoryIdentities,
 		repositoryIdentity,
 	);
-	const unresolvedAmbiguousCwd = ambiguousCwd && !repositoryIdentity && !clean(row?.git_remote);
+	const unresolvedAmbiguousCwd = ambiguousCwd && !repositoryIdentity;
 	let effectiveMappings = mappings;
 	if (repositoryConflict || unresolvedAmbiguousCwd) {
 		effectiveMappings = [];

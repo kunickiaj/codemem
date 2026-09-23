@@ -7,6 +7,7 @@ import { REPOSITORY_IDENTITY_METADATA_KEY } from "./project.js";
 import {
 	analyzeProjectScopeMappingChangeGuardrails,
 	analyzeProjectScopeMappingChangesGuardrails,
+	deleteProjectScopeSettingsMapping,
 	listProjectScopeCandidates,
 	listProjectScopeInventory,
 	upsertProjectScopeSettingsMapping,
@@ -516,6 +517,39 @@ function expectBulkSimulationGuardrails(store: MemoryStore, tmpDir: string): voi
 	expectBulkRejectsNonPositiveIds(store);
 }
 
+function expectDeleteConflictPropagation(store: MemoryStore, tmpDir: string): void {
+	const { mainRepo, worktree } = createLinkedWorktree(
+		tmpDir,
+		"delete-conflict",
+		"https://example.test/acme/delete-conflict.git",
+	);
+	insertScope(store, "delete-a");
+	insertScope(store, "delete-b");
+	const memoryIds = [mainRepo, worktree].map((cwd, index) =>
+		store.remember(
+			store.startSession({ cwd, project: "delete-conflict" }),
+			"discovery",
+			`delete ${index}`,
+			`delete ${index}`,
+		),
+	);
+	insertMapping(store, mainRepo, "delete-a");
+	const conflicting = upsertProjectScopeSettingsMapping(store.db, {
+		deviceId: store.deviceId,
+		workspace_identity: worktree,
+		project_pattern: worktree,
+		scope_id: "delete-b",
+	});
+	expect(
+		deleteProjectScopeSettingsMapping(store.db, conflicting.id, { deviceId: store.deviceId }),
+	).toBe(true);
+	for (const memoryId of memoryIds) {
+		expect(
+			store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").pluck().get(memoryId),
+		).toBe("delete-a");
+	}
+}
+
 function expectEquivalentRepositoryIdentityConflict(store: MemoryStore): void {
 	const repositoryIdentity = "https://example.test/acme/equivalent-conflict.git";
 	const main = "/workspace/equivalent-conflict-main";
@@ -799,9 +833,20 @@ function expectMetadataAndRemoteHistoryRemainsAmbiguous(store: MemoryStore): voi
 			.run("2026-09-23T00:00:00.000Z", cwd, "reused-mixed-evidence", remoteRepository)
 			.lastInsertRowid,
 	);
+	const malformedRemoteSessionId = Number(
+		store.db
+			.prepare(
+				`INSERT INTO sessions(started_at, cwd, project, git_remote, metadata_json)
+				 VALUES (?, ?, ?, 'fatal: not a git repository', '{}')`,
+			)
+			.run("2026-09-24T00:00:00.000Z", cwd, "reused-mixed-evidence").lastInsertRowid,
+	);
 
 	expect(repositoryIdentitiesByWorkspace(store.db).has(cwd)).toBe(false);
 	expect(resolveSessionScopeId(store.db, { sessionId: remoteSessionId })).toBe("remote-scope");
+	expect(resolveSessionScopeId(store.db, { sessionId: malformedRemoteSessionId })).toBe(
+		"local-default",
+	);
 }
 
 function expectRecordedSiblingEvidence(store: MemoryStore, tmpDir: string): void {
@@ -937,6 +982,7 @@ describe("repository mapping aliases", () => {
 
 	it("resolves each bulk draft against preceding identity moves", () => {
 		expectBulkSimulationGuardrails(store, tmpDir);
+		expectDeleteConflictPropagation(store, tmpDir);
 	});
 
 	it("normalizes equivalent repository evidence before candidate conflict checks", () => {
