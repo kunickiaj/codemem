@@ -234,6 +234,45 @@ function expectConflictPropagationFailsClosed(store: MemoryStore, tmpDir: string
 	}
 }
 
+function expectInsertedPatternClearsConflictForAllMemories(
+	store: MemoryStore,
+	tmpDir: string,
+): void {
+	const { mainRepo, worktree } = createLinkedWorktree(
+		tmpDir,
+		"insert-clears-conflict",
+		"https://example.test/acme/insert-clears-conflict.git",
+	);
+	insertScope(store, "insert-clear-a");
+	insertScope(store, "insert-clear-b");
+	insertPatternMapping(store, mainRepo, "insert-clear-a");
+	insertPatternMapping(store, worktree, "insert-clear-b");
+	const sessionIds = [mainRepo, worktree].map((cwd) =>
+		store.startSession({ cwd, project: "insert-clears-conflict" }),
+	);
+	const memoryIds = sessionIds.map((sessionId, index) =>
+		store.remember(sessionId, "discovery", `insert clear ${index}`, `insert clear ${index}`),
+	);
+	for (const memoryId of memoryIds) {
+		expect(
+			store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").pluck().get(memoryId),
+		).toBe("local-default");
+	}
+
+	upsertProjectScopeSettingsMapping(store.db, {
+		deviceId: store.deviceId,
+		project_pattern: mainRepo,
+		scope_id: "insert-clear-b",
+		priority: 20,
+	});
+
+	for (const memoryId of memoryIds) {
+		expect(
+			store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").pluck().get(memoryId),
+		).toBe("insert-clear-b");
+	}
+}
+
 function expectLegacyRemoteConflictsFailClosed(store: MemoryStore): void {
 	const repositoryIdentity = "https://example.test/acme/legacy-remote-conflict.git";
 	const main = "/workspace/legacy-remote-main";
@@ -745,6 +784,10 @@ describe("repository mapping aliases", () => {
 
 	it("moves historical memories local when a mapping creates a repository conflict", () => {
 		expectConflictPropagationFailsClosed(store, tmpDir);
+	});
+
+	it("reconsiders every repository sibling when an inserted pattern clears a conflict", () => {
+		expectInsertedPatternClearsConflictForAllMemories(store, tmpDir);
 	});
 
 	it("fails closed for conflicting worktrees recorded only by git remote", () => {

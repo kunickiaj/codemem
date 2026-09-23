@@ -1946,8 +1946,8 @@ export function upsertProjectScopeSettingsMapping(
 
 	const source = draft.source;
 	const now = new Date().toISOString();
+	const previousMappings = listProjectScopeSettingsMappings(db);
 	if (existing) {
-		const previousMappings = listProjectScopeSettingsMappings(db);
 		db.prepare(
 			`UPDATE project_scope_mappings
 			 SET workspace_identity = ?, project_pattern = ?, scope_id = ?, priority = ?, source = ?, updated_at = ?
@@ -1968,7 +1968,7 @@ export function upsertProjectScopeSettingsMapping(
 		.run(workspaceIdentity, projectPattern, scopeId, priority, source, now, now);
 	const saved = getProjectScopeSettingsMappingById(db, Number(result.lastInsertRowid));
 	if (!saved) throw new Error("project_scope_mapping insert returned no row");
-	propagateProjectScopeMappingToSourceOwnedMemories(db, saved, draft.deviceId);
+	propagateProjectScopeMappingToSourceOwnedMemories(db, saved, draft.deviceId, previousMappings);
 	return saved;
 }
 
