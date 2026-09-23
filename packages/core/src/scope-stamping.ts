@@ -105,6 +105,10 @@ function repositoryScopeContext(
 ): RepositoryScopeContext {
 	if (mappings.length === 0) return emptyRepositoryScopeContext(row, mappings);
 	const mappedWorkspaces = mappings.map((mapping) => mapping.workspace_identity);
+	const mappingIdentitySeeds = mappings.flatMap((mapping) => [
+		mapping.workspace_identity,
+		mapping.project_pattern,
+	]);
 	const evidence = recordedRepositoryIdentityEvidenceByWorkspace(
 		db,
 		[row?.cwd, ...mappedWorkspaces],
@@ -119,7 +123,7 @@ function repositoryScopeContext(
 		const knownRepositoryIdentities = new Set(
 			[
 				...repositoryIdentities.values(),
-				...mappedWorkspaces.map((identity) => clean(identity)),
+				...mappingIdentitySeeds.map((identity) => normalizeRepositoryWorkspaceIdentity(identity)),
 			].filter((identity): identity is string => identity != null),
 		);
 		const repositoryIdentity = discoverKnownRepositoryIdentity(cwd, knownRepositoryIdentities);
@@ -135,7 +139,7 @@ function repositoryScopeContext(
 			db,
 			repositoryIdentities,
 			repositoryIdentity,
-			mappedWorkspaces,
+			mappingIdentitySeeds,
 		);
 	}
 	const repositoryConflict = hasRepositoryConflict(

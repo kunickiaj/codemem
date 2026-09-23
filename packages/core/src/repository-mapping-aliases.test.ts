@@ -760,6 +760,32 @@ function expectDiscoveredSiblingDraftRequiresConflictConfirmation(
 	);
 }
 
+function expectPatternOnlyRepositorySeedFailsClosed(store: MemoryStore, tmpDir: string): void {
+	const remote = "https://example.test/acme/pattern-only-seed.git";
+	const { mainRepo, worktree } = createLinkedWorktree(tmpDir, "pattern-only-seed", remote);
+	insertScope(store, "pattern-only-a");
+	insertScope(store, "pattern-only-b");
+	insertPatternMapping(store, remote, "pattern-only-a");
+	insertPatternMapping(store, worktree, "pattern-only-b");
+	const sessions = [mainRepo, worktree].map((cwd) =>
+		Number(
+			store.db
+				.prepare(
+					"INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, ?, ?, '{}')",
+				)
+				.run("2026-09-24T00:00:00.000Z", cwd, "pattern-only-seed").lastInsertRowid,
+		),
+	);
+	expect(
+		listProjectScopeCandidates(store.db).find(
+			(candidate) => candidate.repository_identity === remote,
+		),
+	).toMatchObject({ resolved_scope_id: "local-default" });
+	for (const sessionId of sessions) {
+		expect(resolveSessionScopeId(store.db, { sessionId })).toBe("local-default");
+	}
+}
+
 function expectMovedMappingAnalyzesPreviousRepository(store: MemoryStore, tmpDir: string): void {
 	const remote = "https://example.test/acme/moved-mapping.git";
 	const { mainRepo, worktree } = createLinkedWorktree(tmpDir, "moved-mapping", remote);
@@ -1386,6 +1412,7 @@ describe("repository mapping aliases", () => {
 		expectDeleteConflictPropagation(store, tmpDir);
 		expectMappedRepositorySeedsCandidateDiscovery(store, tmpDir);
 		expectDiscoveredSiblingDraftRequiresConflictConfirmation(store, tmpDir);
+		expectPatternOnlyRepositorySeedFailsClosed(store, tmpDir);
 		expectMovedMappingAnalyzesPreviousRepository(store, tmpDir);
 	});
 
