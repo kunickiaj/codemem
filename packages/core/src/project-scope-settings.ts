@@ -1105,7 +1105,7 @@ function recordSourceOwnedMemoryScopeMove(
 }
 
 function mappingChangeAffectsSourceOwnedMemory(
-	mappingId: number,
+	mappingIds: ReadonlySet<number>,
 	repositoryIdentity: string | null,
 	previousResolution: ReturnType<typeof resolveProjectScope>,
 	resolution: ReturnType<typeof resolveProjectScope>,
@@ -1115,16 +1115,55 @@ function mappingChangeAffectsSourceOwnedMemory(
 	if (repositoryIdentity) {
 		if (previousConflicts.get(repositoryIdentity) || conflicts.get(repositoryIdentity)) return true;
 	}
-	return previousResolution.mapping?.id === mappingId || resolution.mapping?.id === mappingId;
+	return (
+		(previousResolution.mapping?.id != null && mappingIds.has(previousResolution.mapping.id)) ||
+		(resolution.mapping?.id != null && mappingIds.has(resolution.mapping.id))
+	);
 }
 
-function propagateProjectScopeMappingToSourceOwnedMemories(
+function changedMappingIdForScopeMove(
+	changedMappings: ProjectScopeSettingsMapping[],
+	previousResolution: ReturnType<typeof resolveProjectScope>,
+	resolution: ReturnType<typeof resolveProjectScope>,
+	fallbackMappingId: number,
+): number {
+	const selectedId = resolution.mapping?.id ?? previousResolution.mapping?.id;
+	return changedMappings.find((mapping) => mapping.id === selectedId)?.id ?? fallbackMappingId;
+}
+
+function resolveSourceOwnedMemoryMappingTransition(
+	row: SourceOwnedMemoryScopeRow,
+	oldMappings: ProjectScopeSettingsMapping[],
+	mappings: ProjectScopeSettingsMapping[],
+	repositoryIdentities: ReadonlyMap<string, string>,
+	oldConflicts: Map<string, boolean>,
+	conflicts: Map<string, boolean>,
+) {
+	return {
+		previousResolution: resolveSourceOwnedMemoryScope(
+			row,
+			oldMappings,
+			repositoryIdentities,
+			oldConflicts,
+		),
+		resolution: resolveSourceOwnedMemoryScope(row, mappings, repositoryIdentities, conflicts),
+		repositoryIdentity: repositoryIdentityForWorkspace(repositoryIdentities, {
+			cwd: row.cwd,
+			gitRemote: row.git_remote,
+			metadataJson: row.session_metadata_json,
+		}),
+	};
+}
+
+function propagateProjectScopeMappingsToSourceOwnedMemories(
 	db: Database,
-	mapping: ProjectScopeSettingsMapping,
+	changedMappings: ProjectScopeSettingsMapping[],
 	deviceId: string | null,
 	previousMappings?: ProjectScopeSettingsMapping[],
 ): number {
-	if (!deviceId) return 0;
+	const firstMapping = changedMappings[0];
+	if (!deviceId || !firstMapping) return 0;
+	const mappingIds = new Set(changedMappings.map((mapping) => mapping.id));
 	const mappings = withRepositoryMappingAliases(db, listProjectScopeSettingsMappings(db));
 	const oldMappings = previousMappings
 		? withRepositoryMappingAliases(db, previousMappings)
@@ -1137,26 +1176,18 @@ function propagateProjectScopeMappingToSourceOwnedMemories(
 	const conflictsByRepository = new Map<string, boolean>();
 	let moved = 0;
 	for (const row of sourceOwnedMemoryRowsForScopePropagation(db, deviceId)) {
-		const previousResolution = resolveSourceOwnedMemoryScope(
-			row,
-			oldMappings,
-			repositoryIdentities,
-			oldConflictsByRepository,
-		);
-		const resolution = resolveSourceOwnedMemoryScope(
-			row,
-			mappings,
-			repositoryIdentities,
-			conflictsByRepository,
-		);
-		const repositoryIdentity = repositoryIdentityForWorkspace(repositoryIdentities, {
-			cwd: row.cwd,
-			gitRemote: row.git_remote,
-			metadataJson: row.session_metadata_json,
-		});
+		const { previousResolution, resolution, repositoryIdentity } =
+			resolveSourceOwnedMemoryMappingTransition(
+				row,
+				oldMappings,
+				mappings,
+				repositoryIdentities,
+				oldConflictsByRepository,
+				conflictsByRepository,
+			);
 		if (
 			!mappingChangeAffectsSourceOwnedMemory(
-				mapping.id,
+				mappingIds,
 				repositoryIdentity,
 				previousResolution,
 				resolution,
@@ -1171,7 +1202,12 @@ function propagateProjectScopeMappingToSourceOwnedMemories(
 		if (oldScopeId === newScopeId) continue;
 		recordSourceOwnedMemoryScopeMove(db, row, {
 			deviceId,
-			mappingId: mapping.id,
+			mappingId: changedMappingIdForScopeMove(
+				changedMappings,
+				previousResolution,
+				resolution,
+				firstMapping.id,
+			),
 			newScopeId,
 			now,
 			oldScopeId,
@@ -1179,6 +1215,20 @@ function propagateProjectScopeMappingToSourceOwnedMemories(
 		moved += 1;
 	}
 	return moved;
+}
+
+function propagateProjectScopeMappingToSourceOwnedMemories(
+	db: Database,
+	mapping: ProjectScopeSettingsMapping,
+	deviceId: string | null,
+	previousMappings?: ProjectScopeSettingsMapping[],
+): number {
+	return propagateProjectScopeMappingsToSourceOwnedMemories(
+		db,
+		[mapping],
+		deviceId,
+		previousMappings,
+	);
 }
 
 function changedScopesAfterMappingTransition(
@@ -1214,7 +1264,7 @@ function changedScopesAfterMappingTransition(
 		});
 		if (
 			!mappingChangeAffectsSourceOwnedMemory(
-				id,
+				new Set([id]),
 				repository,
 				before,
 				after,
@@ -2228,6 +2278,26 @@ export function upsertProjectScopeSettingsMapping(
 	input: UpsertProjectScopeMappingInput,
 ): ProjectScopeSettingsMapping {
 	return db.transaction(() => upsertProjectScopeSettingsMappingInTransaction(db, input))();
+}
+
+export function upsertProjectScopeSettingsMappings(
+	db: Database,
+	inputs: UpsertProjectScopeMappingInput[],
+	options: { deviceId: string },
+): ProjectScopeSettingsMapping[] {
+	return db.transaction(() => {
+		const previousMappings = listProjectScopeSettingsMappings(db);
+		const saved = inputs.map((input) =>
+			upsertProjectScopeSettingsMappingInTransaction(db, { ...input, deviceId: null }),
+		);
+		propagateProjectScopeMappingsToSourceOwnedMemories(
+			db,
+			saved,
+			options.deviceId,
+			previousMappings,
+		);
+		return saved;
+	})();
 }
 
 export function deleteProjectScopeSettingsMapping(

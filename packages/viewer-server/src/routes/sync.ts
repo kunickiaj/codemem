@@ -175,6 +175,7 @@ import {
 	updatePeerAddresses,
 	upsertCoordinatorGroupPreference,
 	upsertProjectScopeSettingsMapping,
+	upsertProjectScopeSettingsMappings,
 	VERSION,
 	verifyDirectPeerSignature,
 	verifyRecipientReviewedIntent,
@@ -6225,14 +6226,9 @@ export function syncRoutes(
 					409,
 				);
 			}
-			const saveMappings = store.db.transaction(() =>
-				mappingInputs.map((mappingInput) =>
-					upsertProjectScopeSettingsMapping(store.db, { deviceId, ...mappingInput }),
-				),
-			);
 			return c.json({
 				ok: true,
-				mappings: saveMappings(),
+				mappings: upsertProjectScopeSettingsMappings(store.db, mappingInputs, { deviceId }),
 				guardrail_warnings: analyses.flatMap((analysis) => analysis.warnings),
 			});
 		} catch (error) {

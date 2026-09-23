@@ -12,6 +12,7 @@ import {
 	listProjectScopeCandidates,
 	listProjectScopeInventory,
 	upsertProjectScopeSettingsMapping,
+	upsertProjectScopeSettingsMappings,
 } from "./project-scope-settings.js";
 import {
 	hasConflictingRepositoryMappings,
@@ -927,6 +928,62 @@ function expectFailedMappingUpdateRollsBack(store: MemoryStore, tmpDir: string):
 	}
 }
 
+function expectBulkSkipsIntermediateScopeExposure(store: MemoryStore, tmpDir: string): void {
+	const cwd = join(tmpDir, "bulk-intermediate-scope");
+	insertScope(store, "bulk-intermediate-a");
+	insertScope(store, "bulk-intermediate-b");
+	insertMapping(store, cwd, "bulk-intermediate-a");
+	insertPatternMapping(store, cwd, "bulk-intermediate-b");
+	store.db
+		.prepare("UPDATE project_scope_mappings SET priority = 9 WHERE scope_id = ?")
+		.run("bulk-intermediate-b");
+	const mappingId = Number(
+		store.db
+			.prepare("SELECT id FROM project_scope_mappings WHERE workspace_identity = ?")
+			.pluck()
+			.get(cwd),
+	);
+	const sessionId = store.startSession({ cwd, project: "bulk-intermediate-scope" });
+	const memoryId = store.remember(
+		sessionId,
+		"discovery",
+		"intermediate scope",
+		"intermediate scope",
+	);
+	const importKey = store.db
+		.prepare("SELECT import_key FROM memory_items WHERE id = ?")
+		.pluck()
+		.get(memoryId) as string;
+	const inputs = [0, 10].map((priority) => ({
+		id: mappingId,
+		workspace_identity: cwd,
+		project_pattern: cwd,
+		scope_id: "bulk-intermediate-a",
+		priority,
+	}));
+	const analyses = analyzeProjectScopeMappingChangesGuardrails(
+		store.db,
+		inputs.map((input) => ({ ...input, deviceId: store.deviceId })),
+	);
+	expect(
+		analyses
+			.flatMap((analysis) => analysis.warnings)
+			.some((warning) => warning.code === "scope_reassignment_old_copies"),
+	).toBe(false);
+	upsertProjectScopeSettingsMappings(store.db, inputs, { deviceId: store.deviceId });
+	expect(
+		store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").pluck().get(memoryId),
+	).toBe("bulk-intermediate-a");
+	expect(
+		store.db
+			.prepare(
+				"SELECT COUNT(*) FROM replication_ops WHERE entity_id = ? AND scope_id = ? AND op_type = 'upsert'",
+			)
+			.pluck()
+			.get(importKey, "bulk-intermediate-b"),
+	).toBe(0);
+}
+
 function expectMovingSoleRepositoryMappingPreservesEvidence(
 	store: MemoryStore,
 	tmpDir: string,
@@ -1559,6 +1616,7 @@ describe("repository mapping aliases", () => {
 		expectMovingMappingRequiresFallbackConfirmation(store, tmpDir);
 		expectInsertMappingRequiresScopeConfirmation(store, tmpDir);
 		expectFailedMappingUpdateRollsBack(store, tmpDir);
+		expectBulkSkipsIntermediateScopeExposure(store, tmpDir);
 	});
 
 	it("normalizes equivalent repository evidence before candidate conflict checks", () => {

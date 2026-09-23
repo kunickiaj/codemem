@@ -790,6 +790,7 @@ export {
 	listSharingDomainSettingsScopes,
 	reassignProjectScopeInventoryProject,
 	upsertProjectScopeSettingsMapping,
+	upsertProjectScopeSettingsMappings,
 } from "./project-scope-settings.js";
 export * from "./prompt-pack-ledger.js";
 export * from "./prompt-transport.js";
