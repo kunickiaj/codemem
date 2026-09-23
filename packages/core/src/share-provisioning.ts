@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { CoordinatorScope, CoordinatorScopeMembership } from "./coordinator-store-contract.js";
 import { type Database, fromJson } from "./db.js";
 import { assertLegacyShareGrantAllowed } from "./recipient-policy-reconciler.js";
+import { serializeRecipientPolicyPublicationMutation } from "./recipient-policy-team-metadata.js";
 import {
 	canonicalRepositoryProjectIdentity,
 	hasConflictingRepositoryMappings,
@@ -741,7 +742,7 @@ function exactMapping(db: Database, project: ManagedProjectPlan): void {
 	);
 }
 
-export async function executeShareProvisioning(
+async function executeShareProvisioningWithStableMappings(
 	db: Database,
 	input: { operationId: string; initiatingDeviceId: string },
 	dependencies: ShareProvisioningDependencies,
@@ -880,6 +881,16 @@ export async function executeShareProvisioning(
 	// superseded: a duplicate won the race and cancelled this operation while it
 	// was in flight. Callers must not report it as active.
 	return { ...plan, superseded: activation.changes === 0 };
+}
+
+export function executeShareProvisioning(
+	db: Database,
+	input: { operationId: string; initiatingDeviceId: string },
+	dependencies: ShareProvisioningDependencies,
+): Promise<ShareProvisioningPlan & { superseded: boolean }> {
+	return serializeRecipientPolicyPublicationMutation(db, () =>
+		executeShareProvisioningWithStableMappings(db, input, dependencies),
+	);
 }
 
 /**

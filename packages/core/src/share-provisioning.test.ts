@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { REPOSITORY_IDENTITY_METADATA_KEY } from "./project.js";
+import { claimRecipientPolicyPublicationMutation } from "./recipient-policy-team-metadata.js";
 import { getCachedScopeAuthorization } from "./scope-membership-cache.js";
 import {
 	inviteTokenDigest,
@@ -125,6 +126,51 @@ function successfulProvisioningDependencies(boundaryId: string): ShareProvisioni
 			perScopeResults: [{ scope_id: boundaryId, ok: true }],
 		})),
 	};
+}
+
+async function expectPublicationGate(
+	db: InstanceType<typeof Database>,
+	operationId: string,
+	deps: ShareProvisioningDependencies,
+): Promise<void> {
+	const releasePublication = await claimRecipientPolicyPublicationMutation(db);
+	let released = false;
+	try {
+		const execution = executeShareProvisioning(
+			db,
+			{ operationId, initiatingDeviceId: "owner" },
+			deps,
+		);
+		for (const [cwd, scopeId] of [
+			["/workspace/api-main", "source-space"],
+			["/workspace/api-sibling", "local-default"],
+		] as const) {
+			db.prepare(
+				"INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, ?, 'api', ?)",
+			).run(createdAt, cwd, JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: remote }));
+			db.prepare(
+				"INSERT INTO project_scope_mappings(workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at) VALUES (?, ?, ?, 10, 'user', ?, ?)",
+			).run(cwd, cwd, scopeId, createdAt, createdAt);
+		}
+		releasePublication();
+		released = true;
+		await expect(execution).rejects.toThrow("conflicting_repository_mappings");
+		expect(deps.grantMembership).not.toHaveBeenCalled();
+	} finally {
+		if (!released) releasePublication();
+	}
+}
+
+function expectInviterProjectFilterRejected(
+	db: InstanceType<typeof Database>,
+	operationId: string,
+): void {
+	db.prepare(
+		"UPDATE sync_peers SET projects_include_json = '[\"other\"]' WHERE peer_device_id = 'owner-proven'",
+	).run();
+	expect(() => planShareProvisioning(db, { operationId, initiatingDeviceId: "owner" })).toThrow(
+		"inviter_project_access_ambiguous",
+	);
 }
 
 describe("exact project share provisioning", () => {
@@ -387,16 +433,9 @@ describe("exact project share provisioning", () => {
 			"unreviewed-source-member",
 		]);
 	});
-
-	it("fails closed when a reviewed inviter device no longer passes current project filters", () => {
-		db.prepare(
-			"UPDATE sync_peers SET projects_include_json = '[\"other\"]' WHERE peer_device_id = 'owner-proven'",
-		).run();
-		expect(() => planShareProvisioning(db, { operationId, initiatingDeviceId: "owner" })).toThrow(
-			"inviter_project_access_ambiguous",
-		);
-	});
-
+	it("fails closed when a reviewed inviter device no longer passes current project filters", () =>
+		expectInviterProjectFilterRejected(db, operationId));
+	it("waits for mapping edits", () => expectPublicationGate(db, operationId, dependencies().deps));
 	it("fails capability preflight before any boundary, migration, or mapping mutation", async () => {
 		const supportsReassignScope = vi.fn(async (deviceId: string) =>
 			deviceId === "unreviewed-source-member" ? "unsupported" : "supported",

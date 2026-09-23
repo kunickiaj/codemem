@@ -160,6 +160,12 @@ describe("requested repository mapping guardrails", () => {
 			expect(analysis.warnings).toContainEqual(
 				expect.objectContaining({ code: "conflicting_repository_mappings" }),
 			);
+			const copiedSecond = analyzeProjectScopeMappingChangeGuardrails(
+				db,
+				{ ...requestedMappings[1] },
+				{ requestedMappings },
+			);
+			expect(copiedSecond.requested_scope_id).toBe("scope-b");
 		} finally {
 			db.close();
 		}
