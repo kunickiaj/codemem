@@ -202,7 +202,7 @@ function propagateHistoricalRepositoryMapping(db: InstanceType<typeof Database>)
 	});
 	expect(
 		db.prepare("SELECT scope_id, rev FROM memory_items WHERE id = ?").get(historicalMemoryId),
-	).toMatchObject({ rev: 2, scope_id: "acme-work" });
+	).toMatchObject({ rev: 0, scope_id: LOCAL_DEFAULT_SCOPE_ID });
 	expect(
 		db.prepare("SELECT scope_id, rev FROM memory_items WHERE id = ?").get(reusedRemoteMemoryId),
 	).toMatchObject({ rev: 0, scope_id: LOCAL_DEFAULT_SCOPE_ID });
@@ -1901,7 +1901,7 @@ describe("project scope settings", () => {
 });
 
 describe("historical repository scope propagation", () => {
-	it("propagates repository mappings to cwd-only memories", () => {
+	it("keeps cwd-only memories local when repository history is ambiguous", () => {
 		const db = new Database(":memory:");
 		try {
 			initTestSchema(db);

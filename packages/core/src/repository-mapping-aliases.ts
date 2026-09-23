@@ -127,8 +127,11 @@ function recordedRepositoryIdentities(
 	}
 	const byWorkspace = new Map<string, Set<string>>();
 	for (const cwd of new Set([...metadataByWorkspace.keys(), ...remoteByWorkspace.keys()])) {
-		const recorded = metadataByWorkspace.get(cwd) ?? remoteByWorkspace.get(cwd);
-		if (!recorded) continue;
+		const recorded = new Set([
+			...(metadataByWorkspace.get(cwd) ?? []),
+			...(remoteByWorkspace.get(cwd) ?? []),
+		]);
+		if (recorded.size === 0) continue;
 		byWorkspace.set(cwd, recorded);
 		for (const repositoryIdentity of recorded) known.add(repositoryIdentity);
 	}

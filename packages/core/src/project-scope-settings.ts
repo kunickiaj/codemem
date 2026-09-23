@@ -205,11 +205,17 @@ function originDevicesForCandidate(row: ProjectScopeCandidateRow): Array<{ devic
 		.map((deviceId) => ({ device_id: deviceId }));
 }
 
-function repositoryIdentityForRow(row: ProjectScopeCandidateRow): string | null {
+function explicitRepositoryIdentityForRow(row: ProjectScopeCandidateRow): string | null {
 	return normalizeRepositoryWorkspaceIdentity(
 		cleanProjectIdentity(row.repository_identity) ??
-			repositoryIdentityFromMetadata(row.metadata_json) ??
-			cleanProjectIdentity(row.git_remote),
+			repositoryIdentityFromMetadata(row.metadata_json),
+	);
+}
+
+function repositoryIdentityForRow(row: ProjectScopeCandidateRow): string | null {
+	return (
+		explicitRepositoryIdentityForRow(row) ??
+		normalizeRepositoryWorkspaceIdentity(cleanProjectIdentity(row.git_remote))
 	);
 }
 
@@ -217,7 +223,7 @@ function workspaceIdentityForRow(row: ProjectScopeCandidateRow) {
 	return canonicalWorkspaceIdentity({
 		gitRemote: row.git_remote,
 		gitBranch: row.git_branch,
-		repositoryIdentity: repositoryIdentityForRow(row),
+		repositoryIdentity: explicitRepositoryIdentityForRow(row),
 		cwd: row.cwd,
 		project: row.project,
 		workspaceId: row.workspace_id,
@@ -228,7 +234,7 @@ function identifyRepositoryRow(
 	row: ProjectScopeCandidateRow,
 	repositoryIdentityByCwd: Map<string, string>,
 ): ProjectScopeCandidateRow {
-	const discoveredRepositoryIdentity = repositoryIdentityForRow(row);
+	const discoveredRepositoryIdentity = explicitRepositoryIdentityForRow(row);
 	const cwd = normalizeRepositoryWorkspaceIdentity(row.cwd);
 	const explicitRemote = cleanProjectIdentity(row.git_remote);
 	const ambiguousWorkspace = Boolean(

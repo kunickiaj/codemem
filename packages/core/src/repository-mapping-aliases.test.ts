@@ -731,6 +731,36 @@ function expectReusedCheckoutHistoryRemainsAmbiguous(store: MemoryStore, tmpDir:
 	).toBe("second-scope");
 }
 
+function expectMetadataAndRemoteHistoryRemainsAmbiguous(store: MemoryStore): void {
+	const cwd = "/workspace/reused-mixed-evidence";
+	const metadataRepository = "https://example.test/acme/metadata-repository.git";
+	const remoteRepository = "https://example.test/acme/remote-repository.git";
+	insertScope(store, "metadata-scope");
+	insertScope(store, "remote-scope");
+	insertMapping(store, cwd, "metadata-scope");
+	insertMapping(store, remoteRepository, "remote-scope");
+	store.db
+		.prepare("INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, ?, ?, ?)")
+		.run(
+			"2026-09-22T00:00:00.000Z",
+			cwd,
+			"reused-mixed-evidence",
+			JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: metadataRepository }),
+		);
+	const remoteSessionId = Number(
+		store.db
+			.prepare(
+				`INSERT INTO sessions(started_at, cwd, project, git_remote, metadata_json)
+				 VALUES (?, ?, ?, ?, '{}')`,
+			)
+			.run("2026-09-23T00:00:00.000Z", cwd, "reused-mixed-evidence", remoteRepository)
+			.lastInsertRowid,
+	);
+
+	expect(repositoryIdentitiesByWorkspace(store.db).has(cwd)).toBe(false);
+	expect(resolveSessionScopeId(store.db, { sessionId: remoteSessionId })).toBe("remote-scope");
+}
+
 function expectRecordedSiblingEvidence(store: MemoryStore, tmpDir: string): void {
 	const remote = "https://example.test/acme/legacy-worktree.git";
 	const { mainRepo, worktree } = createLinkedWorktree(tmpDir, "legacy-worktree", remote);
@@ -888,6 +918,10 @@ describe("repository mapping aliases", () => {
 
 	it("does not infer metadata-less sessions when a cwd has conflicting repository history", () => {
 		expectReusedCheckoutHistoryRemainsAmbiguous(store, tmpDir);
+	});
+
+	it("preserves remote-only history beside metadata evidence for a reused cwd", () => {
+		expectMetadataAndRemoteHistoryRemainsAmbiguous(store);
 	});
 
 	it("surfaces worktrees that resolve to different pattern scopes", () => {
