@@ -556,6 +556,28 @@ function expectBulkSimulationPreservesNormalizedDuplicates(store: MemoryStore): 
 	});
 }
 
+function expectBulkNormalizedLookupMatchesPersistence(store: MemoryStore): void {
+	insertScope(store, "normalized-existing");
+	insertMapping(store, "/workspace/normalized-existing/", "normalized-existing");
+	store.db
+		.prepare("UPDATE project_scope_mappings SET priority = 10 WHERE workspace_identity = ?")
+		.run("/workspace/normalized-existing/");
+	const input = {
+		workspace_identity: "/workspace/normalized-existing",
+		project_pattern: "/workspace/normalized-existing",
+		scope_id: "normalized-existing",
+	};
+	const [analysis] = analyzeProjectScopeMappingChangesGuardrails(store.db, [input]);
+	const saved = upsertProjectScopeSettingsMapping(store.db, input);
+	expect(saved).toMatchObject({ id: analysis?.existing_mapping?.id, priority: 10 });
+	expect(
+		store.db
+			.prepare("SELECT COUNT(*) FROM project_scope_mappings WHERE scope_id = ?")
+			.pluck()
+			.get("normalized-existing"),
+	).toBe(1);
+}
+
 function expectMappedRepositorySeedsCandidateDiscovery(store: MemoryStore, tmpDir: string): void {
 	const remote = "https://example.test/acme/mapping-seeded-candidate.git";
 	const { mainRepo, worktree } = createLinkedWorktree(tmpDir, "mapping-seeded-candidate", remote);
@@ -568,6 +590,17 @@ function expectMappedRepositorySeedsCandidateDiscovery(store: MemoryStore, tmpDi
 			)
 			.run("2026-09-24T00:00:00.000Z", mainRepo, "mapping-seeded-candidate").lastInsertRowid,
 	);
+	store.db
+		.prepare(
+			"INSERT INTO sessions(started_at, cwd, project, git_remote, metadata_json) VALUES (?, ?, ?, ?, ?)",
+		)
+		.run(
+			"2026-09-24T01:00:00.000Z",
+			mainRepo,
+			"mapping-seeded-candidate",
+			remote,
+			JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: 123 }),
+		);
 
 	expect(
 		listProjectScopeCandidates(store.db).find(
@@ -1226,6 +1259,7 @@ describe("repository mapping aliases", () => {
 	it("resolves each bulk draft against preceding identity moves", () => {
 		expectBulkSimulationGuardrails(store, tmpDir);
 		expectBulkSimulationPreservesNormalizedDuplicates(store);
+		expectBulkNormalizedLookupMatchesPersistence(store);
 		expectDeleteConflictPropagation(store, tmpDir);
 		expectMappedRepositorySeedsCandidateDiscovery(store, tmpDir);
 		expectMovedMappingAnalyzesPreviousRepository(store, tmpDir);

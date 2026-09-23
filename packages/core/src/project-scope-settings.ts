@@ -289,7 +289,7 @@ function persistMappedRepositoryIdentityEvidence(
 		const repositoryIdentity = cwd ? identities.get(cwd) : null;
 		if (!repositoryIdentity) continue;
 		const metadata = fromJson(row.metadata_json);
-		if (cleanProjectIdentity(metadata[REPOSITORY_IDENTITY_METADATA_KEY] as string | undefined)) {
+		if (cleanProjectIdentity(repositoryIdentityFromMetadata(row.metadata_json))) {
 			continue;
 		}
 		update.run(
@@ -886,22 +886,6 @@ function getProjectScopeSettingsMappingById(
 	return row ? rowToMapping(row) : null;
 }
 
-function getProjectScopeSettingsMappingByWorkspaceIdentity(
-	db: Database,
-	workspaceIdentity: string,
-): ProjectScopeSettingsMapping | null {
-	const row = db
-		.prepare(
-			`SELECT id, workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
-			 FROM project_scope_mappings
-			 WHERE workspace_identity = ?
-			 ORDER BY priority DESC, updated_at DESC, id DESC
-			 LIMIT 1`,
-		)
-		.get(workspaceIdentity) as Record<string, unknown> | undefined;
-	return row ? rowToMapping(row) : null;
-}
-
 function assertActiveScope(db: Database, scopeId: string): void {
 	if (scopeId === LEGACY_SHARED_REVIEW_SCOPE_ID) {
 		throw new Error("legacy-shared-review is a review bucket, not an assignable Sharing domain");
@@ -938,9 +922,8 @@ function projectScopeMappingByWorkspace(
 	workspaceIdentity: string | null,
 ): ProjectScopeSettingsMapping | null {
 	if (!workspaceIdentity) return null;
-	if (!mappings) return getProjectScopeSettingsMappingByWorkspaceIdentity(db, workspaceIdentity);
 	return (
-		mappings.find(
+		(mappings ?? listProjectScopeSettingsMappings(db)).find(
 			(mapping) =>
 				normalizeRepositoryWorkspaceIdentity(mapping.workspace_identity) === workspaceIdentity,
 		) ?? null
