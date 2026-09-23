@@ -629,6 +629,20 @@ function missingGuardrailConfirmations(
 	);
 }
 
+function mappingGuardrailChallenge(
+	warnings: ProjectScopeGuardrailWarning[],
+	missing: ProjectScopeGuardrailWarning[],
+) {
+	return {
+		error: "guardrail_confirmation_required",
+		required_guardrails: [...new Set(missing.map((warning) => warning.code))],
+		required_guardrail_tokens: [
+			...new Set(missing.map((warning) => warning.confirmation_token)),
+		].filter((token): token is string => typeof token === "string" && token.length > 0),
+		guardrail_warnings: warnings,
+	};
+}
+
 function parseViewerProjectMappingInput(body: Record<string, unknown>) {
 	const id = optionalViewerInteger(body, "id");
 	const priority = optionalViewerInteger(body, "priority");
@@ -6128,7 +6142,11 @@ export function syncRoutes(
 			const confirmedGuardrailTokens = optionalViewerStringList(body, "confirmed_guardrail_tokens");
 			const mappingInput = parseViewerProjectMappingInput(body);
 			releasePublicationMutation = await claimRecipientPolicyPublicationMutation(store.db);
-			const analysis = analyzeProjectScopeMappingChangeGuardrails(store.db, mappingInput);
+			const [deviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
+			const analysis = analyzeProjectScopeMappingChangeGuardrails(store.db, {
+				...mappingInput,
+				deviceId,
+			});
 			if (analysis.requested_workspace_identity?.startsWith("unmapped:")) {
 				return c.json(
 					{
@@ -6145,21 +6163,8 @@ export function syncRoutes(
 				confirmedGuardrailTokens,
 			);
 			if (missingConfirmations.length > 0) {
-				const missingCodes = [...new Set(missingConfirmations.map((warning) => warning.code))];
-				const missingTokens = [
-					...new Set(missingConfirmations.map((warning) => warning.confirmation_token)),
-				].filter((token): token is string => typeof token === "string" && token.length > 0);
-				return c.json(
-					{
-						error: "guardrail_confirmation_required",
-						required_guardrails: missingCodes,
-						required_guardrail_tokens: missingTokens,
-						guardrail_warnings: analysis.warnings,
-					},
-					409,
-				);
+				return c.json(mappingGuardrailChallenge(analysis.warnings, missingConfirmations), 409);
 			}
-			const [deviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 			const mapping = upsertProjectScopeSettingsMapping(store.db, {
 				deviceId,
 				...mappingInput,
@@ -6189,7 +6194,11 @@ export function syncRoutes(
 				return parseViewerProjectMappingInput(raw as Record<string, unknown>);
 			});
 			releasePublicationMutation = await claimRecipientPolicyPublicationMutation(store.db);
-			const analyses = analyzeProjectScopeMappingChangesGuardrails(store.db, mappingInputs);
+			const [deviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
+			const analyses = analyzeProjectScopeMappingChangesGuardrails(
+				store.db,
+				mappingInputs.map((input) => ({ ...input, deviceId })),
+			);
 			const unmapped = analyses.find((analysis) =>
 				analysis.requested_workspace_identity?.startsWith("unmapped:"),
 			);
@@ -6208,21 +6217,14 @@ export function syncRoutes(
 				missingGuardrailConfirmations(analysis.warnings, []),
 			);
 			if (missingConfirmations.length > 0) {
-				const missingCodes = [...new Set(missingConfirmations.map((warning) => warning.code))];
-				const missingTokens = [
-					...new Set(missingConfirmations.map((warning) => warning.confirmation_token)),
-				].filter((token): token is string => typeof token === "string" && token.length > 0);
 				return c.json(
-					{
-						error: "guardrail_confirmation_required",
-						required_guardrails: missingCodes,
-						required_guardrail_tokens: missingTokens,
-						guardrail_warnings: analyses.flatMap((analysis) => analysis.warnings),
-					},
+					mappingGuardrailChallenge(
+						analyses.flatMap((analysis) => analysis.warnings),
+						missingConfirmations,
+					),
 					409,
 				);
 			}
-			const [deviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 			const saveMappings = store.db.transaction(() =>
 				mappingInputs.map((mappingInput) =>
 					upsertProjectScopeSettingsMapping(store.db, { deviceId, ...mappingInput }),

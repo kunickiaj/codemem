@@ -827,6 +827,147 @@ function expectMovedMappingAnalyzesPreviousRepository(store: MemoryStore, tmpDir
 	);
 }
 
+function expectMovingMappingRequiresFallbackConfirmation(store: MemoryStore, tmpDir: string): void {
+	const cwd = join(tmpDir, "moving-fallback-a");
+	insertScope(store, "moving-fallback-x");
+	insertScope(store, "moving-fallback-y");
+	insertPatternMapping(store, cwd, "moving-fallback-y");
+	insertMapping(store, cwd, "moving-fallback-x");
+	const id = Number(
+		store.db
+			.prepare("SELECT id FROM project_scope_mappings WHERE workspace_identity = ?")
+			.pluck()
+			.get(cwd),
+	);
+	const sessionId = store.startSession({ cwd, project: "moving-fallback" });
+	const memoryId = store.remember(sessionId, "discovery", "moving fallback", "moving fallback");
+	expect(
+		store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").pluck().get(memoryId),
+	).toBe("moving-fallback-x");
+	const analysis = analyzeProjectScopeMappingChangeGuardrails(store.db, {
+		id,
+		deviceId: store.deviceId,
+		workspace_identity: join(tmpDir, "moving-fallback-b"),
+		project_pattern: join(tmpDir, "moving-fallback-b"),
+		scope_id: "moving-fallback-x",
+	});
+	expect(analysis.warnings).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({
+				code: "scope_reassignment_old_copies",
+				previous_scope_id: "moving-fallback-x",
+				scope_id: "moving-fallback-y",
+				requires_confirmation: true,
+			}),
+		]),
+	);
+}
+
+function expectInsertMappingRequiresScopeConfirmation(store: MemoryStore, tmpDir: string): void {
+	const cwd = join(tmpDir, "inserting-shared-mapping");
+	insertScope(store, "insert-shared-confirmation");
+	const sessionId = store.startSession({ cwd, project: "inserting-shared-mapping" });
+	const memoryId = store.remember(sessionId, "discovery", "insert shared", "insert shared");
+	const input = {
+		deviceId: store.deviceId,
+		workspace_identity: cwd,
+		project_pattern: cwd,
+		scope_id: "insert-shared-confirmation",
+	};
+	const analysis = analyzeProjectScopeMappingChangeGuardrails(store.db, input);
+	expect(analysis.warnings).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({
+				code: "scope_reassignment_old_copies",
+				previous_scope_id: "local-default",
+				scope_id: "insert-shared-confirmation",
+				requires_confirmation: true,
+			}),
+		]),
+	);
+	expect(
+		store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").pluck().get(memoryId),
+	).toBe("local-default");
+}
+
+function expectFailedMappingUpdateRollsBack(store: MemoryStore, tmpDir: string): void {
+	const cwd = join(tmpDir, "failed-mapping-update");
+	insertScope(store, "failed-update-a");
+	insertScope(store, "failed-update-b");
+	insertMapping(store, cwd, "failed-update-a");
+	const sessionId = store.startSession({ cwd, project: "failed-mapping-update" });
+	const memoryId = store.remember(sessionId, "discovery", "failed update", "failed update");
+	const id = Number(
+		store.db
+			.prepare("SELECT id FROM project_scope_mappings WHERE workspace_identity = ?")
+			.pluck()
+			.get(cwd),
+	);
+	store.db.exec(
+		`CREATE TRIGGER reject_scope_move BEFORE UPDATE OF scope_id ON memory_items WHEN NEW.id = ${memoryId} BEGIN SELECT RAISE(ABORT, 'forced scope update failure'); END`,
+	);
+	try {
+		expect(() =>
+			upsertProjectScopeSettingsMapping(store.db, {
+				id,
+				deviceId: store.deviceId,
+				workspace_identity: cwd,
+				project_pattern: cwd,
+				scope_id: "failed-update-b",
+			}),
+		).toThrow("forced scope update failure");
+		expect(
+			store.db.prepare("SELECT scope_id FROM project_scope_mappings WHERE id = ?").pluck().get(id),
+		).toBe("failed-update-a");
+		expect(
+			store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").pluck().get(memoryId),
+		).toBe("failed-update-a");
+	} finally {
+		store.db.exec("DROP TRIGGER reject_scope_move");
+	}
+}
+
+function expectMovingSoleRepositoryMappingPreservesEvidence(
+	store: MemoryStore,
+	tmpDir: string,
+): void {
+	const remote = "https://example.test/acme/moving-sole-repository.git";
+	const { mainRepo, worktree } = createLinkedWorktree(tmpDir, "moving-sole-repository", remote);
+	insertScope(store, "moving-repository-a");
+	insertScope(store, "moving-repository-b");
+	insertMapping(store, remote, "moving-repository-a");
+	for (const cwd of [mainRepo, worktree])
+		store.db
+			.prepare(
+				"INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, ?, ?, '{}')",
+			)
+			.run("2026-09-24T00:00:00.000Z", cwd, "moving-sole-repository");
+	const id = Number(
+		store.db
+			.prepare("SELECT id FROM project_scope_mappings WHERE workspace_identity = ?")
+			.pluck()
+			.get(remote),
+	);
+	upsertProjectScopeSettingsMapping(store.db, {
+		id,
+		workspace_identity: "/workspace/elsewhere",
+		project_pattern: "/workspace/elsewhere",
+		scope_id: "moving-repository-a",
+	});
+	insertPatternMapping(store, mainRepo, "moving-repository-a");
+	insertPatternMapping(store, worktree, "moving-repository-b");
+	for (const cwd of [mainRepo, worktree]) {
+		const sessionId = Number(
+			store.db
+				.prepare(
+					"INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, ?, ?, '{}')",
+				)
+				.run("2026-09-24T01:00:00.000Z", cwd, "moving-sole-repository").lastInsertRowid,
+		);
+		expect(resolveSessionScopeId(store.db, { sessionId })).toBe("local-default");
+	}
+}
+
 function expectDeleteConflictPropagation(store: MemoryStore, tmpDir: string): void {
 	const { mainRepo, worktree } = createLinkedWorktree(
 		tmpDir,
@@ -1414,6 +1555,10 @@ describe("repository mapping aliases", () => {
 		expectDiscoveredSiblingDraftRequiresConflictConfirmation(store, tmpDir);
 		expectPatternOnlyRepositorySeedFailsClosed(store, tmpDir);
 		expectMovedMappingAnalyzesPreviousRepository(store, tmpDir);
+		expectMovingSoleRepositoryMappingPreservesEvidence(store, tmpDir);
+		expectMovingMappingRequiresFallbackConfirmation(store, tmpDir);
+		expectInsertMappingRequiresScopeConfirmation(store, tmpDir);
+		expectFailedMappingUpdateRollsBack(store, tmpDir);
 	});
 
 	it("normalizes equivalent repository evidence before candidate conflict checks", () => {

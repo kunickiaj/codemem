@@ -486,6 +486,55 @@ async function resolvesReceivedProjectOriginDeviceNames(): Promise<void> {
 // Tests
 // ---------------------------------------------------------------------------
 
+async function requestBehindPublicationForDb(
+	db: InstanceType<typeof Database>,
+	request: () => Promise<Response>,
+): Promise<Response> {
+	let releasePublication: () => void = () => undefined;
+	const publicationGate = new Promise<void>((resolve) => {
+		releasePublication = resolve;
+	});
+	let markPublicationStarted: () => void = () => undefined;
+	const publicationStarted = new Promise<void>((resolve) => {
+		markPublicationStarted = resolve;
+	});
+	const heldPublication = core.serializeRecipientPolicyPublicationMutation(db, async () => {
+		markPublicationStarted();
+		await publicationGate;
+	});
+	await publicationStarted;
+	let requestSettled = false;
+	const pendingRequest = request().then((response) => {
+		requestSettled = true;
+		return response;
+	});
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	expect(requestSettled).toBe(false);
+	releasePublication();
+	const response = await pendingRequest;
+	await heldPublication;
+	return response;
+}
+
+async function saveMappingWithConfirmation(
+	request: (input: Record<string, unknown>) => Promise<Response>,
+	input: Record<string, unknown>,
+): Promise<Response> {
+	const preview = await request(input);
+	expect(preview.status).toBe(409);
+	const challenge = (await preview.json()) as {
+		required_guardrails: string[];
+		required_guardrail_tokens: string[];
+	};
+	expect(challenge.required_guardrails).toContain("scope_reassignment_old_copies");
+	const saved = await request({
+		...input,
+		confirmed_guardrail_tokens: challenge.required_guardrail_tokens,
+	});
+	expect(saved.status).toBe(200);
+	return saved;
+}
+
 describe("GET /api/sync/projects origin devices", () => {
 	it(
 		"resolves safe names and rejects raw IDs from identity and peer records",
@@ -12464,35 +12513,8 @@ describe("viewer-server", () => {
 				await app.request("/api/stats");
 				const store = getStore();
 				if (!store) throw new Error("store not initialized");
-				const requestBehindPublication = async (request: () => Promise<Response>) => {
-					let releasePublication: () => void = () => undefined;
-					const publicationGate = new Promise<void>((resolve) => {
-						releasePublication = resolve;
-					});
-					let markPublicationStarted: () => void = () => undefined;
-					const publicationStarted = new Promise<void>((resolve) => {
-						markPublicationStarted = resolve;
-					});
-					const heldPublication = core.serializeRecipientPolicyPublicationMutation(
-						store.db,
-						async () => {
-							markPublicationStarted();
-							await publicationGate;
-						},
-					);
-					await publicationStarted;
-					let requestSettled = false;
-					const pendingRequest = request().then((response) => {
-						requestSettled = true;
-						return response;
-					});
-					await new Promise((resolve) => setTimeout(resolve, 0));
-					expect(requestSettled).toBe(false);
-					releasePublication();
-					const response = await pendingRequest;
-					await heldPublication;
-					return response;
-				};
+				const requestBehindPublication = (request: () => Promise<Response>) =>
+					requestBehindPublicationForDb(store.db, request);
 				const sessionId = insertTestSession(store.db);
 				insertTestMemory(store, {
 					sessionId,
@@ -12612,8 +12634,24 @@ describe("viewer-server", () => {
 						body: JSON.stringify(mappingRequest),
 					}),
 				);
-				expect(saveRes.status).toBe(200);
-				const saveBody = (await saveRes.json()) as { mapping: { id: number; scope_id: string } };
+				expect(saveRes.status).toBe(409);
+				const required = (await saveRes.json()) as {
+					required_guardrails: string[];
+					required_guardrail_tokens: string[];
+				};
+				expect(required.required_guardrails).toContain("scope_reassignment_old_copies");
+				const confirmedSaveRes = await app.request("/api/sync/sharing-domains/project-mappings", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						...mappingRequest,
+						confirmed_guardrail_tokens: required.required_guardrail_tokens,
+					}),
+				});
+				expect(confirmedSaveRes.status).toBe(200);
+				const saveBody = (await confirmedSaveRes.json()) as {
+					mapping: { id: number; scope_id: string };
+				};
 				expect(saveBody.mapping.scope_id).toBe("acme-work");
 
 				const updatedRes = await app.request("/api/sync/sharing-domains/settings");
@@ -13895,16 +13933,19 @@ describe("viewer-server", () => {
 					.run(now, now);
 
 				const projectIdentity = "https://git.example.invalid/exampleco/api.git";
-				const saveRes = await app.request("/api/sync/sharing-domains/project-mappings", {
-					method: "PUT",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({
+				await saveMappingWithConfirmation(
+					(input) =>
+						app.request("/api/sync/sharing-domains/project-mappings", {
+							method: "PUT",
+							headers: { "Content-Type": "application/json" },
+							body: JSON.stringify(input),
+						}),
+					{
 						workspace_identity: projectIdentity,
 						project_pattern: "api",
 						scope_id: "exampleco-work",
-					}),
-				});
-				expect(saveRes.status).toBe(200);
+					},
+				);
 
 				const inventoryRes = await app.request(
 					"/api/sync/projects?q=exampleco&status=explicitly_mapped&limit=1",
@@ -14401,16 +14442,19 @@ describe("viewer-server", () => {
 				};
 				const project = settings.projects.find((item) => item.display_project === "test-project");
 				if (!project) throw new Error("project missing");
-				const createRes = await app.request("/api/sync/sharing-domains/project-mappings", {
-					method: "PUT",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({
+				const createRes = await saveMappingWithConfirmation(
+					(input) =>
+						app.request("/api/sync/sharing-domains/project-mappings", {
+							method: "PUT",
+							headers: { "Content-Type": "application/json" },
+							body: JSON.stringify(input),
+						}),
+					{
 						workspace_identity: project.workspace_identity,
 						project_pattern: project.display_project,
 						scope_id: "acme-work",
-					}),
-				});
-				expect(createRes.status).toBe(200);
+					},
+				);
 				const created = (await createRes.json()) as { mapping: { id: number } };
 
 				const unconfirmedRes = await app.request("/api/sync/sharing-domains/project-mappings", {

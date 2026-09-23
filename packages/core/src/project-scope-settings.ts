@@ -901,6 +901,7 @@ function assertActiveScope(db: Database, scopeId: string): void {
 interface ProjectScopeMappingDraft {
 	deviceId: string | null;
 	existing: ProjectScopeSettingsMapping | null;
+	mappingId: number | null;
 	workspaceIdentity: string | null;
 	projectPattern: string | null;
 	scopeId: string;
@@ -952,6 +953,7 @@ function resolveProjectScopeMappingDraft(
 	return {
 		deviceId: clean(input.deviceId),
 		existing,
+		mappingId: existing?.id ?? null,
 		workspaceIdentity,
 		projectPattern,
 		scopeId: clean(input.scope_id) ?? "",
@@ -1179,20 +1181,23 @@ function propagateProjectScopeMappingToSourceOwnedMemories(
 	return moved;
 }
 
-function changedScopesAfterMappingDeletion(
+function changedScopesAfterMappingTransition(
 	db: Database,
 	id: number,
 	deviceId: string,
 	oldMappings: ProjectScopeSettingsMapping[],
+	newMappings: ProjectScopeSettingsMapping[],
 ): Set<string> {
-	const remaining = oldMappings.filter((row) => row.id !== id);
 	const identities = repositoryIdentitiesByWorkspace(db, {
-		knownRepositoryIdentities: knownRepositoryIdentitiesForMappings(oldMappings),
+		knownRepositoryIdentities: knownRepositoryIdentitiesForMappings([
+			...oldMappings,
+			...newMappings,
+		]),
 	});
 	const oldAliases = withRepositoryMappingAliasesFromIdentities(oldMappings, identities, {
 		discoverFilesystem: true,
 	});
-	const newAliases = withRepositoryMappingAliasesFromIdentities(remaining, identities, {
+	const newAliases = withRepositoryMappingAliasesFromIdentities(newMappings, identities, {
 		discoverFilesystem: true,
 	});
 	const oldConflicts = new Map<string, boolean>();
@@ -1267,7 +1272,13 @@ export function analyzeProjectScopeMappingDeletionGuardrails(
 	const mapping = getProjectScopeSettingsMappingById(db, id);
 	if (!mapping || !deviceId) return [];
 	const oldMappings = listProjectScopeSettingsMappings(db);
-	const changes = changedScopesAfterMappingDeletion(db, id, deviceId, oldMappings);
+	const changes = changedScopesAfterMappingTransition(
+		db,
+		id,
+		deviceId,
+		oldMappings,
+		oldMappings.filter((row) => row.id !== id),
+	);
 	return [...changes].sort().map((change) => {
 		const [previousScopeId, scopeId] = JSON.parse(change) as [string, string];
 		return withGuardrailConfirmationToken({
@@ -1328,6 +1339,7 @@ function resolveProjectScopeMappingDrafts(
 	let nextSyntheticId = Math.max(0, ...mappings.map((mapping) => mapping.id)) + 1;
 	for (const input of inputs) {
 		const draft = resolveProjectScopeMappingDraft(db, input, mappings);
+		draft.mappingId = draft.existing?.id ?? nextSyntheticId;
 		drafts.push(draft);
 		mappings = applyProjectScopeDraft(mappings, draft, nextSyntheticId);
 		if (!draft.existing) nextSyntheticId += 1;
@@ -1422,6 +1434,48 @@ function bindDraftConflictWarning(
 	};
 }
 
+function mappingTransitionGuardrailWarnings(
+	db: Database,
+	draft: ProjectScopeMappingDraft,
+	scopes: SharingDomainSettingsScope[],
+	mappings: ProjectScopeSettingsMapping[],
+): ProjectScopeGuardrailWarning[] {
+	const deviceId = draft.deviceId;
+	if (!draft.mappingId || !deviceId) return [];
+	const oldMappings = listProjectScopeSettingsMappingsForScopes(db, scopes);
+	const transitionState = createHash("sha256")
+		.update(
+			JSON.stringify([
+				mappingConfirmationState(oldMappings),
+				deletionConfirmationState(db, deviceId, mappings),
+			]),
+		)
+		.digest("hex");
+	const changes = changedScopesAfterMappingTransition(
+		db,
+		draft.mappingId,
+		deviceId,
+		oldMappings,
+		mappings,
+	);
+	return [...changes].sort().map((change) => {
+		const [previousScopeId, scopeId] = JSON.parse(change) as [string, string];
+		return {
+			code: "scope_reassignment_old_copies",
+			severity: "warning",
+			message:
+				"Assigning this mapping changes the Sharing domain for existing memories. Review access before continuing; old copies may remain on devices and backups.",
+			requires_confirmation: true,
+			mapping_id: draft.mappingId,
+			previous_scope_id: previousScopeId,
+			scope_id: scopeId,
+			workspace_identity: draft.existing?.workspace_identity ?? draft.workspaceIdentity,
+			project_pattern: draft.existing?.project_pattern ?? draft.projectPattern,
+			conflict_state: transitionState,
+		};
+	});
+}
+
 function analyzeProjectScopeMappingDraftGuardrails(
 	db: Database,
 	draft: ProjectScopeMappingDraft,
@@ -1455,6 +1509,7 @@ function analyzeProjectScopeMappingDraftGuardrails(
 				.map((warning) => bindDraftConflictWarning(warning, draft, conflictState)),
 		);
 	}
+	warnings.push(...mappingTransitionGuardrailWarnings(db, draft, scopes, mappings));
 	if (draft.scopeId && draft.existing && draft.existing.scope_id !== draft.scopeId) {
 		const oldScope = scopeDisplayName(
 			scopesById.get(draft.existing.scope_id),
@@ -1489,6 +1544,10 @@ export function analyzeProjectScopeMappingChangesGuardrails(
 	ensureScopeBackfillScopes(db);
 	const scopes = listSharingDomainSettingsScopes(db);
 	const { drafts, mappings } = resolveProjectScopeMappingDrafts(db, scopes, inputs);
+	for (const draft of drafts) {
+		if (!draft.scopeId) throw new Error("scope_id must be a non-empty string");
+		assertActiveScope(db, draft.scopeId);
+	}
 	return drafts.map((draft) =>
 		analyzeProjectScopeMappingDraftGuardrails(db, draft, scopes, mappings),
 	);
@@ -2106,7 +2165,7 @@ export function reassignProjectScopeInventoryProject(
 	};
 }
 
-export function upsertProjectScopeSettingsMapping(
+function upsertProjectScopeSettingsMappingInTransaction(
 	db: Database,
 	input: UpsertProjectScopeMappingInput,
 ): ProjectScopeSettingsMapping {
@@ -2139,6 +2198,7 @@ export function upsertProjectScopeSettingsMapping(
 	const now = new Date().toISOString();
 	const previousMappings = listProjectScopeSettingsMappings(db);
 	if (existing) {
+		persistMappedRepositoryIdentityEvidence(db, previousMappings);
 		db.prepare(
 			`UPDATE project_scope_mappings
 			 SET workspace_identity = ?, project_pattern = ?, scope_id = ?, priority = ?, source = ?, updated_at = ?
@@ -2161,6 +2221,13 @@ export function upsertProjectScopeSettingsMapping(
 	if (!saved) throw new Error("project_scope_mapping insert returned no row");
 	propagateProjectScopeMappingToSourceOwnedMemories(db, saved, draft.deviceId, previousMappings);
 	return saved;
+}
+
+export function upsertProjectScopeSettingsMapping(
+	db: Database,
+	input: UpsertProjectScopeMappingInput,
+): ProjectScopeSettingsMapping {
+	return db.transaction(() => upsertProjectScopeSettingsMappingInTransaction(db, input))();
 }
 
 export function deleteProjectScopeSettingsMapping(

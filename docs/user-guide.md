@@ -458,6 +458,8 @@ Safe defaults:
 - Removing a Local-only project mapping can expose existing memories through a
   fallback Sharing domain. Review the access warning and select Remove again to
   confirm; if mappings change in between, review the new warning first.
+- Assigning a shared mapping to a Project with existing Local memories also
+  requires reviewing and confirming the access change before those memories move.
 
 For a mixed personal/work laptop, start conservatively:
 
