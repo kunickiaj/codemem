@@ -208,7 +208,7 @@ function originDevicesForCandidate(row: ProjectScopeCandidateRow): Array<{ devic
 function explicitRepositoryIdentityForRow(row: ProjectScopeCandidateRow): string | null {
 	return normalizeRepositoryWorkspaceIdentity(
 		cleanProjectIdentity(row.repository_identity) ??
-			repositoryIdentityFromMetadata(row.metadata_json),
+			cleanProjectIdentity(repositoryIdentityFromMetadata(row.metadata_json)),
 	);
 }
 
@@ -1166,14 +1166,13 @@ function propagateProjectScopeMappingToSourceOwnedMemories(
 	return moved;
 }
 
-function applyProjectScopeDraft(
-	mappings: ProjectScopeSettingsMapping[],
+function projectScopeMappingFromDraft(
 	draft: ProjectScopeMappingDraft,
 	syntheticId: number,
-): ProjectScopeSettingsMapping[] {
-	if (!draft.projectPattern || !draft.scopeId) return mappings;
+): ProjectScopeSettingsMapping | null {
+	if (!draft.projectPattern || !draft.scopeId) return null;
 	const now = new Date().toISOString();
-	const requested: ProjectScopeSettingsMapping = {
+	return {
 		id: draft.existing?.id ?? syntheticId,
 		workspace_identity: draft.workspaceIdentity,
 		project_pattern: draft.projectPattern,
@@ -1184,6 +1183,15 @@ function applyProjectScopeDraft(
 		updated_at: now,
 		guardrail_warnings: [],
 	};
+}
+
+function applyProjectScopeDraft(
+	mappings: ProjectScopeSettingsMapping[],
+	draft: ProjectScopeMappingDraft,
+	syntheticId: number,
+): ProjectScopeSettingsMapping[] {
+	const requested = projectScopeMappingFromDraft(draft, syntheticId);
+	if (!requested) return mappings;
 	if (!draft.existing) return [...mappings, requested];
 	return mappings.map((mapping) => (mapping.id === draft.existing?.id ? requested : mapping));
 }
@@ -1208,12 +1216,11 @@ function resolveProjectScopeMappingDrafts(
 function candidateMatchesProjectScopeDraft(
 	db: Database,
 	candidate: ProjectScopeCandidate,
-	draft: ProjectScopeMappingDraft,
-	requested: ProjectScopeSettingsMapping,
+	mapping: ProjectScopeSettingsMapping,
 	repositoryIdentities: ReadonlyMap<string, string>,
 	workspacesByRepository: Map<string, ReadonlySet<string>>,
 ): boolean {
-	const normalizedWorkspace = normalizeRepositoryWorkspaceIdentity(draft.workspaceIdentity);
+	const normalizedWorkspace = normalizeRepositoryWorkspaceIdentity(mapping.workspace_identity);
 	if (normalizedWorkspace) {
 		const candidateWorkspace = normalizeRepositoryWorkspaceIdentity(candidate.workspace_identity);
 		if (candidateWorkspace === normalizedWorkspace) return true;
@@ -1240,7 +1247,7 @@ function candidateMatchesProjectScopeDraft(
 			identities.add(workspace);
 		}
 	}
-	return scopeIdsMatchingProjectPatterns([requested], identities).size > 0;
+	return scopeIdsMatchingProjectPatterns([mapping], identities).size > 0;
 }
 
 function candidatesForProjectScopeDraft(
@@ -1250,7 +1257,7 @@ function candidatesForProjectScopeDraft(
 	mappings: ProjectScopeSettingsMapping[],
 ): ProjectScopeCandidate[] {
 	if (!draft.projectPattern || !draft.scopeId) return [];
-	const requested = applyProjectScopeDraft([], draft, -1)[0];
+	const requested = projectScopeMappingFromDraft(draft, -1);
 	if (!requested) return [];
 	const effectiveMappings = withRepositoryMappingAliases(db, mappings);
 	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
@@ -1263,14 +1270,16 @@ function candidatesForProjectScopeDraft(
 			scopes,
 		}),
 	);
+	const affectedMappings = draft.existing ? [requested, draft.existing] : [requested];
 	return candidates.filter((candidate) =>
-		candidateMatchesProjectScopeDraft(
-			db,
-			candidate,
-			draft,
-			requested,
-			repositoryIdentities,
-			workspacesByRepository,
+		affectedMappings.some((mapping) =>
+			candidateMatchesProjectScopeDraft(
+				db,
+				candidate,
+				mapping,
+				repositoryIdentities,
+				workspacesByRepository,
+			),
 		),
 	);
 }

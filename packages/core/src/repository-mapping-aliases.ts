@@ -227,8 +227,8 @@ export function repositoryIdentityForWorkspace(
 	},
 ): string | null {
 	const recorded =
-		normalizeIdentity(input.repositoryIdentity) ??
-		normalizeIdentity(repositoryIdentityFromMetadata(input.metadataJson));
+		normalizeIdentity(cleanProjectIdentity(input.repositoryIdentity)) ??
+		normalizeIdentity(cleanProjectIdentity(repositoryIdentityFromMetadata(input.metadataJson)));
 	if (recorded) return recorded;
 	const gitRemote = normalizeIdentity(cleanProjectIdentity(input.gitRemote));
 	if (gitRemote) return gitRemote;

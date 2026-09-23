@@ -602,6 +602,47 @@ function expectMappedRepositorySeedsCandidateDiscovery(store: MemoryStore, tmpDi
 	).toBe("local-default");
 }
 
+function expectMovedMappingAnalyzesPreviousRepository(store: MemoryStore, tmpDir: string): void {
+	const remote = "https://example.test/acme/moved-mapping.git";
+	const { mainRepo, worktree } = createLinkedWorktree(tmpDir, "moved-mapping", remote);
+	for (const scopeId of ["moved-main", "moved-worktree"]) {
+		insertScope(store, scopeId);
+	}
+	insertPatternMapping(store, mainRepo, "moved-main");
+	insertPatternMapping(store, worktree, "moved-worktree");
+	const overridingPattern = `${tmpDir}/moved-mapping*`;
+	insertPatternMapping(store, overridingPattern, "moved-main");
+	store.db
+		.prepare("UPDATE project_scope_mappings SET priority = 100 WHERE project_pattern = ?")
+		.run(overridingPattern);
+	for (const cwd of [mainRepo, worktree]) {
+		store.db
+			.prepare("INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, ?, ?, ?)")
+			.run(
+				"2026-09-24T00:00:00.000Z",
+				cwd,
+				"moved-mapping",
+				JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: remote }),
+			);
+	}
+	const mappingId = Number(
+		store.db
+			.prepare("SELECT id FROM project_scope_mappings WHERE project_pattern = ?")
+			.pluck()
+			.get(overridingPattern),
+	);
+	const analysis = analyzeProjectScopeMappingChangeGuardrails(store.db, {
+		id: mappingId,
+		workspace_identity: null,
+		project_pattern: "/workspace/moved-destination",
+		scope_id: "moved-main",
+	});
+
+	expect(analysis.warnings).toEqual(
+		expect.arrayContaining([expect.objectContaining({ code: "conflicting_repository_mappings" })]),
+	);
+}
+
 function expectDeleteConflictPropagation(store: MemoryStore, tmpDir: string): void {
 	const { mainRepo, worktree } = createLinkedWorktree(
 		tmpDir,
@@ -1175,6 +1216,7 @@ describe("repository mapping aliases", () => {
 		expectBulkSimulationPreservesNormalizedDuplicates(store);
 		expectDeleteConflictPropagation(store, tmpDir);
 		expectMappedRepositorySeedsCandidateDiscovery(store, tmpDir);
+		expectMovedMappingAnalyzesPreviousRepository(store, tmpDir);
 	});
 
 	it("normalizes equivalent repository evidence before candidate conflict checks", () => {
