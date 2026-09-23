@@ -517,6 +517,61 @@ function expectBulkSimulationGuardrails(store: MemoryStore, tmpDir: string): voi
 	expectBulkRejectsNonPositiveIds(store);
 }
 
+function expectBulkSimulationPreservesNormalizedDuplicates(store: MemoryStore): void {
+	insertScope(store, "normalized-duplicate-a");
+	insertScope(store, "normalized-duplicate-b");
+	insertMapping(store, "/workspace/normalized-duplicate", "normalized-duplicate-a");
+	const olderId = Number(
+		store.db
+			.prepare("SELECT id FROM project_scope_mappings WHERE scope_id = 'normalized-duplicate-a'")
+			.pluck()
+			.get(),
+	);
+	insertMapping(store, "/workspace/normalized-duplicate/", "normalized-duplicate-b");
+	const newerId = Number(
+		store.db
+			.prepare("SELECT id FROM project_scope_mappings WHERE scope_id = 'normalized-duplicate-b'")
+			.pluck()
+			.get(),
+	);
+
+	const analyses = analyzeProjectScopeMappingChangesGuardrails(store.db, [
+		{
+			id: olderId,
+			workspace_identity: "/workspace/normalized-duplicate",
+			project_pattern: "/workspace/normalized-duplicate",
+			scope_id: "normalized-duplicate-a",
+		},
+		{
+			id: newerId,
+			workspace_identity: "/workspace/normalized-duplicate/",
+			project_pattern: "/workspace/normalized-duplicate/",
+			scope_id: "normalized-duplicate-b",
+		},
+	]);
+
+	expect(analyses[1]?.existing_mapping).toMatchObject({
+		id: newerId,
+		scope_id: "normalized-duplicate-b",
+	});
+}
+
+function expectMappedRepositorySeedsCandidateDiscovery(store: MemoryStore, tmpDir: string): void {
+	const remote = "https://example.test/acme/mapping-seeded-candidate.git";
+	const { mainRepo } = createLinkedWorktree(tmpDir, "mapping-seeded-candidate", remote);
+	insertScope(store, "mapping-seeded-candidate");
+	insertMapping(store, remote, "mapping-seeded-candidate");
+	store.db
+		.prepare("INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, ?, ?, '{}')")
+		.run("2026-09-24T00:00:00.000Z", mainRepo, "mapping-seeded-candidate");
+
+	expect(
+		listProjectScopeCandidates(store.db).find(
+			(candidate) => candidate.workspace_identity === remote,
+		),
+	).toMatchObject({ repository_identity: remote, resolved_scope_id: "mapping-seeded-candidate" });
+}
+
 function expectDeleteConflictPropagation(store: MemoryStore, tmpDir: string): void {
 	const { mainRepo, worktree } = createLinkedWorktree(
 		tmpDir,
@@ -916,6 +971,60 @@ function expectScopeStampingRefreshesRepositoryIdentity(store: MemoryStore, tmpD
 	expect(resolveSessionScopeId(store.db, { sessionId })).toBe("scope-b");
 }
 
+function expectPatternConflictInventory(store: MemoryStore): void {
+	const now = "2026-09-23T00:00:00Z";
+	for (const [scopeId, label] of [
+		["scope-a", "Scope A"],
+		["scope-b", "Scope B"],
+	]) {
+		store.db
+			.prepare(
+				`INSERT INTO replication_scopes(
+					scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+				 ) VALUES (?, ?, 'team', 'coordinator', 1, 'active', ?, ?)`,
+			)
+			.run(scopeId, label, now, now);
+	}
+	for (const [pattern, scopeId] of [
+		["/workspace/a/*", "scope-a"],
+		["/workspace/b/*", "scope-b"],
+	]) {
+		store.db
+			.prepare(
+				`INSERT INTO project_scope_mappings(
+					workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+				 ) VALUES (NULL, ?, ?, 10, 'user', ?, ?)`,
+			)
+			.run(pattern, scopeId, now, now);
+	}
+	const repositoryIdentity = "https://example.test/acme/pattern-conflict.git";
+	for (const cwd of ["/workspace/a/api", "/workspace/b/api"]) {
+		store.db
+			.prepare(
+				`INSERT INTO sessions(started_at, cwd, project, metadata_json)
+				 VALUES (?, ?, 'api', ?)`,
+			)
+			.run(now, cwd, JSON.stringify({ codemem_repository_identity: repositoryIdentity }));
+	}
+
+	const inventory = listProjectScopeInventory(store.db, { limit: 10 });
+	expect(inventory.projects).toHaveLength(1);
+	expect(inventory.projects[0]).toMatchObject({
+		mapping_id: null,
+		matched_pattern: null,
+		resolved_scope_id: "local-default",
+		statuses: expect.arrayContaining(["local_only", "needs_attention"]),
+		workspace_identity: repositoryIdentity,
+		worktrees: expect.arrayContaining([
+			expect.objectContaining({ cwd: "/workspace/a/api" }),
+			expect.objectContaining({ cwd: "/workspace/b/api" }),
+		]),
+	});
+	expect(inventory.projects[0]?.guardrail_warnings).toEqual(
+		expect.arrayContaining([expect.objectContaining({ code: "conflicting_repository_mappings" })]),
+	);
+}
+
 describe("repository mapping aliases", () => {
 	let originalConfig: string | undefined;
 	let store: MemoryStore;
@@ -982,7 +1091,9 @@ describe("repository mapping aliases", () => {
 
 	it("resolves each bulk draft against preceding identity moves", () => {
 		expectBulkSimulationGuardrails(store, tmpDir);
+		expectBulkSimulationPreservesNormalizedDuplicates(store);
 		expectDeleteConflictPropagation(store, tmpDir);
+		expectMappedRepositorySeedsCandidateDiscovery(store, tmpDir);
 	});
 
 	it("normalizes equivalent repository evidence before candidate conflict checks", () => {
@@ -1014,58 +1125,6 @@ describe("repository mapping aliases", () => {
 	});
 
 	it("surfaces worktrees that resolve to different pattern scopes", () => {
-		const now = "2026-09-23T00:00:00Z";
-		for (const [scopeId, label] of [
-			["scope-a", "Scope A"],
-			["scope-b", "Scope B"],
-		]) {
-			store.db
-				.prepare(
-					`INSERT INTO replication_scopes(
-						scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
-					 ) VALUES (?, ?, 'team', 'coordinator', 1, 'active', ?, ?)`,
-				)
-				.run(scopeId, label, now, now);
-		}
-		for (const [pattern, scopeId] of [
-			["/workspace/a/*", "scope-a"],
-			["/workspace/b/*", "scope-b"],
-		]) {
-			store.db
-				.prepare(
-					`INSERT INTO project_scope_mappings(
-						workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
-					 ) VALUES (NULL, ?, ?, 10, 'user', ?, ?)`,
-				)
-				.run(pattern, scopeId, now, now);
-		}
-		const repositoryIdentity = "https://example.test/acme/pattern-conflict.git";
-		for (const cwd of ["/workspace/a/api", "/workspace/b/api"]) {
-			store.db
-				.prepare(
-					`INSERT INTO sessions(started_at, cwd, project, metadata_json)
-					 VALUES (?, ?, 'api', ?)`,
-				)
-				.run(now, cwd, JSON.stringify({ codemem_repository_identity: repositoryIdentity }));
-		}
-
-		const inventory = listProjectScopeInventory(store.db, { limit: 10 });
-		expect(inventory.projects).toHaveLength(1);
-		expect(inventory.projects[0]).toMatchObject({
-			mapping_id: null,
-			matched_pattern: null,
-			resolved_scope_id: "local-default",
-			statuses: expect.arrayContaining(["local_only", "needs_attention"]),
-			workspace_identity: repositoryIdentity,
-			worktrees: expect.arrayContaining([
-				expect.objectContaining({ cwd: "/workspace/a/api" }),
-				expect.objectContaining({ cwd: "/workspace/b/api" }),
-			]),
-		});
-		expect(inventory.projects[0]?.guardrail_warnings).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({ code: "conflicting_repository_mappings" }),
-			]),
-		);
+		expectPatternConflictInventory(store);
 	});
 });

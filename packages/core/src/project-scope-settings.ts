@@ -1173,24 +1173,8 @@ function applyProjectScopeDraft(
 		updated_at: now,
 		guardrail_warnings: [],
 	};
-	const requestedWorkspace = normalizeRepositoryWorkspaceIdentity(draft.workspaceIdentity);
-	const replaced = mappings.some(
-		(mapping) =>
-			(draft.existing && mapping.id === draft.existing.id) ||
-			(requestedWorkspace != null &&
-				normalizeRepositoryWorkspaceIdentity(mapping.workspace_identity) === requestedWorkspace),
-	);
-	if (!replaced) return [...mappings, requested];
-	return mappings.map((mapping) => {
-		if (draft.existing && mapping.id === draft.existing.id) return requested;
-		if (
-			requestedWorkspace != null &&
-			normalizeRepositoryWorkspaceIdentity(mapping.workspace_identity) === requestedWorkspace
-		) {
-			return requested;
-		}
-		return mapping;
-	});
+	if (!draft.existing) return [...mappings, requested];
+	return mappings.map((mapping) => (mapping.id === draft.existing?.id ? requested : mapping));
 }
 
 function resolveProjectScopeMappingDrafts(
@@ -1415,7 +1399,12 @@ function collectProjectScopeCandidates(
 ): ProjectScopeCandidate[] {
 	const queries = candidatePageQueries(db, input.excludePeerReceived);
 	const seen = new Set<string>();
-	const repositories = repositoryIdentitiesByWorkspace(db);
+	const repositories = repositoryIdentitiesByWorkspace(db, {
+		knownRepositoryIdentities: input.mappings.flatMap((mapping) => [
+			mapping.workspace_identity,
+			mapping.project_pattern,
+		]),
+	});
 	const conflictsByRepository = new Map<string, boolean>();
 	const candidates: ProjectScopeCandidate[] = [];
 	let cursor: { startedAt: string; id: number } | null = null;

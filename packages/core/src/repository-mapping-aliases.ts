@@ -180,9 +180,17 @@ export function discoverKnownRepositoryIdentity(
 		: null;
 }
 
-export function repositoryIdentitiesByWorkspace(db: Database): Map<string, string> {
+export function repositoryIdentitiesByWorkspace(
+	db: Database,
+	options: { knownRepositoryIdentities?: Iterable<string | null | undefined> } = {},
+): Map<string, string> {
 	const recorded = recordedRepositoryIdentityEvidence(db);
 	const identities = recorded.byWorkspace;
+	const known = new Set(recorded.known);
+	for (const identity of options.knownRepositoryIdentities ?? []) {
+		const normalized = normalizeIdentity(cleanProjectIdentity(identity));
+		if (normalized) known.add(normalized);
+	}
 	const rows = db
 		.prepare(
 			`SELECT DISTINCT cwd
@@ -194,7 +202,7 @@ export function repositoryIdentitiesByWorkspace(db: Database): Map<string, strin
 	for (const row of rows) {
 		const cwd = normalizeIdentity(row.cwd);
 		if (!cwd || identities.has(cwd) || recorded.recordedWorkspaces.has(cwd)) continue;
-		const repositoryIdentity = discoverKnownRepositoryIdentity(row.cwd, recorded.known);
+		const repositoryIdentity = discoverKnownRepositoryIdentity(row.cwd, known);
 		if (repositoryIdentity) identities.set(cwd, repositoryIdentity);
 	}
 	return identities;
