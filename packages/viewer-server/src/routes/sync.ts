@@ -659,6 +659,19 @@ function parseViewerProjectMappingInput(body: Record<string, unknown>) {
 	};
 }
 
+function parseViewerProjectMappingInputs(body: Record<string, unknown>) {
+	const rawMappings = body.mappings;
+	if (!Array.isArray(rawMappings) || rawMappings.length === 0) {
+		throw new Error("mappings must be a non-empty array");
+	}
+	return rawMappings.map((raw) => {
+		if (raw == null || typeof raw !== "object" || Array.isArray(raw)) {
+			throw new Error("each mapping must be an object");
+		}
+		return parseViewerProjectMappingInput(raw as Record<string, unknown>);
+	});
+}
+
 function coordinatorAdminMutationStatus(message: string): 400 | 404 | 409 | 502 {
 	if (
 		message.includes("scope_not_found") ||
@@ -6184,16 +6197,7 @@ export function syncRoutes(
 		if (!body) return c.json({ error: "invalid json" }, 400);
 		let releasePublicationMutation: (() => void) | undefined;
 		try {
-			const rawMappings = body.mappings;
-			if (!Array.isArray(rawMappings) || rawMappings.length === 0) {
-				return c.json({ error: "mappings must be a non-empty array" }, 400);
-			}
-			const mappingInputs = rawMappings.map((raw) => {
-				if (raw == null || typeof raw !== "object" || Array.isArray(raw)) {
-					throw new Error("each mapping must be an object");
-				}
-				return parseViewerProjectMappingInput(raw as Record<string, unknown>);
-			});
+			const mappingInputs = parseViewerProjectMappingInputs(body);
 			releasePublicationMutation = await claimRecipientPolicyPublicationMutation(store.db);
 			const [deviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 			const analyses = analyzeProjectScopeMappingChangesGuardrails(

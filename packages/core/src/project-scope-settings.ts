@@ -1606,8 +1606,11 @@ export function analyzeProjectScopeMappingChangesGuardrails(
 export function analyzeProjectScopeMappingChangeGuardrails(
 	db: Database,
 	input: UpsertProjectScopeMappingInput,
+	options: { requestedMappings?: UpsertProjectScopeMappingInput[] } = {},
 ): ProjectScopeMappingChangeGuardrailAnalysis {
-	const analysis = analyzeProjectScopeMappingChangesGuardrails(db, [input])[0];
+	const requestedMappings = options.requestedMappings ?? [input];
+	const inputIndex = Math.max(requestedMappings.indexOf(input), 0);
+	const analysis = analyzeProjectScopeMappingChangesGuardrails(db, requestedMappings)[inputIndex];
 	if (!analysis) throw new Error("project_scope_mapping_analysis_missing");
 	return analysis;
 }
@@ -2159,13 +2162,15 @@ export function reassignProjectScopeInventoryProject(
 	ensureScopeBackfillScopes(db);
 	const { deviceId, workspaceIdentity, project } = validatedReassignmentInput(input);
 	const rows = projectRowsForScopeReassignment(db);
-	const repositoryIdentityByCwd = repositoryIdentitiesByCwd(db, rows);
-	const matched = rows
-		.map((row) => identifyRepositoryRow(row, repositoryIdentityByCwd))
-		.filter((row) => {
-			const identity = workspaceIdentityForRow(row);
-			return identity.value === workspaceIdentity;
-		});
+	const repositoryIdentityByCwd = repositoryIdentitiesByCwd(
+		db,
+		rows,
+		listProjectScopeSettingsMappings(db),
+	);
+	const matched = rows.filter((row) => {
+		const identity = workspaceIdentityForRow(identifyRepositoryRow(row, repositoryIdentityByCwd));
+		return identity.value === workspaceIdentity;
+	});
 	if (matched.length === 0) throw new Error("project identity not found");
 	const now = new Date().toISOString();
 	const sessionIds = matched.map((row) => row.id);
