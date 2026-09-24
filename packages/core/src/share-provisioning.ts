@@ -7,6 +7,7 @@ import {
 	canonicalRepositoryProjectIdentity,
 	hasConflictingRepositoryMappings,
 	hasRecordedRepositoryWorkspace,
+	mappedScopeIdsForRepository,
 	normalizeRepositoryWorkspaceIdentity,
 	repositoryIdentitiesByWorkspace,
 	repositoryIdentityForWorkspace,
@@ -747,6 +748,14 @@ function assertCompatibleEffectiveMapping(
 	project: ManagedProjectPlan,
 	evidence: ProvisioningMappingEvidence,
 ): boolean {
+	const repositoryScopes = mappedScopeIdsForRepository(
+		evidence.mappings,
+		evidence.repositoryIdentities,
+		project.canonicalIdentity,
+	);
+	if ([...repositoryScopes].some((scopeId) => scopeId !== project.boundaryId)) {
+		throw new Error("project_mapping_conflict");
+	}
 	const resolution = resolveProjectScope({
 		repositoryIdentity: project.canonicalIdentity,
 		allowRepositoryCwdFallback: false,

@@ -474,18 +474,36 @@ function repositoryScopeResolutions(
 	mappings: ScopeMapping[],
 	repositoryIdentity: string,
 	workspaces: ReadonlySet<string>,
-): { explicitLocalWinner: boolean; scopeIds: Set<string> } {
+): { explicitLocalWinner: boolean; scopeIds: Set<string>; mappedScopeIds: Set<string> } {
 	const scopeIds = new Set<string>();
+	const mappedScopeIds = new Set<string>();
 	let explicitLocalWinner = false;
 	const candidateWorkspaces = workspaces.size > 0 ? workspaces : [null];
 	for (const cwd of candidateWorkspaces) {
 		const resolution = resolveProjectScope({ repositoryIdentity, cwd, mappings });
 		scopeIds.add(resolution.scopeId);
+		if (resolution.mapping) mappedScopeIds.add(resolution.scopeId);
 		if (resolution.scopeId === LOCAL_DEFAULT_SCOPE_ID && resolution.mapping) {
 			explicitLocalWinner = true;
 		}
 	}
-	return { explicitLocalWinner, scopeIds };
+	return { explicitLocalWinner, scopeIds, mappedScopeIds };
+}
+
+export function mappedScopeIdsForRepository(
+	mappings: ScopeMapping[],
+	repositoryIdentities: ReadonlyMap<string, string>,
+	repositoryIdentity: string,
+): Set<string> {
+	const normalized = normalizeIdentity(repositoryIdentity);
+	if (!normalized) return new Set();
+	const effectiveMappings = mappings.filter((mapping) => !syntheticRepositoryAliases.has(mapping));
+	const workspaces = repositoryWorkspacesForMappings(
+		effectiveMappings,
+		repositoryIdentities,
+		normalized,
+	);
+	return repositoryScopeResolutions(effectiveMappings, normalized, workspaces).mappedScopeIds;
 }
 
 export function hasConflictingRepositoryMappings(
