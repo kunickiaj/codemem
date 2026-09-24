@@ -41,6 +41,7 @@ export interface ProjectInventoryClusterViewModel {
 	projects: ProjectInventoryProjectViewModel[];
 	projectIds: string[];
 	selectedProjectIds: string[];
+	worktreesOpen: boolean;
 	detailsOpen: boolean;
 	draftScopeId: string | null;
 	recipients: ProjectInventoryRecipientViewModel[];
@@ -72,6 +73,7 @@ export interface ProjectInventoryCallbacks {
 	manageRecipients(projectIds: string[]): void;
 	setProjectDetailsOpen(key: string, open: boolean): void;
 	setClusterDetailsOpen(key: string, open: boolean): void;
+	setClusterWorktreesOpen(key: string, open: boolean): void;
 	setProjectScopeDraft(projectIdentity: string, scopeId: string): void;
 	setClusterScopeDraft(clusterKey: string, scopeId: string): void;
 	saveProjectScope(projectIdentity: string, scopeId: string): Promise<void>;

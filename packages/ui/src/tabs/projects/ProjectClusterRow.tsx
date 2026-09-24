@@ -84,7 +84,12 @@ function ClusterStats({ model, summary, view }: ClusterContentProps) {
 	);
 }
 
-type ClusterHeaderProps = ClusterContentProps & { onOpenAssignment: () => void; titleId: string };
+type ClusterHeaderProps = ClusterContentProps & {
+	onOpenAssignment: () => void;
+	onToggleWorktrees: () => void;
+	titleId: string;
+	worktreesOpen: boolean;
+};
 
 function ClusterActions({ callbacks, model, onOpenAssignment, summary, view }: ClusterHeaderProps) {
 	return (
@@ -108,8 +113,15 @@ function ClusterActions({ callbacks, model, onOpenAssignment, summary, view }: C
 }
 
 function ClusterHeader(props: ClusterHeaderProps) {
-	const { callbacks, model, summary, titleId } = props;
+	const { callbacks, model, onToggleWorktrees, summary, titleId, worktreesOpen } = props;
 	const checkboxRef = useClusterCheckbox(model);
+	const sameNameClusters = props.view.rows.filter(
+		(row) => row.kind === "cluster" && row.label === model.label,
+	);
+	const groupLabel =
+		sameNameClusters.length > 1
+			? ` (group ${sameNameClusters.findIndex((row) => row.key === model.key) + 1} of ${sameNameClusters.length})`
+			: "";
 	const allSelected =
 		model.projectIds.length > 0 && model.selectedProjectIds.length === model.projectIds.length;
 	return (
@@ -135,6 +147,18 @@ function ClusterHeader(props: ClusterHeaderProps) {
 				</strong>
 				<div className="project-inventory-badges">
 					<Chip variant="badge">{model.projects.length} worktrees</Chip>
+					<button
+						aria-expanded={worktreesOpen}
+						aria-label={`${worktreesOpen ? "Hide" : "Show"} worktrees for ${model.label}${groupLabel}`}
+						className="settings-button project-worktrees-toggle"
+						onClick={(event) => {
+							if (worktreesOpen) event.currentTarget.focus();
+							onToggleWorktrees();
+						}}
+						type="button"
+					>
+						{worktreesOpen ? "Hide worktrees" : "Show worktrees"}
+					</button>
 					{summary.warningTotal > 0 ? (
 						<Chip tone="badge-offline" variant="badge">
 							Needs attention · {summary.warningTotal}
@@ -284,8 +308,12 @@ export function ProjectClusterRow(props: ProjectClusterRowProps) {
 				<ClusterHeader
 					{...props}
 					onOpenAssignment={openAssignment}
+					onToggleWorktrees={() =>
+						callbacks.setClusterWorktreesOpen(model.key, !model.worktreesOpen)
+					}
 					summary={summary}
 					titleId={titleId}
+					worktreesOpen={model.worktreesOpen}
 				/>
 				<ClusterDetails
 					{...props}
@@ -297,16 +325,18 @@ export function ProjectClusterRow(props: ProjectClusterRowProps) {
 					summary={summary}
 				/>
 			</tbody>
-			{model.projects.map((project) => (
-				<ProjectRow
-					callbacks={callbacks}
-					child
-					clusterKey={model.key}
-					key={`${project.project.read_only ? "received" : "local"}:${project.key}`}
-					model={project}
-					view={props.view}
-				/>
-			))}
+			{model.worktreesOpen
+				? model.projects.map((project) => (
+						<ProjectRow
+							callbacks={callbacks}
+							child
+							clusterKey={model.key}
+							key={`${project.project.read_only ? "received" : "local"}:${project.key}`}
+							model={project}
+							view={props.view}
+						/>
+					))
+				: null}
 		</>
 	);
 }

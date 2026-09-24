@@ -57,6 +57,7 @@ const maxRepairLookupPages = 100;
 let scopes: SharingDomainScope[] = [];
 const openProjectDetails = new Set<string>();
 const openProjectClusters = new Set<string>();
+const openProjectWorktrees = new Set<string>();
 const draftDomainSelections = new Map<string, string>();
 const draftClusterDomainSelections = new Map<string, string>();
 const pendingConfirmations = new Map<
@@ -639,6 +640,10 @@ async function openProjectAdministrationFromRepair(target: {
 }): Promise<void> {
 	const { project } = target;
 	if (focusProjectAdministration(project.workspace_identity)) return;
+	openProjectWorktrees.add(projectClusterKey(project));
+	renderCurrentProjectInventory();
+	notifyProjectInventoryChanged();
+	if (focusProjectAdministration(project.workspace_identity)) return;
 	const search = el<HTMLInputElement>("projectsSearch");
 	const status = el<HTMLSelectElement>("projectsStatusFilter");
 	const previous = projectNavigationSnapshot();
@@ -789,6 +794,7 @@ function inventoryRowViewModel(
 		projects: projects.map(projectViewModel),
 		projectIds,
 		selectedProjectIds: projectIds.filter((projectId) => selectedProjectIds.has(projectId)),
+		worktreesOpen: openProjectWorktrees.has(key),
 		detailsOpen: openProjectClusters.has(key),
 		draftScopeId: draftClusterDomainSelections.get(key) ?? null,
 		recipients: recipientChips(projectIds),
@@ -1301,6 +1307,12 @@ const projectInventoryCallbacks: ProjectInventoryCallbacks = {
 		else openProjectClusters.delete(key);
 		notifyProjectInventoryChanged();
 	},
+	setClusterWorktreesOpen(key, open) {
+		if (open) openProjectWorktrees.add(key);
+		else openProjectWorktrees.delete(key);
+		renderCurrentProjectInventory();
+		notifyProjectInventoryChanged();
+	},
 	setProjectScopeDraft(projectIdentity, scopeId) {
 		draftDomainSelections.set(projectIdentity, scopeId);
 		pendingConfirmations.delete(projectIdentity);
@@ -1382,6 +1394,7 @@ export function initProjectsTab(
 	selectedProjectIds.clear();
 	openProjectDetails.clear();
 	openProjectClusters.clear();
+	openProjectWorktrees.clear();
 	draftDomainSelections.clear();
 	draftClusterDomainSelections.clear();
 	pendingConfirmations.clear();

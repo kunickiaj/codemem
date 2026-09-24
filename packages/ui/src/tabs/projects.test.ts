@@ -2237,6 +2237,11 @@ describe("Projects cached recipient presentation", () => {
 		const repairRow = document.querySelector<HTMLElement>(
 			`[data-project-workspace-identity="${repairProject.workspace_identity}"]`,
 		);
+		expect(
+			document
+				.querySelector<HTMLElement>(".project-inventory-cluster button[aria-expanded]")
+				?.getAttribute("aria-expanded"),
+		).toBe("true");
 		expect(repairRow?.querySelector<HTMLDetailsElement>(".project-inventory-details")?.open).toBe(
 			true,
 		);
@@ -2651,6 +2656,10 @@ describe("Projects cached recipient presentation", () => {
 
 		await loadProjectsData();
 
+		document.querySelector<HTMLButtonElement>(".project-worktrees-toggle")?.click();
+		await vi.waitFor(() =>
+			expect(document.querySelectorAll(".project-inventory-child")).toHaveLength(2),
+		);
 		const rows = [...document.querySelectorAll<HTMLElement>("[data-project-workspace-identity]")];
 		const selectedRow = rows.find(
 			(row) => row.querySelector(".project-inventory-title")?.textContent === "codemem",
@@ -2986,10 +2995,38 @@ describe("Projects cached recipient presentation", () => {
 		if (!cluster) throw new Error("project cluster missing");
 		expect(cluster.textContent).toContain("2 worktrees");
 		expect(cluster.querySelector("details")?.open).toBe(false);
+		const disclosure = cluster.querySelector<HTMLButtonElement>(
+			'button[aria-label="Show worktrees for api"]',
+		);
+		expect(disclosure?.getAttribute("aria-expanded")).toBe("false");
+		expect(document.querySelectorAll(".project-inventory-child")).toHaveLength(0);
+		disclosure?.click();
+		await vi.waitFor(() =>
+			expect(document.querySelectorAll(".project-inventory-child")).toHaveLength(2),
+		);
 		const childRows = [...document.querySelectorAll<HTMLElement>(".project-inventory-child")];
 		expect(childRows).toHaveLength(2);
 		expect(childRows.every((row) => !cluster.contains(row))).toBe(true);
 		expect(childRows[0]?.previousElementSibling).toBe(cluster);
+		const hideWorktrees = document.querySelector<HTMLButtonElement>(
+			'button[aria-label="Hide worktrees for api"]',
+		);
+		expect(hideWorktrees).not.toBeNull();
+		expect(hideWorktrees?.getAttribute("aria-expanded")).toBe("true");
+		childRows[0]?.querySelector<HTMLElement>("summary")?.focus();
+		expect(childRows[0]?.contains(document.activeElement)).toBe(true);
+		hideWorktrees?.click();
+		await vi.waitFor(() =>
+			expect(
+				document
+					.querySelector<HTMLElement>(".project-worktrees-toggle")
+					?.getAttribute("aria-expanded"),
+			).toBe("false"),
+		);
+		await vi.waitFor(() =>
+			expect(document.querySelectorAll(".project-inventory-child")).toHaveLength(0),
+		);
+		expect(document.activeElement).toBe(hideWorktrees);
 		expect(cluster?.querySelector('[data-label="Memories"]')?.textContent).toBe("5");
 		expect(cluster?.querySelector('[data-label="Sessions"]')?.textContent).toBe("3");
 		expect(document.body.textContent).toContain("Save Space for 2 identities");
@@ -3019,6 +3056,27 @@ describe("Projects cached recipient presentation", () => {
 				}),
 			]),
 		});
+	});
+
+	it("distinguishes same-name repository groups in worktree disclosure labels", async () => {
+		const firstRemote = "https://git.example.invalid/exampleco/first.git";
+		const secondRemote = "https://git.example.invalid/exampleco/second.git";
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [firstRemote, secondRemote].flatMap((remote) => [
+				project({ git_remote: remote, workspace_identity: remote }),
+				project({ git_remote: remote, workspace_identity: `${remote}:worktree` }),
+			]),
+			total: 4,
+		});
+		await loadProjectsData();
+		const toggles = [...document.querySelectorAll<HTMLButtonElement>(".project-worktrees-toggle")];
+		expect(toggles.map((button) => button.getAttribute("aria-label"))).toEqual([
+			"Show worktrees for api (group 1 of 2)",
+			"Show worktrees for api (group 2 of 2)",
+		]);
 	});
 
 	it("excludes peer-received identities from cluster bulk assignment", async () => {
