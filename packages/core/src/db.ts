@@ -936,7 +936,6 @@ function ensureRecipientPolicyAdditiveColumns(db: DatabaseType): void {
 		["policy_teams", "device_eligibility_mode", "TEXT NOT NULL DEFAULT 'person_all_devices'"],
 		["identity_devices", "assignment_version", "INTEGER NOT NULL DEFAULT 0"],
 		["policy_team_device_decisions", "assignment_version", "INTEGER NOT NULL DEFAULT 0"],
-		["recipient_policy_authority_states", "wake_epoch", "INTEGER NOT NULL DEFAULT 0"],
 	] as const) {
 		try {
 			addColumnIfMissing(db, table, name, definition);
@@ -946,9 +945,22 @@ function ensureRecipientPolicyAdditiveColumns(db: DatabaseType): void {
 	}
 }
 
-export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
+function ensureRecipientPolicyWakeColumn(db: DatabaseType): void {
+	// Earlier compatibility markers could be written after this column failed to
+	// upgrade. Repair on every open and fail before advancing schema markers.
+	if (!tableExists(db, "recipient_policy_authority_states")) return;
+	addColumnIfMissing(
+		db,
+		"recipient_policy_authority_states",
+		"wake_epoch",
+		"INTEGER NOT NULL DEFAULT 0",
+	);
+}
+
+function ensureAlwaysOnSchemaCompatibility(db: DatabaseType): void {
 	ensureMemoryOwnershipSchemas(db);
 	ensureOptionalRetrievalLedgerSchema(db);
+	ensureRecipientPolicyWakeColumn(db);
 	// Always run: current-marker databases may predate these no-version-bump
 	// columns, so the schema_compat_state gate cannot prove they exist.
 	ensureSyncPeerRuntimeVersionColumns(db);
@@ -960,6 +972,10 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 	ensureSessionsPagingIndex(db);
 	ensureSyncAttemptsDiagnosticIndexes(db);
 	ensureRawEventSessionsPendingIndex(db);
+}
+
+export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
+	ensureAlwaysOnSchemaCompatibility(db);
 	const compatAlreadyApplied = schemaCompatAlreadyApplied(db);
 	if (!compatAlreadyApplied) {
 		// IMPORTANT: any NEW DDL added to this gated block REQUIRES bumping

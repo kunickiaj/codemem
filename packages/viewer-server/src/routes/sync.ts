@@ -4929,7 +4929,15 @@ function projectSharingByRepository(
 ): Map<string, Array<Record<string, unknown>>> {
 	const operationById = new Map(operations.map((operation) => [operation.operation_id, operation]));
 	const sharingByProject = new Map<string, Array<Record<string, unknown>>>();
-	const repositoryIdentities = repositoryIdentitiesByWorkspace(store.db);
+	const mappings = store.db
+		.prepare("SELECT workspace_identity, project_pattern FROM project_scope_mappings")
+		.all() as Array<{ workspace_identity: string | null; project_pattern: string }>;
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(store.db, {
+		knownRepositoryIdentities: mappings.flatMap((mapping) => [
+			mapping.workspace_identity,
+			mapping.project_pattern,
+		]),
+	});
 	const seenOperationProjects = new Set<string>();
 	const reviewed = store.db
 		.prepare(`SELECT p.operation_id, p.canonical_project_identity

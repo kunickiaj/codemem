@@ -482,20 +482,48 @@ async function resolvesReceivedProjectOriginDeviceNames(): Promise<void> {
 	}
 }
 
-async function aliasesPreUpgradeSharesToRepositoryProjects(): Promise<void> {
+async function aliasesPreUpgradeSharesToRepositoryProjects(
+	options: { mappingOnly?: boolean } = {},
+): Promise<void> {
 	const { app, getStore, cleanup } = createTestApp();
+	const repositoryDirectory = options.mappingOnly
+		? mkdtempSync(join(tmpdir(), "codemem-share-repository-"))
+		: null;
 	try {
 		await app.request("/api/stats");
 		const store = getStore();
 		if (!store) throw new Error("store not initialized");
-		const cwd = "/workspace/repository";
+		const cwd = repositoryDirectory ?? "/workspace/repository";
 		const repositoryIdentity = "https://example.test/acme/repository.git";
+		if (repositoryDirectory) {
+			mkdirSync(join(repositoryDirectory, ".git"));
+			writeFileSync(
+				join(repositoryDirectory, ".git", "config"),
+				`[remote "origin"]\n\turl = ${repositoryIdentity}\n`,
+			);
+			store.db
+				.prepare(`INSERT INTO project_scope_mappings(
+				workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+			) VALUES (?, ?, 'local-default', 1000, 'test', ?, ?)`)
+				.run(
+					repositoryIdentity,
+					repositoryIdentity,
+					"2026-09-22T00:00:00.000Z",
+					"2026-09-22T00:00:00.000Z",
+				);
+		}
 		const sessionId = insertTestSession(store.db);
 		store.db
 			.prepare(
 				"UPDATE sessions SET cwd = ?, project = 'repository', metadata_json = ? WHERE id = ?",
 			)
-			.run(cwd, JSON.stringify({ codemem_repository_identity: repositoryIdentity }), sessionId);
+			.run(
+				cwd,
+				JSON.stringify(
+					options.mappingOnly ? {} : { codemem_repository_identity: repositoryIdentity },
+				),
+				sessionId,
+			);
 		insertTestMemory(store, { sessionId, kind: "discovery", title: "repository memory" });
 		store.db
 			.prepare(`INSERT INTO share_operations(
@@ -515,21 +543,25 @@ async function aliasesPreUpgradeSharesToRepositoryProjects(): Promise<void> {
 				existing_memory_count, ordinal
 			 ) VALUES ('share-pre-upgrade', ?, 'repository', 'cwd', 1, 0)`)
 			.run(cwd);
-		const siblingCwd = "/workspace/repository-worktree";
-		store.db
-			.prepare("INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, ?, ?, ?)")
-			.run(
-				"2026-09-22T00:00:00.000Z",
-				siblingCwd,
-				"repository",
-				JSON.stringify({ codemem_repository_identity: repositoryIdentity }),
-			);
-		store.db
-			.prepare(`INSERT INTO share_operation_projects(
+		if (!options.mappingOnly) {
+			const siblingCwd = "/workspace/repository-worktree";
+			store.db
+				.prepare(
+					"INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, ?, ?, ?)",
+				)
+				.run(
+					"2026-09-22T00:00:00.000Z",
+					siblingCwd,
+					"repository",
+					JSON.stringify({ codemem_repository_identity: repositoryIdentity }),
+				);
+			store.db
+				.prepare(`INSERT INTO share_operation_projects(
 				operation_id, canonical_project_identity, display_name, identity_source,
 				existing_memory_count, ordinal
 			 ) VALUES ('share-pre-upgrade', ?, 'repository worktree', 'cwd', 0, 1)`)
-			.run(siblingCwd);
+				.run(siblingCwd);
+		}
 
 		const response = await app.request("/api/sync/projects");
 		const inventory = (await response.json()) as {
@@ -543,6 +575,7 @@ async function aliasesPreUpgradeSharesToRepositoryProjects(): Promise<void> {
 		]);
 	} finally {
 		cleanup();
+		if (repositoryDirectory) rmSync(repositoryDirectory, { recursive: true, force: true });
 	}
 }
 
@@ -608,6 +641,8 @@ describe("GET /api/sync/projects origin devices", () => {
 		"attaches pre-upgrade cwd shares to repository Projects",
 		aliasesPreUpgradeSharesToRepositoryProjects,
 	);
+	it("attaches cwd shares when only a mapping identifies the repository", () =>
+		aliasesPreUpgradeSharesToRepositoryProjects({ mappingOnly: true }));
 });
 
 it("wakes affected recipient policies after an actor merge", async () => {
