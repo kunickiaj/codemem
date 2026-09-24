@@ -322,11 +322,7 @@ function addDiscoveredRepositoryEvidence(
 export function recordedRepositoryIdentityEvidenceByWorkspace(
 	db: Database,
 	workspaceIdentities: Iterable<string | null | undefined>,
-	options: {
-		freshWorkspaces?: Iterable<string | null | undefined>;
-		knownRepositoryIdentities?: Iterable<string | null | undefined>;
-		restrictToRequestedWorkspaces?: boolean;
-	} = {},
+	options: { freshWorkspaces?: Iterable<string | null | undefined> } = {},
 ): {
 	byWorkspace: Map<string, string>;
 	recordedWorkspaces: Set<string>;
@@ -347,24 +343,13 @@ export function recordedRepositoryIdentityEvidenceByWorkspace(
 			.filter((identity): identity is string => identity != null),
 	);
 	const requested = new Set(normalizedWorkspaces);
-	const query = options.restrictToRequestedWorkspaces
-		? `SELECT cwd, git_remote, metadata_json FROM sessions
-		   WHERE COALESCE(NULLIF(RTRIM(REPLACE(TRIM(cwd), char(92), '/'), '/'), ''), TRIM(cwd)) IN (${normalizedWorkspaces.map(() => "?").join(",")})
-		   ORDER BY id DESC`
-		: `SELECT cwd, git_remote, metadata_json FROM sessions
-		   WHERE cwd IS NOT NULL AND TRIM(cwd) <> '' ORDER BY id DESC`;
 	const rows = db
-		.prepare(query)
-		.all(...(options.restrictToRequestedWorkspaces ? normalizedWorkspaces : [])) as Array<{
-		cwd: string;
-		git_remote: string | null;
-		metadata_json: string | null;
-	}>;
+		.prepare(
+			`SELECT cwd, git_remote, metadata_json FROM sessions
+			 WHERE cwd IS NOT NULL AND TRIM(cwd) <> '' ORDER BY id DESC`,
+		)
+		.all() as Array<{ cwd: string; git_remote: string | null; metadata_json: string | null }>;
 	const evidence = collectRecordedRepositoryEvidence(rows, requested);
-	for (const identity of options.knownRepositoryIdentities ?? []) {
-		const normalized = normalizeIdentity(cleanProjectIdentity(identity));
-		if (normalized) evidence.known.add(normalized);
-	}
 	addUnambiguousRecordedEvidence(identities, recordedWorkspaces, evidence.recordedByWorkspace);
 	addDiscoveredRepositoryEvidence(
 		identities,

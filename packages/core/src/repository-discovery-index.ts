@@ -14,7 +14,30 @@ interface RepositoryDiscoveryState {
 	indexed_revision: number;
 }
 
+function discoveryTriggerCount(db: Database): number {
+	return db
+		.prepare(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name IN (
+			'trg_repository_discovery_session_insert',
+			'trg_repository_discovery_session_update',
+			'trg_repository_discovery_session_delete'
+		)`)
+		.pluck()
+		.get() as number;
+}
+
 export function ensureRepositoryDiscoveryIndex(db: Database): void {
+	if (discoveryTriggerCount(db) !== 3) {
+		const existingState = db
+			.prepare(
+				"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'repository_discovery_state'",
+			)
+			.get();
+		if (existingState) {
+			// Missing triggers may have let sessions change without advancing source_revision.
+			// Invalidate before repairing them so a failed repair still falls back to a scan.
+			db.prepare("UPDATE repository_discovery_state SET indexed_revision = -1 WHERE id = 1").run();
+		}
+	}
 	db.exec(`
 		CREATE TABLE IF NOT EXISTS repository_discovery_state (
 			id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -47,15 +70,7 @@ export function ensureRepositoryDiscoveryIndex(db: Database): void {
 
 export function repositoryDiscoveryRevision(db: Database): number | null {
 	try {
-		const triggers = db
-			.prepare(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name IN (
-				'trg_repository_discovery_session_insert',
-				'trg_repository_discovery_session_update',
-				'trg_repository_discovery_session_delete'
-			)`)
-			.pluck()
-			.get() as number;
-		if (triggers !== 3) return null;
+		if (discoveryTriggerCount(db) !== 3) return null;
 		const row = db
 			.prepare("SELECT source_revision FROM repository_discovery_state WHERE id = 1")
 			.get() as { source_revision: number } | undefined;

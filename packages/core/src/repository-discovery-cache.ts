@@ -21,10 +21,11 @@ const MAX_IDENTITY_MAP_VARIANTS = 8;
 interface DiscoverySnapshot {
 	revision: number;
 	rows: Array<RepositoryWorkspaceEvidence & { recordedIdentities: string[] }>;
+	workspaces: Set<string>;
 	knownRecorded: Set<string>;
 	anchors: Map<string, string>;
 	expiresAt: number;
-	identityMaps: Map<string, Map<string, string>>;
+	identityMaps: Map<string, { identities: Map<string, string>; known: Set<string> }>;
 }
 
 const snapshots = new WeakMap<Database, DiscoverySnapshot>();
@@ -175,7 +176,15 @@ function parseSnapshot(
 		if (!recordAnchor(row, recordedIdentities, anchors)) return null;
 		parsed.push({ ...row, recordedIdentities });
 	}
-	return { revision, rows: parsed, knownRecorded, anchors, expiresAt, identityMaps: new Map() };
+	return {
+		revision,
+		rows: parsed,
+		workspaces: new Set(parsed.map((row) => row.cwd)),
+		knownRecorded,
+		anchors,
+		expiresAt,
+		identityMaps: new Map(),
+	};
 }
 
 function stillFresh(snapshot: DiscoverySnapshot): boolean {
@@ -208,40 +217,42 @@ function currentSnapshot(db: Database, revision: number): DiscoverySnapshot | nu
 	return rebuilt;
 }
 
-function identityMapForKnown(
+function identityMapForSeeds(
 	snapshot: DiscoverySnapshot,
-	known: ReadonlySet<string>,
-): Map<string, string> {
-	const key = JSON.stringify([...known].toSorted());
+	seeds: ReadonlySet<string>,
+): { identities: Map<string, string>; known: Set<string> } {
+	const key = JSON.stringify([...seeds].toSorted());
 	const existing = snapshot.identityMaps.get(key);
 	if (existing) {
 		snapshot.identityMaps.delete(key);
 		snapshot.identityMaps.set(key, existing);
 		return existing;
 	}
-	const identities = repositoryIdentityMapFromEvidence(snapshot.rows, known);
+	const known = new Set(snapshot.knownRecorded);
+	for (const seed of seeds) known.add(seed);
+	const variant = { identities: repositoryIdentityMapFromEvidence(snapshot.rows, known), known };
 	if (snapshot.identityMaps.size >= MAX_IDENTITY_MAP_VARIANTS) {
 		const oldestKey = snapshot.identityMaps.keys().next().value;
 		if (oldestKey !== undefined) snapshot.identityMaps.delete(oldestKey);
 	}
-	snapshot.identityMaps.set(key, identities);
-	return identities;
+	snapshot.identityMaps.set(key, variant);
+	return variant;
 }
 
 export function repositoryIdentitiesFromIndexedEvidence(
 	db: Database,
 	knownRepositoryIdentities: Array<string | null | undefined>,
-): { identities: Map<string, string>; known: Set<string> } | null {
+): { identities: Map<string, string>; known: Set<string>; workspaces: ReadonlySet<string> } | null {
 	const revision = repositoryDiscoveryRevision(db);
 	if (revision == null) return null;
 	const snapshot = currentSnapshot(db, revision);
 	if (!snapshot) return null;
-	const known = new Set(snapshot.knownRecorded);
+	const seeds = new Set<string>();
 	for (const identity of knownRepositoryIdentities) {
 		const normalized = normalizeRepositoryWorkspaceIdentity(cleanProjectIdentity(identity));
-		if (normalized) known.add(normalized);
+		if (normalized) seeds.add(normalized);
 	}
-	const identities = identityMapForKnown(snapshot, known);
+	const { identities, known } = identityMapForSeeds(snapshot, seeds);
 	if (repositoryDiscoveryRevision(db) !== revision) return null;
-	return { identities, known };
+	return { identities, known, workspaces: snapshot.workspaces };
 }

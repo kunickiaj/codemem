@@ -17,7 +17,6 @@ import {
 import { repositoryDiscoveryRevision } from "./repository-discovery-index.js";
 import {
 	hasConflictingRepositoryMappings,
-	recordedRepositoryIdentityEvidenceByWorkspace,
 	repositoryIdentitiesByWorkspace,
 	withRepositoryMappingAliases,
 	withRepositoryMappingAliasesFromIdentities,
@@ -1216,6 +1215,16 @@ function expectWarmStampAvoidsHistoricalQueries(store: MemoryStore, tmpDir: stri
 			JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: repository }),
 		).lastInsertRowid,
 	);
+	store.db.transaction(() => {
+		for (let i = 0; i < 100; i++) {
+			insertSession.run(
+				"2026-09-24T00:00:00.000Z",
+				join(tmpDir, "active"),
+				"bounded-stamp",
+				JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: repository }),
+			);
+		}
+	})();
 	expect(repositoryDiscoveryRevision(store.db)).not.toBeNull();
 	expect(resolveSessionScopeId(store.db, { sessionId })).toBe("bounded-stamp-scope");
 	const prepare = vi.spyOn(store.db, "prepare");
@@ -1229,25 +1238,15 @@ function expectWarmStampAvoidsHistoricalQueries(store: MemoryStore, tmpDir: stri
 				String(sql).includes("SELECT DISTINCT cwd FROM sessions"),
 			),
 		).toHaveLength(0);
+		expect(
+			prepare.mock.calls.filter(([sql]) =>
+				String(sql).includes("SELECT cwd, git_remote, metadata_json FROM sessions"),
+			),
+		).toHaveLength(0);
 	} finally {
 		prepare.mockRestore();
 		rmSync(unrelated, { recursive: true, force: true });
 	}
-}
-
-function expectRootWorkspaceEvidenceSurvivesTargetedLookup(store: MemoryStore): void {
-	const repository = "https://example.test/acme/root-workspace.git";
-	store.db
-		.prepare("INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, '/', ?, ?)")
-		.run(
-			"2026-09-24T00:00:00.000Z",
-			"root-workspace",
-			JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: repository }),
-		);
-	const evidence = recordedRepositoryIdentityEvidenceByWorkspace(store.db, ["/"], {
-		restrictToRequestedWorkspaces: true,
-	});
-	expect(evidence.byWorkspace.get("/")).toBe(repository);
 }
 
 function expectDiscoveredSiblingConflictFailsClosed(store: MemoryStore, tmpDir: string): void {
@@ -1715,8 +1714,6 @@ describe("repository mapping aliases", () => {
 		expectAncestorCheckoutAppearingLaterFailsClosed(store, tmpDir));
 	it("reuses indexed evidence without rescan on warm stamps", () =>
 		expectWarmStampAvoidsHistoricalQueries(store, tmpDir));
-	it("keeps root-workspace evidence in indexed lookups", () =>
-		expectRootWorkspaceEvidenceSurvivesTargetedLookup(store));
 
 	it("refreshes identity before scope stamping", () =>
 		expectScopeStampingRefreshesRepositoryIdentity(store, tmpDir));

@@ -62,3 +62,27 @@ it("invalidates persisted repository evidence for every session identity mutatio
 		db.close();
 	}
 });
+
+it("invalidates indexed evidence after restoring a missing session trigger", () => {
+	const db = new Database(":memory:");
+	try {
+		bootstrapSchema(db);
+		ensureAdditiveSchemaCompatibility(db);
+		const sessionId = Number(
+			db
+				.prepare("INSERT INTO sessions(started_at, cwd, metadata_json) VALUES (?, ?, ?)")
+				.run("2026-09-24T00:00:00Z", "/workspace/trigger-repair", "{}").lastInsertRowid,
+		);
+		const revision = repositoryDiscoveryRevision(db);
+		expect(replaceRepositoryDiscoveryEvidence(db, revision ?? -1, [])).toBe(true);
+		db.exec("DROP TRIGGER trg_repository_discovery_session_update");
+		db.prepare("UPDATE sessions SET metadata_json = ? WHERE id = ?").run(
+			'{"codemem_repository_identity":"https://example.test/new.git"}',
+			sessionId,
+		);
+		ensureRepositoryDiscoveryIndex(db);
+		expect(loadRepositoryDiscoveryEvidence(db)).toBeNull();
+	} finally {
+		db.close();
+	}
+});

@@ -1,8 +1,11 @@
+import { isAbsolute } from "node:path";
 import type { Database } from "./db.js";
+import { resolveGitRepositoryIdentity } from "./project.js";
 import { repositoryIdentitiesFromIndexedEvidence } from "./repository-discovery-cache.js";
 import {
 	discoverKnownRepositoryIdentity,
 	hasConflictingRepositoryMappings,
+	hasRecordedRepositoryWorkspace,
 	normalizeRepositoryWorkspaceIdentity,
 	recordedRepositoryIdentityEvidenceByWorkspace,
 	repositoryIdentitiesByWorkspace,
@@ -21,6 +24,46 @@ interface SessionScopeRow {
 	git_remote: string | null;
 	git_branch: string | null;
 	metadata_json: string | null;
+}
+
+type IndexedRepositoryEvidence = NonNullable<
+	ReturnType<typeof repositoryIdentitiesFromIndexedEvidence>
+>;
+
+function refreshMappedWorkspace(
+	indexed: IndexedRepositoryEvidence,
+	workspace: string | null | undefined,
+	currentCwd: string | null,
+): void {
+	const mapped = normalizeRepositoryWorkspaceIdentity(workspace);
+	if (!mapped || mapped === currentCwd || indexed.workspaces.has(mapped)) return;
+	indexed.identities.delete(mapped);
+	const identity = discoverKnownRepositoryIdentity(mapped, indexed.known);
+	if (identity) indexed.identities.set(mapped, identity);
+}
+
+function refreshIndexedWorkspaces(
+	indexed: IndexedRepositoryEvidence,
+	row: SessionScopeRow | null,
+	mappedWorkspaces: Array<string | null | undefined>,
+): Set<string> {
+	const cwd = normalizeRepositoryWorkspaceIdentity(row?.cwd);
+	const recordedWorkspaces = new Set<string>();
+	if (cwd && hasRecordedRepositoryWorkspace(indexed.identities, cwd)) {
+		recordedWorkspaces.add(cwd);
+	} else if (cwd) {
+		indexed.identities.delete(cwd);
+		if (isAbsolute(cwd)) {
+			const identity = normalizeRepositoryWorkspaceIdentity(
+				resolveGitRepositoryIdentity(row?.cwd ?? cwd)?.identity,
+			);
+			if (identity && indexed.known.has(identity)) indexed.identities.set(cwd, identity);
+		}
+	}
+	for (const workspace of mappedWorkspaces) {
+		refreshMappedWorkspace(indexed, workspace, cwd);
+	}
+	return recordedWorkspaces;
 }
 
 interface MemoryScopeRow extends SessionScopeRow {
@@ -105,10 +148,7 @@ function scopeRepositoryEvidence(
 	mappedWorkspaces: Array<string | null | undefined>,
 	mappingIdentitySeeds: Array<string | null | undefined>,
 ) {
-	const indexed =
-		mappedWorkspaces.length < 900
-			? repositoryIdentitiesFromIndexedEvidence(db, mappingIdentitySeeds)
-			: null;
+	const indexed = repositoryIdentitiesFromIndexedEvidence(db, mappingIdentitySeeds);
 	const legacy = () => ({
 		evidence: recordedRepositoryIdentityEvidenceByWorkspace(db, [row?.cwd, ...mappedWorkspaces], {
 			freshWorkspaces: [row?.cwd],
@@ -116,27 +156,9 @@ function scopeRepositoryEvidence(
 		indexed: false,
 	});
 	if (!indexed) return legacy();
-	const requested = [row?.cwd, ...mappedWorkspaces];
-	let fresh: ReturnType<typeof recordedRepositoryIdentityEvidenceByWorkspace>;
-	try {
-		fresh = recordedRepositoryIdentityEvidenceByWorkspace(db, requested, {
-			freshWorkspaces: [row?.cwd],
-			knownRepositoryIdentities: indexed.known,
-			restrictToRequestedWorkspaces: true,
-		});
-	} catch {
-		// Unavailable indexes or query limits must not narrow the policy check.
-		return legacy();
-	}
-	for (const workspace of requested) {
-		const cwd = normalizeRepositoryWorkspaceIdentity(workspace);
-		if (!cwd) continue;
-		indexed.identities.delete(cwd);
-		const identity = fresh.byWorkspace.get(cwd);
-		if (identity) indexed.identities.set(cwd, identity);
-	}
+	const recordedWorkspaces = refreshIndexedWorkspaces(indexed, row, mappedWorkspaces);
 	return {
-		evidence: { byWorkspace: indexed.identities, recordedWorkspaces: fresh.recordedWorkspaces },
+		evidence: { byWorkspace: indexed.identities, recordedWorkspaces },
 		indexed: true,
 	};
 }
@@ -180,12 +202,13 @@ function repositoryScopeContext(
 	const ambiguousCwd = Boolean(
 		cwd && evidence.recordedWorkspaces.has(cwd) && !repositoryIdentities.has(cwd),
 	);
-	discoverCurrentWorkspace(
-		cwd,
-		repositoryIdentities,
-		evidence.recordedWorkspaces,
-		mappingIdentitySeeds,
-	);
+	if (!indexed)
+		discoverCurrentWorkspace(
+			cwd,
+			repositoryIdentities,
+			evidence.recordedWorkspaces,
+			mappingIdentitySeeds,
+		);
 	const repositoryIdentity = repositoryIdentityForWorkspace(repositoryIdentities, {
 		cwd: row?.cwd,
 		gitRemote: row?.git_remote ?? null,
