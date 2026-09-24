@@ -5,7 +5,6 @@
  * truth for the Health tab's "Overall health" status. */
 
 import { openDiagnosticsDrawer } from "../../../components/diagnostics";
-import * as api from "../../../lib/api";
 import {
 	formatAgeShort,
 	formatReductionPercent,
@@ -20,6 +19,7 @@ import {
 	type HealthMaintenanceJob,
 	healthData,
 	healthResourceIsStale,
+	type SyncPeer,
 	state,
 } from "../../../lib/state";
 import { formatAgentClientList } from "../../settings/data/value-helpers";
@@ -88,6 +88,9 @@ type OverviewSignals = {
 	syncAgeSeconds: number | null;
 	syncLooksStale: boolean;
 	syncRecentlyOk: boolean;
+	syncHasRecentFailedAttempt: boolean;
+	syncProblemPeers: string[];
+	syncOfflinePeersNames: string[];
 	hasBacklog: boolean;
 };
 
@@ -144,6 +147,32 @@ function syncStateLabel(syncState: string): string {
 	return SYNC_STATE_LABELS[syncState] ?? titleCase(syncState);
 }
 
+function recentFailedPeerIds(): Set<string> {
+	const latestByPeer = new Map<string, boolean>();
+	for (const item of state.lastSyncAttempts) {
+		if (!item || typeof item !== "object") continue;
+		const attempt = item as Record<string, unknown>;
+		const peerId = attempt.peer_device_id;
+		if (typeof peerId !== "string" || latestByPeer.has(peerId)) continue;
+		const age = secondsSince(typeof attempt.finished_at === "string" ? attempt.finished_at : null);
+		if (age === null || age < 0 || age > 600) continue;
+		latestByPeer.set(peerId, attempt.status === "error");
+	}
+	return new Set([...latestByPeer].filter(([, failed]) => failed).map(([peerId]) => peerId));
+}
+
+function namedPeers(peers: SyncPeer[], include: (peer: SyncPeer) => boolean): string[] {
+	return [
+		...new Set(
+			peers
+				.filter(include)
+				.map((peer) => peer.name || peer.peer_name || peer.display_name || "")
+				.map((name) => name.trim().slice(0, 60))
+				.filter(Boolean),
+		),
+	].sort((left, right) => left.localeCompare(right));
+}
+
 function deriveOverviewSignals(
 	stats: CachedStatsPayload,
 	usage: CachedUsagePayload,
@@ -158,6 +187,8 @@ function deriveOverviewSignals(
 	const syncState = String(syncStatus.daemon_state || "unknown");
 	const syncDisabled = syncState === "disabled" || syncStatus.enabled === false;
 	const peerCount = Array.isArray(state.lastSyncPeers) ? state.lastSyncPeers.length : 0;
+	const peers = Array.isArray(state.lastSyncPeers) ? state.lastSyncPeers : [];
+	const recentlyFailed = recentFailedPeerIds();
 	const syncAgeSeconds = secondsSince(
 		syncStatus.last_sync_at || syncStatus.last_sync_at_utc || null,
 	);
@@ -185,6 +216,15 @@ function deriveOverviewSignals(
 		syncAgeSeconds,
 		syncLooksStale: syncAgeSeconds !== null && syncAgeSeconds > 7200,
 		syncRecentlyOk: syncAgeSeconds !== null && syncAgeSeconds <= 300,
+		syncHasRecentFailedAttempt: recentlyFailed.size > 0,
+		syncProblemPeers: namedPeers(
+			peers,
+			(peer) =>
+				peer.status?.peer_state === "degraded" ||
+				Boolean(peer.has_error) ||
+				Boolean(peer.peer_device_id && recentlyFailed.has(peer.peer_device_id)),
+		),
+		syncOfflinePeersNames: namedPeers(peers, (peer) => peer.status?.peer_state === "offline"),
 		hasBacklog: raw.pending >= 200,
 	};
 }
@@ -213,15 +253,20 @@ function applyPipelineRisk(result: RiskResult, signals: OverviewSignals): void {
 }
 
 function applySyncStateRisk(result: RiskResult, signals: OverviewSignals): void {
-	if (signals.syncState === "error") addRisk(result, 36, "sync daemon reports errors");
+	if (signals.syncState === "error") addRisk(result, 36, "background sync failed");
 	if (signals.syncState === "needs_attention") addRisk(result, 40, "sync needs manual attention");
 	if (signals.syncState === "stopped") addRisk(result, 22, "sync daemon stopped");
 	if (signals.syncState === "stale") addRisk(result, 20, "sync daemon stale");
 	if (signals.syncState === "rebootstrapping") {
 		addRisk(result, 20, "sync daemon rebootstrapping");
 	}
-	if (signals.syncState === "degraded" && !signals.syncRecentlyOk) {
-		addRisk(result, 20, "sync daemon degraded");
+	if (
+		signals.syncState === "degraded" &&
+		(!signals.syncRecentlyOk ||
+			signals.syncHasRecentFailedAttempt ||
+			signals.syncProblemPeers.length > 0)
+	) {
+		addRisk(result, signals.syncRecentlyOk ? 26 : 20, "sync with paired devices failed");
 	}
 }
 
@@ -360,7 +405,12 @@ function syncTile(signals: OverviewSignals): HealthTileInput {
 	if (signals.syncNoPeers) {
 		return tile("sync", "Sync", "No peers", "unknown", "Daemon state and sync recency");
 	}
-	if (signals.syncState === "degraded" && signals.syncRecentlyOk) {
+	if (
+		signals.syncState === "degraded" &&
+		signals.syncRecentlyOk &&
+		!signals.syncHasRecentFailedAttempt &&
+		signals.syncProblemPeers.length === 0
+	) {
 		return tile("sync", "Sync", "Syncing", "online", "Daemon state and sync recency");
 	}
 	if (SYNC_PROBLEM_STATES.has(signals.syncState)) {
@@ -453,14 +503,7 @@ function buildHealthTiles(signals: OverviewSignals): HealthTileInput[] {
 	return [pipelineTile(signals), syncTile(signals), retrievalTile(signals), freshnessTile(signals)];
 }
 
-async function triggerSync(): Promise<void> {
-	await api.triggerSync();
-}
-
-function primaryRecommendations(
-	signals: OverviewSignals,
-	overallIsHealthy: boolean,
-): HealthAction[] {
+function primaryRecommendations(signals: OverviewSignals): HealthAction[] {
 	if (signals.hasBacklog) {
 		return [
 			{
@@ -483,33 +526,55 @@ function primaryRecommendations(
 			},
 		];
 	}
-	if (!signals.syncDisabled && !signals.syncNoPeers && !overallIsHealthy) {
-		if (signals.syncState === "error" || signals.syncState === "degraded") {
-			return unhealthySyncRecommendations();
-		}
-	}
-	if (!signals.syncDisabled && !signals.syncNoPeers && signals.syncLooksStale) {
-		return [
-			{
-				label: "Sync is stale. Run one immediate sync pass.",
-				command: "codemem sync once",
-				action: triggerSync,
-				actionLabel: "Sync now",
-			},
-		];
-	}
+	if (signals.syncDisabled || signals.syncNoPeers) return [];
+	if (
+		signals.syncState === "degraded" &&
+		signals.syncRecentlyOk &&
+		!signals.syncHasRecentFailedAttempt &&
+		signals.syncProblemPeers.length === 0
+	)
+		return [];
+	if (
+		["error", "degraded", "offline-peers", "stale", "needs_attention"].includes(
+			signals.syncState,
+		) ||
+		signals.syncLooksStale
+	)
+		return unhealthySyncRecommendations(signals);
 	return [];
 }
 
-function unhealthySyncRecommendations(): HealthAction[] {
+function shortDeviceList(names: string[]): string {
+	const visible = names.slice(0, 2).join(", ");
+	return names.length > 2 ? `${visible} +${names.length - 2} more` : visible;
+}
+
+function syncProblemDescription(signals: OverviewSignals): string {
+	const failed = shortDeviceList(signals.syncProblemPeers);
+	if (signals.syncState === "error") {
+		return `Background sync reported an unresolved error.${failed ? ` Check sync with ${failed}.` : ""}`;
+	}
+	if (signals.syncState === "offline-peers") {
+		const offline = shortDeviceList(signals.syncOfflinePeersNames);
+		return `All paired devices are offline${offline ? `: ${offline}` : ""}. Check those devices' connections.`;
+	}
+	if (signals.syncState === "degraded") {
+		return failed
+			? `Sync with ${failed} is failing. Other devices may still sync.`
+			: "Some device sync attempts are failing.";
+	}
+	if (signals.syncState === "needs_attention") return "Sync requires manual attention.";
+	return "Paired devices have not synced recently.";
+}
+
+function unhealthySyncRecommendations(signals: OverviewSignals): HealthAction[] {
 	return [
 		{
-			label: "Sync is unhealthy. Restart and run one immediate pass.",
-			command: "codemem serve restart",
-			action: triggerSync,
-			actionLabel: "Sync now",
+			label: syncProblemDescription(signals),
+			command: "codemem sync doctor",
+			action: (trigger) => openDiagnosticsDrawer({ subsystem: "sync", trigger }),
+			actionLabel: "View diagnostics",
 		},
-		{ label: "Then run doctor to see root cause details.", command: "codemem sync doctor" },
 	];
 }
 
@@ -527,8 +592,8 @@ function appendMaintenanceRecommendation(
 	});
 }
 
-function buildRecommendations(signals: OverviewSignals, overallIsHealthy: boolean): HealthAction[] {
-	const recommendations = primaryRecommendations(signals, overallIsHealthy);
+function buildRecommendations(signals: OverviewSignals): HealthAction[] {
+	const recommendations = primaryRecommendations(signals);
 	appendMaintenanceRecommendation(recommendations, signals.hasFailedMaintenance);
 	if (signals.hasLowTagCoverage && recommendations.length < 2) {
 		recommendations.push({
@@ -560,7 +625,7 @@ function commitHealthOverview(
 	status: HealthStatusModel,
 	hasStaleData: boolean,
 ): void {
-	const recommendations = buildRecommendations(signals, status.className === "status-healthy");
+	const recommendations = buildRecommendations(signals);
 	const maintenanceCards = signals.maintenanceJobs.map(maintenanceCard);
 	updateHealthDot(mounts.healthDot, status);
 	renderHealthOverviewGrid(mounts.healthGrid, buildHealthTiles(signals), maintenanceCards);
