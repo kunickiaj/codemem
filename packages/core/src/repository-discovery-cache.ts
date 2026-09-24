@@ -87,7 +87,7 @@ function inspectWorkspace(
 	recordedIdentities: string[],
 	checkedAtMs: number,
 ): RepositoryWorkspaceEvidence | null {
-	if (recordedIdentities.length > 0) {
+	if (recordedIdentities.length > 0 || !isAbsolute(cwd)) {
 		return {
 			cwd,
 			recordedIdentitiesJson: JSON.stringify(recordedIdentities),
@@ -150,7 +150,7 @@ function recordAnchor(
 	anchors: Map<string, string>,
 ): boolean {
 	if (!row.filesystemAnchor || !row.anchorMtimeNs) {
-		return Boolean(row.filesystemIdentity || recordedIdentities.length > 0);
+		return Boolean(row.filesystemIdentity || recordedIdentities.length > 0 || !isAbsolute(row.cwd));
 	}
 	const previous = anchors.get(row.filesystemAnchor);
 	if (previous && previous !== row.anchorMtimeNs) return false;

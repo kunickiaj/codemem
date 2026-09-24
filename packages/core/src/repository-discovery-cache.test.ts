@@ -35,3 +35,29 @@ it("bounds identity-map variants across repeated mapping edits", () => {
 		db.close();
 	}
 });
+
+it("keeps indexed evidence usable beside a relative historical cwd", () => {
+	const db = new Database(":memory:");
+	try {
+		initTestSchema(db);
+		ensureAdditiveSchemaCompatibility(db);
+		db.prepare("INSERT INTO sessions(started_at, cwd, metadata_json) VALUES (?, ?, '{}')").run(
+			"2026-09-24T00:00:00.000Z",
+			"relative/old-checkout",
+		);
+		const first = repositoryIdentitiesFromIndexedEvidence(db, [
+			"https://example.test/acme/current.git",
+		]);
+		expect(first).not.toBeNull();
+		expect(
+			db
+				.prepare("SELECT filesystem_identity FROM repository_workspace_evidence WHERE cwd = ?")
+				.pluck()
+				.get("relative/old-checkout"),
+		).toBeNull();
+		expect(__repositoryDiscoveryCacheTestHooks.variantCount(db)).toBe(1);
+		expect(repositoryIdentitiesFromIndexedEvidence(db, [])).not.toBeNull();
+	} finally {
+		db.close();
+	}
+});
