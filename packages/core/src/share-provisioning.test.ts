@@ -1290,6 +1290,7 @@ describe("historical repository share safeguards", () => {
 			[remote, remote],
 			[null, remote],
 			[`${remote}/`, `${remote}/`],
+			["/workspace/api", "/workspace/api"],
 		] as const) {
 			const db = new Database(":memory:");
 			try {

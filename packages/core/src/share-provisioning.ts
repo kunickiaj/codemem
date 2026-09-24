@@ -10,6 +10,7 @@ import {
 	normalizeRepositoryWorkspaceIdentity,
 	repositoryIdentitiesByWorkspace,
 	repositoryIdentityForWorkspace,
+	withRepositoryMappingAliasesFromIdentities,
 } from "./repository-mapping-aliases.js";
 import {
 	canonicalWorkspaceIdentity,
@@ -298,11 +299,37 @@ function projectAllowedPeerDeviceIds(db: Database, projectValues: Array<string |
 		.toSorted();
 }
 
+interface ProvisioningMappingEvidence {
+	repositoryIdentities: ReadonlyMap<string, string>;
+	mappings: ScopeMapping[];
+	effectiveMappings: ScopeMapping[];
+}
+
+function loadProvisioningMappingEvidence(db: Database): ProvisioningMappingEvidence {
+	const mappings = db
+		.prepare(`SELECT id, workspace_identity, project_pattern, scope_id, priority, source, updated_at
+			FROM project_scope_mappings ORDER BY priority DESC, id ASC`)
+		.all() as ScopeMapping[];
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db, {
+		knownRepositoryIdentities: mappings.flatMap((mapping) => [
+			mapping.workspace_identity,
+			mapping.project_pattern,
+		]),
+	});
+	return {
+		repositoryIdentities,
+		mappings,
+		effectiveMappings: withRepositoryMappingAliasesFromIdentities(mappings, repositoryIdentities, {
+			discoverFilesystem: true,
+		}),
+	};
+}
+
 function assertValidProvisioningProjects(
-	db: Database,
 	projects: ProjectRow[],
-	repositoryIdentities: ReadonlyMap<string, string>,
+	evidence: ProvisioningMappingEvidence,
 ): void {
+	const { repositoryIdentities, mappings } = evidence;
 	if (projects.length === 0) throw new Error("operation_intent_invalid");
 	if (
 		projects.some((project) => {
@@ -321,18 +348,6 @@ function assertValidProvisioningProjects(
 	if (new Set(canonicalIdentities).size !== canonicalIdentities.length) {
 		throw new Error("operation_intent_invalid");
 	}
-	const mappings = db
-		.prepare(`SELECT id, workspace_identity, project_pattern, scope_id, priority, source, updated_at
-			FROM project_scope_mappings ORDER BY priority DESC, id ASC`)
-		.all() as Array<{
-		id: number;
-		workspace_identity: string | null;
-		project_pattern: string;
-		scope_id: string;
-		priority: number;
-		source: string;
-		updated_at: string;
-	}>;
 	if (
 		canonicalIdentities.some((identity) =>
 			hasConflictingRepositoryMappings(mappings, repositoryIdentities, identity),
@@ -519,15 +534,16 @@ export function planShareProvisioning(
 		.prepare(`SELECT canonical_project_identity, display_name FROM share_operation_projects
 		 WHERE operation_id = ? ORDER BY ordinal`)
 		.all(context.operation.operation_id) as ProjectRow[];
-	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
-	assertValidProvisioningProjects(db, projects, repositoryIdentities);
+	const evidence = loadProvisioningMappingEvidence(db);
+	const repositoryIdentities = evidence.repositoryIdentities;
+	assertValidProvisioningProjects(projects, evidence);
 	const candidates = memoryCandidates(db);
 	const plans = projects.map((project) =>
 		buildManagedProjectPlan(db, project, candidates, repositoryIdentities, context),
 	);
 	if (plans.some((project) => !clean(project.boundaryId)))
 		throw new Error("managed_boundary_plan_missing");
-	for (const project of plans) assertCompatibleEffectiveMapping(db, project);
+	for (const project of plans) assertCompatibleEffectiveMapping(project, evidence);
 	return {
 		operationId: context.operation.operation_id,
 		groupId: context.operation.coordinator_group_id,
@@ -727,15 +743,14 @@ function localReassign(db: Database, memoryIds: number[], scopeId: string, devic
 	})();
 }
 
-function assertCompatibleEffectiveMapping(db: Database, project: ManagedProjectPlan): boolean {
-	const mappings = db
-		.prepare(`SELECT id, workspace_identity, project_pattern, scope_id, priority, updated_at
-		 FROM project_scope_mappings`)
-		.all() as ScopeMapping[];
+function assertCompatibleEffectiveMapping(
+	project: ManagedProjectPlan,
+	evidence: ProvisioningMappingEvidence,
+): boolean {
 	const resolution = resolveProjectScope({
 		repositoryIdentity: project.canonicalIdentity,
 		allowRepositoryCwdFallback: false,
-		mappings,
+		mappings: evidence.effectiveMappings,
 	});
 	if (resolution.mapping && resolution.scopeId !== project.boundaryId) {
 		throw new Error("project_mapping_conflict");
@@ -744,7 +759,7 @@ function assertCompatibleEffectiveMapping(db: Database, project: ManagedProjectP
 }
 
 function exactMapping(db: Database, project: ManagedProjectPlan): void {
-	if (assertCompatibleEffectiveMapping(db, project)) return;
+	if (assertCompatibleEffectiveMapping(project, loadProvisioningMappingEvidence(db))) return;
 	const now = new Date().toISOString();
 	db.prepare(`INSERT INTO project_scope_mappings(
 		workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
