@@ -198,6 +198,44 @@ function initializeMigrationDb(db: InstanceType<typeof Database>): void {
 	).run(LOCAL_DEVICE_ID, NOW);
 }
 
+function seedBackedOffMigrationAuthority(
+	db: InstanceType<typeof Database>,
+	projectId: string,
+): void {
+	db.prepare(`INSERT INTO recipient_policy_authority_states(
+		canonical_project_identity, authority_state, generation, state_changed_at,
+		last_attempt_at, created_at, updated_at
+	 ) VALUES (?, 'active', 1, ?, ?, ?, ?)`).run(projectId, NOW, NOW, NOW, NOW);
+}
+
+function expectMigratedDirectIntentAndWake(
+	db: InstanceType<typeof Database>,
+	fixture: { projectId: string; recipientActorId: string; deviceId: string },
+): void {
+	expect(
+		db
+			.prepare(
+				"SELECT last_attempt_at FROM recipient_policy_authority_states WHERE canonical_project_identity = ?",
+			)
+			.pluck()
+			.get(fixture.projectId),
+	).toBeNull();
+	const intent = listRecipientPolicyIntent(db);
+	expect(intent.projectRecipients).toContainEqual(
+		expect.objectContaining({
+			canonicalProjectIdentity: fixture.projectId,
+			recipientKind: "identity",
+			identityId: fixture.recipientActorId,
+		}),
+	);
+	expect(intent.identityDevices).toContainEqual(
+		expect.objectContaining({
+			deviceId: fixture.deviceId,
+			identityId: fixture.recipientActorId,
+		}),
+	);
+}
+
 describe("recipient policy intent migration", () => {
 	let db: InstanceType<typeof Database>;
 
@@ -322,12 +360,12 @@ describe("recipient policy intent migration", () => {
 
 	it("revalidates exact operation digests, writes direct intent, and replays idempotently", () => {
 		const fixture = exactFixture();
+		seedBackedOffMigrationAuthority(db, fixture.projectId);
 		const protectedBefore = protectedSnapshot(db);
 		const actorsBefore = JSON.stringify(db.prepare("SELECT * FROM actors ORDER BY actor_id").all());
 
 		const first = migrateRecipientPolicyIntent(db, context);
 		const second = migrateRecipientPolicyIntent(db, context);
-		const intent = listRecipientPolicyIntent(db);
 
 		expect(first.results).toContainEqual(
 			expect.objectContaining({
@@ -338,19 +376,7 @@ describe("recipient policy intent migration", () => {
 		expect(second.results).toContainEqual(
 			expect.objectContaining({ status: "unchanged", idempotent: true, writeCount: 0 }),
 		);
-		expect(intent.projectRecipients).toContainEqual(
-			expect.objectContaining({
-				canonicalProjectIdentity: fixture.projectId,
-				recipientKind: "identity",
-				identityId: fixture.recipientActorId,
-			}),
-		);
-		expect(intent.identityDevices).toContainEqual(
-			expect.objectContaining({
-				deviceId: fixture.deviceId,
-				identityId: fixture.recipientActorId,
-			}),
-		);
+		expectMigratedDirectIntentAndWake(db, fixture);
 		expect(protectedSnapshot(db)).toBe(protectedBefore);
 		expect(JSON.stringify(db.prepare("SELECT * FROM actors ORDER BY actor_id").all())).toBe(
 			actorsBefore,

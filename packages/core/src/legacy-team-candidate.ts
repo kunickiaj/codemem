@@ -1,4 +1,5 @@
 import type { Database } from "./db.js";
+import { wakeRecipientPoliciesForProjectIdentities } from "./device-identity-binding.js";
 import {
 	type ListLegacyRecipientPolicyProjectionsOptions,
 	listLegacyTeamProjectEvidence,
@@ -667,14 +668,18 @@ interface ExistingProjectRecipientRow {
 	provenance: string;
 }
 
-function reconcileMissingCompletedProjectRecipients(
+interface PlannedProjectRecipientRepair {
+	mode: "insert" | "reactivate";
+	sourceFingerprint: string;
+}
+
+function planMissingCompletedProjectRecipients(
 	db: Database,
 	candidateId: string,
 	draftRow: DraftFreshnessRow,
 	rosterFingerprint: string,
 	currentProjects: LegacyTeamSetupProjectInput[],
-	now: string,
-): number {
+): { planned: Map<string, PlannedProjectRecipientRepair>; teamRevision: string } | null {
 	if (
 		draftRow.state !== "completed" ||
 		!draftRow.completed_team_id ||
@@ -683,12 +688,12 @@ function reconcileMissingCompletedProjectRecipients(
 			allowMissingSetupRecipients: true,
 		})
 	) {
-		return 0;
+		return null;
 	}
 	const team = db
 		.prepare("SELECT revision FROM policy_teams WHERE team_id = ? AND status = 'active'")
 		.get(draftRow.completed_team_id) as { revision: string } | undefined;
-	if (!team) return 0;
+	if (!team) return null;
 	const completionProjects = (
 		db
 			.prepare(
@@ -702,20 +707,33 @@ function reconcileMissingCompletedProjectRecipients(
 		`SELECT status, provenance FROM project_recipients
 		 WHERE canonical_project_identity = ? AND recipient_kind = 'team' AND recipient_id = ?`,
 	);
-	const planned = new Map<string, { mode: "insert" | "reactivate"; sourceFingerprint: string }>();
+	const planned = new Map<string, PlannedProjectRecipientRepair>();
 	for (const project of completionProjects) {
 		const resolvedIdentity = project.resolved_project_identity;
-		if (!resolvedIdentity || !isMigratableLegacyTeamProjectIdentity(resolvedIdentity, db)) return 0;
+		if (!resolvedIdentity || !isMigratableLegacyTeamProjectIdentity(resolvedIdentity, db))
+			return null;
 		const existing = existingRecipient.get(resolvedIdentity, draftRow.completed_team_id) as
 			| ExistingProjectRecipientRow
 			| undefined;
 		if (existing?.status === "active") continue;
-		if (existing && existing.provenance !== "reviewed_team_setup") return 0;
+		if (existing && existing.provenance !== "reviewed_team_setup") return null;
 		planned.set(resolvedIdentity, {
 			mode: existing ? "reactivate" : "insert",
 			sourceFingerprint: project.source_fingerprint,
 		});
 	}
+	return { planned, teamRevision: team.revision };
+}
+
+function applyCompletedProjectRecipientRepairs(
+	db: Database,
+	input: {
+		now: string;
+		planned: ReadonlyMap<string, PlannedProjectRecipientRepair>;
+		teamId: string;
+		teamRevision: string;
+	},
+): string[] {
 	const insert = db.prepare(
 		`INSERT INTO project_recipients(
 		 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
@@ -730,33 +748,59 @@ function reconcileMissingCompletedProjectRecipients(
 		 WHERE canonical_project_identity = ? AND recipient_kind = 'team' AND recipient_id = ?
 		   AND provenance = 'reviewed_team_setup' AND status <> 'active'`,
 	);
-	let writeCount = 0;
-	for (const [resolvedIdentity, plan] of planned) {
+	const affectedProjects: string[] = [];
+	for (const [resolvedIdentity, plan] of input.planned) {
 		if (plan.mode === "insert") {
 			insert.run(
 				resolvedIdentity,
-				draftRow.completed_team_id,
-				team.revision,
+				input.teamId,
+				input.teamRevision,
 				plan.sourceFingerprint,
-				recipientPolicyDigest("legacy-team-project-recipient-v1", [
-					resolvedIdentity,
-					draftRow.completed_team_id,
-				]),
-				now,
-				now,
+				recipientPolicyDigest("legacy-team-project-recipient-v1", [resolvedIdentity, input.teamId]),
+				input.now,
+				input.now,
 			);
-			writeCount += 1;
+			affectedProjects.push(resolvedIdentity);
 			continue;
 		}
-		writeCount += reactivate.run(
-			team.revision,
+		const changes = reactivate.run(
+			input.teamRevision,
 			plan.sourceFingerprint,
-			now,
+			input.now,
 			resolvedIdentity,
-			draftRow.completed_team_id,
+			input.teamId,
 		).changes;
+		if (changes > 0) affectedProjects.push(resolvedIdentity);
 	}
-	return writeCount;
+	return affectedProjects;
+}
+
+function reconcileMissingCompletedProjectRecipients(
+	db: Database,
+	candidateId: string,
+	draftRow: DraftFreshnessRow,
+	rosterFingerprint: string,
+	currentProjects: LegacyTeamSetupProjectInput[],
+	now: string,
+): number {
+	const repair = planMissingCompletedProjectRecipients(
+		db,
+		candidateId,
+		draftRow,
+		rosterFingerprint,
+		currentProjects,
+	);
+	if (!repair || !draftRow.completed_team_id) return 0;
+	const affectedProjects = applyCompletedProjectRecipientRepairs(db, {
+		now,
+		planned: repair.planned,
+		teamId: draftRow.completed_team_id,
+		teamRevision: repair.teamRevision,
+	});
+	if (affectedProjects.length > 0) {
+		wakeRecipientPoliciesForProjectIdentities(db, affectedProjects, now);
+	}
+	return affectedProjects.length;
 }
 
 function hasTerminalLegacyTeamCompletion(

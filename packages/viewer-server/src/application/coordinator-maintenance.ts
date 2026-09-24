@@ -308,6 +308,7 @@ const RECIPIENT_POLICY_MAINTENANCE_DEFAULT_LIMIT = 3;
 const RECIPIENT_POLICY_MAINTENANCE_BACKOFF_MS = 60_000;
 
 interface MaintenanceAuthorityRow {
+	authority_state: string;
 	canonical_project_identity: string;
 	last_attempt_at: string | null;
 	safe_error_code: string | null;
@@ -329,7 +330,7 @@ function recipientPolicyMaintenanceCandidates(
 		.all() as Array<{ canonical_project_identity: string }>;
 	const authorityRows = store.db
 		.prepare(
-			`SELECT canonical_project_identity, last_attempt_at, safe_error_code
+			`SELECT authority_state, canonical_project_identity, last_attempt_at, safe_error_code
 			 FROM recipient_policy_authority_states`,
 		)
 		.all() as MaintenanceAuthorityRow[];
@@ -354,8 +355,9 @@ function recipientPolicyMaintenanceCandidates(
 		.filter((projectId) => {
 			const authority = authorityByProject.get(projectId);
 			return (
-				authority?.safe_error_code == null ||
+				authority == null ||
 				authority.last_attempt_at == null ||
+				(authority.safe_error_code == null && authority.authority_state !== "active") ||
 				authority.last_attempt_at <= retryBefore
 			);
 		})

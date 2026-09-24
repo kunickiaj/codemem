@@ -1,4 +1,8 @@
 import type { Database } from "./db.js";
+import {
+	wakeRecipientPoliciesForIdentities,
+	wakeRecipientPoliciesForProjectIdentities,
+} from "./device-identity-binding.js";
 import { assignIdentityDeviceInTransaction } from "./identity-device-assignment.js";
 import {
 	type LegacyRecipientPolicyProjectionV1,
@@ -987,6 +991,38 @@ function projectMigrationErrorCode(error: unknown): string | null {
 	return null;
 }
 
+function applyProjectMigrationPlan(
+	db: Database,
+	plan: ProjectPlan,
+	input: {
+		projectId: string;
+		now: string;
+		write: boolean;
+		compatibleDeviceEvidence: ReadonlyMap<string, IntentRow[]>;
+	},
+): number {
+	let writeCount = 0;
+	const changedIdentityIds = new Set<string>();
+	for (const actor of plan.actors) {
+		if (validateOrWriteActor(db, actor, input.now, input.write)) writeCount += 1;
+	}
+	for (const row of plan.rows) {
+		const changed =
+			row.table === "identity_devices"
+				? validateOrAssignIdentityDevice(db, row, input.write, input.compatibleDeviceEvidence)
+				: validateOrWriteRow(db, row, input.write);
+		if (changed) writeCount += 1;
+		if (changed && input.write && row.table === "identity_devices") {
+			changedIdentityIds.add(requiredIntentValue(row, "identity_id"));
+		}
+	}
+	if (input.write && writeCount > 0) {
+		wakeRecipientPoliciesForProjectIdentities(db, [input.projectId], input.now);
+		wakeRecipientPoliciesForIdentities(db, changedIdentityIds, input.now);
+	}
+	return writeCount;
+}
+
 function migrateProjectInTransaction(input: {
 	db: Database;
 	context: RecipientPolicyReviewContext;
@@ -1085,20 +1121,17 @@ function migrateProjectInTransaction(input: {
 			errorCode: "migration_evidence_missing",
 		};
 	}
-	let plannedWriteCount = 0;
-	for (const actor of plan.actors) {
-		if (validateOrWriteActor(db, actor, now, write)) plannedWriteCount += 1;
-	}
-	for (const row of plan.rows) {
-		const changed =
-			row.table === "identity_devices"
-				? validateOrAssignIdentityDevice(db, row, write, compatibleDeviceEvidence)
-				: validateOrWriteRow(db, row, write);
-		if (changed) plannedWriteCount += 1;
-	}
+	const plannedWriteCount = applyProjectMigrationPlan(db, plan, {
+		projectId,
+		now,
+		write,
+		compatibleDeviceEvidence,
+	});
+	let status: RecipientPolicyMigrationProjectResultV1["status"] = "unchanged";
+	if (plannedWriteCount > 0) status = write ? "migrated" : "would_migrate";
 	return {
 		canonicalProjectIdentity: projectId,
-		status: plannedWriteCount === 0 ? "unchanged" : write ? "migrated" : "would_migrate",
+		status,
 		writeCount: write ? plannedWriteCount : 0,
 		idempotent: plannedWriteCount === 0,
 		errorCode: null,

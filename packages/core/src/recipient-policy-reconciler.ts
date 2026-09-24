@@ -819,6 +819,36 @@ async function retryPendingRevocationRefreshes(
 	return pending.length > 0;
 }
 
+function normalizeIncompleteRefreshStep(
+	db: Database,
+	input: {
+		projectId: string;
+		generation: number;
+		stepKey: string;
+		leaseOwner: string;
+		now: string;
+	},
+): void {
+	const payloadDigest = digest("recipient-policy-step-payload-v1", {
+		canonicalProjectIdentity: input.projectId,
+	});
+	const effectId = deterministicRecipientPolicyReconciliationEffectId({
+		canonicalProjectIdentity: input.projectId,
+		generation: input.generation,
+		stepKey: input.stepKey,
+		payloadDigest,
+	});
+	db.transaction(() => {
+		assertLease(db, input.projectId, input.leaseOwner, input.now);
+		db.prepare(
+			`UPDATE recipient_policy_reconciliation_steps
+			 SET effect_id = ?, payload_digest = ?
+			 WHERE canonical_project_identity = ? AND generation = ? AND step_key = ?
+			 AND status IN ('pending', 'running', 'failed')`,
+		).run(effectId, payloadDigest, input.projectId, input.generation, input.stepKey);
+	}).immediate();
+}
+
 async function retryPendingRefreshes(
 	db: Database,
 	input: {
@@ -832,24 +862,13 @@ async function retryPendingRefreshes(
 	const pending = listPendingRecipientPolicyRefreshSteps(db, input.projectId);
 	for (const refresh of pending) {
 		const payload = { canonicalProjectIdentity: input.projectId };
-		const payloadDigest = digest("recipient-policy-step-payload-v1", payload);
-		const effectId = deterministicRecipientPolicyReconciliationEffectId({
-			canonicalProjectIdentity: input.projectId,
+		normalizeIncompleteRefreshStep(db, {
+			projectId: input.projectId,
 			generation: refresh.generation,
 			stepKey: refresh.stepKey,
-			payloadDigest,
+			leaseOwner: input.leaseOwner,
+			now: input.effects.now(),
 		});
-		// Pre-upgrade incomplete refresh rows used snapshot-specific payload identities. Refresh is
-		// idempotent and targets the current boundary, so normalize those rows before replay.
-		db.transaction(() => {
-			assertLease(db, input.projectId, input.leaseOwner, input.effects.now());
-			db.prepare(
-				`UPDATE recipient_policy_reconciliation_steps
-				 SET effect_id = ?, payload_digest = ?
-				 WHERE canonical_project_identity = ? AND generation = ? AND step_key = ?
-				 AND status IN ('pending', 'running', 'failed')`,
-			).run(effectId, payloadDigest, input.projectId, refresh.generation, refresh.stepKey);
-		}).immediate();
 		await step(
 			db,
 			{
@@ -1171,6 +1190,27 @@ async function applyGrantSteps(
 	}
 }
 
+function stageGrantRefresh(run: RecipientPolicyReconciliationRun, input: GrantEffectInput): void {
+	if (input.grantDeviceIds.length === 0) return;
+	const stepKey = `refresh:${input.passKey}`;
+	normalizeIncompleteRefreshStep(run.db, {
+		projectId: run.projectId,
+		generation: run.activeGeneration,
+		stepKey,
+		leaseOwner: run.leaseOwner,
+		now: run.effects.now(),
+	});
+	ensureRecipientPolicyReconciliationStep(run.db, {
+		canonicalProjectIdentity: run.projectId,
+		generation: run.activeGeneration,
+		stepKey,
+		payloadDigest: digest("recipient-policy-step-payload-v1", {
+			canonicalProjectIdentity: run.projectId,
+		}),
+		now: run.effects.now(),
+	});
+}
+
 async function checkCapabilitiesAndApplyGrants(
 	run: RecipientPolicyReconciliationRun,
 	input: GrantEffectInput,
@@ -1179,6 +1219,7 @@ async function checkCapabilitiesAndApplyGrants(
 	if (capabilityOutcome) return capabilityOutcome;
 	const staleOutcome = await staleGrantEnrollment(run, input);
 	if (staleOutcome) return staleOutcome;
+	stageGrantRefresh(run, input);
 	await applyGrantSteps(run, input);
 	return null;
 }
@@ -1251,13 +1292,7 @@ async function refreshAfterGrantEffects(
 		lease: run.lease,
 		effects: run.effects,
 	});
-	if (
-		replayedRefresh ||
-		(input.grantDeviceIds.length === 0 &&
-			(input.revocations.length > 0 || input.replayedRevocationRefresh))
-	) {
-		return;
-	}
+	if (replayedRefresh || input.grantDeviceIds.length === 0) return;
 	await step(
 		run.db,
 		{

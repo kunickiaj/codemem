@@ -133,6 +133,72 @@ function seedRevokedProjectForConvergence(
 	 ) VALUES (?, 'active', 1, ?, ?, ?, ?)`).run(PROJECT_B, NOW, NOW, NOW, NOW);
 }
 
+function containmentPolicySnapshot(db: InstanceType<typeof Database>) {
+	return ["policy_teams", "project_recipients", "legacy_team_setup_drafts"].map((table) =>
+		db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),
+	);
+}
+
+function containmentMappingsSnapshot(db: InstanceType<typeof Database>) {
+	return db.prepare("SELECT * FROM project_scope_mappings ORDER BY id").all();
+}
+
+function seedContainmentWakeAuthority(
+	db: InstanceType<typeof Database>,
+	input: { teamId: string; revision: string; state: string },
+): string[] {
+	const project = "https://example.test/acme/containment-wake.git";
+	const insertRecipient = db.prepare(`INSERT INTO project_recipients(
+		canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+		policy_revision, migration_state, idempotency_key, created_at, updated_at
+	 ) VALUES (?, 'team', ?, 'active', ?, ?, 'completed', ?, ?, ?)`);
+	insertRecipient.run(
+		project,
+		input.teamId,
+		"reviewed_team_setup",
+		input.revision,
+		`containment-wake:${input.state}`,
+		NOW,
+		NOW,
+	);
+	const insertAuthority = db.prepare(`INSERT INTO recipient_policy_authority_states(
+		canonical_project_identity, authority_state, generation, state_changed_at,
+		last_attempt_at, created_at, updated_at
+	 ) VALUES (?, 'active', 1, ?, ?, ?, ?)`);
+	insertAuthority.run(project, NOW, NOW, NOW, NOW);
+	const projects = [project];
+	if (input.state === "active") {
+		const userProject = "https://example.test/acme/user-owned-containment.git";
+		insertRecipient.run(userProject, input.teamId, "user", input.revision, "user-wake", NOW, NOW);
+		insertAuthority.run(userProject, NOW, NOW, NOW, NOW);
+		projects.push(userProject);
+	}
+	if (input.state === "legacy-contained") {
+		insertAuthority.run(PROJECT_B, NOW, NOW, NOW, NOW);
+		projects.push(PROJECT_B);
+	}
+	return projects;
+}
+
+function expectContainmentWake(
+	db: InstanceType<typeof Database>,
+	projects: string[],
+	state: string,
+): void {
+	for (const project of projects) {
+		expect(
+			db
+				.prepare(
+					"SELECT last_attempt_at FROM recipient_policy_authority_states WHERE canonical_project_identity = ?",
+				)
+				.pluck()
+				.get(project),
+		).toBe(
+			state === "active" || (state === "legacy-contained" && project === PROJECT_B) ? null : NOW,
+		);
+	}
+}
+
 describe("legacy Team setup completion manifests", () => {
 	let db: InstanceType<typeof Database>;
 
@@ -2061,28 +2127,29 @@ describe("legacy Team setup completion manifests", () => {
 			const before = Number(session.run(NOW, "api", PROJECT_A).lastInsertRowid);
 			expect(resolveSessionScopeId(db, { sessionId: before })).toBe("scope-engineering");
 			seedPriorContainmentState(state, manifest.team_id, draft.attemptId);
-			const policySnapshot = () =>
-				["policy_teams", "project_recipients", "legacy_team_setup_drafts"].map((table) =>
-					db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),
-				);
-			const previousPolicy = policySnapshot();
-			const mappings = () => db.prepare("SELECT * FROM project_scope_mappings ORDER BY id").all();
-			const previousMappings = mappings();
+			const previousMappings = containmentMappingsSnapshot(db);
+			const affectedProjects = seedContainmentWakeAuthority(db, {
+				teamId: manifest.team_id,
+				revision: manifest.team.policy_revision,
+				state,
+			});
+			const previousPolicy = containmentPolicySnapshot(db);
 
 			await containLegacyTeamSetupCompletionConflict(db, {
 				coordinatorId: COORDINATOR_ID,
 				groupId: GROUP_ID,
 			});
-			if (state !== "active") expect(policySnapshot()).toEqual(previousPolicy);
-			if (!cleanup) expect(mappings()).toEqual(previousMappings);
-			const containedPolicy = policySnapshot();
-			const containedMappings = mappings();
+			if (state !== "active") expect(containmentPolicySnapshot(db)).toEqual(previousPolicy);
+			if (!cleanup) expect(containmentMappingsSnapshot(db)).toEqual(previousMappings);
+			const containedPolicy = containmentPolicySnapshot(db);
+			const containedMappings = containmentMappingsSnapshot(db);
 			await containLegacyTeamSetupCompletionConflict(db, {
 				coordinatorId: COORDINATOR_ID,
 				groupId: GROUP_ID,
 			});
-			expect(policySnapshot()).toEqual(containedPolicy);
-			expect(mappings()).toEqual(containedMappings);
+			expect(containmentPolicySnapshot(db)).toEqual(containedPolicy);
+			expect(containmentMappingsSnapshot(db)).toEqual(containedMappings);
+			expectContainmentWake(db, affectedProjects, state);
 			const after = Number(session.run(NOW, "api", PROJECT_A).lastInsertRowid);
 			expect(resolveSessionScopeId(db, { sessionId: after })).toBe(
 				cleanup ? "local-default" : "scope-engineering",

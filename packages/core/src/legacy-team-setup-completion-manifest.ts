@@ -4,6 +4,7 @@ import {
 	normalizeCoordinatorLegacyTeamCompletionManifest,
 } from "./coordinator-legacy-team-completion.js";
 import type { Database } from "./db.js";
+import { wakeRecipientPoliciesForProjectIdentities } from "./device-identity-binding.js";
 import {
 	isLegacyTeamCandidateSelectable,
 	type LegacyTeamRosterDeviceSnapshot,
@@ -875,8 +876,17 @@ function quarantineDivergentCompletedPolicy(
 			)
 			.get(binding.teamId) as { revision: string; status: string } | undefined;
 		if (!team) return;
+		const now = new Date().toISOString();
+		let affectedProjects: string[] = [];
 		if (team.status === "active") {
-			const now = new Date().toISOString();
+			affectedProjects = db
+				.prepare(
+					`SELECT canonical_project_identity FROM project_recipients
+					 WHERE recipient_kind = 'team' AND recipient_id = ?
+					   AND status = 'active'`,
+				)
+				.pluck()
+				.all(binding.teamId) as string[];
 			db.prepare(
 				`UPDATE policy_teams
 				 SET status = 'inactive', migration_state = 'needs_setup', updated_at = ?
@@ -896,16 +906,32 @@ function quarantineDivergentCompletedPolicy(
 		// Scope stamping ignores recipient status; remove this setup group's
 		// routing on active and retired scopes without touching independently owned mappings.
 		// Older containment already deactivated policy but left these mappings behind.
-		db.prepare(
-			`DELETE FROM project_scope_mappings
+		const removedMappings = db
+			.prepare(
+				`DELETE FROM project_scope_mappings
 			 WHERE source = 'reviewed_team_setup' AND scope_id IN (
 			   SELECT scope.scope_id FROM replication_scopes AS scope
 			   JOIN legacy_team_setup_drafts AS draft
 			     ON draft.coordinator_id = scope.coordinator_id AND draft.group_id = scope.group_id
 			   WHERE draft.candidate_id = ? AND draft.completed_team_id = ?
-			     AND scope.authority_type = 'coordinator'
-			 )`,
-		).run(binding.candidateRef, binding.teamId);
+			 ) RETURNING workspace_identity, project_pattern`,
+			)
+			.all(binding.candidateRef, binding.teamId) as Array<{
+			workspace_identity: string | null;
+			project_pattern: string;
+		}>;
+		wakeRecipientPoliciesForProjectIdentities(
+			db,
+			[
+				...affectedProjects,
+				...removedMappings.flatMap((mapping) =>
+					[mapping.workspace_identity, mapping.project_pattern].filter(
+						(identity): identity is string => identity != null,
+					),
+				),
+			],
+			now,
+		);
 	}).immediate();
 }
 
