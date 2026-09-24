@@ -16,6 +16,7 @@ import {
 	type RecipientReviewedIntentV1,
 } from "./recipient-reviewed-intent.js";
 import {
+	canonicalRepositoryProjectIdentity,
 	repositoryIdentitiesByWorkspace,
 	repositoryIdentityForWorkspace,
 } from "./repository-mapping-aliases.js";
@@ -290,6 +291,28 @@ function repositoryIdentityForProjectFact(
 	});
 }
 
+function addPersistedProjectFact(
+	projects: Map<string, ProjectFact>,
+	repositoryIdentities: ReadonlyMap<string, string>,
+	projectId: unknown,
+	displayName: unknown,
+): void {
+	if (typeof projectId !== "string" || !projectId || projectId.startsWith("unmapped:")) return;
+	const canonicalProjectIdentity = canonicalRepositoryProjectIdentity(
+		repositoryIdentities,
+		projectId,
+	);
+	if (projects.has(canonicalProjectIdentity)) return;
+	projects.set(canonicalProjectIdentity, {
+		canonicalProjectIdentity,
+		displayName:
+			typeof displayName === "string" && displayName.trim()
+				? displayName.trim()
+				: canonicalProjectIdentity,
+		existingMemoryCount: 0,
+	});
+}
+
 function projectFacts(db: Database): Map<string, ProjectFact> {
 	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
 	const rows = db
@@ -325,16 +348,8 @@ function projectFacts(db: Database): Map<string, ProjectFact> {
 			existingMemoryCount: (existing?.existingMemoryCount ?? 0) + Number(row.memory_count ?? 0),
 		});
 	}
-	const add = (projectId: unknown, displayName: unknown): void => {
-		if (typeof projectId !== "string" || !projectId || projectId.startsWith("unmapped:")) return;
-		if (projects.has(projectId)) return;
-		projects.set(projectId, {
-			canonicalProjectIdentity: projectId,
-			displayName:
-				typeof displayName === "string" && displayName.trim() ? displayName.trim() : projectId,
-			existingMemoryCount: 0,
-		});
-	};
+	const add = (projectId: unknown, displayName: unknown): void =>
+		addPersistedProjectFact(projects, repositoryIdentities, projectId, displayName);
 	for (const row of db
 		.prepare(
 			`SELECT canonical_project_identity, display_name
@@ -361,6 +376,36 @@ function projectFacts(db: Database): Map<string, ProjectFact> {
 		add(row.canonical_project_identity, row.display_name);
 	}
 	return projects;
+}
+
+function canonicalDirectProjectIdentities(db: Database, request: NormalizedRequest): string[] {
+	if (request.journey !== "direct_project") return [];
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
+	return [
+		...new Set(
+			request.canonicalProjectIdentities.map((projectId) =>
+				canonicalRepositoryProjectIdentity(repositoryIdentities, projectId),
+			),
+		),
+	].toSorted(compareText);
+}
+
+function canonicalizeDirectProjectRequest(
+	db: Database,
+	request: NormalizedRequest,
+): NormalizedRequest {
+	if (request.journey !== "direct_project") return request;
+	return {
+		...request,
+		canonicalProjectIdentities: canonicalDirectProjectIdentities(db, request),
+	};
+}
+
+function previewProjectFacts(db: Database, request: NormalizedRequest) {
+	return {
+		facts: projectFacts(db),
+		canonicalProjectIdentities: canonicalDirectProjectIdentities(db, request),
+	};
 }
 
 function managedProjectFact(db: Database, projectId: string): ProjectFact | null {
@@ -424,6 +469,15 @@ function addSource(
 	sources.set(projectId, current);
 }
 
+function addCanonicalSource(
+	sources: Map<string, RecipientPolicyOnboardingProjectSourceV1[]>,
+	repositoryIdentities: ReadonlyMap<string, string>,
+	projectId: string,
+	source: RecipientPolicyOnboardingProjectSourceV1,
+): void {
+	addSource(sources, canonicalRepositoryProjectIdentity(repositoryIdentities, projectId), source);
+}
+
 function teamFact(db: Database, teamId: string): { teamId: string; displayName: string } {
 	const row = db
 		.prepare(
@@ -434,19 +488,67 @@ function teamFact(db: Database, teamId: string): { teamId: string; displayName: 
 	return { teamId: row.team_id, displayName: row.display_name };
 }
 
+interface CanonicalRecipientProjectRow {
+	canonical_project_identity: string;
+	status: string;
+	updated_at: string;
+}
+
+function activeCanonicalProjectsFromRows(
+	repositoryIdentities: ReadonlyMap<string, string>,
+	rows: CanonicalRecipientProjectRow[],
+): string[] {
+	const winners = new Map<string, (typeof rows)[number]>();
+	for (const row of rows) {
+		const projectId = canonicalRepositoryProjectIdentity(
+			repositoryIdentities,
+			row.canonical_project_identity,
+		);
+		const winner = winners.get(projectId);
+		if (!winner) {
+			winners.set(projectId, row);
+			continue;
+		}
+		const winnerIsCanonical = winner.canonical_project_identity === projectId;
+		if (winnerIsCanonical) continue;
+		if (row.canonical_project_identity === projectId || row.updated_at > winner.updated_at) {
+			winners.set(projectId, row);
+		}
+	}
+	return [...winners]
+		.filter(([, row]) => row.status === "active")
+		.map(([projectId]) => projectId)
+		.toSorted(compareText);
+}
+
+function activeCanonicalRecipientProjects(
+	db: Database,
+	repositoryIdentities: ReadonlyMap<string, string>,
+	recipientKind: "identity" | "team",
+	recipientId: string,
+): string[] {
+	const rows = db
+		.prepare(
+			`SELECT canonical_project_identity, status, updated_at FROM project_recipients
+			 WHERE recipient_kind = ? AND recipient_id = ? ORDER BY canonical_project_identity`,
+		)
+		.all(recipientKind, recipientId) as CanonicalRecipientProjectRow[];
+	return activeCanonicalProjectsFromRows(repositoryIdentities, rows);
+}
+
 function teamSources(
 	db: Database,
 	team: { teamId: string; displayName: string },
 ): Map<string, RecipientPolicyOnboardingProjectSourceV1[]> {
 	const result = new Map<string, RecipientPolicyOnboardingProjectSourceV1[]>();
-	for (const row of db
-		.prepare(
-			`SELECT canonical_project_identity FROM project_recipients
-			 WHERE recipient_kind = 'team' AND recipient_id = ? AND status = 'active'
-			 ORDER BY canonical_project_identity`,
-		)
-		.all(team.teamId) as Array<{ canonical_project_identity: string }>) {
-		addSource(result, row.canonical_project_identity, {
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
+	for (const projectId of activeCanonicalRecipientProjects(
+		db,
+		repositoryIdentities,
+		"team",
+		team.teamId,
+	)) {
+		addSource(result, projectId, {
 			kind: "team",
 			teamId: team.teamId,
 			displayName: team.displayName,
@@ -460,22 +562,66 @@ function sameCoordinatorBoundary(...values: Array<string | null>): boolean {
 	return normalized[0] !== "" && normalized.every((value) => value === normalized[0]);
 }
 
+function directIdentitySources(
+	db: Database,
+	identityId: string,
+	repositoryIdentities: ReadonlyMap<string, string>,
+): Map<string, RecipientPolicyOnboardingProjectSourceV1[]> {
+	const result = new Map<string, RecipientPolicyOnboardingProjectSourceV1[]>();
+	for (const projectId of activeCanonicalRecipientProjects(
+		db,
+		repositoryIdentities,
+		"identity",
+		identityId,
+	)) {
+		addSource(result, projectId, {
+			kind: "direct",
+		});
+	}
+	return result;
+}
+
+interface InheritedTeamProjectRow extends CanonicalRecipientProjectRow {
+	team_id: string;
+	display_name: string;
+	device_eligibility_mode: string;
+}
+
+function addInheritedTeamSources(
+	result: Map<string, RecipientPolicyOnboardingProjectSourceV1[]>,
+	repositoryIdentities: ReadonlyMap<string, string>,
+	teamProjectRows: InheritedTeamProjectRow[],
+	inheritableTeamIds: ReadonlySet<string>,
+): void {
+	const projectRowsByTeam = new Map<string, CanonicalRecipientProjectRow[]>();
+	for (const row of teamProjectRows) {
+		const rows = projectRowsByTeam.get(row.team_id) ?? [];
+		rows.push(row);
+		projectRowsByTeam.set(row.team_id, rows);
+	}
+	for (const row of new Map(teamProjectRows.map((team) => [team.team_id, team])).values()) {
+		if (!inheritableTeamIds.has(row.team_id)) continue;
+		for (const projectId of activeCanonicalProjectsFromRows(
+			repositoryIdentities,
+			projectRowsByTeam.get(row.team_id) ?? [],
+		)) {
+			addSource(result, projectId, {
+				kind: "team",
+				teamId: row.team_id,
+				displayName: row.display_name,
+			});
+		}
+	}
+}
+
 function inheritedSources(
 	db: Database,
 	identityId: string,
 	deviceId: string,
 	options: { addDeviceTeamEligibility?: "binding_device" | "prospective_device" } = {},
 ): Map<string, RecipientPolicyOnboardingProjectSourceV1[]> {
-	const result = new Map<string, RecipientPolicyOnboardingProjectSourceV1[]>();
-	for (const row of db
-		.prepare(
-			`SELECT canonical_project_identity FROM project_recipients
-			 WHERE recipient_kind = 'identity' AND recipient_id = ? AND status = 'active'
-			 ORDER BY canonical_project_identity`,
-		)
-		.all(identityId) as Array<{ canonical_project_identity: string }>) {
-		addSource(result, row.canonical_project_identity, { kind: "direct" });
-	}
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
+	const result = directIdentitySources(db, identityId, repositoryIdentities);
 	for (const row of db
 		.prepare(
 			`SELECT projection.canonical_project_identity, projection.managed_scope_id,
@@ -519,7 +665,9 @@ function inheritedSources(
 		) {
 			continue;
 		}
-		addSource(result, row.canonical_project_identity, { kind: "direct" });
+		addCanonicalSource(result, repositoryIdentities, row.canonical_project_identity, {
+			kind: "direct",
+		});
 	}
 	for (const row of db
 		.prepare(
@@ -561,25 +709,22 @@ function inheritedSources(
 		) {
 			continue;
 		}
-		addSource(result, row.canonical_project_identity, { kind: "direct" });
+		addCanonicalSource(result, repositoryIdentities, row.canonical_project_identity, {
+			kind: "direct",
+		});
 	}
 	const teamProjectRows = db
 		.prepare(
-			`SELECT pr.canonical_project_identity, pt.team_id, pt.display_name,
-			 pt.device_eligibility_mode
+			`SELECT pr.canonical_project_identity, pr.status, pr.updated_at,
+			 pt.team_id, pt.display_name, pt.device_eligibility_mode
 			 FROM policy_team_memberships tm
 			 JOIN policy_teams pt ON pt.team_id = tm.team_id AND pt.status = 'active'
 			 JOIN project_recipients pr ON pr.recipient_kind = 'team'
-			  AND pr.recipient_id = tm.team_id AND pr.status = 'active'
+			  AND pr.recipient_id = tm.team_id
 			 WHERE tm.identity_id = ?
 			 ORDER BY pr.canonical_project_identity, pt.team_id`,
 		)
-		.all(identityId) as Array<{
-		canonical_project_identity: string;
-		team_id: string;
-		display_name: string;
-		device_eligibility_mode: string;
-	}>;
+		.all(identityId) as InheritedTeamProjectRow[];
 	if (teamProjectRows.length === 0) return result;
 	const factsByTeam = new Map<
 		string,
@@ -593,9 +738,9 @@ function inheritedSources(
 			`WITH referenced_teams AS (
 			 SELECT DISTINCT tm.team_id
 			 FROM policy_team_memberships tm
-			 JOIN policy_teams pt ON pt.team_id = tm.team_id AND pt.status = 'active'
-			 JOIN project_recipients pr ON pr.recipient_kind = 'team'
-			  AND pr.recipient_id = tm.team_id AND pr.status = 'active'
+				 JOIN policy_teams pt ON pt.team_id = tm.team_id AND pt.status = 'active'
+				 JOIN project_recipients pr ON pr.recipient_kind = 'team'
+				  AND pr.recipient_id = tm.team_id
 			 WHERE tm.identity_id = ?
 			)
 			SELECT 'membership' AS fact_kind, membership.team_id,
@@ -634,7 +779,7 @@ function inheritedSources(
 		FROM policy_team_memberships tm
 		JOIN policy_teams pt ON pt.team_id = tm.team_id AND pt.status = 'active'
 		JOIN project_recipients pr ON pr.recipient_kind = 'team'
-		 AND pr.recipient_id = tm.team_id AND pr.status = 'active'
+		 AND pr.recipient_id = tm.team_id
 		WHERE tm.identity_id = ?
 	), referenced_members AS (
 		SELECT DISTINCT membership.identity_id
@@ -739,14 +884,7 @@ function inheritedSources(
 		}
 		inheritableTeamIds.add(row.team_id);
 	}
-	for (const row of teamProjectRows) {
-		if (!inheritableTeamIds.has(row.team_id)) continue;
-		addSource(result, row.canonical_project_identity, {
-			kind: "team",
-			teamId: row.team_id,
-			displayName: row.display_name,
-		});
-	}
+	addInheritedTeamSources(result, repositoryIdentities, teamProjectRows, inheritableTeamIds);
 	return result;
 }
 
@@ -756,7 +894,7 @@ function buildPreview(
 	options: { addDeviceTeamEligibility?: "binding_device" | "prospective_device" } = {},
 ): RecipientPolicyOnboardingPreviewV1 {
 	assertActiveIdentity(db, request.binding.identityId);
-	const facts = projectFacts(db);
+	const { facts, canonicalProjectIdentities } = previewProjectFacts(db, request);
 	let team: RecipientPolicyOnboardingPreviewV1["team"] = null;
 	let sources = new Map<string, RecipientPolicyOnboardingProjectSourceV1[]>();
 	if (request.journey === "team") {
@@ -765,7 +903,7 @@ function buildPreview(
 		sources = teamSources(db, selectedTeam);
 	}
 	if (request.journey === "direct_project") {
-		for (const projectId of request.canonicalProjectIdentities) {
+		for (const projectId of canonicalProjectIdentities) {
 			if (!facts.has(projectId)) {
 				throw new RecipientPolicyOnboardingRequestError("not_found", "project_not_found");
 			}
@@ -822,7 +960,7 @@ export function previewRecipientPolicyOnboarding(
 	request: RecipientPolicyOnboardingPreviewRequestV1,
 	options: { addDeviceTeamEligibility?: "binding_device" | "prospective_device" } = {},
 ): RecipientPolicyOnboardingPreviewV1 {
-	return buildPreview(db, normalizeRequest(request), options);
+	return buildPreview(db, canonicalizeDirectProjectRequest(db, normalizeRequest(request)), options);
 }
 
 function reviewedIntentTarget(request: NormalizedRequest) {
@@ -1140,7 +1278,9 @@ function planRows(
 	}
 	if (request.journey === "direct_project") {
 		rows.push(
-			...request.canonicalProjectIdentities.map((projectId) => projectRow(request, projectId, now)),
+			...canonicalDirectProjectIdentities(db, request).map((projectId) =>
+				projectRow(request, projectId, now),
+			),
 		);
 	}
 	return rows;
@@ -1590,16 +1730,19 @@ export function commitDirectProjectSharePolicyInTransaction(
 	input: DirectProjectSharePolicyCommitInput,
 ): number {
 	if (!db.inTransaction) throw new Error("direct_share_policy_transaction_required");
-	const normalized = normalizeRequest({
-		version: 1,
-		journey: "direct_project",
-		invitationId: input.operationId,
-		identityId: input.recipientIdentityId,
-		deviceId: input.recipientDeviceId,
-		devicePublicKey: input.recipientDevicePublicKey,
-		deviceDisplayName: input.recipientDeviceDisplayName,
-		canonicalProjectIdentities: input.canonicalProjectIdentities,
-	});
+	const normalized = canonicalizeDirectProjectRequest(
+		db,
+		normalizeRequest({
+			version: 1,
+			journey: "direct_project",
+			invitationId: input.operationId,
+			identityId: input.recipientIdentityId,
+			deviceId: input.recipientDeviceId,
+			devicePublicKey: input.recipientDevicePublicKey,
+			deviceDisplayName: input.recipientDeviceDisplayName,
+			canonicalProjectIdentities: input.canonicalProjectIdentities,
+		}),
+	);
 	if (normalized.journey !== "direct_project") throw new Error("journey_invalid");
 	assertActiveIdentity(db, normalized.binding.identityId);
 	assertActiveLocalIdentity(db, input.inviterIdentityId);
@@ -1666,6 +1809,14 @@ function isSqliteConstraint(error: unknown): boolean {
 	return code.startsWith("SQLITE_CONSTRAINT");
 }
 
+function validReviewedDigest(value: string): boolean {
+	return /^recipient-onboarding-preview-v1:[a-f0-9]{64}$/u.test(value);
+}
+
+function invalidDigest(journey: RecipientPolicyOnboardingJourneyV1) {
+	return emptyResult("invalid", "reviewed_onboarding_digest_invalid", journey, "");
+}
+
 export function commitRecipientPolicyOnboarding(
 	db: Database,
 	request: RecipientPolicyOnboardingCommitRequestV1,
@@ -1675,14 +1826,12 @@ export function commitRecipientPolicyOnboarding(
 	try {
 		normalized = normalizeRequest(request);
 	} catch (error) {
-		if (error instanceof RecipientPolicyOnboardingRequestError) {
+		if (error instanceof RecipientPolicyOnboardingRequestError)
 			return emptyResult(error.status, error.errorCode, null, "");
-		}
 		return emptyResult("invalid", "request_invalid", null, "");
 	}
-	if (!/^recipient-onboarding-preview-v1:[a-f0-9]{64}$/u.test(request.reviewedOnboardingDigest)) {
-		return emptyResult("invalid", "reviewed_onboarding_digest_invalid", normalized.journey, "");
-	}
+	if (!validReviewedDigest(request.reviewedOnboardingDigest))
+		return invalidDigest(normalized.journey);
 	try {
 		db.exec("BEGIN IMMEDIATE");
 		try {
@@ -1722,14 +1871,13 @@ export function commitRecipientPolicyOnboarding(
 		}
 	} catch (error) {
 		if (isSqliteBusy(error)) throw error;
-		if (error instanceof RecipientPolicyOnboardingRequestError) {
+		if (error instanceof RecipientPolicyOnboardingRequestError)
 			return emptyResult(
 				error.status,
 				error.errorCode,
 				normalized.journey,
 				request.reviewedOnboardingDigest,
 			);
-		}
 		const errorCode =
 			error instanceof Error && error.message === "device_binding_conflict"
 				? "device_binding_conflict"

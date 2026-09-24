@@ -5,6 +5,10 @@ import {
 	isStrictRecipientPolicyProjectIdentity,
 	legacyRecipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
+import {
+	canonicalRepositoryProjectIdentity,
+	repositoryIdentitiesByWorkspace,
+} from "./repository-mapping-aliases.js";
 
 // Preserve the established module-level import path while sharing one grammar.
 export { isStrictRecipientPolicyId };
@@ -525,22 +529,74 @@ export function deriveRecipientPolicyEffectiveDevices(
 	};
 }
 
+interface StoredProjectRecipientRow {
+	canonical_project_identity: string;
+	recipient_kind: string;
+	recipient_id: string;
+	status: string;
+	updated_at: string;
+}
+
+function canonicalProjectRecipientRows(
+	db: Database,
+	canonicalProjectIdentity: string,
+): StoredProjectRecipientRow[] {
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
+	const canonicalIdentity = canonicalRepositoryProjectIdentity(
+		repositoryIdentities,
+		canonicalProjectIdentity,
+	);
+	const aliases = [
+		...new Set([
+			canonicalIdentity,
+			canonicalProjectIdentity,
+			...[...repositoryIdentities]
+				.filter(([, identity]) => identity === canonicalIdentity)
+				.map(([workspace]) => workspace),
+		]),
+	];
+	const rows = db
+		.prepare(
+			`SELECT canonical_project_identity, recipient_kind, recipient_id, status, updated_at
+			 FROM project_recipients
+			 WHERE canonical_project_identity IN (SELECT value FROM json_each(?))
+			 ORDER BY recipient_kind, recipient_id`,
+		)
+		.all(JSON.stringify(aliases)) as StoredProjectRecipientRow[];
+	const rowsByRecipient = new Map<string, StoredProjectRecipientRow>();
+	for (const row of rows) {
+		const rowCanonicalIdentity = canonicalRepositoryProjectIdentity(
+			repositoryIdentities,
+			row.canonical_project_identity,
+		);
+		if (rowCanonicalIdentity !== canonicalIdentity) continue;
+		const key = `${row.recipient_kind}\u0000${row.recipient_id}`;
+		const current = rowsByRecipient.get(key);
+		if (!current) {
+			rowsByRecipient.set(key, row);
+			continue;
+		}
+		const currentIsCanonical = current.canonical_project_identity === canonicalIdentity;
+		const rowIsCanonical = row.canonical_project_identity === canonicalIdentity;
+		if (currentIsCanonical && !rowIsCanonical) continue;
+		if (rowIsCanonical || row.updated_at > current.updated_at) rowsByRecipient.set(key, row);
+	}
+	return [...rowsByRecipient.values()].map((row) => ({
+		...row,
+		canonical_project_identity: canonicalIdentity,
+	}));
+}
+
 export function deriveRecipientPolicyEffectiveDevicesFromDatabase(
 	db: Database,
 	canonicalProjectIdentity: string,
 ): StrictRecipientPolicyEffectiveDeviceDerivation {
-	const projectRecipients = db
-		.prepare(
-			`SELECT canonical_project_identity, recipient_kind, recipient_id, status
-			 FROM project_recipients WHERE canonical_project_identity = ?
-			 ORDER BY recipient_kind, recipient_id`,
-		)
-		.all(canonicalProjectIdentity) as Array<{
-		canonical_project_identity: string;
-		recipient_kind: string;
-		recipient_id: string;
-		status: string;
-	}>;
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
+	const canonicalIdentity = canonicalRepositoryProjectIdentity(
+		repositoryIdentities,
+		canonicalProjectIdentity,
+	);
+	const projectRecipients = canonicalProjectRecipientRows(db, canonicalIdentity);
 	const identities = db
 		.prepare("SELECT actor_id, status, merged_into_actor_id FROM actors ORDER BY actor_id")
 		.all() as Array<{ actor_id: string; status: string; merged_into_actor_id: string | null }>;
@@ -577,7 +633,7 @@ export function deriveRecipientPolicyEffectiveDevicesFromDatabase(
 		assignment_version: number;
 	}>;
 	return deriveRecipientPolicyEffectiveDevices({
-		canonicalProjectIdentity,
+		canonicalProjectIdentity: canonicalIdentity,
 		projectRecipients: projectRecipients.map((row) => ({
 			canonicalProjectIdentity: row.canonical_project_identity,
 			recipientKind: row.recipient_kind,
@@ -946,7 +1002,12 @@ export function ensureRecipientPolicyReconciliationStep(
 		| Record<string, unknown>
 		| undefined;
 	if (existing) {
-		if (existing.effect_id !== effectId || existing.payload_digest !== input.payloadDigest) {
+		const uncertainMigratedEffect =
+			existing.effect_id !== effectId && ["running", "failed"].includes(String(existing.status));
+		if (
+			existing.payload_digest !== input.payloadDigest ||
+			(existing.effect_id !== effectId && !uncertainMigratedEffect)
+		) {
 			throw new Error("recipient_policy_reconciliation_step_conflict");
 		}
 		return stepRow(existing);

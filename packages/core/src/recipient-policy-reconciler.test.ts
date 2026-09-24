@@ -1650,7 +1650,7 @@ describe("recipient-policy reconciler executor", () => {
 		).run(
 			PROJECT,
 			PROJECT,
-			SCOPE,
+			"managed-project-scope-other",
 			new Date(BASE_TIME).toISOString(),
 			new Date(BASE_TIME).toISOString(),
 		);

@@ -1649,7 +1649,7 @@ describe("recipient-policy onboarding", () => {
 			journey: "direct_project",
 			invitationId: "invite-direct",
 			identityId: "identity-b",
-			canonicalProjectIdentities: [PROJECT_C, PROJECT_A],
+			canonicalProjectIdentities: [PROJECT_C, "/workspace/alpha"],
 		});
 		const preview = previewRecipientPolicyOnboarding(db, request);
 		const membershipsBefore = db
@@ -2396,6 +2396,80 @@ describe("recipient-policy onboarding", () => {
 	});
 });
 
+describe("recipient-policy onboarding canonical recipient precedence", () => {
+	it("prefers canonical revocations when deriving Team and direct sources", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			insertActor(db, "identity-a", "Ada");
+			insertProject(db, PROJECT_A, "alpha", 1);
+			insertTeam(db, "team-a", "Core Team");
+			insertMembership(db, "team-a", "identity-a");
+			const alias = "/workspace/alpha";
+			for (const recipientKind of ["identity", "team"] as const) {
+				const recipientId = recipientKind === "identity" ? "identity-a" : "team-a";
+				insertRecipient(db, alias, recipientKind, recipientId);
+				insertRecipient(db, PROJECT_A, recipientKind, recipientId);
+				db.prepare(
+					`UPDATE project_recipients SET status = 'revoked', updated_at = ?
+					 WHERE canonical_project_identity = ? AND recipient_kind = ? AND recipient_id = ?`,
+				).run("2026-01-01T00:00:00.000Z", PROJECT_A, recipientKind, recipientId);
+			}
+
+			const teamPreview = previewRecipientPolicyOnboarding(
+				db,
+				baseRequest({ journey: "team", teamId: "team-a", invitationId: "invite-team-alias" }),
+			);
+			const devicePreview = previewRecipientPolicyOnboarding(
+				db,
+				baseRequest({ journey: "add_device", invitationId: "invite-device-alias" }),
+			);
+			expect(teamPreview.projects).toEqual([]);
+			expect(devicePreview.projects).toEqual([]);
+		} finally {
+			db.close();
+		}
+	});
+});
+
+function expectStaleCwdDirectOnboardingCanonicalized(): void {
+	const db = new Database(":memory:");
+	try {
+		initTestSchema(db);
+		insertActor(db, "identity-a", "Ada");
+		insertProject(db, PROJECT_A, "alpha", 2);
+		db.prepare("UPDATE sessions SET metadata_json = ? WHERE cwd = '/workspace/alpha'").run(
+			JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: PROJECT_A }),
+		);
+		const request = baseRequest({
+			journey: "direct_project",
+			invitationId: "invite-direct-stale-cwd",
+			canonicalProjectIdentities: ["/workspace/alpha"],
+		});
+		const preview = previewRecipientPolicyOnboarding(db, request);
+		expect(preview.projects).toEqual([
+			expect.objectContaining({ canonicalProjectIdentity: PROJECT_A }),
+		]);
+		const result = commitRecipientPolicyOnboarding(
+			db,
+			{ ...request, reviewedOnboardingDigest: preview.reviewedOnboardingDigest },
+			{ now: () => NOW },
+		);
+		expect(result.status).toBe("applied");
+		expect(
+			db
+				.prepare(
+					`SELECT canonical_project_identity FROM project_recipients
+					 WHERE recipient_kind = 'identity' AND recipient_id = 'identity-a'`,
+				)
+				.pluck()
+				.all(),
+		).toEqual([PROJECT_A]);
+	} finally {
+		db.close();
+	}
+}
+
 describe("recipient-policy onboarding repository inference", () => {
 	it("includes historical cwd-only memories without a duplicate excluded Project", () => {
 		const db = new Database(":memory:");
@@ -2461,5 +2535,34 @@ describe("recipient-policy onboarding repository inference", () => {
 		} finally {
 			db.close();
 		}
+	});
+
+	it("aliases pre-upgrade cwd recipient edges to the repository Project", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			insertActor(db, "identity-a", "Ada");
+			insertProject(db, PROJECT_A, "alpha", 2);
+			insertTeam(db, "team-a", "Core Team");
+			insertRecipient(db, "/workspace/alpha", "team", "team-a");
+			insertMembership(db, "team-a", "identity-a");
+			db.prepare("UPDATE sessions SET metadata_json = ? WHERE cwd = '/workspace/alpha'").run(
+				JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: PROJECT_A }),
+			);
+
+			const preview = previewRecipientPolicyOnboarding(
+				db,
+				baseRequest({ journey: "team", invitationId: "invite-team", teamId: "team-a" }),
+			);
+			expect(preview.projects).toEqual([
+				expect.objectContaining({ canonicalProjectIdentity: PROJECT_A, existingMemoryCount: 2 }),
+			]);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("canonicalizes a stale cwd in direct-project onboarding", () => {
+		expectStaleCwdDirectOnboardingCanonicalized();
 	});
 });

@@ -46,6 +46,7 @@ import {
 	buildBaseUrl,
 	buildDirectPeerAuthHeaders,
 	CoordinatorReciprocalApprovalRequestChangedError,
+	canonicalRepositoryProjectIdentity,
 	canonicalWorkspaceIdentity,
 	claimRecipientPolicyActorMutations,
 	claimRecipientPolicyPublicationMutation,
@@ -2237,6 +2238,22 @@ function recipientPolicyReadCopy(state: RecipientPolicyReconciliationReadState):
 	};
 }
 
+function recipientPolicyAuthorityForAliases(
+	store: MemoryStore,
+	canonicalProjectIdentity: string,
+	aliases: string[],
+): ReturnType<typeof getRecipientPolicyAuthorityState> {
+	const canonical = getRecipientPolicyAuthorityState(store.db, canonicalProjectIdentity);
+	if (canonical) return canonical;
+	return (
+		aliases
+			.filter((identity) => identity !== canonicalProjectIdentity)
+			.map((identity) => getRecipientPolicyAuthorityState(store.db, identity))
+			.filter((state): state is NonNullable<typeof state> => state != null)
+			.toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0] ?? null
+	);
+}
+
 export function listRecipientPolicyReconciliationStatus(
 	store: MemoryStore,
 ): RecipientPolicyReconciliationReadModel {
@@ -2249,11 +2266,22 @@ export function listRecipientPolicyReconciliationStatus(
 			)
 			.all() as Array<{ canonical_project_identity: string }>
 	).map((row) => row.canonical_project_identity);
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(store.db);
+	const aliasesByProject = new Map<string, string[]>();
+	for (const projectId of projectIds) {
+		const canonical = canonicalRepositoryProjectIdentity(repositoryIdentities, projectId);
+		aliasesByProject.set(canonical, [...(aliasesByProject.get(canonical) ?? []), projectId]);
+	}
+	const canonicalProjectIds = [...aliasesByProject.keys()].toSorted();
 	return {
 		version: 1,
-		items: projectIds.map((canonicalProjectIdentity) => {
+		items: canonicalProjectIds.map((canonicalProjectIdentity) => {
 			const state = recipientPolicyReadState(
-				getRecipientPolicyAuthorityState(store.db, canonicalProjectIdentity),
+				recipientPolicyAuthorityForAliases(
+					store,
+					canonicalProjectIdentity,
+					aliasesByProject.get(canonicalProjectIdentity) ?? [],
+				),
 			);
 			return {
 				canonicalProjectIdentity,

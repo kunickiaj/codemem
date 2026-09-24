@@ -1,8 +1,10 @@
 import {
+	canonicalRepositoryProjectIdentity,
 	type MemoryStore,
 	type RecipientPolicyReconcileResult,
 	type RecipientPolicyReconcilerEffects,
 	reconcileRecipientPolicyProject,
+	repositoryIdentitiesByWorkspace,
 } from "@codemem/core";
 
 export interface AdvanceProjectShareOperationResult {
@@ -305,6 +307,112 @@ const RECIPIENT_POLICY_MAINTENANCE_MAX_LIMIT = 10;
 const RECIPIENT_POLICY_MAINTENANCE_DEFAULT_LIMIT = 3;
 const RECIPIENT_POLICY_MAINTENANCE_BACKOFF_MS = 60_000;
 
+interface MaintenanceAuthorityRow {
+	canonical_project_identity: string;
+	last_attempt_at: string | null;
+	safe_error_code: string | null;
+}
+
+function recipientPolicyMaintenanceCandidates(
+	store: MemoryStore,
+	retryBefore: string,
+	limit: number,
+): string[] {
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(store.db);
+	const canonicalize = (projectId: string) =>
+		canonicalRepositoryProjectIdentity(repositoryIdentities, projectId);
+	const projectIds = store.db
+		.prepare(
+			`SELECT canonical_project_identity FROM project_recipients
+			 UNION SELECT canonical_project_identity FROM recipient_policy_authority_states`,
+		)
+		.all() as Array<{ canonical_project_identity: string }>;
+	const authorityRows = store.db
+		.prepare(
+			`SELECT canonical_project_identity, last_attempt_at, safe_error_code
+			 FROM recipient_policy_authority_states`,
+		)
+		.all() as MaintenanceAuthorityRow[];
+	const authorityByProject = new Map<string, MaintenanceAuthorityRow>();
+	for (const row of authorityRows) {
+		const projectId = canonicalize(row.canonical_project_identity);
+		const current = authorityByProject.get(projectId);
+		if (!current) {
+			authorityByProject.set(projectId, row);
+			continue;
+		}
+		if (current.canonical_project_identity === projectId) continue;
+		if (row.canonical_project_identity === projectId) {
+			authorityByProject.set(projectId, row);
+			continue;
+		}
+		if (String(row.last_attempt_at ?? "") > String(current.last_attempt_at ?? "")) {
+			authorityByProject.set(projectId, row);
+		}
+	}
+	return [...new Set(projectIds.map((row) => canonicalize(row.canonical_project_identity)))]
+		.filter((projectId) => {
+			const authority = authorityByProject.get(projectId);
+			return (
+				authority?.safe_error_code == null ||
+				authority.last_attempt_at == null ||
+				authority.last_attempt_at <= retryBefore
+			);
+		})
+		.toSorted((left, right) => {
+			const leftAttempt = authorityByProject.get(left)?.last_attempt_at;
+			const rightAttempt = authorityByProject.get(right)?.last_attempt_at;
+			if (leftAttempt == null && rightAttempt != null) return -1;
+			if (leftAttempt != null && rightAttempt == null) return 1;
+			return (
+				String(leftAttempt ?? "").localeCompare(String(rightAttempt ?? "")) ||
+				left.localeCompare(right)
+			);
+		})
+		.slice(0, limit);
+}
+
+function recordRecipientPolicyMaintenanceFailure(
+	store: MemoryStore,
+	projectId: string,
+	attemptedAt: string,
+): void {
+	store.db
+		.prepare(
+			`INSERT INTO recipient_policy_authority_states(
+			 canonical_project_identity, state_changed_at, created_at, updated_at,
+			 attempt_count, last_attempt_at, safe_error_code, last_error_at
+			 ) VALUES (?, ?, ?, ?, 1, ?, 'recipient_policy_reconciliation_failed', ?)
+			 ON CONFLICT(canonical_project_identity) DO UPDATE SET
+			 attempt_count = attempt_count + 1, last_attempt_at = excluded.last_attempt_at,
+			 safe_error_code = excluded.safe_error_code, last_error_at = excluded.last_error_at,
+			 updated_at = excluded.updated_at`,
+		)
+		.run(projectId, attemptedAt, attemptedAt, attemptedAt, attemptedAt, attemptedAt);
+}
+
+function isSqliteBusy(error: unknown): boolean {
+	if (!error || typeof error !== "object" || !("code" in error)) return false;
+	const code = error.code;
+	return (
+		typeof code === "string" && (code.startsWith("SQLITE_BUSY") || code.startsWith("SQLITE_LOCKED"))
+	);
+}
+
+function recordMaintenanceFailureIfAvailable(
+	store: MemoryStore,
+	projectId: string,
+	attemptedAt: string,
+	error: unknown,
+): void {
+	if (isSqliteBusy(error)) return;
+	try {
+		recordRecipientPolicyMaintenanceFailure(store, projectId, attemptedAt);
+	} catch (bookkeepingError) {
+		if (!isSqliteBusy(bookkeepingError)) throw bookkeepingError;
+	}
+}
+
 export async function reconcileRecipientPolicyProjectsOperation(
 	store: MemoryStore,
 	options: {
@@ -329,24 +437,8 @@ export async function reconcileRecipientPolicyProjectsOperation(
 		Math.trunc(options.backoffMs ?? RECIPIENT_POLICY_MAINTENANCE_BACKOFF_MS),
 	);
 	const retryBefore = new Date(maintenanceNow.getTime() - backoffMs).toISOString();
-	const rows = store.db
-		.prepare(
-			`WITH projects AS (
-				SELECT DISTINCT canonical_project_identity FROM project_recipients
-				UNION
-				SELECT canonical_project_identity FROM recipient_policy_authority_states
-			)
-			 SELECT projects.canonical_project_identity
-			 FROM projects
-			 LEFT JOIN recipient_policy_authority_states authority
-			  ON authority.canonical_project_identity = projects.canonical_project_identity
-			 WHERE authority.safe_error_code IS NULL OR authority.last_attempt_at IS NULL
-			  OR authority.last_attempt_at <= ?
-			 ORDER BY CASE WHEN authority.last_attempt_at IS NULL THEN 0 ELSE 1 END,
-			  authority.last_attempt_at, projects.canonical_project_identity
-			 LIMIT ?`,
-		)
-		.all(retryBefore, limit) as Array<{ canonical_project_identity: string }>;
+	const attemptedAt = maintenanceNow.toISOString();
+	const projectIds = recipientPolicyMaintenanceCandidates(store, retryBefore, limit);
 	const reconcileProject = options.reconcileProject ?? reconcileRecipientPolicyProject;
 	const result: ReconcileRecipientPolicyProjectsResult = {
 		processed: 0,
@@ -356,13 +448,13 @@ export async function reconcileRecipientPolicyProjectsOperation(
 		failed: 0,
 		items: [],
 	};
-	for (const row of rows) {
+	for (const projectId of projectIds) {
 		result.processed += 1;
 		try {
 			const outcome = await reconcileProject(
 				store.db,
 				{
-					canonicalProjectIdentity: row.canonical_project_identity,
+					canonicalProjectIdentity: projectId,
 					leaseOwner:
 						options.leaseOwner ?? `recipient-policy-maintenance:${store.deviceId || process.pid}`,
 				},
@@ -372,14 +464,15 @@ export async function reconcileRecipientPolicyProjectsOperation(
 			else if (outcome.status === "needs_attention") result.attention += 1;
 			else result.waiting += 1;
 			result.items.push({
-				canonicalProjectIdentity: row.canonical_project_identity,
+				canonicalProjectIdentity: projectId,
 				status: outcome.status,
 				safeErrorCode: outcome.safeErrorCode,
 			});
-		} catch {
+		} catch (error) {
+			recordMaintenanceFailureIfAvailable(store, projectId, attemptedAt, error);
 			result.failed += 1;
 			result.items.push({
-				canonicalProjectIdentity: row.canonical_project_identity,
+				canonicalProjectIdentity: projectId,
 				status: "failed",
 				safeErrorCode: "recipient_policy_reconciliation_failed",
 			});

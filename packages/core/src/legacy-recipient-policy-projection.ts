@@ -16,6 +16,7 @@ import {
 	recipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
 import {
+	canonicalRepositoryProjectIdentity,
 	repositoryIdentitiesByWorkspace,
 	repositoryIdentityForWorkspace,
 	withRepositoryMappingAliases,
@@ -896,6 +897,13 @@ function appendLegacyMappingProject(
 	});
 }
 
+function canonicalShareProject(
+	repositoryIdentities: ReadonlyMap<string, string>,
+	identity: string,
+): string {
+	return canonicalRepositoryProjectIdentity(repositoryIdentities, identity);
+}
+
 function legacyProjectContext(db: Database): {
 	mappings: ReturnType<typeof loadProjectScopeMappings>;
 	repositoryIdentities: ReadonlyMap<string, string>;
@@ -1131,7 +1139,7 @@ function loadSnapshot(
 					// at share time.
 					canonicalProjectIdentity: row.canonicalProjectIdentity.startsWith("unmapped:")
 						? (explicitResolutionFor(row.canonicalProjectIdentity) ?? row.canonicalProjectIdentity)
-						: row.canonicalProjectIdentity,
+						: canonicalShareProject(repositoryIdentities, row.canonicalProjectIdentity),
 					displayName: row.displayName,
 					identityId: row.identityId,
 					coordinatorGroupId: row.coordinatorGroupId,

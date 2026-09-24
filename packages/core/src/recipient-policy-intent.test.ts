@@ -99,4 +99,31 @@ describe("recipient policy intent status projection", () => {
 			{ teamId: "team-unknown-mode", status: "revoked" },
 		]);
 	});
+
+	it("prefers a canonical revocation over an active cwd alias", () => {
+		const repository = "https://example.test/acme/intent.git";
+		const cwd = "/workspace/intent";
+		db.prepare(
+			"INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, ?, 'intent', ?)",
+		).run(NOW, cwd, JSON.stringify({ codemem_repository_identity: repository }));
+		for (const [projectId, status, updatedAt] of [
+			[cwd, "active", "2026-08-10T13:00:00.000Z"],
+			[repository, "revoked", "2026-08-10T11:00:00.000Z"],
+		] as const) {
+			db.prepare(
+				`INSERT INTO project_recipients(
+				 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+				 policy_revision, migration_state, idempotency_key, created_at, updated_at
+				 ) VALUES (?, 'identity', 'identity-a', ?, 'user', 'revision', 'user_managed', ?, ?, ?)`,
+			).run(projectId, status, `key:${projectId}`, NOW, updatedAt);
+		}
+
+		expect(listRecipientPolicyIntent(db).projectRecipients).toEqual([
+			expect.objectContaining({
+				canonicalProjectIdentity: repository,
+				identityId: "identity-a",
+				status: "revoked",
+			}),
+		]);
+	});
 });

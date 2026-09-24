@@ -1294,4 +1294,105 @@ describe("recipient-policy edge repository inference", () => {
 			}),
 		]);
 	});
+
+	it("updates a pre-upgrade cwd edge through its repository identity", () => {
+		const db = seedGraph();
+		db.prepare("UPDATE sessions SET metadata_json = ? WHERE cwd = '/workspace/alpha'").run(
+			JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: PROJECT_A }),
+		);
+		insertProjectRecipient(db, "/workspace/alpha", "identity-a");
+		insertProjectRecipient(db, PROJECT_A, "identity-a");
+		const change = identityChange(PROJECT_A, "identity-a", "remove");
+		const preview = previewRecipientPolicyEdges(db, { version: 1, changes: [change] });
+
+		expect(
+			commitRecipientPolicyEdges(db, {
+				version: 1,
+				changes: [change],
+				reviewedPolicyDigest: preview.reviewedPolicyDigest,
+			}),
+		).toMatchObject({ status: "applied", writeCount: 1 });
+		expect(
+			db
+				.prepare(
+					`SELECT status FROM project_recipients
+					 WHERE recipient_id = 'identity-a' ORDER BY canonical_project_identity`,
+				)
+				.pluck()
+				.all(),
+		).toEqual(["revoked", "revoked"]);
+	});
+});
+
+describe("recipient-policy edge canonical alias precedence", () => {
+	it("canonicalizes a stale cwd removal request", () => {
+		const db = seedGraph();
+		db.prepare("UPDATE sessions SET metadata_json = ? WHERE cwd = '/workspace/alpha'").run(
+			JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: PROJECT_A }),
+		);
+		insertProjectRecipient(db, "/workspace/alpha", "identity-a");
+		const change = identityChange("/workspace/alpha", "identity-a", "remove");
+		const preview = previewRecipientPolicyEdges(db, { version: 1, changes: [change] });
+		expect(preview.normalizedChanges[0]?.canonicalProjectIdentity).toBe(PROJECT_A);
+
+		expect(
+			commitRecipientPolicyEdges(db, {
+				version: 1,
+				changes: [change],
+				reviewedPolicyDigest: preview.reviewedPolicyDigest,
+			}),
+		).toMatchObject({ status: "applied", writeCount: 1 });
+		expect(
+			db
+				.prepare("SELECT status FROM project_recipients WHERE recipient_id = 'identity-a'")
+				.pluck()
+				.get(),
+		).toBe("revoked");
+	});
+
+	it("prefers canonical revocation over an active cwd alias", () => {
+		const db = seedGraph();
+		db.prepare("UPDATE sessions SET metadata_json = ? WHERE cwd = '/workspace/alpha'").run(
+			JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: PROJECT_A }),
+		);
+		insertProjectRecipient(db, "/workspace/alpha", "identity-a");
+		insertProjectRecipient(db, PROJECT_A, "identity-a");
+		db.prepare(
+			`UPDATE project_recipients SET status = 'revoked', updated_at = ?
+			 WHERE canonical_project_identity = ? AND recipient_id = 'identity-a'`,
+		).run("2026-01-01T00:00:00.000Z", PROJECT_A);
+
+		expect(deriveRecipientPolicyEffectiveDevicesFromDatabase(db, PROJECT_A).devices).toEqual([]);
+		const preview = previewRecipientPolicyEdges(db, {
+			version: 1,
+			changes: [identityChange("/workspace/alpha", "identity-a", "remove")],
+		});
+		expect(preview.outcomes).toEqual([expect.objectContaining({ outcome: "already_absent" })]);
+	});
+});
+
+describe("recipient-policy edge repository merging", () => {
+	it("combines cwd and repository recipient edges for intent and reconciliation", () => {
+		const db = seedGraph();
+		db.prepare("UPDATE sessions SET metadata_json = ? WHERE cwd = '/workspace/alpha'").run(
+			JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: PROJECT_A }),
+		);
+		insertProjectRecipient(db, "/workspace/alpha", "identity-a");
+		insertProjectRecipient(db, PROJECT_A, "identity-b");
+
+		expect(
+			listRecipientPolicyIntent(db).projectRecipients.map((recipient) => ({
+				project: recipient.canonicalProjectIdentity,
+				recipient: recipient.recipientKind === "identity" ? recipient.identityId : recipient.teamId,
+			})),
+		).toEqual([
+			{ project: PROJECT_A, recipient: "identity-a" },
+			{ project: PROJECT_A, recipient: "identity-b" },
+		]);
+		expect(
+			deriveRecipientPolicyEffectiveDevicesFromDatabase(db, PROJECT_A).devices.map(
+				(device) => device.deviceId,
+			),
+		).toEqual(["device-a", "device-b"]);
+	});
 });
