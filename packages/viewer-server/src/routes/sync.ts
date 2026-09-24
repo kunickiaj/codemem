@@ -175,12 +175,13 @@ import {
 	syncScopeResetRequiredPayload,
 	updatePeerAddresses,
 	upsertCoordinatorGroupPreference,
-	upsertProjectScopeSettingsMapping,
 	upsertProjectScopeSettingsMappings,
 	VERSION,
 	verifyDirectPeerSignature,
 	verifyRecipientReviewedIntent,
 	verifySignature,
+	wakeRecipientPoliciesForIdentities,
+	wakeRecipientPoliciesForProjectIdentities,
 } from "@codemem/core";
 import {
 	type AdvancePendingProjectSharesResult,
@@ -4884,15 +4885,6 @@ function serializeProjectScopeInventory(
 	};
 }
 
-function deleteProjectScopeMapping(
-	store: MemoryStore,
-	id: number,
-	deviceId: string,
-	confirmedGuardrailTokens: string[],
-): boolean {
-	return deleteProjectScopeSettingsMapping(store.db, id, { deviceId, confirmedGuardrailTokens });
-}
-
 async function deleteProjectScopeMappingRoute(c: Context, store: MemoryStore) {
 	const id = Number(c.req.param("id"));
 	let releasePublicationMutation: (() => void) | undefined;
@@ -4917,7 +4909,12 @@ async function deleteProjectScopeMappingRoute(c: Context, store: MemoryStore) {
 				409,
 			);
 		}
-		const deleted = deleteProjectScopeMapping(store, id, deviceId, confirmedGuardrailTokens);
+		const deleted = deleteProjectMappingAndWakePolicies(
+			store,
+			id,
+			deviceId,
+			confirmedGuardrailTokens,
+		);
 		return c.json({ ok: true, deleted });
 	} catch (error) {
 		return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
@@ -4962,6 +4959,140 @@ function projectSharingByRepository(
 		sharingByProject.set(projectId, current);
 	}
 	return sharingByProject;
+}
+
+function deactivateActorAndWakePolicies(store: MemoryStore, actorId: string, now: string): void {
+	store.db
+		.transaction(() => {
+			store.db
+				.prepare("UPDATE actors SET status = 'deactivated', updated_at = ? WHERE actor_id = ?")
+				.run(now, actorId);
+			store.db.prepare("UPDATE sync_peers SET actor_id = NULL WHERE actor_id = ?").run(actorId);
+			wakeRecipientPoliciesForIdentities(store.db, [actorId], now);
+		})
+		.immediate();
+}
+
+function finishActorMerge(
+	store: MemoryStore,
+	primaryActorId: string,
+	secondaryActorId: string,
+	now: string,
+): void {
+	store.db
+		.prepare(
+			"UPDATE actors SET status = 'merged', merged_into_actor_id = ?, updated_at = ? WHERE actor_id = ?",
+		)
+		.run(primaryActorId, now, secondaryActorId);
+	wakeRecipientPoliciesForIdentities(store.db, [primaryActorId, secondaryActorId], now);
+}
+
+interface PolicyWakeMapping {
+	id: number;
+	scope_id: string;
+	workspace_identity: string | null;
+}
+
+function policyWakeMappings(store: MemoryStore): PolicyWakeMapping[] {
+	return store.db
+		.prepare("SELECT id, scope_id, workspace_identity FROM project_scope_mappings ORDER BY id")
+		.all() as PolicyWakeMapping[];
+}
+
+function existingRequestedMappings(
+	mappings: PolicyWakeMapping[],
+	inputs: Array<ReturnType<typeof parseViewerProjectMappingInput>>,
+): PolicyWakeMapping[] {
+	const requestedIds = new Set(inputs.map((input) => input.id).filter((id) => id != null));
+	const requestedIdentities = new Set(
+		inputs
+			.map((input) => input.workspace_identity)
+			.filter((identity): identity is string => identity != null)
+			.map((identity) => canonicalWorkspaceIdentity({ cwd: identity }).value),
+	);
+	return mappings.filter((mapping) => {
+		if (requestedIds.has(mapping.id)) return true;
+		if (!mapping.workspace_identity) return false;
+		return requestedIdentities.has(
+			canonicalWorkspaceIdentity({ cwd: mapping.workspace_identity }).value,
+		);
+	});
+}
+
+function mappedProjectsInScopes(
+	mappings: PolicyWakeMapping[],
+	scopeIds: ReadonlySet<string>,
+): string[] {
+	return mappings
+		.filter((mapping) => scopeIds.has(mapping.scope_id))
+		.map((mapping) => mapping.workspace_identity)
+		.filter((identity): identity is string => identity != null);
+}
+
+function wakeRecipientPolicyProjects(
+	store: MemoryStore,
+	projectIdentities: Iterable<string>,
+	now: string,
+): void {
+	wakeRecipientPoliciesForProjectIdentities(store.db, [...new Set(projectIdentities)], now);
+}
+
+function saveProjectMappingsAndWakePolicies(
+	store: MemoryStore,
+	deviceId: string,
+	mappingInputs: Array<ReturnType<typeof parseViewerProjectMappingInput>>,
+) {
+	return store.db
+		.transaction(() => {
+			const before = policyWakeMappings(store);
+			const previousMappings = existingRequestedMappings(before, mappingInputs);
+			const mappings = upsertProjectScopeSettingsMappings(store.db, mappingInputs, { deviceId });
+			const after = policyWakeMappings(store);
+			const changedScopeIds = new Set([
+				...previousMappings.map((mapping) => mapping.scope_id),
+				...mappings.map((mapping) => mapping.scope_id),
+			]);
+			wakeRecipientPolicyProjects(
+				store,
+				[
+					...mappedProjectsInScopes(before, changedScopeIds),
+					...mappedProjectsInScopes(after, changedScopeIds),
+				],
+				new Date().toISOString(),
+			);
+			return mappings;
+		})
+		.immediate();
+}
+
+function deleteProjectMappingAndWakePolicies(
+	store: MemoryStore,
+	mappingId: number,
+	deviceId: string,
+	confirmedGuardrailTokens: string[],
+): boolean {
+	return store.db
+		.transaction(() => {
+			const before = policyWakeMappings(store);
+			const removed = before.find((mapping) => mapping.id === mappingId);
+			const deleted = deleteProjectScopeSettingsMapping(store.db, mappingId, {
+				deviceId,
+				confirmedGuardrailTokens,
+			});
+			if (deleted && removed) {
+				const changedScopeIds = new Set([removed.scope_id]);
+				wakeRecipientPolicyProjects(
+					store,
+					[
+						...mappedProjectsInScopes(before, changedScopeIds),
+						...mappedProjectsInScopes(policyWakeMappings(store), changedScopeIds),
+					],
+					new Date().toISOString(),
+				);
+			}
+			return deleted;
+		})
+		.immediate();
 }
 
 /**
@@ -6222,10 +6353,7 @@ export function syncRoutes(
 			if (missingConfirmations.length > 0) {
 				return c.json(mappingGuardrailChallenge(analysis.warnings, missingConfirmations), 409);
 			}
-			const mapping = upsertProjectScopeSettingsMapping(store.db, {
-				deviceId,
-				...mappingInput,
-			});
+			const [mapping] = saveProjectMappingsAndWakePolicies(store, deviceId, [mappingInput]);
 			return c.json({ ok: true, mapping, guardrail_warnings: analysis.warnings });
 		} catch (error) {
 			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
@@ -6275,7 +6403,7 @@ export function syncRoutes(
 			}
 			return c.json({
 				ok: true,
-				mappings: upsertProjectScopeSettingsMappings(store.db, mappingInputs, { deviceId }),
+				mappings: saveProjectMappingsAndWakePolicies(store, deviceId, mappingInputs),
 				guardrail_warnings: analyses.flatMap((analysis) => analysis.warnings),
 			});
 		} catch (error) {
@@ -6745,10 +6873,7 @@ export function syncRoutes(
 						.where(eq(schema.syncPeers.actor_id, primaryActorId))
 						.run();
 				}
-				d.update(schema.actors)
-					.set({ status: "merged", merged_into_actor_id: primaryActorId, updated_at: now })
-					.where(eq(schema.actors.actor_id, secondaryActorId))
-					.run();
+				finishActorMerge(store, primaryActorId, secondaryActorId, now);
 				return { mergedCount: Number(peerUpdate.changes ?? 0) };
 			})
 			.immediate();
@@ -6777,14 +6902,7 @@ export function syncRoutes(
 		if (!actor) return c.json({ error: "actor not found" }, 404);
 		if (actor.status !== "active") return c.json({ error: "actor not active" }, 409);
 		const now = new Date().toISOString();
-		d.update(schema.actors)
-			.set({ status: "deactivated", updated_at: now })
-			.where(eq(schema.actors.actor_id, actorId))
-			.run();
-		d.update(schema.syncPeers)
-			.set({ actor_id: null })
-			.where(eq(schema.syncPeers.actor_id, actorId))
-			.run();
+		deactivateActorAndWakePolicies(store, actorId, now);
 		return c.json({ ok: true });
 	});
 
