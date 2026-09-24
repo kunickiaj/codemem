@@ -27,6 +27,15 @@ export type SyncRuntimeStatus = {
 	detail?: string | null;
 };
 
+const SAFE_RUNTIME_DETAILS: Partial<Record<NonNullable<SyncRuntimeStatus["phase"]>, string>> = {
+	starting: "Running initial sync in background",
+	stopping: "Stopping sync daemon",
+	error: "Background sync failed. Open diagnostics for details.",
+	rebootstrapping: "Restoring sync baseline",
+	needs_attention: "Sync needs attention",
+	disabled: "Sync is off",
+};
+
 type PeerOperations = Map<string, { in: number; out: number }>;
 type ScopeRejections = Map<string, InboundScopeRejectionPeerSummary>;
 type SyncConfig = ReturnType<typeof readCoordinatorSyncConfig>;
@@ -211,6 +220,15 @@ function initialDaemonState(config: SyncConfig, rows: StatusRows, daemonRunning:
 	return "ok";
 }
 
+export function safeDaemonIssueCode(
+	state: string,
+	lastError: string | null | undefined,
+): "coordinator_timeout" | "coordinator_error" | null {
+	if (state !== "error" || !lastError?.includes("coordinator enrollment maintenance failed"))
+		return null;
+	return lastError.includes(":request_timeout") ? "coordinator_timeout" : "coordinator_error";
+}
+
 function retentionPayload(config: SyncConfig, rows: StatusRows, retainedFloor: string | null) {
 	const state = rows.retention;
 	return {
@@ -315,8 +333,14 @@ function readBaseStatus(input: SyncStatusInput): BaseStatus {
 		state = runtime.phase;
 		statusPayload.daemon_state = state;
 		statusPayload.daemon_running = runtime.phase === "starting" || running;
-		statusPayload.daemon_detail = runtime.detail ?? detail;
+		statusPayload.daemon_detail = input.showDiagnostics
+			? (runtime.detail ?? detail)
+			: (SAFE_RUNTIME_DETAILS[runtime.phase] ?? null);
 	}
+	statusPayload.daemon_issue_code = safeDaemonIssueCode(
+		state,
+		runtime?.phase === "error" ? null : rows.daemon?.last_error,
+	);
 	return {
 		config,
 		localDeviceId: rows.device?.device_id ?? null,

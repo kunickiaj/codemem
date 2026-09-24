@@ -476,6 +476,45 @@ it("explains a local sync error without recommending a restart or blind retry", 
 	expect(actions).not.toContain("Sync now");
 });
 
+it("shows a safe coordinator timeout reason when the daemon reports it", () => {
+	state.lastSyncPeers = [
+		{
+			peer_device_id: "peer-a",
+			name: "Work laptop",
+			has_error: true,
+			status: { peer_state: "degraded" },
+		},
+	];
+	state.lastSyncStatus = {
+		enabled: true,
+		daemon_state: "error",
+		daemon_issue_code: "coordinator_timeout",
+	};
+	renderOverview();
+	expect(document.getElementById("healthActions")?.textContent).toContain(
+		"Coordinator sync requests timed out",
+	);
+	expect(document.getElementById("healthActions")?.textContent).not.toContain("restart");
+	expect(document.getElementById("healthActions")?.textContent).not.toContain("Work laptop");
+});
+
+it("shows a coordinator sync failure even when no peers are configured", () => {
+	state.lastSyncPeers = [];
+	state.lastSyncStatus = {
+		enabled: true,
+		daemon_state: "error",
+		daemon_issue_code: "coordinator_timeout",
+	};
+	renderOverview();
+	expect(document.querySelectorAll("#healthGrid .health-tile-value")[1]?.textContent).toBe("Error");
+	expect(document.getElementById("healthActions")?.textContent).toContain(
+		"Coordinator sync requests timed out",
+	);
+	expect(document.getElementById("healthMeta")?.textContent).toContain(
+		"coordinator sync requests timed out",
+	);
+});
+
 it("names affected devices from safe status and recent failed attempts", () => {
 	state.lastSyncPeers = [
 		{ peer_device_id: "peer-a", name: "Work laptop", status: { peer_state: "online" } },

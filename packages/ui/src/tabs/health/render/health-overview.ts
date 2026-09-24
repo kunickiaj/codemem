@@ -81,6 +81,7 @@ type OverviewSignals = {
 	lastPackAt: string | null;
 	packAgeSeconds: number | null;
 	syncState: string;
+	syncIssueCode: string | null;
 	syncStateLabel: string;
 	syncDisabled: boolean;
 	syncOfflinePeers: boolean;
@@ -192,6 +193,31 @@ function hasRecentFailedAttempt(peers: SyncPeer[], recentlyFailed: Set<string>):
 	);
 }
 
+function deriveSyncSignals() {
+	const syncStatus = state.lastSyncStatus ?? {};
+	const syncState = String(syncStatus.daemon_state || "unknown");
+	const syncDisabled = syncState === "disabled" || syncStatus.enabled === false;
+	const peers = Array.isArray(state.lastSyncPeers) ? state.lastSyncPeers : [];
+	const recentlyFailed = recentFailedPeerIds(peers);
+	const syncAgeSeconds = secondsSince(
+		syncStatus.last_sync_at || syncStatus.last_sync_at_utc || null,
+	);
+	return {
+		syncState,
+		syncIssueCode: syncStatus.daemon_issue_code ?? null,
+		syncStateLabel: syncStateLabel(syncState),
+		syncDisabled,
+		syncOfflinePeers: syncState === "offline-peers",
+		syncNoPeers: !syncDisabled && peers.length === 0,
+		syncAgeSeconds,
+		syncLooksStale: syncAgeSeconds !== null && syncAgeSeconds > 7200,
+		syncRecentlyOk: syncAgeSeconds !== null && syncAgeSeconds <= 300,
+		syncHasRecentFailedAttempt: hasRecentFailedAttempt(peers, recentlyFailed),
+		syncProblemPeers: namedPeers(peers, (peer) => peerHasSyncProblem(peer, recentlyFailed)),
+		syncOfflinePeersNames: namedPeers(peers, (peer) => peer.status?.peer_state === "offline"),
+	};
+}
+
 function deriveOverviewSignals(
 	stats: CachedStatsPayload,
 	usage: CachedUsagePayload,
@@ -202,15 +228,6 @@ function deriveOverviewSignals(
 	const reductionLabel = packUsage
 		? formatReductionPercent(packUsage.total_tokens_saved, packUsage.total_tokens_read)
 		: "n/a";
-	const syncStatus = state.lastSyncStatus ?? {};
-	const syncState = String(syncStatus.daemon_state || "unknown");
-	const syncDisabled = syncState === "disabled" || syncStatus.enabled === false;
-	const peerCount = Array.isArray(state.lastSyncPeers) ? state.lastSyncPeers.length : 0;
-	const peers = Array.isArray(state.lastSyncPeers) ? state.lastSyncPeers : [];
-	const recentlyFailed = recentFailedPeerIds(peers);
-	const syncAgeSeconds = secondsSince(
-		syncStatus.last_sync_at || syncStatus.last_sync_at_utc || null,
-	);
 	const maintenanceJobs = stats.maintenance_jobs;
 	return {
 		maintenanceJobs,
@@ -227,17 +244,7 @@ function deriveOverviewSignals(
 		hasPackUsage: packUsage !== null,
 		lastPackAt,
 		packAgeSeconds: secondsSince(lastPackAt),
-		syncState,
-		syncStateLabel: syncStateLabel(syncState),
-		syncDisabled,
-		syncOfflinePeers: syncState === "offline-peers",
-		syncNoPeers: !syncDisabled && peerCount === 0,
-		syncAgeSeconds,
-		syncLooksStale: syncAgeSeconds !== null && syncAgeSeconds > 7200,
-		syncRecentlyOk: syncAgeSeconds !== null && syncAgeSeconds <= 300,
-		syncHasRecentFailedAttempt: hasRecentFailedAttempt(peers, recentlyFailed),
-		syncProblemPeers: namedPeers(peers, (peer) => peerHasSyncProblem(peer, recentlyFailed)),
-		syncOfflinePeersNames: namedPeers(peers, (peer) => peer.status?.peer_state === "offline"),
+		...deriveSyncSignals(),
 		hasBacklog: raw.pending >= 200,
 	};
 }
@@ -266,7 +273,15 @@ function applyPipelineRisk(result: RiskResult, signals: OverviewSignals): void {
 }
 
 function applySyncStateRisk(result: RiskResult, signals: OverviewSignals): void {
-	if (signals.syncState === "error") addRisk(result, 36, "background sync failed");
+	if (signals.syncState === "error") {
+		addRisk(
+			result,
+			36,
+			signals.syncIssueCode === "coordinator_timeout"
+				? "coordinator sync requests timed out"
+				: "background sync failed",
+		);
+	}
 	if (signals.syncState === "needs_attention") addRisk(result, 40, "sync needs manual attention");
 	if (signals.syncState === "stopped") addRisk(result, 22, "sync daemon stopped");
 	if (signals.syncState === "stale") addRisk(result, 20, "sync daemon stale");
@@ -306,7 +321,7 @@ function calculateRisk(signals: OverviewSignals): RiskResult {
 	applyPipelineRisk(result, signals);
 	if (signals.hasLowTagCoverage) addRisk(result, 8, "low tag coverage");
 	if (signals.hasFailedMaintenance) addRisk(result, 30, "maintenance job failed");
-	if (!signals.syncDisabled && !signals.syncNoPeers) {
+	if (!signals.syncDisabled && (!signals.syncNoPeers || signals.syncState === "error")) {
 		applySyncStateRisk(result, signals);
 		applySyncRecencyRisk(result, signals);
 	}
@@ -418,7 +433,7 @@ function syncTile(signals: OverviewSignals): HealthTileInput {
 	if (signals.syncState === "unknown") {
 		return tile("sync", "Sync", "Unknown", "unknown", "Daemon state and sync recency");
 	}
-	if (signals.syncNoPeers) {
+	if (signals.syncNoPeers && signals.syncState !== "error") {
 		return tile("sync", "Sync", "No peers", "unknown", "Daemon state and sync recency");
 	}
 	if (signals.syncState === "ok" && signals.syncHasRecentFailedAttempt) {
@@ -545,7 +560,7 @@ function primaryRecommendations(signals: OverviewSignals): HealthAction[] {
 			},
 		];
 	}
-	if (signals.syncDisabled || signals.syncNoPeers) return [];
+	if (signals.syncDisabled || (signals.syncNoPeers && signals.syncState !== "error")) return [];
 	if (
 		signals.syncState === "degraded" &&
 		signals.syncRecentlyOk &&
@@ -569,11 +584,19 @@ function shortDeviceList(names: string[]): string {
 	return names.length > 2 ? `${visible} +${names.length - 2} more` : visible;
 }
 
+function daemonErrorDescription(signals: OverviewSignals, failed: string): string {
+	if (signals.syncIssueCode === "coordinator_timeout") {
+		return "Coordinator sync requests timed out. Check the coordinator connection.";
+	}
+	if (signals.syncIssueCode === "coordinator_error") {
+		return "Coordinator enrollment failed. Review sync diagnostics before retrying.";
+	}
+	return `Background sync reported an unresolved error.${failed ? ` Check sync with ${failed}.` : ""}`;
+}
+
 function syncProblemDescription(signals: OverviewSignals): string {
 	const failed = shortDeviceList(signals.syncProblemPeers);
-	if (signals.syncState === "error") {
-		return `Background sync reported an unresolved error.${failed ? ` Check sync with ${failed}.` : ""}`;
-	}
+	if (signals.syncState === "error") return daemonErrorDescription(signals, failed);
 	if (signals.syncState === "offline-peers") {
 		const offline = shortDeviceList(signals.syncOfflinePeersNames);
 		return `All paired devices are offline${offline ? `: ${offline}` : ""}. Check those devices' connections.`;

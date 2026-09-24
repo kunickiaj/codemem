@@ -222,6 +222,7 @@ export function healthResourceIsStale(
 export interface CachedSyncStatus {
 	device_id?: string | null;
 	daemon_state?: TeamSyncDaemonState;
+	daemon_issue_code?: "coordinator_timeout" | "coordinator_error" | null;
 	daemon_running?: boolean;
 	enabled?: boolean;
 	last_sync_at?: string;

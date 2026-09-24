@@ -615,6 +615,7 @@ export interface ApiSyncStatusBlock {
 	peer_count: number;
 	last_sync_at: string | null;
 	daemon_state: ApiSyncDaemonState;
+	daemon_issue_code?: "coordinator_timeout" | "coordinator_error" | null;
 	daemon_running: boolean;
 	daemon_detail: string | null;
 	project_filter_active: boolean;
@@ -638,6 +639,7 @@ export interface ApiSyncStatusResponse {
 	peer_count: number;
 	last_sync_at: string | null;
 	daemon_state: ApiSyncDaemonState;
+	daemon_issue_code?: "coordinator_timeout" | "coordinator_error" | null;
 	daemon_running: boolean;
 	daemon_detail: string | null;
 	project_filter_active: boolean;
