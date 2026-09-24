@@ -914,6 +914,7 @@ function quarantineDivergentCompletedPolicy(
 			   JOIN legacy_team_setup_drafts AS draft
 			     ON draft.coordinator_id = scope.coordinator_id AND draft.group_id = scope.group_id
 			   WHERE draft.candidate_id = ? AND draft.completed_team_id = ?
+			     AND scope.authority_type = 'coordinator'
 			 ) RETURNING workspace_identity, project_pattern`,
 			)
 			.all(binding.candidateRef, binding.teamId) as Array<{

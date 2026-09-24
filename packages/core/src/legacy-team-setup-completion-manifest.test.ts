@@ -199,6 +199,35 @@ function expectContainmentWake(
 	}
 }
 
+function seedPriorContainmentState(
+	db: InstanceType<typeof Database>,
+	state: string,
+	teamId: string,
+	attemptId: string,
+): void {
+	if (state === "legacy-contained" || state === "unbound-contained") {
+		db.prepare(
+			"UPDATE policy_teams SET status = 'inactive', migration_state = 'needs_setup' WHERE team_id = ?",
+		).run(teamId);
+		db.prepare("UPDATE legacy_team_setup_drafts SET finish_digest = NULL WHERE attempt_id = ?").run(
+			attemptId,
+		);
+	}
+	if (state === "unbound-contained") {
+		db.prepare(
+			"UPDATE legacy_team_setup_drafts SET completed_team_id = NULL WHERE attempt_id = ?",
+		).run(attemptId);
+	}
+	if (state === "independently-inactive") {
+		db.prepare("UPDATE policy_teams SET status = 'inactive' WHERE team_id = ?").run(teamId);
+	}
+	if (state === "non-setup-owned") {
+		db.prepare("UPDATE policy_teams SET provenance = 'user' WHERE team_id = ?").run(teamId);
+	}
+	if (state === "missing-team")
+		db.prepare("DELETE FROM policy_teams WHERE team_id = ?").run(teamId);
+}
+
 describe("legacy Team setup completion manifests", () => {
 	let db: InstanceType<typeof Database>;
 
@@ -2058,30 +2087,6 @@ describe("legacy Team setup completion manifests", () => {
 		).rejects.toThrow("team_setup_confirmation_stale");
 	});
 
-	function seedPriorContainmentState(state: string, teamId: string, attemptId: string): void {
-		if (state === "legacy-contained" || state === "unbound-contained") {
-			db.prepare(
-				"UPDATE policy_teams SET status = 'inactive', migration_state = 'needs_setup' WHERE team_id = ?",
-			).run(teamId);
-			db.prepare(
-				"UPDATE legacy_team_setup_drafts SET finish_digest = NULL WHERE attempt_id = ?",
-			).run(attemptId);
-		}
-		if (state === "unbound-contained") {
-			db.prepare(
-				"UPDATE legacy_team_setup_drafts SET completed_team_id = NULL WHERE attempt_id = ?",
-			).run(attemptId);
-		}
-		if (state === "independently-inactive") {
-			db.prepare("UPDATE policy_teams SET status = 'inactive' WHERE team_id = ?").run(teamId);
-		}
-		if (state === "non-setup-owned") {
-			db.prepare("UPDATE policy_teams SET provenance = 'user' WHERE team_id = ?").run(teamId);
-		}
-		if (state === "missing-team")
-			db.prepare("DELETE FROM policy_teams WHERE team_id = ?").run(teamId);
-	}
-
 	it.each([
 		{ state: "active", cleanup: true },
 		{ state: "legacy-contained", cleanup: true },
@@ -2110,6 +2115,10 @@ describe("legacy Team setup completion manifests", () => {
 			insertScope.run("retired-scope", COORDINATOR_ID, GROUP_ID, "inactive", NOW, NOW);
 			insertScope.run("other-group", COORDINATOR_ID, "other-group", "active", NOW, NOW);
 			insertScope.run("other-coordinator", "other-coordinator", GROUP_ID, "active", NOW, NOW);
+			insertScope.run("locally-managed", COORDINATOR_ID, GROUP_ID, "active", NOW, NOW);
+			db.prepare("UPDATE replication_scopes SET authority_type = 'local' WHERE scope_id = ?").run(
+				"locally-managed",
+			);
 			const insertMapping = db.prepare(`INSERT INTO project_scope_mappings(
 			workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
 		) VALUES (?, ?, ?, 1000, ?, ?, ?)`);
@@ -2119,6 +2128,7 @@ describe("legacy Team setup completion manifests", () => {
 				["manual", "scope-engineering", "user"],
 				["foreign-group", "other-group", "reviewed_team_setup"],
 				["foreign-coordinator", "other-coordinator", "reviewed_team_setup"],
+				["locally-managed", "locally-managed", "reviewed_team_setup"],
 			])
 				insertMapping.run(project, project, scope, source, NOW, NOW);
 			const session = db.prepare(
@@ -2126,7 +2136,7 @@ describe("legacy Team setup completion manifests", () => {
 			);
 			const before = Number(session.run(NOW, "api", PROJECT_A).lastInsertRowid);
 			expect(resolveSessionScopeId(db, { sessionId: before })).toBe("scope-engineering");
-			seedPriorContainmentState(state, manifest.team_id, draft.attemptId);
+			seedPriorContainmentState(db, state, manifest.team_id, draft.attemptId);
 			const previousMappings = containmentMappingsSnapshot(db);
 			const affectedProjects = seedContainmentWakeAuthority(db, {
 				teamId: manifest.team_id,
@@ -2160,7 +2170,7 @@ describe("legacy Team setup completion manifests", () => {
 					.prepare("SELECT project_pattern FROM project_scope_mappings ORDER BY project_pattern")
 					.pluck()
 					.all(),
-			).toEqual(["foreign-coordinator", "foreign-group", "manual"]);
+			).toEqual(["foreign-coordinator", "foreign-group", "locally-managed", "manual"]);
 		},
 	);
 
