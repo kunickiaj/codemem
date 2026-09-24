@@ -33,6 +33,7 @@ import {
 } from "./database-runtime-primitives.js";
 import { ensureMemoryOwnershipSchemas } from "./memory-ownership-recovery-schema.js";
 import { expandUserPath } from "./observer-config.js";
+import { ensureRepositoryDiscoveryIndex } from "./repository-discovery-index.js";
 import {
 	canAutoBootstrapSchema,
 	ensureLegacyTeamSetupDraftSchema,
@@ -960,6 +961,11 @@ function ensureRecipientPolicyWakeColumn(db: DatabaseType): void {
 function ensureAlwaysOnSchemaCompatibility(db: DatabaseType): void {
 	ensureMemoryOwnershipSchemas(db);
 	ensureOptionalRetrievalLedgerSchema(db);
+	try {
+		ensureRepositoryDiscoveryIndex(db);
+	} catch {
+		// Derived discovery evidence is optional; stamping retains its full-scan path.
+	}
 	ensureRecipientPolicyWakeColumn(db);
 	// Always run: current-marker databases may predate these no-version-bump
 	// columns, so the schema_compat_state gate cannot prove they exist.
