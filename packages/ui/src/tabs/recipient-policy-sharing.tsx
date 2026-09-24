@@ -10,7 +10,7 @@ import type {
 	RecipientPolicyIntentGraphV1,
 } from "../lib/api/sync";
 import { deviceIdentityAttentionItems } from "../lib/device-identity-inventory";
-import { stableProjectPresentationLabels } from "../lib/project-identity-presentation";
+import { projectIdentitySummaryGroups } from "../lib/project-identity-presentation";
 import { ProvenanceChip } from "./feed/components/ProvenanceChip";
 import { TagChip } from "./feed/components/TagChip";
 import { RecipientPolicyInvitations } from "./recipient-policy-invitations";
@@ -322,10 +322,7 @@ function activeProjectNames(
 		canonicalId: projectId,
 		displayName: projectsById.get(projectId)?.displayName ?? "Unavailable Project",
 	}));
-	const labels = stableProjectPresentationLabels(projects);
-	return projects
-		.map((project) => labels.get(project.canonicalId) ?? project.displayName)
-		.sort((left, right) => left.localeCompare(right));
+	return projectIdentitySummaryGroups(projects).map((group) => group.displayName);
 }
 
 const PROJECT_CHIP_LIMIT = 8;

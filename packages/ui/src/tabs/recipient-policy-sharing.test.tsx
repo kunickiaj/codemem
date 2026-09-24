@@ -901,7 +901,7 @@ function testRecipientFocusedIdentityViews() {
 		expect(text).not.toContain("directly shared active Project — Codemem");
 	});
 
-	it("groups exact same-label Project identities with a bounded accessible preview", () => {
+	it("shows each shared Project name once without changing the underlying recipient edges", () => {
 		const privatePath = "/private/worktrees/codemem";
 		const privateRemote = "ssh://git@private.example.test/codemem.git";
 		const repeatedProjects: RecipientPolicyManagementProject[] = [
@@ -932,12 +932,12 @@ function testRecipientFocusedIdentityViews() {
 
 		mount(intent({ projectRecipients: [...teamEdges, ...identityEdges] }), {}, repeatedProjects);
 
-		expect(visiblePanel().textContent).toContain("5Shared projects");
-		expect(visiblePanel().querySelectorAll(".tag-chip")).toHaveLength(5);
+		expect(visiblePanel().textContent).toContain("4Shared projects");
+		expect(visiblePanel().querySelectorAll(".tag-chip")).toHaveLength(4);
+		expect(visiblePanel().textContent).not.toContain("duplicate name");
 		clickTab("Identities");
-		expect(visiblePanel().textContent).toContain(
-			"Shared directlyAPICodemem — duplicate name 1 of 2Codemem — duplicate name 2 of 2DocsTools",
-		);
+		expect(visiblePanel().textContent).toContain("Shared directlyAPICodememDocsTools");
+		expect(visiblePanel().querySelectorAll(".tag-chip")).toHaveLength(4);
 		expect(document.body.outerHTML).not.toContain(privatePath);
 		expect(document.body.outerHTML).not.toContain(privateRemote);
 	});
