@@ -1893,6 +1893,21 @@ function shouldPromoteAliasStep(aliasStep: AliasStepRow, canonicalStep: AliasSte
 	return ["running", "failed"].includes(aliasStep.status) && canonicalStep.status === "pending";
 }
 
+function assertCompatibleUncertainAliasEffects(
+	aliasStep: AliasStepRow,
+	canonicalStep: AliasStepRow | undefined,
+	effectId: string,
+): void {
+	if (!canonicalStep) return;
+	if (
+		["running", "failed"].includes(aliasStep.status) &&
+		["running", "failed"].includes(canonicalStep.status) &&
+		canonicalStep.effect_id !== effectId
+	) {
+		throw new Error("recipient_policy_reconciliation_step_conflict");
+	}
+}
+
 function rekeyRecipientPolicyAliasStep(
 	db: Database,
 	input: {
@@ -1975,6 +1990,7 @@ function migrateRecipientPolicyAliasSteps(
 			throw new Error("recipient_policy_reconciliation_step_conflict");
 		}
 		const effectId = aliasStepEffectId(aliasStep, canonicalProjectIdentity, payloadDigest);
+		assertCompatibleUncertainAliasEffects(aliasStep, canonicalStep, effectId);
 		if (!canonicalStep) {
 			rekeyRecipientPolicyAliasStep(db, {
 				alias,

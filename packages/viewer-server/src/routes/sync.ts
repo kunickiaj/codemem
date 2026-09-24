@@ -4926,6 +4926,44 @@ async function deleteProjectScopeMappingRoute(c: Context, store: MemoryStore) {
 	}
 }
 
+function projectSharingByRepository(
+	store: MemoryStore,
+	operations: Awaited<ReturnType<typeof shareOperationReadModels>>,
+): Map<string, Array<Record<string, unknown>>> {
+	const operationById = new Map(operations.map((operation) => [operation.operation_id, operation]));
+	const sharingByProject = new Map<string, Array<Record<string, unknown>>>();
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(store.db);
+	const seenOperationProjects = new Set<string>();
+	const reviewed = store.db
+		.prepare(`SELECT p.operation_id, p.canonical_project_identity
+			 FROM share_operation_projects p
+			 JOIN share_operations o ON o.operation_id = p.operation_id
+			 WHERE o.inviter_actor_id = ? ORDER BY o.created_at, p.ordinal`)
+		.all(store.actorId) as Array<{ operation_id: string; canonical_project_identity: string }>;
+	for (const item of reviewed) {
+		const operation = operationById.get(item.operation_id);
+		if (!operation) continue;
+		const projectId = canonicalRepositoryProjectIdentity(
+			repositoryIdentities,
+			item.canonical_project_identity,
+		);
+		const operationProjectKey = `${item.operation_id}\u0000${projectId}`;
+		if (seenOperationProjects.has(operationProjectKey)) continue;
+		seenOperationProjects.add(operationProjectKey);
+		const current = sharingByProject.get(projectId) ?? [];
+		current.push({
+			person: operation.person,
+			lifecycle: {
+				state: operation.lifecycle.state,
+				label: operation.lifecycle.label,
+				explanation: operation.lifecycle.explanation,
+			},
+		});
+		sharingByProject.set(projectId, current);
+	}
+	return sharingByProject;
+}
+
 /**
  * Viewer-facing sync management routes (/api/sync/*).
  *
@@ -5829,30 +5867,7 @@ export function syncRoutes(
 			status: c.req.query("status"),
 		});
 		const operations = await shareOperationReadModels(store, undefined, false);
-		const operationById = new Map(
-			operations.map((operation) => [operation.operation_id, operation]),
-		);
-		const sharingByProject = new Map<string, Array<Record<string, unknown>>>();
-		const reviewed = store.db
-			.prepare(`SELECT p.operation_id, p.canonical_project_identity
-			 FROM share_operation_projects p
-			 JOIN share_operations o ON o.operation_id = p.operation_id
-			 WHERE o.inviter_actor_id = ? ORDER BY o.created_at, p.ordinal`)
-			.all(store.actorId) as Array<{ operation_id: string; canonical_project_identity: string }>;
-		for (const item of reviewed) {
-			const operation = operationById.get(item.operation_id);
-			if (!operation) continue;
-			const current = sharingByProject.get(item.canonical_project_identity) ?? [];
-			current.push({
-				person: operation.person,
-				lifecycle: {
-					state: operation.lifecycle.state,
-					label: operation.lifecycle.label,
-					explanation: operation.lifecycle.explanation,
-				},
-			});
-			sharingByProject.set(item.canonical_project_identity, current);
-		}
+		const sharingByProject = projectSharingByRepository(store, operations);
 		return c.json(serializeProjectScopeInventory(store, inventory, sharingByProject));
 	});
 
