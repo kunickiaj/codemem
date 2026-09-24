@@ -171,7 +171,11 @@ async function addSnapshot(
 	commit: string,
 ): Promise<Snapshot> {
 	const directory = path.join(parent, name);
-	await git(root, ["worktree", "add", "--detach", directory, commit]);
+	// Git commit hooks may set GIT_INDEX_FILE=.git/index. A worktree add must use
+	// its own index, not interpret that relative path inside the new worktree.
+	const env = { ...process.env };
+	delete env.GIT_INDEX_FILE;
+	await gitWithOptions(root, ["worktree", "add", "--detach", directory, commit], { env });
 	return { directory, commit };
 }
 

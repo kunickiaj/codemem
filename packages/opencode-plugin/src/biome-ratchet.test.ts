@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	compareBiomePolicy,
 	compareBiomeToolPolicy,
@@ -1784,6 +1784,20 @@ describe("Biome ratchet CLI execution", () => {
 		expect(result.changedFiles).toBe(1);
 		expect(result.regressions).toHaveLength(1);
 		expect(result.regressions[0]?.path).toBe("src/staged.ts");
+
+		vi.stubEnv("GIT_INDEX_FILE", ".git/index");
+		try {
+			const fromCommitHook = await runRatchet(
+				{ base: "auto", json: true, staged: true },
+				{
+					cwd: root,
+					biomeEntrypoint: createRequire(import.meta.url).resolve("@biomejs/biome/bin/biome"),
+				},
+			);
+			expect(fromCommitHook.regressions[0]?.path).toBe("src/staged.ts");
+		} finally {
+			vi.unstubAllEnvs();
+		}
 	});
 
 	it("includes an untracked maintained file and fails closed on missing refs or tool failure", async () => {
