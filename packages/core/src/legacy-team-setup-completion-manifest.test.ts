@@ -109,6 +109,30 @@ function expectDeviceLabel(db: InstanceType<typeof Database>, attemptId: string,
 	).toBe(expected);
 }
 
+function seedRevokedProjectForConvergence(
+	db: InstanceType<typeof Database>,
+	teamId: string,
+	policyRevision: string,
+): void {
+	db.prepare(`INSERT INTO project_recipients(
+		canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+		policy_revision, migration_state, source_fingerprint, idempotency_key,
+		created_at, updated_at
+	 ) VALUES (?, 'team', ?, 'revoked', 'reviewed_team_setup', ?, 'completed', ?, ?, ?, ?)`).run(
+		PROJECT_B,
+		teamId,
+		policyRevision,
+		"source-b",
+		"revoked-before-convergence",
+		NOW,
+		NOW,
+	);
+	db.prepare(`INSERT INTO recipient_policy_authority_states(
+		canonical_project_identity, authority_state, generation, state_changed_at,
+		last_attempt_at, created_at, updated_at
+	 ) VALUES (?, 'active', 1, ?, ?, ?, ?)`).run(PROJECT_B, NOW, NOW, NOW, NOW);
+}
+
 describe("legacy Team setup completion manifests", () => {
 	let db: InstanceType<typeof Database>;
 
@@ -1083,21 +1107,7 @@ describe("legacy Team setup completion manifests", () => {
 		db.prepare(
 			"DELETE FROM project_scope_mappings WHERE workspace_identity = ? AND source = 'user'",
 		).run(PROJECT_B);
-		db.prepare(
-			`INSERT INTO project_recipients(
-			 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
-			 policy_revision, migration_state, source_fingerprint, idempotency_key,
-			 created_at, updated_at
-			 ) VALUES (?, 'team', ?, 'revoked', 'reviewed_team_setup', ?, 'completed', ?, ?, ?, ?)`,
-		).run(
-			PROJECT_B,
-			manifest.team_id,
-			manifest.team.policy_revision,
-			"source-b",
-			"revoked-before-convergence",
-			NOW,
-			NOW,
-		);
+		seedRevokedProjectForConvergence(db, manifest.team_id, manifest.team.policy_revision);
 		const insertNewerSession = db.prepare(
 			"INSERT INTO sessions(started_at, project, git_remote) VALUES (?, ?, ?)",
 		);
@@ -1140,6 +1150,14 @@ describe("legacy Team setup completion manifests", () => {
 				manifest,
 			}),
 		).resolves.toEqual(manifest);
+		expect(
+			db
+				.prepare(
+					"SELECT last_attempt_at FROM recipient_policy_authority_states WHERE canonical_project_identity = ?",
+				)
+				.pluck()
+				.get(PROJECT_B),
+		).toBeNull();
 		expect(
 			db
 				.prepare(

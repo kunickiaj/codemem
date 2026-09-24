@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { wakeRecipientPoliciesForProjectIdentities } from "./device-identity-binding.js";
 import {
 	assertLegacyShareGrantAllowed,
 	type RecipientPolicyReconcilerEffects,
@@ -124,6 +125,45 @@ function insertActiveAuthority(db: InstanceType<typeof Database>): void {
 		 ) VALUES (?, 'active', 1, 'old-desired', ?, ?, ?)`,
 	).run(PROJECT, now, now, now);
 }
+
+it("preserves a policy wake committed during an active reconciliation", async () => {
+	const db = new Database(":memory:");
+	try {
+		initTestSchema(db);
+		insertPolicyGraph(db);
+		insertActiveAuthority(db);
+		const { effects } = harness(["device-keep", "device-new"]);
+		const snapshot = effects.snapshot;
+		let woke = false;
+		effects.snapshot = async (input) => {
+			if (!woke) {
+				woke = true;
+				wakeRecipientPoliciesForProjectIdentities(
+					db,
+					[PROJECT],
+					new Date(BASE_TIME + 500).toISOString(),
+				);
+			}
+			return snapshot(input);
+		};
+		await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-wake" },
+			effects,
+		);
+		expect(woke).toBe(true);
+		expect(
+			db
+				.prepare(
+					"SELECT last_attempt_at FROM recipient_policy_authority_states WHERE canonical_project_identity = ?",
+				)
+				.pluck()
+				.get(PROJECT),
+		).toBeNull();
+	} finally {
+		db.close();
+	}
+});
 
 describe("recipient-policy reconciler executor", () => {
 	let db: InstanceType<typeof Database>;

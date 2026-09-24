@@ -204,6 +204,46 @@ afterEach(() => {
 	}
 });
 
+it("wakes an active policy when its desired recipients change", () => {
+	const db = seedGraph();
+	const cwd = "/workspace/project-a";
+	db.prepare("INSERT INTO sessions(started_at, cwd, metadata_json) VALUES (?, ?, ?)").run(
+		NOW,
+		cwd,
+		JSON.stringify({ codemem_repository_identity: PROJECT_A }),
+	);
+	db.prepare(
+		`INSERT INTO recipient_policy_authority_states(
+		 canonical_project_identity, authority_state, generation, state_changed_at,
+		 last_attempt_at, created_at, updated_at
+		 ) VALUES (?, 'active', 1, ?, ?, ?, ?)`,
+	).run(PROJECT_A, NOW, NOW, NOW, NOW);
+	db.prepare(
+		`INSERT INTO recipient_policy_authority_states(
+		 canonical_project_identity, authority_state, generation, state_changed_at,
+		 last_attempt_at, created_at, updated_at
+		 ) VALUES (?, 'active', 1, ?, ?, ?, ?)`,
+	).run(cwd, NOW, NOW, NOW, NOW);
+	const changes = [identityChange(PROJECT_A, "identity-b")];
+	const preview = previewRecipientPolicyEdges(db, { version: 1, changes });
+
+	expect(
+		commitRecipientPolicyEdges(db, {
+			version: 1,
+			changes,
+			reviewedPolicyDigest: preview.reviewedPolicyDigest,
+		}),
+	).toMatchObject({ status: "applied", writeCount: 1 });
+	expect(
+		db
+			.prepare(
+				"SELECT last_attempt_at FROM recipient_policy_authority_states ORDER BY canonical_project_identity",
+			)
+			.pluck()
+			.all(),
+	).toEqual([null, null]);
+});
+
 describe("recipient-policy edge changes", () => {
 	it("strictly parses only the canonical direction-free request", () => {
 		const valid = {

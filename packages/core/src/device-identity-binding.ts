@@ -12,6 +12,10 @@ import {
 	canonicalRecipientPolicyJson,
 	legacyRecipientPolicyDigest,
 } from "./recipient-policy-identifiers.js";
+import {
+	canonicalRepositoryProjectIdentity,
+	repositoryIdentitiesByWorkspace,
+} from "./repository-mapping-aliases.js";
 
 export const DEVICE_IDENTITY_BINDING_VERSION = 1 as const;
 const BINDING_LIMIT = 100;
@@ -425,6 +429,79 @@ function writeBinding(
 	);
 }
 
+export function wakeRecipientPoliciesForIdentities(
+	db: Database,
+	identityIds: Iterable<string>,
+	now: string,
+): void {
+	const projects = db.prepare(
+		`SELECT DISTINCT recipient.canonical_project_identity
+		  FROM project_recipients recipient
+		  WHERE recipient.status = 'active'
+		   AND (
+		    (recipient.recipient_kind = 'identity' AND recipient.recipient_id = ?)
+		    OR (recipient.recipient_kind = 'team' AND recipient.recipient_id IN (
+		     SELECT membership.team_id
+		     FROM policy_team_memberships membership
+		     JOIN policy_teams team ON team.team_id = membership.team_id
+		     WHERE membership.identity_id = ? AND team.status = 'active'
+		      AND (
+		       (team.device_eligibility_mode = 'person_all_devices' AND membership.status = 'active')
+		       OR (team.device_eligibility_mode = 'reviewed_allowlist'
+		        AND membership.status = 'reviewed_active')
+		      )
+		    ))
+		   )`,
+	);
+	const projectIdentities = new Set<string>();
+	for (const identityId of new Set(identityIds)) {
+		for (const projectId of projects.pluck().all(identityId, identityId) as string[]) {
+			projectIdentities.add(projectId);
+		}
+	}
+	wakeRecipientPoliciesForProjectIdentities(db, projectIdentities, now);
+}
+
+export function wakeRecipientPoliciesForProjectIdentities(
+	db: Database,
+	projectIdentities: Iterable<string>,
+	now: string,
+): void {
+	const requested = [...projectIdentities];
+	if (requested.length === 0) return;
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
+	const targets = new Set(
+		requested.map((identity) => canonicalRepositoryProjectIdentity(repositoryIdentities, identity)),
+	);
+	const authorityIds = db
+		.prepare("SELECT canonical_project_identity FROM recipient_policy_authority_states")
+		.pluck()
+		.all() as string[];
+	const wake = db.prepare(
+		`UPDATE recipient_policy_authority_states
+		 SET last_attempt_at = NULL, wake_epoch = wake_epoch + 1, updated_at = ?
+		 WHERE canonical_project_identity = ?`,
+	);
+	for (const authorityId of authorityIds) {
+		const canonical = canonicalRepositoryProjectIdentity(repositoryIdentities, authorityId);
+		if (targets.has(canonical)) wake.run(now, authorityId);
+	}
+}
+
+function wakePoliciesForBindingChanges(
+	db: Database,
+	outcomes: DeviceIdentityBindingOutcomeV1[],
+	now: string,
+): void {
+	const changedIdentities = new Set<string>();
+	for (const outcome of outcomes) {
+		if (outcome.action === "unchanged") continue;
+		if (outcome.previousIdentityId) changedIdentities.add(outcome.previousIdentityId);
+		changedIdentities.add(outcome.targetIdentityId);
+	}
+	wakeRecipientPoliciesForIdentities(db, changedIdentities, now);
+}
+
 function commitInTransaction(
 	db: Database,
 	context: DeviceIdentityBindingContext,
@@ -484,6 +561,7 @@ function commitInTransaction(
 		now,
 	);
 	for (const item of preview.outcomes) writeBinding(db, context, commitDigest, item, now);
+	wakePoliciesForBindingChanges(db, preview.outcomes, now);
 	return {
 		...preview,
 		status: "applied",

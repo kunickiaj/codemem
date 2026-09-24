@@ -478,6 +478,10 @@ Do not treat coordinator-group membership as data access. A coordinator group ca
 
 ### Upgrade maintenance / Sharing-domain backfill
 
+Schema version 21 adds a recipient-policy wake counter on startup. Policy edits made
+while reconciliation is running remain due for a follow-up pass; existing databases
+gain the column automatically.
+
 When upgrading an existing database to 0.30, codemem may run a one-time
 Sharing-domain backfill. This stamps historical memories and sync bookkeeping
 rows with `scope_id` so future sync and retrieval can enforce the new hard

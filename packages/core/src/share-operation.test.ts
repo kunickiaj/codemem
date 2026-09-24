@@ -74,6 +74,60 @@ function acceptanceInput(
 	};
 }
 
+function expectAcceptanceWakesActivePolicies(db: InstanceType<typeof Database>): void {
+	const operation = plan();
+	persistShareOperation(db, operation, {
+		inviteId: "invite-policy-wake",
+		tokenDigest: inviteTokenDigest("token-policy-wake"),
+	});
+	const insertAuthority = db.prepare(`INSERT INTO recipient_policy_authority_states(
+		canonical_project_identity, authority_state, generation, state_changed_at,
+		last_attempt_at, created_at, updated_at
+	) VALUES (?, 'active', 1, ?, ?, ?, ?)`);
+	for (const project of operation.projects) {
+		insertAuthority.run(project.canonicalIdentity, createdAt, createdAt, createdAt, createdAt);
+	}
+	db.prepare(`INSERT INTO project_recipients(
+		canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+		policy_revision, migration_state, idempotency_key, created_at, updated_at
+	) VALUES ('unrelated-project', 'identity', 'actor-adam', 'active', 'user',
+	'revision-unrelated', 'user_managed', 'key-unrelated', ?, ?)`).run(createdAt, createdAt);
+	insertAuthority.run("unrelated-project", createdAt, createdAt, createdAt, createdAt);
+	reconcileShareOperationAcceptance(db, acceptanceInput(operation));
+	expect(
+		db
+			.prepare(
+				"SELECT last_attempt_at FROM recipient_policy_authority_states ORDER BY canonical_project_identity",
+			)
+			.pluck()
+			.all(),
+	).toEqual([null, null, null]);
+	const replayAttempt = "2026-07-20T14:00:00.000Z";
+	db.prepare("UPDATE recipient_policy_authority_states SET last_attempt_at = ?").run(replayAttempt);
+	reconcileShareOperationAcceptance(db, acceptanceInput(operation));
+	expect(
+		db
+			.prepare(
+				"SELECT last_attempt_at FROM recipient_policy_authority_states ORDER BY canonical_project_identity",
+			)
+			.pluck()
+			.all(),
+	).toEqual([replayAttempt, replayAttempt, replayAttempt]);
+}
+
+it("wakes active Project policies after direct-share acceptance", () => {
+	const db = new Database(":memory:");
+	try {
+		initTestSchema(db);
+		db.prepare(`INSERT INTO actors(
+			actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
+		) VALUES ('actor-adam', 'Adam', 1, 'active', NULL, ?, ?)`).run(createdAt, createdAt);
+		expectAcceptanceWakesActivePolicies(db);
+	} finally {
+		db.close();
+	}
+});
+
 function managedBoundaryIds(operation: ReturnType<typeof planShareOperation>): string[] {
 	return operation.steps
 		.filter((item) => item.stepKey.startsWith("managed_boundary:"))

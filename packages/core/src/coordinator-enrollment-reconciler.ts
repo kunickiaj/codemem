@@ -3,6 +3,7 @@ import type { CoordinatorConsumedTeamInvite } from "./coordinator-actions.js";
 import { persistCoordinatorEnrollmentReconciliationIssues } from "./coordinator-enrollment-reconciliation-issues.js";
 import type { CoordinatorEnrollment } from "./coordinator-store-contract.js";
 import type { Database } from "./db.js";
+import { wakeRecipientPoliciesForIdentities } from "./device-identity-binding.js";
 import { assignIdentityDeviceInTransaction } from "./identity-device-assignment.js";
 import { normalizeIdentityDisplayName } from "./project-invite-identity.js";
 import {
@@ -77,6 +78,45 @@ function displayNameOrFallback(
 	return normalizedDisplayNameOrNull(value, field) ?? fallback;
 }
 
+function finalizeReconciliation(
+	db: Database,
+	input: { coordinatorId: string; groupId: string },
+	result: CoordinatorEnrollmentReconcileResult,
+	changedIdentityIds: Set<string>,
+	now: string,
+): void {
+	const issueSet = new Map(
+		result.issues.map((item) => [`${item.kind}\u0000${item.referenceId}\u0000${item.code}`, item]),
+	);
+	result.issues = [...issueSet.values()].sort(
+		(left, right) =>
+			compareCodepoints(left.kind, right.kind) ||
+			compareCodepoints(left.referenceId, right.referenceId) ||
+			compareCodepoints(left.code, right.code),
+	);
+	persistCoordinatorEnrollmentReconciliationIssues(db, {
+		coordinatorId: input.coordinatorId,
+		groupId: input.groupId,
+		issues: result.issues,
+		now,
+	});
+	wakeRecipientPoliciesForIdentities(db, changedIdentityIds, now);
+}
+
+function adoptMembership(
+	db: Database,
+	teamId: string,
+	identityId: string,
+	status: "active" | "reviewed_active",
+	now: string,
+): void {
+	db.prepare(
+		`UPDATE policy_team_memberships
+		 SET status = ?, provenance = 'coordinator_invite', updated_at = ?
+		 WHERE team_id = ? AND identity_id = ?`,
+	).run(status, now, teamId, identityId);
+}
+
 export async function reconcileCoordinatorEnrollmentSnapshot(
 	db: Database,
 	input: {
@@ -129,6 +169,7 @@ export async function reconcileCoordinatorEnrollmentSnapshot(
 		localEnrollmentIdentityIds.size === 1 ? [...localEnrollmentIdentityIds][0] : undefined;
 
 	const apply = db.transaction(() => {
+		const changedIdentityIds = new Set<string>();
 		const reviewedInviteMemberships = new Map<
 			string,
 			{ identityId: string; inviteId: string; newlyAdded: boolean; teamId: string }
@@ -186,6 +227,7 @@ export async function reconcileCoordinatorEnrollmentSnapshot(
 					actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
 				) VALUES (?, ?, 0, 'active', NULL, ?, ?)`).run(identityId, recipientDisplayName, now, now);
 				result.identitiesAdded += 1;
+				changedIdentityIds.add(identityId);
 			} else if (
 				actor.is_local !== 0 ||
 				actor.status !== "active" ||
@@ -211,11 +253,8 @@ export async function reconcileCoordinatorEnrollmentSnapshot(
 			if (membership) {
 				if (membershipTransition === "preserve" || membershipTransition === "adopt_setup") {
 					if (membershipTransition === "adopt_setup") {
-						db.prepare(
-							`UPDATE policy_team_memberships
-							 SET status = ?, provenance = 'coordinator_invite', updated_at = ?
-							 WHERE team_id = ? AND identity_id = ?`,
-						).run(activeMembershipStatus, now, invite.policy_team_id, identityId);
+						adoptMembership(db, invite.policy_team_id, identityId, activeMembershipStatus, now);
+						changedIdentityIds.add(identityId);
 					}
 					result.unchanged += 1;
 					if (reviewedTeam) {
@@ -236,6 +275,7 @@ export async function reconcileCoordinatorEnrollmentSnapshot(
 						 WHERE team_id = ? AND identity_id = ?`,
 					).run(activeMembershipStatus, now, invite.policy_team_id, identityId);
 					result.unchanged += 1;
+					changedIdentityIds.add(identityId);
 					const key = `${invite.policy_team_id}\u0000${identityId}`;
 					if (!reviewedInviteMemberships.has(key)) {
 						reviewedInviteMemberships.set(key, {
@@ -271,6 +311,7 @@ export async function reconcileCoordinatorEnrollmentSnapshot(
 						identityId,
 					);
 					result.membershipsAdded += 1;
+					changedIdentityIds.add(identityId);
 					if (reviewedTeam) {
 						reviewedInviteMemberships.set(`${invite.policy_team_id}\u0000${identityId}`, {
 							teamId: invite.policy_team_id,
@@ -306,6 +347,7 @@ export async function reconcileCoordinatorEnrollmentSnapshot(
 				now,
 			);
 			result.membershipsAdded += 1;
+			changedIdentityIds.add(identityId);
 			if (reviewedTeam) {
 				reviewedInviteMemberships.set(`${invite.policy_team_id}\u0000${identityId}`, {
 					teamId: invite.policy_team_id,
@@ -447,6 +489,7 @@ export async function reconcileCoordinatorEnrollmentSnapshot(
 			});
 			recordActiveRosterDevice(identityId, enrollment.device_id, assignment.assignmentVersion);
 			result.devicesAdded += 1;
+			changedIdentityIds.add(identityId);
 		}
 
 		for (const membership of reviewedInviteMemberships.values()) {
@@ -509,6 +552,7 @@ export async function reconcileCoordinatorEnrollmentSnapshot(
 									)
 									.run(device.assignmentVersion, revision, now, membership.teamId, device.deviceId);
 				if (changed.changes > 0) {
+					changedIdentityIds.add(membership.identityId);
 					db.prepare(
 						`UPDATE policy_teams SET source_fingerprint = NULL, updated_at = ?
 						 WHERE team_id = ? AND device_eligibility_mode = 'reviewed_allowlist'
@@ -521,24 +565,7 @@ export async function reconcileCoordinatorEnrollmentSnapshot(
 			}
 		}
 
-		const issueSet = new Map(
-			result.issues.map((item) => [
-				`${item.kind}\u0000${item.referenceId}\u0000${item.code}`,
-				item,
-			]),
-		);
-		result.issues = [...issueSet.values()].sort(
-			(left, right) =>
-				compareCodepoints(left.kind, right.kind) ||
-				compareCodepoints(left.referenceId, right.referenceId) ||
-				compareCodepoints(left.code, right.code),
-		);
-		persistCoordinatorEnrollmentReconciliationIssues(db, {
-			coordinatorId: input.coordinatorId,
-			groupId: input.groupId,
-			issues: result.issues,
-			now,
-		});
+		finalizeReconciliation(db, input, result, changedIdentityIds, now);
 	});
 	await serializeRecipientPolicyPublicationMutation(db, async () => apply());
 	return result;

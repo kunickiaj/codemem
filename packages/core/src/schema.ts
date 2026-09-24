@@ -1378,6 +1378,7 @@ export const recipientPolicyAuthorityStates = sqliteTable("recipient_policy_auth
 	last_error_at: text("last_error_at"),
 	attempt_count: integer("attempt_count").notNull().default(0),
 	last_attempt_at: text("last_attempt_at"),
+	wake_epoch: integer("wake_epoch").notNull().default(0),
 	last_completed_at: text("last_completed_at"),
 	lease_owner: text("lease_owner"),
 	lease_acquired_at: text("lease_acquired_at"),

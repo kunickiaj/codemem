@@ -1,4 +1,5 @@
 import type { Database } from "./db.js";
+import { wakeRecipientPoliciesForIdentities } from "./device-identity-binding.js";
 import {
 	assignIdentityDeviceInTransaction,
 	IdentityDeviceAssignmentError,
@@ -1290,10 +1291,19 @@ function applyTeamJourneySideEffects(
 	db: Database,
 	request: NormalizedRequest,
 	now: string,
+	priorWriteCount: number,
 ): number {
-	if (request.journey !== "team") return 0;
-	if (teamDeviceEligibilityMode(db, request.teamId) !== "reviewed_allowlist") return 0;
-	return applyReviewedTeamInviteDecision(db, request, now);
+	let writeCount = 0;
+	if (
+		request.journey === "team" &&
+		teamDeviceEligibilityMode(db, request.teamId) === "reviewed_allowlist"
+	) {
+		writeCount = applyReviewedTeamInviteDecision(db, request, now);
+	}
+	if (priorWriteCount + writeCount > 0) {
+		wakeRecipientPoliciesForIdentities(db, [request.binding.identityId], now);
+	}
+	return writeCount;
 }
 
 /**
@@ -1575,6 +1585,8 @@ function transitionExactProjectDevice(
 	db: Database,
 	row: IntentRow,
 	where: { clause: string; parameters: string[] },
+	existingIdentityId: string,
+	targetIdentityId: string,
 ): void {
 	const entries = Object.entries(row.values).filter(
 		([column]) => column !== "created_at" && column !== "identity_id",
@@ -1586,6 +1598,12 @@ function transitionExactProjectDevice(
 		)
 		.run(...entries.map(([, value]) => value), ...where.parameters);
 	if (result.changes !== 1) throw new Error("device_binding_conflict");
+	if (existingIdentityId === targetIdentityId) return;
+	wakeRecipientPoliciesForIdentities(
+		db,
+		[existingIdentityId, targetIdentityId],
+		String(row.values.updated_at),
+	);
 }
 
 function applyIdentityDeviceAssignment(
@@ -1662,7 +1680,7 @@ function applyIdentityDeviceAssignment(
 			now: String(expected.updated_at),
 		});
 		if (exactProjectTransition) {
-			transitionExactProjectDevice(db, row, where);
+			transitionExactProjectDevice(db, row, where, existingIdentityId, targetIdentityId);
 			return true;
 		}
 		// A reviewed-cleared binding (NULL stored fingerprint) that accepted
@@ -1854,7 +1872,7 @@ export function commitRecipientPolicyOnboarding(
 			})) {
 				if (validateOrWriteRow(db, row)) writeCount += 1;
 			}
-			writeCount += applyTeamJourneySideEffects(db, normalized, now);
+			writeCount += applyTeamJourneySideEffects(db, normalized, now, writeCount);
 			db.exec("COMMIT");
 			return {
 				version: 1,
@@ -1952,7 +1970,7 @@ export function commitRecipientPolicyOnboardingFromReviewedIntent(
 			})) {
 				if (validateOrWriteRow(db, row)) writeCount += 1;
 			}
-			writeCount += applyTeamJourneySideEffects(db, normalized, now);
+			writeCount += applyTeamJourneySideEffects(db, normalized, now, writeCount);
 			db.exec("COMMIT");
 			return {
 				version: 1,

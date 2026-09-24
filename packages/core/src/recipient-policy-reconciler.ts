@@ -117,6 +117,7 @@ interface ManagedProjectBoundary {
 interface Lease {
 	acquiredAt: string;
 	expiresAt: string;
+	wakeEpoch: number;
 }
 
 const DEFAULT_LEASE_DURATION_MS = 60_000;
@@ -224,7 +225,13 @@ function acquireLease(
 			`UPDATE recipient_policy_authority_states SET lease_owner = ?, lease_acquired_at = ?,
 			 lease_expires_at = ?, updated_at = ? WHERE canonical_project_identity = ?`,
 		).run(input.leaseOwner, now, expiresAt, now, input.canonicalProjectIdentity);
-		return { acquiredAt: now, expiresAt };
+		const wakeEpoch = db
+			.prepare(
+				"SELECT wake_epoch FROM recipient_policy_authority_states WHERE canonical_project_identity = ?",
+			)
+			.pluck()
+			.get(input.canonicalProjectIdentity) as number;
+		return { acquiredAt: now, expiresAt, wakeEpoch };
 	})();
 }
 
@@ -496,43 +503,46 @@ function generation(db: Database, projectId: string, desiredDigest: string): num
 }
 
 function authority(
-	db: Database,
+	run: RecipientPolicyReconciliationRun,
 	input: {
-		projectId: string;
 		state?: "active" | "eligible" | "legacy" | "rolled_back";
 		safeErrorCode: string | null;
 		now: string;
 		completed?: boolean;
 	},
 ): void {
-	const current = getRecipientPolicyAuthorityState(db, input.projectId);
+	const current = getRecipientPolicyAuthorityState(run.db, run.projectId);
 	const preserveActiveAuthority =
 		input.safeErrorCode !== null && RETRYABLE_ACTIVE_AUTHORITY_ERRORS.has(input.safeErrorCode);
 	const nextState =
 		input.state ??
 		(current?.authorityState === "active" && !preserveActiveAuthority ? "rolled_back" : undefined);
-	db.prepare(
-		`UPDATE recipient_policy_authority_states SET
+	run.db
+		.prepare(
+			`UPDATE recipient_policy_authority_states SET
 		 authority_state = COALESCE(?, authority_state),
 		 state_changed_at = CASE WHEN ? IS NULL OR ? = authority_state THEN state_changed_at ELSE ? END,
 		 safe_error_code = ?, last_error_at = CASE WHEN ? IS NULL THEN NULL ELSE ? END,
 		 last_completed_at = CASE WHEN ? THEN ? ELSE last_completed_at END,
-		 attempt_count = attempt_count + 1, last_attempt_at = ?, updated_at = ?
+		 attempt_count = attempt_count + 1,
+		 last_attempt_at = CASE WHEN wake_epoch = ? THEN ? ELSE NULL END, updated_at = ?
 		 WHERE canonical_project_identity = ?`,
-	).run(
-		nextState ?? null,
-		nextState ?? null,
-		nextState ?? null,
-		input.now,
-		input.safeErrorCode,
-		input.safeErrorCode,
-		input.now,
-		input.completed ? 1 : 0,
-		input.now,
-		input.now,
-		input.now,
-		input.projectId,
-	);
+		)
+		.run(
+			nextState ?? null,
+			nextState ?? null,
+			nextState ?? null,
+			input.now,
+			input.safeErrorCode,
+			input.safeErrorCode,
+			input.now,
+			input.completed ? 1 : 0,
+			input.now,
+			run.lease.wakeEpoch,
+			input.now,
+			input.now,
+			run.projectId,
+		);
 }
 
 function resetParity(db: Database, projectId: string, now: string): void {
@@ -1081,7 +1091,7 @@ async function capabilityFailure(
 		capability === "unsupported"
 			? "recipient_policy_capability_unsupported"
 			: "recipient_policy_capability_undetermined";
-	authority(run.db, { projectId: run.projectId, safeErrorCode, now: run.effects.now() });
+	authority(run, { safeErrorCode, now: run.effects.now() });
 	return result(
 		run.projectId,
 		capability === "unsupported" ? "needs_attention" : "waiting",
@@ -1111,8 +1121,7 @@ async function staleGrantEnrollment(
 	);
 	if (!changed) return null;
 	resetParity(run.db, run.projectId, run.effects.now());
-	authority(run.db, {
-		projectId: run.projectId,
+	authority(run, {
 		safeErrorCode: "recipient_policy_generation_stale",
 		now: run.effects.now(),
 	});
@@ -1214,8 +1223,7 @@ async function revokeChangedGrantBindings(
 		lease: run.lease,
 		effects: run.effects,
 	});
-	authority(run.db, {
-		projectId: run.projectId,
+	authority(run, {
 		safeErrorCode: "recipient_policy_generation_stale",
 		now: run.effects.now(),
 	});
@@ -1291,8 +1299,7 @@ function incompleteParityResult(
 	run: RecipientPolicyReconciliationRun,
 ): RecipientPolicyReconcileResult {
 	resetParity(run.db, run.projectId, run.effects.now());
-	authority(run.db, {
-		projectId: run.projectId,
+	authority(run, {
 		safeErrorCode: "recipient_policy_parity_incomplete",
 		now: run.effects.now(),
 	});
@@ -1307,8 +1314,7 @@ function incompleteParityResult(
 }
 
 function activeParityResult(run: RecipientPolicyReconciliationRun): RecipientPolicyReconcileResult {
-	authority(run.db, {
-		projectId: run.projectId,
+	authority(run, {
 		state: "active",
 		safeErrorCode: null,
 		now: run.effects.now(),
@@ -1418,8 +1424,7 @@ function finishParityPass(
 			passedAt: input.verified.snapshot.observedAt,
 		});
 	}
-	authority(run.db, {
-		projectId: run.projectId,
+	authority(run, {
 		state: "eligible",
 		safeErrorCode: null,
 		now: run.effects.now(),
@@ -1482,8 +1487,7 @@ async function prepareInitialReconciliation(
 	const managedBoundary = boundary(run.db, run.projectId);
 	const desired = deriveRecipientPolicyEffectiveDevicesFromDatabase(run.db, run.projectId);
 	if (desired.status !== "eligible") {
-		authority(run.db, {
-			projectId: run.projectId,
+		authority(run, {
 			safeErrorCode: "recipient_policy_desired_state_invalid",
 			now: run.effects.now(),
 		});
@@ -1559,8 +1563,7 @@ function staleDesiredResult(
 	) {
 		return null;
 	}
-	authority(run.db, {
-		projectId: run.projectId,
+	authority(run, {
 		safeErrorCode: "recipient_policy_generation_stale",
 		now: run.effects.now(),
 	});
@@ -1804,7 +1807,7 @@ async function executeRecipientPolicyReconciliation(
 		});
 	} catch (error) {
 		const safeErrorCode = safeError(error, "recipient_policy_reconciliation_failed");
-		authority(run.db, { projectId: run.projectId, safeErrorCode, now: run.effects.now() });
+		authority(run, { safeErrorCode, now: run.effects.now() });
 		return result(
 			run.projectId,
 			safeErrorCode === "recipient_policy_snapshot_not_fresh" ? "waiting" : "needs_attention",

@@ -229,6 +229,8 @@ export {
 	commitDeviceIdentityBindings,
 	DEVICE_IDENTITY_BINDING_VERSION,
 	previewDeviceIdentityBindings,
+	wakeRecipientPoliciesForIdentities,
+	wakeRecipientPoliciesForProjectIdentities,
 } from "./device-identity-binding.js";
 export type {
 	DeviceIdentityBindingEvidence,

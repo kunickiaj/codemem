@@ -1,5 +1,9 @@
 import type { Database } from "./db.js";
 import {
+	wakeRecipientPoliciesForIdentities,
+	wakeRecipientPoliciesForProjectIdentities,
+} from "./device-identity-binding.js";
+import {
 	assignIdentityDeviceInTransaction,
 	IdentityDeviceAssignmentError,
 } from "./identity-device-assignment.js";
@@ -1504,6 +1508,68 @@ export function inspectFreshLegacyTeamSetupActivation(
 	}
 }
 
+function wakeLegacyTeamPolicies(db: Database, model: ActivationModel, now: string): void {
+	const priorProjects = db
+		.prepare(
+			`SELECT canonical_project_identity FROM project_recipients
+			 WHERE recipient_kind = 'team' AND recipient_id = ?`,
+		)
+		.pluck()
+		.all(model.teamId) as string[];
+	wakeRecipientPoliciesForProjectIdentities(
+		db,
+		[
+			...priorProjects,
+			...model.projects.map((project) => project.resolved_project_identity as string),
+		],
+		now,
+	);
+}
+
+function assignSetupDevice(
+	db: Database,
+	device: DraftDeviceRow,
+	targetIdentityId: string,
+	revision: string,
+	now: string,
+): ReturnType<typeof assignIdentityDeviceInTransaction> {
+	const expectation =
+		device.expected_assignment_kind === "existing" &&
+		device.existing_identity_id &&
+		device.expected_assignment_version != null
+			? {
+					kind: "existing" as const,
+					identityId: device.existing_identity_id,
+					assignmentVersion: device.expected_assignment_version,
+				}
+			: { kind: "absent" as const };
+	return assignIdentityDeviceInTransaction(db, {
+		deviceId: device.device_id,
+		targetIdentityId,
+		expectation,
+		insert: {
+			displayName: device.display_name,
+			provenance: "reviewed_team_setup",
+			revision,
+			migrationState: "completed",
+			sourceFingerprint: device.key_fingerprint,
+			idempotencyKey: recipientPolicyDigest("legacy-team-assignment-v1", device.device_id),
+		},
+		now,
+	});
+}
+
+function recordChangedSetupAssignment(
+	changedIdentityIds: Set<string>,
+	device: DraftDeviceRow,
+	targetIdentityId: string,
+	changed: boolean,
+): void {
+	if (!changed) return;
+	if (device.existing_identity_id) changedIdentityIds.add(device.existing_identity_id);
+	changedIdentityIds.add(targetIdentityId);
+}
+
 function applyActivation(
 	db: Database,
 	model: ActivationModel,
@@ -1547,33 +1613,18 @@ function applyActivation(
 	}
 
 	const assignmentVersions = new Map<string, number>();
+	const reassignedIdentityIds = new Set<string>();
 	for (const device of model.devices) {
-		if (device.decision !== "included" || !device.target_identity_id) continue;
-		const expectation =
-			device.expected_assignment_kind === "existing" &&
-			device.existing_identity_id &&
-			device.expected_assignment_version != null
-				? {
-						kind: "existing" as const,
-						identityId: device.existing_identity_id,
-						assignmentVersion: device.expected_assignment_version,
-					}
-				: { kind: "absent" as const };
-		const assignment = assignIdentityDeviceInTransaction(db, {
-			deviceId: device.device_id,
-			targetIdentityId: device.target_identity_id,
-			expectation,
-			insert: {
-				displayName: device.display_name,
-				provenance: "reviewed_team_setup",
-				revision,
-				migrationState: "completed",
-				sourceFingerprint: device.key_fingerprint,
-				idempotencyKey: recipientPolicyDigest("legacy-team-assignment-v1", device.device_id),
-			},
-			now,
-		});
+		const targetIdentityId = device.target_identity_id;
+		if (device.decision !== "included" || !targetIdentityId) continue;
+		const assignment = assignSetupDevice(db, device, targetIdentityId, revision, now);
 		assignmentVersions.set(device.device_id, assignment.assignmentVersion);
+		recordChangedSetupAssignment(
+			reassignedIdentityIds,
+			device,
+			targetIdentityId,
+			assignment.changed,
+		);
 	}
 	// The completed setup must read as Ready afterwards: assignment writes above
 	// legitimately change the roster fingerprint (a newly assigned device now
@@ -1725,12 +1776,7 @@ function applyActivation(
 				row.scope_id === projectTargetScopeId,
 		);
 		if (!mapping) {
-			if (!projectTargetScopeId) {
-				activationError("team_setup_conflict");
-			}
-			// A reviewed re-resolution supersedes the prior activation's
-			// setup-owned mapping in place; inserting a second row for the
-			// same source would leave a stale boundary competing on priority.
+			if (!projectTargetScopeId) activationError("team_setup_conflict");
 			const staleSetupMapping = model.mappings.find(
 				(row) =>
 					row.project_pattern === project.source_project_identity &&
@@ -1843,6 +1889,8 @@ function applyActivation(
 			targetScopeId: targetScopeId(model, project) as string,
 		})),
 	);
+	wakeLegacyTeamPolicies(db, model, now);
+	wakeRecipientPoliciesForIdentities(db, reassignedIdentityIds, now);
 
 	const result: LegacyTeamSetupActivationResultV1 = {
 		status: "completed",
@@ -1986,6 +2034,26 @@ export function applyCanonicalLegacyTeamSetupActivationInTransaction(
  * Materializes only newly resolvable Projects for an already-completed Team.
  * The caller owns serialization and the surrounding immediate transaction.
  */
+function finishAdditiveProjectMappings(
+	db: Database,
+	projects: AdditiveProjectRow[],
+	now: string,
+): void {
+	requireSelectedProjectScopeMappings(
+		db,
+		projects.map((project) => ({
+			sourceProjectIdentity: project.source_project_identity,
+			resolvedProjectIdentity: project.resolved_project_identity as string,
+			targetScopeId: project.target_scope_id as string,
+		})),
+	);
+	wakeRecipientPoliciesForProjectIdentities(
+		db,
+		projects.map((project) => project.resolved_project_identity as string),
+		now,
+	);
+}
+
 export function applyAdditiveCanonicalLegacyTeamSetupProjectsInTransaction(
 	db: Database,
 	input: {
@@ -2182,14 +2250,7 @@ export function applyAdditiveCanonicalLegacyTeamSetupProjectsInTransaction(
 			if (recipientStatus !== "active") activationError("team_setup_conflict");
 		}
 
-		requireSelectedProjectScopeMappings(
-			db,
-			projects.map((project) => ({
-				sourceProjectIdentity: project.source_project_identity,
-				resolvedProjectIdentity: project.resolved_project_identity as string,
-				targetScopeId: project.target_scope_id as string,
-			})),
-		);
+		finishAdditiveProjectMappings(db, projects, input.completedAt);
 	} catch (error) {
 		throw normalizedActivationError(error);
 	}

@@ -1,4 +1,5 @@
 import type { Database } from "./db.js";
+import { wakeRecipientPoliciesForProjectIdentities } from "./device-identity-binding.js";
 import {
 	derivePolicyTeamDeviceEligibility,
 	type PolicyTeamDeviceEligibilityBlock,
@@ -1017,6 +1018,20 @@ function isSqliteBusy(error: unknown): boolean {
 	);
 }
 
+function commitChangedRecipientPolicies(
+	db: Database,
+	outcomes: RecipientPolicyEdgeCommitOutcomeV1[],
+	now: string,
+): void {
+	const changedProjects = new Set(
+		outcomes
+			.filter((outcome) => outcome.outcome === "added" || outcome.outcome === "removed")
+			.map((outcome) => outcome.change.canonicalProjectIdentity),
+	);
+	wakeRecipientPoliciesForProjectIdentities(db, [...changedProjects], now);
+	db.exec("COMMIT");
+}
+
 export function commitRecipientPolicyEdges(
 	db: Database,
 	value: unknown,
@@ -1101,7 +1116,7 @@ export function commitRecipientPolicyEdges(
 				writeCount += 1;
 				outcomes.push({ change, outcome: "removed" });
 			}
-			db.exec("COMMIT");
+			commitChangedRecipientPolicies(db, outcomes, now);
 			return {
 				version: 1,
 				status: "applied",

@@ -70,6 +70,29 @@ function snapshot() {
 
 type ReadyDraft = ReturnType<typeof refreshLegacyTeamSetupDraft>;
 
+function expectCrossTeamPoliciesWoken(
+	db: InstanceType<typeof Database>,
+	teamId: string,
+	projects: [string, string],
+): void {
+	expect(
+		db
+			.prepare(
+				"SELECT decision FROM policy_team_device_decisions WHERE team_id = ? AND device_id = 'device-b'",
+			)
+			.pluck()
+			.get(teamId),
+	).toBe("unresolved");
+	expect(
+		db
+			.prepare(
+				"SELECT last_attempt_at FROM recipient_policy_authority_states WHERE canonical_project_identity IN (?, ?) ORDER BY canonical_project_identity",
+			)
+			.pluck()
+			.all(...projects),
+	).toEqual([null, null]);
+}
+
 describe("legacy Team setup activation", () => {
 	let db: InstanceType<typeof Database>;
 
@@ -2641,6 +2664,13 @@ describe("legacy Team setup activation", () => {
 			 ) VALUES (?, 'identity', 'identity-a', 'active', 'user', 'other-r1', 'completed',
 			 'covered-identity-edge', ?, ?)`,
 		).run(coveredProject, NOW, NOW);
+		const insertAuthority = db.prepare(`INSERT INTO recipient_policy_authority_states(
+			canonical_project_identity, authority_state, generation, state_changed_at,
+			last_attempt_at, created_at, updated_at
+		 ) VALUES (?, 'active', 1, ?, ?, ?, ?)`);
+		for (const project of [otherProject, coveredProject]) {
+			insertAuthority.run(project, NOW, NOW, NOW, NOW);
+		}
 		let secondDraft = readyDraft();
 		const reassignedDevice = secondDraft.devices.find((device) => device.displayName === "Desktop");
 		if (!reassignedDevice) throw new Error("invalid activation fixture");
@@ -2676,14 +2706,7 @@ describe("legacy Team setup activation", () => {
 				deviceId: "device-b",
 			}),
 		);
-		expect(
-			db
-				.prepare(
-					"SELECT decision FROM policy_team_device_decisions WHERE team_id = ? AND device_id = 'device-b'",
-				)
-				.pluck()
-				.get(otherTeamId),
-		).toBe("unresolved");
+		expectCrossTeamPoliciesWoken(db, otherTeamId, [coveredProject, otherProject]);
 	});
 
 	it("reuses the canonical Team for repeat setup without dropping existing recipient edges", async () => {

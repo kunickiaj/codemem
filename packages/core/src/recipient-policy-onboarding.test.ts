@@ -280,6 +280,36 @@ function addDeviceReviewedIntent(): Extract<RecipientReviewedIntentV1, { journey
 	};
 }
 
+function seedOldIdentityPolicyWake(db: InstanceType<typeof Database>): void {
+	db.prepare(`INSERT INTO project_recipients(
+		canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+		policy_revision, migration_state, idempotency_key, created_at, updated_at
+	 ) VALUES ('project-old-identity', 'identity', 'identity-a', 'active', 'test',
+		'1', 'native', 'old-identity-project', ?, ?)`).run(NOW, NOW);
+	db.prepare(`INSERT INTO recipient_policy_authority_states(
+		canonical_project_identity, authority_state, generation, state_changed_at,
+		last_attempt_at, created_at, updated_at
+	 ) VALUES ('project-old-identity', 'legacy', 0, ?, ?, ?, ?)`).run(NOW, NOW, NOW, NOW);
+}
+
+function expectOldIdentityPolicyWasWoken(db: InstanceType<typeof Database>): void {
+	expect(
+		db
+			.prepare(
+				"SELECT last_attempt_at FROM recipient_policy_authority_states WHERE canonical_project_identity = 'project-old-identity'",
+			)
+			.pluck()
+			.get(),
+	).toBeNull();
+}
+
+function policyTeamSourceFingerprint(db: InstanceType<typeof Database>, teamId: string): unknown {
+	return db
+		.prepare("SELECT source_fingerprint FROM policy_teams WHERE team_id = ?")
+		.pluck()
+		.get(teamId);
+}
+
 describe("recipient-policy onboarding", () => {
 	let db: InstanceType<typeof Database>;
 
@@ -2143,6 +2173,7 @@ describe("recipient-policy onboarding", () => {
 			 ) VALUES ('team-a', 'device-new', 'included', 0, 'reviewed_setup',
 			 'reviewed-revision', ?, ?)`,
 		).run(NOW, NOW);
+		seedOldIdentityPolicyWake(db);
 		const request = baseRequest({
 			invitationId: "invite-identity-transition",
 			identityId: "identity-b",
@@ -2176,12 +2207,8 @@ describe("recipient-policy onboarding", () => {
 				)
 				.get(),
 		).toEqual({ decision: "unresolved", assignment_version: 0 });
-		expect(
-			db
-				.prepare("SELECT source_fingerprint FROM policy_teams WHERE team_id = 'team-a'")
-				.pluck()
-				.get(),
-		).toBeNull();
+		expect(policyTeamSourceFingerprint(db, "team-a")).toBeNull();
+		expectOldIdentityPolicyWasWoken(db);
 	});
 
 	it("rolls back assignment invalidation when the exact-Project transition fails", () => {

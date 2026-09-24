@@ -510,6 +510,7 @@ CREATE TABLE IF NOT EXISTS recipient_policy_authority_states (
 	last_error_at TEXT,
 	attempt_count INTEGER NOT NULL DEFAULT 0,
 	last_attempt_at TEXT,
+	wake_epoch INTEGER NOT NULL DEFAULT 0,
 	last_completed_at TEXT,
 	lease_owner TEXT,
 	lease_acquired_at TEXT,

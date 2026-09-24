@@ -931,6 +931,21 @@ function ensureOptionalRetrievalLedgerSchema(db: DatabaseType): void {
 	}
 }
 
+function ensureRecipientPolicyAdditiveColumns(db: DatabaseType): void {
+	for (const [table, name, definition] of [
+		["policy_teams", "device_eligibility_mode", "TEXT NOT NULL DEFAULT 'person_all_devices'"],
+		["identity_devices", "assignment_version", "INTEGER NOT NULL DEFAULT 0"],
+		["policy_team_device_decisions", "assignment_version", "INTEGER NOT NULL DEFAULT 0"],
+		["recipient_policy_authority_states", "wake_epoch", "INTEGER NOT NULL DEFAULT 0"],
+	] as const) {
+		try {
+			addColumnIfMissing(db, table, name, definition);
+		} catch {
+			// Continue repairing independent recipient-policy columns.
+		}
+	}
+}
+
 export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 	ensureMemoryOwnershipSchemas(db);
 	ensureOptionalRetrievalLedgerSchema(db);
@@ -1077,6 +1092,7 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 				last_error_at TEXT,
 				attempt_count INTEGER NOT NULL DEFAULT 0,
 				last_attempt_at TEXT,
+				wake_epoch INTEGER NOT NULL DEFAULT 0,
 				last_completed_at TEXT,
 				lease_owner TEXT,
 				lease_acquired_at TEXT,
@@ -1208,17 +1224,7 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 		} catch {
 			// Keep compatibility shim fail-open for additive share-operation state.
 		}
-		for (const [table, name, definition] of [
-			["policy_teams", "device_eligibility_mode", "TEXT NOT NULL DEFAULT 'person_all_devices'"],
-			["identity_devices", "assignment_version", "INTEGER NOT NULL DEFAULT 0"],
-			["policy_team_device_decisions", "assignment_version", "INTEGER NOT NULL DEFAULT 0"],
-		] as const) {
-			try {
-				addColumnIfMissing(db, table, name, definition);
-			} catch {
-				// Continue repairing independent recipient-policy columns.
-			}
-		}
+		ensureRecipientPolicyAdditiveColumns(db);
 		const shareOperationColumns = [
 			["state", "TEXT NOT NULL DEFAULT 'waiting_for_acceptance'"],
 			["inviter_actor_id", "TEXT NOT NULL DEFAULT ''"],
