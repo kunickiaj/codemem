@@ -1189,8 +1189,8 @@ function verifiesCloseButtonStructure() {
 	const closeButton = dialog?.querySelector<HTMLButtonElement>(".modal-close-button");
 	if (!closeButton) throw new Error("shared close button missing");
 	expect(closeButton.getAttribute("aria-label")).toBe("Close invitation");
-	expect(closeButton.querySelector(".modal-close-button-icon")?.getAttribute("data-lucide")).toBe(
-		"x",
+	expect(closeButton.querySelector("svg.modal-close-button-icon path")?.getAttribute("d")).toBe(
+		"M18 6 6 18M6 6l12 12",
 	);
 	expect(closeButton.querySelector(".modal-close-button-label")?.textContent).toBe("Close");
 	expect(closeButton.textContent).not.toContain("×");

@@ -498,7 +498,13 @@ function failed(
 	}
 	const recovered = result.recoveredView ? applyView(state, result.recoveredView, false) : state;
 	if (result.recoveredView?.state === "completed") return recovered;
-	const error = errorFor(command, result.cause, result.recoveryCause);
+	const recoveredUnavailable =
+		command.kind === "load" && !command.refresh && result.recoveredView?.state === "unavailable";
+	const cause =
+		recoveredUnavailable && result.recoveredView?.state === "unavailable"
+			? new LegacyTeamSetupApiError(409, result.recoveredView.unavailableReason)
+			: result.cause;
+	const error = errorFor(command, cause, recoveredUnavailable ? undefined : result.recoveryCause);
 	const next = {
 		...recovered,
 		errors: [...clearScope(recovered, error.scope).errors, error],
@@ -614,10 +620,13 @@ function errorFor(
 		changed,
 		rosterUnavailable,
 	});
+	const staleRecovery = terminalRecoveryCode
+		? null
+		: staleLoadRecoveryMessage(command, cause, recoveryCause);
 	const globalError = changed || rosterUnavailable || completionCode !== null;
 	return {
 		scope: errorScopeFor(command, { globalError }),
-		message,
+		message: staleRecovery ?? message,
 		retry: retryFor(command, cause, recoveryCause, {
 			changed,
 			rosterUnavailable,
@@ -639,21 +648,28 @@ function errorScopeFor(command: SetupEffect, options: { globalError: boolean }):
 	return command.kind === "load" ? { kind: "load" } : { kind: "global" };
 }
 
+function staleConfirmationRetry(
+	command: SetupEffect,
+	cause: unknown,
+	recoveryCause: unknown,
+): "completion" | "refresh" | null {
+	const recoveryStale =
+		recoveryCause instanceof LegacyTeamSetupApiError &&
+		recoveryCause.errorCode === "team_setup_confirmation_stale";
+	const initialStale =
+		cause instanceof LegacyTeamSetupApiError && cause.errorCode === "team_setup_confirmation_stale";
+	if (!initialStale && !recoveryStale) return null;
+	return command.kind === "load" && (command.refresh || recoveryStale) ? "completion" : "refresh";
+}
+
 function retryFor(
 	command: SetupEffect,
 	cause: unknown,
 	recoveryCause: unknown,
 	options: { changed: boolean; rosterUnavailable: boolean; terminalRecovery: boolean },
 ): SetupSessionError["retry"] {
-	const confirmationStale =
-		(cause instanceof LegacyTeamSetupApiError &&
-			cause.errorCode === "team_setup_confirmation_stale") ||
-		(recoveryCause instanceof LegacyTeamSetupApiError &&
-			recoveryCause.errorCode === "team_setup_confirmation_stale");
-	if (confirmationStale) {
-		if (command.kind === "load" && command.refresh) return "completion";
-		return "refresh";
-	}
+	const staleRetry = staleConfirmationRetry(command, cause, recoveryCause);
+	if (staleRetry) return staleRetry;
 	if (command.kind === "load" && command.completionOnly) {
 		return completionOnlyRetry(cause);
 	}
@@ -669,6 +685,32 @@ function completionOnlyRetry(cause: unknown): "completion" | "refresh" {
 		return "completion";
 	}
 	return "refresh";
+}
+
+function staleLoadRecoveryMessage(
+	command: SetupEffect,
+	cause: unknown,
+	recoveryCause: unknown,
+): string | null {
+	if (
+		command.kind !== "load" ||
+		command.refresh ||
+		!(cause instanceof LegacyTeamSetupApiError) ||
+		cause.errorCode !== "team_setup_confirmation_stale" ||
+		!recoveryCause
+	)
+		return null;
+	if (
+		recoveryCause instanceof LegacyTeamSetupApiError &&
+		recoveryCause.errorCode === "team_setup_roster_unavailable"
+	)
+		return ROSTER_UNAVAILABLE_ERROR;
+	if (
+		recoveryCause instanceof LegacyTeamSetupApiError &&
+		isChangedStateCode(recoveryCause.errorCode)
+	)
+		return CHANGED_STATE_ERROR;
+	return "The current Team setup could not be loaded. Retry to check the latest details.";
 }
 
 function completionOrChangedMessage(options: {

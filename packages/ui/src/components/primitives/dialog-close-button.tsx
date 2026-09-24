@@ -26,7 +26,14 @@ export function DialogCloseButton({
 			}}
 			type="button"
 		>
-			<i aria-hidden="true" className="modal-close-button-icon" data-lucide="x" />
+			<svg aria-hidden="true" className="modal-close-button-icon" fill="none" viewBox="0 0 24 24">
+				<path
+					d="M18 6 6 18M6 6l12 12"
+					stroke="currentColor"
+					strokeLinecap="round"
+					strokeWidth="2"
+				/>
+			</svg>
 			<span className="modal-close-button-label">{label}</span>
 		</button>
 	);
