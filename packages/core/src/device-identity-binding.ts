@@ -465,7 +465,7 @@ export function wakeRecipientPoliciesForIdentities(
 export function wakeRecipientPoliciesForProjectIdentities(
 	db: Database,
 	projectIdentities: Iterable<string>,
-	now: string,
+	_now: string,
 ): void {
 	const requested = [...projectIdentities];
 	if (requested.length === 0) return;
@@ -479,12 +479,12 @@ export function wakeRecipientPoliciesForProjectIdentities(
 		.all() as string[];
 	const wake = db.prepare(
 		`UPDATE recipient_policy_authority_states
-		 SET last_attempt_at = NULL, wake_epoch = wake_epoch + 1, updated_at = ?
+		 SET last_attempt_at = NULL, wake_epoch = wake_epoch + 1
 		 WHERE canonical_project_identity = ?`,
 	);
 	for (const authorityId of authorityIds) {
 		const canonical = canonicalRepositoryProjectIdentity(repositoryIdentities, authorityId);
-		if (targets.has(canonical)) wake.run(now, authorityId);
+		if (targets.has(canonical)) wake.run(authorityId);
 	}
 }
 

@@ -139,6 +139,43 @@ it("wakes a canonical authority row for a legacy cwd recipient edge", () => {
 	}
 });
 
+it("preserves canonical authority precedence when waking a checkout alias", () => {
+	const db = new Database(":memory:");
+	const cwd = "/workspace/wake-alias";
+	const repository = "https://example.test/acme/wake-alias.git";
+	try {
+		initTestSchema(db);
+		db.prepare("INSERT INTO sessions(started_at, cwd, metadata_json) VALUES (?, ?, ?)").run(
+			NOW,
+			cwd,
+			JSON.stringify({ codemem_repository_identity: repository }),
+		);
+		for (const [identity, updatedAt] of [
+			[cwd, "2026-08-18T11:00:00.000Z"],
+			[repository, NOW],
+		]) {
+			db.prepare(`INSERT INTO recipient_policy_authority_states(
+				canonical_project_identity, authority_state, generation, state_changed_at,
+				last_attempt_at, created_at, updated_at
+			 ) VALUES (?, 'active', 1, ?, ?, ?, ?)`).run(identity, NOW, NOW, NOW, updatedAt);
+		}
+		wakeRecipientPoliciesForProjectIdentities(db, [cwd], "2026-08-18T13:00:00.000Z");
+		expect(
+			db
+				.prepare(
+					"SELECT canonical_project_identity FROM recipient_policy_authority_states ORDER BY generation DESC, updated_at DESC, canonical_project_identity ASC LIMIT 1",
+				)
+				.pluck()
+				.get(),
+		).toBe(repository);
+		expect(
+			db.prepare("SELECT last_attempt_at FROM recipient_policy_authority_states").pluck().all(),
+		).toEqual([null, null]);
+	} finally {
+		db.close();
+	}
+});
+
 it("does not scan repository history for an empty policy wake", () => {
 	const db = new Database(":memory:");
 	try {
