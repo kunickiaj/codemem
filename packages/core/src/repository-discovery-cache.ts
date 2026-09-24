@@ -16,6 +16,7 @@ import {
 } from "./repository-mapping-aliases.js";
 
 const POSITIVE_DISCOVERY_TTL_MS = 5_000;
+const MAX_IDENTITY_MAP_VARIANTS = 8;
 
 interface DiscoverySnapshot {
 	revision: number;
@@ -27,6 +28,10 @@ interface DiscoverySnapshot {
 }
 
 const snapshots = new WeakMap<Database, DiscoverySnapshot>();
+
+export const __repositoryDiscoveryCacheTestHooks = {
+	variantCount: (db: Database): number => snapshots.get(db)?.identityMaps.size ?? 0,
+};
 
 function statFingerprint(path: string): string | null {
 	try {
@@ -203,6 +208,26 @@ function currentSnapshot(db: Database, revision: number): DiscoverySnapshot | nu
 	return rebuilt;
 }
 
+function identityMapForKnown(
+	snapshot: DiscoverySnapshot,
+	known: ReadonlySet<string>,
+): Map<string, string> {
+	const key = JSON.stringify([...known].toSorted());
+	const existing = snapshot.identityMaps.get(key);
+	if (existing) {
+		snapshot.identityMaps.delete(key);
+		snapshot.identityMaps.set(key, existing);
+		return existing;
+	}
+	const identities = repositoryIdentityMapFromEvidence(snapshot.rows, known);
+	if (snapshot.identityMaps.size >= MAX_IDENTITY_MAP_VARIANTS) {
+		const oldestKey = snapshot.identityMaps.keys().next().value;
+		if (oldestKey !== undefined) snapshot.identityMaps.delete(oldestKey);
+	}
+	snapshot.identityMaps.set(key, identities);
+	return identities;
+}
+
 export function repositoryIdentitiesFromIndexedEvidence(
 	db: Database,
 	knownRepositoryIdentities: Array<string | null | undefined>,
@@ -216,12 +241,7 @@ export function repositoryIdentitiesFromIndexedEvidence(
 		const normalized = normalizeRepositoryWorkspaceIdentity(cleanProjectIdentity(identity));
 		if (normalized) known.add(normalized);
 	}
-	const key = JSON.stringify([...known].toSorted());
-	let identities = snapshot.identityMaps.get(key);
-	if (!identities) {
-		identities = repositoryIdentityMapFromEvidence(snapshot.rows, known);
-		snapshot.identityMaps.set(key, identities);
-	}
+	const identities = identityMapForKnown(snapshot, known);
 	if (repositoryDiscoveryRevision(db) !== revision) return null;
 	return { identities, known };
 }
