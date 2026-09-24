@@ -26,24 +26,17 @@ function discoveryTriggerCount(db: Database): number {
 }
 
 export function ensureRepositoryDiscoveryIndex(db: Database): void {
-	const evidenceTableExists = db
-		.prepare(
-			"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'repository_workspace_evidence'",
-		)
-		.get();
-	if (discoveryTriggerCount(db) !== 3 || !evidenceTableExists) {
-		const existingState = db
-			.prepare(
-				"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'repository_discovery_state'",
-			)
-			.get();
-		if (existingState) {
-			// Missing triggers may have missed writes, and a missing evidence table has
-			// lost its rows. Invalidate in-memory and on-disk snapshots before repair.
-			db.prepare(`UPDATE repository_discovery_state
-				SET source_revision = source_revision + 1, indexed_revision = -1 WHERE id = 1`).run();
-		}
+	db.exec("SAVEPOINT repository_discovery_repair");
+	try {
+		repairRepositoryDiscoveryIndex(db);
+		db.exec("RELEASE repository_discovery_repair");
+	} catch (error) {
+		db.exec("ROLLBACK TO repository_discovery_repair; RELEASE repository_discovery_repair");
+		throw error;
 	}
+}
+
+function repairRepositoryDiscoveryIndex(db: Database): void {
 	db.exec(`
 		CREATE TABLE IF NOT EXISTS repository_discovery_state (
 			id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -51,6 +44,24 @@ export function ensureRepositoryDiscoveryIndex(db: Database): void {
 			indexed_revision INTEGER NOT NULL DEFAULT -1
 		);
 		INSERT OR IGNORE INTO repository_discovery_state(id) VALUES (1);
+	`);
+	// Acquire the write lock before checking for missing schema, so no session
+	// mutation can slip between invalidation and trigger recreation.
+	db.prepare(
+		"UPDATE repository_discovery_state SET indexed_revision = indexed_revision WHERE id = 1",
+	).run();
+	const evidenceTableExists = db
+		.prepare(
+			"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'repository_workspace_evidence'",
+		)
+		.get();
+	if (discoveryTriggerCount(db) !== 3 || !evidenceTableExists) {
+		// Missing triggers may have missed writes, and a missing evidence table has
+		// lost its rows. Invalidate in-memory and on-disk snapshots before repair.
+		db.prepare(`UPDATE repository_discovery_state
+				SET source_revision = source_revision + 1, indexed_revision = -1 WHERE id = 1`).run();
+	}
+	db.exec(`
 		CREATE TABLE IF NOT EXISTS repository_workspace_evidence (
 			cwd TEXT PRIMARY KEY,
 			recorded_identities_json TEXT NOT NULL,
