@@ -5,6 +5,7 @@ import {
 	__repositoryDiscoveryCacheTestHooks,
 	repositoryIdentitiesFromIndexedEvidence,
 } from "./repository-discovery-cache.js";
+import { ensureRepositoryDiscoveryIndex } from "./repository-discovery-index.js";
 import { initTestSchema } from "./test-utils.js";
 
 it("bounds identity-map variants across repeated mapping edits", () => {
@@ -57,6 +58,36 @@ it("keeps indexed evidence usable beside a relative historical cwd", () => {
 		).toBeNull();
 		expect(__repositoryDiscoveryCacheTestHooks.variantCount(db)).toBe(1);
 		expect(repositoryIdentitiesFromIndexedEvidence(db, [])).not.toBeNull();
+	} finally {
+		db.close();
+	}
+});
+
+it("drops an in-memory snapshot when a missing trigger is repaired", () => {
+	const db = new Database(":memory:");
+	const cwd = "/workspace/trigger-repaired";
+	const before = "https://example.test/acme/before.git";
+	const after = "https://example.test/acme/after.git";
+	try {
+		initTestSchema(db);
+		ensureAdditiveSchemaCompatibility(db);
+		const sessionId = Number(
+			db
+				.prepare("INSERT INTO sessions(started_at, cwd, metadata_json) VALUES (?, ?, ?)")
+				.run(
+					"2026-09-24T00:00:00.000Z",
+					cwd,
+					JSON.stringify({ codemem_repository_identity: before }),
+				).lastInsertRowid,
+		);
+		expect(repositoryIdentitiesFromIndexedEvidence(db, [before])?.identities.get(cwd)).toBe(before);
+		db.exec("DROP TRIGGER trg_repository_discovery_session_update");
+		db.prepare("UPDATE sessions SET metadata_json = ? WHERE id = ?").run(
+			JSON.stringify({ codemem_repository_identity: after }),
+			sessionId,
+		);
+		ensureRepositoryDiscoveryIndex(db);
+		expect(repositoryIdentitiesFromIndexedEvidence(db, [after])?.identities.get(cwd)).toBe(after);
 	} finally {
 		db.close();
 	}

@@ -57,7 +57,7 @@ it("invalidates persisted repository evidence for every session identity mutatio
 		db.exec("DROP TRIGGER trg_repository_discovery_session_update");
 		expect(repositoryDiscoveryRevision(db)).toBeNull();
 		ensureRepositoryDiscoveryIndex(db);
-		expect(repositoryDiscoveryRevision(db)).toBe(5);
+		expect(repositoryDiscoveryRevision(db)).toBe(6);
 	} finally {
 		db.close();
 	}

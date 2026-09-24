@@ -34,8 +34,9 @@ export function ensureRepositoryDiscoveryIndex(db: Database): void {
 			.get();
 		if (existingState) {
 			// Missing triggers may have let sessions change without advancing source_revision.
-			// Invalidate before repairing them so a failed repair still falls back to a scan.
-			db.prepare("UPDATE repository_discovery_state SET indexed_revision = -1 WHERE id = 1").run();
+			// Advance it before repair so in-memory and on-disk snapshots both become stale.
+			db.prepare(`UPDATE repository_discovery_state
+				SET source_revision = source_revision + 1, indexed_revision = -1 WHERE id = 1`).run();
 		}
 	}
 	db.exec(`
