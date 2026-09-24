@@ -138,11 +138,7 @@ function recordedRepositoryIdentities(
 	return { byWorkspace, known };
 }
 
-export function recordedRepositoryIdentityEvidence(db: Database): {
-	byWorkspace: Map<string, string>;
-	known: Set<string>;
-	recordedWorkspaces: Set<string>;
-} {
+export function recordedRepositoryIdentitySetsByWorkspace(db: Database): Map<string, Set<string>> {
 	const rows = db
 		.prepare(
 			`SELECT DISTINCT cwd, git_remote, metadata_json
@@ -153,20 +149,53 @@ export function recordedRepositoryIdentityEvidence(db: Database): {
 			        OR (git_remote IS NOT NULL AND TRIM(git_remote) <> ''))`,
 		)
 		.all() as Array<{ cwd: string; git_remote: string | null; metadata_json: string | null }>;
-	const recorded = recordedRepositoryIdentities(rows);
+	return recordedRepositoryIdentities(rows).byWorkspace;
+}
+
+export function recordedRepositoryIdentityEvidence(db: Database): {
+	byWorkspace: Map<string, string>;
+	known: Set<string>;
+	recordedWorkspaces: Set<string>;
+} {
+	const byWorkspaceSets = recordedRepositoryIdentitySetsByWorkspace(db);
 	const byWorkspace = new Map<string, string>();
-	const recordedWorkspaces = new Set(recorded.byWorkspace.keys());
+	const recordedWorkspaces = new Set(byWorkspaceSets.keys());
+	const known = new Set<string>();
 	recordedWorkspacesByIdentityMap.set(byWorkspace, recordedWorkspaces);
-	for (const [cwd, identities] of recorded.byWorkspace) {
+	for (const [cwd, identities] of byWorkspaceSets) {
+		for (const identity of identities) known.add(identity);
 		if (identities.size !== 1) continue;
 		const [repositoryIdentity] = identities;
 		if (repositoryIdentity) byWorkspace.set(cwd, repositoryIdentity);
 	}
 	return {
 		byWorkspace,
-		known: recorded.known,
+		known,
 		recordedWorkspaces,
 	};
+}
+
+export function repositoryIdentityMapFromEvidence(
+	rows: Array<{ cwd: string; recordedIdentities: string[]; filesystemIdentity: string | null }>,
+	known: ReadonlySet<string>,
+): Map<string, string> {
+	const identities = new Map<string, string>();
+	const recordedWorkspaces = new Set<string>();
+	recordedWorkspacesByIdentityMap.set(identities, recordedWorkspaces);
+	for (const row of rows) {
+		if (row.recordedIdentities.length > 0) {
+			recordedWorkspaces.add(row.cwd);
+			if (row.recordedIdentities.length === 1) {
+				const identity = row.recordedIdentities[0];
+				if (identity) identities.set(row.cwd, identity);
+			}
+			continue;
+		}
+		if (row.filesystemIdentity && known.has(row.filesystemIdentity)) {
+			identities.set(row.cwd, row.filesystemIdentity);
+		}
+	}
+	return identities;
 }
 
 export function discoverKnownRepositoryIdentity(
@@ -293,7 +322,11 @@ function addDiscoveredRepositoryEvidence(
 export function recordedRepositoryIdentityEvidenceByWorkspace(
 	db: Database,
 	workspaceIdentities: Iterable<string | null | undefined>,
-	options: { freshWorkspaces?: Iterable<string | null | undefined> } = {},
+	options: {
+		freshWorkspaces?: Iterable<string | null | undefined>;
+		knownRepositoryIdentities?: Iterable<string | null | undefined>;
+		restrictToRequestedWorkspaces?: boolean;
+	} = {},
 ): {
 	byWorkspace: Map<string, string>;
 	recordedWorkspaces: Set<string>;
@@ -314,13 +347,24 @@ export function recordedRepositoryIdentityEvidenceByWorkspace(
 			.filter((identity): identity is string => identity != null),
 	);
 	const requested = new Set(normalizedWorkspaces);
+	const query = options.restrictToRequestedWorkspaces
+		? `SELECT cwd, git_remote, metadata_json FROM sessions
+		   WHERE COALESCE(NULLIF(RTRIM(REPLACE(TRIM(cwd), char(92), '/'), '/'), ''), TRIM(cwd)) IN (${normalizedWorkspaces.map(() => "?").join(",")})
+		   ORDER BY id DESC`
+		: `SELECT cwd, git_remote, metadata_json FROM sessions
+		   WHERE cwd IS NOT NULL AND TRIM(cwd) <> '' ORDER BY id DESC`;
 	const rows = db
-		.prepare(
-			`SELECT cwd, git_remote, metadata_json FROM sessions
-			 WHERE cwd IS NOT NULL AND TRIM(cwd) <> '' ORDER BY id DESC`,
-		)
-		.all() as Array<{ cwd: string; git_remote: string | null; metadata_json: string | null }>;
+		.prepare(query)
+		.all(...(options.restrictToRequestedWorkspaces ? normalizedWorkspaces : [])) as Array<{
+		cwd: string;
+		git_remote: string | null;
+		metadata_json: string | null;
+	}>;
 	const evidence = collectRecordedRepositoryEvidence(rows, requested);
+	for (const identity of options.knownRepositoryIdentities ?? []) {
+		const normalized = normalizeIdentity(cleanProjectIdentity(identity));
+		if (normalized) evidence.known.add(normalized);
+	}
 	addUnambiguousRecordedEvidence(identities, recordedWorkspaces, evidence.recordedByWorkspace);
 	addDiscoveredRepositoryEvidence(
 		identities,

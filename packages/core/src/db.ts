@@ -633,6 +633,13 @@ function ensureSessionsPagingIndex(db: DatabaseType): void {
 	} catch {
 		// Keep additive compatibility best-effort for index creation.
 	}
+	if (!columnExists(db, "sessions", "cwd")) return;
+	try {
+		db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_normalized_cwd
+			ON sessions(COALESCE(NULLIF(RTRIM(REPLACE(TRIM(cwd), char(92), '/'), '/'), ''), TRIM(cwd)))`);
+	} catch {
+		// Stamping falls back to a scan if the optional index cannot be installed.
+	}
 }
 
 function ensureSyncAttemptsDiagnosticIndexes(db: DatabaseType): void {

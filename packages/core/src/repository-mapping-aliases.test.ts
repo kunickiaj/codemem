@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { connect } from "./db.js";
 import { REPOSITORY_IDENTITY_METADATA_KEY } from "./project.js";
 import {
@@ -14,8 +14,10 @@ import {
 	upsertProjectScopeSettingsMapping,
 	upsertProjectScopeSettingsMappings,
 } from "./project-scope-settings.js";
+import { repositoryDiscoveryRevision } from "./repository-discovery-index.js";
 import {
 	hasConflictingRepositoryMappings,
+	recordedRepositoryIdentityEvidenceByWorkspace,
 	repositoryIdentitiesByWorkspace,
 	withRepositoryMappingAliases,
 	withRepositoryMappingAliasesFromIdentities,
@@ -1113,6 +1115,141 @@ function expectPartialPatternMappingFailsClosed(store: MemoryStore, tmpDir: stri
 	expect(resolveSessionScopeId(store.db, { sessionId: worktreeSessionId })).toBe("local-default");
 }
 
+function expectUnmappedSiblingAppearingLaterFailsClosed(store: MemoryStore, tmpDir: string): void {
+	const remote = "https://example.test/acme/late-sibling.git";
+	const { mainRepo, worktree } = createLinkedWorktree(tmpDir, "late-sibling", remote);
+	rmSync(join(worktree, ".git"));
+	insertScope(store, "late-sibling-scope");
+	insertPatternMapping(store, `${mainRepo}*`, "late-sibling-scope");
+	const mainSessionId = store.getOrCreateSessionForOpencodeSession({
+		opencodeSessionId: "late-sibling-main",
+		cwd: mainRepo,
+		project: "late-sibling",
+		metadata: { [REPOSITORY_IDENTITY_METADATA_KEY]: remote },
+	});
+	store.db
+		.prepare("INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, ?, ?, '{}')")
+		.run("2026-09-24T00:00:00.000Z", worktree, "late-sibling");
+	expect(resolveSessionScopeId(store.db, { sessionId: mainSessionId })).toBe("late-sibling-scope");
+	writeFileSync(
+		join(worktree, ".git"),
+		`gitdir: ${join(mainRepo, ".git", "worktrees", "late-sibling")}\n`,
+	);
+	expect(resolveSessionScopeId(store.db, { sessionId: mainSessionId })).toBe("local-default");
+}
+
+function expectExternalSessionUpdateInvalidatesEvidence(store: MemoryStore, tmpDir: string): void {
+	const remote = "https://example.test/acme/external-sibling.git";
+	const { mainRepo, worktree } = createLinkedWorktree(tmpDir, "external-sibling", remote);
+	rmSync(join(worktree, ".git"));
+	insertScope(store, "external-sibling-scope");
+	insertPatternMapping(store, `${mainRepo}*`, "external-sibling-scope");
+	const mainSessionId = store.getOrCreateSessionForOpencodeSession({
+		opencodeSessionId: "external-sibling-main",
+		cwd: mainRepo,
+		project: "external-sibling",
+		metadata: { [REPOSITORY_IDENTITY_METADATA_KEY]: remote },
+	});
+	const siblingSessionId = Number(
+		store.db
+			.prepare(
+				"INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, ?, ?, '{}')",
+			)
+			.run("2026-09-24T00:00:00.000Z", worktree, "external-sibling").lastInsertRowid,
+	);
+	expect(resolveSessionScopeId(store.db, { sessionId: mainSessionId })).toBe(
+		"external-sibling-scope",
+	);
+	const other = connect(join(tmpDir, "test.sqlite"));
+	try {
+		other
+			.prepare("UPDATE sessions SET metadata_json = ? WHERE id = ?")
+			.run(JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: remote }), siblingSessionId);
+	} finally {
+		other.close();
+	}
+	expect(resolveSessionScopeId(store.db, { sessionId: mainSessionId })).toBe("local-default");
+}
+
+function expectAncestorCheckoutAppearingLaterFailsClosed(store: MemoryStore, tmpDir: string): void {
+	const remote = "https://example.test/acme/ancestor-sibling.git";
+	const { mainRepo } = createLinkedWorktree(tmpDir, "ancestor-sibling", remote);
+	const newRoot = join(tmpDir, "later-checkout");
+	const nestedCwd = join(newRoot, "nested");
+	mkdirSync(nestedCwd, { recursive: true });
+	insertScope(store, "ancestor-sibling-scope");
+	insertPatternMapping(store, `${mainRepo}*`, "ancestor-sibling-scope");
+	const mainSessionId = store.getOrCreateSessionForOpencodeSession({
+		opencodeSessionId: "ancestor-sibling-main",
+		cwd: mainRepo,
+		project: "ancestor-sibling",
+		metadata: { [REPOSITORY_IDENTITY_METADATA_KEY]: remote },
+	});
+	store.db
+		.prepare("INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, ?, ?, '{}')")
+		.run("2026-09-24T00:00:00.000Z", nestedCwd, "ancestor-sibling");
+	expect(resolveSessionScopeId(store.db, { sessionId: mainSessionId })).toBe(
+		"ancestor-sibling-scope",
+	);
+	mkdirSync(join(newRoot, ".git"));
+	writeFileSync(join(newRoot, ".git", "config"), `[remote "origin"]\n\turl = ${remote}\n`);
+	expect(resolveSessionScopeId(store.db, { sessionId: mainSessionId })).toBe("local-default");
+}
+
+function expectWarmStampAvoidsHistoricalQueries(store: MemoryStore, tmpDir: string): void {
+	const repository = "https://example.test/acme/bounded-stamp.git";
+	insertScope(store, "bounded-stamp-scope");
+	insertMapping(store, repository, "bounded-stamp-scope");
+	const insertSession = store.db.prepare(
+		"INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, ?, ?, ?)",
+	);
+	store.db.transaction(() => {
+		for (let i = 0; i < 500; i++) {
+			insertSession.run("2026-09-24T00:00:00.000Z", join(tmpDir, `absent-${i}`), "other", "{}");
+		}
+	})();
+	const sessionId = Number(
+		insertSession.run(
+			"2026-09-24T00:00:00.000Z",
+			join(tmpDir, "active"),
+			"bounded-stamp",
+			JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: repository }),
+		).lastInsertRowid,
+	);
+	expect(repositoryDiscoveryRevision(store.db)).not.toBeNull();
+	expect(resolveSessionScopeId(store.db, { sessionId })).toBe("bounded-stamp-scope");
+	const prepare = vi.spyOn(store.db, "prepare");
+	const unrelated = mkdtempSync(join(tmpdir(), "codemem-unrelated-checkout-"));
+	try {
+		for (let i = 0; i < 5; i++) {
+			expect(resolveSessionScopeId(store.db, { sessionId })).toBe("bounded-stamp-scope");
+		}
+		expect(
+			prepare.mock.calls.filter(([sql]) =>
+				String(sql).includes("SELECT DISTINCT cwd FROM sessions"),
+			),
+		).toHaveLength(0);
+	} finally {
+		prepare.mockRestore();
+		rmSync(unrelated, { recursive: true, force: true });
+	}
+}
+
+function expectRootWorkspaceEvidenceSurvivesTargetedLookup(store: MemoryStore): void {
+	const repository = "https://example.test/acme/root-workspace.git";
+	store.db
+		.prepare("INSERT INTO sessions(started_at, cwd, project, metadata_json) VALUES (?, '/', ?, ?)")
+		.run(
+			"2026-09-24T00:00:00.000Z",
+			"root-workspace",
+			JSON.stringify({ [REPOSITORY_IDENTITY_METADATA_KEY]: repository }),
+		);
+	const evidence = recordedRepositoryIdentityEvidenceByWorkspace(store.db, ["/"], {
+		restrictToRequestedWorkspaces: true,
+	});
+	expect(evidence.byWorkspace.get("/")).toBe(repository);
+}
+
 function expectDiscoveredSiblingConflictFailsClosed(store: MemoryStore, tmpDir: string): void {
 	const remote = "https://example.test/acme/discovered-sibling-conflict.git";
 	const { mainRepo, worktree } = createLinkedWorktree(
@@ -1570,6 +1707,16 @@ describe("repository mapping aliases", () => {
 
 	it("retries filesystem discovery after a checkout appears", () =>
 		expectLateCheckoutDiscovery(store, tmpDir));
+	it("rechecks an unmapped sibling that appears after a cached stamp", () =>
+		expectUnmappedSiblingAppearingLaterFailsClosed(store, tmpDir));
+	it("invalidates indexed evidence when another connection changes a sibling", () =>
+		expectExternalSessionUpdateInvalidatesEvidence(store, tmpDir));
+	it("rechecks an ancestor that becomes a checkout after a cached stamp", () =>
+		expectAncestorCheckoutAppearingLaterFailsClosed(store, tmpDir));
+	it("reuses indexed evidence without rescan on warm stamps", () =>
+		expectWarmStampAvoidsHistoricalQueries(store, tmpDir));
+	it("keeps root-workspace evidence in indexed lookups", () =>
+		expectRootWorkspaceEvidenceSurvivesTargetedLookup(store));
 
 	it("refreshes identity before scope stamping", () =>
 		expectScopeStampingRefreshesRepositoryIdentity(store, tmpDir));

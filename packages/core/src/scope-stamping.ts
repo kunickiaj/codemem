@@ -1,4 +1,5 @@
 import type { Database } from "./db.js";
+import { repositoryIdentitiesFromIndexedEvidence } from "./repository-discovery-cache.js";
 import {
 	discoverKnownRepositoryIdentity,
 	hasConflictingRepositoryMappings,
@@ -98,6 +99,65 @@ function addDiscoveredRepositoryWorkspaces(
 	}
 }
 
+function scopeRepositoryEvidence(
+	db: Database,
+	row: SessionScopeRow | null,
+	mappedWorkspaces: Array<string | null | undefined>,
+	mappingIdentitySeeds: Array<string | null | undefined>,
+) {
+	const indexed =
+		mappedWorkspaces.length < 900
+			? repositoryIdentitiesFromIndexedEvidence(db, mappingIdentitySeeds)
+			: null;
+	const legacy = () => ({
+		evidence: recordedRepositoryIdentityEvidenceByWorkspace(db, [row?.cwd, ...mappedWorkspaces], {
+			freshWorkspaces: [row?.cwd],
+		}),
+		indexed: false,
+	});
+	if (!indexed) return legacy();
+	const requested = [row?.cwd, ...mappedWorkspaces];
+	let fresh: ReturnType<typeof recordedRepositoryIdentityEvidenceByWorkspace>;
+	try {
+		fresh = recordedRepositoryIdentityEvidenceByWorkspace(db, requested, {
+			freshWorkspaces: [row?.cwd],
+			knownRepositoryIdentities: indexed.known,
+			restrictToRequestedWorkspaces: true,
+		});
+	} catch {
+		// Unavailable indexes or query limits must not narrow the policy check.
+		return legacy();
+	}
+	for (const workspace of requested) {
+		const cwd = normalizeRepositoryWorkspaceIdentity(workspace);
+		if (!cwd) continue;
+		indexed.identities.delete(cwd);
+		const identity = fresh.byWorkspace.get(cwd);
+		if (identity) indexed.identities.set(cwd, identity);
+	}
+	return {
+		evidence: { byWorkspace: indexed.identities, recordedWorkspaces: fresh.recordedWorkspaces },
+		indexed: true,
+	};
+}
+
+function discoverCurrentWorkspace(
+	cwd: string | null,
+	repositoryIdentities: Map<string, string>,
+	recordedWorkspaces: ReadonlySet<string>,
+	mappingIdentitySeeds: Array<string | null | undefined>,
+): void {
+	if (!cwd || recordedWorkspaces.has(cwd)) return;
+	const known = new Set(
+		[
+			...repositoryIdentities.values(),
+			...mappingIdentitySeeds.map((identity) => normalizeRepositoryWorkspaceIdentity(identity)),
+		].filter((identity): identity is string => identity != null),
+	);
+	const identity = discoverKnownRepositoryIdentity(cwd, known);
+	if (identity) repositoryIdentities.set(cwd, identity);
+}
+
 function repositoryScopeContext(
 	db: Database,
 	row: SessionScopeRow | null,
@@ -109,32 +169,29 @@ function repositoryScopeContext(
 		mapping.workspace_identity,
 		mapping.project_pattern,
 	]);
-	const evidence = recordedRepositoryIdentityEvidenceByWorkspace(
+	const { evidence, indexed } = scopeRepositoryEvidence(
 		db,
-		[row?.cwd, ...mappedWorkspaces],
-		{ freshWorkspaces: [row?.cwd] },
+		row,
+		mappedWorkspaces,
+		mappingIdentitySeeds,
 	);
 	const repositoryIdentities = evidence.byWorkspace;
 	const cwd = normalizeRepositoryWorkspaceIdentity(row?.cwd);
 	const ambiguousCwd = Boolean(
 		cwd && evidence.recordedWorkspaces.has(cwd) && !repositoryIdentities.has(cwd),
 	);
-	if (cwd && !evidence.recordedWorkspaces.has(cwd)) {
-		const knownRepositoryIdentities = new Set(
-			[
-				...repositoryIdentities.values(),
-				...mappingIdentitySeeds.map((identity) => normalizeRepositoryWorkspaceIdentity(identity)),
-			].filter((identity): identity is string => identity != null),
-		);
-		const repositoryIdentity = discoverKnownRepositoryIdentity(cwd, knownRepositoryIdentities);
-		if (repositoryIdentity) repositoryIdentities.set(cwd, repositoryIdentity);
-	}
+	discoverCurrentWorkspace(
+		cwd,
+		repositoryIdentities,
+		evidence.recordedWorkspaces,
+		mappingIdentitySeeds,
+	);
 	const repositoryIdentity = repositoryIdentityForWorkspace(repositoryIdentities, {
 		cwd: row?.cwd,
 		gitRemote: row?.git_remote ?? null,
 		metadataJson: row?.metadata_json,
 	});
-	if (repositoryIdentity) {
+	if (repositoryIdentity && !indexed) {
 		addDiscoveredRepositoryWorkspaces(
 			db,
 			repositoryIdentities,

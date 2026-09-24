@@ -47,6 +47,15 @@ export function ensureRepositoryDiscoveryIndex(db: Database): void {
 
 export function repositoryDiscoveryRevision(db: Database): number | null {
 	try {
+		const triggers = db
+			.prepare(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name IN (
+				'trg_repository_discovery_session_insert',
+				'trg_repository_discovery_session_update',
+				'trg_repository_discovery_session_delete'
+			)`)
+			.pluck()
+			.get() as number;
+		if (triggers !== 3) return null;
 		const row = db
 			.prepare("SELECT source_revision FROM repository_discovery_state WHERE id = 1")
 			.get() as { source_revision: number } | undefined;

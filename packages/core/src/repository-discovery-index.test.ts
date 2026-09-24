@@ -54,6 +54,8 @@ it("invalidates persisted repository evidence for every session identity mutatio
 		expect(repositoryDiscoveryRevision(db)).toBe(4);
 		db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId);
 		expect(repositoryDiscoveryRevision(db)).toBe(5);
+		db.exec("DROP TRIGGER trg_repository_discovery_session_update");
+		expect(repositoryDiscoveryRevision(db)).toBeNull();
 		ensureRepositoryDiscoveryIndex(db);
 		expect(repositoryDiscoveryRevision(db)).toBe(5);
 	} finally {
