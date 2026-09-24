@@ -128,6 +128,56 @@ it("canonicalizes a queued legacy cwd before resolving its boundary and recipien
 	}
 });
 
+it("keeps distinct uncertain sibling effects when their canonical steps collide", async () => {
+	const db = new Database(":memory:");
+	initTestSchema(db);
+	const now = new Date(BASE_TIME).toISOString();
+	const aliases = [CWD, "/workspace/reconciled-sibling"];
+	try {
+		const insertStep = db.prepare(`INSERT INTO recipient_policy_reconciliation_steps(
+			canonical_project_identity, generation, step_key, effect_id, payload_digest,
+			status, created_at, updated_at
+		 ) VALUES (?, 4, 'revoke:device-old', ?, 'payload:same', ?, ?, ?)`);
+		for (const [index, cwd] of aliases.entries()) {
+			db.prepare("INSERT INTO sessions(started_at, cwd, metadata_json) VALUES (?, ?, ?)").run(
+				now,
+				cwd,
+				JSON.stringify({ codemem_repository_identity: PROJECT }),
+			);
+			insertStep.run(
+				cwd,
+				`effect:uncertain:${index}`,
+				index === 0 ? "running" : "failed",
+				now,
+				now,
+			);
+		}
+		const effects = aliasReconciliationEffects();
+		await expect(
+			reconcileRecipientPolicyProject(
+				db,
+				{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-collision" },
+				effects,
+			),
+		).rejects.toThrow("recipient_policy_reconciliation_step_conflict");
+		expect(
+			db
+				.prepare(
+					"SELECT canonical_project_identity, effect_id FROM recipient_policy_reconciliation_steps ORDER BY canonical_project_identity",
+				)
+				.all(),
+		).toEqual(
+			aliases.map((cwd, index) => ({
+				canonical_project_identity: cwd,
+				effect_id: `effect:uncertain:${index}`,
+			})),
+		);
+		expect(effects.revoke).not.toHaveBeenCalled();
+	} finally {
+		db.close();
+	}
+});
+
 it("leaves cwd-keyed reconciliation state untouched while its lease is live", async () => {
 	const db = new Database(":memory:");
 	initTestSchema(db);
