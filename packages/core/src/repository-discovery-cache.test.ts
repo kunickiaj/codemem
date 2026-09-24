@@ -5,7 +5,11 @@ import {
 	__repositoryDiscoveryCacheTestHooks,
 	repositoryIdentitiesFromIndexedEvidence,
 } from "./repository-discovery-cache.js";
-import { ensureRepositoryDiscoveryIndex } from "./repository-discovery-index.js";
+import {
+	ensureRepositoryDiscoveryIndex,
+	loadRepositoryDiscoveryEvidence,
+	repositoryDiscoveryRevision,
+} from "./repository-discovery-index.js";
 import { initTestSchema } from "./test-utils.js";
 
 it("bounds identity-map variants across repeated mapping edits", () => {
@@ -88,6 +92,38 @@ it("drops an in-memory snapshot when a missing trigger is repaired", () => {
 		);
 		ensureRepositoryDiscoveryIndex(db);
 		expect(repositoryIdentitiesFromIndexedEvidence(db, [after])?.identities.get(cwd)).toBe(after);
+	} finally {
+		db.close();
+	}
+});
+
+it("rebuilds recorded sibling evidence after repairing a missing index table", () => {
+	const db = new Database(":memory:");
+	const repository = "https://example.test/acme/linked.git";
+	const siblings = ["/workspace/linked-main", "/workspace/linked-sibling"];
+	try {
+		initTestSchema(db);
+		ensureAdditiveSchemaCompatibility(db);
+		const insert = db.prepare(
+			"INSERT INTO sessions(started_at, cwd, metadata_json) VALUES (?, ?, ?)",
+		);
+		for (const cwd of siblings) {
+			insert.run(
+				"2026-09-24T00:00:00.000Z",
+				cwd,
+				JSON.stringify({ codemem_repository_identity: repository }),
+			);
+		}
+		const before = repositoryIdentitiesFromIndexedEvidence(db, [repository]);
+		expect([...(before?.identities.values() ?? [])]).toEqual([repository, repository]);
+		const revision = repositoryDiscoveryRevision(db);
+		db.exec("DROP TABLE repository_workspace_evidence");
+		ensureRepositoryDiscoveryIndex(db);
+		expect(loadRepositoryDiscoveryEvidence(db)).toBeNull();
+		expect(repositoryDiscoveryRevision(db)).toBeGreaterThan(revision ?? 0);
+		const after = repositoryIdentitiesFromIndexedEvidence(db, [repository]);
+		expect([...(after?.identities.values() ?? [])]).toEqual([repository, repository]);
+		expect(db.prepare("SELECT COUNT(*) FROM repository_workspace_evidence").pluck().get()).toBe(2);
 	} finally {
 		db.close();
 	}

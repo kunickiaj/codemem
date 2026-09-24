@@ -26,15 +26,20 @@ function discoveryTriggerCount(db: Database): number {
 }
 
 export function ensureRepositoryDiscoveryIndex(db: Database): void {
-	if (discoveryTriggerCount(db) !== 3) {
+	const evidenceTableExists = db
+		.prepare(
+			"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'repository_workspace_evidence'",
+		)
+		.get();
+	if (discoveryTriggerCount(db) !== 3 || !evidenceTableExists) {
 		const existingState = db
 			.prepare(
 				"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'repository_discovery_state'",
 			)
 			.get();
 		if (existingState) {
-			// Missing triggers may have let sessions change without advancing source_revision.
-			// Advance it before repair so in-memory and on-disk snapshots both become stale.
+			// Missing triggers may have missed writes, and a missing evidence table has
+			// lost its rows. Invalidate in-memory and on-disk snapshots before repair.
 			db.prepare(`UPDATE repository_discovery_state
 				SET source_revision = source_revision + 1, indexed_revision = -1 WHERE id = 1`).run();
 		}
