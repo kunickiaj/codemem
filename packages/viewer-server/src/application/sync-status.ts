@@ -407,6 +407,39 @@ function readAttemptStatus(input: SyncStatusInput): AttemptStatusReadModel {
 	return { items, latestError: String(rows[0]?.error || "").trim() };
 }
 
+export function latestFailedPeerIds(
+	store: MemoryStore,
+	activePeerIds: Set<string>,
+	isRecentIso: (value: unknown) => boolean,
+): Set<string> {
+	const cutoff = new Date(Date.now() - 10 * 60_000).toISOString();
+	const now = new Date().toISOString();
+	return traceSync("recentPeerFailures", () => {
+		const rows = store.db
+			.prepare(
+				`SELECT peer_device_id, ok, error, finished_at
+				 FROM sync_attempts
+				 WHERE (CASE WHEN finished_at IS NULL THEN started_at ELSE finished_at END) BETWEEN ? AND ?
+				 ORDER BY (CASE WHEN finished_at IS NULL THEN started_at ELSE finished_at END) DESC, id DESC`,
+			)
+			.iterate(cutoff, now) as Iterable<{
+			peer_device_id: string;
+			ok: number;
+			error: string | null;
+			finished_at: string | null;
+		}>;
+		const seen = new Set<string>();
+		const failed = new Set<string>();
+		for (const row of rows) {
+			if (!activePeerIds.has(row.peer_device_id) || seen.has(row.peer_device_id)) continue;
+			if (!isRecentIso(row.finished_at)) continue;
+			seen.add(row.peer_device_id);
+			if (!row.ok && row.error) failed.add(row.peer_device_id);
+		}
+		return failed;
+	});
+}
+
 function peerStates(peers: PeerStatusReadModel): Set<string> {
 	return new Set(
 		peers.items.map((peer) =>
@@ -424,19 +457,13 @@ function allPeersOffline(peers: PeerStatusReadModel): boolean {
 	);
 }
 
-function degradedDaemonState(
-	input: SyncStatusInput,
+export function degradedDaemonState(
 	peers: PeerStatusReadModel,
-	attempts: AttemptStatusReadModel,
+	failedPeerIds: Set<string>,
 ): string {
 	const states = peerStates(peers);
 	const allOffline = allPeersOffline(peers);
-	const latestFailedRecently = Boolean(
-		attempts.items[0] &&
-			attempts.items[0].status === "error" &&
-			input.operations.isRecentIso(attempts.items[0].finished_at),
-	);
-	if (latestFailedRecently) {
+	if (failedPeerIds.size > 0) {
 		if (states.has("online") || states.has("degraded")) return "degraded";
 		if (allOffline) return "offline-peers";
 		if (peers.items.length > 0) return "stale";
@@ -448,10 +475,10 @@ function degradedDaemonState(
 }
 
 function applyDerivedDaemonState(
-	input: SyncStatusInput,
 	base: BaseStatus,
 	peers: PeerStatusReadModel,
 	attempts: AttemptStatusReadModel,
+	failedPeerIds: Set<string>,
 	statusBlock: Record<string, unknown>,
 ): void {
 	let state = base.daemonState;
@@ -461,7 +488,7 @@ function applyDerivedDaemonState(
 		base.statusPayload.daemon_detail = detail;
 		statusBlock.daemon_detail = detail;
 	} else if (state === "ok") {
-		state = degradedDaemonState(input, peers, attempts);
+		state = degradedDaemonState(peers, failedPeerIds);
 	}
 	base.statusPayload.daemon_state = state;
 	statusBlock.daemon_state = state;
@@ -491,6 +518,16 @@ export async function buildSyncStatusResponse(
 	);
 	const peers = readPeerStatus(input, base.localDeviceId);
 	const attempts = readAttemptStatus(input);
+	const activePeerIds = new Set(peers.items.map((peer) => String(peer.peer_device_id ?? "")));
+	const failedPeerIds = latestFailedPeerIds(
+		input.store,
+		activePeerIds,
+		input.operations.isRecentIso,
+	);
+	for (const peer of peers.items) {
+		const status = peer.status as Record<string, unknown>;
+		status.recent_failed_attempt = failedPeerIds.has(String(peer.peer_device_id ?? ""));
+	}
 	const statusBlock: Record<string, unknown> = {
 		...base.statusPayload,
 		background_maintenance: input.operations.summarizeMaintenanceJobs(
@@ -513,7 +550,7 @@ export async function buildSyncStatusResponse(
 		input.operations.listRecipientPolicyReconciliationStatus(input.store),
 	);
 	const joinRequests = await readJoinRequests(input, base.config);
-	applyDerivedDaemonState(input, base, peers, attempts, statusBlock);
+	applyDerivedDaemonState(base, peers, attempts, failedPeerIds, statusBlock);
 	const response: Record<string, unknown> = {
 		...base.statusPayload,
 		status: statusBlock,

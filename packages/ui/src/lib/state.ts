@@ -248,6 +248,7 @@ export interface SyncPeerStatus {
 	sync_status?: string;
 	ping_status?: string;
 	fresh?: boolean;
+	recent_failed_attempt?: boolean;
 }
 
 export interface SyncPeer {

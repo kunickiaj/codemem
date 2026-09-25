@@ -517,6 +517,71 @@ it("does not hide a failed device just because another device synced recently", 
 	);
 });
 
+it("shows a failed device when the daemon reports ok after a different peer succeeds", () => {
+	state.lastSyncPeers = [
+		{ peer_device_id: "peer-a", name: "Work laptop", status: { peer_state: "online" } },
+		{ peer_device_id: "peer-b", name: "Home desktop", status: { peer_state: "online" } },
+	];
+	state.lastSyncAttempts = [
+		{ peer_device_id: "peer-b", status: "ok", finished_at: new Date().toISOString() },
+		{ peer_device_id: "peer-a", status: "error", finished_at: new Date().toISOString() },
+	];
+	state.lastSyncStatus = {
+		enabled: true,
+		daemon_state: "ok",
+		last_sync_at: new Date().toISOString(),
+	};
+	renderOverview();
+	expect(document.querySelectorAll("#healthGrid .health-tile-value")[1]?.textContent).toBe(
+		"Degraded",
+	);
+	expect(document.getElementById("healthMeta")?.textContent).toContain(
+		"sync with paired devices failed",
+	);
+	expect(document.getElementById("healthActions")?.textContent).toContain("Work laptop");
+});
+
+it("does not treat a future-dated failed attempt as recent after the clock moves", () => {
+	state.lastSyncPeers = [
+		{ peer_device_id: "peer-a", name: "Work laptop", status: { peer_state: "online" } },
+	];
+	state.lastSyncAttempts = [
+		{
+			peer_device_id: "peer-a",
+			status: "error",
+			finished_at: new Date(Date.now() + 60_000).toISOString(),
+		},
+	];
+	state.lastSyncStatus = {
+		enabled: true,
+		daemon_state: "ok",
+		last_sync_at: new Date().toISOString(),
+	};
+	renderOverview();
+	expect(document.getElementById("healthActions")?.textContent).not.toContain("Work laptop");
+	expect(document.getElementById("healthMeta")?.textContent).toContain("0 issues");
+});
+
+it("names a failed peer when its attempt fell outside the five-row activity preview", () => {
+	state.lastSyncPeers = [
+		{
+			peer_device_id: "peer-a",
+			name: "Work laptop",
+			status: { peer_state: "online", recent_failed_attempt: true },
+		},
+	];
+	state.lastSyncAttempts = [
+		{ peer_device_id: "peer-b", status: "ok", finished_at: new Date().toISOString() },
+	];
+	state.lastSyncStatus = {
+		enabled: true,
+		daemon_state: "degraded",
+		last_sync_at: new Date().toISOString(),
+	};
+	renderOverview();
+	expect(document.getElementById("healthActions")?.textContent).toContain("Work laptop");
+});
+
 it("explains offline peers without treating a restart as their recovery", () => {
 	state.lastSyncPeers = [
 		{ peer_device_id: "peer-a", name: "Work laptop", status: { peer_state: "offline" } },

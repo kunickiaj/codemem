@@ -441,6 +441,7 @@ export interface ApiProjectScope {
 /** Peer status breakdown. */
 export interface ApiPeerStatus {
 	sync_status: "ok" | "error" | "stale" | "unknown";
+	recent_failed_attempt?: boolean;
 	ping_status: "ok" | "stale" | "unknown";
 	peer_state: "online" | "offline" | "degraded" | "stale" | "unknown";
 	fresh: boolean;
