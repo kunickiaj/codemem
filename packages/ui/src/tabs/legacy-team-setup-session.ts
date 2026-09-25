@@ -628,7 +628,7 @@ function errorFor(
 	return {
 		scope: errorScopeFor(command, { globalError }),
 		message: staleRecovery ?? message,
-		hideStaleView: Boolean(staleRecovery),
+		hideStaleView: Boolean(staleRecovery) || (command.kind === "load" && command.completionOnly),
 		retry: retryFor(command, cause, recoveryCause, {
 			changed,
 			rosterUnavailable,
@@ -697,10 +697,10 @@ function retryFor(
 	return "load";
 }
 
-function completionOnlyRetry(cause: unknown): "load" | "completion" | "refresh" {
-	if (!(cause instanceof LegacyTeamSetupApiError)) return "load";
-	if (completionErrorCode(cause.errorCode) !== null) return "completion";
-	return isChangedStateCode(cause.errorCode) ? "refresh" : "load";
+function completionOnlyRetry(cause: unknown): "completion" | "refresh" {
+	if (cause instanceof LegacyTeamSetupApiError && isChangedStateCode(cause.errorCode))
+		return "refresh";
+	return "completion";
 }
 
 function staleLoadRecoveryMessage(

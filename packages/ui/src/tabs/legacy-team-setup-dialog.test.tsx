@@ -3258,6 +3258,37 @@ describe("Team setup dialog completion races during load", () => {
 });
 
 describe("Team setup completion check recovery", () => {
+	it("rejects an obsolete ready draft after a transient completion-check failure", async () => {
+		const loadDetail = vi
+			.fn()
+			.mockRejectedValueOnce(new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale"))
+			.mockRejectedValueOnce(new LegacyTeamSetupApiError(503, "team_setup_completion_unavailable"))
+			.mockRejectedValueOnce(new Error("temporary read failure"))
+			.mockResolvedValueOnce(detail({ canFinish: true }));
+		const refreshCandidate = vi.fn();
+		setup({ loadDetail, refreshCandidate });
+		await vi.waitFor(() =>
+			expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+				"Team setup completion could not be checked",
+			),
+		);
+		act(() => document.getElementById("legacy-team-setup-retry")?.click());
+		await vi.waitFor(() =>
+			expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+				"details are temporarily unavailable",
+			),
+		);
+		act(() => document.getElementById("legacy-team-setup-retry")?.click());
+		await vi.waitFor(() => expect(loadDetail).toHaveBeenCalledTimes(4));
+		await vi.waitFor(() =>
+			expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+				"changed since it was last reviewed",
+			),
+		);
+		expect(document.querySelector(".legacy-team-setup-confirmation input")).toBeNull();
+		expect(refreshCandidate).not.toHaveBeenCalled();
+	});
+
 	it.each([
 		new Error("private follow-up transport failure"),
 		new LegacyTeamSetupApiError(503, "team_setup_failed"),
@@ -3356,7 +3387,49 @@ describe("Team setup follow-up read failures", () => {
 });
 
 describe("Team setup completion-only read failure", () => {
-	it("keeps the old confirmation hidden until a later detail read succeeds", async () => {
+	it.each(["team_setup_completion_conflict", "team_setup_completion_invalid"] as const)(
+		"hides the old confirmation while completion remains unresolved: %s",
+		async (code) => {
+			const initial = detail({ canFinish: true });
+			const stale = new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale");
+			const loadDetail = vi
+				.fn()
+				.mockResolvedValueOnce(initial)
+				.mockResolvedValueOnce(initial)
+				.mockRejectedValueOnce(new LegacyTeamSetupApiError(409, code));
+			const refreshCandidate = vi.fn().mockRejectedValue(stale);
+			setup({ loadDetail, finish: vi.fn().mockRejectedValue(stale), refreshCandidate });
+			await vi.waitFor(() => expect(document.body.textContent).toContain("Finish Team setup"));
+			const confirmation = document.querySelector<HTMLInputElement>(
+				".legacy-team-setup-confirmation input",
+			);
+			if (!confirmation) throw new Error("finish confirmation missing");
+			confirmation.checked = true;
+			act(() => {
+				confirmation.dispatchEvent(new Event("change", { bubbles: true }));
+			});
+			act(() => button("Finish Team setup").click());
+			await vi.waitFor(() => expect(document.querySelector('[role="alert"]')).not.toBeNull());
+			act(() => document.getElementById("legacy-team-setup-retry")?.click());
+			await vi.waitFor(() => expect(refreshCandidate).toHaveBeenCalledOnce());
+			await vi.waitFor(() =>
+				expect(
+					document.getElementById("legacy-team-setup-retry")?.getAttribute("aria-disabled"),
+				).toBeNull(),
+			);
+			act(() => document.getElementById("legacy-team-setup-retry")?.click());
+			await vi.waitFor(() =>
+				expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+					code === "team_setup_completion_conflict"
+						? "Another device completed this Team"
+						: "completed Team setup could not be verified",
+				),
+			);
+			expect(document.querySelector(".legacy-team-setup-confirmation input")).toBeNull();
+		},
+	);
+
+	it("keeps the old confirmation hidden until a completed detail is confirmed", async () => {
 		const initial = detail({ canFinish: true });
 		const loadDetail = vi
 			.fn()
@@ -3395,13 +3468,14 @@ describe("Team setup completion-only read failure", () => {
 		expect(document.querySelector(".legacy-team-setup-confirmation input")).toBeNull();
 		act(() => document.getElementById("legacy-team-setup-retry")?.click());
 		await vi.waitFor(() => expect(loadDetail).toHaveBeenCalledTimes(4));
+		await vi.waitFor(() =>
+			expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+				"changed since it was last reviewed",
+			),
+		);
 		expect(refreshCandidate).toHaveBeenCalledOnce();
 		expect(onCompleted).not.toHaveBeenCalled();
-		await vi.waitFor(() =>
-			expect(
-				document.querySelector<HTMLInputElement>(".legacy-team-setup-confirmation input")?.checked,
-			).toBe(false),
-		);
+		expect(document.querySelector(".legacy-team-setup-confirmation input")).toBeNull();
 	});
 });
 
