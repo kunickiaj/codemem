@@ -981,6 +981,39 @@ describe("recipient-focused Sharing unavailable Projects", () => {
 		expect(document.body.outerHTML).not.toContain("missing-a");
 		expect(document.body.outerHTML).not.toContain("missing-b");
 	});
+
+	it("keeps placeholder names distinct from real Projects with the same labels", () => {
+		const knownProjects: RecipientPolicyManagementProject[] = [
+			{
+				canonicalProjectIdentity: "known-a",
+				displayName: "Unavailable Project",
+				existingMemoryCount: 1,
+			},
+			{
+				canonicalProjectIdentity: "known-b",
+				displayName: "Unavailable Project 1 of 2",
+				existingMemoryCount: 1,
+			},
+		];
+		const projectRecipients = ["known-a", "known-b", "missing-a", "missing-b"].map(
+			(projectId, index) => ({
+				version: 1 as const,
+				canonicalProjectIdentity: projectId,
+				recipientKind: "team" as const,
+				teamId: "team-example",
+				intentSource: "user" as const,
+				policyRevision: `collision-${index}`,
+				status: "active" as const,
+			}),
+		);
+		mount(intent({ projectRecipients }), {}, knownProjects);
+		const names = [...visiblePanel().querySelectorAll(".tag-chip")].map((chip) => chip.textContent);
+		expect(names).toHaveLength(4);
+		expect(new Set(names).size).toBe(4);
+		expect(names).toContain("Unavailable Project");
+		expect(names).toContain("Unavailable Project 1 of 2");
+		expect(visiblePanel().textContent).toContain("4Shared projects");
+	});
 });
 
 function testRecipientFocusedRecipientActions() {
