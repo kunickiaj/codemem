@@ -226,7 +226,9 @@ export function safeDaemonIssueCode(
 ): "coordinator_timeout" | "coordinator_error" | null {
 	if (state !== "error" || !lastError?.includes("coordinator enrollment maintenance failed"))
 		return null;
-	return lastError.includes(":request_timeout") ? "coordinator_timeout" : "coordinator_error";
+	return lastError.includes(":request_timeout") || lastError.endsWith(" (coordinator_timeout)")
+		? "coordinator_timeout"
+		: "coordinator_error";
 }
 
 function retentionPayload(config: SyncConfig, rows: StatusRows, retainedFloor: string | null) {

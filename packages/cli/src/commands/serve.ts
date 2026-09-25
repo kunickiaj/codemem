@@ -603,6 +603,25 @@ function createServeCoordinatorMaintenanceDependencies(
 	};
 }
 
+function coordinatorEnrollmentFailureMessage(result: {
+	failedGroups: number;
+	issues?: number;
+	failures?: ReconcileConfiguredCoordinatorEnrollmentResult["failures"];
+}): string {
+	const groupLabel = result.failedGroups === 1 ? "group" : "groups";
+	const issueCount = result.issues ?? 0;
+	const issueLabel = issueCount === 1 ? "issue" : "issues";
+	const failures = result.failures ?? [];
+	const failureDetail = failures.length
+		? ` [${failures
+				.slice(0, 3)
+				.map((failure) => `${failure.groupId}:${failure.stage}:${failure.code}`)
+				.join(", ")}${failures.length > 3 ? `, +${failures.length - 3} more` : ""}]`
+		: "";
+	const hiddenTimeout = failures.slice(3).some((failure) => failure.code === "request_timeout");
+	return `coordinator enrollment maintenance failed for ${result.failedGroups} ${groupLabel} with ${issueCount} reconciliation ${issueLabel}${failureDetail}${hiddenTimeout ? " (coordinator_timeout)" : ""}`;
+}
+
 export async function runServeCoordinatorMaintenance(
 	store: MemoryStore,
 	dependencies: {
@@ -634,18 +653,7 @@ export async function runServeCoordinatorMaintenance(
 		);
 	}
 	if (coordinatorEnrollment.failedGroups > 0) {
-		const groupLabel = coordinatorEnrollment.failedGroups === 1 ? "group" : "groups";
-		const issueLabel = enrollmentIssues === 1 ? "issue" : "issues";
-		const failures = coordinatorEnrollment.failures ?? [];
-		const failureDetail = failures.length
-			? ` [${failures
-					.slice(0, 3)
-					.map((failure) => `${failure.groupId}:${failure.stage}:${failure.code}`)
-					.join(", ")}${failures.length > 3 ? `, +${failures.length - 3} more` : ""}]`
-			: "";
-		throw new Error(
-			`coordinator enrollment maintenance failed for ${coordinatorEnrollment.failedGroups} ${groupLabel} with ${enrollmentIssues} reconciliation ${issueLabel}${failureDetail}`,
-		);
+		throw new Error(coordinatorEnrollmentFailureMessage(coordinatorEnrollment));
 	}
 	if (enrollmentIssues > 0) {
 		const issueLabel = enrollmentIssues === 1 ? "issue" : "issues";

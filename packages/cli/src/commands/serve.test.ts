@@ -258,7 +258,7 @@ describe("serve command option resolution", () => {
 		expect(reconcileRecipientPolicyProjects).toHaveBeenCalledOnce();
 	});
 
-	it("bounds enrollment failure details", async () => {
+	it("limits enrollment failure details but preserves a hidden timeout reason", async () => {
 		await expect(
 			runServeCoordinatorMaintenance({} as MemoryStore, {
 				advancePendingProjectShares: vi.fn(async () => ({ processed: 0, failed: 0 })),
@@ -269,13 +269,13 @@ describe("serve command option resolution", () => {
 					failures: ["a", "b", "c", "d"].map((groupId) => ({
 						groupId,
 						stage: "list_devices" as const,
-						code: "coordinator_device_list_malformed",
+						code: groupId === "d" ? "request_timeout" : "coordinator_device_list_malformed",
 					})),
 				})),
 				reconcileRecipientPolicyProjects: vi.fn(async () => ({ processed: 0, failed: 0 })),
 			}),
 		).rejects.toThrow(
-			"[a:list_devices:coordinator_device_list_malformed, b:list_devices:coordinator_device_list_malformed, c:list_devices:coordinator_device_list_malformed, +1 more]",
+			"[a:list_devices:coordinator_device_list_malformed, b:list_devices:coordinator_device_list_malformed, c:list_devices:coordinator_device_list_malformed, +1 more] (coordinator_timeout)",
 		);
 	});
 

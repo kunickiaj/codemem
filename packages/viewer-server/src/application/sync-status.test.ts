@@ -14,6 +14,12 @@ describe("safe daemon issue codes", () => {
 		const code = safeDaemonIssueCode("error", error);
 		expect(code).toBe("coordinator_timeout");
 		expect(JSON.stringify({ daemon_issue_code: code })).not.toContain("private-group");
+		expect(
+			safeDaemonIssueCode(
+				"error",
+				"coordinator enrollment maintenance failed for 4 groups [first:list_devices:bad_response, +3 more] (coordinator_timeout)",
+			),
+		).toBe("coordinator_timeout");
 	});
 
 	it("does not surface a resolved or unrelated error as coordinator trouble", () => {
