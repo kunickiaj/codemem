@@ -166,6 +166,7 @@ export {
 	reassignProjectInventoryProject,
 	refreshLegacyTeamSetupCandidate,
 	renameActor,
+	renameKnownDevice,
 	renamePeer,
 	renameRecipientPolicyTeam,
 	resolveRecipientPolicyReview,

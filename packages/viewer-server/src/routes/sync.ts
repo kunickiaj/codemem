@@ -206,6 +206,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { type Context, Hono } from "hono";
 import { queryBool, queryInt, safeJsonList } from "../helpers.js";
 import type { InMemoryRequestRateLimiter } from "../request-rate-limit.js";
+import { deviceRenameRoutes } from "./device-rename.js";
 import { legacyTeamCandidateGroupDescriptors, normalizedCoordinatorId } from "./team-setup.js";
 
 type StoreFactory = () => MemoryStore;
@@ -5757,7 +5758,7 @@ export function syncRoutes(
 		);
 	});
 
-	app.get("/api/sync/recipient-policy/v1/intent", (c) => {
+	app.route("/", deviceRenameRoutes(getStore)).get("/api/sync/recipient-policy/v1/intent", (c) => {
 		const store = getStore();
 		return c.json(listRecipientPolicyIntent(store.db));
 	});

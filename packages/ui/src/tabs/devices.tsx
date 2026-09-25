@@ -16,6 +16,7 @@ import {
 	type DeviceIdentityInventoryItemV1,
 	type DeviceIdentityInventoryV1,
 	previewDeviceIdentityBindings,
+	type renameKnownDevice,
 } from "../lib/api/sync";
 import {
 	deviceIdentityAttentionItems,
@@ -23,6 +24,7 @@ import {
 } from "../lib/device-identity-inventory";
 import { copyToClipboard } from "../lib/dom";
 import { state } from "../lib/state";
+import { RenameDeviceAction } from "./device-rename";
 
 export type DeviceAvailabilityState = "available" | "offline" | "unknown";
 export type DevicesNavigationTarget =
@@ -61,6 +63,7 @@ export interface DevicesRendererOptions {
 	onCommitted?: () => boolean | undefined | Promise<boolean | undefined>;
 	previewBindings?: typeof previewDeviceIdentityBindings;
 	commitBindings?: typeof commitDeviceIdentityBindings;
+	renameDevice?: typeof renameKnownDevice;
 	coordinatorEnrollmentIssueCount?: number;
 }
 
@@ -1284,21 +1287,6 @@ function rememberDetailsFocus(deviceId: string) {
 	};
 }
 
-function PairedDeviceRename({
-	device,
-	onNavigate,
-}: {
-	device: DeviceProjection;
-	onNavigate?: DevicesRendererOptions["onNavigate"];
-}) {
-	if (!device.isPairedPeer || !onNavigate) return null;
-	return (
-		<button className="sync-subview-link" onClick={() => onNavigate("advanced_sync")} type="button">
-			Rename paired device in Advanced Sync…
-		</button>
-	);
-}
-
 function DeviceTableRow({
 	device,
 	intent,
@@ -1329,7 +1317,7 @@ function DeviceTableRow({
 				</td>
 				<td className="devices-table-device">
 					<strong>{device.displayName}</strong>
-					<PairedDeviceRename device={device} onNavigate={options.onNavigate} />
+					<RenameDeviceAction device={device} options={options} />
 					{directLocalDeviceId(options) === device.deviceId ? (
 						<Chip tone="actor-badge local" variant="badge">
 							This device

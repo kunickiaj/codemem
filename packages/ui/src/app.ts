@@ -614,9 +614,14 @@ function navigateFromDevices(target: DevicesNavigationTarget) {
 	queueMicrotask(() => document.getElementById(`tabBtn-${target}`)?.focus());
 }
 
-function loadDevicesData(options: ReadRequestOptions = {}): Promise<boolean> {
+function loadDevicesData(
+	options: ReadRequestOptions & { deferWhileRenaming?: boolean } = {},
+): Promise<boolean> {
 	const mount = document.getElementById("devicesMount");
 	if (!mount) return Promise.resolve(true);
+	if (options.deferWhileRenaming && document.activeElement?.closest(".devices-rename-form")) {
+		return Promise.resolve(true);
+	}
 	const revision = ++devicesLoadRevision;
 	const operation = runLoadDevicesData(mount, revision, options);
 	latestDevicesLoad = operation;
@@ -771,7 +776,11 @@ function appendTabRefreshTasks(
 		);
 	}
 	if (refreshTab === "devices") {
-		promises.push(loadDevicesData({ signal: session.signal }).then(recordBooleanResult));
+		promises.push(
+			loadDevicesData({ deferWhileRenaming: true, signal: session.signal }).then(
+				recordBooleanResult,
+			),
+		);
 	}
 	if (refreshTab === "health") {
 		promises.push(

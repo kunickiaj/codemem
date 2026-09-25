@@ -911,13 +911,12 @@ describe("Device runtime aliases", () => {
 				expect(row?.textContent).toContain(validated ? "Available" : "Presence unavailable");
 				expect(row?.textContent?.includes("0.42.0")).toBe(validated);
 				const action = [...mount.querySelectorAll<HTMLButtonElement>("button")].find(
-					(button) => button.textContent === "Rename paired device in Advanced Sync…",
+					(button) => button.textContent === "Rename device…",
 				);
-				expect(Boolean(action)).toBe(validated);
+				expect(action).toBeDefined();
 				if (action) act(() => action.click());
 			}
-			if (validated) expect(onNavigate).toHaveBeenCalledWith("advanced_sync");
-			else expect(onNavigate).not.toHaveBeenCalled();
+			expect(onNavigate).not.toHaveBeenCalled();
 		},
 	);
 });
@@ -1017,7 +1016,7 @@ describe("Device runtime observation ordering", () => {
 					}),
 				);
 				expect(mount.querySelector(".devices-table-version")?.textContent).toBe(expected);
-				expect(mount.textContent).toContain("Rename paired device in Advanced Sync");
+				expect(mount.textContent).toContain("Rename device…");
 			}
 			if (!outage) {
 				const result = projectDevices(
@@ -1128,13 +1127,17 @@ describe("Device runtime metadata", () => {
 	});
 });
 describe("Device naming", () => {
-	it("offers paired-device naming separately from Identity reassignment", async () => {
+	it("renames a configured device separately from Identity reassignment", async () => {
 		const onNavigate = vi.fn();
+		const renameDevice = vi.fn().mockResolvedValue(undefined);
+		const onCommitted = vi.fn().mockResolvedValue(true);
 		mount(intent(), reconciliation(), {
 			inventory: inventory([
 				inventoryItem("device-address-fingerprint-secret", "Work Laptop", "configured"),
 			]),
 			onNavigate,
+			onCommitted,
+			renameDevice,
 			peerRuntimeMetadata: [
 				{
 					deviceId: "device-address-fingerprint-secret",
@@ -1145,10 +1148,22 @@ describe("Device naming", () => {
 		});
 		const rename = [
 			...document.querySelectorAll<HTMLButtonElement>(".devices-table-device button"),
-		].find((button) => button.textContent?.includes("Rename paired device"));
+		].find((button) => button.textContent?.includes("Rename device"));
 		expect(rename).toBeDefined();
 		act(() => rename?.click());
-		expect(onNavigate).toHaveBeenCalledWith("advanced_sync");
+		const form = document.querySelector<HTMLFormElement>(".devices-rename-form");
+		const input = form?.querySelector<HTMLInputElement>("input");
+		if (!form || !input) throw new Error("Rename form missing");
+		act(() => {
+			input.value = "Desk laptop";
+			input.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		await act(async () => {
+			form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+		});
+		expect(renameDevice).toHaveBeenCalledWith("device-address-fingerprint-secret", "Desk laptop");
+		expect(onCommitted).toHaveBeenCalledOnce();
+		expect(onNavigate).not.toHaveBeenCalled();
 		const details = [...document.querySelectorAll<HTMLButtonElement>(".feed-menu-item")].find(
 			(button) => button.textContent === "Details",
 		);
@@ -1237,7 +1252,7 @@ describe("Device identity grouping", () => {
 		expect(document.querySelector(".devices-identity-header")?.textContent).toContain(
 			"Adam & Co · 1 device",
 		);
-		expect(table.textContent).toContain("Work LaptopAvailable—");
+		expect(table.textContent).toContain("Work LaptopRename device…Available—");
 		expect(table.textContent).not.toContain("Owning Identity");
 		expect(table.textContent).not.toContain("Per-device Team access");
 		expect(document.body.textContent).toContain("Changing access stops future delivery");
@@ -1499,7 +1514,7 @@ describe("Device safe rendering", () => {
 		});
 
 		const text = document.body.textContent ?? "";
-		expect(text).toContain("Work LaptopAvailable");
+		expect(text).toContain("Work LaptopRename device…Available");
 		expect(text).toContain("Setup required");
 		expect(text).toContain("Pair this device first");
 		expect(text).toContain("Device evidence conflicts");

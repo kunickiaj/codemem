@@ -349,6 +349,19 @@ export async function deletePeer(peerDeviceId: string): Promise<unknown> {
 	return payload;
 }
 
+export async function renameKnownDevice(deviceId: string, name: string): Promise<void> {
+	const resp = await fetch(
+		`/api/sync/recipient-policy/v1/devices/${encodeURIComponent(deviceId)}/rename`,
+		{
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ display_name: name }),
+		},
+	);
+	const { text, payload } = await readJsonPayload(resp);
+	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
+}
+
 export async function renamePeer(peerDeviceId: string, name: string): Promise<unknown> {
 	const resp = await fetch("/api/sync/peers/rename", {
 		method: "POST",

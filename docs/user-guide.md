@@ -364,7 +364,7 @@ The recipient accepts on the new device. Codemem links it to the same Identity, 
 
 **Devices** shows every known device and whether its Identity ownership is configured. It does not infer ownership from pairing, coordinator membership, device names, or historical associations. It also does not infer per-device Team access from Identity membership; use Team policy administration when you need to review authoritative device decisions. Both direct and Team access remain limited to exact canonical Projects selected in Sharing.
 
-For a paired device, use **Rename paired device in Advanced Sync** from its Devices row, expand the device under **Advanced → Sync**, edit **Device name**, and choose **Save name**. The peer rename does not change names supplied by coordinator enrollment or a local Identity binding. **Change Identity** is a separate, reviewed ownership reassignment; the target picker lists only other active Identities. It cannot rename a device.
+Use **Rename device** on a configured row in **Devices** to change its friendly name. A coordinator-enrolled device is renamed in every configured group where it is enrolled; if one group fails, retry the same name after the coordinator recovers. A device without coordinator enrollment gets a name local to this installation. **Change Identity** is a separate, reviewed ownership reassignment; the target picker lists only other active Identities. It cannot rename a device.
 
 | Identity setup state | Meaning | What to do |
 | --- | --- | --- |
