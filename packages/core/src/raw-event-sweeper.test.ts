@@ -12,6 +12,15 @@ function sleep(ms: number) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Flushes write memories; loading the real embedding model makes timing-based
+// assertions depend on whether the embeddings package happens to be built.
+beforeEach(() => {
+	vi.stubEnv("CODEMEM_EMBEDDING_DISABLED", "1");
+});
+afterEach(() => {
+	vi.unstubAllEnvs();
+});
+
 describe("RawEventSweeper auto flush", () => {
 	let tmpDir: string;
 	let dbPath: string;
@@ -350,9 +359,9 @@ describe("RawEventSweeper auto flush", () => {
 		});
 
 		sweeper.nudge("sess-rerun");
-		await sleep(220);
 
-		expect(store.rawEventFlushState("sess-rerun")).toBe(2);
+		await vi.waitFor(() => expect(store.rawEventFlushState("sess-rerun")).toBe(2));
+		await sweeper.stop();
 	});
 
 	it("does not auto flush when auto flush is disabled", async () => {

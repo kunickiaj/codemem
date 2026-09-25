@@ -1,5 +1,6 @@
-import type { ComponentChildren } from "preact";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { type ComponentChildren, render } from "preact";
+import { act } from "preact/test-utils";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { state } from "../../lib/state";
 import {
@@ -121,6 +122,14 @@ function seedCoordinatorScopedDrafts(): void {
 		recoveryRetryRequested: false,
 	});
 }
+
+function unmountCoordinatorAdmin() {
+	const mount = document.getElementById("coordinatorAdminMount");
+	// Unmount inside act so pending effects run before the test environment is torn down.
+	if (mount) act(() => render(null, mount));
+}
+
+afterEach(unmountCoordinatorAdmin);
 
 function setupCoordinatorAdminLifecycleTest() {
 	vi.resetAllMocks();
