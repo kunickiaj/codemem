@@ -1882,6 +1882,16 @@ function recipientPolicyEnrollmentValueIsValid(value: unknown): value is string 
 	return typeof value === "string" && value.length > 0 && value === value.trim();
 }
 
+function recipientPolicySnapshotUnavailable(
+	stage: "scope_memberships" | "device_enrollments",
+	error: unknown,
+): never {
+	console.warn(
+		`[sync] recipient policy coordinator snapshot failed: stage=${stage} code=${coordinatorEnrollmentFailureCode(error)}`,
+	);
+	throw new Error("recipient_policy_snapshot_not_fresh");
+}
+
 export function createRecipientPolicyReconcilerEffects(
 	store: MemoryStore,
 	options: {
@@ -1957,9 +1967,7 @@ export function createRecipientPolicyReconcilerEffects(
 				includeRevoked: true,
 				remoteUrl: targetOptions.remoteUrl,
 				adminSecret: targetOptions.adminSecret,
-			}).catch(() => {
-				throw new Error("recipient_policy_snapshot_not_fresh");
-			});
+			}).catch((error) => recipientPolicySnapshotUnavailable("scope_memberships", error));
 			const snapshotMemberships = memberships.map((membership) => {
 				if (
 					typeof membership.device_id !== "string" ||
@@ -1995,9 +2003,7 @@ export function createRecipientPolicyReconcilerEffects(
 				includeDisabled: true,
 				remoteUrl: targetOptions.remoteUrl,
 				adminSecret: targetOptions.adminSecret,
-			}).catch(() => {
-				throw new Error("recipient_policy_snapshot_not_fresh");
-			});
+			}).catch((error) => recipientPolicySnapshotUnavailable("device_enrollments", error));
 			const presenceCapabilityExpiries = new Map(
 				enrollments.map((enrollment) => [
 					enrollment.device_id,
