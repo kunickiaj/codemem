@@ -318,11 +318,21 @@ function activeProjectNames(
 	projectIds: Iterable<string>,
 	projectsById: Map<string, RecipientPolicyManagementProject>,
 ): string[] {
-	const projects = [...new Set(projectIds)].map((projectId) => ({
-		canonicalId: projectId,
-		displayName: projectsById.get(projectId)?.displayName ?? "Unavailable Project",
-	}));
-	return projectIdentitySummaryGroups(projects).map((group) => group.displayName);
+	const distinctIds = [...new Set(projectIds)];
+	const projects = distinctIds.flatMap((projectId) => {
+		const project = projectsById.get(projectId);
+		return project ? [{ canonicalId: projectId, displayName: project.displayName }] : [];
+	});
+	const unavailableCount = distinctIds.length - projects.length;
+	const unavailableNames = Array.from({ length: unavailableCount }, (_, index) =>
+		unavailableCount === 1
+			? "Unavailable Project"
+			: `Unavailable Project ${index + 1} of ${unavailableCount}`,
+	);
+	return [
+		...projectIdentitySummaryGroups(projects).map((group) => group.displayName),
+		...unavailableNames,
+	].sort((left, right) => left.localeCompare(right));
 }
 
 const PROJECT_CHIP_LIMIT = 8;

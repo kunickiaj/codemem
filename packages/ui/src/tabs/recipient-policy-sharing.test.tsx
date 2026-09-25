@@ -945,6 +945,44 @@ function testRecipientFocusedIdentityViews() {
 
 describe("recipient-focused Sharing Identity views", testRecipientFocusedIdentityViews);
 
+describe("recipient-focused Sharing unavailable Projects", () => {
+	registerRecipientFocusedSharingLifecycle();
+
+	it("keeps missing Project identities distinct while collapsing known worktree names", () => {
+		const knownProjects: RecipientPolicyManagementProject[] = [
+			{
+				canonicalProjectIdentity: "known-a",
+				displayName: "Example Project",
+				existingMemoryCount: 1,
+			},
+			{
+				canonicalProjectIdentity: "known-b",
+				displayName: "Example Project",
+				existingMemoryCount: 2,
+			},
+		];
+		const projectRecipients = ["known-a", "known-b", "missing-a", "missing-b"].map(
+			(projectId, index) => ({
+				version: 1 as const,
+				canonicalProjectIdentity: projectId,
+				recipientKind: "team" as const,
+				teamId: "team-example",
+				intentSource: "user" as const,
+				policyRevision: `revision-${index}`,
+				status: "active" as const,
+			}),
+		);
+		mount(intent({ projectRecipients }), {}, knownProjects);
+
+		expect(visiblePanel().textContent).toContain("3Shared projects");
+		expect(
+			[...visiblePanel().querySelectorAll(".tag-chip")].map((chip) => chip.textContent),
+		).toEqual(["Example Project", "Unavailable Project 1 of 2", "Unavailable Project 2 of 2"]);
+		expect(document.body.outerHTML).not.toContain("missing-a");
+		expect(document.body.outerHTML).not.toContain("missing-b");
+	});
+});
+
 function testRecipientFocusedRecipientActions() {
 	registerRecipientFocusedSharingLifecycle();
 
