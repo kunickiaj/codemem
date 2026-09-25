@@ -122,38 +122,40 @@ function seedCoordinatorScopedDrafts(): void {
 	});
 }
 
+function setupCoordinatorAdminLifecycleTest() {
+	vi.resetAllMocks();
+	successfulPayloads();
+	document.body.innerHTML = "";
+	localStorage.clear();
+	state.lastCoordinatorAdminStatus = null;
+	state.lastCoordinatorAdminGroups = [];
+	state.lastCoordinatorAdminJoinRequests = [];
+	state.lastCoordinatorAdminDevices = [];
+	state.lastTeamInvite = null;
+	state.coordinatorAdminTargetGroup = "";
+	coordinatorAdminState.recovery = initialCoordinatorAdminRecovery();
+	coordinatorAdminState.loadGeneration = 0;
+	coordinatorAdminState.recoveryAnnouncement = "";
+	coordinatorAdminState.recoveryFocusPending = false;
+	coordinatorAdminState.recoveryRetryRequested = false;
+	coordinatorAdminState.joinRequestsSnapshotTarget = null;
+	coordinatorAdminState.devicesSnapshotTarget = null;
+	coordinatorAdminState.groupRenameDrafts.clear();
+	coordinatorAdminState.groupPresentationAliases.clear();
+	coordinatorAdminState.deviceRenameDrafts.clear();
+	coordinatorAdminState.deviceRenameServerNames.clear();
+	coordinatorAdminState.groupPreferencesOpen.clear();
+	coordinatorAdminState.groupPreferencesDrafts.clear();
+	coordinatorAdminState.groupScopeManagementOpen.clear();
+	coordinatorAdminState.groupScopeManagementDrafts.clear();
+	coordinatorAdminState.teamSetupGuide = null;
+	coordinatorAdminState.unnamedDeviceAliases.aliases.clear();
+	coordinatorAdminState.unnamedDeviceAliases.duplicateDisplayNames.clear();
+	coordinatorAdminState.unnamedDeviceAliases.reservedDisplayNames.clear();
+}
+
 describe("coordinator administration recovery lifecycle", () => {
-	beforeEach(() => {
-		vi.resetAllMocks();
-		successfulPayloads();
-		document.body.innerHTML = "";
-		localStorage.clear();
-		state.lastCoordinatorAdminStatus = null;
-		state.lastCoordinatorAdminGroups = [];
-		state.lastCoordinatorAdminJoinRequests = [];
-		state.lastCoordinatorAdminDevices = [];
-		state.lastTeamInvite = null;
-		state.coordinatorAdminTargetGroup = "";
-		coordinatorAdminState.recovery = initialCoordinatorAdminRecovery();
-		coordinatorAdminState.loadGeneration = 0;
-		coordinatorAdminState.recoveryAnnouncement = "";
-		coordinatorAdminState.recoveryFocusPending = false;
-		coordinatorAdminState.recoveryRetryRequested = false;
-		coordinatorAdminState.joinRequestsSnapshotTarget = null;
-		coordinatorAdminState.devicesSnapshotTarget = null;
-		coordinatorAdminState.groupRenameDrafts.clear();
-		coordinatorAdminState.groupPresentationAliases.clear();
-		coordinatorAdminState.deviceRenameDrafts.clear();
-		coordinatorAdminState.deviceRenameServerNames.clear();
-		coordinatorAdminState.groupPreferencesOpen.clear();
-		coordinatorAdminState.groupPreferencesDrafts.clear();
-		coordinatorAdminState.groupScopeManagementOpen.clear();
-		coordinatorAdminState.groupScopeManagementDrafts.clear();
-		coordinatorAdminState.teamSetupGuide = null;
-		coordinatorAdminState.unnamedDeviceAliases.aliases.clear();
-		coordinatorAdminState.unnamedDeviceAliases.duplicateDisplayNames.clear();
-		coordinatorAdminState.unnamedDeviceAliases.reservedDisplayNames.clear();
-	});
+	beforeEach(setupCoordinatorAdminLifecycleTest);
 
 	it("reserves explicit names across device surfaces before allocating aliases", async () => {
 		mocks.loadCoordinatorAdminJoinRequests.mockResolvedValue({
@@ -618,5 +620,40 @@ describe("coordinator administration recovery lifecycle", () => {
 		expect(document.getElementById("coordinatorAdminRecoveryStatus")).toBe(statusNode);
 		expect(statusNode?.textContent).toContain("Retained data remains unchanged");
 		expect(document.activeElement).toBe(statusNode);
+	});
+});
+
+describe("coordinator device rename polling", () => {
+	beforeEach(setupCoordinatorAdminLifecycleTest);
+
+	it("keeps the rename usable during background polling", async () => {
+		document.body.innerHTML = '<div id="coordinatorAdminMount"></div>';
+		coordinatorAdminState.activeSection = "devices";
+		initCoordinatorAdminTab();
+		await loadCoordinatorAdminData();
+		const form = [...document.querySelectorAll<HTMLFormElement>(".coordinator-admin-form")].find(
+			(item) => item.querySelector("label")?.textContent?.includes("Display name"),
+		);
+		const name = form?.querySelector<HTMLInputElement>("input");
+		const rename = form?.querySelector<HTMLButtonElement>('button[type="submit"]');
+		if (!name || !rename) throw new Error("Device rename form missing");
+		name.focus();
+		name.value = "Desk laptop";
+		name.dispatchEvent(new Event("input", { bubbles: true }));
+		const statusReads = mocks.loadCoordinatorAdminStatus.mock.calls.length;
+		const deviceReads = mocks.loadCoordinatorAdminDevices.mock.calls.length;
+
+		await expect(loadCoordinatorAdminData({ deferWhileRenaming: true })).resolves.toBe(true);
+		expect(mocks.loadCoordinatorAdminStatus).toHaveBeenCalledTimes(statusReads);
+		expect(mocks.loadCoordinatorAdminDevices).toHaveBeenCalledTimes(deviceReads);
+		expect(document.activeElement).toBe(name);
+		expect(name.value).toBe("Desk laptop");
+		expect(rename.disabled).toBe(false);
+
+		await loadCoordinatorAdminData();
+		expect(mocks.loadCoordinatorAdminDevices).toHaveBeenCalledTimes(deviceReads + 1);
+		name.blur();
+		await loadCoordinatorAdminData({ deferWhileRenaming: true });
+		expect(mocks.loadCoordinatorAdminDevices).toHaveBeenCalledTimes(deviceReads + 2);
 	});
 });

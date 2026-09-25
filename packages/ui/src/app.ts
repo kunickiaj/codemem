@@ -787,7 +787,11 @@ function appendTabRefreshTasks(
 		promises.push(loadSyncData({ signal: session.signal }).then(recordBooleanResult));
 	}
 	if (refreshTab === "advanced" && state.advancedSection === "teams") {
-		promises.push(loadCoordinatorAdminData({ signal: session.signal }).then(recordBooleanResult));
+		promises.push(
+			loadCoordinatorAdminData({ deferWhileRenaming: true, signal: session.signal }).then(
+				recordBooleanResult,
+			),
+		);
 	}
 	if (!state.syncPairingOpen) return;
 	const pairingVisible = refreshTab === "advanced" && state.advancedSection === "sync";

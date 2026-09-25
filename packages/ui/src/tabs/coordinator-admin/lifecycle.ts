@@ -315,7 +315,16 @@ function latestCoordinatorAdminLoadResult(generation: number): boolean | Promise
 	return latestCoordinatorAdminLoad?.operation ?? false;
 }
 
-export function loadCoordinatorAdminData(options: { signal?: AbortSignal } = {}): Promise<boolean> {
+export function loadCoordinatorAdminData(
+	options: { deferWhileRenaming?: boolean; signal?: AbortSignal } = {},
+): Promise<boolean> {
+	if (
+		options.deferWhileRenaming &&
+		coordinatorAdminState.activeSection === "devices" &&
+		document.activeElement?.closest("#coordinatorAdminMount .coordinator-admin-form")
+	) {
+		return Promise.resolve(true);
+	}
 	const generation = beginCoordinatorAdminLoadGeneration();
 	const operation = runCoordinatorAdminLoad(generation, options.signal);
 	latestCoordinatorAdminLoad = { generation, operation };
