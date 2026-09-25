@@ -668,6 +668,12 @@ function retryFor(
 	recoveryCause: unknown,
 	options: { changed: boolean; rosterUnavailable: boolean; terminalRecovery: boolean },
 ): SetupSessionError["retry"] {
+	if (
+		command.kind === "load" &&
+		recoveryCause instanceof LegacyTeamSetupApiError &&
+		completionErrorCode(recoveryCause.errorCode) !== null
+	)
+		return "completion";
 	if (options.terminalRecovery) return command.kind === "load" ? "completion" : "load";
 	const staleRetry = staleConfirmationRetry(command, cause, recoveryCause);
 	if (staleRetry) return staleRetry;
@@ -705,6 +711,11 @@ function staleLoadRecoveryMessage(
 		recoveryCause.errorCode === "team_setup_roster_unavailable"
 	)
 		return ROSTER_UNAVAILABLE_ERROR;
+	if (
+		recoveryCause instanceof LegacyTeamSetupApiError &&
+		recoveryCause.errorCode === "team_setup_completion_unavailable"
+	)
+		return COMPLETION_UNAVAILABLE_ERROR;
 	if (
 		recoveryCause instanceof LegacyTeamSetupApiError &&
 		isChangedStateCode(recoveryCause.errorCode)

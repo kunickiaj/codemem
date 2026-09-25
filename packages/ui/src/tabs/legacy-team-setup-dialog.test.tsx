@@ -3259,6 +3259,30 @@ describe("Team setup dialog completion races during load", () => {
 	});
 });
 
+describe("Team setup completion check recovery", () => {
+	it("keeps coordinator guidance and a read-only retry after completion cannot be checked", async () => {
+		const loadDetail = vi
+			.fn()
+			.mockRejectedValueOnce(new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale"))
+			.mockRejectedValueOnce(new LegacyTeamSetupApiError(503, "team_setup_completion_unavailable"))
+			.mockResolvedValueOnce(detail({ draftState: "completed" }));
+		const refreshCandidate = vi.fn();
+		setup({ loadDetail, refreshCandidate });
+		await vi.waitFor(() =>
+			expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+				"Team setup completion could not be checked",
+			),
+		);
+		expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+			"Check the coordinator connection",
+		);
+		act(() => document.getElementById("legacy-team-setup-retry")?.click());
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Team setup complete"));
+		expect(loadDetail).toHaveBeenCalledTimes(3);
+		expect(refreshCandidate).not.toHaveBeenCalled();
+	});
+});
+
 describe("Team setup stale retry lifecycle", () => {
 	it("blocks dismissal and switching Teams during an explicitly requested refresh", async () => {
 		const pendingRefresh = deferred<LegacyTeamSetupDetailResponseV1>();
