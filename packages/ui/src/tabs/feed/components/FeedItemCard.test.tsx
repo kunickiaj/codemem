@@ -160,6 +160,26 @@ describe("FeedItemCard pack-faithful content", () => {
 		expect(mount.querySelector(".feed-observation-context")).toBeNull();
 	});
 
+	it("shows the narrative directly when facts contain only blank entries", () => {
+		renderCard(observation({ facts: ["  ", ""], narrative: "Useful observation context." }));
+
+		expect(mount.querySelector(".feed-observation-points")).toBeNull();
+		expect(mount.querySelector(".feed-observation-context")).toBeNull();
+		expect(mount.querySelector(".feed-detail .feed-body.narrative")?.textContent).toContain(
+			"Useful observation context.",
+		);
+	});
+
+	it("keeps the legacy body visible when all structured facts are blank", () => {
+		renderCard(observation({ facts: ["  ", ""], narrative: "" }));
+
+		expect(mount.querySelector(".feed-observation-points")).toBeNull();
+		expect(mount.querySelector(".feed-observation-context")).toBeNull();
+		expect(mount.querySelector(".feed-detail .feed-body.narrative")?.textContent).toContain(
+			"Legacy fallback",
+		);
+	});
+
 	it("uses the stored session-summary title and structured pack fields", () => {
 		renderCard(
 			observation({

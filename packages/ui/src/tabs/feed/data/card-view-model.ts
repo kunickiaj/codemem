@@ -53,9 +53,10 @@ function indexedMetadataSearchText(item: FeedItem, renderedSearchText: string): 
 
 function buildPackContent(item: FeedItem): { content: FeedCardContent; searchOnlyText: string } {
 	const narrative = String(item.narrative || "").trim();
-	const facts = parseJsonArray(item.facts).filter(
-		(fact): fact is string => typeof fact === "string",
-	);
+	const facts = parseJsonArray(item.facts)
+		.filter((fact): fact is string => typeof fact === "string")
+		.map((fact) => fact.trim())
+		.filter(Boolean);
 	const legacyBody = String(item.body_text || "").trim();
 	const hasStructuredContent = Boolean(narrative || facts.length);
 	const body = hasStructuredContent ? "" : legacyBody;
