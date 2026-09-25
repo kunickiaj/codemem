@@ -369,6 +369,31 @@ describe("FeedItemCard search evidence", () => {
 		expect(mount.querySelector(".feed-search-match mark.match")?.textContent).toBe("coordinator");
 	});
 
+	it("updates search evidence as observation context opens and closes", () => {
+		state.feedQuery = "coordinator";
+		renderCard(
+			observation({
+				facts: ["Approved peer routes"],
+				narrative: "The coordinator changed the route.",
+			}),
+		);
+		const context = mount.querySelector<HTMLDetailsElement>(".feed-observation-context");
+		if (!context) throw new Error("Expected observation context disclosure");
+		expect(mount.querySelector(".feed-search-match")).not.toBeNull();
+
+		act(() => {
+			context.open = true;
+			context.dispatchEvent(new Event("toggle"));
+		});
+		expect(mount.querySelector(".feed-search-match")).toBeNull();
+
+		act(() => {
+			context.open = false;
+			context.dispatchEvent(new Event("toggle"));
+		});
+		expect(mount.querySelector(".feed-search-match mark.match")?.textContent).toBe("coordinator");
+	});
+
 	it("retains an excerpt when Markdown hides a matching link destination", () => {
 		state.feedQuery = "needle";
 		renderCard(observation({ narrative: "Visit [documentation](https://example.com/needle)." }));

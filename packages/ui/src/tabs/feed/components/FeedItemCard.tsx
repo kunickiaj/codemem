@@ -57,8 +57,20 @@ function useRenderedSearchMatch(cardRef: { current: HTMLElement | null }) {
 	useLayoutEffect(() => {
 		const query = normalizeFeedQuery(state.feedQuery);
 		const body = cardRef.current?.querySelector(".feed-detail");
-		const text = body ? renderedSearchText(body) : "";
-		setVisible(Boolean(query && text.toLowerCase().includes(query)));
+		const update = () => {
+			const text = body ? renderedSearchText(body) : "";
+			setVisible(Boolean(query && text.toLowerCase().includes(query)));
+		};
+		update();
+		const disclosures = body?.querySelectorAll(".feed-observation-context");
+		disclosures?.forEach((disclosure) => {
+			disclosure.addEventListener("toggle", update);
+		});
+		return () => {
+			disclosures?.forEach((disclosure) => {
+				disclosure.removeEventListener("toggle", update);
+			});
+		};
 	});
 	return visible;
 }
