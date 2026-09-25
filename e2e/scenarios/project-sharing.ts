@@ -145,6 +145,34 @@ function fixture(ctx: ScenarioContext, service: string, action: string, artifact
 	return parseJson<FixtureSummary>(result.stdout, artifact);
 }
 
+function captureCoordinatorMembershipProbe(
+	ctx: ScenarioContext,
+	scopeId: string,
+	artifact: string,
+): void {
+	try {
+		ctx.compose.exec(
+			"peer-a",
+			[
+				"pnpm",
+				"exec",
+				"tsx",
+				"--conditions",
+				"source",
+				"e2e/scripts/project-sharing-fixture.ts",
+				"--action",
+				"probe-coordinator-memberships",
+				"--scope-id",
+				scopeId,
+			],
+			artifact,
+			30_000,
+		);
+	} catch {
+		// Diagnostic failure must not change the revocation scenario's outcome.
+	}
+}
+
 function startServer(ctx: ScenarioContext, service: string, artifact: string): void {
 	const staticResult = ctx.compose.exec(
 		service,
@@ -1028,6 +1056,11 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		),
 		"owner did not hold group-derived coordinator-policy trust for peer-c before disable",
 	);
+	captureCoordinatorMembershipProbe(
+		ctx,
+		selectedScopeMembership.scope_id,
+		"39-owner-coordinator-membership-probe-before-disable",
+	);
 	const disabledEnrollment = ctx.compose.exec(
 		"coordinator",
 		[
@@ -1047,40 +1080,49 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 
 	// Act: periodic owner maintenance reads the disabled enrollment and reconciles the exact Project scope.
 	let revocationAttemptCount = -1;
-	await waitFor(
-		async () => {
-			const owner = fixture(ctx, "peer-a", "summary", "39-owner-peer-c-revocation-convergence");
-			assert(
-				owner.managed_memberships.some(
-					(member) =>
-						member.scope_id === selectedScopeMembership.scope_id &&
-						member.device_id === peerC.device_id &&
-						member.status === "revoked",
-				),
-				"owner maintenance has not revoked peer-c from the selected managed Project",
-			);
-			assert(
-				owner.policy.identity_devices.some(
-					(device) => device.device_id === peerC.device_id && device.status === "active",
-				),
-				"group-scoped enrollment disable globally revoked peer-c's Identity device",
-			);
-			assert(
-				!owner.peers.some(
-					(peer) =>
-						peer.peer_device_id === peerC.device_id &&
-						(peer.pinned_fingerprint || peer.trust_provenance === "coordinator_policy"),
-				),
-				"coordinator-policy-derived peer-c trust survived the scope refresh",
-			);
-			const authority = owner.policy.authority_states.find(
-				(state) => state.canonical_project_identity === selected.workspace_identity,
-			);
-			assert(authority, "selected Project recipient-policy authority state is missing");
-			revocationAttemptCount = authority.attempt_count;
-		},
-		{ description: "group-scoped peer-c enrollment revocation", timeoutMs: 180_000, intervalMs: 3_000 },
-	);
+	try {
+		await waitFor(
+			async () => {
+				const owner = fixture(ctx, "peer-a", "summary", "39-owner-peer-c-revocation-convergence");
+				assert(
+					owner.managed_memberships.some(
+						(member) =>
+							member.scope_id === selectedScopeMembership.scope_id &&
+							member.device_id === peerC.device_id &&
+							member.status === "revoked",
+					),
+					"owner maintenance has not revoked peer-c from the selected managed Project",
+				);
+				assert(
+					owner.policy.identity_devices.some(
+						(device) => device.device_id === peerC.device_id && device.status === "active",
+					),
+					"group-scoped enrollment disable globally revoked peer-c's Identity device",
+				);
+				assert(
+					!owner.peers.some(
+						(peer) =>
+							peer.peer_device_id === peerC.device_id &&
+							(peer.pinned_fingerprint || peer.trust_provenance === "coordinator_policy"),
+					),
+					"coordinator-policy-derived peer-c trust survived the scope refresh",
+				);
+				const authority = owner.policy.authority_states.find(
+					(state) => state.canonical_project_identity === selected.workspace_identity,
+				);
+				assert(authority, "selected Project recipient-policy authority state is missing");
+				revocationAttemptCount = authority.attempt_count;
+			},
+			{ description: "group-scoped peer-c enrollment revocation", timeoutMs: 180_000, intervalMs: 3_000 },
+		);
+	} catch (error) {
+		captureCoordinatorMembershipProbe(
+			ctx,
+			selectedScopeMembership.scope_id,
+			"39-owner-coordinator-membership-probe-on-failure",
+		);
+		throw error;
+	}
 
 	// Act: let another deterministic maintenance tick run to exercise retry convergence.
 	await waitFor(
