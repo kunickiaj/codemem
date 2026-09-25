@@ -44,6 +44,7 @@ interface FixtureSummary {
 			canonical_project_identity: string;
 			authority_state: string;
 			attempt_count: number;
+			safe_error_code: string | null;
 		}>;
 		team_memberships: Array<{ team_id: string; identity_id: string; status: string }>;
 		teams: Array<{ team_id: string; display_name: string; status: string }>;
@@ -145,9 +146,10 @@ function fixture(ctx: ScenarioContext, service: string, action: string, artifact
 	return parseJson<FixtureSummary>(result.stdout, artifact);
 }
 
-function captureCoordinatorMembershipProbe(
+function captureCoordinatorBoundaryProbe(
 	ctx: ScenarioContext,
 	scopeId: string,
+	deviceId: string,
 	artifact: string,
 ): void {
 	try {
@@ -161,9 +163,11 @@ function captureCoordinatorMembershipProbe(
 				"source",
 				"e2e/scripts/project-sharing-fixture.ts",
 				"--action",
-				"probe-coordinator-memberships",
+				"probe-coordinator-boundary",
 				"--scope-id",
 				scopeId,
+				"--device-id",
+				deviceId,
 			],
 			artifact,
 			30_000,
@@ -1056,10 +1060,11 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		),
 		"owner did not hold group-derived coordinator-policy trust for peer-c before disable",
 	);
-	captureCoordinatorMembershipProbe(
+	captureCoordinatorBoundaryProbe(
 		ctx,
 		selectedScopeMembership.scope_id,
-		"39-owner-coordinator-membership-probe-before-disable",
+		peerC.device_id,
+		"39-owner-coordinator-boundary-probe-before-disable",
 	);
 	const disabledEnrollment = ctx.compose.exec(
 		"coordinator",
@@ -1080,10 +1085,23 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 
 	// Act: periodic owner maintenance reads the disabled enrollment and reconciles the exact Project scope.
 	let revocationAttemptCount = -1;
+	let snapshotFailureProbed = false;
 	try {
 		await waitFor(
 			async () => {
 				const owner = fixture(ctx, "peer-a", "summary", "39-owner-peer-c-revocation-convergence");
+				const authority = owner.policy.authority_states.find(
+					(state) => state.canonical_project_identity === selected.workspace_identity,
+				);
+				if (!snapshotFailureProbed && authority?.safe_error_code === "recipient_policy_snapshot_not_fresh") {
+					snapshotFailureProbed = true;
+					captureCoordinatorBoundaryProbe(
+						ctx,
+						selectedScopeMembership.scope_id,
+						peerC.device_id,
+						"39-owner-coordinator-boundary-probe-first-snapshot-error",
+					);
+				}
 				assert(
 					owner.managed_memberships.some(
 						(member) =>
@@ -1107,19 +1125,17 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 					),
 					"coordinator-policy-derived peer-c trust survived the scope refresh",
 				);
-				const authority = owner.policy.authority_states.find(
-					(state) => state.canonical_project_identity === selected.workspace_identity,
-				);
 				assert(authority, "selected Project recipient-policy authority state is missing");
 				revocationAttemptCount = authority.attempt_count;
 			},
 			{ description: "group-scoped peer-c enrollment revocation", timeoutMs: 180_000, intervalMs: 3_000 },
 		);
 	} catch (error) {
-		captureCoordinatorMembershipProbe(
+		captureCoordinatorBoundaryProbe(
 			ctx,
 			selectedScopeMembership.scope_id,
-			"39-owner-coordinator-membership-probe-on-failure",
+			peerC.device_id,
+			"39-owner-coordinator-boundary-probe-on-failure",
 		);
 		throw error;
 	}

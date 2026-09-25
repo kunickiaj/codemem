@@ -1,5 +1,6 @@
 import {
 	commitRecipientPolicyOnboarding,
+	coordinatorListDevicesAction,
 	coordinatorListScopeMembershipsAction,
 	deriveRecipientPolicyEffectiveDevicesFromDatabase,
 	fingerprintPublicKey,
@@ -47,7 +48,7 @@ type Action =
 	| "stale-legacy-device-evidence"
 	| "truncate-legacy-device-evidence"
 	| "reconciliation-proof"
-	| "probe-coordinator-memberships";
+	| "probe-coordinator-boundary";
 
 const ACTIONS: Action[] = [
 	"init",
@@ -65,7 +66,7 @@ const ACTIONS: Action[] = [
 	"stale-legacy-device-evidence",
 	"truncate-legacy-device-evidence",
 	"reconciliation-proof",
-	"probe-coordinator-memberships",
+	"probe-coordinator-boundary",
 ];
 
 function action(): Action {
@@ -683,37 +684,69 @@ function summary(store: MemoryStore): Record<string, unknown> {
 	};
 }
 
-async function probeCoordinatorMemberships(
+async function probeCoordinatorRead<T>(
+	read: () => Promise<T>,
+	summarize: (value: T) => Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+	const startedAt = Date.now();
+	try {
+		return { status: "ok", ...summarize(await read()), durationMs: Date.now() - startedAt };
+	} catch (error) {
+		const httpStatus = error instanceof RemoteCoordinatorRequestError ? error.status : null;
+		const timedOut = error instanceof Error && /timed out|timeout/iu.test(error.message);
+		let failureClass = "transport_or_other";
+		if (httpStatus) failureClass = "http";
+		else if (timedOut) failureClass = "timeout";
+		else if (error instanceof Error && error.message === "coordinator_device_list_malformed") {
+			failureClass = "invalid_device_list";
+		}
+		return {
+			status: "failed",
+			httpStatus,
+			failureClass,
+			durationMs: Date.now() - startedAt,
+		};
+	}
+}
+
+async function probeCoordinatorBoundary(
 	store: MemoryStore,
 	scopeId: string,
+	deviceId: string,
 ): Promise<Record<string, unknown>> {
 	const scope = store.db
 		.prepare("SELECT group_id FROM replication_scopes WHERE scope_id = ?")
 		.get(scopeId) as { group_id: string | null } | undefined;
+	const groupId = scope?.group_id;
 	const config = readCoordinatorSyncConfig();
-	if (!scope?.group_id || !config.syncCoordinatorUrl || !config.syncCoordinatorAdminSecret) {
+	if (!groupId || !config.syncCoordinatorUrl || !config.syncCoordinatorAdminSecret) {
 		return { status: "configuration_unavailable" };
 	}
-	const startedAt = Date.now();
-	try {
-		const memberships = await coordinatorListScopeMembershipsAction({
-			groupId: scope.group_id,
-			scopeId,
-			includeRevoked: true,
-			remoteUrl: config.syncCoordinatorUrl,
-			adminSecret: config.syncCoordinatorAdminSecret,
-		});
-		return { status: "ok", membershipCount: memberships.length, durationMs: Date.now() - startedAt };
-	} catch (error) {
-		const httpStatus = error instanceof RemoteCoordinatorRequestError ? error.status : null;
-		const timedOut = error instanceof Error && /timed out|timeout/iu.test(error.message);
-		return {
-			status: "failed",
-			httpStatus,
-			failureClass: httpStatus ? "http" : timedOut ? "timeout" : "transport_or_other",
-			durationMs: Date.now() - startedAt,
-		};
-	}
+	const memberships = await probeCoordinatorRead(
+		() =>
+			coordinatorListScopeMembershipsAction({
+				groupId,
+				scopeId,
+				includeRevoked: true,
+				remoteUrl: config.syncCoordinatorUrl,
+				adminSecret: config.syncCoordinatorAdminSecret,
+			}),
+		(items) => ({ membershipCount: items.length }),
+	);
+	const enrollments = await probeCoordinatorRead(
+		() =>
+			coordinatorListDevicesAction({
+				groupId,
+				includeDisabled: true,
+				remoteUrl: config.syncCoordinatorUrl,
+				adminSecret: config.syncCoordinatorAdminSecret,
+			}),
+		(items) => ({
+			enrollmentCount: items.length,
+			targetEnabled: items.find((item) => item.device_id === deviceId)?.enabled ?? null,
+		}),
+	);
+	return { memberships, enrollments };
 }
 
 async function main(): Promise<void> {
@@ -734,11 +767,14 @@ async function main(): Promise<void> {
 		if (selectedAction === "inherit-policy") actionResult = inheritRecipientPolicy(store);
 		if (selectedAction === "reconciliation-proof") actionResult = await reconciliationProof(store);
 		if (selectedAction === "keep-current") actionResult = keepCurrentProof(store);
-		if (selectedAction === "probe-coordinator-memberships") {
+		if (selectedAction === "probe-coordinator-boundary") {
 			const scopeIndex = process.argv.indexOf("--scope-id");
 			const scopeId = scopeIndex < 0 ? null : process.argv[scopeIndex + 1];
 			if (!scopeId) throw new Error("--scope-id is required for the coordinator probe");
-			actionResult = await probeCoordinatorMemberships(store, scopeId);
+			const deviceIndex = process.argv.indexOf("--device-id");
+			const deviceId = deviceIndex < 0 ? null : process.argv[deviceIndex + 1];
+			if (!deviceId) throw new Error("--device-id is required for the coordinator probe");
+			actionResult = await probeCoordinatorBoundary(store, scopeId, deviceId);
 		}
 		if (selectedAction === "revoke-policy") revokeDirectRecipient(store);
 		if (selectedAction === "add-stale-memory") {
