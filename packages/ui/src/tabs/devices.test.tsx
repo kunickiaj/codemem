@@ -911,7 +911,7 @@ describe("Device runtime aliases", () => {
 				expect(row?.textContent).toContain(validated ? "Available" : "Presence unavailable");
 				expect(row?.textContent?.includes("0.42.0")).toBe(validated);
 				const action = [...mount.querySelectorAll<HTMLButtonElement>("button")].find(
-					(button) => button.textContent === "Identify or rename in Sync…",
+					(button) => button.textContent === "Rename paired device in Advanced Sync…",
 				);
 				expect(Boolean(action)).toBe(validated);
 				if (action) act(() => action.click());
@@ -1017,7 +1017,7 @@ describe("Device runtime observation ordering", () => {
 					}),
 				);
 				expect(mount.querySelector(".devices-table-version")?.textContent).toBe(expected);
-				expect(mount.textContent).toContain("Identify or rename in Sync");
+				expect(mount.textContent).toContain("Rename paired device in Advanced Sync");
 			}
 			if (!outage) {
 				const result = projectDevices(
@@ -1127,6 +1127,43 @@ describe("Device runtime metadata", () => {
 		expect(document.querySelector(".devices-table-version")?.textContent).toBe("—");
 	});
 });
+describe("Device naming", () => {
+	it("offers paired-device naming separately from Identity reassignment", async () => {
+		const onNavigate = vi.fn();
+		mount(intent(), reconciliation(), {
+			inventory: inventory([
+				inventoryItem("device-address-fingerprint-secret", "Work Laptop", "configured"),
+			]),
+			onNavigate,
+			peerRuntimeMetadata: [
+				{
+					deviceId: "device-address-fingerprint-secret",
+					runtimeVersion: null,
+					runtimeVersionObservedAt: null,
+				},
+			],
+		});
+		const rename = [
+			...document.querySelectorAll<HTMLButtonElement>(".devices-table-device button"),
+		].find((button) => button.textContent?.includes("Rename paired device"));
+		expect(rename).toBeDefined();
+		act(() => rename?.click());
+		expect(onNavigate).toHaveBeenCalledWith("advanced_sync");
+		const details = [...document.querySelectorAll<HTMLButtonElement>(".feed-menu-item")].find(
+			(button) => button.textContent === "Details",
+		);
+		act(() => details?.click());
+		const changeIdentity = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+			(button) => button.textContent === "Change Identity…",
+		);
+		act(() => changeIdentity?.click());
+		await vi.waitFor(() =>
+			expect(document.body.textContent).toContain("No other active Identity is available"),
+		);
+		expect(document.body.textContent).toContain("it does not rename it");
+	});
+});
+
 describe("Device identity grouping", () => {
 	it("excludes devices owned by pending or merged Identities", () => {
 		const graph = intent({

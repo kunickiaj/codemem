@@ -1222,11 +1222,14 @@ async function loadProjectsDataOperation(options: ProjectsDataLoadOptions): Prom
 	skippedProjectRefreshForActiveSelect = false;
 	const loadGeneration = ++projectsLoadGeneration;
 	const requestedFilters = readProjectInventoryFilters();
-	projectShareInventoryReady = false;
-	recipientPolicyIntentReady = false;
-	updateSelectionControls();
-	notifyProjectInventoryChanged();
-	meta.textContent = "Loading project inventory…";
+	// Keep the last successful inventory usable while a background refresh is pending.
+	// The recipient review/commit path revalidates the current policy before saving.
+	if (!hasProjectInventoryResult) {
+		updateSelectionControls();
+	}
+	if (!hasProjectInventoryResult || !meta.textContent?.trim()) {
+		meta.textContent = "Loading project inventory…";
+	}
 	let teamSetupSummaryPromise: Promise<TeamSetupSummaryResult> | null = null;
 	try {
 		const entryLoadGeneration = ++teamSetupEntryLoadGeneration;

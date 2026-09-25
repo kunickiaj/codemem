@@ -715,7 +715,7 @@ describe("Devices cached snapshot aliases", () => {
 			expect(deviceRow()?.textContent).toContain("Studio laptop");
 			expect(deviceRow()?.textContent).toContain("0.42.0");
 			expect(deviceRow()?.textContent).toContain("Available");
-			expect(deviceRow()?.textContent).toContain("Identify or rename in Sync");
+			expect(deviceRow()?.textContent).toContain("Rename paired device in Advanced Sync");
 			if (mixed) {
 				mocks.loadDeviceIdentityInventory.mockRejectedValueOnce(new Error("inventory unavailable"));
 				await act(async () => {
@@ -723,7 +723,7 @@ describe("Devices cached snapshot aliases", () => {
 				});
 				expect(deviceRow()?.textContent).toContain("Presence unavailable");
 				expect(deviceRow()?.textContent).not.toContain("0.42.0");
-				expect(deviceRow()?.textContent).not.toContain("Identify or rename in Sync");
+				expect(deviceRow()?.textContent).not.toContain("Rename paired device in Advanced Sync");
 			}
 			const before = deviceRow()?.textContent;
 			mocks.loadRecipientPolicyIntent.mockRejectedValueOnce(new Error("intent unavailable"));
@@ -780,7 +780,7 @@ describe("Devices unavailable inventory aliases", () => {
 				"0.42.0",
 			);
 			expect(document.getElementById("device-identity-card-device-private")?.textContent).toContain(
-				"Identify or rename in Sync",
+				"Rename paired device in Advanced Sync",
 			);
 			mocks.loadDeviceIdentityInventory.mockRejectedValue(new Error("inventory unavailable"));
 			mocks.loadSyncData.mockImplementation(async () => {
@@ -800,7 +800,7 @@ describe("Devices unavailable inventory aliases", () => {
 			});
 			const row = document.getElementById("device-identity-card-device-private");
 			expect(row?.textContent?.includes("0.99.0")).toBe(direct);
-			expect(row?.textContent?.includes("Identify or rename in Sync")).toBe(direct);
+			expect(row?.textContent?.includes("Rename paired device in Advanced Sync")).toBe(direct);
 			expect(row?.textContent).toContain(direct ? "Available" : "Presence unavailable");
 		},
 	);
@@ -853,7 +853,7 @@ describe("Devices presence evidence", () => {
 			expect(row?.textContent).toContain("Studio laptop");
 			expect(row?.textContent).not.toContain("Canonical device");
 			expect(row?.textContent).not.toContain("Offline");
-			expect(row?.textContent?.includes("Identify or rename in Sync")).toBe(peer);
+			expect(row?.textContent?.includes("Rename paired device in Advanced Sync")).toBe(peer);
 		},
 	);
 });

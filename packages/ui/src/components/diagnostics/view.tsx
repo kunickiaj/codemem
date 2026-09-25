@@ -36,7 +36,20 @@ function DiagnosticsEventRow({
 			<div className="diagnostics-event-heading">
 				<span className="diagnostics-severity">
 					<span aria-hidden="true" className="diagnostics-severity-icon">
-						{severity.icon}
+						{event.severity === "error" ? (
+							<svg
+								fill="none"
+								stroke="currentColor"
+								strokeLinecap="round"
+								strokeWidth="2.5"
+								viewBox="0 0 16 16"
+							>
+								<title>Error</title>
+								<path d="M4 4l8 8M12 4l-8 8" />
+							</svg>
+						) : (
+							severity.icon
+						)}
 					</span>
 					{severity.label}
 				</span>

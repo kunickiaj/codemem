@@ -513,6 +513,8 @@ See `codemem memory export --help` and `codemem memory import --help` for full o
 
 Share selected project memories with a teammate, or use the same Project-first model to understand your own devices. The viewer's normal workflow is **Projects → Sharing → Devices → Health**; open **Sharing → Teams** to manage ongoing Team membership and inherited Project access. Sync internals live under **Advanced**.
 
+See the [sharing guide](docs/sharing-guide.md) for a short walkthrough of Projects, Teams, Identities, devices, and when advanced Spaces matter.
+
 ### Share projects with a teammate
 
 For ongoing collaboration:

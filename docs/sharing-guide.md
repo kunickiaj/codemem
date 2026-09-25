@@ -1,0 +1,13 @@
+# Share Projects and add devices
+
+Start in **Projects**. A Project is the canonical repository whose memories you want to share; linked worktrees belong to that Project, while unrelated repositories with the same short name remain separate. Select the Projects, choose **Add Teams or Identities**, and review the recipients and resulting access before confirming. A Team is a group of people; an Identity represents one person. A Project shared with a Team reaches its eligible members, while a Project shared with an Identity reaches that person directly. Joining a Team does not automatically share every Project on your machine.
+
+For a new teammate, open **Sharing → Create an invitation**. Choose Team onboarding for ongoing collaboration, or **Share exact Projects** to invite one Identity without giving them Team membership. Review the Projects and existing-memory counts before sending the invitation. An invitation is single-use; accepting it sets up the recipient's device and starts delivery. Check **Devices** for ownership and availability, then **Health** for sync problems. A device being offline does not remove its access.
+
+To add another device for someone who already has an Identity, create an **Add device** invitation for that Identity in Sharing. Review the direct and Team Projects that the new device will receive. On **Devices**, **Change Identity** reassigns a configured device to a *different* Identity; it does not rename it or change Project access. For a paired device, use **Rename paired device in Advanced Sync**, expand that device, edit **Device name**, and choose **Save name**. If there is no different active Identity, the reassignment picker has no target; use the invitation flow to add a new person or device instead. Devices known only through an Identity binding or coordinator enrollment may still display an ID; the paired-device rename control cannot change those names.
+
+## When do I need a Space?
+
+You do not need to choose a Space to use the normal Project sharing flow. Spaces are the underlying access boundaries that keep different sets of memories apart; they still exist for sync and older setups. **Advanced Space assignment** in a Project's details changes its mapping and needs individual review when workspaces are ambiguous. Use it only when maintaining an existing mapping or troubleshooting a boundary. A coordinator group is for discovery and administration; being in one does not grant access to a Project. **Only me** memories stay local even when their Project is shared.
+
+For setup recovery and advanced compatibility details, see the [user guide](user-guide.md#projects-sharing-devices-and-health).
