@@ -966,6 +966,13 @@ function ensureAlwaysOnSchemaCompatibility(db: DatabaseType): void {
 			if (!columnExists(db, "sync_peers", "manual_addresses_json")) throw error;
 		}
 	}
+	if (tableExists(db, "sync_peers") && !columnExists(db, "sync_peers", "last_success_address")) {
+		try {
+			db.exec("ALTER TABLE sync_peers ADD COLUMN last_success_address TEXT");
+		} catch (error) {
+			if (!columnExists(db, "sync_peers", "last_success_address")) throw error;
+		}
+	}
 	ensureMemoryOwnershipSchemas(db);
 	ensureOptionalRetrievalLedgerSchema(db);
 	try {

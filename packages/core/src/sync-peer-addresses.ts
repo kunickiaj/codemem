@@ -1,6 +1,10 @@
 import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import { mergeAddresses, mergeCoordinatorPeerAddresses } from "./address-utils.js";
+import {
+	MAX_PEER_ADDRESSES,
+	mergeAddresses,
+	mergeCoordinatorPeerAddresses,
+} from "./address-utils.js";
 import type { Database } from "./db.js";
 import * as schema from "./schema.js";
 
@@ -35,6 +39,13 @@ export function loadManualPeerAddresses(db: Database, peerDeviceId: string): str
 	}
 }
 
+export function loadSuccessfulPeerAddress(db: Database, peerDeviceId: string): string | null {
+	const row = db
+		.prepare("SELECT last_success_address FROM sync_peers WHERE peer_device_id = ?")
+		.get(peerDeviceId) as { last_success_address: string | null } | undefined;
+	return row?.last_success_address ?? null;
+}
+
 export function updatePeerAddresses(
 	db: Database,
 	peerDeviceId: string,
@@ -54,9 +65,17 @@ export function updatePeerAddresses(
 		options?.replaceTrust && addresses.length > 0
 			? mergeAddresses(legacyManual, addresses)
 			: legacyManual;
+	const successfulAddress = loadSuccessfulPeerAddress(db, peerDeviceId) ?? undefined;
 	let merged = mergeAddresses(existingAddresses, addresses);
 	if (options?.coordinatorCandidates) {
-		merged = mergeCoordinatorPeerAddresses(existingAddresses, addresses, manual);
+		merged = mergeCoordinatorPeerAddresses(existingAddresses, addresses, manual, {
+			successfulAddress,
+		});
+	} else if (options?.replaceTrust && addresses.length > 0) {
+		merged = mergeCoordinatorPeerAddresses(existingAddresses, addresses, manual, {
+			requiredFreshAddresses: Math.min(mergeAddresses(addresses, []).length, MAX_PEER_ADDRESSES),
+			successfulAddress,
+		});
 	}
 	const now = new Date().toISOString();
 	const addressesJson = JSON.stringify(merged);

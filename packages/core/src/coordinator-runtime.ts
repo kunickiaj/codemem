@@ -403,6 +403,7 @@ type StoredCoordinatorPeerAddressRow = {
 	pinned_fingerprint: string | null;
 	addresses_json: string | null;
 	manual_addresses_json: string | null;
+	last_success_address: string | null;
 };
 
 function refreshCoordinatorPeerRow(
@@ -418,7 +419,9 @@ function refreshCoordinatorPeerRow(
 	const existing = mergeAddresses(parseAddressCache(row.addresses_json), []);
 	const manual =
 		row.manual_addresses_json == null ? existing : parseAddressCache(row.manual_addresses_json);
-	const merged = mergeCoordinatorPeerAddresses(existing, discovered, manual);
+	const merged = mergeCoordinatorPeerAddresses(existing, discovered, manual, {
+		successfulAddress: row.last_success_address ?? undefined,
+	});
 	if (JSON.stringify(merged) === JSON.stringify(existing) && row.manual_addresses_json != null) {
 		return false;
 	}
@@ -448,7 +451,7 @@ export function refreshStoredCoordinatorPeerAddresses(
 
 	const rows = db
 		.prepare(
-			"SELECT peer_device_id, pinned_fingerprint, addresses_json, manual_addresses_json FROM sync_peers",
+			"SELECT peer_device_id, pinned_fingerprint, addresses_json, manual_addresses_json, last_success_address FROM sync_peers",
 		)
 		.all() as StoredCoordinatorPeerAddressRow[];
 	const update = db.prepare(

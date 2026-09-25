@@ -118,12 +118,17 @@ export function recordPeerSuccess(
 			[],
 			promotedAddress ? [promotedAddress, ...remaining] : addresses,
 			manual,
+			{
+				requiredFreshAddresses: promotedAddress ? 1 : 0,
+				successfulAddress: promotedAddress || undefined,
+			},
 		);
 		const d = drizzle(db, { schema });
 		d.update(schema.syncPeers)
 			.set({
 				addresses_json: JSON.stringify(ordered),
 				manual_addresses_json: JSON.stringify(manual),
+				...(promotedAddress ? { last_success_address: promotedAddress } : {}),
 				last_sync_at: syncedAt,
 				last_seen_at: syncedAt,
 				last_error: null,

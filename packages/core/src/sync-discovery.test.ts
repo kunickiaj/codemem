@@ -378,6 +378,33 @@ describe("recordPeerSuccess", () => {
 		expect(loadPeerAddresses(db, "peer-1")).toEqual(ordered);
 	});
 
+	it("promotes a newly working address when eight manual addresses already fill the cache", () => {
+		const manual = Array.from(
+			{ length: MAX_PEER_ADDRESSES },
+			(_, index) => `manual-${index}.example:7337`,
+		);
+		updatePeerAddresses(db, "peer-1", manual, {
+			pinnedFingerprint: "fp",
+			replaceTrust: true,
+		});
+
+		const ordered = recordPeerSuccess(db, "peer-1", "working.example:7337");
+
+		expect(ordered[0]).toBe("http://working.example:7337");
+		expect(ordered).toHaveLength(MAX_PEER_ADDRESSES);
+		expect(loadManualPeerAddresses(db, "peer-1")).toEqual([
+			...manual.map((address) => `http://${address}`),
+		]);
+		const row = db
+			.prepare("SELECT last_success_address FROM sync_peers WHERE peer_device_id = ?")
+			.get("peer-1") as { last_success_address: string };
+		expect(row.last_success_address).toBe("http://working.example:7337");
+		const refreshed = updatePeerAddresses(db, "peer-1", ["newer.example:7337"], {
+			coordinatorCandidates: true,
+		});
+		expect(refreshed).toContain("http://working.example:7337");
+	});
+
 	it("handles null address gracefully", () => {
 		updatePeerAddresses(db, "peer-1", ["host1:8080"], {
 			pinnedFingerprint: "fp",

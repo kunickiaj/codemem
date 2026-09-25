@@ -738,6 +738,7 @@ export const syncPeers = sqliteTable("sync_peers", {
 	public_key: text("public_key"),
 	addresses_json: text("addresses_json"),
 	manual_addresses_json: text("manual_addresses_json"),
+	last_success_address: text("last_success_address"),
 	claimed_local_actor: integer("claimed_local_actor").notNull().default(0),
 	actor_id: text("actor_id"),
 	projects_include_json: text("projects_include_json"),

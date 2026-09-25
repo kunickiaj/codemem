@@ -825,6 +825,7 @@ export function bootstrapSchema(db: Database): void {
 		ensurePolicyTeamDeviceEligibilityColumns(db);
 		ensureSyncPeerSignatureStateSchema(db);
 		ensureSyncPeerManualAddressesColumn(db);
+		ensureSyncPeerLastSuccessAddressColumn(db);
 		ensureRetrievalAttemptColumns(db);
 		ensureOutcomeEvidenceColumns(db);
 		ensureMemoryOwnershipSchemas(db);
@@ -841,6 +842,12 @@ export function bootstrapSchema(db: Database): void {
 function ensureSyncPeerManualAddressesColumn(db: Database): void {
 	if (!columnExists(db, "sync_peers", "manual_addresses_json")) {
 		db.exec("ALTER TABLE sync_peers ADD COLUMN manual_addresses_json TEXT");
+	}
+}
+
+function ensureSyncPeerLastSuccessAddressColumn(db: Database): void {
+	if (!columnExists(db, "sync_peers", "last_success_address")) {
+		db.exec("ALTER TABLE sync_peers ADD COLUMN last_success_address TEXT");
 	}
 }
 
