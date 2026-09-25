@@ -72,7 +72,8 @@ describe("legacy Team setup effect runner", () => {
 		);
 
 		expect(loadDetail).toHaveBeenCalledTimes(2);
-		expect(outcome).toMatchObject({ status: "failure", cause, recoveredView: completedView });
+		expect(outcome).toMatchObject({ status: "success", view: completedView });
+		expect(outcome).not.toHaveProperty("cause");
 	});
 
 	it("preserves a failure from the one-shot detail recovery", async () => {

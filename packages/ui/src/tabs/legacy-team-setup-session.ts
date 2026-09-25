@@ -659,7 +659,7 @@ function staleConfirmationRetry(
 	const initialStale =
 		cause instanceof LegacyTeamSetupApiError && cause.errorCode === "team_setup_confirmation_stale";
 	if (!initialStale && !recoveryStale) return null;
-	return command.kind === "load" && (command.refresh || recoveryStale) ? "completion" : "refresh";
+	return command.kind === "load" && command.refresh ? "completion" : "refresh";
 }
 
 function retryFor(
@@ -668,12 +668,12 @@ function retryFor(
 	recoveryCause: unknown,
 	options: { changed: boolean; rosterUnavailable: boolean; terminalRecovery: boolean },
 ): SetupSessionError["retry"] {
+	if (options.terminalRecovery) return command.kind === "load" ? "completion" : "load";
 	const staleRetry = staleConfirmationRetry(command, cause, recoveryCause);
 	if (staleRetry) return staleRetry;
 	if (command.kind === "load" && command.completionOnly) {
 		return completionOnlyRetry(cause);
 	}
-	if (options.terminalRecovery) return "load";
 	if (options.changed || options.rosterUnavailable) return "refresh";
 	if (command.kind === "refresh") return "refresh";
 	if (command.kind === "load" && command.refresh) return "refresh";

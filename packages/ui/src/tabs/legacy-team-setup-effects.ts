@@ -226,15 +226,7 @@ async function recover(
 		!effect.completionOnly &&
 		cause.errorCode === "team_setup_confirmation_stale"
 	) {
-		try {
-			const latest = await dependencies.loadDetail(effect.candidateRef);
-			if (latest.state !== "unavailable") return latest;
-		} catch (error) {
-			if (!(error instanceof LegacyTeamSetupApiError) || !isChangedStateCode(error.errorCode)) {
-				throw error;
-			}
-		}
-		return dependencies.refreshCandidate(effect.candidateRef);
+		return dependencies.loadDetail(effect.candidateRef);
 	}
 	if (effect.kind === "load") return undefined;
 	return dependencies.loadDetail(effect.candidateRef);
