@@ -304,6 +304,15 @@ function loadSourceRows(store: MemoryStore, options: EventOptions): DiagnosticSo
 		.all(params) as DiagnosticSourceRow[];
 }
 
+const SYNC_FAILURE_MESSAGES: Record<string, string> = {
+	timeout: "A paired device did not respond in time, so this sync attempt stopped.",
+	connectivity: "This device could not reach a paired device, so this sync attempt stopped.",
+	authentication:
+		"A paired device rejected this device's credentials, so this sync attempt stopped.",
+	compatibility:
+		"A paired device runs an incompatible Codemem version, so this sync attempt stopped.",
+};
+
 function syncEvent(row: DiagnosticSourceRow, includeTechnical: boolean): OrderedDiagnosticEvent {
 	const succeeded = row.status === "succeeded";
 	const opsIn = Number(row.metric_a ?? 0);
@@ -318,7 +327,7 @@ function syncEvent(row: DiagnosticSourceRow, includeTechnical: boolean): Ordered
 		code: succeeded ? "sync_attempt_succeeded" : "sync_attempt_failed",
 		message: succeeded
 			? "A sync attempt completed."
-			: "A sync attempt failed before all work completed.",
+			: (SYNC_FAILURE_MESSAGES[category] ?? "A sync attempt failed before all work completed."),
 		recovery: succeeded
 			? undefined
 			: { label: "Open advanced sync diagnostics", href: "#advanced/sync/diagnostics" },

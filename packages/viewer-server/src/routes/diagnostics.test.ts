@@ -587,3 +587,37 @@ describe("GET /api/diagnostics/events capture backlog", () => {
 		);
 	});
 });
+
+describe("sync failure diagnostics copy", () => {
+	it("explains sync failure categories in plain language without exposing the error", async () => {
+		const store = createStore();
+		const errors = [
+			"all addresses failed | http://host.internal:7337: The operation was aborted due to timeout",
+			"all addresses failed | http://host.internal:7337: fetch failed (network)",
+			"peer status failed (401: unauthorized)",
+			"opaque private failure",
+		];
+		errors.forEach((error, index) => {
+			insertSyncAttempt(store, {
+				at: `2026-09-07T1${index}:00:00.000Z`,
+				error,
+				id: index + 1,
+				ok: false,
+			});
+		});
+		const app = diagnosticsRoutes(() => store);
+
+		const response = await app.request("/api/diagnostics/events");
+		const text = await response.text();
+		const messages = (JSON.parse(text) as DiagnosticsResponse).items.map((item) => item.message);
+
+		expect(messages).toEqual([
+			"A sync attempt failed before all work completed.",
+			"A paired device rejected this device's credentials, so this sync attempt stopped.",
+			"This device could not reach a paired device, so this sync attempt stopped.",
+			"A paired device did not respond in time, so this sync attempt stopped.",
+		]);
+		expect(text).not.toContain("host.internal");
+		expect(text).not.toContain("private-device");
+	});
+});
