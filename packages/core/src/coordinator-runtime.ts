@@ -2,7 +2,7 @@ import { networkInterfaces } from "node:os";
 import {
 	formatHostPort,
 	mergeAddresses,
-	mergeAddressesPreferCandidates,
+	mergeCoordinatorPeerAddresses,
 	normalizeAddress,
 } from "./address-utils.js";
 import {
@@ -398,6 +398,34 @@ function parseAddressCache(value: unknown): string[] {
  * discovered device can refresh a local peer only when both the device id and
  * the pinned fingerprint match the existing row.
  */
+type StoredCoordinatorPeerAddressRow = {
+	peer_device_id: string | null;
+	pinned_fingerprint: string | null;
+	addresses_json: string | null;
+	manual_addresses_json: string | null;
+};
+
+function refreshCoordinatorPeerRow(
+	row: StoredCoordinatorPeerAddressRow,
+	discoveredAddressesByPinnedPeer: Map<string, string[]>,
+	update: (addresses: string, manual: string, deviceId: string, fingerprint: string) => void,
+): boolean {
+	const deviceId = clean(row.peer_device_id);
+	const fingerprint = clean(row.pinned_fingerprint);
+	if (!deviceId || !fingerprint) return false;
+	const discovered = discoveredAddressesByPinnedPeer.get(`${deviceId}:${fingerprint}`);
+	if (!discovered?.length) return false;
+	const existing = mergeAddresses(parseAddressCache(row.addresses_json), []);
+	const manual =
+		row.manual_addresses_json == null ? existing : parseAddressCache(row.manual_addresses_json);
+	const merged = mergeCoordinatorPeerAddresses(existing, discovered, manual);
+	if (JSON.stringify(merged) === JSON.stringify(existing) && row.manual_addresses_json != null) {
+		return false;
+	}
+	update(JSON.stringify(merged), JSON.stringify(manual), deviceId, fingerprint);
+	return true;
+}
+
 export function refreshStoredCoordinatorPeerAddresses(
 	db: Database,
 	peers: Record<string, unknown>[],
@@ -419,32 +447,20 @@ export function refreshStoredCoordinatorPeerAddresses(
 	if (discoveredAddressesByPinnedPeer.size === 0) return 0;
 
 	const rows = db
-		.prepare("SELECT peer_device_id, pinned_fingerprint, addresses_json FROM sync_peers")
-		.all() as Array<{
-		peer_device_id: string | null;
-		pinned_fingerprint: string | null;
-		addresses_json: string | null;
-	}>;
+		.prepare(
+			"SELECT peer_device_id, pinned_fingerprint, addresses_json, manual_addresses_json FROM sync_peers",
+		)
+		.all() as StoredCoordinatorPeerAddressRow[];
 	const update = db.prepare(
-		"UPDATE sync_peers SET addresses_json = ? WHERE peer_device_id = ? AND pinned_fingerprint = ?",
+		"UPDATE sync_peers SET addresses_json = ?, manual_addresses_json = ? WHERE peer_device_id = ? AND pinned_fingerprint = ?",
 	);
+	const write = (addresses: string, manual: string, deviceId: string, fingerprint: string) => {
+		update.run(addresses, manual, deviceId, fingerprint);
+	};
 	let updated = 0;
 	const refresh = db.transaction(() => {
 		for (const row of rows) {
-			const deviceId = clean(row.peer_device_id);
-			const fingerprint = clean(row.pinned_fingerprint);
-			if (!deviceId || !fingerprint) continue;
-			const discoveredAddresses = discoveredAddressesByPinnedPeer.get(`${deviceId}:${fingerprint}`);
-			if (!discoveredAddresses?.length) continue;
-
-			const existingAddresses = mergeAddresses(parseAddressCache(row.addresses_json), []);
-			const mergedAddresses = mergeAddressesPreferCandidates(
-				existingAddresses,
-				discoveredAddresses,
-			);
-			if (JSON.stringify(mergedAddresses) === JSON.stringify(existingAddresses)) continue;
-			update.run(JSON.stringify(mergedAddresses), deviceId, fingerprint);
-			updated += 1;
+			if (refreshCoordinatorPeerRow(row, discoveredAddressesByPinnedPeer, write)) updated += 1;
 		}
 	});
 	refresh.immediate();
@@ -520,6 +536,22 @@ function sharedManagedScopeState(
  * both devices are active members of a Project managed by the exact
  * coordinator and group that supplied the discovered key.
  */
+function updateTrustedCoordinatorPeerAddresses(
+	db: Database,
+	peerDeviceId: string,
+	peer: Record<string, unknown>,
+	fingerprint: string,
+	publicKey: string,
+): void {
+	const addresses = peer.stale ? [] : stringList(peer.addresses);
+	updatePeerAddresses(db, peerDeviceId, addresses, {
+		name: clean(peer.display_name) || undefined,
+		pinnedFingerprint: fingerprint,
+		publicKey,
+		coordinatorCandidates: true,
+	});
+}
+
 export function trustCoordinatorPeersWithSharedManagedScopes(
 	db: Database,
 	localDeviceId: string,
@@ -589,12 +621,7 @@ export function trustCoordinatorPeersWithSharedManagedScopes(
 				existing.actor_id == null &&
 				existing.pending_bootstrap_grant_id == null &&
 				(!existingHasTrust || existing.trust_provenance === "coordinator_policy"));
-		const addresses = peer.stale ? [] : stringList(peer.addresses);
-		updatePeerAddresses(db, peerDeviceId, addresses, {
-			name: clean(peer.display_name) || undefined,
-			pinnedFingerprint: fingerprint,
-			publicKey,
-		});
+		updateTrustedCoordinatorPeerAddresses(db, peerDeviceId, peer, fingerprint, publicKey);
 		if (policyDerivedTrust) {
 			db.prepare(
 				`UPDATE sync_peers SET discovered_via_coordinator_id = ?,

@@ -959,6 +959,13 @@ function ensureRecipientPolicyWakeColumn(db: DatabaseType): void {
 }
 
 function ensureAlwaysOnSchemaCompatibility(db: DatabaseType): void {
+	if (tableExists(db, "sync_peers") && !columnExists(db, "sync_peers", "manual_addresses_json")) {
+		try {
+			db.exec("ALTER TABLE sync_peers ADD COLUMN manual_addresses_json TEXT");
+		} catch (error) {
+			if (!columnExists(db, "sync_peers", "manual_addresses_json")) throw error;
+		}
+	}
 	ensureMemoryOwnershipSchemas(db);
 	ensureOptionalRetrievalLedgerSchema(db);
 	try {

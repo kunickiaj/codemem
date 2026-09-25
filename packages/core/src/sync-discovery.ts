@@ -8,11 +8,16 @@
 import { createRequire } from "node:module";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import { formatHostPort, mergeAddresses, normalizeAddress } from "./address-utils.js";
+import {
+	formatHostPort,
+	mergeAddresses,
+	mergeCoordinatorPeerAddresses,
+	normalizeAddress,
+} from "./address-utils.js";
 import { readCoordinatorSyncConfig } from "./coordinator-sync-config.js";
 import type { Database } from "./db.js";
 import * as schema from "./schema.js";
-import { loadPeerAddresses } from "./sync-peer-addresses.js";
+import { loadManualPeerAddresses, loadPeerAddresses } from "./sync-peer-addresses.js";
 
 const requireFromHere = createRequire(import.meta.url);
 
@@ -108,11 +113,17 @@ export function recordPeerSuccess(
 		const remaining = promotedAddress
 			? addresses.filter((item) => normalizeAddress(item) !== promotedAddress)
 			: addresses;
-		const ordered = promotedAddress ? [promotedAddress, ...remaining] : addresses;
+		const manual = loadManualPeerAddresses(db, deviceId) ?? addresses;
+		const ordered = mergeCoordinatorPeerAddresses(
+			[],
+			promotedAddress ? [promotedAddress, ...remaining] : addresses,
+			manual,
+		);
 		const d = drizzle(db, { schema });
 		d.update(schema.syncPeers)
 			.set({
 				addresses_json: JSON.stringify(ordered),
+				manual_addresses_json: JSON.stringify(manual),
 				last_sync_at: syncedAt,
 				last_seen_at: syncedAt,
 				last_error: null,

@@ -8,6 +8,7 @@
 
 import { and, desc, eq, gt, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import { MAX_PEER_ADDRESSES, mergeAddresses } from "./address-utils.js";
 import type { Database } from "./db.js";
 import { ensureAdditiveSchemaCompatibility } from "./db.js";
 import { isStableReleaseVersion } from "./release-discovery.js";
@@ -1896,7 +1897,10 @@ async function tryPeerAddresses(
 	const addressErrors: Array<{ address: string; error: string }> = [];
 	let attemptedAny = false;
 	let capabilities: SyncCapabilityDiagnostics | undefined;
-	for (const address of addresses) {
+	const boundedAddresses = mergeAddresses(addresses, [], {
+		maxAddresses: MAX_PEER_ADDRESSES,
+	});
+	for (const address of boundedAddresses) {
 		const baseUrl = buildBaseUrl(address);
 		if (!baseUrl) continue;
 		attemptedAny = true;

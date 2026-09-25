@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MAX_PEER_ADDRESSES } from "./address-utils.js";
 import {
 	addressDedupeKey,
 	advertiseMdns,
@@ -19,6 +20,7 @@ import {
 	selectDialAddresses,
 	updatePeerAddresses,
 } from "./sync-discovery.js";
+import { loadManualPeerAddresses } from "./sync-peer-addresses.js";
 import { initTestSchema } from "./test-utils.js";
 
 // ---------------------------------------------------------------------------
@@ -201,6 +203,56 @@ describe("peer address storage", () => {
 		expect(loaded).toEqual(["http://host:8080"]);
 	});
 
+	it("can bound automatic updates while preferring fresh candidates", () => {
+		const existing = Array.from(
+			{ length: MAX_PEER_ADDRESSES * 2 },
+			(_, index) => `old-${index}.example:7337`,
+		);
+		updatePeerAddresses(db, "peer-1", existing);
+
+		const merged = updatePeerAddresses(db, "peer-1", ["fresh.example:7337"], {
+			coordinatorCandidates: true,
+		});
+
+		expect(merged).toHaveLength(MAX_PEER_ADDRESSES);
+		expect(merged[0]).toBe("http://fresh.example:7337");
+		expect(loadPeerAddresses(db, "peer-1")).toEqual(merged);
+	});
+
+	it("keeps manual fallbacks when an automatic update has a full set of candidates", () => {
+		const manual = ["manual-a.example:7337", "manual-b.example:7337"];
+		const fresh = Array.from(
+			{ length: MAX_PEER_ADDRESSES },
+			(_, index) => `fresh-${index}.example:7337`,
+		);
+		updatePeerAddresses(db, "peer-1", manual);
+
+		const merged = updatePeerAddresses(db, "peer-1", fresh, {
+			coordinatorCandidates: true,
+		});
+
+		expect(merged).toEqual([
+			...fresh.slice(0, 6).map((address) => `http://${address}`),
+			...manual.map((address) => `http://${address}`),
+		]);
+	});
+
+	it("records verified pairing addresses separately from coordinator results", () => {
+		updatePeerAddresses(db, "peer-1", ["manual.example:7337"], {
+			pinnedFingerprint: "fp",
+			replaceTrust: true,
+		});
+		updatePeerAddresses(db, "peer-1", ["fresh.example:7337"], {
+			coordinatorCandidates: true,
+		});
+
+		expect(loadManualPeerAddresses(db, "peer-1")).toEqual(["http://manual.example:7337"]);
+		expect(loadPeerAddresses(db, "peer-1")).toEqual([
+			"http://fresh.example:7337",
+			"http://manual.example:7337",
+		]);
+	});
+
 	it("fills missing trust material without replacing existing trust by default", () => {
 		updatePeerAddresses(db, "peer-1", ["host:8080"], {
 			pinnedFingerprint: "old-fp",
@@ -308,6 +360,22 @@ describe("recordPeerSuccess", () => {
 		const ordered = recordPeerSuccess(db, "peer-1", "host2:90");
 		expect(ordered[0]).toBe("http://host2:90");
 		expect(ordered[1]).toBe("http://host1:8080");
+	});
+
+	it("prunes legacy address history after a successful dial", () => {
+		const addresses = Array.from(
+			{ length: MAX_PEER_ADDRESSES * 2 },
+			(_, index) => `host-${index}.example:7337`,
+		);
+		updatePeerAddresses(db, "peer-1", addresses, {
+			pinnedFingerprint: "fp",
+		});
+
+		const ordered = recordPeerSuccess(db, "peer-1", addresses.at(-1) ?? null);
+
+		expect(ordered).toHaveLength(MAX_PEER_ADDRESSES);
+		expect(ordered[0]).toBe(`http://host-${addresses.length - 1}.example:7337`);
+		expect(loadPeerAddresses(db, "peer-1")).toEqual(ordered);
 	});
 
 	it("handles null address gracefully", () => {

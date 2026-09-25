@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MAX_PEER_ADDRESSES } from "./address-utils.js";
 import { createBetterSqliteCoordinatorApp } from "./better-sqlite-coordinator-runtime.js";
 import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
 import {
@@ -1469,6 +1470,87 @@ describe("refreshStoredCoordinatorPeerAddresses", () => {
 			total: number;
 		};
 		expect(count.total).toBe(0);
+	});
+});
+
+describe("bounded coordinator peer address refresh", () => {
+	it("retains previously configured fallbacks when the coordinator advertises eight new addresses", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const manual = ["http://manual-a.example:7337", "http://manual-b.example:7337"];
+			const fresh = Array.from(
+				{ length: MAX_PEER_ADDRESSES },
+				(_, index) => `http://fresh-${index}.example:7337`,
+			);
+			db.prepare(
+				"INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, addresses_json, created_at) VALUES (?, ?, ?, ?)",
+			).run("peer-1", "fp-1", JSON.stringify(manual), new Date().toISOString());
+
+			refreshStoredCoordinatorPeerAddresses(db, [
+				{ device_id: "peer-1", fingerprint: "fp-1", addresses: fresh },
+			]);
+
+			const row = db
+				.prepare("SELECT addresses_json FROM sync_peers WHERE peer_device_id = ?")
+				.get("peer-1") as { addresses_json: string };
+			expect(JSON.parse(row.addresses_json)).toEqual([...fresh.slice(0, 6), ...manual]);
+
+			const newer = fresh.map((_, index) => `http://newer-${index}.example:7337`);
+			refreshStoredCoordinatorPeerAddresses(db, [
+				{ device_id: "peer-1", fingerprint: "fp-1", addresses: newer },
+			]);
+			const refreshed = db
+				.prepare(
+					"SELECT addresses_json, manual_addresses_json FROM sync_peers WHERE peer_device_id = ?",
+				)
+				.get("peer-1") as { addresses_json: string; manual_addresses_json: string };
+			expect(JSON.parse(refreshed.addresses_json)).toEqual([...newer.slice(0, 6), ...manual]);
+			expect(JSON.parse(refreshed.manual_addresses_json)).toEqual(manual);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("prunes legacy address growth while keeping fresh coordinator candidates first", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const legacyAddresses = Array.from(
+				{ length: MAX_PEER_ADDRESSES * 4 },
+				(_, index) => `http://old-${index}.example:7337`,
+			);
+			db.prepare(
+				"INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, addresses_json, created_at) VALUES (?, ?, ?, ?)",
+			).run("peer-1", "fp-1", JSON.stringify(legacyAddresses), new Date().toISOString());
+
+			const updated = refreshStoredCoordinatorPeerAddresses(db, [
+				{
+					device_id: "peer-1",
+					fingerprint: "fp-1",
+					addresses: ["http://fresh.example:7337"],
+				},
+			]);
+
+			expect(updated).toBe(1);
+			const row = db
+				.prepare("SELECT addresses_json FROM sync_peers WHERE peer_device_id = ?")
+				.get("peer-1") as { addresses_json: string };
+			const addresses = JSON.parse(row.addresses_json) as string[];
+			expect(addresses).toHaveLength(MAX_PEER_ADDRESSES);
+			expect(addresses[0]).toBe("http://fresh.example:7337");
+			expect(addresses.slice(1)).toEqual([
+				...legacyAddresses.slice(0, 2),
+				...legacyAddresses.slice(-2),
+				...legacyAddresses.slice(2, 5),
+			]);
+			const archived = db
+				.prepare("SELECT manual_addresses_json FROM sync_peers WHERE peer_device_id = ?")
+				.get("peer-1") as { manual_addresses_json: string };
+			expect(JSON.parse(archived.manual_addresses_json)).toEqual(legacyAddresses);
+		} finally {
+			db.close();
+		}
 	});
 });
 
