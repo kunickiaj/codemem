@@ -30,6 +30,7 @@ export interface SetupSessionError {
 	retry: "load" | "refresh" | "completion" | null;
 	scope: SetupErrorScope;
 	hideStaleView?: boolean;
+	readOnlyRetry?: boolean;
 }
 
 interface ClosedSetupSessionState {
@@ -81,6 +82,8 @@ const CHANGED_STATE_ERROR =
 	"Team setup changed since it was last reviewed. Reload the latest details to continue.";
 const ROSTER_UNAVAILABLE_ERROR =
 	"Team device details are temporarily unavailable. Check the coordinator connection and settings, then refresh.";
+const ROSTER_READ_RETRY_ERROR =
+	"Team device details are temporarily unavailable. Check the coordinator connection and settings, then retry loading.";
 const ROSTER_UNAVAILABLE_AFTER_FINISH_ERROR =
 	"Team device details were unavailable, so setup was not finished and no changes were applied. Check the coordinator connection and settings, then refresh.";
 const LOCAL_SCAN_BUDGET_AFTER_FINISH_ERROR =
@@ -235,13 +238,14 @@ function retry(state: SetupSessionState): SetupSessionState {
 		hasBlockingOperation(state)
 	)
 		return state;
-	const retryMode =
-		globalError(state)?.retry ?? state.errors.find((error) => error.retry)?.retry ?? "load";
+	const retryError = globalError(state) ?? state.errors.find((error) => error.retry);
+	const retryMode = retryError?.retry ?? "load";
 	return append(state, {
 		kind: "load",
 		candidateRef: state.candidateRef,
 		refresh: retryMode === "refresh",
 		completionOnly: retryMode === "completion",
+		readOnlyRecovery: retryMode === "load" && retryError?.readOnlyRetry === true,
 		focusOnOutcome: true,
 	});
 }
@@ -435,10 +439,10 @@ function outcome(state: SetupSessionState, result: SetupEffectOutcome): SetupSes
 		commands: state.commands.filter((item) => item.id !== result.id),
 	};
 	// A plain detail read can return an obsolete draft after the candidate disappears.
-	// Only a completed view can clear the stale error for this command's fallback.
+	// Completion checks and read-only stale recovery require confirmed completion.
 	if (
 		command.kind === "load" &&
-		command.completionOnly &&
+		(command.completionOnly || command.readOnlyRecovery) &&
 		result.status === "success" &&
 		result.view?.state !== "completed"
 	) {
@@ -625,16 +629,37 @@ function errorFor(
 		? null
 		: staleLoadRecoveryMessage(command, cause, recoveryCause);
 	const globalError = changed || rosterUnavailable || completionCode !== null;
+	const retryMode = retryFor(command, cause, recoveryCause, {
+		changed,
+		rosterUnavailable,
+		terminalRecovery: terminalRecoveryCode !== null,
+	});
+	const readOnlyRetry = shouldKeepReadOnlyRetry(command, cause, recoveryCause, retryMode);
 	return {
 		scope: errorScopeFor(command, { globalError }),
 		message: staleRecovery ?? message,
-		hideStaleView: Boolean(staleRecovery) || (command.kind === "load" && command.completionOnly),
-		retry: retryFor(command, cause, recoveryCause, {
-			changed,
-			rosterUnavailable,
-			terminalRecovery: terminalRecoveryCode !== null,
-		}),
+		hideStaleView:
+			Boolean(staleRecovery) ||
+			(command.kind === "load" && command.completionOnly) ||
+			readOnlyRetry,
+		readOnlyRetry,
+		retry: retryMode,
 	};
+}
+
+function shouldKeepReadOnlyRetry(
+	command: SetupEffect,
+	cause: unknown,
+	recoveryCause: unknown,
+	retryMode: SetupSessionError["retry"],
+): boolean {
+	if (command.kind !== "load" || retryMode !== "load") return false;
+	if (command.readOnlyRecovery) return true;
+	return (
+		cause instanceof LegacyTeamSetupApiError &&
+		cause.errorCode === "team_setup_confirmation_stale" &&
+		Boolean(recoveryCause)
+	);
 }
 
 function errorScopeFor(command: SetupEffect, options: { globalError: boolean }): SetupErrorScope {
@@ -673,6 +698,19 @@ function staleConfirmationRetry(
 	return command.kind === "load" && command.refresh ? "completion" : "refresh";
 }
 
+function readOnlyRecoveryRetry(command: SetupEffect, cause: unknown): "load" | "refresh" | null {
+	if (
+		command.kind !== "load" ||
+		!command.readOnlyRecovery ||
+		command.refresh ||
+		command.completionOnly
+	)
+		return null;
+	if (cause instanceof LegacyTeamSetupApiError && isChangedStateCode(cause.errorCode))
+		return "refresh";
+	return "load";
+}
+
 function retryFor(
 	command: SetupEffect,
 	cause: unknown,
@@ -691,6 +729,8 @@ function retryFor(
 	if (command.kind === "load" && command.completionOnly) {
 		return completionOnlyRetry(cause);
 	}
+	const readOnlyRetry = readOnlyRecoveryRetry(command, cause);
+	if (readOnlyRetry) return readOnlyRetry;
 	if (options.changed || options.rosterUnavailable) return "refresh";
 	if (command.kind === "refresh") return "refresh";
 	if (command.kind === "load" && command.refresh) return "refresh";
@@ -720,7 +760,7 @@ function staleLoadRecoveryMessage(
 		recoveryCause instanceof LegacyTeamSetupApiError &&
 		recoveryCause.errorCode === "team_setup_roster_unavailable"
 	)
-		return "Team device details are temporarily unavailable. Check the coordinator connection and settings, then retry loading.";
+		return ROSTER_READ_RETRY_ERROR;
 	if (
 		recoveryCause instanceof LegacyTeamSetupApiError &&
 		recoveryCause.errorCode === "team_setup_completion_unavailable"
@@ -732,6 +772,17 @@ function staleLoadRecoveryMessage(
 	)
 		return CHANGED_STATE_ERROR;
 	return "The current Team setup could not be loaded. Retry to check the latest details.";
+}
+
+function rosterErrorMessage(command: SetupEffect, cause: unknown): string {
+	if (command.kind === "load" && command.readOnlyRecovery) return ROSTER_READ_RETRY_ERROR;
+	if (command.kind !== "finish") return ROSTER_UNAVAILABLE_ERROR;
+	if (
+		cause instanceof LegacyTeamSetupApiError &&
+		cause.reason === "local_candidate_scan_budget_exceeded"
+	)
+		return LOCAL_SCAN_BUDGET_AFTER_FINISH_ERROR;
+	return ROSTER_UNAVAILABLE_AFTER_FINISH_ERROR;
 }
 
 function completionOrChangedMessage(options: {
@@ -762,17 +813,8 @@ function completionOrChangedMessage(options: {
 		};
 	}
 	if (changed) return { completionCode, message: CHANGED_STATE_ERROR, terminalRecoveryCode };
-	if (rosterUnavailable) {
-		let message = ROSTER_UNAVAILABLE_ERROR;
-		if (command.kind === "finish") {
-			message =
-				cause instanceof LegacyTeamSetupApiError &&
-				cause.reason === "local_candidate_scan_budget_exceeded"
-					? LOCAL_SCAN_BUDGET_AFTER_FINISH_ERROR
-					: ROSTER_UNAVAILABLE_AFTER_FINISH_ERROR;
-		}
-		return { completionCode, message, terminalRecoveryCode };
-	}
+	if (rosterUnavailable)
+		return { completionCode, message: rosterErrorMessage(command, cause), terminalRecoveryCode };
 	return {
 		completionCode,
 		message: completionError ?? safeError(command.kind),

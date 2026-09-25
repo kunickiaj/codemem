@@ -28,6 +28,7 @@ export type SetupEffect =
 			candidateRef: string;
 			refresh: boolean;
 			completionOnly?: boolean;
+			readOnlyRecovery?: boolean;
 			focusOnOutcome: boolean;
 	  })
 	| (SetupEffectBase & {

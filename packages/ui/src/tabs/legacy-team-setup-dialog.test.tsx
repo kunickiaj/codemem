@@ -3343,13 +3343,13 @@ describe("Team setup completion check recovery", () => {
 });
 
 describe("Team setup follow-up read failures", () => {
-	it("retries a failed coordinator roster read without changing the draft", async () => {
+	it("retries a failed coordinator roster read before offering an explicit refresh", async () => {
 		const loadDetail = vi
 			.fn()
 			.mockRejectedValueOnce(new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale"))
 			.mockRejectedValueOnce(new LegacyTeamSetupApiError(503, "team_setup_roster_unavailable"))
 			.mockResolvedValueOnce(detail());
-		const refreshCandidate = vi.fn();
+		const refreshCandidate = vi.fn().mockResolvedValue(detail());
 		setup({ loadDetail, refreshCandidate });
 		await vi.waitFor(() =>
 			expect(document.querySelector('[role="alert"]')?.textContent).toContain(
@@ -3357,32 +3357,115 @@ describe("Team setup follow-up read failures", () => {
 			),
 		);
 		act(() => document.getElementById("legacy-team-setup-retry")?.click());
+		await vi.waitFor(() =>
+			expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+				"changed since it was last reviewed",
+			),
+		);
+		expect(refreshCandidate).not.toHaveBeenCalled();
+		act(() => document.getElementById("legacy-team-setup-retry")?.click());
 		await vi.waitFor(() => expect(document.body.textContent).toContain("Set up Example Team"));
 		expect(loadDetail).toHaveBeenCalledTimes(3);
-		expect(refreshCandidate).not.toHaveBeenCalled();
+		expect(refreshCandidate).toHaveBeenCalledOnce();
 	});
 
 	it.each([
 		new Error("private transport failure"),
 		new LegacyTeamSetupApiError(503, "team_setup_failed"),
-	])("retries a failed follow-up read without changing the draft (%s)", async (readError) => {
+	])(
+		"retries a failed follow-up read before offering an explicit refresh (%s)",
+		async (readError) => {
+			const loadDetail = vi
+				.fn()
+				.mockRejectedValueOnce(new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale"))
+				.mockRejectedValueOnce(readError)
+				.mockResolvedValueOnce(detail());
+			const refreshCandidate = vi.fn().mockResolvedValue(detail());
+			setup({ loadDetail, refreshCandidate });
+			await vi.waitFor(() =>
+				expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+					"Retry to check the latest details",
+				),
+			);
+			act(() => document.getElementById("legacy-team-setup-retry")?.click());
+			await vi.waitFor(() =>
+				expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+					"changed since it was last reviewed",
+				),
+			);
+			expect(refreshCandidate).not.toHaveBeenCalled();
+			act(() => document.getElementById("legacy-team-setup-retry")?.click());
+			await vi.waitFor(() => expect(document.body.textContent).toContain("Set up Example Team"));
+			expect(loadDetail).toHaveBeenCalledTimes(3);
+			expect(refreshCandidate).toHaveBeenCalledOnce();
+			expect(document.body.textContent).not.toContain("private transport failure");
+		},
+	);
+});
+
+describe("Team setup repeated read failures", () => {
+	it("rejects an obsolete ready draft until the user explicitly refreshes", async () => {
+		const ready = detail({ canFinish: true });
 		const loadDetail = vi
 			.fn()
 			.mockRejectedValueOnce(new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale"))
-			.mockRejectedValueOnce(readError)
-			.mockResolvedValueOnce(detail());
+			.mockRejectedValueOnce(new LegacyTeamSetupApiError(503, "team_setup_roster_unavailable"))
+			.mockResolvedValueOnce(ready);
+		const refreshCandidate = vi.fn().mockResolvedValue(ready);
+		setup({ loadDetail, refreshCandidate });
+		await vi.waitFor(() =>
+			expect(document.querySelector('[role="alert"]')?.textContent).toContain("retry loading"),
+		);
+		act(() => document.getElementById("legacy-team-setup-retry")?.click());
+		await vi.waitFor(() => expect(loadDetail).toHaveBeenCalledTimes(3));
+		await vi.waitFor(() =>
+			expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+				"changed since it was last reviewed",
+			),
+		);
+		expect(document.querySelector(".legacy-team-setup-confirmation input")).toBeNull();
+		expect(refreshCandidate).not.toHaveBeenCalled();
+		act(() => document.getElementById("legacy-team-setup-retry")?.click());
+		await vi.waitFor(() => expect(refreshCandidate).toHaveBeenCalledOnce());
+		await vi.waitFor(() =>
+			expect(
+				document.querySelector<HTMLInputElement>(".legacy-team-setup-confirmation input")?.checked,
+			).toBe(false),
+		);
+	});
+
+	it.each([
+		{
+			failure: new LegacyTeamSetupApiError(503, "team_setup_roster_unavailable"),
+			message: "Team device details are temporarily unavailable",
+		},
+		{
+			failure: new Error("private transport failure"),
+			message: "current Team setup could not be loaded",
+		},
+	])("keeps Retry read-only after repeated $message", async ({ failure, message }) => {
+		const loadDetail = vi
+			.fn()
+			.mockRejectedValueOnce(new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale"))
+			.mockRejectedValueOnce(failure)
+			.mockRejectedValueOnce(failure)
+			.mockResolvedValueOnce(detail({ draftState: "completed" }));
 		const refreshCandidate = vi.fn();
 		setup({ loadDetail, refreshCandidate });
 		await vi.waitFor(() =>
-			expect(document.querySelector('[role="alert"]')?.textContent).toContain(
-				"Retry to check the latest details",
-			),
+			expect(document.querySelector('[role="alert"]')?.textContent).toContain(message),
 		);
 		act(() => document.getElementById("legacy-team-setup-retry")?.click());
-		await vi.waitFor(() => expect(document.body.textContent).toContain("Set up Example Team"));
-		expect(loadDetail).toHaveBeenCalledTimes(3);
+		await vi.waitFor(() => expect(loadDetail).toHaveBeenCalledTimes(3));
+		await vi.waitFor(() =>
+			expect(
+				document.getElementById("legacy-team-setup-retry")?.getAttribute("aria-disabled"),
+			).toBeNull(),
+		);
+		act(() => document.getElementById("legacy-team-setup-retry")?.click());
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Team setup complete"));
+		expect(loadDetail).toHaveBeenCalledTimes(4);
 		expect(refreshCandidate).not.toHaveBeenCalled();
-		expect(document.body.textContent).not.toContain("private transport failure");
 	});
 });
 
