@@ -722,6 +722,21 @@ export {
 	resolvePiObserverConfig,
 } from "./pi-observer-config.js";
 export type {
+	PiSessionSearchMatch,
+	PiSessionSearchOptions,
+	PiSessionSearchResponse,
+	PiSessionTextEvent,
+} from "./pi-session-search.js";
+export { extractPiSessionText, searchPiSessions } from "./pi-session-search.js";
+export type {
+	ImportPiSessionsOptions,
+	ParsedPiSession,
+	PiImportProgress,
+	PiImportSummary,
+	PiSessionMessage,
+} from "./pi-sessions-import.js";
+export { importPiSessions, parsePiSessionJsonl } from "./pi-sessions-import.js";
+export type {
 	BlockedPolicyTeamDeviceEligibilityResult,
 	DerivePolicyTeamDeviceEligibilityInput,
 	EligiblePolicyTeamDeviceEligibilityResult,

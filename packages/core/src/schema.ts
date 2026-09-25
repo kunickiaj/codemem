@@ -555,6 +555,16 @@ export const rawEventSessions = sqliteTable(
 export type RawEventSession = typeof rawEventSessions.$inferSelect;
 export type NewRawEventSession = typeof rawEventSessions.$inferInsert;
 
+export const piImportState = sqliteTable("pi_import_state", {
+	file_path: text("file_path").primaryKey(),
+	size_bytes: integer("size_bytes").notNull(),
+	mtime_ms: real("mtime_ms").notNull(),
+	updated_at: text("updated_at").notNull(),
+});
+
+export type PiImportStateRow = typeof piImportState.$inferSelect;
+export type NewPiImportStateRow = typeof piImportState.$inferInsert;
+
 export const opencodeSessions = sqliteTable(
 	"opencode_sessions",
 	{
@@ -1476,6 +1486,7 @@ export const schema = {
 	rawEvents,
 	rawEventSessions,
 	opencodeSessions,
+	piImportState,
 	rawEventFlushBatches,
 	userPrompts,
 	sessionSummaries,

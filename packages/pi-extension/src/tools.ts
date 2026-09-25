@@ -1270,12 +1270,106 @@ function registerMemoryDistillCandidates(
 	);
 }
 
+async function executeMemorySessionSearch(
+	client: PiCodememClient,
+	rawParams: unknown,
+	signal: AbortSignal | undefined,
+): Promise<ToolResultContent> {
+	const params = paramsOf(rawParams);
+	return withToolError("memory_session_search", async () => {
+		const query = String(params.query ?? "");
+		if (!query.trim()) return errorResult("query required");
+		return httpOrCli(
+			client,
+			signal,
+			async () => {
+				const res = await httpJson(client, "GET", "/api/pi/sessions/search", {
+					query: {
+						query,
+						limit: params.limit != null ? Number(params.limit) : undefined,
+						snippet_chars: params.snippet_chars != null ? Number(params.snippet_chars) : undefined,
+						project: optionalFilter(params.project),
+						session_id: optionalFilter(params.session_id),
+					},
+					signal,
+				});
+				if (!res.ok) return null;
+				return jsonResult(res.data);
+			},
+			async () => {
+				const { stdout } = await client.execCodemem(sessionSearchCliArgs(params), { signal });
+				return jsonResult(parseCliJson(stdout));
+			},
+		);
+	});
+}
+
+/**
+ * CLI fallback args: codemem pi-session-search <query> --json plus optional
+ * filters. Mirrors the HTTP query-param mapping (bounds are clamped core-side
+ * and by the CLI command itself).
+ */
+function sessionSearchCliArgs(params: Record<string, unknown>): string[] {
+	const args = ["pi-session-search", String(params.query ?? ""), "--json"];
+	if (params.limit != null) args.push("--limit", String(Number(params.limit)));
+	if (params.snippet_chars != null)
+		args.push("--snippet-chars", String(Number(params.snippet_chars)));
+	const project = optionalFilter(params.project);
+	if (project) args.push("--project", project);
+	const sessionId = optionalFilter(params.session_id);
+	if (sessionId) args.push("--session-id", sessionId);
+	return args;
+}
+
+function registerMemorySessionSearch(
+	register: (def: AnyToolDef) => void,
+	tool: typeof asTool,
+	client: PiCodememClient,
+): void {
+	register(
+		tool({
+			name: "memory_session_search",
+			label: "Memory Session Search",
+			description:
+				"Search stored pi session transcripts by free-text query. Matches raw pi " +
+				"conversation events captured by codemem ingest (source pi), ordered " +
+				"most-recent-first, with optional project and session_id filters. Each " +
+				"result carries source, session id, project, role (user/assistant), " +
+				"timestamp, and a bounded text snippet; results are capped (default 10, " +
+				"max 20) and a no-match query returns an explicit empty result, never an " +
+				"error. Empty results usually mean the index only covers sessions captured " +
+				"since codemem was installed — backfill pre-install history with " +
+				"`codemem pi-import-sessions`.",
+			parameters: Type.Object({
+				query: Type.String({ description: "Free-text search over stored pi session text" }),
+				project: Type.Optional(Type.String({ description: "Filter by project label" })),
+				session_id: Type.Optional(Type.String({ description: "Filter by pi session id" })),
+				limit: Type.Optional(
+					Type.Integer({ minimum: 1, maximum: 20, default: 10, description: "Max results" }),
+				),
+				snippet_chars: Type.Optional(
+					Type.Integer({
+						minimum: 100,
+						maximum: 4000,
+						default: 1200,
+						description: "Per-result snippet cap in chars",
+					}),
+				),
+			}),
+			async execute(_id, rawParams, signal) {
+				return executeMemorySessionSearch(client, rawParams, signal);
+			},
+		}),
+	);
+}
+
 export function registerMemoryTools(pi: ExtensionAPI, client: PiCodememClient): string[] {
 	const registered: string[] = [];
 	const register = (def: AnyToolDef) => {
 		pi.registerTool(def);
 		registered.push(def.name);
 	};
+	registerMemorySessionSearch(register, asTool, client);
 	registerMemorySearch(register, asTool, client);
 	registerMemorySearchIndex(register, asTool, client);
 	registerMemoryExplain(register, asTool, client);
@@ -1310,5 +1404,6 @@ export function expectedToolNames(): string[] {
 		"memory_timeline",
 		"memory_expand",
 		"memory_distill_candidates",
+		"memory_session_search",
 	];
 }

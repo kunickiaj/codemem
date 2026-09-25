@@ -32,6 +32,8 @@ import {
 import { packCommand, promptPackLedgerCommand } from "./commands/pack.js";
 import { piHookIngestCommand } from "./commands/pi-hook-ingest.js";
 import { piHookInjectCommand } from "./commands/pi-hook-inject.js";
+import { piImportSessionsCommand } from "./commands/pi-import-sessions.js";
+import { piSessionSearchCommand } from "./commands/pi-session-search.js";
 import { recentCommand } from "./commands/recent.js";
 import { searchCommand } from "./commands/search.js";
 import { serveCommand } from "./commands/serve.js";
@@ -55,6 +57,8 @@ export const ROOT_COMPLETION_COMMANDS = [
 	"mcp",
 	"memory",
 	"pack",
+	"pi-import-sessions",
+	"pi-session-search",
 	"recent",
 	"search",
 	"serve",
@@ -168,6 +172,8 @@ export function registerRootCommands(program: Command): Command {
 	program.addCommand(recentCommand);
 	program.addCommand(searchCommand);
 	program.addCommand(packCommand);
+	program.addCommand(piSessionSearchCommand);
+	program.addCommand(piImportSessionsCommand);
 	program.addCommand(promptPackLedgerCommand, { hidden: true });
 	// Deprecated top-level aliases — use `memory show`, `memory forget`,
 	// `memory remember` instead. Hidden from --help and shell completion but

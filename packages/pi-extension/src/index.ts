@@ -11,7 +11,7 @@
  * Surfaces:
  *   - Ingest → POST /api/pi-hooks → CLI pi-hook-ingest
  *   - Injection → before_agent_start systemPrompt append only (never message)
- *   - Tools → pi.registerTool × 14 when pi.tools_mode === "native"
+ *   - Tools → pi.registerTool × 15 when pi.tools_mode === "native"
  *   - session_before_compact → flush signal only (never return compaction)
  */
 

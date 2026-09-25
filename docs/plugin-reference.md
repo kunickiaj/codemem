@@ -323,7 +323,7 @@ Uninstall by removing the packages entry and restarting pi.
 |---|---|
 | Ingest | Extension POSTs to `POST /api/pi-hooks`, a compatibility alias that normalizes the payload once into the canonical ingest envelope with `source: "pi"` — the same event identity as `POST /api/raw-events` with `source: "pi"`. Falls back to `codemem pi-hook-ingest` + spool when HTTP is unavailable. Boundary events (`session_before_compact`, `session_shutdown`) always flush via the CLI so extraction actually runs |
 | Injection | `before_agent_start` appends a turn-local `systemPrompt` block (`## codemem memories`); never returns `message` |
-| Tools | 14 native `memory_*` tools via `pi.registerTool` (HTTP preferred, CLI fallback). Default `pi.tools_mode: native` — no adapter required |
+| Tools | 15 native `memory_*` tools via `pi.registerTool` (HTTP preferred, CLI fallback). Default `pi.tools_mode: native` — no adapter required. The MCP server stays at 14 tools — `memory_session_search` is native/REST/CLI only |
 | Compaction | Observe-only: `session_before_compact` flushes extraction; never returns a custom `compaction` summary |
 | Fork/resume | Re-keys stream identity on every `session_start`; durable cursors via `pi.appendEntry` |
 | Project identity | Nearest Git root (walks up for a directory `.git` or a `gitdir:` worktree file), same walk as the other adapters |
@@ -331,6 +331,14 @@ Uninstall by removing the packages entry and restarting pi.
 Prompt-time pack retrieval prefers the HTTP path: prove `GET /api/prompt-pack-profile`, then a targeted `POST /api/pack` (or `codemem pi-hook-inject` / `pack --json` fallback). That HTTP pack path is unledgered — no opencode retrieval-ledger row is written for pi injection.
 
 Dashboard tabs are source-agnostic: pi rows appear alongside OpenCode/Claude/Codex with no extra setup. Packs are project-scoped, so memory crosses agents automatically.
+
+### Session search and history import
+
+Session search covers the pi conversation text codemem ingests (user/assistant text blocks; thinking, tool-call, and tool-result content is skipped). All three surfaces share one response shape — `{query, results[], returned, total_matches, truncated}` — and each result carries `source: "pi"`, session id, project, role, timestamp, a snippet plus `snippet_truncated`, and `full_length`. Empty results are explicit, never an error, and usually mean the index only covers sessions captured since install.
+
+- `codemem pi-session-search <query>` — CLI search over stored pi sessions. Flags: `--project <project>`, `--session-id <id>`, `--limit <n>` (1–20, default 10), `--snippet-chars <n>` (100–4000, default 1200), `--json`, `-d/--db-path`.
+- `codemem pi-import-sessions` — backfills `~/.pi/agent/sessions/**/*.jsonl` (honors `PI_CODING_AGENT_DIR`) into the raw-event store. Deterministic event ids dedupe against live-captured sessions, so re-imports are no-ops; size/mtime-unchanged files are skipped via per-database state, so a different or recreated database always re-imports. `--extract` (off by default — observer-model cost scales with backlog) drains imported sessions through the standard sweeper flush so extracted memories carry pi attribution; without it, imported events are stored searchable only, though a running viewer's sweeper can still pick up pending imported sessions like any other backlog.
+- `memory_session_search` — the native tool (native tools mode only; absent in `mcp-adapter` mode) calls `GET /api/pi/sessions/search` on the viewer, falling back to `codemem pi-session-search --json` when the viewer is unreachable.
 
 ### Observer derivation caveats (v1)
 

@@ -32,6 +32,7 @@ import {
 	REMEMBER_MEMORY_KINDS,
 	resolveProject,
 	resolveProjectRoot,
+	searchPiSessions,
 	storeVectors,
 	toJson,
 } from "@codemem/core";
@@ -450,6 +451,31 @@ function expandMemories(
 	};
 }
 
+// GET /api/pi/sessions/search — lexical search over stored pi session events.
+// Same params/result shape as core searchPiSessions (shared contract with the
+// pi-extension tool and the CLI); bounds/clamps live in the core function.
+// Registered from its own named sub-app (not inside memoryToolRoutes) so the
+// new route's lines and branching don't move that ratchet-measured function's
+// baselines or shift the scope identities its neighboring diagnostics pair by.
+function piSessionSearchRoutes(getStore: StoreFactory) {
+	const searchApp = new Hono();
+	searchApp.get("/api/pi/sessions/search", (c) => {
+		const store = getStore();
+		const query = c.req.query("query") ?? "";
+		if (!query.trim()) {
+			return c.json({ error: "query required" }, 400);
+		}
+		const result = searchPiSessions(store.db, query, {
+			project: c.req.query("project"),
+			session_id: c.req.query("session_id"),
+			limit: queryInt(c.req.query("limit"), 10),
+			snippet_chars: queryInt(c.req.query("snippet_chars"), 1200),
+		});
+		return c.json(result);
+	});
+	return searchApp;
+}
+
 export function memoryToolRoutes(getStore: StoreFactory) {
 	const app = new Hono();
 
@@ -716,5 +742,5 @@ export function memoryToolRoutes(getStore: StoreFactory) {
 		}
 	});
 
-	return app;
+	return app.route("/", piSessionSearchRoutes(getStore));
 }
