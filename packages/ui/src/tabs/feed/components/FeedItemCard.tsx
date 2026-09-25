@@ -1,4 +1,4 @@
-import { h } from "preact";
+import { Fragment, h } from "preact";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { Chip } from "../../../components/primitives/chip";
 import { RadixSelect } from "../../../components/primitives/radix-select";
@@ -39,6 +39,7 @@ export interface FeedItemCardProps {
 function renderedSearchText(node: Node): string {
 	if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
 	if (!(node instanceof Element)) return "";
+	if (node.matches("details:not([open])")) return node.querySelector("summary")?.textContent ?? "";
 	const text = Array.from(node.childNodes, renderedSearchText).join("");
 	// Keep inline words intact, but never join text across rendered blocks or breaks.
 	if (
@@ -467,6 +468,47 @@ function renderExpandedProvenance(details: FeedCardDetails) {
 	return h("div", { className: "feed-expanded-provenance" }, provenance);
 }
 
+function renderFeedFacts(facts: string[], label: string, className = "feed-pack-facts") {
+	if (!facts.length) return null;
+	return h(
+		"div",
+		{ className },
+		h("div", { className: "feed-pack-facts-label" }, label),
+		renderFactsContent(facts),
+	);
+}
+
+function renderFeedCardContent(input: FeedCardRenderInput) {
+	const { body, facts, narrative } = input.model.content;
+	if (!input.model.isSessionSummary && facts.length) {
+		const context = narrative || body;
+		return h(
+			Fragment,
+			null,
+			renderFeedFacts(facts, "Key points", "feed-pack-facts feed-observation-points"),
+			context
+				? h(
+						"details",
+						{ className: "feed-observation-context" },
+						h(
+							"summary",
+							{ "aria-label": `Full context for ${input.model.displayTitle}` },
+							"Full context",
+						),
+						renderNarrativeContent(context, "feed-body narrative"),
+					)
+				: null,
+		);
+	}
+	return h(
+		Fragment,
+		null,
+		narrative ? renderNarrativeContent(narrative, "feed-body narrative") : null,
+		body ? renderNarrativeContent(body, "feed-body narrative") : null,
+		renderFeedFacts(facts, "Facts included in pack"),
+	);
+}
+
 function renderFeedCardDetail(input: FeedCardRenderInput) {
 	if (!input.expanded || !input.hasDisclosure) return null;
 	return h(
@@ -476,20 +518,7 @@ function renderFeedCardDetail(input: FeedCardRenderInput) {
 			className: "feed-detail",
 			id: input.details.detailId,
 		},
-		input.model.content.narrative
-			? renderNarrativeContent(input.model.content.narrative, "feed-body narrative")
-			: null,
-		input.model.content.body
-			? renderNarrativeContent(input.model.content.body, "feed-body narrative")
-			: null,
-		input.model.content.facts.length
-			? h(
-					"div",
-					{ className: "feed-pack-facts" },
-					h("div", { className: "feed-pack-facts-label" }, "Facts included in pack"),
-					renderFactsContent(input.model.content.facts),
-				)
-			: null,
+		renderFeedCardContent(input),
 		renderFeedFiles(input.model.files),
 		renderExpandedProvenance(input.details),
 	);

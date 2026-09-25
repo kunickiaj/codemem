@@ -2864,6 +2864,33 @@
       }
       .feed-pack-facts .feed-body ul { display: grid; gap: 4px; margin: 0; }
       .feed-pack-facts .feed-body li::marker { color: var(--accent); }
+      .feed-observation-points {
+        margin-top: 0;
+        padding: var(--sp-3) var(--sp-4);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--surface-2);
+      }
+      .feed-observation-points .feed-pack-facts-label { color: var(--accent); }
+      .feed-observation-points .feed-body ul { gap: var(--sp-2); }
+      .feed-observation-context { max-width: 76ch; }
+      .feed-observation-context summary {
+        width: fit-content;
+        padding: 6px 0;
+        color: var(--accent);
+        cursor: pointer;
+        font-family: var(--font-mono);
+        font-size: var(--font-size-sm);
+        font-weight: var(--font-weight-medium);
+        list-style-position: inside;
+      }
+      .feed-observation-context summary:hover { color: var(--text-primary); }
+      .feed-observation-context summary:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+        border-radius: var(--radius-sm);
+      }
+      .feed-observation-context[open] .feed-body { padding-top: var(--sp-2); }
 
       .feed-card-footer {
         display: flex;
