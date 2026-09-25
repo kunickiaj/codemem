@@ -132,17 +132,19 @@ export function mergeCoordinatorPeerAddresses(
 		manualFallbacks,
 		{ maxAddresses: MAX_PEER_ADDRESSES },
 	);
+	const freshCandidates = mergeAddresses(candidates, []);
 	const fallbackFreshLimit = protectedAddresses.length
 		? MAX_PEER_ADDRESSES - protectedAddresses.length
 		: MAX_PEER_ADDRESSES - COORDINATOR_FALLBACK_ADDRESSES;
 	const freshLimit = Math.max(
 		fallbackFreshLimit,
-		Math.min(options?.requiredFreshAddresses ?? 0, MAX_PEER_ADDRESSES),
+		Math.min(
+			options?.requiredFreshAddresses ?? (freshCandidates.length > 0 ? 1 : 0),
+			MAX_PEER_ADDRESSES,
+		),
 	);
 	if (freshLimit === 0) return protectedAddresses;
-	const fresh = mergeAddresses(candidates, [], {
-		maxAddresses: freshLimit,
-	});
+	const fresh = freshCandidates.slice(0, freshLimit);
 	const withManual = mergeAddresses(
 		fresh,
 		protectedAddresses.slice(0, MAX_PEER_ADDRESSES - freshLimit),
@@ -151,5 +153,5 @@ export function mergeCoordinatorPeerAddresses(
 		},
 	);
 	const withFallbacks = mergeAddresses(withManual, existing, { maxAddresses: MAX_PEER_ADDRESSES });
-	return mergeAddresses(withFallbacks, candidates, { maxAddresses: MAX_PEER_ADDRESSES });
+	return mergeAddresses(withFallbacks, freshCandidates, { maxAddresses: MAX_PEER_ADDRESSES });
 }

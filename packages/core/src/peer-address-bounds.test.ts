@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { afterEach, expect, it, vi } from "vitest";
 import { MAX_PEER_ADDRESSES } from "./address-utils.js";
+import { refreshStoredCoordinatorPeerAddresses } from "./coordinator-runtime.js";
 import { columnExists, ensureAdditiveSchemaCompatibility } from "./db.js";
 import * as syncAuth from "./sync-auth.js";
 import { recordPeerSuccess } from "./sync-discovery.js";
@@ -122,6 +123,72 @@ it("tries new pairing addresses before a legacy cache already exceeds the dial l
 		});
 		expect(refreshed).toContain("http://paired-a.example:7337");
 		expect(refreshed).toContain("http://paired-b.example:7337");
+	} finally {
+		db.close();
+	}
+});
+
+it("tries coordinator candidates even when manual addresses fill the cache", () => {
+	const db = new Database(":memory:");
+	try {
+		initTestSchema(db);
+		const manual = Array.from({ length: MAX_PEER_ADDRESSES }, (_, index) => `manual-${index}:7337`);
+		updatePeerAddresses(db, "peer-1", manual, { pinnedFingerprint: "fp", replaceTrust: true });
+		recordPeerSuccess(db, "peer-1", "working:7337");
+
+		const addresses = updatePeerAddresses(db, "peer-1", ["fresh:7337"], {
+			coordinatorCandidates: true,
+		});
+
+		expect(addresses).toHaveLength(MAX_PEER_ADDRESSES);
+		expect(addresses[0]).toBe("http://fresh:7337");
+		expect(addresses).toContain("http://working:7337");
+		expect(loadManualPeerAddresses(db, "peer-1")).toEqual(
+			manual.map((address) => `http://${address}`),
+		);
+	} finally {
+		db.close();
+	}
+});
+
+it("refreshes a full manual cache from coordinator presence without losing the working fallback", () => {
+	const db = new Database(":memory:");
+	try {
+		initTestSchema(db);
+		const manual = Array.from({ length: MAX_PEER_ADDRESSES }, (_, index) => `manual-${index}:7337`);
+		updatePeerAddresses(db, "peer-1", manual, { pinnedFingerprint: "fp", replaceTrust: true });
+		recordPeerSuccess(db, "peer-1", "working:7337");
+
+		const updated = refreshStoredCoordinatorPeerAddresses(db, [
+			{ device_id: "peer-1", fingerprint: "fp", addresses: ["fresh:7337"] },
+		]);
+
+		expect(updated).toBe(1);
+		const addresses = loadPeerAddresses(db, "peer-1");
+		expect(addresses).toHaveLength(MAX_PEER_ADDRESSES);
+		expect(addresses[0]).toBe("http://fresh:7337");
+		expect(addresses).toContain("http://working:7337");
+	} finally {
+		db.close();
+	}
+});
+
+it("reserves a coordinator slot when all eight active addresses are manual", () => {
+	const db = new Database(":memory:");
+	try {
+		initTestSchema(db);
+		const manual = Array.from({ length: MAX_PEER_ADDRESSES }, (_, index) => `manual-${index}:7337`);
+		updatePeerAddresses(db, "peer-1", manual, { pinnedFingerprint: "fp", replaceTrust: true });
+
+		refreshStoredCoordinatorPeerAddresses(db, [
+			{ device_id: "peer-1", fingerprint: "fp", addresses: ["fresh:7337"] },
+		]);
+
+		expect(loadPeerAddresses(db, "peer-1")).toHaveLength(MAX_PEER_ADDRESSES);
+		expect(loadPeerAddresses(db, "peer-1")[0]).toBe("http://fresh:7337");
+		expect(loadManualPeerAddresses(db, "peer-1")).toEqual(
+			manual.map((address) => `http://${address}`),
+		);
 	} finally {
 		db.close();
 	}
