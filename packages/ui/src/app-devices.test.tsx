@@ -664,7 +664,7 @@ describe("Devices presence evidence", () => {
 			expect(row?.textContent).toContain("Studio laptop");
 			expect(row?.textContent).not.toContain("Canonical device");
 			expect(row?.textContent).not.toContain("Offline");
-			expect(row?.textContent?.includes("Identify or rename in Sync")).toBe(peer);
+			expect(row?.textContent?.includes("Rename paired device in Advanced Sync")).toBe(peer);
 		},
 	);
 });

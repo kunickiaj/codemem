@@ -3867,6 +3867,7 @@
         border-radius: 50%;
         font-weight: var(--font-weight-semibold);
       }
+      .diagnostics-severity-icon svg { display: block; width: 12px; height: 12px; }
       .diagnostics-technical-detail pre,
       .diagnostics-recovery-command code { white-space: pre-wrap; overflow-wrap: anywhere; }
       .diagnostics-technical-detail pre { margin: var(--sp-2) 0 0; color: var(--text-secondary); }
@@ -4587,6 +4588,8 @@
         cursor: pointer;
         transition: border-color var(--duration-fast) var(--ease-standard), background var(--duration-fast) var(--ease-standard);
       }
+      .recipient-policy-management-choice-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+      .devices-table-device .sync-subview-link { display: block; margin-top: 4px; text-align: left; }
       .sync-dialog-radio-option:hover {
         border-color: var(--border-hover);
         background: color-mix(in srgb, var(--surface-1) 94%, var(--surface-0));

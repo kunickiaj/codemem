@@ -875,6 +875,19 @@ function RebindTrigger({
 	);
 }
 
+function RebindGuidance({ hasAlternative }: { hasAlternative: boolean }) {
+	return (
+		<>
+			<p className="small">This changes who owns the device; it does not rename it.</p>
+			{hasAlternative ? null : (
+				<p className="small" role="status">
+					No other active Identity is available for reassignment.
+				</p>
+			)}
+		</>
+	);
+}
+
 function ConfiguredRebind({
 	controlKey,
 	intent,
@@ -1025,6 +1038,7 @@ function ConfiguredRebind({
 					<p>
 						<strong>Suggested current Identity (unconfirmed):</strong> {previousIdentity}
 					</p>
+					<RebindGuidance hasAlternative={identities.length > 0} />
 					<label htmlFor={`configured-rebind-${controlKey}`}>Target Identity</label>
 					<select
 						disabled={rebindBlocked}
@@ -1177,7 +1191,6 @@ function DeviceRowMenu({
 				⋯
 			</summary>
 			<div className="feed-menu-panel">
-				<IdentifyDeviceAction device={device} options={options} select={select} />
 				{device.action && options.onNavigate ? (
 					<button
 						aria-label={`${device.action.label} for ${device.displayName}`}
@@ -1221,31 +1234,25 @@ function DeviceRowMenu({
 	);
 }
 
-function IdentifyDeviceAction({
-	device,
-	options,
-	select,
-}: {
-	device: DeviceProjection;
-	options: DevicesRendererOptions;
-	select: (action: () => void) => void;
-}) {
-	if (!device.isPairedPeer || !options.onNavigate) return null;
-	return (
-		<button
-			className="feed-menu-item"
-			onClick={() => select(() => options.onNavigate?.("advanced_sync"))}
-			type="button"
-		>
-			Identify or rename in Sync…
-		</button>
-	);
-}
-
 function rememberDetailsFocus(deviceId: string) {
 	return (element: HTMLTableRowElement | null) => {
 		if (element) deviceActionFocusIdentities.set(element, { control: "menu", deviceId });
 	};
+}
+
+function PairedDeviceRename({
+	device,
+	onNavigate,
+}: {
+	device: DeviceProjection;
+	onNavigate?: DevicesRendererOptions["onNavigate"];
+}) {
+	if (!device.isPairedPeer || !onNavigate) return null;
+	return (
+		<button className="sync-subview-link" onClick={() => onNavigate("advanced_sync")} type="button">
+			Rename paired device in Advanced Sync…
+		</button>
+	);
 }
 
 function DeviceTableRow({
@@ -1278,6 +1285,7 @@ function DeviceTableRow({
 				</td>
 				<td className="devices-table-device">
 					<strong>{device.displayName}</strong>
+					<PairedDeviceRename device={device} onNavigate={options.onNavigate} />
 					{inventoryItem?.isLocal ? (
 						<Chip tone="actor-badge local" variant="badge">
 							This device

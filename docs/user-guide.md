@@ -294,6 +294,8 @@ Candidate mining is deterministic and review-first:
 
 ## Projects, Sharing, Devices, and Health
 
+For the short Project-first walkthrough, see [Share Projects and add devices](sharing-guide.md).
+
 ### Choose a sharing flow
 
 The normal flow is **Projects → Sharing → Devices → Health**, not manual pairing. Inside **Sharing**, open **Teams** when you want to manage ongoing Team membership and inherited Project access:
@@ -364,6 +366,8 @@ The recipient accepts on the new device. Codemem links it to the same Identity, 
 
 **Devices** shows every known device and whether its Identity ownership is configured. It does not infer ownership from pairing, coordinator membership, device names, or historical associations. It also does not infer per-device Team access from Identity membership; use Team policy administration when you need to review authoritative device decisions. Both direct and Team access remain limited to exact canonical Projects selected in Sharing.
 
+For a paired device, use **Rename paired device in Advanced Sync** from its Devices row, expand the device under **Advanced → Sync**, edit **Device name**, and choose **Save name**. The peer rename does not change names supplied by coordinator enrollment or a local Identity binding. **Change Identity** is a separate, reviewed ownership reassignment; the target picker lists only other active Identities. It cannot rename a device.
+
 | Identity setup state | Meaning | What to do |
 | --- | --- | --- |
 | Configured | One active Identity binding is authoritative. | Nothing, unless you deliberately need to change the Identity. |
@@ -433,7 +437,7 @@ Normal sharing uses product terms:
 
 - A **Team** organizes collaborating people and their devices. Team membership can supply inherited access only to Projects explicitly shared with that Team.
 - A **Project** is the exact canonical workspace selected for sharing, not every workspace with a similar display name.
-- A **Space** is the user-facing access boundary that groups related Projects.
+- A **Space** is the underlying access boundary that groups related Projects. Normal Project sharing does not require choosing one.
 
 Advanced screens and diagnostics may call a Space a **Sharing domain**, a coordinator group an administrative container, and the stored boundary a `scope_id`. Those internal terms explain enforcement; users do not need them to share a Project or add a device. Coordinator-group membership alone never grants Project access.
 
@@ -460,7 +464,7 @@ Safe defaults:
   them. If `codemem` exists under both work and personal paths, map the canonical
   workspace path/remote instead of trusting the basename.
 
-For a mixed personal/work laptop, start conservatively:
+For a mixed personal/work laptop using advanced manual mappings, start conservatively:
 
 1. Create or select one personal Sharing domain and one work/team Sharing
    domain in the Sync settings UI.

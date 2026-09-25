@@ -961,6 +961,42 @@ describe("Projects cached recipient presentation", () => {
 		releaseIntent?.(recipientIntent());
 		await refresh;
 	});
+
+	it("keeps sharing actions clickable during a background inventory refresh", async () => {
+		initProjectsTab(() => {});
+		const sharedProject = project();
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [sharedProject],
+			total: 1,
+		});
+		await loadProjectsData();
+		getProjectsInventoryController().callbacks.toggleSelection([sharedProject.workspace_identity]);
+		const button = document.getElementById("projectsShareSelected") as HTMLButtonElement;
+		expect(button.disabled).toBe(false);
+		let releaseInventory!: (value: ProjectScopeInventoryResult) => void;
+		vi.mocked(api.loadProjectScopeInventory).mockImplementationOnce(
+			() => new Promise((resolve) => (releaseInventory = resolve)),
+		);
+
+		const refresh = loadProjectsData();
+		expect(button.disabled).toBe(false);
+		button.click();
+		expect(recipientPolicyManagement.openRecipientPolicyManagement).toHaveBeenCalledWith({
+			mode: "project-add",
+			projectIds: [sharedProject.workspace_identity],
+		});
+		releaseInventory({
+			has_more: false,
+			limit: 250,
+			offset: 0,
+			projects: [sharedProject],
+			total: 1,
+		});
+		await refresh;
+	});
 });
 
 {
@@ -3133,7 +3169,7 @@ describe("Projects cached recipient presentation", () => {
 			"Blocked identity: https://git.example.invalid/exampleco/api.git:worktree",
 		);
 		expect(document.body.textContent).toContain("Another project is also named api.");
-		expect(document.body.textContent).toContain("Bulk details");
+		expect(document.body.textContent).toContain("Advanced Space assignment");
 	});
 
 	it("does not block cluster bulk assignment for informational guardrail warnings", async () => {
