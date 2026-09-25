@@ -16,6 +16,7 @@ import {
 	type InteractiveTeamSetupStep,
 	isEditable,
 	type OpenSetupSessionState,
+	type SetupSessionError,
 	type TeamSetupStep,
 } from "./legacy-team-setup-session";
 
@@ -41,6 +42,17 @@ export interface LegacyTeamSetupDialogViewProps {
 	onRetry: () => void;
 }
 
+function requiresRecoveryView(
+	view: LegacyTeamSetupDialogViewProps["session"]["view"],
+	error: SetupSessionError | null,
+): boolean {
+	return (
+		view?.state === "unavailable" ||
+		error?.retry === "refresh" ||
+		(error?.scope.kind === "load" && Boolean(view))
+	);
+}
+
 export function LegacyTeamSetupDialogView(props: LegacyTeamSetupDialogViewProps) {
 	const session = props.session;
 	const view = session.view;
@@ -48,7 +60,7 @@ export function LegacyTeamSetupDialogView(props: LegacyTeamSetupDialogViewProps)
 	const loading = session.commands.some((command) => command.kind === "load");
 	const globalBusy = hasGlobalOperation(session) || hasBlockingOperation(session);
 	const finishing = session.commands.some((command) => command.kind === "finish");
-	const recoveryRequired = view?.state === "unavailable" || error?.retry === "refresh";
+	const recoveryRequired = requiresRecoveryView(view, error);
 	const recoveryMode = error != null && (!view || recoveryRequired);
 	const mutationsBlocked = !isEditable(view) || globalBusy || Boolean(error);
 	const mutationBlockDescriptionId =

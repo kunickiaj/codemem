@@ -652,13 +652,22 @@ function staleConfirmationRetry(
 	command: SetupEffect,
 	cause: unknown,
 	recoveryCause: unknown,
-): "completion" | "refresh" | null {
+): "load" | "completion" | "refresh" | null {
 	const recoveryStale =
 		recoveryCause instanceof LegacyTeamSetupApiError &&
 		recoveryCause.errorCode === "team_setup_confirmation_stale";
 	const initialStale =
 		cause instanceof LegacyTeamSetupApiError && cause.errorCode === "team_setup_confirmation_stale";
 	if (!initialStale && !recoveryStale) return null;
+	if (
+		command.kind === "load" &&
+		!command.refresh &&
+		initialStale &&
+		recoveryCause &&
+		(!(recoveryCause instanceof LegacyTeamSetupApiError) ||
+			!isChangedStateCode(recoveryCause.errorCode))
+	)
+		return "load";
 	return command.kind === "load" && command.refresh ? "completion" : "refresh";
 }
 
@@ -686,11 +695,10 @@ function retryFor(
 	return "load";
 }
 
-function completionOnlyRetry(cause: unknown): "completion" | "refresh" {
-	if (cause instanceof LegacyTeamSetupApiError && completionErrorCode(cause.errorCode) !== null) {
-		return "completion";
-	}
-	return "refresh";
+function completionOnlyRetry(cause: unknown): "load" | "completion" | "refresh" {
+	if (!(cause instanceof LegacyTeamSetupApiError)) return "load";
+	if (completionErrorCode(cause.errorCode) !== null) return "completion";
+	return isChangedStateCode(cause.errorCode) ? "refresh" : "load";
 }
 
 function staleLoadRecoveryMessage(
@@ -710,7 +718,7 @@ function staleLoadRecoveryMessage(
 		recoveryCause instanceof LegacyTeamSetupApiError &&
 		recoveryCause.errorCode === "team_setup_roster_unavailable"
 	)
-		return ROSTER_UNAVAILABLE_ERROR;
+		return "Team device details are temporarily unavailable. Check the coordinator connection and settings, then retry loading.";
 	if (
 		recoveryCause instanceof LegacyTeamSetupApiError &&
 		recoveryCause.errorCode === "team_setup_completion_unavailable"
