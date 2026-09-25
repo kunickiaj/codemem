@@ -46,4 +46,47 @@ it("logs only safe status codes for failed coordinator snapshot reads", async ()
 		vi.unstubAllGlobals();
 		db.close();
 	}
+}, 15_000);
+
+it("retries rate-limited coordinator snapshot reads with fresh responses", async () => {
+	const db = new Database(":memory:");
+	try {
+		initTestSchema(db);
+		db.prepare(`INSERT INTO replication_scopes(
+			scope_id, label, kind, authority_type, coordinator_id, group_id, membership_epoch,
+			status, created_at, updated_at
+		) VALUES ('scope-a', 'Project', 'managed_project', 'coordinator',
+			'https://coord.example.test', 'group', 1, 'active', ?, ?)`).run("2026-09-25", "2026-09-25");
+		const store = { db, deviceId: "device-local" } as unknown as MemoryStore;
+		const calls = { members: 0, devices: 0 };
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string) => {
+				const url = String(input);
+				const kind = url.includes("/members") ? "members" : "devices";
+				calls[kind] += 1;
+				if (calls[kind] === 1) {
+					return new Response(JSON.stringify({ error: "rate_limited" }), { status: 429 });
+				}
+				return new Response(JSON.stringify({ items: [] }), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				});
+			}),
+		);
+		const effects = createRecipientPolicyReconcilerEffects(store, {
+			config: {
+				syncCoordinatorUrl: "https://coord.example.test",
+				syncCoordinatorAdminSecret: "secret",
+				syncCoordinatorGroups: ["group"],
+			} as never,
+		});
+		const input = { canonicalProjectIdentity: "project-a", scopeId: "scope-a" };
+		await expect(effects.snapshot(input)).resolves.toMatchObject({ authoritative: true });
+		await expect(effects.listBoundaryEnrollments(input)).resolves.toEqual([]);
+		expect(calls).toEqual({ members: 2, devices: 2 });
+	} finally {
+		vi.unstubAllGlobals();
+		db.close();
+	}
 });

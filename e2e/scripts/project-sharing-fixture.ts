@@ -1,7 +1,5 @@
 import {
 	commitRecipientPolicyOnboarding,
-	coordinatorListDevicesAction,
-	coordinatorListScopeMembershipsAction,
 	deriveRecipientPolicyEffectiveDevicesFromDatabase,
 	fingerprintPublicKey,
 	getRecipientPolicyAuthorityState,
@@ -11,10 +9,8 @@ import {
 	MemoryStore,
 	migrateRecipientPolicyIntent,
 	previewRecipientPolicyOnboarding,
-	readCoordinatorSyncConfig,
 	reconcileRecipientPolicyProject,
 	recordReplicationOp,
-	RemoteCoordinatorRequestError,
 	resolveRecipientPolicyReview,
 	type RecipientPolicyReconcilerEffects,
 } from "../../packages/core/src/index.ts";
@@ -47,8 +43,7 @@ type Action =
 	| "seed-legacy-device-identities"
 	| "stale-legacy-device-evidence"
 	| "truncate-legacy-device-evidence"
-	| "reconciliation-proof"
-	| "probe-coordinator-boundary";
+	| "reconciliation-proof";
 
 const ACTIONS: Action[] = [
 	"init",
@@ -66,7 +61,6 @@ const ACTIONS: Action[] = [
 	"stale-legacy-device-evidence",
 	"truncate-legacy-device-evidence",
 	"reconciliation-proof",
-	"probe-coordinator-boundary",
 ];
 
 function action(): Action {
@@ -684,71 +678,6 @@ function summary(store: MemoryStore): Record<string, unknown> {
 	};
 }
 
-async function probeCoordinatorRead<T>(
-	read: () => Promise<T>,
-	summarize: (value: T) => Record<string, unknown>,
-): Promise<Record<string, unknown>> {
-	const startedAt = Date.now();
-	try {
-		return { status: "ok", ...summarize(await read()), durationMs: Date.now() - startedAt };
-	} catch (error) {
-		const httpStatus = error instanceof RemoteCoordinatorRequestError ? error.status : null;
-		const timedOut = error instanceof Error && /timed out|timeout/iu.test(error.message);
-		let failureClass = "transport_or_other";
-		if (httpStatus) failureClass = "http";
-		else if (timedOut) failureClass = "timeout";
-		else if (error instanceof Error && error.message === "coordinator_device_list_malformed") {
-			failureClass = "invalid_device_list";
-		}
-		return {
-			status: "failed",
-			httpStatus,
-			failureClass,
-			durationMs: Date.now() - startedAt,
-		};
-	}
-}
-
-async function probeCoordinatorBoundary(
-	store: MemoryStore,
-	scopeId: string,
-	deviceId: string,
-): Promise<Record<string, unknown>> {
-	const scope = store.db
-		.prepare("SELECT group_id FROM replication_scopes WHERE scope_id = ?")
-		.get(scopeId) as { group_id: string | null } | undefined;
-	const groupId = scope?.group_id;
-	const config = readCoordinatorSyncConfig();
-	if (!groupId || !config.syncCoordinatorUrl || !config.syncCoordinatorAdminSecret) {
-		return { status: "configuration_unavailable" };
-	}
-	const memberships = await probeCoordinatorRead(
-		() =>
-			coordinatorListScopeMembershipsAction({
-				groupId,
-				scopeId,
-				includeRevoked: true,
-				remoteUrl: config.syncCoordinatorUrl,
-				adminSecret: config.syncCoordinatorAdminSecret,
-			}),
-		(items) => ({ membershipCount: items.length }),
-	);
-	const enrollments = await probeCoordinatorRead(
-		() =>
-			coordinatorListDevicesAction({
-				groupId,
-				includeDisabled: true,
-				remoteUrl: config.syncCoordinatorUrl,
-				adminSecret: config.syncCoordinatorAdminSecret,
-			}),
-		(items) => ({
-			enrollmentCount: items.length,
-			targetEnabled: items.find((item) => item.device_id === deviceId)?.enabled ?? null,
-		}),
-	);
-	return { memberships, enrollments };
-}
-
 async function main(): Promise<void> {
 	process.env.CODEMEM_EMBEDDING_DISABLED = "1";
 	initDatabase(DB_PATH);
@@ -763,19 +692,14 @@ async function main(): Promise<void> {
 		if (selectedAction === "seed-legacy-device-identities") seedLegacyDeviceIdentities(store);
 		if (selectedAction === "stale-legacy-device-evidence") staleLegacyDeviceEvidence(store);
 		if (selectedAction === "truncate-legacy-device-evidence") truncateLegacyDeviceEvidence(store);
-		let actionResult: Record<string, unknown> | null = null;
-		if (selectedAction === "inherit-policy") actionResult = inheritRecipientPolicy(store);
-		if (selectedAction === "reconciliation-proof") actionResult = await reconciliationProof(store);
-		if (selectedAction === "keep-current") actionResult = keepCurrentProof(store);
-		if (selectedAction === "probe-coordinator-boundary") {
-			const scopeIndex = process.argv.indexOf("--scope-id");
-			const scopeId = scopeIndex < 0 ? null : process.argv[scopeIndex + 1];
-			if (!scopeId) throw new Error("--scope-id is required for the coordinator probe");
-			const deviceIndex = process.argv.indexOf("--device-id");
-			const deviceId = deviceIndex < 0 ? null : process.argv[deviceIndex + 1];
-			if (!deviceId) throw new Error("--device-id is required for the coordinator probe");
-			actionResult = await probeCoordinatorBoundary(store, scopeId, deviceId);
-		}
+		const actionResult =
+			selectedAction === "inherit-policy"
+				? inheritRecipientPolicy(store)
+				: selectedAction === "reconciliation-proof"
+					? await reconciliationProof(store)
+					: selectedAction === "keep-current"
+						? keepCurrentProof(store)
+						: null;
 		if (selectedAction === "revoke-policy") revokeDirectRecipient(store);
 		if (selectedAction === "add-stale-memory") {
 			const staleSession = session(store, "policy-selected", POLICY_SELECTED_REMOTE);

@@ -146,37 +146,6 @@ function fixture(ctx: ScenarioContext, service: string, action: string, artifact
 	return parseJson<FixtureSummary>(result.stdout, artifact);
 }
 
-function captureCoordinatorBoundaryProbe(
-	ctx: ScenarioContext,
-	scopeId: string,
-	deviceId: string,
-	artifact: string,
-): void {
-	try {
-		ctx.compose.exec(
-			"peer-a",
-			[
-				"pnpm",
-				"exec",
-				"tsx",
-				"--conditions",
-				"source",
-				"e2e/scripts/project-sharing-fixture.ts",
-				"--action",
-				"probe-coordinator-boundary",
-				"--scope-id",
-				scopeId,
-				"--device-id",
-				deviceId,
-			],
-			artifact,
-			30_000,
-		);
-	} catch {
-		// Diagnostic failure must not change the revocation scenario's outcome.
-	}
-}
-
 const OWNER_SERVER_LOG_PATH = "/tmp/codemem-e2e-owner-serve.log";
 
 function captureOwnerSnapshotFailureLog(ctx: ScenarioContext, artifact: string): void {
@@ -1091,12 +1060,6 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		),
 		"owner did not hold group-derived coordinator-policy trust for peer-c before disable",
 	);
-	captureCoordinatorBoundaryProbe(
-		ctx,
-		selectedScopeMembership.scope_id,
-		peerC.device_id,
-		"39-owner-coordinator-boundary-probe-before-disable",
-	);
 	const disabledEnrollment = ctx.compose.exec(
 		"coordinator",
 		[
@@ -1116,7 +1079,7 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 
 	// Act: periodic owner maintenance reads the disabled enrollment and reconciles the exact Project scope.
 	let revocationAttemptCount = -1;
-	let snapshotFailureProbed = false;
+	let snapshotFailureLogged = false;
 	try {
 		await waitFor(
 			async () => {
@@ -1124,14 +1087,9 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 				const authority = owner.policy.authority_states.find(
 					(state) => state.canonical_project_identity === selected.workspace_identity,
 				);
-				if (!snapshotFailureProbed && authority?.safe_error_code === "recipient_policy_snapshot_not_fresh") {
-					snapshotFailureProbed = true;
-					captureCoordinatorBoundaryProbe(
-						ctx,
-						selectedScopeMembership.scope_id,
-						peerC.device_id,
-						"39-owner-coordinator-boundary-probe-first-snapshot-error",
-					);
+				if (!snapshotFailureLogged && authority?.safe_error_code === "recipient_policy_snapshot_not_fresh") {
+					snapshotFailureLogged = true;
+					captureOwnerSnapshotFailureLog(ctx, "39-owner-snapshot-failure-log-first-error");
 				}
 				assert(
 					owner.managed_memberships.some(
@@ -1162,12 +1120,6 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 			{ description: "group-scoped peer-c enrollment revocation", timeoutMs: 180_000, intervalMs: 3_000 },
 		);
 	} catch (error) {
-		captureCoordinatorBoundaryProbe(
-			ctx,
-			selectedScopeMembership.scope_id,
-			peerC.device_id,
-			"39-owner-coordinator-boundary-probe-on-failure",
-		);
 		captureOwnerSnapshotFailureLog(ctx, "39-owner-snapshot-failure-log-on-timeout");
 		throw error;
 	}

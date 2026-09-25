@@ -143,6 +143,7 @@ import {
 	projectShareLifecycle,
 	RecipientPolicyEdgeRequestError,
 	RecipientPolicyTeamRenameError,
+	RemoteCoordinatorRequestError,
 	readCodememConfigFile,
 	readCoordinatorSyncConfig,
 	reassignProjectScopeInventoryProject,
@@ -1882,6 +1883,18 @@ function recipientPolicyEnrollmentValueIsValid(value: unknown): value is string 
 	return typeof value === "string" && value.length > 0 && value === value.trim();
 }
 
+function recipientPolicyPresenceCapabilityExpiries(
+	enrollments: CoordinatorEnrollment[],
+	observedAt: string,
+): Map<string, number | null> {
+	return new Map(
+		enrollments.map((enrollment) => [
+			enrollment.device_id,
+			recipientPolicyPresenceCapabilityExpiresAt(enrollment, observedAt),
+		]),
+	);
+}
+
 function recipientPolicySnapshotUnavailable(
 	stage: "scope_memberships" | "device_enrollments",
 	error: unknown,
@@ -1890,6 +1903,23 @@ function recipientPolicySnapshotUnavailable(
 		`[sync] recipient policy coordinator snapshot failed: stage=${stage} code=${coordinatorEnrollmentFailureCode(error)}`,
 	);
 	throw new Error("recipient_policy_snapshot_not_fresh");
+}
+
+async function readRecipientPolicyCoordinatorSnapshot<T>(read: () => Promise<T>): Promise<T> {
+	for (let attempt = 0; ; attempt++) {
+		try {
+			return await read();
+		} catch (error) {
+			if (
+				!(error instanceof RemoteCoordinatorRequestError) ||
+				error.status !== 429 ||
+				attempt >= 2
+			) {
+				throw error;
+			}
+			await new Promise<void>((resolve) => setTimeout(resolve, (attempt + 1) * 1000));
+		}
+	}
 }
 
 export function createRecipientPolicyReconcilerEffects(
@@ -1961,13 +1991,15 @@ export function createRecipientPolicyReconcilerEffects(
 		now,
 		snapshot: async ({ scopeId }) => {
 			const targetOptions = coordinatorOptions(scopeId);
-			const memberships = await coordinatorListScopeMembershipsAction({
-				groupId: targetOptions.groupId,
-				scopeId,
-				includeRevoked: true,
-				remoteUrl: targetOptions.remoteUrl,
-				adminSecret: targetOptions.adminSecret,
-			}).catch((error) => recipientPolicySnapshotUnavailable("scope_memberships", error));
+			const memberships = await readRecipientPolicyCoordinatorSnapshot(() =>
+				coordinatorListScopeMembershipsAction({
+					groupId: targetOptions.groupId,
+					scopeId,
+					includeRevoked: true,
+					remoteUrl: targetOptions.remoteUrl,
+					adminSecret: targetOptions.adminSecret,
+				}),
+			).catch((error) => recipientPolicySnapshotUnavailable("scope_memberships", error));
 			const snapshotMemberships = memberships.map((membership) => {
 				if (
 					typeof membership.device_id !== "string" ||
@@ -1998,17 +2030,17 @@ export function createRecipientPolicyReconcilerEffects(
 		listBoundaryEnrollments: async ({ scopeId }) => {
 			const targetOptions = coordinatorOptions(scopeId);
 			const observedAt = now();
-			const enrollments = await listDevices({
-				groupId: targetOptions.groupId,
-				includeDisabled: true,
-				remoteUrl: targetOptions.remoteUrl,
-				adminSecret: targetOptions.adminSecret,
-			}).catch((error) => recipientPolicySnapshotUnavailable("device_enrollments", error));
-			const presenceCapabilityExpiries = new Map(
-				enrollments.map((enrollment) => [
-					enrollment.device_id,
-					recipientPolicyPresenceCapabilityExpiresAt(enrollment, observedAt),
-				]),
+			const enrollments = await readRecipientPolicyCoordinatorSnapshot(() =>
+				listDevices({
+					groupId: targetOptions.groupId,
+					includeDisabled: true,
+					remoteUrl: targetOptions.remoteUrl,
+					adminSecret: targetOptions.adminSecret,
+				}),
+			).catch((error) => recipientPolicySnapshotUnavailable("device_enrollments", error));
+			const presenceCapabilityExpiries = recipientPolicyPresenceCapabilityExpiries(
+				enrollments,
+				observedAt,
 			);
 			const mapped = enrollments.map((enrollment) => {
 				if (
