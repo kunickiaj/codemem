@@ -29,6 +29,7 @@ export interface SetupSessionError {
 	message: string;
 	retry: "load" | "refresh" | "completion" | null;
 	scope: SetupErrorScope;
+	hideStaleView?: boolean;
 }
 
 interface ClosedSetupSessionState {
@@ -627,6 +628,7 @@ function errorFor(
 	return {
 		scope: errorScopeFor(command, { globalError }),
 		message: staleRecovery ?? message,
+		hideStaleView: Boolean(staleRecovery),
 		retry: retryFor(command, cause, recoveryCause, {
 			changed,
 			rosterUnavailable,

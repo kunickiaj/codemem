@@ -47,6 +47,7 @@ import {
 	openLegacyTeamSetup,
 } from "./legacy-team-setup-dialog";
 import { LegacyTeamSetupDialogView } from "./legacy-team-setup-dialog-view";
+import type { SetupEffect } from "./legacy-team-setup-effects";
 import {
 	createSetupSessionState,
 	type OpenSetupSessionState,
@@ -3401,6 +3402,66 @@ describe("Team setup completion-only read failure", () => {
 				document.querySelector<HTMLInputElement>(".legacy-team-setup-confirmation input")?.checked,
 			).toBe(false),
 		);
+	});
+});
+
+describe("Team setup follow-up load error presentation", () => {
+	it("hides a previously ready confirmation during a global read failure", () => {
+		document.body.innerHTML = '<div id="legacyTeamSetupMount"></div>';
+		const mount = document.getElementById("legacyTeamSetupMount");
+		if (!(mount instanceof HTMLElement)) throw new Error("Team setup mount missing");
+		const active = busyViewSession([]);
+		const load: SetupEffect = {
+			kind: "load",
+			candidateRef: active.candidateRef,
+			refresh: false,
+			focusOnOutcome: true,
+			status: "running",
+			generation: active.generation,
+			id: "follow-up-load",
+		};
+		const state: OpenSetupSessionState = {
+			...active,
+			view: detail({ canFinish: true }),
+			step: "review",
+			commands: [load],
+			errors: [],
+		};
+		const session = reduceSetupSession(state, {
+			type: "effect_outcome",
+			outcome: {
+				status: "failure",
+				generation: load.generation,
+				id: load.id,
+				kind: "load",
+				cause: new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale"),
+				recoveryCause: new Error("private transport failure"),
+			},
+		});
+		if (session.status !== "open") throw new Error("Team setup session closed unexpectedly");
+		expect(session.errors[0]?.hideStaleView).toBe(true);
+		act(() =>
+			render(
+				<LegacyTeamSetupDialogView
+					onAssign={vi.fn()}
+					onClear={vi.fn()}
+					onClose={vi.fn()}
+					onCloseAutoFocus={vi.fn()}
+					onDecide={vi.fn()}
+					onFinish={vi.fn()}
+					onMap={vi.fn()}
+					onNavigate={vi.fn()}
+					onOpenAutoFocus={vi.fn()}
+					onRefresh={vi.fn()}
+					onRetry={vi.fn()}
+					session={session}
+				/>,
+				mount,
+			),
+		);
+		expect(document.body.textContent).toContain("Current setup details are unavailable");
+		expect(document.body.textContent).toContain("Retry to check the latest details");
+		expect(document.querySelector(".legacy-team-setup-confirmation input")).toBeNull();
 	});
 });
 

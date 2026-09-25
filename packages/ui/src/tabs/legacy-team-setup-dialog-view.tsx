@@ -49,7 +49,7 @@ function requiresRecoveryView(
 	return (
 		view?.state === "unavailable" ||
 		error?.retry === "refresh" ||
-		(error?.scope.kind === "load" && Boolean(view))
+		((error?.scope.kind === "load" || error?.hideStaleView === true) && Boolean(view))
 	);
 }
 
