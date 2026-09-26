@@ -901,6 +901,30 @@ function indexColumns(db: DatabaseType, indexName: string): string[] {
 		.filter(Boolean);
 }
 
+const SHARE_OPERATION_EFFECT_ID_INDEX_SQL =
+	"CREATE INDEX idx_share_operation_steps_effect_id_nonempty ON share_operation_steps(effect_id) WHERE effect_id <> ''";
+
+function normalizedIndexSql(sql: string): string {
+	return sql
+		.replace(/\s+/g, " ")
+		.replace(/\s*\(\s*/g, "(")
+		.replace(/\s*\)\s*/g, ") ")
+		.trim();
+}
+
+/** True when the partial index exists with exactly the expected definition. */
+function shareOperationEffectIdIndexCurrent(db: DatabaseType): boolean {
+	const row = db
+		.prepare(
+			"SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_share_operation_steps_effect_id_nonempty'",
+		)
+		.get() as { sql?: string | null } | undefined;
+	return (
+		typeof row?.sql === "string" &&
+		normalizedIndexSql(row.sql) === normalizedIndexSql(SHARE_OPERATION_EFFECT_ID_INDEX_SQL)
+	);
+}
+
 function repairShareOperationEffectIdIndex(db: DatabaseType): void {
 	if (
 		!tableExists(db, "share_operation_steps") ||
@@ -911,7 +935,6 @@ function repairShareOperationEffectIdIndex(db: DatabaseType): void {
 	const indexes = db.prepare("PRAGMA index_list('share_operation_steps')").all() as Array<{
 		name: string;
 		unique: number;
-		partial: number;
 	}>;
 	const hasInlineUniqueEffectId = indexes.some(
 		(index) =>
@@ -947,18 +970,9 @@ function repairShareOperationEffectIdIndex(db: DatabaseType): void {
 			`);
 		})();
 	}
-	// Rebuilding the index takes the write lock; skip it when the current
-	// non-unique partial index on effect_id is already in place.
-	const current =
-		!hasInlineUniqueEffectId &&
-		indexes.some(
-			(index) =>
-				index.name === "idx_share_operation_steps_effect_id_nonempty" &&
-				index.unique === 0 &&
-				index.partial === 1 &&
-				indexColumns(db, index.name).join(",") === "effect_id",
-		);
-	if (current) return;
+	// Rebuilding the index takes the write lock; skip it only when the stored
+	// definition, including its WHERE clause, matches exactly.
+	if (!hasInlineUniqueEffectId && shareOperationEffectIdIndexCurrent(db)) return;
 	db.exec(`
 		DROP INDEX IF EXISTS idx_share_operation_steps_effect_id_nonempty;
 		CREATE INDEX IF NOT EXISTS idx_share_operation_steps_effect_id_nonempty

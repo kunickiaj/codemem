@@ -62,6 +62,30 @@ it("still repairs a missing security trigger and copies newer signature state", 
 	}
 });
 
+it("rebuilds the effect-id partial index when its predicate is stale", () => {
+	const path = seededDatabase();
+	const raw = new Database(path);
+	raw.exec(`
+		DROP INDEX idx_share_operation_steps_effect_id_nonempty;
+		CREATE INDEX idx_share_operation_steps_effect_id_nonempty
+			ON share_operation_steps(effect_id) WHERE effect_id IS NOT NULL;
+	`);
+	raw.close();
+
+	const store = new MemoryStore(path);
+	try {
+		const sql = store.db
+			.prepare(
+				"SELECT sql FROM sqlite_master WHERE name = 'idx_share_operation_steps_effect_id_nonempty'",
+			)
+			.pluck()
+			.get() as string;
+		expect(sql.replace(/\s+/g, " ")).toContain("WHERE effect_id <> ''");
+	} finally {
+		store.close();
+	}
+});
+
 it("opens an up-to-date database while another connection holds the write lock", () => {
 	const path = seededDatabase();
 	const writer = new Database(path);

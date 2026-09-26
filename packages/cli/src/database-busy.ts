@@ -9,7 +9,7 @@ export function isDatabaseBusyError(error: unknown): boolean {
 }
 
 type FatalProcess = Pick<NodeJS.Process, "on" | "exit"> & {
-	stderr: { write(text: string): unknown };
+	stderr: { write(text: string, callback: () => void): unknown };
 };
 
 /**
@@ -18,14 +18,12 @@ type FatalProcess = Pick<NodeJS.Process, "on" | "exit"> & {
  */
 export function installDatabaseBusyHandler(target: FatalProcess = process): void {
 	const report = (error: unknown): void => {
-		if (isDatabaseBusyError(error)) {
-			target.stderr.write(`${DATABASE_BUSY_MESSAGE}\n`);
-		} else {
-			target.stderr.write(
-				`${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
-			);
+		let text = DATABASE_BUSY_MESSAGE;
+		if (!isDatabaseBusyError(error)) {
+			text = error instanceof Error ? (error.stack ?? error.message) : String(error);
 		}
-		target.exit(1);
+		// Exit only after stderr flushes; a piped stderr can otherwise drop the message.
+		target.stderr.write(`${text}\n`, () => target.exit(1));
 	};
 	target.on("uncaughtException", report);
 	target.on("unhandledRejection", report);
