@@ -1259,6 +1259,10 @@ export {
 	setPeerProjectFilter,
 	updatePeerAddresses,
 } from "./sync-discovery.js";
+export {
+	classifyRecordedSyncFailure,
+	type RecordedSyncFailureCategory,
+} from "./sync-failure-classification.js";
 export type { RequestJsonOptions } from "./sync-http-client.js";
 export { buildBaseUrl, requestJson } from "./sync-http-client.js";
 export type { DeviceIdentityErrorCode, EnsureDeviceIdentityOptions } from "./sync-identity.js";

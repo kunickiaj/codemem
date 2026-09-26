@@ -612,7 +612,7 @@ function scopedSnapshotAccessDeniedResult(
 	};
 }
 
-function categorizeSyncFailure(error: string | undefined): SyncFailureCategory {
+export function categorizeSyncFailure(error: string | undefined): SyncFailureCategory {
 	const lower = String(error ?? "").toLowerCase();
 	if (!lower) return "other";
 	if (lower.includes("401") && lower.includes("unauthorized")) return "trust";

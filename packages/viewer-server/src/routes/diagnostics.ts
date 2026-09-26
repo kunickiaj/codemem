@@ -1,5 +1,9 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import type { MemoryStore } from "@codemem/core";
+import {
+	classifyRecordedSyncFailure,
+	type MemoryStore,
+	type RecordedSyncFailureCategory,
+} from "@codemem/core";
 import { Hono } from "hono";
 
 const DEFAULT_LIMIT = 50;
@@ -298,41 +302,20 @@ function loadSourceRows(store: MemoryStore, options: EventOptions): DiagnosticSo
 		.all(params) as DiagnosticSourceRow[];
 }
 
-const SYNC_FAILURE_MESSAGES: Record<string, string> = {
-	timeout: "A paired device did not respond in time, so this sync attempt stopped.",
-	connectivity: "This device could not reach a paired device, so this sync attempt stopped.",
-	authentication:
-		"A paired device rejected this device's credentials, so this sync attempt stopped.",
+const SYNC_FAILURE_MESSAGES: Partial<Record<RecordedSyncFailureCategory, string>> = {
+	connectivity:
+		"This device could not reach a paired device, or it did not respond in time, so this sync attempt stopped.",
+	trust: "A paired device did not accept this device's identity, so this sync attempt stopped.",
+	scope: "A paired device has not granted access to a shared Space, so this sync attempt stopped.",
 	compatibility:
 		"A paired device runs an incompatible Codemem version, so this sync attempt stopped.",
 };
-
-// Peer addresses and Space IDs can contain any word (for example
-// `http://authbox.local` or `auth-team`), so strip them before matching
-// failure keywords. Scoped errors are `scoped sync incomplete: <id>=<error>; ...`.
-const PEER_ADDRESS_PATTERN = /[a-z][a-z0-9+.-]*:\/\/\S+?(?=:\s|\s|\||$)/gi;
-const SCOPE_ID_PREFIX_PATTERN = /(scoped sync incomplete:\s*|;\s*)[^=;]*=/gi;
-
-const SYNC_FAILURE_CATEGORIES: Array<[category: string, pattern: RegExp]> = [
-	["authentication", /\bauth|unauthorized|forbidden/],
-	["timeout", /timeout|timed out/],
-	["compatibility", /version|capabilit|protocol mismatch/],
-	["connectivity", /connect|network|dns|fetch failed|enotfound|ehostunreach/],
-];
-
-function classifySyncError(error: string | null): string {
-	const text = String(error ?? "")
-		.replace(SCOPE_ID_PREFIX_PATTERN, "$1")
-		.replace(PEER_ADDRESS_PATTERN, " ")
-		.toLowerCase();
-	return SYNC_FAILURE_CATEGORIES.find(([, pattern]) => pattern.test(text))?.[0] ?? "unspecified";
-}
 
 function syncEvent(row: DiagnosticSourceRow, includeTechnical: boolean): OrderedDiagnosticEvent {
 	const succeeded = row.status === "succeeded";
 	const opsIn = Number(row.metric_a ?? 0);
 	const opsOut = Number(row.metric_b ?? 0);
-	const category = succeeded ? "unspecified" : classifySyncError(row.category);
+	const category = succeeded ? "other" : classifyRecordedSyncFailure(row.category);
 	return {
 		id: opaqueId("sync-attempt", row.source_id),
 		orderKey: row.order_key,
