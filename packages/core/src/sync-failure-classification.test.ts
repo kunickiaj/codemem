@@ -18,6 +18,7 @@ describe("classifyRecordedSyncFailure", () => {
 		["snapshot fetch failed (500: internal)", "other"],
 		["snapshot fetch failed: status 500", "other"],
 		["snapshot fetch failed: status 503", "connectivity"],
+		["snapshot fetch failed: sync_auth_store_busy", "connectivity"],
 		["snapshot fetch failed: bootstrap_grant_invalid", "other"],
 		["peer status failed", "other"],
 		["fetch failed", "connectivity"],

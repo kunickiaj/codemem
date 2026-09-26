@@ -17,7 +17,9 @@ const ANSWERED_RESPONSE_PHRASES = [
 	"peer ops push failed",
 	"snapshot fetch failed",
 ];
-const UNREACHABLE_STATUS_PATTERN = /\b50[234]\b/;
+// JSON error bodies can drop the status (for example `snapshot fetch failed:
+// sync_auth_store_busy` from a 503), so also match stable busy codes.
+const UNREACHABLE_STATUS_PATTERN = /\b50[234]\b|sync_auth_store_busy/;
 
 // Peer addresses can contain any word (for example `http://authbox.local`).
 // Drop whitespace-separated tokens that contain a URL scheme separator; a
