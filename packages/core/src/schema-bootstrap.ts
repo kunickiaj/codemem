@@ -897,11 +897,29 @@ export function ensureSyncPeerDirectSignatureVersionColumn(db: Database): void {
 export function ensureSyncPeerSignatureStateSchema(db: Database): void {
 	if (!tableExists(db, "sync_peers")) return;
 	ensureSyncPeerDirectSignatureVersionColumn(db);
+	if (!tableExists(db, "sync_peer_signature_state")) {
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS sync_peer_signature_state (
+				peer_device_id TEXT PRIMARY KEY NOT NULL,
+				highest_observed_direct_signature_version INTEGER NOT NULL
+			);
+		`);
+	}
+	// Every CLI command opens the store, so only take the write lock when a
+	// peer's recorded version is actually ahead of the preserved state.
+	const pending = db
+		.prepare(
+			`SELECT 1 FROM sync_peers AS peer
+			 LEFT JOIN sync_peer_signature_state AS state USING (peer_device_id)
+			 WHERE peer.highest_observed_direct_signature_version IS NOT NULL
+			   AND (state.peer_device_id IS NULL
+			     OR state.highest_observed_direct_signature_version
+			       < peer.highest_observed_direct_signature_version)
+			 LIMIT 1`,
+		)
+		.get();
+	if (!pending) return;
 	db.exec(`
-		CREATE TABLE IF NOT EXISTS sync_peer_signature_state (
-			peer_device_id TEXT PRIMARY KEY NOT NULL,
-			highest_observed_direct_signature_version INTEGER NOT NULL
-		);
 		INSERT INTO sync_peer_signature_state(
 			peer_device_id, highest_observed_direct_signature_version
 		)

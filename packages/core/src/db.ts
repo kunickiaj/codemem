@@ -27,6 +27,7 @@ import Database from "better-sqlite3";
 import {
 	getSchemaVersion,
 	IDENTITY_DEVICE_ASSIGNMENT_TRIGGERS_DDL,
+	identityDeviceAssignmentTriggersCurrent,
 	REQUIRED_BOOTSTRAPPED_TABLES,
 	REQUIRED_TABLES,
 	SCHEMA_VERSION,
@@ -334,13 +335,40 @@ function hasPlannerStats(db: DatabaseType): boolean {
  * bootstrap them with ANALYZE so Node SQLite picks stable FTS query plans.
  */
 export function ensurePlannerStats(db: DatabaseType): void {
-	db.pragma("optimize");
+	// Statistics are only a planner hint. Never wait on another writer for
+	// them: skip this open and let a later open refresh them.
+	withoutBusyWait(db, () => {
+		db.pragma("optimize");
 
-	if (hasPlannerStats(db)) return;
-	if (!tableExists(db, "memory_items") || !tableExists(db, "memory_fts")) return;
+		if (hasPlannerStats(db)) return;
+		if (!tableExists(db, "memory_items") || !tableExists(db, "memory_fts")) return;
 
-	db.exec("ANALYZE");
-	db.pragma("optimize");
+		db.exec("ANALYZE");
+		db.pragma("optimize");
+	});
+}
+
+function isSqliteBusy(error: unknown): boolean {
+	const code = (error as { code?: unknown } | null)?.code;
+	return code === "SQLITE_BUSY" || code === "SQLITE_LOCKED";
+}
+
+/** Refresh planner hints if the database is free; never waits on another writer. */
+export function optimizeWithoutWaiting(db: DatabaseType): void {
+	withoutBusyWait(db, () => db.pragma("optimize"));
+}
+
+/** Run optional write work without waiting on locks; skip it if the database is busy. */
+function withoutBusyWait(db: DatabaseType, work: () => void): void {
+	const previous = db.pragma("busy_timeout", { simple: true }) as number;
+	db.pragma("busy_timeout = 0");
+	try {
+		work();
+	} catch (error) {
+		if (!isSqliteBusy(error)) throw error;
+	} finally {
+		db.pragma(`busy_timeout = ${Number(previous) || 0}`);
+	}
 }
 
 /**
@@ -568,6 +596,9 @@ function ensureIdentityDeviceAssignmentVersionTriggers(db: DatabaseType): void {
 	) {
 		return;
 	}
+	// Rewriting needs the write lock; skip it when both triggers are already
+	// current so read-only opens do not block behind long write transactions.
+	if (identityDeviceAssignmentTriggersCurrent(db)) return;
 	db.transaction(() => db.exec(IDENTITY_DEVICE_ASSIGNMENT_TRIGGERS_DDL)).immediate();
 }
 
@@ -824,6 +855,16 @@ function markSchemaCompatApplied(db: DatabaseType): void {
  */
 function backfillMemoryItemProject(db: DatabaseType): void {
 	try {
+		// Only take the write lock when some row can actually gain a project.
+		const pending = db
+			.prepare(
+				`SELECT 1 FROM memory_items AS m
+				 JOIN sessions AS s ON s.id = m.session_id
+				 WHERE m.project IS NULL AND s.project IS NOT NULL
+				 LIMIT 1`,
+			)
+			.get();
+		if (!pending) return;
 		db.exec(`UPDATE memory_items
 			 SET project = (
 				 SELECT s.project FROM sessions s
@@ -870,6 +911,7 @@ function repairShareOperationEffectIdIndex(db: DatabaseType): void {
 	const indexes = db.prepare("PRAGMA index_list('share_operation_steps')").all() as Array<{
 		name: string;
 		unique: number;
+		partial: number;
 	}>;
 	const hasInlineUniqueEffectId = indexes.some(
 		(index) =>
@@ -905,6 +947,18 @@ function repairShareOperationEffectIdIndex(db: DatabaseType): void {
 			`);
 		})();
 	}
+	// Rebuilding the index takes the write lock; skip it when the current
+	// non-unique partial index on effect_id is already in place.
+	const current =
+		!hasInlineUniqueEffectId &&
+		indexes.some(
+			(index) =>
+				index.name === "idx_share_operation_steps_effect_id_nonempty" &&
+				index.unique === 0 &&
+				index.partial === 1 &&
+				indexColumns(db, index.name).join(",") === "effect_id",
+		);
+	if (current) return;
 	db.exec(`
 		DROP INDEX IF EXISTS idx_share_operation_steps_effect_id_nonempty;
 		CREATE INDEX IF NOT EXISTS idx_share_operation_steps_effect_id_nonempty

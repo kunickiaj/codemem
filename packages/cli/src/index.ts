@@ -15,6 +15,7 @@ import { VERSION } from "@codemem/core";
 import { Command } from "commander";
 import omelette from "omelette";
 import { ROOT_COMPLETION_COMMANDS, registerRootCommands } from "./command-tree.js";
+import { installDatabaseBusyHandler } from "./database-busy.js";
 import { helpStyle } from "./help-style.js";
 
 type CompletionWithScriptGenerators = ReturnType<typeof omelette> & {
@@ -73,5 +74,6 @@ if (hasRootFlag("--cleanup-completion")) {
 }
 
 registerRootCommands(program);
+installDatabaseBusyHandler();
 
 program.parse();

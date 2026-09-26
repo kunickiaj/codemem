@@ -44,20 +44,41 @@ export function getSchemaVersion(db: Database): number {
 	return typeof row === "number" ? row : 0;
 }
 
-export const IDENTITY_DEVICE_ASSIGNMENT_TRIGGERS_DDL = `
-	DROP TRIGGER IF EXISTS trg_identity_devices_assignment_version;
-	CREATE TRIGGER trg_identity_devices_assignment_version
+const IDENTITY_DEVICE_ASSIGNMENT_TRIGGERS: ReadonlyArray<{ name: string; create: string }> = [
+	{
+		name: "trg_identity_devices_assignment_version",
+		create: `CREATE TRIGGER trg_identity_devices_assignment_version
 	AFTER UPDATE OF identity_id ON identity_devices
 	WHEN NEW.identity_id <> OLD.identity_id
 	BEGIN
 		UPDATE identity_devices
 		SET assignment_version = OLD.assignment_version + 1
 		WHERE device_id = NEW.device_id;
-	END;
-	DROP TRIGGER IF EXISTS trg_identity_devices_purge_decisions;
-	CREATE TRIGGER trg_identity_devices_purge_decisions
+	END`,
+	},
+	{
+		name: "trg_identity_devices_purge_decisions",
+		create: `CREATE TRIGGER trg_identity_devices_purge_decisions
 	AFTER DELETE ON identity_devices
 	BEGIN
 		DELETE FROM policy_team_device_decisions WHERE device_id = OLD.device_id;
-	END;
-`;
+	END`,
+	},
+];
+
+export const IDENTITY_DEVICE_ASSIGNMENT_TRIGGERS_DDL = IDENTITY_DEVICE_ASSIGNMENT_TRIGGERS.map(
+	({ name, create }) => `DROP TRIGGER IF EXISTS ${name};\n${create};`,
+).join("\n");
+
+function normalizedSql(sql: string): string {
+	return sql.replace(/\s+/g, " ").trim();
+}
+
+/** True when both security triggers exist with exactly the expected definitions. */
+export function identityDeviceAssignmentTriggersCurrent(db: Database): boolean {
+	const lookup = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?");
+	return IDENTITY_DEVICE_ASSIGNMENT_TRIGGERS.every(({ name, create }) => {
+		const row = lookup.get(name) as { sql?: string | null } | undefined;
+		return typeof row?.sql === "string" && normalizedSql(row.sql) === normalizedSql(create);
+	});
+}

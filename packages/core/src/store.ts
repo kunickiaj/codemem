@@ -25,6 +25,7 @@ import {
 	fromJson,
 	isEmbeddingDisabled,
 	loadSqliteVec,
+	optimizeWithoutWaiting,
 	resolveDbPath,
 	tableExists,
 	toJson,
@@ -3340,7 +3341,10 @@ export class MemoryStore {
 	/** Close the database connection. */
 	close(): void {
 		this.identityChangeListeners.clear();
-		this.db.pragma("optimize");
-		this.db.close();
+		try {
+			optimizeWithoutWaiting(this.db);
+		} finally {
+			this.db.close();
+		}
 	}
 }
