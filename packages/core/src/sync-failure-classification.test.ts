@@ -12,6 +12,11 @@ describe("classifyRecordedSyncFailure", () => {
 		["peer status failed (401: unauthorized)", "trust"],
 		["peer fingerprint mismatch", "trust"],
 		["peer protocol mismatch (expected 2, got 1)", "compatibility"],
+		["peer ops fetch failed (502)", "connectivity"],
+		["peer status failed (404)", "other"],
+		["peer ops fetch failed (400: bad request)", "other"],
+		["snapshot fetch failed (500: internal)", "other"],
+		["peer ops push failed (403: scope_rejected:stale_epoch)", "scope"],
 		["opaque failure", "other"],
 		[null, "other"],
 	])("classifies %s as %s", (error, category) => {
