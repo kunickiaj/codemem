@@ -97,6 +97,7 @@ codemem status --db-path ./codemem.sqlite --config ./codemem.json
 - A missing database is reported without creating it. Existing databases are opened read-only.
 - With no viewer PID record, status probes the configured loopback viewer address; a malformed or non-loopback record reports `unknown` and is not fetched.
 - Warnings and errors appear in the bounded `attention` list. A collected report exits `0` even when `ok` is false; collection failures exit `1`, and usage errors exit `2`.
+- With `CODEMEM_EMBEDDING_DISABLED=1`, the semantic index reports `disabled` and adds no attention item: semantic search is off by choice and keyword search still works.
 - Terminal raw-event and observer failures affect `ok` for 24 hours; use `codemem db raw-events-gate` for the detailed reliability window.
 - Use `codemem sync status` or `codemem sync doctor`, `codemem maintenance status`, and `codemem db raw-events-status` for detailed subsystem diagnostics.
 

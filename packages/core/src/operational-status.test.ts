@@ -118,10 +118,35 @@ describe("collectOperationalStatus", () => {
 			expect(collectOperationalStatus(db, { embeddingDisabled: true })).toEqual({
 				sync: { available: false, daemon_error: false, needs_attention: false, peer_errors: 0 },
 				maintenance: { state: "unknown", running: 0, failed: 0 },
-				semantic_index: { state: "degraded", vector_table_present: false },
+				semantic_index: { state: "disabled", vector_table_present: false },
 				raw_events: { available: false, pending: 0, failed_batches: 0 },
 				observer: { available: false, failed_batches: 0, backoff_batches: 0 },
 			});
+		} finally {
+			db.close();
+		}
+	});
+
+	it("reports disabled instead of pending when embeddings are disabled", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			db.prepare(
+				`INSERT INTO maintenance_jobs(kind, title, status, updated_at)
+				 VALUES ('vector_model_migration', 'Vectors', 'pending', '2026-08-11T10:00:00Z')`,
+			).run();
+			const changesBefore = db.prepare("SELECT total_changes() AS n").get() as { n: number };
+
+			expect(collectOperationalStatus(db, { embeddingDisabled: true }).semantic_index.state).toBe(
+				"disabled",
+			);
+			expect(collectOperationalStatus(db).semantic_index.state).toBe("pending");
+			expect(db.prepare("SELECT total_changes() AS n").get()).toEqual(changesBefore);
+			expect(
+				db
+					.prepare("SELECT status FROM maintenance_jobs WHERE kind = 'vector_model_migration'")
+					.get(),
+			).toEqual({ status: "pending" });
 		} finally {
 			db.close();
 		}

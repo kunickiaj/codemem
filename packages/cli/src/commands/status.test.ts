@@ -307,3 +307,17 @@ describe("status command", () => {
 		);
 	});
 });
+
+describe("status semantic index projection", () => {
+	it("reports disabled semantic index without an attention warning", async () => {
+		const snapshot = structuredClone(healthySnapshot);
+		snapshot.semantic_index.state = "disabled";
+		const { command, stdout } = harness({ snapshot, embeddingDisabled: () => true });
+		await command.parseAsync(["--json"], { from: "user" });
+		const report = JSON.parse(stdout[0] ?? "{}") as OperationalStatusReport;
+		expect(report.semantic_index.state).toBe("disabled");
+		expect(report.attention.map((item) => item.code)).not.toEqual(
+			expect.arrayContaining([expect.stringMatching(/^semantic_index_/)]),
+		);
+	});
+});

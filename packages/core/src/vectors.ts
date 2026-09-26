@@ -254,7 +254,14 @@ export function resolveSemanticSearchModel(db: Database, currentModel?: string):
 export function resolveSemanticSearchModels(db: Database, resolvedModel?: string): string[] {
 	const currentModel = resolvedModel ?? tryResolveConfiguredVectorIdentityLabel(db);
 	if (currentModel == null) return [];
-	const primaryModel = resolveSemanticSearchModel(db, currentModel);
+	return expandSemanticSearchModels(db, resolveSemanticSearchModel(db, currentModel), currentModel);
+}
+
+function expandSemanticSearchModels(
+	db: Database,
+	primaryModel: string | null,
+	currentModel: string,
+): string[] {
 	if (!primaryModel) return [];
 	if (
 		primaryModel === LEGACY_DEFAULT_EMBEDDING_MODEL &&
@@ -822,7 +829,7 @@ export interface ReplicationVectorMaintenanceResult {
 	errors: string[];
 }
 
-export type SemanticIndexState = "healthy" | "pending" | "failed" | "degraded";
+export type SemanticIndexState = "healthy" | "pending" | "failed" | "degraded" | "disabled";
 
 export interface SemanticIndexDiagnostics {
 	state: SemanticIndexState;
@@ -891,7 +898,7 @@ function isVecModuleMissingError(error: unknown): boolean {
 	return /no such module:\s*vec0/i.test(message);
 }
 
-function countIndexedActiveMemories(db: Database, model: string): number {
+function countIndexedActiveMemories(db: Database, models: string[]): number {
 	if (isEmbeddingDisabled() || !tableExists(db, "memory_vectors")) return 0;
 	let rows: MemoryTextRow[];
 	try {
@@ -909,26 +916,29 @@ function countIndexedActiveMemories(db: Database, model: string): number {
 		throw error;
 	}
 	try {
-		return rows.filter((row) => memoryHasCompleteVectorCoverage(db, row, model)).length;
+		return rows.filter((row) =>
+			models.some((model) => memoryHasCompleteVectorCoverage(db, row, model)),
+		).length;
 	} catch (error) {
 		if (isVecModuleMissingError(error)) return 0;
 		throw error;
 	}
 }
 
-function countIndexedActiveMemoriesFast(db: Database, model: string): number {
+function countIndexedActiveMemoriesFast(db: Database, models: string[]): number {
 	if (isEmbeddingDisabled() || !tableExists(db, "memory_vectors")) return 0;
 	try {
+		const placeholders = models.map(() => "?").join(", ");
 		const row = db
 			.prepare(
 				`SELECT COUNT(DISTINCT mi.id) AS c
 				 FROM memory_items mi
 				 JOIN memory_vectors mv ON mv.memory_id = mi.id
 				 WHERE mi.active = 1
-				   AND mv.model = ?
+				   AND mv.model IN (${placeholders})
 				   AND TRIM(COALESCE(mi.title, '') || COALESCE(mi.body_text, '')) != ''`,
 			)
-			.get(model) as { c?: number } | undefined;
+			.get(...models) as { c?: number } | undefined;
 		return Number(row?.c ?? 0);
 	} catch (error) {
 		if (isVecModuleMissingError(error)) return 0;
@@ -961,17 +971,19 @@ function summarizeSemanticIndexState(
 	if (state === "failed") {
 		return job?.error ?? job?.message ?? "Semantic-index catch-up failed";
 	}
+	if (state === "disabled") {
+		return "Semantic search is off because embeddings are disabled; keyword search remains available";
+	}
 	if (state === "degraded") {
-		if (isEmbeddingDisabled()) {
-			return "Embeddings are disabled; sync data is available in keyword-only mode";
-		}
 		if (runtimeUnavailable) {
 			return "The embedding runtime is unavailable; sync data is available in keyword-only mode";
 		}
 		return "Semantic-index coverage is unavailable; sync data is effectively running in keyword-only mode";
 	}
 	if (state === "pending") {
-		return job?.message ?? `${counts.pending} memory(s) still need semantic indexing`;
+		const jobActive = job?.status === "pending" || job?.status === "running";
+		const jobMessage = jobActive ? job?.message : null;
+		return jobMessage ?? `${counts.pending} memory(s) still need semantic indexing`;
 	}
 	if (counts.embeddable === 0) {
 		return "No embeddable memories need semantic indexing";
@@ -980,6 +992,7 @@ function summarizeSemanticIndexState(
 }
 
 function resolveSemanticIndexState(options: {
+	embeddingsDisabled: boolean;
 	embeddingRevisionMissing: boolean;
 	identityLabelUnresolved: boolean;
 	jobStatus: NonNullable<ReturnType<typeof getMaintenanceJob>>["status"] | undefined;
@@ -987,6 +1000,9 @@ function resolveSemanticIndexState(options: {
 	degraded: boolean;
 	pendingMemoryCount: number;
 }): SemanticIndexState {
+	// Disabled embeddings also stop the catch-up runner, so a queued job would
+	// otherwise read as pending forever.
+	if (options.embeddingsDisabled) return "disabled";
 	if (options.embeddingRevisionMissing) return "degraded";
 	if (options.jobStatus === "failed") return "failed";
 	if (options.identityLabelUnresolved) return "pending";
@@ -1042,7 +1058,7 @@ function resolveSemanticRuntime(db: Database): {
 
 function collectSemanticIndexCounts(
 	db: Database,
-	currentModel: string,
+	coverageModels: string[],
 	fastCounts: boolean,
 ): { embeddableMemoryCount: number; indexedMemoryCount: number } {
 	const embeddableMemoryCount = traceSemanticDiag("countEmbeddableActiveMemories", () =>
@@ -1052,41 +1068,72 @@ function collectSemanticIndexCounts(
 		fastCounts ? "countIndexedActiveMemoriesFast" : "countIndexedActiveMemories",
 		() =>
 			fastCounts
-				? countIndexedActiveMemoriesFast(db, currentModel)
-				: countIndexedActiveMemories(db, currentModel),
+				? countIndexedActiveMemoriesFast(db, coverageModels)
+				: countIndexedActiveMemories(db, coverageModels),
 	);
 	return { embeddableMemoryCount, indexedMemoryCount };
+}
+
+type SemanticRuntime = ReturnType<typeof resolveSemanticRuntime>;
+
+function collectSemanticCoverage(
+	db: Database,
+	runtime: SemanticRuntime,
+	fastCounts: boolean,
+): { embeddableMemoryCount: number; indexedMemoryCount: number } {
+	if (runtime.embeddingRevisionMissing || runtime.identityLabelUnresolved) {
+		const embeddableMemoryCount = traceSemanticDiag("countEmbeddableActiveMemories", () =>
+			countEmbeddableActiveMemories(db),
+		);
+		return { embeddableMemoryCount, indexedMemoryCount: 0 };
+	}
+	// Count coverage under the same model labels search reads, so a corpus
+	// served from compatible legacy vectors is not reported as unindexed.
+	const searchModels = expandSemanticSearchModels(
+		db,
+		runtime.semanticSearchModel,
+		runtime.currentModel,
+	);
+	return collectSemanticIndexCounts(
+		db,
+		searchModels.length > 0 ? searchModels : [runtime.currentModel],
+		fastCounts,
+	);
+}
+
+function describeSemanticIndex(
+	state: SemanticIndexState,
+	runtime: SemanticRuntime,
+	counts: { embeddable: number; indexed: number; pending: number },
+	job: ReturnType<typeof getMaintenanceJob>,
+): string {
+	if (state !== "disabled" && runtime.embeddingRevisionMissing) {
+		return `Semantic search is unavailable because ${runtime.embeddingModel} has no CODEMEM_EMBEDDING_REVISION; keyword search remains available`;
+	}
+	if (state !== "disabled" && runtime.identityLabelUnresolved) {
+		return `Semantic indexing is pending until ${runtime.embeddingModel}@${runtime.embeddingRevision} resolves to a canonical commit`;
+	}
+	return summarizeSemanticIndexState(state, counts, job, runtime.runtimeUnavailable);
 }
 
 export function getSemanticIndexDiagnostics(
 	db: Database,
 	options: SemanticIndexDiagnosticsOptions = {},
 ): SemanticIndexDiagnostics {
-	const fastCounts = options.fastCounts !== false;
+	const runtime = resolveSemanticRuntime(db);
 	const {
-		embeddingModel,
-		embeddingRevision,
 		currentModel,
 		semanticSearchModel,
 		embeddingsDisabled,
 		runtimeUnavailable,
 		embeddingRevisionMissing,
 		identityLabelUnresolved,
-	} = resolveSemanticRuntime(db);
-	let embeddableMemoryCount: number;
-	let indexedMemoryCount: number;
-	if (embeddingRevisionMissing || identityLabelUnresolved) {
-		embeddableMemoryCount = traceSemanticDiag("countEmbeddableActiveMemories", () =>
-			countEmbeddableActiveMemories(db),
-		);
-		indexedMemoryCount = 0;
-	} else {
-		({ embeddableMemoryCount, indexedMemoryCount } = collectSemanticIndexCounts(
-			db,
-			currentModel,
-			fastCounts,
-		));
-	}
+	} = runtime;
+	const { embeddableMemoryCount, indexedMemoryCount } = collectSemanticCoverage(
+		db,
+		runtime,
+		options.fastCounts !== false,
+	);
 	const fallbackPendingCount = Math.max(embeddableMemoryCount - indexedMemoryCount, 0);
 	const job = traceSemanticDiag("getMaintenanceJob", () =>
 		getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB),
@@ -1096,32 +1143,21 @@ export function getSemanticIndexDiagnostics(
 		embeddingRevisionMissing ||
 		(embeddableMemoryCount > 0 &&
 			(embeddingsDisabled || runtimeUnavailable || semanticSearchModel == null));
-	const activeCatchUp = job?.status === "pending" || job?.status === "running";
 	const state = resolveSemanticIndexState({
+		embeddingsDisabled,
 		embeddingRevisionMissing,
 		identityLabelUnresolved,
 		jobStatus: job?.status,
-		activeCatchUp,
+		activeCatchUp: job?.status === "pending" || job?.status === "running",
 		degraded,
 		pendingMemoryCount,
 	});
-	let summary: string;
-	if (embeddingRevisionMissing) {
-		summary = `Semantic search is unavailable because ${embeddingModel} has no CODEMEM_EMBEDDING_REVISION; keyword search remains available`;
-	} else if (identityLabelUnresolved) {
-		summary = `Semantic indexing is pending until ${embeddingModel}@${embeddingRevision} resolves to a canonical commit`;
-	} else {
-		summary = summarizeSemanticIndexState(
-			state,
-			{
-				embeddable: embeddableMemoryCount,
-				indexed: indexedMemoryCount,
-				pending: pendingMemoryCount,
-			},
-			job,
-			runtimeUnavailable,
-		);
-	}
+	const summary = describeSemanticIndex(
+		state,
+		runtime,
+		{ embeddable: embeddableMemoryCount, indexed: indexedMemoryCount, pending: pendingMemoryCount },
+		job,
+	);
 
 	return {
 		state,

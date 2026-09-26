@@ -589,7 +589,7 @@ export interface ApiSyncRetentionStatus {
 }
 
 export interface ApiSemanticIndexDiagnostics {
-	state: "healthy" | "pending" | "failed" | "degraded";
+	state: "healthy" | "pending" | "failed" | "degraded" | "disabled";
 	summary: string;
 	mode: "semantic" | "keyword_only";
 	current_model: string;

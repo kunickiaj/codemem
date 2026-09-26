@@ -30,7 +30,13 @@ import {
 export type DatabaseState = "ready" | "missing" | "unavailable" | "unknown";
 export type SyncState = "healthy" | "degraded" | "disabled" | "error" | "unknown";
 export type MaintenanceState = "idle" | "running" | "failed" | "unknown";
-export type SemanticIndexState = "healthy" | "pending" | "degraded" | "failed" | "unknown";
+export type SemanticIndexState =
+	| "healthy"
+	| "pending"
+	| "degraded"
+	| "disabled"
+	| "failed"
+	| "unknown";
 export type RawEventsState = "healthy" | "backlogged" | "failing" | "unknown";
 export type ObserverState = "healthy" | "idle" | "backoff" | "failed" | "unconfigured" | "unknown";
 export type AttentionSeverity = "warning" | "error";

@@ -117,7 +117,7 @@ Initial state values are:
 - `database.state`: `ready | missing | unavailable | unknown`
 - `sync.state`: `healthy | degraded | disabled | error | unknown`
 - `maintenance.state`: `idle | running | failed | unknown`
-- `semantic_index.state`: `healthy | pending | degraded | failed | unknown`
+- `semantic_index.state`: `healthy | pending | degraded | disabled | failed | unknown`
 - `raw_events.state`: `healthy | backlogged | failing | unknown`
 - `observer.state`: `healthy | idle | backoff | failed | unconfigured | unknown`
 

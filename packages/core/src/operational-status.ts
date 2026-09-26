@@ -2,7 +2,13 @@ import { columnExists, type Database, tableExists } from "./db.js";
 import { VECTOR_MODEL_MIGRATION_JOB } from "./vector-migration.js";
 
 export type OperationalMaintenanceState = "idle" | "running" | "failed" | "unknown";
-export type OperationalSemanticState = "healthy" | "pending" | "degraded" | "failed" | "unknown";
+export type OperationalSemanticState =
+	| "healthy"
+	| "pending"
+	| "degraded"
+	| "disabled"
+	| "failed"
+	| "unknown";
 
 export interface OperationalStatusSnapshot {
 	sync: {
@@ -115,14 +121,29 @@ function collectMaintenance(db: Database): OperationalStatusSnapshot["maintenanc
 	}
 }
 
+function semanticStateFromJob(
+	status: string | null,
+	vectorTablePresent: boolean,
+): OperationalSemanticState {
+	if (status === "failed") return "failed";
+	if (status === "pending" || status === "running") return "pending";
+	if (!vectorTablePresent) return "degraded";
+	return "healthy";
+}
+
 function collectSemanticIndex(
 	db: Database,
 	embeddingDisabled: boolean,
 ): OperationalStatusSnapshot["semantic_index"] {
 	const vectorTablePresent = tableExists(db, "memory_vectors");
+	// Disabled embeddings also stop the catch-up runner, so a queued job would
+	// otherwise read as pending forever.
+	if (embeddingDisabled) {
+		return { state: "disabled", vector_table_present: vectorTablePresent };
+	}
 	if (!tableExists(db, "maintenance_jobs")) {
 		return {
-			state: embeddingDisabled || !vectorTablePresent ? "degraded" : "unknown",
+			state: vectorTablePresent ? "unknown" : "degraded",
 			vector_table_present: vectorTablePresent,
 		};
 	}
@@ -131,15 +152,10 @@ function collectSemanticIndex(
 			.prepare("SELECT status FROM maintenance_jobs WHERE kind = ?")
 			.get(VECTOR_MODEL_MIGRATION_JOB) as { status?: unknown } | undefined;
 		const status = typeof row?.status === "string" ? row.status : null;
-		const state: OperationalSemanticState =
-			status === "failed"
-				? "failed"
-				: status === "pending" || status === "running"
-					? "pending"
-					: embeddingDisabled || !vectorTablePresent
-						? "degraded"
-						: "healthy";
-		return { state, vector_table_present: vectorTablePresent };
+		return {
+			state: semanticStateFromJob(status, vectorTablePresent),
+			vector_table_present: vectorTablePresent,
+		};
 	} catch {
 		return { state: "unknown", vector_table_present: vectorTablePresent };
 	}
