@@ -596,6 +596,8 @@ describe("sync failure diagnostics copy", () => {
 			"all addresses failed | http://host.internal:7337: fetch failed (network)",
 			"peer status failed (401: unauthorized)",
 			"opaque private failure",
+			"all addresses failed | http://authbox.local:7337: fetch failed",
+			"peer protocol mismatch (expected 2, got 1)",
 		];
 		errors.forEach((error, index) => {
 			insertSyncAttempt(store, {
@@ -612,12 +614,15 @@ describe("sync failure diagnostics copy", () => {
 		const messages = (JSON.parse(text) as DiagnosticsResponse).items.map((item) => item.message);
 
 		expect(messages).toEqual([
+			"A paired device runs an incompatible Codemem version, so this sync attempt stopped.",
+			"This device could not reach a paired device, so this sync attempt stopped.",
 			"A sync attempt failed before all work completed.",
 			"A paired device rejected this device's credentials, so this sync attempt stopped.",
 			"This device could not reach a paired device, so this sync attempt stopped.",
 			"A paired device did not respond in time, so this sync attempt stopped.",
 		]);
 		expect(text).not.toContain("host.internal");
+		expect(text).not.toContain("authbox");
 		expect(text).not.toContain("private-device");
 	});
 });

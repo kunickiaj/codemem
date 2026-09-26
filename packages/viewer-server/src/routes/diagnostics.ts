@@ -152,14 +152,8 @@ function syncSelect(options: EventOptions): string | null {
 		${SYNC_OCCURRED_AT_SQL} AS occurred_at,
 		CASE WHEN ok <> 0 THEN 'succeeded' ELSE 'failed' END AS status,
 		ops_in AS metric_a, ops_out AS metric_b,
-		CASE
-			WHEN lower(error) LIKE '%auth%' OR lower(error) LIKE '%unauthorized%' THEN 'authentication'
-			WHEN lower(error) LIKE '%timeout%' OR lower(error) LIKE '%timed out%' THEN 'timeout'
-			WHEN lower(error) LIKE '%version%' OR lower(error) LIKE '%capability%' THEN 'compatibility'
-			WHEN lower(error) LIKE '%connect%' OR lower(error) LIKE '%network%'
-				OR lower(error) LIKE '%dns%' THEN 'connectivity'
-			ELSE 'unspecified'
-		END AS category
+		-- Raw error text; syncEvent classifies it server-side and never returns it.
+		error AS category
 		FROM sync_attempts ${where}
 		ORDER BY ${SYNC_OCCURRED_AT_SQL} DESC, id DESC
 		LIMIT @sourceLimit`;
@@ -313,11 +307,29 @@ const SYNC_FAILURE_MESSAGES: Record<string, string> = {
 		"A paired device runs an incompatible Codemem version, so this sync attempt stopped.",
 };
 
+// Peer addresses can contain any word (for example `http://authbox.local`), so
+// strip them before matching failure keywords.
+const PEER_ADDRESS_PATTERN = /[a-z][a-z0-9+.-]*:\/\/\S+?(?=:\s|\s|\||$)/gi;
+
+const SYNC_FAILURE_CATEGORIES: Array<[category: string, pattern: RegExp]> = [
+	["authentication", /\bauth|unauthorized|forbidden/],
+	["timeout", /timeout|timed out/],
+	["compatibility", /version|capabilit|protocol mismatch/],
+	["connectivity", /connect|network|dns|fetch failed|enotfound|ehostunreach/],
+];
+
+function classifySyncError(error: string | null): string {
+	const text = String(error ?? "")
+		.replace(PEER_ADDRESS_PATTERN, " ")
+		.toLowerCase();
+	return SYNC_FAILURE_CATEGORIES.find(([, pattern]) => pattern.test(text))?.[0] ?? "unspecified";
+}
+
 function syncEvent(row: DiagnosticSourceRow, includeTechnical: boolean): OrderedDiagnosticEvent {
 	const succeeded = row.status === "succeeded";
 	const opsIn = Number(row.metric_a ?? 0);
 	const opsOut = Number(row.metric_b ?? 0);
-	const category = row.category ?? "unspecified";
+	const category = succeeded ? "unspecified" : classifySyncError(row.category);
 	return {
 		id: opaqueId("sync-attempt", row.source_id),
 		orderKey: row.order_key,
