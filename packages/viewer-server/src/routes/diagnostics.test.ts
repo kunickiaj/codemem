@@ -618,12 +618,12 @@ describe("sync failure diagnostics copy", () => {
 		expect(messages).toEqual([
 			"A sync attempt failed before all work completed.",
 			"A sync attempt failed before all work completed.",
-			"A paired device runs an incompatible Codemem version, so this sync attempt stopped.",
-			"This device could not reach a paired device, or it did not respond in time, so this sync attempt stopped.",
+			"Sync stopped because two devices run incompatible Codemem versions.",
+			"Sync could not reach a paired device, or the device did not respond in time.",
 			"A sync attempt failed before all work completed.",
-			"A paired device did not accept this device's identity, so this sync attempt stopped.",
-			"This device could not reach a paired device, or it did not respond in time, so this sync attempt stopped.",
-			"This device could not reach a paired device, or it did not respond in time, so this sync attempt stopped.",
+			"Sync stopped because the pairing or identity check between two devices failed.",
+			"Sync could not reach a paired device, or the device did not respond in time.",
+			"Sync could not reach a paired device, or the device did not respond in time.",
 		]);
 		expect(text).not.toContain("host.internal");
 		expect(text).not.toContain("authbox");

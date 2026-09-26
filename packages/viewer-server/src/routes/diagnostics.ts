@@ -302,13 +302,13 @@ function loadSourceRows(store: MemoryStore, options: EventOptions): DiagnosticSo
 		.all(params) as DiagnosticSourceRow[];
 }
 
+// Wording stays neutral about which device caused the failure: the same
+// category can start on either side of the connection.
 const SYNC_FAILURE_MESSAGES: Partial<Record<RecordedSyncFailureCategory, string>> = {
-	connectivity:
-		"This device could not reach a paired device, or it did not respond in time, so this sync attempt stopped.",
-	trust: "A paired device did not accept this device's identity, so this sync attempt stopped.",
-	scope: "A paired device has not granted access to a shared Space, so this sync attempt stopped.",
-	compatibility:
-		"A paired device runs an incompatible Codemem version, so this sync attempt stopped.",
+	connectivity: "Sync could not reach a paired device, or the device did not respond in time.",
+	trust: "Sync stopped because the pairing or identity check between two devices failed.",
+	scope: "Sync stopped because two devices disagree about access to a shared Space.",
+	compatibility: "Sync stopped because two devices run incompatible Codemem versions.",
 };
 
 function syncEvent(row: DiagnosticSourceRow, includeTechnical: boolean): OrderedDiagnosticEvent {

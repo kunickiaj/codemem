@@ -2,40 +2,34 @@ import { categorizeSyncFailure, type SyncFailureCategory } from "./sync-pass.js"
 
 export type RecordedSyncFailureCategory = SyncFailureCategory | "compatibility";
 
-const SCOPED_PREFIX = "scoped sync incomplete:";
-const INBOUND_PREFIX = "inbound apply incomplete";
+// Aggregated per-Space and inbound-apply errors embed arbitrary Space IDs and
+// nested error text whose delimiters are ambiguous, and the runtime category
+// for them is not persisted. Report them as `other` rather than guess.
+const AGGREGATE_PREFIXES = ["scoped sync incomplete:", "inbound apply incomplete"];
+
 // Peer addresses can contain any word (for example `http://authbox.local`).
-const PEER_ADDRESS_PATTERN = /[a-z][a-z0-9+.-]*:\/\/\S+?(?=:\s|\s|\||$)/gi;
-
-function classifySingleFailure(error: string): RecordedSyncFailureCategory {
-	const text = error.replace(PEER_ADDRESS_PATTERN, " ");
-	if (text.toLowerCase().includes("protocol mismatch")) return "compatibility";
-	return categorizeSyncFailure(text);
-}
-
-function classifyScopedFailures(detail: string): RecordedSyncFailureCategory {
-	// Each entry is `<scope id>=<error>`; scope IDs are arbitrary text, so drop them.
-	const categories = new Set(
-		detail
-			.split(/;\s*/)
-			.filter(Boolean)
-			.map((entry) => classifySingleFailure(entry.slice(entry.indexOf("=") + 1))),
-	);
-	return categories.size === 1 ? ([...categories][0] ?? "other") : "other";
+// Drop whitespace-separated tokens that contain a URL scheme separator; a
+// linear token scan avoids backtracking on untrusted input.
+function withoutPeerAddresses(text: string): string {
+	return text
+		.split(/\s+/)
+		.filter((token) => !token.includes("://"))
+		.join(" ");
 }
 
 /**
- * Classify an error string persisted in `sync_attempts`, matching the
- * categories the sync pass assigns at runtime. Mixed per-Space failures and
- * incomplete inbound apply are `other`, as in `aggregateScopeFailureCategory`.
+ * Classify an error string persisted in `sync_attempts`, using the same
+ * categories the sync pass assigns at runtime. Returns `other` whenever the
+ * stored text cannot be classified unambiguously.
  */
 export function classifyRecordedSyncFailure(
 	error: string | null | undefined,
 ): RecordedSyncFailureCategory {
 	const text = String(error ?? "").trim();
 	if (!text) return "other";
-	if (text.startsWith(INBOUND_PREFIX)) return "other";
-	if (text.startsWith(SCOPED_PREFIX))
-		return classifyScopedFailures(text.slice(SCOPED_PREFIX.length));
-	return classifySingleFailure(text);
+	const lower = text.toLowerCase();
+	if (AGGREGATE_PREFIXES.some((prefix) => lower.startsWith(prefix))) return "other";
+	const withoutAddresses = withoutPeerAddresses(text);
+	if (withoutAddresses.toLowerCase().includes("protocol mismatch")) return "compatibility";
+	return categorizeSyncFailure(withoutAddresses);
 }
