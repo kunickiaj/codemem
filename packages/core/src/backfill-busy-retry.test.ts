@@ -79,14 +79,17 @@ function jobStatus(kind: string): string | undefined {
 	}
 }
 
-function seedRefBackfillWork(): void {
+function seedRefBackfillWork(count = 1): void {
 	seed((db, sessionId) => {
 		const now = new Date().toISOString();
-		db.prepare(
+		const insert = db.prepare(
 			`INSERT INTO memory_items(session_id, kind, title, body_text, confidence, tags_text, active,
 			 created_at, updated_at, metadata_json, rev, visibility, workspace_id, files_read)
 			 VALUES (?, 'discovery', 'm', 'b', 0.5, '', 1, ?, ?, '{}', 1, 'shared', 'shared:default', ?)`,
-		).run(sessionId, now, now, JSON.stringify(["/src/a.ts"]));
+		);
+		for (let i = 0; i < count; i += 1) {
+			insert.run(sessionId, now, now, JSON.stringify([`/src/${i}.ts`]));
+		}
 	});
 }
 
@@ -128,6 +131,23 @@ describe("backfill runners on a busy database", () => {
 		expect(busyOnce.remaining).toBe(0);
 		expect(busyOnce.failCalls).toEqual([]);
 		expect(jobStatus(REF_BACKFILL_JOB)).toBe("completed");
+	});
+
+	it("ref backfill counts rows committed before a busy write", async () => {
+		busyOnce.target = "complete";
+		seedRefBackfillWork(2);
+
+		await runUntilIdle(new RefBackfillRunner({ dbPath, intervalMs: 1000 }));
+
+		expect(busyOnce.remaining).toBe(0);
+		const db = connect(dbPath);
+		try {
+			const job = getMaintenanceJob(db, REF_BACKFILL_JOB);
+			expect(job?.status).toBe("completed");
+			expect(job?.metadata).toMatchObject({ processed: 2, total_backfillable: 2 });
+		} finally {
+			db.close();
+		}
 	});
 
 	it("summary-dedup backfill retries instead of failing the job", async () => {

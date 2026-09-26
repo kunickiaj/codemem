@@ -167,9 +167,7 @@ export async function runRefBackfillPass(
 		"INSERT OR IGNORE INTO memory_concept_refs (memory_id, concept) VALUES (?, ?)",
 	);
 
-	// Insert refs per-row (not per-batch) to keep write transactions short
-	// and avoid blocking the viewer's read connections on large databases.
-	const insertOneRow = db.transaction((row: BackfillRow) => {
+	const insertRowRefs = (row: BackfillRow) => {
 		const filesRead = safeJsonArray(row.files_read);
 		const filesModified = safeJsonArray(row.files_modified);
 		const concepts = safeJsonArray(row.concepts);
@@ -190,25 +188,29 @@ export async function runRefBackfillPass(
 				if (normalized) insertConceptRef.run(row.id, normalized);
 			}
 		}
-	});
-	// rows.length > 0 guaranteed by early return above
-	const lastRow = rows[rows.length - 1] as BackfillRow;
-	for (const row of rows.slice(0, -1)) {
-		insertOneRow(row);
-	}
-	// The last row shares a transaction with the job-status write so the
+	};
+
+	// Insert refs per-row (not per-batch) to keep write transactions short
+	// and avoid blocking the viewer's read connections on large databases.
+	// Each row commits together with its progress and cursor, so a busy
+	// error mid-batch never leaves committed rows uncounted, and the
 	// coordinator, which polls pending work independently, can never observe
 	// finished work while the job row still says running.
-	const finishBatch = db.transaction(() => {
-		insertOneRow(lastRow);
+	const processRow = db.transaction((row: BackfillRow, index: number) => {
+		insertRowRefs(row);
+		const isLastRow = index === rows.length - 1;
 		return recordBatchProgress(db, {
-			processedAfter: processedBefore + rows.length,
+			processedAfter: processedBefore + index + 1,
 			progressTotal,
-			newCursor: lastRow.id,
-			exhausted: rows.length < batchSize || !hasPendingRefBackfill(db),
+			newCursor: row.id,
+			exhausted: isLastRow && (rows.length < batchSize || !hasPendingRefBackfill(db)),
 		});
 	});
-	return finishBatch();
+	let hasMoreWork = true;
+	for (const [index, row] of rows.entries()) {
+		hasMoreWork = processRow(row, index);
+	}
+	return hasMoreWork;
 }
 
 function recordBatchProgress(
