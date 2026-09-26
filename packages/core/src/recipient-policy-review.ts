@@ -1,4 +1,4 @@
-import { type Database, fromJson } from "./db.js";
+import type { Database } from "./db.js";
 import {
 	isLegacyUmbrellaScopeKind,
 	type LegacyRecipientPolicyConditionCodeV1,
@@ -9,7 +9,7 @@ import {
 } from "./legacy-recipient-policy-projection.js";
 import { isLegacyTeamCandidateSelectable } from "./legacy-team-candidate.js";
 import { isMigratableLegacyTeamProjectIdentity } from "./legacy-team-project-policy.js";
-import { REPOSITORY_IDENTITY_METADATA_KEY } from "./project.js";
+import { repositoryIdentitySql } from "./project.js";
 import { isActiveUnmergedLocalActor } from "./recipient-policy-actor-eligibility.js";
 import {
 	isRecipientPolicyNoOpDecision,
@@ -234,18 +234,26 @@ function memoryCountsByProject(db: Database): Map<string, number> {
 	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
 	const rows = db
 		.prepare(
-			`SELECT s.cwd, s.project, s.git_remote, s.git_branch, s.metadata_json, mi.workspace_id
-			 FROM memory_items mi
-			 JOIN sessions s ON s.id = mi.session_id
-			 WHERE mi.active = 1 AND mi.deleted_at IS NULL`,
+			`WITH session_counts AS (
+				SELECT session_id, workspace_id, COUNT(*) AS memory_count
+				FROM memory_items
+				WHERE active = 1 AND deleted_at IS NULL
+				GROUP BY session_id, workspace_id
+			 )
+			 SELECT s.cwd, s.project, s.git_remote, s.git_branch,
+				${repositoryIdentitySql("s.metadata_json")} AS repository_identity,
+				c.workspace_id, c.memory_count
+			 FROM session_counts c
+			 JOIN sessions s ON s.id = c.session_id`,
 		)
 		.all() as Array<{
 		cwd: string | null;
 		project: string | null;
 		git_remote: string | null;
 		git_branch: string | null;
-		metadata_json: string | null;
+		repository_identity: string | null;
 		workspace_id: string | null;
+		memory_count: number;
 	}>;
 	const counts = new Map<string, number>();
 	for (const row of rows) {
@@ -257,11 +265,11 @@ function memoryCountsByProject(db: Database): Map<string, number> {
 			repositoryIdentity: repositoryIdentityForWorkspace(repositoryIdentities, {
 				cwd: row.cwd,
 				gitRemote: row.git_remote,
-				metadataJson: row.metadata_json,
+				repositoryIdentity: row.repository_identity,
 			}),
 			workspaceId: row.workspace_id,
 		}).value;
-		counts.set(projectId, (counts.get(projectId) ?? 0) + 1);
+		counts.set(projectId, (counts.get(projectId) ?? 0) + Number(row.memory_count));
 	}
 	return counts;
 }
@@ -269,7 +277,8 @@ function memoryCountsByProject(db: Database): Map<string, number> {
 function repositoryIdentitiesByProject(db: Database): Map<string, string> {
 	const rows = db
 		.prepare(
-			`SELECT cwd, project, git_remote, git_branch, metadata_json
+			`SELECT cwd, project, git_remote, git_branch,
+				${repositoryIdentitySql("metadata_json")} AS repository_identity
 			 FROM sessions
 			 WHERE COALESCE(tool_version, '') <> 'sync_replication'
 			 ORDER BY id`,
@@ -279,7 +288,7 @@ function repositoryIdentitiesByProject(db: Database): Map<string, string> {
 		project: string | null;
 		git_remote: string | null;
 		git_branch: string | null;
-		metadata_json: string | null;
+		repository_identity: string | null;
 	}>;
 	const evidence = new Map<string, string | null>();
 	for (const row of rows) {
@@ -289,8 +298,7 @@ function repositoryIdentitiesByProject(db: Database): Map<string, string> {
 			gitRemote: row.git_remote,
 			gitBranch: row.git_branch,
 		}).value;
-		const value = fromJson(row.metadata_json)[REPOSITORY_IDENTITY_METADATA_KEY];
-		const repositoryIdentity = typeof value === "string" && value.trim() ? value.trim() : null;
+		const repositoryIdentity = row.repository_identity?.trim() || null;
 		if (!evidence.has(projectId)) {
 			evidence.set(projectId, repositoryIdentity);
 			continue;

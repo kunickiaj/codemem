@@ -1060,7 +1060,7 @@ describe("recipient policy review persistence", () => {
 			).toEqual([first.reviewItemId, third.reviewItemId]);
 			expect(
 				prepare.mock.calls.filter(([sql]) =>
-					/FROM memory_items mi\s+JOIN sessions s ON s.id = mi.session_id/u.test(String(sql)),
+					/FROM session_counts c\s+JOIN sessions s ON s.id = c.session_id/u.test(String(sql)),
 				),
 			).toHaveLength(1);
 			expect(

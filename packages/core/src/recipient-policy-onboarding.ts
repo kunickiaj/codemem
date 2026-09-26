@@ -6,6 +6,7 @@ import {
 } from "./identity-device-assignment.js";
 import { managedProjectScopeId } from "./managed-project-scope.js";
 import { derivePolicyTeamDeviceEligibility } from "./policy-team-device-eligibility.js";
+import { repositoryIdentitySql } from "./project.js";
 import { normalizeIdentityDisplayName } from "./project-invite-identity.js";
 import {
 	isStrictRecipientPolicyId,
@@ -276,7 +277,7 @@ interface ProjectFactRow {
 	project: string | null;
 	git_remote: string | null;
 	git_branch: string | null;
-	metadata_json: string | null;
+	repository_identity: string | null;
 	workspace_id: string | null;
 	memory_count: number;
 }
@@ -288,7 +289,7 @@ function repositoryIdentityForProjectFact(
 	return repositoryIdentityForWorkspace(repositoryIdentities, {
 		cwd: row.cwd,
 		gitRemote: row.git_remote,
-		metadataJson: row.metadata_json,
+		repositoryIdentity: row.repository_identity,
 	});
 }
 
@@ -318,7 +319,8 @@ function projectFacts(db: Database): Map<string, ProjectFact> {
 	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
 	const rows = db
 		.prepare(
-			`SELECT s.id, s.cwd, s.project, s.git_remote, s.git_branch, s.metadata_json,
+			`SELECT s.id, s.cwd, s.project, s.git_remote, s.git_branch,
+			 ${repositoryIdentitySql("s.metadata_json")} AS repository_identity,
 			 (SELECT mi.workspace_id FROM memory_items mi
 			  WHERE mi.session_id = s.id AND mi.workspace_id IS NOT NULL AND TRIM(mi.workspace_id) <> ''
 			  ORDER BY mi.id DESC LIMIT 1) AS workspace_id,

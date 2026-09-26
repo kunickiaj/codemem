@@ -9,11 +9,15 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	projectBasename,
 	projectClause,
 	projectMatchesFilter,
+	recordedRepositoryIdentitiesBySession,
+	repositoryIdentityFromMetadata,
+	repositoryIdentitySql,
 	resolveGitRepositoryIdentity,
 	resolveProject,
 	resolveProjectRoot,
@@ -301,5 +305,51 @@ describe("project directory resolution", () => {
 	it("returns cwd basename when no git repo exists", () => {
 		expect(projectBasename("/tmp/foo/bar")).toBe("bar");
 		expect(resolveProject("/tmp/foo/bar")).toBe("bar");
+	});
+});
+
+describe("recorded repository identity SQL", () => {
+	const cases: Array<string | null> = [
+		null,
+		"",
+		"not json",
+		"[]",
+		"{}",
+		JSON.stringify({ codemem_repository_identity: "github.com/acme/repo" }),
+		JSON.stringify({ codemem_repository_identity: "  github.com/acme/repo  " }),
+		JSON.stringify({ codemem_repository_identity: "   " }),
+		JSON.stringify({ codemem_repository_identity: 42 }),
+		JSON.stringify({ codemem_repository_identity: null }),
+		JSON.stringify({ nested: { codemem_repository_identity: "ignored" } }),
+		JSON.stringify({ note: "mentions codemem_repository_identity only in a value" }),
+		'{"codemem_repository_identity": "broken',
+	];
+
+	it("matches the JavaScript metadata parser for every shape", () => {
+		const db = new Database(":memory:");
+		try {
+			db.exec("CREATE TABLE sessions (id INTEGER PRIMARY KEY, metadata_json TEXT)");
+			const insert = db.prepare("INSERT INTO sessions (id, metadata_json) VALUES (?, ?)");
+			for (const [index, metadata] of cases.entries()) insert.run(index + 1, metadata);
+			const rows = db
+				.prepare(
+					`SELECT id, metadata_json, ${repositoryIdentitySql("metadata_json")} AS identity
+					 FROM sessions ORDER BY id`,
+				)
+				.all() as Array<{ id: number; metadata_json: string | null; identity: string | null }>;
+			for (const row of rows) {
+				expect(row.identity?.trim() || null).toBe(
+					repositoryIdentityFromMetadata(row.metadata_json),
+				);
+			}
+			expect(recordedRepositoryIdentitiesBySession(db)).toEqual(
+				new Map([
+					[6, "github.com/acme/repo"],
+					[7, "github.com/acme/repo"],
+				]),
+			);
+		} finally {
+			db.close();
+		}
 	});
 });

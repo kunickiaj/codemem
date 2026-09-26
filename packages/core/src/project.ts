@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
+import type { Database } from "./db.js";
 
 export interface GitRepositoryIdentity {
 	identity: string;
@@ -9,6 +10,42 @@ export interface GitRepositoryIdentity {
 }
 
 export const REPOSITORY_IDENTITY_METADATA_KEY = "codemem_repository_identity";
+
+/**
+ * SQL expression for the recorded repository identity in a metadata JSON
+ * column, or NULL. Read queries select this instead of the whole column: few
+ * sessions record the key, and the substring check skips JSON parsing for the
+ * rest.
+ */
+export function repositoryIdentitySql(column: string): string {
+	const path = `'$.${REPOSITORY_IDENTITY_METADATA_KEY}'`;
+	return `CASE
+		WHEN instr(${column}, '${REPOSITORY_IDENTITY_METADATA_KEY}') = 0 THEN NULL
+		WHEN json_valid(${column}) THEN
+			CASE WHEN json_type(${column}, ${path}) = 'text' THEN json_extract(${column}, ${path}) END
+	END`;
+}
+
+/**
+ * Recorded repository identities keyed by session id, for the few sessions
+ * that recorded one. Lets per-memory queries join by session id instead of
+ * evaluating session metadata once per memory row.
+ */
+export function recordedRepositoryIdentitiesBySession(db: Database): Map<number, string> {
+	const rows = db
+		.prepare(
+			`SELECT id, ${repositoryIdentitySql("metadata_json")} AS repository_identity
+			 FROM sessions
+			 WHERE instr(metadata_json, '${REPOSITORY_IDENTITY_METADATA_KEY}') > 0`,
+		)
+		.all() as Array<{ id: number; repository_identity: string | null }>;
+	const identities = new Map<number, string>();
+	for (const row of rows) {
+		const identity = row.repository_identity?.trim();
+		if (identity) identities.set(row.id, identity);
+	}
+	return identities;
+}
 
 export function repositoryIdentityFromMetadata(
 	metadataJson: string | null | undefined,

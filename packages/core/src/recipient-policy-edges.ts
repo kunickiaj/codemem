@@ -46,6 +46,8 @@ export type {
 	RecipientPolicyEdgeSelectedRecipientV1,
 } from "./recipient-policy-contract.js";
 
+import { repositoryIdentitySql } from "./project.js";
+
 export class RecipientPolicyEdgeRequestError extends Error {
 	readonly status: "invalid" | "not_found";
 	readonly errorCode: string;
@@ -232,7 +234,7 @@ interface ProjectFactRow {
 	project: string | null;
 	git_remote: string | null;
 	git_branch: string | null;
-	metadata_json: string | null;
+	repository_identity: string | null;
 	workspace_id: string | null;
 	memory_count: number;
 }
@@ -263,7 +265,8 @@ function projectFacts(db: Database): Map<string, ProjectFact> {
 	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
 	const rows = db
 		.prepare(
-			`SELECT s.id, s.cwd, s.project, s.git_remote, s.git_branch, s.metadata_json,
+			`SELECT s.id, s.cwd, s.project, s.git_remote, s.git_branch,
+				${repositoryIdentitySql("s.metadata_json")} AS repository_identity,
 				(SELECT mi.workspace_id FROM memory_items mi
 				 WHERE mi.session_id = s.id AND mi.workspace_id IS NOT NULL AND TRIM(mi.workspace_id) <> ''
 				 ORDER BY mi.id DESC LIMIT 1) AS workspace_id,
@@ -286,7 +289,7 @@ function projectFacts(db: Database): Map<string, ProjectFact> {
 			repositoryIdentity: repositoryIdentityForWorkspace(repositoryIdentities, {
 				cwd: row.cwd,
 				gitRemote: row.git_remote,
-				metadataJson: row.metadata_json,
+				repositoryIdentity: row.repository_identity,
 			}),
 			workspaceId: row.workspace_id,
 		});
