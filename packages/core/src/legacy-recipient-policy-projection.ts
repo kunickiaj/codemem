@@ -3,6 +3,7 @@ import {
 	isFilesystemRootProjectIdentity,
 	normalizeLegacyProjectMappingIdentity,
 } from "./legacy-project-identity.js";
+import { recordedRepositoryIdentitiesBySession } from "./project.js";
 import { preferredActiveUnmergedLocalActorId } from "./recipient-policy-actor-eligibility.js";
 import {
 	RECIPIENT_POLICY_CONTRACT_VERSION,
@@ -864,7 +865,7 @@ interface LegacyProjectRow {
 	project: string | null;
 	git_remote: string | null;
 	git_branch: string | null;
-	metadata_json: string | null;
+	repository_identity: string | null;
 	memory_id: number | null;
 	workspace_id: string | null;
 	scope_id: string | null;
@@ -917,18 +918,17 @@ function legacyProjectContext(db: Database): {
 			repositoryIdentityForWorkspace(repositoryIdentities, {
 				cwd: row.cwd,
 				gitRemote: row.git_remote,
-				metadataJson: row.metadata_json,
+				repositoryIdentity: row.repository_identity,
 			}),
 	};
 }
 
-function loadSnapshot(
-	db: Database,
-	options: ListLegacyRecipientPolicyProjectionsOptions,
-): LegacyRecipientPolicySnapshot {
-	const projectRows = db
+// Recorded repository identities are looked up per session, not selected per
+// memory row: the session metadata is large and few sessions record one.
+function loadLegacyProjectRows(db: Database): LegacyProjectRow[] {
+	const sessionRows = db
 		.prepare(
-			`SELECT s.cwd, s.project, s.git_remote, s.git_branch, s.metadata_json,
+			`SELECT s.id AS session_id, s.cwd, s.project, s.git_remote, s.git_branch,
 				mi.id AS memory_id, mi.workspace_id, mi.scope_id
 			 FROM sessions s
 			 LEFT JOIN memory_items mi ON mi.session_id = s.id
@@ -938,7 +938,21 @@ function loadSnapshot(
 			   AND COALESCE(s.tool_version, '') <> 'sync_replication'
 			 ORDER BY s.id, mi.id`,
 		)
-		.all(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX) as LegacyProjectRow[];
+		.all(SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX) as Array<
+		Omit<LegacyProjectRow, "repository_identity"> & { session_id: number }
+	>;
+	const sessionIdentities = recordedRepositoryIdentitiesBySession(db);
+	return sessionRows.map((row) => ({
+		...row,
+		repository_identity: sessionIdentities.get(row.session_id) ?? null,
+	}));
+}
+
+function loadSnapshot(
+	db: Database,
+	options: ListLegacyRecipientPolicyProjectionsOptions,
+): LegacyRecipientPolicySnapshot {
+	const projectRows = loadLegacyProjectRows(db);
 	const { mappings, repositoryIdentities, repositoryIdentityForRow } = legacyProjectContext(db);
 	// Guided setup materializes an explicit Project resolution as a mapping
 	// whose pattern is the original `unmapped:` identity and whose workspace
