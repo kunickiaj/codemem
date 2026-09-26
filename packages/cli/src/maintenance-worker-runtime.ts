@@ -62,12 +62,43 @@ function readWorkerSyncConfig(configPath?: string | null) {
 	return readCoordinatorSyncConfig(config);
 }
 
+// Pending predicates can scan large tables (seconds on a Raspberry Pi), so
+// re-check them rarely while the job row already reports progress.
+const PENDING_RECHECK_INTERVAL_MS = 30_000;
+const BACKFILL_POLL_INTERVAL_MS = 1000;
+
+/**
+ * Decide when the active backfill is done. A backfill can complete while its
+ * predicate still reports work (for example rows it skipped), so a terminal
+ * row written during this run ends it; rows finished before the run started
+ * do not count.
+ */
+function createBackfillCompletionTracker(store: MemoryStore) {
+	let startedAt = "";
+	let lastPendingCheckAt = 0;
+	return {
+		begin(plan: BackfillJobPlan): BackfillJobPlan {
+			startedAt = new Date().toISOString();
+			lastPendingCheckAt = Date.now();
+			return plan;
+		},
+		finished(plan: BackfillJobPlan, job: ReturnType<typeof getMaintenanceJob>): boolean {
+			if (job && (job.status === "completed" || job.status === "cancelled")) {
+				if ((job.finished_at ?? job.updated_at) >= startedAt) return true;
+			}
+			if (Date.now() - lastPendingCheckAt < PENDING_RECHECK_INTERVAL_MS) return false;
+			lastPendingCheckAt = Date.now();
+			return !plan.isPending(store.db);
+		},
+	};
+}
+
 export function createSequentialBackfillCoordinator(
 	store: MemoryStore,
 	jobPlans: BackfillJobPlan[],
 	options: { signal?: AbortSignal; logger: MaintenanceWorkerLogger },
 ): ManagedMaintenanceRunner {
-	const pollIntervalMs = 1000;
+	const completion = createBackfillCompletionTracker(store);
 	let activeRunner: ManagedMaintenanceRunner | null = null;
 	let activePlan: BackfillJobPlan | null = null;
 	let activePollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -82,7 +113,7 @@ export function createSequentialBackfillCoordinator(
 
 	const schedulePoll = (fn: () => void) => {
 		clearPollTimer();
-		activePollTimer = setTimeout(fn, pollIntervalMs);
+		activePollTimer = setTimeout(fn, BACKFILL_POLL_INTERVAL_MS);
 		if (typeof activePollTimer === "object" && "unref" in activePollTimer) {
 			activePollTimer.unref();
 		}
@@ -95,7 +126,7 @@ export function createSequentialBackfillCoordinator(
 			const plan = jobPlans[nextJobIndex++];
 			if (!plan) continue;
 			if (!plan.isPending(store.db)) continue;
-			activePlan = plan;
+			activePlan = completion.begin(plan);
 			activeRunner = plan.createRunner();
 			options.logger.step(`${plan.name} backfill started`);
 			activeRunner.start();
@@ -123,7 +154,7 @@ export function createSequentialBackfillCoordinator(
 			});
 			return;
 		}
-		if (!activePlan.isPending(store.db)) {
+		if (completion.finished(activePlan, job)) {
 			const finishedPlan = activePlan;
 			const finishedRunner = activeRunner;
 			activePlan = null;
