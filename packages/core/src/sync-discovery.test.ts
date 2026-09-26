@@ -334,6 +334,10 @@ describe("recordSyncAttempt", () => {
 			.prepare("SELECT last_error FROM sync_peers WHERE peer_device_id = ?")
 			.get("peer-1") as Record<string, unknown>;
 		expect(peer.last_error).toBe("connection refused");
+		const attempt = db
+			.prepare("SELECT failure_category FROM sync_attempts WHERE peer_device_id = ?")
+			.get("peer-1") as { failure_category: string | null };
+		expect(attempt.failure_category).toBe("other");
 	});
 });
 

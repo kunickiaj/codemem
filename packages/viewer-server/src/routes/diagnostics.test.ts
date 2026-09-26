@@ -20,13 +20,14 @@ function createStore(): MemoryStore {
 
 function insertSyncAttempt(
 	store: MemoryStore,
-	input: { at: string; error?: string; id: number; ok: boolean },
+	input: { at: string; error?: string; failureCategory?: string; id: number; ok: boolean },
 ) {
 	store.db
 		.prepare(
 			`INSERT INTO sync_attempts(
-				id, peer_device_id, started_at, finished_at, ok, ops_in, ops_out, error
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				id, peer_device_id, started_at, finished_at, ok, ops_in, ops_out, error,
+				failure_category
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		)
 		.run(
 			input.id,
@@ -37,6 +38,7 @@ function insertSyncAttempt(
 			input.id,
 			input.id + 1,
 			input.error ?? null,
+			input.failureCategory ?? null,
 		);
 }
 
@@ -329,6 +331,48 @@ describe("GET /api/diagnostics/events", () => {
 			technical_detail: { available: true, text: "Failure category: timeout. Attempts: 5." },
 		});
 		expect(JSON.stringify(body)).not.toContain("waiting for retry");
+	});
+});
+
+describe("GET /api/diagnostics/events sync failure categories", () => {
+	it("prefers a specific stored category and reclassifies stored other from error text", async () => {
+		const store = createStore();
+		insertSyncAttempt(store, {
+			at: "2026-09-07T10:00:00.000Z",
+			error: "peer status failed (401: unauthorized) after network timeout",
+			failureCategory: "compatibility",
+			id: 1,
+			ok: false,
+		});
+		insertSyncAttempt(store, {
+			at: "2026-09-07T11:00:00.000Z",
+			error: "peer ops fetch failed (503: sync_auth_store_busy)",
+			failureCategory: "other",
+			id: 2,
+			ok: false,
+		});
+		insertSyncAttempt(store, {
+			at: "2026-09-07T12:00:00.000Z",
+			error: "private-device-3 at 10.20.30.40 unauthorized",
+			failureCategory: "private-device-3 10.20.30.40",
+			id: 3,
+			ok: false,
+		});
+		const app = diagnosticsRoutes(() => store);
+
+		const response = await app.request(
+			"/api/diagnostics/events?subsystem=sync&severity=error&includeTechnical=1",
+		);
+		const text = await response.text();
+		const body = JSON.parse(text) as DiagnosticsResponse;
+
+		expect(body.items.map((event) => event.technical_detail?.text)).toEqual([
+			"Failure category: other. 3 inbound and 4 outbound operations.",
+			"Failure category: connectivity. 2 inbound and 3 outbound operations.",
+			"Failure category: compatibility. 1 inbound and 2 outbound operations.",
+		]);
+		expect(text).not.toContain("private-device");
+		expect(text).not.toContain("10.20.30.40");
 	});
 });
 

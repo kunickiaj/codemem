@@ -95,6 +95,13 @@ const EXPECTED_SYNC_PROTOCOL_VERSION = "2";
 
 export type SyncFailureCategory = "trust" | "scope" | "connectivity" | "other";
 
+/**
+ * Category persisted on `sync_attempts.failure_category`. Wider than the
+ * runtime `SyncFailureCategory` so stored diagnostics can tell protocol
+ * mismatches apart without changing callers that switch on the runtime type.
+ */
+export type SyncAttemptFailureCategory = SyncFailureCategory | "compatibility";
+
 export interface SyncResult {
 	ok: boolean;
 	error?: string;
@@ -344,6 +351,7 @@ function recordSyncAttempt(
 		opsIn?: number;
 		opsOut?: number;
 		error?: string;
+		failureCategory?: SyncAttemptFailureCategory;
 		capabilities?: SyncCapabilityDiagnostics;
 	},
 ): void {
@@ -362,6 +370,7 @@ function recordSyncAttempt(
 			local_sync_capability: capabilities.local,
 			peer_sync_capability: capabilities.peer,
 			negotiated_sync_capability: capabilities.negotiated,
+			failure_category: options.ok ? null : (options.failureCategory ?? "other"),
 		})
 		.run();
 }
@@ -1184,13 +1193,26 @@ interface NegotiatedPeerExchange {
 	capabilities: SyncCapabilityDiagnostics;
 }
 
+class PeerProtocolMismatchError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "PeerProtocolMismatchError";
+	}
+}
+
 class PeerNegotiationError extends Error {
 	readonly capabilities: SyncCapabilityDiagnostics;
+	readonly protocolMismatch: boolean;
 
-	constructor(message: string, capabilities: SyncCapabilityDiagnostics) {
+	constructor(
+		message: string,
+		capabilities: SyncCapabilityDiagnostics,
+		options: { protocolMismatch: boolean },
+	) {
 		super(message);
 		this.name = "PeerNegotiationError";
 		this.capabilities = capabilities;
+		this.protocolMismatch = options.protocolMismatch;
 	}
 }
 
@@ -1228,7 +1250,7 @@ async function negotiatePeerExchange(
 	const capabilities = capabilityDiagnostics(statusPayload.sync_capability);
 	try {
 		if (String(statusPayload.protocol_version ?? "") !== EXPECTED_SYNC_PROTOCOL_VERSION) {
-			throw new Error(
+			throw new PeerProtocolMismatchError(
 				`peer protocol mismatch (expected ${EXPECTED_SYNC_PROTOCOL_VERSION}, got ${String(statusPayload.protocol_version ?? "missing")})`,
 			);
 		}
@@ -1248,7 +1270,9 @@ async function negotiatePeerExchange(
 	} catch (error) {
 		const message =
 			error instanceof Error ? error.message.trim() || error.constructor.name : "unknown";
-		throw new PeerNegotiationError(message, capabilities);
+		throw new PeerNegotiationError(message, capabilities, {
+			protocolMismatch: error instanceof PeerProtocolMismatchError,
+		});
 	}
 }
 
@@ -1274,12 +1298,14 @@ function snapshotAccessDenied(
 		localDeviceId: context.deviceId,
 	});
 	if (!failure) return null;
+	const result = scopedSnapshotAccessDeniedResult(peer.baseUrl, reset, failure);
 	recordSyncAttempt(context.db, context.peerDeviceId, {
 		ok: false,
 		error: `reset_required:${failure}`,
+		failureCategory: result.failureCategory,
 		capabilities: peer.capabilities,
 	});
-	return scopedSnapshotAccessDeniedResult(peer.baseUrl, reset, failure);
+	return result;
 }
 
 type SnapshotItems = Awaited<ReturnType<typeof fetchAllSnapshotPages>>["items"];
@@ -1318,6 +1344,7 @@ async function finishInitialBootstrap(
 				.filter((result) => !result.ok)
 				.map((result) => `${result.scope_id}=${result.error ?? "unknown"}`)
 				.join("; ")}`;
+	const failureCategory = aggregateScopeFailureCategory(scoped.results);
 	recordPeerSuccess(context.db, context.peerDeviceId, peer.baseUrl);
 	recordSyncAttempt(context.db, context.peerDeviceId, {
 		ok,
@@ -1325,11 +1352,12 @@ async function finishInitialBootstrap(
 		opsOut: 0,
 		capabilities: peer.capabilities,
 		error,
+		failureCategory,
 	});
 	return {
 		ok,
 		address: peer.baseUrl,
-		failureCategory: aggregateScopeFailureCategory(scoped.results),
+		failureCategory,
 		opsIn: bootstrap.applied + scoped.totalOpsIn,
 		opsOut: 0,
 		addressErrors: [],
@@ -1364,6 +1392,7 @@ async function performInitialBootstrap(
 		recordSyncAttempt(context.db, context.peerDeviceId, {
 			ok: false,
 			error: "needs_attention:shared_memories_appeared_during_bootstrap",
+			failureCategory: "other",
 			capabilities: peer.capabilities,
 		});
 		return {
@@ -1442,6 +1471,7 @@ function failedResetBootstrap(
 	recordSyncAttempt(context.db, context.peerDeviceId, {
 		ok: false,
 		error: `bootstrap_failed:${detail}`,
+		failureCategory: "other",
 		capabilities: peer.capabilities,
 	});
 	return {
@@ -1466,6 +1496,7 @@ async function performResetBootstrap(
 		recordSyncAttempt(context.db, context.peerDeviceId, {
 			ok: false,
 			error: `needs_attention:local_unsynced_shared_memory:${dirtyLocal.count}`,
+			failureCategory: "other",
 			capabilities: peer.capabilities,
 		});
 		return resetBlockedResult(peer.baseUrl, dirtyLocal.count, resetRequired, "before");
@@ -1484,6 +1515,7 @@ async function performResetBootstrap(
 			recordSyncAttempt(context.db, context.peerDeviceId, {
 				ok: false,
 				error: `needs_attention:local_unsynced_shared_memory:${dirtyAfterFetch.count}`,
+				failureCategory: "other",
 				capabilities: peer.capabilities,
 			});
 			return resetBlockedResult(peer.baseUrl, dirtyAfterFetch.count, resetRequired, "during");
@@ -1713,6 +1745,9 @@ async function finishIncrementalExchange(
 	}
 	const ok = allScopesOk && !inboundIncomplete;
 	const error = errors.length > 0 ? errors.join("; ") : undefined;
+	const failureCategory = inboundIncomplete
+		? "other"
+		: aggregateScopeFailureCategory(scoped.results);
 	if (!inboundIncomplete) recordPeerSuccess(context.db, context.peerDeviceId, peer.baseUrl);
 	recordSyncAttempt(context.db, context.peerDeviceId, {
 		ok,
@@ -1720,12 +1755,13 @@ async function finishIncrementalExchange(
 		opsOut: pushed.outboundOps.length,
 		capabilities: peer.capabilities,
 		error,
+		failureCategory,
 	});
 	return {
 		ok,
 		address: peer.baseUrl,
 		error,
-		failureCategory: inboundIncomplete ? "other" : aggregateScopeFailureCategory(scoped.results),
+		failureCategory,
 		opsIn: applied.applied + scoped.totalOpsIn,
 		opsOut: pushed.outboundOps.length,
 		opsSkipped: pushed.opsSkipped,
@@ -1807,7 +1843,7 @@ function unavailableIdentityResult(db: Database, peerDeviceId: string, error: un
 	const detail =
 		error instanceof Error ? error.message.trim() || error.constructor.name : "unknown";
 	const message = `device identity unavailable: ${detail}`;
-	recordSyncAttempt(db, peerDeviceId, { ok: false, error: message });
+	recordSyncAttempt(db, peerDeviceId, { ok: false, error: message, failureCategory: "other" });
 	return {
 		ok: false,
 		error: message,
@@ -1874,15 +1910,22 @@ function failedAddressResult(
 	addressErrors: Array<{ address: string; error: string }>,
 	attemptedAny: boolean,
 	capabilities: SyncCapabilityDiagnostics | undefined,
+	options: { protocolMismatch: boolean },
 ): SyncResult {
 	let error = summarizeAddressErrors(addressErrors);
 	if (!attemptedAny) error = "no dialable peer addresses";
 	if (!error) error = "sync failed without diagnostic detail";
-	recordSyncAttempt(db, peerDeviceId, { ok: false, error, capabilities });
+	const failureCategory = categorizeSyncFailure(error);
+	recordSyncAttempt(db, peerDeviceId, {
+		ok: false,
+		error,
+		failureCategory: options.protocolMismatch ? "compatibility" : failureCategory,
+		capabilities,
+	});
 	return {
 		ok: false,
 		error,
-		failureCategory: categorizeSyncFailure(error),
+		failureCategory,
 		opsIn: 0,
 		opsOut: 0,
 		addressErrors,
@@ -1897,6 +1940,9 @@ async function tryPeerAddresses(
 	const addressErrors: Array<{ address: string; error: string }> = [];
 	let attemptedAny = false;
 	let capabilities: SyncCapabilityDiagnostics | undefined;
+	// A protocol mismatch is only reported after the pinned fingerprint
+	// matched, so the peer was reachable and trusted but incompatible.
+	let protocolMismatch = false;
 	const boundedAddresses = mergeAddresses(addresses, [], {
 		maxAddresses: MAX_PEER_ADDRESSES,
 	});
@@ -1907,6 +1953,9 @@ async function tryPeerAddresses(
 		const exchange = await syncAddress(context, baseUrl, cursors);
 		if (exchange.kind === "success") return exchange.result;
 		if (exchange.capabilities) capabilities = exchange.capabilities;
+		if (exchange.error instanceof PeerNegotiationError && exchange.error.protocolMismatch) {
+			protocolMismatch = true;
+		}
 		const detail =
 			exchange.error instanceof Error
 				? exchange.error.message.trim() || exchange.error.constructor.name
@@ -1919,6 +1968,7 @@ async function tryPeerAddresses(
 		addressErrors,
 		attemptedAny,
 		capabilities,
+		{ protocolMismatch },
 	);
 }
 

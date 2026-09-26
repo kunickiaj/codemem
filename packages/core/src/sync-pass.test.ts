@@ -89,6 +89,18 @@ function addSyncTables(db: InstanceType<typeof Database>): void {
 		`);
 }
 
+function latestAttemptFailureCategory(
+	db: InstanceType<typeof Database>,
+	peerDeviceId: string,
+): unknown {
+	const row = db
+		.prepare(
+			"SELECT failure_category FROM sync_attempts WHERE peer_device_id = ? ORDER BY id DESC LIMIT 1",
+		)
+		.get(peerDeviceId) as { failure_category: unknown } | undefined;
+	return row?.failure_category;
+}
+
 function grantScopeForSyncPass(
 	db: InstanceType<typeof Database>,
 	scopeId: string,
@@ -200,6 +212,8 @@ describe("sync capability negotiation", () => {
 
 			expect(result.ok).toBe(false);
 			expect(result.error).toContain("peer protocol mismatch");
+			expect(result.failureCategory).toBe("other");
+			expect(latestAttemptFailureCategory(db, "peer-protocol-mismatch")).toBe("compatibility");
 			const attempt = db
 				.prepare(
 					`SELECT local_sync_capability, peer_sync_capability, negotiated_sync_capability
@@ -3212,5 +3226,146 @@ describe("syncOnce auto-bootstrap", () => {
 		expect(result.ok).toBe(false);
 		expect(result.error).toContain("shared memory change(s) appeared during initial bootstrap");
 		expect(applySpy).not.toHaveBeenCalled();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// sync_attempts.failure_category
+// ---------------------------------------------------------------------------
+
+const EMPTY_DEFAULT_OPS = {
+	reset_required: false,
+	generation: 1,
+	snapshot_id: "snap-default",
+	baseline_cursor: null,
+	retained_floor_cursor: null,
+	ops: [],
+	next_cursor: null,
+	skipped: 0,
+};
+
+function pinFailureCategoryPeer(
+	db: InstanceType<typeof Database>,
+	peerDeviceId: string,
+	scopeIds: string[] = [],
+): void {
+	const now = new Date().toISOString();
+	db.prepare(
+		"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+	).run(peerDeviceId, `fp-${peerDeviceId}`, now);
+	db.prepare(
+		"INSERT INTO replication_cursors (peer_device_id, last_applied_cursor, last_acked_cursor, updated_at) VALUES (?, ?, ?, ?)",
+	).run(peerDeviceId, "2025-12-31T00:00:00Z|local-op-0", null, now);
+	vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+		"local-device-id",
+		"ed25519 AAAA",
+	]);
+	vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+	for (const scopeId of scopeIds) {
+		grantScopeForSyncPass(db, scopeId, [peerDeviceId, "local-device-id"]);
+	}
+}
+
+function scopedStatusPayload(peerDeviceId: string, scopeIds: string[]): Record<string, unknown> {
+	return {
+		fingerprint: `fp-${peerDeviceId}`,
+		protocol_version: "2",
+		sync_capability: "scoped",
+		sync_reset: {
+			generation: 1,
+			snapshot_id: "snap-default",
+			baseline_cursor: null,
+			retained_floor_cursor: null,
+		},
+		authorized_scopes: scopeIds.map((scopeId) => ({
+			scope_id: scopeId,
+			label: scopeId,
+			authority_type: "coordinator",
+			membership_epoch: 1,
+			sync_reset: {
+				scope_id: scopeId,
+				generation: 1,
+				snapshot_id: `snap-${scopeId}`,
+				baseline_cursor: null,
+				retained_floor_cursor: null,
+			},
+		})),
+	};
+}
+
+const MISSING_SCOPE_RESPONSE: [number, Record<string, unknown>] = [
+	409,
+	{ error: "reset_required", reason: "missing_scope" },
+];
+
+describe("sync_attempts.failure_category", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+		addSyncTables(db);
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+		db.close();
+	});
+
+	it("records trust for rejected peer authentication", async () => {
+		pinFailureCategoryPeer(db, "peer-trust");
+		vi.spyOn(syncHttpClient, "requestJson").mockResolvedValueOnce([401, { error: "unauthorized" }]);
+
+		const result = await syncOnce(db, "peer-trust", ["http://127.0.0.1:9090"]);
+
+		expect(result.failureCategory).toBe("trust");
+		expect(latestAttemptFailureCategory(db, "peer-trust")).toBe("trust");
+	});
+
+	it.each([
+		["scope", [MISSING_SCOPE_RESPONSE]],
+		["connectivity", [new Error("fetch failed")]],
+		["other", [MISSING_SCOPE_RESPONSE, new Error("fetch failed")]],
+	] as const)("records %s from scoped pass outcomes", async (category, scopeResponses) => {
+		const scopeIds = scopeResponses.map((_, index) => `scope-${index}`);
+		pinFailureCategoryPeer(db, "peer-scoped", scopeIds);
+		const request = vi
+			.spyOn(syncHttpClient, "requestJson")
+			.mockResolvedValueOnce([200, scopedStatusPayload("peer-scoped", scopeIds)])
+			.mockResolvedValueOnce([200, EMPTY_DEFAULT_OPS]);
+		for (const response of scopeResponses) {
+			if (response instanceof Error) request.mockRejectedValueOnce(response);
+			else request.mockResolvedValueOnce(response);
+		}
+
+		const result = await syncOnce(db, "peer-scoped", ["http://127.0.0.1:9090"]);
+
+		expect(result.ok).toBe(false);
+		expect(result.failureCategory).toBe(category);
+		expect(latestAttemptFailureCategory(db, "peer-scoped")).toBe(category);
+	});
+
+	it("records other when the local device identity is unavailable", async () => {
+		pinFailureCategoryPeer(db, "peer-identity");
+		vi.mocked(syncIdentity.ensureDeviceIdentity).mockImplementation(() => {
+			throw new Error("keys unavailable");
+		});
+
+		const result = await syncOnce(db, "peer-identity", ["http://127.0.0.1:9090"]);
+
+		expect(result.failureCategory).toBe("other");
+		expect(latestAttemptFailureCategory(db, "peer-identity")).toBe("other");
+	});
+
+	it("leaves failure_category empty on successful attempts", async () => {
+		pinFailureCategoryPeer(db, "peer-ok");
+		vi.spyOn(syncHttpClient, "requestJson")
+			.mockResolvedValueOnce([200, scopedStatusPayload("peer-ok", [])])
+			.mockResolvedValue([200, EMPTY_DEFAULT_OPS]);
+
+		const result = await syncOnce(db, "peer-ok", ["http://127.0.0.1:9090"]);
+
+		expect(result.ok).toBe(true);
+		expect(latestAttemptFailureCategory(db, "peer-ok")).toBeNull();
 	});
 });

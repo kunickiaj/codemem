@@ -767,6 +767,12 @@ function ensureSyncPeerRuntimeVersionColumns(db: DatabaseType): void {
 	addColumnIfMissing(db, "sync_peers", "runtime_version_observed_at", "TEXT");
 }
 
+/** Add the structured sync-attempt failure category without a schema-version bump. */
+function ensureSyncAttemptFailureCategoryColumn(db: DatabaseType): void {
+	if (!tableExists(db, "sync_attempts")) return;
+	addColumnIfMissing(db, "sync_attempts", "failure_category", "TEXT");
+}
+
 /** Persist a direct-peer signature version only when it advances the peer's observed maximum. */
 export function recordHighestObservedDirectSignatureVersion(
 	db: DatabaseType,
@@ -1052,6 +1058,7 @@ function ensureAlwaysOnSchemaCompatibility(db: DatabaseType): void {
 	// Always run: current-marker databases may predate these no-version-bump
 	// columns, so the schema_compat_state gate cannot prove they exist.
 	ensureSyncPeerRuntimeVersionColumns(db);
+	ensureSyncAttemptFailureCategoryColumn(db);
 	ensureRawEventCaptureContextSchema(db);
 	ensureSyncPeerSignatureStateSchema(db);
 	ensureDeviceIdentityBindingAuditSchema(db);

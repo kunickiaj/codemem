@@ -17,6 +17,7 @@ import {
 import { readCoordinatorSyncConfig } from "./coordinator-sync-config.js";
 import type { Database } from "./db.js";
 import * as schema from "./schema.js";
+import type { SyncAttemptFailureCategory } from "./sync-pass.js";
 import { loadManualPeerAddresses, loadPeerAddresses } from "./sync-peer-addresses.js";
 
 const requireFromHere = createRequire(import.meta.url);
@@ -67,6 +68,7 @@ export function recordSyncAttempt(
 		opsIn?: number;
 		opsOut?: number;
 		error?: string;
+		failureCategory?: SyncAttemptFailureCategory;
 	},
 ): void {
 	const d = drizzle(db, { schema });
@@ -80,6 +82,7 @@ export function recordSyncAttempt(
 			ops_in: options.opsIn ?? 0,
 			ops_out: options.opsOut ?? 0,
 			error: options.error ?? null,
+			failure_category: options.ok ? null : (options.failureCategory ?? "other"),
 		})
 		.run();
 

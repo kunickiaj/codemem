@@ -135,6 +135,7 @@ type DiagnosticSourceRow = {
 	metric_a: number | null;
 	metric_b: number | null;
 	category: string | null;
+	stored_category?: string | null;
 };
 
 const SYNC_OCCURRED_AT_SQL = "CASE WHEN finished_at IS NULL THEN started_at ELSE finished_at END";
@@ -157,7 +158,8 @@ function syncSelect(options: EventOptions): string | null {
 		CASE WHEN ok <> 0 THEN 'succeeded' ELSE 'failed' END AS status,
 		ops_in AS metric_a, ops_out AS metric_b,
 		-- Raw error text; syncEvent classifies it server-side and never returns it.
-		error AS category
+		error AS category,
+		failure_category AS stored_category
 		FROM sync_attempts ${where}
 		ORDER BY ${SYNC_OCCURRED_AT_SQL} DESC, id DESC
 		LIMIT @sourceLimit`;
@@ -192,7 +194,8 @@ function observerSelect(options: EventOptions): string | null {
 						WHEN lower(COALESCE(observer_error_code, error_type)) LIKE '%schema%'
 							OR lower(COALESCE(observer_error_code, error_type)) LIKE '%parse%' THEN 'response format'
 						ELSE 'unspecified'
-					END AS category
+					END AS category,
+					NULL AS stored_category
 				FROM raw_event_flush_batches
 				WHERE status = '${status}' ${providerFilter} ${cursorFilter}
 				ORDER BY updated_at DESC, id DESC
@@ -212,7 +215,7 @@ function maintenanceSelect(options: EventOptions): string | null {
 	return `SELECT 'maintenance' AS source_type, kind AS source_id,
 		'm:' || hex(kind) AS order_key, updated_at AS occurred_at,
 		status, progress_current AS metric_a, progress_total AS metric_b,
-		NULL AS category
+		NULL AS category, NULL AS stored_category
 		FROM maintenance_jobs WHERE status IN (${statuses.join(", ")})`;
 }
 
@@ -247,7 +250,8 @@ function backlogSelect(options: EventOptions): string | null {
 		'b:' || printf('%020d', 0) AS order_key, occurred_at,
 		CASE WHEN pending >= 1000 THEN 'error' ELSE 'warning' END AS status,
 		pending AS metric_a, sessions AS metric_b,
-		CASE WHEN candidate_count > 1000 THEN 'capped' ELSE NULL END AS category
+		CASE WHEN candidate_count > 1000 THEN 'capped' ELSE NULL END AS category,
+		NULL AS stored_category
 		FROM (
 			SELECT MAX(updated_at) AS occurred_at,
 				SUM(pending) AS pending,
@@ -311,11 +315,28 @@ const SYNC_FAILURE_MESSAGES: Partial<Record<RecordedSyncFailureCategory, string>
 	compatibility: "Sync stopped because two devices run incompatible Codemem versions.",
 };
 
+// A stored `other` only means the recorder could not classify the failure,
+// so the error text may still identify it.
+const SPECIFIC_STORED_SYNC_CATEGORIES = new Set<string>([
+	"trust",
+	"scope",
+	"connectivity",
+	"compatibility",
+]);
+
+function syncFailureCategory(row: DiagnosticSourceRow): RecordedSyncFailureCategory {
+	const stored = row.stored_category;
+	if (stored && SPECIFIC_STORED_SYNC_CATEGORIES.has(stored)) {
+		return stored as RecordedSyncFailureCategory;
+	}
+	return classifyRecordedSyncFailure(row.category);
+}
+
 function syncEvent(row: DiagnosticSourceRow, includeTechnical: boolean): OrderedDiagnosticEvent {
 	const succeeded = row.status === "succeeded";
 	const opsIn = Number(row.metric_a ?? 0);
 	const opsOut = Number(row.metric_b ?? 0);
-	const category = succeeded ? "other" : classifyRecordedSyncFailure(row.category);
+	const category = succeeded ? "other" : syncFailureCategory(row);
 	return {
 		id: opaqueId("sync-attempt", row.source_id),
 		orderKey: row.order_key,

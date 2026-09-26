@@ -2023,6 +2023,49 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 	});
 });
 
+describe("sync_attempts.failure_category compatibility", () => {
+	let tmpDir: string;
+	let db: Database;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-test-"));
+		db = connect(join(tmpDir, "test.sqlite"));
+	});
+
+	afterEach(() => {
+		db?.close();
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("adds sync_attempts.failure_category to an existing database on open", () => {
+		ensureAdditiveSchemaCompatibility(db);
+		db.exec("ALTER TABLE sync_attempts DROP COLUMN failure_category");
+		db.prepare(
+			`INSERT INTO sync_attempts(peer_device_id, started_at, finished_at, ok, ops_in, ops_out, error)
+			 VALUES ('legacy-peer', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0, 0, 0, 'legacy')`,
+		).run();
+		db.close();
+
+		db = connect(join(tmpDir, "test.sqlite"));
+		expect(columnExists(db, "sync_attempts", "failure_category")).toBe(false);
+		ensureAdditiveSchemaCompatibility(db);
+
+		expect(columnInfo(db, "sync_attempts", "failure_category")).toEqual({ is_not_null: 0 });
+		expect(
+			db
+				.prepare("SELECT failure_category FROM sync_attempts WHERE peer_device_id = 'legacy-peer'")
+				.get(),
+		).toEqual({ failure_category: null });
+
+		const exec = vi.spyOn(db, "exec");
+		ensureAdditiveSchemaCompatibility(db);
+		expect(exec.mock.calls.some(([sql]) => /ALTER TABLE sync_attempts/i.test(String(sql)))).toBe(
+			false,
+		);
+		exec.mockRestore();
+	});
+});
+
 describe("ensurePlannerStats", () => {
 	let tmpDir: string;
 	let db: Database;
