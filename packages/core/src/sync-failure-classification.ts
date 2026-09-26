@@ -6,8 +6,18 @@ export type RecordedSyncFailureCategory = SyncFailureCategory | "compatibility";
 // nested error text whose delimiters are ambiguous, and the runtime category
 // for them is not persisted. Report them as `other` rather than guess.
 const AGGREGATE_PREFIXES = ["scoped sync incomplete:", "inbound apply incomplete"];
-const HTTP_STATUS_PATTERN = /failed \((\d{3})\b/;
-const UNREACHABLE_HTTP_STATUSES = new Set(["502", "503", "504"]);
+
+// The sync pass writes these phrases only after the peer returned an HTTP
+// response (status/error formats vary); transport failures are recorded as raw
+// fetch errors instead. A response is a reachability problem only when a
+// gateway or unavailable status says so.
+const ANSWERED_RESPONSE_PHRASES = [
+	"peer status failed",
+	"peer ops fetch failed",
+	"peer ops push failed",
+	"snapshot fetch failed",
+];
+const UNREACHABLE_STATUS_PATTERN = /\b50[234]\b/;
 
 // Peer addresses can contain any word (for example `http://authbox.local`).
 // Drop whitespace-separated tokens that contain a URL scheme separator; a
@@ -29,15 +39,13 @@ export function classifyRecordedSyncFailure(
 ): RecordedSyncFailureCategory {
 	const text = String(error ?? "").trim();
 	if (!text) return "other";
-	const lower = text.toLowerCase();
-	if (AGGREGATE_PREFIXES.some((prefix) => lower.startsWith(prefix))) return "other";
+	if (AGGREGATE_PREFIXES.some((prefix) => text.toLowerCase().startsWith(prefix))) return "other";
 	const withoutAddresses = withoutPeerAddresses(text);
-	if (withoutAddresses.toLowerCase().includes("protocol mismatch")) return "compatibility";
+	const lower = withoutAddresses.toLowerCase();
+	if (lower.includes("protocol mismatch")) return "compatibility";
 	const category = categorizeSyncFailure(withoutAddresses);
-	// `peer status failed (404)` and similar mean the peer answered, so only
-	// gateway/unavailable statuses count as a reachability problem.
-	const httpStatus = HTTP_STATUS_PATTERN.exec(withoutAddresses)?.[1];
-	if (category === "connectivity" && httpStatus && !UNREACHABLE_HTTP_STATUSES.has(httpStatus)) {
+	const peerAnswered = ANSWERED_RESPONSE_PHRASES.some((phrase) => lower.includes(phrase));
+	if (category === "connectivity" && peerAnswered && !UNREACHABLE_STATUS_PATTERN.test(lower)) {
 		return "other";
 	}
 	return category;
