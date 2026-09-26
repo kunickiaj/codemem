@@ -68,6 +68,48 @@ describe("maintenance worker runtime", () => {
 		);
 	});
 
+	it("constructs vector migration with bounded batches and the default idle cadence", async () => {
+		// Arrange
+		vi.stubEnv("CODEMEM_EMBEDDING_DISABLED", "0");
+		let vectorRunner: VectorModelMigrationRunner | null = null;
+		const logger: MaintenanceWorkerLogger = {
+			step: vi.fn(),
+			warn: vi.fn(),
+			error: vi.fn(),
+		};
+		vi.spyOn(VectorModelMigrationRunner.prototype, "start").mockImplementation(function (
+			this: VectorModelMigrationRunner,
+		) {
+			vectorRunner = this;
+		});
+
+		// Act
+		const runtime = startMaintenanceWorkerRuntime({ dbPath: ":memory:", logger });
+		await runtime.stop();
+
+		// Assert
+		const configuredBatchSize = (vectorRunner as unknown as { batchSize: number } | null)
+			?.batchSize;
+		const configuredIdleInterval = (vectorRunner as unknown as { idleIntervalMs: number } | null)
+			?.idleIntervalMs;
+		expect(configuredBatchSize).toBe(10);
+		expect(configuredIdleInterval).toBeGreaterThanOrEqual(60_000);
+	});
+});
+
+describe("maintenance worker backfill completion", () => {
+	let db: Database;
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+		db = connect(":memory:");
+	});
+
+	afterEach(() => {
+		db.close();
+		vi.useRealTimers();
+	});
+
 	it("advances after the backfill completes even when its pending predicate stays true", async () => {
 		const logger: MaintenanceWorkerLogger = { step: vi.fn(), warn: vi.fn(), error: vi.fn() };
 		const runner = {
@@ -101,6 +143,28 @@ describe("maintenance worker runtime", () => {
 		await coordinator.stop();
 	});
 
+	it("evaluates each pending predicate once at startup when nothing is pending", async () => {
+		const logger: MaintenanceWorkerLogger = { step: vi.fn(), warn: vi.fn(), error: vi.fn() };
+		const predicates = [vi.fn(() => false), vi.fn(() => false)];
+		const coordinator = createSequentialBackfillCoordinator(
+			{ db } as never,
+			predicates.map((isPending, index) => ({
+				name: `Plan ${index}`,
+				kind: `plan_${index}`,
+				isPending,
+				createRunner: () => ({ start: vi.fn(), stop: vi.fn(async () => {}) }),
+			})),
+			{ logger },
+		);
+
+		coordinator.start();
+		await vi.advanceTimersByTimeAsync(5_000);
+
+		for (const isPending of predicates) expect(isPending).toHaveBeenCalledTimes(1);
+		expect(logger.step).not.toHaveBeenCalled();
+		await coordinator.stop();
+	});
+
 	it("does not treat a completed row from an earlier run as this run finishing", async () => {
 		const logger: MaintenanceWorkerLogger = { step: vi.fn(), warn: vi.fn(), error: vi.fn() };
 		startMaintenanceJob(db, { kind: "test_backfill", title: "Test", status: "running" });
@@ -122,33 +186,5 @@ describe("maintenance worker runtime", () => {
 
 		expect(runner.stop).not.toHaveBeenCalled();
 		await coordinator.stop();
-	});
-
-	it("constructs vector migration with bounded batches and the default idle cadence", async () => {
-		// Arrange
-		vi.stubEnv("CODEMEM_EMBEDDING_DISABLED", "0");
-		let vectorRunner: VectorModelMigrationRunner | null = null;
-		const logger: MaintenanceWorkerLogger = {
-			step: vi.fn(),
-			warn: vi.fn(),
-			error: vi.fn(),
-		};
-		vi.spyOn(VectorModelMigrationRunner.prototype, "start").mockImplementation(function (
-			this: VectorModelMigrationRunner,
-		) {
-			vectorRunner = this;
-		});
-
-		// Act
-		const runtime = startMaintenanceWorkerRuntime({ dbPath: ":memory:", logger });
-		await runtime.stop();
-
-		// Assert
-		const configuredBatchSize = (vectorRunner as unknown as { batchSize: number } | null)
-			?.batchSize;
-		const configuredIdleInterval = (vectorRunner as unknown as { idleIntervalMs: number } | null)
-			?.idleIntervalMs;
-		expect(configuredBatchSize).toBe(10);
-		expect(configuredIdleInterval).toBeGreaterThanOrEqual(60_000);
 	});
 });

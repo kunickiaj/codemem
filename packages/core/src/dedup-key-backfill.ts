@@ -19,6 +19,7 @@ type DedupKeyBackfillMetadata = {
 	checked_rows?: number;
 	last_batch_updated?: number;
 	last_cursor_id?: number;
+	last_cursor_created_at?: string | null;
 };
 
 export interface DedupKeyBackfillRunnerOptions {
@@ -43,6 +44,24 @@ function getExistingMetadata(db: SqliteDatabase): DedupKeyBackfillMetadata {
 		{}) as DedupKeyBackfillMetadata;
 }
 
+function resumeCursor(
+	startingFresh: boolean,
+	metadata: DedupKeyBackfillMetadata,
+): { afterId: number; afterCreatedAt: string | null } {
+	if (startingFresh) return { afterId: 0, afterCreatedAt: null };
+	return {
+		afterId: Number(metadata.last_cursor_id ?? 0),
+		afterCreatedAt: metadata.last_cursor_created_at ?? null,
+	};
+}
+
+function cursorMetadata(
+	id: number,
+	createdAt: string | null,
+): Pick<DedupKeyBackfillMetadata, "last_cursor_id" | "last_cursor_created_at"> {
+	return { last_cursor_id: id, last_cursor_created_at: createdAt };
+}
+
 export async function runDedupKeyBackfillPass(
 	db: SqliteDatabase,
 	options: { batchSize?: number } = {},
@@ -57,12 +76,8 @@ export async function runDedupKeyBackfillPass(
 	// `backfillable > 0` predicate keeps re-triggering the coordinator.
 	const startingFresh =
 		!existingJob || existingJob.status === "completed" || existingJob.status === "failed";
-	const lastCursorId = startingFresh ? 0 : Number(existingMetadata.last_cursor_id ?? 0);
-	const plan = planMemoryDedupKeys(db, {
-		rowLimit: batchSize,
-		updateLimit: batchSize,
-		afterId: lastCursorId,
-	});
+	const cursor = resumeCursor(startingFresh, existingMetadata);
+	const plan = planMemoryDedupKeys(db, { rowLimit: batchSize, updateLimit: batchSize, ...cursor });
 
 	if (plan.checked <= 0) {
 		if (existingJob && existingJob.status !== "completed") {
@@ -79,7 +94,7 @@ export async function runDedupKeyBackfillPass(
 					remaining_backfillable: 0,
 					checked_rows: 0,
 					last_batch_updated: 0,
-					last_cursor_id: lastCursorId,
+					...cursorMetadata(cursor.afterId, cursor.afterCreatedAt),
 				},
 			});
 		}
@@ -110,7 +125,7 @@ export async function runDedupKeyBackfillPass(
 				skipped_rows: 0,
 				checked_rows: plan.checked,
 				last_batch_updated: 0,
-				last_cursor_id: 0,
+				...cursorMetadata(0, null),
 			},
 		});
 		progressTotal = initialTotal;
@@ -136,7 +151,7 @@ export async function runDedupKeyBackfillPass(
 				skipped_rows: cumulativeSkipped,
 				checked_rows: plan.checked,
 				last_batch_updated: plan.updates.length,
-				last_cursor_id: plan.lastScannedId,
+				...cursorMetadata(plan.lastScannedId, plan.lastScannedCreatedAt),
 			},
 		});
 		return false;
@@ -153,7 +168,7 @@ export async function runDedupKeyBackfillPass(
 			skipped_rows: cumulativeSkipped,
 			checked_rows: plan.checked,
 			last_batch_updated: plan.updates.length,
-			last_cursor_id: plan.lastScannedId,
+			...cursorMetadata(plan.lastScannedId, plan.lastScannedCreatedAt),
 		},
 	});
 	return true;

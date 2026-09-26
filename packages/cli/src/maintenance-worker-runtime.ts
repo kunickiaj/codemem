@@ -103,6 +103,7 @@ export function createSequentialBackfillCoordinator(
 	let activePlan: BackfillJobPlan | null = null;
 	let activePollTimer: ReturnType<typeof setTimeout> | null = null;
 	let nextJobIndex = 0;
+	let startedAny = false;
 	let stopped = false;
 
 	const clearPollTimer = () => {
@@ -128,12 +129,13 @@ export function createSequentialBackfillCoordinator(
 			if (!plan.isPending(store.db)) continue;
 			activePlan = completion.begin(plan);
 			activeRunner = plan.createRunner();
+			startedAny = true;
 			options.logger.step(`${plan.name} backfill started`);
 			activeRunner.start();
 			schedulePoll(waitForCurrentJob);
 			return;
 		}
-		options.logger.step("All backfill jobs complete");
+		if (startedAny) options.logger.step("All backfill jobs complete");
 	};
 
 	const waitForCurrentJob = () => {
@@ -172,10 +174,8 @@ export function createSequentialBackfillCoordinator(
 
 	return {
 		start: () => {
-			if (stopped || options.signal?.aborted) return;
-			const pendingCount = jobPlans.filter((plan) => plan.isPending(store.db)).length;
-			if (pendingCount === 0) return;
-			options.logger.step(`${pendingCount} backfill job(s) pending — starting sequential runners`);
+			// startNextJob evaluates each pending predicate once; they can take
+			// seconds on slow disks, so avoid a separate counting pass first.
 			startNextJob();
 		},
 		stop: async () => {

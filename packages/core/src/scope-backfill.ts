@@ -223,12 +223,14 @@ function countAllUnstampedReplicationOps(db: SqliteDatabase): number {
 	// Index-aided via idx_replication_ops_scope_created. Counts every
 	// unstamped op (stampable or not) — used to set the
 	// "unstamped_replication_ops_at_completion" watermark and to read it
-	// back from the cheap startup probe.
+	// back from the cheap startup probe. The unary `+` keeps SQLite from
+	// choosing idx_replication_ops_entity, which scans every memory op
+	// (~30 s on a Raspberry Pi with 180k ops) instead of the few unstamped ones.
 	const row = db
 		.prepare(
 			`SELECT COUNT(*) AS n
 			 FROM replication_ops
-			 WHERE entity_type = 'memory_item'
+			 WHERE +entity_type = 'memory_item'
 			   AND (scope_id IS NULL OR scope_id = '')`,
 		)
 		.get() as { n: number } | undefined;

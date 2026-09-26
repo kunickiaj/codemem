@@ -14,6 +14,7 @@ export interface BackfillDedupKeysPlan extends BackfillDedupKeysResult {
 	backfillable: number;
 	updates: Array<{ id: number; dedupKey: string }>;
 	lastScannedId: number;
+	lastScannedCreatedAt: string | null;
 	exhausted: boolean;
 }
 
@@ -26,10 +27,13 @@ interface BackfillDedupKeysPlanOptions {
 	rowLimit?: number | null;
 	updateLimit?: number | null;
 	afterId?: number | null;
+	/** Pair with afterId; rows are scanned in (created_at, id) order. */
+	afterCreatedAt?: string | null;
 }
 
 type DedupKeyCandidateRow = {
 	id: number;
+	created_at: string;
 	title: string;
 	session_id: number;
 	kind: string;
@@ -40,21 +44,37 @@ type DedupKeyCandidateRow = {
 
 function selectDedupKeyCandidateRows(
 	db: Database,
-	options: { rowLimit: number | null | undefined; afterId: number | null | undefined },
+	options: BackfillDedupKeysPlanOptions,
 ): DedupKeyCandidateRow[] {
 	const limitClause =
 		options.rowLimit != null && options.rowLimit > 0 ? `LIMIT ${Number(options.rowLimit)}` : "";
 	const afterId = options.afterId != null && options.afterId > 0 ? options.afterId : 0;
+	// The cursor must follow the scan order. An id-only cursor over rows sorted
+	// by created_at skips older-created rows with smaller ids (common after sync),
+	// leaving them unkeyed while the job reports completion.
+	const afterCreatedAt = afterId > 0 ? (options.afterCreatedAt ?? "") : "";
 	return db
 		.prepare(
-			`SELECT id, title, session_id, kind, visibility, workspace_id, active
+			`SELECT id, created_at, title, session_id, kind, visibility, workspace_id, active
 			 FROM memory_items
 			 WHERE dedup_key IS NULL
-			   AND id > ?
+			   AND (created_at > ? OR (created_at = ? AND id > ?))
 			 ORDER BY created_at ASC, id ASC
 			 ${limitClause}`,
 		)
-		.all(afterId) as DedupKeyCandidateRow[];
+		.all(afterCreatedAt, afterCreatedAt, afterId) as DedupKeyCandidateRow[];
+}
+
+function scanCursor(
+	rows: DedupKeyCandidateRow[],
+	options: BackfillDedupKeysPlanOptions,
+): Pick<BackfillDedupKeysPlan, "lastScannedId" | "lastScannedCreatedAt"> {
+	const last = rows.at(-1);
+	if (last) return { lastScannedId: last.id, lastScannedCreatedAt: last.created_at };
+	return {
+		lastScannedId: options.afterId ?? 0,
+		lastScannedCreatedAt: options.afterCreatedAt ?? null,
+	};
 }
 
 function buildDedupActiveScopeKey(row: DedupKeyCandidateRow, dedupKey: string): string {
@@ -68,10 +88,7 @@ export function planMemoryDedupKeys(
 	options: BackfillDedupKeysPlanOptions = {},
 ): BackfillDedupKeysPlan {
 	const rowLimit = options.rowLimit ?? null;
-	const rows = selectDedupKeyCandidateRows(db, {
-		rowLimit,
-		afterId: options.afterId ?? null,
-	});
+	const rows = selectDedupKeyCandidateRows(db, { ...options, rowLimit });
 	const updateLimit =
 		options.updateLimit != null && options.updateLimit > 0 ? options.updateLimit : null;
 
@@ -133,7 +150,7 @@ export function planMemoryDedupKeys(
 		skipped,
 		backfillable,
 		updates,
-		lastScannedId: rows.at(-1)?.id ?? options.afterId ?? 0,
+		...scanCursor(rows, options),
 		exhausted: rowLimit == null || rows.length < rowLimit,
 	};
 }

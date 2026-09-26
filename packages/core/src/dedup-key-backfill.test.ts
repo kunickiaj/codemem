@@ -94,6 +94,41 @@ describe("dedup-key backfill maintenance", () => {
 		}
 	});
 
+	it("keys every row when id order differs from created_at order across batches", async () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const sessionId = insertTestSession(db);
+			const insert = db.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility,
+				 workspace_id, dedup_key)
+				 VALUES (?, 'discovery', ?, 'Body', 0.5, '', 1, ?, ?, '{}', 1, 'shared', 'shared:default', NULL)`,
+			);
+			// Newer rows get smaller ids, like memories synced in after local ones.
+			for (let index = 0; index < 6; index++) {
+				const createdAt = `2026-0${6 - index}-01T00:00:00Z`;
+				insert.run(sessionId, `Distinct title ${index}`, createdAt, createdAt);
+			}
+
+			for (
+				let pass = 0;
+				pass < 20 && (await runDedupKeyBackfillPass(db, { batchSize: 2 }));
+				pass++
+			) {
+				// Keep running batches until the pass reports completion.
+			}
+
+			expect(getMaintenanceJob(db, DEDUP_KEY_BACKFILL_JOB)?.status).toBe("completed");
+			expect(
+				db.prepare("SELECT COUNT(*) FROM memory_items WHERE dedup_key IS NULL").pluck().get(),
+			).toBe(0);
+			expect(hasPendingDedupKeyBackfill(db)).toBe(false);
+		} finally {
+			db.close();
+		}
+	});
+
 	it("tracks progress and completes when backfillable rows are exhausted", async () => {
 		const db = new Database(":memory:");
 		try {
