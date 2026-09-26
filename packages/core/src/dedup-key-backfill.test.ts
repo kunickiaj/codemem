@@ -212,4 +212,33 @@ describe("dedup-key backfill concurrent inserts", () => {
 			db.close();
 		}
 	});
+
+	it("keys rows with an empty created_at on the initial scan", async () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const sessionId = insertTestSession(db);
+			db.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility,
+				 workspace_id, dedup_key)
+				 VALUES (?, 'discovery', 'Imported title', 'Body', 0.5, '', 1, '', '', '{}', 1,
+				 'shared', 'shared:default', NULL)`,
+			).run(sessionId);
+
+			expect(hasPendingDedupKeyBackfill(db)).toBe(true);
+			for (
+				let pass = 0;
+				pass < 5 && (await runDedupKeyBackfillPass(db, { batchSize: 2 }));
+				pass++
+			) {
+				// Keep running batches until the pass reports completion.
+			}
+
+			expect(getMaintenanceJob(db, DEDUP_KEY_BACKFILL_JOB)?.status).toBe("completed");
+			expect(hasPendingDedupKeyBackfill(db)).toBe(false);
+		} finally {
+			db.close();
+		}
+	});
 });
