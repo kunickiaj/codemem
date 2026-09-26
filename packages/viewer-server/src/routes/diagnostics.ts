@@ -307,9 +307,11 @@ const SYNC_FAILURE_MESSAGES: Record<string, string> = {
 		"A paired device runs an incompatible Codemem version, so this sync attempt stopped.",
 };
 
-// Peer addresses can contain any word (for example `http://authbox.local`), so
-// strip them before matching failure keywords.
+// Peer addresses and Space IDs can contain any word (for example
+// `http://authbox.local` or `auth-team`), so strip them before matching
+// failure keywords. Scoped errors are `scoped sync incomplete: <id>=<error>; ...`.
 const PEER_ADDRESS_PATTERN = /[a-z][a-z0-9+.-]*:\/\/\S+?(?=:\s|\s|\||$)/gi;
+const SCOPE_ID_PREFIX_PATTERN = /(scoped sync incomplete:\s*|;\s*)[^=;]*=/gi;
 
 const SYNC_FAILURE_CATEGORIES: Array<[category: string, pattern: RegExp]> = [
 	["authentication", /\bauth|unauthorized|forbidden/],
@@ -320,6 +322,7 @@ const SYNC_FAILURE_CATEGORIES: Array<[category: string, pattern: RegExp]> = [
 
 function classifySyncError(error: string | null): string {
 	const text = String(error ?? "")
+		.replace(SCOPE_ID_PREFIX_PATTERN, "$1")
 		.replace(PEER_ADDRESS_PATTERN, " ")
 		.toLowerCase();
 	return SYNC_FAILURE_CATEGORIES.find(([, pattern]) => pattern.test(text))?.[0] ?? "unspecified";

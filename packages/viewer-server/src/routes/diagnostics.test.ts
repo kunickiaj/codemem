@@ -598,6 +598,8 @@ describe("sync failure diagnostics copy", () => {
 			"opaque private failure",
 			"all addresses failed | http://authbox.local:7337: fetch failed",
 			"peer protocol mismatch (expected 2, got 1)",
+			"scoped sync incomplete: auth-team=bootstrap apply failed; oss=scoped incremental failed: The operation was aborted due to timeout",
+			"scoped sync incomplete: auth-team=bootstrap apply failed",
 		];
 		errors.forEach((error, index) => {
 			insertSyncAttempt(store, {
@@ -614,6 +616,8 @@ describe("sync failure diagnostics copy", () => {
 		const messages = (JSON.parse(text) as DiagnosticsResponse).items.map((item) => item.message);
 
 		expect(messages).toEqual([
+			"A sync attempt failed before all work completed.",
+			"A paired device did not respond in time, so this sync attempt stopped.",
 			"A paired device runs an incompatible Codemem version, so this sync attempt stopped.",
 			"This device could not reach a paired device, so this sync attempt stopped.",
 			"A sync attempt failed before all work completed.",
@@ -623,6 +627,7 @@ describe("sync failure diagnostics copy", () => {
 		]);
 		expect(text).not.toContain("host.internal");
 		expect(text).not.toContain("authbox");
+		expect(text).not.toContain("auth-team");
 		expect(text).not.toContain("private-device");
 	});
 });
