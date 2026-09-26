@@ -3,7 +3,6 @@ import {
 	classifyRecordedSyncFailure,
 	type MemoryStore,
 	type RecordedSyncFailureCategory,
-	refineStoredSyncConnectivity,
 } from "@codemem/core";
 import { Hono } from "hono";
 
@@ -316,15 +315,18 @@ const SYNC_FAILURE_MESSAGES: Partial<Record<RecordedSyncFailureCategory, string>
 	compatibility: "Sync stopped because two devices run incompatible Codemem versions.",
 };
 
-// Stored trust, scope and compatibility come from specific error codes or
-// structured checks. Stored `connectivity` is kept unless the error text
-// shows a known false positive, and stored `other` or missing values fall
-// back to the recorded-failure classifier.
-const SPECIFIC_STORED_SYNC_CATEGORIES = new Set<string>(["trust", "scope", "compatibility"]);
+// The sync pass classifies each address error on its own before storing a
+// category, so specific stored categories are trusted. Stored `other` and
+// rows without a category fall back to the recorded-failure classifier.
+const SPECIFIC_STORED_SYNC_CATEGORIES = new Set<string>([
+	"trust",
+	"scope",
+	"connectivity",
+	"compatibility",
+]);
 
 function syncFailureCategory(row: DiagnosticSourceRow): RecordedSyncFailureCategory {
 	const stored = row.stored_category;
-	if (stored === "connectivity") return refineStoredSyncConnectivity(row.category);
 	if (stored && SPECIFIC_STORED_SYNC_CATEGORIES.has(stored)) {
 		return stored as RecordedSyncFailureCategory;
 	}

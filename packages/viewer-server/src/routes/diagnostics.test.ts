@@ -377,7 +377,7 @@ describe("GET /api/diagnostics/events sync failure categories", () => {
 });
 
 describe("GET /api/diagnostics/events stored connectivity", () => {
-	it("keeps stored connectivity unless the error text shows a known false positive", async () => {
+	it("trusts a stored connectivity category regardless of the error text", async () => {
 		const store = createStore();
 		insertSyncAttempt(store, {
 			at: "2026-09-07T10:00:00.000Z",
@@ -424,8 +424,8 @@ describe("GET /api/diagnostics/events stored connectivity", () => {
 			"Failure category: connectivity. 5 inbound and 6 outbound operations.",
 			"Failure category: connectivity. 4 inbound and 5 outbound operations.",
 			"Failure category: connectivity. 3 inbound and 4 outbound operations.",
-			"Failure category: other. 2 inbound and 3 outbound operations.",
-			"Failure category: other. 1 inbound and 2 outbound operations.",
+			"Failure category: connectivity. 2 inbound and 3 outbound operations.",
+			"Failure category: connectivity. 1 inbound and 2 outbound operations.",
 		]);
 	});
 });

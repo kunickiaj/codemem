@@ -3345,6 +3345,22 @@ describe("sync_attempts.failure_category", () => {
 		expect(latestAttemptFailureCategory(db, "peer-scoped")).toBe(category);
 	});
 
+	it.each([
+		["http://gateway.local:9090/missing_scope", [500, { error: "boom" }]],
+		["http://127.0.0.1:9090", [400, { error: "bad || connection refused" }]],
+	] as const)(
+		"classifies each address error without the address for %s",
+		async (address, response) => {
+			pinFailureCategoryPeer(db, "peer-address");
+			vi.spyOn(syncHttpClient, "requestJson").mockResolvedValueOnce([...response]);
+
+			const result = await syncOnce(db, "peer-address", [address]);
+
+			expect(result.ok).toBe(false);
+			expect(latestAttemptFailureCategory(db, "peer-address")).toBe("other");
+		},
+	);
+
 	it("records other when the local device identity is unavailable", async () => {
 		pinFailureCategoryPeer(db, "peer-identity");
 		vi.mocked(syncIdentity.ensureDeviceIdentity).mockImplementation(() => {

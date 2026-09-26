@@ -1,6 +1,38 @@
-import { categorizeSyncFailure, type SyncFailureCategory } from "./sync-pass.js";
+import type { SyncFailureCategory } from "./sync-pass.js";
 
 export type RecordedSyncFailureCategory = SyncFailureCategory | "compatibility";
+
+// Checked in order; the first matching phrase decides the category.
+const SYNC_FAILURE_PHRASES: Array<[SyncFailureCategory, string[]]> = [
+	["trust", ["fingerprint mismatch", "peer not pinned"]],
+	["scope", ["scope_rejected", "scope rejected", "missing_scope", "stale_epoch", "scope_inactive"]],
+	[
+		"connectivity",
+		[
+			"no dialable peer addresses",
+			"fetch failed",
+			"connection refused",
+			"network",
+			"timeout",
+			"503",
+			"502",
+			"504",
+			"peer status failed",
+			"peer ops fetch failed",
+			"snapshot fetch failed",
+		],
+	],
+];
+
+export function categorizeSyncFailure(error: string | undefined): SyncFailureCategory {
+	const lower = String(error ?? "").toLowerCase();
+	if (!lower) return "other";
+	if (lower.includes("401") && lower.includes("unauthorized")) return "trust";
+	const match = SYNC_FAILURE_PHRASES.find(([, phrases]) =>
+		phrases.some((phrase) => lower.includes(phrase)),
+	);
+	return match?.[0] ?? "other";
+}
 
 // Aggregated per-Space and inbound-apply errors embed arbitrary Space IDs and
 // nested error text whose delimiters are ambiguous, and the runtime category
@@ -53,39 +85,24 @@ export function classifyRecordedSyncFailure(
 	return category;
 }
 
-const ADDRESS_SUMMARY_PREFIX = "all addresses failed |";
-
-type ConnectivityEvidence = "genuine" | "false-positive" | "none";
-
-function connectivityEvidence(segment: string): ConnectivityEvidence {
-	const withoutAddresses = withoutPeerAddresses(segment);
-	const lower = withoutAddresses.toLowerCase();
-	const peerAnswered = ANSWERED_RESPONSE_PHRASES.some((phrase) => lower.includes(phrase));
-	if (peerAnswered && !UNREACHABLE_STATUS_PATTERN.test(lower)) return "false-positive";
-	if (categorizeSyncFailure(withoutAddresses) === "connectivity") return "genuine";
-	if (categorizeSyncFailure(segment) === "connectivity") return "false-positive";
-	return "none";
-}
-
-// Multi-address failures are recorded as `all addresses failed | a: err || b: err`.
-function addressErrorSegments(text: string): string[] {
-	if (!text.toLowerCase().startsWith(ADDRESS_SUMMARY_PREFIX)) return [text];
-	return text.slice(ADDRESS_SUMMARY_PREFIX.length).split(" || ");
-}
+const STORED_CATEGORY_PRIORITY: RecordedSyncFailureCategory[] = [
+	"trust",
+	"scope",
+	"compatibility",
+	"connectivity",
+];
 
 /**
- * Stored `connectivity` comes from broad text matching when the attempt was
- * recorded. Keep it unless the error text shows only known false positives:
- * a peer that answered with a non-gateway error, or a connectivity word that
- * appears only in a peer URL. Any genuine connectivity failure among several
- * addresses keeps the category.
+ * Category persisted for a failed multi-address attempt. Each address error is
+ * classified on its own, without the address, so peer URLs and delimiter text
+ * inside an error cannot change the result. The most actionable category wins
+ * when addresses disagree.
  */
-export function refineStoredSyncConnectivity(
-	error: string | null | undefined,
+export function storedAddressFailureCategory(
+	addressErrors: Array<{ address: string; error: string }>,
+	fallbackError: string,
 ): RecordedSyncFailureCategory {
-	const text = String(error ?? "").trim();
-	if (!text) return "connectivity";
-	const evidence = addressErrorSegments(text).map(connectivityEvidence);
-	if (evidence.includes("genuine")) return "connectivity";
-	return evidence.includes("false-positive") ? "other" : "connectivity";
+	if (addressErrors.length === 0) return categorizeSyncFailure(fallbackError);
+	const categories = new Set(addressErrors.map((item) => classifyRecordedSyncFailure(item.error)));
+	return STORED_CATEGORY_PRIORITY.find((category) => categories.has(category)) ?? "other";
 }

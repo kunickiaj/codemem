@@ -1262,7 +1262,6 @@ export {
 export {
 	classifyRecordedSyncFailure,
 	type RecordedSyncFailureCategory,
-	refineStoredSyncConnectivity,
 } from "./sync-failure-classification.js";
 export type { RequestJsonOptions } from "./sync-http-client.js";
 export { buildBaseUrl, requestJson } from "./sync-http-client.js";

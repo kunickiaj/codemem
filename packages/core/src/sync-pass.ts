@@ -32,6 +32,10 @@ import {
 	supportsSyncFeature,
 } from "./sync-capability.js";
 import { recordPeerSuccess } from "./sync-discovery.js";
+import {
+	categorizeSyncFailure,
+	storedAddressFailureCategory,
+} from "./sync-failure-classification.js";
 import { buildBaseUrl, requestJson } from "./sync-http-client.js";
 import { ensureDeviceIdentity } from "./sync-identity.js";
 import {
@@ -619,29 +623,6 @@ function scopedSnapshotAccessDeniedResult(
 		addressErrors: [],
 		resetRequired: { ...resetInfo, reason },
 	};
-}
-
-export function categorizeSyncFailure(error: string | undefined): SyncFailureCategory {
-	const lower = String(error ?? "").toLowerCase();
-	if (!lower) return "other";
-	if (lower.includes("401") && lower.includes("unauthorized")) return "trust";
-	if (lower.includes("fingerprint mismatch")) return "trust";
-	if (lower.includes("peer not pinned")) return "trust";
-	if (lower.includes("scope_rejected") || lower.includes("scope rejected")) return "scope";
-	if (lower.includes("missing_scope")) return "scope";
-	if (lower.includes("stale_epoch")) return "scope";
-	if (lower.includes("scope_inactive")) return "scope";
-	if (lower.includes("no dialable peer addresses")) return "connectivity";
-	if (lower.includes("fetch failed")) return "connectivity";
-	if (lower.includes("connection refused")) return "connectivity";
-	if (lower.includes("network")) return "connectivity";
-	if (lower.includes("timeout")) return "connectivity";
-	if (lower.includes("503") || lower.includes("502") || lower.includes("504"))
-		return "connectivity";
-	if (lower.includes("peer status failed")) return "connectivity";
-	if (lower.includes("peer ops fetch failed")) return "connectivity";
-	if (lower.includes("snapshot fetch failed")) return "connectivity";
-	return "other";
 }
 
 function scopeFailureCategory(error: string | undefined): SyncFailureCategory {
@@ -1919,7 +1900,9 @@ function failedAddressResult(
 	recordSyncAttempt(db, peerDeviceId, {
 		ok: false,
 		error,
-		failureCategory: options.protocolMismatch ? "compatibility" : failureCategory,
+		failureCategory: options.protocolMismatch
+			? "compatibility"
+			: storedAddressFailureCategory(addressErrors, error),
 		capabilities,
 	});
 	return {
