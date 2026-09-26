@@ -294,3 +294,18 @@ export function failMaintenanceJob(
 export function ensureMaintenanceJobsSchema(db: Database): void {
 	ensureTable(db);
 }
+
+/**
+ * A backfill write that loses the lock to another writer is not a job
+ * failure: runners should skip the tick and retry instead of parking the job
+ * as failed until the next process restart.
+ */
+export function isTransientSqliteBusy(error: unknown): boolean {
+	const code =
+		typeof error === "object" && error != null
+			? String((error as { code?: unknown }).code ?? "")
+			: "";
+	if (code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") return true;
+	const message = error instanceof Error ? error.message : String(error);
+	return /database is (?:locked|busy)/i.test(message);
+}

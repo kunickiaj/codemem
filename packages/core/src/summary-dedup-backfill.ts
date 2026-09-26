@@ -19,6 +19,7 @@ import {
 	completeMaintenanceJob,
 	failMaintenanceJob,
 	getMaintenanceJob,
+	isTransientSqliteBusy,
 	startMaintenanceJob,
 	updateMaintenanceJob,
 } from "./maintenance-jobs.js";
@@ -327,6 +328,10 @@ export class SummaryDedupBackfillRunner {
 				this.active = false;
 			}
 		} catch (error) {
+			if (isTransientSqliteBusy(error)) {
+				console.warn("Summary-dedup backfill runner deferred because the database is busy", error);
+				return;
+			}
 			if (db) {
 				failMaintenanceJob(
 					db,

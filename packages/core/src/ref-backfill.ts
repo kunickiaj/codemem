@@ -15,6 +15,7 @@ import {
 	completeMaintenanceJob,
 	failMaintenanceJob,
 	getMaintenanceJob,
+	isTransientSqliteBusy,
 	startMaintenanceJob,
 	updateMaintenanceJob,
 } from "./maintenance-jobs.js";
@@ -288,6 +289,10 @@ export class RefBackfillRunner {
 				this.active = false;
 			}
 		} catch (error) {
+			if (isTransientSqliteBusy(error)) {
+				console.warn("Ref backfill runner deferred because the database is busy", error);
+				return;
+			}
 			if (db) {
 				failMaintenanceJob(
 					db,

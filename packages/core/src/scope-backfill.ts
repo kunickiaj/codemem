@@ -12,6 +12,7 @@ import {
 	completeMaintenanceJob,
 	failMaintenanceJob,
 	getMaintenanceJob,
+	isTransientSqliteBusy,
 	startMaintenanceJob,
 	updateMaintenanceJob,
 } from "./maintenance-jobs.js";
@@ -745,14 +746,4 @@ export class ScopeBackfillRunner {
 			db?.close();
 		}
 	}
-}
-
-function isTransientSqliteBusy(error: unknown): boolean {
-	const code =
-		typeof error === "object" && error != null
-			? String((error as { code?: unknown }).code ?? "")
-			: "";
-	if (code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") return true;
-	const message = error instanceof Error ? error.message : String(error);
-	return /database is (?:locked|busy)/i.test(message);
 }
