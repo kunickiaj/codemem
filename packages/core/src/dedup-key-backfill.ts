@@ -74,18 +74,38 @@ function completeOrRewind(
 ): boolean {
 	return db
 		.transaction(() => {
-			if (hasPendingDedupKeyBackfill(db)) {
-				updateMaintenanceJob(db, DEDUP_KEY_BACKFILL_JOB, {
-					...completion,
-					message: "Rescanning for memories added during the dedup-key backfill",
-					metadata: { ...completion.metadata, skipped_rows: 0, ...cursorMetadata(0, null) },
-				});
+			const remaining = planMemoryDedupKeys(db, { updateLimit: 1 }).backfillable;
+			if (remaining > 0) {
+				rewindForLateRows(db, completion, remaining);
 				return true;
 			}
 			completeMaintenanceJob(db, DEDUP_KEY_BACKFILL_JOB, completion);
 			return false;
 		})
 		.immediate();
+}
+
+// Grow the total by the late rows so progress never reads "5 of 4".
+function rewindForLateRows(
+	db: SqliteDatabase,
+	completion: Omit<UpdateMaintenanceJobInput, "status">,
+	remaining: number,
+): void {
+	const metadata = (completion.metadata ?? {}) as DedupKeyBackfillMetadata;
+	const processed = Number(metadata.processed_updates ?? 0);
+	const total = processed + remaining;
+	updateMaintenanceJob(db, DEDUP_KEY_BACKFILL_JOB, {
+		message: "Rescanning for memories added during the dedup-key backfill",
+		progressCurrent: processed,
+		progressTotal: total,
+		metadata: {
+			...metadata,
+			total_backfillable: total,
+			remaining_backfillable: remaining,
+			skipped_rows: 0,
+			...cursorMetadata(0, null),
+		},
+	});
 }
 
 export async function runDedupKeyBackfillPass(

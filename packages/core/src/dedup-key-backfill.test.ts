@@ -197,10 +197,14 @@ describe("dedup-key backfill concurrent inserts", () => {
 				pass < 20 && (await runDedupKeyBackfillPass(db, { batchSize: 2 }));
 				pass++
 			) {
-				// Keep running batches until the pass reports completion.
+				const job = getMaintenanceJob(db, DEDUP_KEY_BACKFILL_JOB);
+				expect(job?.progress.current).toBeLessThanOrEqual(job?.progress.total ?? 0);
 			}
 
-			expect(getMaintenanceJob(db, DEDUP_KEY_BACKFILL_JOB)?.status).toBe("completed");
+			const job = getMaintenanceJob(db, DEDUP_KEY_BACKFILL_JOB);
+			expect(job?.status).toBe("completed");
+			expect(job?.metadata?.processed_updates).toBe(5);
+			expect(job?.metadata?.total_backfillable).toBe(5);
 			expect(
 				db.prepare("SELECT COUNT(*) FROM memory_items WHERE dedup_key IS NULL").pluck().get(),
 			).toBe(0);
