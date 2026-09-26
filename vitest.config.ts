@@ -2,7 +2,9 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
 	test: {
-		maxWorkers: process.env.CI ? 1 : undefined,
+		// Standard GitHub-hosted runners for public repos have 4 vCPUs; keep one
+		// free for the main process and SQLite I/O.
+		maxWorkers: process.env.CI ? 3 : undefined,
 		projects: [
 			"packages/*/vite.config.ts",
 			{
