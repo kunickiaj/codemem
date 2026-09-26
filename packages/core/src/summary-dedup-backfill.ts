@@ -219,18 +219,36 @@ export async function runSummaryDedupBackfillPass(
 		});
 	}
 
-	let supersededInBatch = 0;
-	let maxSessionId = lastSessionId;
+	// The job-status write shares the data transaction so the coordinator,
+	// which polls pending work independently, can never observe finished
+	// work while the job row still says running.
 	const runTxn = db.transaction(() => {
+		let supersededInBatch = 0;
+		let maxSessionId = lastSessionId;
 		for (const plan of plans) {
 			supersededInBatch += applySessionPlan(db, plan, deviceId);
 			if (plan.session_id > maxSessionId) maxSessionId = plan.session_id;
 		}
+		return recordBatchProgress(db, {
+			existingMetadata,
+			processedAfter: processedBefore + plans.length,
+			supersededAfter: supersededBefore + supersededInBatch,
+			maxSessionId,
+		});
 	});
-	runTxn();
+	return runTxn();
+}
 
-	const processedAfter = processedBefore + plans.length;
-	const supersededAfter = supersededBefore + supersededInBatch;
+function recordBatchProgress(
+	db: SqliteDatabase,
+	batch: {
+		existingMetadata: SummaryDedupBackfillMetadata;
+		processedAfter: number;
+		supersededAfter: number;
+		maxSessionId: number;
+	},
+): boolean {
+	const { existingMetadata, processedAfter, supersededAfter, maxSessionId } = batch;
 	const remaining = countPendingSessions(db);
 	const totalSessions = Math.max(
 		Number(existingMetadata.total_sessions ?? processedAfter),

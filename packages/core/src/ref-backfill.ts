@@ -191,16 +191,32 @@ export async function runRefBackfillPass(
 			}
 		}
 	});
-	for (const row of rows) {
+	// rows.length > 0 guaranteed by early return above
+	const lastRow = rows[rows.length - 1] as BackfillRow;
+	for (const row of rows.slice(0, -1)) {
 		insertOneRow(row);
 	}
+	// The last row shares a transaction with the job-status write so the
+	// coordinator, which polls pending work independently, can never observe
+	// finished work while the job row still says running.
+	const finishBatch = db.transaction(() => {
+		insertOneRow(lastRow);
+		return recordBatchProgress(db, {
+			processedAfter: processedBefore + rows.length,
+			progressTotal,
+			newCursor: lastRow.id,
+			exhausted: rows.length < batchSize || !hasPendingRefBackfill(db),
+		});
+	});
+	return finishBatch();
+}
 
-	const processedAfter = processedBefore + rows.length;
-	const exhausted = rows.length < batchSize;
-	// rows.length > 0 guaranteed by early return above
-	const newCursor = (rows[rows.length - 1] as BackfillRow).id;
-
-	if (exhausted) {
+function recordBatchProgress(
+	db: SqliteDatabase,
+	batch: { processedAfter: number; progressTotal: number; newCursor: number; exhausted: boolean },
+): boolean {
+	const { processedAfter, progressTotal, newCursor } = batch;
+	if (batch.exhausted) {
 		const finalProgressTotal = Number(
 			getExistingMetadata(db).total_backfillable ?? progressTotal ?? processedAfter,
 		);
