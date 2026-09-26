@@ -67,6 +67,18 @@ describe("refineStoredSyncConnectivity", () => {
 		["peer status failed (400)", "other"],
 		["peer ops fetch failed (500) http://network-box.local:7337", "other"],
 		["handshake rejected by http://timeout-lab.local:7337", "other"],
+		[
+			"all addresses failed | http://a.local:7337: peer status failed (400) || http://b.local:7337: connection refused",
+			"connectivity",
+		],
+		[
+			"all addresses failed | http://a.local:7337: peer status failed (400) || http://network-b.local:7337: peer status failed (500)",
+			"other",
+		],
+		[
+			"all addresses failed | http://a.local:7337: peer status failed (400) || http://b.local:7337: The operation was aborted due to timeout",
+			"connectivity",
+		],
 	] as const)("classifies %j as %s", (error, category) => {
 		expect(refineStoredSyncConnectivity(error)).toBe(category);
 	});
