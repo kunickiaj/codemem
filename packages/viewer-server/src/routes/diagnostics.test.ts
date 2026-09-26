@@ -376,6 +376,45 @@ describe("GET /api/diagnostics/events sync failure categories", () => {
 	});
 });
 
+describe("GET /api/diagnostics/events stored connectivity", () => {
+	it("refines stored connectivity with the answered-response and peer-URL rules", async () => {
+		const store = createStore();
+		insertSyncAttempt(store, {
+			at: "2026-09-07T10:00:00.000Z",
+			error: "peer status failed (400)",
+			failureCategory: "connectivity",
+			id: 1,
+			ok: false,
+		});
+		insertSyncAttempt(store, {
+			at: "2026-09-07T11:00:00.000Z",
+			error: "peer ops fetch failed (500) http://network-box.local:7337",
+			failureCategory: "connectivity",
+			id: 2,
+			ok: false,
+		});
+		insertSyncAttempt(store, {
+			at: "2026-09-07T12:00:00.000Z",
+			error: "fetch failed",
+			failureCategory: "connectivity",
+			id: 3,
+			ok: false,
+		});
+		const app = diagnosticsRoutes(() => store);
+
+		const response = await app.request(
+			"/api/diagnostics/events?subsystem=sync&severity=error&includeTechnical=1",
+		);
+		const body = (await response.json()) as DiagnosticsResponse;
+
+		expect(body.items.map((event) => event.technical_detail?.text)).toEqual([
+			"Failure category: connectivity. 3 inbound and 4 outbound operations.",
+			"Failure category: other. 2 inbound and 3 outbound operations.",
+			"Failure category: other. 1 inbound and 2 outbound operations.",
+		]);
+	});
+});
+
 describe("GET /api/diagnostics/events pagination and validation", () => {
 	it("clamps page size and returns an opaque cursor for the next page", async () => {
 		const store = createStore();

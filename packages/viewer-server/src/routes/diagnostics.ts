@@ -315,14 +315,11 @@ const SYNC_FAILURE_MESSAGES: Partial<Record<RecordedSyncFailureCategory, string>
 	compatibility: "Sync stopped because two devices run incompatible Codemem versions.",
 };
 
-// A stored `other` only means the recorder could not classify the failure,
-// so the error text may still identify it.
-const SPECIFIC_STORED_SYNC_CATEGORIES = new Set<string>([
-	"trust",
-	"scope",
-	"connectivity",
-	"compatibility",
-]);
+// Stored trust, scope and compatibility come from specific error codes or
+// structured checks. Stored `connectivity` and `other` come from broad text
+// matching at record time, so let the recorded-failure classifier refine them:
+// it treats answered HTTP responses as reachable and ignores peer URLs.
+const SPECIFIC_STORED_SYNC_CATEGORIES = new Set<string>(["trust", "scope", "compatibility"]);
 
 function syncFailureCategory(row: DiagnosticSourceRow): RecordedSyncFailureCategory {
 	const stored = row.stored_category;
