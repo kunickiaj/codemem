@@ -65,21 +65,27 @@ function cursorMetadata(
 
 // Sync can insert a row whose created_at sorts behind the cursor while a run is
 // in progress. Rewind to the start instead of completing so the same run keys
-// it; the coordinator stops watching once the job reports completed.
+// it; the coordinator stops watching once the job reports completed. The
+// check and the status write share one write transaction so another process
+// cannot insert a row between them.
 function completeOrRewind(
 	db: SqliteDatabase,
 	completion: Omit<UpdateMaintenanceJobInput, "status">,
 ): boolean {
-	if (hasPendingDedupKeyBackfill(db)) {
-		updateMaintenanceJob(db, DEDUP_KEY_BACKFILL_JOB, {
-			...completion,
-			message: "Rescanning for memories added during the dedup-key backfill",
-			metadata: { ...completion.metadata, skipped_rows: 0, ...cursorMetadata(0, null) },
-		});
-		return true;
-	}
-	completeMaintenanceJob(db, DEDUP_KEY_BACKFILL_JOB, completion);
-	return false;
+	return db
+		.transaction(() => {
+			if (hasPendingDedupKeyBackfill(db)) {
+				updateMaintenanceJob(db, DEDUP_KEY_BACKFILL_JOB, {
+					...completion,
+					message: "Rescanning for memories added during the dedup-key backfill",
+					metadata: { ...completion.metadata, skipped_rows: 0, ...cursorMetadata(0, null) },
+				});
+				return true;
+			}
+			completeMaintenanceJob(db, DEDUP_KEY_BACKFILL_JOB, completion);
+			return false;
+		})
+		.immediate();
 }
 
 export async function runDedupKeyBackfillPass(
