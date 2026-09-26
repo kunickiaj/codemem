@@ -250,9 +250,9 @@ Uninstall: remove the `@codemem/pi-extension` entry from pi's `packages` list an
 What you get:
 
 - **Ingest** — extension POSTs to `POST /api/pi-hooks` (a compatibility alias that normalizes the payload once and runs it through the canonical ingest envelope with `source: "pi"`, the same event identity as `POST /api/raw-events`), with `codemem pi-hook-ingest` CLI fallback (spool when offline)
-- **Injection** — turn-local `systemPrompt` append on `before_agent_start` (`## codemem memories`); never the persistent `message` channel
+- **Injection** — appends a `## codemem memories` block to the latest user message of the request copy on pi's `context` event; older messages replay the same bytes (never the system prompt, never the saved session). `CODEMEM_INJECT_RETAINED_TOKEN_BUDGET` optionally caps retained injected tokens
 - **Tools** — all 14 `memory_*` tools registered natively via `pi.registerTool` (HTTP preferred, CLI fallback). No `pi-mcp-adapter` required for tools
-- **Compaction** — pi-only observe-only boundary: `session_before_compact` flushes extraction before pi discards context; never replaces pi's summarizer
+- **Compaction** — pi-only observe-only boundary: `session_before_compact` flushes extraction before pi discards context; never replaces pi's summarizer. A later pack fetch is skipped only when that compaction immediately resumes the turn
 - **Fork/resume** — stream identity re-keys on every `session_start`
 - **Project identity** — the extension resolves the project from the nearest Git root (same walk as the other adapters)
 - **Dashboard** — pi rows appear in the source-agnostic feed/sessions/projects tabs with no extra setup

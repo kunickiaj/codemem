@@ -115,7 +115,11 @@ describe("memory_pack uses targeted POST /api/pack, not GET /api/pack", () => {
 					return jsonOk({ pack_text: "from GET", items: ["get"] });
 				}
 				if (url.pathname === "/api/pack" && method === "POST") {
-					return jsonOk({ pack_text: "from POST", items: ["post"] });
+					return jsonOk({
+						pack_text: "from POST",
+						items: ["post"],
+						metrics: { total_items: 1, pack_tokens: 2 },
+					});
 				}
 				return jsonErr(404, {});
 			}),

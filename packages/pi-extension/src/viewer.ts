@@ -132,9 +132,27 @@ export function isViewerTargetConflict(status: number, body: unknown): boolean {
 	);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
 	return value != null && typeof value === "object" && !Array.isArray(value);
 }
+
+/** Renderer-owned pack item spans (core PackResponse.rendered_items). */
+export type RenderedPackItem = {
+	id: number;
+	fingerprint: string;
+	spans: Array<{ start: number; end: number }>;
+};
+
+/** Successful proven pack body; null when unproven, failing, or non-JSON. */
+export type ProvenPack = {
+	packText: string;
+	/** Present only when the response carried renderer span data. */
+	renderedItems?: RenderedPackItem[];
+	/** metrics.total_items from the same response. */
+	itemCount?: number;
+	/** metrics.pack_tokens from the same response, when present. */
+	packTokens?: number;
+};
 
 function canonicalJson(value: unknown): string {
 	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -196,7 +214,31 @@ async function readJson(res: Response): Promise<unknown> {
 	}
 }
 
-/** GET /api/prompt-pack-profile, then POST /api/pack with db_path + identity_target. */
+/**
+ * PackResponse contract check. A valid zero-item pack has a string `pack_text`
+ * and numeric `metrics.total_items` (0 is success). `{}`, a non-string `pack_text`,
+ * a missing item count, a non-array `rendered_items`, or an `error` field is not a pack.
+ */
+export function parseProvenPack(body: unknown): ProvenPack | null {
+	if (!isRecord(body) || "error" in body) return null;
+	if (typeof body.pack_text !== "string") return null;
+	if (!isRecord(body.metrics)) return null;
+	const totalItems = body.metrics.total_items;
+	if (typeof totalItems !== "number" || !Number.isFinite(totalItems)) return null;
+	const pack: ProvenPack = { packText: body.pack_text.trim(), itemCount: totalItems };
+	const packTokens = body.metrics.pack_tokens;
+	if (typeof packTokens === "number" && Number.isFinite(packTokens)) pack.packTokens = packTokens;
+	if (body.rendered_items === undefined) return pack;
+	if (!Array.isArray(body.rendered_items)) return null;
+	pack.renderedItems = body.rendered_items as RenderedPackItem[];
+	return pack;
+}
+
+/**
+ * GET /api/prompt-pack-profile, then POST /api/pack with db_path + identity_target.
+ * Returns a contract-valid pack, including a zero-item pack; null means unproven,
+ * failed, or a body that is not a PackResponse, and the caller may fall back.
+ */
 export async function proveAndPostPack(
 	config: PiExtensionConfig,
 	args: {
@@ -207,20 +249,20 @@ export async function proveAndPostPack(
 		limit?: number;
 		tokenBudget?: number;
 	},
-): Promise<string> {
-	if (!config.viewerEnabled) return "";
+): Promise<ProvenPack | null> {
+	if (!config.viewerEnabled) return null;
 	const target = viewerRequestTarget(args.cwd);
 	const profileRes = await fetch(promptPackProfileUrl(config), {
 		method: "GET",
 		redirect: "manual",
 		signal: args.signal,
 	});
-	if (profileRes.status >= 300 && profileRes.status < 400) return "";
-	if (!profileRes.ok) return "";
+	if (profileRes.status >= 300 && profileRes.status < 400) return null;
+	if (!profileRes.ok) return null;
 	if (
 		!profileMatchesViewerTarget(await readJson(profileRes), target.db_path, target.identity_target)
 	) {
-		return "";
+		return null;
 	}
 	const res = await fetch(packUrl(config), {
 		method: "POST",
@@ -235,9 +277,8 @@ export async function proveAndPostPack(
 		}),
 		signal: args.signal,
 	});
-	if (!res.ok) return "";
-	const body = await readJson(res);
-	return isRecord(body) ? String(body.pack_text ?? "").trim() : "";
+	if (!res.ok) return null;
+	return parseProvenPack(await readJson(res));
 }
 
 /** Probe viewer with a cheap GET. Returns true when reachable. */

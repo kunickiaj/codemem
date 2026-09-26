@@ -105,7 +105,10 @@ describe("extension factory lifecycle", () => {
 			"tool_call",
 			"tool_result",
 			"session_before_compact",
-			"before_agent_start",
+			"session_compact",
+			"session_compact_failed",
+			"agent_settled",
+			"context",
 		];
 		for (const name of expectedEvents) {
 			expect(handlers.has(name), `missing handler for ${name}`).toBe(true);
@@ -645,10 +648,10 @@ describe("tool_call identity", () => {
 	});
 });
 
-describe("injection (before_agent_start)", () => {
+describe("injection (context)", () => {
 	afterEach(resetPiExtensionTest);
 
-	it("appends only systemPrompt (never message) on successful pack", async () => {
+	it("appends the pack to the latest user message on the context copy and returns undefined", async () => {
 		vi.stubEnv("CODEMEM_PI_INJECT_PROMPTS", "1");
 		const packText = "• past decision about auth";
 		const cwd = "/tmp/codemem-pi-test";
@@ -661,7 +664,7 @@ describe("injection (before_agent_start)", () => {
 					return jsonOk({
 						pack_text: packText,
 						items: [1],
-						metrics: { pack_tokens: 10 },
+						metrics: { total_items: 1, pack_tokens: 10 },
 					});
 				}
 				if (url.includes("/api/raw-events/status")) {
@@ -681,22 +684,46 @@ describe("injection (before_agent_start)", () => {
 		const ctx = createMockCtx();
 		await handlers.get("session_start")?.[0]?.({ type: "session_start", reason: "startup" }, ctx);
 
-		const result = (await handlers.get("before_agent_start")?.[0]?.(
-			{
-				type: "before_agent_start",
-				prompt: "how does auth work?",
-				systemPrompt: "You are helpful.",
-				systemPromptOptions: {},
-			},
-			ctx,
-		)) as { systemPrompt?: string; message?: unknown } | undefined;
+		// The system-prompt surface is gone; injection rides the context event only.
+		expect(handlers.has("before_agent_start")).toBe(false);
+		const messages = [
+			{ role: "user", content: "how does auth work?", timestamp: 1_700_000_000_001 },
+		];
+		const result = await handlers.get("context")?.[0]?.({ type: "context", messages }, ctx);
 
-		expect(result).toBeDefined();
-		expect(result?.message).toBeUndefined();
-		expect(result?.systemPrompt).toContain("You are helpful.");
-		expect(result?.systemPrompt).toContain("## codemem memories");
-		expect(result?.systemPrompt).toContain(packText);
-		expect(Object.keys(result ?? {}).toSorted()).toEqual(["systemPrompt"]);
+		expect(result).toBeUndefined();
+		expect(messages[0]?.content).toContain("how does auth work?");
+		expect(messages[0]?.content).toContain("## codemem memories");
+		expect(messages[0]?.content).toContain(packText);
+	});
+	it("injectPrompts off attaches nothing and the handler returns undefined", async () => {
+		vi.stubEnv("CODEMEM_PI_INJECT_PROMPTS", "0");
+		const cwd = "/tmp/codemem-pi-test";
+		let packCalls = 0;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.includes("/api/pack")) packCalls += 1;
+				if (url.includes("/api/prompt-pack-profile")) return matchingProfile(cwd);
+				if (url.includes("/api/raw-events/status")) {
+					return jsonOk({ ingest: { available: true } });
+				}
+				return jsonOk({ pack_text: "should not be reached", items: [], metrics: {} });
+			}),
+		);
+
+		const { pi, handlers } = createMockPi();
+		codememPiExtension(pi as never);
+		const ctx = createMockCtx();
+		await handlers.get("session_start")?.[0]?.({ type: "session_start", reason: "startup" }, ctx);
+
+		const messages = [{ role: "user", content: "hello", timestamp: 1_700_000_000_002 }];
+		const result = await handlers.get("context")?.[0]?.({ type: "context", messages }, ctx);
+
+		expect(result).toBeUndefined();
+		expect(messages[0]?.content).toBe("hello");
+		expect(packCalls).toBe(0);
 	});
 
 	it("returns undefined (no mutation) when pack empty / fetch fails", async () => {
@@ -715,16 +742,10 @@ describe("injection (before_agent_start)", () => {
 		const ctx = createMockCtx();
 		await handlers.get("session_start")?.[0]?.({ type: "session_start", reason: "startup" }, ctx);
 
-		const result = await handlers.get("before_agent_start")?.[0]?.(
-			{
-				type: "before_agent_start",
-				prompt: "hello",
-				systemPrompt: "base",
-				systemPromptOptions: {},
-			},
-			ctx,
-		);
+		const messages = [{ role: "user", content: "hello", timestamp: 1_700_000_000_003 }];
+		const result = await handlers.get("context")?.[0]?.({ type: "context", messages }, ctx);
 		expect(result).toBeUndefined();
+		expect(messages[0]?.content).toBe("hello");
 	});
 
 	it("formatPiInjectionBlock never produces a persistent message shape", () => {
@@ -734,6 +755,41 @@ describe("injection (before_agent_start)", () => {
 	});
 });
 
+describe("injection does not move the ingest counter", () => {
+	afterEach(resetPiExtensionTest);
+
+	it("a timestamp-less context walk leaves the first ingest id at n:1", async () => {
+		const messageEndIds: string[] = [];
+		__setTestExecImpl(async (args, opts) => {
+			if (args[0] === "pi-hook-ingest" && opts?.stdin) {
+				const body = JSON.parse(opts.stdin) as { piEvent?: string; entryId?: string };
+				if (body.piEvent === "message_end" && body.entryId) messageEndIds.push(body.entryId);
+			}
+			return { stdout: JSON.stringify({ inserted: 1, skipped: 0 }), stderr: "" };
+		});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				throw new Error("offline");
+			}),
+		);
+		const { pi, handlers } = createMockPi();
+		codememPiExtension(pi as never);
+		const ctx = createMockCtx({ sessionId: "sess-counter" });
+		await handlers.get("session_start")?.[0]?.({ type: "session_start", reason: "startup" }, ctx);
+		await handlers.get("context")?.[0]?.(
+			{ type: "context", messages: [{ role: "user", content: "no timestamp" }] },
+			ctx,
+		);
+		await handlers.get("message_end")?.[0]?.(
+			{ type: "message_end", message: { role: "user", content: "no timestamp" } },
+			ctx,
+		);
+		expect(messageEndIds[0]).toBe(
+			stableMessageEntryId("sess-counter", "user", "no timestamp", "n:1"),
+		);
+	});
+});
 describe("injection hostile framing", () => {
 	afterEach(resetPiExtensionTest);
 
@@ -753,7 +809,7 @@ describe("injection hostile framing", () => {
 					return jsonOk({
 						pack_text: hostile,
 						items: [1],
-						metrics: { pack_tokens: 10 },
+						metrics: { total_items: 1, pack_tokens: 10 },
 					});
 				}
 				if (url.includes("/api/raw-events/status")) {
@@ -773,19 +829,12 @@ describe("injection hostile framing", () => {
 		const ctx = createMockCtx();
 		await handlers.get("session_start")?.[0]?.({ type: "session_start", reason: "startup" }, ctx);
 
-		const result = (await handlers.get("before_agent_start")?.[0]?.(
-			{
-				type: "before_agent_start",
-				prompt: "recall memory",
-				systemPrompt: "base",
-				systemPromptOptions: {},
-			},
-			ctx,
-		)) as { systemPrompt?: string } | undefined;
+		const messages = [{ role: "user", content: "recall memory", timestamp: 1_700_000_000_004 }];
+		await handlers.get("context")?.[0]?.({ type: "context", messages }, ctx);
 
 		const cfg = defaultPiExtensionConfig();
-		expect(result?.systemPrompt).toBe(
-			`base\n\n${formatPiInjectionBlock(hostile, cfg.injectMaxChars)}`,
+		expect(messages[0]?.content).toBe(
+			`recall memory\n\n${formatPiInjectionBlock(hostile, cfg.injectMaxChars)}`,
 		);
 	});
 });
@@ -956,5 +1005,141 @@ describe("message_end payload feeds core adapter", () => {
 		expect(adapter?.source).toBe("pi");
 		expect(adapter?.event_type).toBe("prompt");
 		expect(adapter?.event_id).toMatch(/^pi_evt_[0-9a-f]{24}$/);
+	});
+});
+
+describe("compaction replay skip follows Pi resume", () => {
+	afterEach(resetPiExtensionTest);
+
+	async function packsAfter(
+		steps: Array<
+			(handlers: Map<string, Handler[]>, ctx: ReturnType<typeof createMockCtx>) => Promise<void>
+		>,
+	): Promise<number> {
+		vi.stubEnv("CODEMEM_PI_INJECT_PROMPTS", "1");
+		__setTestExecImpl(async () => ({ stdout: "", stderr: "" }));
+		const cwd = "/tmp/codemem-pi-test";
+		let packs = 0;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url.includes("/api/prompt-pack-profile")) return matchingProfile(cwd);
+				if (url.includes("/api/raw-events/status")) return jsonOk({ ingest: { available: true } });
+				if (url.includes("/api/pack")) {
+					packs += 1;
+					return jsonOk({ pack_text: "pack", metrics: { total_items: 1, pack_tokens: 2 } });
+				}
+				return { ok: false, status: 404, json: async () => ({}), text: async () => "" };
+			}),
+		);
+		const { pi, handlers } = createMockPi();
+		codememPiExtension(pi as never);
+		const ctx = createMockCtx();
+		await handlers.get("session_start")?.[0]?.({ type: "session_start", reason: "startup" }, ctx);
+		for (const step of steps) await step(handlers, ctx);
+		await handlers.get("context")?.[0]?.(
+			{
+				type: "context",
+				messages: [{ role: "user", content: "next question", timestamp: 1_700_000_000_099 }],
+			},
+			ctx,
+		);
+		return packs;
+	}
+
+	function beforeCompact(reason: "manual" | "threshold" | "overflow", willRetry: boolean) {
+		return async (handlers: Map<string, Handler[]>, ctx: ReturnType<typeof createMockCtx>) => {
+			await handlers.get("session_before_compact")?.[0]?.(
+				{
+					type: "session_before_compact",
+					reason,
+					willRetry,
+					signal: new AbortController().signal,
+					preparation: {},
+					branchEntries: [],
+				},
+				ctx,
+			);
+		};
+	}
+
+	function compact(reason: "manual" | "threshold" | "overflow", willRetry: boolean) {
+		return async (handlers: Map<string, Handler[]>) => {
+			await handlers.get("session_compact")?.[0]?.(
+				{
+					type: "session_compact",
+					reason,
+					willRetry,
+					fromExtension: false,
+					compactionEntry: { type: "compaction" },
+				},
+				undefined,
+			);
+		};
+	}
+
+	function compactFailed(aborted: boolean) {
+		return async (handlers: Map<string, Handler[]>) => {
+			await handlers.get("session_compact_failed")?.[0]?.(
+				{
+					type: "session_compact_failed",
+					reason: "overflow",
+					aborted,
+					willRetry: false,
+					fromExtension: false,
+					errorMessage: aborted ? undefined : "compaction failed",
+				},
+				undefined,
+			);
+		};
+	}
+
+	function userMessage() {
+		return async (handlers: Map<string, Handler[]>, ctx: ReturnType<typeof createMockCtx>) => {
+			await handlers.get("message_end")?.[0]?.(
+				{
+					type: "message_end",
+					message: { role: "user", content: "next question", timestamp: 1_700_000_000_099 },
+				},
+				ctx,
+			);
+		};
+	}
+
+	it("still fetches after manual, threshold, cancel, failure, and a new user turn", async () => {
+		expect(await packsAfter([])).toBe(1);
+		expect(await packsAfter([beforeCompact("manual", false)])).toBe(1);
+		expect(
+			await packsAfter([beforeCompact("manual", false), compact("manual", false), userMessage()]),
+		).toBe(1);
+		expect(
+			await packsAfter([
+				beforeCompact("threshold", false),
+				compact("threshold", false),
+				userMessage(),
+			]),
+		).toBe(1);
+		expect(await packsAfter([beforeCompact("overflow", true), compactFailed(true)])).toBe(1);
+		expect(await packsAfter([beforeCompact("overflow", false), compactFailed(false)])).toBe(1);
+		expect(
+			await packsAfter([beforeCompact("overflow", true), compact("overflow", true), userMessage()]),
+		).toBe(1);
+	});
+
+	it("skips the fetch only when overflow compaction immediately resumes", async () => {
+		expect(await packsAfter([beforeCompact("overflow", true), compact("overflow", true)])).toBe(0);
+	});
+
+	it("clears the skip if the resume settles before context", async () => {
+		expect(
+			await packsAfter([
+				beforeCompact("overflow", true),
+				compact("overflow", true),
+				async (handlers) => {
+					await handlers.get("agent_settled")?.[0]?.({ type: "agent_settled" }, undefined);
+				},
+			]),
+		).toBe(1);
 	});
 });

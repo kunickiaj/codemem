@@ -7,6 +7,7 @@ import { execFile } from "node:child_process";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import type { PiExtensionConfig } from "./config.js";
+import { logPiInjectPack } from "./plugin-log.js";
 import {
 	checkIngestAvailable,
 	clearStreamFailure,
@@ -14,8 +15,11 @@ import {
 	isStreamInBackoff,
 	isViewerTargetConflict,
 	markStreamFailure,
+	type ProvenPack,
+	parseProvenPack,
 	piHooksUrl,
 	proveAndPostPack,
+	type RenderedPackItem,
 	type ViewerRuntime,
 	viewerRequestTarget,
 } from "./viewer.js";
@@ -65,11 +69,41 @@ export type ExecCodememFn = (
  * already the full `## codemem memories` block (CLI pi-hook-inject) or bare
  * pack text (HTTP /api/pack, CLI pack --json) that must be framed via
  * formatPiInjectionBlock. Never sniff the memory text to decide framing.
+ *
+ * `renderedItems` + `itemCount` exist only on span-bearing transports (HTTP
+ * /api/pack, CLI pack --json) and are absent on plain-text pi-hook-inject.
  */
 export type PackFetch = {
 	text: string;
 	preformatted: boolean;
+	/** Renderer item spans for injection dedup; undefined without span data. */
+	renderedItems?: RenderedPackItem[];
+	/** metrics.total_items from the same span-bearing response. */
+	itemCount?: number;
 };
+
+function packFetchFromProven(pack: ProvenPack): PackFetch {
+	const result: PackFetch = { text: pack.packText, preformatted: false };
+	if (pack.renderedItems) result.renderedItems = pack.renderedItems;
+	if (pack.itemCount != null) result.itemCount = pack.itemCount;
+	return result;
+}
+
+function logFetchedPack(
+	origin: "local" | "viewer",
+	pack: ProvenPack,
+	query: string,
+	project: string | null,
+): void {
+	logPiInjectPack({
+		origin,
+		items: pack.itemCount ?? 0,
+		packTokens: pack.packTokens ?? 0,
+		queryLen: query.length,
+		empty: !pack.packText,
+		project,
+	});
+}
 
 /** Boundary flush signals that need the long CLI budget (HTTP cannot flush). */
 function isBoundaryFlushEvent(piEvent: string): boolean {
@@ -257,16 +291,44 @@ export class PiCodememClient {
 		}
 	}
 
-	/** Profile-proven POST /api/pack, then CLI pi-hook-inject / pack --json fallback. */
-	async fetchPackText(context: string, signal?: AbortSignal): Promise<PackFetch> {
+	/**
+	 * Profile-proven POST /api/pack, then CLI pack --json / pi-hook-inject fallback.
+	 * A contract-valid span-bearing response ends the chain, including a zero-item
+	 * pack. `{}` and error-shaped bodies are not success and fall through.
+	 * Plain-text pi-hook-inject runs only when no contract-valid response is
+	 * obtainable. Span-bearing successes log `inject.pack.ok source=pi`.
+	 * `opts.tokenBudget` sizes the pack request (default injectTokenBudget).
+	 */
+	async fetchPackText(
+		context: string,
+		signal?: AbortSignal,
+		opts?: { tokenBudget?: number },
+	): Promise<PackFetch> {
 		const query = context.trim().slice(0, 500) || "recent work";
+		const tokenBudget = opts?.tokenBudget ?? this.config.injectTokenBudget;
 		if (this.config.viewerEnabled) {
 			await this.ensureViewer(signal);
-			const httpPack = await this.tryHttpPack(query, signal);
-			if (httpPack.text) return httpPack;
+			const httpPack = await this.tryHttpPack(query, tokenBudget, signal);
+			if (httpPack) return httpPack;
 		}
 
-		// CLI pi-hook-inject already emits the full `## codemem memories` block.
+		// CLI pack --json carries renderer item spans for injection dedup.
+		try {
+			const args = ["pack", query, "--json", "-n", String(this.config.injectLimit)];
+			if (this.project) args.push("--project", this.project);
+			args.push("--token-budget", String(tokenBudget));
+			const { stdout } = await this.execCodemem(args, {
+				signal,
+				timeoutMs: CLI_PACK_TIMEOUT_MS,
+			});
+			const parsed = parseProvenPack(JSON.parse(stdout));
+			if (!parsed) throw new Error("pack response is not a PackResponse");
+			logFetchedPack("local", parsed, query, this.project);
+			return packFetchFromProven(parsed);
+		} catch {
+			// Last resort: pi-hook-inject prints the framed block without span data.
+		}
+
 		try {
 			const { stdout } = await this.execCodemem(["pi-hook-inject"], {
 				stdin: JSON.stringify({
@@ -280,40 +342,34 @@ export class PiCodememClient {
 			});
 			return { text: stdout.trim(), preformatted: true };
 		} catch {
-			// Last resort: pack --json and let caller format.
-			try {
-				const args = ["pack", query, "--json", "-n", String(this.config.injectLimit)];
-				if (this.project) args.push("--project", this.project);
-				args.push("--token-budget", String(this.config.injectTokenBudget));
-				const { stdout } = await this.execCodemem(args, {
-					signal,
-					timeoutMs: CLI_PACK_TIMEOUT_MS,
-				});
-				const parsed = JSON.parse(stdout) as { pack_text?: string };
-				return { text: String(parsed.pack_text ?? "").trim(), preformatted: false };
-			} catch {
-				return { text: "", preformatted: false };
-			}
+			return { text: "", preformatted: false };
 		}
 	}
 
-	private async tryHttpPack(context: string, signal?: AbortSignal): Promise<PackFetch> {
-		const empty = { text: "", preformatted: false };
-		if (!this.config.viewerEnabled) return empty;
+	/** Null when the viewer is unproven/unavailable; a proven success ends the pack chain. */
+	private async tryHttpPack(
+		context: string,
+		tokenBudget: number,
+		signal?: AbortSignal,
+	): Promise<PackFetch | null> {
+		if (!this.config.viewerEnabled) return null;
 		const controller = new AbortController();
 		const onAbort = () => controller.abort();
 		signal?.addEventListener("abort", onAbort, { once: true });
 		const timeout = setTimeout(() => controller.abort(), 2_000);
 		try {
-			const text = await proveAndPostPack(this.config, {
+			const pack = await proveAndPostPack(this.config, {
 				context,
 				cwd: this.cwd,
 				project: this.project,
+				tokenBudget,
 				signal: controller.signal,
 			});
-			return text ? { text, preformatted: false } : empty;
+			if (!pack) return null;
+			logFetchedPack("viewer", pack, context, this.project);
+			return packFetchFromProven(pack);
 		} catch {
-			return empty;
+			return null;
 		} finally {
 			clearTimeout(timeout);
 			signal?.removeEventListener("abort", onAbort);

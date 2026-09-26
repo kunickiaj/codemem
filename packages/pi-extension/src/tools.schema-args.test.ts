@@ -95,7 +95,7 @@ describe("memory_pack forwards project on HTTP and CLI", () => {
 				}
 				if (url.pathname === "/api/pack" && (init?.method ?? "GET").toUpperCase() === "POST") {
 					packBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
-					return jsonOk({ pack_text: "http pack" });
+					return jsonOk({ pack_text: "http pack", metrics: { total_items: 1, pack_tokens: 2 } });
 				}
 				return jsonErr(404, {});
 			}),

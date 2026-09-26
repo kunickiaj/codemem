@@ -534,7 +534,7 @@ async function executeMemoryPack(
 				signal?.addEventListener("abort", onAbort, { once: true });
 				const timeout = setTimeout(() => controller.abort(), client.config.httpTimeoutMs);
 				try {
-					const text = await proveAndPostPack(client.config, {
+					const pack = await proveAndPostPack(client.config, {
 						context,
 						cwd: client.cwd,
 						project: project ?? null,
@@ -542,8 +542,8 @@ async function executeMemoryPack(
 						limit: limit ?? 10,
 						tokenBudget: client.config.injectTokenBudget,
 					});
-					if (!text) return null;
-					return jsonResult({ pack_text: text });
+					if (!pack) return null;
+					return jsonResult({ pack_text: pack.packText });
 				} finally {
 					clearTimeout(timeout);
 					signal?.removeEventListener("abort", onAbort);
