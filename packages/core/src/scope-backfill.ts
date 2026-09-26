@@ -225,7 +225,7 @@ function countAllUnstampedReplicationOps(db: SqliteDatabase): number {
 	// "unstamped_replication_ops_at_completion" watermark and to read it
 	// back from the cheap startup probe. The unary `+` keeps SQLite from
 	// choosing idx_replication_ops_entity, which scans every memory op
-	// (~30 s on a Raspberry Pi with 180k ops) instead of the few unstamped ones.
+	// (tens of seconds on large databases) instead of the few unstamped ones.
 	const row = db
 		.prepare(
 			`SELECT COUNT(*) AS n

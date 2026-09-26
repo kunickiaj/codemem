@@ -62,7 +62,7 @@ function readWorkerSyncConfig(configPath?: string | null) {
 	return readCoordinatorSyncConfig(config);
 }
 
-// Pending predicates can scan large tables (seconds on a Raspberry Pi), so
+// Pending predicates can scan large tables (seconds on slow disks), so
 // re-check them rarely while the job row already reports progress.
 const PENDING_RECHECK_INTERVAL_MS = 30_000;
 const BACKFILL_POLL_INTERVAL_MS = 1000;
