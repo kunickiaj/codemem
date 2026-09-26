@@ -171,3 +171,41 @@ describe("dedup-key backfill maintenance", () => {
 		}
 	});
 });
+
+describe("dedup-key backfill concurrent inserts", () => {
+	it("rescans before completing when a row is inserted behind the cursor mid-run", async () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const sessionId = insertTestSession(db);
+			const insert = db.prepare(
+				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility,
+				 workspace_id, dedup_key)
+				 VALUES (?, 'discovery', ?, 'Body', 0.5, '', 1, ?, ?, '{}', 1, 'shared', 'shared:default', NULL)`,
+			);
+			for (let index = 0; index < 4; index++) {
+				const createdAt = `2026-0${index + 2}-01T00:00:00Z`;
+				insert.run(sessionId, `Local title ${index}`, createdAt, createdAt);
+			}
+
+			expect(await runDedupKeyBackfillPass(db, { batchSize: 2 })).toBe(true);
+			// A synced memory keeps its older source created_at but gets a new id.
+			insert.run(sessionId, "Synced title", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z");
+			for (
+				let pass = 0;
+				pass < 20 && (await runDedupKeyBackfillPass(db, { batchSize: 2 }));
+				pass++
+			) {
+				// Keep running batches until the pass reports completion.
+			}
+
+			expect(getMaintenanceJob(db, DEDUP_KEY_BACKFILL_JOB)?.status).toBe("completed");
+			expect(
+				db.prepare("SELECT COUNT(*) FROM memory_items WHERE dedup_key IS NULL").pluck().get(),
+			).toBe(0);
+		} finally {
+			db.close();
+		}
+	});
+});

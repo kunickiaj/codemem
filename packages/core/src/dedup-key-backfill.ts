@@ -6,6 +6,7 @@ import {
 	failMaintenanceJob,
 	getMaintenanceJob,
 	startMaintenanceJob,
+	type UpdateMaintenanceJobInput,
 	updateMaintenanceJob,
 } from "./maintenance-jobs.js";
 
@@ -62,6 +63,25 @@ function cursorMetadata(
 	return { last_cursor_id: id, last_cursor_created_at: createdAt };
 }
 
+// Sync can insert a row whose created_at sorts behind the cursor while a run is
+// in progress. Rewind to the start instead of completing so the same run keys
+// it; the coordinator stops watching once the job reports completed.
+function completeOrRewind(
+	db: SqliteDatabase,
+	completion: Omit<UpdateMaintenanceJobInput, "status">,
+): boolean {
+	if (hasPendingDedupKeyBackfill(db)) {
+		updateMaintenanceJob(db, DEDUP_KEY_BACKFILL_JOB, {
+			...completion,
+			message: "Rescanning for memories added during the dedup-key backfill",
+			metadata: { ...completion.metadata, skipped_rows: 0, ...cursorMetadata(0, null) },
+		});
+		return true;
+	}
+	completeMaintenanceJob(db, DEDUP_KEY_BACKFILL_JOB, completion);
+	return false;
+}
+
 export async function runDedupKeyBackfillPass(
 	db: SqliteDatabase,
 	options: { batchSize?: number } = {},
@@ -82,7 +102,7 @@ export async function runDedupKeyBackfillPass(
 	if (plan.checked <= 0) {
 		if (existingJob && existingJob.status !== "completed") {
 			const processedUpdates = Number(existingMetadata.processed_updates ?? 0);
-			completeMaintenanceJob(db, DEDUP_KEY_BACKFILL_JOB, {
+			return completeOrRewind(db, {
 				message:
 					Number(existingMetadata.skipped_rows ?? 0) > 0
 						? `No backfillable dedup keys remaining (${Number(existingMetadata.skipped_rows ?? 0)} skipped)`
@@ -137,7 +157,7 @@ export async function runDedupKeyBackfillPass(
 		const finalProgressTotal = Number(
 			getExistingMetadata(db).total_backfillable ?? progressTotal ?? processedAfter,
 		);
-		completeMaintenanceJob(db, DEDUP_KEY_BACKFILL_JOB, {
+		return completeOrRewind(db, {
 			message:
 				cumulativeSkipped > 0
 					? `Dedup-key backfill complete (${cumulativeSkipped} skipped)`
@@ -154,7 +174,6 @@ export async function runDedupKeyBackfillPass(
 				...cursorMetadata(plan.lastScannedId, plan.lastScannedCreatedAt),
 			},
 		});
-		return false;
 	}
 
 	updateMaintenanceJob(db, DEDUP_KEY_BACKFILL_JOB, {
