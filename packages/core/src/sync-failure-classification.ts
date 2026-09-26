@@ -52,3 +52,24 @@ export function classifyRecordedSyncFailure(
 	}
 	return category;
 }
+
+/**
+ * Stored `connectivity` comes from broad text matching when the attempt was
+ * recorded. Keep it unless the error text shows a known false positive: the
+ * peer answered with a non-gateway error, or the only connectivity word is
+ * part of a peer URL.
+ */
+export function refineStoredSyncConnectivity(
+	error: string | null | undefined,
+): RecordedSyncFailureCategory {
+	const text = String(error ?? "").trim();
+	if (!text) return "connectivity";
+	const withoutAddresses = withoutPeerAddresses(text);
+	const lower = withoutAddresses.toLowerCase();
+	const peerAnswered = ANSWERED_RESPONSE_PHRASES.some((phrase) => lower.includes(phrase));
+	if (peerAnswered && !UNREACHABLE_STATUS_PATTERN.test(lower)) return "other";
+	const matchedOnlyInAddress =
+		categorizeSyncFailure(text) === "connectivity" &&
+		categorizeSyncFailure(withoutAddresses) !== "connectivity";
+	return matchedOnlyInAddress ? "other" : "connectivity";
+}

@@ -3,6 +3,7 @@ import {
 	classifyRecordedSyncFailure,
 	type MemoryStore,
 	type RecordedSyncFailureCategory,
+	refineStoredSyncConnectivity,
 } from "@codemem/core";
 import { Hono } from "hono";
 
@@ -316,13 +317,14 @@ const SYNC_FAILURE_MESSAGES: Partial<Record<RecordedSyncFailureCategory, string>
 };
 
 // Stored trust, scope and compatibility come from specific error codes or
-// structured checks. Stored `connectivity` and `other` come from broad text
-// matching at record time, so let the recorded-failure classifier refine them:
-// it treats answered HTTP responses as reachable and ignores peer URLs.
+// structured checks. Stored `connectivity` is kept unless the error text
+// shows a known false positive, and stored `other` or missing values fall
+// back to the recorded-failure classifier.
 const SPECIFIC_STORED_SYNC_CATEGORIES = new Set<string>(["trust", "scope", "compatibility"]);
 
 function syncFailureCategory(row: DiagnosticSourceRow): RecordedSyncFailureCategory {
 	const stored = row.stored_category;
+	if (stored === "connectivity") return refineStoredSyncConnectivity(row.category);
 	if (stored && SPECIFIC_STORED_SYNC_CATEGORIES.has(stored)) {
 		return stored as RecordedSyncFailureCategory;
 	}

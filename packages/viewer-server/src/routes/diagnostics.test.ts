@@ -377,7 +377,7 @@ describe("GET /api/diagnostics/events sync failure categories", () => {
 });
 
 describe("GET /api/diagnostics/events stored connectivity", () => {
-	it("refines stored connectivity with the answered-response and peer-URL rules", async () => {
+	it("keeps stored connectivity unless the error text shows a known false positive", async () => {
 		const store = createStore();
 		insertSyncAttempt(store, {
 			at: "2026-09-07T10:00:00.000Z",
@@ -400,6 +400,19 @@ describe("GET /api/diagnostics/events stored connectivity", () => {
 			id: 3,
 			ok: false,
 		});
+		insertSyncAttempt(store, {
+			at: "2026-09-07T13:00:00.000Z",
+			failureCategory: "connectivity",
+			id: 4,
+			ok: false,
+		});
+		insertSyncAttempt(store, {
+			at: "2026-09-07T14:00:00.000Z",
+			error: "socket hang up",
+			failureCategory: "connectivity",
+			id: 5,
+			ok: false,
+		});
 		const app = diagnosticsRoutes(() => store);
 
 		const response = await app.request(
@@ -408,6 +421,8 @@ describe("GET /api/diagnostics/events stored connectivity", () => {
 		const body = (await response.json()) as DiagnosticsResponse;
 
 		expect(body.items.map((event) => event.technical_detail?.text)).toEqual([
+			"Failure category: connectivity. 5 inbound and 6 outbound operations.",
+			"Failure category: connectivity. 4 inbound and 5 outbound operations.",
 			"Failure category: connectivity. 3 inbound and 4 outbound operations.",
 			"Failure category: other. 2 inbound and 3 outbound operations.",
 			"Failure category: other. 1 inbound and 2 outbound operations.",
