@@ -339,6 +339,17 @@ describe("recordSyncAttempt", () => {
 			.get("peer-1") as { failure_category: string | null };
 		expect(attempt.failure_category).toBe("other");
 	});
+
+	it("adds the failure category column for databases created before it existed", () => {
+		db.exec("ALTER TABLE sync_attempts DROP COLUMN failure_category");
+
+		recordSyncAttempt(db, "peer-1", { ok: false, error: "connection refused" });
+
+		const attempt = db
+			.prepare("SELECT failure_category FROM sync_attempts WHERE peer_device_id = ?")
+			.get("peer-1") as { failure_category: string | null };
+		expect(attempt.failure_category).toBe("other");
+	});
 });
 
 // ---------------------------------------------------------------------------

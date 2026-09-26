@@ -768,7 +768,7 @@ function ensureSyncPeerRuntimeVersionColumns(db: DatabaseType): void {
 }
 
 /** Add the structured sync-attempt failure category without a schema-version bump. */
-function ensureSyncAttemptFailureCategoryColumn(db: DatabaseType): void {
+export function ensureSyncAttemptFailureCategoryColumn(db: DatabaseType): void {
 	if (!tableExists(db, "sync_attempts")) return;
 	addColumnIfMissing(db, "sync_attempts", "failure_category", "TEXT");
 }
