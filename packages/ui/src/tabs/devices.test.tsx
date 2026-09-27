@@ -1127,7 +1127,7 @@ describe("Device runtime metadata", () => {
 	});
 });
 describe("Device naming", () => {
-	it("opens rename from the row actions menu and returns focus when cancelled", () => {
+	it("opens rename from the row actions menu and returns focus when cancelled", async () => {
 		const renameDevice = vi.fn().mockResolvedValue(undefined);
 		mount(intent(), reconciliation(), {
 			inventory: inventory([inventoryItem("device-menu", "Work Laptop", "configured")]),
@@ -1154,6 +1154,23 @@ describe("Device naming", () => {
 		expect(document.activeElement).toBe(trigger);
 
 		const reopened = openRename();
+		const input = reopened.querySelector<HTMLInputElement>("input");
+		await act(async () => {
+			await Promise.resolve();
+		});
+		act(() => {
+			if (input) {
+				input.value = "Desk laptop";
+				input.dispatchEvent(new Event("input", { bubbles: true }));
+			}
+			input?.blur();
+		});
+		await act(async () => {
+			openRename();
+			await Promise.resolve();
+		});
+		expect(document.activeElement).toBe(input);
+		expect(input?.value).toBe("Desk laptop");
 		act(() => {
 			reopened.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		});

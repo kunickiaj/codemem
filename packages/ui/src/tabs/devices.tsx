@@ -1304,12 +1304,12 @@ function DeviceNameCell({
 	device,
 	onRenameClose,
 	options,
-	renameOpen,
+	renameRequest,
 }: {
 	device: DeviceProjection;
 	onRenameClose: () => void;
 	options: DevicesRendererOptions;
-	renameOpen: boolean;
+	renameRequest: number;
 }) {
 	return (
 		<td className="devices-table-device">
@@ -1320,7 +1320,8 @@ function DeviceNameCell({
 					onRenameClose();
 					document.getElementById(`device-actions-${device.deviceId}`)?.focus();
 				}}
-				open={renameOpen}
+				focusRequest={renameRequest}
+				open={renameRequest > 0}
 				options={options}
 			/>
 			{directLocalDeviceId(options) === device.deviceId ? (
@@ -1344,7 +1345,7 @@ function DeviceTableRow({
 	options: DevicesRendererOptions;
 }) {
 	const [detailsOpen, setDetailsOpen] = useState(false);
-	const [renameOpen, setRenameOpen] = useState(false);
+	const [renameRequest, setRenameRequest] = useState(0);
 	const rebindTriggerRef = useRef<HTMLButtonElement>(null);
 	const detailsId = `device-details-${device.deviceId}`;
 	return (
@@ -1363,9 +1364,9 @@ function DeviceTableRow({
 				</td>
 				<DeviceNameCell
 					device={device}
-					onRenameClose={() => setRenameOpen(false)}
+					onRenameClose={() => setRenameRequest(0)}
 					options={options}
-					renameOpen={renameOpen}
+					renameRequest={renameRequest}
 				/>
 				<td className="devices-table-availability" data-label="Availability">
 					{device.availabilityLabel}
@@ -1380,7 +1381,7 @@ function DeviceTableRow({
 						detailsOpen={detailsOpen}
 						inventoryItem={inventoryItem}
 						onDetails={() => setDetailsOpen((open) => !open)}
-						onRename={() => setRenameOpen(true)}
+						onRename={() => setRenameRequest((count) => count + 1)}
 						onRebind={() => {
 							setDetailsOpen(true);
 							queueMicrotask(() => openConfiguredRebind(device.deviceId, rebindTriggerRef.current));

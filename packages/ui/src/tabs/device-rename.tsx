@@ -64,11 +64,14 @@ function RenameForm({
 /** Rename form opened from the device row's actions menu. */
 export function RenameDevicePanel({
 	device,
+	focusRequest,
 	onClose,
 	open,
 	options,
 }: {
 	device: DeviceProjection;
+	/** Changes each time the menu asks for the form, so a repeat request refocuses it. */
+	focusRequest: number;
 	onClose: () => void;
 	open: boolean;
 	options: DevicesRendererOptions;
@@ -82,8 +85,10 @@ export function RenameDevicePanel({
 		if (!open) return;
 		setName(device.displayName);
 		setMessage("");
-		queueMicrotask(() => inputRef.current?.focus());
 	}, [open, device.displayName]);
+	useEffect(() => {
+		if (open && focusRequest > 0) queueMicrotask(() => inputRef.current?.focus());
+	}, [open, focusRequest]);
 	const save = async (event: Event) => {
 		event.preventDefault();
 		if (disabled) return;
