@@ -120,7 +120,10 @@ export function RenameDevicePanel({
 					disabled={disabled}
 					inputRef={inputRef}
 					name={name}
-					onCancel={onClose}
+					onCancel={() => {
+						setMessage("");
+						onClose();
+					}}
 					onName={setName}
 					onSave={(event) => void save(event)}
 				/>

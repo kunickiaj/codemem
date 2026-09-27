@@ -1126,7 +1126,7 @@ describe("Device runtime metadata", () => {
 		expect(document.querySelector(".devices-table-version")?.textContent).toBe("—");
 	});
 });
-describe("Device naming", () => {
+describe("Device rename menu", () => {
 	it.each([{ inventoryUnavailable: true }, { refreshError: true }])(
 		"disables the rename menu item when the device list is unavailable (%o)",
 		(state) => {
@@ -1160,6 +1160,25 @@ describe("Device naming", () => {
 		};
 		const trigger = document.querySelector(".devices-row-menu summary");
 
+		const invalid = openRename();
+		const invalidInput = invalid.querySelector<HTMLInputElement>("input");
+		act(() => {
+			if (invalidInput) {
+				invalidInput.value = "   ";
+				invalidInput.dispatchEvent(new Event("input", { bubbles: true }));
+			}
+		});
+		act(() => {
+			invalid.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+		});
+		expect(document.querySelector(".devices-rename [role=status]")?.textContent).toContain(
+			"Enter a device name",
+		);
+		act(() => {
+			invalid.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		});
+		expect(document.querySelector(".devices-rename [role=status]")).toBeNull();
+
 		const cancel = [...openRename().querySelectorAll("button")].find(
 			(button) => button.textContent === "Cancel",
 		);
@@ -1191,7 +1210,9 @@ describe("Device naming", () => {
 		expect(document.querySelector(".devices-rename-form")).toBeNull();
 		expect(renameDevice).not.toHaveBeenCalled();
 	});
+});
 
+describe("Device naming", () => {
 	it("renames a configured device separately from Identity reassignment", async () => {
 		const onNavigate = vi.fn();
 		const renameDevice = vi.fn().mockResolvedValue(undefined);
