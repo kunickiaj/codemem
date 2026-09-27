@@ -1127,6 +1127,20 @@ describe("Device runtime metadata", () => {
 	});
 });
 describe("Device naming", () => {
+	it.each([{ inventoryUnavailable: true }, { refreshError: true }])(
+		"disables the rename menu item when the device list is unavailable (%o)",
+		(state) => {
+			mount(intent(), reconciliation(), {
+				inventory: inventory([inventoryItem("device-menu", "Work Laptop", "configured")]),
+				...state,
+			});
+			const item = [
+				...document.querySelectorAll<HTMLButtonElement>(".devices-row-menu .feed-menu-item"),
+			].find((button) => button.textContent === "Rename device…");
+			expect(item?.disabled).toBe(true);
+		},
+	);
+
 	it("opens rename from the row actions menu and returns focus when cancelled", async () => {
 		const renameDevice = vi.fn().mockResolvedValue(undefined);
 		mount(intent(), reconciliation(), {

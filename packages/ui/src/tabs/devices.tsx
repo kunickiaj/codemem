@@ -1192,6 +1192,27 @@ function availabilityPipState(availability: DeviceAvailabilityState) {
 	return availability;
 }
 
+// Disabled while the device list is unavailable: the form would open with a
+// disabled field, leaving keyboard focus on the closed menu.
+function RenameMenuItem({
+	onSelect,
+	options,
+}: {
+	onSelect: () => void;
+	options: DevicesRendererOptions;
+}) {
+	return (
+		<button
+			className="feed-menu-item"
+			disabled={options.inventoryUnavailable === true || options.refreshError === true}
+			onClick={onSelect}
+			type="button"
+		>
+			Rename device…
+		</button>
+	);
+}
+
 function DeviceRowMenu({
 	device,
 	inventoryItem,
@@ -1268,9 +1289,7 @@ function DeviceRowMenu({
 				>
 					Details
 				</button>
-				<button className="feed-menu-item" onClick={() => select(onRename)} type="button">
-					Rename device…
-				</button>
+				<RenameMenuItem onSelect={() => select(onRename)} options={options} />
 				{inventoryItem ? (
 					<button
 						className="feed-menu-item"
