@@ -119,6 +119,9 @@ export function RenameDevicePanel({
 			);
 		} catch (error) {
 			setMessage(failureMessage(error));
+			// Focus was on the Save button, disabled while saving; return it to the
+			// field once the form is enabled again.
+			setTimeout(() => inputRef.current?.focus(), 0);
 		} finally {
 			setBusy(false);
 		}

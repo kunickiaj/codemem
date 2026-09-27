@@ -1126,7 +1126,43 @@ describe("Device runtime metadata", () => {
 		expect(document.querySelector(".devices-table-version")?.textContent).toBe("—");
 	});
 });
-describe("Device rename menu", () => {
+describe("Device rename saving", () => {
+	it("returns focus to the name field after a failed save", async () => {
+		vi.useFakeTimers();
+		try {
+			mount(intent(), reconciliation(), {
+				inventory: inventory([inventoryItem("device-fail", "Work Laptop", "configured")]),
+				renameDevice: vi.fn().mockRejectedValue(new Error("rename_failed")),
+			});
+			const item = [
+				...document.querySelectorAll<HTMLButtonElement>(".devices-row-menu .feed-menu-item"),
+			].find((button) => button.textContent === "Rename device…");
+			act(() => item?.click());
+			const form = document.querySelector<HTMLFormElement>(".devices-rename-form");
+			const input = form?.querySelector<HTMLInputElement>("input");
+			if (!form || !input) throw new Error("Rename form missing");
+			act(() => {
+				input.value = "Desk laptop";
+				input.dispatchEvent(new Event("input", { bubbles: true }));
+			});
+			await act(async () => {
+				await vi.runAllTimersAsync();
+			});
+			form.querySelector<HTMLButtonElement>('button[type="submit"]')?.focus();
+			expect(document.activeElement?.getAttribute("type")).toBe("submit");
+			await act(async () => {
+				form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+				await vi.runAllTimersAsync();
+			});
+			expect(document.querySelector(".devices-rename [role=status]")?.textContent).toContain(
+				"Device name was not saved",
+			);
+			expect(document.activeElement).toBe(input);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("focuses the row actions button when rename is requested during a save", async () => {
 		let finish: () => void = () => {};
 		const renameDevice = vi.fn(
@@ -1166,7 +1202,9 @@ describe("Device rename menu", () => {
 			await Promise.resolve();
 		});
 	});
+});
 
+describe("Device rename menu", () => {
 	it.each([{ inventoryUnavailable: true }, { refreshError: true }])(
 		"disables the rename menu item when the device list is unavailable (%o)",
 		(state) => {
