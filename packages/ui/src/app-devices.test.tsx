@@ -1277,9 +1277,9 @@ describe("Devices rename polling", () => {
 	afterEach(teardownDevicesAppTest);
 
 	it("does not replace the active rename form during a background refresh", async () => {
-		const trigger = document.querySelector<HTMLButtonElement>(
-			".devices-table-device .sync-subview-link",
-		);
+		const trigger = [
+			...document.querySelectorAll<HTMLButtonElement>(".devices-row-menu .feed-menu-item"),
+		].find((button) => button.textContent === "Rename device…");
 		act(() => trigger?.click());
 		const input = document.querySelector<HTMLInputElement>(".devices-rename-form input");
 		if (!input) throw new Error("Rename input missing");

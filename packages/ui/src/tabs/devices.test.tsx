@@ -1127,6 +1127,40 @@ describe("Device runtime metadata", () => {
 	});
 });
 describe("Device naming", () => {
+	it("opens rename from the row actions menu and returns focus when cancelled", () => {
+		const renameDevice = vi.fn().mockResolvedValue(undefined);
+		mount(intent(), reconciliation(), {
+			inventory: inventory([inventoryItem("device-menu", "Work Laptop", "configured")]),
+			renameDevice,
+		});
+		expect(document.querySelector(".devices-table-device button")).toBeNull();
+		const openRename = () => {
+			const item = [
+				...document.querySelectorAll<HTMLButtonElement>(".devices-row-menu .feed-menu-item"),
+			].find((button) => button.textContent === "Rename device…");
+			if (!item) throw new Error("Rename menu item missing");
+			act(() => item.click());
+			const form = document.querySelector<HTMLFormElement>(".devices-rename-form");
+			if (!form) throw new Error("Rename form missing");
+			return form;
+		};
+		const trigger = document.querySelector(".devices-row-menu summary");
+
+		const cancel = [...openRename().querySelectorAll("button")].find(
+			(button) => button.textContent === "Cancel",
+		);
+		act(() => cancel?.click());
+		expect(document.querySelector(".devices-rename-form")).toBeNull();
+		expect(document.activeElement).toBe(trigger);
+
+		const reopened = openRename();
+		act(() => {
+			reopened.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		});
+		expect(document.querySelector(".devices-rename-form")).toBeNull();
+		expect(renameDevice).not.toHaveBeenCalled();
+	});
+
 	it("renames a configured device separately from Identity reassignment", async () => {
 		const onNavigate = vi.fn();
 		const renameDevice = vi.fn().mockResolvedValue(undefined);
@@ -1147,7 +1181,7 @@ describe("Device naming", () => {
 			],
 		});
 		const rename = [
-			...document.querySelectorAll<HTMLButtonElement>(".devices-table-device button"),
+			...document.querySelectorAll<HTMLButtonElement>(".devices-row-menu .feed-menu-item"),
 		].find((button) => button.textContent?.includes("Rename device"));
 		expect(rename).toBeDefined();
 		act(() => rename?.click());
@@ -1252,7 +1286,7 @@ describe("Device identity grouping", () => {
 		expect(document.querySelector(".devices-identity-header")?.textContent).toContain(
 			"Adam & Co · 1 device",
 		);
-		expect(table.textContent).toContain("Work LaptopRename device…Available—");
+		expect(table.textContent).toContain("Work LaptopAvailable—");
 		expect(table.textContent).not.toContain("Owning Identity");
 		expect(table.textContent).not.toContain("Per-device Team access");
 		expect(document.body.textContent).toContain("Changing access stops future delivery");
@@ -1514,7 +1548,7 @@ describe("Device safe rendering", () => {
 		});
 
 		const text = document.body.textContent ?? "";
-		expect(text).toContain("Work LaptopRename device…Available");
+		expect(text).toContain("Work LaptopAvailable");
 		expect(text).toContain("Setup required");
 		expect(text).toContain("Pair this device first");
 		expect(text).toContain("Device evidence conflicts");

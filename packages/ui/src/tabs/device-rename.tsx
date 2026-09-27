@@ -1,4 +1,4 @@
-import { useRef, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { renameKnownDevice } from "../lib/api/sync";
 import type { DeviceProjection, DevicesRendererOptions } from "./devices";
 
@@ -21,6 +21,7 @@ function RenameForm({
 	disabled,
 	inputRef,
 	name,
+	onCancel,
 	onName,
 	onSave,
 }: {
@@ -28,11 +29,18 @@ function RenameForm({
 	disabled: boolean;
 	inputRef: ReturnType<typeof useRef<HTMLInputElement>>;
 	name: string;
+	onCancel: () => void;
 	onName: (value: string) => void;
 	onSave: (event: Event) => void;
 }) {
 	return (
-		<form className="devices-rename-form" onSubmit={onSave}>
+		<form
+			className="devices-rename-form"
+			onKeyDown={(event) => {
+				if (event.key === "Escape" && !busy) onCancel();
+			}}
+			onSubmit={onSave}
+		>
 			<label>
 				Device name
 				<input
@@ -46,23 +54,36 @@ function RenameForm({
 			<button className="settings-button" disabled={disabled} type="submit">
 				{busy ? "Saving…" : "Save name"}
 			</button>
+			<button className="settings-button" disabled={busy} onClick={onCancel} type="button">
+				Cancel
+			</button>
 		</form>
 	);
 }
 
-export function RenameDeviceAction({
+/** Rename form opened from the device row's actions menu. */
+export function RenameDevicePanel({
 	device,
+	onClose,
+	open,
 	options,
 }: {
 	device: DeviceProjection;
+	onClose: () => void;
+	open: boolean;
 	options: DevicesRendererOptions;
 }) {
-	const [open, setOpen] = useState(false);
 	const [name, setName] = useState(device.displayName);
 	const [busy, setBusy] = useState(false);
 	const [message, setMessage] = useState("");
 	const inputRef = useRef<HTMLInputElement>(null);
 	const disabled = busy || options.inventoryUnavailable === true || options.refreshError === true;
+	useEffect(() => {
+		if (!open) return;
+		setName(device.displayName);
+		setMessage("");
+		queueMicrotask(() => inputRef.current?.focus());
+	}, [open, device.displayName]);
 	const save = async (event: Event) => {
 		event.preventDefault();
 		if (disabled) return;
@@ -76,7 +97,7 @@ export function RenameDeviceAction({
 		try {
 			await (options.renameDevice ?? renameKnownDevice)(device.deviceId, name.trim());
 			const refreshed = await options.onCommitted?.();
-			setOpen(false);
+			onClose();
 			setMessage(
 				refreshed === false ? "Name saved. Refresh Devices to see it." : "Device renamed.",
 			);
@@ -88,25 +109,13 @@ export function RenameDeviceAction({
 	};
 	return (
 		<div className="devices-rename">
-			<button
-				aria-expanded={open}
-				className="sync-subview-link"
-				onClick={() => {
-					setOpen((current) => !current);
-					setName(device.displayName);
-					setMessage("");
-					queueMicrotask(() => inputRef.current?.focus());
-				}}
-				type="button"
-			>
-				Rename device…
-			</button>
 			{open ? (
 				<RenameForm
 					busy={busy}
 					disabled={disabled}
 					inputRef={inputRef}
 					name={name}
+					onCancel={onClose}
 					onName={setName}
 					onSave={(event) => void save(event)}
 				/>

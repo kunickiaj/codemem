@@ -24,7 +24,7 @@ import {
 } from "../lib/device-identity-inventory";
 import { copyToClipboard } from "../lib/dom";
 import { state } from "../lib/state";
-import { RenameDeviceAction } from "./device-rename";
+import { RenameDevicePanel } from "./device-rename";
 
 export type DeviceAvailabilityState = "available" | "offline" | "unknown";
 export type DevicesNavigationTarget =
@@ -1199,6 +1199,7 @@ function DeviceRowMenu({
 	detailsId,
 	detailsOpen,
 	onRebind,
+	onRename,
 	options,
 }: {
 	device: DeviceProjection;
@@ -1207,6 +1208,7 @@ function DeviceRowMenu({
 	detailsId: string;
 	detailsOpen: boolean;
 	onRebind: () => void;
+	onRename: () => void;
 	options: DevicesRendererOptions;
 }) {
 	const menuRef = useRef<HTMLDetailsElement>(null);
@@ -1266,6 +1268,9 @@ function DeviceRowMenu({
 				>
 					Details
 				</button>
+				<button className="feed-menu-item" onClick={() => select(onRename)} type="button">
+					Rename device…
+				</button>
 				{inventoryItem ? (
 					<button
 						className="feed-menu-item"
@@ -1287,6 +1292,46 @@ function rememberDetailsFocus(deviceId: string) {
 	};
 }
 
+function openConfiguredRebind(deviceId: string, trigger: HTMLButtonElement | null) {
+	if (trigger?.getAttribute("aria-expanded") !== "true") {
+		trigger?.click();
+		return;
+	}
+	document.getElementById(`configured-rebind-${deviceId}`)?.focus();
+}
+
+function DeviceNameCell({
+	device,
+	onRenameClose,
+	options,
+	renameOpen,
+}: {
+	device: DeviceProjection;
+	onRenameClose: () => void;
+	options: DevicesRendererOptions;
+	renameOpen: boolean;
+}) {
+	return (
+		<td className="devices-table-device">
+			<strong>{device.displayName}</strong>
+			<RenameDevicePanel
+				device={device}
+				onClose={() => {
+					onRenameClose();
+					document.getElementById(`device-actions-${device.deviceId}`)?.focus();
+				}}
+				open={renameOpen}
+				options={options}
+			/>
+			{directLocalDeviceId(options) === device.deviceId ? (
+				<Chip tone="actor-badge local" variant="badge">
+					This device
+				</Chip>
+			) : null}
+		</td>
+	);
+}
+
 function DeviceTableRow({
 	device,
 	intent,
@@ -1299,6 +1344,7 @@ function DeviceTableRow({
 	options: DevicesRendererOptions;
 }) {
 	const [detailsOpen, setDetailsOpen] = useState(false);
+	const [renameOpen, setRenameOpen] = useState(false);
 	const rebindTriggerRef = useRef<HTMLButtonElement>(null);
 	const detailsId = `device-details-${device.deviceId}`;
 	return (
@@ -1315,15 +1361,12 @@ function DeviceTableRow({
 						state={availabilityPipState(device.availability)}
 					/>
 				</td>
-				<td className="devices-table-device">
-					<strong>{device.displayName}</strong>
-					<RenameDeviceAction device={device} options={options} />
-					{directLocalDeviceId(options) === device.deviceId ? (
-						<Chip tone="actor-badge local" variant="badge">
-							This device
-						</Chip>
-					) : null}
-				</td>
+				<DeviceNameCell
+					device={device}
+					onRenameClose={() => setRenameOpen(false)}
+					options={options}
+					renameOpen={renameOpen}
+				/>
 				<td className="devices-table-availability" data-label="Availability">
 					{device.availabilityLabel}
 				</td>
@@ -1337,16 +1380,10 @@ function DeviceTableRow({
 						detailsOpen={detailsOpen}
 						inventoryItem={inventoryItem}
 						onDetails={() => setDetailsOpen((open) => !open)}
+						onRename={() => setRenameOpen(true)}
 						onRebind={() => {
 							setDetailsOpen(true);
-							queueMicrotask(() => {
-								const trigger = rebindTriggerRef.current;
-								if (trigger?.getAttribute("aria-expanded") !== "true") {
-									trigger?.click();
-									return;
-								}
-								document.getElementById(`configured-rebind-${device.deviceId}`)?.focus();
-							});
+							queueMicrotask(() => openConfiguredRebind(device.deviceId, rebindTriggerRef.current));
 						}}
 						options={options}
 					/>
