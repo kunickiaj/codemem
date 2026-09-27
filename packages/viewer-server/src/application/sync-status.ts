@@ -10,7 +10,7 @@ import {
 	readCoordinatorSyncConfig,
 	schema,
 } from "@codemem/core";
-import { count, desc, eq, max } from "drizzle-orm";
+import { count, eq, max } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { safeJsonList } from "../helpers.js";
 
@@ -382,25 +382,26 @@ function readPeerStatus(input: SyncStatusInput, localDeviceId: string | null): P
 }
 
 function readAttemptRows(store: MemoryStore): Record<string, unknown>[] {
-	return traceSync("attemptRows", () =>
-		drizzle(store.db, { schema })
-			.select({
-				peer_device_id: schema.syncAttempts.peer_device_id,
-				ok: schema.syncAttempts.ok,
-				error: schema.syncAttempts.error,
-				started_at: schema.syncAttempts.started_at,
-				finished_at: schema.syncAttempts.finished_at,
-				ops_in: schema.syncAttempts.ops_in,
-				ops_out: schema.syncAttempts.ops_out,
-				local_sync_capability: schema.syncAttempts.local_sync_capability,
-				peer_sync_capability: schema.syncAttempts.peer_sync_capability,
-				negotiated_sync_capability: schema.syncAttempts.negotiated_sync_capability,
-			})
-			.from(schema.syncAttempts)
-			.orderBy(desc(schema.syncAttempts.finished_at))
-			.limit(25)
-			.all(),
-	);
+	return traceSync("attemptRows", () => {
+		const columns = `peer_device_id, ok, error, started_at, finished_at, ops_in, ops_out,
+			local_sync_capability, peer_sync_capability, negotiated_sync_capability`;
+		// finished_at equals the indexed effective timestamp for finished rows.
+		const completed = store.db
+			.prepare(
+				`SELECT ${columns} FROM sync_attempts WHERE finished_at IS NOT NULL
+				 ORDER BY CASE WHEN finished_at IS NULL THEN started_at ELSE finished_at END DESC, id DESC
+				 LIMIT 25`,
+			)
+			.all() as Record<string, unknown>[];
+		if (completed.length === 25) return completed;
+		// Old attempts without a completion time sort after finished ones.
+		const unfinished = store.db
+			.prepare(
+				`SELECT ${columns} FROM sync_attempts WHERE finished_at IS NULL ORDER BY id ASC LIMIT ?`,
+			)
+			.all(25 - completed.length) as Record<string, unknown>[];
+		return [...completed, ...unfinished];
+	});
 }
 
 function readPeerAddressMap(store: MemoryStore): Map<string, string[]> {

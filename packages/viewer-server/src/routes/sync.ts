@@ -3662,6 +3662,19 @@ function addLegacySharedReviewRow(
 }
 
 function collectLegacySharedReviewGroups(store: MemoryStore) {
+	const hasLegacyRows = store.db
+		.prepare(
+			`SELECT 1 FROM memory_items
+			 WHERE scope_id = ? AND active = 1 AND deleted_at IS NULL LIMIT 1`,
+		)
+		.get(LEGACY_SHARED_REVIEW_SCOPE_ID);
+	if (!hasLegacyRows) {
+		return {
+			groups: new Map<string, LegacySharedReviewGroupAccumulator>(),
+			lastUpdatedAt: null,
+			memoryCount: 0,
+		};
+	}
 	const ownedBySelf = store.buildOwnershipPredicate();
 	const repositoryIdentities = repositoryIdentitiesByWorkspace(store.db);
 	const candidatesByIdentity = new Map(
@@ -4225,13 +4238,21 @@ const SYNC_DIRECTION_WINDOW_SECONDS = 24 * 60 * 60;
 
 function recentPeerOps(store: MemoryStore): Map<string, { in: number; out: number }> {
 	const cutoff = new Date(Date.now() - SYNC_DIRECTION_WINDOW_SECONDS * 1000).toISOString();
+	// Read the time range before grouping: otherwise SQLite scans the peer index
+	// instead of the existing partial success/effective-time index. ok <> 0
+	// matches that index's predicate; ok = 1 preserves the existing count.
 	const rows = store.db
 		.prepare(
 			`SELECT peer_device_id,
 			        COALESCE(SUM(ops_in), 0) AS ops_in,
 			        COALESCE(SUM(ops_out), 0) AS ops_out
-			   FROM sync_attempts
-			  WHERE ok = 1 AND finished_at IS NOT NULL AND finished_at >= ?
+			   FROM (
+			     SELECT peer_device_id, ops_in, ops_out
+			       FROM sync_attempts
+			      WHERE ok = 1 AND ok <> 0 AND finished_at IS NOT NULL
+			        AND CASE WHEN finished_at IS NULL THEN started_at ELSE finished_at END >= ?
+			      ORDER BY CASE WHEN finished_at IS NULL THEN started_at ELSE finished_at END DESC
+			   )
 			  GROUP BY peer_device_id`,
 		)
 		.all(cutoff) as Array<{
