@@ -16,6 +16,16 @@ function failureMessage(error: unknown): string {
 	return "Device name was not saved. Refresh Devices and retry.";
 }
 
+// The menu that opened the form is closed by now. A disabled input (while
+// saving) cannot take focus, so fall back to the row's actions button.
+function focusRenameTarget(input: HTMLInputElement | null, deviceId: string) {
+	if (input && !input.disabled) {
+		input.focus();
+		return;
+	}
+	document.getElementById(`device-actions-${deviceId}`)?.focus();
+}
+
 function RenameForm({
 	busy,
 	disabled,
@@ -87,8 +97,9 @@ export function RenameDevicePanel({
 		setMessage("");
 	}, [open, device.displayName]);
 	useEffect(() => {
-		if (open && focusRequest > 0) queueMicrotask(() => inputRef.current?.focus());
-	}, [open, focusRequest]);
+		if (!open || focusRequest <= 0) return;
+		queueMicrotask(() => focusRenameTarget(inputRef.current, device.deviceId));
+	}, [open, focusRequest, device.deviceId]);
 	const save = async (event: Event) => {
 		event.preventDefault();
 		if (disabled) return;

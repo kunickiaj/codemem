@@ -1127,6 +1127,46 @@ describe("Device runtime metadata", () => {
 	});
 });
 describe("Device rename menu", () => {
+	it("focuses the row actions button when rename is requested during a save", async () => {
+		let finish: () => void = () => {};
+		const renameDevice = vi.fn(
+			() =>
+				new Promise<void>((resolve) => {
+					finish = resolve;
+				}),
+		);
+		mount(intent(), reconciliation(), {
+			inventory: inventory([inventoryItem("device-busy", "Work Laptop", "configured")]),
+			renameDevice,
+		});
+		const menuItem = () =>
+			[...document.querySelectorAll<HTMLButtonElement>(".devices-row-menu .feed-menu-item")].find(
+				(button) => button.textContent === "Rename device…",
+			);
+		act(() => menuItem()?.click());
+		const form = document.querySelector<HTMLFormElement>(".devices-rename-form");
+		const input = form?.querySelector<HTMLInputElement>("input");
+		if (!form || !input) throw new Error("Rename form missing");
+		act(() => {
+			input.value = "Desk laptop";
+			input.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		await act(async () => {
+			form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+			await Promise.resolve();
+		});
+		expect(input.disabled).toBe(true);
+		await act(async () => {
+			menuItem()?.click();
+			await Promise.resolve();
+		});
+		expect(document.activeElement).toBe(document.querySelector(".devices-row-menu summary"));
+		await act(async () => {
+			finish();
+			await Promise.resolve();
+		});
+	});
+
 	it.each([{ inventoryUnavailable: true }, { refreshError: true }])(
 		"disables the rename menu item when the device list is unavailable (%o)",
 		(state) => {
