@@ -170,6 +170,8 @@ has no evaluated runs and null rates, rather than a quality pass.
 - `claude_command` controls how `claude_sidecar` invokes Claude CLI (default `["claude"]`).
   - Wrapper example: `"claude_command": ["wrapper", "claude", "--"]`
 - `codex_sidecar` runs observer calls through the local Codex CLI login and does not require `OPENAI_API_KEY`.
+- OpenCode V2 keeps refreshed provider credentials in its service database, not the legacy `auth.json` file. `api_http` cannot reuse a V2-only login through that old file; use a separately configured API credential or choose `codex_sidecar` for an existing ChatGPT-backed Codex CLI login. Codemem does not copy credentials out of OpenCode's database.
+- When observer authentication is missing or rejected, new raw-event batches stay visibly failed and retryable without spending flush attempts or advancing their stream cursor. The sweeper backs off until credentials become available. This does not recover older batches that already exhausted retries under earlier versions.
 - `codex_command` controls how `codex_sidecar` invokes Codex CLI (default `["codex"]`).
 - Default model selection:
 - `api_http`: `gpt-5.4-mini` unless `observer_model` is set.

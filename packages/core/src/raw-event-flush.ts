@@ -116,6 +116,79 @@ function flushFailureErrorType(error: Error): string {
 	return error.name;
 }
 
+function releaseBatchForAuthFailure(
+	store: MemoryStore,
+	batchId: number,
+	error: Error,
+	status: ReturnType<NonNullable<IngestOptions["observer"]>["getStatus"]> | null,
+): ObserverAuthError | null {
+	const missingAuth =
+		status?.lastError?.code === "auth_missing" &&
+		((error instanceof RawEventObserverOutputError && error.reason === "empty_observer_output") ||
+			(error instanceof ObserverOutputTransportError && error.code === "observer_auth_missing"));
+	if (!(error instanceof ObserverAuthError || missingAuth)) return null;
+	const authError =
+		error instanceof ObserverAuthError
+			? error
+			: new ObserverAuthError("Observer authentication is not configured", {
+					code: "auth_missing",
+					message: "Observer authentication is not configured",
+				});
+	const released = store.releaseRawEventFlushBatchAfterAuthError(batchId, {
+		code: authError.detail.code,
+		provider: status?.provider ?? null,
+		model: status?.model ?? null,
+		runtime: status?.runtime ?? null,
+		authSource: status?.auth?.source ?? null,
+		authType: status?.auth?.type ?? null,
+	});
+	return released ? authError : null;
+}
+
+function normalizedFlushErrorType(
+	error: Error,
+	observerFailure: boolean,
+	isNonErrorRejection: boolean,
+	isLegacyRediagnosis: boolean,
+): string {
+	let type = flushFailureErrorType(error);
+	if (type === "Error" && (observerFailure || isNonErrorRejection)) type = OBSERVER_CALL_ERROR_TYPE;
+	if (type === "Error" && isLegacyRediagnosis) type = LEGACY_REDIAGNOSIS_FAILED_ERROR_TYPE;
+	return type;
+}
+
+function handleFlushFailure(
+	store: MemoryStore,
+	ingestOpts: IngestOptions,
+	batchId: number,
+	isLegacyRediagnosis: boolean,
+	exc: unknown,
+): never {
+	const observerFailureStatus = rawEventObserverStatusFromError(exc);
+	const err = exc instanceof Error ? exc : new Error(String(exc));
+	const status = observerFailureStatus ?? ingestOpts.observer?.getStatus?.();
+	const provider = status?.provider as string | undefined;
+	const authError = releaseBatchForAuthFailure(store, batchId, err, status ?? null);
+	if (authError) throw authError;
+	store.recordRawEventFlushBatchFailure(batchId, {
+		message: truncateErrorMessage(summarizeFlushFailure(err, provider)),
+		errorType: normalizedFlushErrorType(
+			err,
+			observerFailureStatus !== null,
+			!(exc instanceof Error),
+			isLegacyRediagnosis,
+		),
+		observerProvider: provider ?? null,
+		observerModel: status?.model ?? null,
+		observerRuntime: status?.runtime ?? null,
+		observerAuthSource: status?.auth?.source ?? null,
+		observerAuthType: status?.auth?.type ?? null,
+		observerErrorCode: status?.lastError?.code ?? null,
+		observerErrorMessage: truncateErrorMessage(status?.lastError?.message ?? "", 400) || null,
+	});
+	throw exc;
+}
+
 function isTerminalNoOutputMicrobatch(
 	events: Record<string, unknown>[],
 	failure: {
@@ -503,34 +576,7 @@ export async function flushRawEvents(
 	try {
 		await ingest(payload, store, ingestOpts);
 	} catch (exc) {
-		// Record failure details on the batch
-		const observerFailureStatus = rawEventObserverStatusFromError(exc);
-		const isNonErrorRejection = !(exc instanceof Error);
-		const err = exc instanceof Error ? exc : new Error(String(exc));
-		const status = observerFailureStatus ?? ingestOpts.observer?.getStatus?.();
-		const provider = status?.provider as string | undefined;
-		const message = truncateErrorMessage(summarizeFlushFailure(err, provider));
-		const reportedErrorType = flushFailureErrorType(err);
-		const currentErrorType =
-			reportedErrorType === "Error" && (observerFailureStatus || isNonErrorRejection)
-				? OBSERVER_CALL_ERROR_TYPE
-				: reportedErrorType;
-		const errorType =
-			isLegacyRediagnosis && currentErrorType === "Error"
-				? LEGACY_REDIAGNOSIS_FAILED_ERROR_TYPE
-				: currentErrorType;
-		store.recordRawEventFlushBatchFailure(batchId, {
-			message,
-			errorType,
-			observerProvider: provider ?? null,
-			observerModel: status?.model ?? null,
-			observerRuntime: status?.runtime ?? null,
-			observerAuthSource: status?.auth?.source ?? null,
-			observerAuthType: status?.auth?.type ?? null,
-			observerErrorCode: status?.lastError?.code ?? null,
-			observerErrorMessage: truncateErrorMessage(status?.lastError?.message ?? "", 400) || null,
-		});
-		throw exc;
+		handleFlushFailure(store, ingestOpts, batchId, isLegacyRediagnosis, exc);
 	}
 
 	// Success — mark batch completed and advance flush state

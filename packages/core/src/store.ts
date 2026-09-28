@@ -2379,6 +2379,45 @@ export class MemoryStore {
 		return row != null;
 	}
 
+	/** Keep auth failures visible and retryable without consuming an observer attempt. */
+	releaseRawEventFlushBatchAfterAuthError(
+		batchId: number,
+		failure: {
+			code: string;
+			provider: string | null;
+			model: string | null;
+			runtime: string | null;
+			authSource: string | null;
+			authType: string | null;
+		},
+	): boolean {
+		const row = this.d
+			.update(schema.rawEventFlushBatches)
+			.set({
+				status: "failed",
+				updated_at: new Date().toISOString(),
+				attempt_count: sql`MAX(0, ${schema.rawEventFlushBatches.attempt_count} - 1)`,
+				error_type: "ObserverAuthError",
+				error_message: "Observer authentication failed; waiting for credentials.",
+				observer_provider: failure.provider,
+				observer_model: failure.model,
+				observer_runtime: failure.runtime,
+				observer_auth_source: failure.authSource,
+				observer_auth_type: failure.authType,
+				observer_error_code: failure.code,
+				observer_error_message: null,
+			})
+			.where(
+				and(
+					eq(schema.rawEventFlushBatches.id, batchId),
+					eq(schema.rawEventFlushBatches.status, "claimed"),
+				),
+			)
+			.returning({ id: schema.rawEventFlushBatches.id })
+			.get();
+		return row != null;
+	}
+
 	/**
 	 * Update the status of a flush batch.
 	 * Port of update_raw_event_flush_batch_status().
