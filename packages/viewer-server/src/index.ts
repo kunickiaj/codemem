@@ -25,7 +25,7 @@ import {
 	createInMemoryRequestRateLimiter,
 	type InMemoryRequestRateLimiter,
 } from "./request-rate-limit.js";
-import { configRoutes } from "./routes/config.js";
+import { type ConfigRouteOptions, configRoutes } from "./routes/config.js";
 import { diagnosticsRoutes } from "./routes/diagnostics.js";
 import { healthRoutes } from "./routes/health.js";
 import { memoryRoutes } from "./routes/memory.js";
@@ -118,6 +118,9 @@ export interface AppOptions {
 	rawEventTarget?: ViewerTargetStore;
 	sweeper?: RawEventSweeper | null;
 	observer?: ObserverClient | null;
+	getObserver?: () => ObserverClient | null;
+	scheduleObserverApply?: ConfigRouteOptions["scheduleObserverApply"];
+	getObserverApplyStatus?: ConfigRouteOptions["getObserverApplyStatus"];
 	getUpdateStatus?: (options: GetUpdateStatusOptions) => Promise<UpdateStatus>;
 	loadDeviceIdentityCoordinatorEvidence?: () => Promise<DeviceIdentityCoordinatorEvidence>;
 	loadLegacyTeamConfiguredGroupSnapshots?: LegacyTeamConfiguredGroupSnapshotLoader;
@@ -178,10 +181,25 @@ function registerStaticRoutes(app: Hono): void {
 	});
 }
 
+function registerConfigRoutes(
+	app: Hono,
+	opts: AppOptions | undefined,
+	sweeper: RawEventSweeper | null,
+): void {
+	app.route(
+		"/",
+		configRoutes({
+			getSweeper: () => sweeper,
+			scheduleObserverApply: opts?.scheduleObserverApply,
+			getObserverApplyStatus: opts?.getObserverApplyStatus,
+		}),
+	);
+}
+
 export function createApp(opts?: AppOptions) {
 	const storeFactory = opts?.storeFactory ?? getStore;
 	const sweeper = opts?.sweeper ?? null;
-	const observer = opts?.observer ?? null;
+	const getObserver = opts?.getObserver ?? (() => opts?.observer ?? null);
 	const getSyncRuntimeStatus = opts?.getSyncRuntimeStatus ?? (() => null);
 	let invalidateTeamSetupSummary = () => {};
 	const app = new Hono();
@@ -209,10 +227,10 @@ export function createApp(opts?: AppOptions) {
 		observerStatusRoutes({
 			getStore: storeFactory,
 			getSweeper: () => sweeper,
-			getObserver: () => observer,
+			getObserver,
 		}),
 	);
-	app.route("/", configRoutes({ getSweeper: () => sweeper }));
+	registerConfigRoutes(app, opts, sweeper);
 	app.route("/", rawEventsRoutes(storeFactory, sweeper, opts?.rawEventInbox, opts?.rawEventTarget));
 	app.route(
 		"/",

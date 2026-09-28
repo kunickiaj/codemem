@@ -215,6 +215,22 @@ export class RawEventSweeper {
 		}
 	}
 
+	/** Apply new observer settings after all previously dispatched work settles. */
+	async reconfigureObserver(
+		createObserver: () => IngestOptions["observer"],
+		options: { shouldResume?: () => boolean } = {},
+	): Promise<IngestOptions["observer"] | null> {
+		await this.stop();
+		if (options.shouldResume?.() === false) return null;
+		const observer = createObserver();
+		this.ingestOpts = { ...this.ingestOpts, observer };
+		this.authBackoffUntil = 0;
+		this.authErrorLogged = false;
+		this.start();
+		this.wake();
+		return observer;
+	}
+
 	/**
 	 * Notify the sweeper that config changed.
 	 * Schedules an extra tick after a short delay.
@@ -256,6 +272,7 @@ export class RawEventSweeper {
 
 	/** Flush one session immediately through the event visible at this boundary. */
 	async flushBoundary(opencodeSessionId: string, source = "opencode"): Promise<void> {
+		if (this.stopping) return;
 		const streamId = opencodeSessionId.trim();
 		if (!streamId) return;
 		const sourceNorm = source.trim().toLowerCase() || "opencode";
@@ -355,7 +372,7 @@ export class RawEventSweeper {
 			drainThroughEventSeq?: number;
 		} = {},
 	): Promise<void> {
-		if (!options.bypassAuthBackoff && Date.now() / 1000 < this.authBackoffUntil) return;
+		if (this.shouldDeferFlush(options)) return;
 		const key = `${source}:${opencodeSessionId}`;
 		const finishSessionFlush = await this.acquireSessionFlush(key, options.waitForActive === true);
 		if (finishSessionFlush === null) {
@@ -369,7 +386,9 @@ export class RawEventSweeper {
 		}
 		try {
 			const maxEvents = this.workerMaxEvents();
-			while (true) {
+			let first = true;
+			while (first || !this.stopping) {
+				first = false;
 				const result = await flushRawEvents(this.store, this.ingestOpts, {
 					opencodeSessionId,
 					source,
@@ -404,6 +423,12 @@ export class RawEventSweeper {
 				this.scheduleAutoFlush(opencodeSessionId, source);
 			}
 		}
+	}
+
+	private shouldDeferFlush(options: { bypassAuthBackoff?: boolean }): boolean {
+		return (
+			this.stopping || (!options.bypassAuthBackoff && Date.now() / 1000 < this.authBackoffUntil)
+		);
 	}
 
 	/** Schedule the next tick after the configured interval. */
@@ -469,6 +494,91 @@ export class RawEventSweeper {
 		if (retentionMs > 0) this.store.purgeRawEvents(retentionMs);
 	}
 
+	private handleSessionFlushError(
+		error: unknown,
+		streamId: string,
+		phase: "queue" | "active",
+	): boolean {
+		if (error instanceof ObserverAuthError) {
+			this.handleAuthError(error);
+			return true;
+		}
+		const label = phase === "queue" ? "queue worker" : "sweeper";
+		console.error(
+			`codemem: raw event ${label} flush failed for ${streamId}:`,
+			error instanceof Error ? error.message : error,
+		);
+		return false;
+	}
+
+	private async flushPendingQueueSessions(
+		maxEvents: number | null,
+		sessionLimit: number,
+	): Promise<Set<string> | null> {
+		const drained = new Set<string>();
+		for (const { source, streamId } of this.store.rawEventSessionsWithPendingQueue(sessionLimit)) {
+			if (this.stopping) return null;
+			if (!streamId) continue;
+			const key = `${source}:${streamId}`;
+			const finish = await this.acquireSessionFlush(key, false);
+			if (!finish) continue;
+			try {
+				if (this.stopping) return null;
+				await flushRawEvents(this.store, this.ingestOpts, {
+					opencodeSessionId: streamId,
+					source,
+					cwd: null,
+					project: null,
+					startedAt: null,
+					maxEvents,
+				});
+				drained.add(key);
+			} catch (error) {
+				if (this.handleSessionFlushError(error, streamId, "queue")) return null;
+			} finally {
+				finish();
+			}
+		}
+		return drained;
+	}
+
+	private async flushActiveSessions(
+		maxEvents: number | null,
+		sessionLimit: number,
+		drained: ReadonlySet<string>,
+	): Promise<boolean> {
+		for (const { source, streamId } of this.store.rawEventSessionsPendingFlush(sessionLimit)) {
+			if (this.stopping) return false;
+			if (this.skipActiveSession(source, streamId, drained)) continue;
+			const finish = await this.acquireSessionFlush(`${source}:${streamId}`, false);
+			if (!finish) continue;
+			try {
+				if (this.stopping) return false;
+				await flushRawEvents(this.store, this.ingestOpts, {
+					opencodeSessionId: streamId,
+					source,
+					cwd: null,
+					project: null,
+					startedAt: null,
+					maxEvents,
+				});
+			} catch (error) {
+				if (this.handleSessionFlushError(error, streamId, "active")) return false;
+			} finally {
+				finish();
+			}
+		}
+		return true;
+	}
+
+	private skipActiveSession(
+		source: string,
+		streamId: string,
+		drained: ReadonlySet<string>,
+	): boolean {
+		return !streamId || drained.has(`${source}:${streamId}`);
+	}
+
 	// -----------------------------------------------------------------------
 	// Tick — one sweep cycle
 	// -----------------------------------------------------------------------
@@ -483,7 +593,7 @@ export class RawEventSweeper {
 	 * 5. Flush sessions with unflushed events
 	 */
 	async tick(): Promise<void> {
-		if (!this.enabled()) return;
+		if (!this.enabled() || this.stopping) return;
 
 		// Skip while backing off from auth error
 		const now = Date.now() / 1000;
@@ -508,73 +618,10 @@ export class RawEventSweeper {
 
 		const maxEvents = this.workerMaxEvents();
 		const sessionLimit = this.limit();
-		const drained = new Set<string>();
-
-		// Phase 1: Flush sessions with pending queue entries
-		const queueSessions = this.store.rawEventSessionsWithPendingQueue(sessionLimit);
-		for (const item of queueSessions) {
-			const { source, streamId } = item;
-			if (!streamId) continue;
-			const key = `${source}:${streamId}`;
-			const finishSessionFlush = await this.acquireSessionFlush(key, false);
-			if (finishSessionFlush === null) continue;
-
-			try {
-				await flushRawEvents(this.store, this.ingestOpts, {
-					opencodeSessionId: streamId,
-					source,
-					cwd: null,
-					project: null,
-					startedAt: null,
-					maxEvents,
-				});
-				drained.add(`${source}:${streamId}`);
-			} catch (exc) {
-				if (exc instanceof ObserverAuthError) {
-					this.handleAuthError(exc);
-					return; // Stop all flush work during auth backoff
-				}
-				console.error(
-					`codemem: raw event queue worker flush failed for ${streamId}:`,
-					exc instanceof Error ? exc.message : exc,
-				);
-			} finally {
-				finishSessionFlush();
-			}
-		}
-
-		// Phase 2: Flush accepted events even while their session remains active.
-		const pendingSessions = this.store.rawEventSessionsPendingFlush(sessionLimit);
-		for (const item of pendingSessions) {
-			const { source, streamId } = item;
-			if (!streamId) continue;
-			if (drained.has(`${source}:${streamId}`)) continue;
-			const key = `${source}:${streamId}`;
-			const finishSessionFlush = await this.acquireSessionFlush(key, false);
-			if (finishSessionFlush === null) continue;
-
-			try {
-				await flushRawEvents(this.store, this.ingestOpts, {
-					opencodeSessionId: streamId,
-					source,
-					cwd: null,
-					project: null,
-					startedAt: null,
-					maxEvents,
-				});
-			} catch (exc) {
-				if (exc instanceof ObserverAuthError) {
-					this.handleAuthError(exc);
-					return; // Stop all flush work during auth backoff
-				}
-				console.error(
-					`codemem: raw event sweeper flush failed for ${streamId}:`,
-					exc instanceof Error ? exc.message : exc,
-				);
-			} finally {
-				finishSessionFlush();
-			}
-		}
+		const drained = await this.flushPendingQueueSessions(maxEvents, sessionLimit);
+		if (!drained) return;
+		if (!(await this.flushActiveSessions(maxEvents, sessionLimit, drained))) return;
+		if (this.stopping) return;
 		await this.recoverMissingAuthHistory();
 	}
 }

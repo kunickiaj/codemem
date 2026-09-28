@@ -77,7 +77,7 @@ export function describeEffectiveSettings(
 	if (hasEnvironmentOverrides) {
 		return "Fields show configuration-resolved values. Runtime behavior may apply automatic provider defaults. Environment settings supply some fields.";
 	}
-	return "Fields show configuration-resolved values. Runtime behavior may apply automatic provider defaults. Restart-dependent changes are labeled below.";
+	return "Fields show configuration-resolved values. Active observer and tier choices are shown separately. Restart-dependent changes are labeled below.";
 }
 
 export function renderConfigModal(payload: unknown) {
@@ -98,6 +98,7 @@ export function renderConfigModal(payload: unknown) {
 	settingsState.effectiveConfig = { ...config, ...data.effective };
 	settingsState.resolvedObserverRuntime = data.resolved_observer_runtime ?? null;
 	settingsState.observerRuntimeByAuthSource = data.observer_runtime_by_auth_source ?? {};
+	settingsState.observerApply = data.observer_apply ?? null;
 	settingsState.protectedKeys = new Set(protectedKeys);
 	state.configDefaults = defaults;
 	state.configPath = data.path || "";

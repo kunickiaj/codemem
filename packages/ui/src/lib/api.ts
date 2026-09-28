@@ -5,7 +5,7 @@
  * keeps the public API stable for `import * as api from "../lib/api"`
  * call sites. */
 
-export { loadConfig, loadObserverStatus, saveConfig } from "./api/config";
+export { applyObserverConfig, loadConfig, loadObserverStatus, saveConfig } from "./api/config";
 export {
 	archiveCoordinatorAdminGroup,
 	createCoordinatorAdminGroup,

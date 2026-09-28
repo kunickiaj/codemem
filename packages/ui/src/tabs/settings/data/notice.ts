@@ -8,6 +8,7 @@ import { formatSettingsKey, joinPhrases } from "./format";
 interface SettingsSaveEffects {
 	hot_reloaded_keys?: unknown;
 	live_applied_keys?: unknown;
+	applying_keys?: unknown;
 	restart_required_keys?: unknown;
 	warnings?: unknown;
 	manual_actions?: unknown;
@@ -18,6 +19,24 @@ interface SettingsSaveEffects {
 		affected_keys?: unknown;
 		ok?: boolean;
 	};
+}
+
+function noticeHasWarning(
+	effects: SettingsSaveEffects,
+	restartRequired: string[],
+	warnings: string[],
+	observerApplying: boolean,
+): boolean {
+	return (
+		observerApplying ||
+		restartRequired.length > 0 ||
+		warnings.length > 0 ||
+		effects.sync?.ok === false
+	);
+}
+
+function observerApplyPending(effects: SettingsSaveEffects): boolean {
+	return Array.isArray(effects.applying_keys) && effects.applying_keys.length > 0;
 }
 
 export function buildSettingsNotice(payload: unknown): {
@@ -36,6 +55,7 @@ export function buildSettingsNotice(payload: unknown): {
 	const restartRequired = Array.isArray(effects.restart_required_keys)
 		? effects.restart_required_keys.map((key) => formatSettingsKey(String(key)))
 		: [];
+	const observerApplying = observerApplyPending(effects);
 	const warnings = Array.isArray(effects.warnings)
 		? effects.warnings.filter(
 				(value): value is string => typeof value === "string" && value.trim().length > 0,
@@ -52,6 +72,9 @@ export function buildSettingsNotice(payload: unknown): {
 	}
 	if (liveApplied.length) {
 		lines.push(`Live settings updated: ${joinPhrases(liveApplied)}.`);
+	}
+	if (observerApplying) {
+		lines.push("Observer settings saved. Applying them now; new events will wait.");
 	}
 	if (sync.attempted && typeof sync.message === "string" && sync.message) {
 		lines.push(`Sync: ${sync.message}.`);
@@ -78,6 +101,6 @@ export function buildSettingsNotice(payload: unknown): {
 		lines.push("Saved.");
 	}
 
-	const hasWarning = restartRequired.length > 0 || warnings.length > 0 || sync.ok === false;
+	const hasWarning = noticeHasWarning(effects, restartRequired, warnings, observerApplying);
 	return { message: lines.join(" "), type: hasWarning ? "warning" : "success" };
 }

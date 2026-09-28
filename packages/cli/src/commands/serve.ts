@@ -20,6 +20,7 @@ import {
 import type { ReconcileConfiguredCoordinatorEnrollmentResult } from "@codemem/server";
 import { Command, Option } from "commander";
 import { helpStyle } from "../help-style.js";
+import { ObserverRuntimeController } from "../observer-runtime-controller.js";
 import {
 	addConfigOption,
 	addDbOption,
@@ -712,6 +713,11 @@ function startRawEventProcessing(
 	createInbox: typeof import("@codemem/server").createViewerRawEventInbox,
 ) {
 	const sweeper = new RawEventSweeper(store, { observer });
+	const observerRuntime = new ObserverRuntimeController(
+		observer,
+		sweeper,
+		() => new ObserverClient(),
+	);
 	sweeper.start();
 	const queue = createInbox({
 		dbPath,
@@ -741,10 +747,13 @@ function startRawEventProcessing(
 			rawEventInbox: queue.inbox,
 			rawEventTarget,
 			sweeper,
-			observer,
+			getObserver: () => observerRuntime.getObserver(),
+			scheduleObserverApply: () => observerRuntime.requestApply(),
+			getObserverApplyStatus: () => observerRuntime.getStatus(),
 		},
 		stop: async () => {
 			rawEventTarget.stop();
+			await observerRuntime.stop();
 			await queue.stop();
 			await sweeper.stop();
 		},

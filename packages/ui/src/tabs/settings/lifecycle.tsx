@@ -13,13 +13,19 @@ import {
 	focusFirstRunGuide,
 	reopenFirstRunGuide,
 } from "../feed/data/first-run-guide";
+import { ObserverApplyDetails } from "./components/ObserverApplyDetails";
 import type { ObserverStatusShape } from "./components/ObserverStatusBanner";
 import { ObserverStatusBanner as ObserverStatusBannerComponent } from "./components/ObserverStatusBanner";
 import { SettingsDialogShell } from "./components/SettingsDialogShell";
 import { SettingsModalContent } from "./components/SettingsModalContent";
-import { collectSettingsPayload, isProtectedConfigKey } from "./data/config-loader";
+import {
+	collectSettingsPayload,
+	isProtectedConfigKey,
+	renderObserverStatusBanner,
+} from "./data/config-loader";
 import { diffSettingsPayload } from "./data/diff-payload";
 import { createSettingsEventHandlers } from "./data/event-handlers";
+import type { ObserverApplyPayload } from "./data/form-state";
 import {
 	getObserverModelDescription as getObserverModelDescriptionRaw,
 	getObserverModelHint as getObserverModelHintRaw,
@@ -63,13 +69,46 @@ const { onTextInput, onSelectValueChange, onSwitchInput } = createSettingsEventH
 	setDirty: (dirty) => setDirty(dirty),
 });
 
+function updateObserverApply(payload: unknown): void {
+	if (!payload || typeof payload !== "object") return;
+	const apply = (payload as { observer_apply?: ObserverApplyPayload }).observer_apply;
+	if (!apply || !["active", "applying", "failed"].includes(apply.state)) return;
+	settingsState.observerApply = apply;
+	updateRenderState({});
+}
+
+async function retryObserverApply(): Promise<void> {
+	try {
+		updateObserverApply(await api.applyObserverConfig());
+	} catch {
+		showGlobalNotice("Observer settings could not be applied. Retry from Settings.", "warning");
+	}
+}
+
+async function refreshObserverApply(): Promise<void> {
+	try {
+		updateObserverApply(await api.loadConfig());
+		renderObserverStatusBanner(await api.loadObserverStatus());
+	} catch {
+		showGlobalNotice("Observer status could not be refreshed. Try again.", "warning");
+	}
+}
+
 function ObserverStatusBanner() {
 	const status = settingsView.value.renderState.observerStatus as ObserverStatusShape | null;
+	const apply = settingsState.observerApply;
 	return (
-		<ObserverStatusBannerComponent
-			status={status}
-			onOpenDiagnostics={openObserverDiagnosticsFromSettings}
-		/>
+		<>
+			<ObserverStatusBannerComponent
+				status={status}
+				onOpenDiagnostics={openObserverDiagnosticsFromSettings}
+			/>
+			<ObserverApplyDetails
+				status={apply}
+				onRetry={() => void retryObserverApply()}
+				onRefresh={() => void refreshObserverApply()}
+			/>
+		</>
 	);
 }
 

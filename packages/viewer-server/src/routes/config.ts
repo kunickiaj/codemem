@@ -105,6 +105,12 @@ const ALLOWED_KEYS = [
 	"raw_events_sweeper_interval_s",
 ] as const;
 
+const OBSERVER_KEYS = new Set<string>(
+	ALLOWED_KEYS.filter(
+		(key) => key.startsWith("observer_") || key === "codex_command" || key === "claude_command",
+	),
+);
+
 const DEFAULTS: ConfigData = {
 	claude_command: ["claude"],
 	codex_command: ["codex"],
@@ -133,6 +139,8 @@ const DEFAULTS: ConfigData = {
 
 export interface ConfigRouteOptions {
 	getSweeper?: () => RawEventSweeper | null;
+	scheduleObserverApply?: () => boolean;
+	getObserverApplyStatus?: () => { state: "active" | "applying" | "failed"; message?: string };
 }
 
 function loadProviderOptions(): string[] {
@@ -490,18 +498,24 @@ function viewerConfigSavePayload(
 	const runtimeChangedKeys = [
 		...new Set([...touchedKeys, ...savedChangedKeys, ...effectiveChangedKeys]),
 	];
+	const observerChangedKeys = effectiveChangedKeys.filter((key) => OBSERVER_KEYS.has(key));
+	const observerApplying =
+		observerChangedKeys.length > 0 && opts.scheduleObserverApply?.() === true;
+	const applyingKeys = observerApplying ? observerChangedKeys : [];
 	return {
 		path: savedPath,
 		config: sanitizeConfigForResponse(nextConfig),
 		effective: sanitizeConfigForResponse(afterEffective),
 		...observerRuntimeMetadata(nextConfig),
+		...(opts.getObserverApplyStatus ? { observer_apply: opts.getObserverApplyStatus() } : {}),
 		protected_keys: [...PROTECTED_WRITE_KEYS].sort(),
 		effects: {
 			saved_keys: savedChangedKeys,
 			effective_keys: effectiveChangedKeys,
 			hot_reloaded_keys: applyRuntimeEffects(runtimeChangedKeys, opts),
+			applying_keys: applyingKeys,
 			restart_required_keys: effectiveChangedKeys.filter(
-				(key) => !HOT_RELOAD_KEYS.has(key) && !(key in envOverrides),
+				(key) => !HOT_RELOAD_KEYS.has(key) && !applyingKeys.includes(key) && !(key in envOverrides),
 			),
 			ignored_by_env_keys: ignoredByEnvKeys,
 			warnings: ignoredByEnvKeys.map(
@@ -542,6 +556,7 @@ export function configRoutes(opts: ConfigRouteOptions = {}) {
 			defaults: DEFAULTS,
 			effective: sanitizeConfigForResponse(effective),
 			...observerRuntimeMetadata(configData),
+			...(opts.getObserverApplyStatus ? { observer_apply: opts.getObserverApplyStatus() } : {}),
 			env_overrides: getCodememEnvOverrides(),
 			protected_keys: [...PROTECTED_WRITE_KEYS].sort(),
 			providers: loadProviderOptions(),
@@ -549,6 +564,12 @@ export function configRoutes(opts: ConfigRouteOptions = {}) {
 	});
 
 	app.post("/api/config", (c) => handleConfigPost(c, opts));
+	app.post("/api/config/apply-observer", (c) => {
+		if (opts.scheduleObserverApply?.() !== true) {
+			return c.json({ error: "Observer settings could not be applied. Restart the viewer." }, 409);
+		}
+		return c.json({ observer_apply: opts.getObserverApplyStatus?.() ?? { state: "applying" } });
+	});
 
 	return app;
 }

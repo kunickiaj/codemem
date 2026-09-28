@@ -14,6 +14,14 @@ export async function loadConfig(options: ReadRequestOptions = {}): Promise<unkn
 	return fetchJson("/api/config", options);
 }
 
+export async function applyObserverConfig(): Promise<unknown> {
+	const response = await fetch("/api/config/apply-observer", { method: "POST" });
+	const payload: unknown = await response.json();
+	if (!response.ok)
+		throw new Error(payloadError(payload) || "Observer settings could not be applied");
+	return payload;
+}
+
 export async function saveConfig(payload: Record<string, unknown>): Promise<unknown> {
 	const resp = await fetch("/api/config", {
 		method: "POST",

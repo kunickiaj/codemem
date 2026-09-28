@@ -8,6 +8,25 @@ afterEach(() => {
 	document.body.innerHTML = "";
 });
 
+it("describes sidecar login without incorrectly reporting a missing API token", () => {
+	act(() =>
+		render(
+			<ObserverStatusBanner
+				status={{
+					active: {
+						provider: "openai",
+						model: "gpt-6-luna",
+						auth: { method: "codex_sidecar", token_present: false },
+					},
+				}}
+			/>,
+			document.body,
+		),
+	);
+	expect(document.querySelector('[aria-label="CLI login checked on use"]')).not.toBeNull();
+	expect(document.querySelector('[aria-label="token missing"]')).toBeNull();
+});
+
 describe("ObserverStatusBanner diagnostics action", () => {
 	it("offers a contextual action for a processing failure without forwarding raw error text", () => {
 		const onOpenDiagnostics = vi.fn();

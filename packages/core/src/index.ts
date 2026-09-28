@@ -418,6 +418,7 @@ export type {
 	ExtractionReplayTierRoutingInput,
 } from "./extraction-tier-routing.js";
 export {
+	buildTieredObserverSelection,
 	decideExtractionReplayTier,
 	RICH_TIER_DEFAULTS,
 	SIMPLE_TIER_DEFAULTS,

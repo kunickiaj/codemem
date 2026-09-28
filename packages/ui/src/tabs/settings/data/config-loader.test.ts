@@ -18,7 +18,7 @@ beforeEach(() => {
 describe("describeEffectiveSettings", () => {
 	it("describes configuration-resolved values without claiming they match runtime resolution", () => {
 		expect(describeEffectiveSettings({ observer_model: "fixture" }, false)).toBe(
-			"Fields show configuration-resolved values. Runtime behavior may apply automatic provider defaults. Restart-dependent changes are labeled below.",
+			"Fields show configuration-resolved values. Active observer and tier choices are shown separately. Restart-dependent changes are labeled below.",
 		);
 		expect(describeEffectiveSettings({ observer_model: "fixture" }, true)).toContain(
 			"Environment settings supply some fields",

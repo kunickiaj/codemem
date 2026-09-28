@@ -9,11 +9,26 @@ export interface ConfigPayload {
 	effective?: Record<string, unknown>;
 	resolved_observer_runtime?: string;
 	observer_runtime_by_auth_source?: Record<string, string>;
+	observer_apply?: ObserverApplyPayload;
 	defaults?: Record<string, unknown>;
 	env_overrides?: Record<string, unknown>;
 	protected_keys?: unknown;
 	providers?: unknown;
 	path?: string;
+}
+
+export interface ObserverApplyPayload {
+	state: "active" | "applying" | "failed";
+	message?: string;
+	active?: {
+		provider: string;
+		model: string;
+		runtime: string;
+		authType: string;
+		tierRoutingEnabled?: boolean;
+		simple?: { provider: string; model: string; runtime: string; reasoningEffort: string | null };
+		rich?: { provider: string; model: string; runtime: string; reasoningEffort: string | null };
+	};
 }
 
 function runtimeFromPayload(payload: ConfigPayload): string {

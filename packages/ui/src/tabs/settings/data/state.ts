@@ -3,6 +3,7 @@
 
 import { signal } from "@preact/signals";
 import { EMPTY_FORM_STATE } from "./constants";
+import type { ObserverApplyPayload } from "./form-state";
 import type { SettingsViewState } from "./types";
 import { loadAdvancedPreference } from "./value-helpers";
 
@@ -12,6 +13,7 @@ export interface SettingsState {
 	effectiveConfig: Record<string, unknown>;
 	resolvedObserverRuntime: string | null;
 	observerRuntimeByAuthSource: Record<string, string>;
+	observerApply: ObserverApplyPayload | null;
 	envOverrides: Record<string, unknown>;
 	touchedKeys: Set<string>;
 	shellMounted: boolean;
@@ -27,6 +29,7 @@ export const settingsState: SettingsState = {
 	effectiveConfig: {},
 	resolvedObserverRuntime: null,
 	observerRuntimeByAuthSource: {},
+	observerApply: null,
 	envOverrides: {},
 	touchedKeys: new Set<string>(),
 	shellMounted: false,
