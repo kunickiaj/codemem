@@ -280,6 +280,8 @@ export interface IngestOptions {
 	storeSummary?: boolean;
 	/** Whether to store typed observations. Default true. */
 	storeTyped?: boolean;
+	/** Recover observations from an older flush without replacing summaries or rewriting session time. */
+	historicalRecovery?: { sessionId: number; occurredAt: string };
 }
 
 export type RawEventObserverOutputFailureReason =
@@ -453,6 +455,7 @@ interface IngestSessionStage {
 	sessionId: number;
 	storeSummary: boolean;
 	storeTyped: boolean;
+	historicalRecovery: IngestOptions["historicalRecovery"];
 }
 
 interface PreparedIngestStage {
@@ -558,6 +561,29 @@ function resolveIngestSessionId(
 	});
 }
 
+function requireHistoricalSession(
+	d: ReturnType<typeof drizzle>,
+	context: SessionContext,
+	sessionId: number,
+): { sessionId: number; project: string | null } {
+	if (context.flusher !== "raw_events" || !context.streamId) {
+		throw new Error("historical recovery session mismatch");
+	}
+	const linked = d
+		.select({ sessionId: schema.opencodeSessions.session_id, project: schema.sessions.project })
+		.from(schema.opencodeSessions)
+		.innerJoin(schema.sessions, eq(schema.sessions.id, schema.opencodeSessions.session_id))
+		.where(
+			and(
+				eq(schema.opencodeSessions.source, context.source ?? "opencode"),
+				eq(schema.opencodeSessions.stream_id, context.streamId),
+			),
+		)
+		.get();
+	if (linked?.sessionId !== sessionId) throw new Error("historical recovery session mismatch");
+	return { sessionId, project: linked.project };
+}
+
 function createIngestSession(
 	payload: IngestPayload,
 	store: MemoryStore,
@@ -569,14 +595,20 @@ function createIngestSession(
 
 	const sessionContext = payload.sessionContext ?? {};
 	const priorDelegatedContext = resolvePriorDelegatedContext(store, sessionContext);
-	const storeSummary = options.storeSummary ?? true;
+	const storeSummary = !options.historicalRecovery && (options.storeSummary ?? true);
 	const storeTyped = options.storeTyped ?? true;
 	const maxChars = options.maxChars ?? 12_000;
 	const observerMaxChars = options.observerMaxChars ?? 12_000;
-	const captureRoutingEnabled = process.env.CODEMEM_CAPTURE_ROUTING === "1";
+	const captureRoutingEnabled =
+		!options.historicalRecovery && process.env.CODEMEM_CAPTURE_ROUTING === "1";
 	const d = drizzle(store.db, { schema });
 	const now = new Date().toISOString();
-	const project = normalizeProjectLabel(payload.project) ?? resolveProject(cwd) ?? null;
+	const historicalSession = options.historicalRecovery
+		? requireHistoricalSession(d, sessionContext, options.historicalRecovery.sessionId)
+		: null;
+	const project = historicalSession
+		? historicalSession.project
+		: (normalizeProjectLabel(payload.project) ?? resolveProject(cwd) ?? null);
 	const sessionMetadata = {
 		source: "plugin",
 		event_count: events.length,
@@ -584,13 +616,15 @@ function createIngestSession(
 		session_context: sessionContextForStorage(sessionContext),
 	};
 
-	const sessionId = resolveIngestSessionId(
-		{ cwd, d, project, sessionContext },
-		store,
-		payload,
-		sessionMetadata,
-		now,
-	);
+	const sessionId =
+		historicalSession?.sessionId ??
+		resolveIngestSessionId(
+			{ cwd, d, project, sessionContext },
+			store,
+			payload,
+			sessionMetadata,
+			now,
+		);
 
 	return {
 		captureRoutingEnabled,
@@ -605,6 +639,7 @@ function createIngestSession(
 		sessionId,
 		storeSummary,
 		storeTyped,
+		historicalRecovery: options.historicalRecovery,
 	};
 }
 
@@ -1307,6 +1342,16 @@ function persistIngestPlan(
 			if (index === plan.summaryIndex) {
 				supersededIds = supersedePriorObserverSummaries(store, stage.d, stage.sessionId);
 			}
+			const metadata = stage.historicalRecovery
+				? {
+						...memory.metadata,
+						visibility: "private",
+						workspace_kind: "personal",
+						workspace_id: `personal:${store.actorId}`,
+						actor_id: store.actorId,
+						recovered_at: new Date().toISOString(),
+					}
+				: memory.metadata;
 			const memoryId = store.remember(
 				stage.sessionId,
 				memory.kind,
@@ -1314,7 +1359,11 @@ function persistIngestPlan(
 				memory.bodyText,
 				memory.confidence,
 				memory.tags,
-				memory.metadata,
+				metadata,
+				{
+					createdAt: stage.historicalRecovery?.occurredAt,
+					replicate: !stage.historicalRecovery,
+				},
 			);
 			if (supersededIds.length > 0) markSupersededBy(stage.d, supersededIds, memoryId);
 			vectorWriteInputs.push({
@@ -1352,6 +1401,7 @@ function endIngestSession(
 	stage: IngestSessionStage,
 	metadata: Record<string, unknown> = {},
 ): void {
+	if (stage.historicalRecovery) return;
 	endSession(store, stage.sessionId, stage.events.length, stage.sessionContext, metadata);
 }
 

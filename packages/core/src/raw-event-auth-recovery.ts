@@ -1,0 +1,274 @@
+import { type IngestOptions, ingest, rawEventObserverStatusFromError } from "./ingest-pipeline.js";
+import { ObserverAuthError } from "./observer-client.js";
+import { buildFlushSessionContext } from "./raw-event-flush.js";
+import {
+	planRawEventRecoveryWindows,
+	type RawEventRecoveryRange,
+} from "./raw-event-recovery-windows.js";
+import type { MemoryStore } from "./store.js";
+
+const RECOVERY_VERSION = "raw_events_auth_recovery_v1";
+const MAX_EVENTS = 100;
+const MAX_STREAMS = 1000;
+const MAX_RANGES_PER_STREAM = 10_000;
+const MAX_ATTEMPTS = 3;
+const MAX_HOURLY_CALLS = 4;
+
+interface BatchRangeRow {
+	id?: number;
+	source: string;
+	stream_id: string;
+	start_event_seq: number;
+	end_event_seq: number;
+}
+
+function acknowledgeCoveredRanges(
+	store: MemoryStore,
+	missing: BatchRangeRow[],
+	completed: RawEventRecoveryRange[],
+): BatchRangeRow[] {
+	const uncovered: BatchRangeRow[] = [];
+	for (const row of missing) {
+		if (planRawEventRecoveryWindows([recoveryRange(row)], completed, MAX_EVENTS).length > 0) {
+			uncovered.push(row);
+			continue;
+		}
+		store.db
+			.prepare(`
+			UPDATE raw_event_flush_batches SET status = 'recovered', updated_at = ?
+			WHERE id = ? AND status IN ('failed', 'gave_up') AND observer_error_code = 'auth_missing'
+		`)
+			.run(new Date().toISOString(), row.id);
+	}
+	return uncovered;
+}
+
+function recoveryRange(row: BatchRangeRow): RawEventRecoveryRange {
+	return {
+		source: row.source,
+		streamId: row.stream_id,
+		startEventSeq: row.start_event_seq,
+		endEventSeq: row.end_event_seq,
+	};
+}
+
+function nextRecoveryWindow(store: MemoryStore): RawEventRecoveryRange | null {
+	const streams = store.db
+		.prepare(`
+		SELECT b.source, b.stream_id
+		FROM raw_event_flush_batches b
+		JOIN raw_event_sessions s ON s.source = b.source AND s.stream_id = b.stream_id
+		WHERE b.status IN ('failed', 'gave_up') AND b.observer_error_code = 'auth_missing'
+			AND b.extractor_version != ? AND s.last_flushed_event_seq >= b.end_event_seq
+		GROUP BY b.source, b.stream_id ORDER BY MIN(b.created_at) LIMIT ?
+	`)
+		.all(RECOVERY_VERSION, MAX_STREAMS + 1) as Array<{ source: string; stream_id: string }>;
+	if (streams.length > MAX_STREAMS) throw new Error("observer recovery stream limit exceeded");
+	for (const stream of streams) {
+		const missingRows = store.db
+			.prepare(`
+			SELECT b.id, b.source, b.stream_id, b.start_event_seq, b.end_event_seq
+			FROM raw_event_flush_batches b
+			JOIN raw_event_sessions s ON s.source = b.source AND s.stream_id = b.stream_id
+			WHERE b.source = ? AND b.stream_id = ? AND b.status IN ('failed', 'gave_up')
+				AND b.observer_error_code = 'auth_missing' AND b.extractor_version != ?
+				AND s.last_flushed_event_seq >= b.end_event_seq
+			LIMIT ?
+		`)
+			.all(
+				stream.source,
+				stream.stream_id,
+				RECOVERY_VERSION,
+				MAX_RANGES_PER_STREAM + 1,
+			) as BatchRangeRow[];
+		if (missingRows.length > MAX_RANGES_PER_STREAM)
+			throw new Error("observer recovery range limit exceeded");
+		const completed = store.db
+			.prepare(`
+			SELECT source, stream_id, start_event_seq, end_event_seq
+			FROM raw_event_flush_batches WHERE source = ? AND stream_id = ? AND status = 'completed'
+			LIMIT ?
+		`)
+			.all(stream.source, stream.stream_id, MAX_RANGES_PER_STREAM + 1) as BatchRangeRow[];
+		if (completed.length > MAX_RANGES_PER_STREAM)
+			throw new Error("observer recovery completed-range limit exceeded");
+		const covered = completed.map(recoveryRange);
+		const uncovered = acknowledgeCoveredRanges(store, missingRows, covered);
+		const windows = planRawEventRecoveryWindows(uncovered.map(recoveryRange), covered, MAX_EVENTS);
+		for (const window of windows) {
+			const batch = store.db
+				.prepare(`
+				SELECT status, attempt_count FROM raw_event_flush_batches
+				WHERE source = ? AND stream_id = ? AND start_event_seq = ?
+					AND end_event_seq = ? AND extractor_version = ?
+			`)
+				.get(
+					window.source,
+					window.streamId,
+					window.startEventSeq,
+					window.endEventSeq,
+					RECOVERY_VERSION,
+				) as { status: string; attempt_count: number } | undefined;
+			if (!batch || (batch.status !== "completed" && batch.attempt_count < MAX_ATTEMPTS))
+				return window;
+		}
+	}
+	return null;
+}
+
+function sourceEventTime(events: Record<string, unknown>[]): string {
+	const times = events.map((event) => event.timestamp_wall_ms);
+	if (
+		times.some(
+			(time) =>
+				typeof time !== "number" ||
+				!Number.isSafeInteger(time) ||
+				time < 0 ||
+				time > Date.now() + 60_000,
+		)
+	) {
+		throw new Error("observer recovery event time is unavailable");
+	}
+	return new Date(Math.max(...(times as number[]))).toISOString();
+}
+
+function existingRecoveredMemories(store: MemoryStore, batchId: number): number {
+	const row = store.db
+		.prepare(`
+		SELECT COUNT(*) AS count FROM memory_items
+		WHERE CAST(json_extract(metadata_json, '$.flush_batch.batch_id') AS INTEGER) = ?
+	`)
+		.get(batchId) as { count: number };
+	return row.count;
+}
+
+function withinHourlyBudget(store: MemoryStore): boolean {
+	const cutoff = new Date(Date.now() - 3_600_000).toISOString();
+	const calls = store.db
+		.prepare(`
+		SELECT COALESCE(SUM(attempt_count), 0) AS count FROM raw_event_flush_batches
+		WHERE extractor_version = ? AND attempt_count > 0 AND updated_at >= ?
+	`)
+		.get(RECOVERY_VERSION, cutoff) as { count: number };
+	return calls.count < MAX_HOURLY_CALLS;
+}
+
+function linkedRecoverySession(store: MemoryStore, range: RawEventRecoveryRange) {
+	const linked = store.db
+		.prepare(`
+			SELECT os.session_id AS sessionId, s.cwd, s.project, s.started_at AS startedAt
+			FROM opencode_sessions os JOIN sessions s ON s.id = os.session_id
+			WHERE os.source = ? AND os.stream_id = ?
+		`)
+		.get(range.source, range.streamId) as
+		| { sessionId: number; cwd: string | null; project: string | null; startedAt: string | null }
+		| undefined;
+	if (!linked?.sessionId) throw new Error("observer recovery session missing");
+	return linked;
+}
+
+async function inferRecoveryWindow(
+	store: MemoryStore,
+	options: IngestOptions,
+	range: RawEventRecoveryRange,
+	batchId: number,
+): Promise<void> {
+	const { source, streamId, startEventSeq, endEventSeq } = range;
+	const events = store.rawEventsSinceBySeq(
+		streamId,
+		source,
+		startEventSeq - 1,
+		MAX_EVENTS,
+		endEventSeq,
+	);
+	if (events.length !== endEventSeq - startEventSeq + 1)
+		throw new Error("observer recovery events missing");
+	const linked = linkedRecoverySession(store, range);
+	const occurredAt = sourceEventTime(events);
+	const context = buildFlushSessionContext(events, {
+		opencodeSessionId: streamId,
+		source,
+		startEventSeq,
+		lastEventSeq: endEventSeq,
+		batchId,
+	});
+	if (context.flushBatch) context.flushBatch.extractor_version = RECOVERY_VERSION;
+	await ingest(
+		{
+			cwd: linked.cwd ?? undefined,
+			project: linked.project ?? undefined,
+			startedAt: linked.startedAt ?? undefined,
+			events,
+			sessionContext: context,
+		},
+		store,
+		{
+			...options,
+			storeSummary: false,
+			historicalRecovery: { sessionId: linked.sessionId, occurredAt },
+		},
+	);
+}
+
+function releaseRecoveryAuthFailure(
+	store: MemoryStore,
+	batchId: number,
+	error: unknown,
+): ObserverAuthError | null {
+	const status = rawEventObserverStatusFromError(error);
+	if (!(error instanceof ObserverAuthError || status?.lastError?.code === "auth_missing"))
+		return null;
+	const authError =
+		error instanceof ObserverAuthError
+			? error
+			: new ObserverAuthError("Observer authentication is unavailable", {
+					code: "auth_missing",
+					message: "Observer authentication is unavailable",
+				});
+	const released = store.releaseRawEventFlushBatchAfterAuthError(batchId, {
+		code: authError.detail.code,
+		provider: status?.provider ?? null,
+		model: status?.model ?? null,
+		runtime: status?.runtime ?? null,
+		authSource: status?.auth?.source ?? null,
+		authType: status?.auth?.type ?? null,
+	});
+	return released ? authError : null;
+}
+
+/** At most one historical observer call per sweep. Never rewinds a stream cursor. */
+export async function recoverOneMissingAuthWindow(
+	store: MemoryStore,
+	options: IngestOptions,
+): Promise<boolean> {
+	if (!withinHourlyBudget(store)) return false;
+	const window = nextRecoveryWindow(store);
+	if (!window) return false;
+	const batch = store.getOrCreateRawEventFlushBatch(
+		window.streamId,
+		window.source,
+		window.startEventSeq,
+		window.endEventSeq,
+		RECOVERY_VERSION,
+	);
+	if (batch.status === "completed" || batch.attemptCount >= MAX_ATTEMPTS) return false;
+	if (!store.claimRawEventFlushBatch(batch.batchId)) return false;
+	if (existingRecoveredMemories(store, batch.batchId) > 0) {
+		store.updateRawEventFlushBatchStatus(batch.batchId, "completed");
+		return true;
+	}
+	try {
+		await inferRecoveryWindow(store, options, window, batch.batchId);
+		store.updateRawEventFlushBatchStatus(batch.batchId, "completed");
+		return true;
+	} catch (error) {
+		const authError = releaseRecoveryAuthFailure(store, batch.batchId, error);
+		if (authError) throw authError;
+		store.recordRawEventFlushBatchFailure(batch.batchId, {
+			message: "Historical observer recovery could not process this range.",
+			errorType: "RawEventRecoveryError",
+			observerErrorCode: "recovery_failed",
+		});
+		throw error;
+	}
+}

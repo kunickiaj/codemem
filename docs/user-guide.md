@@ -171,7 +171,8 @@ has no evaluated runs and null rates, rather than a quality pass.
   - Wrapper example: `"claude_command": ["wrapper", "claude", "--"]`
 - `codex_sidecar` runs observer calls through the local Codex CLI login and does not require `OPENAI_API_KEY`.
 - OpenCode V2 keeps refreshed provider credentials in its service database, not the legacy `auth.json` file. `api_http` cannot reuse a V2-only login through that old file; use a separately configured API credential or choose `codex_sidecar` for an existing ChatGPT-backed Codex CLI login. Codemem does not copy credentials out of OpenCode's database.
-- When observer authentication is missing or rejected, new raw-event batches stay visibly failed and retryable without spending flush attempts or advancing their stream cursor. The sweeper backs off until credentials become available. This does not recover older batches that already exhausted retries under earlier versions.
+- When observer authentication is missing or rejected, new raw-event batches stay visibly failed and retryable without spending flush attempts or advancing their stream cursor. The sweeper backs off until credentials become available.
+- Once authentication works again, the viewer automatically reviews retained raw events from older auth-missing failures whose cursors already advanced. It reconciles overlapping failed ranges, excludes completed ranges, and processes at most four recovery windows per hour. Recovered observations keep their original event time, remain private on this device, and do not replace later session summaries. Missing or invalid raw events stay failed for review instead of receiving invented facts. Set `CODEMEM_RAW_EVENTS_RECOVERY_ENABLED=0` on the viewer process to disable automatic historical recovery.
 - `codex_command` controls how `codex_sidecar` invokes Codex CLI (default `["codex"]`).
 - Default model selection:
 - `api_http`: `gpt-5.4-mini` unless `observer_model` is set.

@@ -20,6 +20,7 @@ import { readCoordinatorSyncConfig } from "./coordinator-runtime.js";
 import type { IngestOptions } from "./ingest-pipeline.js";
 import { ObserverAuthError } from "./observer-client.js";
 import { readCodememConfigFile } from "./observer-config.js";
+import { recoverOneMissingAuthWindow } from "./raw-event-auth-recovery.js";
 import { flushRawEvents } from "./raw-event-flush.js";
 import type { MemoryStore } from "./store.js";
 
@@ -450,6 +451,24 @@ export class RawEventSweeper {
 		}
 	}
 
+	private async recoverMissingAuthHistory(): Promise<void> {
+		if (process.env.CODEMEM_RAW_EVENTS_RECOVERY_ENABLED === "0") return;
+		try {
+			await recoverOneMissingAuthWindow(this.store, this.ingestOpts);
+		} catch (error) {
+			if (error instanceof ObserverAuthError) {
+				this.handleAuthError(error);
+				return;
+			}
+			console.error("codemem: historical observer recovery paused after a failed window");
+		}
+	}
+
+	private purgeExpiredRawEvents(): void {
+		const retentionMs = this.retentionMs();
+		if (retentionMs > 0) this.store.purgeRawEvents(retentionMs);
+	}
+
 	// -----------------------------------------------------------------------
 	// Tick — one sweep cycle
 	// -----------------------------------------------------------------------
@@ -478,10 +497,7 @@ export class RawEventSweeper {
 		const nowMs = Date.now();
 
 		// Purge old events if retention configured
-		const retentionMs = this.retentionMs();
-		if (retentionMs > 0) {
-			this.store.purgeRawEvents(retentionMs);
-		}
+		this.purgeExpiredRawEvents();
 
 		// Mark stuck batches as error
 		const stuckMs = this.stuckBatchMs();
@@ -559,5 +575,6 @@ export class RawEventSweeper {
 				finishSessionFlush();
 			}
 		}
+		await this.recoverMissingAuthHistory();
 	}
 }

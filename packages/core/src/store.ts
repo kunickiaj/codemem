@@ -194,6 +194,15 @@ function nowIso(): string {
 	return new Date().toISOString();
 }
 
+function memoryCreatedAt(requested: string | undefined, now: string): string {
+	if (!requested) return now;
+	const occurredAt = Date.parse(requested);
+	if (!Number.isFinite(occurredAt) || occurredAt > Date.now() + 60_000) {
+		throw new Error("invalid memory event time");
+	}
+	return new Date(occurredAt).toISOString();
+}
+
 function countQuestionPlaceholders(clause: string): number {
 	return (clause.match(/\?/g) ?? []).length;
 }
@@ -916,9 +925,11 @@ export class MemoryStore {
 		confidence = 0.5,
 		tags?: string[],
 		metadata?: Record<string, unknown>,
+		options: { createdAt?: string; replicate?: boolean } = {},
 	): number {
 		const validKind = validateMemoryKind(kind);
 		const now = nowIso();
+		const createdAt = memoryCreatedAt(options.createdAt, now);
 
 		// Scan for secrets BEFORE any further processing. The redacted forms are
 		// what get deduped, embedded, and persisted; the originals never reach
@@ -1011,7 +1022,7 @@ export class MemoryStore {
 						confidence,
 						tags_text: tagsText,
 						active: 1,
-						created_at: now,
+						created_at: createdAt,
 						updated_at: now,
 						metadata_json: toJson(metaPayload),
 						actor_id: provenance.actor_id,
@@ -1044,12 +1055,7 @@ export class MemoryStore {
 
 				populateMemoryRefs(this.db, id, filesRead, filesModified, concepts);
 
-				// Record replication op for sync propagation (non-fatal)
-				try {
-					recordReplicationOp(this.db, { memoryId: id, opType: "upsert", deviceId: this.deviceId });
-				} catch {
-					// Non-fatal — don't block memory creation
-				}
+				this.recordMemoryUpsert(id, options.replicate !== false);
 
 				return id;
 			})();
@@ -1083,6 +1089,15 @@ export class MemoryStore {
 		}
 
 		return memoryId;
+	}
+
+	private recordMemoryUpsert(memoryId: number, enabled: boolean): void {
+		if (!enabled) return;
+		try {
+			recordReplicationOp(this.db, { memoryId, opType: "upsert", deviceId: this.deviceId });
+		} catch {
+			// Non-fatal — don't block memory creation
+		}
 	}
 
 	/**

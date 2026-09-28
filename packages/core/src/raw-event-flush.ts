@@ -362,7 +362,7 @@ function isTerminalLowSignalSession(
 // Main flush function
 // ---------------------------------------------------------------------------
 
-function buildFlushSessionContext(
+export function buildFlushSessionContext(
 	events: Record<string, unknown>[],
 	{
 		opencodeSessionId,
