@@ -190,3 +190,22 @@ describe("buildObserverPrompt", () => {
 		expect(prompt.user).toContain("USER_TAIL");
 	});
 });
+
+it("does not request an XML recap in observations-only recovery mode", () => {
+	const { system } = buildObserverPrompt({
+		project: "codemem",
+		userPrompt: "Recover prior facts",
+		promptNumber: 1,
+		transcript: "User: Recover prior facts",
+		toolEvents: [],
+		lastAssistantMessage: null,
+		includeSummary: false,
+		diffSummary: "",
+		recentFiles: "",
+	});
+	expect(system).toContain("Observation XML schema:");
+	expect(system).toContain("Do not emit <summary> blocks");
+	expect(system).not.toContain("Summary XML schema:");
+	expect(system).not.toContain("Also emit a <summary> block");
+	expect(system).not.toContain("emit a <summary> and zero");
+});

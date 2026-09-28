@@ -118,6 +118,14 @@ const OUTPUT_GUIDANCE =
 	"Do not collapse a rich batch into only the final or most recent thread when earlier threads produced durable decisions, learnings, or outcomes.\n\n" +
 	"Prefer fewer, more comprehensive observations over many small ones.";
 
+const OBSERVATIONS_ONLY_GUIDANCE = `Recover durable, reusable facts from the observed evidence.
+- Emit only <observation> blocks for supported constraints, root causes, decisions, or how-it-works findings.
+- For multiple meaningful threads, include a small, diverse set of observations rather than repeating one thread.
+- Routine status, workflow narration, and unsupported guesses do not become observations.
+- Do not emit <summary> blocks. This historical pass must not replace a later session recap.
+- If there is no durable finding, emit only <skip_summary reason="low-signal"/>.
+Output only XML with no commentary outside these blocks.`;
+
 const OBSERVATION_SCHEMA = `<observation>
   <type>[ ${OBSERVATION_TYPES} ]</type>
   <!--
@@ -300,10 +308,23 @@ function observerGuidance(outputMode: "json_schema" | "legacy_xml", guidance: st
 	return outputMode === "json_schema" ? jsonOutputGuidance(guidance) : guidance;
 }
 
+function buildObservationsOnlySystemPrompt(outputMode: "json_schema" | "legacy_xml"): string {
+	const blocks = [SYSTEM_IDENTITY, RECORDING_FOCUS, NARRATIVE_GUIDANCE];
+	if (outputMode === "json_schema") {
+		blocks.push(
+			"Recover only durable, supported observations from the historical evidence. Do not create a session recap. Return one JSON object conforming to the supplied JSON Schema with summary set to null. If nothing durable was learned, set status to skipped, observations to [], summary to null, and skip_reason to low-signal. Do not output XML or extra prose.",
+		);
+	} else {
+		blocks.push(OBSERVATIONS_ONLY_GUIDANCE, "Observation XML schema:", OBSERVATION_SCHEMA);
+	}
+	return blocks.join("\n\n");
+}
+
 function buildObserverSystemPrompt(
 	context: ObserverContext,
 	outputMode: "json_schema" | "legacy_xml",
 ): string {
+	if (!context.includeSummary) return buildObservationsOnlySystemPrompt(outputMode);
 	const systemBlocks: string[] = [
 		SYSTEM_IDENTITY,
 		"",
