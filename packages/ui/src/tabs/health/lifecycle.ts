@@ -1,7 +1,7 @@
 /* Health tab lifecycle — owns lightweight viewer status plus detailed Health loads. */
 
 import * as api from "../../lib/api";
-import type { ReadRequestOptions } from "../../lib/read-request";
+import { createReadDeadline, type ReadRequestOptions, waitForAbort } from "../../lib/read-request";
 import type { HealthResourceState } from "../../lib/state";
 import {
 	beginHealthLoad,
@@ -17,6 +17,48 @@ import { renderSessionSummary } from "./render/session-summary";
 import { renderStats } from "./render/stats";
 
 let healthLoadGeneration = 0;
+let pendingUpdateStatus: { cancel: () => void } | null = null;
+
+export function cancelHealthUpdateStatus(): void {
+	pendingUpdateStatus?.cancel();
+}
+
+function loadHealthUpdateStatus(options: ReadRequestOptions): void {
+	if (
+		state.activeTab !== "health" ||
+		(state.lastUpdateStatus && !state.lastUpdateStatus.unavailable) ||
+		pendingUpdateStatus ||
+		options.signal?.aborted
+	)
+		return;
+	// A normal Health refresh finishes before registry discovery does. Keep this
+	// request alive across polls, but cancel it on an actual session abort or navigation.
+	const deadline = createReadDeadline();
+	const request = {
+		cancel: () => {
+			if (pendingUpdateStatus !== request) return;
+			pendingUpdateStatus = null;
+			deadline.abort();
+			deadline.dispose();
+			options.signal?.removeEventListener("abort", request.cancel);
+		},
+	};
+	pendingUpdateStatus = request;
+	options.signal?.addEventListener("abort", request.cancel, { once: true });
+	void waitForAbort(api.loadUpdateStatus({ signal: deadline.signal }), deadline.signal).then(
+		(status) => finish(status),
+		(error) => finish(api.unavailableUpdateStatus(error)),
+	);
+	function finish(status: api.UpdateStatus): void {
+		if (pendingUpdateStatus !== request) return;
+		pendingUpdateStatus = null;
+		deadline.dispose();
+		options.signal?.removeEventListener("abort", request.cancel);
+		if (state.activeTab !== "health") return;
+		state.lastUpdateStatus = status;
+		renderHealthOverview();
+	}
+}
 
 export async function refreshViewerStatus(options: ReadRequestOptions = {}) {
 	const previousActorId = state.viewerActorId;
@@ -36,20 +78,7 @@ export async function loadHealthData(options: ReadRequestOptions = {}) {
 	renderHealthSections();
 
 	const isCurrent = () => !options.signal?.aborted && generation === healthLoadGeneration;
-	if (state.activeTab === "health" && !state.lastUpdateStatus) {
-		void api.loadUpdateStatus(options).then(
-			(status) => {
-				if (!isCurrent()) return;
-				state.lastUpdateStatus = status;
-				renderHealthOverview();
-			},
-			(error) => {
-				if (!isCurrent()) return;
-				state.lastUpdateStatus = api.unavailableUpdateStatus(error);
-				renderHealthOverview();
-			},
-		);
-	}
+	loadHealthUpdateStatus(options);
 
 	await Promise.all([
 		settleHealthRead(api.loadStats(options)).then((result) => {
