@@ -498,7 +498,14 @@ function viewerConfigSavePayload(
 	const runtimeChangedKeys = [
 		...new Set([...touchedKeys, ...savedChangedKeys, ...effectiveChangedKeys]),
 	];
-	const observerChangedKeys = effectiveChangedKeys.filter((key) => OBSERVER_KEYS.has(key));
+	// A removed explicit value may resolve differently even when static defaults
+	// make the effective value look unchanged (for example, automatic runtime selection).
+	const observerChangedKeys = [
+		...new Set([
+			...effectiveChangedKeys,
+			...savedChangedKeys.filter((key) => !(key in envOverrides)),
+		]),
+	].filter((key) => OBSERVER_KEYS.has(key));
 	const observerApplying =
 		observerChangedKeys.length > 0 && opts.scheduleObserverApply?.() === true;
 	const applyingKeys = observerApplying ? observerChangedKeys : [];
@@ -514,7 +521,7 @@ function viewerConfigSavePayload(
 			effective_keys: effectiveChangedKeys,
 			hot_reloaded_keys: applyRuntimeEffects(runtimeChangedKeys, opts),
 			applying_keys: applyingKeys,
-			restart_required_keys: effectiveChangedKeys.filter(
+			restart_required_keys: [...new Set([...effectiveChangedKeys, ...observerChangedKeys])].filter(
 				(key) => !HOT_RELOAD_KEYS.has(key) && !applyingKeys.includes(key) && !(key in envOverrides),
 			),
 			ignored_by_env_keys: ignoredByEnvKeys,

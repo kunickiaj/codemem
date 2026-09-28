@@ -122,6 +122,51 @@ it("does not swap the observer for a saved value hidden by an environment overri
 	expect(scheduleObserverApply).not.toHaveBeenCalled();
 });
 
+it("applies an automatic runtime after removing an explicit API setting", async () => {
+	process.env.CLAUDE_CODE_SESSION = "fixture-session";
+	writeFileSync(join(home, "config.json"), JSON.stringify({ observer_runtime: "api_http" }));
+	const scheduleObserverApply = vi.fn(() => true);
+	const response = await configRoutes({ scheduleObserverApply }).request("/api/config", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ config: { observer_runtime: null } }),
+	});
+	const body = await response.json();
+	expect(body.config).not.toHaveProperty("observer_runtime");
+	expect(body.resolved_observer_runtime).toBe("claude_sidecar");
+	expect(body.effects.applying_keys).toContain("observer_runtime");
+	expect(scheduleObserverApply).toHaveBeenCalledOnce();
+});
+
+it("reports restart needed for a semantic observer change without a live-apply owner", async () => {
+	process.env.CLAUDE_CODE_SESSION = "fixture-session";
+	writeFileSync(join(home, "config.json"), JSON.stringify({ observer_runtime: "api_http" }));
+	const response = await configRoutes().request("/api/config", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ config: { observer_runtime: null } }),
+	});
+	expect((await response.json()).effects.restart_required_keys).toContain("observer_runtime");
+});
+
+it("reapplies tier routing when an explicit false override is removed", async () => {
+	writeFileSync(
+		join(home, "config.json"),
+		JSON.stringify({ observer_runtime: "api_http", observer_tier_routing_enabled: false }),
+	);
+	const scheduleObserverApply = vi.fn(() => true);
+	const response = await configRoutes({ scheduleObserverApply }).request("/api/config", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ config: { observer_tier_routing_enabled: null } }),
+	});
+	const body = await response.json();
+	expect(body.effective.observer_tier_routing_enabled).toBe(false);
+	expect(body.config).not.toHaveProperty("observer_tier_routing_enabled");
+	expect(body.effects.applying_keys).toContain("observer_tier_routing_enabled");
+	expect(scheduleObserverApply).toHaveBeenCalledOnce();
+});
+
 async function runtimePreview(config: Record<string, unknown> = {}) {
 	writeFileSync(
 		join(home, "config.json"),
