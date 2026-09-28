@@ -132,14 +132,22 @@ function sourceEventTime(events: Record<string, unknown>[]): string {
 	return new Date(Math.max(...(times as number[]))).toISOString();
 }
 
-function existingRecoveredMemories(store: MemoryStore, batchId: number): number {
+function hasPersistedRecoveryOutcome(store: MemoryStore, batchId: number): boolean {
 	const row = store.db
 		.prepare(`
 		SELECT COUNT(*) AS count FROM memory_items
 		WHERE CAST(json_extract(metadata_json, '$.flush_batch.batch_id') AS INTEGER) = ?
 	`)
 		.get(batchId) as { count: number };
-	return row.count;
+	if (row.count > 0) return true;
+	const usage = store.db
+		.prepare(`
+		SELECT 1 FROM usage_events WHERE event = 'observer_call'
+			AND CAST(json_extract(metadata_json, '$.historical_recovery_batch_id') AS INTEGER) = ?
+		LIMIT 1
+	`)
+		.get(batchId);
+	return usage != null;
 }
 
 function withinHourlyBudget(store: MemoryStore): boolean {
@@ -253,7 +261,7 @@ export async function recoverOneMissingAuthWindow(
 	);
 	if (batch.status === "completed" || batch.attemptCount >= MAX_ATTEMPTS) return false;
 	if (!store.claimRawEventFlushBatch(batch.batchId)) return false;
-	if (existingRecoveredMemories(store, batch.batchId) > 0) {
+	if (hasPersistedRecoveryOutcome(store, batch.batchId)) {
 		store.updateRawEventFlushBatchStatus(batch.batchId, "completed");
 		return true;
 	}

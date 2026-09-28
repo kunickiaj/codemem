@@ -184,6 +184,63 @@ it("does not rerun inference after a crash following committed observations", as
 	).toMatchObject({ n: 1 });
 });
 
+it("does not rerun a memoryless successful recovery after a crash", async () => {
+	const { settings, observe } = options();
+	observe.mockResolvedValue({
+		raw: '<skip_summary reason="low-signal"/>',
+		parsed: null,
+		provider: "test",
+		model: "test",
+	});
+	expect(await recoverOneMissingAuthWindow(store, settings)).toBe(true);
+	expect(
+		store.db.prepare("SELECT COUNT(*) AS n FROM memory_items WHERE session_id=?").get(sessionId),
+	).toMatchObject({ n: 0 });
+	store.db
+		.prepare(
+			"UPDATE raw_event_flush_batches SET status='error', attempt_count=1 WHERE extractor_version='raw_events_auth_recovery_v1'",
+		)
+		.run();
+	expect(await recoverOneMissingAuthWindow(store, settings)).toBe(true);
+	expect(observe).toHaveBeenCalledTimes(1);
+});
+
+it("does not treat failure usage as a completed memoryless recovery", async () => {
+	const { settings, observe } = options();
+	observe.mockResolvedValue({ raw: null, parsed: null, provider: "test", model: "test" });
+	await expect(recoverOneMissingAuthWindow(store, settings)).rejects.toThrow();
+	await expect(recoverOneMissingAuthWindow(store, settings)).rejects.toThrow();
+	expect(observe).toHaveBeenCalledTimes(2);
+	expect(
+		store.db
+			.prepare(
+				"SELECT status FROM raw_event_flush_batches WHERE extractor_version='raw_events_auth_recovery_v1'",
+			)
+			.get(),
+	).toMatchObject({ status: "failed" });
+});
+
+it("does not treat failed persistence telemetry as a successful recovery", async () => {
+	const { settings, observe } = options();
+	const remember = vi.spyOn(store, "remember").mockImplementation(() => {
+		throw new Error("storage busy");
+	});
+	await expect(recoverOneMissingAuthWindow(store, settings)).rejects.toThrow("storage busy");
+	remember.mockRestore();
+	expect(
+		store.db
+			.prepare(
+				"SELECT COUNT(*) AS n FROM usage_events WHERE json_extract(metadata_json, '$.historical_recovery_batch_id') IS NOT NULL",
+			)
+			.get(),
+	).toMatchObject({ n: 0 });
+	expect(await recoverOneMissingAuthWindow(store, settings)).toBe(true);
+	expect(observe).toHaveBeenCalledTimes(2);
+	expect(
+		store.db.prepare("SELECT COUNT(*) AS n FROM memory_items WHERE session_id=?").get(sessionId),
+	).toMatchObject({ n: 1 });
+});
+
 it("leaves missing event timestamps unprocessed rather than inventing a timeline", async () => {
 	store.db.prepare("UPDATE raw_events SET ts_wall_ms=NULL WHERE event_id='tool'").run();
 	const { settings, observe } = options();

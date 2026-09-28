@@ -1153,6 +1153,9 @@ function buildObserverCallMetadata(
 	);
 	return {
 		project: stage.project,
+		...(stage.historicalRecovery && stage.sessionContext.flushBatch
+			? { historical_recovery_batch_id: stage.sessionContext.flushBatch.batch_id }
+			: {}),
 		token_usage: observerTokenUsageMetadata(
 			inference.usage,
 			observerOutputAttemptCount(inference.output),
@@ -1487,6 +1490,9 @@ async function processIngestSession(
 		await storeVectorInputs(store, vectorWriteInputs);
 		endIngestSession(store, stage, persistence.plan.sessionMetadata);
 	} catch (error) {
+		if (stage.historicalRecovery && !usageRecord.recorded) {
+			delete usageRecord.metadata.historical_recovery_batch_id;
+		}
 		try {
 			recordCompletedObserverUsage(store, stage.sessionId, usageRecord);
 		} catch {
