@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { connect } from "./db.js";
 import { type IngestOptions, ingest } from "./ingest-pipeline.js";
 import type { IngestPayload } from "./ingest-types.js";
@@ -144,4 +144,23 @@ it("rejects a mismatched historical session rather than creating or reassigning 
 		}),
 	).rejects.toThrow("historical recovery session mismatch");
 	expect(store.db.prepare("SELECT COUNT(*) AS n FROM sessions").get()).toMatchObject({ n: 1 });
+});
+
+it("extracts typed observations from a historical assistant-only range without writing a recap", async () => {
+	const payload = historicalPayload();
+	payload.events = [
+		{
+			type: "assistant_message",
+			assistant_text: "The validated callback is required for safe storage.",
+		},
+	];
+	const settings = observerOptions();
+	const observe = vi.spyOn(settings.observer, "observe");
+	await ingest(payload, store, settings);
+	expect(observe.mock.calls[0]?.[1]).toContain("Assistant: The validated callback is required");
+	const rows = store.db
+		.prepare("SELECT kind, title FROM memory_items WHERE session_id=? ORDER BY id")
+		.all(sessionId) as Array<{ kind: string; title: string }>;
+	expect(rows.find((row) => row.title === "Validated callback")?.kind).toBe("discovery");
+	expect(rows.filter((row) => row.kind === "session_summary")).toHaveLength(1);
 });

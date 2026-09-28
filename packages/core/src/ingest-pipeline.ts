@@ -713,7 +713,7 @@ function hasProcessableInput(
 	return (
 		toolEvents.length > 0 ||
 		Boolean(latestPrompt) ||
-		(stage.storeSummary && Boolean(lastAssistantMessage))
+		((stage.storeSummary || Boolean(stage.historicalRecovery)) && Boolean(lastAssistantMessage))
 	);
 }
 
