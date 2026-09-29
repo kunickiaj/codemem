@@ -8,16 +8,19 @@
 import {
 	CodememConfigMutationError,
 	coerceObserverCommand,
+	generateWithOpenCodeV2,
 	getCodememConfigPath,
 	getCodememEnvOverrides,
 	getCodememEnvOverrideValues,
 	listObserverProviderOptions,
+	listOpenCodeV2Models,
 	mutateCodememConfigFile,
 	type RawEventSweeper,
 	readCodememConfigFile,
 	resolveObserverRuntime,
 } from "@codemem/core";
 import { type Context, Hono } from "hono";
+import { createInMemoryRequestRateLimiter } from "../request-rate-limit.js";
 
 type ConfigData = Record<string, unknown>;
 
@@ -548,6 +551,41 @@ async function handleConfigPost(c: Context, opts: ConfigRouteOptions) {
 
 export function configRoutes(opts: ConfigRouteOptions = {}) {
 	const app = new Hono();
+	const modelChecks = createInMemoryRequestRateLimiter();
+	app.get("/api/observer-model-catalog", async (c) => {
+		return c.json({ models: await listOpenCodeV2Models(), availability: "catalog_only" });
+	});
+	app.post("/api/observer-model-check", async (c) => {
+		let input: unknown;
+		try {
+			input = await c.req.json();
+		} catch {
+			return c.json({ error: "Choose a provider and model to check." }, 400);
+		}
+		if (!input || typeof input !== "object") {
+			return c.json({ error: "Choose a provider and model to check." }, 400);
+		}
+		const { provider, model } = input as { provider?: unknown; model?: unknown };
+		if (
+			(provider !== "openai" && provider !== "anthropic") ||
+			typeof model !== "string" ||
+			!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(model)
+		) {
+			return c.json({ error: "Choose an OpenAI or Anthropic model to check." }, 400);
+		}
+		const check = modelChecks.check("observer-model-check", 2);
+		if (!check.allowed) {
+			c.header("Retry-After", String(check.retryAfterS));
+			return c.json({ error: "Model checks are limited. Try again shortly." }, 429);
+		}
+		const result = await generateWithOpenCodeV2({ provider, model, prompt: "Reply exactly OK." });
+		return c.json({
+			provider,
+			model,
+			available: result.error === null && result.text?.trim() === "OK",
+			status: result.error ?? (result.text?.trim() === "OK" ? "verified" : "unexpected_response"),
+		});
+	});
 
 	app.get("/api/config", (c) => {
 		// Resolve via the core resolver so GET reflects the same file POST

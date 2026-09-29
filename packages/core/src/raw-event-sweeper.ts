@@ -143,10 +143,13 @@ export class RawEventSweeper {
 		this.authBackoffUntil = Date.now() / 1000 + AUTH_BACKOFF_S;
 		if (!this.authErrorLogged) {
 			this.authErrorLogged = true;
+			const v2ServiceError = !["auth_failed", "auth_missing"].includes(exc.detail.code);
+			const advice = v2ServiceError
+				? "Check the selected model and OpenCode service in Settings."
+				: "Refresh your provider credentials or update observer_provider in Settings.";
 			const msg =
-				`codemem: observer auth error — backing off for ${AUTH_BACKOFF_S}s. ` +
-				`Refresh your provider credentials or update observer_provider in settings. ` +
-				`(${exc.message})`;
+				`codemem: observer unavailable — backing off for ${AUTH_BACKOFF_S}s. ` +
+				`${advice} (${exc.message})`;
 			console.error(msg);
 		}
 	}

@@ -11,7 +11,9 @@ const helperRoot = path.join(packageRoot, ".opencode", "lib");
 const readPluginFile = (name: string) => readFile(path.join(pluginRoot, name), "utf8");
 const readHelperFile = (name: string) => readFile(path.join(helperRoot, name), "utf8");
 
-async function createRuntimeFixture(options: { rawEvents?: boolean; homeDir?: string } = {}) {
+async function createRuntimeFixture(
+	options: { rawEvents?: boolean; homeDir?: string; hostGeneration?: "v2" } = {},
+) {
 	vi.stubEnv("CODEMEM_RAW_EVENTS", options.rawEvents ? "1" : "0");
 	if (options.homeDir) vi.stubEnv("HOME", options.homeDir);
 	vi.stubEnv("CODEMEM_VIEWER", "0");
@@ -21,6 +23,7 @@ async function createRuntimeFixture(options: { rawEvents?: boolean; homeDir?: st
 	const runtimeUrl = pathToFileURL(path.join(helperRoot, "runtime.js")).href;
 	const { createCodememRuntime } = await import(runtimeUrl);
 	const runtime = await createCodememRuntime({
+		hostGeneration: options.hostGeneration,
 		location: {
 			project: { name: "runtime-boundary", root: packageRoot },
 			directory: packageRoot,
@@ -211,6 +214,38 @@ describe("shared runtime prompt boundaries", () => {
 });
 
 describe("shared runtime disposal durability", () => {
+	it("marks every V2-generated raw-event envelope, not just translated host events", async () => {
+		const homeDir = await mkdtemp(path.join(tmpdir(), "codemem-v2-provenance-"));
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response("Viewer unavailable", { status: 503 })),
+		);
+		const runtime = await createRuntimeFixture({ rawEvents: true, homeDir, hostGeneration: "v2" });
+		const { loadRawEventSpoolEntries } = await import(
+			pathToFileURL(path.join(helperRoot, "raw-event-spool.js")).href
+		);
+		try {
+			await addPrompt(runtime, "message-1");
+			await runtime.handleToolResult(
+				{ sessionID: "session-1", tool: "read", args: { filePath: "fixture.ts" } },
+				{ output: "fixture", error: null },
+			);
+			await runtime.dispose();
+			const spool = await loadRawEventSpoolEntries({ homeDir });
+			const envelopes: Array<Record<string, unknown>> = spool.entries.map(
+				(entry: { envelope: Record<string, unknown> }) => entry.envelope,
+			);
+			expect(envelopes.some((entry) => entry.event_type === "user_prompt")).toBe(true);
+			expect(envelopes.some((entry) => entry.event_type === "tool.execute.after")).toBe(true);
+			expect(envelopes.every((entry) => entry.host_generation === "v2")).toBe(true);
+		} finally {
+			await runtime.dispose();
+			vi.unstubAllGlobals();
+			vi.unstubAllEnvs();
+			await rm(homeDir, { recursive: true, force: true });
+		}
+	});
+
 	it("durably spools a pending prompt before disposal completes", async () => {
 		const homeDir = await mkdtemp(path.join(tmpdir(), "codemem-runtime-disposal-"));
 		const fetchMock = vi.fn(async () => new Promise<Response>(() => {}));

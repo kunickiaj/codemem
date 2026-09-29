@@ -2,12 +2,15 @@ import {
 	CodememPlugin,
 	OpencodeMemPlugin,
 } from "./.opencode/plugins/codemem.js";
-import { setupOpenCodeV2 } from "./.opencode/lib/opencode-v2-adapter.js";
+import { createOpenCodeV2Adapter } from "./.opencode/lib/opencode-v2-adapter.js";
+import { createCodememRuntime } from "./.opencode/lib/runtime.js";
 
 const CodememDualPlugin = {
 	id: "codemem",
 	server: CodememPlugin,
-	setup: setupOpenCodeV2,
+	setup: createOpenCodeV2Adapter({
+		createRuntime: (options) => createCodememRuntime({ ...options, hostGeneration: "v2" }),
+	}),
 };
 
 export default CodememDualPlugin;

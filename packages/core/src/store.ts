@@ -190,6 +190,25 @@ const SAME_PERSON_BINDING_PROVENANCE = new Set([
 // Helpers
 
 /** ISO 8601 timestamp in UTC. */
+function observerAdmissionErrorDetails(code: string): { type: string; message: string } {
+	if (code === "model_unavailable") {
+		return {
+			type: "ObserverModelUnavailable",
+			message: "Selected model is unavailable in the OpenCode service; choose a model in Settings.",
+		};
+	}
+	if (code === "service_unavailable") {
+		return {
+			type: "ObserverServiceUnavailable",
+			message: "OpenCode service is unavailable; start it and retry.",
+		};
+	}
+	return {
+		type: "ObserverAuthError",
+		message: "Observer authentication failed; waiting for credentials.",
+	};
+}
+
 function nowIso(): string {
 	return new Date().toISOString();
 }
@@ -2412,8 +2431,8 @@ export class MemoryStore {
 				status: "failed",
 				updated_at: new Date().toISOString(),
 				attempt_count: sql`MAX(0, ${schema.rawEventFlushBatches.attempt_count} - 1)`,
-				error_type: "ObserverAuthError",
-				error_message: "Observer authentication failed; waiting for credentials.",
+				error_type: observerAdmissionErrorDetails(failure.code).type,
+				error_message: observerAdmissionErrorDetails(failure.code).message,
 				observer_provider: failure.provider,
 				observer_model: failure.model,
 				observer_runtime: failure.runtime,

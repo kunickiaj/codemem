@@ -5,8 +5,54 @@ import { TextInput } from "../../../components/primitives/text-input";
 import type { SettingsPanelProps } from "../data/types";
 import { formatAgentClientList } from "../data/value-helpers";
 import { Field } from "./Field";
+import { ObserverModelAvailability } from "./ObserverModelAvailability";
 import { SettingsHint } from "./SettingsHint";
 import { SettingsSectionIntro } from "./SettingsSectionIntro";
+
+function MainModelField({
+	values,
+	onTextInput,
+	getObserverModelLabel,
+	getObserverModelTooltip,
+	getObserverModelDescription,
+	getObserverModelHint,
+}: Pick<
+	SettingsPanelProps,
+	| "values"
+	| "onTextInput"
+	| "getObserverModelLabel"
+	| "getObserverModelTooltip"
+	| "getObserverModelDescription"
+	| "getObserverModelHint"
+>) {
+	return (
+		<Field>
+			<div className="field-label">
+				<label htmlFor="observerModel">{getObserverModelLabel()}</label>
+				<button
+					aria-label="About model defaults"
+					className="help-icon"
+					data-tooltip={getObserverModelTooltip()}
+					type="button"
+				>
+					?
+				</button>
+			</div>
+			<TextInput
+				id="observerModel"
+				list="observerModel-catalog"
+				onInput={onTextInput("observerModel")}
+				placeholder="leave empty for default"
+				value={values.observerModel}
+			/>
+			<div className="small">{getObserverModelDescription()}</div>
+			<div className="small" id="observerModelHint">
+				{getObserverModelHint()}
+			</div>
+			<ObserverModelAvailability id="observerModel" values={values} />
+		</Field>
+	);
+}
 
 export function ObserverPanel({
 	values,
@@ -62,36 +108,21 @@ export function ObserverPanel({
 						provider/model from API-key providers only.
 					</div>
 				</Field>
-				<Field>
-					<div className="field-label">
-						<label htmlFor="observerModel">{getObserverModelLabel()}</label>
-						<button
-							aria-label="About model defaults"
-							className="help-icon"
-							data-tooltip={getObserverModelTooltip()}
-							type="button"
-						>
-							?
-						</button>
-					</div>
-					<TextInput
-						id="observerModel"
-						onInput={onTextInput("observerModel")}
-						placeholder="leave empty for default"
-						value={values.observerModel}
-					/>
-					<div className="small">{getObserverModelDescription()}</div>
-					<div className="small" id="observerModelHint">
-						{getObserverModelHint()}
-					</div>
-				</Field>
+				<MainModelField
+					values={values}
+					onTextInput={onTextInput}
+					getObserverModelLabel={getObserverModelLabel}
+					getObserverModelTooltip={getObserverModelTooltip}
+					getObserverModelDescription={getObserverModelDescription}
+					getObserverModelHint={getObserverModelHint}
+				/>
 				<Field>
 					<div className="field-label">
 						<label htmlFor="observerRuntime">Connection mode</label>
 						<button
 							aria-label="About connection mode"
 							className="help-icon"
-							data-tooltip="Direct API uses provider credentials, including cheap-model-first settings derived from pi API-key providers. Local sessions use the selected Claude or Codex CLI login."
+							data-tooltip="V2-captured sessions with implicit OpenCode credentials use its active provider connection. V1 and explicit API credentials keep their current path. Local CLI choices remain explicit."
 							type="button"
 						>
 							?
@@ -104,7 +135,7 @@ export function ObserverPanel({
 						itemClassName="settings-select-item"
 						onValueChange={onSelectValueChange("observerRuntime")}
 						options={[
-							{ label: "Direct API (default)", value: "api_http" },
+							{ label: "Automatic (V2 service / V1 direct)", value: "api_http" },
 							{ label: "Local Claude session", value: "claude_sidecar" },
 							{ label: "Local Codex session", value: "codex_sidecar" },
 						]}
@@ -113,8 +144,9 @@ export function ObserverPanel({
 						viewportClassName="settings-select-viewport"
 					/>
 					<div className="small">
-						Switch between provider API credentials (OpenCode, Claude, Codex, pi) and local Claude
-						or Codex CLI auth.
+						Automatic uses OpenCode V2 for V2 sessions with implicit credentials; V1 keeps its
+						route. OpenCode controls account billing. You can choose a local Claude or Codex session
+						instead.
 					</div>
 				</Field>
 				<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>

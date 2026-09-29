@@ -80,6 +80,6 @@ describe("ObserverPanel", () => {
 		expect(mount.textContent).toContain("opencode, claude, codex, and pi");
 		expect(mount.textContent).toMatch(/pi setup can derive Direct API/i);
 		const runtimeHelp = mount.querySelector('[aria-label="About connection mode"]');
-		expect(runtimeHelp?.getAttribute("data-tooltip") ?? "").toMatch(/pi API-key providers/i);
+		expect(runtimeHelp?.getAttribute("data-tooltip") ?? "").toMatch(/V2-captured sessions/i);
 	});
 });

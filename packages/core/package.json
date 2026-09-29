@@ -37,6 +37,7 @@
 		"vitest": "catalog:"
 	},
 	"dependencies": {
+		"@opencode/client": "2.0.12",
 		"better-sqlite3": "13.0.3",
 		"bonjour-service": "^1.4.4",
 		"drizzle-orm": "catalog:",

@@ -691,6 +691,17 @@ try {
 		checkoutLintFixtureCreated = true;
 		provider.setLintTarget(checkoutLintFixture);
 		checkoutHost = await startHost(opencode2, workspaceRoot, checkoutEnv);
+		const generated = await fetch(`${checkoutHost.baseURL}/api/experimental/generate`, {
+			method: "POST",
+			headers: {
+				Authorization: `Basic ${Buffer.from(`opencode:${checkoutEnv.OPENCODE_SERVER_PASSWORD}`).toString("base64")}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ model: { providerID: "contract", id: "contract-model" }, prompt: "Reply OK." }),
+		});
+		// The fixture has no active account for this model; a model rejection is
+		// acceptable here, but an absent one-shot route is not.
+		assert(![404, 405].includes(generated.status), `Pinned V2 host lacks stateless generation (${generated.status})`);
 		await waitForPlugins(checkoutHost, workspaceRoot, checkoutEnv, [
 			"codemem-source-checkout-v1", "codemem", "codemem-lint-feedback",
 		]);

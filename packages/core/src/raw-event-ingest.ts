@@ -218,6 +218,14 @@ function legacyStringSequenceEventId(
 	return `legacy-seq-${eventSeq}-${digest}`;
 }
 
+function eventHostGeneration(value: unknown, source: string): "v2" | null {
+	if (value == null) return null;
+	if (source !== "opencode" || value !== "v2") {
+		validationError("host_generation must be v2 on an opencode event");
+	}
+	return "v2";
+}
+
 function normalizeEvent(
 	item: Record<string, unknown>,
 	defaultStreamId: StreamIdResolution,
@@ -237,6 +245,10 @@ function normalizeEvent(
 		validationError("payload must be an object");
 	}
 	const payload = stripPrivateObj(rawPayload) as Record<string, unknown>;
+	if (eventHostGeneration(item.host_generation, source)) {
+		// Keep provenance in the existing event JSON without changing source/stream identity.
+		payload.codemem_host_generation = "v2";
+	}
 	const rawEventId = item.event_id;
 	const eventId =
 		rawEventId == null || rawEventId === ""

@@ -5,7 +5,7 @@
  * an LLM (Anthropic Messages or OpenAI Chat Completions) via fetch to extract
  * memories from session transcripts.
  *
- * Supports api_http, claude_sidecar, and codex_sidecar runtimes (no opencode_run).
+ * Supports api_http, opencode_v2, claude_sidecar, and codex_sidecar runtimes.
  * Non-streaming responses via fetch (no SDK deps).
  */
 
@@ -46,6 +46,7 @@ import {
 } from "./observer-config.js";
 import type { ObserverEnvelopeFailureReason } from "./observer-output-schema.js";
 import { parseObserverSSE } from "./observer-sse.js";
+import { generateWithOpenCodeV2 } from "./opencode-v2-generation.js";
 import { resolvePiObserverConfig } from "./pi-observer-config.js";
 
 // ---------------------------------------------------------------------------
@@ -336,7 +337,7 @@ function supportsDefaultTierRouting(
 	hasCustomBaseUrl: boolean,
 ): boolean {
 	if (runtime === "claude_sidecar") return true;
-	if (runtime !== "api_http") return false;
+	if (runtime !== "api_http" && runtime !== "opencode_v2") return false;
 	if (provider !== "openai" && provider !== "anthropic") return false;
 	// A custom base URL may point at an OpenAI-compatible gateway that only
 	// implements chat/completions. Rich-tier defaults turn Responses on, so we
@@ -846,7 +847,8 @@ export function loadObserverConfig(configData?: Record<string, unknown>): Observ
 /** Normalize the runtime exactly as ObserverClient does after automatic selection. */
 export function normalizeObserverRuntime(value: unknown): string {
 	const runtime = typeof value === "string" ? value.trim().toLowerCase() : "";
-	if (runtime === "claude_sidecar" || runtime === "codex_sidecar") return runtime;
+	if (runtime === "claude_sidecar" || runtime === "codex_sidecar" || runtime === "opencode_v2")
+		return runtime;
 	return "api_http";
 }
 
@@ -1746,24 +1748,31 @@ export class ObserverClient {
 		this.bindCustomBaseUrl(cfg.observerBaseUrl, explicitConfigKeys);
 		this.bindPiApiKey();
 		this.bindAuthAdapter(cfg);
+		this.initializeRuntime(cfg);
+	}
 
-		// Initialize provider client state — skip for sidecar runtimes (no API
-		// key needed; auth is delegated to the local Claude/Codex CLI).
-		const isSidecarRuntime = this.runtime === "claude_sidecar" || this.runtime === "codex_sidecar";
-		if (!isSidecarRuntime) {
+	private initializeRuntime(cfg: ObserverConfig): void {
+		// Hosted runtimes use the active connection of their local CLI or service.
+		const isHostedRuntime =
+			this.runtime === "claude_sidecar" ||
+			this.runtime === "codex_sidecar" ||
+			this.runtime === "opencode_v2";
+		if (!isHostedRuntime) {
 			this._initProvider(false);
 		} else if (
 			cfg.observerAuthSource === "file" ||
 			cfg.observerAuthSource === "command" ||
 			cfg.observerAuthSource === "env"
 		) {
-			// The sidecar runtimes authenticate through the local CLI and do not
-			// consult observer_auth_source, so flag the mismatch to avoid silently
-			// ignoring user config.
-			const cliName = this.runtime === "codex_sidecar" ? "Codex" : "Claude";
+			// A selected host ignores auth_source; never claim the saved value took effect.
+			const hostName: Record<string, string> = {
+				opencode_v2: "OpenCode service",
+				codex_sidecar: "Codex CLI",
+				claude_sidecar: "Claude CLI",
+			};
 			console.warn(
 				`[codemem] observer_auth_source="${cfg.observerAuthSource}" is ignored when ` +
-					`observer_runtime="${this.runtime}"; the sidecar authenticates via the local ${cliName} CLI.`,
+					`observer_runtime="${this.runtime}"; authentication uses the local ${hostName[this.runtime]}.`,
 			);
 		}
 	}
@@ -1808,10 +1817,9 @@ export class ObserverClient {
 	/** Return the resolved runtime state of this observer client. */
 	getStatus(): ObserverStatus {
 		let method = "none";
-		if (this.runtime === "claude_sidecar") {
-			method = "claude_sidecar";
-		} else if (this.runtime === "codex_sidecar") {
-			method = "codex_sidecar";
+		const hostedMethod = ["claude_sidecar", "codex_sidecar", "opencode_v2"].includes(this.runtime);
+		if (hostedMethod) {
+			method = this.runtime;
 		} else if (this._anthropicOAuthAccess) {
 			method = "anthropic_consumer";
 		} else if (this._codexAccess) {
@@ -1833,7 +1841,7 @@ export class ObserverClient {
 			model: isSidecarRuntime ? (this._lastResolvedModel ?? this.model) : this.model,
 			runtime,
 			auth: {
-				source: this.auth.source,
+				source: this.runtime === "opencode_v2" ? "opencode_service" : this.auth.source,
 				type: method,
 				hasToken: !!this.auth.token,
 			},
@@ -1858,6 +1866,7 @@ export class ObserverClient {
 
 	/** Force-refresh auth credentials. */
 	refreshAuth(force = true): void {
+		if (this.runtime === "opencode_v2") return;
 		this.authAdapter.invalidateCache();
 		this._initProvider(force);
 	}
@@ -2266,6 +2275,9 @@ export class ObserverClient {
 	// -----------------------------------------------------------------------
 
 	private async _callOnce(systemPrompt: string, userPrompt: string): Promise<ObserverCallResult> {
+		if (this.runtime === "opencode_v2") {
+			return this._callOpenCodeV2(systemPrompt, userPrompt);
+		}
 		// Claude sidecar path — dispatches before any API-based paths
 		if (this.runtime === "claude_sidecar") {
 			return this._callSidecar(systemPrompt, userPrompt);
@@ -2305,6 +2317,25 @@ export class ObserverClient {
 			return this._callAnthropicDirect(systemPrompt, userPrompt);
 		}
 		return this._callOpenAIDirect(systemPrompt, userPrompt);
+	}
+
+	private async _callOpenCodeV2(
+		systemPrompt: string,
+		userPrompt: string,
+	): Promise<ObserverCallResult> {
+		const result = await generateWithOpenCodeV2({
+			provider: this.provider,
+			model: this.model,
+			prompt: `${systemPrompt}\n\n${userPrompt}`,
+		});
+		if (result.error) {
+			const message = `OpenCode V2 generation failed: ${result.error}. Check the selected provider and model in Settings.`;
+			this._setLastError(message, result.error);
+			// Retain the raw-event range. Changing the selected model or restarting the
+			// service must not require replaying an already-advanced stream cursor.
+			throw new ObserverAuthError(message, { code: result.error, message });
+		}
+		return emptyCallResult(result.text);
 	}
 
 	// -----------------------------------------------------------------------

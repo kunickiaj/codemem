@@ -101,7 +101,12 @@ function resolveRichTierDefaults(provider: KnownTierProvider): Partial<ObserverC
 
 function normalizeRuntime(value: string | null | undefined): string {
 	const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
-	if (normalized === "claude_sidecar" || normalized === "codex_sidecar") return normalized;
+	if (
+		normalized === "claude_sidecar" ||
+		normalized === "codex_sidecar" ||
+		normalized === "opencode_v2"
+	)
+		return normalized;
 	return "api_http";
 }
 

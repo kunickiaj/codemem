@@ -1948,6 +1948,7 @@ const buildRawEventEnvelope = ({
   nowMono,
   nextEventId,
   captureContext,
+  hostGeneration,
 }) => ({
   session_stream_id: sessionID,
   session_id: sessionID,
@@ -1960,6 +1961,7 @@ const buildRawEventEnvelope = ({
   cwd,
   project,
   started_at: startedAt,
+  ...(hostGeneration === "v2" ? { host_generation: "v2" } : {}),
   ...(captureContext ? { capture_context: captureContext } : {}),
 });
 
@@ -2169,7 +2171,7 @@ const buildRunnerArgs = ({ runner, runnerFrom, runnerFromExplicit }) => {
   return runnerFromExplicit ? [runnerFrom] : [];
 };
 
-export const createCodememRuntime = async ({ location, host }) => {
+export const createCodememRuntime = async ({ location, host, hostGeneration = null }) => {
   const { project, directory, worktree } = location;
   const hostLog = typeof host?.log === "function" ? host.log : async () => {};
   const hostNotify = typeof host?.notify === "function" ? host.notify : null;
@@ -2803,7 +2805,7 @@ export const createCodememRuntime = async ({ location, host }) => {
 
   rawEventDelivery = createRawEventDelivery({
     backoffMs: rawEventsBackoffMs,
-    buildEnvelope: buildRawEventEnvelope,
+    buildEnvelope: (input) => buildRawEventEnvelope({ ...input, hostGeneration }),
     classifyViewerFailure: classifyRawEventViewerFailure,
     cwd,
     discardResponseBody,

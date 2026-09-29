@@ -688,6 +688,7 @@ export {
 export * from "./observer-forced-tool.js";
 export * from "./observer-output.js";
 export * from "./observer-output-schema.js";
+export { generateWithOpenCodeV2, listOpenCodeV2Models } from "./opencode-v2-generation.js";
 export * from "./operational-status.js";
 export * from "./outcome-evidence.js";
 export type { PackArtifacts } from "./pack.js";

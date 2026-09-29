@@ -81,6 +81,32 @@ afterEach(() => {
 });
 
 describe("ingestRawEvents schema compatibility", () => {
+	it("retains V2 host provenance without changing the stream source", () => {
+		const dbPath = createDbPath();
+		const db = connect(dbPath);
+		try {
+			const event = {
+				source: "opencode",
+				session_id: "mixed-client",
+				event_id: "v2-event",
+				event_type: "user_prompt",
+				payload: { prompt_text: "synthetic" },
+				host_generation: "v2",
+			};
+			ingestRawEvents({ db }, event);
+			const stored = db
+				.prepare("SELECT source, payload_json FROM raw_events WHERE event_id = ?")
+				.get("v2-event") as { source: string; payload_json: string };
+			expect(stored.source).toBe("opencode");
+			expect(JSON.parse(stored.payload_json).codemem_host_generation).toBe("v2");
+			expect(() =>
+				ingestRawEvents({ db }, { ...event, event_id: "bad", host_generation: "v1" }),
+			).toThrow("host_generation must be v2 on an opencode event");
+		} finally {
+			db.close();
+		}
+	});
+
 	it("adds capture context storage before ingesting into an existing database", () => {
 		const dbPath = createDbPath();
 		const db = connect(dbPath);

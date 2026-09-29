@@ -27,7 +27,7 @@ import {
 	normalizeEventsForSessionContext,
 } from "./ingest-transcript.js";
 import type { IngestPayload, SessionContext } from "./ingest-types.js";
-import { ObserverAuthError } from "./observer-client.js";
+import { ObserverAuthError, ObserverClient } from "./observer-client.js";
 import { ObserverOutputError, ObserverOutputTransportError } from "./observer-output.js";
 import type { MemoryStore } from "./store.js";
 
@@ -39,6 +39,50 @@ const DEFAULT_MAX_FLUSH_ATTEMPTS = 5;
 const TERMINAL_NO_OUTPUT_MICROBATCH_MAX_EVENTS = 2;
 const LEGACY_REDIAGNOSIS_FAILED_ERROR_TYPE = "RawEventLegacyFailure:rediagnosis_failed";
 const OBSERVER_CALL_ERROR_TYPE = "RawEventObserverCallError";
+
+function isV2Event(event: Record<string, unknown>): boolean {
+	return event.codemem_host_generation === "v2";
+}
+
+/** Keep a host upgrade from mixing V1 and V2 credentials in one flush range. */
+export function oneHostGeneration(events: Record<string, unknown>[]): Record<string, unknown>[] {
+	if (events.length === 0) return events;
+	const generation = isV2Event(events[0] ?? {});
+	const transition = events.findIndex((event) => isV2Event(event) !== generation);
+	return transition > 0 ? events.slice(0, transition) : events;
+}
+
+function hasImplicitObserverAuth(options: IngestOptions, explicitRuntime: boolean): boolean {
+	const status = options.observer.getStatus();
+	const configured = options.observer.toConfig();
+	const autoSidecar =
+		["codex_sidecar", "claude_sidecar"].includes(options.observer.runtime) && !explicitRuntime;
+	if (!autoSidecar && status.auth.source !== "none" && status.auth.source !== "oauth") return false;
+	if (configured.observerBaseUrl || configured.observerApiKey) return false;
+	if (options.observer.provider === "anthropic" && process.env.CODEMEM_ANTHROPIC_ENDPOINT?.trim())
+		return false;
+	if (configured.observerAuthFile || configured.observerAuthCommand.length) return false;
+	return Object.keys(configured.observerHeaders).length === 0;
+}
+
+export function observerForRawEvents(
+	events: Record<string, unknown>[],
+	options: IngestOptions,
+	source: string,
+): IngestOptions {
+	if (source !== "opencode" || !events.every(isV2Event)) return options;
+	const configured = options.observer.toConfig();
+	const explicitRuntime =
+		configured.observerExplicitConfigKeys?.includes("observerRuntime") ?? false;
+	if (explicitRuntime && configured.observerRuntime !== "api_http") return options;
+	if (configured.observerAuthSource !== "auto") return options;
+	if (!hasImplicitObserverAuth(options, explicitRuntime)) return options;
+	if (!["openai", "anthropic"].includes(options.observer.provider)) return options;
+	return {
+		...options,
+		observer: new ObserverClient({ ...configured, observerRuntime: "opencode_v2" }),
+	};
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -455,12 +499,8 @@ export async function flushRawEvents(
 
 	// Read unflushed events
 	const lastFlushed = store.rawEventFlushState(opencodeSessionId, source);
-	const events = store.rawEventsSinceBySeq(
-		opencodeSessionId,
-		source,
-		lastFlushed,
-		maxEvents,
-		throughEventSeq,
+	const events = oneHostGeneration(
+		store.rawEventsSinceBySeq(opencodeSessionId, source, lastFlushed, maxEvents, throughEventSeq),
 	);
 	if (events.length === 0) {
 		return { flushed: 0, updatedState: 0 };
@@ -574,7 +614,7 @@ export async function flushRawEvents(
 
 	// Run ingest pipeline
 	try {
-		await ingest(payload, store, ingestOpts);
+		await ingest(payload, store, observerForRawEvents(events, ingestOpts, source));
 	} catch (exc) {
 		handleFlushFailure(store, ingestOpts, batchId, isLegacyRediagnosis, exc);
 	}
