@@ -18,7 +18,7 @@ import {
 	renderStats,
 } from "./health";
 import { renderAutomaticRecall } from "./health/components";
-import { loadHealthData } from "./health/lifecycle";
+import { cancelHealthUpdateStatus, loadHealthData } from "./health/lifecycle";
 
 vi.mock("../components/primitives/tooltip", () => ({
 	Tooltip: ({ children, label }: { children?: ComponentChildren; label?: string }) =>
@@ -826,6 +826,144 @@ describe("Usage metric provenance", () => {
 	});
 });
 
+describe("Progressive Health loads", () => {
+	it("renders local results before release discovery and other reads settle", async () => {
+		state.activeTab = "health";
+		setUpdateStatus(null);
+		state.healthStats = healthNotLoaded();
+		state.healthUsage = healthNotLoaded();
+		state.healthSession = healthNotLoaded();
+		state.healthRawEvents = healthNotLoaded();
+		let resolveUsage: ((payload: CachedUsagePayload) => void) | undefined;
+		let resolveUpdate: ((status: UpdateStatus) => void) | undefined;
+		mockSuccessfulHealthReads();
+		vi.spyOn(api, "loadUpdateStatus").mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					resolveUpdate = resolve;
+				}),
+		);
+		vi.mocked(api.loadUsage).mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					resolveUsage = resolve;
+				}),
+		);
+
+		const loading = loadHealthData();
+		await vi.waitFor(() => expect(state.healthStats.status).toBe("available"));
+		expect(state.healthUsage.status).toBe("loading");
+		expect(document.getElementById("statsGrid")?.textContent).toContain("0");
+		expect(state.lastUpdateStatus).toBeNull();
+		resolveUsage?.(usagePayload());
+		await loading;
+		expect(state.lastUpdateStatus).toBeNull();
+		resolveUpdate?.(availableStatus);
+		await vi.waitFor(() => expect(state.lastUpdateStatus).toEqual(availableStatus));
+		expect(updateBannerText()).toContain("0.41.0");
+	});
+
+	it("keeps a single pending release lookup across multiple completed Health polls", async () => {
+		state.activeTab = "health";
+		setUpdateStatus(null);
+		mockSuccessfulHealthReads();
+		let resolveUpdate: ((status: UpdateStatus) => void) | undefined;
+		const lookup = vi.spyOn(api, "loadUpdateStatus").mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					resolveUpdate = resolve;
+				}),
+		);
+
+		await loadHealthData();
+		await loadHealthData();
+		await loadHealthData();
+		expect(lookup).toHaveBeenCalledTimes(1);
+		expect(state.lastUpdateStatus).toBeNull();
+		resolveUpdate?.(availableStatus);
+		await vi.waitFor(() => expect(state.lastUpdateStatus).toEqual(availableStatus));
+		expect(updateBannerText()).toContain("0.41.0");
+	});
+
+	it("keeps a late update notice from an older or aborted load out of the current view", async () => {
+		state.activeTab = "health";
+		setUpdateStatus(null);
+		mockSuccessfulHealthReads();
+		const resolveUpdates: Array<(status: UpdateStatus) => void> = [];
+		vi.spyOn(api, "loadUpdateStatus").mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					resolveUpdates.push(resolve);
+				}),
+		);
+		const first = new AbortController();
+		await loadHealthData({ signal: first.signal });
+		first.abort();
+		const second = loadHealthData();
+		await second;
+		resolveUpdates[0]?.(availableStatus);
+		await Promise.resolve();
+		expect(state.lastUpdateStatus).toBeNull();
+		resolveUpdates[1]?.(availableStatus);
+		await vi.waitFor(() => expect(state.lastUpdateStatus).toEqual(availableStatus));
+	});
+});
+
+describe("Health load cancellation and retry", () => {
+	it("shows release discovery errors without blocking Health data", async () => {
+		state.activeTab = "health";
+		setUpdateStatus(null);
+		mockSuccessfulHealthReads();
+		vi.spyOn(api, "loadUpdateStatus").mockRejectedValueOnce(new Error("registry timeout"));
+
+		await loadHealthData();
+
+		expect(state.healthStats.status).toBe("available");
+		expect(state.lastUpdateStatus).toMatchObject({ unavailable: true, error: "registry timeout" });
+		vi.mocked(api.loadUpdateStatus).mockResolvedValueOnce(availableStatus);
+		await loadHealthData();
+		await vi.waitFor(() => expect(state.lastUpdateStatus).toEqual(availableStatus));
+	});
+
+	it("ignores a late release result after navigation cancels the lookup", async () => {
+		state.activeTab = "health";
+		setUpdateStatus(null);
+		mockSuccessfulHealthReads();
+		let resolveUpdate: ((status: UpdateStatus) => void) | undefined;
+		vi.spyOn(api, "loadUpdateStatus").mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					resolveUpdate = resolve;
+				}),
+		);
+		await loadHealthData();
+		cancelHealthUpdateStatus();
+		state.activeTab = "feed";
+		resolveUpdate?.(availableStatus);
+		await Promise.resolve();
+		expect(state.lastUpdateStatus).toBeNull();
+	});
+
+	it("ignores local results from an older refresh even without an abort", async () => {
+		mockSuccessfulHealthReads();
+		let resolveOldStats: ((payload: CachedStatsPayload) => void) | undefined;
+		vi.mocked(api.loadStats).mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					resolveOldStats = resolve;
+				}),
+		);
+		const oldLoad = loadHealthData();
+		await loadHealthData();
+		resolveOldStats?.(
+			statsPayload({ database: { ...statsPayload().database, active_memory_items: 99 } }),
+		);
+		await oldLoad;
+		expect(state.healthStats.status).toBe("available");
+		expect(document.getElementById("statsGrid")?.textContent).not.toContain("99");
+	});
+});
+
 describe("Health resource load outcomes", () => {
 	it("keeps successful resources when one Health request fails", async () => {
 		state.healthStats = healthNotLoaded();
@@ -961,6 +1099,7 @@ describe("Health resource load outcomes", () => {
 });
 
 afterEach(() => {
+	cancelHealthUpdateStatus();
 	vi.restoreAllMocks();
 	state.activeTab = "feed";
 	setUpdateStatus(null);

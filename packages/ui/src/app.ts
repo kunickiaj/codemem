@@ -63,6 +63,7 @@ import {
 import { initFeedTab, loadFeedData, updateFeedView } from "./tabs/feed";
 import { completeFirstRunStep } from "./tabs/feed/data/first-run-guide";
 import {
+	cancelHealthUpdateStatus,
 	initHealthTab,
 	loadHealthData,
 	markHealthStatusUnchecked,
@@ -309,6 +310,7 @@ function setRefreshStatus(rs: RefreshState, detail?: string) {
 /* ── Polling ─────────────────────────────────────────────── */
 
 function stopPolling() {
+	cancelHealthUpdateStatus();
 	refreshSessions.cancel();
 	if (refreshDebounceTimer) {
 		clearTimeout(refreshDebounceTimer);
@@ -411,6 +413,7 @@ function switchTab(
 	tab: TabId,
 	options: { canonicalHash?: boolean; advancedSection?: AdvancedSection } = {},
 ) {
+	cancelHealthUpdateStatus();
 	refreshSessions.cancel();
 	const nextTab = resolveAccessibleTab(tab, state.lastCoordinatorAdminStatus);
 	if (nextTab === "advanced") {
@@ -728,6 +731,7 @@ async function runLoadDevicesData(
 
 $select("projectFilter")?.addEventListener("change", () => {
 	refreshSessions.cancel();
+	cancelHealthUpdateStatus();
 	state.currentProject = $select("projectFilter")?.value || "";
 	completeFirstRunStep("scope");
 	updateFeedView(true);
@@ -863,6 +867,7 @@ async function doRefresh(): Promise<void> {
 		if (refreshTab === "feed") updateFeedView(true);
 		const nextTab = resolveAccessibleTab(state.activeTab, state.lastCoordinatorAdminStatus);
 		if (nextTab !== state.activeTab) {
+			cancelHealthUpdateStatus();
 			setActiveTab(nextTab);
 		}
 		renderTabs(state.activeTab);

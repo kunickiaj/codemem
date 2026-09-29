@@ -68,6 +68,7 @@ vi.mock("./tabs/feed", () => ({
 	updateFeedView: vi.fn(),
 }));
 vi.mock("./tabs/health", () => ({
+	cancelHealthUpdateStatus: vi.fn(),
 	initHealthTab: vi.fn(),
 	loadHealthData: mocks.loadHealthData,
 	markHealthStatusUnchecked: mocks.markHealthStatusUnchecked,

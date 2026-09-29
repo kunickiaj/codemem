@@ -1,7 +1,7 @@
 /* Health tab lifecycle — owns lightweight viewer status plus detailed Health loads. */
 
 import * as api from "../../lib/api";
-import type { ReadRequestOptions } from "../../lib/read-request";
+import { createReadDeadline, type ReadRequestOptions, waitForAbort } from "../../lib/read-request";
 import type { HealthResourceState } from "../../lib/state";
 import {
 	beginHealthLoad,
@@ -16,6 +16,50 @@ import { renderHealthOverview } from "./render/health-overview";
 import { renderSessionSummary } from "./render/session-summary";
 import { renderStats } from "./render/stats";
 
+let healthLoadGeneration = 0;
+let pendingUpdateStatus: { cancel: () => void } | null = null;
+
+export function cancelHealthUpdateStatus(): void {
+	pendingUpdateStatus?.cancel();
+}
+
+function loadHealthUpdateStatus(options: ReadRequestOptions): void {
+	if (
+		state.activeTab !== "health" ||
+		(state.lastUpdateStatus && !state.lastUpdateStatus.unavailable) ||
+		pendingUpdateStatus ||
+		options.signal?.aborted
+	)
+		return;
+	// A normal Health refresh finishes before registry discovery does. Keep this
+	// request alive across polls, but cancel it on an actual session abort or navigation.
+	const deadline = createReadDeadline();
+	const request = {
+		cancel: () => {
+			if (pendingUpdateStatus !== request) return;
+			pendingUpdateStatus = null;
+			deadline.abort();
+			deadline.dispose();
+			options.signal?.removeEventListener("abort", request.cancel);
+		},
+	};
+	pendingUpdateStatus = request;
+	options.signal?.addEventListener("abort", request.cancel, { once: true });
+	void waitForAbort(api.loadUpdateStatus({ signal: deadline.signal }), deadline.signal).then(
+		(status) => finish(status),
+		(error) => finish(api.unavailableUpdateStatus(error)),
+	);
+	function finish(status: api.UpdateStatus): void {
+		if (pendingUpdateStatus !== request) return;
+		pendingUpdateStatus = null;
+		deadline.dispose();
+		options.signal?.removeEventListener("abort", request.cancel);
+		if (state.activeTab !== "health") return;
+		state.lastUpdateStatus = status;
+		renderHealthOverview();
+	}
+}
+
 export async function refreshViewerStatus(options: ReadRequestOptions = {}) {
 	const previousActorId = state.viewerActorId;
 	const status = await api.loadViewerStatus(options);
@@ -25,6 +69,7 @@ export async function refreshViewerStatus(options: ReadRequestOptions = {}) {
 }
 
 export async function loadHealthData(options: ReadRequestOptions = {}) {
+	const generation = ++healthLoadGeneration;
 	const project = state.currentProject;
 	state.healthStats = beginHealthLoad(state.healthStats);
 	state.healthUsage = beginHealthLoad(state.healthUsage, project);
@@ -32,26 +77,31 @@ export async function loadHealthData(options: ReadRequestOptions = {}) {
 	state.healthRawEvents = beginHealthLoad(state.healthRawEvents);
 	renderHealthSections();
 
-	const updateStatusPromise =
-		state.activeTab === "health" && !state.lastUpdateStatus
-			? api.loadUpdateStatus(options).catch(api.unavailableUpdateStatus)
-			: Promise.resolve(state.lastUpdateStatus);
-	const [statsResult, usageResult, sessionResult, rawEventsResult, updateStatus] =
-		await Promise.all([
-			settleHealthRead(api.loadStats(options)),
-			settleHealthRead(api.loadUsage(project, options)),
-			settleHealthRead(api.loadSession(project, options)),
-			settleHealthRead(api.loadRawEvents(project, options)),
-			updateStatusPromise,
-		]);
-	if (options.signal?.aborted) return;
+	const isCurrent = () => !options.signal?.aborted && generation === healthLoadGeneration;
+	loadHealthUpdateStatus(options);
 
-	state.healthStats = applyHealthResult(state.healthStats, statsResult);
-	state.healthUsage = applyHealthResult(state.healthUsage, usageResult, project);
-	state.healthSession = applyHealthResult(state.healthSession, sessionResult, project);
-	state.healthRawEvents = applyHealthResult(state.healthRawEvents, rawEventsResult);
-	state.lastUpdateStatus = updateStatus;
-	renderHealthSections();
+	await Promise.all([
+		settleHealthRead(api.loadStats(options)).then((result) => {
+			if (!isCurrent()) return;
+			state.healthStats = applyHealthResult(state.healthStats, result);
+			renderHealthSections();
+		}),
+		settleHealthRead(api.loadUsage(project, options)).then((result) => {
+			if (!isCurrent()) return;
+			state.healthUsage = applyHealthResult(state.healthUsage, result, project);
+			renderHealthSections();
+		}),
+		settleHealthRead(api.loadSession(project, options)).then((result) => {
+			if (!isCurrent()) return;
+			state.healthSession = applyHealthResult(state.healthSession, result, project);
+			renderHealthSections();
+		}),
+		settleHealthRead(api.loadRawEvents(project, options)).then((result) => {
+			if (!isCurrent()) return;
+			state.healthRawEvents = applyHealthResult(state.healthRawEvents, result);
+			renderHealthSections();
+		}),
+	]);
 }
 
 function renderHealthSections(): void {
