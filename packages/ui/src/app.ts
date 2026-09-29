@@ -779,6 +779,7 @@ async function runLoadDevicesData(
 			coordinatorEnrollmentIssueCount,
 			peerRuntimeMetadata,
 			peerSyncMetadata,
+			syncStatusUnavailable: !syncRefreshed,
 		});
 		lastDevicesData = {
 			projects,

@@ -76,6 +76,7 @@ export interface DevicesRendererOptions {
 	onRetry?: () => void | Promise<void>;
 	peerRuntimeMetadata?: DevicePeerRuntimeMetadataInput[];
 	peerSyncMetadata?: DevicePeerSyncInput[];
+	syncStatusUnavailable?: boolean;
 	onSyncDevice?: (peerDeviceId: string) => Promise<DeviceSyncFeedback>;
 	inventory?: DeviceIdentityInventoryV1;
 	onCommitted?: () => boolean | undefined | Promise<boolean | undefined>;
@@ -1297,7 +1298,12 @@ function SyncMenuItem({
 		<button
 			aria-label={`Sync ${device.displayName}`}
 			className="feed-menu-item"
-			disabled={busy || !device.syncPeer.statusAvailable || options.refreshError === true}
+			disabled={
+				busy ||
+				!device.syncPeer.statusAvailable ||
+				options.syncStatusUnavailable === true ||
+				options.refreshError === true
+			}
 			onClick={() => {
 				onSelect();
 				menuRef.current?.querySelector<HTMLElement>("summary")?.focus();
@@ -1462,9 +1468,9 @@ function syncHealthLabel(
 ): string {
 	const peer = device.syncPeer;
 	if (isLocal) return "This device";
+	if (statusUnavailable) return "Sync status unavailable";
 	if (!peer) return "Not paired here";
 	if (!peer.paired) return "Pairing required";
-	if (statusUnavailable) return "Sync status unavailable";
 	if (peer.status === "ok") return "Synced recently";
 	if (peer.status === "error") return "Needs attention";
 	if (peer.status === "stale") return "Not recent";
@@ -1560,7 +1566,9 @@ function DeviceRowStatusCells({
 				device={device}
 				isLocal={directLocalDeviceId(options) === device.deviceId}
 				statusUnavailable={
-					options.refreshError === true || device.syncPeer?.statusAvailable === false
+					options.syncStatusUnavailable === true ||
+					options.refreshError === true ||
+					device.syncPeer?.statusAvailable === false
 				}
 				feedback={feedback}
 				busy={busy}

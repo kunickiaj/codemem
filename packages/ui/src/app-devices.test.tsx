@@ -728,12 +728,19 @@ describe("Devices cached snapshot aliases", () => {
 				expect(deviceRow()?.textContent).not.toContain("0.42.0");
 				expect(deviceRow()?.textContent).toContain("Rename device…");
 			}
-			const before = deviceRow()?.textContent;
+			const stableDeviceDetails = () =>
+				[...(deviceRow()?.querySelectorAll("td:not(.devices-table-sync)") ?? [])]
+					.map((cell) => cell.textContent)
+					.join("");
+			const before = stableDeviceDetails();
 			mocks.loadRecipientPolicyIntent.mockRejectedValueOnce(new Error("intent unavailable"));
 			await act(async () => {
 				await vi.advanceTimersByTimeAsync(5_100);
 			});
-			expect(deviceRow()?.textContent).toBe(before);
+			expect(stableDeviceDetails()).toBe(before);
+			expect(deviceRow()?.querySelector(".devices-table-sync")?.textContent).toContain(
+				"Sync status unavailable",
+			);
 			const panel = document.getElementById("tab-devices");
 			expect(panel?.textContent).toContain("Refresh failed; showing previous device information");
 			expect(

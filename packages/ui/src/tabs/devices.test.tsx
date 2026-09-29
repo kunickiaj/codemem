@@ -304,6 +304,17 @@ describe("Devices sync health", () => {
 		expect(
 			stale?.querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]')?.disabled,
 		).toBe(true);
+		mount(graph, reconciliation(), {
+			peerSyncMetadata: [],
+			syncStatusUnavailable: true,
+			onSyncDevice,
+		});
+		expect(
+			document
+				.getElementById("device-identity-card-unpaired-device")
+				?.querySelector(".devices-table-sync")?.textContent,
+		).toContain("Sync status unavailable");
+		expect(document.querySelectorAll('[aria-label="Sync Tablet"]')).toHaveLength(0);
 	});
 });
 
