@@ -301,6 +301,7 @@ PL->>OC: inject codemem context
 
 Raw-event degradation logs identify the Viewer stage and safe cause without exposing endpoints, paths, payloads, or subprocess output. Successfully spooled events do not show a user-facing warning; persistence failures and capacity exhaustion still do.
 If the same raw event is captured again with only delivery-time timestamps changed, OpenCode reuses its existing durable spool entry; a genuinely different event with the same ID still fails rather than overwriting saved data. Keep OpenCode running after a memory-only warning until the event is delivered or saved for retry.
+When a retry spool write fails, the local plugin log also records a safe failure stage and category (for example, an existing-entry conflict versus a filesystem error) without recording the event ID or content. This diagnostic does not change retry behavior; keep OpenCode running if it warns an event remains only in memory.
 
 OpenCode defaults to an approximate 800-token injection budget and reserves room for its `[codemem context]` prefix before requesting the pack. The estimate is `ceil(characters / 4)`, not the provider's tokenizer. Set `CODEMEM_INJECT_TOKEN_BUDGET` to a positive override; unset, zero, negative, and invalid values use the default. A positive override too small to leave pack capacity injects nothing instead of forwarding `0`, which means unlimited to the generic pack CLI.
 
