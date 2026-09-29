@@ -132,6 +132,13 @@ export function openObserverDiagnosticsFromSettings(options: {
 	queueMicrotask(() => openDiagnosticsDrawer({ ...options, trigger }));
 }
 
+function effectiveTierProviders() {
+	return {
+		simple: String(settingsState.effectiveConfig.observer_simple_provider ?? "").trim(),
+		rich: String(settingsState.effectiveConfig.observer_rich_provider ?? "").trim(),
+	};
+}
+
 function SettingsDialogContent() {
 	const view = settingsView.value;
 	const values = view.renderState.values;
@@ -149,6 +156,7 @@ function SettingsDialogContent() {
 
 	const panelProps: SettingsPanelProps = {
 		values,
+		tierProviders: effectiveTierProviders(),
 		observerMaxCharsDefault,
 		providerOptions,
 		showAuthFile,

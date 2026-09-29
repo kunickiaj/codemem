@@ -10,7 +10,10 @@ function TierModelField({
 	tier,
 	values,
 	onTextInput,
-}: Pick<SettingsPanelProps, "values" | "onTextInput"> & { tier: "simple" | "rich" }) {
+	tierProviders,
+}: Pick<SettingsPanelProps, "values" | "onTextInput" | "tierProviders"> & {
+	tier: "simple" | "rich";
+}) {
 	const id = tier === "simple" ? "observerSimpleModel" : "observerRichModel";
 	const copy = {
 		simple: {
@@ -47,19 +50,21 @@ function TierModelField({
 				value={values[id]}
 			/>
 			<div className="small">{copy.detail}</div>
-			<ObserverModelAvailability id={id} values={values} />
+			<ObserverModelAvailability id={id} values={values} provider={tierProviders?.[tier]} />
 		</Field>
 	);
 }
 
 export function ProcessingPanel({
 	values,
+	tierProviders,
 	showTieredRouting,
 	hiddenUnlessAdvanced,
 	onTextInput,
 	onSwitchInput,
 	getTieredRoutingHelperText,
 }: SettingsPanelProps) {
+	const modelFieldProps = { values, onTextInput, tierProviders };
 	return (
 		<>
 			<SettingsSectionIntro
@@ -111,7 +116,7 @@ export function ProcessingPanel({
 				</SettingsHint>
 				<div hidden={!showTieredRouting}>
 					<h4>Simple tier</h4>
-					<TierModelField tier="simple" values={values} onTextInput={onTextInput} />
+					<TierModelField {...modelFieldProps} tier="simple" />
 					<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
 						<label htmlFor="observerSimpleTemperature">Temperature</label>
 						<TextInput
@@ -150,7 +155,7 @@ export function ProcessingPanel({
 				</div>
 				<div hidden={!showTieredRouting}>
 					<h4>Rich tier</h4>
-					<TierModelField tier="rich" values={values} onTextInput={onTextInput} />
+					<TierModelField {...modelFieldProps} tier="rich" />
 					<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
 						<label htmlFor="observerRichTemperature">Temperature</label>
 						<TextInput

@@ -21,16 +21,18 @@ function catalogModels(): Promise<ModelOption[]> {
 export function ObserverModelAvailability({
 	id,
 	values,
+	provider: providerOverride,
 }: {
 	id: "observerModel" | "observerSimpleModel" | "observerRichModel";
 	values: SettingsFormState;
+	provider?: string;
 }) {
 	const model = {
 		observerModel: values.observerModel,
 		observerSimpleModel: values.observerSimpleModel,
 		observerRichModel: values.observerRichModel,
 	}[id];
-	const provider = values.observerProvider;
+	const provider = providerOverride?.trim().toLowerCase() || values.observerProvider;
 	const [models, setModels] = useState<ModelOption[]>([]);
 	const [checking, setChecking] = useState(false);
 	const [status, setStatus] = useState("");

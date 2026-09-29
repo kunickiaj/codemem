@@ -16,7 +16,12 @@ it("labels catalog suggestions as unverified and checks only after a click", asy
 	const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async (request, options) => {
 		if (String(request).endsWith("/api/observer-model-catalog")) {
 			return new Response(
-				JSON.stringify({ models: [{ provider: "openai", model: "gpt-6-luna" }] }),
+				JSON.stringify({
+					models: [
+						{ provider: "openai", model: "gpt-6-luna" },
+						{ provider: "anthropic", model: "claude-sonnet-5-5" },
+					],
+				}),
 			);
 		}
 		expect(options?.method).toBe("POST");
@@ -39,4 +44,28 @@ it("labels catalog suggestions as unverified and checks only after a click", asy
 	await act(async () => mount?.querySelector<HTMLButtonElement>("button")?.click());
 	expect(fetcher).toHaveBeenCalledTimes(2);
 	await vi.waitFor(() => expect(mount?.textContent).toContain("Verified with a request"));
+	await act(async () =>
+		render(
+			<ObserverModelAvailability
+				id="observerSimpleModel"
+				provider="anthropic"
+				values={{
+					...EMPTY_FORM_STATE,
+					observerProvider: "openai",
+					observerSimpleModel: "claude-sonnet-5-5",
+				}}
+			/>,
+			mount as HTMLDivElement,
+		),
+	);
+	await vi.waitFor(() =>
+		expect(mount?.querySelector('option[value="claude-sonnet-5-5"]')).not.toBeNull(),
+	);
+	expect(mount?.querySelector('option[value="gpt-6-luna"]')).toBeNull();
+	await act(async () => mount?.querySelector<HTMLButtonElement>("button")?.click());
+	await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
+	expect(JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body))).toMatchObject({
+		provider: "anthropic",
+		model: "claude-sonnet-5-5",
+	});
 });
