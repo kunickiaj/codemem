@@ -161,6 +161,35 @@ it("completes a usage-only auth gap without an observer call or cursor rewind", 
 			)
 			.run(`previous-${i}`, `previous-${i}`, i, i, new Date().toISOString());
 	}
+	store.recordRawEvent({
+		opencodeSessionId: "earlier-content",
+		eventId: "earlier-prompt",
+		eventType: "user_prompt",
+		payload: { type: "user_prompt", prompt_text: "Retain this prompt" },
+		tsWallMs: eventTime,
+	});
+	store.getOrCreateSessionForOpencodeSession({
+		opencodeSessionId: "earlier-content",
+		source: "opencode",
+		cwd: dir,
+		project: "codemem",
+		metadata: { source: "plugin" },
+		startedAt: "2026-09-21T09:00:00.000Z",
+		toolVersion: "raw_events",
+	});
+	const earlier = store.getOrCreateRawEventFlushBatch(
+		"earlier-content",
+		"opencode",
+		0,
+		0,
+		"raw_events_v1",
+	);
+	store.db
+		.prepare(
+			"UPDATE raw_event_flush_batches SET status='gave_up', observer_error_code='auth_missing', created_at=datetime('now','-1 day') WHERE id=?",
+		)
+		.run(earlier.batchId);
+	store.updateRawEventFlushState("earlier-content", 0);
 	const { settings, observe } = options();
 	expect(await recoverOneMissingAuthWindow(store, settings)).toBe(true);
 	expect(await recoverOneMissingAuthWindow(store, settings)).toBe(false);

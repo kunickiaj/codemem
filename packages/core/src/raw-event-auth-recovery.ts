@@ -52,7 +52,36 @@ function recoveryRange(row: BatchRangeRow): RawEventRecoveryRange {
 	};
 }
 
-function nextRecoveryWindow(store: MemoryStore): RawEventRecoveryRange | null {
+function eligibleRecoveryWindow(
+	store: MemoryStore,
+	windows: RawEventRecoveryRange[],
+	observerBudgetAvailable: boolean,
+): RawEventRecoveryRange | null {
+	for (const window of windows) {
+		const batch = store.db
+			.prepare(`
+			SELECT status, attempt_count FROM raw_event_flush_batches
+			WHERE source = ? AND stream_id = ? AND start_event_seq = ?
+				AND end_event_seq = ? AND extractor_version = ?
+		`)
+			.get(
+				window.source,
+				window.streamId,
+				window.startEventSeq,
+				window.endEventSeq,
+				RECOVERY_VERSION,
+			) as { status: string; attempt_count: number } | undefined;
+		if (batch?.status === "completed") continue;
+		if (observerBudgetAvailable && (!batch || batch.attempt_count < MAX_ATTEMPTS)) return window;
+		if (isUsageOnlyRecoveryWindow(store, window)) return window;
+	}
+	return null;
+}
+
+function nextRecoveryWindow(
+	store: MemoryStore,
+	{ observerBudgetAvailable }: { observerBudgetAvailable: boolean },
+): RawEventRecoveryRange | null {
 	const streams = store.db
 		.prepare(`
 		SELECT b.source, b.stream_id
@@ -95,27 +124,8 @@ function nextRecoveryWindow(store: MemoryStore): RawEventRecoveryRange | null {
 		const covered = completed.map(recoveryRange);
 		const uncovered = acknowledgeCoveredRanges(store, missingRows, covered);
 		const windows = planRawEventRecoveryWindows(uncovered.map(recoveryRange), covered, MAX_EVENTS);
-		for (const window of windows) {
-			const batch = store.db
-				.prepare(`
-				SELECT status, attempt_count FROM raw_event_flush_batches
-				WHERE source = ? AND stream_id = ? AND start_event_seq = ?
-					AND end_event_seq = ? AND extractor_version = ?
-			`)
-				.get(
-					window.source,
-					window.streamId,
-					window.startEventSeq,
-					window.endEventSeq,
-					RECOVERY_VERSION,
-				) as { status: string; attempt_count: number } | undefined;
-			if (
-				!batch ||
-				(batch.status !== "completed" &&
-					(batch.attempt_count < MAX_ATTEMPTS || isUsageOnlyRecoveryWindow(store, window)))
-			)
-				return window;
-		}
+		const eligible = eligibleRecoveryWindow(store, windows, observerBudgetAvailable);
+		if (eligible) return eligible;
 	}
 	return null;
 }
@@ -273,10 +283,11 @@ export async function recoverOneMissingAuthWindow(
 	store: MemoryStore,
 	options: IngestOptions,
 ): Promise<boolean> {
-	const window = nextRecoveryWindow(store);
+	const observerBudgetAvailable = withinHourlyBudget(store);
+	const window = nextRecoveryWindow(store, { observerBudgetAvailable });
 	if (!window) return false;
 	const usageOnly = isUsageOnlyRecoveryWindow(store, window);
-	if (!usageOnly && !withinHourlyBudget(store)) return false;
+	if (!usageOnly && !observerBudgetAvailable) return false;
 	const batch = store.getOrCreateRawEventFlushBatch(
 		window.streamId,
 		window.source,
