@@ -214,8 +214,14 @@ jobs:
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             echo "Release $RELEASE_TAG already exists"
           else
+            RELEASE_NOTES_ARGS=()
+            RELEASE_NOTES_PATH="docs/release-notes-${RELEASE_TAG#v}.md"
+            if [[ -f "$RELEASE_NOTES_PATH" ]]; then
+              RELEASE_NOTES_ARGS=(--notes "$(cat "$RELEASE_NOTES_PATH")")
+            fi
             gh release create "$RELEASE_TAG" \
               --generate-notes \
-              --title "Release $RELEASE_TAG" \
+              --title "codemem $RELEASE_TAG" \
+              "${RELEASE_NOTES_ARGS[@]}" \
               $PRERELEASE_FLAG
           fi

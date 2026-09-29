@@ -1,13 +1,17 @@
-# 0.46.1 release notes (draft)
+This patch improves OpenCode 2 observer authentication, keeps raw-event capture safer, and makes device sync easier to inspect and run.
 
-OpenCode 2 observer extraction can use the signed-in OpenCode service instead of relying on the legacy `auth.json` credential file. Newly captured V2 events with implicit OpenCode credentials take the stateless service path automatically, preserving the selected provider and model. OpenCode 1 events, older unmarked events, explicit API credentials, custom endpoints, and selected sidecars retain their previous behavior. Historical recovery stays on its configured route.
+## Highlights
 
-Settings shows model suggestions from OpenCode's catalog and offers an on-demand synthetic model check. A listing is not a guarantee that the active connection can use that model; a failed request does not silently select another model or provider. OpenCode chooses the active account for the provider, so subscription and API billing depend on that account.
+- **OpenCode 2 observer:** Newly captured V2 events with implicit OpenCode credentials can use the signed-in service without reading the legacy `auth.json` file. codemem preserves the selected provider and model. OpenCode 1, older unmarked events, explicit credentials, custom endpoints, and selected sidecars keep their previous routes.
+- **Settings:** Observer changes can take effect in the running viewer without a restart. Model suggestions and an on-demand synthetic check help verify a choice without silently switching provider or model. A listed model is not a guarantee that the active account can use it.
+- **Raw events:** Missing observer authentication no longer discards queued events. Historical recovery processes eligible gaps at a paced rate without rewinding session cursors. Windows containing only assistant usage records finish without an observer call or a new memory; missing or invalid events remain failed for diagnosis.
+- **Spool reliability:** Failures report a safe stage and code without logging event contents. A repeated event ID that differs only in top-level delivery timestamps reuses the durable spool entry; other conflicting entries remain conflicts.
+- **Devices:** Each paired peer shows sync health, last sync, and past-24-hour inbound and outbound **operation counts**, not bytes. The row action syncs only the selected peer. Local, unpaired, unavailable, and stale states remain distinct; Advanced Sync retains its deeper controls.
 
-**Output limits:** The V2 stateless generation route does not accept a provider-enforced output-token cap or report token usage. Codemem limits its wait and the response size it accepts, but these do not cap upstream generation or billing. The existing Codex and Claude CLI sidecars and legacy OpenCode OAuth Codex path have the same lack of a provider-side cap. For a provider-enforced cap, configure a direct API-key observer route; direct API requests may incur separate API charges.
+## Limits and upgrade
 
-Raw events remain queued through missing-observer-auth failures. Historical recovery retries eligible gaps at a paced rate without rewinding session cursors or silently changing the configured observer route. Failed windows remain recorded for diagnosis rather than being marked recovered.
+The V2 stateless generation route and the Codex and Claude CLI sidecars do **not** enforce a provider-side output-token cap. codemem limits its wait and the response size it accepts, but those limits do not cap upstream generation or billing. Charges depend on the active provider account; a separately configured API key may incur API charges.
 
-Raw-event spool failures now report a safe failure stage and code without logging event contents. Repeated event IDs whose only differences are top-level delivery timestamps reuse the durable spool entry instead of producing a false memory-only warning; other conflicting entries remain conflicts. Viewer raw-event POST 409 responses already include a target-validation `error.code` in 0.46.0; this release does not remove those checks or make the toast display the code.
+Raw-event POST 409 still rejects database, identity, or contract mismatches. Its response includes `error.code` (already present in 0.46.0), though the toast may not show it.
 
-Devices now shows each paired peer's sync health, last sync, and past-24-hour inbound and outbound operation counts, with an action to sync **only that selected peer**. Local, unpaired, unavailable, and stale states are labeled separately. Advanced Sync retains the deeper controls.
+Install the matching 0.46.1 packages, then restart the viewer and agent host when safe. An already-running viewer does not switch builds automatically.

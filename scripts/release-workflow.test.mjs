@@ -8,6 +8,10 @@ import { fileURLToPath } from "node:url";
 import { npmDistTagForReleaseTag } from "./release-dist-tag.mjs";
 
 const releaseWorkflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+const patchReleaseNotes = readFileSync(
+	new URL("../docs/release-notes-0.46.1.md", import.meta.url),
+	"utf8",
+);
 const publishedPackages = [
 	["@codemem/embeddings", "packages/embeddings"],
 	["@codemem/core", "packages/core"],
@@ -66,5 +70,15 @@ describe("release npm dist-tag routing", () => {
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("GitHub release presentation", () => {
+	it("uses the lowercase product name and prepends curated notes to generated changes", () => {
+		assert.match(releaseWorkflow, /--title "codemem \$RELEASE_TAG"/);
+		assert.match(releaseWorkflow, /RELEASE_NOTES_ARGS=\(--notes "\$\(cat "\$RELEASE_NOTES_PATH"\)"\)/);
+		assert.match(releaseWorkflow, /--generate-notes/);
+		assert.doesNotMatch(patchReleaseNotes, /^# /m);
+		assert.doesNotMatch(patchReleaseNotes, /\b(?:CodeMem|Codemem)\b/);
 	});
 });
