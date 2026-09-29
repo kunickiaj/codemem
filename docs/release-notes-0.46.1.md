@@ -6,4 +6,8 @@ Settings shows model suggestions from OpenCode's catalog and offers an on-demand
 
 **Output limits:** The V2 stateless generation route does not accept a provider-enforced output-token cap or report token usage. Codemem limits its wait and the response size it accepts, but these do not cap upstream generation or billing. The existing Codex and Claude CLI sidecars and legacy OpenCode OAuth Codex path have the same lack of a provider-side cap. For a provider-enforced cap, configure a direct API-key observer route; direct API requests may incur separate API charges.
 
-Other included fixes retain raw events through missing-observer-auth failures, recover historical auth gaps at a paced rate without rewinding session cursors, and apply observer Settings changes in the running viewer. Verify release CI and recovery failures before publishing this patch.
+Raw events remain queued through missing-observer-auth failures. Historical recovery retries eligible gaps at a paced rate without rewinding session cursors or silently changing the configured observer route. Failed windows remain recorded for diagnosis rather than being marked recovered.
+
+Raw-event spool failures now report a safe failure stage and code without logging event contents. Repeated event IDs whose only differences are top-level delivery timestamps reuse the durable spool entry instead of producing a false memory-only warning; other conflicting entries remain conflicts. Viewer raw-event POST 409 responses already include a target-validation `error.code` in 0.46.0; this release does not remove those checks or make the toast display the code.
+
+Devices now shows each paired peer's sync health, last sync, and past-24-hour inbound and outbound operation counts, with an action to sync **only that selected peer**. Local, unpaired, unavailable, and stale states are labeled separately. Advanced Sync retains the deeper controls.
