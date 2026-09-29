@@ -9,5 +9,7 @@ describe("responsive Devices table accessibility", () => {
 
 		expect(narrow).not.toContain(".devices-table-head { display: none; }");
 		expect(narrow).toContain(".devices-table-head { position: absolute; width: 1px; height: 1px;");
+		expect(narrow).toContain(".devices-table-row > :nth-child(6) { grid-column: 3; grid-row: 1; }");
+		expect(narrow).toContain(".devices-table-sync::before");
 	});
 });

@@ -255,11 +255,10 @@ describe("project-first navigation boundaries", () => {
 		expect(html).toContain('id="syncSharingReview"');
 	});
 
-	it("keeps Devices read-only at the app integration boundary", () => {
+	it("keeps policy mutations out of Devices while allowing a targeted peer sync", () => {
 		expect(html).toContain('id="devicesMount"');
-		expect(appSource).not.toMatch(
-			/commitRecipientPolicy|previewRecipientPolicy|updatePeer|triggerSync/,
-		);
+		expect(appSource).not.toMatch(/commitRecipientPolicy|previewRecipientPolicy|updatePeer/);
+		expect(appSource).toContain("api.triggerSync({ peerDeviceId })");
 	});
 });
 

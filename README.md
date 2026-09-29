@@ -547,14 +547,16 @@ Disabling a device's enrollment for one coordinator group revokes future deliver
 
 ### Check devices and health
 
-**Devices** is read-only. Each card shows the device's **Owning Identity**, whether it is available, and the Projects it receives:
+**Devices** shows each device's **Owning Identity**, whether it is available, and the Projects it receives:
 
 - **Direct** — the Project was shared with that Identity.
 - **Team** — the Identity receives the Project through a Team policy.
 - **Waiting** — acceptance, setup, or delivery is waiting; an offline device resumes on reconnect.
 - **Needs attention** — setup reached a terminal failure; use the displayed retry action.
 
-**Presence unavailable** means there is no current presence evidence, including when a coordinator announcement has expired; it does not mean the machine is powered off. A live paired connection or this viewer's local device is shown as **Available**, while an explicitly offline peer remains **Offline**. Devices without a known name appear as **Unnamed device**. Paired devices offer **Identify or rename in Sync…** in their action menu, using the existing Advanced controls.
+For a paired peer, the Sync column separately shows sync health, last sync, and operations received/sent in the past 24 hours (not bytes). Use **Sync this device** in that peer's action menu to run one targeted pass; local or unpaired devices do not offer that action. If sync status cannot refresh, counts are hidden rather than presented as current.
+
+**Presence unavailable** means there is no current presence evidence, including when a coordinator announcement has expired; it does not mean the machine is powered off. A live paired connection or this viewer's local device is shown as **Available**, while an explicitly offline peer remains **Offline**. Devices without a known name appear as **Unnamed device**. Rename a configured device from its action menu; Advanced Sync retains deeper peer diagnostics.
 
 Older coordinator and migration records may contain generated labels such as **Enrolled device** or **Peer device**. For those source-tagged records, Devices prefers a name from current inventory evidence. Historical records did not track whether those exact labels were generated or entered by a person, so that distinction cannot always be recovered. This display fallback does not rename stored devices. If inventory refresh fails, cached aliases cannot supply fresh peer status, versions, or rename actions; direct device-ID matches still work.
 

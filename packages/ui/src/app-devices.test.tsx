@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
 	mountLegacyTeamSetupDialog: vi.fn(),
 	loadSyncStatus: vi.fn(),
 	pingViewerReady: vi.fn(),
+	triggerSync: vi.fn(),
 }));
 
 vi.mock("./app-sharing", () => ({
@@ -61,6 +62,7 @@ vi.mock("./lib/api", () => ({
 	loadRuntimeInfo: vi.fn(async () => ({ version: "test" })),
 	loadSyncStatus: mocks.loadSyncStatus,
 	pingViewerReady: mocks.pingViewerReady,
+	triggerSync: mocks.triggerSync,
 	refreshLegacyTeamSetupCandidate: vi.fn(),
 	saveLegacyTeamSetupAssignment: vi.fn(),
 	saveLegacyTeamSetupDecision: vi.fn(),
@@ -976,6 +978,136 @@ describe("Devices app inventory recovery", () => {
 			"Refresh failed; showing previous device information. Identity setup is disabled until a refresh succeeds.",
 		);
 		expect(panel?.textContent).toContain("Device ownership information is temporarily unavailable");
+	});
+});
+
+describe("Devices app sync health", () => {
+	beforeEach(setupDevicesAppTest);
+	afterEach(teardownDevicesAppTest);
+	it("shows synced peer health and targets only that peer from Devices", async () => {
+		const originalLoad = mocks.loadSyncData.getMockImplementation();
+		mocks.loadSyncData.mockImplementation(async () => {
+			await originalLoad?.();
+			const { state } = await import("./lib/state");
+			const peer = state.lastSyncPeers.find((item) => item.peer_device_id === "device-private");
+			if (peer) {
+				peer.pinned = true;
+				peer.last_sync_at = "2026-09-29T12:00:00Z";
+				peer.recent_ops = { in: 4, out: 2 };
+				peer.status = { peer_state: "online", sync_status: "ok", fresh: true };
+			}
+			return true;
+		});
+		mocks.triggerSync.mockResolvedValue({
+			items: [
+				{ peer_device_id: "device-private", ok: true, opsIn: 2, opsOut: 1, addressErrors: [] },
+			],
+		});
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(5_100);
+		});
+		const row = document.getElementById("device-identity-card-device-private");
+		expect(row?.querySelector(".devices-table-sync")?.textContent).toContain(
+			"24h: received 4 · sent 2",
+		);
+		const action = row?.querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]');
+		expect(action?.disabled).toBe(false);
+		await act(async () => {
+			action?.click();
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		expect(mocks.triggerSync).toHaveBeenCalledExactlyOnceWith({ peerDeviceId: "device-private" });
+		expect(
+			document
+				.getElementById("device-identity-card-device-private")
+				?.querySelector(".devices-table-sync")?.textContent,
+		).toContain("Sync pass finished for 1 device.");
+	});
+
+	it("does not label an empty targeted sync result as success", async () => {
+		const originalLoad = mocks.loadSyncData.getMockImplementation();
+		mocks.loadSyncData.mockImplementation(async () => {
+			await originalLoad?.();
+			const { state } = await import("./lib/state");
+			const peer = state.lastSyncPeers.find((item) => item.peer_device_id === "device-private");
+			if (peer) peer.pinned = true;
+			return true;
+		});
+		mocks.triggerSync.mockResolvedValue({ items: [] });
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(5_100);
+		});
+		const row = document.getElementById("device-identity-card-device-private");
+		await act(async () => {
+			row?.querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]')?.click();
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		expect(
+			document
+				.getElementById("device-identity-card-device-private")
+				?.querySelector(".devices-table-sync")?.textContent,
+		).toContain("This device is no longer paired here");
+	});
+
+	it("marks a retained peer sync snapshot unavailable when the required refresh fails", async () => {
+		const originalLoad = mocks.loadSyncData.getMockImplementation();
+		mocks.loadSyncData.mockImplementation(async () => {
+			await originalLoad?.();
+			const { state } = await import("./lib/state");
+			const peer = state.lastSyncPeers.find((item) => item.peer_device_id === "device-private");
+			if (peer) {
+				peer.pinned = true;
+				peer.recent_ops = { in: 3, out: 2 };
+				peer.status = { sync_status: "ok", peer_state: "online", fresh: true };
+			}
+			return true;
+		});
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(5_100);
+		});
+		const row = () => document.getElementById("device-identity-card-device-private");
+		expect(row()?.querySelector(".devices-table-sync")?.textContent).toContain(
+			"received 3 · sent 2",
+		);
+		mocks.loadSyncData.mockResolvedValueOnce(false);
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(5_100);
+		});
+		expect(row()?.querySelector(".devices-table-sync")?.textContent).toContain(
+			"Sync status unavailable",
+		);
+		expect(row()?.querySelector(".devices-table-sync")?.textContent).not.toContain("received 3");
+		expect(
+			row()?.querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]')?.disabled,
+		).toBe(true);
+	});
+});
+
+describe("Devices app sync errors", () => {
+	beforeEach(setupDevicesAppTest);
+	afterEach(teardownDevicesAppTest);
+
+	it("explains how to recover when sync is disabled", async () => {
+		const originalLoad = mocks.loadSyncData.getMockImplementation();
+		mocks.loadSyncData.mockImplementation(async () => {
+			await originalLoad?.();
+			const { state } = await import("./lib/state");
+			const peer = state.lastSyncPeers.find((item) => item.peer_device_id === "device-private");
+			if (peer) peer.pinned = true;
+			return true;
+		});
+		mocks.triggerSync.mockRejectedValue(new Error("sync_disabled"));
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(5_100);
+		});
+		const row = () => document.getElementById("device-identity-card-device-private");
+		await act(async () => {
+			row()?.querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]')?.click();
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		expect(row()?.querySelector(".devices-table-sync")?.textContent).toContain(
+			"Device sync is off. Turn it on in Settings → Device Sync, then try again.",
+		);
 	});
 });
 

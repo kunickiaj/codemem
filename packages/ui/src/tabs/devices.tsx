@@ -23,6 +23,7 @@ import {
 	deviceIdentitySetupGate,
 } from "../lib/device-identity-inventory";
 import { copyToClipboard } from "../lib/dom";
+import { formatTimestamp } from "../lib/format";
 import { state } from "../lib/state";
 import { RenameDevicePanel } from "./device-rename";
 
@@ -45,6 +46,21 @@ export interface DevicePeerRuntimeMetadataInput {
 	runtimeVersionObservedAt: string | null;
 }
 
+export interface DevicePeerSyncInput {
+	deviceId: string;
+	paired: boolean;
+	status: "ok" | "error" | "stale" | "unknown";
+	lastSyncAt: string | null;
+	recentIn: number | null;
+	recentOut: number | null;
+	statusAvailable: boolean;
+}
+
+export interface DeviceSyncFeedback {
+	message: string;
+	tone: "success" | "warning";
+}
+
 export interface DevicesProjectInput {
 	canonicalProjectIdentity: string;
 	displayName: string;
@@ -59,6 +75,8 @@ export interface DevicesRendererOptions {
 	onNavigate?: (target: DevicesNavigationTarget) => void;
 	onRetry?: () => void | Promise<void>;
 	peerRuntimeMetadata?: DevicePeerRuntimeMetadataInput[];
+	peerSyncMetadata?: DevicePeerSyncInput[];
+	onSyncDevice?: (peerDeviceId: string) => Promise<DeviceSyncFeedback>;
 	inventory?: DeviceIdentityInventoryV1;
 	onCommitted?: () => boolean | undefined | Promise<boolean | undefined>;
 	previewBindings?: typeof previewDeviceIdentityBindings;
@@ -98,6 +116,7 @@ export interface DeviceProjection {
 	availability: DeviceAvailabilityState;
 	availabilityLabel: string;
 	isPairedPeer: boolean;
+	syncPeer?: DevicePeerSyncInput | null;
 	reportedRuntimeVersion: string | null;
 	runtimeVersionObservedAt: string | null;
 	directProjects: DeviceProjectProjection[];
@@ -182,6 +201,22 @@ function deviceDisplayName(name: string, inventoryItem?: DeviceIdentityInventory
 	return resolved === "Canonical device" ? "Unnamed device" : resolved;
 }
 
+function syncPeerLookup(peers?: DevicePeerSyncInput[]): Map<string, DevicePeerSyncInput> {
+	return new Map((peers ?? []).map((peer) => [peer.deviceId, peer]));
+}
+
+function projectDisplayNames(projects: DevicesProjectInput[]): Map<string, string> {
+	return new Map(projects.map((item) => [item.canonicalProjectIdentity, item.displayName]));
+}
+
+function activeIdentityNames(intent: RecipientPolicyIntentGraphV1): Map<string, string> {
+	return new Map(
+		intent.identities
+			.filter((item) => item.status === "active" && item.mergedIntoIdentityId === null)
+			.map((item) => [item.identityId, item.displayName]),
+	);
+}
+
 export function projectDevices(
 	intent: RecipientPolicyIntentGraphV1,
 	reconciliation: RecipientPolicyReconciliationStatusV1,
@@ -190,17 +225,13 @@ export function projectDevices(
 	peerRuntimeMetadataInput: DevicePeerRuntimeMetadataInput[] = [],
 	inventory?: DeviceIdentityInventoryV1,
 	localDeviceId = inventory?.items.find((item) => item.isLocal)?.deviceId,
+	peerSyncInput?: DevicePeerSyncInput[],
 ): DevicesProjection {
-	const identityNames = new Map(
-		intent.identities
-			.filter((item) => item.status === "active" && item.mergedIntoIdentityId === null)
-			.map((item) => [item.identityId, item.displayName]),
-	);
-	const projectNames = new Map(
-		projects.map((item) => [item.canonicalProjectIdentity, item.displayName]),
-	);
+	const identityNames = activeIdentityNames(intent);
+	const projectNames = projectDisplayNames(projects);
 	const availability = new Map(availabilityInput.map((item) => [item.deviceId, item.state]));
 	const peerMetadata = new Map(peerRuntimeMetadataInput.map((item) => [item.deviceId, item]));
+	const syncPeers = syncPeerLookup(peerSyncInput);
 	const statuses = new Map(
 		reconciliation.items.map((item) => [item.canonicalProjectIdentity, item]),
 	);
@@ -248,6 +279,9 @@ export function projectDevices(
 				identityId: device.identityId,
 				identityName: identityNames.get(device.identityId) ?? "Identity unavailable",
 				isPairedPeer: runtimeMetadata !== undefined,
+				...(peerSyncInput
+					? { syncPeer: deviceSyncPeer(device.deviceId, inventory, syncPeers) }
+					: {}),
 				reportedRuntimeVersion: runtimeMetadata?.runtimeVersion ?? null,
 				runtimeVersionObservedAt: runtimeMetadata?.runtimeVersionObservedAt ?? null,
 				directProjects,
@@ -307,6 +341,21 @@ function deviceRuntimeMetadata(
 	return usable.reduce((current, candidate) =>
 		runtimeObservationTime(candidate) > runtimeObservationTime(current) ? candidate : current,
 	);
+}
+
+function deviceSyncPeer(
+	deviceId: string,
+	inventory: DeviceIdentityInventoryV1 | undefined,
+	peers: Map<string, DevicePeerSyncInput>,
+): DevicePeerSyncInput | null {
+	const direct = peers.get(deviceId);
+	if (direct) return direct;
+	const aliases = deviceEvidenceIds(deviceId, inventory)
+		.filter((id) => id !== deviceId)
+		.map((id) => peers.get(id))
+		.filter((peer): peer is DevicePeerSyncInput => peer?.paired === true);
+	// Multiple aliases must not turn a row action into a guess about the peer target.
+	return aliases.length === 1 ? (aliases[0] ?? null) : null;
 }
 
 function runtimeObservationTime(metadata: DevicePeerRuntimeMetadataInput): number {
@@ -1213,6 +1262,53 @@ function RenameMenuItem({
 	);
 }
 
+function rebindMenuBlocked(
+	inventoryItem: DeviceIdentityInventoryItemV1 | undefined,
+	options: DevicesRendererOptions,
+): boolean {
+	return (
+		!inventoryItem ||
+		!options.inventory ||
+		deviceIdentitySetupGate(options.inventory, inventoryItem).blocked ||
+		identityMutationsBlocked(options)
+	);
+}
+
+function SyncMenuItem({
+	device,
+	options,
+	busy,
+	onSelect,
+	menuRef,
+}: {
+	device: DeviceProjection;
+	options: DevicesRendererOptions;
+	busy: boolean;
+	onSelect: () => void;
+	menuRef: RefObject<HTMLDetailsElement>;
+}) {
+	if (
+		!device.syncPeer?.paired ||
+		directLocalDeviceId(options) === device.deviceId ||
+		!options.onSyncDevice
+	)
+		return null;
+	return (
+		<button
+			aria-label={`Sync ${device.displayName}`}
+			className="feed-menu-item"
+			disabled={busy || !device.syncPeer.statusAvailable || options.refreshError === true}
+			onClick={() => {
+				onSelect();
+				menuRef.current?.querySelector<HTMLElement>("summary")?.focus();
+			}}
+			type="button"
+		>
+			{busy ? "Syncing…" : "Sync this device"}
+		</button>
+	);
+}
+
 function DeviceRowMenu({
 	device,
 	inventoryItem,
@@ -1221,6 +1317,8 @@ function DeviceRowMenu({
 	detailsOpen,
 	onRebind,
 	onRename,
+	onSync,
+	syncBusy,
 	options,
 }: {
 	device: DeviceProjection;
@@ -1230,14 +1328,12 @@ function DeviceRowMenu({
 	detailsOpen: boolean;
 	onRebind: () => void;
 	onRename: () => void;
+	onSync: () => void;
+	syncBusy: boolean;
 	options: DevicesRendererOptions;
 }) {
 	const menuRef = useRef<HTMLDetailsElement>(null);
-	const rebindBlocked =
-		!inventoryItem ||
-		!options.inventory ||
-		deviceIdentitySetupGate(options.inventory, inventoryItem).blocked ||
-		identityMutationsBlocked(options);
+	const rebindBlocked = rebindMenuBlocked(inventoryItem, options);
 	const select = (action: () => void) => {
 		if (menuRef.current) menuRef.current.open = false;
 		action();
@@ -1261,6 +1357,13 @@ function DeviceRowMenu({
 				⋯
 			</summary>
 			<div className="feed-menu-panel">
+				<SyncMenuItem
+					device={device}
+					options={options}
+					busy={syncBusy}
+					onSelect={() => select(onSync)}
+					menuRef={menuRef}
+				/>
 				{device.action && options.onNavigate ? (
 					<button
 						aria-label={`${device.action.label} for ${device.displayName}`}
@@ -1352,6 +1455,175 @@ function DeviceNameCell({
 	);
 }
 
+function syncHealthLabel(
+	device: DeviceProjection,
+	isLocal: boolean,
+	statusUnavailable: boolean,
+): string {
+	const peer = device.syncPeer;
+	if (isLocal) return "This device";
+	if (!peer) return "Not paired here";
+	if (!peer.paired) return "Pairing required";
+	if (statusUnavailable) return "Sync status unavailable";
+	if (peer.status === "ok") return "Synced recently";
+	if (peer.status === "error") return "Needs attention";
+	if (peer.status === "stale") return "Not recent";
+	return peer.lastSyncAt ? "Sync status unknown" : "No sync yet";
+}
+
+function DeviceSyncCell({
+	device,
+	isLocal,
+	statusUnavailable,
+	feedback,
+	busy,
+}: {
+	device: DeviceProjection;
+	isLocal: boolean;
+	statusUnavailable: boolean;
+	feedback: DeviceSyncFeedback | null;
+	busy: boolean;
+}) {
+	const peer = device.syncPeer;
+	const showCounts = peer?.paired && !statusUnavailable && !isLocal;
+	return (
+		<td className="devices-table-sync" data-label="Sync">
+			<strong>{syncHealthLabel(device, isLocal, statusUnavailable)}</strong>
+			{busy ? (
+				<span aria-live="polite" className="small">
+					Syncing this device…
+				</span>
+			) : null}
+			{showCounts ? (
+				<>
+					<span>Last sync: {formatTimestamp(peer.lastSyncAt)}</span>
+					<span>
+						24h: received {peer.recentIn?.toLocaleString() ?? "—"} · sent{" "}
+						{peer.recentOut?.toLocaleString() ?? "—"}
+					</span>
+				</>
+			) : null}
+			{feedback ? (
+				<span aria-live="polite" className="small" data-tone={feedback.tone} role="status">
+					{feedback.message}
+				</span>
+			) : null}
+		</td>
+	);
+}
+
+function useDeviceSyncAction(device: DeviceProjection, options: DevicesRendererOptions) {
+	const [syncBusy, setSyncBusy] = useState(false);
+	const [syncFeedback, setSyncFeedback] = useState<DeviceSyncFeedback | null>(null);
+	const inFlight = useRef(false);
+	async function syncDevice() {
+		const peerId = device.syncPeer?.deviceId;
+		if (!peerId || inFlight.current || !options.onSyncDevice) return;
+		inFlight.current = true;
+		setSyncBusy(true);
+		setSyncFeedback(null);
+		try {
+			setSyncFeedback(await options.onSyncDevice(peerId));
+		} catch {
+			setSyncFeedback({
+				message: "Could not sync this device. Check its pairing and try again.",
+				tone: "warning",
+			});
+		} finally {
+			inFlight.current = false;
+			setSyncBusy(false);
+		}
+	}
+	return { syncBusy, syncFeedback, syncDevice };
+}
+
+function DeviceRowStatusCells({
+	device,
+	options,
+	feedback,
+	busy,
+}: {
+	device: DeviceProjection;
+	options: DevicesRendererOptions;
+	feedback: DeviceSyncFeedback | null;
+	busy: boolean;
+}) {
+	return (
+		<>
+			<td className="devices-table-availability" data-label="Availability">
+				{device.availabilityLabel}
+			</td>
+			<td className="devices-table-version" data-label="Version">
+				{device.reportedRuntimeVersion ?? "—"}
+			</td>
+			<DeviceSyncCell
+				device={device}
+				isLocal={directLocalDeviceId(options) === device.deviceId}
+				statusUnavailable={
+					options.refreshError === true || device.syncPeer?.statusAvailable === false
+				}
+				feedback={feedback}
+				busy={busy}
+			/>
+		</>
+	);
+}
+
+function DeviceTableDetails({
+	device,
+	intent,
+	inventoryItem,
+	options,
+	detailsOpen,
+	detailsId,
+	rebindTriggerRef,
+}: {
+	device: DeviceProjection;
+	intent: RecipientPolicyIntentGraphV1;
+	inventoryItem?: DeviceIdentityInventoryItemV1;
+	options: DevicesRendererOptions;
+	detailsOpen: boolean;
+	detailsId: string;
+	rebindTriggerRef: RefObject<HTMLButtonElement>;
+}) {
+	return (
+		<tr
+			className="devices-table-details"
+			hidden={!detailsOpen}
+			id={detailsId}
+			ref={rememberDetailsFocus(device.deviceId)}
+		>
+			<td colSpan={6}>
+				{device.availability === "unknown" ? (
+					<p className="small">
+						No current presence is available. This does not mean the machine is powered off.
+					</p>
+				) : null}
+				<p>
+					<strong>{device.statusLabel}</strong> — {device.statusCopy}
+				</p>
+				<ProjectList empty="No direct shares" projects={device.directProjects} />
+				{device.unavailableProjectCount > 0 ? (
+					<p className="small" role="status">
+						Some Project names are unavailable.
+					</p>
+				) : null}
+				{inventoryItem && options.inventory ? (
+					<ConfiguredRebind
+						controlKey={device.deviceId}
+						intent={intent}
+						inventory={options.inventory}
+						item={inventoryItem}
+						options={options}
+						previousIdentityName={device.identityName}
+						triggerRef={rebindTriggerRef}
+					/>
+				) : null}
+			</td>
+		</tr>
+	);
+}
+
 function DeviceTableRow({
 	device,
 	intent,
@@ -1365,8 +1637,15 @@ function DeviceTableRow({
 }) {
 	const [detailsOpen, setDetailsOpen] = useState(false);
 	const [renameRequest, setRenameRequest] = useState(0);
+	const { syncBusy, syncFeedback, syncDevice } = useDeviceSyncAction(device, options);
 	const rebindTriggerRef = useRef<HTMLButtonElement>(null);
 	const detailsId = `device-details-${device.deviceId}`;
+	const nameCellProps = {
+		device,
+		options,
+		renameRequest,
+		onRenameClose: () => setRenameRequest(0),
+	};
 	return (
 		<>
 			<tr
@@ -1381,18 +1660,13 @@ function DeviceTableRow({
 						state={availabilityPipState(device.availability)}
 					/>
 				</td>
-				<DeviceNameCell
+				<DeviceNameCell {...nameCellProps} />
+				<DeviceRowStatusCells
 					device={device}
-					onRenameClose={() => setRenameRequest(0)}
 					options={options}
-					renameRequest={renameRequest}
+					feedback={syncFeedback}
+					busy={syncBusy}
 				/>
-				<td className="devices-table-availability" data-label="Availability">
-					{device.availabilityLabel}
-				</td>
-				<td className="devices-table-version" data-label="Version">
-					{device.reportedRuntimeVersion ?? "—"}
-				</td>
 				<td>
 					<DeviceRowMenu
 						device={device}
@@ -1401,6 +1675,8 @@ function DeviceTableRow({
 						inventoryItem={inventoryItem}
 						onDetails={() => setDetailsOpen((open) => !open)}
 						onRename={() => setRenameRequest((count) => count + 1)}
+						onSync={() => void syncDevice()}
+						syncBusy={syncBusy}
 						onRebind={() => {
 							setDetailsOpen(true);
 							queueMicrotask(() => openConfiguredRebind(device.deviceId, rebindTriggerRef.current));
@@ -1409,40 +1685,15 @@ function DeviceTableRow({
 					/>
 				</td>
 			</tr>
-			<tr
-				className="devices-table-details"
-				hidden={!detailsOpen}
-				id={detailsId}
-				ref={rememberDetailsFocus(device.deviceId)}
-			>
-				<td colSpan={5}>
-					{device.availability === "unknown" ? (
-						<p className="small">
-							No current presence is available. This does not mean the machine is powered off.
-						</p>
-					) : null}
-					<p>
-						<strong>{device.statusLabel}</strong> — {device.statusCopy}
-					</p>
-					<ProjectList empty="No direct shares" projects={device.directProjects} />
-					{device.unavailableProjectCount > 0 ? (
-						<p className="small" role="status">
-							Some Project names are unavailable.
-						</p>
-					) : null}
-					{inventoryItem && options.inventory ? (
-						<ConfiguredRebind
-							controlKey={device.deviceId}
-							intent={intent}
-							inventory={options.inventory}
-							item={inventoryItem}
-							options={options}
-							previousIdentityName={device.identityName}
-							triggerRef={rebindTriggerRef}
-						/>
-					) : null}
-				</td>
-			</tr>
+			<DeviceTableDetails
+				device={device}
+				intent={intent}
+				inventoryItem={inventoryItem}
+				options={options}
+				detailsOpen={detailsOpen}
+				detailsId={detailsId}
+				rebindTriggerRef={rebindTriggerRef}
+			/>
 		</>
 	);
 }
@@ -1507,6 +1758,7 @@ function DeviceIdentityGroup({
 						<th>Device</th>
 						<th>Availability</th>
 						<th>Version</th>
+						<th>Sync</th>
 						<th aria-label="Actions" />
 					</tr>
 				</thead>
@@ -2189,6 +2441,7 @@ export function mountDevices(
 		options.peerRuntimeMetadata,
 		currentDeviceInventory(options),
 		directLocalDeviceId(options),
+		options.peerSyncMetadata,
 	);
 	render(<DevicesRoot intent={intent} options={options} projection={projection} />, mount);
 	setDeviceCommitStatus("");

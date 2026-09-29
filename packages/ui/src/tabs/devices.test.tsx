@@ -201,6 +201,219 @@ afterEach(() => {
 	state.pendingDeviceIdentityFocus = undefined;
 });
 
+describe("Devices sync health", () => {
+	it("shows per-peer sync status and runs a sync only for that device", async () => {
+		const onSyncDevice = vi.fn(async () => ({
+			message: "Sync finished for this device.",
+			tone: "success" as const,
+		}));
+		mount(intent(), reconciliation(), {
+			peerSyncMetadata: [
+				{
+					deviceId: "device-address-fingerprint-secret",
+					paired: true,
+					status: "ok",
+					lastSyncAt: "2026-09-29T12:00:00.000Z",
+					recentIn: 7,
+					recentOut: 3,
+					statusAvailable: true,
+				},
+			],
+			onSyncDevice,
+		});
+		const row = document.getElementById("device-identity-card-device-address-fingerprint-secret");
+		const sync = row?.querySelector(".devices-table-sync");
+		expect(sync?.textContent).toContain("Synced recently");
+		expect(sync?.textContent).toContain("Last sync:");
+		expect(sync?.textContent).toContain("24h: received 7 · sent 3");
+		const action = [...(row?.querySelectorAll<HTMLButtonElement>(".feed-menu-item") ?? [])].find(
+			(button) => button.textContent === "Sync this device",
+		);
+		expect(action?.disabled).toBe(false);
+		await act(async () => action?.click());
+		expect(onSyncDevice).toHaveBeenCalledExactlyOnceWith("device-address-fingerprint-secret");
+		expect(sync?.textContent).toContain("Sync finished for this device.");
+		expect(document.activeElement).toBe(row?.querySelector(".devices-row-menu summary"));
+	});
+
+	it("does not offer peer sync for this device, unpaired devices, or unavailable status", () => {
+		const onSyncDevice = vi.fn();
+		const graph = intent({
+			identityDevices: [
+				...intent().identityDevices,
+				{
+					version: 1,
+					identityId: "identity-scope-secret",
+					deviceId: "unpaired-device",
+					displayName: "Tablet",
+					status: "active",
+				},
+			],
+		});
+		mount(graph, reconciliation(), {
+			localDeviceId: "device-address-fingerprint-secret",
+			peerSyncMetadata: [
+				{
+					deviceId: "device-address-fingerprint-secret",
+					paired: true,
+					status: "ok",
+					lastSyncAt: null,
+					recentIn: 0,
+					recentOut: 0,
+					statusAvailable: true,
+				},
+			],
+			onSyncDevice,
+		});
+		const unpaired = document.getElementById("device-identity-card-unpaired-device");
+		expect(document.querySelector(".devices-local-row")?.textContent).toContain("This device");
+		expect(
+			document.getElementById("device-identity-card-device-address-fingerprint-secret"),
+		).toBeNull();
+		expect(unpaired?.querySelector(".devices-table-sync")?.textContent).toContain(
+			"Not paired here",
+		);
+		expect(document.querySelectorAll('[aria-label="Sync Work Laptop"]')).toHaveLength(0);
+		expect(document.querySelectorAll('[aria-label="Sync Tablet"]')).toHaveLength(0);
+		mount(intent(), reconciliation(), {
+			peerRuntimeMetadata: [
+				{
+					deviceId: "device-address-fingerprint-secret",
+					runtimeVersion: "0.46.0",
+					runtimeVersionObservedAt: null,
+				},
+			],
+			peerSyncMetadata: [
+				{
+					deviceId: "device-address-fingerprint-secret",
+					paired: true,
+					status: "ok",
+					lastSyncAt: "2026-09-29T12:00:00Z",
+					recentIn: 2,
+					recentOut: 4,
+					statusAvailable: false,
+				},
+			],
+			onSyncDevice,
+		});
+		const stale = document.getElementById("device-identity-card-device-address-fingerprint-secret");
+		expect(stale?.querySelector(".devices-table-sync")?.textContent).toContain(
+			"Sync status unavailable",
+		);
+		expect(stale?.querySelector(".devices-table-sync")?.textContent).not.toContain("received 2");
+		expect(
+			stale?.querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]')?.disabled,
+		).toBe(true);
+	});
+});
+
+describe("Devices sync peer identity", () => {
+	it("does not guess which peer to sync when validated aliases match multiple peers", () => {
+		const matchedInventory = inventory([
+			inventoryItem("device-address-fingerprint-secret", "Work Laptop", "configured", {
+				validatedFingerprint: "validated-test-key",
+				evidenceDeviceIds: ["device-address-fingerprint-secret", "peer-a", "peer-b"],
+			}),
+		]);
+		const peers = ["peer-a", "peer-b"].map((deviceId) => ({
+			deviceId,
+			paired: true,
+			status: "ok" as const,
+			lastSyncAt: null,
+			recentIn: 0,
+			recentOut: 0,
+			statusAvailable: true,
+		}));
+		const projected = projectDevices(
+			intent(),
+			reconciliation(),
+			projects,
+			[],
+			[],
+			matchedInventory,
+			undefined,
+			peers,
+		);
+		expect(projected.devices[0]?.syncPeer).toBeNull();
+	});
+
+	it("targets a sole validated paired alias by its peer ID, not the display device ID", async () => {
+		const onSyncDevice = vi.fn(async () => ({
+			message: "Sync finished.",
+			tone: "success" as const,
+		}));
+		mount(intent(), reconciliation(), {
+			inventory: inventory([
+				inventoryItem("device-address-fingerprint-secret", "Work Laptop", "configured", {
+					validatedFingerprint: "validated-test-key",
+					evidenceDeviceIds: ["device-address-fingerprint-secret", "peer-alias"],
+				}),
+			]),
+			peerSyncMetadata: [
+				{
+					deviceId: "peer-alias",
+					paired: true,
+					status: "ok",
+					lastSyncAt: null,
+					recentIn: 0,
+					recentOut: 1,
+					statusAvailable: true,
+				},
+			],
+			onSyncDevice,
+		});
+		const row = document.getElementById("device-identity-card-device-address-fingerprint-secret");
+		await act(async () =>
+			row?.querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]')?.click(),
+		);
+		expect(onSyncDevice).toHaveBeenCalledExactlyOnceWith("peer-alias");
+	});
+});
+
+describe("Devices sync progress", () => {
+	it("shows progress without running a second sync for the same peer", async () => {
+		let resolveSync: (result: { message: string; tone: "success" }) => void = () => {};
+		const result = new Promise<{ message: string; tone: "success" }>((resolve) => {
+			resolveSync = resolve;
+		});
+		const onSyncDevice = vi.fn(() => result);
+		mount(intent(), reconciliation(), {
+			peerSyncMetadata: [
+				{
+					deviceId: "device-address-fingerprint-secret",
+					paired: true,
+					status: "ok",
+					lastSyncAt: null,
+					recentIn: 0,
+					recentOut: 0,
+					statusAvailable: true,
+				},
+			],
+			onSyncDevice,
+		});
+		const row = () =>
+			document.getElementById("device-identity-card-device-address-fingerprint-secret");
+		await act(async () =>
+			row()?.querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]')?.click(),
+		);
+		expect(row()?.querySelector(".devices-table-sync")?.textContent).toContain(
+			"Syncing this device…",
+		);
+		expect(
+			row()?.querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]')?.disabled,
+		).toBe(true);
+		await act(async () =>
+			row()?.querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]')?.click(),
+		);
+		expect(onSyncDevice).toHaveBeenCalledTimes(1);
+		await act(async () => {
+			resolveSync({ message: "Sync finished.", tone: "success" });
+			await result;
+		});
+		expect(row()?.querySelector(".devices-table-sync")?.textContent).toContain("Sync finished.");
+	});
+});
+
 describe("Devices focus and inventory", function devicesFocusAndInventoryTests() {
 	it("focuses a requested setup card only after inventory content renders", () => {
 		state.pendingDeviceIdentityFocus = "setup-device";

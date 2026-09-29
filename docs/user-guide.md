@@ -371,6 +371,8 @@ The recipient accepts on the new device. Codemem links it to the same Identity, 
 
 Use **Rename device** on a configured row in **Devices** to change its friendly name. A coordinator-enrolled device is renamed in every configured group where it is enrolled; if one group fails, retry the same name after the coordinator recovers. A device without coordinator enrollment gets a name local to this installation. **Change Identity** is a separate, reviewed ownership reassignment; the target picker lists only other active Identities. It cannot rename a device.
 
+The **Sync** column shows a paired device's sync health separately from its availability, its last sync time, and operations received and sent in the past 24 hours—not bytes or a lifetime total. An unpaired device does not show zeroes as though it had synced. If the status refresh fails, Devices hides stale counts and disables manual sync until a successful refresh. Choose **Sync this device** from the paired device's action menu to run one pass for that device only; it does not sync every peer. The result reports partial or failed delivery, and **Advanced → Sync** still has detailed peer diagnostics.
+
 | Identity setup state | Meaning | What to do |
 | --- | --- | --- |
 | Configured | One active Identity binding is authoritative. | Nothing, unless you deliberately need to change the Identity. |

@@ -28,6 +28,7 @@ import * as api from "./lib/api";
 import type { ProjectScopeInventoryProject } from "./lib/api/sync";
 import { coordinatorEnrollmentOpenIssueCount } from "./lib/coordinator-enrollment-attention";
 import { $, $button, $select } from "./lib/dom";
+import { friendlyError } from "./lib/form";
 import { isReadTimeout, type ReadRequestOptions, waitForAbort } from "./lib/read-request";
 import { createRefreshSessionOwner, type RefreshSession } from "./lib/refresh-session";
 import {
@@ -55,6 +56,8 @@ import {
 import {
 	type DeviceAvailabilityInput,
 	type DevicePeerRuntimeMetadataInput,
+	type DevicePeerSyncInput,
+	type DeviceSyncFeedback,
 	type DevicesNavigationTarget,
 	type DevicesProjectInput,
 	type DevicesRendererOptions,
@@ -82,6 +85,7 @@ import {
 	loadSyncData,
 } from "./tabs/sync";
 import { applySyncSubView } from "./tabs/sync/sync-view-controller";
+import { summarizeSyncRunResult } from "./tabs/sync/view-model";
 import { derivePeerUiStatus } from "./tabs/sync/view-model/peer-status";
 
 function setRuntimeLabel(version: string, commit: string | null) {
@@ -538,6 +542,7 @@ let lastDevicesData: {
 	reconciliation: api.RecipientPolicyReconciliationStatusV1;
 	availability: DeviceAvailabilityInput[];
 	peerRuntimeMetadata: DevicePeerRuntimeMetadataInput[];
+	peerSyncMetadata: DevicePeerSyncInput[];
 	inventory: api.DeviceIdentityInventoryV1 | undefined;
 	inventoryUnavailable: boolean;
 	coordinatorEnrollmentIssueCount: number;
@@ -601,6 +606,63 @@ function deriveDevicePeerRuntimeMetadata(): DevicePeerRuntimeMetadataInput[] {
 	});
 }
 
+function safeRecentOps(value: number | undefined): number | null {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function deriveDevicePeerSyncMetadata(statusAvailable: boolean): DevicePeerSyncInput[] {
+	return state.lastSyncPeers.flatMap((peer) => {
+		const deviceId = String(peer.peer_device_id ?? "").trim();
+		if (!deviceId) return [];
+		const rawStatus = peer.has_error ? "error" : peer.status?.sync_status;
+		const status = ["ok", "error", "stale"].includes(rawStatus ?? "")
+			? (rawStatus as DevicePeerSyncInput["status"])
+			: "unknown";
+		return [
+			{
+				deviceId,
+				paired: peer.pinned === true,
+				status,
+				lastSyncAt: peer.last_sync_at ?? peer.status?.last_sync_at ?? null,
+				recentIn: safeRecentOps(peer.recent_ops?.in),
+				recentOut: safeRecentOps(peer.recent_ops?.out),
+				statusAvailable,
+			},
+		];
+	});
+}
+
+async function syncDeviceFromDevices(peerDeviceId: string): Promise<DeviceSyncFeedback> {
+	try {
+		const result = await api.triggerSync({ peerDeviceId });
+		if (result.items.length !== 1 || result.items[0]?.peer_device_id !== peerDeviceId) {
+			return {
+				message: "This device is no longer paired here. Refresh Devices before retrying.",
+				tone: "warning",
+			};
+		}
+		const summary = summarizeSyncRunResult(result);
+		const refreshed = await loadDevicesData();
+		return {
+			message: refreshed
+				? summary.message
+				: `${summary.message} Refresh Devices to see the latest sync status.`,
+			tone: summary.ok && !summary.warning && refreshed ? "success" : "warning",
+		};
+	} catch (error) {
+		if (error instanceof Error && /\bsync_disabled\b/.test(error.message)) {
+			return {
+				message: "Device sync is off. Turn it on in Settings → Device Sync, then try again.",
+				tone: "warning",
+			};
+		}
+		return {
+			message: friendlyError(error, "Could not sync this device. Check its pairing and try again."),
+			tone: "warning",
+		};
+	}
+}
+
 function navigateFromDevices(target: DevicesNavigationTarget) {
 	if (target === "advanced_sync") {
 		switchTab("advanced", { advancedSection: "sync" });
@@ -641,14 +703,40 @@ async function refreshDevicesAfterCommit(): Promise<boolean> {
 
 function deviceRendererActions(): Pick<
 	DevicesRendererOptions,
-	"onCommitted" | "onNavigate" | "onRetry" | "localDeviceId"
+	"onCommitted" | "onNavigate" | "onRetry" | "localDeviceId" | "onSyncDevice"
 > {
 	return {
 		localDeviceId: state.lastSyncStatus?.device_id ?? undefined,
 		onCommitted: refreshDevicesAfterCommit,
 		onNavigate: navigateFromDevices,
 		onRetry: () => void loadDevicesData(),
+		onSyncDevice: syncDeviceFromDevices,
 	};
+}
+
+function renderPreviousDevicesAfterRefreshFailure(mount: HTMLElement): void {
+	if (!lastDevicesData) {
+		mountDevices(mount, emptyRecipientPolicyIntent, { version: 1, items: [] }, [], [], {
+			loadError: true,
+		});
+		return;
+	}
+	mountDevices(
+		mount,
+		lastDevicesData.intent,
+		lastDevicesData.reconciliation,
+		lastDevicesData.projects,
+		lastDevicesData.availability,
+		{
+			...deviceRendererActions(),
+			coordinatorEnrollmentIssueCount: lastDevicesData.coordinatorEnrollmentIssueCount,
+			inventory: lastDevicesData.inventory,
+			inventoryUnavailable: lastDevicesData.inventoryUnavailable,
+			peerRuntimeMetadata: lastDevicesData.peerRuntimeMetadata,
+			peerSyncMetadata: lastDevicesData.peerSyncMetadata,
+			refreshError: true,
+		},
+	);
 }
 
 async function runLoadDevicesData(
@@ -676,6 +764,7 @@ async function runLoadDevicesData(
 		if (revision !== devicesLoadRevision) return latestDevicesLoad ?? false;
 		const availability = deriveDeviceAvailability();
 		const peerRuntimeMetadata = deriveDevicePeerRuntimeMetadata();
+		const peerSyncMetadata = deriveDevicePeerSyncMetadata(syncRefreshed);
 		const coordinatorEnrollmentIssueCount = coordinatorEnrollmentOpenIssueCount(
 			state.lastSyncStatus,
 		);
@@ -689,6 +778,7 @@ async function runLoadDevicesData(
 			inventoryUnavailable: inventoryResult.unavailable,
 			coordinatorEnrollmentIssueCount,
 			peerRuntimeMetadata,
+			peerSyncMetadata,
 		});
 		lastDevicesData = {
 			projects,
@@ -696,6 +786,7 @@ async function runLoadDevicesData(
 			reconciliation,
 			availability,
 			peerRuntimeMetadata,
+			peerSyncMetadata,
 			inventory: inventoryResult.inventory,
 			inventoryUnavailable: inventoryResult.unavailable,
 			coordinatorEnrollmentIssueCount,
@@ -704,27 +795,7 @@ async function runLoadDevicesData(
 	} catch {
 		if (options.signal?.aborted) return false;
 		if (revision !== devicesLoadRevision) return latestDevicesLoad ?? false;
-		if (lastDevicesData) {
-			mountDevices(
-				mount,
-				lastDevicesData.intent,
-				lastDevicesData.reconciliation,
-				lastDevicesData.projects,
-				lastDevicesData.availability,
-				{
-					...deviceRendererActions(),
-					coordinatorEnrollmentIssueCount: lastDevicesData.coordinatorEnrollmentIssueCount,
-					inventory: lastDevicesData.inventory,
-					inventoryUnavailable: lastDevicesData.inventoryUnavailable,
-					peerRuntimeMetadata: lastDevicesData.peerRuntimeMetadata,
-					refreshError: true,
-				},
-			);
-		} else {
-			mountDevices(mount, emptyRecipientPolicyIntent, { version: 1, items: [] }, [], [], {
-				loadError: true,
-			});
-		}
+		renderPreviousDevicesAfterRefreshFailure(mount);
 		return false;
 	}
 }

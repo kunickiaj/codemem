@@ -247,6 +247,7 @@ export interface SyncActor {
 export interface SyncPeerStatus {
 	peer_state?: string;
 	sync_status?: string;
+	last_sync_at?: string;
 	ping_status?: string;
 	fresh?: boolean;
 	recent_failed_attempt?: boolean;
@@ -254,6 +255,9 @@ export interface SyncPeerStatus {
 
 export interface SyncPeer {
 	peer_device_id?: string;
+	pinned?: boolean;
+	last_sync_at?: string | null;
+	recent_ops?: { in?: number; out?: number };
 	name?: string;
 	peer_name?: string;
 	display_name?: string;
