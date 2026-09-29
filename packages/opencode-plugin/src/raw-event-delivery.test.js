@@ -1,8 +1,12 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { createRawEventDelivery } from "../.opencode/lib/raw-event-delivery.js";
+import {
+	loadRawEventSpoolEntries,
+	writeRawEventSpoolEntry,
+} from "../.opencode/lib/raw-event-spool.js";
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -90,6 +94,96 @@ test("does not drain retained events while viewer transport backoff is active", 
 		expect(fetchMock).toHaveBeenCalledOnce();
 		await delivery.drainSpool();
 		expect(fetchMock).toHaveBeenCalledOnce();
+	} finally {
+		await rm(home, { recursive: true, force: true });
+	}
+});
+
+test("classifies a duplicate-ID spool conflict without logging event identity or content", async () => {
+	const home = await mkdtemp(join(tmpdir(), "codemem-spool-conflict-"));
+	let sequence = 0;
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async () => {
+			throw new DOMException("synthetic timeout", "TimeoutError");
+		}),
+	);
+	const delivery = createRawEventDelivery({
+		backoffMs: 10_000,
+		buildEnvelope: () => ({
+			event_id: "private-event-id",
+			event_type: "user_prompt",
+			ts_wall_ms: ++sequence,
+			payload: { prompt_text: "private-content" },
+		}),
+		classifyViewerFailure: () => "connection",
+		cwd: home,
+		discardResponseBody: () => {},
+		enabled: true,
+		failureActions: { connection: "check viewer" },
+		fetchRawEventsStatus: async () =>
+			new Response(JSON.stringify({ ingest: { available: true } }), { status: 200 }),
+		hostLog: async () => {},
+		hostNotify: null,
+		identityTarget: null,
+		isActive: () => true,
+		logLine: async () => {},
+		nextEventId: () => "private-event-id",
+		projectName: "synthetic",
+		promptPackDbPath: join(home, "mem.sqlite"),
+		rawEventsStatusTimeoutMs: 100,
+		rawEventsStatusUrl: "http://viewer/status",
+		rawEventsUrl: "http://viewer/events",
+		sessionStartedAt: () => 1,
+		spoolHome: home,
+		statusCheckMs: 30_000,
+	});
+	try {
+		expect(
+			await delivery.deliver({ sessionID: "synthetic", type: "user_prompt", payload: {} }),
+		).toBe(true);
+		expect(
+			await delivery.deliver({ sessionID: "synthetic", type: "user_prompt", payload: {} }),
+		).toBe(false);
+		const diagnostic = await readFile(join(home, ".codemem", "plugin.log"), "utf8");
+		expect(diagnostic).toContain(
+			"raw_events.spool.failure stage=existing_entry code=conflict category=persistence",
+		);
+		expect(diagnostic).not.toMatch(/private-event-id|private-content/);
+		expect((await loadRawEventSpoolEntries({ homeDir: home })).entries).toHaveLength(1);
+	} finally {
+		await rm(home, { recursive: true, force: true });
+	}
+});
+
+test("attaches a safe filesystem failure stage without changing the thrown write error", async () => {
+	const home = await mkdtemp(join(tmpdir(), "codemem-spool-io-"));
+	const file = join(home, "not-a-directory");
+	try {
+		await writeFile(file, "fixture");
+		await expect(
+			writeRawEventSpoolEntry({ homeDir: file, envelope: { event_id: "synthetic" } }),
+		).rejects.toMatchObject({ code: "ENOTDIR", spoolStage: "directory" });
+		const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+		const delivery = createRawEventDelivery({
+			enabled: true,
+			spoolHome: file,
+			isActive: () => false,
+			buildEnvelope: () => ({
+				event_id: "private-event-id",
+				payload: { prompt_text: "private-content" },
+			}),
+			logLine: async () => {},
+			hostLog: async () => {},
+			hostNotify: null,
+			nextEventId: () => "private-event-id",
+			sessionStartedAt: () => 1,
+		});
+		expect(
+			await delivery.deliver({ sessionID: "synthetic", type: "user_prompt", payload: {} }),
+		).toBe(false);
+		expect(stderr).toHaveBeenCalledWith(expect.stringContaining("stage=directory code=ENOTDIR"));
+		expect(stderr.mock.calls.flat().join(" ")).not.toMatch(/private-event-id|private-content/);
 	} finally {
 		await rm(home, { recursive: true, force: true });
 	}

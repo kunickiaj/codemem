@@ -15,6 +15,7 @@ import { dirname, join } from "node:path";
 const DEFAULT_DRAIN_LIMIT = 20;
 const DEFAULT_MAX_ENTRIES = 2000;
 const RAW_EVENT_SPOOL_FULL_CODE = "raw_event_spool_full";
+const RAW_EVENT_SPOOL_CONFLICT_CODE = "raw_event_spool_conflict";
 const SPOOL_DIRECTORY_NAME = "opencode-raw-event-spool";
 const spoolWritesInFlight = new Map();
 
@@ -34,6 +35,12 @@ const requireEventId = (envelope) => {
     throw new Error("raw event spool requires event_id");
   }
   return eventId;
+};
+
+const conflictingEntry = () => {
+  const error = new Error("raw event spool entry conflicts with existing event_id");
+  error.code = RAW_EVENT_SPOOL_CONFLICT_CODE;
+  return error;
 };
 
 const ensurePrivateDirectory = async (directory) => {
@@ -75,6 +82,61 @@ const syncDirectory = async (path) => {
   }
 };
 
+const atSpoolStage = async (stage, action) => {
+  try {
+    return await action();
+  } catch (error) {
+    if (error && typeof error === "object") error.spoolStage = stage;
+    throw error;
+  }
+};
+
+const readExistingEntry = async (directory, destination, bytes, eventId) => {
+  try {
+    return await atSpoolStage("existing_entry", async () => {
+      const existing = await readFile(destination, "utf8");
+      if (existing !== bytes) throw conflictingEntry();
+      await chmod(destination, 0o600);
+      await syncDirectory(directory);
+      return { eventId, serialized: existing };
+    });
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    return null;
+  }
+};
+
+const requireSpoolCapacity = async (directory, maxEntries) =>
+  atSpoolStage("capacity", async () => {
+    const directoryEntries = await readdir(directory, { withFileTypes: true });
+    const entryCount = directoryEntries.filter(
+      (entry) => entry.isFile() && entry.name.endsWith(".json"),
+    ).length;
+    if (entryCount < maxEntries) return;
+    const error = new Error("raw event spool is full");
+    error.code = RAW_EVENT_SPOOL_FULL_CODE;
+    throw error;
+  });
+
+const publishSpoolEntry = async (temporary, destination, bytes) => {
+  try {
+    await atSpoolStage("temporary_write", () => writeDurableFile(temporary, bytes));
+    await atSpoolStage("publish", async () => {
+      try {
+        await link(temporary, destination);
+      } catch (error) {
+        if (error?.code !== "EEXIST") throw error;
+        const existing = await readFile(destination, "utf8");
+        if (existing !== bytes) throw conflictingEntry();
+        await chmod(destination, 0o600);
+      }
+      await chmod(destination, 0o600);
+    });
+  } finally {
+    await rm(temporary, { force: true }).catch(() => {});
+  }
+};
+
 const writeRawEventSpoolEntryUnlocked = async ({
   envelope,
   serialized,
@@ -93,50 +155,12 @@ const writeRawEventSpoolEntryUnlocked = async ({
     `.${spoolFilename(eventId)}.${process.pid}.${randomUUID()}.tmp`,
   );
 
-  await ensurePrivateDirectory(directory);
-  try {
-    const existing = await readFile(destination, "utf8");
-    if (existing !== bytes) {
-      throw new Error("raw event spool entry conflicts with existing event_id");
-    }
-    await chmod(destination, 0o600);
-    await syncDirectory(directory);
-    return { eventId, serialized: existing };
-  } catch (error) {
-    if (error?.code !== "ENOENT") {
-      throw error;
-    }
-  }
-
-  const directoryEntries = await readdir(directory, { withFileTypes: true });
-  const entryCount = directoryEntries.filter(
-    (entry) => entry.isFile() && entry.name.endsWith(".json"),
-  ).length;
-  if (entryCount >= normalizedMaxEntries) {
-    const error = new Error("raw event spool is full");
-    error.code = RAW_EVENT_SPOOL_FULL_CODE;
-    throw error;
-  }
-
-  try {
-    await writeDurableFile(temporary, bytes);
-    try {
-      await link(temporary, destination);
-    } catch (error) {
-      if (error?.code !== "EEXIST") {
-        throw error;
-      }
-      const existing = await readFile(destination, "utf8");
-      if (existing !== bytes) {
-        throw new Error("raw event spool entry conflicts with existing event_id");
-      }
-      await chmod(destination, 0o600);
-    }
-    await chmod(destination, 0o600);
-  } finally {
-    await rm(temporary, { force: true }).catch(() => {});
-  }
-  await syncDirectory(directory);
+  await atSpoolStage("directory", () => ensurePrivateDirectory(directory));
+  const existing = await readExistingEntry(directory, destination, bytes, eventId);
+  if (existing) return existing;
+  await requireSpoolCapacity(directory, normalizedMaxEntries);
+  await publishSpoolEntry(temporary, destination, bytes);
+  await atSpoolStage("directory_sync", () => syncDirectory(directory));
 
   return { eventId, serialized: bytes };
 };
@@ -225,6 +249,7 @@ export {
   DEFAULT_DRAIN_LIMIT,
   DEFAULT_MAX_ENTRIES,
   loadRawEventSpoolEntries,
+  RAW_EVENT_SPOOL_CONFLICT_CODE,
   RAW_EVENT_SPOOL_FULL_CODE,
   removeRawEventSpoolEntry,
   resolveSpoolDirectory,

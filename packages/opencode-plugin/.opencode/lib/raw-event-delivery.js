@@ -1,8 +1,11 @@
+import { appendFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
+import { join } from "node:path";
 import {
   DEFAULT_DRAIN_LIMIT,
   DEFAULT_MAX_ENTRIES,
   loadRawEventSpoolEntries,
+  RAW_EVENT_SPOOL_CONFLICT_CODE,
   RAW_EVENT_SPOOL_FULL_CODE,
   removeRawEventSpoolEntry,
   resolveSpoolDirectory,
@@ -95,6 +98,24 @@ const warnSpoolPersistenceFailure = async (state, sessionID, reason) => {
   await bestEffortNotify(state, { message: `codemem: ${message}`, variant: "error" });
 };
 
+const SPOOL_STAGES = new Set(["directory", "existing_entry", "capacity", "temporary_write", "publish", "directory_sync"]);
+const SPOOL_ERRNOS = new Set(["EACCES", "EPERM", "ENOSPC", "EROFS", "ENOTDIR", "EEXIST", "EIO", "EINVAL", "EMFILE", "ENFILE"]);
+
+const spoolFailureDiagnostic = (error) => {
+  const stage = SPOOL_STAGES.has(error?.spoolStage) ? error.spoolStage : "unknown";
+  let code = "other";
+  if (error?.code === RAW_EVENT_SPOOL_CONFLICT_CODE) code = "conflict";
+  else if (error?.code === RAW_EVENT_SPOOL_FULL_CODE) code = "full";
+  else if (SPOOL_ERRNOS.has(error?.code)) code = error.code;
+  return `raw_events.spool.failure stage=${stage} code=${code} category=persistence`;
+};
+
+const persistSafeSpoolDiagnostic = async (state, line) => {
+  const directory = join(state.options.spoolHome, ".codemem");
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await appendFile(join(directory, "plugin.log"), `${new Date().toISOString()} ${line}\n`, { mode: 0o600 });
+};
+
 const persistForRetry = async (state, { body, serialized, payload, sessionID }) => {
   try {
     await writeRawEventSpoolEntry({
@@ -109,6 +130,14 @@ const persistForRetry = async (state, { body, serialized, payload, sessionID }) 
   } catch (error) {
     const reason = error?.code === RAW_EVENT_SPOOL_FULL_CODE ? "spool_full" : "write_failed";
     await state.options.logLine(`raw_events.spool.${reason} category=persistence`);
+    const diagnostic = spoolFailureDiagnostic(error);
+    try {
+      await persistSafeSpoolDiagnostic(state, diagnostic);
+    } catch {
+      // The same disk/permission failure can block the local log. Keep the
+      // category visible in the host's stderr without exposing event content.
+      console.error(`codemem: ${diagnostic}`);
+    }
     await warnSpoolPersistenceFailure(state, sessionID, reason);
     return false;
   }
