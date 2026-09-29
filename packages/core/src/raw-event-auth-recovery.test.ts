@@ -209,6 +209,19 @@ it("does not complete a usage-only gap with a missing event timestamp", async ()
 			)
 			.get(),
 	).toMatchObject({ status: "failed" });
+	store.db
+		.prepare(
+			"UPDATE raw_event_flush_batches SET attempt_count=3, updated_at=datetime('now','-1 hour') WHERE extractor_version='raw_events_auth_recovery_v1'",
+		)
+		.run();
+	expect(await recoverOneMissingAuthWindow(store, settings)).toBe(false);
+	expect(
+		store.db
+			.prepare(
+				"SELECT attempt_count FROM raw_event_flush_batches WHERE extractor_version='raw_events_auth_recovery_v1'",
+			)
+			.get(),
+	).toMatchObject({ attempt_count: 3 });
 });
 
 it("still infers when an auth gap mixes usage with processable content", async () => {

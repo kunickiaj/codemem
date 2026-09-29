@@ -151,11 +151,15 @@ function recoveryWindowEvents(
 
 function isUsageOnlyRecoveryWindow(store: MemoryStore, range: RawEventRecoveryRange): boolean {
 	const events = recoveryWindowEvents(store, range);
-	return (
-		events.length === range.endEventSeq - range.startEventSeq + 1 &&
-		events.length > 0 &&
-		events.every((event) => event.type === "assistant_usage")
-	);
+	if (events.length !== range.endEventSeq - range.startEventSeq + 1 || events.length === 0)
+		return false;
+	if (!events.every((event) => event.type === "assistant_usage")) return false;
+	try {
+		sourceEventTime(events);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 function hasPersistedRecoveryOutcome(store: MemoryStore, batchId: number): boolean {
