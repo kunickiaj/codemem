@@ -154,6 +154,13 @@ it("completes a usage-only auth gap without an observer call or cursor rewind", 
 			"INSERT INTO raw_event_flush_batches(source,stream_id,opencode_session_id,start_event_seq,end_event_seq,extractor_version,status,created_at,updated_at,attempt_count) VALUES ('opencode','missed-session','missed-session',0,1,'raw_events_auth_recovery_v1','failed',datetime('now'),datetime('now','-1 hour'),3)",
 		)
 		.run();
+	for (let i = 0; i < 4; i++) {
+		store.db
+			.prepare(
+				"INSERT INTO raw_event_flush_batches(source,stream_id,opencode_session_id,start_event_seq,end_event_seq,extractor_version,status,created_at,updated_at,attempt_count) VALUES ('opencode',?, ?, ?, ?,'raw_events_auth_recovery_v1','completed',datetime('now'),?,1)",
+			)
+			.run(`previous-${i}`, `previous-${i}`, i, i, new Date().toISOString());
+	}
 	const { settings, observe } = options();
 	expect(await recoverOneMissingAuthWindow(store, settings)).toBe(true);
 	expect(await recoverOneMissingAuthWindow(store, settings)).toBe(false);

@@ -273,9 +273,10 @@ export async function recoverOneMissingAuthWindow(
 	store: MemoryStore,
 	options: IngestOptions,
 ): Promise<boolean> {
-	if (!withinHourlyBudget(store)) return false;
 	const window = nextRecoveryWindow(store);
 	if (!window) return false;
+	const usageOnly = isUsageOnlyRecoveryWindow(store, window);
+	if (!usageOnly && !withinHourlyBudget(store)) return false;
 	const batch = store.getOrCreateRawEventFlushBatch(
 		window.streamId,
 		window.source,
@@ -283,12 +284,8 @@ export async function recoverOneMissingAuthWindow(
 		window.endEventSeq,
 		RECOVERY_VERSION,
 	);
-	if (
-		batch.status === "completed" ||
-		(batch.attemptCount >= MAX_ATTEMPTS && !isUsageOnlyRecoveryWindow(store, window))
-	)
+	if (batch.status === "completed" || (batch.attemptCount >= MAX_ATTEMPTS && !usageOnly))
 		return false;
-	const usageOnly = isUsageOnlyRecoveryWindow(store, window);
 	if (!store.claimRawEventFlushBatch(batch.batchId, { countAttempt: !usageOnly })) return false;
 	if (hasPersistedRecoveryOutcome(store, batch.batchId)) {
 		store.updateRawEventFlushBatchStatus(batch.batchId, "completed");
