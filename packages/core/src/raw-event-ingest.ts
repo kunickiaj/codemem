@@ -245,6 +245,9 @@ function normalizeEvent(
 		validationError("payload must be an object");
 	}
 	const payload = stripPrivateObj(rawPayload) as Record<string, unknown>;
+	// This is routing provenance, never user-supplied event content. A legacy
+	// payload must not impersonate a V2 host to change the account used by extraction.
+	delete payload.codemem_host_generation;
 	if (eventHostGeneration(item.host_generation, source)) {
 		// Keep provenance in the existing event JSON without changing source/stream identity.
 		payload.codemem_host_generation = "v2";

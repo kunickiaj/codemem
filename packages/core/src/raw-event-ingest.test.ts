@@ -99,6 +99,31 @@ describe("ingestRawEvents schema compatibility", () => {
 				.get("v2-event") as { source: string; payload_json: string };
 			expect(stored.source).toBe("opencode");
 			expect(JSON.parse(stored.payload_json).codemem_host_generation).toBe("v2");
+			ingestRawEvents(
+				{ db },
+				{
+					...event,
+					event_id: "spoofed-v1-event",
+					host_generation: undefined,
+					payload: { codemem_host_generation: "v2", prompt_text: "synthetic" },
+				},
+			);
+			const legacy = db
+				.prepare("SELECT payload_json FROM raw_events WHERE event_id = ?")
+				.get("spoofed-v1-event") as { payload_json: string };
+			expect(JSON.parse(legacy.payload_json)).not.toHaveProperty("codemem_host_generation");
+			ingestRawEvents(
+				{ db },
+				{
+					...event,
+					event_id: "top-level-wins",
+					payload: { codemem_host_generation: "v1", prompt_text: "synthetic" },
+				},
+			);
+			const marked = db
+				.prepare("SELECT payload_json FROM raw_events WHERE event_id = ?")
+				.get("top-level-wins") as { payload_json: string };
+			expect(JSON.parse(marked.payload_json).codemem_host_generation).toBe("v2");
 			expect(() =>
 				ingestRawEvents({ db }, { ...event, event_id: "bad", host_generation: "v1" }),
 			).toThrow("host_generation must be v2 on an opencode event");
