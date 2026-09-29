@@ -11,6 +11,7 @@ import {
 } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 const DEFAULT_DRAIN_LIMIT = 20;
 const DEFAULT_MAX_ENTRIES = 2000;
@@ -34,6 +35,22 @@ const requireEventId = (envelope) => {
     throw new Error("raw event spool requires event_id");
   }
   return eventId;
+};
+
+/** Delivery timestamps can change when the same host event is captured again. */
+const sameEventApartFromDeliveryTime = (existingBytes, incomingBytes) => {
+  if (existingBytes === incomingBytes) return true;
+  try {
+    const existing = JSON.parse(existingBytes);
+    const incoming = JSON.parse(incomingBytes);
+    if (!existing || typeof existing !== "object" || Array.isArray(existing)) return false;
+    if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) return false;
+    const withoutDeliveryTime = ({ ts_wall_ms: _wall, ts_mono_ms: _mono, ...event }) => event;
+    return isDeepStrictEqual(withoutDeliveryTime(existing), withoutDeliveryTime(incoming));
+  } catch {
+    // Malformed retained data is not proof that the new event is already durable.
+    return false;
+  }
 };
 
 const ensurePrivateDirectory = async (directory) => {
@@ -96,7 +113,7 @@ const writeRawEventSpoolEntryUnlocked = async ({
   await ensurePrivateDirectory(directory);
   try {
     const existing = await readFile(destination, "utf8");
-    if (existing !== bytes) {
+    if (!sameEventApartFromDeliveryTime(existing, bytes)) {
       throw new Error("raw event spool entry conflicts with existing event_id");
     }
     await chmod(destination, 0o600);
@@ -127,7 +144,7 @@ const writeRawEventSpoolEntryUnlocked = async ({
         throw error;
       }
       const existing = await readFile(destination, "utf8");
-      if (existing !== bytes) {
+      if (!sameEventApartFromDeliveryTime(existing, bytes)) {
         throw new Error("raw event spool entry conflicts with existing event_id");
       }
       await chmod(destination, 0o600);
