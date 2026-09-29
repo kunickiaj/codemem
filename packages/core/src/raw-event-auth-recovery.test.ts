@@ -141,6 +141,87 @@ it("recovers stranded events once without rewinding the cursor or publishing the
 	).toMatchObject({ n: 1 });
 });
 
+it("completes a usage-only auth gap without an observer call or cursor rewind", async () => {
+	for (const eventId of ["prompt", "tool"]) {
+		store.db
+			.prepare(
+				"UPDATE raw_events SET event_type='assistant_usage', payload_json=? WHERE event_id=?",
+			)
+			.run(JSON.stringify({ type: "assistant_usage", usage: { input_tokens: 12 } }), eventId);
+	}
+	store.db
+		.prepare(
+			"INSERT INTO raw_event_flush_batches(source,stream_id,opencode_session_id,start_event_seq,end_event_seq,extractor_version,status,created_at,updated_at,attempt_count) VALUES ('opencode','missed-session','missed-session',0,1,'raw_events_auth_recovery_v1','failed',datetime('now'),datetime('now','-1 hour'),3)",
+		)
+		.run();
+	const { settings, observe } = options();
+	expect(await recoverOneMissingAuthWindow(store, settings)).toBe(true);
+	expect(await recoverOneMissingAuthWindow(store, settings)).toBe(false);
+	expect(observe).not.toHaveBeenCalled();
+	expect(store.rawEventFlushState("missed-session")).toBe(1);
+	expect(store.rawEventsSinceBySeq("missed-session")).toHaveLength(2);
+	expect(
+		store.db.prepare("SELECT COUNT(*) AS n FROM memory_items WHERE session_id=?").get(sessionId),
+	).toMatchObject({ n: 0 });
+	expect(
+		store.db
+			.prepare(
+				"SELECT status FROM raw_event_flush_batches WHERE extractor_version='raw_events_auth_recovery_v1'",
+			)
+			.get(),
+	).toMatchObject({ status: "completed" });
+	expect(
+		store.db
+			.prepare("SELECT status FROM raw_event_flush_batches WHERE extractor_version='raw_events_v1'")
+			.get(),
+	).toMatchObject({ status: "gave_up" });
+});
+
+it("keeps exhausted content-bearing auth gaps blocked", async () => {
+	store.db
+		.prepare(
+			"INSERT INTO raw_event_flush_batches(source,stream_id,opencode_session_id,start_event_seq,end_event_seq,extractor_version,status,created_at,updated_at,attempt_count) VALUES ('opencode','missed-session','missed-session',0,1,'raw_events_auth_recovery_v1','failed',datetime('now'),datetime('now','-1 hour'),3)",
+		)
+		.run();
+	const { settings, observe } = options();
+	expect(await recoverOneMissingAuthWindow(store, settings)).toBe(false);
+	expect(observe).not.toHaveBeenCalled();
+});
+
+it("does not complete a usage-only gap with a missing event timestamp", async () => {
+	for (const eventId of ["prompt", "tool"]) {
+		store.db
+			.prepare(
+				"UPDATE raw_events SET event_type='assistant_usage', payload_json=? WHERE event_id=?",
+			)
+			.run(JSON.stringify({ type: "assistant_usage", usage: { input_tokens: 12 } }), eventId);
+	}
+	store.db.prepare("UPDATE raw_events SET ts_wall_ms=NULL WHERE event_id='tool'").run();
+	const { settings, observe } = options();
+	await expect(recoverOneMissingAuthWindow(store, settings)).rejects.toThrow(
+		"event time is unavailable",
+	);
+	expect(observe).not.toHaveBeenCalled();
+	expect(
+		store.db
+			.prepare(
+				"SELECT status FROM raw_event_flush_batches WHERE extractor_version='raw_events_auth_recovery_v1'",
+			)
+			.get(),
+	).toMatchObject({ status: "failed" });
+});
+
+it("still infers when an auth gap mixes usage with processable content", async () => {
+	store.db
+		.prepare(
+			"UPDATE raw_events SET event_type='assistant_usage', payload_json=? WHERE event_id='prompt'",
+		)
+		.run(JSON.stringify({ type: "assistant_usage", usage: { input_tokens: 12 } }));
+	const { settings, observe } = options();
+	expect(await recoverOneMissingAuthWindow(store, settings)).toBe(true);
+	expect(observe).toHaveBeenCalledTimes(1);
+});
+
 it("never infers over a completed event range", async () => {
 	store.db
 		.prepare(

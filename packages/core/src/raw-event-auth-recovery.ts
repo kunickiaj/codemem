@@ -109,7 +109,11 @@ function nextRecoveryWindow(store: MemoryStore): RawEventRecoveryRange | null {
 					window.endEventSeq,
 					RECOVERY_VERSION,
 				) as { status: string; attempt_count: number } | undefined;
-			if (!batch || (batch.status !== "completed" && batch.attempt_count < MAX_ATTEMPTS))
+			if (
+				!batch ||
+				(batch.status !== "completed" &&
+					(batch.attempt_count < MAX_ATTEMPTS || isUsageOnlyRecoveryWindow(store, window)))
+			)
 				return window;
 		}
 	}
@@ -130,6 +134,28 @@ function sourceEventTime(events: Record<string, unknown>[]): string {
 		throw new Error("observer recovery event time is unavailable");
 	}
 	return new Date(Math.max(...(times as number[]))).toISOString();
+}
+
+function recoveryWindowEvents(
+	store: MemoryStore,
+	range: RawEventRecoveryRange,
+): Record<string, unknown>[] {
+	return store.rawEventsSinceBySeq(
+		range.streamId,
+		range.source,
+		range.startEventSeq - 1,
+		MAX_EVENTS,
+		range.endEventSeq,
+	);
+}
+
+function isUsageOnlyRecoveryWindow(store: MemoryStore, range: RawEventRecoveryRange): boolean {
+	const events = recoveryWindowEvents(store, range);
+	return (
+		events.length === range.endEventSeq - range.startEventSeq + 1 &&
+		events.length > 0 &&
+		events.every((event) => event.type === "assistant_usage")
+	);
 }
 
 function hasPersistedRecoveryOutcome(store: MemoryStore, batchId: number): boolean {
@@ -182,13 +208,7 @@ async function inferRecoveryWindow(
 	batchId: number,
 ): Promise<void> {
 	const { source, streamId, startEventSeq, endEventSeq } = range;
-	const events = store.rawEventsSinceBySeq(
-		streamId,
-		source,
-		startEventSeq - 1,
-		MAX_EVENTS,
-		endEventSeq,
-	);
+	const events = recoveryWindowEvents(store, range);
 	if (events.length !== endEventSeq - startEventSeq + 1)
 		throw new Error("observer recovery events missing");
 	const linked = linkedRecoverySession(store, range);
@@ -259,13 +279,22 @@ export async function recoverOneMissingAuthWindow(
 		window.endEventSeq,
 		RECOVERY_VERSION,
 	);
-	if (batch.status === "completed" || batch.attemptCount >= MAX_ATTEMPTS) return false;
+	if (
+		batch.status === "completed" ||
+		(batch.attemptCount >= MAX_ATTEMPTS && !isUsageOnlyRecoveryWindow(store, window))
+	)
+		return false;
 	if (!store.claimRawEventFlushBatch(batch.batchId)) return false;
 	if (hasPersistedRecoveryOutcome(store, batch.batchId)) {
 		store.updateRawEventFlushBatchStatus(batch.batchId, "completed");
 		return true;
 	}
 	try {
+		if (isUsageOnlyRecoveryWindow(store, window)) {
+			sourceEventTime(recoveryWindowEvents(store, window));
+			store.updateRawEventFlushBatchStatus(batch.batchId, "completed");
+			return true;
+		}
 		await inferRecoveryWindow(store, options, window, batch.batchId);
 		store.updateRawEventFlushBatchStatus(batch.batchId, "completed");
 		return true;
