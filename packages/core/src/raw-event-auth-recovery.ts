@@ -288,15 +288,16 @@ export async function recoverOneMissingAuthWindow(
 		(batch.attemptCount >= MAX_ATTEMPTS && !isUsageOnlyRecoveryWindow(store, window))
 	)
 		return false;
-	if (!store.claimRawEventFlushBatch(batch.batchId)) return false;
+	const usageOnly = isUsageOnlyRecoveryWindow(store, window);
+	if (!store.claimRawEventFlushBatch(batch.batchId, { countAttempt: !usageOnly })) return false;
 	if (hasPersistedRecoveryOutcome(store, batch.batchId)) {
 		store.updateRawEventFlushBatchStatus(batch.batchId, "completed");
 		return true;
 	}
 	try {
-		if (isUsageOnlyRecoveryWindow(store, window)) {
+		if (usageOnly) {
 			sourceEventTime(recoveryWindowEvents(store, window));
-			store.updateRawEventFlushBatchStatus(batch.batchId, "completed");
+			store.updateRawEventFlushBatchStatus(batch.batchId, "completed", { resetAttempts: true });
 			return true;
 		}
 		await inferRecoveryWindow(store, options, window, batch.batchId);

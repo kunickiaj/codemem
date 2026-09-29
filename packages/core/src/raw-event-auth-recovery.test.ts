@@ -166,15 +166,15 @@ it("completes a usage-only auth gap without an observer call or cursor rewind", 
 	expect(
 		store.db
 			.prepare(
-				"SELECT status FROM raw_event_flush_batches WHERE extractor_version='raw_events_auth_recovery_v1'",
+				"SELECT status, attempt_count FROM raw_event_flush_batches WHERE extractor_version='raw_events_auth_recovery_v1'",
 			)
 			.get(),
-	).toMatchObject({ status: "completed" });
+	).toMatchObject({ status: "completed", attempt_count: 0 });
 	expect(
 		store.db
 			.prepare("SELECT status FROM raw_event_flush_batches WHERE extractor_version='raw_events_v1'")
 			.get(),
-	).toMatchObject({ status: "gave_up" });
+	).toMatchObject({ status: "recovered" });
 });
 
 it("keeps exhausted content-bearing auth gaps blocked", async () => {

@@ -2393,14 +2393,19 @@ export class MemoryStore {
 	 * Returns true if successfully claimed, false if already claimed/completed.
 	 * Port of claim_raw_event_flush_batch().
 	 */
-	claimRawEventFlushBatch(batchId: number): boolean {
+	claimRawEventFlushBatch(
+		batchId: number,
+		{ countAttempt = true }: { countAttempt?: boolean } = {},
+	): boolean {
 		const now = new Date().toISOString();
 		const row = this.d
 			.update(schema.rawEventFlushBatches)
 			.set({
 				status: "claimed",
 				updated_at: now,
-				attempt_count: sql`${schema.rawEventFlushBatches.attempt_count} + 1`,
+				...(countAttempt
+					? { attempt_count: sql`${schema.rawEventFlushBatches.attempt_count} + 1` }
+					: {}),
 			})
 			.where(
 				and(
@@ -2456,7 +2461,11 @@ export class MemoryStore {
 	 * Update the status of a flush batch.
 	 * Port of update_raw_event_flush_batch_status().
 	 */
-	updateRawEventFlushBatchStatus(batchId: number, status: string): void {
+	updateRawEventFlushBatchStatus(
+		batchId: number,
+		status: string,
+		{ resetAttempts = false }: { resetAttempts?: boolean } = {},
+	): void {
 		const now = new Date().toISOString();
 		if (status === "failed" || status === "gave_up") {
 			// Preserve existing error details when marking as failed/gave_up
@@ -2472,6 +2481,7 @@ export class MemoryStore {
 				.set({
 					status,
 					updated_at: now,
+					...(resetAttempts ? { attempt_count: 0 } : {}),
 					error_message: null,
 					error_type: null,
 					observer_provider: null,
