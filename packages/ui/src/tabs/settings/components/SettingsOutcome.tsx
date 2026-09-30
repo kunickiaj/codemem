@@ -350,10 +350,13 @@ export function SettingsOutcome({
 	if (configKey?.startsWith("observer_")) {
 		const override = settingsState.envOverrides[configKey];
 		if (typeof override !== "string" || !override.trim()) return null;
+		let guidance = "Remove that environment setting and restart the viewer to apply changes here.";
+		if (scope === "No current effect" || stage === "Sidecar authentication") {
+			guidance = `Inactive · ${timing}. Removing the environment setting does not activate this field for the current connection.`;
+		}
 		return (
 			<div className="settings-env-note small">
-				Controlled by {override.trim()}. Remove that environment setting and restart the viewer to
-				apply changes here.
+				Controlled by {override.trim()}. {guidance}
 			</div>
 		);
 	}

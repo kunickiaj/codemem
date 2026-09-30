@@ -123,6 +123,26 @@ describe("inactive pack setting outcomes", () => {
 	});
 });
 
+it.each(["claude_sidecar", "codex_sidecar"])(
+	"keeps overridden temperature inactive for %s",
+	(runtime) => {
+		settingsState.envOverrides = {
+			observer_simple_temperature: "CODEMEM_OBSERVER_SIMPLE_TEMPERATURE",
+		};
+		const root = renderPanels(runtime);
+		const note =
+			root
+				.querySelector("#observerSimpleTemperature")
+				?.closest(".field")
+				?.querySelector(".settings-env-note")?.textContent ??
+			root.querySelector(".settings-env-note")?.textContent;
+		expect(note).toContain("CODEMEM_OBSERVER_SIMPLE_TEMPERATURE");
+		expect(note).toContain("Inactive");
+		expect(note).toContain("do not send sampling temperature");
+		expect(note).not.toContain("to apply changes here");
+	},
+);
+
 describe("settings outcomes", () => {
 	it("keeps observer restart guesses off fields while preserving sync and processing outcomes", () => {
 		const root = renderPanels();
