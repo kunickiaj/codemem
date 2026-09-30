@@ -65,13 +65,19 @@ it("previews auto Codex to command API and back without persisting an automatic 
 	expect(settingsOutcomeFor("observerAuthSource")?.scope).toContain("model requests");
 	expect(settingsOutcomeFor("observerAuthTimeoutMs")?.scope).not.toBe("No current effect");
 	expect(settingsOutcomeFor("observerRichReasoningEffort")?.scope).toContain("Responses");
-	expect(changedSettings()).toEqual({ observer_auth_source: "command" });
+	expect(changedSettings()).toEqual({
+		observer_auth_source: "command",
+		observer_tier_routing_enabled: false,
+	});
 	editAuthSource("auto");
 	expect(settingsOutcomeFor("observerAuthSource")?.scope).toContain("No effect");
 	expect(changedSettings()).toEqual({});
 	settingsState.touchedKeys.add("observer_provider");
 	updateFormState({ observerProvider: "anthropic" });
-	expect(changedSettings()).toEqual({ observer_provider: "anthropic" });
+	expect(changedSettings()).toEqual({
+		observer_provider: "anthropic",
+		observer_tier_routing_enabled: false,
+	});
 });
 
 it.each(["claude_sidecar", "codex_sidecar"])(
@@ -90,6 +96,7 @@ it.each(["claude_sidecar", "codex_sidecar"])(
 		expect(changedSettings()).toEqual({
 			observer_runtime: runtime,
 			observer_auth_source: "command",
+			observer_tier_routing_enabled: false,
 		});
 	},
 );
@@ -102,7 +109,10 @@ it("previews restoring auto from saved command authentication", () => {
 	});
 	editAuthSource("auto");
 	expect(settingsOutcomeFor("observerAuthSource")?.scope).toContain("No effect");
-	expect(changedSettings()).toEqual({ observer_auth_source: "auto" });
+	expect(changedSettings()).toEqual({
+		observer_auth_source: "auto",
+		observer_tier_routing_enabled: false,
+	});
 	editAuthSource("command");
 	expect(settingsOutcomeFor("observerAuthSource")?.scope).toContain("model requests");
 });
@@ -120,6 +130,7 @@ it("keeps an explicit runtime draft ahead of automatic auth previews", () => {
 	expect(changedSettings()).toEqual({
 		observer_runtime: "claude_sidecar",
 		observer_auth_source: "command",
+		observer_tier_routing_enabled: false,
 	});
 });
 
