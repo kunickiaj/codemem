@@ -52,7 +52,10 @@ import type { SettingsPanelProps } from "./data/types";
 
 const getObserverModelHint = (): string =>
 	getObserverModelHintRaw(
-		{ ...getSettingsViewState().renderState.values, observerRuntime: effectiveObserverRuntime() },
+		{
+			...getSettingsViewState().renderState.values,
+			observerRuntime: hasExplicitObserverRuntime() ? effectiveObserverRuntime() : "api_http",
+		},
 		settingsState.envOverrides,
 	);
 const getTieredRoutingHelperText = (): string =>

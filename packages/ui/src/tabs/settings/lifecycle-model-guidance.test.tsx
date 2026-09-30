@@ -27,9 +27,14 @@ afterEach(() => {
 	settingsState.observerRuntimeByAuthSource = {};
 });
 
-it.each(["claude_sidecar", "codex_sidecar"])(
-	"uses the API preview for model guidance from %s",
-	(runtime) => {
+it.each([
+	["claude_sidecar", "auto"],
+	["codex_sidecar", "auto"],
+	["claude_sidecar", "command"],
+	["codex_sidecar", "command"],
+])(
+	"uses provider model guidance from automatic %s with %s authentication",
+	(runtime, authSource) => {
 		document.body.innerHTML = '<div id="settingsDialogMount"></div>';
 		renderConfigModal({
 			config: {},
@@ -37,7 +42,7 @@ it.each(["claude_sidecar", "codex_sidecar"])(
 			observer_runtime_by_auth_source: { command: "api_http", auto: runtime },
 		});
 		settingsState.touchedKeys.add("observer_auth_source");
-		updateFormState({ observerAuthSource: "command", observerProvider: "anthropic" });
+		updateFormState({ observerProvider: "anthropic", observerAuthSource: authSource });
 		act(() => initSettings(vi.fn(), vi.fn(), vi.fn()));
 		expect(document.getElementById("previewHint")?.textContent).toBe(
 			"Recommended (Anthropic provider): claude-4.5-haiku",

@@ -151,7 +151,7 @@ export function collectSettingsPayload(
 		observer_rich_reasoning_effort: normalizeTextValue(values.observerRichReasoningEffort),
 		observer_rich_reasoning_summary: normalizeTextValue(values.observerRichReasoningSummary),
 		observer_rich_max_output_tokens: richMaxOutputTokens,
-		observer_runtime: normalizeTextValue(values.observerRuntime || "api_http") || "api_http",
+		observer_runtime: normalizeTextValue(values.observerRuntime),
 		observer_auth_source: normalizeTextValue(values.observerAuthSource || "auto") || "auto",
 		observer_auth_file: normalizeTextValue(values.observerAuthFile),
 		observer_auth_command: authCommand,

@@ -1,10 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { state } from "../../../lib/state";
 import {
+	collectSettingsPayload,
 	deriveFeedProcessingStatus,
 	describeEffectiveSettings,
+	renderConfigModal,
 	renderObserverStatusBanner,
 } from "./config-loader";
+import { settingsState } from "./state";
+import { updateFormState } from "./state-ops";
+
+it("preserves clearing a pinned runtime when Automatic is selected", () => {
+	renderConfigModal({ config: { observer_runtime: "codex_sidecar" } });
+	settingsState.touchedKeys.add("observer_runtime");
+	updateFormState({ observerRuntime: "" });
+	expect(collectSettingsPayload().observer_runtime).toBe("");
+});
 
 const mocks = vi.hoisted(() => ({ updateFeedView: vi.fn() }));
 
