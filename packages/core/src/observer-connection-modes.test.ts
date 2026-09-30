@@ -111,6 +111,25 @@ it("uses OPENCODE_API_KEY only for the OpenCode API-key provider", () => {
 	}
 });
 
+it("strips mixed-case OpenCode prefixes in direct API-key requests", async () => {
+	const fetchMock = vi
+		.fn()
+		.mockResolvedValue(
+			new Response(JSON.stringify({ choices: [{ message: { content: "{}" } }] }), { status: 200 }),
+		);
+	vi.stubGlobal("fetch", fetchMock);
+	const observer = new ObserverClient(
+		loadObserverConfig({
+			observer_runtime: "api_key",
+			observer_model: "OpenCode/ModelCase",
+			observer_api_key: "fixture-explicit-key",
+		}),
+	);
+	await observer.observeStructuredJson("system", "user", "test", { type: "object" });
+	expect(fetchMock.mock.calls[0]?.[0]).toBe("https://opencode.ai/zen/v1/chat/completions");
+	expect(JSON.parse(fetchMock.mock.calls[0]?.[1].body).model).toBe("ModelCase");
+});
+
 it.each(["openai", "anthropic"])(
 	"OpenCode %s structured requests never use direct API credentials",
 	async (provider) => {

@@ -1420,7 +1420,7 @@ export function resolveBuiltInProviderModel(
 	}
 	const name = modelName || resolveBuiltInProviderDefaultModel(provider) || "";
 	const prefix = `${provider}/`;
-	const shortName = name.startsWith(prefix) ? name.slice(prefix.length) : name;
+	const shortName = name.toLowerCase().startsWith(prefix) ? name.slice(prefix.length) : name;
 	return ["https://opencode.ai/zen/v1", shortName || null, {}];
 }
 
