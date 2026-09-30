@@ -15,6 +15,48 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
+it.each([false, true])("shows API-key model catalogs with tier routing %s", async (tiered) => {
+	vi.stubGlobal(
+		"fetch",
+		vi.fn().mockResolvedValue({
+			json: async () => ({ models: [{ provider: "openai", model: "api-key-model" }] }),
+		}),
+	);
+	const props: SettingsPanelProps = {
+		values: {
+			...EMPTY_FORM_STATE,
+			observerRuntime: "api_key",
+			observerProvider: "openai",
+			observerTierRoutingEnabled: tiered,
+		},
+		showTieredRouting: tiered,
+		observerMaxCharsDefault: "",
+		providerOptions: [],
+		showAuthFile: false,
+		showAuthCommand: false,
+		hiddenUnlessAdvanced: () => true,
+		onTextInput: () => vi.fn(),
+		onSelectValueChange: () => vi.fn(),
+		onSwitchInput: () => vi.fn(),
+		getObserverModelLabel: () => "Model",
+		getObserverModelTooltip: () => "",
+		getObserverModelDescription: () => "",
+		getObserverModelHint: () => "",
+		protectedConfigHelp: () => "",
+	};
+	const mount = document.createElement("div");
+	document.body.appendChild(mount);
+	await act(async () =>
+		render(<ObserverPanel {...props} observerStatusBannerSlot={null} />, mount),
+	);
+	await vi.waitFor(() => {
+		const models = Array.from(mount.querySelectorAll("datalist option"), (option) =>
+			option.getAttribute("value"),
+		);
+		expect(models).toEqual(tiered ? ["api-key-model", "api-key-model"] : ["api-key-model"]);
+	});
+});
+
 it.each([
 	["codex_sidecar", "anthropic", true],
 	["claude_sidecar", "openai", true],

@@ -48,7 +48,7 @@ function BaseModelField({
 			{tiered ? (
 				<div className="small">Used only when a tier has no selected or built-in model.</div>
 			) : null}
-			{["api_http", "opencode_v2"].includes(values.observerRuntime) ? (
+			{["api_http", "api_key", "opencode_v2"].includes(values.observerRuntime) ? (
 				<ObserverModelAvailability id="observerModel" values={values} />
 			) : null}
 		</Field>
@@ -81,7 +81,7 @@ function TierModelField({
 				value={values[id]}
 			/>
 			<div className="small">{detail}</div>
-			{["api_http", "opencode_v2"].includes(values.observerRuntime) ? (
+			{["api_http", "api_key", "opencode_v2"].includes(values.observerRuntime) ? (
 				<ObserverModelAvailability id={id} values={values} provider={tierProviders?.[tier]} />
 			) : null}
 		</Field>

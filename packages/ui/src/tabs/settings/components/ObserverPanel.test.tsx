@@ -87,12 +87,13 @@ it.each(["claude_sidecar", "codex_sidecar", "api_http"])(
 		expect(mount.querySelector("#observerProvider")).not.toBeNull();
 		const select = mount.querySelector<HTMLSelectElement>("#observerRuntime");
 		expect(select?.value).toBe("automatic");
+		const selected = runtime === "api_http" ? "api_key" : runtime;
 		act(() => {
 			if (!select) throw new Error("Missing connection mode");
-			select.value = runtime;
+			select.value = selected;
 			select.dispatchEvent(new Event("change", { bubbles: true }));
 		});
-		expect(onSelect).toHaveBeenCalledWith(runtime);
+		expect(onSelect).toHaveBeenCalledWith(selected);
 	},
 );
 it.each([false, true])(
@@ -315,6 +316,7 @@ describe("ObserverPanel connection details", () => {
 			);
 			const options = mount.querySelector<HTMLSelectElement>("#observerRuntime")?.options;
 			expect(Array.from(options ?? [], (option) => option.textContent)).toEqual([
+				"Automatic (detect connection)",
 				"OpenCode account",
 				"API key",
 				"Local Claude session",
