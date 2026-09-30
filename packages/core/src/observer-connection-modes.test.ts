@@ -121,6 +121,26 @@ it("legacy api_http still uses its existing subscription route", () => {
 	expect(observer.getStatus().auth.type).toBe("codex_consumer");
 });
 
+it.each([
+	{ provider: "opencode", selected: undefined, expected: "gpt-6-luna" },
+	{ provider: "custom", selected: "custom/org/model", expected: "org/model" },
+	{ provider: "custom", selected: "org/model", expected: "org/model" },
+])(
+	"sends provider-local model IDs to OpenCode for $provider/$selected",
+	async ({ provider, selected, expected }) => {
+		generate.mockResolvedValue({ text: "{}", error: null });
+		const observer = new ObserverClient(
+			loadObserverConfig({
+				observer_runtime: "opencode_v2",
+				observer_provider: provider,
+				observer_model: selected,
+			}),
+		);
+		await observer.observe("system", "user");
+		expect(generate).toHaveBeenCalledWith({ provider, model: expected, prompt: "system\n\nuser" });
+	},
+);
+
 it("API key mode requires a key even for a custom endpoint", async () => {
 	const fetchMock = vi.fn();
 	vi.stubGlobal("fetch", fetchMock);

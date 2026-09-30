@@ -2361,9 +2361,11 @@ export class ObserverClient {
 		systemPrompt: string,
 		userPrompt: string,
 	): Promise<ObserverCallResult> {
+		const prefix = `${this.provider}/`;
+		const model = this.model.startsWith(prefix) ? this.model.slice(prefix.length) : this.model;
 		const result = await generateWithOpenCodeV2({
 			provider: this.provider,
-			model: this.model,
+			model,
 			prompt: `${systemPrompt}\n\n${userPrompt}`,
 		});
 		if (result.error) {

@@ -78,6 +78,21 @@ const capturedEnvelope = JSON.stringify({
 });
 
 describe("resolveObserverOutputCapability", () => {
+	it.each(["openai", "anthropic"])(
+		"supports API-key structured output for %s",
+		async (provider) => {
+			const observer = fakeObserver({
+				provider,
+				runtime: "api_key",
+				structuredRaw: capturedEnvelope,
+				status: status({ provider, runtime: "api_key" }),
+			});
+			expect(resolveObserverOutputCapability(observer).actualMode).toBe("json_schema");
+			await observeAndNormalizeObserverOutput(observer, "system", "user");
+			expect(observer.observeStructuredJson).toHaveBeenCalledOnce();
+			expect(observer.observe).not.toHaveBeenCalled();
+		},
+	);
 	it("selects native JSON Schema only for proven direct API paths", () => {
 		expect(resolveObserverOutputCapability(fakeObserver()).actualMode).toBe("json_schema");
 

@@ -154,7 +154,7 @@ it.each(["claude_sidecar", "codex_sidecar"])(
 		expect(mount.querySelector("#observerProvider")).not.toBeNull();
 	},
 );
-describe("ObserverPanel", () => {
+describe("ObserverPanel automatic authentication", () => {
 	it("keeps authentication available for an automatically detected local session", () => {
 		mount = document.createElement("div");
 		document.body.appendChild(mount);
@@ -191,6 +191,9 @@ describe("ObserverPanel", () => {
 		expect(mount.querySelector<HTMLSelectElement>("#observerRuntime")?.value).toBe("api_http");
 		expect(mount.textContent).not.toContain("Codex chooses the provider");
 	});
+});
+
+describe("ObserverPanel", () => {
 	it("starts with connection mode and only offers a provider picker on the automatic path", () => {
 		mount = document.createElement("div");
 		document.body.appendChild(mount);

@@ -153,7 +153,7 @@ function snapshotObserverFailureStatus(observer: ObserverClient, error: unknown)
 
 function isDirectOpenAIResponses(observer: ObserverClient, status: ObserverStatus): boolean {
 	if (observer.provider !== "openai" || !observer.openaiUseResponses) return false;
-	if (observer.runtime !== "api_http") return false;
+	if (!["api_http", "api_key"].includes(observer.runtime)) return false;
 	if (status.auth.type === "codex_consumer") return false;
 	if (observer.hasCustomBaseUrl) return observer.outputMode === "json_schema";
 	return status.auth.type === "api_direct";
@@ -163,7 +163,7 @@ function unsupportedCapabilityReason(
 	observer: ObserverClient,
 	status: ObserverStatus,
 ): ObserverOutputCapabilityReason {
-	if (observer.runtime !== "api_http") return "unsupported_runtime";
+	if (!["api_http", "api_key"].includes(observer.runtime)) return "unsupported_runtime";
 	if (status.auth.type === "codex_consumer" || status.auth.type === "anthropic_consumer") {
 		return "unsupported_auth_path";
 	}
@@ -216,7 +216,7 @@ export function resolveObserverOutputCapability(
 	}
 	if (
 		observer.provider === "anthropic" &&
-		observer.runtime === "api_http" &&
+		["api_http", "api_key"].includes(observer.runtime) &&
 		status.auth.type === "api_direct" &&
 		(!observer.hasCustomBaseUrl ||
 			(observer.hasCustomAnthropicEndpoint && observer.outputMode === "json_schema"))
