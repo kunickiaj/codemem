@@ -16,24 +16,13 @@ afterEach(() => {
 });
 
 it.each([
-	["codex_sidecar", "anthropic", "openai-model", true],
-	["claude_sidecar", "openai", "anthropic-model", true],
-	["codex_sidecar", "anthropic", "anthropic-model", false],
-	["claude_sidecar", "openai", "openai-model", false],
+	["codex_sidecar", "anthropic", true],
+	["claude_sidecar", "openai", true],
+	["codex_sidecar", "anthropic", false],
+	["claude_sidecar", "openai", false],
 ])(
-	"suggests models for %s rather than the saved %s provider",
-	async (runtime, savedProvider, expected, explicit) => {
-		vi.stubGlobal(
-			"fetch",
-			vi.fn().mockResolvedValue({
-				json: async () => ({
-					models: [
-						{ provider: "openai", model: "openai-model" },
-						{ provider: "anthropic", model: "anthropic-model" },
-					],
-				}),
-			}),
-		);
+	"keeps %s catalogs hidden despite a saved %s provider",
+	async (runtime, savedProvider, explicit) => {
 		const props: SettingsPanelProps = {
 			values: { ...EMPTY_FORM_STATE, observerRuntime: "api_http", observerProvider: savedProvider },
 			effectiveObserverRuntime: runtime,
@@ -66,12 +55,7 @@ it.each([
 				mount,
 			);
 		});
-		await vi.waitFor(() =>
-			expect(
-				Array.from(mount.querySelectorAll("datalist option"), (option) =>
-					option.getAttribute("value"),
-				),
-			).toEqual([expected, expected, expected]),
-		);
+		expect(mount.querySelector("datalist")).toBeNull();
+		expect(props.values.observerProvider).toBe(savedProvider);
 	},
 );
