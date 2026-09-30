@@ -145,7 +145,9 @@ export function settingsOutcomeFor(
 	};
 }
 
-export function hasExplicitObserverRuntime(draft?: string): boolean {
+export function hasExplicitObserverRuntime(
+	draft = settingsView.value.renderState.values.observerRuntime,
+): boolean {
 	if (settingsState.envOverrides.observer_runtime)
 		return Boolean(String(settingsState.effectiveConfig.observer_runtime ?? "").trim());
 	if (settingsState.touchedKeys.has("observer_runtime")) return Boolean(draft?.trim());

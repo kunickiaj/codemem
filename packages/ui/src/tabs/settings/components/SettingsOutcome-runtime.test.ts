@@ -3,13 +3,26 @@ import { collectSettingsPayload, renderConfigModal } from "../data/config-loader
 import { diffSettingsPayload } from "../data/diff-payload";
 import { settingsState, settingsView } from "../data/state";
 import { updateFormState } from "../data/state-ops";
-import { effectiveObserverRuntime, settingsOutcomeFor } from "./SettingsOutcome";
+import {
+	effectiveObserverRuntime,
+	hasExplicitObserverRuntime,
+	settingsOutcomeFor,
+} from "./SettingsOutcome";
 
 afterEach(() => {
 	settingsState.resolvedObserverRuntime = null;
 	settingsState.observerRuntimeByAuthSource = {};
 	settingsState.envOverrides = {};
 	settingsState.touchedKeys.clear();
+});
+
+it("recognizes an explicitly selected local draft without a caller-supplied value", () => {
+	renderConfigModal({ config: {}, resolved_observer_runtime: "codex_sidecar" });
+	expect(hasExplicitObserverRuntime()).toBe(false);
+	settingsState.touchedKeys.add("observer_runtime");
+	updateFormState({ observerRuntime: "claude_sidecar" });
+	expect(hasExplicitObserverRuntime()).toBe(true);
+	expect(settingsOutcomeFor("observerProvider")?.scope).toBe("No current effect");
 });
 
 function editAuthSource(source: string) {
