@@ -29,7 +29,6 @@ export function ObserverPanel({
 				detail="Set how codemem reaches your model provider and where it should look for credentials."
 				title="Connection and credentials"
 			/>
-			{observerStatusBannerSlot}
 			<div className="settings-group">
 				<h3 className="settings-group-title">Connection</h3>
 				<Field>
@@ -148,6 +147,7 @@ export function ObserverPanel({
 					</div>
 				</Field>
 			</div>
+			{observerStatusBannerSlot}
 
 			<div className="settings-group">
 				<h3 className="settings-group-title">Authentication</h3>

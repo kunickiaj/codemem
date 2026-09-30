@@ -71,4 +71,27 @@ describe("ObserverPanel", () => {
 		expect(mount.querySelector<HTMLTextAreaElement>("#codexCommand")).not.toBeNull();
 		expect(mount.textContent).toContain("codex_command is protected");
 	});
+
+	it("places the current connection after the editable connection settings", () => {
+		mount = document.createElement("div");
+		document.body.appendChild(mount);
+		act(() =>
+			render(
+				<ObserverPanel
+					{...props()}
+					observerStatusBannerSlot={<div id="observerStatusBanner">Current connection</div>}
+				/>,
+				mount as HTMLDivElement,
+			),
+		);
+
+		const groups = mount.querySelectorAll(".settings-group");
+		const status = mount.querySelector("#observerStatusBanner");
+		expect(
+			groups[0]?.compareDocumentPosition(status as Node) & Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		expect(
+			groups[1]?.compareDocumentPosition(status as Node) & Node.DOCUMENT_POSITION_PRECEDING,
+		).toBeTruthy();
+	});
 });
