@@ -29,7 +29,6 @@ it.each([
 			hasExplicitObserverRuntime: explicit,
 			showTieredRouting: true,
 			tierProviders: { simple: savedProvider, rich: savedProvider },
-			getTieredRoutingHelperText: () => "",
 			observerMaxCharsDefault: "",
 			providerOptions: [],
 			showAuthFile: false,
