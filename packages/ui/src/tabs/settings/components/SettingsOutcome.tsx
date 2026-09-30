@@ -340,26 +340,60 @@ function tuningOutcome(controlId: string, sidecar: boolean): SettingsOutcomeDeta
 	};
 }
 
+function ObserverEffectDetails({ controlId, existingData, scope, stage }: SettingsOutcomeDetails) {
+	return (
+		<details className="settings-outcome" data-settings-outcome-for={controlId}>
+			<summary>Change details</summary>
+			<div className="settings-outcome-details">
+				<span>
+					<strong>Affects:</strong> {stage}
+				</span>
+				<span>
+					<strong>Scope:</strong> {scope}
+				</span>
+				<span>
+					<strong>Existing data:</strong> {existingData}
+				</span>
+			</div>
+		</details>
+	);
+}
+
+function ObserverEffectNote({ scope, stage, timing }: SettingsOutcomeDetails) {
+	if (scope === "No current effect" || stage === "Sidecar authentication")
+		return <div className="settings-effect-note small">Inactive · {timing}</div>;
+	if (/only/i.test(scope)) return <div className="settings-effect-note small">{scope}</div>;
+	return null;
+}
+
 function ObserverFieldOutcome({
 	configKey,
-	scope,
-	stage,
-	timing,
-}: Pick<SettingsOutcomeDetails, "scope" | "stage" | "timing"> & { configKey: string }) {
+	...details
+}: SettingsOutcomeDetails & { configKey: string }) {
+	const { scope, stage, timing } = details;
 	const override = settingsState.envOverrides[configKey];
 	const inactive = scope === "No current effect" || stage === "Sidecar authentication";
 	if (typeof override !== "string" || !override.trim()) {
-		if (inactive) return <div className="settings-effect-note small">Inactive · {timing}</div>;
-		if (/only/i.test(scope)) return <div className="settings-effect-note small">{scope}</div>;
-		return null;
+		return (
+			<>
+				<ObserverEffectNote {...details} />
+				<ObserverEffectDetails {...details} />
+			</>
+		);
 	}
 	let guidance = "Remove that environment setting and restart the viewer to apply changes here.";
-	if (inactive)
+	const authOverride = settingsState.envOverrides.observer_auth_source;
+	if (stage === "Sidecar authentication" && typeof authOverride === "string" && authOverride.trim())
+		guidance = `Inactive for the current connection · ${timing}. Remove ${authOverride.trim()} and restart the viewer to use the saved authentication settings. The connection may change after removal.`;
+	else if (inactive)
 		guidance = `Inactive · ${timing}. Removing the environment setting does not activate this field for the current connection.`;
 	return (
-		<div className="settings-env-note small">
-			Controlled by {override.trim()}. {guidance}
-		</div>
+		<>
+			<div className="settings-env-note small">
+				Controlled by {override.trim()}. {guidance}
+			</div>
+			<ObserverEffectDetails {...details} />
+		</>
 	);
 }
 
@@ -373,7 +407,14 @@ export function SettingsOutcome({
 	const configKey = INPUT_TO_CONFIG_KEY[controlId as keyof typeof INPUT_TO_CONFIG_KEY];
 	if (configKey?.startsWith("observer_")) {
 		return (
-			<ObserverFieldOutcome configKey={configKey} scope={scope} stage={stage} timing={timing} />
+			<ObserverFieldOutcome
+				configKey={configKey}
+				controlId={controlId}
+				existingData={existingData}
+				scope={scope}
+				stage={stage}
+				timing={timing}
+			/>
 		);
 	}
 	let summary = timing;

@@ -6,6 +6,7 @@ import { settingsState, settingsView } from "../data/state";
 import type { SettingsPanelProps } from "../data/types";
 import { ObserverPanel } from "./ObserverPanel";
 import { ProcessingPanel } from "./ProcessingPanel";
+import { SettingsOutcome, settingsOutcomeFor } from "./SettingsOutcome";
 import { SyncPanel } from "./SyncPanel";
 
 vi.mock("../../../components/primitives/radix-select", () => ({
@@ -98,6 +99,7 @@ function renderPanels(observerRuntime = "api_http") {
 afterEach(() => {
 	document.body.innerHTML = "";
 	settingsState.envOverrides = {};
+	settingsState.baseline = {};
 	settingsView.value = {
 		...settingsView.value,
 		renderState: {
@@ -106,6 +108,33 @@ afterEach(() => {
 		},
 	};
 });
+
+it("retains active observer scope and data impact without guessing timing", () => {
+	const root = renderPanels();
+	for (const id of ["observerRuntime", "observerMaxChars", "observerTierRoutingEnabled"]) {
+		const disclosure = root.querySelector(`[data-settings-outcome-for="${id}"]`);
+		expect(disclosure?.textContent).toContain("Affects:");
+		expect(disclosure?.textContent).toContain("Scope:");
+		expect(disclosure?.textContent).toContain("Stored memories stay unchanged");
+		expect(disclosure?.textContent).not.toContain("Takes effect:");
+		expect(disclosure?.textContent).not.toContain("restart");
+	}
+});
+
+it.each(["command", "file"])(
+	"explains auth override removal above saved %s authentication",
+	(source) => {
+		settingsState.baseline = { observer_auth_source: source };
+		settingsState.envOverrides = { observer_auth_source: "CODEMEM_OBSERVER_AUTH_SOURCE" };
+		const outcome = settingsOutcomeFor("observerAuthSource", { observerRuntime: "codex_sidecar" });
+		const root = document.createElement("div");
+		document.body.appendChild(root);
+		act(() => render(outcome ? <SettingsOutcome {...outcome} /> : null, root));
+		expect(root.textContent).toContain("CODEMEM_OBSERVER_AUTH_SOURCE");
+		expect(root.textContent).toContain("restart the viewer");
+		expect(root.textContent).not.toContain("does not activate");
+	},
+);
 
 describe("inactive pack setting outcomes", () => {
 	it("keeps no-effect timing under environment overrides", () => {
@@ -167,7 +196,9 @@ describe("settings outcomes", () => {
 			expect(root.querySelector(`#${id}`), `${id} control`).not.toBeNull();
 			const outcome = root.querySelector(`[data-settings-outcome-for="${id}"]`);
 			if (id.startsWith("observer")) {
-				expect(outcome, `${id} has no static timing`).toBeNull();
+				expect(outcome, `${id} has impact details`).not.toBeNull();
+				expect(outcome?.textContent).toContain("Existing data:");
+				expect(outcome?.textContent).not.toContain("Takes effect:");
 				continue;
 			}
 			expect(outcome, `${id} outcome`).not.toBeNull();
@@ -185,7 +216,7 @@ describe("settings outcomes", () => {
 		const root = renderPanels();
 		const summaryFor = (id: string) =>
 			root.querySelector(`[data-settings-outcome-for="${id}"] > summary`)?.textContent;
-		expect(summaryFor("observerProvider")).toBeUndefined();
+		expect(summaryFor("observerProvider")).toBe("Change details");
 		expect(summaryFor("rawEventsSweeperIntervalS")).toBe("Immediately after save");
 		expect(summaryFor("packObservationLimit")).toBe(
 			"Inactive · Not used when Codemem creates context packs",
@@ -199,7 +230,9 @@ describe("settings outcomes", () => {
 		expect(
 			root.querySelector('[data-settings-outcome-for="rawEventsSweeperIntervalS"]')?.textContent,
 		).toContain("Immediately after save");
-		expect(root.querySelector('[data-settings-outcome-for="observerProvider"]')).toBeNull();
+		expect(
+			root.querySelector('[data-settings-outcome-for="observerProvider"]')?.textContent,
+		).not.toContain("restart");
 		expect(
 			root.querySelector('[data-settings-outcome-for="packObservationLimit"]')?.textContent,
 		).toContain("Not used when Codemem creates context packs");
@@ -244,7 +277,9 @@ describe("settings outcomes", () => {
 			"CODEMEM_OBSERVER_MODEL",
 		);
 		expect(root.querySelector(".settings-env-note")?.textContent).toContain("restart the viewer");
-		expect(root.querySelector('[data-settings-outcome-for="observerProvider"]')).toBeNull();
+		expect(
+			root.querySelector('[data-settings-outcome-for="observerProvider"]')?.textContent,
+		).not.toContain("restart");
 	});
 
 	it.each(["claude_sidecar", "codex_sidecar"])("hides API auth controls for %s", (runtime) => {
