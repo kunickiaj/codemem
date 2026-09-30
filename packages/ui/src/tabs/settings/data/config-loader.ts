@@ -87,7 +87,7 @@ export function describeEffectiveSettings(
 	if (hasEnvironmentOverrides) {
 		return "Fields show configuration-resolved values. Runtime behavior may apply automatic provider defaults. Environment settings supply some fields.";
 	}
-	return "Fields show configuration-resolved values. Active observer and tier choices are shown separately. Restart-dependent changes are labeled below.";
+	return "Fields show configuration-resolved values. The current connection and models are shown separately while changes apply.";
 }
 
 export function renderConfigModal(payload: unknown) {

@@ -338,6 +338,16 @@ export function SettingsOutcome({
 	stage,
 	timing,
 }: SettingsOutcomeDetails) {
+	const configKey = INPUT_TO_CONFIG_KEY[controlId as keyof typeof INPUT_TO_CONFIG_KEY];
+	if (configKey?.startsWith("observer_")) {
+		const override = settingsState.envOverrides[configKey];
+		if (typeof override !== "string" || !override.trim()) return null;
+		return (
+			<div className="settings-env-note small">
+				Controlled by {override.trim()}. Changes here won't apply until that setting is removed.
+			</div>
+		);
+	}
 	let summary = timing;
 	if (timing === "After viewer restart") summary = "Restart required";
 	else if (timing.startsWith("After removing ")) summary = `Environment-controlled · ${timing}`;

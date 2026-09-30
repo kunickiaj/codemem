@@ -126,6 +126,10 @@ function ConnectionFields({
 	);
 }
 
+function isLocalSession(runtime: string): boolean {
+	return runtime === "claude_sidecar" || runtime === "codex_sidecar";
+}
+
 export function ObserverPanel({
 	values,
 	effectiveObserverRuntime = values.observerRuntime,
@@ -208,7 +212,7 @@ export function ObserverPanel({
 			/>
 			{observerStatusBannerSlot}
 
-			<div className="settings-group">
+			<div className="settings-group" hidden={isLocalSession(values.observerRuntime)}>
 				<h3 className="settings-group-title">Authentication</h3>
 				<Field>
 					<div className="field-label">

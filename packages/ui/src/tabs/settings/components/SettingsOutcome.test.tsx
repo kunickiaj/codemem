@@ -124,12 +124,16 @@ describe("inactive pack setting outcomes", () => {
 });
 
 describe("settings outcomes", () => {
-	it("identifies the stage, scope, timing, and existing-data effect for every editable setting", () => {
+	it("keeps observer restart guesses off fields while preserving sync and processing outcomes", () => {
 		const root = renderPanels();
 
 		for (const id of EDITABLE_SETTING_IDS) {
 			expect(root.querySelector(`#${id}`), `${id} control`).not.toBeNull();
 			const outcome = root.querySelector(`[data-settings-outcome-for="${id}"]`);
+			if (id.startsWith("observer")) {
+				expect(outcome, `${id} has no static timing`).toBeNull();
+				continue;
+			}
 			expect(outcome, `${id} outcome`).not.toBeNull();
 			expect(outcome?.tagName).toBe("DETAILS");
 			expect(outcome?.hasAttribute("open")).toBe(false);
@@ -145,7 +149,7 @@ describe("settings outcomes", () => {
 		const root = renderPanels();
 		const summaryFor = (id: string) =>
 			root.querySelector(`[data-settings-outcome-for="${id}"] > summary`)?.textContent;
-		expect(summaryFor("observerProvider")).toBe("Restart required");
+		expect(summaryFor("observerProvider")).toBeUndefined();
 		expect(summaryFor("rawEventsSweeperIntervalS")).toBe("Immediately after save");
 		expect(summaryFor("packObservationLimit")).toBe(
 			"Inactive · Not used when Codemem creates context packs",
@@ -159,9 +163,7 @@ describe("settings outcomes", () => {
 		expect(
 			root.querySelector('[data-settings-outcome-for="rawEventsSweeperIntervalS"]')?.textContent,
 		).toContain("Immediately after save");
-		expect(
-			root.querySelector('[data-settings-outcome-for="observerProvider"]')?.textContent,
-		).toContain("After viewer restart");
+		expect(root.querySelector('[data-settings-outcome-for="observerProvider"]')).toBeNull();
 		expect(
 			root.querySelector('[data-settings-outcome-for="packObservationLimit"]')?.textContent,
 		).toContain("Not used when Codemem creates context packs");
@@ -202,32 +204,17 @@ describe("settings outcomes", () => {
 		settingsState.envOverrides = { observer_model: "CODEMEM_OBSERVER_MODEL" };
 		const root = renderPanels();
 
-		expect(
-			root.querySelector('[data-settings-outcome-for="observerModel"]')?.textContent,
-		).toContain("After removing CODEMEM_OBSERVER_MODEL and restarting the viewer");
-		expect(
-			root.querySelector('[data-settings-outcome-for="observerProvider"]')?.textContent,
-		).toContain("After viewer restart");
+		expect(root.querySelector(".settings-env-note")?.textContent).toContain(
+			"CODEMEM_OBSERVER_MODEL",
+		);
+		expect(root.querySelector('[data-settings-outcome-for="observerProvider"]')).toBeNull();
 	});
 
-	it.each(["claude_sidecar", "codex_sidecar"])(
-		"marks API authentication controls inactive for %s",
-		(runtime) => {
-			const root = renderPanels(runtime);
-
-			for (const controlId of [
-				"observerAuthSource",
-				"observerAuthTimeoutMs",
-				"observerAuthCacheTtlS",
-			]) {
-				const outcome = root.querySelector(
-					`[data-settings-outcome-for="${controlId}"]`,
-				)?.textContent;
-				expect(outcome).toContain(
-					"No effect while Connection mode uses a local Claude or Codex session",
-				);
-				expect(outcome).toContain("Not used by local Claude or Codex sessions");
-			}
-		},
-	);
+	it.each(["claude_sidecar", "codex_sidecar"])("hides API auth controls for %s", (runtime) => {
+		const root = renderPanels(runtime);
+		const authGroup = root
+			.querySelector<HTMLElement>("#observerAuthSource")
+			?.closest<HTMLElement>(".settings-group");
+		expect(authGroup?.hidden).toBe(true);
+	});
 });

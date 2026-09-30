@@ -29,7 +29,7 @@ beforeEach(() => {
 describe("describeEffectiveSettings", () => {
 	it("describes configuration-resolved values without claiming they match runtime resolution", () => {
 		expect(describeEffectiveSettings({ observer_model: "fixture" }, false)).toBe(
-			"Fields show configuration-resolved values. Active observer and tier choices are shown separately. Restart-dependent changes are labeled below.",
+			"Fields show configuration-resolved values. The current connection and models are shown separately while changes apply.",
 		);
 		expect(describeEffectiveSettings({ observer_model: "fixture" }, true)).toContain(
 			"Environment settings supply some fields",

@@ -38,6 +38,10 @@ export function SettingsModalContent({
 	observerStatusBannerSlot,
 }: SettingsModalContentProps) {
 	const saveDisabled = !settingsDirty || renderState.isSaving;
+	const statusText =
+		settingsDirty && !renderState.isSaving && !renderState.statusText.startsWith("Save failed")
+			? "Unsaved changes"
+			: renderState.statusText;
 	return (
 		<form
 			className="modal-card"
@@ -119,9 +123,14 @@ export function SettingsModalContent({
 			</div>
 			<div className="modal-footer">
 				<div className="settings-footer-copy">
-					<div className="small" id="settingsStatus">
-						{renderState.statusText}
+					<div aria-live="polite" className="small" id="settingsStatus">
+						{statusText}
 					</div>
+					{settingsDirty ? (
+						<div className="small settings-save-help">
+							If anything needs a restart, we'll tell you after saving.
+						</div>
+					) : null}
 					<button className="settings-link-button" onClick={onShowGettingStarted} type="button">
 						Show getting started
 					</button>

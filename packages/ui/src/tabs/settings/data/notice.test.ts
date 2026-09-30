@@ -13,3 +13,12 @@ it("reports a saved observer setting as applying rather than already active or r
 	expect(notice.message).not.toContain("Applied now");
 	expect(notice.message).not.toContain("Restart required");
 });
+
+it("mentions restart only when the save response requires one", () => {
+	const notice = buildSettingsNotice({ effects: { restart_required_keys: ["observer_model"] } });
+	expect(notice.message).toContain("Restart required for observer model");
+	const applied = buildSettingsNotice({
+		effects: { applying_keys: ["observer_model"], restart_required_keys: [] },
+	});
+	expect(applied.message).not.toContain("Restart required");
+});

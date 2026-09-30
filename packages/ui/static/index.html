@@ -4127,6 +4127,14 @@
       .modal-body { display: flex; flex-direction: column; gap: var(--sp-3); flex: 1; min-height: 0; overflow-y: auto; padding-right: 6px; }
       .modal-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); flex-shrink: 0; padding-top: var(--sp-2); border-top: 1px solid var(--border); }
       .settings-footer-copy { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+      .settings-footer-copy #settingsStatus { color: var(--text-primary); }
+      .settings-save-help,
+      .settings-env-note { color: var(--text-secondary); }
+      @media (max-width: 560px) {
+        .modal-footer:has(.settings-footer-copy) { flex-wrap: wrap; }
+        .settings-footer-copy { flex-basis: 100%; }
+        .settings-footer-copy + .settings-save { margin-left: auto; }
+      }
       .settings-link-button {
         padding: 0;
         border: 0;
@@ -4411,6 +4419,7 @@
         border-radius: var(--radius-md);
         background: var(--surface-0);
       }
+      .settings-group[hidden] { display: none; }
       .settings-group-title {
         margin: 0;
         font-size: var(--font-size-sm);

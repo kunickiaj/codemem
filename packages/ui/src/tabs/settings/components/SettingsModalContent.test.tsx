@@ -88,6 +88,15 @@ function pressEnter(target: HTMLElement, modifiers: KeyboardEventInit = {}) {
 }
 
 describe("Settings form keyboard actions", () => {
+	it("keeps pending-save guidance by Save instead of repeating restart guesses", () => {
+		renderDirtySettings();
+		expect(requiredElement("#settingsStatus").textContent).toBe("Unsaved changes");
+		expect(requiredElement(".settings-save-help").textContent).toContain(
+			"If anything needs a restart, we'll tell you after saving",
+		);
+		expect(mount.querySelector('[data-settings-outcome-for="observerRuntime"]')).toBeNull();
+	});
+
 	it.each([".settings-outcome", ".settings-config-details"])(
 		"preserves native disclosure activation in dirty Settings: %s",
 		(selector) => {
