@@ -352,7 +352,8 @@ export function SettingsOutcome({
 		if (typeof override !== "string" || !override.trim()) return null;
 		return (
 			<div className="settings-env-note small">
-				Controlled by {override.trim()}. Changes here won't apply until that setting is removed.
+				Controlled by {override.trim()}. Remove that environment setting and restart the viewer to
+				apply changes here.
 			</div>
 		);
 	}

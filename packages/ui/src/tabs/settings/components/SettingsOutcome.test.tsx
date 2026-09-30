@@ -207,6 +207,7 @@ describe("settings outcomes", () => {
 		expect(root.querySelector(".settings-env-note")?.textContent).toContain(
 			"CODEMEM_OBSERVER_MODEL",
 		);
+		expect(root.querySelector(".settings-env-note")?.textContent).toContain("restart the viewer");
 		expect(root.querySelector('[data-settings-outcome-for="observerProvider"]')).toBeNull();
 	});
 
