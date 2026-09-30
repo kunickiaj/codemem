@@ -232,6 +232,23 @@ it.each([
 	expect(root.textContent?.includes("use the saved authentication settings")).toBe(recovery);
 });
 
+it("offers recovery after drafting away a pinned local runtime", () => {
+	renderConfigModal({
+		config: { observer_runtime: "codex_sidecar", observer_auth_source: "command" },
+		resolved_observer_runtime: "codex_sidecar",
+		observer_automatic_runtime_by_auth_source: { auto: "codex_sidecar", command: "codex_sidecar" },
+		observer_runtime_after_auth_override_removal: { auto: "codex_sidecar", command: "api_http" },
+		env_overrides: { observer_auth_source: "CODEMEM_OBSERVER_AUTH_SOURCE" },
+	});
+	settingsState.touchedKeys.add("observer_runtime");
+	updateFormState({ observerRuntime: "" });
+	const outcome = settingsOutcomeFor("observerAuthSource");
+	const root = document.createElement("div");
+	document.body.appendChild(root);
+	act(() => render(outcome ? <SettingsOutcome {...outcome} /> : null, root));
+	expect(root.textContent).toContain("use the saved authentication settings");
+});
+
 describe("inactive pack setting outcomes", () => {
 	it("keeps no-effect timing under environment overrides", () => {
 		settingsState.envOverrides = {

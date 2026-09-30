@@ -179,7 +179,7 @@ function observerRuntimeMetadata(configData: ConfigData) {
 			[...AUTH_SOURCES].map((source) => [
 				source,
 				resolveObserverRuntime(
-					{ ...configData, observer_auth_source: source },
+					{ ...automatic, observer_auth_source: source },
 					{ ignoreAuthSourceOverride: true },
 				),
 			]),
