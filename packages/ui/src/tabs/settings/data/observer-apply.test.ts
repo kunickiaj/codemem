@@ -42,14 +42,17 @@ it("refreshes implicit routing and its baseline after apply completes", () => {
 	expect(pendingChanges().observer_tier_routing_enabled).toBe(true);
 });
 
-it("preserves an explicit unsaved routing choice during status refresh", () => {
-	renderConfigModal({ config: {}, observer_apply: { state: "applying" } });
-	settingsState.touchedKeys.add("observer_tier_routing_enabled");
-	updateFormState({ observerTierRoutingEnabled: false });
-	updateObserverApply({ observer_apply: active });
-	expect(settingsView.value.renderState.values.observerTierRoutingEnabled).toBe(false);
-	expect(pendingChanges().observer_tier_routing_enabled).toBe(false);
-});
+it.each([false, true])(
+	"persists explicit routing %s even when active routing matches",
+	(routing) => {
+		renderConfigModal({ config: {}, observer_apply: { state: "applying" } });
+		settingsState.touchedKeys.add("observer_tier_routing_enabled");
+		updateFormState({ observerTierRoutingEnabled: routing });
+		updateObserverApply({ observer_apply: active });
+		expect(settingsView.value.renderState.values.observerTierRoutingEnabled).toBe(routing);
+		expect(pendingChanges().observer_tier_routing_enabled).toBe(routing);
+	},
+);
 
 it("preserves draft connection routing when the saved observer finishes applying", () => {
 	renderConfigModal({ config: {}, observer_apply: { state: "applying" } });

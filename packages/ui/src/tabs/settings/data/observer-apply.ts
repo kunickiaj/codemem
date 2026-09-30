@@ -26,14 +26,14 @@ export function updateObserverApply(payload: unknown): void {
 	if (
 		apply.state !== "active" ||
 		typeof routing !== "boolean" ||
-		settingsState.observerTierRoutingExplicit
+		settingsState.observerTierRoutingExplicit ||
+		settingsState.touchedKeys.has("observer_tier_routing_enabled")
 	) {
 		updateRenderState({});
 		return;
 	}
 	settingsState.baseline.observer_tier_routing_enabled = routing;
-	const draftConnection =
-		hasConnectionDraft() || settingsState.touchedKeys.has("observer_tier_routing_enabled");
+	const draftConnection = hasConnectionDraft();
 	if (draftConnection) {
 		updateRenderState({});
 		return;

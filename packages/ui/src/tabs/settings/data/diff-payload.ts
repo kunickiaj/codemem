@@ -32,7 +32,7 @@ export function diffSettingsPayload(input: DiffSettingsPayloadInput): Record<str
 	// A connection edit can change automatic routing. Save the displayed switch
 	// with it so selected tier models cannot silently become inactive.
 	if (
-		connectionChanged &&
+		(connectionChanged || touchedKeys.has(routingKey)) &&
 		typeof current[routingKey] === "boolean" &&
 		!hasOwn(envOverrides, routingKey) &&
 		!isProtected(routingKey)
