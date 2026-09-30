@@ -90,6 +90,15 @@ export function describeEffectiveSettings(
 	return "Fields show configuration-resolved values. The current connection and models are shown separately while changes apply.";
 }
 
+function updateRuntimeMetadata(data: ConfigPayload): void {
+	settingsState.resolvedObserverRuntime = data.resolved_observer_runtime ?? null;
+	settingsState.observerRuntimeByAuthSource = data.observer_runtime_by_auth_source ?? {};
+	settingsState.observerRuntimeAfterAuthOverrideRemoval =
+		data.observer_runtime_after_auth_override_removal ?? {};
+	settingsState.observerAutomaticRuntimeByAuthSource =
+		data.observer_automatic_runtime_by_auth_source ?? {};
+}
+
 export function renderConfigModal(payload: unknown) {
 	if (!payload || typeof payload !== "object") return;
 	const data = payload as ConfigPayload;
@@ -106,12 +115,7 @@ export function renderConfigModal(payload: unknown) {
 
 	settingsState.envOverrides = envOverrides;
 	settingsState.effectiveConfig = { ...config, ...data.effective };
-	settingsState.resolvedObserverRuntime = data.resolved_observer_runtime ?? null;
-	settingsState.observerRuntimeByAuthSource = data.observer_runtime_by_auth_source ?? {};
-	settingsState.observerRuntimeAfterAuthOverrideRemoval =
-		data.observer_runtime_after_auth_override_removal ?? {};
-	settingsState.observerAutomaticRuntimeByAuthSource =
-		data.observer_automatic_runtime_by_auth_source ?? {};
+	updateRuntimeMetadata(data);
 	settingsState.observerApply = data.observer_apply ?? null;
 	settingsState.observerTierRoutingExplicit = hasExplicitTierRouting(data);
 	settingsState.protectedKeys = new Set(protectedKeys);
