@@ -4,9 +4,9 @@ import { diffSettingsPayload } from "../data/diff-payload";
 import { settingsState, settingsView } from "../data/state";
 import { updateFormState } from "../data/state-ops";
 import {
+	canEditAutomaticAuth,
 	effectiveObserverRuntime,
 	hasExplicitObserverRuntime,
-	canEditAutomaticAuth,
 	settingsOutcomeFor,
 } from "./SettingsOutcome";
 
