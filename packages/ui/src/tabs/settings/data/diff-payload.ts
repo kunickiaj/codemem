@@ -28,7 +28,7 @@ export function diffSettingsPayload(input: DiffSettingsPayloadInput): Record<str
 		"observer_provider",
 		"observer_model",
 		"observer_auth_source",
-	].some((key) => hasOwn(changed, key) && !hasOwn(envOverrides, key));
+	].some((key) => hasOwn(changed, key));
 	// A connection edit can change automatic routing. Save the displayed switch
 	// with it so selected tier models cannot silently become inactive.
 	if (

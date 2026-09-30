@@ -2,6 +2,29 @@ import { expect, it } from "vitest";
 import { diffSettingsPayload } from "./diff-payload";
 
 it.each([true, false])(
+	"pins routing %s when saving a touched connection under an override",
+	(routing) => {
+		const baseline = { observer_provider: "openai", observer_tier_routing_enabled: routing };
+		const current = { ...baseline, observer_provider: "opencode" };
+		const input = {
+			current,
+			baseline,
+			envOverrides: { observer_provider: "CODEMEM_OBSERVER_PROVIDER" },
+			touchedKeys: new Set(["observer_provider"]),
+			isProtected: () => false,
+		};
+		expect(diffSettingsPayload(input)).toEqual({
+			observer_provider: "opencode",
+			observer_tier_routing_enabled: routing,
+		});
+		expect(diffSettingsPayload({ ...input, touchedKeys: new Set() })).toEqual({});
+		expect(
+			diffSettingsPayload({ ...input, isProtected: (key) => key === "observer_provider" }),
+		).toEqual({});
+	},
+);
+
+it.each([true, false])(
 	"preserves the displayed routing choice %s when changing connection",
 	(routing) => {
 		const baseline = { observer_runtime: "api_http", observer_tier_routing_enabled: routing };
