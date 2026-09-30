@@ -60,6 +60,16 @@ it("preserves draft connection routing when the saved observer finishes applying
 	expect(pendingChanges().observer_tier_routing_enabled).toBe(false);
 });
 
+it("adopts active routing after a provider edit is reverted", () => {
+	renderConfigModal({ config: {}, observer_apply: { state: "applying" } });
+	settingsState.touchedKeys.add("observer_provider");
+	updateFormState({ observerProvider: "anthropic" });
+	updateFormState({ observerProvider: "" });
+	updateObserverApply({ observer_apply: active });
+	expect(settingsView.value.renderState.values.observerTierRoutingEnabled).toBe(true);
+	expect(pendingChanges()).not.toHaveProperty("observer_tier_routing_enabled");
+});
+
 it.each([
 	{ config: { observer_tier_routing_enabled: false } },
 	{

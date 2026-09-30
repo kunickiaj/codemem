@@ -1,6 +1,21 @@
 import type { ObserverApplyPayload } from "./form-state";
-import { settingsState } from "./state";
+import { settingsState, settingsView } from "./state";
 import { updateFormState, updateRenderState } from "./state-ops";
+import { normalizeTextValue } from "./value-helpers";
+
+function hasConnectionDraft(): boolean {
+	const fields = [
+		["observer_runtime", "observerRuntime"],
+		["observer_provider", "observerProvider"],
+		["observer_model", "observerModel"],
+		["observer_auth_source", "observerAuthSource"],
+	] as const;
+	return fields.some(
+		([key, id]) =>
+			settingsState.touchedKeys.has(key) &&
+			normalizeTextValue(settingsView.value.renderState.values[id]) !== settingsState.baseline[key],
+	);
+}
 
 export function updateObserverApply(payload: unknown): void {
 	if (!payload || typeof payload !== "object") return;
@@ -17,13 +32,8 @@ export function updateObserverApply(payload: unknown): void {
 		return;
 	}
 	settingsState.baseline.observer_tier_routing_enabled = routing;
-	const draftConnection = [
-		"observer_runtime",
-		"observer_provider",
-		"observer_model",
-		"observer_auth_source",
-		"observer_tier_routing_enabled",
-	].some((key) => settingsState.touchedKeys.has(key));
+	const draftConnection =
+		hasConnectionDraft() || settingsState.touchedKeys.has("observer_tier_routing_enabled");
 	if (draftConnection) {
 		updateRenderState({});
 		return;
