@@ -375,13 +375,16 @@ function codexTierModel(
 	config: ObserverConfig,
 	tier: "simple" | "rich",
 ): string | null | undefined {
-	const selected = tier === "simple" ? config.observerSimpleModel : config.observerRichModel;
-	if (selected != null) return selected;
+	const selected = (
+		tier === "simple" ? config.observerSimpleModel : config.observerRichModel
+	)?.trim();
+	if (selected) return selected;
 	// Older callers lack explicit-key metadata; preserve their supplied base model.
 	const explicitBase =
 		config.observerExplicitConfigKeys == null ||
 		config.observerExplicitConfigKeys.includes("observerModel");
-	if (config.observerModel != null && explicitBase) return config.observerModel;
+	const baseModel = config.observerModel?.trim();
+	if (baseModel && explicitBase) return baseModel;
 	const defaults = tier === "simple" ? SIMPLE_TIER_DEFAULTS : RICH_TIER_DEFAULTS;
 	return defaults.observerModel;
 }

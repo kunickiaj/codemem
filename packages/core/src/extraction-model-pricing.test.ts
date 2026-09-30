@@ -9,6 +9,11 @@ describe("extraction model pricing", () => {
 	it("lists the explicit benchmark model prices", () => {
 		expect(listExtractionModelPricing()).toEqual([
 			expect.objectContaining({
+				model: "gpt-6-luna",
+				inputUsdPerMillionTokens: 0.1,
+				outputUsdPerMillionTokens: 0.5,
+			}),
+			expect.objectContaining({
 				model: "gpt-5.4-mini",
 				inputUsdPerMillionTokens: 0.75,
 				outputUsdPerMillionTokens: 4.5,
@@ -34,6 +39,7 @@ describe("extraction model pricing", () => {
 	});
 
 	it.each([
+		["gpt-6-luna", "gpt-6-luna", 0.1, 0.5],
 		["gpt-5.6-luna", "gpt-5.6-luna", 1, 6],
 		["Luna", "gpt-5.6-luna", 1, 6],
 		["gpt-5.6-terra", "gpt-5.6-terra", 2.5, 15],
@@ -62,6 +68,21 @@ describe("extraction model pricing", () => {
 			inputCostUsd: 0.75,
 			outputCostUsd: 0.9,
 			totalCostUsd: 1.65,
+		});
+	});
+
+	it("estimates the default Luna model with its own rates", () => {
+		expect(
+			estimateExtractionModelCost("gpt-6-luna", {
+				inputTokens: 1_000_000,
+				outputTokens: 200_000,
+			}),
+		).toEqual({
+			model: "gpt-6-luna",
+			usage: { inputTokens: 1_000_000, outputTokens: 200_000 },
+			inputCostUsd: 0.1,
+			outputCostUsd: 0.1,
+			totalCostUsd: 0.2,
 		});
 	});
 

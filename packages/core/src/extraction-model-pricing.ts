@@ -23,6 +23,15 @@ export interface ExtractionModelCostEstimate {
 // applying cache discounts because cache billing fields are not consistent
 // across the supported HTTP and sidecar transports.
 const EXTRACTION_MODEL_PRICING: readonly ExtractionModelPricing[] = [
+	// Standard short-context rates verified 2026-09-30:
+	// https://developers.openai.com/api/docs/pricing
+	// Usage totals do not identify the context pricing band.
+	{
+		model: "gpt-6-luna",
+		aliases: ["gpt-6-luna"],
+		inputUsdPerMillionTokens: 0.1,
+		outputUsdPerMillionTokens: 0.5,
+	},
 	{
 		model: "gpt-5.4-mini",
 		aliases: ["gpt-5.4-mini"],
