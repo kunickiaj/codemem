@@ -1055,6 +1055,7 @@ function observerEndpointsMatch(
 function officialObserverEndpoint(provider: string): string {
 	if (provider === "anthropic") return ANTHROPIC_MESSAGES_ENDPOINT;
 	if (provider === "openai") return "https://api.openai.com/v1";
+	if (provider === "opencode") return "https://opencode.ai/zen/v1";
 	return "";
 }
 
@@ -2251,7 +2252,9 @@ export class ObserverClient {
 			explicitToken: getProviderApiKey(providerConfig) || this._apiKey || cachedApiKey,
 			envTokens: [
 				process.env.CODEMEM_OBSERVER_API_KEY ?? "",
-				this.provider === "opencode" ? (process.env.OPENCODE_API_KEY ?? "") : "",
+				this.provider === "opencode" && this.vendorCredentialsAllowed()
+					? (process.env.OPENCODE_API_KEY ?? "")
+					: "",
 			],
 			piToken: this._piApiKey,
 			forceRefresh,
