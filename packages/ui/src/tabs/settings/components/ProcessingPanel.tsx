@@ -12,9 +12,14 @@ function TierModelField({
 	onTextInput,
 	tierProviders,
 	effectiveObserverRuntime,
+	hasExplicitObserverRuntime = true,
 }: Pick<
 	SettingsPanelProps,
-	"values" | "onTextInput" | "tierProviders" | "effectiveObserverRuntime"
+	| "values"
+	| "onTextInput"
+	| "tierProviders"
+	| "effectiveObserverRuntime"
+	| "hasExplicitObserverRuntime"
 > & {
 	tier: "simple" | "rich";
 }) {
@@ -56,7 +61,12 @@ function TierModelField({
 			<div className="small">{copy.detail}</div>
 			<ObserverModelAvailability
 				id={id}
-				values={{ ...values, observerRuntime: effectiveObserverRuntime ?? values.observerRuntime }}
+				values={{
+					...values,
+					observerRuntime: hasExplicitObserverRuntime
+						? (effectiveObserverRuntime ?? values.observerRuntime)
+						: "api_http",
+				}}
 				provider={tierProviders?.[tier]}
 			/>
 		</Field>
@@ -65,15 +75,14 @@ function TierModelField({
 
 export function ProcessingPanel({
 	values,
-	effectiveObserverRuntime = values.observerRuntime,
-	tierProviders,
 	showTieredRouting,
 	hiddenUnlessAdvanced,
 	onTextInput,
 	onSwitchInput,
 	getTieredRoutingHelperText,
+	...modelOptions
 }: SettingsPanelProps) {
-	const modelFieldProps = { values, onTextInput, tierProviders, effectiveObserverRuntime };
+	const modelFieldProps = { values, onTextInput, ...modelOptions };
 	return (
 		<>
 			<SettingsSectionIntro

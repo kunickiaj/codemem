@@ -5,7 +5,7 @@ import { TextInput } from "../../../components/primitives/text-input";
 import type { SettingsPanelProps } from "../data/types";
 import { formatAgentClientList } from "../data/value-helpers";
 import { Field } from "./Field";
-import { ObserverModelAvailability } from "./ObserverModelAvailability";
+import { catalogValues, ObserverModelAvailability } from "./ObserverModelAvailability";
 import { SettingsHint } from "./SettingsHint";
 import { SettingsSectionIntro } from "./SettingsSectionIntro";
 
@@ -183,7 +183,7 @@ export function ObserverPanel({
 					onSelectValueChange={onSelectValueChange}
 				/>
 				<MainModelField
-					values={{ ...values, observerRuntime: effectiveObserverRuntime }}
+					values={catalogValues(values, effectiveObserverRuntime, hasExplicitObserverRuntime)}
 					onTextInput={onTextInput}
 					getObserverModelLabel={getObserverModelLabel}
 					getObserverModelTooltip={getObserverModelTooltip}

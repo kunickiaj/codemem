@@ -16,11 +16,13 @@ afterEach(() => {
 });
 
 it.each([
-	["codex_sidecar", "anthropic", "openai-model"],
-	["claude_sidecar", "openai", "anthropic-model"],
+	["codex_sidecar", "anthropic", "openai-model", true],
+	["claude_sidecar", "openai", "anthropic-model", true],
+	["codex_sidecar", "anthropic", "anthropic-model", false],
+	["claude_sidecar", "openai", "openai-model", false],
 ])(
 	"suggests models for %s rather than the saved %s provider",
-	async (runtime, savedProvider, expected) => {
+	async (runtime, savedProvider, expected, explicit) => {
 		vi.stubGlobal(
 			"fetch",
 			vi.fn().mockResolvedValue({
@@ -35,6 +37,7 @@ it.each([
 		const props: SettingsPanelProps = {
 			values: { ...EMPTY_FORM_STATE, observerRuntime: "api_http", observerProvider: savedProvider },
 			effectiveObserverRuntime: runtime,
+			hasExplicitObserverRuntime: explicit,
 			showTieredRouting: true,
 			tierProviders: { simple: savedProvider, rich: savedProvider },
 			getTieredRoutingHelperText: () => "",

@@ -58,3 +58,11 @@ export function ObserverModelAvailability({
 		</>
 	);
 }
+
+export function catalogValues(
+	values: SettingsFormState,
+	runtime: string,
+	explicit: boolean,
+): SettingsFormState {
+	return { ...values, observerRuntime: explicit ? runtime : "api_http" };
+}
