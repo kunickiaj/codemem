@@ -37,7 +37,7 @@ export function getObserverModelTooltip(values: SettingsFormState): string {
 export function getObserverModelDescription(values: SettingsFormState): string {
 	return values.observerTierRoutingEnabled
 		? "Tiered routing is active. Use this only as a fallback while Connection controls simple/rich model selection and explicit tier settings override built-in defaults."
-		: "Default: `gpt-5.4-mini` for Direct API (including pi-derived API-key providers), `gpt-5.1-codex-mini` for Local Codex session, or `claude-4.5-haiku` for Local Claude session.";
+		: "Default: `gpt-6-luna` for Direct API (including pi-derived API-key providers) or Local Codex session, or `claude-4.5-haiku` for Local Claude session.";
 }
 
 export function hiddenUnlessAdvanced(showAdvanced: boolean): boolean {

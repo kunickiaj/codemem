@@ -3,7 +3,7 @@
 
 import { signal } from "@preact/signals";
 import { EMPTY_FORM_STATE } from "./constants";
-import type { ObserverApplyPayload } from "./form-state";
+import type { ObserverApplyPayload, ObserverModelDefaults } from "./form-state";
 import type { SettingsViewState } from "./types";
 import { loadAdvancedPreference } from "./value-helpers";
 
@@ -17,6 +17,8 @@ export interface SettingsState {
 	observerAutomaticRuntimeByAuthSource: Record<string, string>;
 	observerApply: ObserverApplyPayload | null;
 	observerTierRoutingExplicit: boolean;
+	observerModelDefaults: ObserverModelDefaults | null;
+	restartRequiredKeys: Set<string>;
 	envOverrides: Record<string, unknown>;
 	touchedKeys: Set<string>;
 	shellMounted: boolean;
@@ -36,6 +38,8 @@ export const settingsState: SettingsState = {
 	observerAutomaticRuntimeByAuthSource: {},
 	observerApply: null,
 	observerTierRoutingExplicit: false,
+	observerModelDefaults: null,
+	restartRequiredKeys: new Set(),
 	envOverrides: {},
 	touchedKeys: new Set<string>(),
 	shellMounted: false,

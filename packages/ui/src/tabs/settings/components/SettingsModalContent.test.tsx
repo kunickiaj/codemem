@@ -48,7 +48,7 @@ afterEach(() => {
 	mount.remove();
 });
 
-function renderDirtySettings() {
+function renderDirtySettings(restartRequired = false) {
 	mount = document.createElement("div");
 	document.body.append(mount);
 	const onSave = vi.fn();
@@ -65,6 +65,7 @@ function renderDirtySettings() {
 				panelProps={panelProps}
 				renderState={settingsView.value.renderState}
 				settingsDirty
+				restartRequired={restartRequired}
 				showAdvanced
 			/>,
 			mount,
@@ -88,16 +89,19 @@ function pressEnter(target: HTMLElement, modifiers: KeyboardEventInit = {}) {
 }
 
 describe("Settings form keyboard actions", () => {
-	it("keeps pending-save guidance by Save instead of repeating restart guesses", () => {
+	it("does not show generic restart guidance for live-applicable changes", () => {
 		renderDirtySettings();
 		expect(requiredElement("#settingsStatus").textContent).toBe("Unsaved changes");
-		expect(requiredElement(".settings-save-help").textContent).toContain(
-			"If anything needs a restart, we'll tell you after saving",
-		);
+		expect(mount.querySelector(".settings-save-help")).toBeNull();
+		expect(mount.querySelector(".settings-restart-required")).toBeNull();
 		const outcome = mount.querySelector('[data-settings-outcome-for="observerRuntime"]');
 		expect(outcome?.textContent).toContain("Existing data:");
 		expect(outcome?.textContent).not.toContain("Takes effect:");
 		expect(outcome?.textContent).not.toContain("restart");
+	});
+	it("highlights restart-required changes before saving", () => {
+		renderDirtySettings(true);
+		expect(requiredElement(".settings-restart-required").textContent).toBe("Restart required");
 	});
 
 	it.each([".settings-outcome", ".settings-config-details"])(

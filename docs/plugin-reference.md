@@ -407,7 +407,7 @@ Example agent requests:
 
 ## Observer model defaults
 
-- OpenAI: `gpt-5.1-codex-mini`
+- OpenAI: `gpt-6-luna` (tier routing uses `gpt-6-luna` for simple batches and `gpt-5.6-terra` for rich batches)
 - Anthropic: `claude-4.5-haiku` (mapped to Anthropic direct API alias `claude-haiku-4-5` when using `api_http`)
 
 Provider/model selection can be overridden with `CODEMEM_OBSERVER_PROVIDER` and
@@ -450,9 +450,9 @@ Observer execution supports API, Claude, and Codex runtime paths.
 - `codex_sidecar` runs observer calls via the local `codex` CLI (`codex exec`), so Codex / ChatGPT Pro users get memory extraction with **no API key** — auth is delegated to the Codex CLI (`~/.codex`). It uses `codex_command` (or `CODEMEM_CODEX_COMMAND`) as the argv prefix. Default: `["codex"]`. The spawned process runs with `--ephemeral --ignore-user-config -s read-only` and codemem's own hooks suppressed, so it never recurses into capture.
 - codemem auto-selects `codex_sidecar` only when no `observer_runtime` is set, no API key is available from any provider, the OpenCode OAuth cache has no usable credentials, the `codex` CLI is resolvable, and `~/.codex/auth.json` exists. Otherwise set `observer_runtime = "codex_sidecar"` (or `CODEMEM_OBSERVER_RUNTIME=codex_sidecar`) explicitly.
 - Default models:
-- `api_http`: `gpt-5.1-codex-mini` unless `observer_model` is set.
+- `api_http`: `gpt-6-luna` for OpenAI unless `observer_model` is set.
 - `claude_sidecar`: `claude-4.5-haiku` unless `observer_model` is set.
-- `codex_sidecar`: `gpt-5.1-codex-mini` unless `observer_model` is set; the selected model is passed to `codex exec` via `-m` (tier routing).
+- `codex_sidecar`: `gpt-6-luna` unless `observer_model` is set; with tier routing enabled, simple/rich defaults are `gpt-6-luna` / `gpt-5.6-terra`. Explicit tier models take precedence over an explicit base model, which takes precedence over these defaults. The selected model is passed to `codex exec` via `-m`.
 - Anthropic direct API calls accept Anthropic model IDs/aliases; use `claude-haiku-4-5-20251001` if you need a pinned snapshot instead of the moving alias.
 - If `observer_model` is unsupported in Claude CLI, codemem retries once without `--model`. The same fallback applies to `codex_sidecar`: an unavailable tier model is retried once without `-m`.
 - Supported auth sources: `auto`, `env`, `file`, `command`, `none`.
@@ -713,10 +713,10 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_INJECT_RETAINED_TOKEN_BUDGET` | Opt-in approximate cap for retained OpenCode automatic message blocks, off by default. Only an explicit positive safe integer (for example `8000`) enables it; unset, invalid, or nonpositive values disable it. Count full wrapped blocks currently retained, including replay/reconstruction. Compaction notifications do not reset allowance. Does not apply to legacy system injection or explicit MCP recall. |
 | `CODEMEM_INJECT_TOKEN_BUDGET` | Positive approximate token cap for OpenCode's complete wrapped injection (default `800`). OpenCode reserves its context prefix before sending the remaining budget through Viewer or CLI; unset, zero, negative, and invalid values use `800`. An override too small to leave a positive pack budget injects nothing because `0` means unlimited to generic pack calls. Pack accounting uses `ceil(characters / 4)`, not the provider tokenizer. |
 | `CODEMEM_USE_OPENCODE_RUN` | Use `opencode run` for observer generation (default off). |
-| `CODEMEM_OPENCODE_MODEL` | Model for `opencode run` (default `gpt-5.1-codex-mini`). |
+| `CODEMEM_OPENCODE_MODEL` | Model for `opencode run` (default `gpt-6-luna`). |
 | `CODEMEM_OPENCODE_AGENT` | Agent for `opencode run` (optional). |
 | `CODEMEM_OBSERVER_PROVIDER` | Force `openai`, `anthropic`, or a custom provider key (optional). |
-| `CODEMEM_OBSERVER_MODEL` | Override observer model (default `gpt-5.1-codex-mini` or `claude-4.5-haiku`). |
+| `CODEMEM_OBSERVER_MODEL` | Override observer model (default `gpt-6-luna` or `claude-4.5-haiku`). |
 | `CODEMEM_OBSERVER_API_KEY` | API key for observer model (optional). |
 | `CODEMEM_CLAUDE_COMMAND` | JSON argv array for Claude CLI invocation used by `claude_sidecar` (default `["claude"]`). |
 | `CODEMEM_OBSERVER_RUNTIME` | Observer runtime mode (`api_http` or `claude_sidecar`). |

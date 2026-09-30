@@ -5,6 +5,8 @@ import type { SettingsFormState } from "./types";
 import { asBooleanValue, asInputString, effectiveOrConfigured, hasOwn } from "./value-helpers";
 
 export interface ConfigPayload {
+	observer_model_defaults?: ObserverModelDefaults;
+	restart_required_keys?: string[];
 	config?: Record<string, unknown>;
 	effective?: Record<string, unknown>;
 	resolved_observer_runtime?: string;
@@ -17,6 +19,14 @@ export interface ConfigPayload {
 	protected_keys?: unknown;
 	providers?: unknown;
 	path?: string;
+}
+
+export interface ObserverModelDefaults {
+	base: Record<string, string>;
+	claude: string;
+	codex: string;
+	simple: Record<string, string>;
+	rich: Record<string, string>;
 }
 
 export interface ObserverApplyPayload {

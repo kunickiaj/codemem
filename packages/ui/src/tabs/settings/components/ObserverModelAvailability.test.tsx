@@ -35,7 +35,7 @@ it("shows unverified OpenCode V2 suggestions without offering a paid model check
 		),
 	);
 	await vi.waitFor(() => expect(mount?.querySelector('option[value="gpt-6-luna"]')).not.toBeNull());
-	expect(mount.textContent).toContain("OpenCode V2 catalog suggestions are unverified");
+	expect(mount.textContent).toContain("OpenCode model list; account access is not verified");
 	expect(fetcher).toHaveBeenCalledTimes(1);
 	expect(mount?.querySelector("button")).toBeNull();
 	await act(async () =>

@@ -21,6 +21,10 @@ export function formatAuthMethod(method: string): string {
 			return "OAuth (ChatGPT subscription)";
 		case "sdk_client":
 			return "API key";
+		case "api_direct":
+			return "Direct API key";
+		case "opencode_v2":
+			return "OpenCode account";
 		case "claude_sidecar":
 			return "Local Claude session";
 		case "codex_sidecar":

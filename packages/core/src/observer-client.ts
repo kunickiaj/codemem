@@ -54,8 +54,8 @@ import { resolvePiObserverConfig } from "./pi-observer-config.js";
 // ---------------------------------------------------------------------------
 
 const DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5";
-const DEFAULT_OPENAI_MODEL = "gpt-5.4-mini";
-const DEFAULT_CODEX_SIDECAR_MODEL = "gpt-5.1-codex-mini";
+const DEFAULT_OPENAI_MODEL = "gpt-6-luna";
+const DEFAULT_CODEX_SIDECAR_MODEL = "gpt-6-luna";
 
 const ANTHROPIC_MESSAGES_ENDPOINT = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -337,7 +337,7 @@ function supportsDefaultTierRouting(
 	hasCustomBaseUrl: boolean,
 ): boolean {
 	if (runtime === "claude_sidecar") return true;
-	if (runtime !== "api_http" && runtime !== "opencode_v2") return false;
+	if (!["api_http", "api_key", "opencode_v2"].includes(runtime)) return false;
 	if (provider !== "openai" && provider !== "anthropic") return false;
 	// A custom base URL may point at an OpenAI-compatible gateway that only
 	// implements chat/completions. Rich-tier defaults turn Responses on, so we
@@ -858,7 +858,7 @@ export function loadObserverConfig(
 /** Normalize the runtime exactly as ObserverClient does after automatic selection. */
 export function normalizeObserverRuntime(value: unknown): string {
 	const runtime = typeof value === "string" ? value.trim().toLowerCase() : "";
-	if (runtime === "claude_sidecar" || runtime === "codex_sidecar" || runtime === "opencode_v2")
+	if (["claude_sidecar", "codex_sidecar", "opencode_v2", "api_key"].includes(runtime))
 		return runtime;
 	return "api_http";
 }
@@ -869,6 +869,19 @@ export function resolveObserverRuntime(
 	options: { ignoreAuthSourceOverride?: boolean } = {},
 ): string {
 	return normalizeObserverRuntime(loadObserverConfig(configData, options).observerRuntime);
+}
+
+/** Model default metadata; does not resolve credentials or start a client. */
+export function resolveObserverDefaultModel(runtime: string, provider: string): string {
+	if (runtime === "claude_sidecar") return DEFAULT_ANTHROPIC_MODEL;
+	if (runtime === "codex_sidecar") return DEFAULT_CODEX_SIDECAR_MODEL;
+	if (provider === "anthropic") return DEFAULT_ANTHROPIC_MODEL;
+	if (!provider || provider === "openai") return DEFAULT_OPENAI_MODEL;
+	return (
+		resolveBuiltInProviderDefaultModel(provider) ??
+		resolveCustomProviderDefaultModel(provider) ??
+		""
+	);
 }
 
 // ---------------------------------------------------------------------------
@@ -1623,15 +1636,8 @@ export class ObserverClient {
 		// Resolve model
 		if (model) {
 			this.model = model;
-		} else if (resolved === "anthropic") {
-			this.model = DEFAULT_ANTHROPIC_MODEL;
-		} else if (resolved === "openai") {
-			this.model = DEFAULT_OPENAI_MODEL;
 		} else {
-			this.model =
-				resolveBuiltInProviderDefaultModel(resolved) ??
-				resolveCustomProviderDefaultModel(resolved) ??
-				"";
+			this.model = resolveObserverDefaultModel(this.runtime, resolved);
 		}
 
 		// Claude sidecar config
@@ -1712,16 +1718,16 @@ export class ObserverClient {
 			explicitConfigKeys.has("observerOpenAIUseResponses") ||
 			cfg.observerOpenAIUseResponses === true
 				? cfg.observerOpenAIUseResponses === true
-				: this.provider === "openai" && this.runtime === "api_http";
+				: this.provider === "openai" && this.isDirectRuntime();
 		this.openaiUseResponses =
-			this.provider === "openai" && this.runtime === "api_http" && !hasCustomBaseUrl
+			this.provider === "openai" && this.isDirectRuntime() && !hasCustomBaseUrl
 				? true
 				: configuredOpenAIUseResponses;
 		this.outputMode = cfg.observerOutputMode ?? "legacy_xml";
 		this.hasCustomBaseUrl = hasCustomBaseUrl;
 		const usesCustomOpenAIChatCompletions =
 			this.provider === "openai" &&
-			this.runtime === "api_http" &&
+			this.isDirectRuntime() &&
 			hasCustomBaseUrl &&
 			!this.openaiUseResponses;
 		this.reasoningEffort =
@@ -1886,7 +1892,25 @@ export class ObserverClient {
 	}
 
 	private canCallOpenAIDirectWithoutAuth(): boolean {
-		return this._customBaseUrlAllowsNoAuth && !this._codexAccess && this.provider !== "anthropic";
+		return (
+			this.runtime !== "api_key" &&
+			this._customBaseUrlAllowsNoAuth &&
+			!this._codexAccess &&
+			this.provider !== "anthropic"
+		);
+	}
+
+	private isDirectRuntime(): boolean {
+		return this.runtime === "api_http" || this.runtime === "api_key";
+	}
+
+	private usesOpenAIStructuredOutputs(): boolean {
+		return (
+			this.isDirectRuntime() &&
+			this.provider === "openai" &&
+			this.openaiUseResponses &&
+			!this._codexAccess
+		);
 	}
 
 	/**
@@ -1992,7 +2016,7 @@ export class ObserverClient {
 	): Promise<ObserverStructuredJsonResponse> {
 		const startedAt = nowMs();
 		const clipped = clipObserverPrompts(systemPrompt, userPrompt, this.maxChars);
-		if (this.provider === "openai" && this.openaiUseResponses && !this._codexAccess) {
+		if (this.usesOpenAIStructuredOutputs()) {
 			if (!this.auth.token && !this.canCallOpenAIDirectWithoutAuth()) {
 				this._initProvider(true);
 				if (!this.auth.token && !this.canCallOpenAIDirectWithoutAuth()) {
@@ -2026,7 +2050,7 @@ export class ObserverClient {
 			});
 			return this._structuredResponse(call, authRetry, startedAt);
 		}
-		if (this.provider === "anthropic") {
+		if (this.isDirectRuntime() && this.provider === "anthropic") {
 			const structured = await this._anthropicStructuredJson(clipped, schema, startedAt);
 			if (structured) return structured;
 		}
@@ -2187,7 +2211,7 @@ export class ObserverClient {
 		this._codexAccountId = null;
 		this._anthropicOAuthAccess = null;
 
-		const oauthCache = loadOpenCodeOAuthCache();
+		const oauthCache = this.runtime === "api_key" ? {} : loadOpenCodeOAuthCache();
 		let oauthAccess: string | null = null;
 		let oauthProvider: string | null = null;
 
@@ -2254,7 +2278,7 @@ export class ObserverClient {
 			explicitToken: this._apiKey,
 			envTokens: vendorOk
 				? [
-						process.env.OPENCODE_API_KEY ?? "",
+						this.runtime === "api_key" ? "" : (process.env.OPENCODE_API_KEY ?? ""),
 						process.env.OPENAI_API_KEY ?? "",
 						process.env.CODEX_API_KEY ?? "",
 					]
@@ -2343,7 +2367,7 @@ export class ObserverClient {
 			prompt: `${systemPrompt}\n\n${userPrompt}`,
 		});
 		if (result.error) {
-			const message = `OpenCode V2 generation failed: ${result.error}. Check the selected provider and model in Settings.`;
+			const message = `OpenCode account request failed: ${result.error}. Check the OpenCode connection and selected model in Settings.`;
 			this._setLastError(message, result.error);
 			// Retain the raw-event range. Changing the selected model or restarting the
 			// service must not require replaying an already-advanced stream cursor.

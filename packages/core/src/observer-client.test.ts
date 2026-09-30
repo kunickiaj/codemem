@@ -412,7 +412,7 @@ describe("ObserverClient", () => {
 				observerAuthCacheTtlS: 300,
 			});
 			expect(client.provider).toBe("openai");
-			expect(client.model).toBe("gpt-5.4-mini");
+			expect(client.model).toBe("gpt-6-luna");
 			expect(client.temperature).toBe(0.2);
 			expect(client.runtime).toBe("api_http");
 		});
@@ -1150,7 +1150,7 @@ describe("ObserverClient.observe()", () => {
 	});
 
 	it.each([
-		{ tier: "simple", expectedModel: "gpt-5.6-luna" },
+		{ tier: "simple", expectedModel: "gpt-6-luna" },
 		{ tier: "rich", expectedModel: "gpt-5.6-terra" },
 	] as const)("sends the shipped $tier tier over OAuth codex_consumer", async (scenario) => {
 		const prevHome = process.env.HOME;

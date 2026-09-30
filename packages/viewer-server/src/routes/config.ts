@@ -16,8 +16,13 @@ import {
 	listOpenCodeV2Models,
 	mutateCodememConfigFile,
 	type RawEventSweeper,
+	RICH_TIER_ANTHROPIC_DEFAULTS,
+	RICH_TIER_DEFAULTS,
 	readCodememConfigFile,
+	resolveObserverDefaultModel,
 	resolveObserverRuntime,
+	SIMPLE_TIER_ANTHROPIC_DEFAULTS,
+	SIMPLE_TIER_DEFAULTS,
 } from "@codemem/core";
 import { type Context, Hono } from "hono";
 import { createInMemoryRequestRateLimiter } from "../request-rate-limit.js";
@@ -26,7 +31,7 @@ type ConfigData = Record<string, unknown>;
 
 const REDACTED_VALUE = "[redacted]";
 
-const RUNTIMES = new Set(["api_http", "claude_sidecar", "codex_sidecar"]);
+const RUNTIMES = new Set(["api_http", "api_key", "opencode_v2", "claude_sidecar", "codex_sidecar"]);
 const AUTH_SOURCES = new Set(["auto", "env", "file", "command", "none"]);
 const HOT_RELOAD_KEYS = new Set(["raw_events_sweeper_interval_s"]);
 const EXECUTABLE_ARGV_KEYS = new Set(["claude_command", "codex_command", "observer_auth_command"]);
@@ -148,6 +153,36 @@ export interface ConfigRouteOptions {
 
 function loadProviderOptions(): string[] {
 	return listObserverProviderOptions();
+}
+
+function modelDefaultMetadata() {
+	return {
+		base: Object.fromEntries(
+			loadProviderOptions().map((provider) => [
+				provider,
+				resolveObserverDefaultModel("api_key", provider),
+			]),
+		),
+		claude: resolveObserverDefaultModel("claude_sidecar", "anthropic"),
+		codex: resolveObserverDefaultModel("codex_sidecar", "openai"),
+		simple: {
+			openai: SIMPLE_TIER_DEFAULTS.observerModel,
+			anthropic: SIMPLE_TIER_ANTHROPIC_DEFAULTS.observerModel,
+		},
+		rich: {
+			openai: RICH_TIER_DEFAULTS.observerModel,
+			anthropic: RICH_TIER_ANTHROPIC_DEFAULTS.observerModel,
+		},
+	};
+}
+
+function settingsCapabilityMetadata(opts: ConfigRouteOptions) {
+	return {
+		observer_model_defaults: modelDefaultMetadata(),
+		restart_required_keys: ALLOWED_KEYS.filter(
+			(key) => !HOT_RELOAD_KEYS.has(key) && !(OBSERVER_KEYS.has(key) && opts.scheduleObserverApply),
+		),
+	};
 }
 
 function withoutRemovedConfigKeys(configData: ConfigData): ConfigData {
@@ -325,7 +360,7 @@ function applyNormalizedEnum(
 	if (!allowed.has(normalized)) {
 		const choices =
 			key === "observer_runtime"
-				? "api_http, claude_sidecar, codex_sidecar"
+				? "api_http, api_key, opencode_v2, claude_sidecar, codex_sidecar"
 				: "auto, env, file, command, none";
 		return `${key} must be one of: ${choices}`;
 	}
@@ -622,6 +657,7 @@ export function configRoutes(opts: ConfigRouteOptions = {}) {
 			env_overrides: getCodememEnvOverrides(),
 			protected_keys: [...PROTECTED_WRITE_KEYS].sort(),
 			providers: loadProviderOptions(),
+			...settingsCapabilityMetadata(opts),
 		});
 	});
 

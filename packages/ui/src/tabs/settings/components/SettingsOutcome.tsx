@@ -172,7 +172,9 @@ export function effectiveObserverRuntime(draft?: string): string {
 	const runtime = String(runtimeValue ?? "")
 		.trim()
 		.toLowerCase();
-	return isSidecarRuntime(runtime) ? runtime : "api_http";
+	return ["api_key", "opencode_v2"].includes(runtime) || isSidecarRuntime(runtime)
+		? runtime
+		: "api_http";
 }
 
 function draftAuthRuntime(): string | undefined {

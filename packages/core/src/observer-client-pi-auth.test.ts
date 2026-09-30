@@ -435,7 +435,7 @@ describe("ObserverClient — pi-derived auth sidecar", () => {
 		expect(cfg.observerModel).toBeNull();
 		expect(cfg.observerProvider).toBeNull();
 		const client = new ObserverClient(cfg);
-		expect(client.model).toBe("gpt-5.1-codex-mini");
+		expect(client.model).toBe("gpt-6-luna");
 	});
 
 	it("does not send a gateway-scoped pi openai key to api.openai.com", () => {

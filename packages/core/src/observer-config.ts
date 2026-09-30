@@ -1405,9 +1405,9 @@ export function resolveBuiltInProviderFromModel(model: string): string | null {
 }
 
 export function resolveBuiltInProviderDefaultModel(provider: string): string | null {
-	if (provider === "openai") return "gpt-5.4-mini";
+	if (provider === "openai") return "gpt-6-luna";
 	if (provider === "anthropic") return "claude-haiku-4-5";
-	if (provider === "opencode") return "opencode/gpt-5.4-mini";
+	if (provider === "opencode") return "opencode/gpt-6-luna";
 	return null;
 }
 

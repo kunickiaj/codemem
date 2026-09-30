@@ -5,6 +5,7 @@ export type ObserverStatusShape = {
 	active?: {
 		provider?: string;
 		model?: string;
+		runtime?: string;
 		auth?: {
 			method?: string;
 			token_present?: boolean;
@@ -56,16 +57,15 @@ function AvailableCredentials({
 	const entries = Object.entries(available ?? {}).filter(
 		([, creds]) => creds && typeof creds === "object",
 	);
-	if (!entries.length) return null;
-	const isLocalSession = method === "codex_sidecar" || method === "claude_sidecar";
+	if (
+		!entries.length ||
+		["codex_sidecar", "claude_sidecar", "opencode_v2"].includes(method ?? "")
+	) {
+		return null;
+	}
 	return (
 		<details className="status-credentials">
-			<summary>Direct API credentials</summary>
-			<div className="small">
-				{isLocalSession
-					? "Local sessions use their CLI login. These credentials do not show local or OpenCode V2 account access."
-					: "Direct API and legacy cache only; OpenCode V2 accounts are separate."}
-			</div>
+			<summary>API keys and saved sign-ins</summary>
 			<ul>
 				{entries.map(([provider, creds]) => (
 					<li key={provider}>
@@ -128,6 +128,9 @@ export function ObserverStatusBanner({ status, onOpenDiagnostics }: ObserverStat
 	}
 
 	const active = status.active;
+	const missingApiKey =
+		active?.auth?.token_present === false &&
+		(active.runtime === "api_key" || active.auth.method === "none");
 	return (
 		<div id="observerStatusBanner" className="observer-status-banner">
 			{status.latest_failure ? (
@@ -147,7 +150,7 @@ export function ObserverStatusBanner({ status, onOpenDiagnostics }: ObserverStat
 					)}
 				</span>
 			</div>
-			{active?.auth?.method === "none" && active.auth.token_present === false ? (
+			{missingApiKey ? (
 				<div className="status-token-warning">
 					No Direct API key detected. Check your credentials.
 				</div>

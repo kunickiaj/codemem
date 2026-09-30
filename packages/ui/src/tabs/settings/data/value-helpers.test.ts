@@ -20,13 +20,15 @@ describe("agent client enumerations", () => {
 describe("Codex sidecar settings helpers", () => {
 	it("infers the current Codex-sidecar default model", () => {
 		expect(inferObserverModel("codex_sidecar", "openai", "")).toEqual({
-			model: "gpt-5.1-codex-mini",
+			model: "gpt-6-luna",
 			source: "Recommended (local Codex session)",
 		});
 	});
 
 	it("formats Codex-sidecar authentication status", () => {
 		expect(formatAuthMethod("codex_sidecar")).toBe("Local Codex session");
+		expect(formatAuthMethod("opencode_v2")).toBe("OpenCode account");
+		expect(formatAuthMethod("api_direct")).toBe("Direct API key");
 	});
 
 	it("loads the protected Codex command into form state", () => {

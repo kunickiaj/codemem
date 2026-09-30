@@ -46,7 +46,7 @@ export interface TieredObserverConfigSelection {
 
 export const SIMPLE_TIER_DEFAULTS: Partial<ObserverConfig> = {
 	observerProvider: "openai",
-	observerModel: "gpt-5.6-luna",
+	observerModel: "gpt-6-luna",
 	observerTemperature: 0.2,
 	observerReasoningEffort: "medium",
 };
@@ -104,6 +104,7 @@ function normalizeRuntime(value: string | null | undefined): string {
 	if (
 		normalized === "claude_sidecar" ||
 		normalized === "codex_sidecar" ||
+		normalized === "api_key" ||
 		normalized === "opencode_v2"
 	)
 		return normalized;
@@ -216,10 +217,7 @@ export function buildTieredObserverSelection(
 				: trimmedProvider(baseConfig.observerRichProvider)) ??
 			trimmedProvider(baseConfig.observerProvider);
 		const observer = withProviderOverride(baseConfig, "openai", {
-			observerModel:
-				decision.tier === "simple"
-					? (baseConfig.observerSimpleModel ?? baseConfig.observerModel)
-					: (baseConfig.observerRichModel ?? baseConfig.observerModel),
+			observerModel: codexTierModel(baseConfig, decision.tier),
 			observerTemperature:
 				decision.tier === "simple"
 					? (baseConfig.observerSimpleTemperature ?? baseConfig.observerTemperature)
@@ -371,6 +369,21 @@ export function buildTieredObserverSelection(
 			observerRuntime: normalizedRuntime,
 		}),
 	};
+}
+
+function codexTierModel(
+	config: ObserverConfig,
+	tier: "simple" | "rich",
+): string | null | undefined {
+	const selected = tier === "simple" ? config.observerSimpleModel : config.observerRichModel;
+	if (selected != null) return selected;
+	// Older callers lack explicit-key metadata; preserve their supplied base model.
+	const explicitBase =
+		config.observerExplicitConfigKeys == null ||
+		config.observerExplicitConfigKeys.includes("observerModel");
+	if (config.observerModel != null && explicitBase) return config.observerModel;
+	const defaults = tier === "simple" ? SIMPLE_TIER_DEFAULTS : RICH_TIER_DEFAULTS;
+	return defaults.observerModel;
 }
 
 export function buildTieredObserverConfig(

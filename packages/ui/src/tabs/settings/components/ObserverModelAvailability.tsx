@@ -51,9 +51,7 @@ export function ObserverModelAvailability({
 				))}
 			</datalist>
 			{suggestions.length ? (
-				<div className="small">
-					OpenCode V2 catalog suggestions are unverified for this connection.
-				</div>
+				<div className="small">OpenCode model list; account access is not verified.</div>
 			) : null}
 		</>
 	);

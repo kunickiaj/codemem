@@ -15,13 +15,25 @@ function ConnectionModeField({
 	runtime: string;
 	onSelectValueChange: SettingsPanelProps["onSelectValueChange"];
 }) {
-	let description =
-		"OpenCode V2 sessions use your OpenCode connection; V1 sessions keep their existing direct route. Billing follows the active account.";
+	let description = "Keeps your existing connection rules until you choose a connection below.";
 	if (runtime === "claude_sidecar") {
 		description = "Uses your local Claude CLI login. Claude chooses the provider.";
 	} else if (runtime === "codex_sidecar") {
 		description = "Uses your local Codex CLI login. Codex chooses the provider.";
+	} else if (runtime === "opencode_v2") {
+		description = "Uses the selected provider account in OpenCode. OpenCode must be running.";
+	} else if (runtime === "api_key") {
+		description = "Uses an API key for the selected provider. Does not use subscription sign-ins.";
 	}
+	const options = [
+		{ label: "Automatic (detect connection)", value: "automatic" },
+		{ label: "OpenCode account", value: "opencode_v2" },
+		{ label: "API key", value: "api_key" },
+		{ label: "Local Claude session", value: "claude_sidecar" },
+		{ label: "Local Codex session", value: "codex_sidecar" },
+	];
+	if (runtime === "api_http")
+		options.unshift({ label: "Existing API connection (legacy)", value: "api_http" });
 	return (
 		<Field>
 			<div className="field-label">
@@ -29,7 +41,7 @@ function ConnectionModeField({
 				<button
 					aria-label="About connection mode"
 					className="help-icon"
-					data-tooltip="V2-captured sessions with implicit OpenCode credentials use its active provider connection. V1 and explicit API credentials keep their current path. Local CLI choices remain explicit."
+					data-tooltip="Choose which account handles model requests. An explicit connection never falls back to another account."
 					type="button"
 				>
 					?
@@ -43,12 +55,7 @@ function ConnectionModeField({
 				onValueChange={(value) =>
 					onSelectValueChange("observerRuntime")(value === "automatic" ? "" : value)
 				}
-				options={[
-					{ label: "Automatic (detect connection)", value: "automatic" },
-					{ label: "API connection (legacy)", value: "api_http" },
-					{ label: "Local Claude session", value: "claude_sidecar" },
-					{ label: "Local Codex session", value: "codex_sidecar" },
-				]}
+				options={options}
 				triggerClassName="settings-select-trigger"
 				value={runtime}
 				viewportClassName="settings-select-viewport"
@@ -67,6 +74,11 @@ function ProviderField({
 	providerOptions: SettingsPanelProps["providerOptions"];
 	onSelectValueChange: SettingsPanelProps["onSelectValueChange"];
 }) {
+	const providerNames: Record<string, string> = {
+		anthropic: "Anthropic",
+		opencode: "OpenCode",
+		openai: "OpenAI",
+	};
 	return (
 		<Field>
 			<div className="field-label">
@@ -86,8 +98,14 @@ function ProviderField({
 				id="observerProvider"
 				itemClassName="settings-select-item"
 				onValueChange={onSelectValueChange("observerProvider")}
-				options={[{ label: "auto (default)", value: "" }, ...providerOptions]}
-				placeholder="auto (default)"
+				options={[
+					{ label: "Auto (infer provider)", value: "" },
+					...providerOptions.map((option) => ({
+						...option,
+						label: providerNames[option.value] ?? option.label,
+					})),
+				]}
+				placeholder="Auto (infer provider)"
 				triggerClassName="settings-select-trigger"
 				value={value}
 				viewportClassName="settings-select-viewport"
@@ -129,12 +147,17 @@ function isLocalSession(runtime: string): boolean {
 	return runtime === "claude_sidecar" || runtime === "codex_sidecar";
 }
 
+function usesHostedAccount(runtime: string): boolean {
+	return isLocalSession(runtime) || runtime === "opencode_v2";
+}
+
 export function ObserverPanel({
 	values,
 	effectiveObserverRuntime = values.observerRuntime,
 	hasExplicitObserverRuntime = true,
 	allowAutomaticAuthChanges = false,
 	tierProviders,
+	modelDefaults,
 	observerMaxCharsDefault,
 	providerOptions,
 	showAuthFile,
@@ -145,8 +168,6 @@ export function ObserverPanel({
 	onSwitchInput,
 	getObserverModelLabel,
 	getObserverModelTooltip,
-	getObserverModelDescription,
-	getObserverModelHint,
 	protectedConfigHelp,
 	observerStatusBannerSlot,
 }: SettingsPanelProps & { observerStatusBannerSlot: ComponentChildren }) {
@@ -199,24 +220,23 @@ export function ObserverPanel({
 			<ObserverModelSettings
 				values={{ ...values, observerRuntime: effectiveObserverRuntime }}
 				tierProviders={tierProviders}
+				modelDefaults={modelDefaults}
 				hiddenUnlessAdvanced={hiddenUnlessAdvanced}
 				onTextInput={onTextInput}
 				onSwitchInput={onSwitchInput}
 				getObserverModelLabel={getObserverModelLabel}
 				getObserverModelTooltip={getObserverModelTooltip}
-				getObserverModelDescription={getObserverModelDescription}
-				getObserverModelHint={getObserverModelHint}
 			/>
 			{observerStatusBannerSlot}
 
 			<div
 				className="settings-group"
-				hidden={isLocalSession(effectiveObserverRuntime) && !allowAutomaticAuthChanges}
+				hidden={usesHostedAccount(effectiveObserverRuntime) && !allowAutomaticAuthChanges}
 			>
-				<h3 className="settings-group-title">Authentication</h3>
+				<h3 className="settings-group-title">API credentials</h3>
 				<Field>
 					<div className="field-label">
-						<label htmlFor="observerAuthSource">Authentication method</label>
+						<label htmlFor="observerAuthSource">Credential source</label>
 						<button
 							aria-label="About authentication method"
 							className="help-icon"
@@ -244,7 +264,8 @@ export function ObserverPanel({
 						viewportClassName="settings-select-viewport"
 					/>
 					<div className="small">
-						Use `auto` unless you need to force a file or command-based token source.
+						API keys are read from your config or environment. File and command sources use the
+						saved protected settings below.
 					</div>
 				</Field>
 				<Field hidden={!showAuthFile} id="observerAuthFileField">

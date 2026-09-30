@@ -55,4 +55,34 @@ describe("config mutation routes", () => {
 		expect(body.defaults.sync_mdns).toBe(false);
 		expect(body.effective.sync_mdns).toBe(false);
 	});
+
+	it.each(["api_key", "opencode_v2"])(
+		"accepts explicit %s without replacing it with an automatic mode",
+		async (runtime) => {
+			const response = await configRoutes().request("/api/config", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ config: { observer_runtime: runtime } }),
+			});
+			expect(response.status).toBe(200);
+			expect((await response.json()).resolved_observer_runtime).toBe(runtime);
+		},
+	);
+
+	it("reports live-apply capabilities and actual model defaults without scheduling an apply", async () => {
+		let applies = 0;
+		const response = await configRoutes({
+			scheduleObserverApply: () => {
+				applies++;
+				return true;
+			},
+		}).request("/api/config");
+		const body = await response.json();
+		expect(body.restart_required_keys).toContain("sync_port");
+		expect(body.restart_required_keys).not.toContain("observer_runtime");
+		expect(body.restart_required_keys).not.toContain("raw_events_sweeper_interval_s");
+		expect(body.observer_model_defaults.simple.openai).toBe("gpt-6-luna");
+		expect(body.observer_model_defaults.codex).toBe("gpt-6-luna");
+		expect(applies).toBe(0);
+	});
 });

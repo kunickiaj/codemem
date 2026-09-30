@@ -27,13 +27,31 @@ it("describes sidecar login without incorrectly reporting a missing API token", 
 	expect(document.querySelector('[aria-label="token missing"]')).toBeNull();
 });
 
-it("keeps direct API and legacy credentials separate from local and V2 accounts", () => {
+it.each(["codex_sidecar", "claude_sidecar", "opencode_v2"])(
+	"hides the unrelated credential inventory for %s",
+	(method) => {
+		act(() =>
+			render(
+				<ObserverStatusBanner
+					status={{
+						active: { auth: { method, token_present: false } },
+						available_credentials: { openai: { api_key: false } },
+					}}
+				/>,
+				document.body,
+			),
+		);
+		expect(document.querySelector(".status-credentials")).toBeNull();
+	},
+);
+
+it("keeps other credentials available for direct connections", () => {
 	act(() =>
 		render(
 			<ObserverStatusBanner
 				status={{
-					active: { auth: { method: "codex_sidecar", token_present: false } },
-					available_credentials: { openai: { api_key: false } },
+					active: { auth: { method: "api_direct" } },
+					available_credentials: { openai: { api_key: true } },
 				}}
 			/>,
 			document.body,
@@ -41,9 +59,8 @@ it("keeps direct API and legacy credentials separate from local and V2 accounts"
 	);
 	const details = document.querySelector<HTMLDetailsElement>(".status-credentials");
 	expect(details?.open).toBe(false);
-	expect(details?.querySelector("summary")?.textContent).toBe("Direct API credentials");
-	expect(details?.textContent).toContain("do not show local or OpenCode V2 account access");
-	expect(details?.textContent).toContain("openai: none");
+	expect(details?.querySelector("summary")?.textContent).toBe("API keys and saved sign-ins");
+	expect(details?.textContent).toContain("openai: API key");
 });
 
 it("keeps a missing Direct API key actionable", () => {

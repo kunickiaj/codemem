@@ -121,7 +121,7 @@ it("resolves omitted provider, model, and routing before applying built-in tier 
 			reasons: [],
 			observer: {},
 		});
-		expect(selected.observerModel).not.toBe(client.model);
+		expect(selected.observerModel).toBe(tier === "simple" ? "gpt-6-luna" : "gpt-5.6-terra");
 	}
 });
 

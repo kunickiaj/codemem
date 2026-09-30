@@ -40,6 +40,7 @@ import {
 } from "./data/model-accessors";
 import { buildSettingsNotice } from "./data/notice";
 import { updateObserverApply } from "./data/observer-apply";
+import { pendingRestartRequired } from "./data/restart-preview";
 import { settingsState, settingsView } from "./data/state";
 import {
 	getSettingsViewState,
@@ -142,7 +143,6 @@ function effectiveTierProviders() {
 function SettingsDialogContent() {
 	const view = settingsView.value;
 	const values = view.renderState.values;
-	const showTieredRouting = values.observerTierRoutingEnabled;
 	const providerOptions = Array.from(
 		new Set(
 			view.renderState.providers.concat(values.observerProvider ? [values.observerProvider] : []),
@@ -158,10 +158,11 @@ function SettingsDialogContent() {
 		allowAutomaticAuthChanges: canEditAutomaticAuth(values.observerRuntime),
 		tierProviders: effectiveTierProviders(),
 		observerMaxCharsDefault: String(state.configDefaults?.observer_max_chars || ""),
+		modelDefaults: settingsState.observerModelDefaults ?? undefined,
 		providerOptions,
 		showAuthFile: values.observerAuthSource === "file",
 		showAuthCommand: values.observerAuthSource === "command",
-		showTieredRouting,
+		showTieredRouting: values.observerTierRoutingEnabled,
 		hiddenUnlessAdvanced,
 		onTextInput,
 		onSelectValueChange,
@@ -180,6 +181,7 @@ function SettingsDialogContent() {
 			showAdvanced={view.showAdvanced}
 			renderState={view.renderState}
 			settingsDirty={view.dirty}
+			restartRequired={pendingRestartRequired()}
 			onClose={() => {
 				if (settingsState.startPolling && settingsState.refresh) {
 					closeSettings(settingsState.startPolling, settingsState.refresh);

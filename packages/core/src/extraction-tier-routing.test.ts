@@ -70,7 +70,7 @@ describe("extraction tier routing", () => {
 		});
 
 		expect(decision.tier).toBe("simple");
-		expect(decision.observer.observerModel).toBe("gpt-5.6-luna");
+		expect(decision.observer.observerModel).toBe("gpt-6-luna");
 		expect(decision.observer.observerTemperature).toBe(0.2);
 		expect(decision.observer.observerReasoningEffort).toBe("medium");
 	});
@@ -86,7 +86,7 @@ describe("extraction tier routing", () => {
 		});
 		const config = buildTieredObserverConfig(baseConfig(), decision);
 		expect(config.observerOpenAIUseResponses).toBe(true);
-		expect(config.observerModel).toBe("gpt-5.6-luna");
+		expect(config.observerModel).toBe("gpt-6-luna");
 		expect(config.observerReasoningEffort).toBe("medium");
 		expect(config.observerMaxOutputTokens).toBe(7_000);
 	});
@@ -288,7 +288,7 @@ describe("extraction tier routing", () => {
 		expect(config.observerRuntime).toBe("claude_sidecar");
 	});
 
-	it("preserves the Codex sidecar default for simple tier routing", () => {
+	it("preserves the explicit Codex base model for simple tier routing", () => {
 		const decision = decideExtractionReplayTier({
 			batchId: 19001,
 			sessionId: 200001,
@@ -299,8 +299,8 @@ describe("extraction tier routing", () => {
 		});
 		const selection = buildTieredObserverSelection(
 			baseConfig({
-				observerProvider: "openai",
 				observerModel: "gpt-5.1-codex-mini",
+				observerExplicitConfigKeys: ["observerModel"],
 				observerRuntime: "codex_sidecar",
 				observerSimpleModel: null,
 			}),
@@ -314,7 +314,7 @@ describe("extraction tier routing", () => {
 		expect(selection.metadata.requestedModel).toBe("gpt-5.1-codex-mini");
 	});
 
-	it("preserves the Codex sidecar default for rich tier routing", () => {
+	it("preserves the explicit Codex base model for rich tier routing", () => {
 		const decision = decideExtractionReplayTier({
 			batchId: 18503,
 			sessionId: 166405,
@@ -325,8 +325,8 @@ describe("extraction tier routing", () => {
 		});
 		const selection = buildTieredObserverSelection(
 			baseConfig({
-				observerProvider: "openai",
 				observerModel: "gpt-5.1-codex-mini",
+				observerExplicitConfigKeys: ["observerModel"],
 				observerRuntime: "codex_sidecar",
 				observerRichModel: null,
 			}),

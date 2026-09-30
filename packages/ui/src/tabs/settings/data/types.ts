@@ -1,6 +1,7 @@
 /* Settings modal shared types. */
 
 import type { ComponentChildren, JSX } from "preact";
+import type { ObserverModelDefaults } from "./form-state";
 
 export type SettingsTabId = "observer" | "queue" | "sync";
 
@@ -86,6 +87,7 @@ export type SettingsPanelProps = {
 	allowAutomaticAuthChanges?: boolean;
 	/** Resolved tier-specific provider overrides, which the form does not edit. */
 	tierProviders?: { simple: string; rich: string };
+	modelDefaults?: ObserverModelDefaults;
 	observerMaxCharsDefault: string;
 	providerOptions: Array<{ label: string; value: string }>;
 	showAuthFile: boolean;

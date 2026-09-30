@@ -70,6 +70,7 @@ export function observerForRawEvents(
 	options: IngestOptions,
 	source: string,
 ): IngestOptions {
+	if (["api_key", "opencode_v2"].includes(options.observer.runtime)) return options;
 	if (source !== "opencode" || !events.every(isV2Event)) return options;
 	const configured = options.observer.toConfig();
 	const explicitRuntime =

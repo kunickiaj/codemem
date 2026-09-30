@@ -1,4 +1,5 @@
 import { TextInput } from "../../../components/primitives/text-input";
+import { modelPlaceholder } from "../data/model-placeholders";
 import type { SettingsPanelProps } from "../data/types";
 import { Field } from "./Field";
 import { ObserverModelAvailability } from "./ObserverModelAvailability";
@@ -8,13 +9,12 @@ type ModelSettingsProps = Pick<
 	SettingsPanelProps,
 	| "values"
 	| "tierProviders"
+	| "modelDefaults"
 	| "hiddenUnlessAdvanced"
 	| "onTextInput"
 	| "onSwitchInput"
 	| "getObserverModelLabel"
 	| "getObserverModelTooltip"
-	| "getObserverModelDescription"
-	| "getObserverModelHint"
 >;
 
 function BaseModelField({
@@ -22,8 +22,7 @@ function BaseModelField({
 	onTextInput,
 	getObserverModelLabel,
 	getObserverModelTooltip,
-	getObserverModelDescription,
-	getObserverModelHint,
+	modelDefaults,
 }: ModelSettingsProps) {
 	const tiered = values.observerTierRoutingEnabled;
 	return (
@@ -43,20 +42,13 @@ function BaseModelField({
 				id="observerModel"
 				list="observerModel-catalog"
 				onInput={onTextInput("observerModel")}
-				placeholder="leave empty for default"
+				placeholder={modelPlaceholder(values, modelDefaults)}
 				value={values.observerModel}
 			/>
 			{tiered ? (
 				<div className="small">Used only when a tier has no selected or built-in model.</div>
-			) : (
-				<>
-					<div className="small">{getObserverModelDescription()}</div>
-					<div className="small" id="observerModelHint">
-						{getObserverModelHint()}
-					</div>
-				</>
-			)}
-			{values.observerRuntime === "api_http" ? (
+			) : null}
+			{["api_http", "opencode_v2"].includes(values.observerRuntime) ? (
 				<ObserverModelAvailability id="observerModel" values={values} />
 			) : null}
 		</Field>
@@ -68,7 +60,8 @@ function TierModelField({
 	values,
 	onTextInput,
 	tierProviders,
-}: Pick<ModelSettingsProps, "values" | "onTextInput" | "tierProviders"> & {
+	modelDefaults,
+}: Pick<ModelSettingsProps, "values" | "onTextInput" | "tierProviders" | "modelDefaults"> & {
 	tier: "simple" | "rich";
 }) {
 	const id = tier === "simple" ? "observerSimpleModel" : "observerRichModel";
@@ -84,11 +77,11 @@ function TierModelField({
 				id={id}
 				list={`${id}-catalog`}
 				onInput={onTextInput(id)}
-				placeholder="leave empty for recommended default"
+				placeholder={modelPlaceholder(values, modelDefaults, tier, tierProviders?.[tier])}
 				value={values[id]}
 			/>
 			<div className="small">{detail}</div>
-			{values.observerRuntime === "api_http" ? (
+			{["api_http", "opencode_v2"].includes(values.observerRuntime) ? (
 				<ObserverModelAvailability id={id} values={values} provider={tierProviders?.[tier]} />
 			) : null}
 		</Field>
@@ -111,7 +104,6 @@ export function ObserverModelSettings(props: ModelSettingsProps) {
 			/>
 			{tiered ? (
 				<>
-					<div className="small">Leave a model blank to use its recommended default.</div>
 					<TierModelField tier="simple" {...props} />
 					<TierModelField tier="rich" {...props} />
 					{hasFallback || !hiddenUnlessAdvanced() ? (

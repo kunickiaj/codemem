@@ -16,6 +16,7 @@ export interface SettingsModalContentProps {
 	showAdvanced: boolean;
 	renderState: SettingsRenderState;
 	settingsDirty: boolean;
+	restartRequired?: boolean;
 	onClose: () => void;
 	onSave: () => void;
 	onActiveTabChange: (tab: string) => void;
@@ -30,6 +31,7 @@ export function SettingsModalContent({
 	showAdvanced,
 	renderState,
 	settingsDirty,
+	restartRequired = false,
 	onClose,
 	onSave,
 	onActiveTabChange,
@@ -126,9 +128,9 @@ export function SettingsModalContent({
 					<div aria-live="polite" className="small" id="settingsStatus">
 						{statusText}
 					</div>
-					{settingsDirty ? (
-						<div className="small settings-save-help">
-							If anything needs a restart, we'll tell you after saving.
+					{settingsDirty && restartRequired ? (
+						<div role="status" className="small settings-restart-required">
+							Restart required
 						</div>
 					) : null}
 					<button className="settings-link-button" onClick={onShowGettingStarted} type="button">

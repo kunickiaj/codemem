@@ -150,7 +150,7 @@ describe("extraction replay", () => {
 	});
 
 	it.each([
-		{ tier: "simple", eventSpan: 12, toolCount: 1, expectedModel: "gpt-5.6-luna" },
+		{ tier: "simple", eventSpan: 12, toolCount: 1, expectedModel: "gpt-6-luna" },
 		{ tier: "rich", eventSpan: 153, toolCount: 12, expectedModel: "gpt-5.6-terra" },
 	] as const)("preserves the CLI reasoning override for $tier tier routing", (scenario) => {
 		const routed = buildTierRoutedReplayObserverConfig(
@@ -220,7 +220,7 @@ describe("extraction replay", () => {
 
 		expect(routed.tier).toBe("simple");
 		expect(routed.observer.observerProvider).toBe("openai");
-		expect(routed.observer.observerModel).toBe("gpt-5.6-luna");
+		expect(routed.observer.observerModel).toBe("gpt-6-luna");
 	});
 
 	it.each([

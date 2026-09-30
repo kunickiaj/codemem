@@ -219,6 +219,35 @@ describe("ObserverPanel", () => {
 		expect(provider?.value).toBe("anthropic");
 	});
 
+	it("keeps built-in and configured providers in the real picker", () => {
+		mount = document.createElement("div");
+		document.body.appendChild(mount);
+		act(() =>
+			render(
+				<ObserverPanel
+					{...props()}
+					providerOptions={[
+						{ label: "openai", value: "openai" },
+						{ label: "anthropic", value: "anthropic" },
+						{ label: "opencode", value: "opencode" },
+						{ label: "custom-gateway", value: "custom-gateway" },
+					]}
+				/>,
+				mount as HTMLDivElement,
+			),
+		);
+		const options = [
+			...(mount.querySelector<HTMLSelectElement>("#observerProvider")?.options ?? []),
+		];
+		expect(options.map(({ textContent }) => textContent)).toEqual([
+			"Auto (infer provider)",
+			"OpenAI",
+			"Anthropic",
+			"OpenCode",
+			"custom-gateway",
+		]);
+	});
+
 	it("shows simple and rich models together without a competing base model field", () => {
 		mount = document.createElement("div");
 		document.body.appendChild(mount);
@@ -269,6 +298,29 @@ describe("ObserverPanel", () => {
 });
 
 describe("ObserverPanel connection details", () => {
+	it.each(["api_key", "opencode_v2"])(
+		"offers distinct modes without legacy automatic for %s",
+		(mode) => {
+			mount = document.createElement("div");
+			document.body.appendChild(mount);
+			const base = props();
+			act(() =>
+				render(
+					<ObserverPanel {...base} values={{ ...base.values, observerRuntime: mode }} />,
+					mount as HTMLDivElement,
+				),
+			);
+			const options = mount.querySelector<HTMLSelectElement>("#observerRuntime")?.options;
+			expect(Array.from(options ?? [], (option) => option.textContent)).toEqual([
+				"OpenCode account",
+				"API key",
+				"Local Claude session",
+				"Local Codex session",
+			]);
+			const authentication = mount.querySelector("#observerAuthSource")?.closest(".settings-group");
+			expect(authentication?.hasAttribute("hidden")).toBe(mode === "opencode_v2");
+		},
+	);
 	it("offers a local Codex runtime and shows its protected command", () => {
 		mount = document.createElement("div");
 		document.body.appendChild(mount);
@@ -291,7 +343,9 @@ describe("ObserverPanel connection details", () => {
 			mount.querySelector('[aria-label="About model provider"]')?.getAttribute("data-tooltip"),
 		).toMatch(/Pi setup can also derive a provider/i);
 		const runtimeHelp = mount.querySelector('[aria-label="About connection mode"]');
-		expect(runtimeHelp?.getAttribute("data-tooltip") ?? "").toMatch(/V2-captured sessions/i);
+		expect(runtimeHelp?.getAttribute("data-tooltip") ?? "").toMatch(
+			/never falls back to another account/i,
+		);
 	});
 
 	it("puts connection controls ahead of observer status", () => {

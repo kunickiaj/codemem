@@ -118,6 +118,8 @@ export function renderConfigModal(payload: unknown) {
 	updateRuntimeMetadata(data);
 	settingsState.observerApply = data.observer_apply ?? null;
 	settingsState.observerTierRoutingExplicit = hasExplicitTierRouting(data);
+	settingsState.observerModelDefaults = data.observer_model_defaults ?? null;
+	settingsState.restartRequiredKeys = new Set(data.restart_required_keys ?? []);
 	settingsState.protectedKeys = new Set(protectedKeys);
 	state.configDefaults = defaults;
 	state.configPath = data.path || "";

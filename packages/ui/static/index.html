@@ -4128,7 +4128,6 @@
       .modal-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); flex-shrink: 0; padding-top: var(--sp-2); border-top: 1px solid var(--border); }
       .settings-footer-copy { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
       .settings-footer-copy #settingsStatus { color: var(--text-primary); }
-      .settings-save-help,
       .settings-env-note { color: var(--text-secondary); }
       @media (max-width: 560px) {
         .modal-footer:has(.settings-footer-copy) { flex-wrap: wrap; }
@@ -4357,6 +4356,7 @@
       .observer-status-banner[hidden] { display: none; }
       .observer-status-banner .status-active {
         display: flex;
+        align-items: baseline;
         flex-wrap: wrap;
         gap: 4px var(--sp-2);
         color: var(--text-primary);
@@ -4376,6 +4376,11 @@
       .observer-fallback-details summary { cursor: pointer; }
       .observer-routing-details summary:focus-visible,
       .observer-fallback-details summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+      .observer-routing-details { padding-inline: var(--sp-3); }
+      .observer-routing-details summary { position: relative; list-style: none; }
+      .observer-routing-details summary::-webkit-details-marker { display: none; }
+      .observer-routing-details summary::before { content: "▸"; position: absolute; inset-inline-start: calc(-1 * var(--sp-3)); }
+      .observer-routing-details[open] summary::before { content: "▾"; }
       .observer-fallback-details {
         border-top: 1px solid var(--border);
         padding-top: var(--sp-2);
@@ -4386,7 +4391,7 @@
       .observer-routing-list div { display: grid; gap: 2px; }
       .observer-routing-list dt { color: var(--text-secondary); }
       .observer-routing-list dd { margin: 0; color: var(--text-primary); overflow-wrap: anywhere; }
-      .observer-status-banner .status-credentials .small { margin-top: var(--sp-1); }
+      .settings-restart-required { color: var(--status-degraded); font-weight: 600; }
       .observer-status-banner .status-credentials ul {
         margin: var(--sp-1) 0 0;
         padding-left: var(--sp-4);
@@ -5057,7 +5062,7 @@
                   <button class="help-icon" type="button" data-tooltip="Leave blank to use a recommended model for your selected mode/provider." aria-label="About model defaults">?</button>
                 </div>
                 <input id="observerModel" placeholder="leave empty for default" />
-                <div class="small">Default: `gpt-5.1-codex-mini` for Direct API; `claude-4.5-haiku` for Local Claude session.</div>
+                <div class="small">Default: `gpt-6-luna` for OpenAI or Local Codex session; `claude-haiku-4-5` for Local Claude session.</div>
                 <div class="small" id="observerModelHint"></div>
               </div>
               <div class="field">

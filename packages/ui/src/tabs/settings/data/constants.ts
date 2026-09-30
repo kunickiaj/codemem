@@ -6,7 +6,7 @@ import type { SettingsFormState } from "./types";
 
 export const SETTINGS_ADVANCED_KEY = "codemem-settings-advanced";
 
-export const DEFAULT_OPENAI_MODEL = "gpt-5.1-codex-mini";
+export const DEFAULT_OPENAI_MODEL = "gpt-6-luna";
 export const DEFAULT_ANTHROPIC_MODEL = "claude-4.5-haiku";
 
 export const SETTINGS_TABS: RadixTabOption[] = [

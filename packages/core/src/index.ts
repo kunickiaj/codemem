@@ -420,7 +420,9 @@ export type {
 export {
 	buildTieredObserverSelection,
 	decideExtractionReplayTier,
+	RICH_TIER_ANTHROPIC_DEFAULTS,
 	RICH_TIER_DEFAULTS,
+	SIMPLE_TIER_ANTHROPIC_DEFAULTS,
 	SIMPLE_TIER_DEFAULTS,
 } from "./extraction-tier-routing.js";
 export { buildFilterClauses, buildFilterClausesWithContext } from "./filters.js";
@@ -636,6 +638,7 @@ export {
 	ObserverAuthError,
 	ObserverClient,
 	observerBaseUrlForProviderOverride,
+	resolveObserverDefaultModel,
 	resolveObserverRuntime,
 } from "./observer-client.js";
 export * from "./observer-concepts.js";
