@@ -50,7 +50,7 @@ it("keeps a missing Direct API key actionable", () => {
 	act(() =>
 		render(
 			<ObserverStatusBanner
-				status={{ active: { auth: { method: "sdk_client", token_present: false } } }}
+				status={{ active: { auth: { method: "none", token_present: false } } }}
 			/>,
 			document.body,
 		),

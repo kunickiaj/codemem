@@ -147,7 +147,7 @@ export function ObserverStatusBanner({ status, onOpenDiagnostics }: ObserverStat
 					)}
 				</span>
 			</div>
-			{active?.auth?.method === "sdk_client" && active.auth.token_present === false ? (
+			{active?.auth?.method === "none" && active.auth.token_present === false ? (
 				<div className="status-token-warning">
 					No Direct API key detected. Check your credentials.
 				</div>
