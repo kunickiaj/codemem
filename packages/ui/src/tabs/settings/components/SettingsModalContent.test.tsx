@@ -94,7 +94,10 @@ describe("Settings form keyboard actions", () => {
 		expect(requiredElement(".settings-save-help").textContent).toContain(
 			"If anything needs a restart, we'll tell you after saving",
 		);
-		expect(mount.querySelector('[data-settings-outcome-for="observerRuntime"]')).toBeNull();
+		const outcome = mount.querySelector('[data-settings-outcome-for="observerRuntime"]');
+		expect(outcome?.textContent).toContain("Existing data:");
+		expect(outcome?.textContent).not.toContain("Takes effect:");
+		expect(outcome?.textContent).not.toContain("restart");
 	});
 
 	it.each([".settings-outcome", ".settings-config-details"])(
