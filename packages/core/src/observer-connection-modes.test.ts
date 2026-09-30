@@ -130,6 +130,34 @@ it("strips mixed-case OpenCode prefixes in direct API-key requests", async () =>
 	expect(JSON.parse(fetchMock.mock.calls[0]?.[1].body).model).toBe("ModelCase");
 });
 
+it.each([
+	["OpenAI", "gpt-6-luna", "https://api.openai.com/v1/responses"],
+	["Anthropic", "claude-sonnet-4-6", "https://api.anthropic.com/v1/messages"],
+])("strips the %s prefix on direct vendor requests", async (prefix, model, url) => {
+	const fetchMock = vi.fn().mockResolvedValue(
+		new Response(
+			JSON.stringify({
+				choices: [{ message: { content: "{}" } }],
+				content: [{ type: "text", text: "{}" }],
+				output: [{ type: "message", content: [{ type: "output_text", text: "{}" }] }],
+			}),
+			{ status: 200 },
+		),
+	);
+	vi.stubGlobal("fetch", fetchMock);
+	const observer = new ObserverClient(
+		loadObserverConfig({
+			observer_runtime: "api_key",
+			observer_model: `${prefix}/${model}`,
+			observer_api_key: "fixture-explicit-key",
+			observer_openai_use_responses: false,
+		}),
+	);
+	await observer.observeStructuredJson("system", "user", "test", { type: "object" });
+	expect(fetchMock.mock.calls[0]?.[0]).toBe(url);
+	expect(JSON.parse(fetchMock.mock.calls[0]?.[1].body).model).toBe(model);
+});
+
 it.each(["openai", "anthropic"])(
 	"OpenCode %s structured requests never use direct API credentials",
 	async (provider) => {

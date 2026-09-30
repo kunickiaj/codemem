@@ -585,6 +585,12 @@ function readObserverConfigData(): Record<string, unknown> {
  * Reads the codemem config file (not OpenCode's) and extracts observer-related
  * fields with environment variable overrides.
  */
+function directVendorModel(model: string, provider: string, runtime: string): string {
+	if (runtime !== "api_key" || !["openai", "anthropic"].includes(provider)) return model;
+	const prefix = `${provider}/`;
+	return model.toLowerCase().startsWith(prefix) ? model.slice(prefix.length) : model;
+}
+
 function authSourceWithOverride(
 	source: string,
 	options: { ignoreAuthSourceOverride?: boolean },
@@ -1636,7 +1642,7 @@ export class ObserverClient {
 
 		// Resolve model
 		if (model) {
-			this.model = model;
+			this.model = directVendorModel(model, resolved, this.runtime);
 		} else {
 			this.model = resolveObserverDefaultModel(this.runtime, resolved);
 		}
