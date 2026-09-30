@@ -186,7 +186,10 @@ export function canEditAutomaticAuth(draft?: string): boolean {
 	const changed =
 		settingsState.touchedKeys.has("observer_runtime") &&
 		draft !== settingsState.baseline.observer_runtime;
-	if (changed && !settingsState.envOverrides.observer_runtime) return false;
+	if (changed && !settingsState.envOverrides.observer_runtime) {
+		if (draft?.trim()) return false;
+		return Object.values(settingsState.observerAutomaticRuntimeByAuthSource).includes("api_http");
+	}
 	return Object.values(settingsState.observerRuntimeByAuthSource).includes("api_http");
 }
 
