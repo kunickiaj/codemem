@@ -28,7 +28,9 @@ export function ObserverModelAvailability({
 	provider?: string;
 }) {
 	const model = values[id];
-	const provider = providerOverride?.trim().toLowerCase() || values.observerProvider;
+	let provider = providerOverride?.trim().toLowerCase() || values.observerProvider;
+	if (values.observerRuntime === "codex_sidecar") provider = "openai";
+	else if (values.observerRuntime === "claude_sidecar") provider = "anthropic";
 	const [models, setModels] = useState<ModelOption[]>([]);
 	useEffect(() => {
 		let current = true;

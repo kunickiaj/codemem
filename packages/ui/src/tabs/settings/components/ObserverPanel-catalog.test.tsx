@@ -4,8 +4,10 @@ import { afterEach, expect, it, vi } from "vitest";
 import { EMPTY_FORM_STATE } from "../data/constants";
 import type { SettingsPanelProps } from "../data/types";
 import { ObserverPanel } from "./ObserverPanel";
+import { ProcessingPanel } from "./ProcessingPanel";
 
 vi.mock("../../../components/primitives/radix-select", () => ({ RadixSelect: () => null }));
+vi.mock("../../../components/primitives/radix-switch", () => ({ RadixSwitch: () => null }));
 
 afterEach(() => {
 	for (const mount of Array.from(document.body.children)) act(() => render(null, mount));
@@ -33,6 +35,9 @@ it.each([
 		const props: SettingsPanelProps = {
 			values: { ...EMPTY_FORM_STATE, observerRuntime: "api_http", observerProvider: savedProvider },
 			effectiveObserverRuntime: runtime,
+			showTieredRouting: true,
+			tierProviders: { simple: savedProvider, rich: savedProvider },
+			getTieredRoutingHelperText: () => "",
 			observerMaxCharsDefault: "",
 			providerOptions: [],
 			showAuthFile: false,
@@ -50,14 +55,20 @@ it.each([
 		const mount = document.createElement("div");
 		document.body.appendChild(mount);
 		await act(async () => {
-			render(<ObserverPanel {...props} observerStatusBannerSlot={null} />, mount);
+			render(
+				<>
+					<ObserverPanel {...props} observerStatusBannerSlot={null} />
+					<ProcessingPanel {...props} />
+				</>,
+				mount,
+			);
 		});
 		await vi.waitFor(() =>
 			expect(
 				Array.from(mount.querySelectorAll("datalist option"), (option) =>
 					option.getAttribute("value"),
 				),
-			).toEqual([expected]),
+			).toEqual([expected, expected, expected]),
 		);
 	},
 );
