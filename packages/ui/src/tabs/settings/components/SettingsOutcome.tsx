@@ -378,7 +378,10 @@ function observerFieldOverride(configKey: string, stage: string): unknown {
 }
 
 function savedAuthUsesApi(): boolean {
-	const source = String(settingsState.baseline.observer_auth_source || "auto");
+	const value = settingsState.touchedKeys.has("observer_auth_source")
+		? settingsView.value.renderState.values.observerAuthSource
+		: settingsState.baseline.observer_auth_source;
+	const source = normalizedAuthSource(value);
 	return (
 		(settingsState.observerRuntimeAfterAuthOverrideRemoval[source] ??
 			settingsState.observerRuntimeByAuthSource[source]) === "api_http"

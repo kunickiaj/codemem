@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderConfigModal } from "../data/config-loader";
 import { EMPTY_FORM_STATE } from "../data/constants";
 import { settingsState, settingsView } from "../data/state";
+import { updateFormState } from "../data/state-ops";
 import type { SettingsPanelProps } from "../data/types";
 import { ObserverPanel } from "./ObserverPanel";
 import { ProcessingPanel } from "./ProcessingPanel";
@@ -210,6 +211,26 @@ it.each(["observerAuthSource", "observerAuthTimeoutMs", "observerAuthCacheTtlS"]
 		expect(root.textContent).not.toContain("use the saved authentication settings");
 	},
 );
+
+it.each([
+	["auto", "command", true],
+	["command", "auto", false],
+])("previews auth recovery from drafted %s to %s", (saved, draft, recovery) => {
+	renderConfigModal({
+		config: { observer_auth_source: saved },
+		resolved_observer_runtime: "codex_sidecar",
+		observer_runtime_by_auth_source: { auto: "codex_sidecar", command: "codex_sidecar" },
+		observer_runtime_after_auth_override_removal: { auto: "codex_sidecar", command: "api_http" },
+		env_overrides: { observer_auth_source: "CODEMEM_OBSERVER_AUTH_SOURCE" },
+	});
+	settingsState.touchedKeys.add("observer_auth_source");
+	updateFormState({ observerAuthSource: draft });
+	const outcome = settingsOutcomeFor("observerAuthSource");
+	const root = document.createElement("div");
+	document.body.appendChild(root);
+	act(() => render(outcome ? <SettingsOutcome {...outcome} /> : null, root));
+	expect(root.textContent?.includes("use the saved authentication settings")).toBe(recovery);
+});
 
 describe("inactive pack setting outcomes", () => {
 	it("keeps no-effect timing under environment overrides", () => {
