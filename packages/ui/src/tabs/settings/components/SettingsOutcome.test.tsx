@@ -124,6 +124,22 @@ describe("inactive pack setting outcomes", () => {
 });
 
 it.each(["claude_sidecar", "codex_sidecar"])(
+	"keeps unsupported local %s tuning visibly inactive without an override",
+	(runtime) => {
+		const root = renderPanels(runtime);
+		expect(root.textContent).toContain(
+			"Inactive · Anthropic and local Claude/Codex sessions do not send sampling temperature",
+		);
+		expect(root.textContent).toContain(
+			"Local Claude and Codex sessions do not use these API tuning fields",
+		);
+		expect(
+			root.querySelector("#observerSimpleTemperature")?.closest(".field")?.textContent,
+		).not.toContain("Restart required");
+	},
+);
+
+it.each(["claude_sidecar", "codex_sidecar"])(
 	"keeps overridden temperature inactive for %s",
 	(runtime) => {
 		settingsState.envOverrides = {

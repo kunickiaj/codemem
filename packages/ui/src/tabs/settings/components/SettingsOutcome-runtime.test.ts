@@ -62,6 +62,16 @@ it("keeps explicit local runtimes separate from direct credentials", () => {
 	expect(canEditAutomaticAuth("codex_sidecar")).toBe(false);
 });
 
+it("exposes authentication environment guidance even when every preview stays local", () => {
+	renderConfigModal({
+		config: {},
+		resolved_observer_runtime: "codex_sidecar",
+		observer_runtime_by_auth_source: { auto: "codex_sidecar", command: "codex_sidecar" },
+		env_overrides: { observer_auth_source: "CODEMEM_OBSERVER_AUTH_SOURCE" },
+	});
+	expect(canEditAutomaticAuth("codex_sidecar")).toBe(true);
+});
+
 function editAuthSource(source: string) {
 	settingsState.touchedKeys.add("observer_auth_source");
 	updateFormState({ observerAuthSource: source });

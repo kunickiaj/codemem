@@ -182,6 +182,7 @@ function draftAuthRuntime(): string | undefined {
 }
 
 export function canEditAutomaticAuth(draft?: string): boolean {
+	if (settingsState.envOverrides.observer_auth_source) return true;
 	const changed =
 		settingsState.touchedKeys.has("observer_runtime") &&
 		draft !== settingsState.baseline.observer_runtime;
@@ -339,6 +340,29 @@ function tuningOutcome(controlId: string, sidecar: boolean): SettingsOutcomeDeta
 	};
 }
 
+function ObserverFieldOutcome({
+	configKey,
+	scope,
+	stage,
+	timing,
+}: Pick<SettingsOutcomeDetails, "scope" | "stage" | "timing"> & { configKey: string }) {
+	const override = settingsState.envOverrides[configKey];
+	const inactive = scope === "No current effect" || stage === "Sidecar authentication";
+	if (typeof override !== "string" || !override.trim()) {
+		if (inactive) return <div className="settings-effect-note small">Inactive · {timing}</div>;
+		if (/only/i.test(scope)) return <div className="settings-effect-note small">{scope}</div>;
+		return null;
+	}
+	let guidance = "Remove that environment setting and restart the viewer to apply changes here.";
+	if (inactive)
+		guidance = `Inactive · ${timing}. Removing the environment setting does not activate this field for the current connection.`;
+	return (
+		<div className="settings-env-note small">
+			Controlled by {override.trim()}. {guidance}
+		</div>
+	);
+}
+
 export function SettingsOutcome({
 	controlId,
 	existingData,
@@ -348,16 +372,8 @@ export function SettingsOutcome({
 }: SettingsOutcomeDetails) {
 	const configKey = INPUT_TO_CONFIG_KEY[controlId as keyof typeof INPUT_TO_CONFIG_KEY];
 	if (configKey?.startsWith("observer_")) {
-		const override = settingsState.envOverrides[configKey];
-		if (typeof override !== "string" || !override.trim()) return null;
-		let guidance = "Remove that environment setting and restart the viewer to apply changes here.";
-		if (scope === "No current effect" || stage === "Sidecar authentication") {
-			guidance = `Inactive · ${timing}. Removing the environment setting does not activate this field for the current connection.`;
-		}
 		return (
-			<div className="settings-env-note small">
-				Controlled by {override.trim()}. {guidance}
-			</div>
+			<ObserverFieldOutcome configKey={configKey} scope={scope} stage={stage} timing={timing} />
 		);
 	}
 	let summary = timing;
