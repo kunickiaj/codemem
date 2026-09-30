@@ -366,12 +366,20 @@ function ObserverEffectNote({ scope, stage, timing }: SettingsOutcomeDetails) {
 	return null;
 }
 
+function observerFieldOverride(configKey: string, stage: string): unknown {
+	const ownOverride = settingsState.envOverrides[configKey];
+	if (ownOverride) return ownOverride;
+	if (stage === "Sidecar authentication" && !hasExplicitObserverRuntime())
+		return settingsState.envOverrides.observer_auth_source;
+	return undefined;
+}
+
 function ObserverFieldOutcome({
 	configKey,
 	...details
 }: SettingsOutcomeDetails & { configKey: string }) {
 	const { scope, stage, timing } = details;
-	const override = settingsState.envOverrides[configKey];
+	const override = observerFieldOverride(configKey, stage);
 	const inactive = scope === "No current effect" || stage === "Sidecar authentication";
 	if (typeof override !== "string" || !override.trim()) {
 		return (

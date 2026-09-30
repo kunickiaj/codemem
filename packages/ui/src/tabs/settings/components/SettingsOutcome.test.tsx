@@ -171,6 +171,24 @@ it.each([
 	expect(root.textContent).toContain(`Remove CODEMEM_OBSERVER_AUTH_SOURCE and ${variable}`);
 });
 
+it.each(["observerAuthTimeoutMs", "observerAuthCacheTtlS"])(
+	"shows auth-source recovery for %s without its own override",
+	(id) => {
+		renderConfigModal({
+			config: { observer_auth_source: "command" },
+			resolved_observer_runtime: "codex_sidecar",
+			env_overrides: { observer_auth_source: "CODEMEM_OBSERVER_AUTH_SOURCE" },
+		});
+		const outcome = settingsOutcomeFor(id);
+		const root = document.createElement("div");
+		document.body.appendChild(root);
+		act(() => render(outcome ? <SettingsOutcome {...outcome} /> : null, root));
+		expect(root.textContent).toContain(
+			"Remove CODEMEM_OBSERVER_AUTH_SOURCE and restart the viewer",
+		);
+	},
+);
+
 describe("inactive pack setting outcomes", () => {
 	it("keeps no-effect timing under environment overrides", () => {
 		settingsState.envOverrides = {
