@@ -12,21 +12,17 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-it("labels catalog suggestions as unverified and checks only after a click", async () => {
-	const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async (request, options) => {
-		if (String(request).endsWith("/api/observer-model-catalog")) {
-			return new Response(
-				JSON.stringify({
-					models: [
-						{ provider: "openai", model: "gpt-6-luna" },
-						{ provider: "anthropic", model: "claude-sonnet-5-5" },
-					],
-				}),
-			);
-		}
-		expect(options?.method).toBe("POST");
-		return new Response(JSON.stringify({ available: true, status: "verified" }));
-	});
+it("shows unverified OpenCode V2 suggestions without offering a paid model check", async () => {
+	const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+		new Response(
+			JSON.stringify({
+				models: [
+					{ provider: "openai", model: "gpt-6-luna" },
+					{ provider: "anthropic", model: "claude-sonnet-5-5" },
+				],
+			}),
+		),
+	);
 	mount = document.createElement("div");
 	document.body.appendChild(mount);
 	await act(async () =>
@@ -38,12 +34,10 @@ it("labels catalog suggestions as unverified and checks only after a click", asy
 			mount as HTMLDivElement,
 		),
 	);
-	expect(mount.textContent).toContain("Catalog suggestions are unverified");
 	await vi.waitFor(() => expect(mount?.querySelector('option[value="gpt-6-luna"]')).not.toBeNull());
+	expect(mount.textContent).toContain("OpenCode V2 catalog suggestions are unverified");
 	expect(fetcher).toHaveBeenCalledTimes(1);
-	await act(async () => mount?.querySelector<HTMLButtonElement>("button")?.click());
-	expect(fetcher).toHaveBeenCalledTimes(2);
-	await vi.waitFor(() => expect(mount?.textContent).toContain("Verified with a request"));
+	expect(mount?.querySelector("button")).toBeNull();
 	await act(async () =>
 		render(
 			<ObserverModelAvailability
@@ -62,10 +56,6 @@ it("labels catalog suggestions as unverified and checks only after a click", asy
 		expect(mount?.querySelector('option[value="claude-sonnet-5-5"]')).not.toBeNull(),
 	);
 	expect(mount?.querySelector('option[value="gpt-6-luna"]')).toBeNull();
-	await act(async () => mount?.querySelector<HTMLButtonElement>("button")?.click());
-	await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
-	expect(JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body))).toMatchObject({
-		provider: "anthropic",
-		model: "claude-sonnet-5-5",
-	});
+	expect(mount?.querySelector("button")).toBeNull();
+	expect(fetcher).toHaveBeenCalledTimes(1);
 });
