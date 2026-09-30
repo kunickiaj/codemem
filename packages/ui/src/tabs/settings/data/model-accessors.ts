@@ -10,7 +10,7 @@ export function getObserverModelHint(
 	envOverrides: Record<string, unknown>,
 ): string {
 	if (values.observerTierRoutingEnabled) {
-		return "Tiered routing is enabled: simple/rich model selection now lives in Processing.";
+		return "Tiered routing is enabled: simple/rich model selection lives in Connection.";
 	}
 	const inferred = inferObserverModel(
 		values.observerRuntime.trim() || "api_http",
@@ -30,13 +30,13 @@ export function getObserverModelLabel(values: SettingsFormState): string {
 
 export function getObserverModelTooltip(values: SettingsFormState): string {
 	return values.observerTierRoutingEnabled
-		? "Tiered routing is enabled, so Processing controls the simple/rich models. This base model is only a fallback, and explicit settings override built-in defaults."
+		? "Tiered routing is enabled, so Connection controls the simple/rich models. This base model is only a fallback, and explicit settings override built-in defaults."
 		: "Leave blank to use a recommended model for your selected mode/provider.";
 }
 
 export function getObserverModelDescription(values: SettingsFormState): string {
 	return values.observerTierRoutingEnabled
-		? "Tiered routing is active. Use this only as a fallback while the Processing tab owns simple/rich model selection and explicit tier settings override built-in defaults."
+		? "Tiered routing is active. Use this only as a fallback while Connection controls simple/rich model selection and explicit tier settings override built-in defaults."
 		: "Default: `gpt-5.4-mini` for Direct API (including pi-derived API-key providers), `gpt-5.1-codex-mini` for Local Codex session, or `claude-4.5-haiku` for Local Claude session.";
 }
 
