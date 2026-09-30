@@ -61,6 +61,22 @@ afterEach(() => {
 });
 
 describe("ObserverPanel", () => {
+	it("shows the provider when authentication previews a direct API connection", () => {
+		mount = document.createElement("div");
+		document.body.appendChild(mount);
+		const base = props();
+		act(() =>
+			render(
+				<ObserverPanel
+					{...base}
+					values={{ ...base.values, observerRuntime: "codex_sidecar" }}
+					effectiveObserverRuntime="api_http"
+				/>,
+				mount as HTMLDivElement,
+			),
+		);
+		expect(mount.querySelector("#observerProvider")).not.toBeNull();
+	});
 	it("starts with connection mode and only offers a provider picker on the automatic path", () => {
 		mount = document.createElement("div");
 		document.body.appendChild(mount);

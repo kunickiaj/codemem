@@ -103,6 +103,7 @@ function ConnectionModeField({
 
 export function ObserverPanel({
 	values,
+	effectiveObserverRuntime = values.observerRuntime,
 	observerMaxCharsDefault,
 	providerOptions,
 	showAuthFile,
@@ -129,8 +130,8 @@ export function ObserverPanel({
 					runtime={values.observerRuntime}
 					onSelectValueChange={onSelectValueChange}
 				/>
-				{values.observerRuntime !== "claude_sidecar" &&
-				values.observerRuntime !== "codex_sidecar" ? (
+				{effectiveObserverRuntime !== "claude_sidecar" &&
+				effectiveObserverRuntime !== "codex_sidecar" ? (
 					<Field>
 						<div className="field-label">
 							<label htmlFor="observerProvider">Model provider</label>

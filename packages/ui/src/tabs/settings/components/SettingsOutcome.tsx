@@ -145,7 +145,7 @@ export function settingsOutcomeFor(
 	};
 }
 
-function effectiveObserverRuntime(draft?: string): string {
+export function effectiveObserverRuntime(draft?: string): string {
 	const overridden = settingsState.envOverrides.observer_runtime;
 	const runtimeValue = effectiveSetting("observerRuntime", draft);
 	const runtimeChanged =

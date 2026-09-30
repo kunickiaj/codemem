@@ -18,6 +18,7 @@ import type { ObserverStatusShape } from "./components/ObserverStatusBanner";
 import { ObserverStatusBanner as ObserverStatusBannerComponent } from "./components/ObserverStatusBanner";
 import { SettingsDialogShell } from "./components/SettingsDialogShell";
 import { SettingsModalContent } from "./components/SettingsModalContent";
+import { effectiveObserverRuntime } from "./components/SettingsOutcome";
 import {
 	collectSettingsPayload,
 	isProtectedConfigKey,
@@ -142,7 +143,6 @@ function effectiveTierProviders() {
 function SettingsDialogContent() {
 	const view = settingsView.value;
 	const values = view.renderState.values;
-	const observerMaxCharsDefault = String(state.configDefaults?.observer_max_chars || "");
 	const showAuthFile = values.observerAuthSource === "file";
 	const showAuthCommand = values.observerAuthSource === "command";
 	const showTieredRouting = values.observerTierRoutingEnabled;
@@ -156,8 +156,9 @@ function SettingsDialogContent() {
 
 	const panelProps: SettingsPanelProps = {
 		values,
+		effectiveObserverRuntime: effectiveObserverRuntime(values.observerRuntime),
 		tierProviders: effectiveTierProviders(),
-		observerMaxCharsDefault,
+		observerMaxCharsDefault: String(state.configDefaults?.observer_max_chars || ""),
 		providerOptions,
 		showAuthFile,
 		showAuthCommand,
