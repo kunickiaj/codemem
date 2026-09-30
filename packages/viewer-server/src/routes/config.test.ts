@@ -81,8 +81,24 @@ describe("config mutation routes", () => {
 		expect(body.restart_required_keys).toContain("sync_port");
 		expect(body.restart_required_keys).not.toContain("observer_runtime");
 		expect(body.restart_required_keys).not.toContain("raw_events_sweeper_interval_s");
+		expect(body.restart_required_keys).not.toContain("pack_observation_limit");
+		expect(body.restart_required_keys).not.toContain("pack_session_limit");
 		expect(body.observer_model_defaults.simple.openai).toBe("gpt-6-luna");
 		expect(body.observer_model_defaults.codex).toBe("gpt-6-luna");
 		expect(applies).toBe(0);
+	});
+
+	it("saves inactive pack limits without requesting a restart", async () => {
+		const response = await configRoutes().request("/api/config", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ config: { pack_observation_limit: 51, pack_session_limit: 11 } }),
+		});
+		expect(response.status).toBe(200);
+		const body = await response.json();
+		expect(body.effects.saved_keys).toEqual(
+			expect.arrayContaining(["pack_observation_limit", "pack_session_limit"]),
+		);
+		expect(body.effects.restart_required_keys).toEqual([]);
 	});
 });

@@ -34,6 +34,7 @@ const REDACTED_VALUE = "[redacted]";
 const RUNTIMES = new Set(["api_http", "api_key", "opencode_v2", "claude_sidecar", "codex_sidecar"]);
 const AUTH_SOURCES = new Set(["auto", "env", "file", "command", "none"]);
 const HOT_RELOAD_KEYS = new Set(["raw_events_sweeper_interval_s"]);
+const NO_RUNTIME_EFFECT_KEYS = new Set(["pack_observation_limit", "pack_session_limit"]);
 const EXECUTABLE_ARGV_KEYS = new Set(["claude_command", "codex_command", "observer_auth_command"]);
 const BOOLEAN_KEYS = new Set([
 	"sync_enabled",
@@ -180,7 +181,10 @@ function settingsCapabilityMetadata(opts: ConfigRouteOptions) {
 	return {
 		observer_model_defaults: modelDefaultMetadata(),
 		restart_required_keys: ALLOWED_KEYS.filter(
-			(key) => !HOT_RELOAD_KEYS.has(key) && !(OBSERVER_KEYS.has(key) && opts.scheduleObserverApply),
+			(key) =>
+				!NO_RUNTIME_EFFECT_KEYS.has(key) &&
+				!HOT_RELOAD_KEYS.has(key) &&
+				!(OBSERVER_KEYS.has(key) && opts.scheduleObserverApply),
 		),
 	};
 }
@@ -577,7 +581,11 @@ function viewerConfigSavePayload(
 			hot_reloaded_keys: applyRuntimeEffects(runtimeChangedKeys, opts),
 			applying_keys: applyingKeys,
 			restart_required_keys: [...new Set([...effectiveChangedKeys, ...observerChangedKeys])].filter(
-				(key) => !HOT_RELOAD_KEYS.has(key) && !applyingKeys.includes(key) && !(key in envOverrides),
+				(key) =>
+					!NO_RUNTIME_EFFECT_KEYS.has(key) &&
+					!HOT_RELOAD_KEYS.has(key) &&
+					!applyingKeys.includes(key) &&
+					!(key in envOverrides),
 			),
 			ignored_by_env_keys: ignoredByEnvKeys,
 			warnings: ignoredByEnvKeys.map(
