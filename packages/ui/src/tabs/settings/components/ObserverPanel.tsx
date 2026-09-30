@@ -176,7 +176,7 @@ export function ObserverPanel({
 				</Field>
 			</div>
 			<ObserverModelSettings
-				values={values}
+				values={{ ...values, observerRuntime: effectiveObserverRuntime }}
 				tierProviders={tierProviders}
 				hiddenUnlessAdvanced={hiddenUnlessAdvanced}
 				onTextInput={onTextInput}

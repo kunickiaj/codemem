@@ -95,6 +95,45 @@ it.each(["claude_sidecar", "codex_sidecar", "api_http"])(
 		expect(onSelect).toHaveBeenCalledWith(runtime);
 	},
 );
+it.each([false, true])(
+	"uses the auth runtime preview for model catalogs with tier routing %s",
+	(tiered) => {
+		mount = document.createElement("div");
+		document.body.appendChild(mount);
+		const base = props();
+		act(() =>
+			render(
+				<ObserverPanel
+					{...base}
+					values={{
+						...base.values,
+						observerRuntime: "codex_sidecar",
+						observerTierRoutingEnabled: tiered,
+					}}
+					effectiveObserverRuntime="api_http"
+				/>,
+				mount as HTMLDivElement,
+			),
+		);
+		expect(mount.querySelector("datalist")).not.toBeNull();
+		act(() =>
+			render(
+				<ObserverPanel
+					{...base}
+					values={{
+						...base.values,
+						observerRuntime: "api_http",
+						observerTierRoutingEnabled: tiered,
+					}}
+					effectiveObserverRuntime="codex_sidecar"
+				/>,
+				mount as HTMLDivElement,
+			),
+		);
+		expect(mount.querySelector("datalist")).toBeNull();
+	},
+);
+
 describe("ObserverPanel", () => {
 	it("shows the provider when authentication previews a direct API connection", () => {
 		mount = document.createElement("div");
