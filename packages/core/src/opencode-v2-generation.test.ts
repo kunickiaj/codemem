@@ -8,7 +8,10 @@ vi.mock("@opencode/client/service", () => ({
 	},
 }));
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+	vi.useRealTimers();
+	vi.restoreAllMocks();
+});
 
 it("requests the exact provider/model through the service without exporting credentials", async () => {
 	const fetcher = vi
@@ -29,15 +32,77 @@ it("requests the exact provider/model through the service without exporting cred
 	expect(options?.headers).toHaveProperty("authorization", "Bearer test");
 });
 
-it("reports rejected models instead of trying another model or provider", async () => {
+const unavailable = () =>
+	new Response(
+		JSON.stringify({
+			_tag: "InvalidRequestError",
+			message: "Model unavailable: openai/gpt-6-luna",
+		}),
+		{ status: 400 },
+	);
+
+it("retries only pre-generation model selection failures until the cold catalog is ready", async () => {
+	vi.useFakeTimers();
 	const fetcher = vi
 		.spyOn(globalThis, "fetch")
-		.mockResolvedValue(new Response("{}", { status: 400 }));
-	expect(
-		await generateWithOpenCodeV2({ provider: "openai", model: "unknown", prompt: "OK" }),
-	).toEqual({ text: null, error: "model_unavailable" });
-	expect(fetcher).toHaveBeenCalledTimes(1);
+		.mockResolvedValueOnce(unavailable())
+		.mockResolvedValueOnce(new Response(JSON.stringify({ data: { text: "OK" } }), { status: 200 }));
+	const result = generateWithOpenCodeV2({ provider: "openai", model: "gpt-6-luna", prompt: "OK" });
+	await vi.advanceTimersByTimeAsync(10_000);
+	expect(await result).toEqual({ text: "OK", error: null });
+	expect(fetcher).toHaveBeenCalledTimes(2);
+	expect(fetcher.mock.calls[1]?.[1]?.body).toBe(fetcher.mock.calls[0]?.[1]?.body);
 });
+
+it("does not retry an unrelated bad request or a model-selection error for a different model", async () => {
+	const fetcher = vi
+		.spyOn(globalThis, "fetch")
+		.mockResolvedValueOnce(
+			new Response(JSON.stringify({ _tag: "InvalidRequestError", message: "Invalid prompt" }), {
+				status: 400,
+			}),
+		)
+		.mockResolvedValueOnce(unavailable());
+	expect(
+		await generateWithOpenCodeV2({ provider: "openai", model: "gpt-6-luna", prompt: "OK" }),
+	).toEqual({ text: null, error: "request_failed" });
+	expect(
+		await generateWithOpenCodeV2({ provider: "openai", model: "other", prompt: "OK" }),
+	).toEqual({ text: null, error: "request_failed" });
+	expect(fetcher).toHaveBeenCalledTimes(2);
+});
+
+it("stops retrying a permanently unavailable model within a short deadline", async () => {
+	vi.useFakeTimers();
+	const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async () => unavailable());
+	const result = generateWithOpenCodeV2({ provider: "openai", model: "gpt-6-luna", prompt: "OK" });
+	await vi.advanceTimersByTimeAsync(15_000);
+	expect(await result).toEqual({ text: null, error: "model_unavailable" });
+	expect(fetcher.mock.calls.length).toBeGreaterThan(1);
+	expect(fetcher.mock.calls.length).toBeLessThanOrEqual(6);
+});
+
+it.each([
+	{ status: 401, error: "auth_failed" },
+	{ status: 500, error: "request_failed" },
+])(
+	"does not retry a $status response after a model-readiness rejection",
+	async ({ status, error }) => {
+		vi.useFakeTimers();
+		const fetcher = vi
+			.spyOn(globalThis, "fetch")
+			.mockResolvedValueOnce(unavailable())
+			.mockResolvedValueOnce(new Response("{}", { status }));
+		const result = generateWithOpenCodeV2({
+			provider: "openai",
+			model: "gpt-6-luna",
+			prompt: "OK",
+		});
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(await result).toEqual({ text: null, error });
+		expect(fetcher).toHaveBeenCalledTimes(2);
+	},
+);
 
 it("rejects responses larger than the local byte budget", async () => {
 	vi.spyOn(globalThis, "fetch").mockResolvedValue(

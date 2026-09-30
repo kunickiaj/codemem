@@ -2,6 +2,7 @@ import { Service } from "@opencode/client/service";
 
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 120_000;
+const MODEL_READINESS_DELAYS_MS = [250, 500, 1000, 2000, 4000] as const;
 
 class ResponseTooLargeError extends Error {}
 
@@ -99,6 +100,59 @@ async function readBoundedResponse(
 	return typeof text === "string" ? { text, error: null } : { text: null, error: "request_failed" };
 }
 
+async function isPreGenerationModelUnavailable(
+	response: Response,
+	controller: AbortController,
+	provider: string,
+	model: string,
+): Promise<boolean> {
+	try {
+		const body = await readLimitedJson(response, controller);
+		return (
+			body != null &&
+			typeof body === "object" &&
+			"_tag" in body &&
+			body._tag === "InvalidRequestError" &&
+			"message" in body &&
+			body.message === `Model unavailable: ${provider}/${model}`
+		);
+	} catch {
+		return false;
+	}
+}
+
+async function requestGeneration(
+	endpoint: NonNullable<Awaited<ReturnType<typeof Service.discover>>>,
+	url: URL,
+	input: { provider: string; model: string; prompt: string },
+	controller: AbortController,
+): Promise<V2GenerationResult> {
+	const response = await fetch(new URL("/api/experimental/generate", url), {
+		method: "POST",
+		headers: { ...Service.headers(endpoint), "content-type": "application/json" },
+		body: JSON.stringify({
+			model: { providerID: input.provider, id: input.model },
+			prompt: input.prompt,
+		}),
+		signal: controller.signal,
+	});
+	if (response.status === 401 || response.status === 403) {
+		return { text: null, error: "auth_failed" };
+	}
+	if (response.status === 400) {
+		return (await isPreGenerationModelUnavailable(
+			response,
+			controller,
+			input.provider,
+			input.model,
+		))
+			? { text: null, error: "model_unavailable" }
+			: { text: null, error: "request_failed" };
+	}
+	if (!response.ok) return { text: null, error: "request_failed" };
+	return readBoundedResponse(response, controller);
+}
+
 /** Use the service-owned provider connection; never read or export its credential. */
 export async function generateWithOpenCodeV2(input: {
 	provider: string;
@@ -119,25 +173,12 @@ export async function generateWithOpenCodeV2(input: {
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 	try {
-		const response = await fetch(new URL("/api/experimental/generate", url), {
-			method: "POST",
-			headers: { ...Service.headers(endpoint), "content-type": "application/json" },
-			body: JSON.stringify({
-				model: { providerID: input.provider, id: input.model },
-				prompt: input.prompt,
-			}),
-			signal: controller.signal,
-		});
-		if (response.status === 401 || response.status === 403) {
-			return { text: null, error: "auth_failed" };
+		for (const delay of [...MODEL_READINESS_DELAYS_MS, 0]) {
+			const result = await requestGeneration(endpoint, url, input, controller);
+			if (result.error !== "model_unavailable" || !delay) return result;
+			await new Promise<void>((resolve) => setTimeout(resolve, delay));
 		}
-		if (!response.ok) {
-			return {
-				text: null,
-				error: response.status === 400 ? "model_unavailable" : "request_failed",
-			};
-		}
-		return await readBoundedResponse(response, controller);
+		return { text: null, error: "request_failed" };
 	} catch {
 		return { text: null, error: "request_failed" };
 	} finally {
