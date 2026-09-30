@@ -175,6 +175,15 @@ function observerRuntimeMetadata(configData: ConfigData) {
 	delete automatic.observer_runtime;
 	return {
 		resolved_observer_runtime: resolveObserverRuntime(configData),
+		observer_runtime_after_auth_override_removal: Object.fromEntries(
+			[...AUTH_SOURCES].map((source) => [
+				source,
+				resolveObserverRuntime(
+					{ ...configData, observer_auth_source: source },
+					{ ignoreAuthSourceOverride: true },
+				),
+			]),
+		),
 		observer_automatic_runtime_by_auth_source: Object.fromEntries(
 			[...AUTH_SOURCES].map((source) => [
 				source,

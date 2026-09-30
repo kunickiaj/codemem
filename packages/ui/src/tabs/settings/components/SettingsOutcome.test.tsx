@@ -179,7 +179,8 @@ it.each(["observerAuthTimeoutMs", "observerAuthCacheTtlS"])(
 		renderConfigModal({
 			config: { observer_auth_source: "command" },
 			resolved_observer_runtime: "codex_sidecar",
-			observer_runtime_by_auth_source: { command: "api_http", auto: "codex_sidecar" },
+			observer_runtime_by_auth_source: { command: "codex_sidecar", auto: "codex_sidecar" },
+			observer_runtime_after_auth_override_removal: { command: "api_http" },
 			env_overrides: { observer_auth_source: "CODEMEM_OBSERVER_AUTH_SOURCE" },
 		});
 		const outcome = settingsOutcomeFor(id);

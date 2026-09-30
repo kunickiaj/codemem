@@ -186,6 +186,17 @@ async function runtimePreview(config: Record<string, unknown> = {}) {
 	return response.json();
 }
 
+it("previews auth-override removal without mutating the environment", async () => {
+	process.env.CODEMEM_OBSERVER_AUTH_SOURCE = "auto";
+	const body = await runtimePreview({ observer_auth_source: "command" });
+	expect(body.resolved_observer_runtime).toBe("codex_sidecar");
+	expect(body.observer_runtime_after_auth_override_removal.command).toBe("api_http");
+	expect(process.env.CODEMEM_OBSERVER_AUTH_SOURCE).toBe("auto");
+	process.env.CLAUDE_CODE_SESSION = "fixture-session";
+	const claude = await runtimePreview({ observer_auth_source: "command" });
+	expect(claude.observer_runtime_after_auth_override_removal.command).toBe("claude_sidecar");
+});
+
 it.each(["simple", "rich"])(
 	"exposes %s provider environment overrides over saved values",
 	async (tier) => {

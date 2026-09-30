@@ -13,6 +13,7 @@ export interface SettingsState {
 	effectiveConfig: Record<string, unknown>;
 	resolvedObserverRuntime: string | null;
 	observerRuntimeByAuthSource: Record<string, string>;
+	observerRuntimeAfterAuthOverrideRemoval: Record<string, string>;
 	observerAutomaticRuntimeByAuthSource: Record<string, string>;
 	observerApply: ObserverApplyPayload | null;
 	observerTierRoutingExplicit: boolean;
@@ -31,6 +32,7 @@ export const settingsState: SettingsState = {
 	effectiveConfig: {},
 	resolvedObserverRuntime: null,
 	observerRuntimeByAuthSource: {},
+	observerRuntimeAfterAuthOverrideRemoval: {},
 	observerAutomaticRuntimeByAuthSource: {},
 	observerApply: null,
 	observerTierRoutingExplicit: false,

@@ -9,6 +9,7 @@ export interface ConfigPayload {
 	effective?: Record<string, unknown>;
 	resolved_observer_runtime?: string;
 	observer_runtime_by_auth_source?: Record<string, string>;
+	observer_runtime_after_auth_override_removal?: Record<string, string>;
 	observer_automatic_runtime_by_auth_source?: Record<string, string>;
 	observer_apply?: ObserverApplyPayload;
 	defaults?: Record<string, unknown>;

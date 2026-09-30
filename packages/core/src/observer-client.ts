@@ -585,7 +585,18 @@ function readObserverConfigData(): Record<string, unknown> {
  * Reads the codemem config file (not OpenCode's) and extracts observer-related
  * fields with environment variable overrides.
  */
-export function loadObserverConfig(configData?: Record<string, unknown>): ObserverConfig {
+function authSourceWithOverride(
+	source: string,
+	options: { ignoreAuthSourceOverride?: boolean },
+): string {
+	if (options.ignoreAuthSourceOverride) return source;
+	return process.env.CODEMEM_OBSERVER_AUTH_SOURCE ?? source;
+}
+
+export function loadObserverConfig(
+	configData?: Record<string, unknown>,
+	options: { ignoreAuthSourceOverride?: boolean } = {},
+): ObserverConfig {
 	const defaults: ObserverConfig = {
 		observerProvider: null,
 		observerModel: null,
@@ -762,7 +773,7 @@ export function loadObserverConfig(configData?: Record<string, unknown>): Observ
 		const n = Number(process.env.CODEMEM_OBSERVER_MAX_OUTPUT_TOKENS);
 		cfg.observerMaxOutputTokens = Number.isFinite(n) ? n : cfg.observerMaxOutputTokens;
 	}
-	cfg.observerAuthSource = process.env.CODEMEM_OBSERVER_AUTH_SOURCE ?? cfg.observerAuthSource;
+	cfg.observerAuthSource = authSourceWithOverride(cfg.observerAuthSource, options);
 	cfg.observerAuthFile = process.env.CODEMEM_OBSERVER_AUTH_FILE ?? cfg.observerAuthFile;
 	cfg.observerMaxChars = parseIntSafe(process.env.CODEMEM_OBSERVER_MAX_CHARS, cfg.observerMaxChars);
 	cfg.observerMaxTokens = parseIntSafe(
@@ -853,8 +864,11 @@ export function normalizeObserverRuntime(value: unknown): string {
 }
 
 /** Resolve only safe runtime metadata, without constructing a client or resolving auth. */
-export function resolveObserverRuntime(configData: Record<string, unknown>): string {
-	return normalizeObserverRuntime(loadObserverConfig(configData).observerRuntime);
+export function resolveObserverRuntime(
+	configData: Record<string, unknown>,
+	options: { ignoreAuthSourceOverride?: boolean } = {},
+): string {
+	return normalizeObserverRuntime(loadObserverConfig(configData, options).observerRuntime);
 }
 
 // ---------------------------------------------------------------------------
