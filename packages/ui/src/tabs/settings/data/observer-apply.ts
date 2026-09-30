@@ -32,11 +32,11 @@ export function updateObserverApply(payload: unknown): void {
 		updateRenderState({});
 		return;
 	}
-	settingsState.baseline.observer_tier_routing_enabled = routing;
 	const draftConnection = hasConnectionDraft();
 	if (draftConnection) {
 		updateRenderState({});
 		return;
 	}
+	settingsState.baseline.observer_tier_routing_enabled = routing;
 	updateFormState({ observerTierRoutingEnabled: routing });
 }
