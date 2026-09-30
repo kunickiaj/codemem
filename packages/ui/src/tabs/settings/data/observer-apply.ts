@@ -17,7 +17,14 @@ export function updateObserverApply(payload: unknown): void {
 		return;
 	}
 	settingsState.baseline.observer_tier_routing_enabled = routing;
-	if (settingsState.touchedKeys.has("observer_tier_routing_enabled")) {
+	const draftConnection = [
+		"observer_runtime",
+		"observer_provider",
+		"observer_model",
+		"observer_auth_source",
+		"observer_tier_routing_enabled",
+	].some((key) => settingsState.touchedKeys.has(key));
+	if (draftConnection) {
 		updateRenderState({});
 		return;
 	}
