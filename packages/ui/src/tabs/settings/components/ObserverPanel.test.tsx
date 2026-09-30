@@ -60,7 +60,7 @@ afterEach(() => {
 	document.body.innerHTML = "";
 });
 
-it.each(["claude_sidecar", "codex_sidecar"])(
+it.each(["claude_sidecar", "codex_sidecar", "api_http"])(
 	"keeps the provider editable for automatically resolved %s",
 	(runtime) => {
 		mount = document.createElement("div");
@@ -81,7 +81,7 @@ it.each(["claude_sidecar", "codex_sidecar"])(
 		);
 		expect(mount.querySelector("#observerProvider")).not.toBeNull();
 		const select = mount.querySelector<HTMLSelectElement>("#observerRuntime");
-		expect(select?.value).toBe("api_http");
+		expect(select?.value).toBe("automatic");
 		act(() => {
 			if (!select) throw new Error("Missing connection mode");
 			select.value = runtime;

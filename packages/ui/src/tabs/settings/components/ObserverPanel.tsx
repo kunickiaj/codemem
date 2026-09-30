@@ -89,9 +89,12 @@ function ConnectionModeField({
 				contentClassName="settings-select-content"
 				id="observerRuntime"
 				itemClassName="settings-select-item"
-				onValueChange={onSelectValueChange("observerRuntime")}
+				onValueChange={(value) =>
+					onSelectValueChange("observerRuntime")(value === "automatic" ? "" : value)
+				}
 				options={[
-					{ label: "Automatic (V2 service / V1 direct)", value: "api_http" },
+					{ label: "Automatic (detect connection)", value: "automatic" },
+					{ label: "API connection (legacy)", value: "api_http" },
 					{ label: "Local Claude session", value: "claude_sidecar" },
 					{ label: "Local Codex session", value: "codex_sidecar" },
 				]}
@@ -173,7 +176,7 @@ export function ObserverPanel({
 			<div className="settings-group">
 				<h3 className="settings-group-title">Connection</h3>
 				<ConnectionModeField
-					runtime={hasExplicitObserverRuntime ? effectiveObserverRuntime : "api_http"}
+					runtime={hasExplicitObserverRuntime ? effectiveObserverRuntime : "automatic"}
 					onSelectValueChange={onSelectValueChange}
 				/>
 				<ModelProviderField
