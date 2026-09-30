@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { buildTieredObserverConfig } from "./extraction-tier-routing.js";
+import { probeAvailableCredentials } from "./observer-auth.js";
 import { loadObserverConfig, ObserverAuthError, ObserverClient } from "./observer-client.js";
 import { observerForRawEvents } from "./raw-event-flush.js";
 
@@ -97,6 +98,7 @@ it("uses OPENCODE_API_KEY only for the OpenCode API-key provider", () => {
 		loadObserverConfig({ observer_runtime: "api_key", observer_provider: "opencode" }),
 	);
 	expect(opencode.auth.token).toBe("fixture-provider-env-key");
+	expect(probeAvailableCredentials().opencode?.env_var).toBe(true);
 	for (const provider of ["openai", "anthropic", "gateway"]) {
 		const observer = new ObserverClient(
 			loadObserverConfig({

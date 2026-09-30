@@ -115,7 +115,7 @@ export function probeAvailableCredentials(): Record<
 	const providers = [
 		["openai", "OPENAI_API_KEY"],
 		["anthropic", "ANTHROPIC_API_KEY"],
-		["opencode", null],
+		["opencode", "OPENCODE_API_KEY"],
 	] as const;
 	const result: Record<string, { oauth: boolean; api_key: boolean; env_var: boolean }> = {};
 	for (const [provider, envVar] of providers) {
