@@ -76,6 +76,8 @@ describe("ObserverPanel", () => {
 			),
 		);
 		expect(mount.querySelector("#observerProvider")).not.toBeNull();
+		expect(mount.querySelector<HTMLSelectElement>("#observerRuntime")?.value).toBe("api_http");
+		expect(mount.textContent).not.toContain("Codex chooses the provider");
 	});
 	it("starts with connection mode and only offers a provider picker on the automatic path", () => {
 		mount = document.createElement("div");

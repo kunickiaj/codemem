@@ -127,7 +127,7 @@ export function ObserverPanel({
 			<div className="settings-group">
 				<h3 className="settings-group-title">Connection</h3>
 				<ConnectionModeField
-					runtime={values.observerRuntime}
+					runtime={effectiveObserverRuntime}
 					onSelectValueChange={onSelectValueChange}
 				/>
 				{effectiveObserverRuntime !== "claude_sidecar" &&
