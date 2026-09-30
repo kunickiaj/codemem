@@ -143,6 +143,9 @@ it.each([
 	{ provider: "opencode", selected: undefined, expected: "gpt-6-luna" },
 	{ provider: "custom", selected: "custom/org/model", expected: "org/model" },
 	{ provider: "custom", selected: "org/model", expected: "org/model" },
+	{ provider: "openai", selected: "OpenAI/gpt-6-luna", expected: "gpt-6-luna" },
+	{ provider: "anthropic", selected: "ANTHROPIC/claude-sonnet-4-6", expected: "claude-sonnet-4-6" },
+	{ provider: "custom", selected: "Custom/Org/Model", expected: "Org/Model" },
 ])(
 	"sends provider-local model IDs to OpenCode for $provider/$selected",
 	async ({ provider, selected, expected }) => {

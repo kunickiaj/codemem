@@ -2368,7 +2368,9 @@ export class ObserverClient {
 		userPrompt: string,
 	): Promise<ObserverCallResult> {
 		const prefix = `${this.provider}/`;
-		const model = this.model.startsWith(prefix) ? this.model.slice(prefix.length) : this.model;
+		const model = this.model.toLowerCase().startsWith(prefix)
+			? this.model.slice(prefix.length)
+			: this.model;
 		const result = await generateWithOpenCodeV2({
 			provider: this.provider,
 			model,
