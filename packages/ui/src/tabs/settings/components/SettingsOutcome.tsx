@@ -388,9 +388,10 @@ function ObserverFieldOutcome({
 		!hasExplicitObserverRuntime(settingsView.value.renderState.values.observerRuntime) &&
 		typeof authOverride === "string" &&
 		authOverride.trim()
-	)
-		guidance = `Inactive for the current connection · ${timing}. Remove ${authOverride.trim()} and restart the viewer to use the saved authentication settings. The connection may change after removal.`;
-	else if (inactive)
+	) {
+		const controllingOverrides = [...new Set([authOverride.trim(), override.trim()])].join(" and ");
+		guidance = `Inactive for the current connection · ${timing}. Remove ${controllingOverrides} and restart the viewer to use the saved authentication settings. The connection may change after removal.`;
+	} else if (inactive)
 		guidance = `Inactive · ${timing}. Removing the environment setting does not activate this field for the current connection.`;
 	return (
 		<>

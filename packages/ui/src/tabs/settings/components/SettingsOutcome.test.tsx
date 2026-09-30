@@ -155,6 +155,22 @@ it.each(["claude_sidecar", "codex_sidecar"])(
 	},
 );
 
+it.each([
+	["observerAuthTimeoutMs", "observer_auth_timeout_ms", "CODEMEM_OBSERVER_AUTH_TIMEOUT_MS"],
+	["observerAuthCacheTtlS", "observer_auth_cache_ttl_s", "CODEMEM_OBSERVER_AUTH_CACHE_TTL_S"],
+])("names both controlling variables for %s recovery", (id, key, variable) => {
+	renderConfigModal({
+		config: { observer_auth_source: "command" },
+		resolved_observer_runtime: "codex_sidecar",
+		env_overrides: { observer_auth_source: "CODEMEM_OBSERVER_AUTH_SOURCE", [key]: variable },
+	});
+	const outcome = settingsOutcomeFor(id);
+	const root = document.createElement("div");
+	document.body.appendChild(root);
+	act(() => render(outcome ? <SettingsOutcome {...outcome} /> : null, root));
+	expect(root.textContent).toContain(`Remove CODEMEM_OBSERVER_AUTH_SOURCE and ${variable}`);
+});
+
 describe("inactive pack setting outcomes", () => {
 	it("keeps no-effect timing under environment overrides", () => {
 		settingsState.envOverrides = {
