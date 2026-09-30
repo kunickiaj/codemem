@@ -126,6 +126,7 @@ it.each(["command", "file"])(
 	"explains auth override removal above saved %s authentication",
 	(source) => {
 		settingsState.baseline = { observer_auth_source: source };
+		settingsState.observerRuntimeByAuthSource = { [source]: "api_http" };
 		settingsState.envOverrides = { observer_auth_source: "CODEMEM_OBSERVER_AUTH_SOURCE" };
 		const outcome = settingsOutcomeFor("observerAuthSource", { observerRuntime: "codex_sidecar" });
 		const root = document.createElement("div");
@@ -162,6 +163,7 @@ it.each([
 	renderConfigModal({
 		config: { observer_auth_source: "command" },
 		resolved_observer_runtime: "codex_sidecar",
+		observer_runtime_by_auth_source: { command: "api_http", auto: "codex_sidecar" },
 		env_overrides: { observer_auth_source: "CODEMEM_OBSERVER_AUTH_SOURCE", [key]: variable },
 	});
 	const outcome = settingsOutcomeFor(id);
@@ -177,6 +179,7 @@ it.each(["observerAuthTimeoutMs", "observerAuthCacheTtlS"])(
 		renderConfigModal({
 			config: { observer_auth_source: "command" },
 			resolved_observer_runtime: "codex_sidecar",
+			observer_runtime_by_auth_source: { command: "api_http", auto: "codex_sidecar" },
 			env_overrides: { observer_auth_source: "CODEMEM_OBSERVER_AUTH_SOURCE" },
 		});
 		const outcome = settingsOutcomeFor(id);
@@ -186,6 +189,24 @@ it.each(["observerAuthTimeoutMs", "observerAuthCacheTtlS"])(
 		expect(root.textContent).toContain(
 			"Remove CODEMEM_OBSERVER_AUTH_SOURCE and restart the viewer",
 		);
+	},
+);
+
+it.each(["observerAuthSource", "observerAuthTimeoutMs", "observerAuthCacheTtlS"])(
+	"does not promise auth recovery for automatic Claude on %s",
+	(id) => {
+		renderConfigModal({
+			config: { observer_auth_source: "command" },
+			resolved_observer_runtime: "claude_sidecar",
+			observer_runtime_by_auth_source: { command: "claude_sidecar", auto: "claude_sidecar" },
+			env_overrides: { observer_auth_source: "CODEMEM_OBSERVER_AUTH_SOURCE" },
+		});
+		const outcome = settingsOutcomeFor(id);
+		const root = document.createElement("div");
+		document.body.appendChild(root);
+		act(() => render(outcome ? <SettingsOutcome {...outcome} /> : null, root));
+		expect(root.textContent).toContain("does not activate this field");
+		expect(root.textContent).not.toContain("use the saved authentication settings");
 	},
 );
 

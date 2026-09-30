@@ -374,6 +374,11 @@ function observerFieldOverride(configKey: string, stage: string): unknown {
 	return undefined;
 }
 
+function savedAuthUsesApi(): boolean {
+	const source = String(settingsState.baseline.observer_auth_source || "auto");
+	return settingsState.observerRuntimeByAuthSource[source] === "api_http";
+}
+
 function ObserverFieldOutcome({
 	configKey,
 	...details
@@ -394,6 +399,7 @@ function ObserverFieldOutcome({
 	if (
 		stage === "Sidecar authentication" &&
 		!hasExplicitObserverRuntime(settingsView.value.renderState.values.observerRuntime) &&
+		savedAuthUsesApi() &&
 		typeof authOverride === "string" &&
 		authOverride.trim()
 	) {
