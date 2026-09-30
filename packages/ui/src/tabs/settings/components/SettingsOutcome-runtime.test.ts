@@ -6,6 +6,7 @@ import { updateFormState } from "../data/state-ops";
 import {
 	effectiveObserverRuntime,
 	hasExplicitObserverRuntime,
+	canEditAutomaticAuth,
 	settingsOutcomeFor,
 } from "./SettingsOutcome";
 
@@ -39,6 +40,27 @@ it.each(["auto", " AUTO ", "Auto", "unknown"])(
 		expect(collectSettingsPayload().observer_runtime).toBe("");
 	},
 );
+
+it("allows auth-only edits for automatic sidecars but not explicit local drafts", () => {
+	renderConfigModal({
+		config: {},
+		resolved_observer_runtime: "codex_sidecar",
+		observer_runtime_by_auth_source: { auto: "codex_sidecar", command: "api_http" },
+	});
+	expect(canEditAutomaticAuth("codex_sidecar")).toBe(true);
+	settingsState.touchedKeys.add("observer_runtime");
+	expect(canEditAutomaticAuth("claude_sidecar")).toBe(false);
+	expect(canEditAutomaticAuth("codex_sidecar")).toBe(false);
+});
+
+it("keeps explicit local runtimes separate from direct credentials", () => {
+	renderConfigModal({
+		config: { observer_runtime: "codex_sidecar" },
+		resolved_observer_runtime: "codex_sidecar",
+		observer_runtime_by_auth_source: { auto: "codex_sidecar", command: "codex_sidecar" },
+	});
+	expect(canEditAutomaticAuth("codex_sidecar")).toBe(false);
+});
 
 function editAuthSource(source: string) {
 	settingsState.touchedKeys.add("observer_auth_source");

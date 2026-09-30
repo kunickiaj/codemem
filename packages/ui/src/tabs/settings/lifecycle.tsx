@@ -18,7 +18,11 @@ import type { ObserverStatusShape } from "./components/ObserverStatusBanner";
 import { ObserverStatusBanner as ObserverStatusBannerComponent } from "./components/ObserverStatusBanner";
 import { SettingsDialogShell } from "./components/SettingsDialogShell";
 import { SettingsModalContent } from "./components/SettingsModalContent";
-import { effectiveObserverRuntime, hasExplicitObserverRuntime } from "./components/SettingsOutcome";
+import {
+	canEditAutomaticAuth,
+	effectiveObserverRuntime,
+	hasExplicitObserverRuntime,
+} from "./components/SettingsOutcome";
 import {
 	collectSettingsPayload,
 	isProtectedConfigKey,
@@ -151,6 +155,7 @@ function SettingsDialogContent() {
 		values,
 		effectiveObserverRuntime: effectiveObserverRuntime(values.observerRuntime),
 		hasExplicitObserverRuntime: hasExplicitObserverRuntime(values.observerRuntime),
+		allowAutomaticAuthChanges: canEditAutomaticAuth(values.observerRuntime),
 		tierProviders: effectiveTierProviders(),
 		observerMaxCharsDefault: String(state.configDefaults?.observer_max_chars || ""),
 		providerOptions,

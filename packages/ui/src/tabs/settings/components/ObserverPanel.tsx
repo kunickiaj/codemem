@@ -133,6 +133,7 @@ export function ObserverPanel({
 	values,
 	effectiveObserverRuntime = values.observerRuntime,
 	hasExplicitObserverRuntime = true,
+	allowAutomaticAuthChanges = false,
 	tierProviders,
 	observerMaxCharsDefault,
 	providerOptions,
@@ -208,7 +209,10 @@ export function ObserverPanel({
 			/>
 			{observerStatusBannerSlot}
 
-			<div className="settings-group" hidden={isLocalSession(values.observerRuntime)}>
+			<div
+				className="settings-group"
+				hidden={isLocalSession(effectiveObserverRuntime) && !allowAutomaticAuthChanges}
+			>
 				<h3 className="settings-group-title">Authentication</h3>
 				<Field>
 					<div className="field-label">

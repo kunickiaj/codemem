@@ -181,6 +181,14 @@ function draftAuthRuntime(): string | undefined {
 	return settingsState.observerRuntimeByAuthSource[source];
 }
 
+export function canEditAutomaticAuth(draft?: string): boolean {
+	const changed =
+		settingsState.touchedKeys.has("observer_runtime") &&
+		draft !== settingsState.baseline.observer_runtime;
+	if (changed && !settingsState.envOverrides.observer_runtime) return false;
+	return Object.values(settingsState.observerRuntimeByAuthSource).includes("api_http");
+}
+
 function effectiveSetting(controlId: string, draft?: unknown): unknown {
 	const key = INPUT_TO_CONFIG_KEY[controlId as keyof typeof INPUT_TO_CONFIG_KEY];
 	if (key && settingsState.envOverrides[key]) return settingsState.effectiveConfig[key];

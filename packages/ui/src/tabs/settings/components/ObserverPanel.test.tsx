@@ -135,6 +135,24 @@ it.each([false, true])(
 );
 
 describe("ObserverPanel", () => {
+	it("keeps authentication available for an automatically detected local session", () => {
+		mount = document.createElement("div");
+		document.body.appendChild(mount);
+		const base = props();
+		act(() =>
+			render(
+				<ObserverPanel
+					{...base}
+					values={{ ...base.values, observerRuntime: "codex_sidecar" }}
+					allowAutomaticAuthChanges
+				/>,
+				mount as HTMLDivElement,
+			),
+		);
+		expect(
+			mount.querySelector("#observerAuthSource")?.closest<HTMLElement>(".settings-group")?.hidden,
+		).toBe(false);
+	});
 	it("shows the provider when authentication previews a direct API connection", () => {
 		mount = document.createElement("div");
 		document.body.appendChild(mount);
