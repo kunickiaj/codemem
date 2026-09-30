@@ -8,7 +8,7 @@ import { type FeedProcessingStatus, state } from "../../../lib/state";
 import { updateFeedView } from "../../feed";
 import { collectSettingsPayload as collectSettingsPayloadRaw } from "./collect-payload";
 import { PROTECTED_VIEWER_CONFIG_KEYS } from "./constants";
-import { type ConfigPayload, formStateFromPayload } from "./form-state";
+import { type ConfigPayload, formStateFromPayload, hasExplicitTierRouting } from "./form-state";
 import { isProtectedConfigKey as isProtectedConfigKeyRaw } from "./model-accessors";
 import { settingsState } from "./state";
 import { getSettingsViewState, setDirty, updateRenderState } from "./state-ops";
@@ -111,9 +111,7 @@ export function renderConfigModal(payload: unknown) {
 	settingsState.observerAutomaticRuntimeByAuthSource =
 		data.observer_automatic_runtime_by_auth_source ?? {};
 	settingsState.observerApply = data.observer_apply ?? null;
-	settingsState.observerTierRoutingExplicit =
-		Object.hasOwn(config, "observer_tier_routing_enabled") ||
-		Object.hasOwn(envOverrides, "observer_tier_routing_enabled");
+	settingsState.observerTierRoutingExplicit = hasExplicitTierRouting(data);
 	settingsState.protectedKeys = new Set(protectedKeys);
 	state.configDefaults = defaults;
 	state.configPath = data.path || "";

@@ -40,14 +40,20 @@ function runtimeFromPayload(payload: ConfigPayload): string {
 	);
 }
 
+export function hasExplicitTierRouting(payload: ConfigPayload): boolean {
+	return (
+		hasOwn(payload.config, "observer_tier_routing_enabled") ||
+		hasOwn(payload.env_overrides, "observer_tier_routing_enabled")
+	);
+}
+
 function tierRoutingFromPayload(payload: ConfigPayload): boolean {
 	const config = payload.config || {};
 	const effective = payload.effective || {};
 	const running = payload.observer_apply?.active?.tierRoutingEnabled;
 	if (
 		payload.observer_apply?.state === "active" &&
-		!hasOwn(config, "observer_tier_routing_enabled") &&
-		!hasOwn(payload.env_overrides, "observer_tier_routing_enabled") &&
+		!hasExplicitTierRouting(payload) &&
 		typeof running === "boolean"
 	) {
 		return running;
