@@ -61,6 +61,34 @@ afterEach(() => {
 });
 
 describe("ObserverPanel", () => {
+	it("starts with connection mode and only offers a provider picker on the automatic path", () => {
+		mount = document.createElement("div");
+		document.body.appendChild(mount);
+		const base = { ...props(), providerOptions: [{ label: "anthropic", value: "anthropic" }] };
+		const values = { ...base.values, observerProvider: "anthropic" };
+		act(() =>
+			render(
+				<ObserverPanel {...base} values={{ ...values, observerRuntime: "codex_sidecar" }} />,
+				mount as HTMLDivElement,
+			),
+		);
+		expect(mount.querySelector("#observerProvider")).toBeNull();
+		expect(mount.textContent).toContain("Codex chooses the provider");
+
+		act(() =>
+			render(
+				<ObserverPanel {...base} values={{ ...values, observerRuntime: "api_http" }} />,
+				mount as HTMLDivElement,
+			),
+		);
+		const runtime = mount.querySelector("#observerRuntime");
+		const provider = mount.querySelector<HTMLSelectElement>("#observerProvider");
+		expect(
+			runtime?.compareDocumentPosition(provider as Node) & Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		expect(provider?.value).toBe("anthropic");
+	});
+
 	it("offers a local Codex runtime and shows its protected command", () => {
 		mount = document.createElement("div");
 		document.body.appendChild(mount);

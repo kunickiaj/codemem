@@ -54,6 +54,53 @@ function MainModelField({
 	);
 }
 
+function ConnectionModeField({
+	runtime,
+	onSelectValueChange,
+}: {
+	runtime: string;
+	onSelectValueChange: SettingsPanelProps["onSelectValueChange"];
+}) {
+	let description =
+		"OpenCode V2 sessions use your OpenCode connection; V1 sessions keep their existing direct route. Billing follows the active account.";
+	if (runtime === "claude_sidecar") {
+		description = "Uses your local Claude CLI login. Claude chooses the provider.";
+	} else if (runtime === "codex_sidecar") {
+		description = "Uses your local Codex CLI login. Codex chooses the provider.";
+	}
+	return (
+		<Field>
+			<div className="field-label">
+				<label htmlFor="observerRuntime">Connection mode</label>
+				<button
+					aria-label="About connection mode"
+					className="help-icon"
+					data-tooltip="V2-captured sessions with implicit OpenCode credentials use its active provider connection. V1 and explicit API credentials keep their current path. Local CLI choices remain explicit."
+					type="button"
+				>
+					?
+				</button>
+			</div>
+			<RadixSelect
+				ariaLabel="Connection mode"
+				contentClassName="settings-select-content"
+				id="observerRuntime"
+				itemClassName="settings-select-item"
+				onValueChange={onSelectValueChange("observerRuntime")}
+				options={[
+					{ label: "Automatic (V2 service / V1 direct)", value: "api_http" },
+					{ label: "Local Claude session", value: "claude_sidecar" },
+					{ label: "Local Codex session", value: "codex_sidecar" },
+				]}
+				triggerClassName="settings-select-trigger"
+				value={runtime}
+				viewportClassName="settings-select-viewport"
+			/>
+			<div className="small">{description}</div>
+		</Field>
+	);
+}
+
 export function ObserverPanel({
 	values,
 	observerMaxCharsDefault,
@@ -78,35 +125,42 @@ export function ObserverPanel({
 			/>
 			<div className="settings-group">
 				<h3 className="settings-group-title">Connection</h3>
-				<Field>
-					<div className="field-label">
-						<label htmlFor="observerProvider">Model provider</label>
-						<button
-							aria-label="About model provider"
-							className="help-icon"
-							data-tooltip="Choose where model requests are sent. Use auto for recommended defaults."
-							type="button"
-						>
-							?
-						</button>
-					</div>
-					<RadixSelect
-						ariaLabel="Model provider"
-						contentClassName="settings-select-content"
-						id="observerProvider"
-						itemClassName="settings-select-item"
-						onValueChange={onSelectValueChange("observerProvider")}
-						options={[{ label: "auto (default)", value: "" }, ...providerOptions]}
-						placeholder="auto (default)"
-						triggerClassName="settings-select-trigger"
-						value={values.observerProvider}
-						viewportClassName="settings-select-viewport"
-					/>
-					<div className="small">
-						Use `auto` unless you need to pin a specific provider. Pi setup can derive Direct API
-						provider/model from API-key providers only.
-					</div>
-				</Field>
+				<ConnectionModeField
+					runtime={values.observerRuntime}
+					onSelectValueChange={onSelectValueChange}
+				/>
+				{values.observerRuntime !== "claude_sidecar" &&
+				values.observerRuntime !== "codex_sidecar" ? (
+					<Field>
+						<div className="field-label">
+							<label htmlFor="observerProvider">Model provider</label>
+							<button
+								aria-label="About model provider"
+								className="help-icon"
+								data-tooltip="Choose where model requests are sent. Use auto for recommended defaults."
+								type="button"
+							>
+								?
+							</button>
+						</div>
+						<RadixSelect
+							ariaLabel="Model provider"
+							contentClassName="settings-select-content"
+							id="observerProvider"
+							itemClassName="settings-select-item"
+							onValueChange={onSelectValueChange("observerProvider")}
+							options={[{ label: "auto (default)", value: "" }, ...providerOptions]}
+							placeholder="auto (default)"
+							triggerClassName="settings-select-trigger"
+							value={values.observerProvider}
+							viewportClassName="settings-select-viewport"
+						/>
+						<div className="small">
+							Use `auto` unless you need to pin a specific provider. Pi setup can derive Direct API
+							provider/model from API-key providers only.
+						</div>
+					</Field>
+				) : null}
 				<MainModelField
 					values={values}
 					onTextInput={onTextInput}
@@ -115,39 +169,6 @@ export function ObserverPanel({
 					getObserverModelDescription={getObserverModelDescription}
 					getObserverModelHint={getObserverModelHint}
 				/>
-				<Field>
-					<div className="field-label">
-						<label htmlFor="observerRuntime">Connection mode</label>
-						<button
-							aria-label="About connection mode"
-							className="help-icon"
-							data-tooltip="V2-captured sessions with implicit OpenCode credentials use its active provider connection. V1 and explicit API credentials keep their current path. Local CLI choices remain explicit."
-							type="button"
-						>
-							?
-						</button>
-					</div>
-					<RadixSelect
-						ariaLabel="Connection mode"
-						contentClassName="settings-select-content"
-						id="observerRuntime"
-						itemClassName="settings-select-item"
-						onValueChange={onSelectValueChange("observerRuntime")}
-						options={[
-							{ label: "Automatic (V2 service / V1 direct)", value: "api_http" },
-							{ label: "Local Claude session", value: "claude_sidecar" },
-							{ label: "Local Codex session", value: "codex_sidecar" },
-						]}
-						triggerClassName="settings-select-trigger"
-						value={values.observerRuntime}
-						viewportClassName="settings-select-viewport"
-					/>
-					<div className="small">
-						Automatic uses OpenCode V2 for V2 sessions with implicit credentials; V1 keeps its
-						route. OpenCode controls account billing. You can choose a local Claude or Codex session
-						instead.
-					</div>
-				</Field>
 				<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
 					<label htmlFor="codexCommand">Codex command (JSON argv)</label>
 					<TextArea
