@@ -122,7 +122,7 @@ codemem status --db-path ./codemem.sqlite --config ./codemem.json
 - Includes a `Show advanced controls` toggle for technical tuning fields (JSON headers, cache/timeout, tier-routing tuning, network overrides, and pack limits).
 - Connection/auth settings map to `claude_command`, `observer_runtime`, `observer_provider`, `observer_model`, `observer_base_url`, `observer_auth_source`, `observer_auth_file`, `observer_auth_command`, `observer_auth_timeout_ms`, `observer_auth_cache_ttl_s`, and `observer_headers`.
 - Processing settings include `raw_events_sweeper_interval_s` plus tiered observer routing controls for `observer_tier_routing_enabled`, `observer_simple_model`, `observer_simple_temperature`, `observer_reasoning_effort`, `observer_reasoning_summary`, `observer_rich_model`, `observer_rich_temperature`, `observer_rich_reasoning_effort`, `observer_rich_reasoning_summary`, and `observer_rich_max_output_tokens`.
-- When tiered routing is enabled, the Processing tab becomes the primary place for model selection; the Connection tab's base `observer_model` acts as a fallback rather than a competing primary control.
+- Settings keeps connection choice and model choice together on the Connection tab. With tiered routing on, Simple and Rich are the main model fields; `observer_model` appears only as an optional advanced or already-configured fallback. With tiered routing off, `observer_model` is the main model field.
 - Settings outcomes honor `CODEMEM_OBSERVER_SIMPLE_PROVIDER` and `CODEMEM_OBSERVER_RICH_PROVIDER` over saved tier providers. Empty overrides clear the saved tier provider; temperature and base-model outcomes follow the resulting tier-provider fallback.
 - Observer environment overrides follow the runtime's parsing rules in Settings and save results: empty strings clear string fields, clear authentication commands/headers, set temperatures and output-token limits to zero, and disable boolean options. Empty or invalid integer and output-mode overrides, and empty sidecar-command overrides, retain saved values and do not mark those settings as environment-controlled.
 - When you have not made an explicit routing choice, codemem may enable tiered routing automatically for capability-safe paths such as OpenAI/Anthropic over `api_http` and Claude subscription usage over `claude_sidecar`.
@@ -191,8 +191,7 @@ has no evaluated runs and null rates, rather than a quality pass.
 - Header templates can use `${auth.token}`, `${auth.type}`, and `${auth.source}`.
 - Settings are grouped into `Connection`, `Processing`, and `Device Sync` sections with shell-agnostic labels.
 - Queue settings include `raw_events_sweeper_interval_s` (seconds), which controls background pending-event drain cadence.
-- Tiered routing settings live in the Processing tab. The basic view exposes the tier-routing toggle plus simple/rich model choices, while advanced controls reveal the extra rich-tier tuning knobs.
-- To avoid overlapping primary controls, the Connection tab reframes `observer_model` as a fallback whenever tiered routing is enabled.
+- Tiered routing and simple/rich model choices live in the Connection tab. Processing retains background cadence and advanced request tuning; the optional base fallback is shown only when already configured or when advanced controls are visible.
 - Rich-tier OpenAI transport tuning remains visible in Processing. Official OpenAI tiers and OAuth `codex_consumer` always use Responses with reasoning effort `medium` by default. An explicit custom `observer_base_url` may use `observer_openai_use_responses: false` for chat-completions compatibility.
 
 Example command-token gateway config:

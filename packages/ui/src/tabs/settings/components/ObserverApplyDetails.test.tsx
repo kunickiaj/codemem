@@ -40,12 +40,14 @@ it("shows active simple and rich models separately without claiming account avai
 			document.body,
 		),
 	);
-	expect(document.body.textContent).toContain("Simple: openai / gpt-6-luna");
-	expect(document.body.textContent).toContain("Rich: openai / gpt-5.6-terra");
-	expect(document.body.textContent).toContain("may be unavailable to the active account");
+	expect(document.body.textContent).toContain("Simple requests");
+	expect(document.body.textContent).toContain("openai · gpt-6-luna");
+	expect(document.body.textContent).toContain("Rich requests");
+	expect(document.body.textContent).toContain("openai · gpt-5.6-terra");
+	expect(document.body.textContent).not.toContain("codex_sidecar");
 	const routing = document.querySelector<HTMLDetailsElement>(".observer-routing-details");
 	expect(routing?.open).toBe(false);
-	expect(routing?.querySelector("summary")?.textContent).toBe("Applied model routing");
+	expect(routing?.querySelector("summary")?.textContent).toBe("Models in use");
 });
 
 it("makes a saved-but-failed application actionable", () => {

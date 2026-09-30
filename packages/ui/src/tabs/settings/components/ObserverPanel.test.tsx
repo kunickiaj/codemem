@@ -27,6 +27,12 @@ vi.mock("../../../components/primitives/radix-select", () => ({
 	),
 }));
 
+vi.mock("../../../components/primitives/radix-switch", () => ({
+	RadixSwitch: ({ id, checked }: { id: string; checked: boolean }) => (
+		<input checked={checked} id={id} readOnly type="checkbox" />
+	),
+}));
+
 let mount: HTMLDivElement | null = null;
 
 function props(): SettingsPanelProps & { observerStatusBannerSlot: null } {
@@ -45,7 +51,6 @@ function props(): SettingsPanelProps & { observerStatusBannerSlot: null } {
 		getObserverModelTooltip: () => "",
 		getObserverModelDescription: () => "",
 		getObserverModelHint: () => "",
-		getTieredRoutingHelperText: () => "",
 		protectedConfigHelp: (key) => `${key} is protected`,
 		observerStatusBannerSlot: null,
 	};
@@ -137,6 +142,56 @@ describe("ObserverPanel", () => {
 		expect(provider?.value).toBe("anthropic");
 	});
 
+	it("shows simple and rich models together without a competing base model field", () => {
+		mount = document.createElement("div");
+		document.body.appendChild(mount);
+		const base = props();
+		act(() =>
+			render(
+				<ObserverPanel
+					{...base}
+					hiddenUnlessAdvanced={() => true}
+					values={{ ...base.values, observerTierRoutingEnabled: true }}
+				/>,
+				mount as HTMLDivElement,
+			),
+		);
+		expect(mount.querySelector("#observerTierRoutingEnabled")).not.toBeNull();
+		expect(mount.querySelector("#observerSimpleModel")).not.toBeNull();
+		expect(mount.querySelector("#observerRichModel")).not.toBeNull();
+		expect(mount.querySelector("#observerModel")).toBeNull();
+
+		act(() =>
+			render(
+				<ObserverPanel
+					{...base}
+					hiddenUnlessAdvanced={() => true}
+					values={{ ...base.values, observerTierRoutingEnabled: true, observerModel: "custom" }}
+				/>,
+				mount as HTMLDivElement,
+			),
+		);
+		expect(mount.querySelector(".observer-fallback-details summary")?.textContent).toContain(
+			"Fallback model",
+		);
+		expect(mount.querySelector<HTMLInputElement>("#observerModel")?.value).toBe("custom");
+
+		act(() =>
+			render(
+				<ObserverPanel
+					{...base}
+					hiddenUnlessAdvanced={() => true}
+					values={{ ...base.values, observerTierRoutingEnabled: false, observerModel: "custom" }}
+				/>,
+				mount as HTMLDivElement,
+			),
+		);
+		expect(mount.querySelector<HTMLInputElement>("#observerModel")?.value).toBe("custom");
+		expect(mount.querySelector("#observerSimpleModel")).toBeNull();
+	});
+});
+
+describe("ObserverPanel connection details", () => {
 	it("offers a local Codex runtime and shows its protected command", () => {
 		mount = document.createElement("div");
 		document.body.appendChild(mount);
@@ -154,7 +209,9 @@ describe("ObserverPanel", () => {
 		act(() => render(<ObserverPanel {...props()} />, mount as HTMLDivElement));
 
 		expect(mount.textContent).toContain("opencode, claude, codex, and pi");
-		expect(mount.textContent).toMatch(/pi setup can derive Direct API/i);
+		expect(
+			mount.querySelector('[aria-label="About model provider"]')?.getAttribute("data-tooltip"),
+		).toMatch(/Pi setup can also derive a provider/i);
 		const runtimeHelp = mount.querySelector('[aria-label="About connection mode"]');
 		expect(runtimeHelp?.getAttribute("data-tooltip") ?? "").toMatch(/V2-captured sessions/i);
 	});
@@ -177,7 +234,10 @@ describe("ObserverPanel", () => {
 			groups[0]?.compareDocumentPosition(status as Node) & Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
 		expect(
-			groups[1]?.compareDocumentPosition(status as Node) & Node.DOCUMENT_POSITION_PRECEDING,
+			groups[1]?.compareDocumentPosition(status as Node) & Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		expect(
+			groups[2]?.compareDocumentPosition(status as Node) & Node.DOCUMENT_POSITION_PRECEDING,
 		).toBeTruthy();
 	});
 });

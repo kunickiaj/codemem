@@ -4363,7 +4363,20 @@
         letter-spacing: 0.06em;
       }
       .observer-status-banner .status-credentials summary,
-      .observer-routing-details summary { cursor: pointer; }
+      .observer-routing-details summary,
+      .observer-fallback-details summary { cursor: pointer; }
+      .observer-routing-details summary:focus-visible,
+      .observer-fallback-details summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+      .observer-fallback-details {
+        border-top: 1px solid var(--border);
+        padding-top: var(--sp-2);
+        color: var(--text-secondary);
+      }
+      .observer-fallback-details .field { margin-top: var(--sp-2); }
+      .observer-routing-list { display: grid; gap: var(--sp-2); margin: var(--sp-2) 0 0; }
+      .observer-routing-list div { display: grid; gap: 2px; }
+      .observer-routing-list dt { color: var(--text-secondary); }
+      .observer-routing-list dd { margin: 0; color: var(--text-primary); overflow-wrap: anywhere; }
       .observer-status-banner .status-credentials .small { margin-top: var(--sp-1); }
       .observer-status-banner .status-credentials ul {
         margin: var(--sp-1) 0 0;

@@ -67,7 +67,6 @@ function panelProps(observerRuntime = "api_http"): SettingsPanelProps {
 		getObserverModelTooltip: () => "",
 		getObserverModelDescription: () => "",
 		getObserverModelHint: () => "",
-		getTieredRoutingHelperText: () => "",
 		protectedConfigHelp: () => "Managed outside Settings",
 	};
 }

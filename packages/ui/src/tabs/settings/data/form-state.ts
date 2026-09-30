@@ -2,7 +2,7 @@
  * SettingsFormState the UI renders from. Pure — no module state. */
 
 import type { SettingsFormState } from "./types";
-import { asBooleanValue, asInputString, effectiveOrConfigured } from "./value-helpers";
+import { asBooleanValue, asInputString, effectiveOrConfigured, hasOwn } from "./value-helpers";
 
 export interface ConfigPayload {
 	config?: Record<string, unknown>;
@@ -40,6 +40,20 @@ function runtimeFromPayload(payload: ConfigPayload): string {
 	);
 }
 
+function tierRoutingFromPayload(payload: ConfigPayload): boolean {
+	const config = payload.config || {};
+	const effective = payload.effective || {};
+	const running = payload.observer_apply?.active?.tierRoutingEnabled;
+	if (
+		!hasOwn(config, "observer_tier_routing_enabled") &&
+		!hasOwn(payload.env_overrides, "observer_tier_routing_enabled") &&
+		typeof running === "boolean"
+	) {
+		return running;
+	}
+	return asBooleanValue(effectiveOrConfigured(config, effective, "observer_tier_routing_enabled"));
+}
+
 export function formStateFromPayload(payload: ConfigPayload): SettingsFormState {
 	const config = payload.config || {};
 	const effective = payload.effective || {};
@@ -72,9 +86,7 @@ export function formStateFromPayload(payload: ConfigPayload): SettingsFormState 
 		codexCommand: codexCommand.length ? JSON.stringify(codexCommand, null, 2) : "",
 		observerProvider: asInputString(effectiveOrConfigured(config, effective, "observer_provider")),
 		observerModel: asInputString(effectiveOrConfigured(config, effective, "observer_model")),
-		observerTierRoutingEnabled: asBooleanValue(
-			effectiveOrConfigured(config, effective, "observer_tier_routing_enabled"),
-		),
+		observerTierRoutingEnabled: tierRoutingFromPayload(payload),
 		observerSimpleModel: asInputString(
 			effectiveOrConfigured(config, effective, "observer_simple_model"),
 		),

@@ -32,7 +32,6 @@ import {
 	getObserverModelHint as getObserverModelHintRaw,
 	getObserverModelLabel as getObserverModelLabelRaw,
 	getObserverModelTooltip as getObserverModelTooltipRaw,
-	getTieredRoutingHelperText as getTieredRoutingHelperTextRaw,
 	hiddenUnlessAdvanced as hiddenUnlessAdvancedRaw,
 	protectedConfigHelp,
 } from "./data/model-accessors";
@@ -58,8 +57,6 @@ const getObserverModelHint = (): string =>
 		},
 		settingsState.envOverrides,
 	);
-const getTieredRoutingHelperText = (): string =>
-	getTieredRoutingHelperTextRaw(getSettingsViewState().renderState.values);
 const getObserverModelLabel = (): string =>
 	getObserverModelLabelRaw(getSettingsViewState().renderState.values);
 const getObserverModelTooltip = (): string =>
@@ -176,7 +173,6 @@ function SettingsDialogContent() {
 		getObserverModelTooltip,
 		getObserverModelDescription,
 		getObserverModelHint,
-		getTieredRoutingHelperText,
 		protectedConfigHelp,
 	};
 

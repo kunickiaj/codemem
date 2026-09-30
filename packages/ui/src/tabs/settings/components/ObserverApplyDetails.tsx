@@ -5,28 +5,34 @@ type Tier = NonNullable<NonNullable<ObserverApplyPayload["active"]>["simple"]>;
 function tierLabel(tier: Tier | undefined): string {
 	if (!tier) return "Not available";
 	const effort = tier.reasoningEffort ? ` · ${tier.reasoningEffort} reasoning` : "";
-	return `${tier.provider} / ${tier.model}${effort}`;
+	return `${tier.provider} · ${tier.model}${effort}`;
 }
 
 function ActiveRouting({ active }: { active: NonNullable<ObserverApplyPayload["active"]> }) {
 	return (
 		<details className="settings-note observer-routing-details">
-			<summary>Applied model routing</summary>
-			<div>
-				Running: {active.provider} / {active.model} via {active.runtime}
-			</div>
+			<summary>Models in use</summary>
 			{active.tierRoutingEnabled ? (
-				<>
-					<div>Simple: {tierLabel(active.simple)}</div>
-					<div>Rich: {tierLabel(active.rich)}</div>
-				</>
+				<dl className="observer-routing-list">
+					<div>
+						<dt>Simple requests</dt>
+						<dd>{tierLabel(active.simple)}</dd>
+					</div>
+					<div>
+						<dt>Rich requests</dt>
+						<dd>{tierLabel(active.rich)}</dd>
+					</div>
+				</dl>
 			) : (
-				<div>Simple/rich routing is off.</div>
+				<dl className="observer-routing-list">
+					<div>
+						<dt>All requests</dt>
+						<dd>
+							{active.provider} · {active.model}
+						</dd>
+					</div>
+				</dl>
 			)}
-			<div>
-				Listed models may be unavailable to the active account; check the result after an observer
-				request.
-			</div>
 		</details>
 	);
 }

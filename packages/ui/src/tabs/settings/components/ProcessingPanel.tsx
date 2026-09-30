@@ -1,93 +1,20 @@
 import { TextInput } from "../../../components/primitives/text-input";
 import type { SettingsPanelProps } from "../data/types";
 import { Field } from "./Field";
-import { ObserverModelAvailability } from "./ObserverModelAvailability";
 import { SettingsHint } from "./SettingsHint";
 import { SettingsSectionIntro } from "./SettingsSectionIntro";
-import { SettingsSwitchRow } from "./SettingsSwitchRow";
-
-function TierModelField({
-	tier,
-	values,
-	onTextInput,
-	tierProviders,
-	effectiveObserverRuntime,
-	hasExplicitObserverRuntime = true,
-}: Pick<
-	SettingsPanelProps,
-	| "values"
-	| "onTextInput"
-	| "tierProviders"
-	| "effectiveObserverRuntime"
-	| "hasExplicitObserverRuntime"
-> & {
-	tier: "simple" | "rich";
-}) {
-	const id = tier === "simple" ? "observerSimpleModel" : "observerRichModel";
-	const copy = {
-		simple: {
-			help: "About simple tier model",
-			detail: "Used when a batch falls below rich-routing thresholds.",
-			tooltip:
-				"Used for lighter replay batches. Leave blank to keep codemem's routing defaults. Explicit simple-tier values override the built-in defaults.",
-		},
-		rich: {
-			help: "About rich tier model",
-			detail: "Used when routing detects a richer replay batch.",
-			tooltip:
-				"Used for larger or more complex replay batches. Leave blank to keep codemem's rich-tier defaults. Explicit rich-tier values override the built-in defaults.",
-		},
-	}[tier];
-	return (
-		<Field>
-			<div className="field-label">
-				<label htmlFor={id}>Model</label>
-				<button
-					aria-label={copy.help}
-					className="help-icon"
-					data-tooltip={copy.tooltip}
-					type="button"
-				>
-					?
-				</button>
-			</div>
-			<TextInput
-				id={id}
-				list={`${id}-catalog`}
-				onInput={onTextInput(id)}
-				placeholder="leave empty for default"
-				value={values[id]}
-			/>
-			<div className="small">{copy.detail}</div>
-			<ObserverModelAvailability
-				id={id}
-				values={{
-					...values,
-					observerRuntime: hasExplicitObserverRuntime
-						? (effectiveObserverRuntime ?? values.observerRuntime)
-						: "api_http",
-				}}
-				provider={tierProviders?.[tier]}
-			/>
-		</Field>
-	);
-}
 
 export function ProcessingPanel({
 	values,
 	showTieredRouting,
 	hiddenUnlessAdvanced,
 	onTextInput,
-	onSwitchInput,
-	getTieredRoutingHelperText,
-	...modelOptions
 }: SettingsPanelProps) {
-	const modelFieldProps = { values, onTextInput, ...modelOptions };
 	return (
 		<>
 			<SettingsSectionIntro
-				detail="Control how often codemem processes queued work and, if needed, how it routes lighter vs richer model requests."
-				title="Processing and routing"
+				detail="Adjust background processing and, if needed, advanced model request controls. Choose models in Connection."
+				title="Background processing"
 			/>
 			<div className="settings-group">
 				<h3 className="settings-group-title">Processing</h3>
@@ -117,24 +44,16 @@ export function ProcessingPanel({
 					</div>
 				</Field>
 			</div>
-			<div className="settings-group">
-				<h3 className="settings-group-title">Tiered observer routing</h3>
-				<SettingsSwitchRow
-					checked={values.observerTierRoutingEnabled}
-					className="field"
-					id="observerTierRoutingEnabled"
-					label="Enable tiered routing"
-					onCheckedChange={onSwitchInput("observerTierRoutingEnabled")}
-				/>
-				<div className="small">{getTieredRoutingHelperText()}</div>
-				<SettingsHint hidden={!showTieredRouting || hiddenUnlessAdvanced()}>
-					These advanced routing values are only useful when you are tuning model cost, latency, or
-					output quality for a known workload. If a selected path cannot honor the requested tier
-					settings, codemem falls back visibly instead of silently pretending it worked.
-				</SettingsHint>
-				<div hidden={!showTieredRouting}>
+			<div
+				className="settings-group settings-advanced"
+				hidden={!showTieredRouting || hiddenUnlessAdvanced()}
+			>
+				<h3 className="settings-group-title">Model tuning</h3>
+				<div className="small">
+					These controls apply only when the selected connection supports them.
+				</div>
+				<div>
 					<h4>Simple tier</h4>
-					<TierModelField {...modelFieldProps} tier="simple" />
 					<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
 						<label htmlFor="observerSimpleTemperature">Temperature</label>
 						<TextInput
@@ -171,9 +90,8 @@ export function ProcessingPanel({
 						/>
 					</Field>
 				</div>
-				<div hidden={!showTieredRouting}>
+				<div>
 					<h4>Rich tier</h4>
-					<TierModelField {...modelFieldProps} tier="rich" />
 					<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
 						<label htmlFor="observerRichTemperature">Temperature</label>
 						<TextInput

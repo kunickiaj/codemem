@@ -79,7 +79,6 @@ function baseProps(): SettingsPanelProps {
 		getObserverModelTooltip: () => "",
 		getObserverModelDescription: () => "",
 		getObserverModelHint: () => "",
-		getTieredRoutingHelperText: () => "",
 		protectedConfigHelp: (key) => `${key} is managed outside Settings`,
 	};
 }

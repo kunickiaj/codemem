@@ -100,6 +100,5 @@ export type SettingsPanelProps = {
 	getObserverModelTooltip: () => string;
 	getObserverModelDescription: () => string;
 	getObserverModelHint: () => string;
-	getTieredRoutingHelperText: () => string;
 	protectedConfigHelp: (key: string) => string;
 };
