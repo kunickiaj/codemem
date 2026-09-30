@@ -8,6 +8,11 @@ import themes from "../static/themes.css?inline";
 import tokens from "../static/tokens.css?inline";
 
 describe("native control styles", () => {
+	it("keeps the Models in use disclosure at normal text size", () => {
+		const rule = html.match(/\.observer-routing-details summary \{([^}]+)\}/)?.[1];
+		expect(rule).toContain("font-size: var(--font-size-base)");
+		expect(rule).toContain("color: var(--text-secondary)");
+	});
 	it("loads the global control baseline after theme tokens", () => {
 		const tokensIndex = html.indexOf('<link rel="stylesheet" href="/assets/tokens.css" />');
 		const themesIndex = html.indexOf('<link rel="stylesheet" href="/assets/themes.css" />');

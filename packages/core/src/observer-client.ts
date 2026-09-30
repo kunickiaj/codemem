@@ -2249,7 +2249,10 @@ export class ObserverClient {
 			this.provider === "opencode" ? extractProviderApiKey(oauthCache, this.provider) : null;
 		this.auth = this.authAdapter.resolve({
 			explicitToken: getProviderApiKey(providerConfig) || this._apiKey || cachedApiKey,
-			envTokens: [process.env.CODEMEM_OBSERVER_API_KEY ?? ""],
+			envTokens: [
+				process.env.CODEMEM_OBSERVER_API_KEY ?? "",
+				this.provider === "opencode" ? (process.env.OPENCODE_API_KEY ?? "") : "",
+			],
 			piToken: this._piApiKey,
 			forceRefresh,
 		});

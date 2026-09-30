@@ -91,6 +91,24 @@ it("API key mode preserves the connection across tier routing and uses the suppl
 	expect(fetchMock.mock.calls[0]?.[1].headers.authorization).toBe("Bearer fixture-explicit-key");
 });
 
+it("uses OPENCODE_API_KEY only for the OpenCode API-key provider", () => {
+	vi.stubEnv("OPENCODE_API_KEY", "fixture-provider-env-key");
+	const opencode = new ObserverClient(
+		loadObserverConfig({ observer_runtime: "api_key", observer_provider: "opencode" }),
+	);
+	expect(opencode.auth.token).toBe("fixture-provider-env-key");
+	for (const provider of ["openai", "anthropic", "gateway"]) {
+		const observer = new ObserverClient(
+			loadObserverConfig({
+				observer_runtime: "api_key",
+				observer_provider: provider,
+				observer_base_url: "https://gateway.example/v1",
+			}),
+		);
+		expect(observer.auth.token).toBeNull();
+	}
+});
+
 it.each(["openai", "anthropic"])(
 	"OpenCode %s structured requests never use direct API credentials",
 	async (provider) => {

@@ -330,6 +330,9 @@ describe("settings outcomes", () => {
 		const summaryFor = (id: string) =>
 			root.querySelector(`[data-settings-outcome-for="${id}"] > summary`)?.textContent;
 		expect(summaryFor("observerProvider")).toBe("Change details");
+		expect(summaryFor("syncEnabled")).toBe("Change details");
+		expect(summaryFor("syncInterval")).toBe("Change details");
+		expect(root.textContent).not.toContain("Restart required");
 		expect(summaryFor("rawEventsSweeperIntervalS")).toBe("Immediately after save");
 		expect(summaryFor("packObservationLimit")).toBe(
 			"Inactive · Not used when Codemem creates context packs",
