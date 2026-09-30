@@ -12,7 +12,12 @@ import { type ConfigPayload, formStateFromPayload } from "./form-state";
 import { isProtectedConfigKey as isProtectedConfigKeyRaw } from "./model-accessors";
 import { settingsState } from "./state";
 import { getSettingsViewState, setDirty, updateRenderState } from "./state-ops";
-import { mergeOverrideBaseline, toProviderList } from "./value-helpers";
+import {
+	asInputString,
+	mergeOverrideBaseline,
+	normalizeTextValue,
+	toProviderList,
+} from "./value-helpers";
 
 export function isSettingsOpen(): boolean {
 	return getSettingsViewState().open;
@@ -25,12 +30,17 @@ export function isProtectedConfigKey(key: string): boolean {
 export function collectSettingsPayload(
 	options: { allowUntouchedParseErrors?: boolean } = {},
 ): Record<string, unknown> {
-	return collectSettingsPayloadRaw({
+	const payload = collectSettingsPayloadRaw({
 		values: getSettingsViewState().renderState.values,
 		touchedKeys: settingsState.touchedKeys,
 		baseline: settingsState.baseline,
 		allowUntouchedParseErrors: options.allowUntouchedParseErrors,
 	});
+	// Display the resolved connection, but only persist it after an explicit selection.
+	if (!settingsState.touchedKeys.has("observer_runtime")) {
+		payload.observer_runtime = settingsState.baseline.observer_runtime;
+	}
+	return payload;
 }
 
 export function renderObserverStatusBanner(status: unknown) {
@@ -116,6 +126,9 @@ export function renderConfigModal(payload: unknown) {
 	try {
 		const baseline = collectSettingsPayload({ allowUntouchedParseErrors: true });
 		settingsState.baseline = mergeOverrideBaseline(baseline, config, envOverrides);
+		settingsState.baseline.observer_runtime = normalizeTextValue(
+			asInputString(config.observer_runtime),
+		);
 	} catch {
 		settingsState.baseline = {};
 	}

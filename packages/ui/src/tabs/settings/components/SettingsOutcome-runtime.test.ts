@@ -3,7 +3,7 @@ import { collectSettingsPayload, renderConfigModal } from "../data/config-loader
 import { diffSettingsPayload } from "../data/diff-payload";
 import { settingsState, settingsView } from "../data/state";
 import { updateFormState } from "../data/state-ops";
-import { settingsOutcomeFor } from "./SettingsOutcome";
+import { effectiveObserverRuntime, settingsOutcomeFor } from "./SettingsOutcome";
 
 afterEach(() => {
 	settingsState.resolvedObserverRuntime = null;
@@ -38,11 +38,6 @@ it("previews auto Codex to command API and back without persisting an automatic 
 	expect(settingsOutcomeFor("observerAuthTimeoutMs")?.scope).not.toBe("No current effect");
 	expect(settingsOutcomeFor("observerRichReasoningEffort")?.scope).toContain("Responses");
 	expect(changedSettings()).toEqual({ observer_auth_source: "command" });
-	settingsState.touchedKeys.add("observer_runtime");
-	updateFormState({ observerRuntime: "api_http" });
-	updateFormState({ observerRuntime: "codex_sidecar" });
-	expect(changedSettings()).toEqual({ observer_auth_source: "command" });
-	expect(settingsOutcomeFor("observerAuthSource")?.scope).toContain("model requests");
 	editAuthSource("auto");
 	expect(settingsOutcomeFor("observerAuthSource")?.scope).toContain("No effect");
 	expect(changedSettings()).toEqual({});
@@ -50,6 +45,26 @@ it("previews auto Codex to command API and back without persisting an automatic 
 	updateFormState({ observerProvider: "anthropic" });
 	expect(changedSettings()).toEqual({ observer_provider: "anthropic" });
 });
+
+it.each(["claude_sidecar", "codex_sidecar"])(
+	"pins an explicit %s selection after an automatic auth preview",
+	(runtime) => {
+		renderConfigModal({
+			config: {},
+			resolved_observer_runtime: runtime,
+			observer_runtime_by_auth_source: { auto: runtime, command: "api_http" },
+		});
+		editAuthSource("command");
+		expect(effectiveObserverRuntime()).toBe("api_http");
+		settingsState.touchedKeys.add("observer_runtime");
+		updateFormState({ observerRuntime: runtime });
+		expect(effectiveObserverRuntime()).toBe(runtime);
+		expect(changedSettings()).toEqual({
+			observer_runtime: runtime,
+			observer_auth_source: "command",
+		});
+	},
+);
 
 it("previews restoring auto from saved command authentication", () => {
 	renderConfigModal({
