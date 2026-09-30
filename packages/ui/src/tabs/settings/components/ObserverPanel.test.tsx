@@ -248,6 +248,7 @@ describe("ObserverPanel connection details", () => {
 		act(() => render(<ObserverPanel {...props()} />, mount as HTMLDivElement));
 
 		expect(mount.textContent).toContain("opencode, claude, codex, and pi");
+		expect(mount.querySelector(".settings-section-intro")).toBeNull();
 		expect(
 			mount.querySelector('[aria-label="About model provider"]')?.getAttribute("data-tooltip"),
 		).toMatch(/Pi setup can also derive a provider/i);
