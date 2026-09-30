@@ -1,6 +1,30 @@
 import { expect, it } from "vitest";
 import { formStateFromPayload } from "./form-state";
 
+it.each(["applying", "failed"] as const)(
+	"ignores old observer routing while apply is %s",
+	(state) => {
+		for (const routing of [true, false]) {
+			expect(
+				formStateFromPayload({
+					config: { observer_runtime: "codex_sidecar" },
+					effective: { observer_tier_routing_enabled: routing },
+					observer_apply: {
+						state,
+						active: {
+							provider: "openai",
+							model: "old-model",
+							runtime: "api_http",
+							authType: "sdk_client",
+							tierRoutingEnabled: !routing,
+						},
+					},
+				}).observerTierRoutingEnabled,
+			).toBe(routing);
+		}
+	},
+);
+
 it("shows the running tier default when no explicit routing setting exists", () => {
 	const payload = {
 		config: {},

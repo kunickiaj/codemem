@@ -45,6 +45,7 @@ function tierRoutingFromPayload(payload: ConfigPayload): boolean {
 	const effective = payload.effective || {};
 	const running = payload.observer_apply?.active?.tierRoutingEnabled;
 	if (
+		payload.observer_apply?.state === "active" &&
 		!hasOwn(config, "observer_tier_routing_enabled") &&
 		!hasOwn(payload.env_overrides, "observer_tier_routing_enabled") &&
 		typeof running === "boolean"
