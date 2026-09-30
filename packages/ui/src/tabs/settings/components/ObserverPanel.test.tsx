@@ -60,27 +60,37 @@ afterEach(() => {
 	document.body.innerHTML = "";
 });
 
+it.each(["claude_sidecar", "codex_sidecar"])(
+	"keeps the provider editable for automatically resolved %s",
+	(runtime) => {
+		mount = document.createElement("div");
+		document.body.appendChild(mount);
+		const base = props();
+		const onSelect = vi.fn();
+		act(() =>
+			render(
+				<ObserverPanel
+					{...base}
+					values={{ ...base.values, observerRuntime: runtime }}
+					hasExplicitObserverRuntime={false}
+					effectiveObserverRuntime={runtime}
+					onSelectValueChange={() => onSelect}
+				/>,
+				mount as HTMLDivElement,
+			),
+		);
+		expect(mount.querySelector("#observerProvider")).not.toBeNull();
+		const select = mount.querySelector<HTMLSelectElement>("#observerRuntime");
+		expect(select?.value).toBe("api_http");
+		act(() => {
+			if (!select) throw new Error("Missing connection mode");
+			select.value = runtime;
+			select.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+		expect(onSelect).toHaveBeenCalledWith(runtime);
+	},
+);
 describe("ObserverPanel", () => {
-	it.each(["claude_sidecar", "codex_sidecar"])(
-		"keeps the provider editable for automatically resolved %s",
-		(runtime) => {
-			mount = document.createElement("div");
-			document.body.appendChild(mount);
-			const base = props();
-			act(() =>
-				render(
-					<ObserverPanel
-						{...base}
-						values={{ ...base.values, observerRuntime: runtime }}
-						hasExplicitObserverRuntime={false}
-						effectiveObserverRuntime={runtime}
-					/>,
-					mount as HTMLDivElement,
-				),
-			);
-			expect(mount.querySelector("#observerProvider")).not.toBeNull();
-		},
-	);
 	it("shows the provider when authentication previews a direct API connection", () => {
 		mount = document.createElement("div");
 		document.body.appendChild(mount);

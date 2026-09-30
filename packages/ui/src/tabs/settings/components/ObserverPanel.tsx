@@ -173,7 +173,7 @@ export function ObserverPanel({
 			<div className="settings-group">
 				<h3 className="settings-group-title">Connection</h3>
 				<ConnectionModeField
-					runtime={effectiveObserverRuntime}
+					runtime={hasExplicitObserverRuntime ? effectiveObserverRuntime : "api_http"}
 					onSelectValueChange={onSelectValueChange}
 				/>
 				<ModelProviderField
