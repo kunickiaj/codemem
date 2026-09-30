@@ -25,6 +25,18 @@ it("recognizes an explicitly selected local draft without a caller-supplied valu
 	expect(settingsOutcomeFor("observerProvider")?.scope).toBe("No current effect");
 });
 
+it("uses the unpinned server preview after selecting Automatic", () => {
+	renderConfigModal({
+		config: { observer_runtime: "api_http" },
+		resolved_observer_runtime: "api_http",
+		observer_automatic_runtime_by_auth_source: { auto: "codex_sidecar" },
+	});
+	settingsState.touchedKeys.add("observer_runtime");
+	updateFormState({ observerRuntime: "" });
+	expect(effectiveObserverRuntime()).toBe("codex_sidecar");
+	expect(collectSettingsPayload().observer_runtime).toBe("");
+});
+
 function editAuthSource(source: string) {
 	settingsState.touchedKeys.add("observer_auth_source");
 	updateFormState({ observerAuthSource: source });

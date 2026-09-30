@@ -171,8 +171,16 @@ function observerRuntimeMetadata(configData: ConfigData) {
 	// Runtime and auth source are the only editable auto-selection inputs. Resolve
 	// every auth-source draft against the full saved config and server environment,
 	// including protected commands/files and credential availability, without auth.
+	const automatic = { ...configData };
+	delete automatic.observer_runtime;
 	return {
 		resolved_observer_runtime: resolveObserverRuntime(configData),
+		observer_automatic_runtime_by_auth_source: Object.fromEntries(
+			[...AUTH_SOURCES].map((source) => [
+				source,
+				resolveObserverRuntime({ ...automatic, observer_auth_source: source }),
+			]),
+		),
 		observer_runtime_by_auth_source: Object.fromEntries(
 			[...AUTH_SOURCES].map((source) => [
 				source,

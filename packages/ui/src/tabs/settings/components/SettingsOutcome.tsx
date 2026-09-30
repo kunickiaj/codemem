@@ -160,6 +160,10 @@ export function effectiveObserverRuntime(draft?: string): string {
 	const runtimeChanged =
 		settingsState.touchedKeys.has("observer_runtime") &&
 		runtimeValue !== settingsState.baseline.observer_runtime;
+	if (runtimeChanged && !runtimeValue && !overridden) {
+		const source = String(effectiveSetting("observerAuthSource") || "auto");
+		return settingsState.observerAutomaticRuntimeByAuthSource[source] || "api_http";
+	}
 	if (overridden || !runtimeChanged) {
 		const preview = draftAuthRuntime();
 		if (preview) return preview;

@@ -13,6 +13,7 @@ export interface SettingsState {
 	effectiveConfig: Record<string, unknown>;
 	resolvedObserverRuntime: string | null;
 	observerRuntimeByAuthSource: Record<string, string>;
+	observerAutomaticRuntimeByAuthSource: Record<string, string>;
 	observerApply: ObserverApplyPayload | null;
 	envOverrides: Record<string, unknown>;
 	touchedKeys: Set<string>;
@@ -29,6 +30,7 @@ export const settingsState: SettingsState = {
 	effectiveConfig: {},
 	resolvedObserverRuntime: null,
 	observerRuntimeByAuthSource: {},
+	observerAutomaticRuntimeByAuthSource: {},
 	observerApply: null,
 	envOverrides: {},
 	touchedKeys: new Set<string>(),

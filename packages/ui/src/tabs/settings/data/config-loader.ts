@@ -108,6 +108,8 @@ export function renderConfigModal(payload: unknown) {
 	settingsState.effectiveConfig = { ...config, ...data.effective };
 	settingsState.resolvedObserverRuntime = data.resolved_observer_runtime ?? null;
 	settingsState.observerRuntimeByAuthSource = data.observer_runtime_by_auth_source ?? {};
+	settingsState.observerAutomaticRuntimeByAuthSource =
+		data.observer_automatic_runtime_by_auth_source ?? {};
 	settingsState.observerApply = data.observer_apply ?? null;
 	settingsState.protectedKeys = new Set(protectedKeys);
 	state.configDefaults = defaults;

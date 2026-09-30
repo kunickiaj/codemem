@@ -26,6 +26,13 @@ afterEach(() => {
 	rmSync(home, { recursive: true, force: true });
 });
 
+it("previews unpinned detection separately from a saved API runtime", async () => {
+	const body = await runtimePreview({ observer_runtime: "api_http" });
+	expect(body.resolved_observer_runtime).toBe("api_http");
+	expect(body.observer_automatic_runtime_by_auth_source.auto).toBe("codex_sidecar");
+	expect(body.observer_automatic_runtime_by_auth_source.command).toBe("api_http");
+});
+
 it.each([
 	{ claude: true, runtime: undefined, override: undefined, expected: "claude_sidecar" },
 	{ claude: false, runtime: undefined, override: undefined, expected: "codex_sidecar" },
