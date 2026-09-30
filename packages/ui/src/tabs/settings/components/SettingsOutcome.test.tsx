@@ -1,6 +1,7 @@
 import { render } from "preact";
 import { act } from "preact/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { renderConfigModal } from "../data/config-loader";
 import { EMPTY_FORM_STATE } from "../data/constants";
 import { settingsState, settingsView } from "../data/state";
 import type { SettingsPanelProps } from "../data/types";
@@ -133,6 +134,24 @@ it.each(["command", "file"])(
 		expect(root.textContent).toContain("CODEMEM_OBSERVER_AUTH_SOURCE");
 		expect(root.textContent).toContain("restart the viewer");
 		expect(root.textContent).not.toContain("does not activate");
+	},
+);
+
+it.each(["claude_sidecar", "codex_sidecar"])(
+	"keeps auth removal inactive for pinned %s",
+	(runtime) => {
+		renderConfigModal({
+			config: { observer_runtime: runtime, observer_auth_source: "command" },
+			resolved_observer_runtime: runtime,
+			env_overrides: { observer_auth_source: "CODEMEM_OBSERVER_AUTH_SOURCE" },
+		});
+		const outcome = settingsOutcomeFor("observerAuthSource");
+		const root = document.createElement("div");
+		document.body.appendChild(root);
+		act(() => render(outcome ? <SettingsOutcome {...outcome} /> : null, root));
+		expect(root.textContent).toContain("does not activate this field");
+		expect(root.textContent).not.toContain("connection may change");
+		expect(root.textContent).not.toContain("use the saved authentication settings");
 	},
 );
 

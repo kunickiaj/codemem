@@ -383,7 +383,12 @@ function ObserverFieldOutcome({
 	}
 	let guidance = "Remove that environment setting and restart the viewer to apply changes here.";
 	const authOverride = settingsState.envOverrides.observer_auth_source;
-	if (stage === "Sidecar authentication" && typeof authOverride === "string" && authOverride.trim())
+	if (
+		stage === "Sidecar authentication" &&
+		!hasExplicitObserverRuntime(settingsView.value.renderState.values.observerRuntime) &&
+		typeof authOverride === "string" &&
+		authOverride.trim()
+	)
 		guidance = `Inactive for the current connection · ${timing}. Remove ${authOverride.trim()} and restart the viewer to use the saved authentication settings. The connection may change after removal.`;
 	else if (inactive)
 		guidance = `Inactive · ${timing}. Removing the environment setting does not activate this field for the current connection.`;

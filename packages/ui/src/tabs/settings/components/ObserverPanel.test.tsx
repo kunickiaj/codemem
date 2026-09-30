@@ -134,6 +134,26 @@ it.each([false, true])(
 	},
 );
 
+it.each(["claude_sidecar", "codex_sidecar"])(
+	"keeps the provider editable for automatically resolved %s",
+	(runtime) => {
+		mount = document.createElement("div");
+		document.body.appendChild(mount);
+		const base = props();
+		act(() =>
+			render(
+				<ObserverPanel
+					{...base}
+					values={{ ...base.values, observerRuntime: runtime }}
+					hasExplicitObserverRuntime={false}
+					effectiveObserverRuntime={runtime}
+				/>,
+				mount as HTMLDivElement,
+			),
+		);
+		expect(mount.querySelector("#observerProvider")).not.toBeNull();
+	},
+);
 describe("ObserverPanel", () => {
 	it("keeps authentication available for an automatically detected local session", () => {
 		mount = document.createElement("div");
