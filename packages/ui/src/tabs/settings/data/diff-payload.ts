@@ -22,5 +22,22 @@ export function diffSettingsPayload(input: DiffSettingsPayloadInput): Record<str
 			changed[key] = value;
 		}
 	});
+	const routingKey = "observer_tier_routing_enabled";
+	const connectionChanged = [
+		"observer_runtime",
+		"observer_provider",
+		"observer_model",
+		"observer_auth_source",
+	].some((key) => hasOwn(changed, key) && !hasOwn(envOverrides, key));
+	// A connection edit can change automatic routing. Save the displayed switch
+	// with it so selected tier models cannot silently become inactive.
+	if (
+		connectionChanged &&
+		typeof current[routingKey] === "boolean" &&
+		!hasOwn(envOverrides, routingKey) &&
+		!isProtected(routingKey)
+	) {
+		changed[routingKey] = current[routingKey];
+	}
 	return changed;
 }
