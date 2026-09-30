@@ -161,7 +161,7 @@ export function effectiveObserverRuntime(draft?: string): string {
 		settingsState.touchedKeys.has("observer_runtime") &&
 		runtimeValue !== settingsState.baseline.observer_runtime;
 	if (runtimeChanged && !runtimeValue && !overridden) {
-		const source = String(effectiveSetting("observerAuthSource") || "auto");
+		const source = normalizedAuthSource(effectiveSetting("observerAuthSource"));
 		return settingsState.observerAutomaticRuntimeByAuthSource[source] || "api_http";
 	}
 	if (overridden || !runtimeChanged) {
@@ -177,7 +177,7 @@ export function effectiveObserverRuntime(draft?: string): string {
 
 function draftAuthRuntime(): string | undefined {
 	if (!settingsState.touchedKeys.has("observer_auth_source")) return undefined;
-	const source = String(effectiveSetting("observerAuthSource"));
+	const source = normalizedAuthSource(effectiveSetting("observerAuthSource"));
 	return settingsState.observerRuntimeByAuthSource[source];
 }
 
