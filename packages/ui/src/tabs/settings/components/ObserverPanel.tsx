@@ -25,6 +25,9 @@ function MainModelField({
 	| "getObserverModelDescription"
 	| "getObserverModelHint"
 >) {
+	let provider = values.observerProvider;
+	if (values.observerRuntime === "codex_sidecar") provider = "openai";
+	else if (values.observerRuntime === "claude_sidecar") provider = "anthropic";
 	return (
 		<Field>
 			<div className="field-label">
@@ -49,7 +52,7 @@ function MainModelField({
 			<div className="small" id="observerModelHint">
 				{getObserverModelHint()}
 			</div>
-			<ObserverModelAvailability id="observerModel" values={values} />
+			<ObserverModelAvailability id="observerModel" values={values} provider={provider} />
 		</Field>
 	);
 }
@@ -101,6 +104,48 @@ function ConnectionModeField({
 	);
 }
 
+function ModelProviderField({
+	runtime,
+	values,
+	providerOptions,
+	onSelectValueChange,
+}: Pick<SettingsPanelProps, "values" | "providerOptions" | "onSelectValueChange"> & {
+	runtime: string;
+}) {
+	if (runtime === "claude_sidecar" || runtime === "codex_sidecar") return null;
+	return (
+		<Field>
+			<div className="field-label">
+				<label htmlFor="observerProvider">Model provider</label>
+				<button
+					aria-label="About model provider"
+					className="help-icon"
+					data-tooltip="Choose where model requests are sent. Use auto for recommended defaults."
+					type="button"
+				>
+					?
+				</button>
+			</div>
+			<RadixSelect
+				ariaLabel="Model provider"
+				contentClassName="settings-select-content"
+				id="observerProvider"
+				itemClassName="settings-select-item"
+				onValueChange={onSelectValueChange("observerProvider")}
+				options={[{ label: "auto (default)", value: "" }, ...providerOptions]}
+				placeholder="auto (default)"
+				triggerClassName="settings-select-trigger"
+				value={values.observerProvider}
+				viewportClassName="settings-select-viewport"
+			/>
+			<div className="small">
+				Use `auto` unless you need to pin a specific provider. Pi setup can derive Direct API
+				provider/model from API-key providers only.
+			</div>
+		</Field>
+	);
+}
+
 export function ObserverPanel({
 	values,
 	effectiveObserverRuntime = values.observerRuntime,
@@ -130,40 +175,14 @@ export function ObserverPanel({
 					runtime={effectiveObserverRuntime}
 					onSelectValueChange={onSelectValueChange}
 				/>
-				{effectiveObserverRuntime !== "claude_sidecar" &&
-				effectiveObserverRuntime !== "codex_sidecar" ? (
-					<Field>
-						<div className="field-label">
-							<label htmlFor="observerProvider">Model provider</label>
-							<button
-								aria-label="About model provider"
-								className="help-icon"
-								data-tooltip="Choose where model requests are sent. Use auto for recommended defaults."
-								type="button"
-							>
-								?
-							</button>
-						</div>
-						<RadixSelect
-							ariaLabel="Model provider"
-							contentClassName="settings-select-content"
-							id="observerProvider"
-							itemClassName="settings-select-item"
-							onValueChange={onSelectValueChange("observerProvider")}
-							options={[{ label: "auto (default)", value: "" }, ...providerOptions]}
-							placeholder="auto (default)"
-							triggerClassName="settings-select-trigger"
-							value={values.observerProvider}
-							viewportClassName="settings-select-viewport"
-						/>
-						<div className="small">
-							Use `auto` unless you need to pin a specific provider. Pi setup can derive Direct API
-							provider/model from API-key providers only.
-						</div>
-					</Field>
-				) : null}
-				<MainModelField
+				<ModelProviderField
+					runtime={effectiveObserverRuntime}
 					values={values}
+					providerOptions={providerOptions}
+					onSelectValueChange={onSelectValueChange}
+				/>
+				<MainModelField
+					values={{ ...values, observerRuntime: effectiveObserverRuntime }}
 					onTextInput={onTextInput}
 					getObserverModelLabel={getObserverModelLabel}
 					getObserverModelTooltip={getObserverModelTooltip}
