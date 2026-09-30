@@ -15,6 +15,7 @@ export interface SettingsState {
 	observerRuntimeByAuthSource: Record<string, string>;
 	observerAutomaticRuntimeByAuthSource: Record<string, string>;
 	observerApply: ObserverApplyPayload | null;
+	observerTierRoutingExplicit: boolean;
 	envOverrides: Record<string, unknown>;
 	touchedKeys: Set<string>;
 	shellMounted: boolean;
@@ -32,6 +33,7 @@ export const settingsState: SettingsState = {
 	observerRuntimeByAuthSource: {},
 	observerAutomaticRuntimeByAuthSource: {},
 	observerApply: null,
+	observerTierRoutingExplicit: false,
 	envOverrides: {},
 	touchedKeys: new Set<string>(),
 	shellMounted: false,

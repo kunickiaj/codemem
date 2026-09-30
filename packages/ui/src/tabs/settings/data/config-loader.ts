@@ -111,6 +111,9 @@ export function renderConfigModal(payload: unknown) {
 	settingsState.observerAutomaticRuntimeByAuthSource =
 		data.observer_automatic_runtime_by_auth_source ?? {};
 	settingsState.observerApply = data.observer_apply ?? null;
+	settingsState.observerTierRoutingExplicit =
+		Object.hasOwn(config, "observer_tier_routing_enabled") ||
+		Object.hasOwn(envOverrides, "observer_tier_routing_enabled");
 	settingsState.protectedKeys = new Set(protectedKeys);
 	state.configDefaults = defaults;
 	state.configPath = data.path || "";
