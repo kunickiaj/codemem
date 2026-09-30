@@ -51,7 +51,10 @@ import {
 import type { SettingsPanelProps } from "./data/types";
 
 const getObserverModelHint = (): string =>
-	getObserverModelHintRaw(getSettingsViewState().renderState.values, settingsState.envOverrides);
+	getObserverModelHintRaw(
+		{ ...getSettingsViewState().renderState.values, observerRuntime: effectiveObserverRuntime() },
+		settingsState.envOverrides,
+	);
 const getTieredRoutingHelperText = (): string =>
 	getTieredRoutingHelperTextRaw(getSettingsViewState().renderState.values);
 const getObserverModelLabel = (): string =>
