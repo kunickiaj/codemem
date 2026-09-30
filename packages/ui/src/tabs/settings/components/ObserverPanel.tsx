@@ -98,6 +98,34 @@ function ProviderField({
 	);
 }
 
+function ConnectionFields({
+	values,
+	runtime,
+	explicit,
+	providerOptions,
+	onSelectValueChange,
+}: Pick<SettingsPanelProps, "values" | "providerOptions" | "onSelectValueChange"> & {
+	runtime: string;
+	explicit: boolean;
+}) {
+	const local = runtime === "claude_sidecar" || runtime === "codex_sidecar";
+	return (
+		<>
+			<ConnectionModeField
+				runtime={explicit ? runtime : "automatic"}
+				onSelectValueChange={onSelectValueChange}
+			/>
+			{!explicit || !local ? (
+				<ProviderField
+					value={values.observerProvider}
+					providerOptions={providerOptions}
+					onSelectValueChange={onSelectValueChange}
+				/>
+			) : null}
+		</>
+	);
+}
+
 export function ObserverPanel({
 	values,
 	effectiveObserverRuntime = values.observerRuntime,
@@ -126,19 +154,11 @@ export function ObserverPanel({
 			/>
 			<div className="settings-group">
 				<h3 className="settings-group-title">Connection</h3>
-				<ConnectionModeField
-					runtime={hasExplicitObserverRuntime ? effectiveObserverRuntime : "automatic"}
-					onSelectValueChange={onSelectValueChange}
+				<ConnectionFields
+					{...{ values, providerOptions, onSelectValueChange }}
+					runtime={effectiveObserverRuntime}
+					explicit={hasExplicitObserverRuntime}
 				/>
-				{!hasExplicitObserverRuntime ||
-				(effectiveObserverRuntime !== "claude_sidecar" &&
-					effectiveObserverRuntime !== "codex_sidecar") ? (
-					<ProviderField
-						value={values.observerProvider}
-						providerOptions={providerOptions}
-						onSelectValueChange={onSelectValueChange}
-					/>
-				) : null}
 				<Field className="field settings-advanced" hidden={hiddenUnlessAdvanced()}>
 					<label htmlFor="codexCommand">Codex command (JSON argv)</label>
 					<TextArea
