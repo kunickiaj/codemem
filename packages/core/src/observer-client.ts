@@ -539,7 +539,11 @@ function finalizeLoadedObserverConfig(
 	cfg: ObserverConfig,
 	data: Record<string, unknown>,
 ): ObserverConfig {
-	if (cfg.observerRuntime !== "claude_sidecar" && cfg.observerRuntime !== "codex_sidecar") {
+	if (
+		!["claude_sidecar", "codex_sidecar", "opencode_v2"].includes(
+			normalizeObserverRuntime(cfg.observerRuntime),
+		)
+	) {
 		applyPiDerivedObserverFields(cfg);
 	}
 	cfg.observerExplicitConfigKeys = collectExplicitObserverConfigKeys(data, process.env);

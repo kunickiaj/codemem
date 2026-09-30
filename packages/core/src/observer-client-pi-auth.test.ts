@@ -128,6 +128,22 @@ function apiHttpClient(provider: string): ObserverClient {
 	});
 }
 
+describe("OpenCode account defaults remain independent of Pi", () => {
+	const h = piAuthHarness();
+	beforeEach(() => h.before());
+	afterEach(() => h.after());
+	it.each(["opencode_v2", " OpenCode_V2 "])("excludes Pi projection for %s", (runtime) => {
+		writePiApiKeyFixture(h, { provider: "anthropic", model: "pi-only-model" });
+		const cfg = loadObserverConfig({ observer_runtime: runtime });
+		expect(cfg.observerProvider).not.toBe("anthropic");
+		expect(cfg.observerModel).not.toBe("pi-only-model");
+		expect(cfg.observerBaseUrl).toBeNull();
+		const client = new ObserverClient(cfg);
+		expect(client.provider).toBe("openai");
+		expect(client.model).toBe("gpt-6-luna");
+	});
+});
+
 describe("ObserverClient — pi-derived auth basics", () => {
 	const h = piAuthHarness();
 	beforeEach(() => h.before());
