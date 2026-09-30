@@ -82,4 +82,26 @@ describe("ObserverPanel", () => {
 		const runtimeHelp = mount.querySelector('[aria-label="About connection mode"]');
 		expect(runtimeHelp?.getAttribute("data-tooltip") ?? "").toMatch(/V2-captured sessions/i);
 	});
+
+	it("puts connection controls ahead of observer status", () => {
+		mount = document.createElement("div");
+		document.body.appendChild(mount);
+		act(() =>
+			render(
+				<ObserverPanel
+					{...props()}
+					observerStatusBannerSlot={<div id="observerStatusBanner">Current connection</div>}
+				/>,
+				mount as HTMLDivElement,
+			),
+		);
+		const groups = mount.querySelectorAll(".settings-group");
+		const status = mount.querySelector("#observerStatusBanner");
+		expect(
+			groups[0]?.compareDocumentPosition(status as Node) & Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		expect(
+			groups[1]?.compareDocumentPosition(status as Node) & Node.DOCUMENT_POSITION_PRECEDING,
+		).toBeTruthy();
+	});
 });

@@ -23,8 +23,41 @@ it("describes sidecar login without incorrectly reporting a missing API token", 
 			document.body,
 		),
 	);
-	expect(document.querySelector('[aria-label="CLI login checked on use"]')).not.toBeNull();
+	expect(document.querySelector(".status-active")?.textContent).toContain("Local Codex session");
 	expect(document.querySelector('[aria-label="token missing"]')).toBeNull();
+});
+
+it("keeps direct API and legacy credentials separate from local and V2 accounts", () => {
+	act(() =>
+		render(
+			<ObserverStatusBanner
+				status={{
+					active: { auth: { method: "codex_sidecar", token_present: false } },
+					available_credentials: { openai: { api_key: false } },
+				}}
+			/>,
+			document.body,
+		),
+	);
+	const details = document.querySelector<HTMLDetailsElement>(".status-credentials");
+	expect(details?.open).toBe(false);
+	expect(details?.querySelector("summary")?.textContent).toBe("Direct API credentials");
+	expect(details?.textContent).toContain("do not show local or OpenCode V2 account access");
+	expect(details?.textContent).toContain("openai: none");
+});
+
+it("keeps a missing Direct API key actionable", () => {
+	act(() =>
+		render(
+			<ObserverStatusBanner
+				status={{ active: { auth: { method: "sdk_client", token_present: false } } }}
+			/>,
+			document.body,
+		),
+	);
+	expect(document.querySelector(".status-token-warning")?.textContent).toContain(
+		"Check your credentials",
+	);
 });
 
 describe("ObserverStatusBanner diagnostics action", () => {

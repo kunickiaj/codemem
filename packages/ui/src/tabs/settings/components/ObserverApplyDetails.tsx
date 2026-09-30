@@ -10,7 +10,8 @@ function tierLabel(tier: Tier | undefined): string {
 
 function ActiveRouting({ active }: { active: NonNullable<ObserverApplyPayload["active"]> }) {
 	return (
-		<section className="settings-note" aria-label="Active observer model routing">
+		<details className="settings-note observer-routing-details">
+			<summary>Applied model routing</summary>
 			<div>
 				Running: {active.provider} / {active.model} via {active.runtime}
 			</div>
@@ -26,7 +27,7 @@ function ActiveRouting({ active }: { active: NonNullable<ObserverApplyPayload["a
 				Listed models may be unavailable to the active account; check the result after an observer
 				request.
 			</div>
-		</section>
+		</details>
 	);
 }
 
