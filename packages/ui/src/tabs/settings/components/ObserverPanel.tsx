@@ -149,6 +149,7 @@ function ModelProviderField({
 export function ObserverPanel({
 	values,
 	effectiveObserverRuntime = values.observerRuntime,
+	hasExplicitObserverRuntime = true,
 	observerMaxCharsDefault,
 	providerOptions,
 	showAuthFile,
@@ -176,7 +177,7 @@ export function ObserverPanel({
 					onSelectValueChange={onSelectValueChange}
 				/>
 				<ModelProviderField
-					runtime={effectiveObserverRuntime}
+					runtime={hasExplicitObserverRuntime ? effectiveObserverRuntime : ""}
 					values={values}
 					providerOptions={providerOptions}
 					onSelectValueChange={onSelectValueChange}

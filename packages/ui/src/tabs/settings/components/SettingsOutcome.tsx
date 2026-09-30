@@ -145,6 +145,13 @@ export function settingsOutcomeFor(
 	};
 }
 
+export function hasExplicitObserverRuntime(draft?: string): boolean {
+	if (settingsState.envOverrides.observer_runtime)
+		return Boolean(String(settingsState.effectiveConfig.observer_runtime ?? "").trim());
+	if (settingsState.touchedKeys.has("observer_runtime")) return Boolean(draft?.trim());
+	return Boolean(String(settingsState.baseline.observer_runtime ?? "").trim());
+}
+
 export function effectiveObserverRuntime(draft?: string): string {
 	const overridden = settingsState.envOverrides.observer_runtime;
 	const runtimeValue = effectiveSetting("observerRuntime", draft);
@@ -195,7 +202,7 @@ function conditionalOutcome(
 ): SettingsOutcomeDetails | undefined {
 	const sidecar = isSidecarRuntime(runtime);
 	const provider = String(effectiveSetting("observerProvider"));
-	if (controlId === "observerProvider" && sidecar)
+	if (controlId === "observerProvider" && sidecar && hasExplicitObserverRuntime())
 		return inactiveOutcome(controlId, "Local Claude and Codex sessions select their own provider");
 	if (controlId === "observerModel") return baseModelOutcome(runtime, provider);
 	const authSource = normalizedAuthSource(effectiveSetting("observerAuthSource"));

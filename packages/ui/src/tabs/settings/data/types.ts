@@ -82,6 +82,7 @@ export type SettingsTooltipState = {
 export type SettingsPanelProps = {
 	values: SettingsFormState;
 	effectiveObserverRuntime?: string;
+	hasExplicitObserverRuntime?: boolean;
 	/** Resolved tier-specific provider overrides, which the form does not edit. */
 	tierProviders?: { simple: string; rich: string };
 	observerMaxCharsDefault: string;

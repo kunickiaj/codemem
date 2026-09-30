@@ -130,7 +130,7 @@ it.each(["claude_sidecar", "codex_sidecar"])(
 		});
 		expect(settingsView.value.renderState.values.observerRuntime).toBe(runtime);
 		expect(settingsOutcomeFor("observerAuthSource")?.scope).toContain("No effect");
-		expect(settingsOutcomeFor("observerProvider")?.scope).toBe("No current effect");
+		expect(settingsOutcomeFor("observerProvider")?.scope).toContain("Queued and future");
 		expect(settingsOutcomeFor("observerRichReasoningEffort")?.scope).toBe("No current effect");
 		expect(collectSettingsPayload({ allowUntouchedParseErrors: true }).observer_runtime).toBe(
 			settingsState.baseline.observer_runtime,

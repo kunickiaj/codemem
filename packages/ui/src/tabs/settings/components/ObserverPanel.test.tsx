@@ -61,6 +61,26 @@ afterEach(() => {
 });
 
 describe("ObserverPanel", () => {
+	it.each(["claude_sidecar", "codex_sidecar"])(
+		"keeps the provider editable for automatically resolved %s",
+		(runtime) => {
+			mount = document.createElement("div");
+			document.body.appendChild(mount);
+			const base = props();
+			act(() =>
+				render(
+					<ObserverPanel
+						{...base}
+						values={{ ...base.values, observerRuntime: runtime }}
+						hasExplicitObserverRuntime={false}
+						effectiveObserverRuntime={runtime}
+					/>,
+					mount as HTMLDivElement,
+				),
+			);
+			expect(mount.querySelector("#observerProvider")).not.toBeNull();
+		},
+	);
 	it("shows the provider when authentication previews a direct API connection", () => {
 		mount = document.createElement("div");
 		document.body.appendChild(mount);
