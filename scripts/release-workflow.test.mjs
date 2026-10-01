@@ -91,7 +91,7 @@ describe("GitHub release presentation", () => {
 describe("repository changelog", () => {
 	it("uses dated version entries, change categories and comparison links", () => {
 		assert.match(changelog, /^## \[Unreleased\]$/m);
-		for (const version of ["0.46.2", "0.46.1", "0.44.0"]) {
+		for (const version of ["0.46.2", "0.46.1", "0.46.0"]) {
 			assert.ok(changelog.includes(`## [${version}] - `));
 			assert.ok(changelog.includes(`[${version}]: https://github.com/kunickiaj/codemem/compare/`));
 		}
