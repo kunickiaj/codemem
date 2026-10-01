@@ -1,9 +1,5 @@
 # Changelog
 
-Notable changes to codemem are documented here, following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/).
-
-Stable release history starts at 0.46.0. Earlier versions, prereleases, release announcements, and contributor credits remain in [GitHub Releases](https://github.com/kunickiaj/codemem/releases).
-
 ## [Unreleased]
 
 ### Changed
