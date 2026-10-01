@@ -306,6 +306,7 @@ The normal flow is **Projects → Sharing → Devices → Health**, not manual p
 - **Team onboarding** — create or join a Team when people will collaborate over time.
   - Accepting the Team invitation links the recipient's Identity and device and inherits every current and future Project assigned to that Team.
   - The invitation does not create Project-to-Team assignments. Manage those separately, and review the Team's Projects before sending or accepting the invitation.
+  - Team invitation previews group matching Project display names into one row, combine their memory counts, and show how many distinct Project identities the row covers. This summary does not merge Project identities or change access; matching names alone do not prove that repositories are the same.
 - **Direct Project sharing** — once Team sharing is configured, use **Share exact Projects** to invite one Identity to exact Projects without adding the recipient to the Team.
 - **Add device** — invite another device for an existing Identity and review the Projects it will inherit from that Identity's direct and Team access.
 

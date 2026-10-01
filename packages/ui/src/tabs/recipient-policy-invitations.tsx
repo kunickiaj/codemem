@@ -12,6 +12,7 @@ import type {
 } from "../lib/api/sync";
 import type { ImportInviteResult } from "../lib/api/types";
 import { humanPresentationLabel, isMachinePresentationLabel } from "../lib/identity-presentation";
+import { projectIdentityMemorySummaryGroups } from "../lib/project-identity-presentation";
 import { openProjectShareFlow } from "./project-sharing";
 
 type CreateKind = "team_member" | "add_device";
@@ -133,12 +134,20 @@ function ProjectList({ preview }: { preview: RecipientOnboardingPreviewV1 }) {
 	if (preview.projects.length === 0) {
 		return <p className="small">No Projects are currently shared with this Team.</p>;
 	}
+	const groups = projectIdentityMemorySummaryGroups(
+		preview.projects.map((project) => ({
+			canonicalId: project.canonicalProjectIdentity,
+			displayName: project.displayName,
+			existingMemoryCount: project.existingMemoryCount,
+		})),
+	);
 	return (
 		<ul>
-			{preview.projects.map((project) => (
-				<li key={project.canonicalProjectIdentity}>
-					<strong>{project.displayName}</strong> — {memoryLabel(project.existingMemoryCount)} and
-					future activity
+			{groups.map((group) => (
+				<li key={group.displayName}>
+					<strong>{group.displayName}</strong> — {memoryLabel(group.existingMemoryCount)} and future
+					activity
+					{group.identityCount > 1 ? ` (${group.identityCount} Project identities)` : null}
 				</li>
 			))}
 		</ul>

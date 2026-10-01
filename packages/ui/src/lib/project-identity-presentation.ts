@@ -8,6 +8,14 @@ export interface ProjectIdentitySummaryGroup {
 	identityCount: number;
 }
 
+export interface ProjectIdentityMemoryPresentationItem extends ProjectIdentityPresentationItem {
+	existingMemoryCount: number;
+}
+
+export interface ProjectIdentityMemorySummaryGroup extends ProjectIdentitySummaryGroup {
+	existingMemoryCount: number;
+}
+
 function compareCanonicalId(
 	left: ProjectIdentityPresentationItem,
 	right: ProjectIdentityPresentationItem,
@@ -24,10 +32,8 @@ export function projectDisplayNameKey(displayName: string): string {
 		.toLowerCase();
 }
 
-function distinctSortedItems(
-	items: ProjectIdentityPresentationItem[],
-): ProjectIdentityPresentationItem[] {
-	const byCanonicalId = new Map<string, ProjectIdentityPresentationItem>();
+function distinctSortedItems<T extends ProjectIdentityPresentationItem>(items: T[]): T[] {
+	const byCanonicalId = new Map<string, T>();
 	for (const item of items) {
 		const current = byCanonicalId.get(item.canonicalId);
 		if (!current || item.displayName < current.displayName)
@@ -96,4 +102,19 @@ export function projectIdentitySummaryGroups(
 			displayName: group.displayName,
 			identityCount: group.canonicalIds.length,
 		}));
+}
+
+export function projectIdentityMemorySummaryGroups(
+	items: ProjectIdentityMemoryPresentationItem[],
+): ProjectIdentityMemorySummaryGroup[] {
+	const distinctItems = distinctSortedItems(items);
+	const memoryCounts = new Map<string, number>();
+	for (const item of distinctItems) {
+		const key = projectDisplayNameKey(item.displayName);
+		memoryCounts.set(key, (memoryCounts.get(key) ?? 0) + item.existingMemoryCount);
+	}
+	return projectIdentitySummaryGroups(distinctItems).map((group) => ({
+		...group,
+		existingMemoryCount: memoryCounts.get(projectDisplayNameKey(group.displayName)) ?? 0,
+	}));
 }

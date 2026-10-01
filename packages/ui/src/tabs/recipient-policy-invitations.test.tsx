@@ -125,6 +125,37 @@ const addDevicePreview: RecipientOnboardingPreviewV1 = {
 	reviewedOnboardingDigest: "recipient-onboarding-preview-v1:device",
 };
 
+const worktreePreview: RecipientOnboardingPreviewV1 = {
+	...teamPreview,
+	projects: [
+		{ ...teamPreview.projects[0], canonicalProjectIdentity: "project-a", existingMemoryCount: 2 },
+		{
+			...teamPreview.projects[0],
+			canonicalProjectIdentity: "project-b",
+			displayName: " code\u200Bmem ",
+			existingMemoryCount: 5,
+		},
+		{ ...teamPreview.projects[0], canonicalProjectIdentity: "project-c", existingMemoryCount: 0 },
+		{
+			...teamPreview.projects[0],
+			canonicalProjectIdentity: "project-viewer",
+			displayName: "Viewer",
+			existingMemoryCount: 1,
+		},
+	],
+};
+
+function expectGroupedProjectList(dialog: Element): void {
+	const rows = [...dialog.querySelectorAll("li")];
+	expect(rows).toHaveLength(2);
+	expect(rows[0].textContent).toBe(
+		"Codemem — 7 existing memories and future activity (3 Project identities)",
+	);
+	expect(rows[1].textContent).toBe("Viewer — 1 existing memory and future activity");
+	expect(dialog.textContent).not.toContain("project-a");
+	expect(dialog.textContent).not.toContain("project-b");
+}
+
 const projectShareInspection = {
 	kind: "project_share_invite" as const,
 	operation_id: "share-projects",
@@ -229,6 +260,68 @@ it("previews and creates a Team-member invitation with the exact reviewed reques
 		policy_team_id: "team-one",
 		reviewed_onboarding_digest: teamPreview.reviewedOnboardingDigest,
 	});
+});
+
+it("groups worktree names and memory counts when creating a Team invitation", async () => {
+	vi.mocked(api.previewRecipientInvite).mockResolvedValue({
+		kind: "team_member",
+		preview: worktreePreview,
+	});
+	vi.mocked(api.createRecipientInvite).mockResolvedValue({
+		ok: true,
+		kind: "team_member",
+		preview: worktreePreview,
+		invite: { link: "codemem://join?invite=team" },
+	});
+	mount();
+	act(() => button("Invite Team member").click());
+	const dialog = document.querySelector('[role="dialog"]');
+	if (!dialog) throw new Error("dialog missing");
+	act(() => button("Review invitation", dialog).click());
+	await vi.waitFor(() => expect(dialog.textContent).toContain("Current Projects for"));
+	expectGroupedProjectList(dialog);
+	act(() => button("Create invitation", dialog).click());
+	await vi.waitFor(() => expect(api.createRecipientInvite).toHaveBeenCalledOnce());
+	expect(api.createRecipientInvite).toHaveBeenCalledWith({
+		kind: "team_member",
+		policy_team_id: "team-one",
+		reviewed_onboarding_digest: worktreePreview.reviewedOnboardingDigest,
+	});
+	expect(worktreePreview.projects).toHaveLength(4);
+});
+
+it("groups worktree names and memory counts when reviewing a Team invitation", async () => {
+	vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue({
+		kind: "team_member",
+		recipient_name: "Local Identity",
+		device_name: "Work Laptop",
+		onboarding: worktreePreview,
+	});
+	vi.mocked(api.importCoordinatorInvite).mockResolvedValue({ status: "accepted" });
+	mount();
+	act(() => button("Review invitation").click());
+	const textarea = document.querySelector<HTMLTextAreaElement>("textarea");
+	const dialog = document.querySelector('[role="dialog"]');
+	if (!textarea || !dialog) throw new Error("dialog missing");
+	act(() => {
+		textarea.value = "team-member-invite";
+		textarea.dispatchEvent(new Event("input", { bubbles: true }));
+	});
+	act(() => button("Review invitation", dialog).click());
+	await vi.waitFor(() => expect(dialog.textContent).toContain("Current Projects for"));
+	expectGroupedProjectList(dialog);
+	act(() => button("Accept invitation", dialog).click());
+	await vi.waitFor(() => expect(api.importCoordinatorInvite).toHaveBeenCalledOnce());
+	expect(api.importCoordinatorInvite).toHaveBeenCalledWith(
+		"team-member-invite",
+		{
+			recipient_name: "Local Identity",
+			device_name: "Work Laptop",
+			reviewed_onboarding_digest: worktreePreview.reviewedOnboardingDigest,
+		},
+		"team_member",
+	);
+	expect(worktreePreview.projects).toHaveLength(4);
 });
 
 it("inspects and accepts add-device access with direct, inherited, and excluded Projects", async () => {

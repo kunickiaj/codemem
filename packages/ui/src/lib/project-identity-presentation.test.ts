@@ -1,10 +1,32 @@
 import { describe, expect, it } from "vitest";
 import {
+	projectIdentityMemorySummaryGroups,
 	projectIdentitySummaryGroups,
 	stableProjectPresentationLabels,
 } from "./project-identity-presentation";
 
 describe("Project identity presentation", () => {
+	it("combines memory counts for name summaries without counting an identity twice", () => {
+		const items = [
+			{ canonicalId: "project-b", displayName: "codemem", existingMemoryCount: 5 },
+			{ canonicalId: "project-a", displayName: "Codemem", existingMemoryCount: 2 },
+			{ canonicalId: "project-a", displayName: "Codemem", existingMemoryCount: 2 },
+			{ canonicalId: "project-c", displayName: " code\u200Bmem ", existingMemoryCount: 0 },
+			{ canonicalId: "project-viewer", displayName: "Viewer", existingMemoryCount: 1 },
+		];
+		const expected = [
+			{ displayName: "Codemem", identityCount: 3, existingMemoryCount: 7 },
+			{ displayName: "Viewer", identityCount: 1, existingMemoryCount: 1 },
+		];
+		expect(projectIdentityMemorySummaryGroups(items)).toEqual(expected);
+		expect(projectIdentityMemorySummaryGroups([...items].reverse())).toEqual(expected);
+		expect(items).toHaveLength(5);
+	});
+
+	it("returns no memory summaries for an empty Project list", () => {
+		expect(projectIdentityMemorySummaryGroups([])).toEqual([]);
+	});
+
 	it("assigns privacy-safe same-label ordinals by canonical identity regardless of input order", () => {
 		const privatePath = "/private/worktrees/codemem";
 		const privateRemote = "ssh://git@private.example.test/codemem.git";
