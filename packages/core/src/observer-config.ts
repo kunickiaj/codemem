@@ -1620,7 +1620,9 @@ export function resolveCustomProviderModel(
 	}
 
 	const prefix = `${provider}/`;
-	const shortName = name.startsWith(prefix) ? name.slice(prefix.length) : name;
+	const shortName = name.toLowerCase().startsWith(prefix.toLowerCase())
+		? name.slice(prefix.length)
+		: name;
 
 	const models = asRecord(providerConfig.models);
 	let modelId: string | null = shortName;

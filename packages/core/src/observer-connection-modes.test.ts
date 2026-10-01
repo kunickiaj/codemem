@@ -218,6 +218,37 @@ it("keeps exact custom provider matches ahead of case-insensitive aliases", () =
 	expect(resolveCustomProviderFromModel("OrgModel", providers)).toBeNull();
 });
 
+it.each(["api_key", "api_http"])(
+	"maps mixed-case custom prefixes before %s direct dispatch",
+	async (runtime) => {
+		const configDir = join(home, ".config/opencode");
+		mkdirSync(configDir, { recursive: true });
+		writeFileSync(
+			join(configDir, "opencode.json"),
+			JSON.stringify({
+				provider: {
+					Gateway: {
+						options: { baseURL: "https://gateway.example/v1", apiKey: "fixture-gateway-key" },
+						models: { "Org/Model": { id: "MappedModelCase" } },
+					},
+				},
+			}),
+		);
+		const fetchMock = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ choices: [{ message: { content: "{}" } }] }), {
+				status: 200,
+			}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		const observer = new ObserverClient(
+			loadObserverConfig({ observer_runtime: runtime, observer_model: "GATEWAY/Org/Model" }),
+		);
+		await observer.observeStructuredJson("system", "user", "test", { type: "object" });
+		expect(fetchMock.mock.calls[0]?.[0]).toBe("https://gateway.example/v1/chat/completions");
+		expect(JSON.parse(fetchMock.mock.calls[0]?.[1].body).model).toBe("MappedModelCase");
+	},
+);
+
 it.each([
 	{ provider: "opencode", selected: undefined, expected: "gpt-6-luna" },
 	{ provider: "custom", selected: "custom/org/model", expected: "org/model" },
