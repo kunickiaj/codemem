@@ -4,7 +4,7 @@
 
 Partially implemented. The fail-closed Team eligibility foundation is delivered
 separately; this plan scopes the remaining guided-setup activation work from the
-approved [Legacy Team Guided Setup Design](../specs/2026-08-10-legacy-team-guided-setup-design.md).
+approved [Legacy Team Guided Setup Design](./2026-08-10-legacy-team-guided-setup-design.md).
 
 ## Outcome
 

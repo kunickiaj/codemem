@@ -166,5 +166,5 @@ Non-authoritative pattern references (optional):
 
 ## Draft schema artifacts
 
-- `docs/plans/adapter-event-v1.schema.json`
-- `docs/plans/adapter-event-v1.fixtures.json`
+- `docs/contracts/adapter-event-v1.schema.json`
+- `docs/contracts/adapter-event-v1.fixtures.json`

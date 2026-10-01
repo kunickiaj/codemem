@@ -495,7 +495,7 @@ established these decisions:
 ## Related documents
 
 - `docs/plans/2026-03-02-multi-agent-adapter-architecture-design.md`
-- `docs/plans/adapter-event-v1.schema.json`
+- `docs/contracts/adapter-event-v1.schema.json`
 - `docs/plans/2026-05-28-codex-first-class-integration.md`
 - `docs/plans/2026-08-10-release-0.41-fast-focused-recall-design.md`
 - `docs/plans/2026-08-11-cli-operational-status-and-command-tree-consolidation-design.md`

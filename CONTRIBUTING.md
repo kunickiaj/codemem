@@ -99,3 +99,6 @@ pnpm run release:preflight-tag
 - Keep README focused on user onboarding.
 - Put advanced operational details in `docs/`.
 - If behavior changes, update the related docs in the same PR.
+- Use `docs/adr/` for durable architecture decisions, `docs/contracts/` for maintained interfaces and schemas, and `docs/design/` for reusable UI patterns.
+- Keep active designs in `docs/plans/`; mark historical or superseded designs clearly and link to current guidance. Do not create tool-named documentation hierarchies.
+- Track routine implementation steps, review corrections, release checklists, and completion evidence in Beads or the PR, not new committed plan files. Before removing an old plan, preserve unique rationale and repair references.

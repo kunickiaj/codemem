@@ -181,7 +181,7 @@ named routes to compatibility adapters.
 
 - Update `packages/viewer-server/src/routes/raw-events.ts`.
 - Update `packages/viewer-server/src/index.test.ts`.
-- Update `docs/plans/adapter-event-v1.schema.json` only for clarified metadata,
+- Update `docs/contracts/adapter-event-v1.schema.json` only for clarified metadata,
   not a breaking top-level field.
 
 ### Steps
