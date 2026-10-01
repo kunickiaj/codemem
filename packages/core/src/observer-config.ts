@@ -1431,7 +1431,10 @@ export function resolveCustomProviderFromModel(
 ): string | null {
 	if (!model?.includes("/")) return null;
 	const prefix = model.split("/")[0] ?? "";
-	return prefix && providers.has(prefix) ? prefix : null;
+	if (!prefix) return null;
+	if (providers.has(prefix)) return prefix;
+	const normalizedPrefix = prefix.toLowerCase();
+	return [...providers].find((provider) => provider.toLowerCase() === normalizedPrefix) ?? null;
 }
 
 // ---------------------------------------------------------------------------

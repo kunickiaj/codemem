@@ -1,8 +1,9 @@
 import { expect, it } from "vitest";
 import { collectSettingsPayload, renderConfigModal } from "./config-loader";
 import { diffSettingsPayload } from "./diff-payload";
+import { createSettingsEventHandlers } from "./event-handlers";
 import type { ObserverApplyPayload } from "./form-state";
-import { updateObserverApply } from "./observer-apply";
+import { reconcileObserverRouting, updateObserverApply } from "./observer-apply";
 import { settingsState, settingsView } from "./state";
 import { updateFormState } from "./state-ops";
 
@@ -82,6 +83,34 @@ it("does not save stale routing when a connection draft is reverted after refres
 	expect(pendingChanges()).not.toHaveProperty("observer_tier_routing_enabled");
 });
 
+it.each([false, true])(
+	"reconciles cached active routing %s after reverting a connection draft",
+	(routing) => {
+		renderConfigModal({
+			config: {},
+			effective: { observer_tier_routing_enabled: !routing },
+			observer_apply: { state: "applying" },
+		});
+		const events = createSettingsEventHandlers({
+			getTouchedKeys: () => settingsState.touchedKeys,
+			getValues: () => settingsView.value.renderState.values,
+			updateFormState,
+			setDirty: () => {},
+			onValuesChanged: reconcileObserverRouting,
+		});
+		events.updateField("observerProvider", "anthropic");
+		updateObserverApply({
+			observer_apply: { ...active, active: { ...active.active, tierRoutingEnabled: routing } },
+		});
+		expect(settingsView.value.renderState.values.observerTierRoutingEnabled).toBe(!routing);
+		events.updateField("observerProvider", "");
+		expect(settingsView.value.renderState.values.observerTierRoutingEnabled).toBe(routing);
+		expect(pendingChanges()).not.toHaveProperty("observer_tier_routing_enabled");
+		events.updateField("observerModel", "new-model");
+		expect(pendingChanges().observer_tier_routing_enabled).toBe(routing);
+	},
+);
+
 it.each([
 	{ config: { observer_tier_routing_enabled: false } },
 	{
@@ -93,6 +122,26 @@ it.each([
 	renderConfigModal(payload);
 	updateObserverApply({ observer_apply: active });
 	expect(settingsView.value.renderState.values.observerTierRoutingEnabled).toBe(false);
+});
+
+it("keeps explicit routing and other connection drafts during edit reconciliation", () => {
+	renderConfigModal({ config: {}, observer_apply: { state: "applying" } });
+	const events = createSettingsEventHandlers({
+		getTouchedKeys: () => settingsState.touchedKeys,
+		getValues: () => settingsView.value.renderState.values,
+		updateFormState,
+		setDirty: () => {},
+		onValuesChanged: reconcileObserverRouting,
+	});
+	events.updateField("observerProvider", "anthropic");
+	events.updateField("observerModel", "draft-model");
+	updateObserverApply({ observer_apply: active });
+	events.updateField("observerProvider", "");
+	expect(settingsView.value.renderState.values.observerTierRoutingEnabled).toBe(false);
+	events.updateField("observerTierRoutingEnabled", false);
+	events.updateField("observerModel", "");
+	expect(settingsView.value.renderState.values.observerTierRoutingEnabled).toBe(false);
+	expect(pendingChanges().observer_tier_routing_enabled).toBe(false);
 });
 
 it.each(["applying", "failed"])("does not adopt stale active routing while %s", (state) => {

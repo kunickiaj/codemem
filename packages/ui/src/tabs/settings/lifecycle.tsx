@@ -39,7 +39,7 @@ import {
 	protectedConfigHelp,
 } from "./data/model-accessors";
 import { buildSettingsNotice } from "./data/notice";
-import { updateObserverApply } from "./data/observer-apply";
+import { reconcileObserverRouting, updateObserverApply } from "./data/observer-apply";
 import { pendingRestartRequired } from "./data/restart-preview";
 import { settingsState, settingsView } from "./data/state";
 import {
@@ -76,6 +76,7 @@ const { onTextInput, onSelectValueChange, onSwitchInput } = createSettingsEventH
 	getValues: () => getSettingsViewState().renderState.values,
 	updateFormState,
 	setDirty: (dirty) => setDirty(dirty),
+	onValuesChanged: reconcileObserverRouting,
 });
 
 async function retryObserverApply(): Promise<void> {

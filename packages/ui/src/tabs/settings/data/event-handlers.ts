@@ -15,6 +15,7 @@ export interface EventHandlerDeps {
 	getValues: () => SettingsFormState;
 	updateFormState: (patch: Partial<SettingsFormState>) => void;
 	setDirty: (dirty: boolean) => void;
+	onValuesChanged?: () => void;
 }
 
 export interface SettingsEventHandlers {
@@ -40,6 +41,7 @@ export function createSettingsEventHandlers(deps: EventHandlerDeps): SettingsEve
 	) => {
 		markFieldTouched(field);
 		deps.updateFormState({ [field]: value } as Partial<SettingsFormState>);
+		deps.onValuesChanged?.();
 		deps.setDirty(true);
 	};
 

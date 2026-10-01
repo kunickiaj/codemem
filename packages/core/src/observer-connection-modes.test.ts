@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { buildTieredObserverConfig } from "./extraction-tier-routing.js";
 import { probeAvailableCredentials } from "./observer-auth.js";
 import { loadObserverConfig, ObserverAuthError, ObserverClient } from "./observer-client.js";
+import { resolveCustomProviderFromModel } from "./observer-config.js";
 import { observerForRawEvents } from "./raw-event-flush.js";
 
 const generate = vi.hoisted(() => vi.fn());
@@ -186,6 +187,35 @@ it("legacy api_http still uses its existing subscription route", () => {
 		loadObserverConfig({ observer_runtime: "api_http", observer_provider: "openai" }),
 	);
 	expect(observer.getStatus().auth.type).toBe("codex_consumer");
+});
+
+it.each([
+	["gateway", "Gateway/Org/Model"],
+	["Gateway", "GATEWAY/Org/Model"],
+])("infers configured custom provider %s from %s in Auto mode", async (provider, model) => {
+	const configDir = join(home, ".config/opencode");
+	mkdirSync(configDir, { recursive: true });
+	writeFileSync(
+		join(configDir, "opencode.json"),
+		JSON.stringify({ provider: { [provider]: { models: { "Org/Model": {} } } } }),
+	);
+	generate.mockResolvedValue({ text: "{}", error: null });
+	const observer = new ObserverClient(
+		loadObserverConfig({ observer_runtime: "opencode_v2", observer_model: model }),
+	);
+	await observer.observe("system", "user");
+	expect(generate).toHaveBeenCalledWith({
+		provider,
+		model: "Org/Model",
+		prompt: "system\n\nuser",
+	});
+});
+
+it("keeps exact custom provider matches ahead of case-insensitive aliases", () => {
+	const providers = new Set(["gateway", "Gateway"]);
+	expect(resolveCustomProviderFromModel("Gateway/Org/Model", providers)).toBe("Gateway");
+	expect(resolveCustomProviderFromModel("missing/Org/Model", providers)).toBeNull();
+	expect(resolveCustomProviderFromModel("OrgModel", providers)).toBeNull();
 });
 
 it.each([

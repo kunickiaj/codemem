@@ -2377,7 +2377,7 @@ export class ObserverClient {
 		systemPrompt: string,
 		userPrompt: string,
 	): Promise<ObserverCallResult> {
-		const prefix = `${this.provider}/`;
+		const prefix = `${this.provider.toLowerCase()}/`;
 		const model = this.model.toLowerCase().startsWith(prefix)
 			? this.model.slice(prefix.length)
 			: this.model;

@@ -17,11 +17,9 @@ function hasConnectionDraft(): boolean {
 	);
 }
 
-export function updateObserverApply(payload: unknown): void {
-	if (!payload || typeof payload !== "object") return;
-	const apply = (payload as { observer_apply?: ObserverApplyPayload }).observer_apply;
-	if (!apply || !["active", "applying", "failed"].includes(apply.state)) return;
-	settingsState.observerApply = apply;
+export function reconcileObserverRouting(): void {
+	const apply = settingsState.observerApply;
+	if (!apply) return;
 	const routing = apply.active?.tierRoutingEnabled;
 	if (
 		apply.state !== "active" ||
@@ -29,14 +27,21 @@ export function updateObserverApply(payload: unknown): void {
 		settingsState.observerTierRoutingExplicit ||
 		settingsState.touchedKeys.has("observer_tier_routing_enabled")
 	) {
-		updateRenderState({});
 		return;
 	}
 	const draftConnection = hasConnectionDraft();
 	if (draftConnection) {
-		updateRenderState({});
 		return;
 	}
 	settingsState.baseline.observer_tier_routing_enabled = routing;
 	updateFormState({ observerTierRoutingEnabled: routing });
+}
+
+export function updateObserverApply(payload: unknown): void {
+	if (!payload || typeof payload !== "object") return;
+	const apply = (payload as { observer_apply?: ObserverApplyPayload }).observer_apply;
+	if (!apply || !["active", "applying", "failed"].includes(apply.state)) return;
+	settingsState.observerApply = apply;
+	reconcileObserverRouting();
+	updateRenderState({});
 }
