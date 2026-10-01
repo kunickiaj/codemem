@@ -91,7 +91,7 @@ The internal stable identifier for a sharing domain. Every shareable memory and 
 
 ### Project mapping
 
-A local rule that maps an observed project/workspace to a default `scope_id`. Example: `/work/acme/*` maps to `acme-work`; `/Users/adam/personal/*` maps to `personal`.
+A local rule that maps an observed project/workspace to a default `scope_id`. Example: `/work/example/*` maps to `example-work`; `/home/user/personal/*` maps to `personal`.
 
 #### Canonical workspace identity
 

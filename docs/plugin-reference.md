@@ -4,7 +4,7 @@ This page covers advanced plugin behavior, environment variables, and stream rel
 
 ## Observer and settings UI
 
-<img src="images/codemem-settings.png" alt="codemem observer settings" width="520" />
+See the [Settings guide](user-guide.md#settings-modal) for connection modes, model choices, and save/apply behavior.
 
 ## Running OpenCode with the plugin
 
@@ -675,9 +675,9 @@ Failure semantics:
 
 When ingesting plugin payloads, CodeMem stores a normalized project label instead of a full path.
 
-- Path-like labels are reduced to the basename (for example, `/Users/adam/workspace/codemem` -> `codemem`).
+- Path-like labels are reduced to the basename (for example, `/home/user/projects/example` -> `example`).
 - Windows-style paths are normalized with Windows path rules on every OS runtime.
-  - `C:\Users\adam\workspace\codemem` -> `codemem`
+  - `C:\Users\user\projects\example` -> `example`
   - `D:/dev/client-demo` -> `client-demo`
   - `\\server\share\team\project-x` -> `project-x`
 - `CODEMEM_PROJECT` still has highest precedence and is normalized the same way.

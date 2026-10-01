@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-21
 **Status:** Approved
-**Related:** `2026-07-20-project-first-teammate-sharing-design.md`, `2026-04-30-sharing-domain-scope-design.md`, `2026-05-25-access-management-ia-design.md`
+**Related:** `2026-07-20-project-first-teammate-sharing-design.md`, `2026-04-30-sharing-domain-scope-design.md`
 
 ## Decision summary
 

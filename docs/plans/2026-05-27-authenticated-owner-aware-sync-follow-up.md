@@ -2,7 +2,7 @@
 
 Status: design follow-up
 Date: 2026-05-27
-Related: `2026-05-27-scope-revocation-cleanup-plan.md`, `2026-03-08-identity-aware-sync-shared-memory-foundation.md`, `2026-03-12-actor-registry-peer-assignment-contract.md`, `2026-04-30-sharing-domain-scope-design.md`
+Related: `2026-03-08-identity-aware-sync-shared-memory-foundation.md`, `2026-03-12-actor-registry-peer-assignment-contract.md`, `2026-04-30-sharing-domain-scope-design.md`
 
 ## Problem
 

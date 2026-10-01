@@ -69,7 +69,7 @@ See [coordinator-discovery.md](./coordinator-discovery.md) for cross-network set
 
 ### Create a shared Sharing domain
 
-Pick a stable, human-readable name (`shared-research`, `family-notes`, etc.). Create the domain on host A and grant it to host B's device key with the `codemem sync` and `codemem coordinator` CLI workflows (see [user-guide.md](./user-guide.md#peer-to-peer-sync)). Device Sync settings cover pairing and discovery configuration, not project-to-Space assignment.
+Pick a stable, human-readable name (`shared-research`, `family-notes`, etc.). Create the domain on host A and grant it to host B's device key with the `codemem sync` and `codemem coordinator` CLI workflows (see [Advanced Sync panel](./user-guide.md#advanced-sync-panel)). Device Sync settings cover pairing and discovery configuration, not project-to-Space assignment.
 
 Both sides must grant the domain to the partner peer for bidirectional replication. A grant in only one direction yields one-way sync.
 

@@ -1,49 +1,18 @@
-# Rename Migration Plan
+# Migrate this repository's former opencode-mem installation
 
-This document tracks migration from `codemem` naming to `CodeMem` package names.
+This guide covers this repository's former name, not importing data from `tickernelz/opencode-mem`. The shipped runtime is now the npm `codemem` package; the OpenCode plugin is `@codemem/opencode-plugin`.
 
-## Canonical names
+## Back up and update
 
-- GitHub repo: `kunickiaj/codemem`
-- npm plugin package: `@codemem/opencode-plugin`
-- PyPI package: `codemem`
+1. Stop the legacy runtime before copying its database. Preserve the database and any SQLite `-wal` and `-shm` sidecars together.
+2. Install the current runtime and configure the host:
 
-## Compatibility policy
-
-- Keep `codemem` CLI command compatibility for two releases after the first `codemem` release.
-- Keep git-based install commands as fallback during migration; move them to advanced docs.
-- Keep old references in release notes with explicit replacement commands.
-
-## User migration guidance
-
-### Plugin config migration
-
-Old:
-
-```json
-{
-  "plugin": ["@kunickiaj/codemem"]
-}
+```text
+npm install -g codemem
+codemem setup --opencode-only
 ```
 
-New:
-
-```json
-{
-  "plugin": ["@codemem/opencode-plugin"]
-}
-```
-
-### End-user cutover checklist (opencode-mem -> codemem)
-
-1. Back up the legacy DB file:
-
-```bash
-cp ~/.opencode-mem.sqlite ~/.opencode-mem.sqlite.bak
-```
-
-2. Update OpenCode plugin config to `@codemem/opencode-plugin`.
-3. Update OpenCode MCP command to `codemem` (if configured):
+If you configure plugins manually, replace `@kunickiaj/codemem` with `@codemem/opencode-plugin`. If an MCP command still invokes the old runtime, use:
 
 ```json
 {
@@ -57,69 +26,16 @@ cp ~/.opencode-mem.sqlite ~/.opencode-mem.sqlite.bak
 }
 ```
 
-4. Migrate runtime config file (if present):
+3. If needed, copy the legacy configuration into `~/.config/codemem/config.json`. Review it against the current [configuration reference](../README.md#configuration); old Python runner settings are not installation guidance for the npm runtime.
+4. Restart the agent host and verify:
 
-```bash
-mkdir -p ~/.config/codemem
-cp ~/.config/opencode-mem/config.json ~/.config/codemem/config.json
-```
-
-5. Restart OpenCode.
-6. Verify codemem health:
-
-```bash
+```text
 codemem stats
 codemem db raw-events-status
 ```
 
-7. Confirm migrated default DB exists:
+## Database migration
 
-```bash
-ls ~/.codemem/mem.sqlite
-```
+The default database is `~/.codemem/mem.sqlite`. When it does not exist, the runtime can migrate `~/.opencode-mem.sqlite` and its SQLite sidecars. If the new default already exists, the legacy database remains untouched; do not overwrite either database to combine histories. Explicit database paths are not a request to migrate the default database.
 
-8. Remove legacy tool only after successful verification:
-
-```bash
-uv tool uninstall opencode-mem
-```
-
-Expected DB behavior:
-- First codemem run migrates `~/.opencode-mem.sqlite` to `~/.codemem/mem.sqlite`.
-- Migration includes SQLite sidecars (`-wal`, `-shm`).
-- If the new default DB already exists, legacy DB is left untouched.
-- If migration is skipped because a new DB already exists, move/copy legacy DB manually.
-
-### Runtime/CLI migration
-
-- Prefer published package installs (`codemem`) over git-based `uvx --from git+...`.
-- If runtime is older than supported minimum, plugin warns and provides upgrade command.
-- Keep `opencode-mem` installed until one successful codemem run is confirmed, then uninstall it.
-- Remove `runner_from` from `~/.config/codemem/config.json` for normal installed behavior.
-
-### Dev machine behavior
-
-- Inside the codemem repo, use the workspace/local plugin test flow for validation.
-- Outside the repo, OpenCode uses configured plugin package (`@codemem/opencode-plugin`).
-- For realistic migration validation on a dev machine, run at least one session outside the repo.
-- Viewer auto-start now occurs on plugin initialization and is idempotent.
-
-## Release communication template
-
-Use this snippet in release notes for migration releases:
-
-```text
-CodeMem rename update:
-- Repo moved to github.com/kunickiaj/codemem
-- Plugin package: @codemem/opencode-plugin
-- Python package: codemem
-- Existing codemem command remains supported during transition window
-```
-
-## Completion criteria
-
-- Docs updated to show new names first
-- Release notes include migration snippet
-- Fallback paths documented and tested
-- Transition window end date announced before alias removal
-- Migration checklist includes backup, verification, and legacy uninstall order
+Confirm that the expected memories appear in the viewer before uninstalling the legacy tool or deleting its files. See [Python-to-TypeScript migration](migration-python-to-ts.md) for runtime history and database compatibility.

@@ -65,7 +65,7 @@ Support tiers describe operational expectations for each adapter path:
 | OpenCode 1 plugin | Supported | Primary reference adapter for lifecycle events and injection behavior. Minimum host 1.18.29. |
 | OpenCode 2 plugin | Beta | Same package, `setup()` entrypoint, validated on the exact stable `@opencode/cli@2.0.12` and `@opencode/plugin@2.0.12` releases. Captures conversation, tool, terminal usage, and lifecycle activity with bounded cleanup and keeps the hyphenated `mem-status`, `mem-recent`, and `mem-stats` tool IDs. `session.context` performs automatic recall only when the latest user message has a non-empty, non-whitespace ID; retries and tool continuations replay retained context byte-for-byte, while compaction, title, and generate hooks stay isolated. Disable with `CODEMEM_PLUGIN_IGNORE=1` or return to OpenCode 1 without a database migration. |
 | Claude hooks/plugin | Supported | Hook-first queue path with CLI/runtime fallback and parity slices tracked in adapter stack PRs. |
-| pi extension | Supported | Thin pi-package (`packages/pi-extension`, `packages/core/src/pi-hooks.ts`): extension → `POST /api/pi-hooks` alias → canonical ingest envelope (`source: "pi"`) → observer → memories; turn-local `systemPrompt` injection; 14 native `memory_*` tools; observe-only compaction boundary; fork/resume-aware streams; Git-root project identity. Observer derivation from pi config is API-key-only in v1 (OAuth → explicit `unconfigured (oauth-only)`). |
+| pi extension | Supported | Thin pi-package (`packages/pi-extension`, `packages/core/src/pi-hooks.ts`): extension → `POST /api/pi-hooks` alias → canonical ingest envelope (`source: "pi"`) → observer → memories; injection into request-copy user messages on the `context` event without modifying the system prompt or saved session; 14 native `memory_*` tools; observe-only compaction boundary; fork/resume-aware streams; Git-root project identity. Observer derivation from pi config is API-key-only in v1 (OAuth → explicit `unconfigured (oauth-only)`). |
 | Codex plugin (hooks + MCP) | Supported | Functional capture pipeline (`plugins/codex/`, `packages/core/src/codex-hooks.ts`) dogfooded end-to-end: edge normalization → `POST /api/raw-events` → observer → memories. Prompt-time injection is present and env-gated but not fully validated on strict models. |
 | Windsurf integration | Experimental | Planned via shared adapter contract after OpenCode/Claude stabilization. |
 | Cursor integration | Experimental | Planned via shared adapter contract after OpenCode/Claude stabilization. |
@@ -150,28 +150,20 @@ If sqlite-vec or the optional embedding runtime cannot load, Codemem warns once 
 
 ### Hybrid merge and re-rank (pack path)
 
-In the pack-building path — CLI `pack`/`inject`, MCP `memory_pack`, and plugin injection — results from both backends are merged and re-ranked. This happens in the hybrid merge layer (`packages/core/src/search.ts`):
+In the pack-building path — CLI `pack`/`inject`, MCP `memory_pack`, and plugin injection — keyword and semantic candidates are combined with equal-weight reciprocal rank fusion in `packages/core/src/pack-fusion.ts`, called from `packages/core/src/pack.ts`:
 
 1. Run FTS5 search to get lexical candidates.
 2. Run semantic search to get vector candidates.
 3. Merge candidates, deduplicating by memory ID.
-4. Re-rank the merged set using a composite score.
+4. Sort by fused relevance, using existing preferences only to break exact ties.
 
-The re-ranking formula in hybrid mode (`_rerank_results_hybrid`):
+Each channel contributes by rank rather than raw score:
 
 ```
-score = (base_score * 1.2) + (recency * 0.8) + kind_bonus + semantic_boost
-
-where:
-  base_score   = lexical candidates: -bm25(memory_fts, 1.0, 1.0, 0.25)
-                 semantic-only candidates: 1.0 / (1.0 + distance)
-  recency      = 1.0 / (1.0 + days_ago / 7.0)
-  kind_bonus   = 0.25 (session_summary), 0.2 (decision), 0.15 (note),
-                 0.1 (observation), 0.05 (entities), 0.0 (others)
-  semantic_boost = 0.35 if the memory ID was returned by vector search, else 0.0
+fused_score = 1 / (60 + keyword_rank) + 1 / (60 + semantic_rank)
 ```
 
-In baseline mode (hybrid disabled), the formula is slightly different: `base_score * 1.5 + recency + kind_bonus` with no semantic boost.
+Ranks start at one; a missing channel contributes zero. Recency, kind, ownership, trust, and path preferences break exact fused-score ties, followed by memory ID. Public raw scores retain their existing meaning. Later section allocation, deduplication, and budgeting can change final pack membership; see [Pack candidate ranking](pack-ranking.md) for the maintained contract.
 
 **Scope note:** Hybrid merge/re-rank only runs in the pack-building path. Direct search endpoints (`codemem search`, MCP `memory_search`) use FTS5 scoring with recency weighting, actor/workspace filters, and personal-first ranking bias, but don't merge semantic results.
 

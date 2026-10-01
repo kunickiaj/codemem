@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-20
 **Status:** Approved
-**Related:** `codemem-00dc`, `2026-05-25-access-management-ia-design.md`, `2026-05-22-team-space-sharing-ux-design.md`
+**Related:** `codemem-00dc`, `2026-05-22-team-space-sharing-ux-design.md`
 
 ## Decision summary
 
