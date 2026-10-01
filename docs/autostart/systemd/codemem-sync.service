@@ -3,7 +3,7 @@ Description=codemem viewer + sync daemon
 After=network-online.target
 
 [Service]
-ExecStart=codemem serve start --foreground
+ExecStart=/ABSOLUTE/PATH/TO/codemem serve start --foreground
 Restart=on-failure
 Environment=CODEMEM_CONFIG=%h/.config/codemem/config.json
 

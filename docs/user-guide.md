@@ -547,7 +547,7 @@ When selected history may already have replicated, all participating owner devic
 
 - codemem does not ship a `sync install` helper in the TS CLI.
 - Use an OS service manager to run `codemem serve start --foreground` at login/boot.
-- Example service templates live in `docs/autostart/launchd/` and `docs/autostart/systemd/`.
+- Follow the [autostart template guide](autostart/README.md) to customize executable paths, runtime environment, and logs before installing an OS service.
 
 ### Diagnostics
 

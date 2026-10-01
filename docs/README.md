@@ -3,6 +3,7 @@
 ## Using codemem
 
 - [User guide](user-guide.md): viewer workflows, configuration, and troubleshooting.
+- [Command reference](cli-reference.md): CLI groups, diagnostics, and compatibility commands.
 - [Plugin reference](plugin-reference.md): adapter behavior and environment controls.
 - [Sharing guide](sharing-guide.md): sharing Projects and adding devices.
 - [Migration guide](rename-migration.md): this repository's former installation name.

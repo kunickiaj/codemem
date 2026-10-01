@@ -67,6 +67,18 @@ pnpm --filter @codemem/ui build
 pnpm run codemem serve restart
 ```
 
+## Repository lint feedback
+
+The checkout-local `.opencode/plugins/lint-feedback.js` reports new or worsened Biome diagnostics after supported OpenCode edit tools. It is contributor tooling and is excluded from the published plugin. See the [plugin reference](docs/plugin-reference.md#repository-only-lint-feedback) for hook coverage and limitations.
+
+Shell-driven edits need an explicit checkpoint:
+
+```text
+pnpm lint:delta -- --base <ref>
+```
+
+Use `--staged` to inspect only the Git index; it cannot be combined with `--head`. The pre-commit hook uses `--base auto --staged` to compare from a local remote-default merge base, falling back to `HEAD`. Run hooks normally; an ignore-policy change currently requires a separate tooling change because the ratchet rejects it without an approval mechanism.
+
 ## Release workflow
 
 Releases are tag-driven (`vX.Y.Z`) and run via `.github/workflows/release.yml`.

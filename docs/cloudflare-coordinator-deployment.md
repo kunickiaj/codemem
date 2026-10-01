@@ -15,6 +15,8 @@ Current source-of-truth files:
 - D1 schema: `packages/cloudflare-coordinator-worker/schema.sql`
 - Example Wrangler config wrapper: `examples/cloudflare-coordinator/wrangler.toml.example`
 
+The example wrapper is the only deployment template. The package's `wrangler.jsonc` is the checked-in local-test and bundle-validation configuration with a placeholder database ID; do not edit it with a production database ID. Keep real deployment configuration in the ignored `examples/cloudflare-coordinator/wrangler.toml` file.
+
 The Worker currently provides:
 
 - signed `POST /v1/presence`
@@ -89,7 +91,7 @@ This secret is required for admin routes such as invite creation and join-reques
 
 ## 4. Apply the schema
 
-Use the package schema, not the stale example copy:
+Use the package schema:
 
 ```fish
 wrangler d1 execute codemem-coordinator --remote --file packages/cloudflare-coordinator-worker/schema.sql
