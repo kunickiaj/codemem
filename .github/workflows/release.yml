@@ -215,9 +215,9 @@ jobs:
             echo "Release $RELEASE_TAG already exists"
           else
             RELEASE_NOTES_ARGS=()
-            RELEASE_NOTES_PATH="docs/release-notes-${RELEASE_TAG#v}.md"
-            if [[ -f "$RELEASE_NOTES_PATH" ]]; then
-              RELEASE_NOTES_ARGS=(--notes "$(cat "$RELEASE_NOTES_PATH")")
+            RELEASE_NOTES="$(node scripts/release-notes.mjs "$RELEASE_TAG")"
+            if [[ -n "$RELEASE_NOTES" ]]; then
+              RELEASE_NOTES_ARGS=(--notes "$RELEASE_NOTES")
             fi
             gh release create "$RELEASE_TAG" \
               --generate-notes \

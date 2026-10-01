@@ -14,6 +14,8 @@ CodeMem uses one shared semantic version stream across its npm packages.
 - npm packages publish the same `X.Y.Z`.
 - GitHub Release notes are shared per version.
 
+Release summaries belong in the root [CHANGELOG.md](../CHANGELOG.md), newest first, with an exact `## X.Y.Z` heading (or `## X.Y.Z-rc.N` for a prerelease) and `###` subheadings. Add the entry in the release PR; do not create per-version release-note documents. The release workflow extracts only the matching entry and prepends it to GitHub's generated commit notes. Versions without a changelog entry retain generated notes only.
+
 ## Release workflow
 
 Version bumps are prepared on a release branch and touch these files:

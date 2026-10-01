@@ -329,7 +329,7 @@ Validated request, policy, and authorization failures after a compatible handsha
 
 **Memories** are typed — `bugfix`, `feature`, `refactor`, `change`, `discovery`, `decision`, `exploration` — with structured fields like `facts`, `concepts`, `files_read`, and `files_modified` that improve retrieval relevance. Low-signal events are filtered at multiple layers before persistence.
 
-For architecture details, see [docs/architecture.md](docs/architecture.md).
+For architecture details, see [docs/architecture.md](docs/architecture.md). Release history lives in [CHANGELOG.md](CHANGELOG.md).
 
 ## CLI
 
