@@ -1,63 +1,83 @@
 # Changelog
 
-Release summaries live here, newest first. Add an entry when preparing a release; GitHub releases use that entry alongside generated commit notes. Earlier releases and versions without an entry are available in [GitHub Releases](https://github.com/kunickiaj/codemem/releases).
+Notable changes to codemem are documented here, following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/).
 
-## 0.46.2
+This file starts with the release summaries previously checked into the repository; it is not a complete backfill. Other versions, release announcements, and contributor credits remain in [GitHub Releases](https://github.com/kunickiaj/codemem/releases).
 
-This patch makes observer Settings easier to configure and verifies that saved connection choices stay separate. It also fixes OpenCode 2 model selection during cold startup.
+## [Unreleased]
 
-### Highlights
+### Changed
 
-- **Clear connection choices:** Choose an OpenCode account, an API key, a local Claude session, or a local Codex session. API-key mode does not use cached subscription sign-ins, and OpenCode-account mode does not silently fall back to a direct API key. Missing credentials or an unavailable service produce a visible error.
-- **Model settings:** Settings shows the actual defaults and puts Simple and Rich tier models together. OpenAI/Codex uses `gpt-6-luna` for Simple and untiered defaults, and `gpt-5.6-terra` for Rich. Saved model choices and hidden values remain intact. The misleading model check was removed; a suggested model does not guarantee account access.
-- **Save and apply feedback:** Settings distinguishes saved changes from changes active in the running observer and shows restart guidance only when needed. Automatic connection choices remain automatic when saved. Reverting a connection draft restores active tier routing without overwriting explicit routing choices or other drafts.
-- **Custom providers:** Auto provider inference accepts mixed-case provider prefixes while retaining the configured provider ID. OpenCode and direct custom-provider requests strip matching prefixes without changing model-ID case; direct requests still apply configured model-ID mappings.
-- **OpenCode 2 startup:** codemem retries the exact pre-generation model-selection rejection that can occur before the service's model catalog is ready. Retries keep the selected provider and model, stop after six requests, and wait at most 7.75 seconds in total. Other errors and uncertain generation outcomes are not retried by this compatibility path.
+- Consolidated release history in this changelog and removed standalone release-note documents. GitHub release announcements remain separate.
 
-### Compatibility and upgrade
+## [0.46.2] - 2026-10-01
 
-Legacy `api_http` and omitted runtime settings keep their previous routing until you explicitly change the connection. Unrelated Settings edits do not migrate your credentials or account choice.
+### Changed
 
-Install the matching 0.46.2 packages, then restart the viewer and agent host when safe. An already-running viewer does not switch builds automatically. This release does not claim to fix every queued-event failure; inspect observer status if a backlog remains.
+- Organized observer Settings around separate OpenCode account, API key, local Claude, and local Codex connection modes, with actual defaults and clearer save/apply feedback. Existing legacy routing remains unchanged until the connection is explicitly selected. ([#1875], [#1877], [#1879], [#1880])
+- Grouped Simple and Rich model settings. OpenAI/Codex defaults use `gpt-6-luna` for Simple and untiered requests and `gpt-5.6-terra` for Rich; saved model choices remain intact. ([#1878], [#1880])
 
-## 0.46.1
+### Fixed
 
-This patch improves OpenCode 2 observer authentication, keeps raw-event capture safer, and makes device sync easier to inspect and run.
+- Prevented API-key mode from using cached subscription credentials and OpenCode-account mode from falling back to a direct API key. ([#1880])
+- Preserved Automatic connection choices on save and reconciled active tier routing after a connection draft is reverted without overwriting explicit routing choices or other drafts. ([#1880], [#1882])
+- Matched custom provider prefixes case-insensitively while preserving configured provider IDs, model-ID case, and direct-provider model mappings. ([#1882])
+- Retried OpenCode 2's exact pre-generation cold-start model-selection rejection without changing the selected provider or model; other errors and uncertain outcomes are not retried by this path. ([#1881])
 
-### Highlights
+### Removed
 
-- **OpenCode 2 observer:** Newly captured V2 events with implicit OpenCode credentials can use the signed-in service without reading the legacy `auth.json` file. codemem preserves the selected provider and model. OpenCode 1, older unmarked events, explicit credentials, custom endpoints, and selected sidecars keep their previous routes.
-- **Settings:** Observer changes can take effect in the running viewer without a restart. Model suggestions and an on-demand synthetic check help verify a choice without silently switching provider or model. A listed model is not a guarantee that the active account can use it.
-- **Raw events:** Missing observer authentication no longer discards queued events. Historical recovery processes eligible gaps at a paced rate without rewinding session cursors. Windows containing only assistant usage records finish without an observer call or a new memory; missing or invalid events remain failed for diagnosis.
-- **Spool reliability:** Failures report a safe stage and code without logging event contents. A repeated event ID that differs only in top-level delivery timestamps reuses the durable spool entry; other conflicting entries remain conflicts.
-- **Devices:** Each paired peer shows sync health, last sync, and past-24-hour inbound and outbound **operation counts**, not bytes. The row action syncs only the selected peer. Local, unpaired, unavailable, and stale states remain distinct; Advanced Sync retains its deeper controls.
+- Removed the misleading observer model check; model suggestions do not guarantee account access. ([#1876])
 
-### Limits and upgrade
+## [0.46.1] - 2026-09-29
 
-The V2 stateless generation route and the Codex and Claude CLI sidecars do **not** enforce a provider-side output-token cap. codemem limits its wait and the response size it accepts, but those limits do not cap upstream generation or billing. Charges depend on the active provider account; a separately configured API key may incur API charges.
+### Added
 
-Raw-event POST 409 still rejects database, identity, or contract mismatches. Its response includes `error.code` (already present in 0.46.0), though the toast may not show it.
+- Added live application of observer Settings, model suggestions, and an on-demand synthetic model check (removed in 0.46.2).
+- Added per-device sync health, selected-peer sync actions, and past-24-hour inbound/outbound operation counts.
 
-Install the matching 0.46.1 packages, then restart the viewer and agent host when safe. An already-running viewer does not switch builds automatically.
+### Fixed
 
-## 0.44.0
+- Routed newly captured OpenCode 2 events with implicit credentials through the signed-in service without requiring legacy `auth.json`; older events and explicit connections retain their previous routes.
+- Retained queued raw events when observer authentication is missing and recovered eligible historical gaps without rewinding session cursors.
+- Finished usage-only windows without observer calls or new memories; missing or invalid events remain failed for diagnosis.
+- Reused durable spool entries when repeated event IDs differ only in delivery timestamps, and reported safe failure stages without logging event contents.
 
-This release combines semantic installation, safer automatic recall, and Team setup corrections.
+**Upgrade notes and limitations:**
 
-### Highlights
+- OpenCode 2 stateless generation and local Claude/Codex sessions do not enforce provider-side output-token caps. Wait and response-size limits do not cap upstream generation or charges.
+- Restart the viewer and agent host after upgrading packages; a running viewer does not switch builds automatically.
 
-- Automatic OpenCode recall checks requester-session eligibility before retrieval and fallback, and isolates delta baselines by requester continuity. Missing session mapping blocks continuity summaries without excluding useful historical facts.
-- Automatic recall preserves retained context and deduplicates unchanged items. The retained-token ceiling remains off by default; Health reports bounded injection measurements rather than provider token usage or answer quality.
-- Viewer diagnostics provide contextual actions and redacted event details. Observer output follows provider capabilities, with deterministic envelope and forced-tool evaluation coverage.
-- Team setup retries refresh stale confirmation evidence and require renewed confirmation. Readiness counts roster devices and persisted assignments once, while still limiting unrelated assignment work.
-- Team conflict containment removes setup-owned routing mappings on the affected coordinator group's active and retired scopes in the same transaction, including mappings left by older containment. Already-contained policy is not reactivated or rewritten. User-owned mappings and other coordinator groups remain unchanged; stored memories are not rewritten.
-- SQLite uses the connection's actual in-memory state when deciding whether to enable WAL, so disk filenames resembling memory URIs retain WAL behavior.
-- The CLI-only packed install verifies the matching optional embedding runtime, real inference, and semantic retrieval. Lexical fallback remains available when the runtime cannot initialize.
+## [0.44.0] - 2026-09-09
 
-### Limits and upgrade
+### Added
 
-Session eligibility is not task classification, and this release does not claim to solve every same-session task transition. Source-window provenance superseded the earlier mandatory task-classification proposal; no new source-window suppression shipped here. Dual OpenCode V1/V2 support followed in 0.45.
+- Added viewer diagnostics with contextual actions and redacted event details, plus local automatic-recall measurements.
 
-The npm latest-tag guard remains verify-only and warning-only. Stable publication uses `--tag latest`; publishing a new stable embeddings version can advance its tag naturally, but skipping an already-published version does not repair tags.
+### Changed
 
-Update through your usual installation method, then restart the viewer and coding-agent session. Back up your memory database before upgrading and let any search-index updates finish. Search by meaning remains platform-dependent; keyword search is still available. See [the published release](https://github.com/kunickiaj/codemem/releases/tag/v0.44.0) for contributor credits and the full commit history.
+- Preserved retained OpenCode context, deduplicated unchanged memories, and isolated continuation summaries by requester session. The retained-token ceiling remains off by default.
+- Verified matching optional embedding runtimes and semantic retrieval in CLI-only packed installations; keyword fallback remains available when the runtime cannot initialize.
+
+### Fixed
+
+- Refreshed stale Team setup confirmation evidence, counted roster devices and assignments once, and removed setup-owned routing mappings during conflict containment without rewriting user-owned mappings or stored memories.
+- Used the SQLite connection's actual in-memory state when deciding whether to enable WAL.
+
+**Upgrade notes and limitations:**
+
+- Session eligibility does not classify every same-session task transition. Dual OpenCode V1/V2 support followed in 0.45.
+- Search by meaning remains platform-dependent. Back up the database before upgrading and allow search-index updates to finish; keyword search remains available.
+- The npm latest-tag guard remains verify-only and warning-only; skipping an already-published package version does not repair its dist-tags.
+
+[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.46.2...HEAD
+[0.46.2]: https://github.com/kunickiaj/codemem/compare/v0.46.1...v0.46.2
+[0.46.1]: https://github.com/kunickiaj/codemem/compare/v0.46.0...v0.46.1
+[0.44.0]: https://github.com/kunickiaj/codemem/compare/v0.43.2...v0.44.0
+[#1875]: https://github.com/kunickiaj/codemem/pull/1875
+[#1876]: https://github.com/kunickiaj/codemem/pull/1876
+[#1877]: https://github.com/kunickiaj/codemem/pull/1877
+[#1878]: https://github.com/kunickiaj/codemem/pull/1878
+[#1879]: https://github.com/kunickiaj/codemem/pull/1879
+[#1880]: https://github.com/kunickiaj/codemem/pull/1880
+[#1881]: https://github.com/kunickiaj/codemem/pull/1881
+[#1882]: https://github.com/kunickiaj/codemem/pull/1882

@@ -214,14 +214,8 @@ jobs:
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             echo "Release $RELEASE_TAG already exists"
           else
-            RELEASE_NOTES_ARGS=()
-            RELEASE_NOTES="$(node scripts/release-notes.mjs "$RELEASE_TAG")"
-            if [[ -n "$RELEASE_NOTES" ]]; then
-              RELEASE_NOTES_ARGS=(--notes "$RELEASE_NOTES")
-            fi
             gh release create "$RELEASE_TAG" \
               --generate-notes \
               --title "codemem $RELEASE_TAG" \
-              "${RELEASE_NOTES_ARGS[@]}" \
               $PRERELEASE_FLAG
           fi

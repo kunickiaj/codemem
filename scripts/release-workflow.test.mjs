@@ -6,11 +6,9 @@ import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { npmDistTagForReleaseTag } from "./release-dist-tag.mjs";
-import { releaseNotesForTag } from "./release-notes.mjs";
 
 const releaseWorkflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
 const changelog = readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf8");
-const patchReleaseNotes = releaseNotesForTag(changelog, "v0.46.1");
 const publishedPackages = [
 	["@codemem/embeddings", "packages/embeddings"],
 	["@codemem/core", "packages/core"],
@@ -33,7 +31,6 @@ describe("release npm dist-tag routing", () => {
 				packageName,
 				distTag: npmDistTagForReleaseTag(releaseTag),
 			}));
-
 			assert.equal(routes.length, publishedPackages.length);
 			assert.ok(routes.every(({ distTag }) => distTag === expectedTag));
 		});
@@ -45,12 +42,7 @@ describe("release npm dist-tag routing", () => {
 		assert.match(releaseWorkflow, /printf '%s\\n' "\$TAG_OUTPUT" >> "\$GITHUB_OUTPUT"/);
 		assert.match(releaseWorkflow, /publish --tag "\$\{DIST_TAG\}"/);
 		for (const [packageName, packageDirectory] of publishedPackages) {
-			assert.match(
-				releaseWorkflow,
-				new RegExp(
-					`publish_if_missing "${packageName.replaceAll("/", "\\/")}" "${packageDirectory.replaceAll("/", "\\/")}"`,
-				),
-			);
+			assert.match(releaseWorkflow, new RegExp(`publish_if_missing "${packageName.replaceAll("/", "\\/")}" "${packageDirectory.replaceAll("/", "\\/")}"`));
 		}
 		assert.doesNotMatch(releaseWorkflow, /npm dist-tag (?:add|rm)/);
 	});
@@ -60,10 +52,7 @@ describe("release npm dist-tag routing", () => {
 		const scriptPath = join(directory, "release dist tag.mjs");
 		try {
 			copyFileSync(fileURLToPath(new URL("./release-dist-tag.mjs", import.meta.url)), scriptPath);
-			const result = spawnSync(process.execPath, [scriptPath, "v0.44.0-alpha.2"], {
-				encoding: "utf8",
-			});
-
+			const result = spawnSync(process.execPath, [scriptPath, "v0.44.0-alpha.2"], { encoding: "utf8" });
 			assert.equal(result.status, 0);
 			assert.equal(result.stdout, "tag=alpha\n");
 		} finally {
@@ -73,61 +62,40 @@ describe("release npm dist-tag routing", () => {
 });
 
 describe("GitHub release presentation", () => {
-	it("uses the lowercase product name and prepends curated notes to generated changes", () => {
+	it("uses generated notes independently of repository changelog files", () => {
 		assert.match(releaseWorkflow, /--title "codemem \$RELEASE_TAG"/);
- assert.match(releaseWorkflow, /RELEASE_NOTES="\$\(node scripts\/release-notes\.mjs "\$RELEASE_TAG"\)"/);
- assert.match(releaseWorkflow, /RELEASE_NOTES_ARGS=\(--notes "\$RELEASE_NOTES"\)/);
 		assert.match(releaseWorkflow, /--generate-notes/);
-		assert.doesNotMatch(patchReleaseNotes, /^# /m);
-		assert.doesNotMatch(patchReleaseNotes, /\b(?:CodeMem|Codemem)\b/);
+		assert.doesNotMatch(releaseWorkflow, /RELEASE_NOTES|release-notes|CHANGELOG\.md/);
+	});
+
+	it("can create a release from an older tagged checkout without notes tooling", () => {
+		const directory = mkdtempSync(join(tmpdir(), "codemem old release "));
+		const releaseStep = releaseWorkflow.slice(releaseWorkflow.indexOf("      - name: Create GitHub Release"));
+		const script = releaseStep.slice(releaseStep.indexOf("          set -euo pipefail"));
+		// Mock gh locally: view reports no existing release, create records its arguments.
+		const mock = 'gh() { if [ "$2" = "view" ]; then return 1; fi; printf "%s\\n" "$@"; }\n';
+		try {
+			const result = spawnSync("bash", ["-c", mock + script], {
+				cwd: directory,
+				encoding: "utf8",
+				env: { ...process.env, RELEASE_TAG: "v0.46.2" },
+			});
+			assert.equal(result.status, 0, result.stderr);
+			assert.match(result.stdout, /create\nv0\.46\.2\n--generate-notes/);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
 	});
 });
 
-describe("changelog release notes", () => {
-	const fixture = "# Changelog\n\n## 1.2.3\n\nCurrent notes.\n\n### Limits\n\nA caveat.\n\n## 1.2.2\n\nPrevious notes.\n";
-
-	it("extracts only the matching release while preserving subheadings", () => {
-		assert.equal(releaseNotesForTag(fixture, "v1.2.3"), "Current notes.\n\n### Limits\n\nA caveat.");
-		assert.equal(releaseNotesForTag(fixture, "v1.2.2"), "Previous notes.");
-	});
-
-	it("handles CRLF and a final entry without a trailing newline", () => {
-		assert.equal(releaseNotesForTag(fixture.replaceAll("\n", "\r\n").trimEnd(), "1.2.2"), "Previous notes.");
-	});
-
-	it("matches prereleases exactly instead of including the stable entry", () => {
-		const text = "## 1.2.3-rc.1\n\nCandidate.\n\n## 1.2.3\n\nStable.";
-		assert.equal(releaseNotesForTag(text, "v1.2.3-rc.1"), "Candidate.");
-		assert.equal(releaseNotesForTag(text, "v1.2.3"), "Stable.");
-	});
-
-	it("leaves missing or empty entries to generated GitHub notes", () => {
-		assert.equal(releaseNotesForTag(fixture, "v9.9.9"), "");
-		assert.equal(releaseNotesForTag("## 1.2.3\n\n## 1.2.2\nOld", "v1.2.3"), "");
-	});
-
-	it("rejects invalid tags and ambiguous duplicate entries", () => {
-		for (const tag of ["main", "v1.2", "v1.2.3\n", "v1.2.3-other.1"]) {
-			assert.throws(() => releaseNotesForTag(fixture, tag), /Invalid release tag/);
+describe("repository changelog", () => {
+	it("uses dated version entries, change categories and comparison links", () => {
+		assert.match(changelog, /^## \[Unreleased\]$/m);
+		for (const version of ["0.46.2", "0.46.1", "0.44.0"]) {
+			assert.ok(changelog.includes(`## [${version}] - `));
+			assert.ok(changelog.includes(`[${version}]: https://github.com/kunickiaj/codemem/compare/`));
 		}
-		assert.throws(() => releaseNotesForTag(`${fixture}\n## 1.2.3\nDuplicate`, "v1.2.3"), /Duplicate changelog entry/);
-	});
-
-	it("preserves the migrated patch notes and upgrade caveats", () => {
-		assert.match(patchReleaseNotes, /do \*\*not\*\* enforce a provider-side output-token cap/);
-		const latest = releaseNotesForTag(changelog, "v0.46.2");
-		assert.match(latest, /gpt-6-luna/);
-		assert.match(latest, /Legacy `api_http`/);
-		assert.doesNotMatch(latest, /This patch improves OpenCode 2 observer authentication/);
-	});
-
-	it("prints notes through the CLI and fails for an invalid tag", () => {
-		const script = fileURLToPath(new URL("./release-notes.mjs", import.meta.url));
-		const result = spawnSync(process.execPath, [script, "v0.46.2"], { encoding: "utf8" });
-		assert.equal(result.status, 0);
-		assert.equal(result.stdout, `${releaseNotesForTag(changelog, "v0.46.2")}\n`);
-		const invalid = spawnSync(process.execPath, [script, "main"], { encoding: "utf8" });
-		assert.equal(invalid.status, 1);
-		assert.match(invalid.stderr, /Invalid release tag/);
+		assert.match(changelog, /^### (?:Added|Changed|Fixed|Removed)$/m);
+		assert.doesNotMatch(changelog, /^### (?:Highlights|Compatibility and upgrade)$/m);
 	});
 });
