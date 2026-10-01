@@ -2,7 +2,7 @@
 
 Notable changes to codemem are documented here, following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/).
 
-This file starts with the release summaries previously checked into the repository; it is not a complete backfill. Other versions, release announcements, and contributor credits remain in [GitHub Releases](https://github.com/kunickiaj/codemem/releases).
+Stable release history starts at 0.46.0. Earlier versions, prereleases, release announcements, and contributor credits remain in [GitHub Releases](https://github.com/kunickiaj/codemem/releases).
 
 ## [Unreleased]
 
@@ -47,32 +47,54 @@ This file starts with the release summaries previously checked into the reposito
 - OpenCode 2 stateless generation and local Claude/Codex sessions do not enforce provider-side output-token caps. Wait and response-size limits do not cap upstream generation or charges.
 - Restart the viewer and agent host after upgrading packages; a running viewer does not switch builds automatically.
 
-## [0.44.0] - 2026-09-09
+## [0.46.0] - 2026-09-27
 
 ### Added
 
-- Added viewer diagnostics with contextual actions and redacted event details, plus local automatic-recall measurements.
+- Added Pi coding-agent support through setup, lifecycle capture, native memory tools, and memory-pack injection on the request copy without changing the system prompt. ([#1788], [#1778], [#1831])
+- Added exact-Project sharing actions, first-run guidance, source-device information, and device renaming from the Devices view. ([#1770], [#1786], [#1773], [#1846])
 
 ### Changed
 
-- Preserved retained OpenCode context, deduplicated unchanged memories, and isolated continuation summaries by requester session. The retained-token ceiling remains off by default.
-- Verified matching optional embedding runtimes and semantic retrieval in CLI-only packed installations; keyword fallback remains available when the runtime cannot initialize.
+- Grouped related repository worktrees in Projects and devices by Identity, and made Feed cards show more useful content. ([#1835], [#1780], [#1843])
+- Reduced repeated reads in Projects, sharing summaries, and sync status on large stores. ([#1857], [#1746], [#1860])
+- Added safe sync failure categories and clearer explanations in Health and diagnostics. ([#1851], [#1848])
 
 ### Fixed
 
-- Refreshed stale Team setup confirmation evidence, counted roster devices and assignments once, and removed setup-owned routing mappings during conflict containment without rewriting user-owned mappings or stored memories.
-- Used the SQLite connection's actual in-memory state when deciding whether to enable WAL.
+- Avoided taking a write lock when opening an unchanged database. ([#1849])
+- Stopped completed backfill workers, included rows arriving during backfills, and retried temporary database-busy failures. ([#1850], [#1853])
+- Reported disabled embeddings and compatible legacy semantic vectors accurately; keyword search remains available when semantic search is off. ([#1852])
 
 **Upgrade notes and limitations:**
 
-- Session eligibility does not classify every same-session task transition. Dual OpenCode V1/V2 support followed in 0.45.
-- Search by meaning remains platform-dependent. Back up the database before upgrading and allow search-index updates to finish; keyword search remains available.
-- The npm latest-tag guard remains verify-only and warning-only; skipping an already-published package version does not repair its dist-tags.
+- Restart the agent host after upgrading and run `codemem setup` to add Pi. Existing databases update automatically; background maintenance may continue after upgrade.
+- Pi does not persist recalled memory pastes in its session file, so restarting Pi does not restore earlier injection decisions. First loads of Health and coordinator administration can still be slow on large stores.
+- Revoking a shared Space stops new delivery but cannot erase copies already received by another device.
 
 [Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.46.2...HEAD
 [0.46.2]: https://github.com/kunickiaj/codemem/compare/v0.46.1...v0.46.2
 [0.46.1]: https://github.com/kunickiaj/codemem/compare/v0.46.0...v0.46.1
-[0.44.0]: https://github.com/kunickiaj/codemem/compare/v0.43.2...v0.44.0
+[0.46.0]: https://github.com/kunickiaj/codemem/compare/v0.45.0...v0.46.0
+[#1746]: https://github.com/kunickiaj/codemem/pull/1746
+[#1770]: https://github.com/kunickiaj/codemem/pull/1770
+[#1773]: https://github.com/kunickiaj/codemem/pull/1773
+[#1778]: https://github.com/kunickiaj/codemem/pull/1778
+[#1780]: https://github.com/kunickiaj/codemem/pull/1780
+[#1786]: https://github.com/kunickiaj/codemem/pull/1786
+[#1788]: https://github.com/kunickiaj/codemem/pull/1788
+[#1831]: https://github.com/kunickiaj/codemem/pull/1831
+[#1835]: https://github.com/kunickiaj/codemem/pull/1835
+[#1843]: https://github.com/kunickiaj/codemem/pull/1843
+[#1846]: https://github.com/kunickiaj/codemem/pull/1846
+[#1848]: https://github.com/kunickiaj/codemem/pull/1848
+[#1849]: https://github.com/kunickiaj/codemem/pull/1849
+[#1850]: https://github.com/kunickiaj/codemem/pull/1850
+[#1851]: https://github.com/kunickiaj/codemem/pull/1851
+[#1852]: https://github.com/kunickiaj/codemem/pull/1852
+[#1853]: https://github.com/kunickiaj/codemem/pull/1853
+[#1857]: https://github.com/kunickiaj/codemem/pull/1857
+[#1860]: https://github.com/kunickiaj/codemem/pull/1860
 [#1875]: https://github.com/kunickiaj/codemem/pull/1875
 [#1876]: https://github.com/kunickiaj/codemem/pull/1876
 [#1877]: https://github.com/kunickiaj/codemem/pull/1877
