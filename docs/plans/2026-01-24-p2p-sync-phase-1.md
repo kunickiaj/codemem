@@ -1,5 +1,7 @@
 # P2P Sync (Phase 1) Plan: LAN + Tailscale
 
+**Status:** Historical design for the former Python runtime, not current setup instructions. See [Architecture](../architecture.md) and the [User guide](../user-guide.md#advanced-sync-panel) for maintained behavior and operations.
+
 This plan describes Phase 1 of syncing the codemem database across multiple computers owned by the same person, without a centralized store.
 
 The target experience is opt-in sync that is easy to set up, works on LAN and/or over Tailscale, and converges deterministically.
@@ -274,21 +276,3 @@ Run expectations:
   - Peers list (last seen, last sync, addresses), actions (sync now, rename/remove)
 - Settings dialog additions for sync config.
 - Key storage via OS keychain (with fallback).
-
-## Handoff Prompt (for OpenCoder / GPT-5.2-codex)
-
-Implement Phase 1 of this plan in the existing codemem repo.
-
-Constraints:
-
-- Follow repo style and the standards in `/Users/adam/.config/opencode/context/core/standards/code-quality.md` and `/Users/adam/.config/opencode/context/core/standards/test-coverage.md`.
-- Keep changes pragmatic and debuggable; avoid new heavy deps unless needed.
-- No web UI changes in Phase 1.
-
-Deliverables:
-
-- Schema/migrations + ops log + tombstones.
-- Sync daemon + CLI commands listed above.
-- LAN mDNS discovery + Tailscale address fallback.
-- Tests demonstrating deterministic convergence.
-- Minimal docs update describing how to enable/pair/status/troubleshoot.

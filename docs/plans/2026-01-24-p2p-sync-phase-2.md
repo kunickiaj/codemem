@@ -1,5 +1,7 @@
 # P2P Sync (Phase 2) Plan: Close Gaps + UI + Strong Auth
 
+**Status:** Historical design for the former Python runtime, not current setup instructions. See [Architecture](../architecture.md) and the [User guide](../user-guide.md#advanced-sync-panel) for maintained behavior and operations.
+
 Phase 2 extends the Phase 1 LAN/Tailscale peer-to-peer sync implementation by:
 
 - closing Phase 1 gaps that were deferred (auth enforcement, mDNS wired into daemon, QR pairing)

@@ -1,5 +1,7 @@
 # DB Coexistence Contract: Python/TS Migration
 
+**Historical contract:** This records transition constraints, not the current runtime topology. Python has been removed from the shipped runtime; see [Migration: Python to TypeScript](../migration-python-to-ts.md).
+
 **Status:** Reviewed — prerequisites identified  
 **Date:** 2026-03-15  
 **Reviewed:** 2026-03-15 (CodeReviewer: 4 must-fix, 4 should-fix)

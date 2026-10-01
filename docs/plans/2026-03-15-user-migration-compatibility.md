@@ -1,5 +1,7 @@
 # User Migration Compatibility: Python → npm
 
+**Historical decision:** The proposed dual-runtime rollout below is no longer installation guidance. The shipped runtime is TypeScript-only; see [Migration: Python to TypeScript](../migration-python-to-ts.md) and the [rename migration guide](../rename-migration.md).
+
 ## Status
 
 Decision
