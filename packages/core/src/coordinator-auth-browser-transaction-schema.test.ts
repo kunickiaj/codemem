@@ -12,9 +12,14 @@ import { backendTest, NOW } from "./coordinator-auth-link-test-fixtures.js";
 import type { Backend } from "./coordinator-auth-store-test-fixtures.js";
 
 function schema(db: Database.Database) {
+	const indexes = db.prepare(`PRAGMA index_list(${TABLE})`).all() as { name: string }[];
 	return {
 		columns: db.prepare(`PRAGMA table_info(${TABLE})`).all(),
-		indexes: db.prepare(`PRAGMA index_list(${TABLE})`).all(),
+		indexes: indexes.map((index) => ({
+			...index,
+			columns: db.prepare("SELECT * FROM pragma_index_xinfo(?)").all(index.name),
+			definition: db.prepare("SELECT sql FROM sqlite_master WHERE name = ?").get(index.name),
+		})),
 		definition: db.prepare("SELECT sql FROM sqlite_master WHERE name = ?").get(TABLE),
 	};
 }
@@ -105,13 +110,16 @@ for (const backend of ["SQLite", "D1"] as const satisfies readonly Backend[]) {
 	});
 }
 
-it("migration 0020 applies twice without changing existing proof history", () => {
+it("migration 0020 matches the contract and applies twice without changing proof history", () => {
 	// Arrange
 	const directory = join(import.meta.dirname, "../../cloudflare-coordinator-worker/migrations");
 	const migration = readFileSync(join(directory, "0020_add_auth_browser_transactions.sql"), "utf8");
 	const db = new Database(":memory:");
+	const reference = new Database(":memory:");
 	try {
+		reference.exec(AUTH_BROWSER_TXN_SCHEMA_SQL);
 		db.exec(migration);
+		expect(schema(db)).toEqual(schema(reference));
 		db.prepare(
 			`INSERT INTO ${TABLE} (coordinator_id,browser_transaction_hash,purpose,state_hash,binder_hash,issuer,auth_config_revision,redirect_uri,state,nonce,pkce_verifier,created_at_ms,expires_at_ms) VALUES ('coordinator-a',?,'signin',?,?,'https://accounts.example.test',?,'https://coordinator.example.test/auth/callback','pending',?,?,?,?)`,
 		).run(
@@ -139,5 +147,37 @@ it("migration 0020 applies twice without changing existing proof history", () =>
 		).toHaveLength(2);
 	} finally {
 		db.close();
+		reference.close();
 	}
 });
+
+it.each([
+	["CHECK-only", "expires_at_ms > created_at_ms", "expires_at_ms >= created_at_ms"],
+	[
+		"index-column order",
+		"(coordinator_id, purpose, created_at_ms)",
+		"(coordinator_id, created_at_ms, purpose)",
+	],
+])(
+	"schema comparison detects %s drift without column or index-name changes",
+	(_, before, after) => {
+		const reference = new Database(":memory:");
+		const mutant = new Database(":memory:");
+		try {
+			const changed = AUTH_BROWSER_TXN_SCHEMA_SQL.replace(before, after);
+			expect(changed).not.toBe(AUTH_BROWSER_TXN_SCHEMA_SQL);
+			reference.exec(AUTH_BROWSER_TXN_SCHEMA_SQL);
+			mutant.exec(changed);
+			expect(mutant.prepare(`PRAGMA table_info(${TABLE})`).all()).toEqual(
+				reference.prepare(`PRAGMA table_info(${TABLE})`).all(),
+			);
+			expect(mutant.prepare(`PRAGMA index_list(${TABLE})`).all()).toEqual(
+				reference.prepare(`PRAGMA index_list(${TABLE})`).all(),
+			);
+			expect(schema(mutant)).not.toEqual(schema(reference));
+		} finally {
+			reference.close();
+			mutant.close();
+		}
+	},
+);
