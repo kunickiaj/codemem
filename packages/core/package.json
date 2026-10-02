@@ -44,6 +44,7 @@
 		"eventsource-parser": "4.1.0",
 		"hono": "catalog:",
 		"limiter": "catalog:",
+		"openid-client": "6.8.8",
 		"sqlite-vec": "0.1.9",
 		"zod": "4.5.4"
 	},
