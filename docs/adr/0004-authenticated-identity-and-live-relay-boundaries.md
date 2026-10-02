@@ -47,8 +47,13 @@ with the Work Identity or an eligible Team.
   Identity per coordinator, with one account link per Identity and no
   multiplicity flag. See the inert metadata contract in
   [`../contracts/coordinator-auth-account-link.md`](../contracts/coordinator-auth-account-link.md).
-- The first provider is configurable Google OIDC using only `openid` and
-  `email` scopes. GitHub OAuth is not treated as generic OIDC automatically.
+- The first provider is configurable Google OIDC using `openid email profile`
+  scopes. Name and picture are optional display metadata, with a fallback avatar;
+  they never prove ownership. GitHub OAuth is not treated as generic OIDC automatically.
+- Do not request Google offline access or retain Google access, refresh, or ID
+  tokens after the login ceremony. Store the verified issuer/subject link and
+  permitted display metadata, not a reusable Google credential. Profile metadata
+  may be refreshed at a later sign-in; it need not remain current between logins.
 - Use a mature, portable OIDC verifier. Do not parse JWTs or implement crypto
   by hand for coordinator auth. The existing MCP verifier is not a reference
   implementation to copy; changing that separate flow is out of scope.
@@ -96,6 +101,16 @@ explicit opt-in.
 - Sign-in belongs to an auth-enabled coordinator, not to local Codemem use.
   Existing direct sync without mandatory coordinator authentication remains
   available. No separate Codemem password registration is introduced.
+- Successful login creates a Codemem-owned account-management session, not just
+  a permanent account attestation. Sign-out ends that session; it does not remove
+  the account link, revoke enrolled devices, or stop their approved background sync.
+  Device revocation is a separate explicit action. Session access still requires
+  the existing account-link and authorization checks; login cannot claim an Identity.
+- Optional sign-in/linking implementation is approved under the reviewed ownership,
+  browser-completion, and transactional mapping safeguards below. This approval
+  does not cover production configuration or deployment, mandatory-auth activation,
+  recovery activation, or relay. Detailed protocol validation and security review
+  remain engineering gates, not substitutes for these product rules.
 - Migration starts with optional linking from an existing enrolled device.
   Preserve Teams, actor IDs, device keys, Project grants, and memory authorship;
   do not reinvite existing members. Missing or uncertain Identity links need
