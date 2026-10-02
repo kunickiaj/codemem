@@ -29,6 +29,72 @@ type SqliteStatement = {
 	raw: (value: boolean) => { all: (...values: unknown[]) => unknown[] };
 };
 
+it("migration 0018 adds empty sessions repeatedly without changing legacy or link ownership", () => {
+	// Arrange: only this disposable database represents the pre-session schema.
+	const db = connectCoordinator(":memory:");
+	const tables = ["coordinator_auth_session_receipts", "coordinator_auth_sessions"];
+	const unchanged = [
+		"groups",
+		"enrolled_devices",
+		"coordinator_auth_controller_attestations",
+		"coordinator_auth_link_attempts",
+		"coordinator_auth_account_links",
+		"coordinator_auth_link_audit_log",
+	];
+	try {
+		for (const table of tables) db.exec(`DROP TABLE ${table}`);
+		db.prepare("INSERT INTO groups (group_id, created_at) VALUES (?, ?)").run(
+			"legacy-session-group",
+			"2026-10-02T00:00:00.000Z",
+		);
+		db.prepare(`INSERT INTO enrolled_devices
+			(group_id, device_id, public_key, fingerprint, identity_id, enabled, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
+			"legacy-session-group",
+			"legacy-session-device",
+			"fixture-public-key",
+			"a".repeat(64),
+			"legacy-session-identity",
+			1,
+			"2026-10-02T00:00:00.000Z",
+		);
+		const before = unchanged.map((table) => db.prepare(`SELECT * FROM ${table}`).all());
+		const migration = readFileSync(
+			join(import.meta.dirname, "../migrations/0018_add_auth_sessions.sql"),
+			"utf8",
+		);
+		// Act
+		db.exec(migration);
+		db.exec(migration);
+		// Assert
+		for (const table of tables) expect(db.prepare(`SELECT * FROM ${table}`).all()).toEqual([]);
+		expect(unchanged.map((table) => db.prepare(`SELECT * FROM ${table}`).all())).toEqual(before);
+		// Negative: repeat application must retain the fixed session TTL CHECK.
+		expect(() =>
+			db
+				.prepare(`INSERT INTO coordinator_auth_sessions
+			(coordinator_id, session_id, credential_hash, browser_transaction_hash, link_id, identity_id,
+			issuer, subject, auth_config_revision, created_at_ms, expires_at_ms)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+				.run(
+					"coord-a",
+					"session-a",
+					"a".repeat(64),
+					"b".repeat(64),
+					"link-a",
+					"identity-a",
+					"https://accounts.example.test",
+					"opaque-subject",
+					"c".repeat(64),
+					0,
+					1,
+				),
+		).toThrow(/CHECK constraint failed/);
+	} finally {
+		db.close();
+	}
+});
+
 it("migration 0017 adds empty link storage idempotently without backfilling ownership", () => {
 	// Arrange: the migration acts only on this disposable pre-link database.
 	const db = connectCoordinator(":memory:");
