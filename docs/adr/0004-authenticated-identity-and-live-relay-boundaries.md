@@ -174,9 +174,12 @@ secrets must be stored hashed and kept out of polling, logs, and referrers.
 Loopback alone does not protect against someone pasting the secret to an attacker
 or a compromised/shared local host; do not claim it does.
 
-The proposal does not decide enrollment UX, recovery evidence, or the
-account-linking protocol. The account-link metadata contract does not approve a
-new auth architecture or any binding behavior.
+The [optional account-link protocol](../contracts/coordinator-auth-protocol.md)
+now specifies initial binding, controller attestations, browser sessions, and
+guarded persistence. Its focused security review permits the optional store
+implementation; backend and browser integration tests still gate runtime use.
+The earlier metadata helper alone authorizes no binding. Additional-device
+enrollment and recovery activation remain separate reviewed work.
 
 ## Deferred decisions and required gates
 
@@ -186,13 +189,16 @@ tracked in `codemem-79h7`. Do not guess historical ownership or run cleanup
 from inferred identity matches.
 
 Trusted-device approval, admin-assisted recovery, and the 24-hour offline window
-are approved product rules. First-account binding and the exact enrollment,
-revocation, and recovery proofs still need security approval before runtime changes.
+are approved product rules. Optional first-account binding and account-session
+revocation follow the reviewed protocol above. Additional-device enrollment,
+mandatory sync enforcement, and recovery proofs still need security validation
+before their separate runtime changes.
 
-The authentication decision task also owns coordinator mapping authority and
-revocation propagation, including what an offline peer can enforce. Do not
-claim that provider logout revokes direct-sync keys. These decisions block
-runtime authentication; they are not deferred implementation details.
+Coordinator mapping authority and account-session revocation are specified in
+the optional protocol. Mandatory sync revocation propagation, including what
+an offline peer can enforce, remains a separate activation gate. Do not claim
+that provider logout revokes direct-sync keys or that optional login activates
+mandatory sync policy.
 
 Before an auth rollout, validate:
 
