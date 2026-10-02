@@ -15,6 +15,23 @@ import {
 	legacyTeamCandidateId,
 } from "./recipient-policy-identifiers.js";
 
+const EXPECTED_COORDINATOR_TABLES = [
+	"coordinator_auth_controller_attestations",
+	"coordinator_bootstrap_grants",
+	"coordinator_invites",
+	"coordinator_join_requests",
+	"coordinator_legacy_team_completions",
+	"coordinator_reciprocal_approvals",
+	"coordinator_scope_membership_audit_log",
+	"coordinator_scope_membership_effect_receipts",
+	"coordinator_scope_memberships",
+	"coordinator_scopes",
+	"enrolled_devices",
+	"groups",
+	"presence_records",
+	"request_nonces",
+];
+
 function legacyTeamCompletion(): CoordinatorLegacyTeamCompletionManifestV1 {
 	const candidateRef = legacyTeamCandidateId("coord-a", "g1");
 	return {
@@ -245,21 +262,7 @@ describe("CoordinatorStore", () => {
 					)
 					.all() as { name: string }[];
 				const names = tables.map((t) => t.name).sort();
-				expect(names).toEqual([
-					"coordinator_bootstrap_grants",
-					"coordinator_invites",
-					"coordinator_join_requests",
-					"coordinator_legacy_team_completions",
-					"coordinator_reciprocal_approvals",
-					"coordinator_scope_membership_audit_log",
-					"coordinator_scope_membership_effect_receipts",
-					"coordinator_scope_memberships",
-					"coordinator_scopes",
-					"enrolled_devices",
-					"groups",
-					"presence_records",
-					"request_nonces",
-				]);
+				expect(names).toEqual(EXPECTED_COORDINATOR_TABLES);
 			} finally {
 				await cleanup();
 			}

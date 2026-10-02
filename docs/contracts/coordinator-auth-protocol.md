@@ -130,6 +130,8 @@ only by an admin-authenticated ownership review in this slice. A legacy caller-p
 Persist controller attestations with coordinator ID, existing actor ID, group ID,
 device ID, exact stored public key/fingerprint, authority-source receipt ID,
 revision, creation time, and revocation time. They add no parallel Identity registry.
+The [controller storage contract](coordinator-auth-controller-storage.md) defines
+this first persistence slice; routes and account/session writes remain separate.
 Legacy enrollment rows begin with no attestation; do not backfill caller claims
 as trusted evidence. An authenticated coordinator admin explicitly reviews the
 existing actor/device binding and records an evidence reference/digest. Authority

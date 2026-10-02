@@ -29,6 +29,107 @@ type SqliteStatement = {
 	raw: (value: boolean) => { all: (...values: unknown[]) => unknown[] };
 };
 
+function preControllerMigrationFixture() {
+	const db = connectCoordinator(":memory:");
+	// Match the existing migration tests: drop only the new table in a disposable
+	// database to represent the schema before this migration existed.
+	db.exec("DROP TABLE coordinator_auth_controller_attestations");
+	db.prepare("INSERT INTO groups (group_id, created_at) VALUES (?, ?)").run(
+		"legacy-group",
+		"2026-10-02T00:00:00.000Z",
+	);
+	db.prepare(`INSERT INTO enrolled_devices
+		(group_id, device_id, public_key, fingerprint, identity_id, enabled, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
+		"legacy-group",
+		"legacy-device",
+		"fixture-public-key",
+		"a".repeat(64),
+		"legacy-identity",
+		1,
+		"2026-10-02T00:00:00.000Z",
+	);
+	const migration = readFileSync(
+		join(import.meta.dirname, "../migrations/0016_add_auth_controller_attestations.sql"),
+		"utf8",
+	);
+	return { db, migration };
+}
+
+describe("auth-controller migration 0016 (SQLite-backed schema checks)", () => {
+	it("creates empty review storage idempotently without trusting or changing legacy identities", () => {
+		// Arrange
+		const { db, migration } = preControllerMigrationFixture();
+		try {
+			const before = db.prepare("SELECT * FROM enrolled_devices").all();
+			// Act
+			db.exec(migration);
+			db.exec(migration);
+			// Assert
+			expect(
+				db.prepare("SELECT COUNT(*) AS count FROM coordinator_auth_controller_attestations").get(),
+			).toEqual({ count: 0 });
+			expect(db.prepare("SELECT * FROM enrolled_devices").all()).toEqual(before);
+			expect(db.prepare("SELECT identity_id FROM enrolled_devices").get()).toEqual({
+				identity_id: "legacy-identity",
+			});
+		} finally {
+			db.close();
+		}
+	});
+
+	it("accepts a reviewed revision-one row but rejects an unsupported revision", () => {
+		// Arrange
+		const { db, migration } = preControllerMigrationFixture();
+		try {
+			db.exec(migration);
+			const insert = db.prepare(`INSERT INTO coordinator_auth_controller_attestations
+				(attestation_id, coordinator_id, identity_id, group_id, device_id, public_key,
+				fingerprint, review_receipt_id, evidence_digest, enrollment_identity_id, revision, created_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+			const values = [
+				"coordinator-a",
+				"legacy-identity",
+				"legacy-group",
+				"legacy-device",
+				"fixture-public-key",
+				"a".repeat(64),
+			];
+			// Act
+			insert.run(
+				"review-a",
+				...values,
+				"receipt-a",
+				"b".repeat(64),
+				"legacy-identity",
+				1,
+				"2026-10-02T00:00:00.000Z",
+			);
+			const invalid = () =>
+				insert.run(
+					"review-b",
+					...values,
+					"receipt-b",
+					"b".repeat(64),
+					"legacy-identity",
+					2,
+					"2026-10-02T00:00:00.000Z",
+				);
+			// Assert
+			expect(invalid).toThrow(/CHECK constraint failed/u);
+			expect(
+				db
+					.prepare(
+						"SELECT attestation_id, revision, revoked_at FROM coordinator_auth_controller_attestations",
+					)
+					.all(),
+			).toEqual([{ attestation_id: "review-a", revision: 1, revoked_at: null }]);
+		} finally {
+			db.close();
+		}
+	});
+});
+
 class SqliteD1Statement implements D1PreparedStatementLike {
 	private bound: unknown[] = [];
 

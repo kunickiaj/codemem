@@ -1,3 +1,18 @@
+import {
+	AUTH_CONTROLLER_ACTIVE_SQL,
+	AUTH_CONTROLLER_CONFLICT_SQL,
+	AUTH_CONTROLLER_INSERT_SQL,
+	AUTH_CONTROLLER_REVOKE_SQL,
+	authControllerConflictValues,
+	authControllerInsertValues,
+	authControllerRetryResult,
+	type CoordinatorAuthControllerAttestation,
+	type CoordinatorAuthControllerCreateResult,
+	type CoordinatorAuthControllerReviewInput,
+	captureAuthControllerReview,
+	isAuthControllerId,
+	isAuthControllerUniqueError,
+} from "./coordinator-auth-controller.js";
 import type {
 	CoordinatorLegacyTeamCompletionManifestV1,
 	CoordinatorLegacyTeamCompletionRecord,
@@ -366,6 +381,68 @@ export class D1CoordinatorStore implements CoordinatorStore {
 
 	async close(): Promise<void> {
 		// No-op for D1 bindings.
+	}
+
+	async createAuthControllerAttestation(
+		input: CoordinatorAuthControllerReviewInput,
+	): Promise<CoordinatorAuthControllerCreateResult> {
+		const review = captureAuthControllerReview(input);
+		if (!review) return { kind: "rejected", error: "invalid_review_input" };
+		try {
+			const inserted = await runChanges(
+				this.db
+					.prepare(AUTH_CONTROLLER_INSERT_SQL)
+					.bind(...authControllerInsertValues(review, nowISO())),
+			);
+			if (inserted === 0) return { kind: "rejected", error: "enrollment_mismatch" };
+		} catch (error) {
+			if (!isAuthControllerUniqueError(error)) throw error;
+			return this.resolveAuthControllerRetry(review);
+		}
+		const attestation = await this.getActiveAuthControllerAttestation(
+			review.coordinatorId,
+			review.attestationId,
+		);
+		if (!attestation) throw new Error("auth_controller_persistence_incomplete");
+		return { kind: "created", attestation };
+	}
+
+	private async resolveAuthControllerRetry(
+		input: CoordinatorAuthControllerReviewInput,
+	): Promise<CoordinatorAuthControllerCreateResult> {
+		const row = await firstRow<CoordinatorAuthControllerAttestation>(
+			this.db.prepare(AUTH_CONTROLLER_CONFLICT_SQL).bind(...authControllerConflictValues(input)),
+		);
+		const result = authControllerRetryResult(input, row);
+		if (result.kind === "rejected") return result;
+		const active = await this.getActiveAuthControllerAttestation(
+			input.coordinatorId,
+			input.attestationId,
+		);
+		if (!active) return { kind: "rejected", error: "enrollment_mismatch" };
+		return { kind: "existing", attestation: active };
+	}
+
+	async getActiveAuthControllerAttestation(
+		coordinatorId: string,
+		attestationId: string,
+	): Promise<CoordinatorAuthControllerAttestation | null> {
+		if (!isAuthControllerId(coordinatorId) || !isAuthControllerId(attestationId)) return null;
+		return firstRow<CoordinatorAuthControllerAttestation>(
+			this.db.prepare(AUTH_CONTROLLER_ACTIVE_SQL).bind(coordinatorId, attestationId),
+		);
+	}
+
+	async revokeAuthControllerAttestation(
+		coordinatorId: string,
+		attestationId: string,
+	): Promise<boolean> {
+		if (!isAuthControllerId(coordinatorId) || !isAuthControllerId(attestationId)) return false;
+		return (
+			(await runChanges(
+				this.db.prepare(AUTH_CONTROLLER_REVOKE_SQL).bind(nowISO(), coordinatorId, attestationId),
+			)) > 0
+		);
 	}
 
 	async createGroup(_groupId: string, _displayName?: string | null): Promise<void> {
