@@ -17,6 +17,16 @@ import { dirname, join } from "node:path";
 import type { Database as DatabaseType } from "better-sqlite3";
 import Database from "better-sqlite3";
 import {
+	AUTH_BROWSER_TXN_SCHEMA_SQL,
+	type CoordinatorAuthBrowserConfig,
+	type CoordinatorAuthBrowserTransactionConsumeInput,
+	type CoordinatorAuthBrowserTransactionMaintenanceOptions,
+	type CoordinatorAuthBrowserTransactionScope,
+	type CoordinatorAuthBrowserTransactionStartInput,
+	CoordinatorAuthBrowserTransactions,
+	type CoordinatorAuthLinkBrowserTransactionResolveInput,
+} from "./coordinator-auth-browser-transaction.js";
+import {
 	AUTH_CONTROLLER_ACTIVE_SQL,
 	AUTH_CONTROLLER_CONFLICT_SQL,
 	AUTH_CONTROLLER_INSERT_SQL,
@@ -335,6 +345,7 @@ function initializeSchema(db: DatabaseType): void {
 	db.exec(AUTH_CONTROLLER_SCHEMA_SQL);
 	db.exec(AUTH_LINK_SCHEMA_SQL);
 	db.exec(AUTH_SESSION_SCHEMA_SQL);
+	db.exec(AUTH_BROWSER_TXN_SCHEMA_SQL);
 	db.exec(`
 		CREATE TABLE IF NOT EXISTS groups (
 			group_id TEXT PRIMARY KEY,
@@ -626,6 +637,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	readonly db: DatabaseType;
 	private readonly authLinks: AuthLinkOperations;
 	private readonly authSessions: AuthSessionOperations;
+	private readonly authBrowserTransactions: CoordinatorAuthBrowserTransactions;
 
 	constructor(path?: string, options: CoordinatorAuthLinkOptions = {}) {
 		this.path = path ?? DEFAULT_COORDINATOR_DB_PATH;
@@ -648,6 +660,35 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		};
 		this.authLinks = new AuthLinkOperations(authBackend, options.authClock);
 		this.authSessions = new AuthSessionOperations(authBackend, options.authClock);
+		this.authBrowserTransactions = new CoordinatorAuthBrowserTransactions(
+			authBackend,
+			options.authClock,
+		);
+	}
+
+	async startAuthBrowserTransaction(
+		input: CoordinatorAuthBrowserTransactionStartInput,
+		config: CoordinatorAuthBrowserConfig,
+	) {
+		return this.authBrowserTransactions.startAuthBrowserTransaction(input, config);
+	}
+	async consumeAuthBrowserTransaction(
+		input: CoordinatorAuthBrowserTransactionConsumeInput,
+		config: CoordinatorAuthBrowserConfig,
+	) {
+		return this.authBrowserTransactions.consumeAuthBrowserTransaction(input, config);
+	}
+	async resolveAuthLinkBrowserTransaction(
+		input: CoordinatorAuthLinkBrowserTransactionResolveInput,
+		config: CoordinatorAuthBrowserConfig,
+	) {
+		return this.authBrowserTransactions.resolveAuthLinkBrowserTransaction(input, config);
+	}
+	async maintainAuthBrowserTransactions(
+		scope: CoordinatorAuthBrowserTransactionScope,
+		options?: CoordinatorAuthBrowserTransactionMaintenanceOptions,
+	) {
+		return this.authBrowserTransactions.maintainAuthBrowserTransactions(scope, options);
 	}
 
 	async redeemAuthLinkSession(

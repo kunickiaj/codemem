@@ -71,6 +71,8 @@ The browser transaction binds the exact attempt and
 OIDC `state`, `nonce`, and PKCE verifier. The configured OIDC redirect URI is a
 preconfigured HTTPS coordinator callback only, with `response_mode=query`.
 
+Browser-transaction persistence is implemented but pending handler integration under the [browser-transaction storage contract](coordinator-auth-browser-transaction.md): it stores only transaction commitments and pending SDK nonce/PKCE material, not cookies or CSRF values. Future route work must retain the approved CSRF value **and** same-origin/Origin validation; it must not replace that protection with Origin-only checks. The callback remains a fixed configured HTTPS URI, never one derived from a request header, and the existing stored device attempt alone controls the literal loopback second hop.
+
 At that callback, the coordinator verifies the browser cookie and exact state,
 nonce, PKCE, issuer, signature, audience, expiry, and provider subject. It holds
 only verified minimal account claims and the confirmed issuer/subject in the

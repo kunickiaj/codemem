@@ -1,4 +1,13 @@
 import {
+	type CoordinatorAuthBrowserConfig,
+	type CoordinatorAuthBrowserTransactionConsumeInput,
+	type CoordinatorAuthBrowserTransactionMaintenanceOptions,
+	type CoordinatorAuthBrowserTransactionScope,
+	type CoordinatorAuthBrowserTransactionStartInput,
+	CoordinatorAuthBrowserTransactions,
+	type CoordinatorAuthLinkBrowserTransactionResolveInput,
+} from "./coordinator-auth-browser-transaction.js";
+import {
 	AUTH_CONTROLLER_ACTIVE_SQL,
 	AUTH_CONTROLLER_CONFLICT_SQL,
 	AUTH_CONTROLLER_INSERT_SQL,
@@ -399,6 +408,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	readonly db: D1DatabaseLike;
 	private readonly authLinks: AuthLinkOperations;
 	private readonly authSessions: AuthSessionOperations;
+	private readonly authBrowserTransactions: CoordinatorAuthBrowserTransactions;
 
 	constructor(db: D1DatabaseLike, options: CoordinatorAuthLinkOptions = {}) {
 		this.db = db;
@@ -418,6 +428,35 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		};
 		this.authLinks = new AuthLinkOperations(authBackend, options.authClock);
 		this.authSessions = new AuthSessionOperations(authBackend, options.authClock);
+		this.authBrowserTransactions = new CoordinatorAuthBrowserTransactions(
+			authBackend,
+			options.authClock,
+		);
+	}
+
+	async startAuthBrowserTransaction(
+		input: CoordinatorAuthBrowserTransactionStartInput,
+		config: CoordinatorAuthBrowserConfig,
+	) {
+		return this.authBrowserTransactions.startAuthBrowserTransaction(input, config);
+	}
+	async consumeAuthBrowserTransaction(
+		input: CoordinatorAuthBrowserTransactionConsumeInput,
+		config: CoordinatorAuthBrowserConfig,
+	) {
+		return this.authBrowserTransactions.consumeAuthBrowserTransaction(input, config);
+	}
+	async resolveAuthLinkBrowserTransaction(
+		input: CoordinatorAuthLinkBrowserTransactionResolveInput,
+		config: CoordinatorAuthBrowserConfig,
+	) {
+		return this.authBrowserTransactions.resolveAuthLinkBrowserTransaction(input, config);
+	}
+	async maintainAuthBrowserTransactions(
+		scope: CoordinatorAuthBrowserTransactionScope,
+		options?: CoordinatorAuthBrowserTransactionMaintenanceOptions,
+	) {
+		return this.authBrowserTransactions.maintainAuthBrowserTransactions(scope, options);
 	}
 
 	async redeemAuthLinkSession(
