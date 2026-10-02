@@ -5,7 +5,15 @@ import {
 import { isAuthControllerId, isAuthControllerUniqueError } from "./coordinator-auth-controller.js";
 import {
 	AUTH_LINK_ATTEMPT_TTL_MS,
+	AUTH_LINK_CREATE_WINDOW_MS,
+	AUTH_LINK_EXPIRE_BATCH_MAX,
+	AUTH_LINK_MAX_ACTIVE_PER_DEVICE,
+	AUTH_LINK_MAX_ACTIVE_PER_IDENTITY,
+	AUTH_LINK_MAX_CREATES_PER_DEVICE_RETENTION,
+	AUTH_LINK_MAX_CREATES_PER_DEVICE_WINDOW,
+	AUTH_LINK_MAX_UNFINISHED_PER_COORDINATOR,
 	AUTH_LINK_PURPOSE,
+	AUTH_LINK_RETENTION_WINDOW_MS,
 	type CoordinatorAuthLinkClaimInput,
 	type CoordinatorAuthLinkConfig,
 	type CoordinatorAuthLinkConfirmInput,
@@ -14,6 +22,8 @@ import {
 	type CoordinatorAuthLinkError,
 	type CoordinatorAuthLinkFailInput,
 	type CoordinatorAuthLinkFinalizeInput,
+	type CoordinatorAuthLinkMaintenanceOptions,
+	type CoordinatorAuthLinkMaintenanceResult,
 	type CoordinatorAuthLinkOidcInput,
 	type CoordinatorAuthLinkOidcResult,
 	type CoordinatorAuthLinkRejected,
@@ -141,7 +151,7 @@ function rejected(error: CoordinatorAuthLinkError): CoordinatorAuthLinkRejected 
 	return { kind: "rejected", error };
 }
 function isTerminal(row: Attempt): boolean {
-	return ["failed", "finalized", "session_redeemed"].includes(row.state);
+	return ["expired", "failed", "finalized", "session_redeemed"].includes(row.state);
 }
 function status(row: Attempt, now: number): CoordinatorAuthLinkStatus {
 	const state = !isTerminal(row) && now >= row.expires_at_ms ? "expired" : row.state;
@@ -174,6 +184,7 @@ function diagnose(
 ): CoordinatorAuthLinkRejected {
 	if (!row) return rejected("attempt_unavailable");
 	if (!configMatches(row, c)) return rejected("auth_config_changed");
+	if (row.state === "expired") return rejected("attempt_expired");
 	if (!isTerminal(row) && row.expires_at_ms <= now) return rejected("attempt_expired");
 	return rejected("attempt_unavailable");
 }
@@ -192,17 +203,72 @@ const AUTHORITY = `EXISTS (SELECT 1 FROM coordinator_auth_controller_attestation
  AND a.public_key = coordinator_auth_link_attempts.public_key AND a.fingerprint = coordinator_auth_link_attempts.fingerprint
  AND e.enabled = 1 AND g.archived_at IS NULL AND e.public_key = a.public_key AND e.fingerprint = a.fingerprint
  AND (e.identity_id IS NULL OR e.identity_id = a.identity_id))`;
+const CREATE_SOURCE_SQL = `FROM coordinator_auth_controller_attestations a
+ JOIN enrolled_devices e ON e.group_id = a.group_id AND e.device_id = a.device_id
+ JOIN groups g ON g.group_id = a.group_id
+ WHERE a.coordinator_id = ? AND a.group_id = ? AND a.device_id = ? AND a.public_key = ? AND a.fingerprint = ?
+ AND a.revoked_at IS NULL AND a.revision = 1 AND ? = 1 AND e.enabled = 1 AND g.archived_at IS NULL
+ AND e.public_key = a.public_key AND e.fingerprint = a.fingerprint AND (e.identity_id IS NULL OR e.identity_id = a.identity_id)`;
 const CREATE_SQL = `INSERT INTO coordinator_auth_link_attempts (
  coordinator_id, attempt_id, identity_id, group_id, device_id, public_key, fingerprint,
  controller_attestation_id, controller_review_receipt_id, controller_revision,
  issuer, auth_config_revision, runtime_verifier_hash, loopback_redirect, state, created_at_ms, expires_at_ms)
  SELECT ?, ?, a.identity_id, a.group_id, a.device_id, a.public_key, a.fingerprint,
  a.attestation_id, a.review_receipt_id, a.revision, ?, ?, ?, ?, 'pending', ?, ?
- FROM coordinator_auth_controller_attestations a JOIN enrolled_devices e ON e.group_id = a.group_id AND e.device_id = a.device_id
- JOIN groups g ON g.group_id = a.group_id
- WHERE a.coordinator_id = ? AND a.group_id = ? AND a.device_id = ? AND a.public_key = ? AND a.fingerprint = ?
- AND a.revoked_at IS NULL AND a.revision = 1 AND ? = 1 AND e.enabled = 1 AND g.archived_at IS NULL
- AND e.public_key = a.public_key AND e.fingerprint = a.fingerprint AND (e.identity_id IS NULL OR e.identity_id = a.identity_id)`;
+ ${CREATE_SOURCE_SQL}
+ AND (SELECT count(*) FROM coordinator_auth_link_attempts t
+  WHERE t.coordinator_id = a.coordinator_id AND t.group_id = a.group_id AND t.device_id = a.device_id
+  AND t.state IN ('pending','browser_claimed','oidc_verified','confirmed') AND t.expires_at_ms > ?) < ?
+ AND (SELECT count(*) FROM coordinator_auth_link_attempts t
+  WHERE t.coordinator_id = a.coordinator_id AND t.identity_id = a.identity_id
+  AND t.state IN ('pending','browser_claimed','oidc_verified','confirmed') AND t.expires_at_ms > ?) < ?
+ AND (SELECT count(*) FROM coordinator_auth_link_attempts t
+  WHERE t.coordinator_id = a.coordinator_id AND t.group_id = a.group_id AND t.device_id = a.device_id
+  AND t.created_at_ms > ?) < ?
+ AND (SELECT count(*) FROM coordinator_auth_link_attempts t
+  WHERE t.coordinator_id = a.coordinator_id AND t.group_id = a.group_id AND t.device_id = a.device_id
+  AND t.created_at_ms > ?) < ?
+ AND (SELECT count(*) FROM (SELECT 1 FROM coordinator_auth_link_attempts t
+  WHERE t.coordinator_id = a.coordinator_id AND t.state NOT IN ('finalized','session_redeemed') LIMIT ?)) < ?`;
+const MAINTENANCE_CANDIDATE_SQL = `link_id IS NULL AND (
+ (state IN ('pending','browser_claimed','oidc_verified','confirmed') AND expires_at_ms <= ?)
+ OR (state IN ('failed','expired') AND account_subject IS NOT NULL))`;
+const MAINTENANCE_SQL = `UPDATE coordinator_auth_link_attempts
+ SET state = CASE WHEN state = 'failed' THEN 'failed' ELSE 'expired' END, account_subject = NULL
+ WHERE coordinator_id = ? AND ${MAINTENANCE_CANDIDATE_SQL}
+ AND attempt_id IN (SELECT attempt_id FROM coordinator_auth_link_attempts
+  WHERE coordinator_id = ? AND ${MAINTENANCE_CANDIDATE_SQL}
+  ORDER BY expires_at_ms, attempt_id LIMIT ?)`;
+function captureMaintenanceLimit(options: unknown): number | null {
+	if (options === undefined) return AUTH_LINK_EXPIRE_BATCH_MAX;
+	if (!options || typeof options !== "object") return null;
+	try {
+		if (Array.isArray(options)) return null;
+		const descriptor = Object.getOwnPropertyDescriptor(options, "limit");
+		if (!descriptor) {
+			if ("limit" in options) return null;
+			return AUTH_LINK_EXPIRE_BATCH_MAX;
+		}
+		if (!Object.hasOwn(descriptor, "value")) return null;
+		const limit: unknown = descriptor.value;
+		if (
+			typeof limit !== "number" ||
+			!Number.isSafeInteger(limit) ||
+			limit < 1 ||
+			limit > AUTH_LINK_EXPIRE_BATCH_MAX
+		)
+			return null;
+		return limit;
+	} catch {
+		return null;
+	}
+}
+function createSourceValues(
+	c: CoordinatorAuthLinkConfig,
+	s: CoordinatorAuthLinkSigner,
+): (string | number)[] {
+	return [c.coordinatorId, s.groupId, s.deviceId, s.publicKey, s.fingerprint, Number(c.enabled)];
+}
 
 /** Optional persistence capability. No token verification, routes, sessions or grants. */
 export class AuthLinkOperations implements CoordinatorAuthLinkStore {
@@ -234,6 +300,25 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			throw new Error("auth_link_persistence_error");
 		}
 	}
+	async maintainAuthLinkAttempts(
+		config: CoordinatorAuthLinkConfig,
+		options?: CoordinatorAuthLinkMaintenanceOptions,
+	): Promise<CoordinatorAuthLinkMaintenanceResult> {
+		const c = captureConfig(config);
+		const limit = captureMaintenanceLimit(options);
+		if (!c || limit === null) return rejected("invalid_input");
+		if (!c.enabled) return rejected("auth_config_changed");
+		const now = authLinkNow(this.clock);
+		const result = await this.execute(
+			{
+				sql: MAINTENANCE_SQL,
+				values: [c.coordinatorId, now, c.coordinatorId, now, limit],
+			},
+			"attempt_conflict",
+		);
+		if (typeof result !== "number") return result;
+		return { kind: "maintained", processedCount: result, more: result === limit };
+	}
 	async createAuthLinkAttempt(
 		input: CoordinatorAuthLinkCreateInput,
 		config: CoordinatorAuthLinkConfig,
@@ -261,16 +346,28 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			i.loopbackRedirect as string,
 			now,
 			now + AUTH_LINK_ATTEMPT_TTL_MS,
-			c.coordinatorId,
-			s.groupId,
-			s.deviceId,
-			s.publicKey,
-			s.fingerprint,
-			Number(c.enabled),
+			...createSourceValues(c, s),
+			now,
+			AUTH_LINK_MAX_ACTIVE_PER_DEVICE,
+			now,
+			AUTH_LINK_MAX_ACTIVE_PER_IDENTITY,
+			now - AUTH_LINK_CREATE_WINDOW_MS,
+			AUTH_LINK_MAX_CREATES_PER_DEVICE_WINDOW,
+			now - AUTH_LINK_RETENTION_WINDOW_MS,
+			AUTH_LINK_MAX_CREATES_PER_DEVICE_RETENTION,
+			AUTH_LINK_MAX_UNFINISHED_PER_COORDINATOR,
+			AUTH_LINK_MAX_UNFINISHED_PER_COORDINATOR,
 		];
 		const result = await this.execute({ sql: CREATE_SQL, values }, "attempt_conflict");
-		if (result === 0) return rejected("controller_not_active");
 		const row = await this.read(i.attemptId, c);
+		if (result === 0) {
+			if (row) return this.createRetry(row, i, s, c, now);
+			const active = await this.first({
+				sql: `SELECT 1 ${CREATE_SOURCE_SQL}`,
+				values: createSourceValues(c, s),
+			});
+			return rejected(active ? "attempt_limited" : "controller_not_active");
+		}
 		if (typeof result !== "number") return this.createRetry(row, i, s, c, now);
 		if (!row) throw new Error("auth_link_persistence_incomplete");
 		return { kind: "created", status: status(row, now), identityId: row.identity_id };
@@ -288,6 +385,7 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			!signerMatches(row, s) ||
 			row.runtime_verifier_hash !== i.runtimeVerifierHash ||
 			row.loopback_redirect !== i.loopbackRedirect ||
+			row.state === "expired" ||
 			row.expires_at_ms <= now
 		)
 			return rejected("attempt_conflict");
@@ -338,8 +436,15 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		if (!c.enabled) return rejected("auth_config_changed");
 		const now = authLinkNow(this.clock);
 		const update = {
-			sql: `UPDATE coordinator_auth_link_attempts SET state = 'browser_claimed', browser_transaction_hash = ?, claimed_at_ms = ? WHERE attempt_id = ? AND ${LIVE_CONFIG} AND expires_at_ms > ? AND state = 'pending' AND browser_transaction_hash IS NULL`,
-			values: [i.browserTransactionHash, now, i.attemptId, ...configValues(c), now],
+			sql: `UPDATE coordinator_auth_link_attempts SET state = 'browser_claimed', browser_transaction_hash = ?, claimed_at_ms = ? WHERE attempt_id = ? AND ${LIVE_CONFIG} AND expires_at_ms > ? AND state = 'pending' AND browser_transaction_hash IS NULL AND NOT EXISTS (SELECT 1 FROM coordinator_auth_session_receipts r WHERE r.coordinator_id = coordinator_auth_link_attempts.coordinator_id AND r.browser_transaction_hash = ?)`,
+			values: [
+				i.browserTransactionHash,
+				now,
+				i.attemptId,
+				...configValues(c),
+				now,
+				i.browserTransactionHash,
+			],
 		};
 		const result = await this.transition(i, c, now, update);
 		if (result.kind !== "rejected" || result.error !== "attempt_unavailable") return result;

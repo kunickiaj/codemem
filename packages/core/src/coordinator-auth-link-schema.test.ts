@@ -47,6 +47,15 @@ function schema(db: SqliteDatabase, table: (typeof TABLES)[number]) {
 				partial: index.partial,
 			}))
 			.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+		namedIndexes: indexes
+			.filter((index) => index.unique === 0 && index.name.startsWith("idx_auth_link_attempts_"))
+			.map((index) => ({
+				name: index.name,
+				unique: index.unique,
+				partial: index.partial,
+				columns: db.prepare("SELECT name FROM pragma_index_info(?) ORDER BY seqno").all(index.name),
+			}))
+			.sort((a, b) => a.name.localeCompare(b.name)),
 	};
 }
 
@@ -89,6 +98,28 @@ function registerBackend(backend: Backend) {
 			const expected = TABLES.map((table) => schema(peer, table));
 			// Assert
 			expect(actual).toEqual(expected);
+			expect(actual[0].namedIndexes).toEqual([
+				{
+					name: "idx_auth_link_attempts_device_created",
+					unique: 0,
+					partial: 0,
+					columns: ["coordinator_id", "group_id", "device_id", "created_at_ms"].map((name) => ({
+						name,
+					})),
+				},
+				{
+					name: "idx_auth_link_attempts_identity_expiry",
+					unique: 0,
+					partial: 0,
+					columns: ["coordinator_id", "identity_id", "expires_at_ms"].map((name) => ({ name })),
+				},
+				{
+					name: "idx_auth_link_attempts_state_expiry",
+					unique: 0,
+					partial: 0,
+					columns: ["coordinator_id", "state", "expires_at_ms"].map((name) => ({ name })),
+				},
+			]);
 			for (const table of actual)
 				expect(table.indexes.every((index) => index.partial === 0)).toBe(true);
 			expect(actual[1].indexes).toEqual(
@@ -106,7 +137,7 @@ function registerBackend(backend: Backend) {
 			peer.close();
 		}
 	});
-	it("migration 0017 and exported schema match the fresh-install link tables", () => {
+	it("migrations 0017 then 0019 and exported schema match the fresh-install link tables", () => {
 		// Arrange: explicit SQL seeds an existing review; no account-link operations are imported.
 		const db = setupSchema(backend);
 		try {
@@ -123,10 +154,19 @@ function registerBackend(backend: Backend) {
 				),
 				"utf8",
 			);
+			const indexesMigration = readFileSync(
+				join(
+					import.meta.dirname,
+					"../../cloudflare-coordinator-worker/migrations/0019_add_auth_link_attempt_limit_indexes.sql",
+				),
+				"utf8",
+			);
 			for (const table of [...TABLES].reverse()) db.exec(`DROP TABLE ${table}`);
 			// Act
 			db.exec(migration);
 			db.exec(migration);
+			db.exec(indexesMigration);
+			db.exec(indexesMigration);
 			const migrated = TABLES.map((table) => schema(db, table));
 			for (const table of [...TABLES].reverse()) db.exec(`DROP TABLE ${table}`);
 			db.exec(AUTH_LINK_SCHEMA_SQL);
