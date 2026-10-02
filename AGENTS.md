@@ -37,6 +37,7 @@
 ## Workflow rules specific to this repo
 
 - Use `bd` for issue tracking, not markdown TODOs: `bd ready --json`, `bd create ... --json`, `bd close ... --json`.
+- Aim for PRs around 1,000 changed lines or fewer (additions plus deletions, including tests and docs). Check the diff against its immediate stack parent before submission; split substantially larger work along natural, independently validated boundaries. A small overage is preferable to added complexity or awkward partial commits just to meet the guideline.
 - After each stable edit, run `pnpm run fix -- <changed paths>` before manually fixing formatting, imports, or other safe Biome diagnostics. Keep paths scoped to the active task; pre-commit runs the same safe fixes on staged files.
 - If you change plugin behavior, update `README.md` and any affected docs under `docs/`.
 - If you change memory kinds or their presentation, update all three surfaces together: `packages/core/src/store.ts`, `packages/mcp-server/src/index.ts`, and `packages/ui/src/tabs/feed.ts`.

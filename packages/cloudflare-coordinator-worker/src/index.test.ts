@@ -29,6 +29,91 @@ type SqliteStatement = {
 	raw: (value: boolean) => { all: (...values: unknown[]) => unknown[] };
 };
 
+it("migration 0017 adds empty link storage idempotently without backfilling ownership", () => {
+	// Arrange: the migration acts only on this disposable pre-link database.
+	const db = connectCoordinator(":memory:");
+	const tables = [
+		"coordinator_auth_link_audit_log",
+		"coordinator_auth_account_links",
+		"coordinator_auth_link_attempts",
+	];
+	try {
+		for (const table of tables) db.exec(`DROP TABLE ${table}`);
+		db.prepare("INSERT INTO groups (group_id, created_at) VALUES (?, ?)").run(
+			"legacy-link-group",
+			"2026-10-02T00:00:00.000Z",
+		);
+		db.prepare(`INSERT INTO enrolled_devices
+			(group_id, device_id, public_key, fingerprint, identity_id, enabled, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
+			"legacy-link-group",
+			"legacy-link-device",
+			"fixture-public-key",
+			"a".repeat(64),
+			"legacy-link-identity",
+			1,
+			"2026-10-02T00:00:00.000Z",
+		);
+		const before = ["groups", "enrolled_devices", "coordinator_auth_controller_attestations"].map(
+			(table) => db.prepare(`SELECT * FROM ${table}`).all(),
+		);
+		const migration = readFileSync(
+			join(import.meta.dirname, "../migrations/0017_add_auth_account_links.sql"),
+			"utf8",
+		);
+		// Act
+		db.exec(migration);
+		db.exec(migration);
+		// Assert: no account, Identity, or review trust is inferred from legacy labels.
+		for (const table of tables) expect(db.prepare(`SELECT * FROM ${table}`).all()).toEqual([]);
+		expect(
+			["groups", "enrolled_devices", "coordinator_auth_controller_attestations"].map((table) =>
+				db.prepare(`SELECT * FROM ${table}`).all(),
+			),
+		).toEqual(before);
+		const columns = db.pragma("table_info(coordinator_auth_link_attempts)") as { name: string }[];
+		expect(columns.map((column) => column.name)).toEqual(
+			expect.arrayContaining([
+				"controller_attestation_id",
+				"controller_revision",
+				"runtime_verifier_hash",
+				"completion_secret_hash",
+				"expires_at_ms",
+			]),
+		);
+		// Negative: repeated migration does not relax the safe clock/deadline CHECK.
+		expect(() =>
+			db
+				.prepare(`INSERT INTO coordinator_auth_link_attempts
+			(coordinator_id, attempt_id, identity_id, group_id, device_id, public_key, fingerprint,
+			controller_attestation_id, controller_review_receipt_id, controller_revision, issuer,
+			auth_config_revision, runtime_verifier_hash, loopback_redirect, state, created_at_ms, expires_at_ms)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+				.run(
+					"coord-a",
+					"attempt-a",
+					"identity-a",
+					"legacy-link-group",
+					"legacy-link-device",
+					"fixture-public-key",
+					"a".repeat(64),
+					"attestation-a",
+					"receipt-a",
+					1,
+					"https://accounts.example.test",
+					"b".repeat(64),
+					"c".repeat(64),
+					"http://127.0.0.1:4567/codemem/auth/complete",
+					"pending",
+					0,
+					1,
+				),
+		).toThrow(/CHECK constraint failed/);
+	} finally {
+		db.close();
+	}
+});
+
 function preControllerMigrationFixture() {
 	const db = connectCoordinator(":memory:");
 	// Match the existing migration tests: drop only the new table in a disposable

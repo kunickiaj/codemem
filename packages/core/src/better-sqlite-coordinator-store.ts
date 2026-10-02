@@ -32,6 +32,7 @@ import {
 	isAuthControllerId,
 	isAuthControllerUniqueError,
 } from "./coordinator-auth-controller.js";
+import { AUTH_LINK_SCHEMA_SQL } from "./coordinator-auth-link-contract.js";
 import type {
 	CoordinatorLegacyTeamCompletionManifestV1,
 	CoordinatorLegacyTeamCompletionRecord,
@@ -308,6 +309,7 @@ function insertBootstrapGrantSync(
 
 function initializeSchema(db: DatabaseType): void {
 	db.exec(AUTH_CONTROLLER_SCHEMA_SQL);
+	db.exec(AUTH_LINK_SCHEMA_SQL);
 	db.exec(`
 		CREATE TABLE IF NOT EXISTS groups (
 			group_id TEXT PRIMARY KEY,

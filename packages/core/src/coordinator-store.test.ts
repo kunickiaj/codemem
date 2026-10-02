@@ -16,7 +16,10 @@ import {
 } from "./recipient-policy-identifiers.js";
 
 const EXPECTED_COORDINATOR_TABLES = [
+	"coordinator_auth_account_links",
 	"coordinator_auth_controller_attestations",
+	"coordinator_auth_link_attempts",
+	"coordinator_auth_link_audit_log",
 	"coordinator_bootstrap_grants",
 	"coordinator_invites",
 	"coordinator_join_requests",
