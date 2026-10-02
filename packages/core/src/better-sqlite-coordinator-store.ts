@@ -17,6 +17,11 @@ import { dirname, join } from "node:path";
 import type { Database as DatabaseType } from "better-sqlite3";
 import Database from "better-sqlite3";
 import {
+	AUTH_ACCOUNT_PROFILE_SCHEMA_SQL,
+	AuthAccountProfileOperations,
+	type CoordinatorAuthAccountProfileInput,
+} from "./coordinator-auth-account-profile.js";
+import {
 	AUTH_BROWSER_TXN_SCHEMA_SQL,
 	type CoordinatorAuthBrowserConfig,
 	type CoordinatorAuthBrowserTransactionConsumeInput,
@@ -345,6 +350,7 @@ function initializeSchema(db: DatabaseType): void {
 	db.exec(AUTH_CONTROLLER_SCHEMA_SQL);
 	db.exec(AUTH_LINK_SCHEMA_SQL);
 	db.exec(AUTH_SESSION_SCHEMA_SQL);
+	db.exec(AUTH_ACCOUNT_PROFILE_SCHEMA_SQL);
 	db.exec(AUTH_BROWSER_TXN_SCHEMA_SQL);
 	db.exec(`
 		CREATE TABLE IF NOT EXISTS groups (
@@ -637,6 +643,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	readonly db: DatabaseType;
 	private readonly authLinks: AuthLinkOperations;
 	private readonly authSessions: AuthSessionOperations;
+	private readonly authAccountProfiles: AuthAccountProfileOperations;
 	private readonly authBrowserTransactions: CoordinatorAuthBrowserTransactions;
 
 	constructor(path?: string, options: CoordinatorAuthLinkOptions = {}) {
@@ -660,6 +667,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		};
 		this.authLinks = new AuthLinkOperations(authBackend, options.authClock);
 		this.authSessions = new AuthSessionOperations(authBackend, options.authClock);
+		this.authAccountProfiles = new AuthAccountProfileOperations(authBackend, options.authClock);
 		this.authBrowserTransactions = new CoordinatorAuthBrowserTransactions(
 			authBackend,
 			options.authClock,
@@ -705,6 +713,21 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	}
 	async readAuthSession(credentialHash: string, config: CoordinatorAuthLinkConfig) {
 		return this.authSessions.readAuthSession(credentialHash, config);
+	}
+	async recordAuthAccountProfile(
+		input: CoordinatorAuthAccountProfileInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authAccountProfiles.recordAuthAccountProfile(input, config);
+	}
+	async readAuthSessionAccount(credentialHash: string, config: CoordinatorAuthLinkConfig) {
+		return this.authAccountProfiles.readAuthSessionAccount(credentialHash, config);
+	}
+	async clearRevokedAuthAccountProfile(
+		input: { linkId: string },
+		scope: { coordinatorId: string },
+	) {
+		return this.authAccountProfiles.clearRevokedAuthAccountProfile(input, scope);
 	}
 	async signOutAuthSession(credentialHash: string, scope: CoordinatorAuthSessionScope) {
 		return this.authSessions.signOutAuthSession(credentialHash, scope);

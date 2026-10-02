@@ -54,6 +54,6 @@ This is server-rendered auth UI, not a viewer/settings surface. CSP form-action 
 
 Before a protected caller uses a page, it must read a live session or consume a reviewed link attempt using the actual SDK and durable browser transaction. No UI HTML method grants access.
 
-The pre-link profile is held only for the rendered confirmation response; this module writes no personal data. Profile persistence and refresh after sign-in are separate work, not implemented here.
+The pre-link profile is held only for the rendered confirmation response; this module writes no personal data. The separate [account-profile storage contract](coordinator-auth-account-profile-storage.md) can retain a display snapshot only after a fresh normal sign-in, never from first-link confirmation. It does not change this renderer's image-host policy or make browser routes live.
 
 JSDOM or Worker tests can check projection, escaping, and headers. They do not prove Chrome/Safari navigation, CSP behavior, image failure, or layout.

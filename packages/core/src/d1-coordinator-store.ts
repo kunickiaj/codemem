@@ -1,4 +1,8 @@
 import {
+	AuthAccountProfileOperations,
+	type CoordinatorAuthAccountProfileInput,
+} from "./coordinator-auth-account-profile.js";
+import {
 	type CoordinatorAuthBrowserConfig,
 	type CoordinatorAuthBrowserTransactionConsumeInput,
 	type CoordinatorAuthBrowserTransactionMaintenanceOptions,
@@ -408,6 +412,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	readonly db: D1DatabaseLike;
 	private readonly authLinks: AuthLinkOperations;
 	private readonly authSessions: AuthSessionOperations;
+	private readonly authAccountProfiles: AuthAccountProfileOperations;
 	private readonly authBrowserTransactions: CoordinatorAuthBrowserTransactions;
 
 	constructor(db: D1DatabaseLike, options: CoordinatorAuthLinkOptions = {}) {
@@ -428,6 +433,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		};
 		this.authLinks = new AuthLinkOperations(authBackend, options.authClock);
 		this.authSessions = new AuthSessionOperations(authBackend, options.authClock);
+		this.authAccountProfiles = new AuthAccountProfileOperations(authBackend, options.authClock);
 		this.authBrowserTransactions = new CoordinatorAuthBrowserTransactions(
 			authBackend,
 			options.authClock,
@@ -473,6 +479,21 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	}
 	async readAuthSession(credentialHash: string, config: CoordinatorAuthLinkConfig) {
 		return this.authSessions.readAuthSession(credentialHash, config);
+	}
+	async recordAuthAccountProfile(
+		input: CoordinatorAuthAccountProfileInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authAccountProfiles.recordAuthAccountProfile(input, config);
+	}
+	async readAuthSessionAccount(credentialHash: string, config: CoordinatorAuthLinkConfig) {
+		return this.authAccountProfiles.readAuthSessionAccount(credentialHash, config);
+	}
+	async clearRevokedAuthAccountProfile(
+		input: { linkId: string },
+		scope: { coordinatorId: string },
+	) {
+		return this.authAccountProfiles.clearRevokedAuthAccountProfile(input, scope);
 	}
 	async signOutAuthSession(credentialHash: string, scope: CoordinatorAuthSessionScope) {
 		return this.authSessions.signOutAuthSession(credentialHash, scope);

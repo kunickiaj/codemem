@@ -17,6 +17,7 @@ import {
 
 const EXPECTED_COORDINATOR_TABLES = [
 	"coordinator_auth_account_links",
+	"coordinator_auth_account_profiles",
 	"coordinator_auth_browser_transactions",
 	"coordinator_auth_controller_attestations",
 	"coordinator_auth_link_attempts",

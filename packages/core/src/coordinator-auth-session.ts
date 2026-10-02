@@ -85,6 +85,9 @@ function sessionNow(clock: () => number): number {
 		throw new Error("auth_session_invalid_clock");
 	return now;
 }
+
+export { sessionNow as authSessionNow };
+
 function rejected(error: CoordinatorAuthSessionError): CoordinatorAuthSessionIssueResult {
 	return { kind: "rejected", error };
 }
@@ -116,8 +119,10 @@ function dto(row: SessionRow): CoordinatorAuthSession {
 		expiresAtMs: row.expires_at_ms,
 	};
 }
-const LINK_MATCH = `l.coordinator_id = s.coordinator_id AND l.link_id = s.link_id
+export const AUTH_SESSION_LINK_MATCH_SQL = `l.coordinator_id = s.coordinator_id AND l.link_id = s.link_id
  AND l.identity_id = s.identity_id AND l.issuer = s.issuer AND l.subject = s.subject`;
+const LINK_MATCH = AUTH_SESSION_LINK_MATCH_SQL;
+export const AUTH_SESSION_LIVE_GUARD_SQL = `s.coordinator_id = ? AND s.credential_hash = ? AND s.issuer = ? AND s.auth_config_revision = ? AND s.revoked_at_ms IS NULL AND l.revoked_at_ms IS NULL AND s.expires_at_ms > ? AND s.created_at_ms <= ?`;
 const RECEIPT_COLUMNS = `coordinator_id, browser_transaction_hash, source, attempt_id, link_id, session_id, auth_config_revision, created_at_ms`;
 const REDEEM_RECEIPT_SQL = `INSERT INTO coordinator_auth_session_receipts (${RECEIPT_COLUMNS})
  SELECT t.coordinator_id, t.browser_transaction_hash, 'link_redeem', t.attempt_id, t.link_id, ?, ?, ?
@@ -327,7 +332,7 @@ export class AuthSessionOperations
 		const now = sessionNow(this.clock);
 		const row = await this.first<SessionRow>({
 			sql: `SELECT s.session_id, s.identity_id, s.link_id, s.issuer, s.subject, s.expires_at_ms FROM coordinator_auth_sessions s JOIN coordinator_auth_account_links l ON ${LINK_MATCH}
- WHERE s.coordinator_id = ? AND s.credential_hash = ? AND s.issuer = ? AND s.auth_config_revision = ? AND s.revoked_at_ms IS NULL AND l.revoked_at_ms IS NULL AND s.expires_at_ms > ? AND s.created_at_ms <= ?`,
+ WHERE ${AUTH_SESSION_LIVE_GUARD_SQL}`,
 			values: [c.coordinatorId, credentialHash, c.issuer, c.revision, now, now],
 		});
 		return row ? dto(row) : null;
