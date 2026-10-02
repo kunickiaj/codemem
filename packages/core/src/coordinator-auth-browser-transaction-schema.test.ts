@@ -35,6 +35,7 @@ for (const backend of ["SQLite", "D1"] as const satisfies readonly Backend[]) {
 				// Assert
 				expect(actual.columns).toEqual(expected.columns);
 				expect(actual.indexes).toEqual(expected.indexes);
+				expect(actual.definition).toEqual(expected.definition);
 				const names = (actual.columns as { name: string }[]).map((column) => column.name);
 				for (const forbidden of [
 					"raw_state",
