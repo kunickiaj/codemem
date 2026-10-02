@@ -55,6 +55,8 @@ function isIssuer(value: unknown): value is string {
 	}
 }
 
+export { isIssuer as isCoordinatorAccountIssuer };
+
 function isSubject(value: unknown): value is string {
 	return (
 		typeof value === "string" &&

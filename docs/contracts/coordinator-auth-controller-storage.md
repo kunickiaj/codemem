@@ -91,5 +91,7 @@ failed response undid the write. Later binding transactions must recheck live au
 
 ## Deferred work
 
-Account-link attempts and browser-session persistence remain separate work.
-Routes and active authentication follow only after their integration tests pass.
+Account-link-attempt persistence is a separate, unreviewed candidate documented
+in [the link-attempt storage contract](coordinator-auth-link-storage.md).
+Browser sessions, routes, and active authentication remain deferred until their
+integration tests pass.

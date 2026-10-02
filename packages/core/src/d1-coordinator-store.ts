@@ -13,6 +13,18 @@ import {
 	isAuthControllerId,
 	isAuthControllerUniqueError,
 } from "./coordinator-auth-controller.js";
+import { AuthLinkOperations, type AuthLinkStatement } from "./coordinator-auth-link.js";
+import type {
+	CoordinatorAuthLinkClaimInput,
+	CoordinatorAuthLinkConfig,
+	CoordinatorAuthLinkConfirmInput,
+	CoordinatorAuthLinkCreateInput,
+	CoordinatorAuthLinkFailInput,
+	CoordinatorAuthLinkFinalizeInput,
+	CoordinatorAuthLinkOidcInput,
+	CoordinatorAuthLinkOptions,
+	CoordinatorAuthLinkRequester,
+} from "./coordinator-auth-link-contract.js";
 import type {
 	CoordinatorLegacyTeamCompletionManifestV1,
 	CoordinatorLegacyTeamCompletionRecord,
@@ -374,9 +386,71 @@ async function runChanges(statement: D1PreparedStatementLike): Promise<number> {
 
 export class D1CoordinatorStore implements CoordinatorStore {
 	readonly db: D1DatabaseLike;
+	private readonly authLinks: AuthLinkOperations;
 
-	constructor(db: D1DatabaseLike) {
+	constructor(db: D1DatabaseLike, options: CoordinatorAuthLinkOptions = {}) {
 		this.db = db;
+		this.authLinks = new AuthLinkOperations(
+			{
+				first: <T>(statement: AuthLinkStatement) =>
+					db
+						.prepare(statement.sql)
+						.bind(...statement.values)
+						.first<T>(),
+				run: (statement) => runChanges(db.prepare(statement.sql).bind(...statement.values)),
+				batch: async (statements) => {
+					if (!db.batch) throw new Error("auth_link_atomic_batch_required");
+					await db.batch(
+						statements.map((statement) => db.prepare(statement.sql).bind(...statement.values)),
+					);
+				},
+			},
+			options.authClock,
+		);
+	}
+
+	async createAuthLinkAttempt(
+		input: CoordinatorAuthLinkCreateInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authLinks.createAuthLinkAttempt(input, config);
+	}
+	async claimAuthLinkAttempt(
+		input: CoordinatorAuthLinkClaimInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authLinks.claimAuthLinkAttempt(input, config);
+	}
+	async recordAuthLinkOidcVerified(
+		input: CoordinatorAuthLinkOidcInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authLinks.recordAuthLinkOidcVerified(input, config);
+	}
+	async confirmAuthLinkAttempt(
+		input: CoordinatorAuthLinkConfirmInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authLinks.confirmAuthLinkAttempt(input, config);
+	}
+	async finalizeAuthLinkAttempt(
+		input: CoordinatorAuthLinkFinalizeInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authLinks.finalizeAuthLinkAttempt(input, config);
+	}
+	async failAuthLinkAttempt(
+		input: CoordinatorAuthLinkFailInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authLinks.failAuthLinkAttempt(input, config);
+	}
+	async getAuthLinkAttemptStatus(
+		attemptId: string,
+		requester: CoordinatorAuthLinkRequester,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authLinks.getAuthLinkAttemptStatus(attemptId, requester, config);
 	}
 
 	async close(): Promise<void> {

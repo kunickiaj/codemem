@@ -32,7 +32,19 @@ import {
 	isAuthControllerId,
 	isAuthControllerUniqueError,
 } from "./coordinator-auth-controller.js";
-import { AUTH_LINK_SCHEMA_SQL } from "./coordinator-auth-link-contract.js";
+import { AuthLinkOperations, type AuthLinkStatement } from "./coordinator-auth-link.js";
+import {
+	AUTH_LINK_SCHEMA_SQL,
+	type CoordinatorAuthLinkClaimInput,
+	type CoordinatorAuthLinkConfig,
+	type CoordinatorAuthLinkConfirmInput,
+	type CoordinatorAuthLinkCreateInput,
+	type CoordinatorAuthLinkFailInput,
+	type CoordinatorAuthLinkFinalizeInput,
+	type CoordinatorAuthLinkOidcInput,
+	type CoordinatorAuthLinkOptions,
+	type CoordinatorAuthLinkRequester,
+} from "./coordinator-auth-link-contract.js";
 import type {
 	CoordinatorLegacyTeamCompletionManifestV1,
 	CoordinatorLegacyTeamCompletionRecord,
@@ -599,10 +611,74 @@ export function connectCoordinator(path?: string): DatabaseType {
 export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	readonly path: string;
 	readonly db: DatabaseType;
+	private readonly authLinks: AuthLinkOperations;
 
-	constructor(path?: string) {
+	constructor(path?: string, options: CoordinatorAuthLinkOptions = {}) {
 		this.path = path ?? DEFAULT_COORDINATOR_DB_PATH;
 		this.db = connectCoordinator(this.path);
+		this.authLinks = new AuthLinkOperations(
+			{
+				first: async <T>(statement: AuthLinkStatement) =>
+					(this.db.prepare(statement.sql).get(...statement.values) as T | undefined) ?? null,
+				run: async (statement) =>
+					this.db
+						.transaction(() => this.db.prepare(statement.sql).run(...statement.values).changes)
+						.immediate(),
+				batch: async (statements) => {
+					this.db
+						.transaction(() => {
+							for (const statement of statements)
+								this.db.prepare(statement.sql).run(...statement.values);
+						})
+						.immediate();
+				},
+			},
+			options.authClock,
+		);
+	}
+
+	async createAuthLinkAttempt(
+		input: CoordinatorAuthLinkCreateInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authLinks.createAuthLinkAttempt(input, config);
+	}
+	async claimAuthLinkAttempt(
+		input: CoordinatorAuthLinkClaimInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authLinks.claimAuthLinkAttempt(input, config);
+	}
+	async recordAuthLinkOidcVerified(
+		input: CoordinatorAuthLinkOidcInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authLinks.recordAuthLinkOidcVerified(input, config);
+	}
+	async confirmAuthLinkAttempt(
+		input: CoordinatorAuthLinkConfirmInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authLinks.confirmAuthLinkAttempt(input, config);
+	}
+	async finalizeAuthLinkAttempt(
+		input: CoordinatorAuthLinkFinalizeInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authLinks.finalizeAuthLinkAttempt(input, config);
+	}
+	async failAuthLinkAttempt(
+		input: CoordinatorAuthLinkFailInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authLinks.failAuthLinkAttempt(input, config);
+	}
+	async getAuthLinkAttemptStatus(
+		attemptId: string,
+		requester: CoordinatorAuthLinkRequester,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authLinks.getAuthLinkAttemptStatus(attemptId, requester, config);
 	}
 
 	private enrollDeviceSync(groupId: string, opts: CoordinatorEnrollDeviceInput): void {
