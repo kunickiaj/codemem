@@ -41,8 +41,12 @@ with the Work Identity or an eligible Team.
   and email addresses never auto-link an Identity. Email is display-only, not
   an authorization credential.
 - A provider link references an actor; it has no separate Identity lifecycle
-  or merge authority (ADR 0001, Decision 1). Mapping authority, uniqueness,
-  and revocation remain implementation decisions.
+  or merge authority (ADR 0001, Decision 1). Persistence, enforcement, and
+  revocation propagation remain implementation decisions.
+- The initial account rule is one Google account to one existing actor-backed
+  Identity per coordinator, with one account link per Identity and no
+  multiplicity flag. See the inert metadata contract in
+  [`../contracts/coordinator-auth-account-link.md`](../contracts/coordinator-auth-account-link.md).
 - The first provider is configurable Google OIDC using only `openid` and
   `email` scopes. GitHub OAuth is not treated as generic OIDC automatically.
 - Use a mature, portable OIDC verifier. Do not parse JWTs or implement crypto
@@ -96,6 +100,9 @@ explicit opt-in.
   Preserve Teams, actor IDs, device keys, Project grants, and memory authorship;
   do not reinvite existing members. Missing or uncertain Identity links need
   explicit review, not email matching or automatic actor adoption.
+- The existing mixed Identity keeps its actor ID; do not force a personal/work
+  split or change reinvites or default sharing. A future split is explicit and
+  reviewed, never inferred from historical authorship.
   Invitation-derived actor claims are not independent account ownership proof;
   derived add-device invitations do not upgrade that proof automatically.
 - Additional devices require explicit approval from an existing trusted device,
@@ -153,7 +160,8 @@ Loopback alone does not protect against someone pasting the secret to an attacke
 or a compromised/shared local host; do not claim it does.
 
 The proposal does not decide enrollment UX, recovery evidence, or the
-account-linking protocol. No binding behavior is approved by this ADR.
+account-linking protocol. The account-link metadata contract does not approve a
+new auth architecture or any binding behavior.
 
 ## Deferred decisions and required gates
 
