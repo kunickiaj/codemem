@@ -9,8 +9,8 @@ Codemem is local-first. Current direct sync carries signed, scoped replication
 between devices. Coordinator enrollment is not a Project grant; future login
 must not become one either.
 This ADR records approved boundaries for an auth-first slice and a possible
-future live relay. It does **not** approve a general login rollout, account
-recovery, account linking, or provider deployment.
+future live relay. Later product approvals below cover migration and recovery
+rules, not a completed security protocol or provider deployment.
 
 ## Accepted decisions
 
@@ -20,6 +20,8 @@ recovery, account linking, or provider deployment.
   can have many devices and belong to many Teams.
 - Personal and Work are distinct Identities, even when one person controls
   both. Their privileges never union automatically.
+- Separate runtime contexts must use separate databases and key directories.
+  Changing the database alone does not isolate the existing default key store.
 - Work receives an OSS or personal Project through an explicit share with that
   Identity or a Team it belongs to. Sharing with the Work Identity does not
   share the Project with its Work Team.
@@ -85,6 +87,35 @@ explicit opt-in.
 
 ## Proposed mechanism, not a final contract
 
+### Approved product flow
+
+- Sign-in belongs to an auth-enabled coordinator, not to local Codemem use.
+  Existing direct sync without mandatory coordinator authentication remains
+  available. No separate Codemem password registration is introduced.
+- Migration starts with optional linking from an existing enrolled device.
+  Preserve Teams, actor IDs, device keys, Project grants, and memory authorship;
+  do not reinvite existing members. Missing or uncertain Identity links need
+  explicit review, not email matching or automatic actor adoption.
+  Invitation-derived actor claims are not independent account ownership proof;
+  derived add-device invitations do not upgrade that proof automatically.
+- Additional devices require explicit approval from an existing trusted device,
+  using the reviewed add-device invitation. Login alone cannot enroll them.
+- If all trusted device keys are lost, the coordinator admin can explicitly
+  approve a replacement for the existing Identity and disable lost enrollments.
+  Reuse add-device invitations. Do not restore old signing keys or source-device
+  deletion authority through Google login. Restore backups if admin authority
+  is also lost; do not introduce a separate recovery framework.
+- Mandatory authentication for affected Project sync is a separate admin choice.
+  The approved policy uses 24-hour signed device permissions checked by peers,
+  in addition to Project authorization. Existing enrolled, non-revoked devices
+  renew automatically with device-key proof, without routine login or approval.
+  If permissions expire while the coordinator is unreachable, affected sync
+  waits; local use continues. Offline peers can accept a revoked device's old
+  permission until expiry unless they learn its revocation sooner.
+
+These are product rules. The proof, signing, policy-binding, migration, and
+anti-downgrade protocols still need approval before runtime changes.
+
 The initial binding policy is a proposal for the implementation design review:
 
 1. An existing actor cannot be claimed from a matching email or name.
@@ -100,11 +131,26 @@ even if the coordinator has never seen that actor before. Do not let a first
 login claim an arbitrary unregistered actor ID.
 
 The OIDC callback must not make an ownership binding or device grant durable.
-Finalization requires single-use proof from the initiating runtime, bound to
-its login attempt and device key, using a secret unavailable to someone who
-merely follows the browser authorization URL. A loopback redirect alone is
-not sufficient. The exact finalization protocol still needs security review;
-binding an existing Identity also requires its controller's approval.
+The proposed local-browser flow requires both a verifier kept by the initiating
+runtime and a separate one-time completion secret delivered only through the
+browser's loopback callback. The coordinator validates and fixes that destination
+when the attempt starts: literal `127.0.0.1` or `[::1]`, a fixed callback path,
+and a runtime-selected port. Reject hostnames and non-loopback destinations;
+the destination cannot change after creation. Finalization signs both proofs with that runtime's
+device key and binds them to the same short-lived attempt. Polling an attempt
+must never reveal the browser completion secret. The loopback listener accepts
+only its own outstanding attempt; no binding is written at the OIDC callback.
+
+Both proofs matter: an attacker who starts a login already holds the initiating
+verifier and device key. Those alone cannot show that the account owner finished
+login on that runtime. The exact finalization protocol still needs security
+review; binding an existing Identity also requires its controller's approval.
+
+The browser confirmation must name the account, Identity, and requesting device
+and warn against sharing callback URLs. Short-lived, single-use completion
+secrets must be stored hashed and kept out of polling, logs, and referrers.
+Loopback alone does not protect against someone pasting the secret to an attacker
+or a compromised/shared local host; do not claim it does.
 
 The proposal does not decide enrollment UX, recovery evidence, or the
 account-linking protocol. No binding behavior is approved by this ADR.
@@ -116,10 +162,9 @@ providers, device enrollment, and account linking. Lost-key recovery remains
 tracked in `codemem-79h7`. Do not guess historical ownership or run cleanup
 from inferred identity matches.
 
-The proposed safe default is to require explicit approval from an already
-trusted Identity-controlling device when adding a device. Login alone does
-not enroll it. First-account binding, revocation propagation, and fully lost
-device recovery need separate approved proof rules before runtime changes.
+Trusted-device approval, admin-assisted recovery, and the 24-hour offline window
+are approved product rules. First-account binding and the exact enrollment,
+revocation, and recovery proofs still need security approval before runtime changes.
 
 The authentication decision task also owns coordinator mapping authority and
 revocation propagation, including what an offline peer can enforce. Do not

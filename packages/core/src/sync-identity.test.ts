@@ -604,3 +604,141 @@ describe("sync-identity", () => {
 		});
 	});
 });
+
+// Explicit key directories isolate separately configured runtime contexts.
+function withExplicitFileContexts(
+	run: (contexts: { dbPath: string; keysDir: string }[]) => void,
+): void {
+	const fixtureDir = mkdtempSync(join(tmpdir(), "codemem-sync-isolation-test-"));
+	const originalKeyStore = process.env.CODEMEM_SYNC_KEY_STORE;
+	process.env.CODEMEM_SYNC_KEY_STORE = "file";
+	const contexts = ["first", "second"].map((name) => ({
+		dbPath: join(fixtureDir, `${name}.sqlite`),
+		keysDir: join(fixtureDir, `${name}-keys`),
+	}));
+	try {
+		run(contexts);
+	} finally {
+		if (originalKeyStore === undefined) delete process.env.CODEMEM_SYNC_KEY_STORE;
+		else process.env.CODEMEM_SYNC_KEY_STORE = originalKeyStore;
+		rmSync(fixtureDir, { recursive: true, force: true });
+	}
+}
+
+it("keeps separate explicit database and key directories on distinct identities", () => {
+	// Arrange
+	withExplicitFileContexts(([first, second]) => {
+		const firstDb = connect(first.dbPath);
+		const secondDb = connect(second.dbPath);
+		try {
+			initTestSchema(firstDb);
+			initTestSchema(secondDb);
+
+			// Act
+			const firstIdentity = ensureDeviceIdentity(firstDb, { keysDir: first.keysDir });
+			const secondIdentity = ensureDeviceIdentity(secondDb, { keysDir: second.keysDir });
+
+			// Assert: IDs, fingerprints, and on-disk keys belong to distinct contexts.
+			expect(firstIdentity[0]).not.toBe(secondIdentity[0]);
+			expect(firstIdentity[1]).not.toBe(secondIdentity[1]);
+			expect(loadPublicKey(first.keysDir)).toMatch(/^ssh-ed25519 /);
+			expect(loadPublicKey(second.keysDir)).toMatch(/^ssh-ed25519 /);
+			expect(loadPublicKey(first.keysDir)).not.toBe(loadPublicKey(second.keysDir));
+			expect(loadPrivateKey(first.keysDir)).not.toBeNull();
+			expect(loadPrivateKey(second.keysDir)).not.toBeNull();
+			expect(loadPrivateKey(first.keysDir)).not.toEqual(loadPrivateKey(second.keysDir));
+			expect(firstDb.prepare("SELECT device_id, fingerprint FROM sync_device").get()).toMatchObject(
+				{
+					device_id: firstIdentity[0],
+					fingerprint: firstIdentity[1],
+				},
+			);
+			expect(
+				secondDb.prepare("SELECT device_id, fingerprint FROM sync_device").get(),
+			).toMatchObject({
+				device_id: secondIdentity[0],
+				fingerprint: secondIdentity[1],
+			});
+		} finally {
+			firstDb.close();
+			secondDb.close();
+		}
+	});
+});
+
+it("preserves both explicit identities and key files across database reopenings", () => {
+	// Arrange
+	withExplicitFileContexts((contexts) => {
+		const originals = contexts.map(({ dbPath, keysDir }) => {
+			const db = connect(dbPath);
+			try {
+				initTestSchema(db);
+				return {
+					identity: ensureDeviceIdentity(db, { keysDir }),
+					privateKey: readFileSync(resolveKeyPaths(keysDir)[0]),
+					publicKey: readFileSync(resolveKeyPaths(keysDir)[1]),
+				};
+			} finally {
+				db.close();
+			}
+		});
+
+		// Act: reopen in reverse order to catch context leakage.
+		const reopened = contexts.toReversed().map(({ dbPath, keysDir }) => {
+			const db = connect(dbPath);
+			try {
+				return {
+					identity: ensureDeviceIdentity(db, { keysDir }),
+					row: db.prepare("SELECT device_id, fingerprint FROM sync_device").get(),
+					privateKey: readFileSync(resolveKeyPaths(keysDir)[0]),
+					publicKey: readFileSync(resolveKeyPaths(keysDir)[1]),
+				};
+			} finally {
+				db.close();
+			}
+		});
+
+		// Assert
+		expect(reopened.map(({ identity }) => identity)).toEqual(
+			originals.toReversed().map(({ identity }) => identity),
+		);
+		for (const [index, context] of reopened.entries()) {
+			const original = originals[originals.length - 1 - index];
+			expect(context.row).toMatchObject({
+				device_id: original.identity[0],
+				fingerprint: original.identity[1],
+			});
+			expect(context.privateKey).toEqual(original.privateKey);
+			expect(context.publicKey).toEqual(original.publicKey);
+		}
+	});
+});
+
+it("rejects a different explicit key directory without changing enrolled contexts", () => {
+	// Arrange
+	withExplicitFileContexts(([first, second]) => {
+		const firstDb = connect(first.dbPath);
+		const secondDb = connect(second.dbPath);
+		try {
+			initTestSchema(firstDb);
+			initTestSchema(secondDb);
+			const firstIdentity = ensureDeviceIdentity(firstDb, { keysDir: first.keysDir });
+			const secondIdentity = ensureDeviceIdentity(secondDb, { keysDir: second.keysDir });
+			const firstKey = readFileSync(resolveKeyPaths(first.keysDir)[0]);
+			const secondKey = readFileSync(resolveKeyPaths(second.keysDir)[0]);
+
+			// Act
+			const mismatchedIdentity = () => ensureDeviceIdentity(firstDb, { keysDir: second.keysDir });
+
+			// Assert: fail closed, retaining both IDs and files.
+			expect(mismatchedIdentity).toThrow("device_identity_key_mismatch");
+			expect(ensureDeviceIdentity(firstDb, { keysDir: first.keysDir })).toEqual(firstIdentity);
+			expect(ensureDeviceIdentity(secondDb, { keysDir: second.keysDir })).toEqual(secondIdentity);
+			expect(readFileSync(resolveKeyPaths(first.keysDir)[0])).toEqual(firstKey);
+			expect(readFileSync(resolveKeyPaths(second.keysDir)[0])).toEqual(secondKey);
+		} finally {
+			firstDb.close();
+			secondDb.close();
+		}
+	});
+});
