@@ -45,6 +45,7 @@ import {
 	type CoordinatorAuthLinkCreateInput,
 	type CoordinatorAuthLinkFailInput,
 	type CoordinatorAuthLinkFinalizeInput,
+	type CoordinatorAuthLinkMaintenanceOptions,
 	type CoordinatorAuthLinkOidcInput,
 	type CoordinatorAuthLinkOptions,
 	type CoordinatorAuthLinkRequester,
@@ -671,6 +672,12 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		return this.authSessions.revokeAuthAccountLink(input, scope);
 	}
 
+	async maintainAuthLinkAttempts(
+		config: CoordinatorAuthLinkConfig,
+		options?: CoordinatorAuthLinkMaintenanceOptions,
+	) {
+		return this.authLinks.maintainAuthLinkAttempts(config, options);
+	}
 	async createAuthLinkAttempt(
 		input: CoordinatorAuthLinkCreateInput,
 		config: CoordinatorAuthLinkConfig,

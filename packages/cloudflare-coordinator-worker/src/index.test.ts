@@ -29,6 +29,101 @@ type SqliteStatement = {
 	raw: (value: boolean) => { all: (...values: unknown[]) => unknown[] };
 };
 
+it("migration 0019 adds only named nonunique indexes and retains expired evidence on repeat", () => {
+	// Arrange: a disposable legacy schema with retained, unlinked evidence.
+	const db = connectCoordinator(":memory:");
+	const names = [
+		"idx_auth_link_attempts_device_created",
+		"idx_auth_link_attempts_identity_expiry",
+		"idx_auth_link_attempts_state_expiry",
+	];
+	try {
+		for (const name of names) db.exec(`DROP INDEX IF EXISTS ${name}`);
+		db.prepare(`INSERT INTO coordinator_auth_link_attempts
+			(coordinator_id, attempt_id, identity_id, group_id, device_id, public_key, fingerprint,
+			controller_attestation_id, controller_review_receipt_id, controller_revision, issuer,
+			auth_config_revision, runtime_verifier_hash, loopback_redirect, state, browser_transaction_hash,
+			account_subject, completion_secret_hash, created_at_ms, expires_at_ms)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 'expired', ?, ?, ?, 0, 600000)`).run(
+			"coordinator-a",
+			"legacy-attempt",
+			"identity-a",
+			"group-a",
+			"device-a",
+			"fixture-key",
+			"a".repeat(64),
+			"attestation-a",
+			"receipt-a",
+			"https://accounts.example.test",
+			"b".repeat(64),
+			"c".repeat(64),
+			"http://127.0.0.1:4567/codemem/auth/complete",
+			"d".repeat(64),
+			"retained-subject",
+			"e".repeat(64),
+		);
+		const tables = (
+			db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as {
+				name: string;
+			}[]
+		).map((row) => row.name);
+		const before = tables.map((table) => ({
+			columns: db.pragma(`table_info(${table})`),
+			rows: db.prepare(`SELECT * FROM ${table}`).all(),
+		}));
+		const ddl = db
+			.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table' ORDER BY name")
+			.all();
+		const migration = readFileSync(
+			join(import.meta.dirname, "../migrations/0019_add_auth_link_attempt_limit_indexes.sql"),
+			"utf8",
+		);
+		// Act
+		db.exec(migration);
+		db.exec(migration);
+		const indexes = names.map((name) => ({
+			name,
+			columns: db.prepare("SELECT name FROM pragma_index_info(?) ORDER BY seqno").all(name),
+			flags: db
+				.prepare(
+					"SELECT \"unique\", partial FROM pragma_index_list('coordinator_auth_link_attempts') WHERE name = ?",
+				)
+				.get(name),
+		}));
+		// Assert: no column changes, data backfill, subject scrubbing or row deletion.
+		expect(
+			tables.map((table) => ({
+				columns: db.pragma(`table_info(${table})`),
+				rows: db.prepare(`SELECT * FROM ${table}`).all(),
+			})),
+		).toEqual(before);
+		expect(
+			db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table' ORDER BY name").all(),
+		).toEqual(ddl);
+		expect(indexes).toEqual([
+			{
+				name: names[0],
+				columns: ["coordinator_id", "group_id", "device_id", "created_at_ms"].map((name) => ({
+					name,
+				})),
+				flags: { unique: 0, partial: 0 },
+			},
+			{
+				name: names[1],
+				columns: ["coordinator_id", "identity_id", "expires_at_ms"].map((name) => ({ name })),
+				flags: { unique: 0, partial: 0 },
+			},
+			{
+				name: names[2],
+				columns: ["coordinator_id", "state", "expires_at_ms"].map((name) => ({ name })),
+				flags: { unique: 0, partial: 0 },
+			},
+		]);
+	} finally {
+		db.close();
+	}
+});
+
 it("migration 0018 adds empty sessions repeatedly without changing legacy or link ownership", () => {
 	// Arrange: only this disposable database represents the pre-session schema.
 	const db = connectCoordinator(":memory:");

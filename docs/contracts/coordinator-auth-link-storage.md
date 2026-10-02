@@ -98,6 +98,7 @@ winning link ID, not a connection-local row counter. No remote D1 run or
 deployment was performed. These tests do not prove OIDC, signatures, or cookie/CSRF
 verification; those remain handler integration work.
 
-Attempt cleanup and retention limits remain deferred. Until that work lands,
-expired and failed rows remain stored; do not describe their evidence as deleted
-when the ten-minute authorization window closes.
+Attempt cleanup, retention limits, and explicit maintenance are documented as a
+candidate in [coordinator-auth-link-maintenance.md](coordinator-auth-link-maintenance.md).
+Until reviewed and implemented, expired and failed rows remain stored; a
+ten-minute authorization expiry is not evidence deletion.

@@ -1,5 +1,13 @@
 export const AUTH_LINK_PURPOSE = "coordinator-account-link-v1";
 export const AUTH_LINK_ATTEMPT_TTL_MS = 600000;
+export const AUTH_LINK_MAX_ACTIVE_PER_DEVICE = 2;
+export const AUTH_LINK_MAX_ACTIVE_PER_IDENTITY = 3;
+export const AUTH_LINK_CREATE_WINDOW_MS = 3600000;
+export const AUTH_LINK_MAX_CREATES_PER_DEVICE_WINDOW = 6;
+export const AUTH_LINK_RETENTION_WINDOW_MS = 2592000000;
+export const AUTH_LINK_MAX_CREATES_PER_DEVICE_RETENTION = 60;
+export const AUTH_LINK_MAX_UNFINISHED_PER_COORDINATOR = 10000;
+export const AUTH_LINK_EXPIRE_BATCH_MAX = 32;
 /** Trusted server configuration, never request JSON. */
 export interface CoordinatorAuthLinkConfig {
 	coordinatorId: string;
@@ -35,6 +43,7 @@ export type CoordinatorAuthLinkError =
 	| "invalid_input"
 	| "controller_not_active"
 	| "attempt_conflict"
+	| "attempt_limited"
 	| "attempt_unavailable"
 	| "attempt_expired"
 	| "auth_config_changed"
@@ -43,6 +52,12 @@ export interface CoordinatorAuthLinkRejected {
 	kind: "rejected";
 	error: CoordinatorAuthLinkError;
 }
+export interface CoordinatorAuthLinkMaintenanceOptions {
+	limit?: number;
+}
+export type CoordinatorAuthLinkMaintenanceResult =
+	| { kind: "maintained"; processedCount: number; more: boolean }
+	| CoordinatorAuthLinkRejected;
 export type CoordinatorAuthLinkResult =
 	| { kind: "applied" | "existing"; status: CoordinatorAuthLinkStatus }
 	| CoordinatorAuthLinkRejected;
@@ -90,6 +105,10 @@ export interface CoordinatorAuthLinkFailInput {
 	reason: "cancelled" | "provider_failure" | "config_failure";
 }
 export interface CoordinatorAuthLinkStore {
+	maintainAuthLinkAttempts(
+		config: CoordinatorAuthLinkConfig,
+		options?: CoordinatorAuthLinkMaintenanceOptions,
+	): Promise<CoordinatorAuthLinkMaintenanceResult>;
 	createAuthLinkAttempt(
 		input: CoordinatorAuthLinkCreateInput,
 		config: CoordinatorAuthLinkConfig,
@@ -194,4 +213,10 @@ CREATE TABLE IF NOT EXISTS coordinator_auth_link_audit_log (
  auth_config_revision TEXT NOT NULL CHECK (length(auth_config_revision) = 64 AND auth_config_revision NOT GLOB '*[^0-9a-f]*'),
  created_at_ms INTEGER NOT NULL,
  PRIMARY KEY (coordinator_id, link_id, action)
-);`;
+);
+CREATE INDEX IF NOT EXISTS idx_auth_link_attempts_device_created
+ ON coordinator_auth_link_attempts(coordinator_id, group_id, device_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_auth_link_attempts_identity_expiry
+ ON coordinator_auth_link_attempts(coordinator_id, identity_id, expires_at_ms);
+CREATE INDEX IF NOT EXISTS idx_auth_link_attempts_state_expiry
+ ON coordinator_auth_link_attempts(coordinator_id, state, expires_at_ms);`;
