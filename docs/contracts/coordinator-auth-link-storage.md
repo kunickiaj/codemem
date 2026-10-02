@@ -54,11 +54,12 @@ Source candidate: `packages/core/src/coordinator-auth-link.ts`.
 | `failAuthLinkAttempt({ attemptId, requester, reason }, config)` | Device may cancel only; matching browser may cancel or report provider/config failure. It terminally fails an unfinished attempt. |
 | `getAuthLinkAttemptStatus(attemptId, requester, config)` | Authenticated matching device or claimed browser reads public status only; expiry is derived for unfinished attempts. |
 
-`session_redeemed` is reserved for browser-session persistence and is never written here.
+`session_redeemed` belongs to the separate
+[browser-session store](coordinator-auth-session-storage.md), not these linking operations.
 Wrong proofs, malformed tuples, and request labels neither consume attempts nor
 reveal their cause; errors stay redacted. A matching account or Identity on any
-other attempt, including a revoked link, is `link_conflict`. Later normal sign-in
-and any relink workflow are separate future review work.
+other attempt, including a revoked link, is `link_conflict`. Normal sign-in uses
+the separate session store; replacing an account link remains future reviewed work.
 
 ## Time, fields, and persistence
 

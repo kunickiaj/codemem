@@ -32,7 +32,11 @@ import {
 	isAuthControllerId,
 	isAuthControllerUniqueError,
 } from "./coordinator-auth-controller.js";
-import { AuthLinkOperations, type AuthLinkStatement } from "./coordinator-auth-link.js";
+import {
+	type AuthLinkBackend,
+	AuthLinkOperations,
+	type AuthLinkStatement,
+} from "./coordinator-auth-link.js";
 import {
 	AUTH_LINK_SCHEMA_SQL,
 	type CoordinatorAuthLinkClaimInput,
@@ -45,7 +49,13 @@ import {
 	type CoordinatorAuthLinkOptions,
 	type CoordinatorAuthLinkRequester,
 } from "./coordinator-auth-link-contract.js";
-import { AUTH_SESSION_SCHEMA_SQL } from "./coordinator-auth-session-contract.js";
+import { AuthSessionOperations } from "./coordinator-auth-session.js";
+import {
+	AUTH_SESSION_SCHEMA_SQL,
+	type CoordinatorAuthAccountSignInInput,
+	type CoordinatorAuthLinkSessionRedeemInput,
+	type CoordinatorAuthSessionScope,
+} from "./coordinator-auth-session-contract.js";
 import type {
 	CoordinatorLegacyTeamCompletionManifestV1,
 	CoordinatorLegacyTeamCompletionRecord,
@@ -614,29 +624,51 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	readonly path: string;
 	readonly db: DatabaseType;
 	private readonly authLinks: AuthLinkOperations;
+	private readonly authSessions: AuthSessionOperations;
 
 	constructor(path?: string, options: CoordinatorAuthLinkOptions = {}) {
 		this.path = path ?? DEFAULT_COORDINATOR_DB_PATH;
 		this.db = connectCoordinator(this.path);
-		this.authLinks = new AuthLinkOperations(
-			{
-				first: async <T>(statement: AuthLinkStatement) =>
-					(this.db.prepare(statement.sql).get(...statement.values) as T | undefined) ?? null,
-				run: async (statement) =>
-					this.db
-						.transaction(() => this.db.prepare(statement.sql).run(...statement.values).changes)
-						.immediate(),
-				batch: async (statements) => {
-					this.db
-						.transaction(() => {
-							for (const statement of statements)
-								this.db.prepare(statement.sql).run(...statement.values);
-						})
-						.immediate();
-				},
+		const authBackend: AuthLinkBackend = {
+			first: async <T>(statement: AuthLinkStatement) =>
+				(this.db.prepare(statement.sql).get(...statement.values) as T | undefined) ?? null,
+			run: async (statement) =>
+				this.db
+					.transaction(() => this.db.prepare(statement.sql).run(...statement.values).changes)
+					.immediate(),
+			batch: async (statements) => {
+				this.db
+					.transaction(() => {
+						for (const statement of statements)
+							this.db.prepare(statement.sql).run(...statement.values);
+					})
+					.immediate();
 			},
-			options.authClock,
-		);
+		};
+		this.authLinks = new AuthLinkOperations(authBackend, options.authClock);
+		this.authSessions = new AuthSessionOperations(authBackend, options.authClock);
+	}
+
+	async redeemAuthLinkSession(
+		input: CoordinatorAuthLinkSessionRedeemInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authSessions.redeemAuthLinkSession(input, config);
+	}
+	async signInWithAuthAccount(
+		input: CoordinatorAuthAccountSignInInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authSessions.signInWithAuthAccount(input, config);
+	}
+	async readAuthSession(credentialHash: string, config: CoordinatorAuthLinkConfig) {
+		return this.authSessions.readAuthSession(credentialHash, config);
+	}
+	async signOutAuthSession(credentialHash: string, scope: CoordinatorAuthSessionScope) {
+		return this.authSessions.signOutAuthSession(credentialHash, scope);
+	}
+	async revokeAuthAccountLink(input: { linkId: string }, scope: CoordinatorAuthSessionScope) {
+		return this.authSessions.revokeAuthAccountLink(input, scope);
 	}
 
 	async createAuthLinkAttempt(

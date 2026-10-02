@@ -13,7 +13,11 @@ import {
 	isAuthControllerId,
 	isAuthControllerUniqueError,
 } from "./coordinator-auth-controller.js";
-import { AuthLinkOperations, type AuthLinkStatement } from "./coordinator-auth-link.js";
+import {
+	type AuthLinkBackend,
+	AuthLinkOperations,
+	type AuthLinkStatement,
+} from "./coordinator-auth-link.js";
 import type {
 	CoordinatorAuthLinkClaimInput,
 	CoordinatorAuthLinkConfig,
@@ -25,6 +29,12 @@ import type {
 	CoordinatorAuthLinkOptions,
 	CoordinatorAuthLinkRequester,
 } from "./coordinator-auth-link-contract.js";
+import { AuthSessionOperations } from "./coordinator-auth-session.js";
+import type {
+	CoordinatorAuthAccountSignInInput,
+	CoordinatorAuthLinkSessionRedeemInput,
+	CoordinatorAuthSessionScope,
+} from "./coordinator-auth-session-contract.js";
 import type {
 	CoordinatorLegacyTeamCompletionManifestV1,
 	CoordinatorLegacyTeamCompletionRecord,
@@ -387,26 +397,48 @@ async function runChanges(statement: D1PreparedStatementLike): Promise<number> {
 export class D1CoordinatorStore implements CoordinatorStore {
 	readonly db: D1DatabaseLike;
 	private readonly authLinks: AuthLinkOperations;
+	private readonly authSessions: AuthSessionOperations;
 
 	constructor(db: D1DatabaseLike, options: CoordinatorAuthLinkOptions = {}) {
 		this.db = db;
-		this.authLinks = new AuthLinkOperations(
-			{
-				first: <T>(statement: AuthLinkStatement) =>
-					db
-						.prepare(statement.sql)
-						.bind(...statement.values)
-						.first<T>(),
-				run: (statement) => runChanges(db.prepare(statement.sql).bind(...statement.values)),
-				batch: async (statements) => {
-					if (!db.batch) throw new Error("auth_link_atomic_batch_required");
-					await db.batch(
-						statements.map((statement) => db.prepare(statement.sql).bind(...statement.values)),
-					);
-				},
+		const authBackend: AuthLinkBackend = {
+			first: <T>(statement: AuthLinkStatement) =>
+				db
+					.prepare(statement.sql)
+					.bind(...statement.values)
+					.first<T>(),
+			run: (statement) => runChanges(db.prepare(statement.sql).bind(...statement.values)),
+			batch: async (statements) => {
+				if (!db.batch) throw new Error("auth_link_atomic_batch_required");
+				await db.batch(
+					statements.map((statement) => db.prepare(statement.sql).bind(...statement.values)),
+				);
 			},
-			options.authClock,
-		);
+		};
+		this.authLinks = new AuthLinkOperations(authBackend, options.authClock);
+		this.authSessions = new AuthSessionOperations(authBackend, options.authClock);
+	}
+
+	async redeemAuthLinkSession(
+		input: CoordinatorAuthLinkSessionRedeemInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authSessions.redeemAuthLinkSession(input, config);
+	}
+	async signInWithAuthAccount(
+		input: CoordinatorAuthAccountSignInInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authSessions.signInWithAuthAccount(input, config);
+	}
+	async readAuthSession(credentialHash: string, config: CoordinatorAuthLinkConfig) {
+		return this.authSessions.readAuthSession(credentialHash, config);
+	}
+	async signOutAuthSession(credentialHash: string, scope: CoordinatorAuthSessionScope) {
+		return this.authSessions.signOutAuthSession(credentialHash, scope);
+	}
+	async revokeAuthAccountLink(input: { linkId: string }, scope: CoordinatorAuthSessionScope) {
+		return this.authSessions.revokeAuthAccountLink(input, scope);
 	}
 
 	async createAuthLinkAttempt(
