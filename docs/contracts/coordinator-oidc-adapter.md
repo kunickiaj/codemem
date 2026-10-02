@@ -72,9 +72,9 @@ The result projects only issuer, subject, and known display fields: name, email,
 
 Email and its verification flag stay paired to the same response. An email supplied by UserInfo without a verification flag does not inherit the ID token's flag; a flag without an email is ignored.
 
-### 5.4 Profile display (held)
+### 5.4 Browser display integration
 
-No profile UI exists yet. If it is added, treat the picture URL as untrusted: allowlist the provider host, require HTTPS, escape displayed text, use a restrictive CSP, and use `noreferrer`; do not fetch arbitrary image URLs on the server or cache tokens for an icon.
+The reviewed renderer in [the browser display contract](coordinator-auth-browser-view.md) projects already verified profile metadata into a static HTML page and headers. It is not a verifier or route handler: live browser routes remain disabled, and callers must still use the real SDK plus a reviewed durable browser transaction or live session. The display policy permits only the exact Google LH3 picture host for the exact Google issuer; it makes no provider-wide avatar-host promise.
 
 ## 6. Integration boundary
 
