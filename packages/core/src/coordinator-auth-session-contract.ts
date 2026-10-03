@@ -1,7 +1,9 @@
+import type { CoordinatorAuthBrowserConfig } from "./coordinator-auth-browser-transaction-contract.js";
 import type { CoordinatorAccountReference } from "./coordinator-auth-contract.js";
 import type { CoordinatorAuthLinkConfig } from "./coordinator-auth-link-contract.js";
 
 export const AUTH_SESSION_TTL_MS = 28800000;
+export const AUTH_SESSION_MAX_LIVE_PER_LINK = 10;
 export const AUTH_LINK_REDEEM_WINDOW_MS = 120000;
 /** Server metadata only: never a bearer credential or its commitment. */
 export interface CoordinatorAuthSession {
@@ -17,6 +19,8 @@ export type CoordinatorAuthSessionError =
 	| "attempt_unavailable"
 	| "redeem_window_expired"
 	| "browser_transaction_used"
+	| "transaction_unavailable"
+	| "session_limited"
 	| "account_not_linked";
 export type CoordinatorAuthSessionIssueResult =
 	| { kind: "issued"; session: CoordinatorAuthSession }
@@ -53,6 +57,13 @@ export interface CoordinatorAuthSessionStore {
 	signInWithAuthAccount(
 		input: CoordinatorAuthAccountSignInInput,
 		config: CoordinatorAuthLinkConfig,
+	): Promise<CoordinatorAuthSessionIssueResult>;
+	/** Caller already verified OIDC claims, original browser binding and CSRF.
+	 * Hashes are trusted server metadata, never accepted from HTTP JSON.
+	 */
+	signInWithConsumedBrowserTransaction(
+		input: CoordinatorAuthAccountSignInInput,
+		config: CoordinatorAuthBrowserConfig,
 	): Promise<CoordinatorAuthSessionIssueResult>;
 	readAuthSession(
 		credentialHash: string,
@@ -105,4 +116,7 @@ CREATE TABLE IF NOT EXISTS coordinator_auth_sessions (
  PRIMARY KEY (coordinator_id, session_id),
  UNIQUE (coordinator_id, credential_hash),
  UNIQUE (coordinator_id, browser_transaction_hash)
-);`;
+);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_link_config_expiry
+ ON coordinator_auth_sessions(coordinator_id, link_id, auth_config_revision, expires_at_ms);
+`;

@@ -725,6 +725,12 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	) {
 		return this.authSessions.signInWithAuthAccount(input, config);
 	}
+	async signInWithConsumedBrowserTransaction(
+		input: CoordinatorAuthAccountSignInInput,
+		config: CoordinatorAuthBrowserConfig,
+	) {
+		return this.authSessions.signInWithConsumedBrowserTransaction(input, config);
+	}
 	async readAuthSession(credentialHash: string, config: CoordinatorAuthLinkConfig) {
 		return this.authSessions.readAuthSession(credentialHash, config);
 	}

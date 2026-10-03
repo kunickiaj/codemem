@@ -193,6 +193,13 @@ or fresh device approval, and cannot invoke the initial-link helper to enroll or
 reassign devices. An unknown account remains unlinked; it gets no management
 session or new actor. Initial linking follows the separate dual-proof flow above.
 
+After OIDC/JWS verification and the original cookie, CSRF, and Origin checks,
+future public handlers **must** issue a normal sign-in session through
+`signInWithConsumedBrowserTransaction`, as defined by the
+[session admission contract](coordinator-auth-session-admission.md). The older
+`signInWithAuthAccount` helper remains trusted internal only and is not a public
+handler substitute.
+
 Successful device finalization does not return a browser cookie to the CLI and
 does not treat a runtime credential as a browser session. The original browser
 transaction cookie can redeem finalized status once; only that browser then gets

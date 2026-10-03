@@ -48,7 +48,8 @@ Source candidate: `packages/core/src/coordinator-auth-session.ts`.
 | Method | Required behavior |
 | --- | --- |
 | `redeemAuthLinkSession({ attemptId, browserTransactionHash, credentialHash }, cfg)` | The original browser alone redeems one finalized link attempt and receives a newly minted session record. |
-| `signInWithAuthAccount({ browserTransactionHash, account: { issuer, subject }, credentialHash }, cfg)` | Creates a fresh session only for an active link matching the exact configured issuer/subject. A normal verified known-account sign-in needs no signer or device proof. |
+| `signInWithAuthAccount({ browserTransactionHash, account: { issuer, subject }, credentialHash }, cfg)` | Unchanged trusted internal compatibility helper. It is not the future public-handler path and does not apply the admission limit. |
+| `signInWithConsumedBrowserTransaction({ browserTransactionHash, account: { issuer, subject }, credentialHash }, browserCfg)` | Future public handlers **must** use this post-OIDC seam after independently verifying OIDC/JWS, original browser binding, CSRF, and Origin. It requires a consumed current-config sign-in transaction and applies the per-link admission limit; see the [admission contract](coordinator-auth-session-admission.md). |
 | `readAuthSession(hash, cfg)` | Returns the DTO only while the session, link, and configuration remain live. |
 | `signOutAuthSession(hash, { coordinatorId })` | Idempotently revokes only the targeted session. |
 | `revokeAuthAccountLink({ linkId }, { coordinatorId })` | Future configured-admin-only operation; its caller must already be authenticated. |
@@ -57,6 +58,10 @@ Identity comes from the active exact issuer/subject link, never email or a
 default actor. An unknown account gets no session. A changed configuration
 revision denies existing sessions, but a fresh sign-in for the same
 issuer/subject may use the new configuration.
+
+The consumed-transaction seam accepts hashes and internal session metadata only;
+it does not accept or return raw credentials or provider tokens. Its result is
+not an HTTP response or a substitute for live session lookup.
 
 ## Lifetime and invalidation
 
@@ -103,10 +108,12 @@ Every later protected use must call the live session lookup.
 
 ## Schema and deferred work
 
-Add two initially empty tables: `coordinator_auth_session_receipts` and
-`coordinator_auth_sessions`. Their DDL must be identical in
-`AUTH_SESSION_SCHEMA_SQL`, fresh Worker `schema.sql`, and Worker migration
-`0018`; do not change 0017, backfill data, or add foreign keys.
+Migration `0018` adds two initially empty tables:
+`coordinator_auth_session_receipts` and `coordinator_auth_sessions`. It remains
+unchanged: no change to 0017, backfill, or foreign keys. Migration `0022` adds
+the session-admission index; the current `AUTH_SESSION_SCHEMA_SQL` and fresh
+Worker `schema.sql` include that index too. See the
+[admission contract](coordinator-auth-session-admission.md).
 
 Cleanup and retention work gates public routes. Until it is complete,
 this candidate does not expose browser-session routes or claim retention

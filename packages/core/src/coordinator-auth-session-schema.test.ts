@@ -41,9 +41,18 @@ function schema(db: SqliteDatabase, table: (typeof SESSION_TABLES)[number]) {
 			.trim(),
 		columns: db.pragma(`table_info(${table})`),
 		indexes: indexes
-			.filter((index) => index.unique === 1)
 			.map((index) => ({
 				columns: db.prepare("SELECT name FROM pragma_index_info(?) ORDER BY seqno").all(index.name),
+				unique: index.unique,
+				sql:
+					(
+						db
+							.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?")
+							.pluck()
+							.get(index.name) as string | null
+					)
+						?.replace(/\s+/gu, " ")
+						.trim() ?? null,
 				partial: index.partial,
 			}))
 			.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
@@ -107,10 +116,19 @@ function registerParity(backend: Backend) {
 				),
 				"utf8",
 			);
+			const indexMigration = readFileSync(
+				join(
+					import.meta.dirname,
+					"../../cloudflare-coordinator-worker/migrations/0022_add_auth_session_admission_index.sql",
+				),
+				"utf8",
+			);
 			for (const table of SESSION_TABLES) db.exec(`DROP TABLE ${table}`);
 			// Act
 			db.exec(migration);
 			db.exec(migration);
+			db.exec(indexMigration);
+			db.exec(indexMigration);
 			const migrated = SESSION_TABLES.map((table) => schema(db, table));
 			for (const table of SESSION_TABLES) db.exec(`DROP TABLE ${table}`);
 			db.exec(AUTH_SESSION_SCHEMA_SQL);
@@ -129,6 +147,43 @@ function registerParity(backend: Backend) {
 		} finally {
 			db.close();
 			peer.close();
+		}
+	});
+	it("admission index migration is idempotent and leaves existing session and receipt data unchanged", () => {
+		// Arrange
+		const db = setup(backend);
+		try {
+			insertSession(db);
+			insertReceipt(db);
+			const before = SESSION_TABLES.map((table) => db.prepare(`SELECT * FROM ${table}`).all());
+			const migration = readFileSync(
+				join(
+					import.meta.dirname,
+					"../../cloudflare-coordinator-worker/migrations/0022_add_auth_session_admission_index.sql",
+				),
+				"utf8",
+			);
+			// Act
+			db.exec(migration);
+			db.exec(migration);
+			// Assert
+			expect(SESSION_TABLES.map((table) => db.prepare(`SELECT * FROM ${table}`).all())).toEqual(
+				before,
+			);
+			expect(
+				db
+					.prepare(
+						"SELECT name FROM pragma_index_info('idx_auth_sessions_link_config_expiry') ORDER BY seqno",
+					)
+					.all(),
+			).toEqual([
+				{ name: "coordinator_id" },
+				{ name: "link_id" },
+				{ name: "auth_config_revision" },
+				{ name: "expires_at_ms" },
+			]);
+		} finally {
+			db.close();
 		}
 	});
 	it("stores independent sessions and multiple NULL-attempt sign-in receipts without provider fields", () => {

@@ -1,3 +1,4 @@
+import type { CoordinatorAuthBrowserConfig } from "./coordinator-auth-browser-transaction-contract.js";
 import {
 	isCoordinatorAccountIssuer,
 	parseCoordinatorAccountReference,
@@ -7,6 +8,7 @@ import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link
 import type { CoordinatorAuthLinkConfig } from "./coordinator-auth-link-contract.js";
 import {
 	AUTH_LINK_REDEEM_WINDOW_MS,
+	AUTH_SESSION_MAX_LIVE_PER_LINK,
 	AUTH_SESSION_TTL_MS,
 	type CoordinatorAuthAccountLinkAdminStore,
 	type CoordinatorAuthAccountLinkRevokeResult,
@@ -61,6 +63,37 @@ function captureConfig(value: unknown): CoordinatorAuthLinkConfig | null {
 function captureScope(value: unknown): CoordinatorAuthSessionScope | null {
 	const s = capture(value, ["coordinatorId"]);
 	return s && isAuthControllerId(s.coordinatorId) ? { coordinatorId: s.coordinatorId } : null;
+}
+function captureBrowserConfig(value: unknown): CoordinatorAuthBrowserConfig | null {
+	const snapshot = capture(value, [
+		"coordinatorId",
+		"issuer",
+		"revision",
+		"enabled",
+		"redirectUri",
+	]);
+	const c = captureConfig(snapshot);
+	if (!c || !snapshot || typeof snapshot.redirectUri !== "string") return null;
+	const redirectUri = snapshot.redirectUri;
+	if (redirectUri.trim() !== redirectUri || /[\\\p{Cc}\p{Cf}\p{Cs}]/u.test(redirectUri))
+		return null;
+	try {
+		const url = new URL(redirectUri);
+		if (
+			url.protocol !== "https:" ||
+			url.href !== redirectUri ||
+			url.username ||
+			url.password ||
+			url.search ||
+			url.hash ||
+			redirectUri.includes("?") ||
+			redirectUri.includes("#")
+		)
+			return null;
+	} catch {
+		return null;
+	}
+	return { ...c, redirectUri };
 }
 function captureIssue(
 	value: unknown,
@@ -138,6 +171,22 @@ const SIGNIN_RECEIPT_SQL = `INSERT INTO coordinator_auth_session_receipts (${REC
  SELECT l.coordinator_id, ?, 'signin', NULL, l.link_id, ?, ?, ? FROM coordinator_auth_account_links l
  WHERE l.coordinator_id = ? AND l.issuer = ? AND l.subject = ? AND l.revoked_at_ms IS NULL
  AND NOT EXISTS (SELECT 1 FROM coordinator_auth_link_attempts t WHERE t.coordinator_id = l.coordinator_id AND t.browser_transaction_hash = ?)
+ ON CONFLICT(coordinator_id, browser_transaction_hash) DO NOTHING`;
+const CONSUMED_BROWSER_GUARD_SQL = `b.coordinator_id = ? AND b.browser_transaction_hash = ?
+ AND b.purpose = 'signin' AND b.attempt_id IS NULL AND b.state = 'consumed'
+ AND b.nonce IS NULL AND b.pkce_verifier IS NULL AND b.claim_token IS NOT NULL
+ AND b.issuer = ? AND b.auth_config_revision = ? AND b.redirect_uri = ?
+ AND b.created_at_ms <= ? AND b.consumed_at_ms <= ? AND b.expires_at_ms > ?`;
+const CONSUMED_SIGNIN_RECEIPT_SQL = `INSERT INTO coordinator_auth_session_receipts (${RECEIPT_COLUMNS})
+ SELECT b.coordinator_id, b.browser_transaction_hash, 'signin', NULL, l.link_id, ?, ?, ?
+ FROM coordinator_auth_browser_transactions b JOIN coordinator_auth_account_links l
+ ON l.coordinator_id = b.coordinator_id AND l.issuer = b.issuer
+ WHERE ${CONSUMED_BROWSER_GUARD_SQL} AND l.subject = ? AND l.revoked_at_ms IS NULL
+ AND NOT EXISTS (SELECT 1 FROM coordinator_auth_link_attempts t
+ WHERE t.coordinator_id = b.coordinator_id AND t.browser_transaction_hash = b.browser_transaction_hash)
+ AND (SELECT COUNT(*) FROM coordinator_auth_sessions s WHERE ${LINK_MATCH}
+ AND s.auth_config_revision = b.auth_config_revision AND s.revoked_at_ms IS NULL
+ AND s.expires_at_ms > ?) < ${AUTH_SESSION_MAX_LIVE_PER_LINK}
  ON CONFLICT(coordinator_id, browser_transaction_hash) DO NOTHING`;
 const SESSION_INSERT_SQL = `INSERT INTO coordinator_auth_sessions
  (coordinator_id, session_id, credential_hash, browser_transaction_hash, link_id, identity_id, issuer, subject, auth_config_revision, created_at_ms, expires_at_ms)
@@ -257,6 +306,60 @@ export class AuthSessionOperations
 			values: [c.coordinatorId, i.browserTransactionHash],
 		});
 		return rejected(used ? "browser_transaction_used" : "account_not_linked");
+	}
+	/** Admission only; the caller has already verified JWT, cookie binding and CSRF. */
+	async signInWithConsumedBrowserTransaction(
+		input: CoordinatorAuthAccountSignInInput,
+		config: CoordinatorAuthBrowserConfig,
+	): Promise<CoordinatorAuthSessionIssueResult> {
+		const c = captureBrowserConfig(config);
+		const i = captureIssue(input, ["account"]);
+		if (!c || !i) return rejected("invalid_input");
+		const account = parseCoordinatorAccountReference(capture(i.account, ["issuer", "subject"]), {
+			issuer: c.issuer,
+		});
+		if (!account.ok) return rejected("invalid_input");
+		if (!c.enabled) return rejected("auth_config_changed");
+		const now = sessionNow(this.clock);
+		const sessionId = globalThis.crypto.randomUUID();
+		const transactionValues = [
+			c.coordinatorId,
+			i.browserTransactionHash,
+			c.issuer,
+			c.revision,
+			c.redirectUri,
+			now,
+			now,
+			now,
+		];
+		// Admission and minting share one atomic batch, not a read-then-insert race.
+		// Future-born current-config sessions reserve slots until they become readable.
+		await this.batch([
+			{
+				sql: CONSUMED_SIGNIN_RECEIPT_SQL,
+				values: [sessionId, c.revision, now, ...transactionValues, account.account.subject, now],
+			},
+			this.sessionInsert(i, c, sessionId),
+		]);
+		const result = await this.issueReceipt(i, c, now, sessionId);
+		if (result) return result;
+		const used = await this.first({
+			sql: "SELECT 1 FROM coordinator_auth_link_attempts WHERE coordinator_id = ? AND browser_transaction_hash = ?",
+			values: [c.coordinatorId, i.browserTransactionHash],
+		});
+		if (used) return rejected("browser_transaction_used");
+		// These reads choose rejection labels only; they never admit or reuse a receipt.
+		const transaction = await this.first({
+			sql: `SELECT 1 FROM coordinator_auth_browser_transactions b WHERE ${CONSUMED_BROWSER_GUARD_SQL}`,
+			values: transactionValues,
+		});
+		if (!transaction) return rejected("transaction_unavailable");
+		const link = await this.first({
+			sql: "SELECT 1 FROM coordinator_auth_account_links WHERE coordinator_id = ? AND issuer = ? AND subject = ? AND revoked_at_ms IS NULL",
+			values: [c.coordinatorId, c.issuer, account.account.subject],
+		});
+		if (!link) return rejected("account_not_linked");
+		return rejected("session_limited");
 	}
 	private sessionInsert(
 		i: { credentialHash: string; browserTransactionHash: string },
