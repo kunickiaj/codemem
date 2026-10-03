@@ -48,7 +48,7 @@ async function ready(f: LinkFixture, id = 1, cfg = browserConfig) {
 function capability(
 	f: LinkFixture,
 	hooks: {
-		beforeBatch?: (sql: string[]) => void;
+		beforeBatch?: (sql: string[]) => void | Promise<void>;
 		beforeRead?: (sql: string) => void;
 		clock?: () => number;
 	} = {},
@@ -64,7 +64,7 @@ function capability(
 				return 0;
 			},
 			async batch(statements) {
-				hooks.beforeBatch?.(statements.map(({ sql }) => sql));
+				await hooks.beforeBatch?.(statements.map(({ sql }) => sql));
 				f.db.transaction(() => {
 					for (const { sql, values } of statements) f.db.prepare(sql).run(...values);
 				})();
@@ -88,10 +88,32 @@ async function fill(f: LinkFixture, count = 10, cfg = f.cfg) {
 	}
 }
 
-function peer(f: LinkFixture) {
-	if (f.store instanceof D1CoordinatorStore)
-		return new D1CoordinatorStore(sqliteD1(f.db), { authClock: () => f.now });
-	return capability(f);
+function blockedPeer(f: LinkFixture) {
+	const entered = Promise.withResolvers<void>();
+	const released = Promise.withResolvers<void>();
+	const reads: string[] = [];
+	const beforeRead = (sql: string) => reads.push(sql);
+	const beforeBatch = async () => {
+		entered.resolve();
+		await released.promise;
+	};
+	let store: D1CoordinatorStore | AuthSessionOperations;
+	if (f.store instanceof D1CoordinatorStore) {
+		const backend = sqliteD1(f.db, { beforeRead });
+		store = new D1CoordinatorStore(
+			{
+				...backend,
+				async batch(statements) {
+					await beforeBatch();
+					return backend.batch(statements);
+				},
+			},
+			{ authClock: () => f.now },
+		);
+	} else {
+		store = capability(f, { beforeBatch, beforeRead });
+	}
+	return { store, entered: entered.promise, release: released.resolve, reads };
 }
 
 function registerIssuance(test: SessionTest) {
@@ -353,34 +375,46 @@ function registerSharedReceiptCompatibility(test: SessionTest) {
 }
 
 function registerBudget(test: SessionTest) {
-	test("14 distinct consumed proofs race for exactly 10 slots with no eviction or device changes", async ({
-		fixture: f,
-	}) => {
-		// Arrange
-		await linked(f);
-		const inputs = [];
-		for (let i = 1; i <= 14; i++) inputs.push(await ready(f, i));
-		const before = grants(f);
-		const first = f.store;
-		const second = peer(f);
-		// Act
-		const results = await Promise.all(
-			inputs.map((input, i) =>
-				(i % 2 ? first : second).signInWithConsumedBrowserTransaction(input, browserConfig),
-			),
-		);
-		// Assert
-		expect(results.filter((r) => r.kind === "issued")).toHaveLength(10);
-		expect(results.filter((r) => r.kind === "rejected")).toEqual(
-			Array(4).fill({ kind: "rejected", error: "session_limited" }),
-		);
-		expect(sessionRows(f).map((rows) => rows.length)).toEqual([10, 10]);
-		expect(grants(f)).toEqual(before);
-		for (const input of inputs) {
-			const result = await f.store.readAuthSession(input.credentialHash, f.cfg);
-			expect(result === null || result.expiresAtMs === f.now + SESSION_TTL).toBe(true);
-		}
-	});
+	test.for(["forward", "reverse"] as const)(
+		"14 independently blocked batches admit exactly 10 proofs in %s commit order",
+		async (order, { fixture: f }) => {
+			// Arrange
+			await linked(f);
+			const inputs = [];
+			for (let i = 1; i <= 14; i++) inputs.push(await ready(f, i));
+			const before = grants(f);
+			const peers = inputs.map(() => blockedPeer(f));
+			const commitOrder = inputs.map((_, i) => i);
+			if (order === "reverse") commitOrder.reverse();
+			// Act: overlap operation lifetimes, not synchronous SQLite transactions.
+			const pending = inputs.map((input, i) =>
+				peers[i].store.signInWithConsumedBrowserTransaction(input, browserConfig),
+			);
+			await Promise.all(peers.map((peer) => peer.entered));
+			// Assert: no pre-read may make an admission decision against the empty budget.
+			expect(peers.map((peer) => peer.reads)).toEqual(inputs.map(() => []));
+			expect(sessionRows(f)).toEqual([[], []]);
+			// Act: each held batch sees commits made while its own batch was blocked.
+			const results = [];
+			for (const i of commitOrder) {
+				peers[i].release();
+				results.push(await pending[i]);
+			}
+			// Assert
+			expect(results.filter((r) => r.kind === "issued")).toHaveLength(10);
+			expect(results.filter((r) => r.kind === "rejected")).toEqual(
+				Array(4).fill({ kind: "rejected", error: "session_limited" }),
+			);
+			expect(sessionRows(f).map((rows) => rows.length)).toEqual([10, 10]);
+			expect(grants(f)).toEqual(before);
+			for (const [position, i] of commitOrder.entries()) {
+				const input = inputs[i];
+				const result = await f.store.readAuthSession(input.credentialHash, f.cfg);
+				if (position < 10) expect(result).toMatchObject({ expiresAtMs: f.now + SESSION_TTL });
+				else expect(result).toBeNull();
+			}
+		},
+	);
 	test("current normal signin and first-link redemption together fill the cap without refresh or signout", async ({
 		fixture: f,
 	}) => {
@@ -492,28 +526,51 @@ function registerBudgetIsolation(test: SessionTest) {
 }
 
 function registerAtomicity(test: SessionTest) {
-	test("two fresh instances racing one proof own exactly one fresh receipt even with changes() zero", async ({
-		fixture: f,
-	}) => {
-		// Arrange
-		await linked(f);
-		const input = await ready(f);
-		f.db.function("changes", () => 0);
-		const first = f.store;
-		const second = peer(f);
-		// Act
-		const results = await Promise.all([
-			first.signInWithConsumedBrowserTransaction(input, browserConfig),
-			second.signInWithConsumedBrowserTransaction(
-				{ ...input, credentialHash: hash(800) },
-				browserConfig,
-			),
-		]);
-		// Assert
-		expect(results.filter((r) => r.kind === "issued")).toHaveLength(1);
-		expect(results).toContainEqual({ kind: "rejected", error: "browser_transaction_used" });
-		expect(sessionRows(f).map((rows) => rows.length)).toEqual([1, 1]);
-	});
+	test.for(["forward", "reverse"] as const)(
+		"two independently blocked batches own one proof in %s commit order even with changes() zero",
+		async (order, { fixture: f }) => {
+			// Arrange
+			await linked(f);
+			const input = await ready(f);
+			f.db.function("changes", () => 0);
+			const inputs = [input, { ...input, credentialHash: hash(800) }];
+			const peers = inputs.map(() => blockedPeer(f));
+			const commitOrder = order === "forward" ? [0, 1] : [1, 0];
+			// Act: both operations reach independently held batches before either commits.
+			const pending = inputs.map((candidate, i) =>
+				peers[i].store.signInWithConsumedBrowserTransaction(candidate, browserConfig),
+			);
+			await Promise.all(peers.map((peer) => peer.entered));
+			// Assert: receipt ownership cannot come from a stale pre-read.
+			expect(peers.map((peer) => peer.reads)).toEqual([[], []]);
+			expect(sessionRows(f)).toEqual([[], []]);
+			// Act: synchronous transactions still serialize on this single connection.
+			const results = [];
+			for (const i of commitOrder) {
+				peers[i].release();
+				results.push(await pending[i]);
+			}
+			// Assert
+			expect(results.filter((r) => r.kind === "issued")).toHaveLength(1);
+			expect(results).toContainEqual({ kind: "rejected", error: "browser_transaction_used" });
+			expect(sessionRows(f).map((rows) => rows.length)).toEqual([1, 1]);
+			expectIssued(results[0], f);
+			expectRejected(results[1], "browser_transaction_used");
+			if (results[0].kind !== "issued") throw new Error("fixture_session_not_issued");
+			expect(await f.store.readAuthSession(inputs[commitOrder[0]].credentialHash, f.cfg)).toEqual(
+				results[0].session,
+			);
+			expect(
+				await f.store.readAuthSession(inputs[commitOrder[1]].credentialHash, f.cfg),
+			).toBeNull();
+			expect(sessionRows(f)[0]).toEqual([
+				expect.objectContaining({
+					browser_transaction_hash: input.browserTransactionHash,
+					session_id: results[0].session.sessionId,
+				}),
+			]);
+		},
+	);
 	test.for(["revoke-link", "retire-transaction", "fill-cap"] as const)(
 		"%s immediately before atomic batch prevents a stale pre-read grant",
 		async (change, { fixture: f }) => {
