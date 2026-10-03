@@ -11,11 +11,15 @@ import {
 	type CoordinatorAuthBrowserTransactionMaintenanceOptions,
 	type CoordinatorAuthBrowserTransactionMaintenanceResult,
 	type CoordinatorAuthBrowserTransactionRejected,
+	type CoordinatorAuthBrowserTransactionRetirementOptions,
+	type CoordinatorAuthBrowserTransactionRetirementResult,
 	type CoordinatorAuthBrowserTransactionScope,
 	type CoordinatorAuthBrowserTransactionStartInput,
 	type CoordinatorAuthBrowserTransactionStartResult,
 	type CoordinatorAuthBrowserTransactionStore,
 	type CoordinatorAuthLinkBrowserTransactionResolveInput,
+	type CoordinatorAuthSigninBrowserTransactionCancelInput,
+	type CoordinatorAuthSigninBrowserTransactionCancelResult,
 } from "./coordinator-auth-browser-transaction-contract.js";
 import { isCoordinatorAccountIssuer } from "./coordinator-auth-contract.js";
 import { isAuthControllerId, isAuthControllerUniqueError } from "./coordinator-auth-controller.js";
@@ -150,6 +154,19 @@ function maintenanceLimit(value: unknown): number | null {
 			limit <= AUTH_BROWSER_TXN_MAINTENANCE_BATCH_MAX
 			? limit
 			: null;
+	} catch {
+		return null;
+	}
+}
+function captureRetirementOptions(value: unknown): { limit: number; attemptId?: string } | null {
+	const limit = maintenanceLimit(value);
+	if (limit === null) return null;
+	if (value === undefined) return { limit };
+	try {
+		const descriptor = Object.getOwnPropertyDescriptor(value, "attemptId");
+		if (!descriptor) return "attemptId" in (value as object) ? null : { limit };
+		if (!Object.hasOwn(descriptor, "value") || !isAuthControllerId(descriptor.value)) return null;
+		return { limit, attemptId: descriptor.value };
 	} catch {
 		return null;
 	}
@@ -522,6 +539,78 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 			values: [...configValues(c), i.attemptId, i.binderHash, now, now],
 		});
 		return row ? { browserTransactionHash: row.browser_transaction_hash } : null;
+	}
+	async cancelAuthSigninBrowserTransaction(
+		input: CoordinatorAuthSigninBrowserTransactionCancelInput,
+		scope: CoordinatorAuthBrowserTransactionScope,
+	): Promise<CoordinatorAuthSigninBrowserTransactionCancelResult> {
+		const i = capture(input, ["binderHash"]);
+		const s = capture(scope, ["coordinatorId"]);
+		if (!i || !isHash(i.binderHash) || !s || !isAuthControllerId(s.coordinatorId))
+			return { kind: "rejected", error: "invalid_input" };
+		authLinkNow(this.clock);
+		// Explicit cookie-owner intent remains valid across clock rollback.
+		const match =
+			"coordinator_id = ? AND binder_hash = ? AND purpose = 'signin' AND attempt_id IS NULL";
+		const values = [s.coordinatorId, i.binderHash];
+		try {
+			await this.backend.run({
+				sql: `UPDATE ${TABLE} SET state = 'expired', nonce = NULL, pkce_verifier = NULL
+ WHERE ${match} AND state = 'pending'`,
+				values,
+			});
+		} catch {
+			throw new Error("auth_browser_transaction_persistence_error");
+		}
+		const row = await this.first({
+			sql: `SELECT 1 FROM ${TABLE} WHERE ${match} AND state = 'expired' AND nonce IS NULL AND pkce_verifier IS NULL`,
+			values,
+		});
+		return row ? { kind: "cancelled" } : { kind: "unavailable" };
+	}
+	async retireAuthBrowserTransactions(
+		config: CoordinatorAuthBrowserConfig,
+		options?: CoordinatorAuthBrowserTransactionRetirementOptions,
+	): Promise<CoordinatorAuthBrowserTransactionRetirementResult> {
+		const c = captureConfig(config);
+		const o = captureRetirementOptions(options);
+		if (!c || !o) return { kind: "rejected", error: "invalid_input" };
+		const now = authLinkNow(this.clock);
+		const attemptFilter = o.attemptId === undefined ? "" : "AND b.attempt_id = ?";
+		const attemptValues = o.attemptId === undefined ? [] : [o.attemptId];
+		let creationGuard = "b.created_at_ms <= ?";
+		const creationValues = [now];
+		if (o.attemptId !== undefined) {
+			creationGuard = `(b.created_at_ms <= ? OR (b.purpose = 'link' AND NOT ${LIVE_LINK}))`;
+			creationValues.push(now);
+		}
+		try {
+			const processedCount = await this.backend.run({
+				sql: `UPDATE ${TABLE} SET state = 'expired', nonce = NULL, pkce_verifier = NULL
+ WHERE coordinator_id = ? AND state = 'pending' AND browser_transaction_hash IN
+ (SELECT b.browser_transaction_hash FROM ${TABLE} b
+ WHERE b.coordinator_id = ? AND b.state = 'pending' AND ${creationGuard} ${attemptFilter}
+ AND (b.expires_at_ms <= ? OR ? = 0 OR b.issuer <> ? OR b.auth_config_revision <> ? OR b.redirect_uri <> ?
+ OR (b.purpose = 'link' AND NOT ${LIVE_LINK}))
+ ORDER BY b.expires_at_ms, b.browser_transaction_hash LIMIT ?)`,
+				values: [
+					c.coordinatorId,
+					c.coordinatorId,
+					...creationValues,
+					...attemptValues,
+					now,
+					Number(c.enabled),
+					c.issuer,
+					c.revision,
+					c.redirectUri,
+					now,
+					o.limit,
+				],
+			});
+			return { kind: "retired", processedCount, more: processedCount === o.limit };
+		} catch {
+			throw new Error("auth_browser_transaction_persistence_error");
+		}
 	}
 	async maintainAuthBrowserTransactions(
 		scope: CoordinatorAuthBrowserTransactionScope,

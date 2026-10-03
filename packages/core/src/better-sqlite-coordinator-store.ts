@@ -26,10 +26,12 @@ import {
 	type CoordinatorAuthBrowserConfig,
 	type CoordinatorAuthBrowserTransactionConsumeInput,
 	type CoordinatorAuthBrowserTransactionMaintenanceOptions,
+	type CoordinatorAuthBrowserTransactionRetirementOptions,
 	type CoordinatorAuthBrowserTransactionScope,
 	type CoordinatorAuthBrowserTransactionStartInput,
 	CoordinatorAuthBrowserTransactions,
 	type CoordinatorAuthLinkBrowserTransactionResolveInput,
+	type CoordinatorAuthSigninBrowserTransactionCancelInput,
 } from "./coordinator-auth-browser-transaction.js";
 import {
 	AUTH_CONTROLLER_ACTIVE_SQL,
@@ -691,6 +693,18 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		config: CoordinatorAuthBrowserConfig,
 	) {
 		return this.authBrowserTransactions.resolveAuthLinkBrowserTransaction(input, config);
+	}
+	async cancelAuthSigninBrowserTransaction(
+		input: CoordinatorAuthSigninBrowserTransactionCancelInput,
+		scope: CoordinatorAuthBrowserTransactionScope,
+	) {
+		return this.authBrowserTransactions.cancelAuthSigninBrowserTransaction(input, scope);
+	}
+	async retireAuthBrowserTransactions(
+		config: CoordinatorAuthBrowserConfig,
+		options?: CoordinatorAuthBrowserTransactionRetirementOptions,
+	) {
+		return this.authBrowserTransactions.retireAuthBrowserTransactions(config, options);
 	}
 	async maintainAuthBrowserTransactions(
 		scope: CoordinatorAuthBrowserTransactionScope,

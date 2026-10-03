@@ -53,6 +53,21 @@ export interface CoordinatorAuthBrowserTransactionScope {
 export interface CoordinatorAuthBrowserTransactionMaintenanceOptions {
 	limit?: number;
 }
+export interface CoordinatorAuthSigninBrowserTransactionCancelInput {
+	binderHash: string;
+}
+export type CoordinatorAuthSigninBrowserTransactionCancelResult =
+	| { kind: "cancelled" }
+	| { kind: "unavailable" }
+	| { kind: "rejected"; error: "invalid_input" };
+export interface CoordinatorAuthBrowserTransactionRetirementOptions {
+	/** Omit unused options; explicit undefined values are rejected. */
+	attemptId?: string;
+	limit?: number;
+}
+export type CoordinatorAuthBrowserTransactionRetirementResult =
+	| { kind: "retired"; processedCount: number; more: boolean }
+	| { kind: "rejected"; error: "invalid_input" };
 export type CoordinatorAuthBrowserTransactionMaintenanceResult =
 	| { kind: "maintained"; processedCount: number; more: boolean }
 	| { kind: "rejected"; error: "invalid_input" };
@@ -73,6 +88,14 @@ export interface CoordinatorAuthBrowserTransactionStore {
 		scope: CoordinatorAuthBrowserTransactionScope,
 		options?: CoordinatorAuthBrowserTransactionMaintenanceOptions,
 	): Promise<CoordinatorAuthBrowserTransactionMaintenanceResult>;
+	cancelAuthSigninBrowserTransaction(
+		input: CoordinatorAuthSigninBrowserTransactionCancelInput,
+		scope: CoordinatorAuthBrowserTransactionScope,
+	): Promise<CoordinatorAuthSigninBrowserTransactionCancelResult>;
+	retireAuthBrowserTransactions(
+		config: CoordinatorAuthBrowserConfig,
+		options?: CoordinatorAuthBrowserTransactionRetirementOptions,
+	): Promise<CoordinatorAuthBrowserTransactionRetirementResult>;
 }
 
 export const AUTH_BROWSER_TXN_SCHEMA_SQL = `
