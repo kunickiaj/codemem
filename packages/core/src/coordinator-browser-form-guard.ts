@@ -43,6 +43,7 @@ export interface BrowserFormGuardInput {
 	limit?: number;
 }
 const INVALID_INPUT: Failure = Object.freeze({ ok: false, error: "invalid_input" });
+const ratePolicies = new WeakMap<InMemoryRequestRateLimiter, Map<string, number>>();
 const headersGet = Headers.prototype.get;
 function nativeRequestGetter(name: string): ((this: Request) => unknown) | undefined {
 	let prototype: object | null = Request.prototype;
@@ -172,6 +173,19 @@ function captureInput(input: BrowserFormGuardInput): Snapshot {
 	});
 }
 
+function pinRatePolicy(snapshot: Snapshot, limit: number): boolean {
+	let policies = ratePolicies.get(snapshot.limiter);
+	if (!policies) {
+		policies = new Map();
+		ratePolicies.set(snapshot.limiter, policies);
+	}
+	const coordinatorId = snapshot.scope.store.coordinatorId;
+	const existing = policies.get(coordinatorId);
+	if (existing !== undefined) return existing === limit;
+	policies.set(coordinatorId, limit);
+	return true;
+}
+
 function checkRate(snapshot: Snapshot): Failure | null {
 	const { clientKey, limit } = snapshot;
 	if (!isAuthControllerId(clientKey) || clientKey.length > 128) {
@@ -180,6 +194,8 @@ function checkRate(snapshot: Snapshot): Failure | null {
 	if (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit < 1 || limit > 1000) {
 		return INVALID_INPUT;
 	}
+	// The injected limiter includes the limit in its internal bucket key.
+	if (!pinRatePolicy(snapshot, limit)) return INVALID_INPUT;
 	const result: unknown = snapshot.check.call(
 		snapshot.limiter,
 		JSON.stringify(["browser-form", snapshot.scope.store.coordinatorId, clientKey]),

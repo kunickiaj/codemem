@@ -446,6 +446,149 @@ describe("limiter boundary", () => {
 	});
 });
 
+describe("coordinator-wide limiter policy", () => {
+	it("cannot replenish a mixed-action budget by changing limit or trusted client", async () => {
+		// Arrange: exercise the real primitive whose bucket identity includes the limit.
+		const clock = vi.spyOn(performance, "now").mockReturnValue(1000);
+		const limiter = createInMemoryRequestRateLimiter({ now: () => 1000 });
+		const check = vi.spyOn(limiter, "check");
+		const transaction = await fixture();
+		const session = await fixture("session");
+		// Act
+		const first = await guardBrowserForm({ ...transaction.input, limiter, limit: 2 });
+		const second = await guardBrowserForm({ ...session.input, limiter, limit: 2 });
+		// Assert: both real cookie/MAC action kinds share the chosen policy.
+		expect(first.ok).toBe(true);
+		expect(second.ok).toBe(true);
+		for (const [limit, clientKey] of [
+			[3, "trusted-client"],
+			[undefined, "trusted-client"],
+			[20, "other-client"],
+		] as const) {
+			// Arrange
+			const f = await fixture("session");
+			check.mockClear();
+			// Act
+			const result = await guardBrowserForm({ ...f.input, limiter, limit, clientKey });
+			// Assert: mismatch is rejected before bucket access or body consumption.
+			deny(result, "invalid_input");
+			expect(check).not.toHaveBeenCalled();
+			expect(f.source.pull).not.toHaveBeenCalled();
+			expect(f.input.request.bodyUsed).toBe(false);
+		}
+		// Arrange / Act: the original policy remains exhausted; rollover cannot replace it.
+		const exhausted = await fixture();
+		const original = await guardBrowserForm({ ...exhausted.input, limiter, limit: 2 });
+		clock.mockReturnValue(61_001);
+		const changed = await fixture();
+		check.mockClear();
+		const afterWindow = await guardBrowserForm({ ...changed.input, limiter, limit: 3 });
+		const callsAfterMismatch = check.mock.calls.length;
+		const renewed = await fixture();
+		const samePolicy = await guardBrowserForm({ ...renewed.input, limiter, limit: 2 });
+		// Assert
+		expect(original).toEqual({ ok: false, error: "rate_limited", retryAfterS: 30 });
+		deny(afterWindow, "invalid_input");
+		expect(callsAfterMismatch).toBe(0);
+		expect(changed.source.pull).not.toHaveBeenCalled();
+		expect(changed.input.request.bodyUsed).toBe(false);
+		expect(samePolicy.ok).toBe(true);
+	});
+	it.each(["origin", "client", "limit"])(
+		"does not pin policy from rejected %s input",
+		async (gate) => {
+			// Arrange
+			const f = await fixture();
+			const limiter = createInMemoryRequestRateLimiter({ now: () => 1000 });
+			const check = vi.spyOn(limiter, "check");
+			if (gate === "origin") {
+				f.headers.set("origin", "https://evil.example");
+				f.input.request = request(f.headers, f.source.body);
+			}
+			// Act
+			const rejected = await guardBrowserForm({
+				...f.input,
+				limiter,
+				limit: gate === "limit" ? 0 : 100,
+				clientKey: gate === "client" ? "" : "trusted-client",
+			});
+			const callsAfterRejection = check.mock.calls.length;
+			const valid = await fixture();
+			const accepted = await guardBrowserForm({ ...valid.input, limiter, limit: 2 });
+			// Assert
+			const errors = {
+				origin: "origin_rejected",
+				client: "client_unidentified",
+				limit: "invalid_input",
+			};
+			deny(rejected, errors[gate as keyof typeof errors]);
+			expect(callsAfterRejection).toBe(0);
+			expect(f.source.pull).not.toHaveBeenCalled();
+			expect(f.input.request.bodyUsed).toBe(false);
+			expect(accepted.ok).toBe(true);
+		},
+	);
+});
+
+describe("limiter policy isolation and failures", () => {
+	it.each(["coordinator", "limiter"])(
+		"allows independent policy for a different %s",
+		async (isolation) => {
+			// Arrange
+			const first = await fixture();
+			const other = await fixture();
+			const limiter = createInMemoryRequestRateLimiter({ now: () => 1000 });
+			let otherLimiter = limiter;
+			if (isolation === "limiter")
+				otherLimiter = createInMemoryRequestRateLimiter({ now: () => 1000 });
+			else {
+				other.input.scope.store.coordinatorId = "other-coordinator";
+				const token = await issueBrowserCsrfToken(
+					other.input.csrfKey,
+					other.credential.secret,
+					"transaction",
+					other.input.scope,
+				);
+				replaceBody(other, `csrf=${token}&attempt_id=${ATTEMPT}`);
+			}
+			// Act
+			const initial = await guardBrowserForm({ ...first.input, limiter, limit: 2 });
+			const separate = await guardBrowserForm({ ...other.input, limiter: otherLimiter, limit: 3 });
+			// Assert
+			expect(initial.ok).toBe(true);
+			expect(separate.ok).toBe(true);
+		},
+	);
+	it.each(["malformed", "throwing"])(
+		"retains trusted policy after %s limiter output",
+		async (failure) => {
+			// Arrange
+			const first = await fixture();
+			const check = vi.fn<() => unknown>(() => {
+				if (failure === "throwing") throw new Error(PRIVATE_CAUSE);
+				return { allowed: "yes", retryAfterS: 0 };
+			});
+			const limiter = { check };
+			// Act
+			const failed = await untyped({ ...first.input, limiter, limit: 2 });
+			check.mockClear();
+			check.mockReturnValue({ allowed: true, retryAfterS: 0 });
+			const changed = await fixture();
+			const mismatch = await untyped({ ...changed.input, limiter, limit: 3 });
+			const callsAfterMismatch = check.mock.calls.length;
+			const valid = await fixture();
+			const recovered = await untyped({ ...valid.input, limiter, limit: 2 });
+			// Assert
+			deny(failed, "invalid_input");
+			deny(mismatch, "invalid_input");
+			expect(callsAfterMismatch).toBe(0);
+			expect(changed.source.pull).not.toHaveBeenCalled();
+			expect(changed.input.request.bodyUsed).toBe(false);
+			expect(recovered.ok).toBe(true);
+		},
+	);
+});
+
 describe("cross-site requests cannot exhaust a trusted client's quota", () => {
 	it.each([
 		["missing", null, `${ORIGIN}/form`],

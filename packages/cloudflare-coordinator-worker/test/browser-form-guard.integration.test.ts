@@ -228,6 +228,50 @@ it("rejects foreign origins without spending the trusted client's local rate bud
 	}
 });
 
+it("rejects policy changes without creating a fresh native mixed-action rate budget", async () => {
+	// Arrange: native workerd requests, real HMACs and a pass-through primitive spy.
+	const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("No network"));
+	vi.useFakeTimers();
+	vi.setSystemTime(0);
+	try {
+		const transaction = await fixture("transaction_attempt");
+		const session = await fixture("session_logout");
+		const limiter = createInMemoryRequestRateLimiter({ now: () => 0 });
+		const check = vi.spyOn(limiter, "check");
+		// Act
+		const first = await run(transaction, undefined, { limiter, limit: 2 });
+		const second = await run(session, undefined, { limiter, limit: 2 });
+		// Assert
+		expect(first.ok).toBe(true);
+		expect(second.ok).toBe(true);
+		for (const limit of [3, 20]) {
+			// Arrange
+			const stream = unreadBody();
+			const native = request(session.headers, stream.body);
+			check.mockClear();
+			// Act
+			const mismatch = await run(session, native, { limiter, limit });
+			// Assert
+			fixedError(mismatch, "invalid_input");
+			expect(check).not.toHaveBeenCalled();
+			expect(stream.pull).not.toHaveBeenCalled();
+			expect(native.bodyUsed).toBe(false);
+		}
+		// Arrange / Act: original policy still denies rather than resetting its quota.
+		const stream = unreadBody();
+		const native = request(transaction.headers, stream.body);
+		const exhausted = await run(transaction, native, { limiter, limit: 2 });
+		// Assert
+		expect(exhausted).toEqual({ ok: false, error: "rate_limited", retryAfterS: 30 });
+		expect(stream.pull).not.toHaveBeenCalled();
+		expect(native.bodyUsed).toBe(false);
+		expect(fetch).not.toHaveBeenCalled();
+	} finally {
+		vi.useRealTimers();
+		fetch.mockRestore();
+	}
+});
+
 it("returns fixed errors for oversized forms, malformed bytes and independently invalid MAC context", async () => {
 	// Arrange: a small Content-Length must not bypass the actual 4096-byte stream cap.
 	const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("No network"));

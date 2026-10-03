@@ -27,7 +27,7 @@ It does not authenticate or authorize. A valid cookie and CSRF MAC can exist for
 | `action` | Fixed caller choice: `transaction_attempt` or `session_logout`; selects cookie kind and exact fields. |
 | `limiter` | Injected `InMemoryRequestRateLimiter`. |
 | `clientKey` | Trusted platform identity, never an untrusted request header. |
-| `limit` | Optional safe integer from 1 through 1,000; default 20. |
+| `limit` | Optional safe integer from 1 through 1,000; default 20. Must remain fixed per coordinator and reused limiter. |
 
 The promise returns a frozen success object, or frozen `{ ok: false, error }` with `retryAfterS` only for rate limiting:
 
@@ -67,6 +67,19 @@ Buckets use this JSON key, so actions share a coordinator/client bucket while co
 ```ts
 JSON.stringify(["browser-form", coordinatorId, clientKey])
 ```
+
+The underlying limiter also includes the numeric limit in its internal key.
+The guard therefore pins the first valid limit for each coordinator and injected
+limiter instance. Later calls with a different limit return `invalid_input`
+without calling the limiter or reading the body, even for another action or
+client. Wrong-Origin requests and invalid client keys or limits cannot pin this
+policy. Window rollover and failed limiter checks do not reset it; another
+coordinator or limiter instance has an independent policy.
+
+This small registry retains only coordinator IDs and numeric limits, not
+configuration snapshots, keys, cookies or authority. It follows the injected
+limiter's lifetime. Mounting must supply a stable coordinator-wide limit and
+must not create a fresh limiter per request to evade the invariant.
 
 ## Request policy
 
