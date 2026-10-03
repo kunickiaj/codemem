@@ -442,7 +442,7 @@ function registerReplay(test: Test) {
 		expect(account).toBeNull();
 		expect(snapshot(f, [SESSIONS, RECEIPTS])).toEqual(protectedBefore);
 	});
-	test("ten live current-config sessions remain readable after cleanup and large rollback", async ({
+	test("ten current-config sessions survive cleanup but are unreadable after large rollback", async ({
 		fixture: f,
 	}) => {
 		// Arrange
@@ -468,7 +468,7 @@ function registerReplay(test: Test) {
 		// Assert
 		expectRejected(denied, "session_limited");
 		expect(readable.filter(Boolean)).toHaveLength(10);
-		expect(rolledBack.filter(Boolean).length).toBeLessThanOrEqual(10);
+		expect(rolledBack).toEqual(Array(10).fill(null));
 		expect(await f.store.readAuthSession(old.credentialHash, f.cfg)).toBeNull();
 		expect(
 			await f.store.readAuthSession(live[0].credentialHash, { ...f.cfg, revision: hash(997) }),
