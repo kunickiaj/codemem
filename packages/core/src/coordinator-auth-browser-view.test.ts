@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { JSDOM } from "jsdom";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	AUTH_BROWSER_AVATAR_HOSTS,
 	AUTH_BROWSER_FORM_ACTIONS,
@@ -9,9 +9,11 @@ import {
 	renderAuthLinkConfirmPage,
 	renderCurrentAccountPage,
 } from "./coordinator-auth-browser-view.js";
+import { BROWSER_COOKIE_NAMES, readBrowserCookie } from "./coordinator-browser-credential.js";
+import { importBrowserCsrfKey, issueBrowserCsrfToken } from "./coordinator-browser-csrf.js";
 
 const issuer = "https://accounts.google.com";
-const csrfToken = "a".repeat(43);
+const csrfToken = `${"c".repeat(85)}A`;
 const picture = "https://lh3.googleusercontent.com/avatar?sz=64&x=y";
 const profile = { displayName: "Ada Lovelace", email: "ada@example.test", emailVerified: true };
 const linkInput = () => ({
@@ -22,6 +24,17 @@ const linkInput = () => ({
 	group: { id: "group-prefix-abcdefgh", label: "Development" },
 	attemptId: "public-attempt",
 	csrfToken,
+});
+
+beforeEach(() => {
+	vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("No network"));
+});
+afterEach(() => {
+	try {
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+	} finally {
+		vi.restoreAllMocks();
+	}
 });
 
 // Default JSDOM does not execute scripts or load images, styles, or provider URLs.
@@ -420,11 +433,46 @@ describe("safe browser display", () => {
 	});
 });
 
+describe("issued CSRF form values", () => {
+	it.each(["transaction", "session"] as const)(
+		"preserves a helper-issued %s CSRF token in the appropriate form",
+		async (purpose) => {
+			// Arrange: deterministic entropy, independent server key, and opaque cookie.
+			vi.spyOn(crypto, "getRandomValues").mockImplementation((array) => {
+				if (!(array instanceof Uint8Array)) throw new Error("expected byte array");
+				array.fill(17);
+				return array;
+			});
+			const key = await importBrowserCsrfKey(new Uint8Array(32).fill(29));
+			const cookie = await readBrowserCookie(
+				`${BROWSER_COOKIE_NAMES[purpose]}=${"A".repeat(43)}`,
+				purpose,
+			);
+			if (cookie.kind !== "present") throw new Error("fixture cookie missing");
+			const token = await issueBrowserCsrfToken(key, cookie.secret, purpose, {
+				publicOrigin: "https://coordinator.example.test",
+				store: { coordinatorId: "coordinator-fixture", revision: "a".repeat(64) },
+			});
+			const input = { ...linkInput(), csrfToken: token };
+			// Act
+			const page = await (purpose === "transaction"
+				? renderAuthLinkConfirmPage(input)
+				: renderCurrentAccountPage(input));
+			const fields = openPage(page.body).querySelectorAll("input[name='csrf']");
+			// Assert: rendering preserves shape; it does not authenticate the token.
+			expect(token).toHaveLength(86);
+			expect(token).toMatch(/^[A-Za-z0-9_-]{85}[AQgw]$/);
+			expect(fields).toHaveLength(purpose === "transaction" ? 2 : 1);
+			for (const field of fields) expect(field.getAttribute("value")).toBe(token);
+		},
+	);
+});
+
 describe("redacted validation", () => {
 	it("accepts full-length IDs and base64url CSRF without truncating identifiers", async () => {
 		// Arrange
 		const id = "i".repeat(256);
-		const token = `${"a".repeat(41)}_-`;
+		const token = `${"a".repeat(83)}_-w`;
 		const input = {
 			...linkInput(),
 			identity: { id },
@@ -479,18 +527,25 @@ describe("redacted validation", () => {
 		},
 	);
 
-	it.each(["", "a".repeat(42), "a".repeat(44), `${"a".repeat(42)}=`, `${"a".repeat(42)}\n`])(
-		"rejects malformed CSRF %j",
-		async (token) => {
-			// Arrange
-			const input = { ...linkInput(), csrfToken: token };
-			// Act
-			const promises = [renderAuthLinkConfirmPage(input), renderCurrentAccountPage(input)];
-			// Assert
-			for (const promise of promises)
-				await expect(promise).rejects.toThrow(/^auth_browser_view_invalid_input$/);
-		},
-	);
+	it.each([
+		"",
+		"a".repeat(43),
+		"a".repeat(85),
+		"a".repeat(87),
+		`${"a".repeat(85)}=`,
+		`${"a".repeat(85)}.`,
+		`${"a".repeat(85)}B`,
+		`${"a".repeat(85)}\n`,
+		`${csrfToken}==`,
+	])("rejects malformed CSRF %j", async (token) => {
+		// Arrange
+		const input = { ...linkInput(), csrfToken: token };
+		// Act
+		const promises = [renderAuthLinkConfirmPage(input), renderCurrentAccountPage(input)];
+		// Assert
+		for (const promise of promises)
+			await expect(promise).rejects.toThrow(/^auth_browser_view_invalid_input$/);
+	});
 
 	it.each(["issuer", "identity", "device", "attemptId", "csrfToken"])(
 		"rejects required accessor %s without executing it",
@@ -592,6 +647,14 @@ describe("passive notices and response policy", () => {
 	it("hashes the exact shared static CSS with native Web Crypto and restrictive CSP", async () => {
 		// Arrange
 		const input = linkInput();
+		const referrerPolicies = [
+			"same-origin",
+			"same-origin",
+			"no-referrer",
+			"no-referrer",
+			"no-referrer",
+			"same-origin",
+		];
 		// Act
 		const pages = await Promise.all([
 			renderAuthLinkConfirmPage(input),
@@ -617,7 +680,7 @@ describe("passive notices and response policy", () => {
 			expect(css).not.toMatch(/@import|url\s*\(/i);
 			expect(header(page.headers, "Content-Type")).toMatch(/^text\/html;\s*charset=utf-8$/i);
 			expect(header(page.headers, "Cache-Control")).toBe("no-store");
-			expect(header(page.headers, "Referrer-Policy")).toBe("no-referrer");
+			expect(header(page.headers, "Referrer-Policy")).toBe(referrerPolicies[index]);
 			expect(header(page.headers, "X-Content-Type-Options")).toBe("nosniff");
 			expect(header(page.headers, "X-Frame-Options")).toBe("DENY");
 			const csp = header(page.headers, "Content-Security-Policy");

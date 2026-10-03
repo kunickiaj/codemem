@@ -45,7 +45,7 @@ source is part of this contract. The `scope` input contains its own primitive
 snapshots of `coordinatorId` and `revision`; OIDC client secrets are ignored.
 
 ## Bound scope and authenticated message
-`scope.publicOrigin` must be the exact configured HTTPS origin, not a URL path, request Host, Origin, forwarding header, or a value selected by a browser.
+`scope.publicOrigin` must be the exact statically configured HTTPS public origin, not a URL path, request Host, Origin, forwarding header, or a value selected by a browser.
 The source accepts only an exact origin string, with no credentials or controls.
 
 `scope.store.coordinatorId` is a validated opaque ID and `revision` is exactly
@@ -98,15 +98,13 @@ look up and bind the original live cookie/session or transaction after MAC
 verification, then enforce their explicit Origin policy.
 
 This helper does not read HTTP requests, validate Origin or Referer, provide an
-Origin fallback, or make a read-only standalone check safe. Mandatory exact
-`POST` Origin validation is a future handler requirement; null-Origin rejection
-is also future work.
+Origin fallback, or make a read-only standalone check safe. A future handler
+must compare the `POST` Origin to the configured public origin and reject
+`null`; accepting `null` and using a Referer fallback are out of scope.
 
-The current DOM renderer accepts only 43-character CSRF values. It rejects these
-86-character tokens, so this API remains unmounted until the renderer work is
-complete. Browser/CSP validation, same-origin form/referrer policy changes,
-stored IPv4/IPv6 loopback behavior, configuration provisioning, and deployment
-approval remain separate gates.
+The form renderer now accepts canonical 86-character tokens. This does not mount
+guards or sign-in routes: real-browser/CSP validation, signed runtime completion,
+and Origin/liveness enforcement remain future gates.
 
 ## References
 - [OWASP CSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html): server-side secrets, session binding, and unpredictable tokens.

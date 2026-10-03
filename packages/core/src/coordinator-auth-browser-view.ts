@@ -1,5 +1,6 @@
 import { isCoordinatorAccountIssuer } from "./coordinator-auth-contract.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
+import { isBrowserCsrfToken } from "./coordinator-browser-csrf.js";
 
 export const AUTH_BROWSER_FORM_ACTIONS = Object.freeze({
 	confirmLink: "/auth/link/confirm",
@@ -191,11 +192,7 @@ function capture(input: unknown): {
 		if (!data) return invalidInput();
 		const issuer = ownData(data, "issuer", { rejectAccessor: true });
 		const csrfToken = ownData(data, "csrfToken", { rejectAccessor: true });
-		if (
-			!isCoordinatorAccountIssuer(issuer) ||
-			typeof csrfToken !== "string" ||
-			!/^[A-Za-z0-9_-]{43}$/.test(csrfToken)
-		)
+		if (!isCoordinatorAccountIssuer(issuer) || !isBrowserCsrfToken(csrfToken))
 			return invalidInput();
 		return {
 			data,
@@ -243,6 +240,7 @@ async function buildPage(
 	title: string,
 	content: string,
 	issuer?: string,
+	options: { referrerPolicy?: "no-referrer" | "same-origin" } = {},
 ): Promise<CoordinatorAuthBrowserPage> {
 	try {
 		const digest = await globalThis.crypto.subtle.digest(
@@ -258,7 +256,7 @@ async function buildPage(
 			headers: {
 				"Content-Type": "text/html;charset=utf-8",
 				"Cache-Control": "no-store",
-				"Referrer-Policy": "no-referrer",
+				"Referrer-Policy": options.referrerPolicy ?? "no-referrer",
 				"X-Content-Type-Options": "nosniff",
 				"X-Frame-Options": "DENY",
 				"Content-Security-Policy": `default-src 'none'; style-src 'sha256-${hash}'; img-src ${images}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
@@ -298,6 +296,7 @@ export async function renderAuthLinkConfirmPage(
 		"Link account",
 		`<h1>Link account</h1>${profileMarkup(captured.profile)}<section aria-label="Link details"><h2>Link details</h2><dl>${entities}</dl><p>Linking this account does not change project sharing, memories, or device keys.</p></section><div class="actions">${actions}</div>`,
 		captured.issuer,
+		{ referrerPolicy: "same-origin" },
 	);
 }
 
@@ -309,6 +308,7 @@ export async function renderCurrentAccountPage(
 		"Account",
 		`<p class="eyebrow">Signed in</p><h1>Account</h1>${profileMarkup(captured.profile)}<section aria-label="Identity"><h2>Identity</h2><dl>${entityMarkup(captured.identity, "Identity")}</dl></section><div class="actions">${form(AUTH_BROWSER_FORM_ACTIONS.signOut, captured.csrfToken, "Sign out")}</div>`,
 		captured.issuer,
+		{ referrerPolicy: "same-origin" },
 	);
 }
 

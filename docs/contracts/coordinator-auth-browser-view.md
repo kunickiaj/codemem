@@ -1,6 +1,6 @@
 # Coordinator auth browser display
 
-**Status:** Reviewed renderer; browser routes remain disabled.
+**Status:** Reviewed renderer with canonical CSRF token shape; browser routes remain disabled.
 
 ## Purpose and surface
 
@@ -21,7 +21,9 @@ Verified issuer and subject from the OIDC SDK remain the account authority. Name
 
 ## Input and output rules
 
-Inputs are plain own-data records only: inherited values, getters, coercion, controls, bidi characters, and oversized display strings are ignored or rejected without invocation. Required IDs, issuer, attempt ID, and the 43-character base64url CSRF token reject with a redacted error; rendering failure after crypto returns a generic failure.
+Inputs are plain own-data records only: inherited values, getters, coercion, controls, bidi characters, and oversized display strings are ignored or rejected without invocation. Required IDs, issuer, attempt ID, and the canonical 86-character base64url CSRF token reject with a redacted error; rendering failure after crypto returns a generic failure.
+
+The token decodes to 64 bytes, has no padding or period, and ends in `A`, `Q`, `g`, or `w`. `isBrowserCsrfToken` checks this shared shape only; this renderer does not verify a MAC or authenticate a token.
 
 All text and attributes escape `&`, `<`, `>`, and quotes. Unknown claims, JSON, token keys, account subject, nonce, PKCE material, cookies, credentials, signing keys, and completion secrets never appear in markup; link forms contain only `csrf` and `attempt_id`.
 
@@ -44,7 +46,11 @@ The image is decorative (`alt=""`) and uses `referrerpolicy="no-referrer"`; fall
 
 ## Page policy
 
-Each page contains a local hashed stylesheet and no JavaScript, remote fonts, or other static asset binding. Web Crypto SHA-256 creates the exact `style-src` hash; headers are UTF-8 HTML, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`, and `X-Frame-Options: DENY`.
+Each page contains a local hashed stylesheet and no JavaScript, remote fonts, or other static asset binding. Web Crypto SHA-256 creates the exact `style-src` hash; headers are UTF-8 HTML, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, and `X-Frame-Options: DENY`.
+
+The confirmation and account form pages use `Referrer-Policy: same-origin`; notices without forms keep `no-referrer`. This permits a full-URL `Referer` only to a same-origin coordinator endpoint, so operators should treat same-origin request URLs as potentially containing transient callback parameters and avoid retaining provider codes or CSRF values in logs. Google avatars, loopback destinations, and other remote hosts do not receive it; the avatar remains explicitly `referrerpolicy="no-referrer"`.
+
+The Fetch [append a request `Origin` header](https://fetch.spec.whatwg.org/#append-a-request-origin-header) algorithm sends `Origin: null` for a non-CORS `POST` under `no-referrer`; a same-origin form under `same-origin` keeps its real origin. This renderer changes no Origin-header policy: it is only a prerequisite for a later strict `POST` check, which must reject `null` and must not use a Referer fallback.
 
 Its CSP is `default-src 'none'`, the specific style hash, `form-action 'self'`, `base-uri 'none'`, `frame-ancestors 'none'`, and either the exact permitted picture origin or `img-src 'none'`. It does not allow loopback, `http:`, remote styles, or scripts.
 
