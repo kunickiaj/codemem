@@ -334,6 +334,7 @@ CREATE TABLE IF NOT EXISTS coordinator_auth_session_receipts (
  session_id TEXT NOT NULL,
  auth_config_revision TEXT NOT NULL CHECK (length(auth_config_revision) = 64 AND auth_config_revision NOT GLOB '*[^0-9a-f]*'),
  created_at_ms INTEGER NOT NULL CHECK (typeof(created_at_ms) = 'integer' AND created_at_ms BETWEEN 0 AND 9007199225940991),
+ purge_eligible INTEGER NOT NULL DEFAULT 0 CHECK (typeof(purge_eligible) = 'integer' AND purge_eligible IN (0,1) AND (purge_eligible = 0 OR (source = 'signin' AND attempt_id IS NULL))),
  PRIMARY KEY (coordinator_id, browser_transaction_hash),
  UNIQUE (coordinator_id, session_id),
  UNIQUE (coordinator_id, attempt_id),
@@ -359,6 +360,10 @@ CREATE TABLE IF NOT EXISTS coordinator_auth_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_link_config_expiry
   ON coordinator_auth_sessions(coordinator_id, link_id, auth_config_revision, expires_at_ms);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry
+ ON coordinator_auth_sessions(coordinator_id, expires_at_ms, session_id);
+CREATE INDEX IF NOT EXISTS idx_auth_session_receipts_purge
+ ON coordinator_auth_session_receipts(coordinator_id, purge_eligible, created_at_ms, browser_transaction_hash);
 
 CREATE INDEX IF NOT EXISTS idx_auth_link_attempts_device_created
  ON coordinator_auth_link_attempts(coordinator_id, group_id, device_id, created_at_ms);

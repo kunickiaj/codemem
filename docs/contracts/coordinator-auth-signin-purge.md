@@ -39,7 +39,7 @@ The method can delete only supplied-coordinator rows that are `signin`, have no 
 
 State does not matter: eligible `pending`, `consumed`, and `expired` sign-in rows are candidates. Expiry, consumption, and later account outcome do not create exceptions.
 
-It never deletes `link` rows, link attempts, accounts, controllers, profiles, audits, sessions, session receipts, or other receipt records.
+It never deletes `link` rows, link attempts, accounts, controllers, profiles, audits, sessions, session receipts, or other receipt records. Separate explicit guarded-session retention may delete a narrow class of old normal-sign-in sessions and receipts; it has no hook here.
 
 It does not purge legacy sign-in data or change legacy receipt-burn behavior. The old permanent receipt-burn rule remains outside this scoped browser-transaction method.
 
@@ -92,7 +92,11 @@ State and binder reuse detection is retention-scoped; this capability does not c
 
 Browser transaction hashes remain fresh 32-byte CSPRNG output and are not caller-nominated public JSON. Unissued-hash collisions are negligible in practice, not mathematically impossible.
 
-Fresh-hash checks keep link attempts and session receipts forever, so a forced reuse of a purged-but-issued browser hash remains denied.
+Fresh-hash checks keep link attempts and legacy/link-created or historical
+session receipts permanently, so a forced reuse of a purged-but-issued browser
+hash remains denied while its guarded receipt/session remains. The separate
+[guarded-session retention contract](coordinator-auth-session-retention.md)
+defines the narrow approved exception after both eligible records are deleted.
 
 The caller SDK must independently generate fresh state, nonce, and PKCE material;
 the handler separately generates a fresh 32-byte browser binder. The store keeps

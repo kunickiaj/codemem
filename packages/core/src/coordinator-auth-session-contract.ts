@@ -5,6 +5,9 @@ import type { CoordinatorAuthLinkConfig } from "./coordinator-auth-link-contract
 export const AUTH_SESSION_TTL_MS = 28800000;
 export const AUTH_SESSION_MAX_LIVE_PER_LINK = 10;
 export const AUTH_LINK_REDEEM_WINDOW_MS = 120000;
+export const AUTH_GUARDED_SIGNIN_PURGE_GRACE_MS = 86400000;
+export const AUTH_GUARDED_SIGNIN_RECEIPT_PURGE_AGE_MS = 115200000;
+export const AUTH_GUARDED_SIGNIN_PURGE_BATCH_MAX = 256;
 /** Server metadata only: never a bearer credential or its commitment. */
 export interface CoordinatorAuthSession {
 	sessionId: string;
@@ -43,6 +46,12 @@ export interface CoordinatorAuthAccountSignInInput {
 export interface CoordinatorAuthSessionScope {
 	coordinatorId: string;
 }
+export interface CoordinatorAuthSessionPurgeOptions {
+	limit?: number;
+}
+export type CoordinatorAuthSessionPurgeResult =
+	| { kind: "purged"; processedCount: number; more: boolean }
+	| { kind: "rejected"; error: "invalid_input" };
 export type CoordinatorAuthSessionSignOutResult =
 	| { kind: "signed_out" }
 	| { kind: "rejected"; error: "invalid_input" };
@@ -50,6 +59,15 @@ export type CoordinatorAuthAccountLinkRevokeResult =
 	| { kind: "revoked" }
 	| { kind: "rejected"; error: "invalid_input" | "link_unavailable" };
 export interface CoordinatorAuthSessionStore {
+	/** Optional metadata cleanup only; more is an operational hint, not authority. */
+	purgeAuthGuardedSigninSessions(
+		scope: CoordinatorAuthSessionScope,
+		options?: CoordinatorAuthSessionPurgeOptions,
+	): Promise<CoordinatorAuthSessionPurgeResult>;
+	purgeAuthGuardedSigninReceipts(
+		scope: CoordinatorAuthSessionScope,
+		options?: CoordinatorAuthSessionPurgeOptions,
+	): Promise<CoordinatorAuthSessionPurgeResult>;
 	redeemAuthLinkSession(
 		input: CoordinatorAuthLinkSessionRedeemInput,
 		config: CoordinatorAuthLinkConfig,
@@ -85,6 +103,7 @@ export interface CoordinatorAuthAccountLinkAdminStore {
 }
 
 // Empty tables only: no foreign keys, backfill, profiles, or provider tokens.
+export const AUTH_SESSION_RETENTION_COLUMN_SQL = `purge_eligible INTEGER NOT NULL DEFAULT 0 CHECK (typeof(purge_eligible) = 'integer' AND purge_eligible IN (0,1) AND (purge_eligible = 0 OR (source = 'signin' AND attempt_id IS NULL)))`;
 export const AUTH_SESSION_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS coordinator_auth_session_receipts (
  coordinator_id TEXT NOT NULL,
@@ -95,6 +114,7 @@ CREATE TABLE IF NOT EXISTS coordinator_auth_session_receipts (
  session_id TEXT NOT NULL,
  auth_config_revision TEXT NOT NULL CHECK (length(auth_config_revision) = 64 AND auth_config_revision NOT GLOB '*[^0-9a-f]*'),
  created_at_ms INTEGER NOT NULL CHECK (typeof(created_at_ms) = 'integer' AND created_at_ms BETWEEN 0 AND 9007199225940991),
+ ${AUTH_SESSION_RETENTION_COLUMN_SQL},
  PRIMARY KEY (coordinator_id, browser_transaction_hash),
  UNIQUE (coordinator_id, session_id),
  UNIQUE (coordinator_id, attempt_id),
@@ -119,4 +139,8 @@ CREATE TABLE IF NOT EXISTS coordinator_auth_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_link_config_expiry
  ON coordinator_auth_sessions(coordinator_id, link_id, auth_config_revision, expires_at_ms);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry
+ ON coordinator_auth_sessions(coordinator_id, expires_at_ms, session_id);
+CREATE INDEX IF NOT EXISTS idx_auth_session_receipts_purge
+ ON coordinator_auth_session_receipts(coordinator_id, purge_eligible, created_at_ms, browser_transaction_hash);
 `;

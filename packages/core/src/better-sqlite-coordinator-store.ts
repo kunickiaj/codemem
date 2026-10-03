@@ -69,9 +69,11 @@ import {
 } from "./coordinator-auth-link-contract.js";
 import { AuthSessionOperations } from "./coordinator-auth-session.js";
 import {
+	AUTH_SESSION_RETENTION_COLUMN_SQL,
 	AUTH_SESSION_SCHEMA_SQL,
 	type CoordinatorAuthAccountSignInInput,
 	type CoordinatorAuthLinkSessionRedeemInput,
+	type CoordinatorAuthSessionPurgeOptions,
 	type CoordinatorAuthSessionScope,
 } from "./coordinator-auth-session-contract.js";
 import type {
@@ -348,9 +350,28 @@ function insertBootstrapGrantSync(
 	return rowToRecord<CoordinatorBootstrapGrant>(row);
 }
 
+function upgradeAuthSessionRetentionSchema(db: DatabaseType): void {
+	const present = db
+		.prepare(
+			"SELECT 1 FROM pragma_table_info('coordinator_auth_session_receipts') WHERE name = 'purge_eligible'",
+		)
+		.get();
+	if (present) return;
+	db.transaction(() => {
+		const columns = db.prepare("PRAGMA table_info(coordinator_auth_session_receipts)").all() as {
+			name: string;
+		}[];
+		if (columns.length === 0 || columns.some((column) => column.name === "purge_eligible")) return;
+		db.exec(
+			`ALTER TABLE coordinator_auth_session_receipts ADD COLUMN ${AUTH_SESSION_RETENTION_COLUMN_SQL}`,
+		);
+	}).immediate();
+}
+
 function initializeSchema(db: DatabaseType): void {
 	db.exec(AUTH_CONTROLLER_SCHEMA_SQL);
 	db.exec(AUTH_LINK_SCHEMA_SQL);
+	upgradeAuthSessionRetentionSchema(db);
 	db.exec(AUTH_SESSION_SCHEMA_SQL);
 	db.exec(AUTH_ACCOUNT_PROFILE_SCHEMA_SQL);
 	db.exec(AUTH_BROWSER_TXN_SCHEMA_SQL);
@@ -724,6 +745,18 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		config: CoordinatorAuthLinkConfig,
 	) {
 		return this.authSessions.redeemAuthLinkSession(input, config);
+	}
+	async purgeAuthGuardedSigninSessions(
+		scope: CoordinatorAuthSessionScope,
+		options?: CoordinatorAuthSessionPurgeOptions,
+	) {
+		return this.authSessions.purgeAuthGuardedSigninSessions(scope, options);
+	}
+	async purgeAuthGuardedSigninReceipts(
+		scope: CoordinatorAuthSessionScope,
+		options?: CoordinatorAuthSessionPurgeOptions,
+	) {
+		return this.authSessions.purgeAuthGuardedSigninReceipts(scope, options);
 	}
 	async signInWithAuthAccount(
 		input: CoordinatorAuthAccountSignInInput,

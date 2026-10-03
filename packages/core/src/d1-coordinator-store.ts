@@ -49,6 +49,7 @@ import { AuthSessionOperations } from "./coordinator-auth-session.js";
 import type {
 	CoordinatorAuthAccountSignInInput,
 	CoordinatorAuthLinkSessionRedeemInput,
+	CoordinatorAuthSessionPurgeOptions,
 	CoordinatorAuthSessionScope,
 } from "./coordinator-auth-session-contract.js";
 import type {
@@ -490,6 +491,18 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		config: CoordinatorAuthLinkConfig,
 	) {
 		return this.authSessions.redeemAuthLinkSession(input, config);
+	}
+	async purgeAuthGuardedSigninSessions(
+		scope: CoordinatorAuthSessionScope,
+		options?: CoordinatorAuthSessionPurgeOptions,
+	) {
+		return this.authSessions.purgeAuthGuardedSigninSessions(scope, options);
+	}
+	async purgeAuthGuardedSigninReceipts(
+		scope: CoordinatorAuthSessionScope,
+		options?: CoordinatorAuthSessionPurgeOptions,
+	) {
+		return this.authSessions.purgeAuthGuardedSigninReceipts(scope, options);
 	}
 	async signInWithAuthAccount(
 		input: CoordinatorAuthAccountSignInInput,

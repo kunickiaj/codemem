@@ -32,7 +32,7 @@ table for [explicit sign-in cleanup](coordinator-auth-signin-purge.md).
 | `claim_token`, `consumed_at_ms`, `created_at_ms`, `expires_at_ms` | Server UUID claim token and safe epoch timestamps. |
 | `state` | `pending`, `consumed`, or `expired`; consumed and expired are terminal. |
 
-The table stores no raw state, profile, account subject, access token, refresh token, ID token, CSRF token, or cookie secret. It retains hashes, IDs, and terminal rows as burn proof. Explicit sign-in-only purge is the sole documented exception; it does not delete link rows or related proof records.
+The table stores no raw state, profile, account subject, access token, refresh token, ID token, CSRF token, or cookie secret. It retains hashes, IDs, and terminal rows as burn proof. Explicit sign-in-only purge is the sole deletion exception for this table; it does not delete link rows or related proof records. Separate [guarded-session retention](coordinator-auth-session-retention.md) can delete only eligible session metadata and requires this transaction row to be absent.
 
 ## Internal store interface
 

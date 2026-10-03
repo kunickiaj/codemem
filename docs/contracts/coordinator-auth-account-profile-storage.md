@@ -64,6 +64,10 @@ const account = await store.readAuthSessionAccount(credentialHash, config);
 The returned session DTO is internal server metadata. Future handlers must not
 blindly serialize its private account references to browsers or other clients.
 Extracting the shared live-session guard changes no existing session behavior.
+If explicit [guarded-session retention](coordinator-auth-session-retention.md)
+later deletes a source session, a profile may retain its dangling source-session
+ID. It remains display-only; reads still require a current live session and
+configuration, and retention does not erase profiles or change authority.
 
 ## Revocation and privacy cleanup
 

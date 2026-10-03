@@ -7,6 +7,9 @@ import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
 import type { CoordinatorAuthLinkConfig } from "./coordinator-auth-link-contract.js";
 import {
+	AUTH_GUARDED_SIGNIN_PURGE_BATCH_MAX,
+	AUTH_GUARDED_SIGNIN_PURGE_GRACE_MS,
+	AUTH_GUARDED_SIGNIN_RECEIPT_PURGE_AGE_MS,
 	AUTH_LINK_REDEEM_WINDOW_MS,
 	AUTH_SESSION_MAX_LIVE_PER_LINK,
 	AUTH_SESSION_TTL_MS,
@@ -17,6 +20,8 @@ import {
 	type CoordinatorAuthSession,
 	type CoordinatorAuthSessionError,
 	type CoordinatorAuthSessionIssueResult,
+	type CoordinatorAuthSessionPurgeOptions,
+	type CoordinatorAuthSessionPurgeResult,
 	type CoordinatorAuthSessionScope,
 	type CoordinatorAuthSessionSignOutResult,
 	type CoordinatorAuthSessionStore,
@@ -63,6 +68,21 @@ function captureConfig(value: unknown): CoordinatorAuthLinkConfig | null {
 function captureScope(value: unknown): CoordinatorAuthSessionScope | null {
 	const s = capture(value, ["coordinatorId"]);
 	return s && isAuthControllerId(s.coordinatorId) ? { coordinatorId: s.coordinatorId } : null;
+}
+function capturePurgeLimit(value: unknown): number | null {
+	if (value === undefined) return AUTH_GUARDED_SIGNIN_PURGE_BATCH_MAX;
+	if (!value || typeof value !== "object") return null;
+	try {
+		if (Array.isArray(value)) return null;
+		const descriptor = Object.getOwnPropertyDescriptor(value, "limit");
+		if (!descriptor) return "limit" in value ? null : AUTH_GUARDED_SIGNIN_PURGE_BATCH_MAX;
+		if (!Object.hasOwn(descriptor, "value")) return null;
+		const limit: unknown = descriptor.value;
+		if (typeof limit !== "number" || !Number.isSafeInteger(limit)) return null;
+		return limit >= 1 && limit <= AUTH_GUARDED_SIGNIN_PURGE_BATCH_MAX ? limit : null;
+	} catch {
+		return null;
+	}
 }
 function captureBrowserConfig(value: unknown): CoordinatorAuthBrowserConfig | null {
 	const snapshot = capture(value, [
@@ -177,8 +197,8 @@ const CONSUMED_BROWSER_GUARD_SQL = `b.coordinator_id = ? AND b.browser_transacti
  AND b.nonce IS NULL AND b.pkce_verifier IS NULL AND b.claim_token IS NOT NULL
  AND b.issuer = ? AND b.auth_config_revision = ? AND b.redirect_uri = ?
  AND b.created_at_ms <= ? AND b.consumed_at_ms <= ? AND b.expires_at_ms > ?`;
-const CONSUMED_SIGNIN_RECEIPT_SQL = `INSERT INTO coordinator_auth_session_receipts (${RECEIPT_COLUMNS})
- SELECT b.coordinator_id, b.browser_transaction_hash, 'signin', NULL, l.link_id, ?, ?, ?
+const CONSUMED_SIGNIN_RECEIPT_SQL = `INSERT INTO coordinator_auth_session_receipts (${RECEIPT_COLUMNS}, purge_eligible)
+ SELECT b.coordinator_id, b.browser_transaction_hash, 'signin', NULL, l.link_id, ?, ?, ?, 1
  FROM coordinator_auth_browser_transactions b JOIN coordinator_auth_account_links l
  ON l.coordinator_id = b.coordinator_id AND l.issuer = b.issuer
  WHERE ${CONSUMED_BROWSER_GUARD_SQL} AND l.subject = ? AND l.revoked_at_ms IS NULL
@@ -208,6 +228,32 @@ const ISSUE_READ_SQL = `SELECT s.session_id, s.identity_id, s.link_id, s.issuer,
  AND t.state = 'session_redeemed' AND t.link_id = r.link_id AND t.browser_transaction_hash = r.browser_transaction_hash
  AND t.identity_id = s.identity_id AND t.issuer = s.issuer AND t.account_subject = s.subject)))`;
 
+const PURGE_GUARDED_SIGNIN_SESSIONS_SQL = `DELETE FROM coordinator_auth_sessions
+ WHERE coordinator_id = ? AND expires_at_ms <= ? AND session_id IN
+ (SELECT s.session_id FROM coordinator_auth_sessions s
+ WHERE s.coordinator_id = ? AND s.expires_at_ms <= ?
+ AND EXISTS (SELECT 1 FROM coordinator_auth_session_receipts r
+ WHERE r.coordinator_id = s.coordinator_id AND r.session_id = s.session_id
+ AND r.browser_transaction_hash = s.browser_transaction_hash AND r.link_id = s.link_id
+ AND r.auth_config_revision = s.auth_config_revision AND r.created_at_ms = s.created_at_ms
+ AND r.source = 'signin' AND r.attempt_id IS NULL AND r.purge_eligible = 1)
+ AND NOT EXISTS (SELECT 1 FROM coordinator_auth_browser_transactions b
+ WHERE b.coordinator_id = s.coordinator_id AND b.browser_transaction_hash = s.browser_transaction_hash)
+ ORDER BY s.expires_at_ms, s.session_id LIMIT ?)`;
+const PURGE_GUARDED_SIGNIN_RECEIPTS_SQL = `DELETE FROM coordinator_auth_session_receipts
+ WHERE coordinator_id = ? AND purge_eligible = 1 AND source = 'signin' AND attempt_id IS NULL
+ AND created_at_ms <= ? AND browser_transaction_hash IN
+ (SELECT r.browser_transaction_hash FROM coordinator_auth_session_receipts r
+ WHERE r.coordinator_id = ? AND r.purge_eligible = 1 AND r.source = 'signin'
+ AND r.attempt_id IS NULL AND r.created_at_ms <= ?
+ AND NOT EXISTS (SELECT 1 FROM coordinator_auth_browser_transactions b
+ WHERE b.coordinator_id = r.coordinator_id AND b.browser_transaction_hash = r.browser_transaction_hash)
+ AND NOT EXISTS (SELECT 1 FROM coordinator_auth_sessions s
+ WHERE s.coordinator_id = r.coordinator_id AND s.session_id = r.session_id)
+ AND NOT EXISTS (SELECT 1 FROM coordinator_auth_sessions s
+ WHERE s.coordinator_id = r.coordinator_id AND s.browser_transaction_hash = r.browser_transaction_hash)
+ ORDER BY r.created_at_ms, r.browser_transaction_hash LIMIT ?)`;
+
 /** Optional persistence only. Future callers authenticate browser/OIDC/CSRF/admin;
  * this capability creates no routes, actors, enrollment, role, or sync permission.
  */
@@ -218,6 +264,48 @@ export class AuthSessionOperations
 		private readonly backend: AuthLinkBackend,
 		private readonly clock: () => number = Date.now,
 	) {}
+	async purgeAuthGuardedSigninSessions(
+		scope: CoordinatorAuthSessionScope,
+		options?: CoordinatorAuthSessionPurgeOptions,
+	): Promise<CoordinatorAuthSessionPurgeResult> {
+		return this.purgeGuardedSigninMetadata(
+			scope,
+			options,
+			PURGE_GUARDED_SIGNIN_SESSIONS_SQL,
+			AUTH_GUARDED_SIGNIN_PURGE_GRACE_MS,
+		);
+	}
+	async purgeAuthGuardedSigninReceipts(
+		scope: CoordinatorAuthSessionScope,
+		options?: CoordinatorAuthSessionPurgeOptions,
+	): Promise<CoordinatorAuthSessionPurgeResult> {
+		return this.purgeGuardedSigninMetadata(
+			scope,
+			options,
+			PURGE_GUARDED_SIGNIN_RECEIPTS_SQL,
+			AUTH_GUARDED_SIGNIN_RECEIPT_PURGE_AGE_MS,
+		);
+	}
+	private async purgeGuardedSigninMetadata(
+		scope: CoordinatorAuthSessionScope,
+		options: CoordinatorAuthSessionPurgeOptions | undefined,
+		sql: string,
+		ageMs: number,
+	): Promise<CoordinatorAuthSessionPurgeResult> {
+		const s = captureScope(scope);
+		const limit = capturePurgeLimit(options);
+		if (!s || limit === null) return { kind: "rejected", error: "invalid_input" };
+		const cutoff = sessionNow(this.clock) - ageMs;
+		try {
+			const processedCount = await this.backend.run({
+				sql,
+				values: [s.coordinatorId, cutoff, s.coordinatorId, cutoff, limit],
+			});
+			return { kind: "purged", processedCount, more: processedCount === limit };
+		} catch {
+			throw new Error("auth_session_persistence_error");
+		}
+	}
 	private async first<T>(statement: AuthLinkStatement): Promise<T | null> {
 		try {
 			return await this.backend.first<T>(statement);

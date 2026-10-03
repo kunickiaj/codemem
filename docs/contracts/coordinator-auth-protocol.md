@@ -224,6 +224,10 @@ config revision, and the action's authorization. Session credentials are bearer
 secrets even though they are not Google tokens; never return them to the CLI,
 put them in URLs, or include them in polling, logs, or audit records. Replacing
 a session rotates its credential rather than adopting a caller-supplied value.
+
+Old eligible normal-sign-in session rows and receipts may later be removed only
+by the separate trusted explicit [guarded-session retention capability](coordinator-auth-session-retention.md). It creates no logout/revoke hook or public handler; browser transaction, cookie, OIDC/JWS, CSRF, and Origin requirements are unchanged.
+
 Only configured-admin authentication can revoke an account link in this slice,
 with a redacted audit receipt; user sessions cannot self-revoke the link yet.
 Revocation denies every related session immediately on its next request and keeps

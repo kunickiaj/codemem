@@ -419,7 +419,7 @@ function registerReplay(test: Test) {
 		expect(protectedData(f)).toEqual(before);
 		expect(sessionRows(f).map((rows) => rows.length)).toEqual([1, 1]);
 	});
-	test("retained receipt burns a purged hash forever while fresh hashes permit state and binder reuse", async ({
+	test("purged hash stays burned while receipt retained; fresh hashes permit state and binder reuse", async ({
 		fixture: f,
 	}) => {
 		// Arrange

@@ -142,6 +142,7 @@ function registerIssuance(test: SessionTest) {
 					session_id: result.session.sessionId,
 					auth_config_revision: f.cfg.revision,
 					created_at_ms: f.now,
+					purge_eligible: 1,
 				},
 			],
 			[

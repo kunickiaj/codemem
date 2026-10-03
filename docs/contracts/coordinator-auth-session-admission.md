@@ -96,6 +96,8 @@ first redeemed session counts when a later normal sign-in uses this seam, but
 its own redemption behavior is unchanged. The legacy
 `signInWithAuthAccount` helper remains a trusted internal compatibility method,
 unchanged and uncapped; callers of it do not receive a global session budget.
+It must not be a public handler path or nominate old hashes after guarded-record
+cleanup; see the [retention contract](coordinator-auth-session-retention.md).
 There is no request-driven or configuration option for this limit.
 
 ## Storage and migration
@@ -114,10 +116,11 @@ transaction table; this new seam requires that table and its migrations.
 
 ## Remaining gates
 
-There is no session, receipt, or transaction purge here. Sign-in retained-capacity
-recovery and readiness gates remain pending, including the retained 4,096
-sign-in-transaction limit. Upstream per-client rate limiting is a deployment
-requirement, not an accepted risk.
+Separate explicit cleanup can delete only aged, new guarded normal-sign-in
+sessions and receipts; it neither schedules work nor changes admission's
+10-session live-row rule. See the [retention contract](coordinator-auth-session-retention.md).
+The retained 4,096 sign-in-transaction limit and upstream per-client rate
+limiting remain separate requirements.
 
 Future handler work must still validate CSRF, cookies, OIDC/JWS, and browser
 behavior, including IPv4 and IPv6 loopback handling. It must not treat this

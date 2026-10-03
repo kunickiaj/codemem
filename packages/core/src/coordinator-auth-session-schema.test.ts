@@ -38,6 +38,7 @@ function schema(db: SqliteDatabase, table: (typeof SESSION_TABLES)[number]) {
 				.get(table) as string
 		)
 			.replace(/\s+/gu, " ")
+			.replace(/\s*,\s*/gu, ",")
 			.trim(),
 		columns: db.pragma(`table_info(${table})`),
 		indexes: indexes
@@ -129,6 +130,15 @@ function registerParity(backend: Backend) {
 			db.exec(migration);
 			db.exec(indexMigration);
 			db.exec(indexMigration);
+			db.exec(
+				readFileSync(
+					join(
+						import.meta.dirname,
+						"../../cloudflare-coordinator-worker/migrations/0024_add_auth_guarded_signin_retention.sql",
+					),
+					"utf8",
+				),
+			);
 			const migrated = SESSION_TABLES.map((table) => schema(db, table));
 			for (const table of SESSION_TABLES) db.exec(`DROP TABLE ${table}`);
 			db.exec(AUTH_SESSION_SCHEMA_SQL);
@@ -251,6 +261,11 @@ function registerChecks(backend: Backend) {
 		{ created_at_ms: -1 },
 		{ created_at_ms: 0.5 },
 		{ created_at_ms: Number.MAX_SAFE_INTEGER - SESSION_TTL + 1 },
+		{ purge_eligible: null },
+		{ purge_eligible: 0.5 },
+		{ purge_eligible: "invalid" },
+		{ purge_eligible: 2 },
+		{ purge_eligible: 1, source: "link_redeem", attempt_id: "attempt-a" },
 	])("rejects invalid receipt storage %j", (changes) => {
 		// Arrange
 		const db = setup(backend);
@@ -258,7 +273,11 @@ function registerChecks(backend: Backend) {
 			// Act
 			const act = () => insertReceipt(db, changes);
 			// Assert
-			expect(act).toThrow(/CHECK constraint failed/);
+			if ("purge_eligible" in changes && changes.purge_eligible === null) {
+				expect(act).toThrow(/NOT NULL constraint failed.*purge_eligible/u);
+			} else {
+				expect(act).toThrow(/CHECK constraint failed/);
+			}
 			expect(db.prepare("SELECT * FROM coordinator_auth_session_receipts").all()).toEqual([]);
 		} finally {
 			db.close();

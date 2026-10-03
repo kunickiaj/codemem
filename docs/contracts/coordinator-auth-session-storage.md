@@ -53,6 +53,7 @@ Source candidate: `packages/core/src/coordinator-auth-session.ts`.
 | `readAuthSession(hash, cfg)` | Returns the DTO only while the session, link, and configuration remain live. |
 | `signOutAuthSession(hash, { coordinatorId })` | Idempotently revokes only the targeted session. |
 | `revokeAuthAccountLink({ linkId }, { coordinatorId })` | Future configured-admin-only operation; its caller must already be authenticated. |
+| `purgeAuthGuardedSigninSessions` / `purgeAuthGuardedSigninReceipts` | Trusted, explicit old guarded-normal-sign-in metadata cleanup; see the [retention contract](coordinator-auth-session-retention.md). |
 
 Identity comes from the active exact issuer/subject link, never email or a
 default actor. An unknown account gets no session. A changed configuration
@@ -111,13 +112,13 @@ Every later protected use must call the live session lookup.
 Migration `0018` adds two initially empty tables:
 `coordinator_auth_session_receipts` and `coordinator_auth_sessions`. It remains
 unchanged: no change to 0017, backfill, or foreign keys. Migration `0022` adds
-the session-admission index; the current `AUTH_SESSION_SCHEMA_SQL` and fresh
-Worker `schema.sql` include that index too. See the
+the session-admission index. Migration `0024` appends a default-0 receipt
+eligibility column and retention indexes; the current `AUTH_SESSION_SCHEMA_SQL`
+and fresh Worker `schema.sql` include them. See the
 [admission contract](coordinator-auth-session-admission.md).
 
-Cleanup and retention work gates public routes. Until it is complete,
-this candidate does not expose browser-session routes or claim retention
-behavior.
+The retention capability is explicit only and does not expose browser-session
+routes. Its narrow deletion rules are in the [retention contract](coordinator-auth-session-retention.md).
 
 Required parity tests cover the exact lifetime boundary, config rotation,
 link-revocation denial, original-browser/two-minute redemption guards, replay,
