@@ -14,6 +14,10 @@ CodeMem uses one shared semantic version stream across its npm packages.
 - npm packages publish the same `X.Y.Z`.
 - GitHub Release notes are shared per version.
 
+Keep notable changes in the root [CHANGELOG.md](../CHANGELOG.md), following Keep a Changelog: collect pending entries under `Unreleased`, group them by Added, Changed, Deprecated, Removed, Fixed, or Security, and move them under a dated version heading in the release PR. Omit empty categories, link versions to tag comparisons, and include compatibility or migration details when needed. Do not create per-version release-note documents or copy release announcements into the changelog.
+
+GitHub release announcements remain separate. The release workflow uses GitHub's generated PR list, contributor credits, and comparison link, configured by `.github/release.yml`; a human summary can be added to the GitHub release after publication. The comparison link shows the changes between tags, not a curated changelog. Retrying an older tag does not require changelog tooling in that tagged checkout.
+
 ## Release workflow
 
 Version bumps are prepared on a release branch and touch these files:
