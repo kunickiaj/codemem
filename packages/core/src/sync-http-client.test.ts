@@ -122,6 +122,140 @@ describe("requestJson", () => {
 		const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
 		expect(call[1].headers.Authorization).toBe("Bearer tok");
 	});
+});
+
+describe("requestJson direct-peer connection policy", () => {
+	const originalFetch = globalThis.fetch;
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+	});
+
+	it.each(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"])(
+		"closes recipient-bound direct-peer %s connections",
+		async (method) => {
+			// Arrange: recipient binding, not the HTTP method, selects isolation.
+			const fetchMock = vi.fn().mockResolvedValue(new Response("{}"));
+			globalThis.fetch = fetchMock;
+
+			// Act
+			await requestJson(method, "http://localhost:8080/sync", {
+				headers: { "X-Codemem-Recipient": "peer-b" },
+			});
+
+			// Assert
+			expect(new Headers(fetchMock.mock.calls[0][1].headers).get("connection")).toBe("close");
+		},
+	);
+
+	it.each<Record<string, string>>([
+		{ "x-codemem-recipient": "peer-b", connection: "keep-alive" },
+		{ "X-CODEMEM-RECIPIENT": "peer-b", CONNECTION: "keep-alive" },
+		{
+			"x-CoDeMeM-ReCiPiEnT": "peer-b",
+			Connection: "keep-alive",
+			cOnNeCtIoN: "keep-alive",
+		},
+	])("overrides all caller Connection spellings for direct peers: %j", async (headers) => {
+		// Arrange: duplicate spellings must not become a combined keep-alive/close value.
+		const fetchMock = vi.fn().mockResolvedValue(new Response("{}"));
+		globalThis.fetch = fetchMock;
+		const originalHeaders = { ...headers };
+
+		// Act
+		await requestJson("POST", "http://localhost:8080/sync", { headers });
+
+		// Assert
+		const sentHeaders = fetchMock.mock.calls[0][1].headers as Record<string, string>;
+		expect(
+			Object.entries(sentHeaders)
+				.filter(([name]) => name.toLowerCase() === "connection")
+				.map(([, value]) => value),
+		).toEqual(["close"]);
+		expect(headers).toEqual(originalHeaders);
+	});
+
+	it.each([
+		["ordinary", {}],
+		["coordinator", { "X-Opencode-Signature": "v2:synthetic-signature" }],
+		["admin", { Authorization: "Bearer synthetic-token" }],
+	])("preserves %s connection policy without a recipient marker", async (_kind, authHeaders) => {
+		// Arrange
+		const fetchMock = vi.fn().mockImplementation(async () => new Response("{}"));
+		globalThis.fetch = fetchMock;
+		const headers = { ...authHeaders, cOnNeCtIoN: "keep-alive" };
+
+		// Act
+		await requestJson("GET", "http://localhost:8080/status", { headers });
+		await requestJson("POST", "http://localhost:8080/status", { headers: authHeaders });
+
+		// Assert: neither explicit keep-alive nor the absent-header default changes.
+		expect(fetchMock.mock.calls[0][1].headers).toEqual({ Accept: "application/json", ...headers });
+		expect(fetchMock.mock.calls[1][1].headers).toEqual({
+			Accept: "application/json",
+			...authHeaders,
+		});
+	});
+
+	it("preserves direct-peer authentication headers and exact supplied body bytes", async () => {
+		// Arrange: noncanonical whitespace detects accidental JSON reserialization.
+		const fetchMock = vi.fn().mockResolvedValue(new Response('{"ok":true}'));
+		globalThis.fetch = fetchMock;
+		const bodyBytes = new TextEncoder().encode('{ "ops": [], "label": "sample" }\n');
+		const originalBytes = bodyBytes.slice();
+		const headers = {
+			"X-Codemem-Recipient": "peer-b",
+			"X-Codemem-Signature": "v3:synthetic-signature",
+			"X-Opencode-Signature": "v2:synthetic-signature",
+			"X-Opencode-Timestamp": "1700000000",
+			"X-Opencode-Nonce": "synthetic-nonce",
+		};
+
+		// Act
+		const result = await requestJson("POST", "http://localhost:8080/sync", {
+			headers,
+			body: { ignored: true },
+			bodyBytes,
+		});
+
+		// Assert
+		expect(result).toEqual([200, { ok: true }]);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		const sent = fetchMock.mock.calls[0][1];
+		expect(sent.headers).toMatchObject({
+			...headers,
+			"Content-Type": "application/json",
+			"Content-Length": String(bodyBytes.byteLength),
+		});
+		expect(sent.body).toBe(bodyBytes);
+		expect(bodyBytes).toEqual(originalBytes);
+	});
+
+	it("propagates a failed direct-peer POST without blindly retrying", async () => {
+		// Arrange: the receiver may already have applied a POST when transport fails.
+		const failure = new TypeError("synthetic socket failure");
+		const fetchMock = vi.fn().mockRejectedValue(failure);
+		globalThis.fetch = fetchMock;
+
+		// Act
+		const result = requestJson("POST", "http://localhost:8080/sync", {
+			headers: { "X-Codemem-Recipient": "peer-b" },
+			body: { ops: [] },
+		});
+
+		// Assert
+		await expect(result).rejects.toBe(failure);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("requestJson response limits and timeouts", () => {
+	const originalFetch = globalThis.fetch;
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+		vi.restoreAllMocks();
+	});
 
 	it("rounds fractional timeout seconds to integer milliseconds", async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue({

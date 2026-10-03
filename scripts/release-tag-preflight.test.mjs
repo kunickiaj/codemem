@@ -39,7 +39,8 @@ function makeRepo() {
 	runGit(root, "init", "--initial-branch=main", repo);
 	configureAuthor(repo);
 	write(join(repo, "README.md"), "release test\n");
-	runGit(repo, "add", "README.md");
+	write(join(repo, "packages/core/package.json"), '{"version":"0.46.3"}\n');
+	runGit(repo, "add", "README.md", "packages/core/package.json");
 	runGit(repo, "commit", "-m", "initial");
 	runGit(repo, "remote", "add", "origin", remote);
 	runGit(repo, "push", "--set-upstream", "origin", "main");
@@ -59,11 +60,11 @@ function advanceMain({ remote, root }, content = "advanced main\n") {
 }
 
 function createReleaseBranch(repo) {
-	runGit(repo, "checkout", "-b", "release/0.41.0");
+	runGit(repo, "checkout", "-b", "release/0.46");
 	write(join(repo, "release.txt"), "release branch only\n");
 	runGit(repo, "add", "release.txt");
 	runGit(repo, "commit", "-m", "release branch commit");
-	runGit(repo, "push", "--set-upstream", "origin", "release/0.41.0");
+	runGit(repo, "push", "--set-upstream", "origin", "release/0.46");
 }
 
 function runPreflight(repo, env = {}) {
@@ -95,13 +96,25 @@ describe("release tag preflight", () => {
 		assert.match(result.stdout, /passed .* on main/);
 	});
 
-	it("rejects a local release branch commit", () => {
+	it("accepts a clean maintenance branch at its pushed head", () => {
 		const { repo } = makeRepo();
 		createReleaseBranch(repo);
-		const result = runPreflight(repo, { RELEASE_EXPECTED_BRANCH: "release/0.41.0" });
+		const result = runPreflight(repo);
+
+		assert.equal(result.status, 0, result.stderr);
+		assert.match(result.stdout, /passed .* on release\/0\.46/);
+	});
+
+	it("rejects an unpushed maintenance commit", () => {
+		const { repo } = makeRepo();
+		createReleaseBranch(repo);
+		write(join(repo, "release.txt"), "unpublished release commit\n");
+		runGit(repo, "add", "release.txt");
+		runGit(repo, "commit", "-m", "unpublished");
+		const result = runPreflight(repo);
 
 		assert.equal(result.status, 1);
-		assert.match(result.stderr, /not origin\/main HEAD/);
+		assert.match(result.stderr, /not origin\/release\/0\.46 HEAD/);
 	});
 
 	it("rejects a stale local main checkout", () => {
@@ -138,16 +151,37 @@ describe("release tag preflight", () => {
 		assert.match(result.stdout, /passed .* on main/);
 	});
 
-	it("rejects a release-only commit in CI", () => {
+	it("accepts the maintenance branch head in CI", () => {
 		const { repo } = makeRepo();
 		createReleaseBranch(repo);
 		const result = runPreflight(repo, {
 			GITHUB_ACTIONS: "1",
-			RELEASE_EXPECTED_BRANCH: "release/0.41.0",
 			RELEASE_TAG_COMMIT: runGit(repo, "rev-parse", "HEAD"),
 		});
 
+		assert.equal(result.status, 0, result.stderr);
+		assert.match(result.stdout, /passed .* on release\/0\.46/);
+	});
+
+	it("rejects a stale maintenance commit in CI", () => {
+		const { repo } = makeRepo();
+		createReleaseBranch(repo);
+		const oldHead = runGit(repo, "rev-parse", "HEAD");
+		write(join(repo, "release.txt"), "new head\n");
+		runGit(repo, "add", "release.txt");
+		runGit(repo, "commit", "-m", "advance release");
+		runGit(repo, "push", "origin", "release/0.46");
+		const result = runPreflight(repo, { GITHUB_ACTIONS: "1", RELEASE_TAG_COMMIT: oldHead });
+
 		assert.equal(result.status, 1);
-		assert.match(result.stderr, /not reachable from origin\/main/);
+		assert.match(result.stderr, /neither on origin\/main nor the head/);
+	});
+
+	it("rejects a mismatched release tag", () => {
+		const { repo } = makeRepo();
+		const result = runPreflight(repo, { RELEASE_TAG: "v0.47.0" });
+
+		assert.equal(result.status, 1);
+		assert.match(result.stderr, /does not match/);
 	});
 });

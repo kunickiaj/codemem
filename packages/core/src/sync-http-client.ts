@@ -54,6 +54,22 @@ export interface RequestJsonOptions {
 	maxResponseBytes?: number;
 }
 
+function isolateDirectPeerConnection(headers: Record<string, string>): Record<string, string> {
+	const isDirectPeer = Object.keys(headers).some(
+		(name) => name.toLowerCase() === "x-codemem-recipient",
+	);
+	if (!isDirectPeer) return headers;
+
+	// Sync preparation can block expiry callbacks past a peer's idle deadline.
+	// Close reads too, so a later write cannot reuse their expired connection.
+	return {
+		...Object.fromEntries(
+			Object.entries(headers).filter(([name]) => name.toLowerCase() !== "connection"),
+		),
+		Connection: "close",
+	};
+}
+
 /**
  * Send an HTTP request and parse the JSON response.
  *
@@ -86,7 +102,7 @@ export async function requestJson(
 
 	const response = await fetch(url, {
 		method,
-		headers: requestHeaders,
+		headers: isolateDirectPeerConnection(requestHeaders),
 		body: requestBody,
 		signal: AbortSignal.timeout(Math.round(timeoutS * 1_000)),
 	});
