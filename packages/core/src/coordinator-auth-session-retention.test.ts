@@ -869,9 +869,47 @@ it("SQLite checks old receipt columns while holding an immediate write lock", ()
 });
 const retentionReadHint =
 	"SELECT 1 FROM pragma_table_info('coordinator_auth_session_receipts') WHERE name = 'purge_eligible'";
-const explicitWriterTransaction = /\bBEGIN\s+(?:IMMEDIATE|EXCLUSIVE)\b/iu;
-function withoutSqlComments(sql: string) {
-	return sql.replace(/\/\*[\s\S]*?\*\/|--[^\n]*/gu, " ");
+function skipQuoted(sql: string, start: number) {
+	const closing = sql[start] === "[" ? "]" : sql[start];
+	let index = start + 1;
+	while (index < sql.length) {
+		if (sql[index++] !== closing) continue;
+		if (sql[index] !== closing) return index;
+		index++;
+	}
+	return index;
+}
+function skipSqlTrivia(sql: string, start: number) {
+	const trivia = /^(?:\s+|--[^\n]*(?:\n|$)|\/\*[\s\S]*?(?:\*\/|$))/u.exec(sql.slice(start));
+	return start + (trivia?.[0].length ?? 0);
+}
+// Lexical statement-start detection only, not SQL grammar or global lock-free proof.
+function hasRawTransactionBegin(sql: string) {
+	let statementStart = true;
+	let index = 0;
+	while (index < sql.length) {
+		const afterTrivia = skipSqlTrivia(sql, index);
+		if (afterTrivia !== index) {
+			index = afterTrivia;
+			continue;
+		}
+		const character = sql[index];
+		if (character === ";") {
+			statementStart = true;
+			index++;
+			continue;
+		}
+		if ("'\"`[".includes(character)) {
+			index = skipQuoted(sql, index);
+			statementStart = false;
+			continue;
+		}
+		const token = /^[A-Za-z_\P{ASCII}][A-Za-z0-9_$\P{ASCII}]*/u.exec(sql.slice(index))?.[0];
+		if (statementStart && token?.toUpperCase() === "BEGIN") return true;
+		statementStart = false;
+		index += token?.length ?? 1;
+	}
+	return false;
 }
 function observeWarmStartup(probe: Database.Database) {
 	const sqlCalls: string[] = [];
@@ -915,25 +953,43 @@ function observeWarmStartup(probe: Database.Database) {
 		},
 	};
 }
-it.each(["exec", "prepare"] as const)(
-	"warm startup observation detects raw %s writer transactions without the transaction API",
-	(method) => {
+const transactionBeginCases = [
+	"BEGIN",
+	"BEGIN TRANSACTION",
+	"BEGIN DEFERRED",
+	"BEGIN DEFERRED TRANSACTION",
+	"BEGIN IMMEDIATE",
+	"BEGIN IMMEDIATE TRANSACTION",
+	"BEGIN EXCLUSIVE",
+	"BEGIN EXCLUSIVE TRANSACTION",
+].flatMap((begin) => (["exec", "prepare"] as const).map((method) => ({ begin, method })));
+it.each(transactionBeginCases)(
+	"warm startup observation detects raw $method $begin without the transaction API",
+	({ method, begin }) => {
 		// Arrange: a test-local counterexample must not evade the startup observer.
 		const probe = new Database(":memory:");
 		const db = new Database(":memory:");
+		db.exec(
+			"CREATE TABLE transaction_probe (value INTEGER); INSERT INTO transaction_probe VALUES (0)",
+		);
 		const trace = observeWarmStartup(probe);
 		try {
-			// Act: exec closes the lock in the same call; prepare uses Statement.run.
+			// Act: even deferred BEGIN takes a writer lock through the synthetic UPDATE.
+			const commentedBegin = ` /* leading comment */ ${begin.toLowerCase().replace("begin", "BeGiN /* mode */")}`;
 			if (method === "exec")
-				db.exec(" SELECT 1; -- preceding statement\nBEGIN /* lock */ IMMEDIATE; COMMIT");
+				db.exec(
+					` SELECT 1; -- preceding statement\n${commentedBegin}; UPDATE transaction_probe SET value=1; COMMIT`,
+				);
 			else {
-				db.prepare(" /* leading comment */ BEGIN EXCLUSIVE").run();
+				db.prepare(commentedBegin).run();
+				db.prepare("UPDATE transaction_probe SET value=1").run();
 				db.prepare("COMMIT").run();
 			}
 			// Assert: the hint-time lock probe alone could miss both counterexamples.
 			expect(db.inTransaction).toBe(false);
+			expect(db.prepare("SELECT value FROM transaction_probe").pluck().get()).toBe(1);
 			expect(trace.transactionSpy).not.toHaveBeenCalled();
-			expect(trace.sqlCalls.map(withoutSqlComments).join("\n")).toMatch(explicitWriterTransaction);
+			expect(trace.sqlCalls.some(hasRawTransactionBegin)).toBe(true);
 		} finally {
 			trace.restore();
 			if (db.inTransaction) db.exec("ROLLBACK");
@@ -942,7 +998,81 @@ it.each(["exec", "prepare"] as const)(
 		}
 	},
 );
-it("SQLite warm receipt upgrade uses the read hint without creating an explicit writer transaction", () => {
+it.each([
+	"BEGINNING",
+	"BEGIN_DEFERRED",
+	"BEGIN$mode",
+	"BEGIN\u0301",
+	"'BEGIN'",
+	'"BEGIN"',
+	"`BEGIN`",
+	"[BEGIN]",
+])("raw transaction detector requires an unquoted exact BEGIN token, not %s", (token) => {
+	// Arrange: token fragments exercise the lexer, not complete SQL grammar.
+	const sql = ` /* leading comment */ ${token}`;
+	// Act
+	const detected = hasRawTransactionBegin(sql);
+	// Assert
+	expect(detected).toBe(false);
+});
+it.each([
+	"SELECT 'BEGIN DEFERRED'",
+	"SELECT 1; -- BEGIN IMMEDIATE\nSELECT 2",
+	"/* BEGIN EXCLUSIVE */ SELECT 1",
+	"CREATE TRIGGER fixture AFTER UPDATE ON transaction_probe BEGIN SELECT 1; END",
+	"SELECT ';BEGIN DEFERRED;'",
+	"SELECT '--;BEGIN DEFERRED;'",
+	"SELECT '/*;BEGIN DEFERRED;*/'",
+	"SELECT 'escaped '';BEGIN DEFERRED;'",
+	'SELECT 1 AS "escaped "";BEGIN DEFERRED;"',
+	"SELECT 1 AS `escaped ``;BEGIN DEFERRED;`",
+	"SELECT 1 AS [;BEGIN DEFERRED;]",
+])("raw transaction detector ignores non-transaction BEGIN in %s", (sql) => {
+	// Arrange
+	const db = new Database(":memory:");
+	db.exec("CREATE TABLE transaction_probe (value INTEGER)");
+	try {
+		// Act: SQLite accepts the literal, identifier, comment or trigger syntax.
+		db.exec(sql);
+		const detected = hasRawTransactionBegin(sql);
+		// Assert
+		expect(detected).toBe(false);
+		expect(db.inTransaction).toBe(false);
+	} finally {
+		db.close();
+	}
+});
+it.each([
+	'SELECT "--not comment" FROM transaction_probe;',
+	"SELECT '/*not comment*/';",
+	"SELECT 'escaped ''--not comment';",
+	'SELECT 1 AS "escaped ""/*not comment*/";',
+	"SELECT 1 AS `escaped ``--not comment`;",
+	"SELECT 1 AS [/*not comment*/];",
+])("raw transaction observation finds BEGIN after quoted comment markers in %s", (prefix) => {
+	// Arrange: setup precedes observation and all connections are test-owned.
+	const db = new Database(":memory:");
+	const probe = new Database(":memory:");
+	db.exec(
+		'CREATE TABLE transaction_probe ("--not comment" INTEGER); INSERT INTO transaction_probe VALUES (0)',
+	);
+	const trace = observeWarmStartup(probe);
+	try {
+		// Act: quoted markers cannot hide the real transaction that follows.
+		db.exec(`${prefix} BEGIN DEFERRED; UPDATE transaction_probe SET "--not comment"=1; COMMIT`);
+		// Assert
+		expect(trace.sqlCalls.some(hasRawTransactionBegin)).toBe(true);
+		expect(trace.transactionSpy).not.toHaveBeenCalled();
+		expect(db.inTransaction).toBe(false);
+		expect(db.prepare('SELECT "--not comment" FROM transaction_probe').pluck().get()).toBe(1);
+	} finally {
+		trace.restore();
+		if (db.inTransaction) db.exec("ROLLBACK");
+		db.close();
+		probe.close();
+	}
+});
+it("SQLite warm receipt upgrade uses the read hint without invoking transaction APIs or raw BEGIN", () => {
 	// Arrange: cold startup performs the upgrade before transaction instrumentation.
 	const directory = mkdtempSync(join(tmpdir(), "codemem-retention-warm-"));
 	const path = join(directory, "fixture.sqlite");
@@ -969,9 +1099,7 @@ it("SQLite warm receipt upgrade uses the read hint without creating an explicit 
 			"PRAGMA table_info(coordinator_auth_session_receipts)",
 		);
 		expect(trace.transactionSpy).not.toHaveBeenCalled();
-		expect(trace.sqlCalls.map(withoutSqlComments).join("\n")).not.toMatch(
-			explicitWriterTransaction,
-		);
+		expect(trace.sqlCalls.some(hasRawTransactionBegin)).toBe(false);
 		expect(trace.lockErrors).toEqual([null]);
 		expect(probe.inTransaction).toBe(false);
 		expect(warm.prepare(`SELECT * FROM ${RECEIPTS}`).all()).toEqual(before);
