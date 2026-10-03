@@ -1,7 +1,7 @@
 # Coordinator browser CSRF tokens
 
-**Status:** Reviewed, user-approved helper capability. It is unmounted and not
-exported from a package entrypoint.
+**Status:** Reviewed helper capability, including the `start` purpose.
+It is unmounted and not exported from a package entrypoint.
 
 ## Purpose and boundary
 `packages/core/src/coordinator-browser-csrf.ts` issues opaque CSRF tokens bound to a browser cookie, purpose, and immutable coordinator scope, and verifies them.
@@ -14,7 +14,8 @@ const valid = await verifyBrowserCsrfToken(key, cookie.secret, "session", scope,
 ```
 
 `valid` only means the token MAC matches these inputs. A protected handler also
-needs a live session/transaction lookup and matching binder, plus an explicit `POST` Origin check before authorizing an action.
+needs a live session/transaction lookup and matching binder, plus an explicit
+`POST` Origin check before authorizing an action.
 
 ## Source API
 | API | Result or rule |
@@ -52,8 +53,8 @@ The source accepts only an exact origin string, with no credentials or controls.
 64 lowercase hexadecimal characters. Values are read as own data before crypto;
 accessors, inherited values, and invalid handles fail closed. Proxy reflection
 traps may run during inspection; their failures become the fixed invalid-input
-error rather than exposing their cause. The UTF-8 message is
-JSON for this fixed array, in this order:
+error rather than exposing their cause. The UTF-8 message is JSON for this fixed
+array, in this order:
 
 ```ts
 [
@@ -62,9 +63,10 @@ JSON for this fixed array, in this order:
 ]
 ```
 
-`purpose` is exactly `"transaction"` or `"session"`. `encodedCookie` and
-`encodedNonce` are canonical 43-character base64url encodings of 32 bytes.
-The format is local policy; it is not presented as an OWASP-prescribed JSON form.
+`purpose` is exactly `"start"`, `"transaction"`, or `"session"`.
+`encodedCookie` and `encodedNonce` are canonical 43-character base64url
+encodings of 32 bytes. The format is local policy; it is not presented as an
+OWASP-prescribed JSON form.
 
 The message, cookie value, cookie hash, internal session ID, and key are never
 returned or logged. The token contains only MAC bytes and a deliberately public
@@ -86,16 +88,32 @@ value to 86 characters and 64 decoded bytes before Web Crypto verifies the first
 constant-time guarantee, and this contract makes no such claim.
 
 Tokens are per-render fresh, but are not single-use. An older MAC remains
-verifiable for the same cookie, scope, and key, so browser Back does not inherently
-fail. A handler may accept it only while the corresponding session or transaction
-is live. There is no timestamp, CSRF database field, or per-request state;
-clock changes do not alter this helper's MAC verification result.
+verifiable for the same cookie, purpose, scope, and key, so browser Back does not
+inherently fail. A handler may accept it only while the corresponding session or
+transaction is live. There is no timestamp, CSRF database field, or per-request
+state; clock changes do not alter this helper's MAC verification result.
+
+## Start-purpose use and promotion
+
+`start` binds sign-in-start form transport only. No account binding,
+timestamp, durable start record, or authenticated-issuance evidence exists yet;
+an arbitrary helper-issued or parsed-cookie start token is not an authentication
+proof. It grants no session, identity, role, or Project access.
+
+The purpose is signed in the existing message. Therefore a token issued with a
+start secret and `"start"` purpose cannot validate against the same bytes after
+promotion with `"transaction"` purpose. The original opaque secret remains a
+start handle; promotion does not create a transaction handle.
 
 ## Integration gates
 A valid MAC can be made for an attacker-owned cookie with this helper. It is not
 an account proof, user proof, or authorization decision. Future handlers must
-look up and bind the original live cookie/session or transaction after MAC
-verification, then enforce their explicit Origin policy.
+look up and bind the original live session or transaction after MAC verification,
+and require their explicit Origin policy. For `start`, no live start row exists:
+the handler must verify Origin and the start-purpose MAC, refuse an existing
+active ceremony, and commit durable unique-binder admission before appending a
+promoted transaction header. See
+[Start issue and promotion](coordinator-browser-credential.md#start-issue-and-promotion).
 
 This helper does not read HTTP requests, validate Origin or Referer, provide an
 Origin fallback, or make a read-only standalone check safe. A future handler

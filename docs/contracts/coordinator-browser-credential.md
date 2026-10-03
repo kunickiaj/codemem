@@ -1,8 +1,9 @@
 # Coordinator browser credentials
 
-**Status:** Reviewed helper capability; not exported from a package entrypoint.
-Browser routes, stores, configuration, provider setup,
-network access, and live keys remain outside this slice.
+**Status:** Reviewed helper capability, including `start` and same-value promotion.
+Not exported from a package entrypoint.
+Browser routes, stores, configuration, provider setup, network access, and live
+keys remain outside this slice.
 
 ## Purpose and boundary
 
@@ -16,22 +17,54 @@ const issued = await issueBrowserCookie("transaction");
 response.headers.append("Set-Cookie", issued.setCookie);
 ```
 
-Append `setCookie` only after the durable write commits. `append`, rather than
-`set`, preserves other cookies. Every issue call generates a fresh credential;
-clients cannot choose one.
+Append a transaction or session `setCookie` only after its durable write commits.
+`append`, rather than `set`, preserves other cookies. Every issue call generates
+a fresh credential; clients cannot choose one.
 
 ## Source API
 
 | API | Result or rule |
 | --- | --- |
-| `issueBrowserCookie(kind)` | Async `{ secret, cookieHash, setCookie }`. The hash is 64 lowercase hex characters. |
+| `issueBrowserCookie(kind)` | Async `{ secret, cookieHash, setCookie }`. The hash is 64 lowercase hex characters. Every call, including `start`, uses fresh entropy. |
 | `readBrowserCookie(cookieHeader, kind)` | Async `absent`, `invalid`, or `present` with an opaque secret and hash. Accept a native `request.headers.get("Cookie")` string, not a `Headers` object. |
 | `clearBrowserCookie(kind)` | A `Set-Cookie` string with an empty value and `Max-Age=0`. |
 | `browserCookieValue(secret, expectedKind)` | Internal-only encoded-value accessor for later server-key MAC input. |
+| `reissueStartCookieAsTransaction(secret)` | Synchronously returns a transaction `Set-Cookie` header using the same start value. It accepts only an opaque start handle, issued or parsed by this module. |
 
 Invalid kinds and unusable, forged, spread, deserialized, or wrong-kind secret
 handles throw the fixed `auth_browser_credential_invalid_input` error. Entropy
 and digest failures throw fixed errors without a cause or private exception.
+
+## Start issue and promotion
+
+```ts
+const start = await issueBrowserCookie("start");
+// A start GET may append start.setCookie before any durable transaction exists.
+
+// Only after POST Origin + explicit CSRF-MAC gates and durable unique-binder admission:
+response.headers.append("Set-Cookie", reissueStartCookieAsTransaction(start.secret));
+// The caller clears the start cookie separately after its authorized commit.
+```
+
+The helper returns only the transaction header; the caller appends it after the
+durable start commit. It uses the same canonical 43-character value, consumes no
+entropy, leaves the original handle start-kind, performs no internal burn, and
+is not a one-shot, freshness, or authorization proof. Repeated header generation
+is permitted.
+Later admission must use its durable unique cookie/binder binding only after the
+current handler's `POST` Origin and explicit CSRF-MAC checks, and reject a new
+active ceremony. The pre-database start GET must not replace an existing durable
+transaction.
+
+The store's unique binder excludes duplicate admission while its transaction row
+is retained. This is not a permanent issuance receipt: approved retention can
+later remove that row. The helper proves neither the cookie's birth time nor
+that the original response reached the browser.
+
+Promotion deliberately does not rotate the credential: anyone who knows the
+start value also knows the promoted transaction value. The future browser flow
+requires fresh server issuance and browser enforcement of the `__Host-` cookie
+rules; those browser assumptions still need dogfood verification.
 
 ## Credential and cookie format
 
@@ -42,13 +75,15 @@ its JSON form is `{}` and it cannot recreate access to the underlying value.
 
 | Kind | Name | Lifetime |
 | --- | --- | --- |
+| `start` | `__Host-codemem-auth-start` | `AUTH_BROWSER_TXN_TTL_MS` / 600 seconds |
 | `transaction` | `__Host-codemem-auth-transaction` | `AUTH_BROWSER_TXN_TTL_MS` / 600 seconds |
 | `session` | `__Host-codemem-session` | `AUTH_SESSION_TTL_MS` / 28,800 seconds |
 
-Issue and clear strings use `Path=/; Secure; HttpOnly; SameSite=Lax` with no
-`Domain`. The `__Host-` prefix and flags are header declarations for Node/Worker
-responses, not proof of browser enforcement. The client-relative `Max-Age` does
-not authorize a row; each protected use still needs a live server lookup.
+Issue, promotion, and clear strings use `Path=/; Secure; HttpOnly; SameSite=Lax`
+with no `Domain`. The `__Host-` prefix and flags are header declarations for
+Node/Worker responses, not proof of browser enforcement. Client-relative
+`Max-Age` starts at browser receipt and does not prove server age, liveness,
+freshness, or expiry; each protected use still needs a live server lookup.
 
 ## Reading a Cookie header
 
@@ -67,7 +102,7 @@ The raw header is limited to 8,192 ASCII bytes. Space and tab are the only
 optional whitespace; other controls, non-ASCII bytes, commas, malformed pairs,
 and malformed known values return `cookie_malformed`. A case variant is malformed
 alone, or `cookie_duplicate` when it repeats an already-seen known name.
-Duplicate known names are rejected even while reading the other kind.
+Duplicate known names are rejected even while reading either other kind.
 
 A malformed or oversized unrelated cookie also makes the whole header invalid;
 callers must treat it as unauthenticated. Parent-domain cookies or other services
@@ -87,10 +122,10 @@ them and must not disclose parsing detail.
 
 ## Secret handling and later integration
 
-`setCookie` deliberately carries a raw bearer header, while `cookieHash` is
-sensitive internal data. Never log or JSON-serialize an issue/read result, a
-request cookie header, a cookie hash, or `browserCookieValue` output. The opaque
-secret is not a promise of whole-DTO redaction.
+`setCookie` deliberately carries raw bearer header material, while `cookieHash`
+is sensitive internal data. Never log or JSON-serialize an issue/read result, a
+request cookie header, a cookie hash, `browserCookieValue` output, or any
+`Set-Cookie` value. The opaque secret is not a promise of whole-DTO redaction.
 
 `browserCookieValue` is reserved for a later server-key MAC message; the cookie
 must never become the MAC key. Reflection across JavaScript contexts cannot turn

@@ -7,9 +7,10 @@ import {
 	clearBrowserCookie,
 	issueBrowserCookie,
 	readBrowserCookie,
+	reissueStartCookieAsTransaction,
 } from "./coordinator-browser-credential.js";
 
-const KINDS = ["transaction", "session"] as const;
+const KINDS = ["transaction", "session", "start"] as const;
 type CookieKind = (typeof KINDS)[number];
 const ZERO_VALUE = "A".repeat(43);
 const ZERO_HASH = "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925";
@@ -68,7 +69,7 @@ function registerIssuanceTests(kind: CookieKind): void {
 	it("sets only the fixed host-only attributes and lifetime", async () => {
 		// Arrange: these are header fixtures, not live browser prefix/expiry checks.
 		zeroEntropy();
-		const maxAge = { transaction: 600, session: 28800 }[kind];
+		const maxAge = { transaction: 600, session: 28800, start: 600 }[kind];
 		// Act
 		const result = await issueBrowserCookie(kind);
 		const attributes = result.setCookie.split("; ");
@@ -145,9 +146,9 @@ function registerParsingTests(kind: CookieKind): void {
 			expect(digest).not.toHaveBeenCalled();
 		},
 	);
-	it("reads both known names with OWS into kind-bound opaque handles", async () => {
+	it("reads all known names with OWS into kind-bound opaque handles", async () => {
 		// Arrange
-		const header = ` \t${cookie("transaction")} \t;\t ${cookie("session")}\t; theme=dark `;
+		const header = ` \t${KINDS.map((name) => cookie(name)).join(" \t;\t ")}\t; theme=dark `;
 		const entropy = vi.spyOn(crypto, "getRandomValues");
 		// Act
 		const result = await readBrowserCookie(header, kind);
@@ -312,7 +313,9 @@ function registerMalformedTests(kind: CookieKind): void {
 		"rejects malformed %s credentials even when the requested cookie is valid",
 		async (badKind) => {
 			// Arrange
-			const header = `${cookie(badKind, "bad")}; ${cookie(otherKind(badKind))}`;
+			const header = KINDS.map((name) => cookie(name, name === badKind ? "bad" : ZERO_VALUE)).join(
+				"; ",
+			);
 			// Act
 			const result = await readBrowserCookie(header, kind);
 			// Assert
@@ -402,6 +405,7 @@ describe("browser credential fixed contract", () => {
 		const expected = {
 			transaction: "__Host-codemem-auth-transaction",
 			session: "__Host-codemem-session",
+			start: "__Host-codemem-auth-start",
 		};
 		// Act
 		const names = BROWSER_COOKIE_NAMES;
@@ -431,6 +435,82 @@ describe("browser credential fixed contract", () => {
 			expect(digest).not.toHaveBeenCalled();
 		},
 	);
+});
+
+describe("start-cookie same-value header promotion", () => {
+	it.each(["issued", "parsed"])(
+		"reissues a %s start handle synchronously without consuming it",
+		async (source) => {
+			// Arrange: deterministic bytes and independent raw-byte commitment, no storage authority.
+			zeroEntropy();
+			const issued = await issueBrowserCookie("start");
+			const parsed = await readBrowserCookie(cookie("start"), "start");
+			if (parsed.kind !== "present") throw new Error("expected start cookie");
+			const secret = source === "issued" ? issued.secret : parsed.secret;
+			const rng = vi.mocked(crypto.getRandomValues);
+			rng.mockClear();
+			const digest = vi.spyOn(crypto.subtle, "digest");
+			// Act: header construction is synchronous and repeatable, not one-shot admission.
+			const header = reissueStartCookieAsTransaction(secret);
+			const repeated = reissueStartCookieAsTransaction(secret);
+			const promotionDigests = digest.mock.calls.length;
+			const transaction = await readBrowserCookie(header.split(";")[0], "transaction");
+			// Assert: original handles remain start-kind; parsing creates a separate transaction handle.
+			expect(typeof header).toBe("string");
+			expect(header).toBe(
+				`${cookie("transaction")}; Max-Age=600; Path=/; Secure; HttpOnly; SameSite=Lax`,
+			);
+			expect(repeated).toBe(header);
+			expect(rng).not.toHaveBeenCalled();
+			expect(promotionDigests).toBe(0);
+			expect(transaction.kind).toBe("present");
+			if (transaction.kind !== "present") throw new Error("expected transaction cookie");
+			expect(transaction.cookieHash).toBe(issued.cookieHash);
+			expect(transaction.cookieHash).toBe(parsed.cookieHash);
+			expect(transaction.cookieHash).toBe(ZERO_HASH);
+			expect(transaction.secret).not.toBe(secret);
+			expect(browserCookieValue(transaction.secret, "transaction")).toBe(ZERO_VALUE);
+			for (const start of [issued.secret, parsed.secret]) {
+				expect(browserCookieValue(start, "start")).toBe(ZERO_VALUE);
+				expect(() => browserCookieValue(start, "transaction")).toThrow("invalid_input");
+				assertOpaque(start);
+			}
+			expect(() => browserCookieValue(transaction.secret, "start")).toThrow("invalid_input");
+			assertOpaque(transaction.secret);
+		},
+	);
+	it("rejects other kinds and forged handles without inspecting them or drawing entropy", async () => {
+		// Arrange
+		zeroEntropy();
+		const start = await issueBrowserCookie("start");
+		const transaction = await issueBrowserCookie("transaction");
+		const session = await issueBrowserCookie("session");
+		const trap = vi.fn(() => {
+			throw new Error(PRIVATE_ERROR);
+		});
+		const getter = Object.defineProperty({}, "value", { get: trap });
+		const invalid = [
+			transaction.secret,
+			session.secret,
+			{},
+			{ ...start.secret },
+			JSON.parse(JSON.stringify(start.secret)),
+			structuredClone(start.secret),
+			null,
+			new Proxy(start.secret, { get: trap, ownKeys: trap }),
+			getter,
+		];
+		const rng = vi.mocked(crypto.getRandomValues);
+		rng.mockClear();
+		// Act
+		const actions = invalid.map(
+			(secret) => () => reissueStartCookieAsTransaction(secret as typeof start.secret),
+		);
+		// Assert: only native WeakMap membership grants access to material.
+		for (const action of actions) expect(action).toThrow(/^auth_browser_credential_invalid_input$/);
+		expect(trap).not.toHaveBeenCalled();
+		expect(rng).not.toHaveBeenCalled();
+	});
 });
 
 for (const kind of KINDS) {

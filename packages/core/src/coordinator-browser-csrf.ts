@@ -85,7 +85,9 @@ function captureMessageFields(
 ): { cryptoKey: CryptoKey; fields: string[] } {
 	try {
 		const cryptoKey = keys.get(key);
-		if (!cryptoKey || (purpose !== "transaction" && purpose !== "session")) throw invalidInput();
+		if (!cryptoKey || (purpose !== "transaction" && purpose !== "session" && purpose !== "start")) {
+			throw invalidInput();
+		}
 		const publicOrigin = ownData(scope, "publicOrigin");
 		const store = ownData(scope, "store");
 		const coordinatorId = ownData(store, "coordinatorId");

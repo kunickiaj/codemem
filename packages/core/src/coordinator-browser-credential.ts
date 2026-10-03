@@ -1,18 +1,20 @@
 import { AUTH_BROWSER_TXN_TTL_MS } from "./coordinator-auth-browser-transaction-contract.js";
 import { AUTH_SESSION_TTL_MS } from "./coordinator-auth-session-contract.js";
 
-export type CookieKind = "transaction" | "session";
+export type CookieKind = "transaction" | "session" | "start";
 declare const browserCookieSecretBrand: unique symbol;
 export type BrowserCookieSecret = Readonly<{ [browserCookieSecretBrand]: true }>;
 
 export const BROWSER_COOKIE_NAMES = Object.freeze({
 	transaction: "__Host-codemem-auth-transaction",
 	session: "__Host-codemem-session",
+	start: "__Host-codemem-auth-start",
 });
 export const BROWSER_COOKIE_HEADER_MAX_BYTES = 8192;
 const MAX_AGE_SECONDS = {
 	transaction: AUTH_BROWSER_TXN_TTL_MS / 1000,
 	session: AUTH_SESSION_TTL_MS / 1000,
+	start: AUTH_BROWSER_TXN_TTL_MS / 1000,
 };
 const CANONICAL_VALUE = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
 const COOKIE_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
@@ -31,7 +33,7 @@ export type BrowserCookieReadResult =
 	| { kind: "present"; secret: BrowserCookieSecret; cookieHash: string };
 
 function validateKind(kind: CookieKind): void {
-	if (kind !== "transaction" && kind !== "session") {
+	if (kind !== "transaction" && kind !== "session" && kind !== "start") {
 		throw new Error("auth_browser_credential_invalid_input");
 	}
 }
@@ -111,6 +113,19 @@ export function browserCookieValue(secret: BrowserCookieSecret, expectedKind: Co
 	return material.encoded;
 }
 
+/**
+ * Same-value header promotion only; the secret remains start-kind. Append only after
+ * Origin/CSRF checks and durable unique-binder admission commit. No one-shot or
+ * freshness proof: Max-Age is a browser hint, not server-side expiry enforcement.
+ */
+export function reissueStartCookieAsTransaction(secret: BrowserCookieSecret): string {
+	return cookieHeader(
+		"transaction",
+		browserCookieValue(secret, "start"),
+		MAX_AGE_SECONDS.transaction,
+	);
+}
+
 function trimOws(value: string): string {
 	let start = 0;
 	let end = value.length;
@@ -133,6 +148,7 @@ function knownCookieKind(name: string): CookieKind | undefined {
 	const lowerName = name.toLowerCase();
 	if (lowerName === BROWSER_COOKIE_NAMES.transaction.toLowerCase()) return "transaction";
 	if (lowerName === BROWSER_COOKIE_NAMES.session.toLowerCase()) return "session";
+	if (lowerName === BROWSER_COOKIE_NAMES.start.toLowerCase()) return "start";
 	return undefined;
 }
 

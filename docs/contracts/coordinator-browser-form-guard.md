@@ -105,7 +105,7 @@ Future link confirmation and cancellation both use the transaction action and mu
 ## Cookie, CSRF, and live state
 
 The guard selects only the action's cookie kind, while the shared parser checks
-ambiguity and malformed values across both known cookie names. It rejects
+ambiguity and malformed values across all known cookie names. It rejects
 absence or malformed input, hashes a present canonical credential, and retains
 its opaque secret only for CSRF verification. See
 [browser credentials](coordinator-browser-credential.md) and

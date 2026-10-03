@@ -5,12 +5,13 @@ import {
 	clearBrowserCookie,
 	issueBrowserCookie,
 	readBrowserCookie,
+	reissueStartCookieAsTransaction,
 } from "../../core/src/coordinator-browser-credential.js";
 
-it("round-trips both opaque cookies with workerd SHA-256 and separate Set-Cookie headers", async () => {
+it("round-trips all three opaque cookies with workerd SHA-256 and separate Set-Cookie headers", async () => {
 	// Arrange: test header strings and runtime crypto, not browser attribute enforcement.
-	const kinds = ["transaction", "session"] as const;
-	const ages = { transaction: 600, session: 28800 };
+	const kinds = ["transaction", "session", "start"] as const;
+	const ages = { transaction: 600, session: 28800, start: 600 };
 	const headers = new Headers();
 	const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("No network"));
 	try {
@@ -42,6 +43,7 @@ it("round-trips both opaque cookies with workerd SHA-256 and separate Set-Cookie
 		expect(BROWSER_COOKIE_NAMES).toEqual({
 			transaction: "__Host-codemem-auth-transaction",
 			session: "__Host-codemem-session",
+			start: "__Host-codemem-auth-start",
 		});
 		expect(Object.isFrozen(BROWSER_COOKIE_NAMES)).toBe(true);
 		expect(headers.getSetCookie()).toEqual(issued.map((cookie) => cookie.setCookie));
@@ -70,6 +72,68 @@ it("round-trips both opaque cookies with workerd SHA-256 and separate Set-Cookie
 		}
 		expect(fetch).not.toHaveBeenCalled();
 	} finally {
+		fetch.mockRestore();
+	}
+});
+
+it("promotes start bytes through Request cookies without changing opaque kind or accepting copies", async () => {
+	// Arrange: native runtime crypto and real headers; no live browser or persistence claim.
+	const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("No network"));
+	let entropy: ReturnType<typeof vi.spyOn> | undefined;
+	try {
+		const start = await issueBrowserCookie("start");
+		const value = browserCookieValue(start.secret, "start");
+		const request = new Request("https://app.example.test", {
+			headers: { Cookie: `${BROWSER_COOKIE_NAMES.start}=${value}` },
+		});
+		const parsed = await readBrowserCookie(request.headers.get("Cookie"), "start");
+		if (parsed.kind !== "present") throw new Error("Expected start cookie");
+		entropy = vi.spyOn(crypto, "getRandomValues");
+		// Act
+		const header = reissueStartCookieAsTransaction(parsed.secret);
+		const repeated = reissueStartCookieAsTransaction(start.secret);
+		const next = new Request(request.url, { headers: { Cookie: header.split(";")[0] } });
+		const transaction = await readBrowserCookie(next.headers.get("Cookie"), "transaction");
+		const invalid = [
+			{},
+			{ ...parsed.secret },
+			JSON.parse(JSON.stringify(parsed.secret)),
+			new Proxy(parsed.secret, {}),
+			null,
+		];
+		const denied = await Promise.all(
+			["start", "transaction", "session"].map((kind) =>
+				readBrowserCookie(
+					`${request.headers.get("Cookie")}; ${BROWSER_COOKIE_NAMES.start}=bad`,
+					kind as "start" | "transaction" | "session",
+				),
+			),
+		);
+		// Assert: repeatability is not durable unique-binder admission.
+		expect(header).toBe(
+			`${BROWSER_COOKIE_NAMES.transaction}=${value}; Max-Age=600; Path=/; Secure; HttpOnly; SameSite=Lax`,
+		);
+		expect(repeated).toBe(header);
+		expect(entropy).not.toHaveBeenCalled();
+		expect(transaction.kind).toBe("present");
+		if (transaction.kind !== "present") throw new Error("Expected transaction cookie");
+		expect(transaction.cookieHash).toBe(start.cookieHash);
+		expect(transaction.cookieHash).toBe(parsed.cookieHash);
+		expect(transaction.secret).not.toBe(parsed.secret);
+		expect(browserCookieValue(parsed.secret, "start")).toBe(value);
+		expect(browserCookieValue(transaction.secret, "transaction")).toBe(value);
+		expect(() => browserCookieValue(parsed.secret, "transaction")).toThrow(
+			"auth_browser_credential_invalid_input",
+		);
+		for (const secret of invalid)
+			expect(() => reissueStartCookieAsTransaction(secret as typeof parsed.secret)).toThrow(
+				/^auth_browser_credential_invalid_input$/,
+			);
+		expect(denied).toEqual(Array(3).fill({ kind: "invalid", error: "cookie_duplicate" }));
+		expect(JSON.stringify(parsed.secret)).toBe("{}");
+		expect(fetch).not.toHaveBeenCalled();
+	} finally {
+		entropy?.mockRestore();
 		fetch.mockRestore();
 	}
 });

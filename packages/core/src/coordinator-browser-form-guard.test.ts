@@ -780,6 +780,45 @@ describe("owned snapshots and unusable bodies", () => {
 });
 
 describe("cookie, form and MAC checks", () => {
+	for (const kind of ["transaction", "session"] as const) {
+		it.each(["canonical", "malformed", "duplicate", "case-variant"])(
+			`checks %s start-cookie presence before the ${kind} action body`,
+			async (variant) => {
+				// Arrange: valid native HMAC/body fixtures isolate the appended start cookie.
+				const f = await fixture(kind);
+				const value = Buffer.alloc(32, 23).toString("base64url");
+				const start = `${BROWSER_COOKIE_NAMES.start}=${value}`;
+				const appended: Record<string, string> = {
+					canonical: start,
+					malformed: `${BROWSER_COOKIE_NAMES.start}=bad`,
+					duplicate: `${start}; ${start}`,
+					"case-variant": `${BROWSER_COOKIE_NAMES.start.toLowerCase()}=${value}`,
+				};
+				const header = `${f.cookie}; ${appended[variant]}`;
+				f.headers.set("cookie", header);
+				f.input.request = request(f.headers, f.source.body);
+				// Act
+				const result = await guardBrowserForm(f.input);
+				// Assert: known-cookie validation applies even when start is not the selected kind.
+				if (variant !== "canonical") {
+					deny(result, "cookie_invalid", [f.token, f.cookie, start, header, value]);
+					expect(f.source.pull).not.toHaveBeenCalled();
+					expect(f.input.request.bodyUsed).toBe(false);
+					return;
+				}
+				// Canonical coexistence passes the old action, not authentication or a start action.
+				const expected = { ok: true, action: f.input.action, cookieHash: f.credential.cookieHash };
+				expect(result).toEqual(
+					kind === "transaction" ? { ...expected, attemptId: ATTEMPT } : expected,
+				);
+				expect(Object.isFrozen(result)).toBe(true);
+				expect(f.source.pull).toHaveBeenCalled();
+				for (const secret of [f.token, f.cookie, start, header, value]) {
+					expect(JSON.stringify(result)).not.toContain(secret);
+				}
+			},
+		);
+	}
 	it("rejects overlong cookie OWS before trimming and without pulling body", async () => {
 		// Arrange: interior OWS survives native Headers outer-whitespace normalization.
 		const f = await fixture();

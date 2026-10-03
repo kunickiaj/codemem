@@ -5,6 +5,7 @@ import {
 	type BrowserCookieSecret,
 	browserCookieValue,
 	readBrowserCookie,
+	reissueStartCookieAsTransaction,
 } from "./coordinator-browser-credential.js";
 import {
 	importBrowserCsrfKey,
@@ -13,7 +14,7 @@ import {
 	verifyBrowserCsrfToken,
 } from "./coordinator-browser-csrf.js";
 
-const PURPOSES = ["transaction", "session"] as const;
+const PURPOSES = ["transaction", "session", "start"] as const;
 type Purpose = (typeof PURPOSES)[number];
 type Key = Awaited<ReturnType<typeof importBrowserCsrfKey>>;
 type Scope = Parameters<typeof issueBrowserCsrfToken>[3];
@@ -539,6 +540,49 @@ for (const purpose of PURPOSES) {
 		registerFailureTests(purpose);
 	});
 }
+
+describe("same-byte start/transaction CSRF domain separation", () => {
+	it("keeps start, promoted transaction, and session MAC purposes noninterchangeable", async () => {
+		// Arrange: same raw cookie bytes across kinds isolate purpose from credential differences.
+		const start = await cookie("start");
+		const session = await cookie("session");
+		const header = reissueStartCookieAsTransaction(start.secret);
+		const transaction = await readBrowserCookie(header.split(";")[0], "transaction");
+		if (transaction.kind !== "present") throw new Error("expected promoted transaction");
+		const key = await importBrowserCsrfKey(RAW_KEY.slice());
+		const binding = scope();
+		entropy();
+		const credentials = { start, transaction, session };
+		// Act
+		const tokens = await Promise.all(
+			PURPOSES.map((purpose) =>
+				issueBrowserCsrfToken(key, credentials[purpose].secret, purpose, binding),
+			),
+		);
+		const matrix = await Promise.all(
+			PURPOSES.flatMap((purpose) =>
+				tokens.map((token) =>
+					verifyBrowserCsrfToken(key, credentials[purpose].secret, purpose, binding, token),
+				),
+			),
+		);
+		// Assert: full native MAC verification rejects cross-purpose tokens with identical bearer bytes.
+		expect(transaction.cookieHash).toBe(start.cookieHash);
+		expect(session.cookieHash).toBe(start.cookieHash);
+		expect(matrix).toEqual([true, false, false, false, true, false, false, false, true]);
+		for (const [index, purpose] of PURPOSES.entries()) {
+			oracle(
+				tokens[index] as string,
+				purpose,
+				binding,
+				browserCookieValue(credentials[purpose].secret, purpose),
+			);
+		}
+		expect(browserCookieValue(start.secret, "start")).toBe(
+			browserCookieValue(transaction.secret, "transaction"),
+		);
+	});
+});
 
 describe("canonical CSRF token predicate", () => {
 	it("does not decode oversized values or coerce hostile objects", () => {

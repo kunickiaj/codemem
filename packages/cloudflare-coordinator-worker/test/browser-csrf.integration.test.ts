@@ -5,6 +5,7 @@ import {
 	browserCookieValue,
 	issueBrowserCookie,
 	readBrowserCookie,
+	reissueStartCookieAsTransaction,
 } from "../../core/src/coordinator-browser-credential.js";
 import {
 	type BrowserCsrfKey,
@@ -82,6 +83,55 @@ it("uses native HMAC for both purposes and round-trips the same Cookie header", 
 		entropy.mockRestore();
 		nativeVerify.mockRestore();
 		nativeImport.mockRestore();
+		fetch.mockRestore();
+	}
+});
+
+it("separates start and promoted transaction MACs even when Request cookies contain identical bytes", async () => {
+	// Arrange: independent server key, native workerd HMAC; no route or store authorization.
+	const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("No network"));
+	try {
+		const key = await importKey(rawKey);
+		const issued = await issueBrowserCookie("start");
+		const promoted = reissueStartCookieAsTransaction(issued.secret).split(";")[0];
+		const value = browserCookieValue(issued.secret, "start");
+		const request = new Request("https://app.example.test", {
+			headers: {
+				Cookie: `${BROWSER_COOKIE_NAMES.start}=${value}; ${promoted}; ${BROWSER_COOKIE_NAMES.session}=${value}`,
+			},
+		});
+		const purposes = ["start", "transaction", "session"] as const;
+		const credentials = await Promise.all(
+			purposes.map((purpose) => readBrowserCookie(request.headers.get("Cookie"), purpose)),
+		);
+		const secrets = credentials.map((credential) => {
+			if (credential.kind !== "present") throw new Error("Expected cookie");
+			return credential.secret;
+		});
+		// Act
+		const tokens = await Promise.all(
+			purposes.map((purpose, index) => issueToken(key, secrets[index], purpose, scope)),
+		);
+		const valid = await Promise.all(
+			purposes.flatMap((purpose, index) =>
+				tokens.map((token) => verifyToken(key, secrets[index], purpose, scope, token)),
+			),
+		);
+		// Assert: purpose separation, not different cookie bytes, prevents token interchange.
+		expect(valid).toEqual([true, false, false, false, true, false, false, false, true]);
+		expect(tokens.every((token) => token.length === 86 && isToken(token))).toBe(true);
+		expect(browserCookieValue(issued.secret, "start")).toBe(value);
+		expect(
+			credentials.every(
+				(credential) =>
+					credential.kind === "present" && credential.cookieHash === issued.cookieHash,
+			),
+		).toBe(true);
+		expect(() => browserCookieValue(issued.secret, "transaction")).toThrow(
+			"auth_browser_credential_invalid_input",
+		);
+		expect(fetch).not.toHaveBeenCalled();
+	} finally {
 		fetch.mockRestore();
 	}
 });
