@@ -18,8 +18,9 @@ The server generates a fresh receipt using 32 cryptographically random bytes, en
 
 ## Record
 
-The additive, initially empty `coordinator_auth_browser_transactions` table is
-the only table in this slice.
+The additive `coordinator_auth_browser_transactions` table stores ceremonies.
+Migration `0023` also adds the initially empty `coordinator_auth_signin_purge_floors`
+table for [explicit sign-in cleanup](coordinator-auth-signin-purge.md).
 
 | Field | Requirement |
 | --- | --- |
@@ -31,7 +32,7 @@ the only table in this slice.
 | `claim_token`, `consumed_at_ms`, `created_at_ms`, `expires_at_ms` | Server UUID claim token and safe epoch timestamps. |
 | `state` | `pending`, `consumed`, or `expired`; consumed and expired are terminal. |
 
-The table stores no raw state, profile, account subject, access token, refresh token, ID token, CSRF token, or cookie secret. It retains hashes, IDs, and terminal rows as burn proof; there is no deletion, compaction, or capacity recovery in this slice.
+The table stores no raw state, profile, account subject, access token, refresh token, ID token, CSRF token, or cookie secret. It retains hashes, IDs, and terminal rows as burn proof. Explicit sign-in-only purge is the sole documented exception; it does not delete link rows or related proof records.
 
 ## Internal store interface
 
@@ -68,7 +69,8 @@ the cookie, configuration, expiry, or attempt state.
 Sign-in start permits at most 1,024 new rows per coordinator per hour, counting
 all history with `created_at > now - window` (strictly greater than). A hard
 4,096-row limit counts all retained sign-in rows for that coordinator, including
-consumed and expired rows. Expiration and maintenance cannot restore capacity.
+consumed and expired rows. Expiration and ordinary maintenance cannot restore
+capacity; only the separate, explicit sign-in purge can do so.
 The internal store distinguishes used state/binder conflicts from quota errors;
 future handlers must normalize public denials. Repeated starts do not refresh TTL.
 
@@ -152,10 +154,13 @@ the stored device attempt.
 
 Cleanup/capacity recovery and normal per-link session-receipt growth are still
 required before public routes. Retirement clears nonce/PKCE fields but keeps rows
-and hashes, so it cannot recover the retained 4,096-row sign-in cap. It does not
-guarantee secure erasure from database pages, logs, or backups.
-A one-hour deletion design was rejected because it has not shown preservation of
-replay, identity, hash, or quota-counter evidence. This storage slice makes no
+and hashes, so it cannot recover the retained 4,096-row sign-in cap. The separate
+explicit sign-in purge is not secure erasure from database pages, logs,
+or backups.
+A one-hour deletion design without a durable floor was rejected because it had
+not shown preservation of replay, identity, hash, or quota-counter evidence.
+The explicit two-hour purge uses a monotonic floor to preserve quota counting
+across clock rollback while retaining related replay records. This storage slice makes no
 production-readiness, perpetual sign-in quota, or public-route claim.
 
 Before public routes, handlers must integrate pre-callback browser and device

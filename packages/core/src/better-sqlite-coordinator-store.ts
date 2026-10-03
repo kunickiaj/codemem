@@ -706,6 +706,12 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	) {
 		return this.authBrowserTransactions.retireAuthBrowserTransactions(config, options);
 	}
+	async purgeAuthSigninBrowserTransactions(
+		scope: CoordinatorAuthBrowserTransactionScope,
+		options?: CoordinatorAuthBrowserTransactionMaintenanceOptions,
+	) {
+		return this.authBrowserTransactions.purgeAuthSigninBrowserTransactions(scope, options);
+	}
 	async maintainAuthBrowserTransactions(
 		scope: CoordinatorAuthBrowserTransactionScope,
 		options?: CoordinatorAuthBrowserTransactionMaintenanceOptions,

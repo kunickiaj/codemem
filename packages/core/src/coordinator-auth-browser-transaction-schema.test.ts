@@ -114,11 +114,16 @@ it("migration 0020 matches the contract and applies twice without changing proof
 	// Arrange
 	const directory = join(import.meta.dirname, "../../cloudflare-coordinator-worker/migrations");
 	const migration = readFileSync(join(directory, "0020_add_auth_browser_transactions.sql"), "utf8");
+	const purgeMigration = readFileSync(
+		join(directory, "0023_add_auth_signin_purge_floors.sql"),
+		"utf8",
+	);
 	const db = new Database(":memory:");
 	const reference = new Database(":memory:");
 	try {
 		reference.exec(AUTH_BROWSER_TXN_SCHEMA_SQL);
 		db.exec(migration);
+		db.exec(purgeMigration);
 		expect(schema(db)).toEqual(schema(reference));
 		db.prepare(
 			`INSERT INTO ${TABLE} (coordinator_id,browser_transaction_hash,purpose,state_hash,binder_hash,issuer,auth_config_revision,redirect_uri,state,nonce,pkce_verifier,created_at_ms,expires_at_ms) VALUES ('coordinator-a',?,'signin',?,?,'https://accounts.example.test',?,'https://coordinator.example.test/auth/callback','pending',?,?,?,?)`,

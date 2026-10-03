@@ -3,6 +3,8 @@ import {
 	AUTH_BROWSER_TXN_TTL_MS,
 	AUTH_SIGNIN_TXN_MAX_RETAINED,
 	AUTH_SIGNIN_TXN_MAX_STARTS_PER_WINDOW,
+	AUTH_SIGNIN_TXN_PURGE_AGE_MS,
+	AUTH_SIGNIN_TXN_PURGE_BATCH_MAX,
 	AUTH_SIGNIN_TXN_WINDOW_MS,
 	type CoordinatorAuthBrowserConfig,
 	type CoordinatorAuthBrowserTransactionConsumeInput,
@@ -20,6 +22,7 @@ import {
 	type CoordinatorAuthLinkBrowserTransactionResolveInput,
 	type CoordinatorAuthSigninBrowserTransactionCancelInput,
 	type CoordinatorAuthSigninBrowserTransactionCancelResult,
+	type CoordinatorAuthSigninBrowserTransactionPurgeResult,
 } from "./coordinator-auth-browser-transaction-contract.js";
 import { isCoordinatorAccountIssuer } from "./coordinator-auth-contract.js";
 import { isAuthControllerId, isAuthControllerUniqueError } from "./coordinator-auth-controller.js";
@@ -139,19 +142,19 @@ function captureStart(value: unknown): CoordinatorAuthBrowserTransactionStartInp
 		return null;
 	}
 }
-function maintenanceLimit(value: unknown): number | null {
-	if (value === undefined) return AUTH_BROWSER_TXN_MAINTENANCE_BATCH_MAX;
+function maintenanceLimit(
+	value: unknown,
+	max = AUTH_BROWSER_TXN_MAINTENANCE_BATCH_MAX,
+): number | null {
+	if (value === undefined) return max;
 	if (!value || typeof value !== "object") return null;
 	try {
 		if (Array.isArray(value)) return null;
 		const d = Object.getOwnPropertyDescriptor(value, "limit");
-		if (!d) return "limit" in value ? null : AUTH_BROWSER_TXN_MAINTENANCE_BATCH_MAX;
+		if (!d) return "limit" in value ? null : max;
 		if (!Object.hasOwn(d, "value")) return null;
 		const limit: unknown = d.value;
-		return typeof limit === "number" &&
-			Number.isSafeInteger(limit) &&
-			limit >= 1 &&
-			limit <= AUTH_BROWSER_TXN_MAINTENANCE_BATCH_MAX
+		return typeof limit === "number" && Number.isSafeInteger(limit) && limit >= 1 && limit <= max
 			? limit
 			: null;
 	} catch {
@@ -218,6 +221,7 @@ function isConsumableRow(
 	return row.purpose === "link" && isAuthControllerId(row.attempt_id);
 }
 const TABLE = "coordinator_auth_browser_transactions";
+const PURGE_FLOORS = "coordinator_auth_signin_purge_floors";
 const COLUMNS = `coordinator_id, browser_transaction_hash, purpose, attempt_id, state_hash, binder_hash,
  issuer, auth_config_revision, redirect_uri, state, nonce, pkce_verifier, created_at_ms, expires_at_ms, claim_token, consumed_at_ms`;
 // Force a uniqueness failure even when another admission guard suppresses a colliding insert.
@@ -273,6 +277,7 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 			await this.backend.run({
 				sql: `INSERT INTO ${TABLE} (${COLUMNS}) SELECT ?, ?, 'signin', NULL, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, NULL, NULL
  WHERE ${FRESH_HASH}
+ AND NOT EXISTS (SELECT 1 FROM ${PURGE_FLOORS} WHERE coordinator_id = ? AND purged_through_created_at_ms > ?)
  AND (SELECT count(*) FROM ${TABLE} WHERE coordinator_id = ? AND purpose = 'signin' AND created_at_ms > ?) < ?
  AND (SELECT count(*) FROM (SELECT 1 FROM ${TABLE} WHERE coordinator_id = ? AND purpose = 'signin' LIMIT ?)) < ?
  ${ASSERT_HASH_FRESH}`,
@@ -291,6 +296,8 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 					...freshValues(c, hash),
 					c.coordinatorId,
 					now - AUTH_SIGNIN_TXN_WINDOW_MS,
+					c.coordinatorId,
+					now - AUTH_SIGNIN_TXN_WINDOW_MS,
 					AUTH_SIGNIN_TXN_MAX_STARTS_PER_WINDOW,
 					c.coordinatorId,
 					AUTH_SIGNIN_TXN_MAX_RETAINED,
@@ -306,7 +313,16 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 		const row = await this.startedRow(i, c, hash, now);
 		if (row) return { kind: "started", expiresAtMs: row.expires_at_ms };
 		if (await this.hasConflict(i, c, hash)) return rejected("transaction_conflict");
+		if (await this.isSigninRetentionBlocked(c.coordinatorId, now))
+			return { kind: "rejected", error: "clock_retention_blocked" };
 		return rejected("transaction_limited");
+	}
+	private async isSigninRetentionBlocked(coordinatorId: string, now: number): Promise<boolean> {
+		const row = await this.first({
+			sql: `SELECT 1 FROM ${PURGE_FLOORS} WHERE coordinator_id = ? AND purged_through_created_at_ms > ?`,
+			values: [coordinatorId, now - AUTH_SIGNIN_TXN_WINDOW_MS],
+		});
+		return row !== null;
 	}
 	private async hasConflict(
 		i: CoordinatorAuthBrowserTransactionStartInput,
@@ -611,6 +627,55 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 		} catch {
 			throw new Error("auth_browser_transaction_persistence_error");
 		}
+	}
+	async purgeAuthSigninBrowserTransactions(
+		scope: CoordinatorAuthBrowserTransactionScope,
+		options?: CoordinatorAuthBrowserTransactionMaintenanceOptions,
+	): Promise<CoordinatorAuthSigninBrowserTransactionPurgeResult> {
+		const s = capture(scope, ["coordinatorId"]);
+		const limit = maintenanceLimit(options, AUTH_SIGNIN_TXN_PURGE_BATCH_MAX);
+		if (!s || !isAuthControllerId(s.coordinatorId) || limit === null)
+			return { kind: "rejected", error: "invalid_input" };
+		const cutoff = authLinkNow(this.clock) - AUTH_SIGNIN_TXN_PURGE_AGE_MS;
+		try {
+			// Commit the monotonic floor first; the delete independently reads it atomically.
+			await this.advanceSigninPurgeFloor(s.coordinatorId, cutoff);
+			const processedCount = await this.deletePurgedSigninTransactions(
+				s.coordinatorId,
+				cutoff,
+				limit,
+			);
+			return { kind: "purged", processedCount, more: processedCount === limit };
+		} catch {
+			throw new Error("auth_browser_transaction_persistence_error");
+		}
+	}
+	private advanceSigninPurgeFloor(coordinatorId: string, cutoff: number): Promise<number> {
+		return this.backend.run({
+			sql: `INSERT INTO ${PURGE_FLOORS} (coordinator_id, purged_through_created_at_ms)
+ SELECT ?, m FROM (SELECT max(created_at_ms) m FROM ${TABLE}
+ WHERE coordinator_id = ? AND purpose = 'signin' AND attempt_id IS NULL AND created_at_ms <= ?)
+ WHERE m IS NOT NULL ON CONFLICT(coordinator_id) DO UPDATE
+ SET purged_through_created_at_ms = excluded.purged_through_created_at_ms
+ WHERE excluded.purged_through_created_at_ms > ${PURGE_FLOORS}.purged_through_created_at_ms`,
+			values: [coordinatorId, coordinatorId, cutoff],
+		});
+	}
+	private deletePurgedSigninTransactions(
+		coordinatorId: string,
+		cutoff: number,
+		limit: number,
+	): Promise<number> {
+		return this.backend.run({
+			sql: `DELETE FROM ${TABLE}
+ WHERE coordinator_id = ? AND purpose = 'signin' AND attempt_id IS NULL AND created_at_ms <= ?
+ AND browser_transaction_hash IN (SELECT b.browser_transaction_hash FROM ${TABLE} b
+ JOIN ${PURGE_FLOORS} f ON f.coordinator_id = b.coordinator_id
+ WHERE b.coordinator_id = ? AND b.purpose = 'signin' AND b.attempt_id IS NULL
+ AND b.created_at_ms <= f.purged_through_created_at_ms AND b.created_at_ms <= ?
+ ORDER BY b.created_at_ms, b.browser_transaction_hash LIMIT ?)`,
+			values: [coordinatorId, cutoff, coordinatorId, cutoff, limit],
+		});
 	}
 	async maintainAuthBrowserTransactions(
 		scope: CoordinatorAuthBrowserTransactionScope,

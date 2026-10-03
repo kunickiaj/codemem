@@ -5,6 +5,8 @@ export const AUTH_SIGNIN_TXN_WINDOW_MS = 3600000;
 export const AUTH_SIGNIN_TXN_MAX_STARTS_PER_WINDOW = 1024;
 export const AUTH_SIGNIN_TXN_MAX_RETAINED = 4096;
 export const AUTH_BROWSER_TXN_MAINTENANCE_BATCH_MAX = 32;
+export const AUTH_SIGNIN_TXN_PURGE_AGE_MS = 7200000;
+export const AUTH_SIGNIN_TXN_PURGE_BATCH_MAX = 256;
 
 export interface CoordinatorAuthBrowserConfig extends CoordinatorAuthLinkConfig {
 	redirectUri: string;
@@ -39,6 +41,7 @@ export interface CoordinatorAuthBrowserTransactionRejected {
 }
 export type CoordinatorAuthBrowserTransactionStartResult =
 	| { kind: "started"; expiresAtMs: number }
+	| { kind: "rejected"; error: "clock_retention_blocked" }
 	| CoordinatorAuthBrowserTransactionRejected;
 /** Secrets are for the trusted SDK exchange caller only, never an HTTP or polling DTO. */
 export type CoordinatorAuthBrowserTransactionConsumeResult =
@@ -71,6 +74,9 @@ export type CoordinatorAuthBrowserTransactionRetirementResult =
 export type CoordinatorAuthBrowserTransactionMaintenanceResult =
 	| { kind: "maintained"; processedCount: number; more: boolean }
 	| { kind: "rejected"; error: "invalid_input" };
+export type CoordinatorAuthSigninBrowserTransactionPurgeResult =
+	| { kind: "purged"; processedCount: number; more: boolean }
+	| { kind: "rejected"; error: "invalid_input" };
 export interface CoordinatorAuthBrowserTransactionStore {
 	startAuthBrowserTransaction(
 		input: CoordinatorAuthBrowserTransactionStartInput,
@@ -88,6 +94,10 @@ export interface CoordinatorAuthBrowserTransactionStore {
 		scope: CoordinatorAuthBrowserTransactionScope,
 		options?: CoordinatorAuthBrowserTransactionMaintenanceOptions,
 	): Promise<CoordinatorAuthBrowserTransactionMaintenanceResult>;
+	purgeAuthSigninBrowserTransactions(
+		scope: CoordinatorAuthBrowserTransactionScope,
+		options?: CoordinatorAuthBrowserTransactionMaintenanceOptions,
+	): Promise<CoordinatorAuthSigninBrowserTransactionPurgeResult>;
 	cancelAuthSigninBrowserTransaction(
 		input: CoordinatorAuthSigninBrowserTransactionCancelInput,
 		scope: CoordinatorAuthBrowserTransactionScope,
@@ -129,4 +139,8 @@ CREATE INDEX IF NOT EXISTS idx_auth_browser_txn_purpose_created
  ON coordinator_auth_browser_transactions(coordinator_id, purpose, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_auth_browser_txn_state_expiry
  ON coordinator_auth_browser_transactions(coordinator_id, state, expires_at_ms);
+CREATE TABLE IF NOT EXISTS coordinator_auth_signin_purge_floors (
+ coordinator_id TEXT NOT NULL PRIMARY KEY CHECK (length(coordinator_id) BETWEEN 1 AND 256),
+ purged_through_created_at_ms INTEGER NOT NULL CHECK (typeof(purged_through_created_at_ms) = 'integer' AND purged_through_created_at_ms BETWEEN 0 AND 9007199254140991)
+);
 `;
