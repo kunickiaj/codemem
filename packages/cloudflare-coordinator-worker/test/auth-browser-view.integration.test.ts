@@ -22,10 +22,24 @@ async function assertPage(page: { body: string; headers: Record<string, string> 
 	expect(page.headers["Content-Security-Policy"]).toContain("frame-ancestors 'none'");
 	expect(page.headers["Cache-Control"]).toBe("no-store");
 	expect(page.headers["Referrer-Policy"]).toBe("no-referrer");
-	const unsafe = /<script|<[^>]+\son[a-z]+\s*=|nonce=|pkceVerifier|completion_secret/;
+	const unsafe = /<script|<[^>]+\son[a-z]+\s*=|nonce=|pkceVerifier|completion_secret/i;
 	expect(page.body).not.toMatch(unsafe);
 	expect(globalThis.fetch).not.toHaveBeenCalled();
 }
+
+it.each(["<SCRIPT>alert(1)</SCRIPT>", '<IMG SRC=x ONERROR="bad">', "<ScRiPt>bad</ScRiPt>"])(
+	"escapes mixed-case executable markup in account labels: %s",
+	async (label) => {
+		const page = await renderCurrentAccountPage({
+			issuer,
+			identity: { ...identity, label },
+			csrfToken,
+		});
+		await assertPage(page);
+		expect(page.body).not.toContain(label);
+		expect(page.body).toContain("&lt;");
+	},
+);
 
 it("renders fixed link forms, escaped labels and a canonical Google avatar in workerd", async () => {
 	// Arrange: unrelated profile secrets must not leak.

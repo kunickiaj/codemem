@@ -391,15 +391,21 @@ function registerSanitization(test: SessionTest) {
 		async (pictureUrl, { fixture: f }) => {
 			// Arrange
 			const session = await signedIn(f);
-			// Act
-			const result = await record(f, { displayName: "Safe", pictureUrl });
-			// Assert
-			expect(result).toEqual({ kind: "recorded" });
-			expect(await f.store.readAuthSessionAccount(credentialHash, f.cfg)).toEqual({
-				session,
-				profile: { displayName: "Safe" },
-			});
-			expect(profiles(f)).toEqual([expect.objectContaining({ picture_url: null })]);
+			const fetch = vi
+				.spyOn(globalThis, "fetch")
+				.mockRejectedValue(new Error("unexpected_network"));
+			try {
+				// Act
+				const result = await record(f, { displayName: "Safe", pictureUrl });
+				const account = await f.store.readAuthSessionAccount(credentialHash, f.cfg);
+				// Assert: dropping an unsafe URL must not fetch it first.
+				expect(result).toEqual({ kind: "recorded" });
+				expect(account).toEqual({ session, profile: { displayName: "Safe" } });
+				expect(profiles(f)).toEqual([expect.objectContaining({ picture_url: null })]);
+				expect(fetch).not.toHaveBeenCalled();
+			} finally {
+				fetch.mockRestore();
+			}
 		},
 	);
 	test("accepts bounded metadata, false email verification and canonical non-Google HTTPS picture", async ({
@@ -731,25 +737,29 @@ function registerCleanup(test: SessionTest) {
 			expect({ profile: profiles(f), authority: authority(f) }).toEqual(before);
 		},
 	);
-	test("SQL write abort preserves the previously recorded profile and all authority", async ({
-		fixture: f,
-	}) => {
-		// Arrange
-		await signedIn(f);
-		await record(f);
-		f.now += 1;
-		await secondSignIn(f);
-		for (const event of ["INSERT", "UPDATE"])
+	test.for(["INSERT", "UPDATE"] as const)(
+		"SQL %s abort preserves the previously recorded profile and all authority",
+		async (event, { fixture: f }) => {
+			// Arrange
+			await signedIn(f);
+			await record(f);
+			f.now += 1;
+			await secondSignIn(f);
+			const triggerFired = vi.fn(() => null);
+			f.db.function("fixture_profile_fault_fired", triggerFired);
+			// Isolate each trigger so INSERT cannot mask the upsert's UPDATE failure.
 			f.db.exec(
-				`CREATE TRIGGER fixture_profile_${event.toLowerCase()}_fault BEFORE ${event} ON ${TABLE} BEGIN SELECT RAISE(ABORT, 'private_backend_detail'); END`,
+				`CREATE TRIGGER fixture_profile_${event.toLowerCase()}_fault BEFORE ${event} ON ${TABLE} BEGIN SELECT fixture_profile_fault_fired(); SELECT RAISE(ABORT, 'private_backend_detail'); END`,
 			);
-		const before = { profile: profiles(f), authority: authority(f) };
-		// Act
-		const write = record(f, { displayName: "Must not persist" }, otherCredentialHash);
-		// Assert
-		await expect(write).rejects.toThrow(/^auth_account_profile_persistence_error$/);
-		expect({ profile: profiles(f), authority: authority(f) }).toEqual(before);
-	});
+			const before = { profile: profiles(f), authority: authority(f) };
+			// Act
+			const write = record(f, { displayName: "Must not persist" }, otherCredentialHash);
+			// Assert
+			await expect(write).rejects.toThrow(/^auth_account_profile_persistence_error$/);
+			expect(triggerFired).toHaveBeenCalledTimes(1);
+			expect({ profile: profiles(f), authority: authority(f) }).toEqual(before);
+		},
+	);
 }
 
 function registerBackend(backend: Backend) {
