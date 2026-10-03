@@ -376,6 +376,13 @@ before pi discards context. The preferred HTTP pack path — prove `GET /api/pro
 targeted `POST /api/pack` — is unledgered (no opencode retrieval-ledger row). The queue/sweeper
 behavior is shared with the other adapters.
 
+A history-import primitive rounds out the pi flow. The core `importPiSessions`/
+`parsePiSessionJsonl` import walks `~/.pi/agent/sessions/**/*.jsonl` (honoring
+`PI_CODING_AGENT_DIR`) and inserts the same `source: "pi"` raw events with deterministic ids, so
+re-imports dedupe against live-captured sessions. Idempotency is per destination database:
+unchanged files (size/mtime) are skipped via a `pi_import_state` table inside that database, and
+deterministic event ids make reprocessing safe.
+
 ### OpenCode session finalization triggers
 - `session.idle` — finalizes current local buffer
 - `session.created` — finalizes before switching to a new session

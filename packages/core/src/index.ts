@@ -727,6 +727,14 @@ export {
 	resolvePiObserverConfig,
 } from "./pi-observer-config.js";
 export type {
+	ImportPiSessionsOptions,
+	ParsedPiSession,
+	PiImportProgress,
+	PiImportSummary,
+	PiSessionMessage,
+} from "./pi-sessions-import.js";
+export { importPiSessions, parsePiSessionJsonl } from "./pi-sessions-import.js";
+export type {
 	BlockedPolicyTeamDeviceEligibilityResult,
 	DerivePolicyTeamDeviceEligibilityInput,
 	EligiblePolicyTeamDeviceEligibilityResult,
