@@ -806,19 +806,18 @@ it("versioned migration 24 runs once, keeps historical flags zero and rejects re
 		db.exec(migration("0018_add_auth_sessions.sql"));
 		db.exec(migration("0022_add_auth_session_admission_index.sql"));
 		historical(db);
+		const before = db.prepare(`SELECT * FROM ${RECEIPTS}`).all();
 		const upgrade = migration("0024_add_auth_guarded_signin_retention.sql");
 		// Act
 		db.exec(upgrade);
-		const before = db.prepare(`SELECT * FROM ${RECEIPTS}`).all();
+		const after = db.prepare(`SELECT * FROM ${RECEIPTS}`).all();
 		const replay = () => db.exec(upgrade);
 		// Assert
 		expect(schema(db)).toEqual(schema(reference));
 		expect(before).toHaveLength(2);
-		expect(before).toEqual(
-			expect.arrayContaining([expect.objectContaining({ purge_eligible: 0 })]),
-		);
+		expect(after).toEqual(before.map((row) => ({ ...(row as object), purge_eligible: 0 })));
 		expect(replay).toThrow(/duplicate column name: purge_eligible/u);
-		expect(db.prepare(`SELECT * FROM ${RECEIPTS}`).all()).toEqual(before);
+		expect(db.prepare(`SELECT * FROM ${RECEIPTS}`).all()).toEqual(after);
 	} finally {
 		db.close();
 		reference.close();
@@ -868,7 +867,82 @@ it("SQLite checks old receipt columns while holding an immediate write lock", ()
 		rmSync(directory, { recursive: true, force: true });
 	}
 });
-it("SQLite warm receipt upgrade uses the read hint without creating a writer transaction", () => {
+const retentionReadHint =
+	"SELECT 1 FROM pragma_table_info('coordinator_auth_session_receipts') WHERE name = 'purge_eligible'";
+const explicitWriterTransaction = /\bBEGIN\s+(?:IMMEDIATE|EXCLUSIVE)\b/iu;
+function withoutSqlComments(sql: string) {
+	return sql.replace(/\/\*[\s\S]*?\*\/|--[^\n]*/gu, " ");
+}
+function observeWarmStartup(probe: Database.Database) {
+	const sqlCalls: string[] = [];
+	const lockErrors: unknown[] = [];
+	const originalPrepare = Database.prototype.prepare;
+	const originalExec = Database.prototype.exec;
+	const transactionSpy = vi.spyOn(Database.prototype, "transaction");
+	const execSpy = vi.spyOn(Database.prototype, "exec").mockImplementation(function (
+		this: Database.Database,
+		sql: string,
+	) {
+		if (this !== probe) sqlCalls.push(sql);
+		return originalExec.call(this, sql);
+	});
+	const prepareSpy = vi.spyOn(Database.prototype, "prepare").mockImplementation(function (
+		this: Database.Database,
+		sql: string,
+	) {
+		if (this !== probe) sqlCalls.push(sql);
+		if (this !== probe && sql === retentionReadHint) {
+			try {
+				probe.exec("BEGIN IMMEDIATE");
+				lockErrors.push(null);
+			} catch (error) {
+				lockErrors.push(error);
+			} finally {
+				if (probe.inTransaction) probe.exec("ROLLBACK");
+			}
+		}
+		return originalPrepare.call(this, sql);
+	});
+	return {
+		sqlCalls,
+		lockErrors,
+		transactionSpy,
+		prepareSpy,
+		restore() {
+			prepareSpy.mockRestore();
+			execSpy.mockRestore();
+			transactionSpy.mockRestore();
+		},
+	};
+}
+it.each(["exec", "prepare"] as const)(
+	"warm startup observation detects raw %s writer transactions without the transaction API",
+	(method) => {
+		// Arrange: a test-local counterexample must not evade the startup observer.
+		const probe = new Database(":memory:");
+		const db = new Database(":memory:");
+		const trace = observeWarmStartup(probe);
+		try {
+			// Act: exec closes the lock in the same call; prepare uses Statement.run.
+			if (method === "exec")
+				db.exec(" SELECT 1; -- preceding statement\nBEGIN /* lock */ IMMEDIATE; COMMIT");
+			else {
+				db.prepare(" /* leading comment */ BEGIN EXCLUSIVE").run();
+				db.prepare("COMMIT").run();
+			}
+			// Assert: the hint-time lock probe alone could miss both counterexamples.
+			expect(db.inTransaction).toBe(false);
+			expect(trace.transactionSpy).not.toHaveBeenCalled();
+			expect(trace.sqlCalls.map(withoutSqlComments).join("\n")).toMatch(explicitWriterTransaction);
+		} finally {
+			trace.restore();
+			if (db.inTransaction) db.exec("ROLLBACK");
+			db.close();
+			probe.close();
+		}
+	},
+);
+it("SQLite warm receipt upgrade uses the read hint without creating an explicit writer transaction", () => {
 	// Arrange: cold startup performs the upgrade before transaction instrumentation.
 	const directory = mkdtempSync(join(tmpdir(), "codemem-retention-warm-"));
 	const path = join(directory, "fixture.sqlite");
@@ -876,36 +950,38 @@ it("SQLite warm receipt upgrade uses the read hint without creating a writer tra
 	old.exec(migration("0018_add_auth_sessions.sql"));
 	old.exec(migration("0022_add_auth_session_admission_index.sql"));
 	historical(old);
+	const legacy = old.prepare(`SELECT * FROM ${RECEIPTS}`).all();
 	old.close();
+	const probe = new Database(path, { timeout: 0 });
 	let warm: Database.Database | undefined;
-	let transactionSpy: ReturnType<typeof vi.spyOn> | undefined;
-	let prepareSpy: ReturnType<typeof vi.spyOn> | undefined;
+	let trace: ReturnType<typeof observeWarmStartup> | undefined;
 	try {
 		const cold = connectCoordinator(path);
 		const before = cold.prepare(`SELECT * FROM ${RECEIPTS}`).all();
 		cold.close();
-		// Both spies call through; no startup SQL or transaction mode is mocked.
-		transactionSpy = vi.spyOn(Database.prototype, "transaction");
-		prepareSpy = vi.spyOn(Database.prototype, "prepare");
+		// All spies call through; no startup SQL or transaction mode is mocked.
+		trace = observeWarmStartup(probe);
 		// Act
 		warm = connectCoordinator(path);
 		// Assert: this verifies the helper's fast path, not global lock-free startup.
-		expect(prepareSpy).toHaveBeenCalledWith(
-			"SELECT 1 FROM pragma_table_info('coordinator_auth_session_receipts') WHERE name = 'purge_eligible'",
-		);
-		expect(prepareSpy).not.toHaveBeenCalledWith(
+		expect(trace.prepareSpy).toHaveBeenCalledWith(retentionReadHint);
+		expect(trace.prepareSpy).not.toHaveBeenCalledWith(
 			"PRAGMA table_info(coordinator_auth_session_receipts)",
 		);
-		expect(transactionSpy).not.toHaveBeenCalled();
+		expect(trace.transactionSpy).not.toHaveBeenCalled();
+		expect(trace.sqlCalls.map(withoutSqlComments).join("\n")).not.toMatch(
+			explicitWriterTransaction,
+		);
+		expect(trace.lockErrors).toEqual([null]);
+		expect(probe.inTransaction).toBe(false);
 		expect(warm.prepare(`SELECT * FROM ${RECEIPTS}`).all()).toEqual(before);
 		expect(before).toHaveLength(2);
-		expect(before).toEqual(
-			expect.arrayContaining([expect.objectContaining({ purge_eligible: 0 })]),
-		);
+		expect(before).toEqual(legacy.map((row) => ({ ...(row as object), purge_eligible: 0 })));
 	} finally {
-		prepareSpy?.mockRestore();
-		transactionSpy?.mockRestore();
+		trace?.restore();
+		if (probe.inTransaction) probe.exec("ROLLBACK");
 		warm?.close();
+		probe.close();
 		rmSync(directory, { recursive: true, force: true });
 	}
 });
