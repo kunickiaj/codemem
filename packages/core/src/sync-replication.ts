@@ -2637,11 +2637,23 @@ function reconcileStalePeerReceivedRowsInternal(
 		ambiguous: [],
 	};
 	const deleteMemory = deleteRows ? db.prepare("DELETE FROM memory_items WHERE id = ?") : null;
-	const clearDeletedScopeCursor = (originDeviceId: string, scopeId: string): void => {
-		if (!deleteRows || scopeId === DEFAULT_SYNC_SCOPE_ID) return;
-		clearReplicationCursorLastApplied(db, originDeviceId, scopeId);
+	const deleteCandidate = (
+		memoryId: number,
+		cursor?: { originDeviceId: string; scopeId: string },
+	): void => {
+		if (deleteRows) {
+			clearMemoryRefs(db, memoryId);
+			deleteMemory?.run(memoryId);
+			if (cursor && cursor.scopeId !== DEFAULT_SYNC_SCOPE_ID) {
+				clearReplicationCursorLastApplied(db, cursor.originDeviceId, cursor.scopeId);
+			}
+		}
+		result.deleted += 1;
+		result.deleted_memory_ids.push(memoryId);
 	};
 	db.transaction(() => {
+		// Authorization decisions must not survive this synchronous cleanup transaction.
+		const authorizationByScope = new Map<string, CachedScopeAuthorizationResult>();
 		for (const row of rows) {
 			const memoryId = Number(row.id);
 			const importKey = cleanText(row.import_key);
@@ -2664,12 +2676,7 @@ function reconcileStalePeerReceivedRowsInternal(
 				continue;
 			}
 			if (!scopeId || scopeId === DEFAULT_SYNC_SCOPE_ID) {
-				if (deleteRows) {
-					clearMemoryRefs(db, memoryId);
-					deleteMemory?.run(memoryId);
-				}
-				result.deleted += 1;
-				result.deleted_memory_ids.push(memoryId);
+				deleteCandidate(memoryId);
 				continue;
 			}
 			if (!importKey) {
@@ -2684,7 +2691,11 @@ function reconcileStalePeerReceivedRowsInternal(
 				);
 				continue;
 			}
-			const auth = getCachedScopeAuthorization(db, { deviceId: localDeviceId, scopeId });
+			let auth = authorizationByScope.get(scopeId);
+			if (!auth) {
+				auth = getCachedScopeAuthorization(db, { deviceId: localDeviceId, scopeId });
+				authorizationByScope.set(scopeId, auth);
+			}
 			if (auth.authorized) {
 				result.retained += 1;
 				continue;
@@ -2702,13 +2713,7 @@ function reconcileStalePeerReceivedRowsInternal(
 				continue;
 			}
 			if (!auth.membership) {
-				if (deleteRows) {
-					clearMemoryRefs(db, memoryId);
-					deleteMemory?.run(memoryId);
-					clearDeletedScopeCursor(originDeviceId, scopeId);
-				}
-				result.deleted += 1;
-				result.deleted_memory_ids.push(memoryId);
+				deleteCandidate(memoryId, { originDeviceId, scopeId });
 				continue;
 			}
 			if (!stalePeerCandidateIsDeletable(auth.state)) {
@@ -2723,13 +2728,7 @@ function reconcileStalePeerReceivedRowsInternal(
 				);
 				continue;
 			}
-			if (deleteRows) {
-				clearMemoryRefs(db, memoryId);
-				deleteMemory?.run(memoryId);
-				clearDeletedScopeCursor(originDeviceId, scopeId);
-			}
-			result.deleted += 1;
-			result.deleted_memory_ids.push(memoryId);
+			deleteCandidate(memoryId, { originDeviceId, scopeId });
 		}
 	})();
 	return result;

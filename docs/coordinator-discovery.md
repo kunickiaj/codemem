@@ -281,6 +281,16 @@ feature lag — new coordinator capabilities may land in the built-in coordinato
 reference Worker immediately. When you do choose it, follow the dedicated Cloudflare runbook instead of relying on the
 older scattered example notes.
 
+## Direct peer HTTP connections
+
+Recipient-bound direct peer requests close their HTTP connection after each response, including status and snapshot reads. Sync preparation can block the sender's event loop long enough for an earlier connection to exceed the peer's idle timeout; reusing that connection can then fail before a write receives an HTTP response.
+
+This connection policy does not change signatures, device trust, sharing grants, request bodies, or cursor acknowledgements. It does not retry failed writes automatically. Coordinator and administrator requests keep their existing connection policy. The tradeoff is an extra connection handshake for each direct peer request.
+
+## Peer-memory cleanup
+
+Peer-memory cleanup resolves authorization once per scope within each cleanup transaction, rather than repeating the same database queries for every memory. Each new cleanup transaction starts with fresh lookups, so membership, revocation, and policy changes are not hidden by a cache shared across sync passes.
+
 ## Always-on peers
 
 If you need a high-uptime sync backstop, deploy an anchor peer separately from
