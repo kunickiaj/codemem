@@ -13,7 +13,7 @@ This module makes a pure HTML page and headers from already trusted inputs. It d
 | `renderCurrentAccountPage(input)` | Profile, issuer, Identity, and CSRF token; returns HTML and headers. |
 | `renderAuthSigninPage(input)` | Canonical `csrfToken` only; returns a fixed sign-in POST form and headers. |
 | `renderAuthSigninContinuePage(input)` | Trusted SDK-produced `authorizationUrl`; returns an explicit Google continuation link and headers. |
-| `renderAuthBrowserNotice(kind)` | Fixed `expired`, `unavailable`, `signed_out`, `signin_in_progress`, or `signin_unavailable` notice; returns HTML and headers. |
+| `renderAuthBrowserNotice(kind)` | Fixed `expired`, `unavailable`, `signed_out`, `signin_in_progress`, `signin_unavailable`, or `auth_unavailable` notice; returns HTML and headers. `auth_unavailable` has the static title “Sign-in or linking unavailable” and no form. |
 
 Page renderers return promises. An omitted profile uses the fallback display.
 
