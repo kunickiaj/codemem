@@ -110,7 +110,7 @@ it("renders fixed link forms, escaped labels and a canonical Google avatar in wo
 
 it("renders account fallback and fixed notices without granting image or script access", async () => {
 	// Arrange
-	const kinds = ["expired", "unavailable", "signed_out"] as const;
+	const kinds = ["expired", "unavailable", "signed_out", "auth_unavailable"] as const;
 	const profile = { displayName: "Élodie Martin", pictureUrl: "https://unknown.example/avatar" };
 	// Act
 	const account = await renderCurrentAccountPage({ issuer, identity, csrfToken, profile });
@@ -130,6 +130,7 @@ it("renders account fallback and fixed notices without granting image or script 
 	expect(pages[0].body).toContain("Link expired");
 	expect(pages[1].body).toContain("Account linking unavailable");
 	expect(pages[2].body).toContain('href="/auth/sign-in"');
+	expect(pages[3].body).toContain("Sign-in or linking unavailable");
 	await expect(renderAuthBrowserNotice("<script>" as "expired")).rejects.toThrow(
 		"auth_browser_view_invalid_input",
 	);

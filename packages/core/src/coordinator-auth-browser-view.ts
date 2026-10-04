@@ -398,11 +398,21 @@ export async function renderCurrentAccountPage(
 }
 
 export async function renderAuthBrowserNotice(
-	kind: "expired" | "unavailable" | "signed_out" | "signin_in_progress" | "signin_unavailable",
+	kind:
+		| "expired"
+		| "unavailable"
+		| "signed_out"
+		| "signin_in_progress"
+		| "signin_unavailable"
+		| "auth_unavailable",
 ): Promise<CoordinatorAuthBrowserPage> {
 	let title: string;
 	let content: string;
 	switch (kind) {
+		case "auth_unavailable":
+			title = "Sign-in or linking unavailable";
+			content = "<p>Return to the flow you started and try again.</p>";
+			break;
 		case "signin_in_progress":
 			title = "Sign-in already in progress";
 			content = "<p>Finish the open sign-in or account-link flow before starting another.</p>";

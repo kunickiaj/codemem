@@ -149,5 +149,25 @@ async function beginTransaction(state: FixtureState, fetch: CustomFetch) {
 export function oidcFixture(options: { issuer?: string } = {}) {
 	const state = fixtureState(options.issuer ?? ISSUER);
 	const fetch = vi.fn(fixtureTransport(state));
-	return { ...state, fetch, begin: () => beginTransaction(state, fetch) };
+	let serial = 0;
+	function authorize(
+		authorizationUrl: string | URL,
+		overrides: { nonce?: string; challenge?: string; code?: string } = {},
+	): URL {
+		const url = new URL(authorizationUrl);
+		const publicState = url.searchParams.get("state");
+		const nonce = url.searchParams.get("nonce");
+		const challenge = url.searchParams.get("code_challenge");
+		if (!publicState || !nonce || !challenge) throw new Error("Missing authorization material");
+		const code = overrides.code ?? `fixture-authorized-code-${serial++}`;
+		state.codes.set(code, {
+			nonce: overrides.nonce ?? nonce,
+			challenge: overrides.challenge ?? challenge,
+		});
+		const callback = new URL(PROVIDER.redirectUri);
+		callback.searchParams.set("code", code);
+		callback.searchParams.set("state", publicState);
+		return callback;
+	}
+	return { ...state, fetch, authorize, begin: () => beginTransaction(state, fetch) };
 }
