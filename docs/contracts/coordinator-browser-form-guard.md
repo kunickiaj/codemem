@@ -132,3 +132,7 @@ Fleet-wide limits need upstream shared enforcement and deployment decisions. Tru
 ## Integration status
 
 Current coordinator routes do not mount this helper. Browser use still needs route wiring, trusted client identity, independent key provisioning, live-store authorization and mutation design, browser validation, and an operator-approved shared-key deployment plan. Existing OIDC/provider setup, including Google configuration, does not change that status.
+
+The unmounted [sign-in-start factory](coordinator-browser-signin-start.md) uses
+`signin_start` for GET-page/POST-admission orchestration. A guard success is still
+only one step before durable admission, not authentication or cookie promotion.
