@@ -348,21 +348,18 @@ it("rejects origins before native body/limiter/store work and shares the default
 		for (const spy of Object.values(f.operations)) expect(spy).not.toHaveBeenCalled();
 	}
 	// Act: ten rejected start proofs plus ten rejected logout proofs consume one bucket.
+	let replacement = "A";
+	if (csrf[0] === "A") replacement = "B";
+	const invalidCsrf = `${replacement}${csrf.slice(1)}`;
 	for (let i = 0; i < 20; i++) {
-		const response =
-			i < 10
-				? (
-						await f.started.signInStart(
-							post(s.cookie, csrf, `${ORIGIN}/auth/sign-in`),
-							"budget-client",
-						)
-					).response
-				: (
-						await f.handlers.logout(
-							post(s.cookie, `${csrf[0] === "A" ? "B" : "A"}${csrf.slice(1)}`),
-							"budget-client",
-						)
-					).response;
+		let response: Response;
+		if (i < 10) {
+			response = (
+				await f.started.signInStart(post(s.cookie, csrf, `${ORIGIN}/auth/sign-in`), "budget-client")
+			).response;
+		} else {
+			response = (await f.handlers.logout(post(s.cookie, invalidCsrf), "budget-client")).response;
+		}
 		expect(response.status).toBe(403);
 		expect(response.headers.getSetCookie()).toEqual([]);
 	}
