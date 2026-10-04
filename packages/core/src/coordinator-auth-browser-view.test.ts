@@ -6,6 +6,7 @@ import {
 	AUTH_BROWSER_FORM_ACTIONS,
 	projectAccountProfileView,
 	renderAuthBrowserNotice,
+	renderAuthLinkCompletionHopPage,
 	renderAuthLinkConfirmPage,
 	renderAuthSigninContinuePage,
 	renderAuthSigninPage,
@@ -433,6 +434,115 @@ describe("safe browser display", () => {
 			expect(JSON.stringify(page.headers)).not.toContain(secret);
 			assertPassivePage(openPage(page.body));
 		}
+	});
+});
+
+describe("explicit link completion hop", () => {
+	it.each([
+		"http://127.0.0.1:1/codemem/auth/complete",
+		"http://127.0.0.1:80/codemem/auth/complete",
+		"http://[::1]:80/codemem/auth/complete",
+		"http://[::1]:65535/codemem/auth/complete",
+	])("preserves stored literal %s in the sole escaped no-referrer anchor", async (destination) => {
+		// Arrange: shape-only fixture, not a generated or authenticated completion proof.
+		const attemptId = "attempt._- & <'\"?>";
+		const completionSecret = "A".repeat(43);
+		const input = { destination, attemptId, completionSecret, profile, session: "private-session" };
+		const href = `${destination}?attempt_id=${encodeURIComponent(attemptId)}&completion=${completionSecret}`;
+		// Act
+		const page = await renderAuthLinkCompletionHopPage(input);
+		const notice = await renderAuthBrowserNotice("expired");
+		const document = openPage(page.body);
+		// Assert: getAttribute preserves :80; URL.href would normalize it away.
+		expect(page.headers).toEqual(notice.headers);
+		expect(document.querySelector("style")?.textContent).toBe(
+			openPage(notice.body).querySelector("style")?.textContent,
+		);
+		expect(document.querySelectorAll("a")).toHaveLength(1);
+		const anchor = document.querySelector("a");
+		expect(anchor?.getAttribute("href")).toBe(href);
+		expect(page.body).toContain(`href="${href.replaceAll("&", "&amp;").replaceAll("'", "&#39;")}"`);
+		expect(anchor?.getAttribute("referrerpolicy")).toBe("no-referrer");
+		expect(anchor?.getAttribute("rel")).toBe("noreferrer");
+		expect(anchor?.hasAttribute("target")).toBe(false);
+		expect(anchor?.textContent).toBe("Continue on this computer");
+		expect(document.body.textContent).toContain("Do not share this link");
+		expect(page.body).not.toMatch(/private-session|Ada Lovelace|ada@example\.test/);
+		expect(page.body.split(completionSecret)).toHaveLength(2);
+		for (const value of [destination, attemptId, completionSecret]) {
+			expect(document.body.textContent).not.toContain(value);
+			expect(JSON.stringify(page.headers)).not.toContain(value);
+		}
+		expect(document.querySelector("form,input,button,img,code,dl,section.profile")).toBeNull();
+		expect(header(page.headers, "Location")).toBe("");
+		assertPassivePage(document);
+	});
+
+	it.each([
+		{ completionSecret: "A".repeat(42) },
+		{ completionSecret: "A".repeat(44) },
+		{ completionSecret: `${"A".repeat(42)}B` },
+		{ completionSecret: `${"A".repeat(42)}=` },
+		{ completionSecret: '"><img src=x onerror="private-secret">' },
+		{ completionSecret: new String("A".repeat(43)) },
+		{ destination: "http://localhost:80/codemem/auth/complete" },
+		{ destination: "http://127.0.0.1:80/codemem/auth/complete?private-secret" },
+		{ destination: "http://[::1]:65536/codemem/auth/complete" },
+		{ attemptId: "forged\nprivate-id" },
+	])("rejects malformed completion input %j with a fixed error", async (overrides) => {
+		// Arrange
+		const input = {
+			destination: "http://127.0.0.1:80/codemem/auth/complete",
+			attemptId: "attempt",
+			completionSecret: "A".repeat(43),
+			...overrides,
+		} as Parameters<typeof renderAuthLinkCompletionHopPage>[0];
+		// Act
+		const promise = renderAuthLinkCompletionHopPage(input);
+		// Assert
+		await expect(promise).rejects.toThrow(/^auth_browser_view_invalid_input$/);
+	});
+
+	it("requires own data without executing accessors and redacts proxy faults", async () => {
+		// Arrange
+		const data = {
+			destination: "http://127.0.0.1:80/codemem/auth/complete",
+			attemptId: "attempt",
+			completionSecret: "A".repeat(43),
+		};
+		const getter = vi.fn(() => {
+			throw new Error("private-accessor");
+		});
+		const accessor = Object.defineProperty({ ...data }, "completionSecret", { get: getter });
+		const proxy = new Proxy(data, {
+			getOwnPropertyDescriptor: () => {
+				throw new Error("private-proxy");
+			},
+		});
+		// Act
+		const outcomes = await Promise.allSettled(
+			[accessor, Object.create(data), proxy].map(renderAuthLinkCompletionHopPage),
+		);
+		// Assert
+		for (const outcome of outcomes)
+			expect(outcome).toEqual({
+				status: "rejected",
+				reason: new Error("auth_browser_view_invalid_input"),
+			});
+		expect(getter).not.toHaveBeenCalled();
+	});
+
+	it("redacts digest failure without returning a secret-bearing page", async () => {
+		// Arrange
+		vi.spyOn(crypto.subtle, "digest").mockRejectedValue(new Error("private-crypto-cause"));
+		// Act
+		const promise = renderAuthLinkCompletionHopPage({
+			destination: "http://127.0.0.1:80/codemem/auth/complete",
+			attemptId: "attempt",
+			completionSecret: "A".repeat(43),
+		});
+		// Assert
+		await expect(promise).rejects.toThrow(/^auth_browser_view_render_failed$/);
 	});
 });
 

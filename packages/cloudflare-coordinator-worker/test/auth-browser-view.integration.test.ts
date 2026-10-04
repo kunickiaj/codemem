@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
 	renderAuthBrowserNotice,
+	renderAuthLinkCompletionHopPage,
 	renderAuthLinkConfirmPage,
 	renderAuthSigninContinuePage,
 	renderAuthSigninPage,
@@ -22,6 +23,66 @@ beforeEach(() => {
 	vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("No network"));
 });
 afterEach(() => vi.restoreAllMocks());
+
+it("preserves the explicit loopback :80 completion anchor in workerd", async () => {
+	// Arrange: canonical shape only; no secret generation or authorization proof.
+	const destination = "http://[::1]:80/codemem/auth/complete";
+	const attemptId = "attempt._- & '";
+	const completionSecret = "A".repeat(43);
+	const href = `${destination}?attempt_id=${encodeURIComponent(attemptId)}&completion=${completionSecret}`;
+	const anchors: Record<string, string | null>[] = [];
+	// Act
+	const page = await renderAuthLinkCompletionHopPage({ destination, attemptId, completionSecret });
+	await new HTMLRewriter()
+		.on("a", {
+			element(element) {
+				anchors.push({
+					href: element.getAttribute("href"),
+					rel: element.getAttribute("rel"),
+					referrerPolicy: element.getAttribute("referrerpolicy"),
+				});
+			},
+		})
+		.transform(new Response(page.body))
+		.text();
+	// Assert: HTMLRewriter preserves entities, unlike the Node DOM assertion.
+	expect(anchors).toEqual([
+		{
+			href: href.replaceAll("&", "&amp;").replaceAll("'", "&#39;"),
+			rel: "noreferrer",
+			referrerPolicy: "no-referrer",
+		},
+	]);
+	expect(page.body).toContain("Continue on this computer");
+	expect(page.body).toContain("Do not share this link");
+	expect(page.body).not.toMatch(/<form|<input|<img|<script|http-equiv=/i);
+	expect(page.headers["Content-Security-Policy"]).toContain("img-src 'none'");
+	await assertPage(page, { referrerPolicy: "no-referrer" });
+});
+
+it("rejects malformed completion secrets and destinations in workerd", async () => {
+	// Arrange
+	const input = {
+		destination: "http://127.0.0.1:80/codemem/auth/complete",
+		attemptId: "attempt",
+		completionSecret: "A".repeat(43),
+	};
+	// Act
+	const outcomes = await Promise.allSettled([
+		renderAuthLinkCompletionHopPage({ ...input, completionSecret: `${"A".repeat(42)}B` }),
+		renderAuthLinkCompletionHopPage({
+			...input,
+			destination: `${input.destination}#private-secret`,
+		}),
+	]);
+	// Assert
+	for (const outcome of outcomes)
+		expect(outcome).toEqual({
+			status: "rejected",
+			reason: new Error("auth_browser_view_invalid_input"),
+		});
+	expect(globalThis.fetch).not.toHaveBeenCalled();
+});
 
 async function assertPage(
 	page: { body: string; headers: Record<string, string> },

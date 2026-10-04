@@ -1,5 +1,6 @@
 import { isCoordinatorAccountIssuer } from "./coordinator-auth-contract.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
+import { parseCoordinatorAuthLoopback } from "./coordinator-auth-loopback.js";
 import { isBrowserCsrfToken } from "./coordinator-browser-csrf.js";
 
 export const AUTH_BROWSER_FORM_ACTIONS = Object.freeze({
@@ -50,6 +51,12 @@ export interface CoordinatorAuthSigninPageInput {
 
 export interface CoordinatorAuthSigninContinuePageInput {
 	authorizationUrl: string;
+}
+
+export interface CoordinatorAuthLinkCompletionHopPageInput {
+	destination: string;
+	attemptId: string;
+	completionSecret: string;
 }
 
 export interface CoordinatorAuthBrowserPage {
@@ -323,6 +330,37 @@ async function buildPage(
 	} catch {
 		throw new Error("auth_browser_view_render_failed");
 	}
+}
+
+/** Caller releases this secret-bearing page only after confirmation commits. */
+export async function renderAuthLinkCompletionHopPage(
+	input: CoordinatorAuthLinkCompletionHopPageInput,
+): Promise<CoordinatorAuthBrowserPage> {
+	let href: string;
+	try {
+		const data = record(input);
+		if (!data) return invalidInput();
+		const destination = ownData(data, "destination", { rejectAccessor: true });
+		const attemptId = ownData(data, "attemptId", { rejectAccessor: true });
+		const completionSecret = ownData(data, "completionSecret", { rejectAccessor: true });
+		const parsed = parseCoordinatorAuthLoopback(destination);
+		if (
+			!parsed.ok ||
+			!isAuthControllerId(attemptId) ||
+			typeof completionSecret !== "string" ||
+			completionSecret.length !== 43 ||
+			!/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/.test(completionSecret)
+		)
+			return invalidInput();
+		// Concatenation preserves the saved literal, including an explicit :80.
+		href = `${parsed.destination}?attempt_id=${encodeURIComponent(attemptId)}&completion=${completionSecret}`;
+	} catch {
+		return invalidInput();
+	}
+	return buildPage(
+		"Continue on this computer",
+		`<h1>Continue on this computer</h1><p>Return to the computer where you started linking to finish.</p><p><strong>Do not share this link.</strong> It lets your computer finish linking.</p><div class="actions"><a class="link" href="${escapeHtml(href)}" referrerpolicy="no-referrer" rel="noreferrer">Continue on this computer</a></div>`,
+	);
 }
 
 export async function renderAuthSigninPage(

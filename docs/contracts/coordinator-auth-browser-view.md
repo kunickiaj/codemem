@@ -13,6 +13,7 @@ This module makes a pure HTML page and headers from already trusted inputs. It d
 | `renderCurrentAccountPage(input)` | Profile, issuer, Identity, and CSRF token; returns HTML and headers. |
 | `renderAuthSigninPage(input)` | Canonical `csrfToken` only; returns a fixed sign-in POST form and headers. |
 | `renderAuthSigninContinuePage(input)` | Trusted SDK-produced `authorizationUrl`; returns an explicit Google continuation link and headers. |
+| `renderAuthLinkCompletionHopPage(input)` | Saved literal `destination`, `attemptId`, and server-generated `completionSecret`; returns one explicit return-to-computer link. |
 | `renderAuthBrowserNotice(kind)` | Fixed `expired`, `unavailable`, `signed_out`, `signin_in_progress`, `signin_unavailable`, or `auth_unavailable` notice; returns HTML and headers. `auth_unavailable` has the static title “Sign-in or linking unavailable” and no form. |
 
 Page renderers return promises. An omitted profile uses the fallback display.
@@ -36,8 +37,9 @@ state, nonce, and code challenge in its escaped URL, never as debug/body text.
 
 The fixed form actions are `POST /auth/link/confirm`, `POST /auth/link/cancel`,
 `POST /auth/logout`, and `POST /auth/sign-in`. Retry and signed-out notices link
-with `GET` to `/auth/sign-in`. Callers cannot choose a form action or notice link;
-only the continuation renderer accepts a separately constrained provider URL.
+with `GET` to `/auth/sign-in`. Callers cannot choose a form action or notice link.
+The provider continuation and link-completion renderers accept separately
+constrained trusted destinations, never a browser-chosen redirect.
 
 ## Sign-in continuation boundary
 
@@ -61,6 +63,26 @@ rather than hardcoding its authorization endpoint path.
 The continuation page has one explicit link with `referrerpolicy="no-referrer"`
 and `rel="noreferrer"`; it has no form, script, automatic redirect, or meta
 refresh. It renders no Identity, device, profile, or provider-error metadata.
+
+## Return-to-computer boundary
+
+The completion page accepts only the saved literal IPv4 or IPv6 loopback address
+validated by `parseCoordinatorAuthLoopback`, a valid attempt ID, and a canonical
+43-character encoding of a 32-byte completion secret. Shape validation proves
+neither random generation nor authorization. The caller must generate the secret
+and read the destination from the matching verified attempt, not from form input.
+
+The link appends exactly `attempt_id` and `completion` query fields to the saved
+literal. It does not normalize an explicit `:80` or bracketed IPv6 address. The
+secret appears only in the escaped link, not visible text, logs, or error labels;
+the page and response object must never be logged. It warns “Do not share this
+link” and uses `no-referrer` on both the page and anchor, with `rel="noreferrer"`.
+
+There is no form, script, refresh, automatic redirect, or CSP exception. The
+handler must build the page before writing confirmation and release it only
+after confirmation commits. Rendering alone does not confirm or finalize a link;
+the requesting device must still supply its separate proof. Actual browser
+navigation and local-network permission behavior remain validation gates.
 
 ## Profile projection
 
