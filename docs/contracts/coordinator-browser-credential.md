@@ -135,3 +135,7 @@ This helper does not implement CSRF, server keys, referrer or Origin checks,
 logout, account linking, revocation, cleanup, metadata persistence, secret
 erasure, or expiration enforcement. Real Chrome tests, including stored IPv4 and
 IPv6 loopback completion behavior, remain future integration gates.
+
+The unmounted [sign-in-start factory](coordinator-browser-signin-start.md) composes
+these headers with explicit Origin/CSRF checks and durable binder admission. It
+does not make browser routes live.

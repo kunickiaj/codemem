@@ -32,13 +32,13 @@ function response(body: unknown, status = 200): Response {
 	});
 }
 
-function fixtureState() {
+function fixtureState(issuer: string) {
 	const metadata: Record<string, unknown> = {
-		issuer: ISSUER,
-		authorization_endpoint: `${ISSUER}/authorize`,
-		token_endpoint: `${ISSUER}/token`,
-		jwks_uri: `${ISSUER}/jwks`,
-		userinfo_endpoint: `${ISSUER}/userinfo`,
+		issuer,
+		authorization_endpoint: `${issuer}/authorize`,
+		token_endpoint: `${issuer}/token`,
+		jwks_uri: `${issuer}/jwks`,
+		userinfo_endpoint: `${issuer}/userinfo`,
 		response_types_supported: ["code"],
 		subject_types_supported: ["public"],
 		id_token_signing_alg_values_supported: ["RS256"],
@@ -49,7 +49,7 @@ function fixtureState() {
 	const settings = { failure: "", omitIdToken: false, signature: "valid", alg: "RS256" };
 	const codes = new Map<string, { nonce: string; challenge: string }>();
 	const requests: { url: string; options: CustomFetchOptions }[] = [];
-	return { metadata, claims, userInfo, settings, codes, requests };
+	return { issuer, metadata, claims, userInfo, settings, codes, requests };
 }
 
 type FixtureState = ReturnType<typeof fixtureState>;
@@ -58,7 +58,7 @@ function idToken(state: FixtureState, nonce: string): string {
 	const { settings, claims } = state;
 	const now = Math.floor(Date.now() / 1000);
 	const payload = {
-		iss: ISSUER,
+		iss: state.issuer,
 		aud: PROVIDER.clientId,
 		sub: "fixture-subject",
 		iat: now,
@@ -102,15 +102,15 @@ async function token(state: FixtureState, options: CustomFetchOptions): Promise<
 }
 
 function fixtureTransport(state: FixtureState): CustomFetch {
-	const { requests, settings, metadata, userInfo } = state;
+	const { issuer, requests, settings, metadata, userInfo } = state;
 	const transport: CustomFetch = async (url, options) => {
 		requests.push({ url, options });
 		if (url === settings.failure)
 			throw new Error("fixture-secret fixture-access-token backend failure");
-		if (url === `${ISSUER}/.well-known/openid-configuration`) return response(metadata);
-		if (url === `${ISSUER}/token`) return token(state, options);
-		if (url === `${ISSUER}/jwks`) return response({ keys: [jwk] });
-		if (url === `${ISSUER}/userinfo`) {
+		if (url === `${issuer}/.well-known/openid-configuration`) return response(metadata);
+		if (url === `${issuer}/token`) return token(state, options);
+		if (url === `${issuer}/jwks`) return response({ keys: [jwk] });
+		if (url === `${issuer}/userinfo`) {
 			if (new Headers(options.headers).get("authorization") !== "Bearer fixture-access-token") {
 				throw new Error("Missing userinfo bearer token");
 			}
@@ -123,7 +123,10 @@ function fixtureTransport(state: FixtureState): CustomFetch {
 
 async function beginTransaction(state: FixtureState, fetch: CustomFetch) {
 	const { codes, requests } = state;
-	const result = await createCoordinatorOidcClient({ ...PROVIDER }, { fetch });
+	const result = await createCoordinatorOidcClient(
+		{ ...PROVIDER, issuer: state.issuer },
+		{ fetch },
+	);
 	if (!result.ok) throw new Error(result.error);
 	const request = await result.client.createAuthorizationRequest();
 	const url = new URL(request.authorizationUrl);
@@ -143,8 +146,8 @@ async function beginTransaction(state: FixtureState, fetch: CustomFetch) {
 	};
 }
 
-export function oidcFixture() {
-	const state = fixtureState();
+export function oidcFixture(options: { issuer?: string } = {}) {
+	const state = fixtureState(options.issuer ?? ISSUER);
 	const fetch = vi.fn(fixtureTransport(state));
 	return { ...state, fetch, begin: () => beginTransaction(state, fetch) };
 }
