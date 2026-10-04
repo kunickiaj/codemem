@@ -31,6 +31,7 @@ type Rejection = (typeof BROWSER_FORM_REJECTIONS)[number];
 type Failure = Readonly<{ ok: false; error: Rejection; retryAfterS?: number }>;
 export type BrowserFormGuardResult =
 	| Readonly<{ ok: true; action: "session_logout"; cookieHash: string }>
+	| Readonly<{ ok: true; action: "signin_start"; cookieHash: string }>
 	| Readonly<{ ok: true; action: "transaction_attempt"; cookieHash: string; attemptId: string }>
 	| Failure;
 export interface BrowserFormGuardInput {
@@ -43,6 +44,11 @@ export interface BrowserFormGuardInput {
 	limit?: number;
 }
 const INVALID_INPUT: Failure = Object.freeze({ ok: false, error: "invalid_input" });
+const ACTION_COOKIE_KINDS: Readonly<Record<BrowserFormAction, CookieKind>> = Object.freeze({
+	transaction_attempt: "transaction",
+	session_logout: "session",
+	signin_start: "start",
+});
 const ratePolicies = new WeakMap<InMemoryRequestRateLimiter, Map<string, number>>();
 const headersGet = Headers.prototype.get;
 function nativeRequestGetter(name: string): ((this: Request) => unknown) | undefined {
@@ -144,7 +150,7 @@ function captureInput(input: BrowserFormGuardInput): Snapshot {
 	const limit = suppliedLimit === undefined ? 20 : suppliedLimit;
 	if (
 		!(request instanceof Request) ||
-		(action !== "session_logout" && action !== "transaction_attempt")
+		(action !== "session_logout" && action !== "transaction_attempt" && action !== "signin_start")
 	) {
 		throw INVALID_INPUT;
 	}
@@ -158,7 +164,7 @@ function captureInput(input: BrowserFormGuardInput): Snapshot {
 		scope,
 		csrfKey,
 		action,
-		kind: action === "session_logout" ? "session" : "transaction",
+		kind: ACTION_COOKIE_KINDS[action],
 		limiter: limiter as InMemoryRequestRateLimiter,
 		check,
 		clientKey,
@@ -281,7 +287,7 @@ async function verifyForm(snapshot: Snapshot): Promise<BrowserFormGuardResult> {
 		))
 	)
 		return reject("csrf_invalid");
-	if (form.action === "session_logout") {
+	if (form.action === "session_logout" || form.action === "signin_start") {
 		return Object.freeze({ ok: true, action: form.action, cookieHash: cookie.cookieHash });
 	}
 	return Object.freeze({

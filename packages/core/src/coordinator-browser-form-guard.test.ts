@@ -3,6 +3,7 @@ import {
 	BROWSER_COOKIE_NAMES,
 	type CookieKind,
 	issueBrowserCookie,
+	reissueStartCookieAsTransaction,
 } from "./coordinator-browser-credential.js";
 import { importBrowserCsrfKey, issueBrowserCsrfToken } from "./coordinator-browser-csrf.js";
 import { guardBrowserForm } from "./coordinator-browser-form-guard.js";
@@ -64,7 +65,12 @@ async function fixture(kind: CookieKind = "transaction") {
 	const credential = await issueBrowserCookie(kind);
 	const cookie = credential.setCookie.split(";")[0];
 	const token = await issueBrowserCsrfToken(csrfKey, credential.secret, kind, binding);
-	const action = kind === "transaction" ? "transaction_attempt" : "session_logout";
+	const actions = {
+		transaction: "transaction_attempt",
+		session: "session_logout",
+		start: "signin_start",
+	} as const;
+	const action = actions[kind];
 	const text = kind === "transaction" ? `csrf=${token}&attempt_id=${ATTEMPT}` : `csrf=${token}`;
 	const headers = new Headers({
 		origin: ORIGIN,
@@ -101,11 +107,13 @@ function untyped(input: unknown) {
 }
 
 describe("browser form guard caller contract", () => {
-	it.each(["transaction", "session"] as const)(
+	it.each(["transaction", "session", "start"] as const)(
 		"verifies %s without claiming authentication",
 		async (kind) => {
 			// Arrange: real minted credentials, deliberately no database or authenticated row.
 			const f = await fixture(kind);
+			const text = vi.spyOn(f.input.request, "text");
+			const formData = vi.spyOn(f.input.request, "formData");
 			// Act
 			const result = await guardBrowserForm(f.input);
 			// Assert: caller must subsequently look up cookieHash and validate the live row.
@@ -116,6 +124,8 @@ describe("browser form guard caller contract", () => {
 			expect(Object.isFrozen(result)).toBe(true);
 			expect(f.check).toHaveBeenCalledOnce();
 			expect(f.check.mock.calls[0]?.[1]).toBe(20);
+			expect(text).not.toHaveBeenCalled();
+			expect(formData).not.toHaveBeenCalled();
 			for (const secret of [f.token, f.cookie, Buffer.from(RAW_KEY).toString("hex")]) {
 				expect(JSON.stringify(result)).not.toContain(secret);
 			}
@@ -454,19 +464,22 @@ describe("coordinator-wide limiter policy", () => {
 		const check = vi.spyOn(limiter, "check");
 		const transaction = await fixture();
 		const session = await fixture("session");
+		const start = await fixture("start");
 		// Act
-		const first = await guardBrowserForm({ ...transaction.input, limiter, limit: 2 });
-		const second = await guardBrowserForm({ ...session.input, limiter, limit: 2 });
-		// Assert: both real cookie/MAC action kinds share the chosen policy.
+		const first = await guardBrowserForm({ ...transaction.input, limiter, limit: 3 });
+		const second = await guardBrowserForm({ ...session.input, limiter, limit: 3 });
+		const third = await guardBrowserForm({ ...start.input, limiter, limit: 3 });
+		// Assert: all three real cookie/MAC action kinds share the chosen policy.
 		expect(first.ok).toBe(true);
 		expect(second.ok).toBe(true);
+		expect(third.ok).toBe(true);
 		for (const [limit, clientKey] of [
-			[3, "trusted-client"],
+			[4, "trusted-client"],
 			[undefined, "trusted-client"],
 			[20, "other-client"],
 		] as const) {
 			// Arrange
-			const f = await fixture("session");
+			const f = await fixture("start");
 			check.mockClear();
 			// Act
 			const result = await guardBrowserForm({ ...f.input, limiter, limit, clientKey });
@@ -478,16 +491,16 @@ describe("coordinator-wide limiter policy", () => {
 		}
 		// Arrange / Act: the original policy remains exhausted; rollover cannot replace it.
 		const exhausted = await fixture();
-		const original = await guardBrowserForm({ ...exhausted.input, limiter, limit: 2 });
+		const original = await guardBrowserForm({ ...exhausted.input, limiter, limit: 3 });
 		clock.mockReturnValue(61_001);
 		const changed = await fixture();
 		check.mockClear();
-		const afterWindow = await guardBrowserForm({ ...changed.input, limiter, limit: 3 });
+		const afterWindow = await guardBrowserForm({ ...changed.input, limiter, limit: 4 });
 		const callsAfterMismatch = check.mock.calls.length;
 		const renewed = await fixture();
-		const samePolicy = await guardBrowserForm({ ...renewed.input, limiter, limit: 2 });
+		const samePolicy = await guardBrowserForm({ ...renewed.input, limiter, limit: 3 });
 		// Assert
-		expect(original).toEqual({ ok: false, error: "rate_limited", retryAfterS: 30 });
+		expect(original).toEqual({ ok: false, error: "rate_limited", retryAfterS: 20 });
 		deny(afterWindow, "invalid_input");
 		expect(callsAfterMismatch).toBe(0);
 		expect(changed.source.pull).not.toHaveBeenCalled();
@@ -604,8 +617,9 @@ describe("cross-site requests cannot exhaust a trusted client's quota", () => {
 			const limiter = createInMemoryRequestRateLimiter({ windowMs: 60_000, now: () => 1000 });
 			const check = vi.spyOn(limiter, "check");
 			const limit = 3;
-			const attacks = await Promise.all(Array.from({ length: limit + 2 }, () => fixture()));
-			const legitimate = await Promise.all(Array.from({ length: limit + 1 }, () => fixture()));
+			const kind = _forgery === "wrong-origin" ? "start" : "transaction";
+			const attacks = await Promise.all(Array.from({ length: limit + 2 }, () => fixture(kind)));
+			const legitimate = await Promise.all(Array.from({ length: limit + 1 }, () => fixture(kind)));
 			for (const f of attacks) {
 				if (origin === null) f.headers.delete("origin");
 				else f.headers.set("origin", origin);
@@ -614,7 +628,7 @@ describe("cross-site requests cannot exhaust a trusted client's quota", () => {
 			// Act: all attacks share the legitimate client's trusted key and coordinator.
 			const rejected: Result[] = [];
 			for (const f of attacks)
-				rejected.push(await guardBrowserForm({ ...f.input, limiter, limit }));
+				rejected.push(await guardBrowserForm({ ...f.input, limiter, limit: 100 }));
 			const callsAfterAttacks = check.mock.calls.length;
 			const admitted: Result[] = [];
 			for (const f of legitimate)
@@ -627,12 +641,10 @@ describe("cross-site requests cannot exhaust a trusted client's quota", () => {
 			}
 			expect(callsAfterAttacks).toBe(0);
 			for (const [index, f] of legitimate.slice(0, limit).entries()) {
-				expect(admitted[index]).toEqual({
-					ok: true,
-					action: "transaction_attempt",
-					cookieHash: f.credential.cookieHash,
-					attemptId: ATTEMPT,
-				});
+				const expected = { ok: true, action: f.input.action, cookieHash: f.credential.cookieHash };
+				expect(admitted[index]).toEqual(
+					kind === "transaction" ? { ...expected, attemptId: ATTEMPT } : expected,
+				);
 			}
 			expect(admitted[limit]).toEqual({ ok: false, error: "rate_limited", retryAfterS: 20 });
 			expect(check).toHaveBeenCalledTimes(limit + 1);
@@ -920,18 +932,19 @@ describe("cookie, form and MAC checks", () => {
 	});
 });
 
-describe("CSRF binding", () => {
+describe.each(["transaction", "start"] as const)("%s CSRF binding", (kind) => {
+	const suffix = kind === "transaction" ? `&attempt_id=${ATTEMPT}` : "";
 	it.each(["key", "cookie", "kind", "coordinator", "origin", "revision", "tamper"])(
 		"rejects changed CSRF binding %s",
 		async (change) => {
 			// Arrange: retain the otherwise-valid cookie to avoid confounding scope checks.
-			const f = await fixture();
+			const f = await fixture(kind);
 			if (change === "key")
 				f.input.csrfKey = await importBrowserCsrfKey(new Uint8Array(32).fill(99));
 			if (change === "cookie") {
 				f.headers.set(
 					"cookie",
-					`${BROWSER_COOKIE_NAMES.transaction}=${Buffer.alloc(32, 99).toString("base64url")}`,
+					`${BROWSER_COOKIE_NAMES[kind]}=${Buffer.alloc(32, 99).toString("base64url")}`,
 				);
 				f.input.request = request(f.headers, f.source.body);
 			}
@@ -943,7 +956,7 @@ describe("CSRF binding", () => {
 					"session",
 					f.input.scope,
 				);
-				replaceBody(f, `csrf=${token}&attempt_id=${ATTEMPT}`);
+				replaceBody(f, `csrf=${token}${suffix}`);
 			}
 			if (change === "coordinator") f.input.scope.store.coordinatorId = "changed-coordinator";
 			if (change === "revision") f.input.scope.store.revision = "b".repeat(64);
@@ -955,7 +968,8 @@ describe("CSRF binding", () => {
 			if (change === "tamper") {
 				const bytes = Buffer.from(f.token, "base64url");
 				bytes[0] ^= 1;
-				replaceBody(f, `csrf=${bytes.toString("base64url")}&attempt_id=${ATTEMPT}`);
+				const token = bytes.toString("base64url");
+				replaceBody(f, `csrf=${token}${suffix}`);
 			}
 			// Act
 			const result = await guardBrowserForm(f.input);
@@ -965,10 +979,84 @@ describe("CSRF binding", () => {
 	);
 	it("rejects a forged opaque key at the CSRF gate", async () => {
 		// Arrange
-		const f = await fixture();
+		const f = await fixture(kind);
 		// Act
 		const result = await untyped({ ...f.input, csrfKey: {} });
 		// Assert
 		deny(result, "csrf_invalid", [f.token, f.cookie]);
+	});
+});
+
+describe("signin start guard contract", () => {
+	it.each(["", "x", "A".repeat(86)])("rejects invalid start csrf %j", async (token) => {
+		// Arrange
+		const f = await fixture("start");
+		replaceBody(f, `csrf=${token}`);
+		// Act
+		const result = await guardBrowserForm(f.input);
+		// Assert
+		deny(result, "csrf_invalid", [f.token, f.cookie]);
+	});
+	it.each([
+		"",
+		"role=admin",
+		"csrf=x&actor=x",
+		"csrf=x&controller=x",
+		"csrf=x&%63srf=y",
+		"csrf=x&attempt_id=x",
+		new Uint8Array([255]),
+	])("rejects malformed start form %#", async (text) => {
+		// Arrange
+		const f = await fixture("start");
+		replaceBody(f, text);
+		// Act
+		const result = await guardBrowserForm(f.input);
+		// Assert
+		deny(result, "form_invalid", [f.token, f.cookie]);
+	});
+	it.each([true, false])(
+		"requires the start cookie among mixed cookies: %s",
+		async (includeStart) => {
+			// Arrange: independently issued old-kind cookies must not substitute for start.
+			const f = await fixture("start");
+			const transaction = await fixture();
+			const session = await fixture("session");
+			const cookies = [transaction.cookie, session.cookie];
+			if (includeStart) cookies.push(f.cookie);
+			f.headers.set("cookie", cookies.join("; "));
+			f.input.request = request(f.headers, f.source.body);
+			// Act
+			const result = await guardBrowserForm(f.input);
+			// Assert: exact output is only a lookup input, never authorization or promotion.
+			if (includeStart) {
+				expect(result).toEqual({
+					ok: true,
+					action: "signin_start",
+					cookieHash: f.credential.cookieHash,
+				});
+				expect(Object.isFrozen(result)).toBe(true);
+			} else {
+				deny(result, "cookie_missing");
+				expect(f.source.pull).not.toHaveBeenCalled();
+			}
+		},
+	);
+	it("cannot reuse either purpose token after same-byte header promotion", async () => {
+		// Arrange: header promotion preserves bytes, not CSRF purpose or authorization.
+		const start = await fixture("start");
+		const transaction = await fixture();
+		transaction.headers.set(
+			"cookie",
+			reissueStartCookieAsTransaction(start.credential.secret).split(";")[0],
+		);
+		replaceBody(transaction, `csrf=${start.token}&attempt_id=${ATTEMPT}`);
+		replaceBody(start, `csrf=${transaction.token}`);
+		// Act
+		const oldAction = await guardBrowserForm(transaction.input);
+		const startAction = await guardBrowserForm(start.input);
+		// Assert: deterministic entropy makes both issued cookies byte-identical.
+		expect(transaction.credential.cookieHash).toBe(start.credential.cookieHash);
+		deny(oldAction, "csrf_invalid", [start.token, transaction.token]);
+		deny(startAction, "csrf_invalid", [start.token, transaction.token]);
 	});
 });

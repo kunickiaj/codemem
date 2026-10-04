@@ -24,7 +24,7 @@ their own timeout: transport policy must protect handlers from slow senders.
 | API | Result or rule |
 | --- | --- |
 | `readBrowserFormBody({ body, contentLength })` | Async read result: owned bytes, `form_invalid`, or `body_too_large`. |
-| `parseBrowserFormBody(bytes, action)` | Synchronous parsed result or `form_invalid`. `action` is `transaction_attempt` or `session_logout`. |
+| `parseBrowserFormBody(bytes, action)` | Synchronous parsed result or `form_invalid`. `action` is `transaction_attempt`, `session_logout`, or `signin_start`. |
 | `BROWSER_FORM_BODY_MAX_BYTES` | `4096` actual body bytes. |
 
 The read input must be an own-data record. `body` is a native unlocked, undisturbed `ReadableStream<Uint8Array>` or `null`; missing, locked, used, or invalid streams produce `form_invalid`.
@@ -64,6 +64,7 @@ Malformed percent escapes, invalid UTF-8, overlong sequences, surrogate data, a 
 | --- | --- |
 | `transaction_attempt` | `csrf`, `attempt_id` |
 | `session_logout` | `csrf` |
+| `signin_start` | `csrf` |
 
 `attempt_id` uses the existing controller-ID predicate: a trimmed nonempty string of at most 256 characters with no Unicode control, format, or surrogate characters. `csrf` must be present but may be empty at this parsing boundary.
 
@@ -73,8 +74,10 @@ The returned outer result objects are frozen. Their values are sensitive interna
 
 A caller must separately enforce method, content type, configured Origin,
 request/client limits, and any cookie and live-store lookup. It must validate
-the CSRF token shape and MAC, then apply the chosen transaction or logout
-operation.
+the CSRF token shape and MAC, then apply the chosen operation. `signin_start`
+accepts no `attempt_id` or other caller-nominated metadata. Its future handler
+must refuse an existing active ceremony and commit durable unique-binder
+admission before promoting the start credential; parsing does none of this.
 
 This helper does not perform cryptography, authentication, authorization, Origin or cookie checks, client limits, database access, key operations, or network access. It neither injects a root CSRF server key nor changes loopback literal policy, routes, Worker behavior, configuration, environment, stores, or schemas.
 

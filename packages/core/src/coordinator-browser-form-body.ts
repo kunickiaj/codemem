@@ -1,7 +1,7 @@
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 
 export const BROWSER_FORM_BODY_MAX_BYTES = 4096;
-export type BrowserFormAction = "transaction_attempt" | "session_logout";
+export type BrowserFormAction = "transaction_attempt" | "session_logout" | "signin_start";
 type FormInvalid = Readonly<{ ok: false; error: "form_invalid" }>;
 type ReadResult =
 	| Readonly<{ ok: true; bytes: Uint8Array<ArrayBuffer> }>
@@ -10,6 +10,7 @@ type ReadResult =
 type ParseResult =
 	| FormInvalid
 	| Readonly<{ ok: true; action: "session_logout"; csrf: string }>
+	| Readonly<{ ok: true; action: "signin_start"; csrf: string }>
 	| Readonly<{ ok: true; action: "transaction_attempt"; csrf: string; attemptId: string }>;
 const FORM_INVALID: FormInvalid = Object.freeze({ ok: false, error: "form_invalid" });
 const BODY_TOO_LARGE = Object.freeze({ ok: false, error: "body_too_large" } as const);
@@ -133,12 +134,19 @@ function decodeFields(raw: string, action: BrowserFormAction): Readonly<Record<s
 /** Grammar and field checks only; this does not authenticate CSRF or an attempt. */
 export function parseBrowserFormBody(bytes: Uint8Array, action: BrowserFormAction): ParseResult {
 	try {
-		if (action !== "session_logout" && action !== "transaction_attempt") return FORM_INVALID;
+		if (
+			action !== "session_logout" &&
+			action !== "transaction_attempt" &&
+			action !== "signin_start"
+		)
+			return FORM_INVALID;
 		const fields = decodeFields(decodeRawBody(bytes), action);
 		if (!Object.hasOwn(fields, "csrf")) return FORM_INVALID;
 		const csrf = fields.csrf;
 		if (typeof csrf !== "string") return FORM_INVALID;
-		if (action === "session_logout") return Object.freeze({ ok: true, action, csrf });
+		if (action === "session_logout" || action === "signin_start") {
+			return Object.freeze({ ok: true, action, csrf });
+		}
 		const attemptId = fields.attempt_id;
 		if (!isAuthControllerId(attemptId)) return FORM_INVALID;
 		return Object.freeze({ ok: true, action, csrf, attemptId });

@@ -24,7 +24,7 @@ It does not authenticate or authorize. A valid cookie and CSRF MAC can exist for
 | `request` | Native `Request`; native method, URL, headers, and body are read once in the initial snapshot. |
 | `scope` | Trusted CSRF scope: configured canonical HTTPS public origin, coordinator ID, and 64-character lowercase revision. |
 | `csrfKey` | Already imported opaque server CSRF key. |
-| `action` | Fixed caller choice: `transaction_attempt` or `session_logout`; selects cookie kind and exact fields. |
+| `action` | Fixed caller choice: `transaction_attempt`, `session_logout`, or `signin_start`; selects cookie kind and exact fields. |
 | `limiter` | Injected `InMemoryRequestRateLimiter`. |
 | `clientKey` | Trusted platform identity, never an untrusted request header. |
 | `limit` | Optional safe integer from 1 through 1,000; default 20. Must remain fixed per coordinator and reused limiter. |
@@ -34,6 +34,7 @@ The promise returns a frozen success object, or frozen `{ ok: false, error }` wi
 ```ts
 { ok: true, action: "session_logout", cookieHash }
 { ok: true, action: "transaction_attempt", cookieHash, attemptId }
+{ ok: true, action: "signin_start", cookieHash }
 { ok: false, error: "rate_limited", retryAfterS: 1 }
 ```
 
@@ -62,7 +63,7 @@ result is `invalid_input`. A denial is `rate_limited`, with its finite numeric
 `retryAfterS` rounded up and clamped to 1–3,600 seconds. Allowed results must have
 a nonnegative integer retry hint.
 
-Buckets use this JSON key, so actions share a coordinator/client bucket while coordinators remain separate:
+Buckets use this JSON key, so all three actions share a coordinator/client bucket while coordinators remain separate:
 
 ```ts
 JSON.stringify(["browser-form", coordinatorId, clientKey])
@@ -99,6 +100,7 @@ The action is private caller policy, not a browser choice:
 | --- | --- | --- |
 | `transaction_attempt` | `transaction` | `csrf`, `attempt_id` |
 | `session_logout` | `session` | `csrf` |
+| `signin_start` | `start` | `csrf` |
 
 Future link confirmation and cancellation both use the transaction action and must resolve the original cookie-bound attempt before mutation.
 
@@ -113,7 +115,13 @@ its opaque secret only for CSRF verification. See
 
 `csrf_invalid` covers malformed token shape or failed MAC. A missing/wrong key handle reaches this late validation path. Before mounting, deployment must import an independent valid 32-byte key; this helper does not provision, load, cache, rotate, or otherwise manage keys. All instances need compatible server key material.
 
-After success, a handler still needs a fresh database lookup using the original cookie binding, account/transaction state checks, and an atomic store mutation. `Verified` means transport bindings passed; it does not mean authenticated.
+After success, authenticated handlers still need a fresh database lookup using
+the original cookie binding, account/transaction state checks, and an atomic
+store mutation. `signin_start` has no live start row: its handler must refuse an
+existing active ceremony and commit durable unique-binder admission before
+appending a promoted transaction header. A valid start MAC does not issue a
+transaction, enforce one-shot admission, promote a cookie, or grant account
+access. `Verified` means transport bindings passed, not authenticated.
 
 ## Limiter and deployment limits
 
