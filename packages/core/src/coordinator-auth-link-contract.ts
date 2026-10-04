@@ -125,6 +125,10 @@ export interface CoordinatorAuthLinkStore {
 		input: CoordinatorAuthLinkConfirmInput,
 		config: CoordinatorAuthLinkConfig,
 	): Promise<CoordinatorAuthLinkResult>;
+	readAuthLinkCompletionDestination(
+		input: CoordinatorAuthLinkClaimInput,
+		config: CoordinatorAuthLinkConfig,
+	): Promise<{ destination: string } | null>;
 	finalizeAuthLinkAttempt(
 		input: CoordinatorAuthLinkFinalizeInput,
 		config: CoordinatorAuthLinkConfig,

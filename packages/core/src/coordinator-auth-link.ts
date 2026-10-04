@@ -514,6 +514,28 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			],
 		});
 	}
+	/** Read-only snapshot; confirmation must still atomically check the browser proof and state. */
+	async readAuthLinkCompletionDestination(
+		input: CoordinatorAuthLinkClaimInput,
+		config: CoordinatorAuthLinkConfig,
+	): Promise<{ destination: string } | null> {
+		const c = captureConfig(config);
+		const i = this.browserInput(input);
+		if (!c || !i || !c.enabled) return null;
+		const now = authLinkNow(this.clock);
+		const row = await this.read(i.attemptId, c);
+		if (
+			!row ||
+			!configMatches(row, c) ||
+			row.attempt_id !== i.attemptId ||
+			row.browser_transaction_hash !== i.browserTransactionHash ||
+			row.state !== "oidc_verified" ||
+			!(row.created_at_ms <= now && now < row.expires_at_ms) ||
+			!parseCoordinatorAuthLoopback(row.loopback_redirect).ok
+		)
+			return null;
+		return { destination: row.loopback_redirect };
+	}
 	async getAuthLinkAttemptStatus(
 		attemptId: string,
 		requester: CoordinatorAuthLinkRequester,

@@ -571,6 +571,12 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	) {
 		return this.authLinks.confirmAuthLinkAttempt(input, config);
 	}
+	async readAuthLinkCompletionDestination(
+		input: CoordinatorAuthLinkClaimInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authLinks.readAuthLinkCompletionDestination(input, config);
+	}
 	async finalizeAuthLinkAttempt(
 		input: CoordinatorAuthLinkFinalizeInput,
 		config: CoordinatorAuthLinkConfig,

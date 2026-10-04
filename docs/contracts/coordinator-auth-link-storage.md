@@ -34,11 +34,18 @@ All public status is limited to:
 { "attemptId": "attempt-1", "state": "pending", "expiresAtMs": 600000 }
 ```
 
-No result exposes hashes, raw subject, loopback URL, link ID, browser
+No public result exposes hashes, raw subject, loopback URL, link ID, browser
 credentials, provider claims, or secrets. Create additionally returns the
 `identityId` derived from the active controller record. OIDC recording returns
 only its target IDs: `identityId`, `groupId`, and `deviceId`. Other successful
 mutations return `applied` or `existing` plus public status.
+
+One internal read, `readAuthLinkCompletionDestination`, returns only the saved
+loopback address to trusted browser-handler code. It requires the matching
+browser transaction, current configuration, and an unexpired `oidc_verified`
+attempt. It revalidates the stored literal address without normalizing it, so
+IPv4, IPv6, and an explicit `:80` remain exactly as the device requested.
+This is not a public status field or permission to choose a new destination.
 
 ## Store interface
 
@@ -53,6 +60,7 @@ Source candidate: `packages/core/src/coordinator-auth-link.ts`.
 | `finalizeAuthLinkAttempt(body, config)` | Receives the verified signed-request bindings and server-computed proof hashes: purpose, coordinator, attempt, group, controller-derived actor, device, fingerprint, and matching signer. `confirmed` → `finalized`, with one link and audit effect. |
 | `failAuthLinkAttempt({ attemptId, requester, reason }, config)` | Device may cancel only; matching browser may cancel or report provider/config failure. It terminally fails an unfinished attempt. |
 | `getAuthLinkAttemptStatus(attemptId, requester, config)` | Authenticated matching device or claimed browser reads public status only; expiry is derived for unfinished attempts. |
+| `readAuthLinkCompletionDestination({ attemptId, browserTransactionHash }, config)` | Internal read only: returns `{ destination }` for the matching current verified attempt, or `null`. Rejects future-born/expired attempts and invalid saved destinations; changes no state. |
 
 `session_redeemed` belongs to the separate
 [browser-session store](coordinator-auth-session-storage.md), not these linking operations.
