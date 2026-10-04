@@ -417,7 +417,7 @@ export async function renderAuthLinkConfirmPage(
 		});
 	return buildPage(
 		"Link account",
-		`<h1>Link account</h1>${profileMarkup(captured.profile)}<section aria-label="Link details"><h2>Link details</h2><dl>${entities}</dl><p>Linking this account does not change project sharing, memories, or device keys.</p></section><div class="actions">${actions}</div>`,
+		`<h1>Link account</h1>${profileMarkup(captured.profile)}<section aria-label="Link details"><h2>Link details</h2><dl>${entities}</dl><p>Linking this account does not change project sharing, memories, or device keys.</p></section><p>Only confirm if you started linking on this computer. Do not share the link used to start this request.</p><div class="actions">${actions}</div>`,
 		captured.issuer,
 		{ referrerPolicy: "same-origin" },
 	);
@@ -440,6 +440,7 @@ export async function renderAuthBrowserNotice(
 		| "expired"
 		| "unavailable"
 		| "signed_out"
+		| "link_cancelled"
 		| "signin_in_progress"
 		| "signin_unavailable"
 		| "auth_unavailable",
@@ -447,6 +448,11 @@ export async function renderAuthBrowserNotice(
 	let title: string;
 	let content: string;
 	switch (kind) {
+		case "link_cancelled":
+			title = "Linking cancelled";
+			content =
+				"<p>No account was linked in this attempt. Return to your terminal to start again.</p>";
+			break;
 		case "auth_unavailable":
 			title = "Sign-in or linking unavailable";
 			content = "<p>Return to the flow you started and try again.</p>";

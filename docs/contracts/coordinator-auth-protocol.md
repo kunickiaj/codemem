@@ -88,9 +88,30 @@ The confirmation page names the account, target Identity, and requesting device.
 Its explicit confirmation requires CSRF protection and same-origin validation.
 On success, the coordinator generates the separate random 32-byte completion
 secret and stores only SHA-256 of its raw bytes. Proofs use canonical base64url
-encoding in transit; hash comparisons use constant-time comparison. The browser receives a redirect only to the immutable loopback URL
-with the attempt ID and browser-completion secret. It uses `Cache-Control:
+encoding in transit; hash comparisons use constant-time comparison. The browser receives an explicit link only to the immutable loopback URL
+with `attempt_id` and `completion` query fields. It uses `Cache-Control:
 no-store`, `Referrer-Policy: no-referrer`, and a restrictive CSP.
+
+The unmounted `createCoordinatorBrowserLinkHandlers` continuation receives only
+the existing callback's verification outcome and original browser binding. It offers
+the confirmation screen but creates no account link, session, or stored profile.
+Confirmation builds the return page before writing and sends its private link
+only after the store confirms the write. The requesting device still supplies
+its independent proof before the link becomes permanent.
+
+Confirm and cancel POSTs use the existing exact-Origin and CSRF guard and resolve
+the attempt through the original browser cookie. Cancellation affects only that
+attempt and explicitly retires its temporary provider material before reporting
+success or clearing the transaction cookie. A storage or cleanup fault returns
+an error without clearing the cookie; no rollback is promised after a committed
+failure. General maintenance and route activation remain separate work.
+
+If the confirmation screen is lost or reloaded, its verified attempt is not
+reopened and the profile is not reconstructed from storage. The user must cancel
+from the requesting device or wait for expiry and start again. If confirmation
+commits but its return page is lost, the original confirmation form can still
+cancel the attempt. Scheduled maintenance must finish erasing temporary material
+when a cancellation commits but its cleanup fails.
 
 Runtime polling requires the attempt device's signed request; browser polling
 requires its original transaction cookie. A public attempt ID is not authorization.

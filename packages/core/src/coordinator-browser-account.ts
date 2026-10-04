@@ -19,6 +19,7 @@ import {
 	issueBrowserCsrfToken,
 } from "./coordinator-browser-csrf.js";
 import { type BrowserFormGuardResult, guardBrowserForm } from "./coordinator-browser-form-guard.js";
+import { snapshotBrowserRequest as snapshotRequest } from "./coordinator-browser-request.js";
 import type { InMemoryRequestRateLimiter } from "./request-rate-limit.js";
 
 type AccountStore = Pick<CoordinatorAuthAccountProfileStore, "readAuthSessionAccount"> &
@@ -92,28 +93,6 @@ function dataMethod(value: unknown, name: string): unknown {
 		cursor = Object.getPrototypeOf(cursor);
 	}
 	throw new Error();
-}
-function nativeRequestGetter(name: string): ((this: Request) => unknown) | undefined {
-	let prototype: object | null = Request.prototype;
-	while (prototype !== null) {
-		const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
-		if (descriptor) return descriptor.get;
-		prototype = Object.getPrototypeOf(prototype);
-	}
-	return undefined;
-}
-const requestGetters = Object.freeze({
-	method: nativeRequestGetter("method"),
-	url: nativeRequestGetter("url"),
-	headers: nativeRequestGetter("headers"),
-});
-const headersGet = Headers.prototype.get;
-function snapshotRequest(request: Request) {
-	const method = requestGetters.method?.call(request);
-	const url = requestGetters.url?.call(request);
-	const headers = requestGetters.headers?.call(request) as Headers;
-	if (typeof method !== "string" || typeof url !== "string") throw new Error();
-	return Object.freeze({ method, url, cookie: headersGet.call(headers, "cookie") });
 }
 type Context = Readonly<{
 	storeConfig: StoreConfig;
