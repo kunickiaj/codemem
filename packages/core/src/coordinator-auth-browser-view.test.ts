@@ -7,6 +7,7 @@ import {
 	projectAccountProfileView,
 	renderAuthBrowserNotice,
 	renderAuthLinkCompletionHopPage,
+	renderAuthLinkCompletionPage,
 	renderAuthLinkConfirmPage,
 	renderAuthSigninContinuePage,
 	renderAuthSigninPage,
@@ -62,6 +63,66 @@ function assertPassivePage(document: Document): void {
 		}
 	}
 }
+
+describe("browser link completion page", () => {
+	it("waiting offers only a fixed manual GET check without identity or authority", async () => {
+		// Arrange
+		const input = { attemptId: "public-attempt", state: "waiting" as const };
+		// Act
+		const page = await renderAuthLinkCompletionPage(input);
+		const document = openPage(page.body);
+		// Assert
+		assertPassivePage(document);
+		expect(document.querySelector("form,input,img")).toBeNull();
+		expect([...document.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual([
+			"/auth/link/complete?attempt_id=public-attempt",
+		]);
+		expect(header(page.headers, "Cache-Control")).toBe("no-store");
+		expect(header(page.headers, "Referrer-Policy")).toBe("no-referrer");
+	});
+
+	it("ready renders only attempt and canonical CSRF in the fixed same-origin POST", async () => {
+		// Arrange
+		const input = { attemptId: "public-attempt", state: "ready" as const, csrfToken };
+		// Act
+		const page = await renderAuthLinkCompletionPage(input);
+		const document = openPage(page.body);
+		// Assert
+		assertPassivePage(document);
+		const forms = [...document.querySelectorAll("form")];
+		expect(forms).toHaveLength(1);
+		expect(forms[0].getAttribute("action")).toBe("/auth/link/complete");
+		expect(forms[0].getAttribute("method")?.toLowerCase()).toBe("post");
+		expect(
+			[...document.querySelectorAll("input")].map((input) => [input.name, input.value]),
+		).toEqual([
+			["csrf", csrfToken],
+			["attempt_id", "public-attempt"],
+		]);
+		expect(document.querySelector("img")).toBeNull();
+		expect(page.body).not.toMatch(/Google|email|nonce|completion_secret/i);
+		const waiting = await renderAuthLinkCompletionPage({
+			attemptId: input.attemptId,
+			state: "waiting",
+		});
+		expect(header(page.headers, "Content-Security-Policy")).toBe(
+			header(waiting.headers, "Content-Security-Policy"),
+		);
+	});
+
+	it.each([
+		{ attemptId: "", state: "waiting" },
+		{ attemptId: "public-attempt", state: "ready", csrfToken: "c".repeat(43) },
+		{ attemptId: "public-attempt", state: "other" },
+	])("rejects invalid completion page input %j with a fixed error", async (value) => {
+		// Arrange
+		const input = value as Parameters<typeof renderAuthLinkCompletionPage>[0];
+		// Act
+		const result = renderAuthLinkCompletionPage(input);
+		// Assert
+		await expect(result).rejects.toThrow("auth_browser_view_invalid_input");
+	});
+});
 
 describe("account profile projection", () => {
 	it("projects optional metadata without mutating it or granting authority", () => {
@@ -306,6 +367,7 @@ describe("auth browser forms and safe display", () => {
 			signIn: "/auth/sign-in",
 			confirmLink: "/auth/link/confirm",
 			cancelLink: "/auth/link/cancel",
+			completeLink: "/auth/link/complete",
 			signOut: "/auth/logout",
 		});
 		expect(Object.isFrozen(AUTH_BROWSER_FORM_ACTIONS)).toBe(true);

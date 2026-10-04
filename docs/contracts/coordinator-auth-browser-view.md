@@ -14,6 +14,7 @@ This module makes a pure HTML page and headers from already trusted inputs. It d
 | `renderAuthSigninPage(input)` | Canonical `csrfToken` only; returns a fixed sign-in POST form and headers. |
 | `renderAuthSigninContinuePage(input)` | Trusted SDK-produced `authorizationUrl`; returns an explicit Google continuation link and headers. |
 | `renderAuthLinkCompletionHopPage(input)` | Saved literal `destination`, `attemptId`, and server-generated `completionSecret`; returns one explicit return-to-computer link. |
+| `renderAuthLinkCompletionPage(input)` | Bound `attemptId` and explicit `waiting` or `ready` state; ready requires a canonical CSRF token and renders the fixed finish form. |
 | `renderAuthBrowserNotice(kind)` | Fixed `expired`, `unavailable`, `signed_out`, `signin_in_progress`, `signin_unavailable`, or `auth_unavailable` notice; returns HTML and headers. `auth_unavailable` has the static title “Sign-in or linking unavailable” and no form. |
 
 Page renderers return promises. An omitted profile uses the fallback display.
@@ -36,7 +37,7 @@ The continuation anchor necessarily carries public OAuth request fields such as
 state, nonce, and code challenge in its escaped URL, never as debug/body text.
 
 The fixed form actions are `POST /auth/link/confirm`, `POST /auth/link/cancel`,
-`POST /auth/logout`, and `POST /auth/sign-in`. Retry and signed-out notices link
+`POST /auth/logout`, `POST /auth/sign-in`, and `POST /auth/link/complete`. Retry and signed-out notices link
 with `GET` to `/auth/sign-in`. Callers cannot choose a form action or notice link.
 The provider continuation and link-completion renderers accept separately
 constrained trusted destinations, never a browser-chosen redirect.
@@ -84,6 +85,14 @@ after confirmation commits. Rendering alone does not confirm or finalize a link;
 the requesting device must still supply its separate proof. Actual browser
 navigation and local-network permission behavior remain validation gates.
 
+The waiting completion screen contains only a fixed “Check again” GET link with
+the encoded attempt ID; it does not refresh automatically or offer a form. The
+ready screen posts only `csrf` and `attempt_id` to `/auth/link/complete` and uses
+the same-origin referrer policy required by the POST guard. Its caller must read
+device-finalized state before rendering it; the POST independently checks that
+state again. The screen explains that finishing will not replace a session that
+is already signed in.
+
 ## Profile projection
 
 `projectAccountProfileView` accepts only bounded display name, email, `emailVerified === true`, and picture data. If an email is present and its flag is false or absent, it says “Email not verified by provider”; otherwise it shows no positive verification badge.
@@ -103,7 +112,7 @@ The image is decorative (`alt=""`) and uses `referrerpolicy="no-referrer"`; fall
 
 Each page contains a local hashed stylesheet and no JavaScript, remote fonts, or other static asset binding. Web Crypto SHA-256 creates the exact `style-src` hash; headers are UTF-8 HTML, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, and `X-Frame-Options: DENY`.
 
-The confirmation, account, and sign-in form pages use `Referrer-Policy:
+The confirmation, account, sign-in, and ready-completion form pages use `Referrer-Policy:
 same-origin`; continuation pages and notices without forms keep `no-referrer`.
 This permits a full-URL `Referer` only to a same-origin coordinator endpoint, so
 operators should treat same-origin request URLs as potentially containing

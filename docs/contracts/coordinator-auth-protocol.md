@@ -119,6 +119,21 @@ Polling exposes status only. It never returns a browser-completion secret, raw
 account details, provider tokens, or a session secret. A callback replay, expired
 attempt, state mismatch, or consumed attempt fails closed.
 
+After device finalization, the local listener returns the browser to
+`GET /auth/link/complete?attempt_id=...` at the coordinator. The unmounted
+completion handler checks the original transaction cookie before showing status.
+A confirmed attempt shows a read-only waiting page; a finalized attempt offers
+an explicit CSRF-protected `POST /auth/link/complete` form. GET never creates a
+session or clears a cookie.
+
+The POST must also confirm finalized state before preserving an existing live
+browser session or redeeming a new one. It uses the cookie-bound atomic redeem,
+never the trusted compatibility method. Session credentials leave the server
+only after an issued result; rejection or uncertainty preserves the transaction
+cookie. Existing sessions are not replaced, and initial-link profiles are not
+stored. These handlers remain unmounted; the signed device routes, local
+listener, and actual browser navigation still need integration and validation.
+
 ### Persisted attempt states
 
 | Transition | Driver and guard |

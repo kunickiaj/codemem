@@ -7,6 +7,7 @@ export const AUTH_BROWSER_FORM_ACTIONS = Object.freeze({
 	signIn: "/auth/sign-in",
 	confirmLink: "/auth/link/confirm",
 	cancelLink: "/auth/link/cancel",
+	completeLink: "/auth/link/complete",
 	signOut: "/auth/logout",
 });
 
@@ -52,6 +53,10 @@ export interface CoordinatorAuthSigninPageInput {
 export interface CoordinatorAuthSigninContinuePageInput {
 	authorizationUrl: string;
 }
+
+export type CoordinatorAuthLinkCompletionPageInput =
+	| { attemptId: string; state: "waiting" }
+	| { attemptId: string; state: "ready"; csrfToken: string };
 
 export interface CoordinatorAuthLinkCompletionHopPageInput {
 	destination: string;
@@ -360,6 +365,31 @@ export async function renderAuthLinkCompletionHopPage(
 	return buildPage(
 		"Continue on this computer",
 		`<h1>Continue on this computer</h1><p>Return to the computer where you started linking to finish.</p><p><strong>Do not share this link.</strong> It lets your computer finish linking.</p><div class="actions"><a class="link" href="${escapeHtml(href)}" referrerpolicy="no-referrer" rel="noreferrer">Continue on this computer</a></div>`,
+	);
+}
+
+/** Presentation only; completion still requires live browser binding and device finalization. */
+export async function renderAuthLinkCompletionPage(
+	input: CoordinatorAuthLinkCompletionPageInput,
+): Promise<CoordinatorAuthBrowserPage> {
+	const attemptId = capturePageField(input, "attemptId");
+	const state = capturePageField(input, "state");
+	if (!isAuthControllerId(attemptId)) return invalidInput();
+	if (state === "waiting") {
+		const href = `${AUTH_BROWSER_FORM_ACTIONS.completeLink}?attempt_id=${encodeURIComponent(attemptId)}`;
+		return buildPage(
+			"Waiting for this computer",
+			`<h1>Waiting for this computer</h1><p>Finish linking in the Codemem terminal, then check again.</p><div class="actions"><a class="link" href="${escapeHtml(href)}" rel="noreferrer" referrerpolicy="no-referrer">Check again</a></div>`,
+		);
+	}
+	if (state !== "ready") return invalidInput();
+	const csrfToken = capturePageField(input, "csrfToken");
+	if (!isBrowserCsrfToken(csrfToken)) return invalidInput();
+	return buildPage(
+		"Finish linking",
+		`<h1>Finish linking</h1><p>Your computer confirmed the link. Finish to continue to your account. If you are already signed in, your current session stays unchanged. Sign out first to switch accounts.</p><div class="actions">${form(AUTH_BROWSER_FORM_ACTIONS.completeLink, csrfToken, "Finish linking", { attemptId })}</div>`,
+		undefined,
+		{ referrerPolicy: "same-origin" },
 	);
 }
 
