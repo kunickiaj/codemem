@@ -28,6 +28,9 @@ export type CoordinatorAuthSessionError =
 export type CoordinatorAuthSessionIssueResult =
 	| { kind: "issued"; session: CoordinatorAuthSession }
 	| { kind: "rejected"; error: CoordinatorAuthSessionError };
+export type CoordinatorAuthLinkSessionPreserveResult =
+	| Readonly<{ kind: "preserved" }>
+	| Extract<CoordinatorAuthSessionIssueResult, { kind: "rejected" }>;
 /** Hashes come from trusted browser authentication and a fresh 32-byte server generator.
  * Shape validation is not cryptographic evidence; raw credentials never enter this API.
  */
@@ -81,6 +84,11 @@ export interface CoordinatorAuthSessionStore {
 		input: CoordinatorAuthBoundLinkSessionRedeemInput,
 		config: CoordinatorAuthBrowserConfig,
 	): Promise<CoordinatorAuthSessionIssueResult>;
+	/** credentialHash is the existing live session hash, not a fresh token hash. */
+	preserveAuthLinkSessionCompletion(
+		input: CoordinatorAuthBoundLinkSessionRedeemInput,
+		config: CoordinatorAuthBrowserConfig,
+	): Promise<CoordinatorAuthLinkSessionPreserveResult>;
 	signInWithAuthAccount(
 		input: CoordinatorAuthAccountSignInInput,
 		config: CoordinatorAuthLinkConfig,

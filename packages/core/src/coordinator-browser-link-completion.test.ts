@@ -68,6 +68,17 @@ async function existingSessionFixture(
 	return issued.setCookie.split(";")[0];
 }
 
+function completionOperations(store: ReturnType<typeof setupStore>["store"]) {
+	return {
+		resolveAuthLinkBrowserTransaction: vi.fn(store.resolveAuthLinkBrowserTransaction.bind(store)),
+		getAuthLinkAttemptStatus: vi.fn(store.getAuthLinkAttemptStatus.bind(store)),
+		readAuthSession: vi.fn(store.readAuthSession.bind(store)),
+		preserveAuthLinkSessionCompletion: vi.fn(store.preserveAuthLinkSessionCompletion.bind(store)),
+		redeemAuthLinkSessionWithBrowserTransaction: vi.fn(
+			store.redeemAuthLinkSessionWithBrowserTransaction.bind(store),
+		),
+	};
+}
 async function setup(backend: Backend = "SQLite", options: { existingSession?: boolean } = {}) {
 	const clock = { now: NOW };
 	const f = setupStore(backend, { authClock: () => clock.now });
@@ -117,16 +128,7 @@ async function setup(backend: Backend = "SQLite", options: { existingSession?: b
 	const csrfKey = await importBrowserCsrfKey(new Uint8Array(32).fill(17));
 	const limiter = createInMemoryRequestRateLimiter({ now: () => clock.now });
 	const check = vi.spyOn(limiter, "check");
-	const operations = {
-		resolveAuthLinkBrowserTransaction: vi.fn(
-			f.store.resolveAuthLinkBrowserTransaction.bind(f.store),
-		),
-		getAuthLinkAttemptStatus: vi.fn(f.store.getAuthLinkAttemptStatus.bind(f.store)),
-		readAuthSession: vi.fn(f.store.readAuthSession.bind(f.store)),
-		redeemAuthLinkSessionWithBrowserTransaction: vi.fn(
-			f.store.redeemAuthLinkSessionWithBrowserTransaction.bind(f.store),
-		),
-	};
+	const operations = completionOperations(f.store);
 	const forbidden = vi.fn(() => {
 		throw new Error("legacy/profile forbidden");
 	});
@@ -228,6 +230,37 @@ async function ready(f: Fixture) {
 	expect(
 		await f.store.finalizeAuthLinkAttempt(finalize({ completionSecretHash: hash }), f.config),
 	).toMatchObject({ kind: "applied" });
+}
+async function liveCompletion(backend: Backend) {
+	const f = await setup(backend);
+	await ready(f);
+	const session = await issueBrowserCookie("session");
+	expect(
+		await f.store.signInWithAuthAccount(
+			{
+				credentialHash: session.cookieHash,
+				browserTransactionHash: "f".repeat(64),
+				account: { issuer: f.config.issuer, subject: "opaque-subject-a" },
+			},
+			f.config,
+		),
+	).toMatchObject({ kind: "issued" });
+	const browser = await f.store.resolveAuthLinkBrowserTransaction(
+		{ attemptId: "attempt-a", binderHash: f.parsed.cookieHash },
+		f.config,
+	);
+	if (browser === null) throw new Error("Original browser proof missing");
+	return {
+		f,
+		session,
+		cookie: `${f.header}; ${session.setCookie.split(";")[0]}`,
+		input: {
+			attemptId: "attempt-a",
+			browserTransactionHash: browser.browserTransactionHash,
+			binderHash: f.parsed.cookieHash,
+			credentialHash: session.cookieHash,
+		},
+	};
 }
 async function safe(response: Response, status: number) {
 	expect(response.status).toBe(status);
@@ -603,32 +636,293 @@ it("does not clear a pending ceremony even with a genuinely live SESSION", async
 	expect(authority(f)).toEqual(before);
 });
 
-it("preserves an existing live session after finalization without rotation or redemption", async () => {
-	// Arrange
-	const f = await setup();
-	await ready(f);
-	const issued = await issueBrowserCookie("session");
-	expect(
-		await f.store.signInWithAuthAccount(
-			{
-				credentialHash: issued.cookieHash,
-				browserTransactionHash: "f".repeat(64),
-				account: { issuer: f.config.issuer, subject: "opaque-subject-a" },
-			},
-			f.config,
-		),
-	).toMatchObject({ kind: "issued" });
-	const cookie = `${f.header}; ${issued.setCookie.split(";")[0]}`;
-	const before = authority(f);
-	// Act
-	const result = await f.handlers.complete(post(f, {}, cookie), "trusted-client");
-	// Assert
-	expect(result.response.status).toBe(303);
-	expect(result.response.headers.get("location")).toBe(`${ORIGIN}/auth/account`);
-	expect(result.response.headers.getSetCookie()).toEqual([clearBrowserCookie("transaction")]);
-	expect(f.operations.redeemAuthLinkSessionWithBrowserTransaction).not.toHaveBeenCalled();
-	expect(authority(f)).toEqual(before);
+describe.each(["SQLite", "D1"] as const)("%s live SESSION completion consumption", (backend) => {
+	it.each(["browser replay", "bound redemption", "legacy redemption"] as const)(
+		"preserves the current SID and rejects subsequent %s",
+		async (path) => {
+			// Arrange
+			const f = await setup(backend);
+			await ready(f);
+			const issued = await issueBrowserCookie("session");
+			expect(
+				await f.store.signInWithAuthAccount(
+					{
+						credentialHash: issued.cookieHash,
+						browserTransactionHash: "f".repeat(64),
+						account: { issuer: f.config.issuer, subject: "opaque-subject-a" },
+					},
+					f.config,
+				),
+			).toMatchObject({ kind: "issued" });
+			const cookie = `${f.header}; ${issued.setCookie.split(";")[0]}`;
+			const before = authority(f);
+			const browser = await f.store.resolveAuthLinkBrowserTransaction(
+				{ attemptId: "attempt-a", binderHash: f.parsed.cookieHash },
+				f.config,
+			);
+			if (browser === null) throw new Error("Original browser proof missing");
+			const redemption = {
+				attemptId: "attempt-a",
+				browserTransactionHash: browser.browserTransactionHash,
+				binderHash: f.parsed.cookieHash,
+				credentialHash: "e".repeat(64),
+			};
+			// Act
+			const result = await f.handlers.complete(post(f, {}, cookie), "trusted-client");
+			// Assert
+			expect(result.response.status).toBe(303);
+			expect(result.response.headers.get("location")).toBe(`${ORIGIN}/auth/account`);
+			expect(result.response.headers.getSetCookie()).toEqual([clearBrowserCookie("transaction")]);
+			expect(f.operations.redeemAuthLinkSessionWithBrowserTransaction).not.toHaveBeenCalled();
+			expect(f.operations.preserveAuthLinkSessionCompletion).toHaveBeenCalledExactlyOnceWith(
+				{ ...redemption, credentialHash: issued.cookieHash },
+				f.config,
+			);
+			expect(rows(f)[0].state).toBe("session_redeemed");
+			expect(authority(f)).toEqual(before);
+			expect(await f.store.readAuthSession(issued.cookieHash, f.config)).not.toBeNull();
+			// Act: each route gets an independent preserved completion, with no SESSION on HTTP replay.
+			if (path === "browser replay") {
+				const replay = await f.handlers.complete(post(f), "trusted-client");
+				// Assert
+				expect.soft(replay.response.status).toBe(403);
+				expect.soft(replay.response.headers.getSetCookie()).toEqual([]);
+				expect.soft(replay.response.headers.get("cache-control")).toBe("no-store");
+			} else {
+				let redeemed: Awaited<ReturnType<typeof f.store.redeemAuthLinkSession>>;
+				if (path === "bound redemption") {
+					redeemed = await f.store.redeemAuthLinkSessionWithBrowserTransaction(
+						redemption,
+						f.config,
+					);
+				} else {
+					redeemed = await f.store.redeemAuthLinkSession(redemption, f.config);
+				}
+				// Assert
+				expect.soft(redeemed).toMatchObject({ kind: "rejected" });
+			}
+			expect.soft(authority(f)).toEqual(before);
+		},
+	);
 });
+
+describe.each(["SQLite", "D1"] as const)("%s preserve completion guards", (backend) => {
+	it.each([
+		"binder",
+		"revision",
+		"missing-session",
+		"revoked-session",
+		"expired-session",
+		"finalized-deadline",
+	])("rejects %s at the write without marking completion or clearing TXN", async (guard) => {
+		// Arrange: the handler has already read a real live session before the store guard runs.
+		const { f, cookie, session } = await liveCompletion(backend);
+		let expectedAuthority = authority(f);
+		const attempts = rows(f);
+		f.operations.preserveAuthLinkSessionCompletion.mockImplementation(async (input, cfg) => {
+			switch (guard) {
+				case "binder":
+					input = { ...input, binderHash: "e".repeat(64) };
+					break;
+				case "revision":
+					cfg = { ...cfg, revision: "b".repeat(64) };
+					break;
+				case "missing-session":
+					input = { ...input, credentialHash: "e".repeat(64) };
+					break;
+				case "revoked-session":
+					f.db
+						.prepare(
+							"UPDATE coordinator_auth_sessions SET revoked_at_ms = ? WHERE credential_hash = ?",
+						)
+						.run(NOW, session.cookieHash);
+					expectedAuthority = authority(f);
+					break;
+				case "expired-session":
+					f.db
+						.prepare(
+							"UPDATE coordinator_auth_sessions SET created_at_ms = ?, expires_at_ms = ? WHERE credential_hash = ?",
+						)
+						.run(NOW - SESSION_TTL, NOW, session.cookieHash);
+					expectedAuthority = authority(f);
+					break;
+				case "finalized-deadline":
+					f.clock.now += 120_000;
+					break;
+			}
+			return f.store.preserveAuthLinkSessionCompletion(input, cfg);
+		});
+		// Act
+		const result = await f.handlers.complete(post(f, {}, cookie), "trusted-client");
+		// Assert: a successful earlier read cannot authorize a failed atomic guard.
+		await safe(result.response, 403);
+		expect(await f.operations.readAuthSession.mock.results[0].value).not.toBeNull();
+		expect(
+			await f.operations.preserveAuthLinkSessionCompletion.mock.results[0].value,
+		).toMatchObject({ kind: "rejected" });
+		expect(f.operations.redeemAuthLinkSessionWithBrowserTransaction).not.toHaveBeenCalled();
+		expect(rows(f)).toEqual(attempts);
+		expect(authority(f)).toEqual(expectedAuthority);
+	});
+});
+
+describe.each(["SQLite", "D1"] as const)(
+	"%s preservation delivery and competing completions",
+	(backend) => {
+		it("waits for the real preservation write before delivering the prebuilt TXN clear", async () => {
+			// Arrange: pause only the preservation call, after the independent live read.
+			const { f, cookie } = await liveCompletion(backend);
+			const before = authority(f);
+			const entered = Promise.withResolvers<void>();
+			const release = Promise.withResolvers<void>();
+			let delivered = false;
+			f.operations.preserveAuthLinkSessionCompletion.mockImplementation(async (...args) => {
+				entered.resolve();
+				await release.promise;
+				return f.store.preserveAuthLinkSessionCompletion(...args);
+			});
+			// Act
+			const pending = f.handlers.complete(post(f, {}, cookie), "trusted-client").then((result) => {
+				delivered = true;
+				return result;
+			});
+			await entered.promise;
+			// Assert: response construction is not response delivery or a persistence guarantee.
+			expect(delivered).toBe(false);
+			expect(rows(f)[0].state).toBe("finalized");
+			expect(authority(f)).toEqual(before);
+			// Act
+			release.resolve();
+			const result = await pending;
+			// Assert
+			expect(result.response.status).toBe(303);
+			expect(result.response.headers.getSetCookie()).toEqual([clearBrowserCookie("transaction")]);
+			expect(rows(f)[0].state).toBe("session_redeemed");
+			expect(authority(f)).toEqual(before);
+		});
+		it.each(["before-write", "after-commit"])("%s failure releases no cookies", async (fault) => {
+			// Arrange
+			const { f, cookie } = await liveCompletion(backend);
+			const before = authority(f);
+			f.operations.preserveAuthLinkSessionCompletion.mockImplementation(async (...args) => {
+				if (fault === "after-commit") await f.store.preserveAuthLinkSessionCompletion(...args);
+				throw new Error("privateCause");
+			});
+			// Act
+			const result = await f.handlers.complete(post(f, {}, cookie), "trusted-client");
+			// Assert: an exception after commit burns authority but never claims rollback or sends TXN clear.
+			await safe(result.response, 503);
+			expect(rows(f)[0].state).toBe(fault === "after-commit" ? "session_redeemed" : "finalized");
+			expect(authority(f)).toEqual(before);
+			expect(f.operations.redeemAuthLinkSessionWithBrowserTransaction).not.toHaveBeenCalled();
+		});
+		it.each(["preserve", "redeem"])(
+			"competing preserve and %s have one completion winner",
+			async (contender) => {
+				// Arrange: two wrappers share persistence, not separate production isolates.
+				const { f, cookie } = await liveCompletion(backend);
+				const before = authority(f);
+				const sessionBefore = rows(f, "coordinator_auth_sessions")[0];
+				const receiptBefore = rows(f, "coordinator_auth_session_receipts")[0];
+				const peer = new D1CoordinatorStore(sqliteD1(f.db), { authClock: () => f.clock.now });
+				const other = createCoordinatorBrowserLinkCompletionHandlers({ ...f.input, store: peer });
+				if (!other.ok) throw new Error("Peer setup failed");
+				const secondCookie = contender === "preserve" ? cookie : f.header;
+				// Act
+				const results = await Promise.all([
+					f.handlers.complete(post(f, {}, cookie), "client-a"),
+					other.handlers.complete(post(f, {}, secondCookie), "client-b"),
+				]);
+				// Assert
+				expect(results.map((r) => r.response.status).sort()).toEqual([303, 403]);
+				const winner = results.find((r) => r.response.status === 303);
+				const loser = results.find((r) => r.response.status === 403);
+				if (!winner || !loser) throw new Error("Completion winner missing");
+				await safe(loser.response, 403);
+				const added = winner.outcome === "session_issued" ? 1 : 0;
+				expect(rows(f, "coordinator_auth_sessions")).toHaveLength(1 + added);
+				expect(rows(f, "coordinator_auth_session_receipts")).toHaveLength(1 + added);
+				expect(rows(f, "coordinator_auth_sessions")[0]).toEqual(sessionBefore);
+				expect(rows(f, "coordinator_auth_session_receipts")[0]).toEqual(receiptBefore);
+				expect(authority(f).slice(0, 2)).toEqual(before.slice(0, 2));
+				expect(authority(f).slice(4)).toEqual(before.slice(4));
+				expect(rows(f)[0].state).toBe("session_redeemed");
+				expect(winner.response.headers.getSetCookie()).toHaveLength(1 + added);
+				if (!added) expect(authority(f)).toEqual(before);
+			},
+		);
+		it.each(["empty", "already-used"])(
+			"direct store rejects %s input without touching authority",
+			async (scenario) => {
+				// Arrange
+				const { f, input } = await liveCompletion(backend);
+				if (scenario === "already-used") {
+					expect(await f.store.preserveAuthLinkSessionCompletion(input, f.config)).toEqual({
+						kind: "preserved",
+					});
+				}
+				const before = authority(f);
+				const attempts = rows(f);
+				// Act
+				const result = await f.store.preserveAuthLinkSessionCompletion(
+					{ ...input, attemptId: scenario === "empty" ? "" : input.attemptId },
+					f.config,
+				);
+				// Assert
+				expect(result).toMatchObject({ kind: "rejected" });
+				expect(authority(f)).toEqual(before);
+				expect(rows(f)).toEqual(attempts);
+			},
+		);
+	},
+);
+
+it.each(["readback-throw", "readback-missing", "zero-metadata"])(
+	"%s sends no cookies and leaves completion burned",
+	async (fault) => {
+		// Arrange: inject only the preservation readback, leaving native SQLite writes real.
+		const { f, cookie } = await liveCompletion("D1");
+		const before = authority(f);
+		const database = sqliteD1(f.db);
+		const peer = new D1CoordinatorStore(
+			{
+				...database,
+				prepare(query) {
+					const statement = database.prepare(query);
+					if (query.startsWith("SELECT state FROM coordinator_auth_link_attempts")) {
+						if (fault === "readback-throw")
+							vi.spyOn(statement, "first").mockRejectedValue(new Error("privateCause"));
+						if (fault === "readback-missing") vi.spyOn(statement, "first").mockResolvedValue(null);
+					}
+					if (
+						fault === "zero-metadata" &&
+						query.startsWith(
+							"UPDATE coordinator_auth_link_attempts AS t SET state = 'session_redeemed'",
+						)
+					) {
+						const run = statement.run.bind(statement);
+						vi.spyOn(statement, "run").mockImplementation(async () => {
+							await run();
+							return { meta: { changes: 0 } };
+						});
+					}
+					return statement;
+				},
+			},
+			{ authClock: () => f.clock.now },
+		);
+		f.operations.preserveAuthLinkSessionCompletion.mockImplementation(
+			peer.preserveAuthLinkSessionCompletion.bind(peer),
+		);
+		// Act
+		const result = await f.handlers.complete(post(f, {}, cookie), "trusted-client");
+		// Assert
+		await safe(result.response, fault === "zero-metadata" ? 403 : 503);
+		expect(rows(f)[0].state).toBe("session_redeemed");
+		expect(authority(f)).toEqual(before);
+		await safe((await f.handlers.complete(post(f), "trusted-client")).response, 403);
+	},
+);
 
 it("double submits through two store wrappers issue one SESSION and never clobber the winner", async () => {
 	// Arrange

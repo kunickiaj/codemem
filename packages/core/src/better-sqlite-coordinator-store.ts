@@ -753,6 +753,12 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	) {
 		return this.authSessions.redeemAuthLinkSessionWithBrowserTransaction(input, config);
 	}
+	async preserveAuthLinkSessionCompletion(
+		input: CoordinatorAuthBoundLinkSessionRedeemInput,
+		config: CoordinatorAuthBrowserConfig,
+	) {
+		return this.authSessions.preserveAuthLinkSessionCompletion(input, config);
+	}
 	async purgeAuthGuardedSigninSessions(
 		scope: CoordinatorAuthSessionScope,
 		options?: CoordinatorAuthSessionPurgeOptions,

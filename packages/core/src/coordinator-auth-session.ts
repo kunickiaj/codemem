@@ -17,6 +17,7 @@ import {
 	type CoordinatorAuthAccountLinkRevokeResult,
 	type CoordinatorAuthAccountSignInInput,
 	type CoordinatorAuthBoundLinkSessionRedeemInput,
+	type CoordinatorAuthLinkSessionPreserveResult,
 	type CoordinatorAuthLinkSessionRedeemInput,
 	type CoordinatorAuthSession,
 	type CoordinatorAuthSessionError,
@@ -142,7 +143,9 @@ function sessionNow(clock: () => number): number {
 
 export { sessionNow as authSessionNow };
 
-function rejected(error: CoordinatorAuthSessionError): CoordinatorAuthSessionIssueResult {
+function rejected(
+	error: CoordinatorAuthSessionError,
+): Extract<CoordinatorAuthSessionIssueResult, { kind: "rejected" }> {
 	return { kind: "rejected", error };
 }
 interface SessionRow {
@@ -199,6 +202,18 @@ const BOUND_LINK_BROWSER_GUARD_SQL = `b.coordinator_id = t.coordinator_id
 const BOUND_LINK_REDEEM_RECEIPT_SQL = `${REDEEM_RECEIPT_SELECT_SQL}
  AND EXISTS (SELECT 1 FROM coordinator_auth_browser_transactions b WHERE ${BOUND_LINK_BROWSER_GUARD_SQL})
  ON CONFLICT(coordinator_id, browser_transaction_hash) DO NOTHING`;
+const PRESERVE_LINK_COMPLETION_SQL = `UPDATE coordinator_auth_link_attempts AS t SET state = 'session_redeemed'
+ WHERE t.coordinator_id = ? AND t.attempt_id = ? AND t.browser_transaction_hash = ?
+ AND t.issuer = ? AND t.auth_config_revision = ? AND t.state = 'finalized'
+ AND t.created_at_ms <= ? AND t.finalized_at_ms <= ?
+ AND ? < t.finalized_at_ms + 120000 AND t.expires_at_ms > ?
+ AND EXISTS (SELECT 1 FROM coordinator_auth_account_links l
+ WHERE l.coordinator_id = t.coordinator_id AND l.link_id = t.link_id AND l.attempt_id = t.attempt_id
+ AND l.identity_id = t.identity_id AND l.issuer = t.issuer AND l.subject = t.account_subject
+ AND l.auth_config_revision = t.auth_config_revision AND l.revoked_at_ms IS NULL)
+ AND EXISTS (SELECT 1 FROM coordinator_auth_browser_transactions b WHERE ${BOUND_LINK_BROWSER_GUARD_SQL})
+ AND EXISTS (SELECT 1 FROM coordinator_auth_sessions s
+ JOIN coordinator_auth_account_links l ON ${LINK_MATCH} WHERE ${AUTH_SESSION_LIVE_GUARD_SQL})`;
 const SIGNIN_RECEIPT_SQL = `INSERT INTO coordinator_auth_session_receipts (${RECEIPT_COLUMNS})
  SELECT l.coordinator_id, ?, 'signin', NULL, l.link_id, ?, ?, ? FROM coordinator_auth_account_links l
  WHERE l.coordinator_id = ? AND l.issuer = ? AND l.subject = ? AND l.revoked_at_ms IS NULL
@@ -368,6 +383,62 @@ export class AuthSessionOperations
 		const result = await this.issueReceipt(i, c, now, sessionId);
 		if (result) return result;
 		return this.diagnoseRedeem(i.attemptId, i.browserTransactionHash, c, now);
+	}
+	/** Complete once while preserving the existing session and its own active account link. */
+	async preserveAuthLinkSessionCompletion(
+		input: CoordinatorAuthBoundLinkSessionRedeemInput,
+		config: CoordinatorAuthBrowserConfig,
+	): Promise<CoordinatorAuthLinkSessionPreserveResult> {
+		const c = captureBrowserConfig(config);
+		const i = captureIssue(input, ["attemptId", "binderHash"]);
+		if (!c || !i || !isAuthControllerId(i.attemptId) || !isHash(i.binderHash))
+			return rejected("invalid_input");
+		if (!c.enabled) return rejected("auth_config_changed");
+		const now = sessionNow(this.clock);
+		// credentialHash names the existing live session, which may belong to another linked account.
+		// Completion creates no receipt: it preserves that session and burns only this attempt.
+		let changed: number;
+		try {
+			changed = await this.backend.run({
+				sql: PRESERVE_LINK_COMPLETION_SQL,
+				values: [
+					c.coordinatorId,
+					i.attemptId,
+					i.browserTransactionHash,
+					c.issuer,
+					c.revision,
+					now,
+					now,
+					now,
+					now,
+					i.binderHash,
+					c.issuer,
+					c.revision,
+					c.redirectUri,
+					now,
+					now,
+					now,
+					c.coordinatorId,
+					i.credentialHash,
+					c.issuer,
+					c.revision,
+					now,
+					now,
+				],
+			});
+		} catch {
+			throw new Error("auth_session_persistence_error");
+		}
+		if (changed !== 1) return rejected("attempt_unavailable");
+		const row = await this.first<{ state: string }>({
+			sql: `SELECT state FROM coordinator_auth_link_attempts
+ WHERE coordinator_id = ? AND attempt_id = ? AND browser_transaction_hash = ?
+ AND issuer = ? AND auth_config_revision = ?`,
+			values: [c.coordinatorId, i.attemptId, i.browserTransactionHash, c.issuer, c.revision],
+		});
+		// A failed post-commit read must not release cookies or pretend the burn rolled back.
+		if (row?.state !== "session_redeemed") throw new Error("auth_session_persistence_incomplete");
+		return { kind: "preserved" };
 	}
 	/** Admission binds a finalized link to its consumed original browser transaction. */
 	async redeemAuthLinkSessionWithBrowserTransaction(

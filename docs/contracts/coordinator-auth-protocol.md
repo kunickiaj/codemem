@@ -127,7 +127,9 @@ an explicit CSRF-protected `POST /auth/link/complete` form. GET never creates a
 session or clears a cookie.
 
 The POST must also confirm finalized state before preserving an existing live
-browser session or redeeming a new one. It uses the cookie-bound atomic redeem,
+browser session or redeeming a new one. Preservation atomically consumes the
+attempt while keeping the existing session unchanged, so replaying without that
+session cannot mint another. New issuance uses the cookie-bound atomic redeem,
 never the trusted compatibility method. Session credentials leave the server
 only after an issued result; rejection or uncertainty preserves the transaction
 cookie. Existing sessions are not replaced, and initial-link profiles are not

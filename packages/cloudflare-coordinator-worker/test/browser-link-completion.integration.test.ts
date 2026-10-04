@@ -96,6 +96,7 @@ async function setup() {
 		resolveAuthLinkBrowserTransaction: vi.fn(store.resolveAuthLinkBrowserTransaction.bind(store)),
 		getAuthLinkAttemptStatus: vi.fn(store.getAuthLinkAttemptStatus.bind(store)),
 		readAuthSession: vi.fn(store.readAuthSession.bind(store)),
+		preserveAuthLinkSessionCompletion: vi.fn(store.preserveAuthLinkSessionCompletion.bind(store)),
 		redeemAuthLinkSessionWithBrowserTransaction: vi.fn(
 			store.redeemAuthLinkSessionWithBrowserTransaction.bind(store),
 		),
@@ -199,6 +200,22 @@ async function ready(f: Fixture) {
 	expect(await f.stores[1].finalizeAuthLinkAttempt(proof, f.config)).toMatchObject({
 		kind: "applied",
 	});
+}
+async function liveCompletion() {
+	const f = await setup();
+	await ready(f);
+	const session = await issueBrowserCookie("session");
+	expect(
+		await f.store.signInWithAuthAccount(
+			{
+				credentialHash: session.cookieHash,
+				browserTransactionHash: "f".repeat(64),
+				account: { issuer: f.config.issuer, subject: "fixture-subject" },
+			},
+			f.config,
+		),
+	).toMatchObject({ kind: "issued" });
+	return { f, session, cookie: `${f.cookie}; ${session.setCookie.split(";")[0]}` };
 }
 
 it("native D1 fake-Google flow waits for device proofs, finishes and reads the live account", async () => {
@@ -413,6 +430,228 @@ it("native D1 rejects wrong origin/proof and defers pending completion despite a
 	expect(f.operations.redeemAuthLinkSessionWithBrowserTransaction).not.toHaveBeenCalled();
 	expect(await authority(f)).toEqual(before);
 });
+
+it.each(["browser replay", "bound redemption", "legacy redemption"] as const)(
+	"native D1 preserves the current SID and rejects subsequent %s",
+	async (path) => {
+		// Arrange: real finalized fake-Google ceremony and an independently issued live session.
+		const f = await setup();
+		await ready(f);
+		const session = await issueBrowserCookie("session");
+		expect(
+			await f.store.signInWithAuthAccount(
+				{
+					credentialHash: session.cookieHash,
+					browserTransactionHash: "f".repeat(64),
+					account: { issuer: f.config.issuer, subject: "fixture-subject" },
+				},
+				f.config,
+			),
+		).toMatchObject({ kind: "issued" });
+		const before = await authority(f);
+		const browser = await f.store.resolveAuthLinkBrowserTransaction(
+			{ attemptId: f.attempt.attemptId, binderHash: f.parsed.cookieHash },
+			f.config,
+		);
+		if (browser === null) throw new Error("Original browser proof missing");
+		const redemption = {
+			attemptId: f.attempt.attemptId,
+			browserTransactionHash: browser.browserTransactionHash,
+			binderHash: f.parsed.cookieHash,
+			credentialHash: "e".repeat(64),
+		};
+		// Act
+		const preserved = await f.handlers.complete(
+			post(f, { cookie: `${f.cookie}; ${session.setCookie.split(";")[0]}` }),
+			"trusted-client",
+		);
+		// Assert: no rotation, extension, new receipt or unrelated authority/profile mutation.
+		expect(preserved.response.status).toBe(303);
+		expect(preserved.response.headers.get("location")).toBe(`${ORIGIN}/auth/account`);
+		expect(preserved.response.headers.getSetCookie()).toEqual([clearBrowserCookie("transaction")]);
+		expect(f.operations.redeemAuthLinkSessionWithBrowserTransaction).not.toHaveBeenCalled();
+		expect(f.operations.preserveAuthLinkSessionCompletion).toHaveBeenCalledExactlyOnceWith(
+			{ ...redemption, credentialHash: session.cookieHash },
+			f.config,
+		);
+		expect((await rows(f))[0].state).toBe("session_redeemed");
+		expect(await authority(f)).toEqual(before);
+		expect(await f.store.readAuthSession(session.cookieHash, f.config)).not.toBeNull();
+		// Act: independent fixtures prevent HTTP replay from consuming the trusted API proof.
+		if (path === "browser replay") {
+			const replay = await f.handlers.complete(post(f), "trusted-client");
+			// Assert
+			expect.soft(replay.response.status).toBe(403);
+			expect.soft(replay.response.headers.getSetCookie()).toEqual([]);
+		} else {
+			let redeemed: Awaited<ReturnType<typeof f.store.redeemAuthLinkSession>>;
+			if (path === "bound redemption") {
+				redeemed = await f.stores[1].redeemAuthLinkSessionWithBrowserTransaction(
+					redemption,
+					f.config,
+				);
+			} else {
+				redeemed = await f.stores[1].redeemAuthLinkSession(redemption, f.config);
+			}
+			// Assert
+			expect.soft(redeemed).toMatchObject({ kind: "rejected" });
+		}
+		expect.soft(await authority(f)).toEqual(before);
+	},
+);
+
+it.each(["binder", "revision", "missing-session", "revoked-session", "expired-session"])(
+	"native D1 rejects %s at preservation without marking completion or clearing TXN",
+	async (guard) => {
+		// Arrange: readAuthSession is real; revoke only after that live read succeeds.
+		const { f, cookie, session } = await liveCompletion();
+		let expectedAuthority = await authority(f);
+		const attempts = await rows(f);
+		f.operations.preserveAuthLinkSessionCompletion.mockImplementation(async (input, cfg) => {
+			if (guard === "binder") input = { ...input, binderHash: "e".repeat(64) };
+			if (guard === "revision") cfg = { ...cfg, revision: "b".repeat(64) };
+			if (guard === "missing-session") input = { ...input, credentialHash: "e".repeat(64) };
+			if (guard === "revoked-session") {
+				await env.COORDINATOR_DB.prepare(
+					"UPDATE coordinator_auth_sessions SET revoked_at_ms = ? WHERE coordinator_id = ? AND credential_hash = ?",
+				)
+					.bind(NOW, f.config.coordinatorId, session.cookieHash)
+					.run();
+				expectedAuthority = await authority(f);
+			}
+			if (guard === "expired-session") {
+				await env.COORDINATOR_DB.prepare(
+					"UPDATE coordinator_auth_sessions SET created_at_ms = ?, expires_at_ms = ? WHERE coordinator_id = ? AND credential_hash = ?",
+				)
+					.bind(NOW - 28_800_000, NOW, f.config.coordinatorId, session.cookieHash)
+					.run();
+				expectedAuthority = await authority(f);
+			}
+			return f.store.preserveAuthLinkSessionCompletion(input, cfg);
+		});
+		// Act
+		const result = await f.handlers.complete(post(f, { cookie }), "trusted-client");
+		// Assert
+		expect(result.response.status).toBe(403);
+		expect(result.response.headers.getSetCookie()).toEqual([]);
+		expect(await f.operations.readAuthSession.mock.results[0].value).not.toBeNull();
+		expect(
+			await f.operations.preserveAuthLinkSessionCompletion.mock.results[0].value,
+		).toMatchObject({ kind: "rejected" });
+		expect(f.operations.redeemAuthLinkSessionWithBrowserTransaction).not.toHaveBeenCalled();
+		expect(await rows(f)).toEqual(attempts);
+		expect(await authority(f)).toEqual(expectedAuthority);
+	},
+);
+
+it.each(["before-write", "after-commit", "readback", "readback-missing", "zero-metadata"])(
+	"native D1 preservation %s failure releases no cookies",
+	async (fault) => {
+		// Arrange: only the narrow readback is faulted; native D1 still performs the actual update.
+		const { f, cookie } = await liveCompletion();
+		const before = await authority(f);
+		if (["readback", "readback-missing", "zero-metadata"].includes(fault)) {
+			const peer = new D1CoordinatorStore(
+				{
+					prepare(query) {
+						const statement = env.COORDINATOR_DB.prepare(query);
+						if (
+							query.startsWith("SELECT state FROM coordinator_auth_link_attempts") ||
+							query.startsWith(
+								"UPDATE coordinator_auth_link_attempts AS t SET state = 'session_redeemed'",
+							)
+						) {
+							const bind = statement.bind.bind(statement);
+							vi.spyOn(statement, "bind").mockImplementation((...values) => {
+								const bound = bind(...values);
+								if (query.startsWith("SELECT state")) {
+									if (fault === "readback")
+										vi.spyOn(bound, "first").mockRejectedValue(new Error("privateCause"));
+									if (fault === "readback-missing")
+										vi.spyOn(bound, "first").mockResolvedValue(null);
+								} else if (fault === "zero-metadata") {
+									const run = bound.run.bind(bound);
+									vi.spyOn(bound, "run").mockImplementation(async () => {
+										const result = await run();
+										return { ...result, meta: { ...result.meta, changes: 0 } };
+									});
+								}
+								return bound;
+							});
+						}
+						return statement;
+					},
+					batch: env.COORDINATOR_DB.batch.bind(env.COORDINATOR_DB),
+				},
+				{ authClock: () => NOW },
+			);
+			f.operations.preserveAuthLinkSessionCompletion.mockImplementation(
+				peer.preserveAuthLinkSessionCompletion.bind(peer),
+			);
+		} else {
+			f.operations.preserveAuthLinkSessionCompletion.mockImplementation(async (...args) => {
+				if (fault === "after-commit") await f.store.preserveAuthLinkSessionCompletion(...args);
+				throw new Error("privateCause");
+			});
+		}
+		// Act
+		const result = await f.handlers.complete(post(f, { cookie }), "trusted-client");
+		// Assert: post-commit failure burns the proof; it never promises rollback.
+		expect(result.response.status).toBe(fault === "zero-metadata" ? 403 : 503);
+		expect(result.response.headers.getSetCookie()).toEqual([]);
+		expect(await result.response.text()).not.toMatch(/privateCause|Fixture User|user@example.test/);
+		expect((await rows(f))[0].state).toBe(
+			fault === "before-write" ? "finalized" : "session_redeemed",
+		);
+		expect(await authority(f)).toEqual(before);
+		if (fault !== "before-write") {
+			const replay = await f.handlers.complete(post(f), "trusted-client");
+			expect(replay.response.status).toBe(403);
+			expect(replay.response.headers.getSetCookie()).toEqual([]);
+		}
+	},
+);
+
+it.each(["preserve", "redeem"])(
+	"native D1 competing preserve and %s have one completion winner",
+	async (contender) => {
+		// Arrange: wrappers share a native pool binding, not separate production isolates.
+		const { f, cookie } = await liveCompletion();
+		const before = await authority(f);
+		const other = createCoordinatorBrowserLinkCompletionHandlers({
+			config: f.config,
+			csrfKey: f.csrfKey,
+			limiter: f.limiter,
+			store: f.stores[1],
+		});
+		if (!other.ok) throw new Error("Peer setup failed");
+		// Act
+		const results = await Promise.all([
+			f.handlers.complete(post(f, { cookie }), "client-a"),
+			other.handlers.complete(
+				post(f, { cookie: contender === "preserve" ? cookie : f.cookie }),
+				"client-b",
+			),
+		]);
+		// Assert
+		expect(results.map((r) => r.response.status).sort()).toEqual([303, 403]);
+		const winner = results.find((r) => r.response.status === 303);
+		const loser = results.find((r) => r.response.status === 403);
+		if (!winner || !loser) throw new Error("Completion winner missing");
+		expect(loser.response.headers.getSetCookie()).toEqual([]);
+		const added = winner.outcome === "session_issued" ? 1 : 0;
+		const after = await authority(f);
+		expect(after.sessions).toHaveLength(1 + added);
+		expect(after.receipts).toHaveLength(1 + added);
+		expect(after.sessions[0]).toEqual(before.sessions[0]);
+		expect(after.receipts[0]).toEqual(before.receipts[0]);
+		expect(after.links).toEqual(before.links);
+		expect(after.profiles).toEqual(before.profiles);
+		expect(after.device).toEqual(before.device);
+		expect((await rows(f))[0].state).toBe("session_redeemed");
+		expect(winner.response.headers.getSetCookie()).toHaveLength(1 + added);
+	},
+);
 
 it("native D1 competing wrappers issue one session; failed store delivery releases no cookie", async () => {
 	// Arrange

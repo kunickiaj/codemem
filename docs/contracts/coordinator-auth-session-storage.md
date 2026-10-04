@@ -49,6 +49,7 @@ Source candidate: `packages/core/src/coordinator-auth-session.ts`.
 | --- | --- |
 | `redeemAuthLinkSession({ attemptId, browserTransactionHash, credentialHash }, cfg)` | Unchanged trusted compatibility helper. It checks the attempt's transaction hash, not the browser cookie; public browser handlers must use the cookie-bound method below. |
 | `redeemAuthLinkSessionWithBrowserTransaction({ attemptId, browserTransactionHash, binderHash, credentialHash }, browserCfg)` | Requires the original browser cookie hash and matching consumed link transaction inside the atomic redemption write; returns a fresh session record only for the winning finalized attempt. |
+| `preserveAuthLinkSessionCompletion({ attemptId, browserTransactionHash, binderHash, credentialHash }, browserCfg)` | Here `credentialHash` identifies the existing live session. Atomically marks the finalized attempt `session_redeemed` while keeping that session unchanged; creates no receipt or new session. |
 | `signInWithAuthAccount({ browserTransactionHash, account: { issuer, subject }, credentialHash }, cfg)` | Unchanged trusted internal compatibility helper. It is not the future public-handler path and does not apply the admission limit. |
 | `signInWithConsumedBrowserTransaction({ browserTransactionHash, account: { issuer, subject }, credentialHash }, browserCfg)` | Future public handlers **must** use this post-OIDC seam after independently verifying OIDC/JWS, original browser binding, CSRF, and Origin. It requires a consumed current-config sign-in transaction and applies the per-link admission limit; see the [admission contract](coordinator-auth-session-admission.md). |
 | `readAuthSession(hash, cfg)` | Returns the DTO only while the session, link, and configuration remain live. |
@@ -117,6 +118,17 @@ followed by the compatibility redeem is not equivalent to this check.
 
 Initial-link receipts remain permanent (`purge_eligible = 0`); this method does
 not widen normal-sign-in cleanup or change the existing compatibility API.
+
+Keeping a live browser session must also consume completion authority. The
+preservation write checks the finalized attempt, original browser binding,
+current configuration and deadlines, active target account link, and the
+existing session's own active link in one guarded update. The existing session
+can belong to another linked account; preservation does not switch accounts.
+
+The update marks the attempt `session_redeemed`, blocking both compatibility and
+cookie-bound redemption. It creates no new session receipt because it issues no
+credential. Only a statement-local winning result and matching readback report
+`preserved`; a write or readback fault must not release a cookie-clearing reply.
 
 ## Schema and deferred work
 

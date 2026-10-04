@@ -32,7 +32,9 @@ type CompletionStore = Pick<
 	Pick<CoordinatorAuthLinkStore, "getAuthLinkAttemptStatus"> &
 	Pick<
 		CoordinatorAuthSessionStore,
-		"readAuthSession" | "redeemAuthLinkSessionWithBrowserTransaction"
+		| "readAuthSession"
+		| "redeemAuthLinkSessionWithBrowserTransaction"
+		| "preserveAuthLinkSessionCompletion"
 	>;
 export interface CoordinatorBrowserLinkCompletionInput {
 	config?: CoordinatorAuthBrowserConfig;
@@ -225,7 +227,15 @@ async function finishSession(
 	if (session.kind === "invalid") return notice(403, "cookie_invalid");
 	if (session.kind === "present") {
 		const live = await context.store.readAuthSession(session.cookieHash, context.config);
-		if (live !== null) return result(accountRedirect(context), "session_preserved");
+		if (live !== null) {
+			const response = accountRedirect(context);
+			const preserved = await context.store.preserveAuthLinkSessionCompletion(
+				{ attemptId, browserTransactionHash, binderHash, credentialHash: session.cookieHash },
+				context.config,
+			);
+			if (preserved.kind !== "preserved") return notice(403, "completion_rejected");
+			return result(response, "session_preserved");
+		}
 	}
 	const issued = await issueBrowserCookie("session");
 	// Construct all bearer-bearing output before the atomic write; release only its issued result.
@@ -295,6 +305,7 @@ export function createCoordinatorBrowserLinkCompletionHandlers(
 		resolveAuthLinkBrowserTransaction: receiver.resolveAuthLinkBrowserTransaction.bind(receiver),
 		getAuthLinkAttemptStatus: receiver.getAuthLinkAttemptStatus.bind(receiver),
 		readAuthSession: receiver.readAuthSession.bind(receiver),
+		preserveAuthLinkSessionCompletion: receiver.preserveAuthLinkSessionCompletion.bind(receiver),
 		redeemAuthLinkSessionWithBrowserTransaction:
 			receiver.redeemAuthLinkSessionWithBrowserTransaction.bind(receiver),
 	});
