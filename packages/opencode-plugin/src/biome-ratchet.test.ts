@@ -1,9 +1,9 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
+import { devNull, tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	compareBiomePolicy,
 	compareBiomeToolPolicy,
@@ -23,6 +23,12 @@ import {
 import type { LintDiagnostic } from "./lint-diagnostics.js";
 
 const temporaryDirectories: string[] = [];
+
+function isolateFixtureGitConfig(): void {
+	// Temporary repos must not inherit personal signing, hooks, or init templates.
+	vi.stubEnv("GIT_CONFIG_GLOBAL", devNull);
+	vi.stubEnv("GIT_CONFIG_SYSTEM", devNull);
+}
 
 afterEach(() => {
 	for (const directory of temporaryDirectories.splice(0)) {
@@ -1725,6 +1731,9 @@ describe("Biome ratchet CLI", () => {
 });
 
 describe("Biome ratchet CLI execution", () => {
+	beforeEach(isolateFixtureGitConfig);
+	afterEach(() => vi.unstubAllEnvs());
+
 	it("finds a renamed remote's default branch and falls back to HEAD", async () => {
 		const root = mkdtempSync(path.join(tmpdir(), "codemem-biome-ratchet-base-test-"));
 		temporaryDirectories.push(root);
@@ -1786,18 +1795,14 @@ describe("Biome ratchet CLI execution", () => {
 		expect(result.regressions[0]?.path).toBe("src/staged.ts");
 
 		vi.stubEnv("GIT_INDEX_FILE", ".git/index");
-		try {
-			const fromCommitHook = await runRatchet(
-				{ base: "auto", json: true, staged: true },
-				{
-					cwd: root,
-					biomeEntrypoint: createRequire(import.meta.url).resolve("@biomejs/biome/bin/biome"),
-				},
-			);
-			expect(fromCommitHook.regressions[0]?.path).toBe("src/staged.ts");
-		} finally {
-			vi.unstubAllEnvs();
-		}
+		const fromCommitHook = await runRatchet(
+			{ base: "auto", json: true, staged: true },
+			{
+				cwd: root,
+				biomeEntrypoint: createRequire(import.meta.url).resolve("@biomejs/biome/bin/biome"),
+			},
+		);
+		expect(fromCommitHook.regressions[0]?.path).toBe("src/staged.ts");
 	});
 
 	it("includes an untracked maintained file and fails closed on missing refs or tool failure", async () => {
