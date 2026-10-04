@@ -3,6 +3,7 @@ import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import { isBrowserCsrfToken } from "./coordinator-browser-csrf.js";
 
 export const AUTH_BROWSER_FORM_ACTIONS = Object.freeze({
+	signIn: "/auth/sign-in",
 	confirmLink: "/auth/link/confirm",
 	cancelLink: "/auth/link/cancel",
 	signOut: "/auth/logout",
@@ -43,6 +44,14 @@ export interface CoordinatorAuthCurrentAccountPageInput {
 	csrfToken: string;
 }
 
+export interface CoordinatorAuthSigninPageInput {
+	csrfToken: string;
+}
+
+export interface CoordinatorAuthSigninContinuePageInput {
+	authorizationUrl: string;
+}
+
 export interface CoordinatorAuthBrowserPage {
 	body: string;
 	headers: Record<string, string>;
@@ -51,6 +60,14 @@ export interface CoordinatorAuthBrowserPage {
 const GOOGLE_ISSUER = "https://accounts.google.com";
 const INVALID_INPUT = "auth_browser_view_invalid_input";
 const CONTROLS = /[\p{Cc}\p{Cf}\p{Cs}]/u;
+const SENSITIVE_AUTHORIZATION_KEYS = new Set([
+	"code",
+	"code_verifier",
+	"client_secret",
+	"access_token",
+	"refresh_token",
+	"id_token",
+]);
 const STYLE = `
 :root{color-scheme:light;font-family:system-ui,-apple-system,sans-serif;color:#202731;background:#f7f5ef}
 *{box-sizing:border-box}body{margin:0;padding:2rem 1rem}main{max-width:42rem;margin:0 auto;border-top:4px solid #183b60;padding-top:1.5rem}
@@ -93,6 +110,47 @@ function displayText(value: unknown, limit: number): string | undefined {
 	if (typeof value !== "string" || value.length > limit || CONTROLS.test(value)) return undefined;
 	if (!value || value !== value.trim()) return undefined;
 	return value;
+}
+
+function capturePageField(input: unknown, key: string): unknown {
+	try {
+		const data = record(input);
+		if (!data) return invalidInput();
+		return ownData(data, key, { rejectAccessor: true });
+	} catch {
+		return invalidInput();
+	}
+}
+
+function captureSigninCsrf(input: unknown): string {
+	const csrfToken = capturePageField(input, "csrfToken");
+	// Shape validation only; the controller verifies the token before starting sign-in.
+	if (!isBrowserCsrfToken(csrfToken)) return invalidInput();
+	return csrfToken;
+}
+
+function captureAuthorizationUrl(input: unknown): string {
+	try {
+		const text = displayText(capturePageField(input, "authorizationUrl"), 8192);
+		if (!text || text.includes("\\") || text.includes("#")) return invalidInput();
+		const url = new URL(text);
+		if (
+			url.href !== text ||
+			url.protocol !== "https:" ||
+			url.origin !== GOOGLE_ISSUER ||
+			url.username ||
+			url.password ||
+			url.port ||
+			url.hash
+		)
+			return invalidInput();
+		for (const name of url.searchParams.keys()) {
+			if (SENSITIVE_AUTHORIZATION_KEYS.has(name.toLowerCase())) return invalidInput();
+		}
+		return text;
+	} catch {
+		return invalidInput();
+	}
 }
 
 function pictureUrl(value: unknown, issuer: string): string | undefined {
@@ -267,6 +325,33 @@ async function buildPage(
 	}
 }
 
+export async function renderAuthSigninPage(
+	input: CoordinatorAuthSigninPageInput,
+): Promise<CoordinatorAuthBrowserPage> {
+	const csrfToken = captureSigninCsrf(input);
+	return buildPage(
+		"Sign in",
+		`<h1>Sign in</h1><p>Sign in to manage your coordinator account.</p><p>Signing in does not enroll a device or change project access.</p><div class="actions">${form(AUTH_BROWSER_FORM_ACTIONS.signIn, csrfToken, "Sign in with Google")}</div>`,
+		undefined,
+		{ referrerPolicy: "same-origin" },
+	);
+}
+
+/**
+ * Only pass a trusted SDK-produced URL, never a request-nominated URL.
+ * The origin and known-key checks protect the anchor, not the OAuth protocol;
+ * the denylist cannot detect arbitrary secret values in other parameters.
+ */
+export async function renderAuthSigninContinuePage(
+	input: CoordinatorAuthSigninContinuePageInput,
+): Promise<CoordinatorAuthBrowserPage> {
+	const authorizationUrl = captureAuthorizationUrl(input);
+	return buildPage(
+		"Continue sign-in",
+		`<h1>Continue sign-in</h1><div class="actions"><a class="link" href="${escapeHtml(authorizationUrl)}" referrerpolicy="no-referrer" rel="noreferrer">Continue to Google</a></div>`,
+	);
+}
+
 export async function renderAuthLinkConfirmPage(
 	input: CoordinatorAuthLinkConfirmPageInput,
 ): Promise<CoordinatorAuthBrowserPage> {
@@ -313,11 +398,20 @@ export async function renderCurrentAccountPage(
 }
 
 export async function renderAuthBrowserNotice(
-	kind: "expired" | "unavailable" | "signed_out",
+	kind: "expired" | "unavailable" | "signed_out" | "signin_in_progress" | "signin_unavailable",
 ): Promise<CoordinatorAuthBrowserPage> {
 	let title: string;
 	let content: string;
 	switch (kind) {
+		case "signin_in_progress":
+			title = "Sign-in already in progress";
+			content = "<p>Finish the open sign-in or account-link flow before starting another.</p>";
+			break;
+		case "signin_unavailable":
+			title = "Sign-in unavailable";
+			content =
+				'<p>Sign-in is unavailable. Try again.</p><div class="actions"><a class="link" href="/auth/sign-in">Sign in</a></div>';
+			break;
 		case "expired":
 			title = "Link expired";
 			content =

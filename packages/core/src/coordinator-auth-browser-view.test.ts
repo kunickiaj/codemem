@@ -7,6 +7,8 @@ import {
 	projectAccountProfileView,
 	renderAuthBrowserNotice,
 	renderAuthLinkConfirmPage,
+	renderAuthSigninContinuePage,
+	renderAuthSigninPage,
 	renderCurrentAccountPage,
 } from "./coordinator-auth-browser-view.js";
 import { BROWSER_COOKIE_NAMES, readBrowserCookie } from "./coordinator-browser-credential.js";
@@ -300,6 +302,7 @@ describe("auth browser forms and safe display", () => {
 			expect(document.body.textContent).toContain(entry.label);
 		}
 		expect(AUTH_BROWSER_FORM_ACTIONS).toEqual({
+			signIn: "/auth/sign-in",
 			confirmLink: "/auth/link/confirm",
 			cancelLink: "/auth/link/cancel",
 			signOut: "/auth/logout",
@@ -433,8 +436,202 @@ describe("safe browser display", () => {
 	});
 });
 
+describe("sign-in presentation only", () => {
+	it("accepts a shape-only token without MAC or database proof and ignores action nominations", async () => {
+		// Arrange: this canonical fixture has no authenticated provenance.
+		const input = {
+			csrfToken,
+			action: "https://foreign.example.test",
+			attemptId: "private-attempt",
+			profile,
+			identity: { id: "private-identity" },
+			role: "private-role",
+			pkceVerifier: "private-verifier",
+		};
+		// Act
+		const page = await renderAuthSigninPage(input);
+		const document = openPage(page.body);
+		// Assert: the sole action is the local CSRF-protected POST, not authorization.
+		expect(document.querySelectorAll("form")).toHaveLength(1);
+		const form = document.querySelector("form");
+		expect(form?.getAttribute("method")).toBe("post");
+		expect(form?.getAttribute("action")).toBe("/auth/sign-in");
+		expect(document.querySelectorAll("input")).toHaveLength(1);
+		expect(form?.querySelector("input")?.getAttribute("name")).toBe("csrf");
+		expect(form?.querySelector("input")?.getAttribute("type")).toBe("hidden");
+		expect(form?.querySelector("input")?.getAttribute("value")).toBe(csrfToken);
+		expect(document.querySelectorAll("button")).toHaveLength(1);
+		expect(form?.querySelector("button")?.getAttribute("type")).toBe("submit");
+		expect(form?.querySelector("button")?.textContent).toBe("Sign in with Google");
+		expect(document.querySelector("main h1")?.textContent).toBe("Sign in");
+		expect(document.querySelector("a,img,dl,code,section.profile")).toBeNull();
+		expect(page.body).not.toMatch(/private-|foreign\.example\.test|ada@example\.test/);
+		assertPassivePage(document);
+	});
+
+	it.each(["/", "/discovery-selected-endpoint"])(
+		"preserves public SDK-like query fields on Google path %s",
+		async (path) => {
+			// Arrange: mock SDK output only; no provider/discovery request.
+			const url = new URL(path, issuer);
+			for (const [key, value] of Object.entries({
+				state: "public ' & <state>",
+				nonce: "public-nonce",
+				code_challenge: "public-challenge",
+				client_id: "public-client",
+				redirect_uri: "https://coordinator.example.test/auth/callback",
+				scope: "openid email profile",
+				response_type: "code",
+			}))
+				url.searchParams.set(key, value);
+			const authorizationUrl = url.href;
+			// Act
+			const page = await renderAuthSigninContinuePage({ authorizationUrl });
+			const document = openPage(page.body);
+			// Assert: public protocol values occur only in the one escaped anchor.
+			expect(document.querySelectorAll("a")).toHaveLength(1);
+			const anchor = document.querySelector("a");
+			expect(anchor?.getAttribute("href")).toBe(authorizationUrl);
+			expect(anchor?.classList.contains("link")).toBe(true);
+			expect(anchor?.getAttribute("referrerpolicy")).toBe("no-referrer");
+			expect(anchor?.getAttribute("rel")?.split(/\s+/)).toContain("noreferrer");
+			expect(anchor?.hasAttribute("target")).toBe(false);
+			expect(anchor?.textContent).toBe("Continue to Google");
+			expect(document.querySelector("main h1")?.textContent).toBe("Continue sign-in");
+			expect(document.querySelector("form,input,button,img")).toBeNull();
+			expect(document.body.textContent).not.toMatch(
+				/public-|accounts\.google\.com|authorizationUrl/,
+			);
+			assertPassivePage(document);
+		},
+	);
+
+	it("accepts an own string at the URL length limit without evaluating constructor accessors", async () => {
+		// Arrange
+		const prefix = `${issuer}/?state=`;
+		const authorizationUrl = prefix + "s".repeat(8192 - prefix.length);
+		const getter = vi.fn(() => {
+			throw new Error("private-constructor");
+		});
+		const input = Object.assign(Object.create(null), { authorizationUrl });
+		Object.defineProperty(input, "constructor", { get: getter });
+		// Act
+		const page = await renderAuthSigninContinuePage(input);
+		// Assert
+		expect(openPage(page.body).querySelector("a")?.getAttribute("href")).toBe(authorizationUrl);
+		expect(getter).not.toHaveBeenCalled();
+	});
+});
+
+describe("sign-in input rejection", () => {
+	it.each([
+		"",
+		42,
+		null,
+		new String(`${issuer}/`),
+		`${issuer}/${"s".repeat(8192)}`,
+		"javascript:alert(1)",
+		"data:text/html,private-secret",
+		"blob:https://accounts.google.com/public-id",
+		"http://accounts.google.com/",
+		"//accounts.google.com/",
+		"https://foreign.example.test/",
+		"https://xn--google-9jg.example.test/",
+		"https://accounts.google.com.evil.test/",
+		"https://accounts.google.com@foreign.example.test/",
+		"https://user:private-secret@accounts.google.com/",
+		"https://accounts.google.com:8443/",
+		"https://accounts.google.com:443/",
+		"https://%61ccounts.google.com/",
+		"https://ACCOUNTS.google.com/",
+		`${issuer}/#`,
+		`${issuer}/#private-secret`,
+		`${issuer}\\path`,
+		` ${issuer}/`,
+		`${issuer}/ `,
+		`${issuer}/?state=bad\n`,
+		`${issuer}/?state=bad\u202e`,
+		`${issuer}/?state=bad\ud800`,
+	])(
+		"rejects unsafe or noncanonical authorization input %j without echoing it",
+		async (authorizationUrl) => {
+			// Arrange
+			const input = { authorizationUrl } as Parameters<typeof renderAuthSigninContinuePage>[0];
+			// Act
+			const promise = renderAuthSigninContinuePage(input);
+			// Assert
+			await expect(promise).rejects.toThrow(/^auth_browser_view_invalid_input$/);
+		},
+	);
+
+	it.each(["code", "code_verifier", "client_secret", "access_token", "refresh_token", "id_token"])(
+		"rejects decoded case-insensitive sensitive query key %s",
+		async (key) => {
+			// Arrange: URLSearchParams decodes names, including escaped uppercase letters.
+			const name = `%${key.charCodeAt(0).toString(16)}${key.slice(1).toUpperCase()}`;
+			// Act
+			const promises = [key, name].map((field) =>
+				renderAuthSigninContinuePage({ authorizationUrl: `${issuer}/?${field}=private-secret` }),
+			);
+			// Assert
+			for (const promise of promises)
+				await expect(promise).rejects.toThrow(/^auth_browser_view_invalid_input$/);
+		},
+	);
+
+	it.each(["accessor", "inherited", "array", "prototype fault", "descriptor fault"])(
+		"requires own data and normalizes %s faults for both inputs",
+		async (kind) => {
+			// Arrange
+			const getter = vi.fn(() => {
+				throw new Error("private-accessor");
+			});
+			const get = vi.fn(() => {
+				throw new Error("private-get-trap");
+			});
+			const fixtures = [
+				{ render: renderAuthSigninPage, field: "csrfToken", value: csrfToken },
+				{ render: renderAuthSigninContinuePage, field: "authorizationUrl", value: `${issuer}/` },
+			];
+			const inputs = fixtures.map(({ field, value }) => {
+				const data = { [field]: value };
+				if (kind === "accessor") return Object.defineProperty({}, field, { get: getter });
+				if (kind === "inherited") return Object.create(data);
+				if (kind === "array") return Object.assign([], data);
+				if (kind === "prototype fault") return new Proxy(data, { getPrototypeOf: getter });
+				return new Proxy(data, { get, getOwnPropertyDescriptor: getter });
+			});
+			// Act
+			const outcomes = await Promise.allSettled(
+				fixtures.map(({ render }, index) => render(inputs[index])),
+			);
+			// Assert
+			for (const outcome of outcomes) {
+				expect(outcome.status).toBe("rejected");
+				if (outcome.status === "rejected")
+					expect(outcome.reason.message).toBe("auth_browser_view_invalid_input");
+			}
+			if (["accessor", "inherited", "array"].includes(kind)) expect(getter).not.toHaveBeenCalled();
+			expect(get).not.toHaveBeenCalled();
+		},
+	);
+
+	it("redacts native digest failures for both new pages", async () => {
+		// Arrange
+		vi.spyOn(crypto.subtle, "digest").mockRejectedValue(new Error("private-crypto-cause"));
+		// Act
+		const promises = [
+			renderAuthSigninPage({ csrfToken }),
+			renderAuthSigninContinuePage({ authorizationUrl: `${issuer}/` }),
+		];
+		// Assert
+		for (const promise of promises)
+			await expect(promise).rejects.toThrow(/^auth_browser_view_render_failed$/);
+	});
+});
+
 describe("issued CSRF form values", () => {
-	it.each(["transaction", "session"] as const)(
+	it.each(["transaction", "session", "start"] as const)(
 		"preserves a helper-issued %s CSRF token in the appropriate form",
 		async (purpose) => {
 			// Arrange: deterministic entropy, independent server key, and opaque cookie.
@@ -455,9 +652,12 @@ describe("issued CSRF form values", () => {
 			});
 			const input = { ...linkInput(), csrfToken: token };
 			// Act
-			const page = await (purpose === "transaction"
-				? renderAuthLinkConfirmPage(input)
-				: renderCurrentAccountPage(input));
+			const renderers = {
+				transaction: renderAuthLinkConfirmPage,
+				session: renderCurrentAccountPage,
+				start: renderAuthSigninPage,
+			};
+			const page = await renderers[purpose](input);
 			const fields = openPage(page.body).querySelectorAll("input[name='csrf']");
 			// Assert: rendering preserves shape; it does not authenticate the token.
 			expect(token).toHaveLength(86);
@@ -541,7 +741,11 @@ describe("redacted validation", () => {
 		// Arrange
 		const input = { ...linkInput(), csrfToken: token };
 		// Act
-		const promises = [renderAuthLinkConfirmPage(input), renderCurrentAccountPage(input)];
+		const promises = [
+			renderAuthLinkConfirmPage(input),
+			renderCurrentAccountPage(input),
+			renderAuthSigninPage(input),
+		];
 		// Assert
 		for (const promise of promises)
 			await expect(promise).rejects.toThrow(/^auth_browser_view_invalid_input$/);
@@ -611,29 +815,38 @@ describe("redacted validation", () => {
 });
 
 describe("passive notices and response policy", () => {
-	it.each(["expired", "unavailable", "signed_out"] as const)(
-		"renders fixed %s notice without forms or redirects",
-		async (kind) => {
-			// Arrange
-			const expectedLinks = kind === "signed_out" ? ["/auth/sign-in"] : [];
-			const titles = {
-				expired: "Link expired",
-				unavailable: "Account linking unavailable",
-				signed_out: "Signed out",
-			};
-			// Act
-			const page = await renderAuthBrowserNotice(kind);
-			const document = openPage(page.body);
-			// Assert
-			expect(document.querySelectorAll("form")).toHaveLength(0);
-			expect([...document.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual(
-				expectedLinks,
-			);
-			expect(document.querySelector("h1")?.textContent).toBe(titles[kind]);
-			expect(header(page.headers, "Location")).toBe("");
-			assertPassivePage(document);
-		},
-	);
+	it.each([
+		"expired",
+		"unavailable",
+		"signed_out",
+		"signin_in_progress",
+		"signin_unavailable",
+	] as const)("renders fixed %s notice without forms or redirects", async (kind) => {
+		// Arrange
+		const expectedLinks = ["signed_out", "signin_unavailable"].includes(kind)
+			? ["/auth/sign-in"]
+			: [];
+		const titles = {
+			expired: "Link expired",
+			unavailable: "Account linking unavailable",
+			signed_out: "Signed out",
+			signin_in_progress: "Sign-in already in progress",
+			signin_unavailable: "Sign-in unavailable",
+		};
+		// Act
+		const page = await renderAuthBrowserNotice(kind);
+		const document = openPage(page.body);
+		// Assert
+		expect(document.querySelectorAll("form")).toHaveLength(0);
+		expect([...document.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual(
+			expectedLinks,
+		);
+		expect(document.querySelector("h1")?.textContent).toBe(titles[kind]);
+		expect(header(page.headers, "Location")).toBe("");
+		assertPassivePage(document);
+		expect(document.querySelector("input,img,code,dl")).toBeNull();
+		expect(header(page.headers, "Referrer-Policy")).toBe("no-referrer");
+	});
 
 	it("rejects caller-supplied notice content with a generic error", async () => {
 		// Arrange
@@ -655,6 +868,7 @@ describe("passive notices and response policy", () => {
 			"no-referrer",
 			"same-origin",
 		];
+		referrerPolicies.push("same-origin", "no-referrer", "no-referrer", "no-referrer");
 		// Act
 		const pages = await Promise.all([
 			renderAuthLinkConfirmPage(input),
@@ -667,6 +881,12 @@ describe("passive notices and response policy", () => {
 				issuer: "https://other.example.test",
 				profile: { ...profile, pictureUrl: picture },
 			}),
+			renderAuthSigninPage({ csrfToken }),
+			renderAuthSigninContinuePage({
+				authorizationUrl: `${issuer}/o/oauth2/auth?state=public-state`,
+			}),
+			renderAuthBrowserNotice("signin_in_progress"),
+			renderAuthBrowserNotice("signin_unavailable"),
 		]);
 		// Assert
 		const css = openPage(pages[0].body).querySelector("style")?.textContent ?? "";

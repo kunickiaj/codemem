@@ -2,6 +2,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
 	renderAuthBrowserNotice,
 	renderAuthLinkConfirmPage,
+	renderAuthSigninContinuePage,
+	renderAuthSigninPage,
 	renderCurrentAccountPage,
 } from "../../core/src/coordinator-auth-browser-view.js";
 import {
@@ -204,3 +206,86 @@ it.each(["transaction", "session"] as const)(
 		await assertPage(page, { referrerPolicy: "same-origin" });
 	},
 );
+
+it("renders the local sign-in POST and rejects malformed tokens without fetching in workerd", async () => {
+	// Arrange: native HTMLRewriter parses attributes without a browser or JSDOM.
+	const elements: Record<string, string | null>[] = [];
+	// Act
+	const page = await renderAuthSigninPage({ csrfToken });
+	await new HTMLRewriter()
+		.on("form,input,button,h1", {
+			element(element) {
+				elements.push({
+					tag: element.tagName,
+					method: element.getAttribute("method"),
+					action: element.getAttribute("action"),
+					name: element.getAttribute("name"),
+					value: element.getAttribute("value"),
+					type: element.getAttribute("type"),
+				});
+			},
+		})
+		.transform(new Response(page.body))
+		.text();
+	const invalid = await Promise.allSettled([renderAuthSigninPage({ csrfToken: "a".repeat(43) })]);
+	// Assert: exact controls and native CSS digest; no live provider involved.
+	await assertPage(page, { referrerPolicy: "same-origin" });
+	expect(elements.map((element) => element.tag)).toEqual(["h1", "form", "input", "button"]);
+	expect(elements[1]).toMatchObject({ method: "post", action: "/auth/sign-in" });
+	expect(elements[2]).toMatchObject({ name: "csrf", type: "hidden", value: csrfToken });
+	expect(elements[3].type).toBe("submit");
+	expect(page.body).toContain("Sign in with Google");
+	expect(page.body).not.toMatch(/<img|attempt_id|<script|http-equiv=/i);
+	expect(page.headers["Content-Security-Policy"]).toContain("img-src 'none'");
+	expect(invalid).toEqual([
+		{ status: "rejected", reason: new Error("auth_browser_view_invalid_input") },
+	]);
+	expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
+it("preserves the trusted continuation anchor and redacts bad URLs in workerd without fetching", async () => {
+	// Arrange: mock SDK output, not provider discovery.
+	const url = new URL("/discovery-selected-endpoint", issuer);
+	url.searchParams.set("state", "public ' & <state>");
+	url.searchParams.set("code_challenge", "public-challenge");
+	const anchors: Record<string, string | null>[] = [];
+	// Act
+	const page = await renderAuthSigninContinuePage({ authorizationUrl: url.href });
+	await new HTMLRewriter()
+		.on("a", {
+			element(element) {
+				anchors.push({
+					href: element.getAttribute("href"),
+					rel: element.getAttribute("rel"),
+					referrerPolicy: element.getAttribute("referrerpolicy"),
+					target: element.getAttribute("target"),
+				});
+			},
+		})
+		.transform(new Response(page.body))
+		.text();
+	const invalid = await Promise.allSettled(
+		["https://foreign.example.test/", `${issuer}/?CODE_VERIFIER=private-verifier`].map(
+			(authorizationUrl) => renderAuthSigninContinuePage({ authorizationUrl }),
+		),
+	);
+	// Assert
+	await assertPage(page, { referrerPolicy: "no-referrer" });
+	// HTMLRewriter retains entities in attributes; core DOM tests check the decoded href.
+	expect(anchors).toEqual([
+		{
+			href: url.href.replaceAll("&", "&amp;"),
+			rel: "noreferrer",
+			referrerPolicy: "no-referrer",
+			target: null,
+		},
+	]);
+	expect(page.body).not.toMatch(/<form|<input|<img|http-equiv=/i);
+	expect(page.headers["Content-Security-Policy"]).toContain("img-src 'none'");
+	for (const outcome of invalid)
+		expect(outcome).toEqual({
+			status: "rejected",
+			reason: new Error("auth_browser_view_invalid_input"),
+		});
+	expect(globalThis.fetch).not.toHaveBeenCalled();
+});
