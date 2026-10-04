@@ -72,6 +72,7 @@ import {
 	AUTH_SESSION_RETENTION_COLUMN_SQL,
 	AUTH_SESSION_SCHEMA_SQL,
 	type CoordinatorAuthAccountSignInInput,
+	type CoordinatorAuthBoundLinkSessionRedeemInput,
 	type CoordinatorAuthLinkSessionRedeemInput,
 	type CoordinatorAuthSessionPurgeOptions,
 	type CoordinatorAuthSessionScope,
@@ -745,6 +746,12 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		config: CoordinatorAuthLinkConfig,
 	) {
 		return this.authSessions.redeemAuthLinkSession(input, config);
+	}
+	async redeemAuthLinkSessionWithBrowserTransaction(
+		input: CoordinatorAuthBoundLinkSessionRedeemInput,
+		config: CoordinatorAuthBrowserConfig,
+	) {
+		return this.authSessions.redeemAuthLinkSessionWithBrowserTransaction(input, config);
 	}
 	async purgeAuthGuardedSigninSessions(
 		scope: CoordinatorAuthSessionScope,

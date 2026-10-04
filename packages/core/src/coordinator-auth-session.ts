@@ -16,6 +16,7 @@ import {
 	type CoordinatorAuthAccountLinkAdminStore,
 	type CoordinatorAuthAccountLinkRevokeResult,
 	type CoordinatorAuthAccountSignInInput,
+	type CoordinatorAuthBoundLinkSessionRedeemInput,
 	type CoordinatorAuthLinkSessionRedeemInput,
 	type CoordinatorAuthSession,
 	type CoordinatorAuthSessionError,
@@ -177,7 +178,7 @@ export const AUTH_SESSION_LINK_MATCH_SQL = `l.coordinator_id = s.coordinator_id 
 const LINK_MATCH = AUTH_SESSION_LINK_MATCH_SQL;
 export const AUTH_SESSION_LIVE_GUARD_SQL = `s.coordinator_id = ? AND s.credential_hash = ? AND s.issuer = ? AND s.auth_config_revision = ? AND s.revoked_at_ms IS NULL AND l.revoked_at_ms IS NULL AND s.expires_at_ms > ? AND s.created_at_ms <= ?`;
 const RECEIPT_COLUMNS = `coordinator_id, browser_transaction_hash, source, attempt_id, link_id, session_id, auth_config_revision, created_at_ms`;
-const REDEEM_RECEIPT_SQL = `INSERT INTO coordinator_auth_session_receipts (${RECEIPT_COLUMNS})
+const REDEEM_RECEIPT_SELECT_SQL = `INSERT INTO coordinator_auth_session_receipts (${RECEIPT_COLUMNS})
  SELECT t.coordinator_id, t.browser_transaction_hash, 'link_redeem', t.attempt_id, t.link_id, ?, ?, ?
  FROM coordinator_auth_link_attempts t JOIN coordinator_auth_account_links l
  ON l.coordinator_id = t.coordinator_id AND l.link_id = t.link_id AND l.attempt_id = t.attempt_id
@@ -185,7 +186,18 @@ const REDEEM_RECEIPT_SQL = `INSERT INTO coordinator_auth_session_receipts (${REC
  AND l.auth_config_revision = t.auth_config_revision
  WHERE t.coordinator_id = ? AND t.attempt_id = ? AND t.browser_transaction_hash = ?
  AND t.state = 'finalized' AND t.issuer = ? AND t.auth_config_revision = ? AND l.revoked_at_ms IS NULL
- AND ? >= t.finalized_at_ms AND ? < t.finalized_at_ms + 120000 AND ? < t.expires_at_ms
+ AND ? >= t.finalized_at_ms AND ? < t.finalized_at_ms + 120000 AND ? < t.expires_at_ms`;
+const REDEEM_RECEIPT_SQL = `${REDEEM_RECEIPT_SELECT_SQL}
+ ON CONFLICT(coordinator_id, browser_transaction_hash) DO NOTHING`;
+const BOUND_LINK_BROWSER_GUARD_SQL = `b.coordinator_id = t.coordinator_id
+ AND b.browser_transaction_hash = t.browser_transaction_hash AND b.attempt_id = t.attempt_id
+ AND b.binder_hash = ? AND b.purpose = 'link' AND b.state = 'consumed'
+ AND b.issuer = ? AND b.auth_config_revision = ? AND b.redirect_uri = ?
+ AND b.nonce IS NULL AND b.pkce_verifier IS NULL AND b.claim_token IS NOT NULL
+ AND b.consumed_at_ms IS NOT NULL AND b.created_at_ms <= ?
+ AND b.consumed_at_ms <= ? AND b.expires_at_ms > ?`;
+const BOUND_LINK_REDEEM_RECEIPT_SQL = `${REDEEM_RECEIPT_SELECT_SQL}
+ AND EXISTS (SELECT 1 FROM coordinator_auth_browser_transactions b WHERE ${BOUND_LINK_BROWSER_GUARD_SQL})
  ON CONFLICT(coordinator_id, browser_transaction_hash) DO NOTHING`;
 const SIGNIN_RECEIPT_SQL = `INSERT INTO coordinator_auth_session_receipts (${RECEIPT_COLUMNS})
  SELECT l.coordinator_id, ?, 'signin', NULL, l.link_id, ?, ?, ? FROM coordinator_auth_account_links l
@@ -342,6 +354,53 @@ export class AuthSessionOperations
 					i.browserTransactionHash,
 					c.issuer,
 					c.revision,
+					now,
+					now,
+					now,
+				],
+			},
+			this.sessionInsert(i, c, sessionId),
+			{
+				sql: REDEEM_CONSUME_SQL,
+				values: [c.coordinatorId, i.attemptId, i.browserTransactionHash, sessionId],
+			},
+		]);
+		const result = await this.issueReceipt(i, c, now, sessionId);
+		if (result) return result;
+		return this.diagnoseRedeem(i.attemptId, i.browserTransactionHash, c, now);
+	}
+	/** Admission binds a finalized link to its consumed original browser transaction. */
+	async redeemAuthLinkSessionWithBrowserTransaction(
+		input: CoordinatorAuthBoundLinkSessionRedeemInput,
+		config: CoordinatorAuthBrowserConfig,
+	): Promise<CoordinatorAuthSessionIssueResult> {
+		const c = captureBrowserConfig(config);
+		const i = captureIssue(input, ["attemptId", "binderHash"]);
+		if (!c || !i || !isAuthControllerId(i.attemptId) || !isHash(i.binderHash))
+			return rejected("invalid_input");
+		if (!c.enabled) return rejected("auth_config_changed");
+		const now = sessionNow(this.clock);
+		const sessionId = globalThis.crypto.randomUUID();
+		// The receipt guard is the admission check; only its fresh winner can mint and consume.
+		await this.batch([
+			{
+				sql: BOUND_LINK_REDEEM_RECEIPT_SQL,
+				values: [
+					sessionId,
+					c.revision,
+					now,
+					c.coordinatorId,
+					i.attemptId,
+					i.browserTransactionHash,
+					c.issuer,
+					c.revision,
+					now,
+					now,
+					now,
+					i.binderHash,
+					c.issuer,
+					c.revision,
+					c.redirectUri,
 					now,
 					now,
 					now,

@@ -47,7 +47,8 @@ Source candidate: `packages/core/src/coordinator-auth-session.ts`.
 
 | Method | Required behavior |
 | --- | --- |
-| `redeemAuthLinkSession({ attemptId, browserTransactionHash, credentialHash }, cfg)` | The original browser alone redeems one finalized link attempt and receives a newly minted session record. |
+| `redeemAuthLinkSession({ attemptId, browserTransactionHash, credentialHash }, cfg)` | Unchanged trusted compatibility helper. It checks the attempt's transaction hash, not the browser cookie; public browser handlers must use the cookie-bound method below. |
+| `redeemAuthLinkSessionWithBrowserTransaction({ attemptId, browserTransactionHash, binderHash, credentialHash }, browserCfg)` | Requires the original browser cookie hash and matching consumed link transaction inside the atomic redemption write; returns a fresh session record only for the winning finalized attempt. |
 | `signInWithAuthAccount({ browserTransactionHash, account: { issuer, subject }, credentialHash }, cfg)` | Unchanged trusted internal compatibility helper. It is not the future public-handler path and does not apply the admission limit. |
 | `signInWithConsumedBrowserTransaction({ browserTransactionHash, account: { issuer, subject }, credentialHash }, browserCfg)` | Future public handlers **must** use this post-OIDC seam after independently verifying OIDC/JWS, original browser binding, CSRF, and Origin. It requires a consumed current-config sign-in transaction and applies the per-link admission limit; see the [admission contract](coordinator-auth-session-admission.md). |
 | `readAuthSession(hash, cfg)` | Returns the DTO only while the session, link, and configuration remain live. |
@@ -87,10 +88,11 @@ it cannot write or verify the audit receipt; an error does not undo that revocat
 
 ## Atomic redemption
 
-Redemption applies only to the original browser, within two minutes after
+Cookie-bound redemption applies only to the original browser, within two minutes after
 finalization and before the original ten-minute attempt deadline. It atomically:
 
-1. validates active exact link/config and the browser transaction hash;
+1. validates the active exact link/config, the attempt's transaction hash, and
+   the original cookie hash against a consumed current link transaction;
 2. inserts a receipt guarded by `INSERT ... SELECT` with a fresh session UUID;
 3. inserts the session and changes the attempt to `session_redeemed`.
 
@@ -106,6 +108,15 @@ approval.
 An issue result describes the committed session, not perpetual authorization:
 revocation racing with its read-back can make that session unusable immediately.
 Every later protected use must call the live session lookup.
+
+The cookie-bound method's receipt insert checks the same coordinator, attempt,
+transaction hash, cookie hash, issuer, configuration revision, and callback URI
+in one write. The transaction must be consumed with nonce and verifier erased,
+have a consume winner, and be unexpired and not future-born. A separate lookup
+followed by the compatibility redeem is not equivalent to this check.
+
+Initial-link receipts remain permanent (`purge_eligible = 0`); this method does
+not widen normal-sign-in cleanup or change the existing compatibility API.
 
 ## Schema and deferred work
 

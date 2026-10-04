@@ -48,6 +48,7 @@ import type {
 import { AuthSessionOperations } from "./coordinator-auth-session.js";
 import type {
 	CoordinatorAuthAccountSignInInput,
+	CoordinatorAuthBoundLinkSessionRedeemInput,
 	CoordinatorAuthLinkSessionRedeemInput,
 	CoordinatorAuthSessionPurgeOptions,
 	CoordinatorAuthSessionScope,
@@ -491,6 +492,12 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		config: CoordinatorAuthLinkConfig,
 	) {
 		return this.authSessions.redeemAuthLinkSession(input, config);
+	}
+	async redeemAuthLinkSessionWithBrowserTransaction(
+		input: CoordinatorAuthBoundLinkSessionRedeemInput,
+		config: CoordinatorAuthBrowserConfig,
+	) {
+		return this.authSessions.redeemAuthLinkSessionWithBrowserTransaction(input, config);
 	}
 	async purgeAuthGuardedSigninSessions(
 		scope: CoordinatorAuthSessionScope,

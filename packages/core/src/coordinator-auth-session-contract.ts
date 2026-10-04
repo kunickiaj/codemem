@@ -36,6 +36,11 @@ export interface CoordinatorAuthLinkSessionRedeemInput {
 	browserTransactionHash: string;
 	credentialHash: string;
 }
+/** Binding hashes are derived and resolved by the trusted server, never nominated by HTTP JSON. */
+export interface CoordinatorAuthBoundLinkSessionRedeemInput
+	extends CoordinatorAuthLinkSessionRedeemInput {
+	binderHash: string;
+}
 /** Account claims must already be independently verified by the server's OIDC ceremony. */
 export interface CoordinatorAuthAccountSignInInput {
 	browserTransactionHash: string;
@@ -71,6 +76,10 @@ export interface CoordinatorAuthSessionStore {
 	redeemAuthLinkSession(
 		input: CoordinatorAuthLinkSessionRedeemInput,
 		config: CoordinatorAuthLinkConfig,
+	): Promise<CoordinatorAuthSessionIssueResult>;
+	redeemAuthLinkSessionWithBrowserTransaction(
+		input: CoordinatorAuthBoundLinkSessionRedeemInput,
+		config: CoordinatorAuthBrowserConfig,
 	): Promise<CoordinatorAuthSessionIssueResult>;
 	signInWithAuthAccount(
 		input: CoordinatorAuthAccountSignInInput,
