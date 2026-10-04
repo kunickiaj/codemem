@@ -373,7 +373,7 @@ describe("browser form reader lifecycle and metadata", () => {
 });
 
 describe("strict browser form parser", () => {
-	it.each(["transaction_attempt", "session_logout"] as const)(
+	it.each(["transaction_attempt", "session_logout", "signin_start"] as const)(
 		"returns frozen typed fields for %s",
 		(action) => {
 			// Arrange
@@ -446,6 +446,43 @@ describe("strict browser form parser", () => {
 		const raw = `csrf=${TOKEN}&attempt_id=${encodeURIComponent(attemptId)}`;
 		// Act
 		const result = parsed(raw);
+		// Assert
+		invalid(result);
+	});
+});
+
+describe("signin start form fields", () => {
+	it.each([`csrf=${TOKEN}`, `%63srf=${TOKEN}`, "csrf="])("parses only internal csrf: %s", (raw) => {
+		// Arrange
+		const input = bytes(raw);
+		// Act
+		const result = parseBrowserFormBody(input, "signin_start");
+		// Assert: token shape and authentication belong to the guard, not this parser.
+		expect(result).toEqual({
+			ok: true,
+			action: "signin_start",
+			csrf: raw.endsWith("=") ? "" : TOKEN,
+		});
+		expect(Object.isFrozen(result)).toBe(true);
+	});
+	it.each([
+		"",
+		"attempt_id=x",
+		"csrf=x&attempt_id=x",
+		"csrf=x&role=admin",
+		"csrf=x&actor=x",
+		"csrf=x&controller=x",
+		"csrf=x&unknown=x",
+		"csrf=x&__proto__=x",
+		"csrf=x&%63srf=y",
+		"csrf=x&%61ttempt_id=x",
+		"csrf=%",
+		"csrf=%ED%A0%80",
+	])("rejects missing, extra, duplicate or malformed start fields: %s", (raw) => {
+		// Arrange
+		const input = bytes(raw);
+		// Act
+		const result = parseBrowserFormBody(input, "signin_start");
 		// Assert
 		invalid(result);
 	});

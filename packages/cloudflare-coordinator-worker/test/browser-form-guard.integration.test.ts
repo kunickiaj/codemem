@@ -19,12 +19,17 @@ const scope = {
 	publicOrigin: "https://app.example.test",
 	store: { coordinatorId: "coord-a", revision: "a".repeat(64) },
 };
-type Action = "transaction_attempt" | "session_logout";
+type Action = BrowserFormGuardInput["action"];
 const encoder = new TextEncoder();
 async function fixture(action: Action, tokenScope = scope) {
 	// Public fixture key, not configuration or a provider credential.
 	const csrfKey = await importBrowserCsrfKey(new Uint8Array(32));
-	const purpose = action === "transaction_attempt" ? "transaction" : "session";
+	const purposes = {
+		transaction_attempt: "transaction",
+		session_logout: "session",
+		signin_start: "start",
+	} as const;
+	const purpose = purposes[action];
 	const issued = await issueBrowserCookie(purpose);
 	const rawCookie = browserCookieValue(issued.secret, purpose);
 	const csrf = await issueBrowserCsrfToken(csrfKey, issued.secret, purpose, tokenScope);
@@ -66,6 +71,69 @@ function fixedError(result: unknown, error: string) {
 	expect(result).toEqual({ ok: false, error });
 	expect(Object.isFrozen(result)).toBe(true);
 }
+
+it("verifies native start HMACs and shares the pinned budget with both old actions", async () => {
+	// Arrange: unmounted helpers, real WebCrypto, no authorization or database lookup.
+	const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("No network"));
+	try {
+		const start = await fixture("signin_start");
+		start.headers.set("Content-Type", "Application/X-Www-Form-Urlencoded ; CHARSET=UTF-8");
+		const limiter = createInMemoryRequestRateLimiter({ now: () => 0 });
+		const check = vi.spyOn(limiter, "check");
+		const foreignHeaders = new Headers(start.headers);
+		foreignHeaders.set("Origin", "https://other.example.test");
+		const foreign = unreadBody();
+		const foreignRequest = request(foreignHeaders, foreign.body);
+		// Act / Assert: rejected origins cannot pin a different policy or pull the body.
+		fixedError(await run(start, foreignRequest, { limiter, limit: 4 }), "origin_rejected");
+		expect(check).not.toHaveBeenCalled();
+		expect(foreign.pull).not.toHaveBeenCalled();
+		expect(foreignRequest.bodyUsed).toBe(false);
+		// Arrange / Act: matching native request Origin still cannot validate a foreign-origin MAC.
+		const foreignMac = await fixture("signin_start", {
+			...scope,
+			publicOrigin: "https://other.example.test",
+		});
+		const invalidMac = await run(foreignMac);
+		// Assert
+		fixedError(invalidMac, "csrf_invalid");
+		// Arrange / Act: all three valid native actions spend the same client's quota.
+		const transaction = await fixture("transaction_attempt");
+		const session = await fixture("session_logout");
+		const accepted = await run(start, undefined, { limiter, limit: 3 });
+		const oldActions = [
+			await run(transaction, undefined, { limiter, limit: 3 }),
+			await run(session, undefined, { limiter, limit: 3 }),
+		];
+		// Assert
+		expect(accepted).toEqual({ ok: true, action: "signin_start", cookieHash: start.cookieHash });
+		expect(Object.isFrozen(accepted)).toBe(true);
+		expect(JSON.stringify(accepted)).not.toContain(start.csrf);
+		expect(JSON.stringify(accepted)).not.toContain(start.rawCookie);
+		for (const result of oldActions) expect(result.ok).toBe(true);
+		expect(new Set(check.mock.calls.map(([key]) => key)).size).toBe(1);
+		for (const [limit, error] of [
+			[4, "invalid_input"],
+			[3, "rate_limited"],
+		] as const) {
+			// Arrange
+			const source = unreadBody();
+			const native = request(start.headers, source.body);
+			check.mockClear();
+			// Act
+			const result = await run(start, native, { limiter, limit });
+			// Assert
+			expect(result).toMatchObject({ ok: false, error });
+			expect(Object.isFrozen(result)).toBe(true);
+			expect(check).toHaveBeenCalledTimes(limit === 4 ? 0 : 1);
+			expect(source.pull).not.toHaveBeenCalled();
+			expect(native.bodyUsed).toBe(false);
+		}
+		expect(fetch).not.toHaveBeenCalled();
+	} finally {
+		fetch.mockRestore();
+	}
+});
 
 it("accepts native encoded forms for both actions without returning credentials", async () => {
 	// Arrange: this unmounted helper validates input, not database authorization or browser policy.

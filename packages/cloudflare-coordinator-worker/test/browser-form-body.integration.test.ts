@@ -9,6 +9,49 @@ const csrf = "A".repeat(86); // Canonical public fixture; parsing does not authe
 const invalid = { ok: false, error: "form_invalid" };
 const tooLarge = { ok: false, error: "body_too_large" };
 
+it("reads native start forms with csrf only and rejects decoded extra fields or malformed encodings", async () => {
+	// Arrange: the parsed token stays internal and does not prove authentication.
+	const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("No network"));
+	const native = new Request("https://app.example.test/form", {
+		method: "POST",
+		body: `%63srf=${csrf}`,
+	});
+	const malformed = [
+		"",
+		"attempt_id=x",
+		"csrf=x&attempt_id=x",
+		"csrf=x&role=admin",
+		"csrf=x&actor=x",
+		"csrf=x&controller=x",
+		"csrf=x&unknown=x",
+		"csrf=x&__proto__=x",
+		"csrf=x&%63srf=y",
+		"csrf=%",
+		"csrf=%ED%A0%80",
+	];
+	try {
+		// Act
+		const read = await readBrowserFormBody({ body: native.body, contentLength: null });
+		if (!read.ok) throw new Error("Expected native body bytes");
+		const accepted = parseBrowserFormBody(read.bytes, "signin_start");
+		const denied = [...malformed.map((raw) => encoder.encode(raw)), new Uint8Array([255])].map(
+			(raw) => parseBrowserFormBody(raw, "signin_start"),
+		);
+		// Assert
+		expect(accepted).toEqual({ ok: true, action: "signin_start", csrf });
+		expect(Object.isFrozen(accepted)).toBe(true);
+		for (const result of denied) {
+			expect(result).toEqual(invalid);
+			expect(Object.isFrozen(result)).toBe(true);
+		}
+		expect(native.bodyUsed).toBe(true);
+		expect(native.body?.locked).toBe(false);
+		expect(fetch).not.toHaveBeenCalled();
+	} finally {
+		fetch.mockRestore();
+	}
+});
+
 it("rejects locked and partially consumed native Request bodies without pulling the valid remainder", async () => {
 	// Arrange: an unread valid suffix must not disguise an already disturbed body.
 	const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("No network"));
