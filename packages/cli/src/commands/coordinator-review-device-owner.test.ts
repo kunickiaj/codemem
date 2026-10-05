@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -75,11 +76,23 @@ const reviewedOwner = {
 const tty = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
 const stdinTty = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 const originalExitCode = process.exitCode;
-function run(extra: string[] = []) {
+function run(extra: string[] = [], groupId = "group-a") {
 	return buildCoordinatorReviewDeviceOwnerCommand().parseAsync(
-		["group-a", "-d", "fixture.sqlite", ...extra],
+		[groupId, "-d", "fixture.sqlite", ...extra],
 		{ from: "user" },
 	);
+}
+function approveGroup(groupId: string) {
+	mocks.confirm.mockResolvedValue(true);
+	mocks.coordinatorAuthControllerReviewAction.mockResolvedValueOnce(preview).mockResolvedValueOnce({
+		state: "created",
+		coordinator_id: preview.coordinator_id,
+		group_id: groupId,
+		device_id: "device-a",
+		identity_id: "actor-a",
+		fingerprint: local.device.fingerprint,
+		created_at: "2026-10-05T00:00:00Z",
+	});
 }
 beforeEach(() => {
 	vi.clearAllMocks();
@@ -179,14 +192,17 @@ it.each([false, Symbol("cancel")])(
 	},
 );
 
-it("explicit approval rereads local identity before committing the server digest", async () => {
+it.each([
+	["group-a", "'group-a'"],
+	[
+		"team owner's space; $(printf injected) & | < > *",
+		"'team owner'\\''s space; $(printf injected) & | < > *'",
+	],
+])("explicit approval preserves group %s in the next command", async (groupId, quotedGroup) => {
 	// Arrange
-	mocks.confirm.mockResolvedValue(true);
-	mocks.coordinatorAuthControllerReviewAction
-		.mockResolvedValueOnce(preview)
-		.mockResolvedValueOnce(reviewedOwner);
+	approveGroup(groupId);
 	// Act
-	await run();
+	await buildCoordinatorReviewDeviceOwnerCommand().parseAsync([groupId], { from: "user" });
 	// Assert
 	expect(mocks.readCoordinatorOwnerReviewLocalEvidence).toHaveBeenCalledTimes(2);
 	expect(mocks.coordinatorAuthControllerReviewAction).toHaveBeenLastCalledWith(
@@ -197,9 +213,20 @@ it("explicit approval rereads local identity before committing the server digest
 	);
 	expect(mocks.log.success).toHaveBeenCalledOnce();
 	expect(mocks.log.info).toHaveBeenLastCalledWith(
-		expect.stringContaining("Reuse the same --coordinator, --config, and --db-path"),
+		expect.stringContaining(`link-account ${quotedGroup}`),
 		{ output: process.stderr },
 	);
+	// A literal round trip guards against shell evaluation of group IDs.
+	const output = String(mocks.log.info.mock.lastCall?.[0]);
+	const extractedQuotedArg = output.split("link-account ")[1];
+	expect(extractedQuotedArg).toBe(quotedGroup);
+	if (process.platform !== "win32") {
+		expect(
+			execFileSync("/bin/sh", ["-c", `printf '%s' ${extractedQuotedArg}`], {
+				encoding: "utf8",
+			}),
+		).toBe(groupId);
+	}
 });
 
 it.each(["config", "environment"])(
@@ -388,6 +415,22 @@ it.each([
 		expect(followUp).not.toContain("Reuse the same");
 	}
 });
+it.each(["team\\owner", "team\\\\owner", "team\\'owner"])(
+	"explicit approval gives shell-specific guidance for group %s",
+	async (groupId) => {
+		// Arrange
+		approveGroup(groupId);
+		// Act
+		await buildCoordinatorReviewDeviceOwnerCommand().parseAsync([groupId], { from: "user" });
+		// Assert
+		expect(mocks.log.success).toHaveBeenCalledOnce();
+		const output = String(mocks.log.info.mock.lastCall?.[0]);
+		expect(output).toBe(
+			`Next, run codemem coordinator link-account with group ID ${JSON.stringify(groupId)}. Quote the ID for your shell.`,
+		);
+		expect(output).not.toContain("link-account '");
+	},
+);
 
 it.each(["actor", "key"])("changed local %s during approval prevents commit", async (changed) => {
 	// Arrange

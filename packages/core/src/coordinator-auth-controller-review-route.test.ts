@@ -93,6 +93,7 @@ const inviteChanges = [
 	"UPDATE coordinator_invites SET bound_device_id = 'changed'",
 	"UPDATE coordinator_invites SET bound_fingerprint = 'changed'",
 	"UPDATE coordinator_invites SET invite_kind = 'project_share'",
+	"UPDATE coordinator_invites SET invite_kind = 'add_device'",
 ] as const;
 beforeEach(() => {
 	vi.spyOn(Date, "now").mockReturnValue(NOW);
@@ -306,6 +307,31 @@ for (const backend of ["SQLite", "D1"] as const) {
 			expect(fresh.evidence_digest).not.toBe(old.evidence_digest);
 			expect(created.status).toBe(201);
 		});
+	});
+	describe(`${backend} enrollment Identity insertion races`, () => {
+		test.for([false, true])(
+			"rejects null-to-matching enrollment Identity after listInvites, replay=%s",
+			async (replay, { f }) => {
+				await seedInvite(f);
+				const app = appFor(f);
+				const initial = await (await request(app)).json();
+				const body = { ...input, confirm_evidence_digest: initial.evidence_digest };
+				if (replay) expect((await request(app, body)).status).toBe(201);
+				const before = f.db.prepare("SELECT * FROM coordinator_auth_controller_attestations").all();
+				const list = f.store.listInvites.bind(f.store);
+				vi.spyOn(f.store, "listInvites").mockImplementation(async (group) => {
+					const invites = await list(group);
+					f.db.prepare("UPDATE enrolled_devices SET identity_id = ?").run(input.identity_id);
+					return invites;
+				});
+				const response = await request(app, body);
+				expect(response.status).toBe(409);
+				expect(await response.json()).toEqual({ error: "review_stale" });
+				expect(
+					f.db.prepare("SELECT * FROM coordinator_auth_controller_attestations").all(),
+				).toEqual(before);
+			},
+		);
 	});
 	describe(`${backend} invite evidence and insertion races`, () => {
 		test.for(inviteChanges)("rejects post-read evidence race: %s", async (sql, { f }) => {

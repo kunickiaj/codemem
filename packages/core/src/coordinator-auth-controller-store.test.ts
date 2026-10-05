@@ -4,7 +4,13 @@ import { join } from "node:path";
 import type { Database as SqliteDatabase } from "better-sqlite3";
 import { describe, expect, it, vi } from "vitest";
 import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
-import type { CoordinatorAuthControllerReviewInput } from "./coordinator-auth-controller.js";
+import {
+	AUTH_CONTROLLER_INSERT_SQL,
+	AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL,
+	authControllerInsertValues,
+	authControllerRetryEligibleValues,
+	type CoordinatorAuthControllerReviewInput,
+} from "./coordinator-auth-controller.js";
 import {
 	type Backend,
 	enroll,
@@ -443,6 +449,95 @@ function registerValidationTests(test: ReturnType<typeof it.extend<{ fixture: Fi
 			kind: "created",
 			attestation: { public_key: input.publicKey, attestation_id: input.attestationId },
 		});
+	});
+}
+
+function registerSnapshotPerformanceTests(
+	test: ReturnType<typeof it.extend<{ fixture: Fixture }>>,
+) {
+	test("materializes snapshot JSON once and compares sets without correlated scans", async ({
+		fixture: { store, db },
+	}) => {
+		await enroll(store);
+		const input = review({ verifiedSnapshot: { enrollmentIdentityId: null, invites: [] } });
+		for (const [sql, values] of [
+			[AUTH_CONTROLLER_INSERT_SQL, authControllerInsertValues(input, "now")],
+			[AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL, authControllerRetryEligibleValues(input)],
+		] as const) {
+			const plan = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...values) as {
+				detail: string;
+			}[];
+			const details = plan.map((row) => row.detail);
+			expect(details.filter((detail) => /SCAN j VIRTUAL TABLE/.test(detail))).toHaveLength(1);
+			expect(details).toContain("MATERIALIZE snapshot_invites");
+			expect(
+				details.includes("EXCEPT USING TEMP B-TREE") ||
+					(details.includes("MERGE (EXCEPT)") && details.includes("USE TEMP B-TREE FOR ORDER BY")),
+			).toBe(true);
+			expect(details.some((detail) => /CORRELATED/.test(detail))).toBe(false);
+		}
+	});
+	test("guards all 4096 tuples below the JSON cap, including nullable identity fields", async ({
+		fixture: { store, db },
+	}) => {
+		await enroll(store);
+		const invites = Array.from({ length: 4096 }, (_, index) => ({
+			inviteId: `i${index}`,
+			kind: "add_device" as const,
+			actorId: "identity-a",
+			assignedIdentityId: index % 2 === 0 ? null : "identity-a",
+			targetIdentityId: index % 2 === 0 ? "identity-a" : null,
+			digest: "c".repeat(64),
+		}));
+		const input = review({ verifiedSnapshot: { enrollmentIdentityId: null, invites } });
+		expect(Buffer.byteLength(JSON.stringify(input.verifiedSnapshot))).toBeLessThan(1_000_000);
+		const insert = db.prepare(`INSERT INTO coordinator_invites (
+			invite_id, group_id, token, policy, expires_at, created_at, consumed_at,
+			bound_device_id, bound_public_key, bound_fingerprint, invite_kind,
+			recipient_actor_id, assigned_identity_id, target_identity_id, reviewed_preview_digest
+		) VALUES (?, ?, ?, 'auto', '2030', 'now', 'consumed', ?, ?, ?, ?, ?, ?, ?, ?)`);
+		db.transaction(() => {
+			for (const invite of invites)
+				insert.run(
+					invite.inviteId,
+					input.groupId,
+					invite.inviteId,
+					input.deviceId,
+					input.publicKey,
+					input.fingerprint,
+					invite.kind,
+					invite.actorId,
+					invite.assignedIdentityId,
+					invite.targetIdentityId,
+					invite.digest,
+				);
+		})();
+		expect(authControllerInsertValues(input, "now")).toHaveLength(16);
+		expect(await store.createAuthControllerAttestation(input)).toMatchObject({ kind: "created" });
+		// Order is not evidence; an unchanged maximum-size retry must stay valid.
+		const reordered = {
+			...input,
+			verifiedSnapshot: { enrollmentIdentityId: null, invites: [...invites].reverse() },
+		};
+		expect(await store.createAuthControllerAttestation(reordered)).toMatchObject({
+			kind: "existing",
+		});
+		for (const sql of [
+			"UPDATE coordinator_invites SET assigned_identity_id = 'identity-a' WHERE invite_id = 'i4094'",
+			"UPDATE coordinator_invites SET target_identity_id = NULL WHERE invite_id = 'i4094'",
+		]) {
+			db.exec(sql);
+			expect(await store.createAuthControllerAttestation(input)).toEqual({
+				kind: "rejected",
+				error: "review_stale",
+			});
+			db.exec(
+				"UPDATE coordinator_invites SET assigned_identity_id = NULL, target_identity_id = 'identity-a' WHERE invite_id = 'i4094'",
+			);
+		}
+		expect(
+			db.prepare("SELECT count(*) AS count FROM coordinator_auth_controller_attestations").get(),
+		).toEqual({ count: 1 });
 	});
 }
 
@@ -922,6 +1017,7 @@ describe.each(["SQLite", "D1"] as const)("%s auth-controller store parity", (bac
 	registerValidationTests(test);
 	registerFailureTests(test);
 	registerSnapshotTests(test);
+	registerSnapshotPerformanceTests(test);
 	registerPersistenceTests(test, backend);
 	registerBindingTests(test);
 	if (backend === "D1") registerD1ReadRaceTests(test);

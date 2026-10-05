@@ -265,7 +265,17 @@ async function confirmReview(
 		output: process.stderr,
 	});
 	if (showTargetedLinkFollowUp(options)) return;
-	const quotedGroup = `'${group.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`;
+	showLinkFollowUp(group);
+}
+function showLinkFollowUp(group: string): void {
+	if (group.includes("\\")) {
+		p.log.info(
+			`Next, run codemem coordinator link-account with group ID ${JSON.stringify(group)}. Quote the ID for your shell.`,
+			{ output: process.stderr },
+		);
+		return;
+	}
+	const quotedGroup = `'${group.replaceAll("'", "'\\''")}'`;
 	p.log.info(
 		`Next, link your Google account separately: codemem coordinator link-account ${quotedGroup}`,
 		{ output: process.stderr },

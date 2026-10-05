@@ -254,9 +254,21 @@ export const AUTH_CONTROLLER_SCHEMA_SQL = `
 
 // No foreign keys: removal of an enrollment must not erase revocation tombstones.
 // One JSON bind keeps the exact set comparison below D1's parameter limit.
+// Parse each tuple once; EXCEPT uses temporary B-trees rather than an inner
+// JSON scan per live invite. Unique captured/live IDs plus equal counts prove
+// equality; EXCEPT also compares nullable identity fields without losing NULLs.
 const AUTH_CONTROLLER_SNAPSHOT_CTE = `
-	WITH snapshot(value) AS (SELECT ?), live_invites AS (
-		SELECT i.* FROM coordinator_invites i
+	WITH snapshot(value) AS (SELECT ?), snapshot_invites AS MATERIALIZED (
+		SELECT json_extract(j.value, '$.inviteId') AS invite_id,
+			json_extract(j.value, '$.kind') AS invite_kind,
+			json_extract(j.value, '$.actorId') AS recipient_actor_id,
+			json_extract(j.value, '$.assignedIdentityId') AS assigned_identity_id,
+			json_extract(j.value, '$.targetIdentityId') AS target_identity_id,
+			json_extract(j.value, '$.digest') AS reviewed_preview_digest
+		FROM json_each((SELECT value FROM snapshot), '$.invites') j
+	), live_invites AS MATERIALIZED (
+		SELECT i.invite_id, i.invite_kind, i.recipient_actor_id, i.assigned_identity_id,
+			i.target_identity_id, i.reviewed_preview_digest FROM coordinator_invites i
 		WHERE i.group_id = ? AND i.bound_device_id = ? AND i.bound_public_key = ?
 			AND i.bound_fingerprint = ? AND i.revoked_at IS NULL
 			AND i.consumed_at IS NOT NULL AND i.consumed_at != ''
@@ -266,17 +278,11 @@ const AUTH_CONTROLLER_SNAPSHOT_GUARD = `
 	AND ((SELECT value FROM snapshot) IS NULL OR (
 		e.identity_id IS json_extract((SELECT value FROM snapshot), '$.enrollmentIdentityId')
 		AND (SELECT count(*) FROM live_invites) =
-			(SELECT count(*) FROM json_each((SELECT value FROM snapshot), '$.invites'))
+			(SELECT count(*) FROM snapshot_invites)
 		AND NOT EXISTS (
-			SELECT 1 FROM live_invites i WHERE NOT EXISTS (
-				SELECT 1 FROM json_each((SELECT value FROM snapshot), '$.invites') j
-				WHERE i.invite_id = json_extract(j.value, '$.inviteId')
-					AND i.invite_kind = json_extract(j.value, '$.kind')
-					AND i.recipient_actor_id IS json_extract(j.value, '$.actorId')
-					AND i.assigned_identity_id IS json_extract(j.value, '$.assignedIdentityId')
-					AND i.target_identity_id IS json_extract(j.value, '$.targetIdentityId')
-					AND i.reviewed_preview_digest IS json_extract(j.value, '$.digest')
-			)
+			SELECT * FROM live_invites
+			EXCEPT
+			SELECT * FROM snapshot_invites
 		)
 	))`;
 

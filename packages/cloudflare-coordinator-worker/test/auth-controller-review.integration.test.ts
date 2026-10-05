@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createCoordinatorApp } from "../../core/src/coordinator-api.js";
+import { AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL, authControllerRetryEligibleValues } from "../../core/src/coordinator-auth-controller.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
 import { buildCanonicalRequest, SIGNATURE_VERSION } from "../../core/src/sync-auth.js";
 import { fingerprintPublicKey } from "../../core/src/sync-fingerprint.js";
@@ -133,6 +134,24 @@ it.each([false, true])("native D1 rejects a new invite after an empty snapshot, 
 	expect(await response.json()).toEqual({ error: "review_stale" });
 	expect(await rows(f)).toEqual(before);
 });
+it.each([false, true])("native D1 rejects null-to-matching enrollment Identity after listInvites, replay=%s", async (replay) => {
+	const f = await setup();
+	await seedReviewedInvite(f);
+	const initial = await (await review(f)).json<{ evidence_digest: string }>();
+	if (replay) expect((await review(f, initial.evidence_digest)).status).toBe(201);
+	const before = await rows(f);
+	const list = f.store.listInvites.bind(f.store);
+	vi.spyOn(f.store, "listInvites").mockImplementation(async (group) => {
+		const invites = await list(group);
+		await env.COORDINATOR_DB.prepare("UPDATE enrolled_devices SET identity_id = ? WHERE group_id = ? AND device_id = ?")
+			.bind(f.input.identity_id, f.input.group_id, f.deviceId).run();
+		return invites;
+	});
+	const response = await review(f, initial.evidence_digest);
+	expect(response.status).toBe(409);
+	expect(await response.json()).toEqual({ error: "review_stale" });
+	expect(await rows(f)).toEqual(before);
+});
 it("native D1 retry rejects evidence changed after the uniqueness failure", async () => {
 	const f = await setup();
 	const inviteId = await seedReviewedInvite(f);
@@ -172,6 +191,15 @@ it("native D1 guards all 201 invitations with fixed SQL binds and a limited resp
 	expect(await rows(f)).toEqual([]);
 	spy.mockRestore();
 	const fresh = await (await review(f)).json<{ evidence_digest: string }>();
+	vi.spyOn(f.store, "createAuthControllerAttestation").mockImplementation(async (input) => {
+		const eligible = await env.COORDINATOR_DB.prepare(AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL)
+			.bind(...authControllerRetryEligibleValues(input)).all();
+		expect(eligible.results).toEqual([{ eligible: 1 }]);
+		// A generous linear scan budget, not a machine-dependent timing limit.
+		expect(eligible.meta.rows_read).toBeGreaterThan(0);
+		expect(eligible.meta.rows_read).toBeLessThan(201 * 20 + 100);
+		return create(input);
+	});
 	expect((await review(f, fresh.evidence_digest)).status).toBe(201);
 	expect((await review(f, fresh.evidence_digest)).status).toBe(200);
 });
