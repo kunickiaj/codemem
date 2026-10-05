@@ -401,7 +401,7 @@ describe("extraction tier routing", () => {
 		);
 		expect(config.observerProvider).toBe("opencode");
 		expect(config.observerModel).toBe("custom-sonnet");
-		expect(config.observerOpenAIUseResponses).toBeUndefined();
+		expect(config.observerOpenAIUseResponses).toBe(false);
 	});
 
 	it("honors rich tier override model under a custom provider", () => {
@@ -584,6 +584,82 @@ describe("extraction tier routing", () => {
 		expect(selection.metadata.fallbackReason).toBe("unsupported tier override for runtime");
 		expect(selection.observer.observerProvider).toBe("anthropic");
 	});
+});
+
+describe("custom-provider tier transport", () => {
+	for (const tier of ["simple", "rich"] as const) {
+		it.each([true, false, undefined])(
+			`preserves Responses=%s when the ${tier} tier keeps its custom provider`,
+			(useResponses) => {
+				// Arrange: model overrides must not silently change the gateway's protocol.
+				const base = baseConfig({
+					observerProvider: "gateway",
+					observerBaseUrl: "https://gateway.example/v1",
+					observerSimpleModel: "gpt-5.4-mini",
+					observerRichModel: "gpt-5.4",
+					observerSimpleTemperature: 0.3,
+					observerRichTemperature: 0.4,
+					observerOpenAIUseResponses: useResponses,
+					observerReasoningEffort: "high",
+					observerReasoningSummary: "detailed",
+					observerExplicitConfigKeys: ["observerOpenAIUseResponses"],
+				});
+
+				// Act: implicit and normalized explicit same-provider choices are equivalent.
+				const selections = [null, "gateway", " GaTeWaY "].map((provider) =>
+					buildTieredObserverSelection(
+						{
+							...base,
+							observerSimpleProvider: provider,
+							observerRichProvider: provider,
+						},
+						{ tier, reasons: [], observer: {} },
+					),
+				);
+
+				// Assert: preserve transport without changing sampling or reasoning policy.
+				for (const selection of selections) {
+					expect(selection.observer).toMatchObject({
+						observerProvider: "gateway",
+						observerBaseUrl: base.observerBaseUrl,
+						observerModel: tier === "simple" ? "gpt-5.4-mini" : "gpt-5.4",
+						observerTemperature: tier === "simple" ? 0.3 : 0.4,
+						observerOpenAIUseResponses: useResponses,
+						observerReasoningEffort: null,
+						observerReasoningSummary: null,
+					});
+					expect(selection.metadata.requestedOpenAIResponses).toBe(useResponses ?? null);
+				}
+			},
+		);
+
+		it.each([true, false, undefined])(
+			`does not inherit Responses=%s when the ${tier} tier changes custom providers`,
+			(useResponses) => {
+				// Arrange: a different gateway may not support the base protocol.
+				const base = baseConfig({
+					observerProvider: "gateway",
+					observerBaseUrl: "https://gateway.example/v1",
+					observerSimpleProvider: "other-gateway",
+					observerRichProvider: "other-gateway",
+					observerOpenAIUseResponses: useResponses,
+				});
+
+				// Act.
+				const selection = buildTieredObserverSelection(base, {
+					tier,
+					reasons: [],
+					observer: {},
+				});
+
+				// Assert: keep the existing provider/endpoint override behavior.
+				expect(selection.observer.observerProvider).toBe("other-gateway");
+				expect(selection.observer.observerBaseUrl).toBeNull();
+				expect(selection.observer.observerOpenAIUseResponses).toBeUndefined();
+				expect(selection.metadata.requestedOpenAIResponses).toBeNull();
+			},
+		);
+	}
 });
 
 describe("extraction tier routing observer base URL provenance", () => {

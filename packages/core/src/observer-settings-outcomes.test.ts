@@ -1,9 +1,12 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { readCoordinatorSyncConfig } from "./coordinator-sync-config.js";
-import { buildTieredObserverConfig } from "./extraction-tier-routing.js";
+import {
+	buildTieredObserverConfig,
+	buildTieredObserverSelection,
+} from "./extraction-tier-routing.js";
 import { ObserverAuthAdapter } from "./observer-auth.js";
 import { loadObserverConfig, ObserverClient } from "./observer-client.js";
 import { CODEMEM_CONFIG_ENV_OVERRIDES, getCodememEnvOverrides } from "./observer-config.js";
@@ -16,9 +19,133 @@ beforeEach(() => {
 	process.env = { PATH: env.PATH, HOME: home, CODEMEM_CONFIG: join(home, "config.json") };
 });
 afterEach(() => {
+	vi.unstubAllGlobals();
 	process.env = env;
 	rmSync(home, { recursive: true, force: true });
 });
+
+for (const tier of ["simple", "rich"] as const) {
+	it.each([true, false])(
+		`uses configured Responses=%s for ${tier}-tier requests to a Responses-only custom gateway`,
+		async (useResponses) => {
+			// Arrange: reject chat completions exactly as a Responses-only gateway does.
+			const fetchMock = vi.fn(async (url: string) => {
+				if (url !== "https://gateway.example/v1/responses") {
+					return new Response("endpoint not relayed", { status: 404 });
+				}
+				return new Response(
+					JSON.stringify({
+						output: [{ type: "message", content: [{ type: "output_text", text: "{}" }] }],
+					}),
+					{ status: 200 },
+				);
+			});
+			vi.stubGlobal("fetch", fetchMock);
+			const config = loadObserverConfig({
+				observer_runtime: "api_http",
+				observer_provider: "gateway",
+				observer_base_url: "https://gateway.example/v1",
+				observer_api_key: "fixture-key",
+				observer_auth_source: "none",
+				observer_model: "gpt-5.4-mini",
+				observer_simple_model: "gpt-5.4-mini",
+				observer_rich_model: "gpt-5.4",
+				observer_openai_use_responses: useResponses,
+				observer_tier_routing_enabled: true,
+			});
+			const base = new ObserverClient(config);
+			const selected = buildTieredObserverConfig(base.toConfig(), {
+				tier,
+				reasons: [],
+				observer: {},
+			});
+
+			// Act: both base and tier clients must honor the same protocol choice.
+			const baseResult = await base.observe("system", "user");
+			const tierResult = await new ObserverClient(selected).observe("system", "user");
+
+			// Assert: true succeeds; explicit false still fails rather than being auto-enabled.
+			const expectedStatus = useResponses ? "success" : "failure";
+			expect(baseResult.outcome.status).toBe(expectedStatus);
+			expect(tierResult.outcome.status).toBe(expectedStatus);
+			expect(fetchMock).toHaveBeenCalledTimes(2);
+			const endpoint = useResponses ? "responses" : "chat/completions";
+			for (const call of fetchMock.mock.calls) {
+				expect(call[0]).toBe(`https://gateway.example/v1/${endpoint}`);
+			}
+		},
+	);
+}
+
+for (const tier of ["simple", "rich"] as const) {
+	it.each([null, 0.2])(
+		`uses temperature=%j for base and same-provider ${tier}-tier Responses requests`,
+		async (temperature) => {
+			// Arrange: this gateway rejects sampling parameters but accepts model defaults.
+			const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+				const payload = JSON.parse(String(init?.body));
+				if (Object.hasOwn(payload, "temperature")) {
+					return new Response("Unsupported parameter: temperature", { status: 400 });
+				}
+				return new Response(
+					JSON.stringify({
+						output: [{ type: "message", content: [{ type: "output_text", text: "{}" }] }],
+					}),
+					{ status: 200 },
+				);
+			});
+			vi.stubGlobal("fetch", fetchMock);
+			writeFileSync(
+				join(home, "config.json"),
+				JSON.stringify({
+					observer_runtime: "api_http",
+					observer_provider: "gateway",
+					observer_base_url: "https://gateway.example/v1",
+					observer_api_key: "fixture-key",
+					observer_auth_source: "none",
+					observer_model: "base-model",
+					observer_simple_model: "simple-model",
+					observer_rich_model: "rich-model",
+					observer_openai_use_responses: true,
+					observer_tier_routing_enabled: true,
+					observer_temperature: temperature,
+					observer_simple_temperature: null,
+					observer_rich_temperature: null,
+				}),
+			);
+
+			// Act: null tier values inherit the global value through client round trips.
+			const config = loadObserverConfig();
+			const base = new ObserverClient(config);
+			const selected = buildTieredObserverSelection(base.toConfig(), {
+				tier,
+				reasons: [],
+				observer: {},
+			}).observer;
+			const client = new ObserverClient(selected);
+			const baseResult = await base.observe("system", "user");
+			const tierResult = await client.observe("system", "user");
+
+			// Assert: explicit null succeeds without sampling; numeric sampling fails without retry.
+			expect(config.observerTemperature).toBe(temperature);
+			expect(config.observerSimpleTemperature).toBeNull();
+			expect(config.observerRichTemperature).toBeNull();
+			expect(base.temperature).toBe(temperature);
+			expect(selected.observerTemperature).toBe(temperature);
+			expect(client.temperature).toBe(temperature);
+			expect(client.model).toBe(`${tier}-model`);
+			const expectedStatus = temperature === null ? "success" : "failure";
+			expect(baseResult.outcome.status).toBe(expectedStatus);
+			expect(tierResult.outcome.status).toBe(expectedStatus);
+			expect(fetchMock).toHaveBeenCalledTimes(2);
+			for (const [url, init] of fetchMock.mock.calls) {
+				expect(url).toBe("https://gateway.example/v1/responses");
+				const payload = JSON.parse(String(init?.body));
+				expect(Object.hasOwn(payload, "temperature")).toBe(temperature !== null);
+			}
+		},
+	);
+}
 
 it.each(["simple", "rich"] as const)(
 	"backs effective %s provider outcome precedence with tier selection",

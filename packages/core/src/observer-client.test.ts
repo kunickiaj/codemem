@@ -38,6 +38,79 @@ function fixtureToken(label: string): string {
 	return ["fixture", label, "token"].join("-");
 }
 
+describe("explicit temperature configuration", () => {
+	let env: NodeJS.ProcessEnv;
+	beforeEach(() => {
+		env = process.env;
+		process.env = { PATH: env.PATH, HOME: env.HOME };
+	});
+	afterEach(() => {
+		process.env = env;
+	});
+
+	it.each([
+		[null, null],
+		[undefined, 0.2],
+		[0, 0],
+		[0.35, 0.35],
+		["0.15", 0.15],
+		["invalid", 0.2],
+		[Number.NaN, 0.2],
+		[Number.POSITIVE_INFINITY, 0.2],
+	] as const)("preserves temperature parsing for %j as %j", (value, expected) => {
+		// Arrange: explicit null opts out; absent and invalid values retain the default.
+		const data = { observer_temperature: value };
+
+		// Act
+		const cfg = loadObserverConfig(data);
+
+		// Assert
+		expect(cfg.observerTemperature).toBe(expected);
+	});
+
+	it.each([
+		["0", 0],
+		["0.45", 0.45],
+		["invalid", null],
+		["null", null],
+	] as const)("applies environment temperature %j over explicit null as %j", (value, expected) => {
+		// Arrange: numeric overrides win; invalid overrides retain the configured null.
+		process.env.CODEMEM_OBSERVER_TEMPERATURE = value;
+
+		// Act
+		const cfg = loadObserverConfig({ observer_temperature: null });
+
+		// Assert
+		expect(cfg.observerTemperature).toBe(expected);
+	});
+
+	it.each([
+		[null, null],
+		[undefined, 0.2],
+		[Number.NaN, 0.2],
+		[Number.POSITIVE_INFINITY, 0.2],
+		[0, 0],
+		[0.35, 0.35],
+	] as const)("constructs and round-trips temperature %j as %j", (value, expected) => {
+		// Arrange: use a custom provider without active reasoning to isolate sampling defaults.
+		const cfg = loadObserverConfig({
+			observer_runtime: "api_http",
+			observer_provider: "gateway",
+			observer_model: "base-model",
+			observer_base_url: "https://gateway.example/v1",
+			observer_auth_source: "none",
+		});
+		Object.assign(cfg, { observerTemperature: value });
+
+		// Act
+		const client = new ObserverClient(cfg);
+
+		// Assert
+		expect(client.temperature).toBe(expected);
+		expect(client.toConfig().observerTemperature).toBe(expected);
+	});
+});
+
 // ---------------------------------------------------------------------------
 // loadObserverConfig
 // ---------------------------------------------------------------------------

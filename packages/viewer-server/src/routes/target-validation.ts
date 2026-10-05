@@ -2,6 +2,7 @@ import { resolve as resolvePath } from "node:path";
 import type { ViewerIdentityTarget } from "@codemem/core";
 import {
 	buildViewerIdentityTarget,
+	resolveCodememConfigPath,
 	resolveDbPath,
 	VIEWER_IDENTITY_TARGET_KEYS,
 } from "@codemem/core";
@@ -45,6 +46,26 @@ function requestedDbMatches(store: ViewerTargetStore, value: unknown): boolean |
 	return resolvePath(resolveDbPath(value.trim())) === resolvePath(store.dbPath);
 }
 
+function implicitConfigPath(): string | null {
+	const { resolved, fallbackChain } = resolveCodememConfigPath();
+	if (resolved.source !== "env-codemem-config") return resolvePath(resolved.path);
+	// Older clients encode an omitted override as null. Resolve the same read
+	// fallback without the viewer's explicit override, not a guessed global path.
+	const candidates = fallbackChain.filter((candidate) => candidate.valid);
+	const implicit = candidates.find((candidate) => candidate.exists) ?? candidates[0];
+	return implicit ? resolvePath(implicit.path) : null;
+}
+
+function identityFieldMatches(
+	key: string,
+	requested: string | boolean | null,
+	expected: string | boolean | null,
+): boolean {
+	if (requested === expected) return true;
+	if (key !== "config_path" || (requested !== null && expected !== null)) return false;
+	return (requested ?? expected) === implicitConfigPath();
+}
+
 function requestedIdentityMatches(value: unknown): boolean | null | "unsupported" {
 	if (value == null) return true;
 	if (!isRecord(value)) return null;
@@ -61,7 +82,7 @@ function requestedIdentityMatches(value: unknown): boolean | null | "unsupported
 		} else if (requested !== null && typeof requested !== "string") {
 			return null;
 		}
-		if (requested !== expected[key]) return false;
+		if (!identityFieldMatches(key, requested, expected[key])) return false;
 	}
 	return true;
 }
