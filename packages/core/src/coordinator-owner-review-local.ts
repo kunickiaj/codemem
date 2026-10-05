@@ -20,8 +20,10 @@ export interface CoordinatorOwnerReviewLocalEvidence {
 	memoryCounts: { current: number | null; others: number | null; unknown: number | null };
 	teamCount: number | null;
 	projectCount: number | null;
+	ownershipRecords: { actorPresent: boolean; deviceAssignmentPresent: boolean };
 }
 type Row = Record<string, unknown>;
+type OwnershipRecord = { present: boolean; label?: string };
 function hasColumns(db: Database.Database, table: string, required: string[]): boolean {
 	const exists = db
 		.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
@@ -62,14 +64,10 @@ function readDevice(
 		return null;
 	return { deviceId: row.device_id, publicKey: row.public_key, fingerprint: row.fingerprint };
 }
-function checkActor(
-	db: Database.Database,
-	identityId: string,
-	reasons: string[],
-): string | undefined {
+function checkActor(db: Database.Database, identityId: string, reasons: string[]): OwnershipRecord {
 	if (!hasColumns(db, "actors", ["actor_id", "is_local", "status", "merged_into_actor_id"])) {
 		reasons.push("actor_evidence_unavailable");
-		return undefined;
+		return { present: false };
 	}
 	const row = db.prepare("SELECT * FROM actors WHERE actor_id = ?").get(identityId) as
 		| Row
@@ -82,24 +80,24 @@ function checkActor(
 	if (others) reasons.push("local_actor_ambiguous");
 	if (row && (row.is_local !== 1 || row.status !== "active" || row.merged_into_actor_id !== null))
 		reasons.push("current_actor_unavailable");
-	return label(row?.display_name);
+	return { present: row !== undefined, label: label(row?.display_name) };
 }
 function checkDeviceAssignment(
 	db: Database.Database,
 	deviceId: string,
 	identityId: string,
 	reasons: string[],
-): string | undefined {
+): OwnershipRecord {
 	if (!hasColumns(db, "identity_devices", ["device_id", "identity_id", "status"])) {
 		reasons.push("device_assignment_unavailable");
-		return undefined;
+		return { present: false };
 	}
 	const row = db.prepare("SELECT * FROM identity_devices WHERE device_id = ?").get(deviceId) as
 		| Row
 		| undefined;
 	if (row && (row.status !== "active" || row.identity_id !== identityId))
 		reasons.push("device_identity_conflict");
-	return label(row?.display_name);
+	return { present: row !== undefined, label: label(row?.display_name) };
 }
 function memoryCounts(
 	db: Database.Database,
@@ -152,6 +150,7 @@ function readEvidence(
 		memoryCounts: { current: null, others: null, unknown: null },
 		teamCount: null,
 		projectCount: null,
+		ownershipRecords: { actorPresent: false, deviceAssignmentPresent: false },
 	};
 	if (!device) return empty;
 	const actorId = options.actorId?.trim();
@@ -160,18 +159,19 @@ function readEvidence(
 	const reasons: string[] = [];
 	const override = options.deviceIdOverride?.trim();
 	if (override && override !== device.deviceId) reasons.push("device_override_mismatch");
-	const actorLabel = checkActor(db, identityId, reasons);
-	const deviceLabel = checkDeviceAssignment(db, device.deviceId, identityId, reasons);
+	const actor = checkActor(db, identityId, reasons);
+	const assignment = checkDeviceAssignment(db, device.deviceId, identityId, reasons);
 	return {
 		state: reasons.length ? "needs_review" : "ready",
 		reasons,
-		device: { ...device, label: deviceLabel },
+		device: { ...device, label: assignment.label },
 		identity: {
 			identityId,
-			label: actorLabel,
+			label: actor.label,
 			source: actorId ? (options.identitySource ?? "config") : "device_fallback",
 		},
 		memoryCounts: memoryCounts(db, identityId),
+		ownershipRecords: { actorPresent: actor.present, deviceAssignmentPresent: assignment.present },
 		...accessCounts(db, identityId),
 	};
 }

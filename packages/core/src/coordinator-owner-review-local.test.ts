@@ -57,6 +57,7 @@ it("reads only this device and authorship, leaving bytes, schema, and peer assig
 		memoryCounts: { current: 1, others: 1, unknown: 2 },
 		teamCount: 1,
 		projectCount: 1,
+		ownershipRecords: { actorPresent: true, deviceAssignmentPresent: true },
 	});
 	expect(readFileSync(dbPath)).toEqual(bytes);
 	expect(readdirSync(directory)).toEqual(files);
@@ -117,6 +118,10 @@ it("allows absent current actor and absent assignment only when no other local a
 	const ambiguous = read({ dbPath });
 	// Assert
 	expect(fallback.state).toBe("ready");
+	expect(fallback.ownershipRecords).toEqual({
+		actorPresent: false,
+		deviceAssignmentPresent: false,
+	});
 	expect(fallback.identity).toMatchObject({
 		identityId: "local:device-a",
 		source: "device_fallback",
@@ -124,6 +129,59 @@ it("allows absent current actor and absent assignment only when no other local a
 	expect(ambiguous.state).toBe("needs_review");
 	expect(ambiguous.reasons).toContain("local_actor_ambiguous");
 });
+
+it.each([
+	{ name: "actor", sql: "DELETE FROM actors", actorPresent: false, deviceAssignmentPresent: true },
+	{
+		name: "assignment",
+		sql: "DELETE FROM identity_devices WHERE device_id = 'device-a'",
+		actorPresent: true,
+		deviceAssignmentPresent: false,
+	},
+	{
+		name: "both",
+		sql: "DELETE FROM actors; DELETE FROM identity_devices WHERE device_id = 'device-a'",
+		actorPresent: false,
+		deviceAssignmentPresent: false,
+	},
+])(
+	"reports $name deletion without guessing ownership or changing either snapshot",
+	({ sql, ...row }) => {
+		// Arrange: snapshot the schema and bytes separately on each side of the fixture mutation.
+		const schema = () => {
+			const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+			try {
+				return db.prepare("SELECT name, sql FROM sqlite_master ORDER BY name").all();
+			} finally {
+				db.close();
+			}
+		};
+		const initialBytes = readFileSync(dbPath);
+		const initialSchema = schema();
+		// Act
+		const before = read({ dbPath, actorId: "actor-a", identitySource: "config" });
+		// Assert: the initial read must not write before the intentional deletion.
+		expect(readFileSync(dbPath)).toEqual(initialBytes);
+		expect(schema()).toEqual(initialSchema);
+		// Arrange
+		write(sql);
+		const deletedBytes = readFileSync(dbPath);
+		// Act
+		const after = read({ dbPath, actorId: "actor-a", identitySource: "config" });
+		// Assert: absence is allowed for a fresh legacy preview, but remains observable.
+		expect(before.ownershipRecords).toEqual({ actorPresent: true, deviceAssignmentPresent: true });
+		expect(after.ownershipRecords).toEqual({
+			actorPresent: row.actorPresent,
+			deviceAssignmentPresent: row.deviceAssignmentPresent,
+		});
+		expect(after.state).toBe("ready");
+		expect(after.reasons).toEqual([]);
+		expect(after.identity).toMatchObject({ identityId: "actor-a", source: "config" });
+		expect(after.device).toMatchObject({ deviceId: "device-a", publicKey, fingerprint });
+		expect(readFileSync(dbPath)).toEqual(deletedBytes);
+		expect(schema()).toEqual(initialSchema);
+	},
+);
 
 it("reports missing evidence tables as unknown rather than zero and never creates them", () => {
 	// Arrange
@@ -140,6 +198,7 @@ it("reports missing evidence tables as unknown rather than zero and never create
 		teamCount: null,
 		projectCount: null,
 		reasons: ["actor_evidence_unavailable", "device_assignment_unavailable"],
+		ownershipRecords: { actorPresent: false, deviceAssignmentPresent: false },
 	});
 	expect(readFileSync(dbPath)).toEqual(bytes);
 });
@@ -151,4 +210,20 @@ it("refuses a missing file or in-memory default without creating a database", ()
 	expect(() => read({ dbPath: join(directory, "missing.sqlite") })).toThrow();
 	expect(() => read({ dbPath: ":memory:" })).toThrow("owner_review_local_unavailable");
 	expect(readdirSync(directory)).toEqual(files);
+});
+
+it("reports no ownership presence when the device itself is unavailable", () => {
+	// Arrange
+	write("DELETE FROM sync_device");
+	const bytes = readFileSync(dbPath);
+	// Act
+	const evidence = read({ dbPath, actorId: "actor-a" });
+	// Assert: unread actor/assignment rows must not be guessed from the requested identity.
+	expect(evidence.state).toBe("needs_review");
+	expect(evidence.reasons).toEqual(["device_unavailable"]);
+	expect(evidence.ownershipRecords).toEqual({
+		actorPresent: false,
+		deviceAssignmentPresent: false,
+	});
+	expect(readFileSync(dbPath)).toEqual(bytes);
 });

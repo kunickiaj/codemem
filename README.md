@@ -547,6 +547,22 @@ Use **Health** for the current status. Globally revoked identity devices are omi
 
 Pair devices from **Devices**. Actor assignment, Spaces, grants, project mappings, and coordinator administration remain available in **Advanced** for existing integrations and diagnostics. They are not required for normal teammate sharing. Existing `#sync` and `#sync/diagnostics` links remain supported as Advanced compatibility routes. See [the user guide](docs/user-guide.md#advanced-operator-and-compatibility-guidance).
 
+#### Optional coordinator account linking
+
+Coordinator account linking is an advanced operator flow and is off by default. These commands do not configure Google or deploy a coordinator; an operator must first enable optional account linking on the coordinator. Local memory and direct sync remain usable without Google.
+
+First preview the owner on the device being linked; `--json` is always preview-only:
+
+```text
+codemem coordinator review-device-owner team-alpha --coordinator "https://coord.example.com" --json
+```
+
+The review reads the existing local device database and current Identity without running maintenance, changing configuration or credentials, rotating keys, adopting an Identity, moving memories, or changing grants. Interactive review defaults to **No**; only an operator confirmation records ownership evidence for linking, without changing device assignments or access. It requires the configured coordinator-admin credential.
+
+Ambiguous ownership stops the review; ownership records disappearing or changing during confirmation require a fresh preview. To link, reuse the exact `--coordinator`, `--config`, and `--db-path` (or `-d`) selections from the review, and choose the intended Google account in the browser. See [coordinator-backed discovery](docs/coordinator-discovery.md#optional-account-linking).
+
+Keep any `CODEMEM_SYNC_COORDINATOR_URL` setting unchanged between review and linking.
+
 ### Device pairing and compatibility
 
 For a same-person device or compatibility workflow, open **Devices**, choose **Pair a device**, and copy the displayed command. Run it on the device you want to connect, copy that device's payload, then paste and review the payload back in **Devices**.

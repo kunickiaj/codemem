@@ -583,6 +583,34 @@ When selected history may already have replicated, all participating owner devic
 - See [docs/anchor-peer-deployment.md](anchor-peer-deployment.md) if you want an always-on peer as a sync backstop for personal or team Sharing domains.
 - Do **not** expose the viewer itself just because the coordinator or sync protocol needs cross-network reachability; those are separate surfaces.
 
+### Optional coordinator account linking
+
+This advanced operator flow is off by default. The commands do not configure Google or deploy a coordinator; an operator must first enable optional account linking on the coordinator. Local memory and direct sync do not require Google.
+
+Preview the existing device owner before linking. The group name is the coordinator administrative group, not a Team permission or an access grant:
+
+```fish
+codemem coordinator review-device-owner team-alpha --coordinator "https://coord.example.com" --json
+```
+
+The preview reads the existing local device database and current Identity, then asks the coordinator to preview the review. It does not run database maintenance, change configuration or credentials, rotate keys, adopt an Identity, move memories, or change ownership or grants. It uses the configured coordinator-admin credential; do not put that credential in the command or output.
+
+Without `--json`, the interactive prompt defaults to **No**. Only an operator confirmation writes a coordinator controller review; it does not write an actor, grant, or Identity/device ownership record. Noninteractive and JSON calls remain preview-only.
+
+Ambiguous ownership stops the review. If ownership records disappear or change during the prompt, the command stops and requires a fresh preview; it never migrates legacy records automatically.
+
+After a successful review, linking is a separate opt-in step. Reuse the exact `--coordinator`, `--config`, and `--db-path` selections (including `-d`) used for review, and choose the intended Google account in the browser:
+
+```fish
+codemem coordinator link-account team-alpha --coordinator "https://coord.example.com"
+```
+
+Add the same `--config` and `--db-path` options only if the review used them.
+Both commands also honor `CODEMEM_SYNC_COORDINATOR_URL`; keep that environment
+setting unchanged between review and linking.
+
+See [Coordinator-backed discovery](coordinator-discovery.md#optional-account-linking) for the link-session limits and privacy rules.
+
 ### Keychain (optional)
 
 - `CODEMEM_SYNC_KEY_STORE=keychain` stores the private key in Secret Service (Linux) or Keychain (macOS).

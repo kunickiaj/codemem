@@ -1,4 +1,11 @@
-import { RemoteCoordinatorRequestError } from "@codemem/core";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import {
+	type CoordinatorOwnerReviewLocalOptions,
+	RemoteCoordinatorRequestError,
+} from "@codemem/core";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -35,6 +42,7 @@ const local = {
 	memoryCounts: { current: 2, others: 3, unknown: 1 },
 	teamCount: 1,
 	projectCount: 2,
+	ownershipRecords: { actorPresent: true, deviceAssignmentPresent: true },
 };
 const preview = {
 	state: "ready",
@@ -64,6 +72,7 @@ const reviewedOwner = {
 	created_at: "2026-10-05T00:00:00Z",
 };
 const tty = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
+const stdinTty = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 const originalExitCode = process.exitCode;
 function run(extra: string[] = []) {
 	return buildCoordinatorReviewDeviceOwnerCommand().parseAsync(
@@ -79,6 +88,7 @@ beforeEach(() => {
 	vi.stubEnv("CODEMEM_SYNC_COORDINATOR_URL", undefined);
 	process.exitCode = undefined;
 	Object.defineProperty(process.stderr, "isTTY", { configurable: true, value: true });
+	Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
 	mocks.readCodememConfigFile.mockReturnValue(config);
 	mocks.readCodememConfigFileAtPath.mockReturnValue(config);
 	mocks.readCoordinatorOwnerReviewLocalEvidence.mockReturnValue(structuredClone(local));
@@ -92,6 +102,8 @@ afterEach(() => {
 	expect(globalThis.fetch).not.toHaveBeenCalled();
 	if (tty) Object.defineProperty(process.stderr, "isTTY", tty);
 	else Reflect.deleteProperty(process.stderr, "isTTY");
+	if (stdinTty) Object.defineProperty(process.stdin, "isTTY", stdinTty);
+	else Reflect.deleteProperty(process.stdin, "isTTY");
 	process.exitCode = originalExitCode;
 	vi.unstubAllEnvs();
 	vi.restoreAllMocks();
@@ -161,6 +173,49 @@ it("explicit approval rereads local identity before committing the server digest
 		expect.stringContaining("Reuse the same --coordinator, --config, and --db-path"),
 		{ output: process.stderr },
 	);
+});
+
+it.each([
+	{ name: "environment over custom config", saved: config.sync_coordinator_url, flag: undefined },
+	{ name: "environment without saved URL", saved: undefined, flag: undefined },
+	{
+		name: "explicit flag over environment",
+		saved: config.sync_coordinator_url,
+		flag: "https://flag.example.test",
+	},
+])("$name previews against the shared runtime coordinator", async ({ saved, flag }) => {
+	// Arrange
+	vi.stubEnv("CODEMEM_SYNC_COORDINATOR_URL", "  https://environment.example.test  ");
+	mocks.readCodememConfigFileAtPath.mockReturnValue({ ...config, sync_coordinator_url: saved });
+	// Act
+	await run(["--json", "-c", "fixture.json", ...(flag ? ["-u", flag] : [])]);
+	// Assert
+	expect(mocks.coordinatorAuthControllerReviewAction).toHaveBeenCalledExactlyOnceWith(
+		expect.objectContaining({
+			remoteUrl: flag ?? "https://environment.example.test",
+			identityId: "actor-a",
+		}),
+	);
+	expect(mocks.confirm).not.toHaveBeenCalled();
+	expect(process.exitCode).toBeUndefined();
+});
+
+it.each([
+	{ name: "piped stdin", stdin: false, stderr: true, json: false },
+	{ name: "redirected stderr", stdin: true, stderr: false, json: false },
+	{ name: "JSON with piped stdin", stdin: false, stderr: true, json: true },
+])("$name previews only without prompting or committing", async ({ stdin, stderr, json }) => {
+	// Arrange: even a preconfigured Yes cannot authorize a noninteractive confirmation.
+	Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: stdin });
+	Object.defineProperty(process.stderr, "isTTY", { configurable: true, value: stderr });
+	mocks.confirm.mockResolvedValue(true);
+	// Act
+	await run(json ? ["--json"] : []);
+	// Assert
+	expect(mocks.coordinatorAuthControllerReviewAction).toHaveBeenCalledOnce();
+	expect(mocks.confirm).not.toHaveBeenCalled();
+	expect(mocks.log.success).not.toHaveBeenCalled();
+	expect(process.exitCode).toBe(json ? undefined : 2);
 });
 
 it.each([
@@ -263,6 +318,116 @@ it.each(["actor", "key"])("changed local %s during approval prevents commit", as
 	expect(mocks.coordinatorAuthControllerReviewAction).toHaveBeenCalledOnce();
 	expect(process.exitCode).toBe(1);
 });
+
+const deleteActor = "DELETE FROM actors WHERE actor_id = 'actor-a';";
+const deleteAssignment = "DELETE FROM identity_devices WHERE device_id = 'device-a';";
+const addActor = "INSERT INTO actors VALUES ('actor-a', 1, 'active', NULL);";
+const addAssignment = "INSERT INTO identity_devices VALUES ('device-a', 'actor-a', 'active');";
+it.each([
+	{ name: "actor deletion", initial: "", during: deleteActor, commits: false },
+	{ name: "assignment deletion", initial: "", during: deleteAssignment, commits: false },
+	{ name: "both deletions", initial: "", during: deleteActor + deleteAssignment, commits: false },
+	{ name: "actor insertion", initial: deleteActor, during: addActor, commits: false },
+	{
+		name: "assignment insertion",
+		initial: deleteAssignment,
+		during: addAssignment,
+		commits: false,
+	},
+	{
+		name: "both insertions",
+		initial: deleteActor + deleteAssignment,
+		during: addActor + addAssignment,
+		commits: false,
+	},
+	{ name: "unchanged absent actor", initial: deleteActor, during: "", commits: true },
+	{ name: "unchanged absent assignment", initial: deleteAssignment, during: "", commits: true },
+	{
+		name: "unchanged legacy missing rows",
+		initial: deleteActor + deleteAssignment,
+		during: "",
+		commits: true,
+	},
+	{
+		name: "authorship and access counts only",
+		initial: "",
+		during:
+			"INSERT INTO memory_items VALUES ('other'); INSERT INTO policy_team_memberships VALUES ('actor-a', 'active');",
+		commits: true,
+	},
+])(
+	"real read-only evidence: $name requires a fresh preview only when owner records change",
+	async ({ initial, during, commits }) => {
+		// Arrange: only the coordinator and prompt are faked; both local reads use real SQLite.
+		const core = await vi.importActual<typeof import("@codemem/core")>("@codemem/core");
+		const directory = mkdtempSync(join(tmpdir(), "owner-review-cli-test-"));
+		const dbPath = join(directory, "device.sqlite");
+		const publicKey = "ssh-ed25519 fixture-public-key";
+		const fingerprint = core.fingerprintPublicKey(publicKey);
+		const mutate = (sql: string) => {
+			const db = new DatabaseSync(dbPath);
+			try {
+				db.exec(sql);
+			} finally {
+				db.close();
+			}
+		};
+		try {
+			mutate(`CREATE TABLE sync_device(device_id TEXT, public_key TEXT, fingerprint TEXT);
+			CREATE TABLE actors(actor_id TEXT, is_local INTEGER, status TEXT, merged_into_actor_id TEXT);
+			CREATE TABLE identity_devices(device_id TEXT, identity_id TEXT, status TEXT);
+			CREATE TABLE memory_items(actor_id TEXT);
+			CREATE TABLE policy_team_memberships(identity_id TEXT, status TEXT);
+			INSERT INTO sync_device VALUES ('device-a', '${publicKey}', '${fingerprint}');
+			${addActor}${addAssignment}${initial}`);
+			mocks.readCoordinatorOwnerReviewLocalEvidence.mockImplementation(
+				(options: CoordinatorOwnerReviewLocalOptions) => {
+					const bytes = readFileSync(dbPath);
+					const evidence = core.readCoordinatorOwnerReviewLocalEvidence(options);
+					expect(readFileSync(dbPath)).toEqual(bytes);
+					return evidence;
+				},
+			);
+			mocks.confirm.mockImplementation(async () => {
+				if (during) mutate(during);
+				return true;
+			});
+			mocks.coordinatorAuthControllerReviewAction.mockImplementation(async (request) => {
+				if (request.confirmEvidenceDigest) return { ...reviewedOwner, fingerprint };
+				return { ...preview, enrollment: { ...preview.enrollment, fingerprint } };
+			});
+			// Act
+			await run(["--db-path", dbPath]);
+			// Assert: the same actor/key is insufficient if row presence changed during approval.
+			expect(mocks.readCoordinatorOwnerReviewLocalEvidence).toHaveBeenCalledTimes(2);
+			expect(mocks.coordinatorAuthControllerReviewAction).toHaveBeenCalledTimes(commits ? 2 : 1);
+			if (commits) {
+				expect(mocks.coordinatorAuthControllerReviewAction).toHaveBeenLastCalledWith(
+					expect.objectContaining({
+						identityId: "actor-a",
+						fingerprint,
+						confirmEvidenceDigest: preview.evidence_digest,
+					}),
+				);
+				expect(mocks.log.success).toHaveBeenCalledOnce();
+				expect(process.exitCode).toBeUndefined();
+			} else {
+				expect(mocks.log.error).toHaveBeenCalledWith(expect.stringContaining("preview again"), {
+					output: process.stderr,
+				});
+				expect(mocks.log.success).not.toHaveBeenCalled();
+				expect(process.exitCode).toBe(1);
+			}
+			const output =
+				JSON.stringify(Object.values(mocks.log).map((log) => log.mock.calls)) +
+				JSON.stringify(vi.mocked(process.stdout.write).mock.calls);
+			expect(output).not.toContain(publicKey);
+			expect(output).not.toContain(config.sync_coordinator_admin_secret);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	},
+);
 
 it("changed device override during approval is reread and prevents commit", async () => {
 	// Arrange

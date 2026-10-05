@@ -23,6 +23,16 @@ const tty = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
 const exitCode = process.exitCode;
 beforeEach(() => {
 	vi.clearAllMocks();
+	for (const name of [
+		"CODEMEM_SYNC_COORDINATOR_URL",
+		"CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET",
+		"CODEMEM_SYNC_COORDINATOR_GROUP",
+		"CODEMEM_SYNC_COORDINATOR_GROUPS",
+		"CODEMEM_SYNC_COORDINATOR_TIMEOUT_S",
+		"CODEMEM_SYNC_COORDINATOR_PRESENCE_TTL_S",
+		"CODEMEM_KEYS_DIR",
+	])
+		vi.stubEnv(name, undefined);
 	process.exitCode = undefined;
 	Object.defineProperty(process.stderr, "isTTY", { configurable: true, value: true });
 	mocks.readCodememConfigFile.mockReturnValue({
@@ -112,6 +122,34 @@ it("TTY-only handoff prints privately to stderr and removes signal listeners", a
 	);
 	expect(console.log).not.toHaveBeenCalled();
 	expect([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]).toEqual(signals);
+});
+
+it.each([
+	{ name: "environment over saved URL", saved: "https://saved.example.test", flag: undefined },
+	{ name: "environment without saved URL", saved: undefined, flag: undefined },
+	{
+		name: "explicit flag over environment",
+		saved: "https://saved.example.test",
+		flag: "https://flag.example.test",
+	},
+])("$name uses the same coordinator as the shared runtime config", async ({ saved, flag }) => {
+	// Arrange: the actual shared loader trims the environment override, including custom configs.
+	vi.stubEnv("CODEMEM_SYNC_COORDINATOR_URL", "  https://environment.example.test  ");
+	mocks.readCodememConfigFileAtPath.mockReturnValue({ sync_coordinator_url: saved });
+	// Act
+	await buildCoordinatorLinkAccountCommand().parseAsync(
+		["group-a", "-d", "fixture.sqlite", "-c", "fixture.json", ...(flag ? ["-u", flag] : [])],
+		{ from: "user" },
+	);
+	// Assert: never pass the saved URL or whitespace through to the account-link runtime.
+	expect(mocks.linkCoordinatorAccount).toHaveBeenCalledExactlyOnceWith(
+		expect.objectContaining({
+			coordinatorUrl: flag ?? "https://environment.example.test",
+			groupId: "group-a",
+			dbPath: "fixture.sqlite",
+		}),
+	);
+	expect(process.exitCode).toBeUndefined();
 });
 
 it.each(["json", "nonterminal"])(

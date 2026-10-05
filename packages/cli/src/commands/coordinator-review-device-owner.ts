@@ -190,6 +190,9 @@ function sameLocalOwner(
 ): boolean {
 	return (
 		after.state === "ready" &&
+		before.ownershipRecords.actorPresent === after.ownershipRecords.actorPresent &&
+		before.ownershipRecords.deviceAssignmentPresent ===
+			after.ownershipRecords.deviceAssignmentPresent &&
 		before.device?.deviceId === after.device?.deviceId &&
 		before.device?.publicKey === after.device?.publicKey &&
 		before.device?.fingerprint === after.device?.fingerprint &&
@@ -204,7 +207,7 @@ async function confirmReview(
 	request: CoordinatorAuthControllerReviewActionOptions,
 	preview: CoordinatorControllerReviewPreview,
 ): Promise<void> {
-	if (!process.stderr.isTTY)
+	if (!process.stdin.isTTY || !process.stderr.isTTY)
 		return failure(
 			options,
 			"Preview only. Run in a terminal without --json to confirm this review.",

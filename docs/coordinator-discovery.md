@@ -139,6 +139,10 @@ and non-terminal runs stay preview-only. Before confirming, the command rereads
 the local device and Identity and stops if either or the coordinator endpoint
 changed.
 
+The reread also compares whether the current Identity and device-assignment records
+exist. Records appearing or disappearing during confirmation require a fresh
+preview, even when the derived Identity and device key are unchanged.
+
 The coordinator records an immutable controller review only after that explicit
 confirmation. It recomputes server-owned evidence before writing, so a changed
 enrollment, key, group, or reviewed invitation stops the request without a

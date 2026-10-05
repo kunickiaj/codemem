@@ -4,6 +4,7 @@ import {
 	linkCoordinatorAccount,
 	readCodememConfigFile,
 	readCodememConfigFileAtPath,
+	readCoordinatorSyncConfig,
 	resolveDbPath,
 } from "@codemem/core";
 import { Command } from "commander";
@@ -53,7 +54,8 @@ async function linkAccount(group: string, options: Options): Promise<void> {
 		const config = options.config
 			? readCodememConfigFileAtPath(options.config)
 			: readCodememConfigFile();
-		const coordinatorUrl = options.coordinator ?? config.sync_coordinator_url;
+		const coordinatorUrl =
+			options.coordinator ?? readCoordinatorSyncConfig(config).syncCoordinatorUrl;
 		if (
 			typeof coordinatorUrl !== "string" ||
 			!coordinatorUrl ||
