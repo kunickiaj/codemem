@@ -58,15 +58,19 @@ http://[::1]:<selected-port>/codemem/auth/complete
 The coordinator rejects another scheme, hostname, credentials, query, fragment,
 path, external override, or later destination change. Creation returns trusted
 coordinator/attempt metadata, not the raw runtime verifier or completion secret.
-The planned CLI (not implemented or publicly routed yet) builds the private browser-start URL locally with the one-time start
-code. The code is not a Google credential or permission grant; it prevents a
+The device command builds the private browser-start URL locally with the
+one-time start code. The optional browser routes are not mounted yet. The code
+is not a Google credential or permission grant; it prevents a
 public attempt ID alone from claiming that device's flow. Do not share or log
 the start URL.
 `parseCoordinatorAuthLoopback` implements this exact syntax check, including an
 explicit canonical decimal port from 1 through 65535. Preserve the returned
 destination verbatim, including `:80`; URL normalization is not an authorization
-step. Signed device creation validates this target. The planned listener accepts one
-GET for its outstanding attempt and returns a `no-store` response.
+step. Signed device creation validates this target. The listener accepts one
+GET for its outstanding attempt, matching the exact literal Host and port,
+saved path, and only `attempt_id` plus canonical `completion`. It rejects other
+methods, duplicate or extra parameters, absolute-form targets, and prefetch or
+non-navigation requests, and returns a `no-store`, `no-referrer` response.
 
 ## Browser OIDC and confirmation
 
@@ -201,13 +205,22 @@ stored enrollment key, signature, timestamp and nonce, with a separate
 per-device quota using the existing limits; SQL
 still supplies the reviewed controller authority. Browser sessions or Google
 claims are not device authorization. Storage or cleanup faults report no success
-and disclose no proof or private cause. The local command, listener, and real
-browser checks remain separate work; this option changes no enrollment or access.
+and disclose no proof or private cause. The local command and listener are
+implemented; optional app mounting and real browser checks remain outstanding.
+This option changes no enrollment or access.
 
 All mounted device-link responses, including errors, use `Cache-Control: no-store`.
 Custom signature headers do not provide the caching protections of a standard
 `Authorization` header; every status poll must reach the signer check and current
 attempt state instead of a cached response.
+
+The device pins the coordinator and Identity from creation, then signs polling,
+finalization, and cancellation with its existing key. Expiry-response validation
+allows the existing five-minute signature clock tolerance; the device still
+waits at most ten local minutes, and the coordinator enforces its own attempt
+deadline. Neither a status response nor a loopback proof alone reports success:
+the device requires its own proof-bearing finalization response. A lost final
+reply may be retried once with a fresh signed nonce.
 
 The runtime signs a finalization `POST` for the same attempt. It presents the
 original runtime verifier and the browser-completion secret; the coordinator

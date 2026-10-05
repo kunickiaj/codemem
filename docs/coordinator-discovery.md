@@ -115,6 +115,39 @@ These group/device management commands operate on the built-in local coordinator
 Remote coordinator admin for invites and join-request review exists separately; remote device-admin parity remains a
 follow-up.
 
+## Optional account linking
+
+The account-link command is implemented, but the optional browser routes still
+need app integration and browser checks before a dogfood pilot. Default
+coordinators return `404` for these routes; this command does not enable them or
+configure Google. The coordinator must already have reviewed ownership for this
+enrolled device's exact key and existing Identity.
+
+Run it from a terminal on the device being linked:
+
+```fish
+codemem coordinator link-account team-alpha --coordinator "https://coord.example.com"
+codemem coordinator link-account team-alpha --coordinator "https://coord.example.com" --loopback-host "::1"
+```
+
+`--config` can select the saved coordinator configuration. Here, `--db-path`
+selects the **device's memory database**, not the coordinator database used by
+admin commands. `CODEMEM_KEYS_DIR` selects existing device keys when configured;
+the command never creates keys, enrolls a device, adopts another Identity, or
+changes Project access. Remote coordinators require HTTPS; literal HTTP loopback
+origins are allowed only for local development.
+
+Open the private link printed to terminal stderr, review the account, Identity,
+and device in the browser, then return to the coordinator tab to finish. Do not
+share or log the link. JSON and nonterminal execution are rejected before an
+attempt starts so the private URL cannot enter structured output.
+
+The command holds an exact IPv4 or IPv6 loopback listener before creating the
+attempt, signs its requests with the existing device key, and waits at most ten
+minutes. Interrupting it attempts to cancel only its own request. If cancellation
+or the final reply cannot be confirmed, the command reports that uncertainty
+instead of claiming a rollback; an already completed link may still exist.
+
 ## Discovery groups vs sync peers
 
 Coordinator group membership and sync peer relationships are not the same thing.

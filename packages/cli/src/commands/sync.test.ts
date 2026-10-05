@@ -32,6 +32,37 @@ const configFailureFixtures = {
 	},
 } satisfies Record<string, (configPath: string) => void>;
 
+describe("coordinator command parity", () => {
+	it("registers coordinator parity subcommands", () => {
+		const coordinator = syncCommand.commands.find((command) => command.name() === "coordinator");
+		expect(coordinator).toBeDefined();
+		expect(coordinator?.commands.map((command) => command.name())).toEqual([
+			"link-account",
+			"group-create",
+			"list-groups",
+			"enroll-device",
+			"list-devices",
+			"list-scopes",
+			"create-scope",
+			"update-scope",
+			"list-scope-members",
+			"grant-scope-member",
+			"revoke-scope-member",
+			"rename-device",
+			"disable-device",
+			"remove-device",
+			"serve",
+			"list-bootstrap-grants",
+			"revoke-bootstrap-grant",
+			"create-invite",
+			"import-invite",
+			"list-join-requests",
+			"approve-join-request",
+			"deny-join-request",
+		]);
+	});
+});
+
 describe("formatSyncAttempt", () => {
 	it("matches the compact Python-era output shape", () => {
 		expect(
@@ -174,34 +205,6 @@ describe("formatSyncAttempt", () => {
 				utun0: [{ address: "fd00::2", internal: false, family: "IPv6" }],
 			}),
 		).toEqual(["[fd00::2]:7337"]);
-	});
-
-	it("registers coordinator parity subcommands", () => {
-		const coordinator = syncCommand.commands.find((command) => command.name() === "coordinator");
-		expect(coordinator).toBeDefined();
-		expect(coordinator?.commands.map((command) => command.name())).toEqual([
-			"group-create",
-			"list-groups",
-			"enroll-device",
-			"list-devices",
-			"list-scopes",
-			"create-scope",
-			"update-scope",
-			"list-scope-members",
-			"grant-scope-member",
-			"revoke-scope-member",
-			"rename-device",
-			"disable-device",
-			"remove-device",
-			"serve",
-			"list-bootstrap-grants",
-			"revoke-bootstrap-grant",
-			"create-invite",
-			"import-invite",
-			"list-join-requests",
-			"approve-join-request",
-			"deny-join-request",
-		]);
 	});
 
 	it("documents the coordinator command surface in help output", () => {

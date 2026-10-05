@@ -35,6 +35,19 @@ export {
 	mapCodexHookPayload,
 } from "./codex-hooks.js";
 export type {
+	CoordinatorAccountLinkReceiver,
+	CoordinatorAccountLinkReceiverOptions,
+} from "./coordinator-account-link-receiver.js";
+export { createCoordinatorAccountLinkReceiver } from "./coordinator-account-link-receiver.js";
+export type {
+	LinkCoordinatorAccountOptions,
+	LinkCoordinatorAccountResult,
+} from "./coordinator-account-link-runtime.js";
+export {
+	CoordinatorAccountLinkError,
+	linkCoordinatorAccount,
+} from "./coordinator-account-link-runtime.js";
+export type {
 	CoordinatorConsumedTeamInvite,
 	CoordinatorReviewedRecipientInviteEvidence,
 } from "./coordinator-actions.js";
