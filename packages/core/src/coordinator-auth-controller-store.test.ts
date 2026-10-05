@@ -446,6 +446,111 @@ function registerValidationTests(test: ReturnType<typeof it.extend<{ fixture: Fi
 	});
 }
 
+function registerSnapshotTests(test: ReturnType<typeof it.extend<{ fixture: Fixture }>>) {
+	test.for([
+		null,
+		undefined,
+		{},
+		{ enrollmentIdentityId: null, invites: null },
+		{ enrollmentIdentityId: "invalid\n", invites: [] },
+		{ enrollmentIdentityId: null, invites: new Array(4097) },
+		{ enrollmentIdentityId: null, invites: new Array(1) },
+		{ enrollmentIdentityId: null, invites: [{ inviteId: "a" }] },
+	])(
+		"rejects malformed optional snapshot %j",
+		async (verifiedSnapshot, { fixture: { store, db } }) => {
+			await enroll(store);
+			const input = { ...review(), verifiedSnapshot } as CoordinatorAuthControllerReviewInput;
+			expect(await store.createAuthControllerAttestation(input)).toEqual({
+				kind: "rejected",
+				error: "invalid_review_input",
+			});
+			expect(db.prepare("SELECT * FROM coordinator_auth_controller_attestations").all()).toEqual(
+				[],
+			);
+		},
+	);
+	test.for(["snapshot", "identity", "list", "item", "field", "inherited"] as const)(
+		"captures snapshot own data only: %s",
+		async (variant, { fixture: { store } }) => {
+			await enroll(store);
+			const getter = vi.fn(() => {
+				throw new Error("must not execute");
+			});
+			const invite = {
+				inviteId: "a",
+				kind: "team_member" as const,
+				actorId: "identity-a",
+				assignedIdentityId: "identity-a",
+				targetIdentityId: null,
+				digest: "c".repeat(64),
+			};
+			const verifiedSnapshot = { enrollmentIdentityId: null, invites: [invite] };
+			let input = review({ verifiedSnapshot });
+			if (variant === "snapshot") Object.defineProperty(input, "verifiedSnapshot", { get: getter });
+			if (variant === "identity")
+				Object.defineProperty(verifiedSnapshot, "enrollmentIdentityId", { get: getter });
+			if (variant === "list") Object.defineProperty(verifiedSnapshot, "invites", { get: getter });
+			if (variant === "item") Object.defineProperty(verifiedSnapshot.invites, "0", { get: getter });
+			if (variant === "field") Object.defineProperty(invite, "digest", { get: getter });
+			if (variant === "inherited") {
+				input = review();
+				Object.setPrototypeOf(input, { verifiedSnapshot });
+			}
+			expect(await store.createAuthControllerAttestation(input)).toEqual({
+				kind: "rejected",
+				error: "invalid_review_input",
+			});
+			expect(getter).not.toHaveBeenCalled();
+		},
+	);
+	test("rejects duplicate refs and oversized captured JSON", async ({ fixture: { store } }) => {
+		await enroll(store);
+		const invite = {
+			inviteId: "a".repeat(256),
+			kind: "team_member" as const,
+			actorId: "i".repeat(256),
+			assignedIdentityId: "i".repeat(256),
+			targetIdentityId: "i".repeat(256),
+			digest: "c".repeat(64),
+		};
+		for (const invites of [
+			[invite, invite],
+			Array.from({ length: 1500 }, (_, index) => ({
+				...invite,
+				inviteId: `${index}`.padEnd(256, "a"),
+			})),
+		]) {
+			expect(
+				await store.createAuthControllerAttestation(
+					review({ verifiedSnapshot: { enrollmentIdentityId: null, invites } }),
+				),
+			).toEqual({ kind: "rejected", error: "invalid_review_input" });
+		}
+	});
+	test("captures an empty snapshot before an asynchronous caller mutation", async ({
+		fixture: { store },
+	}) => {
+		await enroll(store);
+		const verifiedSnapshot = { enrollmentIdentityId: null, invites: [] };
+		const pending = store.createAuthControllerAttestation(review({ verifiedSnapshot }));
+		Object.assign(verifiedSnapshot, { enrollmentIdentityId: "changed", invites: null });
+		expect(await pending).toMatchObject({ kind: "created" });
+	});
+	test("empty guarded snapshot rejects a changed enrollment Identity", async ({
+		fixture: { store, db },
+	}) => {
+		await enroll(store);
+		setIdentity(db, "identity-a");
+		expect(
+			await store.createAuthControllerAttestation(
+				review({ verifiedSnapshot: { enrollmentIdentityId: null, invites: [] } }),
+			),
+		).toEqual({ kind: "rejected", error: "review_stale" });
+		expect(db.prepare("SELECT * FROM coordinator_auth_controller_attestations").all()).toEqual([]);
+	});
+}
+
 function registerFailureTests(test: ReturnType<typeof it.extend<{ fixture: Fixture }>>) {
 	test("rejects an accessor even when Object.prototype supplies its expected value", async ({
 		fixture: { store, db },
@@ -816,6 +921,7 @@ describe.each(["SQLite", "D1"] as const)("%s auth-controller store parity", (bac
 	registerLiveTests(test);
 	registerValidationTests(test);
 	registerFailureTests(test);
+	registerSnapshotTests(test);
 	registerPersistenceTests(test, backend);
 	registerBindingTests(test);
 	if (backend === "D1") registerD1ReadRaceTests(test);

@@ -17,9 +17,11 @@ import {
 	AUTH_CONTROLLER_ACTIVE_SQL,
 	AUTH_CONTROLLER_CONFLICT_SQL,
 	AUTH_CONTROLLER_INSERT_SQL,
+	AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL,
 	AUTH_CONTROLLER_REVOKE_SQL,
 	authControllerConflictValues,
 	authControllerInsertValues,
+	authControllerRetryEligibleValues,
 	authControllerRetryResult,
 	type CoordinatorAuthControllerAttestation,
 	type CoordinatorAuthControllerCreateResult,
@@ -625,7 +627,11 @@ export class D1CoordinatorStore implements CoordinatorStore {
 					.prepare(AUTH_CONTROLLER_INSERT_SQL)
 					.bind(...authControllerInsertValues(review, nowISO())),
 			);
-			if (inserted === 0) return { kind: "rejected", error: "enrollment_mismatch" };
+			if (inserted === 0)
+				return {
+					kind: "rejected",
+					error: review.verifiedSnapshot ? "review_stale" : "enrollment_mismatch",
+				};
 		} catch (error) {
 			if (!isAuthControllerUniqueError(error)) throw error;
 			return this.resolveAuthControllerRetry(review);
@@ -651,6 +657,17 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			input.attestationId,
 		);
 		if (!active) return { kind: "rejected", error: "enrollment_mismatch" };
+		if (
+			!(await firstRow(
+				this.db
+					.prepare(AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL)
+					.bind(...authControllerRetryEligibleValues(input)),
+			))
+		)
+			return {
+				kind: "rejected",
+				error: input.verifiedSnapshot ? "review_stale" : "enrollment_mismatch",
+			};
 		return { kind: "existing", attestation: active };
 	}
 

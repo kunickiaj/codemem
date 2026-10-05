@@ -130,6 +130,22 @@ function showLocal(evidence: CoordinatorOwnerReviewLocalEvidence): void {
 		{ output: process.stderr },
 	);
 }
+function validInviteCount(reply: Record<string, unknown>, invites: unknown[]): boolean {
+	return (
+		invites.length <= 10 &&
+		Number.isSafeInteger(reply.reviewed_invite_count) &&
+		(reply.reviewed_invite_count as number) >= invites.length
+	);
+}
+function validInviteRef(
+	invite: CoordinatorControllerReviewPreview["reviewed_invites"][number],
+): boolean {
+	return (
+		!!invite &&
+		validId(invite.invite_id) &&
+		(invite.kind === "team_member" || invite.kind === "add_device")
+	);
+}
 function parsePreview(
 	reply: Record<string, unknown>,
 	request: CoordinatorAuthControllerReviewActionOptions,
@@ -144,12 +160,8 @@ function parsePreview(
 			(reason) => typeof reason === "string" && REVIEW_REASONS.includes(reason),
 		) ||
 		!Array.isArray(invites) ||
-		!invites.every(
-			(invite) =>
-				invite &&
-				validId(invite.invite_id) &&
-				(invite.kind === "team_member" || invite.kind === "add_device"),
-		)
+		!validInviteCount(reply, invites) ||
+		!invites.every(validInviteRef)
 	)
 		throw new Error("invalid_preview");
 	if (
@@ -184,6 +196,7 @@ function parsePreview(
 				}
 			: null,
 		reviewed_invites: invites.map((invite) => ({ invite_id: invite.invite_id, kind: invite.kind })),
+		reviewed_invite_count: reply.reviewed_invite_count as number,
 	};
 }
 function sameLocalOwner(
@@ -335,7 +348,7 @@ async function reviewDeviceOwner(group: string, options: Options): Promise<void>
 				`Coordinator review stopped: ${preview.reasons.join(", ")}. Nothing changed.`,
 			);
 		p.log.info(
-			`Coordinator: ${preview.coordinator_id}; reviewed invitations: ${preview.reviewed_invites.length}`,
+			`Coordinator: ${preview.coordinator_id}; reviewed invitations: ${preview.reviewed_invite_count}`,
 			{ output: process.stderr },
 		);
 		await confirmReview(group, options, evidence, request, preview);

@@ -211,6 +211,12 @@ const server = httpsServer({ cert, key: readFileSync(keyPath) }, async (request,
 					fetch: async (input, init) => {
 						const target = new URL(String(input));
 						if (target.origin !== origin) throw new Error("Nonlocal runtime destination");
+						if (
+							process.argv.includes("--sanity") &&
+							process.argv.includes("--sanity-fail-cancel") &&
+							target.pathname.endsWith("/cancel")
+						)
+							return new Response(null, { status: 503 });
 						const result = await pinnedRequest(target, init);
 						calls.push({ method: init.method, path: target.pathname, status: result.status });
 						return result;
@@ -412,19 +418,37 @@ console.log(
 	}),
 );
 if (process.argv.includes("--sanity")) {
-	const started = await pinnedRequest(`${origin}/__fixture/start`, { method: "POST" });
-	assert.equal(started.status, 202);
-	await pinnedRequest(`${origin}/__fixture/cancel`, { method: "POST" });
-	assert.ok(
-		calls.some(
-			(call) =>
-				call.method === "POST" && call.path === "/v1/auth/link-attempts" && call.status === 201,
-		),
-	);
-	assert.equal(
-		(await db.prepare("SELECT COUNT(*) AS count FROM coordinator_auth_sessions").first()).count,
-		0,
-	);
-	await stop();
-	console.log(JSON.stringify({ SANITY: "passed", assertions: 10, browserValidated: false }));
+	try {
+		const started = await pinnedRequest(`${origin}/__fixture/start`, { method: "POST" });
+		assert.equal(started.status, 202);
+		const cancelled = await pinnedRequest(`${origin}/__fixture/cancel`, { method: "POST" });
+		assert.equal(cancelled.status, 200);
+		assert.deepEqual((await cancelled.json()).flow, {
+			state: "stopped",
+			code: "link_stopped",
+			host: "127.0.0.1",
+		});
+		assert.ok(
+			calls.some(
+				(call) => call.method === "POST" && call.path.endsWith("/cancel") && call.status === 200,
+			),
+		);
+		assert.equal(
+			(await db.prepare("SELECT state FROM coordinator_auth_link_attempts").first()).state,
+			"failed",
+		);
+		assert.ok(
+			calls.some(
+				(call) =>
+					call.method === "POST" && call.path === "/v1/auth/link-attempts" && call.status === 201,
+			),
+		);
+		assert.equal(
+			(await db.prepare("SELECT COUNT(*) AS count FROM coordinator_auth_sessions").first()).count,
+			0,
+		);
+	} finally {
+		await stop();
+	}
+	console.log(JSON.stringify({ SANITY: "passed", assertions: 14, browserValidated: false }));
 }

@@ -147,6 +147,10 @@ The coordinator records an immutable controller review only after that explicit
 confirmation. It recomputes server-owned evidence before writing, so a changed
 enrollment, key, group, or reviewed invitation stops the request without a
 write. Existing conflicting or revoked reviews are never overwritten.
+The database compares all matching invitation evidence atomically during insertion
+and retry, so changes after the preview read cannot approve stale evidence.
+The CLI displays the total reviewed invitation count; JSON includes at most ten
+invitation references, but every matching invitation is checked.
 
 If the local database lacks the required actor or binding tables or columns, has another
 active local actor, or identifies a revoked or differently bound device, the

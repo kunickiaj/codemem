@@ -42,6 +42,17 @@ the write. Without it, the route only returns `ready` or `needs_review` and no
 record is created. Confirmation recomputes evidence from the live group,
 enrollment key and fingerprint, selected Identity, and sorted consumed verified
 Team/add-device invitations. A changed digest returns `409 review_stale`.
+The write itself atomically compares the complete reviewed invitation set,
+including an empty set, against live consumed, unrevoked Team/add-device invitations
+bound to the exact device, key, and fingerprint. Added, removed, revoked, or changed
+evidence after the preview read returns `409 review_stale` without inserting a row.
+Exact retries apply the same live snapshot guard before accepting an existing row.
+
+Preview responses include `reviewed_invite_count`, the total number of verified
+invitations, and `reviewed_invites`, a sorted sample of at most ten references.
+The sample does not limit evidence: every matching invitation contributes to the
+digest and atomic write guard. Device display labels are capped at 256 characters;
+the response fits the client's 16 KiB limit even with maximum-length invitation IDs.
 
 Unavailable groups or enrollments, disabled or archived state, key mismatch, or
 Identity mismatches return a `needs_review` preview. A consumed, unrevoked
@@ -59,12 +70,20 @@ of the same live review returns the existing record. Responses are `no-store`.
 createAuthControllerAttestation({
   attestationId, coordinatorId, identityId, groupId, deviceId,
   publicKey, fingerprint, reviewReceiptId, evidenceDigest,
+  verifiedSnapshot: { enrollmentIdentityId, invites },
 });
 ```
 
 The immutable revision-1 record stores those values using snake-case field names,
 `created_at`, and a nullable `revoked_at`. Its read-only `enrollment_identity_id` stores the
 enrollment's `identity_id` snapshot; a null snapshot is valid.
+The optional trusted-store `verifiedSnapshot` captures invitation IDs, kinds,
+recipient actors, assigned and target Identities, and reviewed digests, plus the
+enrollment Identity. Existing seed callers can omit it; the operator route always
+supplies it, including empty invitations. Present null, malformed, inherited, or
+accessor-backed snapshot fields are rejected as `invalid_review_input` without
+executing getters. The captured snapshot allows at most 4,096 distinct invitations
+and 1,000,000 UTF-8 JSON bytes; larger input fails closed rather than truncating evidence.
 
 `identityId` is the reviewed actor, not a caller assertion. A non-null
 legacy enrollment `identity_id` must match it. A null value records that the
@@ -116,7 +135,9 @@ The implementation belongs in these direct source paths:
 - `packages/core/src/d1-coordinator-store.ts`
 - `packages/cloudflare-coordinator-worker/migrations/0016_add_auth_controller_attestations.sql`
 
-D1 uses one guarded `INSERT`; SQLite uses an immediate transaction. Neither
+D1 uses one guarded `INSERT`; SQLite uses an immediate transaction. A shared
+`json_each` set comparison uses a fixed number of parameters, independent of the
+number of invitations. Neither
 backend may treat a check-then-write sequence as authority. Migration 0016 is
 source and test input only; it is not applied to a live deployment by this slice.
 The fresh-install `schema.sql` includes the same table as migration 0016. Source

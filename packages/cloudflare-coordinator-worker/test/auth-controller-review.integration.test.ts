@@ -23,6 +23,7 @@ afterEach(async () => {
 			...["link_audit_log", "link_attempts", "controller_attestations"].map((table) => env.COORDINATOR_DB.prepare(`DELETE FROM coordinator_auth_${table} WHERE coordinator_id = ?`).bind(f.config.coordinatorId)),
 			env.COORDINATOR_DB.prepare("DELETE FROM request_nonces WHERE device_id = ?").bind(f.deviceId),
 			env.COORDINATOR_DB.prepare("DELETE FROM enrolled_devices WHERE group_id = ?").bind(f.input.group_id),
+			env.COORDINATOR_DB.prepare("DELETE FROM coordinator_invites WHERE group_id = ?").bind(f.input.group_id),
 			env.COORDINATOR_DB.prepare("DELETE FROM groups WHERE group_id = ?").bind(f.input.group_id),
 		]);
 	}
@@ -86,4 +87,91 @@ it("real operator preview/commit replaces seeded authority and unlocks a signed 
 	expect(await f.store.getEnrollment(f.input.group_id, f.deviceId)).toEqual(enrollment);
 	const text = JSON.stringify(preview);
 	for (const hidden of [secret, f.publicKey, "public_key", "subject", "email", "token"]) expect(text).not.toContain(hidden);
+});
+
+async function seedReviewedInvite(f: Fixture) {
+	const invite = await f.store.createInvite({ groupId: f.input.group_id, policy: "auto", expiresAt: "2030-01-01T00:00:00Z" });
+	await env.COORDINATOR_DB.prepare("UPDATE coordinator_invites SET invite_kind = 'add_device', consumed_at = 'consumed', bound_device_id = ?, bound_public_key = ?, bound_fingerprint = ?, recipient_actor_id = ?, target_identity_id = ?, reviewed_preview_digest = ? WHERE invite_id = ?")
+		.bind(f.deviceId, f.publicKey, f.input.fingerprint, f.input.identity_id, f.input.identity_id, "c".repeat(64), invite.invite_id).run();
+	return invite.invite_id;
+}
+it.each([
+	"DELETE FROM coordinator_invites WHERE invite_id = ?",
+	"UPDATE coordinator_invites SET revoked_at = 'revoked' WHERE invite_id = ?",
+	"UPDATE coordinator_invites SET recipient_actor_id = 'changed' WHERE invite_id = ?",
+	"UPDATE coordinator_invites SET assigned_identity_id = 'changed' WHERE invite_id = ?",
+	"UPDATE coordinator_invites SET target_identity_id = 'changed' WHERE invite_id = ?",
+	"UPDATE coordinator_invites SET reviewed_preview_digest = 'changed' WHERE invite_id = ?",
+	"UPDATE coordinator_invites SET bound_public_key = 'changed' WHERE invite_id = ?",
+])("native D1 rejects evidence mutation after listInvites: %s", async (sql) => {
+	const f = await setup();
+	const inviteId = await seedReviewedInvite(f);
+	const initial = await (await review(f)).json<{ evidence_digest: string }>();
+	const list = f.store.listInvites.bind(f.store);
+	vi.spyOn(f.store, "listInvites").mockImplementation(async (group) => {
+		const result = await list(group);
+		await env.COORDINATOR_DB.prepare(sql).bind(inviteId).run();
+		return result;
+	});
+	const response = await review(f, initial.evidence_digest);
+	expect(response.status).toBe(409);
+	expect(await response.json()).toEqual({ error: "review_stale" });
+	expect(await rows(f)).toEqual([]);
+});
+it.each([false, true])("native D1 rejects a new invite after an empty snapshot, replay=%s", async (replay) => {
+	const f = await setup();
+	const initial = await (await review(f)).json<{ evidence_digest: string }>();
+	if (replay) expect((await review(f, initial.evidence_digest)).status).toBe(201);
+	const before = await rows(f);
+	const create = f.store.createAuthControllerAttestation.bind(f.store);
+	vi.spyOn(f.store, "createAuthControllerAttestation").mockImplementation(async (input) => {
+		await seedReviewedInvite(f);
+		return create(input);
+	});
+	const response = await review(f, initial.evidence_digest);
+	expect(response.status).toBe(409);
+	expect(await response.json()).toEqual({ error: "review_stale" });
+	expect(await rows(f)).toEqual(before);
+});
+it("native D1 retry rejects evidence changed after the uniqueness failure", async () => {
+	const f = await setup();
+	const inviteId = await seedReviewedInvite(f);
+	const initial = await (await review(f)).json<{ evidence_digest: string }>();
+	expect((await review(f, initial.evidence_digest)).status).toBe(201);
+	const before = await rows(f);
+	const getActive = f.store.getActiveAuthControllerAttestation.bind(f.store);
+	vi.spyOn(f.store, "getActiveAuthControllerAttestation").mockImplementation(async (...args) => {
+		const active = await getActive(...args);
+		await env.COORDINATOR_DB.prepare("UPDATE coordinator_invites SET revoked_at = 'revoked' WHERE invite_id = ?").bind(inviteId).run();
+		return active;
+	});
+	const response = await review(f, initial.evidence_digest);
+	expect(response.status).toBe(409);
+	expect(await response.json()).toEqual({ error: "review_stale" });
+	expect(await rows(f)).toEqual(before);
+});
+it("native D1 guards all 201 invitations with fixed SQL binds and a limited response sample", async () => {
+	const f = await setup();
+	const ids: string[] = [];
+	for (let index = 0; index < 201; index++) ids.push(await seedReviewedInvite(f));
+	const response = await review(f);
+	const wire = await response.text();
+	const initial = JSON.parse(wire);
+	expect(new TextEncoder().encode(wire).byteLength).toBeLessThan(16384);
+	expect(initial.reviewed_invite_count).toBe(201);
+	expect(initial.reviewed_invites).toHaveLength(10);
+	const hiddenId = ids.find((id) => !initial.reviewed_invites.some((ref: { invite_id: string }) => ref.invite_id === id));
+	const create = f.store.createAuthControllerAttestation.bind(f.store);
+	const spy = vi.spyOn(f.store, "createAuthControllerAttestation").mockImplementation(async (input) => {
+		await env.COORDINATOR_DB.prepare("UPDATE coordinator_invites SET reviewed_preview_digest = ? WHERE invite_id = ?").bind("d".repeat(64), hiddenId).run();
+		return create(input);
+	});
+	const stale = await review(f, initial.evidence_digest);
+	expect(stale.status).toBe(409);
+	expect(await stale.json()).toEqual({ error: "review_stale" });
+	expect(await rows(f)).toEqual([]);
+	spy.mockRestore();
+	const fresh = await (await review(f)).json<{ evidence_digest: string }>();
+	expect((await review(f, fresh.evidence_digest)).status).toBe(201);
+	expect((await review(f, fresh.evidence_digest)).status).toBe(200);
 });

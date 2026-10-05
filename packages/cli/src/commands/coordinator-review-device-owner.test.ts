@@ -56,6 +56,7 @@ const preview = {
 		display_name: null,
 	},
 	reviewed_invites: [],
+	reviewed_invite_count: 0,
 };
 const config = {
 	actor_id: "actor-a",
@@ -138,6 +139,30 @@ it("JSON previews once with shared options and never prompts or exposes the publ
 	expect(output).not.toContain("fixture-secret");
 	expect(mocks.confirm).not.toHaveBeenCalled();
 });
+it("shows the total reviewed invitations rather than the reference sample length", async () => {
+	mocks.coordinatorAuthControllerReviewAction.mockResolvedValue({
+		...preview,
+		reviewed_invite_count: 201,
+		reviewed_invites: [{ invite_id: "sample", kind: "team_member" }],
+	});
+	await run();
+	expect(mocks.log.info).toHaveBeenCalledWith(
+		expect.stringContaining("reviewed invitations: 201"),
+		expect.anything(),
+	);
+});
+it.each([undefined, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, "201"])(
+	"rejects invalid reviewed invite count %s",
+	async (reviewed_invite_count) => {
+		mocks.coordinatorAuthControllerReviewAction.mockResolvedValue({
+			...preview,
+			reviewed_invite_count,
+		});
+		await run();
+		expect(process.exitCode).toBe(1);
+		expect(mocks.confirm).not.toHaveBeenCalled();
+	},
+);
 it.each([false, Symbol("cancel")])(
 	"No/Cancel %s never commits; confirmation defaults to No",
 	async (answer) => {

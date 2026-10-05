@@ -2,6 +2,8 @@ import type { Context } from "hono";
 import type { CoordinatorAuthBrowserConfig } from "./coordinator-auth-browser-transaction-contract.js";
 import {
 	type CoordinatorAuthControllerStore,
+	type CoordinatorAuthControllerVerifiedSnapshot,
+	captureVerifiedSnapshot,
 	isAuthControllerId,
 } from "./coordinator-auth-controller.js";
 import type {
@@ -50,6 +52,7 @@ export interface CoordinatorControllerReviewPreview {
 		identity_label: "none" | "matches";
 	} | null;
 	reviewed_invites: { invite_id: string; kind: "team_member" | "add_device" }[];
+	reviewed_invite_count: number;
 }
 const PATH = "/v1/admin/auth-controller-reviews";
 const FIELDS = ["group_id", "device_id", "identity_id", "fingerprint"] as const;
@@ -164,12 +167,16 @@ async function preview(
 	if (bound.some((invite) => !isHash(invite.reviewed_preview_digest)))
 		reasons.push("invite_evidence_invalid");
 	const invites = bound.filter((invite) => isHash(invite.reviewed_preview_digest));
+	const verifiedSnapshot = verifiedInviteSnapshot(enrollment, invites);
+	addSnapshotReasons(verifiedSnapshot, reasons);
 	const result: CoordinatorControllerReviewPreview = {
 		state: reasons.length ? "needs_review" : "ready",
 		reasons,
 		coordinator_id: coordinatorId,
 		enrollment: null,
-		reviewed_invites: invites.map((invite) => ({
+		reviewed_invite_count: invites.length,
+		// Ten references fit the action's 16 KiB limit even with 256-character Unicode IDs.
+		reviewed_invites: invites.slice(0, 10).map((invite) => ({
 			invite_id: invite.invite_id,
 			kind: invite.invite_kind as "team_member" | "add_device",
 		})),
@@ -177,7 +184,7 @@ async function preview(
 	if (enrollment && !reasons.includes("enrollment_identity_mismatch"))
 		result.enrollment = {
 			device_id: enrollment.device_id,
-			display_name: enrollment.display_name,
+			display_name: enrollment.display_name?.slice(0, 256) ?? null,
 			fingerprint: enrollment.fingerprint,
 			identity_label: enrollment.identity_id === null ? "none" : "matches",
 		};
@@ -195,10 +202,34 @@ async function preview(
 				invite.invite_id,
 				invite.invite_kind,
 				invite.recipient_actor_id,
+				invite.assigned_identity_id,
+				invite.target_identity_id,
 				invite.reviewed_preview_digest,
 			]),
 		]);
-	return { result, enrollment };
+	return { result, enrollment, verifiedSnapshot };
+}
+function addSnapshotReasons(
+	snapshot: CoordinatorAuthControllerVerifiedSnapshot,
+	reasons: CoordinatorControllerReviewReason[],
+): void {
+	if (!captureVerifiedSnapshot(snapshot)) reasons.push("invite_evidence_invalid");
+}
+function verifiedInviteSnapshot(
+	enrollment: CoordinatorEnrollment | null,
+	invites: CoordinatorInvite[],
+): CoordinatorAuthControllerVerifiedSnapshot {
+	return {
+		enrollmentIdentityId: enrollment?.identity_id ?? null,
+		invites: invites.map((invite) => ({
+			inviteId: invite.invite_id,
+			kind: invite.invite_kind as "team_member" | "add_device",
+			actorId: invite.recipient_actor_id as string,
+			assignedIdentityId: invite.assigned_identity_id ?? null,
+			targetIdentityId: invite.target_identity_id ?? null,
+			digest: invite.reviewed_preview_digest as string,
+		})),
+	};
 }
 async function applyReview(
 	c: Context,
@@ -206,7 +237,7 @@ async function applyReview(
 	input: ReviewInput,
 	coordinatorId: string,
 ): Promise<Response> {
-	const { result, enrollment } = await preview(store, input, coordinatorId);
+	const { result, enrollment, verifiedSnapshot } = await preview(store, input, coordinatorId);
 	if (input.confirm_evidence_digest === undefined) return c.json(result);
 	if (result.state !== "ready" || !enrollment || !result.evidence_digest)
 		return c.json({ error: "needs_review", ...result }, 409);
@@ -224,9 +255,11 @@ async function applyReview(
 		fingerprint: enrollment.fingerprint,
 		reviewReceiptId,
 		evidenceDigest: result.evidence_digest,
+		verifiedSnapshot,
 	});
 	if (created.kind === "rejected") {
-		if (created.error === "enrollment_mismatch") return c.json({ error: "review_stale" }, 409);
+		if (created.error === "enrollment_mismatch" || created.error === "review_stale")
+			return c.json({ error: "review_stale" }, 409);
 		if (created.error === "attestation_conflict" || created.error === "attestation_revoked")
 			return c.json({ error: "already_reviewed_or_needs_review" }, 409);
 		return c.json({ error: "review_unavailable" }, 403);

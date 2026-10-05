@@ -32,7 +32,10 @@ The script starts two owned local services, prints a `READY` HTTPS origin,
 certificate fingerprint, certificate path, and control URLs. It stays running
 until stopped with SIGINT or SIGTERM; `--sanity` stops it automatically.
 An expected SIGTERM/Node exit `143` during owned-server cleanup is not a failure.
-Use `--sanity` to run its 10 assertions without the browser flow. Retain its ignored
+Use `--sanity` to run its 14 assertions without the browser flow, including
+confirmed cancellation and a failed attempt state. With `--sanity-fail-cancel`
+also supplied, the fixture injects a cancellation outage and must exit nonzero
+without reporting success; owned services still stop. Retain its ignored
 `.tmp` artifacts for debugging; do not treat them as test inputs or publish them.
 
 ### Safety boundary

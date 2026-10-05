@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { coordinatorAuthControllerReviewAction } from "./coordinator-actions.js";
 import {
 	type CoordinatorRequestRateLimitOptions,
 	createCoordinatorApp,
@@ -68,6 +69,31 @@ function request(
 		body: JSON.stringify(body),
 	});
 }
+async function seedInvite(f: Fixture, id = "reviewed-invite") {
+	const invite = await f.store.createInvite({
+		groupId: input.group_id,
+		policy: "auto",
+		expiresAt: "2030-01-01T00:00:00Z",
+	});
+	f.db
+		.prepare(
+			"UPDATE coordinator_invites SET invite_id = ?, invite_kind = 'team_member', consumed_at = 'consumed', bound_device_id = 'device-a', bound_public_key = ?, bound_fingerprint = ?, recipient_actor_id = 'identity-a', assigned_identity_id = 'identity-a', target_identity_id = 'identity-a', reviewed_preview_digest = ? WHERE invite_id = ?",
+		)
+		.run(id, review().publicKey, input.fingerprint, "c".repeat(64), invite.invite_id);
+}
+const inviteChanges = [
+	"DELETE FROM coordinator_invites",
+	"UPDATE coordinator_invites SET revoked_at = 'revoked'",
+	"UPDATE coordinator_invites SET consumed_at = NULL",
+	"UPDATE coordinator_invites SET recipient_actor_id = 'other'",
+	"UPDATE coordinator_invites SET assigned_identity_id = 'other'",
+	"UPDATE coordinator_invites SET target_identity_id = 'other'",
+	"UPDATE coordinator_invites SET reviewed_preview_digest = 'changed'",
+	"UPDATE coordinator_invites SET bound_public_key = 'changed'",
+	"UPDATE coordinator_invites SET bound_device_id = 'changed'",
+	"UPDATE coordinator_invites SET bound_fingerprint = 'changed'",
+	"UPDATE coordinator_invites SET invite_kind = 'project_share'",
+] as const;
 beforeEach(() => {
 	vi.spyOn(Date, "now").mockReturnValue(NOW);
 	vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
@@ -111,6 +137,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 					identity_label: "none",
 				},
 				reviewed_invites: [],
+				reviewed_invite_count: 0,
 			});
 			expect(text).not.toMatch(
 				/fixture-admin-secret|private-cookie|public_key|subject|email|token/,
@@ -281,6 +308,137 @@ for (const backend of ["SQLite", "D1"] as const) {
 		});
 	});
 	describe(`${backend} invite evidence and insertion races`, () => {
+		test.for(inviteChanges)("rejects post-read evidence race: %s", async (sql, { f }) => {
+			await seedInvite(f);
+			const app = appFor(f);
+			const initial = await (await request(app)).json();
+			const list = f.store.listInvites.bind(f.store);
+			vi.spyOn(f.store, "listInvites").mockImplementation(async (group) => {
+				const invites = await list(group);
+				f.db.exec(sql);
+				return invites;
+			});
+			const response = await request(app, {
+				...input,
+				confirm_evidence_digest: initial.evidence_digest,
+			});
+			expect(response.status).toBe(409);
+			expect(await response.json()).toEqual({ error: "review_stale" });
+			expect(f.db.prepare("SELECT * FROM coordinator_auth_controller_attestations").all()).toEqual(
+				[],
+			);
+		});
+		test.for([false, true])(
+			"rejects new exact-key invite after empty preview, replay=%s",
+			async (replay, { f }) => {
+				const app = appFor(f);
+				const initial = await (await request(app)).json();
+				const body = { ...input, confirm_evidence_digest: initial.evidence_digest };
+				if (replay) expect((await request(app, body)).status).toBe(201);
+				const before = f.db.prepare("SELECT * FROM coordinator_auth_controller_attestations").all();
+				const create = f.store.createAuthControllerAttestation.bind(f.store);
+				vi.spyOn(f.store, "createAuthControllerAttestation").mockImplementation(async (value) => {
+					await seedInvite(f);
+					return create(value);
+				});
+				const response = await request(app, body);
+				expect(response.status).toBe(409);
+				expect(await response.json()).toEqual({ error: "review_stale" });
+				expect(
+					f.db.prepare("SELECT * FROM coordinator_auth_controller_attestations").all(),
+				).toEqual(before);
+			},
+		);
+		test("unrelated new invite does not invalidate review or unchanged replay", async ({ f }) => {
+			await seedInvite(f);
+			const app = appFor(f);
+			const initial = await (await request(app)).json();
+			const create = f.store.createAuthControllerAttestation.bind(f.store);
+			vi.spyOn(f.store, "createAuthControllerAttestation").mockImplementation(async (value) => {
+				await f.store.createInvite({
+					groupId: input.group_id,
+					policy: "auto",
+					expiresAt: "2030-01-01T00:00:00Z",
+				});
+				return create(value);
+			});
+			const body = { ...input, confirm_evidence_digest: initial.evidence_digest };
+			expect((await request(app, body)).status).toBe(201);
+			expect((await request(app, body)).status).toBe(200);
+		});
+		test("201 invitations fit the real action response limit without truncating evidence", async ({
+			f,
+		}) => {
+			for (let index = 0; index < 201; index++)
+				await seedInvite(f, `${String(index).padStart(3, "0")}${"界".repeat(253)}`);
+			const app = appFor(f);
+			const wire = await (await request(app)).text();
+			expect(new TextEncoder().encode(wire).byteLength).toBeLessThan(16384);
+			vi.mocked(globalThis.fetch).mockImplementation(async (url, init) =>
+				app.request(String(url), init),
+			);
+			try {
+				const options = {
+					remoteUrl: "https://coordinator.example.test",
+					adminSecret: secret,
+					groupId: input.group_id,
+					deviceId: input.device_id,
+					identityId: input.identity_id,
+					fingerprint: input.fingerprint,
+				};
+				const initial = await coordinatorAuthControllerReviewAction(options);
+				expect(initial.reviewed_invite_count).toBe(201);
+				expect(initial.reviewed_invites).toHaveLength(10);
+				f.db
+					.prepare("UPDATE coordinator_invites SET reviewed_preview_digest = ? WHERE invite_id = ?")
+					.run("d".repeat(64), `200${"界".repeat(253)}`);
+				const fresh = await coordinatorAuthControllerReviewAction(options);
+				expect(fresh.evidence_digest).not.toBe(initial.evidence_digest);
+				expect(
+					await coordinatorAuthControllerReviewAction({
+						...options,
+						confirmEvidenceDigest: fresh.evidence_digest as string,
+					}),
+				).toMatchObject({ state: "created" });
+			} finally {
+				// The transport is an in-process fixture, never a network request.
+				vi.mocked(globalThis.fetch).mockClear();
+			}
+		});
+	});
+	describe(`${backend} consumed invitation evidence`, () => {
+		test.for(["invalid-id", "4097-invites"])(
+			"rejects invalid verified snapshot: %s",
+			async (mode, { f }) => {
+				// Arrange: valid exact-key evidence must pass snapshot validation before ready.
+				await seedInvite(f);
+				const app = appFor(f);
+				const initial = await (await request(app)).json();
+				const [invite] = await f.store.listInvites(input.group_id);
+				vi.spyOn(f.store, "listInvites").mockResolvedValue(
+					Array.from({ length: mode === "invalid-id" ? 1 : 4097 }, (_, index) => ({
+						...invite,
+						invite_id: mode === "invalid-id" ? " " : `invite-${index}`,
+					})),
+				);
+				// Act
+				const preview = await (await request(app)).json();
+				const commit = await request(app, {
+					...input,
+					confirm_evidence_digest: initial.evidence_digest,
+				});
+				// Assert
+				expect(preview).toMatchObject({
+					state: "needs_review",
+					reasons: ["invite_evidence_invalid"],
+				});
+				expect(preview).not.toHaveProperty("evidence_digest");
+				expect(commit.status).toBe(409);
+				expect(
+					f.db.prepare("SELECT * FROM coordinator_auth_controller_attestations").all(),
+				).toEqual([]);
+			},
+		);
 		test("uses only consumed exact-key Team/add-device evidence, sorted independently of labels", async ({
 			f,
 		}) => {

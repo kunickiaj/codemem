@@ -37,10 +37,12 @@ import {
 	AUTH_CONTROLLER_ACTIVE_SQL,
 	AUTH_CONTROLLER_CONFLICT_SQL,
 	AUTH_CONTROLLER_INSERT_SQL,
+	AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL,
 	AUTH_CONTROLLER_REVOKE_SQL,
 	AUTH_CONTROLLER_SCHEMA_SQL,
 	authControllerConflictValues,
 	authControllerInsertValues,
+	authControllerRetryEligibleValues,
 	authControllerRetryResult,
 	type CoordinatorAuthControllerAttestation,
 	type CoordinatorAuthControllerCreateResult,
@@ -926,7 +928,11 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 					const inserted = this.db
 						.prepare(AUTH_CONTROLLER_INSERT_SQL)
 						.run(...authControllerInsertValues(review, nowISO()));
-					if (inserted.changes === 0) return { kind: "rejected", error: "enrollment_mismatch" };
+					if (inserted.changes === 0)
+						return {
+							kind: "rejected",
+							error: review.verifiedSnapshot ? "review_stale" : "enrollment_mismatch",
+						};
 				} catch (error) {
 					if (!isAuthControllerUniqueError(error)) throw error;
 					return this.resolveAuthControllerRetrySync(review);
@@ -944,6 +950,15 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	private resolveAuthControllerRetrySync(
 		input: CoordinatorAuthControllerReviewInput,
 	): CoordinatorAuthControllerCreateResult {
+		if (
+			!this.db
+				.prepare(AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL)
+				.get(...authControllerRetryEligibleValues(input))
+		)
+			return {
+				kind: "rejected",
+				error: input.verifiedSnapshot ? "review_stale" : "enrollment_mismatch",
+			};
 		const row = this.db
 			.prepare(AUTH_CONTROLLER_CONFLICT_SQL)
 			.get(...authControllerConflictValues(input)) as
