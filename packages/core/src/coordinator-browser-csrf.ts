@@ -15,6 +15,9 @@ export interface BrowserCsrfScope {
 
 type CryptoKey = Awaited<ReturnType<typeof globalThis.crypto.subtle.importKey>>;
 const keys = new WeakMap<BrowserCsrfKey, CryptoKey>();
+export function isBrowserCsrfKey(value: unknown): value is BrowserCsrfKey {
+	return typeof value === "object" && value !== null && keys.has(value as BrowserCsrfKey);
+}
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{85}[AQgw]$/;
 const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
 const typedArrayTag = Object.getOwnPropertyDescriptor(typedArrayPrototype, Symbol.toStringTag)?.get;

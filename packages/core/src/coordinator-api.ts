@@ -7,8 +7,13 @@
 
 import type { Context } from "hono";
 import { Hono } from "hono";
+import type {
+	CoordinatorBrowserAuth,
+	CoordinatorBrowserAuthClientKey,
+} from "./coordinator-browser-auth-app.js";
 import {
 	type CoordinatorDeviceAuthLinkOptions,
+	type CoordinatorDeviceAuthLinkStore,
 	registerCoordinatorDeviceAuthLinkRoutes,
 } from "./coordinator-device-auth-link.js";
 import type { InvitePayload } from "./coordinator-invites.js";
@@ -85,6 +90,52 @@ export interface CreateCoordinatorAppOptions {
 	requestVerifier: CoordinatorRequestVerifier;
 	requestRateLimit?: CoordinatorRequestRateLimitOptions;
 	authLink?: CoordinatorDeviceAuthLinkOptions;
+	browserAuth?: CoordinatorAppBrowserAuthOptions;
+}
+export type CoordinatorAppBrowserAuthOptions =
+	| {
+			kind: "ready";
+			auth: CoordinatorBrowserAuth;
+			storeFactory: () => CoordinatorDeviceAuthLinkStore;
+			clientKey: CoordinatorBrowserAuthClientKey;
+	  }
+	| { kind: "unavailable" };
+
+function registerOptionalCoordinatorAuth(
+	app: Hono,
+	opts: CreateCoordinatorAppOptions,
+	deps: Omit<
+		Parameters<typeof registerCoordinatorDeviceAuthLinkRoutes>[1],
+		"config" | "storeFactory"
+	>,
+): void {
+	if (opts.authLink && opts.browserAuth) throw new Error("coordinator_auth_configuration_conflict");
+	if (opts.browserAuth?.kind === "unavailable") {
+		for (const path of ["/auth/*", "/v1/auth/link-attempts", "/v1/auth/link-attempts/*"]) {
+			app.all(
+				path,
+				() =>
+					new Response("Authentication unavailable. Try again.", {
+						status: 503,
+						headers: {
+							"Cache-Control": "no-store",
+							"Referrer-Policy": "no-referrer",
+							"X-Content-Type-Options": "nosniff",
+							"Content-Type": "text/plain;charset=utf-8",
+						},
+					}),
+			);
+		}
+		return;
+	}
+	const ready = opts.browserAuth;
+	const authLink =
+		ready?.kind === "ready"
+			? { config: ready.auth.storeConfig, storeFactory: ready.storeFactory }
+			: opts.authLink;
+	if (authLink?.config.enabled)
+		registerCoordinatorDeviceAuthLinkRoutes(app, { ...deps, ...authLink });
+	if (ready?.kind === "ready") ready.auth.register(app, ready.clientKey);
 }
 
 export interface CoordinatorVerifyRequestInput {
@@ -323,18 +374,14 @@ export function createCoordinatorApp(
 		}
 	}
 
-	if (opts.authLink?.config.enabled) {
-		registerCoordinatorDeviceAuthLinkRoutes(app, {
-			config: opts.authLink.config,
-			storeFactory: opts.authLink.storeFactory,
-			authorizeRequest: (store, request) =>
-				authorizeRequest(store, runtime, requestVerifier, request),
-			authErrorStatus,
-			readRequestBytes,
-			parseJsonObject,
-			rateLimitedResponse: (c, key, options) => rateLimitedResponse(c, key, options.authenticated),
-		});
-	}
+	registerOptionalCoordinatorAuth(app, opts, {
+		authorizeRequest: (store, request) =>
+			authorizeRequest(store, runtime, requestVerifier, request),
+		authErrorStatus,
+		readRequestBytes,
+		parseJsonObject,
+		rateLimitedResponse: (c, key, options) => rateLimitedResponse(c, key, options.authenticated),
+	});
 
 	function optionalString(data: Record<string, unknown>, key: string): string | null {
 		const value = data[key];

@@ -1,4 +1,6 @@
 import {
+	type CoordinatorAppBrowserAuthOptions,
+	type CoordinatorRequestRateLimitOptions,
 	type CoordinatorRequestVerifier,
 	type CoordinatorRuntimeDeps,
 	createCoordinatorApp,
@@ -10,6 +12,10 @@ export interface CreateD1CoordinatorAppOptions {
 	adminSecret?: string | null;
 	now?: () => string;
 	requestVerifier: CoordinatorRequestVerifier;
+	requestRateLimit?: CoordinatorRequestRateLimitOptions;
+	browserAuth?:
+		| Exclude<CoordinatorAppBrowserAuthOptions, { kind: "ready" }>
+		| Omit<Extract<CoordinatorAppBrowserAuthOptions, { kind: "ready" }>, "storeFactory">;
 }
 
 export function createD1CoordinatorApp(
@@ -23,5 +29,10 @@ export function createD1CoordinatorApp(
 		storeFactory: () => new D1CoordinatorStore(opts.db),
 		runtime,
 		requestVerifier: opts.requestVerifier,
+		requestRateLimit: opts.requestRateLimit,
+		browserAuth:
+			opts.browserAuth?.kind === "ready"
+				? { ...opts.browserAuth, storeFactory: () => new D1CoordinatorStore(opts.db) }
+				: opts.browserAuth,
 	});
 }

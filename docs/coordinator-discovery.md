@@ -117,8 +117,8 @@ follow-up.
 
 ## Optional account linking
 
-The account-link command is implemented, but the optional browser routes still
-need app integration and browser checks before a dogfood pilot. Default
+The account-link command and optional app integration are implemented, but
+browser checks and live Google setup remain required before a dogfood pilot. Default
 coordinators return `404` for these routes; this command does not enable them or
 configure Google. The coordinator must already have reviewed ownership for this
 enrolled device's exact key and existing Identity.

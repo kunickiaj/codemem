@@ -59,7 +59,8 @@ The coordinator rejects another scheme, hostname, credentials, query, fragment,
 path, external override, or later destination change. Creation returns trusted
 coordinator/attempt metadata, not the raw runtime verifier or completion secret.
 The device command builds the private browser-start URL locally with the
-one-time start code. The optional browser routes are not mounted yet. The code
+one-time start code. Browser routes mount only through explicit optional server
+configuration; default coordinators leave them off. The code
 is not a Google credential or permission grant; it prevents a
 public attempt ID alone from claiming that device's flow. Do not share or log
 the start URL.
@@ -80,7 +81,8 @@ GET and POST reject URLs longer than 8,192 characters before parsing the URL or
 query, reading cookies, or calling the provider or store.
 The page uses the existing pre-start cookie and CSRF token, with exactly
 `csrf`, `attempt_id`, and `start_code` in a POST to the clean `/auth/link/start`
-address. The handlers remain unmounted until optional app composition.
+address. The optional app composition mounts this entry with the callback,
+confirmation, completion, account, and logout handlers as one setup.
 
 The POST checks exact Origin before spending the shared browser-form quota,
 requires the cookie-bound CSRF token and canonical 32-byte code, and promotes
@@ -127,7 +129,7 @@ encoding in transit; hash comparisons use constant-time comparison. The browser 
 with `attempt_id` and `completion` query fields. It uses `Cache-Control:
 no-store`, `Referrer-Policy: no-referrer`, and a restrictive CSP.
 
-The unmounted `createCoordinatorBrowserLinkHandlers` continuation receives only
+The `createCoordinatorBrowserLinkHandlers` continuation receives only
 the existing callback's verification outcome and original browser binding. It offers
 the confirmation screen but creates no account link, session, or stored profile.
 Confirmation builds the return page before writing and sends its private link
@@ -139,7 +141,8 @@ the attempt through the original browser cookie. Cancellation affects only that
 attempt and explicitly retires its temporary provider material before reporting
 success or clearing the transaction cookie. A storage or cleanup fault returns
 an error without clearing the cookie; no rollback is promised after a committed
-failure. General maintenance and route activation remain separate work.
+failure. General maintenance runs only through an explicit operator call or
+the optional scheduled handler; no request performs a general purge.
 
 If the confirmation screen is lost or reloaded, its verified attempt is not
 reopened and the profile is not reconstructed from storage. The user must cancel
@@ -158,7 +161,7 @@ Once the local listener receives the completion proof, it offers an explicit
 `Finish linking` link to `GET /auth/link/complete?attempt_id=...` at the runtime's
 pinned coordinator origin. The link includes only its own public attempt ID,
 never a proof or a browser-supplied return target, and uses `no-referrer`.
-The listener does not redirect automatically. The unmounted
+The listener does not redirect automatically. The
 completion handler checks the original transaction cookie before showing status.
 A confirmed attempt shows a read-only waiting page; a finalized attempt offers
 an explicit CSRF-protected `POST /auth/link/complete` form. GET never creates a
@@ -171,8 +174,9 @@ session cannot mint another. New issuance uses the cookie-bound atomic redeem,
 never the trusted compatibility method. Session credentials leave the server
 only after an issued result; rejection or uncertainty preserves the transaction
 cookie. Existing sessions are not replaced, and initial-link profiles are not
-stored. These handlers remain unmounted; opt-in signed device routes, the local
-listener, and actual browser navigation still need integration and validation.
+stored. The optional composition connects these handlers and signed device
+routes. Actual browser navigation, live Google setup, and remote database
+verification remain pilot requirements.
 
 ### Persisted attempt states
 
@@ -211,7 +215,7 @@ per-device quota using the existing limits; SQL
 still supplies the reviewed controller authority. Browser sessions or Google
 claims are not device authorization. Storage or cleanup faults report no success
 and disclose no proof or private cause. The local command and listener are
-implemented; optional app mounting and real browser checks remain outstanding.
+implemented, along with optional app mounting; real browser checks remain outstanding.
 This option changes no enrollment or access.
 
 All mounted device-link responses, including errors, use `Cache-Control: no-store`.
@@ -226,6 +230,48 @@ waits at most ten local minutes, and the coordinator enforces its own attempt
 deadline. Neither a status response nor a loopback proof alone reports success:
 the device requires its own proof-bearing finalization response. A lost final
 reply may be retried once with a fresh signed nonce.
+
+### Optional app lifetime and maintenance
+
+`captureCoordinatorBrowserAuthOptions` captures server-owned configuration, an
+already-imported independent CSRF key, and optional SDK transport settings.
+It returns an opaque handle: secrets live only in a private lookup, so logging
+or serializing the handle exposes no credentials. Copied or forged enabled
+handles cannot build handlers or run maintenance.
+`createCoordinatorBrowserAuth` builds all existing handler sets before mounting
+anything. A disabled setup leaves auth routes at `404`; an invalid or failed
+explicit setup returns fixed, uncached `503` responses on auth paths while
+leaving legacy routes available.
+
+An explicitly configured Worker keeps one browser-form limiter and one device
+request limiter. It pins the first D1 binding and rejects a different reference
+instead of mixing stores or resetting quotas. Each cold request owns its setup
+I/O; only completed results cross requests, and warm requests reuse them.
+Concurrent cold requests may repeat discovery, but share the captured key,
+configuration, and quota state. Local tests exercise separate native HTTP
+request contexts; they do not guarantee production binding-update behavior.
+
+When optional auth is enabled, the shared device limiter also enforces the
+existing limits on legacy routes across requests: 120 reads and 30 mutations
+per device per minute, per isolate. Default and disabled Workers keep their
+existing behavior. The first completed setup result is cached even if setup
+fails; a transient cold-start discovery failure requires a new Worker instance
+before auth becomes available, while legacy routes remain usable.
+
+`maintainCoordinatorBrowserAuth` runs existing attempt maintenance, browser
+retirement, sign-in transaction purge, guarded session purge, and guarded
+receipt purge in that order. Each stage gets one to eight batches (default four)
+with its existing row limit; failures stop the run without exposing raw causes.
+Historical controller, account-link, link-attempt, and audit records are not
+deleted. The optional Worker schedules this work with `ctx.waitUntil`; no cron
+trigger or live cleanup is enabled by this change.
+Before enabling a live cron, add sanitized maintenance-result reporting and
+check the batch budget against the deployment's D1 query allowance.
+
+Changing configuration or the CSRF key requires a new reviewed Worker instance.
+Before disabling auth, explicitly retire pending provider material; an in-flight
+request may still require a follow-up retirement pass. Review platform logging
+for private URL, Referer, and body exposure before enabling a live pilot.
 
 The runtime signs a finalization `POST` for the same attempt. It presents the
 original runtime verifier and the browser-completion secret; the coordinator
