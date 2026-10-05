@@ -34,7 +34,7 @@ afterEach(() => {
 	}
 });
 
-async function setup(backend: Backend = "SQLite", legacy = false) {
+async function setup(backend: Backend = "SQLite", options: { legacy?: boolean } = {}) {
 	const f = setupStore(backend, { authClock: () => NOW });
 	databases.push(f.db);
 	const config = {
@@ -52,7 +52,7 @@ async function setup(backend: Backend = "SQLite", legacy = false) {
 	const deviceRaw = randomBytes(32);
 	const input = attempt({
 		runtimeVerifierHash: hash(deviceRaw),
-		...(legacy ? {} : { browserStartHash: hash(startRaw) }),
+		...(options.legacy ? {} : { browserStartHash: hash(startRaw) }),
 	});
 	expect(await f.store.createAuthLinkAttempt(input, config)).toMatchObject({ kind: "created" });
 	const oidc = oidcFixture({ issuer: config.issuer });
@@ -60,14 +60,14 @@ async function setup(backend: Backend = "SQLite", legacy = false) {
 	const limiter = createInMemoryRequestRateLimiter();
 	const check = vi.spyOn(limiter, "check");
 	const start = vi.fn(f.store.startAuthBrowserTransaction.bind(f.store));
-	const options = {
+	const factoryOptions = {
 		config,
 		csrfKey,
 		limiter,
 		store: { startAuthBrowserTransaction: start },
 		oidcOptions: { fetch: oidc.fetch },
 	};
-	const factory = await createCoordinatorBrowserLinkStart(options);
+	const factory = await createCoordinatorBrowserLinkStart(factoryOptions);
 	if (!factory.ok) throw new Error("Link start fixture failed");
 	oidc.fetch.mockClear();
 	return {
@@ -78,7 +78,7 @@ async function setup(backend: Backend = "SQLite", legacy = false) {
 		limiter,
 		check,
 		start,
-		options,
+		options: factoryOptions,
 		handlers: factory.handlers,
 		startCode,
 		input,
@@ -138,116 +138,185 @@ function authorization(body: string) {
 	return new URL(href.replaceAll("&amp;", "&"));
 }
 
+async function callbackAndConfirmationHandlers(f: Fixture) {
+	const link = createCoordinatorBrowserLinkHandlers({
+		config: f.config,
+		csrfKey: f.csrfKey,
+		limiter: f.limiter,
+		store: f.store,
+	});
+	if (!link.ok) throw new Error("Link fixture failed");
+	const callback = await createCoordinatorBrowserAuthCallback({
+		config: f.config,
+		store: f.store,
+		completeLink: link.handlers.completeLink,
+		oidcOptions: { fetch: f.oidc.fetch },
+	});
+	if (!callback.ok) throw new Error("Callback fixture failed");
+	f.oidc.fetch.mockClear();
+	return { link: link.handlers, callback: callback.handlers };
+}
+type ContinuationHandlers = Awaited<ReturnType<typeof callbackAndConfirmationHandlers>>;
+
+async function showStartPage(f: Fixture) {
+	const before = snapshot(f);
+	const c = await form(f);
+	expect(c.response.status).toBe(200);
+	expect(c.fields).toEqual({
+		csrf: expect.any(String),
+		attempt_id: f.input.attemptId,
+		start_code: f.startCode,
+	});
+	expect(c.body).toContain('action="/auth/link/start"');
+	expect(c.response.headers.get("cache-control")).toBe("no-store");
+	expect(c.response.headers.get("referrer-policy")).toBe("same-origin");
+	expect(c.response.headers.get("content-security-policy")).toContain("default-src 'none'");
+	expect(c.response.headers.get("content-security-policy")).toContain("form-action 'self'");
+	expect(snapshot(f)).toEqual(before);
+	expect(f.start).not.toHaveBeenCalled();
+	expect(f.oidc.fetch).not.toHaveBeenCalled();
+	return c;
+}
+
+async function checkAdmission(f: Fixture, c: Form) {
+	const { response } = await f.handlers.linkStart(post(c), "client-a");
+	const body = await response.text();
+	const url = authorization(body);
+	const original = rows(f)[0];
+	const rawBinder = Buffer.from(c.cookie.split("=")[1], "base64url");
+	const transactionCookie = response.headers.getSetCookie()[0].split(";")[0];
+	expect(response.status).toBe(200);
+	expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+	expect(response.headers.get("cache-control")).toBe("no-store");
+	expect(response.headers.get("location")).toBeNull();
+	expect(rows(f)).toHaveLength(1);
+	expect(original).toMatchObject({
+		purpose: "link",
+		attempt_id: f.input.attemptId,
+		state: "pending",
+		binder_hash: hash(rawBinder),
+		state_hash: hash(url.searchParams.get("state") ?? ""),
+		nonce: url.searchParams.get("nonce"),
+	});
+	expect(original.binder_hash).not.toBe(hash(c.cookie.split("=")[1]));
+	expect(await challenge(String(original.pkce_verifier))).toBe(
+		url.searchParams.get("code_challenge"),
+	);
+	expect(response.headers.getSetCookie()).toEqual([
+		`${BROWSER_COOKIE_NAMES.transaction}=${c.cookie.split("=")[1]}; Max-Age=600; Path=/; Secure; HttpOnly; SameSite=Lax`,
+		clearBrowserCookie("start"),
+	]);
+	expect(rows(f, ATTEMPTS)[0].state).toBe("browser_claimed");
+	expect(body).not.toContain(f.startCode);
+	expect(body).not.toContain(String(original.pkce_verifier));
+	expect(url.searchParams.has("start_code")).toBe(false);
+	expect(f.oidc.fetch).not.toHaveBeenCalled();
+	return { url, transactionCookie };
+}
+type Admission = Awaited<ReturnType<typeof checkAdmission>>;
+
+async function callbackAndConfirmation(
+	f: Fixture,
+	handlers: ContinuationHandlers,
+	{ url, transactionCookie }: Admission,
+) {
+	const completed = await handlers.callback.callback(
+		new Request(f.oidc.authorize(url), { headers: { cookie: transactionCookie } }),
+	);
+	const confirmation = await completed.response.text();
+	const csrf = /name="csrf" value="([^"]+)"/.exec(confirmation)?.[1] ?? "";
+	const confirmed = await handlers.link.confirm(
+		new Request(`${ORIGIN}/auth/link/confirm`, {
+			method: "POST",
+			headers: {
+				origin: ORIGIN,
+				cookie: transactionCookie,
+				"content-type": "application/x-www-form-urlencoded",
+			},
+			body: new URLSearchParams({ csrf, attempt_id: f.input.attemptId }),
+		}),
+		"client-a",
+	);
+	const hop = await confirmed.response.text();
+	const href = /href="(http:[^"]+)"/.exec(hop)?.[1]?.replaceAll("&amp;", "&") ?? "";
+	const completion = new URL(href).searchParams.get("completion") ?? "";
+	expect(completed.outcome).toBe("link_dispatched");
+	expect(confirmed.response.status).toBe(200);
+	expect(rows(f)[0]).toMatchObject({ state: "consumed", nonce: null, pkce_verifier: null });
+	expect(rows(f, ATTEMPTS)[0].state).toBe("confirmed");
+	expect(rows(f, "coordinator_auth_account_links")).toEqual([]);
+	return completion;
+}
+
+async function deviceFinalization(f: Fixture, completion: string) {
+	const finalInput = finalize({
+		runtimeVerifierHash: hash(f.deviceRaw),
+		completionSecretHash: hash(Buffer.from(completion, "base64url")),
+	});
+	expect(
+		await f.store.finalizeAuthLinkAttempt(
+			{ ...finalInput, runtimeVerifierHash: hash(randomBytes(32)) },
+			f.config,
+		),
+	).toMatchObject({ kind: "rejected" });
+	expect(await f.store.finalizeAuthLinkAttempt(finalInput, f.config)).toMatchObject({
+		kind: "applied",
+	});
+}
+
+describe.each(["SQLite", "D1"] as const)("%s link-start URL length admission", (backend) => {
+	it.each(["GET", "POST"])("rejects oversized %s URLs before parsing", async (method) => {
+		// Arrange: construct the native Request before observing handler-owned URL parsing.
+		const f = await setup(backend);
+		const c = await form(f);
+		const prefix = `${pageUrl(f)}&extra=`;
+		const oversized = prefix + "x".repeat(8193 - prefix.length);
+		const request = new Request(oversized, {
+			method,
+			headers: {
+				origin: ORIGIN,
+				cookie: c.cookie,
+				"content-type": "application/x-www-form-urlencoded",
+			},
+			...(method === "POST" ? { body: new URLSearchParams(c.fields) } : {}),
+		});
+		const before = snapshot(f);
+		const NativeURL = globalThis.URL;
+		let oversizedParses = 0;
+		globalThis.URL = class extends NativeURL {
+			constructor(input: string | URL, base?: string | URL) {
+				if (input === oversized) oversizedParses++;
+				super(input, base);
+			}
+		};
+		try {
+			// Act
+			const { response, outcome } =
+				method === "GET"
+					? await f.handlers.linkStartPage(request)
+					: await f.handlers.linkStart(request, "client-a");
+			// Assert: a 400 alone would not prove the parser never received the oversized input.
+			expect(oversizedParses).toBe(0);
+			expect(outcome).toBe("form_invalid");
+			await rejected(response, f.startCode, 400);
+			expect(snapshot(f)).toEqual(before);
+			expect(f.start).not.toHaveBeenCalled();
+			expect(f.check).not.toHaveBeenCalled();
+			expect(f.oidc.fetch).not.toHaveBeenCalled();
+		} finally {
+			globalThis.URL = NativeURL;
+		}
+	});
+});
+
 describe.each(["SQLite", "D1"] as const)("%s protected unmounted link start", (backend) => {
 	it("GET renders three fields without claiming; POST promotes the same raw binder and feeds the existing SDK callback/confirmation", async () => {
-		// Arrange: real in-memory adapters, controller review and independently generated device/start proofs.
 		const f = await setup(backend);
-		const before = snapshot(f);
-		const c = await form(f);
-		const link = createCoordinatorBrowserLinkHandlers({
-			config: f.config,
-			csrfKey: f.csrfKey,
-			limiter: f.limiter,
-			store: f.store,
-		});
-		if (!link.ok) throw new Error("Link fixture failed");
-		const callback = await createCoordinatorBrowserAuthCallback({
-			config: f.config,
-			store: f.store,
-			completeLink: link.handlers.completeLink,
-			oidcOptions: { fetch: f.oidc.fetch },
-		});
-		if (!callback.ok) throw new Error("Callback fixture failed");
-		f.oidc.fetch.mockClear();
-		// Assert: the deliberately hidden start proof is present only in the clean-URL form.
-		expect(c.response.status).toBe(200);
-		expect(c.fields).toEqual({
-			csrf: expect.any(String),
-			attempt_id: f.input.attemptId,
-			start_code: f.startCode,
-		});
-		expect(c.body).toContain('action="/auth/link/start"');
-		expect(c.response.headers.get("cache-control")).toBe("no-store");
-		expect(c.response.headers.get("referrer-policy")).toBe("same-origin");
-		expect(c.response.headers.get("content-security-policy")).toContain("default-src 'none'");
-		expect(c.response.headers.get("content-security-policy")).toContain("form-action 'self'");
-		expect(snapshot(f)).toEqual(before);
-		expect(f.start).not.toHaveBeenCalled();
-		expect(f.oidc.fetch).not.toHaveBeenCalled();
-		// Act: submit actual form headers and parse the Google-only explicit continuation.
-		const { response } = await f.handlers.linkStart(post(c), "client-a");
-		const body = await response.text();
-		const url = authorization(body);
-		const original = rows(f)[0];
-		const rawBinder = Buffer.from(c.cookie.split("=")[1], "base64url");
-		const transactionCookie = response.headers.getSetCookie()[0].split(";")[0];
-		// Assert: durable protected LINK claim precedes cookie changes, and raw bytes (not text) bind it.
-		expect(response.status).toBe(200);
-		expect(response.headers.get("referrer-policy")).toBe("no-referrer");
-		expect(response.headers.get("cache-control")).toBe("no-store");
-		expect(response.headers.get("location")).toBeNull();
-		expect(rows(f)).toHaveLength(1);
-		expect(original).toMatchObject({
-			purpose: "link",
-			attempt_id: f.input.attemptId,
-			state: "pending",
-			binder_hash: hash(rawBinder),
-			state_hash: hash(url.searchParams.get("state") ?? ""),
-			nonce: url.searchParams.get("nonce"),
-		});
-		expect(original.binder_hash).not.toBe(hash(c.cookie.split("=")[1]));
-		expect(await challenge(String(original.pkce_verifier))).toBe(
-			url.searchParams.get("code_challenge"),
-		);
-		expect(response.headers.getSetCookie()).toEqual([
-			`${BROWSER_COOKIE_NAMES.transaction}=${c.cookie.split("=")[1]}; Max-Age=600; Path=/; Secure; HttpOnly; SameSite=Lax`,
-			clearBrowserCookie("start"),
-		]);
-		expect(rows(f, ATTEMPTS)[0].state).toBe("browser_claimed");
-		expect(body).not.toContain(f.startCode);
-		expect(body).not.toContain(String(original.pkce_verifier));
-		expect(url.searchParams.has("start_code")).toBe(false);
-		expect(f.oidc.fetch).not.toHaveBeenCalled();
-		// Act: manually compose existing handlers, without claiming mounted browser navigation.
-		const completed = await callback.handlers.callback(
-			new Request(f.oidc.authorize(url), { headers: { cookie: transactionCookie } }),
-		);
-		const confirmation = await completed.response.text();
-		const csrf = /name="csrf" value="([^"]+)"/.exec(confirmation)?.[1] ?? "";
-		const confirmed = await link.handlers.confirm(
-			new Request(`${ORIGIN}/auth/link/confirm`, {
-				method: "POST",
-				headers: {
-					origin: ORIGIN,
-					cookie: transactionCookie,
-					"content-type": "application/x-www-form-urlencoded",
-				},
-				body: new URLSearchParams({ csrf, attempt_id: f.input.attemptId }),
-			}),
-			"client-a",
-		);
-		const hop = await confirmed.response.text();
-		const href = /href="(http:[^"]+)"/.exec(hop)?.[1]?.replaceAll("&amp;", "&") ?? "";
-		const completion = new URL(href).searchParams.get("completion") ?? "";
-		// Assert: actual consume clears OIDC materials; grants still require the device's second proof.
-		expect(completed.outcome).toBe("link_dispatched");
-		expect(confirmed.response.status).toBe(200);
-		expect(rows(f)[0]).toMatchObject({ state: "consumed", nonce: null, pkce_verifier: null });
-		expect(rows(f, ATTEMPTS)[0].state).toBe("confirmed");
-		expect(rows(f, "coordinator_auth_account_links")).toEqual([]);
-		const finalInput = finalize({
-			runtimeVerifierHash: hash(f.deviceRaw),
-			completionSecretHash: hash(Buffer.from(completion, "base64url")),
-		});
-		expect(
-			await f.store.finalizeAuthLinkAttempt(
-				{ ...finalInput, runtimeVerifierHash: hash(randomBytes(32)) },
-				f.config,
-			),
-		).toMatchObject({ kind: "rejected" });
-		expect(await f.store.finalizeAuthLinkAttempt(finalInput, f.config)).toMatchObject({
-			kind: "applied",
-		});
+		const handlers = await callbackAndConfirmationHandlers(f);
+		const c = await showStartPage(f);
+		const admitted = await checkAdmission(f, c);
+		const completion = await callbackAndConfirmation(f, handlers, admitted);
+		await deviceFinalization(f, completion);
 	});
 });
 
@@ -256,7 +325,7 @@ describe.each(["SQLite", "D1"] as const)("%s protected admission failures", (bac
 		"rejects %s proof without orphan OIDC rows or unrelated changes",
 		async (fault) => {
 			// Arrange
-			const f = await setup(backend, fault === "legacy");
+			const f = await setup(backend, { legacy: fault === "legacy" });
 			expect(
 				await f.store.createAuthLinkAttempt(
 					attempt({

@@ -76,6 +76,8 @@ non-navigation requests, and returns a `no-store`, `no-referrer` response.
 
 The browser-entry handlers implement `GET /auth/link/start?attempt_id=...&start_code=...`
 as a page only: it does not claim an attempt or start provider authorization.
+GET and POST reject URLs longer than 8,192 characters before parsing the URL or
+query, reading cookies, or calling the provider or store.
 The page uses the existing pre-start cookie and CSRF token, with exactly
 `csrf`, `attempt_id`, and `start_code` in a POST to the clean `/auth/link/start`
 address. The handlers remain unmounted until optional app composition.

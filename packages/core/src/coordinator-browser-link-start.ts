@@ -99,6 +99,7 @@ type Snapshot = ReturnType<typeof snapshotBrowserRequest>;
 type LinkGuard = Extract<BrowserFormGuardResult, { ok: true; action: "link_start" }>;
 const requestHeaders = Object.getOwnPropertyDescriptor(Request.prototype, "headers")?.get;
 const headersGet = Headers.prototype.get;
+const MAX_START_URL_LENGTH = 8192;
 
 function ownData(value: unknown, name: string): unknown {
 	if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error();
@@ -200,6 +201,7 @@ async function linkStartPage(
 	try {
 		const snapshot = snapshotBrowserRequest(request);
 		if (snapshot.method !== "GET") return await notice(405, "method_not_allowed", { Allow: "GET" });
+		if (snapshot.url.length > MAX_START_URL_LENGTH) return await notice(400, "form_invalid");
 		const url = new URL(snapshot.url);
 		if (`${url.origin}${url.pathname}` !== context.startUrl || url.username || url.password)
 			return await notice(404, "not_found");
@@ -310,6 +312,7 @@ async function linkStart(
 		const snapshot = snapshotBrowserRequest(request);
 		if (snapshot.method !== "POST")
 			return await notice(405, "method_not_allowed", { Allow: "POST" });
+		if (snapshot.url.length > MAX_START_URL_LENGTH) return await notice(400, "form_invalid");
 		const headers = requestHeaders?.call(request) as Headers;
 		if (
 			new URL(snapshot.url).origin !== context.scope.publicOrigin ||
