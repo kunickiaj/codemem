@@ -249,6 +249,72 @@ describe("requestJson direct-peer connection policy", () => {
 	});
 });
 
+describe("requestJson admin redirect policy", () => {
+	const originalFetch = globalThis.fetch;
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+	});
+
+	it.each([
+		"X-Codemem-Coordinator-Admin",
+		"x-codemem-coordinator-admin",
+		"X-CoDeMeM-CoOrDiNaToR-AdMiN",
+	])("rejects redirects for credential header %s", async (name) => {
+		// Arrange: header presence selects the policy, regardless of casing.
+		const fetchMock = vi.fn().mockResolvedValue(new Response('{"ok":true}'));
+		globalThis.fetch = fetchMock;
+		const headers = { [name]: "synthetic-admin-secret", Connection: "keep-alive" };
+		const originalHeaders = { ...headers };
+
+		// Act
+		const result = await requestJson("POST", "http://localhost:8080/admin", {
+			headers,
+			body: { action: "sample" },
+		});
+
+		// Assert: do not strip credentials or change non-peer connection policy.
+		expect(result).toEqual([200, { ok: true }]);
+		expect(fetchMock.mock.calls[0][1]).toMatchObject({
+			redirect: "error",
+			headers,
+		});
+		expect(headers).toEqual(originalHeaders);
+	});
+
+	it("uses header presence even when the admin credential is empty", async () => {
+		// Arrange
+		const fetchMock = vi.fn().mockResolvedValue(new Response("{}"));
+		globalThis.fetch = fetchMock;
+
+		// Act
+		await requestJson("GET", "http://localhost:8080/admin", {
+			headers: { "X-Codemem-Coordinator-Admin": "" },
+		});
+
+		// Assert
+		expect(fetchMock.mock.calls[0][1].redirect).toBe("error");
+	});
+
+	it.each<Record<string, string>>([
+		{},
+		{ "X-Codemem-Coordinator-Admin-Actor": "synthetic-audit-actor" },
+		{ "X-Opencode-Signature": "v2:synthetic-signature" },
+		{ "X-Codemem-Recipient": "peer-b", "X-Codemem-Signature": "v3:synthetic-signature" },
+		{ Authorization: "Bearer synthetic-legacy-token" },
+	])("keeps legacy redirect following without the admin header: %j", async (headers) => {
+		// Arrange
+		const fetchMock = vi.fn().mockResolvedValue(new Response("{}"));
+		globalThis.fetch = fetchMock;
+
+		// Act
+		await requestJson("GET", "http://localhost:8080/status", { headers });
+
+		// Assert: absent redirect uses fetch's existing follow default.
+		expect([undefined, "follow"]).toContain(fetchMock.mock.calls[0][1].redirect);
+	});
+});
+
 describe("requestJson response limits and timeouts", () => {
 	const originalFetch = globalThis.fetch;
 

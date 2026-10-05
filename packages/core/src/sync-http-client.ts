@@ -70,6 +70,27 @@ function isolateDirectPeerConnection(headers: Record<string, string>): Record<st
 	};
 }
 
+function requestRedirectPolicy(headers: Record<string, string>): "error" | "follow" {
+	const carriesAdminCredential = Object.keys(headers).some(
+		(name) => name.toLowerCase() === "x-codemem-coordinator-admin",
+	);
+	if (carriesAdminCredential) return "error";
+	return "follow";
+}
+
+function buildRequestHeaders(options: {
+	headers?: Record<string, string>;
+	bodyBytes?: Uint8Array;
+}): Record<string, string> {
+	const headers: Record<string, string> = { Accept: "application/json" };
+	if (options.bodyBytes != null) {
+		headers["Content-Type"] = "application/json";
+		headers["Content-Length"] = String(options.bodyBytes.byteLength);
+	}
+	if (options.headers) Object.assign(headers, options.headers);
+	return headers;
+}
+
 /**
  * Send an HTTP request and parse the JSON response.
  *
@@ -88,22 +109,14 @@ export async function requestJson(
 		bodyBytes = new TextEncoder().encode(JSON.stringify(body));
 	}
 
-	const requestHeaders: Record<string, string> = {
-		Accept: "application/json",
-	};
-	if (bodyBytes != null) {
-		requestHeaders["Content-Type"] = "application/json";
-		requestHeaders["Content-Length"] = String(bodyBytes.byteLength);
-	}
-	if (headers) {
-		Object.assign(requestHeaders, headers);
-	}
+	const requestHeaders = buildRequestHeaders({ headers, bodyBytes });
 	const requestBody = (bodyBytes ?? null) as RequestInit["body"] | null;
 
 	const response = await fetch(url, {
 		method,
 		headers: isolateDirectPeerConnection(requestHeaders),
 		body: requestBody,
+		redirect: requestRedirectPolicy(requestHeaders),
 		signal: AbortSignal.timeout(Math.round(timeoutS * 1_000)),
 	});
 

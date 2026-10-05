@@ -331,6 +331,11 @@ CLI uses that remote admin path for invite creation and join-request review; rem
 Device participation auth still uses the enrolled device keypair for `presence` and `peers` endpoints; the admin secret
 is only for remote mutation/listing endpoints.
 
+Admin requests do not follow HTTP redirects, even to another path on the same
+origin. Configure `sync_coordinator_url` or `--coordinator` with the final API URL
+if a proxy or URL alias redirects requests. This prevents forwarding the admin
+credential; ordinary discovery and direct-sync request behavior is unchanged.
+
 ## Canonical deployment target
 
 The built-in coordinator (`codemem coordinator serve`) is the canonical deployment target for ongoing product
