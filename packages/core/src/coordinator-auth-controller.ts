@@ -359,6 +359,18 @@ export const AUTH_CONTROLLER_ACTIVE_SQL = `
 		AND e.enabled = 1 AND g.archived_at IS NULL AND e.public_key = a.public_key
 		AND e.fingerprint = a.fingerprint AND (e.identity_id IS NULL OR e.identity_id = a.identity_id)`;
 
+/** D1 retries must return the row checked against live authority in this statement. */
+export const AUTH_CONTROLLER_RETRY_ACTIVE_SQL = `
+	${AUTH_CONTROLLER_SNAPSHOT_CTE}
+	${AUTH_CONTROLLER_ACTIVE_SQL}
+	${AUTH_CONTROLLER_SNAPSHOT_GUARD}`;
+
+export function authControllerRetryActiveValues(
+	input: CoordinatorAuthControllerReviewInput,
+): (string | null)[] {
+	return [...authControllerSnapshotValues(input), input.coordinatorId, input.attestationId];
+}
+
 export const AUTH_CONTROLLER_CONFLICT_SQL = `
 	SELECT * FROM coordinator_auth_controller_attestations
 	WHERE coordinator_id = ? AND (attestation_id = ? OR review_receipt_id = ?

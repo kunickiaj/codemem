@@ -6,8 +6,10 @@ import { describe, expect, it, vi } from "vitest";
 import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
 import {
 	AUTH_CONTROLLER_INSERT_SQL,
+	AUTH_CONTROLLER_RETRY_ACTIVE_SQL,
 	AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL,
 	authControllerInsertValues,
+	authControllerRetryActiveValues,
 	authControllerRetryEligibleValues,
 	type CoordinatorAuthControllerReviewInput,
 } from "./coordinator-auth-controller.js";
@@ -458,16 +460,20 @@ function registerSnapshotPerformanceTests(
 	test("materializes snapshot JSON once and compares sets without correlated scans", async ({
 		fixture: { store, db },
 	}) => {
+		// Arrange: explain the insert and both live retry guards against the fixture schema.
 		await enroll(store);
 		const input = review({ verifiedSnapshot: { enrollmentIdentityId: null, invites: [] } });
 		for (const [sql, values] of [
 			[AUTH_CONTROLLER_INSERT_SQL, authControllerInsertValues(input, "now")],
 			[AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL, authControllerRetryEligibleValues(input)],
+			[AUTH_CONTROLLER_RETRY_ACTIVE_SQL, authControllerRetryActiveValues(input)],
 		] as const) {
+			// Act
 			const plan = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...values) as {
 				detail: string;
 			}[];
 			const details = plan.map((row) => row.detail);
+			// Assert: the actual D1 retry must retain the single materialized JSON scan.
 			expect(details.filter((detail) => /SCAN j VIRTUAL TABLE/.test(detail))).toHaveLength(1);
 			expect(details).toContain("MATERIALIZE snapshot_invites");
 			expect(
@@ -722,6 +728,38 @@ function registerFailureTests(test: ReturnType<typeof it.extend<{ fixture: Fixtu
 }
 
 function registerD1ReadRaceTests(test: ReturnType<typeof it.extend<{ fixture: Fixture }>>) {
+	test("rejects an exact D1 retry revoked immediately before its final guarded read", async ({
+		fixture: { store, db },
+	}) => {
+		// Arrange: intercept SQL, not the early active helper removed by the fix.
+		await enroll(store);
+		const input = review({ verifiedSnapshot: { enrollmentIdentityId: null, invites: [] } });
+		expect((await store.createAuthControllerAttestation(input)).kind).toBe("created");
+		let revocation: Promise<boolean> | undefined;
+		const beforeRead = vi.fn((query: string) => {
+			if (!/^\s*WITH snapshot\b/u.test(query) || !/SELECT (?:1 AS eligible|a\.\*)/u.test(query))
+				return;
+			if (!revocation)
+				revocation = store.revokeAuthControllerAttestation(
+					input.coordinatorId,
+					input.attestationId,
+				);
+		});
+		const racing = new D1CoordinatorStore(sqliteD1(db, { beforeRead }));
+		// Act: revocation lands after the conflict read and before final eligibility.
+		const retry = await racing.createAuthControllerAttestation(input);
+		// Assert: an unchanged snapshot cannot approve cached, revoked authority.
+		expect(revocation).toBeDefined();
+		expect(await revocation).toBe(true);
+		expect(retry).toMatchObject({ kind: "rejected" });
+		expect(
+			await store.getActiveAuthControllerAttestation(input.coordinatorId, input.attestationId),
+		).toBeNull();
+		expect(
+			db.prepare("SELECT count(*) AS count FROM coordinator_auth_controller_attestations").get(),
+		).toEqual({ count: 1 });
+	});
+
 	test("recovers a persisted review by exact retry after the D1 post-insert read fails", async ({
 		fixture: { store, db },
 	}) => {

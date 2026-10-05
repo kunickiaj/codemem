@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createCoordinatorApp } from "../../core/src/coordinator-api.js";
-import { AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL, authControllerRetryEligibleValues } from "../../core/src/coordinator-auth-controller.js";
+import { AUTH_CONTROLLER_RETRY_ACTIVE_SQL, authControllerRetryActiveValues } from "../../core/src/coordinator-auth-controller.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
 import { buildCanonicalRequest, SIGNATURE_VERSION } from "../../core/src/sync-auth.js";
 import { fingerprintPublicKey } from "../../core/src/sync-fingerprint.js";
@@ -29,7 +29,7 @@ afterEach(async () => {
 		]);
 	}
 });
-async function setup() {
+async function setup(database = env.COORDINATOR_DB) {
 	const { publicKey: pub, privateKey } = generateKeyPairSync("ed25519");
 	const raw = Buffer.from(pub.export({ type: "spki", format: "der" })).subarray(-32);
 	const kind = Buffer.from("ssh-ed25519");
@@ -40,7 +40,7 @@ async function setup() {
 	const deviceId = randomUUID();
 	const config = { enabled: true, coordinatorId: randomUUID(), issuer: "https://accounts.example.test", revision: "a".repeat(64), redirectUri: "https://coordinator.example.test/auth/callback" };
 	const input = { group_id: randomUUID(), device_id: deviceId, identity_id: randomUUID(), fingerprint: fingerprintPublicKey(publicKey) };
-	const store = new D1CoordinatorStore(env.COORDINATOR_DB, { authClock: () => NOW });
+	const store = new D1CoordinatorStore(database, { authClock: () => NOW });
 	await store.createGroup(input.group_id);
 	await store.enrollDevice(input.group_id, { deviceId, publicKey, fingerprint: input.fingerprint });
 	const app = createCoordinatorApp({ storeFactory: () => store, requestVerifier: verifyCloudflareCoordinatorRequest, runtime: { adminSecret: () => secret, now: () => new Date(NOW).toISOString() }, authLink: { config, storeFactory: () => store } });
@@ -152,22 +152,54 @@ it.each([false, true])("native D1 rejects null-to-matching enrollment Identity a
 	expect(await response.json()).toEqual({ error: "review_stale" });
 	expect(await rows(f)).toEqual(before);
 });
-it("native D1 retry rejects evidence changed after the uniqueness failure", async () => {
-	const f = await setup();
+it.each(["invite", "attestation"] as const)("native D1 retry rejects %s revoked before its final guarded read", async (target) => {
+	// Arrange: wrap native prepared statements while preserving bind cloning.
+	let beforeRead: (() => Promise<void>) | undefined;
+	const wrap = (statement: D1PreparedStatement, query: string): D1PreparedStatement => new Proxy(statement, {
+		get(statement, property) {
+			if (property === "bind") return (...values: unknown[]) => wrap(statement.bind(...values), query);
+			if (property === "first") return async (...args: Parameters<D1PreparedStatement["first"]>) => {
+				if (/^\s*WITH snapshot\b/u.test(query) && /SELECT (?:1 AS eligible|a\.\*)/u.test(query)) await beforeRead?.();
+				return statement.first(...args);
+			};
+			const value = Reflect.get(statement, property);
+			return typeof value === "function" ? value.bind(statement) : value;
+		},
+	});
+	const database = new Proxy(env.COORDINATOR_DB, {
+		get(database, property) {
+			if (property === "prepare") return (query: string) => wrap(database.prepare(query), query);
+			const value = Reflect.get(database, property);
+			return typeof value === "function" ? value.bind(database) : value;
+		},
+	});
+	const f = await setup(database);
 	const inviteId = await seedReviewedInvite(f);
 	const initial = await (await review(f)).json<{ evidence_digest: string }>();
 	expect((await review(f, initial.evidence_digest)).status).toBe(201);
 	const before = await rows(f);
-	const getActive = f.store.getActiveAuthControllerAttestation.bind(f.store);
-	vi.spyOn(f.store, "getActiveAuthControllerAttestation").mockImplementation(async (...args) => {
-		const active = await getActive(...args);
+	const attestationId = before[0].attestation_id as string;
+	const revoke = vi.fn(async () => {
+		beforeRead = undefined;
+		if (target === "attestation") {
+			expect(await f.store.revokeAuthControllerAttestation(f.config.coordinatorId, attestationId)).toBe(true);
+			return;
+		}
 		await env.COORDINATOR_DB.prepare("UPDATE coordinator_invites SET revoked_at = 'revoked' WHERE invite_id = ?").bind(inviteId).run();
-		return active;
 	});
+	beforeRead = revoke;
+	// Act: replay the same operator confirmation against changed live authority.
 	const response = await review(f, initial.evidence_digest);
+	// Assert: native SQL must execute after revocation, never return stale success.
+	expect(revoke).toHaveBeenCalledTimes(1);
 	expect(response.status).toBe(409);
 	expect(await response.json()).toEqual({ error: "review_stale" });
-	expect(await rows(f)).toEqual(before);
+	if (target === "invite") {
+		expect(await rows(f)).toEqual(before);
+	} else {
+		expect(await f.store.getActiveAuthControllerAttestation(f.config.coordinatorId, attestationId)).toBeNull();
+		expect(await rows(f)).toHaveLength(1);
+	}
 });
 it("native D1 guards all 201 invitations with fixed SQL binds and a limited response sample", async () => {
 	const f = await setup();
@@ -191,15 +223,20 @@ it("native D1 guards all 201 invitations with fixed SQL binds and a limited resp
 	expect(await rows(f)).toEqual([]);
 	spy.mockRestore();
 	const fresh = await (await review(f)).json<{ evidence_digest: string }>();
+	// Arrange: measure the active retry only after a real confirmation stores its derived ID.
+	expect((await review(f, fresh.evidence_digest)).status).toBe(201);
+	const stored = await rows(f);
+	expect(stored).toHaveLength(1);
 	vi.spyOn(f.store, "createAuthControllerAttestation").mockImplementation(async (input) => {
-		const eligible = await env.COORDINATOR_DB.prepare(AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL)
-			.bind(...authControllerRetryEligibleValues(input)).all();
-		expect(eligible.results).toEqual([{ eligible: 1 }]);
+		// Act: use the actual reviewed snapshot and persisted attestation ID.
+		const active = await env.COORDINATOR_DB.prepare(AUTH_CONTROLLER_RETRY_ACTIVE_SQL)
+			.bind(...authControllerRetryActiveValues({ ...input, attestationId: stored[0].attestation_id as string })).all();
+		// Assert: the native guard returns the stored row within a linear scan budget.
+		expect(active.results).toEqual(stored);
 		// A generous linear scan budget, not a machine-dependent timing limit.
-		expect(eligible.meta.rows_read).toBeGreaterThan(0);
-		expect(eligible.meta.rows_read).toBeLessThan(201 * 20 + 100);
+		expect(active.meta.rows_read).toBeGreaterThan(0);
+		expect(active.meta.rows_read).toBeLessThan(201 * 20 + 100);
 		return create(input);
 	});
-	expect((await review(f, fresh.evidence_digest)).status).toBe(201);
 	expect((await review(f, fresh.evidence_digest)).status).toBe(200);
 });

@@ -17,11 +17,11 @@ import {
 	AUTH_CONTROLLER_ACTIVE_SQL,
 	AUTH_CONTROLLER_CONFLICT_SQL,
 	AUTH_CONTROLLER_INSERT_SQL,
-	AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL,
+	AUTH_CONTROLLER_RETRY_ACTIVE_SQL,
 	AUTH_CONTROLLER_REVOKE_SQL,
 	authControllerConflictValues,
 	authControllerInsertValues,
-	authControllerRetryEligibleValues,
+	authControllerRetryActiveValues,
 	authControllerRetryResult,
 	type CoordinatorAuthControllerAttestation,
 	type CoordinatorAuthControllerCreateResult,
@@ -652,23 +652,18 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		);
 		const result = authControllerRetryResult(input, row);
 		if (result.kind === "rejected") return result;
-		const active = await this.getActiveAuthControllerAttestation(
-			input.coordinatorId,
-			input.attestationId,
+		const active = await firstRow<CoordinatorAuthControllerAttestation>(
+			this.db
+				.prepare(AUTH_CONTROLLER_RETRY_ACTIVE_SQL)
+				.bind(...authControllerRetryActiveValues(input)),
 		);
-		if (!active) return { kind: "rejected", error: "enrollment_mismatch" };
-		if (
-			!(await firstRow(
-				this.db
-					.prepare(AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL)
-					.bind(...authControllerRetryEligibleValues(input)),
-			))
-		)
+		// A change after the conflict read makes this review stale, including revocation.
+		if (!active)
 			return {
 				kind: "rejected",
 				error: input.verifiedSnapshot ? "review_stale" : "enrollment_mismatch",
 			};
-		return { kind: "existing", attestation: active };
+		return authControllerRetryResult(input, active);
 	}
 
 	async getActiveAuthControllerAttestation(
