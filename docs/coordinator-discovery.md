@@ -241,21 +241,15 @@ Dial preference is intentionally conservative:
 2. if mDNS returns addresses on the current LAN, codemem still tries those first
 3. otherwise codemem uses the stored address cache, which may have been refreshed by the coordinator
 
-Codemem keeps at most eight normalized addresses per peer in the active cache and during direct dialing. Fresh coordinator
-candidates come first, with up to six slots reserved when enough candidates exist, even if paired addresses fill the cache.
-Coordinator IPv6 link-local candidates come after other fresh candidates; order within each group stays unchanged. This
-keeps link-local interface addresses from crowding out candidates usable across network boundaries, without guessing which
-IPv4 address or network will work. Link-local addresses remain eligible, including manually paired and successful fallbacks.
-
-When six fresh candidates occupy the active cache, up to two protected fallbacks remain, with the last successful address
-first, followed by manually paired addresses. Fewer fresh candidates leave more room for fallbacks. Explicitly paired
-addresses retain their separate stored copy across refreshes. Verified re-pairing preserves the supplied address order and
-reserves enough slots for those addresses (up to eight), even when that leaves less room for fallbacks.
+Codemem keeps at most eight normalized addresses per peer in the active cache and during direct dialing. At least one
+fresh coordinator candidate comes first when available, even if paired addresses fill all eight slots. Explicitly paired
+addresses retain their own stored copy across later refreshes.
+Verified re-pairing addresses take priority over obsolete cached addresses, and the last successful address remains a
+preferred fallback even when the active list is full.
 
 For older peers whose addresses predate source tracking, codemem retains the original list separately and includes the
-first and last two as fallback candidates when it compacts the active cache; available fallback slots determine how many
-remain active. This preserves the original data without allowing thousands of obsolete Docker, VPN, DHCP, or temporary
-IPv6 addresses to consume a daemon tick in serial attempts.
+first and last two as fallbacks when it compacts the active cache. This preserves the original data without allowing
+thousands of obsolete Docker, VPN, DHCP, or temporary IPv6 addresses to consume a daemon tick in serial attempts.
 
 If the coordinator is unavailable, codemem falls back to cached addresses and mDNS.
 
