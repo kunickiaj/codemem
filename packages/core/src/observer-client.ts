@@ -603,6 +603,11 @@ function authSourceWithOverride(
 	return process.env.CODEMEM_OBSERVER_AUTH_SOURCE ?? source;
 }
 
+function resolveObserverTemperature(value: unknown, fallback: number | null = 0.2): number | null {
+	if (value === null) return null;
+	return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
 export function loadObserverConfig(
 	configData?: Record<string, unknown>,
 	options: { ignoreAuthSourceOverride?: boolean } = {},
@@ -649,9 +654,9 @@ export function loadObserverConfig(
 	if (typeof data.observer_runtime === "string") cfg.observerRuntime = data.observer_runtime;
 	if (typeof data.observer_api_key === "string") cfg.observerApiKey = data.observer_api_key;
 	if (typeof data.observer_base_url === "string") cfg.observerBaseUrl = data.observer_base_url;
-	if (data.observer_temperature != null) {
-		const n = Number(data.observer_temperature);
-		cfg.observerTemperature = Number.isFinite(n) ? n : cfg.observerTemperature;
+	if (data.observer_temperature !== undefined) {
+		const n = data.observer_temperature === null ? null : Number(data.observer_temperature);
+		cfg.observerTemperature = resolveObserverTemperature(n, cfg.observerTemperature);
 	}
 	if (data.observer_tier_routing_enabled != null) {
 		cfg.observerTierRoutingEnabled = data.observer_tier_routing_enabled === true;
@@ -1670,10 +1675,7 @@ export class ObserverClient {
 			this._lastResolvedModel = this._codexSidecarModel;
 		}
 
-		this.temperature =
-			typeof cfg.observerTemperature === "number" && Number.isFinite(cfg.observerTemperature)
-				? cfg.observerTemperature
-				: 0.2;
+		this.temperature = resolveObserverTemperature(cfg.observerTemperature, 0.2);
 		const hasConfiguredBaseUrl =
 			typeof cfg.observerBaseUrl === "string" && cfg.observerBaseUrl.trim().length > 0;
 		const hasCustomAnthropicEndpoint =

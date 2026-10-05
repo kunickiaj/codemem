@@ -10,6 +10,10 @@ function withProviderOverride(
 		...baseConfig,
 		observerProvider: provider,
 		observerBaseUrl: observerBaseUrlForProviderOverride(baseConfig, provider ?? ""),
+		observerOpenAIUseResponses:
+			trimmedProvider(baseConfig.observerProvider) === trimmedProvider(provider)
+				? baseConfig.observerOpenAIUseResponses
+				: undefined,
 		...rest,
 	};
 }
@@ -287,7 +291,6 @@ export function buildTieredObserverSelection(
 		const observer = withProviderOverride(baseConfig, preservedProvider, {
 			observerModel: modelOverride ?? baseConfig.observerModel,
 			observerTemperature: baseConfig.observerSimpleTemperature ?? baseConfig.observerTemperature,
-			observerOpenAIUseResponses: undefined,
 			observerReasoningEffort: null,
 			observerReasoningSummary: null,
 			observerMaxOutputTokens: baseConfig.observerMaxOutputTokens ?? baseConfig.observerMaxTokens,
@@ -350,7 +353,6 @@ export function buildTieredObserverSelection(
 	const observer = withProviderOverride(baseConfig, preservedProvider, {
 		observerModel: modelOverride ?? baseConfig.observerModel,
 		observerTemperature: baseConfig.observerRichTemperature ?? baseConfig.observerTemperature,
-		observerOpenAIUseResponses: undefined,
 		observerReasoningEffort: null,
 		observerReasoningSummary: null,
 		observerMaxOutputTokens:

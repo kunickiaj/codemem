@@ -862,6 +862,42 @@ it("wakes old-scope siblings when an ID-less remap uses a normalized identity", 
 	}
 });
 
+describe("raw event default config targeting", () => {
+	it.each(["implicit", "explicit"])(
+		"ingests raw events from an older client with an equivalent config and %s viewer",
+		async (viewer) => {
+			const home = mkdtempSync(join(tmpdir(), "codemem-viewer-default-config-"));
+			const configPath = join(home, ".config", "codemem", "config.json");
+			vi.stubEnv("HOME", home);
+			vi.stubEnv("CODEMEM_RUNTIME_ROOT", undefined);
+			vi.stubEnv("CODEMEM_WORKSPACE_ID", undefined);
+			vi.stubEnv("CODEMEM_CONFIG", viewer === "explicit" ? configPath : undefined);
+			const { app, ensureStore, cleanup } = createTestApp();
+			try {
+				const store = ensureStore();
+				const response = await postViewerJson(app, "/api/raw-events", {
+					session_id: "equivalent-config-session",
+					event_id: "equivalent-config-event",
+					event_type: "prompt",
+					payload: { text: "default config regression" },
+					db_path: store.dbPath,
+					identity_target: {
+						...core.buildViewerIdentityTarget(),
+						config_path: viewer === "explicit" ? null : configPath,
+					},
+				});
+				expect(response.status).toBe(200);
+				expect(await response.json()).toEqual({ inserted: 1, skipped: 0, received: 1 });
+				expect(rawEventState(store).events).toHaveLength(1);
+			} finally {
+				cleanup();
+				vi.unstubAllEnvs();
+				rmSync(home, { recursive: true, force: true });
+			}
+		},
+	);
+});
+
 describe("viewer-server", () => {
 	it("serves viewer shell and app bundle with cache-safe headers", async () => {
 		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-viewer-static-cache-"));
