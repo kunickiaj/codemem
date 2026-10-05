@@ -86,6 +86,7 @@ beforeEach(() => {
 	vi.stubEnv("CODEMEM_DEVICE_ID", undefined);
 	vi.stubEnv("CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET", undefined);
 	vi.stubEnv("CODEMEM_SYNC_COORDINATOR_URL", undefined);
+	vi.stubEnv("CODEMEM_SYNC_COORDINATOR_TIMEOUT_S", undefined);
 	process.exitCode = undefined;
 	Object.defineProperty(process.stderr, "isTTY", { configurable: true, value: true });
 	Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
@@ -125,6 +126,7 @@ it("JSON previews once with shared options and never prompts or exposes the publ
 	expect(mocks.coordinatorAuthControllerReviewAction).toHaveBeenCalledExactlyOnceWith({
 		remoteUrl: "https://override.example.test",
 		adminSecret: "fixture-secret",
+		timeoutS: 3,
 		groupId: "group-a",
 		deviceId: "device-a",
 		identityId: "actor-a",
@@ -174,6 +176,64 @@ it("explicit approval rereads local identity before committing the server digest
 		{ output: process.stderr },
 	);
 });
+
+it.each(["config", "environment"])(
+	"%s timeout budget reaches both preview and confirmation",
+	async (source) => {
+		// Arrange: the environment overrides a different saved budget through the shared loader.
+		mocks.readCodememConfigFileAtPath.mockReturnValue({
+			...config,
+			sync_coordinator_timeout_s: source === "config" ? 12 : 9,
+		});
+		if (source === "environment") vi.stubEnv("CODEMEM_SYNC_COORDINATOR_TIMEOUT_S", "12");
+		mocks.confirm.mockResolvedValue(true);
+		mocks.coordinatorAuthControllerReviewAction
+			.mockResolvedValueOnce(preview)
+			.mockResolvedValueOnce(reviewedOwner);
+		// Act
+		await run(["--config", "fixture.json"]);
+		// Assert: confirmation adds only the digest to the original named request options.
+		const request = {
+			remoteUrl: config.sync_coordinator_url,
+			adminSecret: config.sync_coordinator_admin_secret,
+			timeoutS: 12,
+			groupId: "group-a",
+			deviceId: "device-a",
+			identityId: "actor-a",
+			fingerprint: local.device.fingerprint,
+		};
+		expect(mocks.coordinatorAuthControllerReviewAction.mock.calls).toEqual([
+			[request],
+			[{ ...request, confirmEvidenceDigest: preview.evidence_digest }],
+		]);
+		expect(process.exitCode).toBeUndefined();
+	},
+);
+
+it.each([
+	{ configured: 0, expected: 1 },
+	{ configured: -4, expected: 1 },
+	{ configured: "invalid", expected: 3 },
+])(
+	"timeout $configured uses budget $expected without committing JSON preview",
+	async ({ configured, expected }) => {
+		// Arrange: even a Yes answer cannot authorize a JSON preview.
+		mocks.readCodememConfigFile.mockReturnValue({
+			...config,
+			sync_coordinator_timeout_s: configured,
+		});
+		mocks.confirm.mockResolvedValue(true);
+		// Act
+		await run(["--json"]);
+		// Assert
+		expect(mocks.coordinatorAuthControllerReviewAction).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ timeoutS: expected }),
+		);
+		expect(mocks.confirm).not.toHaveBeenCalled();
+		expect(mocks.log.success).not.toHaveBeenCalled();
+		expect(process.exitCode).toBeUndefined();
+	},
+);
 
 it.each([
 	{ name: "environment over custom config", saved: config.sync_coordinator_url, flag: undefined },
@@ -255,6 +315,7 @@ it.each([
 	const request = {
 		remoteUrl: hasCoordinator ? "https://override.example.test" : config.sync_coordinator_url,
 		adminSecret: config.sync_coordinator_admin_secret,
+		timeoutS: 3,
 		groupId: "group-a",
 		deviceId: "device-a",
 		identityId: "actor-a",

@@ -309,6 +309,7 @@ export interface CoordinatorAuthControllerReviewActionOptions {
 	identityId: string;
 	fingerprint: string;
 	confirmEvidenceDigest?: string;
+	timeoutS?: number;
 }
 
 /** Preview or explicitly confirm a review using the existing configured admin credential. */
@@ -329,7 +330,7 @@ export async function coordinatorAuthControllerReviewAction(
 		opts.adminSecret,
 		body,
 		null,
-		3,
+		opts.timeoutS ?? 3,
 		16384,
 	);
 	if (!payload) throw new Error("controller_review_response_invalid");

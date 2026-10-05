@@ -73,6 +73,7 @@ function localOptions(options: Options): {
 	local: CoordinatorOwnerReviewLocalOptions;
 	remoteUrl: string | null;
 	adminSecret: string;
+	timeoutS: number;
 } {
 	const config = options.config
 		? readCodememConfigFileAtPath(options.config)
@@ -95,6 +96,7 @@ function localOptions(options: Options): {
 			options.coordinator ?? sync.syncCoordinatorUrl,
 		),
 		adminSecret: sync.syncCoordinatorAdminSecret,
+		timeoutS: Math.max(1, sync.syncCoordinatorTimeoutS),
 	};
 }
 function displayLocal(evidence: CoordinatorOwnerReviewLocalEvidence): Omit<
@@ -316,6 +318,7 @@ async function reviewDeviceOwner(group: string, options: Options): Promise<void>
 		const request = {
 			remoteUrl: setup.remoteUrl,
 			adminSecret: setup.adminSecret,
+			timeoutS: setup.timeoutS,
 			groupId: group,
 			deviceId: evidence.device.deviceId,
 			identityId: evidence.identity.identityId,
