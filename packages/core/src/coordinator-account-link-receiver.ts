@@ -12,6 +12,49 @@ export interface CoordinatorAccountLinkReceiverOptions {
 	host?: "127.0.0.1" | "::1";
 	port?: number;
 	signal?: AbortSignal;
+	coordinatorOrigin?: string;
+}
+
+export function normalizeCoordinatorAccountLinkOrigin(value: unknown): string | null {
+	if (typeof value !== "string") return null;
+	try {
+		const url = new URL(value);
+		const local =
+			url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "[::1]");
+		if (
+			(!local && url.protocol !== "https:") ||
+			url.username ||
+			url.password ||
+			url.pathname !== "/" ||
+			url.search ||
+			url.hash ||
+			value.includes("\\") ||
+			/[\s\p{Cc}]/u.test(value) ||
+			value.includes("?") ||
+			value.includes("#") ||
+			(value !== url.origin && value !== `${url.origin}/`)
+		)
+			return null;
+		return url.origin;
+	} catch {
+		return null;
+	}
+}
+
+function completionPage(options: CoordinatorAccountLinkReceiverOptions): string {
+	if (options.coordinatorOrigin === undefined)
+		return "Return to the coordinator tab to finish linking.";
+	const origin = normalizeCoordinatorAccountLinkOrigin(options.coordinatorOrigin);
+	if (!origin) throw new Error("Invalid account-link receiver options.");
+	const url = new URL("/auth/link/complete", origin);
+	url.searchParams.set("attempt_id", options.attemptId);
+	const href = url.href
+		.replaceAll("&", "&amp;")
+		.replaceAll('"', "&quot;")
+		.replaceAll("'", "&#39;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;");
+	return `<p>Your computer received the confirmation. Finish linking at the coordinator.</p><a href="${href}" referrerpolicy="no-referrer" rel="noreferrer">Finish linking</a>`;
 }
 const PATH = "/codemem/auth/complete";
 const HEADERS = {
@@ -130,6 +173,8 @@ function validOptions(options: CoordinatorAccountLinkReceiverOptions): boolean {
 		Number.isInteger(port) &&
 		port >= 0 &&
 		port <= 65535 &&
+		(options.coordinatorOrigin === undefined ||
+			normalizeCoordinatorAccountLinkOrigin(options.coordinatorOrigin) !== null) &&
 		!signal?.aborted
 	);
 }
@@ -139,6 +184,7 @@ export async function createCoordinatorAccountLinkReceiver(
 ): Promise<CoordinatorAccountLinkReceiver> {
 	if (!validOptions(options)) throw new Error("Invalid account-link receiver options.");
 	const { attemptId, signal, port = 0, host = "127.0.0.1" } = options;
+	const page = completionPage(options);
 	let authority = "";
 	const server = createServer(
 		{ maxHeaderSize: 4096, requestTimeout: 5000, headersTimeout: 5000 },
@@ -156,7 +202,7 @@ export async function createCoordinatorAccountLinkReceiver(
 				reply(response, 410, "Completion is no longer available.");
 				return;
 			}
-			reply(response, 200, "Return to the coordinator tab to finish linking.");
+			reply(response, 200, page);
 		},
 	);
 	server.setTimeout(5000, (socket) => socket.destroy());

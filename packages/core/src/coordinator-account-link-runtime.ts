@@ -4,6 +4,7 @@ import Database from "better-sqlite3";
 import {
 	type CoordinatorAccountLinkReceiver,
 	createCoordinatorAccountLinkReceiver,
+	normalizeCoordinatorAccountLinkOrigin,
 } from "./coordinator-account-link-receiver.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import {
@@ -63,31 +64,6 @@ export class CoordinatorAccountLinkError extends Error {
 }
 function failure(code: Failure): CoordinatorAccountLinkError {
 	return new CoordinatorAccountLinkError(code);
-}
-function coordinatorOrigin(value: string): string {
-	try {
-		const url = new URL(value);
-		const local =
-			url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "[::1]");
-		if (
-			(!local && url.protocol !== "https:") ||
-			url.username ||
-			url.password ||
-			url.pathname !== "/" ||
-			url.search ||
-			url.hash ||
-			value.includes("\\") ||
-			/[\s\p{Cc}]/u.test(value) ||
-			value.includes("?") ||
-			value.includes("#")
-		)
-			throw failure("invalid_options");
-		// Reject normalized aliases (including nonliteral IPv4 spellings and path dot segments).
-		if (value !== url.origin && value !== `${url.origin}/`) throw failure("invalid_options");
-		return url.origin;
-	} catch {
-		throw failure("invalid_options");
-	}
 }
 interface Device {
 	deviceId: string;
@@ -423,8 +399,9 @@ async function runLink(runtime: Runtime): Promise<LinkCoordinatorAccountResult> 
 export async function linkCoordinatorAccount(
 	options: LinkCoordinatorAccountOptions,
 ): Promise<LinkCoordinatorAccountResult> {
-	const origin = coordinatorOrigin(options.coordinatorUrl);
+	const origin = normalizeCoordinatorAccountLinkOrigin(options.coordinatorUrl);
 	if (
+		!origin ||
 		!isAuthControllerId(options.groupId) ||
 		typeof options.onBrowserStart !== "function" ||
 		(options.loopbackHost !== undefined &&
@@ -450,6 +427,7 @@ export async function linkCoordinatorAccount(
 		const attemptId = randomUUID();
 		const receiver = await createCoordinatorAccountLinkReceiver({
 			attemptId,
+			coordinatorOrigin: origin,
 			host: options.loopbackHost,
 			signal,
 		});

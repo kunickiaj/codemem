@@ -27,10 +27,13 @@ const hash = (raw: string) =>
 function localGet(destination: string) {
 	if (!/^http:\/\/(127\.0\.0\.1|\[::1\]):\d+\//.test(destination))
 		throw new Error("nonlocal test request");
-	return new Promise<number>((resolve, reject) => {
+	return new Promise<{ status: number; body: string }>((resolve, reject) => {
 		const req = httpRequest(destination, { method: "GET" }, (response) => {
-			response.resume();
-			response.on("end", () => resolve(response.statusCode ?? 0));
+			let body = "";
+			response.on("data", (chunk) => {
+				body += chunk.toString();
+			});
+			response.on("end", () => resolve({ status: response.statusCode ?? 0, body }));
 		});
 		req.setTimeout(2000, () => req.destroy(new Error("local request timed out")));
 		req.on("error", reject);
@@ -114,7 +117,7 @@ async function fixture() {
 		expect(new URL(req.url).origin).toBe(origin);
 		if (req.method === "POST" && req.url.endsWith("/v1/auth/link-attempts")) {
 			const create = await req.clone().json();
-			expect(await localGet(create.loopback_redirect)).toBe(400);
+			expect((await localGet(create.loopback_redirect)).status).toBe(400);
 		}
 		calls.push(req.clone());
 		return app.fetch(req);
@@ -175,11 +178,14 @@ async function browser(f: Awaited<ReturnType<typeof fixture>>, privateUrl: strin
 			)
 		).kind,
 	).toBe("applied");
-	expect(
-		await localGet(
-			`${row.loopback_redirect}?attempt_id=${row.attempt_id}&completion=${completion}`,
-		),
-	).toBe(200);
+	const response = await localGet(
+		`${row.loopback_redirect}?attempt_id=${row.attempt_id}&completion=${completion}`,
+	);
+	expect(response.status).toBe(200);
+	expect(response.body.match(/href="([^"]+)"/)?.[1]).toBe(
+		`${origin}/auth/link/complete?attempt_id=${row.attempt_id}`,
+	);
+	for (const secret of [start, completion]) expect(response.body).not.toContain(secret);
 	return { completion, row, start };
 }
 
@@ -199,13 +205,18 @@ test("real signatures, reviewed actor and independent browser proof finalize wit
 		f.remote.db.prepare(`SELECT * FROM ${name}`).all(),
 	);
 	let proofs: Awaited<ReturnType<typeof browser>> | undefined;
+	let browserDone: Promise<unknown> = Promise.resolve();
 	// Act
 	const result = await linkCoordinatorAccount({
 		...f.options,
-		onBrowserStart: async (url) => {
-			proofs = await browser(f, url);
+		onBrowserStart: (url) => {
+			browserDone = browser(f, url).then((result) => {
+				proofs = result;
+			});
+			void browserDone.catch(() => {});
 		},
 	});
+	await browserDone;
 	// Assert
 	expect(result).toEqual({
 		coordinatorId: cfg.coordinatorId,
@@ -419,6 +430,7 @@ test("two lost finalize replies retry fresh signatures then report uncertainty w
 	const forwarding = f.options.fetch.getMockImplementation();
 	if (!forwarding) throw new Error("fixture fetch missing");
 	let proofs: Awaited<ReturnType<typeof browser>> | undefined;
+	let browserDone: Promise<unknown> = Promise.resolve();
 	f.options.fetch.mockImplementation(async (input, init) => {
 		const response = await forwarding(input, init);
 		if (new Request(input, init).url.endsWith("/finalize"))
@@ -428,10 +440,14 @@ test("two lost finalize replies retry fresh signatures then report uncertainty w
 	// Act
 	const result = await linkCoordinatorAccount({
 		...f.options,
-		onBrowserStart: async (url) => {
-			proofs = await browser(f, url);
+		onBrowserStart: (url) => {
+			browserDone = browser(f, url).then((result) => {
+				proofs = result;
+			});
+			void browserDone.catch(() => {});
 		},
 	}).catch((cause: unknown) => cause);
+	await browserDone;
 	// Assert
 	expect(f.remote.db.prepare("SELECT state FROM coordinator_auth_link_attempts").get()).toEqual({
 		state: "finalized",

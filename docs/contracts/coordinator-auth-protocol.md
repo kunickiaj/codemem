@@ -152,8 +152,11 @@ Polling exposes status only. It never returns a browser-completion secret, raw
 account details, provider tokens, or a session secret. A callback replay, expired
 attempt, state mismatch, or consumed attempt fails closed.
 
-After device finalization, the local listener returns the browser to
-`GET /auth/link/complete?attempt_id=...` at the coordinator. The unmounted
+Once the local listener receives the completion proof, it offers an explicit
+`Finish linking` link to `GET /auth/link/complete?attempt_id=...` at the runtime's
+pinned coordinator origin. The link includes only its own public attempt ID,
+never a proof or a browser-supplied return target, and uses `no-referrer`.
+The listener does not redirect automatically. The unmounted
 completion handler checks the original transaction cookie before showing status.
 A confirmed attempt shows a read-only waiting page; a finalized attempt offers
 an explicit CSRF-protected `POST /auth/link/complete` form. GET never creates a

@@ -27,6 +27,70 @@ function request(receiver: Receiver, target: string, host?: string, method = "GE
 	});
 }
 
+describe("account link receiver pinned coordinator navigation", () => {
+	it.each(["127.0.0.1", "::1"] as const)(
+		"returns a pinned coordinator navigation link on %s",
+		async (host) => {
+			// Arrange
+			const receiver = await createCoordinatorAccountLinkReceiver({
+				attemptId: "attempt-a",
+				host,
+				coordinatorOrigin: "https://app.example.test",
+			});
+			const target = new URL(receiver.destination).pathname + query;
+			try {
+				// Act: the browser cannot nominate a return destination, even before the valid delivery.
+				const rejected = await request(receiver, `${target}&return=https://evil.example.test`);
+				const response = await request(receiver, target);
+				// Assert
+				expect(rejected).toMatch(/^HTTP\/1.1 400 /);
+				expect(response.match(/href="([^"]+)"/)?.[1]).toBe(
+					"https://app.example.test/auth/link/complete?attempt_id=attempt-a",
+				);
+				expect(response).toMatch(/rel="[^"]*noreferrer[^"]*"/);
+				expect(response.toLowerCase()).toContain("referrer-policy: no-referrer");
+				expect(response.toLowerCase()).toContain("cache-control: no-store");
+				expect(response.toLowerCase()).not.toMatch(/location:|access-control-allow-origin:/);
+				expect(response).not.toContain(proof);
+				expect(response).not.toContain("evil.example.test");
+				expect(await receiver.completion).toBe(proof);
+			} finally {
+				await receiver.close();
+			}
+		},
+	);
+	it("rejects unsafe coordinator navigation origins without returning a listener", async () => {
+		// Arrange
+		const origins = [
+			"http://evil.example.test",
+			"http://localhost:4567",
+			"https://user@app.example.test",
+			"https://app.example.test/path",
+			"https://app.example.test?x=1",
+			"https://app.example.test#fragment",
+			"http://127.1:4567",
+			"https://app.example.test:443",
+		];
+		for (const coordinatorOrigin of origins) {
+			// Act: close an incorrectly accepted listener so a red test cannot leak its port.
+			const result = await createCoordinatorAccountLinkReceiver({
+				attemptId: "attempt-a",
+				host: "127.0.0.1",
+				coordinatorOrigin,
+			}).then(
+				async (receiver) => {
+					await receiver.close();
+					return null;
+				},
+				(error: unknown) => error,
+			);
+			// Assert
+			expect(result).toBeInstanceOf(Error);
+			expect(String(result)).not.toContain(coordinatorOrigin);
+		}
+	});
+});
+
 describe("account link receiver literal transport boundary", () => {
 	it.each(["127.0.0.1", "::1"] as const)(
 		"accepts exact %s once without disclosing completion",
