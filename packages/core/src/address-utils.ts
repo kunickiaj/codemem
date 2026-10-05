@@ -115,16 +115,6 @@ export function mergeAddressesPreferCandidates(
 	return mergeAddresses(candidates, existing, options);
 }
 
-function isIpv6LinkLocalAddress(address: string): boolean {
-	try {
-		// URL hosts use brackets; fe80::/10 includes fe80 through febf.
-		return /^\[fe[89ab][0-9a-f]:/i.test(new URL(address).hostname);
-	} catch {
-		// Preserve legacy normalization behavior for addresses without a URL origin.
-		return false;
-	}
-}
-
 /** Prefer coordinator results without letting a full response evict every existing fallback. */
 export function mergeCoordinatorPeerAddresses(
 	existing: string[],
@@ -143,23 +133,11 @@ export function mergeCoordinatorPeerAddresses(
 		{ maxAddresses: MAX_PEER_ADDRESSES },
 	);
 	const freshCandidates = mergeAddresses(candidates, []);
-	// Explicit pairing keeps its supplied order; only coordinator presence is ranked.
-	if (options?.requiredFreshAddresses === undefined) {
-		freshCandidates.sort(
-			(left, right) => Number(isIpv6LinkLocalAddress(left)) - Number(isIpv6LinkLocalAddress(right)),
-		);
-	}
 	const fallbackFreshLimit = protectedAddresses.length
 		? MAX_PEER_ADDRESSES - protectedAddresses.length
 		: MAX_PEER_ADDRESSES - COORDINATOR_FALLBACK_ADDRESSES;
-	const coordinatorFreshLimit =
-		options?.requiredFreshAddresses === undefined
-			? Math.min(freshCandidates.length, MAX_PEER_ADDRESSES - COORDINATOR_FALLBACK_ADDRESSES)
-			: 0;
 	const freshLimit = Math.max(
 		fallbackFreshLimit,
-		// A large manual archive must not crowd current coordinator addresses out of dialing.
-		coordinatorFreshLimit,
 		Math.min(
 			options?.requiredFreshAddresses ?? (freshCandidates.length > 0 ? 1 : 0),
 			MAX_PEER_ADDRESSES,
