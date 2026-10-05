@@ -1,4 +1,9 @@
 import { AUTH_BROWSER_TXN_TTL_MS } from "./coordinator-auth-browser-transaction-contract.js";
+import {
+	decodeCoordinatorAuthProof32 as decodeValue,
+	encodeCoordinatorAuthProof32 as encodeBytes,
+	hashCoordinatorAuthProofBytes32,
+} from "./coordinator-auth-proof.js";
 import { AUTH_SESSION_TTL_MS } from "./coordinator-auth-session-contract.js";
 
 export type CookieKind = "transaction" | "session" | "start";
@@ -16,7 +21,6 @@ const MAX_AGE_SECONDS = {
 	session: AUTH_SESSION_TTL_MS / 1000,
 	start: AUTH_BROWSER_TXN_TTL_MS / 1000,
 };
-const CANONICAL_VALUE = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
 const COOKIE_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 const COOKIE_VALUE =
 	/^(?:[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]*|"[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]*")$/;
@@ -38,31 +42,9 @@ function validateKind(kind: CookieKind): void {
 	}
 }
 
-function encodeBytes(bytes: Uint8Array<ArrayBuffer>): string {
-	return btoa(String.fromCharCode(...bytes))
-		.replaceAll("+", "-")
-		.replaceAll("/", "_")
-		.replace(/=+$/, "");
-}
-
-function decodeValue(encoded: string): Uint8Array<ArrayBuffer> | null {
-	if (!CANONICAL_VALUE.test(encoded)) return null;
-	try {
-		const binary = atob(`${encoded.replaceAll("-", "+").replaceAll("_", "/")}=`);
-		const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-		if (bytes.length !== 32 || encodeBytes(bytes) !== encoded) return null;
-		return bytes;
-	} catch {
-		return null;
-	}
-}
-
 async function hashBytes(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
 	try {
-		const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
-		return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(
-			"",
-		);
+		return await hashCoordinatorAuthProofBytes32(bytes);
 	} catch {
 		throw new Error("auth_browser_credential_crypto_failed");
 	}

@@ -7,6 +7,10 @@
 
 import type { Context } from "hono";
 import { Hono } from "hono";
+import {
+	type CoordinatorDeviceAuthLinkOptions,
+	registerCoordinatorDeviceAuthLinkRoutes,
+} from "./coordinator-device-auth-link.js";
 import type { InvitePayload } from "./coordinator-invites.js";
 import { encodeInvitePayload, inviteLink } from "./coordinator-invites.js";
 import type { CoordinatorLegacyTeamCompletionManifestV1 } from "./coordinator-legacy-team-completion.js";
@@ -80,6 +84,7 @@ export interface CreateCoordinatorAppOptions {
 	runtime: CoordinatorRuntimeDeps;
 	requestVerifier: CoordinatorRequestVerifier;
 	requestRateLimit?: CoordinatorRequestRateLimitOptions;
+	authLink?: CoordinatorDeviceAuthLinkOptions;
 }
 
 export interface CoordinatorVerifyRequestInput {
@@ -225,6 +230,40 @@ function authErrorStatus(error: string): 401 | 403 | 409 {
 // App factory
 // ---------------------------------------------------------------------------
 
+async function readRequestBytes(c: Context, maxBytes = MAX_BODY_BYTES): Promise<Uint8Array | null> {
+	const contentLength = Number.parseInt(c.req.header("content-length") ?? "", 10);
+	if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+		return null;
+	}
+	const stream = c.req.raw.body;
+	if (!stream) return new Uint8Array();
+	const reader = stream.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (!value) continue;
+			total += value.byteLength;
+			if (total > maxBytes) {
+				await reader.cancel();
+				return null;
+			}
+			chunks.push(value);
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	const combined = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		combined.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return combined;
+}
+
 export function createCoordinatorApp(
 	opts?: CreateCoordinatorAppOptions,
 ): InstanceType<typeof Hono> {
@@ -272,43 +311,6 @@ export function createCoordinatorApp(
 		return c.json({ error: "rate_limited", retry_after_s: result.retryAfterS }, 429);
 	}
 
-	async function readRequestBytes(
-		c: Context,
-		maxBytes = MAX_BODY_BYTES,
-	): Promise<Uint8Array | null> {
-		const contentLength = Number.parseInt(c.req.header("content-length") ?? "", 10);
-		if (Number.isFinite(contentLength) && contentLength > maxBytes) {
-			return null;
-		}
-		const stream = c.req.raw.body;
-		if (!stream) return new Uint8Array();
-		const reader = stream.getReader();
-		const chunks: Uint8Array[] = [];
-		let total = 0;
-		try {
-			while (true) {
-				const { done, value } = await reader.read();
-				if (done) break;
-				if (!value) continue;
-				total += value.byteLength;
-				if (total > maxBytes) {
-					await reader.cancel();
-					return null;
-				}
-				chunks.push(value);
-			}
-		} finally {
-			reader.releaseLock();
-		}
-		const combined = new Uint8Array(total);
-		let offset = 0;
-		for (const chunk of chunks) {
-			combined.set(chunk, offset);
-			offset += chunk.byteLength;
-		}
-		return combined;
-	}
-
 	function parseJsonObject(raw: Uint8Array): Record<string, unknown> | null {
 		try {
 			const data: unknown = JSON.parse(textDecoder.decode(raw));
@@ -319,6 +321,19 @@ export function createCoordinatorApp(
 		} catch {
 			return null;
 		}
+	}
+
+	if (opts.authLink?.config.enabled) {
+		registerCoordinatorDeviceAuthLinkRoutes(app, {
+			config: opts.authLink.config,
+			storeFactory: opts.authLink.storeFactory,
+			authorizeRequest: (store, request) =>
+				authorizeRequest(store, runtime, requestVerifier, request),
+			authErrorStatus,
+			readRequestBytes,
+			parseJsonObject,
+			rateLimitedResponse: (c, key, options) => rateLimitedResponse(c, key, options.authenticated),
+		});
 	}
 
 	function optionalString(data: Record<string, unknown>, key: string): string | null {

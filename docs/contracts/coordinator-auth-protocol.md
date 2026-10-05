@@ -149,7 +149,7 @@ session cannot mint another. New issuance uses the cookie-bound atomic redeem,
 never the trusted compatibility method. Session credentials leave the server
 only after an issued result; rejection or uncertainty preserves the transaction
 cookie. Existing sessions are not replaced, and initial-link profiles are not
-stored. These handlers remain unmounted; the signed device routes, local
+stored. These handlers remain unmounted; opt-in signed device routes, the local
 listener, and actual browser navigation still need integration and validation.
 
 ### Persisted attempt states
@@ -170,6 +170,26 @@ the attempt or overwriting state. Restart retains authoritative state; it never
 reopens consumed attempts or creates browser ownership from a request label.
 
 ## Runtime finalization and ownership
+
+The device API is opt-in through `createCoordinatorApp({ authLink: ... })` with
+trusted browser configuration and a store factory that supplies both request
+authentication and link operations. Absent or disabled configuration leaves all
+four routes at `404`; the default Worker does not wire this option yet.
+
+| Route | Signed input and result |
+| --- | --- |
+| `POST /v1/auth/link-attempts` | Requires `group_id`, `attempt_id`, `runtime_verifier_hash`, `browser_start_hash`, and the literal `loopback_redirect`. Returns public status plus controller-derived `identity_id` and configured `coordinator_id`, never proofs or a private start URL. |
+| `GET /v1/auth/link-attempts/:attemptId?group_id=...` | The attempt device's signed request reads public status; a different device and a missing attempt both receive an unavailable response. |
+| `POST /v1/auth/link-attempts/:attemptId/finalize` | Exact purpose, coordinator/attempt/group/Identity/device/fingerprint fields and canonical raw `runtime_verifier`/`completion` proofs. The path and body attempt must match; the server hashes decoded 32-byte proofs. Client-nominated proof hashes are rejected. |
+| `POST /v1/auth/link-attempts/:attemptId/cancel` | Signed `group_id` only; fails the requester's bound attempt and retires its temporary provider material before reporting success. |
+
+Bodies are limited to 4 KiB and exact fields. Authentication uses the existing
+stored enrollment key, signature, timestamp and nonce, with a separate
+per-device quota using the existing limits; SQL
+still supplies the reviewed controller authority. Browser sessions or Google
+claims are not device authorization. Storage or cleanup faults report no success
+and disclose no proof or private cause. The local command, listener, and real
+browser checks remain separate work; this option changes no enrollment or access.
 
 The runtime signs a finalization `POST` for the same attempt. It presents the
 original runtime verifier and the browser-completion secret; the coordinator
