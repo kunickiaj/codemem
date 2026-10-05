@@ -1,3 +1,4 @@
+import { CoordinatorAccountLinkError } from "@codemem/core";
 import { Command } from "commander";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
@@ -87,6 +88,12 @@ it("TTY-only handoff prints privately to stderr and removes signal listeners", a
 	const signals = [process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")];
 	mocks.linkCoordinatorAccount.mockImplementation(async (options) => {
 		options.onBrowserStart(privateUrl);
+		return {
+			coordinatorId: "coordinator-a",
+			identityId: "identity-a",
+			attemptId: "attempt-a",
+			state: "finalized",
+		};
 	});
 	// Act
 	await buildCoordinatorLinkAccountCommand().parseAsync(
@@ -117,7 +124,7 @@ it("TTY-only handoff prints privately to stderr and removes signal listeners", a
 	);
 	expect(mocks.log.message).toHaveBeenCalledWith(privateUrl, { output: process.stderr });
 	expect(mocks.log.success).toHaveBeenCalledWith(
-		expect.stringContaining("local Identity has not changed"),
+		expect.stringContaining("coordinator Identity identity-a. Your local Identity has not changed"),
 		{ output: process.stderr },
 	);
 	expect(console.log).not.toHaveBeenCalled();
@@ -191,4 +198,58 @@ it("unexpected failure cannot echo private URLs or proof-bearing causes", async 
 	expect(console.log).not.toHaveBeenCalled();
 	expect(process.exitCode).toBe(1);
 	expect([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]).toEqual(signals);
+});
+
+it("review rejection names the operator action without reconstructing secret-bearing arguments", async () => {
+	// Arrange
+	vi.stubEnv("CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET", "private-admin-secret");
+	mocks.linkCoordinatorAccount.mockRejectedValueOnce(
+		new CoordinatorAccountLinkError("review_required"),
+	);
+	// Act
+	await buildCoordinatorLinkAccountCommand().parseAsync(
+		["group-private", "-d", "private-db.sqlite", "-c", "private-config.json"],
+		{ from: "user" },
+	);
+	// Assert
+	const output = JSON.stringify([mocks.log.error.mock.calls, mocks.log.message.mock.calls]);
+	expect(output).toContain("codemem coordinator review-device-owner");
+	expect(output).toMatch(/this group.*this device/);
+	expect(output).toMatch(/admin.*credential/);
+	for (const setting of ["--coordinator", "--config", "--db-path", "environment"])
+		expect(output).toContain(setting);
+	for (const secret of [
+		"group-private",
+		"private-db.sqlite",
+		"private-config.json",
+		"private-admin-secret",
+		"private-proof",
+	])
+		expect(output).not.toContain(secret);
+	expect(mocks.log.success).not.toHaveBeenCalled();
+	expect(console.log).not.toHaveBeenCalled();
+	expect(process.exitCode).toBe(1);
+});
+
+it("conflict guidance uses only the configured origin and does not promise another account fixes it", async () => {
+	// Arrange
+	vi.stubEnv("CODEMEM_SYNC_COORDINATOR_URL", "https://environment.example.test");
+	mocks.linkCoordinatorAccount.mockRejectedValueOnce(
+		new CoordinatorAccountLinkError("link_conflict"),
+	);
+	// Act
+	await buildCoordinatorLinkAccountCommand().parseAsync(
+		["group-a", "-d", "fixture.sqlite", "-u", "https://pinned.example.test/"],
+		{ from: "user" },
+	);
+	// Assert
+	const output = JSON.stringify([mocks.log.error.mock.calls, mocks.log.message.mock.calls]);
+	expect(output).toContain("https://pinned.example.test/auth/sign-in");
+	expect(output).toMatch(/If.*intended.*Identity/);
+	expect(output).toMatch(/Otherwise.*operator/);
+	expect(output).toMatch(/not supported/);
+	expect(output).not.toMatch(/environment\.example|saved\.example|private-proof|switch accounts/i);
+	expect(mocks.log.success).not.toHaveBeenCalled();
+	expect(console.log).not.toHaveBeenCalled();
+	expect(process.exitCode).toBe(1);
 });

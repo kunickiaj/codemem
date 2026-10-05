@@ -136,9 +136,15 @@ function localSnapshot(f: Awaited<ReturnType<typeof fixture>>) {
 			.map((name) => [name, readFileSync(join(f.options.keysDir, name), "utf8")]),
 	};
 }
-async function browser(f: Awaited<ReturnType<typeof fixture>>, privateUrl: string) {
+async function browser(
+	f: Awaited<ReturnType<typeof fixture>>,
+	privateUrl: string,
+	transaction = 1,
+) {
 	const url = new URL(privateUrl);
-	const row = f.remote.db.prepare("SELECT * FROM coordinator_auth_link_attempts").get() as {
+	const row = f.remote.db
+		.prepare("SELECT * FROM coordinator_auth_link_attempts WHERE attempt_id = ?")
+		.get(url.searchParams.get("attempt_id")) as {
 		attempt_id: string;
 		browser_start_hash: string;
 		runtime_verifier_hash: string;
@@ -148,7 +154,7 @@ async function browser(f: Awaited<ReturnType<typeof fixture>>, privateUrl: strin
 	const start = url.searchParams.get("start_code") ?? "";
 	expect(hash(start)).toBe(row.browser_start_hash);
 	const input = {
-		...materials(),
+		...materials(transaction),
 		purpose: "link" as const,
 		attemptId: row.attempt_id,
 		browserStartHash: row.browser_start_hash,
@@ -462,4 +468,221 @@ test("two lost finalize replies retry fresh signatures then report uncertainty w
 	expect(String(result)).not.toMatch(/rollback|cancelled|private-lost-response/);
 	for (const secret of [proofs?.start, proofs?.completion])
 		expect(JSON.stringify(result)).not.toContain(secret);
+});
+
+test("an enrolled but unreviewed device gets review guidance before browser handoff", async ({
+	f,
+}) => {
+	// Arrange
+	f.remote.db.prepare("DELETE FROM coordinator_auth_controller_attestations").run();
+	const onBrowserStart = vi.fn();
+	const before = localSnapshot(f);
+	// Act
+	const error = await linkCoordinatorAccount({ ...f.options, onBrowserStart }).catch(
+		(cause: unknown) => cause,
+	);
+	// Assert
+	expect(error).toMatchObject({ code: "review_required" });
+	expect(onBrowserStart).not.toHaveBeenCalled();
+	expect(f.calls.filter((req) => req.url.endsWith("/cancel"))).toHaveLength(1);
+	expect(f.remote.db.prepare("SELECT * FROM coordinator_auth_link_attempts").all()).toEqual([]);
+	expect(f.remote.db.prepare("SELECT * FROM coordinator_auth_account_links").all()).toEqual([]);
+	expect(localSnapshot(f)).toEqual(before);
+});
+
+test.for([false, true])(
+	"a revoked Identity link conflicts once and preserves guidance when cancellation fails=%s",
+	async (cancelFails, { f }) => {
+		// Arrange: complete one real signed link, then retain its revoked unique tombstone.
+		let browserDone: Promise<unknown> = Promise.resolve();
+		let transaction = 0;
+		const onBrowserStart = (url: string) => {
+			browserDone = browser(f, url, ++transaction);
+			void browserDone.catch(() => {});
+		};
+		await linkCoordinatorAccount({ ...f.options, onBrowserStart });
+		await browserDone;
+		f.remote.db.prepare("UPDATE coordinator_auth_account_links SET revoked_at_ms = ?").run(NOW);
+		const links = f.remote.db.prepare("SELECT * FROM coordinator_auth_account_links").all();
+		const audit = f.remote.db.prepare("SELECT * FROM coordinator_auth_link_audit_log").all();
+		const before = localSnapshot(f);
+		f.calls.length = 0;
+		const forwarding = f.options.fetch.getMockImplementation();
+		if (!forwarding) throw new Error("fixture fetch missing");
+		f.options.fetch.mockImplementation(async (input, init) => {
+			const req = new Request(input, init);
+			if (cancelFails && req.url.endsWith("/cancel")) {
+				f.calls.push(req);
+				return new Response("private-transport-proof", { status: 503 });
+			}
+			return forwarding(input, init);
+		});
+		// Act
+		const error = await linkCoordinatorAccount({ ...f.options, onBrowserStart }).catch(
+			(cause: unknown) => cause,
+		);
+		await browserDone;
+		// Assert
+		expect(error).toMatchObject({ code: "link_conflict" });
+		expect(String(error)).not.toContain("private-transport-proof");
+		expect(f.calls.filter((req) => req.url.endsWith("/finalize"))).toHaveLength(1);
+		expect(f.calls.filter((req) => req.url.endsWith("/cancel"))).toHaveLength(1);
+		expect(f.remote.db.prepare("SELECT * FROM coordinator_auth_account_links").all()).toEqual(
+			links,
+		);
+		expect(f.remote.db.prepare("SELECT * FROM coordinator_auth_link_audit_log").all()).toEqual(
+			audit,
+		);
+		const second = f.remote.db
+			.prepare("SELECT state FROM coordinator_auth_link_attempts WHERE state <> 'finalized'")
+			.get();
+		expect(second).toEqual({ state: cancelFails ? "confirmed" : "failed" });
+		expect(localSnapshot(f)).toEqual(before);
+	},
+);
+
+test.for([
+	{ status: 409, body: JSON.stringify({ error: "auth_link_conflict" }) },
+	{ status: 403, body: JSON.stringify({ error: "auth_link_unavailable" }) },
+	{ status: 409, body: JSON.stringify({ error: "auth_link_review_required" }) },
+	{
+		status: 403,
+		body: JSON.stringify({ error: "auth_link_review_required", proof: "private-proof" }),
+	},
+	{ status: 403, body: "not JSON private-proof" },
+])("create rejection $status $body remains generic", async ({ status, body }, { f }) => {
+	// Arrange: a valid cancellation reply isolates the original rejection classification.
+	const onBrowserStart = vi.fn();
+	f.options.fetch.mockImplementation(async (input, init) => {
+		const req = new Request(input, init);
+		if (req.url.endsWith("/cancel")) {
+			const attemptId = req.url.split("/").at(-2);
+			return Response.json({ status: { attemptId, state: "failed", expiresAtMs: NOW + 600000 } });
+		}
+		return new Response(body, { status });
+	});
+	// Act
+	const error = await linkCoordinatorAccount({ ...f.options, onBrowserStart }).catch(
+		(cause: unknown) => cause,
+	);
+	// Assert
+	expect(error).toMatchObject({ code: "request_failed" });
+	expect(onBrowserStart).not.toHaveBeenCalled();
+	expect(String(error)).not.toContain("private-proof");
+});
+
+test("oversized rejection streams stop reading and cancel instead of mapping a label", async ({
+	f,
+}) => {
+	// Arrange
+	const cancelled = vi.fn();
+	const body = new ReadableStream<Uint8Array>({
+		start(controller) {
+			controller.enqueue(
+				new TextEncoder().encode(
+					`${JSON.stringify({ error: "auth_link_review_required" })}${" ".repeat(16384)}`,
+				),
+			);
+		},
+		cancel: cancelled,
+	});
+	f.options.fetch.mockImplementation(async (input, init) => {
+		const req = new Request(input, init);
+		if (req.url.endsWith("/cancel"))
+			return Response.json({
+				status: {
+					attemptId: req.url.split("/").at(-2),
+					state: "failed",
+					expiresAtMs: NOW + 600000,
+				},
+			});
+		return new Response(body, { status: 403 });
+	});
+	// Act
+	const error = await linkCoordinatorAccount({ ...f.options, onBrowserStart: vi.fn() }).catch(
+		(cause: unknown) => cause,
+	);
+	// Assert
+	expect(error).toMatchObject({ code: "request_failed" });
+	expect(cancelled).toHaveBeenCalledOnce();
+});
+
+test("a controller revoked after browser confirmation gets review guidance, not a retry or cancel warning", async ({
+	f,
+}) => {
+	// Arrange
+	const forwarding = f.options.fetch.getMockImplementation();
+	if (!forwarding) throw new Error("fixture fetch missing");
+	f.options.fetch.mockImplementation(async (input, init) => {
+		const req = new Request(input, init);
+		if (req.url.endsWith("/cancel")) {
+			f.calls.push(req);
+			return new Response("private-cancel-proof", { status: 503 });
+		}
+		if (req.url.endsWith("/finalize"))
+			await f.remote.store.revokeAuthControllerAttestation(
+				cfg.coordinatorId,
+				review().attestationId,
+			);
+		return forwarding(input, init);
+	});
+	let browserDone: Promise<unknown> = Promise.resolve();
+	// Act
+	const error = await linkCoordinatorAccount({
+		...f.options,
+		onBrowserStart: (url) => {
+			browserDone = browser(f, url);
+			void browserDone.catch(() => {});
+		},
+	}).catch((cause: unknown) => cause);
+	await browserDone;
+	// Assert
+	expect(error).toMatchObject({ code: "review_required" });
+	expect(f.calls.filter((req) => req.url.endsWith("/finalize"))).toHaveLength(1);
+	expect(f.calls.filter((req) => req.url.endsWith("/cancel"))).toHaveLength(1);
+	expect(String(error)).not.toContain("private-cancel-proof");
+	expect(f.remote.db.prepare("SELECT * FROM coordinator_auth_account_links").all()).toEqual([]);
+});
+
+test("a generic rejection still reports uncertainty when cancellation fails", async ({ f }) => {
+	// Arrange
+	f.options.fetch.mockImplementation(async (input, init) => {
+		const req = new Request(input, init);
+		if (req.url.endsWith("/cancel"))
+			return Response.json({ error: "auth_link_review_required" }, { status: 403 });
+		return Response.json({ error: "auth_link_unavailable" }, { status: 403 });
+	});
+	const onBrowserStart = vi.fn();
+	// Act
+	const error = await linkCoordinatorAccount({ ...f.options, onBrowserStart }).catch(
+		(cause: unknown) => cause,
+	);
+	// Assert
+	expect(error).toMatchObject({ code: "cancellation_unconfirmed" });
+	expect(onBrowserStart).not.toHaveBeenCalled();
+	expect(String(error)).toMatch(/may already have finished/i);
+});
+
+test("a review label on status polling does not become owner-review guidance", async ({ f }) => {
+	// Arrange
+	const forwarding = f.options.fetch.getMockImplementation();
+	if (!forwarding) throw new Error("fixture fetch missing");
+	f.options.fetch.mockImplementation(async (input, init) => {
+		if (init?.method === "GET")
+			return Response.json({ error: "auth_link_review_required" }, { status: 403 });
+		return forwarding(input, init);
+	});
+	const onBrowserStart = vi.fn();
+	// Act
+	const error = await linkCoordinatorAccount({ ...f.options, onBrowserStart }).catch(
+		(cause: unknown) => cause,
+	);
+	// Assert
+	expect(error).toMatchObject({ code: "request_failed" });
+	expect(onBrowserStart).toHaveBeenCalledOnce();
+	expect(f.calls.some((req) => req.url.endsWith("/finalize"))).toBe(false);
+	expect(f.calls.filter((req) => req.url.endsWith("/cancel"))).toHaveLength(1);
+	expect(f.remote.db.prepare("SELECT state FROM coordinator_auth_link_attempts").get()).toEqual({
+		state: "failed",
+	});
 });

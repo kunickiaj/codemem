@@ -561,7 +561,11 @@ The review reads the existing local device database and current Identity without
 
 Ambiguous ownership stops the review; ownership records disappearing or changing during confirmation require a fresh preview. To link, reuse the exact `--coordinator`, `--config`, and `--db-path` (or `-d`) selections from the review, and choose the intended Google account in the browser. See [coordinator-backed discovery](docs/coordinator-discovery.md#optional-account-linking).
 
-Keep any `CODEMEM_SYNC_COORDINATOR_URL` setting unchanged between review and linking.
+Keep any `CODEMEM_SYNC_COORDINATOR_URL` or `CODEMEM_KEYS_DIR` setting unchanged between review and linking. If linking says this device needs an active owner review, run the review on this device with the same group and settings, then retry linking.
+
+A review conflict, revocation, or stopped review needs coordinator-operator help. A rejected link does not replace an existing link; do not create another Identity, key, or credential to work around it.
+
+An account-link conflict may involve the Google account or the coordinator Identity, including a revoked binding. If the account already belongs to the intended Identity, sign in at the configured coordinator's `/auth/sign-in`; otherwise, ask the operator. Replacing or removing account links is not supported by these commands.
 
 ### Device pairing and compatibility
 

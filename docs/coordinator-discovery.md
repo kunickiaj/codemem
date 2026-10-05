@@ -168,8 +168,10 @@ database, not the coordinator's server database.
 After a successful review, linking remains a separate opt-in step:
 
 If the review used `--coordinator`, `--config`, or `--db-path` (including `-d`),
-repeat those selections when linking. The next-step hint reminds you to reuse
-them rather than suggesting a command that silently targets saved defaults.
+repeat those selections when linking. Keep `CODEMEM_SYNC_COORDINATOR_URL` and
+`CODEMEM_KEYS_DIR` unchanged when they were part of the original setup. The
+next-step hint reminds you to reuse them rather than suggesting a command that
+silently targets saved defaults.
 
 Run it from a terminal on the device being linked:
 
@@ -195,6 +197,20 @@ attempt, signs its requests with the existing device key, and waits at most ten
 minutes. Interrupting it attempts to cancel only its own request. If cancellation
 or the final reply cannot be confirmed, the command reports that uncertainty
 instead of claiming a rollback; an already completed link may still exist.
+
+If linking says this device needs an active owner review (`auth_link_review_required`
+on the signed API), run the review command on this device with the same group and settings, then
+retry linking.
+
+If review conflicts, is revoked, or stops, ask the coordinator operator. A
+rejected request does not replace any existing account link, so do not create
+another Identity, key, or credential as a workaround.
+
+An account-link conflict can involve the Google account or the coordinator
+Identity, including a revoked binding; changing accounts does not necessarily
+resolve it. If this account already belongs to the intended Identity, sign in at
+the configured coordinator's `/auth/sign-in`; otherwise ask the operator.
+Replacing or removing account links is not supported by these commands.
 
 ## Discovery groups vs sync peers
 

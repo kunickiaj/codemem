@@ -240,7 +240,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 			const response = await request(app, key);
 			// Assert
 			expect(response.status).toBe(403);
-			expectPrivate(await response.text());
+			expect(await response.json()).toEqual({ error: "auth_link_review_required" });
 			expect(snapshot(f)).toEqual(before);
 			expect(f.store.close).toHaveBeenCalledOnce();
 		});
@@ -544,10 +544,37 @@ for (const backend of ["SQLite", "D1"] as const) {
 				const response = await request(app, key, `${ROOT}/attempt-a/finalize`, input);
 				// Assert
 				expect(response.status).toBe(403);
-				expectPrivate(await response.text());
+				expect(await response.json()).toEqual({
+					error: variant === "revoked" ? "auth_link_review_required" : "auth_link_unavailable",
+				});
 				expect(snapshot(f)).toEqual(before);
 			},
 		);
+	});
+	describe(`${backend} signed finalization review privacy`, () => {
+		test("a wrong completion proof cannot expose a revoked controller's review state", async ({
+			f,
+			key,
+			app,
+		}) => {
+			// Arrange
+			await seed(f, key, app);
+			await f.store.revokeAuthControllerAttestation(config.coordinatorId, review().attestationId);
+			const before = snapshot(f);
+			// Act
+			const response = await request(
+				app,
+				key,
+				`${ROOT}/attempt-a/finalize`,
+				finalBody(key, {
+					completion: Buffer.alloc(32, 99).toString("base64url"),
+				}),
+			);
+			// Assert
+			expect(response.status).toBe(403);
+			expect(await response.json()).toEqual({ error: "auth_link_unavailable" });
+			expect(snapshot(f)).toEqual(before);
+		});
 	});
 	describe(`${backend} signed link cancellation`, () => {
 		test("cancel erases only this attempt's pending browser credentials", async ({

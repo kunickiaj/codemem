@@ -2,6 +2,7 @@ import * as p from "@clack/prompts";
 import {
 	CoordinatorAccountLinkError,
 	linkCoordinatorAccount,
+	normalizeCoordinatorAccountLinkOrigin,
 	readCodememConfigFile,
 	readCodememConfigFileAtPath,
 	readCoordinatorSyncConfig,
@@ -24,6 +25,36 @@ interface Options {
 	json?: boolean;
 	coordinator?: string;
 	loopbackHost: string;
+}
+function reportLinkFailure(error: unknown, coordinatorOrigin: string | null): void {
+	const message =
+		error instanceof CoordinatorAccountLinkError
+			? error.message
+			: "Account linking could not finish. Check your existing device setup and coordinator configuration, then try again.";
+	p.log.error(message, { output: process.stderr });
+	if (!(error instanceof CoordinatorAccountLinkError)) return;
+	if (error.code === "review_required") {
+		p.log.message(
+			"Run codemem coordinator review-device-owner for this group on this device with your configured coordinator-admin credential. Reuse this command's --coordinator, --config, --db-path/-d and environment settings (including the coordinator URL), then link again. If the review stops, ask your coordinator operator.",
+			{ output: process.stderr },
+		);
+	}
+	if (error.code !== "link_conflict") return;
+	let guidance = "Replacing or removing coordinator account links is not supported. ";
+	if (coordinatorOrigin) {
+		const signInUrl = new URL("/auth/sign-in", coordinatorOrigin).href;
+		guidance += `If this Google account already belongs to the intended coordinator Identity, sign in at ${signInUrl}. Otherwise, ask your coordinator operator.`;
+	} else {
+		guidance += "Ask your coordinator operator.";
+	}
+	p.log.message(guidance, { output: process.stderr });
+}
+function showPrivateBrowserLink(privateUrl: string): void {
+	p.log.warn(
+		"Keep this browser link private. Open it to review account linking, then return to the coordinator tab to finish.",
+		{ output: process.stderr },
+	);
+	p.log.message(privateUrl, { output: process.stderr });
 }
 function requireInteractive(options: Options): boolean {
 	if (options.json) {
@@ -50,6 +81,7 @@ async function linkAccount(group: string, options: Options): Promise<void> {
 	const stop = () => controller.abort();
 	process.once("SIGINT", stop);
 	process.once("SIGTERM", stop);
+	let coordinatorOrigin: string | null = null;
 	try {
 		const config = options.config
 			? readCodememConfigFileAtPath(options.config)
@@ -68,30 +100,22 @@ async function linkAccount(group: string, options: Options): Promise<void> {
 			process.exitCode = 2;
 			return;
 		}
-		await linkCoordinatorAccount({
+		coordinatorOrigin = normalizeCoordinatorAccountLinkOrigin(coordinatorUrl);
+		const result = await linkCoordinatorAccount({
 			dbPath: resolveDbPath(resolveDbOpt(options)),
 			keysDir: process.env.CODEMEM_KEYS_DIR?.trim() || undefined,
 			groupId: group,
 			coordinatorUrl,
 			loopbackHost: options.loopbackHost,
 			signal: controller.signal,
-			onBrowserStart: (privateUrl) => {
-				p.log.warn(
-					"Keep this browser link private. Open it to review account linking, then return to the coordinator tab to finish.",
-					{ output: process.stderr },
-				);
-				p.log.message(privateUrl, { output: process.stderr });
-			},
+			onBrowserStart: showPrivateBrowserLink,
 		});
-		p.log.success("Coordinator account linked. Your local Identity has not changed.", {
-			output: process.stderr,
-		});
+		p.log.success(
+			`Coordinator account linked to coordinator Identity ${result.identityId}. Your local Identity has not changed.`,
+			{ output: process.stderr },
+		);
 	} catch (error) {
-		const message =
-			error instanceof CoordinatorAccountLinkError
-				? error.message
-				: "Account linking could not finish. Check your existing device setup and coordinator configuration, then try again.";
-		p.log.error(message, { output: process.stderr });
+		reportLinkFailure(error, coordinatorOrigin);
 		process.exitCode = 1;
 	} finally {
 		process.removeListener("SIGINT", stop);

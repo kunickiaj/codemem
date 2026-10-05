@@ -606,8 +606,21 @@ codemem coordinator link-account team-alpha --coordinator "https://coord.example
 ```
 
 Add the same `--config` and `--db-path` options only if the review used them.
-Both commands also honor `CODEMEM_SYNC_COORDINATOR_URL`; keep that environment
-setting unchanged between review and linking.
+Keep `CODEMEM_KEYS_DIR` unchanged when selecting existing device keys.
+Both commands also honor `CODEMEM_SYNC_COORDINATOR_URL`;
+keep that setting unchanged between review and linking.
+
+If linking says this device needs an active owner review, run the review on this
+device with the same group and settings, then retry linking.
+
+If review conflicts, is revoked, or stops, contact the coordinator operator. A
+rejected link does not replace an existing link; do not create another Identity,
+key, or credential to work around it.
+
+An account-link conflict can involve either the Google account or the coordinator
+Identity, including a revoked binding. If this account already belongs to the
+intended Identity, sign in at the configured coordinator's `/auth/sign-in`;
+otherwise ask the operator. These commands cannot replace or remove account links.
 
 See [Coordinator-backed discovery](coordinator-discovery.md#optional-account-linking) for the link-session limits and privacy rules.
 

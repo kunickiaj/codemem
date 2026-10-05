@@ -281,7 +281,7 @@ it("native verifier rejects tampered nonce and unreviewed key possession without
 		expect(await rows(f, "account_links")).toEqual([]);
 	}
 	privateResponse(await tampered.text());
-	privateResponse(await noController.text());
+	expect(await noController.json()).toEqual({ error: "auth_link_review_required" });
 	expect(await protectedData()).toEqual(before);
 });
 it("native signed cancel retires only its attempt and cannot cancel a different signer", async () => {

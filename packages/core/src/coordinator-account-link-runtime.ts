@@ -40,6 +40,8 @@ type Failure =
 	| "invalid_options"
 	| "device_unavailable"
 	| "request_failed"
+	| "review_required"
+	| "link_conflict"
 	| "invalid_response"
 	| "link_stopped"
 	| "cancellation_unconfirmed"
@@ -49,6 +51,10 @@ const MESSAGES: Record<Failure, string> = {
 	device_unavailable:
 		"An existing device and matching private key are required. Complete device setup first.",
 	request_failed: "Account linking could not finish. Try again.",
+	review_required:
+		"This device needs an active owner review on the coordinator before linking. This linking request was rejected.",
+	link_conflict:
+		"Account linking conflicts with an existing or revoked coordinator link. This request did not replace it.",
 	invalid_response: "The coordinator returned an invalid account-link response.",
 	link_stopped: "Account linking stopped or expired. Try again.",
 	cancellation_unconfirmed:
@@ -166,6 +172,35 @@ async function boundedJson(response: Response): Promise<Record<string, unknown>>
 		reader.releaseLock();
 	}
 }
+type FailureCodes = Readonly<Record<number, Readonly<Record<string, Failure>>>>;
+const CREATE_FAILURE_CODES: FailureCodes = {
+	403: { auth_link_review_required: "review_required" },
+};
+const FINALIZE_FAILURE_CODES: FailureCodes = {
+	403: { auth_link_review_required: "review_required" },
+	409: { auth_link_conflict: "link_conflict" },
+};
+async function readFailureCode(
+	response: Response,
+	failureCodes?: FailureCodes,
+): Promise<Failure | undefined> {
+	if (!failureCodes || !Object.hasOwn(failureCodes, response.status)) return undefined;
+	const labels = failureCodes[response.status];
+	try {
+		const data = await boundedJson(response);
+		if (
+			Object.keys(data).length !== 1 ||
+			!Object.hasOwn(data, "error") ||
+			typeof data.error !== "string" ||
+			!labels ||
+			!Object.hasOwn(labels, data.error)
+		)
+			return undefined;
+		return labels[data.error];
+	} catch {
+		return undefined;
+	}
+}
 async function request(
 	runtime: Runtime,
 	options: {
@@ -173,6 +208,7 @@ async function request(
 		path: string;
 		body?: Record<string, string>;
 		cancellation?: boolean;
+		failureCodes?: FailureCodes;
 	},
 ): Promise<Record<string, unknown>> {
 	const url = `${runtime.origin}${options.path}`;
@@ -192,6 +228,8 @@ async function request(
 			redirect: "manual",
 		});
 		if (!response.ok) {
+			const code = await readFailureCode(response, options.failureCodes);
+			if (code) throw failure(code);
 			await response.body?.cancel().catch(() => {});
 			throw failure("request_failed");
 		}
@@ -250,7 +288,12 @@ async function createAttempt(
 		browser_start_hash: await hashCoordinatorAuthProofBytes32(startCode),
 		loopback_redirect: runtime.receiver.destination,
 	};
-	const reply = await request(runtime, { method: "POST", path: "/v1/auth/link-attempts", body });
+	const reply = await request(runtime, {
+		method: "POST",
+		path: "/v1/auth/link-attempts",
+		body,
+		failureCodes: CREATE_FAILURE_CODES,
+	});
 	const status = readStatus(reply, runtime);
 	if (
 		status.state !== "pending" ||
@@ -271,6 +314,7 @@ async function finalize(
 	const reply = await request(runtime, {
 		method: "POST",
 		path: `${attemptPath(runtime)}/finalize`,
+		failureCodes: FINALIZE_FAILURE_CODES,
 		body: {
 			purpose: AUTH_LINK_PURPOSE,
 			coordinator_id: pin.coordinatorId,
@@ -367,7 +411,18 @@ async function runBrowserLink(
 		runtime.options.onBrowserStart(url.href);
 		return await waitForFinalization(runtime, pin, verifier);
 	} catch (error) {
-		if (runtime.created && !runtime.succeeded) await cancelAttempt(runtime);
+		if (runtime.created && !runtime.succeeded) {
+			try {
+				await cancelAttempt(runtime);
+			} catch (cancellationError) {
+				// A known rejection describes this request, not future proof copies or cleanup.
+				if (
+					!(error instanceof CoordinatorAccountLinkError) ||
+					(error.code !== "review_required" && error.code !== "link_conflict")
+				)
+					throw cancellationError;
+			}
+		}
 		if (error instanceof CoordinatorAccountLinkError) throw error;
 		throw failure("link_stopped");
 	}

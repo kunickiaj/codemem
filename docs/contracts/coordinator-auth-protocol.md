@@ -1,6 +1,6 @@
 # Coordinator account-link protocol candidate
 
-**Status:** Reviewed contract for optional persistence implementation; runtime routes remain disabled
+**Status:** Optional flow, disabled by default; live Google/provider enablement remains a separate approval
 
 ## Purpose and limits
 
@@ -217,6 +217,21 @@ claims are not device authorization. Storage or cleanup faults report no success
 and disclose no proof or private cause. The local command and listener are
 implemented, along with optional app mounting; real browser checks remain outstanding.
 This option changes no enrollment or access.
+
+### Signed-device route errors
+
+| Route | Condition | Response |
+| --- | --- | --- |
+| Create or finalize | The authenticated, enabled enrolled signer has a verified signature and nonce, but its stored controller review is absent, inactive, or no longer matches, including concurrent enrollment or group changes | `403 auth_link_review_required` |
+| Create | The attempt ID conflicts with a different immutable create request | `409 auth_link_conflict` (attempt conflict only) |
+| Finalize | A matched finalization conflicts with an existing account-link binding, including a revoked tombstone | `409 auth_link_conflict` |
+| Any signed route | Bad signatures or proofs, disabled enrollment, archived group, expiry, unavailable attempt, or another failed guard | Existing generic response; do not reveal controller or account-link state |
+
+The `403` applies only after the signed request reaches the controller check.
+Only the finalization `409 auth_link_conflict` indicates an account-link conflict;
+the same label on create is an attempt conflict. Clients must match the request
+stage, status, and exact error label, not infer a binding from any `409` response.
+Neither rejection identifies an account or Identity, grants access, or replaces a link.
 
 All mounted device-link responses, including errors, use `Cache-Control: no-store`.
 Custom signature headers do not provide the caching protections of a standard

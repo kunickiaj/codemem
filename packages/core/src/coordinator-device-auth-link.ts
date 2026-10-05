@@ -126,10 +126,17 @@ function validInput(
 		decodeCoordinatorAuthProof32(data.completion) !== null
 	);
 }
-function rejectedResponse(c: Context, result: CoordinatorAuthLinkRejected): Response {
+function rejectedResponse(
+	c: Context,
+	result: CoordinatorAuthLinkRejected,
+	options: { reviewRequired?: boolean } = {},
+): Response {
 	if (result.error === "attempt_limited") return c.json({ error: "auth_link_limited" }, 429);
 	if (result.error === "attempt_conflict" || result.error === "link_conflict") {
 		return c.json({ error: "auth_link_conflict" }, 409);
+	}
+	if (options.reviewRequired && result.error === "controller_not_active") {
+		return c.json({ error: "auth_link_review_required" }, 403);
 	}
 	return c.json({ error: "auth_link_unavailable" }, 403);
 }
@@ -165,7 +172,7 @@ async function applyDeviceAction(
 			},
 			config,
 		);
-		if (result.kind === "rejected") return rejectedResponse(c, result);
+		if (result.kind === "rejected") return rejectedResponse(c, result, { reviewRequired: true });
 		return c.json(
 			{
 				status: result.status,
@@ -235,7 +242,7 @@ async function finalizeDeviceAttempt(
 		},
 		config,
 	);
-	if (result.kind === "rejected") return rejectedResponse(c, result);
+	if (result.kind === "rejected") return rejectedResponse(c, result, { reviewRequired: true });
 	return c.json({ status: result.status });
 }
 
