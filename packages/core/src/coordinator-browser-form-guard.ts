@@ -32,6 +32,13 @@ type Failure = Readonly<{ ok: false; error: Rejection; retryAfterS?: number }>;
 export type BrowserFormGuardResult =
 	| Readonly<{ ok: true; action: "session_logout"; cookieHash: string }>
 	| Readonly<{ ok: true; action: "signin_start"; cookieHash: string }>
+	| Readonly<{
+			ok: true;
+			action: "link_start";
+			cookieHash: string;
+			attemptId: string;
+			startCode: string;
+	  }>
 	| Readonly<{ ok: true; action: "transaction_attempt"; cookieHash: string; attemptId: string }>
 	| Failure;
 export interface BrowserFormGuardInput {
@@ -48,6 +55,7 @@ const ACTION_COOKIE_KINDS: Readonly<Record<BrowserFormAction, CookieKind>> = Obj
 	transaction_attempt: "transaction",
 	session_logout: "session",
 	signin_start: "start",
+	link_start: "start",
 });
 const ratePolicies = new WeakMap<InMemoryRequestRateLimiter, Map<string, number>>();
 const headersGet = Headers.prototype.get;
@@ -150,7 +158,10 @@ function captureInput(input: BrowserFormGuardInput): Snapshot {
 	const limit = suppliedLimit === undefined ? 20 : suppliedLimit;
 	if (
 		!(request instanceof Request) ||
-		(action !== "session_logout" && action !== "transaction_attempt" && action !== "signin_start")
+		(action !== "session_logout" &&
+			action !== "transaction_attempt" &&
+			action !== "signin_start" &&
+			action !== "link_start")
 	) {
 		throw INVALID_INPUT;
 	}
@@ -289,6 +300,15 @@ async function verifyForm(snapshot: Snapshot): Promise<BrowserFormGuardResult> {
 		return reject("csrf_invalid");
 	if (form.action === "session_logout" || form.action === "signin_start") {
 		return Object.freeze({ ok: true, action: form.action, cookieHash: cookie.cookieHash });
+	}
+	if (form.action === "link_start") {
+		return Object.freeze({
+			ok: true,
+			action: form.action,
+			cookieHash: cookie.cookieHash,
+			attemptId: form.attemptId,
+			startCode: form.startCode,
+		});
 	}
 	return Object.freeze({
 		ok: true,

@@ -1,7 +1,12 @@
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
+import { decodeCoordinatorAuthProof32 } from "./coordinator-auth-proof.js";
 
 export const BROWSER_FORM_BODY_MAX_BYTES = 4096;
-export type BrowserFormAction = "transaction_attempt" | "session_logout" | "signin_start";
+export type BrowserFormAction =
+	| "transaction_attempt"
+	| "session_logout"
+	| "signin_start"
+	| "link_start";
 type FormInvalid = Readonly<{ ok: false; error: "form_invalid" }>;
 type ReadResult =
 	| Readonly<{ ok: true; bytes: Uint8Array<ArrayBuffer> }>
@@ -11,6 +16,7 @@ type ParseResult =
 	| FormInvalid
 	| Readonly<{ ok: true; action: "session_logout"; csrf: string }>
 	| Readonly<{ ok: true; action: "signin_start"; csrf: string }>
+	| Readonly<{ ok: true; action: "link_start"; csrf: string; attemptId: string; startCode: string }>
 	| Readonly<{ ok: true; action: "transaction_attempt"; csrf: string; attemptId: string }>;
 const FORM_INVALID: FormInvalid = Object.freeze({ ok: false, error: "form_invalid" });
 const BODY_TOO_LARGE = Object.freeze({ ok: false, error: "body_too_large" } as const);
@@ -122,7 +128,10 @@ function decodeFields(raw: string, action: BrowserFormAction): Readonly<Record<s
 		const equals = segment.indexOf("=");
 		if (equals < 1 || equals !== segment.lastIndexOf("=")) throw FORM_INVALID;
 		const key = decodeURIComponent(segment.slice(0, equals).replaceAll("+", " "));
-		if (key !== "csrf" && (action !== "transaction_attempt" || key !== "attempt_id")) {
+		const attemptField =
+			key === "attempt_id" && (action === "transaction_attempt" || action === "link_start");
+		const startField = key === "start_code" && action === "link_start";
+		if (key !== "csrf" && !attemptField && !startField) {
 			throw FORM_INVALID;
 		}
 		if (Object.hasOwn(fields, key)) throw FORM_INVALID;
@@ -137,7 +146,8 @@ export function parseBrowserFormBody(bytes: Uint8Array, action: BrowserFormActio
 		if (
 			action !== "session_logout" &&
 			action !== "transaction_attempt" &&
-			action !== "signin_start"
+			action !== "signin_start" &&
+			action !== "link_start"
 		)
 			return FORM_INVALID;
 		const fields = decodeFields(decodeRawBody(bytes), action);
@@ -149,6 +159,12 @@ export function parseBrowserFormBody(bytes: Uint8Array, action: BrowserFormActio
 		}
 		const attemptId = fields.attempt_id;
 		if (!isAuthControllerId(attemptId)) return FORM_INVALID;
+		if (action === "link_start") {
+			const startCode = fields.start_code;
+			if (typeof startCode !== "string" || !decodeCoordinatorAuthProof32(startCode))
+				return FORM_INVALID;
+			return Object.freeze({ ok: true, action, csrf, attemptId, startCode });
+		}
 		return Object.freeze({ ok: true, action, csrf, attemptId });
 	} catch {
 		return FORM_INVALID;

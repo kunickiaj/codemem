@@ -1,10 +1,12 @@
 import { isCoordinatorAccountIssuer } from "./coordinator-auth-contract.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import { parseCoordinatorAuthLoopback } from "./coordinator-auth-loopback.js";
+import { decodeCoordinatorAuthProof32 } from "./coordinator-auth-proof.js";
 import { isBrowserCsrfToken } from "./coordinator-browser-csrf.js";
 
 export const AUTH_BROWSER_FORM_ACTIONS = Object.freeze({
 	signIn: "/auth/sign-in",
+	startLink: "/auth/link/start",
 	confirmLink: "/auth/link/confirm",
 	cancelLink: "/auth/link/cancel",
 	completeLink: "/auth/link/complete",
@@ -47,6 +49,12 @@ export interface CoordinatorAuthCurrentAccountPageInput {
 }
 
 export interface CoordinatorAuthSigninPageInput {
+	csrfToken: string;
+}
+
+export interface CoordinatorAuthLinkStartPageInput {
+	attemptId: string;
+	startCode: string;
 	csrfToken: string;
 }
 
@@ -297,11 +305,13 @@ function form(
 	action: string,
 	csrf: string,
 	label: string,
-	options: { attemptId?: string; secondary?: boolean } = {},
+	options: { attemptId?: string; startCode?: string; secondary?: boolean } = {},
 ): string {
 	let fields = `<input type="hidden" name="csrf" value="${escapeHtml(csrf)}">`;
 	if (options.attemptId)
 		fields += `<input type="hidden" name="attempt_id" value="${escapeHtml(options.attemptId)}">`;
+	if (options.startCode)
+		fields += `<input type="hidden" name="start_code" value="${escapeHtml(options.startCode)}">`;
 	const className = options.secondary ? ' class="secondary"' : "";
 	return `<form method="post" action="${escapeHtml(action)}">${fields}<button type="submit"${className}>${escapeHtml(label)}</button></form>`;
 }
@@ -388,6 +398,27 @@ export async function renderAuthLinkCompletionPage(
 	return buildPage(
 		"Finish linking",
 		`<h1>Finish linking</h1><p>Your computer confirmed the link. Finish to continue to your account. If you are already signed in, your current session stays unchanged. Sign out first to switch accounts.</p><div class="actions">${form(AUTH_BROWSER_FORM_ACTIONS.completeLink, csrfToken, "Finish linking", { attemptId })}</div>`,
+		undefined,
+		{ referrerPolicy: "same-origin" },
+	);
+}
+
+/** Private handoff code stays in hidden form data, never visible copy or provider URLs. */
+export async function renderAuthLinkStartPage(
+	input: CoordinatorAuthLinkStartPageInput,
+): Promise<CoordinatorAuthBrowserPage> {
+	const attemptId = capturePageField(input, "attemptId");
+	const startCode = capturePageField(input, "startCode");
+	const csrfToken = captureSigninCsrf(input);
+	if (
+		!isAuthControllerId(attemptId) ||
+		typeof startCode !== "string" ||
+		!decodeCoordinatorAuthProof32(startCode)
+	)
+		return invalidInput();
+	return buildPage(
+		"Link this device",
+		`<h1>Link this device</h1><p>Continue only if you started linking on this computer. Do not share this link.</p><p>Linking does not change project access or your current signed-in session.</p><div class="actions">${form(AUTH_BROWSER_FORM_ACTIONS.startLink, csrfToken, "Continue with Google", { attemptId, startCode })}</div>`,
 		undefined,
 		{ referrerPolicy: "same-origin" },
 	);

@@ -65,13 +65,26 @@ the start URL.
 `parseCoordinatorAuthLoopback` implements this exact syntax check, including an
 explicit canonical decimal port from 1 through 65535. Preserve the returned
 destination verbatim, including `:80`; URL normalization is not an authorization
-step. The helper is not yet wired into runtime routes. The listener accepts one
+step. Signed device creation validates this target. The planned listener accepts one
 GET for its outstanding attempt and returns a `no-store` response.
 
 ## Browser OIDC and confirmation
 
-The planned browser entry presents the start code through a same-origin
-CSRF-protected POST; no public start route exists yet.
+The browser-entry handlers implement `GET /auth/link/start?attempt_id=...&start_code=...`
+as a page only: it does not claim an attempt or start provider authorization.
+The page uses the existing pre-start cookie and CSRF token, with exactly
+`csrf`, `attempt_id`, and `start_code` in a POST to the clean `/auth/link/start`
+address. The handlers remain unmounted until optional app composition.
+
+The POST checks exact Origin before spending the shared browser-form quota,
+requires the cookie-bound CSRF token and canonical 32-byte code, and promotes
+the same pre-start cookie value only after atomic admission. Existing transaction
+cookies block a new start; existing browser sessions remain untouched. The form
+page uses `Referrer-Policy: same-origin` so its POST retains a usable Origin;
+the separate provider-continuation page uses `no-referrer` and carries no start
+code. Gateways must omit the private handoff query, Referer, and form body from
+logs. No account, device, or sharing permission comes from opening this page.
+
 The atomic claim matches its raw-byte hash to the signed device attempt's saved
 commitment before recording the browser cookie binding. Missing or wrong codes
 leave the attempt and provider material untouched. Once claimed, the original

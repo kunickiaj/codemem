@@ -365,6 +365,7 @@ describe("auth browser forms and safe display", () => {
 		}
 		expect(AUTH_BROWSER_FORM_ACTIONS).toEqual({
 			signIn: "/auth/sign-in",
+			startLink: "/auth/link/start",
 			confirmLink: "/auth/link/confirm",
 			cancelLink: "/auth/link/cancel",
 			completeLink: "/auth/link/complete",
