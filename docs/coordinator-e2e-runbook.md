@@ -14,6 +14,93 @@ Use this path to prove the coordinator-assisted delivery path end-to-end:
 6. confirm Project access and delivery in Devices/Health
 7. run a direct sync only when diagnosing
 
+## Optional auth browser check
+
+The local browser fixture completed a real cmux WKWebView link flow over both IPv4
+and IPv6 in separate fresh fixtures. It kept the original browser binding through
+session completion and used one existing Identity without changing its device
+assignment. This is **not** a real provider pilot, deployment,
+dogfood-ready result, or a claim about production configuration.
+
+Run the local-only fixture on Node 24:
+
+```fish
+node packages/cloudflare-coordinator-worker/test/browser-auth-browser-fixture.mjs
+```
+
+The script starts two owned local services, prints a `READY` HTTPS origin,
+certificate fingerprint, certificate path, and control URLs. It stays running
+until stopped with SIGINT or SIGTERM; `--sanity` stops it automatically.
+An expected SIGTERM/Node exit `143` during owned-server cleanup is not a failure.
+Use `--sanity` to run its 10 assertions without the browser flow. Retain its ignored
+`.tmp` artifacts for debugging; do not treat them as test inputs or publish them.
+
+### Safety boundary
+
+- The fixture uses a local fake provider, local D1 state, a demo actor, temporary
+  device keys, a signed runtime, and a loopback Node receiver.
+- Node clients pin the specific public certificate reported by `READY`; TLS
+  validation stays enabled.
+- The browser needs explicit permission for the disposable local certificate.
+  Do not add a CA, change system trust, disable TLS checks, import profiles or
+  cookies, or use real user keys.
+- The TLS sanity check requires `Secure`, `HttpOnly`, and `SameSite=Lax` on the
+  source cookie; raw browser cookie values are not inspected or recorded.
+- The provider step extracts the provider link from the DOM but never navigates to
+  a real provider. A local authorize endpoint validates that link and returns the
+  local callback instead.
+- Do not visit, resolve, or override a real provider domain, including HSTS. The
+  fixture loads no external assets.
+
+### Control sequence and expected result
+
+1. POST to the `READY` start control URL, choosing `host=127.0.0.1` or `host=::1`.
+   Use the reported certificate as the client's specific CA. Open the private
+   start URL printed to terminal stderr in the browser; do not share or log it.
+2. Submit the CSRF-protected form with its normal `Origin`; the local provider
+   continuation must omit link secrets and completion material.
+3. Follow the local callback. The SDK verifies its token and JWKS against the
+   signed fake provider; the confirmation view names the account, Identity, and
+   device.
+4. Confirm with CSRF protection. The saved receiver is IPv4 HTTP; a fresh fixture
+   can save the IPv6 HTTP receiver.
+5. Click the receiver's `Finish linking` link back to the pinned coordinator's
+   `/auth/link/complete` page. The return link contains only the public attempt ID
+   and sends no referrer; an early click may show a read-only waiting page.
+6. Redeem from the original cookie and confirm the account reports one session.
+   `document.cookie` being empty is expected because the browser cookie is
+   `HttpOnly`.
+
+The browser retains its original secure coordinator cookie during the loopback
+hop; the receiver does not read or set that cookie. A normal fresh
+sign-in after logout displays the fake profile, while the first link does not
+persist that profile. This checks the fixture's intended account behavior, not
+provider account merging or memory-rights changes.
+
+### Repeat and failure interpretation
+
+Use a different database for an independent initial-link test: one account-to-
+Identity mapping is unique. Repeating IPv6 on the already-used database should
+finalize with `409`; a fresh fixture should pass.
+
+The fixture also checks one benign race: two submissions sharing the same
+pre-start cookie yield `200` and `409`, and the browser winner completes. That is
+not proof that every cookie race is resolved. A replayed callback is rejected while
+the existing browser session can still open its account page.
+
+Occasional browser wait-script completion-handler errors or timeouts can occur
+after navigation has already arrived. Confirm the resulting URL and accessibility
+snapshot before calling that an application failure; do not relax browser or TLS
+security to work around it.
+
+### Remaining gates
+
+This fixture does not cover enrollment review, migration UX, real provider
+configuration or consent, independent key provisioning, remote database checks,
+migrations, isolated deployment, or separate approval. Relay-after-auth is not
+started. Existing plugin smoke-test flakiness has an unconfirmed cause and is not
+masked by this fixture.
+
 If this flow does not work on a clean Linux/Node setup, fix that first. Do not blame Cloudflare for bugs that already
 exist locally.
 
