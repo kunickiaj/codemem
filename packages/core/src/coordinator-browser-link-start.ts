@@ -27,7 +27,7 @@ import {
 	issueBrowserCsrfToken,
 } from "./coordinator-browser-csrf.js";
 import { type BrowserFormGuardResult, guardBrowserForm } from "./coordinator-browser-form-guard.js";
-import { snapshotBrowserRequest } from "./coordinator-browser-request.js";
+import { snapshotBrowserRequest, snapshotBrowserRoute } from "./coordinator-browser-request.js";
 import {
 	type CoordinatorOidcClient,
 	type CoordinatorOidcOptions,
@@ -199,14 +199,15 @@ async function linkStartPage(
 	request: Request,
 ): Promise<CoordinatorBrowserLinkStartResponse> {
 	try {
-		const snapshot = snapshotBrowserRequest(request);
-		if (snapshot.method !== "GET") return await notice(405, "method_not_allowed", { Allow: "GET" });
-		if (snapshot.url.length > MAX_START_URL_LENGTH) return await notice(400, "form_invalid");
-		const url = new URL(snapshot.url);
+		const route = snapshotBrowserRoute(request);
+		if (route.method !== "GET") return await notice(405, "method_not_allowed", { Allow: "GET" });
+		if (route.url.length > MAX_START_URL_LENGTH) return await notice(400, "form_invalid");
+		const url = new URL(route.url);
 		if (`${url.origin}${url.pathname}` !== context.startUrl || url.username || url.password)
 			return await notice(404, "not_found");
-		const query = parseStartQuery(context, snapshot.url);
+		const query = parseStartQuery(context, route.url);
 		if (!query) return await notice(400, "form_invalid");
+		const snapshot = snapshotBrowserRequest(request);
 		const transaction = await readBrowserCookie(snapshot.cookie, "transaction");
 		if (transaction.kind === "invalid") return await notice(400, "cookie_invalid");
 		if (transaction.kind === "present") return await notice(409, "link_in_progress");
@@ -309,17 +310,17 @@ async function linkStart(
 	clientKey: string,
 ): Promise<CoordinatorBrowserLinkStartResponse> {
 	try {
-		const snapshot = snapshotBrowserRequest(request);
-		if (snapshot.method !== "POST")
-			return await notice(405, "method_not_allowed", { Allow: "POST" });
-		if (snapshot.url.length > MAX_START_URL_LENGTH) return await notice(400, "form_invalid");
+		const route = snapshotBrowserRoute(request);
+		if (route.method !== "POST") return await notice(405, "method_not_allowed", { Allow: "POST" });
+		if (route.url.length > MAX_START_URL_LENGTH) return await notice(400, "form_invalid");
 		const headers = requestHeaders?.call(request) as Headers;
 		if (
-			new URL(snapshot.url).origin !== context.scope.publicOrigin ||
+			new URL(route.url).origin !== context.scope.publicOrigin ||
 			headersGet.call(headers, "origin") !== context.scope.publicOrigin
 		)
 			return await notice(403, "origin_rejected");
-		if (snapshot.url !== context.startUrl) return await notice(404, "not_found");
+		if (route.url !== context.startUrl) return await notice(404, "not_found");
+		const snapshot = snapshotBrowserRequest(request);
 		// Capture the guard's native fields in the same synchronous tick.
 		const pendingGuard = guardBrowserForm({
 			request,

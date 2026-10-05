@@ -12,6 +12,7 @@ import {
 import { importBrowserCsrfKey } from "./coordinator-browser-csrf.js";
 import { createCoordinatorBrowserLinkHandlers } from "./coordinator-browser-link.js";
 import { createCoordinatorBrowserLinkStart } from "./coordinator-browser-link-start.js";
+import * as browserRequest from "./coordinator-browser-request.js";
 import { createCoordinatorBrowserSigninStart } from "./coordinator-browser-signin-start.js";
 import { challenge, oidcFixture, PROVIDER } from "./coordinator-oidc-test-fixtures.js";
 import { createInMemoryRequestRateLimiter } from "./request-rate-limit.js";
@@ -281,6 +282,7 @@ describe.each(["SQLite", "D1"] as const)("%s link-start URL length admission", (
 			...(method === "POST" ? { body: new URLSearchParams(c.fields) } : {}),
 		});
 		const before = snapshot(f);
+		const fullSnapshot = vi.spyOn(browserRequest, "snapshotBrowserRequest");
 		const NativeURL = globalThis.URL;
 		let oversizedParses = 0;
 		globalThis.URL = class extends NativeURL {
@@ -297,6 +299,7 @@ describe.each(["SQLite", "D1"] as const)("%s link-start URL length admission", (
 					: await f.handlers.linkStart(request, "client-a");
 			// Assert: a 400 alone would not prove the parser never received the oversized input.
 			expect(oversizedParses).toBe(0);
+			expect(fullSnapshot).not.toHaveBeenCalled();
 			expect(outcome).toBe("form_invalid");
 			await rejected(response, f.startCode, 400);
 			expect(snapshot(f)).toEqual(before);
@@ -305,6 +308,7 @@ describe.each(["SQLite", "D1"] as const)("%s link-start URL length admission", (
 			expect(f.oidc.fetch).not.toHaveBeenCalled();
 		} finally {
 			globalThis.URL = NativeURL;
+			fullSnapshot.mockRestore();
 		}
 	});
 });

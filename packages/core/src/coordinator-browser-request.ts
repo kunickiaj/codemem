@@ -13,10 +13,15 @@ const requestGetters = Object.freeze({
 	headers: nativeRequestGetter("headers"),
 });
 const headersGet = Headers.prototype.get;
-export function snapshotBrowserRequest(request: Request) {
+export function snapshotBrowserRoute(request: Request) {
 	const method = requestGetters.method?.call(request);
 	const url = requestGetters.url?.call(request);
-	const headers = requestGetters.headers?.call(request) as Headers;
 	if (typeof method !== "string" || typeof url !== "string") throw new Error();
-	return Object.freeze({ method, url, cookie: headersGet.call(headers, "cookie") });
+	return Object.freeze({ method, url });
+}
+
+export function snapshotBrowserRequest(request: Request) {
+	const route = snapshotBrowserRoute(request);
+	const headers = requestGetters.headers?.call(request) as Headers;
+	return Object.freeze({ ...route, cookie: headersGet.call(headers, "cookie") });
 }
