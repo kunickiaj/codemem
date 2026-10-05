@@ -47,13 +47,19 @@ attempt. It revalidates the stored literal address without normalizing it, so
 IPv4, IPv6, and an explicit `:80` remain exactly as the device requested.
 This is not a public status field or permission to choose a new destination.
 
+New public device-link creation also commits `browserStartHash`, the SHA-256 of
+a separate private 32-byte start code. The stored commitment is immutable and
+unique within a coordinator; it never appears in status or creation results.
+Old internal callers may omit it, leaving `NULL` for compatibility. Public routes
+must require it, and the blind compatibility claim rejects protected attempts.
+
 ## Store interface
 
 Source candidate: `packages/core/src/coordinator-auth-link.ts`.
 
 | Method | Required transition and result |
 | --- | --- |
-| `createAuthLinkAttempt({ attemptId, signer, runtimeVerifierHash, loopbackRedirect }, config)` | Copies the active controller actor, key, review receipt, revision, issuer, config revision, and literal validated loopback target. Returns `created` or matching `existing` with controller-derived `identityId`. |
+| `createAuthLinkAttempt({ attemptId, signer, runtimeVerifierHash, loopbackRedirect, browserStartHash? }, config)` | Copies the active controller actor, key, review receipt, revision, issuer, config revision, validated loopback target, and optional immutable start-code commitment. Public callers must supply that commitment. Returns `created` or matching `existing` with controller-derived `identityId`. |
 | `claimAuthLinkAttempt({ attemptId, browserTransactionHash }, config)` | Claims once: `pending` → `browser_claimed`; the same cookie hash may receive `existing` only while claimed. |
 | `recordAuthLinkOidcVerified({ attemptId, browserTransactionHash, account }, config)` | Trusted, already-verified caller supplies exact configured issuer and subject; only a matching claimed cookie can freeze it: `browser_claimed` → `oidc_verified`. It validates no JWT or caller provenance. |
 | `confirmAuthLinkAttempt({ attemptId, browserTransactionHash, completionSecretHash }, config)` | The coordinator generator supplies the hash once; no raw completion secret is returned, stored, or replayed. `oidc_verified` → `confirmed`. |

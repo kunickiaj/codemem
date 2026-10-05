@@ -18,7 +18,7 @@ interface BrowserMaterials {
 	pkceVerifier: string;
 }
 export type CoordinatorAuthBrowserTransactionStartInput = BrowserMaterials &
-	({ purpose: "signin" } | { purpose: "link"; attemptId: string });
+	({ purpose: "signin" } | { purpose: "link"; attemptId: string; browserStartHash?: string });
 export interface CoordinatorAuthBrowserTransactionConsumeInput {
 	stateHash: string;
 	binderHash: string;

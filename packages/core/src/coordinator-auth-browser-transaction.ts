@@ -30,6 +30,7 @@ import {
 	type AuthLinkBackend,
 	type AuthLinkStatement,
 	authLinkNow,
+	captureAuthLinkBrowserStartHash,
 } from "./coordinator-auth-link.js";
 
 export * from "./coordinator-auth-browser-transaction-contract.js";
@@ -94,6 +95,10 @@ function captureConfig(value: unknown): CoordinatorAuthBrowserConfig | null {
 		redirectUri: c.redirectUri,
 	};
 }
+function isSigninAttempt(value: object, attempt: PropertyDescriptor | undefined): boolean {
+	if (attempt) return Object.hasOwn(attempt, "value") && attempt.value === undefined;
+	return !("attemptId" in value);
+}
 function captureStart(value: unknown): CoordinatorAuthBrowserTransactionStartInput | null {
 	const i = capture(value, ["purpose", "stateHash", "binderHash", "nonce", "pkceVerifier"]);
 	if (
@@ -113,8 +118,7 @@ function captureStart(value: unknown): CoordinatorAuthBrowserTransactionStartInp
 			return null;
 		const attempt = Object.getOwnPropertyDescriptor(value, "attemptId");
 		if (i.purpose === "signin") {
-			if (attempt && (!Object.hasOwn(attempt, "value") || attempt.value !== undefined)) return null;
-			if (!attempt && "attemptId" in (value as object)) return null;
+			if (!isSigninAttempt(value as object, attempt)) return null;
 			return {
 				purpose: "signin",
 				stateHash: i.stateHash,
@@ -130,9 +134,12 @@ function captureStart(value: unknown): CoordinatorAuthBrowserTransactionStartInp
 			!isAuthControllerId(attempt.value)
 		)
 			return null;
+		const browserStartHash = captureAuthLinkBrowserStartHash(value);
+		if (browserStartHash === false) return null;
 		return {
 			purpose: "link",
 			attemptId: attempt.value,
+			...(browserStartHash === null ? {} : { browserStartHash }),
 			stateHash: i.stateHash,
 			binderHash: i.binderHash,
 			nonce: i.nonce,
@@ -237,6 +244,23 @@ const MATCH_CONFIG =
 	"b.coordinator_id = ? AND b.issuer = ? AND b.auth_config_revision = ? AND b.redirect_uri = ?";
 function configValues(c: CoordinatorAuthBrowserConfig): string[] {
 	return [c.coordinatorId, c.issuer, c.revision, c.redirectUri];
+}
+function assertLinkClaim(
+	i: CoordinatorAuthBrowserTransactionStartInput & { purpose: "link" },
+	c: CoordinatorAuthBrowserConfig,
+	now: number,
+	hash: string,
+): AuthLinkStatement {
+	// A suppressed claim must violate the pending-secret CHECK inside the same atomic batch.
+	return {
+		sql: `UPDATE ${TABLE} AS b SET nonce = NULL WHERE ${MATCH_CONFIG} AND b.browser_transaction_hash = ?
+ AND b.state = 'pending' AND b.attempt_id = ? AND b.created_at_ms = ? AND NOT EXISTS
+ (SELECT 1 FROM coordinator_auth_link_attempts a WHERE a.coordinator_id = b.coordinator_id AND a.attempt_id = b.attempt_id
+ AND a.browser_transaction_hash = b.browser_transaction_hash AND a.state = 'browser_claimed'
+ AND a.claimed_at_ms = ? AND a.issuer = b.issuer AND a.auth_config_revision = b.auth_config_revision
+ AND a.expires_at_ms = b.expires_at_ms AND a.expires_at_ms > ?)`,
+		values: [...configValues(c), hash, i.attemptId, now, now, now],
+	};
 }
 function linkMatch(states: string): string {
 	return `(b.purpose = 'signin' OR EXISTS (SELECT 1 FROM coordinator_auth_link_attempts a
@@ -377,11 +401,13 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 		now: number,
 		hash: string,
 	): Promise<CoordinatorAuthBrowserTransactionStartResult> {
+		const browserStartHash = i.browserStartHash ?? null;
 		const insert: AuthLinkStatement = {
 			sql: `INSERT INTO ${TABLE} (${COLUMNS}) SELECT a.coordinator_id, ?, 'link', a.attempt_id, ?, ?, a.issuer,
  a.auth_config_revision, ?, 'pending', ?, ?, ?, a.expires_at_ms, NULL, NULL FROM coordinator_auth_link_attempts a
  WHERE a.coordinator_id = ? AND a.attempt_id = ? AND a.issuer = ? AND a.auth_config_revision = ?
- AND a.state = 'pending' AND a.browser_transaction_hash IS NULL AND a.expires_at_ms > ? AND ${FRESH_HASH}
+ AND a.state = 'pending' AND a.browser_transaction_hash IS NULL AND a.expires_at_ms > ?
+ AND ((a.browser_start_hash IS NULL AND ? IS NULL) OR a.browser_start_hash = ?) AND ${FRESH_HASH}
  ${ASSERT_HASH_FRESH}`,
 			values: [
 				hash,
@@ -396,6 +422,8 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 				c.issuer,
 				c.revision,
 				now,
+				browserStartHash,
+				browserStartHash,
 				...freshValues(c, hash),
 				c.coordinatorId,
 				hash,
@@ -405,6 +433,7 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 			sql: `UPDATE coordinator_auth_link_attempts SET state = 'browser_claimed', browser_transaction_hash = ?, claimed_at_ms = ?
  WHERE coordinator_id = ? AND attempt_id = ? AND issuer = ? AND auth_config_revision = ?
  AND state = 'pending' AND browser_transaction_hash IS NULL AND expires_at_ms > ?
+ AND ((browser_start_hash IS NULL AND ? IS NULL) OR browser_start_hash = ?)
  AND NOT EXISTS (SELECT 1 FROM coordinator_auth_session_receipts r WHERE r.coordinator_id = ? AND r.browser_transaction_hash = ?)
  AND EXISTS (SELECT 1 FROM ${TABLE} b WHERE ${MATCH_CONFIG} AND b.browser_transaction_hash = ? AND b.attempt_id = ?
  AND b.purpose = 'link' AND b.state = 'pending' AND b.state_hash = ? AND b.binder_hash = ? AND b.created_at_ms = ?
@@ -417,6 +446,8 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 				c.issuer,
 				c.revision,
 				now,
+				browserStartHash,
+				browserStartHash,
 				c.coordinatorId,
 				hash,
 				...configValues(c),
@@ -427,22 +458,21 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 				now,
 			],
 		};
-		// A suppressed claim must violate the pending-secret CHECK inside the same atomic batch.
-		const assertClaim: AuthLinkStatement = {
-			sql: `UPDATE ${TABLE} AS b SET nonce = NULL WHERE ${MATCH_CONFIG} AND b.browser_transaction_hash = ?
- AND b.state = 'pending' AND b.attempt_id = ? AND b.created_at_ms = ? AND NOT EXISTS
- (SELECT 1 FROM coordinator_auth_link_attempts a WHERE a.coordinator_id = b.coordinator_id AND a.attempt_id = b.attempt_id
- AND a.browser_transaction_hash = b.browser_transaction_hash AND a.state = 'browser_claimed'
- AND a.claimed_at_ms = ? AND a.issuer = b.issuer AND a.auth_config_revision = b.auth_config_revision
- AND a.expires_at_ms = b.expires_at_ms AND a.expires_at_ms > ?)`,
-			values: [...configValues(c), hash, i.attemptId, now, now, now],
-		};
+		const assertClaim = assertLinkClaim(i, c, now, hash);
 		try {
 			await this.backend.batch([insert, claim, assertClaim]);
 		} catch (error) {
 			if (isAuthControllerUniqueError(error)) return rejected("transaction_conflict");
 			throw new Error("auth_browser_transaction_persistence_incomplete");
 		}
+		return this.startLinkReceipt(i, c, now, hash);
+	}
+	private async startLinkReceipt(
+		i: CoordinatorAuthBrowserTransactionStartInput & { purpose: "link" },
+		c: CoordinatorAuthBrowserConfig,
+		now: number,
+		hash: string,
+	): Promise<CoordinatorAuthBrowserTransactionStartResult> {
 		const row = await this.startedRow(i, c, hash, now);
 		if (row) return { kind: "started", expiresAtMs: row.expires_at_ms };
 		if (await this.hasConflict(i, c, hash)) return rejected("transaction_conflict");

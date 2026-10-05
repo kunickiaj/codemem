@@ -38,10 +38,11 @@ ownership; neither its result nor a caller label supplies the controller authori
 The runtime generates:
 
 - a 32-byte random runtime verifier and sends only SHA-256 of its raw bytes;
+- a separate 32-byte random browser-start code and sends only SHA-256 of its raw bytes;
 - a random public `attemptId`, which is not a credential.
 
 The coordinator stores a pending attempt with the coordinator ID, actor ID,
-enrolled device ID, pinned public key and fingerprint, runtime-verifier commitment,
+enrolled device ID, pinned public key and fingerprint, runtime-verifier and browser-start commitments,
 group ID, configured issuer, and auth-config revision. Those fields and the local callback
 target are immutable. The runtime does not create or receive the browser-completion
 secret at attempt creation; knowing both proofs at initiation would defeat their separation.
@@ -55,8 +56,12 @@ http://[::1]:<selected-port>/codemem/auth/complete
 ```
 
 The coordinator rejects another scheme, hostname, credentials, query, fragment,
-path, external override, or later destination change. It returns a coordinator
-browser URL, not either secret.
+path, external override, or later destination change. Creation returns trusted
+coordinator/attempt metadata, not the raw runtime verifier or completion secret.
+The planned CLI (not implemented or publicly routed yet) builds the private browser-start URL locally with the one-time start
+code. The code is not a Google credential or permission grant; it prevents a
+public attempt ID alone from claiming that device's flow. Do not share or log
+the start URL.
 `parseCoordinatorAuthLoopback` implements this exact syntax check, including an
 explicit canonical decimal port from 1 through 65535. Preserve the returned
 destination verbatim, including `:80`; URL normalization is not an authorization
@@ -64,6 +69,17 @@ step. The helper is not yet wired into runtime routes. The listener accepts one
 GET for its outstanding attempt and returns a `no-store` response.
 
 ## Browser OIDC and confirmation
+
+The planned browser entry presents the start code through a same-origin
+CSRF-protected POST; no public start route exists yet.
+The atomic claim matches its raw-byte hash to the signed device attempt's saved
+commitment before recording the browser cookie binding. Missing or wrong codes
+leave the attempt and provider material untouched. Once claimed, the original
+browser binding controls progress; the code cannot claim another browser.
+Public creation must require the commitment, and public start must require the
+code. Nullable legacy commitments exist only for internal compatibility; they
+are not a public fallback, and blind compatibility claims cannot bypass a saved
+non-null commitment. The device still does not know the later completion secret.
 
 Initiation creates a host-only `__Host-codemem-auth-transaction` cookie with
 `HttpOnly`, `Secure`, `SameSite=Lax`, and `Path=/`, plus a CSRF value.

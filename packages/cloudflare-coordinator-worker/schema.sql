@@ -282,6 +282,7 @@ CREATE TABLE IF NOT EXISTS coordinator_auth_link_attempts (
  confirmed_at_ms INTEGER,
  finalized_at_ms INTEGER,
  failed_at_ms INTEGER,
+ browser_start_hash TEXT CHECK (browser_start_hash IS NULL OR (length(browser_start_hash) = 64 AND browser_start_hash NOT GLOB '*[^0-9a-f]*')),
  PRIMARY KEY (coordinator_id, attempt_id),
  UNIQUE (coordinator_id, runtime_verifier_hash),
  UNIQUE (coordinator_id, browser_transaction_hash),
@@ -371,6 +372,8 @@ CREATE INDEX IF NOT EXISTS idx_auth_link_attempts_identity_expiry
  ON coordinator_auth_link_attempts(coordinator_id, identity_id, expires_at_ms);
 CREATE INDEX IF NOT EXISTS idx_auth_link_attempts_state_expiry
  ON coordinator_auth_link_attempts(coordinator_id, state, expires_at_ms);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_link_attempts_browser_start
+ ON coordinator_auth_link_attempts(coordinator_id, browser_start_hash);
 
 CREATE TABLE IF NOT EXISTS coordinator_auth_browser_transactions (
  coordinator_id TEXT NOT NULL CHECK (length(coordinator_id) BETWEEN 1 AND 256),

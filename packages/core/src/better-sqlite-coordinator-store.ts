@@ -55,6 +55,7 @@ import {
 	type AuthLinkStatement,
 } from "./coordinator-auth-link.js";
 import {
+	AUTH_LINK_BROWSER_START_COLUMN_SQL,
 	AUTH_LINK_SCHEMA_SQL,
 	type CoordinatorAuthLinkClaimInput,
 	type CoordinatorAuthLinkConfig,
@@ -369,8 +370,28 @@ function upgradeAuthSessionRetentionSchema(db: DatabaseType): void {
 	}).immediate();
 }
 
+function upgradeAuthLinkBrowserStartSchema(db: DatabaseType): void {
+	const present = db
+		.prepare(
+			"SELECT 1 FROM pragma_table_info('coordinator_auth_link_attempts') WHERE name = 'browser_start_hash'",
+		)
+		.get();
+	if (present) return;
+	db.transaction(() => {
+		const columns = db.prepare("PRAGMA table_info(coordinator_auth_link_attempts)").all() as {
+			name: string;
+		}[];
+		if (columns.length === 0 || columns.some((column) => column.name === "browser_start_hash"))
+			return;
+		db.exec(
+			`ALTER TABLE coordinator_auth_link_attempts ADD COLUMN ${AUTH_LINK_BROWSER_START_COLUMN_SQL}`,
+		);
+	}).immediate();
+}
+
 function initializeSchema(db: DatabaseType): void {
 	db.exec(AUTH_CONTROLLER_SCHEMA_SQL);
+	upgradeAuthLinkBrowserStartSchema(db);
 	db.exec(AUTH_LINK_SCHEMA_SQL);
 	upgradeAuthSessionRetentionSchema(db);
 	db.exec(AUTH_SESSION_SCHEMA_SQL);

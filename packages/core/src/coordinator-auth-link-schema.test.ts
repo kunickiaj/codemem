@@ -59,6 +59,13 @@ function schema(db: SqliteDatabase, table: (typeof TABLES)[number]) {
 	};
 }
 
+function readLinkMigration(name: string): string {
+	return readFileSync(
+		join(import.meta.dirname, "../../cloudflare-coordinator-worker/migrations", name),
+		"utf8",
+	);
+}
+
 function seedReviewedEnrollment(db: SqliteDatabase) {
 	const created = "2026-10-02T12:00:00.000Z";
 	db.prepare("INSERT INTO groups (group_id, created_at) VALUES (?, ?)").run("group-a", created);
@@ -137,7 +144,7 @@ function registerBackend(backend: Backend) {
 			peer.close();
 		}
 	});
-	it("migrations 0017 then 0019 and exported schema match the fresh-install link tables", () => {
+	it("migrations 0017, 0019, and 0025 match the fresh-install link tables", () => {
 		// Arrange: explicit SQL seeds an existing review; no account-link operations are imported.
 		const db = setupSchema(backend);
 		try {
@@ -147,26 +154,16 @@ function registerBackend(backend: Backend) {
 				.prepare("SELECT * FROM coordinator_auth_controller_attestations")
 				.all();
 			const enrollment = db.prepare("SELECT * FROM enrolled_devices").all();
-			const migration = readFileSync(
-				join(
-					import.meta.dirname,
-					"../../cloudflare-coordinator-worker/migrations/0017_add_auth_account_links.sql",
-				),
-				"utf8",
-			);
-			const indexesMigration = readFileSync(
-				join(
-					import.meta.dirname,
-					"../../cloudflare-coordinator-worker/migrations/0019_add_auth_link_attempt_limit_indexes.sql",
-				),
-				"utf8",
-			);
+			const migration = readLinkMigration("0017_add_auth_account_links.sql");
+			const indexesMigration = readLinkMigration("0019_add_auth_link_attempt_limit_indexes.sql");
+			const browserStartMigration = readLinkMigration("0025_add_auth_link_browser_start_hash.sql");
 			for (const table of [...TABLES].reverse()) db.exec(`DROP TABLE ${table}`);
 			// Act
 			db.exec(migration);
 			db.exec(migration);
 			db.exec(indexesMigration);
 			db.exec(indexesMigration);
+			db.exec(browserStartMigration);
 			const migrated = TABLES.map((table) => schema(db, table));
 			for (const table of [...TABLES].reverse()) db.exec(`DROP TABLE ${table}`);
 			db.exec(AUTH_LINK_SCHEMA_SQL);

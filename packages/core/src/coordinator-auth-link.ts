@@ -60,6 +60,7 @@ interface Attempt {
 	issuer: string;
 	auth_config_revision: string;
 	runtime_verifier_hash: string;
+	browser_start_hash: string | null;
 	loopback_redirect: string;
 	state: CoordinatorAuthLinkState;
 	browser_transaction_hash: string | null;
@@ -90,6 +91,19 @@ function capture(value: unknown, fields: readonly string[]): Captured | null {
 		return null;
 	}
 }
+/** Capture without invoking accessors; null denotes an omitted legacy commitment. */
+export function captureAuthLinkBrowserStartHash(value: unknown): string | null | false {
+	if (!value || typeof value !== "object") return false;
+	try {
+		if (Array.isArray(value)) return false;
+		const descriptor = Object.getOwnPropertyDescriptor(value, "browserStartHash");
+		if (!descriptor) return "browserStartHash" in value ? false : null;
+		if (!Object.hasOwn(descriptor, "value") || !isHash(descriptor.value)) return false;
+		return descriptor.value;
+	} catch {
+		return false;
+	}
+}
 function captureConfig(value: unknown): CoordinatorAuthLinkConfig | null {
 	const c = capture(value, ["coordinatorId", "issuer", "revision", "enabled"]);
 	if (
@@ -118,6 +132,32 @@ function captureSigner(value: unknown): CoordinatorAuthLinkSigner | null {
 	)
 		return null;
 	return s as unknown as CoordinatorAuthLinkSigner;
+}
+function captureCreateInput(value: unknown):
+	| (Captured & {
+			attemptId: string;
+			runtimeVerifierHash: string;
+			loopbackRedirect: string;
+			browserStartHash: string | null;
+	  })
+	| null {
+	const i = capture(value, ["attemptId", "signer", "runtimeVerifierHash", "loopbackRedirect"]);
+	const browserStartHash = captureAuthLinkBrowserStartHash(value);
+	if (
+		!i ||
+		browserStartHash === false ||
+		!isAuthControllerId(i.attemptId) ||
+		!isHash(i.runtimeVerifierHash) ||
+		!parseCoordinatorAuthLoopback(i.loopbackRedirect).ok
+	)
+		return null;
+	return {
+		...i,
+		attemptId: i.attemptId,
+		runtimeVerifierHash: i.runtimeVerifierHash,
+		loopbackRedirect: i.loopbackRedirect as string,
+		browserStartHash,
+	};
 }
 function captureRequester(value: unknown): CoordinatorAuthLinkRequester | null {
 	const k = capture(value, ["kind"]);
@@ -212,9 +252,9 @@ const CREATE_SOURCE_SQL = `FROM coordinator_auth_controller_attestations a
 const CREATE_SQL = `INSERT INTO coordinator_auth_link_attempts (
  coordinator_id, attempt_id, identity_id, group_id, device_id, public_key, fingerprint,
  controller_attestation_id, controller_review_receipt_id, controller_revision,
- issuer, auth_config_revision, runtime_verifier_hash, loopback_redirect, state, created_at_ms, expires_at_ms)
+ issuer, auth_config_revision, runtime_verifier_hash, loopback_redirect, browser_start_hash, state, created_at_ms, expires_at_ms)
  SELECT ?, ?, a.identity_id, a.group_id, a.device_id, a.public_key, a.fingerprint,
- a.attestation_id, a.review_receipt_id, a.revision, ?, ?, ?, ?, 'pending', ?, ?
+ a.attestation_id, a.review_receipt_id, a.revision, ?, ?, ?, ?, ?, 'pending', ?, ?
  ${CREATE_SOURCE_SQL}
  AND (SELECT count(*) FROM coordinator_auth_link_attempts t
   WHERE t.coordinator_id = a.coordinator_id AND t.group_id = a.group_id AND t.device_id = a.device_id
@@ -324,17 +364,9 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		config: CoordinatorAuthLinkConfig,
 	): Promise<CoordinatorAuthLinkCreateResult> {
 		const c = captureConfig(config);
-		const i = capture(input, ["attemptId", "signer", "runtimeVerifierHash", "loopbackRedirect"]);
+		const i = captureCreateInput(input);
 		const s = captureSigner(i?.signer);
-		if (
-			!c ||
-			!i ||
-			!s ||
-			!isAuthControllerId(i.attemptId) ||
-			!isHash(i.runtimeVerifierHash) ||
-			!parseCoordinatorAuthLoopback(i.loopbackRedirect).ok
-		)
-			return rejected("invalid_input");
+		if (!c || !i || !s) return rejected("invalid_input");
 		if (!c.enabled) return rejected("auth_config_changed");
 		const now = authLinkNow(this.clock);
 		const values = [
@@ -344,6 +376,7 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			c.revision,
 			i.runtimeVerifierHash,
 			i.loopbackRedirect as string,
+			i.browserStartHash,
 			now,
 			now + AUTH_LINK_ATTEMPT_TTL_MS,
 			...createSourceValues(c, s),
@@ -384,6 +417,7 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			!configMatches(row, c) ||
 			!signerMatches(row, s) ||
 			row.runtime_verifier_hash !== i.runtimeVerifierHash ||
+			(row.browser_start_hash ?? null) !== i.browserStartHash ||
 			row.loopback_redirect !== i.loopbackRedirect ||
 			row.state === "expired" ||
 			row.expires_at_ms <= now
@@ -436,7 +470,7 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		if (!c.enabled) return rejected("auth_config_changed");
 		const now = authLinkNow(this.clock);
 		const update = {
-			sql: `UPDATE coordinator_auth_link_attempts SET state = 'browser_claimed', browser_transaction_hash = ?, claimed_at_ms = ? WHERE attempt_id = ? AND ${LIVE_CONFIG} AND expires_at_ms > ? AND state = 'pending' AND browser_transaction_hash IS NULL AND NOT EXISTS (SELECT 1 FROM coordinator_auth_session_receipts r WHERE r.coordinator_id = coordinator_auth_link_attempts.coordinator_id AND r.browser_transaction_hash = ?)`,
+			sql: `UPDATE coordinator_auth_link_attempts SET state = 'browser_claimed', browser_transaction_hash = ?, claimed_at_ms = ? WHERE attempt_id = ? AND ${LIVE_CONFIG} AND expires_at_ms > ? AND state = 'pending' AND browser_start_hash IS NULL AND browser_transaction_hash IS NULL AND NOT EXISTS (SELECT 1 FROM coordinator_auth_session_receipts r WHERE r.coordinator_id = coordinator_auth_link_attempts.coordinator_id AND r.browser_transaction_hash = ?)`,
 			values: [
 				i.browserTransactionHash,
 				now,
@@ -454,6 +488,7 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			configMatches(row, c) &&
 			row.expires_at_ms > now &&
 			row.state === "browser_claimed" &&
+			row.browser_start_hash == null &&
 			row.browser_transaction_hash === i.browserTransactionHash
 		)
 			return { kind: "existing", status: status(row, now) };
