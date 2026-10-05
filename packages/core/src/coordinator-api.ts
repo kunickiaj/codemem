@@ -7,6 +7,7 @@
 
 import type { Context } from "hono";
 import { Hono } from "hono";
+import { registerCoordinatorAuthControllerReviewRoutes } from "./coordinator-auth-controller-review-route.js";
 import type {
 	CoordinatorBrowserAuth,
 	CoordinatorBrowserAuthClientKey,
@@ -111,7 +112,12 @@ function registerOptionalCoordinatorAuth(
 ): void {
 	if (opts.authLink && opts.browserAuth) throw new Error("coordinator_auth_configuration_conflict");
 	if (opts.browserAuth?.kind === "unavailable") {
-		for (const path of ["/auth/*", "/v1/auth/link-attempts", "/v1/auth/link-attempts/*"]) {
+		for (const path of [
+			"/auth/*",
+			"/v1/auth/link-attempts",
+			"/v1/auth/link-attempts/*",
+			"/v1/admin/auth-controller-reviews",
+		]) {
 			app.all(
 				path,
 				() =>
@@ -133,8 +139,14 @@ function registerOptionalCoordinatorAuth(
 		ready?.kind === "ready"
 			? { config: ready.auth.storeConfig, storeFactory: ready.storeFactory }
 			: opts.authLink;
-	if (authLink?.config.enabled)
+	if (authLink?.config.enabled) {
 		registerCoordinatorDeviceAuthLinkRoutes(app, { ...deps, ...authLink });
+		registerCoordinatorAuthControllerReviewRoutes(app, {
+			...deps,
+			...authLink,
+			adminSecret: () => opts.runtime.adminSecret(),
+		});
+	}
 	if (ready?.kind === "ready") ready.auth.register(app, ready.clientKey);
 }
 

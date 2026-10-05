@@ -3,6 +3,7 @@ import type {
 	CoordinatorAuthBrowserConfig,
 	CoordinatorAuthBrowserTransactionStore,
 } from "./coordinator-auth-browser-transaction-contract.js";
+import type { CoordinatorAuthControllerStore } from "./coordinator-auth-controller.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import {
 	AUTH_LINK_PURPOSE,
@@ -18,6 +19,7 @@ import {
 import type { CoordinatorEnrollment, CoordinatorStore } from "./coordinator-store-contract.js";
 
 export type CoordinatorDeviceAuthLinkStore = CoordinatorStore &
+	Pick<CoordinatorAuthControllerStore, "createAuthControllerAttestation"> &
 	Pick<
 		CoordinatorAuthLinkStore,
 		| "createAuthLinkAttempt"

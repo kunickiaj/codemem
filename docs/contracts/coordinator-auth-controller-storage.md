@@ -1,17 +1,55 @@
 # Coordinator auth controller-attestation storage contract
 
-**Status:** Reviewed persistence slice; no runtime authorization integration
+**Status:** Reviewed persistence slice with a source-ready, explicitly configured
+admin-review route. Publishing, live provider setup, and account-link activation
+remain separate approvals.
 
 ## Purpose and boundary
 
 This contract defines durable controller-attestation records used by the reviewed
-[coordinator auth protocol](coordinator-auth-protocol.md). It does **not** enable
-active authentication, an admin route, account-link attempts or sessions, or any
-runtime authorization.
+[coordinator auth protocol](coordinator-auth-protocol.md). A configured
+coordinator can expose the narrow ownership-review route below. The record does
+**not** enable account-link attempts or sessions, Google, relay, enrollment, or
+runtime access changes.
 
-The future caller must already authenticate a configured coordinator admin and
-review legacy ownership. This store records the review's labels and receipt; it
-does not verify a credential, signature, or other cryptographic proof itself.
+The caller must already authenticate a configured coordinator admin and review
+existing ownership. This store records the review's labels and receipt; it does
+not create a second admin authority or verify device-signature proof.
+
+## Configured admin-review route
+
+The source implementation registers `POST /v1/admin/auth-controller-reviews`
+only when optional auth configuration is enabled. Disabled setups leave the
+route absent (`404`); an explicitly unavailable setup returns fixed `503`.
+The route requires the existing configured admin credential in
+`X-Codemem-Coordinator-Admin`, verified with a constant-time digest/HMAC check.
+It accepts no caller-nominated admin actor proof.
+
+Request bodies are capped at 4 KiB, reject unknown fields, and use exactly this
+preview schema:
+
+```json
+{
+  "group_id": "team-alpha",
+  "device_id": "device-example",
+  "identity_id": "actor-example",
+  "fingerprint": "<64-lowercase-hex>"
+}
+```
+
+Adding `confirm_evidence_digest` with the preview's 64-character digest requests
+the write. Without it, the route only returns `ready` or `needs_review` and no
+record is created. Confirmation recomputes evidence from the live group,
+enrollment key and fingerprint, selected Identity, and sorted consumed verified
+Team/add-device invitations. A changed digest returns `409 review_stale`.
+
+Unavailable groups or enrollments, disabled or archived state, key mismatch, or
+Identity mismatches return a `needs_review` preview. A consumed, unrevoked
+Team/add-device invitation bound to this exact key with missing or malformed
+review evidence also stops the review; it is not silently ignored.
+Existing conflicting or
+revoked attestations return `409 already_reviewed_or_needs_review`; exact replay
+of the same live review returns the existing record. Responses are `no-store`.
 
 ## Creation input and record
 
@@ -69,7 +107,7 @@ row exists, including an already-revoked row, and preserves the original timesta
 When a live enrollment no longer matches, creation/retry reports
 `enrollment_mismatch` before inspecting conflicting or revoked receipts.
 
-## Storage implementation
+## Storage implementation and deployment
 
 The implementation belongs in these direct source paths:
 
@@ -81,7 +119,9 @@ The implementation belongs in these direct source paths:
 D1 uses one guarded `INSERT`; SQLite uses an immediate transaction. Neither
 backend may treat a check-then-write sequence as authority. Migration 0016 is
 source and test input only; it is not applied to a live deployment by this slice.
-The fresh-install `schema.sql` includes the same table as migration 0016.
+The fresh-install `schema.sql` includes the same table as migration 0016. Source
+and tests are ready for the configured route, but this contract does not claim
+that a live schema or operator configuration has been applied.
 In D1, a post-insert read failure or changed enrollment can leave the durable
 review receipt in place. A missing active read-back throws
 `auth_controller_persistence_incomplete`; it is not a clean rejection. An exact
@@ -93,5 +133,5 @@ failed response undid the write. Later binding transactions must recheck live au
 
 Account-link-attempt persistence is a separate, unreviewed candidate documented
 in [the link-attempt storage contract](coordinator-auth-link-storage.md).
-Browser sessions, routes, and active authentication remain deferred until their
-integration tests pass.
+Browser sessions, live account-link route activation, and provider setup remain
+deferred despite the controller-review route's source and test coverage.

@@ -287,19 +287,23 @@ The canonical signature does not sign the origin; explicit purpose and
 coordinator ID in the body prevent cross-coordinator replay.
 
 Linking requires an active controller attestation for the initiating key, created
-only by an admin-authenticated ownership review in this slice. A legacy caller-provided `recipient_actor_id`, enrollment
+only by an admin-authenticated ownership review in this slice. The configured
+review-route source and tests are ready, but publishing that route, applying its
+schema to a live deployment, and enabling Google remain separate approvals. A
+legacy caller-provided `recipient_actor_id`, enrollment
 `identity_id`, invitation claim, or request label cannot authorize linking.
 
 Persist controller attestations with coordinator ID, existing actor ID, group ID,
 device ID, exact stored public key/fingerprint, authority-source receipt ID,
 revision, creation time, and revocation time. They add no parallel Identity registry.
 The [controller storage contract](coordinator-auth-controller-storage.md) defines
-this first persistence slice; routes and account/session writes remain separate.
+this first persistence slice; browser and account/session routes remain separate.
 Legacy enrollment rows begin with no attestation; do not backfill caller claims
 as trusted evidence. An authenticated coordinator admin explicitly reviews the
-existing actor/device binding and records an evidence reference/digest. Authority
-comes from the configured admin credential, not caller-supplied audit actor labels.
-The admin supplies the existing actor ID and reviewed evidence digest. A non-null
+existing actor/device binding and records a server-computed evidence digest.
+Authority comes from the configured admin credential, not caller-supplied audit
+actor labels. The admin request supplies the existing actor ID; only an explicit
+confirmation carrying the preceding preview digest can create the record. A non-null
 enrollment `identity_id` must equal that actor ID; reject a mismatch. If it is null,
 the reviewed admin attestation is the actor source and records that fact, without
 rewriting enrollment. Later null-to-different-actor changes invalidate the proof.
