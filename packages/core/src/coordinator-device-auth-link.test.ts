@@ -260,6 +260,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 				const payload = await created.json();
 				// Assert
 				expect(created.status).toBe(201);
+				expect(created.headers.get("cache-control")).toBe("no-store");
 				expect(created.headers.get("set-cookie")).toBeNull();
 				expect(retry.status).toBe(200);
 				expect(payload).toEqual({
@@ -339,6 +340,8 @@ for (const backend of ["SQLite", "D1"] as const) {
 			);
 			// Assert
 			expect(own.status).toBe(200);
+			for (const response of [own, foreign, missing])
+				expect(response.headers.get("cache-control")).toBe("no-store");
 			expectPrivate(await own.text());
 			expect(foreign.status).toBe(404);
 			expect(missing.status).toBe(404);
@@ -358,6 +361,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 			// Assert
 			expect(response.status).toBe(400);
 			expect(read).not.toHaveBeenCalled();
+			expect(response.headers.get("cache-control")).toBe("no-store");
 		});
 		test("status nonce replay cannot read protected status again", async ({ f, key, app }) => {
 			// Arrange
@@ -373,6 +377,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 			expect(first.status).toBe(200);
 			expect(replay.status).toBe(401);
 			expect(read).toHaveBeenCalledOnce();
+			expect(replay.headers.get("cache-control")).toBe("no-store");
 			expect(snapshot(f)).toEqual(before);
 		});
 	});
@@ -467,6 +472,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 			const retry = await request(app, key, path, finalBody(key));
 			// Assert
 			expect(applied.status).toBe(200);
+			expect(applied.headers.get("cache-control")).toBe("no-store");
 			expect(applied.headers.get("set-cookie")).toBeNull();
 			expect(replay.status).toBe(401);
 			expect(retry.status).toBe(200);
@@ -594,6 +600,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 			expect(response.status).toBe(200);
 			expectPrivate(await response.text());
 			expect(retire).toHaveBeenCalledWith(config, { attemptId: "attempt-a" });
+			expect(response.headers.get("cache-control")).toBe("no-store");
 			expect(
 				f.db
 					.prepare(
@@ -657,6 +664,8 @@ for (const backend of ["SQLite", "D1"] as const) {
 			// Assert
 			expect(first.status).toBe(401);
 			expect(second.status).toBe(429);
+			for (const response of [first, second])
+				expect(response.headers.get("cache-control")).toBe("no-store");
 			expectPrivate(await first.text());
 			expectPrivate(await second.text());
 			expect(snapshot(f)).toEqual(before);
@@ -684,6 +693,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 				});
 				// Assert
 				expect(response.status).toBe(503);
+				expect(response.headers.get("cache-control")).toBe("no-store");
 				expect(await response.json()).toEqual({ error: "auth_link_unavailable" });
 				expect(rows(f, TABLES[0])[0]).toMatchObject({
 					state: variant === "persist-throw" ? "browser_claimed" : "failed",

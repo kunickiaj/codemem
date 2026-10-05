@@ -242,6 +242,7 @@ it("native D1 signed create, protected browser proof, finalize and retry preserv
 	);
 	// Assert
 	expect(created.status).toBe(201);
+	expect(created.headers.get("cache-control")).toBe("no-store");
 	expect(await created.json()).toEqual({
 		status: { attemptId: f.attemptId, state: "pending", expiresAtMs: NOW + 600000 },
 		identity_id: f.review.identityId,
@@ -252,6 +253,7 @@ it("native D1 signed create, protected browser proof, finalize and retry preserv
 	expect(retry.status).toBe(200);
 	expect(status.status).toBe(200);
 	for (const response of [finalized, retry, status]) {
+		expect(response.headers.get("cache-control")).toBe("no-store");
 		expect(response.headers.get("set-cookie")).toBeNull();
 		privateResponse(await response.text());
 	}
@@ -272,6 +274,8 @@ it("native verifier rejects tampered nonce and unreviewed key possession without
 	// Assert
 	expect(tampered.status).toBe(401);
 	expect(noController.status).toBe(403);
+	for (const response of [tampered, noController])
+		expect(response.headers.get("cache-control")).toBe("no-store");
 	for (const f of [blind, reviewed]) {
 		expect(await rows(f, "link_attempts")).toEqual([]);
 		expect(await rows(f, "account_links")).toEqual([]);
@@ -312,6 +316,8 @@ it("native signed cancel retires only its attempt and cannot cancel a different 
 	expect(denied.status).toBe(403);
 	expect(afterDenied).toEqual(pending);
 	expect(cancelled.status).toBe(200);
+	for (const response of [denied, cancelled])
+		expect(response.headers.get("cache-control")).toBe("no-store");
 	privateResponse(await cancelled.text());
 	const after = await rows(f, "browser_transactions");
 	expect(after.find((r) => r.attempt_id === f.attemptId)).toMatchObject({

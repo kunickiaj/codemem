@@ -204,6 +204,11 @@ claims are not device authorization. Storage or cleanup faults report no success
 and disclose no proof or private cause. The local command, listener, and real
 browser checks remain separate work; this option changes no enrollment or access.
 
+All mounted device-link responses, including errors, use `Cache-Control: no-store`.
+Custom signature headers do not provide the caching protections of a standard
+`Authorization` header; every status poll must reach the signer check and current
+attempt state instead of a cached response.
+
 The runtime signs a finalization `POST` for the same attempt. It presents the
 original runtime verifier and the browser-completion secret; the coordinator
 matches them to that attempt's expected commitment and secret hash, then rejects

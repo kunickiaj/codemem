@@ -263,6 +263,7 @@ async function handleDeviceRequest(
 	action: Action,
 	deps: DeviceAuthLinkDeps,
 ): Promise<Response> {
+	c.header("Cache-Control", "no-store");
 	const { config, storeFactory, authorizeRequest, rateLimitedResponse, authErrorStatus } = deps;
 	let store: CoordinatorDeviceAuthLinkStore | undefined;
 	try {
