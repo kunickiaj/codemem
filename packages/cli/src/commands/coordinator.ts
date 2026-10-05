@@ -49,6 +49,7 @@ import {
 	resolveDbOpt,
 } from "../shared-options.js";
 import { buildCoordinatorLinkAccountCommand } from "./coordinator-link-account.js";
+import { buildCoordinatorReviewDeviceOwnerCommand } from "./coordinator-review-device-owner.js";
 
 function readCoordinatorPublicKey(opts: { publicKey?: string; publicKeyFile?: string }): string {
 	const inline = String(opts.publicKey ?? "").trim();
@@ -113,6 +114,7 @@ function createCoordinatorCommandRoot(): Command {
 		.configureHelp(helpStyle)
 		.description("Manage coordinator invites, join requests, and relay server");
 	cmd.addCommand(buildCoordinatorLinkAccountCommand());
+	cmd.addCommand(buildCoordinatorReviewDeviceOwnerCommand());
 	return cmd;
 }
 

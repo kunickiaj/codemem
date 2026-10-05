@@ -301,6 +301,41 @@ async function remoteRequest(
 	return payload;
 }
 
+export interface CoordinatorAuthControllerReviewActionOptions {
+	remoteUrl: string;
+	adminSecret: string;
+	groupId: string;
+	deviceId: string;
+	identityId: string;
+	fingerprint: string;
+	confirmEvidenceDigest?: string;
+}
+
+/** Preview or explicitly confirm a review using the existing configured admin credential. */
+export async function coordinatorAuthControllerReviewAction(
+	opts: CoordinatorAuthControllerReviewActionOptions,
+): Promise<Record<string, unknown>> {
+	const body: Record<string, unknown> = {
+		group_id: opts.groupId,
+		device_id: opts.deviceId,
+		identity_id: opts.identityId,
+		fingerprint: opts.fingerprint,
+	};
+	if (opts.confirmEvidenceDigest !== undefined)
+		body.confirm_evidence_digest = opts.confirmEvidenceDigest;
+	const payload = await remoteRequest(
+		"POST",
+		`${buildBaseUrl(opts.remoteUrl)}/v1/admin/auth-controller-reviews`,
+		opts.adminSecret,
+		body,
+		null,
+		3,
+		16384,
+	);
+	if (!payload) throw new Error("controller_review_response_invalid");
+	return payload;
+}
+
 function inviteUrlWarnings(rawUrl: string | null | undefined): string[] {
 	const value = String(rawUrl ?? "").trim();
 	if (!value) return [];

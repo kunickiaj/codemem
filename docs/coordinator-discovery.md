@@ -117,11 +117,51 @@ follow-up.
 
 ## Optional account linking
 
-The account-link command and optional app integration are implemented, but
-browser checks and live Google setup remain required before a dogfood pilot. Default
-coordinators return `404` for these routes; this command does not enable them or
-configure Google. The coordinator must already have reviewed ownership for this
-enrolled device's exact key and existing Identity.
+Review the existing device owner before starting optional Google account linking.
+The review uses the already configured coordinator-admin credential; it grants no
+new access and does not enable Google, relay, or account-link routes.
+
+Run this on the existing device first:
+
+```fish
+codemem coordinator review-device-owner team-alpha --coordinator "https://coord.example.com"
+```
+
+The command opens the existing device memory database read-only and previews the
+device, current Identity, memory-author counts, and active Team/direct-Project
+counts. The preview does **not** move memories, change keys, enroll a device,
+adopt an Identity, or change access. It also does not infer ownership from memory
+origin metadata.
+
+The first request is preview-only. In an interactive terminal, a second request
+is sent only after an explicit confirmation; the default answer is **No**. JSON
+and non-terminal runs stay preview-only. Before confirming, the command rereads
+the local device and Identity and stops if either or the coordinator endpoint
+changed.
+
+The coordinator records an immutable controller review only after that explicit
+confirmation. It recomputes server-owned evidence before writing, so a changed
+enrollment, key, group, or reviewed invitation stops the request without a
+write. Existing conflicting or revoked reviews are never overwritten.
+
+If the local database lacks the required actor or binding tables or columns, has another
+active local actor, or identifies a revoked or differently bound device, the
+command fails closed with `needs_review`. It does not initialize or migrate the
+database. Missing count tables display as unknown, not zero.
+
+The command reads the existing coordinator configuration for its endpoint and
+admin credential. Do not place that credential in command arguments or output.
+When using `--config`, ensure its Identity setting matches the configuration used
+by the runtime; selecting a review configuration does not change runtime settings.
+A differing `CODEMEM_DEVICE_ID` override stops the review without a write.
+`--config` selects that configuration, and `--db-path` selects the device memory
+database, not the coordinator's server database.
+
+After a successful review, linking remains a separate opt-in step:
+
+If the review used `--coordinator`, `--config`, or `--db-path` (including `-d`),
+repeat those selections when linking. The next-step hint reminds you to reuse
+them rather than suggesting a command that silently targets saved defaults.
 
 Run it from a terminal on the device being linked:
 
