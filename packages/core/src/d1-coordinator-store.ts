@@ -55,6 +55,18 @@ import type {
 	CoordinatorAuthSessionPurgeOptions,
 	CoordinatorAuthSessionScope,
 } from "./coordinator-auth-session-contract.js";
+import {
+	type CoordinatorIdentityGroupGrant,
+	type CoordinatorIdentityGroupGrantIssueInput,
+	type CoordinatorIdentityGroupGrantIssueResult,
+	type CoordinatorIdentityGroupGrantRevokeInput,
+	type CoordinatorIdentityGroupGrantScope,
+	captureIdentityGroupGrantInput,
+	IDENTITY_GROUP_GRANT_INSERT_SQL,
+	IDENTITY_GROUP_GRANT_LIST_SQL,
+	IDENTITY_GROUP_GRANT_RETRY_SQL,
+	IDENTITY_GROUP_GRANT_REVOKE_SQL,
+} from "./coordinator-identity-group-grant.js";
 import type {
 	CoordinatorLegacyTeamCompletionManifestV1,
 	CoordinatorLegacyTeamCompletionRecord,
@@ -614,6 +626,66 @@ export class D1CoordinatorStore implements CoordinatorStore {
 
 	async close(): Promise<void> {
 		// No-op for D1 bindings.
+	}
+
+	async issueIdentityGroupGrantFromControllerAttestation(
+		input: CoordinatorIdentityGroupGrantIssueInput,
+	): Promise<CoordinatorIdentityGroupGrantIssueResult> {
+		const captured = captureIdentityGroupGrantInput(input, ["coordinatorId", "attestationId"]);
+		if (!captured) return { kind: "rejected", error: "invalid_grant_input" };
+		const grant = await firstRow<CoordinatorIdentityGroupGrant>(
+			this.db
+				.prepare(IDENTITY_GROUP_GRANT_INSERT_SQL)
+				.bind(nowISO(), captured.coordinatorId, captured.attestationId),
+		);
+		if (grant) return { kind: "created", grant };
+		// Never return a separately fetched grant after an authority check.
+		const existing = await firstRow<CoordinatorIdentityGroupGrant>(
+			this.db
+				.prepare(IDENTITY_GROUP_GRANT_RETRY_SQL)
+				.bind(captured.coordinatorId, captured.attestationId),
+		);
+		if (existing) return { kind: "existing", grant: existing };
+		return { kind: "rejected", error: "grant_authority_unavailable" };
+	}
+
+	async listIdentityGroupGrantRevisions(
+		input: CoordinatorIdentityGroupGrantScope,
+	): Promise<CoordinatorIdentityGroupGrant[]> {
+		const captured = captureIdentityGroupGrantInput(input, ["coordinatorId", "identityId"]);
+		if (!captured) throw new Error("invalid_grant_input");
+		const result = await this.db
+			.prepare(IDENTITY_GROUP_GRANT_LIST_SQL)
+			.bind(captured.coordinatorId, captured.identityId)
+			.all<CoordinatorIdentityGroupGrant>();
+		if (!Array.isArray(result?.results)) throw new Error("identity_group_grant_read_incomplete");
+		return result.results;
+	}
+
+	async revokeIdentityGroupGrant(
+		input: CoordinatorIdentityGroupGrantRevokeInput,
+	): Promise<boolean> {
+		const captured = captureIdentityGroupGrantInput(input, [
+			"coordinatorId",
+			"identityId",
+			"groupId",
+			"expectedRevision",
+		]);
+		if (!captured) return false;
+		const result = (await this.db
+			.prepare(IDENTITY_GROUP_GRANT_REVOKE_SQL)
+			.bind(
+				nowISO(),
+				captured.coordinatorId,
+				captured.identityId,
+				captured.groupId,
+				captured.expectedRevision,
+			)
+			.run()) as D1RunResultLike | undefined;
+		const changes = result?.meta?.changes;
+		if (typeof changes !== "number" || !Number.isSafeInteger(changes) || changes < 0 || changes > 1)
+			throw new Error("identity_group_grant_write_incomplete");
+		return changes === 1;
 	}
 
 	async createAuthControllerAttestation(

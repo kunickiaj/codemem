@@ -125,6 +125,15 @@ export {
 	listCoordinatorGroupPreferences,
 	upsertCoordinatorGroupPreference,
 } from "./coordinator-group-preferences.js";
+export type {
+	CoordinatorIdentityGroupGrant,
+	CoordinatorIdentityGroupGrantIssueInput,
+	CoordinatorIdentityGroupGrantIssueResult,
+	CoordinatorIdentityGroupGrantRevokeInput,
+	CoordinatorIdentityGroupGrantScope,
+	CoordinatorIdentityGroupGrantStore,
+} from "./coordinator-identity-group-grant.js";
+export { compareIdentityGroupGrantRevisions } from "./coordinator-identity-group-grant.js";
 export type { InvitePayload } from "./coordinator-invites.js";
 export {
 	decodeInvitePayload,
