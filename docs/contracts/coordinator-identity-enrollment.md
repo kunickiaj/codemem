@@ -190,6 +190,55 @@ authorization must check the new record. Writers must compare it atomically with
 their writes on both SQLite and D1. New owner registration is insert-only and
 refuses existing device/key collisions; no silent resurrection or key replacement.
 
+### Revocation authority and audit
+
+Only these principals may create coordinator-wide device/key tombstones:
+
+- **Verified Identity owner:** an authenticated OIDC-derived management session
+  whose current active account link resolves to that Identity. The target must
+  have a server-verified ownership binding from owner enrollment or explicit
+  legacy controller review. Names, email, enrollment actor hints, possession of
+  an invitation, and a device signature alone are not ownership authorization.
+- **Coordinator-wide operator:** the existing coordinator-wide administrative
+  authority, authenticated with its configured admin credential and acting after
+  an explicit target/impact review. A Team role or per-group approval alone does
+  not confer this authority, and Team privileges never union into it.
+
+The ownership authority must remain current and must not have been revoked or
+reassigned. Device liveness or a historical actor hint cannot substitute for that
+check; losing a signing key does not by itself transfer the Identity's ownership.
+
+A Team admin can remove membership or exclude a device through that Team's
+policy, not globally revoke a device's unrelated memberships or direct grants.
+Owner revocation needs no signature or approval from the device being revoked;
+losing that device must not prevent its verified owner from acting.
+
+The server derives the complete affected device-ID/key subject set and verifies
+ownership across its known aliases before confirmation. The owner path is allowed
+only when every affected binding is verified as belonging to the same Identity.
+Conflicting, shared or unreviewed legacy bindings require coordinator-operator
+review; do not infer ownership or let one Identity revoke another's key aliases.
+An owner response must not disclose another Identity's private membership details.
+
+Browser management actions require CSRF/Origin protection and explicit target
+confirmation. The commit rechecks the principal's current authority, verified
+ownership and complete reviewed impact snapshot together with the tombstone writes
+and one durable redacted revocation audit event. Changes to aliases or authority
+stale the review rather than silently expanding its scope. Audit failure rolls
+back the transaction; a lost response is unknown, and exact retries do not append
+duplicate events. The audit records the authority kind and the verified Identity
+for owner actions, affected subject references, reviewed evidence and server time,
+never credentials, cookies, provider tokens, raw proof secrets or private callback
+URLs. A shared operator credential identifies only coordinator-operator authority,
+not an individual person; a caller-supplied actor ID is not verified attribution.
+
+No supported principal or API may clear, expire, overwrite or automatically revive
+a revocation tombstone. Signing in again does not restore a revoked key. Replacement
+uses a fresh device/key through the reviewed enrollment path, preserving existing
+memberships and historical authorship. Management endpoints remain gated until
+this authority/audit contract and all writer/discovery guards are implemented and
+verified; an internal store method is not itself an authorization boundary.
+
 Per-Team exclusions do not block the Identity binding. They filter only that
 Team's derived eligibility and must survive enrollment/upsert. A Team cannot veto
 the device's unrelated memberships or direct grants. Today's `person_all_devices`
@@ -245,6 +294,9 @@ No Team may claim required-auth readiness until the separate permission policy i
 | Attempt ID leaks; another browser lacks the correct raw browser-start value | Claim rejects without browser rebinding or starting OIDC | Browser-start commitment and concurrent-claim tests |
 | Finalization reaches commit at/after expiry or after cancellation won | No enrollment or audit event; a zero-row winning transition is not success | State/deadline guards and cancellation-race SQLite/D1 parity |
 | Audit insertion fails, or a committed response is lost and retried | Audit failure rolls back the whole transaction; reconciliation of a committed retry yields one enrollment and one redacted event | Audit fault injection and exact-retry SQLite/D1 parity |
+| Team admin attempts coordinator-wide revocation | Denied; only that Team's membership/exclusion policy may change | Principal/scope separation tests |
+| Verified owner requests revocation of a device with conflicting or unreviewed aliases | No global write; coordinator-operator impact review required, with no private cross-Identity details disclosed to the owner | Ownership and alias-snapshot race tests |
+| Authorized revocation audit fails, or sign-in attempts to clear its tombstones | Revocation transaction rolls back on audit failure; sign-in cannot clear or revive retained tombstones | Revocation-audit parity and no-reactivation tests |
 | Attacker's start URL opened on owner's computer | Confirmation shows the attacker's key fingerprint and warns against pasting; enrollment cannot finish without loopback completion. If the owner pastes that secret to the attacker, enrollment can succeed and must be visible and revocable | Phishing, audit and revocation fixtures |
 | Old device revoked after reviewed Identity-group grant | Grant persists; fresh owner registration needs no old-device approval | Transport-grant lifecycle tests |
 
