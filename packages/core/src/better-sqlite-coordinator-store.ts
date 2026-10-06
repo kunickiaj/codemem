@@ -85,8 +85,10 @@ import {
 	type CoordinatorListDeviceRevocationsInput,
 	type CoordinatorRecordAuthorizedNonceInput,
 	DEVICE_REVOCATION_SCHEMA_SQL,
+	DEVICE_REVOCATION_SUBJECT_EXISTS_SQL,
 	DeviceRevocationOperations,
 } from "./coordinator-device-revocation.js";
+import { parseSshEd25519PublicKeyForRevocation } from "./coordinator-ed25519-key-id-compat.js";
 import {
 	type CoordinatorIdentityGroupGrant,
 	type CoordinatorIdentityGroupGrantIssueInput,
@@ -707,6 +709,12 @@ export function connectCoordinator(path?: string): DatabaseType {
 	return db;
 }
 
+function enrollmentRevocationKeyId(publicKey: string): string | null {
+	const parsed = parseSshEd25519PublicKeyForRevocation(publicKey);
+	if (parsed.kind !== "ed25519") return null;
+	return createHash("sha256").update(parsed.blob).digest("hex");
+}
+
 export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	readonly path: string;
 	readonly db: DatabaseType;
@@ -929,10 +937,13 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	}
 
 	private enrollDeviceSync(groupId: string, opts: CoordinatorEnrollDeviceInput): void {
+		const { deviceId, publicKey, fingerprint, identityId, displayName } = opts;
+		const keyId = enrollmentRevocationKeyId(publicKey);
 		const result = this.db
 			.prepare(`INSERT INTO enrolled_devices(
 					group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled, created_at
-				) VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+				) SELECT ?, ?, ?, ?, ?, ?, 1, ?
+				WHERE NOT ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}
 				ON CONFLICT(group_id, device_id) DO UPDATE SET
 					public_key = excluded.public_key,
 					fingerprint = excluded.fingerprint,
@@ -944,14 +955,20 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 					OR enrolled_devices.identity_id = excluded.identity_id`)
 			.run(
 				groupId,
-				opts.deviceId,
-				opts.publicKey,
-				opts.fingerprint,
-				opts.identityId ?? null,
-				opts.displayName ?? null,
+				deviceId,
+				publicKey,
+				fingerprint,
+				identityId ?? null,
+				displayName ?? null,
 				nowISO(),
+				deviceId,
+				keyId,
 			);
-		if (result.changes === 0) throw new Error("invite_identity_conflict");
+		if (result.changes !== 0) return;
+		const revoked = this.db
+			.prepare(`SELECT 1 WHERE ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}`)
+			.get(deviceId, keyId);
+		throw new Error(revoked ? "device_revoked" : "invite_identity_conflict");
 	}
 
 	async close(): Promise<void> {
@@ -1153,7 +1170,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	}
 
 	async enrollDevice(groupId: string, opts: CoordinatorEnrollDeviceInput): Promise<void> {
-		this.enrollDeviceSync(groupId, opts);
+		this.db.transaction(() => this.enrollDeviceSync(groupId, opts)).immediate();
 	}
 
 	async listEnrolledDevices(
@@ -1196,6 +1213,23 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	}
 
 	async setDeviceEnabled(groupId: string, deviceId: string, enabled: boolean): Promise<boolean> {
+		if (enabled) {
+			return this.db
+				.transaction(() => {
+					const enrollment = this.db
+						.prepare("SELECT public_key FROM enrolled_devices WHERE group_id = ? AND device_id = ?")
+						.get(groupId, deviceId) as { public_key: string } | undefined;
+					if (!enrollment) return false;
+					const keyId = enrollmentRevocationKeyId(enrollment.public_key);
+					const result = this.db
+						.prepare(`UPDATE enrolled_devices SET enabled = 1
+						WHERE group_id = ? AND device_id = ? AND public_key = ?
+						AND NOT ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}`)
+						.run(groupId, deviceId, enrollment.public_key, deviceId, keyId);
+					return result.changes > 0;
+				})
+				.immediate();
+		}
 		const result = this.db
 			.prepare(`UPDATE enrolled_devices SET enabled = ?
 				 WHERE group_id = ? AND device_id = ?`)

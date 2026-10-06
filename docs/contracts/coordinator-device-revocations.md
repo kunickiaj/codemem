@@ -86,6 +86,29 @@ Only that supported builtin is added to the bundle import policy; other blocked
 Node modules, native packages and assets remain blocked. Node compatibility flags
 are unchanged, and native tests and bundle checks gate this integration.
 
+## Direct enrollment and re-enable guards
+
+Direct enrollment/upsert and `setDeviceEnabled(..., true)` now check device-ID
+and canonical-key subjects in the statement that changes the enrollment. A
+separate pre-read is not permission to write. SQLite direct enrollment runs in
+an immediate transaction; D1 uses a guarded insert/upsert.
+
+D1 captures enrollment input values before asynchronous hashing. Enabling also
+pins the public key read for that device and compares it in the guarded update;
+revocation or key drift cannot enable a different unchecked key. An enable denial
+returns `false`, while an enrollment denial uses the fixed `device_revoked` error.
+Existing authenticated admin/join acceptance paths translate that error to 403
+where the shared enrollment primitive can reject it.
+
+Disabling, removal, raw fingerprints, and existing Identity-conflict checks retain
+their behavior. With no revocation subjects, ordinary enrollment remains unchanged.
+Removing an enrollment does not remove retained revocation subjects.
+
+The shared synchronous SQLite enrollment primitive also protects callers already
+inside a transaction. This is not proof that every invitation/join path is guarded:
+their D1 batch consumption and retry predicates still need the next writer slice,
+as do bootstrap/controller/link/group-grant authority writes.
+
 ## Activation limits
 
 Existing group disable/removal does not create global subjects automatically.

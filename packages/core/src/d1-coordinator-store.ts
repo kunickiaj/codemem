@@ -59,8 +59,10 @@ import {
 	type CoordinatorCreateDeviceRevocationInput,
 	type CoordinatorListDeviceRevocationsInput,
 	type CoordinatorRecordAuthorizedNonceInput,
+	DEVICE_REVOCATION_SUBJECT_EXISTS_SQL,
 	DeviceRevocationOperations,
 } from "./coordinator-device-revocation.js";
+import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
 import {
 	type CoordinatorIdentityGroupGrant,
 	type CoordinatorIdentityGroupGrantIssueInput,
@@ -847,11 +849,14 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	}
 
 	async enrollDevice(_groupId: string, _opts: CoordinatorEnrollDeviceInput): Promise<void> {
+		const { deviceId, publicKey, fingerprint, identityId, displayName } = _opts;
+		const keyId = await ed25519KeyIdForRevocation(publicKey);
 		const changes = await runChanges(
 			this.db
 				.prepare(`INSERT INTO enrolled_devices(
 					group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled, created_at
-				) VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+				) SELECT ?, ?, ?, ?, ?, ?, 1, ?
+				WHERE NOT ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}
 				ON CONFLICT(group_id, device_id) DO UPDATE SET
 					public_key = excluded.public_key,
 					fingerprint = excluded.fingerprint,
@@ -863,15 +868,23 @@ export class D1CoordinatorStore implements CoordinatorStore {
 					OR enrolled_devices.identity_id = excluded.identity_id`)
 				.bind(
 					_groupId,
-					_opts.deviceId,
-					_opts.publicKey,
-					_opts.fingerprint,
-					_opts.identityId ?? null,
-					_opts.displayName ?? null,
+					deviceId,
+					publicKey,
+					fingerprint,
+					identityId ?? null,
+					displayName ?? null,
 					nowISO(),
+					deviceId,
+					keyId,
 				),
 		);
-		if (changes === 0) throw new Error("invite_identity_conflict");
+		if (changes !== 0) return;
+		const revoked = await firstRow<{ revoked: number }>(
+			this.db
+				.prepare(`SELECT 1 AS revoked WHERE ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}`)
+				.bind(deviceId, keyId),
+		);
+		throw new Error(revoked ? "device_revoked" : "invite_identity_conflict");
 	}
 
 	async listEnrolledDevices(
@@ -922,6 +935,25 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	}
 
 	async setDeviceEnabled(_groupId: string, _deviceId: string, _enabled: boolean): Promise<boolean> {
+		if (_enabled) {
+			const enrollment = await firstRow<{ public_key: string }>(
+				this.db
+					.prepare("SELECT public_key FROM enrolled_devices WHERE group_id = ? AND device_id = ?")
+					.bind(_groupId, _deviceId),
+			);
+			if (!enrollment) return false;
+			const publicKey = enrollment.public_key;
+			const keyId = await ed25519KeyIdForRevocation(publicKey);
+			return (
+				(await runChanges(
+					this.db
+						.prepare(`UPDATE enrolled_devices SET enabled = 1
+						WHERE group_id = ? AND device_id = ? AND public_key = ?
+						AND NOT ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}`)
+						.bind(_groupId, _deviceId, publicKey, _deviceId, keyId),
+				)) > 0
+			);
+		}
 		return (
 			(await runChanges(
 				this.db

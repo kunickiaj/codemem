@@ -166,6 +166,11 @@ function incompleteResult(): never {
 
 const CURRENT_TUPLE_SQL = `SELECT 1 FROM enrolled_devices
 WHERE group_id = ? AND device_id = ? AND public_key = ? AND fingerprint = ?`;
+/** Bind the device ID and derived canonical key ID (or null), in that order. */
+export const DEVICE_REVOCATION_SUBJECT_EXISTS_SQL = `EXISTS (
+SELECT 1 FROM coordinator_device_revocations WHERE
+(subject_kind = 'device_id' AND subject_value = ?) OR
+(subject_kind = 'ed25519_key' AND subject_value = ?))`;
 const SUBJECTS_SQL = `SELECT * FROM coordinator_device_revocations WHERE
 (subject_kind = 'device_id' AND subject_value = ?) OR
 (subject_kind = 'ed25519_key' AND subject_value = ?)

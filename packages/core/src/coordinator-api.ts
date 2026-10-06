@@ -328,6 +328,48 @@ async function readRequestBytes(c: Context, maxBytes = MAX_BODY_BYTES): Promise<
 	return combined;
 }
 
+function deviceRevokedResponse(c: Context, error: unknown): Response {
+	if (error instanceof Error && error.message === "device_revoked") {
+		return c.json({ error: "device_revoked" }, 403);
+	}
+	throw error;
+}
+
+function projectInviteAcceptanceErrorResponse(c: Context, error: unknown): Response {
+	const code = error instanceof Error ? error.message : "invite_invalid";
+	if (code === "device_revoked") return c.json({ error: "device_revoked" }, 403);
+	if (code === "invite_expired") return c.json({ error: code }, 410);
+	if (code === "invite_invalid") return c.json({ error: code }, 404);
+	return c.json({ error: code }, 409);
+}
+
+async function enrollAdminDevice(
+	c: Context,
+	store: CoordinatorStore,
+	groupId: string,
+	input: Parameters<CoordinatorStore["enrollDevice"]>[1],
+): Promise<Response> {
+	try {
+		await store.createGroup(groupId);
+		await store.enrollDevice(groupId, input);
+		return c.json({ ok: true });
+	} catch (error) {
+		return deviceRevokedResponse(c, error);
+	} finally {
+		await store.close();
+	}
+}
+
+async function reviewJoinRequestWithRevocationDenial(
+	...args: Parameters<typeof handleJoinRequestReview>
+): Promise<Response> {
+	try {
+		return await handleJoinRequestReview(...args);
+	} catch (error) {
+		return deviceRevokedResponse(args[0], error);
+	}
+}
+
 export function createCoordinatorApp(
 	opts?: CreateCoordinatorAppOptions,
 ): InstanceType<typeof Hono> {
@@ -976,20 +1018,12 @@ export function createCoordinatorApp(
 			return c.json({ error: "fingerprint_mismatch" }, 400);
 		}
 
-		const store = createStore();
-		try {
-			await store.createGroup(groupId);
-			await store.enrollDevice(groupId, {
-				deviceId,
-				fingerprint,
-				publicKey,
-				displayName,
-			});
-		} finally {
-			await store.close();
-		}
-
-		return c.json({ ok: true });
+		return enrollAdminDevice(c, createStore(), groupId, {
+			deviceId,
+			fingerprint,
+			publicKey,
+			displayName,
+		});
 	});
 
 	// GET /v1/admin/groups — list coordinator groups
@@ -2189,12 +2223,20 @@ export function createCoordinatorApp(
 
 	// POST /v1/admin/join-requests/approve
 	app.post("/v1/admin/join-requests/approve", async (c) => {
-		return handleJoinRequestReview(c, true, { createStore, runtime, rateLimitedResponse });
+		return reviewJoinRequestWithRevocationDenial(c, true, {
+			createStore,
+			runtime,
+			rateLimitedResponse,
+		});
 	});
 
 	// POST /v1/admin/join-requests/deny
 	app.post("/v1/admin/join-requests/deny", async (c) => {
-		return handleJoinRequestReview(c, false, { createStore, runtime, rateLimitedResponse });
+		return reviewJoinRequestWithRevocationDenial(c, false, {
+			createStore,
+			runtime,
+			rateLimitedResponse,
+		});
 	});
 
 	// GET /v1/admin/join-requests — list join requests
@@ -2437,9 +2479,7 @@ export function createCoordinatorApp(
 						accepted_project_intent: acceptedIntent,
 					});
 				} catch (error) {
-					const code = error instanceof Error ? error.message : "invite_invalid";
-					const status = code === "invite_expired" ? 410 : code === "invite_invalid" ? 404 : 409;
-					return c.json({ error: code }, status);
+					return projectInviteAcceptanceErrorResponse(c, error);
 				}
 			}
 			const projectAcceptanceFields = [
@@ -2502,6 +2542,8 @@ export function createCoordinatorApp(
 				group_id: invite.group_id,
 				policy: invite.policy,
 			});
+		} catch (error) {
+			return deviceRevokedResponse(c, error);
 		} finally {
 			await store.close();
 		}

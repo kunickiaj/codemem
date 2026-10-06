@@ -99,9 +99,8 @@ function registerLegacyLongIds(test: RevocationTest) {
 	test("a registered long-ID alias cannot bypass a canonical-key revocation", async ({
 		fixture: f,
 	}) => {
-		// Arrange: revoke with bounded evidence, then register a disposable legacy alias.
+		// Arrange: register the historical alias before revoking its shared key.
 		await enrollRevocation(f);
-		await f.store.createDeviceRevocation(f.input);
 		const alias = {
 			...f.input,
 			groupId: `${f.input.groupId}-${"g".repeat(257)}`,
@@ -109,6 +108,7 @@ function registerLegacyLongIds(test: RevocationTest) {
 		};
 		await f.store.createGroup(alias.groupId);
 		await f.store.enrollDevice(alias.groupId, alias);
+		await f.store.createDeviceRevocation(f.input);
 		const before = await f.rows("coordinator_device_revocations");
 		// Act: exact known enrollment does not narrow global canonical-key denial.
 		const admission = await f.store.recordAuthorizedNonce({ ...nonceInput(f), ...alias });
@@ -153,11 +153,8 @@ function registerOverlappingSubjects(test: RevocationTest) {
 	test("revoking a new device alias preserves the old key action and gives only the new ID a new action", async ({
 		fixture: f,
 	}) => {
-		// Arrange: B1 enrollment writers remain intentionally unguarded.
+		// Arrange: both aliases exist before the first global key revocation.
 		await enrollRevocation(f);
-		await f.store.createDeviceRevocation(f.input);
-		const first = await f.store.listDeviceRevocations(f.input);
-		const oldKey = first.find((record) => record.subject_kind === "ed25519_key");
 		const alias = {
 			...f.input,
 			deviceId: `${f.input.deviceId}-alias`,
@@ -165,6 +162,9 @@ function registerOverlappingSubjects(test: RevocationTest) {
 			actorId: "second-operator",
 		};
 		await f.store.enrollDevice(alias.groupId, alias);
+		await f.store.createDeviceRevocation(f.input);
+		const first = await f.store.listDeviceRevocations(f.input);
+		const oldKey = first.find((record) => record.subject_kind === "ed25519_key");
 		// Act
 		const result = await f.store.createDeviceRevocation(alias);
 		const records = await f.store.listDeviceRevocations(alias);
@@ -347,9 +347,8 @@ function registerAliases(test: RevocationTest) {
 		test(`finds and denies the global key subject through ${alias.name}`, async ({
 			fixture: f,
 		}) => {
-			// Arrange: B1 writers are not guarded yet; seed disposable enrollment aliases.
+			// Arrange: historical aliases exist before their canonical key is revoked.
 			await enrollRevocation(f);
-			await f.store.createDeviceRevocation(f.input);
 			const other = {
 				...f.input,
 				groupId: `${f.input.groupId}-other`,
@@ -358,6 +357,7 @@ function registerAliases(test: RevocationTest) {
 			};
 			await f.store.createGroup(other.groupId);
 			await f.store.enrollDevice(other.groupId, other);
+			await f.store.createDeviceRevocation(f.input);
 			// Act: neither a different group nor a new ID narrows the database-wide query.
 			const records = await f.store.listDeviceRevocations({
 				deviceId: other.deviceId,
