@@ -392,8 +392,12 @@ from device status.
 clears the cookie. It does not revoke links or devices. Sessions end when their
 link is revoked or provider configuration is disabled or changed. Management
 authorization still uses existing role checks; this flow grants no administrator
-role. Sensitive linking and new-device approval require fresh OIDC plus the
-original controller or admin proof.
+role. Sensitive **first-account linking** requires fresh OIDC plus the original
+controller or admin proof. That legacy/bootstrap rule does not authorize future
+owner enrollment of a fresh key for an already active linked Identity; the
+separate [Identity enrollment contract](coordinator-identity-enrollment.md) is
+a proposed, review-gated protocol for that path and is not implemented or an
+activation approval.
 Every protected request rechecks live session expiry/revocation, active link,
 config revision, and the action's authorization. Session credentials are bearer
 secrets even though they are not Google tokens; never return them to the CLI,
