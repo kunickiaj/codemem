@@ -10,13 +10,54 @@ One Identity may have many device keys and belong to many Teams. A verified acco
 
 This is not the legacy first-account-link ceremony, an account replacement, Google-account switch, revoked-link restoration, general recovery system, or automatic adoption of a populated local store. A browser session ends at its own expiry/logout; it is not a device revocation or sync grant.
 
+## Standards first
+
+Authentication remains the existing coordinator's Google OIDC authorization-code
+flow, verified by its maintained OIDC library. Preserve state, nonce, PKCE S256,
+issuer/audience checks, and the coordinator's HTTPS callback. Do not add a custom
+identity credential, coordinator OAuth authorization server, token endpoint, or
+DPoP layer merely to register a device key.
+
+Device registration is an authenticated application authorization action, not a
+second authentication protocol. It requires explicit owner confirmation protected
+by CSRF/Origin checks and proof of possession of the key being registered. Any
+pending request or signed challenge must be scoped, short-lived, single-use, and
+bound to the intended coordinator, operation, and key. Its exact browser/runtime
+handoff still needs review; the existing account-link ceremony is not automatically
+the right device-registration protocol.
+
+[OAuth Security BCP (RFC 9700)](https://www.rfc-editor.org/rfc/rfc9700) guides the
+OAuth boundary. [RFC 8252](https://www.rfc-editor.org/rfc/rfc8252) and
+[PKCE (RFC 7636)](https://www.rfc-editor.org/rfc/rfc7636) apply if a runtime is an
+OAuth native client; that is not today's confidential coordinator client. A local
+application callback alone does not make a custom handoff RFC-compliant. Google's
+callback remains HTTPS on the coordinator; this draft does not change client type.
+
+The ceremony below remains a candidate for review, not a requirement to invent
+or duplicate OAuth. Removing an existing proof also requires a threat-model review;
+calling another step “standard” does not make that removal safe.
+
+### Accepted enrollment authentication policy
+
+An existing Google session may be used in a new, attempt-bound OIDC transaction,
+followed by explicit device confirmation. Enrollment does not require fresh password
+entry or a recent `auth_time` claim. An existing Codemem management cookie by itself
+does not replace that transaction. Control of the Google session can therefore
+authorize a new device; enrollment visibility, safe audit events, and device
+revocation are required safeguards, not proof that account takeover is impossible.
+
+Google [documents its OIDC parameters](https://developers.google.com/identity/openid-connect/openid-connect):
+`prompt` supports `none`, `consent`, and `select_account`; optional `auth_time`
+requires settings enablement. Do not assume that `max_age` or `prompt=login`
+can force fresh credential entry. No provider settings change is authorized here.
+
 ## Authority boundary
 
 | Fact | Authority | Never inferred from |
 | --- | --- | --- |
 | Existing Identity for an account | Server lookup of active exact `issuer` + `sub` link | Client actor ID, email, name, label, invitation claim |
 | Fresh key possession | Signature by that exact pending key | Browser session or invitation bearer |
-| Account ownership for this attempt | Verified provider result bound to original browser transaction; freshness policy unresolved | Retained Google token or profile fields |
+| Account ownership for this attempt | Verified provider result bound to original browser transaction; existing Google session permitted | Retained Google token, profile fields, or Codemem management cookie alone |
 | Team membership / Project scope | Current server policy and membership records | Device enrollment or browser sign-in |
 | New-person admission | Reviewed invitation or operator bootstrap policy | Ordinary sign-in alone |
 | Group enrollment / sync transport | Separately authorized per-group eligibility; derivation contract unresolved | Identity binding alone or discovery-group membership as a Project grant |
@@ -44,7 +85,7 @@ The existing account-link two-proof literal-loopback pattern is the preferred mo
 
 1. The fresh runtime creates a key pair, pins coordinator origin, discovery group, and server identity, binds a literal loopback listener, and submits a public start with its key and commitments. This proves no authority and grants nothing.
 2. The server creates one short-lived pending-device attempt. It saves immutable coordinator/origin, group, server identity, exact key/fingerprint, attempt ID, browser-binding commitment, runtime-verifier commitment, and configuration versions. Once the verified account resolves an Identity, it pins the relevant membership and revocation versions before confirmation. This path consumes no invitation.
-3. The original browser claims the attempt and completes an OIDC transaction bound to that attempt. Fresh network OIDC alone is not proof of fresh interactive authentication; acceptable `max_age`/prompt behavior, claim validation, and threshold remain security decisions.
+3. The original browser claims the attempt and completes an OIDC transaction bound to that attempt. An existing Google session is accepted under the policy above; the transaction is not claimed to prove fresh password entry. State, nonce, PKCE and normal ID-token validation remain required.
 4. The server resolves only the verified exact `issuer` + `sub` to an active link. Unknown, revoked, conflicting, or replacement links deny the attempt; they do not reserve or preclaim an Identity indefinitely.
 5. The browser explicitly confirms the named account, resolved Identity, and pending device. It sends a one-time completion proof only to the exact loopback handoff. Original-cookie browser completion is available only after signed finalization.
 6. The runtime finalizes with a request signed by the pending key carrying both independent secrets: the raw runtime verifier, committed at start and never sent to the browser, and the browser completion secret. Both must match their stored commitments and the same attempt. The signature proves key possession and replaces neither secret. The server commits only after current-state checks pass.
@@ -127,7 +168,7 @@ No Team may claim required-auth readiness until the separate permission policy i
 
 ## Unresolved decisions
 
-- Fresh-interaction threshold and provider-claim validation for enrollment.
+- Minimal authenticated device-registration challenge/handoff, including whether the candidate account-link proof ceremony can be simplified without losing request/key/browser binding. The accepted existing-Google-session policy does not approve an invented authentication protocol.
 - Exact pending-device endpoint shapes, rate limits, storage schema, and safe public error vocabulary.
 - Existing-Identity invite targeting/redemption, eligible signing key, new-person first-binding proof, legacy unlinked-recipient compatibility, and first-owner bootstrap detail.
 - Authorized per-group enrollment derivation from existing Identity eligibility, including what the fresh-device commit writes. Identity binding alone is insufficient for existing group-signed APIs.
