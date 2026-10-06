@@ -1,11 +1,17 @@
 # ADR 0005: Authenticated Identity, device, and membership lifecycle
 
-**Date:** 2026-10-05  
-**Status:** Accepted for product boundaries; protocol and implementation gates remain open  
-**Amends:** [ADR 0004](0004-authenticated-identity-and-live-relay-boundaries.md) (specific decisions listed below)  
-**Related ADRs:** [ADR 0001](0001-project-recipient-policy-boundaries.md), [ADR 0002](0002-legacy-team-hardening-boundaries.md)  
-**Related contract:** [Coordinator account-link protocol](../contracts/coordinator-auth-protocol.md)  
-**Affected areas:** coordinator auth, device enrollment, Team invitations, recipient policy, memory control  
+**Date:** 2026-10-05
+
+**Status:** Accepted for product boundaries; protocol and implementation gates remain open
+
+**Amends:** [ADR 0004](0004-authenticated-identity-and-live-relay-boundaries.md) (specific decisions listed below)
+
+**Related ADRs:** [ADR 0001](0001-project-recipient-policy-boundaries.md), [ADR 0002](0002-legacy-team-hardening-boundaries.md)
+
+**Related contract:** [Coordinator account-link protocol](../contracts/coordinator-auth-protocol.md)
+
+**Affected areas:** coordinator auth, device enrollment, Team invitations, recipient policy, memory control
+
 **Related task:** `codemem-e8j15.12`; implementation slices remain separately tracked and gated
 
 ## Summary
