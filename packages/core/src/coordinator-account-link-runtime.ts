@@ -16,9 +16,13 @@ import {
 	encodeCoordinatorAuthProof32,
 	hashCoordinatorAuthProofBytes32,
 } from "./coordinator-auth-proof.js";
+import {
+	type CoordinatorDeviceLocalEvidence,
+	readCoordinatorDeviceLocalEvidence,
+} from "./coordinator-device-local.js";
 import { buildAuthHeaders, verifySignature } from "./sync-auth.js";
 import { DEFAULT_TIME_WINDOW_S } from "./sync-auth-constants.js";
-import { fingerprintPublicKey, loadPrivateKey } from "./sync-identity.js";
+import { loadPrivateKey } from "./sync-identity.js";
 
 export interface LinkCoordinatorAccountOptions {
 	dbPath: string;
@@ -71,31 +75,13 @@ export class CoordinatorAccountLinkError extends Error {
 function failure(code: Failure): CoordinatorAccountLinkError {
 	return new CoordinatorAccountLinkError(code);
 }
-interface Device {
-	deviceId: string;
-	publicKey: string;
-	fingerprint: string;
-}
-function readDevice(dbPath: string): Device {
+function readDevice(dbPath: string): CoordinatorDeviceLocalEvidence {
 	if (!dbPath || dbPath === ":memory:") throw failure("device_unavailable");
 	const db = new Database(dbPath, { readonly: true, fileMustExist: true, timeout: 1000 });
 	try {
-		const rows = db
-			.prepare("SELECT device_id, public_key, fingerprint FROM sync_device LIMIT 2")
-			.all() as Record<string, unknown>[];
-		const row = rows[0];
-		if (
-			rows.length !== 1 ||
-			!row ||
-			!isAuthControllerId(row.device_id) ||
-			typeof row.public_key !== "string" ||
-			!row.public_key.startsWith("ssh-ed25519 ") ||
-			typeof row.fingerprint !== "string" ||
-			!/^[a-f0-9]{64}$/.test(row.fingerprint) ||
-			fingerprintPublicKey(row.public_key) !== row.fingerprint
-		)
-			throw failure("device_unavailable");
-		return { deviceId: row.device_id, publicKey: row.public_key, fingerprint: row.fingerprint };
+		const device = readCoordinatorDeviceLocalEvidence(db);
+		if (!device) throw failure("device_unavailable");
+		return device;
 	} finally {
 		db.close();
 	}
@@ -103,7 +89,7 @@ function readDevice(dbPath: string): Device {
 interface Runtime {
 	options: LinkCoordinatorAccountOptions;
 	origin: string;
-	device: Device;
+	device: CoordinatorDeviceLocalEvidence;
 	attemptId: string;
 	deadline: number;
 	expiresAtMs?: number;
@@ -464,7 +450,7 @@ export async function linkCoordinatorAccount(
 			options.loopbackHost !== "::1")
 	)
 		throw failure("invalid_options");
-	let device: Device;
+	let device: CoordinatorDeviceLocalEvidence;
 	try {
 		device = readDevice(options.dbPath);
 		if (!loadPrivateKey(options.keysDir, undefined, device.deviceId))

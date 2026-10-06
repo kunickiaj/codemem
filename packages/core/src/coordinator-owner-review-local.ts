@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
-import { fingerprintPublicKey } from "./sync-fingerprint.js";
+import { readCoordinatorDeviceLocalEvidence } from "./coordinator-device-local.js";
 
 export interface CoordinatorOwnerReviewLocalOptions {
 	dbPath: string;
@@ -42,27 +42,6 @@ function label(value: unknown): string | undefined {
 			.trim()
 			.slice(0, 120) || undefined
 	);
-}
-function readDevice(
-	db: Database.Database,
-): NonNullable<CoordinatorOwnerReviewLocalEvidence["device"]> | null {
-	if (!hasColumns(db, "sync_device", ["device_id", "public_key", "fingerprint"])) return null;
-	const rows = db
-		.prepare("SELECT device_id, public_key, fingerprint FROM sync_device LIMIT 2")
-		.all() as Row[];
-	const row = rows[0];
-	if (
-		rows.length !== 1 ||
-		!row ||
-		!isAuthControllerId(row.device_id) ||
-		typeof row.public_key !== "string" ||
-		!row.public_key.startsWith("ssh-ed25519 ") ||
-		typeof row.fingerprint !== "string" ||
-		!/^[a-f0-9]{64}$/.test(row.fingerprint) ||
-		fingerprintPublicKey(row.public_key) !== row.fingerprint
-	)
-		return null;
-	return { deviceId: row.device_id, publicKey: row.public_key, fingerprint: row.fingerprint };
 }
 function checkActor(db: Database.Database, identityId: string, reasons: string[]): OwnershipRecord {
 	if (!hasColumns(db, "actors", ["actor_id", "is_local", "status", "merged_into_actor_id"])) {
@@ -141,7 +120,7 @@ function readEvidence(
 	db: Database.Database,
 	options: CoordinatorOwnerReviewLocalOptions,
 ): CoordinatorOwnerReviewLocalEvidence {
-	const device = readDevice(db);
+	const device = readCoordinatorDeviceLocalEvidence(db);
 	const empty: CoordinatorOwnerReviewLocalEvidence = {
 		state: "needs_review",
 		reasons: ["device_unavailable"],
