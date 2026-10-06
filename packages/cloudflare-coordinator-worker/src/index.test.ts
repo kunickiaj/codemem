@@ -23,6 +23,7 @@ import { createCloudflareCoordinatorWorker } from "./index.js";
 
 type SqliteDatabase = ReturnType<typeof connectCoordinator>;
 type SqliteStatement = {
+	reader: boolean;
 	get: (...values: unknown[]) => unknown;
 	run: (...values: unknown[]) => { changes: number };
 	all: (...values: unknown[]) => unknown[];
@@ -396,6 +397,9 @@ class SqliteD1Statement implements D1PreparedStatementLike {
 	}
 
 	executeRunSync(): unknown {
+		if (this.statement.reader) {
+			return { results: this.statement.all(...this.bound), meta: { changes: 0 } };
+		}
 		const result = this.statement.run(...this.bound);
 		return { meta: { changes: result.changes } };
 	}

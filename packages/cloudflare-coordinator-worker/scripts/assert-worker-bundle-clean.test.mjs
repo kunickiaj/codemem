@@ -53,13 +53,27 @@ test("rejects static, dynamic, and generated require imports of forbidden module
 });
 
 test("allows only the Node imports used by the Worker bundle", () => {
+	// Arrange: buffer is the only newly permitted builtin.
 	const source = [
+		'import { Buffer } from "node:buffer";',
 		'import { createHash } from "node:crypto";',
 		'import { resolve } from "node:path";',
 		'const crypto = require("crypto");',
 		'import "path";',
 	].join("\n");
-	assert.deepEqual(findForbiddenWorkerImports(source), []);
+	// Act
+	const forbidden = findForbiddenWorkerImports(source);
+	// Assert
+	assert.deepEqual(forbidden, []);
+});
+
+test("buffer permission does not allow process, filesystem, or other Node builtins", () => {
+	// Arrange
+	const source = 'import "node:buffer";\nimport "node:process";\nimport "process";\nimport "node:fs";\nimport "node:buffer/extra";';
+	// Act
+	const forbidden = findForbiddenWorkerImports(source);
+	// Assert
+	assert.deepEqual(forbidden, ["node:buffer/extra", "node:fs", "node:process", "process"]);
 });
 
 test("rejects forbidden packages after the bundler resolves their import specifiers", () => {

@@ -207,6 +207,121 @@ for (const backend of ["SQLite", "D1"] as const) {
 		).toBe("applied");
 	}
 
+	describe(`${backend} global revocation authorization`, () => {
+		test("admits a valid real signature before revocation and denies it afterwards", async ({
+			f,
+			key,
+			app,
+		}) => {
+			// Arrange
+			const body = { group_id: "group-a", addresses: [] };
+			const guard = vi.spyOn(f.store, "recordAuthorizedNonce");
+			const legacy = vi.spyOn(f.store, "recordNonce");
+			const admitted = await request(app, key, "/v1/presence", body);
+			await f.store.createDeviceRevocation({ groupId: "group-a", ...key });
+			const before = rows(f, "request_nonces");
+			// Act
+			const denied = await request(app, key, "/v1/presence", body);
+			// Assert
+			expect(admitted.status).toBe(200);
+			expect(denied.status).toBe(403);
+			expect(await denied.json()).toEqual({ error: "device_revoked" });
+			expect(rows(f, "request_nonces")).toEqual(before);
+			expect(guard).toHaveBeenLastCalledWith(
+				expect.objectContaining({
+					groupId: "group-a",
+					deviceId: key.deviceId,
+					publicKey: key.publicKey,
+					createdAt: new Date(NOW).toISOString(),
+				}),
+			);
+			expect(legacy).not.toHaveBeenCalled();
+		});
+		test("rejects an invalid real signature before consulting revocation or consuming a nonce", async ({
+			f,
+			key,
+			app,
+		}) => {
+			// Arrange
+			await f.store.createDeviceRevocation({ groupId: "group-a", ...key });
+			const guard = vi.spyOn(f.store, "recordAuthorizedNonce");
+			const body = JSON.stringify({ group_id: "group-a", addresses: [] });
+			const signed = headers(key, "POST", "/v1/presence", body);
+			signed["X-Opencode-Signature"] = `v2:${Buffer.alloc(64).toString("base64")}`;
+			// Act
+			const response = await app.request("/v1/presence", { method: "POST", headers: signed, body });
+			// Assert
+			expect(response.status).toBe(401);
+			expect(await response.json()).toEqual({ error: "invalid_signature" });
+			expect(guard).not.toHaveBeenCalled();
+			expect(rows(f, "request_nonces")).toEqual([]);
+		});
+		test("denies revocation committed during signature verification before nonce INSERT", async ({
+			f,
+			key,
+		}) => {
+			// Arrange
+			const verifier = vi.fn(
+				async (
+					input: Parameters<NonNullable<CreateCoordinatorAppOptions["requestVerifier"]>>[0],
+				) => {
+					const valid = verifySignature({ ...input, bodyBytes: Buffer.from(input.bodyBytes) });
+					await f.store.createDeviceRevocation({ groupId: "group-a", ...key });
+					return valid;
+				},
+			);
+			const app = makeApp(f, { requestVerifier: verifier });
+			// Act
+			const response = await request(app, key, "/v1/presence", {
+				group_id: "group-a",
+				addresses: [],
+			});
+			// Assert
+			expect(verifier).toHaveResolvedWith(true);
+			expect(response.status).toBe(403);
+			expect(await response.json()).toEqual({ error: "device_revoked" });
+			expect(rows(f, "request_nonces")).toEqual([]);
+			expect(rows(f, "presence_records")).toEqual([]);
+		});
+		for (const route of ["create", "status", "finalize", "cancel"] as const) {
+			test(`denies revoked real signatures on signed auth-link ${route}`, async ({
+				f,
+				key,
+				app,
+			}) => {
+				// Arrange: existing route tests cover each corresponding non-revoked success.
+				await seed(f, key, app);
+				await f.store.createDeviceRevocation({ groupId: "group-a", ...key });
+				const before = snapshot(f);
+				const nonces = rows(f, "request_nonces");
+				let path = ROOT;
+				let body: unknown = createBody({ attempt_id: "attempt-next" });
+				let method = "POST";
+				if (route === "status") {
+					path = `${ROOT}/attempt-a?group_id=group-a`;
+					method = "GET";
+				}
+				if (route === "finalize") {
+					path = `${ROOT}/attempt-a/finalize`;
+					body = finalBody(key);
+				}
+				if (route === "cancel") {
+					path = `${ROOT}/attempt-a/cancel`;
+					body = { group_id: "group-a" };
+				}
+				// Act
+				const response = await request(app, key, path, body, method);
+				const text = await response.text();
+				// Assert: no body secret or account data appears in the denial.
+				expect(response.status).toBe(403);
+				expect(JSON.parse(text)).toEqual({ error: "auth_link_unavailable" });
+				expectPrivate(text);
+				expect(snapshot(f)).toEqual(before);
+				expect(rows(f, "request_nonces")).toEqual(nonces);
+			});
+		}
+	});
+
 	describe(`${backend} signed link creation`, () => {
 		test.for(["absent", "disabled"])(
 			"%s option exposes no routes or store",

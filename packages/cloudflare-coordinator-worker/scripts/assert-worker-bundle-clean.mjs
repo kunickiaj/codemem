@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 // Extend this allowlist only when the Worker runtime and source graph require it.
-const ALLOWED_NODE_IMPORTS = new Set(["node:crypto", "node:path"]);
+const ALLOWED_NODE_IMPORTS = new Set(["node:buffer", "node:crypto", "node:path"]);
 const BARE_NODE_IMPORTS = new Set(
 	builtinModules.filter((specifier) => !specifier.startsWith("node:")),
 );

@@ -4,6 +4,15 @@ export {
 	DEFAULT_COORDINATOR_DB_PATH,
 } from "./better-sqlite-coordinator-store.js";
 export type {
+	CoordinatorAuthorizedNonceResult,
+	CoordinatorCreateDeviceRevocationInput,
+	CoordinatorCreateDeviceRevocationResult,
+	CoordinatorDeviceRevocationRecord,
+	CoordinatorDeviceRevocationStore,
+	CoordinatorListDeviceRevocationsInput,
+	CoordinatorRecordAuthorizedNonceInput,
+} from "./coordinator-device-revocation.js";
+export type {
 	CoordinatorLegacyTeamCompletionDeviceDecisionV1,
 	CoordinatorLegacyTeamCompletionManifestV1,
 	CoordinatorLegacyTeamCompletionMembershipV1,

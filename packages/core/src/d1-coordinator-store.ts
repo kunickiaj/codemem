@@ -56,6 +56,12 @@ import type {
 	CoordinatorAuthSessionScope,
 } from "./coordinator-auth-session-contract.js";
 import {
+	type CoordinatorCreateDeviceRevocationInput,
+	type CoordinatorListDeviceRevocationsInput,
+	type CoordinatorRecordAuthorizedNonceInput,
+	DeviceRevocationOperations,
+} from "./coordinator-device-revocation.js";
+import {
 	type CoordinatorIdentityGroupGrant,
 	type CoordinatorIdentityGroupGrantIssueInput,
 	type CoordinatorIdentityGroupGrantIssueResult,
@@ -429,12 +435,29 @@ async function runChanges(statement: D1PreparedStatementLike): Promise<number> {
 export class D1CoordinatorStore implements CoordinatorStore {
 	readonly db: D1DatabaseLike;
 	private readonly authLinks: AuthLinkOperations;
+	private readonly deviceRevocations: DeviceRevocationOperations;
 	private readonly authSessions: AuthSessionOperations;
 	private readonly authAccountProfiles: AuthAccountProfileOperations;
 	private readonly authBrowserTransactions: CoordinatorAuthBrowserTransactions;
 
 	constructor(db: D1DatabaseLike, options: CoordinatorAuthLinkOptions = {}) {
 		this.db = db;
+		this.deviceRevocations = new DeviceRevocationOperations(
+			{
+				all: (statement) =>
+					db
+						.prepare(statement.sql)
+						.bind(...statement.values)
+						.all(),
+				batch: async (statements) => {
+					if (!db.batch) throw new Error("device_revocation_atomic_batch_required");
+					return db.batch(
+						statements.map((statement) => db.prepare(statement.sql).bind(...statement.values)),
+					);
+				},
+			},
+			options.authClock,
+		);
 		const authBackend: AuthLinkBackend = {
 			first: <T>(statement: AuthLinkStatement) =>
 				db
@@ -950,6 +973,18 @@ export class D1CoordinatorStore implements CoordinatorStore {
 
 	async cleanupNonces(_cutoff: string): Promise<void> {
 		await this.db.prepare("DELETE FROM request_nonces WHERE created_at < ?").bind(_cutoff).run();
+	}
+
+	async createDeviceRevocation(input: CoordinatorCreateDeviceRevocationInput) {
+		return this.deviceRevocations.createDeviceRevocation(input);
+	}
+
+	async listDeviceRevocations(input: CoordinatorListDeviceRevocationsInput) {
+		return this.deviceRevocations.listDeviceRevocations(input);
+	}
+
+	async recordAuthorizedNonce(input: CoordinatorRecordAuthorizedNonceInput) {
+		return this.deviceRevocations.recordAuthorizedNonce(input);
 	}
 
 	async createInvite(_opts: CoordinatorCreateInviteInput): Promise<CoordinatorInvite> {

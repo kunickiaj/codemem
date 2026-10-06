@@ -116,6 +116,11 @@ function createMockStore(
 		renameDevice: vi.fn(async () => false),
 		setDeviceEnabled: vi.fn(async () => false),
 		removeDevice: vi.fn(async () => false),
+		createDeviceRevocation: vi.fn(
+			async () => ({ kind: "rejected", error: "invalid_input" }) as const,
+		),
+		listDeviceRevocations: vi.fn(async () => []),
+		recordAuthorizedNonce: vi.fn(async () => "recorded" as const),
 		recordNonce: vi.fn(async () => true),
 		cleanupNonces: vi.fn(async () => undefined),
 		createInvite: vi.fn(async (_: CoordinatorCreateInviteInput): Promise<CoordinatorInvite> => {
@@ -206,6 +211,23 @@ function createMockStore(
 }
 
 const allowRequest: CoordinatorRequestVerifier = async () => true;
+
+function expectNoNonceWrite(store: CoordinatorStoreInterface) {
+	expect(store.recordNonce).not.toHaveBeenCalled();
+	expect(store.recordAuthorizedNonce).not.toHaveBeenCalled();
+}
+
+function createNonceReplayMockStore(overrides: Partial<CoordinatorStoreInterface>) {
+	return createMockStore({
+		...overrides,
+		recordAuthorizedNonce: vi.fn(async () => "nonce_replay" as const),
+	});
+}
+
+function expectNoInviteOrNonceWrite(store: CoordinatorStoreInterface) {
+	expect(store.createInvite).not.toHaveBeenCalled();
+	expectNoNonceWrite(store);
+}
 
 function authHeaders(deviceId = "device-a", nonce = "nonce-a") {
 	return {
@@ -906,7 +928,7 @@ describe("createCoordinatorApp dependency injection", () => {
 			expect(inviteResponse.status).toBe(403);
 			expect(await inviteResponse.json()).toEqual({ error: "device_disabled" });
 			expect(requestVerifier).not.toHaveBeenCalled();
-			expect(store.recordNonce).not.toHaveBeenCalled();
+			expectNoNonceWrite(store);
 			expect(store.upsertPresence).not.toHaveBeenCalled();
 		});
 
@@ -964,7 +986,7 @@ describe("createCoordinatorApp dependency injection", () => {
 			expect(response.status).toBe(401);
 			expect(await response.json()).toEqual({ error: "unknown_device" });
 			expect(requestVerifier).not.toHaveBeenCalled();
-			expect(store.recordNonce).not.toHaveBeenCalled();
+			expectNoNonceWrite(store);
 			expect(store.createInvite).not.toHaveBeenCalled();
 		});
 
@@ -987,7 +1009,7 @@ describe("createCoordinatorApp dependency injection", () => {
 				runtime: { adminSecret: () => null, now: () => "2026-03-28T00:00:00Z" },
 				requestVerifier: async () => false,
 			});
-			const replayStore = createMockStore({ ...baseStore, recordNonce: vi.fn(async () => false) });
+			const replayStore = createNonceReplayMockStore(baseStore);
 			const replayApp = createCoordinatorApp({
 				storeFactory: () => replayStore,
 				runtime: { adminSecret: () => null, now: () => "2026-03-28T00:00:00Z" },
@@ -1009,7 +1031,7 @@ describe("createCoordinatorApp dependency injection", () => {
 			expect(await invalidSignature.json()).toEqual({ error: "invalid_signature" });
 			expect(replay.status).toBe(401);
 			expect(await replay.json()).toEqual({ error: "nonce_replay" });
-			expect(invalidSignatureStore.createInvite).not.toHaveBeenCalled();
+			expectNoInviteOrNonceWrite(invalidSignatureStore);
 			expect(replayStore.createInvite).not.toHaveBeenCalled();
 		});
 
@@ -3650,4 +3672,96 @@ describe("createCoordinatorApp dependency injection", () => {
 			},
 		});
 	});
+});
+
+describe("guarded nonce API result mapping", () => {
+	it("rejects a nonstring stored public key without coercing it or invoking signature and nonce guards", async () => {
+		// Arrange: this intentionally corrupt mock represents an invalid legacy database field.
+		const publicKey = { toString: vi.fn(() => "private-corrupt-key-marker") };
+		const enrollment = {
+			...enrolledDevice(),
+			public_key: publicKey,
+		} as unknown as CoordinatorEnrollment;
+		const requestVerifier = vi.fn(async () => true);
+		const store = createMockStore({
+			getEnrollment: vi.fn(async () => enrollment),
+			getGroup: vi.fn(async () => ({
+				group_id: "g1",
+				display_name: "Group",
+				archived_at: null,
+				created_at: "2026-03-28T00:00:00Z",
+			})),
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: { adminSecret: () => null, now: () => "2026-03-28T00:00:00Z" },
+			requestVerifier,
+		});
+		// Act
+		const response = await app.request("/v1/peers?group_id=g1", { headers: authHeaders() });
+		// Assert: no 500, implicit coercion, nonce write, or raw field disclosure.
+		expect(response.status).toBe(401);
+		expect(await response.json()).toEqual({ error: "unknown_device" });
+		expect(publicKey.toString).not.toHaveBeenCalled();
+		expect(requestVerifier).not.toHaveBeenCalled();
+		expectNoNonceWrite(store);
+		expect(store.listGroupPeers).not.toHaveBeenCalled();
+	});
+	for (const admission of [
+		"recorded",
+		"nonce_replay",
+		"device_revoked",
+		"unknown_device",
+		"device_disabled",
+		"group_not_found",
+		"group_archived",
+	] as const) {
+		it(`maps ${admission} only after signature verification`, async () => {
+			// Arrange: opaque keys intentionally use an isolated fake verifier.
+			const requestVerifier = vi.fn(async () => true);
+			const store = createMockStore({
+				getEnrollment: vi.fn(async () => enrolledDevice()),
+				getGroup: vi.fn(async () => ({
+					group_id: "g1",
+					display_name: "Group",
+					archived_at: null,
+					created_at: "2026-03-28T00:00:00Z",
+				})),
+				recordAuthorizedNonce: vi.fn(async () => {
+					expect(requestVerifier).toHaveBeenCalledOnce();
+					return admission;
+				}),
+			});
+			const app = createCoordinatorApp({
+				storeFactory: () => store,
+				runtime: { adminSecret: () => null, now: () => "2026-03-28T00:00:00Z" },
+				requestVerifier,
+			});
+			// Act
+			const response = await app.request("/v1/peers?group_id=g1", { headers: authHeaders() });
+			// Assert: the old primitive is never a fallback for any admission outcome.
+			const statuses = {
+				recorded: 200,
+				nonce_replay: 401,
+				device_revoked: 403,
+				unknown_device: 401,
+				device_disabled: 403,
+				group_not_found: 401,
+				group_archived: 409,
+			};
+			expect(response.status).toBe(statuses[admission]);
+			expect(store.recordAuthorizedNonce).toHaveBeenCalledWith({
+				groupId: "g1",
+				deviceId: "device-a",
+				publicKey: "pk-a",
+				nonce: "nonce-a",
+				createdAt: "2026-03-28T00:00:00Z",
+			});
+			expect(store.recordNonce).not.toHaveBeenCalled();
+			if (admission !== "recorded") {
+				expect(await response.json()).toEqual({ error: admission });
+				expect(store.listGroupPeers).not.toHaveBeenCalled();
+			}
+		});
+	}
 });

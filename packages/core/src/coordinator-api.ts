@@ -187,15 +187,6 @@ function pathWithQuery(url: string): string {
 	return parsed.search ? `${parsed.pathname}${parsed.search}` : parsed.pathname;
 }
 
-async function recordNonce(
-	store: CoordinatorStore,
-	deviceId: string,
-	nonce: string,
-	createdAt: string,
-): Promise<boolean> {
-	return await store.recordNonce(deviceId, nonce, createdAt);
-}
-
 async function cleanupNonces(store: CoordinatorStore, cutoff: string): Promise<void> {
 	await store.cleanupNonces(cutoff);
 }
@@ -241,6 +232,9 @@ async function authorizeRequest(
 		return { ok: false, error: "group_archived", enrollment: null };
 	}
 
+	const publicKey = enrollment.public_key;
+	if (typeof publicKey !== "string")
+		return { ok: false, error: "unknown_device", enrollment: null };
 	let valid: boolean;
 	try {
 		valid = await requestVerifier({
@@ -250,7 +244,7 @@ async function authorizeRequest(
 			timestamp,
 			nonce,
 			signature,
-			publicKey: String(enrollment.public_key),
+			publicKey: String(publicKey),
 			deviceId,
 		});
 	} catch {
@@ -262,8 +256,15 @@ async function authorizeRequest(
 	}
 
 	const createdAt = runtime.now();
-	if (!(await recordNonce(store, deviceId, nonce, createdAt))) {
-		return { ok: false, error: "nonce_replay", enrollment: null };
+	const admission = await store.recordAuthorizedNonce({
+		groupId: opts.groupId,
+		deviceId,
+		publicKey,
+		nonce,
+		createdAt,
+	});
+	if (admission !== "recorded") {
+		return { ok: false, error: admission, enrollment: null };
 	}
 
 	// Clock-source note: the nonce timestamp/cutoff below is driven by the
@@ -284,7 +285,7 @@ async function authorizeRequest(
 }
 
 function authErrorStatus(error: string): 401 | 403 | 409 {
-	if (error === "device_disabled") return 403;
+	if (error === "device_disabled" || error === "device_revoked") return 403;
 	if (error === "group_archived") return 409;
 	return 401;
 }

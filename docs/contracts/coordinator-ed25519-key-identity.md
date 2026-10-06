@@ -1,8 +1,9 @@
 # Canonical coordinator device-key identity
 
-**Scope:** Inert helper and verifier compatibility tests for future device
-revocation. This slice changes no signature acceptance, stored fingerprint,
-enrollment, permission, or revocation behavior.
+**Scope:** Canonical metadata helpers and their integration into internal
+coordinator revocation storage and signed-request admission. Signature acceptance
+and legacy text fingerprints remain unchanged. Public revocation management and
+complete writer/discovery enforcement are still gated.
 
 ## Two fingerprints serve different purposes
 
@@ -41,22 +42,29 @@ The original `atob`-based functions and both signature verifiers keep their
 existing behavior. Normalizing a Node-compatible encoding for metadata does not
 make the Worker accept its signature. Native compatibility tests pin that distinction.
 
-The compatibility module has no application caller or root-package export yet.
-The Worker's current bundle policy is unchanged: introducing `node:buffer` into
-the deployed entry point requires a specific import review and bundle checks at
-integration, not a blanket expansion of allowed Node APIs.
+The [revocation admission contract](coordinator-device-revocations.md) uses the
+finished compatibility wrapper to derive IDs from server-held public keys.
+The Worker bundle permits only the specifically required `node:buffer` builtin
+in addition to its existing supported imports; unsupported modules and native
+assets remain blocked. Native alias tests and bundle checks cover that integration.
 
-## Guard integration remains gated
+## Admission invariant and remaining gates
 
 The Node verifier's Buffer decoder and the Worker's `atob` decoder accept
 different base64 representations. Tests pin those differences against the real
 verifiers; callers must not assume the original strict helper covers both.
 
-If a real verifier accepts a key that the original strict helper cannot parse, a future revocation
-guard must not fall back silently to device-ID-only checks. It must either obtain
-the canonical identity from the exact bytes the trusted verifier checked, or apply
-an explicitly reviewed fail-closed compatibility rule. This slice chooses neither
-runtime policy and adds no guard.
+The first-party Node and Worker verifiers accept Ed25519 keys whose actual bytes
+are understood by the compatibility wrapper. Parity tests maintain that invariant.
+Admission additionally rejects an Ed25519 entry when that wrapper returns no ID;
+it never silently falls back to a device-ID-only check for a malformed Ed25519 key.
+Opaque non-key fixture strings can retain device-ID-only storage behavior, but
+neither real verifier authenticates them. A custom verifier for another algorithm
+needs an explicit compatible key-identity contract before key-based revocation.
+
+Owner enrollment must require a supported canonical key ID. Public management,
+all enrollment writers, and discovery/bootstrap closure still need their separate
+guards and review; this integration does not claim complete revocation behavior.
 
 Normalizing keys for revocation also does not authorize enrollment. Registration
 still needs verified account ownership, explicit device confirmation, key

@@ -20,6 +20,7 @@ export function sqliteD1(
 	hooks: {
 		beforeFirst?: () => void;
 		beforeRead?: (query: string, values: readonly unknown[]) => void;
+		beforeWrite?: (query: string, values: readonly unknown[]) => void;
 		beforeBatch?: (statements: readonly { query: string; values: readonly unknown[] }[]) => void;
 	} = {},
 ): D1DatabaseLike {
@@ -32,7 +33,14 @@ export function sqliteD1(
 		prepare(query) {
 			const statement = db.prepare(query);
 			let values: unknown[] = [];
-			const run = () => ({ meta: { changes: statement.run(...values).changes } });
+			const run = () => {
+				if (statement.reader) {
+					hooks.beforeRead?.(query, values);
+					return { results: statement.all(...values), meta: { changes: 0 } };
+				}
+				hooks.beforeWrite?.(query, values);
+				return { meta: { changes: statement.run(...values).changes } };
+			};
 			const adapter: D1PreparedStatementLike = {
 				bind(...bound) {
 					values = bound;

@@ -81,6 +81,13 @@ import {
 	type CoordinatorAuthSessionScope,
 } from "./coordinator-auth-session-contract.js";
 import {
+	type CoordinatorCreateDeviceRevocationInput,
+	type CoordinatorListDeviceRevocationsInput,
+	type CoordinatorRecordAuthorizedNonceInput,
+	DEVICE_REVOCATION_SCHEMA_SQL,
+	DeviceRevocationOperations,
+} from "./coordinator-device-revocation.js";
+import {
 	type CoordinatorIdentityGroupGrant,
 	type CoordinatorIdentityGroupGrantIssueInput,
 	type CoordinatorIdentityGroupGrantIssueResult,
@@ -406,6 +413,7 @@ function upgradeAuthLinkBrowserStartSchema(db: DatabaseType): void {
 
 function initializeSchema(db: DatabaseType): void {
 	db.exec(IDENTITY_GROUP_GRANT_SCHEMA_SQL);
+	db.exec(DEVICE_REVOCATION_SCHEMA_SQL);
 	db.exec(AUTH_CONTROLLER_SCHEMA_SQL);
 	upgradeAuthLinkBrowserStartSchema(db);
 	db.exec(AUTH_LINK_SCHEMA_SQL);
@@ -703,6 +711,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	readonly path: string;
 	readonly db: DatabaseType;
 	private readonly authLinks: AuthLinkOperations;
+	private readonly deviceRevocations: DeviceRevocationOperations;
 	private readonly authSessions: AuthSessionOperations;
 	private readonly authAccountProfiles: AuthAccountProfileOperations;
 	private readonly authBrowserTransactions: CoordinatorAuthBrowserTransactions;
@@ -710,6 +719,24 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	constructor(path?: string, options: CoordinatorAuthLinkOptions = {}) {
 		this.path = path ?? DEFAULT_COORDINATOR_DB_PATH;
 		this.db = connectCoordinator(this.path);
+		this.deviceRevocations = new DeviceRevocationOperations(
+			{
+				all: async (statement) => ({
+					results: this.db.prepare(statement.sql).all(...statement.values),
+				}),
+				batch: async (statements) =>
+					this.db
+						.transaction(() =>
+							statements.map((statement) => {
+								const prepared = this.db.prepare(statement.sql);
+								if (statement.read) return { results: prepared.all(...statement.values) };
+								return { meta: { changes: prepared.run(...statement.values).changes } };
+							}),
+						)
+						.immediate(),
+			},
+			options.authClock,
+		);
 		const authBackend: AuthLinkBackend = {
 			first: async <T>(statement: AuthLinkStatement) =>
 				(this.db.prepare(statement.sql).get(...statement.values) as T | undefined) ?? null,
@@ -1205,6 +1232,18 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		} catch {
 			return false;
 		}
+	}
+
+	async createDeviceRevocation(input: CoordinatorCreateDeviceRevocationInput) {
+		return this.deviceRevocations.createDeviceRevocation(input);
+	}
+
+	async listDeviceRevocations(input: CoordinatorListDeviceRevocationsInput) {
+		return this.deviceRevocations.listDeviceRevocations(input);
+	}
+
+	async recordAuthorizedNonce(input: CoordinatorRecordAuthorizedNonceInput) {
+		return this.deviceRevocations.recordAuthorizedNonce(input);
 	}
 
 	async cleanupNonces(cutoff: string): Promise<void> {
