@@ -1,7 +1,14 @@
 # ADR 0004: Authenticated Identity and live-relay boundaries
 
 **Date:** 2026-10-01  
-**Status:** Accepted for architecture boundaries; implementation gates remain
+**Status:** Accepted for architecture boundaries; implementation gates remain;
+partly amended by [ADR 0005](0005-authenticated-identity-device-and-membership-lifecycle.md) (2026-10-05)
+
+> **Amendment note:** ADR 0005 replaces the trusted-device approval requirement
+> for every additional device with verified-owner enrollment, clarifies that
+> login alone never writes device bindings, and narrows admin-assisted
+> replacement. See its "Amendments to ADR 0004" table. The text below is kept
+> as the original decision record.
 
 ## Context
 
