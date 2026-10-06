@@ -145,7 +145,8 @@ store local Team membership versions or verify local database adoption eligibili
 A stale or zero-row compare is not success. An unconfirmed commit is unknown,
 never success or a claim that nothing changed; reconcile through authorized status.
 
-The winning transition, device/group enrollment writes and one durable redacted
+The winning transition, durable device/key ownership binding, device/group
+enrollment writes and one durable redacted
 `owner_device_enrolled` audit event must commit in the same SQLite transaction or
 guarded D1 batch. The audit records the coordinator, Identity, device/key
 fingerprint, attempt reference, trusted grant revisions and server time, not raw
@@ -170,6 +171,38 @@ The runtime checks local adoption eligibility before starting and again before
 local materialization. If local data changes after remote finalization, report
 that the coordinator binding exists but local adoption failed; do not sync or
 claim the remote binding was rolled back.
+
+### Durable device/key ownership
+
+Owner enrollment must retain an authoritative coordinator-level binding of the
+device ID, server-derived canonical key ID and verified Identity. A compact record
+in the durable owner-enrollment ledger can provide this authority; it does not
+require a separate identity or recovery framework.
+
+Device-ID and canonical-key uniqueness are enforced against this ledger, not
+only against `enrolled_devices`. The binding commits atomically with enrollment
+and audit, and has no cascading dependency on a group enrollment, browser session,
+short-lived attempt or audit-retention cleanup. Removing the last group enrollment
+does not remove, release or transfer ownership. Key/device revocation also retains
+the ownership association rather than making the identifiers available to another
+Identity.
+
+Every enrollment writer, including invite acceptance and join approval, compares
+the retained binding in its guarded write. A different Identity cannot claim the
+same device ID or canonical key after group rows disappear; matching names,
+account sign-in or possession of the key alone cannot overwrite the binding.
+A writer may attach a ledger-bound device ID or canonical key only when it
+resolves the same verified Identity. An unresolved or different Identity is
+rejected, as is the same device ID under a different canonical key.
+Ownership transfer remains a separately reviewed migration, never an enrollment
+upsert. The owner management path reads this durable authority rather than deriving
+ownership from remaining group rows or the audit actor of a revocation record.
+An explicit legacy migration writes the ledger binding under the same canonical
+uniqueness and verified-ownership checks; it does not create a second authority source.
+
+This ledger is a prerequisite for the new owner-enrollment and management paths.
+Existing Identity-group transport grants and revocation subjects are not device
+ownership records and must not be repurposed as that authority.
 
 ### Trusted Identity-group grants
 
@@ -343,6 +376,7 @@ No Team may claim required-auth readiness until the separate permission policy i
 | Pending request supplies a fingerprint mismatch, or reuses a revoked key with a new ID/text encoding after its old enrollment is removed | Reject the mismatch before persistence; derive the canonical ID from signed key bytes and deny retained key tombstones at creation and commit | Server-derived fingerprint and canonical-key alias SQLite/D1 parity |
 | Provider callback or confirmation arrives after expiry or a winning cancellation | No state revival, durable owner binding or completion secret | Intermediate-transition deadline/state SQLite/D1 parity |
 | Revoked device signs a scope, reciprocal-approval or bootstrap read | Central authorization denies admission; management cannot activate before this guard and all writer/read guards pass | Signed-route coverage and activation-gate tests |
+| Last group enrollment is removed, then an invite or enrollment tries to assign the old device ID or an alias of its key to another Identity | Durable ownership remains with the original Identity; the guarded writer rejects rebind with no ownership overwrite or new grant | Delete-then-rebind and canonical-alias SQLite/D1 parity |
 | Attacker's start URL opened on owner's computer | Confirmation shows the attacker's key fingerprint and warns against pasting; enrollment cannot finish without loopback completion. If the owner pastes that secret to the attacker, enrollment can succeed and must be visible and revocable | Phishing, audit and revocation fixtures |
 | Old device revoked after reviewed Identity-group grant | Grant persists; fresh owner registration needs no old-device approval | Transport-grant lifecycle tests |
 
