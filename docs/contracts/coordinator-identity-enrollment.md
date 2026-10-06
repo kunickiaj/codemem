@@ -87,11 +87,11 @@ an existing enabled enrollment, so a pending key needs a separately scoped
 possession check. Creating a pending request grants nothing. Exact route/schema,
 quotas and native D1 commit details still gate the endpoint.
 
-1. The runtime checks local adoption eligibility, binds a literal loopback listener, and signs the pending request with the key being registered. The server verifies that signature without treating the key as enrolled. Coordinator/origin, purpose, key/fingerprint, device ID, attempt ID and callback address are fixed at start. No client-selected Identity or group grants are accepted.
-2. The server creates one ten-minute, single-use request and persists its coordinator/origin, purpose, pending key/fingerprint, device ID, attempt ID, browser-start commitment, deadline, and validated loopback destination as immutable fields. Validate that destination at creation with the existing literal-loopback rules: `http://127.0.0.1:<port>/codemem/auth/complete` or `http://[::1]:<port>/codemem/auth/complete`, with a valid explicit port and no hostname, user information, query or fragment. Once OIDC resolves an Identity, pin the active account-link row and trusted Identity-group grant revision set. This path consumes no invitation.
+1. The runtime checks local adoption eligibility, binds a literal loopback listener, and signs the pending request with the key being registered. The server verifies that signature without treating the key as enrolled, then derives the fingerprints from that exact signed public key before persisting an attempt. Compute the legacy `fingerprintPublicKey(publicKey)` for exact-text evidence and the canonical Ed25519 key ID from the verified key bytes for revocation and collision checks. The new request need not carry either fingerprint; if a compatibility wire format includes a legacy fingerprint, reject any supplied mismatch. Neither value is caller-selected authority. Coordinator/origin, purpose, exact key, derived fingerprints, device ID, attempt ID and callback address are fixed at start. No client-selected Identity or group grants are accepted.
+2. The server creates one ten-minute, single-use request and persists its coordinator/origin, purpose, exact pending public key, server-derived legacy fingerprint and canonical key ID, device ID, attempt ID, browser-start commitment, deadline, and validated loopback destination as immutable fields. Validate that destination at creation with the existing literal-loopback rules: `http://127.0.0.1:<port>/codemem/auth/complete` or `http://[::1]:<port>/codemem/auth/complete`, with a valid explicit port and no hostname, user information, query or fragment. Once OIDC resolves an Identity, pin the active account-link row and trusted Identity-group grant revision set. This path consumes no invitation.
 3. The original browser claims the request through a CSRF/Origin-protected POST presenting the raw one-time browser-start value. The server hashes the decoded value and matches the stored commitment before atomically recording the browser-cookie binding and starting OIDC; an attempt ID or caller-supplied hash alone cannot claim it. Reject an incorrect, missing, expired or already-claimed start value without changing the binding or starting OIDC. Use the documented `prompt=select_account` to make the selected account visible; this is not forced password entry. An existing Google session is accepted. State, nonce, PKCE and normal ID-token validation remain required; an existing Codemem session must not skip this purpose-bound transaction.
 4. The server resolves only the verified exact `issuer` + `sub` to an active link. Unknown, revoked, conflicting, or replacement links deny the attempt; they do not reserve or preclaim an Identity indefinitely.
-5. The CSRF/Origin-protected confirmation names the account, resolved Identity, device label and short key fingerprint. The local viewer or CLI shows the same fingerprint. Warn: continue only if this computer started enrollment; never paste a callback URL or completion code. Deliver the one-use completion secret only to the validated destination persisted at creation; confirmation and later requests cannot supply or replace that destination. Only server-generated handoff parameters may be appended to the saved URI.
+5. The CSRF/Origin-protected confirmation names the account, resolved Identity, device label and short server-derived canonical key fingerprint. The local viewer or CLI independently derives and shows the same canonical fingerprint. Warn: continue only if this computer started enrollment; never paste a callback URL or completion code. Deliver the one-use completion secret only to the validated destination persisted at creation; confirmation and later requests cannot supply or replace that destination. Only server-generated handoff parameters may be appended to the saved URI.
 6. Finalization is signed by the exact pending key and carries that completion secret, the purpose, coordinator ID and immutable request bindings. The server commits only after current-state checks pass. The original-cookie browser receives safe status after finalization; registration mints no new browser session.
 
 The pending-key signature binds completion to the requested key. Intercepting a
@@ -130,7 +130,7 @@ for that commit. It atomically consumes the request and transitions it to
 `finalized`; expired, failed or retired requests, including a winning cancellation,
 cannot enroll.
 The same compare checks only coordinator-owned facts: request and completion
-commitment, pinned key, exact active account link, Identity-group grant
+commitment, pinned exact key and server-derived canonical key ID, exact active account link, Identity-group grant
 revision set, auth configuration revision, unarchived groups, no device/key
 collision, and no coordinator-wide revocation record. The coordinator does not
 store local Team membership versions or verify local database adoption eligibility.
@@ -182,7 +182,7 @@ that evidence, not a background guess.
 
 ### Coordinator-wide device revocation
 
-Add durable device-ID and key-fingerprint revocation records independent of
+Add durable device-ID and canonical-key-ID revocation records independent of
 enrollment rows. Current group removal hard-deletes rows and current enrollment
 upserts can re-enable disabled devices; those paths are not global revocation.
 Every enrollment writer, invite acceptance, join approval and signed-device
@@ -190,14 +190,32 @@ authorization must check the new record. Writers must compare it atomically with
 their writes on both SQLite and D1. New owner registration is insert-only and
 refuses existing device/key collisions; no silent resurrection or key replacement.
 
+Canonical key IDs use the standard SHA-256 fingerprint of the canonical SSH
+Ed25519 wire blob, stored and exchanged as 64 lowercase hexadecimal characters.
+The confirmation's short fingerprint is a prefix of that same hex value, not a
+separately nominated or differently encoded comparison value.
+Legacy `fingerprintPublicKey` hashes the full key text and
+remains unchanged for existing evidence; it is not sufficient for key revocation.
+Do not accept a client-nominated canonical key ID.
+At creation and finalization, use the server-derived canonical ID so comments,
+whitespace, alternate accepted encodings or a new device ID cannot evade a key
+tombstone. An accepted key whose actual verified bytes cannot be canonicalized
+must fail closed, never fall back to a caller hash or device-ID-only check.
+Retained key tombstones remain enforceable after an enrollment row is removed.
+For an older enrollment with only stored public-key text, derive the canonical
+ID from that server-held text. A legacy key that no supported verifier accepts
+may receive a device-ID tombstone only, with that limited effect made explicit
+to the operator. Never substitute its legacy text hash as a key tombstone or
+silently treat a verified-but-unparseable key as unsupported.
+
 ### Revocation authority and audit
 
 Only these principals may create coordinator-wide device/key tombstones:
 
 - **Verified Identity owner:** an authenticated OIDC-derived management session
   whose current active account link resolves to that Identity. The target must
-  have a server-verified ownership binding from owner enrollment or explicit
-  legacy controller review. Names, email, enrollment actor hints, possession of
+  have a server-verified ownership binding from owner enrollment or an explicitly
+  migrated, unambiguous legacy binding. Names, email, enrollment actor hints, possession of
   an invitation, and a device signature alone are not ownership authorization.
 - **Coordinator-wide operator:** the existing coordinator-wide administrative
   authority, authenticated with its configured admin credential and acting after
@@ -208,21 +226,32 @@ The ownership authority must remain current and must not have been revoked or
 reassigned. Device liveness or a historical actor hint cannot substitute for that
 check; losing a signing key does not by itself transfer the Identity's ownership.
 
+The pilot owner path covers only an unambiguous, server-recorded ownership binding.
+It must prove exclusive device-ID and canonical-key ownership; an exact raw
+key-text match or a historical controller row alone is insufficient. Maintain
+that uniqueness at enrollment and subsequent writes rather than constructing
+a new ownership graph when the owner clicks Revoke.
+Every enrollment writer, including invite acceptance and join approval, must
+refuse reuse of an owner-bound device ID or canonical key under another Identity.
+The owner revocation commit checks in the same transaction that no conflicting
+binding exists; otherwise it denies the owner action and routes to the operator.
+
 A Team admin can remove membership or exclude a device through that Team's
 policy, not globally revoke a device's unrelated memberships or direct grants.
 Owner revocation needs no signature or approval from the device being revoked;
 losing that device must not prevent its verified owner from acting.
 
-The server derives the complete affected device-ID/key subject set and verifies
-ownership across its known aliases before confirmation. The owner path is allowed
-only when every affected binding is verified as belonging to the same Identity.
-Conflicting, shared or unreviewed legacy bindings require coordinator-operator
-review; do not infer ownership or let one Identity revoke another's key aliases.
-An owner response must not disclose another Identity's private membership details.
+The server derives the fixed device-ID and canonical-key subjects from verified
+bindings, not caller-supplied IDs or hashes. Shared, conflicting or unreviewed
+legacy bindings are denied to the owner and handled by the coordinator operator;
+do not infer ownership or let one Identity revoke another's key aliases. Operator
+confirmation states that these subjects are blocked across all coordinator groups.
+No universal alias-review or recovery framework is required for the pilot. An owner
+response must not disclose another Identity's private membership details.
 
 Browser management actions require CSRF/Origin protection and explicit target
 confirmation. The commit rechecks the principal's current authority, verified
-ownership and complete reviewed impact snapshot together with the tombstone writes
+ownership and reviewed target/subject snapshot together with the tombstone writes
 and one durable redacted revocation audit event. Changes to aliases or authority
 stale the review rather than silently expanding its scope. Audit failure rolls
 back the transaction; a lost response is unknown, and exact retries do not append
@@ -238,6 +267,11 @@ uses a fresh device/key through the reviewed enrollment path, preserving existin
 memberships and historical authorship. Management endpoints remain gated until
 this authority/audit contract and all writer/discovery guards are implemented and
 verified; an internal store method is not itself an authorization boundary.
+
+Use a small transaction-local audit record following the existing link-audit
+pattern, not a separate audit service or event framework. Internal tombstone rows
+already retain durable effect evidence; public management additionally needs
+verified authority and idempotent action attribution in that same transaction.
 
 Per-Team exclusions do not block the Identity binding. They filter only that
 Team's derived eligibility and must survive enrollment/upsert. A Team cannot veto
@@ -297,6 +331,7 @@ No Team may claim required-auth readiness until the separate permission policy i
 | Team admin attempts coordinator-wide revocation | Denied; only that Team's membership/exclusion policy may change | Principal/scope separation tests |
 | Verified owner requests revocation of a device with conflicting or unreviewed aliases | No global write; coordinator-operator impact review required, with no private cross-Identity details disclosed to the owner | Ownership and alias-snapshot race tests |
 | Authorized revocation audit fails, or sign-in attempts to clear its tombstones | Revocation transaction rolls back on audit failure; sign-in cannot clear or revive retained tombstones | Revocation-audit parity and no-reactivation tests |
+| Pending request supplies a fingerprint mismatch, or reuses a revoked key with a new ID/text encoding after its old enrollment is removed | Reject the mismatch before persistence; derive the canonical ID from signed key bytes and deny retained key tombstones at creation and commit | Server-derived fingerprint and canonical-key alias SQLite/D1 parity |
 | Attacker's start URL opened on owner's computer | Confirmation shows the attacker's key fingerprint and warns against pasting; enrollment cannot finish without loopback completion. If the owner pastes that secret to the attacker, enrollment can succeed and must be visible and revocable | Phishing, audit and revocation fixtures |
 | Old device revoked after reviewed Identity-group grant | Grant persists; fresh owner registration needs no old-device approval | Transport-grant lifecycle tests |
 
