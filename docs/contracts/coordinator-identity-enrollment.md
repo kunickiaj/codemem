@@ -63,7 +63,7 @@ can force fresh credential entry. No provider settings change is authorized here
 | Group enrollment / sync transport | Active server-trusted Identity group grant | Unreviewed enrollment actor claims or discovery-group membership as a Project grant |
 | Controller review | Existing reviewed controller/admin authority for first-account linking | Fresh-key possession or owner enrollment as a new controller attestation |
 
-The local backend retains its private key and local proofs. The coordinator stores commitments and safe audit facts only; no private proof is available by GET, polling, logs, or durable browser storage. A fresh-key signature proves possession only. It cannot authorize itself, an Identity, a Team, or an invite. The existing no-retained-Google-token rule applies unchanged.
+The local backend retains its private key and local proofs. The coordinator stores server-owned request bindings, commitments, the validated private loopback destination, and redacted audit facts; no private proof is available by GET, polling, logs, or durable browser storage. A fresh-key signature proves possession only. It cannot authorize itself, an Identity, a Team, or an invite. The existing no-retained-Google-token rule applies unchanged.
 
 ## Entry paths
 
@@ -88,10 +88,10 @@ possession check. Creating a pending request grants nothing. Exact route/schema,
 quotas and native D1 commit details still gate the endpoint.
 
 1. The runtime checks local adoption eligibility, binds a literal loopback listener, and signs the pending request with the key being registered. The server verifies that signature without treating the key as enrolled. Coordinator/origin, purpose, key/fingerprint, device ID, attempt ID and callback address are fixed at start. No client-selected Identity or group grants are accepted.
-2. The server creates one ten-minute, single-use request and stores only the browser-start commitment and other immutable bindings needed for the operation. Once OIDC resolves an Identity, it pins the active account-link row and the trusted Identity-group grant revision set. This path consumes no invitation.
-3. The original browser claims the request and completes its own OIDC transaction. Use the documented `prompt=select_account` to make the selected account visible; this is not forced password entry. An existing Google session is accepted. State, nonce, PKCE and normal ID-token validation remain required; an existing Codemem session must not skip this purpose-bound transaction.
+2. The server creates one ten-minute, single-use request and persists its coordinator/origin, purpose, pending key/fingerprint, device ID, attempt ID, browser-start commitment, deadline, and validated loopback destination as immutable fields. Validate that destination at creation with the existing literal-loopback rules: `http://127.0.0.1:<port>/codemem/auth/complete` or `http://[::1]:<port>/codemem/auth/complete`, with a valid explicit port and no hostname, user information, query or fragment. Once OIDC resolves an Identity, pin the active account-link row and trusted Identity-group grant revision set. This path consumes no invitation.
+3. The original browser claims the request through a CSRF/Origin-protected POST presenting the raw one-time browser-start value. The server hashes the decoded value and matches the stored commitment before atomically recording the browser-cookie binding and starting OIDC; an attempt ID or caller-supplied hash alone cannot claim it. Reject an incorrect, missing, expired or already-claimed start value without changing the binding or starting OIDC. Use the documented `prompt=select_account` to make the selected account visible; this is not forced password entry. An existing Google session is accepted. State, nonce, PKCE and normal ID-token validation remain required; an existing Codemem session must not skip this purpose-bound transaction.
 4. The server resolves only the verified exact `issuer` + `sub` to an active link. Unknown, revoked, conflicting, or replacement links deny the attempt; they do not reserve or preclaim an Identity indefinitely.
-5. The CSRF/Origin-protected confirmation names the account, resolved Identity, device label and short key fingerprint. The local viewer or CLI shows the same fingerprint. Warn: continue only if this computer started enrollment; never paste a callback URL or completion code. The one-use completion secret is delivered only through the fixed loopback handoff.
+5. The CSRF/Origin-protected confirmation names the account, resolved Identity, device label and short key fingerprint. The local viewer or CLI shows the same fingerprint. Warn: continue only if this computer started enrollment; never paste a callback URL or completion code. Deliver the one-use completion secret only to the validated destination persisted at creation; confirmation and later requests cannot supply or replace that destination. Only server-generated handoff parameters may be appended to the saved URI.
 6. Finalization is signed by the exact pending key and carries that completion secret, the purpose, coordinator ID and immutable request bindings. The server commits only after current-state checks pass. The original-cookie browser receives safe status after finalization; registration mints no new browser session.
 
 The pending-key signature binds completion to the requested key. Intercepting a
@@ -109,14 +109,14 @@ required; do not claim loopback or PKCE prevents that social-engineering case.
 
 | State | Allowed transition | Effect |
 | --- | --- | --- |
-| `pending` | Original browser claims | No Identity or grant mutation |
+| `pending` | CSRF/Origin-protected claim matches the raw browser-start value to its stored commitment, within the deadline, then atomically binds the original browser cookie | No Identity or grant mutation |
 | `browser_claimed` | Verified OIDC resolves active link | Account binding becomes immutable |
 | `oidc_verified` | Same browser confirms | Completion commitment written once |
-| `confirmed` | Pending key signs completion for the same request | Atomic enrollment only |
+| `confirmed` | Pending key signs completion; the winning write matches `confirmed`, an unconsumed request and the unexpired deadline, then consumes it | Atomic enrollment and redacted audit event |
 | `finalized` | Original browser observes signed result | Safe status only; no new browser session |
 | `expired` / `failed` / `retired` | Terminal | No grant change |
 
-Attempts are short lived, single purpose, and idempotent only for the exact attempt/key/account tuple. Invitation attempts additionally bind their reviewed invitation snapshot. Cancellation racing commit returns the actual outcome. A failure may retire an attempt, including a proof failure; clients must not assume every invalid proof leaves it reusable. Restart reconciliation returns a safe status and never reconstructs browser secrets.
+Attempts are short lived, single purpose, and idempotent only for the exact attempt/key/account tuple. Invitation attempts additionally bind their reviewed invitation snapshot. Cancellation racing commit returns the actual outcome; cancellation that wins retires the request. A failure may retire an attempt, including a proof failure; clients must not assume every invalid proof leaves it reusable. Restart reconciliation returns a safe status and never reconstructs browser secrets.
 
 Public status contains no proof, provider claim, private loopback destination, or admission inference. Do not poll or log private handoff URLs, form bodies, proofs, tokens, or browser secrets.
 
@@ -124,13 +124,33 @@ Public status contains no proof, provider claim, private loopback destination, o
 
 This section applies to fresh-device enrollment for an already-linked Identity,
 not invitation admission. SQLite and D1 must make the same guarded decision
-atomically. The winning compare checks only coordinator-owned facts: request and
-completion commitment, pinned key, exact active account link, Identity-group grant
+atomically. The winning write must match `state = 'confirmed'`, an unconsumed
+request, and a deadline strictly later than trusted coordinator time evaluated
+for that commit. It atomically consumes the request and transitions it to
+`finalized`; expired, failed or retired requests, including a winning cancellation,
+cannot enroll.
+The same compare checks only coordinator-owned facts: request and completion
+commitment, pinned key, exact active account link, Identity-group grant
 revision set, auth configuration revision, unarchived groups, no device/key
 collision, and no coordinator-wide revocation record. The coordinator does not
 store local Team membership versions or verify local database adoption eligibility.
 A stale or zero-row compare is not success. An unconfirmed commit is unknown,
 never success or a claim that nothing changed; reconcile through authorized status.
+
+The winning transition, device/group enrollment writes and one durable redacted
+`owner_device_enrolled` audit event must commit in the same SQLite transaction or
+guarded D1 batch. The audit records the coordinator, Identity, device/key
+fingerprint, attempt reference, trusted grant revisions and server time, not raw
+start/completion secrets, handoff URLs, cookies, Google tokens or provider claims.
+Audit insertion failure rolls back the transition and enrollment writes; it is
+not a best-effort post-commit log. Dependent writes are gated on this transaction's
+winning transition, so a losing cancellation/finalization race writes neither
+an enrollment nor an audit event.
+
+An exact retry may reconcile an already-committed result for the same immutable
+request/key/account tuple, but must not re-consume the request, re-enroll the key
+or append another event. A lost commit response is reported as unknown until
+reconciled; it does not prove rollback.
 
 Commit may bind the fresh key to the resolved Identity only when all remain true:
 
@@ -221,6 +241,10 @@ No Team may claim required-auth readiness until the separate permission policy i
 | Team exclusion before/after enrollment | Binding and unrelated access preserved; excluded Team access denied | Team eligibility and upsert tests |
 | Populated local store attempts adoption | Conflict; no actor/provenance rewrite | Local eligibility guard tests |
 | Cancellation, replay, restart, SQLite/D1 outage | Actual safe outcome; grants unchanged unless commit won | Idempotency and fault-injection parity tests |
+| Creation nominates a non-literal or malformed loopback URI, or confirmation attempts to replace the saved destination | Creation rejects invalid destinations; later substitution never redirects the proof | Destination persistence and tampering tests |
+| Attempt ID leaks; another browser lacks the correct raw browser-start value | Claim rejects without browser rebinding or starting OIDC | Browser-start commitment and concurrent-claim tests |
+| Finalization reaches commit at/after expiry or after cancellation won | No enrollment or audit event; a zero-row winning transition is not success | State/deadline guards and cancellation-race SQLite/D1 parity |
+| Audit insertion fails, or a committed response is lost and retried | Audit failure rolls back the whole transaction; reconciliation of a committed retry yields one enrollment and one redacted event | Audit fault injection and exact-retry SQLite/D1 parity |
 | Attacker's start URL opened on owner's computer | Confirmation shows the attacker's key fingerprint and warns against pasting; enrollment cannot finish without loopback completion. If the owner pastes that secret to the attacker, enrollment can succeed and must be visible and revocable | Phishing, audit and revocation fixtures |
 | Old device revoked after reviewed Identity-group grant | Grant persists; fresh owner registration needs no old-device approval | Transport-grant lifecycle tests |
 
