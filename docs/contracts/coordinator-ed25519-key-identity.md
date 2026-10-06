@@ -29,13 +29,30 @@ and bounds-checks wire reads. It is not a stricter replacement verifier. It
 canonicalizes the actual Ed25519 bytes even where the existing verifiers tolerate
 an alternate inner type string or trailing bytes.
 
+## Server-runtime metadata compatibility
+
+`parseSshEd25519PublicKeyForRevocation` and `ed25519KeyIdForRevocation` provide
+a separate metadata path using the standard `node:buffer` decoder. They share the
+same wire extraction, canonical encoding and WebCrypto hash stages; there is no
+hand-written permissive base64 decoder. This path is for Node and Worker runtimes
+with Node compatibility, not a generic browser helper.
+
+The original `atob`-based functions and both signature verifiers keep their
+existing behavior. Normalizing a Node-compatible encoding for metadata does not
+make the Worker accept its signature. Native compatibility tests pin that distinction.
+
+The compatibility module has no application caller or root-package export yet.
+The Worker's current bundle policy is unchanged: introducing `node:buffer` into
+the deployed entry point requires a specific import review and bundle checks at
+integration, not a blanket expansion of allowed Node APIs.
+
 ## Guard integration remains gated
 
-The Node verifier's Buffer decoder and the Worker's `atob` decoder may accept
-different base64 representations. Tests must pin those differences against the
-real verifiers, rather than assume the helper covers their combined acceptance.
+The Node verifier's Buffer decoder and the Worker's `atob` decoder accept
+different base64 representations. Tests pin those differences against the real
+verifiers; callers must not assume the original strict helper covers both.
 
-If a real verifier accepts a key that this helper cannot parse, a future revocation
+If a real verifier accepts a key that the original strict helper cannot parse, a future revocation
 guard must not fall back silently to device-ID-only checks. It must either obtain
 the canonical identity from the exact bytes the trusted verifier checked, or apply
 an explicitly reviewed fail-closed compatibility rule. This slice chooses neither

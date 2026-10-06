@@ -39,11 +39,24 @@ function canonicalBlob(rawKey: Uint8Array): Uint8Array {
  * atob rejects some encodings accepted by Node's Buffer base64 decoder.
  */
 export function parseSshEd25519PublicKey(publicKey: string): SshEd25519Parse {
+	return parseSshEd25519PublicKeyWithDecoder(publicKey, decodeWire);
+}
+
+/** Internal trusted decoder seam; callers must not use it to decide authentication acceptance. */
+export function parseSshEd25519PublicKeyWithDecoder(
+	publicKey: string,
+	decode: (encoded: string) => Uint8Array | null,
+): SshEd25519Parse {
 	if (typeof publicKey !== "string") return { kind: "other" };
 	const [keyType, keyData] = publicKey.trim().split(/\s+/);
 	if (keyType !== "ssh-ed25519") return { kind: "other" };
 	if (!keyData) return { kind: "malformed_ed25519" };
-	const wire = decodeWire(keyData);
+	let wire: Uint8Array | null;
+	try {
+		wire = decode(keyData);
+	} catch {
+		return { kind: "malformed_ed25519" };
+	}
 	if (!wire) return { kind: "malformed_ed25519" };
 	const rawKey = readRawKey(wire);
 	if (!rawKey) return { kind: "malformed_ed25519" };
@@ -52,7 +65,11 @@ export function parseSshEd25519PublicKey(publicKey: string): SshEd25519Parse {
 
 /** SHA-256 hex of the canonical SSH blob; leaves legacy text fingerprints unchanged. */
 export async function ed25519KeyId(publicKey: string): Promise<string | null> {
-	const parsed = parseSshEd25519PublicKey(publicKey);
+	return hashEd25519KeyId(parseSshEd25519PublicKey(publicKey));
+}
+
+/** Internal canonical identity hash, not proof of key possession or authorization. */
+export async function hashEd25519KeyId(parsed: SshEd25519Parse): Promise<string | null> {
 	if (parsed.kind !== "ed25519") return null;
 	// Copy to an owned ArrayBuffer for the portable Web Crypto BufferSource API.
 	const bytes = new Uint8Array(parsed.blob);
