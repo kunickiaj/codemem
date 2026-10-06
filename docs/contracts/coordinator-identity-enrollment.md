@@ -110,13 +110,21 @@ required; do not claim loopback or PKCE prevents that social-engineering case.
 | State | Allowed transition | Effect |
 | --- | --- | --- |
 | `pending` | CSRF/Origin-protected claim matches the raw browser-start value to its stored commitment, within the deadline, then atomically binds the original browser cookie | No Identity or grant mutation |
-| `browser_claimed` | Verified OIDC resolves active link | Account binding becomes immutable |
-| `oidc_verified` | Same browser confirms | Completion commitment written once |
+| `browser_claimed` | Verified OIDC resolves an active link only while the request is still in this state and unexpired | Account binding becomes immutable |
+| `oidc_verified` | Same browser confirms only while the request is still in this state and unexpired | Completion commitment written once |
 | `confirmed` | Pending key signs completion; the winning write matches `confirmed`, an unconsumed request and the unexpired deadline, then consumes it | Atomic enrollment and redacted audit event |
 | `finalized` | Original browser observes signed result | Safe status only; no new browser session |
 | `expired` / `failed` / `retired` | Terminal | No grant change |
 
 Attempts are short lived, single purpose, and idempotent only for the exact attempt/key/account tuple. Invitation attempts additionally bind their reviewed invitation snapshot. Cancellation racing commit returns the actual outcome; cancellation that wins retires the request. A failure may retire an attempt, including a proof failure; clients must not assume every invalid proof leaves it reusable. Restart reconciliation returns a safe status and never reconstructs browser secrets.
+
+Every transition that claims the browser, records verified OIDC ownership or
+confirms the device checks the expected current state, original browser binding
+where applicable, and trusted-time deadline in its atomic write. Expired, failed
+and retired requests cannot be revived by a late provider callback or confirmation.
+If expiry or cancellation wins while OIDC verification is in progress, discard
+the transient provider result without persisting an ownership binding or issuing
+a completion secret. Expiry cleanup may mark the request terminal, never advance it.
 
 Public status contains no proof, provider claim, private loopback destination, or admission inference. Do not poll or log private handoff URLs, form bodies, proofs, tokens, or browser secrets.
 
@@ -265,7 +273,8 @@ No supported principal or API may clear, expire, overwrite or automatically revi
 a revocation tombstone. Signing in again does not restore a revoked key. Replacement
 uses a fresh device/key through the reviewed enrollment path, preserving existing
 memberships and historical authorship. Management endpoints remain gated until
-this authority/audit contract and all writer/discovery guards are implemented and
+this authority/audit contract, the central signed-device authorization guard,
+and all enrollment-writer and discovery/bootstrap guards are implemented and
 verified; an internal store method is not itself an authorization boundary.
 
 Use a small transaction-local audit record following the existing link-audit
@@ -301,7 +310,7 @@ Source evidence, not shipped enrollment evidence:
 - The existing account-link flow and its SQLite/D1 guarded pattern are in the [coordinator auth protocol](coordinator-auth-protocol.md) and [link storage contract](coordinator-auth-link-storage.md).
 
 1. Reviewed registration boundary, bounded endpoint contract (unmounted) and source-only foundation.
-2. Trusted Identity-group grants and coordinator-wide revocation guards on every writer, with SQLite/D1 parity tests.
+2. Trusted Identity-group grants and coordinator-wide revocation checks in central signed-device authorization, every enrollment writer and discovery/bootstrap reads, with SQLite/D1 parity tests.
 3. Owner registration and browser integration, including purpose/schema separation from first-account linking.
 4. Device-eligibility semantics and existing-Identity invitation path.
 5. Sign-in/enrollment UI, retaining the legacy reviewed-first-link exception.
@@ -332,6 +341,8 @@ No Team may claim required-auth readiness until the separate permission policy i
 | Verified owner requests revocation of a device with conflicting or unreviewed aliases | No global write; coordinator-operator impact review required, with no private cross-Identity details disclosed to the owner | Ownership and alias-snapshot race tests |
 | Authorized revocation audit fails, or sign-in attempts to clear its tombstones | Revocation transaction rolls back on audit failure; sign-in cannot clear or revive retained tombstones | Revocation-audit parity and no-reactivation tests |
 | Pending request supplies a fingerprint mismatch, or reuses a revoked key with a new ID/text encoding after its old enrollment is removed | Reject the mismatch before persistence; derive the canonical ID from signed key bytes and deny retained key tombstones at creation and commit | Server-derived fingerprint and canonical-key alias SQLite/D1 parity |
+| Provider callback or confirmation arrives after expiry or a winning cancellation | No state revival, durable owner binding or completion secret | Intermediate-transition deadline/state SQLite/D1 parity |
+| Revoked device signs a scope, reciprocal-approval or bootstrap read | Central authorization denies admission; management cannot activate before this guard and all writer/read guards pass | Signed-route coverage and activation-gate tests |
 | Attacker's start URL opened on owner's computer | Confirmation shows the attacker's key fingerprint and warns against pasting; enrollment cannot finish without loopback completion. If the owner pastes that secret to the attacker, enrollment can succeed and must be visible and revocable | Phishing, audit and revocation fixtures |
 | Old device revoked after reviewed Identity-group grant | Grant persists; fresh owner registration needs no old-device approval | Transport-grant lifecycle tests |
 
