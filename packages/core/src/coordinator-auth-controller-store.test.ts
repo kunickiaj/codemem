@@ -5,9 +5,11 @@ import type { Database as SqliteDatabase } from "better-sqlite3";
 import { describe, expect, it, vi } from "vitest";
 import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
 import {
+	AUTH_CONTROLLER_ACTIVE_SQL,
 	AUTH_CONTROLLER_INSERT_SQL,
 	AUTH_CONTROLLER_RETRY_ACTIVE_SQL,
 	AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL,
+	authControllerAuthorityValues,
 	authControllerInsertValues,
 	authControllerRetryActiveValues,
 	authControllerRetryEligibleValues,
@@ -463,10 +465,13 @@ function registerSnapshotPerformanceTests(
 		// Arrange: explain the insert and both live retry guards against the fixture schema.
 		await enroll(store);
 		const input = review({ verifiedSnapshot: { enrollmentIdentityId: null, invites: [] } });
+		const enrollment = await store.getEnrollment(input.groupId, input.deviceId, true);
+		if (!enrollment) throw new Error("Fixture enrollment missing");
+		const authority = authControllerAuthorityValues(enrollment, null);
 		for (const [sql, values] of [
-			[AUTH_CONTROLLER_INSERT_SQL, authControllerInsertValues(input, "now")],
-			[AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL, authControllerRetryEligibleValues(input)],
-			[AUTH_CONTROLLER_RETRY_ACTIVE_SQL, authControllerRetryActiveValues(input)],
+			[AUTH_CONTROLLER_INSERT_SQL, authControllerInsertValues(input, "now", authority)],
+			[AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL, authControllerRetryEligibleValues(input, authority)],
+			[AUTH_CONTROLLER_RETRY_ACTIVE_SQL, authControllerRetryActiveValues(input, authority)],
 		] as const) {
 			// Act
 			const plan = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...values) as {
@@ -518,7 +523,11 @@ function registerSnapshotPerformanceTests(
 					invite.digest,
 				);
 		})();
-		expect(authControllerInsertValues(input, "now")).toHaveLength(16);
+		const enrollment = await store.getEnrollment(input.groupId, input.deviceId, true);
+		if (!enrollment) throw new Error("Fixture enrollment missing");
+		expect(
+			authControllerInsertValues(input, "now", authControllerAuthorityValues(enrollment, null)),
+		).toHaveLength(23);
 		expect(await store.createAuthControllerAttestation(input)).toMatchObject({ kind: "created" });
 		// Order is not evidence; an unchanged maximum-size retry must stay valid.
 		const reordered = {
@@ -765,10 +774,16 @@ function registerD1ReadRaceTests(test: ReturnType<typeof it.extend<{ fixture: Fi
 	}) => {
 		// Arrange
 		await enroll(store);
-		const beforeFirst = vi.fn().mockImplementationOnce(() => {
+		const failRead = vi.fn().mockImplementationOnce(() => {
 			throw new Error("test D1 read failure");
 		});
-		const faulting = new D1CoordinatorStore(sqliteD1(db, { beforeFirst }));
+		const faulting = new D1CoordinatorStore(
+			sqliteD1(db, {
+				beforeRead: (query) => {
+					if (query === AUTH_CONTROLLER_ACTIVE_SQL) failRead();
+				},
+			}),
+		);
 		// Act
 		const creation = faulting.createAuthControllerAttestation(review());
 		// Assert: the failed response does not roll back an already committed D1 insert.
@@ -788,12 +803,18 @@ function registerD1ReadRaceTests(test: ReturnType<typeof it.extend<{ fixture: Fi
 	}) => {
 		// Arrange
 		await enroll(store);
-		const beforeFirst = vi.fn().mockImplementationOnce(() => {
+		const replaceKey = vi.fn().mockImplementationOnce(() => {
 			db.prepare(
 				"UPDATE enrolled_devices SET public_key = ?, fingerprint = ? WHERE group_id = ? AND device_id = ?",
 			).run("replacement-key", "c".repeat(64), "group-a", "device-a");
 		});
-		const racing = new D1CoordinatorStore(sqliteD1(db, { beforeFirst }));
+		const racing = new D1CoordinatorStore(
+			sqliteD1(db, {
+				beforeRead: (query) => {
+					if (query === AUTH_CONTROLLER_ACTIVE_SQL) replaceKey();
+				},
+			}),
+		);
 		// Act
 		const creation = racing.createAuthControllerAttestation(review());
 		await expect(creation).rejects.toThrow("auth_controller_persistence_incomplete");

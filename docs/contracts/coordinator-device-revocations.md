@@ -200,9 +200,29 @@ revision comparison, and explicit grant revocation do not depend on that device'
 current enrollment or revocation state. Source-device revocation blocks issuance
 and success retries, but does not silently revoke transport grants or memberships.
 
-Standalone bootstrap/controller/link authority guards remain separate work.
-These writer slices do not enable public revocation management or substitute
-for durable device ownership.
+## Current controller authority
+
+Controller attestation creation, exact retries, snapshot-aware retries, and active
+lookups now check device-ID and canonical-key revocation subjects. Each operation
+derives the key from the actual enrollment and pins its group, device ID, key,
+fingerprint, and Identity in the final SQL. A pre-read cannot authorize a later
+insert or active result after that tuple changes.
+
+Existing reviewed evidence and ownership requirements remain intact. Creation and
+retry retain their existing rejection codes; unavailable active lookups return
+`null`. Ordinary active-read Identity eligibility is unchanged, including an
+unassigned enrollment later binding to the same attested Identity. Snapshot-aware
+review retries still require the exact reviewed snapshot.
+
+Stored attestations, account links, browser sessions, and already-issued grants
+are not deleted or silently revoked. D1 can insert an attestation before a later
+active lookup detects revocation; its incomplete result does not imply rollback
+of that earlier insert.
+
+Account-link creation/finalization reconstruct controller authority in separate
+SQL, so these controller guards alone do not close linking. Those predicates and
+standalone bootstrap authority remain separate work. These writer slices do not
+enable public revocation management or substitute for durable device ownership.
 
 ## Activation limits
 

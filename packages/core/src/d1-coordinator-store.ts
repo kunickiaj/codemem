@@ -16,13 +16,17 @@ import {
 import {
 	AUTH_CONTROLLER_ACTIVE_SQL,
 	AUTH_CONTROLLER_CONFLICT_SQL,
+	AUTH_CONTROLLER_CURRENT_ENROLLMENT_SQL,
+	AUTH_CONTROLLER_ENROLLMENT_SQL,
 	AUTH_CONTROLLER_INSERT_SQL,
 	AUTH_CONTROLLER_RETRY_ACTIVE_SQL,
 	AUTH_CONTROLLER_REVOKE_SQL,
+	authControllerAuthorityValues,
 	authControllerConflictValues,
 	authControllerInsertValues,
 	authControllerRetryActiveValues,
 	authControllerRetryResult,
+	authControllerUnavailableResult,
 	type CoordinatorAuthControllerAttestation,
 	type CoordinatorAuthControllerCreateResult,
 	type CoordinatorAuthControllerReviewInput,
@@ -982,11 +986,19 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	): Promise<CoordinatorAuthControllerCreateResult> {
 		const review = captureAuthControllerReview(input);
 		if (!review) return { kind: "rejected", error: "invalid_review_input" };
+		const source = await firstRow<CoordinatorEnrollment>(
+			this.db.prepare(AUTH_CONTROLLER_ENROLLMENT_SQL).bind(review.groupId, review.deviceId),
+		);
+		if (!source) return authControllerUnavailableResult(review);
+		const authority = authControllerAuthorityValues(
+			source,
+			await ed25519KeyIdForRevocation(source.public_key),
+		);
 		try {
 			const inserted = await runChanges(
 				this.db
 					.prepare(AUTH_CONTROLLER_INSERT_SQL)
-					.bind(...authControllerInsertValues(review, nowISO())),
+					.bind(...authControllerInsertValues(review, nowISO(), authority)),
 			);
 			if (inserted === 0)
 				return {
@@ -995,11 +1007,12 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				};
 		} catch (error) {
 			if (!isAuthControllerUniqueError(error)) throw error;
-			return this.resolveAuthControllerRetry(review);
+			return this.resolveAuthControllerRetry(review, authority);
 		}
-		const attestation = await this.getActiveAuthControllerAttestation(
-			review.coordinatorId,
-			review.attestationId,
+		const attestation = await firstRow<CoordinatorAuthControllerAttestation>(
+			this.db
+				.prepare(AUTH_CONTROLLER_ACTIVE_SQL)
+				.bind(review.coordinatorId, review.attestationId, ...authority),
 		);
 		if (!attestation) throw new Error("auth_controller_persistence_incomplete");
 		return { kind: "created", attestation };
@@ -1007,6 +1020,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 
 	private async resolveAuthControllerRetry(
 		input: CoordinatorAuthControllerReviewInput,
+		authority: (string | null)[],
 	): Promise<CoordinatorAuthControllerCreateResult> {
 		const row = await firstRow<CoordinatorAuthControllerAttestation>(
 			this.db.prepare(AUTH_CONTROLLER_CONFLICT_SQL).bind(...authControllerConflictValues(input)),
@@ -1016,7 +1030,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		const active = await firstRow<CoordinatorAuthControllerAttestation>(
 			this.db
 				.prepare(AUTH_CONTROLLER_RETRY_ACTIVE_SQL)
-				.bind(...authControllerRetryActiveValues(input)),
+				.bind(...authControllerRetryActiveValues(input, authority)),
 		);
 		// A change after the conflict read makes this review stale, including revocation.
 		if (!active)
@@ -1032,8 +1046,16 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		attestationId: string,
 	): Promise<CoordinatorAuthControllerAttestation | null> {
 		if (!isAuthControllerId(coordinatorId) || !isAuthControllerId(attestationId)) return null;
+		const source = await firstRow<CoordinatorEnrollment>(
+			this.db.prepare(AUTH_CONTROLLER_CURRENT_ENROLLMENT_SQL).bind(coordinatorId, attestationId),
+		);
+		if (!source) return null;
+		const authority = authControllerAuthorityValues(
+			source,
+			await ed25519KeyIdForRevocation(source.public_key),
+		);
 		return firstRow<CoordinatorAuthControllerAttestation>(
-			this.db.prepare(AUTH_CONTROLLER_ACTIVE_SQL).bind(coordinatorId, attestationId),
+			this.db.prepare(AUTH_CONTROLLER_ACTIVE_SQL).bind(coordinatorId, attestationId, ...authority),
 		);
 	}
 

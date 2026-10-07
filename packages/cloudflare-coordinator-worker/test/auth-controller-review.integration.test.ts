@@ -2,7 +2,8 @@ import { env } from "cloudflare:workers";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createCoordinatorApp } from "../../core/src/coordinator-api.js";
-import { AUTH_CONTROLLER_RETRY_ACTIVE_SQL, authControllerRetryActiveValues } from "../../core/src/coordinator-auth-controller.js";
+import { AUTH_CONTROLLER_RETRY_ACTIVE_SQL, authControllerAuthorityValues, authControllerRetryActiveValues } from "../../core/src/coordinator-auth-controller.js";
+import { ed25519KeyIdForRevocation } from "../../core/src/coordinator-ed25519-key-id-compat.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
 import { buildCanonicalRequest, SIGNATURE_VERSION } from "../../core/src/sync-auth.js";
 import { fingerprintPublicKey } from "../../core/src/sync-fingerprint.js";
@@ -229,8 +230,11 @@ it("native D1 guards all 201 invitations with fixed SQL binds and a limited resp
 	expect(stored).toHaveLength(1);
 	vi.spyOn(f.store, "createAuthControllerAttestation").mockImplementation(async (input) => {
 		// Act: use the actual reviewed snapshot and persisted attestation ID.
+		const enrollment = await f.store.getEnrollment(input.groupId, input.deviceId, true);
+		if (!enrollment) throw new Error("Fixture enrollment missing");
+		const authority = authControllerAuthorityValues(enrollment, await ed25519KeyIdForRevocation(enrollment.public_key));
 		const active = await env.COORDINATOR_DB.prepare(AUTH_CONTROLLER_RETRY_ACTIVE_SQL)
-			.bind(...authControllerRetryActiveValues({ ...input, attestationId: stored[0].attestation_id as string })).all();
+			.bind(...authControllerRetryActiveValues({ ...input, attestationId: stored[0].attestation_id as string }, authority)).all();
 		// Assert: the native guard returns the stored row within a linear scan budget.
 		expect(active.results).toEqual(stored);
 		// A generous linear scan budget, not a machine-dependent timing limit.

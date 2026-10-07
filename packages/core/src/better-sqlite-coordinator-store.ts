@@ -36,14 +36,18 @@ import {
 import {
 	AUTH_CONTROLLER_ACTIVE_SQL,
 	AUTH_CONTROLLER_CONFLICT_SQL,
+	AUTH_CONTROLLER_CURRENT_ENROLLMENT_SQL,
+	AUTH_CONTROLLER_ENROLLMENT_SQL,
 	AUTH_CONTROLLER_INSERT_SQL,
 	AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL,
 	AUTH_CONTROLLER_REVOKE_SQL,
 	AUTH_CONTROLLER_SCHEMA_SQL,
+	authControllerAuthorityValues,
 	authControllerConflictValues,
 	authControllerInsertValues,
 	authControllerRetryEligibleValues,
 	authControllerRetryResult,
+	authControllerUnavailableResult,
 	type CoordinatorAuthControllerAttestation,
 	type CoordinatorAuthControllerCreateResult,
 	type CoordinatorAuthControllerReviewInput,
@@ -1059,10 +1063,18 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		if (!review) return { kind: "rejected", error: "invalid_review_input" };
 		return this.db
 			.transaction((): CoordinatorAuthControllerCreateResult => {
+				const source = this.db
+					.prepare(AUTH_CONTROLLER_ENROLLMENT_SQL)
+					.get(review.groupId, review.deviceId) as CoordinatorEnrollment | undefined;
+				if (!source) return authControllerUnavailableResult(review);
+				const authority = authControllerAuthorityValues(
+					source,
+					enrollmentRevocationKeyId(source.public_key),
+				);
 				try {
 					const inserted = this.db
 						.prepare(AUTH_CONTROLLER_INSERT_SQL)
-						.run(...authControllerInsertValues(review, nowISO()));
+						.run(...authControllerInsertValues(review, nowISO(), authority));
 					if (inserted.changes === 0)
 						return {
 							kind: "rejected",
@@ -1070,11 +1082,12 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 						};
 				} catch (error) {
 					if (!isAuthControllerUniqueError(error)) throw error;
-					return this.resolveAuthControllerRetrySync(review);
+					return this.resolveAuthControllerRetrySync(review, authority);
 				}
 				const attestation = this.getActiveAuthControllerAttestationSync(
 					review.coordinatorId,
 					review.attestationId,
+					authority,
 				);
 				if (!attestation) throw new Error("auth_controller_persistence_incomplete");
 				return { kind: "created", attestation };
@@ -1084,11 +1097,12 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 
 	private resolveAuthControllerRetrySync(
 		input: CoordinatorAuthControllerReviewInput,
+		authority: (string | null)[],
 	): CoordinatorAuthControllerCreateResult {
 		if (
 			!this.db
 				.prepare(AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL)
-				.get(...authControllerRetryEligibleValues(input))
+				.get(...authControllerRetryEligibleValues(input, authority))
 		)
 			return {
 				kind: "rejected",
@@ -1104,6 +1118,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		const active = this.getActiveAuthControllerAttestationSync(
 			input.coordinatorId,
 			input.attestationId,
+			authority,
 		);
 		if (!active) return { kind: "rejected", error: "enrollment_mismatch" };
 		return { kind: "existing", attestation: active };
@@ -1112,9 +1127,22 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	private getActiveAuthControllerAttestationSync(
 		coordinatorId: string,
 		attestationId: string,
+		authority?: (string | null)[],
 	): CoordinatorAuthControllerAttestation | null {
+		if (!authority) {
+			const source = this.db
+				.prepare(AUTH_CONTROLLER_CURRENT_ENROLLMENT_SQL)
+				.get(coordinatorId, attestationId) as CoordinatorEnrollment | undefined;
+			if (!source) return null;
+			authority = authControllerAuthorityValues(
+				source,
+				enrollmentRevocationKeyId(source.public_key),
+			);
+		}
 		return (
-			(this.db.prepare(AUTH_CONTROLLER_ACTIVE_SQL).get(coordinatorId, attestationId) as
+			(this.db
+				.prepare(AUTH_CONTROLLER_ACTIVE_SQL)
+				.get(coordinatorId, attestationId, ...authority) as
 				| CoordinatorAuthControllerAttestation
 				| undefined) ?? null
 		);

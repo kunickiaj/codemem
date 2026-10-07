@@ -221,6 +221,15 @@ export function authControllerRetryResult(
 	return { kind: "existing", attestation: row };
 }
 
+export function authControllerUnavailableResult(
+	input: CoordinatorAuthControllerReviewInput,
+): CoordinatorAuthControllerCreateResult {
+	return {
+		kind: "rejected",
+		error: input.verifiedSnapshot ? "review_stale" : "enrollment_mismatch",
+	};
+}
+
 /** Only uniqueness violations are domain conflicts; other backend failures propagate. */
 export function isAuthControllerUniqueError(error: unknown): boolean {
 	if (!(error instanceof Error)) return false;
@@ -298,6 +307,38 @@ function authControllerSnapshotValues(
 	];
 }
 
+/** Pin the actual enrollment used to derive the revocation key across async reads. */
+export function authControllerAuthorityValues(
+	source: {
+		group_id: string;
+		device_id: string;
+		public_key: string;
+		fingerprint: string;
+		identity_id: string | null;
+	},
+	keyId: string | null,
+): (string | null)[] {
+	return [
+		source.group_id,
+		source.device_id,
+		source.public_key,
+		source.fingerprint,
+		source.identity_id,
+		source.device_id,
+		keyId,
+	];
+}
+
+const AUTH_CONTROLLER_AUTHORITY_GUARD = `
+	AND e.group_id = ? AND e.device_id = ? AND e.public_key = ?
+	AND e.fingerprint = ? AND e.identity_id IS ?
+	AND NOT EXISTS (SELECT 1 FROM coordinator_device_revocations WHERE
+		(subject_kind = 'device_id' AND subject_value = ?) OR
+		(subject_kind = 'ed25519_key' AND subject_value = ?))`;
+
+export const AUTH_CONTROLLER_ENROLLMENT_SQL = `
+	SELECT e.* FROM enrolled_devices e WHERE e.group_id = ? AND e.device_id = ?`;
+
 export const AUTH_CONTROLLER_INSERT_SQL = `
 	${AUTH_CONTROLLER_SNAPSHOT_CTE}
 	INSERT INTO coordinator_auth_controller_attestations (
@@ -308,7 +349,8 @@ export const AUTH_CONTROLLER_INSERT_SQL = `
 	FROM enrolled_devices e JOIN groups g ON g.group_id = e.group_id
 	WHERE e.group_id = ? AND e.device_id = ? AND e.enabled = 1 AND g.archived_at IS NULL
 		AND e.public_key = ? AND e.fingerprint = ? AND (e.identity_id IS NULL OR e.identity_id = ?)
-		${AUTH_CONTROLLER_SNAPSHOT_GUARD}`;
+		${AUTH_CONTROLLER_SNAPSHOT_GUARD}
+		${AUTH_CONTROLLER_AUTHORITY_GUARD}`;
 
 /** Retry eligibility is read atomically with all the same live evidence guards. */
 export const AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL = `
@@ -316,10 +358,12 @@ export const AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL = `
 	SELECT 1 AS eligible FROM enrolled_devices e JOIN groups g ON g.group_id = e.group_id
 	WHERE e.group_id = ? AND e.device_id = ? AND e.enabled = 1 AND g.archived_at IS NULL
 		AND e.public_key = ? AND e.fingerprint = ? AND (e.identity_id IS NULL OR e.identity_id = ?)
-		${AUTH_CONTROLLER_SNAPSHOT_GUARD}`;
+		${AUTH_CONTROLLER_SNAPSHOT_GUARD}
+		${AUTH_CONTROLLER_AUTHORITY_GUARD}`;
 
 export function authControllerRetryEligibleValues(
 	input: CoordinatorAuthControllerReviewInput,
+	authority: (string | null)[],
 ): (string | null)[] {
 	return [
 		...authControllerSnapshotValues(input),
@@ -328,12 +372,14 @@ export function authControllerRetryEligibleValues(
 		input.publicKey,
 		input.fingerprint,
 		input.identityId,
+		...authority,
 	];
 }
 
 export function authControllerInsertValues(
 	input: CoordinatorAuthControllerReviewInput,
 	createdAt: string,
+	authority: (string | null)[],
 ): (string | null)[] {
 	return [
 		...authControllerSnapshotValues(input),
@@ -348,16 +394,26 @@ export function authControllerInsertValues(
 		input.publicKey,
 		input.fingerprint,
 		input.identityId,
+		...authority,
 	];
 }
 
-export const AUTH_CONTROLLER_ACTIVE_SQL = `
+const AUTH_CONTROLLER_CURRENT_SQL = `
 	SELECT a.* FROM coordinator_auth_controller_attestations a
 	JOIN enrolled_devices e ON e.group_id = a.group_id AND e.device_id = a.device_id
 	JOIN groups g ON g.group_id = a.group_id
 	WHERE a.coordinator_id = ? AND a.attestation_id = ? AND a.revoked_at IS NULL
 		AND e.enabled = 1 AND g.archived_at IS NULL AND e.public_key = a.public_key
-		AND e.fingerprint = a.fingerprint AND (e.identity_id IS NULL OR e.identity_id = a.identity_id)`;
+		AND e.fingerprint = a.fingerprint
+		AND (e.identity_id IS NULL OR e.identity_id = a.identity_id)`;
+
+export const AUTH_CONTROLLER_CURRENT_ENROLLMENT_SQL = AUTH_CONTROLLER_CURRENT_SQL.replace(
+	"SELECT a.*",
+	"SELECT e.*",
+);
+
+export const AUTH_CONTROLLER_ACTIVE_SQL = `
+	${AUTH_CONTROLLER_CURRENT_SQL} ${AUTH_CONTROLLER_AUTHORITY_GUARD}`;
 
 /** D1 retries must return the row checked against live authority in this statement. */
 export const AUTH_CONTROLLER_RETRY_ACTIVE_SQL = `
@@ -367,8 +423,14 @@ export const AUTH_CONTROLLER_RETRY_ACTIVE_SQL = `
 
 export function authControllerRetryActiveValues(
 	input: CoordinatorAuthControllerReviewInput,
+	authority: (string | null)[],
 ): (string | null)[] {
-	return [...authControllerSnapshotValues(input), input.coordinatorId, input.attestationId];
+	return [
+		...authControllerSnapshotValues(input),
+		input.coordinatorId,
+		input.attestationId,
+		...authority,
+	];
 }
 
 export const AUTH_CONTROLLER_CONFLICT_SQL = `
