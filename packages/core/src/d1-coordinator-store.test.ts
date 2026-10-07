@@ -34,11 +34,13 @@ class SqliteD1Statement implements D1PreparedStatementLike {
 	}
 
 	async run(): Promise<unknown> {
-		const result = this.statement.run(...this.bound);
-		return { meta: { changes: result.changes } };
+		return this.executeRunSync();
 	}
 
 	executeRunSync(): unknown {
+		if (this.statement.reader) {
+			return { results: this.statement.all(...this.bound), meta: { changes: 0 } };
+		}
 		const result = this.statement.run(...this.bound);
 		return { meta: { changes: result.changes } };
 	}

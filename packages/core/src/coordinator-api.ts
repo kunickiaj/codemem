@@ -373,6 +373,12 @@ async function reviewJoinRequestWithRevocationDenial(
 	try {
 		return await handleJoinRequestReview(...args);
 	} catch (error) {
+		if (
+			error instanceof Error &&
+			(error.message === "join_review_unavailable" || error.message === "join_review_incomplete")
+		) {
+			return args[0].json({ error: error.message }, 503);
+		}
 		return deviceRevokedResponse(args[0], error);
 	}
 }

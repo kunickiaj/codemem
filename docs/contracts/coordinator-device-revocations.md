@@ -151,9 +151,34 @@ untouched. Missing/disabled inviters retain no-grant behavior unless revoked, an
 removed historical inviter keys are not inferred. Existing Project acceptance
 maps `device_revoked` to 403 after normal invitation validation.
 
-Join approval and standalone bootstrap/controller/link/group-grant authority
-guards remain separate work. Neither invitation slice enables public revocation
-management or substitutes for durable device ownership.
+## Join approval guards
+
+Pending join approval checks the requested device's ID and canonical key and,
+when issuing a bootstrap grant, the current enabled seed's ID and canonical key.
+Seed authority remains current enrollment in the same group with a different
+device ID; a reviewer name or actor hint does not prove ownership.
+
+SQLite reads pending state inside an immediate transaction. Enrollment, optional
+grant, and the conditional status transition share that transaction. D1 requires
+an atomic batch for approval, pins the request and seed evidence, and chains each
+writer to the previous statement's affected-row count. An approved status with
+the same timestamp is not proof that this invocation won the pending transition.
+Lost transitions return the existing `_no_transition` result without granting
+authority. Denial remains available for revoked pending devices and on D1 adapters
+without batch support; already-reviewed requests retain their existing precedence.
+
+The API returns fixed `503 join_review_unavailable` when atomic approval is not
+available and `503 join_review_incomplete` for stale or unconfirmed outcomes.
+Applicable device revocation retains `403 device_revoked`. SQL assertion failures
+abort the batch for detected evidence drift; database diagnostics are not returned.
+Malformed receipts and synthetic triggers that suppress a write without raising
+a SQL error can produce an incomplete response after commit. That response is not
+proof of rollback, and callers must reconcile current state rather than retry as
+though nothing changed.
+
+Standalone bootstrap/controller/link/group-grant authority guards remain separate
+work. These writer slices do not enable public revocation management or substitute
+for durable device ownership.
 
 ## Activation limits
 
