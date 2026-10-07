@@ -267,6 +267,36 @@ next separate slice; raw issuance guards alone do not close bootstrap access.
 These writer slices do not enable public revocation management, new owner
 enrollment, durable ownership, or a live authentication configuration.
 
+## Current bootstrap authorization read
+
+`getBootstrapGrantAuthorization` is a required store capability, separate from raw
+inspection. It accepts a grant ID, server-trusted time, and optional seed constraints
+from verified request admission. Its authorized result carries version 1, the grant,
+and both current enrollments from the final SQL decision—not from earlier snapshots.
+
+The decision requires an unrevoked, unexpired grant, an unarchived group, both
+participants currently enrolled and enabled in that group, and no device-ID or
+canonical-key revocation. It derives both key IDs from actual enrollment keys and
+pins the captured grant fields and participant tuples across hashing. Changed
+evidence cannot silently authorize a replacement key. Invalid expiry dates fail
+closed. Authorization requires an ISO timestamp with seconds and an explicit `Z`
+or numeric timezone offset; timezone-less and free-form dates fail closed rather
+than expiring at different instants on different hosts. Backend or unconfirmed
+results use `bootstrap_authorization_unavailable`.
+
+Missing grants or mismatched seed expectations retain `grant_not_found`; missing
+or disabled participants use `seed_enrollment_not_found` or
+`worker_enrollment_not_found`. Other denials distinguish grant revocation, expiry,
+group archival, and participant device revocation without database diagnostics.
+Raw records, history, and explicit grant revocation remain independently readable.
+Incomplete enrollment metadata, including empty fingerprints or creation times,
+also fails closed as unavailable without changing raw inspection.
+
+This slice does not yet change API or viewer behavior. Their next adoption slice
+must authenticate before this read, pass the actual verified seed key, expose an
+explicit authorization version, and reject older unversioned inspection responses.
+No optional raw-getter fallback can substitute for the authorization decision.
+
 ## Activation limits
 
 Existing group disable/removal does not create global subjects automatically.

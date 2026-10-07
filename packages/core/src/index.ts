@@ -185,6 +185,9 @@ export {
 } from "./coordinator-runtime.js";
 export type {
 	CoordinatorAuthorizedNonceResult,
+	CoordinatorBootstrapGrantAuthorizationError,
+	CoordinatorBootstrapGrantAuthorizationInput,
+	CoordinatorBootstrapGrantAuthorizationResult,
 	CoordinatorBootstrapGrantVerification,
 	CoordinatorConsumeProjectInviteInput,
 	CoordinatorCreateDeviceRevocationInput,

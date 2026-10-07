@@ -225,6 +225,34 @@ export interface CoordinatorBootstrapGrant {
 	revoked_at: string | null;
 }
 
+export interface CoordinatorBootstrapGrantAuthorizationInput {
+	grantId: string;
+	/** Server-trusted time, not a caller-supplied expiry or clock. */
+	nowMs: number;
+	expectedSeed?: { groupId: string; deviceId: string; publicKey: string; fingerprint: string };
+}
+
+export type CoordinatorBootstrapGrantAuthorizationError =
+	| "grant_not_found"
+	| "seed_enrollment_not_found"
+	| "worker_enrollment_not_found"
+	| "grant_revoked"
+	| "grant_expired"
+	| "group_archived"
+	| "device_revoked"
+	| "bootstrap_authorization_unavailable";
+
+/** A current read snapshot, not a permanent authorization capability. */
+export type CoordinatorBootstrapGrantAuthorizationResult =
+	| {
+			kind: "authorized";
+			authorizationVersion: 1;
+			grant: CoordinatorBootstrapGrant;
+			seedEnrollment: CoordinatorEnrollment;
+			workerEnrollment: CoordinatorEnrollment;
+	  }
+	| { kind: "rejected"; error: CoordinatorBootstrapGrantAuthorizationError };
+
 export interface CoordinatorScope {
 	scope_id: string;
 	label: string;
@@ -534,6 +562,9 @@ export interface CoordinatorStore extends CoordinatorDeviceRevocationStore {
 		opts: CoordinatorListScopeMembershipAuditInput,
 	): Promise<CoordinatorScopeMembershipAuditEvent[]>;
 	getBootstrapGrant(grantId: string): Promise<CoordinatorBootstrapGrant | null>;
+	getBootstrapGrantAuthorization(
+		input: CoordinatorBootstrapGrantAuthorizationInput,
+	): Promise<CoordinatorBootstrapGrantAuthorizationResult>;
 	listBootstrapGrants(groupId: string): Promise<CoordinatorBootstrapGrant[]>;
 	revokeBootstrapGrant(grantId: string, revokedAt?: string): Promise<boolean>;
 	listReciprocalApprovals(

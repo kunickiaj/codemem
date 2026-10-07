@@ -85,6 +85,15 @@ import {
 	type CoordinatorAuthSessionScope,
 } from "./coordinator-auth-session-contract.js";
 import {
+	BOOTSTRAP_AUTHORIZATION_SOURCE_SQL,
+	type BootstrapAuthorizationRow,
+	bootstrapAuthorizationDecision,
+	bootstrapAuthorizationResult,
+	bootstrapAuthorizationSourceError,
+	captureBootstrapAuthorizationInput,
+	rejectBootstrapAuthorization,
+} from "./coordinator-bootstrap-grant-authorization.js";
+import {
 	BOOTSTRAP_PARTICIPANT_SOURCE_SQL,
 	BOOTSTRAP_PARTICIPANTS_REVOKED_SQL,
 	BOOTSTRAP_RAW_INSERT_SQL,
@@ -146,6 +155,8 @@ import {
 import { projectInviteGuardEvidence } from "./coordinator-project-invite-guards.js";
 import type {
 	CoordinatorBootstrapGrant,
+	CoordinatorBootstrapGrantAuthorizationInput,
+	CoordinatorBootstrapGrantAuthorizationResult,
 	CoordinatorConsumeProjectInviteInput,
 	CoordinatorConsumeRecipientInviteInput,
 	CoordinatorCreateBootstrapGrantInput,
@@ -2622,6 +2633,41 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				 FROM coordinator_bootstrap_grants WHERE grant_id = ?`)
 			.get(grantId);
 		return row ? rowToRecord<CoordinatorBootstrapGrant>(row) : null;
+	}
+
+	async getBootstrapGrantAuthorization(
+		raw: CoordinatorBootstrapGrantAuthorizationInput,
+	): Promise<CoordinatorBootstrapGrantAuthorizationResult> {
+		try {
+			const input = captureBootstrapAuthorizationInput(raw);
+			return this.db
+				.transaction(() => {
+					const source = this.db.prepare(BOOTSTRAP_AUTHORIZATION_SOURCE_SQL).get(input.grantId) as
+						| BootstrapAuthorizationRow
+						| undefined;
+					const sourceError = bootstrapAuthorizationSourceError(input, source ?? null);
+					if (sourceError) return rejectBootstrapAuthorization(sourceError);
+					if (!source) return rejectBootstrapAuthorization("bootstrap_authorization_unavailable");
+					const captured = { ...source };
+					const decision = bootstrapAuthorizationDecision(input, captured, {
+						seed:
+							captured.seed_enrollment_public_key === null
+								? null
+								: enrollmentRevocationKeyId(captured.seed_enrollment_public_key),
+						worker:
+							captured.worker_enrollment_public_key === null
+								? null
+								: enrollmentRevocationKeyId(captured.worker_enrollment_public_key),
+					});
+					const current = this.db.prepare(decision.sql).get(...decision.values) as
+						| BootstrapAuthorizationRow
+						| undefined;
+					return bootstrapAuthorizationResult(current ?? null);
+				})
+				.immediate();
+		} catch {
+			return rejectBootstrapAuthorization("bootstrap_authorization_unavailable");
+		}
 	}
 
 	async listBootstrapGrants(groupId: string): Promise<CoordinatorBootstrapGrant[]> {

@@ -36,6 +36,9 @@ export {
 	normalizeCoordinatorLegacyTeamCompletionManifest,
 } from "./coordinator-legacy-team-completion.js";
 export type {
+	CoordinatorBootstrapGrantAuthorizationError,
+	CoordinatorBootstrapGrantAuthorizationInput,
+	CoordinatorBootstrapGrantAuthorizationResult,
 	CoordinatorBootstrapGrantVerification,
 	CoordinatorConsumeProjectInviteInput,
 	CoordinatorCreateInviteInput,
