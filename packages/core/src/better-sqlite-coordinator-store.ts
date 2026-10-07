@@ -85,6 +85,14 @@ import {
 	type CoordinatorAuthSessionScope,
 } from "./coordinator-auth-session-contract.js";
 import {
+	BOOTSTRAP_PARTICIPANT_SOURCE_SQL,
+	BOOTSTRAP_PARTICIPANTS_REVOKED_SQL,
+	BOOTSTRAP_RAW_INSERT_SQL,
+	type BootstrapParticipantSource,
+	bootstrapRawInsertValues,
+	captureBootstrapParticipantSource,
+} from "./coordinator-bootstrap-grant-issuance.js";
+import {
 	type CoordinatorCreateDeviceRevocationInput,
 	type CoordinatorListDeviceRevocationsInput,
 	type CoordinatorRecordAuthorizedNonceInput,
@@ -2223,7 +2231,49 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	async createBootstrapGrant(
 		opts: CoordinatorCreateBootstrapGrantInput,
 	): Promise<CoordinatorBootstrapGrant> {
-		return insertBootstrapGrantSync(this.db, opts);
+		const input = normalizeCoordinatorBootstrapGrantInput(opts);
+		try {
+			return this.db
+				.transaction(() => {
+					const revoked = this.db.prepare(BOOTSTRAP_PARTICIPANTS_REVOKED_SQL);
+					if (revoked.get(input.seedDeviceId, null, input.workerDeviceId, null)) {
+						throw new Error("device_revoked");
+					}
+					const source = this.db.prepare(BOOTSTRAP_PARTICIPANT_SOURCE_SQL);
+					const seed = captureBootstrapParticipantSource(
+						(source.get(input.groupId, input.seedDeviceId) as
+							| BootstrapParticipantSource
+							| undefined) ?? null,
+					);
+					const worker = captureBootstrapParticipantSource(
+						(source.get(input.groupId, input.workerDeviceId) as
+							| BootstrapParticipantSource
+							| undefined) ?? null,
+					);
+					const subjects = [
+						input.seedDeviceId,
+						seed ? enrollmentRevocationKeyId(seed.public_key) : null,
+						input.workerDeviceId,
+						worker ? enrollmentRevocationKeyId(worker.public_key) : null,
+					];
+					if (revoked.get(...subjects)) throw new Error("device_revoked");
+					const values = bootstrapRawInsertValues(
+						input,
+						{ grantId: tokenUrlSafe(12), createdAt: nowISO() },
+						{ seed, worker },
+						subjects,
+					);
+					const row = this.db.prepare(BOOTSTRAP_RAW_INSERT_SQL).get(...values);
+					// A trigger may revoke a participant during insertion; abort the entire transaction.
+					if (revoked.get(...subjects)) throw new Error("device_revoked");
+					if (!row) throw new Error("bootstrap_grant_write_incomplete");
+					return rowToRecord<CoordinatorBootstrapGrant>(row);
+				})
+				.immediate();
+		} catch (error) {
+			if (error instanceof Error && error.message === "device_revoked") throw error;
+			throw new Error("bootstrap_grant_write_incomplete");
+		}
 	}
 
 	private getScopeSync(scopeId: string): CoordinatorScope | null {

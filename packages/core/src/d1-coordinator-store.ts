@@ -60,6 +60,14 @@ import type {
 	CoordinatorAuthSessionScope,
 } from "./coordinator-auth-session-contract.js";
 import {
+	BOOTSTRAP_PARTICIPANT_SOURCE_SQL,
+	BOOTSTRAP_PARTICIPANTS_REVOKED_SQL,
+	BOOTSTRAP_RAW_INSERT_SQL,
+	type BootstrapParticipantSource,
+	bootstrapRawInsertValues,
+	captureBootstrapParticipantSource,
+} from "./coordinator-bootstrap-grant-issuance.js";
+import {
 	type CoordinatorCreateDeviceRevocationInput,
 	type CoordinatorListDeviceRevocationsInput,
 	type CoordinatorRecordAuthorizedNonceInput,
@@ -2375,33 +2383,48 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		return rowToRecord<CoordinatorReciprocalApproval>(created);
 	}
 
+	private async getBootstrapParticipantSource(groupId: string, deviceId: string) {
+		const row = await firstRow<BootstrapParticipantSource>(
+			this.db.prepare(BOOTSTRAP_PARTICIPANT_SOURCE_SQL).bind(groupId, deviceId),
+		);
+		return captureBootstrapParticipantSource(row);
+	}
+
 	async createBootstrapGrant(
 		opts: CoordinatorCreateBootstrapGrantInput,
 	): Promise<CoordinatorBootstrapGrant> {
-		const normalized = normalizeCoordinatorBootstrapGrantInput(opts);
-		const grantId = tokenUrlSafe(12);
-		const createdAt = nowISO();
-		await this.db
-			.prepare(`INSERT INTO coordinator_bootstrap_grants(
-				grant_id, group_id, seed_device_id, worker_device_id, expires_at, created_at, created_by, revoked_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`)
-			.bind(
-				grantId,
-				normalized.groupId,
-				normalized.seedDeviceId,
-				normalized.workerDeviceId,
-				normalized.expiresAt,
-				createdAt,
-				normalized.createdBy,
-			)
-			.run();
-		const row = await firstRow<CoordinatorBootstrapGrant>(
-			this.db
-				.prepare(`SELECT grant_id, group_id, seed_device_id, worker_device_id, expires_at, created_at, created_by, revoked_at
-					 FROM coordinator_bootstrap_grants WHERE grant_id = ?`)
-				.bind(grantId),
-		);
-		return rowToRecord<CoordinatorBootstrapGrant>(row);
+		const input = normalizeCoordinatorBootstrapGrantInput(opts);
+		try {
+			const revoked = () => this.db.prepare(BOOTSTRAP_PARTICIPANTS_REVOKED_SQL);
+			if (await firstRow(revoked().bind(input.seedDeviceId, null, input.workerDeviceId, null))) {
+				throw new Error("device_revoked");
+			}
+			const seed = await this.getBootstrapParticipantSource(input.groupId, input.seedDeviceId);
+			const worker = await this.getBootstrapParticipantSource(input.groupId, input.workerDeviceId);
+			// Copy both source tuples before hashing yields; never infer keys from legacy fingerprints.
+			const subjects = [
+				input.seedDeviceId,
+				seed ? await ed25519KeyIdForRevocation(seed.public_key) : null,
+				input.workerDeviceId,
+				worker ? await ed25519KeyIdForRevocation(worker.public_key) : null,
+			];
+			if (await firstRow(revoked().bind(...subjects))) throw new Error("device_revoked");
+			const values = bootstrapRawInsertValues(
+				input,
+				{ grantId: tokenUrlSafe(12), createdAt: nowISO() },
+				{ seed, worker },
+				subjects,
+			);
+			const row = await firstRow<CoordinatorBootstrapGrant>(
+				this.db.prepare(BOOTSTRAP_RAW_INSERT_SQL).bind(...values),
+			);
+			if (row) return rowToRecord<CoordinatorBootstrapGrant>(row);
+			if (await firstRow(revoked().bind(...subjects))) throw new Error("device_revoked");
+			throw new Error("bootstrap_grant_write_incomplete");
+		} catch (error) {
+			if (error instanceof Error && error.message === "device_revoked") throw error;
+			throw new Error("bootstrap_grant_write_incomplete");
+		}
 	}
 
 	private async getScope(scopeId: string): Promise<CoordinatorScope | null> {

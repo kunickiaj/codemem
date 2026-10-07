@@ -242,9 +242,30 @@ receipts are historical results, not proof of current device authority; stored
 links and browser sessions are not silently revoked or deleted. A write accepted
 before later revocation is not retroactively undone.
 
-Standalone bootstrap authority remains separate work. These writer slices do not
-enable public revocation management, new owner enrollment, or durable device
-ownership, and do not activate a live authentication configuration.
+## Standalone raw bootstrap issuance
+
+Standalone grant creation checks both participant device IDs and canonical keys
+from their current enrollments when available, including disabled enrollments.
+The INSERT pins each captured key/fingerprint/Identity tuple or the absence of an
+enrollment. D1 cannot silently use a participant that appeared or changed during
+hashing; SQLite performs capture, hashing, and insertion in an immediate transaction.
+
+Raw grant records are not authorization. Existing no-revocation creation behavior
+for unenrolled, disabled, or identical participant IDs remains unchanged. No
+historical key or ownership is inferred from a fingerprint, actor hint, or stored
+grant. Retained device-ID revocation still denies creation after enrollment removal.
+
+Subject denial uses `device_revoked`; stale evidence and unconfirmed failures use
+the fixed `bootstrap_grant_write_incomplete` error. D1 returns only its own guarded
+INSERT result, not success reconstructed from a later raw read. After a lost D1
+receipt, neither an incomplete response nor a subsequent `device_revoked` denial
+proves that no grant was committed; callers must reconcile current state.
+
+Existing raw reads, history, and explicit grant revocation remain unchanged.
+Current authorization of both participants in signed/admin lookup paths is the
+next separate slice; raw issuance guards alone do not close bootstrap access.
+These writer slices do not enable public revocation management, new owner
+enrollment, durable ownership, or a live authentication configuration.
 
 ## Activation limits
 
