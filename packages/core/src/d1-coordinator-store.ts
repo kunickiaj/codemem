@@ -106,8 +106,11 @@ import {
 import {
 	assertLegacyDeviceScope,
 	captureLegacyEnrollment,
+	captureLegacyEnrollmentPublicKey,
 	DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL,
 	LEGACY_DEVICE_DENIAL_SQL,
+	LEGACY_ENROLLMENT_DENIAL_SQL,
+	LEGACY_ENROLLMENT_WRITE_SQL,
 	legacyDeviceAuthorizationFailure,
 	legacyDeviceDenial,
 	legacyDeviceWriteChanges,
@@ -1175,24 +1178,19 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			_opts,
 		);
 		try {
+			const currentPublicKey = captureLegacyEnrollmentPublicKey(
+				await firstRow<unknown>(
+					this.db
+						.prepare("SELECT public_key FROM enrolled_devices WHERE group_id = ? AND device_id = ?")
+						.bind(_groupId, deviceId),
+				),
+			);
 			const keyId = await ed25519KeyIdForRevocation(publicKey);
-			// The INSERT filter is required; the conflict guard alone cannot protect new rows.
+			const currentKeyId =
+				currentPublicKey === null ? null : await ed25519KeyIdForRevocation(currentPublicKey);
+			const source = [currentPublicKey, _groupId, deviceId, _groupId, deviceId, currentPublicKey];
 			const result = await this.db
-				.prepare(`INSERT INTO enrolled_devices(
-					group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled, created_at
-				) SELECT ?, ?, ?, ?, ?, ?, 1, ?
-				WHERE NOT ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}
-				AND NOT ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL}
-				ON CONFLICT(group_id, device_id) DO UPDATE SET
-					public_key = excluded.public_key,
-					fingerprint = excluded.fingerprint,
-					identity_id = COALESCE(enrolled_devices.identity_id, excluded.identity_id),
-					display_name = excluded.display_name,
-					enabled = 1
-				WHERE (excluded.identity_id IS NULL
-					OR enrolled_devices.identity_id IS NULL
-					OR enrolled_devices.identity_id = excluded.identity_id)
-				AND NOT ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL}`)
+				.prepare(LEGACY_ENROLLMENT_WRITE_SQL)
 				.bind(
 					_groupId,
 					deviceId,
@@ -1206,12 +1204,20 @@ export class D1CoordinatorStore implements CoordinatorStore {
 					deviceId,
 					keyId,
 					deviceId,
+					currentKeyId,
+					...source,
+					deviceId,
 					keyId,
+					deviceId,
+					currentKeyId,
+					currentPublicKey,
 				)
 				.run();
 			if (legacyDeviceWriteChanges(result) === 1) return;
 			const denial = await firstRow<unknown>(
-				this.db.prepare(LEGACY_DEVICE_DENIAL_SQL).bind(deviceId, keyId, deviceId, keyId),
+				this.db
+					.prepare(LEGACY_ENROLLMENT_DENIAL_SQL)
+					.bind(deviceId, keyId, deviceId, keyId, deviceId, currentKeyId, ...source),
 			);
 			throw new Error(legacyDeviceDenial(denial));
 		} catch (error) {

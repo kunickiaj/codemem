@@ -6,6 +6,7 @@ import {
 	ownedRow,
 	type ownershipHarness,
 } from "./coordinator-device-ownership-test-harness.js";
+import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
 import {
 	ACCEPTED_ALIASES,
 	CANONICAL_PUBLIC_KEY,
@@ -44,6 +45,164 @@ export function registerOwnedEnrollmentContract(test: Test) {
 	registerRevocation(test);
 	registerUnavailable(test);
 	registerInputTypes(test);
+	registerStoredOwnedKey(test);
+	registerStoredAliasCompatibility(test);
+}
+
+export const storedOwnedAlias = {
+	...ownedEnrollment,
+	deviceId: "unowned-alias",
+	identityId: undefined,
+};
+export const aliasReplacement = {
+	...storedOwnedAlias,
+	publicKey: UNRELATED_PUBLIC_KEY,
+	fingerprint: "e".repeat(64),
+	displayName: "overwrite",
+};
+export async function seedStoredOwnedAlias(f: OwnershipFixture, publicKey = CANONICAL_PUBLIC_KEY) {
+	await f.store.createGroup(ownedGroup);
+	await f.store.enrollDevice(ownedGroup, { ...storedOwnedAlias, publicKey });
+	await insertOwnership(f);
+}
+export function registerStoredKeyRaces(
+	test: Test,
+	guarded: (f: OwnershipFixture, hook: () => Promise<void>) => OwnershipFixture["store"],
+) {
+	for (const scenario of [
+		"late binding",
+		"rotate captured owned key",
+		"delete captured owned row",
+		"absent row appears",
+	] as const) {
+		test(`stored key race: ${scenario} cannot overwrite or re-enable`, async ({ fixture: f }) => {
+			// Arrange: the mutator's changes are allowed; this enrollment attempt must add none.
+			await f.store.createGroup(ownedGroup);
+			if (scenario !== "absent row appears")
+				await f.store.enrollDevice(ownedGroup, storedOwnedAlias);
+			if (scenario !== "late binding") await insertOwnership(f);
+			let atGate: unknown[][] = [];
+			const hook = async () => {
+				await mutateStoredKeyRace(f, scenario);
+				atGate = await ownedSnapshot(f);
+			};
+			const racing = guarded(f, hook);
+			// Act
+			const pending = racing.enrollDevice(ownedGroup, aliasReplacement);
+			// Assert: captured current ownership wins even if that row rotates or disappears.
+			await expect(pending).rejects.toThrow(
+				new RegExp(`^${scenario === "absent row appears" ? OWNED_UNAVAILABLE : OWNED_DENIAL}$`),
+			);
+			expect(atGate).toHaveLength(3);
+			expect(await ownedSnapshot(f)).toEqual(atGate);
+		});
+	}
+}
+async function mutateStoredKeyRace(f: OwnershipFixture, scenario: string) {
+	if (scenario === "late binding") return insertOwnership(f);
+	if (scenario === "rotate captured owned key")
+		return f.exec(
+			"UPDATE enrolled_devices SET public_key = ? WHERE device_id = ?",
+			UNRELATED_PUBLIC_KEY,
+			storedOwnedAlias.deviceId,
+		);
+	if (scenario === "delete captured owned row")
+		return f.exec("DELETE FROM enrolled_devices WHERE device_id = ?", storedOwnedAlias.deviceId);
+	return f.exec(
+		"INSERT INTO enrolled_devices (group_id,device_id,public_key,fingerprint,enabled,created_at) VALUES (?,?,?,?,0,?)",
+		ownedGroup,
+		storedOwnedAlias.deviceId,
+		CANONICAL_PUBLIC_KEY,
+		"unrelated-physical-fingerprint",
+		"2026-10-07",
+	);
+}
+function registerStoredOwnedKey(test: Test) {
+	for (const enabled of [true, false]) {
+		for (const identityId of [undefined, "foreign-identity", String(ownedRow.identity_id)]) {
+			test(`stored owned key blocks unrelated replacement (${enabled}, hint ${identityId})`, async ({
+				fixture: f,
+			}) => {
+				// Arrange: incoming ID/key have no binding; only the current stored key is owned.
+				await seedStoredOwnedAlias(f);
+				if (!enabled) await f.store.setDeviceEnabled(ownedGroup, storedOwnedAlias.deviceId, false);
+				const incomingKeyId = await ed25519KeyId(aliasReplacement.publicKey);
+				expect(
+					await f.query(
+						`SELECT COUNT(*) AS count FROM ${OWNERSHIP_TABLE} WHERE device_id = ? OR key_id = ?`,
+						storedOwnedAlias.deviceId,
+						incomingKeyId,
+					),
+				).toEqual([{ count: 0 }]);
+				expect(
+					await f.query(
+						`SELECT COUNT(*) AS count FROM ${OWNERSHIP_TABLE} WHERE key_id = ?`,
+						ownedRow.key_id,
+					),
+				).toEqual([{ count: 1 }]);
+				const before = await ownedSnapshot(f);
+				// Act
+				const pending = f.store.enrollDevice(ownedGroup, { ...aliasReplacement, identityId });
+				// Assert
+				await expect(pending).rejects.toThrow(new RegExp(`^${OWNED_DENIAL}$`));
+				expect(await ownedSnapshot(f)).toEqual(before);
+			});
+		}
+	}
+}
+function registerStoredAliasCompatibility(test: Test) {
+	for (const alias of [
+		{ name: "comment", publicKey: `${CANONICAL_PUBLIC_KEY} stored-comment` },
+		...NODE_ONLY_ALIASES,
+	]) {
+		test(`stored owned ${alias.name} canonical key blocks unrelated replacement`, async ({
+			fixture: f,
+		}) => {
+			// Arrange: the physical fingerprint deliberately is not canonical ownership metadata.
+			await seedStoredOwnedAlias(f, alias.publicKey);
+			const before = await ownedSnapshot(f);
+			// Act
+			const pending = f.store.enrollDevice(ownedGroup, aliasReplacement);
+			// Assert
+			await expect(pending).rejects.toThrow(new RegExp(`^${OWNED_DENIAL}$`));
+			expect(await ownedSnapshot(f)).toEqual(before);
+		});
+	}
+	test("unbound current opaque key still permits unrelated replacement", async ({ fixture: f }) => {
+		// Arrange
+		await f.store.createGroup(ownedGroup);
+		await f.store.enrollDevice(ownedGroup, { ...storedOwnedAlias, publicKey: "opaque-legacy-key" });
+		// Act
+		await f.store.enrollDevice(ownedGroup, aliasReplacement);
+		// Assert
+		expect(await f.store.getEnrollment(ownedGroup, storedOwnedAlias.deviceId)).toMatchObject({
+			public_key: UNRELATED_PUBLIC_KEY,
+			display_name: "overwrite",
+			enabled: 1,
+		});
+		expect(await f.query(`SELECT * FROM ${OWNERSHIP_TABLE}`)).toEqual([]);
+	});
+	test("incoming revocation retains priority over the current stored owned key", async ({
+		fixture: f,
+	}) => {
+		// Arrange: revoke an unrelated incoming key using a genuine enrollment tuple.
+		await f.store.createGroup(ownedGroup);
+		const revoked = {
+			...aliasReplacement,
+			deviceId: "revoked-key-source",
+			groupId: ownedGroup,
+			actorId: "fixture-operator",
+		};
+		await f.store.enrollDevice(ownedGroup, revoked);
+		await f.store.createDeviceRevocation(revoked);
+		await seedStoredOwnedAlias(f);
+		const before = await ownedSnapshot(f);
+		// Act
+		const pending = f.store.enrollDevice(ownedGroup, aliasReplacement);
+		// Assert
+		await expect(pending).rejects.toThrow(/^device_revoked$/);
+		expect(await ownedSnapshot(f)).toEqual(before);
+	});
 }
 function registerInputTypes(test: Test) {
 	for (const field of [

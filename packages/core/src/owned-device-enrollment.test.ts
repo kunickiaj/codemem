@@ -10,17 +10,22 @@ import {
 import { UNRELATED_PUBLIC_KEY } from "./coordinator-enrollment-revocation-test-harness.js";
 import { pendingJoin } from "./coordinator-join-revocation-test-harness.js";
 import { projectInvite } from "./coordinator-project-revocation-test-harness.js";
+import { recipientGuardedD1 } from "./coordinator-recipient-revocation-test-harness.js";
 import {
 	D1CoordinatorStore,
 	type D1DatabaseLike,
 	type D1PreparedStatementLike,
 } from "./d1-coordinator-store.js";
 import {
+	aliasReplacement,
 	OWNED_DENIAL,
 	OWNED_UNAVAILABLE,
 	ownedEnrollment,
 	ownedGroup,
 	registerOwnedEnrollmentContract,
+	registerStoredKeyRaces,
+	seedStoredOwnedAlias,
+	storedOwnedAlias,
 } from "./shared-owned-device-enrollment-test-harness.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
@@ -46,11 +51,14 @@ function fixture(f: ReturnType<typeof setupStore>): OwnershipFixture {
 	};
 }
 describe.each(["SQLite", "D1"] as const)("%s owned-device enrollment prerequisites", (backend) => {
+	const databases = new WeakMap<OwnershipFixture, ReturnType<typeof setupStore>["db"]>();
 	const test = ownershipHarness(async (use) => {
 		const f = setupStore(backend);
 		const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
 		try {
-			await use(fixture(f));
+			const o = fixture(f);
+			databases.set(o, f.db);
+			await use(o);
 			expect(fetch).not.toHaveBeenCalled();
 		} finally {
 			fetch.mockRestore();
@@ -59,6 +67,15 @@ describe.each(["SQLite", "D1"] as const)("%s owned-device enrollment prerequisit
 		}
 	});
 	registerOwnedEnrollmentContract(test);
+	if (backend === "D1")
+		registerStoredKeyRaces(test, (f, hook) => {
+			const db = databases.get(f);
+			if (!db) throw new Error("Missing fixture database");
+			return recipientGuardedD1(sqliteD1(db), async (writes) => {
+				if (writes.some(({ query }) => query.includes("INSERT INTO enrolled_devices")))
+					await hook();
+			});
+		});
 	for (const operation of ["enroll", "enable"] as const) {
 		for (const subject of ["ID", "key"] as const) {
 			test(`${operation} observes owned ${subject} inserted immediately before actual SQL`, async ({
@@ -149,7 +166,69 @@ async function d1Interleaving(operation: "enroll" | "enable", subject: "ID" | "k
 	}
 }
 
+it("SQLite observes captured current-key ownership inserted at its final upsert", async () => {
+	// Arrange: only the stored key can match the future binding, not the incoming ID/key.
+	const f = setupStore("SQLite");
+	let spy: ReturnType<typeof vi.spyOn> | undefined;
+	try {
+		await f.store.createGroup(ownedGroup);
+		await f.store.enrollDevice(ownedGroup, storedOwnedAlias);
+		const before = f.db.prepare("SELECT * FROM enrolled_devices").all();
+		const prepare = f.db.prepare.bind(f.db);
+		spy = vi.spyOn(f.db, "prepare").mockImplementation((sql) => {
+			if (sql.includes("INSERT INTO enrolled_devices"))
+				prepare(
+					"INSERT INTO coordinator_device_ownership_bindings (device_id,key_id,identity_id,coordinator_id,binding_id,provenance,source_ref,bound_at) VALUES (?,?,?,?,?,?,?,?)",
+				).run(...Object.values(ownedRow));
+			return prepare(sql);
+		});
+		// Act
+		const pending = f.store.enrollDevice(ownedGroup, aliasReplacement);
+		// Assert: the injected binding may roll back inside SQLite's transaction; enrollment must not change.
+		await expect(pending).rejects.toThrow(new RegExp(`^${OWNED_DENIAL}$`));
+		expect(spy.mock.calls.some(([sql]) => sql.includes("INSERT INTO enrolled_devices"))).toBe(true);
+		expect(prepare("SELECT * FROM enrolled_devices").all()).toEqual(before);
+	} finally {
+		spy?.mockRestore();
+		await f.store.close();
+	}
+});
+
 describe("D1 captured inputs and write receipts", () => {
+	it("current public-key receipt cannot mutate during incoming key hashing", async () => {
+		// Arrange: keep the actual stored owned key unchanged while mutating the returned row object.
+		const f = setupStore("D1");
+		let digestSpy: ReturnType<typeof vi.spyOn> | undefined;
+		try {
+			await seedStoredOwnedAlias(fixture(f));
+			const receipt = { public_key: ownedEnrollment.publicKey };
+			const db = sqliteD1(f.db);
+			const store = new D1CoordinatorStore({
+				prepare(sql) {
+					const statement = db.prepare(sql);
+					if (sql.startsWith("SELECT public_key FROM enrolled_devices"))
+						statement.first = async <T>() => receipt as T;
+					return statement;
+				},
+			});
+			const digest = crypto.subtle.digest.bind(crypto.subtle);
+			digestSpy = vi.spyOn(crypto.subtle, "digest").mockImplementation((algorithm, data) => {
+				receipt.public_key = UNRELATED_PUBLIC_KEY;
+				return digest(algorithm, data);
+			});
+			const before = f.db.prepare("SELECT * FROM enrolled_devices").all();
+			// Act
+			const pending = store.enrollDevice(ownedGroup, aliasReplacement);
+			// Assert
+			await expect(pending).rejects.toThrow(new RegExp(`^${OWNED_DENIAL}$`));
+			expect(digestSpy).toHaveBeenCalled();
+			expect(f.db.prepare("SELECT * FROM enrolled_devices").all()).toEqual(before);
+		} finally {
+			digestSpy?.mockRestore();
+			await f.store.close();
+			if (f.db.open) f.db.close();
+		}
+	});
 	it("backend write failure exposes no raw database diagnostic", async () => {
 		// Arrange
 		const f = setupStore("D1");
@@ -289,7 +368,13 @@ describe.each([
 	["SQLite", "enable"],
 	["D1", "enable"],
 ] as const)("%s %s owned enrollment API errors", (backend, operation) => {
-	for (const scenario of ["unbound", "owned", "unavailable", "wrong secret"] as const) {
+	for (const scenario of [
+		"unbound",
+		"owned",
+		"stored owned",
+		"unavailable",
+		"wrong secret",
+	] as const) {
 		it(`${scenario} admin enrollment returns fixed private result after authentication`, async () => {
 			// Arrange
 			const f = setupStore(backend);
@@ -307,6 +392,7 @@ describe.each([
 				await f.store.createGroup(ownedGroup);
 				await prepareApiEnrollment(f, operation);
 				await prepareApiScenario(f, scenario);
+				const incoming = apiIncoming(scenario);
 				const before = f.db.prepare("SELECT * FROM enrolled_devices").all();
 				// Act
 				const response = await app.request(
@@ -320,16 +406,18 @@ describe.each([
 						},
 						body: JSON.stringify({
 							group_id: ownedGroup,
-							device_id: ownedEnrollment.deviceId,
-							public_key: ownedEnrollment.publicKey,
-							fingerprint: fingerprintPublicKey(ownedEnrollment.publicKey),
+							device_id: incoming.deviceId,
+							public_key: incoming.publicKey,
+							fingerprint: fingerprintPublicKey(incoming.publicKey),
 							identity_id: ownedEnrollment.identityId,
 						}),
 					},
 				);
 				// Assert
 				expect(response.status).toBe(
-					{ unbound: 200, owned: 403, unavailable: 503, "wrong secret": 401 }[scenario],
+					{ unbound: 200, owned: 403, "stored owned": 403, unavailable: 503, "wrong secret": 401 }[
+						scenario
+					],
 				);
 				await assertApiResult(response, scenario, factory);
 				if (scenario !== "unbound")
@@ -408,8 +496,12 @@ function applyDirectWrite(
 	return store.setDeviceEnabled(ownedGroup, ownedEnrollment.deviceId, true);
 }
 async function prepareApiScenario(f: ReturnType<typeof setupStore>, scenario: string) {
+	if (scenario === "stored owned") await seedStoredOwnedAlias(fixture(f));
 	if (scenario === "owned" || scenario === "wrong secret") await insertOwnership(fixture(f));
 	if (scenario === "unavailable") f.db.exec("DROP TABLE coordinator_device_ownership_bindings");
+}
+function apiIncoming(scenario: string) {
+	return scenario === "stored owned" ? aliasReplacement : ownedEnrollment;
 }
 async function prepareSharedCaller(r: Parameters<typeof projectInvite>[0], operation: string) {
 	if (operation === "project") return { project: await projectInvite(r), join: undefined };
@@ -421,7 +513,8 @@ async function assertApiResult(
 	scenario: string,
 	factory: ReturnType<typeof vi.fn>,
 ) {
-	if (scenario === "owned") expect(await response.json()).toEqual({ error: OWNED_DENIAL });
+	if (scenario === "owned" || scenario === "stored owned")
+		expect(await response.json()).toEqual({ error: OWNED_DENIAL });
 	if (scenario === "unavailable")
 		expect(await response.json()).toEqual({ error: OWNED_UNAVAILABLE });
 	if (scenario === "unbound") expect(await response.json()).toEqual({ ok: true });

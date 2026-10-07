@@ -238,6 +238,11 @@ and canonical-key bindings in the actual write. Existing legacy entrypoints
 carry no verified owner proof, so any retained identifier is denied—even when
 the supplied Identity hint matches the binding. Unbound legacy behavior remains
 unchanged; a fingerprint or caller-supplied Identity cannot substitute for proof.
+Enrollment replacement checks both the incoming key and the captured currently
+stored key. An unrelated incoming key cannot overwrite an existing alias whose
+stored key is retained under another device ID. The final write pins the current
+public key or row absence across hashing; changed evidence cannot refresh an
+unconfirmed attempt into success.
 
 Ownership denial uses `device_ownership_requires_verified_identity` (HTTP 403)
 after existing admission and rate limits. Revocation retains its earlier denial

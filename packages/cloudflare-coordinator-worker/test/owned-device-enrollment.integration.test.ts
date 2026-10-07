@@ -12,6 +12,7 @@ import {
 	ownedEnrollment,
 	ownedGroup,
 	registerOwnedEnrollmentContract,
+	registerStoredKeyRaces,
 } from "../../core/src/shared-owned-device-enrollment-test-harness.js";
 
 describe("native D1 owned enrollment prerequisites (retained-binding fixtures, not owner proof)", () => {
@@ -53,6 +54,11 @@ describe("native D1 owned enrollment prerequisites (retained-binding fixtures, n
 		}
 	});
 	registerOwnedEnrollmentContract(test);
+	registerStoredKeyRaces(test, (_f, hook) =>
+		recipientGuardedD1(env.COORDINATOR_DB, async (writes) => {
+			if (writes.some(({ query }) => query.includes("INSERT INTO enrolled_devices"))) await hook();
+		}),
+	);
 	for (const operation of ["enroll", "enable"] as const) {
 		for (const subject of ["ID", "key"] as const) {
 			test(`${operation} actual native SQL denies ${subject} bound after capture`, async ({

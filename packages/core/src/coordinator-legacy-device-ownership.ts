@@ -10,6 +10,49 @@ WHEN ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL} THEN 'device_revoked'
 WHEN ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL} THEN 'device_ownership_requires_verified_identity'
 ELSE 'invite_identity_conflict' END AS denial`;
 
+/** Bind captured public key (null for absence), group/device, then group/device/public key. */
+export const LEGACY_ENROLLMENT_SOURCE_MATCH_SQL = `((? IS NULL AND NOT EXISTS (
+SELECT 1 FROM enrolled_devices WHERE group_id = ? AND device_id = ?)) OR EXISTS (
+SELECT 1 FROM enrolled_devices WHERE group_id = ? AND device_id = ? AND public_key = ?))`;
+
+/** Incoming revocation, incoming ownership, captured current ownership, then source tuple.
+ * Source drift deliberately falls through the denial validator to the unavailable error.
+ */
+export const LEGACY_ENROLLMENT_DENIAL_SQL = `SELECT CASE
+WHEN ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL} THEN 'device_revoked'
+WHEN ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL} OR ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL}
+THEN 'device_ownership_requires_verified_identity'
+WHEN NOT ${LEGACY_ENROLLMENT_SOURCE_MATCH_SQL} THEN 'device_ownership_authorization_unavailable'
+ELSE 'invite_identity_conflict' END AS denial`;
+
+export const LEGACY_ENROLLMENT_WRITE_SQL = `INSERT INTO enrolled_devices(
+group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled, created_at
+) SELECT ?, ?, ?, ?, ?, ?, 1, ?
+WHERE NOT ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}
+AND NOT ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL}
+AND NOT ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL}
+AND ${LEGACY_ENROLLMENT_SOURCE_MATCH_SQL}
+ON CONFLICT(group_id, device_id) DO UPDATE SET
+public_key = excluded.public_key, fingerprint = excluded.fingerprint,
+identity_id = COALESCE(enrolled_devices.identity_id, excluded.identity_id),
+display_name = excluded.display_name, enabled = 1
+WHERE (excluded.identity_id IS NULL OR enrolled_devices.identity_id IS NULL
+OR enrolled_devices.identity_id = excluded.identity_id)
+AND NOT ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL}
+AND NOT ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL}
+AND enrolled_devices.public_key = ?`;
+
+export function captureLegacyEnrollmentPublicKey(row: unknown): string | null {
+	if (row === null) return null;
+	if (!row || typeof row !== "object")
+		throw new Error("device_ownership_authorization_unavailable");
+	const descriptor = Object.getOwnPropertyDescriptor(row, "public_key");
+	if (!descriptor || !("value" in descriptor) || typeof descriptor.value !== "string") {
+		throw new Error("device_ownership_authorization_unavailable");
+	}
+	return descriptor.value;
+}
+
 export function captureLegacyEnrollment(
 	groupId: string,
 	input: CoordinatorEnrollDeviceInput,

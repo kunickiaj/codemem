@@ -129,8 +129,11 @@ import { joinReviewGuardEvidence } from "./coordinator-join-review-guards.js";
 import {
 	assertLegacyDeviceScope,
 	captureLegacyEnrollment,
+	captureLegacyEnrollmentPublicKey,
 	DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL,
 	LEGACY_DEVICE_DENIAL_SQL,
+	LEGACY_ENROLLMENT_DENIAL_SQL,
+	LEGACY_ENROLLMENT_WRITE_SQL,
 	legacyDeviceAuthorizationFailure,
 	legacyDeviceDenial,
 	legacyDeviceWriteChanges,
@@ -990,24 +993,17 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			opts,
 		);
 		try {
+			const currentPublicKey = captureLegacyEnrollmentPublicKey(
+				this.db
+					.prepare("SELECT public_key FROM enrolled_devices WHERE group_id = ? AND device_id = ?")
+					.get(groupId, deviceId) ?? null,
+			);
 			const keyId = enrollmentRevocationKeyId(publicKey);
-			// The INSERT filter is required; the conflict guard alone cannot protect new rows.
+			const currentKeyId =
+				currentPublicKey === null ? null : enrollmentRevocationKeyId(currentPublicKey);
+			const source = [currentPublicKey, groupId, deviceId, groupId, deviceId, currentPublicKey];
 			const result = this.db
-				.prepare(`INSERT INTO enrolled_devices(
-					group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled, created_at
-				) SELECT ?, ?, ?, ?, ?, ?, 1, ?
-				WHERE NOT ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}
-				AND NOT ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL}
-				ON CONFLICT(group_id, device_id) DO UPDATE SET
-					public_key = excluded.public_key,
-					fingerprint = excluded.fingerprint,
-					identity_id = COALESCE(enrolled_devices.identity_id, excluded.identity_id),
-					display_name = excluded.display_name,
-					enabled = 1
-				WHERE (excluded.identity_id IS NULL
-					OR enrolled_devices.identity_id IS NULL
-					OR enrolled_devices.identity_id = excluded.identity_id)
-				AND NOT ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL}`)
+				.prepare(LEGACY_ENROLLMENT_WRITE_SQL)
 				.run(
 					groupId,
 					deviceId,
@@ -1021,12 +1017,18 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 					deviceId,
 					keyId,
 					deviceId,
+					currentKeyId,
+					...source,
+					deviceId,
 					keyId,
+					deviceId,
+					currentKeyId,
+					currentPublicKey,
 				);
 			if (legacyDeviceWriteChanges({ meta: result }) === 1) return;
 			const denial = this.db
-				.prepare(LEGACY_DEVICE_DENIAL_SQL)
-				.get(deviceId, keyId, deviceId, keyId);
+				.prepare(LEGACY_ENROLLMENT_DENIAL_SQL)
+				.get(deviceId, keyId, deviceId, keyId, deviceId, currentKeyId, ...source);
 			throw new Error(legacyDeviceDenial(denial));
 		} catch (error) {
 			legacyDeviceAuthorizationFailure(error);
