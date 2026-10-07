@@ -204,6 +204,33 @@ This ledger is a prerequisite for the new owner-enrollment and management paths.
 Existing Identity-group transport grants and revocation subjects are not device
 ownership records and must not be repurposed as that authority.
 
+#### Inert storage foundation
+
+`coordinator_device_ownership_bindings` retains immutable device ID, canonical key
+ID, Identity, coordinator metadata, binding ID, provenance/reference, and binding
+time. Device IDs and canonical keys are globally unique within the coordinator
+database; nominating different coordinator metadata cannot evade a collision.
+One Identity may own many devices with distinct keys. Reusing a bound key under a
+new device ID is denied even for the same Identity; it is not a new-device clone
+or ownership-transfer mechanism.
+All columns require text storage, preventing binary copies of identifiers from
+bypassing text uniqueness or collision comparisons.
+
+The table has no cascading reference to enrollment, groups, accounts, sessions,
+attempts, grants, or audit records. Its insert-only constraints reject updates,
+deletes, and replacement inserts that would release an existing binding. A future
+verified retry must compare the retained tuple and stage a conditional insert in
+the winning commit, never use replacement or an ownership-changing upsert.
+
+This first foundation only adds aligned schema and migration source. It does not
+issue bindings, backfill legacy rows, enforce enrollment ownership, or expose an
+owner-management route. Existing unbound legacy behavior remains unchanged.
+Schema constraints and provenance labels are not proof of verified ownership.
+Verified-source resolution, every enrollment/repair/reactivation writer guard,
+and atomic binding/enrollment/audit commitment must be implemented and validated
+before ledger issuance or an explicit legacy migration can activate. Applying
+the live migration remains a separate approval gate.
+
 ### Trusted Identity-group grants
 
 Add a coordinator-owned, revisioned Identity/group grant independent of device

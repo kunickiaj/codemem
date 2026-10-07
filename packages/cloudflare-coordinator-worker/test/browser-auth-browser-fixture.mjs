@@ -9,6 +9,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
+import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
 
 const require = createRequire(new URL("../package.json", import.meta.url));
 const coreRequire = createRequire(new URL("../../core/package.json", import.meta.url));
@@ -359,11 +360,10 @@ mf = new Miniflare(
 	}),
 );
 const db = await mf.getD1Database("DB");
-const schema = readFileSync(new URL("../schema.sql", import.meta.url), "utf8").replace(
-	/--[^\n]*/g,
-	"",
-);
-for (const sql of schema.split(";")) if (sql.trim()) await db.prepare(sql).run();
+const migrations = await readD1Migrations(fileURLToPath(new URL("../migrations", import.meta.url)));
+for (const migration of migrations) {
+	await db.batch(migration.queries.map((sql) => db.prepare(sql)));
+}
 store = new D1CoordinatorStore(db);
 await store.createGroup(demo.groupId, "Fake browser demo group");
 await store.enrollDevice(demo.groupId, { ...demo, identityId: null });

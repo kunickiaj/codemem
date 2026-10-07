@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
 
 const require = createRequire(new URL("../package.json", import.meta.url));
 const runtimeRequire = createRequire(require.resolve("wrangler/package.json"));
@@ -97,11 +97,10 @@ export default { async fetch(request, env) {
 	);
 	t.after(() => mf.dispose());
 	const db = await mf.getD1Database("DB");
-	const schema = readFileSync(new URL("../schema.sql", import.meta.url), "utf8").replace(
-		/--[^\n]*/g,
-		"",
-	);
-	for (const sql of schema.split(";")) if (sql.trim()) await db.prepare(sql).run();
+	const migrations = await readD1Migrations(fileURLToPath(new URL("../migrations", import.meta.url)));
+	for (const migration of migrations) {
+		await db.batch(migration.queries.map((sql) => db.prepare(sql)));
+	}
 	const base = await mf.ready;
 	const request = async (path, init) => {
 		const response = await fetch(new URL(path, base), { ...init, redirect: "manual" });

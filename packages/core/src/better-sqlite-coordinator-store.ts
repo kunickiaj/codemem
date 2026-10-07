@@ -101,6 +101,7 @@ import {
 	bootstrapRawInsertValues,
 	captureBootstrapParticipantSource,
 } from "./coordinator-bootstrap-grant-issuance.js";
+import { COORDINATOR_DEVICE_OWNERSHIP_SCHEMA_SQL } from "./coordinator-device-ownership-schema.js";
 import {
 	type CoordinatorCreateDeviceRevocationInput,
 	type CoordinatorListDeviceRevocationsInput,
@@ -446,9 +447,14 @@ function upgradeAuthLinkBrowserStartSchema(db: DatabaseType): void {
 	}).immediate();
 }
 
+function initializeDeviceLedgerSchemas(db: DatabaseType): void {
+	db.exec(COORDINATOR_DEVICE_OWNERSHIP_SCHEMA_SQL);
+	db.exec(DEVICE_REVOCATION_SCHEMA_SQL);
+}
+
 function initializeSchema(db: DatabaseType): void {
 	db.exec(IDENTITY_GROUP_GRANT_SCHEMA_SQL);
-	db.exec(DEVICE_REVOCATION_SCHEMA_SQL);
+	initializeDeviceLedgerSchemas(db);
 	db.exec(AUTH_CONTROLLER_SCHEMA_SQL);
 	upgradeAuthLinkBrowserStartSchema(db);
 	db.exec(AUTH_LINK_SCHEMA_SQL);
