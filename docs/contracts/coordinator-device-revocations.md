@@ -220,9 +220,31 @@ active lookup detects revocation; its incomplete result does not imply rollback
 of that earlier insert.
 
 Account-link creation/finalization reconstruct controller authority in separate
-SQL, so these controller guards alone do not close linking. Those predicates and
-standalone bootstrap authority remain separate work. These writer slices do not
-enable public revocation management or substitute for durable device ownership.
+SQL; active-controller lookups alone are not permission for their later writes.
+
+## Reviewed account-link authority
+
+Existing first-account linking now guards attempt creation, exact creation retry,
+and final consumption against device-ID/canonical-key subjects. Authority metadata
+comes from the actual enrollment. The final SQL pins its group, device, exact key,
+fingerprint, and nullable Identity alongside the controller Identity, attestation,
+review receipt, and revision captured before hashing.
+
+These checks add denial conditions; they do not replace ownership or completion
+proofs. Both runtime-verifier and completion-secret hashes, exact signer binding,
+confirmed state, configuration, expiry, and existing browser/OIDC proofs remain
+required. Consumption, account-link insertion, and the redacted audit event remain
+atomic, with downstream effects tied to this invocation's fresh link ID.
+
+Revocation or tuple drift before the guarded write cannot create a new account
+link. Existing masked errors and status codes remain unchanged. Already-finalized
+receipts are historical results, not proof of current device authority; stored
+links and browser sessions are not silently revoked or deleted. A write accepted
+before later revocation is not retroactively undone.
+
+Standalone bootstrap authority remains separate work. These writer slices do not
+enable public revocation management, new owner enrollment, or durable device
+ownership, and do not activate a live authentication configuration.
 
 ## Activation limits
 

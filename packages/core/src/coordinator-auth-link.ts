@@ -35,6 +35,7 @@ import {
 	type CoordinatorAuthLinkStore,
 } from "./coordinator-auth-link-contract.js";
 import { parseCoordinatorAuthLoopback } from "./coordinator-auth-loopback.js";
+import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
 
 export * from "./coordinator-auth-link-contract.js";
 export interface AuthLinkStatement {
@@ -232,7 +233,54 @@ const LIVE_CONFIG = "coordinator_id = ? AND issuer = ? AND auth_config_revision 
 function configValues(c: CoordinatorAuthLinkConfig): (string | number)[] {
 	return [c.coordinatorId, c.issuer, c.revision, Number(c.enabled)];
 }
-const AUTHORITY = `EXISTS (SELECT 1 FROM coordinator_auth_controller_attestations a
+interface AuthoritySource {
+	group_id: string;
+	device_id: string;
+	public_key: string;
+	fingerprint: string;
+	identity_id: string | null;
+	controller_identity_id: string;
+	attestation_id: string;
+	review_receipt_id: string;
+	revision: number;
+}
+const AUTHORITY_COLUMNS = `e.group_id, e.device_id, e.public_key, e.fingerprint, e.identity_id,
+ a.identity_id AS controller_identity_id, a.attestation_id, a.review_receipt_id, a.revision`;
+// Pin this call's enrollment, not the historical enrollment Identity in the attestation.
+const AUTHORITY_GUARD = `AND e.group_id = ? AND e.device_id = ? AND e.public_key = ?
+ AND e.fingerprint = ? AND e.identity_id IS ? AND a.identity_id = ?
+ AND a.attestation_id = ? AND a.review_receipt_id = ? AND a.revision = ?
+ AND NOT EXISTS (SELECT 1 FROM coordinator_device_revocations WHERE
+  (subject_kind = 'device_id' AND subject_value = ?) OR
+  (subject_kind = 'ed25519_key' AND subject_value = ?))`;
+function authorityValues(
+	source: AuthoritySource,
+	keyId: string | null,
+): (string | number | null)[] {
+	return [
+		source.group_id,
+		source.device_id,
+		source.public_key,
+		source.fingerprint,
+		source.identity_id,
+		source.controller_identity_id,
+		source.attestation_id,
+		source.review_receipt_id,
+		source.revision,
+		source.device_id,
+		keyId,
+	];
+}
+async function deriveAuthority(source: AuthoritySource): Promise<(string | number | null)[]> {
+	const values = authorityValues(source, null);
+	try {
+		values[values.length - 1] = await ed25519KeyIdForRevocation(source.public_key);
+		return values;
+	} catch {
+		throw new Error("auth_link_persistence_error");
+	}
+}
+const AUTHORITY_SOURCE_SQL = `coordinator_auth_controller_attestations a
  JOIN enrolled_devices e ON e.group_id = a.group_id AND e.device_id = a.device_id
  JOIN groups g ON g.group_id = a.group_id
  WHERE a.coordinator_id = coordinator_auth_link_attempts.coordinator_id
@@ -242,7 +290,8 @@ const AUTHORITY = `EXISTS (SELECT 1 FROM coordinator_auth_controller_attestation
  AND a.group_id = coordinator_auth_link_attempts.group_id AND a.device_id = coordinator_auth_link_attempts.device_id
  AND a.public_key = coordinator_auth_link_attempts.public_key AND a.fingerprint = coordinator_auth_link_attempts.fingerprint
  AND e.enabled = 1 AND g.archived_at IS NULL AND e.public_key = a.public_key AND e.fingerprint = a.fingerprint
- AND (e.identity_id IS NULL OR e.identity_id = a.identity_id))`;
+ AND (e.identity_id IS NULL OR e.identity_id = a.identity_id)`;
+const AUTHORITY = `EXISTS (SELECT 1 FROM ${AUTHORITY_SOURCE_SQL} ${AUTHORITY_GUARD})`;
 const CREATE_SOURCE_SQL = `FROM coordinator_auth_controller_attestations a
  JOIN enrolled_devices e ON e.group_id = a.group_id AND e.device_id = a.device_id
  JOIN groups g ON g.group_id = a.group_id
@@ -255,7 +304,7 @@ const CREATE_SQL = `INSERT INTO coordinator_auth_link_attempts (
  issuer, auth_config_revision, runtime_verifier_hash, loopback_redirect, browser_start_hash, state, created_at_ms, expires_at_ms)
  SELECT ?, ?, a.identity_id, a.group_id, a.device_id, a.public_key, a.fingerprint,
  a.attestation_id, a.review_receipt_id, a.revision, ?, ?, ?, ?, ?, 'pending', ?, ?
- ${CREATE_SOURCE_SQL}
+  ${CREATE_SOURCE_SQL} ${AUTHORITY_GUARD}
  AND (SELECT count(*) FROM coordinator_auth_link_attempts t
   WHERE t.coordinator_id = a.coordinator_id AND t.group_id = a.group_id AND t.device_id = a.device_id
   AND t.state IN ('pending','browser_claimed','oidc_verified','confirmed') AND t.expires_at_ms > ?) < ?
@@ -340,6 +389,21 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			throw new Error("auth_link_persistence_error");
 		}
 	}
+	private async readAuthority(
+		attemptId: string,
+		c: CoordinatorAuthLinkConfig,
+	): Promise<(string | number | null)[] | null> {
+		const source = await this.first<AuthoritySource>({
+			sql: `SELECT ${AUTHORITY_COLUMNS} FROM coordinator_auth_link_attempts,
+			 ${AUTHORITY_SOURCE_SQL} AND coordinator_auth_link_attempts.attempt_id = ?
+			 AND coordinator_auth_link_attempts.coordinator_id = ?
+			 AND coordinator_auth_link_attempts.issuer = ?
+			 AND coordinator_auth_link_attempts.auth_config_revision = ? AND ? = 1`,
+			values: [attemptId, ...configValues(c)],
+		});
+		if (!source) return null;
+		return deriveAuthority(source);
+	}
 	async maintainAuthLinkAttempts(
 		config: CoordinatorAuthLinkConfig,
 		options?: CoordinatorAuthLinkMaintenanceOptions,
@@ -369,6 +433,16 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		if (!c || !i || !s) return rejected("invalid_input");
 		if (!c.enabled) return rejected("auth_config_changed");
 		const now = authLinkNow(this.clock);
+		const source = await this.first<AuthoritySource>({
+			sql: `SELECT ${AUTHORITY_COLUMNS} ${CREATE_SOURCE_SQL}`,
+			values: createSourceValues(c, s),
+		});
+		if (!source) {
+			const row = await this.read(i.attemptId, c);
+			if (row) return this.createRetry(row, i, s, c, now, null);
+			return rejected("controller_not_active");
+		}
+		const authority = await deriveAuthority(source);
 		const values = [
 			c.coordinatorId,
 			i.attemptId,
@@ -380,6 +454,7 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			now,
 			now + AUTH_LINK_ATTEMPT_TTL_MS,
 			...createSourceValues(c, s),
+			...authority,
 			now,
 			AUTH_LINK_MAX_ACTIVE_PER_DEVICE,
 			now,
@@ -394,14 +469,14 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		const result = await this.execute({ sql: CREATE_SQL, values }, "attempt_conflict");
 		const row = await this.read(i.attemptId, c);
 		if (result === 0) {
-			if (row) return this.createRetry(row, i, s, c, now);
+			if (row) return this.createRetry(row, i, s, c, now, authority);
 			const active = await this.first({
-				sql: `SELECT 1 ${CREATE_SOURCE_SQL}`,
-				values: createSourceValues(c, s),
+				sql: `SELECT 1 ${CREATE_SOURCE_SQL} ${AUTHORITY_GUARD}`,
+				values: [...createSourceValues(c, s), ...authority],
 			});
 			return rejected(active ? "attempt_limited" : "controller_not_active");
 		}
-		if (typeof result !== "number") return this.createRetry(row, i, s, c, now);
+		if (typeof result !== "number") return this.createRetry(row, i, s, c, now, authority);
 		if (!row) throw new Error("auth_link_persistence_incomplete");
 		return { kind: "created", status: status(row, now), identityId: row.identity_id };
 	}
@@ -411,6 +486,7 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		s: CoordinatorAuthLinkSigner,
 		c: CoordinatorAuthLinkConfig,
 		now: number,
+		authority: (string | number | null)[] | null,
 	): Promise<CoordinatorAuthLinkCreateResult> {
 		if (
 			!row ||
@@ -423,9 +499,10 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			row.expires_at_ms <= now
 		)
 			return rejected("attempt_conflict");
+		if (!authority) return rejected("controller_not_active");
 		const active = await this.first({
 			sql: `SELECT 1 FROM coordinator_auth_link_attempts WHERE attempt_id = ? AND ${LIVE_CONFIG} AND ${AUTHORITY}`,
-			values: [row.attempt_id, ...configValues(c)],
+			values: [row.attempt_id, ...configValues(c), ...authority],
 		});
 		if (!active) return rejected("controller_not_active");
 		return { kind: "existing", status: status(row, now), identityId: row.identity_id };
@@ -640,8 +717,9 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			return rejected("attempt_unavailable");
 		const now = authLinkNow(this.clock);
 		const linkId = globalThis.crypto.randomUUID();
+		const authority = await this.readAuthority(i.attemptId, c);
 		try {
-			await this.backend.batch(finalizeStatements(i, c, now, linkId));
+			await this.backend.batch(finalizeStatements(i, c, now, linkId, authority));
 		} catch (error) {
 			if (isAuthControllerUniqueError(error)) return rejected("link_conflict");
 			throw new Error("auth_link_persistence_error");
@@ -727,9 +805,11 @@ function finalizeStatements(
 	c: CoordinatorAuthLinkConfig,
 	now: number,
 	linkId: string,
+	authority: (string | number | null)[] | null,
 ): AuthLinkStatement[] {
+	const authorityGuard = authority ? AUTHORITY : "0 = 1";
 	const consume: AuthLinkStatement = {
-		sql: `UPDATE coordinator_auth_link_attempts SET state = 'finalized', link_id = ?, finalized_at_ms = ? WHERE attempt_id = ? AND ${LIVE_CONFIG} AND state = 'confirmed' AND expires_at_ms > ? AND group_id = ? AND identity_id = ? AND device_id = ? AND fingerprint = ? AND public_key = ? AND runtime_verifier_hash = ? AND completion_secret_hash = ? AND ${AUTHORITY}`,
+		sql: `UPDATE coordinator_auth_link_attempts SET state = 'finalized', link_id = ?, finalized_at_ms = ? WHERE attempt_id = ? AND ${LIVE_CONFIG} AND state = 'confirmed' AND expires_at_ms > ? AND group_id = ? AND identity_id = ? AND device_id = ? AND fingerprint = ? AND public_key = ? AND runtime_verifier_hash = ? AND completion_secret_hash = ? AND ${authorityGuard}`,
 		values: [
 			linkId,
 			now,
@@ -743,6 +823,7 @@ function finalizeStatements(
 			i.signer.publicKey,
 			i.runtimeVerifierHash,
 			i.completionSecretHash,
+			...(authority ?? []),
 		],
 	};
 	const link: AuthLinkStatement = {
