@@ -2295,14 +2295,15 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			..._opts,
 			bootstrapGrant: _opts.bootstrapGrant ? { ..._opts.bootstrapGrant } : _opts.bootstrapGrant,
 		};
-		const row = await firstRow<CoordinatorJoinRequest & { public_key: string }>(
+		const sourceRow = await firstRow<CoordinatorJoinRequest & { public_key: string }>(
 			this.db
 				.prepare(`SELECT request_id, group_id, device_id, public_key, fingerprint, display_name, token, status,
 					        created_at, reviewed_at, reviewed_by
 					 FROM coordinator_join_requests WHERE request_id = ?`)
 				.bind(_opts.requestId),
 		);
-		if (!row) return null;
+		if (!sourceRow) return null;
+		const row = { ...sourceRow };
 		if (row.status !== "pending") {
 			return { ...rowToRecord<CoordinatorJoinRequest>(row), _no_transition: true };
 		}
@@ -2310,8 +2311,46 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		if (!_opts.approved) return this.denyJoinRequest(_opts);
 		if (!this.db.batch) throw new Error("join_review_unavailable");
 		const reviewedAt = nowISO();
+		const { guard, bootstrapGrantInput } = await this.prepareJoinApproval(
+			row,
+			bootstrapGrantRequest,
+		);
+		const statements: D1PreparedStatementLike[] = [
+			this.db
+				.prepare(`UPDATE coordinator_join_requests
+						 SET status = ?, reviewed_at = ?, reviewed_by = ?
+						 WHERE request_id = ? AND status = 'pending'
+						 AND ${guard.eligibilitySql} AND ${guard.sourceSql}`)
+				.bind(
+					"approved",
+					reviewedAt,
+					_opts.reviewedBy ?? null,
+					_opts.requestId,
+					...guard.eligibilityValues,
+					...guard.sourceValues,
+				),
+		];
+		const bootstrapGrantId = bootstrapGrantInput ? tokenUrlSafe(12) : null;
+		statements.push(
+			...this.prepareJoinApprovalStatements(
+				row,
+				guard,
+				reviewedAt,
+				_opts.reviewedBy ?? null,
+				bootstrapGrantInput,
+				bootstrapGrantId,
+			),
+		);
+		if (!(await this.executeJoinApprovalBatch(statements, { requestId: _opts.requestId, guard })))
+			return this.classifyJoinReviewFailure(_opts.requestId, guard);
+		return this.readCompletedJoinReview(_opts.requestId, bootstrapGrantId);
+	}
+
+	private async prepareJoinApproval(
+		row: CoordinatorJoinRequest & { public_key: string },
+		bootstrapGrantRequest: ReturnType<typeof normalizeCoordinatorBootstrapGrantRequest>,
+	) {
 		let bootstrapGrantInput: CoordinatorCreateBootstrapGrantInput | null = null;
-		let bootstrapGrantId: string | null = null;
 		let seedEnrollment: CoordinatorEnrollment | null = null;
 		if (bootstrapGrantRequest) {
 			seedEnrollment = await firstRow<CoordinatorEnrollment>(
@@ -2324,6 +2363,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			if (!seedEnrollment) {
 				throw new Error("bootstrap grant seed device is not enrolled in the group.");
 			}
+			seedEnrollment = { ...seedEnrollment };
 			if (bootstrapGrantRequest.seedDeviceId === row.device_id) {
 				throw new Error("bootstrap grant seed and worker device ids must differ.");
 			}
@@ -2333,45 +2373,69 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				workerDeviceId: row.device_id,
 			};
 		}
-		const guard = joinReviewGuardEvidence(row, seedEnrollment, {
-			recipient: await ed25519KeyIdForRevocation(row.public_key),
-			seed: seedEnrollment ? await ed25519KeyIdForRevocation(seedEnrollment.public_key) : null,
-		});
-		const statements: D1PreparedStatementLike[] = [
-			this.db
-				.prepare(`UPDATE coordinator_join_requests
-						 SET status = ?, reviewed_at = ?, reviewed_by = ?
-						 WHERE request_id = ? AND status = 'pending'
-						 AND ${guard.eligibilitySql}`)
-				.bind(
-					"approved",
-					reviewedAt,
-					_opts.reviewedBy ?? null,
-					_opts.requestId,
-					...guard.eligibilityValues,
-				),
-		];
-		bootstrapGrantId = bootstrapGrantInput ? tokenUrlSafe(12) : null;
-		statements.push(
-			...this.prepareJoinApprovalStatements(
-				row,
-				guard,
-				reviewedAt,
-				bootstrapGrantInput,
-				bootstrapGrantId,
+		const currentPublicKey = captureLegacyEnrollmentPublicKey(
+			await firstRow<{ public_key: string }>(
+				this.db
+					.prepare(`SELECT public_key FROM enrolled_devices WHERE group_id = ? AND device_id = ?`)
+					.bind(row.group_id, row.device_id),
 			),
 		);
-		if (!(await this.executeJoinApprovalBatch(statements)))
-			return this.classifyJoinReviewFailure(_opts.requestId, guard);
-		return this.readCompletedJoinReview(_opts.requestId, bootstrapGrantId);
+		const guard = joinReviewGuardEvidence(
+			row,
+			seedEnrollment,
+			{
+				recipient: await ed25519KeyIdForRevocation(row.public_key),
+				seed: seedEnrollment ? await ed25519KeyIdForRevocation(seedEnrollment.public_key) : null,
+				current:
+					currentPublicKey === null ? null : await ed25519KeyIdForRevocation(currentPublicKey),
+			},
+			currentPublicKey,
+		);
+		await this.assertJoinOwnershipAvailable(guard);
+		return { guard, bootstrapGrantInput };
 	}
 
-	private async executeJoinApprovalBatch(statements: D1PreparedStatementLike[]): Promise<boolean> {
+	private async assertJoinOwnershipAvailable(guard: ReturnType<typeof joinReviewGuardEvidence>) {
+		const revocation = await readRecipientInviteDecision(
+			() =>
+				this.db
+					.prepare(`SELECT (${guard.revocationSql}) AS revoked`)
+					.bind(...guard.revocationValues),
+			["revoked"],
+		);
+		if (revocation.revoked === 1) throw new Error("device_revoked");
+		const state = await readRecipientInviteDecision(
+			() =>
+				this.db
+					.prepare(`SELECT (${guard.revocationSql}) AS revoked, (${guard.ownershipSql}) AS owned`)
+					.bind(...guard.revocationValues, ...guard.ownershipValues),
+			["revoked", "owned"],
+		);
+		if (state.revoked === 1) throw new Error("device_revoked");
+		if (state.owned === 1) throw new Error("device_ownership_requires_verified_identity");
+	}
+
+	private async executeJoinApprovalBatch(
+		statements: D1PreparedStatementLike[],
+		options: { requestId: string; guard: ReturnType<typeof joinReviewGuardEvidence> },
+	): Promise<boolean> {
 		if (!this.db.batch) throw new Error("join_review_unavailable");
 		let results: unknown[];
 		try {
 			results = await this.db.batch(statements);
 		} catch {
+			// A transport error may follow commit. Only a still-pending request permits denial diagnosis.
+			let latest: { status: unknown } | null;
+			try {
+				latest = await firstRow<{ status: unknown }>(
+					this.db
+						.prepare(`SELECT status FROM coordinator_join_requests WHERE request_id = ?`)
+						.bind(options.requestId),
+				);
+			} catch {
+				throw new Error("join_review_incomplete");
+			}
+			if (latest?.status === "pending") await this.assertJoinOwnershipAvailable(options.guard);
 			throw new Error("join_review_incomplete");
 		}
 		if (results.length !== statements.length) throw new Error("join_review_incomplete");
@@ -2419,12 +2483,13 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		row: CoordinatorJoinRequest & { public_key: string },
 		guard: ReturnType<typeof joinReviewGuardEvidence>,
 		reviewedAt: string,
+		reviewedBy: string | null,
 		grant: CoordinatorCreateBootstrapGrantInput | null,
 		grantId: string | null,
 	): D1PreparedStatementLike[] {
 		const approvedSql = `${guard.eligibilitySql} AND EXISTS (SELECT 1 FROM coordinator_join_requests
-			WHERE request_id = ? AND status = 'approved' AND reviewed_at = ?)`;
-		const approvedValues = [...guard.eligibilityValues, row.request_id, reviewedAt];
+			WHERE request_id = ? AND status = 'approved' AND reviewed_at = ? AND reviewed_by IS ?)`;
+		const approvedValues = [...guard.eligibilityValues, row.request_id, reviewedAt, reviewedBy];
 		const enrolledSql = `${approvedSql} AND EXISTS (SELECT 1 FROM enrolled_devices
 			WHERE group_id = ? AND device_id = ? AND public_key = ? AND fingerprint = ? AND enabled = 1)`;
 		const enrolledValues = [
@@ -2441,9 +2506,11 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				.prepare(`INSERT INTO enrolled_devices(
 			group_id, device_id, public_key, fingerprint, display_name, enabled, created_at)
 			SELECT ?, ?, ?, ?, ?, 1, ? FROM (SELECT 1 WHERE changes() = 1) AS winner
-			WHERE CASE WHEN ${approvedSql} THEN 1 ELSE json('join_review_incomplete') END
+			WHERE CASE WHEN ${approvedSql} AND ${guard.sourceSql} THEN 1 ELSE json('join_review_incomplete') END
 			ON CONFLICT(group_id, device_id) DO UPDATE SET public_key = excluded.public_key,
-			fingerprint = excluded.fingerprint, display_name = excluded.display_name, enabled = 1`)
+			fingerprint = excluded.fingerprint, display_name = excluded.display_name, enabled = 1
+			WHERE CASE WHEN ${guard.eligibilitySql} AND ${guard.sourceSql}
+			THEN 1 ELSE json('join_review_incomplete') END`)
 				.bind(
 					row.group_id,
 					row.device_id,
@@ -2452,6 +2519,9 @@ export class D1CoordinatorStore implements CoordinatorStore {
 					row.display_name ?? null,
 					nowISO(),
 					...approvedValues,
+					...guard.sourceValues,
+					...guard.eligibilityValues,
+					...guard.sourceValues,
 				),
 		];
 		if (grant && grantId) {
@@ -2474,13 +2544,25 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			);
 		}
 		statements.push(
-			this.prepareJoinApprovalConfirmation(row, enrolledSql, enrolledValues, grant, grantId),
+			this.prepareJoinApprovalConfirmation(
+				row,
+				reviewedAt,
+				reviewedBy,
+				guard,
+				enrolledSql,
+				enrolledValues,
+				grant,
+				grantId,
+			),
 		);
 		return statements;
 	}
 
 	private prepareJoinApprovalConfirmation(
 		row: CoordinatorJoinRequest,
+		reviewedAt: string,
+		reviewedBy: string | null,
+		guard: ReturnType<typeof joinReviewGuardEvidence>,
 		enrolledSql: string,
 		enrolledValues: unknown[],
 		grant: CoordinatorCreateBootstrapGrantInput | null,
@@ -2489,10 +2571,20 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		const completeSql = `${enrolledSql} AND (? IS NULL OR EXISTS (
 			SELECT 1 FROM coordinator_bootstrap_grants WHERE grant_id = ? AND group_id = ?
 			AND seed_device_id = ? AND worker_device_id = ? AND expires_at = ? AND revoked_at IS NULL))`;
+		// A zero changes() chain must not commit a newly owned/revoked target after CAS.
+		// Missing effects/receipts still report incomplete, not a fictional atomic rollback.
+		const zeroChainSql = `NOT EXISTS (SELECT 1 FROM coordinator_join_requests
+			WHERE request_id = ? AND status = 'approved' AND reviewed_at = ? AND reviewed_by IS ?)
+			OR (${guard.eligibilitySql})`;
 		return this.db
-			.prepare(`SELECT CASE WHEN changes() = 0 THEN 1
+			.prepare(`SELECT CASE WHEN changes() = 0 THEN
+			CASE WHEN ${zeroChainSql} THEN 1 ELSE json('join_review_incomplete') END
 			WHEN ${completeSql} THEN 1 ELSE json('join_review_incomplete') END AS confirmed`)
 			.bind(
+				row.request_id,
+				reviewedAt,
+				reviewedBy,
+				...guard.eligibilityValues,
 				...enrolledValues,
 				grantId,
 				grantId,
@@ -2516,13 +2608,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		);
 		if (!latest) return null;
 		if (latest.status !== "pending") return { ...latest, _no_transition: true };
-		if (
-			guard &&
-			(await firstRow(
-				this.db.prepare(`SELECT 1 WHERE ${guard.revocationSql}`).bind(...guard.revocationValues),
-			))
-		)
-			throw new Error("device_revoked");
+		if (guard) await this.assertJoinOwnershipAvailable(guard);
 		throw new Error("join_review_incomplete");
 	}
 

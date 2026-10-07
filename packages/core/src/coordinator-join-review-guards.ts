@@ -1,4 +1,8 @@
 import { DEVICE_REVOCATION_SUBJECT_EXISTS_SQL } from "./coordinator-device-revocation.js";
+import {
+	DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL,
+	LEGACY_ENROLLMENT_SOURCE_MATCH_SQL,
+} from "./coordinator-legacy-device-ownership.js";
 import type {
 	CoordinatorEnrollment,
 	CoordinatorJoinRequest,
@@ -11,10 +15,22 @@ export const JOIN_REVIEW_COLUMNS = `request_id, group_id, device_id, public_key,
 export function joinReviewGuardEvidence(
 	row: CoordinatorJoinRequest & { public_key: string },
 	seed: CoordinatorEnrollment | null,
-	keys: { recipient: string | null; seed: string | null },
+	keys: { recipient: string | null; seed: string | null; current: string | null },
+	currentPublicKey: string | null,
 ) {
 	const revocationSql = `${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL} OR ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}`;
 	const revocationValues = [row.device_id, keys.recipient, seed?.device_id ?? null, keys.seed];
+	// Reviewer/seed identity is not recipient ownership proof. Retain the old key even after upsert.
+	const ownershipSql = `${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL} OR ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL}`;
+	const ownershipValues = [row.device_id, keys.recipient, row.device_id, keys.current];
+	const sourceValues = [
+		currentPublicKey,
+		row.group_id,
+		row.device_id,
+		row.group_id,
+		row.device_id,
+		currentPublicKey,
+	];
 	const tupleSql = `EXISTS (SELECT 1 FROM coordinator_join_requests jr
  WHERE jr.request_id = ? AND jr.group_id = ? AND jr.device_id = ?
  AND jr.public_key = ? AND jr.fingerprint = ? AND jr.display_name IS ?
@@ -35,7 +51,11 @@ export function joinReviewGuardEvidence(
 	return {
 		revocationSql,
 		revocationValues,
-		eligibilitySql: `${tupleSql} AND ${seedSql} AND NOT (${revocationSql})`,
+		ownershipSql,
+		ownershipValues,
+		sourceSql: LEGACY_ENROLLMENT_SOURCE_MATCH_SQL,
+		sourceValues,
+		eligibilitySql: `${tupleSql} AND ${seedSql} AND NOT (${revocationSql}) AND NOT (${ownershipSql})`,
 		eligibilityValues: [
 			...tupleValues,
 			seed ? 1 : 0,
@@ -44,6 +64,7 @@ export function joinReviewGuardEvidence(
 			seed?.public_key ?? null,
 			seed?.fingerprint ?? null,
 			...revocationValues,
+			...ownershipValues,
 		],
 	};
 }
