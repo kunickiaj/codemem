@@ -129,7 +129,31 @@ function participant(
 }
 
 const EXPLICIT_OFFSET_EXPIRY =
-	/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+	/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-](\d{2}):(\d{2}))$/;
+
+function parseBootstrapExpiry(value: unknown): number {
+	if (typeof value !== "string") return Number.NaN;
+	const parts = EXPLICIT_OFFSET_EXPIRY.exec(value);
+	if (!parts) return Number.NaN;
+	const year = Number(parts[1]);
+	const month = Number(parts[2]);
+	const day = Number(parts[3]);
+	const hour = Number(parts[4]);
+	const minute = Number(parts[5]);
+	const second = Number(parts[6]);
+	const offsetHour = Number(parts[7] ?? 0);
+	const offsetMinute = Number(parts[8] ?? 0);
+	const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+	const februaryDays = leapYear ? 29 : 28;
+	const monthDays = [31, februaryDays, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+	if (month < 1 || month > 12 || day < 1 || day > (monthDays[month - 1] ?? 0)) {
+		return Number.NaN;
+	}
+	if (hour > 23 || minute > 59 || second > 59 || offsetHour > 23 || offsetMinute > 59) {
+		return Number.NaN;
+	}
+	return Date.parse(value);
+}
 
 // The revocation subjects remain the captured participants even if their keys disappear or rotate.
 // Success pins both tuples and the exact expiry text whose parsed milliseconds were validated.
@@ -138,10 +162,7 @@ export function bootstrapAuthorizationDecision(
 	row: BootstrapAuthorizationRow,
 	keys: { seed: string | null; worker: string | null },
 ) {
-	let expiryMs = Number.NaN;
-	if (typeof row.expires_at === "string" && EXPLICIT_OFFSET_EXPIRY.test(row.expires_at)) {
-		expiryMs = Date.parse(row.expires_at);
-	}
+	const expiryMs = parseBootstrapExpiry(row.expires_at);
 	const expiryValid = Number.isFinite(expiryMs);
 	const expected = input.expectedSeed;
 	return {

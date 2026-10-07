@@ -191,21 +191,42 @@ function registerGrantCases(test: Test) {
 		},
 	);
 }
+const expiryCases = [
+	["2026-10-07T00:00:00.001Z", "authorized"],
+	["2026-10-06T20:00:00.001-04:00", "authorized"],
+	["2026-10-07T00:00:00Z", "grant_expired"],
+	["2026-10-07T01:00:00+02:00", "grant_expired"],
+	["2025-12-31T23:59:59Z", "grant_expired"],
+	["not-a-date", "bootstrap_authorization_unavailable"],
+	["2026-99-99T00:00:00Z", "bootstrap_authorization_unavailable"],
+	["2026-10-07T00:00:01", "bootstrap_authorization_unavailable"],
+	["Oct 8 2026", "bootstrap_authorization_unavailable"],
+	["2028-02-29T00:00:00Z", "authorized"],
+	["2028-02-29T23:59:59.123456+05:30", "authorized"],
+	["2028-02-29T00:00:00.001-04:00", "authorized"],
+	["2000-02-29T00:00:00Z", "grant_expired"],
+	["2027-02-29T00:00:00Z", "bootstrap_authorization_unavailable"],
+	["2100-02-29T00:00:00Z", "bootstrap_authorization_unavailable"],
+	["2028-02-30T00:00:00Z", "bootstrap_authorization_unavailable"],
+	["2028-02-30T00:00:00.123+05:30", "bootstrap_authorization_unavailable"],
+	["2028-04-31T00:00:00Z", "bootstrap_authorization_unavailable"],
+	["2028-00-01T00:00:00Z", "bootstrap_authorization_unavailable"],
+	["2028-13-01T00:00:00Z", "bootstrap_authorization_unavailable"],
+	["2028-01-00T00:00:00Z", "bootstrap_authorization_unavailable"],
+	["2028-02-29T24:00:00Z", "bootstrap_authorization_unavailable"],
+	["2028-02-29T24:00:00.000-04:00", "bootstrap_authorization_unavailable"],
+	["2028-02-29T00:60:00Z", "bootstrap_authorization_unavailable"],
+	["2028-02-29T00:00:60Z", "bootstrap_authorization_unavailable"],
+	["2028-02-29T00:00:00+24:00", "bootstrap_authorization_unavailable"],
+	["2028-02-29T00:00:00-24:00", "bootstrap_authorization_unavailable"],
+	["2028-02-29T00:00:00+00:60", "bootstrap_authorization_unavailable"],
+	["2028-02-29T00:00:00-00:60", "bootstrap_authorization_unavailable"],
+] as const;
 function registerExpiryCases(test: Test) {
-	test.for([
-		["2026-10-07T00:00:00.001Z", "authorized"],
-		["2026-10-06T20:00:00.001-04:00", "authorized"],
-		["2026-10-07T00:00:00Z", "grant_expired"],
-		["2026-10-07T01:00:00+02:00", "grant_expired"],
-		["2025-12-31T23:59:59Z", "grant_expired"],
-		["not-a-date", "bootstrap_authorization_unavailable"],
-		["2026-99-99T00:00:00Z", "bootstrap_authorization_unavailable"],
-		["2026-10-07T00:00:01", "bootstrap_authorization_unavailable"],
-		["Oct 8 2026", "bootstrap_authorization_unavailable"],
-	] as const)(
+	test.for(expiryCases)(
 		"expiry %s uses a finite parsed server-time boundary",
 		async ([expiry, outcome], { fixture: f }) => {
-			// Arrange: offset forms deliberately reverse lexical ordering relative to UTC.
+			// Arrange: offsets reverse lexical ordering; impossible calendar dates must not normalize into authority.
 			const grant = await authorizationFixture(f);
 			await f.exec(
 				"UPDATE coordinator_bootstrap_grants SET expires_at = ? WHERE grant_id = ?",

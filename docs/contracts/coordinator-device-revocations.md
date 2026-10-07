@@ -283,6 +283,9 @@ closed. Authorization requires an ISO timestamp with seconds and an explicit `Z`
 or numeric timezone offset; timezone-less and free-form dates fail closed rather
 than expiring at different instants on different hosts. Backend or unconfirmed
 results use `bootstrap_authorization_unavailable`.
+Calendar dates, clock times, and timezone offsets must have valid components;
+overflow values such as February 30 or `24:00:00` are rejected before parsing
+can normalize them into a later expiry.
 
 Missing grants or mismatched seed expectations retain `grant_not_found`; missing
 or disabled participants use `seed_enrollment_not_found` or
