@@ -1509,89 +1509,90 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		}
 		const preflightInvite = await this.getInviteByTokenForInspection(opts.token);
 		const preflightInspection = preflightInvite ? await inspectInvite(preflightInvite) : null;
-		const consume = this.db.transaction((): CoordinatorRecipientInviteAcceptance => {
-			const invite = this.db
-				.prepare(
-					`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE token_digest = ? OR token = ?`,
-				)
-				.get(tokenDigest(opts.token), opts.token) as CoordinatorInvite | undefined;
-			const inspection = invite ? preflightInspection : null;
-			if (
-				!invite ||
-				!inspection ||
-				invite.invite_id !== preflightInvite?.invite_id ||
-				invite.reviewed_intent_json !== preflightInvite.reviewed_intent_json ||
-				invite.reviewed_preview_digest !== preflightInvite.reviewed_preview_digest ||
-				invite.policy_team_id !== preflightInvite.policy_team_id ||
-				invite.target_identity_id !== preflightInvite.target_identity_id ||
-				invite.assigned_identity_id !== preflightInvite.assigned_identity_id ||
-				inspection.kind !== opts.inviteKind ||
-				invite.revoked_at
-			) {
-				throw new Error("invite_invalid");
-			}
-			const group = this.db
-				.prepare("SELECT archived_at FROM groups WHERE group_id = ?")
-				.get(invite.group_id) as { archived_at: string | null } | undefined;
-			if (!group) throw new Error("group_not_found");
-			if (group.archived_at) throw new Error("group_archived");
-			if (!invite.consumed_at && new Date(invite.expires_at) <= new Date(consumedAt)) {
-				throw new Error("invite_expired");
-			}
-			if (fingerprintPublicKey(opts.publicKey) !== opts.fingerprint) {
-				throw new Error("fingerprint_mismatch");
-			}
-			const authoritativeIdentityId = recipientInviteAuthoritativeIdentityId(inspection);
-			if (authoritativeIdentityId !== opts.identityId) {
-				throw new Error("invite_identity_conflict");
-			}
-			const sameBinding =
-				invite.bound_device_id === opts.deviceId &&
-				invite.bound_public_key === opts.publicKey &&
-				invite.bound_fingerprint === opts.fingerprint;
-			if (invite.consumed_at && !sameBinding) throw new Error("invite_already_bound");
-			if (invite.consumed_at && invite.recipient_actor_id !== authoritativeIdentityId) {
-				throw new Error("invite_identity_conflict");
-			}
-			const participantSubjects = this.validateRecipientInviteParticipants(invite, opts);
-			const changed = invite.consumed_at
-				? 0
-				: this.db
-						.prepare(`UPDATE coordinator_invites SET token = ?, consumed_at = ?, bound_device_id = ?,
+		return this.db
+			.transaction((): CoordinatorRecipientInviteAcceptance => {
+				const invite = this.db
+					.prepare(
+						`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE token_digest = ? OR token = ?`,
+					)
+					.get(tokenDigest(opts.token), opts.token) as CoordinatorInvite | undefined;
+				const inspection = invite ? preflightInspection : null;
+				if (
+					!invite ||
+					!inspection ||
+					invite.invite_id !== preflightInvite?.invite_id ||
+					invite.reviewed_intent_json !== preflightInvite.reviewed_intent_json ||
+					invite.reviewed_preview_digest !== preflightInvite.reviewed_preview_digest ||
+					invite.policy_team_id !== preflightInvite.policy_team_id ||
+					invite.target_identity_id !== preflightInvite.target_identity_id ||
+					invite.assigned_identity_id !== preflightInvite.assigned_identity_id ||
+					inspection.kind !== opts.inviteKind ||
+					invite.revoked_at
+				) {
+					throw new Error("invite_invalid");
+				}
+				const group = this.db
+					.prepare("SELECT archived_at FROM groups WHERE group_id = ?")
+					.get(invite.group_id) as { archived_at: string | null } | undefined;
+				if (!group) throw new Error("group_not_found");
+				if (group.archived_at) throw new Error("group_archived");
+				if (!invite.consumed_at && new Date(invite.expires_at) <= new Date(consumedAt)) {
+					throw new Error("invite_expired");
+				}
+				if (fingerprintPublicKey(opts.publicKey) !== opts.fingerprint) {
+					throw new Error("fingerprint_mismatch");
+				}
+				const authoritativeIdentityId = recipientInviteAuthoritativeIdentityId(inspection);
+				if (authoritativeIdentityId !== opts.identityId) {
+					throw new Error("invite_identity_conflict");
+				}
+				const sameBinding =
+					invite.bound_device_id === opts.deviceId &&
+					invite.bound_public_key === opts.publicKey &&
+					invite.bound_fingerprint === opts.fingerprint;
+				if (invite.consumed_at && !sameBinding) throw new Error("invite_already_bound");
+				if (invite.consumed_at && invite.recipient_actor_id !== authoritativeIdentityId) {
+					throw new Error("invite_identity_conflict");
+				}
+				const participantSubjects = this.validateRecipientInviteParticipants(invite, opts);
+				const changed = invite.consumed_at
+					? 0
+					: this.db
+							.prepare(`UPDATE coordinator_invites SET token = ?, consumed_at = ?, bound_device_id = ?,
 							bound_public_key = ?, bound_fingerprint = ?, recipient_actor_id = ?,
 							recipient_display_name = ?, recipient_device_display_name = ?
 							WHERE invite_id = ? AND consumed_at IS NULL AND revoked_at IS NULL
 							AND expires_at > ? AND invite_kind = ?
 							AND EXISTS (SELECT 1 FROM groups g WHERE g.group_id = coordinator_invites.group_id
 								AND g.archived_at IS NULL)`)
-						.run(
-							`consumed:${invite.invite_id}`,
-							consumedAt,
-							opts.deviceId,
-							opts.publicKey,
-							opts.fingerprint,
-							authoritativeIdentityId,
-							recipientDisplayName,
-							deviceDisplayName,
-							invite.invite_id,
-							consumedAt,
-							opts.inviteKind,
-						).changes;
-			const saved = this.db
-				.prepare(`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE invite_id = ?`)
-				.get(invite.invite_id) as CoordinatorInvite;
-			if (
-				saved.bound_device_id !== opts.deviceId ||
-				saved.bound_public_key !== opts.publicKey ||
-				saved.bound_fingerprint !== opts.fingerprint
-			) {
-				throw new Error("invite_already_bound");
-			}
-			if (saved.recipient_actor_id !== authoritativeIdentityId)
-				throw new Error("invite_identity_conflict");
-			if (changed === 1) {
-				this.db
-					.prepare(`INSERT INTO enrolled_devices(
+							.run(
+								`consumed:${invite.invite_id}`,
+								consumedAt,
+								opts.deviceId,
+								opts.publicKey,
+								opts.fingerprint,
+								authoritativeIdentityId,
+								recipientDisplayName,
+								deviceDisplayName,
+								invite.invite_id,
+								consumedAt,
+								opts.inviteKind,
+							).changes;
+				const saved = this.db
+					.prepare(`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE invite_id = ?`)
+					.get(invite.invite_id) as CoordinatorInvite;
+				if (
+					saved.bound_device_id !== opts.deviceId ||
+					saved.bound_public_key !== opts.publicKey ||
+					saved.bound_fingerprint !== opts.fingerprint
+				) {
+					throw new Error("invite_already_bound");
+				}
+				if (saved.recipient_actor_id !== authoritativeIdentityId)
+					throw new Error("invite_identity_conflict");
+				if (changed === 1) {
+					this.db
+						.prepare(`INSERT INTO enrolled_devices(
 						group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled, created_at
 					) SELECT ?, ?, ?, ?, ?, ?, 1, ?
 					WHERE NOT (${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}
@@ -1604,100 +1605,100 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 						enabled = 1
 					WHERE enrolled_devices.identity_id IS NULL
 						OR enrolled_devices.identity_id = excluded.identity_id`)
-					.run(
-						invite.group_id,
-						opts.deviceId,
-						opts.publicKey,
-						opts.fingerprint,
-						authoritativeIdentityId,
-						deviceDisplayName,
-						consumedAt,
-						...participantSubjects,
-					);
-			} else {
-				this.db
-					.prepare(`UPDATE enrolled_devices SET identity_id = ?
+						.run(
+							invite.group_id,
+							opts.deviceId,
+							opts.publicKey,
+							opts.fingerprint,
+							authoritativeIdentityId,
+							deviceDisplayName,
+							consumedAt,
+							...participantSubjects,
+						);
+				} else {
+					this.db
+						.prepare(`UPDATE enrolled_devices SET identity_id = ?
 						WHERE group_id = ? AND device_id = ? AND identity_id IS NULL
 							AND public_key = ? AND fingerprint = ?
 							AND NOT (${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}
 								OR ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL})`)
-					.run(
-						authoritativeIdentityId,
-						invite.group_id,
-						opts.deviceId,
-						opts.publicKey,
-						opts.fingerprint,
-						...participantSubjects,
-					);
-			}
-			this.validateRecipientInviteParticipants(invite, opts);
-			const enrollment = this.db
-				.prepare(`SELECT ${ENROLLMENT_COLUMNS}
+						.run(
+							authoritativeIdentityId,
+							invite.group_id,
+							opts.deviceId,
+							opts.publicKey,
+							opts.fingerprint,
+							...participantSubjects,
+						);
+				}
+				this.validateRecipientInviteParticipants(invite, opts);
+				const enrollment = this.db
+					.prepare(`SELECT ${ENROLLMENT_COLUMNS}
 					FROM enrolled_devices WHERE group_id = ? AND device_id = ? AND enabled = 1`)
-				.get(invite.group_id, opts.deviceId) as CoordinatorEnrollment | undefined;
-			if (!enrollment) throw new Error("invite_acceptance_incomplete");
-			if (
-				enrollment.public_key !== opts.publicKey ||
-				enrollment.fingerprint !== opts.fingerprint ||
-				enrollment.identity_id !== authoritativeIdentityId
-			) {
-				throw new Error("invite_identity_conflict");
-			}
-			let bootstrapGrant: CoordinatorBootstrapGrant | null = null;
-			if (
-				inspection.kind === "add_device" &&
-				invite.inviter_device_id &&
-				!invite.bootstrap_grant_id &&
-				new Date(invite.expires_at) > new Date(consumedAt)
-			) {
-				const seed = this.db
-					.prepare(`SELECT ${ENROLLMENT_COLUMNS} FROM enrolled_devices
+					.get(invite.group_id, opts.deviceId) as CoordinatorEnrollment | undefined;
+				if (!enrollment) throw new Error("invite_acceptance_incomplete");
+				if (
+					enrollment.public_key !== opts.publicKey ||
+					enrollment.fingerprint !== opts.fingerprint ||
+					enrollment.identity_id !== authoritativeIdentityId
+				) {
+					throw new Error("invite_identity_conflict");
+				}
+				let bootstrapGrant: CoordinatorBootstrapGrant | null = null;
+				if (
+					inspection.kind === "add_device" &&
+					invite.inviter_device_id &&
+					!invite.bootstrap_grant_id &&
+					new Date(invite.expires_at) > new Date(consumedAt)
+				) {
+					const seed = this.db
+						.prepare(`SELECT ${ENROLLMENT_COLUMNS} FROM enrolled_devices
 					 WHERE group_id = ? AND device_id = ? AND enabled = 1`)
-					.get(invite.group_id, invite.inviter_device_id) as CoordinatorEnrollment | undefined;
-				if (seed) {
-					const grantId = tokenUrlSafe(12);
-					const claimed = this.db
-						.prepare(`UPDATE coordinator_invites SET bootstrap_grant_id = ?,
+						.get(invite.group_id, invite.inviter_device_id) as CoordinatorEnrollment | undefined;
+					if (seed) {
+						const grantId = tokenUrlSafe(12);
+						const claimed = this.db
+							.prepare(`UPDATE coordinator_invites SET bootstrap_grant_id = ?,
 						 trust_state = 'bootstrap_grant_created'
 						 WHERE invite_id = ? AND bootstrap_grant_id IS NULL`)
-						.run(grantId, invite.invite_id);
-					if (claimed.changes === 1) {
-						bootstrapGrant = insertBootstrapGrantSync(
-							this.db,
-							{
-								groupId: invite.group_id,
-								seedDeviceId: seed.device_id,
-								workerDeviceId: opts.deviceId,
-								expiresAt: invite.expires_at,
-								createdBy: authoritativeIdentityId,
-							},
-							grantId,
-							consumedAt,
-						);
+							.run(grantId, invite.invite_id);
+						if (claimed.changes === 1) {
+							bootstrapGrant = insertBootstrapGrantSync(
+								this.db,
+								{
+									groupId: invite.group_id,
+									seedDeviceId: seed.device_id,
+									workerDeviceId: opts.deviceId,
+									expiresAt: invite.expires_at,
+									createdBy: authoritativeIdentityId,
+								},
+								grantId,
+								consumedAt,
+							);
+						}
 					}
 				}
-			}
-			const savedWithGrant = this.db
-				.prepare(`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE invite_id = ?`)
-				.get(invite.invite_id) as CoordinatorInvite;
-			if (!bootstrapGrant && savedWithGrant.bootstrap_grant_id) {
-				bootstrapGrant =
-					(this.db
-						.prepare(`SELECT grant_id, group_id, seed_device_id, worker_device_id, expires_at,
+				const savedWithGrant = this.db
+					.prepare(`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE invite_id = ?`)
+					.get(invite.invite_id) as CoordinatorInvite;
+				if (!bootstrapGrant && savedWithGrant.bootstrap_grant_id) {
+					bootstrapGrant =
+						(this.db
+							.prepare(`SELECT grant_id, group_id, seed_device_id, worker_device_id, expires_at,
 						 created_at, created_by, revoked_at FROM coordinator_bootstrap_grants WHERE grant_id = ?`)
-						.get(savedWithGrant.bootstrap_grant_id) as CoordinatorBootstrapGrant | undefined) ??
-					null;
-			}
-			// Trigger effects belong to this transaction too; denial rolls back all acceptance writes.
-			this.validateRecipientInviteParticipants(savedWithGrant, opts);
-			return {
-				status: changed === 1 ? "accepted" : "existing",
-				invite: savedWithGrant,
-				reviewed_intent: inspection.reviewed_intent,
-				bootstrap_grant: bootstrapGrant,
-			};
-		});
-		return consume.immediate();
+							.get(savedWithGrant.bootstrap_grant_id) as CoordinatorBootstrapGrant | undefined) ??
+						null;
+				}
+				// Trigger effects belong to this transaction too; denial rolls back all acceptance writes.
+				this.validateRecipientInviteParticipants(savedWithGrant, opts);
+				return {
+					status: changed === 1 ? "accepted" : "existing",
+					invite: savedWithGrant,
+					reviewed_intent: inspection.reviewed_intent,
+					bootstrap_grant: bootstrapGrant,
+				};
+			})
+			.immediate();
 	}
 
 	async consumeProjectInvite(
