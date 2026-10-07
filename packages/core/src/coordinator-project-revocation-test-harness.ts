@@ -310,8 +310,73 @@ function registerInviterDenials(test: ProjectTest) {
 
 export function registerProjectWriteGuards(test: ProjectTest, guarded: Guarded) {
 	registerFirstGate(test, guarded);
+	registerPinnedInviterGate(test, guarded);
 	registerStateRaces(test, guarded);
 	registerLaterGate(test, guarded);
+}
+
+async function revokePinnedInviterKey(
+	f: RevocationFixture,
+	seed: Awaited<ReturnType<typeof projectInvite>>["seed"],
+) {
+	const alias = { ...seed, deviceId: `${seed.deviceId}-key-alias` };
+	await f.store.enrollDevice(alias.groupId, alias);
+	expect(await f.store.createDeviceRevocation(alias)).toMatchObject({ kind: "revoked" });
+	await f.store.removeDevice(alias.groupId, alias.deviceId);
+	await f.exec(
+		"DELETE FROM coordinator_device_revocations WHERE evidence_group_id = ? AND subject_kind = 'device_id'",
+		seed.groupId,
+	);
+}
+
+function registerPinnedInviterGate(test: ProjectTest, guarded: Guarded) {
+	for (const stage of ["first", "retry"] as const) {
+		for (const state of ["removed", "rotated"] as const) {
+			test(`pinned inviter key revocation blocks ${stage} batch with ${state} current seed`, async ({
+				fixture: f,
+			}) => {
+				// Arrange: revoke only the original seed key, never either receiver subject or seed ID.
+				const setup = await projectInvite(f);
+				const { input, seed } = setup;
+				await prepareStage(f, setup, stage);
+				let called = false;
+				let atGate: unknown[][] = [];
+				const racing = guarded(f, async (writes, phase) => {
+					if (called || phase !== "batch" || !writes.some((w) => w.query.includes("consumed_at =")))
+						return;
+					called = true;
+					await revokePinnedInviterKey(f, seed);
+					if (state === "removed") await f.store.removeDevice(seed.groupId, seed.deviceId);
+					else {
+						const key = "opaque-clean-rotated-seed";
+						await f.exec(
+							"UPDATE enrolled_devices SET public_key = ?, fingerprint = ? WHERE device_id = ?",
+							key,
+							fingerprintPublicKey(key),
+							seed.deviceId,
+						);
+					}
+					expect(await f.store.listDeviceRevocations(input)).toEqual([]);
+					expect(await f.store.listDeviceRevocations({ deviceId: seed.deviceId })).toEqual([]);
+					atGate = await recipientSnapshot(f);
+					expect(atGate[3]).toMatchObject([
+						{ subject_kind: "ed25519_key", evidence_device_id: `${seed.deviceId}-key-alias` },
+					]);
+					expect(atGate[3]).toHaveLength(1);
+				});
+				// Act
+				const error = await racing.consumeProjectInvite(input).then(
+					() => null,
+					(error: unknown) => error,
+				);
+				// Assert: the pinned key must retain its denial classification after seed churn.
+				expect(called).toBe(true);
+				expect(await recipientSnapshot(f)).toEqual(atGate);
+				expect(error).toBeInstanceOf(Error);
+				expect(error).toHaveProperty("message", "device_revoked");
+			});
+		}
+	}
 }
 
 function registerFirstGate(test: ProjectTest, guarded: Guarded) {

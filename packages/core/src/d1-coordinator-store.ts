@@ -647,10 +647,13 @@ async function prepareProjectInviteGuards(
 	const assertEligible = async (options: { requireBinding: boolean }): Promise<void> => {
 		const sql = options.requireBinding ? guard.boundEligibilitySql : guard.eligibilitySql;
 		const values = options.requireBinding ? guard.boundEligibilityValues : guard.eligibilityValues;
-		const eligible = await firstRow<{ eligible: number }>(
-			db.prepare(`SELECT (${sql}) AS eligible`).bind(...values),
+		const state = await firstRow<{ revoked: number; eligible: number }>(
+			db
+				.prepare(`SELECT (${guard.revocationSql}) AS revoked, (${sql}) AS eligible`)
+				.bind(...guard.revocationValues, ...values),
 		);
-		if (!eligible?.eligible) {
+		if (state?.revoked) throw new Error("device_revoked");
+		if (!state?.eligible) {
 			await rejectStaleRecipientInviteEvidence(db, initial, participantOpts, recipientKeyId);
 		}
 	};

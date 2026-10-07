@@ -151,6 +151,11 @@ untouched. Missing/disabled inviters retain no-grant behavior unless revoked, an
 removed historical inviter keys are not inferred. Existing Project acceptance
 maps `device_revoked` to 403 after normal invitation validation.
 
+D1 denial checks the pinned revocation subjects before inspecting fresh state.
+Revoking that captured inviter key still produces `device_revoked` if the
+enrollment is removed or rotated before execution; it does not become a generic
+incomplete response merely because the current enrollment no longer holds that key.
+
 ## Join approval guards
 
 Pending join approval checks the requested device's ID and canonical key and,
