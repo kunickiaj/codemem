@@ -102,6 +102,13 @@ export type CoordinatorAppBrowserAuthOptions =
 	  }
 	| { kind: "unavailable" };
 
+function recipientInviteErrorStatus(code: string): 403 | 404 | 409 | 410 {
+	if (code === "device_revoked") return 403;
+	if (code === "invite_expired") return 410;
+	if (code === "invite_invalid") return 404;
+	return 409;
+}
+
 function registerOptionalCoordinatorAuth(
 	app: Hono,
 	opts: CreateCoordinatorAppOptions,
@@ -2398,8 +2405,7 @@ export function createCoordinatorApp(
 					});
 				} catch (error) {
 					const code = error instanceof Error ? error.message : "invite_invalid";
-					const status = code === "invite_expired" ? 410 : code === "invite_invalid" ? 404 : 409;
-					return c.json({ error: code }, status);
+					return c.json({ error: code }, recipientInviteErrorStatus(code));
 				}
 			}
 			if (invite.operation_id || invite.reviewed_project_set_digest) {

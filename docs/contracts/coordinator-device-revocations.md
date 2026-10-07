@@ -109,6 +109,36 @@ inside a transaction. This is not proof that every invitation/join path is guard
 their D1 batch consumption and retry predicates still need the next writer slice,
 as do bootstrap/controller/link/group-grant authority writes.
 
+## Recipient invitation guards
+
+Team-member and add-device invitation acceptance checks both the recipient and
+the recorded inviter. Each check uses the device ID and the canonical key derived
+from its actual public key. Inviter key evidence comes from the current enrollment,
+including disabled rows; no historical invitation-time key is inferred after removal.
+A retained inviter device-ID subject still denies acceptance after removal.
+
+SQLite checks participants inside an immediate transaction, guards enrollment and
+identity repair at their writes, and rechecks before returning. A denial rolls back
+the invitation binding, enrollment, and any grant created in that transaction.
+D1 pins the inspected invitation and current inviter tuple in each sensitive
+statement, including binding, enrollment, identity repair, and grant recovery.
+A zero-row binding cannot authorize a downstream statement by itself.
+
+Already-bound retries must pass the same participant checks. Missing or disabled
+inviters retain the existing no-grant behavior unless a revocation subject applies.
+Changed D1 evidence fails closed instead of silently switching to a different seed.
+Recipient acceptance maps `device_revoked` to 403 after normal invitation validation;
+inspection responses remain unchanged.
+
+D1 acceptance and later repair/recovery can span separate commits. A revocation
+that arrives after a successful batch prevents later protected writes and success,
+but does not undo that earlier batch. Callers must not describe such rejection as
+proof that no state changed. Existing grants and their history remain intact.
+
+Project invitation consumption/retries and join approval are separate writer slices.
+These recipient guards do not enable public revocation management or replace the
+pending standalone bootstrap/controller/link/group-grant authority guards.
+
 ## Activation limits
 
 Existing group disable/removal does not create global subjects automatically.

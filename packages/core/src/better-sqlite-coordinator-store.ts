@@ -1449,9 +1449,47 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		return inspection;
 	}
 
-	async consumeRecipientInvite(
+	private validateRecipientInviteParticipants(
+		invite: CoordinatorInvite,
 		opts: CoordinatorConsumeRecipientInviteInput,
+	): (string | null)[] {
+		const existingEnrollment = this.db
+			.prepare(`SELECT ${ENROLLMENT_COLUMNS}
+				FROM enrolled_devices WHERE group_id = ? AND device_id = ?`)
+			.get(invite.group_id, opts.deviceId) as CoordinatorEnrollment | undefined;
+		if (
+			existingEnrollment &&
+			(existingEnrollment.public_key !== opts.publicKey ||
+				existingEnrollment.fingerprint !== opts.fingerprint ||
+				(existingEnrollment.identity_id !== null &&
+					existingEnrollment.identity_id !== opts.identityId))
+		)
+			throw new Error("invite_identity_conflict");
+		// The immediate transaction keeps both participants unchanged through grant recovery.
+		const inviterEnrollment = invite.inviter_device_id
+			? (this.db
+					.prepare(`SELECT ${ENROLLMENT_COLUMNS} FROM enrolled_devices
+				WHERE group_id = ? AND device_id = ?`)
+					.get(invite.group_id, invite.inviter_device_id) as CoordinatorEnrollment | undefined)
+			: undefined;
+		const subjects = [
+			opts.deviceId,
+			enrollmentRevocationKeyId(opts.publicKey),
+			invite.inviter_device_id ?? null,
+			inviterEnrollment ? enrollmentRevocationKeyId(inviterEnrollment.public_key) : null,
+		];
+		const revoked = this.db
+			.prepare(`SELECT 1 WHERE ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}
+				OR ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}`)
+			.get(...subjects);
+		if (revoked) throw new Error("device_revoked");
+		return subjects;
+	}
+
+	async consumeRecipientInvite(
+		input: CoordinatorConsumeRecipientInviteInput,
 	): Promise<CoordinatorRecipientInviteAcceptance> {
+		const opts = { ...input };
 		const consumedAt = normalizeInviteExpiresAt(opts.now);
 		const recipientDisplayName = opts.recipientDisplayName ?? null;
 		const deviceDisplayName = opts.deviceDisplayName ?? null;
@@ -1471,7 +1509,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		}
 		const preflightInvite = await this.getInviteByTokenForInspection(opts.token);
 		const preflightInspection = preflightInvite ? await inspectInvite(preflightInvite) : null;
-		return this.db.transaction((): CoordinatorRecipientInviteAcceptance => {
+		const consume = this.db.transaction((): CoordinatorRecipientInviteAcceptance => {
 			const invite = this.db
 				.prepare(
 					`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE token_digest = ? OR token = ?`,
@@ -1515,19 +1553,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			if (invite.consumed_at && invite.recipient_actor_id !== authoritativeIdentityId) {
 				throw new Error("invite_identity_conflict");
 			}
-			const existingEnrollment = this.db
-				.prepare(`SELECT ${ENROLLMENT_COLUMNS}
-					FROM enrolled_devices WHERE group_id = ? AND device_id = ?`)
-				.get(invite.group_id, opts.deviceId) as CoordinatorEnrollment | undefined;
-			if (
-				existingEnrollment &&
-				(existingEnrollment.public_key !== opts.publicKey ||
-					existingEnrollment.fingerprint !== opts.fingerprint ||
-					(existingEnrollment.identity_id !== null &&
-						existingEnrollment.identity_id !== authoritativeIdentityId))
-			) {
-				throw new Error("invite_identity_conflict");
-			}
+			const participantSubjects = this.validateRecipientInviteParticipants(invite, opts);
 			const changed = invite.consumed_at
 				? 0
 				: this.db
@@ -1567,7 +1593,9 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				this.db
 					.prepare(`INSERT INTO enrolled_devices(
 						group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled, created_at
-					) VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+					) SELECT ?, ?, ?, ?, ?, ?, 1, ?
+					WHERE NOT (${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}
+						OR ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL})
 					ON CONFLICT(group_id, device_id) DO UPDATE SET
 						public_key = excluded.public_key,
 						fingerprint = excluded.fingerprint,
@@ -1584,20 +1612,25 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 						authoritativeIdentityId,
 						deviceDisplayName,
 						consumedAt,
+						...participantSubjects,
 					);
 			} else {
 				this.db
 					.prepare(`UPDATE enrolled_devices SET identity_id = ?
 						WHERE group_id = ? AND device_id = ? AND identity_id IS NULL
-							AND public_key = ? AND fingerprint = ?`)
+							AND public_key = ? AND fingerprint = ?
+							AND NOT (${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}
+								OR ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL})`)
 					.run(
 						authoritativeIdentityId,
 						invite.group_id,
 						opts.deviceId,
 						opts.publicKey,
 						opts.fingerprint,
+						...participantSubjects,
 					);
 			}
+			this.validateRecipientInviteParticipants(invite, opts);
 			const enrollment = this.db
 				.prepare(`SELECT ${ENROLLMENT_COLUMNS}
 					FROM enrolled_devices WHERE group_id = ? AND device_id = ? AND enabled = 1`)
@@ -1655,13 +1688,16 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 						.get(savedWithGrant.bootstrap_grant_id) as CoordinatorBootstrapGrant | undefined) ??
 					null;
 			}
+			// Trigger effects belong to this transaction too; denial rolls back all acceptance writes.
+			this.validateRecipientInviteParticipants(savedWithGrant, opts);
 			return {
 				status: changed === 1 ? "accepted" : "existing",
 				invite: savedWithGrant,
 				reviewed_intent: inspection.reviewed_intent,
 				bootstrap_grant: bootstrapGrant,
 			};
-		})();
+		});
+		return consume.immediate();
 	}
 
 	async consumeProjectInvite(
