@@ -280,8 +280,22 @@ unbound recipient. Inviter revocation checks and captured key evidence remain in
 force, and invalid invitation/key bindings retain their earlier private errors.
 Raw inspection and independently issued grants remain readable.
 
-This backend-specific slice does not change D1 recipient writes. D1 parity and
-the remaining Project/join repairs must pass before binding issuance can activate.
+The SQLite slice landed separately from the D1 adoption below. Remaining
+Project/join repairs must still pass before binding issuance can activate.
+
+#### D1 recipient invitation guards
+
+D1 checks the same recipient ownership boundary on acceptance, enrollment,
+Identity repair, retries, and bootstrap grant recovery. Every write pins the
+captured invitation and participant evidence. Enrollment follows the winning
+consume through `changes() = 1`, and a final SQL assertion aborts a batch if its
+authority guard drifts. Owned inviters remain usable; their revocation and
+current-tuple checks are retained.
+
+Unconfirmed or malformed receipts fail closed with the fixed unavailable error.
+A SQL assertion failure rolls back its batch, but a bad or lost receipt may arrive
+after commit; a later read cannot manufacture success or prove rollback.
+Binding issuance, verified owner proof, and live activation remain disabled.
 
 ### Trusted Identity-group grants
 
