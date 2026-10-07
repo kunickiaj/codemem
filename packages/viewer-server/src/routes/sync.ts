@@ -118,6 +118,7 @@ import {
 	listRecipientPolicyReview,
 	listSharingDomainSettingsScopes,
 	loadMemorySnapshotPageForPeer,
+	loadPublicKey,
 	loadReplicationOpsForPeer,
 	lookupCoordinatorPeers,
 	mergeAddresses,
@@ -130,6 +131,7 @@ import {
 	normalizeSyncFeatures,
 	normalizeTeammateName,
 	parseAcceptedProjectIntent,
+	parseBootstrapExpiry,
 	parseReassignScopePayload,
 	parseRecipientPolicyEdgeCommitRequest,
 	parseSyncScopeRequest,
@@ -2665,6 +2667,82 @@ function authorizeSyncRequest(
 	return { ok: true, reason: "ok", deviceId };
 }
 
+function bootstrapPayloadRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function bootstrapPayloadText(value: unknown): value is string {
+	return typeof value === "string" && value.length > 0 && !value.includes("\0");
+}
+
+function bootstrapNullableText(value: unknown): value is string | null {
+	return value === null || typeof value === "string";
+}
+
+function validBootstrapEnrollment(value: unknown): value is CoordinatorEnrollment {
+	if (!bootstrapPayloadRecord(value)) return false;
+	return (
+		bootstrapPayloadText(value.group_id) &&
+		bootstrapPayloadText(value.device_id) &&
+		bootstrapPayloadText(value.public_key) &&
+		bootstrapPayloadText(value.fingerprint) &&
+		bootstrapNullableText(value.identity_id) &&
+		bootstrapNullableText(value.display_name) &&
+		value.enabled === 1 &&
+		bootstrapPayloadText(value.created_at) &&
+		fingerprintPublicKey(value.public_key) === value.fingerprint
+	);
+}
+
+function validBootstrapVerification(
+	value: unknown,
+	grantId: string,
+): value is CoordinatorBootstrapGrantVerification {
+	if (!bootstrapPayloadRecord(value) || value.authorization_version !== 1) return false;
+	const grant = value.grant;
+	if (!bootstrapPayloadRecord(grant)) return false;
+	if (
+		grant.grant_id !== grantId ||
+		!bootstrapPayloadText(grant.group_id) ||
+		!bootstrapPayloadText(grant.seed_device_id) ||
+		!bootstrapPayloadText(grant.worker_device_id) ||
+		!bootstrapPayloadText(grant.created_at) ||
+		!bootstrapNullableText(grant.created_by) ||
+		grant.revoked_at !== null ||
+		!Number.isFinite(parseBootstrapExpiry(grant.expires_at))
+	) {
+		return false;
+	}
+	const seed = value.seed_enrollment;
+	const worker = value.worker_enrollment;
+	if (!validBootstrapEnrollment(seed) || !validBootstrapEnrollment(worker)) return false;
+	return (
+		seed.device_id === grant.seed_device_id &&
+		worker.device_id === grant.worker_device_id &&
+		seed.group_id === grant.group_id &&
+		worker.group_id === grant.group_id
+	);
+}
+
+function bootstrapSeedMatchesLocalIdentity(
+	store: MemoryStore,
+	seed: CoordinatorEnrollment,
+): boolean {
+	try {
+		const [deviceId, fingerprint] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
+		const publicKey = loadPublicKey(syncKeysDir());
+		return (
+			deviceId === seed.device_id &&
+			publicKey === seed.public_key &&
+			fingerprint === seed.fingerprint &&
+			publicKey !== null &&
+			fingerprintPublicKey(publicKey) === seed.fingerprint
+		);
+	} catch {
+		return false;
+	}
+}
+
 async function authorizeBootstrapGrantRequest(
 	store: MemoryStore,
 	request: { method: string; url: string; header(name: string): string | undefined },
@@ -2684,9 +2762,10 @@ async function authorizeBootstrapGrantRequest(
 		return { ok: false, reason: "bootstrap_grant_coordinator_not_configured", deviceId };
 	}
 
-	const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
+	let localDeviceId: string;
 	let verification: CoordinatorBootstrapGrantVerification;
 	try {
+		[localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 		let payload: Record<string, unknown> | null = null;
 		if (config.syncCoordinatorAdminSecret) {
 			const [status, adminPayload] = await requestJson(
@@ -2719,45 +2798,37 @@ async function authorizeBootstrapGrantRequest(
 			}
 		}
 		if (!payload) return { ok: false, reason: "bootstrap_grant_lookup_failed", deviceId };
-		verification = payload as unknown as CoordinatorBootstrapGrantVerification;
+		if (!validBootstrapVerification(payload, grantId)) {
+			return { ok: false, reason: "bootstrap_grant_invalid_payload", deviceId };
+		}
+		verification = payload;
 	} catch {
 		return { ok: false, reason: "bootstrap_grant_lookup_failed", deviceId };
 	}
 
 	const grant = verification.grant;
+	const seedEnrollment = verification.seed_enrollment;
 	const workerEnrollment = verification.worker_enrollment;
-	if (!grant || !workerEnrollment) {
-		return { ok: false, reason: "bootstrap_grant_invalid_payload", deviceId };
-	}
 	if (
 		config.syncCoordinatorGroups.length > 0 &&
-		!config.syncCoordinatorGroups.includes(String(grant.group_id))
+		!config.syncCoordinatorGroups.includes(grant.group_id)
 	) {
 		return { ok: false, reason: "bootstrap_grant_group_mismatch", deviceId };
 	}
-	if (grant.revoked_at) return { ok: false, reason: "bootstrap_grant_revoked", deviceId };
-	if (String(workerEnrollment.device_id) !== String(grant.worker_device_id)) {
-		return { ok: false, reason: "bootstrap_grant_worker_enrollment_mismatch", deviceId };
-	}
-	if (String(workerEnrollment.group_id) !== String(grant.group_id)) {
-		return { ok: false, reason: "bootstrap_grant_group_mismatch", deviceId };
-	}
-	if (Number(workerEnrollment.enabled) !== 1) {
-		return { ok: false, reason: "bootstrap_grant_worker_disabled", deviceId };
-	}
-	const workerPublicKey = String(workerEnrollment.public_key ?? "").trim();
-	const workerFingerprint = String(workerEnrollment.fingerprint ?? "").trim();
-	if (!workerPublicKey || fingerprintPublicKey(workerPublicKey) !== workerFingerprint) {
-		return { ok: false, reason: "bootstrap_grant_worker_identity_invalid", deviceId };
-	}
+	const workerPublicKey = workerEnrollment.public_key;
+	const workerFingerprint = workerEnrollment.fingerprint;
 	if (grant.worker_device_id !== deviceId) {
 		return { ok: false, reason: "bootstrap_grant_worker_mismatch", deviceId };
 	}
 	if (grant.seed_device_id !== localDeviceId) {
 		return { ok: false, reason: "bootstrap_grant_seed_mismatch", deviceId };
 	}
-	if (new Date(grant.expires_at) <= new Date()) {
+	if (parseBootstrapExpiry(grant.expires_at) <= Date.now()) {
 		return { ok: false, reason: "bootstrap_grant_expired", deviceId };
+	}
+	// Re-read after the coordinator lookup; no async gap precedes the trust writes below.
+	if (!bootstrapSeedMatchesLocalIdentity(store, seedEnrollment)) {
+		return { ok: false, reason: "bootstrap_grant_seed_identity_invalid", deviceId };
 	}
 
 	const existingPeer = store.db
@@ -2788,7 +2859,7 @@ async function authorizeBootstrapGrantRequest(
 	const nonceResult = recordSyncAuthNonce(store, deviceId, nonce, createdAt);
 	if (nonceResult) return nonceResult;
 	updatePeerAddresses(store.db, deviceId, [], {
-		name: String(workerEnrollment.display_name ?? "").trim() || undefined,
+		name: workerEnrollment.display_name?.trim() || undefined,
 		pinnedFingerprint: workerFingerprint,
 		publicKey: workerPublicKey,
 		replaceTrust: true,

@@ -103,6 +103,7 @@ export type {
 	CoordinatorControllerReviewStore,
 } from "./coordinator-auth-controller-review-route.js";
 export { registerCoordinatorAuthControllerReviewRoutes } from "./coordinator-auth-controller-review-route.js";
+export { parseBootstrapExpiry } from "./coordinator-bootstrap-grant-authorization.js";
 export type {
 	CoordinatorEnrollmentReconcileIssue,
 	CoordinatorEnrollmentReconcileResult,

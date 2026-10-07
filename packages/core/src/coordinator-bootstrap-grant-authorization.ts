@@ -131,7 +131,8 @@ function participant(
 const EXPLICIT_OFFSET_EXPIRY =
 	/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-](\d{2}):(\d{2}))$/;
 
-function parseBootstrapExpiry(value: unknown): number {
+/** Parse an explicit-zone timestamp without accepting normalized invalid calendar dates. */
+export function parseBootstrapExpiry(value: unknown): number {
 	if (typeof value !== "string") return Number.NaN;
 	const parts = EXPLICIT_OFFSET_EXPIRY.exec(value);
 	if (!parts) return Number.NaN;

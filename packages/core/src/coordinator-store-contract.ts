@@ -584,6 +584,8 @@ export interface CoordinatorStore extends CoordinatorDeviceRevocationStore {
 }
 
 export interface CoordinatorBootstrapGrantVerification {
+	authorization_version: 1;
 	grant: CoordinatorBootstrapGrant;
+	seed_enrollment: CoordinatorEnrollment;
 	worker_enrollment: CoordinatorEnrollment;
 }

@@ -95,6 +95,32 @@ function legacyCompletionManifest(): CoordinatorLegacyTeamCompletionManifestV1 {
 	};
 }
 
+async function unavailableBootstrapAuthorization() {
+	return { kind: "rejected", error: "bootstrap_authorization_unavailable" } as const;
+}
+
+function authorizedBootstrapFixture(
+	seedEnrollment: CoordinatorEnrollment,
+	workerEnrollment: CoordinatorEnrollment,
+) {
+	return {
+		kind: "authorized",
+		authorizationVersion: 1,
+		grant: {
+			grant_id: "grant-1",
+			group_id: "g1",
+			seed_device_id: "seed-1",
+			worker_device_id: "worker-1",
+			expires_at: "2099-01-01T00:00:00Z",
+			created_at: "2026-01-01T00:00:00Z",
+			created_by: "seed-1",
+			revoked_at: null,
+		},
+		seedEnrollment,
+		workerEnrollment,
+	} as const;
+}
+
 function createMockStore(
 	overrides?: Partial<CoordinatorStoreInterface>,
 ): CoordinatorStoreInterface {
@@ -178,6 +204,7 @@ function createMockStore(
 			throw new Error("not implemented");
 		}),
 		getBootstrapGrant: vi.fn(async () => null),
+		getBootstrapGrantAuthorization: vi.fn(unavailableBootstrapAuthorization),
 		listBootstrapGrants: vi.fn(async () => []),
 		revokeBootstrapGrant: vi.fn(async () => false),
 		createScope: vi.fn(async (_: CoordinatorCreateScopeInput): Promise<CoordinatorScope> => {
@@ -2199,16 +2226,9 @@ describe("createCoordinatorApp dependency injection", () => {
 			getEnrollment: vi.fn(async (_groupId, deviceId) =>
 				deviceId === "seed-1" ? seedEnrollment : workerEnrollment,
 			),
-			getBootstrapGrant: vi.fn(async () => ({
-				grant_id: "grant-1",
-				group_id: "g1",
-				seed_device_id: "seed-1",
-				worker_device_id: "worker-1",
-				expires_at: "2099-01-01T00:00:00Z",
-				created_at: "2026-01-01T00:00:00Z",
-				created_by: "seed-1",
-				revoked_at: null,
-			})),
+			getBootstrapGrantAuthorization: vi.fn(async () =>
+				authorizedBootstrapFixture(seedEnrollment, workerEnrollment),
+			),
 		});
 		const app = createCoordinatorApp({
 			storeFactory: () => store,
@@ -2222,7 +2242,9 @@ describe("createCoordinatorApp dependency injection", () => {
 
 		expect(res.status).toBe(200);
 		expect(await res.json()).toEqual({
+			authorization_version: 1,
 			grant: expect.objectContaining({ grant_id: "grant-1", seed_device_id: "seed-1" }),
+			seed_enrollment: expect.objectContaining({ device_id: "seed-1" }),
 			worker_enrollment: expect.objectContaining({ device_id: "worker-1" }),
 		});
 	});

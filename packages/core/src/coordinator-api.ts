@@ -33,6 +33,8 @@ import {
 	SCOPE_MEMBERSHIP_EFFECT_CONFLICT,
 } from "./coordinator-membership-effects.js";
 import type {
+	CoordinatorBootstrapGrantAuthorizationError,
+	CoordinatorBootstrapGrantAuthorizationInput,
 	CoordinatorBootstrapGrantVerification,
 	CoordinatorEnrollment,
 	CoordinatorInviteKind,
@@ -224,10 +226,11 @@ async function authorizeRequest(
 		return { ok: false, error: "missing_headers", enrollment: null };
 	}
 
-	const enrollment = await store.getEnrollment(opts.groupId, deviceId, true);
-	if (!enrollment) {
+	const sourceEnrollment = await store.getEnrollment(opts.groupId, deviceId, true);
+	if (!sourceEnrollment) {
 		return { ok: false, error: "unknown_device", enrollment: null };
 	}
+	const enrollment = { ...sourceEnrollment };
 	if (enrollment.enabled !== 1) {
 		return { ok: false, error: "device_disabled", enrollment: null };
 	}
@@ -295,6 +298,47 @@ function authErrorStatus(error: string): 401 | 403 | 409 {
 	if (error === "device_disabled" || error === "device_revoked") return 403;
 	if (error === "group_archived") return 409;
 	return 401;
+}
+
+function bootstrapAuthorizationErrorStatus(
+	error: CoordinatorBootstrapGrantAuthorizationError,
+): 403 | 404 | 409 | 503 {
+	switch (error) {
+		case "grant_not_found":
+		case "seed_enrollment_not_found":
+		case "worker_enrollment_not_found":
+			return 404;
+		case "grant_revoked":
+		case "grant_expired":
+		case "device_revoked":
+			return 403;
+		case "group_archived":
+			return 409;
+		default:
+			return 503;
+	}
+}
+
+async function bootstrapAuthorizationResponse(
+	c: Context,
+	store: CoordinatorStore,
+	input: CoordinatorBootstrapGrantAuthorizationInput,
+) {
+	try {
+		const result = await store.getBootstrapGrantAuthorization(input);
+		if (result.kind === "rejected") {
+			return c.json({ error: result.error }, bootstrapAuthorizationErrorStatus(result.error));
+		}
+		const payload: CoordinatorBootstrapGrantVerification = {
+			authorization_version: result.authorizationVersion,
+			grant: result.grant,
+			seed_enrollment: result.seedEnrollment,
+			worker_enrollment: result.workerEnrollment,
+		};
+		return c.json(payload);
+	} catch {
+		return c.json({ error: "bootstrap_authorization_unavailable" }, 503);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -2137,15 +2181,10 @@ export function createCoordinatorApp(
 
 		const store = createStore();
 		try {
-			const grant = await store.getBootstrapGrant(grantId);
-			if (!grant) return c.json({ error: "grant_not_found" }, 404);
-			const workerEnrollment = await store.getEnrollment(grant.group_id, grant.worker_device_id);
-			if (!workerEnrollment) return c.json({ error: "worker_enrollment_not_found" }, 404);
-			const payload: CoordinatorBootstrapGrantVerification = {
-				grant,
-				worker_enrollment: workerEnrollment,
-			};
-			return c.json(payload);
+			return await bootstrapAuthorizationResponse(c, store, {
+				grantId,
+				nowMs: Date.parse(runtime.now()),
+			});
 		} finally {
 			await store.close();
 		}
@@ -2175,17 +2214,16 @@ export function createCoordinatorApp(
 			}
 			const limited = rateLimitedResponse(c, String(auth.enrollment.device_id), true);
 			if (limited) return limited;
-			const grant = await store.getBootstrapGrant(grantId);
-			if (
-				!grant ||
-				grant.group_id !== groupId ||
-				grant.seed_device_id !== String(auth.enrollment.device_id)
-			) {
-				return c.json({ error: "grant_not_found" }, 404);
-			}
-			const workerEnrollment = await store.getEnrollment(groupId, grant.worker_device_id);
-			if (!workerEnrollment) return c.json({ error: "worker_enrollment_not_found" }, 404);
-			return c.json({ grant, worker_enrollment: workerEnrollment });
+			return await bootstrapAuthorizationResponse(c, store, {
+				grantId,
+				nowMs: Date.parse(runtime.now()),
+				expectedSeed: {
+					groupId: auth.enrollment.group_id,
+					deviceId: auth.enrollment.device_id,
+					publicKey: auth.enrollment.public_key,
+					fingerprint: auth.enrollment.fingerprint,
+				},
+			});
 		} finally {
 			await store.close();
 		}

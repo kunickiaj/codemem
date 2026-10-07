@@ -262,8 +262,8 @@ receipt, neither an incomplete response nor a subsequent `device_revoked` denial
 proves that no grant was committed; callers must reconcile current state.
 
 Existing raw reads, history, and explicit grant revocation remain unchanged.
-Current authorization of both participants in signed/admin lookup paths is the
-next separate slice; raw issuance guards alone do not close bootstrap access.
+Current authorization of both participants is required in signed/admin lookup
+paths; raw issuance guards alone do not close bootstrap access.
 These writer slices do not enable public revocation management, new owner
 enrollment, durable ownership, or a live authentication configuration.
 
@@ -295,10 +295,27 @@ Raw records, history, and explicit grant revocation remain independently readabl
 Incomplete enrollment metadata, including empty fingerprints or creation times,
 also fails closed as unavailable without changing raw inspection.
 
-This slice does not yet change API or viewer behavior. Their next adoption slice
-must authenticate before this read, pass the actual verified seed key, expose an
-explicit authorization version, and reject older unversioned inspection responses.
+Both single-grant API lookup routes authenticate before this read. The signed
+route constrains the decision to the actual key and fingerprint used during
+request verification; the admin route independently checks both participants.
 No optional raw-getter fallback can substitute for the authorization decision.
+
+Successful lookup responses require `authorization_version: 1`, `grant`,
+`seed_enrollment`, and `worker_enrollment`. The viewer checks the version, both
+enabled enrollment tuples and fingerprints, group/device bindings, strict expiry,
+and its freshly read local seed key before recording a nonce or trusting the peer.
+Malformed or unversioned responses fail closed with the existing generic peer 401.
+
+Older coordinators must be upgraded before a new viewer can admit a new bootstrap
+connection. Ordinary local use and already configured direct-peer authentication
+do not require this response version. Raw grant listing and explicit revocation
+remain separate from authorization.
+
+Lookup denial statuses are 404 for missing grants, missing/disabled participants,
+or mismatched seed constraints; 403 for grant revocation, expiry, or device
+revocation; 409 for group archival; and 503 for unavailable or unconfirmed
+authorization. Invalid signed requests retain their existing admission errors and
+never invoke the authorization read.
 
 ## Activation limits
 

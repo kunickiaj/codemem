@@ -258,6 +258,304 @@ function createTestApp(opts?: {
 	};
 }
 
+function bootstrapSeedEnrollment(deviceId: string) {
+	const publicKey = loadPublicKey(process.env.CODEMEM_KEYS_DIR) ?? "";
+	return {
+		group_id: "g1",
+		device_id: deviceId,
+		public_key: publicKey,
+		fingerprint: core.fingerprintPublicKey(publicKey),
+		enabled: 1,
+		identity_id: null,
+		display_name: "Seed",
+		created_at: "2026-01-01T00:00:00Z",
+	};
+}
+
+function mutateBootstrapReceipt(receipt: Record<string, unknown>, mode: string, staleKey: string) {
+	if (mode === "raw legacy" || mode === "missing version") delete receipt.authorization_version;
+	if (mode === "raw legacy") delete receipt.seed_enrollment;
+	if (mode === "unknown version") receipt.authorization_version = 2;
+	if (mode === "string version") receipt.authorization_version = "1";
+	const [participant, change] = mode.split(" ");
+	if (participant === "seed" || participant === "worker") {
+		mutateBootstrapEnrollment(receipt, `${participant}_enrollment`, change, staleKey);
+	}
+	if (participant === "grant") {
+		if (change === "missing") {
+			delete receipt.grant;
+			return;
+		}
+		const grant = receipt.grant as Record<string, unknown>;
+		const fields: Record<string, string> = {
+			id: "grant_id",
+			group: "group_id",
+			seed: "seed_device_id",
+			worker: "worker_device_id",
+			revoked: "revoked_at",
+		};
+		grant[fields[change]] = "foreign";
+	}
+	if (participant === "expiry") {
+		const values: Record<string, unknown> = {
+			number: 4070908800000,
+			null: null,
+			invalid: "not-a-date",
+			calendar: "2099-02-30T00:00:00Z",
+			"timezone-less": "2099-01-01T00:00:00",
+			expired: "2000-01-01T00:00:00Z",
+		};
+		(receipt.grant as Record<string, unknown>).expires_at = values[change];
+	}
+}
+
+function mutateBootstrapEnrollment(
+	receipt: Record<string, unknown>,
+	field: string,
+	change: string,
+	staleKey: string,
+) {
+	if (change === "missing") {
+		delete receipt[field];
+		return;
+	}
+	const enrollment = receipt[field] as Record<string, unknown>;
+	const values: Record<string, [string, unknown]> = {
+		disabled: ["enabled", 0],
+		group: ["group_id", "foreign"],
+		device: ["device_id", "foreign"],
+		key: ["public_key", ""],
+		fingerprint: ["fingerprint", "foreign"],
+		"enabled-string": ["enabled", "1"],
+		"key-number": ["public_key", 1],
+		"fingerprint-number": ["fingerprint", 1],
+	};
+	if (values[change]) {
+		const [key, value] = values[change];
+		enrollment[key] = value;
+	}
+	if (change === "stale") {
+		enrollment.public_key = staleKey;
+		enrollment.fingerprint = core.fingerprintPublicKey(staleKey);
+	}
+}
+
+function restoreBootstrapEnvironment(config: string | undefined, secret: string | undefined) {
+	if (config == null) delete process.env.CODEMEM_CONFIG;
+	else process.env.CODEMEM_CONFIG = config;
+	if (secret == null) delete process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+	else process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET = secret;
+}
+
+function bootstrapLookupMock(
+	receipt: Record<string, unknown>,
+	signed: boolean,
+	options: { beforeResponse?: () => void } = {},
+) {
+	return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+		expect(String(input)).toContain(
+			signed ? "/v1/bootstrap-grants/grant-1?group_id=g1" : "/v1/admin/bootstrap-grants/grant-1",
+		);
+		const headers = new Headers(init?.headers);
+		if (signed) expect(headers.get("X-Opencode-Signature")).toBeTruthy();
+		else expect(headers.get("X-Codemem-Coordinator-Admin")).toBe("fixture-secret");
+		await Promise.resolve();
+		options.beforeResponse?.();
+		return new Response(JSON.stringify(receipt), { status: 200 });
+	});
+}
+
+async function assertBootstrapWriteBoundary(
+	store: MemoryStore,
+	response: Response,
+	peerDeviceId: string,
+	valid: boolean,
+) {
+	expect(response.status).toBe(valid ? 200 : 401);
+	if (!valid) expect(await response.json()).toEqual({ error: "unauthorized" });
+	expect(
+		store.db
+			.prepare("SELECT COUNT(*) AS count FROM sync_nonces WHERE device_id = ?")
+			.get(peerDeviceId),
+	).toEqual({ count: valid ? 1 : 0 });
+	expect(
+		store.db
+			.prepare("SELECT COUNT(*) AS count FROM sync_peers WHERE peer_device_id = ?")
+			.get(peerDeviceId),
+	).toEqual({ count: valid ? 1 : 0 });
+	expect(
+		store.db
+			.prepare("SELECT COUNT(*) AS count FROM sync_peer_signature_state WHERE peer_device_id = ?")
+			.get(peerDeviceId),
+	).toEqual({ count: valid ? 1 : 0 });
+}
+
+const VERSIONED_BOOTSTRAP_CASES = [
+	"valid admin",
+	"valid signed",
+	"local key drift admin",
+	"local key drift signed",
+	"raw legacy",
+	"missing version",
+	"unknown version",
+	"string version",
+	"seed missing",
+	"seed disabled",
+	"seed group",
+	"seed device",
+	"seed key",
+	"seed fingerprint",
+	"seed stale key",
+	"seed enabled-string",
+	"seed key-number",
+	"seed fingerprint-number",
+	"worker missing",
+	"worker disabled",
+	"worker group",
+	"worker device",
+	"worker key",
+	"worker fingerprint",
+	"worker stale key",
+	"worker enabled-string",
+	"worker key-number",
+	"worker fingerprint-number",
+	"grant missing",
+	"grant id",
+	"grant group",
+	"grant seed",
+	"grant worker",
+	"grant revoked",
+	"expiry number",
+	"expiry null",
+	"expiry invalid",
+	"expiry calendar",
+	"expiry timezone-less",
+	"expiry expired",
+	"invalid signature",
+];
+
+function versionedBootstrapReceipt(
+	seedDeviceId: string,
+	worker: { deviceId: string; publicKey: string; fingerprint: string },
+) {
+	return {
+		authorization_version: 1,
+		grant: {
+			grant_id: "grant-1",
+			group_id: "g1",
+			seed_device_id: seedDeviceId,
+			worker_device_id: worker.deviceId,
+			expires_at: "2099-01-01T00:00:00Z",
+			created_at: "2026-01-01T00:00:00Z",
+			created_by: "admin",
+			revoked_at: null,
+		},
+		seed_enrollment: bootstrapSeedEnrollment(seedDeviceId),
+		worker_enrollment: {
+			group_id: "g1",
+			device_id: worker.deviceId,
+			public_key: worker.publicKey,
+			fingerprint: worker.fingerprint,
+			enabled: 1,
+			identity_id: null,
+			display_name: "Worker",
+			created_at: "2026-01-01T00:00:00Z",
+		},
+	};
+}
+
+function rotateLocalBootstrapKeyForCase(
+	mode: string,
+	store: MemoryStore,
+	replacementKeysDir: string,
+) {
+	if (!mode.startsWith("local key drift")) return;
+	const keysDir = process.env.CODEMEM_KEYS_DIR;
+	if (!keysDir) throw new Error("Local fixture keys missing");
+	const [replacementPrivate, replacementPublic] = core.resolveKeyPaths(replacementKeysDir);
+	const [localPrivate, localPublic] = core.resolveKeyPaths(keysDir);
+	const publicKey = loadPublicKey(replacementKeysDir);
+	if (!publicKey) throw new Error("Replacement fixture key missing");
+	expect(publicKey).not.toBe(loadPublicKey(keysDir));
+	const fingerprint = core.fingerprintPublicKey(publicKey);
+	writeFileSync(localPrivate, readFileSync(replacementPrivate), { mode: 0o600 });
+	writeFileSync(localPublic, readFileSync(replacementPublic), { mode: 0o644 });
+	store.db
+		.prepare("UPDATE sync_device SET public_key = ?, fingerprint = ? WHERE device_id = ?")
+		.run(publicKey, fingerprint, "test-device-001");
+	// A valid rotated identity, not a broken keypair, must invalidate the old receipt.
+	expect(ensureDeviceIdentity(store.db, { keysDir })).toEqual(["test-device-001", fingerprint]);
+}
+
+async function verifyVersionedBootstrapCase(mode: string) {
+	// Arrange: real peer signing without pre-existing trust exercises NEW bootstrap only.
+	const testApp = createTestApp();
+	const store = testApp.ensureStore();
+	const url = "http://localhost/v1/status";
+	const peer = createAuthenticatedSyncPeer(store, { url });
+	const peerRow = store.db
+		.prepare("SELECT public_key, pinned_fingerprint FROM sync_peers WHERE peer_device_id = ?")
+		.get(peer.peerDeviceId) as { public_key: string; pinned_fingerprint: string };
+	store.db.prepare("DELETE FROM sync_peers WHERE peer_device_id = ?").run(peer.peerDeviceId);
+	const dir = mkdtempSync(join(tmpdir(), "codemem-bootstrap-version-"));
+	const previousConfig = process.env.CODEMEM_CONFIG;
+	const previousSecret = process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+	const previousFetch = globalThis.fetch;
+	const signed = mode.endsWith("signed");
+	const receipt = versionedBootstrapReceipt("test-device-001", {
+		deviceId: peer.peerDeviceId,
+		publicKey: peerRow.public_key,
+		fingerprint: peerRow.pinned_fingerprint,
+	});
+	const alternateKey = mode.startsWith("worker ")
+		? receipt.seed_enrollment.public_key
+		: peerRow.public_key;
+	mutateBootstrapReceipt(receipt, mode, alternateKey);
+	const fetch = bootstrapLookupMock(receipt, signed, {
+		beforeResponse: () => rotateLocalBootstrapKeyForCase(mode, store, peer.keysDir),
+	});
+	try {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.setSystemTime(new Date("2026-10-07T00:00:00Z"));
+		process.env.CODEMEM_CONFIG = join(dir, "config.json");
+		delete process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
+		writeFileSync(
+			process.env.CODEMEM_CONFIG,
+			JSON.stringify({
+				sync_coordinator_url: "https://coord.example.test",
+				sync_coordinator_groups: ["g1"],
+				...(signed ? {} : { sync_coordinator_admin_secret: "fixture-secret" }),
+			}),
+		);
+		globalThis.fetch = fetch as typeof globalThis.fetch;
+		const headers = buildDirectPeerAuthHeaders({
+			deviceId: peer.peerDeviceId,
+			recipientId: "test-device-001",
+			method: "GET",
+			url,
+			bodyBytes: Buffer.alloc(0),
+			keysDir: peer.keysDir,
+			bootstrapGrantId: "grant-1",
+		});
+		if (mode === "invalid signature")
+			headers["X-Opencode-Signature"] = `v3:${Buffer.alloc(64).toString("base64")}`;
+		// Act
+		const response = await testApp.syncApp.request(url, { headers });
+		// Assert: failures cannot consume a nonce or pin new peer authority.
+		const valid = mode.startsWith("valid ");
+		await assertBootstrapWriteBoundary(store, response, peer.peerDeviceId, valid);
+		expect(fetch).toHaveBeenCalledTimes(1);
+		if (valid) expect((await testApp.syncApp.request(url, { headers })).status).toBe(401);
+	} finally {
+		globalThis.fetch = previousFetch;
+		restoreBootstrapEnvironment(previousConfig, previousSecret);
+		vi.useRealTimers();
+		peer.cleanup();
+		testApp.cleanup();
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
 function promptPackAttemptId(sequence: number): string {
 	return `018f2db4-f9d3-7a22-8d18-${sequence.toString(16).padStart(12, "0")}`;
 }
@@ -9406,27 +9704,13 @@ describe("viewer-server", () => {
 					expect(seedDeviceId).toBeTruthy();
 					expect(lookupHeaders.get("X-Opencode-Signature")).toBeTruthy();
 					return new Response(
-						JSON.stringify({
-							grant: {
-								grant_id: "grant-1",
-								group_id: "g1",
-								seed_device_id: seedDeviceId,
-								worker_device_id: peerDeviceIdValue,
-								expires_at: "2099-01-01T00:00:00Z",
-								created_at: "2026-01-01T00:00:00Z",
-								created_by: "admin",
-								revoked_at: null,
-							},
-							worker_enrollment: {
-								group_id: "g1",
-								device_id: peerDeviceIdValue,
-								public_key: peerPublicKeyValue,
+						JSON.stringify(
+							versionedBootstrapReceipt(seedDeviceId ?? "", {
+								deviceId: peerDeviceIdValue,
+								publicKey: peerPublicKeyValue,
 								fingerprint: peerFingerprintValue,
-								display_name: "Peer Bootstrap",
-								enabled: 1,
-								created_at: "2026-01-01T00:00:00Z",
-							},
-						}),
+							}),
+						),
 						{ status: 200 },
 					);
 				}
@@ -9515,6 +9799,11 @@ describe("viewer-server", () => {
 				globalThis.fetch = prevFetch;
 			}
 		});
+
+		it.each(VERSIONED_BOOTSTRAP_CASES)(
+			"versioned bootstrap rejects malformed authority before writes: %s",
+			verifyVersionedBootstrapCase,
+		);
 
 		it("returns retryable busy when sync auth cannot record a nonce", async () => {
 			const { syncApp, ensureStore, cleanup } = createTestApp();
@@ -9690,6 +9979,8 @@ describe("viewer-server", () => {
 				if (url.includes("/v1/admin/bootstrap-grants/grant-1")) {
 					return new Response(
 						JSON.stringify({
+							authorization_version: 1,
+							seed_enrollment: bootstrapSeedEnrollment("test-device-001"),
 							grant: {
 								grant_id: "grant-1",
 								group_id: "g1",
@@ -9705,6 +9996,7 @@ describe("viewer-server", () => {
 								device_id: peerDeviceIdValue,
 								public_key: peerPublicKeyValue,
 								fingerprint: peerFingerprintValue,
+								identity_id: null,
 								display_name: "Peer Bootstrap",
 								enabled: 1,
 								created_at: "2026-01-01T00:00:00Z",
@@ -9769,7 +10061,7 @@ describe("viewer-server", () => {
 			}
 		});
 
-		it("rejects bootstrap grants whose worker enrollment does not match the granted worker", async () => {
+		it("rejects an old raw coordinator payload with generic unauthorized", async () => {
 			const { syncApp, ensureStore, cleanup } = createTestApp();
 			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-bootstrap-grant-test-"));
 			const peerDbPath = join(peerDir, "peer.sqlite");
