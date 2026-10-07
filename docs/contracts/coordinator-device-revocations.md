@@ -135,9 +135,25 @@ that arrives after a successful batch prevents later protected writes and succes
 but does not undo that earlier batch. Callers must not describe such rejection as
 proof that no state changed. Existing grants and their history remain intact.
 
-Project invitation consumption/retries and join approval are separate writer slices.
-These recipient guards do not enable public revocation management or replace the
-pending standalone bootstrap/controller/link/group-grant authority guards.
+## Project invitation guards
+
+Project invitation consumption and bound retries check recipient and current
+inviter device-ID/canonical-key subjects too. The write predicates pin the reviewed
+Project intent, operation, invitation evidence, current inviter tuple, and exact
+recipient binding. Changed evidence cannot silently authorize a different seed
+or recipient. Each D1 binding, enrollment, grant, and identity-repair statement
+owns its guard; a zero-row binding is not permission for later writes.
+
+SQLite uses an immediate transaction and final participant checks, so denial rolls
+back its acceptance effects. D1 can reject after a prior batch committed; later
+denial is not proof of rollback. Existing grants and historical records remain
+untouched. Missing/disabled inviters retain no-grant behavior unless revoked, and
+removed historical inviter keys are not inferred. Existing Project acceptance
+maps `device_revoked` to 403 after normal invitation validation.
+
+Join approval and standalone bootstrap/controller/link/group-grant authority
+guards remain separate work. Neither invitation slice enables public revocation
+management or substitutes for durable device ownership.
 
 ## Activation limits
 
