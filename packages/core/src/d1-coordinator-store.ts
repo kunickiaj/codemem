@@ -103,6 +103,15 @@ import {
 	joinReviewGuardEvidence,
 	joinReviewResultChanges,
 } from "./coordinator-join-review-guards.js";
+import {
+	assertLegacyDeviceScope,
+	captureLegacyEnrollment,
+	DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL,
+	LEGACY_DEVICE_DENIAL_SQL,
+	legacyDeviceAuthorizationFailure,
+	legacyDeviceDenial,
+	legacyDeviceWriteChanges,
+} from "./coordinator-legacy-device-ownership.js";
 import type {
 	CoordinatorLegacyTeamCompletionManifestV1,
 	CoordinatorLegacyTeamCompletionRecord,
@@ -1161,23 +1170,29 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	}
 
 	async enrollDevice(_groupId: string, _opts: CoordinatorEnrollDeviceInput): Promise<void> {
-		const { deviceId, publicKey, fingerprint, identityId, displayName } = _opts;
-		const keyId = await ed25519KeyIdForRevocation(publicKey);
-		const changes = await runChanges(
-			this.db
+		const { deviceId, publicKey, fingerprint, identityId, displayName } = captureLegacyEnrollment(
+			_groupId,
+			_opts,
+		);
+		try {
+			const keyId = await ed25519KeyIdForRevocation(publicKey);
+			// The INSERT filter is required; the conflict guard alone cannot protect new rows.
+			const result = await this.db
 				.prepare(`INSERT INTO enrolled_devices(
 					group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled, created_at
 				) SELECT ?, ?, ?, ?, ?, ?, 1, ?
 				WHERE NOT ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}
+				AND NOT ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL}
 				ON CONFLICT(group_id, device_id) DO UPDATE SET
 					public_key = excluded.public_key,
 					fingerprint = excluded.fingerprint,
 					identity_id = COALESCE(enrolled_devices.identity_id, excluded.identity_id),
 					display_name = excluded.display_name,
 					enabled = 1
-				WHERE excluded.identity_id IS NULL
+				WHERE (excluded.identity_id IS NULL
 					OR enrolled_devices.identity_id IS NULL
-					OR enrolled_devices.identity_id = excluded.identity_id`)
+					OR enrolled_devices.identity_id = excluded.identity_id)
+				AND NOT ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL}`)
 				.bind(
 					_groupId,
 					deviceId,
@@ -1188,15 +1203,20 @@ export class D1CoordinatorStore implements CoordinatorStore {
 					nowISO(),
 					deviceId,
 					keyId,
-				),
-		);
-		if (changes !== 0) return;
-		const revoked = await firstRow<{ revoked: number }>(
-			this.db
-				.prepare(`SELECT 1 AS revoked WHERE ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}`)
-				.bind(deviceId, keyId),
-		);
-		throw new Error(revoked ? "device_revoked" : "invite_identity_conflict");
+					deviceId,
+					keyId,
+					deviceId,
+					keyId,
+				)
+				.run();
+			if (legacyDeviceWriteChanges(result) === 1) return;
+			const denial = await firstRow<unknown>(
+				this.db.prepare(LEGACY_DEVICE_DENIAL_SQL).bind(deviceId, keyId, deviceId, keyId),
+			);
+			throw new Error(legacyDeviceDenial(denial));
+		} catch (error) {
+			legacyDeviceAuthorizationFailure(error);
+		}
 	}
 
 	async listEnrolledDevices(
@@ -1247,24 +1267,39 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	}
 
 	async setDeviceEnabled(_groupId: string, _deviceId: string, _enabled: boolean): Promise<boolean> {
+		assertLegacyDeviceScope(_groupId, _deviceId);
+		if (typeof _enabled !== "boolean") throw new Error("invalid_input");
 		if (_enabled) {
-			const enrollment = await firstRow<{ public_key: string }>(
-				this.db
-					.prepare("SELECT public_key FROM enrolled_devices WHERE group_id = ? AND device_id = ?")
-					.bind(_groupId, _deviceId),
-			);
-			if (!enrollment) return false;
-			const publicKey = enrollment.public_key;
-			const keyId = await ed25519KeyIdForRevocation(publicKey);
-			return (
-				(await runChanges(
+			try {
+				const enrollment = await firstRow<{ public_key: string }>(
 					this.db
-						.prepare(`UPDATE enrolled_devices SET enabled = 1
+						.prepare("SELECT public_key FROM enrolled_devices WHERE group_id = ? AND device_id = ?")
+						.bind(_groupId, _deviceId),
+				);
+				if (enrollment === null) return false;
+				if (!enrollment) throw new Error("device_ownership_authorization_unavailable");
+				const publicKey = enrollment.public_key;
+				if (typeof publicKey !== "string")
+					throw new Error("device_ownership_authorization_unavailable");
+				const keyId = await ed25519KeyIdForRevocation(publicKey);
+				const result = await this.db
+					.prepare(`UPDATE enrolled_devices SET enabled = 1
 						WHERE group_id = ? AND device_id = ? AND public_key = ?
-						AND NOT ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}`)
-						.bind(_groupId, _deviceId, publicKey, _deviceId, keyId),
-				)) > 0
-			);
+						AND NOT ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}
+						AND NOT ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL}`)
+					.bind(_groupId, _deviceId, publicKey, _deviceId, keyId, _deviceId, keyId)
+					.run();
+				if (legacyDeviceWriteChanges(result) === 1) return true;
+				const denial = legacyDeviceDenial(
+					await firstRow<unknown>(
+						this.db.prepare(LEGACY_DEVICE_DENIAL_SQL).bind(_deviceId, keyId, _deviceId, keyId),
+					),
+				);
+				if (denial === "device_ownership_requires_verified_identity") throw new Error(denial);
+				return false;
+			} catch (error) {
+				legacyDeviceAuthorizationFailure(error);
+			}
 		}
 		return (
 			(await runChanges(

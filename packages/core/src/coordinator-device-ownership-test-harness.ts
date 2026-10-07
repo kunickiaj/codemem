@@ -257,7 +257,7 @@ function registerAliases(test: OwnershipTest) {
 	});
 }
 function registerLegacy(test: OwnershipTest) {
-	test("legacy enrollment creates no binding, and still ignores an existing binding until writer adoption", async ({
+	test("legacy enrollment creates no binding, but cannot overwrite a retained binding", async ({
 		fixture: f,
 	}) => {
 		// Arrange
@@ -269,21 +269,21 @@ function registerLegacy(test: OwnershipTest) {
 		};
 		// Act
 		await f.store.enrollDevice("ownership-group", enrollment);
-		// Assert: this foundation deliberately is not an ownership authorization gate.
+		// Assert: fixture SQL simulates retained ownership, not verified enrollment proof.
 		expect(await rows(f)).toEqual([]);
 		await insertOwnership(f);
-		await f.store.enrollDevice("ownership-group", {
-			...enrollment,
-			publicKey: `${CANONICAL_PUBLIC_KEY} another-comment`,
-		});
+		await expect(
+			f.store.enrollDevice("ownership-group", {
+				...enrollment,
+				publicKey: `${CANONICAL_PUBLIC_KEY} another-comment`,
+			}),
+		).rejects.toThrow(/^device_ownership_requires_verified_identity$/);
 		expect(await rows(f)).toEqual([ownedRow]);
 		expect(
 			await f.query(
 				"SELECT device_id, public_key FROM enrolled_devices WHERE group_id = 'ownership-group'",
 			),
-		).toEqual([
-			{ device_id: "owned-device", public_key: `${CANONICAL_PUBLIC_KEY} another-comment` },
-		]);
+		).toEqual([{ device_id: "owned-device", public_key: CANONICAL_PUBLIC_KEY }]);
 	});
 }
 function registerRetention(test: OwnershipTest) {
@@ -291,13 +291,13 @@ function registerRetention(test: OwnershipTest) {
 		fixture: f,
 	}) => {
 		// Arrange
-		await insertOwnership(f);
 		await f.store.createGroup("ownership-group");
 		await f.store.enrollDevice("ownership-group", {
 			deviceId: "owned-device",
 			publicKey: CANONICAL_PUBLIC_KEY,
 			fingerprint: "a".repeat(64),
 		});
+		await insertOwnership(f);
 		await f.exec(
 			"INSERT INTO presence_records (group_id, device_id, addresses_json, capabilities_json, last_seen_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
 			"ownership-group",

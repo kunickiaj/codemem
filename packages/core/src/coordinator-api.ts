@@ -380,13 +380,28 @@ async function readRequestBytes(c: Context, maxBytes = MAX_BODY_BYTES): Promise<
 }
 
 function deviceRevokedResponse(c: Context, error: unknown): Response {
+	const ownership = deviceOwnershipErrorResponse(c, error);
+	if (ownership) return ownership;
 	if (error instanceof Error && error.message === "device_revoked") {
 		return c.json({ error: "device_revoked" }, 403);
 	}
 	throw error;
 }
 
+function deviceOwnershipErrorResponse(c: Context, error: unknown): Response | null {
+	if (!(error instanceof Error)) return null;
+	if (error.message === "device_ownership_requires_verified_identity") {
+		return c.json({ error: "device_ownership_requires_verified_identity" }, 403);
+	}
+	if (error.message === "device_ownership_authorization_unavailable") {
+		return c.json({ error: "device_ownership_authorization_unavailable" }, 503);
+	}
+	return null;
+}
+
 function projectInviteAcceptanceErrorResponse(c: Context, error: unknown): Response {
+	const ownership = deviceOwnershipErrorResponse(c, error);
+	if (ownership) return ownership;
 	const code = error instanceof Error ? error.message : "invite_invalid";
 	if (code === "device_revoked") return c.json({ error: "device_revoked" }, 403);
 	if (code === "invite_expired") return c.json({ error: code }, 410);
@@ -424,6 +439,23 @@ async function reviewJoinRequestWithRevocationDenial(
 			return args[0].json({ error: error.message }, 503);
 		}
 		return deviceRevokedResponse(args[0], error);
+	}
+}
+
+async function enableAdminDevice(
+	c: Context,
+	store: CoordinatorStore,
+	groupId: string,
+	deviceId: string,
+): Promise<Response> {
+	try {
+		const ok = await store.setDeviceEnabled(groupId, deviceId, true);
+		if (!ok) return c.json({ error: "device_not_found" }, 404);
+		return c.json({ ok: true });
+	} catch (error) {
+		return deviceRevokedResponse(c, error);
+	} finally {
+		await store.close();
 	}
 }
 
@@ -1621,14 +1653,7 @@ export function createCoordinatorApp(
 			return c.json({ error: "group_id_and_device_id_required" }, 400);
 		}
 
-		const store = createStore();
-		try {
-			const ok = await store.setDeviceEnabled(groupId, deviceId, true);
-			if (!ok) return c.json({ error: "device_not_found" }, 404);
-			return c.json({ ok: true });
-		} finally {
-			await store.close();
-		}
+		return enableAdminDevice(c, createStore(), groupId, deviceId);
 	});
 
 	// POST /v1/admin/devices/remove

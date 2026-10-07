@@ -231,6 +231,36 @@ and atomic binding/enrollment/audit commitment must be implemented and validated
 before ledger issuance or an explicit legacy migration can activate. Applying
 the live migration remains a separate approval gate.
 
+#### Legacy enrollment and reactivation guards
+
+Direct enrollment, replacement, and reactivation now check retained device-ID
+and canonical-key bindings in the actual write. Existing legacy entrypoints
+carry no verified owner proof, so any retained identifier is denied—even when
+the supplied Identity hint matches the binding. Unbound legacy behavior remains
+unchanged; a fingerprint or caller-supplied Identity cannot substitute for proof.
+
+Ownership denial uses `device_ownership_requires_verified_identity` (HTTP 403)
+after existing admission and rate limits. Revocation retains its earlier denial
+priority and reactivation behavior. Missing or unconfirmed ownership storage uses
+the fixed `device_ownership_authorization_unavailable` error (HTTP 503), without
+database diagnostics. An unavailable receipt is not proof that no write committed;
+callers must reconcile state rather than infer rollback or success from a later read.
+Unconfirmed storage/receipt failures intentionally share this code; this slice
+does not add operator logging or expose the original database cause.
+
+Disabling or removing enrollment still does not release ownership. SQLite's
+shared helper guards the enrollment write used by Project-invitation acceptance
+and join approval inside their existing transactions. Project retry Identity-label
+repairs are not covered by that helper. Identity repairs in both backends and D1's
+separate invitation/join writers remain separate adoption slices; this is not
+complete writer closure and cannot enable binding issuance.
+
+Worker deployments of these guards require migration `0028` first. An absent
+ledger is unavailable, not evidence that identifiers are unbound. Local SQLite
+initialization creates the empty ledger automatically. Verified-source resolution,
+all remaining writer guards, and the atomic enrollment/audit commit remain required
+before owner enrollment or an explicit legacy migration can activate.
+
 ### Trusted Identity-group grants
 
 Add a coordinator-owned, revisioned Identity/group grant independent of device
