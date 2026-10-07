@@ -256,15 +256,32 @@ does not add operator logging or expose the original database cause.
 Disabling or removing enrollment still does not release ownership. SQLite's
 shared helper guards the enrollment write used by Project-invitation acceptance
 and join approval inside their existing transactions. Project retry Identity-label
-repairs are not covered by that helper. Identity repairs in both backends and D1's
-separate invitation/join writers remain separate adoption slices; this is not
-complete writer closure and cannot enable binding issuance.
+repairs are not covered by that helper. Project Identity repairs and D1's separate
+invitation/join writers remain separate adoption slices; this is not complete
+writer closure and cannot enable binding issuance.
 
 Worker deployments of these guards require migration `0028` first. An absent
 ledger is unavailable, not evidence that identifiers are unbound. Local SQLite
 initialization creates the empty ledger automatically. Verified-source resolution,
 all remaining writer guards, and the atomic enrollment/audit commit remain required
 before owner enrollment or an explicit legacy migration can activate.
+
+#### SQLite recipient invitation guards
+
+SQLite recipient acceptance checks retained ownership in consumption, enrollment,
+Identity-label repair, and dependent bootstrap grant writes, including retries and
+grant recovery. Server-assigned or target Identity labels are not owner proof.
+An owned recipient is denied without consuming an invitation or changing its
+enrollment; the existing immediate transaction rolls back a late guard failure.
+
+Ownership checks target the recipient being enrolled or repaired, not the inviter
+whose enrollment is only read. An already-owned inviter may still invite an
+unbound recipient. Inviter revocation checks and captured key evidence remain in
+force, and invalid invitation/key bindings retain their earlier private errors.
+Raw inspection and independently issued grants remain readable.
+
+This backend-specific slice does not change D1 recipient writes. D1 parity and
+the remaining Project/join repairs must pass before binding issuance can activate.
 
 ### Trusted Identity-group grants
 

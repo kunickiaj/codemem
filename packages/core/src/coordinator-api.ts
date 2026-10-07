@@ -399,6 +399,13 @@ function deviceOwnershipErrorResponse(c: Context, error: unknown): Response | nu
 	return null;
 }
 
+function recipientInviteAcceptanceErrorResponse(c: Context, error: unknown): Response {
+	const ownership = deviceOwnershipErrorResponse(c, error);
+	if (ownership) return ownership;
+	const code = error instanceof Error ? error.message : "invite_invalid";
+	return c.json({ error: code }, recipientInviteErrorStatus(code));
+}
+
 function projectInviteAcceptanceErrorResponse(c: Context, error: unknown): Response {
 	const ownership = deviceOwnershipErrorResponse(c, error);
 	if (ownership) return ownership;
@@ -2486,8 +2493,7 @@ export function createCoordinatorApp(
 						reviewed_intent: acceptance.reviewed_intent,
 					});
 				} catch (error) {
-					const code = error instanceof Error ? error.message : "invite_invalid";
-					return c.json({ error: code }, recipientInviteErrorStatus(code));
+					return recipientInviteAcceptanceErrorResponse(c, error);
 				}
 			}
 			if (invite.operation_id || invite.reviewed_project_set_digest) {
