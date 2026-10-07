@@ -3,6 +3,6 @@
 	"type": "module",
 	"main": "./index.ts",
 	"peerDependencies": {
-		"@opencode/plugin": "2.0.12"
+		"@opencode/plugin": "2.0.24"
 	}
 }

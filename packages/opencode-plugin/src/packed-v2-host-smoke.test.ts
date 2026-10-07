@@ -33,12 +33,12 @@ function installForVersion(override: string | undefined, installs: string[][]) {
 }
 
 describe("packed OpenCode 2 version selection", () => {
-	it("keeps 2.0.12 as the exact default SDK and host version", () => {
+	it("keeps 2.0.24 as the exact default SDK and host version", () => {
 		const installs: string[][] = [];
 		installForVersion(undefined, installs);
-		expect(smokeSource).toContain('const pinnedVersion = "2.0.12";');
+		expect(smokeSource).toContain('const pinnedVersion = "2.0.24";');
 		expect(installs).toEqual([
-			["npm", "install", "/fixture/plugin.tgz", "@opencode/plugin@2.0.12"],
+			["npm", "install", "/fixture/plugin.tgz", "@opencode/plugin@2.0.24"],
 		]);
 	});
 
@@ -170,7 +170,7 @@ describe("packed OpenCode 2 host config", () => {
 	it.each([undefined, "2.0.3-beta.7"])(
 		"requires the binary to match the selected version %s",
 		(override) => {
-			const selected = override ?? "2.0.12";
+			const selected = override ?? "2.0.24";
 			const checkVersion = (reported: string) =>
 				new Script(
 					`${smokeSection("const pinnedVersion =", "const contextMarker =")}

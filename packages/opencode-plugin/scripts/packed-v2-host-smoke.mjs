@@ -17,7 +17,7 @@ import { join, resolve } from "node:path";
 
 const packageRoot = process.cwd();
 const workspaceRoot = resolve(packageRoot, "..", "..");
-const pinnedVersion = "2.0.12";
+const pinnedVersion = "2.0.24";
 const hostVersion = process.env.CODEMEM_OPENCODE_V2_VERSION ?? pinnedVersion;
 const exactVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\+[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*)?$/u;
 if (hostVersion.trim() !== hostVersion || !exactVersion.test(hostVersion)) {
