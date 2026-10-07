@@ -231,6 +231,130 @@ and atomic binding/enrollment/audit commitment must be implemented and validated
 before ledger issuance or an explicit legacy migration can activate. Applying
 the live migration remains a separate approval gate.
 
+#### Verified owner evidence and final commit (pending approval)
+
+This is the required evidence shape for the future owner-enrollment attempt. It
+is not a new route, schema migration, or activation approval. The attempt must
+persist the independently verified `issuer` and `subject`, the resolved
+Identity, and the exact active account-link tuple (`coordinator_id`, `link_id`,
+`issuer`, `subject`, `identity_id`, `attempt_id`,
+`controller_attestation_id`, `auth_config_revision`).
+
+That link revision is historical creation provenance. Separately pin the current
+verifier configuration revision for the owner attempt and the active Identity-group-grant
+revision set.
+
+In that tuple, `attempt_id` is the **link-creation** attempt, not the future
+owner-enrollment attempt. The link-creation attempt, controller attestation,
+and link-creation configuration revision are historical equality pins against
+the active link row only. Finalization must not require the old controller,
+device, or signer to remain active, enrolled, reachable, or unrevoked.
+
+Revoking an old signing device does not erase an account link, its sessions, or issued
+grants.
+
+Build that record only from the trusted provider-verification result followed by
+the server lookup of the active exact account link. A public
+`verifiedIdentityId`, server-actor hint, browser session row, profile field, or
+stored link provenance is not a substitute. Link provenance records how a link
+was created; it is not cryptographic proof recovered from the database.
+
+The ceremony additionally retains these facts, immutable once recorded:
+
+- the exact pending public key, its server-derived canonical key ID, legacy
+  text fingerprint, device ID, coordinator, origin, literal loopback URI, and
+  browser capability;
+- purpose, deadline, browser-start commitment and original browser binding;
+- the confirmation commitment, one-use completion-secret commitment created by
+  confirmation, and the pending key's final signature proof; and
+- trusted Identity-group-grant revisions needed for the groups that may receive
+  enrollment.
+
+The final SQLite transaction or D1 batch must recheck all pinned facts
+at commit time. In particular, it must require an unexpired confirmed attempt,
+the current active exact link, and the current verifier configuration revision
+that the owner attempt captured. It must not require an active link's historical
+creation revision to equal the current verifier revision.
+
+It must require the same verified `issuer`/`subject`/Identity, an active grant for
+each target group at its pinned revision, and each group to remain unarchived. It must also
+deny a coordinator-wide revocation. Group and coordinator scope checks must
+prevent a grant from one coordinator or group from authorizing another.
+
+For a fresh owner enrollment, any existing ownership binding **or**
+`enrolled_devices` row for the device ID or server-derived canonical key ID
+denies before enrollment, even when it names the same verified Identity. An
+exact retry of its own prior committed binding is handled by the prior-commit
+rule below before this fresh collision check.
+
+Same-Identity attachment must meet the separate writer rules; it is not a
+positive proof for the fresh owner path. The commit must derive canonical-key
+collision evidence from actual stored public keys, not raw fingerprint equality. The required predicate
+and its evidence representation remain pending schema approval where current
+storage cannot express them.
+
+Only the winning transition whose checks all pass may write these together:
+
+1. transition the attempt to its terminal committed state;
+2. insert the immutable ownership binding;
+3. add the permitted group enrollments;
+4. insert exactly one durable redacted `owner_device_enrolled` audit event; and
+5. insert the compact outcome receipt used for exact reconciliation.
+
+The receipt insertion must succeed in that same transaction or batch; a SQL
+insertion failure aborts and rolls back all five effects. A later standalone
+receipt write is not permitted.
+
+The terminal committed state is `finalized`. No dependent write may follow a
+zero-row transition or a separate ownership-binding write.
+
+There is no standalone ownership bind, replacement upsert, or ownership
+transfer. One Identity may add many devices with distinct keys. Existing local
+use and direct-peer sync remain available without Google authentication.
+
+An exact retry may reconcile only a retained ownership binding and compact
+outcome receipt that match the original owner-attempt ID, device ID, exact public
+key and canonical key ID, verified `issuer`/`subject`/Identity, and account-link
+reference. It compares the attempt, enrollment, and audit rows only while those
+rows still exist. After cleanup, a matching receipt returns a read-only
+prior-commit result; missing cleaned rows never authorize a new commit, restore
+an enrollment, re-enable a device, or add grants.
+
+The receipt must retain the original completion and key commitments, or protected
+proof references, needed for that match. Its proposed schema and public output
+remain privacy-redacted. The wire status and error vocabulary are pending
+approval.
+
+An unknown or lost response remains **unknown until reconciled**.
+Do not claim rollback or start a replacement attempt merely because the caller
+did not receive a response.
+
+An exact receipt proves a prior commit, not current group permission. It cannot
+create authority from fresh state or turn revoked grants into authority.
+
+The ownership ledger and its outcome receipt outlive group enrollment, browser
+session, attempt, and audit-retention cleanup. Identity-group grants remain
+transport authority only; they are not Team or Project permissions. A legacy
+migration may write a binding only after review of actual retained evidence.
+
+Missing, ambiguous, or different-owner evidence denies without a hint, guess,
+or automatic backfill.
+
+| Current source | What it can support | Why it is not an owner-attempt proof |
+| --- | --- | --- |
+| [`coordinator-auth-link.ts`](../../packages/core/src/coordinator-auth-link.ts) | Legacy first-link finalization writes link and audit rows together after its attempt and authority checks pass, recording controller evidence, the creation configuration revision, and the resolved account subject. | `recordAuthLinkOidcVerified` accepts claims from an already trusted caller and does not verify a JWT; its controller-attestation evidence is for first linking, not owner enrollment. |
+| [`coordinator-oidc.ts`](../../packages/core/src/coordinator-oidc.ts) | The maintained OIDC client performs authorization-code verification with expected state, nonce, PKCE, required ID token, exact issuer and subject parsing. | It returns a transient verified account result; it does not resolve or persist the future owner attempt. |
+| [`coordinator-auth-browser-transaction.ts`](../../packages/core/src/coordinator-auth-browser-transaction.ts) | A one-use browser transaction stores a `state_hash` commitment plus nonce and PKCE verifier material for `signin` or `link`; consumption burns the secret material. | `state_hash` is not raw state, and the schema has no owner-enrollment purpose, verified subject, resolved Identity, or owner-proof record. Consumption alone is not verification. |
+| [`coordinator-auth-session.ts`](../../packages/core/src/coordinator-auth-session.ts) | Sign-in joins a verified subject to an active account link and writes a purgeable, attempt-less session receipt. | A management session is insufficient for owner enrollment; the callback can retain an already-live session while verifying a different account. |
+| [`coordinator-identity-group-grant.ts`](../../packages/core/src/coordinator-identity-group-grant.ts) | Revisioned active grants can provide a transport-enrollment snapshot. | A grant is device/transport control authority, not proof of account ownership or a Team/Project permission. |
+
+**Pending approval boundary:** the owner-specific browser-transaction purpose,
+owner-attempt and receipt schema (including separate current-verifier and
+historical link revisions, retention, and collision evidence), error vocabulary,
+endpoint paths, quotas, and reviewed legacy-evidence process. Reuse the existing
+OIDC and browser flow by default, keep the owner path off, and do not add a
+signing framework or provider OAuth server.
+
 #### Legacy enrollment and reactivation guards
 
 Direct enrollment, replacement, and reactivation now check retained device-ID
