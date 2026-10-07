@@ -74,6 +74,7 @@ import {
 	IDENTITY_GROUP_GRANT_LIST_SQL,
 	IDENTITY_GROUP_GRANT_RETRY_SQL,
 	IDENTITY_GROUP_GRANT_REVOKE_SQL,
+	IDENTITY_GROUP_GRANT_SOURCE_SQL,
 } from "./coordinator-identity-group-grant.js";
 import {
 	assertJoinReviewConfirmation,
@@ -901,20 +902,37 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	): Promise<CoordinatorIdentityGroupGrantIssueResult> {
 		const captured = captureIdentityGroupGrantInput(input, ["coordinatorId", "attestationId"]);
 		if (!captured) return { kind: "rejected", error: "invalid_grant_input" };
-		const grant = await firstRow<CoordinatorIdentityGroupGrant>(
-			this.db
-				.prepare(IDENTITY_GROUP_GRANT_INSERT_SQL)
-				.bind(nowISO(), captured.coordinatorId, captured.attestationId),
-		);
-		if (grant) return { kind: "created", grant };
-		// Never return a separately fetched grant after an authority check.
-		const existing = await firstRow<CoordinatorIdentityGroupGrant>(
-			this.db
-				.prepare(IDENTITY_GROUP_GRANT_RETRY_SQL)
-				.bind(captured.coordinatorId, captured.attestationId),
-		);
-		if (existing) return { kind: "existing", grant: existing };
-		return { kind: "rejected", error: "grant_authority_unavailable" };
+		try {
+			const source = await firstRow<CoordinatorEnrollment>(
+				this.db
+					.prepare(IDENTITY_GROUP_GRANT_SOURCE_SQL)
+					.bind(captured.coordinatorId, captured.attestationId),
+			);
+			if (!source) return { kind: "rejected", error: "grant_authority_unavailable" };
+			const authority = [
+				captured.coordinatorId,
+				captured.attestationId,
+				source.group_id,
+				source.device_id,
+				source.public_key,
+				source.fingerprint,
+				source.identity_id,
+				source.device_id,
+				await ed25519KeyIdForRevocation(source.public_key),
+			];
+			const grant = await firstRow<CoordinatorIdentityGroupGrant>(
+				this.db.prepare(IDENTITY_GROUP_GRANT_INSERT_SQL).bind(nowISO(), ...authority),
+			);
+			if (grant) return { kind: "created", grant };
+			// Never return a separately fetched grant after an authority check.
+			const existing = await firstRow<CoordinatorIdentityGroupGrant>(
+				this.db.prepare(IDENTITY_GROUP_GRANT_RETRY_SQL).bind(...authority),
+			);
+			if (existing) return { kind: "existing", grant: existing };
+			return { kind: "rejected", error: "grant_authority_unavailable" };
+		} catch {
+			throw new Error("identity_group_grant_write_incomplete");
+		}
 	}
 
 	async listIdentityGroupGrantRevisions(

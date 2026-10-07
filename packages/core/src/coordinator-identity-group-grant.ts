@@ -1,4 +1,5 @@
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
+import { DEVICE_REVOCATION_SUBJECT_EXISTS_SQL } from "./coordinator-device-revocation.js";
 import { COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_GROUPS } from "./coordinator-legacy-team-completion.js";
 
 /** Internal transport grants only: these confer no Team/Project access. */
@@ -163,12 +164,22 @@ const CURRENT_CONTROLLER_FROM_SQL = `
  FROM coordinator_auth_controller_attestations a
  JOIN enrolled_devices e ON e.group_id = a.group_id AND e.device_id = a.device_id
  JOIN groups g ON g.group_id = a.group_id`;
-const CURRENT_CONTROLLER_WHERE_SQL = `
+const CURRENT_CONTROLLER_EVIDENCE_SQL = `
  a.coordinator_id = ? AND a.attestation_id = ? AND a.revoked_at IS NULL
  AND g.archived_at IS NULL AND e.enabled = 1
  AND e.public_key = a.public_key AND e.fingerprint = a.fingerprint
  AND e.identity_id IS a.enrollment_identity_id
  AND (e.identity_id IS NULL OR e.identity_id = a.identity_id)`;
+
+/** Read the actual current enrollment, never caller-provided key metadata. */
+export const IDENTITY_GROUP_GRANT_SOURCE_SQL = `
+ SELECT e.* ${CURRENT_CONTROLLER_FROM_SQL} WHERE ${CURRENT_CONTROLLER_EVIDENCE_SQL}`;
+
+// Pin the hashed enrollment across D1 awaits; both issuance and retry recheck revocation.
+const CURRENT_CONTROLLER_WHERE_SQL = `${CURRENT_CONTROLLER_EVIDENCE_SQL}
+ AND e.group_id = ? AND e.device_id = ? AND e.public_key = ?
+ AND e.fingerprint = ? AND e.identity_id IS ?
+ AND NOT ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}`;
 
 export const IDENTITY_GROUP_GRANT_INSERT_SQL = `
  INSERT INTO coordinator_identity_group_grants (

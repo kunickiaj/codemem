@@ -176,8 +176,27 @@ a SQL error can produce an incomplete response after commit. That response is no
 proof of rollback, and callers must reconcile current state rather than retry as
 though nothing changed.
 
-Standalone bootstrap/controller/link/group-grant authority guards remain separate
-work. These writer slices do not enable public revocation management or substitute
+## Trusted Identity-group grant issuance
+
+Issuance and exact retry derive a canonical key ID from the actual current
+controller enrollment. Both SQL operations independently check device-ID/key
+subjects and pin the enrollment key, fingerprint, Identity, and group alongside
+the existing controller evidence. D1 cannot authorize a write from an earlier
+pre-read after that tuple changes; SQLite derives the key inside its immediate
+transaction.
+
+A revoked or changed source returns the existing `grant_authority_unavailable`
+rejection. Invalid input retains `invalid_grant_input`. Backend exceptions use
+the fixed `identity_group_grant_write_incomplete` error rather than database
+details; an unconfirmed write is not proof that no grant was committed.
+
+Already-issued grants remain independent of their former source device. Listing,
+revision comparison, and explicit grant revocation do not depend on that device's
+current enrollment or revocation state. Source-device revocation blocks issuance
+and success retries, but does not silently revoke transport grants or memberships.
+
+Standalone bootstrap/controller/link authority guards remain separate work.
+These writer slices do not enable public revocation management or substitute
 for durable device ownership.
 
 ## Activation limits

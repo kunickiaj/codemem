@@ -65,7 +65,7 @@ describe("native D1 identity group grant contract", () => {
 		// Act
 		const pending = faulting.issueIdentityGroupGrantFromControllerAttestation(input);
 		// Assert: no error is converted into an existing-authority response.
-		await expect(pending).rejects.toThrow("test native D1 retry read failure");
+		await expect(pending).rejects.toThrow(/^identity_group_grant_write_incomplete$/);
 		expect(await f.store.issueIdentityGroupGrantFromControllerAttestation(input)).toEqual({ kind: "existing", grant: before[0] });
 		expect(await f.store.listIdentityGroupGrantRevisions(f.review)).toEqual(before);
 	});

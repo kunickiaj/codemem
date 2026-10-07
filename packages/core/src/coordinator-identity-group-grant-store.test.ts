@@ -72,7 +72,7 @@ describe.each(["SQLite", "D1"] as const)("%s identity group grant contract", (ba
 			attestationId: f.review.attestationId,
 		});
 		// Assert
-		await expect(pending).rejects.toThrow("test grant insertion failure");
+		await expect(pending).rejects.toThrow(/^identity_group_grant_write_incomplete$/);
 		expect(await f.store.listIdentityGroupGrantRevisions(f.review)).toEqual([]);
 	});
 });
@@ -124,7 +124,7 @@ describe("D1 identity group grant read guards", () => {
 			// Act
 			const pending = faulting.issueIdentityGroupGrantFromControllerAttestation(input);
 			// Assert
-			await expect(pending).rejects.toThrow("test grant read failure");
+			await expect(pending).rejects.toThrow(/^identity_group_grant_write_incomplete$/);
 			expect(await faulting.issueIdentityGroupGrantFromControllerAttestation(input)).toMatchObject({
 				kind: "existing",
 			});

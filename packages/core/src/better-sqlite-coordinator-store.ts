@@ -101,6 +101,7 @@ import {
 	IDENTITY_GROUP_GRANT_RETRY_SQL,
 	IDENTITY_GROUP_GRANT_REVOKE_SQL,
 	IDENTITY_GROUP_GRANT_SCHEMA_SQL,
+	IDENTITY_GROUP_GRANT_SOURCE_SQL,
 } from "./coordinator-identity-group-grant.js";
 import { joinReviewGuardEvidence } from "./coordinator-join-review-guards.js";
 import type {
@@ -982,23 +983,40 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	): Promise<CoordinatorIdentityGroupGrantIssueResult> {
 		const captured = captureIdentityGroupGrantInput(input, ["coordinatorId", "attestationId"]);
 		if (!captured) return { kind: "rejected", error: "invalid_grant_input" };
-		return this.db
-			.transaction((): CoordinatorIdentityGroupGrantIssueResult => {
-				const grant = this.db
-					.prepare(IDENTITY_GROUP_GRANT_INSERT_SQL)
-					.get(nowISO(), captured.coordinatorId, captured.attestationId) as
-					| CoordinatorIdentityGroupGrant
-					| undefined;
-				if (grant) return { kind: "created", grant };
-				const existing = this.db
-					.prepare(IDENTITY_GROUP_GRANT_RETRY_SQL)
-					.get(captured.coordinatorId, captured.attestationId) as
-					| CoordinatorIdentityGroupGrant
-					| undefined;
-				if (existing) return { kind: "existing", grant: existing };
-				return { kind: "rejected", error: "grant_authority_unavailable" };
-			})
-			.immediate();
+		try {
+			return this.db
+				.transaction((): CoordinatorIdentityGroupGrantIssueResult => {
+					const source = this.db
+						.prepare(IDENTITY_GROUP_GRANT_SOURCE_SQL)
+						.get(captured.coordinatorId, captured.attestationId) as
+						| CoordinatorEnrollment
+						| undefined;
+					if (!source) return { kind: "rejected", error: "grant_authority_unavailable" };
+					const authority = [
+						captured.coordinatorId,
+						captured.attestationId,
+						source.group_id,
+						source.device_id,
+						source.public_key,
+						source.fingerprint,
+						source.identity_id,
+						source.device_id,
+						enrollmentRevocationKeyId(source.public_key),
+					];
+					const grant = this.db
+						.prepare(IDENTITY_GROUP_GRANT_INSERT_SQL)
+						.get(nowISO(), ...authority) as CoordinatorIdentityGroupGrant | undefined;
+					if (grant) return { kind: "created", grant };
+					const existing = this.db.prepare(IDENTITY_GROUP_GRANT_RETRY_SQL).get(...authority) as
+						| CoordinatorIdentityGroupGrant
+						| undefined;
+					if (existing) return { kind: "existing", grant: existing };
+					return { kind: "rejected", error: "grant_authority_unavailable" };
+				})
+				.immediate();
+		} catch {
+			throw new Error("identity_group_grant_write_incomplete");
+		}
 	}
 
 	async listIdentityGroupGrantRevisions(
