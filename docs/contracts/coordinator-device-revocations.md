@@ -317,6 +317,32 @@ revocation; 409 for group archival; and 503 for unavailable or unconfirmed
 authorization. Invalid signed requests retain their existing admission errors and
 never invoke the authorization read.
 
+## Revocation-aware peer discovery
+
+`listGroupPeers` omits candidates with a coordinator-wide device-ID or canonical-key
+revocation. Omission includes their key, fingerprint, addresses, and capabilities;
+raw enrollment inspection and retained grant/history records are unchanged.
+
+Discovery captures enabled candidate tuples and derives key IDs from their actual
+public keys. The final SQL read pins those tuples and checks current revocations,
+then joins current presence by both group and device ID. Changed or removed
+candidates are omitted rather than silently authorizing replacement keys. SQLite
+keeps capture, synchronous hashing, and the final read in one transaction; D1
+copies every tuple before hashing and uses a single guarded final read.
+
+Healthy enabled peers with missing or expired presence remain visible as stale,
+with empty addresses. Results retain device-ID ordering. Opaque legacy keys retain
+device-ID-only checks. One JSON parameter carries captured tuples without a new
+schema or a variable bind count for large groups. Backend per-value size limits
+still apply; oversized reads fail closed rather than silently truncating peers.
+
+The public route authenticates and rate-limits the requester before discovery.
+Unconfirmed backend responses or discovery failures return the fixed
+`peer_discovery_unavailable` error with HTTP 503, without database diagnostics.
+This is a fresh discovery snapshot, not a permanent permission or immediate
+revocation of already cached direct-peer trust. Project membership authority,
+removed-device ownership evidence, and public revocation management remain separate.
+
 ## Activation limits
 
 Existing group disable/removal does not create global subjects automatically.

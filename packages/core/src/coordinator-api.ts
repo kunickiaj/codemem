@@ -427,6 +427,20 @@ async function reviewJoinRequestWithRevocationDenial(
 	}
 }
 
+async function peerDiscoveryResponse(
+	c: Context,
+	store: CoordinatorStore,
+	groupId: string,
+	requestingDeviceId: string,
+): Promise<Response> {
+	try {
+		const items = await store.listGroupPeers(groupId, requestingDeviceId);
+		return c.json({ items });
+	} catch {
+		return c.json({ error: "peer_discovery_unavailable" }, 503);
+	}
+}
+
 export function createCoordinatorApp(
 	opts?: CreateCoordinatorAppOptions,
 ): InstanceType<typeof Hono> {
@@ -731,8 +745,7 @@ export function createCoordinatorApp(
 			const limited = rateLimitedResponse(c, String(auth.enrollment.device_id), true);
 			if (limited) return limited;
 
-			const items = await store.listGroupPeers(groupId, String(auth.enrollment.device_id));
-			return c.json({ items });
+			return await peerDiscoveryResponse(c, store, groupId, String(auth.enrollment.device_id));
 		} finally {
 			await store.close();
 		}

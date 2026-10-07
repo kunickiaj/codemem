@@ -152,6 +152,13 @@ import {
 	normalizeMembershipEffectId,
 	revokeMembershipEffectRequestJson,
 } from "./coordinator-membership-effects.js";
+import {
+	CAPTURE_PEER_ENROLLMENTS_SQL,
+	type CapturedPeerEnrollment,
+	capturePeerEnrollments,
+	READ_CURRENT_PEERS_SQL,
+	requirePeerDiscoveryRows,
+} from "./coordinator-peer-discovery.js";
 import { projectInviteGuardEvidence } from "./coordinator-project-invite-guards.js";
 import type {
 	CoordinatorBootstrapGrant,
@@ -2961,20 +2968,33 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		groupId: string,
 		requestingDeviceId: string,
 	): Promise<CoordinatorPeerRecord[]> {
+		try {
+			return this.readGroupPeers(groupId, requestingDeviceId);
+		} catch {
+			throw new Error("peer_discovery_unavailable");
+		}
+	}
+
+	private readGroupPeers(groupId: string, requestingDeviceId: string): CoordinatorPeerRecord[] {
 		const now = new Date();
 		const rows = this.db
-			.prepare(`SELECT enrolled_devices.device_id, enrolled_devices.public_key, enrolled_devices.fingerprint, enrolled_devices.display_name,
-					presence_records.addresses_json, presence_records.last_seen_at, presence_records.expires_at,
-					presence_records.capabilities_json
-				 FROM enrolled_devices
-				 LEFT JOIN presence_records
-				   ON presence_records.group_id = enrolled_devices.group_id
-				  AND presence_records.device_id = enrolled_devices.device_id
-				 WHERE enrolled_devices.group_id = ?
-				   AND enrolled_devices.enabled = 1
-				   AND enrolled_devices.device_id != ?
-				 ORDER BY enrolled_devices.device_id ASC`)
-			.all(groupId, requestingDeviceId) as Record<string, unknown>[];
+			.transaction(() => {
+				const captured = capturePeerEnrollments(
+					this.db
+						.prepare(CAPTURE_PEER_ENROLLMENTS_SQL)
+						.all(groupId, requestingDeviceId) as CapturedPeerEnrollment[],
+				);
+				const candidates = captured.map((row) => ({
+					...row,
+					keyId: enrollmentRevocationKeyId(row.public_key),
+				}));
+				return requirePeerDiscoveryRows(
+					this.db
+						.prepare(READ_CURRENT_PEERS_SQL)
+						.all(JSON.stringify(candidates), groupId, requestingDeviceId),
+				);
+			})
+			.immediate();
 		return rows.map((row) => {
 			const expiresRaw = String(row.expires_at ?? "").trim();
 			let stale = true;
