@@ -255,9 +255,9 @@ does not add operator logging or expose the original database cause.
 
 Disabling or removing enrollment still does not release ownership. SQLite's
 shared helper guards the enrollment write used by Project-invitation acceptance
-and join approval inside their existing transactions. Project acceptance and
-retry repairs now have the separate guards described below. D1 join approval
-and the remaining writer checks are still required before binding issuance.
+and join approval inside their existing transactions. Project acceptance, retry
+repairs, and join approval now have the separate guards described below.
+Cross-writer retention checks and verified commitment remain required before issuance.
 
 Worker deployments of these guards require migration `0028` first. An absent
 ledger is unavailable, not evidence that identifiers are unbound. Local SQLite
@@ -279,8 +279,8 @@ unbound recipient. Inviter revocation checks and captured key evidence remain in
 force, and invalid invitation/key bindings retain their earlier private errors.
 Raw inspection and independently issued grants remain readable.
 
-The SQLite slice landed separately from the D1 adoption below. Join approval and
-all remaining writer checks must still pass before binding issuance can activate.
+The SQLite slice landed separately from the D1 adoption below. Cross-writer
+retention checks must still pass before binding issuance can activate.
 
 #### D1 recipient invitation guards
 
@@ -315,6 +315,25 @@ row whose pointer already exists.
 These guards close Project invitation writes, not join approval or verified-owner
 enrollment. Binding issuance and live activation remain disabled until the
 remaining writer checks and atomic verified ownership commitment pass.
+
+#### Join approval guards
+
+Both stores deny approval for retained recipient device IDs and incoming/current
+canonical keys. Reviewer labels and seed ownership are not recipient owner proof;
+an owned seed may still help enroll an unbound recipient. Rejection remains usable,
+and a completed review can still be read as a no-transition history result.
+
+Approval pins the pending request, seed tuple, and current recipient key or row
+absence. SQLite checks these inside its immediate transaction. D1 chains dependent
+enrollment and bootstrap writes to the winning compare-and-set, not merely a shared
+timestamp; its final SQL assertion checks ownership and revocation even when the
+change-count chain becomes zero. A failed SQL assertion rolls back that batch.
+
+Ownership decisions require confirmed numeric values and fail privately when
+storage is unavailable. Lost or malformed batch receipts remain incomplete outcomes
+and do not prove rollback. These join guards do not issue bindings or implement
+verified-owner enrollment. Cross-writer retention checks, verified proof resolution,
+and atomic binding/enrollment/audit commitment remain activation prerequisites.
 
 ### Trusted Identity-group grants
 

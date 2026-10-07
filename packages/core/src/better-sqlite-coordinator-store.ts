@@ -2251,10 +2251,21 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			if (seed.device_id === row.device_id)
 				throw new Error("bootstrap grant seed and worker device ids must differ.");
 		}
-		const guard = joinReviewGuardEvidence(row, seed, {
-			recipient: enrollmentRevocationKeyId(row.public_key),
-			seed: seed ? enrollmentRevocationKeyId(seed.public_key) : null,
-		});
+		const currentPublicKey = captureLegacyEnrollmentPublicKey(
+			this.db
+				.prepare(`SELECT public_key FROM enrolled_devices WHERE group_id = ? AND device_id = ?`)
+				.get(row.group_id, row.device_id) ?? null,
+		);
+		const guard = joinReviewGuardEvidence(
+			row,
+			seed,
+			{
+				recipient: enrollmentRevocationKeyId(row.public_key),
+				seed: seed ? enrollmentRevocationKeyId(seed.public_key) : null,
+				current: currentPublicKey === null ? null : enrollmentRevocationKeyId(currentPublicKey),
+			},
+			currentPublicKey,
+		);
 		this.assertJoinApprovalCurrentSync(guard);
 		return guard;
 	}
@@ -2262,6 +2273,13 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	private assertJoinApprovalCurrentSync(guard: ReturnType<typeof joinReviewGuardEvidence>) {
 		if (this.db.prepare(`SELECT 1 WHERE ${guard.revocationSql}`).get(...guard.revocationValues))
 			throw new Error("device_revoked");
+		let owned: unknown;
+		try {
+			owned = this.db.prepare(`SELECT 1 WHERE ${guard.ownershipSql}`).get(...guard.ownershipValues);
+		} catch {
+			throw new Error("device_ownership_authorization_unavailable");
+		}
+		if (owned) throw new Error("device_ownership_requires_verified_identity");
 		if (!this.db.prepare(`SELECT 1 WHERE ${guard.eligibilitySql}`).get(...guard.eligibilityValues))
 			throw new Error("join_review_incomplete");
 	}
@@ -2273,6 +2291,8 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		reviewedAt: string,
 	) {
 		this.assertJoinApprovalCurrentSync(guard);
+		if (!this.db.prepare(`SELECT 1 WHERE ${guard.sourceSql}`).get(...guard.sourceValues))
+			throw new Error("join_review_incomplete");
 		this.enrollDeviceSync(row.group_id, {
 			deviceId: row.device_id,
 			fingerprint: row.fingerprint,
