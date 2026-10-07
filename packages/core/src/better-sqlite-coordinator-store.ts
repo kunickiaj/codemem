@@ -1516,17 +1516,16 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 						`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE token_digest = ? OR token = ?`,
 					)
 					.get(tokenDigest(opts.token), opts.token) as CoordinatorInvite | undefined;
-				const inspection = invite ? preflightInspection : null;
 				if (
 					!invite ||
-					!inspection ||
+					!preflightInspection ||
 					invite.invite_id !== preflightInvite?.invite_id ||
 					invite.reviewed_intent_json !== preflightInvite.reviewed_intent_json ||
 					invite.reviewed_preview_digest !== preflightInvite.reviewed_preview_digest ||
 					invite.policy_team_id !== preflightInvite.policy_team_id ||
 					invite.target_identity_id !== preflightInvite.target_identity_id ||
 					invite.assigned_identity_id !== preflightInvite.assigned_identity_id ||
-					inspection.kind !== opts.inviteKind ||
+					preflightInspection.kind !== opts.inviteKind ||
 					invite.revoked_at
 				) {
 					throw new Error("invite_invalid");
@@ -1542,7 +1541,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				if (fingerprintPublicKey(opts.publicKey) !== opts.fingerprint) {
 					throw new Error("fingerprint_mismatch");
 				}
-				const authoritativeIdentityId = recipientInviteAuthoritativeIdentityId(inspection);
+				const authoritativeIdentityId = recipientInviteAuthoritativeIdentityId(preflightInspection);
 				if (authoritativeIdentityId !== opts.identityId) {
 					throw new Error("invite_identity_conflict");
 				}
@@ -1646,7 +1645,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				}
 				let bootstrapGrant: CoordinatorBootstrapGrant | null = null;
 				if (
-					inspection.kind === "add_device" &&
+					preflightInspection.kind === "add_device" &&
 					invite.inviter_device_id &&
 					!invite.bootstrap_grant_id &&
 					new Date(invite.expires_at) > new Date(consumedAt)
@@ -1694,7 +1693,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				return {
 					status: changed === 1 ? "accepted" : "existing",
 					invite: savedWithGrant,
-					reviewed_intent: inspection.reviewed_intent,
+					reviewed_intent: preflightInspection.reviewed_intent,
 					bootstrap_grant: bootstrapGrant,
 				};
 			})
