@@ -70,7 +70,7 @@ export function registerOwnedRecipientContract(test: Test) {
 		registerValidation(test, kind);
 	}
 }
-async function bindInviter(
+export async function bindInviter(
 	f: RevocationFixture,
 	seed: Awaited<ReturnType<typeof recipientInvite>>["seed"],
 ) {

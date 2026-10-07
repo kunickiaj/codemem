@@ -1,9 +1,57 @@
 import { DEVICE_REVOCATION_SUBJECT_EXISTS_SQL } from "./coordinator-device-revocation.js";
-import type { CoordinatorEnrollDeviceInput } from "./coordinator-store-contract.js";
+import type { projectInviteGuardEvidence } from "./coordinator-project-invite-guards.js";
+import type {
+	CoordinatorConsumeProjectInviteInput,
+	CoordinatorEnrollDeviceInput,
+} from "./coordinator-store-contract.js";
+
+export function captureLegacyProjectInviteInput(
+	input: CoordinatorConsumeProjectInviteInput,
+): CoordinatorConsumeProjectInviteInput {
+	if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("invalid_input");
+	const captured: Record<string, unknown> = {};
+	for (const field of [
+		"token",
+		"operationId",
+		"deviceId",
+		"publicKey",
+		"fingerprint",
+		"recipientActorId",
+		"recipientDisplayName",
+		"deviceDisplayName",
+		"now",
+	]) {
+		const descriptor = legacyEnrollmentDescriptor(input, field);
+		if (descriptor && !("value" in descriptor)) throw new Error("invalid_input");
+		const value = descriptor?.value;
+		if (typeof value !== "string") throw new Error("invalid_input");
+		captured[field] = value;
+	}
+	return captured as unknown as CoordinatorConsumeProjectInviteInput;
+}
 
 /** Global ownership metadata, not proof. Bind actual device ID and canonical key ID (or null). */
 export const DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL = `EXISTS (
 SELECT 1 FROM coordinator_device_ownership_bindings WHERE device_id = ? OR key_id = ?)`;
+
+/** Project actor labels never prove ownership; only the target enrollment is mutated. */
+export function legacyProjectInviteOwnershipEvidence(
+	evidence: ReturnType<typeof projectInviteGuardEvidence>,
+	deviceId: string,
+	keyIds: { incoming: string | null; current: string | null },
+) {
+	const ownershipSql = `${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL} OR ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL}`;
+	const ownershipValues = [deviceId, keyIds.incoming, deviceId, keyIds.current];
+	return {
+		...evidence,
+		ownershipSql,
+		ownershipValues,
+		eligibilitySql: `${evidence.eligibilitySql} AND NOT (${ownershipSql})`,
+		eligibilityValues: [...evidence.eligibilityValues, ...ownershipValues],
+		boundEligibilitySql: `${evidence.boundEligibilitySql} AND NOT (${ownershipSql})`,
+		boundEligibilityValues: [...evidence.boundEligibilityValues, ...ownershipValues],
+	};
+}
 
 export const LEGACY_DEVICE_DENIAL_SQL = `SELECT CASE
 WHEN ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL} THEN 'device_revoked'
