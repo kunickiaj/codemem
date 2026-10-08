@@ -14,6 +14,7 @@ import {
 } from "@codemem/core";
 import Database from "better-sqlite3";
 import { expect, it } from "vitest";
+import { refreshTestScopeRows } from "../../core/src/scope-membership-cache-test-fixtures.js";
 import { syncProtocolRoutes } from "./routes/sync.js";
 
 it("serves only its own qualified snapshot rows and rejects requests to assert another source", async () => {
@@ -32,16 +33,21 @@ it("serves only its own qualified snapshot rows and rejects requests to assert a
 		const [localId] = ensureDeviceIdentity(db, { keysDir: localKeys });
 		const [peerId] = ensureDeviceIdentity(peerDb, { keysDir });
 		const publicKey = loadPublicKey(keysDir);
-		if (!publicKey) throw new Error("fixture_key_missing");
+		const localPublicKey = loadPublicKey(localKeys);
+		if (!publicKey || !localPublicKey) throw new Error("fixture_key_missing");
 		const now = new Date().toISOString();
 		db.prepare(
 			"INSERT INTO sync_peers(peer_device_id, public_key, pinned_fingerprint, created_at) VALUES (?, ?, ?, ?)",
 		).run(peerId, publicKey, fingerprintPublicKey(publicKey), now);
-		db.prepare(`INSERT INTO replication_scopes(scope_id,label,kind,authority_type,membership_epoch,status,created_at,updated_at)
-			VALUES ('work','Work','user','coordinator',1,'active',?,?)`).run(now, now);
+		db.prepare(`INSERT INTO replication_scopes(scope_id,label,kind,authority_type,coordinator_id,group_id,membership_epoch,status,created_at,updated_at)
+			VALUES ('work','Work','user','coordinator','coordinator-1','group-1',1,'active',?,?)`).run(
+			now,
+			now,
+		);
 		for (const id of [localId, peerId])
 			db.prepare(`INSERT INTO scope_memberships(scope_id,device_id,role,status,membership_epoch,updated_at)
 			VALUES ('work',?,'member','active',1,?)`).run(id, now);
+		await refreshTestScopeRows(db, { [localId]: localPublicKey, [peerId]: publicKey });
 		const session = insertTestSession(db);
 		const qualified = (id: string) =>
 			`memory-source-v1:${Buffer.from(id).toString("base64url")}:00000000-0000-4000-8000-000000000001`;

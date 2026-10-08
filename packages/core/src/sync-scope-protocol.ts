@@ -4,7 +4,7 @@ import type { Database } from "./db.js";
 import * as schema from "./schema.js";
 import {
 	type CachedScopeAuthorization,
-	getCachedScopeAuthorization,
+	getEffectiveCachedScopeAuthorization,
 } from "./scope-membership-cache.js";
 import { isScopedSyncCapability, type SyncCapability } from "./sync-capability.js";
 import {
@@ -15,6 +15,11 @@ import {
 } from "./sync-replication.js";
 
 export const SYNC_SCOPE_QUERY_PARAM = "scope_id";
+
+// An absent signing key must not turn into an unbound managed-cache lookup.
+function scopeSigningKey(publicKey: string | null | undefined): string {
+	return publicKey ?? "";
+}
 
 export type SyncScopeRequestMode = "legacy" | "scoped";
 export type SyncScopeResetReason =
@@ -69,8 +74,10 @@ export function parseSyncScopeRequest(
 	context?: {
 		db?: Database;
 		localDeviceId?: string | null;
+		localSigningPublicKey?: string | null;
 		negotiatedCapability?: SyncCapability;
 		peerDeviceId?: string | null;
+		authenticatedPeerSigningKey?: string | null;
 	},
 ): SyncScopeRequest {
 	if (!provided) {
@@ -99,18 +106,20 @@ export function parseSyncScopeRequest(
 		return { ok: false, reason: "missing_scope" };
 	}
 
-	const localAuthorization = getCachedScopeAuthorization(db, {
+	const localAuthorization = getEffectiveCachedScopeAuthorization(db, {
 		deviceId: localDeviceId,
 		scopeId,
+		expectedPublicKey: context.localSigningPublicKey ?? "",
 	});
 	const localErrorReason = scopeAuthorizationFailureReason(localAuthorization);
 	if (localErrorReason) {
 		return { ok: false, reason: localErrorReason };
 	}
 
-	const authorization = getCachedScopeAuthorization(db, {
+	const authorization = getEffectiveCachedScopeAuthorization(db, {
 		deviceId: peerDeviceId,
 		scopeId,
+		expectedPublicKey: context.authenticatedPeerSigningKey ?? "",
 	});
 	const errorReason = scopeAuthorizationFailureReason(authorization);
 	if (errorReason) {
@@ -204,7 +213,12 @@ export interface AuthorizedScopeEntry {
  */
 export function listAuthorizedScopesForPeer(
 	db: Database,
-	options: { localDeviceId: string; peerDeviceId: string },
+	options: {
+		localDeviceId: string;
+		peerDeviceId: string;
+		localSigningPublicKey?: string | null;
+		authenticatedPeerSigningKey?: string | null;
+	},
 ): AuthorizedScopeEntry[] {
 	const localDeviceId = options.localDeviceId.trim();
 	const peerDeviceId = options.peerDeviceId.trim();
@@ -232,17 +246,19 @@ export function listAuthorizedScopesForPeer(
 	const entries: AuthorizedScopeEntry[] = [];
 	for (const local of localMemberships) {
 		if (!local.scope_id || local.scope_id === DEFAULT_SYNC_SCOPE_ID) continue;
-		const localAuth = getCachedScopeAuthorization(db, {
+		const localAuth = getEffectiveCachedScopeAuthorization(db, {
 			deviceId: localDeviceId,
 			scopeId: local.scope_id,
+			expectedPublicKey: scopeSigningKey(options.localSigningPublicKey),
 		});
 		if (!localAuth.authorized || localAuth.scope?.authority_type === "local") continue;
 
 		// Peer must also be an active member of the same scope, at the same
 		// or higher membership_epoch as the local row, before we advertise.
-		const peerAuth = getCachedScopeAuthorization(db, {
+		const peerAuth = getEffectiveCachedScopeAuthorization(db, {
 			deviceId: peerDeviceId,
 			scopeId: local.scope_id,
+			expectedPublicKey: scopeSigningKey(options.authenticatedPeerSigningKey),
 		});
 		if (!peerAuth.authorized || !peerAuth.scope) continue;
 		if (peerAuth.scope.status !== "active") continue;
@@ -293,12 +309,17 @@ export interface PerPeerScopeSyncEntry {
 
 export function listPerPeerScopeSyncState(
 	db: Database,
-	options: { localDeviceId: string | null; peerDeviceId: string },
+	options: {
+		localDeviceId: string | null;
+		peerDeviceId: string;
+		localSigningPublicKey?: string | null;
+		authenticatedPeerSigningKey?: string | null;
+	},
 ): PerPeerScopeSyncEntry[] {
 	const localDeviceId = options.localDeviceId?.trim() ?? "";
 	const peerDeviceId = options.peerDeviceId.trim();
 	if (!localDeviceId || !peerDeviceId) return [];
-	const scopes = listAuthorizedScopesForPeer(db, { localDeviceId, peerDeviceId });
+	const scopes = listAuthorizedScopesForPeer(db, { ...options, localDeviceId, peerDeviceId });
 	return scopes.map((scope) => {
 		const [lastApplied, lastAcked] = getReplicationCursor(db, peerDeviceId, scope.scope_id);
 		const hasNullBaselineBootstrapMarker =

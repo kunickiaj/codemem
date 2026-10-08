@@ -28,6 +28,7 @@ import {
 import { serve } from "@hono/node-server";
 import Database from "better-sqlite3";
 import { describe, expect, it, vi } from "vitest";
+import { refreshTestScopeRows } from "../../core/src/scope-membership-cache-test-fixtures.js";
 import { type AppOptions, createApp, createSyncApp } from "./index.js";
 import { __usageCacheTestHooks } from "./routes/stats.js";
 import { reconcileConfiguredCoordinatorEnrollment } from "./routes/sync.js";
@@ -665,6 +666,24 @@ function grantSyncScopeToDevices(store: MemoryStore, scopeId: string, deviceIds:
 			.run(scopeId, deviceId, now);
 	}
 }
+
+async function refreshManagedSyncFixtures(
+	stores: MemoryStore[],
+	publicKeys: Record<string, string>,
+) {
+	for (const store of stores) {
+		store.db
+			.prepare(
+				"UPDATE replication_scopes SET coordinator_id = 'coordinator-1', group_id = 'group-1' WHERE authority_type = 'coordinator' AND coordinator_id IS NULL AND group_id IS NULL",
+			)
+			.run();
+		await refreshTestScopeRows(store.db, publicKeys);
+	}
+}
+
+const SCOPED_SYNC_PEER_INSERT_SQL = `INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, created_at)
+	VALUES (?, ?, ?, ?)`;
+const SCOPED_SYNC_NULL_BASELINE = { baseline_cursor: null, retained_floor_cursor: null };
 
 function authorizationReplicationSnapshot(store: MemoryStore): Record<string, unknown[]> {
 	return Object.fromEntries(
@@ -9492,16 +9511,10 @@ describe("viewer-server", () => {
 
 				const now = "2026-01-01T00:00:00.000Z";
 				source.store.db
-					.prepare(
-						`INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, created_at)
-						 VALUES (?, ?, ?, ?)`,
-					)
+					.prepare(SCOPED_SYNC_PEER_INSERT_SQL)
 					.run(receiverDeviceId, receiverFingerprint, receiverPublicKey, now);
 				receiver.store.db
-					.prepare(
-						`INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, created_at)
-						 VALUES (?, ?, ?, ?)`,
-					)
+					.prepare(SCOPED_SYNC_PEER_INSERT_SQL)
 					.run(sourceDeviceId, sourceFingerprint, sourcePublicKey, now);
 
 				const scopes = ["oss", "personal"] as const;
@@ -9515,13 +9528,16 @@ describe("viewer-server", () => {
 						{
 							generation: 1,
 							snapshot_id: `snapshot-${scopeId}`,
-							baseline_cursor: null,
-							retained_floor_cursor: null,
+							...SCOPED_SYNC_NULL_BASELINE,
 						},
 						scopeId,
 					);
 				}
 				const sourceSessionId = insertTestSession(source.store.db);
+				await refreshManagedSyncFixtures([source.store, receiver.store], {
+					[sourceDeviceId]: sourcePublicKey,
+					[receiverDeviceId]: receiverPublicKey,
+				});
 				for (const scopeId of scopes) {
 					for (let index = 1; index <= 2; index += 1) {
 						insertTestMemory(source.store, {
@@ -9581,16 +9597,10 @@ describe("viewer-server", () => {
 
 				const now = "2026-01-01T00:00:00.000Z";
 				source.store.db
-					.prepare(
-						`INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, created_at)
-						 VALUES (?, ?, ?, ?)`,
-					)
+					.prepare(SCOPED_SYNC_PEER_INSERT_SQL)
 					.run(receiverDeviceId, receiverFingerprint, receiverPublicKey, now);
 				receiver.store.db
-					.prepare(
-						`INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, created_at)
-						 VALUES (?, ?, ?, ?)`,
-					)
+					.prepare(SCOPED_SYNC_PEER_INSERT_SQL)
 					.run(sourceDeviceId, sourceFingerprint, sourcePublicKey, now);
 
 				const initialScope = "scope-a";
@@ -9604,13 +9614,16 @@ describe("viewer-server", () => {
 						{
 							generation: 1,
 							snapshot_id: `snapshot-${scopeId}`,
-							baseline_cursor: null,
-							retained_floor_cursor: null,
+							...SCOPED_SYNC_NULL_BASELINE,
 						},
 						scopeId,
 					);
 				}
 				const sourceSessionId = insertTestSession(source.store.db);
+				await refreshManagedSyncFixtures([source.store, receiver.store], {
+					[sourceDeviceId]: sourcePublicKey,
+					[receiverDeviceId]: receiverPublicKey,
+				});
 				for (const scopeId of [initialScope, laterScope]) {
 					for (let index = 1; index <= 2; index += 1) {
 						insertTestMemory(source.store, {
@@ -9656,6 +9669,10 @@ describe("viewer-server", () => {
 
 				grantSyncScopeToDevices(source.store, laterScope, [sourceDeviceId, receiverDeviceId]);
 				grantSyncScopeToDevices(receiver.store, laterScope, [sourceDeviceId, receiverDeviceId]);
+				await refreshManagedSyncFixtures([source.store, receiver.store], {
+					[sourceDeviceId]: sourcePublicKey,
+					[receiverDeviceId]: receiverPublicKey,
+				});
 
 				const second = await core.syncOnce(receiver.store.db, sourceDeviceId, [server.url], {
 					keysDir: receiver.keysDir,
@@ -10926,16 +10943,17 @@ describe("viewer-server", () => {
 					if (!peerFingerprint?.fingerprint) throw new Error("peer fingerprint missing");
 
 					store.db
-						.prepare(
-							`INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, created_at)
-							 VALUES (?, ?, ?, ?)`,
-						)
+						.prepare(SCOPED_SYNC_PEER_INSERT_SQL)
 						.run(peerDeviceId, peerFingerprint.fingerprint, peerPublicKey, now);
-					const localDevice = store.db.prepare("SELECT device_id FROM sync_device LIMIT 1").get() as
-						| { device_id: string }
-						| undefined;
+					const localDevice = store.db
+						.prepare("SELECT device_id, public_key FROM sync_device LIMIT 1")
+						.get() as { device_id: string; public_key: string } | undefined;
 					if (!localDevice?.device_id) throw new Error("local sync device missing");
 					grantSyncScopeToDevices(store, "snapshot-work", [localDevice.device_id, peerDeviceId]);
+					await refreshManagedSyncFixtures([store], {
+						[localDevice.device_id]: localDevice.public_key,
+						[peerDeviceId]: peerPublicKey,
+					});
 
 					const url =
 						"http://localhost/v1/snapshot?limit=2&generation=11&snapshot_id=snapshot-11&baseline_cursor=2026-01-01T00:00:02Z%7Cbase-op&scope_id=snapshot-work";
