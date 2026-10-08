@@ -364,6 +364,16 @@ state-dependent proof commitments; finalized rows retain the compact outcome.
 It has no cascading references, and finalized receipts cannot be updated,
 deleted, or erased by replacement.
 
+`browser_binder_hash` retains the original browser-cookie commitment separately
+from the browser transaction hash, including after transaction cleanup. Both
+commitments are populated when the pending attempt is claimed and remain pinned.
+
+Birth facts and recorded browser, account/link, and confirmation commitments
+cannot be rewritten or cleared by later updates. The intended one-time recording
+steps and nonfinal same-value retries remain allowed. Terminal cleanup may clear
+the loopback destination, but cannot replace or restore it or revive an attempt
+in place. Deleted unfinished attempts are not tombstoned.
+
 The schema keeps current verifier configuration separate from historical link
 provenance and requires finalized handoff material to be cleared. Schema checks
 validate storage shape, not signatures, provider verification, or owner authority.

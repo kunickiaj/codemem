@@ -7,6 +7,7 @@ import {
 	CANONICAL_PUBLIC_KEY,
 	EXPECTED_KEY_ID,
 } from "./coordinator-ed25519-key-id-test-fixtures.js";
+import { UNRELATED_PUBLIC_KEY } from "./coordinator-enrollment-revocation-test-harness.js";
 import type { SchemaFixture } from "./coordinator-owner-enrollment-migration-test-harness.js";
 
 export const OWNER_TABLE = "coordinator_owner_enrollment_attempts";
@@ -24,6 +25,7 @@ export const pendingOwner = {
 	auth_config_revision: browserConfig.revision,
 	loopback_redirect: "http://127.0.0.1:4567/complete",
 	browser_start_hash: "b".repeat(64),
+	browser_binder_hash: null,
 	state: "pending",
 	created_at_ms: NOW,
 	expires_at_ms: NOW + 600000,
@@ -42,6 +44,7 @@ export const finalizedOwner = {
 	...provenance,
 	state: "finalized",
 	browser_transaction_hash: "d".repeat(64),
+	browser_binder_hash: "8".repeat(64),
 	confirmation_hash: "e".repeat(64),
 	completion_secret_hash: "f".repeat(64),
 	final_key_proof_hash: "1".repeat(64),
@@ -72,12 +75,143 @@ export function ownerHarness(fixture: (use: (f: OwnerFixture) => Promise<void>) 
 // Raw INSERT fixtures test storage shape only; they neither authorize nor create ownership bindings.
 export function registerOwnerSchemaTests(test: ReturnType<typeof ownerHarness>) {
 	registerOwnerStates(test);
+	registerOwnerPins(test);
+	registerOwnerRecordedPins(test);
+	registerOwnerLoopbackPurge(test);
 	registerOwnerInvalid(test);
 	registerOwnerRetention(test);
 	registerOwnerReplacement(test);
+	registerOwnerPendingReplacement(test);
+	registerOwnerRetryAndRowid(test);
+	registerOwnerCommitmentCollisions(test);
+	registerOwnerMixedCollision(test);
 	registerOwnerIsolation(test);
 }
 type OwnerTest = ReturnType<typeof ownerHarness>;
+function registerOwnerPins(test: OwnerTest) {
+	test.for(
+		Object.entries(pendingOwner).filter(([key, value]) => key !== "state" && value !== null),
+	)(
+		"birth fact %j permits identical retry but rejects replacement before finalization",
+		async ([column, value], { fixture: f }) => {
+			// Arrange: contract lines 262–274 pin the original pending key and deadline.
+			await insertOwner(f);
+			const before = await ownerRows(f);
+			// Act: an identical retry is harmless.
+			await f.exec(`UPDATE ${OWNER_TABLE} SET ${column} = ?`, value);
+			// Assert
+			expect(await ownerRows(f)).toEqual(before);
+			// Act: update both timestamps so CHECK constraints cannot mask a mutable deadline.
+			let replacement: Value = `${value}-changed`;
+			if (
+				column.endsWith("hash") ||
+				["key_id", "fingerprint", "auth_config_revision"].includes(column)
+			)
+				replacement = "9".repeat(64);
+			const mutation =
+				typeof value === "number"
+					? f.exec(
+							`UPDATE ${OWNER_TABLE} SET created_at_ms = created_at_ms + 1, expires_at_ms = expires_at_ms + 1`,
+						)
+					: f.exec(`UPDATE ${OWNER_TABLE} SET ${column} = ?`, replacement);
+			// Assert: require the pin error rather than a coincidental CHECK failure.
+			await expect(mutation).rejects.toThrow(/owner_enrollment_pins_immutable/);
+			expect(await ownerRows(f)).toEqual(before);
+			// Act: clearing a birth pin must not open a later refill path.
+			const clear = f.exec(`UPDATE ${OWNER_TABLE} SET ${column} = NULL`);
+			// Assert
+			await expect(clear).rejects.toThrow(/owner_enrollment_pins_immutable/);
+			expect(await ownerRows(f)).toEqual(before);
+		},
+	);
+}
+function registerOwnerRecordedPins(test: OwnerTest) {
+	test("normal ceremony populates commitments once and retains original binder evidence", async ({
+		fixture: f,
+	}) => {
+		// Arrange: raw storage transitions do not issue proof or enroll a device.
+		await insertOwner(f);
+		const stages = [
+			{
+				state: "browser_claimed",
+				browser_transaction_hash: finalizedOwner.browser_transaction_hash,
+				browser_binder_hash: finalizedOwner.browser_binder_hash,
+			},
+			{ state: "oidc_verified", ...provenance },
+			{
+				state: "confirmed",
+				confirmation_hash: finalizedOwner.confirmation_hash,
+				completion_secret_hash: finalizedOwner.completion_secret_hash,
+			},
+			finalizedOwner,
+		];
+		for (const stage of stages) {
+			const entries = Object.entries(stage);
+			// Act
+			await f.exec(
+				`UPDATE ${OWNER_TABLE} SET ${entries.map(([key]) => `${key} = ?`).join(",")}`,
+				...entries.map(([, value]) => value),
+			);
+			// Assert
+			expect(await ownerRows(f)).toEqual([expect.objectContaining(stage)]);
+		}
+	});
+	test.for(["confirmed", "expired", "retired"])(
+		"recorded commitments cannot change, clear or refill in %s",
+		async (state, { fixture: f }) => {
+			// Arrange: terminal nonfinal states must preserve facts recorded earlier.
+			await insertOwner(f, { ...otherConfirmed, state });
+			const before = await ownerRows(f);
+			const pins = {
+				...provenance,
+				browser_transaction_hash: otherConfirmed.browser_transaction_hash,
+				browser_binder_hash: otherConfirmed.browser_binder_hash,
+				confirmation_hash: otherConfirmed.confirmation_hash,
+				completion_secret_hash: otherConfirmed.completion_secret_hash,
+			};
+			for (const [column, original] of Object.entries(pins)) {
+				// Act: same-value retries remain legal before finalization.
+				await f.exec(`UPDATE ${OWNER_TABLE} SET ${column} = ?`, original);
+				// Assert
+				expect(await ownerRows(f)).toEqual(before);
+				for (const replacement of [
+					null,
+					column.endsWith("hash") || column.endsWith("revision") ? "9".repeat(64) : "changed",
+				]) {
+					// Act
+					const mutation = f.exec(`UPDATE ${OWNER_TABLE} SET ${column} = ?`, replacement);
+					// Assert: denial leaves the original value available, not a refillable NULL.
+					await expect(mutation).rejects.toThrow(/owner_enrollment_pins_immutable/);
+					expect(await ownerRows(f)).toEqual(before);
+				}
+			}
+		},
+	);
+}
+function registerOwnerLoopbackPurge(test: OwnerTest) {
+	test.for(["expired", "failed", "retired"])(
+		"%s can purge loopback but cannot restore or replace its destination",
+		async (state, { fixture: f }) => {
+			// Arrange
+			await insertOwner(f);
+			// Act
+			await f.exec(`UPDATE ${OWNER_TABLE} SET state = ?, loopback_redirect = NULL`, state);
+			const before = await ownerRows(f);
+			// Assert
+			expect(before).toEqual([expect.objectContaining({ state, loopback_redirect: null })]);
+			for (const destination of [
+				pendingOwner.loopback_redirect,
+				"http://127.0.0.1:9876/complete",
+			]) {
+				// Act
+				const restore = f.exec(`UPDATE ${OWNER_TABLE} SET loopback_redirect = ?`, destination);
+				// Assert
+				await expect(restore).rejects.toThrow(/owner_enrollment_pins_immutable/);
+				expect(await ownerRows(f)).toEqual(before);
+			}
+		},
+	);
+}
 function registerOwnerStates(test: OwnerTest) {
 	test.for([
 		"pending",
@@ -94,7 +228,10 @@ function registerOwnerStates(test: OwnerTest) {
 			// Arrange
 			const row: Record<string, Value> = { ...pendingOwner, state };
 			if (["browser_claimed", "oidc_verified", "confirmed"].includes(state))
-				row.browser_transaction_hash = "d".repeat(64);
+				Object.assign(row, {
+					browser_transaction_hash: "d".repeat(64),
+					browser_binder_hash: "8".repeat(64),
+				});
 			if (["oidc_verified", "confirmed"].includes(state)) Object.assign(row, provenance);
 			if (state === "confirmed")
 				Object.assign(row, {
@@ -124,6 +261,13 @@ function registerOwnerInvalid(test: OwnerTest) {
 		{ auth_config_revision: "bad" },
 		{ account_subject: "dummy-subject" },
 		{ state: "browser_claimed" },
+		{ browser_binder_hash: "8".repeat(64) },
+		{ state: "browser_claimed", browser_transaction_hash: "d".repeat(64) },
+		{
+			state: "browser_claimed",
+			browser_transaction_hash: "d".repeat(64),
+			browser_binder_hash: "bad",
+		},
 		{ state: "oidc_verified", browser_transaction_hash: "d".repeat(64) },
 		{ state: "confirmed", ...provenance, browser_transaction_hash: "d".repeat(64) },
 		{ final_outcome_json: "{}" },
@@ -153,6 +297,7 @@ function registerOwnerInvalid(test: OwnerTest) {
 		{ final_key_proof_hash: null },
 		{ finalized_at_ms: NOW + 600000 },
 		{ browser_transaction_hash: null },
+		{ browser_binder_hash: null },
 	])("rejects malformed finalized commitment/outcome %j", async (patch, { fixture: f }) => {
 		// Arrange
 		const row = { ...finalizedOwner, ...patch };
@@ -180,6 +325,166 @@ const otherConfirmed = {
 	final_outcome_json: null,
 	final_key_proof_hash: null,
 };
+function registerOwnerPendingReplacement(test: OwnerTest) {
+	test("INSERT OR REPLACE cannot overwrite original pending birth pins via attempt identity", async ({
+		fixture: f,
+	}) => {
+		// Arrange: the replacement has valid storage shape; no owner proof is issued.
+		await insertOwner(f);
+		const replacement = {
+			...pendingOwner,
+			device_id: "replacement-device",
+			public_key: UNRELATED_PUBLIC_KEY,
+			key_id: "9".repeat(64),
+			browser_start_hash: "7".repeat(64),
+			created_at_ms: NOW + 1,
+			expires_at_ms: NOW + 600001,
+		};
+		// Act: the same facts are accepted for a genuinely new attempt.
+		await insertOwner(f, {
+			...replacement,
+			attempt_id: "replacement-attempt",
+			browser_start_hash: "6".repeat(64),
+		});
+		const before = await ownerRows(f);
+		// Assert
+		expect(before).toHaveLength(2);
+		const entries = Object.entries(replacement);
+		// Act: a primary-key collision must not erase the original birth facts.
+		const overwrite = f.exec(
+			`INSERT OR REPLACE INTO ${OWNER_TABLE} (${entries.map(([key]) => key).join(",")}) VALUES (${entries.map(() => "?").join(",")})`,
+			...entries.map(([, value]) => value),
+		);
+		// Assert
+		await expect(overwrite).rejects.toThrow(/owner_enrollment_pins_immutable/);
+		expect(await ownerRows(f)).toEqual(before);
+	});
+}
+function registerOwnerRetryAndRowid(test: OwnerTest) {
+	test.for(["INSERT OR REPLACE", "INSERT OR IGNORE"])(
+		"%s permits identical pending facts but rejects changed facts",
+		async (mode, { fixture: f }) => {
+			// Arrange
+			await insertOwner(f);
+			const before = await ownerRows(f);
+			// Act: retry all stored columns, including nullable commitments.
+			await f.exec(`${mode} INTO ${OWNER_TABLE} SELECT * FROM ${OWNER_TABLE}`);
+			// Assert
+			expect(await ownerRows(f)).toEqual(before);
+			const entries = Object.entries({ ...pendingOwner, device_id: "changed-device" });
+			// Act
+			const changed = f.exec(
+				`${mode} INTO ${OWNER_TABLE} (${entries.map(([key]) => key).join(",")}) VALUES (${entries.map(() => "?").join(",")})`,
+				...entries.map(([, value]) => value),
+			);
+			// Assert
+			await expect(changed).rejects.toThrow(/owner_enrollment_pins_immutable/);
+			expect(await ownerRows(f)).toEqual(before);
+		},
+	);
+	test.for(["INSERT OR REPLACE", "UPDATE OR REPLACE"])(
+		"%s cannot erase a different coordinator's pending row via rowid",
+		async (mode, { fixture: f }) => {
+			// Arrange: per-coordinator identities do not prevent a physical rowid collision.
+			await insertOwner(f, { ...pendingOwner, rowid: 11 });
+			const other = { ...pendingOwner, coordinator_id: "coordinator-b", rowid: 22 };
+			await insertOwner(f, other);
+			const allRows = () => f.query(`SELECT rowid,* FROM ${OWNER_TABLE} ORDER BY rowid`);
+			const before = await allRows();
+			const entries = Object.entries({ ...other, rowid: 11 });
+			// Act: the UPDATE changes no birth pin on its source row.
+			const collision =
+				mode === "INSERT OR REPLACE"
+					? f.exec(
+							`${mode} INTO ${OWNER_TABLE} (${entries.map(([key]) => key).join(",")}) VALUES (${entries.map(() => "?").join(",")})`,
+							...entries.map(([, value]) => value),
+						)
+					: f.exec(`${mode} ${OWNER_TABLE} SET rowid = 11 WHERE rowid = 22`);
+			// Assert
+			await expect(collision).rejects.toThrow(/owner_enrollment_pins_immutable/);
+			expect(await allRows()).toEqual(before);
+		},
+	);
+}
+function registerOwnerCommitmentCollisions(test: OwnerTest) {
+	test.for(["browser_transaction_hash", "completion_secret_hash"])(
+		"one-time %s population cannot replace another nonfinal attempt",
+		async (column, { fixture: f }) => {
+			// Arrange: both rows satisfy their existing state constraints.
+			let source: Record<string, Value> = pendingOwner;
+			let target: Record<string, Value> = {
+				...pendingOwner,
+				attempt_id: "owner-attempt-b",
+				browser_start_hash: "2".repeat(64),
+				state: "browser_claimed",
+				browser_transaction_hash: "3".repeat(64),
+				browser_binder_hash: "8".repeat(64),
+			};
+			let transition: Record<string, Value> = {
+				state: "browser_claimed",
+				browser_transaction_hash: "3".repeat(64),
+				browser_binder_hash: "8".repeat(64),
+			};
+			if (column === "completion_secret_hash") {
+				source = {
+					...pendingOwner,
+					...provenance,
+					state: "oidc_verified",
+					browser_transaction_hash: "d".repeat(64),
+					browser_binder_hash: "8".repeat(64),
+				};
+				target = otherConfirmed;
+				transition = {
+					state: "confirmed",
+					confirmation_hash: otherConfirmed.confirmation_hash,
+					completion_secret_hash: otherConfirmed.completion_secret_hash,
+				};
+			}
+			await insertOwner(f, source);
+			await insertOwner(f, target);
+			const before = await ownerRows(f);
+			const entries = Object.entries(transition);
+			// Act: own NULL-to-value pins are legal; erasing the competing row is not.
+			const collision = f.exec(
+				`UPDATE OR REPLACE ${OWNER_TABLE} SET ${entries.map(([key]) => `${key} = ?`).join(",")} WHERE attempt_id = ?`,
+				...entries.map(([, value]) => value),
+				pendingOwner.attempt_id,
+			);
+			// Assert
+			await expect(collision).rejects.toThrow(/owner_enrollment_pins_immutable/);
+			expect(await ownerRows(f)).toEqual(before);
+		},
+	);
+}
+function registerOwnerMixedCollision(test: OwnerTest) {
+	test("mixed finalized and pending INSERT OR REPLACE collisions preserve receipt error and both rows", async ({
+		fixture: f,
+	}) => {
+		// Arrange: each independent row is valid before the two-collision replacement.
+		await insertOwner(f, finalizedOwner);
+		const pending = {
+			...pendingOwner,
+			attempt_id: "pending-c",
+			browser_start_hash: "5".repeat(64),
+		};
+		await insertOwner(f, pending);
+		const before = await ownerRows(f);
+		const entries = Object.entries({
+			...pending,
+			state: "browser_claimed",
+			browser_transaction_hash: finalizedOwner.browser_transaction_hash,
+			browser_binder_hash: finalizedOwner.browser_binder_hash,
+		});
+		// Act: the attempt PK hits pending; the browser commitment hits finalized.
+		const collision = f.exec(
+			`INSERT OR REPLACE INTO ${OWNER_TABLE} (${entries.map(([key]) => key).join(",")}) VALUES (${entries.map(() => "?").join(",")})`,
+			...entries.map(([, value]) => value),
+		);
+		// Assert: the existing receipt protection retains its diagnostic.
+		await expect(collision).rejects.toThrow(/owner_enrollment_receipt_immutable/);
+		expect(await ownerRows(f)).toEqual(before);
+	});
+}
 function registerOwnerReplacement(test: OwnerTest) {
 	for (const mode of ["UPDATE OR REPLACE", "INSERT OR REPLACE"]) {
 		test.for([
@@ -246,6 +551,7 @@ function registerOwnerRetention(test: OwnerTest) {
 		// Act/Assert
 		for (const sql of [
 			`DELETE FROM ${OWNER_TABLE}`,
+			`UPDATE ${OWNER_TABLE} SET browser_binder_hash = browser_binder_hash`,
 			`UPDATE ${OWNER_TABLE} SET final_outcome_json = '{}'`,
 			`INSERT OR REPLACE INTO ${OWNER_TABLE} SELECT * FROM ${OWNER_TABLE}`,
 		]) {
@@ -265,6 +571,7 @@ function registerOwnerRetention(test: OwnerTest) {
 			"groups",
 			"coordinator_auth_link_attempts",
 			"coordinator_auth_sessions",
+			"coordinator_auth_browser_transactions",
 			"coordinator_auth_link_audit_log",
 		])
 			await f.exec(`DELETE FROM ${table}`);
