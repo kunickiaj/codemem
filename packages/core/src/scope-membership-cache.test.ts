@@ -2,7 +2,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
+import { createCoordinatorApp } from "./coordinator-api.js";
+import {
+	CANONICAL_PUBLIC_KEY,
+	EXPECTED_KEY_ID,
+} from "./coordinator-ed25519-key-id-test-fixtures.js";
 import type { CoordinatorScope, CoordinatorScopeMembership } from "./coordinator-store-contract.js";
 import type { Database as CoreDatabase } from "./db.js";
 import {
@@ -15,6 +21,9 @@ import {
 	refreshScopeMembershipCache,
 	upsertCachedScopeMemberships,
 } from "./scope-membership-cache.js";
+import { verifySignature } from "./sync-auth.js";
+import { fingerprintPublicKey } from "./sync-fingerprint.js";
+import { ensureDeviceIdentity, loadPublicKey } from "./sync-identity.js";
 import { initTestSchema } from "./test-utils.js";
 
 function now(offsetMs = 0): string {
@@ -58,20 +67,44 @@ function membership(
 	};
 }
 
-describe("scope membership cache", () => {
-	let db: CoreDatabase | null = null;
+function memberResponse() {
+	return {
+		authorization_version: 1,
+		scope: scope(),
+		items: [
+			{
+				membership: membership({ manifest_hash: "hash-scope" }),
+				enrollment: {
+					group_id: "team-a",
+					device_id: "device-a",
+					public_key: CANONICAL_PUBLIC_KEY,
+					fingerprint: fingerprintPublicKey(CANONICAL_PUBLIC_KEY),
+					identity_id: null,
+					display_name: null,
+					enabled: 1,
+					created_at: now(),
+				},
+				key_id: EXPECTED_KEY_ID,
+			},
+		],
+	};
+}
 
-	afterEach(() => {
-		db?.close();
-		db = null;
-	});
+let db: CoreDatabase | null = null;
 
-	function setup(): CoreDatabase {
-		db = new Database(":memory:");
-		initTestSchema(db);
-		return db;
-	}
+afterEach(() => {
+	vi.restoreAllMocks();
+	db?.close();
+	db = null;
+});
 
+function setup(): CoreDatabase {
+	db = new Database(":memory:");
+	initTestSchema(db);
+	return db;
+}
+
+describe("scope membership cache signed fixtures", () => {
 	it("caches coordinator scopes and active memberships for deterministic device lookups", async () => {
 		const local = setup();
 		const result = await refreshScopeMembershipCache(local, {
@@ -116,10 +149,10 @@ describe("scope membership cache", () => {
 				expect(headers.get("X-Opencode-Timestamp")).toBeTruthy();
 				expect(headers.get("X-Opencode-Nonce")).toBeTruthy();
 				if (url.endsWith("/v1/scopes?group_id=team-a")) {
-					return new Response(JSON.stringify({ items: [scope()] }), { status: 200 });
+					return new Response(JSON.stringify({ version: 1, items: [scope()] }), { status: 200 });
 				}
 				if (url.endsWith("/v1/scopes/scope-acme/members?group_id=team-a")) {
-					return new Response(JSON.stringify({ items: [membership()] }), { status: 200 });
+					return new Response(JSON.stringify(memberResponse()), { status: 200 });
 				}
 				return new Response(JSON.stringify({ error: "not_found" }), { status: 404 });
 			}) as typeof fetch;
@@ -146,7 +179,141 @@ describe("scope membership cache", () => {
 			rmSync(keysDir, { recursive: true, force: true });
 		}
 	});
+});
 
+it("refreshes nonempty versioned snapshots from the real signed API into the legacy cache", async () => {
+	// Arrange: use the actual server ID, not the transport URL; null identity remains valid legacy data.
+	const local = setup();
+	const keysDir = mkdtempSync(join(tmpdir(), "codemem-scope-cache-api-"));
+	const store = new BetterSqliteCoordinatorStore(":memory:");
+	vi.spyOn(Date, "now").mockReturnValue(Date.parse(now()));
+	try {
+		const [deviceId, fingerprint] = ensureDeviceIdentity(local, { keysDir });
+		const publicKey = loadPublicKey(keysDir);
+		if (!publicKey) throw new Error("Missing fixture public key");
+		await store.createGroup("team-a");
+		await store.enrollDevice("team-a", {
+			deviceId,
+			publicKey,
+			fingerprint,
+		});
+		await store.createScope({
+			groupId: "team-a",
+			scopeId: "scope-acme",
+			label: "Acme Work",
+			coordinatorId: "coord-a",
+			membershipEpoch: 3,
+		});
+		await store.grantScopeMembership({
+			scopeId: "scope-acme",
+			deviceId,
+			effectId: "fixture-grant",
+			membershipEpoch: 4,
+		});
+		vi.spyOn(store, "close").mockResolvedValue(undefined);
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: { now: () => now(), adminSecret: () => "fixture-admin" },
+			requestVerifier: async (input) =>
+				verifySignature({ ...input, bodyBytes: Buffer.from(input.bodyBytes) }),
+			requestRateLimit: { limiter: { check: () => ({ allowed: true, retryAfterS: 1 }) } },
+		});
+		const fetch = vi
+			.spyOn(globalThis, "fetch")
+			.mockImplementation(async (input, init) => app.request(String(input), init));
+		// Act: no injected fetchers or admin credentials; both GETs verify real signatures in-process.
+		const result = await refreshScopeMembershipCache(local, {
+			groupIds: ["team-a"],
+			coordinatorId: "coord-a",
+			remoteUrl: "https://coord.example.test",
+			keysDir,
+			now: new Date(now()),
+		});
+		// Assert: member epoch may exceed scope epoch; it need not equal it.
+		expect(result).toMatchObject({
+			status: "refreshed",
+			groups: [{ scopeCount: 1, membershipCount: 1 }],
+		});
+		expect(
+			getCachedScopeAuthorization(local, {
+				deviceId,
+				scopeId: "scope-acme",
+				now: new Date(now(1)),
+			}),
+		).toMatchObject({
+			authorized: true,
+			freshness: "fresh",
+			membership: { membership_epoch: 4 },
+		});
+		expect(fetch).toHaveBeenCalledTimes(2);
+	} finally {
+		vi.restoreAllMocks();
+		await store.close();
+		rmSync(keysDir, { recursive: true, force: true });
+	}
+});
+
+it.each([
+	["unversioned catalog", { items: [scope()] }, memberResponse()],
+	["unsupported catalog", { version: 2, items: [scope()] }, memberResponse()],
+	["malformed catalog", { version: 1, items: [null] }, memberResponse()],
+	["raw members", { version: 1, items: [scope()] }, { items: [membership()] }],
+	[
+		"unsupported members",
+		{ version: 1, items: [scope()] },
+		{ ...memberResponse(), authorization_version: 2 },
+	],
+	[
+		"malformed member",
+		{ version: 1, items: [scope()] },
+		{ ...memberResponse(), items: [{ membership: {} }] },
+	],
+	[
+		"duplicate member",
+		{ version: 1, items: [scope()] },
+		{ ...memberResponse(), items: [...memberResponse().items, ...memberResponse().items] },
+	],
+	[
+		"catalog snapshot race",
+		{ version: 1, items: [scope()] },
+		{ ...memberResponse(), scope: scope({ updated_at: now(1) }) },
+	],
+])("rejects %s without replacing the last successful cache", async (_name, catalog, members) => {
+	// Arrange: preserve prior success through the public lookup API, without querying private tables.
+	const local = setup();
+	await refreshScopeMembershipCache(local, {
+		groupIds: ["team-a"],
+		coordinatorId: "coord-a",
+		now: new Date(now()),
+		fetchers: { listScopes: async () => [scope()], listMemberships: async () => [membership()] },
+	});
+	const before = listCachedScopesForDevice(local, "device-a", { now: new Date(now()) });
+	const keysDir = mkdtempSync(join(tmpdir(), "codemem-scope-cache-invalid-"));
+	vi.spyOn(globalThis, "fetch").mockImplementation(
+		async (input) =>
+			new Response(JSON.stringify(String(input).includes("/members?") ? members : catalog)),
+	);
+	try {
+		// Act
+		const result = await refreshScopeMembershipCache(local, {
+			groupIds: ["team-a"],
+			coordinatorId: "coord-a",
+			remoteUrl: "https://coord.example.test",
+			keysDir,
+			now: new Date(now(2)),
+		});
+		const after = listCachedScopesForDevice(local, "device-a", { now: new Date(now(3)) });
+		// Assert
+		expect(result.status).toBe("stale");
+		expect(after.freshness).toBe("stale");
+		expect(after.memberships).toEqual(before.memberships);
+		expect(after.cacheStates[0]?.last_success_at).toBe(before.cacheStates[0]?.last_success_at);
+	} finally {
+		rmSync(keysDir, { recursive: true, force: true });
+	}
+});
+
+describe("scope membership cache", () => {
 	it("keeps cached authorization visible as stale when coordinator refresh fails", async () => {
 		const local = setup();
 		await refreshScopeMembershipCache(local, {

@@ -16,6 +16,7 @@ import {
 	type ScopeMembershipRevocationNotice,
 	scopeMembershipEpochStatus,
 } from "./scope-membership-semantics.js";
+import { decodeScopeCatalogue, decodeScopeMembers } from "./scope-membership-wire.js";
 import { buildAuthHeaders } from "./sync-auth.js";
 import { buildBaseUrl, requestJson } from "./sync-http-client.js";
 import { ensureDeviceIdentity } from "./sync-identity.js";
@@ -189,17 +190,10 @@ function signedCoordinatorGet(
 		headers,
 	}).then(([status, payload]) => {
 		if (status < 200 || status >= 300) {
-			const detail = typeof payload?.error === "string" ? payload.error : "unknown";
-			throw new Error(`Coordinator membership snapshot failed (${status}): ${detail}`);
+			throw new Error(`Coordinator membership snapshot failed (${status})`);
 		}
 		return payload;
 	});
-}
-
-function payloadItems<T>(payload: Record<string, unknown> | null): T[] {
-	return Array.isArray(payload?.items)
-		? payload.items.filter((item): item is T => Boolean(item) && typeof item === "object")
-		: [];
 }
 
 function authenticatedFetchers(
@@ -207,17 +201,24 @@ function authenticatedFetchers(
 	opts: RefreshScopeMembershipCacheOptions,
 ): ScopeMembershipCacheFetchers {
 	const baseUrl = coordinatorUrl(opts);
+	const catalogue = new Map<string, CoordinatorScope[]>();
 	return {
 		listScopes: async (groupId) => {
 			const url = `${baseUrl}/v1/scopes?group_id=${encodeURIComponent(groupId)}`;
-			return payloadItems<CoordinatorScope>(
+			const scopes = decodeScopeCatalogue(
 				await signedCoordinatorGet(db, url, opts.keysDir, opts.dbPath),
+				groupId,
 			);
+			catalogue.set(groupId, scopes);
+			return scopes;
 		},
 		listMemberships: async (groupId, scopeId) => {
 			const url = `${baseUrl}/v1/scopes/${encodeURIComponent(scopeId)}/members?group_id=${encodeURIComponent(groupId)}`;
-			return payloadItems<CoordinatorScopeMembership>(
+			return decodeScopeMembers(
 				await signedCoordinatorGet(db, url, opts.keysDir, opts.dbPath),
+				catalogue.get(groupId)?.find((scope) => scope.scope_id === scopeId),
+				groupId,
+				scopeId,
 			);
 		},
 	};

@@ -2,6 +2,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import {
+	CANONICAL_PUBLIC_KEY,
+	EXPECTED_KEY_ID,
+} from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { CoordinatorMembershipError } from "./coordinator-membership-effects.js";
 import {
 	BetterSqliteCoordinatorStore,
@@ -314,6 +318,47 @@ function enrolledDevice(
 		display_name: "Device A",
 		enabled,
 		created_at: "2026-03-28T00:00:00Z",
+	};
+}
+
+function scopeSnapshotFixture(
+	scopes: CoordinatorScope[],
+	memberships: Record<string, CoordinatorScopeMembership[]>,
+) {
+	const enrollment: CoordinatorEnrollment = {
+		group_id: "g1",
+		device_id: "device-a",
+		public_key: CANONICAL_PUBLIC_KEY,
+		fingerprint: "fp-a",
+		identity_id: null,
+		display_name: "Device A",
+		enabled: 1,
+		created_at: "2026-03-28T00:00:00Z",
+	};
+	const members = (scopeId: string) =>
+		(memberships[scopeId] ?? []).map((membership) => ({
+			membership,
+			enrollment: { ...enrollment, device_id: membership.device_id },
+			keyId: EXPECTED_KEY_ID,
+		}));
+	return {
+		enrollment,
+		getScopeAuthorization: vi.fn(async ({ scopeId }: { scopeId: string }) => {
+			const scope = scopes.find((scope) => scope.scope_id === scopeId);
+			if (!scope) return { kind: "rejected" as const, error: "scope_not_found" as const };
+			return {
+				kind: "authorized" as const,
+				authorizationVersion: 1 as const,
+				scope,
+				members: members(scopeId),
+			};
+		}),
+		wireMembers: (scopeId: string) =>
+			members(scopeId).map(({ membership, enrollment, keyId }) => ({
+				membership,
+				enrollment,
+				key_id: keyId,
+			})),
 	};
 }
 
@@ -2930,6 +2975,7 @@ describe("createCoordinatorApp dependency injection", () => {
 	});
 
 	it("lets enrolled devices read non-admin Sharing domain membership snapshots", async () => {
+		// Arrange
 		const scopes: CoordinatorScope[] = [
 			{
 				scope_id: "scope-acme",
@@ -3005,6 +3051,7 @@ describe("createCoordinatorApp dependency injection", () => {
 				},
 			],
 		};
+		const snapshot = scopeSnapshotFixture(scopes, memberships);
 		const store = createMockStore({
 			getGroup: vi.fn(async () => ({
 				group_id: "g1",
@@ -3012,17 +3059,9 @@ describe("createCoordinatorApp dependency injection", () => {
 				archived_at: null,
 				created_at: "2026-03-28T00:00:00Z",
 			})),
-			getEnrollment: vi.fn(async () => ({
-				group_id: "g1",
-				device_id: "device-a",
-				public_key: "pk-a",
-				fingerprint: "fp-a",
-				identity_id: null,
-				display_name: "Device A",
-				enabled: 1,
-				created_at: "2026-03-28T00:00:00Z",
-			})),
+			getEnrollment: vi.fn(async () => snapshot.enrollment),
 			listScopes: vi.fn(async () => scopes),
+			getScopeAuthorization: snapshot.getScopeAuthorization,
 			listScopeMemberships: vi.fn(async (scopeId: string) => memberships[scopeId] ?? []),
 			listDeviceScopeMemberships: vi.fn(async (deviceId: string) =>
 				Object.values(memberships)
@@ -3039,6 +3078,7 @@ describe("createCoordinatorApp dependency injection", () => {
 			requestVerifier: allowRequest,
 		});
 
+		// Act
 		const scopeRes = await app.request("/v1/scopes?group_id=g1", {
 			headers: authHeaders("device-a", "nonce-scopes"),
 		});
@@ -3049,12 +3089,17 @@ describe("createCoordinatorApp dependency injection", () => {
 			headers: authHeaders("device-a", "nonce-other"),
 		});
 
+		// Assert
 		expect(scopeRes.status).toBe(200);
-		expect(await scopeRes.json()).toEqual({ items: [scopes[0]] });
+		expect(await scopeRes.json()).toEqual({ version: 1, items: [scopes[0]] });
 		expect(memberRes.status).toBe(200);
-		expect(await memberRes.json()).toEqual({ items: memberships["scope-acme"] });
+		expect(await memberRes.json()).toEqual({
+			authorization_version: 1,
+			scope: scopes[0],
+			items: snapshot.wireMembers("scope-acme"),
+		});
 		expect(otherRes.status).toBe(403);
-		expect(await otherRes.json()).toEqual({ error: "scope_not_authorized" });
+		expect(await otherRes.json()).toEqual({ error: "scope_membership_required" });
 	});
 
 	it("grants devices explicitly to a Sharing domain", async () => {

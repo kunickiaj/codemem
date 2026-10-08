@@ -390,9 +390,36 @@ A missing or malformed roster receipt is unavailable, not an empty authorized
 roster. Final results must match the captured scope and contain only exact captured
 member tuples; validated members sort by device ID in both stores.
 
-Neither backend falls back to raw membership getters. Public routes and caches
-do not use this method yet; versioned wire responses, all refresh branches, and
-managed local readers remain separate implementation slices.
+Neither backend falls back to raw membership getters.
+
+### Signed scope responses
+
+`GET /v1/scopes` returns `{ version: 1, items: scope[] }` as a discovery catalogue.
+Its metadata is not member or key permission; consumers must fetch the current
+authorization snapshot for each scope before using it as cache authority.
+
+`GET /v1/scopes/:scope_id/members` requires signed admission and rate limiting
+before calling `getScopeAuthorization` once. It returns
+`{ authorization_version: 1, scope, items: [{ membership, enrollment, key_id }] }`.
+
+The requester must appear in the current snapshot with the exact group, device,
+public key, fingerprint, and Identity captured before signature verification.
+Removal, disablement, revocation, or a principal change cannot grant access through
+a newly read enrollment. Failure returns `403 scope_membership_required`.
+
+Missing, inactive, foreign-source, or archived scope decisions return the masked
+`404 scope_not_found`. Unconfirmed snapshots and storage failures return fixed
+`503 scope_authorization_unavailable`, without database diagnostics.
+
+Raw admin listings remain inspection-only, and bootstrap responses are unchanged.
+The signed remote cache consumer validates version 1 and unwraps each current
+membership before reconciliation. Invalid envelopes, key evidence, or changed
+catalogue/snapshot tuples fail stale rather than becoming an empty roster.
+
+The existing fetcher interface cannot carry newer scope metadata, so a change
+between catalogue and member reads fails stale. Full current-authority cache
+adoption, including local/admin-path changes and updated snapshot metadata,
+and managed local readers remain separate slices.
 
 ## Activation limits
 

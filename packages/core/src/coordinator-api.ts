@@ -32,6 +32,7 @@ import {
 	CoordinatorMembershipError,
 	SCOPE_MEMBERSHIP_EFFECT_CONFLICT,
 } from "./coordinator-membership-effects.js";
+import { scopeAuthorizationResponse } from "./coordinator-scope-authorization-response.js";
 import type {
 	CoordinatorBootstrapGrantAuthorizationError,
 	CoordinatorBootstrapGrantAuthorizationInput,
@@ -791,7 +792,7 @@ export function createCoordinatorApp(
 	});
 
 	// -----------------------------------------------------------------------
-	// GET /v1/scopes — list syncable scopes for the authenticated group member
+	// GET /v1/scopes — discovery catalogue, never member/key authority
 	// -----------------------------------------------------------------------
 
 	app.get("/v1/scopes", async (c) => {
@@ -818,7 +819,9 @@ export function createCoordinatorApp(
 				const membership = membershipByScope.get(scope.scope_id);
 				return Boolean(membership && activeCurrentMembership(membership, scope));
 			});
-			return c.json({ items });
+			// Version describes the catalogue format only. Consumers must fetch each
+			// actual scope's current member snapshot before granting cache authority.
+			return c.json({ version: 1, items });
 		} finally {
 			await store.close();
 		}
@@ -838,18 +841,10 @@ export function createCoordinatorApp(
 			const { auth, response } = await authorizeGroupMember(store, groupId, c);
 			if (response) return response;
 			if (!auth.enrollment) return c.json({ error: "unknown_device" }, 401);
-			const scopes = await store.listScopes({ groupId, includeInactive: false });
-			const scope = scopes.find((item) => item.scope_id === scopeId) ?? null;
-			if (scope?.status !== "active") return c.json({ error: "scope_not_found" }, 404);
-			const memberships = await store.listScopeMemberships(scopeId, false);
-			const requesterAuthorized = memberships.some(
-				(membership) =>
-					membership.device_id === String(auth.enrollment?.device_id) &&
-					activeCurrentMembership(membership, scope),
-			);
-			if (!requesterAuthorized) return c.json({ error: "scope_not_authorized" }, 403);
-			return c.json({
-				items: memberships.filter((membership) => activeCurrentMembership(membership, scope)),
+			return await scopeAuthorizationResponse(c, store, {
+				groupId,
+				scopeId,
+				requester: auth.enrollment,
 			});
 		} finally {
 			await store.close();
