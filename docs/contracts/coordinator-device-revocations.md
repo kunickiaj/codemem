@@ -430,8 +430,10 @@ it does not add a new browser, account-owner, or signed-request ceremony.
 Both paths require numeric version 1 and complete current scope/member/key
 evidence. Malformed, unversioned, duplicate, foreign-source, or superseded
 snapshots fail rather than falling back to raw history or an empty roster.
-The cache validates each enrollment's usable key, exact-text fingerprint, and
-canonical key ID; key evidence is not persisted as a new permission record.
+The cache validates each enrollment's usable key, device/group tuple, fingerprint
+field shape, and canonical key ID. Legacy stored fingerprints remain unchanged
+tuple evidence; the decoder does not require them to equal a newly computed hash.
+Key evidence is not persisted as a new permission record in this slice.
 
 The current snapshot's scope metadata replaces catalogue metadata. The configured
 cache authority can be a URL rather than the server's coordinator ID; source
@@ -441,6 +443,10 @@ Refresh gathers and validates every scope in a group before committing scope
 rows, members, omissions, and successful freshness together. Malformed snapshots
 and source or epoch conflicts preserve that group's prior cache and success time
 and record it as stale. Other groups can still refresh independently.
+
+Member epochs are compared only when the current snapshot includes that member.
+A validated omission revokes its cached row even when the member epoch is newer
+than the unchanged scope epoch, without lowering the cached epoch.
 
 If a snapshot re-adds a cached revoked device at the same epoch, refresh grants
 nothing but still applies validated omissions and scope archiving in one

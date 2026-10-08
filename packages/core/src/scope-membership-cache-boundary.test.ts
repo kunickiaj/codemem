@@ -18,6 +18,7 @@ import {
 	cacheTime,
 	cacheWireSnapshot,
 } from "./scope-membership-cache-test-fixtures.js";
+import { decodeScopeCatalogue, decodeScopeMembers } from "./scope-membership-wire.js";
 import { verifySignature } from "./sync-auth.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { ensureDeviceIdentity, loadPublicKey } from "./sync-identity.js";
@@ -58,7 +59,7 @@ const badSnapshots: Array<[string, (wire: Wire) => unknown]> = [
 		"wrong canonical key id",
 		(wire) => ({ ...wire, items: wire.items.map((item) => ({ ...item, key_id: "0".repeat(64) })) }),
 	],
-	["wrong exact-text fingerprint", (wire) => withEnrollment(wire, { fingerprint: "0".repeat(64) })],
+	["nontext fingerprint", (wire) => withEnrollment(wire, { fingerprint: 42 })],
 	[
 		"stale member epoch",
 		(wire) => ({
@@ -253,6 +254,76 @@ it("accepts a canonical key alias with its own exact-text fingerprint", async ()
 	expect(authorization().authorized).toBe(true);
 });
 
+async function legacyFingerprintSnapshot(coordinatorDbPath: string) {
+	const coordinator = new BetterSqliteCoordinatorStore(coordinatorDbPath);
+	const target = { scopeId: "scope-a", groupId: "group-a" };
+	try {
+		await coordinator.createGroup(target.groupId);
+		await coordinator.createScope({ ...target, label: "Legacy scope", membershipEpoch: 3 });
+		await coordinator.enrollDevice(target.groupId, {
+			deviceId: "device-a",
+			publicKey: CANONICAL_PUBLIC_KEY,
+			fingerprint: "a".repeat(64),
+		});
+		await coordinator.grantScopeMembership({
+			...target,
+			deviceId: "device-a",
+			membershipEpoch: 3,
+			effectId: "legacy-grant",
+		});
+		const current = await coordinator.getScopeAuthorization(target);
+		if (current.kind !== "authorized") throw new Error("Missing legacy fixture authorization");
+		return {
+			authorization_version: current.authorizationVersion,
+			scope: current.scope,
+			items: current.members.map(({ membership, enrollment, keyId }) => ({
+				membership,
+				enrollment,
+				key_id: keyId,
+			})),
+		};
+	} finally {
+		await coordinator.close();
+	}
+}
+
+it("local cache accepts the producer's opaque legacy fingerprint unchanged", async () => {
+	// Arrange: stored fingerprint evidence is independent of the canonical key digest.
+	const coordinatorDbPath = join(keysDir, "legacy.sqlite");
+	const snapshot = await legacyFingerprintSnapshot(coordinatorDbPath);
+	expect(snapshot.items[0]?.enrollment.fingerprint).toBe("a".repeat(64));
+	// Act
+	const result = await refreshScopeMembershipCache(db, {
+		groupIds: ["group-a"],
+		coordinatorDbPath,
+		coordinatorId: "local",
+		now: new Date(cacheTime),
+	});
+	// Assert
+	expect(result.status).toBe("refreshed");
+	expect(
+		getCachedScopeAuthorization(db, {
+			deviceId: "device-a",
+			scopeId: "scope-a",
+			now: new Date(cacheTime),
+		}),
+	).toMatchObject({ authorized: true, freshness: "fresh" });
+	expect(fetch).not.toHaveBeenCalled();
+});
+
+it("legacy wire decoder accepts the producer's opaque legacy fingerprint unchanged", async () => {
+	// Arrange: use the actual producer DTO, not a hand-built acceptance fixture.
+	const snapshot = await legacyFingerprintSnapshot(join(keysDir, "legacy.sqlite"));
+	const [scope] = decodeScopeCatalogue({ version: 1, items: [snapshot.scope] }, "group-a");
+	const malformed = withEnrollment(snapshot, { fingerprint: 42 });
+	// Act
+	const decode = () => decodeScopeMembers(snapshot, scope, "group-a", "scope-a");
+	const rejectMalformed = () => decodeScopeMembers(malformed, scope, "group-a", "scope-a");
+	// Assert: malformed evidence remains invalid even though stored text is opaque.
+	expect(rejectMalformed).toThrow("scope_authorization_unavailable");
+	expect(decode()).toEqual(snapshot.items.map((item) => item.membership));
+});
+
 it("local current store omits revoked-key, disabled and deleted enrollments without raw membership fallback", async () => {
 	// Arrange: coordinator storage is not the memory/cache database.
 	const coordinatorDbPath = join(keysDir, "coordinator.sqlite");
@@ -308,6 +379,75 @@ it("local current store omits revoked-key, disabled and deleted enrollments with
 				getCachedScopeAuthorization(db, { deviceId, scopeId: "scope-a", now: new Date(cacheTime) }),
 			).toMatchObject({ authorized: deviceId === "device-a", freshness: "fresh" });
 		}
+	} finally {
+		await coordinator.close();
+	}
+});
+
+it("local revocation removes a higher-epoch cached member without rolling back its epoch", async () => {
+	// Arrange: independent member epochs exceed the unchanged scope epoch.
+	const coordinatorDbPath = join(keysDir, "coordinator.sqlite");
+	const coordinator = new BetterSqliteCoordinatorStore(coordinatorDbPath);
+	const target = { scopeId: "scope-a", groupId: "group-a" };
+	const lookup = (deviceId: string) =>
+		getCachedScopeAuthorization(db, { deviceId, ...target, now: new Date(cacheTime) });
+	const localOptions = {
+		groupIds: ["group-a"],
+		coordinatorDbPath,
+		coordinatorId: "local",
+		now: new Date(cacheTime),
+	};
+	try {
+		await coordinator.createGroup("group-a");
+		await coordinator.createScope({ ...target, label: "Local scope", membershipEpoch: 3 });
+		for (const [deviceId, membershipEpoch] of [
+			["device-a", 4],
+			["device-b", 3],
+		] as const) {
+			await coordinator.enrollDevice("group-a", {
+				deviceId,
+				publicKey: CANONICAL_PUBLIC_KEY,
+				fingerprint: fingerprintPublicKey(CANONICAL_PUBLIC_KEY),
+			});
+			await coordinator.grantScopeMembership({
+				...target,
+				deviceId,
+				membershipEpoch,
+				effectId: `grant-${deviceId}`,
+			});
+		}
+		expect((await refreshScopeMembershipCache(db, localOptions)).status).toBe("refreshed");
+		expect(lookup("device-a")).toMatchObject({
+			authorized: true,
+			membership: { membership_epoch: 4 },
+		});
+		const before = await coordinator.getScopeAuthorization(target);
+		// Act: the real revoke advances only A to epoch 5 and omits A from the current roster.
+		expect(
+			await coordinator.revokeScopeMembership({
+				...target,
+				deviceId: "device-a",
+				effectId: "revoke-a",
+			}),
+		).toBe(true);
+		const current = await coordinator.getScopeAuthorization(target);
+		const first = await refreshScopeMembershipCache(db, localOptions);
+		const repeated = await refreshScopeMembershipCache(db, localOptions);
+		// Assert: valid omission revokes A while preserving both epochs and B's grant.
+		if (before.kind !== "authorized" || current.kind !== "authorized")
+			throw new Error("Missing current fixture authorization");
+		expect(current.scope).toEqual(before.scope);
+		expect(current.members.map((item) => item.membership.device_id)).toEqual(["device-b"]);
+		expect([first.status, repeated.status]).toEqual(["refreshed", "refreshed"]);
+		expect(lookup("device-a")).toMatchObject({
+			authorized: false,
+			state: "revoked",
+			freshness: "fresh",
+			scope: { membership_epoch: 3 },
+			membership: { membership_epoch: 4, status: "revoked" },
+		});
+		expect(lookup("device-b")).toMatchObject({ authorized: true, freshness: "fresh" });
+		expect(fetch).not.toHaveBeenCalled();
 	} finally {
 		await coordinator.close();
 	}

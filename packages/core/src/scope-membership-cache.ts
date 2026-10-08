@@ -681,8 +681,11 @@ function requireUnsupersededSnapshot(db: Database, batch: CurrentScopeBatch): bo
 	let revivalConflict = false;
 	for (const row of rows) {
 		const member = incoming.get(row.device_id);
-		const incomingEpoch = member?.membership_epoch ?? scope.membership_epoch;
-		if (row.membership_epoch > incomingEpoch || !matchesSnapshotSource(row, batch))
+		// Current omissions remove access even when the member advanced beyond the scope epoch.
+		if (
+			(member && row.membership_epoch > member.membership_epoch) ||
+			!matchesSnapshotSource(row, batch)
+		)
 			throw new Error("Current scope snapshot superseded by cached membership.");
 		if (member && row.status === "revoked" && row.membership_epoch === member.membership_epoch)
 			revivalConflict = true;

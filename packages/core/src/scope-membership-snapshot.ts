@@ -13,7 +13,6 @@ import type {
 	CoordinatorScope,
 	CoordinatorScopeMembership,
 } from "./coordinator-store-contract.js";
-import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 export interface ScopeMembershipCatalog {
 	version: 1;
@@ -61,13 +60,13 @@ function requireMember(raw: unknown, scope: CoordinatorScope): CoordinatorScopeM
 	requireScopeAuthorizationRecord(member.membership, MEMBERSHIP_FIELDS);
 	requireScopeAuthorizationRecord(member.enrollment, ENROLLMENT_FIELDS);
 	const { membership, enrollment } = member;
+	// Legacy fingerprints are stored tuple evidence; canonical identity comes from the key blob.
 	const parsed = parseSshEd25519PublicKeyForRevocation(enrollment.public_key);
 	if (
 		!isCurrentScopeMember(scope, membership) ||
 		enrollment.enabled !== 1 ||
 		enrollment.group_id !== scope.group_id ||
 		enrollment.device_id !== membership.device_id ||
-		fingerprintPublicKey(enrollment.public_key) !== enrollment.fingerprint ||
 		parsed.kind !== "ed25519" ||
 		createHash("sha256").update(parsed.blob).digest("hex") !== member.key_id
 	)

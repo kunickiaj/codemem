@@ -13,7 +13,6 @@ import type {
 	CoordinatorScope,
 	CoordinatorScopeMembership,
 } from "./coordinator-store-contract.js";
-import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 function unavailable(): never {
 	throw new Error("scope_authorization_unavailable");
@@ -54,11 +53,11 @@ function decodeMember(raw: unknown, scope: CoordinatorScope): CoordinatorScopeMe
 		!/^[a-f0-9]{64}$/.test(item.key_id)
 	)
 		unavailable();
+	// Preserve the producer's legacy fingerprint tuple without redefining its canonical key ID.
 	const parsed = parseSshEd25519PublicKeyForRevocation(enrollment.public_key);
 	if (
 		parsed.kind !== "ed25519" ||
-		createHash("sha256").update(parsed.blob).digest("hex") !== item.key_id ||
-		fingerprintPublicKey(enrollment.public_key) !== enrollment.fingerprint
+		createHash("sha256").update(parsed.blob).digest("hex") !== item.key_id
 	)
 		unavailable();
 	return membership;
