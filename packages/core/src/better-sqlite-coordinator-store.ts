@@ -130,6 +130,7 @@ import {
 	assertLegacyDeviceScope,
 	captureLegacyEnrollment,
 	captureLegacyEnrollmentPublicKey,
+	captureLegacyProjectInviteInput,
 	DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL,
 	LEGACY_DEVICE_DENIAL_SQL,
 	LEGACY_ENROLLMENT_DENIAL_SQL,
@@ -137,6 +138,7 @@ import {
 	legacyDeviceAuthorizationFailure,
 	legacyDeviceDenial,
 	legacyDeviceWriteChanges,
+	legacyProjectInviteOwnershipEvidence,
 } from "./coordinator-legacy-device-ownership.js";
 import type {
 	CoordinatorLegacyTeamCompletionManifestV1,
@@ -1891,24 +1893,51 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		invite: CoordinatorInvite,
 		opts: CoordinatorConsumeProjectInviteInput,
 	) {
-		const participantOpts = { ...opts, identityId: opts.recipientActorId };
-		const subjects = this.validateRecipientInviteParticipants(invite, participantOpts);
+		const current = this.db
+			.prepare(`SELECT public_key FROM enrolled_devices
+			WHERE group_id = ? AND device_id = ?`)
+			.get(invite.group_id, opts.deviceId);
+		const currentPublicKey = captureLegacyEnrollmentPublicKey(current ?? null);
 		const inviter = invite.inviter_device_id
 			? (this.db
 					.prepare(`SELECT ${ENROLLMENT_COLUMNS} FROM enrolled_devices
 				WHERE group_id = ? AND device_id = ?`)
 					.get(invite.group_id, invite.inviter_device_id) as CoordinatorEnrollment | undefined)
 			: undefined;
-		return projectInviteGuardEvidence(invite, opts, inviter ?? null, {
-			recipient: subjects[1] ?? null,
-			inviter: subjects[3] ?? null,
+		const incomingKeyId = enrollmentRevocationKeyId(opts.publicKey);
+		const evidence = projectInviteGuardEvidence(invite, opts, inviter ?? null, {
+			recipient: incomingKeyId,
+			inviter: inviter ? enrollmentRevocationKeyId(inviter.public_key) : null,
 		});
+		const guard = legacyProjectInviteOwnershipEvidence(evidence, opts.deviceId, {
+			incoming: incomingKeyId,
+			current: currentPublicKey === null ? null : enrollmentRevocationKeyId(currentPublicKey),
+		});
+		try {
+			const row = this.db
+				.prepare(`SELECT (${guard.revocationSql}) AS revoked,
+			(${guard.ownershipSql}) AS owned`)
+				.get(...guard.revocationValues, ...guard.ownershipValues) as
+				| { revoked: number; owned: number }
+				| undefined;
+			if (!row || [row.revoked, row.owned].some((value) => value !== 0 && value !== 1))
+				throw new Error("device_ownership_authorization_unavailable");
+			if (row.revoked === 1) throw new Error("device_revoked");
+			if (row.owned === 1) throw new Error("device_ownership_requires_verified_identity");
+		} catch (error) {
+			legacyDeviceAuthorizationFailure(error);
+		}
+		this.validateRecipientInviteParticipants(invite, {
+			...opts,
+			identityId: opts.recipientActorId,
+		});
+		return guard;
 	}
 
 	private assertProjectInviteEligible(
 		invite: CoordinatorInvite,
 		opts: CoordinatorConsumeProjectInviteInput,
-		guard: ReturnType<typeof projectInviteGuardEvidence>,
+		guard: ReturnType<BetterSqliteCoordinatorStore["prepareProjectInviteGuards"]>,
 	): void {
 		const state = this.db
 			.prepare(`SELECT i.revoked_at, g.group_id, g.archived_at
@@ -1924,10 +1953,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		if (!state || state.revoked_at) throw new Error("invite_invalid");
 		if (!state.group_id) throw new Error("group_not_found");
 		if (state.archived_at) throw new Error("group_archived");
-		this.validateRecipientInviteParticipants(invite, {
-			...opts,
-			identityId: opts.recipientActorId,
-		});
+		this.prepareProjectInviteGuards(invite, opts);
 		const eligible = this.db
 			.prepare(`SELECT 1 WHERE ${guard.boundEligibilitySql}`)
 			.get(...guard.boundEligibilityValues);
@@ -1937,7 +1963,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	async consumeProjectInvite(
 		input: CoordinatorConsumeProjectInviteInput,
 	): Promise<CoordinatorProjectInviteAcceptance> {
-		const opts = { ...input };
+		const opts = captureLegacyProjectInviteInput(input);
 		const consumedAt = normalizeInviteExpiresAt(opts.now);
 		return this.db
 			.transaction(() => {
@@ -2225,10 +2251,21 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			if (seed.device_id === row.device_id)
 				throw new Error("bootstrap grant seed and worker device ids must differ.");
 		}
-		const guard = joinReviewGuardEvidence(row, seed, {
-			recipient: enrollmentRevocationKeyId(row.public_key),
-			seed: seed ? enrollmentRevocationKeyId(seed.public_key) : null,
-		});
+		const currentPublicKey = captureLegacyEnrollmentPublicKey(
+			this.db
+				.prepare(`SELECT public_key FROM enrolled_devices WHERE group_id = ? AND device_id = ?`)
+				.get(row.group_id, row.device_id) ?? null,
+		);
+		const guard = joinReviewGuardEvidence(
+			row,
+			seed,
+			{
+				recipient: enrollmentRevocationKeyId(row.public_key),
+				seed: seed ? enrollmentRevocationKeyId(seed.public_key) : null,
+				current: currentPublicKey === null ? null : enrollmentRevocationKeyId(currentPublicKey),
+			},
+			currentPublicKey,
+		);
 		this.assertJoinApprovalCurrentSync(guard);
 		return guard;
 	}
@@ -2236,6 +2273,13 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	private assertJoinApprovalCurrentSync(guard: ReturnType<typeof joinReviewGuardEvidence>) {
 		if (this.db.prepare(`SELECT 1 WHERE ${guard.revocationSql}`).get(...guard.revocationValues))
 			throw new Error("device_revoked");
+		let owned: unknown;
+		try {
+			owned = this.db.prepare(`SELECT 1 WHERE ${guard.ownershipSql}`).get(...guard.ownershipValues);
+		} catch {
+			throw new Error("device_ownership_authorization_unavailable");
+		}
+		if (owned) throw new Error("device_ownership_requires_verified_identity");
 		if (!this.db.prepare(`SELECT 1 WHERE ${guard.eligibilitySql}`).get(...guard.eligibilityValues))
 			throw new Error("join_review_incomplete");
 	}
@@ -2247,6 +2291,8 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		reviewedAt: string,
 	) {
 		this.assertJoinApprovalCurrentSync(guard);
+		if (!this.db.prepare(`SELECT 1 WHERE ${guard.sourceSql}`).get(...guard.sourceValues))
+			throw new Error("join_review_incomplete");
 		this.enrollDeviceSync(row.group_id, {
 			deviceId: row.device_id,
 			fingerprint: row.fingerprint,

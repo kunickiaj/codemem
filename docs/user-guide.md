@@ -173,7 +173,7 @@ has no evaluated runs and null rates, rather than a quality pass.
 ## Observer auth configuration
 
 - Explicit runtime choices are `api_key`, `opencode_v2` (OpenCode account), `claude_sidecar`, and `codex_sidecar`. `api_http` remains supported for existing automatic setups.
-- Pi users stay on `api_http`. `codemem setup` can derive unset `observer_provider` / `observer_model` from pi API-key providers (cheap-model-first) without copying secrets. OAuth-only pi installs stay explicitly `unconfigured (oauth-only)` in v1 — set observer settings manually.
+- Pi observer auto-derivation is API-key-only. `codemem setup` can derive unset `observer_provider` / `observer_model` from pi API-key providers (cheap-model-first) without copying secrets. `unconfigured (oauth-only)` is an auto-derivation status, not the state of every observer connection. Configure observer credentials or the connection separately, with provider or model overrides as needed.
 - `claude_sidecar` runs observer calls through the local Claude runtime (subscription/session auth) and does not require `ANTHROPIC_API_KEY`.
 - `claude_command` controls how `claude_sidecar` invokes Claude CLI (default `["claude"]`).
   - Wrapper example: `"claude_command": ["wrapper", "claude", "--"]`
@@ -248,6 +248,16 @@ Command/file token caching notes:
 - Retrieval, skipped injection after attempt creation, current-request cache reuse, and handoff status are recorded in the local evidence ledger. A positive token budget too small for the context prefix is rejected before an evidence-ledger attempt is recorded and reported once through the plugin's warning logs. Records contain bounded memory identity, diagnostic codes, and safe repository-relative working-set paths, never prompt text, pack text, memory content, or absolute paths. Reattaching historical cached context does not create attempts, and ledger failures do not block injection. If post-restart identity repair fails, usable fallback context is still injected without assigning its delivery to a stale or failed ledger attempt.
 - Reuse savings estimate discovery work versus pack read size.
 - Automatic message recall deduplicates unchanged retained item fingerprints. Narrow continuation prompts skip injection only after retrieval confirms no changed facts and file/tool context is unchanged. When local plugin logging is enabled, `inject.recall` JSON separates new and retained estimated tokens, duplicate counts, and bounded reasons without content or identifiers. See [lifecycle and evaluation details](opencode-retained-recall.md); these estimates do not measure answer usefulness or provider token usage.
+
+### Pi
+
+Pi captures session, message, and tool activity through `@codemem/pi-extension`. Automatic recall appends a block to the latest user message of the request copy. Older messages replay that process's in-memory decision only; `session_start` and a restart clear it, and the next turn fetches again. The system prompt and saved transcript are not changed. A successful built-in `read` can also attach file context to that tool result.
+
+- `CODEMEM_PI_INJECT_PROMPTS=0` disables prompt recall. If that variable is unset, `CODEMEM_INJECT_CONTEXT=0` does the same for Pi prompts.
+- `CODEMEM_PI_FILE_CONTEXT=0` disables read-file context. It is independent of prompt recall.
+- `pi.tools_mode` / `CODEMEM_PI_TOOLS_MODE`: `native` (default) registers 14 native tools; `mcp-adapter` skips native registration so an independently configured MCP surface can supply them. Use one surface.
+
+Settings: [Pi extension](plugin-reference.md#pi-extension) and the [package configuration table](../packages/pi-extension/README.md#configuration).
 
 ### Usage metric semantics
 
@@ -675,7 +685,7 @@ Generated MCP configurations use the durable global `codemem` binary when it is
 available, allowing it to resolve the globally installed sibling package.
 Setup-managed `npx` launchers instead request `codemem` and
 `@codemem/embeddings` together in one temporary environment. After installation,
-restart the host you configured — OpenCode, Claude Code, or Codex — plus any
+restart the host you configured — OpenCode, Claude Code, Codex, or Pi — plus any
 running `codemem serve` process. Each MCP process checks runtime availability
 once per lifetime, so a running Claude or Codex MCP host stays lexical-only until
 it restarts; restarting `codemem serve` alone does not restart that MCP child.

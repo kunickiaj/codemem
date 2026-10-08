@@ -8,10 +8,7 @@ import { fileURLToPath } from "node:url";
 import { npmDistTagForReleaseTag } from "./release-dist-tag.mjs";
 
 const releaseWorkflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-const patchReleaseNotes = readFileSync(
-	new URL("../docs/release-notes-0.46.1.md", import.meta.url),
-	"utf8",
-);
+const changelog = readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf8");
 const publishedPackages = [
 	["@codemem/embeddings", "packages/embeddings"],
 	["@codemem/core", "packages/core"],
@@ -34,7 +31,6 @@ describe("release npm dist-tag routing", () => {
 				packageName,
 				distTag: npmDistTagForReleaseTag(releaseTag),
 			}));
-
 			assert.equal(routes.length, publishedPackages.length);
 			assert.ok(routes.every(({ distTag }) => distTag === expectedTag));
 		});
@@ -46,12 +42,7 @@ describe("release npm dist-tag routing", () => {
 		assert.match(releaseWorkflow, /printf '%s\\n' "\$TAG_OUTPUT" >> "\$GITHUB_OUTPUT"/);
 		assert.match(releaseWorkflow, /publish --tag "\$\{DIST_TAG\}"/);
 		for (const [packageName, packageDirectory] of publishedPackages) {
-			assert.match(
-				releaseWorkflow,
-				new RegExp(
-					`publish_if_missing "${packageName.replaceAll("/", "\\/")}" "${packageDirectory.replaceAll("/", "\\/")}"`,
-				),
-			);
+			assert.match(releaseWorkflow, new RegExp(`publish_if_missing "${packageName.replaceAll("/", "\\/")}" "${packageDirectory.replaceAll("/", "\\/")}"`));
 		}
 		assert.doesNotMatch(releaseWorkflow, /npm dist-tag (?:add|rm)/);
 	});
@@ -61,10 +52,7 @@ describe("release npm dist-tag routing", () => {
 		const scriptPath = join(directory, "release dist tag.mjs");
 		try {
 			copyFileSync(fileURLToPath(new URL("./release-dist-tag.mjs", import.meta.url)), scriptPath);
-			const result = spawnSync(process.execPath, [scriptPath, "v0.44.0-alpha.2"], {
-				encoding: "utf8",
-			});
-
+			const result = spawnSync(process.execPath, [scriptPath, "v0.44.0-alpha.2"], { encoding: "utf8" });
 			assert.equal(result.status, 0);
 			assert.equal(result.stdout, "tag=alpha\n");
 		} finally {
@@ -74,11 +62,40 @@ describe("release npm dist-tag routing", () => {
 });
 
 describe("GitHub release presentation", () => {
-	it("uses the lowercase product name and prepends curated notes to generated changes", () => {
+	it("uses generated notes independently of repository changelog files", () => {
 		assert.match(releaseWorkflow, /--title "codemem \$RELEASE_TAG"/);
-		assert.match(releaseWorkflow, /RELEASE_NOTES_ARGS=\(--notes "\$\(cat "\$RELEASE_NOTES_PATH"\)"\)/);
 		assert.match(releaseWorkflow, /--generate-notes/);
-		assert.doesNotMatch(patchReleaseNotes, /^# /m);
-		assert.doesNotMatch(patchReleaseNotes, /\b(?:CodeMem|Codemem)\b/);
+		assert.doesNotMatch(releaseWorkflow, /RELEASE_NOTES|release-notes|CHANGELOG\.md/);
+	});
+
+	it("can create a release from an older tagged checkout without notes tooling", () => {
+		const directory = mkdtempSync(join(tmpdir(), "codemem old release "));
+		const releaseStep = releaseWorkflow.slice(releaseWorkflow.indexOf("      - name: Create GitHub Release"));
+		const script = releaseStep.slice(releaseStep.indexOf("          set -euo pipefail"));
+		// Mock gh locally: view reports no existing release, create records its arguments.
+		const mock = 'gh() { if [ "$2" = "view" ]; then return 1; fi; printf "%s\\n" "$@"; }\n';
+		try {
+			const result = spawnSync("bash", ["-c", mock + script], {
+				cwd: directory,
+				encoding: "utf8",
+				env: { ...process.env, RELEASE_TAG: "v0.46.2" },
+			});
+			assert.equal(result.status, 0, result.stderr);
+			assert.match(result.stdout, /create\nv0\.46\.2\n--generate-notes/);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("repository changelog", () => {
+	it("uses dated version entries, change categories and comparison links", () => {
+		assert.match(changelog, /^## \[Unreleased\]$/m);
+		for (const version of ["0.46.2", "0.46.1", "0.46.0"]) {
+			assert.ok(changelog.includes(`## [${version}] - `));
+			assert.ok(changelog.includes(`[${version}]: https://github.com/kunickiaj/codemem/compare/`));
+		}
+		assert.match(changelog, /^### (?:Added|Changed|Fixed|Removed)$/m);
+		assert.doesNotMatch(changelog, /^### (?:Highlights|Compatibility and upgrade)$/m);
 	});
 });
