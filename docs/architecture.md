@@ -277,6 +277,16 @@ PL->>VW: POST /api/prompt-pack-ledger delivery
 PL->>OC: append codemem context to latest user message
 ```
 
+### Pi request-copy injection
+
+`packages/pi-extension/src/index.ts` wires Pi's `context` event to `packages/pi-extension/src/inject.ts`. Decisions live in a `Map` keyed by user-message identity (session, role, text, and timestamp when present). Each call replays historical blocks exactly and fetches one pack for the latest undecided user message. The query is that message's text, trimmed and cut at 500 characters, or `recent work` when empty; project scope is separate. Dedup uses renderer item ids, fingerprints, and spans when the pack carries them.
+
+Defaults are 8 items, 800 approximate pack tokens, and 16000 characters. Without a retained ceiling, 800 is the pack request budget and does not reserve the header. A positive `CODEMEM_INJECT_RETAINED_TOKEN_BUDGET` enables the ceiling; zero, negative, and invalid values leave it uncapped. When the ceiling is on, the header is reserved, and a full ceiling fetches nothing new.
+
+Decisions clear on `session_start`. Ingest cursors are separate `codemem.cursor` metadata via `appendEntry`. `session_compact` skips one new fetch only when `willRetry` is set and `reason` is not `manual`. Failed compaction, `agent_settled`, and a later user message clear that skip. Manual and non-retry threshold compactions do not arm that skip; normal cached-decision behavior still applies.
+
+Pack transport is profile-proof, then `POST /api/pack`, then `codemem pack --json`, then `pi-hook-inject`. The HTTP pack attempt times out at 2 seconds. `@codemem/core` is not loaded in the Pi process.
+
 ## Observer pipeline
 
 The observer turns raw session transcripts into typed, structured memories. It's the quality gate — everything that ends up in the store passes through here.
@@ -371,8 +381,7 @@ Pi extension ingest posts pi lifecycle payloads to the `POST /api/pi-hooks` comp
 normalizes them through `buildRawEventEnvelopeFromPiEvent` and runs `ingestNormalizedEnvelope` with
 `source: "pi"` (same event identity as canonical `POST /api/raw-events`); retryable delivery reuses the
 payload for `codemem pi-hook-ingest` plus a pi-specific spool. Boundary flush events
-(`session_before_compact`, `session_shutdown`) always go through the CLI so extraction actually runs
-before pi discards context. The preferred HTTP pack path — prove `GET /api/prompt-pack-profile`, then
+(`session_before_compact`, `session_shutdown`) always attempt the CLI so extraction can run; a failed attempt is fail-open and does not break the session. The preferred HTTP pack path — prove `GET /api/prompt-pack-profile`, then
 targeted `POST /api/pack` — is unledgered (no opencode retrieval-ledger row). The queue/sweeper
 behavior is shared with the other adapters.
 

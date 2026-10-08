@@ -5,7 +5,7 @@
 
 **The code is still there. The reasoning usually isn’t.**
 
-codemem is persistent coding memory across sessions, machines, and teammates for [OpenCode](https://opencode.ai), [Claude Code](https://claude.ai/code), and Codex. It captures decisions, dead ends, and repository-specific traps, then automatically brings relevant context into later prompts.
+codemem is persistent coding memory across sessions, machines, and teammates for [OpenCode](https://opencode.ai), [Claude Code](https://claude.ai/code), Codex, and the [Pi coding agent](https://github.com/earendil-works/pi). It captures decisions, dead ends, and repository-specific traps, then automatically brings relevant context into later prompts.
 
 - **Automatic context injection** — relevant memories reach the agent without asking it to search; unchanged memories already in OpenCode context are not repeated
 - **Optional sync and sharing** — peer-to-peer sync carries selected project memory across machines; share project knowledge with a teammate or Team when it helps
@@ -14,6 +14,7 @@ codemem is persistent coding memory across sessions, machines, and teammates for
 - **Automatic injection for OpenCode 1 and 2** — the plugin injects context into every prompt, no manual steps; the OpenCode 2 integration is beta
 - **Claude Code plugin support** — install from the codemem marketplace source
 - **Multi-agent** — OpenCode, Claude Code, Codex, and pi share one project-scoped store
+- **Pi coding agent** — session capture, automatic recall, and 14 native memory tools; no MCP required
 - **Built-in viewer** — browse memories, sessions, and observer output in a local web UI
 - **Remote MCP access** — advanced single-user self-hosting can expose an OAuth-protected Streamable HTTP MCP endpoint to configured remote clients; keep the localhost viewer private ([guide](docs/remote-mcp-oauth.md))
 
@@ -30,7 +31,7 @@ codemem is persistent coding memory across sessions, machines, and teammates for
 covers macOS x64/arm64, Linux x64/arm64 (glibc 2.34+ or musl), and Windows x64.
 32-bit targets, including Linux armv7, are not supported.
 
-**Linux:** set `ONNXRUNTIME_NODE_INSTALL=skip` in your shell and the environment that launches OpenCode, Claude Code, or Codex **before the first package install**. This avoids downloading the unused ONNX Runtime GPU provider while keeping CPU inference. Setup-managed `npx` launchers cannot set it themselves.
+**Linux:** set `ONNXRUNTIME_NODE_INSTALL=skip` in your shell and the environment that launches OpenCode, Claude Code, Codex, or Pi **before the first package install**. This avoids downloading the unused ONNX Runtime GPU provider while keeping CPU inference. Setup-managed `npx` launchers cannot set it themselves.
 
 ### OpenCode
 
@@ -230,42 +231,26 @@ Codex hook ingestion shares the same raw-event pipeline as Claude and OpenCode t
 
 ### Pi
 
-Pi support ships as the `@codemem/pi-extension` pi-package. Install the CLI, then let setup wire the extension:
+Install the durable CLI, then configure only Pi. On Linux, set `ONNXRUNTIME_NODE_INSTALL=skip` before the first install, as in Prerequisites above.
 
 ```text
-npm i -g codemem
-codemem setup
+npm install -g codemem
+codemem setup --pi-only
 ```
 
-`codemem setup` auto-detects pi (`pi` on PATH or the agent dir; honors `PI_CODING_AGENT_DIR`) and appends `npm:@codemem/pi-extension@<version>` to `~/.pi/agent/settings.json` `packages`. Flags:
+Restart Pi.
 
-| Flag | Purpose |
-|------|---------|
-| `--pi-only` | Only configure pi |
-| `--pi-mcp` | Opt into MCP via third-party `pi-mcp-adapter` (writes `mcp.json` only when the adapter is detected) |
-| `--pi-extension-path <path>` | Dev: write a local-path `packages` entry instead of the npm pin |
+Verify:
 
-Uninstall: remove the `@codemem/pi-extension` entry from pi's `packages` list and restart pi. The shared memory store is left intact.
+```text
+codemem status
+codemem stats
+codemem db raw-events-status
+```
 
-What you get:
+The extension captures Pi activity, recalls into the latest user message of the request copy, attaches context after a successful built-in `read`, and registers 14 native `memory_*` tools by default. MCP is not required. Observer setup can fill unset settings from Pi API-key providers only. Pi OAuth-only credentials cannot be auto-derived for the observer; configure an observer connection separately ([observer auth](docs/user-guide.md#observer-auth-configuration)).
 
-- **Ingest** — extension POSTs to `POST /api/pi-hooks` (a compatibility alias that normalizes the payload once and runs it through the canonical ingest envelope with `source: "pi"`, the same event identity as `POST /api/raw-events`), with `codemem pi-hook-ingest` CLI fallback (spool when offline)
-- **Injection** — appends a `## codemem memories` block to the latest user message of the request copy on pi's `context` event; older messages replay the same bytes (never the system prompt, never the saved session). `CODEMEM_INJECT_RETAINED_TOKEN_BUDGET` optionally caps retained injected tokens
-- **Tools** — all 14 `memory_*` tools registered natively via `pi.registerTool` (HTTP preferred, CLI fallback). No `pi-mcp-adapter` required for tools
-- **Compaction** — pi-only observe-only boundary: `session_before_compact` flushes extraction before pi discards context; never replaces pi's summarizer. A later pack fetch is skipped only when that compaction immediately resumes the turn
-- **Fork/resume** — stream identity re-keys on every `session_start`
-- **Project identity** — the extension resolves the project from the nearest Git root (same walk as the other adapters)
-- **Dashboard** — pi rows appear in the source-agnostic feed/sessions/projects tabs with no extra setup
-
-Cross-agent: one shared store. Memories from OpenCode/Claude/Codex sessions inject into pi (and the reverse) because packs are project-scoped, never agent-scoped.
-
-Caveats (v1):
-
-- Observer extraction from pi config supports **API-key providers only**. OAuth-only installs get an explicit `unconfigured (oauth-only)` status — never a silent 401. Set `observer_provider` / `observer_model` explicitly when needed. Selection is cheap-model-first.
-- The preferred HTTP pack path — prove `GET /api/prompt-pack-profile`, then a targeted `POST /api/pack` — is unledgered: pi injection does not write an opencode retrieval-ledger row.
-- `--pi-mcp` requires the third-party `pi-mcp-adapter` package; without it setup writes nothing MCP-related and explains the prerequisite. Native tools remain the default surface (`pi.tools_mode: native`).
-
-See [`packages/pi-extension/README.md`](packages/pi-extension/README.md) and [docs/plugin-reference.md](docs/plugin-reference.md) for config knobs and lifecycle details.
+Setup, config, uninstall, and troubleshooting: [Pi extension](docs/plugin-reference.md#pi-extension) and [`packages/pi-extension/README.md`](packages/pi-extension/README.md).
 
 
 > The workflow below illustrates the OpenCode 1 hook names. OpenCode 2.0.24 uses
@@ -329,7 +314,7 @@ Validated request, policy, and authorization failures after a compatible handsha
 
 **Memories** are typed — `bugfix`, `feature`, `refactor`, `change`, `discovery`, `decision`, `exploration` — with structured fields like `facts`, `concepts`, `files_read`, and `files_modified` that improve retrieval relevance. Low-signal events are filtered at multiple layers before persistence.
 
-For architecture details, see [docs/architecture.md](docs/architecture.md).
+For architecture details, see [docs/architecture.md](docs/architecture.md). Release history lives in [CHANGELOG.md](CHANGELOG.md).
 
 ## CLI
 
@@ -415,6 +400,8 @@ codemem setup --opencode-only
 
 This updates your OpenCode config to install the plugin and register the MCP server. Restart OpenCode to activate.
 
+Pi registers the same memory tools natively by default and does not need MCP. See [Pi extension](docs/plugin-reference.md#pi-extension).
+
 The standalone `codemem-mcp-ts` binary runs the same stdio server used by `codemem mcp`. Viewer autostart is on by default for both invocation paths; set `CODEMEM_VIEWER=0` or `CODEMEM_VIEWER_AUTO=0` to disable. MCP autostart and the `serve start`/`stop`/`restart` lifecycle identify a running viewer through `GET /api/health` (service discriminator `codemem-viewer`), with one bounded `GET /api/stats` compatibility probe when an older viewer returns `404`.
 
 For local HTTP transport testing, run `codemem mcp http`. It listens on `127.0.0.1:38889` by default and exposes Streamable HTTP at `POST /mcp`; use `--host`, `--port`, and `--db-path` to override those values. OAuth discovery metadata and Dynamic Client Registration are available at `/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource/mcp`, and `/register`; set `--public-url` or `CODEMEM_MCP_HTTP_PUBLIC_URL` to the externally reachable `/mcp` URL so advertised endpoints use the public origin. `/authorize` redirects through a configured upstream OIDC provider before issuing public-client authorization codes, `/token` supports PKCE S256 exchange, and `/oauth/revoke` revokes access tokens. When a public URL or OIDC configuration is present, `POST /mcp` requires a valid bearer token; local-only HTTP mode remains unauthenticated for development and still applies loopback Host/Origin checks. Non-loopback binds are rejected unless you explicitly pass `--unsafe-public` or set `CODEMEM_MCP_HTTP_UNSAFE_PUBLIC=1`.
@@ -428,6 +415,8 @@ Config resolution precedence for runtime commands is:
 3. legacy global config at `~/.config/codemem/config.json{c}`
 
 Environment variables still override file values once a config file has been selected.
+
+Pi prompt recall, file context, and the native tool surface are documented in [Pi extension](docs/plugin-reference.md#pi-extension).
 
 Codemem config mutations use a same-directory lock and atomic replacement. Concurrent Codemem writers fail with a retryable conflict instead of silently losing an update; malformed or unreadable existing config is left unchanged. External editors do not participate in the lock, so Codemem checks that the file has not changed again immediately before replacement. Existing mode, owner, and group metadata is retained on POSIX systems. Atomic replacement also retains ACLs and extended attributes on macOS and on GNU/Linux systems whose `/bin/cp` supports explicit metadata preservation; a metadata-copy failure on those systems aborts the save before rename. Windows, non-GNU Linux, and other platforms retain the existing mode behavior, but Node does not provide a portable API for preserving their extended ACL metadata.
 
