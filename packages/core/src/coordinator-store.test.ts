@@ -32,6 +32,7 @@ const EXPECTED_COORDINATOR_TABLES = [
 	"coordinator_invites",
 	"coordinator_join_requests",
 	"coordinator_legacy_team_completions",
+	"coordinator_owner_enrollment_attempts",
 	"coordinator_reciprocal_approvals",
 	"coordinator_scope_membership_audit_log",
 	"coordinator_scope_membership_effect_receipts",

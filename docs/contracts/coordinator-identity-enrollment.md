@@ -299,11 +299,11 @@ Only the winning transition whose checks all pass may write these together:
 2. insert the immutable ownership binding;
 3. add the permitted group enrollments;
 4. insert exactly one durable redacted `owner_device_enrolled` audit event; and
-5. insert the compact outcome receipt used for exact reconciliation.
+5. retain the compact outcome receipt on the finalized owner-attempt row.
 
-The receipt insertion must succeed in that same transaction or batch; a SQL
-insertion failure aborts and rolls back all five effects. A later standalone
-receipt write is not permitted.
+The winning attempt update must retain the outcome in that same transaction or
+batch; a SQL failure aborts and rolls back the whole write set. A later standalone
+receipt write or a separate receipt table is not needed.
 
 The terminal committed state is `finalized`. No dependent write may follow a
 zero-row transition or a separate ownership-binding write.
@@ -332,8 +332,8 @@ did not receive a response.
 An exact receipt proves a prior commit, not current group permission. It cannot
 create authority from fresh state or turn revoked grants into authority.
 
-The ownership ledger and its outcome receipt outlive group enrollment, browser
-session, attempt, and audit-retention cleanup. Identity-group grants remain
+The ownership ledger and finalized owner-attempt receipt outlive group enrollment,
+browser session, unfinished-attempt, and audit-retention cleanup. Identity-group grants remain
 transport authority only; they are not Team or Project permissions. A legacy
 migration may write a binding only after review of actual retained evidence.
 
@@ -357,17 +357,33 @@ paths, quotas, and the reviewed legacy-evidence process. Reuse the existing
 OIDC and browser flow by default, keep the owner path off, and do not add a
 signing framework or provider OAuth server.
 
-#### Reserved browser purpose
+#### Owner-attempt storage foundation
 
-This change reserves only the `owner_enroll` browser-transaction purpose.
-Owner-attempt storage and retained outcome receipts follow in a separate change;
-neither is implemented here.
+`coordinator_owner_enrollment_attempts` stores provisional ceremony facts and
+state-dependent proof commitments; finalized rows retain the compact outcome.
+It has no cascading references, and finalized receipts cannot be updated,
+deleted, or erased by replacement.
 
-Migration `0029` and the atomic local SQLite upgrade preserve existing sign-in
+`browser_binder_hash` retains the original browser-cookie commitment separately
+from the browser transaction hash, including after transaction cleanup. Both
+commitments are populated when the pending attempt is claimed and remain pinned.
+
+Birth facts and recorded browser, account/link, and confirmation commitments
+cannot be rewritten or cleared by later updates. The intended one-time recording
+steps and nonfinal same-value retries remain allowed. Terminal cleanup may clear
+the loopback destination, but cannot replace or restore it or revive an attempt
+in place. Deleted unfinished attempts are not tombstoned.
+
+The schema keeps current verifier configuration separate from historical link
+provenance and requires finalized handoff material to be cleared. Schema checks
+validate storage shape, not signatures, provider verification, or owner authority.
+
+Migration `0029` reserves the browser purpose; `0030` adds owner-attempt storage.
+The browser migration and atomic local SQLite upgrade preserve existing sign-in
 and link browser rows, uniqueness, indexes, and purge counters. Legacy handlers
 reject the reserved owner purpose without consuming its nonce or PKCE material.
 
-This is an inert browser reservation: no attempt creation, binding issuance, owner route,
+This is inert storage only: no attempt creation, binding issuance, owner route,
 or verified enrollment commit is implemented. Applying the live migration,
 deploying, and testing real Google sign-in remain separate approval gates.
 

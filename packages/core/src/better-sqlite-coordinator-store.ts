@@ -168,6 +168,7 @@ import {
 	normalizeMembershipEffectId,
 	revokeMembershipEffectRequestJson,
 } from "./coordinator-membership-effects.js";
+import { COORDINATOR_OWNER_ENROLLMENT_SCHEMA_SQL } from "./coordinator-owner-enrollment-schema.js";
 import {
 	CAPTURE_PEER_ENROLLMENTS_SQL,
 	type CapturedPeerEnrollment,
@@ -487,6 +488,7 @@ function upgradeAuthLinkBrowserStartSchema(db: DatabaseType): void {
 function initializeDeviceLedgerSchemas(db: DatabaseType): void {
 	db.exec(COORDINATOR_DEVICE_OWNERSHIP_SCHEMA_SQL);
 	db.exec(DEVICE_REVOCATION_SCHEMA_SQL);
+	db.exec(COORDINATOR_OWNER_ENROLLMENT_SCHEMA_SQL);
 }
 
 function initializeAuthBrowserSchema(db: DatabaseType): void {
