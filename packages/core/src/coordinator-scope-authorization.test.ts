@@ -606,15 +606,15 @@ describe("SQLite review regressions", () => {
 	});
 });
 
-it("keeps D1 unavailable without consulting raw scope getters", async () => {
-	// Arrange: D1 adoption is a separate slice, not a raw-getter fallback.
+it("rejects a missing D1 scope without consulting raw scope getters", async () => {
+	// Arrange: a missing scope must not trigger a raw-getter fallback.
 	const f = setupStore("D1");
 	const raw = vi.spyOn(f.store, "listScopes").mockRejectedValue(new Error("raw fallback"));
 	try {
 		// Act
 		const result = await f.store.getScopeAuthorization(input);
 		// Assert
-		expect(result).toEqual(unavailable);
+		expect(result).toEqual({ kind: "rejected", error: "scope_not_found" });
 		expect(raw).not.toHaveBeenCalled();
 	} finally {
 		await f.store.close();

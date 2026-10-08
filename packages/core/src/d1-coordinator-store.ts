@@ -152,6 +152,18 @@ import {
 	requirePeerDiscoveryRows,
 } from "./coordinator-peer-discovery.js";
 import { projectInviteGuardEvidence } from "./coordinator-project-invite-guards.js";
+import {
+	type CapturedScopeMember,
+	captureScopeAuthorizationInput,
+	ENROLLMENT_FIELDS,
+	isCurrentScopeMember,
+	MEMBERSHIP_FIELDS,
+	parseScopeAuthorizationMembers,
+	READ_SCOPE_AUTHORIZATION_SQL,
+	requireScopeAuthorizationRecord,
+	SCOPE_FIELDS,
+	scopeAuthorizationError,
+} from "./coordinator-scope-authorization.js";
 import type {
 	CoordinatorBootstrapGrant,
 	CoordinatorBootstrapGrantAuthorizationInput,
@@ -481,6 +493,18 @@ async function allRows<T>(statement: D1PreparedStatementLike): Promise<T[]> {
 
 async function firstRow<T>(statement: D1PreparedStatementLike): Promise<T | null> {
 	return await statement.first<T>();
+}
+
+function requireScopeAuthorizationRows<T>(result: { results?: T[] }): T[] {
+	// A lost read receipt is not an empty authority source.
+	if (
+		!result ||
+		Array.isArray(result) ||
+		("success" in result && result.success !== true) ||
+		!Array.isArray(result.results)
+	)
+		throw new Error("scope_authorization_unavailable");
+	return result.results;
 }
 
 async function runChanges(statement: D1PreparedStatementLike): Promise<number> {
@@ -2929,10 +2953,102 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	}
 
 	async getScopeAuthorization(
-		_input: CoordinatorScopeAuthorizationInput,
+		raw: CoordinatorScopeAuthorizationInput,
 	): Promise<CoordinatorScopeAuthorizationResult> {
-		// No raw fallback: D1 adoption is a separate implementation slice.
-		return { kind: "rejected", error: "scope_authorization_unavailable" };
+		try {
+			const input = captureScopeAuthorizationInput(raw);
+			const source = await this.db
+				.prepare(`SELECT ${SCOPE_FIELDS.join(", ")} FROM coordinator_scopes WHERE scope_id = ?`)
+				.bind(input.scopeId)
+				.first<CoordinatorScope>();
+			if (source === null) return { kind: "rejected", error: "scope_not_found" };
+			requireScopeAuthorizationRecord(source, SCOPE_FIELDS);
+			const scope = { ...source };
+			if (scope.scope_id !== input.scopeId) throw new Error("scope_authorization_unavailable");
+			const error = scopeAuthorizationError(scope, input.groupId);
+			if (error) return { kind: "rejected", error };
+			const group = await this.db
+				.prepare("SELECT group_id, archived_at FROM groups WHERE group_id = ?")
+				.bind(input.groupId)
+				.first<{ group_id: string; archived_at: string | null }>();
+			if (group === null) return { kind: "rejected", error: "scope_source_mismatch" };
+			requireScopeAuthorizationRecord(group, ["group_id"]);
+			if (group.group_id !== input.groupId) throw new Error("scope_authorization_unavailable");
+			if (group.archived_at !== null) {
+				requireScopeAuthorizationRecord(group, ["archived_at"]);
+				return { kind: "rejected", error: "group_archived" };
+			}
+			const members = await this.captureScopeAuthorizationMembers(scope, input.groupId);
+			const current = await this.db
+				.prepare(READ_SCOPE_AUTHORIZATION_SQL)
+				.bind(JSON.stringify([scope]), JSON.stringify(members))
+				.first<CoordinatorScope & { members_json: string }>();
+			requireScopeAuthorizationRecord(current, SCOPE_FIELDS);
+			if (!current || SCOPE_FIELDS.some((field) => current[field] !== scope[field]))
+				throw new Error("scope_authorization_unavailable");
+			return {
+				kind: "authorized",
+				authorizationVersion: 1,
+				scope,
+				members: parseScopeAuthorizationMembers(current.members_json, members),
+			};
+		} catch {
+			return { kind: "rejected", error: "scope_authorization_unavailable" };
+		}
+	}
+
+	private async captureScopeAuthorizationMembers(
+		scope: CoordinatorScope,
+		groupId: string,
+	): Promise<CapturedScopeMember[]> {
+		const result = await this.db
+			.prepare(
+				`SELECT ${MEMBERSHIP_FIELDS.join(", ")} FROM coordinator_scope_memberships WHERE scope_id = ? ORDER BY device_id ASC`,
+			)
+			.bind(scope.scope_id)
+			.all<CoordinatorScopeMembership>();
+		const memberships = requireScopeAuthorizationRows(result).flatMap((membership) => {
+			requireScopeAuthorizationRecord(membership, ["status"]);
+			if (membership.status !== "active") return [];
+			requireScopeAuthorizationRecord(membership, MEMBERSHIP_FIELDS);
+			return isCurrentScopeMember(scope, membership) ? [{ ...membership }] : [];
+		});
+		const enrollments = await this.captureScopeAuthorizationEnrollments(memberships, groupId);
+		const captured: Array<Omit<CapturedScopeMember, "keyId">> = [];
+		for (const membership of memberships) {
+			const enrollment = enrollments.get(membership.device_id);
+			if (enrollment?.enabled !== 1) continue;
+			captured.push({ membership, enrollment });
+		}
+		// Complete every DTO copy before async hashing can change another source tuple.
+		const members: CapturedScopeMember[] = [];
+		for (const member of captured) {
+			const keyId = await ed25519KeyIdForRevocation(member.enrollment.public_key);
+			if (keyId !== null) members.push({ ...member, keyId });
+		}
+		return members;
+	}
+
+	private async captureScopeAuthorizationEnrollments(
+		memberships: CoordinatorScopeMembership[],
+		groupId: string,
+	): Promise<Map<string, CoordinatorEnrollment>> {
+		const deviceIds = new Set(memberships.map((membership) => membership.device_id));
+		const result = await this.db
+			.prepare(
+				`SELECT ${ENROLLMENT_FIELDS.join(", ")} FROM enrolled_devices WHERE group_id = ?
+				AND device_id IN (SELECT value FROM json_each(?))`,
+			)
+			.bind(groupId, JSON.stringify([...deviceIds]))
+			.all<CoordinatorEnrollment>();
+		const enrollments = new Map<string, CoordinatorEnrollment>();
+		for (const enrollment of requireScopeAuthorizationRows(result)) {
+			requireScopeAuthorizationRecord(enrollment, ENROLLMENT_FIELDS);
+			if (enrollment.group_id !== groupId || !deviceIds.delete(enrollment.device_id))
+				throw new Error("scope_authorization_unavailable");
+			enrollments.set(enrollment.device_id, { ...enrollment });
+		}
+		return enrollments;
 	}
 
 	async grantScopeMembership(

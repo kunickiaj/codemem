@@ -346,7 +346,7 @@ removed-device ownership evidence, and public revocation management remain separ
 ## Current scope authorization foundation
 
 `getScopeAuthorization({ groupId, scopeId })` is a required internal store
-decision, separate from raw scope and membership inspection. SQLite returns an
+decision, separate from raw scope and membership inspection. Both stores return an
 `authorizationVersion: 1` snapshot containing the scope and effective members,
 each with its captured membership, current enrollment, and canonical key ID.
 
@@ -378,9 +378,21 @@ rejection codes; malformed storage or unconfirmed reads return
 `scope_authorization_unavailable` without database diagnostics. The snapshot is
 not account-owner proof or a permanent permission.
 
-D1 currently returns unavailable for this method, with no raw-getter fallback.
-Public routes and caches do not use it yet; D1 adoption, versioned wire responses,
-all refresh branches, and managed local readers remain separate implementation slices.
+D1 copies scope, membership, and enrollment DTOs before asynchronous canonical-key
+hashing. Its final atomic SQL read uses two JSON parameters and checks the same
+captured fields and revocation subjects as SQLite, without refreshing changed keys.
+
+D1 captures matching enrollments in one query, so a successful snapshot uses five
+reads regardless of roster size. This avoids per-member queries exceeding the
+Worker invocation query quota.
+
+A missing or malformed roster receipt is unavailable, not an empty authorized
+roster. Final results must match the captured scope and contain only exact captured
+member tuples; validated members sort by device ID in both stores.
+
+Neither backend falls back to raw membership getters. Public routes and caches
+do not use this method yet; versioned wire responses, all refresh branches, and
+managed local readers remain separate implementation slices.
 
 ## Activation limits
 
