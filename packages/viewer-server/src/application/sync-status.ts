@@ -594,7 +594,7 @@ export async function buildSyncStatusResponse(
 }
 
 const PEERS_QUERY = `
-	SELECT p.peer_device_id, p.name, p.pinned_fingerprint, p.addresses_json,
+	SELECT p.peer_device_id, p.name, p.pinned_fingerprint, p.public_key, p.addresses_json,
 	       p.last_seen_at, p.last_sync_at, p.last_error,
 	       p.runtime_version, p.runtime_version_observed_at,
 	       p.projects_include_json, p.projects_exclude_json, p.claimed_local_actor,

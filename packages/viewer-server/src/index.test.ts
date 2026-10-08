@@ -685,6 +685,22 @@ const SCOPED_SYNC_PEER_INSERT_SQL = `INSERT INTO sync_peers(peer_device_id, pinn
 	VALUES (?, ?, ?, ?)`;
 const SCOPED_SYNC_NULL_BASELINE = { baseline_cursor: null, retained_floor_cursor: null };
 
+async function seedValidManagedSyncScopes(
+	store: MemoryStore,
+	peer: { peerDeviceId: string; keysDir: string },
+	scopeIds: string[],
+) {
+	const localPublicKey = loadPublicKey(process.env.CODEMEM_KEYS_DIR);
+	const peerPublicKey = loadPublicKey(peer.keysDir);
+	if (!localPublicKey || !peerPublicKey) throw new Error("fixture_signing_key_missing");
+	for (const scopeId of scopeIds)
+		grantSyncScopeToDevices(store, scopeId, [store.deviceId, peer.peerDeviceId]);
+	await refreshManagedSyncFixtures([store], {
+		[store.deviceId]: localPublicKey,
+		[peer.peerDeviceId]: peerPublicKey,
+	});
+}
+
 function authorizationReplicationSnapshot(store: MemoryStore): Record<string, unknown[]> {
 	return Object.fromEntries(
 		[
@@ -10703,8 +10719,7 @@ describe("viewer-server", () => {
 				const store = ensureStore();
 				const url = "http://localhost/v1/ops";
 				peer = createAuthenticatedSyncPeer(store, { url, method: "POST" });
-				grantSyncScopeToDevices(store, "source", [store.deviceId, peer.peerDeviceId]);
-				grantSyncScopeToDevices(store, "managed", [store.deviceId, peer.peerDeviceId]);
+				await seedValidManagedSyncScopes(store, peer, ["source", "managed"]);
 				const sessionId = insertTestSession(store.db);
 				const memoryId = insertTestMemory(store, {
 					sessionId,
@@ -11136,7 +11151,7 @@ describe("viewer-server", () => {
 				const store = ensureStore();
 				const url = "http://localhost/v1/ops";
 				peer = createAuthenticatedSyncPeer(store, { url, method: "POST" });
-				grantSyncScopeToDevices(store, "unsupported-explicit", []);
+				await seedValidManagedSyncScopes(store, peer, ["unsupported-explicit"]);
 				const now = "2026-01-01T00:00:00Z";
 				const payload = {
 					sync_capability: "unsupported",
@@ -11207,7 +11222,7 @@ describe("viewer-server", () => {
 				store.db
 					.prepare("UPDATE sync_peers SET projects_include_json = ? WHERE peer_device_id = ?")
 					.run('["allowed-project"]', peer.peerDeviceId);
-				grantSyncScopeToDevices(store, "acme-work", ["test-device-001", peer.peerDeviceId]);
+				await seedValidManagedSyncScopes(store, peer, ["acme-work"]);
 
 				const now = "2026-01-01T00:00:00Z";
 				const makeOp = (opId: string, project: string) => ({
@@ -11287,7 +11302,7 @@ describe("viewer-server", () => {
 				store.db
 					.prepare("UPDATE sync_peers SET projects_include_json = ? WHERE peer_device_id = ?")
 					.run('["allowed-project"]', peer.peerDeviceId);
-				grantSyncScopeToDevices(store, "acme-work", ["test-device-001", peer.peerDeviceId]);
+				await seedValidManagedSyncScopes(store, peer, ["acme-work"]);
 
 				const sessionId = insertTestSession(store.db);
 				store.db
