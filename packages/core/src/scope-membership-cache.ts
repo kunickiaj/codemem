@@ -6,7 +6,7 @@ import {
 	readCoordinatorSyncConfig,
 } from "./coordinator-sync-config.js";
 import type { Database } from "./db.js";
-import { getAnyRecipientPolicyDenyOverlayForScopeDevice } from "./recipient-policy-reconciliation.js";
+import { getAnyRecipientPolicyDenyOverlayForScopeDevice } from "./recipient-policy-deny-overlay.js";
 import {
 	getRetainedScopeAuthorizationKey,
 	reconcileScopeAuthorizationEvidence,

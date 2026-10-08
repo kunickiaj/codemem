@@ -5,10 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { connect, type Database } from "./db.js";
 import * as embeddings from "./embeddings.js";
 import { exportMemories } from "./export-import.js";
+import { seedProvenMixedScopeFixture } from "./managed-scope-test-fixtures.js";
 import { buildMemoryPack } from "./pack.js";
 import { MemoryStore } from "./store.js";
 import type { MixedScopeFixture } from "./test-utils.js";
-import { initTestSchema, seedMixedScopeFixture } from "./test-utils.js";
+import { initTestSchema } from "./test-utils.js";
 import { semanticSearch } from "./vectors.js";
 
 vi.mock("./embeddings.js", async () => {
@@ -30,19 +31,21 @@ describe("mixed-domain scope regression", () => {
 	let store: MemoryStore;
 	let fixture: MixedScopeFixture;
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		vi.clearAllMocks();
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-scope-regression-"));
 		dbPath = join(tmpDir, "test.sqlite");
 		const db = connect(dbPath);
 		initTestSchema(db);
 		db.close();
-		store = new MemoryStore(dbPath);
-		fixture = seedMixedScopeFixture(store.db, store.deviceId);
+		store = new MemoryStore(dbPath, { keysDir: join(tmpDir, "keys") });
+		fixture = await seedProvenMixedScopeFixture(store.db, join(tmpDir, "keys"), store.deviceId);
+		vi.stubEnv("CODEMEM_KEYS_DIR", join(tmpDir, "keys"));
 	});
 
 	afterEach(() => {
 		store?.close();
+		vi.unstubAllEnvs();
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
@@ -88,10 +91,13 @@ describe("mixed-domain scope regression", () => {
 			embed: vi.fn(),
 		});
 
-		const results = await semanticSearch(store.db, fixture.query, 10, null, {
-			actorId: `local:${store.deviceId}`,
-			deviceId: store.deviceId,
-		});
+		const results = await semanticSearch(
+			store.db,
+			fixture.query,
+			10,
+			null,
+			store.ownershipFilterContext(),
+		);
 
 		const resultIds = results.map((item) => item.id);
 		expect(resultIds).toEqual(expect.arrayContaining(fixture.visibleIds));

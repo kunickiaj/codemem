@@ -20,7 +20,6 @@ import {
 	insertTestSession,
 	loadPublicKey,
 	MemoryStore,
-	seedMixedScopeFixture,
 	startMaintenanceJob,
 	updateMaintenanceJob,
 	VERSION,
@@ -28,6 +27,10 @@ import {
 import { serve } from "@hono/node-server";
 import Database from "better-sqlite3";
 import { describe, expect, it, vi } from "vitest";
+import {
+	refreshManagedScopeFixture,
+	seedProvenMixedScopeFixture,
+} from "../../core/src/managed-scope-test-fixtures.js";
 import { refreshTestScopeRows } from "../../core/src/scope-membership-cache-test-fixtures.js";
 import { type AppOptions, createApp, createSyncApp } from "./index.js";
 import { __usageCacheTestHooks } from "./routes/stats.js";
@@ -131,6 +134,16 @@ const FRESH_PEER_FINGERPRINT = core.fingerprintPublicKey(FRESH_PEER_PUBLIC_KEY);
 const REKEYED_PEER_PUBLIC_KEY = "peer-rekeyed-public-key";
 const REKEYED_PEER_FINGERPRINT = core.fingerprintPublicKey(REKEYED_PEER_PUBLIC_KEY);
 
+function fixtureMemoryOrigin(options: {
+	originDeviceId?: string | null;
+	scopeId?: string | null;
+}): string | null {
+	if (options.originDeviceId !== undefined) return options.originDeviceId;
+	if (!options.scopeId || ["local-default", "legacy-shared-review"].includes(options.scopeId))
+		return "test-device-001";
+	return "fixture-foreign-device";
+}
+
 function insertTestMemory(
 	store: MemoryStore,
 	options: {
@@ -151,6 +164,8 @@ function insertTestMemory(
 	},
 ): number {
 	const now = options.createdAt ?? new Date().toISOString();
+	// Concrete scoped feed rows model replicas; local and migration history stays authored.
+	const originDeviceId = fixtureMemoryOrigin(options);
 	const result = store.db
 		.prepare(
 			`INSERT INTO memory_items (
@@ -174,7 +189,7 @@ function insertTestMemory(
 			options.actorId == null || options.actorId === "local:test-device-001"
 				? "Test User"
 				: options.actorId,
-			options.originDeviceId === undefined ? "test-device-001" : options.originDeviceId,
+			originDeviceId,
 			String(options.metadata?.source ?? "test"),
 			`${options.kind}-${options.title}-${now}`,
 			options.scopeId ?? null,
@@ -699,6 +714,23 @@ async function seedValidManagedSyncScopes(
 		[store.deviceId]: localPublicKey,
 		[peer.peerDeviceId]: peerPublicKey,
 	});
+}
+
+async function grantVisibleReaderScope(store: MemoryStore, scopeId: string): Promise<void> {
+	grantSyncScopeToDevices(store, scopeId, [store.deviceId]);
+	const keysDir = process.env.CODEMEM_KEYS_DIR;
+	if (!keysDir) throw new Error("Missing fixture signing directory");
+	await refreshManagedScopeFixture(store.db, {
+		keysDir,
+		deviceId: store.deviceId,
+		scopeIds: [scopeId],
+	});
+}
+
+async function provenViewerMixedScopeFixture(store: MemoryStore) {
+	const keysDir = process.env.CODEMEM_KEYS_DIR;
+	if (!keysDir) throw new Error("Missing fixture signing directory");
+	return seedProvenMixedScopeFixture(store.db, keysDir, store.deviceId);
 }
 
 function authorizationReplicationSnapshot(store: MemoryStore): Record<string, unknown[]> {
@@ -3973,7 +4005,7 @@ describe("viewer-server", () => {
 				await app.request("/api/stats");
 				const store = getStore();
 				if (!store) throw new Error("store not initialized");
-				grantSyncScopeToDevices(store, "authorized-team", [store.deviceId]);
+				await grantVisibleReaderScope(store, "authorized-team");
 				grantSyncScopeToDevices(store, "unauthorized-team", []);
 				const sessionId = insertTestSession(store.db);
 				insertTestMemory(store, {
@@ -4225,7 +4257,7 @@ describe("viewer-server", () => {
 				await app.request("/api/stats");
 				const store = getStore();
 				if (!store) throw new Error("store not initialized");
-				grantSyncScopeToDevices(store, "authorized-team", [store.deviceId]);
+				await grantVisibleReaderScope(store, "authorized-team");
 				grantSyncScopeToDevices(store, "unauthorized-team", []);
 				const sessionId = insertTestSession(store.db);
 				const visibleId = insertTestMemory(store, {
@@ -4309,7 +4341,7 @@ describe("viewer-server", () => {
 				await app.request("/api/stats");
 				const store = getStore();
 				if (!store) throw new Error("store not initialized");
-				grantSyncScopeToDevices(store, "authorized-team", [store.deviceId]);
+				await grantVisibleReaderScope(store, "authorized-team");
 				grantSyncScopeToDevices(store, "unauthorized-team", []);
 				const visibleSessionId = insertTestSession(store.db);
 				const visibleId = insertTestMemory(store, {
@@ -4436,7 +4468,7 @@ describe("viewer-server", () => {
 				await app.request("/api/stats");
 				const store = getStore();
 				if (!store) throw new Error("store not initialized");
-				grantSyncScopeToDevices(store, "authorized-team", [store.deviceId]);
+				await grantVisibleReaderScope(store, "authorized-team");
 				const sessionId = insertTestSession(store.db);
 				insertTestMemory(store, {
 					sessionId,
@@ -4762,7 +4794,7 @@ describe("viewer-server", () => {
 				await app.request("/api/stats");
 				const store = getStore();
 				if (!store) throw new Error("store not initialized");
-				grantSyncScopeToDevices(store, "authorized-team", [store.deviceId]);
+				await grantVisibleReaderScope(store, "authorized-team");
 				grantSyncScopeToDevices(store, "unauthorized-team", []);
 
 				const visibleSessionId = insertTestSession(store.db);
@@ -5222,7 +5254,7 @@ describe("viewer-server", () => {
 				await app.request("/api/stats");
 				const store = getStore();
 				if (!store) throw new Error("store not initialized");
-				grantSyncScopeToDevices(store, "authorized-team", [store.deviceId]);
+				await grantVisibleReaderScope(store, "authorized-team");
 				grantSyncScopeToDevices(store, "unauthorized-team", []);
 				const projectSessionId = insertTestSession(store.db);
 				store.db
@@ -5588,7 +5620,7 @@ describe("viewer-server", () => {
 				await app.request("/api/stats");
 				const store = getStore();
 				if (!store) throw new Error("store not initialized");
-				grantSyncScopeToDevices(store, "authorized-team", [store.deviceId]);
+				await grantVisibleReaderScope(store, "authorized-team");
 				grantSyncScopeToDevices(store, "unauthorized-team", []);
 				const sessionId = insertTestSession(store.db);
 
@@ -5647,7 +5679,7 @@ describe("viewer-server", () => {
 				await app.request("/api/stats");
 				const store = getStore();
 				if (!store) throw new Error("store not initialized");
-				const fixture = seedMixedScopeFixture(store.db, store.deviceId);
+				const fixture = await provenViewerMixedScopeFixture(store);
 
 				const memoryRes = await app.request("/api/memory?limit=10");
 				expect(memoryRes.status).toBe(200);
@@ -6237,7 +6269,7 @@ describe("viewer-server", () => {
 				await app.request("/api/stats");
 				const store = getStore();
 				if (!store) throw new Error("store not initialized");
-				grantSyncScopeToDevices(store, "authorized-team", [store.deviceId]);
+				await grantVisibleReaderScope(store, "authorized-team");
 				grantSyncScopeToDevices(store, "unauthorized-team", []);
 				const sessionId = insertTestSession(store.db);
 				insertTestMemory(store, {
@@ -6269,7 +6301,7 @@ describe("viewer-server", () => {
 				await app.request("/api/stats");
 				const store = getStore();
 				if (!store) throw new Error("store not initialized");
-				grantSyncScopeToDevices(store, "authorized-team", [store.deviceId]);
+				await grantVisibleReaderScope(store, "authorized-team");
 				grantSyncScopeToDevices(store, "unauthorized-team", []);
 
 				const seedProjectSession = (project: string, scopeId: string) => {
@@ -6360,7 +6392,7 @@ describe("viewer-server", () => {
 				await app.request("/api/stats");
 				const store = getStore();
 				if (!store) throw new Error("store not initialized");
-				grantSyncScopeToDevices(store, "authorized-team", [store.deviceId]);
+				await grantVisibleReaderScope(store, "authorized-team");
 				grantSyncScopeToDevices(store, "unauthorized-team", []);
 
 				const visibleSessionId = insertTestSession(store.db);

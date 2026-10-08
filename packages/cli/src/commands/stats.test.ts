@@ -12,10 +12,37 @@ import {
 	SCHEMA_VERSION,
 } from "@codemem/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { refreshManagedScopeFixture } from "../../../core/src/managed-scope-test-fixtures.js";
 import { statsCommand } from "./stats.js";
 
 function id(sequence: number): string {
 	return `018f2db4-f9d3-7a22-8d18-${sequence.toString(16).padStart(12, "0")}`;
+}
+
+async function seedStatsVisibilityFixture(store: MemoryStore, keysDir: string): Promise<void> {
+	const now = "2026-01-01T00:00:00Z";
+	for (const scopeId of ["authorized-team", "unauthorized-team"]) {
+		store.db
+			.prepare(`INSERT INTO replication_scopes
+			(scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at)
+			VALUES (?, ?, 'team', 'coordinator', 1, 'active', ?, ?)`)
+			.run(scopeId, scopeId, now, now);
+	}
+	await refreshManagedScopeFixture(store.db, {
+		keysDir,
+		deviceId: store.deviceId,
+		scopeIds: ["authorized-team"],
+	});
+	const sessionId = store.startSession({ cwd: process.cwd(), project: "scope-test" });
+	for (const [scopeId, title] of [
+		["authorized-team", "Visible stats"],
+		["unauthorized-team", "Hidden stats"],
+	]) {
+		store.db
+			.prepare(`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, scope_id)
+			VALUES (?, 'discovery', ?, 'Stats body', ?, ?, ?)`)
+			.run(sessionId, title, now, now, scopeId);
+	}
 }
 
 describe("stats command", () => {
@@ -29,6 +56,7 @@ describe("stats command", () => {
 	});
 
 	afterEach(() => {
+		vi.unstubAllEnvs();
 		if (prevCodememConfig === undefined) delete process.env.CODEMEM_CONFIG;
 		else process.env.CODEMEM_CONFIG = prevCodememConfig;
 		rmSync(tmpDir, { recursive: true, force: true });
@@ -59,38 +87,11 @@ describe("stats command", () => {
 
 	it("reports memory counts through the local scope visibility gate", async () => {
 		const dbPath = join(tmpDir, "scoped.sqlite");
+		const keysDir = join(tmpDir, "keys");
+		vi.stubEnv("CODEMEM_KEYS_DIR", keysDir);
 		const store = new MemoryStore(dbPath);
 		try {
-			const now = "2026-01-01T00:00:00Z";
-			for (const scopeId of ["authorized-team", "unauthorized-team"]) {
-				store.db
-					.prepare(
-						`INSERT INTO replication_scopes(
-							scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
-						 ) VALUES (?, ?, 'team', 'coordinator', 1, 'active', ?, ?)`,
-					)
-					.run(scopeId, scopeId, now, now);
-			}
-			store.db
-				.prepare(
-					`INSERT INTO scope_memberships(scope_id, device_id, role, status, membership_epoch, updated_at)
-					 VALUES ('authorized-team', ?, 'member', 'active', 1, ?)`,
-				)
-				.run(store.deviceId, now);
-
-			const sessionId = store.startSession({ cwd: process.cwd(), project: "scope-test" });
-			store.db
-				.prepare(
-					`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, scope_id)
-					 VALUES (?, 'discovery', 'Visible stats', 'Visible body', ?, ?, ?)`,
-				)
-				.run(sessionId, now, now, "authorized-team");
-			store.db
-				.prepare(
-					`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at, scope_id)
-					 VALUES (?, 'discovery', 'Hidden stats', 'Hidden body', ?, ?, ?)`,
-				)
-				.run(sessionId, now, now, "unauthorized-team");
+			await seedStatsVisibilityFixture(store, keysDir);
 		} finally {
 			store.close();
 		}
@@ -106,6 +107,7 @@ describe("stats command", () => {
 			expect(result.database.active_memory_items).toBe(1);
 		} finally {
 			logSpy.mockRestore();
+			vi.unstubAllEnvs();
 		}
 	});
 

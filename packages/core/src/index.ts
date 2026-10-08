@@ -1240,7 +1240,7 @@ export {
 	executeShareProvisioning,
 	planShareProvisioning,
 } from "./share-provisioning.js";
-export { MemoryStore } from "./store.js";
+export { MemoryStore, type MemoryStoreOptions } from "./store.js";
 export {
 	hasPendingSummaryDedupBackfill,
 	runSummaryDedupBackfillPass,

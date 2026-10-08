@@ -8,9 +8,12 @@ import {
 	MemoryStore,
 	purgeRetrievalAttemptsForPrivacy,
 	queryRetrievalAttempts,
-	seedMixedScopeFixture,
 } from "@codemem/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	refreshManagedScopeFixture,
+	seedProvenMixedScopeFixture,
+} from "../../core/src/managed-scope-test-fixtures.js";
 import { createCodememMcpServer } from "./index.js";
 import { withMcpRetrieval } from "./mcp-retrieval-ledger.js";
 import {
@@ -48,24 +51,37 @@ function parseToolJson(result: { content: Array<{ type: string; text: string }> 
 	return JSON.parse(text);
 }
 
-describe("MCP memory access scope guards", () => {
-	const originalDeviceId = process.env.CODEMEM_DEVICE_ID;
-	let tmpDir: string;
-	let dbPath: string;
-	let store: MemoryStore;
+async function createScopeAccessFixture(tmpDir: string) {
+	const dbPath = join(tmpDir, "mem.sqlite");
+	const keysDir = join(tmpDir, "keys");
+	const db = connect(dbPath);
 	let sessionId: number;
-
-	beforeEach(() => {
-		tmpDir = mkdtempSync(join(tmpdir(), "codemem-mcp-scope-"));
-		dbPath = join(tmpDir, "mem.sqlite");
-		process.env.CODEMEM_DEVICE_ID = "mcp-scope-device";
-		const db = connect(dbPath);
+	try {
 		initTestSchema(db);
 		sessionId = insertSession(db, { cwd: join(tmpDir, "greenroom"), project: "greenroom" });
 		grantScopeToDevice(db, "scope-a", "mcp-scope-device");
+		await refreshManagedScopeFixture(db, {
+			keysDir,
+			deviceId: "mcp-scope-device",
+			scopeIds: ["scope-a"],
+		});
 		insertCoordinatorScope(db, "scope-b");
+	} finally {
 		db.close();
-		store = new MemoryStore(dbPath);
+	}
+	return { dbPath, sessionId, store: new MemoryStore(dbPath, { keysDir }) };
+}
+
+describe("MCP memory access scope guards", () => {
+	const originalDeviceId = process.env.CODEMEM_DEVICE_ID;
+	let tmpDir: string;
+	let store: MemoryStore;
+	let sessionId: number;
+
+	beforeEach(async () => {
+		tmpDir = mkdtempSync(join(tmpdir(), "codemem-mcp-scope-"));
+		process.env.CODEMEM_DEVICE_ID = "mcp-scope-device";
+		({ sessionId, store } = await createScopeAccessFixture(tmpDir));
 	});
 
 	afterEach(() => {
@@ -99,8 +115,12 @@ describe("MCP memory access scope guards", () => {
 		expect(getMemoryForMcp(store, authorizedId, { scope_id: "scope-b" })).toBe(null);
 	});
 
-	it("keeps mixed-domain unauthorized scope rows out of MCP direct reads", () => {
-		const fixture = seedMixedScopeFixture(store.db, store.deviceId);
+	it("keeps mixed-domain unauthorized scope rows out of MCP direct reads", async () => {
+		const fixture = await seedProvenMixedScopeFixture(
+			store.db,
+			join(tmpDir, "keys"),
+			store.deviceId,
+		);
 
 		expect(getMemoryForMcp(store, fixture.personalId)?.title).toBe(fixture.visibleTitles[0]);
 		expect(getMemoryForMcp(store, fixture.authorizedId)?.title).toBe(fixture.visibleTitles[1]);

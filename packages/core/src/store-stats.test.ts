@@ -1,12 +1,23 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { connect } from "./db.js";
+import { refreshManagedScopeFixture } from "./managed-scope-test-fixtures.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
 
-function grantScopeToLocalDevice(store: MemoryStore, scopeId: string): void {
+// Stats aggregation does not need embedding inference or provider downloads.
+vi.mock("./vectors.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("./vectors.js")>()),
+	storeVectors: vi.fn(async () => {}),
+}));
+
+async function grantScopeToLocalDevice(
+	store: MemoryStore,
+	scopeId: string,
+	keysDir: string,
+): Promise<void> {
 	const now = new Date().toISOString();
 	store.db
 		.prepare(
@@ -16,14 +27,11 @@ function grantScopeToLocalDevice(store: MemoryStore, scopeId: string): void {
 			 ) VALUES (?, ?, 'team', 'coordinator', 'coord-test', 'group-test', 0, 'active', ?, ?)`,
 		)
 		.run(scopeId, scopeId, now, now);
-	store.db
-		.prepare(
-			`INSERT INTO scope_memberships(
-			 scope_id, device_id, role, status, membership_epoch,
-			 coordinator_id, group_id, updated_at
-			 ) VALUES (?, ?, 'member', 'active', 0, 'coord-test', 'group-test', ?)`,
-		)
-		.run(scopeId, store.deviceId, now);
+	await refreshManagedScopeFixture(store.db, {
+		keysDir,
+		deviceId: store.deviceId,
+		scopeIds: [scopeId],
+	});
 }
 
 function insertScopedMemory(store: MemoryStore, scopeId: string): void {
@@ -49,7 +57,7 @@ describe("MemoryStore stats aggregation", () => {
 		const setupDb = connect(dbPath);
 		initTestSchema(setupDb);
 		setupDb.close();
-		store = new MemoryStore(dbPath);
+		store = new MemoryStore(dbPath, { keysDir: join(tmpDir, "keys") });
 	});
 
 	afterEach(() => {
@@ -87,8 +95,8 @@ describe("MemoryStore stats aggregation", () => {
 		expect(aggregateStatements).toBe(1);
 	});
 
-	it("refreshes scope authorization before aggregating memory stats", () => {
-		grantScopeToLocalDevice(store, "revoked-team");
+	it("refreshes scope authorization before aggregating memory stats", async () => {
+		await grantScopeToLocalDevice(store, "revoked-team", join(tmpDir, "keys"));
 		insertScopedMemory(store, "revoked-team");
 		expect(store.stats().database.memory_items).toBe(1);
 

@@ -51,7 +51,7 @@ import { populateMemoryRefs } from "./ref-populate.js";
 import type { RefQueryOptions, RefQueryResult } from "./ref-queries.js";
 import { findByConcept as findByConceptFn, findByFile as findByFileFn } from "./ref-queries.js";
 import * as schema from "./schema.js";
-import { resolveVisibleScopeIds } from "./scope-resolution.js";
+import { resolveVisibleScopeIds, type ScopeVisibilityOptions } from "./scope-resolution.js";
 import { ensureMemoryScopeId, resolveSessionScopeId } from "./scope-stamping.js";
 import {
 	type ExplainOptions,
@@ -67,6 +67,7 @@ import {
 } from "./secret-scanner.js";
 import { summaryContinuityFilter } from "./summary-memory.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
+import { loadRuntimeSigningPublicKey } from "./sync-identity.js";
 import { recordReplicationOp } from "./sync-replication.js";
 import type {
 	AutomaticContext,
@@ -353,6 +354,13 @@ interface NormalizedRawEventBatch {
 
 // MemoryStore
 
+export interface MemoryStoreOptions {
+	/** Directory already used by this runtime's sync signing setup. */
+	keysDir?: string;
+	/** Verified runtime context for callers that cannot access private keys. */
+	runtimeSigningKey?: { deviceId: string; publicKey: string };
+}
+
 export class MemoryStore {
 	readonly db: Database;
 	readonly dbPath: string;
@@ -362,6 +370,7 @@ export class MemoryStore {
 	readonly crossSessionDedupWindowMs: number;
 	private actorIdUsesDeviceFallback: boolean;
 	private readonly identityChangeListeners = new Set<() => void>();
+	private readonly runtimeKeyOptions: MemoryStoreOptions;
 	/**
 	 * Per-store secret scanner. Lives on the instance (not as a module global)
 	 * so workspace-level rule overrides and allowlists can be wired without
@@ -378,7 +387,11 @@ export class MemoryStore {
 		return this._drizzle;
 	}
 
-	constructor(dbPath: string = DEFAULT_DB_PATH) {
+	constructor(dbPath: string = DEFAULT_DB_PATH, options: MemoryStoreOptions = {}) {
+		this.runtimeKeyOptions = {
+			keysDir: options.keysDir ?? (process.env.CODEMEM_KEYS_DIR?.trim() || undefined),
+			runtimeSigningKey: options.runtimeSigningKey ? { ...options.runtimeSigningKey } : undefined,
+		};
 		this.dbPath = resolveDbPath(dbPath);
 		this.db = connect(this.dbPath);
 		try {
@@ -737,6 +750,22 @@ export class MemoryStore {
 	async flushPendingVectorWrites(): Promise<void> {
 		if (this.pendingVectorWrites.size === 0) return;
 		await Promise.allSettled([...this.pendingVectorWrites]);
+	}
+
+	/** Lazy read-only actual-key context; local reads never open the signing key. */
+	scopeResolutionDeviceContext(): ScopeVisibilityOptions {
+		const injected = this.runtimeKeyOptions.runtimeSigningKey;
+		return {
+			loadExpectedPublicKey: () => {
+				if (injected) return injected.deviceId === this.deviceId ? injected.publicKey : undefined;
+				return (
+					loadRuntimeSigningPublicKey(this.db, {
+						deviceId: this.deviceId,
+						keysDir: this.runtimeKeyOptions.keysDir,
+					}) ?? undefined
+				);
+			},
+		};
 	}
 
 	/**

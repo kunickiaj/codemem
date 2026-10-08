@@ -1,10 +1,13 @@
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { exportMemories, importMemories, readImportPayload } from "./export-import.js";
+import { refreshManagedScopeFixture } from "./managed-scope-test-fixtures.js";
 import { initTestSchema } from "./test-utils.js";
+
+afterEach(() => vi.unstubAllEnvs());
 
 function createDbPath(name: string): string {
 	const dir = mkdtempSync(join(tmpdir(), "codemem-export-import-"));
@@ -113,6 +116,35 @@ function minimalPayload(scopeId: string): ReturnType<typeof exportMemories> {
 	};
 }
 
+async function seedScopedExportDb(dbPath: string, keysDir: string): Promise<void> {
+	const db = new Database(dbPath);
+	try {
+		initTestSchema(db);
+		grantScope(db, "authorized-team");
+		await refreshManagedScopeFixture(db, {
+			keysDir,
+			deviceId: "local",
+			scopeIds: ["authorized-team"],
+		});
+		db.prepare(`INSERT INTO replication_scopes
+			(scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at)
+			VALUES ('unauthorized-team', 'unauthorized-team', 'team', 'coordinator', 1, 'active', ?, ?)`).run(
+			"2026-01-01T00:00:00Z",
+			"2026-01-01T00:00:00Z",
+		);
+		db.prepare(`INSERT INTO sessions(id, started_at, cwd, project, user, tool_version, metadata_json, import_key)
+			VALUES (1, '2026-03-01T00:00:00Z', '/tmp/visible', 'visible', 'test', 'test', '{}', 'session-visible'),
+			(2, '2026-03-01T00:00:00Z', '/tmp/hidden', 'hidden', 'test', 'test', '{}', 'session-hidden')`).run();
+		db.prepare(`INSERT INTO memory_items
+			(id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key, scope_id)
+			VALUES
+			(100, 1, 'discovery', 'Visible scoped export', 'visible', 1, '2026-03-01T00:00:01Z', '2026-03-01T00:00:01Z', '{}', 'memory-visible', 'authorized-team'),
+			(101, 2, 'discovery', 'Hidden scoped export', 'hidden', 1, '2026-03-01T00:00:02Z', '2026-03-01T00:00:02Z', '{}', 'memory-hidden', 'unauthorized-team')`).run();
+	} finally {
+		db.close();
+	}
+}
+
 describe("export/import", () => {
 	it("exports parsed JSON fields and prompt import key links", () => {
 		const dbPath = createDbPath("source");
@@ -131,38 +163,19 @@ describe("export/import", () => {
 		expect(payload.memory_items[0]?.user_prompt_import_key).toBe("prompt-1");
 	});
 
-	it("exports only locally authorized scopes and tags source scope ids", () => {
+	it("exports only locally authorized scopes and tags source scope ids", async () => {
 		const dbPath = createDbPath("scoped-export");
-		const db = new Database(dbPath);
+		const keysDir = join(dirname(dbPath), "keys");
+		vi.stubEnv("CODEMEM_KEYS_DIR", keysDir);
 		try {
-			initTestSchema(db);
-			grantScope(db, "authorized-team");
-			db.prepare(
-				`INSERT INTO replication_scopes(
-					scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
-				 ) VALUES ('unauthorized-team', 'unauthorized-team', 'team', 'coordinator', 1, 'active', ?, ?)`,
-			).run("2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z");
-			db.prepare(
-				`INSERT INTO sessions(id, started_at, cwd, project, user, tool_version, metadata_json, import_key)
-				 VALUES (1, '2026-03-01T00:00:00Z', '/tmp/visible', 'visible', 'test', 'test', '{}', 'session-visible'),
-						(2, '2026-03-01T00:00:00Z', '/tmp/hidden', 'hidden', 'test', 'test', '{}', 'session-hidden')`,
-			).run();
-			db.prepare(
-				`INSERT INTO memory_items(
-					id, session_id, kind, title, body_text, active, created_at, updated_at, metadata_json, import_key, scope_id
-				 ) VALUES
-					(100, 1, 'discovery', 'Visible scoped export', 'visible', 1, '2026-03-01T00:00:01Z', '2026-03-01T00:00:01Z', '{}', 'memory-visible', 'authorized-team'),
-					(101, 2, 'discovery', 'Hidden scoped export', 'hidden', 1, '2026-03-01T00:00:02Z', '2026-03-01T00:00:02Z', '{}', 'memory-hidden', 'unauthorized-team')`,
-			).run();
+			await seedScopedExportDb(dbPath, keysDir);
+			const payload = exportMemories({ dbPath, allProjects: true });
+			expect(payload.sessions.map((session) => session.import_key)).toEqual(["session-visible"]);
+			expect(payload.memory_items.map((memory) => memory.title)).toEqual(["Visible scoped export"]);
+			expect(payload.memory_items[0]?.scope_id).toBe("authorized-team");
 		} finally {
-			db.close();
+			vi.unstubAllEnvs();
 		}
-
-		const payload = exportMemories({ dbPath, allProjects: true });
-
-		expect(payload.sessions.map((session) => session.import_key)).toEqual(["session-visible"]);
-		expect(payload.memory_items.map((memory) => memory.title)).toEqual(["Visible scoped export"]);
-		expect(payload.memory_items[0]?.scope_id).toBe("authorized-team");
 	});
 
 	it("exports null-scope legacy rows as local-default even when project mappings exist", () => {

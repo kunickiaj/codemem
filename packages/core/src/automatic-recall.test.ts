@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -5,9 +8,10 @@ import {
 	isAutomaticRecallMeasurement,
 	recordAutomaticRecall,
 } from "./automatic-recall.js";
+import { seedProvenMixedScopeFixture } from "./managed-scope-test-fixtures.js";
 import { recordRetrievalAttempt } from "./retrieval-ledger.js";
 import { ensureRetrievalLedgerSchema } from "./schema-bootstrap.js";
-import { initTestSchema, seedMixedScopeFixture } from "./test-utils.js";
+import { initTestSchema } from "./test-utils.js";
 
 const now = new Date("2026-09-07T12:00:00.000Z");
 const key = "a".repeat(64);
@@ -25,11 +29,16 @@ const context = { actorId: "local", deviceId: "local" };
 const id = (n: number) => `018f2db4-f9d3-7a22-8d18-${n.toString(16).padStart(12, "0")}`;
 
 let db: Database.Database;
+let keysDir: string;
 beforeEach(() => {
 	db = new Database(":memory:");
 	initTestSchema(db);
+	keysDir = mkdtempSync(join(tmpdir(), "codemem-recall-scope-"));
 });
-afterEach(() => db.close());
+afterEach(() => {
+	db.close();
+	rmSync(keysDir, { recursive: true, force: true });
+});
 function attempt(n: number, memoryId?: number, startedAt = now.toISOString()) {
 	const memory =
 		memoryId == null
@@ -62,6 +71,18 @@ function attempt(n: number, memoryId?: number, startedAt = now.toISOString()) {
 				]
 			: [],
 	});
+}
+
+async function recallVisibilityFixture() {
+	const fixture = await seedProvenMixedScopeFixture(db, keysDir);
+	return {
+		fixture,
+		readContext: {
+			...context,
+			scopeVisibilityDb: db,
+			expectedPublicKey: fixture.expectedPublicKey,
+		},
+	};
 }
 describe("automatic recall ledger measurements", () => {
 	it("deduplicates retries by attempt and stable evaluation key", () => {
@@ -116,8 +137,8 @@ describe("automatic recall ledger measurements", () => {
 			unmeasuredAttempts: 0,
 		});
 	});
-	it("keeps retry markers unknown across visibility and time boundaries", () => {
-		const fixture = seedMixedScopeFixture(db);
+	it("keeps retry markers unknown across visibility and time boundaries", async () => {
+		const { fixture, readContext } = await recallVisibilityFixture();
 		attempt(1, fixture.unauthorizedId);
 		attempt(2, fixture.authorizedId);
 		const oneItem = {
@@ -131,7 +152,7 @@ describe("automatic recall ledger measurements", () => {
 			ok: true,
 			value: { changed: false },
 		});
-		expect(automaticRecallHealth(db, context, now)).toMatchObject({
+		expect(automaticRecallHealth(db, readContext, now)).toMatchObject({
 			freshEvaluations: 0,
 			unmeasuredAttempts: 1,
 		});
@@ -143,7 +164,7 @@ describe("automatic recall ledger measurements", () => {
 			ok: true,
 			value: { changed: false },
 		});
-		expect(automaticRecallHealth(db, context, now)).toMatchObject({
+		expect(automaticRecallHealth(db, readContext, now)).toMatchObject({
 			freshEvaluations: 0,
 			unmeasuredAttempts: 2,
 		});
@@ -162,8 +183,8 @@ describe("automatic recall ledger measurements", () => {
 			reason: "storage_unavailable",
 		});
 	});
-	it("aggregates counts and estimates only while every selected memory remains visible", () => {
-		const fixture = seedMixedScopeFixture(db);
+	it("aggregates counts and estimates only while every selected memory remains visible", async () => {
+		const { fixture, readContext } = await recallVisibilityFixture();
 		attempt(1, fixture.authorizedId);
 		const m = {
 			...measurement,
@@ -174,7 +195,7 @@ describe("automatic recall ledger measurements", () => {
 			invalidRetainedMetadata: true,
 		};
 		expect(recordAutomaticRecall(db, id(1), key, m).ok).toBe(true);
-		expect(automaticRecallHealth(db, context, now)).toMatchObject({
+		expect(automaticRecallHealth(db, readContext, now)).toMatchObject({
 			freshEvaluations: 1,
 			evaluationsWithDuplicates: 1,
 			candidateItems: 1,
@@ -188,7 +209,7 @@ describe("automatic recall ledger measurements", () => {
 		db.prepare("UPDATE scope_memberships SET status = 'revoked' WHERE scope_id = ?").run(
 			fixture.authorizedScopeId,
 		);
-		const hidden = automaticRecallHealth(db, context, now);
+		const hidden = automaticRecallHealth(db, readContext, now);
 		expect(hidden).toMatchObject({
 			freshEvaluations: 0,
 			unmeasuredAttempts: 0,
