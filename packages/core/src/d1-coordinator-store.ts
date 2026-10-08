@@ -183,6 +183,8 @@ import type {
 	CoordinatorReviewJoinRequestInput,
 	CoordinatorRevokeScopeMembershipInput,
 	CoordinatorScope,
+	CoordinatorScopeAuthorizationInput,
+	CoordinatorScopeAuthorizationResult,
 	CoordinatorScopeMembership,
 	CoordinatorScopeMembershipAuditEvent,
 	CoordinatorStore,
@@ -2924,6 +2926,13 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		return (
 			await allRows<CoordinatorScope>(params.length ? statement.bind(...params) : statement)
 		).map((row) => rowToRecord<CoordinatorScope>(row));
+	}
+
+	async getScopeAuthorization(
+		_input: CoordinatorScopeAuthorizationInput,
+	): Promise<CoordinatorScopeAuthorizationResult> {
+		// No raw fallback: D1 adoption is a separate implementation slice.
+		return { kind: "rejected", error: "scope_authorization_unavailable" };
 	}
 
 	async grantScopeMembership(

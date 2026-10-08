@@ -284,6 +284,33 @@ export interface CoordinatorScopeMembership {
 
 export type CoordinatorScopeMembershipAuditAction = "grant" | "revoke";
 
+export interface CoordinatorScopeAuthorizationInput {
+	groupId: string;
+	scopeId: string;
+}
+
+/** Current storage snapshot only; neither account-session proof nor a permanent permission. */
+export type CoordinatorScopeAuthorizationResult =
+	| {
+			kind: "authorized";
+			authorizationVersion: 1;
+			scope: CoordinatorScope;
+			members: Array<{
+				membership: CoordinatorScopeMembership;
+				enrollment: CoordinatorEnrollment;
+				keyId: string;
+			}>;
+	  }
+	| {
+			kind: "rejected";
+			error:
+				| "scope_not_found"
+				| "scope_inactive"
+				| "scope_source_mismatch"
+				| "group_archived"
+				| "scope_authorization_unavailable";
+	  };
+
 export interface CoordinatorScopeMembershipAuditEvent {
 	event_id: number;
 	effect_id: string | null;
@@ -540,6 +567,9 @@ export interface CoordinatorStore extends CoordinatorDeviceRevocationStore {
 	createScope(opts: CoordinatorCreateScopeInput): Promise<CoordinatorScope>;
 	updateScope(opts: CoordinatorUpdateScopeInput): Promise<CoordinatorScope | null>;
 	listScopes(opts?: CoordinatorListScopesInput): Promise<CoordinatorScope[]>;
+	getScopeAuthorization(
+		input: CoordinatorScopeAuthorizationInput,
+	): Promise<CoordinatorScopeAuthorizationResult>;
 	grantScopeMembership(
 		opts: CoordinatorGrantScopeMembershipInput,
 	): Promise<CoordinatorScopeMembership>;

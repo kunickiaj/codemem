@@ -219,6 +219,8 @@ export type {
 	CoordinatorReviewJoinRequestInput,
 	CoordinatorRevokeScopeMembershipInput,
 	CoordinatorScope,
+	CoordinatorScopeAuthorizationInput,
+	CoordinatorScopeAuthorizationResult,
 	CoordinatorScopeMembership,
 	CoordinatorScopeMembershipAuditAction,
 	CoordinatorScopeMembershipAuditEvent,

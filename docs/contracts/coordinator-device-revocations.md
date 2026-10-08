@@ -343,6 +343,45 @@ This is a fresh discovery snapshot, not a permanent permission or immediate
 revocation of already cached direct-peer trust. Project membership authority,
 removed-device ownership evidence, and public revocation management remain separate.
 
+## Current scope authorization foundation
+
+`getScopeAuthorization({ groupId, scopeId })` is a required internal store
+decision, separate from raw scope and membership inspection. SQLite returns an
+`authorizationVersion: 1` snapshot containing the scope and effective members,
+each with its captured membership, current enrollment, and canonical key ID.
+
+The scope must have `authority_type: coordinator`, be active, and be explicitly
+bound to the requested unarchived group.
+Active membership epochs must meet or exceed the scope epoch. Null legacy member
+source fields inherit the scope source; conflicting source fields omit the member.
+
+Legacy coordinator scopes may retain a null coordinator ID when their group is
+explicitly bound. That metadata is neither a tenant boundary nor owner proof.
+Local scopes cannot produce coordinator authorization through this method.
+
+Only enabled enrollments in that group with usable Ed25519 keys can contribute
+authority. Missing, disabled, revoked, or changed member tuples are omitted.
+Opaque legacy keys remain inspectable but cannot substitute for current key evidence.
+
+SQLite captures the entire roster before synchronous hashing inside an immediate
+transaction. One final SQL statement pins every captured scope, membership, and
+enrollment field and checks current device-ID and canonical-key revocations.
+
+It never replaces a captured key with a newer unchecked key.
+
+Empty presentation names or Identity hints do not invalidate otherwise eligible
+members. Inactive membership history cannot authorize and is omitted before
+validating its other fields; malformed active authority still rejects the snapshot.
+
+Missing or inactive scopes, source mismatch, and archived groups have fixed
+rejection codes; malformed storage or unconfirmed reads return
+`scope_authorization_unavailable` without database diagnostics. The snapshot is
+not account-owner proof or a permanent permission.
+
+D1 currently returns unavailable for this method, with no raw-getter fallback.
+Public routes and caches do not use it yet; D1 adoption, versioned wire responses,
+all refresh branches, and managed local readers remain separate implementation slices.
+
 ## Activation limits
 
 Existing group disable/removal does not create global subjects automatically.

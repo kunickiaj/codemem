@@ -175,6 +175,18 @@ import {
 	requirePeerDiscoveryRows,
 } from "./coordinator-peer-discovery.js";
 import { projectInviteGuardEvidence } from "./coordinator-project-invite-guards.js";
+import {
+	type CapturedScopeMember,
+	captureScopeAuthorizationInput,
+	ENROLLMENT_FIELDS,
+	isCurrentScopeMember,
+	MEMBERSHIP_FIELDS,
+	parseScopeAuthorizationMembers,
+	READ_SCOPE_AUTHORIZATION_SQL,
+	requireScopeAuthorizationRecord,
+	SCOPE_FIELDS,
+	scopeAuthorizationError,
+} from "./coordinator-scope-authorization.js";
 import type {
 	CoordinatorBootstrapGrant,
 	CoordinatorBootstrapGrantAuthorizationInput,
@@ -206,6 +218,8 @@ import type {
 	CoordinatorReviewJoinRequestInput,
 	CoordinatorRevokeScopeMembershipInput,
 	CoordinatorScope,
+	CoordinatorScopeAuthorizationInput,
+	CoordinatorScopeAuthorizationResult,
 	CoordinatorScopeMembership,
 	CoordinatorScopeMembershipAuditEvent,
 	CoordinatorStore,
@@ -2562,6 +2576,76 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				 ORDER BY coordinator_id ASC, group_id ASC, scope_id ASC`)
 			.all(...params)
 			.map((row) => rowToRecord<CoordinatorScope>(row));
+	}
+
+	async getScopeAuthorization(
+		raw: CoordinatorScopeAuthorizationInput,
+	): Promise<CoordinatorScopeAuthorizationResult> {
+		try {
+			const input = captureScopeAuthorizationInput(raw);
+			return this.db
+				.transaction((): CoordinatorScopeAuthorizationResult => {
+					const scope = this.getScopeSync(input.scopeId);
+					if (!scope) return { kind: "rejected", error: "scope_not_found" };
+					requireScopeAuthorizationRecord(scope, SCOPE_FIELDS);
+					const error = scopeAuthorizationError(scope, input.groupId);
+					if (error) return { kind: "rejected", error };
+					const group = this.db
+						.prepare("SELECT archived_at FROM groups WHERE group_id = ?")
+						.get(input.groupId) as { archived_at: string | null } | undefined;
+					if (!group) return { kind: "rejected", error: "scope_source_mismatch" };
+					if (group.archived_at !== null) return { kind: "rejected", error: "group_archived" };
+					const members = this.captureScopeAuthorizationMembers(scope, input.groupId);
+					const current = this.db
+						.prepare(READ_SCOPE_AUTHORIZATION_SQL)
+						.get(JSON.stringify([scope]), JSON.stringify(members)) as
+						| (CoordinatorScope & { members_json: string })
+						| undefined;
+					if (!current) return { kind: "rejected", error: "scope_authorization_unavailable" };
+					requireScopeAuthorizationRecord(current, SCOPE_FIELDS);
+					return {
+						kind: "authorized",
+						authorizationVersion: 1,
+						scope,
+						members: parseScopeAuthorizationMembers(current.members_json, members),
+					};
+				})
+				.immediate();
+		} catch {
+			return { kind: "rejected", error: "scope_authorization_unavailable" };
+		}
+	}
+
+	private captureScopeAuthorizationMembers(
+		scope: CoordinatorScope,
+		groupId: string,
+	): CapturedScopeMember[] {
+		const memberships = this.db
+			.prepare(
+				"SELECT * FROM coordinator_scope_memberships WHERE scope_id = ? ORDER BY device_id ASC",
+			)
+			.all(scope.scope_id) as CoordinatorScopeMembership[];
+		const captured: Array<Omit<CapturedScopeMember, "keyId">> = [];
+		for (const membership of memberships) {
+			requireScopeAuthorizationRecord(membership, ["status"]);
+			if (membership.status !== "active") continue;
+			requireScopeAuthorizationRecord(membership, MEMBERSHIP_FIELDS);
+			if (!isCurrentScopeMember(scope, membership)) continue;
+			const enrollment = this.db
+				.prepare(
+					`SELECT ${ENROLLMENT_FIELDS.join(", ")} FROM enrolled_devices WHERE group_id = ? AND device_id = ?`,
+				)
+				.get(groupId, membership.device_id) as CoordinatorEnrollment | undefined;
+			if (!enrollment) continue;
+			requireScopeAuthorizationRecord(enrollment, ENROLLMENT_FIELDS);
+			if (enrollment.enabled !== 1) continue;
+			captured.push({ membership: { ...membership }, enrollment: { ...enrollment } });
+		}
+		// Capture the complete source set before any hash hook can change another tuple.
+		return captured.flatMap((member) => {
+			const keyId = enrollmentRevocationKeyId(member.enrollment.public_key);
+			return keyId === null ? [] : [{ ...member, keyId }];
+		});
 	}
 
 	async grantScopeMembership(
