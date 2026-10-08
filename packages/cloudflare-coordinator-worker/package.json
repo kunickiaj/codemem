@@ -12,7 +12,7 @@
 		"test:node": "pnpm exec vitest run --config vitest.node.config.ts src/index.test.ts",
 		"test:native": "pnpm exec vitest run --config vitest.config.ts",
 		"test:bindings": "node --test --test-timeout=20000 test/browser-auth-binding-lifetime.test.mjs",
-		"test:auth-http": "node --test --test-timeout=20000 test/browser-auth-app.native-http.test.mjs",
+		"test:auth-http": "node --test --test-timeout=20000 test/browser-auth-app.native-http.test.mjs test/ownership-writer-cold-restart.native-http.test.mjs",
 		"test:worker": "pnpm run check:bundle && pnpm run test:node && pnpm run test:native && pnpm run test:bindings && pnpm run test:auth-http"
 	},
 	"dependencies": {

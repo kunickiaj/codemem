@@ -335,6 +335,36 @@ and do not prove rollback. These join guards do not issue bindings or implement
 verified-owner enrollment. Cross-writer retention checks, verified proof resolution,
 and atomic binding/enrollment/audit commitment remain activation prerequisites.
 
+#### Cross-writer retention verification
+
+The production enrollment writers are confined to the two coordinator stores:
+direct enrollment, reactivation, recipient acceptance and Identity repair,
+Project acceptance and Identity repair, and join approval. SQLite shares its
+legacy upsert across direct, Project, and join paths. Rename, disable, and removal
+change labels or lifecycle state; they do not create owner authority.
+
+The shared test matrix connects different writers across disable/removal,
+fixture-only last-group deletion/recreation, and transient-history cleanup.
+Retained device IDs, incoming canonical aliases, and captured current keys deny
+the next writer without changing application rows. Clean controls normalize
+fixture Identity labels to avoid unrelated tuple conflicts; this is not a claim
+that production cleanup clears those labels.
+
+Existing writer-specific contracts cover hashing/write races, private admission
+errors, and unknown receipts.
+
+Core tests close and reopen real SQLite files; their SQLite-backed D1 adapter is
+not native restart evidence. The Worker pool separately runs the shared matrix
+against native D1. Cold HTTP tests dispose and recreate Miniflare on persistent
+D1 storage, check the unchanged snapshot before any new write, and execute
+compiled Core guards in the new Worker's request context without reseeding.
+
+Representative cleanup retains separately issued Identity grants, account links,
+controller records, and raw history. None becomes a positive owner credential.
+These checks verify negative legacy-writer retention only: verified proof,
+atomic owner commitment, scope-authority filtering, device exclusions, and
+onboarding integration remain separate activation gates, and no bindings are issued.
+
 ### Trusted Identity-group grants
 
 Add a coordinator-owned, revisioned Identity/group grant independent of device

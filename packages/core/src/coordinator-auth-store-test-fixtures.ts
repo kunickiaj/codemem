@@ -85,12 +85,15 @@ export function sqliteD1(
 	};
 }
 
-export function setupStore(backend: Backend, options: { authClock?: () => number } = {}): Fixture {
+export function setupStore(
+	backend: Backend,
+	options: { authClock?: () => number; databasePath?: string } = {},
+): Fixture {
 	if (backend === "SQLite") {
-		const store = new BetterSqliteCoordinatorStore(":memory:", options);
+		const store = new BetterSqliteCoordinatorStore(options.databasePath ?? ":memory:", options);
 		return { store, db: store.db };
 	}
-	const db = new Database(":memory:");
+	const db = new Database(options.databasePath ?? ":memory:");
 	try {
 		const worker = join(import.meta.dirname, "../../cloudflare-coordinator-worker");
 		db.exec(readFileSync(join(worker, "schema.sql"), "utf8"));
