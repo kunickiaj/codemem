@@ -121,7 +121,13 @@ it("migration 0020 matches the contract and applies twice without changing proof
 	const db = new Database(":memory:");
 	const reference = new Database(":memory:");
 	try {
-		reference.exec(AUTH_BROWSER_TXN_SCHEMA_SQL);
+		// 0020/0023 are historical: only 0029 admits owner_enroll. Keep all older checks/indexes.
+		reference.exec(
+			AUTH_BROWSER_TXN_SCHEMA_SQL.replace("'signin','link','owner_enroll'", "'signin','link'")
+				.replace("purpose IN ('link','owner_enroll')", "purpose = 'link'")
+				.replace("\n  purpose ", "\n purpose ")
+				.replace("\n  CHECK ((purpose", "\n CHECK ((purpose"),
+		);
 		db.exec(migration);
 		db.exec(purgeMigration);
 		expect(schema(db)).toEqual(schema(reference));

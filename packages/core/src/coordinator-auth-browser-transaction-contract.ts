@@ -112,7 +112,7 @@ export const AUTH_BROWSER_TXN_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS coordinator_auth_browser_transactions (
  coordinator_id TEXT NOT NULL CHECK (length(coordinator_id) BETWEEN 1 AND 256),
  browser_transaction_hash TEXT NOT NULL CHECK (length(browser_transaction_hash) = 64 AND browser_transaction_hash NOT GLOB '*[^0-9a-f]*'),
- purpose TEXT NOT NULL CHECK (purpose IN ('signin','link')),
+  purpose TEXT NOT NULL CHECK (purpose IN ('signin','link','owner_enroll')),
  attempt_id TEXT CHECK (attempt_id IS NULL OR length(attempt_id) BETWEEN 1 AND 256),
  state_hash TEXT NOT NULL CHECK (length(state_hash) = 64 AND state_hash NOT GLOB '*[^0-9a-f]*'),
  binder_hash TEXT NOT NULL CHECK (length(binder_hash) = 64 AND binder_hash NOT GLOB '*[^0-9a-f]*'),
@@ -131,7 +131,7 @@ CREATE TABLE IF NOT EXISTS coordinator_auth_browser_transactions (
  UNIQUE (coordinator_id, binder_hash),
  UNIQUE (coordinator_id, attempt_id),
  UNIQUE (coordinator_id, claim_token),
- CHECK ((purpose = 'link' AND attempt_id IS NOT NULL) OR (purpose = 'signin' AND attempt_id IS NULL)),
+  CHECK ((purpose IN ('link','owner_enroll') AND attempt_id IS NOT NULL) OR (purpose = 'signin' AND attempt_id IS NULL)),
  CHECK ((state = 'pending' AND nonce IS NOT NULL AND pkce_verifier IS NOT NULL) OR (state <> 'pending' AND nonce IS NULL AND pkce_verifier IS NULL)),
  CHECK ((state = 'consumed' AND claim_token IS NOT NULL AND consumed_at_ms IS NOT NULL) OR (state <> 'consumed' AND claim_token IS NULL AND consumed_at_ms IS NULL))
 );

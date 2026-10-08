@@ -203,7 +203,7 @@ function claimToken(): string {
 }
 interface TransactionRow {
 	browser_transaction_hash: string;
-	purpose: "signin" | "link";
+	purpose: string;
 	attempt_id: string | null;
 	nonce: string | null;
 	pkce_verifier: string | null;
@@ -546,7 +546,8 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 		};
 		if (row.purpose === "link" && row.attempt_id !== null)
 			return { ...materials, purpose: "link", attemptId: row.attempt_id };
-		return { ...materials, purpose: "signin" };
+		if (row.purpose === "signin") return { ...materials, purpose: "signin" };
+		return rejected("transaction_unavailable");
 	}
 	private async diagnoseTransactionConfig(
 		stateHash: string,

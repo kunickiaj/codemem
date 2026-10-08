@@ -21,6 +21,7 @@ import {
 	AuthAccountProfileOperations,
 	type CoordinatorAuthAccountProfileInput,
 } from "./coordinator-auth-account-profile.js";
+import { upgradeAuthBrowserOwnerPurposeSchema } from "./coordinator-auth-browser-schema-upgrade.js";
 import {
 	AUTH_BROWSER_TXN_SCHEMA_SQL,
 	type CoordinatorAuthBrowserConfig,
@@ -167,6 +168,7 @@ import {
 	normalizeMembershipEffectId,
 	revokeMembershipEffectRequestJson,
 } from "./coordinator-membership-effects.js";
+import { COORDINATOR_OWNER_ENROLLMENT_SCHEMA_SQL } from "./coordinator-owner-enrollment-schema.js";
 import {
 	CAPTURE_PEER_ENROLLMENTS_SQL,
 	type CapturedPeerEnrollment,
@@ -486,6 +488,12 @@ function upgradeAuthLinkBrowserStartSchema(db: DatabaseType): void {
 function initializeDeviceLedgerSchemas(db: DatabaseType): void {
 	db.exec(COORDINATOR_DEVICE_OWNERSHIP_SCHEMA_SQL);
 	db.exec(DEVICE_REVOCATION_SCHEMA_SQL);
+	db.exec(COORDINATOR_OWNER_ENROLLMENT_SCHEMA_SQL);
+}
+
+function initializeAuthBrowserSchema(db: DatabaseType): void {
+	upgradeAuthBrowserOwnerPurposeSchema(db);
+	db.exec(AUTH_BROWSER_TXN_SCHEMA_SQL);
 }
 
 function initializeSchema(db: DatabaseType): void {
@@ -497,7 +505,7 @@ function initializeSchema(db: DatabaseType): void {
 	upgradeAuthSessionRetentionSchema(db);
 	db.exec(AUTH_SESSION_SCHEMA_SQL);
 	db.exec(AUTH_ACCOUNT_PROFILE_SCHEMA_SQL);
-	db.exec(AUTH_BROWSER_TXN_SCHEMA_SQL);
+	initializeAuthBrowserSchema(db);
 	db.exec(`
 		CREATE TABLE IF NOT EXISTS groups (
 			group_id TEXT PRIMARY KEY,
