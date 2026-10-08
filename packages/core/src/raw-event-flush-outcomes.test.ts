@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { connect } from "./db.js";
 import type { IngestOptions } from "./ingest-pipeline.js";
+import { MAX_OBSERVER_XML_CHARACTERS } from "./ingest-xml-scan.js";
 import { flushRawEvents } from "./raw-event-flush.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema } from "./test-utils.js";
@@ -14,6 +15,81 @@ let tmpDir: string | null = null;
 afterEach(() => {
 	store?.close();
 	if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+});
+
+it("reports oversized XML without exposing the response or changing retry status", async () => {
+	// Arrange: reject a real oversized response at the XML normalization boundary.
+	tmpDir = mkdtempSync(join(tmpdir(), "codemem-flush-outcome-test-"));
+	const dbPath = join(tmpDir, "test.sqlite");
+	const db = connect(dbPath);
+	initTestSchema(db);
+	db.close();
+	store = new MemoryStore(dbPath);
+	const sessionId = "ses_oversized_xml_output";
+	store.recordRawEvent({
+		opencodeSessionId: sessionId,
+		eventId: "evt-1",
+		eventType: "user_prompt",
+		payload: { type: "user_prompt", prompt_text: "Hello" },
+		tsWallMs: 100,
+	});
+	const payloadMarker = "private-observer-response-marker";
+	const observe = vi.fn().mockResolvedValue({
+		raw: `<skip_summary reason="${payloadMarker}"/>`.padEnd(MAX_OBSERVER_XML_CHARACTERS + 1),
+		parsed: null,
+		provider: "openai",
+		model: "test-model",
+		outcome: { status: "success", error: null, authRetry: null },
+	});
+	const observer = {
+		provider: "openai",
+		runtime: "api_http",
+		openaiUseResponses: false,
+		hasCustomBaseUrl: false,
+		outputMode: "legacy_xml",
+		maxChars: 12_000,
+		observe,
+		getStatus: () => ({
+			provider: "openai",
+			model: "test-model",
+			runtime: "api_http",
+			auth: { source: "env", type: "api_direct", hasToken: true },
+		}),
+	};
+
+	// Act: flush through the normal observer and batch-failure paths.
+	await expect(
+		flushRawEvents(store, { observer } as unknown as IngestOptions, {
+			opencodeSessionId: sessionId,
+			source: "opencode",
+			cwd: null,
+			project: null,
+			startedAt: null,
+			maxEvents: null,
+		}),
+	).rejects.toThrow("observer request failed (observer_output_too_large)");
+
+	// Assert: operators see size-specific advice; the batch stays failed and unconsumed.
+	const batch = store.db
+		.prepare(
+			"SELECT status, attempt_count, error_type, error_message FROM raw_event_flush_batches WHERE opencode_session_id = ?",
+		)
+		.get(sessionId) as {
+		status: string;
+		attempt_count: number;
+		error_type: string;
+		error_message: string;
+	};
+	expect(batch).toEqual({
+		status: "failed",
+		attempt_count: 1,
+		error_type: "ObserverOutputTransportError:observer_output_too_large",
+		error_message:
+			"OpenAI returned a response above the XML output limit. Reduce the observer response size before retrying.",
+	});
+	expect(JSON.stringify(batch)).not.toContain(payloadMarker);
+	expect(observe).toHaveBeenCalledOnce();
+	expect(store.rawEventFlushState(sessionId)).toBe(-1);
 });
 
 describe("raw-event flush observer outcomes", () => {

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { MAX_OBSERVER_XML_CHARACTERS } from "./ingest-xml-scan.js";
 import type { ObserverClient, ObserverStatus } from "./observer-client.js";
 import {
 	type ObserverOutputError,
@@ -75,6 +76,70 @@ const capturedEnvelope = JSON.stringify({
 	],
 	summary: null,
 	skip_reason: null,
+});
+
+describe("legacy XML aggregate output limit", () => {
+	const response = (raw: string, elapsedMs = 2) => ({
+		raw,
+		parsed: null,
+		provider: "openai",
+		model: "test-model",
+		elapsedMs,
+		usage: { inputTokens: 3, outputTokens: 5, totalTokens: 8 },
+	});
+
+	it("fails oversized initial output without parsing or attempting repair", async () => {
+		const observe = vi
+			.fn()
+			.mockResolvedValue(response("<observation>".padEnd(MAX_OBSERVER_XML_CHARACTERS + 1)));
+		const observer = fakeObserver({ outputMode: "legacy_xml", observe });
+		await expect(
+			observeAndNormalizeObserverOutput(observer, "system", "user"),
+		).rejects.toMatchObject({
+			code: "observer_output_too_large",
+			diagnostics: { validation: "invalid", repairAttempted: false },
+			telemetry: {
+				totalElapsedMs: 2,
+				totalUsage: { inputTokens: 3, outputTokens: 5, totalTokens: 8 },
+			},
+		});
+		expect(observe).toHaveBeenCalledOnce();
+	});
+
+	it("fails oversized repair output instead of returning partially retained memories", async () => {
+		const observe = vi
+			.fn()
+			.mockResolvedValueOnce(
+				response(
+					"<observation><type>discovery</type><title>Keep this</title></observation><summary>",
+				),
+			)
+			.mockResolvedValueOnce(response("x".repeat(MAX_OBSERVER_XML_CHARACTERS + 1), 7));
+		const observer = fakeObserver({ outputMode: "legacy_xml", observe });
+		await expect(
+			observeAndNormalizeObserverOutput(observer, "system", "user"),
+		).rejects.toMatchObject({
+			code: "observer_output_too_large",
+			diagnostics: { validation: "invalid", repairAttempted: true },
+			telemetry: {
+				totalElapsedMs: 9,
+				totalUsage: { inputTokens: 6, outputTokens: 10, totalTokens: 16 },
+			},
+		});
+		expect(observe).toHaveBeenCalledTimes(2);
+	});
+
+	it("accepts a response exactly at the limit without repair", async () => {
+		const observe = vi
+			.fn()
+			.mockResolvedValue(
+				response('<skip_summary reason="low-signal"/>'.padEnd(MAX_OBSERVER_XML_CHARACTERS)),
+			);
+		const observer = fakeObserver({ outputMode: "legacy_xml", observe });
+		const output = await observeAndNormalizeObserverOutput(observer, "system", "user");
+		expect(output.final.parsed.skipSummaryReason).toBe("low-signal");
+		expect(observe).toHaveBeenCalledOnce();
+	});
 });
 
 describe("resolveObserverOutputCapability", () => {

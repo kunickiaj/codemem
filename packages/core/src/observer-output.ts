@@ -5,6 +5,7 @@ import {
 	shouldPreferRepairedObserverResponse,
 	shouldRepairObserverResponse,
 } from "./ingest-xml-parser.js";
+import { MAX_OBSERVER_XML_CHARACTERS } from "./ingest-xml-scan.js";
 import type {
 	ObserverCallOutcome,
 	ObserverClient,
@@ -479,9 +480,7 @@ async function observeLegacyXml(
 	capability: ObserverOutputCapability,
 ): Promise<NormalizedObserverOutput> {
 	const firstResponse = await observer.observe(system, user);
-	const firstParsed = firstResponse.raw
-		? parseObserverResponse(firstResponse.raw)
-		: emptyParsedOutput();
+	const firstParsed = parseLegacyResponse(firstResponse, capability);
 	const initial = toAttempt(observer, firstResponse, firstParsed);
 	if (!shouldRepairObserverResponse(firstResponse.raw, firstParsed)) {
 		return {
@@ -511,9 +510,7 @@ async function observeLegacyXml(
 			snapshotObserverFailureStatus(observer, error),
 		);
 	}
-	const repairedParsed = repairResponse.raw
-		? parseObserverResponse(repairResponse.raw)
-		: emptyParsedOutput();
+	const repairedParsed = parseLegacyResponse(repairResponse, capability, firstResponse);
 	const repaired = toAttempt(observer, repairResponse, repairedParsed);
 	const repairApplied = shouldPreferRepairedObserverResponse(
 		firstParsed,
@@ -534,6 +531,30 @@ async function observeLegacyXml(
 		repairFailureStatus: null,
 		diagnostics: buildDiagnostics(capability, { repairAttempted: true, failureReason }),
 	};
+}
+
+function parseLegacyResponse(
+	response: ObserverResponse,
+	capability: ObserverOutputCapability,
+	initial?: ObserverResponse,
+): ParsedOutput {
+	if ((response.raw?.length ?? 0) <= MAX_OBSERVER_XML_CHARACTERS) {
+		return response.raw ? parseObserverResponse(response.raw) : emptyParsedOutput();
+	}
+	const first = initial ?? response;
+	const totalElapsedMs =
+		first.elapsedMs != null && (!initial || response.elapsedMs != null)
+			? first.elapsedMs + (initial ? (response.elapsedMs ?? 0) : 0)
+			: null;
+	throw new ObserverOutputTransportError(
+		"observer_output_too_large",
+		buildDiagnostics(capability, { validation: "invalid", repairAttempted: initial !== undefined }),
+		{
+			totalElapsedMs,
+			totalUsage: sumObserverUsage(first.usage, initial ? response.usage : undefined),
+		},
+		response.outcome ?? null,
+	);
 }
 
 export function observerOutputFailureStatus(output: NormalizedObserverOutput): ObserverStatus {

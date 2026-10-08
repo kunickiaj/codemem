@@ -1,15 +1,22 @@
 /**
  * XML response parser for the observer LLM output.
  *
- * Ports codemem/xml_parser.py — uses regex-based parsing to extract
- * observations and session summaries from the observer's XML response.
- *
- * The observer output is structured XML, not arbitrary HTML, so regex
- * is sufficient (no DOM parser needed).
+ * Uses literal, forward-only extraction rather than a validating DOM parser:
+ * incomplete and malformed output must remain available for structural repair.
  */
 
 import { isLowSignalObservation } from "./ingest-filters.js";
 import type { ParsedObservation, ParsedOutput, ParsedSummary } from "./ingest-types.js";
+import {
+	assertObserverXmlSize,
+	closingTagPositions,
+	completeTagBlocks,
+	firstTagContent,
+	openingTagEnds,
+	positionAtOrAfter,
+	positionIndexAtOrAfter,
+	tagOpenings,
+} from "./ingest-xml-scan.js";
 import { REMEMBER_MEMORY_KINDS } from "./memory-kinds.js";
 import { OBSERVER_CONCEPT_SET } from "./observer-concepts.js";
 
@@ -17,9 +24,6 @@ import { OBSERVER_CONCEPT_SET } from "./observer-concepts.js";
 // Regex patterns
 // ---------------------------------------------------------------------------
 
-// Match <observation> with optional attributes (LLMs sometimes add kind="...")
-const OBSERVATION_BLOCK_RE = /<observation[^>]*>.*?<\/observation>/gs;
-const SUMMARY_BLOCK_RE = /<summary[^>]*>.*?<\/summary>/gs;
 const SKIP_SUMMARY_RE =
 	/<skip_summary(?:\s+reason="(?<reason>[^"]+)")?\s*(?:\/>|>\s*<\/skip_summary>)/i;
 const CODE_FENCE_RE = /```(?:xml)?/gi;
@@ -58,6 +62,7 @@ export interface ObserverResponseStructuralDiagnostics {
 
 /** Remove code fences and trim whitespace. */
 function cleanXmlText(text: string): string {
+	assertObserverXmlSize(text);
 	return text.replace(CODE_FENCE_RE, "").trim();
 }
 
@@ -67,113 +72,87 @@ function escapeRegExpLiteral(value: string): string {
 
 /** Extract text content from within a single XML tag. Returns empty string if not found. */
 function extractTagText(xml: string, tag: string): string {
-	const escapedTag = escapeRegExpLiteral(tag);
-	const re = new RegExp(`<${escapedTag}(?=[\\s/>])[^>]*>([\\s\\S]*?)</${escapedTag}>`, "i");
-	const match = re.exec(xml);
-	if (!match?.[1]) return "";
-	return match[1].trim();
+	return firstTagContent(xml, tag)?.trim() ?? "";
 }
 
 /** Extract text content of repeated child elements within a parent tag. */
 function extractChildTexts(xml: string, parentTag: string, childTag: string): string[] {
-	const escapedParentTag = escapeRegExpLiteral(parentTag);
-	const escapedChildTag = escapeRegExpLiteral(childTag);
-	const parentRe = new RegExp(
-		`<${escapedParentTag}(?=[\\s/>])[^>]*>([\\s\\S]*?)</${escapedParentTag}>`,
-		"i",
-	);
-	const parentMatch = parentRe.exec(xml);
-	if (!parentMatch?.[1]) return [];
-
-	const childRe = new RegExp(
-		`<${escapedChildTag}(?=[\\s/>])[^>]*>([\\s\\S]*?)</${escapedChildTag}>`,
-		"gi",
-	);
-	const items: string[] = [];
-	for (
-		let match = childRe.exec(parentMatch[1]);
-		match !== null;
-		match = childRe.exec(parentMatch[1])
-	) {
-		const text = match[1]?.trim();
-		if (text) items.push(text);
-	}
-	return items;
+	const parent = firstTagContent(xml, parentTag);
+	if (!parent) return [];
+	return completeTagBlocks(parent, childTag)
+		.map(({ value }) => firstTagContent(value, childTag)?.trim() ?? "")
+		.filter(Boolean);
 }
 
 function directChildFragments(
 	block: string,
 	rootTag: string,
 ): Array<{ tag: string; value: string; complete: boolean }> {
-	const escapedRootTag = escapeRegExpLiteral(rootTag);
-	const opening = new RegExp(`<${escapedRootTag}(?=[\\s/>])[^>]*>`, "i").exec(block);
+	const opening = tagOpenings(block, rootTag)[0];
 	if (!opening) return [];
-	const contentStart = opening.index + opening[0].length;
+	const contentStart = opening.end;
 	const remainder = block.slice(contentStart);
-	const closing = new RegExp(`</${escapedRootTag}>`, "i").exec(remainder);
-	const inner = closing ? remainder.slice(0, closing.index) : remainder;
+	const closing = closingTagPositions(remainder).get(rootTag)?.[0];
+	const inner = closing === undefined ? remainder : remainder.slice(0, closing);
+	return collectDirectChildFragments(inner);
+}
+
+function collectDirectChildFragments(
+	inner: string,
+): Array<{ tag: string; value: string; complete: boolean }> {
 	const fragments: Array<{ tag: string; value: string; complete: boolean }> = [];
-	const openingTagPattern = /<([A-Za-z_][\w:.-]*)/g;
-	for (
-		let match = openingTagPattern.exec(inner);
-		match !== null;
-		match = openingTagPattern.exec(inner)
-	) {
-		const tag = match[1]?.toLowerCase();
-		if (!tag) continue;
-		const tagEnd = openingTagEnd(inner, openingTagPattern.lastIndex);
+	const openings = directChildOpenings(inner);
+	const closings = closingTagPositions(inner);
+	const knownFields = openings
+		.filter(
+			(opening) => SUMMARY_FIELDS.has(opening.tag) && /[\s/>]/.test(inner[opening.nameEnd] ?? ""),
+		)
+		.map((opening) => opening.index);
+	let cursor = 0;
+	for (const { index, tag, end: tagEnd } of openings) {
+		if (index < cursor) continue;
 		if (tagEnd < 0) break;
-		const token = inner.slice(match.index, tagEnd + 1);
-		openingTagPattern.lastIndex = tagEnd + 1;
-		const childContentStart = (match.index ?? 0) + token.length;
+		const token = inner.slice(index, tagEnd + 1);
+		cursor = tagEnd + 1;
+		const childContentStart = tagEnd + 1;
 		if (/\/\s*>$/.test(token)) {
 			fragments.push({ tag, value: "", complete: true });
 			continue;
 		}
-		const escapedTag = escapeRegExpLiteral(tag);
-		const childClosing = new RegExp(`</${escapedTag}>`, "i").exec(inner.slice(childContentStart));
-		if (!childClosing) {
-			const unclosedRemainder = inner.slice(childContentStart);
-			const nextKnownField = new RegExp(
-				`<(?:${[...SUMMARY_FIELDS].map(escapeRegExpLiteral).join("|")})(?=[\\s/>])`,
-				"i",
-			).exec(unclosedRemainder);
+		const childClosing = positionAtOrAfter(closings.get(tag) ?? [], childContentStart);
+		if (childClosing === undefined) {
+			const nextKnownField = positionAtOrAfter(knownFields, childContentStart);
 			fragments.push({
 				tag,
-				value: nextKnownField
-					? unclosedRemainder.slice(0, nextKnownField.index)
-					: unclosedRemainder,
+				value: inner.slice(childContentStart, nextKnownField ?? inner.length),
 				complete: false,
 			});
-			if (!nextKnownField) break;
-			openingTagPattern.lastIndex = childContentStart + nextKnownField.index;
+			if (nextKnownField === undefined) break;
+			cursor = nextKnownField;
 			continue;
 		}
 		fragments.push({
 			tag,
-			value: inner.slice(childContentStart, childContentStart + childClosing.index),
+			value: inner.slice(childContentStart, childClosing),
 			complete: true,
 		});
-		openingTagPattern.lastIndex = childContentStart + childClosing.index + childClosing[0].length;
+		cursor = childClosing + tag.length + 3;
 	}
 	return fragments;
 }
 
-function openingTagEnd(value: string, contentStart: number): number {
-	let quote: '"' | "'" | null = null;
-	let firstClosingBracket = -1;
-	for (let index = contentStart; index < value.length; index += 1) {
-		const character = value[index];
-		if (character === ">") {
-			if (firstClosingBracket < 0) firstClosingBracket = index;
-			if (quote === null) return index;
-			continue;
-		}
-		if (character !== '"' && character !== "'") continue;
-		if (quote === character) quote = null;
-		else if (quote === null) quote = character;
-	}
-	return firstClosingBracket;
+function directChildOpenings(inner: string) {
+	const matches = [...inner.matchAll(/<([A-Za-z_][\w:.-]*)/g)];
+	const ends = openingTagEnds(
+		inner,
+		matches.map((match) => match.index + match[0].length),
+	);
+	return matches.map((match) => ({
+		index: match.index,
+		tag: (match[1] ?? "").toLowerCase(),
+		nameEnd: match.index + match[0].length,
+		end: ends.get(match.index + match[0].length) ?? -1,
+	}));
 }
 
 function directChildTagNames(block: string, rootTag: string): string[] {
@@ -183,8 +162,28 @@ function directChildTagNames(block: string, rootTag: string): string[] {
 function observationKind(block: string): string {
 	const type = extractTagText(block, "type");
 	if (type) return type.trim().toLowerCase();
-	const attribute = /<observation\b[^>]*\bkind=["']([^"']+)["']/i.exec(block)?.[1];
-	return attribute?.trim().toLowerCase() ?? "";
+	return observationKindAttribute(block);
+}
+
+function observationKindAttribute(block: string): string {
+	const quotes = [...block.matchAll(/["']/g)].map((match) => match.index);
+	const attributes = [...block.matchAll(/\bkind=["']/gi)].flatMap((match) => {
+		const start = match.index + match[0].length;
+		const end = positionAtOrAfter(quotes, start);
+		return end !== undefined && end > start
+			? [{ index: match.index, value: block.slice(start, end) }]
+			: [];
+	});
+	const positions = attributes.map(({ index }) => index);
+	for (const opening of tagOpenings(block, "observation", { prefix: true })) {
+		// The legacy kind attribute accepts word boundaries (including a dash
+		// suffix) and picks the last valid kind attribute before the first bracket.
+		if (/\w/.test(block[opening.index + "<observation".length] ?? "")) continue;
+		const lastIndex = positionIndexAtOrAfter(positions, opening.end - 1) - 1;
+		const attribute = attributes[lastIndex];
+		if (attribute && attribute.index >= opening.index) return attribute.value.trim().toLowerCase();
+	}
+	return "";
 }
 
 // ---------------------------------------------------------------------------
@@ -249,7 +248,7 @@ export function parseObserverResponse(raw: string): ParsedOutput {
 
 	// Extract observations
 	const observations: ParsedObservation[] = [];
-	const obsBlocks = cleaned.match(OBSERVATION_BLOCK_RE) ?? [];
+	const obsBlocks = completeBlockValues(cleaned, "observation");
 	for (const block of obsBlocks) {
 		const parsed = parseObservationBlock(block);
 		if (parsed) observations.push(parsed);
@@ -257,7 +256,7 @@ export function parseObserverResponse(raw: string): ParsedOutput {
 
 	// Extract summary (use last block if multiple)
 	let summary: ParsedSummary | null = null;
-	const summaryBlocks = cleaned.match(SUMMARY_BLOCK_RE) ?? [];
+	const summaryBlocks = completeBlockValues(cleaned, "summary");
 	const lastSummaryBlock = summaryBlocks.at(-1);
 	if (lastSummaryBlock) {
 		summary = parseSummaryBlock(lastSummaryBlock);
@@ -276,9 +275,9 @@ export function inspectObserverResponseStructure(
 	parsed: ParsedOutput = parseObserverResponse(raw),
 ): ObserverResponseStructuralDiagnostics {
 	const cleaned = cleanXmlText(raw);
-	const observationBlockValues = cleaned.match(OBSERVATION_BLOCK_RE) ?? [];
+	const observationBlockValues = completeBlockValues(cleaned, "observation");
 	const observationBlocks = cleaned.match(/<observation(?:\s|>)/gi)?.length ?? 0;
-	const summaryBlockValues = cleaned.match(SUMMARY_BLOCK_RE) ?? [];
+	const summaryBlockValues = completeBlockValues(cleaned, "summary");
 	const summaryBlocks = cleaned.match(/<summary(?:\s|>)/gi)?.length ?? 0;
 	const skipMatch = SKIP_SUMMARY_RE.exec(cleaned);
 	const unlabeledSkipSummary = skipMatch !== null && !skipMatch.groups?.reason;
@@ -383,7 +382,7 @@ function remainingAfterPreservedObservations(
 	const remaining = [...repairedObservations];
 	const unmatched: Array<{ observation: ParsedObservation; fragment: string | null }> = [];
 	const retainedFragments = initialRaw
-		? completeBlockMatches(cleanXmlText(initialRaw), OBSERVATION_BLOCK_RE).flatMap(({ value }) =>
+		? completeBlockMatches(cleanXmlText(initialRaw), "observation").flatMap(({ value }) =>
 				parseObservationBlock(value) ? [value] : [],
 			)
 		: [];
@@ -621,7 +620,7 @@ function preservesPopulatedSummaryFields(
 	] as const;
 	const listFields = ["filesRead", "filesModified"] as const;
 	const retainedFragment = initialRaw
-		? completeBlockMatches(cleanXmlText(initialRaw), SUMMARY_BLOCK_RE).at(-1)?.value
+		? completeBlockMatches(cleanXmlText(initialRaw), "summary").at(-1)?.value
 		: undefined;
 	const recoverableUnknownValues = retainedFragment
 		? recoverableUnknownSummaryValues(retainedFragment)
@@ -809,13 +808,12 @@ function consumeComposedRecoverableValues(
 	return true;
 }
 
-function completeBlockMatches(
-	raw: string,
-	pattern: RegExp,
-): Array<{ index: number; value: string }> {
-	return [...raw.matchAll(new RegExp(pattern.source, pattern.flags))].flatMap((match) =>
-		match.index == null ? [] : [{ index: match.index, value: match[0] }],
-	);
+function completeBlockMatches(raw: string, tag: string): Array<{ index: number; value: string }> {
+	return completeTagBlocks(raw, tag, { caseSensitive: true, prefix: true });
+}
+
+function completeBlockValues(raw: string, tag: string): string[] {
+	return completeBlockMatches(raw, tag).map(({ value }) => value);
 }
 
 function rootBlockBoundaries(raw: string): number[] {
@@ -831,14 +829,14 @@ function blockFragment(
 	boundaries: number[],
 ): string {
 	if (complete) return complete;
-	const end = boundaries.find((boundary) => boundary > start) ?? raw.length;
+	const end = positionAtOrAfter(boundaries, start + 1) ?? raw.length;
 	return raw.slice(start, end);
 }
 
 function allSummaryFragments(raw: string): string[] {
 	const cleaned = cleanXmlText(raw);
 	const completeByStart = new Map(
-		completeBlockMatches(cleaned, SUMMARY_BLOCK_RE).map((match) => [match.index, match.value]),
+		completeBlockMatches(cleaned, "summary").map((match) => [match.index, match.value]),
 	);
 	const boundaries = rootBlockBoundaries(cleaned);
 	const summaryStarts = [...cleaned.matchAll(/<summary(?:\s|>)/gi)].flatMap((opening) =>
@@ -864,16 +862,15 @@ interface GroundingText extends RecoverableText {
 }
 
 function extractRecoverableTagText(xml: string, tag: string): RecoverableText | null {
-	const escapedTag = escapeRegExpLiteral(tag);
-	const opening = new RegExp(`<${escapedTag}(?=[\\s/>])[^>]*>`, "i").exec(xml);
+	const opening = tagOpenings(xml, tag)[0];
 	if (!opening) return null;
-	const contentStart = opening.index + opening[0].length;
+	const contentStart = opening.end;
 	const remainder = xml.slice(contentStart);
-	const closing = new RegExp(`</${escapedTag}>`, "i").exec(remainder);
+	const closing = closingTagPositions(remainder).get(tag)?.[0];
 	const value = (
-		closing ? remainder.slice(0, closing.index) : (remainder.split("<", 1)[0] ?? "")
+		closing !== undefined ? remainder.slice(0, closing) : (remainder.split("<", 1)[0] ?? "")
 	).trim();
-	return { value, complete: closing !== null };
+	return { value, complete: closing !== undefined };
 }
 
 function matchesRecoverableText(recovered: RecoverableText | null, actual: string | null): boolean {
@@ -909,34 +906,38 @@ function extractRecoverableChildTexts(
 	parentTag: string,
 	childTag: string,
 ): RecoverableText[] {
-	const escapedParentTag = escapeRegExpLiteral(parentTag);
-	const escapedChildTag = escapeRegExpLiteral(childTag);
-	const parentOpening = new RegExp(`<${escapedParentTag}(?=[\\s/>])[^>]*>`, "i").exec(xml);
+	const parentOpening = tagOpenings(xml, parentTag)[0];
 	if (!parentOpening) return [];
-	const parentContentStart = parentOpening.index + parentOpening[0].length;
+	const parentContentStart = parentOpening.end;
 	const parentRemainder = xml.slice(parentContentStart);
-	const parentClosing = new RegExp(`</${escapedParentTag}>`, "i").exec(parentRemainder);
+	const parentClosing = closingTagPositions(parentRemainder).get(parentTag)?.[0];
 	const siblingContainer = /<(?:facts|concepts|files_read|files_modified)(?:\s|>)/i.exec(
 		parentRemainder,
 	);
 	const parentEnd = Math.min(
-		parentClosing?.index ?? parentRemainder.length,
+		parentClosing ?? parentRemainder.length,
 		siblingContainer?.index ?? parentRemainder.length,
 	);
 	const parentContent = parentRemainder.slice(0, parentEnd);
-	const openings = [
-		...parentContent.matchAll(new RegExp(`<${escapedChildTag}(?=[\\s/>])[^>]*>`, "gi")),
-	];
+	// Unlike the permissive opening scan, legacy repeated-child matching consumed
+	// each opening token before looking for the next one (including malformed attributes).
+	let openingEnd = 0;
+	const openings = tagOpenings(parentContent, childTag).filter((opening) => {
+		if (opening.index < openingEnd) return false;
+		openingEnd = opening.end;
+		return true;
+	});
+	const closings = closingTagPositions(parentContent).get(childTag) ?? [];
 	return openings.flatMap((opening, index) => {
-		if (opening.index == null) return [];
-		const contentStart = opening.index + opening[0].length;
+		const contentStart = opening.end;
 		const nextOpening = openings[index + 1]?.index ?? parentContent.length;
 		const remainder = parentContent.slice(contentStart, nextOpening);
-		const closing = new RegExp(`</${escapedChildTag}>`, "i").exec(remainder);
+		const closing = positionAtOrAfter(closings, contentStart);
+		const complete = closing !== undefined && closing + childTag.length + 3 <= nextOpening;
 		const value = (
-			closing ? remainder.slice(0, closing.index) : (remainder.split("<", 1)[0] ?? "")
+			complete ? parentContent.slice(contentStart, closing) : (remainder.split("<", 1)[0] ?? "")
 		).trim();
-		return hasVisibleText(value) ? [{ value, complete: closing !== null }] : [];
+		return hasVisibleText(value) ? [{ value, complete }] : [];
 	});
 }
 
@@ -964,7 +965,7 @@ function preservesRecoverableItems(recovered: RecoverableText[], actual: string[
 function discardedObservationFragments(raw: string): string[] {
 	const cleaned = cleanXmlText(raw);
 	const completeByStart = new Map(
-		completeBlockMatches(cleaned, OBSERVATION_BLOCK_RE).map((match) => [match.index, match.value]),
+		completeBlockMatches(cleaned, "observation").map((match) => [match.index, match.value]),
 	);
 	const boundaries = rootBlockBoundaries(cleaned);
 	return [...cleaned.matchAll(/<observation(?:\s|>)/gi)].flatMap((opening) => {
@@ -977,7 +978,7 @@ function discardedObservationFragments(raw: string): string[] {
 
 function discardedSummaryFragments(raw: string, parsed: ParsedOutput): string[] {
 	const cleaned = cleanXmlText(raw);
-	const completeMatches = completeBlockMatches(cleaned, SUMMARY_BLOCK_RE);
+	const completeMatches = completeBlockMatches(cleaned, "summary");
 	const completeByStart = new Map(completeMatches.map((match) => [match.index, match.value]));
 	const retainedStart = parsed.summary ? completeMatches.at(-1)?.index : undefined;
 	const boundaries = rootBlockBoundaries(cleaned);
@@ -1168,7 +1169,7 @@ function recoversUnknownSummaryFields(
 	repairedSummary: ParsedSummary | null,
 ): boolean {
 	if (!initialRaw) return true;
-	const unknownValues = completeBlockMatches(cleanXmlText(initialRaw), SUMMARY_BLOCK_RE).flatMap(
+	const unknownValues = completeBlockMatches(cleanXmlText(initialRaw), "summary").flatMap(
 		({ value: block }) => recoverableUnknownSummaryValues(block),
 	);
 	if (unknownValues.length === 0) return true;
@@ -1203,8 +1204,8 @@ function recoversDiscardedBlocks(
 	if (!recoveredObservations) return false;
 	const discardedObservations = discardedObservationFragments(initialRaw);
 	if (discardedObservations.length < initialDiagnostics.discardedObservationBlocks) return false;
+	const surroundingProse = proseOutsideRootBlocks(initialRaw).join(" ");
 	for (const fragment of discardedObservations) {
-		const surroundingProse = proseOutsideRootBlocks(initialRaw).join(" ");
 		const matchIndex = recoveredObservations.findIndex((observation) =>
 			observationMatchesRecoveredFields(fragment, observation, surroundingProse),
 		);
@@ -1264,6 +1265,7 @@ function proseOutsideRootBlocks(raw: string): string[] {
 	const cleaned = cleanXmlText(raw);
 	const boundaries = rootBlockBoundaries(cleaned);
 	if (boundaries.length === 0) return [];
+	const completeEnds = completeRootEnds(cleaned);
 	const fragments: string[] = [];
 	let cursor = 0;
 	for (const [index, start] of boundaries.entries()) {
@@ -1272,18 +1274,32 @@ function proseOutsideRootBlocks(raw: string): string[] {
 		if (prose) fragments.push(normalizeRecoverableText(prose).toLowerCase());
 		const remainder = cleaned.slice(start);
 		const rootName = /^<([A-Za-z_][\w:.-]*)/i.exec(remainder)?.[1]?.toLowerCase();
-		const completePattern =
-			rootName === "observation"
-				? /^<observation[^>]*>.*?<\/observation>/is
-				: rootName === "summary"
-					? /^<summary[^>]*>.*?<\/summary>/is
-					: /^<skip_summary(?:\s+reason="[^"]+")?\s*(?:\/>|>\s*<\/skip_summary>)/i;
-		const complete = completePattern.exec(remainder)?.[0];
-		cursor = complete ? start + complete.length : (boundaries[index + 1] ?? cleaned.length);
+		const end =
+			rootName === "skip_summary" ? skipSummaryEnd(remainder, start) : completeEnds.get(start);
+		cursor = end ?? boundaries[index + 1] ?? cleaned.length;
 	}
 	const trailing = visibleTextForComparison(cleaned.slice(cursor));
 	if (trailing) fragments.push(normalizeRecoverableText(trailing).toLowerCase());
 	return fragments;
+}
+
+function completeRootEnds(raw: string): Map<number, number> {
+	const closings = closingTagPositions(raw);
+	const ends = new Map<number, number>();
+	for (const tag of ["observation", "summary"]) {
+		for (const opening of tagOpenings(raw, tag, { prefix: true })) {
+			const end = positionAtOrAfter(closings.get(tag) ?? [], opening.end);
+			if (end !== undefined) ends.set(opening.index, end + tag.length + 3);
+		}
+	}
+	return ends;
+}
+
+function skipSummaryEnd(remainder: string, start: number): number | undefined {
+	const complete = /^<skip_summary(?:\s+reason="[^"]+")?\s*(?:\/>|>\s*<\/skip_summary>)/i.exec(
+		remainder,
+	)?.[0];
+	return complete === undefined ? undefined : start + complete.length;
 }
 
 function observationsAreGroundedInPlainProse(

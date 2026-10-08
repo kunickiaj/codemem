@@ -114,6 +114,9 @@ function summarizeObserverOutputFailure(exc: Error, providerTitle: string): stri
 		if (exc.code === "observer_timeout") {
 			return `${providerTitle} request timed out during raw-event processing.`;
 		}
+		if (exc.code === "observer_output_too_large") {
+			return `${providerTitle} returned a response above the XML output limit. Reduce the observer response size before retrying.`;
+		}
 		return `${providerTitle} request failed during raw-event processing.`;
 	}
 	if (!(exc instanceof ObserverOutputError)) return null;
