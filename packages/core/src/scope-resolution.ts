@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import type { Database } from "better-sqlite3";
 import { cleanProjectIdentity, isMalformedProjectIdentity } from "./project-identity.js";
+import { matchesWildcard } from "./wildcard-match.js";
 
 export const LOCAL_DEFAULT_SCOPE_ID = "local-default";
 
@@ -177,10 +178,6 @@ function isBasenameOnlyPattern(pattern: string): boolean {
 	return !/[\\/:]/.test(pattern);
 }
 
-function escapeRegex(value: string): string {
-	return value.replace(/[|\\{}()[\]^$+?.*]/g, "\\$&");
-}
-
 function patternSpecificity(pattern: string): number {
 	return pattern.replace(/[*?]/g, "").length;
 }
@@ -189,10 +186,7 @@ function matchesPattern(identity: string, pattern: string): boolean {
 	const normalizedPattern = normalizeSlash(pattern);
 	if (!normalizedPattern || isBasenameOnlyPattern(normalizedPattern)) return false;
 	if (!/[*?]/.test(normalizedPattern)) return identity === normalizedPattern;
-	const regex = new RegExp(
-		`^${escapeRegex(normalizedPattern).replaceAll("\\*", ".*").replaceAll("\\?", ".")}$`,
-	);
-	return regex.test(identity);
+	return matchesWildcard(identity, normalizedPattern, { unicode: false });
 }
 
 function candidatePriority(candidate: MappingCandidate): number {

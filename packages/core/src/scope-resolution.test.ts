@@ -117,6 +117,16 @@ describe("canonicalWorkspaceIdentity", () => {
 	});
 });
 
+describe("resolveProjectScope adversarial wildcards", () => {
+	it("rejects adversarial wildcard mappings without changing the selected scope", () => {
+		const result = resolveProjectScope({
+			cwd: `/${"a".repeat(40)}`,
+			mappings: [mapping({ project_pattern: `/${"*a".repeat(10)}b`, scope_id: "nonmatch" })],
+		});
+		expect(result).toMatchObject({ reason: "local_default", scopeId: LOCAL_DEFAULT_SCOPE_ID });
+	});
+});
+
 describe("resolveProjectScope", () => {
 	it("uses an explicit runtime override before mappings", () => {
 		const result = resolveProjectScope({

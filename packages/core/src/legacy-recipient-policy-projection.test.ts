@@ -592,6 +592,26 @@ describe("legacy recipient-policy projection", () => {
 	});
 });
 
+describe("legacy recipient-policy adversarial wildcards", () => {
+	it("leaves recipient projections unchanged for adversarial wildcard nonmatches", () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			insertProject(db, { project: "nonmatch", remote: null, cwd: `/${"a".repeat(40)}` });
+			const before = projections(db);
+			insertScope(db, { scopeId: "nonmatch", label: "Nonmatch", kind: "team" });
+			db.prepare(
+				`INSERT INTO project_scope_mappings(
+					workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+				 ) VALUES (NULL, ?, 'nonmatch', 10, 'legacy', ?, ?)`,
+			).run(`/${"*a".repeat(10)}b`, NOW, NOW);
+			expect(projections(db)).toEqual(before);
+		} finally {
+			db.close();
+		}
+	});
+});
+
 describe("legacy recipient-policy repository inference", () => {
 	it("preserves an explicit remote when a checkout path is reused", () => {
 		const db = new Database(":memory:");

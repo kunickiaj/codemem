@@ -5,6 +5,7 @@ import { devNull, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	type ChangedPath,
 	compareBiomePolicy,
 	compareBiomeToolPolicy,
 	compareChangedDiagnostics,
@@ -1176,6 +1177,103 @@ describe("Biome suppression coverage comparison", () => {
 			message: "1 Biome suppression directive added or changed",
 			path: "src/(legacy)+.ts",
 		});
+	});
+});
+
+describe("Biome glob coverage compatibility", () => {
+	const change = (pathValue: string): ChangedPath => ({
+		status: "modified",
+		beforePath: pathValue,
+		afterPath: pathValue,
+		beforeSource: "",
+		afterSource: "// biome-ignore lint/suspicious/noExplicitAny\nconst value: any = 1;",
+	});
+
+	// CR01: an exclusion must not consume a wildcard from its sibling alternative.
+	it.each([
+		{ pathValue: "foo.gen", detected: false },
+		{ pathValue: "x", detected: false },
+		{ pathValue: "foox", detected: true },
+		{ pathValue: "foo/x", detected: true },
+	])("keeps negative brace includes branch-local for $pathValue", ({ pathValue, detected }) => {
+		// Arrange
+		const coverage = config({ include: ["**", "!{*.gen,x}"] });
+		const changes = [change(pathValue)];
+		// Act
+		const violations = compareBiomePolicy(coverage, coverage, changes);
+		// Assert
+		expect(violations).toEqual(
+			detected
+				? [
+						{
+							kind: "suppression",
+							message: "1 Biome suppression directive added or changed",
+							path: pathValue,
+						},
+					]
+				: [],
+		);
+	});
+
+	// CR01: a nonmatching disabled override must leave suppression checks enabled.
+	it.each([
+		{ pathValue: "foo.gen", detected: false },
+		{ pathValue: "x", detected: false },
+		{ pathValue: "foox", detected: true },
+		{ pathValue: "foo/x", detected: true },
+	])(
+		"disables lint only for real brace override matches: $pathValue",
+		({ pathValue, detected }) => {
+			// Arrange
+			const coverage = JSON.stringify({
+				files: { includes: ["**"] },
+				overrides: [{ includes: ["{*.gen,x}"], linter: { enabled: false } }],
+			});
+			const changes = [change(pathValue)];
+			// Act
+			const violations = compareBiomePolicy(coverage, coverage, changes);
+			// Assert
+			expect(violations).toEqual(
+				detected
+					? [
+							{
+								kind: "suppression",
+								message: "1 Biome suppression directive added or changed",
+								path: pathValue,
+							},
+						]
+					: [],
+			);
+		},
+	);
+
+	// CR03: invalid exclusions must surface an error, not silently remove lint coverage.
+	it.each(["[\\]a*]", "[\\]{a,b}]"])(
+		"surfaces ambiguous escaped-class exclusions as policy errors: %s",
+		(pattern) => {
+			// Arrange
+			const coverage = config({ include: ["**", `!${pattern}`] });
+			const changes = [change("a")];
+			// Act
+			const compare = () => compareBiomePolicy(coverage, coverage, changes);
+			// Assert
+			expect(compare).toThrow(SyntaxError);
+		},
+	);
+
+	it("retains ordered negation, re-inclusion, normalized paths and folder prefixes", () => {
+		const coverage = JSON.stringify({
+			files: { includes: ["**", "!!docs", "./docs/{a,b}.[jt]s"] },
+		});
+		expect(compareBiomePolicy(coverage, coverage, [change("docs/nested/a.ts")])).toEqual([]);
+		expect(compareBiomePolicy(coverage, coverage, [change("docs/a.ts")])).toMatchObject([
+			{ kind: "suppression", path: "docs/a.ts" },
+		]);
+	});
+
+	it("ignores adversarial include nonmatches without stalling policy comparison", () => {
+		const coverage = JSON.stringify({ files: { includes: [`src/${"*a".repeat(10)}b`] } });
+		expect(compareBiomePolicy(coverage, coverage, [change(`src/${"a".repeat(40)}`)])).toEqual([]);
 	});
 });
 

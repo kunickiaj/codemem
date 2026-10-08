@@ -606,6 +606,8 @@ explicitly while testing unpublished changes.
 
 Contributor-only lint feedback and source-plugin testing are documented in [Contributing](CONTRIBUTING.md#repository-lint-feedback) and the [plugin reference](docs/plugin-reference.md#repository-only-lint-feedback); installing codemem does not enable checkout tooling.
 
+The repository lint ratchet matches include globs without regex backtracking, so repeated wildcards cannot trigger exponential matching work.
+
 </details>
 
 ## Documentation

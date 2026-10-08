@@ -29,6 +29,7 @@ import {
 } from "./scope-resolution.js";
 import { shareProjectSetDigest } from "./share-operation.js";
 import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap-constants.js";
+import { matchesWildcard } from "./wildcard-match.js";
 
 export { normalizeLegacyProjectMappingIdentity } from "./legacy-project-identity.js";
 
@@ -225,9 +226,7 @@ function wildcardMatches(identity: string, pattern: string): boolean {
 	const normalizedPattern = normalizedIdentity(pattern);
 	if (normalizedPattern === "*") return true;
 	if (!hasWildcard(normalizedPattern) || !/[\\/:]/u.test(normalizedPattern)) return false;
-	const escaped = normalizedPattern.replace(/[|\\{}()[\]^$+?.*]/gu, "\\$&");
-	const regex = new RegExp(`^${escaped.replaceAll("\\*", ".*").replaceAll("\\?", ".")}$`, "u");
-	return regex.test(identity);
+	return matchesWildcard(identity, normalizedPattern, { unicode: true });
 }
 
 function mappingUpdatedAt(mapping: LegacyMappingSnapshot): number {

@@ -1,3 +1,4 @@
+import { matchesBiomeGlob } from "./biome-glob.js";
 import {
 	compareDiagnostics,
 	getScopeIdentity,
@@ -651,54 +652,9 @@ function stringArray(value: unknown): string[] {
 		: [];
 }
 
-function globCharacterClass(pattern: string, index: number): { source: string; end: number } {
-	const closing = pattern.indexOf("]", index + 1);
-	if (closing === -1) return { source: "\\[", end: index };
-	const content = pattern.slice(index + 1, closing);
-	return {
-		source: `[${content.startsWith("!") ? `^${content.slice(1)}` : content}]`,
-		end: closing,
-	};
-}
-
-function globAlternatives(pattern: string, index: number): { source: string; end: number } {
-	const closing = pattern.indexOf("}", index + 1);
-	if (closing === -1) return { source: "\\{", end: index };
-	const alternatives = pattern
-		.slice(index + 1, closing)
-		.split(",")
-		.map((item) => globPatternSource(item));
-	return { source: `(?:${alternatives.join("|")})`, end: closing };
-}
-
-function globToken(pattern: string, index: number): { source: string; end: number } {
-	const current = pattern[index] ?? "";
-	if (current === "[") return globCharacterClass(pattern, index);
-	if (current === "{") return globAlternatives(pattern, index);
-	if (current === "?") return { source: "[^/]", end: index };
-	if (current !== "*") {
-		return { source: current.replace(/[\\^$+.()|]/gu, "\\$&"), end: index };
-	}
-	if (pattern[index + 1] !== "*") return { source: "[^/]*", end: index };
-	return pattern[index + 2] === "/"
-		? { source: "(?:.*/)?", end: index + 2 }
-		: { source: ".*", end: index + 1 };
-}
-
-function globPatternSource(pattern: string): string {
-	let source = "";
-	for (let index = 0; index < pattern.length; index += 1) {
-		const token = globToken(pattern, index);
-		source += token.source;
-		index = token.end;
-	}
-	return source;
-}
-
 function globMatchesPath(pattern: string, path: string, foldersMatch: boolean): boolean {
 	const normalizedPattern = normalizePath(pattern);
-	const exact = new RegExp(`^${globPatternSource(normalizedPattern)}$`, "u");
-	if (exact.test(path)) return true;
+	if (matchesBiomeGlob(normalizedPattern, path)) return true;
 	if (!foldersMatch || /[*?[{]/u.test(normalizedPattern)) return false;
 	return path.startsWith(`${normalizedPattern.replace(/\/$/u, "")}/`);
 }
