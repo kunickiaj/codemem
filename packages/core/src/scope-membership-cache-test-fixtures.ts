@@ -1,3 +1,4 @@
+import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
 import {
 	CANONICAL_PUBLIC_KEY,
 	EXPECTED_KEY_ID,
@@ -101,4 +102,57 @@ export function refreshFixtureScopeMembershipCache(
 			},
 		},
 	});
+}
+
+/** Promote test setup rows through the public refresh DTO, never insert retained proofs. */
+export async function refreshTestScopeRows(
+	db: Database,
+	publicKeys: Record<string, string> = {},
+	options: { now?: Date } = {},
+) {
+	const scopes = db
+		.prepare("SELECT * FROM replication_scopes WHERE authority_type = 'coordinator'")
+		.all() as CoordinatorScope[];
+	const authorities = new Map(
+		scopes.map((scope) => [`${scope.coordinator_id}:${scope.group_id}`, scope]),
+	);
+	for (const authority of authorities.values()) {
+		const catalog = scopes.filter(
+			(scope) =>
+				scope.coordinator_id === authority.coordinator_id && scope.group_id === authority.group_id,
+		);
+		const result = await refreshScopeMembershipCache(db, {
+			coordinatorId: authority.coordinator_id,
+			groupIds: [authority.group_id ?? ""],
+			now: options.now ?? new Date(cacheTime),
+			fetchers: {
+				async listScopes() {
+					return { version: 1, items: catalog };
+				},
+				async getScopeSnapshot(_group, scopeId) {
+					const scope = catalog.find((item) => item.scope_id === scopeId);
+					if (!scope) throw new Error("Missing test scope");
+					const rows = db
+						.prepare("SELECT * FROM scope_memberships WHERE scope_id = ?")
+						.all(scopeId) as CoordinatorScopeMembership[];
+					const members = rows.map((row) => ({
+						...cacheMember(scope, row.device_id),
+						...row,
+						coordinator_id: scope.coordinator_id,
+						group_id: scope.group_id,
+					}));
+					const snapshot = cacheWireSnapshot(scope, members);
+					for (const item of snapshot.items) {
+						const publicKey = publicKeys[item.membership.device_id] ?? CANONICAL_PUBLIC_KEY;
+						item.enrollment.public_key = publicKey;
+						item.enrollment.fingerprint = fingerprintPublicKey(publicKey);
+						item.key_id = (await ed25519KeyId(publicKey)) ?? "";
+					}
+					return snapshot;
+				},
+			},
+		});
+		if (result.status !== "refreshed")
+			throw new Error(`Test refresh failed: ${JSON.stringify(result)}`);
+	}
 }

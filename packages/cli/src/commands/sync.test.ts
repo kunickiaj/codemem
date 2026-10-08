@@ -13,6 +13,8 @@ import {
 	startMaintenanceJob,
 } from "@codemem/core";
 import { describe, expect, it, vi } from "vitest";
+import { CANONICAL_PUBLIC_KEY } from "../../../core/src/coordinator-ed25519-key-id-test-fixtures.js";
+import { refreshTestScopeRows } from "../../../core/src/scope-membership-cache-test-fixtures.js";
 import { buildCoordinatorCommand } from "./coordinator.js";
 import { syncCommand } from "./sync.js";
 import {
@@ -31,6 +33,37 @@ const configFailureFixtures = {
 		writeFileSync(`${configPath}.lock`, "active writer", "utf8");
 	},
 } satisfies Record<string, (configPath: string) => void>;
+
+async function seedScopeStatusFixture(store: MemoryStore, now: string) {
+	const publicKey = CANONICAL_PUBLIC_KEY;
+	const fingerprint = fingerprintPublicKey(publicKey);
+	store.db
+		.prepare(
+			"INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
+		)
+		.run("local-device", publicKey, fingerprint, now);
+	store.db
+		.prepare(
+			"INSERT INTO sync_peers(peer_device_id, name, public_key, pinned_fingerprint, created_at) VALUES (?, ?, ?, ?, ?)",
+		)
+		.run("peer-device", "Work laptop", publicKey, fingerprint, now);
+	for (const [scopeId, label] of [
+		["work", "Work"],
+		["personal", "Personal"],
+	] as const) {
+		store.db
+			.prepare(`INSERT INTO replication_scopes(scope_id, label, kind, authority_type, coordinator_id, group_id, membership_epoch, status, created_at, updated_at)
+			VALUES (?, ?, 'user', 'coordinator', 'coordinator-1', 'group-1', 1, 'active', ?, ?)`)
+			.run(scopeId, label, now, now);
+		for (const deviceId of ["local-device", "peer-device"]) {
+			store.db
+				.prepare(`INSERT INTO scope_memberships(scope_id, device_id, role, status, membership_epoch, updated_at)
+				VALUES (?, ?, 'member', 'active', 1, ?)`)
+				.run(scopeId, deviceId, now);
+		}
+	}
+	await refreshTestScopeRows(store.db);
+}
 
 describe("coordinator command parity", () => {
 	it("registers coordinator parity subcommands", () => {
@@ -595,33 +628,7 @@ describe("formatSyncAttempt", () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		try {
 			const now = "2026-01-01T00:00:00.000Z";
-			store.db
-				.prepare(
-					"INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
-				)
-				.run("local-device", "local-public-key", "local-fingerprint", now);
-			store.db
-				.prepare("INSERT INTO sync_peers(peer_device_id, name, created_at) VALUES (?, ?, ?)")
-				.run("peer-device", "Work laptop", now);
-			for (const [scopeId, label] of [
-				["work", "Work"],
-				["personal", "Personal"],
-			] as const) {
-				store.db
-					.prepare(
-						`INSERT INTO replication_scopes(scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at)
-						 VALUES (?, ?, 'user', 'coordinator', 1, 'active', ?, ?)`,
-					)
-					.run(scopeId, label, now, now);
-				for (const deviceId of ["local-device", "peer-device"]) {
-					store.db
-						.prepare(
-							`INSERT INTO scope_memberships(scope_id, device_id, role, status, membership_epoch, updated_at)
-							 VALUES (?, ?, 'member', 'active', 1, ?)`,
-						)
-						.run(scopeId, deviceId, now);
-				}
-			}
+			await seedScopeStatusFixture(store, now);
 			store.db
 				.prepare(
 					`INSERT INTO replication_cursors_v2(peer_device_id, scope_id, last_applied_cursor, last_acked_cursor, updated_at)

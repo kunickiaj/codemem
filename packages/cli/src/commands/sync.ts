@@ -827,50 +827,116 @@ syncCommand.addCommand(doctorCmd);
 
 // ---- sync status ----
 
+function syncStatusIdentityAndPeers(store: MemoryStore) {
+	const d = drizzle(store.db, { schema });
+	const deviceRow = d
+		.select({
+			device_id: schema.syncDevice.device_id,
+			fingerprint: schema.syncDevice.fingerprint,
+			public_key: schema.syncDevice.public_key,
+		})
+		.from(schema.syncDevice)
+		.limit(1)
+		.get();
+	const peers = d
+		.select({
+			peer_device_id: schema.syncPeers.peer_device_id,
+			name: schema.syncPeers.name,
+			last_sync_at: schema.syncPeers.last_sync_at,
+			last_error: schema.syncPeers.last_error,
+			public_key: schema.syncPeers.public_key,
+		})
+		.from(schema.syncPeers)
+		.all();
+	// Signing keys are authorization inputs only, not status output fields.
+	const localDeviceId = deviceRow?.device_id ?? null;
+	const peersWithScopes = peers.map((peer) => {
+		const peerDeviceId = String(peer.peer_device_id ?? "").trim();
+		const scopes = listPerPeerScopeSyncState(store.db, {
+			localDeviceId,
+			peerDeviceId,
+			localSigningPublicKey: deviceRow?.public_key,
+			authenticatedPeerSigningKey: peer.public_key,
+		});
+		return { peer, scopes };
+	});
+	return { deviceRow, peers, peersWithScopes };
+}
+
+function printSyncStatusPeers(
+	peersWithScopes: ReturnType<typeof syncStatusIdentityAndPeers>["peersWithScopes"],
+) {
+	if (peersWithScopes.length === 0) {
+		p.log.info("Peers: none");
+		return;
+	}
+	for (const { peer, scopes } of peersWithScopes) {
+		const label = peer.name || peer.peer_device_id;
+		const peerHeader = `  ${label}: last_sync=${peer.last_sync_at ?? "never"}, status=${peer.last_error ?? "ok"}`;
+		if (scopes.length === 0) {
+			p.log.message(peerHeader);
+			continue;
+		}
+		const scopeLines = scopes.map((scope) => {
+			const state = scope.bootstrapped ? "received" : "pending";
+			return `      - ${scope.label} (${scope.scope_id}): ${state}`;
+		});
+		p.log.message([peerHeader, "    Spaces:", ...scopeLines].join("\n"));
+	}
+}
+
+function printSyncStatus(
+	config: ReturnType<typeof readCliConfig>,
+	identityAndPeers: ReturnType<typeof syncStatusIdentityAndPeers>,
+	semanticIndex: ReturnType<typeof getSemanticIndexDiagnostics>,
+) {
+	const { deviceRow, peers, peersWithScopes } = identityAndPeers;
+	p.intro("codemem sync status");
+	p.log.info(
+		[
+			`Enabled:    ${config.sync_enabled === true ? "yes" : "no"}`,
+			`Host:       ${config.sync_host ?? "0.0.0.0"}`,
+			`Port:       ${config.sync_port ?? 7337}`,
+			`Interval:   ${config.sync_interval_s ?? 120}s`,
+			`Coordinator: ${config.sync_coordinator_url ?? "(not configured)"}`,
+		].join("\n"),
+	);
+	if (deviceRow) {
+		p.log.info(`Device ID:   ${deviceRow.device_id}\nFingerprint: ${deviceRow.fingerprint}`);
+	} else {
+		p.log.warn("Device identity not initialized (run `codemem sync enable`)");
+	}
+	printSyncStatusPeers(peersWithScopes);
+	p.log.info(
+		[
+			"Semantic index:",
+			`  State: ${semanticIndex.state}`,
+			`  Summary: ${semanticIndex.summary}`,
+			`  Coverage: ${semanticIndex.indexed_memory_count}/${semanticIndex.embeddable_memory_count}`,
+			`  Mode: ${semanticIndex.mode === "semantic" ? `semantic (${semanticIndex.semantic_search_model ?? semanticIndex.current_model})` : "keyword-only"}`,
+		].join("\n"),
+	);
+	p.outro(`${peers.length} peer(s)`);
+}
+
 const statusCmd = new Command("status")
 	.configureHelp(helpStyle)
 	.description("Show sync configuration and peer summary");
 addDbOption(statusCmd);
 addConfigOption(statusCmd);
 addJsonOption(statusCmd);
-statusCmd.action((opts: { db?: string; dbPath?: string; config?: string; json?: boolean }) => {
+statusCmd.action(function showSyncStatus(opts: {
+	db?: string;
+	dbPath?: string;
+	config?: string;
+	json?: boolean;
+}) {
 	const config = readCliConfig(opts.config);
 	const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
 	try {
-		const d = drizzle(store.db, { schema });
-		const deviceRow = d
-			.select({
-				device_id: schema.syncDevice.device_id,
-				fingerprint: schema.syncDevice.fingerprint,
-			})
-			.from(schema.syncDevice)
-			.limit(1)
-			.get();
-		const peers = d
-			.select({
-				peer_device_id: schema.syncPeers.peer_device_id,
-				name: schema.syncPeers.name,
-				last_sync_at: schema.syncPeers.last_sync_at,
-				last_error: schema.syncPeers.last_error,
-			})
-			.from(schema.syncPeers)
-			.all();
+		const identityAndPeers = syncStatusIdentityAndPeers(store);
+		const { deviceRow, peersWithScopes } = identityAndPeers;
 		const semanticIndex = getSemanticIndexDiagnostics(store.db);
-
-		// Per-Space sync state per peer. Uses the shared
-		// `listPerPeerScopeSyncState` helper so this surface stays byte-for-byte
-		// consistent with the viewer's /api/sync/status payload — they are the
-		// two surfaces that close the codemem-ruu6 diagnostic gap where peers
-		// showed `status=ok` while 99% of scoped data was silently missing.
-		const localDeviceId = deviceRow?.device_id ?? null;
-		const peersWithScopes = peers.map((peer) => {
-			const peerDeviceId = String(peer.peer_device_id ?? "").trim();
-			const scopes = listPerPeerScopeSyncState(store.db, {
-				localDeviceId,
-				peerDeviceId,
-			});
-			return { peer, scopes };
-		});
 
 		if (opts.json) {
 			console.log(
@@ -899,48 +965,7 @@ statusCmd.action((opts: { db?: string; dbPath?: string; config?: string; json?: 
 			return;
 		}
 
-		p.intro("codemem sync status");
-		p.log.info(
-			[
-				`Enabled:    ${config.sync_enabled === true ? "yes" : "no"}`,
-				`Host:       ${config.sync_host ?? "0.0.0.0"}`,
-				`Port:       ${config.sync_port ?? 7337}`,
-				`Interval:   ${config.sync_interval_s ?? 120}s`,
-				`Coordinator: ${config.sync_coordinator_url ?? "(not configured)"}`,
-			].join("\n"),
-		);
-		if (deviceRow) {
-			p.log.info(`Device ID:   ${deviceRow.device_id}\nFingerprint: ${deviceRow.fingerprint}`);
-		} else {
-			p.log.warn("Device identity not initialized (run `codemem sync enable`)");
-		}
-		if (peers.length === 0) {
-			p.log.info("Peers: none");
-		} else {
-			for (const { peer, scopes } of peersWithScopes) {
-				const label = peer.name || peer.peer_device_id;
-				const peerHeader = `  ${label}: last_sync=${peer.last_sync_at ?? "never"}, status=${peer.last_error ?? "ok"}`;
-				if (scopes.length === 0) {
-					p.log.message(peerHeader);
-				} else {
-					const scopeLines = scopes.map((scope) => {
-						const state = scope.bootstrapped ? "received" : "pending";
-						return `      - ${scope.label} (${scope.scope_id}): ${state}`;
-					});
-					p.log.message([peerHeader, "    Spaces:", ...scopeLines].join("\n"));
-				}
-			}
-		}
-		p.log.info(
-			[
-				"Semantic index:",
-				`  State: ${semanticIndex.state}`,
-				`  Summary: ${semanticIndex.summary}`,
-				`  Coverage: ${semanticIndex.indexed_memory_count}/${semanticIndex.embeddable_memory_count}`,
-				`  Mode: ${semanticIndex.mode === "semantic" ? `semantic (${semanticIndex.semantic_search_model ?? semanticIndex.current_model})` : "keyword-only"}`,
-			].join("\n"),
-		);
-		p.outro(`${peers.length} peer(s)`);
+		printSyncStatus(config, identityAndPeers, semanticIndex);
 	} finally {
 		store.close();
 	}

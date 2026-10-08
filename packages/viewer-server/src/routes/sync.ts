@@ -2459,7 +2459,17 @@ function unauthorizedPayload(): Record<string, string> {
 
 const SYNC_AUTH_STORE_BUSY_REASON = "sync_auth_store_busy";
 
-type SyncAuthResult = { ok: boolean; reason: string; deviceId: string };
+type AuthenticatedSyncPeer = {
+	ok: true;
+	reason: "ok";
+	deviceId: string;
+	authenticatedPeerSigningKey: string;
+};
+type SyncAuthResult = AuthenticatedSyncPeer | { ok: false; reason: string; deviceId: string };
+
+function authenticatedSyncPeer(deviceId: string, publicKey: string): AuthenticatedSyncPeer {
+	return { ok: true, reason: "ok", deviceId, authenticatedPeerSigningKey: publicKey };
+}
 type VerifiedDirectPeerSignature = { ok: true; version: 2 | 3 } | { ok: false; reason: string };
 
 const DIRECT_PEER_SIGNATURE_VERSION_NUMBER = 3;
@@ -2664,7 +2674,7 @@ function authorizeSyncRequest(
 		const versionResult = recordDirectPeerSignatureVersion(store, deviceId, verification.version);
 		if (versionResult) return versionResult;
 	}
-	return { ok: true, reason: "ok", deviceId };
+	return authenticatedSyncPeer(deviceId, publicKey);
 }
 
 function bootstrapPayloadRecord(value: unknown): value is Record<string, unknown> {
@@ -2872,7 +2882,7 @@ async function authorizeBootstrapGrantRequest(
 		);
 		if (versionResult) return versionResult;
 	}
-	return { ok: true, reason: "ok", deviceId };
+	return authenticatedSyncPeer(deviceId, workerPublicKey);
 }
 
 function parseJsonList(value: unknown): string[] {
@@ -3520,6 +3530,7 @@ function mapPeerRow(
 	const perScopeSync = listPerPeerScopeSyncState(store.db, {
 		localDeviceId: localDeviceId ?? null,
 		peerDeviceId: peerId,
+		...peerScopeDiagnosticKeys(store, row, localDeviceId),
 	});
 	return {
 		peer_device_id: row.peer_device_id,
@@ -4403,7 +4414,7 @@ function readViewerBinding(dbPath: string): { host: string; port: number } | nul
 }
 
 const PEERS_QUERY = `
-	SELECT p.peer_device_id, p.name, p.pinned_fingerprint, p.addresses_json,
+	SELECT p.peer_device_id, p.name, p.pinned_fingerprint, p.public_key, p.addresses_json,
 	       p.last_seen_at, p.last_sync_at, p.last_error,
 	       p.runtime_version, p.runtime_version_observed_at,
 	       p.projects_include_json, p.projects_exclude_json, p.claimed_local_actor,
@@ -4446,15 +4457,42 @@ function negotiatedSyncCapability(c: Context) {
  * network-accessible. All requests are auth-gated via signature
  * verification so unauthenticated callers are rejected.
  */
-function serveAuthorizedSnapshot(c: Context, store: MemoryStore, peerDeviceId: string) {
+function syncScopeAuthorizationContext(
+	store: MemoryStore,
+	auth: AuthenticatedSyncPeer,
+	localDeviceId: string,
+) {
+	return {
+		db: store.db,
+		localDeviceId,
+		peerDeviceId: auth.deviceId,
+		localSigningPublicKey: loadPublicKey(syncKeysDir()),
+		authenticatedPeerSigningKey: auth.authenticatedPeerSigningKey,
+	};
+}
+
+function peerScopeDiagnosticKeys(
+	store: MemoryStore,
+	row: Record<string, unknown>,
+	localDeviceId?: string | null,
+) {
+	return {
+		localSigningPublicKey: store.db
+			.prepare("SELECT public_key FROM sync_device WHERE device_id = ?")
+			.pluck()
+			.get(localDeviceId ?? "") as string | undefined,
+		authenticatedPeerSigningKey: typeof row.public_key === "string" ? row.public_key : null,
+	};
+}
+
+function serveAuthorizedSnapshot(c: Context, store: MemoryStore, auth: AuthenticatedSyncPeer) {
+	const peerDeviceId = auth.deviceId;
 	try {
 		const rawScopeId = c.req.query(SYNC_SCOPE_QUERY_PARAM);
 		const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 		const scopeRequest = parseSyncScopeRequest(rawScopeId, rawScopeId !== undefined, {
-			db: store.db,
-			localDeviceId,
+			...syncScopeAuthorizationContext(store, auth, localDeviceId),
 			negotiatedCapability: negotiatedSyncCapability(c),
-			peerDeviceId,
 		});
 		if (!scopeRequest.ok)
 			return c.json(
@@ -4584,8 +4622,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 				const negotiated = negotiatedSyncCapability(c);
 				const authorizedScopes = isScopedSyncCapability(negotiated)
 					? listAuthorizedScopesForPeer(store.db, {
-							localDeviceId: deviceId,
-							peerDeviceId: auth.deviceId,
+							...syncScopeAuthorizationContext(store, auth, deviceId),
 						})
 					: null;
 				const response: Record<string, unknown> = {
@@ -4625,10 +4662,8 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			const negotiated = negotiatedSyncCapability(c);
 			const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 			const scopeRequest = parseSyncScopeRequest(rawScopeId, rawScopeId !== undefined, {
-				db: store.db,
-				localDeviceId,
+				...syncScopeAuthorizationContext(store, auth, localDeviceId),
 				negotiatedCapability: negotiated,
-				peerDeviceId,
 			});
 			if (!scopeRequest.ok) {
 				return c.json(
@@ -4744,7 +4779,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			}
 			const limited = rateLimitedResponse(c, auth.deviceId, true);
 			if (limited) return limited;
-			return serveAuthorizedSnapshot(c, store, auth.deviceId);
+			return serveAuthorizedSnapshot(c, store, auth);
 		})();
 	});
 
@@ -4783,10 +4818,8 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		);
 		const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 		const scopeRequest = parseSyncScopeRequest(body.scope_id, Object.hasOwn(body, "scope_id"), {
-			db: store.db,
-			localDeviceId,
+			...syncScopeAuthorizationContext(store, auth, localDeviceId),
 			negotiatedCapability: negotiated,
-			peerDeviceId,
 		});
 		if (!scopeRequest.ok) {
 			return c.json(

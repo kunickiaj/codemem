@@ -499,6 +499,12 @@ The raw cached helper remains available for history and compatibility. Network
 and local direct-SQL consumers still require separate adoption of the effective
 decision; retaining evidence alone does not complete reader enforcement.
 
+Scoped request admission and scope advertisement require retained evidence for
+both devices and compare the local signing key and the authenticated peer key.
+Manual and direct-peer scopes retain their existing rules. Coordinator-derived
+peer trust, replication, snapshot selection, and remaining local consumers still
+need adoption before end-to-end enforcement is complete.
+
 ## Activation limits
 
 Existing group disable/removal does not create global subjects automatically.
