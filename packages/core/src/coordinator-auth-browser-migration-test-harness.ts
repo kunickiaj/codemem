@@ -20,7 +20,7 @@ export async function browserSnapshot(f: SchemaFixture) {
 	};
 }
 
-// Dummy strings exercise byte-for-byte preservation, never provider exchange or owner proof.
+// Dummy strings exercise byte-for-byte browser preservation, never provider exchange or owner proof.
 export async function seedOldBrowserRows(f: SchemaFixture) {
 	let index = 0;
 	for (const purpose of ["signin", "link"]) {

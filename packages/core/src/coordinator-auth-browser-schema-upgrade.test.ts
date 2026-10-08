@@ -3,11 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { expect, it, vi } from "vitest";
-import { readOwnerFixtureMigrations } from "../../cloudflare-coordinator-worker/test/owner-enrollment-migrations-fixture.js";
-import { upgradeAuthBrowserOwnerPurposeSchema } from "./coordinator-auth-browser-schema-upgrade.js";
-import { AUTH_BROWSER_TXN_SCHEMA_SQL } from "./coordinator-auth-browser-transaction-contract.js";
-import { NOW } from "./coordinator-auth-link-test-fixtures.js";
-import { setupStore } from "./coordinator-auth-store-test-fixtures.js";
+import { readBrowserFixtureMigrations } from "../../cloudflare-coordinator-worker/test/browser-purpose-migrations-fixture.js";
 import {
 	assertBrowserUniqueness,
 	browserDefinitions,
@@ -15,16 +11,9 @@ import {
 	normalizeDefinitions,
 	type SchemaFixture,
 	seedOldBrowserRows,
-} from "./coordinator-owner-enrollment-migration-test-harness.js";
-import { COORDINATOR_OWNER_ENROLLMENT_SCHEMA_SQL } from "./coordinator-owner-enrollment-schema.js";
-import {
-	finalizedOwner,
-	insertOwner,
-	ownerDefinitions,
-	ownerHarness,
-	ownerRows,
-	registerOwnerSchemaTests,
-} from "./coordinator-owner-enrollment-test-harness.js";
+} from "./coordinator-auth-browser-migration-test-harness.js";
+import { upgradeAuthBrowserOwnerPurposeSchema } from "./coordinator-auth-browser-schema-upgrade.js";
+import { AUTH_BROWSER_TXN_SCHEMA_SQL } from "./coordinator-auth-browser-transaction-contract.js";
 
 function sqliteFixture(db: Database.Database): SchemaFixture {
 	return {
@@ -34,65 +23,44 @@ function sqliteFixture(db: Database.Database): SchemaFixture {
 		query: async (sql) => db.prepare(sql).all() as Record<string, unknown>[],
 	};
 }
-for (const backend of ["SQLite", "D1"] as const) {
-	const test = ownerHarness(async (use) => {
-		const f = setupStore(backend, { authClock: () => NOW });
-		const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
-		try {
-			await use({ ...sqliteFixture(f.db), store: f.store });
-			expect(fetch).not.toHaveBeenCalled();
-		} finally {
-			fetch.mockRestore();
-			f.db.close();
-		}
-	});
-	registerOwnerSchemaTests(test);
-	test(`${backend} fresh schema matches the exact shared table/index definitions`, async ({
-		fixture: f,
-	}) => {
-		// Arrange
-		const reference = new Database(":memory:");
-		try {
-			reference.exec(COORDINATOR_OWNER_ENROLLMENT_SCHEMA_SQL);
-			// Act
-			const actual = normalizeDefinitions(await f.query(ownerDefinitions));
-			// Assert
-			expect(actual).toEqual(
-				normalizeDefinitions(await sqliteFixture(reference).query(ownerDefinitions)),
-			);
-		} finally {
-			reference.close();
-		}
-	});
-}
 
 async function oldMigrationDatabase() {
 	const db = new Database(":memory:");
-	const migrations = await readOwnerFixtureMigrations();
+	const migrations = await readBrowserFixtureMigrations();
 	for (const migration of migrations.filter((m) => m.name < "0029"))
 		db.transaction(() => {
 			for (const sql of migration.queries) db.exec(sql);
 		})();
 	return { db, migrations, fixture: sqliteFixture(db) };
 }
-it("official source migration creates the same owner table, indexes and immutable triggers as fresh SQLite", async () => {
+it("official source migration preserves old browser rows and matches the fresh browser schema", async () => {
 	// Arrange
 	const { db, migrations, fixture: f } = await oldMigrationDatabase();
-	const fresh = setupStore("SQLite");
+	const reference = new Database(":memory:");
 	try {
 		const migration = migrations.find((m) => m.name === "0029_add_owner_enrollment_attempts.sql");
-		if (!migration) throw new Error("Missing owner fixture migration");
+		if (!migration) throw new Error("Missing browser-purpose fixture migration");
+		await seedOldBrowserRows(f);
+		const before = await browserSnapshot(f);
+		reference.exec(
+			AUTH_BROWSER_TXN_SCHEMA_SQL.replace(
+				"CREATE TABLE IF NOT EXISTS coordinator_auth_browser_transactions",
+				'CREATE TABLE IF NOT EXISTS "coordinator_auth_browser_transactions"',
+			),
+		);
 		// Act
 		db.transaction(() => {
 			for (const sql of migration.queries) db.exec(sql);
 		})();
 		// Assert
-		expect(normalizeDefinitions(await f.query(ownerDefinitions))).toEqual(
-			normalizeDefinitions(await sqliteFixture(fresh.db).query(ownerDefinitions)),
+		expect(await browserSnapshot(f)).toEqual(before);
+		expect(normalizeDefinitions(await f.query(browserDefinitions))).toEqual(
+			normalizeDefinitions(await sqliteFixture(reference).query(browserDefinitions)),
 		);
+		await assertBrowserUniqueness(f);
 	} finally {
 		db.close();
-		fresh.db.close();
+		reference.close();
 	}
 });
 it("SQLite upgrades all six old browser state/purpose rows twice without losing counters, indexes or triggers", async () => {
@@ -194,22 +162,23 @@ it("SQLite copy failure inside the real upgrade transaction retains the entire o
 		db.close();
 	}
 });
-it("finalized commitments and exact outcome survive a real SQLite file close and reopen", async () => {
+it("SQLite warm owner-purpose preflight works on a read-only connection without invoking a transaction", () => {
 	// Arrange
-	const directory = mkdtempSync(join(tmpdir(), "owner-schema-test-"));
+	const directory = mkdtempSync(join(tmpdir(), "browser-schema-test-"));
 	const path = join(directory, "fixture.sqlite");
 	let db: Database.Database | undefined;
 	try {
-		const initial = setupStore("SQLite", { databasePath: path });
-		db = initial.db;
-		await insertOwner(sqliteFixture(db), finalizedOwner);
-		const before = await ownerRows(sqliteFixture(db));
+		db = new Database(path);
+		db.exec(AUTH_BROWSER_TXN_SCHEMA_SQL);
 		db.close();
 		db = undefined;
 		// Act
-		db = setupStore("SQLite", { databasePath: path }).db;
+		db = new Database(path, { readonly: true, fileMustExist: true });
+		const transaction = vi.spyOn(db, "transaction");
+		upgradeAuthBrowserOwnerPurposeSchema(db);
 		// Assert
-		expect(await ownerRows(sqliteFixture(db))).toEqual(before);
+		expect(transaction).not.toHaveBeenCalled();
+		expect(db.inTransaction).toBe(false);
 	} finally {
 		db?.close();
 		rmSync(directory, { recursive: true, force: true });
