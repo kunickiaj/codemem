@@ -32,7 +32,7 @@ import {
 
 /* Inlined chevron SVG — matches the sync-tab device-row chevron so the
  * CSS `[data-state="open"]` rotation style is shared. Avoids depending
- * on the viewer's CDN lucide bootstrap inside a Collapsible.Content
+ * on the viewer's bundled Lucide pass inside a Collapsible.Content
  * that mounts after that sweep runs. */
 function ChevronRightIcon() {
 	return h(

@@ -5,8 +5,6 @@
  * Orchestrates tab routing, polling, and delegates rendering to tab modules.
  */
 
-/* global lucide */
-
 declare const __CODEMEM_GIT_COMMIT__: string;
 
 import { createRecipientPolicySharingLoader } from "./app-sharing";
@@ -29,6 +27,7 @@ import type { ProjectScopeInventoryProject } from "./lib/api/sync";
 import { coordinatorEnrollmentOpenIssueCount } from "./lib/coordinator-enrollment-attention";
 import { $, $button, $select } from "./lib/dom";
 import { friendlyError } from "./lib/form";
+import { initializeViewerIcons } from "./lib/icons";
 import { isReadTimeout, type ReadRequestOptions, waitForAbort } from "./lib/read-request";
 import { createRefreshSessionOwner, type RefreshSession } from "./lib/refresh-session";
 import {
@@ -998,6 +997,8 @@ if (legacyUpgradeDialogRoot) {
 		},
 	});
 }
+
+initializeViewerIcons();
 
 // Theme
 initThemeToggle($button("themeToggle"));

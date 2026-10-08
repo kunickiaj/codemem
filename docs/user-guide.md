@@ -79,6 +79,7 @@ codemem update check --json
 - Binding the viewer to `0.0.0.0`, putting it behind a reverse proxy, or exposing it through a tunnel can make local APIs reachable in ways the current trust model was not built for.
 - Treat the viewer as a local tool. If you must expose it beyond loopback, add your own auth and network restrictions first.
 - This warning applies to the viewer HTTP service, not the separate sync/coordinator listeners documented elsewhere.
+- Viewer JavaScript and Lucide icons are bundled locally, so loading icons does not contact a CDN. Fonts may still load from Google Fonts.
 
 ## Check local operational status
 

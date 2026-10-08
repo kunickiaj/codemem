@@ -35,7 +35,7 @@ import { SyncEmptyState } from "./sync-empty-state";
 import { type SyncActionFeedback, SyncInlineFeedback } from "./sync-inline-feedback";
 
 /* Lucide `chevron-right` inlined so Radix Collapsible can rotate it via
- * CSS on open without depending on the viewer's CDN lucide bootstrap
+ * CSS on open without depending on the viewer's bundled Lucide pass
  * (which replaces `<i data-lucide=".." />` placeholders after mount —
  * unreliable inside a portal that mounts after that sweep runs). */
 function ChevronRightIcon() {
