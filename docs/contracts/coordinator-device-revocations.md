@@ -433,7 +433,8 @@ snapshots fail rather than falling back to raw history or an empty roster.
 The cache validates each enrollment's usable key, device/group tuple, fingerprint
 field shape, and canonical key ID. Legacy stored fingerprints remain unchanged
 tuple evidence; the decoder does not require them to equal a newly computed hash.
-Key evidence is not persisted as a new permission record in this slice.
+Validated key evidence is retained with the cache as described below; it is not
+a new signed permission or account-owner proof.
 
 The current snapshot's scope metadata replaces catalogue metadata. The configured
 cache authority can be a URL rather than the server's coordinator ID; source
@@ -458,6 +459,45 @@ The cache keeps its existing freshness lifetime and monotonic revocation rules.
 Version 1 is a format, not a new lease. Coordinator-managed reader adoption,
 including direct-SQL consumers, remains a separate slice; ordinary local and
 direct-peer authentication is unchanged.
+
+### Retained managed-key evidence
+
+Successful refresh retains version-1 scope, membership, enrollment, and canonical
+key evidence in `scope_membership_authorization_evidence`. Evidence replacement,
+cache rows, omissions, and freshness commit in the same group transaction.
+Only known public DTO fields are stored, not unknown fields or provider secrets.
+
+Refresh captures the group's local `refresh_revision` before fetching snapshots.
+The transaction compares it before writing and advances it with committed state.
+A superseded response cannot restore an older key or archived scope, or move the
+latest success time backward. The revision is write ordering, not a lease or
+membership epoch; cold schema upgrades preserve legacy history without proof
+backfill, and effective reads still perform no schema writes.
+
+A delayed failure also leaves newer committed state unchanged. If the revision
+cannot be read or failure state cannot be written, the refresh returns a stale
+result for that group without changing its stored state; other groups continue.
+Raw compatibility reads also perform no schema writes, including on legacy
+read-only databases that lack the revision column.
+
+`getEffectiveCachedScopeAuthorization` requires matching retained evidence for
+coordinator-managed scopes. Old or unproven rows cannot grant access through this
+helper until a successful current refresh; timestamps and pinned keys do not
+backfill proof or infer a historical server-ID-to-URL alias.
+
+The helper compares authority-relevant fields, not presentation labels or dates.
+Missing, malformed, or mismatched evidence denies without creating tables or
+writing during the read. Its optional `expectedPublicKey` checks the canonical
+key blob, accepting text aliases of the same key while rejecting another key.
+
+Previously verified evidence keeps the existing offline behavior; this helper
+adds no expiry or freshness requirement. Unmanaged/manual scopes keep their
+existing behavior. Removal-only refreshes can prune evidence but cannot mint
+proof or grant access.
+
+The raw cached helper remains available for history and compatibility. Network
+and local direct-SQL consumers still require separate adoption of the effective
+decision; retaining evidence alone does not complete reader enforcement.
 
 ## Activation limits
 

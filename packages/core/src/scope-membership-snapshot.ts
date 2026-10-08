@@ -53,7 +53,14 @@ export function normalizeScopeCatalog(raw: unknown, groupId: string): Coordinato
 	return scopes;
 }
 
-function requireMember(raw: unknown, scope: CoordinatorScope): CoordinatorScopeMembership {
+function copyFields<T extends object>(value: T, fields: readonly (keyof T)[]): T {
+	return Object.fromEntries(fields.map((field) => [field, value[field]])) as T;
+}
+
+function requireMember(
+	raw: unknown,
+	scope: CoordinatorScope,
+): ScopeMembershipSnapshot["items"][number] {
 	if (!raw || typeof raw !== "object" || Array.isArray(raw))
 		throw new Error("Invalid current scope member.");
 	const member = raw as ScopeMembershipSnapshot["items"][number];
@@ -71,7 +78,11 @@ function requireMember(raw: unknown, scope: CoordinatorScope): CoordinatorScopeM
 		createHash("sha256").update(parsed.blob).digest("hex") !== member.key_id
 	)
 		throw new Error("Current scope member evidence mismatch.");
-	return membership;
+	return {
+		membership: copyFields(membership, MEMBERSHIP_FIELDS),
+		enrollment: copyFields(enrollment, ENROLLMENT_FIELDS),
+		key_id: member.key_id,
+	};
 }
 
 export function normalizeScopeSnapshot(
@@ -83,6 +94,7 @@ export function normalizeScopeSnapshot(
 	scope: CoordinatorScope;
 	memberships: CoordinatorScopeMembership[];
 	sourceCoordinatorId: string | null;
+	evidence: ScopeMembershipSnapshot;
 } {
 	const envelope = requireEnvelope(raw, "authorization_version");
 	const source = requireScope(envelope.scope, groupId);
@@ -93,14 +105,20 @@ export function normalizeScopeSnapshot(
 	)
 		throw new Error("Current scope snapshot source mismatch.");
 	const members = (envelope.items as unknown[]).map((item) => requireMember(item, source));
-	if (new Set(members.map((member) => member.device_id)).size !== members.length)
+	if (new Set(members.map((member) => member.membership.device_id)).size !== members.length)
 		throw new Error("Duplicate device in current scope snapshot.");
 	// The configured cache authority can be a URL, not the server's coordinator ID.
-	const scope = { ...source, coordinator_id: coordinatorId };
+	const capturedScope = copyFields(source, SCOPE_FIELDS);
+	const scope = { ...capturedScope, coordinator_id: coordinatorId };
 	const memberships = members.map((member) => ({
-		...member,
+		...member.membership,
 		coordinator_id: coordinatorId,
 		group_id: groupId,
 	}));
-	return { scope, memberships, sourceCoordinatorId: source.coordinator_id };
+	return {
+		scope,
+		memberships,
+		sourceCoordinatorId: source.coordinator_id,
+		evidence: { authorization_version: 1, scope: capturedScope, items: members },
+	};
 }

@@ -1718,6 +1718,7 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 				last_success_at TEXT,
 				last_error TEXT,
 				updated_at TEXT NOT NULL,
+				refresh_revision INTEGER NOT NULL DEFAULT 0,
 				PRIMARY KEY (coordinator_id, group_id)
 			);
 		`);

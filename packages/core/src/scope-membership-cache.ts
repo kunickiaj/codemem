@@ -8,6 +8,10 @@ import {
 import type { Database } from "./db.js";
 import { getAnyRecipientPolicyDenyOverlayForScopeDevice } from "./recipient-policy-reconciliation.js";
 import {
+	getRetainedScopeAuthorizationKey,
+	reconcileScopeAuthorizationEvidence,
+} from "./scope-membership-evidence.js";
+import {
 	explainScopeMembershipRevocation,
 	type ScopeMembershipEpochStatus,
 	type ScopeMembershipRevocationNotice,
@@ -70,6 +74,10 @@ export interface CachedScopeAuthorization {
 	membership: CoordinatorScopeMembership | null;
 	scope: CoordinatorScope | null;
 	cacheStates: ScopeMembershipCacheState[];
+}
+
+export interface EffectiveCachedScopeAuthorization extends CachedScopeAuthorization {
+	keyId: string | null;
 }
 
 export interface ScopeMembershipCacheFetchers {
@@ -155,7 +163,11 @@ function errorMessage(error: unknown): string {
 }
 
 export function ensureScopeMembershipCacheStateTable(db: Database): void {
-	db.exec(`
+	if (hasRefreshRevision(db)) return;
+	// Recheck under the write lock: another process may have upgraded the cache.
+	db.transaction(() => {
+		if (hasRefreshRevision(db)) return;
+		db.exec(`
 		CREATE TABLE IF NOT EXISTS scope_membership_cache_state (
 			coordinator_id TEXT NOT NULL,
 			group_id TEXT NOT NULL,
@@ -163,9 +175,33 @@ export function ensureScopeMembershipCacheStateTable(db: Database): void {
 			last_success_at TEXT,
 			last_error TEXT,
 			updated_at TEXT NOT NULL,
+			refresh_revision INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (coordinator_id, group_id)
 		)
 	`);
+		if (!hasRefreshRevision(db))
+			db.exec(
+				"ALTER TABLE scope_membership_cache_state ADD COLUMN refresh_revision INTEGER NOT NULL DEFAULT 0",
+			);
+	}).immediate();
+}
+
+function hasRefreshRevision(db: Database): boolean {
+	return !!db
+		.prepare("SELECT 1 FROM pragma_table_info('scope_membership_cache_state') WHERE name = ?")
+		.get("refresh_revision");
+}
+
+/** Local write ordering only; neither a membership epoch nor a permission lease. */
+function readRefreshRevision(db: Database, authority: ScopeMembershipCacheAuthority): number {
+	const row = db
+		.prepare(`SELECT refresh_revision FROM scope_membership_cache_state
+		WHERE coordinator_id = ? AND group_id = ?`)
+		.get(authority.coordinatorId, authority.groupId) as { refresh_revision: number } | undefined;
+	const revision = row ? row.refresh_revision : 0;
+	if (!Number.isSafeInteger(revision) || revision < 0 || revision >= Number.MAX_SAFE_INTEGER)
+		throw new Error("Scope membership cache revision unavailable.");
+	return revision;
 }
 
 function coordinatorUrl(opts: RefreshScopeMembershipCacheOptions): string {
@@ -431,30 +467,41 @@ function recordRefreshState(
 	input: ScopeMembershipCacheAuthority & { ok: boolean; error?: string | null; now: string },
 ): void {
 	ensureScopeMembershipCacheStateTable(db);
-	db.prepare(
-		`INSERT INTO scope_membership_cache_state(
-			coordinator_id, group_id, last_refresh_at, last_success_at, last_error, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?)
+	readRefreshRevision(db, input);
+	const result = db
+		.prepare(
+			`INSERT INTO scope_membership_cache_state(
+			coordinator_id, group_id, last_refresh_at, last_success_at, last_error, updated_at, refresh_revision
+		) VALUES (?, ?, ?, ?, ?, ?, 1)
 		ON CONFLICT(coordinator_id, group_id) DO UPDATE SET
 			last_refresh_at = excluded.last_refresh_at,
 			last_success_at = COALESCE(excluded.last_success_at, scope_membership_cache_state.last_success_at),
 			last_error = excluded.last_error,
-			updated_at = excluded.updated_at`,
-	).run(
-		input.coordinatorId,
-		input.groupId,
-		input.now,
-		input.ok ? input.now : null,
-		input.ok ? null : (input.error ?? "unknown"),
-		input.now,
-	);
+			updated_at = excluded.updated_at,
+			refresh_revision = scope_membership_cache_state.refresh_revision + 1
+		WHERE scope_membership_cache_state.refresh_revision < 9007199254740991`,
+		)
+		.run(
+			input.coordinatorId,
+			input.groupId,
+			input.now,
+			input.ok ? input.now : null,
+			input.ok ? null : (input.error ?? "unknown"),
+			input.now,
+		);
+	if (result.changes !== 1) throw new Error("Scope membership cache revision unavailable.");
 }
 
 function loadCacheStates(
 	db: Database,
 	authority?: ScopeMembershipCacheAuthority | null,
 ): ScopeMembershipCacheState[] {
-	ensureScopeMembershipCacheStateTable(db);
+	if (
+		!db
+			.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+			.get("scope_membership_cache_state")
+	)
+		return [];
 	if (authority) {
 		return db
 			.prepare(
@@ -471,6 +518,24 @@ function loadCacheStates(
 			 ORDER BY coordinator_id ASC, group_id ASC`,
 		)
 		.all() as ScopeMembershipCacheState[];
+}
+
+function recordRefreshFailure(
+	db: Database,
+	input: ScopeMembershipCacheAuthority & { error: string; now: string },
+	expectedRevision: number | undefined,
+): string {
+	if (expectedRevision === undefined) return "Scope membership cache revision unavailable.";
+	try {
+		db.transaction(() => {
+			// A delayed failure must not overwrite a newer refresh or advance its revision.
+			if (readRefreshRevision(db, input) !== expectedRevision) return;
+			recordRefreshState(db, { ...input, ok: false });
+		}).immediate();
+		return input.error;
+	} catch {
+		return "Scope membership cache refresh state unavailable.";
+	}
 }
 
 function freshness(
@@ -602,11 +667,20 @@ export async function refreshScopeMembershipCache(
 	const results: RefreshScopeMembershipCacheGroupResult[] = [];
 
 	for (const groupId of groups) {
+		let expectedRevision: number | undefined;
 		try {
 			const authority = authorityForGroup(groupId);
+			ensureScopeMembershipCacheStateTable(db);
+			expectedRevision = readRefreshRevision(db, authority);
 			const membershipBatches = await gatherCurrentSnapshots(fetchers, authority);
 			const scopes = membershipBatches.map((batch) => batch.scope);
-			const error = persistCurrentSnapshots(db, membershipBatches, authority, timestamp);
+			const error = persistCurrentSnapshots(
+				db,
+				membershipBatches,
+				authority,
+				timestamp,
+				expectedRevision,
+			);
 			const membershipCount = membershipBatches.reduce(
 				(count, batch) => count + batch.memberships.length,
 				0,
@@ -619,8 +693,11 @@ export async function refreshScopeMembershipCache(
 				error,
 			});
 		} catch (error) {
-			const message = errorMessage(error);
-			recordRefreshState(db, { coordinatorId, groupId, ok: false, error: message, now: timestamp });
+			const message = recordRefreshFailure(
+				db,
+				{ coordinatorId, groupId, error: errorMessage(error), now: timestamp },
+				expectedRevision,
+			);
 			results.push({ groupId, status: "stale", scopeCount: 0, membershipCount: 0, error: message });
 		}
 	}
@@ -715,30 +792,42 @@ function persistCurrentSnapshots(
 	batches: CurrentScopeBatch[],
 	authority: ScopeMembershipCacheAuthority,
 	timestamp: string,
+	expectedRevision: number,
 ): string | null {
-	return db.transaction(() => {
-		// Validate every batch before writes, even when an earlier batch cannot revive a row.
-		const conflicts = batches.map((batch) => requireUnsupersededSnapshot(db, batch));
-		const error = conflicts.some(Boolean)
-			? "Current scope snapshot cannot revive cached revoked membership at the same epoch."
-			: null;
-		for (const batch of batches) {
-			if (!error) {
-				upsertScope(db, batch.scope);
-				migrateSnapshotMembershipAuthority(db, batch);
-				upsertCachedScopeMemberships(db, batch.memberships);
+	return db
+		.transaction(() => {
+			if (readRefreshRevision(db, authority) !== expectedRevision)
+				return "Current scope snapshot superseded by a newer cache refresh.";
+			// Validate every batch before writes, even when an earlier batch cannot revive a row.
+			const conflicts = batches.map((batch) => requireUnsupersededSnapshot(db, batch));
+			const error = conflicts.some(Boolean)
+				? "Current scope snapshot cannot revive cached revoked membership at the same epoch."
+				: null;
+			for (const batch of batches) {
+				if (!error) {
+					upsertScope(db, batch.scope);
+					migrateSnapshotMembershipAuthority(db, batch);
+					upsertCachedScopeMemberships(db, batch.memberships);
+				}
+				reconcileScopeMembershipSnapshot(db, batch, authority, timestamp);
 			}
-			reconcileScopeMembershipSnapshot(db, batch, authority, timestamp);
-		}
-		reconcileGroupScopeSnapshot(
-			db,
-			authority,
-			batches.map((batch) => batch.scope),
-			timestamp,
-		);
-		recordRefreshState(db, { ...authority, ok: error === null, error, now: timestamp });
-		return error;
-	})();
+			reconcileGroupScopeSnapshot(
+				db,
+				authority,
+				batches.map((batch) => batch.scope),
+				timestamp,
+			);
+			try {
+				reconcileScopeAuthorizationEvidence(db, batches, authority, {
+					removalOnly: error !== null,
+				});
+			} catch {
+				throw new Error("Scope authorization evidence unavailable.");
+			}
+			recordRefreshState(db, { ...authority, ok: error === null, error, now: timestamp });
+			return error;
+		})
+		.immediate();
 }
 
 export async function refreshConfiguredScopeMembershipCache(
@@ -767,7 +856,6 @@ export function listCachedScopesForDevice(
 ): CachedDeviceScopeMemberships {
 	const cleanDeviceId = clean(deviceId);
 	if (!cleanDeviceId) throw new Error("device_id is required.");
-	ensureScopeMembershipCacheStateTable(db);
 	const params: string[] = [cleanDeviceId];
 	const authorityFilter = opts.authority
 		? " AND COALESCE(sm.coordinator_id, rs.coordinator_id) = ? AND COALESCE(sm.group_id, rs.group_id) = ?"
@@ -803,131 +891,109 @@ export function getCachedScopeAuthorization(
 	db: Database,
 	input: { deviceId: string; scopeId: string } & ScopeMembershipCacheLookupOptions,
 ): CachedScopeAuthorization {
+	if (!clean(input.deviceId) || !clean(input.scopeId))
+		throw new Error("device_id and scope_id are required.");
+	return readCachedScopeAuthorization(db, input);
+}
+
+/** Managed access needs a current-refresh proof, not merely historical cache rows.
+ * This read neither creates evidence nor refreshes permissions or adds an expiry. */
+export function getEffectiveCachedScopeAuthorization(
+	db: Database,
+	input: {
+		deviceId: string;
+		scopeId: string;
+		expectedPublicKey?: string;
+	} & ScopeMembershipCacheLookupOptions,
+): EffectiveCachedScopeAuthorization {
+	const cached = readCachedScopeAuthorization(db, input);
+	if (!cached.authorized || cached.scope?.authority_type !== "coordinator")
+		return { ...cached, keyId: null };
+	const keyId =
+		cached.membership &&
+		getRetainedScopeAuthorizationKey(db, cached.scope, cached.membership, input.expectedPublicKey);
+	if (!keyId) return { ...cached, authorized: false, state: "not_authorized", keyId: null };
+	return { ...cached, keyId };
+}
+
+function readCachedScopeAuthorization(
+	db: Database,
+	input: { deviceId: string; scopeId: string } & ScopeMembershipCacheLookupOptions,
+): CachedScopeAuthorization {
 	const deviceId = clean(input.deviceId);
 	const scopeId = clean(input.scopeId);
 	if (!deviceId || !scopeId) throw new Error("device_id and scope_id are required.");
-	ensureScopeMembershipCacheStateTable(db);
+	const { membership, scope } = readCachedScopeRows(db, { ...input, deviceId, scopeId });
+	const authority = authorityFromMembership(
+		membership,
+		input.authority ?? authorityFromScope(scope),
+	);
+	const cacheStates = loadCacheStates(db, authority);
+	const epoch = scopeMembershipEpochStatus({
+		membershipEpoch: membership?.membership_epoch ?? null,
+		requiredEpoch: scope?.membership_epoch ?? null,
+	});
+	const state = cachedScopeDecisionState({
+		membership,
+		scope,
+		epoch,
+		policyDenied: !!getAnyRecipientPolicyDenyOverlayForScopeDevice(db, { deviceId, scopeId }),
+	});
+	let revocation: ScopeMembershipRevocationNotice | null = null;
+	if (state === "revoked" && membership)
+		revocation = explainScopeMembershipRevocation({
+			scopeId,
+			deviceId,
+			membershipEpoch: membership.membership_epoch,
+		});
+	return {
+		deviceId,
+		scopeId,
+		authorized: state === "authorized",
+		state,
+		freshness: freshness(cacheStates, input),
+		epoch,
+		revocation,
+		membership,
+		scope,
+		cacheStates,
+	};
+}
+
+function readCachedScopeRows(
+	db: Database,
+	input: { deviceId: string; scopeId: string } & ScopeMembershipCacheLookupOptions,
+): { membership: CoordinatorScopeMembership | null; scope: CoordinatorScope | null } {
 	const authorityFilter = input.authority
 		? " AND COALESCE(sm.coordinator_id, rs.coordinator_id) = ? AND COALESCE(sm.group_id, rs.group_id) = ?"
 		: "";
 	const params = input.authority
-		? [deviceId, scopeId, input.authority.coordinatorId, input.authority.groupId]
-		: [deviceId, scopeId];
+		? [input.deviceId, input.scopeId, input.authority.coordinatorId, input.authority.groupId]
+		: [input.deviceId, input.scopeId];
 	const row = db
 		.prepare(
 			`${joinedMembershipSelect(`WHERE sm.device_id = ? AND sm.scope_id = ?${authorityFilter} LIMIT 1`)}`,
 		)
 		.get(...params) as JoinedMembershipRow | undefined;
 	const membership = row ? membershipFromJoinedRow(row) : null;
-	const scope = row ? scopeFromJoinedRow(row) : loadScope(db, scopeId, input.authority ?? null);
-	const authority = authorityFromMembership(
-		membership,
-		input.authority ?? authorityFromScope(scope),
-	);
-	const cacheStates = loadCacheStates(db, authority);
-	const currentFreshness = freshness(cacheStates, input);
-	const epoch = scopeMembershipEpochStatus({
-		membershipEpoch: membership?.membership_epoch ?? null,
-		requiredEpoch: scope?.membership_epoch ?? null,
-	});
-	if (getAnyRecipientPolicyDenyOverlayForScopeDevice(db, { deviceId, scopeId })) {
-		return {
-			deviceId,
-			scopeId,
-			authorized: false,
-			state: "policy_denied",
-			freshness: currentFreshness,
-			epoch,
-			revocation: null,
-			membership,
-			scope,
-			cacheStates,
-		};
-	}
-	if (!membership) {
-		return {
-			deviceId,
-			scopeId,
-			authorized: false,
-			state: "not_authorized",
-			freshness: currentFreshness,
-			epoch,
-			revocation: null,
-			membership: null,
-			scope,
-			cacheStates,
-		};
-	}
-	if (membership.status === "revoked") {
-		return {
-			deviceId,
-			scopeId,
-			authorized: false,
-			state: "revoked",
-			freshness: currentFreshness,
-			epoch,
-			revocation: explainScopeMembershipRevocation({
-				scopeId,
-				deviceId,
-				membershipEpoch: membership.membership_epoch,
-			}),
-			membership,
-			scope,
-			cacheStates,
-		};
-	}
-	if (scope?.status && scope.status !== "active") {
-		return {
-			deviceId,
-			scopeId,
-			authorized: false,
-			state: "scope_inactive",
-			freshness: currentFreshness,
-			epoch,
-			revocation: null,
-			membership,
-			scope,
-			cacheStates,
-		};
-	}
-	if (!scope) {
-		return {
-			deviceId,
-			scopeId,
-			authorized: false,
-			state: "scope_unknown",
-			freshness: currentFreshness,
-			epoch,
-			revocation: null,
-			membership,
-			scope: null,
-			cacheStates,
-		};
-	}
-	if (epoch.stale) {
-		return {
-			deviceId,
-			scopeId,
-			authorized: false,
-			state: "stale_epoch",
-			freshness: currentFreshness,
-			epoch,
-			revocation: null,
-			membership,
-			scope,
-			cacheStates,
-		};
-	}
-	return {
-		deviceId,
-		scopeId,
-		authorized: membership.status === "active",
-		state: membership.status === "active" ? "authorized" : "not_authorized",
-		freshness: currentFreshness,
-		epoch,
-		revocation: null,
-		membership,
-		scope,
-		cacheStates,
-	};
+	const scope = row
+		? scopeFromJoinedRow(row)
+		: loadScope(db, input.scopeId, input.authority ?? null);
+	return { membership, scope };
+}
+
+function cachedScopeDecisionState(input: {
+	membership: CoordinatorScopeMembership | null;
+	scope: CoordinatorScope | null;
+	epoch: ScopeMembershipEpochStatus;
+	policyDenied: boolean;
+}): ScopeMembershipAuthorizationState {
+	const { membership, scope, epoch, policyDenied } = input;
+	if (policyDenied) return "policy_denied";
+	if (!membership) return "not_authorized";
+	if (membership.status === "revoked") return "revoked";
+	if (scope?.status && scope.status !== "active") return "scope_inactive";
+	if (!scope) return "scope_unknown";
+	if (epoch.stale) return "stale_epoch";
+	return membership.status === "active" ? "authorized" : "not_authorized";
 }
