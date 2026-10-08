@@ -359,6 +359,13 @@ export function resolveProjectScope(input: ResolveProjectScopeInput): ScopeResol
 	};
 }
 
+export interface ScopeVisibilityOptions {
+	/** Public key of the runtime's actual signing key, not an enrolled DB row. */
+	expectedPublicKey?: string;
+	/** Read-only key loader, called once only when coordinator candidates exist. */
+	loadExpectedPublicKey?: () => string | undefined;
+}
+
 /**
  * Resolve, once per request, the full set of scope_ids that `deviceId` may read.
  *

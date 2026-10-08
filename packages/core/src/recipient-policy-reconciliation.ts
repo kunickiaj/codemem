@@ -1,5 +1,7 @@
 import type { Database } from "./db.js";
 import { derivePolicyTeamDeviceEligibility } from "./policy-team-device-eligibility.js";
+import { denyOverlayRow } from "./recipient-policy-deny-overlay.js";
+
 import {
 	isStrictRecipientPolicyId,
 	isStrictRecipientPolicyProjectIdentity,
@@ -9,6 +11,8 @@ import {
 	canonicalRepositoryProjectIdentity,
 	repositoryIdentitiesByWorkspace,
 } from "./repository-mapping-aliases.js";
+
+export { getAnyRecipientPolicyDenyOverlayForScopeDevice } from "./recipient-policy-deny-overlay.js";
 
 // Preserve the established module-level import path while sharing one grammar.
 export { isStrictRecipientPolicyId };
@@ -1094,18 +1098,6 @@ export function recordRecipientPolicyReconciliationStepState(
 	return stepRow(row);
 }
 
-function denyOverlayRow(row: Record<string, unknown>): RecipientPolicyDenyOverlayRecord {
-	return {
-		canonicalProjectIdentity: String(row.canonical_project_identity),
-		scopeId: String(row.scope_id),
-		deviceId: String(row.device_id),
-		generation: Number(row.generation),
-		reasonCode: String(row.reason_code),
-		createdAt: String(row.created_at),
-		updatedAt: String(row.updated_at),
-	};
-}
-
 export function putRecipientPolicyDenyOverlay(
 	db: Database,
 	input: {
@@ -1174,26 +1166,6 @@ export function listRecipientPolicyDenyOverlays(
 			)
 			.all(canonicalProjectIdentity) as Array<Record<string, unknown>>
 	).map(denyOverlayRow);
-}
-
-/**
- * Returns any deny for a scope/device pair. Active policy reconciliation requires
- * one exact Project per managed scope, so enforcement intentionally fails closed
- * if corrupt legacy state contains more than one Project overlay for the pair.
- */
-export function getAnyRecipientPolicyDenyOverlayForScopeDevice(
-	db: Database,
-	input: { scopeId: string; deviceId: string },
-): RecipientPolicyDenyOverlayRecord | null {
-	const row = db
-		.prepare(
-			`SELECT * FROM recipient_policy_deny_overlays
-			 WHERE scope_id = ? AND device_id = ?
-			 ORDER BY canonical_project_identity
-			 LIMIT 1`,
-		)
-		.get(input.scopeId, input.deviceId) as Record<string, unknown> | undefined;
-	return row ? denyOverlayRow(row) : null;
 }
 
 export function clearRecipientPolicyDenyOverlay(

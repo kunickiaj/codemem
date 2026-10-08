@@ -3,13 +3,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
 import * as databaseRuntimePrimitives from "./database-runtime-primitives.js";
 import * as dbModule from "./db.js";
 import type { EmbeddingClient, EmbeddingRuntimeIdentity } from "./embeddings.js";
 import * as embeddings from "./embeddings.js";
 import { failMaintenanceJob, startMaintenanceJob } from "./maintenance-jobs.js";
 import { ensureSchemaBootstrapped } from "./schema-bootstrap.js";
+import { refreshScopeMembershipCache } from "./scope-membership-cache.js";
+import {
+	cacheMember,
+	cacheScope,
+	cacheWireSnapshot,
+} from "./scope-membership-cache-test-fixtures.js";
 import { MemoryStore } from "./store.js";
+import { ensureDeviceIdentity, fingerprintPublicKey, loadPublicKey } from "./sync-identity.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
 import {
 	backfillVectors,
@@ -22,6 +30,13 @@ import {
 	semanticSearch,
 	storeVectors,
 } from "./vectors.js";
+
+vi.mock("node:child_process", async (importOriginal) => ({
+	...(await importOriginal<typeof import("node:child_process")>()),
+	execFileSync: vi.fn(() => {
+		throw new Error("External subprocess disabled in tests");
+	}),
+}));
 
 vi.mock("./embeddings.js", async () => {
 	const actual = await vi.importActual<typeof import("./embeddings.js")>("./embeddings.js");
@@ -149,6 +164,7 @@ const invalidInjectedBackfillClients: Array<{
 ];
 
 let db: InstanceType<typeof Database>;
+const scopeKeyDirectories: string[] = [];
 
 function useVectorFixture() {
 	beforeEach(() => {
@@ -184,6 +200,8 @@ function useVectorFixture() {
 
 	afterEach(() => {
 		db.close();
+		for (const directory of scopeKeyDirectories.splice(0))
+			rmSync(directory, { recursive: true, force: true });
 	});
 }
 
@@ -197,14 +215,58 @@ function insertCoordinatorScope(scopeId: string): void {
 	).run(scopeId, scopeId, now, now);
 }
 
-function grantScopeToDevice(scopeId: string, deviceId: string): void {
+async function grantScopeToDevice(scopeId: string, deviceId: string): Promise<string> {
 	insertCoordinatorScope(scopeId);
-	db.prepare(
-		`INSERT OR REPLACE INTO scope_memberships(
-				scope_id, device_id, role, status, membership_epoch,
-				coordinator_id, group_id, updated_at
-			 ) VALUES (?, ?, 'member', 'active', 0, 'coord-test', 'group-test', ?)`,
-	).run(scopeId, deviceId, new Date().toISOString());
+	const keysDir = mkdtempSync(join(tmpdir(), "codemem-vector-scope-"));
+	scopeKeyDirectories.push(keysDir);
+	ensureDeviceIdentity(db, { keysDir, deviceId });
+	const publicKey = loadPublicKey(keysDir);
+	if (!publicKey) throw new Error("Missing fixture signing key");
+	const scope = cacheScope({
+		scope_id: scopeId,
+		coordinator_id: "coord-test",
+		group_id: "group-test",
+		membership_epoch: 0,
+	});
+	const snapshot = cacheWireSnapshot(scope, [cacheMember(scope, deviceId)]);
+	const item = snapshot.items[0];
+	if (!item) throw new Error("Missing fixture enrollment");
+	item.enrollment.public_key = publicKey;
+	item.enrollment.fingerprint = fingerprintPublicKey(publicKey);
+	item.key_id = (await ed25519KeyId(publicKey)) ?? "";
+	expect(
+		await refreshScopeMembershipCache(db, {
+			coordinatorId: "coord-test",
+			groupIds: ["group-test"],
+			fetchers: {
+				listScopes: async () => ({ version: 1, items: [scope] }),
+				getScopeSnapshot: async () => snapshot,
+			},
+		}),
+	).toMatchObject({ status: "refreshed" });
+	return publicKey;
+}
+
+function vectorScopeContext(deviceId: string, expectedPublicKey: string) {
+	return { actorId: `local:${deviceId}`, deviceId, expectedPublicKey, scopeVisibilityDb: db };
+}
+
+function seedScopeVectorCandidates() {
+	insertCoordinatorScope("unauthorized-team");
+	const visibleId = insertScopedMemory(
+		"authorized-team",
+		"Visible semantic note",
+		"semantic scope detail",
+	);
+	const hiddenId = insertScopedMemory(
+		"unauthorized-team",
+		"Hidden semantic note",
+		"semantic scope secret",
+	);
+	insertTestVector(visibleId, 0, "visible-hash");
+	insertTestVector(hiddenId, 0, "hidden-hash");
+	vi.mocked(embeddings.embedTexts).mockResolvedValue([new Float32Array(384)]);
+	return { visibleId, hiddenId };
 }
 
 function insertScopedMemory(scopeId: string, title: string, bodyText: string): number {
@@ -1443,26 +1505,16 @@ describe("vectors", () => {
 
 	it("filters semantic search candidates by local scope authorization", async () => {
 		const deviceId = "device-authorized";
-		grantScopeToDevice("authorized-team", deviceId);
-		insertCoordinatorScope("unauthorized-team");
-		const visibleId = insertScopedMemory(
-			"authorized-team",
-			"Visible semantic note",
-			"semantic scope detail",
-		);
-		const hiddenId = insertScopedMemory(
-			"unauthorized-team",
-			"Hidden semantic note",
-			"semantic scope secret",
-		);
-		insertTestVector(visibleId, 0, "visible-hash");
-		insertTestVector(hiddenId, 0, "hidden-hash");
-		vi.mocked(embeddings.embedTexts).mockResolvedValue([new Float32Array(384)]);
+		const expectedPublicKey = await grantScopeToDevice("authorized-team", deviceId);
+		const { visibleId, hiddenId } = seedScopeVectorCandidates();
 
-		const results = await semanticSearch(db, "semantic scope", 10, null, {
-			actorId: "local:device-authorized",
-			deviceId,
-		});
+		const results = await semanticSearch(
+			db,
+			"semantic scope",
+			10,
+			null,
+			vectorScopeContext(deviceId, expectedPublicKey),
+		);
 
 		const resultIds = results.map((item) => item.id);
 		expect(resultIds).toContain(visibleId);
@@ -1506,22 +1558,9 @@ describe("vectors", () => {
 
 	it("intersects semantic search scope filters with local authorization", async () => {
 		const deviceId = "device-authorized";
-		grantScopeToDevice("authorized-team", deviceId);
-		insertCoordinatorScope("unauthorized-team");
-		const visibleId = insertScopedMemory(
-			"authorized-team",
-			"Visible semantic note",
-			"semantic scope detail",
-		);
-		const hiddenId = insertScopedMemory(
-			"unauthorized-team",
-			"Hidden semantic note",
-			"semantic scope secret",
-		);
-		insertTestVector(visibleId, 0, "visible-hash");
-		insertTestVector(hiddenId, 0, "hidden-hash");
-		vi.mocked(embeddings.embedTexts).mockResolvedValue([new Float32Array(384)]);
-		const context = { actorId: "local:device-authorized", deviceId };
+		const expectedPublicKey = await grantScopeToDevice("authorized-team", deviceId);
+		const { visibleId } = seedScopeVectorCandidates();
+		const context = vectorScopeContext(deviceId, expectedPublicKey);
 
 		expect(
 			await semanticSearch(db, "semantic scope", 10, { scope_id: "unauthorized-team" }, context),
@@ -1535,7 +1574,7 @@ describe("vectors", () => {
 
 	it("ranks only authorized semantic candidates even when unauthorized candidates dominate", async () => {
 		const deviceId = "device-authorized";
-		grantScopeToDevice("authorized-team", deviceId);
+		const expectedPublicKey = await grantScopeToDevice("authorized-team", deviceId);
 		insertCoordinatorScope("unauthorized-team");
 		for (let i = 0; i < 220; i += 1) {
 			const hiddenId = insertScopedMemory(
@@ -1553,10 +1592,13 @@ describe("vectors", () => {
 		insertTestVector(visibleId, 0.5, "visible-hash");
 		vi.mocked(embeddings.embedTexts).mockResolvedValue([new Float32Array(384)]);
 
-		const results = await semanticSearch(db, "semantic scope", 1, null, {
-			actorId: "local:device-authorized",
-			deviceId,
-		});
+		const results = await semanticSearch(
+			db,
+			"semantic scope",
+			1,
+			null,
+			vectorScopeContext(deviceId, expectedPublicKey),
+		);
 
 		expect(results.map((item) => item.id)).toEqual([visibleId]);
 	});
@@ -1732,7 +1774,7 @@ describe("automatic continuity ranking", () => {
 	useVectorFixture();
 	it("excludes summaries before semantic ranking when automatic continuity is unmapped", async () => {
 		const deviceId = "device-continuity";
-		grantScopeToDevice("authorized-team", deviceId);
+		const expectedPublicKey = await grantScopeToDevice("authorized-team", deviceId);
 		for (let i = 0; i < 220; i += 1) {
 			const summaryId = insertScopedMemory(
 				"authorized-team",
@@ -1755,7 +1797,7 @@ describe("automatic continuity ranking", () => {
 			"semantic scope",
 			1,
 			null,
-			{ actorId: "local:device-continuity", deviceId },
+			vectorScopeContext(deviceId, expectedPublicKey),
 			null,
 		);
 

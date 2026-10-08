@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import incidentFixture from "../../../scripts/eval/fixtures/automatic-recall-pre-policy.json";
 import { connect } from "./db.js";
+import { refreshManagedScopeFixture } from "./managed-scope-test-fixtures.js";
 import {
 	buildMemoryPack,
 	buildMemoryPackTrace,
@@ -111,6 +112,7 @@ it.each([
 let tmpDir: string;
 let store: MemoryStore;
 let sessionId: number;
+let grantedScopeIds: string[];
 
 function usePackFixture() {
 	beforeEach(() => {
@@ -119,7 +121,8 @@ function usePackFixture() {
 		const db = connect(dbPath);
 		initTestSchema(db);
 		db.close();
-		store = new MemoryStore(dbPath);
+		store = new MemoryStore(dbPath, { keysDir: join(tmpDir, "keys") });
+		grantedScopeIds = [];
 		sessionId = insertTestSession(store.db);
 	});
 
@@ -468,16 +471,14 @@ describe("buildMemoryPack", () => {
 			.run(scopeId, scopeId, now, now);
 	}
 
-	function grantScopeToLocalDevice(scopeId: string): void {
+	async function grantScopeToLocalDevice(scopeId: string): Promise<void> {
 		insertCoordinatorScope(scopeId);
-		store.db
-			.prepare(
-				`INSERT OR REPLACE INTO scope_memberships(
-					scope_id, device_id, role, status, membership_epoch,
-					coordinator_id, group_id, updated_at
-				 ) VALUES (?, ?, 'member', 'active', 0, 'coord-test', 'group-test', ?)`,
-			)
-			.run(scopeId, store.deviceId, new Date().toISOString());
+		grantedScopeIds.push(scopeId);
+		await refreshManagedScopeFixture(store.db, {
+			keysDir: join(tmpDir, "keys"),
+			deviceId: store.deviceId,
+			scopeIds: grantedScopeIds,
+		});
 	}
 
 	function insertScopedMemory(scopeId: string, title: string, bodyText: string): number {
@@ -669,8 +670,8 @@ describe("buildMemoryPack", () => {
 		expect(typeof second.metrics.pack_token_delta).toBe("number");
 	});
 
-	it("does not use out-of-scope pack delta baselines", () => {
-		grantScopeToLocalDevice("authorized-team");
+	it("does not use out-of-scope pack delta baselines", async () => {
+		await grantScopeToLocalDevice("authorized-team");
 		insertCoordinatorScope("unauthorized-team");
 		const hiddenId = insertScopedMemory(
 			"unauthorized-team",
@@ -703,8 +704,8 @@ describe("buildMemoryPack", () => {
 		expect(pack.metrics.added_ids).not.toContain(hiddenId);
 	});
 
-	it("does not use itemless pack delta token baselines", () => {
-		grantScopeToLocalDevice("authorized-team");
+	it("does not use itemless pack delta token baselines", async () => {
+		await grantScopeToLocalDevice("authorized-team");
 		const visibleId = insertScopedMemory(
 			"authorized-team",
 			"Visible empty-baseline memory",
@@ -725,9 +726,9 @@ describe("buildMemoryPack", () => {
 		expect(pack.metrics.pack_token_delta).toBe(0);
 	});
 
-	it("does not use pack delta baselines outside current scope filters", () => {
-		grantScopeToLocalDevice("scope-a");
-		grantScopeToLocalDevice("scope-b");
+	it("does not use pack delta baselines outside current scope filters", async () => {
+		await grantScopeToLocalDevice("scope-a");
+		await grantScopeToLocalDevice("scope-b");
 		const scopeBId = insertScopedMemory("scope-b", "Scope B delta memory", "delta filter body");
 		const scopeAId = insertScopedMemory("scope-a", "Scope A delta memory", "delta filter body");
 		store.db
@@ -750,9 +751,9 @@ describe("buildMemoryPack", () => {
 		expect(pack.metrics.retained_ids).not.toContain(scopeBId);
 	});
 
-	it("finds current-scope pack delta baselines beyond out-of-scope history", () => {
-		grantScopeToLocalDevice("scope-a");
-		grantScopeToLocalDevice("scope-b");
+	it("finds current-scope pack delta baselines beyond out-of-scope history", async () => {
+		await grantScopeToLocalDevice("scope-a");
+		await grantScopeToLocalDevice("scope-b");
 		const scopeAId = insertScopedMemory("scope-a", "Scope A retained memory", "retained body");
 		const scopeBId = insertScopedMemory("scope-b", "Scope B noisy memory", "retained body");
 		const insertUsage = (ids: number[], createdAt: string, packTokens: number) => {
@@ -782,9 +783,9 @@ describe("buildMemoryPack", () => {
 		expect(pack.metrics.removed_ids).not.toContain(scopeBId);
 	});
 
-	it("bounds pack delta baseline scans when no current-scope baseline is recent", () => {
-		grantScopeToLocalDevice("scope-a");
-		grantScopeToLocalDevice("scope-b");
+	it("bounds pack delta baseline scans when no current-scope baseline is recent", async () => {
+		await grantScopeToLocalDevice("scope-a");
+		await grantScopeToLocalDevice("scope-b");
 		const scopeAId = insertScopedMemory("scope-a", "Scope A old retained memory", "retained body");
 		const scopeBId = insertScopedMemory("scope-b", "Scope B noisy old memory", "retained body");
 		const insertUsage = (ids: number[], createdAt: string, packTokens: number) => {
@@ -1482,8 +1483,8 @@ describe("buildMemoryPack", () => {
 		expect(pack.item_ids[0]).toBe(overlappingId);
 	});
 
-	it("scopes caller-provided semantic candidates before pack merge", () => {
-		grantScopeToLocalDevice("authorized-team");
+	it("scopes caller-provided semantic candidates before pack merge", async () => {
+		await grantScopeToLocalDevice("authorized-team");
 		insertCoordinatorScope("unauthorized-team");
 		const visibleId = insertScopedMemory(
 			"authorized-team",
@@ -1537,8 +1538,8 @@ describe("buildMemoryPack", () => {
 		expect(pack.metrics.sources.semantic).toBe(1);
 	});
 
-	it("keeps revalidating semantic candidates after hidden candidates fill the first chunk", () => {
-		grantScopeToLocalDevice("authorized-team");
+	it("keeps revalidating semantic candidates after hidden candidates fill the first chunk", async () => {
+		await grantScopeToLocalDevice("authorized-team");
 		insertCoordinatorScope("unauthorized-team");
 		const semanticResults: MemoryResult[] = [];
 		for (let i = 0; i < 205; i += 1) {
@@ -1576,8 +1577,8 @@ describe("buildMemoryPack", () => {
 		expect(pack.metrics.sources.semantic).toBe(1);
 	});
 
-	it("uses database content when revalidating semantic pack candidates", () => {
-		grantScopeToLocalDevice("authorized-team");
+	it("uses database content when revalidating semantic pack candidates", async () => {
+		await grantScopeToLocalDevice("authorized-team");
 		const visibleId = insertScopedMemory(
 			"authorized-team",
 			"Database semantic pack note",
@@ -1593,8 +1594,8 @@ describe("buildMemoryPack", () => {
 		expect(pack.pack_text).not.toContain("Forged semantic pack note");
 	});
 
-	it("uses database content when revalidating semantic trace candidates", () => {
-		grantScopeToLocalDevice("authorized-team");
+	it("uses database content when revalidating semantic trace candidates", async () => {
+		await grantScopeToLocalDevice("authorized-team");
 		const visibleId = insertScopedMemory(
 			"authorized-team",
 			"Database semantic trace note",
@@ -1621,8 +1622,8 @@ describe("buildMemoryPack", () => {
 		expect(candidate?.preview).not.toContain("forged semantic trace body");
 	});
 
-	it("excludes hidden semantic candidates from pack trace output", () => {
-		grantScopeToLocalDevice("authorized-team");
+	it("excludes hidden semantic candidates from pack trace output", async () => {
+		await grantScopeToLocalDevice("authorized-team");
 		insertCoordinatorScope("unauthorized-team");
 		const visibleId = insertScopedMemory(
 			"authorized-team",
@@ -1661,8 +1662,8 @@ describe("buildMemoryPack", () => {
 		expect(trace.retrieval.candidates.map((candidate) => candidate.id)).not.toContain(hiddenId);
 	});
 
-	it("keeps token-budget trimming behind the pack scope gate", () => {
-		grantScopeToLocalDevice("authorized-team");
+	it("keeps token-budget trimming behind the pack scope gate", async () => {
+		await grantScopeToLocalDevice("authorized-team");
 		insertCoordinatorScope("unauthorized-team");
 		const visibleId = insertScopedMemory(
 			"authorized-team",
@@ -1697,9 +1698,9 @@ describe("buildMemoryPack", () => {
 		expect(pack.pack_text).not.toContain("Hidden budget semantic note");
 	});
 
-	it("applies scope filters to working-set file-ref candidates", () => {
-		grantScopeToLocalDevice("scope-a");
-		grantScopeToLocalDevice("scope-b");
+	it("applies scope filters to working-set file-ref candidates", async () => {
+		await grantScopeToLocalDevice("scope-a");
+		await grantScopeToLocalDevice("scope-b");
 		const scopeAId = insertScopedMemory("scope-a", "Scope A working-set note", "working set body");
 		const scopeBId = insertScopedMemory("scope-b", "Scope B working-set note", "working set body");
 		for (const id of [scopeAId, scopeBId]) {
@@ -1724,8 +1725,8 @@ describe("buildMemoryPack", () => {
 		expect(trace.retrieval.candidates.map((candidate) => candidate.id)).not.toContain(scopeBId);
 	});
 
-	it("scopes latest summary fallback during pack assembly", () => {
-		grantScopeToLocalDevice("authorized-team");
+	it("scopes latest summary fallback during pack assembly", async () => {
+		await grantScopeToLocalDevice("authorized-team");
 		insertCoordinatorScope("unauthorized-team");
 		const insertSummary = (scopeId: string, title: string, createdAt: string): number => {
 			const info = store.db

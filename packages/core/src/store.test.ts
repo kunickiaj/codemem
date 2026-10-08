@@ -2,14 +2,61 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
 import { connect, tableExists } from "./db.js";
 import { buildFilterClauses, buildFilterClausesWithContext } from "./filters.js";
+import { refreshScopeMembershipCache } from "./scope-membership-cache.js";
+import {
+	cacheMember,
+	cacheScope,
+	cacheWireSnapshot,
+} from "./scope-membership-cache-test-fixtures.js";
 import { MemoryStore } from "./store.js";
 import { setSyncDaemonPhase } from "./sync-daemon.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
+import { ensureDeviceIdentity, loadPublicKey } from "./sync-identity.js";
 import { loadReplicationOpsSince } from "./sync-replication.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
 import * as vectors from "./vectors.js";
+
+vi.mock("node:child_process", async (importOriginal) => ({
+	...(await importOriginal<typeof import("node:child_process")>()),
+	execFileSync: vi.fn(() => {
+		throw new Error("External subprocess disabled in tests");
+	}),
+}));
+
+async function refreshStoreScope(
+	store: MemoryStore,
+	scopeId: string,
+	keysDir: string,
+): Promise<void> {
+	ensureDeviceIdentity(store.db, { keysDir, deviceId: store.deviceId });
+	const publicKey = loadPublicKey(keysDir);
+	if (!publicKey) throw new Error("Missing fixture signing key");
+	const scope = cacheScope({
+		scope_id: scopeId,
+		coordinator_id: "coord-test",
+		group_id: "group-test",
+		membership_epoch: 0,
+	});
+	const snapshot = cacheWireSnapshot(scope, [cacheMember(scope, store.deviceId)]);
+	const item = snapshot.items[0];
+	if (!item) throw new Error("Missing fixture enrollment");
+	item.enrollment.public_key = publicKey;
+	item.enrollment.fingerprint = fingerprintPublicKey(publicKey);
+	item.key_id = (await ed25519KeyId(publicKey)) ?? "";
+	expect(
+		await refreshScopeMembershipCache(store.db, {
+			coordinatorId: "coord-test",
+			groupIds: ["group-test"],
+			fetchers: {
+				listScopes: async () => ({ version: 1, items: [scope] }),
+				getScopeSnapshot: async () => snapshot,
+			},
+		}),
+	).toMatchObject({ status: "refreshed" });
+}
 
 // ---------------------------------------------------------------------------
 // Helper: create a MemoryStore backed by a temp DB with test schema.
@@ -46,7 +93,7 @@ describe("MemoryStore", () => {
 		initTestSchema(setupDb);
 		setupDb.close();
 		// Now open via MemoryStore
-		store = new MemoryStore(dbPath);
+		store = new MemoryStore(dbPath, { keysDir: join(tmpDir, "keys") });
 	});
 
 	afterEach(() => {
@@ -79,16 +126,9 @@ describe("MemoryStore", () => {
 			.run(scopeId, scopeId, now, now);
 	}
 
-	function grantScopeToLocalDevice(scopeId: string): void {
+	async function grantScopeToLocalDevice(scopeId: string): Promise<void> {
 		insertCoordinatorScope(scopeId);
-		store.db
-			.prepare(
-				`INSERT OR REPLACE INTO scope_memberships(
-					scope_id, device_id, role, status, membership_epoch,
-					coordinator_id, group_id, updated_at
-				 ) VALUES (?, ?, 'member', 'active', 0, 'coord-test', 'group-test', ?)`,
-			)
-			.run(scopeId, store.deviceId, new Date().toISOString());
+		await refreshStoreScope(store, scopeId, join(tmpDir, "keys"));
 	}
 
 	function insertScopedMemory(scopeId: string, title: string): number {
@@ -141,8 +181,8 @@ describe("MemoryStore", () => {
 			expect(typeof result?.metadata_json).toBe("object");
 		});
 
-		it("hides direct ID reads outside locally authorized scopes", () => {
-			grantScopeToLocalDevice("authorized-team");
+		it("hides direct ID reads outside locally authorized scopes", async () => {
+			await grantScopeToLocalDevice("authorized-team");
 			insertCoordinatorScope("unauthorized-team");
 			const visibleId = insertScopedMemory("authorized-team", "Authorized memory");
 			const hiddenId = insertScopedMemory("unauthorized-team", "Unauthorized memory");
@@ -1903,8 +1943,8 @@ describe("MemoryStore", () => {
 			expect(mineIds).not.toContain(otherId);
 		});
 
-		it("intersects explicit scope filters with local authorization", () => {
-			grantScopeToLocalDevice("authorized-team");
+		it("intersects explicit scope filters with local authorization", async () => {
+			await grantScopeToLocalDevice("authorized-team");
 			insertCoordinatorScope("unauthorized-team");
 			const visibleId = insertScopedMemory("authorized-team", "Authorized recent");
 			const hiddenId = insertScopedMemory("unauthorized-team", "Unauthorized recent");
@@ -1975,8 +2015,8 @@ describe("MemoryStore", () => {
 			expect(results).toEqual([]);
 		});
 
-		it("intersects scope filters with local authorization", () => {
-			grantScopeToLocalDevice("authorized-team");
+		it("intersects scope filters with local authorization", async () => {
+			await grantScopeToLocalDevice("authorized-team");
 			insertCoordinatorScope("unauthorized-team");
 			const visibleId = insertScopedMemory("authorized-team", "Authorized by-kind");
 			const hiddenId = insertScopedMemory("unauthorized-team", "Unauthorized by-kind");
@@ -2023,8 +2063,8 @@ describe("MemoryStore", () => {
 			expect(result.database.active_memory_items).toBe(1);
 		});
 
-		it("excludes memories outside locally authorized scopes from memory stats", () => {
-			grantScopeToLocalDevice("authorized-team");
+		it("excludes memories outside locally authorized scopes from memory stats", async () => {
+			await grantScopeToLocalDevice("authorized-team");
 			insertCoordinatorScope("unauthorized-team");
 			insertScopedMemory("authorized-team", "Authorized stats memory");
 			insertScopedMemory("unauthorized-team", "Unauthorized stats memory");
