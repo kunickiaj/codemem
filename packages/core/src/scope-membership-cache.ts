@@ -1,7 +1,4 @@
-import {
-	coordinatorListScopeMembershipsAction,
-	coordinatorListScopesAction,
-} from "./coordinator-actions.js";
+import { BetterSqliteCoordinatorStore, DEFAULT_COORDINATOR_DB_PATH } from "./coordinator-store.js";
 import type { CoordinatorScope, CoordinatorScopeMembership } from "./coordinator-store-contract.js";
 import {
 	type CoordinatorSyncConfig,
@@ -16,7 +13,12 @@ import {
 	type ScopeMembershipRevocationNotice,
 	scopeMembershipEpochStatus,
 } from "./scope-membership-semantics.js";
-import { decodeScopeCatalogue, decodeScopeMembers } from "./scope-membership-wire.js";
+import {
+	normalizeScopeCatalog,
+	normalizeScopeSnapshot,
+	type ScopeMembershipCatalog,
+	type ScopeMembershipSnapshot,
+} from "./scope-membership-snapshot.js";
 import { buildAuthHeaders } from "./sync-auth.js";
 import { buildBaseUrl, requestJson } from "./sync-http-client.js";
 import { ensureDeviceIdentity } from "./sync-identity.js";
@@ -71,8 +73,8 @@ export interface CachedScopeAuthorization {
 }
 
 export interface ScopeMembershipCacheFetchers {
-	listScopes(groupId: string): Promise<CoordinatorScope[]>;
-	listMemberships(groupId: string, scopeId: string): Promise<CoordinatorScopeMembership[]>;
+	listScopes(groupId: string): Promise<ScopeMembershipCatalog>;
+	getScopeSnapshot(groupId: string, scopeId: string): Promise<ScopeMembershipSnapshot>;
 }
 
 export interface RefreshScopeMembershipCacheOptions {
@@ -84,6 +86,8 @@ export interface RefreshScopeMembershipCacheOptions {
 	db?: Database;
 	keysDir?: string | null;
 	dbPath?: string;
+	/** Separate local coordinator storage; dbPath remains the memory/signing database. */
+	coordinatorDbPath?: string;
 	now?: Date;
 	fetchers?: ScopeMembershipCacheFetchers;
 }
@@ -201,25 +205,24 @@ function authenticatedFetchers(
 	opts: RefreshScopeMembershipCacheOptions,
 ): ScopeMembershipCacheFetchers {
 	const baseUrl = coordinatorUrl(opts);
-	const catalogue = new Map<string, CoordinatorScope[]>();
 	return {
 		listScopes: async (groupId) => {
 			const url = `${baseUrl}/v1/scopes?group_id=${encodeURIComponent(groupId)}`;
-			const scopes = decodeScopeCatalogue(
-				await signedCoordinatorGet(db, url, opts.keysDir, opts.dbPath),
-				groupId,
-			);
-			catalogue.set(groupId, scopes);
-			return scopes;
+			return (await signedCoordinatorGet(
+				db,
+				url,
+				opts.keysDir,
+				opts.dbPath,
+			)) as unknown as ScopeMembershipCatalog;
 		},
-		listMemberships: async (groupId, scopeId) => {
+		getScopeSnapshot: async (groupId, scopeId) => {
 			const url = `${baseUrl}/v1/scopes/${encodeURIComponent(scopeId)}/members?group_id=${encodeURIComponent(groupId)}`;
-			return decodeScopeMembers(
-				await signedCoordinatorGet(db, url, opts.keysDir, opts.dbPath),
-				catalogue.get(groupId)?.find((scope) => scope.scope_id === scopeId),
-				groupId,
-				scopeId,
-			);
+			return (await signedCoordinatorGet(
+				db,
+				url,
+				opts.keysDir,
+				opts.dbPath,
+			)) as unknown as ScopeMembershipSnapshot;
 		},
 	};
 }
@@ -228,24 +231,42 @@ function defaultFetchers(
 	db: Database,
 	opts: RefreshScopeMembershipCacheOptions,
 ): ScopeMembershipCacheFetchers {
-	if (opts.remoteUrl && !opts.adminSecret) return authenticatedFetchers(db, opts);
+	if (clean(opts.remoteUrl)) return authenticatedFetchers(db, opts);
 	return {
 		listScopes: (groupId) =>
-			coordinatorListScopesAction({
-				groupId,
-				includeInactive: true,
-				remoteUrl: opts.remoteUrl ?? null,
-				adminSecret: opts.adminSecret ?? null,
-			}),
-		listMemberships: (groupId, scopeId) =>
-			coordinatorListScopeMembershipsAction({
-				groupId,
-				scopeId,
-				includeRevoked: true,
-				remoteUrl: opts.remoteUrl ?? null,
-				adminSecret: opts.adminSecret ?? null,
+			withLocalCoordinator(opts, async (store) => ({
+				version: 1,
+				items: await store.listScopes({ groupId }),
+			})),
+		getScopeSnapshot: (groupId, scopeId) =>
+			withLocalCoordinator(opts, async (store) => {
+				const decision = await store.getScopeAuthorization({ groupId, scopeId });
+				if (decision.kind !== "authorized") throw new Error(decision.error);
+				return {
+					authorization_version: decision.authorizationVersion,
+					scope: decision.scope,
+					items: decision.members.map(({ membership, enrollment, keyId }) => ({
+						membership,
+						enrollment,
+						key_id: keyId,
+					})),
+				};
 			}),
 	};
+}
+
+async function withLocalCoordinator<T>(
+	opts: RefreshScopeMembershipCacheOptions,
+	read: (store: BetterSqliteCoordinatorStore) => Promise<T>,
+): Promise<T> {
+	const store = new BetterSqliteCoordinatorStore(
+		opts.coordinatorDbPath ?? DEFAULT_COORDINATOR_DB_PATH,
+	);
+	try {
+		return await read(store);
+	} finally {
+		await store.close();
+	}
 }
 
 function upsertScope(db: Database, scope: CoordinatorScope): void {
@@ -282,41 +303,17 @@ function upsertScope(db: Database, scope: CoordinatorScope): void {
 	);
 }
 
-function scopeWithAuthority(
-	scope: CoordinatorScope,
-	authority: ScopeMembershipCacheAuthority,
-): CoordinatorScope {
-	return {
-		...scope,
-		coordinator_id: clean(scope.coordinator_id) ?? authority.coordinatorId,
-		group_id: clean(scope.group_id) ?? authority.groupId,
-	};
-}
-
-function membershipWithAuthority(
-	membership: CoordinatorScopeMembership,
-	scope: CoordinatorScope,
-	authority: ScopeMembershipCacheAuthority,
-): CoordinatorScopeMembership {
-	return {
-		...membership,
-		coordinator_id:
-			clean(membership.coordinator_id) ?? clean(scope.coordinator_id) ?? authority.coordinatorId,
-		group_id: clean(membership.group_id) ?? clean(scope.group_id) ?? authority.groupId,
-	};
-}
-
 function placeholders(count: number): string {
 	return Array.from({ length: count }, () => "?").join(", ");
 }
 
 function reconcileScopeMembershipSnapshot(
 	db: Database,
-	scope: CoordinatorScope,
-	memberships: CoordinatorScopeMembership[],
+	batch: CurrentScopeBatch,
 	authority: ScopeMembershipCacheAuthority,
 	timestamp: string,
 ): void {
+	const { scope, memberships, sourceCoordinatorId } = batch;
 	// The authorized scope-members endpoint returns the complete membership list
 	// that is active at the current epoch, so absence is fail-closed here.
 	const deviceIds = memberships.map((membership) => membership.device_id);
@@ -326,11 +323,11 @@ function reconcileScopeMembershipSnapshot(
 		`UPDATE scope_memberships
 		 SET status = 'revoked',
 			 membership_epoch = CASE WHEN membership_epoch > ? THEN membership_epoch ELSE ? END,
-			 coordinator_id = COALESCE(coordinator_id, ?),
-			 group_id = COALESCE(group_id, ?),
+			 coordinator_id = ?,
+			 group_id = ?,
 			 updated_at = ?
 		 WHERE scope_id = ?
-			 AND COALESCE(coordinator_id, ?) = ?
+			 AND COALESCE(coordinator_id, ?) IN (?, ?)
 			 AND COALESCE(group_id, ?) = ?
 			 AND status != 'revoked'
 			 ${deviceFilter}`,
@@ -343,6 +340,7 @@ function reconcileScopeMembershipSnapshot(
 		scope.scope_id,
 		authority.coordinatorId,
 		authority.coordinatorId,
+		sourceCoordinatorId,
 		authority.groupId,
 		authority.groupId,
 		...deviceIds,
@@ -606,44 +604,19 @@ export async function refreshScopeMembershipCache(
 	for (const groupId of groups) {
 		try {
 			const authority = authorityForGroup(groupId);
-			const scopes = (await fetchers.listScopes(groupId)).map((scope) =>
-				scopeWithAuthority(scope, authority),
-			);
-			const membershipBatches: Array<{
-				scope: CoordinatorScope;
-				memberships: CoordinatorScopeMembership[];
-			}> = [];
-			for (const scope of scopes) {
-				const memberships = (await fetchers.listMemberships(groupId, scope.scope_id)).map(
-					(membership) => membershipWithAuthority(membership, scope, authority),
-				);
-				membershipBatches.push({ scope, memberships });
-			}
-			db.transaction(() => {
-				for (const scope of scopes) upsertScope(db, scope);
-				for (const batch of membershipBatches) {
-					upsertCachedScopeMemberships(db, batch.memberships);
-					reconcileScopeMembershipSnapshot(
-						db,
-						batch.scope,
-						batch.memberships,
-						authority,
-						timestamp,
-					);
-				}
-				reconcileGroupScopeSnapshot(db, authority, scopes, timestamp);
-				recordRefreshState(db, { coordinatorId, groupId, ok: true, now: timestamp });
-			})();
+			const membershipBatches = await gatherCurrentSnapshots(fetchers, authority);
+			const scopes = membershipBatches.map((batch) => batch.scope);
+			const error = persistCurrentSnapshots(db, membershipBatches, authority, timestamp);
 			const membershipCount = membershipBatches.reduce(
 				(count, batch) => count + batch.memberships.length,
 				0,
 			);
 			results.push({
 				groupId,
-				status: "refreshed",
-				scopeCount: scopes.length,
-				membershipCount,
-				error: null,
+				status: error ? "stale" : "refreshed",
+				scopeCount: error ? 0 : scopes.length,
+				membershipCount: error ? 0 : membershipCount,
+				error,
 			});
 		} catch (error) {
 			const message = errorMessage(error);
@@ -653,8 +626,116 @@ export async function refreshScopeMembershipCache(
 	}
 
 	const refreshed = results.filter((result) => result.status === "refreshed").length;
-	const status = refreshed === results.length ? "refreshed" : refreshed === 0 ? "stale" : "partial";
+	let status: RefreshScopeMembershipCacheResult["status"] = "partial";
+	if (refreshed === results.length) status = "refreshed";
+	else if (refreshed === 0) status = "stale";
 	return { status, coordinatorId, groups: results };
+}
+
+type CurrentScopeBatch = ReturnType<typeof normalizeScopeSnapshot>;
+
+async function gatherCurrentSnapshots(
+	fetchers: ScopeMembershipCacheFetchers,
+	authority: ScopeMembershipCacheAuthority,
+): Promise<CurrentScopeBatch[]> {
+	const catalog = normalizeScopeCatalog(
+		await fetchers.listScopes(authority.groupId),
+		authority.groupId,
+	);
+	const batches: CurrentScopeBatch[] = [];
+	for (const scope of catalog) {
+		const snapshot = await fetchers.getScopeSnapshot(authority.groupId, scope.scope_id);
+		batches.push(
+			normalizeScopeSnapshot(snapshot, scope, authority.groupId, authority.coordinatorId),
+		);
+	}
+	return batches;
+}
+
+function matchesSnapshotSource(
+	row: { coordinator_id: string | null; group_id: string | null },
+	batch: CurrentScopeBatch,
+): boolean {
+	return (
+		(row.group_id === null || row.group_id === batch.scope.group_id) &&
+		(row.coordinator_id === null ||
+			row.coordinator_id === batch.scope.coordinator_id ||
+			row.coordinator_id === batch.sourceCoordinatorId)
+	);
+}
+
+function requireUnsupersededSnapshot(db: Database, batch: CurrentScopeBatch): boolean {
+	const { scope, memberships } = batch;
+	const stored = loadScope(db, scope.scope_id);
+	if (
+		stored &&
+		(stored.membership_epoch > scope.membership_epoch || !matchesSnapshotSource(stored, batch))
+	)
+		throw new Error("Current scope snapshot conflicts with cached authority or epoch.");
+	const rows = db
+		.prepare(
+			"SELECT device_id, status, membership_epoch, coordinator_id, group_id FROM scope_memberships WHERE scope_id = ?",
+		)
+		.all(scope.scope_id) as CoordinatorScopeMembership[];
+	const incoming = new Map(memberships.map((member) => [member.device_id, member]));
+	let revivalConflict = false;
+	for (const row of rows) {
+		const member = incoming.get(row.device_id);
+		const incomingEpoch = member?.membership_epoch ?? scope.membership_epoch;
+		if (row.membership_epoch > incomingEpoch || !matchesSnapshotSource(row, batch))
+			throw new Error("Current scope snapshot superseded by cached membership.");
+		if (member && row.status === "revoked" && row.membership_epoch === member.membership_epoch)
+			revivalConflict = true;
+	}
+	return revivalConflict;
+}
+
+function migrateSnapshotMembershipAuthority(db: Database, batch: CurrentScopeBatch): void {
+	db.prepare(
+		`UPDATE scope_memberships SET coordinator_id = ?, group_id = ?
+		 WHERE scope_id = ? AND COALESCE(group_id, ?) = ?
+		 AND COALESCE(coordinator_id, ?) IN (?, ?)`,
+	).run(
+		batch.scope.coordinator_id,
+		batch.scope.group_id,
+		batch.scope.scope_id,
+		batch.scope.group_id,
+		batch.scope.group_id,
+		batch.scope.coordinator_id,
+		batch.scope.coordinator_id,
+		batch.sourceCoordinatorId,
+	);
+}
+
+function persistCurrentSnapshots(
+	db: Database,
+	batches: CurrentScopeBatch[],
+	authority: ScopeMembershipCacheAuthority,
+	timestamp: string,
+): string | null {
+	return db.transaction(() => {
+		// Validate every batch before writes, even when an earlier batch cannot revive a row.
+		const conflicts = batches.map((batch) => requireUnsupersededSnapshot(db, batch));
+		const error = conflicts.some(Boolean)
+			? "Current scope snapshot cannot revive cached revoked membership at the same epoch."
+			: null;
+		for (const batch of batches) {
+			if (!error) {
+				upsertScope(db, batch.scope);
+				migrateSnapshotMembershipAuthority(db, batch);
+				upsertCachedScopeMemberships(db, batch.memberships);
+			}
+			reconcileScopeMembershipSnapshot(db, batch, authority, timestamp);
+		}
+		reconcileGroupScopeSnapshot(
+			db,
+			authority,
+			batches.map((batch) => batch.scope),
+			timestamp,
+		);
+		recordRefreshState(db, { ...authority, ok: error === null, error, now: timestamp });
+		return error;
+	})();
 }
 
 export async function refreshConfiguredScopeMembershipCache(

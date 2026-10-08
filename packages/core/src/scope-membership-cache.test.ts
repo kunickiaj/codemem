@@ -18,9 +18,9 @@ import {
 import {
 	getCachedScopeAuthorization,
 	listCachedScopesForDevice,
-	refreshScopeMembershipCache,
 	upsertCachedScopeMemberships,
 } from "./scope-membership-cache.js";
+import { refreshFixtureScopeMembershipCache as refreshScopeMembershipCache } from "./scope-membership-cache-test-fixtures.js";
 import { verifySignature } from "./sync-auth.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { ensureDeviceIdentity, loadPublicKey } from "./sync-identity.js";
@@ -60,7 +60,7 @@ function membership(
 		coordinator_id: "coord-a",
 		group_id: "team-a",
 		manifest_issuer_device_id: null,
-		manifest_hash: "hash-member",
+		manifest_hash: "hash-scope",
 		signed_manifest_json: null,
 		updated_at: now(),
 		...overrides,
@@ -274,9 +274,9 @@ it.each([
 		{ ...memberResponse(), items: [...memberResponse().items, ...memberResponse().items] },
 	],
 	[
-		"catalog snapshot race",
+		"catalog snapshot source mismatch",
 		{ version: 1, items: [scope()] },
-		{ ...memberResponse(), scope: scope({ updated_at: now(1) }) },
+		{ ...memberResponse(), scope: scope({ coordinator_id: "foreign" }) },
 	],
 ])("rejects %s without replacing the last successful cache", async (_name, catalog, members) => {
 	// Arrange: preserve prior success through the public lookup API, without querying private tables.
@@ -477,15 +477,15 @@ describe("scope membership cache", () => {
 		expect(teamB.memberships.map((item) => item.scope_id)).toEqual(["scope-oss"]);
 	});
 
-	it("normalizes missing coordinator authority from refreshed remote payloads", async () => {
+	it("normalizes null legacy coordinator source with an explicit group", async () => {
 		const local = setup();
 		await refreshScopeMembershipCache(local, {
 			groupIds: ["team-a"],
 			coordinatorId: "https://coord.example",
 			now: new Date(now()),
 			fetchers: {
-				listScopes: async () => [scope({ coordinator_id: null, group_id: null })],
-				listMemberships: async () => [membership({ coordinator_id: null, group_id: null })],
+				listScopes: async () => [scope({ coordinator_id: null })],
+				listMemberships: async () => [membership({ coordinator_id: null })],
 			},
 		});
 
@@ -648,10 +648,12 @@ describe("scope membership cache", () => {
 		).toMatchObject({ authorized: true, state: "authorized" });
 	});
 
-	it("does not let stale active grants resurrect revoked memberships", () => {
+	it.each([7, 8])("does not let active epoch %s resurrect an epoch 8 revocation", (epoch) => {
 		const local = setup();
 		upsertCachedScopeMemberships(local, [membership({ membership_epoch: 8, status: "revoked" })]);
-		upsertCachedScopeMemberships(local, [membership({ membership_epoch: 7, status: "active" })]);
+		upsertCachedScopeMemberships(local, [
+			membership({ membership_epoch: epoch, status: "active" }),
+		]);
 
 		const authorization = getCachedScopeAuthorization(local, {
 			deviceId: "device-a",
@@ -671,9 +673,10 @@ describe("scope membership cache", () => {
 			now: new Date(now()),
 			fetchers: {
 				listScopes: async () => [scope({ membership_epoch: 9 })],
-				listMemberships: async () => [membership({ membership_epoch: 8, status: "revoked" })],
+				listMemberships: async () => [],
 			},
 		});
+		upsertCachedScopeMemberships(local, [membership({ membership_epoch: 8, status: "revoked" })]);
 		await refreshScopeMembershipCache(local, {
 			groupIds: ["team-a"],
 			coordinatorId: "coord-a",
@@ -701,9 +704,11 @@ describe("scope membership cache", () => {
 			now: new Date(now()),
 			fetchers: {
 				listScopes: async () => [scope({ membership_epoch: 5 })],
-				listMemberships: async () => [membership({ membership_epoch: 3 })],
+				listMemberships: async () => [],
 			},
 		});
+		// A legacy row is inserted directly to test lookup, not trusted current authorization.
+		upsertCachedScopeMemberships(local, [membership({ membership_epoch: 3 })]);
 
 		expect(
 			getCachedScopeAuthorization(local, {

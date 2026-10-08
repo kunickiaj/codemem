@@ -412,14 +412,46 @@ Missing, inactive, foreign-source, or archived scope decisions return the masked
 `503 scope_authorization_unavailable`, without database diagnostics.
 
 Raw admin listings remain inspection-only, and bootstrap responses are unchanged.
-The signed remote cache consumer validates version 1 and unwraps each current
-membership before reconciliation. Invalid envelopes, key evidence, or changed
-catalogue/snapshot tuples fail stale rather than becoming an empty roster.
+Older cache clients that expect raw membership rows cannot consume this format;
+deploy the wire and cache changes together.
 
-The existing fetcher interface cannot carry newer scope metadata, so a change
-between catalogue and member reads fails stale. Full current-authority cache
-adoption, including local/admin-path changes and updated snapshot metadata,
-and managed local readers remain separate slices.
+### Current-authority cache refresh
+
+Remote refresh always uses the runtime device's signed requests, including when
+an admin secret is configured. An admin secret alone cannot populate access
+caches: a runtime without an enrolled signing device keeps its cache stale.
+Raw admin APIs still support inspection and management.
+
+Local refresh reads `getScopeAuthorization` directly from coordinator storage.
+`coordinatorDbPath` selects that database separately from the memory/signing
+database selected by `dbPath`. This local read uses the store's current decision;
+it does not add a new browser, account-owner, or signed-request ceremony.
+
+Both paths require numeric version 1 and complete current scope/member/key
+evidence. Malformed, unversioned, duplicate, foreign-source, or superseded
+snapshots fail rather than falling back to raw history or an empty roster.
+The cache validates each enrollment's usable key, exact-text fingerprint, and
+canonical key ID; key evidence is not persisted as a new permission record.
+
+The current snapshot's scope metadata replaces catalogue metadata. The configured
+cache authority can be a URL rather than the server's coordinator ID; source
+tuples are checked before mapping them into that cache namespace.
+
+Refresh gathers and validates every scope in a group before committing scope
+rows, members, omissions, and successful freshness together. Malformed snapshots
+and source or epoch conflicts preserve that group's prior cache and success time
+and record it as stale. Other groups can still refresh independently.
+
+If a snapshot re-adds a cached revoked device at the same epoch, refresh grants
+nothing but still applies validated omissions and scope archiving in one
+transaction. The group stays stale and keeps its last success time, while other
+members' removal still takes effect. The coordinator must advance the re-added
+device's membership epoch before that group can become fresh again.
+
+The cache keeps its existing freshness lifetime and monotonic revocation rules.
+Version 1 is a format, not a new lease. Coordinator-managed reader adoption,
+including direct-SQL consumers, remains a separate slice; ordinary local and
+direct-peer authentication is unchanged.
 
 ## Activation limits
 
