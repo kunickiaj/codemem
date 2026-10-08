@@ -600,11 +600,17 @@ pattern, not a separate audit service or event framework. Internal tombstone row
 already retain durable effect evidence; public management additionally needs
 verified authority and idempotent action attribution in that same transaction.
 
-Per-Team exclusions do not block the Identity binding. They filter only that
-Team's derived eligibility and must survive enrollment/upsert. A Team cannot veto
-the device's unrelated memberships or direct grants. Today's `person_all_devices`
-eligibility treats any decision row as a whole-Team conflict; scoped exclusion
-support must be corrected and tested before the pilot claims this behavior.
+Per-Team exclusions do not block the Identity binding. In `person_all_devices`,
+a valid `excluded` decision removes only that device ID from the Team's derived
+eligibility. Other active devices and member Identities remain eligible.
+
+The exclusion persists across assignment-version changes; enrollment or upsert
+cannot clear it. `included` and `unresolved` remain incompatible with this mode,
+and malformed, duplicate, or conflicting decisions still block the policy.
+
+`reviewed_allowlist` still requires an `included` decision matching the device's
+current assignment version, with no automatic mode conversion. Exclusion from
+one Team does not remove direct grants or access supplied by another Team.
 
 The normal authenticated-Team default must accept owner-enrolled devices. An existing `reviewed_allowlist` is not widened silently; retaining it or converting it to the default needs an explicit policy choice. Coordinator-wide device/key tombstones block re-enrollment; Team exclusions block only access through that Team. The approved 24-hour permission ceiling does not make permissions implemented: issuer, wire format, bindings, and enforcement remain separate gates.
 

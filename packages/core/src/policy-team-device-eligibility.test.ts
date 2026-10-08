@@ -103,24 +103,180 @@ describe("Team device eligibility", () => {
 		expect(result).not.toHaveProperty("activeMemberIdentityIds");
 	});
 
-	it("blocks every decision row in person_all_devices mode", () => {
-		const result = derivePolicyTeamDeviceEligibility({
+	it.each(["included", "unresolved"])(
+		"blocks a %s decision in person_all_devices mode",
+		(decision) => {
+			const result = derivePolicyTeamDeviceEligibility({
+				teamId: "team-a",
+				mode: "person_all_devices",
+				identities,
+				memberships: [{ identityId: "identity-a", status: "active" }],
+				devices,
+				decisions: [{ deviceId: "device-a", decision, assignmentVersion: 0 }],
+			});
+
+			expect(result.status).toBe("blocked");
+			expect(result).not.toHaveProperty("eligibleDeviceIds");
+			expect(result.blocked).toContainEqual({
+				code: "team_device_decision_invalid",
+				referenceId: "team-a:device-a",
+			});
+		},
+	);
+});
+
+describe("normal Team device exclusions", () => {
+	it.each([0, 7, Number.MAX_SAFE_INTEGER])(
+		"excludes only the target device at assignment version %d",
+		(assignmentVersion) => {
+			// Arrange: ADR0005 exclusion leaves the Identity and its other devices eligible.
+			const input = {
+				teamId: "team-a",
+				mode: "person_all_devices",
+				identities,
+				memberships: identities.map(({ identityId }) => ({ identityId, status: "active" })),
+				devices: [
+					...devices.map((device) => ({ ...device, assignmentVersion })),
+					{
+						identityId: "identity-a",
+						deviceId: "device-a-second",
+						status: "active",
+						assignmentVersion: 0,
+					},
+				],
+				decisions: [{ deviceId: "device-a", decision: "excluded", assignmentVersion: 0 }],
+			};
+
+			// Act
+			const result = derivePolicyTeamDeviceEligibility(input);
+
+			// Assert: changing assignment version must not erase an exclusion.
+			expect(result).toEqual({
+				status: "eligible",
+				activeMemberIdentityIds: ["identity-a", "identity-b"],
+				eligibleDeviceIds: ["device-a-second", "device-b"],
+				blocked: [],
+			});
+		},
+	);
+
+	it.each([
+		{ deviceId: "", decision: "excluded", assignmentVersion: 0 },
+		{ deviceId: " device-a", decision: "excluded", assignmentVersion: 0 },
+		{ deviceId: "device-a ", decision: "excluded", assignmentVersion: 0 },
+		{ deviceId: "device-a\n", decision: "excluded", assignmentVersion: 0 },
+		{ deviceId: "device-\u200B-a", decision: "excluded", assignmentVersion: 0 },
+		{ deviceId: "d".repeat(257), decision: "excluded", assignmentVersion: 0 },
+		{ deviceId: "device-a", decision: "future_decision", assignmentVersion: 0 },
+		...[-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, undefined].map(
+			(assignmentVersion) => ({ deviceId: "device-a", decision: "excluded", assignmentVersion }),
+		),
+	])("blocks an invalid normal-Team exclusion %j", (decision) => {
+		// Arrange
+		const input = {
 			teamId: "team-a",
 			mode: "person_all_devices",
 			identities,
 			memberships: [{ identityId: "identity-a", status: "active" }],
 			devices,
-			decisions: [{ deviceId: "device-a", decision: "included", assignmentVersion: 0 }],
-		});
+			decisions: [decision as { deviceId: string; decision: string; assignmentVersion: number }],
+		};
 
-		expect(result.status).toBe("blocked");
-		expect(result).not.toHaveProperty("eligibleDeviceIds");
-		expect(result.blocked).toContainEqual({
-			code: "team_device_decision_invalid",
-			referenceId: "team-a:device-a",
+		// Act
+		const result = derivePolicyTeamDeviceEligibility(input);
+
+		// Assert: malformed exclusions cannot produce grant candidates.
+		expect(result).toEqual({
+			status: "blocked",
+			blocked: [
+				{ code: "team_device_decision_invalid", referenceId: `team-a:${decision.deviceId}` },
+			],
 		});
 	});
 
+	it.each(["excluded", "included", "unresolved"])(
+		"blocks duplicate normal-Team decisions with %s",
+		(decision) => {
+			// Arrange
+			const input = {
+				teamId: "team-a",
+				mode: "person_all_devices",
+				identities,
+				memberships: [{ identityId: "identity-a", status: "active" }],
+				devices,
+				decisions: [
+					{ deviceId: "device-a", decision: "excluded", assignmentVersion: 0 },
+					{ deviceId: "device-a", decision, assignmentVersion: 0 },
+				],
+			};
+
+			// Act
+			const result = derivePolicyTeamDeviceEligibility(input);
+
+			// Assert
+			expect(result.status).toBe("blocked");
+			expect(result).not.toHaveProperty("eligibleDeviceIds");
+			expect(result.blocked).toContainEqual({
+				code: "team_device_decision_invalid",
+				referenceId: "team-a:device-a",
+			});
+		},
+	);
+
+	it("does not grant non-member, revoked, or off-roster devices alongside an exclusion", () => {
+		// Arrange
+		const input = {
+			teamId: "team-a",
+			mode: "person_all_devices",
+			identities,
+			memberships: [{ identityId: "identity-a", status: "active" }],
+			devices,
+			decisions: [{ deviceId: "device-off-roster", decision: "excluded", assignmentVersion: 0 }],
+		};
+
+		// Act
+		const result = derivePolicyTeamDeviceEligibility(input);
+
+		// Assert
+		expect(result).toEqual({
+			status: "eligible",
+			activeMemberIdentityIds: ["identity-a"],
+			eligibleDeviceIds: ["device-a"],
+			blocked: [],
+		});
+	});
+});
+
+describe("Identity integrity with Team exclusions", () => {
+	it.each([
+		{ status: "deactivated", mergedIntoIdentityId: null, code: "team_member_identity_not_active" },
+		{ status: "active", mergedIntoIdentityId: "identity-b", code: "team_member_identity_merged" },
+	])(
+		"blocks excluded devices' $status member Identity rather than issuing partial grants",
+		({ status, mergedIntoIdentityId, code }) => {
+			// Arrange: exclusion must not conceal invalid Identity facts.
+			const input = {
+				teamId: "team-a",
+				mode: "person_all_devices",
+				identities: [
+					{ identityId: "identity-a", status, mergedIntoIdentityId },
+					{ identityId: "identity-b", status: "active", mergedIntoIdentityId: null },
+				],
+				memberships: identities.map(({ identityId }) => ({ identityId, status: "active" })),
+				devices,
+				decisions: [{ deviceId: "device-a", decision: "excluded", assignmentVersion: 0 }],
+			};
+
+			// Act
+			const result = derivePolicyTeamDeviceEligibility(input);
+
+			// Assert
+			expect(result).toEqual({ status: "blocked", blocked: [{ code, referenceId: "identity-a" }] });
+		},
+	);
+});
+
+describe("Team eligibility validation", () => {
 	it("blocks duplicate reviewed decisions for the same device", () => {
 		const result = derivePolicyTeamDeviceEligibility({
 			teamId: "team-a",

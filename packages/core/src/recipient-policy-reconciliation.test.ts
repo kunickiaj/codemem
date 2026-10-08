@@ -303,6 +303,118 @@ describe("strict recipient-policy effective-device derivation", () => {
 	});
 });
 
+describe("recipient-policy scoped Team exclusions", () => {
+	it("keeps other member devices and fresh devices eligible without changing Identity facts", () => {
+		// Arrange: an exclusion is not an Identity-wide revocation.
+		const input = graph();
+		input.identityDevices.push({
+			identityId: "identity-b",
+			deviceId: "device-b-second",
+			status: "active",
+			assignmentVersion: 0,
+		});
+		input.teamDeviceDecisions = [
+			{ teamId: "team-a", deviceId: "device-b", decision: "excluded", assignmentVersion: 0 },
+		];
+		const before = structuredClone(input);
+
+		// Act
+		const result = deriveRecipientPolicyEffectiveDevices(input);
+		const withFreshDevice = deriveRecipientPolicyEffectiveDevices({
+			...input,
+			identityDevices: [
+				...input.identityDevices,
+				{
+					identityId: "identity-b",
+					deviceId: "device-b-fresh",
+					status: "active",
+					assignmentVersion: 0,
+				},
+			],
+		});
+
+		// Assert
+		expect(result).toMatchObject({ status: "eligible", blocked: [] });
+		expect(result.devices.map(({ deviceId }) => deviceId)).toEqual(["device-a", "device-b-second"]);
+		expect(withFreshDevice.devices.map(({ deviceId }) => deviceId)).toEqual([
+			"device-a",
+			"device-b-fresh",
+			"device-b-second",
+		]);
+		expect(input).toEqual(before);
+	});
+
+	it.each(["direct_identity", "team_membership"] as const)(
+		"retains an excluded device through an independent %s grant",
+		(kind) => {
+			// Arrange: only team-a's source is removed; another grant still authorizes device-b.
+			const input = graph();
+			input.teamDeviceDecisions = [
+				{ teamId: "team-a", deviceId: "device-b", decision: "excluded", assignmentVersion: 0 },
+			];
+			if (kind === "direct_identity") {
+				input.projectRecipients.push({
+					canonicalProjectIdentity: PROJECT,
+					recipientKind: "identity",
+					recipientId: "identity-b",
+					status: "active",
+				});
+			} else {
+				input.teams.push({
+					teamId: "team-b",
+					status: "active",
+					deviceEligibilityMode: "person_all_devices",
+				});
+				input.teamMemberships.push({
+					teamId: "team-b",
+					identityId: "identity-b",
+					status: "active",
+				});
+				input.projectRecipients.push({
+					canonicalProjectIdentity: PROJECT,
+					recipientKind: "team",
+					recipientId: "team-b",
+					status: "active",
+				});
+			}
+
+			// Act
+			const result = deriveRecipientPolicyEffectiveDevices(input);
+
+			// Assert
+			expect(result).toMatchObject({ status: "eligible", blocked: [] });
+			expect(result.devices.map(({ deviceId }) => deviceId)).toEqual(["device-a", "device-b"]);
+			const sources = result.devices.find(({ deviceId }) => deviceId === "device-b")?.sources;
+			expect(sources).toEqual(
+				kind === "direct_identity" ? [{ kind }] : [{ kind, teamId: "team-b" }],
+			);
+		},
+	);
+
+	it.each(["excluded", "included"])(
+		"blocks the whole Project for duplicate exclusion plus %s",
+		(decision) => {
+			// Arrange
+			const input = graph();
+			input.teamDeviceDecisions = [
+				{ teamId: "team-a", deviceId: "device-b", decision: "excluded", assignmentVersion: 0 },
+				{ teamId: "team-a", deviceId: "device-b", decision, assignmentVersion: 0 },
+			];
+
+			// Act
+			const result = deriveRecipientPolicyEffectiveDevices(input);
+
+			// Assert: even the independent direct recipient must not become a partial grant candidate.
+			expect(result.status).toBe("blocked");
+			expect(result.devices).toEqual([]);
+			expect(result.blocked).toContainEqual({
+				code: "team_device_decision_invalid",
+				referenceId: "team-a:device-b",
+			});
+		},
+	);
+});
+
 describe("recipient-policy reconciliation persistence", () => {
 	let db: InstanceType<typeof Database>;
 

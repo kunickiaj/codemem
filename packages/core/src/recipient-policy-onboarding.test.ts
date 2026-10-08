@@ -310,6 +310,61 @@ function policyTeamSourceFingerprint(db: InstanceType<typeof Database>, teamId: 
 		.get(teamId);
 }
 
+it("omits an excluded incoming device's Team sources while retaining direct and fresh-device grants", () => {
+	// Arrange: no binding exists yet for the excluded incoming device.
+	const db = new Database(":memory:");
+	initTestSchema(db);
+	insertActor(db, "identity-a", "Ada");
+	insertProject(db, PROJECT_A, "alpha", 2);
+	insertProject(db, PROJECT_B, "beta", 1);
+	insertTeam(db, "team-a", "Core Team");
+	insertMembership(db, "team-a", "identity-a");
+	insertRecipient(db, PROJECT_A, "team", "team-a");
+	insertRecipient(db, PROJECT_B, "team", "team-a");
+	insertRecipient(db, PROJECT_B, "identity", "identity-a");
+	db.prepare(`INSERT INTO policy_team_device_decisions(
+		team_id, device_id, decision, assignment_version, provenance, revision, created_at, updated_at
+	 ) VALUES ('team-a', 'device-new', 'excluded', 0, 'user', 'revision-exclusion', ?, ?)`).run(
+		NOW,
+		NOW,
+	);
+	const before = Number(db.prepare("SELECT total_changes()").pluck().get());
+	try {
+		// Act
+		const excluded = previewRecipientPolicyOnboarding(db, baseRequest());
+		const fresh = previewRecipientPolicyOnboarding(db, baseRequest({ deviceId: "device-fresh" }));
+		// This option models a separate future device, not the supplied inviter device ID.
+		const prospective = previewRecipientPolicyOnboarding(db, baseRequest(), {
+			addDeviceTeamEligibility: "prospective_device",
+		});
+
+		// Assert: a fresh device does not restore the known incoming device's Team source.
+		expect(excluded.projects).toEqual([
+			expect.objectContaining({
+				canonicalProjectIdentity: PROJECT_B,
+				sources: [{ kind: "direct" }],
+			}),
+		]);
+		expect(
+			excluded.excludedProjects.map(({ canonicalProjectIdentity }) => canonicalProjectIdentity),
+		).toEqual([PROJECT_A]);
+		expect(fresh.projects).toEqual([
+			expect.objectContaining({
+				canonicalProjectIdentity: PROJECT_A,
+				sources: [{ kind: "team", teamId: "team-a", displayName: "Core Team" }],
+			}),
+			expect.objectContaining({
+				canonicalProjectIdentity: PROJECT_B,
+				sources: [{ kind: "direct" }, { kind: "team", teamId: "team-a", displayName: "Core Team" }],
+			}),
+		]);
+		expect(prospective.projects).toEqual(fresh.projects);
+		expect(Number(db.prepare("SELECT total_changes()").pluck().get())).toBe(before);
+	} finally {
+		db.close();
+	}
+});
+
 describe("recipient-policy onboarding", () => {
 	let db: InstanceType<typeof Database>;
 

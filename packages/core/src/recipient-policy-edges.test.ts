@@ -1287,6 +1287,86 @@ describe("recipient-policy edge changes", () => {
 	});
 });
 
+describe("recipient-policy edge scoped Team exclusions", () => {
+	it("changes effective devices and rejects an old digest when a normal Team device is excluded", () => {
+		// Arrange: review precedes the exclusion; no decisions retain the existing golden digest.
+		const db = seedGraph();
+		insertDevice(db, "identity-a", "device-a-second", "Ada second laptop");
+		const changes = [teamChange(PROJECT_A, "team-a")];
+		const before = previewRecipientPolicyEdges(db, { version: 1, changes });
+		insertTeamDeviceDecision(db, "team-a", "device-a", "excluded");
+		const protectedTables = [
+			"actors",
+			"identity_devices",
+			"sync_device",
+			"policy_teams",
+			"policy_team_memberships",
+			"policy_team_device_decisions",
+		];
+		const snapshot = () =>
+			protectedTables.map((table) => db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
+		const protectedBefore = snapshot();
+
+		// Act
+		const excluded = previewRecipientPolicyEdges(db, { version: 1, changes });
+		const stale = commitRecipientPolicyEdges(
+			db,
+			{ version: 1, changes, reviewedPolicyDigest: before.reviewedPolicyDigest },
+			{ now: () => NOW },
+		);
+		const applied = commitRecipientPolicyEdges(
+			db,
+			{ version: 1, changes, reviewedPolicyDigest: excluded.reviewedPolicyDigest },
+			{ now: () => NOW },
+		);
+		const authoritative = deriveRecipientPolicyEffectiveDevicesFromDatabase(db, PROJECT_A);
+
+		// Assert: exclusion does not convert the Team or mutate bindings or local keys.
+		expect(before.effectiveDevices.map(({ deviceId }) => deviceId)).toEqual([
+			"device-a",
+			"device-a-second",
+			"device-b",
+		]);
+		expect(excluded.effectiveDevices.map(({ deviceId }) => deviceId)).toEqual([
+			"device-a-second",
+			"device-b",
+		]);
+		expect(excluded.reviewedPolicyDigest).not.toBe(before.reviewedPolicyDigest);
+		expect(stale).toMatchObject({ status: "stale", writeCount: 0 });
+		expect(applied).toMatchObject({ status: "applied", writeCount: 1 });
+		expect(authoritative).toMatchObject({ status: "eligible", blocked: [] });
+		expect(authoritative.devices.map(({ deviceId }) => deviceId)).toEqual([
+			"device-a-second",
+			"device-b",
+		]);
+		expect(snapshot()).toEqual(protectedBefore);
+	});
+
+	it("keeps a device excluded after reassignment without invalidating normal-Team assignment-only facts", () => {
+		// Arrange: both owners are already active Team members.
+		const db = seedGraph();
+		insertTeamDeviceDecision(db, "team-a", "device-a", "excluded");
+		const request = { version: 1 as const, changes: [teamChange(PROJECT_A, "team-a")] };
+		const before = previewRecipientPolicyEdges(db, request);
+		db.prepare(
+			"UPDATE identity_devices SET assignment_version = 7 WHERE device_id = 'device-a'",
+		).run();
+
+		// Act
+		const versionChanged = previewRecipientPolicyEdges(db, request);
+		db.prepare(
+			"UPDATE identity_devices SET identity_id = 'identity-b' WHERE device_id = 'device-a'",
+		).run();
+		const reassigned = previewRecipientPolicyEdges(db, request);
+
+		// Assert
+		expect(before.effectiveDevices.map(({ deviceId }) => deviceId)).toEqual(["device-b"]);
+		expect(versionChanged.reviewedPolicyDigest).toBe(before.reviewedPolicyDigest);
+		expect(versionChanged.effectiveDevices).toEqual(before.effectiveDevices);
+		expect(reassigned.effectiveDevices).toEqual(before.effectiveDevices);
+	});
+});
+
 describe("recipient-policy edge repository inference", () => {
 	it("counts historical cwd-only memories in repository Project facts", () => {
 		const db = seedGraph();

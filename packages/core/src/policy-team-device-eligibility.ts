@@ -121,6 +121,28 @@ function blockedResult(
 	return { status: "blocked", blocked: [first, ...rest] };
 }
 
+function collectDeviceDecisions(
+	input: Pick<DerivePolicyTeamDeviceEligibilityInput, "teamId" | "mode" | "decisions">,
+	addBlock: (code: PolicyTeamDeviceEligibilityBlockCode, referenceId: string) => void,
+): Map<string, PolicyTeamDeviceEligibilityDecision> {
+	const decisions = new Map<string, PolicyTeamDeviceEligibilityDecision>();
+	for (const decision of input.decisions) {
+		if (
+			!isStrictRecipientPolicyId(decision.deviceId) ||
+			!DECISIONS.has(decision.decision) ||
+			!Number.isSafeInteger(decision.assignmentVersion) ||
+			decision.assignmentVersion < 0 ||
+			decisions.has(decision.deviceId) ||
+			(input.mode === "person_all_devices" && decision.decision !== "excluded")
+		) {
+			addBlock("team_device_decision_invalid", `${input.teamId}:${decision.deviceId}`);
+			continue;
+		}
+		decisions.set(decision.deviceId, decision);
+	}
+	return decisions;
+}
+
 export function derivePolicyTeamDeviceEligibility(
 	input: DerivePolicyTeamDeviceEligibilityInput,
 ): PolicyTeamDeviceEligibilityResult {
@@ -163,24 +185,7 @@ export function derivePolicyTeamDeviceEligibility(
 			addBlock("team_member_identity_not_active", identityId);
 		}
 	}
-	const decisions = new Map<string, PolicyTeamDeviceEligibilityDecision>();
-	for (const decision of input.decisions) {
-		if (mode === "person_all_devices") {
-			addBlock("team_device_decision_invalid", `${input.teamId}:${decision.deviceId}`);
-			continue;
-		}
-		if (
-			!isStrictRecipientPolicyId(decision.deviceId) ||
-			!DECISIONS.has(decision.decision) ||
-			!Number.isSafeInteger(decision.assignmentVersion) ||
-			decision.assignmentVersion < 0 ||
-			decisions.has(decision.deviceId)
-		) {
-			addBlock("team_device_decision_invalid", `${input.teamId}:${decision.deviceId}`);
-			continue;
-		}
-		decisions.set(decision.deviceId, decision);
-	}
+	const decisions = collectDeviceDecisions(input, addBlock);
 	const eligibleDeviceIds = new Set<string>();
 	for (const device of input.devices) {
 		if (!activeMembers.has(device.identityId)) continue;
@@ -199,6 +204,8 @@ export function derivePolicyTeamDeviceEligibility(
 			continue;
 		}
 		const decision = decisions.get(device.deviceId);
+		// A Team exclusion persists for this device ID when assignment metadata changes.
+		if (mode === "person_all_devices" && decision?.decision === "excluded") continue;
 		if (
 			mode === "person_all_devices" ||
 			(decision?.decision === "included" && decision.assignmentVersion === device.assignmentVersion)
