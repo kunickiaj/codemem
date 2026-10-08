@@ -1,7 +1,7 @@
 # codemem
 
 Persistent memory for AI coding agents — local-first SQLite storage, hybrid retrieval,
-automatic OpenCode injection, and optional peer-to-peer sync.
+automatic OpenCode and Pi injection, and optional peer-to-peer sync.
 
 This is the published npm package for the `codemem` CLI.
 
@@ -42,6 +42,7 @@ npx -y codemem stats
 ```bash
 codemem --help
 codemem setup --opencode-only
+codemem setup --pi-only
 codemem stats
 codemem search "query"
 codemem distill --limit 10
@@ -55,3 +56,4 @@ codemem mcp
 - Full README: https://github.com/kunickiaj/codemem#readme
 - User guide: https://github.com/kunickiaj/codemem/blob/main/docs/user-guide.md
 - Architecture: https://github.com/kunickiaj/codemem/blob/main/docs/architecture.md
+- Pi integration: https://github.com/kunickiaj/codemem/blob/main/docs/plugin-reference.md#pi-extension

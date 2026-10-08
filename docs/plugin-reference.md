@@ -308,43 +308,66 @@ Hooks loaded from the user config layer require a one-time trust approval in Cod
 
 ## Pi extension
 
-Pi support is the `@codemem/pi-extension` pi-package. Install once, then restart pi:
+Pi support is the `@codemem/pi-extension` package. Install the durable CLI (on Linux, set `ONNXRUNTIME_NODE_INSTALL=skip` before the first install; see the README), then:
 
 ```text
-npm i -g codemem
 codemem setup --pi-only
 ```
 
-Setup appends `npm:@codemem/pi-extension@<version>` to `~/.pi/agent/settings.json` `packages` (JSONC-safe, idempotent). It also derives unset `observer_*` keys from pi's API-key providers (cheap-model-first) without copying secrets. Flags:
+Restart Pi. Setup honors `PI_CODING_AGENT_DIR`. A fresh setup adds `npm:@codemem/pi-extension@<version>` to that directory's `settings.json` `packages` list; an existing configured dev path may be retained. It defaults to native tools on a fresh setup. It preserves an existing `tools_mode`. It can fill unset `observer_*` keys from Pi API-key providers (cheap-model-first) without copying secrets. Eligible wire APIs are `openai-completions`, `openai-responses`, and `anthropic-messages` (the last only when the provider id is `anthropic`); an API key does not make other wire APIs eligible. Automatic derivation reports `unconfigured (oauth-only)` when only OAuth credentials are available. That is an auto-derivation status, not the state of every observer connection. Configure observer credentials or the connection separately, with provider or model overrides as needed. See [observer auth](user-guide.md#observer-auth-configuration).
 
-- `--pi-mcp` — opt into MCP via third-party `pi-mcp-adapter` (writes `mcp.json` only when the adapter is present; flips `pi.tools_mode` to `mcp-adapter`)
-- `--pi-extension-path <path>` — dev local-path `packages` entry
+`--pi-mcp` is optional and legacy. It configures the third-party `pi-mcp-adapter` surface when that adapter is detected: it keeps an existing codemem MCP entry unless `--force` is supplied, and sets `pi.tools_mode` to `mcp-adapter`. It does not configure Pi's native MCP. Without the adapter, setup writes nothing MCP-related. `--pi-extension-path <path>` writes a local `packages` entry instead of the npm pin (dev).
 
-Uninstall by removing the packages entry and restarting pi.
+Uninstall: remove the `@codemem/pi-extension` packages entry and restart Pi. The shared store is left intact. Hidden `pi-hook-*` commands are adapter plumbing, not setup steps.
 
 ### Surfaces
 
 | Surface | Behavior |
 |---|---|
-| Ingest | Extension POSTs to `POST /api/pi-hooks`, a compatibility alias that normalizes the payload once into the canonical ingest envelope with `source: "pi"` — the same event identity as `POST /api/raw-events` with `source: "pi"`. Falls back to `codemem pi-hook-ingest` + spool when HTTP is unavailable. Boundary events (`session_before_compact`, `session_shutdown`) always flush via the CLI so extraction actually runs |
-| Injection | `before_agent_start` appends a turn-local `systemPrompt` block (`## codemem memories`); never returns `message` |
-| Tools | 14 native `memory_*` tools via `pi.registerTool` (HTTP preferred, CLI fallback). Default `pi.tools_mode: native` — no adapter required |
-| Compaction | Observe-only: `session_before_compact` flushes extraction; never returns a custom `compaction` summary |
-| Fork/resume | Re-keys stream identity on every `session_start`; durable cursors via `pi.appendEntry` |
-| Project identity | Nearest Git root (walks up for a directory `.git` or a `gitdir:` worktree file), same walk as the other adapters |
+| Ingest | Ordinary events prefer `POST /api/pi-hooks` (compatibility alias into the canonical envelope, `source: "pi"`), with `codemem pi-hook-ingest` CLI fallback (spool on failure). `session_before_compact` and `session_shutdown` always attempt the CLI path so a flush can run; failure is fail-open and does not break the session |
+| Injection | `context` appends `## codemem memories` to the latest user message of the request copy. Older messages replay the exact in-memory block. The system prompt and saved transcript are not modified. Decisions clear on `session_start`; a restart refetches |
+| File context | After a successful built-in `read`, related memories may be appended to that tool result. Errors and other tools do not |
+| Tools | 14 native `memory_*` tools via `pi.registerTool` when `pi.tools_mode` is `native` (the default). No MCP required |
+| Compaction | `session_before_compact` attempts a flush only and does not skip recall. `session_compact` skips one new fetch only when `willRetry` is set and `reason` is not `manual` (overflow resume). Failed compaction, `agent_settled`, manual compaction, and a later user message clear that skip. A threshold compact skips only if that same guard matches |
+| Project | Nearest Git root, same walk as the other adapters |
 
-Prompt-time pack retrieval prefers the HTTP path: prove `GET /api/prompt-pack-profile`, then a targeted `POST /api/pack` (or `codemem pi-hook-inject` / `pack --json` fallback). That HTTP pack path is unledgered — no opencode retrieval-ledger row is written for pi injection.
+Prompt recall uses the latest user text, trimmed and cut at 500 characters (`recent work` when empty). Project scope is separate; this is not the OpenCode working-set query. Fetch order: prove `GET /api/prompt-pack-profile`, `POST /api/pack`, `codemem pack <query> --json`, then `pi-hook-inject`. That HTTP pack attempt times out at 2 seconds and does not write an OpenCode retrieval-ledger row.
 
-Dashboard tabs are source-agnostic: pi rows appear alongside OpenCode/Claude/Codex with no extra setup. Packs are project-scoped, so memory crosses agents automatically.
+Already-shown items are omitted from a new pack when the response carries valid renderer item ids, fingerprints, and spans. Defaults are 8 items, 800 approximate pack tokens, and 16000 characters. Without `CODEMEM_INJECT_RETAINED_TOKEN_BUDGET`, 800 is the pack request budget and does not reserve the header. A positive retained ceiling is optional; a full ceiling attaches nothing new.
 
-### Observer derivation caveats (v1)
+Ingest cursors persist as `codemem.cursor` metadata via `appendEntry`. Recall decisions do not.
 
-- API-key providers only (`openai-completions` / `openai-responses` / `anthropic-messages`). OAuth-only installs surface `unconfigured (oauth-only)` — never silent 401s.
-- Explicit `observer_*` config/env always wins over pi-derived values.
-- Setup never copies pi `auth.json` keys into the codemem config.
-- `--pi-mcp` requires `pi-mcp-adapter`; without it setup explains the prerequisite and writes nothing MCP-related.
+### Native tools
 
-See [`packages/pi-extension/README.md`](../packages/pi-extension/README.md) for env knobs and lifecycle rules.
+| Tool | Purpose |
+|---|---|
+| `memory_search` | Search; return full body text |
+| `memory_search_index` | Search; compact index, no body |
+| `memory_explain` | Ranking diagnostics for a query or IDs |
+| `memory_recent` | Recent memories, newest first |
+| `memory_pack` | One formatted pack for a context string |
+| `memory_get` | One memory by ID |
+| `memory_get_observations` | Several memories by ID |
+| `memory_remember` | Create a memory |
+| `memory_forget` | Soft-delete a memory |
+| `memory_learn` | How to use these tools |
+| `memory_schema` | Kinds, fields, and filters |
+| `memory_timeline` | Chronological window around an anchor |
+| `memory_expand` | Memories by ID plus nearby timeline |
+| `memory_distill_candidates` | Recurring memories as reviewable candidates |
+
+Native HTTP proves `GET /api/prompt-pack-profile` matches this process's `db_path` and `identity_target`, then resends both on the query. An unproven or mismatched viewer falls back to the CLI and is not trusted on 2xx. `memory_remember` is not replayed after an ambiguous HTTP timeout, connection reset, or 5xx. An unproven viewer, a disabled viewer, connect failures, and 4xx may still fall back. Reads may fall back more broadly.
+
+Config and env, including `CODEMEM_PI_*` and shared inject knobs, are in the [package README configuration table](../packages/pi-extension/README.md#configuration). `CODEMEM_PI_HOOK_HTTP_TIMEOUT_MS` (default 5000) is the ingest and native-tool HTTP timeout, not the pack-fetch timeout.
+
+### Troubleshooting
+
+- **Extension not loaded.** Confirm `settings.json` `packages` contains the npm pin or dev path, then restart Pi. Setup writes under `PI_CODING_AGENT_DIR` when set, otherwise `~/.pi/agent`.
+- **CLI fallback fails.** `codemem` must be on `PATH` for ingest, pack, and tool fallbacks.
+- **Observer stays unconfigured.** Automatic derivation reports `unconfigured (oauth-only)` when only OAuth credentials are available (`packages/core/src/pi-observer-config.ts`). That is an auto-derivation status, not the state of every observer connection. Configure observer credentials or the connection separately, with provider or model overrides as needed. Setup never copies Pi secrets. See [observer auth](user-guide.md#observer-auth-configuration).
+- **Duplicate tools.** Native registration plus a `codemem` `mcp.json` entry warns once. Pick one surface: `pi.tools_mode` / `CODEMEM_PI_TOOLS_MODE` of `native` or `mcp-adapter`.
+- **Viewer target mismatch.** Upgrade or restart the viewer so the profile proof matches. Until then, packs and tools use the CLI fallback.
+- **Turn off Pi recall without stopping capture.** `CODEMEM_PI_INJECT_PROMPTS=0` disables prompt injection. `CODEMEM_PI_FILE_CONTEXT=0` disables read-file context. They are independent. If `CODEMEM_PI_INJECT_PROMPTS` is unset, `CODEMEM_INJECT_CONTEXT=0` also disables Pi prompt injection; it does not disable file context.
 
 ## Post-restart config sanity checklist
 
