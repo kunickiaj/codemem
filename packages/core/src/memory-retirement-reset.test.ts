@@ -25,6 +25,7 @@ import { isMemoryScopeRetired } from "./memory-scope-retirement.js";
 import { getVerifiedMemorySource } from "./memory-source-identity.js";
 import { populateMemoryRefs } from "./ref-populate.js";
 import { getCachedScopeAuthorization } from "./scope-membership-cache.js";
+import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import { buildDirectPeerCanonicalRequest } from "./sync-auth.js";
 import { applyBootstrapSnapshot, mergeBootstrapSnapshot } from "./sync-bootstrap.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
@@ -94,8 +95,17 @@ function pinPeer(db: InstanceType<typeof Database>, peer: typeof source) {
 	).run(peer.deviceId, peer.publicKey, fingerprintPublicKey(peer.publicKey), now);
 }
 
-function coordinatorPair(db: InstanceType<typeof Database>, local: string, peer: typeof source) {
+async function coordinatorPair(
+	db: InstanceType<typeof Database>,
+	local: string,
+	peer: typeof source,
+) {
 	const fresh = new Date().toISOString();
+	const localIdentity = [source, recipient].find((identity) => identity.deviceId === local);
+	if (!localIdentity) throw new Error("fixture_local_identity_missing");
+	db.prepare(
+		"INSERT OR REPLACE INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
+	).run(local, localIdentity.publicKey, fingerprintPublicKey(localIdentity.publicKey), fresh);
 	db.prepare("DELETE FROM sync_peers WHERE peer_device_id = ?").run(peer.deviceId);
 	db.prepare(`INSERT OR REPLACE INTO replication_scopes
 		(scope_id, label, kind, authority_type, coordinator_id, group_id, membership_epoch, status, created_at, updated_at)
@@ -107,8 +117,11 @@ function coordinatorPair(db: InstanceType<typeof Database>, local: string, peer:
 		db.prepare(`INSERT OR REPLACE INTO scope_memberships(scope_id, device_id, role, status, membership_epoch, updated_at)
 			VALUES ('old', ?, 'member', 'active', 1, ?)`).run(device, fresh);
 	}
-	db.prepare(`INSERT INTO scope_membership_cache_state(coordinator_id, group_id, last_refresh_at, last_success_at, last_error, updated_at)
-		VALUES ('https://coord.example.test', 'group', ?, ?, NULL, ?)`).run(fresh, fresh, fresh);
+	await refreshTestScopeRows(
+		db,
+		{ [local]: localIdentity.publicKey, [peer.deviceId]: peer.publicKey },
+		{ now: new Date(fresh) },
+	);
 	expect(
 		trustCoordinatorPeersWithSharedManagedScopes(db, local, [
 			{
@@ -338,10 +351,10 @@ afterEach(() => {
 
 it.each(["replace", "merge"] as const)(
 	"uses only retained pins after actual final-scope revocation for %s reset",
-	(mode) => {
+	async (mode) => {
 		const retainedCopies = seedDuplicateSnapshotRows();
-		coordinatorPair(sender, source.deviceId, recipient);
-		coordinatorPair(receiver, recipient.deviceId, source);
+		await coordinatorPair(sender, source.deviceId, recipient);
+		await coordinatorPair(receiver, recipient.deviceId, source);
 		const request = start();
 		revokeLastScopeOnBothSides();
 		queue(1);
@@ -393,9 +406,9 @@ it.each(["replace", "merge"] as const)(
 	},
 );
 
-it("requires the stored retirement pin at begin, serve, receive and protected apply", () => {
-	coordinatorPair(sender, source.deviceId, recipient);
-	coordinatorPair(receiver, recipient.deviceId, source);
+it("requires the stored retirement pin at begin, serve, receive and protected apply", async () => {
+	await coordinatorPair(sender, source.deviceId, recipient);
+	await coordinatorPair(receiver, recipient.deviceId, source);
 	revokeLastScopeOnBothSides();
 	queue(1);
 	const request = start();
@@ -450,7 +463,7 @@ it("requires the stored retirement pin at begin, serve, receive and protected ap
 	expect(protectedApply(request.resetId, "merge", [snapshot(1)]).applied).toBe(0);
 });
 
-it("does not reconstruct reset authority from a claimed key or a different local device after revocation", () => {
+it("does not reconstruct reset authority from a claimed key or a different local device after revocation", async () => {
 	const options = receiverOptions();
 	receiver.prepare("DELETE FROM sync_peers").run();
 	const before = receiver.serialize();
@@ -458,7 +471,7 @@ it("does not reconstruct reset authority from a claimed key or a different local
 		"retirement_peer_untrusted",
 	);
 	expect(receiver.serialize().equals(before)).toBe(true);
-	coordinatorPair(receiver, recipient.deviceId, source);
+	await coordinatorPair(receiver, recipient.deviceId, source);
 	receiver
 		.prepare("UPDATE scope_memberships SET status = 'revoked' WHERE device_id = 'recipient'")
 		.run();

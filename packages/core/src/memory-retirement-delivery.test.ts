@@ -21,6 +21,7 @@ import { getRetirementPeer } from "./memory-retirement-trust.js";
 import { isMemoryScopeRetired } from "./memory-scope-retirement.js";
 import { populateMemoryRefs } from "./ref-populate.js";
 import { getCachedScopeAuthorization } from "./scope-membership-cache.js";
+import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import { buildDirectPeerCanonicalRequest } from "./sync-auth.js";
 import { LOCAL_SYNC_FEATURES, supportsSyncFeature } from "./sync-capability.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
@@ -220,8 +221,17 @@ afterEach(() => {
 	receiver.close();
 });
 
-function coordinatorPair(db: InstanceType<typeof Database>, local: string, peer: typeof source) {
+async function coordinatorPair(
+	db: InstanceType<typeof Database>,
+	local: string,
+	peer: typeof source,
+) {
 	const fresh = new Date().toISOString();
+	const localIdentity = [source, recipient].find((identity) => identity.deviceId === local);
+	if (!localIdentity) throw new Error("fixture_local_identity_missing");
+	db.prepare(
+		"INSERT OR REPLACE INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
+	).run(local, localIdentity.publicKey, fingerprintPublicKey(localIdentity.publicKey), fresh);
 	db.prepare(`INSERT OR REPLACE INTO replication_scopes
 		(scope_id, label, kind, authority_type, coordinator_id, group_id, membership_epoch, status, created_at, updated_at)
 		VALUES ('old', 'Old', 'managed_project', 'coordinator', 'https://coord.example.test', 'group', 1, 'active', ?, ?)`).run(
@@ -233,9 +243,11 @@ function coordinatorPair(db: InstanceType<typeof Database>, local: string, peer:
 			(scope_id, device_id, role, status, membership_epoch, updated_at)
 			VALUES ('old', ?, 'member', 'active', 1, ?)`).run(device, fresh);
 	}
-	db.prepare(`INSERT INTO scope_membership_cache_state
-		(coordinator_id, group_id, last_refresh_at, last_success_at, last_error, updated_at)
-		VALUES ('https://coord.example.test', 'group', ?, ?, NULL, ?)`).run(fresh, fresh, fresh);
+	await refreshTestScopeRows(
+		db,
+		{ [local]: localIdentity.publicKey, [peer.deviceId]: peer.publicKey },
+		{ now: new Date(fresh) },
+	);
 	expect(
 		trustCoordinatorPeersWithSharedManagedScopes(db, local, [
 			{
@@ -249,9 +261,9 @@ function coordinatorPair(db: InstanceType<typeof Database>, local: string, peer:
 	).toBe(1);
 }
 
-function revokePair() {
-	coordinatorPair(sender, source.deviceId, recipient);
-	coordinatorPair(receiver, recipient.deviceId, source);
+async function revokePair() {
+	await coordinatorPair(sender, source.deviceId, recipient);
+	await coordinatorPair(receiver, recipient.deviceId, source);
 	for (const [db, local, peer] of [
 		[sender, source, recipient],
 		[receiver, recipient, source],
@@ -288,7 +300,7 @@ it.each(["before", "after"])(
 	async (timing) => {
 		if (timing === "after") sender.prepare("DELETE FROM memory_retirement_deliveries").run();
 		seedMemory();
-		revokePair();
+		await revokePair();
 		if (timing === "after") {
 			sender.transaction(() =>
 				queueMemoryRetirement(sender, control, { localDeviceId: source.deviceId, now }),
@@ -348,7 +360,7 @@ it.each(["before", "after"])(
 );
 
 it("rejects forged keys and foreign namespaces after revocation without consuming pending deliveries", async () => {
-	revokePair();
+	await revokePair();
 	const options = {
 		localDeviceId: recipient.deviceId,
 		peer: retainedPeer(receiver, recipient.deviceId, source.deviceId),
@@ -399,8 +411,8 @@ it("rejects forged keys and foreign namespaces after revocation without consumin
 	expect(batch().controls).toHaveLength(1);
 });
 
-it("rolls back retained trust together with a failed policy revocation", () => {
-	coordinatorPair(sender, source.deviceId, recipient);
+it("rolls back retained trust together with a failed policy revocation", async () => {
+	await coordinatorPair(sender, source.deviceId, recipient);
 	sender
 		.prepare("UPDATE scope_memberships SET status = 'revoked' WHERE device_id = 'recipient'")
 		.run();
@@ -415,8 +427,8 @@ it("rolls back retained trust together with a failed policy revocation", () => {
 	expect(sender.prepare("SELECT * FROM memory_retirement_peer_trust").all()).toEqual([]);
 });
 
-it("does not replace historical retirement authority when a device ID is later paired with a new key", () => {
-	revokePair();
+it("does not replace historical retirement authority when a device ID is later paired with a new key", async () => {
+	await revokePair();
 	sender
 		.prepare(`INSERT INTO sync_peers(peer_device_id, public_key, pinned_fingerprint, created_at,
 		trust_provenance, discovered_via_coordinator_id, discovered_via_group_id)
@@ -436,8 +448,8 @@ it("does not replace historical retirement authority when a device ID is later p
 
 it.each([null, "mismatched"])(
 	"does not retain an incomplete or inconsistent fingerprint (%s)",
-	(fingerprint) => {
-		coordinatorPair(sender, source.deviceId, recipient);
+	async (fingerprint) => {
+		await coordinatorPair(sender, source.deviceId, recipient);
 		expect(retainedPeer(sender, source.deviceId, recipient.deviceId).publicKey).toBe(
 			recipient.publicKey,
 		);

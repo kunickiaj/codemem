@@ -16,7 +16,7 @@ import {
 } from "./coordinator-sync-config.js";
 import type { Database } from "./db.js";
 import { retainRetirementPeerTrust } from "./memory-retirement-trust.js";
-import { getCachedScopeAuthorization } from "./scope-membership-cache.js";
+import { getEffectiveCachedScopeAuthorization } from "./scope-membership-cache.js";
 import type { MemoryStore } from "./store.js";
 import { buildAuthHeaders } from "./sync-auth.js";
 import { LOCAL_SYNC_CAPABILITY, LOCAL_SYNC_FEATURES } from "./sync-capability.js";
@@ -480,7 +480,12 @@ function sharedManagedScopeState(
 	peerDeviceId: string,
 	coordinatorId: string,
 	peerGroupIds: string[],
+	peerPublicKey: string,
 ): SharedManagedScopeState {
+	const localPublicKey = db
+		.prepare("SELECT public_key FROM sync_device WHERE device_id = ?")
+		.pluck()
+		.get(localDeviceId) as string | undefined;
 	const candidateScopes = db
 		.prepare(
 			`SELECT scope.scope_id, scope.coordinator_id, scope.group_id
@@ -513,23 +518,24 @@ function sharedManagedScopeState(
 			continue;
 		}
 		const authority = { coordinatorId, groupId };
-		const localAuthorization = getCachedScopeAuthorization(db, {
+		const localAuthorization = getEffectiveCachedScopeAuthorization(db, {
 			deviceId: localDeviceId,
 			scopeId,
 			authority,
+			expectedPublicKey: localPublicKey ?? "",
 		});
-		const peerAuthorization = getCachedScopeAuthorization(db, {
+		const peerAuthorization = getEffectiveCachedScopeAuthorization(db, {
 			deviceId: peerDeviceId,
 			scopeId,
 			authority,
+			expectedPublicKey: peerPublicKey,
 		});
+		if (!localAuthorization.authorized || !peerAuthorization.authorized) continue;
 		if (localAuthorization.freshness !== "fresh" || peerAuthorization.freshness !== "fresh") {
 			indeterminate = true;
 			continue;
 		}
-		if (localAuthorization.authorized && peerAuthorization.authorized) {
-			return { state: "authorized", groupId };
-		}
+		return { state: "authorized", groupId };
 	}
 	return { state: indeterminate ? "indeterminate" : "not_authorized" };
 }
@@ -555,6 +561,7 @@ function updateTrustedCoordinatorPeerAddresses(
 	});
 }
 
+/** Call ensureDeviceIdentity with this runtime's keys before trusting the stored local key. */
 export function trustCoordinatorPeersWithSharedManagedScopes(
 	db: Database,
 	localDeviceId: string,
@@ -577,17 +584,14 @@ export function trustCoordinatorPeersWithSharedManagedScopes(
 		) {
 			continue;
 		}
-		try {
-			if (fingerprintPublicKey(publicKey) !== fingerprint) continue;
-		} catch {
-			continue;
-		}
+		if (!coordinatorPeerKeyMatchesFingerprint(publicKey, fingerprint)) continue;
 		const sharedScope = sharedManagedScopeState(
 			db,
 			localDeviceId,
 			peerDeviceId,
 			coordinatorId,
 			peerGroupIds,
+			publicKey,
 		);
 		if (sharedScope.state !== "authorized") continue;
 		const existing = db
@@ -639,6 +643,14 @@ export function trustCoordinatorPeersWithSharedManagedScopes(
 	return trusted;
 }
 
+function coordinatorPeerKeyMatchesFingerprint(publicKey: string, fingerprint: string): boolean {
+	try {
+		return fingerprintPublicKey(publicKey) === fingerprint;
+	} catch {
+		return false;
+	}
+}
+
 /** Delete only policy-derived peer rows after their last fresh shared scope ends. */
 export function revokeUnauthorizedCoordinatorPeerTrust(
 	db: Database,
@@ -650,7 +662,7 @@ export function revokeUnauthorizedCoordinatorPeerTrust(
 function revokeCoordinatorPeerTrust(db: Database, localDeviceId: string): number {
 	const peers = db
 		.prepare(
-			`SELECT peer_device_id, discovered_via_coordinator_id, discovered_via_group_id
+			`SELECT peer_device_id, public_key, discovered_via_coordinator_id, discovered_via_group_id
 			 FROM sync_peers
 			 WHERE claimed_local_actor = 0
 			   AND actor_id IS NULL
@@ -662,6 +674,7 @@ function revokeCoordinatorPeerTrust(db: Database, localDeviceId: string): number
 		)
 		.all() as Array<{
 		peer_device_id: string;
+		public_key: string | null;
 		discovered_via_coordinator_id: string;
 		discovered_via_group_id: string;
 	}>;
@@ -671,9 +684,14 @@ function revokeCoordinatorPeerTrust(db: Database, localDeviceId: string): number
 		const coordinatorId = clean(peer.discovered_via_coordinator_id);
 		const groupId = clean(peer.discovered_via_group_id);
 		if (!peerDeviceId || !coordinatorId || !groupId) continue;
-		const sharedScope = sharedManagedScopeState(db, localDeviceId, peerDeviceId, coordinatorId, [
-			groupId,
-		]);
+		const sharedScope = sharedManagedScopeState(
+			db,
+			localDeviceId,
+			peerDeviceId,
+			coordinatorId,
+			[groupId],
+			clean(peer.public_key),
+		);
 		if (sharedScope.state !== "not_authorized") continue;
 		retainRetirementPeerTrust(db, { localDeviceId, peerDeviceId });
 		const result = db

@@ -11,11 +11,13 @@ import {
 } from "@codemem/core";
 import Database from "better-sqlite3";
 import { expect, it } from "vitest";
+import { CANONICAL_PUBLIC_KEY } from "../../core/src/coordinator-ed25519-key-id-test-fixtures.js";
 import {
 	revokeUnauthorizedCoordinatorPeerTrust,
 	trustCoordinatorPeersWithSharedManagedScopes,
 } from "../../core/src/coordinator-runtime.js";
 import { getRetirementPeer } from "../../core/src/memory-retirement-trust.js";
+import { refreshTestScopeRows } from "../../core/src/scope-membership-cache-test-fixtures.js";
 import { syncProtocolRoutes } from "./routes/sync.js";
 
 it("retained retirement trust cannot authenticate content reads or writes after final-scope revocation", async () => {
@@ -32,6 +34,9 @@ it("retained retirement trust cannot authenticate content reads or writes after 
 		const publicKey = loadPublicKey(keysDir);
 		if (!publicKey) throw new Error("missing test key");
 		const now = new Date().toISOString();
+		db.prepare(
+			"INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
+		).run("local", CANONICAL_PUBLIC_KEY, fingerprintPublicKey(CANONICAL_PUBLIC_KEY), now);
 		db.prepare(`INSERT INTO replication_scopes
 			(scope_id, label, kind, authority_type, coordinator_id, group_id, membership_epoch, status, created_at, updated_at)
 			VALUES ('old', 'Old', 'managed_project', 'coordinator', 'https://coord.example.test', 'group', 1, 'active', ?, ?)`).run(
@@ -42,9 +47,11 @@ it("retained retirement trust cannot authenticate content reads or writes after 
 			db.prepare(`INSERT INTO scope_memberships(scope_id, device_id, role, status, membership_epoch, updated_at)
 				VALUES ('old', ?, 'member', 'active', 1, ?)`).run(deviceId, now);
 		}
-		db.prepare(`INSERT INTO scope_membership_cache_state
-			(coordinator_id, group_id, last_refresh_at, last_success_at, last_error, updated_at)
-			VALUES ('https://coord.example.test', 'group', ?, ?, NULL, ?)`).run(now, now, now);
+		await refreshTestScopeRows(
+			db,
+			{ local: CANONICAL_PUBLIC_KEY, [peerDeviceId]: publicKey },
+			{ now: new Date(now) },
+		);
 		expect(
 			trustCoordinatorPeersWithSharedManagedScopes(db, "local", [
 				{
