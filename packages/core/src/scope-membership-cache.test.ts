@@ -363,7 +363,9 @@ describe("scope membership cache", () => {
 			}).freshness,
 		).toBe("fresh");
 	});
+});
 
+describe("scope membership cache policy denial", () => {
 	it("keeps an exact policy deny ahead of stale active membership until foundation clearing", async () => {
 		const local = setup();
 		await refreshScopeMembershipCache(local, {
@@ -446,7 +448,9 @@ describe("scope membership cache", () => {
 			getCachedScopeAuthorization(local, { deviceId: "device-a", scopeId: "scope-acme" }),
 		).toMatchObject({ authorized: false, state: "revoked" });
 	});
+});
 
+describe("scope membership cache authority mapping", () => {
 	it("filters device lookups by requested coordinator and group authority", async () => {
 		const local = setup();
 		await refreshScopeMembershipCache(local, {
@@ -500,7 +504,9 @@ describe("scope membership cache", () => {
 			group_id: "team-a",
 		});
 	});
+});
 
+describe("scope membership cache missing authorization", () => {
 	it("distinguishes fresh no-authorization from stale unknown authorization", async () => {
 		const local = setup();
 		await refreshScopeMembershipCache(local, {
@@ -549,7 +555,9 @@ describe("scope membership cache", () => {
 			freshness: "stale",
 		});
 	});
+});
 
+describe("scope membership cache omission reconciliation", () => {
 	it("reconciles removed memberships on a successful authoritative refresh", async () => {
 		const local = setup();
 		await refreshScopeMembershipCache(local, {
@@ -647,7 +655,9 @@ describe("scope membership cache", () => {
 			}),
 		).toMatchObject({ authorized: true, state: "authorized" });
 	});
+});
 
+describe("scope membership cache revocation epochs", () => {
 	it.each([7, 8])("does not let active epoch %s resurrect an epoch 8 revocation", (epoch) => {
 		const local = setup();
 		upsertCachedScopeMemberships(local, [membership({ membership_epoch: 8, status: "revoked" })]);
@@ -695,7 +705,9 @@ describe("scope membership cache", () => {
 			}),
 		).toMatchObject({ authorized: true, state: "authorized" });
 	});
+});
 
+describe("scope membership cache authorization lookups", () => {
 	it("detects stale membership epochs without listing the scope as authorized", async () => {
 		const local = setup();
 		await refreshScopeMembershipCache(local, {
