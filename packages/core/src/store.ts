@@ -52,7 +52,12 @@ import type { RefQueryOptions, RefQueryResult } from "./ref-queries.js";
 import { findByConcept as findByConceptFn, findByFile as findByFileFn } from "./ref-queries.js";
 import * as schema from "./schema.js";
 import { resolveVisibleScopeIds, type ScopeVisibilityOptions } from "./scope-resolution.js";
-import { ensureMemoryScopeId, resolveSessionScopeId } from "./scope-stamping.js";
+import {
+	ensureMemoryScopeId,
+	resolveMemoryScopeId,
+	resolveSessionScopeId,
+} from "./scope-stamping.js";
+import { ScopeWriteAuthorityError } from "./scope-write-authority-error.js";
 import {
 	type ExplainOptions,
 	explain as explainFn,
@@ -359,6 +364,19 @@ export interface MemoryStoreOptions {
 	keysDir?: string;
 	/** Verified runtime context for callers that cannot access private keys. */
 	runtimeSigningKey?: { deviceId: string; publicKey: string };
+}
+
+/** Identity only: post-commit vector inputs must come from the persisted row. */
+export interface CreatedMemory {
+	memoryId: number;
+	importKey: string;
+}
+
+interface RememberOptions {
+	createdAt?: string;
+	replicate?: boolean;
+	/** Internal new-row notification; deduplication never invokes this callback. */
+	onCreated?: (created: CreatedMemory) => void;
 }
 
 export class MemoryStore {
@@ -733,7 +751,7 @@ export class MemoryStore {
 		}
 	}
 
-	/** Queue best-effort embeddings after a caller-owned creation transaction commits. */
+	/** Raw best-effort embedding queue; user writes use enqueueCommittedVectorWrites. */
 	enqueueVectorWrite(memoryId: number, title: string, bodyText: string): void {
 		if (this.db.inTransaction) return;
 		let op: Promise<void> | null = null;
@@ -801,6 +819,26 @@ export class MemoryStore {
 	}
 
 	// get
+
+	isScopeWritable(scopeId: string | null): boolean {
+		return resolveVisibleScopeIds(
+			this.db,
+			this.deviceId,
+			this.scopeResolutionDeviceContext(),
+		).includes(scopeId ?? "");
+	}
+
+	/** Current scope authority for user-facing mutations, not authored-history read access. */
+	canMutateMemory(memoryId: number): boolean {
+		const scopeId = resolveMemoryScopeId(this.db, memoryId);
+		return scopeId != null && this.isScopeWritable(scopeId);
+	}
+
+	/** Keep read eligibility and current write authority separate at mutation entrypoints. */
+	getForMutation(memoryId: number): MemoryItemResponse | null {
+		if (!this.canMutateMemory(memoryId)) return null;
+		return this.get(memoryId);
+	}
 
 	/**
 	 * Fetch a single memory item by ID.
@@ -964,6 +1002,83 @@ export class MemoryStore {
 	// remember
 
 	/**
+	 * Require current authority before dedup or insert. Caller-owned transactions must
+	 * collect identities and enqueueCommittedVectorWrites after committing, unless
+	 * CODEMEM_EMBEDDING_DISABLED intentionally suppresses vectors. No text is collected.
+	 */
+	rememberForUser(
+		sessionId: number,
+		kind: string,
+		title: string,
+		bodyText: string,
+		confidence = 0.5,
+		tags?: string[],
+		metadata?: Record<string, unknown>,
+		options: { createdAt?: string; replicate?: boolean; createdMemories?: CreatedMemory[] } = {},
+	): number {
+		const validKind = validateMemoryKind(kind);
+		const outerTransaction = this.db.inTransaction;
+		const suppressVectors = isEmbeddingDisabled();
+		if (outerTransaction && !options.createdMemories && !suppressVectors) {
+			throw new Error("rememberForUser requires createdMemories inside a caller-owned transaction");
+		}
+		const created: CreatedMemory[] = [];
+		const memoryId = this.db
+			.transaction(() => {
+				this.assertSessionScopeWritable(sessionId, metadata);
+				return this.remember(sessionId, validKind, title, bodyText, confidence, tags, metadata, {
+					...options,
+					onCreated: (identity) => created.push(identity),
+				});
+			})
+			.immediate();
+		if (options.createdMemories) options.createdMemories.push(...created);
+		if (!outerTransaction && !suppressVectors) this.enqueueCommittedVectorWrites(created);
+		return memoryId;
+	}
+
+	/** Read committed, active rows by both identities; rolled-back/reused IDs are ignored. */
+	committedVectorInputs(
+		created: readonly CreatedMemory[],
+	): Array<{ memoryId: number; title: string; bodyText: string }> {
+		if (this.db.inTransaction) throw new Error("vector inputs require a committed transaction");
+		const inputs: Array<{ memoryId: number; title: string; bodyText: string }> = [];
+		const seen = new Set<number>();
+		const read = this.db.prepare(
+			`SELECT id AS memoryId, title, body_text AS bodyText FROM memory_items
+			 WHERE id = ? AND import_key = ? AND active = 1 AND deleted_at IS NULL`,
+		);
+		for (const identity of created) {
+			const row = read.get(identity.memoryId, identity.importKey) as
+				| { memoryId: number; title: string; bodyText: string }
+				| undefined;
+			if (!row || seen.has(row.memoryId)) continue;
+			seen.add(row.memoryId);
+			inputs.push(row);
+		}
+		return inputs;
+	}
+
+	/** Call only after the actual outer commit; explicit global suppression remains a no-op. */
+	enqueueCommittedVectorWrites(created: readonly CreatedMemory[]): void {
+		const inputs = this.committedVectorInputs(created);
+		if (isEmbeddingDisabled()) return;
+		for (const row of inputs) this.enqueueVectorWrite(row.memoryId, row.title, row.bodyText);
+	}
+
+	/** Admission check; persistence callers must check again inside their transaction. */
+	assertSessionScopeWritable(sessionId: number, metadata?: Record<string, unknown>): void {
+		const scannedMetadata = this.scanner.redactValue(metadata ?? {});
+		const provenance = this.resolveProvenance(scannedMetadata.value as Record<string, unknown>);
+		const scopeId = resolveSessionScopeId(this.db, {
+			sessionId,
+			workspaceId: provenance.workspace_id,
+			readOnly: true,
+		});
+		if (!this.isScopeWritable(scopeId)) throw new ScopeWriteAuthorityError();
+	}
+
+	/**
 	 * Create a new memory item. Returns the new memory ID.
 	 *
 	 * Validates and normalizes the kind. Resolves provenance fields (actor_id,
@@ -978,7 +1093,7 @@ export class MemoryStore {
 		confidence = 0.5,
 		tags?: string[],
 		metadata?: Record<string, unknown>,
-		options: { createdAt?: string; replicate?: boolean } = {},
+		options: RememberOptions = {},
 	): number {
 		const validKind = validateMemoryKind(kind);
 		const now = nowIso();
@@ -1130,7 +1245,7 @@ export class MemoryStore {
 			throw error;
 		}
 
-		this.enqueueVectorWrite(memoryId, safeTitle, safeBody);
+		this.scheduleRememberVectors({ memoryId, importKey }, safeTitle, safeBody, options);
 
 		const detections = mergeDetections(
 			titleScan.detections,
@@ -1142,6 +1257,16 @@ export class MemoryStore {
 		}
 
 		return memoryId;
+	}
+
+	private scheduleRememberVectors(
+		created: CreatedMemory,
+		title: string,
+		bodyText: string,
+		options: RememberOptions,
+	): void {
+		if (options.onCreated) options.onCreated(created);
+		else this.enqueueVectorWrite(created.memoryId, title, bodyText);
 	}
 
 	private recordMemoryUpsert(memoryId: number, enabled: boolean): void {
@@ -1293,6 +1418,18 @@ export class MemoryStore {
 	}
 
 	// forget
+
+	/** Recheck user write authority after taking the write lock, before any delete effects. */
+	forgetForUser(memoryId: number): boolean {
+		return this.db
+			.transaction(() => {
+				const memory = this.getForMutation(memoryId);
+				if (!memory || !this.memoryOwnedBySelf({ ...memory })) return false;
+				this.forget(memoryId);
+				return true;
+			})
+			.immediate();
+	}
 
 	/**
 	 * Soft-delete a memory item (set active = 0, record deleted_at).
@@ -1554,6 +1691,18 @@ export class MemoryStore {
 
 	// updateMemoryVisibility
 
+	/** Read eligibility alone cannot authorize a user visibility change. */
+	updateMemoryVisibilityForUser(memoryId: number, visibility: string): MemoryItemResponse {
+		return this.db
+			.transaction(() => {
+				if (!this.getForMutation(memoryId)) throw new Error("memory not found");
+				// Keep the authorized assignment stable when visibility changes workspace_id.
+				ensureMemoryScopeId(this.db, memoryId);
+				return this.updateMemoryVisibility(memoryId, visibility);
+			})
+			.immediate();
+	}
+
 	/**
 	 * Update the visibility of an active memory item.
 	 * Throws if visibility is invalid, memory not found, memory is inactive,
@@ -1744,6 +1893,28 @@ export class MemoryStore {
 	}
 
 	// moveMemoryProject
+
+	/** Project attribution changes every memory in the session, including authored history. */
+	moveMemoryProjectForUser(
+		memoryId: number,
+		project: string,
+	): { session_id: number; project: string; moved_memory_count: number } {
+		return this.db
+			.transaction(() => {
+				const row = this.getForMutation(memoryId);
+				if (!row) throw new Error("memory not found");
+				const memories = this.db
+					.prepare("SELECT id FROM memory_items WHERE session_id = ?")
+					.all(row.session_id) as Array<{ id: number }>;
+				if (memories.some((memory) => !this.canMutateMemory(memory.id))) {
+					throw new Error("memory not found");
+				}
+				// Project labels must not silently re-resolve an authorized pending assignment.
+				for (const memory of memories) ensureMemoryScopeId(this.db, memory.id);
+				return this.moveMemoryProject(memoryId, project);
+			})
+			.immediate();
+	}
 
 	/**
 	 * Reassign a memory to a different project by mutating its parent

@@ -22,6 +22,7 @@ import {
 	scopeIdsMatchingProjectPatterns,
 	type WorkspaceIdentitySource,
 } from "./scope-resolution.js";
+import { ensureMemoryScopeId, resolveMemoryScopeId } from "./scope-stamping.js";
 import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap-constants.js";
 import { recordAccessCleanupOp, recordReplicationOp } from "./sync-replication.js";
 
@@ -147,6 +148,7 @@ interface ProjectScopeSuggestion {
 }
 
 export interface UpsertProjectScopeMappingInput {
+	canWriteScope?: (scopeId: string | null) => boolean;
 	deviceId?: string | null;
 	id?: number | null;
 	workspace_identity?: string | null;
@@ -1060,8 +1062,10 @@ function recordSourceOwnedMemoryScopeMove(
 		newScopeId: string;
 		now: string;
 		oldScopeId: string;
+		canWriteScope?: (scopeId: string | null) => boolean;
 	},
 ): void {
+	assertScopeWritesAllowed([input.oldScopeId, input.newScopeId], input.canWriteScope);
 	const oldRev = Number(row.rev ?? 0);
 	const tombstoneRev = oldRev + 1;
 	const upsertRev = oldRev + 2;
@@ -1155,11 +1159,22 @@ function resolveSourceOwnedMemoryMappingTransition(
 	};
 }
 
+function memoryScopeBeforeMappingChange(
+	db: Database,
+	row: SourceOwnedMemoryScopeRow,
+	oldMappings: ScopeMapping[],
+): string {
+	const scopeId = resolveMemoryScopeId(db, row.id, { mappings: oldMappings });
+	if (!scopeId) throw new Error("memory scope could not be resolved");
+	return scopeId;
+}
+
 function propagateProjectScopeMappingsToSourceOwnedMemories(
 	db: Database,
 	changedMappings: ProjectScopeSettingsMapping[],
 	deviceId: string | null,
 	previousMappings?: ProjectScopeSettingsMapping[],
+	canWriteScope?: (scopeId: string | null) => boolean,
 ): number {
 	const firstMapping = changedMappings[0];
 	if (!deviceId || !firstMapping) return 0;
@@ -1172,8 +1187,7 @@ function propagateProjectScopeMappingsToSourceOwnedMemories(
 	const repositoryIdentities = repositoryIdentitiesByWorkspace(db, {
 		knownRepositoryIdentities: knownRepositoryIdentitiesForMappings([...oldMappings, ...mappings]),
 	});
-	const oldConflictsByRepository = new Map<string, boolean>();
-	const conflictsByRepository = new Map<string, boolean>();
+	const conflicts = { previous: new Map<string, boolean>(), current: new Map<string, boolean>() };
 	let moved = 0;
 	for (const row of sourceOwnedMemoryRowsForScopePropagation(db, deviceId)) {
 		const { previousResolution, resolution, repositoryIdentity } =
@@ -1182,8 +1196,8 @@ function propagateProjectScopeMappingsToSourceOwnedMemories(
 				oldMappings,
 				mappings,
 				repositoryIdentities,
-				oldConflictsByRepository,
-				conflictsByRepository,
+				conflicts.previous,
+				conflicts.current,
 			);
 		if (
 			!mappingChangeAffectsSourceOwnedMemory(
@@ -1191,16 +1205,16 @@ function propagateProjectScopeMappingsToSourceOwnedMemories(
 				repositoryIdentity,
 				previousResolution,
 				resolution,
-				oldConflictsByRepository,
-				conflictsByRepository,
+				conflicts.previous,
+				conflicts.current,
 			)
-		) {
+		)
 			continue;
-		}
-		const oldScopeId = clean(row.scope_id) ?? LOCAL_DEFAULT_SCOPE_ID;
+		const oldScopeId = memoryScopeBeforeMappingChange(db, row, oldMappings);
 		const newScopeId = resolution.scopeId;
 		if (oldScopeId === newScopeId) continue;
 		recordSourceOwnedMemoryScopeMove(db, row, {
+			canWriteScope,
 			deviceId,
 			mappingId: changedMappingIdForScopeMove(
 				changedMappings,
@@ -1220,14 +1234,15 @@ function propagateProjectScopeMappingsToSourceOwnedMemories(
 function propagateProjectScopeMappingToSourceOwnedMemories(
 	db: Database,
 	mapping: ProjectScopeSettingsMapping,
-	deviceId: string | null,
+	input: Pick<UpsertProjectScopeMappingInput, "deviceId" | "canWriteScope">,
 	previousMappings?: ProjectScopeSettingsMapping[],
 ): number {
 	return propagateProjectScopeMappingsToSourceOwnedMemories(
 		db,
 		[mapping],
-		deviceId,
+		clean(input.deviceId),
 		previousMappings,
+		input.canWriteScope,
 	);
 }
 
@@ -1254,7 +1269,7 @@ function changedScopesAfterMappingTransition(
 	const newConflicts = new Map<string, boolean>();
 	const changes = new Set<string>();
 	for (const row of sourceOwnedMemoryRowsForScopePropagation(db, deviceId)) {
-		const oldScopeId = clean(row.scope_id) ?? LOCAL_DEFAULT_SCOPE_ID;
+		const oldScopeId = memoryScopeBeforeMappingChange(db, row, oldAliases);
 		const before = resolveSourceOwnedMemoryScope(row, oldAliases, identities, oldConflicts);
 		const after = resolveSourceOwnedMemoryScope(row, newAliases, identities, newConflicts);
 		const repository = repositoryIdentityForWorkspace(identities, {
@@ -2144,11 +2159,11 @@ function sourceOwnedMemoriesForSessions(
 	db: Database,
 	sessionIds: number[],
 	deviceId: string,
-): Array<{ id: number; project: string | null; session_id: number }> {
+): Array<{ id: number; project: string | null; session_id: number; scope_id: string | null }> {
 	const placeholders = sessionIds.map(() => "?").join(", ");
 	return db
 		.prepare(
-			`SELECT id, session_id, project FROM memory_items
+			`SELECT id, session_id, project, scope_id FROM memory_items
 			 WHERE session_id IN (${placeholders})
 			   AND active = 1
 			   AND (origin_device_id IS NULL OR TRIM(origin_device_id) = '' OR origin_device_id = ?)`,
@@ -2157,7 +2172,17 @@ function sourceOwnedMemoriesForSessions(
 		id: number;
 		project: string | null;
 		session_id: number;
+		scope_id: string | null;
 	}>;
+}
+
+function assertScopeWritesAllowed(
+	scopeIds: Array<string | null>,
+	canWriteScope?: (scopeId: string | null) => boolean,
+): void {
+	if (canWriteScope && [...new Set(scopeIds)].some((scopeId) => !canWriteScope(scopeId))) {
+		throw new Error("unauthorized_scope");
+	}
 }
 
 function validatedReassignmentInput(input: {
@@ -2179,7 +2204,21 @@ function validatedReassignmentInput(input: {
 
 export function reassignProjectScopeInventoryProject(
 	db: Database,
-	input: { deviceId: string; workspaceIdentity: string; project: string },
+	input: {
+		deviceId: string;
+		workspaceIdentity: string;
+		project: string;
+		canWriteScope?: (scopeId: string | null) => boolean;
+	},
+): ReassignProjectScopeInventoryProjectResult {
+	return db
+		.transaction(() => reassignProjectScopeInventoryProjectInTransaction(db, input))
+		.immediate();
+}
+
+function reassignProjectScopeInventoryProjectInTransaction(
+	db: Database,
+	input: Parameters<typeof reassignProjectScopeInventoryProject>[1],
 ): ReassignProjectScopeInventoryProjectResult {
 	ensureScopeBackfillScopes(db);
 	const { deviceId, workspaceIdentity, project } = validatedReassignmentInput(input);
@@ -2211,28 +2250,12 @@ export function reassignProjectScopeInventoryProject(
 		(memory) => (clean(memory.project) ?? "") !== project,
 	);
 	const movedMemoryCount = changedMemories.length;
-	const update = db.prepare("UPDATE sessions SET project = ? WHERE id = ?");
-	db.transaction(() => {
-		for (const row of matchedSourceRows) update.run(project, row.id);
-		if (changedMemories.length > 0) {
-			const memoryIds = changedMemories.map((memory) => Number(memory.id));
-			db.prepare(
-				`UPDATE memory_items
-				 SET project = ?, updated_at = ?, rev = COALESCE(rev, 0) + 1
-				 WHERE id IN (${memoryIds.map(() => "?").join(", ")})`,
-			).run(project, now, ...memoryIds);
-			for (const memoryId of memoryIds) {
-				recordReplicationOp(db, {
-					memoryId,
-					opType: "upsert",
-					deviceId,
-					clockDeviceId: deviceId,
-					clockUpdatedAt: now,
-					createdAt: now,
-				});
-			}
-		}
-	})();
+	applyProjectInventoryReassignment(db, matchedSourceRows, changedMemories, {
+		...input,
+		deviceId,
+		project,
+		now,
+	});
 	return {
 		moved_memory_count: movedMemoryCount,
 		moved_session_count: matchedSourceRows.length,
@@ -2240,6 +2263,54 @@ export function reassignProjectScopeInventoryProject(
 		project,
 		workspace_identity: workspaceIdentity,
 	};
+}
+
+function applyProjectInventoryReassignment(
+	db: Database,
+	sessions: Array<{ id: number }>,
+	memories: ReturnType<typeof sourceOwnedMemoriesForSessions>,
+	input: Parameters<typeof reassignProjectScopeInventoryProject>[1] & { now: string },
+): void {
+	assertSessionMemoryWritesAllowed(db, sessions, input.canWriteScope);
+	const update = db.prepare("UPDATE sessions SET project = ? WHERE id = ?");
+	for (const row of sessions) update.run(input.project, row.id);
+	if (memories.length === 0) return;
+	const memoryIds = memories.map((memory) => Number(memory.id));
+	db.prepare(
+		`UPDATE memory_items
+		 SET project = ?, updated_at = ?, rev = COALESCE(rev, 0) + 1
+		 WHERE id IN (${memoryIds.map(() => "?").join(", ")})`,
+	).run(input.project, input.now, ...memoryIds);
+	for (const memoryId of memoryIds) {
+		recordReplicationOp(db, {
+			memoryId,
+			opType: "upsert",
+			deviceId: input.deviceId,
+			clockDeviceId: input.deviceId,
+			clockUpdatedAt: input.now,
+			createdAt: input.now,
+		});
+	}
+}
+
+function assertSessionMemoryWritesAllowed(
+	db: Database,
+	sessions: Array<{ id: number }>,
+	canWriteScope?: (scopeId: string | null) => boolean,
+): void {
+	if (!canWriteScope || sessions.length === 0) return;
+	const scopes = db
+		.prepare(
+			`SELECT id FROM memory_items
+		 WHERE session_id IN (${sessions.map(() => "?").join(", ")})`,
+		)
+		.all(...sessions.map((session) => session.id)) as Array<{ id: number }>;
+	assertScopeWritesAllowed(
+		scopes.map((memory) => resolveMemoryScopeId(db, memory.id)),
+		canWriteScope,
+	);
+	// Freeze the checked assignment before changing the session's project label.
+	for (const memory of scopes) ensureMemoryScopeId(db, memory.id);
 }
 
 function upsertProjectScopeSettingsMappingInTransaction(
@@ -2283,7 +2354,7 @@ function upsertProjectScopeSettingsMappingInTransaction(
 		).run(workspaceIdentity, projectPattern, scopeId, priority, source, now, existing.id);
 		const saved = getProjectScopeSettingsMappingById(db, existing.id);
 		if (!saved) throw new Error("project_scope_mapping update returned no row");
-		propagateProjectScopeMappingToSourceOwnedMemories(db, saved, draft.deviceId, previousMappings);
+		propagateProjectScopeMappingToSourceOwnedMemories(db, saved, input, previousMappings);
 		return saved;
 	}
 
@@ -2296,7 +2367,7 @@ function upsertProjectScopeSettingsMappingInTransaction(
 		.run(workspaceIdentity, projectPattern, scopeId, priority, source, now, now);
 	const saved = getProjectScopeSettingsMappingById(db, Number(result.lastInsertRowid));
 	if (!saved) throw new Error("project_scope_mapping insert returned no row");
-	propagateProjectScopeMappingToSourceOwnedMemories(db, saved, draft.deviceId, previousMappings);
+	propagateProjectScopeMappingToSourceOwnedMemories(db, saved, input, previousMappings);
 	return saved;
 }
 
@@ -2304,59 +2375,69 @@ export function upsertProjectScopeSettingsMapping(
 	db: Database,
 	input: UpsertProjectScopeMappingInput,
 ): ProjectScopeSettingsMapping {
-	return db.transaction(() => upsertProjectScopeSettingsMappingInTransaction(db, input))();
+	return db
+		.transaction(() => upsertProjectScopeSettingsMappingInTransaction(db, input))
+		.immediate();
 }
 
 export function upsertProjectScopeSettingsMappings(
 	db: Database,
 	inputs: UpsertProjectScopeMappingInput[],
-	options: { deviceId: string },
+	options: { deviceId: string; canWriteScope?: (scopeId: string | null) => boolean },
 ): ProjectScopeSettingsMapping[] {
-	return db.transaction(() => {
-		const previousMappings = listProjectScopeSettingsMappings(db);
-		const saved = inputs.map((input) =>
-			upsertProjectScopeSettingsMappingInTransaction(db, { ...input, deviceId: null }),
-		);
-		propagateProjectScopeMappingsToSourceOwnedMemories(
-			db,
-			saved,
-			options.deviceId,
-			previousMappings,
-		);
-		return saved;
-	})();
+	return db
+		.transaction(() => {
+			const previousMappings = listProjectScopeSettingsMappings(db);
+			const saved = inputs.map((input) =>
+				upsertProjectScopeSettingsMappingInTransaction(db, { ...input, deviceId: null }),
+			);
+			propagateProjectScopeMappingsToSourceOwnedMemories(
+				db,
+				saved,
+				options.deviceId,
+				previousMappings,
+				options.canWriteScope,
+			);
+			return saved;
+		})
+		.immediate();
 }
 
 export function deleteProjectScopeSettingsMapping(
 	db: Database,
 	id: number,
-	options: { deviceId?: string | null; confirmedGuardrailTokens?: string[] } = {},
+	options: {
+		deviceId?: string | null;
+		confirmedGuardrailTokens?: string[];
+		canWriteScope?: (scopeId: string | null) => boolean;
+	} = {},
 ): boolean {
 	if (!Number.isInteger(id) || id <= 0) throw new Error("id must be a positive integer");
-	return db.transaction(() => {
-		const mapping = getProjectScopeSettingsMappingById(db, id);
-		if (!mapping) return false;
-		const warnings = analyzeProjectScopeMappingDeletionGuardrails(db, id, clean(options.deviceId));
-		const confirmed = new Set(options.confirmedGuardrailTokens ?? []);
-		if (
-			warnings.some(
-				(warning) => !warning.confirmation_token || !confirmed.has(warning.confirmation_token),
-			)
-		) {
-			throw new Error("guardrail_confirmation_required");
-		}
-		const previousMappings = listProjectScopeSettingsMappings(db);
-		persistMappedRepositoryIdentityEvidence(db, previousMappings);
-		const result = db.prepare("DELETE FROM project_scope_mappings WHERE id = ?").run(id);
-		const deleted = Number(result.changes ?? 0) > 0;
-		if (deleted) {
-			propagateProjectScopeMappingToSourceOwnedMemories(
+	return db
+		.transaction(() => {
+			const mapping = getProjectScopeSettingsMappingById(db, id);
+			if (!mapping) return false;
+			const warnings = analyzeProjectScopeMappingDeletionGuardrails(
 				db,
-				mapping,
+				id,
 				clean(options.deviceId),
-				previousMappings,
 			);
-		}
-		return deleted;
-	})();
+			const confirmed = new Set(options.confirmedGuardrailTokens ?? []);
+			if (
+				warnings.some(
+					(warning) => !warning.confirmation_token || !confirmed.has(warning.confirmation_token),
+				)
+			) {
+				throw new Error("guardrail_confirmation_required");
+			}
+			const previousMappings = listProjectScopeSettingsMappings(db);
+			persistMappedRepositoryIdentityEvidence(db, previousMappings);
+			const result = db.prepare("DELETE FROM project_scope_mappings WHERE id = ?").run(id);
+			const deleted = Number(result.changes ?? 0) > 0;
+			if (deleted) {
+				propagateProjectScopeMappingToSourceOwnedMemories(db, mapping, options, previousMappings);
+			}
+			return deleted;
+		})
+		.immediate();
 }
