@@ -534,6 +534,11 @@ This read exception does not permit new writes: MCP remember checks current
 resolved-scope permission inside its rollback transaction. Import permissions,
 additional share inviters, and policy inheritance still need separate adoption.
 
+Automatic raw-event ingestion checks scope authority before observer inference
+and again during persistence. A scope denial keeps the batch queued without
+consuming observer failure attempts or advancing the event cursor. Refreshing
+scope membership allows the same batch to resume.
+
 ## Activation limits
 
 Existing group disable/removal does not create global subjects automatically.

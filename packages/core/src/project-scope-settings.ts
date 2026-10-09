@@ -22,6 +22,7 @@ import {
 	scopeIdsMatchingProjectPatterns,
 	type WorkspaceIdentitySource,
 } from "./scope-resolution.js";
+import { ensureMemoryScopeId, resolveMemoryScopeId } from "./scope-stamping.js";
 import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap-constants.js";
 import { recordAccessCleanupOp, recordReplicationOp } from "./sync-replication.js";
 
@@ -1158,6 +1159,16 @@ function resolveSourceOwnedMemoryMappingTransition(
 	};
 }
 
+function memoryScopeBeforeMappingChange(
+	db: Database,
+	row: SourceOwnedMemoryScopeRow,
+	oldMappings: ScopeMapping[],
+): string {
+	const scopeId = resolveMemoryScopeId(db, row.id, { mappings: oldMappings });
+	if (!scopeId) throw new Error("memory scope could not be resolved");
+	return scopeId;
+}
+
 function propagateProjectScopeMappingsToSourceOwnedMemories(
 	db: Database,
 	changedMappings: ProjectScopeSettingsMapping[],
@@ -1199,7 +1210,7 @@ function propagateProjectScopeMappingsToSourceOwnedMemories(
 			)
 		)
 			continue;
-		const oldScopeId = clean(row.scope_id) ?? LOCAL_DEFAULT_SCOPE_ID;
+		const oldScopeId = memoryScopeBeforeMappingChange(db, row, oldMappings);
 		const newScopeId = resolution.scopeId;
 		if (oldScopeId === newScopeId) continue;
 		recordSourceOwnedMemoryScopeMove(db, row, {
@@ -1258,7 +1269,7 @@ function changedScopesAfterMappingTransition(
 	const newConflicts = new Map<string, boolean>();
 	const changes = new Set<string>();
 	for (const row of sourceOwnedMemoryRowsForScopePropagation(db, deviceId)) {
-		const oldScopeId = clean(row.scope_id) ?? LOCAL_DEFAULT_SCOPE_ID;
+		const oldScopeId = memoryScopeBeforeMappingChange(db, row, oldAliases);
 		const before = resolveSourceOwnedMemoryScope(row, oldAliases, identities, oldConflicts);
 		const after = resolveSourceOwnedMemoryScope(row, newAliases, identities, newConflicts);
 		const repository = repositoryIdentityForWorkspace(identities, {
@@ -2169,7 +2180,7 @@ function assertScopeWritesAllowed(
 	scopeIds: Array<string | null>,
 	canWriteScope?: (scopeId: string | null) => boolean,
 ): void {
-	if (canWriteScope && scopeIds.some((scopeId) => !canWriteScope(scopeId))) {
+	if (canWriteScope && [...new Set(scopeIds)].some((scopeId) => !canWriteScope(scopeId))) {
 		throw new Error("unauthorized_scope");
 	}
 }
@@ -2290,14 +2301,16 @@ function assertSessionMemoryWritesAllowed(
 	if (!canWriteScope || sessions.length === 0) return;
 	const scopes = db
 		.prepare(
-			`SELECT scope_id FROM memory_items
+			`SELECT id FROM memory_items
 		 WHERE session_id IN (${sessions.map(() => "?").join(", ")})`,
 		)
-		.all(...sessions.map((session) => session.id)) as Array<{ scope_id: string | null }>;
+		.all(...sessions.map((session) => session.id)) as Array<{ id: number }>;
 	assertScopeWritesAllowed(
-		scopes.map((memory) => memory.scope_id),
+		scopes.map((memory) => resolveMemoryScopeId(db, memory.id)),
 		canWriteScope,
 	);
+	// Freeze the checked assignment before changing the session's project label.
+	for (const memory of scopes) ensureMemoryScopeId(db, memory.id);
 }
 
 function upsertProjectScopeSettingsMappingInTransaction(
@@ -2362,7 +2375,9 @@ export function upsertProjectScopeSettingsMapping(
 	db: Database,
 	input: UpsertProjectScopeMappingInput,
 ): ProjectScopeSettingsMapping {
-	return db.transaction(() => upsertProjectScopeSettingsMappingInTransaction(db, input))();
+	return db
+		.transaction(() => upsertProjectScopeSettingsMappingInTransaction(db, input))
+		.immediate();
 }
 
 export function upsertProjectScopeSettingsMappings(
@@ -2370,20 +2385,22 @@ export function upsertProjectScopeSettingsMappings(
 	inputs: UpsertProjectScopeMappingInput[],
 	options: { deviceId: string; canWriteScope?: (scopeId: string | null) => boolean },
 ): ProjectScopeSettingsMapping[] {
-	return db.transaction(() => {
-		const previousMappings = listProjectScopeSettingsMappings(db);
-		const saved = inputs.map((input) =>
-			upsertProjectScopeSettingsMappingInTransaction(db, { ...input, deviceId: null }),
-		);
-		propagateProjectScopeMappingsToSourceOwnedMemories(
-			db,
-			saved,
-			options.deviceId,
-			previousMappings,
-			options.canWriteScope,
-		);
-		return saved;
-	})();
+	return db
+		.transaction(() => {
+			const previousMappings = listProjectScopeSettingsMappings(db);
+			const saved = inputs.map((input) =>
+				upsertProjectScopeSettingsMappingInTransaction(db, { ...input, deviceId: null }),
+			);
+			propagateProjectScopeMappingsToSourceOwnedMemories(
+				db,
+				saved,
+				options.deviceId,
+				previousMappings,
+				options.canWriteScope,
+			);
+			return saved;
+		})
+		.immediate();
 }
 
 export function deleteProjectScopeSettingsMapping(
@@ -2396,25 +2413,31 @@ export function deleteProjectScopeSettingsMapping(
 	} = {},
 ): boolean {
 	if (!Number.isInteger(id) || id <= 0) throw new Error("id must be a positive integer");
-	return db.transaction(() => {
-		const mapping = getProjectScopeSettingsMappingById(db, id);
-		if (!mapping) return false;
-		const warnings = analyzeProjectScopeMappingDeletionGuardrails(db, id, clean(options.deviceId));
-		const confirmed = new Set(options.confirmedGuardrailTokens ?? []);
-		if (
-			warnings.some(
-				(warning) => !warning.confirmation_token || !confirmed.has(warning.confirmation_token),
-			)
-		) {
-			throw new Error("guardrail_confirmation_required");
-		}
-		const previousMappings = listProjectScopeSettingsMappings(db);
-		persistMappedRepositoryIdentityEvidence(db, previousMappings);
-		const result = db.prepare("DELETE FROM project_scope_mappings WHERE id = ?").run(id);
-		const deleted = Number(result.changes ?? 0) > 0;
-		if (deleted) {
-			propagateProjectScopeMappingToSourceOwnedMemories(db, mapping, options, previousMappings);
-		}
-		return deleted;
-	})();
+	return db
+		.transaction(() => {
+			const mapping = getProjectScopeSettingsMappingById(db, id);
+			if (!mapping) return false;
+			const warnings = analyzeProjectScopeMappingDeletionGuardrails(
+				db,
+				id,
+				clean(options.deviceId),
+			);
+			const confirmed = new Set(options.confirmedGuardrailTokens ?? []);
+			if (
+				warnings.some(
+					(warning) => !warning.confirmation_token || !confirmed.has(warning.confirmation_token),
+				)
+			) {
+				throw new Error("guardrail_confirmation_required");
+			}
+			const previousMappings = listProjectScopeSettingsMappings(db);
+			persistMappedRepositoryIdentityEvidence(db, previousMappings);
+			const result = db.prepare("DELETE FROM project_scope_mappings WHERE id = ?").run(id);
+			const deleted = Number(result.changes ?? 0) > 0;
+			if (deleted) {
+				propagateProjectScopeMappingToSourceOwnedMemories(db, mapping, options, previousMappings);
+			}
+			return deleted;
+		})
+		.immediate();
 }
