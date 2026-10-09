@@ -3636,6 +3636,7 @@ function cleanupDiagnostics(
 	const stale =
 		localDeviceId && showDiag
 			? diagnoseStalePeerReceivedRows(store.db, {
+					...store.scopeResolutionDeviceContext(),
 					localDeviceId,
 					maxRows: CLEANUP_DIAGNOSTICS_MAX_ROWS,
 				})
@@ -5027,7 +5028,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		});
 		if (rejected) return rejected;
 
-		const result = applyReplicationOps(store.db, filtered.allowed, localDeviceId, store.scanner);
+		const result = applyPeerPushOps(store, filtered.allowed, localDeviceId);
 		const skipped = result.skipped + filtered.skipped;
 		return c.json({
 			...result,
@@ -5039,6 +5040,16 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 	});
 
 	return app;
+}
+
+function applyPeerPushOps(
+	store: MemoryStore,
+	ops: Parameters<typeof applyReplicationOps>[1],
+	localDeviceId: string,
+) {
+	return applyReplicationOps(store.db, ops, localDeviceId, store.scanner, {
+		keysDir: syncKeysDir(),
+	});
 }
 
 async function loadConfiguredDeviceIdentityCoordinatorEvidence(): Promise<DeviceIdentityCoordinatorEvidence> {

@@ -321,9 +321,21 @@ function persistPeerRuntimeVersion(
 	}
 }
 
+function vectorWorkAfterReconciliation(
+	db: Database,
+	applied: ReturnType<typeof applyReplicationOps>,
+	options: { localDeviceId: string; peerDeviceId: string; keysDir?: string },
+) {
+	const reconciliation = reconcileStalePeerReceivedRows(db, options);
+	return {
+		upsertMemoryIds: applied.vectorWork.upsertMemoryIds,
+		deleteMemoryIds: [...applied.vectorWork.deleteMemoryIds, ...reconciliation.deleted_memory_ids],
+	};
+}
+
 async function reconcilePeerRowsBeforeExchange(
 	db: Database,
-	options: { localDeviceId: string; peerDeviceId: string },
+	options: { localDeviceId: string; peerDeviceId: string; keysDir?: string },
 ): Promise<void> {
 	const reconciliation = reconcileStalePeerReceivedRows(db, options);
 	if (reconciliation.deleted_memory_ids.length === 0) return;
@@ -1035,6 +1047,7 @@ async function syncOneScope(
 		}
 
 		const applied = applyReplicationOps(db, ops, deviceId, scanner, {
+			keysDir,
 			inboundScopeValidation: { peerDeviceId },
 		});
 		if (applied.rejected > 0) {
@@ -1052,17 +1065,11 @@ async function syncOneScope(
 			};
 		}
 
-		const reconciliation = reconcileStalePeerReceivedRows(db, {
+		const vectorWork = vectorWorkAfterReconciliation(db, applied, {
+			keysDir,
 			localDeviceId: deviceId,
 			peerDeviceId,
 		});
-		const vectorWork = {
-			upsertMemoryIds: applied.vectorWork.upsertMemoryIds,
-			deleteMemoryIds: [
-				...applied.vectorWork.deleteMemoryIds,
-				...reconciliation.deleted_memory_ids,
-			],
-		};
 		try {
 			queueVectorBackfillForIncrementalSync(db, vectorWork);
 		} catch (queueErr) {
@@ -1238,6 +1245,7 @@ async function negotiatePeerExchange(
 		const resetBoundary = parsePeerResetBoundary(statusPayload);
 		if (!resetBoundary) throw new Error("peer status missing sync_reset boundary");
 		await reconcilePeerRowsBeforeExchange(context.db, {
+			keysDir: context.keysDir,
 			localDeviceId: context.deviceId,
 			peerDeviceId: context.peerDeviceId,
 		});
@@ -1600,20 +1608,18 @@ async function applyPulledDefaultOps(
 			? { peerDeviceId: context.peerDeviceId, enabled: false }
 			: { peerDeviceId: context.peerDeviceId };
 	const applied = applyReplicationOps(context.db, pulled.ops, context.deviceId, context.scanner, {
+		keysDir: context.keysDir,
 		inboundScopeValidation,
 	});
 	if (applied.rejected > 0) {
 		const firstReason = applied.rejections[0]?.reason ?? "scope_rejected";
 		throw new Error(`inbound scope rejected:${firstReason}`);
 	}
-	const reconciliation = reconcileStalePeerReceivedRows(context.db, {
+	const vectorWork = vectorWorkAfterReconciliation(context.db, applied, {
+		keysDir: context.keysDir,
 		localDeviceId: context.deviceId,
 		peerDeviceId: context.peerDeviceId,
 	});
-	const vectorWork = {
-		upsertMemoryIds: applied.vectorWork.upsertMemoryIds,
-		deleteMemoryIds: [...applied.vectorWork.deleteMemoryIds, ...reconciliation.deleted_memory_ids],
-	};
 	try {
 		queueVectorBackfillForIncrementalSync(context.db, vectorWork);
 	} catch (queueError) {

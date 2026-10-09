@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Database } from "./db.js";
+import { getOrCreateLocalCaptureId } from "./memory-local-capture.js";
 
 const PREFIX = "memory-source-v1:";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -92,6 +93,32 @@ export function allocateLocalMemorySource(db: Database): VerifiedMemorySource {
 		throw new Error("memory_source_local_device_required");
 	const entityId = `${PREFIX}${Buffer.from(source).toString("base64url")}:${randomUUID()}`;
 	return persistBinding(db, { entityId, sourceDeviceId: source, evidence: "local_creation" });
+}
+
+/** Genuine new captures only. Unsigned capture namespaces are never network-authenticated. */
+export function allocateLocalCaptureMemorySource(
+	db: Database,
+	runtimeDeviceId: string,
+): VerifiedMemorySource | null {
+	if (!db.inTransaction) throw new Error("memory_source_transaction_required");
+	const rows = db.prepare("SELECT device_id FROM sync_device LIMIT 2").all() as Array<{
+		device_id: string;
+	}>;
+	if (rows.length > 0) {
+		if (
+			rows.length !== 1 ||
+			rows[0]?.device_id !== runtimeDeviceId ||
+			!validDeviceId(runtimeDeviceId)
+		)
+			return null;
+		return allocateLocalMemorySource(db);
+	}
+	const sourceDeviceId = getOrCreateLocalCaptureId(db);
+	return persistBinding(db, {
+		entityId: `memory-local-capture-v1:${Buffer.from(sourceDeviceId).toString("base64url")}:${randomUUID()}`,
+		sourceDeviceId,
+		evidence: "local_creation",
+	});
 }
 
 /**

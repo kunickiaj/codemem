@@ -13,6 +13,8 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { connect as connectDb, resolveDbPath } from "./db.js";
 import { codememHomeDir } from "./home.js";
+import { adoptLocalCapture, hasPendingLocalCapture } from "./memory-local-capture.js";
+import { readCodememConfigFile } from "./observer-config.js";
 import * as schema from "./schema.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
@@ -479,6 +481,50 @@ export interface EnsureDeviceIdentityOptions {
 	deviceId?: string;
 }
 
+/** Enrollment/write boundary only; reads consume an already-retained association. */
+function adoptPendingCaptureForEnsuredIdentity(
+	db: Database,
+	deviceId: string,
+	publicKey: string,
+): void {
+	if (!hasPendingLocalCapture(db)) return;
+	const configuredDevice = process.env.CODEMEM_DEVICE_ID?.trim();
+	if (configuredDevice && configuredDevice !== deviceId) return;
+	const config = readCodememConfigFile();
+	let configuredActor = typeof config.actor_id === "string" ? config.actor_id.trim() : undefined;
+	if (Object.hasOwn(process.env, "CODEMEM_ACTOR_ID"))
+		configuredActor = process.env.CODEMEM_ACTOR_ID?.trim();
+	try {
+		db.transaction(() =>
+			adoptLocalCapture(db, deviceId, {
+				expectedPublicKey: publicKey,
+				actorId: configuredActor || `local:${deviceId}`,
+				runtimeDeviceId: deviceId,
+			}),
+		)();
+	} catch (error) {
+		// A capture conflict must not stop enrollment. SQL/key failures still propagate.
+		if (
+			!(error instanceof Error) ||
+			error.constructor !== Error ||
+			error.message !== "device_adoption_actor_conflict"
+		)
+			throw error;
+	}
+}
+
+function deviceRowForEnsure(db: Database) {
+	return drizzle(db, { schema })
+		.select({
+			device_id: schema.syncDevice.device_id,
+			public_key: schema.syncDevice.public_key,
+			fingerprint: schema.syncDevice.fingerprint,
+		})
+		.from(schema.syncDevice)
+		.limit(1)
+		.get();
+}
+
 /**
  * Ensure this device has a keypair and a row in the sync_device table.
  *
@@ -495,15 +541,7 @@ export function ensureDeviceIdentity(
 
 	// Check for existing device row
 	const d = drizzle(db, { schema });
-	const row = d
-		.select({
-			device_id: schema.syncDevice.device_id,
-			public_key: schema.syncDevice.public_key,
-			fingerprint: schema.syncDevice.fingerprint,
-		})
-		.from(schema.syncDevice)
-		.limit(1)
-		.get();
+	const row = deviceRowForEnsure(db);
 	const existingDeviceId = row?.device_id ?? "";
 	const existingPublicKey = row?.public_key ?? "";
 	const existingFingerprint = row?.fingerprint ?? "";
@@ -583,6 +621,7 @@ export function ensureDeviceIdentity(
 		if (keyStoreMode() === "keychain" && fileMatchesStoredIdentity) {
 			storePrivateKeyKeychain(privateKey, existingDeviceId);
 		}
+		adoptPendingCaptureForEnsuredIdentity(db, existingDeviceId, derivedPublicKey);
 		return [existingDeviceId, existingFingerprint];
 	}
 
@@ -610,9 +649,12 @@ export function ensureDeviceIdentity(
 
 	// Insert new device row
 	const resolvedDeviceId = options?.deviceId ?? randomUUID();
-	d.insert(schema.syncDevice)
-		.values({ device_id: resolvedDeviceId, public_key: publicKey, fingerprint, created_at: now })
-		.run();
+	db.transaction(() => {
+		d.insert(schema.syncDevice)
+			.values({ device_id: resolvedDeviceId, public_key: publicKey, fingerprint, created_at: now })
+			.run();
+		adoptPendingCaptureForEnsuredIdentity(db, resolvedDeviceId, publicKey);
+	})();
 	if (keyStoreMode() === "keychain") {
 		const privateKey = existsSync(privatePath) ? readFileSync(privatePath) : null;
 		if (privateKey) {

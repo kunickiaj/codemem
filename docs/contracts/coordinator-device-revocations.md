@@ -524,11 +524,40 @@ or write schema. Resolved visibility and the database-backed filter fallback use
 the same decision, while a fallback without database access cannot grant managed
 access.
 
-Locally authored history remains readable after losing membership. Imported rows
-with a legacy `local` origin and an import key do not count as local authorship.
-This read exception does not permit new writes: MCP remember checks current
-resolved-scope permission inside its rollback transaction. Import permissions,
-additional share inviters, and policy inheritance still need separate adoption.
+### Managed-authored history and current writes
+
+Historical read access is never permission for a current write. User-facing
+remember and forget operations, Project and visibility changes, inventory
+relabels, legacy-target changes, scope-mapping moves, and their rollbacks must
+check current managed proof against the runtime's actual signing key in the
+write transaction. A historical key, actor, origin, clock, UUID, or cached
+scope cannot substitute for that check.
+
+Locally authored managed history may remain readable after membership changes
+only when all of the following match: an immutable `local_creation` source
+binding, the original scope and content-creation snapshot, the actual runtime
+key association, and the absence of a foreign revision. This history exception
+does not authorize any new write.
+
+Any local content or scope edit, sharing move, or foreign replacement breaks
+the original-creation match; proof is not rewritten automatically. Key rotation
+does not rebind an earlier capture association. Imported, upserted, or snapshot
+rows cannot inherit local proof by reusing a key, UUID, local clock, or origin.
+Ambiguous older local-origin or UUID rows remain preserved but restricted until
+explicit recovery; they are not backfilled.
+
+The first genuine local capture creates one unsigned, per-database birth record
+without creating signing keys or using Google. A capture/key mismatch still
+writes a plain UUID without proof. Only an explicit, key-validated identity
+ensure can adopt the pending birth, and it can do so once; constructors and
+reads do not adopt it. An actor conflict skips that adoption without blocking
+device enrollment, while an explicit `MemoryStore` actor relabel denies the
+conflict and rolls back.
+
+Data that no longer matches this exception is retained rather than deleted.
+Current managed-authorized reads continue to use their current proof. Import
+permissions, additional share inviters, and policy inheritance remain separate
+contract work.
 
 ## Activation limits
 

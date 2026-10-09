@@ -18,6 +18,8 @@ import { MemoryStore } from "../../../core/src/store.js";
 import { getRetrievalAttempt } from "../../../core/src/retrieval-ledger.js";
 import { automaticRecallHealth } from "../../../core/src/automatic-recall.js";
 import { initTestSchema } from "../../../core/src/test-utils.js";
+import { refreshManagedScopeFixture } from "../../../core/src/managed-scope-test-fixtures.js";
+import { loadRuntimeSigningPublicKey } from "../../../core/src/sync-identity.js";
 import { buildViewerIdentityTarget } from "../../../core/src/identity-target.js";
 import { writeRawEventSpoolEntry } from "../../../opencode-plugin/.opencode/lib/raw-event-spool.js";
 import {
@@ -268,16 +270,6 @@ const insertCoordinatorScope = (db, scopeId) => {
 	).run(scopeId, scopeId, now, now);
 };
 
-const grantScopeToDevice = (db, scopeId, deviceId) => {
-	insertCoordinatorScope(db, scopeId);
-	db.prepare(
-		`INSERT OR REPLACE INTO scope_memberships(
-			scope_id, device_id, role, status, membership_epoch,
-			coordinator_id, group_id, updated_at
-		 ) VALUES (?, ?, 'member', 'active', 0, 'coord-test', 'group-test', ?)`,
-	).run(scopeId, deviceId, new Date().toISOString());
-};
-
 const insertScopedMemory = (
 	db,
 	{ sessionId, scopeId, title, bodyText },
@@ -315,6 +307,7 @@ describe("OpenCode transform-time injection", () => {
 		for (const key of [
 			"CODEMEM_DB",
 			"CODEMEM_DEVICE_ID",
+			"CODEMEM_KEYS_DIR",
 			"CODEMEM_ACTOR_ID",
 			"CODEMEM_CONFIG",
 			"CODEMEM_RUNTIME_ROOT",
@@ -2403,17 +2396,25 @@ describe("OpenCode transform-time injection", () => {
 	});
 
 	test("injects the CLI-scoped pack without unauthorized scope memories", async () => {
+		// Arrange: authorize only scope-a through validated V1 proof and a real signing key.
 		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-plugin-scope-"));
 		tmpDirs.push(tmpDir);
 		const worktree = join(tmpDir, "greenroom");
 		mkdirSync(worktree);
 		const dbPath = join(tmpDir, "mem.sqlite");
 		const deviceId = "plugin-scope-device";
+		const keysDir = join(tmpDir, "keys");
 		const db = connect(dbPath);
 		initTestSchema(db);
 		const sessionId = insertSession(db, { cwd: worktree, project: "greenroom" });
-		grantScopeToDevice(db, "scope-a", deviceId);
+		insertCoordinatorScope(db, "scope-a");
 		insertCoordinatorScope(db, "scope-b");
+		const publicKey = await refreshManagedScopeFixture(db, {
+			keysDir,
+			deviceId,
+			scopeIds: ["scope-a"],
+		});
+		expect(loadRuntimeSigningPublicKey(db, { keysDir, deviceId })).toBe(publicKey);
 		insertScopedMemory(db, {
 			sessionId,
 			scopeId: "scope-a",
@@ -2430,6 +2431,7 @@ describe("OpenCode transform-time injection", () => {
 
 		process.env.CODEMEM_DB = dbPath;
 		process.env.CODEMEM_DEVICE_ID = deviceId;
+		process.env.CODEMEM_KEYS_DIR = keysDir;
 		process.env.CODEMEM_RUNNER = "codemem-test-runner";
 		const showToast = vi.fn().mockResolvedValue(undefined);
 		spawnMock.mockImplementation((_command, args, options) => {
@@ -2466,8 +2468,10 @@ describe("OpenCode transform-time injection", () => {
 				},
 			],
 		};
+		// Act: execute the real CLI pack handler through the mocked subprocess.
 		await hooks["experimental.chat.messages.transform"]({}, output);
 
+		// Assert: retain the authorized note without disclosing payroll content.
 		const userPrompt = output.messages[0].parts.map((part) => part.text || "").join("\n");
 		expect(userPrompt).toContain("Greenroom authorized scope note");
 		expect(userPrompt).not.toContain("Greenroom forbidden payroll secret");
