@@ -6,7 +6,7 @@
  */
 
 import type { Database } from "better-sqlite3";
-import { projectClause } from "./project.js";
+import { projectColumnClause } from "./project.js";
 import {
 	LEGACY_SHARED_REVIEW_SCOPE_ID,
 	LOCAL_DEFAULT_SCOPE_ID,
@@ -258,6 +258,16 @@ function addResolvedScopeVisibilityFilter(
 	params.push(deviceId, deviceId);
 }
 
+function addProjectFilter(project: string | null | undefined, result: FilterResult): void {
+	if (!project) return;
+	// Per-memory attribution takes precedence; legacy rows still need the sessions JOIN.
+	const filter = projectColumnClause("COALESCE(memory_items.project, sessions.project)", project);
+	if (!filter.clause) return;
+	result.clauses.push(filter.clause);
+	result.params.push(...filter.params);
+	result.joinSessions = true;
+}
+
 /**
  * Build WHERE clause fragments from a MemoryFilters object.
  *
@@ -307,15 +317,7 @@ export function buildFilterClausesWithContext(
 		params.push(...ownedPredicate.params);
 	}
 
-	// Project scoping — requires sessions JOIN
-	if (filters.project) {
-		const { clause, params: projectParams } = projectClause(filters.project);
-		if (clause) {
-			clauses.push(clause);
-			params.push(...projectParams);
-			result.joinSessions = true;
-		}
-	}
+	addProjectFilter(filters.project, result);
 
 	// Visibility
 	addMultiValueFilter(
