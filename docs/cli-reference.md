@@ -42,7 +42,11 @@ Adapter plumbing commands (`claude-hook-*`, `codex-hook-*`, `pi-hook-*`, `enqueu
 
 ### Memory export visibility
 
-Exports include only memories readable under the device's current Sharing domain authority. If any memory in a session is inaccessible, including inactive or deleted history, exports omit that session's prompts, summaries, and metadata and retain only an ID-only session reference so readable memories can still be imported. Project, date, and activity filters do not reduce authority for otherwise readable session records. Sessions with no exportable memories remain excluded.
+Exports include only memories readable under the device's current Sharing domain authority. If any memory in a session is inaccessible, including inactive or deleted history, exports omit that session's prompts, summaries, and metadata and retain only a numeric ID, an opaque stable session key, and a redaction marker so readable memories can still be imported. Project, date, and activity filters do not reduce authority for otherwise readable session records. Sessions with no exportable memories remain excluded.
+
+Full and redacted session exports share the same deterministic `export_session_key`; repeated imports and restored authority do not create another session. Redacted imports leave source time blank and source user and working directory unset rather than copying the receiving machine's values. Older payloads without the key retain the legacy import-key behavior; importing a new full representation also upgrades an existing legacy session key for later redacted imports.
+
+Redacted imports preserve projects carried by readable memory rows; an explicit project remap wins. A session gets a project only when all its readable memories agree on one; otherwise each memory keeps its own project for retrieval and feed filtering, without copying the hidden session's project.
 
 ### Pi setup
 

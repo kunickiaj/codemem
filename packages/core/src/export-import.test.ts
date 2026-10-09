@@ -221,7 +221,13 @@ describe("export mixed-session authority", () => {
 
 			// Assert: keep readable memories importable, but no unscoped session source bytes.
 			expect(payload.memory_items.map((memory) => memory.id)).toEqual([100]);
-			expect(payload.sessions).toEqual([{ id: 1 }]);
+			expect(payload.sessions).toEqual([
+				{
+					id: 1,
+					export_session_key: expect.stringMatching(/^export-session:v1:[a-f0-9]{64}$/),
+					export_session_redacted: true,
+				},
+			]);
 			expect(payload.user_prompts).toEqual([]);
 			expect(payload.session_summaries).toEqual([]);
 			expect(JSON.stringify(payload)).not.toContain("hidden-");
@@ -231,6 +237,200 @@ describe("export mixed-session authority", () => {
 				user_prompts: 0,
 				session_summaries: 0,
 			});
+		} finally {
+			store.close();
+		}
+	});
+});
+
+function seedSessionIdentitySource(name: string, importKey: string | null): string {
+	const dbPath = createDbPath(name);
+	seedSourceDb(dbPath);
+	const db = new Database(dbPath);
+	try {
+		db.prepare("UPDATE sessions SET import_key = ?, project = ?, started_at = ? WHERE id = 1").run(
+			importKey,
+			`hidden-project-${name}`,
+			`2026-03-0${name === "first" ? 1 : 2}T10:00:00Z`,
+		);
+		db.prepare("UPDATE memory_items SET import_key = ? WHERE id = 100").run(`visible-${name}`);
+		db.prepare("UPDATE memory_items SET scope_id = 'inaccessible' WHERE id = 101").run();
+	} finally {
+		db.close();
+	}
+	return dbPath;
+}
+
+describe("export session identity", () => {
+	it.each(["source-key", null])(
+		"separates sources and retains identity across redaction with %s",
+		(key) => {
+			// Arrange: same numeric session ID, distinct source identities, and inaccessible history.
+			const firstPath = seedSessionIdentitySource("first", key && `${key}-first`);
+			const secondPath = seedSessionIdentitySource("second", key && `${key}-second`);
+			const destPath = createDbPath("identity-destination");
+			const dest = new Database(destPath);
+			initTestSchema(dest);
+			const first = exportMemories({ dbPath: firstPath, allProjects: true });
+			const second = exportMemories({ dbPath: secondPath, allProjects: true });
+			try {
+				// Act: import two sources, repeat the export, then restore full session authority.
+				const firstImport = importMemories(first, { dbPath: destPath });
+				const secondImport = importMemories(second, { dbPath: destPath });
+				const repeat = exportMemories({ dbPath: firstPath, allProjects: true });
+				const repeatedImport = importMemories(repeat, { dbPath: destPath });
+				const source = new Database(firstPath);
+				source.prepare("UPDATE memory_items SET scope_id = 'local-default' WHERE id = 101").run();
+				source.close();
+				const full = exportMemories({ dbPath: firstPath, allProjects: true });
+				const restoredImport = importMemories(full, { dbPath: destPath });
+
+				// Assert: no collision, no duplicate, no invented source time/user/working directory.
+				expect(firstImport.sessions).toBe(1);
+				expect(secondImport.sessions).toBe(1);
+				expect(repeatedImport.sessions).toBe(0);
+				expect(restoredImport.sessions).toBe(0);
+				expect(first.sessions[0]?.export_session_key).not.toBe(
+					second.sessions[0]?.export_session_key,
+				);
+				expect(repeat.sessions[0]?.export_session_key).toBe(first.sessions[0]?.export_session_key);
+				expect(full.sessions[0]?.export_session_key).toBe(first.sessions[0]?.export_session_key);
+				expect(JSON.stringify(first.sessions)).not.toContain("hidden-project");
+				expect(dest.prepare("SELECT started_at, cwd, user FROM sessions").all()).toEqual([
+					{ started_at: "", cwd: null, user: null },
+					{ started_at: "", cwd: null, user: null },
+				]);
+				expect(
+					dest.prepare("SELECT COUNT(DISTINCT session_id) AS n FROM memory_items").get(),
+				).toEqual({ n: 2 });
+			} finally {
+				dest.close();
+			}
+		},
+	);
+
+	it.each([undefined, "invalid-session-marker"])(
+		"reuses and promotes an older full-payload session identity with %s",
+		(marker) => {
+			// Arrange: a destination imported a full session before opaque keys existed.
+			const sourcePath = seedSessionIdentitySource("first", "source-key-first");
+			const source = new Database(sourcePath);
+			source.prepare("UPDATE memory_items SET scope_id = 'local-default' WHERE id = 101").run();
+			const full = exportMemories({ dbPath: sourcePath, allProjects: true });
+			const legacy = {
+				...full,
+				sessions: full.sessions.map(({ export_session_key: _key, ...row }) => ({
+					...row,
+					export_session_key: marker,
+				})),
+			};
+			const destPath = createDbPath("legacy-identity-destination");
+			const dest = new Database(destPath);
+			initTestSchema(dest);
+			try {
+				// Act: import the older format, the new full format, then a redacted export.
+				const original = importMemories(legacy, { dbPath: destPath });
+				const promoted = importMemories(full, { dbPath: destPath });
+				source.prepare("UPDATE memory_items SET scope_id = 'inaccessible' WHERE id = 101").run();
+				const redacted = exportMemories({ dbPath: sourcePath, allProjects: true });
+				const repeated = importMemories(redacted, { dbPath: destPath });
+
+				// Assert: marker-free imports still work and migration does not create another session.
+				expect(original.sessions).toBe(1);
+				expect(promoted.sessions).toBe(0);
+				expect(repeated.sessions).toBe(0);
+				expect(dest.prepare("SELECT started_at, cwd, user FROM sessions").all()).toEqual([
+					{ started_at: "2026-03-01T10:00:00Z", cwd: "/tmp/repo", user: "adam" },
+				]);
+			} finally {
+				dest.close();
+				source.close();
+			}
+		},
+	);
+});
+
+describe("redacted import project attribution", () => {
+	it.each([
+		{ projects: ["alpha"], remapProject: null, sessionProject: "alpha" },
+		{ projects: ["alpha"], remapProject: "remapped", sessionProject: "remapped" },
+		{ projects: ["alpha", "beta"], remapProject: null, sessionProject: null },
+		{ projects: ["alpha", "beta"], remapProject: "remapped", sessionProject: "remapped" },
+		{ projects: ["alpha", null], remapProject: null, sessionProject: null },
+	])("keeps only readable memory projects retrievable after redacted import: %j", (state) => {
+		// Arrange: readable rows have explicit project attribution distinct from the hidden session.
+		const sourcePath = seedSessionIdentitySource("first", "project-source");
+		const source = new Database(sourcePath);
+		try {
+			source
+				.prepare(
+					"UPDATE memory_items SET project = 'alpha', title = 'projectneedle alpha' WHERE id = 100",
+				)
+				.run();
+			if (state.projects.length > 1) {
+				source
+					.prepare(`INSERT INTO memory_items(id, session_id, kind, title, body_text, active,
+					created_at, updated_at, metadata_json, import_key, scope_id, project)
+					VALUES (102, 1, 'feature', 'projectneedle beta', 'readable beta', 1,
+					'2026-03-01T10:03:00Z', '2026-03-01T10:03:00Z', '{}', 'visible-beta', 'local-default', ?)`)
+					.run(state.projects[1]);
+			}
+			source
+				.prepare("UPDATE memory_items SET project = 'hidden-memory-project' WHERE id = 101")
+				.run();
+		} finally {
+			source.close();
+		}
+		const payload = exportMemories({ dbPath: sourcePath, allProjects: true });
+		const destPath = createDbPath("project-destination");
+		const setup = new Database(destPath);
+		initTestSchema(setup);
+		setup.close();
+
+		// Act: import and repeat, then exercise the store APIs used for retrieval and feed.
+		importMemories(payload, { dbPath: destPath, remapProject: state.remapProject });
+		const repeated = importMemories(payload, {
+			dbPath: destPath,
+			remapProject: state.remapProject,
+		});
+		const rawImport = new Database(destPath, { readonly: true });
+		const importedProjects = rawImport
+			.prepare("SELECT project FROM memory_items ORDER BY id")
+			.all();
+		rawImport.close();
+		const store = new MemoryStore(destPath);
+		try {
+			// Assert: matching projects see their own rows; neither hidden nor unrelated projects match.
+			expect(importedProjects).toEqual(
+				state.projects.map((project) => ({ project: state.remapProject ?? project })),
+			);
+			expect(payload.sessions[0]?.project).toBeUndefined();
+			expect(JSON.stringify(payload)).not.toContain("hidden-project");
+			expect(JSON.stringify(payload)).not.toContain("hidden-memory-project");
+			expect(repeated).toMatchObject({ sessions: 0, memory_items: 0 });
+			expect(store.db.prepare("SELECT project, started_at, cwd, user FROM sessions").get()).toEqual(
+				{
+					project: state.sessionProject,
+					started_at: "",
+					cwd: null,
+					user: null,
+				},
+			);
+			for (const project of state.projects) {
+				if (!project) continue;
+				const filter = { project: state.remapProject ?? project };
+				const expectedCount = state.remapProject ? state.projects.length : 1;
+				expect(store.recent(10, filter)).toHaveLength(expectedCount);
+				expect(store.recentByKinds(["feature"], 10, filter)).toHaveLength(expectedCount);
+				expect(store.search("projectneedle", 10, filter)).toHaveLength(expectedCount);
+			}
+			expect(store.db.prepare("SELECT project FROM memory_items ORDER BY id").all()).toEqual(
+				state.projects.map((project) => ({ project: state.remapProject ?? project })),
+			);
+			for (const project of ["unrelated", "hidden-project-first", "hidden-memory-project"]) {
+				expect(store.recent(10, { project })).toEqual([]);
+				expect(store.search("projectneedle", 10, { project })).toEqual([]);
+			}
 		} finally {
 			store.close();
 		}
