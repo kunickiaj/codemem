@@ -1355,7 +1355,7 @@ function persistIngestPlan(
 						recovered_at: new Date().toISOString(),
 					}
 				: memory.metadata;
-			const memoryId = store.remember(
+			const memoryId = store.rememberForUser(
 				stage.sessionId,
 				memory.kind,
 				memory.title,
@@ -1519,6 +1519,8 @@ export async function ingest(
 	try {
 		await processIngestSession(store, stage, options);
 	} catch (err) {
+		// A denied capture stays retryable; do not mark its session complete.
+		if (err instanceof Error && err.message === "unauthorized_scope") throw err;
 		try {
 			endIngestSession(store, stage);
 		} catch {
