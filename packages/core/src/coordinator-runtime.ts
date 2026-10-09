@@ -844,10 +844,12 @@ function refreshRotatedCoordinatorPeerAddresses(
 	const addresses = new Map([
 		[`${rotation.peerDeviceId}:${rotation.fingerprint}`, stringList(peer.addresses)],
 	]);
-	refreshCoordinatorPeerRow(row, addresses, (merged, _manual, deviceId, fingerprint) => {
+	refreshCoordinatorPeerRow(row, addresses, (merged, manual, deviceId, fingerprint) => {
 		db.prepare(
-			"UPDATE sync_peers SET addresses_json = ? WHERE peer_device_id = ? AND pinned_fingerprint = ?",
-		).run(merged, deviceId, fingerprint);
+			`UPDATE sync_peers SET addresses_json = ?,
+			 manual_addresses_json = COALESCE(manual_addresses_json, ?)
+			 WHERE peer_device_id = ? AND pinned_fingerprint = ?`,
+		).run(merged, manual, deviceId, fingerprint);
 	});
 }
 

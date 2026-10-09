@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MAX_PEER_ADDRESSES } from "./address-utils.js";
+import {
+	MAX_PEER_ADDRESSES,
+	mergeAddresses,
+	mergeCoordinatorPeerAddresses,
+} from "./address-utils.js";
 import { createBetterSqliteCoordinatorApp } from "./better-sqlite-coordinator-runtime.js";
 import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
 import {
@@ -1883,6 +1887,127 @@ function savePeerRotationSettings(fixture: RotationFixture) {
 		.run({ ...saved, peerDeviceId: fixture.peerDeviceId });
 	return saved;
 }
+
+function setRotationDiscoveryAddresses(fixture: RotationFixture, addresses: string[]) {
+	const originalFetch = fixture.fetchMock.getMockImplementation();
+	if (!originalFetch) throw new Error("expected mocked discovery");
+	fixture.fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+		const response = await originalFetch(input);
+		if (new URL(String(input)).pathname !== "/v1/peers") return response;
+		const payload = await response.json();
+		payload.items[0].addresses = addresses;
+		return new Response(JSON.stringify(payload), { status: 200 });
+	});
+}
+
+describe("key rotation retains the address archive's source classification", () => {
+	const callers: RotationCaller[] = ["refresh", "status", "cached status"];
+	it.each(
+		callers.flatMap((caller) =>
+			["legacy NULL", "explicit JSON"].map((archive) => ({ caller, archive })),
+		),
+	)(
+		"$caller preserves $archive through rotation and later discovery churn",
+		async ({ caller, archive }) => {
+			// Arrange: legacy caches classify every old cached address as manual; explicit archives do not.
+			const fixture = await createRotationFixture();
+			vi.stubEnv("CODEMEM_SYNC_PROJECTS_INCLUDE", "");
+			vi.stubEnv("CODEMEM_SYNC_PROJECTS_EXCLUDE", "");
+			try {
+				const saved = savePeerRotationSettings(fixture);
+				const cached = [
+					" http://MANUAL-peer.example:7337/ ",
+					"http://historic-discovery.example:7337/",
+					"http://manual-peer.example:7337",
+				];
+				const explicit =
+					'[ "http://MANUAL-peer.example:7337/", "http://second-manual.example:7337/" ]';
+				const manual =
+					archive === "legacy NULL"
+						? mergeAddresses(cached, [])
+						: (JSON.parse(explicit) as string[]);
+				const expectedArchive = archive === "legacy NULL" ? JSON.stringify(manual) : explicit;
+				fixture.db
+					.prepare(
+						"UPDATE sync_peers SET addresses_json = ?, manual_addresses_json = ? WHERE peer_device_id = ?",
+					)
+					.run(
+						JSON.stringify(cached),
+						archive === "legacy NULL" ? null : explicit,
+						fixture.peerDeviceId,
+					);
+				await prepareRotation(fixture, caller, "proven");
+				const expectedRotationCache = mergeCoordinatorPeerAddresses(
+					mergeAddresses(cached, []),
+					["http://new-peer.example:7337"],
+					manual,
+					{ successfulAddress: saved.last_success_address },
+				);
+				const callsBeforeRotation = fixture.fetchMock.mock.calls.length;
+				// Act: the normal caller trusts B and refreshes discovery in the same tick.
+				if (caller === "refresh")
+					await refreshAuthorizedCoordinatorPeerTrust(fixture.store, fixture.config, {
+						keysDir: fixture.keysDir,
+					});
+				else await coordinatorStatusSnapshot(fixture.store, fixture.config);
+				// Assert: the helper determines the archive, never the newly merged dialing cache.
+				assertRotation(fixture, "proven");
+				if (caller === "cached status")
+					expect(fixture.fetchMock).toHaveBeenCalledTimes(callsBeforeRotation);
+				const row = fixture.db
+					.prepare("SELECT * FROM sync_peers WHERE peer_device_id = ?")
+					.get(fixture.peerDeviceId) as { addresses_json: string; manual_addresses_json: string };
+				expect(row).toMatchObject({
+					...saved,
+					manual_addresses_json: expectedArchive,
+					public_key: fixture.newKey,
+					pinned_fingerprint: fingerprintPublicKey(fixture.newKey),
+				});
+				expect(JSON.parse(row.addresses_json)).toEqual(expectedRotationCache);
+				expect(mergeAddresses(JSON.parse(row.manual_addresses_json), [])).not.toContain(
+					"http://new-peer.example:7337",
+				);
+				expect(syncProjectAllowed(fixture.db, "blocked-project", fixture.peerDeviceId)).toBe(false);
+				// Act: six fresh candidates fill the dialing cache with the two protected manual fallbacks.
+				const later = Array.from({ length: 6 }, (_, index) => `http://later-${index}.example:7337`);
+				setRotationDiscoveryAddresses(fixture, later);
+				await refreshAuthorizedCoordinatorPeerTrust(fixture.store, fixture.config, {
+					keysDir: fixture.keysDir,
+				});
+				// Assert: the transient rotation address is pruned, not silently promoted into the manual archive.
+				const refreshed = fixture.db
+					.prepare(
+						"SELECT addresses_json, manual_addresses_json, public_key FROM sync_peers WHERE peer_device_id = ?",
+					)
+					.get(fixture.peerDeviceId) as {
+					addresses_json: string;
+					manual_addresses_json: string;
+					public_key: string;
+				};
+				const expectedLater = mergeCoordinatorPeerAddresses(expectedRotationCache, later, manual, {
+					successfulAddress: saved.last_success_address,
+				});
+				expect(JSON.parse(refreshed.addresses_json)).toEqual(expectedLater);
+				expect(JSON.parse(refreshed.addresses_json)).not.toContain("http://new-peer.example:7337");
+				expect(JSON.parse(refreshed.addresses_json)).toContain("http://manual-peer.example:7337");
+				expect(mergeAddresses(JSON.parse(refreshed.manual_addresses_json), [])).toEqual(
+					mergeAddresses(manual, []),
+				);
+				expect(refreshed.public_key).toBe(fixture.newKey);
+				expect(syncProjectAllowed(fixture.db, "blocked-project", fixture.peerDeviceId)).toBe(false);
+				expect(
+					getRetirementPeer(fixture.db, {
+						localDeviceId: fixture.localDeviceId,
+						peerDeviceId: fixture.peerDeviceId,
+					}),
+				).toEqual({ deviceId: fixture.peerDeviceId, publicKey: fixture.oldKey });
+			} finally {
+				vi.unstubAllEnvs();
+				fixture.close();
+			}
+		},
+	);
+});
 
 function setReplacementDiscoveryName(fixture: RotationFixture) {
 	const originalFetch = fixture.fetchMock.getMockImplementation();
