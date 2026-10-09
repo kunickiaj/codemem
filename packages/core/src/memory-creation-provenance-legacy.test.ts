@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import {
 	hasMatchingLocalCreation,
 	recordLocalCreationSnapshot,
@@ -9,6 +10,7 @@ import {
 	allocateLocalCaptureMemorySource,
 	ensureMemorySourceIdentitySchema,
 } from "./memory-source-identity.js";
+import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 let db: Database.Database;
 beforeEach(() => {
@@ -80,10 +82,16 @@ it("records NULL key evidence and reads unsigned legacy proof without DDL", () =
 });
 
 it("retains enrolled snapshot evidence and rejects a wrong runtime key without repair", () => {
-	// Arrange: the storage-stage allocator uses enrolled device IDs; read proof also requires the key.
-	db.exec(`CREATE TABLE sync_device(device_id TEXT, public_key TEXT, fingerprint TEXT);
-		INSERT INTO sync_device VALUES ('enrolled', 'ssh-ed25519 stored-key', 'stored-fingerprint')`);
-	const binding = db.transaction(() => allocateLocalCaptureMemorySource(db, "enrolled"))();
+	// Arrange: enrolled allocation and read proof require matching runtime key evidence.
+	const fingerprint = fingerprintPublicKey(CANONICAL_PUBLIC_KEY);
+	db.exec("CREATE TABLE sync_device(device_id TEXT, public_key TEXT, fingerprint TEXT)");
+	db.prepare("INSERT INTO sync_device VALUES ('enrolled', ?, ?)").run(
+		CANONICAL_PUBLIC_KEY,
+		fingerprint,
+	);
+	const binding = db.transaction(() =>
+		allocateLocalCaptureMemorySource(db, "enrolled", { expectedPublicKey: CANONICAL_PUBLIC_KEY }),
+	)();
 	if (!binding) throw new Error("Missing enrolled binding");
 	db.prepare(
 		"INSERT INTO memory_items(id, import_key, title, metadata_json) VALUES (1, ?, 'Original', '{}')",
@@ -106,8 +114,8 @@ it("retains enrolled snapshot evidence and rejects a wrong runtime key without r
 			.prepare("SELECT source_public_key, source_fingerprint FROM memory_local_creation_snapshots")
 			.get(),
 	).toEqual({
-		source_public_key: "ssh-ed25519 stored-key",
-		source_fingerprint: "stored-fingerprint",
+		source_public_key: CANONICAL_PUBLIC_KEY,
+		source_fingerprint: fingerprint,
 	});
 	expect(wrongRuntime).toBeNull();
 	expect(sources).toEqual([]);
@@ -124,9 +132,14 @@ it("retains enrolled snapshot evidence and rejects a wrong runtime key without r
 
 it("does not treat signed snapshots as unsigned when enrollment disappears", () => {
 	// Arrange
-	db.exec(`CREATE TABLE sync_device(device_id TEXT, public_key TEXT, fingerprint TEXT);
-		INSERT INTO sync_device VALUES ('enrolled', 'ssh-ed25519 stored-key', 'stored-fingerprint')`);
-	const binding = db.transaction(() => allocateLocalCaptureMemorySource(db, "enrolled"))();
+	db.exec("CREATE TABLE sync_device(device_id TEXT, public_key TEXT, fingerprint TEXT)");
+	db.prepare("INSERT INTO sync_device VALUES ('enrolled', ?, ?)").run(
+		CANONICAL_PUBLIC_KEY,
+		fingerprintPublicKey(CANONICAL_PUBLIC_KEY),
+	);
+	const binding = db.transaction(() =>
+		allocateLocalCaptureMemorySource(db, "enrolled", { expectedPublicKey: CANONICAL_PUBLIC_KEY }),
+	)();
 	if (!binding) throw new Error("Missing enrolled binding");
 	db.prepare("INSERT INTO memory_items(id, import_key, metadata_json) VALUES (1, ?, '{}')").run(
 		binding.entityId,

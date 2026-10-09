@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { buildFilterClausesWithContext } from "./filters.js";
-import { allocateLocalMemorySource, getVerifiedMemorySource } from "./memory-source-identity.js";
+import { recordLocalCreationSnapshot } from "./memory-creation-provenance.js";
+import {
+	allocateLocalCaptureMemorySource,
+	getVerifiedMemorySource,
+} from "./memory-source-identity.js";
 import { populateMemoryRefs } from "./ref-populate.js";
 import * as schema from "./schema.js";
 import type { MemoryStore } from "./store.js";
@@ -226,7 +230,12 @@ function recoveredMetadata(
 }
 
 function copyRow(store: MemoryStore, original: Row, operationId: string, now: string) {
-	const binding = allocateLocalMemorySource(store.db);
+	const binding = allocateLocalCaptureMemorySource(
+		store.db,
+		store.deviceId,
+		store.scopeResolutionDeviceContext(),
+	);
+	if (!binding) fail("ownership_identity_changed", 409);
 	const { id: _id, ...content } = original;
 	const scanned = store.scanner.redactValue(content).value as typeof content;
 	const session = store.db
@@ -256,6 +265,7 @@ function copyRow(store: MemoryStore, original: Row, operationId: string, now: st
 		})
 		.returning({ id: schema.memoryItems.id })
 		.get();
+	recordLocalCreationSnapshot(store.db, inserted.id);
 	populateMemoryRefs(
 		store.db,
 		inserted.id,

@@ -13,6 +13,7 @@ import { and, desc, eq, gt, isNotNull, isNull, like, or, sql } from "drizzle-orm
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { fromJson, fromJsonStrict, toJson, toJsonNullable } from "./db.js";
+import { recordForeignMemoryRevision } from "./memory-creation-provenance.js";
 import { retirementAllowsSnapshot } from "./memory-retirement-snapshot-guard.js";
 import {
 	assertMemoryScopeNotRetired,
@@ -538,13 +539,16 @@ function resetRequired(
 	};
 }
 
-function mergePayloadMetadata(
-	metadata: Record<string, unknown>,
-	clockDeviceId: string,
+function foreignRevisionMetadata(
+	db: Database,
+	op: ReplicationOp,
+	metadata: Record<string, unknown> | string | null,
 ): Record<string, unknown> {
+	recordForeignMemoryRevision(db, op.entity_id, "replication");
+	const object = typeof metadata === "string" || metadata === null ? fromJson(metadata) : metadata;
 	return {
-		...metadata,
-		clock_device_id: clockDeviceId,
+		...object,
+		clock_device_id: op.clock_device_id,
 	};
 }
 
@@ -3539,6 +3543,60 @@ function rejectUnretiredScopeFailures(
 	return rejected;
 }
 
+function skipOwnRetiredOrAppliedOp(
+	db: Database,
+	d: ReturnType<typeof drizzle>,
+	op: ReplicationOp,
+	localDeviceId: string,
+): boolean {
+	if (skipOwnOrRetiredMemoryOp(db, op, localDeviceId)) return true;
+	return (
+		d
+			.select({ one: sql<number>`1` })
+			.from(schema.replicationOps)
+			.where(eq(schema.replicationOps.op_id, op.op_id))
+			.get() !== undefined
+	);
+}
+
+function rollbackReplicationOp(
+	db: Database,
+	result: ApplyResult,
+	vectorWork: Map<number, "upsert" | "delete">,
+): void {
+	db.exec("ROLLBACK TO codemem_replication_op");
+	result.applied = 0;
+	result.skipped = 0;
+	result.conflicts = 0;
+	vectorWork.clear();
+}
+
+function finishReplicationOp(
+	db: Database,
+	result: ApplyResult,
+	effects: {
+		batchResult: ApplyResult;
+		opVectorWork: Map<number, "upsert" | "delete">;
+		upsertMemoryIds: Set<number>;
+		deleteMemoryIds: Set<number>;
+	},
+): void {
+	db.exec("RELEASE codemem_replication_op");
+	effects.batchResult.applied += result.applied;
+	effects.batchResult.skipped += result.skipped;
+	effects.batchResult.conflicts += result.conflicts;
+	effects.batchResult.errors.push(...result.errors);
+	for (const [memoryId, operation] of effects.opVectorWork) {
+		if (operation === "upsert") {
+			effects.deleteMemoryIds.delete(memoryId);
+			effects.upsertMemoryIds.add(memoryId);
+		} else {
+			effects.upsertMemoryIds.delete(memoryId);
+			effects.deleteMemoryIds.add(memoryId);
+		}
+	}
+}
+
 export function applyReplicationOps(
 	db: Database,
 	ops: ReplicationOp[],
@@ -3560,15 +3618,14 @@ export function applyReplicationOps(
 	}
 	const upsertMemoryIds = new Set<number>();
 	const deleteMemoryIds = new Set<number>();
+	const opVectorWork = new Map<number, "upsert" | "delete">();
 	const queueVectorUpsert = (memoryId: number): void => {
 		if (!Number.isInteger(memoryId) || memoryId <= 0) return;
-		deleteMemoryIds.delete(memoryId);
-		upsertMemoryIds.add(memoryId);
+		opVectorWork.set(memoryId, "upsert");
 	};
 	const queueVectorDelete = (memoryId: number): void => {
 		if (!Number.isInteger(memoryId) || memoryId <= 0) return;
-		upsertMemoryIds.delete(memoryId);
-		deleteMemoryIds.add(memoryId);
+		opVectorWork.set(memoryId, "delete");
 	};
 	const applyAccessCleanupOp = (op: ReplicationOp): boolean => {
 		const cleanup = parseAccessCleanupPayload(op);
@@ -3595,22 +3652,16 @@ export function applyReplicationOps(
 		return true;
 	};
 
+	const effects = { batchResult: result, opVectorWork, upsertMemoryIds, deleteMemoryIds };
 	const applyAll = db.transaction(() => {
 		for (const op of ops) {
+			const result = emptyApplyResult();
+			opVectorWork.clear();
+			// Per-op failures must roll back content, provenance, refs, and op acknowledgement together.
+			db.exec("SAVEPOINT codemem_replication_op");
 			try {
-				// Skip own ops
-				if (skipOwnOrRetiredMemoryOp(db, op, localDeviceId)) {
-					result.skipped++;
-					continue;
-				}
-
-				// Idempotent: skip if already applied
-				const existing = d
-					.select({ one: sql<number>`1` })
-					.from(schema.replicationOps)
-					.where(eq(schema.replicationOps.op_id, op.op_id))
-					.get();
-				if (existing) {
+				// Skip own, retired, and already-applied ops.
+				if (skipOwnRetiredOrAppliedOp(db, d, op, localDeviceId)) {
 					result.skipped++;
 					continue;
 				}
@@ -3662,8 +3713,7 @@ export function applyReplicationOps(
 						result.conflicts++;
 						continue;
 					}
-					const metadata = fromJson(current.metadata_json);
-					metadata.clock_device_id = op.clock_device_id;
+					const metadata = foreignRevisionMetadata(db, op, current.metadata_json);
 					metadata.last_scope_reassignment = reassignment;
 					d.update(schema.memoryItems)
 						.set({
@@ -3753,7 +3803,7 @@ export function applyReplicationOps(
 							continue;
 						}
 						redactMemoryFields(payload, activeScanner);
-						const metaObj = mergePayloadMetadata(payload.metadata_json, op.clock_device_id);
+						const metaObj = foreignRevisionMetadata(db, op, payload.metadata_json);
 						const nextTitle = resolveReplicatedTextUpdate(payload.title, memRow.title);
 						const nextBodyText = resolveReplicatedTextUpdate(payload.body_text, memRow.body_text);
 						const contentChanged =
@@ -3851,7 +3901,7 @@ export function applyReplicationOps(
 							op.clock_updated_at,
 							replicatedProject,
 						);
-						const metaObj = mergePayloadMetadata(payload.metadata_json, op.clock_device_id);
+						const metaObj = foreignRevisionMetadata(db, op, payload.metadata_json);
 						const insertedRows = d
 							.insert(schema.memoryItems)
 							.values({
@@ -3941,8 +3991,7 @@ export function applyReplicationOps(
 							continue;
 						}
 						const now = new Date().toISOString();
-						const deleteMetadata = fromJson(existingForDelete.metadata_json);
-						deleteMetadata.clock_device_id = op.clock_device_id;
+						const deleteMetadata = foreignRevisionMetadata(db, op, existingForDelete.metadata_json);
 						d.update(schema.memoryItems)
 							.set({
 								active: 0,
@@ -3973,7 +4022,10 @@ export function applyReplicationOps(
 				insertReplicationOpRow(d, op);
 				result.applied++;
 			} catch (err) {
+				rollbackReplicationOp(db, result, opVectorWork);
 				result.errors.push(`op ${op.op_id}: ${err instanceof Error ? err.message : String(err)}`);
+			} finally {
+				finishReplicationOp(db, result, effects);
 			}
 		}
 	});
