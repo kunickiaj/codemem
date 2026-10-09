@@ -52,7 +52,11 @@ import type { RefQueryOptions, RefQueryResult } from "./ref-queries.js";
 import { findByConcept as findByConceptFn, findByFile as findByFileFn } from "./ref-queries.js";
 import * as schema from "./schema.js";
 import { resolveVisibleScopeIds, type ScopeVisibilityOptions } from "./scope-resolution.js";
-import { ensureMemoryScopeId, resolveSessionScopeId } from "./scope-stamping.js";
+import {
+	ensureMemoryScopeId,
+	resolveMemoryScopeId,
+	resolveSessionScopeId,
+} from "./scope-stamping.js";
 import {
 	type ExplainOptions,
 	explain as explainFn,
@@ -808,10 +812,8 @@ export class MemoryStore {
 
 	/** Current scope authority for user-facing mutations, not authored-history read access. */
 	canMutateMemory(memoryId: number): boolean {
-		const row = this.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").get(memoryId) as
-			| { scope_id: string | null }
-			| undefined;
-		return row != null && this.isScopeWritable(row.scope_id);
+		const scopeId = resolveMemoryScopeId(this.db, memoryId);
+		return scopeId != null && this.isScopeWritable(scopeId);
 	}
 
 	/** Keep read eligibility and current write authority separate at mutation entrypoints. */
@@ -1621,6 +1623,8 @@ export class MemoryStore {
 		return this.db
 			.transaction(() => {
 				if (!this.getForMutation(memoryId)) throw new Error("memory not found");
+				// Keep the authorized assignment stable when visibility changes workspace_id.
+				ensureMemoryScopeId(this.db, memoryId);
 				return this.updateMemoryVisibility(memoryId, visibility);
 			})
 			.immediate();
@@ -1832,6 +1836,8 @@ export class MemoryStore {
 				if (memories.some((memory) => !this.canMutateMemory(memory.id))) {
 					throw new Error("memory not found");
 				}
+				// Project labels must not silently re-resolve an authorized pending assignment.
+				for (const memory of memories) ensureMemoryScopeId(this.db, memory.id);
 				return this.moveMemoryProject(memoryId, project);
 			})
 			.immediate();
