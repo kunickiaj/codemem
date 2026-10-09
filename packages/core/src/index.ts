@@ -1177,6 +1177,7 @@ export {
 	canonicalWorkspaceIdentity,
 	LOCAL_DEFAULT_SCOPE_ID,
 	resolveProjectScope,
+	resolveVisibleScopeIds,
 } from "./scope-resolution.js";
 export type { StoreHandle } from "./search.js";
 export {
