@@ -320,6 +320,72 @@ describe("managed authorization for the existing row behind a manual operation",
 	);
 });
 
+describe("managed authorization for every duplicate import key row", () => {
+	const cases = (["upsert", "delete"] as const).flatMap((opType) => [
+		{ opType, entityType: "memory_item" },
+		{ opType, entityType: "memory_itemx" },
+	]);
+	it.each(cases)(
+		"rejects $entityType $opType when the first duplicate is manual and the later duplicate is managed",
+		async ({ opType, entityType }) => {
+			// Arrange: use real signing-key evidence, then put U before M under the same key K.
+			await root.refresh();
+			const manualId = await seedManualMemory(`duplicate-${opType}-seed`);
+			const entityId = `duplicate-${opType}-seed-memory`;
+			const inserted = root.store.db
+				.prepare(`INSERT INTO memory_items(
+			session_id, kind, title, body_text, confidence, tags_text, created_at, updated_at,
+			metadata_json, import_key, origin_device_id, rev, visibility, scope_id, active
+		) SELECT session_id, kind, 'Protected duplicate title', 'Protected duplicate body',
+			confidence, tags_text, created_at, updated_at,
+			json_set(metadata_json, '$.scope_id', 'managed-work'), import_key, origin_device_id,
+			rev, visibility, 'managed-work', active FROM memory_items WHERE id = ?`)
+				.run(manualId);
+			expect(Number(inserted.lastInsertRowid)).toBeGreaterThan(manualId);
+			expect(
+				root.store.db
+					.prepare("SELECT scope_id FROM memory_items WHERE import_key = ? ORDER BY id")
+					.all(entityId),
+			).toEqual([{ scope_id: "manual-work" }, { scope_id: "managed-work" }]);
+			// Freeze the old LIMIT 1 lookup's misleading result as part of the fixture contract.
+			expect(
+				root.store.db
+					.prepare("SELECT scope_id FROM memory_items WHERE import_key = ? LIMIT 1")
+					.get(entityId),
+			).toEqual({ scope_id: "manual-work" });
+			pinOtherKey();
+			const before = contentState();
+			const mutation = {
+				...existingMemoryMutation(
+					opType,
+					"manual-work",
+					entityId,
+					`duplicate-${entityType}-${opType}-denied`,
+				),
+				entity_type: entityType,
+			};
+			// Act: B is authenticated and has U, but does not match M's retained enrollment.
+			const status = await root.request("/v1/status", root.other.keysDir);
+			const response = await root.request("/v1/ops", root.other.keysDir, {
+				method: "POST",
+				body: {
+					sync_capability: "unsupported",
+					ops: [memoryOp("manual-work", `manual-before-duplicate-${opType}`), mutation],
+				},
+			});
+			// Assert: inspect all stored scopes and reject before either operation can mutate data.
+			expect(status.status).toBe(200);
+			expect(response.status).toBe(409);
+			expect(await response.json()).toMatchObject({
+				error: "reset_required",
+				reason: "missing_scope",
+				scope_id: "managed-work",
+			});
+			expect(contentState()).toEqual(before);
+		},
+	);
+});
+
 describe("origin cleanup after managed membership revocation", () => {
 	it("permits historic origin cleanup through a retained direct pin without permitting new managed content access", async () => {
 		// Arrange: a direct pin remains trusted after its managed membership is revoked.
