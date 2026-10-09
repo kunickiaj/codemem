@@ -149,7 +149,9 @@ const actions = [
 	"mapping delete",
 ];
 const deniedCases = [null, "", "  "].flatMap((scope) =>
-	["revoked"].flatMap((failure) => actions.map((action) => ({ scope, failure, action }))),
+	["missing proof", "revoked", "wrong key"].flatMap((failure) =>
+		actions.map((action) => ({ scope, failure, action })),
+	),
 );
 it.each(deniedCases)(
 	"denies $action with pending '$scope' scope and $failure without writes",
@@ -288,7 +290,7 @@ it.each(["session", "workspace", "repository", "unmapped", "explicit"])(
 	},
 );
 
-it.each(["active", "revoked"])(
+it.each(["active", "revoked", "missing proof", "wrong key"])(
 	"keeps the authorized workspace-only assignment stable across visibility changes (%s)",
 	async (state) => {
 		// Arrange: switching to private changes workspace_id and would otherwise resolve Local.

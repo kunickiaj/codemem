@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	connect,
-	ensureDeviceIdentity,
 	ensureScopeBackfillScopes,
 	initTestSchema,
 	MemoryStore,
@@ -16,7 +15,9 @@ import {
 	rememberMemoryCommand,
 	showMemoryCommand,
 } from "../../cli/src/commands/memory.js";
+import { CANONICAL_PUBLIC_KEY } from "../../core/src/coordinator-ed25519-key-id-test-fixtures.js";
 import { refreshManagedScopeFixture } from "../../core/src/managed-scope-test-fixtures.js";
+import { refreshTestScopeRows } from "../../core/src/scope-membership-cache-test-fixtures.js";
 import { createCodememMcpServer } from "../../mcp-server/src/index.js";
 import { memoryRoutes } from "./routes/memory.js";
 import { memoryToolRoutes } from "./routes/memory-tools.js";
@@ -29,7 +30,7 @@ vi.mock("@codemem/core", async (importOriginal) => ({
 type Tool = {
 	handler: (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }>;
 };
-type State = "active" | "revoked";
+type State = "active" | "revoked" | "missing proof" | "wrong key";
 let directory: string;
 let dbPath: string;
 let store: MemoryStore;
@@ -55,10 +56,16 @@ beforeEach(async () => {
 			throw new Error("Unexpected network call");
 		}),
 	);
+	await initializeManagedHistory({ keysDir });
+	initializeMutationSurfaces();
+	log = vi.spyOn(console, "log").mockImplementation(() => {});
+	originalExitCode = process.exitCode;
+	process.exitCode = undefined;
+});
+
+async function initializeManagedHistory({ keysDir }: { keysDir: string }) {
 	const db = connect(dbPath);
 	initTestSchema(db);
-	// Persist the same isolated identity used by request-time source ownership checks.
-	ensureDeviceIdentity(db, { deviceId: "user-mutation-device", keysDir });
 	const now = new Date().toISOString();
 	db.prepare(`INSERT INTO replication_scopes(scope_id, label, kind, authority_type,
 		coordinator_id, group_id, membership_epoch, status, created_at, updated_at)
@@ -70,8 +77,6 @@ beforeEach(async () => {
 		now,
 		now,
 	);
-	db.prepare(`INSERT INTO scope_memberships(scope_id, device_id, role, status, membership_epoch, updated_at)
-		VALUES ('managed-write', 'user-mutation-device', 'member', 'active', 1, ?)`).run(now);
 	// Validate enrollment against the same real key used by every mutation surface.
 	await refreshManagedScopeFixture(db, {
 		keysDir,
@@ -95,6 +100,9 @@ beforeEach(async () => {
 			.get(historyId),
 	).toEqual({ origin_device_id: store.deviceId, actor_id: store.actorId });
 	await store.flushPendingVectorWrites();
+}
+
+function initializeMutationSurfaces() {
 	app = new Hono()
 		.route(
 			"/",
@@ -113,10 +121,7 @@ beforeEach(async () => {
 		captureRetrievalLedger: false,
 	});
 	tools = (server as unknown as { _registeredTools: Record<string, Tool> })._registeredTools;
-	log = vi.spyOn(console, "log").mockImplementation(() => {});
-	originalExitCode = process.exitCode;
-	process.exitCode = undefined;
-});
+}
 
 afterEach(() => {
 	store?.close();
@@ -140,6 +145,10 @@ function snapshot() {
 async function setState(state: State) {
 	if (state === "revoked")
 		store.db.prepare("UPDATE scope_memberships SET status = 'revoked'").run();
+	if (state === "missing proof")
+		store.db.prepare("DELETE FROM scope_membership_authorization_evidence").run();
+	if (state === "wrong key")
+		await refreshTestScopeRows(store.db, { [store.deviceId]: CANONICAL_PUBLIC_KEY });
 }
 
 async function mcp(name: string, args: Record<string, unknown>) {
@@ -236,10 +245,10 @@ it.each(["MCP", "viewer"])("%s rollback schedules no vectors", async (surface) =
 	expect(vectors).not.toHaveBeenCalled();
 });
 
-it.each<State>(["revoked"])(
+it.each<State>(["revoked", "missing proof", "wrong key"])(
 	"hides managed authored history and refuses every user mutation with %s",
 	async (state) => {
-		// Arrange: remove current permission only after authorized authorship.
+		// Arrange: remove current permission only after real V1-authorized authorship.
 		await setState(state);
 		const before = snapshot();
 		// Act: denied managed history is hidden on all three user surfaces.
@@ -292,7 +301,7 @@ it.each<State>(["revoked"])(
 	},
 );
 
-it("permits remember and historical mutations with active membership", async () => {
+it("permits remember and historical mutations with active matching V1 proof", async () => {
 	// Arrange: each surface receives distinct content to avoid deduplication.
 	const before = snapshot();
 	// Act.
@@ -333,9 +342,9 @@ it("permits remember and historical mutations with active membership", async () 
 });
 
 it.each(["local", "manual", "invite", "local-first", "private"])(
-	"permits unmanaged %s writes without a coordinator",
+	"permits unmanaged %s writes without Google or retained proof",
 	async (authority) => {
-		// Arrange: convert the fixture to an unmanaged direct scope.
+		// Arrange: convert the fixture to an unmanaged direct scope and remove managed evidence.
 		if (authority === "local-first" || authority === "private") {
 			store.db.prepare("DELETE FROM project_scope_mappings").run();
 			await setState("revoked");
@@ -350,6 +359,7 @@ it.each(["local", "manual", "invite", "local-first", "private"])(
 				)
 				.run(authority);
 		}
+		await setState("missing proof");
 		// Act.
 		const response = await post("remember", remember);
 		const visibility = await post("visibility", { memory_id: historyId, visibility: "private" });
@@ -406,7 +416,7 @@ function seedLegacyHistory() {
 	pinProjectIdentity();
 }
 
-it.each<State>(["revoked"])(
+it.each<State>(["revoked", "missing proof", "wrong key"])(
 	"hides managed history and rolls back the entire project correction batch with %s",
 	async (state) => {
 		// Arrange: include a writable row before the unauthorized managed row.
@@ -426,7 +436,7 @@ it.each<State>(["revoked"])(
 	},
 );
 
-it("corrects the whole project batch with active membership", async () => {
+it("corrects the whole project batch with active actual-key V1 proof", async () => {
 	// Arrange.
 	seedMixedProjectBatch();
 	const before = store.db.prepare("SELECT id, rev FROM memory_items ORDER BY id").all() as {
@@ -463,15 +473,15 @@ async function legacyPreview() {
 	return result.preview.confirmation_token;
 }
 
-it.each<State>(["revoked"])(
-	"rejects both legacy-review preview and previously confirmed commit with %s target membership",
+it.each<State>(["revoked", "missing proof", "wrong key"])(
+	"rejects both legacy-review preview and previously confirmed commit with %s target proof",
 	async (state) => {
-		// Arrange: the token was issued while the target had active membership.
+		// Arrange: the token was issued while the target had actual-key V1 permission.
 		seedLegacyHistory();
 		const token = await legacyPreview();
 		await setState(state);
 		const before = snapshot();
-		// Act/Assert: revoked target membership cannot authorize the operation.
+		// Act/Assert: a raw active membership is insufficient after proof loss or key mismatch.
 		for (const confirmed of [false, true]) {
 			const response = await syncPost("legacy-shared-review/reassign", {
 				workspace_identity: fixtureProjectIdentity,
@@ -488,7 +498,7 @@ it.each<State>(["revoked"])(
 	},
 );
 
-it("requires the existing legacy-review token and reassigns with active target membership", async () => {
+it("requires the existing legacy-review token and reassigns with active V1 target proof", async () => {
 	// Arrange.
 	seedLegacyHistory();
 	const token = await legacyPreview();
@@ -521,10 +531,95 @@ it("requires the existing legacy-review token and reassigns with active target m
 	);
 });
 
+function mappingRequest(tokens: string[] = []) {
+	return app.request("/api/sync/sharing-domains/project-mappings", {
+		method: "PUT",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({
+			workspace_identity: fixtureProjectIdentity,
+			project_pattern: fixtureProjectIdentity,
+			scope_id: "managed-write",
+			confirmed_guardrail_tokens: tokens,
+		}),
+	});
+}
+
+async function mappingTokens() {
+	const response = await mappingRequest();
+	if (response.status === 200) return [];
+	expect(response.status).toBe(409);
+	return ((await response.json()) as { required_guardrail_tokens: string[] })
+		.required_guardrail_tokens;
+}
+
+it.each<State>(["missing proof", "wrong key"])(
+	"refuses public mapping relocation into managed scope with %s",
+	async (state) => {
+		// Arrange: remove configuration, not proof; then author a genuinely local memory.
+		store.db.prepare("DELETE FROM project_scope_mappings").run();
+		ensureScopeBackfillScopes(store.db);
+		store.reassignMemoryScope(historyId, "local-default");
+		const sessionId = store.startSession({ cwd: process.cwd(), project: "local-mapping-project" });
+		historyId = store.rememberForUser(sessionId, "decision", "Local mapping memory", "Local body");
+		store.endSession(sessionId);
+		pinProjectIdentity();
+		await setState(state);
+		const before = snapshot();
+		const mappings = store.db.prepare("SELECT * FROM project_scope_mappings").all();
+		// Act: supply any existing scope-change confirmation challenge, never bypass it.
+		const challenge = await mappingRequest();
+		let response = challenge;
+		if (challenge.status === 409) {
+			const tokens = (await challenge.json()) as { required_guardrail_tokens: string[] };
+			response = await mappingRequest(tokens.required_guardrail_tokens);
+		}
+		// Assert: mapping configuration cannot relocate content under denied target authority.
+		expect(response.status).toBe(400);
+		expect(await response.json()).toEqual({ error: "unauthorized_scope" });
+		expect(snapshot()).toEqual(before);
+		expect(store.db.prepare("SELECT * FROM project_scope_mappings").all()).toEqual(mappings);
+	},
+);
+
+it("resolves mapping batch authority once inside the write transaction with actual-key V1 proof", async () => {
+	// Arrange: preserve local content and remove only the project mapping.
+	store.db.prepare("DELETE FROM project_scope_mappings").run();
+	ensureScopeBackfillScopes(store.db);
+	store.reassignMemoryScope(historyId, "local-default");
+	const sessionId = store.get(historyId)?.session_id;
+	if (!sessionId) throw new Error("Missing fixture session");
+	const memoryIds = [historyId];
+	for (const title of ["Mapping sibling one", "Mapping sibling two"]) {
+		memoryIds.push(store.rememberForUser(sessionId, "decision", title, title));
+	}
+	pinProjectIdentity();
+	// Act.
+	const tokens = await mappingTokens();
+	const actualContext = store.scopeResolutionDeviceContext.bind(store);
+	const loadKey = vi.fn(() => {
+		expect(store.db.inTransaction).toBe(true);
+		return actualContext().loadExpectedPublicKey?.();
+	});
+	const context = vi.spyOn(store, "scopeResolutionDeviceContext").mockImplementation(() => {
+		expect(store.db.inTransaction).toBe(true);
+		return { loadExpectedPublicKey: loadKey };
+	});
+	const response = await mappingRequest(tokens);
+	// Assert.
+	expect(response.status).toBe(200);
+	expect(context).toHaveBeenCalledTimes(1);
+	expect(loadKey).toHaveBeenCalledTimes(1);
+	for (const memoryId of memoryIds) {
+		expect(
+			store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").get(memoryId),
+		).toEqual({ scope_id: "managed-write" });
+	}
+});
+
 it.each(["manual", "private"])(
 	"keeps project correction and legacy-review reassignment usable for old %s content",
 	async (control) => {
-		// Arrange: private local content and manual grants need no coordinator.
+		// Arrange: private local content and manual grants need no coordinator proof.
 		ensureScopeBackfillScopes(store.db);
 		if (control === "private") {
 			store.reassignMemoryScope(historyId, "local-default");
@@ -535,6 +630,7 @@ it.each(["manual", "private"])(
 				"UPDATE replication_scopes SET authority_type = 'manual', coordinator_id = NULL, group_id = NULL WHERE scope_id = 'managed-write'",
 			)
 			.run();
+		await setState("missing proof");
 		pinProjectIdentity();
 		// Act.
 		const corrected = await syncPost("projects/reassign-project", {
@@ -562,7 +658,49 @@ it.each(["manual", "private"])(
 	},
 );
 
-it.each<State>(["revoked"])(
+it.each(["projects/reassign-project", "legacy-shared-review/reassign"])(
+	"rechecks actual scope proof inside the %s transaction, not only during preflight",
+	async (endpoint) => {
+		// Arrange: preflight sees valid V1 proof; the transaction sees proof withdrawal.
+		let body: Record<string, unknown>;
+		if (endpoint === "projects/reassign-project") {
+			seedMixedProjectBatch();
+			body = { workspace_identity: fixtureProjectIdentity, project: "corrected-project" };
+		} else {
+			seedLegacyHistory();
+			body = {
+				workspace_identity: fixtureProjectIdentity,
+				scope_id: "managed-write",
+				confirmed_old_copies: true,
+				confirmation_token: await legacyPreview(),
+			};
+		}
+		const before = snapshot();
+		const actualPermission = store.isScopeWritable.bind(store);
+		let checkedInTransaction = false;
+		vi.spyOn(store, "isScopeWritable").mockImplementation((scopeId) => {
+			if (scopeId === "managed-write" && store.db.inTransaction) {
+				checkedInTransaction = true;
+				store.db.prepare("DELETE FROM scope_membership_authorization_evidence").run();
+			}
+			return actualPermission(scopeId);
+		});
+		// Act: the spy withdraws real proof; it never substitutes an authorization decision.
+		const response = await syncPost(endpoint, body);
+		// Assert: no preflight ownership/read exception can authorize the transaction.
+		expect(checkedInTransaction).toBe(true);
+		expect(response.status).toBe(400);
+		expect(await response.json()).toEqual({
+			error:
+				endpoint === "projects/reassign-project"
+					? "unauthorized_scope"
+					: "local device is not a member of Sharing domain managed-write",
+		});
+		expect(snapshot()).toEqual(before);
+	},
+);
+
+it.each<State>(["revoked", "missing proof", "wrong key"])(
 	"denies project correction with an empty denormalized change set after %s",
 	async (state) => {
 		// Arrange: the real viewer move relabels the session but leaves memory.project unchanged.
@@ -590,17 +728,18 @@ it.each<State>(["revoked"])(
 	},
 );
 
-it.each(["active membership", "local", "manual"])(
+it.each(["active V1", "local", "manual"])(
 	"permits the empty-change project correction with %s authority",
 	async (authority) => {
-		// Arrange: unmanaged scopes need no account provider; managed membership is active.
+		// Arrange: unmanaged scopes need no account provider; managed proof is real V1.
 		pinProjectIdentity();
-		if (authority !== "active membership") {
+		if (authority !== "active V1") {
 			store.db
 				.prepare(
 					"UPDATE replication_scopes SET authority_type = ?, coordinator_id = NULL, group_id = NULL",
 				)
 				.run(authority);
+			await setState("missing proof");
 		}
 		const moved = await post("project", { memory_id: historyId, project: "viewer-relabeled" });
 		expect(moved.status).toBe(200);
@@ -623,10 +762,83 @@ it.each(["active membership", "local", "manual"])(
 	},
 );
 
+async function seedSessionSibling(kind: "inactive" | "foreign" | "inactive foreign") {
+	const now = new Date().toISOString();
+	store.db
+		.prepare(`INSERT INTO replication_scopes(scope_id, label, kind, authority_type,
+		coordinator_id, group_id, membership_epoch, status, created_at, updated_at)
+		SELECT 'managed-sibling', 'Sibling', kind, authority_type, coordinator_id, group_id,
+		membership_epoch, status, ?, ? FROM replication_scopes WHERE scope_id = 'managed-write'`)
+		.run(now, now);
+	await refreshManagedScopeFixture(store.db, {
+		keysDir: join(directory, "keys"),
+		deviceId: store.deviceId,
+		scopeIds: ["managed-write", "managed-sibling"],
+	});
+	const sessionId = store.get(historyId)?.session_id;
+	if (!sessionId) throw new Error("Missing fixture session");
+	const sibling = store.rememberForUser(sessionId, "decision", "Session sibling", "Sibling body");
+	store.reassignMemoryScope(sibling, "managed-sibling");
+	if (kind.includes("inactive")) store.forget(sibling);
+	if (kind.includes("foreign"))
+		store.db
+			.prepare(`UPDATE memory_items SET
+		origin_device_id = 'fixture-foreign-device', actor_id = 'fixture-other-actor' WHERE id = ?`)
+			.run(sibling);
+	pinProjectIdentity();
+	return sibling;
+}
+
+it.each(["inactive", "foreign", "inactive foreign"] as const)(
+	"checks the denied scope of a co-mingled %s row before relabeling its session",
+	async (kind) => {
+		// Arrange: the target row stays authorized; the sibling's scope loses only its proof.
+		const sibling = await seedSessionSibling(kind);
+		const moved = await post("project", { memory_id: historyId, project: "viewer-relabeled" });
+		expect(moved.status).toBe(200);
+		store.db
+			.prepare(
+				"DELETE FROM scope_membership_authorization_evidence WHERE scope_id = 'managed-sibling'",
+			)
+			.run();
+		const before = snapshot();
+		// Act: neither inactive status nor another origin/actor can exempt a session member.
+		const response = await syncPost("projects/reassign-project", {
+			workspace_identity: fixtureProjectIdentity,
+			project: "write-project",
+		});
+		const viewer = await post("project", { memory_id: historyId, project: "other-project" });
+		// Assert: both session-write entrypoints deny without changing either row.
+		expect(store.canMutateMemory(historyId)).toBe(true);
+		expect(store.canMutateMemory(sibling)).toBe(false);
+		expect(response.status).toBe(400);
+		expect(await response.json()).toEqual({ error: "unauthorized_scope" });
+		expect(viewer.status).toBe(404);
+		expect(await viewer.json()).toEqual({ error: "memory not found" });
+		expect(snapshot()).toEqual(before);
+	},
+);
+
 type MutationEndpoint = "CLI forget" | "MCP forget" | "viewer forget" | "viewer visibility";
 const preflightRaces = (
 	["CLI forget", "MCP forget", "viewer forget", "viewer visibility"] as const
-).flatMap((endpoint) => ["revocation"].map((change) => ({ endpoint, change })));
+).flatMap((endpoint) => ["revocation", "key replacement"].map((change) => ({ endpoint, change })));
+
+async function replacementEvidence() {
+	// Generate the alternate proof through actual V1 validation, then restore actual-key permission.
+	await refreshTestScopeRows(store.db, { [store.deviceId]: CANONICAL_PUBLIC_KEY });
+	const row = store.db
+		.prepare(
+			"SELECT evidence_json FROM scope_membership_authorization_evidence WHERE scope_id = 'managed-write'",
+		)
+		.get() as { evidence_json: string };
+	await refreshManagedScopeFixture(store.db, {
+		keysDir: join(directory, "keys"),
+		deviceId: store.deviceId,
+		scopeIds: ["managed-write"],
+	});
+	return row.evidence_json;
+}
 
 async function invokeMutation(endpoint: MutationEndpoint) {
 	if (endpoint === "CLI forget") return cli(forgetMemoryCommand, [String(historyId)]);
@@ -640,8 +852,9 @@ async function invokeMutation(endpoint: MutationEndpoint) {
 
 it.each(preflightRaces)(
 	"rechecks permission for $endpoint after another SQLite connection commits $change",
-	async ({ endpoint }) => {
-		// Arrange: preflight is genuinely authorized, using active membership.
+	async ({ endpoint, change }) => {
+		// Arrange: preflight is genuinely authorized, using the actual local key and V1 proof.
+		const replacement = change === "key replacement" ? await replacementEvidence() : null;
 		const other = connect(dbPath);
 		const before = snapshot();
 		const actualPreflight = MemoryStore.prototype.canMutateMemory;
@@ -650,11 +863,18 @@ it.each(preflightRaces)(
 			const permitted = actualPreflight.call(this, id);
 			if (id === historyId && permitted && !this.db.inTransaction && !changedAfterPreflight) {
 				changedAfterPreflight = true;
-				other
-					.prepare(
-						"UPDATE scope_memberships SET status = 'revoked' WHERE scope_id = 'managed-write'",
-					)
-					.run();
+				if (replacement)
+					other
+						.prepare(
+							"UPDATE scope_membership_authorization_evidence SET evidence_json = ? WHERE scope_id = 'managed-write'",
+						)
+						.run(replacement);
+				else
+					other
+						.prepare(
+							"UPDATE scope_memberships SET status = 'revoked' WHERE scope_id = 'managed-write'",
+						)
+						.run();
 			}
 			return permitted;
 		});
