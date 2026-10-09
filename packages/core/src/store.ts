@@ -897,6 +897,8 @@ export class MemoryStore {
 				user: opts.user ?? process.env.USER ?? "unknown",
 				tool_version: opts.toolVersion ?? "manual",
 				metadata_json: toJson(metadata),
+				// Session identity is bookkeeping, independent of device enrollment and project moves.
+				import_key: randomUUID(),
 			})
 			.returning({ id: schema.sessions.id })
 			.all();
