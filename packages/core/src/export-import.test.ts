@@ -5,6 +5,7 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { exportMemories, importMemories, readImportPayload } from "./export-import.js";
 import { refreshManagedScopeFixture } from "./managed-scope-test-fixtures.js";
+import { MemoryStore } from "./store.js";
 import { initTestSchema } from "./test-utils.js";
 
 afterEach(() => vi.unstubAllEnvs());
@@ -144,6 +145,125 @@ async function seedScopedExportDb(dbPath: string, keysDir: string): Promise<void
 		db.close();
 	}
 }
+
+describe("export mixed-session authority", () => {
+	it.each([
+		{ active: 1, deletedAt: null, includeInactive: false },
+		{ active: 0, deletedAt: null, includeInactive: false },
+		{ active: 0, deletedAt: "2026-03-01T11:00:00Z", includeInactive: false },
+		{ active: 1, deletedAt: null, includeInactive: true },
+		{ active: 0, deletedAt: null, includeInactive: true },
+		{ active: 0, deletedAt: "2026-03-01T11:00:00Z", includeInactive: true },
+	])("omits session source content after mixed-session authority loss: %j", async (state) => {
+		// Arrange: real scope reassignment and verified membership, without a live coordinator.
+		const dbPath = createDbPath("mixed-session");
+		const keysDir = join(dirname(dbPath), "keys");
+		vi.stubEnv("CODEMEM_DEVICE_ID", "local");
+		seedSourceDb(dbPath);
+		const store = new MemoryStore(dbPath, { keysDir });
+		try {
+			grantScope(store.db, "authorized-team");
+			await refreshManagedScopeFixture(store.db, {
+				keysDir,
+				deviceId: "local",
+				scopeIds: ["authorized-team"],
+				now: new Date("2026-03-01T00:00:00Z"),
+			});
+			store.db
+				.prepare(`UPDATE memory_items SET active = 1, deleted_at = NULL,
+				origin_device_id = 'local', body_text = 'hidden-source-content' WHERE id = 101`)
+				.run();
+			store.reassignMemoryScope(101, "authorized-team");
+			store.db
+				.prepare("UPDATE sessions SET metadata_json = ? WHERE id = 1")
+				.run(JSON.stringify({ source_content: "hidden-session-content" }));
+			store.db
+				.prepare("UPDATE user_prompts SET prompt_text = ?, metadata_json = ? WHERE id = 10")
+				.run("hidden-prompt-content", JSON.stringify({ source: "hidden-prompt-metadata" }));
+			store.db
+				.prepare(
+					`UPDATE session_summaries SET request = ?, files_read = ?, files_edited = ?, metadata_json = ? WHERE id = 200`,
+				)
+				.run(
+					"hidden-summary-content",
+					'["hidden-read.ts"]',
+					'["hidden-edited.ts"]',
+					'{"source":"hidden-summary-metadata"}',
+				);
+			const authorized = exportMemories({ dbPath, keysDir, project: "codemem" });
+			expect(authorized.memory_items).toHaveLength(2);
+			expect(authorized.sessions[0]?.metadata_json).toEqual({
+				source_content: "hidden-session-content",
+			});
+			expect(authorized.user_prompts[0]?.prompt_text).toBe("hidden-prompt-content");
+			expect(authorized.session_summaries[0]?.files_read).toEqual(["hidden-read.ts"]);
+			store.db
+				.prepare(
+					"UPDATE scope_memberships SET status = 'revoked' WHERE scope_id = 'authorized-team'",
+				)
+				.run();
+			store.db
+				.prepare("UPDATE memory_items SET active = ?, deleted_at = ? WHERE id = 101")
+				.run(state.active, state.deletedAt);
+
+			// Act: exporting must use all session memories for authority, including inactive history.
+			const payload = exportMemories({
+				dbPath,
+				keysDir,
+				project: "codemem",
+				includeInactive: state.includeInactive,
+			});
+			const destPath = createDbPath("mixed-session-import");
+			const dest = new Database(destPath);
+			initTestSchema(dest);
+			dest.close();
+			const imported = importMemories(payload, { dbPath: destPath });
+
+			// Assert: keep readable memories importable, but no unscoped session source bytes.
+			expect(payload.memory_items.map((memory) => memory.id)).toEqual([100]);
+			expect(payload.sessions).toEqual([{ id: 1 }]);
+			expect(payload.user_prompts).toEqual([]);
+			expect(payload.session_summaries).toEqual([]);
+			expect(JSON.stringify(payload)).not.toContain("hidden-");
+			expect(imported).toMatchObject({
+				sessions: 1,
+				memory_items: 1,
+				user_prompts: 0,
+				session_summaries: 0,
+			});
+		} finally {
+			store.close();
+		}
+	});
+});
+
+describe("export filters", () => {
+	it("preserves authorized session content with narrower export filters and excludes empty sessions", () => {
+		// Arrange: inactive history remains readable; filtering it is not an authority loss.
+		const dbPath = createDbPath("filtered-session");
+		seedSourceDb(dbPath);
+		const db = new Database(dbPath);
+		try {
+			db.prepare(`INSERT INTO sessions(id, started_at, project, user, tool_version, metadata_json)
+				VALUES (2, '2026-03-01T10:00:00Z', 'codemem', 'test', 'test', '{}')`).run();
+		} finally {
+			db.close();
+		}
+
+		// Act: project/date/activity filters select exports, not permission.
+		const payload = exportMemories({ dbPath, project: "codemem", since: "2026-03-01T00:00:00Z" });
+		const excluded = exportMemories({ dbPath, project: "other-project" });
+
+		// Assert: full readable source records survive; unrelated and no-memory sessions do not.
+		expect(payload.memory_items.map((memory) => memory.id)).toEqual([100]);
+		expect(payload.sessions.map((session) => session.id)).toEqual([1]);
+		expect(payload.sessions[0]?.metadata_json).toEqual({ k: 1 });
+		expect(payload.user_prompts).toHaveLength(1);
+		expect(payload.session_summaries).toHaveLength(1);
+		expect(excluded.sessions).toEqual([]);
+		expect(excluded.memory_items).toEqual([]);
+	});
+});
 
 describe("export/import", () => {
 	it("exports parsed JSON fields and prompt import key links", () => {

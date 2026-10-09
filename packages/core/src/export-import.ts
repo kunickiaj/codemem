@@ -286,6 +286,40 @@ function exportedMemoryScopeId(row: JsonObject): string {
 	return existing ?? LOCAL_DEFAULT_SCOPE_ID;
 }
 
+function queryExportSessions(
+	db: Database,
+	project: string | null,
+	opts: ExportOptions,
+	scopeFilter: ScopeFilter,
+): { sessions: JsonObject[]; sessionIds: number[]; safeIds: number[] } {
+	const selectedSessions = querySessions(
+		db,
+		project,
+		opts.since ?? null,
+		scopeFilter,
+		Boolean(opts.includeInactive),
+	);
+	const sessionIds = selectedSessions.map((row) => Number(row.id)).filter(Number.isFinite);
+	if (sessionIds.length === 0) return { sessions: [], sessionIds, safeIds: [] };
+	const placeholders = sessionIds.map(() => "?").join(",");
+	// Session source records have no per-memory scope. Check all history, not
+	// just active/export-selected memories, before releasing those records.
+	const rows = db
+		.prepare(`SELECT DISTINCT session_id FROM memory_items
+		WHERE session_id IN (${placeholders})
+		AND NOT COALESCE((${scopeFilter.clauses.join(" AND ")}), 0)`)
+		.all(...sessionIds, ...scopeFilter.params) as { session_id: number }[];
+	const unsafeSessionIds = new Set(rows.map((row) => row.session_id));
+	const safeIds = sessionIds.filter((id) => !unsafeSessionIds.has(id));
+	// ID-only placeholders preserve import mappings without exporting session
+	// metadata, paths, or other source content from partially readable sessions.
+	const sessions = selectedSessions.map((row) => {
+		if (unsafeSessionIds.has(Number(row.id))) return { id: row.id };
+		return row;
+	});
+	return { sessions, sessionIds, safeIds };
+}
+
 function parseMemoryExportRow(row: JsonObject): JsonObject {
 	return {
 		...parseRowJsonFields(row, [
@@ -325,14 +359,12 @@ export function exportMemories(opts: ExportOptions = {}): ExportPayload {
 		if (opts.since) filters.since = opts.since;
 		const scopeFilter = buildScopeFilter(db, opts.keysDir);
 
-		const sessions = querySessions(
+		const { sessions, sessionIds, safeIds } = queryExportSessions(
 			db,
 			resolvedProject,
-			opts.since ?? null,
+			opts,
 			scopeFilter,
-			Boolean(opts.includeInactive),
 		);
-		const sessionIds = sessions.map((row) => Number(row.id)).filter(Number.isFinite);
 
 		const memories = fetchMemoryRows(
 			db,
@@ -344,11 +376,11 @@ export function exportMemories(opts: ExportOptions = {}): ExportPayload {
 		const summaries = fetchBySessionIds(
 			db,
 			"session_summaries",
-			sessionIds,
+			safeIds,
 			"created_at_epoch ASC",
 		).map((row) => parseRowJsonFields(row, ["metadata_json", "files_read", "files_edited"]));
 
-		const prompts = fetchBySessionIds(db, "user_prompts", sessionIds, "created_at_epoch ASC").map(
+		const prompts = fetchBySessionIds(db, "user_prompts", safeIds, "created_at_epoch ASC").map(
 			(row) => parseRowJsonFields(row, ["metadata_json"]),
 		);
 
