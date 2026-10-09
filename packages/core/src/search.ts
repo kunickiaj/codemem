@@ -24,7 +24,7 @@ import { sanitizeSearchQuery } from "./query-sanitizer.js";
 import { memoryLooksRecapLike, queryPrefersRecap, recapPenaltyMultiplier } from "./recap-policy.js";
 import { findByConcept, findByFile } from "./ref-queries.js";
 import * as schema from "./schema.js";
-import { resolveVisibleScopeIds } from "./scope-resolution.js";
+import { resolveVisibleScopeIds, type ScopeVisibilityOptions } from "./scope-resolution.js";
 import { canonicalMemoryKind, summaryContinuityFilter } from "./summary-memory.js";
 import type {
 	ExplainError,
@@ -52,6 +52,7 @@ export interface StoreHandle {
 	readonly db: import("better-sqlite3").Database;
 	readonly actorId: string;
 	readonly deviceId: string;
+	scopeResolutionDeviceContext?(): ScopeVisibilityOptions;
 	get(memoryId: number): MemoryItemResponse | null;
 	memoryOwnedBySelf(item: MemoryItem | MemoryResult | Record<string, unknown>): boolean;
 	sameActorPeerIds?(): string[];
@@ -87,7 +88,10 @@ const MEMORY_KIND_BONUS: Record<string, number> = {
 	entities: 0.05,
 };
 
-export function ownershipFilterContext(store: StoreHandle): OwnershipFilterContext {
+export function ownershipFilterContext(
+	store: StoreHandle,
+	options: ScopeVisibilityOptions = store.scopeResolutionDeviceContext?.() ?? {},
+): OwnershipFilterContext {
 	const claimedDeviceIds = store.sameActorPeerIds?.() ?? [];
 	return {
 		actorId: store.actorId,
@@ -95,7 +99,10 @@ export function ownershipFilterContext(store: StoreHandle): OwnershipFilterConte
 		claimedDeviceIds,
 		legacyActorIds: claimedDeviceIds.map((peerId) => `legacy-sync:${peerId}`),
 		enforceScopeVisibility: true,
-		visibleScopeIds: resolveVisibleScopeIds(store.db, store.deviceId),
+		visibleScopeIds: resolveVisibleScopeIds(store.db, store.deviceId, options),
+		scopeVisibilityDb: store.db,
+		expectedPublicKey: options.expectedPublicKey,
+		loadExpectedPublicKey: options.loadExpectedPublicKey,
 	};
 }
 

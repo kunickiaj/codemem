@@ -83,11 +83,7 @@ function chunkNumbers(values: number[], chunkSize = 500): number[][] {
 
 function visibleMemoryIdSet(store: MemoryStore, memoryIds: Set<number>): Set<number> {
 	if (memoryIds.size === 0) return new Set();
-	const filterResult = buildFilterClausesWithContext(null, {
-		actorId: store.actorId,
-		deviceId: store.deviceId,
-		enforceScopeVisibility: true,
-	});
+	const filterResult = buildFilterClausesWithContext(null, store.ownershipFilterContext());
 	const visibleIds = new Set<number>();
 	for (const chunk of chunkNumbers([...memoryIds])) {
 		const placeholders = chunk.map(() => "?").join(", ");
@@ -106,11 +102,7 @@ function visibleMemoryIdSet(store: MemoryStore, memoryIds: Set<number>): Set<num
 
 function visibleSessionIdSet(store: MemoryStore, sessionIds: Set<number>): Set<number> {
 	if (sessionIds.size === 0) return new Set();
-	const filterResult = buildFilterClausesWithContext(null, {
-		actorId: store.actorId,
-		deviceId: store.deviceId,
-		enforceScopeVisibility: true,
-	});
+	const filterResult = buildFilterClausesWithContext(null, store.ownershipFilterContext());
 	const visibleIds = new Set<number>();
 	for (const chunk of chunkNumbers([...sessionIds])) {
 		const placeholders = chunk.map(() => "?").join(", ");
@@ -530,10 +522,7 @@ export function statsRoutes(getStore: () => MemoryStore) {
 function healthStats(store: MemoryStore) {
 	return {
 		...store.stats(),
-		automatic_recall: automaticRecallHealth(store.db, {
-			actorId: store.actorId,
-			deviceId: store.deviceId,
-		}),
+		automatic_recall: automaticRecallHealth(store.db, store.ownershipFilterContext()),
 	};
 }
 
