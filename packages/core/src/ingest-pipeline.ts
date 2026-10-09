@@ -70,6 +70,7 @@ import { resolveProject } from "./project.js";
 import { normalizeProjectLabel } from "./project-label.js";
 import { resolveAdjacentDelegatedContext } from "./raw-event-context.js";
 import * as schema from "./schema.js";
+import { ScopeWriteAuthorityError } from "./scope-write-authority-error.js";
 import { classifySessionForInjection, shouldSuppressSummaryOnlyOutput } from "./session-policy.js";
 import type { MemoryStore } from "./store.js";
 import { recordReplicationOp } from "./sync-replication.js";
@@ -1340,6 +1341,7 @@ function persistIngestPlan(
 ): Array<{ memoryId: number; title: string; bodyText: string }> {
 	const vectorWriteInputs: Array<{ memoryId: number; title: string; bodyText: string }> = [];
 	store.db.transaction(() => {
+		store.assertSessionScopeWritable(stage.sessionId);
 		for (const [index, memory] of plan.memories.entries()) {
 			let supersededIds: number[] = [];
 			if (index === plan.summaryIndex) {
@@ -1472,6 +1474,7 @@ async function processIngestSession(
 ): Promise<void> {
 	const prepared = prepareIngestInput(stage);
 	if (handleUnprocessableInput(store, stage, prepared, options.observer)) return;
+	store.assertSessionScopeWritable(stage.sessionId);
 	const inference = await runObserverInference(store, stage, prepared, options);
 	const usageRecord = completedObserverUsageRecord(stage, prepared, inference);
 	try {
@@ -1520,7 +1523,7 @@ export async function ingest(
 		await processIngestSession(store, stage, options);
 	} catch (err) {
 		// A denied capture stays retryable; do not mark its session complete.
-		if (err instanceof Error && err.message === "unauthorized_scope") throw err;
+		if (err instanceof ScopeWriteAuthorityError) throw err;
 		try {
 			endIngestSession(store, stage);
 		} catch {

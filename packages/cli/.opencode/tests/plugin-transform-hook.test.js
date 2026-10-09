@@ -280,7 +280,7 @@ const insertScopeMembership = (db, scopeId, deviceId) => {
 	).run(scopeId, deviceId, new Date().toISOString());
 };
 
-const grantScopeToDevice = async (db, scopeId, deviceId, { keysDir }) => {
+const grantScopeToDevice = async (db, scopeId, deviceId, keysDir) => {
 	insertScopeMembership(db, scopeId, deviceId);
 	// Use the same isolated signing identity as the CLI, not the helper's static key.
 	ensureDeviceIdentity(db, { deviceId, keysDir });
@@ -2433,7 +2433,7 @@ describe("OpenCode transform-time injection", () => {
 		const sessionId = insertSession(db, { cwd: worktree, project: "greenroom" });
 		process.env.CODEMEM_SYNC_KEY_STORE = "file";
 		if (withProof) {
-			await grantScopeToDevice(db, "scope-a", deviceId, { keysDir });
+			await grantScopeToDevice(db, "scope-a", deviceId, keysDir);
 		} else {
 			insertScopeMembership(db, "scope-a", deviceId);
 			ensureDeviceIdentity(db, { deviceId, keysDir });
