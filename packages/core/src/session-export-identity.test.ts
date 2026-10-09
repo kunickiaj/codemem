@@ -146,6 +146,61 @@ describe("private session export identity", () => {
 	});
 });
 
+describe("session export source bytes", () => {
+	let db: Database.Database;
+	beforeEach(() => {
+		db = new Database(":memory:");
+		db.exec(
+			"CREATE TABLE memory_items (id INTEGER PRIMARY KEY, session_id INTEGER, import_key TEXT)",
+		);
+	});
+	afterEach(() => db.close());
+
+	it.each([marker, remapped, "legacy-key"])(
+		"keeps whitespace variants distinct from the exact source key: %s",
+		(source) => {
+			// Arrange: source keys are identities, not whitespace-normalized labels.
+			const variants = [` ${source}`, `${source} `, `\t${source}`, `${source}\n`];
+			const before = db.serialize();
+			const changes = db.prepare("SELECT total_changes()").pluck().get();
+			// Act
+			const exact = exportedSessionKey(db, { id: 1, import_key: source });
+			const exports = variants.map((import_key) => exportedSessionKey(db, { id: 1, import_key }));
+			// Assert: only an exact canonical marker passes through unchanged.
+			expect(exact).toBe(
+				isCanonicalSessionKey(source)
+					? source
+					: `export-session:v1:${digest(["import_key", source])}`,
+			);
+			expect(exports).toEqual(
+				variants.map((key) => `export-session:v1:${digest(["import_key", key])}`),
+			);
+			expect(new Set([exact, ...exports]).size).toBe(variants.length + 1);
+			expect(db.prepare("SELECT total_changes()").pluck().get()).toBe(changes);
+			expect(db.serialize().equals(before)).toBe(true);
+		},
+	);
+
+	it.each([null, "", " \t\n ", 42, undefined])(
+		"retains memory fallback for blank or nonstring source keys: %s",
+		(import_key) => {
+			// Arrange: memory anchors retain their original bytes too.
+			const anchor = " historical-anchor\t";
+			db.prepare("INSERT INTO memory_items (id, session_id, import_key) VALUES (1, 1, ?)").run(
+				anchor,
+			);
+			// Act
+			const resolved = exportedSessionKey(db, { id: 1, import_key });
+			const unavailable = () => exportedSessionKey(db, { id: 2, import_key });
+			// Assert: blankness alone triggers the unchanged historical fallback.
+			expect(resolved).toBe(`export-session:v1:${digest(["memory_key", anchor])}`);
+			expect(unavailable).toThrow(
+				"session_identity_unavailable: session has no immutable source key",
+			);
+		},
+	);
+});
+
 describe("MemoryStore new-session bookkeeping", () => {
 	let directory: string;
 	let store: MemoryStore;

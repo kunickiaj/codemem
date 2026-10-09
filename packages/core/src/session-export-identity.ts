@@ -1,10 +1,9 @@
 import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
 
-function cleanString(value: unknown): string | null {
+function nonblankString(value: unknown): string | null {
 	if (typeof value !== "string") return null;
-	const trimmed = value.trim();
-	return trimmed ? trimmed : null;
+	return value.trim() ? value : null;
 }
 
 function hashIdentity(value: string | readonly [string, string]): string {
@@ -17,7 +16,7 @@ export function isCanonicalSessionKey(value: string | null): value is string {
 
 /** Resolve export bookkeeping identity without changing source rows or enrollment state. */
 export function exportedSessionKey(db: Database, row: Record<string, unknown>): string {
-	const sourceKey = cleanString(row.import_key);
+	const sourceKey = nonblankString(row.import_key);
 	if (isCanonicalSessionKey(sourceKey)) return sourceKey;
 	if (sourceKey) return `export-session:v1:${hashIdentity(["import_key", sourceKey])}`;
 
