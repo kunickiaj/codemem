@@ -2,13 +2,24 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { connect } from "./db.js";
 import type { IngestOptions } from "./ingest-pipeline.js";
 import { ObserverAuthError } from "./observer-client.js";
 import { recoverOneMissingAuthWindow } from "./raw-event-auth-recovery.js";
 import { RawEventSweeper } from "./raw-event-sweeper.js";
+import { refreshScopeMembershipCache } from "./scope-membership-cache.js";
+import {
+	cacheMember,
+	cacheScope,
+	cacheTime,
+	cacheWireSnapshot,
+} from "./scope-membership-cache-test-fixtures.js";
+import { ScopeWriteAuthorityError } from "./scope-write-authority-error.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema } from "./test-utils.js";
+
+vi.mock("./vectors.js", () => ({ storeVectors: vi.fn() }));
 
 let dir: string;
 let store: MemoryStore;
@@ -67,6 +78,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.useRealTimers();
+	vi.restoreAllMocks();
+	vi.unstubAllEnvs();
 	store.close();
 	rmSync(dir, { recursive: true, force: true });
 });
@@ -93,6 +107,639 @@ function options(): { settings: IngestOptions; observe: ReturnType<typeof vi.fn>
 		},
 	};
 }
+
+async function refreshHistoricalScope(membershipEpoch: number) {
+	const scope = cacheScope({ kind: "managed_project", membership_epoch: membershipEpoch });
+	const snapshot = cacheWireSnapshot(scope, [cacheMember(scope, store.deviceId)]);
+	await refreshScopeMembershipCache(store.db, {
+		coordinatorId: "server-a",
+		groupIds: ["group-a"],
+		now: new Date(cacheTime),
+		fetchers: {
+			listScopes: async () => ({ version: 1, items: [scope] }),
+			getScopeSnapshot: async () => snapshot,
+		},
+	});
+}
+
+function recoveryBatch() {
+	return store.db
+		.prepare(
+			"SELECT id, source, stream_id, start_event_seq, end_event_seq, status, attempt_count, error_type, observer_provider, observer_error_code, observer_error_message FROM raw_event_flush_batches WHERE extractor_version='raw_events_auth_recovery_v1'",
+		)
+		.get();
+}
+
+function retainedHistory() {
+	return {
+		session: store.db.prepare("SELECT * FROM sessions WHERE id=?").get(sessionId),
+		link: store.db.prepare("SELECT * FROM opencode_sessions").all(),
+		events: store.db.prepare("SELECT * FROM raw_events").all(),
+		state: store.db.prepare("SELECT * FROM raw_event_sessions").all(),
+		replication: store.db.prepare("SELECT * FROM replication_ops").all(),
+		sourceBatch: store.db
+			.prepare("SELECT * FROM raw_event_flush_batches WHERE extractor_version='raw_events_v1'")
+			.get(),
+	};
+}
+
+async function mapHistoricalScope({ revoked = true } = {}) {
+	vi.useFakeTimers({ toFake: ["Date"] });
+	vi.setSystemTime(new Date(cacheTime));
+	const deviceId = store.deviceId;
+	store.close();
+	store = new MemoryStore(join(dir, "test.sqlite"), {
+		runtimeSigningKey: { deviceId, publicKey: CANONICAL_PUBLIC_KEY },
+	});
+	await refreshHistoricalScope(3);
+	store.db
+		.prepare(
+			"INSERT INTO project_scope_mappings(project_pattern, scope_id, priority, source, created_at, updated_at) VALUES (?, 'scope-a', 100, 'user', ?, ?)",
+		)
+		.run(dir, cacheTime, cacheTime);
+	if (revoked) store.db.prepare("UPDATE scope_memberships SET status='revoked'").run();
+	store.db
+		.prepare("UPDATE raw_event_flush_batches SET created_at=? WHERE stream_id='missed-session'")
+		.run(cacheTime);
+}
+
+function addHistoricalStream(streamId: string, { cwd = join(dir, "unmanaged") } = {}) {
+	store.getOrCreateSessionForOpencodeSession({
+		opencodeSessionId: streamId,
+		source: "opencode",
+		cwd,
+		project: "unmanaged",
+		metadata: { source: "plugin" },
+		startedAt: "2026-09-21T09:00:00.000Z",
+		toolVersion: "raw_events",
+	});
+	store.recordRawEvent({
+		opencodeSessionId: streamId,
+		eventId: `${streamId}-prompt`,
+		eventType: "user_prompt",
+		payload: { type: "user_prompt", prompt_text: "Recover historical context" },
+		tsWallMs: eventTime,
+	});
+	const batch = store.getOrCreateRawEventFlushBatch(streamId, "opencode", 0, 0, "raw_events_v1");
+	store.db
+		.prepare(
+			"UPDATE raw_event_flush_batches SET status='gave_up', observer_error_code='auth_missing', attempt_count=5, created_at=? WHERE id=?",
+		)
+		.run(new Date(Date.now() + 1000).toISOString(), batch.batchId);
+	store.updateRawEventFlushState(streamId, 0);
+}
+
+it.each([false, true])(
+	"charges the fourth post-inference denial without allowing a fifth call (tier routing: %s)",
+	async (tierRouting) => {
+		// Arrange: three real successful recoveries consume three hourly slots.
+		await mapHistoricalScope({ revoked: false });
+		const { settings, observe } = options();
+		if (tierRouting) {
+			const routedObserver = settings.observer;
+			settings.observer = {
+				...routedObserver,
+				observe: vi.fn(),
+				tierRoutingEnabled: true,
+				toConfig: () => ({
+					observerProvider: "openai",
+					observerModel: "test",
+					observerRuntime: "api_http",
+					observerTierRoutingEnabled: true,
+				}),
+			} as IngestOptions["observer"];
+			settings.createTierObserver = vi.fn(() => routedObserver);
+		}
+		for (let i = 0; i < 3; i++) addHistoricalStream(`prior-${i}`);
+		store.db
+			.prepare("UPDATE raw_event_flush_batches SET created_at=? WHERE stream_id='missed-session'")
+			.run(new Date(Date.now() + 2000).toISOString());
+		for (let i = 0; i < 3; i++)
+			expect(await recoverOneMissingAuthWindow(store, settings)).toBe(true);
+		const response = await observe.mock.results[0].value;
+		const startedAt = Date.now();
+		observe.mockImplementationOnce(async () => {
+			store.db.prepare("UPDATE scope_memberships SET status='revoked'").run();
+			vi.setSystemTime(startedAt + 30_000);
+			return response;
+		});
+		const beforeMemories = store.db.prepare("SELECT * FROM memory_items").all();
+		const before = retainedHistory();
+
+		// Act: the fourth actual invocation returns before persistence rolls back.
+		await expect(recoverOneMissingAuthWindow(store, settings)).rejects.toBeInstanceOf(
+			ScopeWriteAuthorityError,
+		);
+		expect(observe).toHaveBeenCalledTimes(4);
+		addHistoricalStream("fifth-authorized");
+		const blocked = await recoverOneMissingAuthWindow(store, settings);
+
+		// Assert: retries remain neutral, but the hourly slot survives outside the content transaction.
+		expect(blocked).toBe(false);
+		expect(observe).toHaveBeenCalledTimes(4);
+		expect(
+			store.db
+				.prepare(
+					"SELECT attempt_count FROM raw_event_flush_batches WHERE stream_id='missed-session' AND extractor_version='raw_events_auth_recovery_v1'",
+				)
+				.get(),
+		).toEqual({ attempt_count: 0 });
+		expect(store.db.prepare("SELECT * FROM memory_items").all()).toEqual(beforeMemories);
+		expect(store.db.prepare("SELECT * FROM replication_ops").all()).toEqual(before.replication);
+		expect(
+			store.db
+				.prepare(
+					"SELECT created_at, session_id, metadata_json FROM usage_events WHERE event='observer_recovery_scope_denial'",
+				)
+				.all(),
+		).toEqual([
+			{ created_at: new Date(startedAt).toISOString(), session_id: null, metadata_json: null },
+		]);
+
+		// Act/Assert: start-time accounting expires exactly at the rolling-hour cutoff.
+		vi.setSystemTime(startedAt + 3_600_000 - 1);
+		expect(await recoverOneMissingAuthWindow(store, settings)).toBe(false);
+		expect(observe).toHaveBeenCalledTimes(4);
+		vi.setSystemTime(startedAt + 3_600_000);
+		expect(await recoverOneMissingAuthWindow(store, settings)).toBe(true);
+		expect(observe).toHaveBeenCalledTimes(5);
+	},
+);
+
+it("stops repeated post-inference scope races at four even with zero attempts", async () => {
+	// Arrange: each returned invocation revokes real membership; re-admit before the next retry.
+	await mapHistoricalScope({ revoked: false });
+	const { settings, observe } = options();
+	const response = await observe();
+	observe.mockClear();
+	observe.mockImplementation(async () => {
+		store.db.prepare("UPDATE scope_memberships SET status='revoked'").run();
+		return response;
+	});
+
+	// Act
+	for (let i = 0; i < 4; i++) {
+		await refreshHistoricalScope(4 + i);
+		await expect(recoverOneMissingAuthWindow(store, settings)).rejects.toBeInstanceOf(
+			ScopeWriteAuthorityError,
+		);
+		vi.setSystemTime(Date.now() + 30_000);
+	}
+	await refreshHistoricalScope(8);
+	const blocked = await recoverOneMissingAuthWindow(store, settings);
+
+	// Assert
+	expect(blocked).toBe(false);
+	expect(observe).toHaveBeenCalledTimes(4);
+	expect(recoveryBatch()).toMatchObject({ attempt_count: 0, status: "failed" });
+	expect(
+		store.db
+			.prepare(
+				"SELECT COUNT(*) AS n FROM usage_events WHERE event='observer_recovery_scope_denial'",
+			)
+			.get(),
+	).toEqual({ n: 4 });
+	expect(store.db.prepare("SELECT * FROM memory_items").all()).toEqual([]);
+});
+
+it("does not debit a typed scope error thrown before observer output returns", async () => {
+	// Arrange: a start hook is not proof of a returned provider invocation.
+	await mapHistoricalScope({ revoked: false });
+	const { settings, observe } = options();
+	observe.mockRejectedValue(new ScopeWriteAuthorityError());
+
+	// Act
+	await expect(recoverOneMissingAuthWindow(store, settings)).rejects.toBeInstanceOf(
+		ScopeWriteAuthorityError,
+	);
+
+	// Assert: the retry release is neutral; no returned inference means no new budget debit.
+	expect(recoveryBatch()).toMatchObject({ attempt_count: 0 });
+	expect(
+		store.db
+			.prepare("SELECT * FROM usage_events WHERE event='observer_recovery_scope_denial'")
+			.all(),
+	).toEqual([]);
+});
+
+it("uses inference start time when a denied invocation spans the hourly cutoff", async () => {
+	// Arrange: the provider returns more than one hour after its trusted start hook.
+	await mapHistoricalScope({ revoked: false });
+	const { settings, observe } = options();
+	const response = await observe();
+	observe.mockClear();
+	const startedAt = Date.now();
+	observe.mockImplementationOnce(async () => {
+		vi.setSystemTime(startedAt + 3_600_000);
+		store.db.prepare("UPDATE scope_memberships SET status='revoked'").run();
+		return response;
+	});
+
+	// Act
+	await expect(recoverOneMissingAuthWindow(store, settings)).rejects.toBeInstanceOf(
+		ScopeWriteAuthorityError,
+	);
+
+	// Assert: the durable debit belongs to the original hour, not the release hour.
+	expect(
+		store.db
+			.prepare("SELECT created_at FROM usage_events WHERE event='observer_recovery_scope_denial'")
+			.get(),
+	).toEqual({ created_at: new Date(startedAt).toISOString() });
+	addHistoricalStream("authorized-after-hour");
+	expect(await recoverOneMissingAuthWindow(store, settings)).toBe(true);
+	expect(observe).toHaveBeenCalledTimes(2);
+});
+
+it.each([1, 2])(
+	"recovers healthy history in the same 30-second sweeper tick after %i older scope denials",
+	async (deniedStreams) => {
+		// Arrange: first tick has only denied history; healthy history arrives before the default next tick.
+		await mapHistoricalScope();
+		if (deniedStreams === 2) addHistoricalStream("second-denied", { cwd: dir });
+		vi.stubEnv("CODEMEM_RAW_EVENTS_RECOVERY_ENABLED", "1");
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		const { settings, observe } = options();
+		const sweeper = new RawEventSweeper(store, settings);
+		await sweeper.tick();
+		expect(observe).not.toHaveBeenCalled();
+		vi.setSystemTime(Date.now() + 30_000);
+		addHistoricalStream("newer-authorized");
+		const before = retainedHistory();
+
+		// Act: the previous cooldown has expired, so this tick must fall through fresh denials.
+		await sweeper.tick();
+
+		// Assert: every denied batch survives with zero attempts; exactly one healthy inference runs.
+		expect(observe).toHaveBeenCalledTimes(1);
+		const batches = store.db
+			.prepare(
+				"SELECT stream_id, status, attempt_count, error_type FROM raw_event_flush_batches WHERE extractor_version='raw_events_auth_recovery_v1' ORDER BY stream_id",
+			)
+			.all();
+		expect(batches).toEqual([
+			{
+				stream_id: "missed-session",
+				status: "failed",
+				attempt_count: 0,
+				error_type: "ScopeWriteAuthorityError",
+			},
+			{ stream_id: "newer-authorized", status: "completed", attempt_count: 1, error_type: null },
+			...(deniedStreams === 2
+				? [
+						{
+							stream_id: "second-denied",
+							status: "failed",
+							attempt_count: 0,
+							error_type: "ScopeWriteAuthorityError",
+						},
+					]
+				: []),
+		]);
+		expect(retainedHistory()).toEqual(before);
+	},
+);
+
+it.each([false, true])(
+	"stops same-call fallback when authority is revoked during observer inference (tier routing: %s)",
+	async (tierRouting) => {
+		// Arrange: both streams begin authorized; the real membership changes while the observer runs.
+		await mapHistoricalScope({ revoked: false });
+		addHistoricalStream("newer-authorized");
+		const before = retainedHistory();
+		const { settings, observe } = options();
+		const baseObserve = vi.fn();
+		if (tierRouting) {
+			const routedObserver = settings.observer;
+			settings.observer = {
+				...routedObserver,
+				observe: baseObserve,
+				tierRoutingEnabled: true,
+				toConfig: () => ({
+					observerProvider: "openai",
+					observerRuntime: "api_http",
+					observerModel: "test",
+					observerTierRoutingEnabled: true,
+				}),
+			} as IngestOptions["observer"];
+			settings.createTierObserver = vi.fn(() => routedObserver);
+		}
+		const response = await observe();
+		observe.mockClear();
+		observe.mockImplementationOnce(async () => {
+			store.db.prepare("UPDATE scope_memberships SET status='revoked'").run();
+			return response;
+		});
+
+		// Act: preflight succeeds but transactional persistence denies the now-revoked session.
+		await expect(recoverOneMissingAuthWindow(store, settings)).rejects.toBeInstanceOf(
+			ScopeWriteAuthorityError,
+		);
+
+		// Assert: no second stream is inferred in the same call, despite an attempt-neutral release.
+		expect(observe).toHaveBeenCalledTimes(1);
+		expect(baseObserve).not.toHaveBeenCalled();
+		expect(recoveryBatch()).toMatchObject({
+			stream_id: "missed-session",
+			status: "failed",
+			attempt_count: 0,
+			error_type: "ScopeWriteAuthorityError",
+		});
+		expect(store.db.prepare("SELECT * FROM memory_items").all()).toEqual([]);
+		expect(retainedHistory()).toEqual(before);
+		expect(
+			store.db
+				.prepare(
+					"SELECT COUNT(*) AS n FROM raw_event_flush_batches WHERE stream_id='newer-authorized' AND extractor_version='raw_events_auth_recovery_v1'",
+				)
+				.get(),
+		).toMatchObject({ n: 0 });
+		// Act/Assert: the next default-cadence tick can pass another preflight denial and recover healthy history.
+		vi.stubEnv("CODEMEM_RAW_EVENTS_RECOVERY_ENABLED", "1");
+		vi.setSystemTime(Date.now() + 30_000);
+		await new RawEventSweeper(store, settings).tick();
+		expect(observe).toHaveBeenCalledTimes(2);
+		expect(baseObserve).not.toHaveBeenCalled();
+		expect(retainedHistory()).toEqual(before);
+	},
+);
+
+it("excludes each denied window for the whole call even when its cooldown expires during later admissions", async () => {
+	// Arrange: two actual revoked streams precede healthy history; each denial takes 30 seconds.
+	await mapHistoricalScope();
+	addHistoricalStream("second-denied", { cwd: dir });
+	vi.setSystemTime(Date.now() + 1000);
+	addHistoricalStream("newer-authorized");
+	const before = retainedHistory();
+	const assertWritable = store.assertSessionScopeWritable.bind(store);
+	const deniedSessions: number[] = [];
+	vi.spyOn(store, "assertSessionScopeWritable").mockImplementation((id, metadata) => {
+		try {
+			assertWritable(id, metadata);
+		} catch (error) {
+			if (error instanceof ScopeWriteAuthorityError) {
+				deniedSessions.push(id);
+				vi.setSystemTime(Date.now() + 30_000);
+			}
+			throw error;
+		}
+	});
+	const { settings, observe } = options();
+
+	// Act
+	expect(await recoverOneMissingAuthWindow(store, settings)).toBe(true);
+
+	// Assert: the oldest window's cooldown expired, but no denied identity was selected twice.
+	expect(deniedSessions).toHaveLength(2);
+	expect(new Set(deniedSessions).size).toBe(2);
+	expect(deniedSessions[0]).toBe(sessionId);
+	expect(observe).toHaveBeenCalledTimes(1);
+	expect(retainedHistory()).toEqual(before);
+});
+
+it("pauses global observer authentication instead of falling through to other healthy streams", async () => {
+	// Arrange: a global credential failure differs from a scope-local admission failure.
+	await mapHistoricalScope({ revoked: false });
+	addHistoricalStream("newer-authorized");
+	vi.stubEnv("CODEMEM_RAW_EVENTS_RECOVERY_ENABLED", "1");
+	vi.spyOn(console, "error").mockImplementation(() => {});
+	const { settings, observe } = options();
+	observe.mockRejectedValue(new ObserverAuthError("Credential expired"));
+	const sweeper = new RawEventSweeper(store, settings);
+	const before = retainedHistory();
+
+	// Act: the first tick invokes one observer and the next default-cadence tick remains paused.
+	await sweeper.tick();
+	vi.setSystemTime(Date.now() + 30_000);
+	await sweeper.tick();
+
+	// Assert: a newer stream cannot bypass the global auth pause or consume a recovery attempt.
+	expect(observe).toHaveBeenCalledTimes(1);
+	expect(recoveryBatch()).toMatchObject({
+		stream_id: "missed-session",
+		status: "failed",
+		attempt_count: 0,
+		error_type: "ObserverAuthError",
+	});
+	expect(
+		store.db
+			.prepare(
+				"SELECT COUNT(*) AS n FROM raw_event_flush_batches WHERE extractor_version='raw_events_auth_recovery_v1'",
+			)
+			.get(),
+	).toMatchObject({ n: 1 });
+	expect(retainedHistory()).toEqual(before);
+	expect(
+		store.db
+			.prepare("SELECT * FROM usage_events WHERE event='observer_recovery_scope_denial'")
+			.all(),
+	).toEqual([]);
+});
+
+it("retains a historical window through repeated scope denials and resumes at a newer membership epoch", async () => {
+	// Arrange: preserve the historical managed mapping and revoke membership, not authority checks.
+	vi.useFakeTimers({ toFake: ["Date"] });
+	vi.setSystemTime(new Date(cacheTime));
+	const deviceId = store.deviceId;
+	store.close();
+	store = new MemoryStore(join(dir, "test.sqlite"), {
+		runtimeSigningKey: { deviceId, publicKey: CANONICAL_PUBLIC_KEY },
+	});
+	await refreshHistoricalScope(3);
+	store.db
+		.prepare(
+			"INSERT INTO project_scope_mappings(project_pattern, scope_id, priority, source, created_at, updated_at) VALUES (?, 'scope-a', 100, 'user', ?, ?)",
+		)
+		.run(dir, cacheTime, cacheTime);
+	store.db.prepare("UPDATE scope_memberships SET status='revoked'").run();
+	const before = retainedHistory();
+	const { settings, observe } = options();
+	let deniedBatch: ReturnType<typeof recoveryBatch>;
+	// Act: exceed MAX_ATTEMPTS without spending any observer attempts or moving the cursor.
+	for (let attempt = 0; attempt < 5; attempt++) {
+		await expect(recoverOneMissingAuthWindow(store, settings)).rejects.toBeInstanceOf(
+			ScopeWriteAuthorityError,
+		);
+		deniedBatch ??= recoveryBatch();
+		// Assert: every retry releases the same claim and retains all historical input.
+		expect(recoveryBatch()).toEqual(deniedBatch);
+		expect(recoveryBatch()).toMatchObject({
+			source: "opencode",
+			stream_id: "missed-session",
+			start_event_seq: 0,
+			end_event_seq: 1,
+			status: "failed",
+			attempt_count: 0,
+			error_type: "ScopeWriteAuthorityError",
+			observer_provider: null,
+			observer_error_code: null,
+			observer_error_message: null,
+		});
+		expect(retainedHistory()).toEqual(before);
+		// An immediate sweep has no eligible work and must not mutate the denied batch.
+		expect(await recoverOneMissingAuthWindow(store, settings)).toBe(false);
+		expect(recoveryBatch()).toEqual(deniedBatch);
+		expect(retainedHistory()).toEqual(before);
+		// A scope denial defers only this window for 15 seconds; later retries still deny.
+		vi.setSystemTime(Date.now() + 15_000);
+	}
+	expect(observe).not.toHaveBeenCalled();
+	expect(store.db.prepare("SELECT * FROM memory_items").all()).toEqual([]);
+	expect(store.db.prepare("SELECT * FROM usage_events").all()).toEqual([]);
+	// Arrange/Act: only a newer epoch restores revoked membership; retry the original window.
+	await refreshHistoricalScope(4);
+	expect(
+		store.db.prepare("SELECT status, membership_epoch FROM scope_memberships").get(),
+	).toMatchObject({
+		status: "active",
+		membership_epoch: 4,
+	});
+	expect(await recoverOneMissingAuthWindow(store, settings)).toBe(true);
+	expect(await recoverOneMissingAuthWindow(store, settings)).toBe(false);
+	// Assert: one observer call completes the same window without discarding or rewinding history.
+	expect(recoveryBatch()).toMatchObject({
+		...(deniedBatch as Record<string, unknown>),
+		status: "completed",
+		attempt_count: 1,
+		error_type: null,
+	});
+	expect(observe).toHaveBeenCalledTimes(1);
+	expect(retainedHistory()).toEqual({
+		...before,
+		sourceBatch: {
+			...(before.sourceBatch as Record<string, unknown>),
+			status: "recovered",
+			updated_at: expect.any(String),
+		},
+	});
+	expect(store.db.prepare("SELECT scope_id, session_id FROM memory_items").all()).toEqual([
+		{ scope_id: "scope-a", session_id: sessionId },
+	]);
+});
+
+it("defers a denied oldest stream while recovering a newer authorized stream, then resumes the same batch", async () => {
+	// Arrange: actual cached membership denies the historical mapping, not payload labels.
+	vi.useFakeTimers({ toFake: ["Date"] });
+	vi.setSystemTime(new Date(cacheTime));
+	const deviceId = store.deviceId;
+	store.close();
+	store = new MemoryStore(join(dir, "test.sqlite"), {
+		runtimeSigningKey: { deviceId, publicKey: CANONICAL_PUBLIC_KEY },
+	});
+	await refreshHistoricalScope(3);
+	store.db
+		.prepare(
+			"INSERT INTO project_scope_mappings(project_pattern, scope_id, priority, source, created_at, updated_at) VALUES (?, 'scope-a', 100, 'user', ?, ?)",
+		)
+		.run(dir, cacheTime, cacheTime);
+	store.db.prepare("UPDATE scope_memberships SET status='revoked'").run();
+	store.getOrCreateSessionForOpencodeSession({
+		opencodeSessionId: "newer-authorized",
+		source: "opencode",
+		cwd: join(dir, "unmanaged"),
+		project: "unmanaged",
+		metadata: { source: "plugin" },
+		startedAt: "2026-09-21T09:00:00.000Z",
+		toolVersion: "raw_events",
+	});
+	store.recordRawEvent({
+		opencodeSessionId: "newer-authorized",
+		eventId: "newer-prompt",
+		eventType: "user_prompt",
+		payload: { type: "user_prompt", prompt_text: "Recover authorized history" },
+		tsWallMs: eventTime,
+	});
+	const newerBatch = store.getOrCreateRawEventFlushBatch(
+		"newer-authorized",
+		"opencode",
+		0,
+		0,
+		"raw_events_v1",
+	);
+	store.db
+		.prepare(
+			"UPDATE raw_event_flush_batches SET status='gave_up', observer_error_code='auth_missing', attempt_count=5, created_at=? WHERE id=?",
+		)
+		.run(new Date(Date.now() + 1000).toISOString(), newerBatch.batchId);
+	store.updateRawEventFlushState("newer-authorized", 0);
+	// beforeEach used the real clock; pin ordering independently of that wall time.
+	store.db
+		.prepare("UPDATE raw_event_flush_batches SET created_at=? WHERE stream_id='missed-session'")
+		.run(cacheTime);
+	const before = retainedHistory();
+	const { settings, observe } = options();
+
+	// Act/Assert: a denied admission falls through to healthy history within this same sweep.
+	expect(await recoverOneMissingAuthWindow(store, settings)).toBe(true);
+	const deniedBatch = recoveryBatch();
+	expect(deniedBatch).toMatchObject({
+		stream_id: "missed-session",
+		status: "failed",
+		attempt_count: 0,
+		error_type: "ScopeWriteAuthorityError",
+	});
+	expect(retainedHistory()).toEqual(before);
+	expect(observe).toHaveBeenCalledTimes(1);
+	expect(await recoverOneMissingAuthWindow(store, settings)).toBe(false);
+	expect(recoveryBatch()).toEqual(deniedBatch);
+	expect(retainedHistory()).toEqual(before);
+
+	// Act/Assert: restoring authority does not bypass the short cooldown; its exact expiry resumes.
+	await refreshHistoricalScope(4);
+	expect(
+		store.db.prepare("SELECT status, membership_epoch FROM scope_memberships").get(),
+	).toMatchObject({ status: "active", membership_epoch: 4 });
+	vi.setSystemTime(Date.now() + 14_999);
+	expect(await recoverOneMissingAuthWindow(store, settings)).toBe(false);
+	expect(recoveryBatch()).toEqual(deniedBatch);
+	expect(observe).toHaveBeenCalledTimes(1);
+	vi.setSystemTime(Date.now() + 1);
+	expect(await recoverOneMissingAuthWindow(store, settings)).toBe(true);
+	expect(recoveryBatch()).toMatchObject({
+		...(deniedBatch as Record<string, unknown>),
+		status: "completed",
+		attempt_count: 1,
+		error_type: null,
+	});
+	expect(observe).toHaveBeenCalledTimes(2);
+	expect(retainedHistory()).toEqual(before);
+	expect(await recoverOneMissingAuthWindow(store, settings)).toBe(false);
+	expect(retainedHistory()).toEqual({
+		...before,
+		sourceBatch: {
+			...(before.sourceBatch as Record<string, unknown>),
+			status: "recovered",
+			updated_at: expect.any(String),
+		},
+	});
+});
+
+it("limits genuine provider failures even when their message resembles a scope denial", async () => {
+	// Arrange: message text alone must never trigger the typed admission release.
+	const { settings, observe } = options();
+	observe.mockRejectedValue(new Error("unauthorized_scope"));
+	// Act
+	for (let attempt = 1; attempt <= 3; attempt++) {
+		await expect(recoverOneMissingAuthWindow(store, settings)).rejects.toThrow(
+			"unauthorized_scope",
+		);
+		// Assert: actual observer failures consume attempts and retain the historical range.
+		expect(recoveryBatch()).toMatchObject({
+			status: "failed",
+			attempt_count: attempt,
+			error_type: "RawEventRecoveryError",
+			observer_error_code: "recovery_failed",
+		});
+	}
+	expect(await recoverOneMissingAuthWindow(store, settings)).toBe(false);
+	expect(observe).toHaveBeenCalledTimes(3);
+	expect(store.rawEventFlushState("missed-session")).toBe(1);
+	expect(
+		store.db
+			.prepare("SELECT * FROM usage_events WHERE event='observer_recovery_scope_denial'")
+			.all(),
+	).toEqual([]);
+});
 
 it("recovers stranded events once without rewinding the cursor or publishing the old observation", async () => {
 	const { settings, observe } = options();
@@ -385,11 +1032,13 @@ it("leaves missing event timestamps unprocessed rather than inventing a timeline
 });
 
 it("keeps authentication failures retryable without spending recovery attempts", async () => {
+	// Arrange
 	const { settings, observe } = options();
 	observe.mockImplementation(async () => {
 		throw new ObserverAuthError("Credential expired");
 	});
-	for (let attempt = 0; attempt < 2; attempt++) {
+	// Act: observer authentication remains attempt-neutral past the processing retry limit.
+	for (let attempt = 0; attempt < 5; attempt++) {
 		await expect(recoverOneMissingAuthWindow(store, settings)).rejects.toBeInstanceOf(
 			ObserverAuthError,
 		);
@@ -398,6 +1047,7 @@ it("keeps authentication failures retryable without spending recovery attempts",
 				"SELECT status, attempt_count, observer_error_code FROM raw_event_flush_batches WHERE extractor_version='raw_events_auth_recovery_v1'",
 			)
 			.get();
+		// Assert
 		expect(row).toMatchObject({
 			status: "failed",
 			attempt_count: 0,
@@ -405,6 +1055,7 @@ it("keeps authentication failures retryable without spending recovery attempts",
 		});
 	}
 	expect(store.rawEventFlushState("missed-session")).toBe(1);
+	expect(observe).toHaveBeenCalledTimes(5);
 });
 
 it("pauses once the per-hour recovery budget is spent", async () => {
