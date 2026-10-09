@@ -70,8 +70,9 @@ import { resolveProject } from "./project.js";
 import { normalizeProjectLabel } from "./project-label.js";
 import { resolveAdjacentDelegatedContext } from "./raw-event-context.js";
 import * as schema from "./schema.js";
+import { ScopeWriteAuthorityError } from "./scope-write-authority-error.js";
 import { classifySessionForInjection, shouldSuppressSummaryOnlyOutput } from "./session-policy.js";
-import type { MemoryStore } from "./store.js";
+import type { CreatedMemory, MemoryStore } from "./store.js";
 import { recordReplicationOp } from "./sync-replication.js";
 import { deriveTags } from "./tags.js";
 import { storeVectors } from "./vectors.js";
@@ -281,7 +282,14 @@ export interface IngestOptions {
 	/** Whether to store typed observations. Default true. */
 	storeTyped?: boolean;
 	/** Recover observations from an older flush without replacing summaries or rewriting session time. */
-	historicalRecovery?: { sessionId: number; occurredAt: string };
+	historicalRecovery?: {
+		sessionId: number;
+		occurredAt: string;
+		/** Internal recovery budget hook, called before invoking the selected observer (including tiers). */
+		onObserverInferenceStart?: () => void;
+		/** Internal recovery hook: selected observer output returned, before content persistence. */
+		onObserverInferenceComplete?: () => void;
+	};
 }
 
 export type RawEventObserverOutputFailureReason =
@@ -822,11 +830,13 @@ async function runObserverInference(
 	const { system, user } = buildObserverPrompt(prepared.observerContext, {
 		outputMode: outputCapability.actualMode,
 	});
+	options.historicalRecovery?.onObserverInferenceStart?.();
 	const output = await observeRawEventOutput(selection.observer, system, user, outputCapability, {
 		store,
 		sessionId: stage.sessionId,
 		project: stage.project,
 	});
+	options.historicalRecovery?.onObserverInferenceComplete?.();
 	return {
 		observerStatus: selection.observer.getStatus(),
 		output,
@@ -1338,8 +1348,9 @@ function persistIngestPlan(
 	plan: PersistIngestPlan,
 	usageRecord: ObserverUsageRecord,
 ): Array<{ memoryId: number; title: string; bodyText: string }> {
-	const vectorWriteInputs: Array<{ memoryId: number; title: string; bodyText: string }> = [];
+	const createdMemories: CreatedMemory[] = [];
 	store.db.transaction(() => {
+		store.assertSessionScopeWritable(stage.sessionId);
 		for (const [index, memory] of plan.memories.entries()) {
 			let supersededIds: number[] = [];
 			if (index === plan.summaryIndex) {
@@ -1355,7 +1366,7 @@ function persistIngestPlan(
 						recovered_at: new Date().toISOString(),
 					}
 				: memory.metadata;
-			const memoryId = store.remember(
+			const memoryId = store.rememberForUser(
 				stage.sessionId,
 				memory.kind,
 				memory.title,
@@ -1364,16 +1375,12 @@ function persistIngestPlan(
 				memory.tags,
 				metadata,
 				{
+					createdMemories,
 					createdAt: stage.historicalRecovery?.occurredAt,
 					replicate: !stage.historicalRecovery,
 				},
 			);
 			if (supersededIds.length > 0) markSupersededBy(stage.d, supersededIds, memoryId);
-			vectorWriteInputs.push({
-				memoryId,
-				title: memory.title,
-				bodyText: memory.bodyText,
-			});
 		}
 		recordObserverUsage(
 			store,
@@ -1383,7 +1390,7 @@ function persistIngestPlan(
 		);
 	})();
 	usageRecord.recorded = true;
-	return vectorWriteInputs;
+	return store.committedVectorInputs(createdMemories);
 }
 
 async function storeVectorInputs(
@@ -1472,6 +1479,7 @@ async function processIngestSession(
 ): Promise<void> {
 	const prepared = prepareIngestInput(stage);
 	if (handleUnprocessableInput(store, stage, prepared, options.observer)) return;
+	store.assertSessionScopeWritable(stage.sessionId);
 	const inference = await runObserverInference(store, stage, prepared, options);
 	const usageRecord = completedObserverUsageRecord(stage, prepared, inference);
 	try {
@@ -1519,6 +1527,8 @@ export async function ingest(
 	try {
 		await processIngestSession(store, stage, options);
 	} catch (err) {
+		// A denied capture stays retryable; do not mark its session complete.
+		if (err instanceof ScopeWriteAuthorityError) throw err;
 		try {
 			endIngestSession(store, stage);
 		} catch {

@@ -197,6 +197,12 @@ const SAME_PERSON_BINDING_PROVENANCE = new Set([
 
 /** ISO 8601 timestamp in UTC. */
 function observerAdmissionErrorDetails(code: string): { type: string; message: string } {
+	if (code === "scope_authority") {
+		return {
+			type: "ScopeWriteAuthorityError",
+			message: "Scope write authority is unavailable; refresh scope membership and retry.",
+		};
+	}
 	if (code === "model_unavailable") {
 		return {
 			type: "ObserverModelUnavailable",
@@ -2628,7 +2634,7 @@ export class MemoryStore {
 		return row != null;
 	}
 
-	/** Keep auth failures visible and retryable without consuming an observer attempt. */
+	/** Keep admission failures retryable without consuming an observer attempt. */
 	releaseRawEventFlushBatchAfterAuthError(
 		batchId: number,
 		failure: {
@@ -2653,7 +2659,7 @@ export class MemoryStore {
 				observer_runtime: failure.runtime,
 				observer_auth_source: failure.authSource,
 				observer_auth_type: failure.authType,
-				observer_error_code: failure.code,
+				observer_error_code: failure.code === "scope_authority" ? null : failure.code,
 				observer_error_message: null,
 			})
 			.where(

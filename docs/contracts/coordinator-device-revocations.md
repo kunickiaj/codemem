@@ -517,6 +517,11 @@ the envelope scope or changing the entity label cannot bypass managed proof.
 Failure rejects the entire batch before applying operations; existing input-error
 precedence and origin-bound cleanup after revocation remain unchanged.
 
+Automatic raw-event ingestion checks scope authority before observer inference
+and again during persistence. A scope denial keeps the batch queued without
+consuming observer failure attempts or advancing the event cursor. Refreshing
+scope membership allows the same batch to resume.
+
 ## Activation limits
 
 Existing group disable/removal does not create global subjects automatically.
