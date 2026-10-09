@@ -35,9 +35,8 @@ export function forgetMemoryForMcp(
 	filters?: MemoryFilters,
 ): boolean {
 	const item = getMemoryForMcp(store, memoryId, filters);
-	if (!item || !store.canMutateMemory(memoryId)) return false;
-	store.forget(memoryId);
-	return true;
+	if (!item) return false;
+	return store.forgetForUser(memoryId);
 }
 
 export interface RememberMemoryForMcpInput {

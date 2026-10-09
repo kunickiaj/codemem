@@ -495,20 +495,39 @@ it.each<State>(["missing proof", "wrong key"])(
 	},
 );
 
-it("permits confirmed public mapping relocation with actual-key V1 target proof", async () => {
+it("resolves mapping batch authority once inside the write transaction with actual-key V1 proof", async () => {
 	// Arrange: preserve local content and remove only the project mapping.
 	store.db.prepare("DELETE FROM project_scope_mappings").run();
 	ensureScopeBackfillScopes(store.db);
 	store.reassignMemoryScope(historyId, "local-default");
+	const sessionId = store.get(historyId)?.session_id;
+	if (!sessionId) throw new Error("Missing fixture session");
+	const memoryIds = [historyId];
+	for (const title of ["Mapping sibling one", "Mapping sibling two"]) {
+		memoryIds.push(store.rememberForUser(sessionId, "decision", title, title));
+	}
 	pinProjectIdentity();
 	// Act.
 	const tokens = await mappingTokens();
+	const actualContext = store.scopeResolutionDeviceContext.bind(store);
+	const loadKey = vi.fn(() => {
+		expect(store.db.inTransaction).toBe(true);
+		return actualContext().loadExpectedPublicKey?.();
+	});
+	const context = vi.spyOn(store, "scopeResolutionDeviceContext").mockImplementation(() => {
+		expect(store.db.inTransaction).toBe(true);
+		return { loadExpectedPublicKey: loadKey };
+	});
 	const response = await mappingRequest(tokens);
 	// Assert.
 	expect(response.status).toBe(200);
-	expect(store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").get(historyId)).toEqual(
-		{ scope_id: "managed-write" },
-	);
+	expect(context).toHaveBeenCalledTimes(1);
+	expect(loadKey).toHaveBeenCalledTimes(1);
+	for (const memoryId of memoryIds) {
+		expect(
+			store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").get(memoryId),
+		).toEqual({ scope_id: "managed-write" });
+	}
 });
 
 it.each(["manual", "private"])(
@@ -592,5 +611,210 @@ it.each(["projects/reassign-project", "legacy-shared-review/reassign"])(
 					: "local device is not a member of Sharing domain managed-write",
 		});
 		expect(snapshot()).toEqual(before);
+	},
+);
+
+it.each<State>(["revoked", "missing proof", "wrong key"])(
+	"denies project correction with an empty denormalized change set after %s",
+	async (state) => {
+		// Arrange: the real viewer move relabels the session but leaves memory.project unchanged.
+		pinProjectIdentity();
+		const moved = await post("project", { memory_id: historyId, project: "viewer-relabeled" });
+		expect(moved.status).toBe(200);
+		expect(
+			store.db
+				.prepare(`SELECT m.project, s.project AS session_project FROM memory_items m
+			JOIN sessions s ON s.id = m.session_id WHERE m.id = ?`)
+				.get(historyId),
+		).toEqual({ project: "write-project", session_project: "viewer-relabeled" });
+		await setState(state);
+		const before = snapshot();
+		// Act: target equals memory.project, so the old changed-memory list is empty.
+		const response = await syncPost("projects/reassign-project", {
+			workspace_identity: fixtureProjectIdentity,
+			project: "write-project",
+		});
+		// Assert: permission applies to session writes too, even with no memory revision change.
+		expect(store.get(historyId)).toBeNull();
+		expect(response.status).toBe(400);
+		expect(await response.json()).toEqual({ error: "unauthorized_scope" });
+		expect(snapshot()).toEqual(before);
+	},
+);
+
+it.each(["active V1", "local", "manual"])(
+	"permits the empty-change project correction with %s authority",
+	async (authority) => {
+		// Arrange: unmanaged scopes need no account provider; managed proof is real V1.
+		pinProjectIdentity();
+		if (authority !== "active V1") {
+			store.db
+				.prepare(
+					"UPDATE replication_scopes SET authority_type = ?, coordinator_id = NULL, group_id = NULL",
+				)
+				.run(authority);
+			await setState("missing proof");
+		}
+		const moved = await post("project", { memory_id: historyId, project: "viewer-relabeled" });
+		expect(moved.status).toBe(200);
+		const before = snapshot();
+		// Act.
+		const response = await syncPost("projects/reassign-project", {
+			workspace_identity: fixtureProjectIdentity,
+			project: "write-project",
+		});
+		// Assert: session changes do not revise unchanged memories or emit operations.
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({ moved_memory_count: 0, moved_session_count: 1 });
+		const after = snapshot();
+		expect(after.memory_items).toEqual(before.memory_items);
+		expect(after.replication_ops).toEqual(before.replication_ops);
+		expect(after.sessions).toEqual(
+			before.sessions.map((row) => ({ ...(row as object), project: "write-project" })),
+		);
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+	},
+);
+
+async function seedSessionSibling(kind: "inactive" | "foreign" | "inactive foreign") {
+	const now = new Date().toISOString();
+	store.db
+		.prepare(`INSERT INTO replication_scopes(scope_id, label, kind, authority_type,
+		coordinator_id, group_id, membership_epoch, status, created_at, updated_at)
+		SELECT 'managed-sibling', 'Sibling', kind, authority_type, coordinator_id, group_id,
+		membership_epoch, status, ?, ? FROM replication_scopes WHERE scope_id = 'managed-write'`)
+		.run(now, now);
+	await refreshManagedScopeFixture(store.db, {
+		keysDir: join(directory, "keys"),
+		deviceId: store.deviceId,
+		scopeIds: ["managed-write", "managed-sibling"],
+	});
+	const sessionId = store.get(historyId)?.session_id;
+	if (!sessionId) throw new Error("Missing fixture session");
+	const sibling = store.rememberForUser(sessionId, "decision", "Session sibling", "Sibling body");
+	store.reassignMemoryScope(sibling, "managed-sibling");
+	if (kind.includes("inactive")) store.forget(sibling);
+	if (kind.includes("foreign"))
+		store.db
+			.prepare(`UPDATE memory_items SET
+		origin_device_id = 'fixture-foreign-device', actor_id = 'fixture-other-actor' WHERE id = ?`)
+			.run(sibling);
+	pinProjectIdentity();
+	return sibling;
+}
+
+it.each(["inactive", "foreign", "inactive foreign"] as const)(
+	"checks the denied scope of a co-mingled %s row before relabeling its session",
+	async (kind) => {
+		// Arrange: the target row stays authorized; the sibling's scope loses only its proof.
+		const sibling = await seedSessionSibling(kind);
+		const moved = await post("project", { memory_id: historyId, project: "viewer-relabeled" });
+		expect(moved.status).toBe(200);
+		store.db
+			.prepare(
+				"DELETE FROM scope_membership_authorization_evidence WHERE scope_id = 'managed-sibling'",
+			)
+			.run();
+		const before = snapshot();
+		// Act: neither inactive status nor another origin/actor can exempt a session member.
+		const response = await syncPost("projects/reassign-project", {
+			workspace_identity: fixtureProjectIdentity,
+			project: "write-project",
+		});
+		const viewer = await post("project", { memory_id: historyId, project: "other-project" });
+		// Assert: both session-write entrypoints deny without changing either row.
+		expect(store.canMutateMemory(historyId)).toBe(true);
+		expect(store.canMutateMemory(sibling)).toBe(false);
+		expect(response.status).toBe(400);
+		expect(await response.json()).toEqual({ error: "unauthorized_scope" });
+		expect(viewer.status).toBe(404);
+		expect(await viewer.json()).toEqual({ error: "memory not found" });
+		expect(snapshot()).toEqual(before);
+	},
+);
+
+type MutationEndpoint = "CLI forget" | "MCP forget" | "viewer forget" | "viewer visibility";
+const preflightRaces = (
+	["CLI forget", "MCP forget", "viewer forget", "viewer visibility"] as const
+).flatMap((endpoint) => ["revocation", "key replacement"].map((change) => ({ endpoint, change })));
+
+async function replacementEvidence() {
+	// Generate the alternate proof through actual V1 validation, then restore actual-key permission.
+	await refreshTestScopeRows(store.db, { [store.deviceId]: CANONICAL_PUBLIC_KEY });
+	const row = store.db
+		.prepare(
+			"SELECT evidence_json FROM scope_membership_authorization_evidence WHERE scope_id = 'managed-write'",
+		)
+		.get() as { evidence_json: string };
+	await refreshManagedScopeFixture(store.db, {
+		keysDir: join(directory, "keys"),
+		deviceId: store.deviceId,
+		scopeIds: ["managed-write"],
+	});
+	return row.evidence_json;
+}
+
+async function invokeMutation(endpoint: MutationEndpoint) {
+	if (endpoint === "CLI forget") return cli(forgetMemoryCommand, [String(historyId)]);
+	if (endpoint === "MCP forget") return mcp("memory_forget", { memory_id: historyId });
+	const response = await post(endpoint === "viewer forget" ? "forget" : "visibility", {
+		memory_id: historyId,
+		visibility: "private",
+	});
+	return { status: response.status, body: await response.json() };
+}
+
+it.each(preflightRaces)(
+	"rechecks permission for $endpoint after another SQLite connection commits $change",
+	async ({ endpoint, change }) => {
+		// Arrange: preflight is genuinely authorized, using the actual local key and V1 proof.
+		const replacement = change === "key replacement" ? await replacementEvidence() : null;
+		const other = connect(dbPath);
+		const before = snapshot();
+		const actualPreflight = MemoryStore.prototype.canMutateMemory;
+		let changedAfterPreflight = false;
+		vi.spyOn(MemoryStore.prototype, "canMutateMemory").mockImplementation(function (id) {
+			const permitted = actualPreflight.call(this, id);
+			if (id === historyId && permitted && !this.db.inTransaction && !changedAfterPreflight) {
+				changedAfterPreflight = true;
+				if (replacement)
+					other
+						.prepare(
+							"UPDATE scope_membership_authorization_evidence SET evidence_json = ? WHERE scope_id = 'managed-write'",
+						)
+						.run(replacement);
+				else
+					other
+						.prepare(
+							"UPDATE scope_memberships SET status = 'revoked' WHERE scope_id = 'managed-write'",
+						)
+						.run();
+			}
+			return permitted;
+		});
+		if (endpoint === "CLI forget" || endpoint === "MCP forget") {
+			// These callers now enter the atomic API directly. Inject a genuine successful
+			// read-only preflight at its boundary, before the normal transaction begins.
+			const atomicForget = MemoryStore.prototype.forgetForUser;
+			vi.spyOn(MemoryStore.prototype, "forgetForUser").mockImplementation(function (id) {
+				this.canMutateMemory(id);
+				return atomicForget.call(this, id);
+			});
+		}
+		try {
+			// Act: return the real successful preflight result, then call the normal public mutation.
+			const result = await invokeMutation(endpoint);
+			// Assert: transaction-time authority must not reuse the previously permitted scope set.
+			expect(changedAfterPreflight).toBe(true);
+			if (endpoint === "CLI forget") {
+				expect(result).toEqual({ error: "not_found", message: `Memory ${historyId} not found` });
+				expect(process.exitCode).toBe(1);
+			} else if (endpoint === "MCP forget") expect(result).toEqual({ error: "not_found" });
+			else expect(result).toEqual({ status: 404, body: { error: "memory not found" } });
+			expect(store.get(historyId)).toBeNull();
+			expect(snapshot()).toEqual(before);
+		} finally {
+			other.close();
+		}
 	},
 );

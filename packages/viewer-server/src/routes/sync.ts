@@ -168,6 +168,7 @@ import {
 	requestJson,
 	resolveRecipientPolicyReview,
 	resolveRecipientPolicyReviewBulk,
+	resolveVisibleScopeIds,
 	runSyncPass,
 	SCOPE_MEMBERSHIP_REVOCATION_LIMITATION,
 	SYNC_AUTHORIZATION_REFRESH_HEADER,
@@ -4158,12 +4159,13 @@ function forgetProjectInventoryLocalMemories(
 	if (input.confirmationToken !== confirmationToken) {
 		throw new Error("project memories changed before cleanup; refresh and try again");
 	}
-	store.db.transaction(() => {
-		for (const row of localRows) {
-			if (!store.canMutateMemory(row.id)) throw new Error("unauthorized_scope");
-			store.forget(row.id);
-		}
-	})();
+	store.db
+		.transaction(() => {
+			for (const row of localRows) {
+				if (!store.forgetForUser(row.id)) throw new Error("unauthorized_scope");
+			}
+		})
+		.immediate();
 	return { confirmed: true, forgotten_memory_count: localRows.length, ...preview };
 }
 
@@ -5357,9 +5359,12 @@ function saveProjectMappingsAndWakePolicies(
 		.transaction(() => {
 			const before = policyWakeMappings(store);
 			const previousMappings = existingRequestedMappings(before, mappingInputs);
+			const writableScopeIds = new Set(
+				resolveVisibleScopeIds(store.db, store.deviceId, store.scopeResolutionDeviceContext()),
+			);
 			const mappings = upsertProjectScopeSettingsMappings(store.db, mappingInputs, {
 				deviceId,
-				canWriteScope: (scopeId) => store.isScopeWritable(scopeId),
+				canWriteScope: (scopeId) => writableScopeIds.has(scopeId ?? ""),
 			});
 			const after = policyWakeMappings(store);
 			const changedScopeIds = new Set([

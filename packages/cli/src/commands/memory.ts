@@ -151,7 +151,7 @@ function forgetMemoryAction(idStr: string, opts: DbOpts & JsonOpts): void {
 	}
 	const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
 	try {
-		if (!store.getForMutation(memoryId)) {
+		if (!store.forgetForUser(memoryId)) {
 			if (opts.json) {
 				emitJsonError("not_found", `Memory ${memoryId} not found`);
 			} else {
@@ -160,7 +160,6 @@ function forgetMemoryAction(idStr: string, opts: DbOpts & JsonOpts): void {
 			}
 			return;
 		}
-		store.forget(memoryId);
 		if (opts.json) {
 			console.log(JSON.stringify({ id: memoryId, status: "forgotten" }));
 		} else {
