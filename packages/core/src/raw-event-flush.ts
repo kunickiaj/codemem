@@ -29,6 +29,7 @@ import {
 import type { IngestPayload, SessionContext } from "./ingest-types.js";
 import { ObserverAuthError, ObserverClient } from "./observer-client.js";
 import { ObserverOutputError, ObserverOutputTransportError } from "./observer-output.js";
+import { ScopeWriteAuthorityError } from "./scope-write-authority-error.js";
 import type { MemoryStore } from "./store.js";
 
 const EXTRACTOR_VERSION = "raw_events_v1";
@@ -212,6 +213,17 @@ function handleFlushFailure(
 	isLegacyRediagnosis: boolean,
 	exc: unknown,
 ): never {
+	if (exc instanceof ScopeWriteAuthorityError) {
+		store.releaseRawEventFlushBatchAfterAuthError(batchId, {
+			code: "scope_authority",
+			provider: null,
+			model: null,
+			runtime: null,
+			authSource: null,
+			authType: null,
+		});
+		throw exc;
+	}
 	const observerFailureStatus = rawEventObserverStatusFromError(exc);
 	const err = exc instanceof Error ? exc : new Error(String(exc));
 	const status = observerFailureStatus ?? ingestOpts.observer?.getStatus?.();

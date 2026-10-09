@@ -53,6 +53,7 @@ import { findByConcept as findByConceptFn, findByFile as findByFileFn } from "./
 import * as schema from "./schema.js";
 import { resolveVisibleScopeIds, type ScopeVisibilityOptions } from "./scope-resolution.js";
 import { ensureMemoryScopeId, resolveSessionScopeId } from "./scope-stamping.js";
+import { ScopeWriteAuthorityError } from "./scope-write-authority-error.js";
 import {
 	type ExplainOptions,
 	explain as explainFn,
@@ -192,6 +193,12 @@ const SAME_PERSON_BINDING_PROVENANCE = new Set([
 
 /** ISO 8601 timestamp in UTC. */
 function observerAdmissionErrorDetails(code: string): { type: string; message: string } {
+	if (code === "scope_authority") {
+		return {
+			type: "ScopeWriteAuthorityError",
+			message: "Scope write authority is unavailable; refresh scope membership and retry.",
+		};
+	}
 	if (code === "model_unavailable") {
 		return {
 			type: "ObserverModelUnavailable",
@@ -995,13 +1002,7 @@ export class MemoryStore {
 		options: { createdAt?: string; replicate?: boolean } = {},
 	): number {
 		const validKind = validateMemoryKind(kind);
-		const scannedMetadata = this.scanner.redactValue(metadata ?? {});
-		const provenance = this.resolveProvenance(scannedMetadata.value as Record<string, unknown>);
-		const scopeId = resolveSessionScopeId(this.db, {
-			sessionId,
-			workspaceId: provenance.workspace_id,
-		});
-		if (!this.isScopeWritable(scopeId)) throw new Error("unauthorized_scope");
+		this.assertSessionScopeWritable(sessionId, metadata);
 		return this.remember(
 			sessionId,
 			validKind,
@@ -1012,6 +1013,17 @@ export class MemoryStore {
 			metadata,
 			options,
 		);
+	}
+
+	/** Admission check; persistence callers must check again inside their transaction. */
+	assertSessionScopeWritable(sessionId: number, metadata?: Record<string, unknown>): void {
+		const scannedMetadata = this.scanner.redactValue(metadata ?? {});
+		const provenance = this.resolveProvenance(scannedMetadata.value as Record<string, unknown>);
+		const scopeId = resolveSessionScopeId(this.db, {
+			sessionId,
+			workspaceId: provenance.workspace_id,
+		});
+		if (!this.isScopeWritable(scopeId)) throw new ScopeWriteAuthorityError();
 	}
 
 	/**
@@ -2544,7 +2556,7 @@ export class MemoryStore {
 		return row != null;
 	}
 
-	/** Keep auth failures visible and retryable without consuming an observer attempt. */
+	/** Keep admission failures retryable without consuming an observer attempt. */
 	releaseRawEventFlushBatchAfterAuthError(
 		batchId: number,
 		failure: {
@@ -2569,7 +2581,7 @@ export class MemoryStore {
 				observer_runtime: failure.runtime,
 				observer_auth_source: failure.authSource,
 				observer_auth_type: failure.authType,
-				observer_error_code: failure.code,
+				observer_error_code: failure.code === "scope_authority" ? null : failure.code,
 				observer_error_message: null,
 			})
 			.where(
