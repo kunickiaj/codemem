@@ -11,6 +11,7 @@ import {
 	toJsonNullable,
 } from "./db.js";
 import { buildFilterClausesWithContext } from "./filters.js";
+import { recordForeignMemoryRevision } from "./memory-creation-provenance.js";
 import { expandUserPath } from "./observer-config.js";
 import { projectColumnClause, resolveProject as resolveProjectName } from "./project.js";
 import { cleanProjectIdentity } from "./project-identity.js";
@@ -913,6 +914,7 @@ function insertMemory(db: Database, d: DrizzleDb, row: JsonObject, deviceId: str
 		import_key: String(row.import_key),
 		scope_id: scopeId,
 	};
+	recordForeignMemoryRevision(db, String(row.import_key), "import");
 	const rows = d
 		.insert(schema.memoryItems)
 		.values(values)
@@ -1052,6 +1054,7 @@ function reconcileImportedPromptLink(
 	const metadata = normalizeImportMetadata(existing.metadata_json);
 	if (metadata?.source !== "export" || metadata.import_key !== existing.import_key) return;
 	authorizeContext(Number(incomingSession?.id), sessionId);
+	recordForeignMemoryRevision(db, String(existing.import_key), "import");
 	db.prepare(
 		"UPDATE memory_items SET user_prompt_id = ? WHERE id = ? AND user_prompt_id IS NULL",
 	).run(promptId, memoryId);
