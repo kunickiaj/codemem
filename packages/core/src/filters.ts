@@ -5,11 +5,13 @@
  * Builds WHERE clause fragments and parameter arrays from a MemoryFilters object.
  */
 
+import type { Database } from "./db.js";
 import { projectClause } from "./project.js";
 import {
 	LEGACY_SHARED_REVIEW_SCOPE_ID,
 	LOCAL_DEFAULT_SCOPE_ID,
 	MAX_SCOPE_IN_PARAMS,
+	resolveVisibleScopeIds,
 } from "./scope-resolution.js";
 import type { MemoryFilters } from "./types.js";
 
@@ -29,11 +31,16 @@ export interface OwnershipFilterContext {
 	 * Pre-resolved set of scope_ids this device may read (see
 	 * `resolveVisibleScopeIds` in scope-resolution.ts). When present, scope visibility is
 	 * enforced with an index-eligible `scope_id IN (...)` predicate instead of
-	 * the per-row EXISTS subqueries. Callers that cannot resolve the set up front
-	 * (e.g. a context built without db access) omit it and fall back to the
-	 * EXISTS predicate, which is semantically identical.
+	 * the per-row EXISTS subqueries. Without this set, scopeVisibilityDb resolves
+	 * the same membership decisions. Callers without either fall back to the
+	 * semantically equivalent EXISTS predicate.
 	 */
 	visibleScopeIds?: readonly string[];
+	scopeVisibilityDb?: Database;
+	/** Public key of the actual runtime signing key; reserved for proof validation. */
+	expectedPublicKey?: string;
+	/** Lazy read-only key loader; membership-only reads never invoke it. */
+	loadExpectedPublicKey?: () => string | undefined;
 }
 
 export interface FilterResult {
@@ -181,7 +188,11 @@ function addScopeVisibilityFilter(
 	// Migration backfill promotes legacy rows to explicit scopes asynchronously,
 	// but until that completes those rows must remain visible to their owning
 	// device exactly the way local-default rows are.
-	const visibleScopeIds = context.visibleScopeIds;
+	const visibleScopeIds =
+		context.visibleScopeIds ??
+		(context.scopeVisibilityDb
+			? resolveVisibleScopeIds(context.scopeVisibilityDb, deviceId, context)
+			: undefined);
 	if (visibleScopeIds !== undefined && visibleScopeIds.length <= MAX_SCOPE_IN_PARAMS) {
 		// Fast path: the visible scope-id set was resolved once per request (see
 		// resolveVisibleScopeIds in scope-resolution.ts). A plain `scope_id IN (...)`

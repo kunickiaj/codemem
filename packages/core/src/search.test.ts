@@ -1186,7 +1186,7 @@ describe("scope visibility filter (resolved visible set)", () => {
 
 		// Fast path (resolved IN-set) vs fallback (EXISTS) must select identical rows.
 		const fastContext = ownershipFilterContext(store);
-		const { visibleScopeIds: _omit, ...fallbackContext } = fastContext;
+		const { visibleScopeIds: _omit, scopeVisibilityDb: _omitDb, ...fallbackContext } = fastContext;
 		expect([...runIds(fastContext)].sort()).toEqual([...runIds(fallbackContext)].sort());
 	});
 
@@ -1222,7 +1222,8 @@ describe("scope visibility filter (resolved visible set)", () => {
 		// correlated subquery and no TRIM (TRIM would defeat the index). This pins
 		// the actual perf goal: a future regression that reintroduces TRIM or the
 		// per-row EXISTS predicate would resurface CORRELATED here and fail.
-		const fastPlan = explainPlan(ownershipFilterContext(store));
+		const fastContext = ownershipFilterContext(store);
+		const fastPlan = explainPlan(fastContext);
 		expect(fastPlan).toMatch(/USING INDEX/);
 		expect(fastPlan).not.toMatch(/CORRELATED/);
 		expect(fastPlan).not.toMatch(/TRIM/);
@@ -1230,9 +1231,8 @@ describe("scope visibility filter (resolved visible set)", () => {
 		// Contrast guard: the EXISTS fallback is exactly the plan shape we are
 		// hoisting away from — it must still contain the correlated subqueries, so
 		// this assertion proves the fast-path check above is meaningful.
-		const { visibleScopeIds: _omit, ...fallbackContext } = ownershipFilterContext(store);
-		const fallbackPlan = explainPlan(fallbackContext);
-		expect(fallbackPlan).toMatch(/CORRELATED/);
+		const { visibleScopeIds: _omit, scopeVisibilityDb: _omitDb, ...fallbackContext } = fastContext;
+		expect(explainPlan(fallbackContext)).toMatch(/CORRELATED/);
 	});
 });
 

@@ -280,7 +280,7 @@ export function resolveProjectScope(input: ResolveProjectScopeInput): ScopeResol
 export interface ScopeVisibilityOptions {
 	/** Public key of the runtime's actual signing key, not an enrolled DB row. */
 	expectedPublicKey?: string;
-	/** Read-only key loader, called once only when coordinator candidates exist. */
+	/** Read-only key loader reserved for coordinator proof validation; not used by membership-only reads. */
 	loadExpectedPublicKey?: () => string | undefined;
 }
 
@@ -301,7 +301,11 @@ export interface ScopeVisibilityOptions {
  * NULL scope_ids are skipped here — a NULL scope_id is handled by the filter's
  * dedicated `IS NULL` branch, not by membership in this set.
  */
-export function resolveVisibleScopeIds(db: Database, deviceId: string): string[] {
+export function resolveVisibleScopeIds(
+	db: Database,
+	deviceId: string,
+	_options: ScopeVisibilityOptions = {},
+): string[] {
 	const visible = new Set<string>(["", LOCAL_DEFAULT_SCOPE_ID, LEGACY_SHARED_REVIEW_SCOPE_ID]);
 	const localScopes = db
 		.prepare(

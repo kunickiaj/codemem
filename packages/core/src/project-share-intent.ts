@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { normalizeIdentityDisplayName } from "./project-invite-identity.js";
-import { canonicalWorkspaceIdentity } from "./scope-resolution.js";
+import { canonicalWorkspaceIdentity } from "./workspace-identity.js";
 
 export const SHARE_HISTORY_POLICY = "existing_and_future" as const;
 

@@ -775,7 +775,9 @@ export class MemoryStore {
 	 * {@link buildOwnershipPredicate}. Shared by core read paths and viewer
 	 * routes to keep a single source of truth for "is this mine?".
 	 */
-	ownershipFilterContext(): OwnershipFilterContext {
+	ownershipFilterContext(
+		options: ScopeVisibilityOptions = this.scopeResolutionDeviceContext(),
+	): OwnershipFilterContext {
 		const claimedDeviceIds = this.sameActorPeerIds();
 		return {
 			actorId: this.actorId,
@@ -787,7 +789,10 @@ export class MemoryStore {
 			// use the index-eligible `scope_id IN (...)` fast path instead of the
 			// per-row EXISTS predicate. Fronts get()/recent()/recentByKinds() and
 			// every viewer-server route.
-			visibleScopeIds: resolveVisibleScopeIds(this.db, this.deviceId),
+			visibleScopeIds: resolveVisibleScopeIds(this.db, this.deviceId, options),
+			scopeVisibilityDb: this.db,
+			expectedPublicKey: options.expectedPublicKey,
+			loadExpectedPublicKey: options.loadExpectedPublicKey,
 		};
 	}
 
