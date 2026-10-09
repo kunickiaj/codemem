@@ -4562,7 +4562,7 @@ function rejectUnauthorizedInboundBatch(
 	if (!failure) return null;
 	return c.json(
 		syncScopeResetRequiredPayload(
-			getSyncResetState(context.db, failure.scopeId),
+			getSyncResetState(context.db),
 			failure.reason,
 			LOCAL_SYNC_CAPABILITY,
 			failure.scopeId,
