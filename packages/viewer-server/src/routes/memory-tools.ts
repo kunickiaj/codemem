@@ -236,7 +236,13 @@ function rememberMemory(
 			.run(now, now, cwd, project, user, "viewer-api", toJson({ viewer: true }));
 		const sessionId = Number(sessionInfo.lastInsertRowid);
 
-		const memId = store.remember(sessionId, input.kind, input.title, input.body, input.confidence);
+		const memId = store.rememberForUser(
+			sessionId,
+			input.kind,
+			input.title,
+			input.body,
+			input.confidence,
+		);
 		if (!getMemoryForAccess(store, memId)) {
 			throw new Error("unauthorized_scope");
 		}

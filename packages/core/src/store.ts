@@ -798,6 +798,28 @@ export class MemoryStore {
 		return this.ownershipFilterContext();
 	}
 
+	isScopeWritable(scopeId: string | null): boolean {
+		return resolveVisibleScopeIds(
+			this.db,
+			this.deviceId,
+			this.scopeResolutionDeviceContext(),
+		).includes(scopeId ?? "");
+	}
+
+	/** Current scope authority for user-facing mutations, not authored-history read access. */
+	canMutateMemory(memoryId: number): boolean {
+		const row = this.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").get(memoryId) as
+			| { scope_id: string | null }
+			| undefined;
+		return row != null && this.isScopeWritable(row.scope_id);
+	}
+
+	/** Keep read eligibility and current write authority separate at mutation entrypoints. */
+	getForMutation(memoryId: number): MemoryItemResponse | null {
+		if (!this.canMutateMemory(memoryId)) return null;
+		return this.get(memoryId);
+	}
+
 	// get
 
 	/**
@@ -960,6 +982,25 @@ export class MemoryStore {
 	}
 
 	// remember
+
+	/** User-facing creation requires current scope authority before dedup or insert. */
+	rememberForUser(
+		sessionId: number,
+		kind: string,
+		title: string,
+		bodyText: string,
+		confidence = 0.5,
+		tags?: string[],
+	): number {
+		const validKind = validateMemoryKind(kind);
+		const provenance = this.resolveProvenance({});
+		const scopeId = resolveSessionScopeId(this.db, {
+			sessionId,
+			workspaceId: provenance.workspace_id,
+		});
+		if (!this.isScopeWritable(scopeId)) throw new Error("unauthorized_scope");
+		return this.remember(sessionId, validKind, title, bodyText, confidence, tags);
+	}
 
 	/**
 	 * Create a new memory item. Returns the new memory ID.
@@ -1742,6 +1783,26 @@ export class MemoryStore {
 	}
 
 	// moveMemoryProject
+
+	/** Project attribution changes every memory in the session, including authored history. */
+	moveMemoryProjectForUser(
+		memoryId: number,
+		project: string,
+	): { session_id: number; project: string; moved_memory_count: number } {
+		return this.db
+			.transaction(() => {
+				const row = this.getForMutation(memoryId);
+				if (!row) throw new Error("memory not found");
+				const memories = this.db
+					.prepare("SELECT id FROM memory_items WHERE session_id = ?")
+					.all(row.session_id) as Array<{ id: number }>;
+				if (memories.some((memory) => !this.canMutateMemory(memory.id))) {
+					throw new Error("memory not found");
+				}
+				return this.moveMemoryProject(memoryId, project);
+			})
+			.immediate();
+	}
 
 	/**
 	 * Reassign a memory to a different project by mutating its parent

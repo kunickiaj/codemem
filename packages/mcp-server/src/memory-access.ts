@@ -2,7 +2,6 @@ import {
 	type MemoryFilters,
 	type MemoryItemResponse,
 	type MemoryStore,
-	resolveVisibleScopeIds,
 	toJson,
 } from "@codemem/core";
 import { resolveWriteProject } from "./project-scope.js";
@@ -36,7 +35,7 @@ export function forgetMemoryForMcp(
 	filters?: MemoryFilters,
 ): boolean {
 	const item = getMemoryForMcp(store, memoryId, filters);
-	if (!item) return false;
+	if (!item || !store.canMutateMemory(memoryId)) return false;
 	store.forget(memoryId);
 	return true;
 }
@@ -78,19 +77,13 @@ export function rememberMemoryForMcp(
 			.run(now, now, cwd, project, user, "mcp-ts", toJson({ mcp: true }));
 		const sessionId = Number(sessionInfo.lastInsertRowid);
 
-		const memId = store.remember(sessionId, input.kind, input.title, input.body, input.confidence);
-		const memory = store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").get(memId) as
-			| { scope_id: string | null }
-			| undefined;
-		// Authored-history reads do not grant permission to create a scoped memory.
-		const permittedScopes = resolveVisibleScopeIds(
-			store.db,
-			store.deviceId,
-			store.scopeResolutionDeviceContext(),
+		const memId = store.rememberForUser(
+			sessionId,
+			input.kind,
+			input.title,
+			input.body,
+			input.confidence,
 		);
-		if (!memory || !permittedScopes.includes(memory.scope_id ?? "")) {
-			throw new Error("unauthorized_scope");
-		}
 		if (!getMemoryForMcp(store, memId)) {
 			throw new Error("unauthorized_scope");
 		}

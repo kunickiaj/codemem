@@ -151,7 +151,7 @@ function forgetMemoryAction(idStr: string, opts: DbOpts & JsonOpts): void {
 	}
 	const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
 	try {
-		if (!store.get(memoryId)) {
+		if (!store.getForMutation(memoryId)) {
 			if (opts.json) {
 				emitJsonError("not_found", `Memory ${memoryId} not found`);
 			} else {
@@ -186,57 +186,35 @@ function parseConfidence(value: string | undefined): number {
 	return Math.min(1, Math.max(0, n));
 }
 
-function rollbackManualMemory(store: MemoryStore, sessionId: number, memoryId: number): void {
-	store.db.transaction(() => {
-		const row = store.db
-			.prepare("SELECT import_key FROM memory_items WHERE id = ?")
-			.get(memoryId) as { import_key: string | null } | undefined;
-		store.db.prepare("DELETE FROM memory_vectors WHERE memory_id = ?").run(memoryId);
-		store.db.prepare("DELETE FROM memory_file_refs WHERE memory_id = ?").run(memoryId);
-		store.db.prepare("DELETE FROM memory_concept_refs WHERE memory_id = ?").run(memoryId);
-		store.db
-			.prepare(
-				"DELETE FROM replication_ops WHERE entity_type = 'memory_item' AND (entity_id = ? OR entity_id = ?)",
-			)
-			.run(row?.import_key ?? "", String(memoryId));
-		store.db.prepare("DELETE FROM memory_items WHERE id = ?").run(memoryId);
-		store.db
-			.prepare(
-				`DELETE FROM sessions
-				 WHERE id = ?
-				   AND NOT EXISTS (SELECT 1 FROM memory_items WHERE session_id = ?)`,
-			)
-			.run(sessionId, sessionId);
-	})();
-}
-
 async function rememberMemoryAction(opts: RememberMemoryOptions): Promise<void> {
 	const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
 	let sessionId: number | null = null;
 	try {
 		const project = resolveProject(process.cwd(), opts.project ?? null);
-		sessionId = store.startSession({
-			cwd: process.cwd(),
-			project,
-			user: process.env.USER ?? "unknown",
-			toolVersion: "manual",
-			metadata: { manual: true },
-		});
-		const memId = store.remember(
-			sessionId,
-			opts.kind,
-			opts.title,
-			opts.body,
-			parseConfidence(opts.confidence),
-			opts.tags,
-		);
-		if (!store.get(memId)) {
-			await store.flushPendingVectorWrites();
-			rollbackManualMemory(store, sessionId, memId);
-			sessionId = null;
-			throw new Error("unauthorized_scope");
-		}
-		store.endSession(sessionId, { manual: true });
+		const result = store.db.transaction(() => {
+			const newSessionId = store.startSession({
+				cwd: process.cwd(),
+				project,
+				user: process.env.USER ?? "unknown",
+				toolVersion: "manual",
+				metadata: { manual: true },
+			});
+			const memId = store.rememberForUser(
+				newSessionId,
+				opts.kind,
+				opts.title,
+				opts.body,
+				parseConfidence(opts.confidence),
+				opts.tags,
+			);
+			const item = store.get(memId);
+			if (!item) throw new Error("unauthorized_scope");
+			store.endSession(newSessionId, { manual: true });
+			return { memId, sessionId: newSessionId, item };
+		})();
+		sessionId = result.sessionId;
+		const memId = result.memId;
+		store.enqueueVectorWrite(memId, result.item.title, result.item.body_text);
 		await store.flushPendingVectorWrites();
 		if (opts.json) {
 			console.log(JSON.stringify({ id: memId }));

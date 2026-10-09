@@ -753,7 +753,7 @@ export function memoryRoutes(getStore: StoreFactory) {
 		if (memoryId == null || memoryId <= 0) {
 			return c.json({ error: "memory_id must be int" }, 400);
 		}
-		if (!store.get(memoryId)) {
+		if (!store.getForMutation(memoryId)) {
 			return c.json({ error: "memory not found" }, 404);
 		}
 		const visibility = String(body.visibility ?? "").trim();
@@ -790,11 +790,11 @@ export function memoryRoutes(getStore: StoreFactory) {
 		if (!project) {
 			return c.json({ error: "project must be a non-empty string" }, 400);
 		}
-		if (!store.get(memoryId)) {
+		if (!store.getForMutation(memoryId)) {
 			return c.json({ error: "memory not found" }, 404);
 		}
 		try {
-			const result = store.moveMemoryProject(memoryId, project);
+			const result = store.moveMemoryProjectForUser(memoryId, project);
 			return c.json(result);
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
@@ -867,6 +867,7 @@ function forgetSafetyFilters(body: Record<string, unknown>): MemoryFilters {
 }
 
 function forgetTargetExists(store: MemoryStore, memoryId: number, filters: MemoryFilters): boolean {
+	if (!store.canMutateMemory(memoryId)) return false;
 	if (Object.keys(filters).length > 0) {
 		return store.timeline(null, memoryId, 0, 0, filters).some((row) => row.id === memoryId);
 	}
