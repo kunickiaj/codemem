@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import {
@@ -311,13 +312,35 @@ function queryExportSessions(
 		.all(...sessionIds, ...scopeFilter.params) as { session_id: number }[];
 	const unsafeSessionIds = new Set(rows.map((row) => row.session_id));
 	const safeIds = sessionIds.filter((id) => !unsafeSessionIds.has(id));
-	// ID-only placeholders preserve import mappings without exporting session
+	// Opaque references preserve import mappings without exporting session
 	// metadata, paths, or other source content from partially readable sessions.
 	const sessions = selectedSessions.map((row) => {
-		if (unsafeSessionIds.has(Number(row.id))) return { id: row.id };
-		return row;
+		const export_session_key = exportedSessionKey(row, resolveLocalDeviceId(db));
+		if (unsafeSessionIds.has(Number(row.id))) {
+			return { id: row.id, export_session_key, export_session_redacted: true };
+		}
+		return { ...row, export_session_key };
 	});
 	return { sessions, sessionIds, safeIds };
+}
+
+function hashIdentity(value: unknown): string {
+	return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function exportedSessionKey(row: JsonObject, deviceId: string): string {
+	const sourceKey = cleanString(row.import_key);
+	let identity: unknown = ["import_key", sourceKey];
+	if (!sourceKey) {
+		identity = [
+			"derived",
+			String(row.id),
+			normalizeImportedProject(row.project),
+			row.started_at ?? null,
+			deviceId,
+		];
+	}
+	return `export-session:v1:${hashIdentity(identity)}`;
 }
 
 function parseMemoryExportRow(row: JsonObject): JsonObject {
@@ -446,17 +469,65 @@ function nextUserName(): string {
 
 type DrizzleDb = ReturnType<typeof drizzle>;
 
+function readableSessionProject(sessionId: unknown, memories: JsonObject[]): string | null {
+	const projects = new Set(
+		memories
+			.filter((memory) => Number(memory.session_id) === Number(sessionId))
+			.map((memory) => cleanProjectIdentity(normalizeImportedProject(memory.project))),
+	);
+	if (projects.size !== 1) return null;
+	return projects.values().next().value ?? null;
+}
+
+function resolveImportedSessionIdentity(
+	db: Database,
+	row: JsonObject,
+	opts: ImportOptions & { memories: JsonObject[] },
+): { project: string | null; importKey: string; existingId: number | null } {
+	const sourceProject = opts.remapProject || normalizeImportedProject(row.project);
+	const legacyKey = buildImportKey("export", "session", row.id, {
+		project: sourceProject,
+		createdAt: typeof row.started_at === "string" ? row.started_at : null,
+	});
+	// Attribution comes only from exported readable memories; it never changes
+	// opaque identity or the legacy full-session fallback key.
+	const project =
+		row.export_session_redacted === true && !opts.remapProject
+			? readableSessionProject(row.id, opts.memories)
+			: sourceProject;
+	const marker = cleanString(row.export_session_key);
+	if (!marker || !/^export-session:v1:[a-f0-9]{64}$/.test(marker)) {
+		return { project, importKey: legacyKey, existingId: findImportedId(db, "sessions", legacyKey) };
+	}
+	let importKey = marker;
+	if (opts.remapProject) importKey += `:remap:${hashIdentity(opts.remapProject)}`;
+	let existingId = findImportedId(db, "sessions", importKey);
+	// Older full imports used project/start/id. Promote their key while full
+	// source identity is available, so later redacted exports reuse the row.
+	if (existingId == null && row.export_session_redacted !== true) {
+		existingId = findImportedId(db, "sessions", legacyKey);
+		if (existingId != null) {
+			db.prepare("UPDATE sessions SET import_key = ? WHERE id = ?").run(importKey, existingId);
+		}
+	}
+	return { project, importKey, existingId };
+}
+
 function insertSession(d: DrizzleDb, row: JsonObject): number {
+	const defaults =
+		row.export_session_redacted === true
+			? { startedAt: "", cwd: null, user: null }
+			: { startedAt: nowIso(), cwd: process.cwd(), user: nextUserName() };
 	const rows = d
 		.insert(schema.sessions)
 		.values({
-			started_at: typeof row.started_at === "string" ? row.started_at : nowIso(),
+			started_at: typeof row.started_at === "string" ? row.started_at : defaults.startedAt,
 			ended_at: typeof row.ended_at === "string" ? row.ended_at : null,
-			cwd: row.cwd == null ? process.cwd() : cleanProjectIdentity(String(row.cwd)),
+			cwd: row.cwd == null ? defaults.cwd : cleanProjectIdentity(String(row.cwd)),
 			project: row.project == null ? null : cleanProjectIdentity(String(row.project)),
 			git_remote: row.git_remote == null ? null : cleanProjectIdentity(String(row.git_remote)),
 			git_branch: row.git_branch == null ? null : cleanProjectIdentity(String(row.git_branch)),
-			user: String(row.user ?? nextUserName()),
+			user: row.user == null ? defaults.user : String(row.user),
 			tool_version: String(row.tool_version ?? "import"),
 			metadata_json: toJson(row.metadata_json ?? null),
 			import_key: String(row.import_key),
@@ -543,6 +614,7 @@ function insertMemory(db: Database, d: DrizzleDb, row: JsonObject, deviceId: str
 	const scopeId = importedMemoryScopeId(db, row, deviceId);
 	const values: MemoryInsert = {
 		session_id: Number(row.session_id),
+		project: cleanProjectIdentity(cleanString(row.project)),
 		kind: String(row.kind ?? "observation"),
 		title: String(row.title ?? "Untitled"),
 		subtitle: row.subtitle == null ? null : String(row.subtitle),
@@ -643,12 +715,10 @@ export function importMemories(payload: ExportPayload, opts: ImportOptions = {})
 
 			for (const session of sessionsData) {
 				const oldSessionId = Number(session.id);
-				const project = opts.remapProject || normalizeImportedProject(session.project);
-				const importKey = buildImportKey("export", "session", session.id, {
-					project,
-					createdAt: typeof session.started_at === "string" ? session.started_at : null,
+				const { project, importKey, existingId } = resolveImportedSessionIdentity(db, session, {
+					...opts,
+					memories: memoriesData,
 				});
-				const existingId = findImportedId(db, "sessions", importKey);
 				if (existingId != null) {
 					sessionMapping.set(oldSessionId, existingId);
 					continue;
