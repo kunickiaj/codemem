@@ -5,6 +5,7 @@ import {
 	buildDirectPeerAuthHeaders,
 	ensureDeviceIdentity,
 	fingerprintPublicKey,
+	getSyncResetState,
 	loadPublicKey,
 	MemoryStore,
 	recordAccessCleanupOp,
@@ -354,6 +355,68 @@ describe("origin cleanup after managed membership revocation", () => {
 			root.store.db.prepare("SELECT 1 FROM memory_items WHERE import_key = ?").get(entityId),
 		).toBeUndefined();
 	});
+});
+
+describe("unknown scope rejection does not allocate caller-selected reset boundaries", () => {
+	it.each(["legacy", "unsupported"])(
+		"rejects repeated authenticated %s pushes using only the fixed global reset boundary",
+		async (mode) => {
+			// Arrange: preserve every existing per-scope boundary and any initialized global row.
+			const existingScopes = root.store.db
+				.prepare(
+					"SELECT * FROM sync_reset_state_v2 WHERE scope_id <> 'local-default' ORDER BY scope_id",
+				)
+				.all();
+			const globalBefore = root.store.db
+				.prepare("SELECT * FROM sync_reset_state_v2 WHERE scope_id = 'local-default'")
+				.get();
+			const contentBefore = contentState();
+			let globalBoundary: ReturnType<typeof getSyncResetState> | undefined;
+			for (const index of [1, 2, 3, 4]) {
+				const scopeId = `${mode}-unknown-scope-${index}`;
+				// The unknown entity label reaches the managed reset-rejection path, not the
+				// older memory_item scope_rejected path; its valid mutation shape is covered above.
+				const op = {
+					...memoryOp(scopeId, `${mode}-unknown-op-${index}`),
+					entity_type: "memory_itemx",
+				};
+				const body: Record<string, unknown> = { ops: [op] };
+				if (mode === "unsupported") body.sync_capability = "unsupported";
+				// Act: no envelope scope_id is supplied and each operation claims a new unknown ID.
+				const response = await root.request("/v1/ops", root.peer.keysDir, { method: "POST", body });
+				const payload = await response.json();
+				const currentBoundary = getSyncResetState(root.store.db);
+				globalBoundary ??= currentBoundary;
+				// Assert: echo the offending ID, but return the same fixed global boundary each time.
+				expect(response.status).toBe(409);
+				expect(payload).toMatchObject({
+					error: "reset_required",
+					reset_required: true,
+					reason: "missing_scope",
+					scope_id: scopeId,
+					...globalBoundary,
+				});
+				expect(currentBoundary).toEqual(globalBoundary);
+				expect(
+					root.store.db
+						.prepare(
+							"SELECT * FROM sync_reset_state_v2 WHERE scope_id <> 'local-default' ORDER BY scope_id",
+						)
+						.all(),
+				).toEqual(existingScopes);
+				expect(
+					root.store.db.prepare("SELECT COUNT(*) FROM sync_reset_state_v2").pluck().get(),
+				).toBe(existingScopes.length + 1);
+				expect(contentState()).toEqual(contentBefore);
+			}
+			// A missing global boundary may initialize once; an existing one remains unchanged.
+			const globalAfter = root.store.db
+				.prepare("SELECT * FROM sync_reset_state_v2 WHERE scope_id = 'local-default'")
+				.get();
+			expect(globalAfter).toBeDefined();
+			if (globalBefore) expect(globalAfter).toEqual(globalBefore);
+		},
+	);
 });
 
 async function seedManualMemory(opId: string) {
