@@ -168,6 +168,7 @@ import {
 	requestJson,
 	resolveRecipientPolicyReview,
 	resolveRecipientPolicyReviewBulk,
+	resolveVisibleScopeIds,
 	runSyncPass,
 	SCOPE_MEMBERSHIP_REVOCATION_LIMITATION,
 	SYNC_AUTHORIZATION_REFRESH_HEADER,
@@ -5358,9 +5359,12 @@ function saveProjectMappingsAndWakePolicies(
 		.transaction(() => {
 			const before = policyWakeMappings(store);
 			const previousMappings = existingRequestedMappings(before, mappingInputs);
+			const writableScopeIds = new Set(
+				resolveVisibleScopeIds(store.db, store.deviceId, store.scopeResolutionDeviceContext()),
+			);
 			const mappings = upsertProjectScopeSettingsMappings(store.db, mappingInputs, {
 				deviceId,
-				canWriteScope: (scopeId) => store.isScopeWritable(scopeId),
+				canWriteScope: (scopeId) => writableScopeIds.has(scopeId ?? ""),
 			});
 			const after = policyWakeMappings(store);
 			const changedScopeIds = new Set([

@@ -495,20 +495,39 @@ it.each<State>(["missing proof", "wrong key"])(
 	},
 );
 
-it("permits confirmed public mapping relocation with actual-key V1 target proof", async () => {
+it("resolves mapping batch authority once inside the write transaction with actual-key V1 proof", async () => {
 	// Arrange: preserve local content and remove only the project mapping.
 	store.db.prepare("DELETE FROM project_scope_mappings").run();
 	ensureScopeBackfillScopes(store.db);
 	store.reassignMemoryScope(historyId, "local-default");
+	const sessionId = store.get(historyId)?.session_id;
+	if (!sessionId) throw new Error("Missing fixture session");
+	const memoryIds = [historyId];
+	for (const title of ["Mapping sibling one", "Mapping sibling two"]) {
+		memoryIds.push(store.rememberForUser(sessionId, "decision", title, title));
+	}
 	pinProjectIdentity();
 	// Act.
 	const tokens = await mappingTokens();
+	const actualContext = store.scopeResolutionDeviceContext.bind(store);
+	const loadKey = vi.fn(() => {
+		expect(store.db.inTransaction).toBe(true);
+		return actualContext().loadExpectedPublicKey?.();
+	});
+	const context = vi.spyOn(store, "scopeResolutionDeviceContext").mockImplementation(() => {
+		expect(store.db.inTransaction).toBe(true);
+		return { loadExpectedPublicKey: loadKey };
+	});
 	const response = await mappingRequest(tokens);
 	// Assert.
 	expect(response.status).toBe(200);
-	expect(store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").get(historyId)).toEqual(
-		{ scope_id: "managed-write" },
-	);
+	expect(context).toHaveBeenCalledTimes(1);
+	expect(loadKey).toHaveBeenCalledTimes(1);
+	for (const memoryId of memoryIds) {
+		expect(
+			store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").get(memoryId),
+		).toEqual({ scope_id: "managed-write" });
+	}
 });
 
 it.each(["manual", "private"])(
