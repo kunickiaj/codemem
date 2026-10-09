@@ -28,6 +28,7 @@ import * as schema from "./schema.js";
 import { getCachedScopeAuthorization } from "./scope-membership-cache.js";
 import { ensureMemoryScopeId } from "./scope-stamping.js";
 import { redactMemoryFields, SecretScanner } from "./secret-scanner.js";
+import { snapshotSessionExportKeysForMemoryIds } from "./session-export-identity-mutation.js";
 import { deriveTags } from "./tags.js";
 import type {
 	ReplicationOp,
@@ -2602,6 +2603,11 @@ export function diagnoseStalePeerReceivedRows(
 	};
 }
 
+function clearRefsBeforeMemoryDeletion(db: Database, memoryId: number): void {
+	snapshotSessionExportKeysForMemoryIds(db, [memoryId]);
+	clearMemoryRefs(db, memoryId);
+}
+
 function reconcileStalePeerReceivedRowsInternal(
 	db: Database,
 	options: ReconcileStalePeerReceivedRowsOptions,
@@ -2642,7 +2648,7 @@ function reconcileStalePeerReceivedRowsInternal(
 		cursor?: { originDeviceId: string; scopeId: string },
 	): void => {
 		if (deleteRows) {
-			clearMemoryRefs(db, memoryId);
+			clearRefsBeforeMemoryDeletion(db, memoryId);
 			deleteMemory?.run(memoryId);
 			if (cursor && cursor.scopeId !== DEFAULT_SYNC_SCOPE_ID) {
 				clearReplicationCursorLastApplied(db, cursor.originDeviceId, cursor.scopeId);
@@ -3309,14 +3315,18 @@ export function migrateLegacyImportKeys(db: Database, limit = 2000): number {
 			continue;
 		}
 
-		d.update(schema.memoryItems)
-			.set({ import_key: canonical })
-			.where(eq(schema.memoryItems.id, memoryId))
-			.run();
+		assignMemoryImportKey(db, memoryId, canonical);
 		updated++;
 	}
 
 	return updated;
+}
+
+function assignMemoryImportKey(db: Database, memoryId: number, importKey: string): void {
+	db.transaction(() => {
+		snapshotSessionExportKeysForMemoryIds(db, [memoryId]);
+		db.prepare("UPDATE memory_items SET import_key = ? WHERE id = ?").run(importKey, memoryId);
+	}).immediate();
 }
 
 /**
@@ -3408,10 +3418,7 @@ export function backfillReplicationOps(db: Database, limit = 200): number {
 		if (!importKey) {
 			if (!originDeviceId) continue;
 			importKey = `legacy:${originDeviceId}:memory_item:${rowId}`;
-			d.update(schema.memoryItems)
-				.set({ import_key: importKey })
-				.where(eq(schema.memoryItems.id, rowId))
-				.run();
+			assignMemoryImportKey(db, rowId, importKey);
 		}
 
 		const rev = Number(row.rev ?? 0);
@@ -3589,7 +3596,7 @@ export function applyReplicationOps(
 		if (!sourceDeviceId || !originDeviceId || originDeviceId !== sourceDeviceId) return false;
 		if (originDeviceId === localDeviceId) return false;
 		if (cleanText(existingForCleanup.scope_id) !== cleanup.cleanup_scope_id) return false;
-		clearMemoryRefs(db, Number(existingForCleanup.id));
+		clearRefsBeforeMemoryDeletion(db, Number(existingForCleanup.id));
 		d.delete(schema.memoryItems).where(eq(schema.memoryItems.id, existingForCleanup.id)).run();
 		queueVectorDelete(Number(existingForCleanup.id));
 		return true;

@@ -2,10 +2,11 @@
  * opencode session linkage.
  */
 
-import { inArray, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { type Database, tableExists } from "../db.js";
 import * as schema from "../schema.js";
+import { snapshotSessionExportKeysForMemoryIds } from "../session-export-identity-mutation.js";
 import type {
 	RawEventRelinkAction,
 	RawEventRelinkApplyOptions,
@@ -219,6 +220,30 @@ function getRawEventRelinkReportFromDb(
 	};
 }
 
+function repointRelinkMemories(
+	db: Database,
+	options: { survivingSessionId: number; redundantSessionIds: number[] },
+): number {
+	const d = drizzle(db, { schema });
+	const survivingMemories = d
+		.select({ id: schema.memoryItems.id })
+		.from(schema.memoryItems)
+		.where(eq(schema.memoryItems.session_id, options.survivingSessionId))
+		.all();
+	snapshotSessionExportKeysForMemoryIds(
+		db,
+		survivingMemories.map((row) => row.id),
+	);
+	// Compaction preserves the survivor's marker, not aliases of removed sessions.
+	return Number(
+		d
+			.update(schema.memoryItems)
+			.set({ session_id: options.survivingSessionId })
+			.where(inArray(schema.memoryItems.session_id, options.redundantSessionIds))
+			.run().changes ?? 0,
+	);
+}
+
 export function applyRawEventRelinkPlanWithDb(
 	db: Database,
 	opts: RawEventRelinkApplyOptions = {},
@@ -269,13 +294,10 @@ export function applyRawEventRelinkPlanWithDb(
 			);
 			if (redundantSessionIds.length === 0) continue;
 
-			memoryRepoints += Number(
-				d
-					.update(schema.memoryItems)
-					.set({ session_id: group.canonical_session_id })
-					.where(inArray(schema.memoryItems.session_id, redundantSessionIds))
-					.run().changes ?? 0,
-			);
+			memoryRepoints += repointRelinkMemories(db, {
+				survivingSessionId: group.canonical_session_id,
+				redundantSessionIds,
+			});
 			d.update(schema.artifacts)
 				.set({ session_id: group.canonical_session_id })
 				.where(inArray(schema.artifacts.session_id, redundantSessionIds))
