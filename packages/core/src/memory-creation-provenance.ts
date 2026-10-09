@@ -57,10 +57,17 @@ export function recordLocalCreationSnapshot(db: Database, memoryId: number): voi
 	)
 		return;
 	ensureCreationProvenanceSchema(db);
+	let publicKeySql = "NULL";
+	let fingerprintSql = "NULL";
+	if (hasTable(db, "sync_device")) {
+		publicKeySql =
+			"(SELECT public_key FROM sync_device WHERE device_id = (SELECT source_device_id FROM memory_source_bindings WHERE entity_id = memory_items.import_key))";
+		fingerprintSql =
+			"(SELECT fingerprint FROM sync_device WHERE device_id = (SELECT source_device_id FROM memory_source_bindings WHERE entity_id = memory_items.import_key))";
+	}
 	db.prepare(`INSERT INTO memory_local_creation_snapshots(entity_id, scope_id, content_json, source_public_key, source_fingerprint, created_at)
 		SELECT import_key, scope_id, ${CREATION_CONTENT_SQL},
-		(SELECT public_key FROM sync_device WHERE device_id = (SELECT source_device_id FROM memory_source_bindings WHERE entity_id = memory_items.import_key)),
-		(SELECT fingerprint FROM sync_device WHERE device_id = (SELECT source_device_id FROM memory_source_bindings WHERE entity_id = memory_items.import_key)),
+		${publicKeySql}, ${fingerprintSql},
 		? FROM memory_items WHERE id = ?`).run(new Date().toISOString(), memoryId);
 }
 
@@ -92,14 +99,17 @@ export function hasRecordedLocalCreation(db: Database, entityId: string): boolea
 export function matchingLocalCreationClause(db: Database): string | null {
 	if (!hasTable(db, "memory_local_creation_snapshots") || !hasTable(db, "memory_foreign_revisions"))
 		return null;
+	let keyMatchSql = "creation.source_public_key IS NULL";
+	if (hasTable(db, "sync_device"))
+		keyMatchSql = `(creation.source_public_key IS NULL OR EXISTS (SELECT 1 FROM sync_device creation_device
+			WHERE creation_device.device_id = (SELECT source_device_id FROM memory_source_bindings WHERE entity_id = creation.entity_id)
+			AND creation_device.public_key = creation.source_public_key
+			AND creation_device.fingerprint = creation.source_fingerprint))`;
 	return `EXISTS (SELECT 1 FROM memory_local_creation_snapshots creation
 		WHERE creation.entity_id = memory_items.import_key
 		AND creation.scope_id IS memory_items.scope_id
 		AND creation.content_json = ${CREATION_CONTENT_SQL}
-		AND (creation.source_public_key IS NULL OR EXISTS (SELECT 1 FROM sync_device creation_device
-			WHERE creation_device.device_id = (SELECT source_device_id FROM memory_source_bindings WHERE entity_id = creation.entity_id)
-			AND creation_device.public_key = creation.source_public_key
-			AND creation_device.fingerprint = creation.source_fingerprint))
+		AND ${keyMatchSql}
 		AND NOT EXISTS (SELECT 1 FROM memory_foreign_revisions foreign_revision
 			WHERE foreign_revision.entity_id = creation.entity_id))`;
 }

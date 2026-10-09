@@ -40,6 +40,10 @@ Run `codemem --help` for the current human-facing command list and append `--hel
 
 Adapter plumbing commands (`claude-hook-*`, `codex-hook-*`, `pi-hook-*`, `enqueue-raw-event`, and `prompt-pack-ledger`) remain executable for packaged-plugin and stale-client compatibility but are hidden from help and shell completion. `show`, `forget`, and `remember` remain hidden top-level aliases. Deprecated `export-memories` and `import-memories` warn on stderr; use `codemem memory export` and `codemem memory import` instead.
 
+### Memory export visibility
+
+Exports include only memories readable under the device's current Sharing domain authority. If any memory in a session is inaccessible, including inactive or deleted history, exports omit that session's prompts, summaries, and metadata and retain only an ID-only session reference so readable memories can still be imported. Project, date, and activity filters do not reduce authority for otherwise readable session records. Sessions with no exportable memories remain excluded.
+
 ### Pi setup
 
 `codemem setup --pi-only` configures only Pi. A fresh setup adds the `@codemem/pi-extension` npm pin to Pi's `packages` list (honors `PI_CODING_AGENT_DIR`); an existing configured dev path may be retained. It defaults to native tools on a fresh setup. It preserves an existing `tools_mode`. `--pi-mcp` opts into the legacy third-party `pi-mcp-adapter` surface when that adapter is detected. It keeps an existing codemem MCP entry unless `--force` is supplied, and does not configure Pi's native MCP. `--pi-extension-path <path>` writes a local-path `packages` entry instead of the npm pin (dev). See [Pi extension](plugin-reference.md#pi-extension).

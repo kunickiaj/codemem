@@ -722,15 +722,17 @@ describe("local visibility uses retained current-key proof", () => {
 			});
 			// Assert: denial must not erase the raw rows used for diagnostics.
 			expect(resolved.includes("scope-a")).toBe(visible);
-			const controls = [
-				"default",
-				"local authored history",
-				"local control",
-				"manual control",
-				"own private history",
-			];
+			const controls = ["default", "local control", "manual control"];
 			const titles = [...controls];
-			if (visible) titles.push("foreign replica", "legacy local replica");
+			// Managed retained authorship awaits immutable creation proof; origin
+			// fields alone must not retain access when current authorization denies.
+			if (visible)
+				titles.push(
+					"foreign replica",
+					"legacy local replica",
+					"local authored history",
+					"own private history",
+				);
 			expect(fast).toEqual(titles.sort().map((title) => ({ title })));
 			expect(fallback).toEqual(fast);
 			expect(connectionOnly).toEqual(controls.map((title) => ({ title })));

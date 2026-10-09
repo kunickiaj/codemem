@@ -988,7 +988,7 @@ export class MemoryStore {
 
 	// remember
 
-	/** User-facing creation requires current scope authority before dedup or insert. */
+	/** User-facing and automatic creation require current authority before dedup or insert. */
 	rememberForUser(
 		sessionId: number,
 		kind: string,
@@ -996,15 +996,27 @@ export class MemoryStore {
 		bodyText: string,
 		confidence = 0.5,
 		tags?: string[],
+		metadata?: Record<string, unknown>,
+		options: { createdAt?: string; replicate?: boolean } = {},
 	): number {
 		const validKind = validateMemoryKind(kind);
-		const provenance = this.resolveProvenance({});
+		const scannedMetadata = this.scanner.redactValue(metadata ?? {});
+		const provenance = this.resolveProvenance(scannedMetadata.value as Record<string, unknown>);
 		const scopeId = resolveSessionScopeId(this.db, {
 			sessionId,
 			workspaceId: provenance.workspace_id,
 		});
 		if (!this.isScopeWritable(scopeId)) throw new Error("unauthorized_scope");
-		return this.remember(sessionId, validKind, title, bodyText, confidence, tags);
+		return this.remember(
+			sessionId,
+			validKind,
+			title,
+			bodyText,
+			confidence,
+			tags,
+			metadata,
+			options,
+		);
 	}
 
 	/**

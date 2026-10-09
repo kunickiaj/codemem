@@ -106,13 +106,15 @@ export function allocateLocalCaptureMemorySource(
 	context: LocalCreationContext = {},
 ): VerifiedMemorySource | null {
 	if (!db.inTransaction) throw new Error("memory_source_transaction_required");
-	const rows = db
-		.prepare("SELECT device_id, public_key, fingerprint FROM sync_device LIMIT 2")
-		.all() as Array<{
+	let rows: Array<{
 		device_id: string;
 		public_key: string;
 		fingerprint: string;
-	}>;
+	}> = [];
+	if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sync_device'").get())
+		rows = db
+			.prepare("SELECT device_id, public_key, fingerprint FROM sync_device LIMIT 2")
+			.all() as typeof rows;
 	if (rows.length > 0) {
 		const tuple = rows[0];
 		if (
