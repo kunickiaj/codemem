@@ -172,6 +172,85 @@ describe("legacy session physical cleanup", () => {
 	});
 });
 
+function observeQueryExecutions() {
+	const statements: Database.Statement[] = [];
+	const prepare = db.prepare.bind(db);
+	const prepareSpy = vi.spyOn(db, "prepare").mockImplementation((sql) => {
+		const statement = prepare(sql);
+		// Count executions, not just preparations: the old loop reused one statement.
+		vi.spyOn(statement, "get");
+		vi.spyOn(statement, "all");
+		vi.spyOn(statement, "run");
+		statements.push(statement);
+		return statement;
+	});
+	return {
+		restore: () => prepareSpy.mockRestore(),
+		count: () =>
+			statements.reduce(
+				(count, statement) =>
+					count +
+					vi.mocked(statement.get).mock.calls.length +
+					vi.mocked(statement.all).mock.calls.length +
+					vi.mocked(statement.run).mock.calls.length,
+				0,
+			),
+	};
+}
+
+describe("legacy session bulk snapshot queries", () => {
+	it.each([1000, 10000])("executes four queries for %i memories in one actual session", (size) => {
+		// Arrange: exceed SQLite's usual placeholder limit without any external services.
+		const sid = session();
+		const ids = db.transaction(() =>
+			Array.from({ length: size }, (_, index) => memory(sid, `anchor-${index}`)),
+		)();
+		const expected = marker(sid);
+		const queries = observeQueryExecutions();
+		// Act
+		db.transaction(() => snapshotSessionExportKeysForMemoryIds(db, ids)).immediate();
+		queries.restore();
+		// Assert: one bulk lookup plus anchor, identity and update per unique session.
+		expect(row(sid).import_key).toBe(expected);
+		expect(queries.count()).toBe(4);
+	});
+
+	it("resolves two actual sessions despite duplicate and missing memory IDs", () => {
+		// Arrange: identical mutable labels must not collapse distinct source sessions.
+		const first = session(" \t");
+		const second = session();
+		const unrelated = session();
+		const ids = db.transaction(() => [
+			memory(first, "first-anchor"),
+			memory(first, "later-first"),
+			memory(second, "second-anchor"),
+			memory(second, "later-second"),
+		])();
+		memory(unrelated, "unrelated-anchor");
+		db.prepare("UPDATE sessions SET project = ?, metadata_json = ?").run(
+			"same-project",
+			JSON.stringify({ source: "same-source" }),
+		);
+		const expected = [marker(first), marker(second)];
+		const before = db.serialize();
+		const queries = observeQueryExecutions();
+		// Act
+		db.transaction(() => {
+			snapshotSessionExportKeysForMemoryIds(db, [-1]);
+		})();
+		const afterMissing = db.serialize();
+		db.transaction(() => {
+			snapshotSessionExportKeysForMemoryIds(db, [...ids, ...ids, -1]);
+		}).immediate();
+		queries.restore();
+		// Assert: missing-only input reads once; the mixed batch reads once plus three per session.
+		expect(afterMissing.equals(before)).toBe(true);
+		expect([row(first).import_key, row(second).import_key]).toEqual(expected);
+		expect(row(unrelated).import_key).toBeNull();
+		expect(queries.count()).toBe(8);
+	});
+});
+
 describe("legacy session snapshot helper", () => {
 	it("requires a transaction even for empty input and never writes on rejection", () => {
 		// Arrange
