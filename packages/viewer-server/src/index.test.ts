@@ -755,6 +755,15 @@ async function grantVisibleReaderScope(
 	});
 }
 
+async function seedProvenProjectMappingScope(
+	store: MemoryStore,
+	scopeId: string,
+	label: string,
+): Promise<void> {
+	seedProjectMappingScope(store, scopeId, label);
+	await grantVisibleReaderScope(store, scopeId);
+}
+
 async function provenViewerMixedScopeFixture(store: MemoryStore) {
 	const keysDir = process.env.CODEMEM_KEYS_DIR;
 	if (!keysDir) throw new Error("Missing fixture signing directory");
@@ -13271,8 +13280,7 @@ describe("viewer-server", () => {
 							'sensitive-review-transport-fingerprint', '["sensitive-review-address"]', ?)`,
 					)
 					.run(new Date().toISOString());
-				seedProjectMappingScope(store, "acme-work", "Acme Work");
-				await grantVisibleReaderScope(store, "acme-work");
+				await seedProvenProjectMappingScope(store, "acme-work", "Acme Work");
 				const initialMemberships = projectMappingMemberships(store);
 				const settingsRes = await app.request("/api/sync/sharing-domains/settings");
 				expect(settingsRes.status).toBe(200);
