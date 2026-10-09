@@ -4523,13 +4523,15 @@ function addExistingMutationScopes(
 	ops: readonly ReplicationOp[],
 	scopeIds: Set<string>,
 ): void {
-	const existingScope = db
-		.prepare("SELECT scope_id FROM memory_items WHERE import_key = ? LIMIT 1")
-		.pluck();
+	const existingScopes = db.prepare(
+		"SELECT DISTINCT scope_id FROM memory_items WHERE import_key = ?",
+	);
 	for (const op of ops) {
 		if (!["upsert", "delete", "reassign_scope"].includes(op.op_type)) continue;
-		const scope = existingScope.get(op.entity_id);
-		if (typeof scope === "string" && scope.trim()) scopeIds.add(scope.trim());
+		const rows = existingScopes.all(op.entity_id) as Array<{ scope_id: unknown }>;
+		for (const { scope_id: scope } of rows) {
+			if (typeof scope === "string" && scope.trim()) scopeIds.add(scope.trim());
+		}
 	}
 }
 
