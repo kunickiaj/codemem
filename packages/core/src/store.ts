@@ -1333,6 +1333,17 @@ export class MemoryStore {
 
 	// forget
 
+	/** Recheck user write authority after taking the write lock, before any delete effects. */
+	forgetForUser(memoryId: number): boolean {
+		return this.db
+			.transaction(() => {
+				if (!this.getForMutation(memoryId)) return false;
+				this.forget(memoryId);
+				return true;
+			})
+			.immediate();
+	}
+
 	/**
 	 * Soft-delete a memory item (set active = 0, record deleted_at).
 	 * Updates metadata_json with clock_device_id for replication tracing.
@@ -1592,6 +1603,16 @@ export class MemoryStore {
 	}
 
 	// updateMemoryVisibility
+
+	/** Read eligibility alone cannot authorize a user visibility change. */
+	updateMemoryVisibilityForUser(memoryId: number, visibility: string): MemoryItemResponse {
+		return this.db
+			.transaction(() => {
+				if (!this.getForMutation(memoryId)) throw new Error("memory not found");
+				return this.updateMemoryVisibility(memoryId, visibility);
+			})
+			.immediate();
+	}
 
 	/**
 	 * Update the visibility of an active memory item.

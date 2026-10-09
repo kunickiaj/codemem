@@ -1,4 +1,7 @@
 import { EventEmitter } from "node:events";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const spawnMock = vi.fn();
@@ -237,14 +240,18 @@ describe("@codemem/opencode-plugin exports", () => {
 
 describe("OpenCode startup release notifications", () => {
 	const originalEnv = { ...process.env };
+	let home;
 
 	beforeEach(() => {
 		vi.useFakeTimers();
 		vi.resetModules();
 		spawnMock.mockReset();
 		execSyncMock.mockClear();
+		// Startup drains retained raw events asynchronously; never share a retry spool between tests.
+		home = mkdtempSync(join(tmpdir(), "codemem-update-home-"));
 		process.env = {
 			...originalEnv,
+			HOME: home,
 			CODEMEM_RUNNER: "codemem",
 			CODEMEM_VIEWER: "0",
 			CODEMEM_PLUGIN_LOG: "0",
@@ -265,6 +272,7 @@ describe("OpenCode startup release notifications", () => {
 		vi.useRealTimers();
 		vi.restoreAllMocks();
 		process.env = originalEnv;
+		rmSync(home, { recursive: true, force: true });
 	});
 
 	test("runs `codemem update check --json` asynchronously through the existing runner", async () => {

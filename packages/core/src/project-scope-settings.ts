@@ -2260,10 +2260,7 @@ function applyProjectInventoryReassignment(
 	memories: ReturnType<typeof sourceOwnedMemoriesForSessions>,
 	input: Parameters<typeof reassignProjectScopeInventoryProject>[1] & { now: string },
 ): void {
-	assertScopeWritesAllowed(
-		memories.map((memory) => memory.scope_id),
-		input.canWriteScope,
-	);
+	assertSessionMemoryWritesAllowed(db, sessions, input.canWriteScope);
 	const update = db.prepare("UPDATE sessions SET project = ? WHERE id = ?");
 	for (const row of sessions) update.run(input.project, row.id);
 	if (memories.length === 0) return;
@@ -2283,6 +2280,24 @@ function applyProjectInventoryReassignment(
 			createdAt: input.now,
 		});
 	}
+}
+
+function assertSessionMemoryWritesAllowed(
+	db: Database,
+	sessions: Array<{ id: number }>,
+	canWriteScope?: (scopeId: string | null) => boolean,
+): void {
+	if (!canWriteScope || sessions.length === 0) return;
+	const scopes = db
+		.prepare(
+			`SELECT scope_id FROM memory_items
+		 WHERE session_id IN (${sessions.map(() => "?").join(", ")})`,
+		)
+		.all(...sessions.map((session) => session.id)) as Array<{ scope_id: string | null }>;
+	assertScopeWritesAllowed(
+		scopes.map((memory) => memory.scope_id),
+		canWriteScope,
+	);
 }
 
 function upsertProjectScopeSettingsMappingInTransaction(

@@ -761,7 +761,7 @@ export function memoryRoutes(getStore: StoreFactory) {
 			return c.json({ error: "visibility must be private or shared" }, 400);
 		}
 		try {
-			const item = store.updateMemoryVisibility(memoryId, visibility);
+			const item = store.updateMemoryVisibilityForUser(memoryId, visibility);
 			return c.json({ item });
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
@@ -839,11 +839,11 @@ export function memoryRoutes(getStore: StoreFactory) {
 		}
 
 		try {
-			store.forget(memoryId);
+			forgetMemoryForViewer(store, memoryId);
 			return c.json({ status: "ok" });
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			if (msg.includes("not found")) return c.json({ error: msg }, 404);
+			if (msg.includes("not found")) return c.json(...forgetNotFound(forgetSafetyFilters(body)));
 			if (msg.includes("not owned")) return c.json({ error: msg }, 403);
 			if (msg.includes("sync_rebootstrap_in_progress")) return c.json({ error: msg }, 409);
 			return c.json({ error: msg }, 400);
@@ -855,6 +855,10 @@ export function memoryRoutes(getStore: StoreFactory) {
 
 function forgetNotFound(filters: MemoryFilters): [body: { error: string }, status: 404] {
 	return [{ error: Object.keys(filters).length > 0 ? "not_found" : "memory not found" }, 404];
+}
+
+function forgetMemoryForViewer(store: MemoryStore, memoryId: number): void {
+	if (!store.forgetForUser(memoryId)) throw new Error("memory not found");
 }
 
 function forgetSafetyFilters(body: Record<string, unknown>): MemoryFilters {
