@@ -192,11 +192,15 @@ function addScopeVisibilityFilter(
 		(context.scopeVisibilityDb
 			? resolveVisibleScopeIds(context.scopeVisibilityDb, deviceId, context)
 			: undefined);
-	// Authored history stays readable after membership removal. A legacy 'local'
-	// origin with an import key may be a foreign replica, not authorship evidence.
-	const authored = `((${OWNERSHIP_ORIGIN_DEVICE_SQL} = ? AND ? <> 'local')
+	// Mutable origin fields cannot prove managed authorship. Retain this legacy
+	// exception only for explicitly unmanaged scopes, even after membership loss.
+	// A legacy 'local' origin with an import key may be a foreign replica.
+	const authored = `(memory_items.scope_id IN (
+		SELECT scope_id FROM replication_scopes
+		WHERE authority_type IN ('local', 'manual', 'invite')
+	) AND ((${OWNERSHIP_ORIGIN_DEVICE_SQL} = ? AND ? <> 'local')
 		OR (${OWNERSHIP_ORIGIN_DEVICE_SQL} = 'local'
-			AND COALESCE(TRIM(memory_items.import_key), '') = ''))`;
+			AND COALESCE(TRIM(memory_items.import_key), '') = '')))`;
 	if (visibleScopeIds !== undefined) {
 		addResolvedScopeVisibilityFilter(clauses, params, visibleScopeIds, authored, deviceId);
 		return;

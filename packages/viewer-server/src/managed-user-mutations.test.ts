@@ -160,22 +160,26 @@ const rememberArgs = [
 ];
 
 it.each<State>(["revoked", "missing proof", "wrong key"])(
-	"keeps authored history readable but refuses every user mutation with %s",
+	"hides managed authored history and refuses every user mutation with %s",
 	async (state) => {
 		// Arrange: remove current permission only after real V1-authorized authorship.
 		await setState(state);
 		const before = snapshot();
-		// Act: reads remain permitted on all three user surfaces.
+		// Act: denied managed history is hidden on all three user surfaces.
 		const read = await app.request("/api/memory");
 		const toolRead = await mcp("memory_get", { memory_id: historyId });
 		const cliRead = await cli(showMemoryCommand, [String(historyId)]);
-		// Assert: read access is not a scope write grant.
+		// Assert: authorship does not bypass managed read authorization.
 		expect(read.status).toBe(200);
 		expect(await read.json()).toMatchObject({
-			items: [expect.objectContaining({ id: historyId })],
+			items: [],
 		});
-		expect(toolRead).toMatchObject({ id: historyId });
-		expect(cliRead).toMatchObject({ id: historyId });
+		expect(toolRead).toEqual({ error: "not_found" });
+		expect(cliRead).toEqual({
+			error: "not_found",
+			message: `Memory ${historyId} not found`,
+		});
+		expect(process.exitCode).toBe(1);
 		expect(snapshot()).toEqual(before);
 		// Act/Assert: preserve each endpoint's existing failure contract and all content rows.
 		const remembered = await post("remember", remember);
@@ -327,7 +331,7 @@ function seedLegacyHistory() {
 }
 
 it.each<State>(["revoked", "missing proof", "wrong key"])(
-	"rolls back the entire project correction batch when one readable managed scope has %s",
+	"hides managed history and rolls back the entire project correction batch with %s",
 	async (state) => {
 		// Arrange: include a writable row before the unauthorized managed row.
 		seedMixedProjectBatch();
@@ -339,7 +343,7 @@ it.each<State>(["revoked", "missing proof", "wrong key"])(
 			project: "corrected-project",
 		});
 		// Assert: project, revision, session metadata, and replication operations all roll back.
-		expect(store.get(historyId)?.id).toBe(historyId);
+		expect(store.get(historyId)).toBeNull();
 		expect(response.status).toBe(400);
 		expect(await response.json()).toEqual({ error: "unauthorized_scope" });
 		expect(snapshot()).toEqual(before);

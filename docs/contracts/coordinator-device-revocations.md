@@ -524,8 +524,12 @@ or write schema. Resolved visibility and the database-backed filter fallback use
 the same decision, while a fallback without database access cannot grant managed
 access.
 
-Locally authored history remains readable after losing membership. Imported rows
-with a legacy `local` origin and an import key do not count as local authorship.
+Legacy origin-based authorship keeps history readable after losing membership
+only in explicitly unmanaged `local`, `manual`, or `invite` scopes, regardless
+of scope status. Imported rows with a legacy `local` origin and an import key
+do not count as local authorship. Managed and unknown scopes cannot use mutable
+origin fields to bypass current access checks. Retained managed authorship is
+deferred to an immutable creation-proof replacement; this slice does not activate it.
 This read exception does not permit new writes: MCP remember checks current
 resolved-scope permission inside its rollback transaction. Import permissions,
 additional share inviters, and policy inheritance still need separate adoption.
