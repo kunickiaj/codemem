@@ -280,11 +280,11 @@ const insertScopeMembership = (db, scopeId, deviceId) => {
 	).run(scopeId, deviceId, new Date().toISOString());
 };
 
-const grantScopeToDevice = async (db, scopeId, deviceId) => {
+const grantScopeToDevice = async (db, scopeId, deviceId, keysDir) => {
 	insertScopeMembership(db, scopeId, deviceId);
-	// Use the same HOME-backed signing identity as the CLI, not the helper's static key.
-	ensureDeviceIdentity(db, { deviceId });
-	const publicKey = loadPublicKey();
+	// Use the same isolated signing identity as the CLI, not the helper's static key.
+	ensureDeviceIdentity(db, { deviceId, keysDir });
+	const publicKey = loadPublicKey(keysDir);
 	if (!publicKey) throw new Error("Missing fixture signing key");
 	// The default fixture date is fixed; retained proofs must match this test's clock.
 	await refreshTestScopeRows(db, { [deviceId]: publicKey }, { now: new Date() });
@@ -327,6 +327,7 @@ describe("OpenCode transform-time injection", () => {
 		for (const key of [
 			"CODEMEM_DB",
 			"CODEMEM_DEVICE_ID",
+			"CODEMEM_KEYS_DIR",
 			"CODEMEM_ACTOR_ID",
 			"CODEMEM_CONFIG",
 			"CODEMEM_RUNTIME_ROOT",
@@ -2425,15 +2426,17 @@ describe("OpenCode transform-time injection", () => {
 		mkdirSync(worktree);
 		const dbPath = join(tmpDir, "mem.sqlite");
 		const deviceId = "plugin-scope-device";
+		const keysDir = join(tmpDir, "keys");
+		process.env.CODEMEM_KEYS_DIR = keysDir;
 		const db = connect(dbPath);
 		initTestSchema(db);
 		const sessionId = insertSession(db, { cwd: worktree, project: "greenroom" });
 		process.env.CODEMEM_SYNC_KEY_STORE = "file";
 		if (withProof) {
-			await grantScopeToDevice(db, "scope-a", deviceId);
+			await grantScopeToDevice(db, "scope-a", deviceId, keysDir);
 		} else {
 			insertScopeMembership(db, "scope-a", deviceId);
-			ensureDeviceIdentity(db, { deviceId });
+			ensureDeviceIdentity(db, { deviceId, keysDir });
 		}
 		// Add scope-b after refresh so even its active membership has no retained proof.
 		insertScopeMembership(db, "scope-b", deviceId);
