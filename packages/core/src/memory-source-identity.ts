@@ -101,9 +101,9 @@ export function allocateLocalCaptureMemorySource(
 	runtimeDeviceId: string,
 ): VerifiedMemorySource | null {
 	if (!db.inTransaction) throw new Error("memory_source_transaction_required");
-	const rows = db.prepare("SELECT device_id FROM sync_device LIMIT 2").all() as Array<{
-		device_id: string;
-	}>;
+	let rows: Array<{ device_id: string }> = [];
+	if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sync_device'").get())
+		rows = db.prepare("SELECT device_id FROM sync_device LIMIT 2").all() as typeof rows;
 	if (rows.length > 0) {
 		if (
 			rows.length !== 1 ||
