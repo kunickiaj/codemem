@@ -709,6 +709,148 @@ function revokeCoordinatorPeerTrust(db: Database, localDeviceId: string): number
 	return revoked;
 }
 
+interface CoordinatorPeerRotation {
+	peerDeviceId: string;
+	coordinatorId: string;
+	groupId: string;
+	publicKey: string;
+	fingerprint: string;
+	previousPublicKey: string;
+	previousFingerprint: string;
+}
+
+function loadRotatablePolicyPeer(db: Database, peerDeviceId: string, coordinatorId: string) {
+	return db
+		.prepare(
+			`SELECT public_key, pinned_fingerprint FROM sync_peers
+			 WHERE peer_device_id = ? AND discovered_via_coordinator_id = ?
+			 AND trust_provenance = 'coordinator_policy'
+			 AND claimed_local_actor = 0 AND actor_id IS NULL
+			 AND pending_bootstrap_grant_id IS NULL`,
+		)
+		.get(peerDeviceId, coordinatorId) as
+		| { public_key: string | null; pinned_fingerprint: string | null }
+		| undefined;
+}
+
+function authorizedCoordinatorPeerRotation(
+	db: Database,
+	localDeviceId: string,
+	peer: Record<string, unknown>,
+): CoordinatorPeerRotation | null {
+	const peerDeviceId = clean(peer.device_id);
+	const coordinatorId = clean(peer.coordinator_id);
+	const publicKey = clean(peer.public_key);
+	const fingerprint = clean(peer.fingerprint);
+	const groups = coordinatorPeerGroups(peer.groups);
+	if (!peerDeviceId || peerDeviceId === localDeviceId || !coordinatorId || !groups) return null;
+	if (!coordinatorPeerKeyMatchesFingerprint(publicKey, fingerprint)) return null;
+	const previous = loadRotatablePolicyPeer(db, peerDeviceId, coordinatorId);
+	if (!previous?.public_key || !previous.pinned_fingerprint) return null;
+	if (!coordinatorPeerKeyMatchesFingerprint(previous.public_key, previous.pinned_fingerprint))
+		return null;
+	const authorized = sharedManagedScopeState(
+		db,
+		localDeviceId,
+		peerDeviceId,
+		coordinatorId,
+		groups,
+		publicKey,
+	);
+	if (authorized.state !== "authorized") return null;
+	// Canonical aliases of the same key remain authorized and must not transfer retirement trust.
+	const previousAuthorization = sharedManagedScopeState(
+		db,
+		localDeviceId,
+		peerDeviceId,
+		coordinatorId,
+		null,
+		previous.public_key,
+	);
+	if (previousAuthorization.state !== "not_authorized") return null;
+	return {
+		peerDeviceId,
+		coordinatorId,
+		groupId: authorized.groupId,
+		publicKey,
+		fingerprint,
+		previousPublicKey: previous.public_key,
+		previousFingerprint: previous.pinned_fingerprint,
+	};
+}
+
+function replaceCoordinatorPeerTrust(
+	db: Database,
+	localDeviceId: string,
+	rotation: CoordinatorPeerRotation,
+): void {
+	retainRetirementPeerTrust(db, { localDeviceId, peerDeviceId: rotation.peerDeviceId });
+	// Only trust fields change: discovery cannot overwrite the peer's settings or runtime state.
+	db.prepare(
+		`UPDATE sync_peers SET public_key = ?, pinned_fingerprint = ?, discovered_via_group_id = ?
+		 WHERE peer_device_id = ? AND discovered_via_coordinator_id = ?
+		 AND public_key = ? AND pinned_fingerprint = ?
+		 AND trust_provenance = 'coordinator_policy'
+		 AND claimed_local_actor = 0 AND actor_id IS NULL
+		 AND pending_bootstrap_grant_id IS NULL`,
+	).run(
+		rotation.publicKey,
+		rotation.fingerprint,
+		rotation.groupId,
+		rotation.peerDeviceId,
+		rotation.coordinatorId,
+		rotation.previousPublicKey,
+		rotation.previousFingerprint,
+	);
+}
+
+function reconcileCoordinatorPeerTrust(
+	db: Database,
+	localDeviceId: string,
+	peers: Record<string, unknown>[],
+): number {
+	return db
+		.transaction(() => {
+			const rotatedDevices = new Set<string>();
+			for (const peer of peers) {
+				const rotation = authorizedCoordinatorPeerRotation(db, localDeviceId, peer);
+				if (!rotation) continue;
+				replaceCoordinatorPeerTrust(db, localDeviceId, rotation);
+				refreshRotatedCoordinatorPeerAddresses(db, rotation, peer);
+				rotatedDevices.add(rotation.peerDeviceId);
+			}
+			revokeCoordinatorPeerTrust(db, localDeviceId);
+			const remainingPeers = peers.filter((peer) => !rotatedDevices.has(clean(peer.device_id)));
+			return (
+				rotatedDevices.size +
+				trustCoordinatorPeersWithSharedManagedScopes(db, localDeviceId, remainingPeers)
+			);
+		})
+		.immediate();
+}
+
+function refreshRotatedCoordinatorPeerAddresses(
+	db: Database,
+	rotation: CoordinatorPeerRotation,
+	peer: Record<string, unknown>,
+): void {
+	if (peer.stale) return;
+	const row = db
+		.prepare(
+			`SELECT peer_device_id, pinned_fingerprint, addresses_json, manual_addresses_json,
+			 last_success_address FROM sync_peers WHERE peer_device_id = ?`,
+		)
+		.get(rotation.peerDeviceId) as StoredCoordinatorPeerAddressRow;
+	const addresses = new Map([
+		[`${rotation.peerDeviceId}:${rotation.fingerprint}`, stringList(peer.addresses)],
+	]);
+	refreshCoordinatorPeerRow(row, addresses, (merged, _manual, deviceId, fingerprint) => {
+		db.prepare(
+			"UPDATE sync_peers SET addresses_json = ? WHERE peer_device_id = ? AND pinned_fingerprint = ?",
+		).run(merged, deviceId, fingerprint);
+	});
+}
+
 export async function refreshAuthorizedCoordinatorPeerTrust(
 	store: PresenceStoreLike,
 	config: CoordinatorSyncConfig,
@@ -719,8 +861,7 @@ export async function refreshAuthorizedCoordinatorPeerTrust(
 	const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir });
 	const peers = await lookupCoordinatorPeers(store, config, { keysDir });
 	refreshStoredCoordinatorPeerAddresses(store.db, peers);
-	revokeUnauthorizedCoordinatorPeerTrust(store.db, localDeviceId);
-	const trusted = trustCoordinatorPeersWithSharedManagedScopes(store.db, localDeviceId, peers);
+	const trusted = reconcileCoordinatorPeerTrust(store.db, localDeviceId, peers);
 	return { peers, trusted };
 }
 
@@ -948,12 +1089,7 @@ export async function coordinatorStatusSnapshot(
 			};
 		}
 		if (now < cachedSnapshot.nextRefreshAtMs) {
-			revokeUnauthorizedCoordinatorPeerTrust(store.db, localDeviceId);
-			trustCoordinatorPeersWithSharedManagedScopes(
-				store.db,
-				localDeviceId,
-				cachedSnapshot.discoveredPeers,
-			);
+			reconcileCoordinatorPeerTrust(store.db, localDeviceId, cachedSnapshot.discoveredPeers);
 			return {
 				...snapshot,
 				paired_peer_count: pairedPeerCount(store),

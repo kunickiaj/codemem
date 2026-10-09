@@ -25,7 +25,7 @@ import {
 	trustCoordinatorPeersWithSharedManagedScopes,
 } from "./coordinator-runtime.js";
 import { recordHighestObservedDirectSignatureVersion } from "./db.js";
-import { getRetirementPeer } from "./memory-retirement-trust.js";
+import { getRetirementPeer, retainRetirementPeerTrust } from "./memory-retirement-trust.js";
 import { getEffectiveCachedScopeAuthorization } from "./scope-membership-cache.js";
 import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import type { MemoryStore } from "./store.js";
@@ -1857,6 +1857,147 @@ describe("managed peer key rotation in the same refresh", () => {
 			}
 		},
 	);
+});
+
+function savePeerRotationSettings(fixture: RotationFixture) {
+	const saved = {
+		name: "User-saved peer name",
+		projects_include_json: '["allowed-project","blocked-project"]',
+		projects_exclude_json: '["blocked-project"]',
+		manual_addresses_json: '["http://manual-peer.example:7337"]',
+		last_success_address: "http://manual-peer.example:7337",
+		created_at: "2026-10-05T00:00:00.000Z",
+		last_seen_at: "2026-10-06T03:00:00.000Z",
+		last_sync_at: "2026-10-06T02:00:00.000Z",
+		last_error: "saved_previous_error",
+		runtime_version: "0.99.0",
+		runtime_version_observed_at: "2026-10-06T01:00:00.000Z",
+	};
+	fixture.db
+		.prepare(`UPDATE sync_peers SET name = @name,
+		projects_include_json = @projects_include_json, projects_exclude_json = @projects_exclude_json,
+		manual_addresses_json = @manual_addresses_json, last_success_address = @last_success_address,
+		created_at = @created_at, last_seen_at = @last_seen_at, last_sync_at = @last_sync_at, last_error = @last_error,
+		runtime_version = @runtime_version, runtime_version_observed_at = @runtime_version_observed_at
+		WHERE peer_device_id = @peerDeviceId`)
+		.run({ ...saved, peerDeviceId: fixture.peerDeviceId });
+	return saved;
+}
+
+function setReplacementDiscoveryName(fixture: RotationFixture) {
+	const originalFetch = fixture.fetchMock.getMockImplementation();
+	if (!originalFetch) throw new Error("expected mocked discovery");
+	fixture.fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+		const response = await originalFetch(input);
+		if (new URL(String(input)).pathname !== "/v1/peers") return response;
+		const payload = await response.json();
+		payload.items[0].display_name = "Coordinator replacement label";
+		return new Response(JSON.stringify(payload), { status: 200 });
+	});
+}
+
+describe("proven managed key rotation preserves peer settings", () => {
+	it.each<RotationCaller>(["refresh", "status", "cached status"])(
+		"%s keeps user filters and operational metadata on the first key-B refresh",
+		async (caller) => {
+			// Arrange: key A has explicit user overrides; global filters would allow the blocked project.
+			const fixture = await createRotationFixture();
+			vi.stubEnv("CODEMEM_SYNC_PROJECTS_INCLUDE", "");
+			vi.stubEnv("CODEMEM_SYNC_PROJECTS_EXCLUDE", "");
+			try {
+				const saved = savePeerRotationSettings(fixture);
+				setReplacementDiscoveryName(fixture);
+				await prepareRotation(fixture, caller, "proven");
+				const callsBefore = fixture.fetchMock.mock.calls.length;
+				// Act: a single normal refresh sees fresh V1 key-B proof and discovery.
+				if (caller === "refresh")
+					await refreshAuthorizedCoordinatorPeerTrust(fixture.store, fixture.config, {
+						keysDir: fixture.keysDir,
+					});
+				else await coordinatorStatusSnapshot(fixture.store, fixture.config);
+				// Assert: effective per-peer filters must not fall back to permissive global settings.
+				expect(syncProjectAllowed(fixture.db, "allowed-project", fixture.peerDeviceId)).toBe(true);
+				expect(syncProjectAllowed(fixture.db, "blocked-project", fixture.peerDeviceId)).toBe(false);
+				expect(syncProjectAllowed(fixture.db, "not-included-project", fixture.peerDeviceId)).toBe(
+					false,
+				);
+				assertRotation(fixture, "proven");
+				expect(
+					fixture.db
+						.prepare("SELECT * FROM sync_peers WHERE peer_device_id = ?")
+						.get(fixture.peerDeviceId),
+				).toMatchObject(saved);
+				const addresses = fixture.db
+					.prepare("SELECT addresses_json FROM sync_peers WHERE peer_device_id = ?")
+					.pluck()
+					.get(fixture.peerDeviceId) as string;
+				expect(JSON.parse(addresses)).toContain("http://manual-peer.example:7337");
+				// A later attempt to retain current key B cannot replace retirement's original key A.
+				fixture.db.transaction(() =>
+					retainRetirementPeerTrust(fixture.db, {
+						localDeviceId: fixture.localDeviceId,
+						peerDeviceId: fixture.peerDeviceId,
+					}),
+				)();
+				expect(
+					getRetirementPeer(fixture.db, {
+						localDeviceId: fixture.localDeviceId,
+						peerDeviceId: fixture.peerDeviceId,
+					}),
+				).toEqual({ deviceId: fixture.peerDeviceId, publicKey: fixture.oldKey });
+				if (caller === "cached status")
+					expect(fixture.fetchMock).toHaveBeenCalledTimes(callsBefore);
+				else
+					expect(
+						fixture.fetchMock.mock.calls.filter(
+							([input]) => new URL(String(input)).pathname === "/v1/peers",
+						),
+					).toHaveLength(1);
+			} finally {
+				vi.unstubAllEnvs();
+				fixture.close();
+			}
+		},
+	);
+
+	it("does not replace a policy pin from another coordinator's fresh key-B proof", async () => {
+		// Arrange: the original coordinator has no replacement authorization; another has fresh key B.
+		const fixture = await createRotationFixture();
+		try {
+			savePeerRotationSettings(fixture);
+			await prepareSharedGroupHandoff(fixture, true);
+			await refreshTestScopeRows(fixture.db, {
+				[fixture.localDeviceId]: fixture.localKey,
+				[fixture.peerDeviceId]: fixture.newKey,
+			});
+			expect(
+				getEffectiveCachedScopeAuthorization(fixture.db, {
+					deviceId: fixture.peerDeviceId,
+					scopeId: "scope-remaining",
+					expectedPublicKey: fixture.newKey,
+				}),
+			).toMatchObject({ authorized: true, freshness: "fresh" });
+			// Act: discovery still comes from the original authority.
+			const result = await refreshAuthorizedCoordinatorPeerTrust(fixture.store, fixture.config, {
+				keysDir: fixture.keysDir,
+			});
+			// Assert: fresh proof from another coordinator cannot authorize replacement.
+			expect(result.trusted).toBe(0);
+			expect(
+				fixture.db
+					.prepare("SELECT public_key FROM sync_peers WHERE peer_device_id = ?")
+					.get(fixture.peerDeviceId),
+			).toBeUndefined();
+			expect(
+				getRetirementPeer(fixture.db, {
+					localDeviceId: fixture.localDeviceId,
+					peerDeviceId: fixture.peerDeviceId,
+				}),
+			).toEqual({ deviceId: fixture.peerDeviceId, publicKey: fixture.oldKey });
+		} finally {
+			fixture.close();
+		}
+	});
 });
 
 async function prepareSharedGroupHandoff(fixture: RotationFixture, crossCoordinator: boolean) {
