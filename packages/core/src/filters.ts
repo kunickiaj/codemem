@@ -260,8 +260,8 @@ function addResolvedScopeVisibilityFilter(
 
 function addProjectFilter(project: string | null | undefined, result: FilterResult): void {
 	if (!project) return;
-	// Per-memory attribution takes precedence; legacy rows still need the sessions JOIN.
-	const filter = projectColumnClause("COALESCE(memory_items.project, sessions.project)", project);
+	// Session moves take precedence; redacted sessions fall back to readable memory attribution.
+	const filter = projectColumnClause("COALESCE(sessions.project, memory_items.project)", project);
 	if (!filter.clause) return;
 	result.clauses.push(filter.clause);
 	result.params.push(...filter.params);
