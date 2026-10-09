@@ -5,11 +5,13 @@
  * Builds WHERE clause fragments and parameter arrays from a MemoryFilters object.
  */
 
+import type { Database } from "better-sqlite3";
 import { projectClause } from "./project.js";
 import {
 	LEGACY_SHARED_REVIEW_SCOPE_ID,
 	LOCAL_DEFAULT_SCOPE_ID,
 	MAX_SCOPE_IN_PARAMS,
+	resolveVisibleScopeIds,
 } from "./scope-resolution.js";
 import type { MemoryFilters } from "./types.js";
 
@@ -29,11 +31,15 @@ export interface OwnershipFilterContext {
 	 * Pre-resolved set of scope_ids this device may read (see
 	 * `resolveVisibleScopeIds` in scope-resolution.ts). When present, scope visibility is
 	 * enforced with an index-eligible `scope_id IN (...)` predicate instead of
-	 * the per-row EXISTS subqueries. Callers that cannot resolve the set up front
-	 * (e.g. a context built without db access) omit it and fall back to the
-	 * EXISTS predicate, which is semantically identical.
+	 * the per-row EXISTS subqueries. Without this set, scopeVisibilityDb resolves
+	 * the same decisions. Without either, SQL can grant only unmanaged access.
 	 */
 	visibleScopeIds?: readonly string[];
+	scopeVisibilityDb?: Database;
+	/** Public key of the actual runtime signing key; managed reads deny without it. */
+	expectedPublicKey?: string;
+	/** Lazy read-only actual-key loader; used only for managed scope candidates. */
+	loadExpectedPublicKey?: () => string | undefined;
 }
 
 export interface FilterResult {
@@ -181,30 +187,22 @@ function addScopeVisibilityFilter(
 	// Migration backfill promotes legacy rows to explicit scopes asynchronously,
 	// but until that completes those rows must remain visible to their owning
 	// device exactly the way local-default rows are.
-	const visibleScopeIds = context.visibleScopeIds;
-	if (visibleScopeIds !== undefined && visibleScopeIds.length <= MAX_SCOPE_IN_PARAMS) {
-		// Fast path: the visible scope-id set was resolved once per request (see
-		// resolveVisibleScopeIds in scope-resolution.ts). A plain `scope_id IN (...)`
-		// is index-eligible on idx_memory_items_scope_visibility_created, unlike the
-		// EXISTS-based fallback below.
-		//
-		// Guarded by MAX_SCOPE_IN_PARAMS: each id is one bound parameter, so an
-		// unrealistically large visible set would otherwise blow SQLite's variable
-		// limit and throw at prepare time. Beyond the cap we fail safe to the
-		// fixed-param EXISTS fallback, which is semantically identical.
-		//
-		// We deliberately do NOT TRIM memory_items.scope_id here. TRIM defeats the
-		// index, and it is unnecessary: stored scope_ids are always trimmed on
-		// write (op scope_id is .trim()ed), so no whitespace-padded values exist.
-		// NULL scope_id (legacy rows pending backfill) is handled by the explicit
-		// IS NULL branch; the empty string "" is included in the resolved set.
-		const placeholders = visibleScopeIds.map(() => "?").join(", ");
-		clauses.push(`(memory_items.scope_id IS NULL OR memory_items.scope_id IN (${placeholders}))`);
-		params.push(...visibleScopeIds);
+	const visibleScopeIds =
+		context.visibleScopeIds ??
+		(context.scopeVisibilityDb
+			? resolveVisibleScopeIds(context.scopeVisibilityDb, deviceId, context)
+			: undefined);
+	// Authored history stays readable after membership removal. A legacy 'local'
+	// origin with an import key may be a foreign replica, not authorship evidence.
+	const authored = `((${OWNERSHIP_ORIGIN_DEVICE_SQL} = ? AND ? <> 'local')
+		OR (${OWNERSHIP_ORIGIN_DEVICE_SQL} = 'local'
+			AND COALESCE(TRIM(memory_items.import_key), '') = ''))`;
+	if (visibleScopeIds !== undefined) {
+		addResolvedScopeVisibilityFilter(clauses, params, visibleScopeIds, authored, deviceId);
 		return;
 	}
-	// Fallback path: no pre-resolved set (e.g. a context built without db access).
-	// Semantically identical to the IN predicate above, but evaluated per row.
+	// DB-less callers cannot validate managed proof. Preserve local/manual/invite
+	// membership behavior, but never let raw coordinator rows grant permission.
 	clauses.push(`(
 		COALESCE(TRIM(memory_items.scope_id), '') IN (?, ?, ?)
 		OR EXISTS (
@@ -222,10 +220,38 @@ function addScopeVisibilityFilter(
 			  AND sm.device_id = ?
 			  AND sm.status = 'active'
 			  AND rs.status = 'active'
+			  AND rs.authority_type <> 'coordinator'
 			  AND sm.membership_epoch >= rs.membership_epoch
 		)
+		OR ${authored}
 	)`);
-	params.push("", LOCAL_DEFAULT_SCOPE_ID, LEGACY_SHARED_REVIEW_SCOPE_ID, deviceId);
+	params.push(
+		"",
+		LOCAL_DEFAULT_SCOPE_ID,
+		LEGACY_SHARED_REVIEW_SCOPE_ID,
+		deviceId,
+		deviceId,
+		deviceId,
+	);
+}
+
+function addResolvedScopeVisibilityFilter(
+	clauses: string[],
+	params: unknown[],
+	visibleScopeIds: readonly string[],
+	authored: string,
+	deviceId: string,
+): void {
+	let scopeClause = "0 = 1";
+	if (visibleScopeIds.length > MAX_SCOPE_IN_PARAMS) {
+		scopeClause = "memory_items.scope_id IN (SELECT value FROM json_each(?))";
+		params.push(JSON.stringify(visibleScopeIds));
+	} else if (visibleScopeIds.length > 0) {
+		scopeClause = `memory_items.scope_id IN (${visibleScopeIds.map(() => "?").join(", ")})`;
+		params.push(...visibleScopeIds);
+	}
+	clauses.push(`(memory_items.scope_id IS NULL OR ${scopeClause} OR ${authored})`);
+	params.push(deviceId, deviceId);
 }
 
 /**

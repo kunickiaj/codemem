@@ -517,6 +517,19 @@ the envelope scope or changing the entity label cannot bypass managed proof.
 Failure rejects the entire batch before applying operations; existing input-error
 precedence and origin-bound cleanup after revocation remain unchanged.
 
+Local store, search, semantic filters, viewer statistics, and exports now use
+retained managed proof with the runtime's actual signing key. Key loading happens
+only when coordinator scope candidates exist; reads do not create or repair keys
+or write schema. Resolved visibility and the database-backed filter fallback use
+the same decision, while a fallback without database access cannot grant managed
+access.
+
+Locally authored history remains readable after losing membership. Imported rows
+with a legacy `local` origin and an import key do not count as local authorship.
+This read exception does not permit new writes: MCP remember checks current
+resolved-scope permission inside its rollback transaction. Import permissions,
+additional share inviters, and policy inheritance still need separate adoption.
+
 ## Activation limits
 
 Existing group disable/removal does not create global subjects automatically.
