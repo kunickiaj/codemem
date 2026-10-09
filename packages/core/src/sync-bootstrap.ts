@@ -16,6 +16,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { ApiSyncMemorySnapshotPageResponse } from "./api-types.js";
 import type { Database } from "./db.js";
 import { toJson } from "./db.js";
+import { recordForeignMemoryRevision } from "./memory-creation-provenance.js";
 import { retirementAllowsSnapshot } from "./memory-retirement-snapshot-guard.js";
 import * as schema from "./schema.js";
 import { redactMemoryFields, SecretScanner } from "./secret-scanner.js";
@@ -484,6 +485,7 @@ export function applyBootstrapSnapshot(
 		for (const item of retirementSnapshotItems(db, items, bootstrapScopeId)) {
 			const inserted = insertSnapshotItem(d, item, bootstrapScopeId, activeScanner);
 			if (!inserted.applied) continue;
+			recordForeignMemoryRevision(db, item.entity_id, "bootstrap");
 			if (inserted.embeddable) embeddableApplied++;
 			result.applied++;
 		}
@@ -632,6 +634,7 @@ export function mergeBootstrapSnapshot(
 
 			const inserted = insertSnapshotItem(d, item, bootstrapScopeId, activeScanner);
 			if (!inserted.applied) continue;
+			recordForeignMemoryRevision(db, item.entity_id, "bootstrap");
 			if (inserted.embeddable) embeddableApplied++;
 			result.applied++;
 		}

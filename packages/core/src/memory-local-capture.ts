@@ -101,7 +101,7 @@ function publicKeyBytes(value: string): string | null {
 	return type === "ssh-ed25519" && bytes ? `${type} ${bytes}` : null;
 }
 
-function matchesRuntime(
+export function matchesLocalCaptureRuntime(
 	tuple: DeviceTuple,
 	deviceId: string,
 	publicKey: string | undefined,
@@ -147,7 +147,7 @@ export function adoptLocalCapture(
 		return;
 	const tuple = deviceTuple(db);
 	const publicKey = context.expectedPublicKey ?? context.loadExpectedPublicKey?.();
-	if (!tuple || !matchesRuntime(tuple, deviceId, publicKey)) return;
+	if (!tuple || !matchesLocalCaptureRuntime(tuple, deviceId, publicKey)) return;
 	const existing = db
 		.prepare(
 			"SELECT device_id, public_key, fingerprint FROM memory_local_capture_adoption WHERE capture_id = ?",
@@ -198,7 +198,7 @@ export function localCreationSourceIds(
 	}
 	if (tuple.device_id !== deviceId) return [];
 	const publicKey = context.expectedPublicKey ?? context.loadExpectedPublicKey?.();
-	if (!matchesRuntime(tuple, deviceId, publicKey)) return [];
+	if (!matchesLocalCaptureRuntime(tuple, deviceId, publicKey)) return [];
 	const sources = [deviceId];
 	if (!birth || !hasTable(db, "memory_local_capture_adoption")) return sources;
 	const adoption = db
