@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { getVerifiedMemorySource } from "./memory-source-identity.js";
 import { buildMemoryPackWithTrace } from "./pack.js";
 import { fusePackCandidates } from "./pack-fusion.js";
 import { scoreResult, search } from "./search.js";
@@ -22,6 +23,23 @@ function memory(id: number, score: number): MemoryResult {
 		narrative: null,
 		facts: null,
 	};
+}
+
+function hiddenForeignBoundary(store: MemoryStore, sessionId: number): number {
+	const id = store.remember(
+		sessionId,
+		"decision",
+		"Hidden shared boundary fact",
+		"boundaryhybrid evidence",
+		0.99,
+		undefined,
+		{ import_key: "foreign-hidden-boundary", origin_device_id: "remote-device" },
+	);
+	expect(getVerifiedMemorySource(store.db, "foreign-hidden-boundary")).toBeNull();
+	store.db
+		.prepare("UPDATE memory_items SET visibility = 'shared', scope_id = ? WHERE id = ?")
+		.run("hidden-boundary-scope", id);
+	return id;
 }
 
 describe("pack reciprocal rank fusion", () => {
@@ -396,16 +414,7 @@ describe("pack reciprocal rank fusion", () => {
 					"2026-01-01T00:00:00.000Z",
 					"2026-01-01T00:00:00.000Z",
 				);
-			const hiddenSharedId = store.remember(
-				foreignSession,
-				"decision",
-				"Hidden shared boundary fact",
-				"boundaryhybrid evidence",
-				0.99,
-			);
-			store.db
-				.prepare("UPDATE memory_items SET visibility = 'shared', scope_id = ? WHERE id = ?")
-				.run("hidden-boundary-scope", hiddenSharedId);
+			const hiddenSharedId = hiddenForeignBoundary(store, foreignSession);
 			const allIds = [
 				currentSummaryId,
 				durableId,

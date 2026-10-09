@@ -32,8 +32,14 @@ import {
 	toJsonNullable,
 } from "./db.js";
 import { buildFilterClausesWithContext, type OwnershipFilterContext } from "./filters.js";
+import {
+	recordForeignMemoryRevision,
+	recordLocalCreationSnapshot,
+} from "./memory-creation-provenance.js";
 import { buildMemoryDedupKey, normalizeMemoryDedupTitle } from "./memory-dedup.js";
 import { validateMemoryKind } from "./memory-kinds.js";
+import { adoptLocalCapture } from "./memory-local-capture.js";
+import { allocateLocalCaptureMemorySource } from "./memory-source-identity.js";
 import { readCodememConfigFile } from "./observer-config.js";
 import type { PackArtifacts } from "./pack.js";
 import {
@@ -552,6 +558,7 @@ export class MemoryStore {
 		const fallbackActorId = `local:${previousDeviceId}`;
 		const fallbackActor = this.fallbackActorForDeviceAdoption(fallbackActorId);
 		if (!this.actorIdUsesDeviceFallback && !fallbackActor) {
+			this.db.transaction(() => this.adoptLocalCaptureForDevice(normalizedDeviceId))();
 			this.publishEnsuredDeviceIdentity(normalizedDeviceId);
 			return;
 		}
@@ -559,17 +566,15 @@ export class MemoryStore {
 		const nextActorId = this.actorIdUsesDeviceFallback
 			? `local:${normalizedDeviceId}`
 			: this.actorId;
-		const fallbackDisplayName = cleanStr(fallbackActor?.display_name);
-		const nextActorDisplayName =
-			this.actorIdUsesDeviceFallback &&
-			fallbackDisplayName &&
-			fallbackDisplayName !== fallbackActorId
-				? fallbackDisplayName
-				: this.actorDisplayName === fallbackActorId
-					? nextActorId
-					: this.actorDisplayName;
+		const nextActorDisplayName = this.displayNameForDeviceAdoption(
+			fallbackActorId,
+			nextActorId,
+			fallbackActor,
+		);
 		const now = nowIso();
 		this.db.transaction(() => {
+			this.assertLocalActorsForDeviceAdoption(fallbackActorId, nextActorId);
+			this.adoptLocalCaptureForDevice(normalizedDeviceId);
 			if (fallbackActor) {
 				this.db
 					.prepare(
@@ -617,6 +622,50 @@ export class MemoryStore {
 			return;
 		}
 		this.publishEnsuredDeviceIdentity(normalizedDeviceId);
+	}
+
+	private assertLocalActorsForDeviceAdoption(fallbackActorId: string, nextActorId: string): void {
+		if (!tableExists(this.db, "actors")) return;
+		const conflict = this.db
+			.prepare(`SELECT 1 FROM actors WHERE actor_id IN (?, ?)
+			AND (is_local <> 1 OR status <> 'active' OR merged_into_actor_id IS NOT NULL) LIMIT 1`)
+			.get(fallbackActorId, nextActorId);
+		if (conflict) throw new Error("device_adoption_actor_conflict");
+	}
+
+	private adoptLocalCaptureForDevice(deviceId: string): void {
+		const configuredDevice = process.env.CODEMEM_DEVICE_ID?.trim();
+		if (configuredDevice && configuredDevice !== deviceId) return;
+		if (!this.hasCurrentConfiguredIdentity()) return;
+		const injected = this.runtimeKeyOptions.runtimeSigningKey;
+		adoptLocalCapture(this.db, deviceId, {
+			actorId: this.actorId,
+			runtimeDeviceId: process.env.CODEMEM_DEVICE_ID?.trim() || this.deviceId,
+			loadExpectedPublicKey: () => {
+				if (injected) return injected.deviceId === deviceId ? injected.publicKey : undefined;
+				return (
+					loadRuntimeSigningPublicKey(this.db, {
+						deviceId,
+						keysDir: this.runtimeKeyOptions.keysDir,
+					}) ?? undefined
+				);
+			},
+		});
+	}
+
+	private displayNameForDeviceAdoption(
+		fallbackActorId: string,
+		nextActorId: string,
+		fallbackActor: { display_name: string } | undefined,
+	): string {
+		const fallbackDisplayName = cleanStr(fallbackActor?.display_name);
+		if (
+			this.actorIdUsesDeviceFallback &&
+			fallbackDisplayName &&
+			fallbackDisplayName !== fallbackActorId
+		)
+			return fallbackDisplayName;
+		return this.actorDisplayName === fallbackActorId ? nextActorId : this.actorDisplayName;
 	}
 
 	private findExistingDuplicateMemory(
@@ -1050,8 +1099,6 @@ export class MemoryStore {
 		const dedupKey = buildMemoryDedupKey(safeTitle);
 
 		metaPayload.clock_device_id ??= this.deviceId;
-		const importKey = (metaPayload.import_key as string) || randomUUID();
-		metaPayload.import_key = importKey;
 
 		// Extract dedicated columns from metadata before they get buried in metadata_json
 		const subtitle = typeof metaPayload.subtitle === "string" ? metaPayload.subtitle : null;
@@ -1103,6 +1150,8 @@ export class MemoryStore {
 		let memoryId: number;
 		try {
 			memoryId = this.db.transaction(() => {
+				const importKey = this.memoryCreationImportKey(metadata, metaPayload);
+				metaPayload.import_key = importKey;
 				const insertedRows = this.d
 					.insert(schema.memoryItems)
 					.values({
@@ -1147,7 +1196,7 @@ export class MemoryStore {
 
 				populateMemoryRefs(this.db, id, filesRead, filesModified, concepts);
 
-				this.recordMemoryUpsert(id, options.replicate !== false);
+				this.recordNewMemoryWrite(id, metadata, options);
 
 				return id;
 			})();
@@ -1183,8 +1232,50 @@ export class MemoryStore {
 		return memoryId;
 	}
 
-	private recordMemoryUpsert(memoryId: number, enabled: boolean): void {
-		if (!enabled) return;
+	private hasSuppliedMemoryIdentity(metadata: Record<string, unknown> | undefined): boolean {
+		return ["import_key", "origin_device_id", "clock_device_id"].some((key) =>
+			Object.hasOwn(metadata ?? {}, key),
+		);
+	}
+
+	private recordNewMemoryProvenance(
+		memoryId: number,
+		metadata: Record<string, unknown> | undefined,
+	): void {
+		if (!this.hasSuppliedMemoryIdentity(metadata)) {
+			recordLocalCreationSnapshot(this.db, memoryId);
+			return;
+		}
+		const entityId = this.db
+			.prepare("SELECT import_key FROM memory_items WHERE id = ?")
+			.pluck()
+			.get(memoryId);
+		if (typeof entityId === "string") recordForeignMemoryRevision(this.db, entityId, "import");
+	}
+
+	private memoryCreationImportKey(
+		metadata: Record<string, unknown> | undefined,
+		scanned: Record<string, unknown>,
+	): string {
+		const configuredDevice = process.env.CODEMEM_DEVICE_ID?.trim();
+		if (configuredDevice && configuredDevice !== this.deviceId) return randomUUID();
+		// Caller-supplied identity fields cannot mint proof, even when empty or malformed.
+		// This runs only after dedup, inside the new-memory transaction.
+		if (this.hasSuppliedMemoryIdentity(metadata)) {
+			return typeof scanned.import_key === "string" && scanned.import_key
+				? scanned.import_key
+				: randomUUID();
+		}
+		return allocateLocalCaptureMemorySource(this.db, this.deviceId)?.entityId ?? randomUUID();
+	}
+
+	private recordNewMemoryWrite(
+		memoryId: number,
+		metadata: Record<string, unknown> | undefined,
+		options: { replicate?: boolean },
+	): void {
+		this.recordNewMemoryProvenance(memoryId, metadata);
+		if (options.replicate === false) return;
 		try {
 			recordReplicationOp(this.db, { memoryId, opType: "upsert", deviceId: this.deviceId });
 		} catch {

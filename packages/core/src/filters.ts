@@ -6,6 +6,8 @@
  */
 
 import type { Database } from "better-sqlite3";
+import { matchingLocalCreationClause } from "./memory-creation-provenance.js";
+import { localCreationSourceIds } from "./memory-local-capture.js";
 import { projectClause } from "./project.js";
 import {
 	LEGACY_SHARED_REVIEW_SCOPE_ID,
@@ -172,6 +174,60 @@ function ownershipPredicateSql(context: OwnershipFilterContext): {
 	return { clause: `(${alternatives.join(" OR ")})`, params };
 }
 
+function localCreationSourcesForFilter(
+	context: OwnershipFilterContext,
+	visibleScopeIds: readonly string[] | undefined,
+): string[] {
+	const db = context.scopeVisibilityDb;
+	if (!db || !visibleScopeIds) return [];
+	const creationClause = matchingLocalCreationClause(db);
+	if (!creationClause) return [];
+	if (
+		!db
+			.prepare(
+				"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_source_bindings'",
+			)
+			.get()
+	)
+		return [];
+	// Opening the signing key is unnecessary when ordinary scope access suffices.
+	const candidate = db
+		.prepare(`SELECT 1 FROM memory_source_bindings msb
+		JOIN memory_items ON memory_items.import_key = msb.entity_id
+		WHERE msb.evidence = 'local_creation' AND ${creationClause}
+		AND NOT EXISTS (SELECT 1 FROM json_each(?) visible WHERE visible.value = COALESCE(memory_items.scope_id, '')) LIMIT 1`)
+		.get(JSON.stringify(visibleScopeIds));
+	return candidate ? localCreationSourceIds(db, context.deviceId.trim(), context) : [];
+}
+
+function unmanagedAuthorshipScopeFilter(db: Database | undefined): {
+	clause: string;
+	params: unknown[];
+} {
+	if (!db) {
+		return {
+			clause: `EXISTS (SELECT 1 FROM replication_scopes legacy_scope
+				WHERE legacy_scope.scope_id = memory_items.scope_id
+				AND legacy_scope.authority_type IN ('local', 'manual', 'invite'))`,
+			params: [],
+		};
+	}
+	// Snapshot explicit unmanaged classification once per filter call, at every status.
+	const rows = db
+		.prepare(`SELECT scope_id FROM replication_scopes
+		WHERE authority_type IN ('local', 'manual', 'invite')`)
+		.all() as Array<{ scope_id: string | null }>;
+	const ids = rows.flatMap((row) => (row.scope_id === null ? [] : [row.scope_id]));
+	if (!ids.length) return { clause: "0 = 1", params: [] };
+	if (ids.length > MAX_SCOPE_IN_PARAMS) {
+		return {
+			clause: "memory_items.scope_id IN (SELECT value FROM json_each(?))",
+			params: [JSON.stringify(ids)],
+		};
+	}
+	return { clause: `memory_items.scope_id IN (${ids.map(() => "?").join(", ")})`, params: ids };
+}
+
 function addScopeVisibilityFilter(
 	clauses: string[],
 	params: unknown[],
@@ -192,13 +248,23 @@ function addScopeVisibilityFilter(
 		(context.scopeVisibilityDb
 			? resolveVisibleScopeIds(context.scopeVisibilityDb, deviceId, context)
 			: undefined);
-	// Authored history stays readable after membership removal. A legacy 'local'
-	// origin with an import key may be a foreign replica, not authorship evidence.
-	const authored = `((${OWNERSHIP_ORIGIN_DEVICE_SQL} = ? AND ? <> 'local')
+	// Origin and blank import keys are not proof for managed or unknown scopes.
+	// Preserve the legacy exception only for explicitly unmanaged scopes.
+	const unmanaged = unmanagedAuthorshipScopeFilter(context.scopeVisibilityDb);
+	let authored = `(((${OWNERSHIP_ORIGIN_DEVICE_SQL} = ? AND ? <> 'local')
 		OR (${OWNERSHIP_ORIGIN_DEVICE_SQL} = 'local'
-			AND COALESCE(TRIM(memory_items.import_key), '') = ''))`;
+			AND COALESCE(TRIM(memory_items.import_key), '') = ''))
+		AND ${unmanaged.clause})`;
+	const sourceIds = localCreationSourcesForFilter(context, visibleScopeIds);
+	if (sourceIds.length && context.scopeVisibilityDb) {
+		authored = `(${authored} OR EXISTS (SELECT 1 FROM memory_source_bindings msb
+			WHERE msb.entity_id = memory_items.import_key AND msb.evidence = 'local_creation'
+			AND msb.source_device_id IN (${sourceIds.map(() => "?").join(", ")})
+			AND ${matchingLocalCreationClause(context.scopeVisibilityDb)}))`;
+	}
 	if (visibleScopeIds !== undefined) {
 		addResolvedScopeVisibilityFilter(clauses, params, visibleScopeIds, authored, deviceId);
+		params.push(...unmanaged.params, ...sourceIds);
 		return;
 	}
 	// DB-less callers cannot validate managed proof. Preserve local/manual/invite
@@ -232,6 +298,8 @@ function addScopeVisibilityFilter(
 		deviceId,
 		deviceId,
 		deviceId,
+		...unmanaged.params,
+		...sourceIds,
 	);
 }
 

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as embeddings from "./embeddings.js";
+import { getVerifiedMemorySource } from "./memory-source-identity.js";
 import { buildMemoryPackTraceAsync, buildMemoryPackWithTraceAsync } from "./pack.js";
 import * as retrieval from "./search.js";
 import { search } from "./search.js";
@@ -19,8 +20,13 @@ const automatic = { source: "opencode", hostSessionId: "synthetic-semantic" };
 const filters = { project: "synthetic" };
 const vector = new Float32Array(384).fill(0.1);
 
-function rememberVector(title: string, body: string, sessionId = session) {
-	const id = store.remember(sessionId, "decision", title, body, 0.9);
+function rememberVector(
+	title: string,
+	body: string,
+	sessionId = session,
+	metadata?: Record<string, unknown>,
+) {
+	const id = store.remember(sessionId, "decision", title, body, 0.9, undefined, metadata);
 	store.db
 		.prepare(
 			"INSERT INTO memory_vectors(embedding, memory_id, chunk_index, content_hash, model) VALUES (?, ?, 0, ?, 'synthetic-model')",
@@ -299,7 +305,11 @@ describe("automatic semantic scope and independent file references", () => {
 			"Orchid segments.",
 			foreignSession,
 		);
-		const hidden = rememberVector("Orchid indexing hidden scope", "Orchid partitions.");
+		const hidden = rememberVector("Orchid indexing hidden scope", "Orchid partitions.", session, {
+			import_key: "foreign-hidden-orchid",
+			origin_device_id: "remote-device",
+		});
+		expect(getVerifiedMemorySource(store.db, "foreign-hidden-orchid")).toBeNull();
 		expect(hidden).not.toBe(foreign);
 		const now = new Date().toISOString();
 		store.db

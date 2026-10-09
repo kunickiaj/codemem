@@ -57,6 +57,28 @@ function makeOp(id: string, payloadSize = 10): ReplicationOp {
 	};
 }
 
+function assertUnprovenCleanup(
+	db: InstanceType<typeof Database>,
+	result: ReturnType<typeof reconcileStalePeerReceivedRows>,
+	ids: { stale: number; local: number; missingOrigin: number; originalLocalRow: unknown },
+): void {
+	expect(result.deleted).toBe(1);
+	expect(result.deleted_memory_ids).toEqual([ids.stale]);
+	expect(db.prepare("SELECT 1 FROM memory_items WHERE id = ?").get(ids.stale)).toBeUndefined();
+	expect(db.prepare("SELECT * FROM memory_items WHERE id = ?").get(ids.local)).toEqual(
+		ids.originalLocalRow,
+	);
+	expect(
+		db.prepare("SELECT 1 FROM memory_items WHERE id = ?").get(ids.missingOrigin),
+	).toBeDefined();
+	expect(getReplicationCursor(db, "dev-remote", "acme-work")).toEqual([null, null]);
+	expect(result.retained).toBe(0);
+	expect(result.ambiguous).toEqual([
+		expect.objectContaining({ memory_id: ids.local, reason: "unverified_local_creation" }),
+		expect.objectContaining({ memory_id: ids.missingOrigin, reason: "missing_origin_device" }),
+	]);
+}
+
 // ---------------------------------------------------------------------------
 // chunkOpsBySize
 // ---------------------------------------------------------------------------
@@ -3367,7 +3389,8 @@ describe("applyReplicationOps", () => {
 		expect(result.vectorWork.deleteMemoryIds).toEqual([]);
 	});
 
-	it("reconciles provably stale peer-received rows without deleting receiver-owned rows", () => {
+	it("reconciles provably stale peer-received rows while preserving ambiguous local-labelled rows", () => {
+		// Arrange: origin labels do not prove creation; ambiguity requires explicit recovery.
 		grantScope("acme-work", ["dev-remote"]);
 		setReplicationCursor(
 			db,
@@ -3390,25 +3413,20 @@ describe("applyReplicationOps", () => {
 			originDeviceId: null,
 			scopeId: "acme-work",
 		});
+		const originalLocalRow = db
+			.prepare("SELECT * FROM memory_items WHERE id = ?")
+			.get(localMemoryId);
 
+		// Act
 		const result = reconcileStalePeerReceivedRows(db, { localDeviceId: "dev-local" });
 
-		expect(result.deleted).toBe(1);
-		expect(result.deleted_memory_ids).toEqual([stalePeerMemoryId]);
-		expect(
-			db.prepare("SELECT 1 FROM memory_items WHERE id = ?").get(stalePeerMemoryId),
-		).toBeUndefined();
-		expect(db.prepare("SELECT 1 FROM memory_items WHERE id = ?").get(localMemoryId)).toBeDefined();
-		expect(
-			db.prepare("SELECT 1 FROM memory_items WHERE id = ?").get(missingOriginMemoryId),
-		).toBeDefined();
-		expect(getReplicationCursor(db, "dev-remote", "acme-work")).toEqual([null, null]);
-		expect(result.ambiguous).toEqual([
-			expect.objectContaining({
-				memory_id: missingOriginMemoryId,
-				reason: "missing_origin_device",
-			}),
-		]);
+		// Assert
+		assertUnprovenCleanup(db, result, {
+			stale: stalePeerMemoryId,
+			local: localMemoryId,
+			missingOrigin: missingOriginMemoryId,
+			originalLocalRow,
+		});
 	});
 
 	it("removes remote-origin local-only rows conservatively and idempotently", () => {

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { buildFilterClausesWithContext } from "./filters.js";
+import { recordLocalCreationSnapshot } from "./memory-creation-provenance.js";
 import { allocateLocalMemorySource, getVerifiedMemorySource } from "./memory-source-identity.js";
 import { populateMemoryRefs } from "./ref-populate.js";
 import * as schema from "./schema.js";
@@ -256,6 +257,7 @@ function copyRow(store: MemoryStore, original: Row, operationId: string, now: st
 		})
 		.returning({ id: schema.memoryItems.id })
 		.get();
+	recordLocalCreationSnapshot(store.db, inserted.id);
 	populateMemoryRefs(
 		store.db,
 		inserted.id,

@@ -13,6 +13,12 @@ import { and, desc, eq, gt, isNotNull, isNull, like, or, sql } from "drizzle-orm
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { fromJson, fromJsonStrict, toJson, toJsonNullable } from "./db.js";
+import {
+	hasMatchingLocalCreation,
+	hasRecordedLocalCreation,
+	recordForeignMemoryRevision,
+} from "./memory-creation-provenance.js";
+import { type LocalCreationContext, localCreationSourceIds } from "./memory-local-capture.js";
 import { retirementAllowsSnapshot } from "./memory-retirement-snapshot-guard.js";
 import {
 	assertMemoryScopeNotRetired,
@@ -26,8 +32,10 @@ import { getAnyRecipientPolicyDenyOverlayForScopeDevice } from "./recipient-poli
 import { clearMemoryRefs, populateMemoryRefs } from "./ref-populate.js";
 import * as schema from "./schema.js";
 import { getCachedScopeAuthorization } from "./scope-membership-cache.js";
+import { LEGACY_SHARED_REVIEW_SCOPE_ID } from "./scope-resolution.js";
 import { ensureMemoryScopeId } from "./scope-stamping.js";
 import { redactMemoryFields, SecretScanner } from "./secret-scanner.js";
+import { loadRuntimeSigningPublicKey } from "./sync-identity.js";
 import { deriveTags } from "./tags.js";
 import type {
 	ReplicationOp,
@@ -538,13 +546,16 @@ function resetRequired(
 	};
 }
 
-function mergePayloadMetadata(
-	metadata: Record<string, unknown>,
-	clockDeviceId: string,
+function foreignRevisionMetadata(
+	db: Database,
+	op: ReplicationOp,
+	metadata: Record<string, unknown> | string | null,
 ): Record<string, unknown> {
+	recordForeignMemoryRevision(db, op.entity_id, "replication");
+	const object = typeof metadata === "string" || metadata === null ? fromJson(metadata) : metadata;
 	return {
-		...metadata,
-		clock_device_id: clockDeviceId,
+		...object,
+		clock_device_id: op.clock_device_id,
 	};
 }
 
@@ -2527,7 +2538,8 @@ export type StalePeerReceivedRowReason =
 	| "authorization_unknown"
 	| "missing_import_key"
 	| "missing_origin_device"
-	| "missing_scope";
+	| "missing_scope"
+	| "unverified_local_creation";
 
 export interface StalePeerReceivedRowDiagnostic {
 	memory_id: number;
@@ -2545,8 +2557,9 @@ export interface ReconcileStalePeerReceivedRowsResult {
 	ambiguous: StalePeerReceivedRowDiagnostic[];
 }
 
-export interface ReconcileStalePeerReceivedRowsOptions {
+export interface ReconcileStalePeerReceivedRowsOptions extends LocalCreationContext {
 	localDeviceId: string;
+	keysDir?: string;
 	maxRows?: number | null;
 	peerDeviceId?: string | null;
 }
@@ -2602,6 +2615,70 @@ export function diagnoseStalePeerReceivedRows(
 	};
 }
 
+interface StalePeerReceivedRow {
+	id: number;
+	import_key: string | null;
+	origin_device_id: string | null;
+	scope_id: string | null;
+}
+
+function stalePeerReceivedRows(
+	db: Database,
+	peerDeviceId: string | null,
+	maxRows: number,
+): StalePeerReceivedRow[] {
+	return db
+		.prepare(`SELECT id, import_key, origin_device_id, scope_id
+		FROM memory_items WHERE active = 1 AND (? IS NULL OR origin_device_id = ?)
+		ORDER BY id LIMIT ?`)
+		.all(peerDeviceId, peerDeviceId, maxRows) as StalePeerReceivedRow[];
+}
+
+function legacyLocalRetentionScope(db: Database, scopeId: string | null): boolean {
+	const scope = cleanText(scopeId);
+	if (!scope || scope === DEFAULT_SYNC_SCOPE_ID || scope === LEGACY_SHARED_REVIEW_SCOPE_ID)
+		return true;
+	return (
+		db
+			.prepare(`SELECT 1 FROM replication_scopes WHERE scope_id = ?
+		AND authority_type IN ('local', 'manual', 'invite')`)
+			.get(scope) !== undefined
+	);
+}
+
+function retainOrDiagnoseLocalRow(
+	db: Database,
+	row: StalePeerReceivedRow,
+	localDeviceId: string,
+	creationSources: readonly string[],
+	result: ReconcileStalePeerReceivedRowsResult,
+): boolean {
+	const proven =
+		row.import_key !== null && hasMatchingLocalCreation(db, row.import_key, creationSources);
+	const origin = cleanText(row.origin_device_id);
+	if (proven || (origin === localDeviceId && legacyLocalRetentionScope(db, row.scope_id))) {
+		result.retained += 1;
+		return true;
+	}
+	if (
+		origin !== localDeviceId &&
+		origin !== "local" &&
+		!hasRecordedLocalCreation(db, row.import_key ?? "")
+	)
+		return false;
+	// Preserve ambiguous originals without treating a copied origin as authorship.
+	result.ambiguous.push(
+		stalePeerCandidateDiagnostic({
+			memoryId: Number(row.id),
+			importKey: cleanText(row.import_key),
+			originDeviceId: origin,
+			scopeId: cleanText(row.scope_id),
+			reason: "unverified_local_creation",
+		}),
+	);
+	return true;
+}
+
 function reconcileStalePeerReceivedRowsInternal(
 	db: Database,
 	options: ReconcileStalePeerReceivedRowsOptions,
@@ -2614,21 +2691,7 @@ function reconcileStalePeerReceivedRowsInternal(
 		typeof options.maxRows === "number" && Number.isFinite(options.maxRows)
 			? Math.max(0, Math.trunc(options.maxRows))
 			: -1;
-	const rows = db
-		.prepare(
-			`SELECT id, import_key, origin_device_id, scope_id
-			 FROM memory_items
-			 WHERE active = 1
-			   AND (? IS NULL OR origin_device_id = ?)
-			 ORDER BY id
-			 LIMIT ?`,
-		)
-		.all(peerDeviceId, peerDeviceId, maxRows) as Array<{
-		id: number;
-		import_key: string | null;
-		origin_device_id: string | null;
-		scope_id: string | null;
-	}>;
+	const rows = stalePeerReceivedRows(db, peerDeviceId, maxRows);
 	const result: ReconcileStalePeerReceivedRowsResult = {
 		checked: rows.length,
 		deleted: 0,
@@ -2651,6 +2714,7 @@ function reconcileStalePeerReceivedRowsInternal(
 		result.deleted += 1;
 		result.deleted_memory_ids.push(memoryId);
 	};
+	const creationSources = cleanupCreationSourceIds(db, localDeviceId, options);
 	db.transaction(() => {
 		// Authorization decisions must not survive this synchronous cleanup transaction.
 		const authorizationByScope = new Map<string, CachedScopeAuthorizationResult>();
@@ -2659,6 +2723,7 @@ function reconcileStalePeerReceivedRowsInternal(
 			const importKey = cleanText(row.import_key);
 			const originDeviceId = cleanText(row.origin_device_id);
 			const scopeId = cleanText(row.scope_id);
+			if (retainOrDiagnoseLocalRow(db, row, localDeviceId, creationSources, result)) continue;
 			if (!originDeviceId) {
 				result.ambiguous.push(
 					stalePeerCandidateDiagnostic({
@@ -2669,10 +2734,6 @@ function reconcileStalePeerReceivedRowsInternal(
 						scopeId,
 					}),
 				);
-				continue;
-			}
-			if (originDeviceId === localDeviceId) {
-				result.retained += 1;
 				continue;
 			}
 			if (!scopeId || scopeId === DEFAULT_SYNC_SCOPE_ID) {
@@ -2755,8 +2816,26 @@ export interface InboundScopeValidationOptions {
 	enabled?: boolean;
 }
 
-export interface ApplyReplicationOpsOptions {
+export interface ApplyReplicationOpsOptions extends LocalCreationContext {
 	inboundScopeValidation?: InboundScopeValidationOptions | null;
+	keysDir?: string;
+}
+
+function cleanupCreationSourceIds(
+	db: Database,
+	deviceId: string,
+	options: LocalCreationContext & { keysDir?: string },
+): string[] {
+	return localCreationSourceIds(db, deviceId, {
+		...options,
+		loadExpectedPublicKey:
+			options.loadExpectedPublicKey ??
+			(() =>
+				loadRuntimeSigningPublicKey(db, {
+					deviceId,
+					keysDir: options.keysDir ?? process.env.CODEMEM_KEYS_DIR?.trim(),
+				}) ?? undefined),
+	});
 }
 
 type CachedScopeAuthorizationResult = ReturnType<typeof getCachedScopeAuthorization>;
@@ -3539,6 +3618,47 @@ function rejectUnretiredScopeFailures(
 	return rejected;
 }
 
+function applyAccessCleanupForLocalDevice(
+	db: Database,
+	d: ReturnType<typeof drizzle>,
+	op: ReplicationOp,
+	context: {
+		localDeviceId: string;
+		options: ApplyReplicationOpsOptions;
+		queueVectorDelete: (memoryId: number) => void;
+	},
+): boolean {
+	const cleanup = parseAccessCleanupPayload(op);
+	if (!cleanup.cleanup_scope_id) return false;
+	const existing = d
+		.select({
+			id: schema.memoryItems.id,
+			origin_device_id: schema.memoryItems.origin_device_id,
+			scope_id: schema.memoryItems.scope_id,
+		})
+		.from(schema.memoryItems)
+		.where(eq(schema.memoryItems.import_key, op.entity_id))
+		.limit(1)
+		.get();
+	if (!existing) return true;
+	const sources = cleanupCreationSourceIds(db, context.localDeviceId, context.options);
+	if (
+		hasMatchingLocalCreation(db, op.entity_id, sources) ||
+		hasRecordedLocalCreation(db, op.entity_id)
+	)
+		return false;
+	const sourceDeviceId = cleanText(op.clock_device_id) ?? cleanText(op.device_id);
+	const originDeviceId = cleanText(existing.origin_device_id);
+	if (!sourceDeviceId || !originDeviceId || originDeviceId !== sourceDeviceId) return false;
+	// Retain ambiguous local-looking originals; this label grants no read permission.
+	if (originDeviceId === context.localDeviceId) return false;
+	if (cleanText(existing.scope_id) !== cleanup.cleanup_scope_id) return false;
+	clearMemoryRefs(db, Number(existing.id));
+	d.delete(schema.memoryItems).where(eq(schema.memoryItems.id, existing.id)).run();
+	context.queueVectorDelete(Number(existing.id));
+	return true;
+}
+
 export function applyReplicationOps(
 	db: Database,
 	ops: ReplicationOp[],
@@ -3570,30 +3690,8 @@ export function applyReplicationOps(
 		upsertMemoryIds.delete(memoryId);
 		deleteMemoryIds.add(memoryId);
 	};
-	const applyAccessCleanupOp = (op: ReplicationOp): boolean => {
-		const cleanup = parseAccessCleanupPayload(op);
-		if (!cleanup.cleanup_scope_id) return false;
-		const existingForCleanup = d
-			.select({
-				id: schema.memoryItems.id,
-				origin_device_id: schema.memoryItems.origin_device_id,
-				scope_id: schema.memoryItems.scope_id,
-			})
-			.from(schema.memoryItems)
-			.where(eq(schema.memoryItems.import_key, op.entity_id))
-			.limit(1)
-			.get();
-		if (!existingForCleanup) return true;
-		const sourceDeviceId = cleanText(op.clock_device_id) ?? cleanText(op.device_id);
-		const originDeviceId = cleanText(existingForCleanup.origin_device_id);
-		if (!sourceDeviceId || !originDeviceId || originDeviceId !== sourceDeviceId) return false;
-		if (originDeviceId === localDeviceId) return false;
-		if (cleanText(existingForCleanup.scope_id) !== cleanup.cleanup_scope_id) return false;
-		clearMemoryRefs(db, Number(existingForCleanup.id));
-		d.delete(schema.memoryItems).where(eq(schema.memoryItems.id, existingForCleanup.id)).run();
-		queueVectorDelete(Number(existingForCleanup.id));
-		return true;
-	};
+	const applyAccessCleanupOp = (op: ReplicationOp): boolean =>
+		applyAccessCleanupForLocalDevice(db, d, op, { localDeviceId, options, queueVectorDelete });
 
 	const applyAll = db.transaction(() => {
 		for (const op of ops) {
@@ -3662,8 +3760,7 @@ export function applyReplicationOps(
 						result.conflicts++;
 						continue;
 					}
-					const metadata = fromJson(current.metadata_json);
-					metadata.clock_device_id = op.clock_device_id;
+					const metadata = foreignRevisionMetadata(db, op, current.metadata_json);
 					metadata.last_scope_reassignment = reassignment;
 					d.update(schema.memoryItems)
 						.set({
@@ -3753,7 +3850,7 @@ export function applyReplicationOps(
 							continue;
 						}
 						redactMemoryFields(payload, activeScanner);
-						const metaObj = mergePayloadMetadata(payload.metadata_json, op.clock_device_id);
+						const metaObj = foreignRevisionMetadata(db, op, payload.metadata_json);
 						const nextTitle = resolveReplicatedTextUpdate(payload.title, memRow.title);
 						const nextBodyText = resolveReplicatedTextUpdate(payload.body_text, memRow.body_text);
 						const contentChanged =
@@ -3851,7 +3948,7 @@ export function applyReplicationOps(
 							op.clock_updated_at,
 							replicatedProject,
 						);
-						const metaObj = mergePayloadMetadata(payload.metadata_json, op.clock_device_id);
+						const metaObj = foreignRevisionMetadata(db, op, payload.metadata_json);
 						const insertedRows = d
 							.insert(schema.memoryItems)
 							.values({
@@ -3941,8 +4038,7 @@ export function applyReplicationOps(
 							continue;
 						}
 						const now = new Date().toISOString();
-						const deleteMetadata = fromJson(existingForDelete.metadata_json);
-						deleteMetadata.clock_device_id = op.clock_device_id;
+						const deleteMetadata = foreignRevisionMetadata(db, op, existingForDelete.metadata_json);
 						d.update(schema.memoryItems)
 							.set({
 								active: 0,
