@@ -117,8 +117,8 @@ function scopeVisibleFilterContext(context: SemanticSearchScopeContext): Ownersh
 		// Forward the pre-resolved visible scope set so the KNN candidate filter
 		// gets the index-eligible `scope_id IN (...)` fast path. Callers reach
 		// semanticSearch via ownershipFilterContext(store) (search.ts / store.ts),
-		// which already resolves this set. Forward DB/key options for callers that
-		// need fallback resolution; membership-only reads do not load a key.
+		// which already resolves this set. Forward DB/key context too so fallback
+		// resolution applies the same effective decisions, not raw managed rows.
 		visibleScopeIds: context?.visibleScopeIds,
 		scopeVisibilityDb: context?.scopeVisibilityDb,
 		expectedPublicKey: context?.expectedPublicKey,

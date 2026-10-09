@@ -2610,8 +2610,24 @@ describe("MemoryStore constructor auto-bootstrap", () => {
 	});
 });
 it("retrieves moved memories only under the new session project", () => {
-	const store = new MemoryStore(":memory:"); // Arrange: isolate all persisted rows.
-	onTestFinished(() => store.close());
+	// Arrange: isolate config, identity keys, and embedding work as well as persisted rows.
+	const tmpDir = mkdtempSync(join(tmpdir(), "codemem-store-move-test-"));
+	const originalEnv = { ...process.env };
+	const storeVectorsSpy = vi.spyOn(vectors, "storeVectors").mockResolvedValue();
+	let fixtureStore: MemoryStore | undefined;
+	onTestFinished(() => {
+		fixtureStore?.close();
+		storeVectorsSpy.mockRestore();
+		process.env = originalEnv;
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+	process.env.CODEMEM_CONFIG = join(tmpDir, "config.json");
+	process.env.CODEMEM_ACTOR_ID = "test-actor";
+	process.env.CODEMEM_ACTOR_DISPLAY_NAME = "Test Actor";
+	process.env.CODEMEM_MEMORY_CROSS_SESSION_DEDUP_WINDOW_MS = "0";
+	process.env.CODEMEM_DEBUG = "0";
+	const store = new MemoryStore(":memory:", { keysDir: join(tmpDir, "keys") });
+	fixtureStore = store;
 	const row = (table: string) => store.db.prepare(`SELECT * FROM ${table}`).get();
 	const sid = store.startSession({ project: "old" });
 	const id = store.remember(sid, "bugfix", "relocationneedle", "Original body");
