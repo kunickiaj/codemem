@@ -275,15 +275,15 @@ interface UsageCacheEntry {
 }
 
 /**
- * Short-lived cache for the computed /api/usage payload.
+ * Short-lived cache for the unfiltered /api/usage aggregates only.
  *
  * The health dot polls /api/usage on every 5s refresh regardless of the
  * active tab. The token/event totals come from indexed SQL aggregates and the
- * recent-pack window runs scope-visibility resolution over its bounded set, so
- * each miss is cheap — but the totals are cumulative dashboard figures where a
- * few seconds of staleness is acceptable, so caching still collapses the
- * repeated recompute on the polling loop. Keyed by db path + scope identity +
- * project filter so distinct stores/projects never share an entry.
+ * recent-pack window must resolve current visibility on every request, even
+ * on cache hits. Only the cumulative dashboard totals tolerate staleness.
+ * Keyed by db path + scope identity + project filter so distinct
+ * stores/projects never share an entry. Never cache recent packs or their
+ * authorization: key, proof, policy, and ownership changes must apply now.
  */
 const usagePayloadCache = new Map<string, UsageCacheEntry>();
 const USAGE_PAYLOAD_CACHE_MS = 10_000;
@@ -329,12 +329,11 @@ function sweepUsagePayloadCache(cache: Map<string, UsageCacheEntry>, nowMs: numb
 /**
  * Cheap fingerprint of the state that drives scope visibility
  * (`scope_memberships` / `replication_scopes`). Folding this into the usage
- * cache key ensures a membership/scope status change — e.g. a revocation —
- * invalidates any cached payload immediately instead of letting a device keep
- * reading a scope it can no longer see for up to the TTL. These tables are
- * small, so the aggregate is negligible next to the usage_events scan the
- * cache exists to avoid. Fails safe: any error forces a unique value so the
- * request bypasses the cache and recomputes visibility from scratch.
+ * cache key preserves aggregate invalidation on membership/scope changes.
+ * This fingerprint is not authorization: recent packs always use the current
+ * ownership/scope filter independently of the aggregate cache. These tables
+ * are small, so the aggregate is negligible next to the usage_events scan the
+ * cache exists to avoid. Any error forces a unique value to bypass the cache.
  */
 function scopeVisibilityGeneration(store: MemoryStore): string {
 	try {
@@ -439,15 +438,21 @@ export function statsRoutes(getStore: () => MemoryStore) {
 			const cacheKey = usageCacheKey(store, projectFilter);
 			const nowMs = Date.now();
 			const cached = usagePayloadCache.get(cacheKey);
-			if (cached && nowMs < cached.expiresAtMs) {
-				return c.json(cached.payload);
-			}
 
 			// Token/event aggregates are unfiltered SQL GROUP BYs (matching
 			// store.stats()), so they never load the full usage_events table
 			// into JS. Only the small surfaced recent_packs window below keeps
 			// per-row scope visibility + metadata sanitization.
-			const aggregates = usageAggregatePayload(store, projectFilter);
+			const cacheHit = cached && nowMs < cached.expiresAtMs;
+			const aggregates = cacheHit ? cached.payload : usageAggregatePayload(store, projectFilter);
+			if (!cacheHit) {
+				const setAtMs = Date.now();
+				sweepUsagePayloadCache(usagePayloadCache, setAtMs);
+				usagePayloadCache.set(cacheKey, {
+					payload: aggregates,
+					expiresAtMs: setAtMs + USAGE_PAYLOAD_CACHE_MS,
+				});
+			}
 
 			// recent_packs candidate window. Over-fetch the most-recent pack
 			// events (20x the 10 we surface) so that, in the common case where a
@@ -506,12 +511,6 @@ export function statsRoutes(getStore: () => MemoryStore) {
 				totals_filtered: aggregates.totalsFiltered,
 				recent_packs: recentPacks,
 			};
-			const setAtMs = Date.now();
-			sweepUsagePayloadCache(usagePayloadCache, setAtMs);
-			usagePayloadCache.set(cacheKey, {
-				payload,
-				expiresAtMs: setAtMs + USAGE_PAYLOAD_CACHE_MS,
-			});
 			return c.json(payload);
 		}
 	});
