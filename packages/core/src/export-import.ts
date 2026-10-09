@@ -22,6 +22,7 @@ import {
 	isCanonicalSessionKey,
 	remappedSessionKey,
 } from "./session-export-identity.js";
+import { loadRuntimeSigningPublicKey } from "./sync-identity.js";
 
 type JsonObject = Record<string, unknown>;
 type MemoryInsert = typeof schema.memoryItems.$inferInsert;
@@ -33,6 +34,8 @@ interface ScopeFilter {
 
 export interface ExportOptions {
 	dbPath?: string;
+	/** Existing runtime signing directory; exports never generate or repair keys. */
+	keysDir?: string;
 	project?: string | null;
 	allProjects?: boolean;
 	includeInactive?: boolean;
@@ -113,11 +116,16 @@ function resolveLocalDeviceId(db: Database): string {
 	}
 }
 
-function buildScopeFilter(db: Database): ScopeFilter {
+function buildScopeFilter(db: Database, keysDir?: string): ScopeFilter {
+	const deviceId = resolveLocalDeviceId(db);
+	const runtimeKeysDir = keysDir ?? (process.env.CODEMEM_KEYS_DIR?.trim() || undefined);
 	return buildFilterClausesWithContext(null, {
 		actorId: "export",
-		deviceId: resolveLocalDeviceId(db),
+		deviceId,
 		enforceScopeVisibility: true,
+		scopeVisibilityDb: db,
+		loadExpectedPublicKey: () =>
+			loadRuntimeSigningPublicKey(db, { deviceId, keysDir: runtimeKeysDir }) ?? undefined,
 	});
 }
 
@@ -401,7 +409,7 @@ export function exportMemories(opts: ExportOptions = {}): ExportPayload {
 		const filters: JsonObject = {};
 		if (resolvedProject) filters.project = resolvedProject;
 		if (opts.since) filters.since = opts.since;
-		const scopeFilter = buildScopeFilter(db);
+		const scopeFilter = buildScopeFilter(db, opts.keysDir);
 
 		const { sessions, sessionIds, safeIds } = queryExportSessions(
 			db,

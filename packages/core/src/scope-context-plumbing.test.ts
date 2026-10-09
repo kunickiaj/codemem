@@ -1,6 +1,8 @@
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { buildFilterClausesWithContext, type OwnershipFilterContext } from "./filters.js";
+import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import { resolveVisibleScopeIds } from "./scope-resolution.js";
 import { initTestSchema, seedMixedScopeFixture } from "./test-utils.js";
 
@@ -9,23 +11,53 @@ afterEach(() => {
 	for (const db of connections.splice(0)) db.close();
 });
 
-// P2 stages context only: raw membership remains sufficient, as on main.
-// The later proof-activation PR must update these same cases to require actual
-// proof and deny wrong/missing runtime keys, rather than drop these cases.
-describe.each(["exists", "db", "pre-resolved"] as const)("%s membership-only context", (path) => {
+it.each([0, 500, 501])("preserves resolved visibility with %i scope ids", (count) => {
+	// Arrange: the resolved set includes only one managed scope, never its denied neighbor.
+	const db = new Database(":memory:");
+	connections.push(db);
+	initTestSchema(db);
+	const fixture = seedMixedScopeFixture(db);
+	db.prepare("UPDATE memory_items SET scope_id = NULL WHERE id = ?").run(fixture.personalId);
+	const visibleScopeIds = Array.from({ length: count }, (_, i) => `filler-${i}`);
+	if (count) visibleScopeIds[0] = fixture.authorizedScopeId;
+	// Act: exercise empty, inline-limit, and JSON fallback predicates against SQLite.
+	const filter = buildFilterClausesWithContext(null, {
+		actorId: "fixture-actor",
+		deviceId: fixture.deviceId,
+		enforceScopeVisibility: true,
+		visibleScopeIds,
+	});
+	const rows = db
+		.prepare(`SELECT id FROM memory_items WHERE ${filter.clauses.join(" AND ")}
+		ORDER BY id`)
+		.all(...filter.params);
+	// Assert: fallback cannot grant the raw-membership neighbor or lose readable rows.
+	expect(rows).toEqual((count ? fixture.visibleIds : [fixture.personalId]).map((id) => ({ id })));
+	expect(filter.clauses.join(" ").includes("json_each")).toBe(count > 500);
+});
+
+describe.each(["exists", "db", "pre-resolved"] as const)("%s proof-required context", (path) => {
 	it.each([
 		{ key: "wrong", expectedPublicKey: "wrong-runtime-key", current: true },
 		{ key: "missing", expectedPublicKey: undefined, current: true },
 		{ key: "wrong", expectedPublicKey: "wrong-runtime-key", current: false },
 		{ key: "missing", expectedPublicKey: undefined, current: false },
 	])(
-		"ignores $key key context with current membership=$current",
-		({ expectedPublicKey, current }) => {
-			// Arrange: coordinator rows have active membership but no authorization proof.
+		"denies $key key context with current membership=$current",
+		async ({ expectedPublicKey, current }) => {
+			// Arrange: retained proof exists, but the runtime key is wrong or missing.
 			const db = new Database(":memory:");
 			connections.push(db);
 			initTestSchema(db);
 			const fixture = seedMixedScopeFixture(db);
+			await refreshTestScopeRows(db, { [fixture.deviceId]: CANONICAL_PUBLIC_KEY });
+			db.exec(`INSERT INTO replication_scopes
+				(scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at)
+				VALUES ('local-control', 'Local', 'user', 'local', 0, 'active', '', ''),
+				('manual-control', 'Manual', 'user', 'manual', 0, 'active', '', '');`);
+			db.prepare(`INSERT INTO scope_memberships
+				(scope_id, device_id, role, status, membership_epoch, updated_at)
+				VALUES ('manual-control', ?, 'member', 'active', 0, '')`).run(fixture.deviceId);
 			if (!current) {
 				db.prepare("UPDATE replication_scopes SET membership_epoch = 1 WHERE scope_id = ?").run(
 					fixture.authorizedScopeId,
@@ -33,6 +65,7 @@ describe.each(["exists", "db", "pre-resolved"] as const)("%s membership-only con
 			}
 			const loadExpectedPublicKey = vi.fn(() => expectedPublicKey);
 			const context: OwnershipFilterContext = {
+				actorId: "fixture-actor",
 				deviceId: fixture.deviceId,
 				enforceScopeVisibility: true,
 				expectedPublicKey,
@@ -42,6 +75,8 @@ describe.each(["exists", "db", "pre-resolved"] as const)("%s membership-only con
 
 			// Act: exercise the new resolver option and both context resolution paths.
 			const resolved = resolveVisibleScopeIds(db, fixture.deviceId, context);
+			expect(loadExpectedPublicKey).toHaveBeenCalledTimes(!expectedPublicKey && current ? 1 : 0);
+			loadExpectedPublicKey.mockClear();
 			if (path === "db") context.scopeVisibilityDb = db;
 			if (path === "pre-resolved") context.visibleScopeIds = resolved;
 			const filter = buildFilterClausesWithContext(undefined, context);
@@ -49,13 +84,15 @@ describe.each(["exists", "db", "pre-resolved"] as const)("%s membership-only con
 				.prepare(`SELECT id FROM memory_items WHERE ${filter.clauses.join(" AND ")} ORDER BY id`)
 				.all(...filter.params);
 
-			// Assert: no new grant, no lost current membership, and no signing-key I/O.
+			// Assert: unmanaged access survives; managed proof needs the actual key.
 			expect(resolved).toEqual(baseline);
-			expect(resolved.includes(fixture.authorizedScopeId)).toBe(current);
+			expect(resolved).not.toContain(fixture.authorizedScopeId);
 			expect(resolved).not.toContain(fixture.unauthorizedScopeId);
-			const expectedIds = current ? fixture.visibleIds : [fixture.personalId];
-			expect(rows).toEqual(expectedIds.map((id) => ({ id })));
-			expect(loadExpectedPublicKey).toHaveBeenCalledTimes(0);
+			expect(resolved).toEqual(expect.arrayContaining(["local-control", "manual-control"]));
+			expect(rows).toEqual([{ id: fixture.personalId }]);
+			expect(loadExpectedPublicKey).toHaveBeenCalledTimes(
+				path === "db" && !expectedPublicKey && current ? 1 : 0,
+			);
 		},
 	);
 });

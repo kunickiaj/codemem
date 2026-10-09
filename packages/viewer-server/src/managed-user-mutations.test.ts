@@ -16,6 +16,7 @@ import {
 	rememberMemoryCommand,
 	showMemoryCommand,
 } from "../../cli/src/commands/memory.js";
+import { refreshManagedScopeFixture } from "../../core/src/managed-scope-test-fixtures.js";
 import { createCodememMcpServer } from "../../mcp-server/src/index.js";
 import { memoryRoutes } from "./routes/memory.js";
 import { memoryToolRoutes } from "./routes/memory-tools.js";
@@ -71,6 +72,13 @@ beforeEach(async () => {
 	);
 	db.prepare(`INSERT INTO scope_memberships(scope_id, device_id, role, status, membership_epoch, updated_at)
 		VALUES ('managed-write', 'user-mutation-device', 'member', 'active', 1, ?)`).run(now);
+	// Validate enrollment against the same real key used by every mutation surface.
+	await refreshManagedScopeFixture(db, {
+		keysDir,
+		deviceId: "user-mutation-device",
+		scopeIds: ["managed-write"],
+		now: new Date(now),
+	});
 	db.close();
 	store = new MemoryStore(dbPath, { keysDir });
 	// Author the history while authorized, rather than inferring authorship from labels.

@@ -1,9 +1,10 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { connect } from "./db.js";
 import { buildFilterClausesWithContext } from "./filters.js";
+import { refreshManagedScopeFixture } from "./managed-scope-test-fixtures.js";
 import { sanitizeSearchQuery } from "./query-sanitizer.js";
 import { resolveVisibleScopeIds } from "./scope-resolution.js";
 import {
@@ -29,7 +30,7 @@ function insertCoordinatorScope(store: MemoryStore, scopeId: string): void {
 		.run(scopeId, scopeId, now, now);
 }
 
-function grantScopeToLocalDevice(store: MemoryStore, scopeId: string): void {
+async function grantScopeToLocalDevice(store: MemoryStore, scopeId: string): Promise<void> {
 	insertCoordinatorScope(store, scopeId);
 	store.db
 		.prepare(
@@ -39,12 +40,21 @@ function grantScopeToLocalDevice(store: MemoryStore, scopeId: string): void {
 			 ) VALUES (?, ?, 'member', 'active', 0, 'coord-test', 'group-test', ?)`,
 		)
 		.run(scopeId, store.deviceId, new Date().toISOString());
+	await verifyScopeGrant(store, scopeId);
+}
+
+function verifyScopeGrant(store: MemoryStore, scopeId: string): Promise<string> {
+	return refreshManagedScopeFixture(store.db, {
+		keysDir: join(dirname(store.dbPath), "keys"),
+		deviceId: store.deviceId,
+		scopeIds: [scopeId],
+	});
 }
 
 function insertScopedMemory(
 	store: MemoryStore,
 	input: {
-		scopeId: string;
+		scopeId: string | null;
 		sessionId?: number;
 		title: string;
 		body: string;
@@ -695,7 +705,7 @@ describe("MemoryStore.search", () => {
 		const setupDb = connect(dbPath);
 		initTestSchema(setupDb);
 		setupDb.close();
-		store = new MemoryStore(dbPath);
+		store = new MemoryStore(dbPath, { keysDir: join(tmpDir, "keys") });
 	});
 
 	afterEach(() => {
@@ -775,8 +785,8 @@ describe("MemoryStore.search", () => {
 		}
 	});
 
-	it("filters by local scope authorization before ranking", () => {
-		grantScopeToLocalDevice(store, "authorized-team");
+	it("filters by local scope authorization before ranking", async () => {
+		await grantScopeToLocalDevice(store, "authorized-team");
 		insertCoordinatorScope(store, "unauthorized-team");
 		const visibleId = insertScopedMemory(store, {
 			scopeId: "authorized-team",
@@ -1021,7 +1031,7 @@ describe("scope visibility filter (resolved visible set)", () => {
 		const setupDb = connect(dbPath);
 		initTestSchema(setupDb);
 		setupDb.close();
-		store = new MemoryStore(dbPath);
+		store = new MemoryStore(dbPath, { keysDir: join(tmpDir, "keys") });
 	});
 
 	afterEach(() => {
@@ -1068,7 +1078,7 @@ describe("scope visibility filter (resolved visible set)", () => {
 			.run(scopeId, store.deviceId, membershipEpoch, new Date().toISOString());
 	}
 
-	it("resolves and filters to exactly the readable scope set", () => {
+	it("resolves and filters to exactly the readable scope set", async () => {
 		// Visible scopes
 		insertLocalAuthorityScope("local-authority-team");
 		insertCoordinatorScopeWithEpoch("member-team", 3, "active");
@@ -1082,7 +1092,8 @@ describe("scope visibility filter (resolved visible set)", () => {
 		grantMembership("inactive-team", 0); // membership active but scope inactive -> not visible
 
 		// Resolver output: literals + local-authority + valid-membership only.
-		const resolved = resolveVisibleScopeIds(store.db, store.deviceId);
+		const expectedPublicKey = await verifyScopeGrant(store, "member-team");
+		const resolved = resolveVisibleScopeIds(store.db, store.deviceId, { expectedPublicKey });
 		expect([...resolved].sort()).toEqual(
 			["", "local-default", "legacy-shared-review", "local-authority-team", "member-team"].sort(),
 		);
@@ -1092,18 +1103,13 @@ describe("scope visibility filter (resolved visible set)", () => {
 
 		// Seed one memory row per scope plus NULL-scope and empty-scope rows.
 		const sessionId = insertTestSession(store.db);
-		const insertRow = (scopeId: string | null): number => {
-			const ts = new Date().toISOString();
-			const info = store.db
-				.prepare(
-					`INSERT INTO memory_items(
-						session_id, kind, title, body_text, confidence, tags_text, active,
-						created_at, updated_at, metadata_json, rev, visibility, scope_id
-					 ) VALUES (?, 'discovery', 'scoped row', 'body', 0.5, '', 1, ?, ?, '{}', 1, 'shared', ?)`,
-				)
-				.run(sessionId, ts, ts, scopeId);
-			return Number(info.lastInsertRowid);
-		};
+		const insertRow = (scopeId: string | null): number =>
+			insertScopedMemory(store, {
+				sessionId,
+				scopeId,
+				title: "scoped row",
+				body: "body",
+			});
 
 		const nullId = insertRow(null);
 		const emptyId = insertRow("");
@@ -1251,7 +1257,7 @@ describe("MemoryStore.search cross-project widening", () => {
 		const setupDb = connect(dbPath);
 		initTestSchema(setupDb);
 		setupDb.close();
-		store = new MemoryStore(dbPath);
+		store = new MemoryStore(dbPath, { keysDir: join(tmpDir, "keys") });
 	});
 
 	afterEach(() => {
@@ -1481,7 +1487,7 @@ describe("MemoryStore.timeline", () => {
 		const setupDb = connect(dbPath);
 		initTestSchema(setupDb);
 		setupDb.close();
-		store = new MemoryStore(dbPath);
+		store = new MemoryStore(dbPath, { keysDir: join(tmpDir, "keys") });
 	});
 
 	afterEach(() => {
@@ -1566,8 +1572,8 @@ describe("MemoryStore.timeline", () => {
 		expect(results.length).toBeLessThanOrEqual(5);
 	});
 
-	it("excludes unauthorized scoped neighbors from memoryId timelines", () => {
-		grantScopeToLocalDevice(store, "authorized-team");
+	it("excludes unauthorized scoped neighbors from memoryId timelines", async () => {
+		await grantScopeToLocalDevice(store, "authorized-team");
 		insertCoordinatorScope(store, "unauthorized-team");
 		const sessionId = insertTestSession(store.db);
 		const hiddenBeforeId = insertScopedMemory(store, {
@@ -1606,8 +1612,8 @@ describe("MemoryStore.timeline", () => {
 		expect(resultIds).not.toContain(hiddenAfterId);
 	});
 
-	it("returns empty when an explicit memoryId anchor fails caller scope filters", () => {
-		grantScopeToLocalDevice(store, "authorized-team");
+	it("returns empty when an explicit memoryId anchor fails caller scope filters", async () => {
+		await grantScopeToLocalDevice(store, "authorized-team");
 		const sessionId = insertTestSession(store.db);
 		const anchorId = insertScopedMemory(store, {
 			sessionId,
@@ -1730,7 +1736,7 @@ describe("MemoryStore.explain", () => {
 		const setupDb = connect(dbPath);
 		initTestSchema(setupDb);
 		setupDb.close();
-		store = new MemoryStore(dbPath);
+		store = new MemoryStore(dbPath, { keysDir: join(tmpDir, "keys") });
 	});
 
 	afterEach(() => {
@@ -1836,8 +1842,8 @@ describe("MemoryStore.explain", () => {
 		}
 	});
 
-	it("excludes unauthorized scoped memories from query and id explain results", () => {
-		grantScopeToLocalDevice(store, "authorized-team");
+	it("excludes unauthorized scoped memories from query and id explain results", async () => {
+		await grantScopeToLocalDevice(store, "authorized-team");
 		insertCoordinatorScope(store, "unauthorized-team");
 		const visibleId = insertScopedMemory(store, {
 			scopeId: "authorized-team",
