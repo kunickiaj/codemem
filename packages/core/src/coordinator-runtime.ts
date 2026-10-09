@@ -479,7 +479,7 @@ function sharedManagedScopeState(
 	localDeviceId: string,
 	peerDeviceId: string,
 	coordinatorId: string,
-	peerGroupIds: string[],
+	peerGroupIds: string[] | null,
 	peerPublicKey: string,
 ): SharedManagedScopeState {
 	const localPublicKey = db
@@ -513,7 +513,7 @@ function sharedManagedScopeState(
 			!scopeId ||
 			clean(scope.coordinator_id) !== coordinatorId ||
 			!groupId ||
-			!peerGroupIds.includes(groupId)
+			(peerGroupIds !== null && !peerGroupIds.includes(groupId))
 		) {
 			continue;
 		}
@@ -684,12 +684,13 @@ function revokeCoordinatorPeerTrust(db: Database, localDeviceId: string): number
 		const coordinatorId = clean(peer.discovered_via_coordinator_id);
 		const groupId = clean(peer.discovered_via_group_id);
 		if (!peerDeviceId || !coordinatorId || !groupId) continue;
+		// Keep the stored key while any shared group under its coordinator still authorizes it.
 		const sharedScope = sharedManagedScopeState(
 			db,
 			localDeviceId,
 			peerDeviceId,
 			coordinatorId,
-			[groupId],
+			null,
 			clean(peer.public_key),
 		);
 		if (sharedScope.state !== "not_authorized") continue;
@@ -718,8 +719,8 @@ export async function refreshAuthorizedCoordinatorPeerTrust(
 	const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir });
 	const peers = await lookupCoordinatorPeers(store, config, { keysDir });
 	refreshStoredCoordinatorPeerAddresses(store.db, peers);
-	const trusted = trustCoordinatorPeersWithSharedManagedScopes(store.db, localDeviceId, peers);
 	revokeUnauthorizedCoordinatorPeerTrust(store.db, localDeviceId);
+	const trusted = trustCoordinatorPeersWithSharedManagedScopes(store.db, localDeviceId, peers);
 	return { peers, trusted };
 }
 
@@ -947,12 +948,12 @@ export async function coordinatorStatusSnapshot(
 			};
 		}
 		if (now < cachedSnapshot.nextRefreshAtMs) {
+			revokeUnauthorizedCoordinatorPeerTrust(store.db, localDeviceId);
 			trustCoordinatorPeersWithSharedManagedScopes(
 				store.db,
 				localDeviceId,
 				cachedSnapshot.discoveredPeers,
 			);
-			revokeUnauthorizedCoordinatorPeerTrust(store.db, localDeviceId);
 			return {
 				...snapshot,
 				paired_peer_count: pairedPeerCount(store),

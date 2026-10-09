@@ -25,11 +25,14 @@ import {
 	trustCoordinatorPeersWithSharedManagedScopes,
 } from "./coordinator-runtime.js";
 import { recordHighestObservedDirectSignatureVersion } from "./db.js";
+import { getRetirementPeer } from "./memory-retirement-trust.js";
+import { getEffectiveCachedScopeAuthorization } from "./scope-membership-cache.js";
 import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
 import type { MemoryStore } from "./store.js";
 import { buildAuthHeaders } from "./sync-auth.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { ensureDeviceIdentity, loadPublicKey } from "./sync-identity.js";
+import { syncProjectAllowed } from "./sync-replication.js";
 import { initTestSchema } from "./test-utils.js";
 
 describe("readCoordinatorSyncConfig.syncOpsLimit", () => {
@@ -1643,6 +1646,364 @@ describe("managed coordinator trust requires actual enrolled keys", () => {
 			} finally {
 				db.close();
 				vi.useRealTimers();
+			}
+		},
+	);
+});
+
+async function createRotationFixture() {
+	vi.useFakeTimers({ toFake: ["Date"] });
+	vi.setSystemTime(new Date("2026-10-07T00:00:00.000Z"));
+	const db = new Database(":memory:");
+	const oldKeyDb = new Database(":memory:");
+	const newKeyDb = new Database(":memory:");
+	const keysDir = mkdtempSync(join(tmpdir(), "codemem-rotation-local-"));
+	const oldKeysDir = mkdtempSync(join(tmpdir(), "codemem-rotation-old-"));
+	const newKeysDir = mkdtempSync(join(tmpdir(), "codemem-rotation-new-"));
+	const previousKeysDir = process.env.CODEMEM_KEYS_DIR;
+	for (const database of [db, oldKeyDb, newKeyDb]) initTestSchema(database);
+	process.env.CODEMEM_KEYS_DIR = keysDir;
+	const [localDeviceId] = ensureDeviceIdentity(db, { keysDir });
+	const [peerDeviceId] = ensureDeviceIdentity(oldKeyDb, { keysDir: oldKeysDir });
+	ensureDeviceIdentity(newKeyDb, { keysDir: newKeysDir });
+	const localKey = loadPublicKey(keysDir);
+	const oldKey = loadPublicKey(oldKeysDir);
+	const newKey = loadPublicKey(newKeysDir);
+	if (!localKey || !oldKey || !newKey) throw new Error("expected runtime key pairs");
+	const now = new Date().toISOString();
+	db.prepare(`INSERT INTO replication_scopes(
+				scope_id, label, kind, authority_type, coordinator_id, group_id,
+				membership_epoch, status, created_at, updated_at
+			) VALUES ('scope-rotation', 'Project', 'managed_project', 'coordinator',
+				'https://coord.example.test', 'group-1', 1, 'active', ?, ?)`).run(now, now);
+	for (const deviceId of [localDeviceId, peerDeviceId]) {
+		db.prepare(`INSERT INTO scope_memberships(
+					scope_id, device_id, role, status, membership_epoch, updated_at
+				) VALUES ('scope-rotation', ?, 'member', 'active', 1, ?)`).run(deviceId, now);
+	}
+	await refreshTestScopeRows(db, { [localDeviceId]: localKey, [peerDeviceId]: oldKey });
+	const oldPeer = {
+		device_id: peerDeviceId,
+		public_key: oldKey,
+		fingerprint: fingerprintPublicKey(oldKey),
+		coordinator_id: "https://coord.example.test",
+		groups: ["group-1"],
+		addresses: ["http://old-peer.example:7337"],
+	};
+	expect(trustCoordinatorPeersWithSharedManagedScopes(db, localDeviceId, [oldPeer])).toBe(1);
+	const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+		const url = new URL(String(input));
+		if (url.pathname === "/v1/peers") {
+			return new Response(
+				JSON.stringify({
+					items: [
+						{
+							...oldPeer,
+							public_key: newKey,
+							fingerprint: fingerprintPublicKey(newKey),
+							addresses: ["http://new-peer.example:7337"],
+							stale: false,
+						},
+					],
+				}),
+				{ status: 200 },
+			);
+		}
+		if (url.pathname === "/v1/presence")
+			return new Response(JSON.stringify({ addresses: [] }), { status: 200 });
+		if (url.pathname === "/v1/reciprocal-approvals")
+			return new Response(JSON.stringify({ items: [] }), { status: 200 });
+		throw new Error(`unexpected mocked endpoint: ${url.pathname}`);
+	});
+	vi.stubGlobal("fetch", fetchMock);
+	const config = readCoordinatorSyncConfig({
+		sync_enabled: true,
+		sync_coordinator_url: oldPeer.coordinator_id,
+		sync_coordinator_groups: ["group-1"],
+	});
+	const store = { db, dbPath: `:memory:-${randomUUID()}` } as unknown as MemoryStore;
+	return {
+		db,
+		localDeviceId,
+		peerDeviceId,
+		localKey,
+		oldKey,
+		newKey,
+		keysDir,
+		config,
+		store,
+		fetchMock,
+		close() {
+			vi.unstubAllGlobals();
+			if (previousKeysDir === undefined) delete process.env.CODEMEM_KEYS_DIR;
+			else process.env.CODEMEM_KEYS_DIR = previousKeysDir;
+			for (const database of [db, oldKeyDb, newKeyDb]) database.close();
+			for (const directory of [keysDir, oldKeysDir, newKeysDir])
+				rmSync(directory, { recursive: true, force: true });
+			vi.useRealTimers();
+		},
+	};
+}
+
+type RotationFixture = Awaited<ReturnType<typeof createRotationFixture>>;
+type RotationEvidence = "proven" | "stale" | "unproven" | "manual" | "direct";
+type RotationCaller = "refresh" | "status" | "cached status";
+
+async function prepareRotation(
+	fixture: RotationFixture,
+	caller: RotationCaller,
+	evidence: RotationEvidence,
+) {
+	const { db, localDeviceId, peerDeviceId, localKey, newKey, store, config } = fixture;
+	if (evidence === "manual" || evidence === "direct") {
+		db.prepare(`UPDATE sync_peers SET trust_provenance = NULL,
+			discovered_via_coordinator_id = ?, discovered_via_group_id = ? WHERE peer_device_id = ?`).run(
+			evidence === "manual" ? "https://coord.example.test" : null,
+			evidence === "manual" ? "group-1" : null,
+			peerDeviceId,
+		);
+	}
+	if (caller === "cached status") await coordinatorStatusSnapshot(store, config);
+	if (evidence !== "unproven") {
+		await refreshTestScopeRows(db, { [localDeviceId]: localKey, [peerDeviceId]: newKey });
+	}
+	if (evidence === "stale") {
+		db.prepare(
+			"UPDATE scope_membership_cache_state SET last_error = 'coordinator_unavailable'",
+		).run();
+	}
+}
+
+function assertRotation(fixture: RotationFixture, evidence: RotationEvidence) {
+	const { db, peerDeviceId, localDeviceId, oldKey, newKey } = fixture;
+	const pinned = db
+		.prepare(`SELECT public_key, pinned_fingerprint, trust_provenance,
+				addresses_json FROM sync_peers WHERE peer_device_id = ?`)
+		.get(peerDeviceId) as
+		| {
+				public_key: string;
+				pinned_fingerprint: string;
+				trust_provenance: string | null;
+				addresses_json: string;
+		  }
+		| undefined;
+	if (evidence === "proven") {
+		expect(pinned).toMatchObject({
+			public_key: newKey,
+			pinned_fingerprint: fingerprintPublicKey(newKey),
+			trust_provenance: "coordinator_policy",
+		});
+		expect(JSON.parse(pinned?.addresses_json ?? "[]")).toContain("http://new-peer.example:7337");
+		expect(
+			getEffectiveCachedScopeAuthorization(db, {
+				deviceId: peerDeviceId,
+				scopeId: "scope-rotation",
+				expectedPublicKey: pinned?.public_key,
+			}).authorized,
+		).toBe(true);
+		expect(getRetirementPeer(db, { localDeviceId, peerDeviceId })).toEqual({
+			deviceId: peerDeviceId,
+			publicKey: oldKey,
+		});
+	} else {
+		expect(pinned?.public_key).not.toBe(newKey);
+		if (evidence === "stale") expect(pinned).toBeUndefined();
+		else
+			expect(pinned).toMatchObject({
+				public_key: oldKey,
+				pinned_fingerprint: fingerprintPublicKey(oldKey),
+			});
+		if (evidence === "manual" || evidence === "direct") expect(pinned?.trust_provenance).toBeNull();
+		expect(getRetirementPeer(db, { localDeviceId, peerDeviceId })).toEqual({
+			deviceId: peerDeviceId,
+			publicKey: oldKey,
+		});
+	}
+}
+
+describe("managed peer key rotation in the same refresh", () => {
+	const callers: RotationCaller[] = ["refresh", "status", "cached status"];
+	const evidenceCases: RotationEvidence[] = ["proven", "stale", "unproven", "manual", "direct"];
+	it.each(callers.flatMap((caller) => evidenceCases.map((evidence) => ({ caller, evidence }))))(
+		"$caller handles $evidence replacement evidence without a second tick",
+		async ({ caller, evidence }) => {
+			// Arrange: real runtime key pairs and retained V1 proof initially authorize key A.
+			const fixture = await createRotationFixture();
+			try {
+				await prepareRotation(fixture, caller, evidence);
+				const callsBeforeRefresh = fixture.fetchMock.mock.calls.length;
+				// Act: exactly one normal runtime refresh after the key-B evidence change.
+				const result =
+					caller === "refresh"
+						? await refreshAuthorizedCoordinatorPeerTrust(fixture.store, fixture.config, {
+								keysDir: fixture.keysDir,
+							})
+						: await coordinatorStatusSnapshot(fixture.store, fixture.config);
+				// Assert: content trust changes now; historical retirement authority never changes.
+				assertRotation(fixture, evidence);
+				if (caller === "refresh")
+					expect(result).toMatchObject({ trusted: evidence === "proven" ? 1 : 0 });
+				else if (evidence === "proven") expect(result).toMatchObject({ paired_peer_count: 1 });
+				if (caller === "cached status")
+					expect(fixture.fetchMock).toHaveBeenCalledTimes(callsBeforeRefresh);
+				else
+					expect(
+						fixture.fetchMock.mock.calls.filter(
+							([input]) => new URL(String(input)).pathname === "/v1/peers",
+						),
+					).toHaveLength(1);
+			} finally {
+				fixture.close();
+			}
+		},
+	);
+});
+
+async function prepareSharedGroupHandoff(fixture: RotationFixture, crossCoordinator: boolean) {
+	const { db, localDeviceId, peerDeviceId, localKey, oldKey } = fixture;
+	const now = new Date().toISOString();
+	db.prepare(`INSERT INTO replication_scopes(
+		scope_id, label, kind, authority_type, coordinator_id, group_id,
+		membership_epoch, status, created_at, updated_at
+	) VALUES ('scope-remaining', 'Remaining project', 'managed_project', 'coordinator',
+		?, 'group-2', 1, 'active', ?, ?)`).run(
+		crossCoordinator ? "https://other-coord.example.test" : "https://coord.example.test",
+		now,
+		now,
+	);
+	for (const deviceId of [localDeviceId, peerDeviceId]) {
+		db.prepare(`INSERT INTO scope_memberships(
+			scope_id, device_id, role, status, membership_epoch, updated_at
+		) VALUES ('scope-remaining', ?, 'member', 'active', 1, ?)`).run(deviceId, now);
+	}
+	db.prepare(
+		"DELETE FROM scope_memberships WHERE scope_id = 'scope-rotation' AND device_id = ?",
+	).run(peerDeviceId);
+	await refreshTestScopeRows(db, { [localDeviceId]: localKey, [peerDeviceId]: oldKey });
+	for (const [deviceId, key] of [
+		[localDeviceId, localKey],
+		[peerDeviceId, oldKey],
+	]) {
+		expect(
+			getEffectiveCachedScopeAuthorization(db, {
+				deviceId,
+				scopeId: "scope-remaining",
+				expectedPublicKey: key,
+			}),
+		).toMatchObject({ authorized: true, freshness: "fresh" });
+	}
+}
+
+function configureSameKeyGroupDiscovery(fixture: RotationFixture) {
+	fixture.fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+		const pathname = new URL(String(input)).pathname;
+		if (pathname === "/v1/peers")
+			return new Response(
+				JSON.stringify({
+					items: [
+						{
+							device_id: fixture.peerDeviceId,
+							public_key: fixture.oldKey,
+							fingerprint: fingerprintPublicKey(fixture.oldKey),
+							addresses: ["http://new-peer.example:7337"],
+							stale: false,
+						},
+					],
+				}),
+				{ status: 200 },
+			);
+		if (pathname === "/v1/presence")
+			return new Response(JSON.stringify({ addresses: [] }), { status: 200 });
+		if (pathname === "/v1/reciprocal-approvals")
+			return new Response(JSON.stringify({ items: [] }), { status: 200 });
+		throw new Error(`unexpected mocked endpoint: ${pathname}`);
+	});
+	return readCoordinatorSyncConfig({
+		sync_enabled: true,
+		sync_coordinator_url: "https://coord.example.test",
+		sync_coordinator_groups: ["group-2"],
+	});
+}
+
+describe("managed peer shared-group handoff preserves user overrides", () => {
+	it.each([
+		{ caller: "refresh", crossCoordinator: false },
+		{ caller: "cached status", crossCoordinator: false },
+		{ caller: "refresh", crossCoordinator: true },
+	])(
+		"$caller handles remaining cross-coordinator scope=$crossCoordinator",
+		async ({ caller, crossCoordinator }) => {
+			// Arrange: stamped group-1 trust has user filters and saved operational metadata.
+			const fixture = await createRotationFixture();
+			vi.stubEnv("CODEMEM_SYNC_PROJECTS_INCLUDE", "");
+			vi.stubEnv("CODEMEM_SYNC_PROJECTS_EXCLUDE", "");
+			try {
+				const { db, peerDeviceId, oldKey } = fixture;
+				const saved = {
+					name: "Saved peer name",
+					projects_include_json: '["allowed-project","blocked-project"]',
+					projects_exclude_json: '["blocked-project"]',
+					manual_addresses_json: '["http://manual-peer.example:7337"]',
+					runtime_version: "0.99.0",
+					runtime_version_observed_at: "2026-10-06T01:00:00.000Z",
+					last_sync_at: "2026-10-06T02:00:00.000Z",
+					last_error: "saved_previous_error",
+					last_success_address: "http://manual-peer.example:7337",
+				};
+				db.prepare(`UPDATE sync_peers SET name = @name, projects_include_json = @projects_include_json,
+				projects_exclude_json = @projects_exclude_json, manual_addresses_json = @manual_addresses_json,
+				runtime_version = @runtime_version, runtime_version_observed_at = @runtime_version_observed_at,
+				last_sync_at = @last_sync_at, last_error = @last_error, last_success_address = @last_success_address
+				WHERE peer_device_id = @peerDeviceId`).run({ ...saved, peerDeviceId });
+				const config = configureSameKeyGroupDiscovery(fixture);
+				if (caller === "cached status") await coordinatorStatusSnapshot(fixture.store, config);
+				expect(
+					db
+						.prepare("SELECT discovered_via_group_id FROM sync_peers WHERE peer_device_id = ?")
+						.pluck()
+						.get(peerDeviceId),
+				).toBe("group-1");
+				await prepareSharedGroupHandoff(fixture, crossCoordinator);
+				const callsBefore = fixture.fetchMock.mock.calls.length;
+				// Act: group 1 ends, but a fresh V1 group-2 proof still binds both actual keys.
+				if (caller === "refresh")
+					await refreshAuthorizedCoordinatorPeerTrust(fixture.store, config, {
+						keysDir: fixture.keysDir,
+					});
+				else await coordinatorStatusSnapshot(fixture.store, config);
+				// Assert: another coordinator cannot preserve trust; the same coordinator must preserve filters.
+				const row = db
+					.prepare("SELECT * FROM sync_peers WHERE peer_device_id = ?")
+					.get(peerDeviceId);
+				if (crossCoordinator) {
+					expect(row).toBeUndefined();
+					expect(
+						getRetirementPeer(db, { localDeviceId: fixture.localDeviceId, peerDeviceId }),
+					).toEqual({ deviceId: peerDeviceId, publicKey: oldKey });
+					return;
+				}
+				expect(syncProjectAllowed(db, "allowed-project", peerDeviceId)).toBe(true);
+				expect(syncProjectAllowed(db, "blocked-project", peerDeviceId)).toBe(false);
+				expect(syncProjectAllowed(db, "not-included-project", peerDeviceId)).toBe(false);
+				expect(row).toMatchObject({
+					...saved,
+					public_key: oldKey,
+					pinned_fingerprint: fingerprintPublicKey(oldKey),
+					trust_provenance: "coordinator_policy",
+					discovered_via_coordinator_id: "https://coord.example.test",
+					discovered_via_group_id: "group-2",
+				});
+				if (caller === "cached status")
+					expect(fixture.fetchMock).toHaveBeenCalledTimes(callsBefore);
+				else
+					expect(
+						fixture.fetchMock.mock.calls.filter(
+							([input]) => new URL(String(input)).pathname === "/v1/peers",
+						),
+					).toHaveLength(1);
+			} finally {
+				vi.unstubAllEnvs();
+				fixture.close();
 			}
 		},
 	);
