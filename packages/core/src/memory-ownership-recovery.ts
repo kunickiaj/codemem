@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { buildFilterClausesWithContext } from "./filters.js";
 import { allocateLocalMemorySource, getVerifiedMemorySource } from "./memory-source-identity.js";
@@ -230,9 +230,14 @@ function copyRow(store: MemoryStore, original: Row, operationId: string, now: st
 	const { id: _id, ...content } = original;
 	const scanned = store.scanner.redactValue(content).value as typeof content;
 	const session = store.db
-		.prepare(`INSERT INTO sessions(started_at, project, tool_version, metadata_json)
-		VALUES (?, ?, 'memory_recovery', ?)`)
-		.run(now, scanned.project, JSON.stringify({ recovery_operation_id: operationId }));
+		.prepare(`INSERT INTO sessions(started_at, project, tool_version, metadata_json, import_key)
+		VALUES (?, ?, 'memory_recovery', ?, ?)`)
+		.run(
+			now,
+			scanned.project,
+			JSON.stringify({ recovery_operation_id: operationId }),
+			randomUUID(),
+		);
 	const metadata = recoveredMetadata(store, original, operationId, binding.entityId);
 	const inserted = drizzle(store.db)
 		.insert(schema.memoryItems)

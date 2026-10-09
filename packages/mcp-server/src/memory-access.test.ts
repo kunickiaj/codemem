@@ -72,6 +72,24 @@ async function createScopeAccessFixture(tmpDir: string) {
 	return { dbPath, sessionId, store: new MemoryStore(dbPath, { keysDir }) };
 }
 
+function assertRememberedMcpSession(store: MemoryStore, memId: number): void {
+	// Inspect the inserted session itself, not an exported identity.
+	const sessionKey = store.db
+		.prepare(
+			"SELECT s.import_key FROM sessions s JOIN memory_items m ON m.session_id = s.id WHERE m.id = ?",
+		)
+		.pluck()
+		.get(memId);
+	expect(sessionKey).toMatch(
+		/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/,
+	);
+	const row = store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").get(memId) as {
+		scope_id: string;
+	};
+	expect(row.scope_id).toBe("scope-a");
+	expect(getMemoryForMcp(store, memId)?.title).toBe("MCP scoped remember");
+}
+
 describe("MCP memory access scope guards", () => {
 	const originalDeviceId = process.env.CODEMEM_DEVICE_ID;
 	let tmpDir: string;
@@ -176,11 +194,13 @@ describe("MCP memory access scope guards", () => {
 	});
 
 	it("stamps remembered MCP memories with the resolved project scope", () => {
+		// Arrange
 		insertProjectScopeMapping(store, {
 			projectPattern: join(tmpDir, "greenroom"),
 			scopeId: "scope-a",
 		});
 
+		// Act
 		const result = rememberMemoryForMcp(
 			store,
 			{
@@ -197,11 +217,8 @@ describe("MCP memory access scope guards", () => {
 			},
 		);
 
-		const row = store.db
-			.prepare("SELECT scope_id FROM memory_items WHERE id = ?")
-			.get(result.memId) as { scope_id: string };
-		expect(row.scope_id).toBe("scope-a");
-		expect(getMemoryForMcp(store, result.memId)?.title).toBe("MCP scoped remember");
+		// Assert
+		assertRememberedMcpSession(store, result.memId);
 	});
 
 	it("uses the env project for memory_remember when no explicit project is supplied", () => {
@@ -310,12 +327,15 @@ describe("MCP memory access scope guards", () => {
 	});
 
 	it("rolls back remembered MCP memories that resolve to unauthorized scopes", () => {
+		// Arrange
+		const sessionsBefore = store.db.prepare("SELECT * FROM sessions ORDER BY id").all();
 		insertProjectScopeMapping(store, {
 			projectPattern: join(tmpDir, "greenroom"),
 			scopeId: "scope-b",
 		});
 
-		expect(() =>
+		// Act
+		const remember = () =>
 			rememberMemoryForMcp(
 				store,
 				{
@@ -330,8 +350,10 @@ describe("MCP memory access scope guards", () => {
 					user: "mcp-test",
 					now: () => "2026-01-01T00:00:00.000Z",
 				},
-			),
-		).toThrow("unauthorized_scope");
+			);
+		// Assert: a failed write must not leave a keyed session or repair old keys.
+		expect(remember).toThrow("unauthorized_scope");
+		expect(store.db.prepare("SELECT * FROM sessions ORDER BY id").all()).toEqual(sessionsBefore);
 		expect(countMemoriesByTitle(store, "Unauthorized MCP scoped remember")).toBe(0);
 	});
 

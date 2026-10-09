@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
 	type CreatedMemory,
 	type MemoryFilters,
@@ -72,10 +73,10 @@ export function rememberMemoryForMcp(
 
 		const sessionInfo = store.db
 			.prepare(
-				`INSERT INTO sessions(started_at, ended_at, cwd, project, user, tool_version, metadata_json)
-				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO sessions(started_at, ended_at, cwd, project, user, tool_version, metadata_json, import_key)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 			)
-			.run(now, now, cwd, project, user, "mcp-ts", toJson({ mcp: true }));
+			.run(now, now, cwd, project, user, "mcp-ts", toJson({ mcp: true }), randomUUID());
 		const sessionId = Number(sessionInfo.lastInsertRowid);
 
 		const memId = store.rememberForUser(

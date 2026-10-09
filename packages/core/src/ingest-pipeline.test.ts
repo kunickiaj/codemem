@@ -1962,6 +1962,15 @@ function observerUsageCount(store: MemoryStore): number {
 	return row.count;
 }
 
+function assertNewPluginSession(session: Record<string, unknown>): void {
+	expect(session.project).toBe("test-project");
+	expect(session.ended_at).not.toBeNull();
+	// Capture the inserted key directly, before any export identity helper runs.
+	expect(session.import_key).toMatch(
+		/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/,
+	);
+}
+
 describe("ingest() integration", { timeout: 15_000 }, () => {
 	let tmpDir: string;
 	let store: MemoryStore;
@@ -2101,8 +2110,7 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 		const session = store.db
 			.prepare("SELECT * FROM sessions ORDER BY id DESC LIMIT 1")
 			.get() as Record<string, unknown>;
-		expect(session.project).toBe("test-project");
-		expect(session.ended_at).not.toBeNull();
+		assertNewPluginSession(session);
 
 		const summaryMemory = store.db
 			.prepare(

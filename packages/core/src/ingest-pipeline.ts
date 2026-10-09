@@ -12,6 +12,7 @@
  * 5. Write vectors after commit and end the session.
  */
 
+import { randomUUID } from "node:crypto";
 import { and, eq, isNull, lt } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { boundedDelegatedBriefs, partitionDelegatedBriefEvents } from "./capture-context.js";
@@ -539,6 +540,7 @@ function insertPluginSession(
 			user: process.env.USER ?? "unknown",
 			tool_version: "plugin-ts",
 			metadata_json: toJson(metadata),
+			import_key: randomUUID(),
 		})
 		.returning({ id: schema.sessions.id })
 		.all();

@@ -897,7 +897,8 @@ export class MemoryStore {
 				user: opts.user ?? process.env.USER ?? "unknown",
 				tool_version: opts.toolVersion ?? "manual",
 				metadata_json: toJson(metadata),
-				// Session identity is bookkeeping, independent of device enrollment and project moves.
+				// New native rows get immutable bookkeeping keys, never ownership proof.
+				// Reuse, imports, and historical reads must not mint or repair these keys.
 				import_key: randomUUID(),
 			})
 			.returning({ id: schema.sessions.id })
@@ -950,12 +951,19 @@ export class MemoryStore {
 				user: opts.user ?? process.env.USER ?? "unknown",
 				tool_version: opts.toolVersion ?? "raw_events",
 				metadata_json: toJson(metadata),
+				import_key: randomUUID(),
 			})
 			.returning({ id: schema.sessions.id })
 			.all();
 		const sessionId = sessionRows[0]?.id;
 		if (sessionId == null) throw new Error("session insert returned no id");
 
+		this.linkOpencodeSession({ source, streamId, sessionId });
+		return Number(sessionId);
+	}
+
+	private linkOpencodeSession(opts: { source: string; streamId: string; sessionId: number }): void {
+		const { source, streamId, sessionId } = opts;
 		this.d
 			.insert(schema.opencodeSessions)
 			.values({
@@ -973,8 +981,6 @@ export class MemoryStore {
 				},
 			})
 			.run();
-
-		return Number(sessionId);
 	}
 
 	/**

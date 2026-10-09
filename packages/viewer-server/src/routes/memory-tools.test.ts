@@ -326,11 +326,35 @@ describe("POST /api/pi-hooks", () => {
 // 4.2 / 4.3 Memory tool routes vs MCP twins
 // ---------------------------------------------------------------------------
 
+function assertRememberedViewerSession(store: MemoryStore, memoryId: number): void {
+	const item = store.get(memoryId);
+	expect(item?.title).toBe("Adopt HTTP tool routes");
+	expect(item?.kind).toBe("decision");
+	expect(Number(item?.active)).toBe(1);
+	const session = store.db
+		.prepare("SELECT project, tool_version, import_key FROM sessions WHERE id = ?")
+		.get(item?.session_id) as { project: string; tool_version: string; import_key: string };
+	expect(session.project).toBe("codemem");
+	expect(session.tool_version).toBe("viewer-api");
+	// Capture the actual new row before any export helper can transform its identity.
+	expect(session.import_key).toMatch(
+		/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/,
+	);
+}
+
+function seedHistoricalSession(store: MemoryStore): unknown[] {
+	const historicalId = insertTestSession(store.db);
+	store.db.prepare("UPDATE sessions SET import_key = 'legacy-key' WHERE id = ?").run(historicalId);
+	return store.db.prepare("SELECT * FROM sessions ORDER BY id").all();
+}
+
 describe("memory tool routes", () => {
 	describe("POST /api/memories/remember (memory_remember)", () => {
 		it("creates a memory and returns { id }", async () => {
+			// Arrange
 			const { app, getStore, cleanup } = createTestApp();
 			try {
+				// Act
 				const res = await app.request("/api/memories/remember", {
 					method: "POST",
 					headers: jsonHeaders(),
@@ -342,6 +366,7 @@ describe("memory tool routes", () => {
 						project: "codemem",
 					}),
 				});
+				// Assert
 				expect(res.status).toBe(200);
 				const body = (await res.json()) as { id: number };
 				expect(typeof body.id).toBe("number");
@@ -349,24 +374,19 @@ describe("memory tool routes", () => {
 
 				const store = getStore();
 				if (!store) throw new Error("store missing");
-				const item = store.get(body.id);
-				expect(item?.title).toBe("Adopt HTTP tool routes");
-				expect(item?.kind).toBe("decision");
-				expect(Number(item?.active)).toBe(1);
-
-				const session = store.db
-					.prepare("SELECT project, tool_version FROM sessions WHERE id = ?")
-					.get(item?.session_id) as { project: string; tool_version: string };
-				expect(session.project).toBe("codemem");
-				expect(session.tool_version).toBe("viewer-api");
+				assertRememberedViewerSession(store, body.id);
 			} finally {
 				cleanup();
 			}
 		});
 
 		it("rejects invalid kind", async () => {
-			const { app, cleanup } = createTestApp();
+			// Arrange
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
+				const store = ensureStore();
+				const before = seedHistoricalSession(store);
+				// Act
 				const res = await app.request("/api/memories/remember", {
 					method: "POST",
 					headers: jsonHeaders(),
@@ -376,9 +396,11 @@ describe("memory tool routes", () => {
 						body: "y",
 					}),
 				});
+				// Assert: rejected requests must not create sessions or rewrite historical keys.
 				expect(res.status).toBe(400);
 				const body = (await res.json()) as { error: string };
 				expect(body.error).toMatch(/kind must be one of/);
+				expect(store.db.prepare("SELECT * FROM sessions ORDER BY id").all()).toEqual(before);
 			} finally {
 				cleanup();
 			}

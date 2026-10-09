@@ -8,6 +8,7 @@
  * same @codemem/core MemoryStore APIs. No dependency on @codemem/mcp.
  */
 
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -231,10 +232,10 @@ function rememberMemory(
 
 		const sessionInfo = store.db
 			.prepare(
-				`INSERT INTO sessions(started_at, ended_at, cwd, project, user, tool_version, metadata_json)
-				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO sessions(started_at, ended_at, cwd, project, user, tool_version, metadata_json, import_key)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 			)
-			.run(now, now, cwd, project, user, "viewer-api", toJson({ viewer: true }));
+			.run(now, now, cwd, project, user, "viewer-api", toJson({ viewer: true }), randomUUID());
 		const sessionId = Number(sessionInfo.lastInsertRowid);
 
 		const memId = store.rememberForUser(

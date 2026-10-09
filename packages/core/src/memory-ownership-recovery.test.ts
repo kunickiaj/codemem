@@ -70,6 +70,38 @@ function count(table: string) {
 	return store.db.prepare(`SELECT COUNT(*) FROM ${table}`).pluck().get();
 }
 
+it("gives each recovered copy a new session UUID without changing originals or minting on retry", () => {
+	// Arrange: recovery copies content, not the original session's bookkeeping identity.
+	const ids = [memory(), memory()];
+	store.db.prepare("UPDATE sessions SET import_key = 'legacy-session-key' WHERE id = 2").run();
+	const originals = store.db.prepare("SELECT * FROM sessions ORDER BY id").all();
+	const input = confirmed(ids);
+	// Act
+	const result = commitMemoryOwnershipRecovery(store, input);
+	const inserted = store.db
+		.prepare("SELECT * FROM sessions WHERE tool_version = 'memory_recovery' ORDER BY id")
+		.all() as Array<{ import_key: string }>;
+	const retry = commitMemoryOwnershipRecovery(store, input);
+	// Assert: capture persisted keys before any export helper runs; they are not owner proof.
+	expect(inserted).toHaveLength(2);
+	for (const row of inserted) {
+		expect(row.import_key).toMatch(
+			/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/,
+		);
+		expect(getVerifiedMemorySource(store.db, row.import_key)).toBeNull();
+	}
+	expect(new Set(inserted.map((row) => row.import_key)).size).toBe(2);
+	expect(store.db.prepare("SELECT * FROM sessions WHERE id <= 2 ORDER BY id").all()).toEqual(
+		originals,
+	);
+	expect(
+		store.db
+			.prepare("SELECT * FROM sessions WHERE tool_version = 'memory_recovery' ORDER BY id")
+			.all(),
+	).toEqual(inserted);
+	expect(retry).toEqual({ ...result, idempotent: true });
+});
+
 it.each([
 	{ rowProject: null, sessionProject: "fixture", expected: "fixture" },
 	{ rowProject: "row-project", sessionProject: "fixture", expected: "row-project" },
@@ -113,11 +145,17 @@ it.each([
 );
 
 it.each(["session", "row"])("rejects changed %s project after preview without writes", (source) => {
+	// Arrange
 	const id = memory();
 	const input = confirmed([id]);
 	if (source === "session") store.db.prepare("UPDATE sessions SET project = 'changed'").run();
 	else store.db.prepare("UPDATE memory_items SET project = 'changed' WHERE id = ?").run(id);
-	expect(() => commitMemoryOwnershipRecovery(store, input)).toThrow("ownership_preview_stale");
+	const sessionsBefore = store.db.prepare("SELECT * FROM sessions ORDER BY id").all();
+	// Act
+	const recover = () => commitMemoryOwnershipRecovery(store, input);
+	// Assert: stale previews must not leave a new keyed session or repair the original.
+	expect(recover).toThrow("ownership_preview_stale");
+	expect(store.db.prepare("SELECT * FROM sessions ORDER BY id").all()).toEqual(sessionsBefore);
 	expect(count("memory_items")).toBe(1);
 	expect(count("sessions")).toBe(1);
 	expect(count("memory_source_bindings")).toBe(0);
