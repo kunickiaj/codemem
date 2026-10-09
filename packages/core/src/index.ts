@@ -1348,6 +1348,7 @@ export {
 	loadPrivateKey,
 	loadPrivateKeyKeychain,
 	loadPublicKey,
+	loadRuntimeSigningPublicKey,
 	resolveKeyPaths,
 	storePrivateKeyKeychain,
 	validateExistingKeypair,

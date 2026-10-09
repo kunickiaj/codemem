@@ -15,6 +15,14 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { CANONICAL_PUBLIC_KEY } from "../../../core/src/coordinator-ed25519-key-id-test-fixtures.js";
 import { refreshTestScopeRows } from "../../../core/src/scope-membership-cache-test-fixtures.js";
+import {
+	diagnosticDatabaseSnapshot,
+	diagnosticKeySnapshot,
+	expectedDiagnosticScopes,
+	seedSigningStatusFixture,
+	selectSigningContext,
+	signingContexts,
+} from "../../../core/src/sync-status-test-fixtures.js";
 import { buildCoordinatorCommand } from "./coordinator.js";
 import { syncCommand } from "./sync.js";
 import {
@@ -34,14 +42,12 @@ const configFailureFixtures = {
 	},
 } satisfies Record<string, (configPath: string) => void>;
 
-async function seedScopeStatusFixture(store: MemoryStore, now: string) {
+async function seedScopeStatusFixture(store: MemoryStore, now: string, keysDir: string) {
 	const publicKey = CANONICAL_PUBLIC_KEY;
 	const fingerprint = fingerprintPublicKey(publicKey);
-	store.db
-		.prepare(
-			"INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
-		)
-		.run("local-device", publicKey, fingerprint, now);
+	ensureDeviceIdentity(store.db, { keysDir, deviceId: "local-device" });
+	const localPublicKey = loadPublicKey(keysDir);
+	if (!localPublicKey) throw new Error("Missing generated status signer");
 	store.db
 		.prepare(
 			"INSERT INTO sync_peers(peer_device_id, name, public_key, pinned_fingerprint, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -62,7 +68,7 @@ async function seedScopeStatusFixture(store: MemoryStore, now: string) {
 				.run(scopeId, deviceId, now);
 		}
 	}
-	await refreshTestScopeRows(store.db);
+	await refreshTestScopeRows(store.db, { "local-device": localPublicKey });
 }
 
 describe("coordinator command parity", () => {
@@ -615,11 +621,15 @@ describe("formatSyncAttempt", () => {
 			rmSync(tmpDbDir, { recursive: true, force: true });
 		}
 	});
+});
 
+describe("sync status scope progress", () => {
 	it("reports per-Space sync progress in sync status output", async () => {
 		const tmpDbDir = mkdtempSync(join(tmpdir(), "sync-status-scopes-test-"));
 		const dbPath = join(tmpDbDir, "mem.sqlite");
 		const configPath = join(tmpDbDir, "config.json");
+		const keysDir = join(tmpDbDir, "keys");
+		const previousKeysDir = process.env.CODEMEM_KEYS_DIR;
 		writeFileSync(configPath, JSON.stringify({ sync_enabled: true }, null, 2));
 		const rawDb = connect(dbPath);
 		initTestSchema(rawDb);
@@ -627,8 +637,9 @@ describe("formatSyncAttempt", () => {
 		const store = new MemoryStore(dbPath);
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		try {
+			process.env.CODEMEM_KEYS_DIR = keysDir;
 			const now = "2026-01-01T00:00:00.000Z";
-			await seedScopeStatusFixture(store, now);
+			await seedScopeStatusFixture(store, now, keysDir);
 			store.db
 				.prepare(
 					`INSERT INTO replication_cursors_v2(peer_device_id, scope_id, last_applied_cursor, last_acked_cursor, updated_at)
@@ -675,11 +686,15 @@ describe("formatSyncAttempt", () => {
 			}
 		} finally {
 			logSpy.mockRestore();
+			if (previousKeysDir == null) delete process.env.CODEMEM_KEYS_DIR;
+			else process.env.CODEMEM_KEYS_DIR = previousKeysDir;
 			store.close();
 			rmSync(tmpDbDir, { recursive: true, force: true });
 		}
 	});
+});
 
+describe("sync doctor identity diagnostics", () => {
 	it("reports missing restored identity keys in sync doctor output", async () => {
 		const tmpDbDir = mkdtempSync(join(tmpdir(), "sync-doctor-identity-test-"));
 		const dbPath = join(tmpDbDir, "mem.sqlite");
@@ -713,6 +728,72 @@ describe("formatSyncAttempt", () => {
 			rmSync(tmpDbDir, { recursive: true, force: true });
 		}
 	});
+});
+
+describe("sync status actual runtime signer diagnostics", () => {
+	it.each(signingContexts)(
+		"reports only authorized received scopes with %s, without writes",
+		async (context) => {
+			// Arrange: real v1 proof and cursors alone must not authorize a missing/wrong signer.
+			const root = mkdtempSync(join(tmpdir(), "sync-status-signer-test-"));
+			const dbPath = join(root, "mem.sqlite");
+			const configPath = join(root, "config.json");
+			writeFileSync(configPath, JSON.stringify({ sync_enabled: true }));
+			const rawDb = connect(dbPath);
+			initTestSchema(rawDb);
+			rawDb.close();
+			const store = new MemoryStore(dbPath);
+			const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+			vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "file");
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(() => {
+					throw new Error("Unexpected network request");
+				}),
+			);
+			try {
+				const fixture = await seedSigningStatusFixture(store.db, root);
+				vi.stubEnv("CODEMEM_KEYS_DIR", selectSigningContext(store.db, fixture, context));
+				// Finish planner maintenance before measuring the command's read-only behavior.
+				store.db.exec("ANALYZE");
+				const beforeDb = diagnosticDatabaseSnapshot(store.db);
+				const beforeKeys = diagnosticKeySnapshot(root);
+				const beforeVersion = store.db.pragma("data_version", { simple: true });
+
+				// Act: exercise the public command, including its separate store connection.
+				await syncCommand.parseAsync(
+					["status", "--db-path", dbPath, "--config", configPath, "--json"],
+					{ from: "user" },
+				);
+				const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
+					peers: Array<{
+						device_id: string;
+						scopes: Array<{ scope_id: string; bootstrapped: boolean }>;
+					}>;
+				};
+
+				// Assert: no false received claim, manual overlap/direct peer controls remain intact.
+				expect(
+					payload.peers
+						.find((peer) => peer.device_id === "peer-device")
+						?.scopes.map(({ scope_id, bootstrapped }) => ({ scope_id, bootstrapped })),
+				).toEqual(expectedDiagnosticScopes(context));
+				expect(payload.peers.find((peer) => peer.device_id === "direct-peer")).toMatchObject({
+					scopes: [],
+				});
+				expect(diagnosticDatabaseSnapshot(store.db)).toEqual(beforeDb);
+				expect(store.db.pragma("data_version", { simple: true })).toBe(beforeVersion);
+				expect(diagnosticKeySnapshot(root)).toEqual(beforeKeys);
+				expect(fetch).not.toHaveBeenCalled();
+			} finally {
+				logSpy.mockRestore();
+				vi.unstubAllEnvs();
+				vi.unstubAllGlobals();
+				store.close();
+				rmSync(root, { recursive: true, force: true });
+			}
+		},
+	);
 });
 
 describe("sync config mutation errors", () => {

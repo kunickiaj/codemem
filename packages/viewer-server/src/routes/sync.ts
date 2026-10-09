@@ -122,6 +122,7 @@ import {
 	loadMemorySnapshotPageForPeer,
 	loadPublicKey,
 	loadReplicationOpsForPeer,
+	loadRuntimeSigningPublicKey,
 	lookupCoordinatorPeers,
 	mergeAddresses,
 	migrateRecipientPolicyIntent,
@@ -3525,6 +3526,7 @@ function mapPeerRow(
 	recentOpsByPeer?: Map<string, { in: number; out: number }>,
 	scopeRejectionsByPeer?: Map<string, InboundScopeRejectionPeerSummary>,
 	localDeviceId?: string | null,
+	loadDiagnosticKey?: ReturnType<typeof createPeerScopeDiagnosticKeyLoader>,
 ): Record<string, unknown> {
 	const peerId = String(row.peer_device_id ?? "");
 	const recentOps = recentOpsByPeer?.get(peerId) ?? { in: 0, out: 0 };
@@ -3533,7 +3535,7 @@ function mapPeerRow(
 	const perScopeSync = listPerPeerScopeSyncState(store.db, {
 		localDeviceId: localDeviceId ?? null,
 		peerDeviceId: peerId,
-		...peerScopeDiagnosticKeys(store, row, localDeviceId),
+		...peerScopeDiagnosticKeys(store, row, localDeviceId, loadDiagnosticKey),
 	});
 	return {
 		peer_device_id: row.peer_device_id,
@@ -4478,14 +4480,61 @@ function peerScopeDiagnosticKeys(
 	store: MemoryStore,
 	row: Record<string, unknown>,
 	localDeviceId?: string | null,
+	loadDiagnosticKey?: ReturnType<typeof createPeerScopeDiagnosticKeyLoader>,
 ) {
 	return {
-		localSigningPublicKey: store.db
-			.prepare("SELECT public_key FROM sync_device WHERE device_id = ?")
-			.pluck()
-			.get(localDeviceId ?? "") as string | undefined,
+		localSigningPublicKey: loadDiagnosticKey?.(store, localDeviceId) ?? null,
 		authenticatedPeerSigningKey: typeof row.public_key === "string" ? row.public_key : null,
 	};
+}
+
+// Each status response reads the signer at most once, including failed selection.
+function createPeerScopeDiagnosticKeyLoader() {
+	let publicKey: string | null | undefined;
+	return (store: MemoryStore, localDeviceId?: string | null): string | null => {
+		if (publicKey !== undefined) return publicKey;
+		publicKey = null;
+		if (!localDeviceId) return null;
+		const hasManagedCandidates = store.db
+			.prepare(
+				`SELECT 1 FROM scope_memberships m
+			 JOIN replication_scopes s ON s.scope_id = m.scope_id
+			 WHERE m.device_id = ? AND m.status = 'active'
+			 AND s.authority_type = 'coordinator' LIMIT 1`,
+			)
+			.get(localDeviceId);
+		if (!hasManagedCandidates) return null;
+		publicKey = loadRuntimeSigningPublicKey(store.db, {
+			deviceId: localDeviceId,
+			keysDir: syncKeysDir(),
+		});
+		return publicKey;
+	};
+}
+
+function readPeerScopeDiagnostics(store: MemoryStore, showDiag: boolean) {
+	const rows = store.db.prepare(PEERS_QUERY).all() as Record<string, unknown>[];
+	const recentOpsByPeer = recentPeerOps(store);
+	const scopeRejectionsByPeer = recentScopeRejectionsByPeer(store);
+	const d = drizzle(store.db, { schema });
+	const deviceRow = d
+		.select({ device_id: schema.syncDevice.device_id })
+		.from(schema.syncDevice)
+		.limit(1)
+		.get();
+	const localDeviceId = deviceRow?.device_id ?? null;
+	const loadDiagnosticKey = createPeerScopeDiagnosticKeyLoader();
+	return rows.map((row) =>
+		mapPeerRow(
+			store,
+			row,
+			showDiag,
+			recentOpsByPeer,
+			scopeRejectionsByPeer,
+			localDeviceId,
+			loadDiagnosticKey,
+		),
+	);
 }
 
 // Default-lane batches omit body.scope_id; validate all signed operation scopes,
@@ -5602,6 +5651,7 @@ export function syncRoutes(
 
 	// GET /api/sync/status
 	app.get("/api/sync/status", async (c) => {
+		const loadDiagnosticKey = createPeerScopeDiagnosticKeyLoader();
 		const response = await buildSyncStatusResponse({
 			store: getStore(),
 			showDiagnostics: queryBool(c.req.query("includeDiagnostics")),
@@ -5613,7 +5663,7 @@ export function syncRoutes(
 				isRecentIso,
 				legacySharedReviewSummary,
 				listRecipientPolicyReconciliationStatus,
-				mapPeerRow,
+				mapPeerRow: (...args) => mapPeerRow(...args, loadDiagnosticKey),
 				mapSyncAttemptRow,
 				peerStatus,
 				readViewerBinding,
@@ -5632,20 +5682,7 @@ export function syncRoutes(
 		const store = getStore();
 		{
 			const showDiag = queryBool(c.req.query("includeDiagnostics"));
-			const rows = store.db.prepare(PEERS_QUERY).all() as Record<string, unknown>[];
-			const recentOpsByPeer = recentPeerOps(store);
-			const scopeRejectionsByPeer = recentScopeRejectionsByPeer(store);
-			const d = drizzle(store.db, { schema });
-			const deviceRow = d
-				.select({ device_id: schema.syncDevice.device_id })
-				.from(schema.syncDevice)
-				.limit(1)
-				.get();
-			const localDeviceId = (deviceRow?.device_id as string | null | undefined) ?? null;
-			// Use deduplicated mapPeerRow helper (fix #4)
-			const peers = rows.map((row) =>
-				mapPeerRow(store, row, showDiag, recentOpsByPeer, scopeRejectionsByPeer, localDeviceId),
-			);
+			const peers = readPeerScopeDiagnostics(store, showDiag);
 			return c.json({ items: peers, redacted: !showDiag });
 		}
 	});

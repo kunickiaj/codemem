@@ -21,6 +21,7 @@ import {
 	hasUnsyncedSharedMemoryChanges,
 	listPerPeerScopeSyncState,
 	loadPublicKey,
+	loadRuntimeSigningPublicKey,
 	MemoryStore,
 	mdnsEnabled,
 	mutateCodememConfigFile,
@@ -833,7 +834,6 @@ function syncStatusIdentityAndPeers(store: MemoryStore) {
 		.select({
 			device_id: schema.syncDevice.device_id,
 			fingerprint: schema.syncDevice.fingerprint,
-			public_key: schema.syncDevice.public_key,
 		})
 		.from(schema.syncDevice)
 		.limit(1)
@@ -850,12 +850,29 @@ function syncStatusIdentityAndPeers(store: MemoryStore) {
 		.all();
 	// Signing keys are authorization inputs only, not status output fields.
 	const localDeviceId = deviceRow?.device_id ?? null;
+	const hasManagedCandidates =
+		localDeviceId &&
+		peers.length > 0 &&
+		store.db
+			.prepare(
+				`SELECT 1 FROM scope_memberships m
+		 JOIN replication_scopes s ON s.scope_id = m.scope_id
+		 WHERE m.device_id = ? AND m.status = 'active'
+		 AND s.authority_type = 'coordinator' LIMIT 1`,
+			)
+			.get(localDeviceId);
+	const localSigningPublicKey = hasManagedCandidates
+		? loadRuntimeSigningPublicKey(store.db, {
+				deviceId: localDeviceId,
+				keysDir: process.env.CODEMEM_KEYS_DIR?.trim() || undefined,
+			})
+		: null;
 	const peersWithScopes = peers.map((peer) => {
 		const peerDeviceId = String(peer.peer_device_id ?? "").trim();
 		const scopes = listPerPeerScopeSyncState(store.db, {
 			localDeviceId,
 			peerDeviceId,
-			localSigningPublicKey: deviceRow?.public_key,
+			localSigningPublicKey,
 			authenticatedPeerSigningKey: peer.public_key,
 		});
 		return { peer, scopes };

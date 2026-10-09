@@ -172,12 +172,23 @@ export function loadPrivateKey(
 	dbPath?: string,
 	deviceId?: string,
 ): Buffer | null {
+	const storedIdentity = dbPath === undefined ? null : loadStoredDeviceIdentity(dbPath);
+	return loadPrivateKeyForIdentity(keysDir, deviceId, storedIdentity, () =>
+		dbPath === undefined && !deviceId ? loadStoredDeviceIdentity() : storedIdentity,
+	);
+}
+
+function loadPrivateKeyForIdentity(
+	keysDir: string | undefined,
+	deviceId: string | undefined,
+	storedIdentity: StoredDeviceIdentity | null,
+	keychainIdentity: () => StoredDeviceIdentity | null,
+): Buffer | null {
 	const [privatePath] = resolveKeyPaths(keysDir);
 	const privateKeyFile = readPrivateKeyFile(privatePath);
 	const privateKeyFromFile = isUsableEd25519PrivateKey(privateKeyFile.value)
 		? privateKeyFile.value
 		: null;
-	const storedIdentity = dbPath === undefined ? null : loadStoredDeviceIdentity(dbPath);
 	if (storedIdentity && deviceId && storedIdentity.deviceId !== deviceId) return null;
 	if (
 		privateKeyFromFile &&
@@ -186,14 +197,13 @@ export function loadPrivateKey(
 		return privateKeyFromFile;
 	}
 	if (keyStoreMode() === "keychain") {
-		const keychainIdentity =
-			dbPath === undefined && !deviceId ? loadStoredDeviceIdentity() : storedIdentity;
-		const resolvedDeviceId = deviceId ?? keychainIdentity?.deviceId;
+		const identity = keychainIdentity();
+		const resolvedDeviceId = deviceId ?? identity?.deviceId;
 		if (resolvedDeviceId) {
 			const keychainValue = loadPrivateKeyKeychain(resolvedDeviceId);
 			if (
 				isUsableEd25519PrivateKey(keychainValue) &&
-				(!keychainIdentity || privateKeyMatchesStoredIdentity(keychainValue, keychainIdentity))
+				(!identity || privateKeyMatchesStoredIdentity(keychainValue, identity))
 			) {
 				return keychainValue;
 			}
@@ -206,6 +216,35 @@ interface StoredDeviceIdentity {
 	deviceId: string;
 	publicKey: string;
 	fingerprint: string;
+}
+
+/** Read-only counterpart of signing-key selection, using the caller's connection.
+ * Derives public bytes from the actual private key; never generates or repairs keys. */
+export function loadRuntimeSigningPublicKey(
+	db: Database,
+	options: { deviceId: string; keysDir?: string },
+): string | null {
+	try {
+		const rows = db
+			.prepare("SELECT device_id, public_key, fingerprint FROM sync_device LIMIT 2")
+			.all() as Array<{ device_id: string; public_key: string; fingerprint: string }>;
+		const row = rows[0];
+		if (rows.length !== 1 || !row || row.device_id !== options.deviceId) return null;
+		const identity = {
+			deviceId: row.device_id,
+			publicKey: row.public_key,
+			fingerprint: row.fingerprint,
+		};
+		const privateKey = loadPrivateKeyForIdentity(
+			options.keysDir,
+			options.deviceId,
+			identity,
+			() => identity,
+		);
+		return privateKey ? derivePublicKey(privateKey) : null;
+	} catch {
+		return null;
+	}
 }
 
 /** Load the enrolled identity from the database for identity-aware key selection. */

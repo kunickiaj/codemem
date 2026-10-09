@@ -9,7 +9,6 @@ import {
 import { isScopedSyncCapability, type SyncCapability } from "./sync-capability.js";
 import {
 	DEFAULT_SYNC_SCOPE_ID,
-	getReplicationCursor,
 	getSyncResetState,
 	SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER,
 } from "./sync-replication.js";
@@ -220,6 +219,26 @@ export function listAuthorizedScopesForPeer(
 		authenticatedPeerSigningKey?: string | null;
 	},
 ): AuthorizedScopeEntry[] {
+	return listAuthorizedScopeMembershipsForPeer(db, options).map((scope) => {
+		const reset = getSyncResetState(db, scope.scope_id);
+		return {
+			...scope,
+			sync_reset: {
+				scope_id: scope.scope_id,
+				generation: reset.generation,
+				snapshot_id: reset.snapshot_id,
+				baseline_cursor: reset.baseline_cursor,
+				retained_floor_cursor: reset.retained_floor_cursor,
+			},
+		};
+	});
+}
+
+// Diagnostics need membership and cursor reads, not creation of reset boundaries.
+function listAuthorizedScopeMembershipsForPeer(
+	db: Database,
+	options: Parameters<typeof listAuthorizedScopesForPeer>[1],
+): Omit<AuthorizedScopeEntry, "sync_reset">[] {
 	const localDeviceId = options.localDeviceId.trim();
 	const peerDeviceId = options.peerDeviceId.trim();
 	if (!localDeviceId || !peerDeviceId || localDeviceId === peerDeviceId) {
@@ -243,7 +262,7 @@ export function listAuthorizedScopesForPeer(
 
 	if (localMemberships.length === 0) return [];
 
-	const entries: AuthorizedScopeEntry[] = [];
+	const entries: Omit<AuthorizedScopeEntry, "sync_reset">[] = [];
 	for (const local of localMemberships) {
 		if (!local.scope_id || local.scope_id === DEFAULT_SYNC_SCOPE_ID) continue;
 		const localAuth = getEffectiveCachedScopeAuthorization(db, {
@@ -260,22 +279,13 @@ export function listAuthorizedScopesForPeer(
 			scopeId: local.scope_id,
 			expectedPublicKey: scopeSigningKey(options.authenticatedPeerSigningKey),
 		});
-		if (!peerAuth.authorized || !peerAuth.scope) continue;
-		if (peerAuth.scope.status !== "active") continue;
+		if (!peerAuth.authorized || !peerAuth.scope || peerAuth.scope.status !== "active") continue;
 
-		const reset = getSyncResetState(db, local.scope_id);
 		entries.push({
 			scope_id: local.scope_id,
 			label: peerAuth.scope.label,
 			authority_type: peerAuth.scope.authority_type,
 			membership_epoch: Number(peerAuth.scope.membership_epoch ?? local.membership_epoch ?? 0),
-			sync_reset: {
-				scope_id: local.scope_id,
-				generation: reset.generation,
-				snapshot_id: reset.snapshot_id,
-				baseline_cursor: reset.baseline_cursor,
-				retained_floor_cursor: reset.retained_floor_cursor,
-			},
 		});
 	}
 
@@ -319,9 +329,21 @@ export function listPerPeerScopeSyncState(
 	const localDeviceId = options.localDeviceId?.trim() ?? "";
 	const peerDeviceId = options.peerDeviceId.trim();
 	if (!localDeviceId || !peerDeviceId) return [];
-	const scopes = listAuthorizedScopesForPeer(db, { ...options, localDeviceId, peerDeviceId });
+	const scopes = listAuthorizedScopeMembershipsForPeer(db, {
+		...options,
+		localDeviceId,
+		peerDeviceId,
+	});
+	const readCursor = db.prepare(
+		`SELECT last_applied_cursor, last_acked_cursor FROM replication_cursors_v2
+		 WHERE peer_device_id = ? AND scope_id = ?`,
+	);
 	return scopes.map((scope) => {
-		const [lastApplied, lastAcked] = getReplicationCursor(db, peerDeviceId, scope.scope_id);
+		const cursor = readCursor.get(peerDeviceId, scope.scope_id) as
+			| { last_applied_cursor: string | null; last_acked_cursor: string | null }
+			| undefined;
+		const lastApplied = cursor?.last_applied_cursor ?? null;
+		const lastAcked = cursor?.last_acked_cursor ?? null;
 		const hasNullBaselineBootstrapMarker =
 			lastAcked === SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER;
 		return {
