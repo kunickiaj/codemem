@@ -249,6 +249,8 @@ describe("OpenCode startup release notifications", () => {
 			CODEMEM_VIEWER: "0",
 			CODEMEM_PLUGIN_LOG: "0",
 			CODEMEM_INJECT_CONTEXT: "0",
+			// Release checks must not replay retained raw events from the caller's HOME.
+			CODEMEM_RAW_EVENTS: "0",
 			CODEMEM_BACKEND_UPDATE_POLICY: "notify",
 		};
 		delete process.env.CODEMEM_MIN_VERSION;
