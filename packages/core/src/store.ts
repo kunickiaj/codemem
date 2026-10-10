@@ -2255,14 +2255,18 @@ export class MemoryStore {
 		return this.rawEventSessionsPendingFlushQuery(limit, idleBeforeTsWallMs);
 	}
 
-	/** Find sessions that have unflushed events, oldest activity first. */
-	rawEventSessionsPendingFlush(limit = 25): { source: string; streamId: string }[] {
-		return this.rawEventSessionsPendingFlushQuery(limit);
+	/** Find unflushed sessions, oldest first; source filters before the cap, null removes it. */
+	rawEventSessionsPendingFlush(
+		limit: number | null = 25,
+		source?: string,
+	): { source: string; streamId: string }[] {
+		return this.rawEventSessionsPendingFlushQuery(limit, undefined, source);
 	}
 
 	private rawEventSessionsPendingFlushQuery(
-		limit: number,
+		limit: number | null,
 		idleBeforeTsWallMs?: number,
+		source?: string,
 	): { source: string; streamId: string }[] {
 		const maxEvents = this.d
 			.select({
@@ -2289,6 +2293,7 @@ export class MemoryStore {
 			)
 			.where(
 				and(
+					source === undefined ? undefined : eq(schema.rawEventSessions.source, source),
 					isNotNull(schema.rawEventSessions.last_seen_ts_wall_ms),
 					idleBeforeTsWallMs == null
 						? undefined
@@ -2297,7 +2302,7 @@ export class MemoryStore {
 				),
 			)
 			.orderBy(schema.rawEventSessions.last_seen_ts_wall_ms)
-			.limit(limit)
+			.limit(limit ?? -1)
 			.all();
 
 		return rows

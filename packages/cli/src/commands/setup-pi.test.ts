@@ -237,6 +237,23 @@ describe("installPi — fresh install", () => {
 		expect(existsSync(join(piHome, "settings.json.codemem.bak"))).toBe(true);
 	});
 
+	it("prints the pi-import-sessions backfill hint in the next steps (D3: import is explicit)", () => {
+		seedPiApiKeyInstall(piHome);
+		const infos: string[] = [];
+		const spy = vi.spyOn(p.log, "info").mockImplementation((msg: string) => {
+			infos.push(String(msg));
+		});
+		try {
+			expect(installPi({ force: false })).toBe(true);
+		} finally {
+			spy.mockRestore();
+		}
+		const output = infos.join("\n");
+		expect(output).toContain("Pi next steps:");
+		expect(output).toContain("codemem pi-import-sessions");
+		expect(output).toMatch(/not imported automatically/i);
+	});
+
 	it("supports a local-path packages entry via piExtensionPath", () => {
 		writeJson(join(piHome, "settings.json"), { packages: [] });
 		const local = join(tempRoot, "local-pi-extension");

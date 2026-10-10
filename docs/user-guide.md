@@ -258,6 +258,8 @@ Pi captures session, message, and tool activity through `@codemem/pi-extension`.
 - `CODEMEM_PI_INJECT_PROMPTS=0` disables prompt recall. If that variable is unset, `CODEMEM_INJECT_CONTEXT=0` does the same for Pi prompts.
 - `CODEMEM_PI_FILE_CONTEXT=0` disables read-file context. It is independent of prompt recall.
 - `pi.tools_mode` / `CODEMEM_PI_TOOLS_MODE`: `native` (default) registers 14 native tools; `mcp-adapter` skips native registration so an independently configured MCP surface can supply them. Use one surface.
+- Pre-install history is not imported automatically. Run `codemem pi-import-sessions` to backfill it. `--extract` also runs the observer over pending Pi sessions, so model cost scales with the backlog; without it, this command does not run extraction. Import `--json` also reports whether extraction was requested, flushed-event and failed/pending-session counts, and the first extraction error. Incomplete extraction exits with code 1 while keeping imported events.
+- Search stored user/assistant text with `codemem pi-session-search <query>`. `--json` returns the shared core response, including `query_truncated` when matching uses a bounded prefix of the query. Human output warns about partial matching even with zero results; shorten the query and retry. See [session search and history import](plugin-reference.md#session-search-and-history-import) for flags and import safety limits.
 
 Settings: [Pi extension](plugin-reference.md#pi-extension) and the [package configuration table](../packages/pi-extension/README.md#configuration).
 

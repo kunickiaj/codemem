@@ -1300,6 +1300,11 @@ export function installPi(options: InstallPiOptions = {}): boolean {
 		p.log.info(
 			"  - To disable: remove the @codemem/pi-extension entry from pi settings.json packages",
 		);
+		// D3: import is explicit, never automatic during setup — unbounded latency
+		// on large histories; the hint keeps backfill opt-in.
+		p.log.info(
+			"  - Pre-install pi session history is not imported automatically; backfill it with: codemem pi-import-sessions",
+		);
 	}
 
 	return ok;
