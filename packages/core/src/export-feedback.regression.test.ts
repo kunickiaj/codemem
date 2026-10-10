@@ -179,7 +179,8 @@ function attackPayload(attack: string) {
 	return incoming;
 }
 
-function mixedRows(moved: boolean) {
+function mixedRows(options: { moved: boolean }) {
+	const { moved } = options;
 	const mixed = payload({ redacted: true });
 	mixed.memory_items.push({
 		...mixed.memory_items[0],
@@ -223,9 +224,9 @@ function assertReadResult(
 	surface: string,
 	project: string,
 	expected: number[],
-	moved: boolean,
-	full = false,
+	options: { moved: boolean; full?: boolean },
 ) {
+	const { moved, full = false } = options;
 	if (surface === "file") {
 		expect(
 			findByFile(db, "shared.ts", { project })
@@ -323,7 +324,7 @@ describe("placeholder project restoration", () => {
 		"retains a real project-only move after %s import on every surface",
 		async (mode) => {
 			// Arrange: keep the opaque placeholder shape intact during the user move.
-			const rows = mixedRows(true);
+			const rows = mixedRows({ moved: true });
 			const before = memory();
 			const session = db.prepare("SELECT * FROM sessions").get() as Record<string, unknown>;
 			const incoming = payload({ redacted: mode === "redacted" });
@@ -346,7 +347,7 @@ describe("placeholder project restoration", () => {
 			for (const project of ["alpha", "beta", "gamma", "absent"]) {
 				const expected = project === "gamma" ? rows.map((row) => row.id) : [];
 				for (const surface of ["file", "concept", "export"])
-					assertReadResult(surface, project, expected, true, mode === "full");
+					assertReadResult(surface, project, expected, { moved: true, full: mode === "full" });
 				expect((await backfillVectors(db, { project, client: embeddingClient() })).checked).toBe(
 					expected.length,
 				);
@@ -435,7 +436,7 @@ describe("placeholder export dates", () => {
 		"qualifies placeholder dates only with eligible activity and project (includeInactive=%s)",
 		(includeInactive) => {
 			// Arrange: mixed attribution ensures the project predicate is memory-local.
-			mixedRows(false);
+			mixedRows({ moved: false });
 			db.prepare(
 				"UPDATE memory_items SET created_at = '2026-01-01T00:00:00Z' WHERE project = 'alpha'",
 			).run();
@@ -514,7 +515,7 @@ describe("project fallback", () => {
 		"selects only the effective project for tag backfill (moved=%s)",
 		(moved) => {
 			// Arrange
-			const rows = mixedRows(moved);
+			const rows = mixedRows({ moved });
 			// Act and Assert: filled tags reveal the actual selected row ids.
 			for (const project of ["alpha", "beta", "gamma", "absent"]) {
 				db.prepare("UPDATE memory_items SET tags_text = ''").run();
@@ -535,7 +536,7 @@ describe("project fallback", () => {
 		),
 	)("uses session-first project selection: $surface (moved=$moved)", async ({ moved, surface }) => {
 		// Arrange: mixed-project opaque session; the session project takes priority after a move.
-		const rows = mixedRows(moved);
+		const rows = mixedRows({ moved });
 		const client = embeddingClient();
 		const bytes = captureDatabaseState(dbPath);
 		// Act and Assert: each result excludes the other project; absent project returns nothing.
@@ -543,7 +544,7 @@ describe("project fallback", () => {
 			const expected = rows
 				.filter((row) => (moved ? "gamma" : row.project) === project)
 				.map((row) => row.id);
-			assertReadResult(surface, project, expected, moved);
+			assertReadResult(surface, project, expected, { moved });
 			assertDatabaseStateUnchanged(bytes);
 		}
 		if (surface !== "vectors") return;
