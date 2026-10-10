@@ -101,6 +101,7 @@ function snapshot() {
 			"project_scope_mappings",
 			"replication_ops",
 			"sync_device",
+			"scope_memberships",
 			"recipient_policy_authority_states",
 			"share_operations",
 		].map((table) => [table, store.db.prepare(`SELECT * FROM ${table} ORDER BY 1`).all()]),
