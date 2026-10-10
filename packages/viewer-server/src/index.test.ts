@@ -682,6 +682,30 @@ function grantSyncScopeToDevices(store: MemoryStore, scopeId: string, deviceIds:
 	}
 }
 
+// Mapping may move local memories only into a scope the device already belongs to.
+// This prefix uses passive membership rows, not coordinator proof-cache activation.
+function seedProjectMappingMembership(store: MemoryStore, scopeId: string): void {
+	store.db
+		.prepare(`INSERT INTO scope_memberships(
+		scope_id, device_id, role, status, membership_epoch, updated_at
+	) VALUES (?, ?, 'member', 'active', 1, ?)`)
+		.run(scopeId, store.deviceId, "2026-01-01T00:00:00Z");
+}
+
+function projectMappingMemberships(store: MemoryStore): unknown[] {
+	return store.db.prepare("SELECT * FROM scope_memberships ORDER BY scope_id, device_id").all();
+}
+
+function seedProjectMappingScope(store: MemoryStore, scopeId: string, label: string): void {
+	const now = "2026-01-01T00:00:00Z";
+	store.db
+		.prepare(`INSERT INTO replication_scopes(
+		scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+	) VALUES (?, ?, 'team', 'coordinator', 1, 'active', ?, ?)`)
+		.run(scopeId, label, now, now);
+	seedProjectMappingMembership(store, scopeId);
+}
+
 async function refreshManagedSyncFixtures(
 	stores: MemoryStore[],
 	publicKeys: Record<string, string>,
@@ -993,7 +1017,7 @@ async function saveMappingWithConfirmation(
 		...input,
 		confirmed_guardrail_tokens: challenge.required_guardrail_tokens,
 	});
-	expect(saved.status).toBe(200);
+	expect(saved.status, JSON.stringify(await saved.clone().json())).toBe(200);
 	return saved;
 }
 
@@ -13243,15 +13267,8 @@ describe("viewer-server", () => {
 							'sensitive-review-transport-fingerprint', '["sensitive-review-address"]', ?)`,
 					)
 					.run(new Date().toISOString());
-				const now = new Date().toISOString();
-				store.db
-					.prepare(
-						`INSERT INTO replication_scopes(
-							scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
-						 ) VALUES ('acme-work', 'Acme Work', 'team', 'coordinator', 1, 'active', ?, ?)`,
-					)
-					.run(now, now);
-
+				seedProjectMappingScope(store, "acme-work", "Acme Work");
+				const initialMemberships = projectMappingMemberships(store);
 				const settingsRes = await app.request("/api/sync/sharing-domains/settings");
 				expect(settingsRes.status).toBe(200);
 				const settings = (await settingsRes.json()) as {
@@ -13381,12 +13398,7 @@ describe("viewer-server", () => {
 					resolved_scope_id: "acme-work",
 					mapping_id: saveBody.mapping.id,
 				});
-				const memberships = store.db
-					.prepare("SELECT COUNT(*) AS n FROM scope_memberships")
-					.get() as {
-					n: number;
-				};
-				expect(memberships.n).toBe(0);
+				expect(projectMappingMemberships(store)).toEqual(initialMemberships);
 				const bulkRes = await requestBehindPublication(() =>
 					app.request("/api/sync/sharing-domains/project-mappings/bulk", {
 						method: "PUT",
@@ -14644,6 +14656,7 @@ describe("viewer-server", () => {
 						 ) VALUES ('exampleco-work', 'ExampleCo Work', 'team', 'coordinator', 1, 'active', ?, ?)`,
 					)
 					.run(now, now);
+				seedProjectMappingMembership(store, "exampleco-work");
 
 				const projectIdentity = "https://git.example.invalid/exampleco/api.git";
 				await saveMappingWithConfirmation(
@@ -15149,6 +15162,8 @@ describe("viewer-server", () => {
 						 ) VALUES ('oss-codemem', 'OSS codemem', 'team', 'coordinator', 1, 'active', ?, ?)`,
 					)
 					.run(now, now);
+				seedProjectMappingMembership(store, "acme-work");
+				seedProjectMappingMembership(store, "oss-codemem");
 				const settingsRes = await app.request("/api/sync/sharing-domains/settings");
 				const settings = (await settingsRes.json()) as {
 					projects: Array<{ display_project: string; workspace_identity: string }>;

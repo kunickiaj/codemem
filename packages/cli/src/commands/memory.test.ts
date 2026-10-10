@@ -664,7 +664,11 @@ describe("memory remember confidence", () => {
 });
 
 describe("memory command scope safety", () => {
-	it("stores vectors for manually remembered memories", async () => {
+	it.each([1, 2])("embeds a manual memory once across %i remember calls", async (calls) => {
+		// Arrange: keep cross-session dedup deterministic and mock all embedding work.
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+		vi.stubEnv("CODEMEM_MEMORY_CROSS_SESSION_DEDUP_WINDOW_MS", "60000");
 		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-memory-command-vector-"));
 		const dbPath = join(tmpDir, "test.sqlite");
 		initDatabase(dbPath);
@@ -685,30 +689,40 @@ describe("memory command scope safety", () => {
 			},
 			embed: vi.fn(),
 		});
-		vi.mocked(embeddings.embedTexts).mockResolvedValue([new Float32Array(384)]);
+		vi.mocked(embeddings.embedTexts)
+			.mockReset()
+			.mockResolvedValue([new Float32Array(384)]);
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const originalExitCode = process.exitCode;
 		process.exitCode = undefined;
 		try {
-			await rememberMemoryCommand.parseAsync(
-				[
-					"--kind",
-					"discovery",
-					"--title",
-					"Manual vector memory",
-					"--body",
-					"Manual vector body",
-					"--db-path",
-					dbPath,
-					"--json",
-				],
-				{ from: "user" },
-			);
+			// Act: a replay must return the original ID without embedding it again.
+			for (let attempt = 0; attempt < calls; attempt++) {
+				await rememberMemoryCommand.parseAsync(
+					[
+						"--kind",
+						"discovery",
+						"--title",
+						"Manual vector memory",
+						"--body",
+						"Manual vector body",
+						"--db-path",
+						dbPath,
+						"--json",
+					],
+					{ from: "user" },
+				);
+			}
 
+			// Assert: both first creation and duplicate replay have one stored vector.
 			const output = logSpy.mock.calls.at(-1)?.[0];
 			const parsed = JSON.parse(String(output)) as { id: number };
 			expect(parsed.id).toBeGreaterThan(0);
 			expect(process.exitCode).toBeUndefined();
+			expect(logSpy.mock.calls.map(([output]) => JSON.parse(String(output)).id)).toEqual(
+				Array(calls).fill(parsed.id),
+			);
+			expect(embeddings.embedTexts).toHaveBeenCalledTimes(1);
 
 			const verifyStore = new MemoryStore(dbPath);
 			try {
@@ -720,6 +734,8 @@ describe("memory command scope safety", () => {
 				verifyStore.close();
 			}
 		} finally {
+			vi.useRealTimers();
+			vi.unstubAllEnvs();
 			process.exitCode = originalExitCode;
 			logSpy.mockRestore();
 			rmSync(tmpDir, { recursive: true, force: true });

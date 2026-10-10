@@ -1,4 +1,5 @@
 import {
+	type CreatedMemory,
 	type MemoryFilters,
 	type MemoryItemResponse,
 	type MemoryStore,
@@ -36,8 +37,7 @@ export function forgetMemoryForMcp(
 ): boolean {
 	const item = getMemoryForMcp(store, memoryId, filters);
 	if (!item) return false;
-	store.forget(memoryId);
-	return true;
+	return store.forgetForUser(memoryId);
 }
 
 export interface RememberMemoryForMcpInput {
@@ -60,7 +60,8 @@ export function rememberMemoryForMcp(
 	input: RememberMemoryForMcpInput,
 	context: RememberMemoryForMcpContext = {},
 ): { memId: number; title: string; body: string } {
-	return store.db.transaction(() => {
+	const createdMemories: CreatedMemory[] = [];
+	const result = store.db.transaction(() => {
 		const now = context.now?.() ?? new Date().toISOString();
 		const user = context.user ?? process.env.USER ?? "unknown";
 		const cwd = context.cwd ?? process.cwd();
@@ -77,7 +78,16 @@ export function rememberMemoryForMcp(
 			.run(now, now, cwd, project, user, "mcp-ts", toJson({ mcp: true }));
 		const sessionId = Number(sessionInfo.lastInsertRowid);
 
-		const memId = store.remember(sessionId, input.kind, input.title, input.body, input.confidence);
+		const memId = store.rememberForUser(
+			sessionId,
+			input.kind,
+			input.title,
+			input.body,
+			input.confidence,
+			undefined,
+			undefined,
+			{ createdMemories },
+		);
 		if (!getMemoryForMcp(store, memId)) {
 			throw new Error("unauthorized_scope");
 		}
@@ -88,4 +98,6 @@ export function rememberMemoryForMcp(
 
 		return { memId, title: input.title, body: input.body };
 	})();
+	store.enqueueCommittedVectorWrites(createdMemories);
+	return result;
 }

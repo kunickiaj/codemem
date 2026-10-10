@@ -1,4 +1,3 @@
-import { storeVectors } from "@codemem/core";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { errorContent, jsonContent } from "../content.js";
@@ -123,7 +122,7 @@ function registerRememberTool(server: McpServer, context: ToolRegistrationContex
 				});
 
 				try {
-					await storeVectors(context.store.db, result.memId, result.title, result.body);
+					await context.store.flushPendingVectorWrites();
 				} catch {
 					// Memory writes should succeed even if embeddings are unavailable.
 				}

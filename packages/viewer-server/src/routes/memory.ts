@@ -753,7 +753,7 @@ export function memoryRoutes(getStore: StoreFactory) {
 		if (memoryId == null || memoryId <= 0) {
 			return c.json({ error: "memory_id must be int" }, 400);
 		}
-		if (!store.get(memoryId)) {
+		if (!store.getForMutation(memoryId)) {
 			return c.json({ error: "memory not found" }, 404);
 		}
 		const visibility = String(body.visibility ?? "").trim();
@@ -761,7 +761,7 @@ export function memoryRoutes(getStore: StoreFactory) {
 			return c.json({ error: "visibility must be private or shared" }, 400);
 		}
 		try {
-			const item = store.updateMemoryVisibility(memoryId, visibility);
+			const item = store.updateMemoryVisibilityForUser(memoryId, visibility);
 			return c.json({ item });
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
@@ -790,11 +790,11 @@ export function memoryRoutes(getStore: StoreFactory) {
 		if (!project) {
 			return c.json({ error: "project must be a non-empty string" }, 400);
 		}
-		if (!store.get(memoryId)) {
+		if (!store.getForMutation(memoryId)) {
 			return c.json({ error: "memory not found" }, 404);
 		}
 		try {
-			const result = store.moveMemoryProject(memoryId, project);
+			const result = store.moveMemoryProjectForUser(memoryId, project);
 			return c.json(result);
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
@@ -839,11 +839,11 @@ export function memoryRoutes(getStore: StoreFactory) {
 		}
 
 		try {
-			store.forget(memoryId);
+			forgetMemoryForViewer(store, memoryId);
 			return c.json({ status: "ok" });
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			if (msg.includes("not found")) return c.json({ error: msg }, 404);
+			if (msg.includes("not found")) return c.json(...forgetNotFound(forgetSafetyFilters(body)));
 			if (msg.includes("not owned")) return c.json({ error: msg }, 403);
 			if (msg.includes("sync_rebootstrap_in_progress")) return c.json({ error: msg }, 409);
 			return c.json({ error: msg }, 400);
@@ -867,8 +867,13 @@ function forgetSafetyFilters(body: Record<string, unknown>): MemoryFilters {
 }
 
 function forgetTargetExists(store: MemoryStore, memoryId: number, filters: MemoryFilters): boolean {
+	if (!store.canMutateMemory(memoryId)) return false;
 	if (Object.keys(filters).length > 0) {
 		return store.timeline(null, memoryId, 0, 0, filters).some((row) => row.id === memoryId);
 	}
 	return store.get(memoryId) != null;
+}
+
+function forgetMemoryForViewer(store: MemoryStore, memoryId: number): void {
+	if (!store.forgetForUser(memoryId)) throw new Error("memory not found");
 }

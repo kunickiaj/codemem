@@ -168,6 +168,7 @@ import {
 	requestJson,
 	resolveRecipientPolicyReview,
 	resolveRecipientPolicyReviewBulk,
+	resolveVisibleScopeIds,
 	runSyncPass,
 	SCOPE_MEMBERSHIP_REVOCATION_LIMITATION,
 	SYNC_AUTHORIZATION_REFRESH_HEADER,
@@ -4158,9 +4159,13 @@ function forgetProjectInventoryLocalMemories(
 	if (input.confirmationToken !== confirmationToken) {
 		throw new Error("project memories changed before cleanup; refresh and try again");
 	}
-	store.db.transaction(() => {
-		for (const row of localRows) store.forget(row.id);
-	})();
+	store.db
+		.transaction(() => {
+			for (const row of localRows) {
+				if (!store.forgetForUser(row.id)) throw new Error("unauthorized_scope");
+			}
+		})
+		.immediate();
 	return { confirmed: true, forgotten_memory_count: localRows.length, ...preview };
 }
 
@@ -4179,7 +4184,9 @@ function assertLocalDeviceScopeMembership(store: MemoryStore, scopeId: string): 
 			 LIMIT 1`,
 		)
 		.get(scopeId, store.deviceId);
-	if (!row) throw new Error(`local device is not a member of Sharing domain ${scopeId}`);
+	if (!row || !store.isScopeWritable(scopeId)) {
+		throw new Error(`local device is not a member of Sharing domain ${scopeId}`);
+	}
 }
 
 function legacySharedReviewRowsForWorkspace(
@@ -4296,25 +4303,28 @@ function reassignLegacySharedReviewGroup(
 	store: MemoryStore,
 	input: { confirmationToken?: string | null; scopeId: string; workspaceIdentity: string },
 ): Record<string, unknown> {
-	const preview = legacySharedReviewReassignmentPreview(store, input);
-	if (input.confirmationToken !== preview.confirmation_token) {
-		throw new Error(
-			"legacy shared review group changed before reassignment; refresh and try again",
-		);
-	}
-	const rows = reassignableLegacySharedReviewRows(
-		store,
-		legacySharedReviewRowsForWorkspace(store, input.workspaceIdentity),
-	);
-	store.db.transaction(() => {
-		for (const row of rows) store.reassignMemoryScope(row.id, input.scopeId);
-	})();
-	return {
-		ok: true,
-		...preview,
-		reassigned_memory_count: rows.length,
-		legacy_shared_review: legacySharedReviewSummary(store),
-	};
+	return store.db
+		.transaction(() => {
+			const preview = legacySharedReviewReassignmentPreview(store, input);
+			if (input.confirmationToken !== preview.confirmation_token) {
+				throw new Error(
+					"legacy shared review group changed before reassignment; refresh and try again",
+				);
+			}
+			const rows = reassignableLegacySharedReviewRows(
+				store,
+				legacySharedReviewRowsForWorkspace(store, input.workspaceIdentity),
+			);
+			assertLocalDeviceScopeMembership(store, input.scopeId);
+			for (const row of rows) store.reassignMemoryScope(row.id, input.scopeId);
+			return {
+				ok: true,
+				...preview,
+				reassigned_memory_count: rows.length,
+				legacy_shared_review: legacySharedReviewSummary(store),
+			};
+		})
+		.immediate();
 }
 
 // Aggregate ops_in / ops_out across recent successful sync_attempts per peer.
@@ -5349,7 +5359,13 @@ function saveProjectMappingsAndWakePolicies(
 		.transaction(() => {
 			const before = policyWakeMappings(store);
 			const previousMappings = existingRequestedMappings(before, mappingInputs);
-			const mappings = upsertProjectScopeSettingsMappings(store.db, mappingInputs, { deviceId });
+			const writableScopeIds = new Set(
+				resolveVisibleScopeIds(store.db, store.deviceId, store.scopeResolutionDeviceContext()),
+			);
+			const mappings = upsertProjectScopeSettingsMappings(store.db, mappingInputs, {
+				deviceId,
+				canWriteScope: (scopeId) => writableScopeIds.has(scopeId ?? ""),
+			});
 			const after = policyWakeMappings(store);
 			const changedScopeIds = new Set([
 				...previousMappings.map((mapping) => mapping.scope_id),
@@ -5381,6 +5397,7 @@ function deleteProjectMappingAndWakePolicies(
 			const deleted = deleteProjectScopeSettingsMapping(store.db, mappingId, {
 				deviceId,
 				confirmedGuardrailTokens,
+				canWriteScope: (scopeId) => store.isScopeWritable(scopeId),
 			});
 			if (deleted && removed) {
 				const changedScopeIds = new Set([removed.scope_id]);
@@ -5405,6 +5422,16 @@ function deleteProjectMappingAndWakePolicies(
  * provide sync status, peer management, and coordinator UI for the
  * local viewer.
  */
+function reassignProjectInventoryForUser(
+	store: MemoryStore,
+	input: { deviceId: string; project: string; workspaceIdentity: string },
+) {
+	return reassignProjectScopeInventoryProject(store.db, {
+		...input,
+		canWriteScope: (scopeId) => store.isScopeWritable(scopeId),
+	});
+}
+
 export function syncRoutes(
 	getStore: StoreFactory,
 	getSyncRuntimeStatus?: () => SyncRuntimeStatus | null,
@@ -6301,7 +6328,7 @@ export function syncRoutes(
 			const workspaceIdentity = optionalViewerStrictString(body, "workspace_identity") ?? "";
 			const project = optionalViewerStrictString(body, "project") ?? "";
 			const [deviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
-			const result = reassignProjectScopeInventoryProject(store.db, {
+			const result = reassignProjectInventoryForUser(store, {
 				deviceId,
 				project,
 				workspaceIdentity,

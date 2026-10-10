@@ -155,7 +155,7 @@ describe("MCP memory access scope guards", () => {
 	});
 
 	it("refuses to forget unauthorized or explicitly filtered-out memories", () => {
-		const authorizedId = insertScopedMemory(store, {
+		const authorizedId = insertOwnedScopedMemory(store, {
 			sessionId,
 			scopeId: "scope-a",
 			title: "Forgettable MCP note",
@@ -378,7 +378,7 @@ describe("MCP memory access scope guards", () => {
 				scopeId: "scope-a",
 				title: "Greenroom direct-ID note",
 			});
-			otherProjectId = insertScopedMemory(store, {
+			otherProjectId = insertOwnedScopedMemory(store, {
 				sessionId: otherSessionId,
 				scopeId: "scope-a",
 				title: "Other-project direct-ID note",
@@ -1411,6 +1411,17 @@ function grantScopeToDevice(
 			coordinator_id, group_id, updated_at
 		 ) VALUES (?, ?, 'member', 'active', 0, 'coord-test', 'group-test', ?)`,
 	).run(scopeId, deviceId, new Date().toISOString());
+}
+
+function insertOwnedScopedMemory(
+	store: MemoryStore,
+	input: Parameters<typeof insertScopedMemory>[1],
+): number {
+	const id = insertScopedMemory(store, input);
+	store.db
+		.prepare("UPDATE memory_items SET origin_device_id = ?, actor_id = ? WHERE id = ?")
+		.run(store.deviceId, store.actorId, id);
+	return id;
 }
 
 function insertScopedMemory(

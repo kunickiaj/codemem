@@ -12,6 +12,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type {
+	CreatedMemory,
 	DistillContextDocument,
 	MemoryFilters,
 	MemoryItemResponse,
@@ -32,7 +33,6 @@ import {
 	REMEMBER_MEMORY_KINDS,
 	resolveProject,
 	resolveProjectRoot,
-	storeVectors,
 	toJson,
 } from "@codemem/core";
 import { Hono } from "hono";
@@ -219,7 +219,8 @@ function rememberMemory(
 		project?: string | null;
 	},
 ): { memId: number; title: string; body: string } {
-	return store.db.transaction(() => {
+	const createdMemories: CreatedMemory[] = [];
+	const result = store.db.transaction(() => {
 		const now = new Date().toISOString();
 		const user = process.env.USER ?? "unknown";
 		const cwd = process.cwd();
@@ -236,7 +237,16 @@ function rememberMemory(
 			.run(now, now, cwd, project, user, "viewer-api", toJson({ viewer: true }));
 		const sessionId = Number(sessionInfo.lastInsertRowid);
 
-		const memId = store.remember(sessionId, input.kind, input.title, input.body, input.confidence);
+		const memId = store.rememberForUser(
+			sessionId,
+			input.kind,
+			input.title,
+			input.body,
+			input.confidence,
+			undefined,
+			undefined,
+			{ createdMemories },
+		);
 		if (!getMemoryForAccess(store, memId)) {
 			throw new Error("unauthorized_scope");
 		}
@@ -247,6 +257,8 @@ function rememberMemory(
 
 		return { memId, title: input.title, body: input.body };
 	})();
+	store.enqueueCommittedVectorWrites(createdMemories);
+	return result;
 }
 
 function readContextFile(
@@ -494,7 +506,7 @@ export function memoryToolRoutes(getStore: StoreFactory) {
 				project,
 			});
 			try {
-				await storeVectors(store.db, result.memId, result.title, result.body);
+				await store.flushPendingVectorWrites();
 			} catch {
 				// Memory writes should succeed even if embeddings are unavailable.
 			}
