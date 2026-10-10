@@ -222,19 +222,23 @@ describe("current authority for import restoration", () => {
 		expect(keyBytes()).toEqual(keys);
 	});
 
-	it("rejects a managed dedupe key mapped to a different session even with active membership", () => {
+	it("allows an active member to import context into a different canonical session without moving a deduped memory", () => {
 		// Arrange
 		importMemories(payload(true), { dbPath });
 		const incoming = payload();
 		incoming.sessions[0].export_session_key = `export-session:v1:${"d".repeat(64)}`;
-		const before = rows();
-		const image = bytes();
+		const before = db.prepare("SELECT * FROM memory_items").get();
 		// Act
-		const act = () => importMemories(incoming, { dbPath });
+		const result = importMemories(incoming, { dbPath });
 		// Assert
-		expect(act).toThrow(/unauthorized_scope: managed \(session mismatch\)/);
-		expect(rows()).toEqual(before);
-		expect(bytes()).toEqual(image);
+		expect(result).toMatchObject({
+			sessions: 1,
+			memory_items: 0,
+			user_prompts: 1,
+			session_summaries: 1,
+		});
+		expect(db.prepare("SELECT * FROM memory_items").get()).toEqual(before);
+		expect(db.prepare("SELECT COUNT(*) FROM sessions").pluck().get()).toBe(2);
 	});
 
 	it("rolls back an earlier local session write when a later restoration is denied", () => {
@@ -430,11 +434,12 @@ describe("generated memory keys with blank remaps", () => {
 		expect(result).toMatchObject({ memory_items: 0, user_prompts: 1, session_summaries: 1 });
 	});
 
-	it("rejects a forged local label and different session for an actual managed generated key", () => {
+	it("rejects a revoked generated-key import into a different session despite a forged local scope label", () => {
 		// Arrange
 		const initial = payload(true);
 		delete initial.memory_items[0].import_key;
 		importMemories(initial, { dbPath, remapProject: "" });
+		revoke();
 		const incoming = payload();
 		delete incoming.memory_items[0].import_key;
 		incoming.memory_items[0].scope_id = "local-default";
@@ -444,9 +449,131 @@ describe("generated memory keys with blank remaps", () => {
 		// Act
 		const act = () => importMemories(incoming, { dbPath, remapProject: "" });
 		// Assert
-		expect(act).toThrow(/unauthorized_scope.*session mismatch/);
+		expect(act).toThrow(/unauthorized_scope: managed/);
 		expect(rows()).toEqual(before);
 		expect(bytes()).toEqual(image);
+	});
+});
+
+describe("authorized context imports across deduped session mappings", () => {
+	it("imports a full canonical session with an explicit managed memory key into a new project remap idempotently", () => {
+		// Arrange
+		importMemories(payload(), { dbPath });
+		const memory = db.prepare("SELECT * FROM memory_items").get();
+		const children = ["user_prompts", "session_summaries"].map((table) =>
+			db.prepare(`SELECT * FROM ${table}`).all(),
+		);
+		const incoming = payload();
+		const options = { dbPath, remapProject: "beta" };
+		// Act
+		const result = importMemories(incoming, options);
+		const restored = db.serialize();
+		const repeated = importMemories(incoming, options);
+		// Assert: context is importable, but the deduped memory and old children stay put.
+		expect(result).toEqual({
+			sessions: 1,
+			memory_items: 0,
+			user_prompts: 0,
+			session_summaries: 0,
+			dryRun: false,
+		});
+		expect(repeated).toEqual({
+			sessions: 0,
+			memory_items: 0,
+			user_prompts: 0,
+			session_summaries: 0,
+			dryRun: false,
+		});
+		expect(db.prepare("SELECT * FROM memory_items").get()).toEqual(memory);
+		expect(
+			["user_prompts", "session_summaries"].map((table) =>
+				db.prepare(`SELECT * FROM ${table}`).all(),
+			),
+		).toEqual(children);
+		expect(
+			db.prepare("SELECT import_key, metadata_json FROM sessions WHERE project = 'beta'").get(),
+		).toMatchObject({
+			import_key: expect.stringContaining(`${marker}:remap:`),
+			metadata_json: expect.stringContaining("session secret"),
+		});
+		expect(db.serialize()).toEqual(restored);
+	});
+
+	it.each(["managed", "local-default", "omitted"])(
+		"denies a revoked remap using the stored scope despite incoming %s scope",
+		(scope) => {
+			// Arrange
+			importMemories(payload(), { dbPath });
+			revoke();
+			const incoming = payload();
+			if (scope === "omitted") delete incoming.memory_items[0].scope_id;
+			else incoming.memory_items[0].scope_id = scope;
+			const image = bytes();
+			const wal = readFileSync(`${dbPath}-wal`);
+			const allTables = db.serialize();
+			const keys = keyBytes();
+			// Act
+			const act = () => importMemories(incoming, { dbPath, remapProject: "beta" });
+			// Assert: every table, including membership cache, and both SQLite files stay unchanged.
+			expect(act).toThrow(/unauthorized_scope: managed/);
+			expect(db.serialize()).toEqual(allTables);
+			expect(readFileSync(dbPath)).toEqual(image);
+			expect(readFileSync(`${dbPath}-wal`)).toEqual(wal);
+			expect(keyBytes()).toEqual(keys);
+		},
+	);
+
+	it("imports a canonical redacted reference after a legacy full import without promoting or reparenting its rows", () => {
+		// Arrange
+		const legacy = payload();
+		delete legacy.sessions[0].export_session_key;
+		importMemories(legacy, { dbPath });
+		const before = rows();
+		// Act
+		const result = importMemories(payload(true), { dbPath });
+		const imported = db.serialize();
+		const repeated = importMemories(payload(true), { dbPath });
+		// Assert: the reference has its own placeholder, while legacy source context remains unchanged.
+		expect(result).toEqual({
+			sessions: 1,
+			memory_items: 0,
+			user_prompts: 0,
+			session_summaries: 0,
+			dryRun: false,
+		});
+		expect(repeated).toEqual({
+			sessions: 0,
+			memory_items: 0,
+			user_prompts: 0,
+			session_summaries: 0,
+			dryRun: false,
+		});
+		expect(rows()[0][0]).toEqual(before[0][0]);
+		expect(rows().slice(1)).toEqual(before.slice(1));
+		expect(
+			db.prepare("SELECT started_at, cwd, project FROM sessions WHERE import_key = ?").get(marker),
+		).toEqual({ started_at: "", cwd: null, project: null });
+		expect(db.serialize()).toEqual(imported);
+	});
+
+	it("denies a canonical redacted reference after revocation of a legacy full import", () => {
+		// Arrange
+		const legacy = payload();
+		delete legacy.sessions[0].export_session_key;
+		importMemories(legacy, { dbPath });
+		revoke();
+		const image = bytes();
+		const wal = readFileSync(`${dbPath}-wal`);
+		const allTables = db.serialize();
+		const keys = keyBytes();
+		// Act
+		const act = () => importMemories(payload(true), { dbPath });
+		// Assert
+		expect(act).toThrow(/unauthorized_scope: managed/);
+		expect(db.serialize()).toEqual(allTables);
+		expect(readFileSync(dbPath)).toEqual(image);
+		expect(readFileSync(`${dbPath}-wal`)).toEqual(wal);
+		expect(keyBytes()).toEqual(keys);
 	});
 });
 
