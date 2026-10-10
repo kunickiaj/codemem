@@ -1198,9 +1198,9 @@ export class MemoryStore {
 		// Block shared-memory writes while sync requires attention.
 		this.assertSharedMutationAllowed(provenance.visibility);
 
-		let memoryId: number;
+		let created: CreatedMemory;
 		try {
-			memoryId = this.db.transaction(() => {
+			created = this.db.transaction(() => {
 				const importKey = this.memoryCreationImportKey(metadata, metaPayload);
 				metaPayload.import_key = importKey;
 				const insertedRows = this.d
@@ -1249,7 +1249,7 @@ export class MemoryStore {
 
 				this.recordNewMemoryWrite(id, metadata, options);
 
-				return id;
+				return { memoryId: id, importKey };
 			})();
 		} catch (error) {
 			if (!isSameSessionDedupConstraintError(error)) throw error;
@@ -1269,7 +1269,7 @@ export class MemoryStore {
 			throw error;
 		}
 
-		this.scheduleRememberVectors({ memoryId, importKey }, safeTitle, safeBody, options);
+		this.scheduleRememberVectors(created, safeTitle, safeBody, options);
 
 		const detections = mergeDetections(
 			titleScan.detections,
@@ -1277,10 +1277,10 @@ export class MemoryStore {
 			metaScan.detections,
 		);
 		if (detections.length > 0) {
-			this.logSecretRedactions(memoryId, validKind, detections);
+			this.logSecretRedactions(created.memoryId, validKind, detections);
 		}
 
-		return memoryId;
+		return created.memoryId;
 	}
 
 	private scheduleRememberVectors(
