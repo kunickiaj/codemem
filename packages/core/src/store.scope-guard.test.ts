@@ -110,7 +110,7 @@ function mutate(action: string) {
 					.prepare("SELECT id FROM project_scope_mappings LIMIT 1")
 					.pluck()
 					.get() as number | undefined;
-				if (!id) return true;
+				if (!id) throw new Error("Test fixture missing project scope mapping");
 				const warnings = analyzeProjectScopeMappingDeletionGuardrails(store.db, id, store.deviceId);
 				return deleteProjectScopeSettingsMapping(store.db, id, {
 					deviceId: store.deviceId,
@@ -181,6 +181,14 @@ it.each(
 )("allows $action for pending '$scope' $mode scope", async ({ scope, mode, action }) => {
 	// Arrange
 	if (mode !== "local") await mapScope(store);
+	if (mode === "local" && action === "mapping delete") {
+		upsertProjectScopeSettingsMapping(store.db, {
+			workspace_identity: "/fixture/project",
+			scope_id: "local-default",
+			deviceId: store.deviceId,
+			canWriteScope: (scopeId) => store.isScopeWritable(scopeId),
+		});
+	}
 	if (mode === "manual") {
 		store.db
 			.prepare("UPDATE replication_scopes SET authority_type = 'manual' WHERE scope_id = 'scope-a'")
@@ -194,6 +202,8 @@ it.each(
 	const result = mutate(action);
 	// Assert
 	expect(result).toBeTruthy();
+	if (action === "mapping delete")
+		expect(store.db.prepare("SELECT id FROM project_scope_mappings LIMIT 1").get()).toBeUndefined();
 	if (action === "forget")
 		expect(
 			store.db.prepare("SELECT active FROM memory_items WHERE id = ?").pluck().get(memoryId),
@@ -206,6 +216,16 @@ it.each(
 		expect(
 			store.db.prepare("SELECT project FROM sessions WHERE id = ?").pluck().get(sessionId),
 		).toBe("renamed");
+});
+
+it("rejects mapping deletion when the test fixture has no mapping", () => {
+	// Arrange: the default local fixture has no mapping row.
+	const before = store.db.serialize();
+	// Act
+	const attempt = () => mutate("mapping delete");
+	// Assert: missing setup cannot masquerade as a successful deletion.
+	expect(attempt).toThrow("Test fixture missing project scope mapping");
+	expect(store.db.serialize().equals(before)).toBe(true);
 });
 
 it("does not infer a scope from an explicit local assignment or origin", async () => {
