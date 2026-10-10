@@ -91,8 +91,9 @@ import type {
 } from "./types.js";
 import { storeVectors } from "./vectors.js";
 
-// Recovery denials debit the private hourly budget, not public observer usage.
-const PUBLIC_USAGE_EVENT_PREDICATE = "event != 'observer_recovery_scope_denial'";
+// Recovery debits and per-batch call clocks are private accounting, not observer usage.
+const PUBLIC_USAGE_EVENT_PREDICATE =
+	"event != 'observer_recovery_scope_denial' AND event NOT GLOB 'observer_recovery_call_clock:*'";
 
 function classifiedUsageSql(sourceSql: string): string {
 	return `WITH classified_usage AS (

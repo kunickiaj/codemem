@@ -15,6 +15,78 @@ const MAX_RANGES_PER_STREAM = 10_000;
 const MAX_ATTEMPTS = 3;
 const MAX_HOURLY_CALLS = 4;
 const SCOPE_DENIAL_RETRY_MS = 15_000;
+const CALL_CLOCK_PREFIX = "observer_recovery_call_clock:";
+
+interface RecoveryClaim {
+	batchId: number;
+	attemptCount: number;
+	updatedAt: string;
+	priorCallTime: string;
+}
+
+function ownsRecoveryClaim(store: MemoryStore, claim: RecoveryClaim): boolean {
+	return (
+		store.db
+			.prepare(`SELECT 1 FROM raw_event_flush_batches
+		WHERE id = ? AND status = 'claimed' AND attempt_count = ? AND updated_at = ?`)
+			.get(claim.batchId, claim.attemptCount, claim.updatedAt) != null
+	);
+}
+
+function writeRecoveryCallClock(store: MemoryStore, batchId: number, time: string): void {
+	const event = `${CALL_CLOCK_PREFIX}${batchId}`;
+	store.db.prepare("DELETE FROM usage_events WHERE event = ?").run(event);
+	store.db.prepare("INSERT INTO usage_events(event, created_at) VALUES (?, ?)").run(event, time);
+}
+
+function claimRecoveryWindow(
+	store: MemoryStore,
+	window: RawEventRecoveryRange,
+	usageOnly: boolean,
+): RecoveryClaim | null {
+	// Capture legacy updated_at before the UPSERT or claim can refresh it. The write
+	// lock keeps another worker from changing the captured row before this claim.
+	return store.db
+		.transaction(() => {
+			const prior = store.db
+				.prepare(`
+			SELECT COALESCE((
+				SELECT created_at FROM usage_events WHERE event = ? || b.id LIMIT 1
+			), b.updated_at) AS call_time FROM raw_event_flush_batches b
+			WHERE source = ? AND stream_id = ? AND start_event_seq = ?
+				AND end_event_seq = ? AND extractor_version = ?
+		`)
+				.get(
+					CALL_CLOCK_PREFIX,
+					window.source,
+					window.streamId,
+					window.startEventSeq,
+					window.endEventSeq,
+					RECOVERY_VERSION,
+				) as { call_time: string } | undefined;
+			const batch = store.getOrCreateRawEventFlushBatch(
+				window.streamId,
+				window.source,
+				window.startEventSeq,
+				window.endEventSeq,
+				RECOVERY_VERSION,
+			);
+			if (batch.status === "completed" || (batch.attemptCount >= MAX_ATTEMPTS && !usageOnly))
+				return null;
+			if (!store.claimRawEventFlushBatch(batch.batchId, { countAttempt: !usageOnly })) return null;
+			const row = store.db
+				.prepare("SELECT updated_at, attempt_count FROM raw_event_flush_batches WHERE id = ?")
+				.get(batch.batchId) as { updated_at: string; attempt_count: number };
+			if (!usageOnly) writeRecoveryCallClock(store, batch.batchId, row.updated_at);
+			return {
+				batchId: batch.batchId,
+				attemptCount: row.attempt_count,
+				updatedAt: row.updated_at,
+				priorCallTime: prior?.call_time ?? row.updated_at,
+			};
+		})
+		.immediate();
+}
 
 interface BatchRangeRow {
 	id?: number;
@@ -231,14 +303,16 @@ function withinHourlyBudget(store: MemoryStore): boolean {
 	const calls = store.db
 		.prepare(`
 		SELECT (
-			SELECT COALESCE(SUM(attempt_count), 0) FROM raw_event_flush_batches
-			WHERE extractor_version = ? AND attempt_count > 0 AND updated_at >= ?
+			SELECT COALESCE(SUM(attempt_count), 0) FROM raw_event_flush_batches b
+			WHERE extractor_version = ? AND attempt_count > 0 AND COALESCE((
+				SELECT created_at FROM usage_events WHERE event = ? || b.id LIMIT 1
+			), b.updated_at) >= ?
 		) + (
 			SELECT COUNT(*) FROM usage_events
 			WHERE event = 'observer_recovery_scope_denial' AND created_at > ?
 		) AS count
 	`)
-		.get(RECOVERY_VERSION, cutoff, cutoff) as { count: number };
+		.get(RECOVERY_VERSION, CALL_CLOCK_PREFIX, cutoff, cutoff) as { count: number };
 	return calls.count < MAX_HOURLY_CALLS;
 }
 
@@ -306,7 +380,7 @@ function releaseRecoveryAdmissionFailure(
 	error: unknown,
 ): ObserverAuthError | ScopeWriteAuthorityError | null {
 	if (error instanceof ScopeWriteAuthorityError) {
-		store.releaseRawEventFlushBatchAfterAuthError(batchId, {
+		const released = store.releaseRawEventFlushBatchAfterAuthError(batchId, {
 			code: "scope_authority",
 			provider: null,
 			model: null,
@@ -314,7 +388,7 @@ function releaseRecoveryAdmissionFailure(
 			authSource: null,
 			authType: null,
 		});
-		return error;
+		return released ? error : null;
 	}
 	const status = rawEventObserverStatusFromError(error);
 	if (!(error instanceof ObserverAuthError || status?.lastError?.code === "auth_missing"))
@@ -339,22 +413,34 @@ function releaseRecoveryAdmissionFailure(
 
 function releaseRecoveryFailure(
 	store: MemoryStore,
-	batchId: number,
+	claim: RecoveryClaim,
 	error: unknown,
 	completedInferenceStartedAt: string | null,
 ): ObserverAuthError | ScopeWriteAuthorityError | null {
 	// Content persistence has already rolled back. Release and debit together so an
 	// attempt-neutral scope race cannot erase the returned invocation's hourly slot.
-	return store.db.transaction(() => {
-		const released = releaseRecoveryAdmissionFailure(store, batchId, error);
-		if (released instanceof ScopeWriteAuthorityError && completedInferenceStartedAt) {
-			store.db
-				.prepare(`INSERT INTO usage_events(event, created_at)
+	return store.db
+		.transaction(() => {
+			// Never release or restore a newer worker's claim after this one was replaced.
+			if (!ownsRecoveryClaim(store, claim)) return null;
+			const released = releaseRecoveryAdmissionFailure(store, claim.batchId, error);
+			if (released) {
+				if (claim.attemptCount > 1)
+					writeRecoveryCallClock(store, claim.batchId, claim.priorCallTime);
+				else
+					store.db
+						.prepare("DELETE FROM usage_events WHERE event = ?")
+						.run(`${CALL_CLOCK_PREFIX}${claim.batchId}`);
+			}
+			if (released instanceof ScopeWriteAuthorityError && completedInferenceStartedAt) {
+				store.db
+					.prepare(`INSERT INTO usage_events(event, created_at)
 					VALUES ('observer_recovery_scope_denial', ?)`)
-				.run(completedInferenceStartedAt);
-		}
-		return released;
-	})();
+					.run(completedInferenceStartedAt);
+			}
+			return released;
+		})
+		.immediate();
 }
 
 async function recoverMissingAuthWindow(
@@ -371,16 +457,8 @@ async function recoverMissingAuthWindow(
 ): Promise<boolean> {
 	const usageOnly = isUsageOnlyRecoveryWindow(store, window);
 	if (!usageOnly && !observerBudgetAvailable) return false;
-	const batch = store.getOrCreateRawEventFlushBatch(
-		window.streamId,
-		window.source,
-		window.startEventSeq,
-		window.endEventSeq,
-		RECOVERY_VERSION,
-	);
-	if (batch.status === "completed" || (batch.attemptCount >= MAX_ATTEMPTS && !usageOnly))
-		return false;
-	if (!store.claimRawEventFlushBatch(batch.batchId, { countAttempt: !usageOnly })) return false;
+	const batch = claimRecoveryWindow(store, window, usageOnly);
+	if (!batch) return false;
 	if (hasPersistedRecoveryOutcome(store, batch.batchId)) {
 		store.updateRawEventFlushBatchStatus(batch.batchId, "completed");
 		return true;
@@ -399,7 +477,14 @@ async function recoverMissingAuthWindow(
 			window,
 			batch.batchId,
 			() => {
-				inferenceStartedAt = new Date().toISOString();
+				const startedAt = new Date().toISOString();
+				inferenceStartedAt = startedAt;
+				store.db
+					.transaction(() => {
+						if (ownsRecoveryClaim(store, batch))
+							writeRecoveryCallClock(store, batch.batchId, startedAt);
+					})
+					.immediate();
 				onObserverInferenceStart();
 			},
 			() => {
@@ -411,16 +496,21 @@ async function recoverMissingAuthWindow(
 	} catch (error) {
 		const admissionError = releaseRecoveryFailure(
 			store,
-			batch.batchId,
+			batch,
 			error,
 			inferenceCompleted ? inferenceStartedAt : null,
 		);
 		if (admissionError) throw admissionError;
-		store.recordRawEventFlushBatchFailure(batch.batchId, {
-			message: "Historical observer recovery could not process this range.",
-			errorType: "RawEventRecoveryError",
-			observerErrorCode: "recovery_failed",
-		});
+		store.db
+			.transaction(() => {
+				if (!ownsRecoveryClaim(store, batch)) return;
+				store.recordRawEventFlushBatchFailure(batch.batchId, {
+					message: "Historical observer recovery could not process this range.",
+					errorType: "RawEventRecoveryError",
+					observerErrorCode: "recovery_failed",
+				});
+			})
+			.immediate();
 		throw error;
 	}
 }
