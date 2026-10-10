@@ -21,6 +21,11 @@ vi.mock("./project.js", async (importOriginal) => ({
 const marker = `export-session:v1:${"a".repeat(64)}`;
 const remapped = `${marker}:remap:${"b".repeat(64)}`;
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const trimWhitespace = [
+	0x0009, 0x000a, 0x000b, 0x000c, 0x000d, 0x0020, 0x00a0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003,
+	0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000,
+	0xfeff,
+].map((codePoint) => ({ codePoint, whitespace: String.fromCodePoint(codePoint) }));
 
 describe("private session export identity", () => {
 	let db: Database.Database;
@@ -144,6 +149,102 @@ describe("private session export identity", () => {
 		expect(replaced).not.toBe(remapped);
 		expect(isCanonicalSessionKey(repeated)).toBe(true);
 	});
+});
+
+describe("session export anchor blankness", () => {
+	let db: Database.Database;
+	beforeEach(() => {
+		db = new Database(":memory:");
+		db.exec(
+			"CREATE TABLE memory_items (id INTEGER PRIMARY KEY, session_id INTEGER, import_key TEXT)",
+		);
+	});
+	afterEach(() => db.close());
+
+	it.each(trimWhitespace)(
+		"skips blank anchors and preserves later raw bytes for trim code point $codePoint",
+		({ whitespace }) => {
+			// Arrange: SQL trim must not decide blankness, and reads must not repair history.
+			const insert = db.prepare("INSERT INTO memory_items VALUES (?, ?, ?)");
+			const anchor = `${whitespace}historical-anchor${whitespace}`;
+			insert.run(1, 1, null);
+			insert.run(2, 1, whitespace);
+			insert.run(3, 1, anchor);
+			insert.run(4, 1, "later-anchor");
+			db.pragma("query_only = ON");
+			const before = db.serialize();
+			const changes = db.prepare("SELECT total_changes()").pluck().get();
+			// Act: both source and fallback anchors use JavaScript blankness semantics.
+			const resolved = exportedSessionKey(db, { id: 1, import_key: whitespace });
+			// Assert: preserve surrounding bytes and pick the earliest actual key.
+			expect(whitespace.trim()).toBe("");
+			expect(resolved).toBe(`export-session:v1:${digest(["memory_key", anchor])}`);
+			expect(resolved).not.toBe(`export-session:v1:${digest(["memory_key", anchor.trim()])}`);
+			expect(db.prepare("SELECT total_changes()").pluck().get()).toBe(changes);
+			expect(db.serialize().equals(before)).toBe(true);
+		},
+	);
+
+	it.each(trimWhitespace)(
+		"rejects blank-only history for trim code point $codePoint without writing",
+		({ whitespace }) => {
+			// Arrange: NULL, empty, and whitespace-only anchors provide no identity.
+			const insert = db.prepare("INSERT INTO memory_items VALUES (?, ?, ?)");
+			insert.run(1, 1, null);
+			insert.run(2, 1, "");
+			insert.run(3, 1, whitespace);
+			db.pragma("query_only = ON");
+			const before = db.serialize();
+			const changes = db.prepare("SELECT total_changes()").pluck().get();
+			// Act
+			const resolve = () => exportedSessionKey(db, { id: 1, import_key: whitespace });
+			// Assert: keep the existing error, not a SQLite write or missing-row error.
+			expect(resolve).toThrow("session_identity_unavailable: session has no immutable source key");
+			expect(db.prepare("SELECT total_changes()").pluck().get()).toBe(changes);
+			expect(db.serialize().equals(before)).toBe(true);
+		},
+	);
+
+	it("keeps unrelated blank-first sessions distinct using their actual anchors", () => {
+		// Arrange: identical blank histories must not collapse unrelated sessions.
+		const blanks = trimWhitespace.map(({ whitespace }) => whitespace).join("");
+		const insert = db.prepare("INSERT INTO memory_items VALUES (?, ?, ?)");
+		insert.run(1, 1, blanks);
+		insert.run(2, 2, blanks);
+		insert.run(3, 1, "first-session-anchor");
+		insert.run(4, 2, "second-session-anchor");
+		const before = db.serialize();
+		const changes = db.prepare("SELECT total_changes()").pluck().get();
+		// Act
+		const first = exportedSessionKey(db, { id: 1, import_key: null });
+		const second = exportedSessionKey(db, { id: 2, import_key: null });
+		// Assert
+		expect(first).toBe(`export-session:v1:${digest(["memory_key", "first-session-anchor"])}`);
+		expect(second).toBe(`export-session:v1:${digest(["memory_key", "second-session-anchor"])}`);
+		expect(first).not.toBe(second);
+		expect(db.prepare("SELECT total_changes()").pluck().get()).toBe(changes);
+		expect(db.serialize().equals(before)).toBe(true);
+	});
+
+	it.each(["\u200b", "\u0085", "\u180e"])(
+		"retains non-trim characters as real source and memory keys: %s",
+		(anchor) => {
+			// Arrange: these characters are not blank under String.trim().
+			db.prepare("INSERT INTO memory_items VALUES (1, 1, ?)").run(anchor);
+			db.prepare("INSERT INTO memory_items VALUES (2, 1, 'later-anchor')").run();
+			const before = db.serialize();
+			const changes = db.prepare("SELECT total_changes()").pluck().get();
+			// Act
+			const fallback = exportedSessionKey(db, { id: 1, import_key: null });
+			const source = exportedSessionKey(db, { id: 1, import_key: anchor });
+			// Assert: do not broaden blankness beyond the exact JavaScript semantics.
+			expect(anchor.trim()).toBe(anchor);
+			expect(fallback).toBe(`export-session:v1:${digest(["memory_key", anchor])}`);
+			expect(source).toBe(`export-session:v1:${digest(["import_key", anchor])}`);
+			expect(db.prepare("SELECT total_changes()").pluck().get()).toBe(changes);
+			expect(db.serialize().equals(before)).toBe(true);
+		},
+	);
 });
 
 describe("session export source bytes", () => {

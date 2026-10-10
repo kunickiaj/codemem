@@ -14,21 +14,30 @@ export function isCanonicalSessionKey(value: string | null): value is string {
 	return value != null && /^export-session:v1:[a-f0-9]{64}(?::remap:[a-f0-9]{64})?$/.test(value);
 }
 
+function firstNonblankMemoryKey(db: Database, sessionId: number): string | null {
+	// Use all history, independent of mutable labels or the caller's readable subset.
+	const candidates = db
+		.prepare(`SELECT import_key FROM memory_items
+			WHERE session_id = ? AND import_key IS NOT NULL
+			ORDER BY id ASC`)
+		.iterate(sessionId) as IterableIterator<Record<string, unknown>>;
+	for (const candidate of candidates) {
+		const key = nonblankString(candidate.import_key);
+		if (key) return key;
+	}
+	return null;
+}
+
 /** Resolve export bookkeeping identity without changing source rows or enrollment state. */
 export function exportedSessionKey(db: Database, row: Record<string, unknown>): string {
 	const sourceKey = nonblankString(row.import_key);
 	if (isCanonicalSessionKey(sourceKey)) return sourceKey;
 	if (sourceKey) return `export-session:v1:${hashIdentity(["import_key", sourceKey])}`;
 
-	// Historical native sessions use the first immutable memory key across all
-	// history, not mutable project/device labels or the export's readable subset.
-	const memory = db
-		.prepare(`SELECT import_key FROM memory_items
-			WHERE session_id = ? AND import_key IS NOT NULL AND trim(import_key) <> ''
-			ORDER BY id ASC LIMIT 1`)
-		.get(Number(row.id)) as { import_key: string } | undefined;
-	if (!memory) throw new Error("session_identity_unavailable: session has no immutable source key");
-	return `export-session:v1:${hashIdentity(["memory_key", memory.import_key])}`;
+	const memoryKey = firstNonblankMemoryKey(db, Number(row.id));
+	if (!memoryKey)
+		throw new Error("session_identity_unavailable: session has no immutable source key");
+	return `export-session:v1:${hashIdentity(["memory_key", memoryKey])}`;
 }
 
 /** Apply a project namespace to a validated canonical key, replacing any prior remap. */
