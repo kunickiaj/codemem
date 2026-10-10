@@ -571,10 +571,7 @@ function contextMemoryScope(
 		.get(memoryImportKey(memory, remapProject)) as JsonObject | undefined;
 	if (!existing)
 		return importedMemoryScopeId(db, { ...memory, session_id: targetSessionId }, deviceId);
-	const scopeId = exportedMemoryScopeId(existing);
-	if (scopeId !== LOCAL_DEFAULT_SCOPE_ID && Number(existing.session_id) !== targetSessionId)
-		throw new Error(`unauthorized_scope: ${scopeId} (session mismatch)`);
-	return scopeId;
+	return exportedMemoryScopeId(existing);
 }
 
 function readableSessionProject(sessionId: unknown, memories: JsonObject[]): string | null {
