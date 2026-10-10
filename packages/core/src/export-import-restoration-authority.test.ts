@@ -28,7 +28,8 @@ let db: Database;
 let dbPath: string;
 let keysDir: string;
 
-function payload(redacted = false): ExportPayload {
+function payload(options: { redacted?: boolean } = {}): ExportPayload {
+	const { redacted = false } = options;
 	return {
 		version: "1.0",
 		exported_at: stamp,
@@ -207,7 +208,7 @@ describe("current authority for import restoration", () => {
 		"omitted-managed-with-local",
 	])("denies revoked placeholder restoration with %s memory labels atomically", (mode) => {
 		// Arrange: an earlier authorized slice contains no unscoped source context.
-		importMemories(payload(true), { dbPath });
+		importMemories(payload({ redacted: true }), { dbPath });
 		revoke();
 		const incoming = restorationPayload(mode);
 		const before = rows();
@@ -224,7 +225,7 @@ describe("current authority for import restoration", () => {
 
 	it("allows an active member to import context into a different canonical session without moving a deduped memory", () => {
 		// Arrange
-		importMemories(payload(true), { dbPath });
+		importMemories(payload({ redacted: true }), { dbPath });
 		const incoming = payload();
 		incoming.sessions[0].export_session_key = `export-session:v1:${"d".repeat(64)}`;
 		const before = db.prepare("SELECT * FROM memory_items").get();
@@ -243,7 +244,7 @@ describe("current authority for import restoration", () => {
 
 	it("rolls back an earlier local session write when a later restoration is denied", () => {
 		// Arrange
-		importMemories(payload(true), { dbPath });
+		importMemories(payload({ redacted: true }), { dbPath });
 		revoke();
 		const incoming = payload();
 		incoming.sessions.unshift({
@@ -272,7 +273,7 @@ describe("current authority for import restoration", () => {
 		"uses current stored authority rather than %s",
 		(mode) => {
 			// Arrange
-			importMemories(payload(true), { dbPath });
+			importMemories(payload({ redacted: true }), { dbPath });
 			if (mode === "epoch")
 				db.prepare(
 					"UPDATE replication_scopes SET membership_epoch = 2 WHERE scope_id = 'managed'",
@@ -327,7 +328,7 @@ describe("authorized restoration and read-only imports", () => {
 	);
 	it("restores the same memory and its context after membership returns", () => {
 		// Arrange
-		importMemories(payload(true), { dbPath });
+		importMemories(payload({ redacted: true }), { dbPath });
 		const memory = db.prepare("SELECT * FROM memory_items").get();
 		revoke();
 		db.prepare("UPDATE scope_memberships SET status = 'active' WHERE scope_id = 'managed'").run();
@@ -348,7 +349,7 @@ describe("authorized restoration and read-only imports", () => {
 		"accepts exact read-only reimport after revocation (redacted=%s)",
 		(redacted) => {
 			// Arrange
-			const incoming = payload(redacted);
+			const incoming = payload({ redacted });
 			importMemories(incoming, { dbPath });
 			if (redacted) {
 				const session = db.prepare("SELECT metadata_json FROM sessions").pluck().get() as string;
@@ -423,7 +424,7 @@ describe("authorized restoration and read-only imports", () => {
 describe("generated memory keys with blank remaps", () => {
 	it("restores context using the actual generated dedupe key", () => {
 		// Arrange
-		const initial = payload(true);
+		const initial = payload({ redacted: true });
 		delete initial.memory_items[0].import_key;
 		importMemories(initial, { dbPath, remapProject: "" });
 		const incoming = payload();
@@ -436,7 +437,7 @@ describe("generated memory keys with blank remaps", () => {
 
 	it("rejects a revoked generated-key import into a different session despite a forged local scope label", () => {
 		// Arrange
-		const initial = payload(true);
+		const initial = payload({ redacted: true });
 		delete initial.memory_items[0].import_key;
 		importMemories(initial, { dbPath, remapProject: "" });
 		revoke();
@@ -530,9 +531,9 @@ describe("authorized context imports across deduped session mappings", () => {
 		importMemories(legacy, { dbPath });
 		const before = rows();
 		// Act
-		const result = importMemories(payload(true), { dbPath });
+		const result = importMemories(payload({ redacted: true }), { dbPath });
 		const imported = db.serialize();
-		const repeated = importMemories(payload(true), { dbPath });
+		const repeated = importMemories(payload({ redacted: true }), { dbPath });
 		// Assert: the reference has its own placeholder, while legacy source context remains unchanged.
 		expect(result).toEqual({
 			sessions: 1,
@@ -567,7 +568,7 @@ describe("authorized context imports across deduped session mappings", () => {
 		const allTables = db.serialize();
 		const keys = keyBytes();
 		// Act
-		const act = () => importMemories(payload(true), { dbPath });
+		const act = () => importMemories(payload({ redacted: true }), { dbPath });
 		// Assert
 		expect(act).toThrow(/unauthorized_scope: managed/);
 		expect(db.serialize().equals(allTables)).toBe(true);
@@ -577,12 +578,111 @@ describe("authorized context imports across deduped session mappings", () => {
 	});
 });
 
+function snapshotImportState() {
+	return {
+		main: bytes(),
+		logical: db.serialize(),
+		wal: readFileSync(`${dbPath}-wal`),
+		keys: keyBytes(),
+	};
+}
+
+function expectImportStateUnchanged(state: ReturnType<typeof snapshotImportState>) {
+	expect(db.serialize().equals(state.logical)).toBe(true);
+	expect(readFileSync(dbPath).equals(state.main)).toBe(true);
+	expect(readFileSync(`${dbPath}-wal`).equals(state.wal)).toBe(true);
+	expect(keyBytes()).toEqual(state.keys);
+}
+
+describe("cross-session context evidence", () => {
+	it.each(["new", "placeholder", "prompt", "summary", "target-scope"])(
+		"does not let an unrelated local dedupe row authorize revoked incoming scope for %s context",
+		(mode) => {
+			// Arrange
+			const initial = payload({ redacted: true });
+			initial.memory_items[0].scope_id = "local-default";
+			importMemories(initial, { dbPath });
+			const incoming = payload();
+			incoming.sessions[0].export_session_key = `export-session:v1:${"d".repeat(64)}`;
+			if (mode !== "new") {
+				const target = payload({ redacted: mode === "placeholder" });
+				target.sessions[0].export_session_key = incoming.sessions[0].export_session_key;
+				if (mode === "target-scope") target.memory_items[0].import_key = "target-managed";
+				else target.memory_items = [];
+				importMemories(target, { dbPath });
+			}
+			if (mode === "prompt") incoming.user_prompts[0].import_key = "new-context-prompt";
+			if (mode === "summary") incoming.session_summaries[0].import_key = "new-context-summary";
+			if (mode === "target-scope") {
+				incoming.memory_items[0].scope_id = "local-default";
+				incoming.user_prompts[0].import_key = "new-context-prompt";
+			}
+			revoke();
+			const before = snapshotImportState();
+			// Act
+			const act = () => importMemories(incoming, { dbPath });
+			// Assert
+			expect(act).toThrow(/unauthorized_scope: managed/);
+			expectImportStateUnchanged(before);
+		},
+	);
+
+	it("uses the local stored scope rather than a forged revoked label for the same mapped session", () => {
+		// Arrange
+		const initial = payload({ redacted: true });
+		initial.memory_items[0].scope_id = "local-default";
+		importMemories(initial, { dbPath });
+		revoke();
+		// Act
+		const result = importMemories(payload(), { dbPath });
+		// Assert
+		expect(result).toMatchObject({
+			sessions: 0,
+			memory_items: 0,
+			user_prompts: 1,
+			session_summaries: 1,
+		});
+		expect(db.prepare("SELECT scope_id FROM memory_items").pluck().get()).toBe("local-default");
+	});
+
+	it("allows an unrelated local dedupe row with an authorized incoming managed scope idempotently", () => {
+		// Arrange
+		const initial = payload({ redacted: true });
+		initial.memory_items[0].scope_id = "local-default";
+		importMemories(initial, { dbPath });
+		const memory = db.prepare("SELECT * FROM memory_items").get();
+		const incoming = payload();
+		incoming.sessions[0].export_session_key = `export-session:v1:${"d".repeat(64)}`;
+		// Act
+		const result = importMemories(incoming, { dbPath });
+		const imported = snapshotImportState();
+		const repeated = importMemories(incoming, { dbPath });
+		// Assert
+		expect(result).toEqual({
+			sessions: 1,
+			memory_items: 0,
+			user_prompts: 1,
+			session_summaries: 1,
+			dryRun: false,
+		});
+		expect(repeated).toEqual({
+			sessions: 0,
+			memory_items: 0,
+			user_prompts: 0,
+			session_summaries: 0,
+			dryRun: false,
+		});
+		expect(db.prepare("SELECT * FROM memory_items").get()).toEqual(memory);
+		expectImportStateUnchanged(imported);
+	});
+});
+
 describe("session lookup index", () => {
 	it.each(["same", "distinct"])(
 		"indexes a thousand %s-session memories without per-memory find calls",
 		(mode) => {
 			// Arrange: observe lookups, not elapsed time or SQL parameter limits.
-			const incoming = payload(true);
+			const incoming = payload({ redacted: true });
 			incoming.memory_items = Array.from({ length: 1000 }, (_, index) => ({
 				...incoming.memory_items[0],
 				id: index + 100,
