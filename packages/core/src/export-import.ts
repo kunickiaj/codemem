@@ -571,6 +571,17 @@ function contextMemoryScope(
 		.get(memoryImportKey(memory, remapProject)) as JsonObject | undefined;
 	if (!existing)
 		return importedMemoryScopeId(db, { ...memory, session_id: targetSessionId }, deviceId);
+	// An unrelated dedupe row cannot replace incoming scope evidence. Remaps
+	// remain valid when both scopes are currently authorized; never reparent it.
+	if (Number(existing.session_id) !== targetSessionId) {
+		const incomingScope = importedMemoryScopeId(
+			db,
+			{ ...memory, session_id: targetSessionId },
+			deviceId,
+		);
+		if (!scopeCanBeImported(db, incomingScope, deviceId))
+			throw new Error(`unauthorized_scope: ${incomingScope}`);
+	}
 	return exportedMemoryScopeId(existing);
 }
 
