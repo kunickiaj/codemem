@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -27,6 +27,7 @@ const stamp = "2026-03-01T00:00:00Z";
 let db: Database;
 let dbPath: string;
 let keysDir: string;
+let fixtureRoot: string;
 
 function payload(options: { redacted?: boolean } = {}): ExportPayload {
 	const { redacted = false } = options;
@@ -169,12 +170,12 @@ function rows() {
 }
 
 beforeEach(async () => {
-	const dir = mkdtempSync(join(tmpdir(), "codemem-restoration-authority-"));
-	vi.stubEnv("CODEMEM_CONFIG", join(dir, "config.json"));
+	fixtureRoot = mkdtempSync(join(tmpdir(), "codemem-restoration-authority-"));
+	vi.stubEnv("CODEMEM_CONFIG", join(fixtureRoot, "config.json"));
 	vi.stubEnv("CODEMEM_DEVICE_ID", "fixture-device");
 	vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "file");
-	dbPath = join(dir, "fixture.sqlite");
-	keysDir = join(dir, "keys");
+	dbPath = join(fixtureRoot, "fixture.sqlite");
+	keysDir = join(fixtureRoot, "keys");
 	db = connect(dbPath);
 	initTestSchema(db);
 	db.prepare(
@@ -191,6 +192,7 @@ beforeEach(async () => {
 });
 afterEach(() => {
 	db.close();
+	rmSync(fixtureRoot, { recursive: true, force: true });
 	vi.unstubAllEnvs();
 	vi.restoreAllMocks();
 });
@@ -593,6 +595,70 @@ function expectImportStateUnchanged(state: ReturnType<typeof snapshotImportState
 	expect(readFileSync(`${dbPath}-wal`).equals(state.wal)).toBe(true);
 	expect(keyBytes()).toEqual(state.keys);
 }
+
+function omittedCustomLocalHistory() {
+	db.prepare(
+		`INSERT INTO replication_scopes(scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at) VALUES ('custom-local', 'custom local', 'team', 'local', 1, 'active', ?, ?)`,
+	).run(stamp, stamp);
+	const initial = payload({ redacted: true });
+	initial.memory_items[0].scope_id = "custom-local";
+	initial.memory_items.push({
+		...initial.memory_items[0],
+		id: 101,
+		scope_id: "managed",
+		import_key: "memory-readable",
+	});
+	importMemories(initial, { dbPath });
+	const incoming = payload();
+	incoming.memory_items[0].id = 101;
+	incoming.memory_items[0].import_key = "memory-readable";
+	return incoming;
+}
+
+describe("registered local-authority scope history", () => {
+	it("denies full context restoration when omitted custom local scope history is inactive", () => {
+		// Arrange: readable incoming memory omits registered, now-unreadable history.
+		const incoming = omittedCustomLocalHistory();
+		db.prepare(
+			"UPDATE replication_scopes SET status = 'archived' WHERE scope_id = 'custom-local'",
+		).run();
+		const before = snapshotImportState();
+		// Act
+		const act = () => importMemories(incoming, { dbPath });
+		// Assert: context, children, all tables, SQLite files, cache, and keys stay unchanged.
+		expect(act).toThrow(/unauthorized_scope: custom-local/);
+		expectImportStateUnchanged(before);
+		expect(getEmbeddingClient).not.toHaveBeenCalled();
+		expect(execFileSync).not.toHaveBeenCalled();
+	});
+
+	it("allows full context restoration for an active custom local scope without membership", () => {
+		// Arrange
+		const incoming = omittedCustomLocalHistory();
+		const omitted = db.prepare("SELECT * FROM memory_items WHERE scope_id = 'custom-local'").get();
+		// Act
+		const result = importMemories(incoming, { dbPath });
+		// Assert: existing local-authority policy requires active status, not enrollment.
+		expect(result).toMatchObject({
+			sessions: 0,
+			memory_items: 0,
+			user_prompts: 1,
+			session_summaries: 1,
+		});
+		expect(
+			db
+				.prepare("SELECT COUNT(*) FROM scope_memberships WHERE scope_id = 'custom-local'")
+				.pluck()
+				.get(),
+		).toBe(0);
+		expect(db.prepare("SELECT * FROM memory_items WHERE scope_id = 'custom-local'").get()).toEqual(
+			omitted,
+		);
+		expect(db.prepare("SELECT metadata_json FROM sessions").pluck().get()).toContain(
+			"session secret",
+		);
+	});
+});
 
 describe("cross-session context evidence", () => {
 	it.each(["new", "placeholder", "prompt", "summary", "target-scope"])(
