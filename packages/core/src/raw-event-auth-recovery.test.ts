@@ -7,6 +7,7 @@ import { connect } from "./db.js";
 import type { IngestOptions } from "./ingest-pipeline.js";
 import { ObserverAuthError } from "./observer-client.js";
 import { recoverOneMissingAuthWindow } from "./raw-event-auth-recovery.js";
+import { planRawEventRecoveryWindows } from "./raw-event-recovery-windows.js";
 import { RawEventSweeper } from "./raw-event-sweeper.js";
 import { refreshScopeMembershipCache } from "./scope-membership-cache.js";
 import {
@@ -188,6 +189,179 @@ function addHistoricalStream(streamId: string, { cwd = join(dir, "unmanaged") } 
 		.run(new Date(Date.now() + 1000).toISOString(), batch.batchId);
 	store.updateRawEventFlushState(streamId, 0);
 }
+
+it("passes 1,001 denied windows in one stream without starving default-cadence recovery", async () => {
+	// Arrange: real alternating events and completed gaps prevent the planner from coalescing windows.
+	await mapHistoricalScope();
+	store.db.transaction(() => {
+		store.db.prepare("UPDATE raw_event_flush_batches SET end_event_seq=0").run();
+		for (let seq = 2; seq <= 2000; seq++) {
+			store.recordRawEvent({
+				opencodeSessionId: "missed-session",
+				eventId: `historical-${seq}`,
+				eventType: "user_prompt",
+				payload: { type: "user_prompt", prompt_text: "Retain denied historical context" },
+				tsWallMs: eventTime,
+			});
+		}
+		for (let seq = 1; seq <= 2000; seq++) {
+			const batch = store.getOrCreateRawEventFlushBatch(
+				"missed-session",
+				"opencode",
+				seq,
+				seq,
+				"raw_events_v1",
+			);
+			store.db
+				.prepare(`UPDATE raw_event_flush_batches SET status=?,
+				observer_error_code=?, created_at=? WHERE id=?`)
+				.run(
+					seq % 2 ? "completed" : "gave_up",
+					seq % 2 ? null : "auth_missing",
+					cacheTime,
+					batch.batchId,
+				);
+		}
+		store.updateRawEventFlushState("missed-session", 2000);
+	})();
+	const ranges = (status: string) =>
+		(
+			store.db
+				.prepare(`SELECT start_event_seq, end_event_seq
+		FROM raw_event_flush_batches WHERE stream_id='missed-session' AND status=?`)
+				.all(status) as Array<{ start_event_seq: number; end_event_seq: number }>
+		).map((row) => ({
+			source: "opencode",
+			streamId: "missed-session",
+			startEventSeq: row.start_event_seq,
+			endEventSeq: row.end_event_seq,
+		}));
+	const windows = planRawEventRecoveryWindows(ranges("gave_up"), ranges("completed"), 100);
+	expect(windows).toHaveLength(1001);
+	expect(
+		windows.every(
+			(window) => window.startEventSeq === window.endEventSeq && window.startEventSeq % 2 === 0,
+		),
+	).toBe(true);
+	vi.stubEnv("CODEMEM_RAW_EVENTS_RECOVERY_ENABLED", "1");
+	vi.spyOn(console, "error").mockImplementation(() => {});
+	const assertWritable = store.assertSessionScopeWritable.bind(store);
+	let deniedAdmissions = 0;
+	vi.spyOn(store, "assertSessionScopeWritable").mockImplementation((id, metadata) => {
+		try {
+			assertWritable(id, metadata);
+		} catch (error) {
+			if (error instanceof ScopeWriteAuthorityError) {
+				deniedAdmissions++;
+				// Fail fast on the old window-by-window loop without a slow 1,000-admission red run.
+				expect(deniedAdmissions).toBeLessThanOrEqual(1);
+			}
+			throw error;
+		}
+	});
+	const { settings, observe } = options();
+	const sweeper = new RawEventSweeper(store, settings);
+
+	// Act/Assert: repeat the default 30-second cadence, beyond the existing 15-second cooldown.
+	for (let tick = 0; tick < 3; tick++) {
+		deniedAdmissions = 0;
+		addHistoricalStream(`healthy-${tick}`);
+		const before = retainedHistory();
+		await sweeper.tick();
+		expect(observe).toHaveBeenCalledTimes(tick + 1);
+		expect(deniedAdmissions).toBe(1);
+		expect(retainedHistory()).toEqual(before);
+		expect(
+			store.db.prepare("SELECT * FROM memory_items WHERE session_id=?").all(sessionId),
+		).toEqual([]);
+		expect(recoveryBatch()).toMatchObject({
+			stream_id: "missed-session",
+			status: "failed",
+			attempt_count: 0,
+		});
+		vi.setSystemTime(Date.now() + 30_000);
+	}
+	// Act: a newer membership epoch re-admits the original stream on the next call.
+	await refreshHistoricalScope(4);
+	expect(await recoverOneMissingAuthWindow(store, settings)).toBe(true);
+	// Assert: exclusions were call-local, and the fourth hourly invocation recovers the original window.
+	expect(observe).toHaveBeenCalledTimes(4);
+	expect(recoveryBatch()).toMatchObject({
+		stream_id: "missed-session",
+		start_event_seq: 0,
+		end_event_seq: 0,
+		status: "completed",
+		attempt_count: 1,
+	});
+	expect(
+		store.db
+			.prepare("SELECT session_id, scope_id FROM memory_items WHERE session_id=?")
+			.all(sessionId),
+	).toEqual([{ session_id: sessionId, scope_id: "scope-a" }]);
+});
+
+it.each([
+	{ deniedStream: "missed-session", source: "other", streamId: "missed-session" },
+	{ deniedStream: "a:b", source: "opencode:a", streamId: "b" },
+])(
+	"keeps denied stream keys separate from $source / $streamId",
+	async ({ deniedStream, source, streamId }) => {
+		// Arrange: identical IDs across sources and colon-colliding tuples have distinct trusted links.
+		await mapHistoricalScope();
+		if (deniedStream !== "missed-session") {
+			store.db.prepare("UPDATE raw_event_flush_batches SET status='completed'").run();
+			addHistoricalStream(deniedStream, { cwd: dir });
+		}
+		const healthySession = store.getOrCreateSessionForOpencodeSession({
+			opencodeSessionId: streamId,
+			source,
+			cwd: join(dir, "unmanaged"),
+			project: "unmanaged",
+			metadata: { source: "plugin" },
+			startedAt: new Date(eventTime).toISOString(),
+			toolVersion: "raw_events",
+		});
+		store.recordRawEvent({
+			opencodeSessionId: streamId,
+			source,
+			eventId: "healthy-prompt",
+			eventType: "user_prompt",
+			// Payload labels cannot borrow the denied session's scope or identity.
+			payload: {
+				type: "user_prompt",
+				prompt_text: "Recover separate linked history",
+				project: "codemem",
+				session_id: sessionId,
+			},
+			tsWallMs: eventTime,
+		});
+		const batch = store.getOrCreateRawEventFlushBatch(streamId, source, 0, 0, "raw_events_v1");
+		store.db
+			.prepare(`UPDATE raw_event_flush_batches SET status='gave_up',
+		observer_error_code='auth_missing', created_at=? WHERE id=?`)
+			.run(new Date(Date.now() + 2000).toISOString(), batch.batchId);
+		store.updateRawEventFlushState(streamId, 0, source);
+		const before = retainedHistory();
+		const { settings, observe } = options();
+
+		// Act
+		const recovered = await recoverOneMissingAuthWindow(store, settings);
+
+		// Assert: only the actual authorized session receives a private observation.
+		expect(recovered).toBe(true);
+		expect(observe).toHaveBeenCalledTimes(1);
+		expect(store.db.prepare("SELECT session_id, scope_id FROM memory_items").all()).toEqual([
+			{ session_id: healthySession, scope_id: "local-default" },
+		]);
+		expect(retainedHistory()).toEqual(before);
+		expect(
+			store.db
+				.prepare(`SELECT status, attempt_count FROM raw_event_flush_batches
+		WHERE source='opencode' AND stream_id=? AND extractor_version='raw_events_auth_recovery_v1'`)
+				.get(deniedStream),
+		).toEqual({ status: "failed", attempt_count: 0 });
+	},
+);
 
 it.each([false, true])(
 	"charges the fourth post-inference denial without allowing a fifth call (tier routing: %s)",
