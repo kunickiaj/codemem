@@ -18,6 +18,9 @@ import type { ReplicationOp, SyncMemorySnapshotItem, SyncResetRequired } from ".
 
 const now = "2026-01-01T00:00:00Z";
 const canonical = `export-session:v1:${"a".repeat(64)}`;
+const trimWhitespace = [
+	..."\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff",
+];
 const reset: SyncResetRequired = {
 	reset_required: true,
 	reason: "generation_mismatch",
@@ -181,6 +184,7 @@ function observeQueryExecutions() {
 		vi.spyOn(statement, "get");
 		vi.spyOn(statement, "all");
 		vi.spyOn(statement, "run");
+		vi.spyOn(statement, "iterate");
 		statements.push(statement);
 		return statement;
 	});
@@ -192,13 +196,27 @@ function observeQueryExecutions() {
 					count +
 					vi.mocked(statement.get).mock.calls.length +
 					vi.mocked(statement.all).mock.calls.length +
-					vi.mocked(statement.run).mock.calls.length,
+					vi.mocked(statement.run).mock.calls.length +
+					vi.mocked(statement.iterate).mock.calls.length,
 				0,
 			),
 	};
 }
 
 describe("legacy session bulk snapshot queries", () => {
+	it("executes only the bulk lookup for each empty transactional input", () => {
+		// Arrange
+		const before = db.serialize();
+		const queries = observeQueryExecutions();
+		// Act
+		db.transaction(() => snapshotSessionExportKeysForMemoryIds(db, []))();
+		db.transaction(() => snapshotSessionExportKeysForMemoryIds(db, [])).immediate();
+		queries.restore();
+		// Assert: preparing anchor and update statements does not execute them.
+		expect(queries.count()).toBe(2);
+		expect(db.serialize().equals(before)).toBe(true);
+	});
+
 	it.each([1000, 10000])("executes four queries for %i memories in one actual session", (size) => {
 		// Arrange: exceed SQLite's usual placeholder limit without any external services.
 		const sid = session();
@@ -252,6 +270,67 @@ describe("legacy session bulk snapshot queries", () => {
 });
 
 describe("legacy session snapshot helper", () => {
+	it.each(trimWhitespace)("does not stamp blank-only history for %j", (blank) => {
+		// Arrange: export and mutation must agree on every JavaScript trim character.
+		const sid = session(" \t");
+		const ids = [memory(sid, null), memory(sid, ""), memory(sid, blank)];
+		const before = db.serialize();
+		const changes = db.prepare("SELECT total_changes()").pluck().get();
+		// Act
+		db.transaction(() => snapshotSessionExportKeysForMemoryIds(db, ids))();
+		// Assert
+		expect(row(sid).import_key).toBe(" \t");
+		expect(db.serialize().equals(before)).toBe(true);
+		expect(db.prepare("SELECT total_changes()").pluck().get()).toBe(changes);
+		expect(() => marker(sid)).toThrow("session_identity_unavailable");
+	});
+
+	it.each([" \tanchor\n", "\ufeffanchor\u3000", "\u0085", "\u200b"])(
+		"skips blank history and preserves raw nonblank anchor %j across rollback and mixed sessions",
+		(key) => {
+			// Arrange: supplied IDs need not include the historical anchor.
+			const blankOnly = session();
+			const blankId = memory(blankOnly, trimWhitespace.join(""));
+			const affected = session("\ufeff");
+			for (const blank of trimWhitespace) memory(affected, blank);
+			const anchor = memory(affected, key);
+			const selected = memory(affected, "later");
+			const other = session();
+			const otherId = memory(other, "other-anchor");
+			const untouched = session();
+			memory(untouched, "unrelated");
+			const expected = `export-session:v1:${createHash("sha256")
+				.update(JSON.stringify(["memory_key", key]))
+				.digest("hex")}`;
+			const otherExpected = marker(other);
+			const before = db.serialize();
+			// Act
+			const snapshot = () =>
+				snapshotSessionExportKeysForMemoryIds(db, [blankId, selected, otherId, selected, -1]);
+			const rollback = db.transaction(() => {
+				snapshot();
+				db.prepare("DELETE FROM memory_items WHERE id = ?").run(anchor);
+				throw new Error("rollback_fixture");
+			});
+			// Assert: both stamping and cleanup participate in the caller's transaction.
+			expect(() => rollback()).toThrow("rollback_fixture");
+			expect(db.serialize().equals(before)).toBe(true);
+			expect(marker(affected)).toBe(expected);
+			// Act: retry with the same mixed batch, then remove the historical anchor.
+			db.transaction(() => {
+				snapshot();
+				db.prepare("DELETE FROM memory_items WHERE id IN (?, ?)").run(anchor, blankId);
+			})();
+			// Assert
+			expect(row(affected).import_key).toBe(expected);
+			expect(marker(affected)).toBe(expected);
+			expect(row(other).import_key).toBe(otherExpected);
+			expect(marker(other)).toBe(otherExpected);
+			expect(row(blankOnly).import_key).toBeNull();
+			expect(row(untouched).import_key).toBeNull();
+		},
+	);
+
 	it("requires a transaction even for empty input and never writes on rejection", () => {
 		// Arrange
 		const id = memory(session(), "anchor");
@@ -306,21 +385,24 @@ describe("legacy session snapshot helper", () => {
 		},
 	);
 
-	it("skips anchorless sessions so cleanup proceeds but export still fails read-only", () => {
-		// Arrange
-		const sid = session();
-		const id = memory(sid, " ");
-		// Act
-		db.transaction(() => {
-			snapshotSessionExportKeysForMemoryIds(db, [id]);
-			db.prepare("DELETE FROM memory_items WHERE id = ?").run(id);
-		})();
-		const before = db.serialize();
-		// Assert
-		expect(row(sid).import_key).toBeNull();
-		expect(() => marker(sid)).toThrow("session_identity_unavailable");
-		expect(db.serialize().equals(before)).toBe(true);
-	});
+	it.each([null, "", " "])(
+		"skips anchorless history %j so cleanup proceeds but export still fails read-only",
+		(key) => {
+			// Arrange
+			const sid = session();
+			const id = memory(sid, key);
+			// Act
+			db.transaction(() => {
+				snapshotSessionExportKeysForMemoryIds(db, [id]);
+				db.prepare("DELETE FROM memory_items WHERE id = ?").run(id);
+			})();
+			const before = db.serialize();
+			// Assert
+			expect(row(sid).import_key).toBeNull();
+			expect(() => marker(sid)).toThrow("session_identity_unavailable");
+			expect(db.serialize().equals(before)).toBe(true);
+		},
+	);
 });
 
 describe("legacy session key assignment", () => {

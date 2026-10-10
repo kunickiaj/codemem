@@ -1,5 +1,14 @@
+import type { Statement } from "better-sqlite3";
 import type { Database } from "./db.js";
 import { exportedSessionKey } from "./session-export-identity.js";
+
+function hasHistoricalMemoryAnchor(statement: Statement, sessionId: number): boolean {
+	const candidates = statement.iterate(sessionId) as IterableIterator<Record<string, unknown>>;
+	for (const candidate of candidates) {
+		if (typeof candidate.import_key === "string" && candidate.import_key.trim()) return true;
+	}
+	return false;
+}
 
 /** Preserve bookkeeping identity before changing memory anchors, never grant access. */
 export function snapshotSessionExportKeysForMemoryIds(
@@ -15,14 +24,14 @@ export function snapshotSessionExportKeysForMemoryIds(
 			JOIN sessions s ON s.id = m.session_id
 			WHERE m.id IN (SELECT value FROM json_each(?))`)
 		.all(JSON.stringify(memoryIds)) as { id: number; import_key: string | null }[];
-	const findAnchor = db.prepare(`SELECT 1 FROM memory_items
-		WHERE session_id = ? AND import_key IS NOT NULL AND trim(import_key) <> '' LIMIT 1`);
+	const findAnchor = db.prepare(`SELECT import_key FROM memory_items
+		WHERE session_id = ? AND import_key IS NOT NULL ORDER BY id ASC`);
 	// Match the original key (including NULL or whitespace), never replace a new key.
 	const saveKey = db.prepare("UPDATE sessions SET import_key = ? WHERE id = ? AND import_key IS ?");
 	for (const session of sessions) {
 		if (session.import_key?.trim()) continue;
 		// No prior helper identity exists without an anchor; cleanup must still proceed.
-		if (!findAnchor.get(session.id)) continue;
+		if (!hasHistoricalMemoryAnchor(findAnchor, session.id)) continue;
 		saveKey.run(exportedSessionKey(db, session), session.id, session.import_key);
 	}
 }
