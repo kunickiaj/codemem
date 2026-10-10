@@ -132,8 +132,14 @@ function recoveryBatch() {
 }
 
 function retainedHistory({ source = "opencode", streamId = "missed-session" } = {}) {
+	const session = store.db
+		.prepare(`SELECT sessions.* FROM sessions JOIN opencode_sessions
+		ON sessions.id=opencode_sessions.session_id
+		WHERE opencode_sessions.source=? AND opencode_sessions.stream_id=?`)
+		.get(source, streamId);
+	expect(session).toBeDefined();
 	return {
-		session: store.db.prepare("SELECT * FROM sessions WHERE id=?").get(sessionId),
+		session,
 		link: store.db.prepare("SELECT * FROM opencode_sessions").all(),
 		events: store.db.prepare("SELECT * FROM raw_events").all(),
 		state: store.db.prepare("SELECT * FROM raw_event_sessions").all(),
@@ -539,6 +545,9 @@ it.each([1, 2])(
 		// Arrange: first tick has only denied history; healthy history arrives before the default next tick.
 		await mapHistoricalScope();
 		if (deniedStreams === 2) addHistoricalStream("second-denied", { cwd: dir });
+		const deniedTuples = ["missed-session", ...(deniedStreams === 2 ? ["second-denied"] : [])].map(
+			(streamId) => ({ source: "opencode", streamId }),
+		);
 		vi.stubEnv("CODEMEM_RAW_EVENTS_RECOVERY_ENABLED", "1");
 		vi.spyOn(console, "error").mockImplementation(() => {});
 		const { settings, observe } = options();
@@ -547,7 +556,9 @@ it.each([1, 2])(
 		expect(observe).not.toHaveBeenCalled();
 		vi.setSystemTime(Date.now() + 30_000);
 		addHistoricalStream("newer-authorized");
-		const before = retainedHistory();
+		const before = deniedTuples.map(retainedHistory);
+		expect(before).toHaveLength(deniedStreams);
+		for (const history of before) expect(history.sourceBatch).toHaveLength(1);
 
 		// Act: the previous cooldown has expired, so this tick must fall through fresh denials.
 		await sweeper.tick();
@@ -578,7 +589,10 @@ it.each([1, 2])(
 					]
 				: []),
 		]);
-		expect(retainedHistory()).toEqual(before);
+		const after = deniedTuples.map(retainedHistory);
+		expect(after).toHaveLength(deniedStreams);
+		for (const history of after) expect(history.sourceBatch).toHaveLength(1);
+		expect(after).toEqual(before);
 	},
 );
 
