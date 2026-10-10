@@ -29,6 +29,21 @@ export interface OpenCodeV2ModelOption {
 	model: string;
 }
 
+function localServiceUrl(endpointUrl: string): URL | null {
+	let url: URL;
+	try {
+		url = new URL(endpointUrl);
+	} catch {
+		return null;
+	}
+	if (url.protocol !== "http:") return null;
+	// Discovery can advertise a listener's wildcard bind address, not a client destination.
+	if (url.hostname === "0.0.0.0") url.hostname = "127.0.0.1";
+	if (url.hostname === "[::]") url.hostname = "[::1]";
+	if (!["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) return null;
+	return url;
+}
+
 export async function listOpenCodeV2Models(): Promise<OpenCodeV2ModelOption[]> {
 	let endpoint: Awaited<ReturnType<typeof Service.discover>>;
 	try {
@@ -37,9 +52,8 @@ export async function listOpenCodeV2Models(): Promise<OpenCodeV2ModelOption[]> {
 		return [];
 	}
 	if (!endpoint) return [];
-	const url = new URL(endpoint.url);
-	if (url.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))
-		return [];
+	const url = localServiceUrl(endpoint.url);
+	if (!url) return [];
 	try {
 		const controller = new AbortController();
 		const response = await fetch(new URL("/api/model", url), {
@@ -166,8 +180,8 @@ export async function generateWithOpenCodeV2(input: {
 		return { text: null, error: "service_unavailable" };
 	}
 	if (!endpoint) return { text: null, error: "service_unavailable" };
-	const url = new URL(endpoint.url);
-	if (url.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) {
+	const url = localServiceUrl(endpoint.url);
+	if (!url) {
 		return { text: null, error: "service_unavailable" };
 	}
 	const controller = new AbortController();

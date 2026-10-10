@@ -1,6 +1,6 @@
 import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
 	revokeUnauthorizedCoordinatorPeerTrust,
 	trustCoordinatorPeersWithSharedManagedScopes,
@@ -22,6 +22,7 @@ import { isMemoryScopeRetired } from "./memory-scope-retirement.js";
 import { populateMemoryRefs } from "./ref-populate.js";
 import { getCachedScopeAuthorization } from "./scope-membership-cache.js";
 import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
+import { exportedSessionKey } from "./session-export-identity.js";
 import { buildDirectPeerCanonicalRequest } from "./sync-auth.js";
 import { LOCAL_SYNC_FEATURES, supportsSyncFeature } from "./sync-capability.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
@@ -135,6 +136,45 @@ function expectIndexedMemories(ids: number[]) {
 	}
 }
 
+it("preserves a historical session marker after authenticated first-anchor and last-anchor retirement", () => {
+	// Arrange: existing signed-control fixtures prove source ownership, not session bookkeeping.
+	vi.spyOn(Date, "now").mockReturnValue(Date.parse(now));
+	const first = seedMemory();
+	const lastKey = "memory-source-v1:c291cmNl:00000000-0000-4000-8000-000000000002";
+	const last = seedMemory("old", lastKey);
+	const sessionId = receiver
+		.prepare("SELECT session_id FROM memory_items WHERE id = ?")
+		.pluck()
+		.get(first) as number;
+	receiver.prepare("UPDATE memory_items SET session_id = ? WHERE id = ?").run(sessionId, last);
+	const sessionRow = () =>
+		receiver.prepare("SELECT id, import_key FROM sessions WHERE id = ?").get(sessionId) as {
+			id: number;
+			import_key: string | null;
+		};
+	const marker = exportedSessionKey(receiver, sessionRow());
+	const other = seedMemory("new");
+	// Act
+	receive(batch());
+	const afterFirst = exportedSessionKey(receiver, sessionRow());
+	sender.transaction(() =>
+		queueMemoryRetirement(
+			sender,
+			{ ...control, entityId: lastKey },
+			{ localDeviceId: source.deviceId, now },
+		),
+	)();
+	receive(batch());
+	const changes = receiver.prepare("SELECT total_changes()").pluck().get();
+	const afterLast = exportedSessionKey(receiver, sessionRow());
+	// Assert: read resolution remains available and read-only with no memory anchors left.
+	expect(afterFirst).toBe(marker);
+	expect(afterLast).toBe(marker);
+	expect(sessionRow().import_key).toBe(marker);
+	expect(receiver.prepare("SELECT total_changes()").pluck().get()).toBe(changes);
+	expect(receiver.prepare("SELECT id FROM memory_items").pluck().all()).toEqual([other]);
+});
+
 it("acknowledges duplicate retirement copies only after all matching content and indexes are removed", async () => {
 	seedIndexedMemory();
 	seedIndexedMemory();
@@ -219,6 +259,7 @@ beforeEach(() => {
 afterEach(() => {
 	sender.close();
 	receiver.close();
+	vi.restoreAllMocks();
 });
 
 async function coordinatorPair(

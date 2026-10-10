@@ -32,8 +32,13 @@ import {
 	toJsonNullable,
 } from "./db.js";
 import { buildFilterClausesWithContext, type OwnershipFilterContext } from "./filters.js";
+import {
+	recordForeignMemoryRevision,
+	recordLocalCreationSnapshot,
+} from "./memory-creation-provenance.js";
 import { buildMemoryDedupKey, normalizeMemoryDedupTitle } from "./memory-dedup.js";
 import { validateMemoryKind } from "./memory-kinds.js";
+import { allocateLocalCaptureMemorySource } from "./memory-source-identity.js";
 import { readCodememConfigFile } from "./observer-config.js";
 import type { PackArtifacts } from "./pack.js";
 import {
@@ -1145,8 +1150,6 @@ export class MemoryStore {
 		const dedupKey = buildMemoryDedupKey(safeTitle);
 
 		metaPayload.clock_device_id ??= this.deviceId;
-		const importKey = (metaPayload.import_key as string) || randomUUID();
-		metaPayload.import_key = importKey;
 
 		// Extract dedicated columns from metadata before they get buried in metadata_json
 		const subtitle = typeof metaPayload.subtitle === "string" ? metaPayload.subtitle : null;
@@ -1195,9 +1198,11 @@ export class MemoryStore {
 		// Block shared-memory writes while sync requires attention.
 		this.assertSharedMutationAllowed(provenance.visibility);
 
-		let memoryId: number;
+		let created: CreatedMemory;
 		try {
-			memoryId = this.db.transaction(() => {
+			created = this.db.transaction(() => {
+				const importKey = this.memoryCreationImportKey(metadata, metaPayload);
+				metaPayload.import_key = importKey;
 				const insertedRows = this.d
 					.insert(schema.memoryItems)
 					.values({
@@ -1242,9 +1247,9 @@ export class MemoryStore {
 
 				populateMemoryRefs(this.db, id, filesRead, filesModified, concepts);
 
-				this.recordMemoryUpsert(id, options.replicate !== false);
+				this.recordNewMemoryWrite(id, metadata, options);
 
-				return id;
+				return { memoryId: id, importKey };
 			})();
 		} catch (error) {
 			if (!isSameSessionDedupConstraintError(error)) throw error;
@@ -1264,7 +1269,7 @@ export class MemoryStore {
 			throw error;
 		}
 
-		this.scheduleRememberVectors({ memoryId, importKey }, safeTitle, safeBody, options);
+		this.scheduleRememberVectors(created, safeTitle, safeBody, options);
 
 		const detections = mergeDetections(
 			titleScan.detections,
@@ -1272,10 +1277,10 @@ export class MemoryStore {
 			metaScan.detections,
 		);
 		if (detections.length > 0) {
-			this.logSecretRedactions(memoryId, validKind, detections);
+			this.logSecretRedactions(created.memoryId, validKind, detections);
 		}
 
-		return memoryId;
+		return created.memoryId;
 	}
 
 	private scheduleRememberVectors(
@@ -1288,8 +1293,53 @@ export class MemoryStore {
 		else this.enqueueVectorWrite(created.memoryId, title, bodyText);
 	}
 
-	private recordMemoryUpsert(memoryId: number, enabled: boolean): void {
-		if (!enabled) return;
+	private hasSuppliedMemoryIdentity(metadata: Record<string, unknown> | undefined): boolean {
+		return ["import_key", "origin_device_id", "clock_device_id"].some((key) =>
+			Object.hasOwn(metadata ?? {}, key),
+		);
+	}
+
+	private recordNewMemoryProvenance(
+		memoryId: number,
+		metadata: Record<string, unknown> | undefined,
+	): void {
+		if (!this.hasSuppliedMemoryIdentity(metadata)) {
+			recordLocalCreationSnapshot(this.db, memoryId);
+			return;
+		}
+		const entityId = this.db
+			.prepare("SELECT import_key FROM memory_items WHERE id = ?")
+			.pluck()
+			.get(memoryId);
+		if (typeof entityId === "string") recordForeignMemoryRevision(this.db, entityId, "import");
+	}
+
+	private memoryCreationImportKey(
+		metadata: Record<string, unknown> | undefined,
+		scanned: Record<string, unknown>,
+	): string {
+		const configuredDevice = process.env.CODEMEM_DEVICE_ID?.trim();
+		if (configuredDevice && configuredDevice !== this.deviceId) return randomUUID();
+		// Caller-supplied identity fields cannot mint proof, even when empty or malformed.
+		// This runs only after dedup, inside the new-memory transaction.
+		if (this.hasSuppliedMemoryIdentity(metadata)) {
+			return typeof scanned.import_key === "string" && scanned.import_key
+				? scanned.import_key
+				: randomUUID();
+		}
+		return (
+			allocateLocalCaptureMemorySource(this.db, this.deviceId, this.scopeResolutionDeviceContext())
+				?.entityId ?? randomUUID()
+		);
+	}
+
+	private recordNewMemoryWrite(
+		memoryId: number,
+		metadata: Record<string, unknown> | undefined,
+		options: { replicate?: boolean },
+	): void {
+		this.recordNewMemoryProvenance(memoryId, metadata);
+		if (options.replicate === false) return;
 		try {
 			recordReplicationOp(this.db, { memoryId, opType: "upsert", deviceId: this.deviceId });
 		} catch {

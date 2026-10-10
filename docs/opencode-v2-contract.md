@@ -87,6 +87,14 @@ pinned release remains unverified.
 - The promise-plugin context exposes neither logging nor toast methods, so the V2
   adapter retains local diagnostics and treats user notifications as unavailable.
 
+## Local observer service connection
+
+Observer generation and model discovery use OpenCode's service discovery for
+the port and service-owned authentication. A wildcard listener address is not a
+client destination: Codemem maps `0.0.0.0` to `127.0.0.1` and `[::]` to `[::1]`
+before making requests. Both operations remain HTTP-only and loopback-only;
+remote addresses are rejected.
+
 ## Automatic recall gate
 
 The 2.0.24 host contract removes the earlier auxiliary-request ambiguity. When the

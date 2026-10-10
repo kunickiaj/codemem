@@ -1,9 +1,10 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { dirname, join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { connect } from "./db.js";
 import { buildFilterClausesWithContext } from "./filters.js";
+import { refreshManagedScopeFixture } from "./managed-scope-test-fixtures.js";
 import { sanitizeSearchQuery } from "./query-sanitizer.js";
 import { resolveVisibleScopeIds } from "./scope-resolution.js";
 import {
@@ -14,8 +15,54 @@ import {
 	rerankResults,
 } from "./search.js";
 import { MemoryStore } from "./store.js";
+import * as syncIdentity from "./sync-identity.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
 import type { MemoryResult } from "./types.js";
+
+// Identity fixtures use real file keys, never an inherited host keychain setting.
+vi.mock("node:child_process", async (importOriginal) => ({
+	...(await importOriginal<typeof import("node:child_process")>()),
+	execFileSync: vi.fn(() => {
+		throw new Error("External subprocess disabled in tests");
+	}),
+}));
+
+// These tests exercise FTS and scope SQL, not embedding providers.
+vi.mock("./vectors.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("./vectors.js")>()),
+	storeVectors: vi.fn(async () => {}),
+	semanticSearch: vi.fn(async () => []),
+}));
+
+it("reads local history without consulting a runtime signing key", () => {
+	// Arrange: key discovery is irrelevant to get, search, timeline, and explain locally.
+	const directory = mkdtempSync(join(tmpdir(), "codemem-local-reader-"));
+	const store = new MemoryStore(join(directory, "test.sqlite"), {
+		keysDir: join(directory, "keys"),
+	});
+	const loader = vi.spyOn(syncIdentity, "loadRuntimeSigningPublicKey");
+	try {
+		const id = insertScopedMemory(store, {
+			scopeId: "local-default",
+			title: "localprobe",
+			body: "localprobe",
+		});
+		// Act
+		const reads = [
+			[store.get(id)?.id],
+			store.search("localprobe").map(({ id }) => id),
+			store.timeline(null, id, 0, 0).map(({ id }) => id),
+			store.explain(null, [id]).items.map(({ id }) => id),
+		];
+		// Assert
+		expect(reads).toEqual([[id], [id], [id], [id]]);
+		expect(loader).not.toHaveBeenCalled();
+	} finally {
+		loader.mockRestore();
+		store.close();
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
 
 function insertCoordinatorScope(store: MemoryStore, scopeId: string): void {
 	const now = new Date().toISOString();
@@ -29,7 +76,7 @@ function insertCoordinatorScope(store: MemoryStore, scopeId: string): void {
 		.run(scopeId, scopeId, now, now);
 }
 
-function grantScopeToLocalDevice(store: MemoryStore, scopeId: string): void {
+async function grantScopeToLocalDevice(store: MemoryStore, scopeId: string): Promise<void> {
 	insertCoordinatorScope(store, scopeId);
 	store.db
 		.prepare(
@@ -39,12 +86,25 @@ function grantScopeToLocalDevice(store: MemoryStore, scopeId: string): void {
 			 ) VALUES (?, ?, 'member', 'active', 0, 'coord-test', 'group-test', ?)`,
 		)
 		.run(scopeId, store.deviceId, new Date().toISOString());
+	await verifyScopeGrant(store, scopeId);
+}
+
+async function verifyScopeGrant(store: MemoryStore, scopeId: string): Promise<string> {
+	const publicKey = await refreshManagedScopeFixture(store.db, {
+		keysDir: join(dirname(store.dbPath), "keys"),
+		deviceId: store.deviceId,
+		scopeIds: [scopeId],
+	});
+	expect(store.ownershipFilterContext({ expectedPublicKey: publicKey }).visibleScopeIds).toContain(
+		scopeId,
+	);
+	return publicKey;
 }
 
 function insertScopedMemory(
 	store: MemoryStore,
 	input: {
-		scopeId: string;
+		scopeId: string | null;
 		sessionId?: number;
 		title: string;
 		body: string;
@@ -695,7 +755,7 @@ describe("MemoryStore.search", () => {
 		const setupDb = connect(dbPath);
 		initTestSchema(setupDb);
 		setupDb.close();
-		store = new MemoryStore(dbPath);
+		store = new MemoryStore(dbPath, { keysDir: join(tmpDir, "keys") });
 	});
 
 	afterEach(() => {
@@ -775,8 +835,8 @@ describe("MemoryStore.search", () => {
 		}
 	});
 
-	it("filters by local scope authorization before ranking", () => {
-		grantScopeToLocalDevice(store, "authorized-team");
+	it("filters by local scope authorization before ranking", async () => {
+		await grantScopeToLocalDevice(store, "authorized-team");
 		insertCoordinatorScope(store, "unauthorized-team");
 		const visibleId = insertScopedMemory(store, {
 			scopeId: "authorized-team",
@@ -1021,7 +1081,7 @@ describe("scope visibility filter (resolved visible set)", () => {
 		const setupDb = connect(dbPath);
 		initTestSchema(setupDb);
 		setupDb.close();
-		store = new MemoryStore(dbPath);
+		store = new MemoryStore(dbPath, { keysDir: join(tmpDir, "keys") });
 	});
 
 	afterEach(() => {
@@ -1068,7 +1128,7 @@ describe("scope visibility filter (resolved visible set)", () => {
 			.run(scopeId, store.deviceId, membershipEpoch, new Date().toISOString());
 	}
 
-	it("resolves and filters to exactly the readable scope set", () => {
+	it("resolves and filters to exactly the readable scope set", async () => {
 		// Visible scopes
 		insertLocalAuthorityScope("local-authority-team");
 		insertCoordinatorScopeWithEpoch("member-team", 3, "active");
@@ -1082,7 +1142,8 @@ describe("scope visibility filter (resolved visible set)", () => {
 		grantMembership("inactive-team", 0); // membership active but scope inactive -> not visible
 
 		// Resolver output: literals + local-authority + valid-membership only.
-		const resolved = resolveVisibleScopeIds(store.db, store.deviceId);
+		const expectedPublicKey = await verifyScopeGrant(store, "member-team");
+		const resolved = resolveVisibleScopeIds(store.db, store.deviceId, { expectedPublicKey });
 		expect([...resolved].sort()).toEqual(
 			["", "local-default", "legacy-shared-review", "local-authority-team", "member-team"].sort(),
 		);
@@ -1092,53 +1153,39 @@ describe("scope visibility filter (resolved visible set)", () => {
 
 		// Seed one memory row per scope plus NULL-scope and empty-scope rows.
 		const sessionId = insertTestSession(store.db);
-		const insertRow = (scopeId: string | null): number => {
-			const ts = new Date().toISOString();
-			const info = store.db
-				.prepare(
-					`INSERT INTO memory_items(
-						session_id, kind, title, body_text, confidence, tags_text, active,
-						created_at, updated_at, metadata_json, rev, visibility, scope_id
-					 ) VALUES (?, 'discovery', 'scoped row', 'body', 0.5, '', 1, ?, ?, '{}', 1, 'shared', ?)`,
-				)
-				.run(sessionId, ts, ts, scopeId);
-			return Number(info.lastInsertRowid);
-		};
+		const insertRow = (scopeId: string | null): number =>
+			insertScopedMemory(store, {
+				sessionId,
+				scopeId,
+				title: "scoped row",
+				body: "body",
+			});
 
-		const nullId = insertRow(null);
-		const emptyId = insertRow("");
-		const localDefaultId = insertRow("local-default");
-		const legacyReviewId = insertRow("legacy-shared-review");
-		const localAuthorityId = insertRow("local-authority-team");
-		const memberId = insertRow("member-team");
-		const nonmemberId = insertRow("nonmember-team");
-		const staleId = insertRow("stale-team");
-		const inactiveId = insertRow("inactive-team");
+		const expectedIds = [
+			null,
+			"",
+			"local-default",
+			"legacy-shared-review",
+			"local-authority-team",
+			"member-team",
+		].map(insertRow);
+		for (const scopeId of ["nonmember-team", "stale-team", "inactive-team"]) insertRow(scopeId);
 
 		// Render the scope-visibility predicate via the resolved-set context
 		// (search.ts ownershipFilterContext sets visibleScopeIds -> fast path).
-		const filterResult = buildFilterClausesWithContext(null, ownershipFilterContext(store));
+		const filterResult = buildFilterClausesWithContext(
+			null,
+			ownershipFilterContext(store, { expectedPublicKey }),
+		);
 		const whereSql = ["memory_items.active = 1", ...filterResult.clauses].join(" AND ");
 		const rows = store.db
 			.prepare(`SELECT id FROM memory_items WHERE ${whereSql}`)
 			.all(...filterResult.params) as Array<{ id: number }>;
-		const visibleIds = new Set(rows.map((row) => row.id));
-
-		// Visible: NULL, "", local-default, legacy-shared-review, local-authority, valid member.
-		expect(visibleIds.has(nullId)).toBe(true);
-		expect(visibleIds.has(emptyId)).toBe(true);
-		expect(visibleIds.has(localDefaultId)).toBe(true);
-		expect(visibleIds.has(legacyReviewId)).toBe(true);
-		expect(visibleIds.has(localAuthorityId)).toBe(true);
-		expect(visibleIds.has(memberId)).toBe(true);
-
-		// Not visible: non-member, stale-epoch member, inactive scope.
-		expect(visibleIds.has(nonmemberId)).toBe(false);
-		expect(visibleIds.has(staleId)).toBe(false);
-		expect(visibleIds.has(inactiveId)).toBe(false);
+		// Assert: exactly the allowed rows, with no nonmember, stale, or inactive replicas.
+		expect(rows.map((row) => row.id).sort((a, b) => a - b)).toEqual(expectedIds);
 	});
 
-	it("matches the EXISTS fallback predicate for the same data", () => {
+	it("matches the DB-backed fallback predicate for the same data", async () => {
 		insertLocalAuthorityScope("local-authority-team");
 		insertCoordinatorScopeWithEpoch("member-team", 3, "active");
 		grantMembership("member-team", 3);
@@ -1147,20 +1194,16 @@ describe("scope visibility filter (resolved visible set)", () => {
 		grantMembership("stale-team", 4);
 		insertCoordinatorScopeWithEpoch("inactive-team", 0, "inactive");
 		grantMembership("inactive-team", 0);
+		const expectedPublicKey = await verifyScopeGrant(store, "member-team");
 
 		const sessionId = insertTestSession(store.db);
-		const insertRow = (scopeId: string | null): number => {
-			const ts = new Date().toISOString();
-			const info = store.db
-				.prepare(
-					`INSERT INTO memory_items(
-						session_id, kind, title, body_text, confidence, tags_text, active,
-						created_at, updated_at, metadata_json, rev, visibility, scope_id
-					 ) VALUES (?, 'discovery', 'scoped row', 'body', 0.5, '', 1, ?, ?, '{}', 1, 'shared', ?)`,
-				)
-				.run(sessionId, ts, ts, scopeId);
-			return Number(info.lastInsertRowid);
-		};
+		const insertRow = (scopeId: string | null): number =>
+			insertScopedMemory(store, {
+				sessionId,
+				scopeId,
+				title: "scoped row",
+				body: "body",
+			});
 		for (const scopeId of [
 			null,
 			"",
@@ -1184,16 +1227,17 @@ describe("scope visibility filter (resolved visible set)", () => {
 			return new Set(rows.map((row) => row.id));
 		};
 
-		// Fast path (resolved IN-set) vs fallback (EXISTS) must select identical rows.
-		const fastContext = ownershipFilterContext(store);
-		const { visibleScopeIds: _omit, scopeVisibilityDb: _omitDb, ...fallbackContext } = fastContext;
+		// The pre-resolved set and DB-backed fallback must select identical rows.
+		const fastContext = ownershipFilterContext(store, { expectedPublicKey });
+		const { visibleScopeIds: _omit, ...fallbackContext } = fastContext;
 		expect([...runIds(fastContext)].sort()).toEqual([...runIds(fallbackContext)].sort());
 	});
 
-	it("renders an index-eligible plan with no correlated scope subquery", () => {
+	it("renders an index-eligible plan with no correlated scope subquery", async () => {
 		insertLocalAuthorityScope("local-authority-team");
 		insertCoordinatorScopeWithEpoch("member-team", 3, "active");
 		grantMembership("member-team", 3);
+		const expectedPublicKey = await verifyScopeGrant(store, "member-team");
 
 		// Enough rows that a full scan would be a real regression, not a tie.
 		const sessionId = insertTestSession(store.db);
@@ -1222,17 +1266,17 @@ describe("scope visibility filter (resolved visible set)", () => {
 		// correlated subquery and no TRIM (TRIM would defeat the index). This pins
 		// the actual perf goal: a future regression that reintroduces TRIM or the
 		// per-row EXISTS predicate would resurface CORRELATED here and fail.
-		const fastContext = ownershipFilterContext(store);
-		const fastPlan = explainPlan(fastContext);
+		const fastPlan = explainPlan(ownershipFilterContext(store, { expectedPublicKey }));
 		expect(fastPlan).toMatch(/USING INDEX/);
 		expect(fastPlan).not.toMatch(/CORRELATED/);
 		expect(fastPlan).not.toMatch(/TRIM/);
 
-		// Contrast guard: the EXISTS fallback is exactly the plan shape we are
-		// hoisting away from — it must still contain the correlated subqueries, so
-		// this assertion proves the fast-path check above is meaningful.
-		const { visibleScopeIds: _omit, scopeVisibilityDb: _omitDb, ...fallbackContext } = fastContext;
-		expect(explainPlan(fallbackContext)).toMatch(/CORRELATED/);
+		// A connection-backed caller also validates proof once before rendering SQL.
+		const { visibleScopeIds: _omit, ...fallbackContext } = ownershipFilterContext(store, {
+			expectedPublicKey,
+		});
+		const fallbackPlan = explainPlan(fallbackContext);
+		expect(fallbackPlan).not.toMatch(/CORRELATED/);
 	});
 });
 
@@ -1251,7 +1295,7 @@ describe("MemoryStore.search cross-project widening", () => {
 		const setupDb = connect(dbPath);
 		initTestSchema(setupDb);
 		setupDb.close();
-		store = new MemoryStore(dbPath);
+		store = new MemoryStore(dbPath, { keysDir: join(tmpDir, "keys") });
 	});
 
 	afterEach(() => {
@@ -1481,7 +1525,7 @@ describe("MemoryStore.timeline", () => {
 		const setupDb = connect(dbPath);
 		initTestSchema(setupDb);
 		setupDb.close();
-		store = new MemoryStore(dbPath);
+		store = new MemoryStore(dbPath, { keysDir: join(tmpDir, "keys") });
 	});
 
 	afterEach(() => {
@@ -1566,8 +1610,8 @@ describe("MemoryStore.timeline", () => {
 		expect(results.length).toBeLessThanOrEqual(5);
 	});
 
-	it("excludes unauthorized scoped neighbors from memoryId timelines", () => {
-		grantScopeToLocalDevice(store, "authorized-team");
+	it("excludes unauthorized scoped neighbors from memoryId timelines", async () => {
+		await grantScopeToLocalDevice(store, "authorized-team");
 		insertCoordinatorScope(store, "unauthorized-team");
 		const sessionId = insertTestSession(store.db);
 		const hiddenBeforeId = insertScopedMemory(store, {
@@ -1606,8 +1650,8 @@ describe("MemoryStore.timeline", () => {
 		expect(resultIds).not.toContain(hiddenAfterId);
 	});
 
-	it("returns empty when an explicit memoryId anchor fails caller scope filters", () => {
-		grantScopeToLocalDevice(store, "authorized-team");
+	it("returns empty when an explicit memoryId anchor fails caller scope filters", async () => {
+		await grantScopeToLocalDevice(store, "authorized-team");
 		const sessionId = insertTestSession(store.db);
 		const anchorId = insertScopedMemory(store, {
 			sessionId,
@@ -1730,7 +1774,7 @@ describe("MemoryStore.explain", () => {
 		const setupDb = connect(dbPath);
 		initTestSchema(setupDb);
 		setupDb.close();
-		store = new MemoryStore(dbPath);
+		store = new MemoryStore(dbPath, { keysDir: join(tmpDir, "keys") });
 	});
 
 	afterEach(() => {
@@ -1836,8 +1880,8 @@ describe("MemoryStore.explain", () => {
 		}
 	});
 
-	it("excludes unauthorized scoped memories from query and id explain results", () => {
-		grantScopeToLocalDevice(store, "authorized-team");
+	it("excludes unauthorized scoped memories from query and id explain results", async () => {
+		await grantScopeToLocalDevice(store, "authorized-team");
 		insertCoordinatorScope(store, "unauthorized-team");
 		const visibleId = insertScopedMemory(store, {
 			scopeId: "authorized-team",

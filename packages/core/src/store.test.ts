@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
 import { connect, tableExists } from "./db.js";
 import { buildFilterClauses, buildFilterClausesWithContext } from "./filters.js";
@@ -2608,4 +2608,38 @@ describe("MemoryStore constructor auto-bootstrap", () => {
 			second.close();
 		}
 	});
+});
+it("retrieves moved memories only under the new session project", () => {
+	// Arrange: isolate config, identity keys, and embedding work as well as persisted rows.
+	const tmpDir = mkdtempSync(join(tmpdir(), "codemem-store-move-test-"));
+	const originalEnv = { ...process.env };
+	const storeVectorsSpy = vi.spyOn(vectors, "storeVectors").mockResolvedValue();
+	let fixtureStore: MemoryStore | undefined;
+	onTestFinished(() => {
+		fixtureStore?.close();
+		storeVectorsSpy.mockRestore();
+		process.env = originalEnv;
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+	process.env.CODEMEM_CONFIG = join(tmpDir, "config.json");
+	process.env.CODEMEM_ACTOR_ID = "test-actor";
+	process.env.CODEMEM_ACTOR_DISPLAY_NAME = "Test Actor";
+	process.env.CODEMEM_MEMORY_CROSS_SESSION_DEDUP_WINDOW_MS = "0";
+	process.env.CODEMEM_DEBUG = "0";
+	const store = new MemoryStore(":memory:", { keysDir: join(tmpDir, "keys") });
+	fixtureStore = store;
+	const row = (table: string) => store.db.prepare(`SELECT * FROM ${table}`).get();
+	const sid = store.startSession({ project: "old" });
+	const id = store.remember(sid, "bugfix", "relocationneedle", "Original body");
+	const [session, memory] = [row("sessions"), row("memory_items")];
+	const result = store.moveMemoryProjectForUser(id, "new"); // Act: move through the user API.
+	expect(result).toEqual({ session_id: sid, project: "new", moved_memory_count: 1 });
+	expect(row("sessions")).toEqual({ ...session, project: "new" }); // Assert: only session changes.
+	expect(row("memory_items")).toEqual(memory);
+	for (const project of ["new", "old"]) {
+		const ids = project === "new" ? [id] : [];
+		expect(store.recent(10, { project }).map((x) => x.id)).toEqual(ids);
+		expect(store.recentByKinds(["bugfix"], 10, { project }).map((x) => x.id)).toEqual(ids);
+		expect(store.search("relocationneedle", 10, { project }).map((x) => x.id)).toEqual(ids);
+	}
 });

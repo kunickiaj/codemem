@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import type { Database } from "better-sqlite3";
 import { cleanProjectIdentity } from "./project-identity.js";
+import { getEffectiveCachedScopeAuthorization } from "./scope-membership-cache.js";
 import { matchesWildcard } from "./wildcard-match.js";
 import {
 	type CanonicalWorkspaceIdentity,
@@ -27,10 +28,8 @@ export const LEGACY_SHARED_REVIEW_SCOPE_ID = "legacy-shared-review";
 
 /**
  * Upper bound on how many scope ids we will inline into the index-eligible
- * `scope_id IN (...)` fast path (one bound parameter each). Kept well under
- * SQLite's compiled `SQLITE_MAX_VARIABLE_NUMBER` so a device with an
- * unrealistically large visible set falls back to the fixed-param EXISTS
- * predicate instead of throwing "too many SQL variables" at prepare time.
+ * `scope_id IN (...)` fast path (one bound parameter each). Larger sets use
+ * a single JSON array parameter instead of exceeding SQLite's variable limit.
  */
 export const MAX_SCOPE_IN_PARAMS = 500;
 
@@ -280,31 +279,30 @@ export function resolveProjectScope(input: ResolveProjectScopeInput): ScopeResol
 export interface ScopeVisibilityOptions {
 	/** Public key of the runtime's actual signing key, not an enrolled DB row. */
 	expectedPublicKey?: string;
-	/** Read-only key loader reserved for coordinator proof validation; not used by membership-only reads. */
+	/** Read-only key loader, called once only when coordinator candidates exist. */
 	loadExpectedPublicKey?: () => string | undefined;
 }
 
+function resolveVisibilityPublicKey(
+	memberScopes: Array<{ scope_id: string | null; authority_type: string }>,
+	options: ScopeVisibilityOptions,
+): string | undefined {
+	if (options.expectedPublicKey != null) return options.expectedPublicKey;
+	if (!memberScopes.some((row) => row.scope_id != null && row.authority_type === "coordinator"))
+		return undefined;
+	return options.loadExpectedPublicKey?.();
+}
+
 /**
- * Resolve, once per request, the full set of scope_ids that `deviceId` may read.
- *
- * This is the index-eligible equivalent of the per-row EXISTS predicate in
- * `addScopeVisibilityFilter`'s fallback branch (filters.ts): instead of
- * evaluating the replication_scopes / scope_memberships subqueries for every
- * candidate row, we compute the visible set up front and let the SQL filter use
- * a plain `scope_id IN (...)`. The membership predicate (active membership with
- * `membership_epoch >= scope.membership_epoch`) is preserved exactly.
- *
- * Lives in this leaf module (it imports nothing from filters/search/store/
- * vectors) so all three OwnershipFilterContext builders can share it without an
- * import cycle.
- *
- * NULL scope_ids are skipped here — a NULL scope_id is handled by the filter's
- * dedicated `IS NULL` branch, not by membership in this set.
+ * Resolve readable scopes once per request. Coordinator membership SQL lists
+ * candidates only; retained proof must match the supplied actual signing key.
+ * Unknown scopes deny, while local/manual/invite scopes retain existing rules.
+ * NULL scopes remain the filter's dedicated local-default branch.
  */
 export function resolveVisibleScopeIds(
 	db: Database,
 	deviceId: string,
-	_options: ScopeVisibilityOptions = {},
+	options: ScopeVisibilityOptions = {},
 ): string[] {
 	const visible = new Set<string>(["", LOCAL_DEFAULT_SCOPE_ID, LEGACY_SHARED_REVIEW_SCOPE_ID]);
 	const localScopes = db
@@ -319,7 +317,7 @@ export function resolveVisibleScopeIds(
 	}
 	const memberScopes = db
 		.prepare(
-			`SELECT sm.scope_id AS scope_id
+			`SELECT sm.scope_id AS scope_id, rs.authority_type
 			 FROM scope_memberships sm
 			 JOIN replication_scopes rs ON rs.scope_id = sm.scope_id
 			 WHERE sm.device_id = ?
@@ -327,9 +325,23 @@ export function resolveVisibleScopeIds(
 			   AND rs.status = 'active'
 			   AND sm.membership_epoch >= rs.membership_epoch`,
 		)
-		.all(deviceId) as Array<{ scope_id: string | null }>;
+		.all(deviceId) as Array<{ scope_id: string | null; authority_type: string }>;
+	const expectedPublicKey = resolveVisibilityPublicKey(memberScopes, options);
 	for (const row of memberScopes) {
-		if (row.scope_id != null) visible.add(row.scope_id);
+		if (row.scope_id == null) continue;
+		if (["local", "manual", "invite"].includes(row.authority_type)) {
+			visible.add(row.scope_id);
+			continue;
+		}
+		if (row.authority_type !== "coordinator") continue;
+		if (!expectedPublicKey?.trim()) continue;
+		const authorization = getEffectiveCachedScopeAuthorization(db, {
+			deviceId,
+			scopeId: row.scope_id,
+			expectedPublicKey,
+		});
+		if (!authorization.authorized) continue;
+		visible.add(row.scope_id);
 	}
 	return [...visible];
 }

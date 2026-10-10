@@ -16,9 +16,11 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { ApiSyncMemorySnapshotPageResponse } from "./api-types.js";
 import type { Database } from "./db.js";
 import { toJson } from "./db.js";
+import { recordForeignMemoryRevision } from "./memory-creation-provenance.js";
 import { retirementAllowsSnapshot } from "./memory-retirement-snapshot-guard.js";
 import * as schema from "./schema.js";
 import { redactMemoryFields, SecretScanner } from "./secret-scanner.js";
+import { snapshotSessionExportKeysForMemoryIds } from "./session-export-identity-mutation.js";
 import { buildAuthHeaders, buildDirectPeerAuthHeaders } from "./sync-auth.js";
 import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap-constants.js";
 import { LOCAL_SYNC_CAPABILITY, SYNC_CAPABILITY_HEADER } from "./sync-capability.js";
@@ -465,17 +467,7 @@ export function applyBootstrapSnapshot(
 		// - The dirty-local gate in sync-pass ensures we only reach here when
 		//   no unsynced shared changes exist.
 		if (bootstrapScopeId) {
-			const deleteResult = d
-				.delete(schema.memoryItems)
-				.where(
-					and(
-						isNotNull(schema.memoryItems.import_key),
-						eq(schema.memoryItems.scope_id, bootstrapScopeId),
-						ne(sql`COALESCE(${schema.memoryItems.visibility}, '')`, "private"),
-					),
-				)
-				.run();
-			result.deleted = deleteResult.changes;
+			result.deleted = deleteSyncedMemoriesInScope(db, bootstrapScopeId);
 		}
 
 		// 2. Insert snapshot items, grouping by project.
@@ -484,6 +476,7 @@ export function applyBootstrapSnapshot(
 		for (const item of retirementSnapshotItems(db, items, bootstrapScopeId)) {
 			const inserted = insertSnapshotItem(d, item, bootstrapScopeId, activeScanner);
 			if (!inserted.applied) continue;
+			recordForeignMemoryRevision(db, item.entity_id, "bootstrap");
 			if (inserted.embeddable) embeddableApplied++;
 			result.applied++;
 		}
@@ -529,6 +522,25 @@ export function applyBootstrapSnapshot(
 	}).immediate();
 
 	return result;
+}
+
+function deleteSyncedMemoriesInScope(db: Database, scopeId: string): number {
+	const d = drizzle(db, { schema });
+	const deletePredicate = and(
+		isNotNull(schema.memoryItems.import_key),
+		eq(schema.memoryItems.scope_id, scopeId),
+		ne(sql`COALESCE(${schema.memoryItems.visibility}, '')`, "private"),
+	);
+	const affectedRows = d
+		.select({ id: schema.memoryItems.id })
+		.from(schema.memoryItems)
+		.where(deletePredicate)
+		.all();
+	snapshotSessionExportKeysForMemoryIds(
+		db,
+		affectedRows.map((row) => row.id),
+	);
+	return d.delete(schema.memoryItems).where(deletePredicate).run().changes;
 }
 
 function advanceMergedSnapshotBoundary(
@@ -623,6 +635,7 @@ export function mergeBootstrapSnapshot(
 
 			const existingIds = existingRows.map((row) => row.id);
 			if (existingIds.length > 0) {
+				snapshotSessionExportKeysForMemoryIds(db, existingIds);
 				const deleteResult = d
 					.delete(schema.memoryItems)
 					.where(inArray(schema.memoryItems.id, existingIds))
@@ -632,6 +645,7 @@ export function mergeBootstrapSnapshot(
 
 			const inserted = insertSnapshotItem(d, item, bootstrapScopeId, activeScanner);
 			if (!inserted.applied) continue;
+			recordForeignMemoryRevision(db, item.entity_id, "bootstrap");
 			if (inserted.embeddable) embeddableApplied++;
 			result.applied++;
 		}

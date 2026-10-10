@@ -1,9 +1,10 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { memoryOwnershipRoutes } from "../../viewer-server/src/routes/memory-ownership.js";
 import { connect } from "./db.js";
+import { enrollFixtureSigningKey } from "./managed-scope-test-fixtures.js";
 import {
 	commitMemoryOwnershipRecovery,
 	previewMemoryOwnershipRecovery,
@@ -12,6 +13,7 @@ import {
 import { getVerifiedMemorySource } from "./memory-source-identity.js";
 import { listProjectScopeInventory } from "./project-scope-settings.js";
 import { MemoryStore } from "./store.js";
+import { generateKeypair } from "./sync-identity.js";
 import {
 	backfillReplicationOps,
 	getSyncResetState,
@@ -27,14 +29,13 @@ beforeEach(() => {
 	directory = mkdtempSync(join(tmpdir(), "ownership-recovery-"));
 	vi.stubEnv("CODEMEM_CONFIG", join(directory, "config.json"));
 	vi.stubEnv("CODEMEM_ACTOR_ID", "fixture-actor");
+	vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "file");
 	const db = connect(join(directory, "test.sqlite"));
 	initTestSchema(db);
-	db.prepare(
-		"INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES ('fixture-device', 'fixture-key', 'fixture-fingerprint', '2026-01-01')",
-	).run();
+	enrollFixtureSigningKey(db, join(directory, "keys"), "fixture-device");
 	vi.stubEnv("CODEMEM_DEVICE_ID", "fixture-device");
 	db.close();
-	store = new MemoryStore(join(directory, "test.sqlite"));
+	store = new MemoryStore(join(directory, "test.sqlite"), { keysDir: join(directory, "keys") });
 	vi.spyOn(vectors, "storeVectors").mockResolvedValue(undefined);
 });
 afterEach(async () => {
@@ -101,6 +102,75 @@ it("gives each recovered copy a new session UUID without changing originals or m
 	).toEqual(inserted);
 	expect(retry).toEqual({ ...result, idempotent: true });
 });
+
+it("records recovery proofs only with the actual enrolled signing key", () => {
+	// Arrange: the fixture stores a real key and its enrolled public identity.
+	const id = memory();
+	const original = store.db.prepare("SELECT * FROM memory_items WHERE id = ?").get(id);
+	const input = confirmed([id]);
+	const keyPath = join(directory, "keys", "device.key");
+	const key = readFileSync(keyPath);
+	const device = store.db.prepare("SELECT public_key, fingerprint FROM sync_device").get() as {
+		public_key: string;
+		fingerprint: string;
+	};
+	// Act
+	const result = commitMemoryOwnershipRecovery(store, input);
+	const identity = result.copies[0]?.recoveredIdentity;
+	// Assert: new proof describes the actual signer; historical rows remain untouched.
+	expect(getVerifiedMemorySource(store.db, identity ?? "")).toEqual({
+		entityId: identity,
+		sourceDeviceId: store.deviceId,
+		evidence: "local_creation",
+	});
+	expect(
+		store.db
+			.prepare(
+				"SELECT source_public_key, source_fingerprint FROM memory_local_creation_snapshots WHERE entity_id = ?",
+			)
+			.get(identity),
+	).toEqual({ source_public_key: device.public_key, source_fingerprint: device.fingerprint });
+	expect(store.db.prepare("SELECT * FROM memory_items WHERE id = ?").get(id)).toEqual(original);
+	expect(getVerifiedMemorySource(store.db, "legacy-1")).toBeNull();
+	expect(readFileSync(keyPath)).toEqual(key);
+});
+
+it.each(
+	["missing", "replaced"].flatMap((keyState) =>
+		["before preview", "after preview"].map((timing) => ({ keyState, timing })),
+	),
+)(
+	"rejects a $keyState actual signing key $timing without writes or repair",
+	({ keyState, timing }) => {
+		// Arrange: retaining the public device tuple must not stand in for private-key control.
+		const id = memory();
+		let input = timing === "after preview" ? confirmed([id]) : undefined;
+		const keyPath = join(directory, "keys", "device.key");
+		let replacement: Buffer | undefined;
+		if (keyState === "missing") renameSync(keyPath, `${keyPath}.fixture-backup`);
+		else {
+			const otherKey = join(directory, "other-keys", "device.key");
+			generateKeypair(otherKey, join(directory, "other-keys", "device.pub"));
+			replacement = readFileSync(otherKey);
+			writeFileSync(keyPath, replacement);
+		}
+		input ??= confirmed([id]);
+		const before = recoveryState();
+		const enqueue = vi.spyOn(store, "enqueueVectorWrite");
+		// Act
+		const recover = () => commitMemoryOwnershipRecovery(store, input);
+		// Assert: fail before allocating source or snapshot authority, including after review.
+		expect(recover).toThrow(
+			expect.objectContaining({ code: "ownership_identity_changed", status: 409 }),
+		);
+		expect(store.db.inTransaction).toBe(false);
+		expect(recoveryState()).toEqual(before);
+		expect(enqueue).not.toHaveBeenCalled();
+		expect(vectors.storeVectors).not.toHaveBeenCalled();
+		if (replacement) expect(readFileSync(keyPath)).toEqual(replacement);
+		else expect(existsSync(keyPath)).toBe(false);
+	},
+);
 
 it.each([
 	{ rowProject: null, sessionProject: "fixture", expected: "fixture" },
@@ -291,10 +361,12 @@ it("rolls back copies, identities, sessions and receipts together after a write 
 		.prepare("UPDATE memory_items SET files_read = ?, concepts = ?")
 		.run('["src/rollback.ts"]', '["rollback"]');
 	const input = confirmed(ids);
+	const before = recoveryState();
 	store.db.exec(
 		"CREATE TRIGGER fail_receipt BEFORE INSERT ON memory_ownership_recoveries BEGIN SELECT RAISE(ABORT, 'fixture_crash'); END;",
 	);
 	expect(() => commitMemoryOwnershipRecovery(store, input)).toThrow("fixture_crash");
+	expect(recoveryState()).toEqual(before);
 	expect(count("memory_items")).toBe(2);
 	expect(count("sessions")).toBe(2);
 	expect(count("memory_source_bindings")).toBe(0);
@@ -393,6 +465,7 @@ function revokeRecoveryAccess(id: number, access: string) {
 
 function recoveryState() {
 	return [
+		"sync_device",
 		"memory_items",
 		"sessions",
 		"memory_source_bindings",
@@ -400,7 +473,17 @@ function recoveryState() {
 		"memory_file_refs",
 		"memory_concept_refs",
 		"replication_ops",
-	].map((table) => store.db.prepare(`SELECT * FROM ${table}`).all());
+		"memory_local_creation_snapshots",
+		"memory_foreign_revisions",
+		"memory_local_capture",
+		"memory_local_capture_adoption",
+	].map((table) => {
+		if (
+			!store.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)
+		)
+			return null;
+		return store.db.prepare(`SELECT * FROM ${table}`).all();
+	});
 }
 
 it.each(
@@ -502,7 +585,7 @@ it("replays a durable receipt after reopening without duplicating copies", () =>
 	const input = confirmed([memory()]);
 	const result = commitMemoryOwnershipRecovery(store, input);
 	store.close();
-	store = new MemoryStore(join(directory, "test.sqlite"));
+	store = new MemoryStore(join(directory, "test.sqlite"), { keysDir: join(directory, "keys") });
 	expect(commitMemoryOwnershipRecovery(store, input)).toEqual({ ...result, idempotent: true });
 	expect(count("memory_items")).toBe(2);
 });

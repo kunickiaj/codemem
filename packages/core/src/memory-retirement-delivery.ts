@@ -5,6 +5,7 @@ import {
 	recordMemoryScopeRetirement,
 } from "./memory-scope-retirement.js";
 import { clearMemoryRefs } from "./ref-populate.js";
+import { snapshotSessionExportKeysForMemoryIds } from "./session-export-identity-mutation.js";
 import { recordNonce, verifyDirectPeerSignature } from "./sync-auth.js";
 import { supportsSyncFeature } from "./sync-capability.js";
 
@@ -156,6 +157,10 @@ function cleanupRetiredMemory(db: Database, control: RetirementControl): void {
 	const rows = db
 		.prepare("SELECT id FROM memory_items WHERE import_key = ? AND scope_id = ?")
 		.all(control.entityId, control.retiredScopeId) as Array<{ id: number }>;
+	snapshotSessionExportKeysForMemoryIds(
+		db,
+		rows.map((row) => row.id),
+	);
 	for (const row of rows) {
 		clearMemoryRefs(db, row.id);
 		if (db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'memory_vectors'").get()) {

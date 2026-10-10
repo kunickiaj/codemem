@@ -10,14 +10,14 @@
  */
 
 import type { Database } from "./db.js";
-import { projectClause } from "./project.js";
+import { projectColumnClause } from "./project.js";
 import { normalizeConcept } from "./ref-populate.js";
 import { summaryLikeSqlPredicate } from "./summary-memory.js";
 
 export interface RefQueryOptions {
 	/** Filter by memory kind (e.g. "decision", "bugfix") */
 	kind?: string;
-	/** Filter by session project using projectClause matching */
+	/** Filter by session project, falling back to the memory project when absent. */
 	project?: string;
 	/** Filter file refs by relation type */
 	relation?: "read" | "modified";
@@ -105,7 +105,10 @@ export function findByFile(
 	let joinClause = "";
 
 	if (options?.project) {
-		const { clause, params } = projectClause(options.project);
+		const { clause, params } = projectColumnClause(
+			"COALESCE(sessions.project, mi.project)",
+			options.project,
+		);
 		if (clause) {
 			joinClause = " JOIN sessions ON sessions.id = mi.session_id";
 			outerClauses.push(clause);
@@ -166,7 +169,10 @@ export function findByConcept(
 	let joinClause = "";
 
 	if (options?.project) {
-		const { clause, params } = projectClause(options.project);
+		const { clause, params } = projectColumnClause(
+			"COALESCE(sessions.project, mi.project)",
+			options.project,
+		);
 		if (clause) {
 			joinClause = " JOIN sessions ON sessions.id = mi.session_id";
 			outerClauses.push(clause);

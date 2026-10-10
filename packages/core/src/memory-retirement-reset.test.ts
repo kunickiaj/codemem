@@ -1,6 +1,6 @@
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
 	revokeUnauthorizedCoordinatorPeerTrust,
 	trustCoordinatorPeersWithSharedManagedScopes,
@@ -26,6 +26,7 @@ import { getVerifiedMemorySource } from "./memory-source-identity.js";
 import { populateMemoryRefs } from "./ref-populate.js";
 import { getCachedScopeAuthorization } from "./scope-membership-cache.js";
 import { refreshTestScopeRows } from "./scope-membership-cache-test-fixtures.js";
+import { exportedSessionKey } from "./session-export-identity.js";
 import { buildDirectPeerCanonicalRequest } from "./sync-auth.js";
 import { applyBootstrapSnapshot, mergeBootstrapSnapshot } from "./sync-bootstrap.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
@@ -347,6 +348,7 @@ it("paginates a direct-source subset and merges it without deleting other author
 afterEach(() => {
 	sender.close();
 	receiver.close();
+	vi.restoreAllMocks();
 });
 
 it.each(["replace", "merge"] as const)(
@@ -515,10 +517,32 @@ function expectRemainingCopies(ids: number[]) {
 }
 
 it("cleans every destructively imported duplicate before reset completion and protected merge retries", () => {
+	// Arrange: convert the affected imported session to historical anchor-only bookkeeping.
+	vi.spyOn(Date, "now").mockReturnValue(Date.parse(now));
 	const retained = seedDuplicateSnapshotRows();
+	const affected = receiver
+		.prepare(
+			"SELECT DISTINCT session_id FROM memory_items WHERE import_key = ? AND scope_id = 'old'",
+		)
+		.pluck()
+		.all(qualified(1)) as number[];
+	for (const id of affected)
+		receiver.prepare("UPDATE sessions SET import_key = NULL WHERE id = ?").run(id);
+	const sessionRows = () =>
+		affected.map(
+			(id) =>
+				receiver.prepare("SELECT id, import_key FROM sessions WHERE id = ?").get(id) as {
+					id: number;
+					import_key: string | null;
+				},
+		);
+	const markers = sessionRows().map((row) => exportedSessionKey(receiver, row));
 	queue(1);
 	const request = start();
+	// Act
 	const page = exchange(request);
+	// Assert: reset's shared retirement cleanup uses the same pre-delete snapshot hook.
+	expect(sessionRows().map((row) => exportedSessionKey(receiver, row))).toEqual(markers);
 	expect(retirementResetProgress(receiver, request.resetId).complete).toBe(true);
 	expectRemainingCopies(retained);
 	expect(protectedApply(request.resetId, "merge", [snapshot(1), snapshot(1)]).applied).toBe(0);
@@ -535,13 +559,20 @@ it("cleans every destructively imported duplicate before reset completion and pr
 });
 
 it("rolls back all duplicate cleanup and reset state when a later copy cannot be deleted", () => {
+	// Arrange: failing shared cleanup must undo historical identity snapshots as well as content.
+	vi.spyOn(Date, "now").mockReturnValue(Date.parse(now));
 	const retained = seedDuplicateSnapshotRows();
+	receiver
+		.prepare(`UPDATE sessions SET import_key = NULL WHERE id IN
+		(SELECT session_id FROM memory_items WHERE import_key = ? AND scope_id = 'old')`)
+		.run(qualified(1));
 	queue(1);
 	const request = start();
 	receiver.exec(`CREATE TRIGGER fail_last_duplicate BEFORE DELETE ON memory_items
 		WHEN OLD.scope_id = 'old' AND (SELECT COUNT(*) FROM memory_items WHERE import_key = OLD.import_key AND scope_id = OLD.scope_id) = 1
 		BEGIN SELECT RAISE(ABORT, 'duplicate_delete_failed'); END`);
 	const before = receiver.serialize();
+	// Act / Assert
 	expect(() => exchange(request)).toThrow("duplicate_delete_failed");
 	expect(receiver.serialize().equals(before)).toBe(true);
 	expect(retirementResetProgress(receiver, request.resetId).complete).toBe(false);

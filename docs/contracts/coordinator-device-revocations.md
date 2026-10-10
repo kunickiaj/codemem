@@ -517,6 +517,23 @@ the envelope scope or changing the entity label cannot bypass managed proof.
 Failure rejects the entire batch before applying operations; existing input-error
 precedence and origin-bound cleanup after revocation remain unchanged.
 
+Local store, search, semantic filters, viewer statistics, and exports now use
+retained managed proof with the runtime's actual signing key. Key loading happens
+only when coordinator scope candidates exist; reads do not create or repair keys
+or write schema. Resolved visibility and the database-backed filter fallback use
+the same decision, while a fallback without database access cannot grant managed
+access.
+
+Legacy origin-based authorship keeps history readable after losing membership
+only in explicitly unmanaged `local`, `manual`, or `invite` scopes, regardless
+of scope status. Imported rows with a legacy `local` origin and an import key
+do not count as local authorship. Managed and unknown scopes cannot use mutable
+origin fields to bypass current access checks. Retained managed authorship is
+deferred to an immutable creation-proof replacement; this slice does not activate it.
+This read exception does not permit new writes: MCP remember checks current
+resolved-scope permission inside its rollback transaction. Import permissions,
+additional share inviters, and policy inheritance still need separate adoption.
+
 Automatic raw-event ingestion checks scope authority before observer inference
 and again during persistence. A scope denial keeps the batch queued without
 consuming observer failure attempts or advancing the event cursor. Refreshing

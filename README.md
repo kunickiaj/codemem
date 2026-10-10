@@ -538,6 +538,14 @@ Use **Health** for the current status. Globally revoked identity devices are omi
 
 Pair devices from **Devices**. Actor assignment, Spaces, grants, project mappings, and coordinator administration remain available in **Advanced** for existing integrations and diagnostics. They are not required for normal teammate sharing. Existing `#sync` and `#sync/diagnostics` links remain supported as Advanced compatibility routes. See [the user guide](docs/user-guide.md#advanced-operator-and-compatibility-guidance).
 
+#### Managed memory access and signing keys
+
+Plugin-injected context from coordinator-managed Projects requires retained version-1 scope authorization proof that matches the runtime's current signing key and current membership. An active membership row alone is insufficient; device or Identity labels and a memory's recorded author cannot substitute for that proof. Unknown scope authority types deny access rather than inheriting local/manual/invite behavior.
+
+If managed context disappears after changing a runtime or key location, restore the original enrolled device's signing keys and use the same `CODEMEM_KEYS_DIR` and `CODEMEM_SYNC_KEY_STORE` settings across the plugin, MCP server, CLI, and viewer. The default key directory is `~/.config/codemem/keys`; file-backed runtimes need the original matching key pair there or in the configured directory, while keychain-backed runtimes need access to the original device's keychain entry. Restart affected processes after restoring their settings; do not generate a replacement key or edit membership rows to bypass denial.
+
+If retained proof is missing, reconnect to the configured coordinator and let the normal sync daemon refresh scope authorization with those same keys and the original enrollment. A valid retained proof still works offline while the key, scope, membership, and policy remain authorized; an outage does not create proof or repair a key mismatch. Built-in local/default and shared-review visibility remains unchanged.
+
 #### Optional coordinator account linking
 
 Coordinator account linking is an advanced operator flow and is off by default. These commands do not configure Google or deploy a coordinator; an operator must first enable optional account linking on the coordinator. Local memory and direct sync remain usable without Google.

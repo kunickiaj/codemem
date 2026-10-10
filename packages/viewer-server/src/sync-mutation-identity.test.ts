@@ -10,6 +10,7 @@ import {
 	MemoryStore,
 } from "@codemem/core";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { refreshManagedScopeFixture } from "../../core/src/managed-scope-test-fixtures.js";
 import { syncRoutes } from "./routes/sync.js";
 
 const projectIdentity = "https://example.test/enrollment/project.git";
@@ -149,7 +150,8 @@ function mutate(mutation: Mutation) {
 }
 
 it.each(mutations)("uses ensured membership for %s after viewer startup", async (mutation) => {
-	// Arrange: only the newly persisted device is a member.
+	// Arrange: only the newly persisted device has proof bound to its actual signing key.
+	await refreshManagedScopeFixture(store.db, { keysDir, deviceId, scopeIds: [scopeId] });
 	if (mutation === "save") {
 		store.db
 			.prepare("UPDATE memory_items SET scope_id = 'local-default' WHERE id = ?")
@@ -182,7 +184,7 @@ it.each(mutations)("uses ensured membership for %s after viewer startup", async 
 });
 
 const denied = mutations.flatMap((mutation) =>
-	(["revoked", "missing", "old-local-only"] as const).map((membership) => ({
+	(["revoked", "missing", "old-local-only", "uncached"] as const).map((membership) => ({
 		mutation,
 		membership,
 	})),
@@ -190,7 +192,7 @@ const denied = mutations.flatMap((mutation) =>
 it.each(denied)(
 	"denies $mutation with $membership enrollment membership",
 	async ({ mutation, membership }) => {
-		// Arrange: stale local membership must never grant the ensured device access.
+		// Arrange: stale or unproven membership must never grant the ensured device access.
 		if (mutation === "save") {
 			store.db
 				.prepare("UPDATE memory_items SET scope_id = 'local-default' WHERE id = ?")
@@ -200,7 +202,7 @@ it.each(denied)(
 			store.db
 				.prepare("UPDATE scope_memberships SET status = 'revoked' WHERE device_id = ?")
 				.run(deviceId);
-		} else {
+		} else if (membership !== "uncached") {
 			store.db.prepare("DELETE FROM scope_memberships WHERE device_id = ?").run(deviceId);
 		}
 		if (membership === "old-local-only") {

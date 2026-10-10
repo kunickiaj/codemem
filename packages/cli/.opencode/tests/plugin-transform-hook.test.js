@@ -18,6 +18,8 @@ import { MemoryStore } from "../../../core/src/store.js";
 import { getRetrievalAttempt } from "../../../core/src/retrieval-ledger.js";
 import { automaticRecallHealth } from "../../../core/src/automatic-recall.js";
 import { initTestSchema } from "../../../core/src/test-utils.js";
+import { refreshTestScopeRows } from "../../../core/src/scope-membership-cache-test-fixtures.js";
+import { ensureDeviceIdentity, loadPublicKey } from "../../../core/src/sync-identity.js";
 import { buildViewerIdentityTarget } from "../../../core/src/identity-target.js";
 import { writeRawEventSpoolEntry } from "../../../opencode-plugin/.opencode/lib/raw-event-spool.js";
 import {
@@ -345,7 +347,7 @@ const insertCoordinatorScope = (db, scopeId) => {
 	).run(scopeId, scopeId, now, now);
 };
 
-const grantScopeToDevice = (db, scopeId, deviceId) => {
+const insertScopeMembership = (db, scopeId, deviceId) => {
 	insertCoordinatorScope(db, scopeId);
 	db.prepare(
 		`INSERT OR REPLACE INTO scope_memberships(
@@ -353,6 +355,16 @@ const grantScopeToDevice = (db, scopeId, deviceId) => {
 			coordinator_id, group_id, updated_at
 		 ) VALUES (?, ?, 'member', 'active', 0, 'coord-test', 'group-test', ?)`,
 	).run(scopeId, deviceId, new Date().toISOString());
+};
+
+const grantScopeToDevice = async (db, scopeId, deviceId, keysDir) => {
+	insertScopeMembership(db, scopeId, deviceId);
+	// Use the same isolated signing identity as the CLI, not the helper's static key.
+	ensureDeviceIdentity(db, { deviceId, keysDir });
+	const publicKey = loadPublicKey(keysDir);
+	if (!publicKey) throw new Error("Missing fixture signing key");
+	// The default fixture date is fixed; retained proofs must match this test's clock.
+	await refreshTestScopeRows(db, { [deviceId]: publicKey }, { now: new Date() });
 };
 
 const insertScopedMemory = (
@@ -392,6 +404,7 @@ describe("OpenCode transform-time injection", () => {
 		for (const key of [
 			"CODEMEM_DB",
 			"CODEMEM_DEVICE_ID",
+			"CODEMEM_KEYS_DIR",
 			"CODEMEM_ACTOR_ID",
 			"CODEMEM_CONFIG",
 			"CODEMEM_RUNTIME_ROOT",
@@ -2479,18 +2492,31 @@ describe("OpenCode transform-time injection", () => {
 		expect(command.join(" ")).not.toContain("/tmp/greenroom");
 	});
 
-	test("injects the CLI-scoped pack without unauthorized scope memories", async () => {
+	test.each([
+		{ name: "injects the CLI-scoped pack without unauthorized scope memories", withProof: true },
+		{ name: "denies CLI-scoped injection for raw membership without proof", withProof: false },
+	])("$name", async ({ withProof }) => {
+		// Arrange: only a refreshed proof can authorize scope-a; raw scope-b stays denied.
 		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-plugin-scope-"));
 		tmpDirs.push(tmpDir);
 		const worktree = join(tmpDir, "greenroom");
 		mkdirSync(worktree);
 		const dbPath = join(tmpDir, "mem.sqlite");
 		const deviceId = "plugin-scope-device";
+		const keysDir = join(tmpDir, "keys");
+		process.env.CODEMEM_KEYS_DIR = keysDir;
 		const db = connect(dbPath);
 		initTestSchema(db);
 		const sessionId = insertSession(db, { cwd: worktree, project: "greenroom" });
-		grantScopeToDevice(db, "scope-a", deviceId);
-		insertCoordinatorScope(db, "scope-b");
+		process.env.CODEMEM_SYNC_KEY_STORE = "file";
+		if (withProof) {
+			await grantScopeToDevice(db, "scope-a", deviceId, keysDir);
+		} else {
+			insertScopeMembership(db, "scope-a", deviceId);
+			ensureDeviceIdentity(db, { deviceId, keysDir });
+		}
+		// Add scope-b after refresh so even its active membership has no retained proof.
+		insertScopeMembership(db, "scope-b", deviceId);
 		insertScopedMemory(db, {
 			sessionId,
 			scopeId: "scope-a",
@@ -2508,6 +2534,8 @@ describe("OpenCode transform-time injection", () => {
 		process.env.CODEMEM_DB = dbPath;
 		process.env.CODEMEM_DEVICE_ID = deviceId;
 		process.env.CODEMEM_RUNNER = "codemem-test-runner";
+		process.env.CODEMEM_EMBEDDING_DISABLED = "1";
+		process.env.CODEMEM_EMBEDDING_OFFLINE = "1";
 		const showToast = vi.fn().mockResolvedValue(undefined);
 		spawnMock.mockImplementation((_command, args, options) => {
 			if (Array.isArray(args) && args.includes("pack")) {
@@ -2543,13 +2571,19 @@ describe("OpenCode transform-time injection", () => {
 				},
 			],
 		};
+		// Act
 		await hooks["experimental.chat.messages.transform"]({}, output);
 
+		// Assert
 		const userPrompt = output.messages[0].parts.map((part) => part.text || "").join("\n");
-		expect(userPrompt).toContain("Greenroom authorized scope note");
+		if (withProof) {
+			expect(userPrompt).toContain("Greenroom authorized scope note");
+		} else {
+			expect(userPrompt).toBe("greenroom scope safety");
+		}
 		expect(userPrompt).not.toContain("Greenroom forbidden payroll secret");
 		expect(userPrompt).not.toContain("forbidden payroll details");
-		expect(showToast).toHaveBeenCalledTimes(1);
+		expect(showToast).toHaveBeenCalledTimes(withProof ? 1 : 0);
 		expect(JSON.stringify(showToast.mock.calls)).not.toContain("forbidden payroll");
 	});
 

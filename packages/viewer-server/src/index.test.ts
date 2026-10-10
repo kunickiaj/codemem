@@ -740,15 +740,28 @@ async function seedValidManagedSyncScopes(
 	});
 }
 
-async function grantVisibleReaderScope(store: MemoryStore, scopeId: string): Promise<void> {
-	grantSyncScopeToDevices(store, scopeId, [store.deviceId]);
+async function grantVisibleReaderScope(
+	store: MemoryStore,
+	scopeId: string | string[],
+): Promise<void> {
+	const scopeIds = typeof scopeId === "string" ? [scopeId] : scopeId;
+	for (const id of scopeIds) grantSyncScopeToDevices(store, id, [store.deviceId]);
 	const keysDir = process.env.CODEMEM_KEYS_DIR;
 	if (!keysDir) throw new Error("Missing fixture signing directory");
 	await refreshManagedScopeFixture(store.db, {
 		keysDir,
 		deviceId: store.deviceId,
-		scopeIds: [scopeId],
+		scopeIds,
 	});
+}
+
+async function seedProvenProjectMappingScope(
+	store: MemoryStore,
+	scopeId: string,
+	label: string,
+): Promise<void> {
+	seedProjectMappingScope(store, scopeId, label);
+	await grantVisibleReaderScope(store, scopeId);
 }
 
 async function provenViewerMixedScopeFixture(store: MemoryStore) {
@@ -8542,7 +8555,7 @@ describe("viewer-server", () => {
 						 ) VALUES ('oss', 'OSS', 'team', 'coordinator', 1, 'active', ?, ?)`,
 					)
 					.run(now, now);
-				grantSyncScopeToDevices(store, "oss", [store.deviceId]);
+				await grantVisibleReaderScope(store, "oss");
 				const sessionId = insertTestSession(store.db);
 				store.db
 					.prepare("UPDATE sessions SET cwd = ?, git_remote = ?, project = ? WHERE id = ?")
@@ -8648,7 +8661,7 @@ describe("viewer-server", () => {
 						 ) VALUES ('oss', 'OSS', 'team', 'coordinator', 1, 'active', ?, ?)`,
 					)
 					.run(now, now);
-				grantSyncScopeToDevices(store, "oss", [store.deviceId]);
+				await grantVisibleReaderScope(store, "oss");
 				const sessionId = insertTestSession(store.db);
 				store.db
 					.prepare("UPDATE sessions SET git_remote = ?, project = ? WHERE id = ?")
@@ -8721,7 +8734,7 @@ describe("viewer-server", () => {
 						 ) VALUES ('oss', 'OSS', 'team', 'coordinator', 1, 'active', ?, ?)`,
 					)
 					.run(now, now);
-				grantSyncScopeToDevices(store, "oss", [store.deviceId]);
+				await grantVisibleReaderScope(store, "oss");
 				const sessionId = insertTestSession(store.db);
 				store.db
 					.prepare("UPDATE sessions SET git_remote = ?, project = ? WHERE id = ?")
@@ -13244,7 +13257,7 @@ describe("viewer-server", () => {
 			}
 		});
 
-		it("updates local Sharing domain project mappings without granting membership", async () => {
+		it("updates local Sharing domain project mappings without granting extra membership", async () => {
 			const { app, getStore, cleanup } = createTestApp();
 			try {
 				await app.request("/api/stats");
@@ -13267,7 +13280,7 @@ describe("viewer-server", () => {
 							'sensitive-review-transport-fingerprint', '["sensitive-review-address"]', ?)`,
 					)
 					.run(new Date().toISOString());
-				seedProjectMappingScope(store, "acme-work", "Acme Work");
+				await seedProvenProjectMappingScope(store, "acme-work", "Acme Work");
 				const initialMemberships = projectMappingMemberships(store);
 				const settingsRes = await app.request("/api/sync/sharing-domains/settings");
 				expect(settingsRes.status).toBe(200);
@@ -14659,6 +14672,7 @@ describe("viewer-server", () => {
 				seedProjectMappingMembership(store, "exampleco-work");
 
 				const projectIdentity = "https://git.example.invalid/exampleco/api.git";
+				await grantVisibleReaderScope(store, "exampleco-work");
 				await saveMappingWithConfirmation(
 					(input) =>
 						app.request("/api/sync/sharing-domains/project-mappings", {
@@ -15162,8 +15176,7 @@ describe("viewer-server", () => {
 						 ) VALUES ('oss-codemem', 'OSS codemem', 'team', 'coordinator', 1, 'active', ?, ?)`,
 					)
 					.run(now, now);
-				seedProjectMappingMembership(store, "acme-work");
-				seedProjectMappingMembership(store, "oss-codemem");
+				await grantVisibleReaderScope(store, ["acme-work", "oss-codemem"]);
 				const settingsRes = await app.request("/api/sync/sharing-domains/settings");
 				const settings = (await settingsRes.json()) as {
 					projects: Array<{ display_project: string; workspace_identity: string }>;
@@ -21191,7 +21204,7 @@ describe("legacy shared review repository inference", () => {
 					 ) VALUES ('oss', 'OSS', 'team', 'coordinator', 1, 'active', ?, ?)`,
 				)
 				.run(now, now);
-			grantSyncScopeToDevices(store, "oss", [store.deviceId]);
+			await grantVisibleReaderScope(store, "oss");
 			const cwd = "/workspace/oss/inferred";
 			const repositoryIdentity = "https://git.example.invalid/oss/inferred.git";
 			const historicalSessionId = insertTestSession(store.db);

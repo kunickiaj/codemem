@@ -99,7 +99,7 @@ describe("automatic ingest current scope authority", () => {
 		vi.restoreAllMocks();
 	});
 
-	it.each(["revoked"])(
+	it.each(["missing proof", "revoked", "wrong key"])(
 		"denies %s without persisting or completing the session on retries",
 		async (failure) => {
 			// Arrange: mapped authority is historical unless the actual key still has a current proof.
@@ -286,6 +286,40 @@ describe("raw flush scope authority retry admission", () => {
 		expect(store.db.prepare("SELECT * FROM usage_events").all()).toEqual([]);
 		// Arrange/Act: a newer epoch restores revoked membership, then retries the same batch.
 		await mapScope(store, { membershipEpoch: 4 });
+		const result = await flushRawEvents(store, options, flushOptions);
+		// Assert
+		expect(result.updatedState).toBe(1);
+		expect(store.rawEventFlushState("scope-stream")).toBe(1);
+		expect(batch()).toMatchObject({ status: "completed", attempt_count: 1, error_type: null });
+		expect(options.observer.observe).toHaveBeenCalledTimes(1);
+		expect(store.db.prepare("SELECT * FROM memory_items").all()).toHaveLength(2);
+	});
+
+	it("retains more than five denied flushes without calling the provider, then resumes after proof refresh", async () => {
+		// Arrange: retain mapping and historical membership but remove the current proof.
+		await mapScope(store);
+		store.db.prepare("DELETE FROM scope_membership_authorization_evidence").run();
+		// Act: every denial is admission failure, not an observer attempt.
+		for (let attempt = 0; attempt < 7; attempt++) {
+			await expect(flushRawEvents(store, options, flushOptions)).rejects.toBeInstanceOf(
+				ScopeWriteAuthorityError,
+			);
+			expect(batch()).toEqual({
+				status: "failed",
+				attempt_count: 0,
+				error_type: "ScopeWriteAuthorityError",
+				observer_provider: null,
+				observer_error_code: null,
+				observer_error_message: null,
+			});
+			expect(store.rawEventFlushState("scope-stream")).toBe(-1);
+		}
+		// Assert: neither abandonment nor billing occurred.
+		expect(options.observer.observe).not.toHaveBeenCalled();
+		expect(store.db.prepare("SELECT * FROM memory_items").all()).toEqual([]);
+		expect(store.db.prepare("SELECT * FROM usage_events").all()).toEqual([]);
+		// Arrange/Act: restore a current enrollment snapshot and retry the same batch.
+		await mapScope(store);
 		const result = await flushRawEvents(store, options, flushOptions);
 		// Assert
 		expect(result.updatedState).toBe(1);
