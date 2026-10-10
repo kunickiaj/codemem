@@ -58,6 +58,10 @@ function recoveryWindowKey(window: RawEventRecoveryRange): string {
 	return JSON.stringify([window.source, window.streamId, window.startEventSeq, window.endEventSeq]);
 }
 
+function recoveryStreamKey(source: string, streamId: string): string {
+	return JSON.stringify([source, streamId]);
+}
+
 function eligibleRecoveryWindow(
 	store: MemoryStore,
 	windows: RawEventRecoveryRange[],
@@ -101,9 +105,11 @@ function nextRecoveryWindow(
 	{
 		observerBudgetAvailable,
 		excludedWindows,
+		excludedStreams,
 	}: {
 		observerBudgetAvailable: boolean;
 		excludedWindows: ReadonlySet<string>;
+		excludedStreams: ReadonlySet<string>;
 	},
 ): RawEventRecoveryRange | null {
 	const streams = store.db
@@ -118,6 +124,7 @@ function nextRecoveryWindow(
 		.all(RECOVERY_VERSION, MAX_STREAMS + 1) as Array<{ source: string; stream_id: string }>;
 	if (streams.length > MAX_STREAMS) throw new Error("observer recovery stream limit exceeded");
 	for (const stream of streams) {
+		if (excludedStreams.has(recoveryStreamKey(stream.source, stream.stream_id))) continue;
 		const missingRows = store.db
 			.prepare(`
 			SELECT b.id, b.source, b.stream_id, b.start_event_seq, b.end_event_seq
@@ -425,11 +432,16 @@ export async function recoverOneMissingAuthWindow(
 ): Promise<boolean> {
 	const observerBudgetAvailable = withinHourlyBudget(store);
 	const excludedWindows = new Set<string>();
+	const excludedStreams = new Set<string>();
 	let firstScopeError: ScopeWriteAuthorityError | null = null;
 	let observerInferenceStarted = false;
 	// Cap scope-local admissions per call as well as the existing stream/range scan limits.
 	for (let admission = 0; admission < MAX_STREAMS; admission++) {
-		const window = nextRecoveryWindow(store, { observerBudgetAvailable, excludedWindows });
+		const window = nextRecoveryWindow(store, {
+			observerBudgetAvailable,
+			excludedWindows,
+			excludedStreams,
+		});
 		if (!window) break;
 		excludedWindows.add(recoveryWindowKey(window));
 		try {
@@ -442,6 +454,9 @@ export async function recoverOneMissingAuthWindow(
 		} catch (error) {
 			if (error instanceof ScopeWriteAuthorityError && !observerInferenceStarted) {
 				firstScopeError ??= error;
+				// All windows link to the same trusted session. Retry its authority next call,
+				// rather than spending this call's admissions on every denied window.
+				excludedStreams.add(recoveryStreamKey(window.source, window.streamId));
 				continue;
 			}
 			throw error;
