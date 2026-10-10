@@ -5355,6 +5355,7 @@ function saveProjectMappingsAndWakePolicies(
 	deviceId: string,
 	mappingInputs: Array<ReturnType<typeof parseViewerProjectMappingInput>>,
 ) {
+	store.adoptEnsuredDeviceIdentity(deviceId);
 	return store.db
 		.transaction(() => {
 			const before = policyWakeMappings(store);
@@ -5390,6 +5391,7 @@ function deleteProjectMappingAndWakePolicies(
 	deviceId: string,
 	confirmedGuardrailTokens: string[],
 ): boolean {
+	store.adoptEnsuredDeviceIdentity(deviceId);
 	return store.db
 		.transaction(() => {
 			const before = policyWakeMappings(store);
@@ -5426,6 +5428,7 @@ function reassignProjectInventoryForUser(
 	store: MemoryStore,
 	input: { deviceId: string; project: string; workspaceIdentity: string },
 ) {
+	store.adoptEnsuredDeviceIdentity(input.deviceId);
 	return reassignProjectScopeInventoryProject(store.db, {
 		...input,
 		canWriteScope: (scopeId) => store.isScopeWritable(scopeId),
