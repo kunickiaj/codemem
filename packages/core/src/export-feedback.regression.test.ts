@@ -29,7 +29,8 @@ vi.mock("./embeddings.js", async (original) => ({
 }));
 
 const marker = `export-session:v1:${"a".repeat(64)}`;
-function payload(redacted = false): ReturnType<typeof exportMemories> {
+function payload(options: { redacted?: boolean } = {}): ReturnType<typeof exportMemories> {
+	const { redacted = false } = options;
 	return {
 		version: "1.0",
 		exported_at: "2026-03-01T00:00:00Z",
@@ -179,7 +180,7 @@ function attackPayload(attack: string) {
 }
 
 function mixedRows(moved: boolean) {
-	const mixed = payload(true);
+	const mixed = payload({ redacted: true });
 	mixed.memory_items.push({
 		...mixed.memory_items[0],
 		id: 101,
@@ -265,7 +266,7 @@ describe("prompt restoration", () => {
 		({ remap, byId }) => {
 			// Arrange: the first slice omitted all prompt context.
 			const options = { dbPath, remapProject: remap ? "remapped" : null };
-			importMemories(payload(true), options);
+			importMemories(payload({ redacted: true }), options);
 			const before = memory();
 			expect(before.user_prompt_id).toBeNull();
 			const incoming = payload();
@@ -301,7 +302,7 @@ describe("prompt restoration", () => {
 		"existing-link",
 	])("does not hijack a deduped memory: %s", (attack) => {
 		// Arrange
-		importMemories(payload(true), { dbPath });
+		importMemories(payload({ redacted: true }), { dbPath });
 		const incoming = attackPayload(attack);
 		const before = memory();
 		const sessions = db.prepare("SELECT * FROM sessions ORDER BY id").all();
@@ -325,7 +326,7 @@ describe("placeholder project restoration", () => {
 			const rows = mixedRows(true);
 			const before = memory();
 			const session = db.prepare("SELECT * FROM sessions").get() as Record<string, unknown>;
-			const incoming = payload(mode === "redacted");
+			const incoming = payload({ redacted: mode === "redacted" });
 			// Act
 			importMemories(incoming, { dbPath });
 			const bytes = captureDatabaseState(dbPath);
@@ -359,7 +360,7 @@ describe("placeholder project restoration", () => {
 		"infers legacy attribution from memory evidence, not custom session project (moved=%s)",
 		(moved) => {
 			// Arrange: emulate a pre-tracking placeholder, retaining unrelated local metadata.
-			importMemories(payload(true), { dbPath });
+			importMemories(payload({ redacted: true }), { dbPath });
 			const row = db.prepare("SELECT metadata_json FROM sessions").get() as {
 				metadata_json: string;
 			};
@@ -370,7 +371,7 @@ describe("placeholder project restoration", () => {
 				JSON.stringify(metadata),
 				moved ? "gamma" : "alpha",
 			);
-			const incoming = payload(true);
+			const incoming = payload({ redacted: true });
 			incoming.memory_items = [
 				{ ...incoming.memory_items[0], id: 101, project: "beta", import_key: "memory-beta" },
 			];
@@ -400,10 +401,10 @@ describe("placeholder project restoration", () => {
 		(moved) => {
 			// Arrange
 			const opts = { dbPath, remapProject: "remapped" };
-			importMemories(payload(true), opts);
+			importMemories(payload({ redacted: true }), opts);
 			if (moved) db.prepare("UPDATE sessions SET project = 'gamma'").run();
 			// Act
-			importMemories(payload(true), opts);
+			importMemories(payload({ redacted: true }), opts);
 			importMemories(payload(), opts);
 			// Assert
 			expect(db.prepare("SELECT project, cwd, started_at FROM sessions").get()).toEqual({
@@ -418,10 +419,10 @@ describe("placeholder project restoration", () => {
 		"preserves explicit project %j through redacted and full imports",
 		(project) => {
 			// Arrange
-			importMemories(payload(true), { dbPath });
+			importMemories(payload({ redacted: true }), { dbPath });
 			db.prepare("UPDATE sessions SET project = ?").run(project);
 			// Act
-			importMemories(payload(true), { dbPath });
+			importMemories(payload({ redacted: true }), { dbPath });
 			importMemories(payload(), { dbPath });
 			// Assert: raw NULL and blank moves must not be normalized back to source attribution.
 			expect(db.prepare("SELECT project FROM sessions").get()).toEqual({ project });
@@ -467,7 +468,7 @@ describe("placeholder export dates", () => {
 
 	it("uses readable memory dates for placeholders without changing native session-start filtering", () => {
 		// Arrange
-		importMemories(payload(true), { dbPath });
+		importMemories(payload({ redacted: true }), { dbPath });
 		// Act
 		const early = exportMemories({ dbPath, project: "alpha", since: "2026-02-01T00:00:00Z" });
 		const late = exportMemories({ dbPath, project: "alpha", since: "2026-04-01T00:00:00Z" });
