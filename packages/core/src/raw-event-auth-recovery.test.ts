@@ -261,16 +261,27 @@ it("passes 1,001 denied windows in one stream without starving default-cadence r
 	});
 	const { settings, observe } = options();
 	const sweeper = new RawEventSweeper(store, settings);
+	const retainedDeniedHistory = () => ({
+		...retainedHistory(),
+		sourceBatch: store.db
+			.prepare(`SELECT * FROM raw_event_flush_batches
+			WHERE source='opencode' AND stream_id='missed-session'
+			AND extractor_version='raw_events_v1' ORDER BY id`)
+			.all(),
+	});
 
 	// Act/Assert: repeat the default 30-second cadence, beyond the existing 15-second cooldown.
 	for (let tick = 0; tick < 3; tick++) {
 		deniedAdmissions = 0;
 		addHistoricalStream(`healthy-${tick}`);
-		const before = retainedHistory();
+		const before = retainedDeniedHistory();
+		expect(before.sourceBatch).toHaveLength(2001);
 		await sweeper.tick();
 		expect(observe).toHaveBeenCalledTimes(tick + 1);
 		expect(deniedAdmissions).toBe(1);
-		expect(retainedHistory()).toEqual(before);
+		const after = retainedDeniedHistory();
+		expect(after.sourceBatch).toHaveLength(2001);
+		expect(after).toEqual(before);
 		expect(
 			store.db.prepare("SELECT * FROM memory_items WHERE session_id=?").all(sessionId),
 		).toEqual([]);
