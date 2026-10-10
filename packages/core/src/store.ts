@@ -1423,8 +1423,13 @@ export class MemoryStore {
 	forgetForUser(memoryId: number): boolean {
 		return this.db
 			.transaction(() => {
-				const memory = this.getForMutation(memoryId);
-				if (!memory || !this.memoryOwnedBySelf({ ...memory })) return false;
+				if (!this.getForMutation(memoryId)) return false;
+				const row = this.d
+					.select()
+					.from(schema.memoryItems)
+					.where(eq(schema.memoryItems.id, memoryId))
+					.get();
+				if (!row || !this.memoryOwnedBySelf(row)) return false;
 				this.forget(memoryId);
 				return true;
 			})
