@@ -18,6 +18,7 @@ beforeEach(() => {
 	vi.stubEnv("CODEMEM_EMBEDDING_DISABLED", "0");
 	vi.mocked(storeVectors).mockClear();
 	directory = mkdtempSync(join(tmpdir(), "codemem-created-effects-"));
+	vi.stubEnv("CODEMEM_CONFIG", join(directory, "config.json"));
 	store = new MemoryStore(join(directory, "test.sqlite"));
 	sessionId = store.startSession({ cwd: "/fixture/project", project: "fixture-project" });
 });
