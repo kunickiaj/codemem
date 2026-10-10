@@ -552,7 +552,7 @@ function addStoredSessionScopes(
 ): void {
 	const filter = options.includeUnregistered
 		? ""
-		: " AND scope_id IN (SELECT scope_id FROM replication_scopes WHERE authority_type <> 'local')";
+		: " AND scope_id IN (SELECT scope_id FROM replication_scopes)";
 	const stored = db
 		.prepare(`SELECT scope_id FROM memory_items WHERE session_id = ?${filter}`)
 		.all(sessionId) as JsonObject[];
