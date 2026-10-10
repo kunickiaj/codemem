@@ -57,6 +57,83 @@ const jsonResponse = (status, body) => ({
 	json: vi.fn().mockResolvedValue(body),
 });
 
+const holdSpoolPublication = async (home) => {
+	const fs = await vi.importActual("node:fs/promises");
+	let release;
+	let reached;
+	const gate = new Promise((resolve) => {
+		release = resolve;
+	});
+	const publication = new Promise((resolve) => {
+		reached = resolve;
+	});
+	vi.doMock("node:fs/promises", () => ({
+		...fs,
+		link: async (temporary, destination) => {
+			if (String(temporary).startsWith(join(home, ".codemem", "opencode-raw-event-spool"))) {
+				reached();
+				await gate;
+			}
+			return fs.link(temporary, destination);
+		},
+	}));
+	return {
+		publication,
+		release,
+		restore: () => {
+			release();
+			vi.doUnmock("node:fs/promises");
+		},
+	};
+};
+
+const assertSpoolLatchRecovery = async ({ home, hooks, appLog, showToast, barrier }) => {
+	// Act: fail once, then retry the retained event through the public idle hook.
+	await hooks["tool.execute.after"]({ tool: "read", args: {}, sessionID: "sess-latch-first" }, {});
+	const deliveries = (kind) =>
+		appLog.mock.calls.filter(([entry]) => entry.body?.extra?.delivery === kind);
+	await vi.waitFor(() => expect(deliveries("memory")).toHaveLength(1));
+	expect(
+		appLog.mock.calls.filter(([entry]) =>
+			entry.body?.message === "codemem could not save a raw event for retry; it remains queued in memory",
+		),
+	).toHaveLength(1);
+	rmSync(join(home, ".codemem"), { force: true });
+	const recovery = hooks.event({
+		event: { type: "session.idle", properties: { sessionID: "sess-latch-first" } },
+	});
+	await barrier.publication;
+	await hooks["tool.execute.after"]({ tool: "read", args: {}, sessionID: "sess-latch-success" }, {});
+	const spoolDirectory = join(home, ".codemem", "opencode-raw-event-spool");
+	// Assert: the old readiness check passes while publication is still blocked.
+	expect(readdirSync(spoolDirectory)).not.toHaveLength(0);
+	expect(deliveries("spool")).toHaveLength(0);
+	barrier.release();
+	// Act: BOTH writes must finish directory sync and reset the warning latch.
+	await vi.waitFor(() => expect(deliveries("spool")).toHaveLength(2));
+	await recovery;
+	expect(
+		readdirSync(spoolDirectory)
+			.map((name) => JSON.parse(readFileSync(join(spoolDirectory, name), "utf8")).session_id)
+			.sort(),
+	).toEqual(["sess-latch-first", "sess-latch-success"]);
+	rmSync(join(home, ".codemem"), { recursive: true, force: true });
+	writeFileSync(join(home, ".codemem"), "blocked-again");
+	await hooks["tool.execute.after"]({ tool: "read", args: {}, sessionID: "sess-latch-second" }, {});
+	await vi.waitFor(() => expect(deliveries("memory")).toHaveLength(2));
+	// Assert: genuine recovery allows exactly one new persistence warning/toast.
+	expect(
+		appLog.mock.calls.filter(([entry]) =>
+			entry.body?.message === "codemem could not save a raw event for retry; it remains queued in memory",
+		),
+	).toHaveLength(2);
+	expect(
+		showToast.mock.calls.filter(([entry]) =>
+			entry.body?.message.includes("could not save a raw event for retry"),
+		),
+	).toHaveLength(2);
+};
+
 const packResponse = (text = "## Summary\n[1] (feature) Viewer-backed context") => ({
 	pack_text: text,
 	metrics: { total_items: 1, pack_tokens: 24 },
@@ -3457,6 +3534,7 @@ describe("OpenCode transform-time injection", () => {
 	});
 
 	test("resets the persistence warning latch after a successful spool write", async () => {
+		// Arrange: hold atomic publication so temporary-file visibility is deterministic.
 		const home = mkdtempSync(join(tmpdir(), "codemem-opencode-spool-latch-"));
 		tmpDirs.push(home);
 		process.env.HOME = home;
@@ -3471,37 +3549,19 @@ describe("OpenCode transform-time injection", () => {
 				? makeProcess({ exitCode: 1, stderr: "fallback unavailable" })
 				: makeProcess({ stdout: "" }),
 		);
-		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
-		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
-			client: { app: { log: appLog }, tui: { showToast } },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
-		});
-
-		await hooks["tool.execute.after"]({ tool: "read", args: {}, sessionID: "sess-latch-first" }, {});
-		await vi.waitFor(() =>
-			expect(appLog.mock.calls.filter(([entry]) =>
-				entry.body?.message === "codemem could not save a raw event for retry; it remains queued in memory",
-			)).toHaveLength(1),
-		);
-		rmSync(join(home, ".codemem"), { force: true });
-		await hooks["tool.execute.after"]({ tool: "read", args: {}, sessionID: "sess-latch-success" }, {});
-		await vi.waitFor(() =>
-			expect(readdirSync(join(home, ".codemem", "opencode-raw-event-spool"))).not.toHaveLength(0),
-		);
-		rmSync(join(home, ".codemem"), { recursive: true, force: true });
-		writeFileSync(join(home, ".codemem"), "blocked-again");
-		await hooks["tool.execute.after"]({ tool: "read", args: {}, sessionID: "sess-latch-second" }, {});
-
-		await vi.waitFor(() =>
-			expect(appLog.mock.calls.filter(([entry]) =>
-				entry.body?.message === "codemem could not save a raw event for retry; it remains queued in memory",
-			)).toHaveLength(2),
-		);
-		expect(showToast.mock.calls.filter(([entry]) =>
-			entry.body?.message.includes("could not save a raw event for retry"),
-		)).toHaveLength(2);
+		const barrier = await holdSpoolPublication(home);
+		try {
+			const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+			const hooks = await OpencodeMemPlugin({
+				project: { name: "greenroom" },
+				client: { app: { log: appLog }, tui: { showToast } },
+				directory: "/tmp/greenroom",
+				worktree: "/tmp/greenroom",
+			});
+			await assertSpoolLatchRecovery({ home, hooks, appLog, showToast, barrier });
+		} finally {
+			barrier.restore();
+		}
 	});
 
 	test("warns without claiming durability when the spool write fails", async () => {
