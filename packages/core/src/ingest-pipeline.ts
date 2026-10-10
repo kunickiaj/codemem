@@ -1510,6 +1510,13 @@ async function processIngestSession(
 	}
 }
 
+function retainDeniedIngestSession(stage: IngestSessionStage): boolean {
+	if (stage.historicalRecovery) return true;
+	return (
+		stage.sessionContext.flusher === "raw_events" && Boolean(stage.sessionContext.opencodeSessionId)
+	);
+}
+
 /**
  * Process a batch of raw coding session events through the full ingest pipeline.
  *
@@ -1527,8 +1534,7 @@ export async function ingest(
 	try {
 		await processIngestSession(store, stage, options);
 	} catch (err) {
-		// A denied capture stays retryable; do not mark its session complete.
-		if (err instanceof ScopeWriteAuthorityError) throw err;
+		if (err instanceof ScopeWriteAuthorityError && retainDeniedIngestSession(stage)) throw err;
 		try {
 			endIngestSession(store, stage);
 		} catch {
