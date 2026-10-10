@@ -218,7 +218,7 @@ describe("current authority for import restoration", () => {
 		// Assert: restoration cannot use a dedupe key as an authorization grant.
 		expect(act).toThrow(/unauthorized_scope/);
 		expect(rows()).toEqual(before);
-		expect(bytes()).toEqual(image);
+		expect(bytes().equals(image)).toBe(true);
 		expect(keyBytes()).toEqual(keys);
 	});
 
@@ -265,7 +265,7 @@ describe("current authority for import restoration", () => {
 		// Assert
 		expect(act).toThrow(/unauthorized_scope/);
 		expect(rows()).toEqual(before);
-		expect(bytes()).toEqual(image);
+		expect(bytes().equals(image)).toBe(true);
 	});
 
 	it.each(["epoch", "archived", "environment-device"])(
@@ -321,7 +321,7 @@ describe("authorized restoration and read-only imports", () => {
 				session_summaries: 0,
 			});
 			expect(rows()).toEqual(before);
-			expect(bytes()).toEqual(image);
+			expect(bytes().equals(image)).toBe(true);
 			expect(keyBytes()).toEqual(keys);
 		},
 	);
@@ -370,7 +370,7 @@ describe("authorized restoration and read-only imports", () => {
 				session_summaries: 0,
 			});
 			expect(rows()).toEqual(before);
-			expect(bytes()).toEqual(image);
+			expect(bytes().equals(image)).toBe(true);
 			expect(keyBytes()).toEqual(keys);
 			expect(getEmbeddingClient).not.toHaveBeenCalled();
 			expect(execFileSync).not.toHaveBeenCalled();
@@ -394,7 +394,7 @@ describe("authorized restoration and read-only imports", () => {
 			// Assert
 			expect(act).toThrow(/unauthorized_scope/);
 			expect(rows()).toEqual(before);
-			expect(bytes()).toEqual(image);
+			expect(bytes().equals(image)).toBe(true);
 		},
 	);
 
@@ -451,7 +451,7 @@ describe("generated memory keys with blank remaps", () => {
 		// Assert
 		expect(act).toThrow(/unauthorized_scope: managed/);
 		expect(rows()).toEqual(before);
-		expect(bytes()).toEqual(image);
+		expect(bytes().equals(image)).toBe(true);
 	});
 });
 
@@ -496,7 +496,7 @@ describe("authorized context imports across deduped session mappings", () => {
 			import_key: expect.stringContaining(`${marker}:remap:`),
 			metadata_json: expect.stringContaining("session secret"),
 		});
-		expect(db.serialize()).toEqual(restored);
+		expect(db.serialize().equals(restored)).toBe(true);
 	});
 
 	it.each(["managed", "local-default", "omitted"])(
@@ -516,9 +516,9 @@ describe("authorized context imports across deduped session mappings", () => {
 			const act = () => importMemories(incoming, { dbPath, remapProject: "beta" });
 			// Assert: every table, including membership cache, and both SQLite files stay unchanged.
 			expect(act).toThrow(/unauthorized_scope: managed/);
-			expect(db.serialize()).toEqual(allTables);
-			expect(readFileSync(dbPath)).toEqual(image);
-			expect(readFileSync(`${dbPath}-wal`)).toEqual(wal);
+			expect(db.serialize().equals(allTables)).toBe(true);
+			expect(readFileSync(dbPath).equals(image)).toBe(true);
+			expect(readFileSync(`${dbPath}-wal`).equals(wal)).toBe(true);
 			expect(keyBytes()).toEqual(keys);
 		},
 	);
@@ -553,7 +553,7 @@ describe("authorized context imports across deduped session mappings", () => {
 		expect(
 			db.prepare("SELECT started_at, cwd, project FROM sessions WHERE import_key = ?").get(marker),
 		).toEqual({ started_at: "", cwd: null, project: null });
-		expect(db.serialize()).toEqual(imported);
+		expect(db.serialize().equals(imported)).toBe(true);
 	});
 
 	it("denies a canonical redacted reference after revocation of a legacy full import", () => {
@@ -570,9 +570,9 @@ describe("authorized context imports across deduped session mappings", () => {
 		const act = () => importMemories(payload(true), { dbPath });
 		// Assert
 		expect(act).toThrow(/unauthorized_scope: managed/);
-		expect(db.serialize()).toEqual(allTables);
-		expect(readFileSync(dbPath)).toEqual(image);
-		expect(readFileSync(`${dbPath}-wal`)).toEqual(wal);
+		expect(db.serialize().equals(allTables)).toBe(true);
+		expect(readFileSync(dbPath).equals(image)).toBe(true);
+		expect(readFileSync(`${dbPath}-wal`).equals(wal)).toBe(true);
 		expect(keyBytes()).toEqual(keys);
 	});
 });
