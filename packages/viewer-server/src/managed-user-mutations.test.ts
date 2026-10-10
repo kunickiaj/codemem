@@ -1,0 +1,678 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+	connect,
+	ensureDeviceIdentity,
+	ensureScopeBackfillScopes,
+	initTestSchema,
+	MemoryStore,
+	storeVectors,
+} from "@codemem/core";
+import { Hono } from "hono";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import {
+	forgetMemoryCommand,
+	rememberMemoryCommand,
+	showMemoryCommand,
+} from "../../cli/src/commands/memory.js";
+import { createCodememMcpServer } from "../../mcp-server/src/index.js";
+import { memoryRoutes } from "./routes/memory.js";
+import { memoryToolRoutes } from "./routes/memory-tools.js";
+import { syncRoutes } from "./routes/sync.js";
+
+vi.mock("@codemem/core", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@codemem/core")>()),
+	storeVectors: vi.fn(),
+}));
+type Tool = {
+	handler: (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }>;
+};
+type State = "active" | "revoked";
+let directory: string;
+let dbPath: string;
+let store: MemoryStore;
+let historyId: number;
+let app: Hono;
+let tools: Record<string, Tool>;
+let log: ReturnType<typeof vi.spyOn>;
+let originalExitCode: typeof process.exitCode;
+
+beforeEach(async () => {
+	vi.useFakeTimers({ toFake: ["Date"] });
+	vi.setSystemTime(new Date("2026-10-07T00:00:00.000Z"));
+	directory = mkdtempSync(join(tmpdir(), "codemem-user-mutations-"));
+	dbPath = join(directory, "memory.sqlite");
+	const keysDir = join(directory, "keys");
+	vi.stubEnv("CODEMEM_KEYS_DIR", keysDir);
+	vi.stubEnv("CODEMEM_EMBEDDING_DISABLED", "1");
+	vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "file");
+	vi.stubEnv("CODEMEM_DEVICE_ID", "user-mutation-device");
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(() => {
+			throw new Error("Unexpected network call");
+		}),
+	);
+	const db = connect(dbPath);
+	initTestSchema(db);
+	// Persist the same isolated identity used by request-time source ownership checks.
+	ensureDeviceIdentity(db, { deviceId: "user-mutation-device", keysDir });
+	const now = new Date().toISOString();
+	db.prepare(`INSERT INTO replication_scopes(scope_id, label, kind, authority_type,
+		coordinator_id, group_id, membership_epoch, status, created_at, updated_at)
+		VALUES ('managed-write', 'Write fixture', 'managed_project', 'coordinator',
+		'fixture-coordinator', 'fixture-group', 1, 'active', ?, ?)`).run(now, now);
+	db.prepare(`INSERT INTO project_scope_mappings(project_pattern, scope_id, priority,
+		source, created_at, updated_at) VALUES (?, 'managed-write', 10, 'test', ?, ?)`).run(
+		process.cwd(),
+		now,
+		now,
+	);
+	db.prepare(`INSERT INTO scope_memberships(scope_id, device_id, role, status, membership_epoch, updated_at)
+		VALUES ('managed-write', 'user-mutation-device', 'member', 'active', 1, ?)`).run(now);
+	db.close();
+	store = new MemoryStore(dbPath, { keysDir });
+	// Author the history while authorized, rather than inferring authorship from labels.
+	const sessionId = store.startSession({ cwd: process.cwd(), project: "write-project" });
+	historyId = store.rememberForUser(sessionId, "decision", "Authorized history", "History body");
+	store.endSession(sessionId);
+	expect(store.deviceId).toBe("user-mutation-device");
+	expect(store.db.prepare("SELECT device_id FROM sync_device").all()).toEqual([
+		{ device_id: store.deviceId },
+	]);
+	expect(
+		store.db
+			.prepare("SELECT origin_device_id, actor_id FROM memory_items WHERE id = ?")
+			.get(historyId),
+	).toEqual({ origin_device_id: store.deviceId, actor_id: store.actorId });
+	await store.flushPendingVectorWrites();
+	app = new Hono()
+		.route(
+			"/",
+			memoryRoutes(() => store),
+		)
+		.route(
+			"/",
+			memoryToolRoutes(() => store),
+		)
+		.route(
+			"/",
+			syncRoutes(() => store),
+		);
+	const server = createCodememMcpServer(store, {
+		defaultProject: null,
+		captureRetrievalLedger: false,
+	});
+	tools = (server as unknown as { _registeredTools: Record<string, Tool> })._registeredTools;
+	log = vi.spyOn(console, "log").mockImplementation(() => {});
+	originalExitCode = process.exitCode;
+	process.exitCode = undefined;
+});
+
+afterEach(() => {
+	store?.close();
+	process.exitCode = originalExitCode;
+	vi.restoreAllMocks();
+	vi.unstubAllEnvs();
+	vi.unstubAllGlobals();
+	vi.useRealTimers();
+	rmSync(directory, { recursive: true, force: true });
+});
+
+function snapshot() {
+	return Object.fromEntries(
+		["sessions", "memory_items", "replication_ops"].map((table) => [
+			table,
+			store.db.prepare(`SELECT * FROM ${table} ORDER BY 1`).all(),
+		]),
+	);
+}
+
+async function setState(state: State) {
+	if (state === "revoked")
+		store.db.prepare("UPDATE scope_memberships SET status = 'revoked'").run();
+}
+
+async function mcp(name: string, args: Record<string, unknown>) {
+	const result = await tools[name].handler(args);
+	return JSON.parse(result.content[0].text);
+}
+
+function post(endpoint: string, body: Record<string, unknown>) {
+	return app.request(`/api/memories/${endpoint}`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(body),
+	});
+}
+
+async function cli(command: typeof rememberMemoryCommand, args: string[]) {
+	log.mockClear();
+	process.exitCode = undefined;
+	await command.parseAsync([...args, "--db-path", dbPath, "--json"], { from: "user" });
+	return JSON.parse(String(log.mock.calls.at(-1)?.[0]));
+}
+
+const remember = {
+	kind: "decision",
+	title: "New user memory",
+	body: "New body",
+	project: "write-project",
+};
+const rememberArgs = [
+	"--kind",
+	remember.kind,
+	"--title",
+	remember.title,
+	"--body",
+	remember.body,
+	"--project",
+	remember.project,
+];
+
+it("keeps authorized foreign shared history readable without forget effects", async () => {
+	// Arrange: membership permits reads, but this peer is not the local actor.
+	store.db
+		.prepare("UPDATE memory_items SET origin_device_id = ?, actor_id = ? WHERE id = ?")
+		.run("foreign-peer", "foreign-actor", historyId);
+	const before = snapshot();
+	// Act/Assert: readable does not mean deletable; includes tombstone and operation checks.
+	expect(await mcp("memory_get", { memory_id: historyId })).toMatchObject({ id: historyId });
+	expect(await mcp("memory_forget", { memory_id: historyId })).toHaveProperty("error");
+	expect(snapshot()).toEqual(before);
+});
+async function rememberThrough(surface: string) {
+	if (surface === "MCP") return mcp("memory_remember", remember);
+	return (await post("remember", remember)).json();
+}
+it.each(["MCP", "viewer"])("%s queues only new committed redacted rows", async (surface) => {
+	// Arrange: inspect the actual readback at the post-commit boundary; never embed raw input.
+	const enqueue = store.enqueueCommittedVectorWrites.bind(store);
+	const safe = "Redacted stored text";
+	const collected: unknown[] = [];
+	const queue = vi.spyOn(store, "enqueueCommittedVectorWrites").mockImplementation((identities) => {
+		expect(store.db.inTransaction).toBe(false);
+		expect(identities).toEqual(
+			identities.map(({ memoryId, importKey }) => ({ memoryId, importKey })),
+		);
+		collected.push(...store.committedVectorInputs(identities));
+		enqueue(identities);
+	});
+	const vectors = vi.spyOn(store, "enqueueVectorWrite").mockImplementation(() => {});
+	vi.stubEnv("CODEMEM_EMBEDDING_DISABLED", "0");
+	vi.mocked(storeVectors).mockClear();
+	vi.spyOn(store.scanner, "scan").mockReturnValue({ redacted: safe, detections: [] });
+	// Act: repeat identical input; the second collector must be empty.
+	const first = await rememberThrough(surface);
+	const second = await rememberThrough(surface);
+	// Assert: new identity only, persisted text only, no direct extra embedding call.
+	expect(second).toEqual(first);
+	expect(queue.mock.calls.map(([identities]) => identities.length)).toEqual([1, 0]);
+	expect(collected).toEqual([{ memoryId: first.id, title: safe, bodyText: safe }]);
+	expect(vectors).toHaveBeenCalledExactlyOnceWith(first.id, safe, safe);
+	expect(storeVectors).not.toHaveBeenCalled();
+});
+it.each(["MCP", "viewer"])("%s rollback schedules no vectors", async (surface) => {
+	// Arrange: deny readback after creation, forcing the caller's outer transaction to roll back.
+	const before = snapshot();
+	vi.spyOn(store, "timeline").mockReturnValue([]);
+	const queue = vi.spyOn(store, "enqueueCommittedVectorWrites");
+	const vectors = vi.spyOn(store, "enqueueVectorWrite");
+	// Act.
+	const result = await rememberThrough(surface);
+	// Assert.
+	expect(result).toEqual({ error: "unauthorized_scope" });
+	expect(snapshot()).toEqual(before);
+	expect(queue).not.toHaveBeenCalled();
+	expect(vectors).not.toHaveBeenCalled();
+});
+
+it.each<State>(["revoked"])(
+	"hides managed authored history and refuses every user mutation with %s",
+	async (state) => {
+		// Arrange: remove current permission only after authorized authorship.
+		await setState(state);
+		const before = snapshot();
+		// Act: denied managed history is hidden on all three user surfaces.
+		const read = await app.request("/api/memory");
+		const toolRead = await mcp("memory_get", { memory_id: historyId });
+		const cliRead = await cli(showMemoryCommand, [String(historyId)]);
+		// Assert: authorship does not bypass managed read authorization.
+		expect(read.status).toBe(200);
+		expect(await read.json()).toMatchObject({
+			items: [],
+		});
+		expect(toolRead).toEqual({ error: "not_found" });
+		expect(cliRead).toEqual({
+			error: "not_found",
+			message: `Memory ${historyId} not found`,
+		});
+		expect(process.exitCode).toBe(1);
+		expect(snapshot()).toEqual(before);
+		// Act/Assert: preserve each endpoint's existing failure contract and all content rows.
+		const remembered = await post("remember", remember);
+		expect(remembered.status).toBe(403);
+		expect(await remembered.json()).toEqual({ error: "unauthorized_scope" });
+		expect(snapshot()).toEqual(before);
+		for (const [endpoint, extra] of [
+			["forget", {}],
+			["visibility", { visibility: "private" }],
+			["project", { project: "other-project" }],
+		] as const) {
+			const response = await post(endpoint, { memory_id: historyId, ...extra });
+			expect(response.status, endpoint).toBe(404);
+			expect(await response.json()).toEqual({ error: "memory not found" });
+			expect(snapshot(), endpoint).toEqual(before);
+		}
+		expect(await mcp("memory_remember", remember)).toEqual({ error: "unauthorized_scope" });
+		expect(snapshot()).toEqual(before);
+		expect(await mcp("memory_forget", { memory_id: historyId })).toEqual({ error: "not_found" });
+		expect(snapshot()).toEqual(before);
+		expect(await cli(rememberMemoryCommand, rememberArgs)).toEqual({
+			error: "remember_failed",
+			message: "unauthorized_scope",
+		});
+		expect(process.exitCode).toBe(1);
+		expect(snapshot()).toEqual(before);
+		expect(await cli(forgetMemoryCommand, [String(historyId)])).toEqual({
+			error: "not_found",
+			message: `Memory ${historyId} not found`,
+		});
+		expect(process.exitCode).toBe(1);
+		expect(snapshot()).toEqual(before);
+	},
+);
+
+it("permits remember and historical mutations with active membership", async () => {
+	// Arrange: each surface receives distinct content to avoid deduplication.
+	const before = snapshot();
+	// Act.
+	const viewer = await post("remember", { ...remember, title: "Viewer permitted" });
+	const tool = await mcp("memory_remember", { ...remember, title: "MCP permitted" });
+	const command = await cli(rememberMemoryCommand, [...rememberArgs, "--title", "CLI permitted"]);
+	const project = await post("project", { memory_id: historyId, project: "other-project" });
+	const visibility = await post("visibility", { memory_id: historyId, visibility: "private" });
+	const forgotten = await post("forget", { memory_id: historyId });
+	const toolForgotten = await mcp("memory_forget", { memory_id: tool.id });
+	const cliForgotten = await cli(forgetMemoryCommand, [String(command.id)]);
+	// Assert: the controls reach actual writes, not just successful read checks.
+	expect(viewer.status).toBe(200);
+	const viewerMemory = (await viewer.json()) as { id: number };
+	for (const [id, active] of [
+		[viewerMemory.id, 1],
+		[tool.id, 0],
+		[command.id, 0],
+	]) {
+		expect(
+			store.db.prepare("SELECT scope_id, active FROM memory_items WHERE id = ?").get(id),
+		).toEqual({ scope_id: "managed-write", active });
+	}
+	expect(tool.id).toBeGreaterThan(historyId);
+	expect(command.id).toBeGreaterThan(historyId);
+	expect(project.status).toBe(200);
+	expect(visibility.status).toBe(200);
+	expect(forgotten.status).toBe(200);
+	expect(toolForgotten).toEqual({ status: "ok" });
+	expect(cliForgotten).toEqual({ id: command.id, status: "forgotten" });
+	expect(
+		store.db
+			.prepare(`SELECT m.active, m.visibility, s.project FROM memory_items m
+					JOIN sessions s ON s.id = m.session_id WHERE m.id = ?`)
+			.get(historyId),
+	).toMatchObject({ active: 0, visibility: "private", project: "other-project" });
+	expect(snapshot()).not.toEqual(before);
+});
+
+it.each(["local", "manual", "invite", "local-first", "private"])(
+	"permits unmanaged %s writes without a coordinator",
+	async (authority) => {
+		// Arrange: convert the fixture to an unmanaged direct scope.
+		if (authority === "local-first" || authority === "private") {
+			store.db.prepare("DELETE FROM project_scope_mappings").run();
+			await setState("revoked");
+			const sessionId = store.startSession({ cwd: process.cwd(), project: "personal-project" });
+			historyId = store.rememberForUser(sessionId, "decision", "Personal history", "Personal body");
+			store.endSession(sessionId);
+			if (authority === "private") store.updateMemoryVisibility(historyId, "private");
+		} else {
+			store.db
+				.prepare(
+					"UPDATE replication_scopes SET authority_type = ?, coordinator_id = NULL, group_id = NULL",
+				)
+				.run(authority);
+		}
+		// Act.
+		const response = await post("remember", remember);
+		const visibility = await post("visibility", { memory_id: historyId, visibility: "private" });
+		const project = await post("project", { memory_id: historyId, project: "other-project" });
+		const forgotten = await post("forget", { memory_id: historyId });
+		const tool = await mcp("memory_remember", { ...remember, title: "Unmanaged MCP" });
+		const toolForgotten = await mcp("memory_forget", { memory_id: tool.id });
+		const command = await cli(rememberMemoryCommand, [...rememberArgs, "--title", "Unmanaged CLI"]);
+		const cliForgotten = await cli(forgetMemoryCommand, [String(command.id)]);
+		// Assert: no account provider or coordinator is contacted.
+		expect(response.status).toBe(200);
+		expect(visibility.status).toBe(200);
+		expect(project.status).toBe(200);
+		expect(forgotten.status).toBe(200);
+		expect(toolForgotten).toEqual({ status: "ok" });
+		expect(cliForgotten).toEqual({ id: command.id, status: "forgotten" });
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+	},
+);
+
+function syncPost(endpoint: string, body: Record<string, unknown>) {
+	return app.request(`/api/sync/${endpoint}`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(body),
+	});
+}
+
+function seedMixedProjectBatch() {
+	// Both rows were authored with actual permission. The first is now local-only.
+	ensureScopeBackfillScopes(store.db);
+	store.reassignMemoryScope(historyId, "local-default");
+	const sessionId = store.startSession({
+		cwd: process.cwd(),
+		project: "write-project",
+		metadata: { fixture: "batch session metadata" },
+	});
+	historyId = store.rememberForUser(sessionId, "decision", "Managed batch member", "Batch body");
+	store.endSession(sessionId);
+	pinProjectIdentity();
+}
+
+const fixtureProjectIdentity = "https://example.test/write/project.git";
+function pinProjectIdentity() {
+	store.db
+		.prepare(`UPDATE sessions SET git_remote = ?,
+		metadata_json = json_set(COALESCE(metadata_json, '{}'), '$.codemem_repository_identity', ?)`)
+		.run(fixtureProjectIdentity, fixtureProjectIdentity);
+}
+
+function seedLegacyHistory() {
+	ensureScopeBackfillScopes(store.db);
+	store.reassignMemoryScope(historyId, "legacy-shared-review");
+	pinProjectIdentity();
+}
+
+it.each<State>(["revoked"])(
+	"hides managed history and rolls back the entire project correction batch with %s",
+	async (state) => {
+		// Arrange: include a writable row before the unauthorized managed row.
+		seedMixedProjectBatch();
+		await setState(state);
+		const before = snapshot();
+		// Act.
+		const response = await syncPost("projects/reassign-project", {
+			workspace_identity: fixtureProjectIdentity,
+			project: "corrected-project",
+		});
+		// Assert: project, revision, session metadata, and replication operations all roll back.
+		expect(store.get(historyId)).toBeNull();
+		expect(response.status).toBe(400);
+		expect(await response.json()).toEqual({ error: "unauthorized_scope" });
+		expect(snapshot()).toEqual(before);
+	},
+);
+
+it("corrects the whole project batch with active membership", async () => {
+	// Arrange.
+	seedMixedProjectBatch();
+	const before = store.db.prepare("SELECT id, rev FROM memory_items ORDER BY id").all() as {
+		id: number;
+		rev: number;
+	}[];
+	// Act.
+	const response = await syncPost("projects/reassign-project", {
+		workspace_identity: fixtureProjectIdentity,
+		project: "corrected-project",
+	});
+	// Assert.
+	expect(response.status).toBe(200);
+	expect(await response.json()).toMatchObject({ moved_memory_count: 2, moved_session_count: 2 });
+	for (const row of before) {
+		expect(
+			store.db.prepare("SELECT project, rev FROM memory_items WHERE id = ?").get(row.id),
+		).toEqual({ project: "corrected-project", rev: row.rev + 1 });
+	}
+});
+
+async function legacyPreview() {
+	const response = await syncPost("legacy-shared-review/reassign", {
+		workspace_identity: fixtureProjectIdentity,
+		scope_id: "managed-write",
+	});
+	expect(response.status).toBe(409);
+	const result = (await response.json()) as {
+		error: string;
+		preview: { confirmation_token: string };
+	};
+	expect(result.error).toBe("legacy_review_confirmation_required");
+	expect(result.preview.confirmation_token).toEqual(expect.any(String));
+	return result.preview.confirmation_token;
+}
+
+it.each<State>(["revoked"])(
+	"rejects both legacy-review preview and previously confirmed commit with %s target membership",
+	async (state) => {
+		// Arrange: the token was issued while the target had active membership.
+		seedLegacyHistory();
+		const token = await legacyPreview();
+		await setState(state);
+		const before = snapshot();
+		// Act/Assert: revoked target membership cannot authorize the operation.
+		for (const confirmed of [false, true]) {
+			const response = await syncPost("legacy-shared-review/reassign", {
+				workspace_identity: fixtureProjectIdentity,
+				scope_id: "managed-write",
+				confirmed_old_copies: confirmed,
+				confirmation_token: token,
+			});
+			expect(response.status).toBe(400);
+			expect(await response.json()).toEqual({
+				error: "local device is not a member of Sharing domain managed-write",
+			});
+			expect(snapshot()).toEqual(before);
+		}
+	},
+);
+
+it("requires the existing legacy-review token and reassigns with active target membership", async () => {
+	// Arrange.
+	seedLegacyHistory();
+	const token = await legacyPreview();
+	const before = snapshot();
+	// Act.
+	const stale = await syncPost("legacy-shared-review/reassign", {
+		workspace_identity: fixtureProjectIdentity,
+		scope_id: "managed-write",
+		confirmed_old_copies: true,
+		confirmation_token: "stale-token",
+	});
+	// Assert: permission does not replace confirmation.
+	expect(stale.status).toBe(400);
+	expect(await stale.json()).toEqual({
+		error: "legacy shared review group changed before reassignment; refresh and try again",
+	});
+	expect(snapshot()).toEqual(before);
+	// Act.
+	const response = await syncPost("legacy-shared-review/reassign", {
+		workspace_identity: fixtureProjectIdentity,
+		scope_id: "managed-write",
+		confirmed_old_copies: true,
+		confirmation_token: token,
+	});
+	// Assert.
+	expect(response.status).toBe(200);
+	expect(await response.json()).toMatchObject({ reassigned_memory_count: 1 });
+	expect(store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").get(historyId)).toEqual(
+		{ scope_id: "managed-write" },
+	);
+});
+
+it.each(["manual", "private"])(
+	"keeps project correction and legacy-review reassignment usable for old %s content",
+	async (control) => {
+		// Arrange: private local content and manual grants need no coordinator.
+		ensureScopeBackfillScopes(store.db);
+		if (control === "private") {
+			store.reassignMemoryScope(historyId, "local-default");
+			store.updateMemoryVisibility(historyId, "private");
+		}
+		store.db
+			.prepare(
+				"UPDATE replication_scopes SET authority_type = 'manual', coordinator_id = NULL, group_id = NULL WHERE scope_id = 'managed-write'",
+			)
+			.run();
+		pinProjectIdentity();
+		// Act.
+		const corrected = await syncPost("projects/reassign-project", {
+			workspace_identity: fixtureProjectIdentity,
+			project: "corrected-project",
+		});
+		seedLegacyHistory();
+		const token = await legacyPreview();
+		const reassigned = await syncPost("legacy-shared-review/reassign", {
+			workspace_identity: fixtureProjectIdentity,
+			scope_id: "managed-write",
+			confirmed_old_copies: true,
+			confirmation_token: token,
+		});
+		// Assert: scope admission neither requests Google nor changes existing private visibility.
+		expect(corrected.status).toBe(200);
+		expect(reassigned.status).toBe(200);
+		expect(
+			store.db.prepare("SELECT scope_id, visibility FROM memory_items WHERE id = ?").get(historyId),
+		).toEqual({
+			scope_id: "managed-write",
+			visibility: control === "private" ? "private" : "shared",
+		});
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+	},
+);
+
+it.each<State>(["revoked"])(
+	"denies project correction with an empty denormalized change set after %s",
+	async (state) => {
+		// Arrange: the real viewer move relabels the session but leaves memory.project unchanged.
+		pinProjectIdentity();
+		const moved = await post("project", { memory_id: historyId, project: "viewer-relabeled" });
+		expect(moved.status).toBe(200);
+		expect(
+			store.db
+				.prepare(`SELECT m.project, s.project AS session_project FROM memory_items m
+			JOIN sessions s ON s.id = m.session_id WHERE m.id = ?`)
+				.get(historyId),
+		).toEqual({ project: "write-project", session_project: "viewer-relabeled" });
+		await setState(state);
+		const before = snapshot();
+		// Act: target equals memory.project, so the old changed-memory list is empty.
+		const response = await syncPost("projects/reassign-project", {
+			workspace_identity: fixtureProjectIdentity,
+			project: "write-project",
+		});
+		// Assert: permission applies to session writes too, even with no memory revision change.
+		expect(store.get(historyId)).toBeNull();
+		expect(response.status).toBe(400);
+		expect(await response.json()).toEqual({ error: "unauthorized_scope" });
+		expect(snapshot()).toEqual(before);
+	},
+);
+
+it.each(["active membership", "local", "manual"])(
+	"permits the empty-change project correction with %s authority",
+	async (authority) => {
+		// Arrange: unmanaged scopes need no account provider; managed membership is active.
+		pinProjectIdentity();
+		if (authority !== "active membership") {
+			store.db
+				.prepare(
+					"UPDATE replication_scopes SET authority_type = ?, coordinator_id = NULL, group_id = NULL",
+				)
+				.run(authority);
+		}
+		const moved = await post("project", { memory_id: historyId, project: "viewer-relabeled" });
+		expect(moved.status).toBe(200);
+		const before = snapshot();
+		// Act.
+		const response = await syncPost("projects/reassign-project", {
+			workspace_identity: fixtureProjectIdentity,
+			project: "write-project",
+		});
+		// Assert: session changes do not revise unchanged memories or emit operations.
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({ moved_memory_count: 0, moved_session_count: 1 });
+		const after = snapshot();
+		expect(after.memory_items).toEqual(before.memory_items);
+		expect(after.replication_ops).toEqual(before.replication_ops);
+		expect(after.sessions).toEqual(
+			before.sessions.map((row) => ({ ...(row as object), project: "write-project" })),
+		);
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+	},
+);
+
+type MutationEndpoint = "CLI forget" | "MCP forget" | "viewer forget" | "viewer visibility";
+const preflightRaces = (
+	["CLI forget", "MCP forget", "viewer forget", "viewer visibility"] as const
+).flatMap((endpoint) => ["revocation"].map((change) => ({ endpoint, change })));
+
+async function invokeMutation(endpoint: MutationEndpoint) {
+	if (endpoint === "CLI forget") return cli(forgetMemoryCommand, [String(historyId)]);
+	if (endpoint === "MCP forget") return mcp("memory_forget", { memory_id: historyId });
+	const response = await post(endpoint === "viewer forget" ? "forget" : "visibility", {
+		memory_id: historyId,
+		visibility: "private",
+	});
+	return { status: response.status, body: await response.json() };
+}
+
+it.each(preflightRaces)(
+	"rechecks permission for $endpoint after another SQLite connection commits $change",
+	async ({ endpoint }) => {
+		// Arrange: preflight is genuinely authorized, using active membership.
+		const other = connect(dbPath);
+		const before = snapshot();
+		const actualPreflight = MemoryStore.prototype.canMutateMemory;
+		let changedAfterPreflight = false;
+		vi.spyOn(MemoryStore.prototype, "canMutateMemory").mockImplementation(function (id) {
+			const permitted = actualPreflight.call(this, id);
+			if (id === historyId && permitted && !this.db.inTransaction && !changedAfterPreflight) {
+				changedAfterPreflight = true;
+				other
+					.prepare(
+						"UPDATE scope_memberships SET status = 'revoked' WHERE scope_id = 'managed-write'",
+					)
+					.run();
+			}
+			return permitted;
+		});
+		if (endpoint === "CLI forget" || endpoint === "MCP forget") {
+			// These callers now enter the atomic API directly. Inject a genuine successful
+			// read-only preflight at its boundary, before the normal transaction begins.
+			const atomicForget = MemoryStore.prototype.forgetForUser;
+			vi.spyOn(MemoryStore.prototype, "forgetForUser").mockImplementation(function (id) {
+				this.canMutateMemory(id);
+				return atomicForget.call(this, id);
+			});
+		}
+		try {
+			// Act: return the real successful preflight result, then call the normal public mutation.
+			const result = await invokeMutation(endpoint);
+			// Assert: transaction-time authority must not reuse the previously permitted scope set.
+			expect(changedAfterPreflight).toBe(true);
+			if (endpoint === "CLI forget") {
+				expect(result).toEqual({ error: "not_found", message: `Memory ${historyId} not found` });
+				expect(process.exitCode).toBe(1);
+			} else if (endpoint === "MCP forget") expect(result).toEqual({ error: "not_found" });
+			else expect(result).toEqual({ status: 404, body: { error: "memory not found" } });
+			expect(store.get(historyId)).toBeNull();
+			expect(snapshot()).toEqual(before);
+		} finally {
+			other.close();
+		}
+	},
+);
