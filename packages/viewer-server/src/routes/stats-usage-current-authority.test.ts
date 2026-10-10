@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -157,7 +158,12 @@ function readOnlyState(store: MemoryStore, keysDir: string) {
 type Usage = {
 	totals: { count: number };
 	recent_packs: Array<{
-		metadata_json: { pack_item_ids: number[]; summary: string; snippets: string[] };
+		metadata_json: {
+			pack_item_ids: number[];
+			summary?: string;
+			snippets?: string[];
+			[key: string]: unknown;
+		};
 	}>;
 };
 
@@ -243,7 +249,9 @@ it.each<Denial>([
 			typeof warm.recent_packs.find((row) => row.metadata_json.summary === secret)?.metadata_json
 				.summary,
 		).toBe("string");
-		expect(warm.recent_packs.some((row) => row.metadata_json.snippets.includes(secret))).toBe(true);
+		expect(warm.recent_packs.some((row) => row.metadata_json.snippets?.includes(secret))).toBe(
+			true,
+		);
 		const aggregate = vi.spyOn(store, "classifiedUsageAggregate");
 		const authority = rawAuthority(store);
 		deny(fixture, reason);
@@ -314,6 +322,252 @@ it("reads local, private, and manual packs without a signing key but excludes un
 	expect(JSON.stringify(payload)).not.toContain(secret);
 	expect(store.get(managedId)).toBeNull();
 	for (const id of controls) expect(store.get(id)).not.toBeNull();
+	expect(readOnlyState(store, keysDir)).toEqual(state);
+	expect(network).not.toHaveBeenCalled();
+});
+
+function setPackMetadata(
+	store: MemoryStore,
+	options: { memoryId: number; metadata: Record<string, unknown> },
+) {
+	store.db
+		.prepare(`UPDATE usage_events SET metadata_json = ?
+			WHERE session_id = (SELECT session_id FROM memory_items WHERE id = ?) AND event = 'pack'`)
+		.run(JSON.stringify(options.metadata), options.memoryId);
+}
+
+function mixedMetadata(options: { localId: number; managedId: number }) {
+	return {
+		pack_item_ids: [options.localId, options.managedId],
+		added_ids: [options.managedId],
+		removed_ids: [options.managedId],
+		retained_ids: [options.localId],
+		summary: secret,
+		snippets: [secret],
+		custom: { nested: { body: secret } },
+		query: secret,
+	};
+}
+
+it.each([
+	{ mode: "cold", reason: "revoked-proof" },
+	{ mode: "cold", reason: "wrong-private-key" },
+	{ mode: "warm", reason: "revoked-proof" },
+	{ mode: "warm", reason: "wrong-private-key" },
+] as const)(
+	"redacts mixed-pack content on $mode aggregates after $reason",
+	async ({ mode, reason }) => {
+		// Arrange: one visible-session row mixes local and genuinely authorized managed content.
+		const fixture = setup();
+		const { store, keysDir, app, network } = fixture;
+		await seedProof(store, keysDir);
+		const controls = seedControls(store);
+		const localId = controls[0];
+		if (!localId) throw new Error("Missing local control");
+		const managedId = seedPack(store, "scope-a");
+		const metadata = mixedMetadata({ localId, managedId });
+		setPackMetadata(store, { memoryId: localId, metadata });
+		const aggregate = vi.spyOn(store, "classifiedUsageAggregate");
+		let warm: Usage | undefined;
+		if (mode === "warm") {
+			warm = await usage(app);
+			expect(
+				warm.recent_packs.find((row) => row.metadata_json.pack_item_ids.includes(localId))
+					?.metadata_json,
+			).toEqual(metadata);
+		}
+		const cachedEntries = [...__usageCacheTestHooks.cache.entries()];
+		const authority = rawAuthority(store);
+		deny(fixture, reason);
+		const state = readOnlyState(store, keysDir);
+		aggregate.mockClear();
+		vi.mocked(execFileSync).mockClear();
+
+		// Act: current proof changes without changing raw SQL scope generation or expiring aggregates.
+		vi.setSystemTime(Date.parse(cacheTime) + 1);
+		const current = await usage(app);
+
+		// Prove the warm case is an actual hit before checking content redaction.
+		if (mode === "warm") {
+			expect(cachedEntries).toHaveLength(1);
+			expect(aggregate).not.toHaveBeenCalled();
+			expect(current.totals).toEqual(warm?.totals);
+			for (const [key, entry] of cachedEntries) {
+				expect(__usageCacheTestHooks.cache.get(key)).toBe(entry);
+			}
+		}
+		expect(rawAuthority(store)).toEqual(authority);
+		// Assert: only confirmed visible IDs survive; arbitrary text cannot identify hidden content.
+		expect(
+			current.recent_packs.find((row) => row.metadata_json.pack_item_ids.includes(localId))
+				?.metadata_json,
+		).toEqual({
+			pack_item_ids: [localId],
+			added_ids: [],
+			removed_ids: [],
+			retained_ids: [localId],
+		});
+		expect(JSON.stringify(current)).not.toContain(secret);
+		expect(current.recent_packs).toHaveLength(3);
+		expect(packIds(current)).toEqual(controls);
+		expect(current.totals).toMatchObject({ count: 4, tokens_read: 80, tokens_saved: 40 });
+		expect(store.get(managedId)).toBeNull();
+		expect(rawAuthority(store)).toEqual(authority);
+		expect(readOnlyState(store, keysDir)).toEqual(state);
+		expect(network).not.toHaveBeenCalled();
+		expect(execFileSync).not.toHaveBeenCalled();
+		if (mode === "cold") {
+			expect(aggregate).toHaveBeenCalledTimes(1);
+			return;
+		}
+		// The same partial-visibility rule also holds when the aggregate TTL finally expires.
+		vi.setSystemTime(Date.parse(cacheTime) + __usageCacheTestHooks.ttlMs + 1);
+		const expired = await usage(app);
+		expect(expired).toEqual(current);
+		expect(aggregate).toHaveBeenCalledTimes(1);
+		expect(readOnlyState(store, keysDir)).toEqual(state);
+		expect(network).not.toHaveBeenCalled();
+		expect(execFileSync).not.toHaveBeenCalled();
+	},
+);
+
+it.each(["pack_item_ids", "added_ids", "removed_ids", "retained_ids"])(
+	"preserves all-visible content but redacts it for unresolved references in %s",
+	async (key) => {
+		// Arrange: a fully readable row carries custom content outside the known ID arrays.
+		const { store, keysDir, app, network } = setup();
+		await seedProof(store, keysDir);
+		const localId = seedPack(store, "local-default");
+		const managedId = seedPack(store, "scope-a");
+		const metadata = mixedMetadata({ localId, managedId });
+		setPackMetadata(store, { memoryId: localId, metadata });
+		const aggregate = vi.spyOn(store, "classifiedUsageAggregate");
+		// Act
+		const visible = await usage(app);
+		// Assert: successful authorization preserves every metadata field exactly.
+		expect(
+			visible.recent_packs.find((row) => row.metadata_json.pack_item_ids.includes(localId))
+				?.metadata_json,
+		).toEqual(metadata);
+		const cachedEntry = [...__usageCacheTestHooks.cache.values()][0];
+		aggregate.mockClear();
+
+		// Arrange / Act / Assert: invalid, missing, and deleted references cannot authorize content.
+		store.db.prepare("DELETE FROM memory_items WHERE id = ?").run(managedId);
+		for (const reference of [
+			"invalid-id",
+			null,
+			true,
+			{ body: secret },
+			[localId],
+			0,
+			-1,
+			1.5,
+			999_999,
+			managedId,
+		]) {
+			const unresolved = {
+				...metadata,
+				pack_item_ids: [localId],
+				added_ids: [],
+				removed_ids: [],
+				retained_ids: [],
+				[key]: [localId, reference],
+			};
+			setPackMetadata(store, { memoryId: localId, metadata: unresolved });
+			const state = readOnlyState(store, keysDir);
+			const partial = await usage(app);
+			expect(partial.recent_packs).toHaveLength(1);
+			expect(partial.recent_packs[0]?.metadata_json).toEqual({
+				pack_item_ids: [localId],
+				added_ids: [],
+				removed_ids: [],
+				retained_ids: [],
+				[key]: [localId],
+			});
+			expect(JSON.stringify(partial)).not.toContain(secret);
+			expect(partial.totals).toEqual(visible.totals);
+			expect(aggregate).not.toHaveBeenCalled();
+			expect([...__usageCacheTestHooks.cache.values()][0]).toBe(cachedEntry);
+			expect(readOnlyState(store, keysDir)).toEqual(state);
+		}
+		expect(network).not.toHaveBeenCalled();
+	},
+);
+
+it.each(["pack_item_ids", "added_ids", "removed_ids", "retained_ids"])(
+	"normalizes readable string IDs but omits a malformed %s field and all arbitrary content",
+	async (key) => {
+		// Arrange: readable string IDs retain the historical numeric API representation.
+		const { store, keysDir, app, network } = setup();
+		await seedProof(store, keysDir);
+		const localId = seedPack(store, "local-default");
+		const metadata = {
+			...mixedMetadata({ localId, managedId: localId }),
+			pack_item_ids: [String(localId)],
+			added_ids: [String(localId)],
+			removed_ids: [String(localId)],
+			retained_ids: [String(localId)],
+		};
+		setPackMetadata(store, { memoryId: localId, metadata });
+		// Act
+		const visible = await usage(app);
+		// Assert
+		expect(visible.recent_packs[0]?.metadata_json).toEqual({
+			...metadata,
+			pack_item_ids: [localId],
+			added_ids: [localId],
+			removed_ids: [localId],
+			retained_ids: [localId],
+		});
+
+		for (const value of [null, false, secret, { body: secret }]) {
+			// Arrange
+			setPackMetadata(store, { memoryId: localId, metadata: { ...metadata, [key]: value } });
+			const state = readOnlyState(store, keysDir);
+			// Act
+			const malformed = await usage(app);
+			// Assert: no unvalidated ID field may become a channel for nested content.
+			expect(malformed.recent_packs).toHaveLength(1);
+			expect(malformed.recent_packs[0]?.metadata_json).toEqual(
+				Object.fromEntries(
+					["pack_item_ids", "added_ids", "removed_ids", "retained_ids"]
+						.filter((idKey) => idKey !== key)
+						.map((idKey) => [idKey, [localId]]),
+				),
+			);
+			expect(JSON.stringify(malformed)).not.toContain(secret);
+			expect(malformed.totals).toEqual(visible.totals);
+			expect(readOnlyState(store, keysDir)).toEqual(state);
+		}
+		expect(network).not.toHaveBeenCalled();
+	},
+);
+
+it("normalizes all-visible legacy numeric-string references while retaining arbitrary content", async () => {
+	// Arrange: real managed proof authorizes every memory referenced by the legacy row.
+	const { store, keysDir, app, network } = setup();
+	await seedProof(store, keysDir);
+	const localId = seedPack(store, "local-default");
+	const managedId = seedPack(store, "scope-a");
+	const numericMetadata = mixedMetadata({ localId, managedId });
+	setPackMetadata(store, {
+		memoryId: localId,
+		metadata: {
+			...numericMetadata,
+			pack_item_ids: [String(localId), String(managedId)],
+			added_ids: [String(managedId)],
+			removed_ids: [String(managedId)],
+			retained_ids: [String(localId)],
+		},
+	});
+	const state = readOnlyState(store, keysDir);
+	// Act
+	const payload = await usage(app);
+	// Assert: normalization changes only ID arrays, never readable text or nested fields.
+	expect(
+		payload.recent_packs.find((row) => row.metadata_json.custom !== undefined)?.metadata_json,
+	).toEqual(numericMetadata);
 	expect(readOnlyState(store, keysDir)).toEqual(state);
 	expect(network).not.toHaveBeenCalled();
 });

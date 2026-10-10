@@ -267,6 +267,8 @@ Settings: [Pi extension](plugin-reference.md#pi-extension) and the [package conf
 
 Observer rows written before this provenance marker used UTF-16 text lengths, not tokens. Codemem keeps those rows for audit but excludes their values from token aggregates and reports them through `legacy_text_length_count`; the original token counts cannot be recovered. Health’s Injected, Savings, and Reduction cards use pack estimates only, so observer model usage is not mixed into pack-size metrics.
 
+The viewer may cache global usage totals, but it checks recent memory packs against current permissions on every request. If a pack references hidden, missing, deleted, or invalid memories, it keeps permitted memory IDs and omits other metadata, including summaries and snippets. Fully visible packs retain their metadata.
+
 ## Retrieval attribution diagnostics
 
 Use `codemem stats --attribution` to inspect local, bounded, observational retrieval diagnostics:

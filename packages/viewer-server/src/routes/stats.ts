@@ -163,10 +163,26 @@ function sanitizePackUsageMetadata(
 	visibility: UsageVisibility,
 ): Record<string, unknown> | null {
 	if (!metadata) return null;
-	const sanitized = { ...metadata };
+	const hasUnresolvedReference = MEMORY_ID_METADATA_KEYS.some((key) => {
+		if (!Object.hasOwn(metadata, key)) return false;
+		const ids = metadata[key];
+		if (!Array.isArray(ids)) return true;
+		return ids.some((value) => {
+			if (typeof value !== "number" && typeof value !== "string") return true;
+			const id = Number(value);
+			return !Number.isInteger(id) || id <= 0 || !visibility.visibleMemoryIds.has(id);
+		});
+	});
+	// Arbitrary text and nested fields cannot be attributed to individual memories.
+	// When any reference is unresolved, expose only confirmed visible ID arrays.
+	const sanitized: Record<string, unknown> = hasUnresolvedReference ? {} : { ...metadata };
 	for (const key of MEMORY_ID_METADATA_KEYS) {
-		if (Array.isArray(sanitized[key])) {
-			sanitized[key] = metadataMemoryIds(sanitized[key]).filter((memoryId) =>
+		const ids = metadata[key];
+		if (Array.isArray(ids)) {
+			const validIds = ids.filter(
+				(value) => typeof value === "number" || typeof value === "string",
+			);
+			sanitized[key] = metadataMemoryIds(validIds).filter((memoryId) =>
 				visibility.visibleMemoryIds.has(memoryId),
 			);
 		}
