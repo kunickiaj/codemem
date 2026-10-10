@@ -6,7 +6,7 @@
  */
 
 import type { Database } from "./db.js";
-import { projectClause } from "./project.js";
+import { projectColumnClause } from "./project.js";
 import {
 	LEGACY_SHARED_REVIEW_SCOPE_ID,
 	LOCAL_DEFAULT_SCOPE_ID,
@@ -250,6 +250,16 @@ export function buildFilterClauses(filters: MemoryFilters | undefined | null): F
 	return buildFilterClausesWithContext(filters);
 }
 
+function addProjectFilter(project: string | null | undefined, result: FilterResult): void {
+	if (!project) return;
+	// Session moves take precedence; redacted sessions fall back to readable memory attribution.
+	const filter = projectColumnClause("COALESCE(sessions.project, memory_items.project)", project);
+	if (!filter.clause) return;
+	result.clauses.push(filter.clause);
+	result.params.push(...filter.params);
+	result.joinSessions = true;
+}
+
 export function buildFilterClausesWithContext(
 	filters: MemoryFilters | undefined | null,
 	ownership?: OwnershipFilterContext,
@@ -288,15 +298,7 @@ export function buildFilterClausesWithContext(
 		params.push(...ownedPredicate.params);
 	}
 
-	// Project scoping — requires sessions JOIN
-	if (filters.project) {
-		const { clause, params: projectParams } = projectClause(filters.project);
-		if (clause) {
-			clauses.push(clause);
-			params.push(...projectParams);
-			result.joinSessions = true;
-		}
-	}
+	addProjectFilter(filters.project, result);
 
 	// Visibility
 	addMultiValueFilter(

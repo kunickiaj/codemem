@@ -2,7 +2,7 @@
  */
 
 import type { Database } from "../db.js";
-import { projectClause } from "../project.js";
+import { projectColumnClause } from "../project.js";
 import { SecretScanner } from "../secret-scanner.js";
 import { deriveTags, parseJsonStringList } from "./tag-helpers.js";
 
@@ -51,7 +51,7 @@ export function backfillTagsText(
 
 	let joinSessions = false;
 	if (project) {
-		const pc = projectClause(project);
+		const pc = projectColumnClause("COALESCE(sessions.project, memory_items.project)", project);
 		if (pc.clause) {
 			whereClauses.push(pc.clause);
 			params.push(...pc.params);

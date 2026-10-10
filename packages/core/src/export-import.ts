@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { and, eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import {
 	assertSchemaReady,
@@ -16,6 +17,11 @@ import { cleanProjectIdentity } from "./project-identity.js";
 import * as schema from "./schema.js";
 import { LOCAL_DEFAULT_SCOPE_ID } from "./scope-resolution.js";
 import { resolveSessionScopeId } from "./scope-stamping.js";
+import {
+	exportedSessionKey,
+	isCanonicalSessionKey,
+	remappedSessionKey,
+} from "./session-export-identity.js";
 
 type JsonObject = Record<string, unknown>;
 type MemoryInsert = typeof schema.memoryItems.$inferInsert;
@@ -239,25 +245,29 @@ function querySessions(
 	let sql = "SELECT * FROM sessions";
 	const params: unknown[] = [];
 	const clauses: string[] = [];
-	if (project) {
-		const clause = projectColumnClause("project", project);
-		if (clause.clause) {
-			clauses.push(clause.clause);
-			params.push(...clause.params);
-		}
-	}
-	if (since) {
-		clauses.push("started_at >= ?");
-		params.push(since);
-	}
 	const memoryClauses = ["memory_items.session_id = sessions.id", ...scopeFilter.clauses];
+	if (project) {
+		const filter = projectColumnClause("COALESCE(sessions.project, memory_items.project)", project);
+		if (filter.clause) memoryClauses.push(filter.clause);
+		// Scope parameters precede project parameters inside this EXISTS.
+		params.push(...scopeFilter.params, ...filter.params);
+	} else {
+		params.push(...scopeFilter.params);
+	}
 	if (!includeInactive) memoryClauses.splice(1, 0, "memory_items.active = 1");
+	if (since) {
+		memoryClauses.push(
+			"(sessions.started_at >= ? OR (sessions.started_at = '' AND memory_items.created_at >= ?))",
+		);
+		params.push(since, since);
+	}
 	clauses.push(`EXISTS (SELECT 1 FROM memory_items WHERE ${memoryClauses.join(" AND ")})`);
-	params.push(...scopeFilter.params);
 	if (clauses.length > 0) sql += ` WHERE ${clauses.join(" AND ")}`;
 	sql += " ORDER BY started_at ASC";
 	const rows = db.prepare(sql).all(...params) as JsonObject[];
-	return rows.map((row) => parseRowJsonFields(row, ["metadata_json"]));
+	return rows
+		.filter((row) => !since || String(row.started_at) >= since || isRedactedSessionPlaceholder(row))
+		.map((row) => parseRowJsonFields(row, ["metadata_json"]));
 }
 
 function fetchBySessionIds(
@@ -278,6 +288,65 @@ function exportedMemoryScopeId(row: JsonObject): string {
 	return existing ?? LOCAL_DEFAULT_SCOPE_ID;
 }
 
+function queryExportSessions(
+	db: Database,
+	project: string | null,
+	opts: ExportOptions,
+	scopeFilter: ScopeFilter,
+): { sessions: JsonObject[]; sessionIds: number[]; safeIds: number[] } {
+	const selectedSessions = querySessions(
+		db,
+		project,
+		opts.since ?? null,
+		scopeFilter,
+		Boolean(opts.includeInactive),
+	);
+	const sessionIds = selectedSessions.map((row) => Number(row.id)).filter(Number.isFinite);
+	if (sessionIds.length === 0) return { sessions: [], sessionIds, safeIds: [] };
+	const placeholders = sessionIds.map(() => "?").join(",");
+	// Session source records have no per-memory scope. Check all history, not
+	// just active/export-selected memories, before releasing those records.
+	const rows = db
+		.prepare(`SELECT DISTINCT session_id FROM memory_items
+		WHERE session_id IN (${placeholders})
+		AND NOT COALESCE((${scopeFilter.clauses.join(" AND ")}), 0)`)
+		.all(...sessionIds, ...scopeFilter.params) as { session_id: number }[];
+	const unsafeSessionIds = new Set(rows.map((row) => row.session_id));
+	for (const row of selectedSessions) {
+		if (isRedactedSessionPlaceholder(row)) unsafeSessionIds.add(Number(row.id));
+	}
+	const safeIds = sessionIds.filter((id) => !unsafeSessionIds.has(id));
+	// Opaque references preserve import mappings without exporting session
+	// metadata, paths, or other source content from partially readable sessions.
+	const sessions = selectedSessions.map((row) => {
+		const export_session_key = exportedSessionKey(db, row);
+		if (unsafeSessionIds.has(Number(row.id))) {
+			return { id: row.id, export_session_key, export_session_redacted: true };
+		}
+		return { ...row, export_session_key };
+	});
+	return { sessions, sessionIds, safeIds };
+}
+
+function isRedactedSessionPlaceholder(row: JsonObject): boolean {
+	const metadata = normalizeImportMetadata(row.metadata_json);
+	return (
+		isCanonicalSessionKey(cleanString(row.import_key)) &&
+		row.started_at === "" &&
+		row.ended_at == null &&
+		row.cwd == null &&
+		row.user == null &&
+		row.git_remote == null &&
+		row.git_branch == null &&
+		row.tool_version === "import" &&
+		metadata?.source === "export" &&
+		metadata.import_key === row.import_key &&
+		metadata.original_started_at === null &&
+		metadata.original_ended_at === null &&
+		metadata.import_metadata === null
+	);
+}
+
 function parseMemoryExportRow(row: JsonObject): JsonObject {
 	return {
 		...parseRowJsonFields(row, [
@@ -295,15 +364,25 @@ function fetchMemoryRows(
 	db: Database,
 	sessionIds: number[],
 	scopeFilter: ScopeFilter,
-	includeInactive: boolean,
+	opts: Pick<ExportOptions, "includeInactive" | "project">,
 ): JsonObject[] {
 	if (sessionIds.length === 0) return [];
 	const placeholders = sessionIds.map(() => "?").join(",");
-	const clauses = [`session_id IN (${placeholders})`, ...scopeFilter.clauses];
+	const clauses = [`memory_items.session_id IN (${placeholders})`, ...scopeFilter.clauses];
 	const params: unknown[] = [...sessionIds, ...scopeFilter.params];
-	if (!includeInactive) clauses.push("active = 1");
+	if (!opts.includeInactive) clauses.push("memory_items.active = 1");
+	if (opts.project) {
+		const filter = projectColumnClause(
+			"COALESCE(sessions.project, memory_items.project)",
+			opts.project,
+		);
+		if (filter.clause) clauses.push(filter.clause);
+		params.push(...filter.params);
+	}
 	return db
-		.prepare(`SELECT * FROM memory_items WHERE ${clauses.join(" AND ")} ORDER BY created_at ASC`)
+		.prepare(
+			`SELECT memory_items.* FROM memory_items JOIN sessions ON sessions.id = memory_items.session_id WHERE ${clauses.join(" AND ")} ORDER BY memory_items.created_at ASC`,
+		)
 		.all(...params) as JsonObject[];
 }
 
@@ -317,30 +396,26 @@ export function exportMemories(opts: ExportOptions = {}): ExportPayload {
 		if (opts.since) filters.since = opts.since;
 		const scopeFilter = buildScopeFilter(db);
 
-		const sessions = querySessions(
+		const { sessions, sessionIds, safeIds } = queryExportSessions(
 			db,
 			resolvedProject,
-			opts.since ?? null,
+			opts,
 			scopeFilter,
-			Boolean(opts.includeInactive),
 		);
-		const sessionIds = sessions.map((row) => Number(row.id)).filter(Number.isFinite);
 
-		const memories = fetchMemoryRows(
-			db,
-			sessionIds,
-			scopeFilter,
-			Boolean(opts.includeInactive),
-		).map((row) => parseMemoryExportRow(row));
+		const memories = fetchMemoryRows(db, sessionIds, scopeFilter, {
+			includeInactive: opts.includeInactive,
+			project: resolvedProject,
+		}).map((row) => parseMemoryExportRow(row));
 
 		const summaries = fetchBySessionIds(
 			db,
 			"session_summaries",
-			sessionIds,
+			safeIds,
 			"created_at_epoch ASC",
 		).map((row) => parseRowJsonFields(row, ["metadata_json", "files_read", "files_edited"]));
 
-		const prompts = fetchBySessionIds(db, "user_prompts", sessionIds, "created_at_epoch ASC").map(
+		const prompts = fetchBySessionIds(db, "user_prompts", safeIds, "created_at_epoch ASC").map(
 			(row) => parseRowJsonFields(row, ["metadata_json"]),
 		);
 
@@ -406,26 +481,182 @@ function nextUserName(): string {
 
 type DrizzleDb = ReturnType<typeof drizzle>;
 
+function readableSessionProject(sessionId: unknown, memories: JsonObject[]): string | null {
+	const projects = new Set(
+		memories
+			.filter((memory) => Number(memory.session_id) === Number(sessionId))
+			.map((memory) => cleanProjectIdentity(normalizeImportedProject(memory.project))),
+	);
+	if (projects.size !== 1) return null;
+	return projects.values().next().value ?? null;
+}
+
+function storedPlaceholderProject(db: Database, id: number): string | null {
+	const scopeFilter = buildScopeFilter(db);
+	const memories = db
+		.prepare(
+			`SELECT session_id, project FROM memory_items
+		 WHERE session_id = ? AND ${scopeFilter.clauses.join(" AND ")}`,
+		)
+		.all(id, ...scopeFilter.params) as JsonObject[];
+	return readableSessionProject(id, memories);
+}
+
+function trackPlaceholderProject(
+	db: Database,
+	session: JsonObject,
+	opts: ImportOptions,
+): JsonObject {
+	const metadata = normalizeImportMetadata(session.metadata_json) ?? {};
+	if (Object.hasOwn(metadata, "placeholder_project")) return metadata;
+	// Legacy rows have no baseline. Infer it from stored readable rows before
+	// ingestion, never from a potentially user-edited session project.
+	metadata.placeholder_project =
+		cleanProjectIdentity(cleanString(opts.remapProject)) ??
+		storedPlaceholderProject(db, Number(session.id));
+	db.prepare("UPDATE sessions SET metadata_json = ? WHERE id = ?").run(
+		toJson(metadata),
+		session.id,
+	);
+	return metadata;
+}
+
+function resolveImportedSessionIdentity(
+	db: Database,
+	row: JsonObject,
+	opts: ImportOptions & { memories: JsonObject[] },
+): { project: string | null; importKey: string; existingId: number | null } {
+	const sourceProject = opts.remapProject || normalizeImportedProject(row.project);
+	const legacyKey = buildImportKey("export", "session", row.id, {
+		project: sourceProject,
+		createdAt: typeof row.started_at === "string" ? row.started_at : null,
+	});
+	// Attribution comes only from exported readable memories; it never changes
+	// opaque identity or the legacy full-session fallback key.
+	const project =
+		row.export_session_redacted === true && !opts.remapProject
+			? readableSessionProject(row.id, opts.memories)
+			: sourceProject;
+	const marker = cleanString(row.export_session_key);
+	if (!isCanonicalSessionKey(marker)) {
+		return { project, importKey: legacyKey, existingId: findImportedId(db, "sessions", legacyKey) };
+	}
+	const importKey = opts.remapProject ? remappedSessionKey(marker, opts.remapProject) : marker;
+	let existingId = findImportedId(db, "sessions", importKey);
+	// Older full imports used project/start/id. Promote their key while full
+	// source identity is available, so later redacted exports reuse the row.
+	if (existingId == null && row.export_session_redacted !== true) {
+		existingId = findImportedId(db, "sessions", legacyKey);
+		if (existingId != null) {
+			db.prepare("UPDATE sessions SET import_key = ? WHERE id = ?").run(importKey, existingId);
+		}
+	}
+	return { project, importKey, existingId };
+}
+
+function importedSessionValues(row: JsonObject): typeof schema.sessions.$inferInsert {
+	const defaults =
+		row.export_session_redacted === true
+			? { startedAt: "", cwd: null, user: null }
+			: { startedAt: nowIso(), cwd: process.cwd(), user: nextUserName() };
+	return {
+		started_at: typeof row.started_at === "string" ? row.started_at : defaults.startedAt,
+		ended_at: typeof row.ended_at === "string" ? row.ended_at : null,
+		cwd: row.cwd == null ? defaults.cwd : cleanProjectIdentity(String(row.cwd)),
+		project: row.project == null ? null : cleanProjectIdentity(String(row.project)),
+		git_remote: row.git_remote == null ? null : cleanProjectIdentity(String(row.git_remote)),
+		git_branch: row.git_branch == null ? null : cleanProjectIdentity(String(row.git_branch)),
+		user: row.user == null ? defaults.user : String(row.user),
+		tool_version: String(row.tool_version ?? "import"),
+		metadata_json: toJson(row.metadata_json ?? null),
+		import_key: String(row.import_key),
+	};
+}
+
 function insertSession(d: DrizzleDb, row: JsonObject): number {
 	const rows = d
 		.insert(schema.sessions)
-		.values({
-			started_at: typeof row.started_at === "string" ? row.started_at : nowIso(),
-			ended_at: typeof row.ended_at === "string" ? row.ended_at : null,
-			cwd: row.cwd == null ? process.cwd() : cleanProjectIdentity(String(row.cwd)),
-			project: row.project == null ? null : cleanProjectIdentity(String(row.project)),
-			git_remote: row.git_remote == null ? null : cleanProjectIdentity(String(row.git_remote)),
-			git_branch: row.git_branch == null ? null : cleanProjectIdentity(String(row.git_branch)),
-			user: String(row.user ?? nextUserName()),
-			tool_version: String(row.tool_version ?? "import"),
-			metadata_json: toJson(row.metadata_json ?? null),
-			import_key: String(row.import_key),
-		})
+		.values(importedSessionValues(row))
 		.returning({ id: schema.sessions.id })
 		.all();
 	const id = rows[0]?.id;
 	if (id == null) throw new Error("session insert returned no id");
 	return id;
+}
+
+function importSession(
+	db: Database,
+	d: DrizzleDb,
+	session: JsonObject,
+	opts: ImportOptions & { memories: JsonObject[] },
+): { id: number; inserted: boolean } {
+	const { project, importKey, existingId } = resolveImportedSessionIdentity(db, session, opts);
+	// Redacted payloads carry references only, even if extra fields are supplied.
+	const sourceSession =
+		session.export_session_redacted === true
+			? { id: session.id, export_session_redacted: true }
+			: session;
+	const importedSession = {
+		...sourceSession,
+		project,
+		metadata_json: {
+			source: "export",
+			original_session_id: sourceSession.id,
+			original_started_at: sourceSession.started_at ?? null,
+			original_ended_at: sourceSession.ended_at ?? null,
+			import_metadata: sourceSession.metadata_json ?? null,
+			import_key: importKey,
+			...(sourceSession.export_session_redacted === true
+				? { placeholder_project: cleanProjectIdentity(project) }
+				: {}),
+		},
+		import_key: importKey,
+	};
+	if (existingId == null) return { id: insertSession(d, importedSession), inserted: true };
+	const existing = db.prepare("SELECT * FROM sessions WHERE id = ?").get(existingId) as JsonObject;
+	if (isRedactedSessionPlaceholder(existing)) {
+		const metadata = trackPlaceholderProject(db, existing, opts);
+		if (session.export_session_redacted !== true) {
+			const values = importedSessionValues(importedSession);
+			// Restore context, but retain raw NULL/blank/custom project moves.
+			if (existing.project !== metadata.placeholder_project)
+				values.project = existing.project as string | null;
+			values.metadata_json = toJson({ ...metadata, ...importedSession.metadata_json });
+			d.update(schema.sessions)
+				.set(values)
+				.where(
+					and(
+						eq(schema.sessions.id, existingId),
+						sql`${schema.sessions.project} IS ${existing.project}`,
+					),
+				)
+				.run();
+		}
+	}
+	return { id: existingId, inserted: false };
+}
+
+function reconcilePlaceholderProjects(
+	db: Database,
+	sessionIds: Iterable<number>,
+	opts: Pick<ImportOptions, "remapProject">,
+): void {
+	// An explicit remap remains authoritative even without stored readable memories.
+	if (cleanString(opts.remapProject)) return;
+	for (const id of new Set(sessionIds)) {
+		const session = db.prepare("SELECT * FROM sessions WHERE id = ?").get(id) as JsonObject;
+		if (!isRedactedSessionPlaceholder(session)) continue;
+		// Use stored rows after ingestion: deduped payload fields are not new
+		// attribution evidence, and previous readable slices still participate.
+		const metadata = trackPlaceholderProject(db, session, opts);
+		const previousProject = metadata.placeholder_project;
+		if (session.project !== previousProject) continue;
+		const project = storedPlaceholderProject(db, id);
+		if (project === previousProject) continue;
+		db.prepare(
+			"UPDATE sessions SET project = ?, metadata_json = ? WHERE id = ? AND project IS ?",
+		).run(project, toJson({ ...metadata, placeholder_project: project }), id, previousProject);
+	}
 }
 
 function insertPrompt(d: DrizzleDb, row: JsonObject): number {
@@ -503,6 +734,7 @@ function insertMemory(db: Database, d: DrizzleDb, row: JsonObject, deviceId: str
 	const scopeId = importedMemoryScopeId(db, row, deviceId);
 	const values: MemoryInsert = {
 		session_id: Number(row.session_id),
+		project: cleanProjectIdentity(cleanString(row.project)),
 		kind: String(row.kind ?? "observation"),
 		title: String(row.title ?? "Untitled"),
 		subtitle: row.subtitle == null ? null : String(row.subtitle),
@@ -571,11 +803,109 @@ function insertSummary(d: DrizzleDb, row: JsonObject): number {
 	return id;
 }
 
-export function importMemories(payload: ExportPayload, opts: ImportOptions = {}): ImportResult {
+function importableRecords(payload: ExportPayload) {
 	const sessionsData = Array.isArray(payload.sessions) ? payload.sessions : [];
 	const memoriesData = Array.isArray(payload.memory_items) ? payload.memory_items : [];
-	const summariesData = Array.isArray(payload.session_summaries) ? payload.session_summaries : [];
-	const promptsData = Array.isArray(payload.user_prompts) ? payload.user_prompts : [];
+	// Incoming redaction withholds children even when the canonical target is
+	// already full. Do not retain them for a later placeholder restoration.
+	const redactedSessionIds = new Set(
+		sessionsData
+			.filter((session) => session.export_session_redacted === true)
+			.map((session) => Number(session.id)),
+	);
+	const summariesData = (
+		Array.isArray(payload.session_summaries) ? payload.session_summaries : []
+	).filter((summary) => !redactedSessionIds.has(Number(summary.session_id)));
+	const promptsData = (Array.isArray(payload.user_prompts) ? payload.user_prompts : []).filter(
+		(prompt) => !redactedSessionIds.has(Number(prompt.session_id)),
+	);
+	return { sessionsData, memoriesData, summariesData, promptsData };
+}
+
+function importSessions(
+	db: Database,
+	d: DrizzleDb,
+	sessions: JsonObject[],
+	opts: ImportOptions & { memories: JsonObject[] },
+) {
+	const sessionMapping = new Map<number, number>();
+	let importedSessions = 0;
+	for (const session of sessions) {
+		const result = importSession(db, d, session, opts);
+		sessionMapping.set(Number(session.id), result.id);
+		if (result.inserted) importedSessions += 1;
+	}
+	return { sessionMapping, importedSessions };
+}
+
+function resolveImportedPromptId(
+	db: Database,
+	memory: JsonObject,
+	sessionId: number,
+	incomingSession: JsonObject | undefined,
+	mappings: { byId: Map<number, number>; byKey: Map<string, number> },
+): number | null {
+	if (incomingSession?.export_session_redacted === true) return null;
+	let promptId: number | null = null;
+	const key = cleanString(memory.user_prompt_import_key);
+	if (key) promptId = mappings.byKey.get(key) ?? findImportedId(db, "user_prompts", key);
+	else if (typeof memory.user_prompt_id === "number")
+		promptId = mappings.byId.get(memory.user_prompt_id) ?? null;
+	// Links are session-local; import-key deduplication alone is not enough.
+	const prompt = db
+		.prepare("SELECT id FROM user_prompts WHERE id = ? AND session_id = ?")
+		.get(promptId, sessionId) as { id: number } | undefined;
+	return prompt?.id ?? null;
+}
+
+function importedMemoryMetadata(memory: JsonObject, importKey: string): JsonObject {
+	const metadata: JsonObject = {
+		source: "export",
+		original_memory_id: memory.id ?? null,
+		original_created_at: memory.created_at ?? null,
+		import_metadata: memory.metadata_json ?? null,
+		import_key: importKey,
+	};
+	const promptKey = cleanString(memory.user_prompt_import_key);
+	if (promptKey) metadata.user_prompt_import_key = promptKey;
+	if (memory.kind === "session_summary")
+		return mergeSummaryMetadata(metadata, memory.metadata_json ?? null);
+	return metadata;
+}
+
+function reconcileImportedPromptLink(
+	db: Database,
+	memoryId: number,
+	sessionId: number,
+	promptId: number | null,
+	incomingSession: JsonObject | undefined,
+	opts: Pick<ImportOptions, "remapProject">,
+): void {
+	if (promptId == null || incomingSession?.export_session_redacted === true) return;
+	const marker = cleanString(incomingSession?.export_session_key);
+	if (!isCanonicalSessionKey(marker)) return;
+	const target = db
+		.prepare("SELECT import_key FROM sessions WHERE id = ?")
+		.get(sessionId) as JsonObject;
+	const expectedKey = opts.remapProject ? remappedSessionKey(marker, opts.remapProject) : marker;
+	if (target.import_key !== expectedKey) return;
+	const existing = db
+		.prepare(
+			"SELECT * FROM memory_items WHERE id = ? AND session_id = ? AND user_prompt_id IS NULL",
+		)
+		.get(memoryId, sessionId) as JsonObject | undefined;
+	if (!existing) return;
+	// Stored import bookkeeping distinguishes an imported row from a native
+	// import-key collision. It grants no creator or scope authority.
+	const metadata = normalizeImportMetadata(existing.metadata_json);
+	if (metadata?.source !== "export" || metadata.import_key !== existing.import_key) return;
+	db.prepare(
+		"UPDATE memory_items SET user_prompt_id = ? WHERE id = ? AND user_prompt_id IS NULL",
+	).run(promptId, memoryId);
+}
+
+export function importMemories(payload: ExportPayload, opts: ImportOptions = {}): ImportResult {
+	const { sessionsData, memoriesData, summariesData, promptsData } = importableRecords(payload);
 
 	const db = connect(resolveDbPath(opts.dbPath));
 	try {
@@ -593,43 +923,15 @@ export function importMemories(payload: ExportPayload, opts: ImportOptions = {})
 		}
 		const d = drizzle(db, { schema });
 		return db.transaction(() => {
-			const sessionMapping = new Map<number, number>();
+			const { sessionMapping, importedSessions } = importSessions(db, d, sessionsData, {
+				...opts,
+				memories: memoriesData,
+			});
 			const promptMapping = new Map<number, number>();
 			const promptImportKeyMapping = new Map<string, number>();
-			let importedSessions = 0;
 			let importedPrompts = 0;
 			let importedMemories = 0;
 			let importedSummaries = 0;
-
-			for (const session of sessionsData) {
-				const oldSessionId = Number(session.id);
-				const project = opts.remapProject || normalizeImportedProject(session.project);
-				const importKey = buildImportKey("export", "session", session.id, {
-					project,
-					createdAt: typeof session.started_at === "string" ? session.started_at : null,
-				});
-				const existingId = findImportedId(db, "sessions", importKey);
-				if (existingId != null) {
-					sessionMapping.set(oldSessionId, existingId);
-					continue;
-				}
-				const metadata: JsonObject = {
-					source: "export",
-					original_session_id: session.id,
-					original_started_at: session.started_at ?? null,
-					original_ended_at: session.ended_at ?? null,
-					import_metadata: session.metadata_json ?? null,
-					import_key: importKey,
-				};
-				const newId = insertSession(d, {
-					...session,
-					project,
-					metadata_json: metadata,
-					import_key: importKey,
-				});
-				sessionMapping.set(oldSessionId, newId);
-				importedSessions += 1;
-			}
 
 			for (const prompt of promptsData) {
 				const oldSessionId = Number(prompt.session_id);
@@ -680,37 +982,24 @@ export function importMemories(payload: ExportPayload, opts: ImportOptions = {})
 								project,
 								createdAt: typeof memory.created_at === "string" ? memory.created_at : null,
 							});
-				if (findImportedId(db, "memory_items", memoryImportKey) != null) continue;
+				const existingId = findImportedId(db, "memory_items", memoryImportKey);
 
-				let linkedPromptId: number | null = null;
-				if (
-					typeof memory.user_prompt_import_key === "string" &&
-					memory.user_prompt_import_key.trim()
-				) {
-					linkedPromptId =
-						promptImportKeyMapping.get(memory.user_prompt_import_key.trim()) ??
-						findImportedId(db, "user_prompts", memory.user_prompt_import_key.trim());
-				} else if (typeof memory.user_prompt_id === "number") {
-					linkedPromptId = promptMapping.get(memory.user_prompt_id) ?? null;
+				const incomingSession = sessionsData.find((session) => Number(session.id) === oldSessionId);
+				const linkedPromptId = resolveImportedPromptId(db, memory, newSessionId, incomingSession, {
+					byId: promptMapping,
+					byKey: promptImportKeyMapping,
+				});
+				if (existingId != null) {
+					reconcileImportedPromptLink(
+						db,
+						existingId,
+						newSessionId,
+						linkedPromptId,
+						incomingSession,
+						opts,
+					);
+					continue;
 				}
-
-				const baseMetadata: JsonObject = {
-					source: "export",
-					original_memory_id: memory.id ?? null,
-					original_created_at: memory.created_at ?? null,
-					import_metadata: memory.metadata_json ?? null,
-					import_key: memoryImportKey,
-				};
-				if (
-					typeof memory.user_prompt_import_key === "string" &&
-					memory.user_prompt_import_key.trim()
-				) {
-					baseMetadata.user_prompt_import_key = memory.user_prompt_import_key.trim();
-				}
-				const metadata =
-					memory.kind === "session_summary"
-						? mergeSummaryMetadata(baseMetadata, memory.metadata_json ?? null)
-						: baseMetadata;
 
 				insertMemory(
 					db,
@@ -720,13 +1009,15 @@ export function importMemories(payload: ExportPayload, opts: ImportOptions = {})
 						session_id: newSessionId,
 						project,
 						user_prompt_id: linkedPromptId,
-						metadata_json: metadata,
+						metadata_json: importedMemoryMetadata(memory, memoryImportKey),
 						import_key: memoryImportKey,
 					},
 					deviceId,
 				);
 				importedMemories += 1;
 			}
+
+			reconcilePlaceholderProjects(db, sessionMapping.values(), opts);
 
 			for (const summary of summariesData) {
 				const oldSessionId = Number(summary.session_id);

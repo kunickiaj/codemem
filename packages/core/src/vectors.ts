@@ -33,7 +33,7 @@ import {
 	getMaintenanceJob,
 	startMaintenanceJob,
 } from "./maintenance-jobs.js";
-import { projectClause } from "./project.js";
+import { projectColumnClause } from "./project.js";
 import { summaryContinuityFilter } from "./summary-memory.js";
 import type { ReplicationVectorWork } from "./sync-replication.js";
 import type { MemoryFilters } from "./types.js";
@@ -1384,7 +1384,7 @@ export async function backfillVectors(
 		params.push(since);
 	}
 	if (project) {
-		const pc = projectClause(project);
+		const pc = projectColumnClause("COALESCE(sessions.project, memory_items.project)", project);
 		if (pc.clause) {
 			whereClauses.push(pc.clause);
 			params.push(...pc.params);
