@@ -131,7 +131,7 @@ function recoveryBatch() {
 		.get();
 }
 
-function retainedHistory() {
+function retainedHistory({ source = "opencode", streamId = "missed-session" } = {}) {
 	return {
 		session: store.db.prepare("SELECT * FROM sessions WHERE id=?").get(sessionId),
 		link: store.db.prepare("SELECT * FROM opencode_sessions").all(),
@@ -139,8 +139,9 @@ function retainedHistory() {
 		state: store.db.prepare("SELECT * FROM raw_event_sessions").all(),
 		replication: store.db.prepare("SELECT * FROM replication_ops").all(),
 		sourceBatch: store.db
-			.prepare("SELECT * FROM raw_event_flush_batches WHERE extractor_version='raw_events_v1'")
-			.get(),
+			.prepare(`SELECT * FROM raw_event_flush_batches WHERE source=? AND stream_id=?
+			AND extractor_version='raw_events_v1' ORDER BY id`)
+			.all(source, streamId),
 	};
 }
 
@@ -261,25 +262,17 @@ it("passes 1,001 denied windows in one stream without starving default-cadence r
 	});
 	const { settings, observe } = options();
 	const sweeper = new RawEventSweeper(store, settings);
-	const retainedDeniedHistory = () => ({
-		...retainedHistory(),
-		sourceBatch: store.db
-			.prepare(`SELECT * FROM raw_event_flush_batches
-			WHERE source='opencode' AND stream_id='missed-session'
-			AND extractor_version='raw_events_v1' ORDER BY id`)
-			.all(),
-	});
 
 	// Act/Assert: repeat the default 30-second cadence, beyond the existing 15-second cooldown.
 	for (let tick = 0; tick < 3; tick++) {
 		deniedAdmissions = 0;
 		addHistoricalStream(`healthy-${tick}`);
-		const before = retainedDeniedHistory();
+		const before = retainedHistory();
 		expect(before.sourceBatch).toHaveLength(2001);
 		await sweeper.tick();
 		expect(observe).toHaveBeenCalledTimes(tick + 1);
 		expect(deniedAdmissions).toBe(1);
-		const after = retainedDeniedHistory();
+		const after = retainedHistory();
 		expect(after.sourceBatch).toHaveLength(2001);
 		expect(after).toEqual(before);
 		expect(
@@ -352,7 +345,9 @@ it.each([
 		observer_error_code='auth_missing', created_at=? WHERE id=?`)
 			.run(new Date(Date.now() + 2000).toISOString(), batch.batchId);
 		store.updateRawEventFlushState(streamId, 0, source);
-		const before = retainedHistory();
+		const deniedTuple = { source: "opencode", streamId: deniedStream };
+		const before = retainedHistory(deniedTuple);
+		expect(before.sourceBatch).toHaveLength(1);
 		const { settings, observe } = options();
 
 		// Act
@@ -364,7 +359,9 @@ it.each([
 		expect(store.db.prepare("SELECT session_id, scope_id FROM memory_items").all()).toEqual([
 			{ session_id: healthySession, scope_id: "local-default" },
 		]);
-		expect(retainedHistory()).toEqual(before);
+		const after = retainedHistory(deniedTuple);
+		expect(after.sourceBatch).toHaveLength(1);
+		expect(after).toEqual(before);
 		expect(
 			store.db
 				.prepare(`SELECT status, attempt_count FROM raw_event_flush_batches
@@ -791,11 +788,13 @@ it("retains a historical window through repeated scope denials and resumes at a 
 	expect(observe).toHaveBeenCalledTimes(1);
 	expect(retainedHistory()).toEqual({
 		...before,
-		sourceBatch: {
-			...(before.sourceBatch as Record<string, unknown>),
-			status: "recovered",
-			updated_at: expect.any(String),
-		},
+		sourceBatch: [
+			{
+				...(before.sourceBatch[0] as Record<string, unknown>),
+				status: "recovered",
+				updated_at: expect.any(String),
+			},
+		],
 	});
 	expect(store.db.prepare("SELECT scope_id, session_id FROM memory_items").all()).toEqual([
 		{ scope_id: "scope-a", session_id: sessionId },
@@ -891,11 +890,13 @@ it("defers a denied oldest stream while recovering a newer authorized stream, th
 	expect(await recoverOneMissingAuthWindow(store, settings)).toBe(false);
 	expect(retainedHistory()).toEqual({
 		...before,
-		sourceBatch: {
-			...(before.sourceBatch as Record<string, unknown>),
-			status: "recovered",
-			updated_at: expect.any(String),
-		},
+		sourceBatch: [
+			{
+				...(before.sourceBatch[0] as Record<string, unknown>),
+				status: "recovered",
+				updated_at: expect.any(String),
+			},
+		],
 	});
 });
 
