@@ -162,25 +162,38 @@ describe("accumulated placeholder project attribution", () => {
 		},
 	);
 
-	it.each(["", "   "])(
-		"still reconciles stored readable projects for blank remap (%j)",
-		(remapProject) => {
-			// Arrange: stored readable evidence, not blank remap intent, supplies the project.
+	it.each(
+		["", "   "].flatMap((remapProject) => [true, false].map((moved) => ({ remapProject, moved }))),
+	)(
+		"blank remap preserves deliberate project moves or reconciles unchanged attribution ($remapProject, moved=$moved)",
+		({ remapProject, moved }) => {
+			// Arrange: blank remap must not override a move or suppress new readable evidence.
 			const dbPath = destination();
 			const incoming = payload("alpha");
 			const opts = { dbPath, remapProject };
 			importMemories(incoming, opts);
 			const db = new Database(dbPath);
 			try {
-				db.prepare("UPDATE memory_items SET project = 'alpha'").run();
-				db.prepare("UPDATE sessions SET project = 'stale'").run();
+				db.prepare("UPDATE memory_items SET project = ?").run(moved ? "alpha" : "beta");
+				if (moved) db.prepare("UPDATE sessions SET project = 'stale'").run();
+				const before = db.prepare("SELECT * FROM sessions").get() as Record<string, unknown>;
 
-				// Act: a duplicate import must still reconcile the accumulated readable evidence.
+				// Act: preserve the moved row; only the unchanged attribution may recompute.
 				const repeated = importMemories(incoming, opts);
 
-				// Assert: whitespace never suppresses reconciliation as an explicit remap would.
+				// Assert: stored beta replaces computed alpha/NULL, never the deliberate stale move.
 				expect(repeated).toMatchObject({ sessions: 0, memory_items: 0 });
-				expect(db.prepare("SELECT project FROM sessions").get()).toEqual({ project: "alpha" });
+				let expected = before;
+				if (!moved)
+					expected = {
+						...before,
+						project: "beta",
+						metadata_json: JSON.stringify({
+							...JSON.parse(String(before.metadata_json)),
+							placeholder_project: "beta",
+						}),
+					};
+				expect(db.prepare("SELECT * FROM sessions").get()).toEqual(expected);
 			} finally {
 				db.close();
 			}
