@@ -395,6 +395,7 @@ it.each([false, true])(
 				throw new Error("rollback creation");
 			});
 		try {
+			vi.stubEnv("CODEMEM_EMBEDDING_DISABLED", "");
 			// Act
 			const create = () =>
 				store.rememberForUser(sessionId, "discovery", "Vector creation", "Vector body");
@@ -415,6 +416,7 @@ it.each([false, true])(
 					.get(),
 			).toBe(rollback ? 0 : 1);
 		} finally {
+			vi.unstubAllEnvs();
 			competing.close();
 		}
 	},
