@@ -410,6 +410,7 @@ export function registerScopeApiQueryBudget(
 	test: Test,
 	database: (f: GrantFixture) => D1DatabaseLike,
 ) {
+	// Fixture seeding makes 357 sequential native D1 writes; CI wall time is not the query budget.
 	test("signed 121-member request stays below 50 queries; catalog does not read each scope snapshot", async ({
 		fixture: f,
 	}) => {
@@ -449,5 +450,5 @@ export function registerScopeApiQueryBudget(
 		expect(reads).toBeGreaterThan(5);
 		expect(reads).toBeLessThan(50);
 		expect(reads).toBe(10);
-	});
+	}, 15_000);
 }
