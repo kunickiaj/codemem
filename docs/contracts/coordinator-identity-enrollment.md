@@ -383,9 +383,31 @@ The browser migration and atomic local SQLite upgrade preserve existing sign-in
 and link browser rows, uniqueness, indexes, and purge counters. Legacy handlers
 reject the reserved owner purpose without consuming its nonce or PKCE material.
 
-The storage foundation remains inert. The private local-test commit layer below
-does not activate attempt creation or an owner route. Applying the live migration,
-deploying, and testing real Google sign-in remain separate approval gates.
+The ordinary browser routes still reject `owner_enroll`. Only explicit local-test
+composition can create an owner attempt; it does not mount an owner route.
+Applying the live migration, deploying, and testing real Google sign-in remain
+separate approval gates.
+
+#### Private signed start and browser claim for local testing
+
+A pending device signs the exact owner-start tuple, including coordinator,
+origin, issuer, configuration revision, device/key, loopback destination, and
+one-use browser-start code. The private start handler validates that signature,
+the literal loopback URI, current revocation and ownership collisions, and
+per-device attempt limits before storing an expiring pending attempt. It derives
+the canonical key ID and exact-text fingerprint from the submitted public key.
+The coordinator-wide unfinished-attempt limit still counts expired rows, and
+no route-level limiter is mounted. Both need review before public activation.
+
+The original browser must present the start code, its start cookie, and a valid
+same-origin CSRF form. Claiming stores the cookie binding alongside an
+`owner_enroll` transaction with SDK-generated state, nonce, and PKCE verifier.
+It refuses an already active transaction cookie, clears the start cookie after
+committing, and adds `prompt=select_account` to the provider URL.
+The browser transaction and attempt transition commit atomically; a lost race
+or write-count failure cannot return an authorization URL. A claim only starts
+provider navigation. It does not verify an account, confirm ownership, grant
+access, or enroll a device; callback and finalization remain separate work.
 
 #### Private atomic commit for local testing
 
