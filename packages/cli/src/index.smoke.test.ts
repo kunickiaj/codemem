@@ -27,7 +27,17 @@ describe("cli smoke", () => {
 	beforeAll(() => {
 		const build = runCommand("pnpm", ["run", "build"], workspaceRoot);
 
-		expect(build.status).toBe(0);
+		expect(
+			build.status,
+			[
+				"CLI smoke workspace build failed (pnpm run build)",
+				`Exit status: ${build.status}`,
+				`Signal: ${build.signal ?? "none"}`,
+				`Spawn error: ${build.error?.stack ?? build.error?.message ?? "none"}`,
+				`stdout:\n${build.stdout ?? ""}`,
+				`stderr:\n${build.stderr ?? ""}`,
+			].join("\n"),
+		).toBe(0);
 	}, 120_000);
 
 	it("prints top-level help", () => {
