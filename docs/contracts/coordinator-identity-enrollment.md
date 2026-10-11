@@ -231,7 +231,7 @@ and atomic binding/enrollment/audit commitment must be implemented and validated
 before ledger issuance or an explicit legacy migration can activate. Applying
 the live migration remains a separate approval gate.
 
-#### Verified owner evidence and final commit (pending approval)
+#### Verified owner evidence and final commit
 
 This is the required evidence shape for the future owner-enrollment attempt. It
 is not a new route, schema migration, or activation approval. The attempt must
@@ -383,9 +383,35 @@ The browser migration and atomic local SQLite upgrade preserve existing sign-in
 and link browser rows, uniqueness, indexes, and purge counters. Legacy handlers
 reject the reserved owner purpose without consuming its nonce or PKCE material.
 
-This is inert storage only: no attempt creation, binding issuance, owner route,
-or verified enrollment commit is implemented. Applying the live migration,
+The storage foundation remains inert. The private local-test commit layer below
+does not activate attempt creation or an owner route. Applying the live migration,
 deploying, and testing real Google sign-in remain separate approval gates.
+
+#### Private atomic commit for local testing
+
+The internal owner commit consumes an already confirmed, pinned attempt and
+independently verifies the pending key's final signature and completion secret.
+The trusted caller supplies the current verifier revision and clock; the winning
+statement compares them with the stored revision and attempt deadline. It also
+rechecks the active account link, grant revisions, group state, revocations,
+ownership collisions, and the scanned enrollment-key set. The scan denies a new
+commit when more than 500 existing group enrollments need examination; it is not
+a general enrollment quota. Historical link/controller facts are equality pins,
+not a requirement that the old controller device remain active.
+
+The attempt, ownership binding, permitted existing group enrollments, audit event,
+and retained outcome commit in one atomic backend batch. On native SQLite,
+unexpected dependent-write counts abort the batch; native D1 parity remains a
+separate validation step. The receipt reader compares the caller's attempt fields
+with the stored finalized attempt and retained binding without restoring missing
+enrollment, re-enabling devices, or adding grants.
+
+This module is not exported from the package entrypoint and has no public route
+or standalone ownership-binding operation. Test composition installs its audit
+table explicitly; no production schema hook or audit migration is added. Tests
+at this layer supply confirmed attempt metadata and do not prove an OIDC callback
+or a working owner ceremony. SDK verification, browser confirmation, runtime
+adoption, viewer integration, and real-provider approval remain separate steps.
 
 #### Legacy enrollment and reactivation guards
 
