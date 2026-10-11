@@ -8,6 +8,14 @@ Use `RadixSelect` from `packages/ui/src/components/primitives/radix-select.tsx`.
 
 Caller classes should adjust layout or a specific variant, not repeat the select's colors, padding, focus state, or menu surface. Keep project-filter changes in the existing application state and refresh flow.
 
+## Menus and help
+
+Use the shared action-menu primitive for row actions. Keep action handlers and confirmation dialogs in the owning screen; the primitive owns opening, keyboard navigation, disabled items, dismissal, and focus return. Menu surfaces should not be clipped by their parent rows. Destructive actions must retain their danger treatment when highlighted.
+
+Give each autocomplete its own listbox and option IDs. An input's active-descendant relationship must point to an option in its own open list. Help text must expose a tooltip role and a description relationship to the active help button without removing other descriptions.
+
+Use `DialogCloseButton` for dialog headers rather than a separately styled character button. Preserve the caller's busy/disabled state and accessible name.
+
 ## Buttons, inputs, and popup surfaces
 
 Text actions share their default geometry. Icon buttons, tabs, and segmented controls may keep their own geometry; use explicit variants for smaller text actions.

@@ -1,5 +1,4 @@
-import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { h } from "preact";
+import { ActionMenu } from "../../../components/primitives/action-menu";
 
 export function FeedItemMenu({
 	assignProjectDisabled,
@@ -14,39 +13,22 @@ export function FeedItemMenu({
 	onForget: () => void;
 	title: string;
 }) {
-	return h(
-		DropdownMenu.Root,
-		null,
-		h(
-			DropdownMenu.Trigger,
-			{ asChild: true },
-			h(
-				"button",
-				{ "aria-label": `Actions for ${title}`, className: "feed-menu-trigger", type: "button" },
-				"⋯",
-			),
-		),
-		h(
-			DropdownMenu.Portal,
-			null,
-			h(
-				DropdownMenu.Content,
-				{ align: "end", className: "feed-menu-panel", side: "bottom", sideOffset: 4 },
-				h(
-					DropdownMenu.Item,
-					{
-						className: "feed-menu-item",
-						disabled: assignProjectDisabled,
-						onSelect: () => onAssignProject(),
-					},
-					assignProjectDisabled ? "Moving…" : "Assign to project…",
-				),
-				h(
-					DropdownMenu.Item,
-					{ className: "feed-menu-item danger", disabled, onSelect: () => onForget() },
-					disabled ? "Forgetting…" : "Forget memory",
-				),
-			),
-		),
+	return (
+		<ActionMenu
+			label={`Actions for ${title}`}
+			actions={[
+				{
+					disabled: assignProjectDisabled,
+					label: assignProjectDisabled ? "Moving…" : "Assign to project…",
+					onSelect: onAssignProject,
+				},
+				{
+					danger: true,
+					disabled,
+					label: disabled ? "Forgetting…" : "Forget memory",
+					onSelect: onForget,
+				},
+			]}
+		/>
 	);
 }

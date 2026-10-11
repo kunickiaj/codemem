@@ -39,16 +39,23 @@ const uiAliases = {
 	"react/jsx-runtime": "preact/jsx-runtime",
 };
 const radixTestDependencies = [
+	"@floating-ui/react-dom",
 	"@radix-ui/react-collapsible",
 	"@radix-ui/react-collection",
 	"@radix-ui/react-compose-refs",
 	"@radix-ui/react-context",
 	"@radix-ui/react-dialog",
 	"@radix-ui/react-direction",
+	"@radix-ui/react-dropdown-menu",
 	"@radix-ui/react-dismissable-layer",
 	"@radix-ui/react-focus-guards",
 	"@radix-ui/react-focus-scope",
 	"@radix-ui/react-id",
+	"@radix-ui/react-menu",
+	"@radix-ui/react-popper",
+	"@radix-ui/react-arrow",
+	"@radix-ui/react-use-size",
+	"@radix-ui/react-use-rect",
 	"@radix-ui/react-portal",
 	"@radix-ui/react-presence",
 	"@radix-ui/react-primitive",
@@ -128,6 +135,9 @@ export default defineConfig(({ command, mode }) => {
 			},
 			environment: "jsdom",
 			name: "ui",
+			alias: {
+				"react-remove-scroll": resolve(import.meta.dirname, "src/menu-test-scroll-lock.tsx"),
+			},
 			server: {
 				deps: {
 					inline: radixTestDependencies,
