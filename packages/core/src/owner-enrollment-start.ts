@@ -35,12 +35,18 @@ import {
 	type CoordinatorOidcOptions,
 	createCoordinatorOidcClient,
 } from "./coordinator-oidc.js";
-import { ownerExcludedLegacyDecisionSql } from "./coordinator-owner-enrollment-commit.js";
+import {
+	commitOwnerEnrollment,
+	OWNER_ACTIVE_LINK_SQL,
+	ownerExcludedLegacyDecisionSql,
+	readOwnerEnrollmentReceipt,
+} from "./coordinator-owner-enrollment-commit.js";
 import {
 	type OwnerAttempt,
 	readGrantPins,
 	validAttemptTime,
 	verifyOwnerEnrollmentSignature,
+	verifyPendingKeySignatureAndHashes,
 } from "./coordinator-owner-enrollment-proof.js";
 import type { InMemoryRequestRateLimiter } from "./request-rate-limit.js";
 
@@ -52,11 +58,23 @@ export interface OwnerEnrollmentStart {
 	browserStartCode: string;
 	signature: string;
 }
+interface OwnerEnrollmentFinalize {
+	attemptId: string;
+	completionSecret: string;
+	signature: string;
+}
 export type OwnerEnrollmentStartResult =
 	| { kind: "rejected"; error: "owner_enrollment_unavailable" | "owner_enrollment_unknown" }
 	| { kind: "started"; attemptId: string; expiresAtMs: number }
 	| { kind: "browser_claimed"; authorizationUrl: string; setCookies: string[] }
-	| { kind: "verified"; confirmation: OwnerEnrollmentConfirmation; csrf: string };
+	| { kind: "verified"; confirmation: OwnerEnrollmentConfirmation; csrf: string }
+	| {
+			kind: "confirmed";
+			completionSecret: string;
+			loopbackRedirect: string;
+			confirmation: OwnerEnrollmentConfirmation;
+	  }
+	| { kind: "finalized" | "prior_commit"; bindingId: string; groups: string[] };
 interface OwnerEnrollmentConfirmation {
 	attemptId: string;
 	coordinatorId: string;
@@ -71,6 +89,7 @@ interface OwnerEnrollmentConfirmation {
 	linkId: string;
 	revision: string;
 	confirmationHash: string;
+	groups: readonly string[];
 }
 type StartPin = { coordinatorId: string; origin: string; issuer: string; revision: string };
 interface OwnerEnrollmentComposition {
@@ -210,6 +229,9 @@ export async function createCoordinatorOwnerEnrollment(input: OwnerEnrollmentCom
 				claimBrowser: (request: Request, clientKey: string) =>
 					boundary(() => claimBrowser(context, request, clientKey)),
 				verifyCallback: (request: Request) => boundary(() => verifyCallback(context, request)),
+				confirm: (request: Request, clientKey: string, confirmationCommitment: string) =>
+					boundary(() => confirm(context, request, clientKey, confirmationCommitment)),
+				finalize: (value: OwnerEnrollmentFinalize) => boundary(() => finalize(context, value)),
 			}),
 		};
 	} catch {
@@ -277,12 +299,14 @@ async function verifyCallback(
 	);
 	return { kind: "verified", confirmation, csrf };
 }
-const CALLBACK_ATTEMPT_SQL = `a.coordinator_id = ? AND a.attempt_id = ? AND a.purpose = 'owner_enroll'
- AND a.state = 'browser_claimed' AND a.origin = ? AND a.issuer = ? AND a.auth_config_revision = ?
+function ownerAttemptSql(state: "browser_claimed" | "oidc_verified"): string {
+	return `a.coordinator_id = ? AND a.attempt_id = ? AND a.purpose = 'owner_enroll'
+ AND a.state = '${state}' AND a.origin = ? AND a.issuer = ? AND a.auth_config_revision = ?
  AND a.browser_transaction_hash = ? AND a.browser_binder_hash = ?
  AND a.device_id = ? AND a.public_key = ? AND a.key_id = ? AND a.fingerprint = ?
  AND a.browser_start_hash = ? AND a.loopback_redirect = ? AND a.created_at_ms = ? AND a.expires_at_ms = ?
  AND a.created_at_ms <= ? AND a.expires_at_ms > ?`;
+}
 function callbackAttemptValues(
 	context: Context,
 	a: OwnerAttempt,
@@ -370,7 +394,7 @@ async function consumeOwnerBrowser(
 		sql: `UPDATE coordinator_auth_browser_transactions AS b SET state = 'consumed',claim_token = ?,
  consumed_at_ms = ?,nonce = NULL,pkce_verifier = NULL WHERE ${CALLBACK_TXN_SQL}
  AND b.state = 'pending' AND b.nonce = ? AND b.pkce_verifier = ?
- AND EXISTS (SELECT 1 FROM coordinator_owner_enrollment_attempts a WHERE ${CALLBACK_ATTEMPT_SQL})`,
+ AND EXISTS (SELECT 1 FROM coordinator_owner_enrollment_attempts a WHERE ${ownerAttemptSql("browser_claimed")})`,
 		values: [
 			claimToken,
 			burnTime,
@@ -408,7 +432,7 @@ async function persistVerified(
 	if (!link) return null;
 	const grants = await context.backend.first<{ rows: string }>({
 		sql: `SELECT (${CALLBACK_GRANTS_SQL}) AS rows FROM coordinator_owner_enrollment_attempts a
- WHERE ${CALLBACK_ATTEMPT_SQL}`,
+ WHERE ${ownerAttemptSql("browser_claimed")}`,
 		values: [link.identity_id, ...callbackAttemptValues(context, consumed.row, context.now())],
 	});
 	if (!grants || !readGrantPins(grants.rows)) return null;
@@ -441,7 +465,7 @@ function verifiedStatement(
 	return {
 		sql: `UPDATE coordinator_owner_enrollment_attempts AS a SET state = 'oidc_verified',
  account_subject = ?,identity_id = ?,link_id = ?,link_attempt_id = ?,link_controller_attestation_id = ?,
- link_auth_config_revision = ?,grant_revisions_json = ? WHERE ${CALLBACK_ATTEMPT_SQL}
+ link_auth_config_revision = ?,grant_revisions_json = ? WHERE ${ownerAttemptSql("browser_claimed")}
  AND EXISTS (SELECT 1 FROM coordinator_auth_browser_transactions b WHERE ${CALLBACK_TXN_SQL}
  AND b.state = 'consumed' AND b.claim_token = ? AND b.nonce IS NULL AND b.pkce_verifier IS NULL)
  AND EXISTS (SELECT 1 FROM coordinator_auth_account_links l WHERE l.coordinator_id = a.coordinator_id
@@ -478,7 +502,9 @@ function verifiedStatement(
 }
 async function confirmationView(row: OwnerAttempt): Promise<OwnerEnrollmentConfirmation> {
 	if (!row.account_subject || !row.identity_id || !row.link_id) throw new Error();
-	// Display commitment only: do not persist a confirmation or completion secret yet.
+	const grants = readGrantPins(row.grant_revisions_json);
+	if (!grants) throw new Error();
+	// Display commitment; confirm() persists it with the completion-secret hash.
 	const confirmationHash = await ownerEnrollmentHash(
 		JSON.stringify([
 			"owner_enroll",
@@ -519,7 +545,216 @@ async function confirmationView(row: OwnerAttempt): Promise<OwnerEnrollmentConfi
 		linkId: row.link_id,
 		revision: row.auth_config_revision,
 		confirmationHash,
+		groups: Object.freeze(grants.map((grant) => grant.groupId)),
 	});
+}
+
+// Both the preflight read and winning update require the consumed transaction,
+// exact linked account provenance, and the same active grant snapshot shown to the user.
+const CONFIRM_AUTHORITY_SQL = `${OWNER_ACTIVE_LINK_SQL}
+ AND (${CALLBACK_GRANTS_SQL}) = a.grant_revisions_json
+ AND NOT EXISTS (SELECT 1 FROM json_each(a.grant_revisions_json) p WHERE ${ownerExcludedLegacyDecisionSql("json_extract(p.value,'$.groupId')")})
+ AND EXISTS (SELECT 1 FROM coordinator_auth_browser_transactions b
+ WHERE b.coordinator_id = a.coordinator_id AND b.attempt_id = a.attempt_id AND b.purpose = 'owner_enroll'
+ AND b.browser_transaction_hash = a.browser_transaction_hash AND b.binder_hash = a.browser_binder_hash
+ AND b.issuer = a.issuer AND b.auth_config_revision = a.auth_config_revision AND b.redirect_uri = ?
+ AND b.state = 'consumed' AND b.claim_token IS NOT NULL AND b.nonce IS NULL AND b.pkce_verifier IS NULL
+ AND b.created_at_ms >= a.created_at_ms AND b.created_at_ms <= ?
+ AND b.expires_at_ms = a.expires_at_ms)`;
+function confirmAuthorityValues(context: Context, row: OwnerAttempt, time: number) {
+	return [row.identity_id, context.c.redirectUri, time];
+}
+async function readConfirmableAttempt(
+	context: Context,
+	attemptId: string,
+	binderHash: string,
+): Promise<OwnerAttempt | null> {
+	const row = await context.backend.first<OwnerAttempt>({
+		sql: `SELECT * FROM coordinator_owner_enrollment_attempts WHERE coordinator_id = ?
+ AND attempt_id = ? AND purpose = 'owner_enroll' AND state = 'oidc_verified' AND browser_binder_hash = ?`,
+		values: [context.c.coordinatorId, attemptId, binderHash],
+	});
+	const time = context.now();
+	if (!live(context, row, time) || !row.browser_transaction_hash || !row.loopback_redirect)
+		return null;
+	if (!parseCoordinatorAuthLoopback(row.loopback_redirect).ok) return null;
+	const current = await context.backend.first({
+		sql: `SELECT 1 FROM coordinator_owner_enrollment_attempts a WHERE
+  ${ownerAttemptSql("oidc_verified")}
+ AND ${CONFIRM_AUTHORITY_SQL}`,
+		values: [
+			...callbackAttemptValues(context, row, time),
+			...confirmAuthorityValues(context, row, time),
+		],
+	});
+	return current ? row : null;
+}
+async function confirm(
+	context: Context,
+	request: Request,
+	clientKey: string,
+	confirmationCommitment: string,
+): Promise<OwnerEnrollmentStartResult> {
+	const snapshot = snapshotBrowserRequest(request);
+	const checked = await guardBrowserForm({
+		request,
+		clientKey,
+		action: "transaction_attempt",
+		scope: context.scope,
+		csrfKey: context.csrfKey,
+		limiter: context.limiter,
+	});
+	if (!checked.ok || checked.action !== "transaction_attempt") return unavailable;
+	const cookie = await readBrowserCookie(snapshot.cookie, "transaction");
+	if (cookie.kind !== "present" || cookie.cookieHash !== checked.cookieHash) return unavailable;
+	const row = await readConfirmableAttempt(context, checked.attemptId, cookie.cookieHash);
+	if (!row?.loopback_redirect) return unavailable;
+	const confirmation = await confirmationView(row);
+	if (confirmationCommitment !== confirmation.confirmationHash) return unavailable;
+	const completionSecret = mintCompletionSecret();
+	const completionHash = await proofHash(completionSecret);
+	const time = context.now();
+	const wrote = await context.backend.run(
+		confirmStatement(context, row, {
+			confirmationHash: confirmation.confirmationHash,
+			completionHash,
+			time,
+		}),
+	);
+	if (wrote !== 1) return unavailable;
+	return {
+		kind: "confirmed",
+		completionSecret,
+		loopbackRedirect: row.loopback_redirect,
+		confirmation,
+	};
+}
+function mintCompletionSecret(): string {
+	const bytes = globalThis.crypto.getRandomValues(new Uint8Array(32));
+	return btoa(String.fromCharCode(...bytes))
+		.replaceAll("+", "-")
+		.replaceAll("/", "_")
+		.replace(/=+$/, "");
+}
+function confirmStatement(
+	context: Context,
+	a: OwnerAttempt,
+	p: { confirmationHash: string; completionHash: string; time: number },
+): AuthLinkStatement {
+	return {
+		sql: `UPDATE coordinator_owner_enrollment_attempts AS a SET state = 'confirmed',
+ confirmation_hash = ?,completion_secret_hash = ? WHERE
+  ${ownerAttemptSql("oidc_verified")}
+ AND a.account_subject = ? AND a.identity_id = ? AND a.link_id = ? AND a.link_attempt_id = ?
+ AND a.link_controller_attestation_id = ? AND a.link_auth_config_revision = ? AND a.grant_revisions_json = ?
+ AND a.confirmation_hash IS NULL AND a.completion_secret_hash IS NULL
+ AND ${CONFIRM_AUTHORITY_SQL} AND ${NO_COLLISION_SQL}`,
+		values: [
+			p.confirmationHash,
+			p.completionHash,
+			...callbackAttemptValues(context, a, p.time),
+			a.account_subject,
+			a.identity_id,
+			a.link_id,
+			a.link_attempt_id,
+			a.link_controller_attestation_id,
+			a.link_auth_config_revision,
+			a.grant_revisions_json,
+			...confirmAuthorityValues(context, a, p.time),
+			a.device_id,
+			a.key_id,
+			a.device_id,
+			a.key_id,
+		],
+	};
+}
+function captureFinalize(value: unknown): OwnerEnrollmentFinalize {
+	return Object.freeze({
+		attemptId: id(own(value, "attemptId")),
+		completionSecret: text(own(value, "completionSecret"), 43),
+		signature: text(own(value, "signature"), 86),
+	});
+}
+function matchesFinalScope(context: Context, row: OwnerAttempt | null): row is OwnerAttempt {
+	return (
+		!!row &&
+		row.purpose === "owner_enroll" &&
+		row.coordinator_id === context.c.coordinatorId &&
+		row.origin === context.pin.origin &&
+		row.issuer === context.c.issuer &&
+		// A committed receipt is historical evidence; only a new commit needs the live revision.
+		(row.state === "finalized" || row.auth_config_revision === context.c.revision) &&
+		!!row.confirmation_hash
+	);
+}
+async function finalize(
+	context: Context,
+	value: OwnerEnrollmentFinalize,
+): Promise<OwnerEnrollmentStartResult> {
+	let i: OwnerEnrollmentFinalize;
+	try {
+		i = captureFinalize(value);
+	} catch {
+		return unavailable;
+	}
+	const row = await readAttempt(context, i.attemptId);
+	if (!matchesFinalScope(context, row)) return unavailable;
+	const proof = await verifyPendingKeySignatureAndHashes(row, i.completionSecret, i.signature);
+	if (!proof || proof.completionHash !== row.completion_secret_hash) return unavailable;
+	if (row.state === "finalized") return priorCommit(context, row, proof);
+	const time = context.now();
+	if (!live(context, row, time) || row.state !== "confirmed") return unavailable;
+	if ((await confirmationView(row)).confirmationHash !== row.confirmation_hash) return unavailable;
+	const committed = await commitOwnerEnrollment({
+		backend: context.backend,
+		row,
+		revision: context.c.revision,
+		now: time,
+		completionSecret: i.completionSecret,
+		signature: i.signature,
+	});
+	return readFinalOutcome(context, i, { committed });
+}
+async function readFinalOutcome(
+	context: Context,
+	i: OwnerEnrollmentFinalize,
+	options: { committed: boolean },
+): Promise<OwnerEnrollmentStartResult> {
+	const fresh = await readAttempt(context, i.attemptId);
+	// A failed/missing post-commit read never proves rollback or successful completion.
+	if (!fresh) throw new Error();
+	if (!matchesFinalScope(context, fresh) || fresh.state !== "finalized") {
+		if (options.committed) throw new Error();
+		return unavailable;
+	}
+	const proof = await verifyPendingKeySignatureAndHashes(fresh, i.completionSecret, i.signature);
+	if (!proof || !(await matchesReceipt(context, fresh, proof))) throw new Error();
+	if (!options.committed) return receipt(fresh, "prior_commit");
+	return receipt(fresh, "finalized");
+}
+type FinalProof = { completionHash: string; keyProofHash: string };
+async function matchesReceipt(context: Context, row: OwnerAttempt, proof: FinalProof) {
+	return (
+		row.completion_secret_hash === proof.completionHash &&
+		row.final_key_proof_hash === proof.keyProofHash &&
+		(await readOwnerEnrollmentReceipt(context.backend, row))
+	);
+}
+async function priorCommit(
+	context: Context,
+	row: OwnerAttempt,
+	proof: FinalProof,
+): Promise<OwnerEnrollmentStartResult> {
+	if (!(await matchesReceipt(context, row, proof))) return unavailable;
+	return receipt(row, "prior_commit");
+}
+function receipt(
+	row: OwnerAttempt,
+	kind: "finalized" | "prior_commit",
+): OwnerEnrollmentStartResult {
+	const grants = readGrantPins(row.grant_revisions_json);
+	if (!grants || !row.binding_id) throw new Error();
+	return { kind, bindingId: row.binding_id, groups: grants.map((grant) => grant.groupId) };
 }
 const NO_COLLISION_SQL = `NOT EXISTS (SELECT 1 FROM coordinator_device_ownership_bindings WHERE device_id = ? OR key_id = ?)
  AND NOT EXISTS (SELECT 1 FROM coordinator_device_revocations WHERE (subject_kind = 'device_id' AND subject_value = ?)

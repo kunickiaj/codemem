@@ -320,6 +320,11 @@ rows still exist. After cleanup, a matching receipt returns a read-only
 prior-commit result; missing cleaned rows never authorize a new commit, restore
 an enrollment, re-enable a device, or add grants.
 
+A verifier configuration revision change still blocks an uncommitted attempt.
+It does not block an exact retry of an already finalized attempt: that retry
+checks the retained revision and signed proof against the immutable receipt,
+without consulting current grant authority or writing again.
+
 The receipt must retain the original completion and key commitments, or protected
 proof references, needed for that match. Its proposed schema and public output
 remain privacy-redacted. The wire status and error vocabulary are pending
@@ -421,7 +426,22 @@ denies confirmation when none remain. The link creation time is checked at this
 transition but is not retained for the final commit. The handler
 returns a confirmation view and browser CSRF token, not an enrollment or browser
 session. Failed verification, link drift, replay, or expiry grants nothing.
-Confirmation and pending-key finalization remain separate private steps.
+
+The same original transaction cookie and a valid Origin/CSRF form must then
+confirm the displayed Identity, pending key, and pinned group list. Confirmation
+records only a hash of a fresh completion secret and uses the loopback address
+saved at signed start; a form cannot choose a new destination. The pending key
+signs that secret and the pinned tuple for finalization through the private
+atomic writer below. An exact lost-response retry reads the retained receipt
+without restoring group enrollment or current permission. These handlers are
+unmounted; loopback delivery, the viewer, native D1 parity, and live provider
+activation remain separate work.
+
+The future browser route must clear the transaction cookie after successful
+confirmation, send the completion secret only to the saved loopback destination
+(never render it in a page), and set `Cache-Control: no-store` and
+`Referrer-Policy: no-referrer`. Route-level admission limits must also cover
+finalization; the private proof helper is not a public rate limiter.
 
 #### Private atomic commit for local testing
 

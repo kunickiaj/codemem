@@ -178,6 +178,8 @@ it("claims once with SDK state/PKCE and preserves the original cookie binder in 
 	const factory = await createCoordinatorOwnerEnrollment(c.options);
 	expect(factory.ok && Object.keys(factory.enrollment).sort()).toEqual([
 		"claimBrowser",
+		"confirm",
+		"finalize",
 		"start",
 		"verifyCallback",
 	]);

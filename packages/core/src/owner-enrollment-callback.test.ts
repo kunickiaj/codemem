@@ -635,7 +635,7 @@ it.each([false, true])(
 			{ groupId: "group-b", revision: 3 },
 		]);
 		noNewEnrollmentAuthority();
-		// Test-only storage transition: no browser confirmation/finalize handler exists here yet.
+		// Test-only storage transition isolates the writer from the browser handlers.
 		const secretBytes = Buffer.alloc(32, 9);
 		const completionSecret = secretBytes.toString("base64url");
 		f.db
