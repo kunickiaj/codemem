@@ -31,13 +31,17 @@ export const OWNER_ACTIVE_LINK_SQL = `EXISTS (SELECT 1 FROM coordinator_auth_acc
  AND l.attempt_id = a.link_attempt_id AND l.controller_attestation_id = a.link_controller_attestation_id
  AND l.auth_config_revision = a.link_auth_config_revision AND l.revoked_at_ms IS NULL)`;
 
-// Shared private predicate: a is the attempt and p is one pinned grant from json_each.
-export const OWNER_EXCLUDED_LEGACY_DECISION_SQL = `EXISTS (SELECT 1 FROM coordinator_legacy_team_completions c, json_each(c.manifest_json,'$.device_decisions') d
- WHERE c.group_id = json_extract(p.value,'$.groupId') AND json_extract(c.manifest_json,'$.coordinator_id') = a.coordinator_id
+// Private SQL expressions only: a is the stored attempt in both callers.
+export function ownerExcludedLegacyDecisionSql(
+	groupExpression: "r.group_id" | "json_extract(p.value,'$.groupId')",
+): string {
+	return `EXISTS (SELECT 1 FROM coordinator_legacy_team_completions c, json_each(c.manifest_json,'$.device_decisions') d
+ WHERE c.group_id = ${groupExpression} AND json_extract(c.manifest_json,'$.coordinator_id') = a.coordinator_id
  AND json_extract(d.value,'$.decision') = 'excluded'
  AND (json_extract(d.value,'$.device_id') = a.device_id OR json_extract(d.value,'$.key_fingerprint') = a.fingerprint
  OR NOT EXISTS (SELECT 1 FROM enrolled_devices e WHERE e.group_id = c.group_id
-   AND e.device_id = json_extract(d.value,'$.device_id') AND e.fingerprint = json_extract(d.value,'$.key_fingerprint'))))`;
+    AND e.device_id = json_extract(d.value,'$.device_id') AND e.fingerprint = json_extract(d.value,'$.key_fingerprint'))))`;
+}
 
 const LIVE_GRANTS = `json_array_length(a.grant_revisions_json) BETWEEN 1 AND 50
  AND NOT EXISTS (SELECT 1 FROM json_each(a.grant_revisions_json) p
@@ -45,7 +49,7 @@ const LIVE_GRANTS = `json_array_length(a.grant_revisions_json) BETWEEN 1 AND 50
  WHERE r.coordinator_id = a.coordinator_id AND r.identity_id = a.identity_id
  AND r.group_id = json_extract(p.value,'$.groupId') AND r.revision = json_extract(p.value,'$.revision')
  AND r.status = 'active' AND r.revoked_at IS NULL AND g.archived_at IS NULL)
- OR ${OWNER_EXCLUDED_LEGACY_DECISION_SQL})`;
+ OR ${ownerExcludedLegacyDecisionSql("json_extract(p.value,'$.groupId')")})`;
 
 const NO_REVOCATION = `NOT EXISTS (SELECT 1 FROM coordinator_device_revocations
  WHERE (subject_kind = 'device_id' AND subject_value = a.device_id)

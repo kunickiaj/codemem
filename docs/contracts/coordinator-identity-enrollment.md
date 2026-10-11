@@ -415,8 +415,10 @@ once, clearing the stored nonce and PKCE verifier, before the maintained OIDC
 client verifies the provider response. The verified issuer and subject must
 resolve to the exact active account link; its historical attempt, controller,
 and revision references and the eligible group-grant revisions are pinned on
-the attempt. The link creation time is checked at this transition but is not
-retained for the final commit. The handler
+the attempt. A Team exclusion removes only that Team from the server-derived
+eligible set; the callback rechecks the exact filtered set at its write, and
+denies confirmation when none remain. The link creation time is checked at this
+transition but is not retained for the final commit. The handler
 returns a confirmation view and browser CSRF token, not an enrollment or browser
 session. Failed verification, link drift, replay, or expiry grants nothing.
 Confirmation and pending-key finalization remain separate private steps.

@@ -35,7 +35,7 @@ import {
 	type CoordinatorOidcOptions,
 	createCoordinatorOidcClient,
 } from "./coordinator-oidc.js";
-import { OWNER_EXCLUDED_LEGACY_DECISION_SQL } from "./coordinator-owner-enrollment-commit.js";
+import { ownerExcludedLegacyDecisionSql } from "./coordinator-owner-enrollment-commit.js";
 import {
 	type OwnerAttempt,
 	readGrantPins,
@@ -390,11 +390,12 @@ interface OwnerAccountLink {
 	auth_config_revision: string;
 	created_at_ms: number;
 }
-// Stable ordering also lets the winning update reject a changed grant snapshot.
+// Filter each Team before pinning; the winning update repeats this exact snapshot.
 const CALLBACK_GRANTS_SQL = `SELECT json_group_array(json_object('groupId',groupId,'revision',revision)) FROM
  (SELECT r.group_id AS groupId,r.revision AS revision FROM coordinator_identity_group_grants r
- JOIN groups g ON g.group_id = r.group_id WHERE r.coordinator_id = ? AND r.identity_id = ?
- AND r.status = 'active' AND r.revoked_at IS NULL AND g.archived_at IS NULL ORDER BY r.group_id LIMIT 51)`;
+ JOIN groups g ON g.group_id = r.group_id WHERE r.coordinator_id = a.coordinator_id AND r.identity_id = ?
+ AND r.status = 'active' AND r.revoked_at IS NULL AND g.archived_at IS NULL
+ AND NOT ${ownerExcludedLegacyDecisionSql("r.group_id")} ORDER BY r.group_id LIMIT 51)`;
 async function persistVerified(
 	context: Context,
 	consumed: ConsumedOwnerBrowser,
@@ -406,8 +407,9 @@ async function persistVerified(
 	});
 	if (!link) return null;
 	const grants = await context.backend.first<{ rows: string }>({
-		sql: `SELECT (${CALLBACK_GRANTS_SQL}) AS rows`,
-		values: [context.c.coordinatorId, link.identity_id],
+		sql: `SELECT (${CALLBACK_GRANTS_SQL}) AS rows FROM coordinator_owner_enrollment_attempts a
+ WHERE ${CALLBACK_ATTEMPT_SQL}`,
+		values: [link.identity_id, ...callbackAttemptValues(context, consumed.row, context.now())],
 	});
 	if (!grants || !readGrantPins(grants.rows)) return null;
 	const time = context.now();
@@ -446,7 +448,6 @@ function verifiedStatement(
  AND l.link_id = ? AND l.issuer = a.issuer AND l.subject = ? AND l.identity_id = ? AND l.attempt_id = ?
  AND l.controller_attestation_id = ? AND l.auth_config_revision = ? AND l.created_at_ms = ? AND l.revoked_at_ms IS NULL)
  AND (${CALLBACK_GRANTS_SQL}) = ?
- AND NOT EXISTS (SELECT 1 FROM json_each(?) p WHERE ${OWNER_EXCLUDED_LEGACY_DECISION_SQL})
  AND ${NO_COLLISION_SQL}`,
 		values: [
 			account.subject,
@@ -466,9 +467,7 @@ function verifiedStatement(
 			link.controller_attestation_id,
 			link.auth_config_revision,
 			link.created_at_ms,
-			context.c.coordinatorId,
 			link.identity_id,
-			grants,
 			grants,
 			consumed.row.device_id,
 			consumed.row.key_id,

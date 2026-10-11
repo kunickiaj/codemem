@@ -4,11 +4,16 @@ import { NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { issueBrowserCookie, readBrowserCookie } from "./coordinator-browser-credential.js";
 import { verifyBrowserCsrfToken } from "./coordinator-browser-csrf.js";
 import { oidcFixture, PROVIDER } from "./coordinator-oidc-test-fixtures.js";
-import { commitPendingKey } from "./coordinator-owner-enrollment-commit-test-fixtures.js";
+import { commitOwnerEnrollment, type OwnerAttempt } from "./coordinator-owner-enrollment-commit.js";
+import {
+	commitPendingKey,
+	commitProofMessage,
+} from "./coordinator-owner-enrollment-commit-test-fixtures.js";
 import {
 	ATTEMPTS,
 	browserForm,
 	config,
+	hash,
 	nativeBackend,
 	ORIGIN,
 	type OwnerStartFixture,
@@ -121,6 +126,23 @@ function exchangeAfterConsumption(c: Ceremony, change?: () => void) {
 		if (url === `${cfg.issuer}/token`) change?.();
 		return transport(url, options);
 	});
+}
+
+function excludeGroup(group: string, decision: Record<string, unknown>, db = f.db) {
+	db.prepare(
+		"INSERT INTO coordinator_legacy_team_completions VALUES (?, 'candidate-a',1,?,?,?)",
+	).run(
+		group,
+		JSON.stringify({ coordinator_id: cfg.coordinatorId, device_decisions: [decision] }),
+		new Date(NOW).toISOString(),
+		new Date(NOW).toISOString(),
+	);
+}
+
+function noNewEnrollmentAuthority() {
+	expect(f.rows("coordinator_device_ownership_bindings")).toEqual([]);
+	expect(f.rows("enrolled_devices").filter((row) => row.device_id === "device-a")).toEqual([]);
+	expect(f.rows("coordinator_owner_enrollment_audit_log")).toEqual([]);
 }
 
 it("pins the SDK-verified exact account and eligible grants without creating authority", async () => {
@@ -450,7 +472,7 @@ it("allows only one callback exchange across native SQLite connections", async (
 });
 
 it.each(["pending-device", "pending-fingerprint", "unresolved", "malformed", "resolved"])(
-	"checks persisted legacy exclusion %s before returning confirmation",
+	"filters only the excluded group for persisted legacy exclusion %s",
 	async (fault) => {
 		// Arrange: group-a remains active, unarchived and granted despite this legacy decision.
 		const c = await claimed();
@@ -484,22 +506,172 @@ it.each(["pending-device", "pending-fingerprint", "unresolved", "malformed", "re
 		// Act: replay must deny regardless of whether the first callback succeeds.
 		const result = await c.verifyCallback(c.request());
 		const replay = await c.verifyCallback(c.request());
-		// Assert: resolved unrelated exclusions preserve the original grant snapshot.
+		// Assert: an excluded Team cannot veto another eligible Team's account grant.
+		expect(result.kind).toBe("verified");
+		expect(f.rows(ATTEMPTS)[0]).toMatchObject({
+			state: "oidc_verified",
+			account_subject: "fixture-subject",
+			identity_id: "identity-a",
+			link_id: "link-a",
+			confirmation_hash: null,
+			completion_secret_hash: null,
+		});
 		if (fault === "resolved") {
-			expect(result.kind).toBe("verified");
 			expect(JSON.parse(f.rows(ATTEMPTS)[0]?.grant_revisions_json as string)).toEqual([
 				{ groupId: "group-a", revision: 2 },
 				{ groupId: "group-b", revision: 3 },
 			]);
 		} else {
-			expect(result).toEqual(unavailable);
-			expect(f.rows(ATTEMPTS)[0]?.state).toBe("browser_claimed");
-			noVerifiedAccount();
+			expect(JSON.parse(f.rows(ATTEMPTS)[0]?.grant_revisions_json as string)).toEqual([
+				{ groupId: "group-b", revision: 3 },
+			]);
 		}
+		expect(f.rows("coordinator_auth_account_links")[0]).toMatchObject({
+			link_id: "link-a",
+			revoked_at_ms: null,
+		});
+		noNewEnrollmentAuthority();
 		expect(replay).toEqual(unavailable);
 		consumed();
 		expect(ownerCallbackAuthority(f)).toEqual(before);
 		expect(c.provider.requests.filter(({ url }) => url === `${cfg.issuer}/jwks`)).toHaveLength(1);
+	},
+);
+
+it.each(["excluded", "archived"])(
+	"denies when group-a is excluded and the other eligible group is %s",
+	async (other) => {
+		// Arrange: no eligible group remains after Team-specific filtering.
+		const c = await claimed();
+		const decision = { decision: "excluded", device_id: "device-a" };
+		excludeGroup("group-a", decision);
+		if (other === "excluded") excludeGroup("group-b", decision);
+		else f.db.exec("UPDATE groups SET archived_at='2026-10-01' WHERE group_id='group-b'");
+		const before = ownerCallbackAuthority(f);
+		// Act
+		const result = await c.verifyCallback(c.request());
+		const replay = await c.verifyCallback(c.request());
+		// Assert: failure burns the proof without pinning an account or minting authority.
+		expect(result).toEqual(unavailable);
+		expect(replay).toEqual(unavailable);
+		consumed();
+		noVerifiedAccount();
+		noNewEnrollmentAuthority();
+		expect(f.rows(ATTEMPTS)[0]?.state).toBe("browser_claimed");
+		expect(ownerCallbackAuthority(f)).toEqual(before);
+		expect(c.provider.requests.filter(({ url }) => url === `${cfg.issuer}/token`)).toHaveLength(1);
+	},
+);
+
+it.each(["insert", "change"])(
+	"rejects exclusion %s drift after reading a filtered grant snapshot",
+	async (drift) => {
+		// Arrange: initially only group-b is eligible; mutate on the independent SQLite connection.
+		const c = await claimed();
+		const decision = { decision: "excluded", device_id: "device-a" };
+		excludeGroup("group-a", decision);
+		if (drift === "change") {
+			f.db
+				.prepare(`INSERT INTO enrolled_devices
+ (group_id,device_id,public_key,fingerprint,identity_id,enabled,created_at)
+ VALUES ('group-b','unrelated-device',?,'unrelated-fingerprint','other-identity',1,?)`)
+				.run(commitPendingKey().publicKey, new Date(NOW).toISOString());
+			excludeGroup("group-b", {
+				decision: "excluded",
+				device_id: "unrelated-device",
+				key_fingerprint: "unrelated-fingerprint",
+			});
+		}
+		let injected = false;
+		let authorityAfterDrift: unknown[] = [];
+		const backend: AuthLinkBackend = {
+			...f.backend,
+			run: async (statement) => {
+				if (statement.sql.includes("SET state = 'oidc_verified'")) {
+					expect(statement.values).toContain(JSON.stringify([{ groupId: "group-b", revision: 3 }]));
+					if (drift === "insert") excludeGroup("group-b", decision, f.second);
+					else {
+						f.second
+							.prepare(
+								"UPDATE coordinator_legacy_team_completions SET manifest_json=? WHERE group_id='group-b'",
+							)
+							.run(
+								JSON.stringify({ coordinator_id: cfg.coordinatorId, device_decisions: [decision] }),
+							);
+					}
+					injected = true;
+					authorityAfterDrift = ownerCallbackAuthority(f);
+				}
+				return f.backend.run(statement);
+			},
+		};
+		const composed = await createCoordinatorOwnerEnrollment({ ...c.options, backend });
+		if (!composed.ok) throw new Error("race composition failed");
+		// Act
+		const result = await composed.enrollment.verifyCallback(c.request());
+		const replay = await composed.enrollment.verifyCallback(c.request());
+		// Assert: neither the stale group-b pin nor an empty grant list becomes verified authority.
+		expect(injected).toBe(true);
+		expect(result).toEqual(unavailable);
+		expect(replay).toEqual(unavailable);
+		consumed();
+		noVerifiedAccount();
+		noNewEnrollmentAuthority();
+		expect(ownerCallbackAuthority(f)).toEqual(authorityAfterDrift);
+	},
+);
+
+it.each([false, true])(
+	"private writer uses filtered callback pins with later eligible-group exclusion=%s",
+	async (excludeRemaining) => {
+		// Arrange: SDK verification pins only group-b, not the excluded group-a.
+		const c = await claimed();
+		const decision = { decision: "excluded", device_id: "device-a" };
+		excludeGroup("group-a", decision);
+		const callback = await c.verifyCallback(c.request());
+		expect(callback.kind).toBe("verified");
+		if (callback.kind !== "verified") throw new Error("missing filtered callback pins");
+		expect(JSON.parse(f.rows(ATTEMPTS)[0]?.grant_revisions_json as string)).toEqual([
+			{ groupId: "group-b", revision: 3 },
+		]);
+		noNewEnrollmentAuthority();
+		// Test-only storage transition: no browser confirmation/finalize handler exists here yet.
+		const secretBytes = Buffer.alloc(32, 9);
+		const completionSecret = secretBytes.toString("base64url");
+		f.db
+			.prepare(`UPDATE coordinator_owner_enrollment_attempts
+ SET state='confirmed',confirmation_hash=?,completion_secret_hash=?`)
+			.run(callback.confirmation.confirmationHash, hash(secretBytes));
+		const row = f.db.prepare(`SELECT * FROM ${ATTEMPTS}`).get() as OwnerAttempt;
+		if (excludeRemaining) excludeGroup("group-b", decision);
+		const before = f.snapshot();
+		// Act: pending-key proof is real; authority checks and writes use the native atomic batch.
+		const result = await commitOwnerEnrollment({
+			backend: f.backend,
+			row,
+			revision: cfg.revision,
+			now: NOW,
+			completionSecret,
+			signature: f.key.sign(commitProofMessage(row, completionSecret)),
+		});
+		// Assert: unrelated excluded grants do not veto the pin; a newly excluded pin cannot mint.
+		expect(result).toBe(!excludeRemaining);
+		if (excludeRemaining) {
+			expect(f.snapshot()).toEqual(before);
+			noNewEnrollmentAuthority();
+		} else {
+			expect(f.rows("enrolled_devices")).toEqual([
+				expect.objectContaining({
+					group_id: "group-b",
+					device_id: "device-a",
+					identity_id: "identity-a",
+				}),
+			]);
+			expect(f.rows("coordinator_device_ownership_bindings")).toHaveLength(1);
+			expect(f.rows("coordinator_owner_enrollment_audit_log")).toHaveLength(1);
+			expect(f.rows(ATTEMPTS)[0]?.state).toBe("finalized");
+		}
+		consumed();
 	},
 );
 
