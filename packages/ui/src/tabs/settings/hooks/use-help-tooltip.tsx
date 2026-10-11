@@ -2,9 +2,9 @@
  * surface `.help-icon[data-tooltip]` messages, positions the tooltip
  * element on open/resize/scroll, and portals it out to document.body. */
 
-import type { ComponentChildren } from "preact";
+import type { ComponentChildren, RefObject } from "preact";
 import { createPortal } from "preact/compat";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { helpButtonFromTarget, positionHelpTooltipElement } from "../data/dom";
 import type { SettingsTooltipState } from "../data/types";
 
@@ -15,13 +15,58 @@ export interface UseHelpTooltipResult {
 	) => void;
 }
 
+function describeHelpTrigger(anchor: HTMLElement, tooltipId: string) {
+	const descriptions = anchor.getAttribute("aria-describedby")?.split(/\s+/).filter(Boolean) ?? [];
+	if (descriptions.includes(tooltipId)) return;
+	anchor.setAttribute("aria-describedby", [...descriptions, tooltipId].join(" "));
+	return () => {
+		// Remove only our relationship, retaining descriptions added while help was open.
+		const remaining = (anchor.getAttribute("aria-describedby")?.split(/\s+/) ?? []).filter(
+			(id) => id && id !== tooltipId,
+		);
+		if (remaining.length > 0) {
+			anchor.setAttribute("aria-describedby", remaining.join(" "));
+		} else {
+			anchor.removeAttribute("aria-describedby");
+		}
+	};
+}
+
+function useHelpTooltipPortal(
+	tooltip: SettingsTooltipState,
+	tooltipRef: RefObject<HTMLDivElement | null>,
+	tooltipId: string,
+) {
+	return useMemo(() => {
+		if (typeof document === "undefined") return null;
+		return createPortal(
+			<div
+				className={`help-tooltip${tooltip.visible ? " visible" : ""}`}
+				hidden={!tooltip.visible}
+				id={tooltipId}
+				ref={tooltipRef}
+				role="tooltip"
+			>
+				{tooltip.content}
+			</div>,
+			document.body,
+		);
+	}, [tooltip.content, tooltip.visible, tooltipId, tooltipRef]);
+}
+
 export function useHelpTooltip(): UseHelpTooltipResult {
+	const tooltipId = `settings-help-${useId()}`;
 	const [tooltip, setTooltip] = useState<SettingsTooltipState>({
 		anchor: null,
 		content: "",
 		visible: false,
 	});
 	const tooltipRef = useRef<HTMLDivElement | null>(null);
+
+	useLayoutEffect(() => {
+		if (!tooltip.visible || !tooltip.anchor) return;
+		return describeHelpTrigger(tooltip.anchor, tooltipId);
+	}, [tooltip.anchor, tooltip.visible, tooltipId]);
 
 	useEffect(() => {
 		const showTooltip = (anchor: HTMLElement) => {
@@ -119,19 +164,7 @@ export function useHelpTooltip(): UseHelpTooltipResult {
 		};
 	}, [tooltip.anchor, tooltip.visible]);
 
-	const tooltipPortal = useMemo(() => {
-		if (typeof document === "undefined") return null;
-		return createPortal(
-			<div
-				className={`help-tooltip${tooltip.visible ? " visible" : ""}`}
-				hidden={!tooltip.visible}
-				ref={tooltipRef}
-			>
-				{tooltip.content}
-			</div>,
-			document.body,
-		);
-	}, [tooltip.content, tooltip.visible]);
+	const tooltipPortal = useHelpTooltipPortal(tooltip, tooltipRef, tooltipId);
 
 	return { tooltipPortal, setTooltip };
 }

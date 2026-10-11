@@ -118,11 +118,11 @@ export function DuplicatePersonDialogContent({
 				});
 			}}
 		>
-			<legend className="small" id={descriptionId}>
+			<legend className="small" id={`${descriptionId}-merge-instructions`}>
 				Choose which person should remain after combining these duplicates.
 			</legend>
 			<RadixRadioGroup
-				ariaDescribedby={descriptionId}
+				ariaDescribedby={`${descriptionId}-merge-instructions`}
 				ariaLabel="Person to keep after combining duplicates"
 				autoFocusValue={primaryActorId}
 				indicatorClassName="sync-dialog-radio-indicator"

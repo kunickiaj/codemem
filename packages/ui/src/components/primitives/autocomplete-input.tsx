@@ -12,7 +12,7 @@
 import * as Popover from "@radix-ui/react-popover";
 import type { JSX, Ref } from "preact";
 import { forwardRef } from "preact/compat";
-import { useEffect, useImperativeHandle, useMemo, useRef, useState } from "preact/hooks";
+import { useEffect, useId, useImperativeHandle, useMemo, useRef, useState } from "preact/hooks";
 
 type InputAttrs = Omit<
 	JSX.InputHTMLAttributes<HTMLInputElement>,
@@ -26,6 +26,11 @@ export type AutocompleteInputProps = InputAttrs & {
 	onSubmit?: () => void;
 	maxSuggestions?: number;
 };
+
+function getActiveOptionId(listboxId: string, index: number, open: boolean, optionCount: number) {
+	if (!open || index < 0 || index >= optionCount) return undefined;
+	return `${listboxId}-option-${index}`;
+}
 
 export const AutocompleteInput = forwardRef(function AutocompleteInput(
 	{
@@ -43,6 +48,7 @@ export const AutocompleteInput = forwardRef(function AutocompleteInput(
 	externalRef: Ref<HTMLInputElement>,
 ) {
 	const inputRef = useRef<HTMLInputElement | null>(null);
+	const listboxId = `autocomplete-listbox-${useId()}`;
 	useImperativeHandle(externalRef, () => inputRef.current as HTMLInputElement, []);
 
 	const [open, setOpen] = useState(false);
@@ -59,6 +65,7 @@ export const AutocompleteInput = forwardRef(function AutocompleteInput(
 	}, [filtered.length, activeIndex]);
 
 	const shouldOpen = open && filtered.length > 0;
+	const activeOptionId = getActiveOptionId(listboxId, activeIndex, shouldOpen, filtered.length);
 
 	const commit = (selection: string) => {
 		onValueChange(selection);
@@ -115,13 +122,7 @@ export const AutocompleteInput = forwardRef(function AutocompleteInput(
 						setOpen(true);
 						setActiveIndex(-1);
 					}}
-					onFocus={(event) => {
-						// Don't open on focus — only open once the user signals
-						// intent (types, or presses arrow-down). Opening on focus
-						// makes the dropdown appear immediately when the dialog
-						// mounts with autoFocus, which hides the input.
-						onFocus?.(event);
-					}}
+					onFocus={onFocus}
 					onBlur={(event) => {
 						// Let click-on-option fire before closing.
 						window.setTimeout(() => setOpen(false), 120);
@@ -131,10 +132,8 @@ export const AutocompleteInput = forwardRef(function AutocompleteInput(
 					role="combobox"
 					aria-autocomplete="list"
 					aria-expanded={shouldOpen}
-					aria-controls="autocompleteListbox"
-					aria-activedescendant={
-						activeIndex >= 0 ? `autocomplete-option-${activeIndex}` : undefined
-					}
+					aria-controls={listboxId}
+					aria-activedescendant={activeOptionId}
 				/>
 			</Popover.Anchor>
 			<Popover.Portal>
@@ -146,14 +145,14 @@ export const AutocompleteInput = forwardRef(function AutocompleteInput(
 					sideOffset={4}
 					style={{ width: "var(--radix-popover-trigger-width)" }}
 				>
-					<div className="autocomplete-listbox" id="autocompleteListbox" role="listbox">
+					<div className="autocomplete-listbox" id={listboxId} role="listbox">
 						{filtered.map((suggestion, index) => {
 							const active = index === activeIndex;
 							return (
 								<div
 									aria-selected={active}
 									className={active ? "autocomplete-option active" : "autocomplete-option"}
-									id={`autocomplete-option-${index}`}
+									id={`${listboxId}-option-${index}`}
 									key={suggestion}
 									onMouseDown={(event) => {
 										event.preventDefault();
