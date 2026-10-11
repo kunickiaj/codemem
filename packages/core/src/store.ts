@@ -38,7 +38,11 @@ import {
 } from "./memory-creation-provenance.js";
 import { buildMemoryDedupKey, normalizeMemoryDedupTitle } from "./memory-dedup.js";
 import { validateMemoryKind } from "./memory-kinds.js";
-import { adoptLocalCapture, assertLocalCaptureAdoptionActors } from "./memory-local-capture.js";
+import {
+	adoptLocalCapture,
+	assertLocalCaptureAdoptionActors,
+	hasPendingLocalCapture,
+} from "./memory-local-capture.js";
 import { allocateLocalCaptureMemorySource } from "./memory-source-identity.js";
 import { readCodememConfigFile } from "./observer-config.js";
 import type { PackArtifacts } from "./pack.js";
@@ -578,6 +582,12 @@ export class MemoryStore {
 		} catch {
 			return false;
 		}
+	}
+
+	/** Read-only preflight; callers that mutate actors must keep it in their write transaction. */
+	assertPendingLocalCaptureAdoptionActors(): void {
+		if (!hasPendingLocalCapture(this.db)) return;
+		assertLocalCaptureAdoptionActors(this.db, this.deviceId, this.actorId);
 	}
 
 	adoptEnsuredDeviceIdentity(deviceId: string): void {

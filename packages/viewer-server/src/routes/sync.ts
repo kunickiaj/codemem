@@ -2995,7 +2995,30 @@ function peerAuthorizedScopes(store: MemoryStore, peerDeviceId: string): Record<
 	}));
 }
 
-function ensureLocalActorRecord(store: MemoryStore): void {
+/** False leaves the conflict untouched; callers must check before claiming or merging identity. */
+function ensureLocalActorRecord(store: MemoryStore): boolean {
+	return store.db
+		.transaction(() => {
+			try {
+				store.assertPendingLocalCaptureAdoptionActors();
+			} catch (error) {
+				if (
+					error instanceof Error &&
+					error.constructor === Error &&
+					error.message === "device_adoption_actor_conflict"
+				) {
+					// Preserve the conflict for explicit adoption instead of repairing it on restart.
+					return false;
+				}
+				throw error;
+			}
+			persistLocalActorRecord(store);
+			return true;
+		})
+		.immediate();
+}
+
+function persistLocalActorRecord(store: MemoryStore): void {
 	const d = drizzle(store.db, { schema });
 	const now = new Date().toISOString();
 	// Invariant: exactly one row in `actors` has is_local=1, and it is the
@@ -5446,12 +5469,26 @@ function reassignProjectInventoryForUser(
 	});
 }
 
+function createActorMutationPreflightRoutes(getStore: StoreFactory) {
+	const app = new Hono();
+	const preflight = async (c: Context, next: () => Promise<void>) => {
+		if (!ensureLocalActorRecord(getStore())) {
+			return c.json({ error: "device_adoption_actor_conflict" }, 409);
+		}
+		await next();
+	};
+	app.post("/api/sync/peers/identity", preflight);
+	app.post("/api/sync/actors/merge", preflight);
+	return app;
+}
+
 export function syncRoutes(
 	getStore: StoreFactory,
 	getSyncRuntimeStatus?: () => SyncRuntimeStatus | null,
 	options: SyncRoutesOptions = {},
 ) {
-	const app = new Hono().post("/api/sync/invites/inspect", inspectPairingInvite);
+	const app = createActorMutationPreflightRoutes(getStore);
+	app.post("/api/sync/invites/inspect", inspectPairingInvite);
 	const readCoordinatorConfig = options.readCoordinatorConfig ?? readCoordinatorSyncConfig;
 	const renameCoordinatorGroup = options.renameCoordinatorGroup ?? coordinatorRenameGroupAction;
 	const loadCoordinatorEvidence =
@@ -6751,7 +6788,6 @@ export function syncRoutes(
 
 	app.post("/api/sync/peers/identity", async (c) => {
 		const store = getStore();
-		ensureLocalActorRecord(store);
 		let body: Record<string, unknown>;
 		try {
 			body = await c.req.json<Record<string, unknown>>();
@@ -6883,7 +6919,6 @@ export function syncRoutes(
 
 	app.post("/api/sync/actors/merge", async (c) => {
 		const store = getStore();
-		ensureLocalActorRecord(store);
 		let body: Record<string, unknown>;
 		try {
 			body = await c.req.json<Record<string, unknown>>();

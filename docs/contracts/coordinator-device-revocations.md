@@ -554,10 +554,17 @@ an identical error message, still propagate. Explicit store identity relabelling
 rejects actor conflicts and rolls back association, actor, and memory changes before
 publishing the new runtime identity.
 
-These checks apply to the ensure and adoption operations, not the broader actor
-record lifecycle after a restart. A skipped capture association remains pending
-rather than granting creation proof; restart-time actor handling is a separate
-integration gate.
+Viewer actor initialization repeats the pending-capture actor check before
+changing locality flags, in the same immediate transaction as those changes.
+An actor conflict skips automatic initialization without demoting other actors
+or promoting the conflicting actor. Listing actors remains available, and a
+later enrollment retry still sees the original conflict. Other database failures
+propagate; an identical SQLite error message is not treated as an actor conflict.
+
+While that conflict remains pending, peer identity assignment and actor merge
+return `409 device_adoption_actor_conflict` rather than reporting a successful
+claim or uniting actors. Successful capture adoption permits normal initialization.
+This is not actor recovery, reassignment, or permission to backfill creator proof.
 
 The association is not an OIDC session, a membership grant, or permission to sync.
 It does not backfill creation proof for unproven rows.
