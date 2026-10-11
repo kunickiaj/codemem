@@ -1,9 +1,10 @@
-import { type ComponentChild, render } from "preact";
+import { type ComponentChild, isValidElement, render, toChildArray } from "preact";
 import { useState } from "preact/hooks";
 import { act } from "preact/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 let selectOnValueChange: ((value: string) => void) | undefined;
+let selectItemKeys: string[] = [];
 let tabsOnValueChange: ((value: string) => void) | undefined;
 let radioOnValueChange: ((value: string) => void) | undefined;
 let switchOnCheckedChange: ((checked: boolean) => void) | undefined;
@@ -35,7 +36,12 @@ vi.mock("@radix-ui/react-select", () => ({
 	Icon: ({ children, ...props }: MockChildrenProps) => <span {...props}>{children}</span>,
 	Portal: ({ children }: { children: ComponentChild }) => <>{children}</>,
 	Content: ({ children, ...props }: MockChildrenProps) => <div {...props}>{children}</div>,
-	Viewport: ({ children, ...props }: MockChildrenProps) => <div {...props}>{children}</div>,
+	Viewport: ({ children, ...props }: MockChildrenProps) => {
+		selectItemKeys = toChildArray(children)
+			.filter(isValidElement)
+			.map((child) => String(child.key));
+		return <div {...props}>{children}</div>;
+	},
 	Item: ({ children, value, ...props }: MockChildrenProps) => (
 		<button
 			{...props}
@@ -148,6 +154,7 @@ afterEach(() => {
 		mount = null;
 	}
 	selectOnValueChange = undefined;
+	selectItemKeys = [];
 	tabsOnValueChange = undefined;
 	radioOnValueChange = undefined;
 	switchOnCheckedChange = undefined;
@@ -327,6 +334,93 @@ describe("RadixSelect shared styling", () => {
 			expect(root.querySelector(".caller-popup")?.classList.contains("radix-select-content")).toBe(
 				true,
 			);
+		},
+	);
+});
+
+describe("RadixSelect collision-free values", () => {
+	const collisionValues = [
+		"",
+		"__codemem-empty-select__",
+		"__codemem-select-value__:",
+		"__codemem-select-value__:project",
+		"project",
+		'项目/é 🚀 : <arbitrary> & "quoted"',
+	];
+	const collisionOptions = collisionValues.map((value, index) => ({
+		label: `Project option ${index}`,
+		value,
+	}));
+
+	it.each(collisionValues)("keeps option %j distinct in Radix values and keys", (value) => {
+		// Objective: arbitrary project names cannot collide with All Projects or encoded names.
+		// Arrange
+		const onValueChange = vi.fn();
+
+		// Act
+		const root = renderIntoDocument(
+			<RadixSelect options={collisionOptions} value={value} onValueChange={onValueChange} />,
+		);
+		const itemValues = Array.from(
+			root.querySelectorAll<HTMLElement>("[data-option-value]"),
+			(item) => item.dataset.optionValue,
+		);
+		const selectedValue = root.querySelector<HTMLElement>('[data-testid="select-root"]')?.dataset
+			.stateValue;
+
+		// Assert
+		expect(new Set(itemValues).size).toBe(collisionOptions.length);
+		expect(itemValues).not.toContain("");
+		expect(selectItemKeys).toEqual(itemValues);
+		expect(new Set(selectItemKeys).size).toBe(collisionOptions.length);
+		expect(selectedValue).toBe(itemValues[collisionValues.indexOf(value)]);
+		expect(root.querySelector<HTMLElement>("button")?.dataset.value).toBe(value);
+		expect(onValueChange).not.toHaveBeenCalled();
+	});
+
+	it.each(collisionValues)("returns the exact original option %j after selection", (value) => {
+		// Objective: decoding removes only the wrapper's prefix, never a caller's prefix.
+		// Arrange
+		const onValueChange = vi.fn();
+		const root = renderIntoDocument(
+			<RadixSelect options={collisionOptions} value="project" onValueChange={onValueChange} />,
+		);
+		const item =
+			root.querySelectorAll<HTMLButtonElement>("[data-option-value]")[
+				collisionValues.indexOf(value)
+			];
+
+		// Act
+		act(() => item?.click());
+
+		// Assert
+		expect(onValueChange).toHaveBeenCalledExactlyOnceWith(value);
+	});
+
+	it.each(["", "project", "__codemem-empty-select__", "__codemem-select-value__:project"])(
+		"does not match option %j when an unknown selected value resembles its encoding",
+		(optionValue) => {
+			// Objective: unknown values stay unknown even when they look like a valid Radix value.
+			// Arrange
+			const value = `__codemem-select-value__:${optionValue}`;
+			const onValueChange = vi.fn();
+
+			// Act
+			const root = renderIntoDocument(
+				<RadixSelect
+					options={[{ label: "Known project", value: optionValue }]}
+					value={value}
+					onValueChange={onValueChange}
+				/>,
+			);
+			const selectedValue = root.querySelector<HTMLElement>('[data-testid="select-root"]')?.dataset
+				.stateValue;
+			const itemValue = root.querySelector<HTMLElement>("[data-option-value]")?.dataset.optionValue;
+
+			// Assert
+			expect(selectedValue).toBe(`__codemem-select-value__:${value}`);
+			expect(selectedValue).not.toBe(itemValue);
+			expect(onValueChange).not.toHaveBeenCalled();
 		},
 	);
 });

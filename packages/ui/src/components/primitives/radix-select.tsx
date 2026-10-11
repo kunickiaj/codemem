@@ -1,6 +1,6 @@
 import * as Select from "@radix-ui/react-select";
 
-const EMPTY_SENTINEL = "__codemem-empty-select__";
+const VALUE_PREFIX = "__codemem-select-value__:";
 
 /* Inline SVGs for the select trigger chevron and item indicator. Using
  * inline SVG (not <i data-lucide=...>) sidesteps a race condition: Radix
@@ -46,11 +46,11 @@ function SelectCheckIcon() {
 }
 
 function encodeValue(value: string): string {
-	return value === "" ? EMPTY_SENTINEL : value;
+	return `${VALUE_PREFIX}${value}`;
 }
 
 function decodeValue(value: string): string {
-	return value === EMPTY_SENTINEL ? "" : value;
+	return value.startsWith(VALUE_PREFIX) ? value.slice(VALUE_PREFIX.length) : value;
 }
 
 export type RadixSelectOption = {
@@ -87,9 +87,8 @@ export function RadixSelect({
 	value,
 }: RadixSelectProps) {
 	// Keep empty values controlled so clearing a filter cannot retain the previous selection.
-	const encodedValue = options.some((option) => option.value === value)
-		? encodeValue(value)
-		: value;
+	const showPlaceholder = value === "" && !options.some((option) => option.value === "");
+	const encodedValue = showPlaceholder ? "" : encodeValue(value);
 
 	return (
 		<Select.Root
