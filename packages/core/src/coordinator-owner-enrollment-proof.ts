@@ -112,6 +112,15 @@ export async function verifyPendingKeySignatureAndHashes(
 ) {
 	const bytes = decodeCoordinatorAuthProof32(completionSecret);
 	if (!bytes || (await ed25519KeyId(a.public_key)) !== a.key_id) return null;
+	// Legacy fingerprints hash the exact key text, unlike the canonical SSH key ID.
+	const fingerprintDigest = await globalThis.crypto.subtle.digest(
+		"SHA-256",
+		new TextEncoder().encode(a.public_key),
+	);
+	const fingerprint = Array.from(new Uint8Array(fingerprintDigest), (b) =>
+		b.toString(16).padStart(2, "0"),
+	).join("");
+	if (fingerprint !== a.fingerprint) return null;
 	const completionHash = await hashCoordinatorAuthProofBytes32(bytes);
 	const message = ownerEnrollmentFinalMessage(a, completionSecret);
 	if (!(await verifyOwnerEnrollmentSignature(a.public_key, message, signature))) return null;

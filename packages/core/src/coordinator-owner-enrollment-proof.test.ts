@@ -32,7 +32,7 @@ async function proofFixture() {
 		device_id: "device-a",
 		public_key: publicKey,
 		key_id: (await ed25519KeyId(publicKey)) as string,
-		fingerprint: "a".repeat(64),
+		fingerprint: createHash("sha256").update(publicKey, "utf8").digest("hex"),
 		issuer: "https://issuer.example.test",
 		auth_config_revision: "b".repeat(64),
 		loopback_redirect: "http://127.0.0.1:4567/complete",
@@ -126,6 +126,47 @@ it("pure final proof hashes actual completion bytes and signature text", async (
 	});
 	expect(ownerEnrollmentFinalMessage(f.row, f.secret)).toBe(f.message);
 });
+
+it.for(["forged-fingerprint", "key-comment"])(
+	"pure completion rejects freshly signed %s fingerprint mismatch",
+	async (fault) => {
+		// Arrange: retain the real private key and independently re-sign every changed field.
+		const f = await proofFixture();
+		const parts = JSON.parse(f.message) as unknown[];
+		const originalKeyId = f.row.key_id;
+		if (fault === "forged-fingerprint") f.row.fingerprint = "9".repeat(64);
+		else f.row.public_key += " changed-comment";
+		f.row.key_id = (await ed25519KeyId(f.row.public_key)) as string;
+		parts[7] = f.row.public_key;
+		parts[8] = f.row.key_id;
+		parts[9] = f.row.fingerprint;
+		const message = JSON.stringify(parts);
+		const signature = f.signMessage(message);
+		// Act
+		const validSignature = await verifyOwnerEnrollmentSignature(
+			f.row.public_key,
+			message,
+			signature,
+		);
+		const proof = await verifyPendingKeySignatureAndHashes(f.row, f.secret, signature);
+		const completion = await verifyOwnerEnrollmentCompletion(
+			f.row,
+			f.row.auth_config_revision,
+			f.row.created_at_ms,
+			f.secret,
+			signature,
+		);
+		// Assert: valid canonical key ID and signature cannot authorize a stale text fingerprint.
+		expect(f.row.key_id).toBe(originalKeyId);
+		expect(f.row.key_id).toBe(await ed25519KeyId(f.row.public_key));
+		expect(f.row.fingerprint).not.toBe(
+			createHash("sha256").update(f.row.public_key, "utf8").digest("hex"),
+		);
+		expect(validSignature).toBe(true);
+		expect(proof).toBeNull();
+		expect(completion).toBeNull();
+	},
+);
 
 const signedFields =
 	"coordinator_id origin auth_config_revision attempt_id device_id public_key key_id fingerprint issuer account_subject identity_id link_id confirmation_hash".split(
