@@ -566,6 +566,17 @@ return `409 device_adoption_actor_conflict` rather than reporting a successful
 claim or uniting actors. Successful capture adoption permits normal initialization.
 This is not actor recovery, reassignment, or permission to backfill creator proof.
 
+The early viewer preflight is not permission to mutate. Peer identity updates and
+actor merges repeat the pending-capture check inside their actual immediate write
+transactions. Actor-dependent invitation and review operations also reject skipped
+initialization; actor listing and explicitly device-only operations remain usable.
+
+Non-recipient invitation import checks the resolved actor before contacting the
+coordinator and again before its local actor upsert. If the actor changes during
+the coordinator request, local persistence rejects without repairing the actor or
+writing local trust/config changes. Remote acceptance may already have committed:
+local rejection does not prove remote rollback or authorize a replacement attempt.
+
 The association is not an OIDC session, a membership grant, or permission to sync.
 It does not backfill creation proof for unproven rows.
 

@@ -46,8 +46,12 @@ import {
 	isCoordinatorAssignedIdentityId,
 	recipientInviteAuthoritativeIdentityId,
 } from "./coordinator-store-contract.js";
-import { connect, resolveDbPath } from "./db.js";
+import { connect, type Database, resolveDbPath } from "./db.js";
 import { initDatabase } from "./maintenance.js";
+import {
+	assertLocalCaptureAdoptionActors,
+	hasPendingLocalCapture,
+} from "./memory-local-capture.js";
 import {
 	deleteCodememConfigFile,
 	mutateCodememConfigFile,
@@ -2144,19 +2148,55 @@ function validateAcceptedProjectIntent(opts: {
 	};
 }
 
-function persistProjectInviteTrust(opts: {
-	dbPath: string;
+interface InviteCaptureActorContext {
+	recipientInvite: boolean;
 	recipientActorId: string;
-	recipientDisplayName: string;
 	acceptingDeviceId: string;
-	groupId: string;
-	response: Record<string, unknown> | null;
-	acceptedIntent: ValidatedAcceptedProjectIntent | null;
-}): void {
+}
+
+function assertPendingInviteCaptureActors(db: Database, opts: InviteCaptureActorContext): void {
+	if (opts.recipientInvite || !hasPendingLocalCapture(db)) return;
+	assertLocalCaptureAdoptionActors(db, opts.acceptingDeviceId, opts.recipientActorId);
+}
+
+function preflightInviteCaptureActors(opts: InviteCaptureActorContext & { dbPath: string }): void {
+	if (opts.recipientInvite) return;
+	const conn = connect(opts.dbPath);
+	try {
+		assertPendingInviteCaptureActors(conn, opts);
+	} finally {
+		conn.close();
+	}
+}
+
+function persistCheckedProjectInviteTrust(
+	conn: Database,
+	opts: InviteCaptureActorContext,
+	persist: () => void,
+): void {
+	conn
+		.transaction(() => {
+			assertPendingInviteCaptureActors(conn, opts);
+			persist();
+		})
+		.immediate();
+}
+
+function persistProjectInviteTrust(
+	opts: InviteCaptureActorContext & {
+		dbPath: string;
+		recipientActorId: string;
+		recipientDisplayName: string;
+		acceptingDeviceId: string;
+		groupId: string;
+		response: Record<string, unknown> | null;
+		acceptedIntent: ValidatedAcceptedProjectIntent | null;
+	},
+): void {
 	const trust = parseProjectInviteTrust(opts.response);
 	const conn = connect(opts.dbPath);
 	try {
-		conn.transaction(() => {
+		persistCheckedProjectInviteTrust(conn, opts, () => {
 			const now = new Date().toISOString();
 			conn
 				.prepare(`INSERT INTO actors(actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at)
@@ -2240,7 +2280,7 @@ function persistProjectInviteTrust(opts: {
 						now,
 					);
 			}
-		})();
+		});
 	} finally {
 		conn.close();
 	}
@@ -2420,6 +2460,16 @@ async function persistAddDeviceInviterTrust(opts: {
 	}
 }
 
+function ensureInviteDeviceIdentity(dbPath: string, keysDir: string | undefined): [string, string] {
+	initDatabase(dbPath);
+	const conn = connect(dbPath);
+	try {
+		return ensureDeviceIdentity(conn, { keysDir });
+	} finally {
+		conn.close();
+	}
+}
+
 export async function coordinatorImportInviteAction(opts: {
 	inviteValue: string;
 	dbPath?: string | null;
@@ -2433,15 +2483,7 @@ export async function coordinatorImportInviteAction(opts: {
 	const payload = decodeInvitePayload(extractInvitePayload(opts.inviteValue));
 	const resolvedDbPath = resolveDbPath(opts.dbPath ?? undefined);
 	const keysDir = opts.keysDir ?? (process.env.CODEMEM_KEYS_DIR?.trim() || undefined);
-	initDatabase(resolvedDbPath);
-	const conn = connect(resolvedDbPath);
-	let deviceId = "";
-	let fingerprint = "";
-	try {
-		[deviceId, fingerprint] = ensureDeviceIdentity(conn, { keysDir });
-	} finally {
-		conn.close();
-	}
+	const [deviceId, fingerprint] = ensureInviteDeviceIdentity(resolvedDbPath, keysDir);
 	const publicKey = loadPublicKey(keysDir);
 	if (!publicKey) throw new Error("public key missing");
 	const coordinatorUrl = String(payload.coordinator_url ?? "").trim();
@@ -2490,6 +2532,12 @@ export async function coordinatorImportInviteAction(opts: {
 		recipientActorId = recipientInviteIdentityId;
 	}
 	const reviewedOnboardingDigest = String(opts.reviewedOnboardingDigest ?? "").trim();
+	preflightInviteCaptureActors({
+		dbPath: resolvedDbPath,
+		recipientInvite,
+		recipientActorId,
+		acceptingDeviceId: deviceId,
+	});
 	if (recipientInvite && !reviewedOnboardingDigest) {
 		throw new Error("reviewed_onboarding_digest_required");
 	}
@@ -2644,6 +2692,7 @@ export async function coordinatorImportInviteAction(opts: {
 	if (projectInvite) {
 		persistProjectInviteTrust({
 			dbPath: resolvedDbPath,
+			recipientInvite,
 			recipientActorId,
 			recipientDisplayName,
 			acceptingDeviceId: deviceId,

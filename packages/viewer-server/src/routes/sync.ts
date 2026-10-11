@@ -1288,7 +1288,7 @@ async function reconcileProjectInviteAcceptance(
 		.get(operationId) as string | undefined;
 	if (!owner) throw new Error("operation_not_found");
 	if (owner !== store.actorId) throw new Error("operation_scope_mismatch");
-	ensureLocalActorRecord(store);
+	requireLocalActorRecord(store);
 	const { groupId, payload } = await coordinatorProjectInvitePayload(operationId);
 	if (payload.state === "waiting_for_acceptance") return { accepted: false, payload };
 	if (payload.state !== "accepted") {
@@ -2995,6 +2995,14 @@ function peerAuthorizedScopes(store: MemoryStore, peerDeviceId: string): Record<
 	}));
 }
 
+function isPendingCaptureActorConflict(error: unknown): error is Error {
+	return (
+		error instanceof Error &&
+		error.constructor === Error &&
+		error.message === "device_adoption_actor_conflict"
+	);
+}
+
 /** False leaves the conflict untouched; callers must check before claiming or merging identity. */
 function ensureLocalActorRecord(store: MemoryStore): boolean {
 	return store.db
@@ -3002,11 +3010,7 @@ function ensureLocalActorRecord(store: MemoryStore): boolean {
 			try {
 				store.assertPendingLocalCaptureAdoptionActors();
 			} catch (error) {
-				if (
-					error instanceof Error &&
-					error.constructor === Error &&
-					error.message === "device_adoption_actor_conflict"
-				) {
+				if (isPendingCaptureActorConflict(error)) {
 					// Preserve the conflict for explicit adoption instead of repairing it on restart.
 					return false;
 				}
@@ -3061,7 +3065,18 @@ function persistLocalActorRecord(store: MemoryStore): void {
 		.run();
 }
 
+function requireLocalActorRecord(store: MemoryStore): void {
+	if (!ensureLocalActorRecord(store)) throw new Error("device_adoption_actor_conflict");
+}
+
 function ensureStableStoreIdentity(store: MemoryStore): string {
+	const deviceId = ensureStableStoreDeviceIdentity(store);
+	requireLocalActorRecord(store);
+	return deviceId;
+}
+
+/** Preserve normal actor setup for reads, without repairing a pending conflict. */
+function ensureStableStoreIdentityForRead(store: MemoryStore): string {
 	const deviceId = ensureStableStoreDeviceIdentity(store);
 	ensureLocalActorRecord(store);
 	return deviceId;
@@ -5469,6 +5484,124 @@ function reassignProjectInventoryForUser(
 	});
 }
 
+function pendingCaptureActorMutationFailure(store: MemoryStore) {
+	try {
+		store.assertPendingLocalCaptureAdoptionActors();
+		return null;
+	} catch (error) {
+		if (isPendingCaptureActorConflict(error)) {
+			return { error: error.message, status: 409 as const };
+		}
+		throw error;
+	}
+}
+
+function runViewerActorMutation<T>(store: MemoryStore, mutate: () => T) {
+	return store.db
+		.transaction(() => pendingCaptureActorMutationFailure(store) ?? mutate())
+		.immediate();
+}
+
+function actorMergeDigest(primaryActorId: string, secondaryActorId: string): string {
+	return createHash("sha256")
+		.update(
+			JSON.stringify({
+				kind: "identity-merge-v1",
+				primaryActorId,
+				secondaryActorId,
+				nonce: randomUUID(),
+			}),
+		)
+		.digest("hex");
+}
+
+function actorMergePrincipalFailure(
+	store: MemoryStore,
+	primary: typeof schema.actors.$inferSelect,
+	secondary: typeof schema.actors.$inferSelect,
+) {
+	if (primary.status !== "active") {
+		return { error: "primary actor not active", status: 409 as const };
+	}
+	if (secondary.status !== "active") {
+		return { error: "secondary actor not active", status: 409 as const };
+	}
+	if (secondary.is_local && secondary.actor_id === store.actorId) {
+		return { error: "cannot merge this device's own local actor", status: 409 as const };
+	}
+	return null;
+}
+
+function resolvePeerIdentityAssignment(
+	store: MemoryStore,
+	opts: { body: Record<string, unknown>; actorId: string | null; claimedLocalActor: boolean },
+) {
+	const requestedActorId =
+		opts.body.actor_id == null ? undefined : String(opts.body.actor_id ?? "").trim() || null;
+	const claimedLocalActor =
+		typeof opts.body.claimed_local_actor === "boolean" ? opts.body.claimed_local_actor : undefined;
+	let nextActorId = opts.actorId;
+	let nextClaimedLocalActor = opts.claimedLocalActor;
+	if (requestedActorId !== undefined) {
+		nextActorId = requestedActorId;
+		if (requestedActorId) {
+			const d = drizzle(store.db, { schema });
+			const actor = d
+				.select({
+					actor_id: schema.actors.actor_id,
+					is_local: schema.actors.is_local,
+					status: schema.actors.status,
+				})
+				.from(schema.actors)
+				.where(eq(schema.actors.actor_id, requestedActorId))
+				.get();
+			if (!actor) return { error: "actor not found", status: 404 as const };
+			if (actor.status !== "active") return { error: "actor not active", status: 409 as const };
+			nextClaimedLocalActor = claimedLocalActor ?? Boolean(actor.is_local);
+		} else {
+			nextClaimedLocalActor = claimedLocalActor ?? false;
+		}
+	} else if (claimedLocalActor !== undefined) {
+		nextClaimedLocalActor = claimedLocalActor;
+		if (claimedLocalActor) {
+			nextActorId = store.actorId;
+		} else if (nextActorId === store.actorId) {
+			nextActorId = null;
+		}
+	}
+	return { actor_id: nextActorId, claimed_local_actor: nextClaimedLocalActor };
+}
+
+function persistPeerIdentityMutation(store: MemoryStore, body: Record<string, unknown>) {
+	const peerDeviceId = String(body.peer_device_id ?? "").trim();
+	if (!peerDeviceId) return { error: "peer_device_id required", status: 400 as const };
+	const d = drizzle(store.db, { schema });
+	const peer = d
+		.select({
+			peer_device_id: schema.syncPeers.peer_device_id,
+			actor_id: schema.syncPeers.actor_id,
+			claimed_local_actor: schema.syncPeers.claimed_local_actor,
+		})
+		.from(schema.syncPeers)
+		.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
+		.get();
+	if (!peer) return { error: "peer not found", status: 404 as const };
+	const assignment = resolvePeerIdentityAssignment(store, {
+		body,
+		actorId: peer.actor_id ?? null,
+		claimedLocalActor: Boolean(peer.claimed_local_actor),
+	});
+	if ("error" in assignment) return assignment;
+	d.update(schema.syncPeers)
+		.set({
+			actor_id: assignment.actor_id,
+			claimed_local_actor: assignment.claimed_local_actor ? 1 : 0,
+		})
+		.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
+		.run();
+	return assignment;
+}
+
 function createActorMutationPreflightRoutes(getStore: StoreFactory) {
 	const app = new Hono();
 	const preflight = async (c: Context, next: () => Promise<void>) => {
@@ -5525,7 +5658,7 @@ export function syncRoutes(
 
 	app.get("/api/sync/recipient-policy/v1/device-inventory", async (c) => {
 		const store = getStore();
-		ensureStableStoreIdentity(store);
+		ensureStableStoreIdentityForRead(store);
 		return c.json(listDeviceIdentityInventory(store.db, await localInventoryInput(store)));
 	});
 
@@ -5675,7 +5808,7 @@ export function syncRoutes(
 		if (!body) return c.json({ error: "binding_request_invalid" }, 400);
 		const store = getStore();
 		try {
-			ensureStableStoreIdentity(store);
+			ensureStableStoreIdentityForRead(store);
 			const result = previewDeviceIdentityBindings(
 				store.db,
 				await localInventoryInput(store),
@@ -6320,7 +6453,7 @@ export function syncRoutes(
 		const body = await parseViewerJsonBody(c);
 		const request = parseReviewRequest(body);
 		if (!request) return c.json({ error: "request_invalid" }, 400);
-		ensureLocalActorRecord(store);
+		requireLocalActorRecord(store);
 		const result = resolveRecipientPolicyReview(
 			store.db,
 			{ localActorId: store.actorId, localDeviceId: store.deviceId },
@@ -6345,7 +6478,7 @@ export function syncRoutes(
 		const requests = body.requests.map(parseReviewRequest);
 		if (requests.some((request) => request == null))
 			return c.json({ error: "request_invalid" }, 400);
-		ensureLocalActorRecord(store);
+		requireLocalActorRecord(store);
 		const result = resolveRecipientPolicyReviewBulk(
 			store.db,
 			{ localActorId: store.actorId, localDeviceId: store.deviceId },
@@ -6794,61 +6927,9 @@ export function syncRoutes(
 		} catch {
 			return c.json({ error: "invalid json" }, 400);
 		}
-		const peerDeviceId = String(body.peer_device_id ?? "").trim();
-		if (!peerDeviceId) return c.json({ error: "peer_device_id required" }, 400);
-		const requestedActorId =
-			body.actor_id == null ? undefined : String(body.actor_id ?? "").trim() || null;
-		const claimedLocalActor =
-			typeof body.claimed_local_actor === "boolean" ? body.claimed_local_actor : undefined;
-		const d = drizzle(store.db, { schema });
-		const peer = d
-			.select({
-				peer_device_id: schema.syncPeers.peer_device_id,
-				actor_id: schema.syncPeers.actor_id,
-				claimed_local_actor: schema.syncPeers.claimed_local_actor,
-			})
-			.from(schema.syncPeers)
-			.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
-			.get();
-		if (!peer) return c.json({ error: "peer not found" }, 404);
-
-		let nextActorId = peer.actor_id ?? null;
-		let nextClaimedLocalActor = Boolean(peer.claimed_local_actor);
-		if (requestedActorId !== undefined) {
-			nextActorId = requestedActorId;
-			if (requestedActorId) {
-				const actor = d
-					.select({
-						actor_id: schema.actors.actor_id,
-						is_local: schema.actors.is_local,
-						status: schema.actors.status,
-					})
-					.from(schema.actors)
-					.where(eq(schema.actors.actor_id, requestedActorId))
-					.get();
-				if (!actor) return c.json({ error: "actor not found" }, 404);
-				if (actor.status !== "active") return c.json({ error: "actor not active" }, 409);
-				nextClaimedLocalActor = claimedLocalActor ?? Boolean(actor.is_local);
-			} else {
-				nextClaimedLocalActor = claimedLocalActor ?? false;
-			}
-		} else if (claimedLocalActor !== undefined) {
-			nextClaimedLocalActor = claimedLocalActor;
-			if (claimedLocalActor) {
-				nextActorId = store.actorId;
-			} else if (nextActorId === store.actorId) {
-				nextActorId = null;
-			}
-		}
-
-		d.update(schema.syncPeers)
-			.set({
-				actor_id: nextActorId,
-				claimed_local_actor: nextClaimedLocalActor ? 1 : 0,
-			})
-			.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
-			.run();
-		return c.json({ ok: true, actor_id: nextActorId, claimed_local_actor: nextClaimedLocalActor });
+		const result = runViewerActorMutation(store, () => persistPeerIdentityMutation(store, body));
+		if ("error" in result) return c.json({ error: result.error }, result.status);
+		return c.json({ ok: true, ...result });
 	});
 
 	app.post("/api/sync/actors", async (c) => {
@@ -6941,6 +7022,8 @@ export function syncRoutes(
 		const now = new Date().toISOString();
 		const result = store.db
 			.transaction(() => {
+				const conflict = pendingCaptureActorMutationFailure(store);
+				if (conflict) return conflict;
 				const primary = d
 					.select()
 					.from(schema.actors)
@@ -6952,15 +7035,8 @@ export function syncRoutes(
 					.where(eq(schema.actors.actor_id, secondaryActorId))
 					.get();
 				if (!primary || !secondary) return { error: "actor not found", status: 404 as const };
-				if (primary.status !== "active") {
-					return { error: "primary actor not active", status: 409 as const };
-				}
-				if (secondary.status !== "active") {
-					return { error: "secondary actor not active", status: 409 as const };
-				}
-				if (secondary.is_local && secondary.actor_id === store.actorId) {
-					return { error: "cannot merge this device's own local actor", status: 409 as const };
-				}
+				const principalFailure = actorMergePrincipalFailure(store, primary, secondary);
+				if (principalFailure) return principalFailure;
 				const memberships = d
 					.select()
 					.from(schema.policyTeamMemberships)
@@ -7019,16 +7095,7 @@ export function syncRoutes(
 					primaryRecipients.set(recipient.canonical_project_identity, primaryRecipient);
 				}
 
-				const mergeDigest = createHash("sha256")
-					.update(
-						JSON.stringify({
-							kind: "identity-merge-v1",
-							primaryActorId,
-							secondaryActorId,
-							nonce: randomUUID(),
-						}),
-					)
-					.digest("hex");
+				const mergeDigest = actorMergeDigest(primaryActorId, secondaryActorId);
 				const bindings = d
 					.select({
 						deviceId: schema.identityDevices.device_id,
