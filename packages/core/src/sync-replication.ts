@@ -3685,7 +3685,6 @@ function applyAccessCleanupForLocalDevice(
 	op: ReplicationOp,
 	context: {
 		localDeviceId: string;
-		options: ApplyReplicationOpsOptions;
 		queueVectorDelete: (memoryId: number) => void;
 	},
 ): boolean {
@@ -3702,12 +3701,7 @@ function applyAccessCleanupForLocalDevice(
 		.limit(1)
 		.get();
 	if (!existing) return true;
-	const sources = cleanupCreationSourceIds(db, context.localDeviceId, context.options);
-	if (
-		hasMatchingLocalCreation(db, op.entity_id, sources) ||
-		hasRecordedLocalCreation(db, op.entity_id)
-	)
-		return false;
+	if (hasRecordedLocalCreation(db, op.entity_id)) return false;
 	const sourceDeviceId = cleanText(op.clock_device_id) ?? cleanText(op.device_id);
 	const originDeviceId = cleanText(existing.origin_device_id);
 	if (!sourceDeviceId || !originDeviceId || originDeviceId !== sourceDeviceId) return false;
@@ -3751,7 +3745,7 @@ export function applyReplicationOps(
 		opVectorWork.set(memoryId, "delete");
 	};
 	const applyAccessCleanupOp = (op: ReplicationOp): boolean =>
-		applyAccessCleanupForLocalDevice(db, d, op, { localDeviceId, options, queueVectorDelete });
+		applyAccessCleanupForLocalDevice(db, d, op, { localDeviceId, queueVectorDelete });
 
 	const effects = { batchResult: result, opVectorWork, upsertMemoryIds, deleteMemoryIds };
 	const applyAll = db.transaction(() => {
