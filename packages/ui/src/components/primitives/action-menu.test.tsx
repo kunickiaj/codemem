@@ -161,6 +161,42 @@ describe("ActionMenu focus and tab order", () => {
 		await vi.waitFor(() => expect(document.activeElement?.textContent).toBe("Last enabled"));
 	});
 
+	it.each([
+		{ position: "last", shiftKey: false },
+		{ position: "first", shiftKey: true },
+	])(
+		"falls back to the trigger when it is the $position tabbable control and ShiftTab=$shiftKey",
+		async ({ position, shiftKey }) => {
+			// Arrange: keep a neighbor only in the opposite direction from the Tab exit.
+			mountMenu(
+				<>
+					{position === "last" && <button type="button">Before</button>}
+					<ActionMenu label="Actions" actions={[{ label: "Select", onSelect: vi.fn() }]} />
+					{position === "first" && <button type="button">After</button>}
+				</>,
+			);
+			const trigger = mount.querySelector<HTMLButtonElement>(
+				".feed-menu-trigger",
+			) as HTMLButtonElement;
+			trigger.focus();
+			key(trigger, "ArrowDown");
+			await vi.waitFor(() => expect(document.querySelector('[role="menuitem"]')).not.toBeNull());
+			const item = document.querySelector<HTMLElement>('[role="menuitem"]') as HTMLElement;
+			act(() => item.focus());
+			expect(document.activeElement).toBe(item);
+			// Real Radix guards must be present to reproduce the temporary Tab destination bug.
+			const guards = [...document.querySelectorAll<HTMLElement>("[data-radix-focus-guard]")];
+			expect(guards.length).toBeGreaterThan(0);
+			// Act
+			key(item, "Tab", shiftKey);
+			// Assert: closing must not leave focus on a temporary guard or lose it to the body.
+			await vi.waitFor(() => expect(document.querySelector('[role="menu"]')).toBeNull());
+			expect(guards).not.toContain(document.activeElement);
+			expect(document.activeElement?.hasAttribute("data-radix-focus-guard")).toBe(false);
+			await vi.waitFor(() => expect(document.activeElement).toBe(trigger));
+		},
+	);
+
 	it.each([false, true])(
 		"exits the shared menu to the neighboring summary with ShiftTab=%s",
 		async (shift) => {

@@ -52,7 +52,7 @@ function ActionMenuItem({
 function isTabTarget(element: HTMLElement): boolean {
 	if (
 		element.closest('[hidden], [inert], [role="menu"]') ||
-		element.matches(':disabled, [tabindex="-1"]')
+		element.matches(':disabled, [tabindex="-1"], [data-radix-focus-guard]')
 	)
 		return false;
 	let ancestor: HTMLElement | null = element;
