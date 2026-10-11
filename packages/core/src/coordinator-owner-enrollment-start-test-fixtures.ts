@@ -143,3 +143,55 @@ export async function browserForm(attemptId: string, startCode: string): Promise
 			}),
 	};
 }
+
+// Existing account authority only: no enrollment or historical controller device is seeded.
+export function seedOwnerCallbackAuthority(f: OwnerStartFixture): void {
+	f.db
+		.prepare(`INSERT INTO coordinator_auth_account_links
+ (coordinator_id,link_id,issuer,subject,identity_id,attempt_id,controller_attestation_id,auth_config_revision,created_at_ms)
+ VALUES (?,?,?,?,?,?,?,?,?)`)
+		.run(
+			config.coordinatorId,
+			"link-a",
+			config.issuer,
+			"fixture-subject",
+			"identity-a",
+			"historical-attempt",
+			"historical-controller",
+			"b".repeat(64),
+			NOW - 1000,
+		);
+	for (const [group, revision, archived, revoked] of [
+		["group-b", 3, false, false],
+		["group-a", 2, false, false],
+		["group-archived", 4, true, false],
+		["group-revoked", 5, false, true],
+	] as const) {
+		f.db
+			.prepare("INSERT INTO groups (group_id,created_at,archived_at) VALUES (?,?,?)")
+			.run(group, new Date(NOW).toISOString(), archived ? new Date(NOW).toISOString() : null);
+		f.db
+			.prepare(`INSERT INTO coordinator_identity_group_grants
+ (coordinator_id,identity_id,group_id,status,revision,source_kind,source_receipt_id,created_at,revoked_at)
+ VALUES (?,? ,?,?,?,'controller_attestation','historical-receipt',?,?)`)
+			.run(
+				config.coordinatorId,
+				"identity-a",
+				group,
+				revoked ? "revoked" : "active",
+				revision,
+				new Date(NOW).toISOString(),
+				revoked ? new Date(NOW).toISOString() : null,
+			);
+	}
+}
+
+// Catch new sessions, receipts, profile, TeamProject grants and all other authority writes.
+export function ownerCallbackAuthority(f: OwnerStartFixture): unknown[] {
+	const tables = f.db
+		.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+		.all() as { name: string }[];
+	return tables
+		.filter(({ name }) => name !== ATTEMPTS && name !== TRANSACTIONS)
+		.map(({ name }) => [name, f.rows(name)]);
+}

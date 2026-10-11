@@ -409,6 +409,18 @@ or write-count failure cannot return an authorization URL. A claim only starts
 provider navigation. It does not verify an account, confirm ownership, grant
 access, or enroll a device; callback and finalization remain separate work.
 
+The private callback handler admits only the original transaction cookie and
+one matching state for the configured redirect. It consumes that transaction
+once, clearing the stored nonce and PKCE verifier, before the maintained OIDC
+client verifies the provider response. The verified issuer and subject must
+resolve to the exact active account link; its historical attempt, controller,
+and revision references and the eligible group-grant revisions are pinned on
+the attempt. The link creation time is checked at this transition but is not
+retained for the final commit. The handler
+returns a confirmation view and browser CSRF token, not an enrollment or browser
+session. Failed verification, link drift, replay, or expiry grants nothing.
+Confirmation and pending-key finalization remain separate private steps.
+
 #### Private atomic commit for local testing
 
 The internal owner commit consumes an already confirmed, pinned attempt and

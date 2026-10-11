@@ -176,7 +176,11 @@ it("claims once with SDK state/PKCE and preserves the original cookie binder in 
 		`${config.issuer}/.well-known/openid-configuration`,
 	]);
 	const factory = await createCoordinatorOwnerEnrollment(c.options);
-	expect(factory.ok && Object.keys(factory.enrollment).sort()).toEqual(["claimBrowser", "start"]);
+	expect(factory.ok && Object.keys(factory.enrollment).sort()).toEqual([
+		"claimBrowser",
+		"start",
+		"verifyCallback",
+	]);
 });
 
 it.each([
