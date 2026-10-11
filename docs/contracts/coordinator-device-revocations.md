@@ -539,6 +539,34 @@ and again during persistence. A scope denial keeps the batch queued without
 consuming observer failure attempts or advancing the event cursor. Refreshing
 scope membership allows the same batch to resume.
 
+## Local capture association during enrollment
+
+Local capture still requires neither Google sign-in nor a signing key. A verified
+device-identity ensure can associate a pending unsigned capture with its actual
+device ID, Ed25519 public key, and fingerprint once. A new device tuple and its
+capture association commit together; reensure validates the existing private key
+before attempting the association. Configured device mismatches skip association.
+
+Foreign, inactive, or merged actor conflicts leave the capture association pending
+without blocking otherwise valid enrollment. Only the exact plain
+`device_adoption_actor_conflict` condition is nonfatal: SQLite failures, including
+an identical error message, still propagate. Explicit store identity relabelling
+rejects actor conflicts and rolls back association, actor, and memory changes before
+publishing the new runtime identity.
+
+These checks apply to the ensure and adoption operations, not the broader actor
+record lifecycle after a restart. A skipped capture association remains pending
+rather than granting creation proof; restart-time actor handling is a separate
+integration gate.
+
+The association is not an OIDC session, a membership grant, or permission to sync.
+It does not backfill creation proof for unproven rows. Historical-read activation
+and provenance-aware cleanup remain separate changes.
+
+Store constructors and ordinary memory reads do not create this association or
+repair keys. Sync request handlers that call device-identity ensure may complete
+a pending association after validating the actual local signing key.
+
 ## Activation limits
 
 Existing group disable/removal does not create global subjects automatically.

@@ -21,7 +21,7 @@ import {
 	getVerifiedMemorySource,
 } from "./memory-source-identity.js";
 
-const { fixture, factRows } = useLocalCaptureFixture();
+const { fixture, factRows, persistUnadoptedIdentity } = useLocalCaptureFixture();
 const tables = [
 	"memory_local_capture",
 	"memory_local_capture_adoption",
@@ -91,7 +91,9 @@ it("keeps birth and adoption singletons and accepts only the actual ensured sign
 	// Arrange
 	const db = fixture.store.db;
 	const capture = db.transaction(createCapture)();
-	const key = enrollFixtureSigningKey(db, fixture.keysDir, "capture-device");
+	// Stage an older ensured tuple: current enrollment itself adopts the pending birth.
+	persistUnadoptedIdentity();
+	const key = db.prepare("SELECT public_key FROM sync_device").pluck().get() as string;
 	// Act / Assert: a mismatching key cannot associate the unsigned birth.
 	db.transaction(() => adoptLocalCapture(db, "capture-device", { expectedPublicKey: "wrong" }))();
 	expect(hasPendingLocalCapture(db)).toBe(true);

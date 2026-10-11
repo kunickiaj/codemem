@@ -38,6 +38,7 @@ import {
 } from "./memory-creation-provenance.js";
 import { buildMemoryDedupKey, normalizeMemoryDedupTitle } from "./memory-dedup.js";
 import { validateMemoryKind } from "./memory-kinds.js";
+import { adoptLocalCapture, assertLocalCaptureAdoptionActors } from "./memory-local-capture.js";
 import { allocateLocalCaptureMemorySource } from "./memory-source-identity.js";
 import { readCodememConfigFile } from "./observer-config.js";
 import type { PackArtifacts } from "./pack.js";
@@ -586,6 +587,12 @@ export class MemoryStore {
 		const fallbackActorId = `local:${previousDeviceId}`;
 		const fallbackActor = this.fallbackActorForDeviceAdoption(fallbackActorId);
 		if (!this.actorIdUsesDeviceFallback && !fallbackActor) {
+			this.db
+				.transaction(() => {
+					assertLocalCaptureAdoptionActors(this.db, normalizedDeviceId, this.actorId);
+					this.adoptLocalCaptureForDevice(normalizedDeviceId);
+				})
+				.immediate();
 			this.publishEnsuredDeviceIdentity(normalizedDeviceId);
 			return;
 		}
@@ -593,56 +600,19 @@ export class MemoryStore {
 		const nextActorId = this.actorIdUsesDeviceFallback
 			? `local:${normalizedDeviceId}`
 			: this.actorId;
-		const fallbackDisplayName = cleanStr(fallbackActor?.display_name);
-		const nextActorDisplayName =
-			this.actorIdUsesDeviceFallback &&
-			fallbackDisplayName &&
-			fallbackDisplayName !== fallbackActorId
-				? fallbackDisplayName
-				: this.actorDisplayName === fallbackActorId
-					? nextActorId
-					: this.actorDisplayName;
-		const now = nowIso();
-		this.db.transaction(() => {
-			if (fallbackActor) {
-				this.db
-					.prepare(
-						`INSERT INTO actors(
-						 actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
-						 ) VALUES (?, ?, 1, 'active', NULL, ?, ?)
-						 ON CONFLICT(actor_id) DO UPDATE SET
-						 display_name = excluded.display_name, is_local = 1, status = 'active',
-						 merged_into_actor_id = NULL, updated_at = excluded.updated_at`,
-					)
-					.run(nextActorId, nextActorDisplayName, now, now);
-			}
-			this.db
-				.prepare(
-					// Canonicalize only rows that still carry both fallback ownership signals.
-					// origin_device_id and metadata clock_device_id remain historical provenance;
-					// personal workspace identity follows the canonical actor when applicable.
-					`UPDATE memory_items
-					 SET actor_id = ?,
-					     workspace_id = CASE WHEN workspace_id = ? THEN ? ELSE workspace_id END
-					 WHERE actor_id = ?
-					   AND (origin_device_id IS NULL OR TRIM(origin_device_id) = '' OR origin_device_id = ?)`,
-				)
-				.run(
-					nextActorId,
-					`personal:${fallbackActorId}`,
-					`personal:${nextActorId}`,
-					fallbackActorId,
-					previousDeviceId,
-				);
-			if (!fallbackActor) return;
-			this.db
-				.prepare(
-					`UPDATE actors SET is_local = 0, status = 'merged', merged_into_actor_id = ?, updated_at = ?
-					 WHERE actor_id = ?`,
-				)
-				.run(nextActorId, now, fallbackActorId);
-		})();
-		// Publish the new in-memory identity only after every persistence mutation commits.
+		const nextActorDisplayName = this.displayNameForDeviceAdoption(
+			fallbackActorId,
+			nextActorId,
+			fallbackActor,
+		);
+		this.persistDeviceAdoption(
+			normalizedDeviceId,
+			fallbackActorId,
+			nextActorId,
+			nextActorDisplayName,
+			fallbackActor,
+		);
+		// Publish only after every persistence mutation commits.
 		if (this.actorIdUsesDeviceFallback) {
 			this.publishEnsuredDeviceIdentity(normalizedDeviceId, {
 				id: nextActorId,
@@ -651,6 +621,94 @@ export class MemoryStore {
 			return;
 		}
 		this.publishEnsuredDeviceIdentity(normalizedDeviceId);
+	}
+
+	private persistDeviceAdoption(
+		deviceId: string,
+		fallbackActorId: string,
+		nextActorId: string,
+		nextActorDisplayName: string,
+		fallbackActor: { display_name: string } | undefined,
+	): void {
+		const now = nowIso();
+		this.db
+			.transaction(() => {
+				assertLocalCaptureAdoptionActors(this.db, deviceId, this.actorId);
+				this.adoptLocalCaptureForDevice(deviceId);
+				if (fallbackActor) {
+					this.db
+						.prepare(
+							`INSERT INTO actors(
+						 actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
+						 ) VALUES (?, ?, 1, 'active', NULL, ?, ?)
+						 ON CONFLICT(actor_id) DO UPDATE SET
+						 display_name = excluded.display_name, is_local = 1, status = 'active',
+						 merged_into_actor_id = NULL, updated_at = excluded.updated_at`,
+						)
+						.run(nextActorId, nextActorDisplayName, now, now);
+				}
+				this.db
+					.prepare(
+						// Canonicalize only rows that still carry both fallback ownership signals.
+						// origin_device_id and metadata clock_device_id remain historical provenance;
+						// personal workspace identity follows the canonical actor when applicable.
+						`UPDATE memory_items
+					 SET actor_id = ?,
+					     workspace_id = CASE WHEN workspace_id = ? THEN ? ELSE workspace_id END
+					 WHERE actor_id = ?
+					   AND (origin_device_id IS NULL OR TRIM(origin_device_id) = '' OR origin_device_id = ?)`,
+					)
+					.run(
+						nextActorId,
+						`personal:${fallbackActorId}`,
+						`personal:${nextActorId}`,
+						fallbackActorId,
+						this.deviceId,
+					);
+				if (!fallbackActor) return;
+				this.db
+					.prepare(
+						`UPDATE actors SET is_local = 0, status = 'merged', merged_into_actor_id = ?, updated_at = ?
+					 WHERE actor_id = ?`,
+					)
+					.run(nextActorId, now, fallbackActorId);
+			})
+			.immediate();
+	}
+
+	private adoptLocalCaptureForDevice(deviceId: string): void {
+		const configuredDevice = process.env.CODEMEM_DEVICE_ID?.trim();
+		if (configuredDevice && configuredDevice !== deviceId) return;
+		if (!this.hasCurrentConfiguredIdentity()) return;
+		const injected = this.runtimeKeyOptions.runtimeSigningKey;
+		adoptLocalCapture(this.db, deviceId, {
+			actorId: this.actorId,
+			runtimeDeviceId: configuredDevice || this.deviceId,
+			loadExpectedPublicKey: () => {
+				if (injected) return injected.deviceId === deviceId ? injected.publicKey : undefined;
+				return (
+					loadRuntimeSigningPublicKey(this.db, {
+						deviceId,
+						keysDir: this.runtimeKeyOptions.keysDir,
+					}) ?? undefined
+				);
+			},
+		});
+	}
+
+	private displayNameForDeviceAdoption(
+		fallbackActorId: string,
+		nextActorId: string,
+		fallbackActor: { display_name: string } | undefined,
+	): string {
+		const fallbackDisplayName = cleanStr(fallbackActor?.display_name);
+		if (
+			this.actorIdUsesDeviceFallback &&
+			fallbackDisplayName &&
+			fallbackDisplayName !== fallbackActorId
+		)
+			return fallbackDisplayName;
+		return this.actorDisplayName === fallbackActorId ? nextActorId : this.actorDisplayName;
 	}
 
 	private findExistingDuplicateMemory(
