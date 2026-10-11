@@ -2487,6 +2487,23 @@ describe("filterReplicationOpsForSyncWithStatus", () => {
 // applyReplicationOps
 // ---------------------------------------------------------------------------
 
+function expectPreservedCleanupAmbiguity(
+	result: ReturnType<typeof reconcileStalePeerReceivedRows>,
+	ids: { localMemoryId: number; missingOriginMemoryId: number },
+): void {
+	expect(result.retained).toBe(0);
+	expect(result.ambiguous).toEqual([
+		expect.objectContaining({
+			memory_id: ids.localMemoryId,
+			reason: "unverified_local_creation",
+		}),
+		expect.objectContaining({
+			memory_id: ids.missingOriginMemoryId,
+			reason: "missing_origin_device",
+		}),
+	]);
+}
+
 describe("applyReplicationOps", () => {
 	let db: InstanceType<typeof Database>;
 
@@ -3367,7 +3384,8 @@ describe("applyReplicationOps", () => {
 		expect(result.vectorWork.deleteMemoryIds).toEqual([]);
 	});
 
-	it("reconciles provably stale peer-received rows without deleting receiver-owned rows", () => {
+	it("reconciles provably stale peer-received rows while preserving unverified local labels", () => {
+		// Arrange: the local label is not a genuine creation binding.
 		grantScope("acme-work", ["dev-remote"]);
 		setReplicationCursor(
 			db,
@@ -3391,8 +3409,10 @@ describe("applyReplicationOps", () => {
 			scopeId: "acme-work",
 		});
 
+		// Act
 		const result = reconcileStalePeerReceivedRows(db, { localDeviceId: "dev-local" });
 
+		// Assert: neither a local label nor missing origin permits deleting the row.
 		expect(result.deleted).toBe(1);
 		expect(result.deleted_memory_ids).toEqual([stalePeerMemoryId]);
 		expect(
@@ -3403,12 +3423,7 @@ describe("applyReplicationOps", () => {
 			db.prepare("SELECT 1 FROM memory_items WHERE id = ?").get(missingOriginMemoryId),
 		).toBeDefined();
 		expect(getReplicationCursor(db, "dev-remote", "acme-work")).toEqual([null, null]);
-		expect(result.ambiguous).toEqual([
-			expect.objectContaining({
-				memory_id: missingOriginMemoryId,
-				reason: "missing_origin_device",
-			}),
-		]);
+		expectPreservedCleanupAmbiguity(result, { localMemoryId, missingOriginMemoryId });
 	});
 
 	it("removes remote-origin local-only rows conservatively and idempotently", () => {

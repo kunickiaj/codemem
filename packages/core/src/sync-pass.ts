@@ -323,7 +323,7 @@ function persistPeerRuntimeVersion(
 
 async function reconcilePeerRowsBeforeExchange(
 	db: Database,
-	options: { localDeviceId: string; peerDeviceId: string },
+	options: { localDeviceId: string; peerDeviceId: string; keysDir?: string },
 ): Promise<void> {
 	const reconciliation = reconcileStalePeerReceivedRows(db, options);
 	if (reconciliation.deleted_memory_ids.length === 0) return;
@@ -342,6 +342,17 @@ async function reconcilePeerRowsBeforeExchange(
 			);
 		}
 	}
+}
+
+function reconcileReceivedRowsForExchange(
+	db: Database,
+	options: { deviceId: string; peerDeviceId: string; keysDir?: string },
+): ReturnType<typeof reconcileStalePeerReceivedRows> {
+	return reconcileStalePeerReceivedRows(db, {
+		localDeviceId: options.deviceId,
+		peerDeviceId: options.peerDeviceId,
+		keysDir: options.keysDir,
+	});
 }
 
 /**
@@ -1036,6 +1047,7 @@ async function syncOneScope(
 
 		const applied = applyReplicationOps(db, ops, deviceId, scanner, {
 			inboundScopeValidation: { peerDeviceId },
+			keysDir,
 		});
 		if (applied.rejected > 0) {
 			const reason = applied.rejections[0]?.reason ?? "scope_rejected";
@@ -1052,10 +1064,7 @@ async function syncOneScope(
 			};
 		}
 
-		const reconciliation = reconcileStalePeerReceivedRows(db, {
-			localDeviceId: deviceId,
-			peerDeviceId,
-		});
+		const reconciliation = reconcileReceivedRowsForExchange(db, options);
 		const vectorWork = {
 			upsertMemoryIds: applied.vectorWork.upsertMemoryIds,
 			deleteMemoryIds: [
@@ -1240,6 +1249,7 @@ async function negotiatePeerExchange(
 		await reconcilePeerRowsBeforeExchange(context.db, {
 			localDeviceId: context.deviceId,
 			peerDeviceId: context.peerDeviceId,
+			keysDir: context.keysDir,
 		});
 		if (context.pendingBootstrapGrantId) {
 			context.db
@@ -1601,6 +1611,7 @@ async function applyPulledDefaultOps(
 			: { peerDeviceId: context.peerDeviceId };
 	const applied = applyReplicationOps(context.db, pulled.ops, context.deviceId, context.scanner, {
 		inboundScopeValidation,
+		keysDir: context.keysDir,
 	});
 	if (applied.rejected > 0) {
 		const firstReason = applied.rejections[0]?.reason ?? "scope_rejected";
@@ -1609,6 +1620,7 @@ async function applyPulledDefaultOps(
 	const reconciliation = reconcileStalePeerReceivedRows(context.db, {
 		localDeviceId: context.deviceId,
 		peerDeviceId: context.peerDeviceId,
+		keysDir: context.keysDir,
 	});
 	const vectorWork = {
 		upsertMemoryIds: applied.vectorWork.upsertMemoryIds,

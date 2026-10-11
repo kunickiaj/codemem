@@ -3617,6 +3617,20 @@ function recentScopeRejectionsByPeer(
 	return map;
 }
 
+function staleRowsForCleanupDiagnostics(store: MemoryStore, localDeviceId: string) {
+	return diagnoseStalePeerReceivedRows(store.db, {
+		localDeviceId,
+		keysDir: syncKeysDir(),
+		maxRows: CLEANUP_DIAGNOSTICS_MAX_ROWS,
+	});
+}
+
+function applyInboundSyncOps(store: MemoryStore, ops: ReplicationOp[], localDeviceId: string) {
+	return applyReplicationOps(store.db, ops, localDeviceId, store.scanner, {
+		keysDir: syncKeysDir(),
+	});
+}
+
 function cleanupDiagnostics(
 	store: MemoryStore,
 	localDeviceId: string | null,
@@ -3636,10 +3650,7 @@ function cleanupDiagnostics(
 		| undefined;
 	const stale =
 		localDeviceId && showDiag
-			? diagnoseStalePeerReceivedRows(store.db, {
-					localDeviceId,
-					maxRows: CLEANUP_DIAGNOSTICS_MAX_ROWS,
-				})
+			? staleRowsForCleanupDiagnostics(store, localDeviceId)
 			: { ambiguous: [], checked: 0, retained: 0, would_delete: 0, would_delete_memory_ids: [] };
 	const ambiguousByReason: Record<string, number> = {};
 	for (const item of stale.ambiguous) {
@@ -5029,7 +5040,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		});
 		if (rejected) return rejected;
 
-		const result = applyReplicationOps(store.db, filtered.allowed, localDeviceId, store.scanner);
+		const result = applyInboundSyncOps(store, filtered.allowed, localDeviceId);
 		const skipped = result.skipped + filtered.skipped;
 		return c.json({
 			...result,

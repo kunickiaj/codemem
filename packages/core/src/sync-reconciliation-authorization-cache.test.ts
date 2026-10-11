@@ -188,8 +188,13 @@ describe("transaction-local authorization reuse for retention and deletion", () 
 			expect(result).toMatchObject({
 				deleted_memory_ids: ids,
 				deleted: 10,
-				retained: 1,
-				ambiguous: [],
+				retained: 0,
+				ambiguous: [
+					expect.objectContaining({
+						memory_id: localIds[0],
+						reason: "unverified_local_creation",
+					}),
+				],
 			});
 			expect(remainingIds()).toEqual(localIds);
 			expect(getReplicationCursor(db, PEER, "scope-stale")).toEqual([null, null]);
@@ -336,8 +341,9 @@ describe("cleanup scan limits and identity preservation", () => {
 
 		// Assert
 		expect(result.deleted_memory_ids).toEqual(localOnlyIds);
-		expect(result.retained).toBe(1);
+		expect(result.retained).toBe(0);
 		expect(result.ambiguous.map((row) => [row.memory_id, row.reason])).toEqual([
+			[localIds[0], "unverified_local_creation"],
 			[missingOriginIds[0], "missing_origin_device"],
 			[missingKeyIds[0], "missing_import_key"],
 		]);

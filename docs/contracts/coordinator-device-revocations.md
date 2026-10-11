@@ -561,11 +561,36 @@ integration gate.
 
 The association is not an OIDC session, a membership grant, or permission to sync.
 It does not backfill creation proof for unproven rows. Historical-read activation
-and provenance-aware cleanup remain separate changes.
+remains a separate change.
 
 Store constructors and ordinary memory reads do not create this association or
 repair keys. Sync request handlers that call device-identity ensure may complete
 a pending association after validating the actual local signing key.
+
+## Local history during sync cleanup
+
+Sync reconciliation preserves rows whose immutable local creation evidence still
+matches their original content, scope, and actual runtime key. Unsigned capture
+can supply its own recorded creation source without generating a signing key.
+Recorded originals also survive missing or wrong keys, content or scope edits,
+and foreign revisions, but these cases report `unverified_local_creation` rather
+than matching creation proof.
+
+Unproven local-looking rows in coordinator-managed scopes remain stored with the
+same diagnostic. Legacy local-device labels retain their prior preservation
+behavior in local, manual, invite, default, and shared-review scopes; those labels
+are retention compatibility only, not evidence of authorship.
+
+Inbound access cleanup cannot delete a recorded local original, even if its
+mutable origin label names the sender. Genuine foreign rows still require the
+matching sender and scope before deletion. Existing reference cleanup, session
+export-key snapshots, operation acknowledgments, and committed vector effects
+remain part of the deletion path.
+
+Preserving a row grants no historical read, current write, membership, or network
+permission. Cleanup diagnostics do not enroll a device, repair keys, associate
+pending captures, or backfill proof. Historical reads remain disabled unless
+current permissions already allow them.
 
 ## Activation limits
 
