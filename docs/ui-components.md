@@ -8,6 +8,16 @@ Use `RadixSelect` from `packages/ui/src/components/primitives/radix-select.tsx`.
 
 Caller classes should adjust layout or a specific variant, not repeat the select's colors, padding, focus state, or menu surface. Keep project-filter changes in the existing application state and refresh flow.
 
+Use `NativeSelect` when existing forms need the native value/change contract or platform picker. It forwards attributes, events, and refs to a real `<select>` and supplies the shared styling class. Single-selects receive trigger styling from `controls.css`; do not add a separate screen-specific chevron. Hidden controls, multiple-selection controls, and visible listboxes retain native rendering.
+
+Selects fill their container by default. Caller layout classes can set `--select-width` and `--select-min-width` to keep a picker content-sized beside its action buttons without overriding shared geometry or state styles.
+
+## Choice rows and chips
+
+Choice lists retain semantic fieldsets and legends without browser-default borders or minimum widths that force the dialog to overflow. Put a choice's label and supporting text in the shared stacked copy container so long names wrap within the row. Checkbox and radio rows share selected and disabled treatments; a disabled option must not look clickable.
+
+Use `Chip` for standard badges rather than repeating the badge class and tone assembly. Keep genuinely different layout variants explicit instead of adding a new shared variant for a single screen.
+
 ## Menus and help
 
 Use the shared action-menu primitive for row actions. Keep action handlers and confirmation dialogs in the owning screen; the primitive owns opening, keyboard navigation, disabled items, dismissal, and focus return. Menu surfaces should not be clipped by their parent rows. Destructive actions must retain their danger treatment when highlighted.

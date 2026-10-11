@@ -159,7 +159,7 @@ function Choice({
 			htmlFor={id}
 		>
 			<input checked={checked} disabled={disabled} id={id} onChange={onChange} type="checkbox" />
-			<span className="recipient-policy-management-choice-copy">
+			<span className="sync-dialog-choice-copy">
 				<strong className="recipient-policy-management-name">{label}</strong>
 				<span className="small recipient-policy-management-description">{description}</span>
 			</span>

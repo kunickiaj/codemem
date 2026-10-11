@@ -1,4 +1,5 @@
 import { useEffect, useId, useState } from "preact/hooks";
+import { NativeSelect } from "../components/primitives/native-select";
 import type { LegacyTeamSetupDetailResponseV1, LegacyTeamSetupProjectV1 } from "../lib/api";
 import { stableProjectPresentationLabels } from "../lib/project-identity-presentation";
 import { setupItemErrorId } from "./legacy-team-setup-dom";
@@ -121,7 +122,7 @@ function ProjectRow({
 							{savedName ? `Saved mapping: ${savedName}` : "This Project still needs a mapping."}
 						</p>
 						<label htmlFor={controlId}>Canonical Project</label>
-						<select
+						<NativeSelect
 							aria-describedby={controlDescription || undefined}
 							className="feed-search legacy-team-project-select"
 							disabled={controlsBlocked}
@@ -135,7 +136,7 @@ function ProjectRow({
 									{choice.label}
 								</option>
 							))}
-						</select>
+						</NativeSelect>
 						{mappingUnavailable ? (
 							<p className="small" id={helpId}>
 								No safe Project mapping is available. Refresh after Project evidence changes.

@@ -45,6 +45,72 @@ describe("canManageLegacyCoordinatorSpaces", () => {
 	});
 });
 
+describe("Sync peer badge compatibility", () => {
+	it.each([false, true])("preserves badge classes and titles with warnings: %s", (warnings) => {
+		// Arrange: exercise both ordinary and optional warning badge output.
+		document.body.innerHTML = '<div id="mount"></div>';
+		const mount = document.getElementById("mount");
+		if (!mount) throw new Error("mount missing");
+		const peer = {
+			peer_device_id: "badge-peer",
+			name: "Peer",
+			status: { peer_state: warnings ? "offline" : "online" },
+			authorized_scopes: warnings ? [] : [{ scope_id: "shared", label: "Shared Space" }],
+			...(warnings
+				? { scope_rejections: { total: 1 }, discovered_via_group_id: "example-group" }
+				: {}),
+		};
+		const trustBadge = warnings
+			? ["badge badge-offline", "Offline"]
+			: ["badge badge-online", "Two-way trust"];
+		const accessBadge = warnings
+			? ["badge badge-offline", "No Space access"]
+			: ["badge actor-badge", "1 Space"];
+		// Act
+		act(() =>
+			renderSyncPeersList(mount, {
+				peers: [peer],
+				onRemove: vi.fn(),
+				onRename: vi.fn(),
+				onSync: vi.fn(),
+			}),
+		);
+		const badges = [...mount.querySelectorAll(".device-row-chips .badge")];
+		// Assert: replacing spans with Chip must not change their DOM contract.
+		expect(
+			badges.map((badge) => [
+				badge.tagName,
+				badge.className,
+				badge.textContent,
+				badge.getAttribute("title"),
+			]),
+		).toEqual([
+			["SPAN", ...trustBadge, null],
+			[
+				"SPAN",
+				...accessBadge,
+				"Spaces are the hard access boundary; advanced filters only narrow inside them.",
+			],
+			...(warnings
+				? [
+						[
+							"SPAN",
+							"badge badge-offline",
+							"1 sync rejection",
+							"Inbound ops rejected by the sharing-domain scope gate. Expand for reason codes.",
+						],
+						[
+							"SPAN",
+							"badge actor-badge",
+							"via example-group",
+							"Discovered through coordinator group example-group",
+						],
+					]
+				: []),
+		]);
+	});
+});
+
 describe("Advanced device Identity ownership", () => {
 	it("uses only an active binding as authoritative ownership", () => {
 		const view = advancedDeviceIdentityView(

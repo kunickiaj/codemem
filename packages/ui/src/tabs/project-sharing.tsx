@@ -70,7 +70,7 @@ function ProjectChoice(props: {
 				onChange={() => props.onToggle(props.project.workspace_identity)}
 				type="checkbox"
 			/>
-			<span>
+			<span className="sync-dialog-choice-copy">
 				<strong>{props.project.display_project}</strong>
 				<span className="small">
 					{available

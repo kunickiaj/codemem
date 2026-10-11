@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Chip } from "../../components/primitives/chip";
+import { NativeSelect } from "../../components/primitives/native-select";
 import type {
 	ProjectInventoryCallbacks,
 	ProjectInventoryClusterViewModel,
@@ -191,7 +192,7 @@ function ClusterAssignmentControls(props: ClusterDetailsProps) {
 	const scopeAvailable = scopeIsAvailable(scopeId, view);
 	return (
 		<>
-			<select
+			<NativeSelect
 				aria-label={`Space for ${model.label} group`}
 				className="project-domain-select"
 				onBlur={callbacks.onSpaceSelectBlur}
@@ -212,7 +213,7 @@ function ClusterAssignmentControls(props: ClusterDetailsProps) {
 						))}
 					</optgroup>
 				))}
-			</select>
+			</NativeSelect>
 			<button
 				className="settings-button"
 				disabled={!scopeAvailable || summary.blocking.length > 0}

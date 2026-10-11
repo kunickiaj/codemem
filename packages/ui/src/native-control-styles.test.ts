@@ -15,7 +15,7 @@ describe("shared select control styles", () => {
 
 		// Act
 		const enabledHover = normalized.match(
-			/\.radix-select-trigger:hover:not\(:disabled\) \{([^}]+)\}/,
+			/\.radix-select-trigger:hover:not\(:disabled\), select\.native-select[^{}]+:hover:not\(:disabled\) \{([^}]+)\}/,
 		)?.[1];
 
 		// Assert
@@ -95,17 +95,171 @@ describe("shared select control styles", () => {
 		const normalized = controls.replace(/\s+/g, " ");
 
 		// Act
-		const defaultRule = normalized.match(/\.radix-select-trigger \{([^}]+)\}/)?.[1];
+		const defaultRule = normalized.match(
+			/\.radix-select-trigger, select\.native-select[^{}]+ \{([^}]+)\}/,
+		)?.[1];
 		const compactRule = normalized.match(
 			/\.radix-select-trigger\[data-size="compact"\] \{([^}]+)\}/,
 		)?.[1];
 
 		// Assert
-		expect(defaultRule).toContain("min-width: 0");
+		expect(defaultRule).toContain("min-width: var(--select-min-width, 0)");
 		expect(defaultRule).toContain("font-size: var(--font-size-md)");
 		expect(compactRule).toContain("font-size: var(--font-size-sm)");
 		expect(compactRule).not.toContain("min-width");
 		expect(compactRule).not.toContain("border:");
+	});
+});
+
+describe("intentional native select styles", () => {
+	it.each([
+		['<button class="radix-select-trigger"></button>', true],
+		['<button class="radix-select-trigger" disabled></button>', false],
+		['<select class="native-select"></select>', true],
+		['<select class="native-select" size="1"></select>', true],
+		['<select class="native-select" disabled></select>', false],
+		['<select class="native-select" hidden></select>', false],
+		['<select class="native-select" aria-hidden="true"></select>', false],
+		['<select class="native-select" multiple></select>', false],
+		['<select class="native-select" size="3"></select>', false],
+		["<select></select>", false],
+	])(
+		"applies shared hover border only to enabled visible single pickers: %s",
+		(markup, interactive) => {
+			// Arrange: test hover eligibility without claiming jsdom renders pointer states.
+			const normalized = controls.replace(/\s+/g, " ");
+			const template = document.createElement("template");
+			template.innerHTML = markup;
+			// Act: preserve qualification and specificity from the actual shared border rule.
+			const rule = normalized.match(
+				/(\.radix-select-trigger:hover:not\(:disabled\), select\.native-select[^{}]+:hover:not\(:disabled\)) \{([^}]+)\}/,
+			);
+			if (!rule) throw new Error("shared native/Radix hover rule missing");
+			const eligible = template.content.firstElementChild?.matches(
+				rule[1].replaceAll(":hover", ""),
+			);
+			// Assert
+			expect(rule[2]).toContain("border-color: var(--border-hover)");
+			expect(rule[1]).not.toMatch(/^:where\(/);
+			expect(eligible).toBe(interactive);
+		},
+	);
+
+	it.each([
+		['class="native-select"', true],
+		['class="native-select" size="0"', true],
+		['class="native-select" size="1"', true],
+		['class="native-select" size="2"', false],
+		['class="native-select" multiple', false],
+		['class="native-select" hidden', false],
+		['class="native-select" aria-hidden="true"', false],
+		['aria-hidden="true" tabindex="-1"', false],
+		["", false],
+	])("opts in only single native pickers: %s", (attributes, styled) => {
+		// Objective: listboxes, unstyled controls, and hidden Radix bubble selects keep native rendering.
+		// Arrange
+		const normalized = controls.replace(/\s+/g, " ");
+		const template = document.createElement("template");
+		template.innerHTML = `<select ${attributes}><option>Project</option></select>`;
+		// Act: use the shipped appearance selector, not a duplicate selector in the test.
+		const selector = normalized.match(/(select\.native-select[^{}]+) \{ appearance: none;/)?.[1];
+		if (!selector) throw new Error("native select appearance rule missing");
+		const matches = template.content.querySelector("select")?.matches(selector);
+		// Assert
+		expect(matches).toBe(styled);
+	});
+
+	it("shares trigger tokens and reserves the 14px chevron box without platform inset", () => {
+		// Arrange
+		const normalized = controls.replace(/\s+/g, " ");
+		// Act
+		const shared = normalized.match(
+			/\.radix-select-trigger, select\.native-select[^{}]+ \{([^}]+)\}/,
+		)?.[1];
+		const native = normalized.match(
+			/select\.native-select[^{}]+ \{ appearance: none;([^}]+)\}/,
+		)?.[1];
+		// Assert
+		for (const declaration of [
+			"min-width: var(--select-min-width, 0)",
+			"padding: var(--sp-2) var(--sp-3)",
+			"border-radius: var(--radius-sm)",
+			"font-size: var(--font-size-md)",
+		])
+			expect(shared).toContain(declaration);
+		expect(native).toContain("box-sizing: border-box");
+		expect(native).toContain("min-height: 38px");
+		expect(native).toContain("padding-right: calc(var(--sp-3) + 14px + var(--sp-2))");
+		expect(native).toContain("var(--text-tertiary)");
+		expect(native).toContain("right calc(var(--sp-3) + 7px) center");
+		expect(native).toContain("background-repeat: no-repeat");
+		expect(native).not.toMatch(/url\(|#[0-9a-f]{3,8}\b/i);
+	});
+
+	it("restores the platform arrow and visible focus in forced colors", () => {
+		// Arrange
+		const normalized = controls.replace(/\s+/g, " ");
+		// Act
+		const forcedColors = normalized.slice(normalized.indexOf("@media (forced-colors: active)"));
+		const native = forcedColors.match(/select\.native-select[^{}]+ \{([^}]+)\}/)?.[1];
+		// Assert
+		expect(native).toContain("appearance: auto");
+		expect(native).toContain("background-image: none");
+		expect(native).not.toContain("appearance: none");
+		expect(forcedColors).toContain("outline: 2px solid CanvasText");
+		expect(forcedColors).not.toContain("forced-color-adjust: none");
+	});
+});
+
+describe("shared choice row styles", () => {
+	it("resets fieldset intrinsic width and stacks wrappable copy", () => {
+		// Objective: narrow dialogs must not inherit fieldset min-content width or inline helper copy.
+		// Arrange
+		const normalized = html.replace(/\s+/g, " ");
+		// Act
+		const list = normalized.match(/\.sync-dialog-radio-list \{([^}]+)\}/)?.[1];
+		const row = normalized.match(/\.sync-dialog-radio-option \{([^}]+)\}/)?.[1];
+		const copy = normalized.match(/\.sync-dialog-choice-copy \{([^}]+)\}/)?.[1];
+		const legend = normalized.match(/\.sync-dialog-radio-list legend \{([^}]+)\}/)?.[1];
+		// Assert: CSS contracts only; jsdom does not measure layout.
+		for (const declaration of ["min-width: 0", "margin: 0", "padding: 0", "border: 0"])
+			expect(list).toContain(declaration);
+		expect(row).toContain("min-width: 0");
+		for (const declaration of [
+			"display: flex",
+			"flex-direction: column",
+			"min-width: 0",
+			"overflow-wrap: anywhere",
+		])
+			expect(copy).toContain(declaration);
+		expect(copy).not.toContain("white-space: nowrap");
+		expect(legend).toContain("max-width: 100%");
+		expect(legend).toContain("overflow-wrap: anywhere");
+	});
+
+	it("keeps checked checkbox and radio rows selected without enabled-hover overrides", () => {
+		// Arrange
+		const normalized = html.replace(/\s+/g, " ");
+		// Act
+		const hover = normalized.match(/(\.sync-dialog-radio-option:hover[^{}]+) \{([^}]+)\}/);
+		const selected = normalized.match(
+			/\.sync-dialog-radio-option:has\(button\[data-state="checked"\], input:checked\) \{([^}]+)\}/,
+		)?.[1];
+		const disabled = normalized.match(
+			/\.sync-dialog-radio-option:has\(:disabled, \[data-disabled\]\) \{([^}]+)\}/,
+		)?.[1];
+		// Assert
+		expect(hover?.[1]).toContain(
+			':not(:has(:disabled, [data-disabled], button[data-state="checked"], input:checked))',
+		);
+		expect(hover?.[2]).toContain("border-color: var(--border-hover)");
+		expect(selected).toContain("var(--accent-subtle)");
+		expect(disabled).toContain("cursor: not-allowed");
+		expect(disabled).toContain("opacity: 0.6");
+		expect(normalized).toContain(
+			":has(:disabled, [data-disabled]) :is(button, input, label) { cursor: not-allowed; }",
+		);
+		expect(normalized).not.toMatch(/\.sync-dialog-radio-option:hover\s*\{/);
 	});
 });
 
@@ -187,7 +341,7 @@ describe("native control styles", () => {
 
 	it("keeps baseline hover states at zero specificity", () => {
 		// Arrange: shared component hover rules have their own selector contract.
-		const nativeHoverPattern = /(:where\([^{}]*:hover:not\(:disabled\)[^{}]*)\{/g;
+		const nativeHoverPattern = /(?:^|})\s*(:where\([^{}]*:hover:not\(:disabled\)[^{}]*)\{/g;
 
 		// Act
 		const hoverSelectors = [...controls.matchAll(nativeHoverPattern)].map(([, selector]) =>

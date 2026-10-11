@@ -1,5 +1,6 @@
 import type { RefObject } from "preact";
 import { useEffect, useState } from "preact/hooks";
+import { NativeSelect } from "../../components/primitives/native-select";
 import type {
 	ProjectInventoryCallbacks,
 	ProjectInventoryProjectViewModel,
@@ -142,7 +143,7 @@ function ProjectSpaceSelect(props: DetailsContentProps) {
 			<label className="sr-only" htmlFor={selectId}>
 				Space for {project.display_project}
 			</label>
-			<select
+			<NativeSelect
 				className="project-domain-select"
 				id={selectId}
 				onBlur={callbacks.onSpaceSelectBlur}
@@ -167,7 +168,7 @@ function ProjectSpaceSelect(props: DetailsContentProps) {
 						))}
 					</optgroup>
 				))}
-			</select>
+			</NativeSelect>
 			<button
 				className="settings-button"
 				disabled={saveDisabled}

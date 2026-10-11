@@ -1,4 +1,5 @@
-import { useState } from "preact/hooks";
+import { useId, useState } from "preact/hooks";
+import { NativeSelect } from "../../../components/primitives/native-select";
 
 import type { LegacySharedReviewReassignmentPreview } from "../../../lib/api/sync";
 
@@ -251,6 +252,42 @@ function SharingReviewRow({
 				</button>
 			</div>
 		</div>
+	);
+}
+
+function LegacyDestinationSelect({
+	group,
+	disabled,
+	onChange,
+	scopes,
+	value,
+}: {
+	group: SyncLegacySharedReviewGroup;
+	disabled: boolean;
+	onChange: (group: SyncLegacySharedReviewGroup, scopeId: string) => void;
+	scopes: SyncLegacySharedReviewTargetScope[];
+	value: string;
+}) {
+	const id = useId();
+	return (
+		<label className="legacy-review-target" htmlFor={id}>
+			<span>Destination Space</span>
+			<NativeSelect
+				className="peer-scope-input"
+				disabled={disabled}
+				id={id}
+				onChange={(event) => onChange(group, event.currentTarget.value)}
+				value={value}
+			>
+				<option value="">Choose Space…</option>
+				{scopes.map((scope) => (
+					<option key={scope.scopeId} value={scope.scopeId}>
+						{scope.label} · {authorityLabel(scope.authorityType)}
+						{scope.scopeId === group.suggestedScopeId ? " · suggested" : ""}
+					</option>
+				))}
+			</NativeSelect>
+		</label>
 	);
 }
 
@@ -611,23 +648,13 @@ function LegacySharedReviewRow({
 							) : null}
 							<LegacyMemorySamples group={group} />
 							{targetScopes.length > 0 && onReassign && canReassignLegacyGroup(group) ? (
-								<label className="legacy-review-target">
-									<span>Destination Space</span>
-									<select
-										className="peer-scope-input"
-										disabled={busyIdentity != null}
-										onChange={(event) => updateSelectedScope(group, event.currentTarget.value)}
-										value={selectedScopes[group.workspaceIdentity] || ""}
-									>
-										<option value="">Choose Space…</option>
-										{targetScopes.map((scope) => (
-											<option key={scope.scopeId} value={scope.scopeId}>
-												{scope.label} · {authorityLabel(scope.authorityType)}
-												{scope.scopeId === group.suggestedScopeId ? " · suggested" : ""}
-											</option>
-										))}
-									</select>
-								</label>
+								<LegacyDestinationSelect
+									group={group}
+									disabled={busyIdentity != null}
+									onChange={updateSelectedScope}
+									scopes={targetScopes}
+									value={selectedScopes[group.workspaceIdentity] || ""}
+								/>
 							) : null}
 							{targetScopes.length > 0 && onReassign && canReassignLegacyGroup(group) ? (
 								<div className="legacy-review-actions">

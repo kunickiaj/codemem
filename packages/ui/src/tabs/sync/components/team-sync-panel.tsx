@@ -1,6 +1,7 @@
 import type { ComponentChildren } from "preact";
 import { createPortal } from "preact/compat";
 import { useState } from "preact/hooks";
+import { Chip } from "../../../components/primitives/chip";
 import { state } from "../../../lib/state";
 import type { UiSyncAttentionItem, UiTeamSyncPrimaryStatus } from "../view-model";
 import { type SyncActionFeedback, SyncInlineFeedback } from "./sync-inline-feedback";
@@ -279,12 +280,19 @@ function DiscoveredDeviceRow({
 		<div className="peer-card peer-card--padded" data-discovered-device-id={row.deviceId}>
 			<div className="peer-title">
 				<strong title={row.displayTitle || undefined}>{row.displayName}</strong>
-				<span className={`badge actor-badge${row.availabilityLabel === "Offline" ? "" : " local"}`}>
+				<Chip
+					variant="badge"
+					tone={row.availabilityLabel === "Offline" ? "actor-badge" : "actor-badge local"}
+				>
 					{row.availabilityLabel}
-				</span>
-				<span className="badge actor-badge">{row.connectionLabel}</span>
+				</Chip>
+				<Chip variant="badge" tone="actor-badge">
+					{row.connectionLabel}
+				</Chip>
 				{row.approvalBadgeLabel ? (
-					<span className="badge actor-badge">{row.approvalBadgeLabel}</span>
+					<Chip variant="badge" tone="actor-badge">
+						{row.approvalBadgeLabel}
+					</Chip>
 				) : null}
 			</div>
 			<div className="peer-meta">{row.note}</div>

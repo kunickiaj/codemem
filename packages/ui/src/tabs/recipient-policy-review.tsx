@@ -1,6 +1,7 @@
 import { type RefObject, render } from "preact";
 import { useEffect, useId, useRef, useState } from "preact/hooks";
 import { Chip } from "../components/primitives/chip";
+import { NativeSelect } from "../components/primitives/native-select";
 import * as api from "../lib/api";
 import type {
 	RecipientPolicyBlockedItemV1,
@@ -379,7 +380,7 @@ interface DecisionControlsProps {
 function DecisionControls(props: DecisionControlsProps) {
 	return (
 		<>
-			<select
+			<NativeSelect
 				aria-label={`Decision for ${props.group.displayName}`}
 				className="recipient-policy-review-select"
 				data-review-control="decision"
@@ -394,7 +395,7 @@ function DecisionControls(props: DecisionControlsProps) {
 						{option.label}
 					</option>
 				))}
-			</select>
+			</NativeSelect>
 			<div className="recipient-policy-review-actions">
 				<button
 					className="settings-save"

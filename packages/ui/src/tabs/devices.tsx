@@ -3,6 +3,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/ho
 import { LoadingCardList } from "../components/LoadingCardList";
 import { ActionMenu, type MenuAction } from "../components/primitives/action-menu";
 import { Chip } from "../components/primitives/chip";
+import { NativeSelect } from "../components/primitives/native-select";
 import { PresencePip } from "../components/primitives/presence-pip";
 import type {
 	RecipientPolicyIntentGraphV1,
@@ -814,7 +815,7 @@ function SetupWorkflow({
 												</label>
 											) : null}
 											<label htmlFor={`${titleId}-identity`}>Identity</label>
-											<select
+											<NativeSelect
 												aria-label={`Choose an Identity for ${item.displayName}`}
 												disabled={setupBlocked}
 												id={`${titleId}-identity`}
@@ -832,7 +833,7 @@ function SetupWorkflow({
 														{identity.displayName}
 													</option>
 												))}
-											</select>
+											</NativeSelect>
 											{item.suggestedIdentityId && identityNames.has(item.suggestedIdentityId) ? (
 												<p className="small">
 													Suggested from historical device information. Review it before applying
@@ -1138,7 +1139,7 @@ function ConfiguredRebind({
 					</p>
 					<RebindGuidance hasAlternative={identities.length > 0} />
 					<label htmlFor={`configured-rebind-${controlKey}`}>Target Identity</label>
-					<select
+					<NativeSelect
 						disabled={rebindBlocked}
 						id={`configured-rebind-${controlKey}`}
 						onInput={(event) => {
@@ -1157,7 +1158,7 @@ function ConfiguredRebind({
 								{identity.displayName}
 							</option>
 						))}
-					</select>
+					</NativeSelect>
 					<label>
 						<input
 							checked={confirmed}

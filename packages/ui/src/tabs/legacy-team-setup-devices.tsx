@@ -1,4 +1,5 @@
 import { useEffect, useId, useState } from "preact/hooks";
+import { NativeSelect } from "../components/primitives/native-select";
 import type { LegacyTeamSetupDetailResponseV1, LegacyTeamSetupDeviceV1 } from "../lib/api";
 import { setupItemErrorId } from "./legacy-team-setup-dom";
 import { orderedSetupDevices } from "./legacy-team-setup-order";
@@ -128,7 +129,7 @@ function DeviceRow({
 				<span>Decision: {DECISION_LABELS[device.decision]}</span>
 			</div>
 			<label htmlFor={controlId}>Person using this device</label>
-			<select
+			<NativeSelect
 				aria-describedby={assignmentDescription}
 				className="feed-search legacy-team-device-select"
 				disabled={assignmentControlsBlocked}
@@ -145,7 +146,7 @@ function DeviceRow({
 						{identity.displayName}
 					</option>
 				))}
-			</select>
+			</NativeSelect>
 			{!device.enabled ? (
 				<p className="small" id={assignmentHelpId}>
 					Inactive devices can only be removed from this Team.

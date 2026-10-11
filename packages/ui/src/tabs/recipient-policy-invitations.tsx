@@ -1,6 +1,7 @@
 import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { DialogCloseButton } from "../components/primitives/dialog-close-button";
+import { NativeSelect } from "../components/primitives/native-select";
 import { RadixDialog } from "../components/primitives/radix-dialog";
 import * as api from "../lib/api";
 import type {
@@ -911,7 +912,7 @@ function InvitationDialogInput({
 		return (
 			<label className="field" htmlFor="recipient-invitation-target">
 				<span>{state.kind === "team_member" ? "Team" : "Identity"}</span>
-				<select
+				<NativeSelect
 					id="recipient-invitation-target"
 					onChange={(event) => state.setTargetId(event.currentTarget.value)}
 					value={state.targetId}
@@ -924,7 +925,7 @@ function InvitationDialogInput({
 							{item.displayName}
 						</option>
 					))}
-				</select>
+				</NativeSelect>
 			</label>
 		);
 	}

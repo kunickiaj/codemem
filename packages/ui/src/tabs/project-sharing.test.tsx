@@ -163,6 +163,42 @@ describe("project sharing close button", () => {
 	});
 });
 
+describe("project sharing choice copy", () => {
+	it.each([false, true])(
+		"keeps long choice copy separate and respects read-only state: %s",
+		(readOnly) => {
+			// Arrange: an unbroken name exposes the narrow-dialog wrapping hook.
+			const longName = "Project-with-a-very-long-unbroken-name-that-must-wrap";
+			const mount = document.getElementById("mount");
+			if (!mount) throw new Error("mount missing");
+			act(() =>
+				renderProjectShareFlow(mount, [
+					{ ...project, display_project: longName, read_only: readOnly },
+					{ ...project, display_project: "Other project", workspace_identity: "git:other" },
+				]),
+			);
+			// Act
+			act(() => (mount.querySelector("button") as HTMLButtonElement).click());
+			const choice = document.querySelector<HTMLLabelElement>(".sync-dialog-radio-option");
+			const input = choice?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+			const copy = choice?.querySelector(".sync-dialog-choice-copy");
+			act(() => choice?.click());
+			// Assert: retained fieldset/legend semantics and native label activation.
+			expect(choice?.closest("fieldset")?.querySelector("legend")?.textContent).toBe(
+				"Select exact projects",
+			);
+			expect(copy?.querySelector("strong")?.textContent).toBe(longName);
+			expect(copy?.children).toHaveLength(2);
+			expect(copy?.querySelector(".small")?.textContent).toBe(
+				readOnly ? "Unavailable until this project identity is reviewed" : "436 existing memories",
+			);
+			expect(input?.disabled).toBe(readOnly);
+			expect(input?.checked).toBe(!readOnly);
+			expect(api.previewProjectInvite).not.toHaveBeenCalled();
+		},
+	);
+});
+
 describe("project sharing flow", () => {
 	it("reviews exact projects, counts, and future sharing without internal terminology", async () => {
 		const mount = document.getElementById("mount");

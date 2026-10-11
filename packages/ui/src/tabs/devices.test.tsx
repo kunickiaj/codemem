@@ -2144,10 +2144,14 @@ describe("Device setup validation", () => {
 	});
 
 	it("does not guess an Identity or allow review for a local device without a target", () => {
+		// Arrange
 		mount(intent(), reconciliation(), {
 			inventory: inventory([inventoryItem("local", "Local", "setup_required", { isLocal: true })]),
 		});
+		// Act
 		const select = document.querySelector<HTMLSelectElement>(".device-identity-setup-card select");
+		// Assert: native styling must not choose a target or enable an unsafe review.
+		expect(select?.className).toBe("native-select");
 		expect(select?.value).toBe("");
 		expect(select?.getAttribute("aria-label")).toBe("Choose an Identity for Local");
 		expect(deviceCard("Local").querySelectorAll('input[type="checkbox"]')).toHaveLength(0);
@@ -2659,6 +2663,7 @@ describe("Device stale previews", () => {
 });
 describe("Device reassignment review", () => {
 	it("discloses both Identities and requires separate review confirmation for rebind", async () => {
+		// Arrange: this intentional native variant must retain select.value and input callbacks.
 		const graph = intent({
 			identities: [
 				...intent().identities,
@@ -2701,6 +2706,11 @@ describe("Device reassignment review", () => {
 		);
 		const select = document.querySelector<HTMLSelectElement>(".device-identity-rebind select");
 		if (!select) throw new Error("rebind select missing");
+		expect(select.className).toBe("native-select");
+		expect(select.value).toBe("");
+		expect(select.disabled).toBe(false);
+		expect(select.multiple).toBe(false);
+		// Act
 		select.value = "identity-target";
 		act(() => {
 			select.dispatchEvent(new Event("input", { bubbles: true }));
@@ -2724,6 +2734,8 @@ describe("Device reassignment review", () => {
 			).click();
 		});
 		const review = document.querySelector(".device-identity-rebind-review");
+		// Assert
+		expect(select.value).toBe("identity-target");
 		expect(review?.textContent).toContain("Work Laptop: Alice → Brian");
 		expect(review?.textContent).not.toContain("Adam & Co → Brian");
 	});

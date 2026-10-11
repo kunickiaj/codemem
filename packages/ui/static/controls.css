@@ -8,13 +8,14 @@
   --popup-padding: 6px;
 }
 
-.radix-select-trigger {
+.radix-select-trigger,
+select.native-select:not([multiple]):not([hidden]):not([aria-hidden="true"]):where(:not([size]), [size="0"], [size="1"]) {
   display: inline-flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--sp-2);
-  width: 100%;
-  min-width: 0;
+  width: var(--select-width, 100%);
+  min-width: var(--select-min-width, 0);
   padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -26,12 +27,33 @@
   transition: border-color var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard);
 }
 
+/* Intentional native variant: keep select.value, input/change events and the
+ * platform picker. Opt in explicitly so Radix bubble selects stay untouched;
+ * multiple/size listboxes retain their native presentation. appearance:none
+ * also lets Safari apply the shared padding instead of its menu-button inset.
+ * Two token-colored strokes match the chevron within Radix's 14px icon box. */
+select.native-select:not([multiple]):not([hidden]):not([aria-hidden="true"]):where(:not([size]), [size="0"], [size="1"]) {
+  appearance: none;
+  display: inline-block;
+  box-sizing: border-box;
+  min-height: 38px;
+  line-height: 20px;
+  padding-right: calc(var(--sp-3) + 14px + var(--sp-2));
+  background-image:
+    linear-gradient(45deg, transparent 38%, var(--text-tertiary) 38% 62%, transparent 62%),
+    linear-gradient(-45deg, transparent 38%, var(--text-tertiary) 38% 62%, transparent 62%);
+  background-position: right calc(var(--sp-3) + 7px) center, right calc(var(--sp-3) + 3.5px) center;
+  background-size: 3.5px 3.5px;
+  background-repeat: no-repeat;
+}
+
 .radix-select-trigger[data-size="compact"] {
   padding: 5px 10px;
   font-size: var(--font-size-sm);
 }
 
-.radix-select-trigger:hover:not(:disabled) {
+.radix-select-trigger:hover:not(:disabled),
+select.native-select:not([multiple]):not([hidden]):not([aria-hidden="true"]):where(:not([size]), [size="0"], [size="1"]):hover:not(:disabled) {
   border-color: var(--border-hover);
 }
 
@@ -190,6 +212,7 @@
 input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="button"]):not([type="reset"]):not([type="submit"]):focus-visible,
 textarea:focus-visible,
 select:focus-visible,
+select.native-select:not([multiple]):not([hidden]):not([aria-hidden="true"]):where(:not([size]), [size="0"], [size="1"]):focus-visible,
 .radix-select-trigger:focus-visible {
   outline: none;
   border-color: var(--accent);
@@ -305,6 +328,11 @@ select:focus-visible,
 }
 
 @media (forced-colors: active) {
+  select.native-select:not([multiple]):not([hidden]):not([aria-hidden="true"]):where(:not([size]), [size="0"], [size="1"]) {
+    appearance: auto;
+    background-image: none;
+  }
+
   :where(input[type="checkbox"], input[type="radio"]) {
     appearance: auto;
   }
@@ -316,6 +344,7 @@ select:focus-visible,
   input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="button"]):not([type="reset"]):not([type="submit"]):focus-visible,
   textarea:focus-visible,
   select:focus-visible,
+  select.native-select:not([multiple]):not([hidden]):not([aria-hidden="true"]):where(:not([size]), [size="0"], [size="1"]):focus-visible,
   .radix-select-trigger:focus-visible {
     outline: 2px solid CanvasText;
   }

@@ -1,3 +1,4 @@
+import { useId } from "preact/hooks";
 import {
 	DIAGNOSTIC_SEVERITIES,
 	DIAGNOSTIC_SUBSYSTEMS,
@@ -8,6 +9,7 @@ import {
 	isDiagnosticRecoveryHref,
 } from "../../lib/api/diagnostics";
 import { DialogCloseButton } from "../primitives/dialog-close-button";
+import { NativeSelect, type NativeSelectProps } from "../primitives/native-select";
 import { RadixDialog, RadixDialogTitle } from "../primitives/radix-dialog";
 import { MAX_ROWS, queuedDiagnosticRowCount } from "./state";
 import type { useDiagnosticsDrawer } from "./use-diagnostics-drawer";
@@ -112,45 +114,51 @@ function LoadingRows() {
 	);
 }
 
+function DiagnosticFilter({ label, ...props }: NativeSelectProps & { label: string }) {
+	const id = useId();
+	return (
+		<label htmlFor={id}>
+			<span>{label}</span>
+			<NativeSelect {...props} id={id} />
+		</label>
+	);
+}
+
 function DrawerControls({ controller }: { controller: DrawerController }) {
 	const { state } = controller;
 	return (
 		<>
 			<div className="diagnostics-controls">
-				<label>
-					<span>Severity</span>
-					<select
-						aria-label="Diagnostic severity"
-						onChange={(event) =>
-							controller.setSeverity(event.currentTarget.value as DiagnosticEventSeverity | "")
-						}
-						value={state.severity}
-					>
-						<option value="">All severities</option>
-						{DIAGNOSTIC_SEVERITIES.map((value) => (
-							<option key={value} value={value}>
-								{severityPresentation(value).label}
-							</option>
-						))}
-					</select>
-				</label>
-				<label>
-					<span>Subsystem</span>
-					<select
-						aria-label="Diagnostic subsystem"
-						onChange={(event) =>
-							controller.setSubsystem(event.currentTarget.value as DiagnosticEventSubsystem | "")
-						}
-						value={state.subsystem}
-					>
-						<option value="">All subsystems</option>
-						{DIAGNOSTIC_SUBSYSTEMS.map((value) => (
-							<option key={value} value={value}>
-								{value}
-							</option>
-						))}
-					</select>
-				</label>
+				<DiagnosticFilter
+					label="Severity"
+					aria-label="Diagnostic severity"
+					onChange={(event) =>
+						controller.setSeverity(event.currentTarget.value as DiagnosticEventSeverity | "")
+					}
+					value={state.severity}
+				>
+					<option value="">All severities</option>
+					{DIAGNOSTIC_SEVERITIES.map((value) => (
+						<option key={value} value={value}>
+							{severityPresentation(value).label}
+						</option>
+					))}
+				</DiagnosticFilter>
+				<DiagnosticFilter
+					label="Subsystem"
+					aria-label="Diagnostic subsystem"
+					onChange={(event) =>
+						controller.setSubsystem(event.currentTarget.value as DiagnosticEventSubsystem | "")
+					}
+					value={state.subsystem}
+				>
+					<option value="">All subsystems</option>
+					{DIAGNOSTIC_SUBSYSTEMS.map((value) => (
+						<option key={value} value={value}>
+							{value}
+						</option>
+					))}
+				</DiagnosticFilter>
 				<button className="settings-button" onClick={controller.togglePaused} type="button">
 					{state.paused ? "Resume updates" : "Pause updates"}
 				</button>

@@ -226,6 +226,31 @@ describe("TeamSyncPanel primary status", () => {
 });
 
 describe("TeamSyncPanel discovered approval rows", () => {
+	it.each(["Available", "Offline"])(
+		"preserves discovered badge spans and classes when %s",
+		(availabilityLabel) => {
+			// Arrange
+			const row = discoveredRow({
+				availabilityLabel,
+				approvalBadgeLabel: availabilityLabel === "Offline" ? null : "Needs your approval",
+			});
+			// Act
+			const discovered = renderDiscoveredRows([row]);
+			const badges = [...discovered.querySelectorAll(".peer-title .badge")];
+			// Assert: Chip must leave the existing CSS hooks and optional badge output unchanged.
+			expect(badges.map((badge) => [badge.tagName, badge.className, badge.textContent])).toEqual([
+				[
+					"SPAN",
+					availabilityLabel === "Offline" ? "badge actor-badge" : "badge actor-badge local",
+					availabilityLabel,
+				],
+				["SPAN", "badge actor-badge", "Paired on this device"],
+				...(row.approvalBadgeLabel ? [["SPAN", "badge actor-badge", row.approvalBadgeLabel]] : []),
+			]);
+			expect(badges.some((badge) => badge.classList.contains("kind-chip"))).toBe(false);
+		},
+	);
+
 	it("renders approval pending as ordinary status without another approval action", () => {
 		const discovered = renderDiscoveredRows([
 			discoveredRow({

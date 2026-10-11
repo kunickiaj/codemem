@@ -1,6 +1,7 @@
 import * as Collapsible from "@radix-ui/react-collapsible";
 import type { TargetedInputEvent } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
+import { Chip } from "../../../components/primitives/chip";
 import { PresencePip, type PresenceState } from "../../../components/primitives/presence-pip";
 import { TextInput } from "../../../components/primitives/text-input";
 import type { DeviceIdentityInventoryItemV1 } from "../../../lib/api/sync";
@@ -33,6 +34,10 @@ import {
 import { renderIntoSyncMount } from "./render-root";
 import { SyncEmptyState } from "./sync-empty-state";
 import { type SyncActionFeedback, SyncInlineFeedback } from "./sync-inline-feedback";
+
+const scopeGateHint =
+	"Inbound ops rejected by the sharing-domain scope gate. Expand for reason codes.";
+const grantRoleHint = "Review whether explicit Space access matches this device's intended role.";
 
 /* Lucide `chevron-right` inlined so Radix Collapsible can rotate it via
  * CSS on open without depending on the viewer's bundled Lucide pass
@@ -450,43 +455,42 @@ function SyncPeerCard({ peer, onRemove, onRename, onSync }: SyncPeerCardProps) {
 							</span>
 						) : null}
 						<span className="device-row-chips">
-							<span
-								className={`badge ${trustSummary.isWarning ? "badge-offline" : "badge-online"}`}
+							<Chip
+								variant="badge"
+								tone={trustSummary.isWarning ? "badge-offline" : "badge-online"}
 							>
 								{trustSummary.badgeLabel}
-							</span>
+							</Chip>
 							{pendingScopeReview ? (
-								<span className="badge actor-badge">Review advanced rules</span>
+								<Chip variant="badge" tone="actor-badge">
+									Review advanced rules
+								</Chip>
 							) : null}
-							<span
-								className={`badge ${authorizedDomains.isWarning ? "badge-offline" : "actor-badge"}`}
+							<Chip
+								variant="badge"
+								tone={authorizedDomains.isWarning ? "badge-offline" : "actor-badge"}
 								title="Spaces are the hard access boundary; advanced filters only narrow inside them."
 							>
 								{authorizedDomains.badgeLabel}
-							</span>
+							</Chip>
 							{scopeRejections.badgeLabel ? (
-								<span
-									className="badge badge-offline"
-									title="Inbound ops rejected by the sharing-domain scope gate. Expand for reason codes."
-								>
+								<Chip variant="badge" tone="badge-offline" title={scopeGateHint}>
 									{scopeRejections.badgeLabel}
-								</span>
+								</Chip>
 							) : null}
 							{grantRoleMismatch.badgeLabel ? (
-								<span
-									className="badge badge-offline"
-									title="Review whether explicit Space access matches this device's intended role."
-								>
+								<Chip variant="badge" tone="badge-offline" title={grantRoleHint}>
 									{grantRoleMismatch.badgeLabel}
-								</span>
+								</Chip>
 							) : null}
 							{peer.discovered_via_group_id ? (
-								<span
-									className="badge actor-badge"
+								<Chip
+									variant="badge"
+									tone="actor-badge"
 									title={`Discovered through coordinator group ${peer.discovered_via_group_id}`}
 								>
 									{`via ${peer.discovered_via_group_id}`}
-								</span>
+								</Chip>
 							) : null}
 						</span>
 						<span className="device-row-meta">{syncMetaText}</span>

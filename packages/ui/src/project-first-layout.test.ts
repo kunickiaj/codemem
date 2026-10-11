@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
 import { describe, expect, it } from "vitest";
+import controls from "../static/controls.css?inline";
 import html from "../static/index.html?raw";
 import appSource from "./app.ts?raw";
 import actionMenuSource from "./components/primitives/action-menu.tsx?raw";
@@ -101,6 +102,25 @@ describe("project-first navigation layout", () => {
 		);
 		expect(html).toContain("Legacy administration");
 		expect(html).toContain('id="coordinatorAdminMount"');
+	});
+});
+
+describe("Project Space selector sizing", () => {
+	it("uses shared sizing hooks to fit content without exceeding a narrow container", () => {
+		// Arrange: CSS contracts only; actual layout is verified in a browser.
+		const normalizedControls = controls.replace(/\s+/g, " ");
+		// Act
+		const shared = normalizedControls.match(
+			/\.radix-select-trigger, select\.native-select[^{}]+ \{([^}]+)\}/,
+		)?.[1];
+		const project = html.match(/\.project-domain-select \{([^}]+)\}/)?.[1];
+		// Assert: ordinary controls retain full width; the Project Space picker opts into content width.
+		expect(shared).toContain("width: var(--select-width, 100%)");
+		expect(shared).toContain("min-width: var(--select-min-width, 0)");
+		expect(project).toContain("--select-width: auto");
+		expect(project).toContain("--select-min-width: min(100%, 260px)");
+		expect(project).not.toMatch(/(?:^|[;\n])\s*(?:width|min-width|border|padding|font-size)\s*:/);
+		expect(project).not.toContain("--select-width: 100%");
 	});
 });
 

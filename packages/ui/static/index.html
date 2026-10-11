@@ -1308,14 +1308,8 @@
       .project-detail-grid dd { margin: 0; overflow-wrap: anywhere; color: var(--text-primary); }
       .project-inventory-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-4); }
       .project-domain-select {
-        min-width: min(100%, 260px);
-        padding: var(--sp-2) var(--sp-3);
-        border: 1px solid var(--border);
-        border-radius: var(--radius-sm);
-        background: var(--input-bg);
-        color: var(--text-primary);
-        font-family: var(--font-sans);
-        font-size: var(--font-size-md);
+        --select-width: auto;
+        --select-min-width: min(100%, 260px);
       }
       .project-guardrail-confirmation { flex-basis: 100%; margin-top: var(--sp-2); }
       .projects-pagination { margin-top: var(--sp-4); }
@@ -3786,16 +3780,6 @@
         flex-shrink: 0;
       }
       .diagnostics-controls label { display: grid; gap: 5px; color: var(--text-secondary); font-size: var(--font-size-sm); }
-      .diagnostics-controls select {
-        width: 100%;
-        min-height: 36px;
-        border: 1px solid var(--border);
-        border-radius: var(--radius-md);
-        padding: 6px 10px;
-        background: var(--input-bg);
-        color: var(--text-primary);
-      }
-      .diagnostics-controls select:focus-visible,
       .diagnostics-new-events:focus-visible,
       .diagnostics-recovery:focus-visible {
         outline: 2px solid var(--accent);
@@ -4534,10 +4518,16 @@
       }
       .sync-dialog-radio-list {
         display: grid;
+        min-width: 0;
+        margin: 0;
+        padding: 0;
+        border: 0;
         gap: var(--sp-2);
       }
+      .sync-dialog-radio-list legend { max-width: 100%; overflow-wrap: anywhere; }
       .sync-dialog-radio-option {
         display: flex;
+        min-width: 0;
         align-items: center;
         gap: 10px;
         padding: 10px 12px;
@@ -4547,18 +4537,20 @@
         cursor: pointer;
         transition: border-color var(--duration-fast) var(--ease-standard), background var(--duration-fast) var(--ease-standard);
       }
-      .recipient-policy-management-choice-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+      .sync-dialog-choice-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
       .devices-table-device .sync-subview-link { display: block; margin-top: 4px; text-align: left; }
       .devices-rename-form { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; margin-top: 6px; }
       .devices-rename-form label { display: grid; gap: 4px; font-weight: var(--font-weight-normal); }
-      .sync-dialog-radio-option:hover {
+      .sync-dialog-radio-option:hover:not(:has(:disabled, [data-disabled], button[data-state="checked"], input:checked)) {
         border-color: var(--border-hover);
         background: color-mix(in srgb, var(--surface-1) 94%, var(--surface-0));
       }
-      .sync-dialog-radio-option:has(button[data-state="checked"]) {
+      .sync-dialog-radio-option:has(button[data-state="checked"], input:checked) {
         border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
         background: color-mix(in srgb, var(--accent-subtle) 68%, var(--surface-1));
       }
+      .sync-dialog-radio-option:has(:disabled, [data-disabled]) { cursor: not-allowed; opacity: 0.6; }
+      .sync-dialog-radio-option:has(:disabled, [data-disabled]) :is(button, input, label) { cursor: not-allowed; }
       .sync-dialog-radio-option button {
         width: 18px;
         height: 18px;
@@ -4586,6 +4578,8 @@
         background: var(--accent);
       }
       .sync-dialog-radio-label {
+        min-width: 0;
+        overflow-wrap: anywhere;
         color: var(--text-primary);
         font-size: var(--font-size-md);
       }
