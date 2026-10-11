@@ -75,7 +75,7 @@ it.each(["fallback actor", "configured actor"])(
 		const id = rememberScoped();
 		const original = row(id);
 		const before = ledger();
-		expect(fixture.store.get(id)).toBeNull();
+		expect(fixture.store.get(id)?.id).toBe(id);
 		// Act: exercise the maintained API; reopening itself must not create facts.
 		const [deviceId] = ensure();
 		const keys = keyBytes();
@@ -97,7 +97,7 @@ it.each(["fallback actor", "configured actor"])(
 		expect(ledger()).toEqual(adopted);
 		expect(keyBytes().equals(keys)).toBe(true);
 		expect(fixture.store.deviceId).toBe(deviceId);
-		expect(fixture.store.get(id)).toBeNull();
+		expect(fixture.store.get(id)?.id).toBe(id);
 		if (actorMode === "configured actor") expect(fixture.store.actorId).toBe("configured-owner");
 	},
 );
@@ -128,7 +128,7 @@ it("explicit reensure adopts a pending capture while constructor and reads leave
 		hasMatchingLocalCreation(fixture.store.db, String(row(id).import_key), actualSources()),
 	).toBe(true);
 	expect(keyBytes().equals(keys)).toBe(true);
-	expect(fixture.store.get(id)).toBeNull();
+	expect(fixture.store.get(id)?.id).toBe(id);
 });
 
 it.each(["other connection enrollment", "environment device mismatch"])(
@@ -254,12 +254,13 @@ it("the same local runtime setup adopts pending capture with its own actual priv
 		deviceId: "capture-device",
 		keysDir: fixture.keysDir,
 	});
-	expect(loadKey.mock.results[0]?.value).toBe(factRows("sync_device")[0]?.public_key);
+	const devices = factRows("sync_device") as { public_key: string }[];
+	expect(loadKey.mock.results[0]?.value).toBe(devices[0]?.public_key);
 	expect(ledger().adoption).toHaveLength(1);
 	expect(ledger().birth).toEqual(before.birth);
 	expect(ledger().bindings).toEqual(before.bindings);
 	expect(keyBytes().equals(keys)).toBe(true);
-	expect(fixture.store.get(id)).toBeNull();
+	expect(fixture.store.get(id)?.id).toBe(id);
 });
 
 it.each(["existing enrollment", "fallback store actor", "configured store actor"])(
@@ -684,6 +685,7 @@ it.each(["matching device", "wrong device"])(
 		expect(ledger().birth).toEqual(before.birth);
 		expect(ledger().bindings).toEqual(before.bindings);
 		expect(keyBytes().equals(keys)).toBe(true);
-		expect(fixture.store.get(id)).toBeNull();
+		if (mode === "matching device") expect(fixture.store.get(id)?.id).toBe(id);
+		else expect(fixture.store.get(id)).toBeNull();
 	},
 );

@@ -151,6 +151,9 @@ it.each([
 	expect(diagnosis.ambiguous).toEqual(result.ambiguous);
 	expect(row(id)).toEqual(original);
 	expect(proofFacts()).toEqual(before);
+	// Reconciliation options do not configure the reader's actual key authority.
+	fixture.store.close();
+	fixture.store = new MemoryStore(join(fixture.dir, "memory.sqlite"), { keysDir });
 	expect(fixture.store.get(id)).toBeNull();
 	expect(ensure).not.toHaveBeenCalled();
 	expect(readFileSync(join(fixture.keysDir, "device.key"))).toEqual(keyBytes);
@@ -162,7 +165,7 @@ it.each(
 		["revoked", "inactive scope", "stale epoch"].map((state) => ({ creator, state })),
 	),
 )(
-	"$state preserves genuine $creator without granting reads, writes or transmission",
+	"$state preserves readable genuine $creator without granting writes or transmission",
 	({ creator, state }) => {
 		// Arrange: stale cache states never supply enrollment or creation proof.
 		const id = createScoped(creator);
@@ -193,7 +196,7 @@ it.each(
 		expect(row(id)).toEqual(original);
 		expect(binding(id)?.evidence).toBe("local_creation");
 		expect(hasMatchingLocalCreation(fixture.store.db, op.entity_id, actualSources())).toBe(true);
-		expect(fixture.store.get(id)).toBeNull();
+		expect(fixture.store.get(id)?.id).toBe(id);
 		expect(fixture.store.isScopeWritable(scopeId)).toBe(false);
 		expect(outbound).toEqual([]);
 		expect(proofFacts()).toEqual(before);
@@ -250,14 +253,14 @@ it.each(["content edit", "scope edit", "foreign revision"])(
 	},
 );
 
-// Frozen reference cases 406–499: adopted/enrolled × replace/merge, no read activation.
+// Replacement is foreign; an unapplied merge preserves matching genuine history.
 it.each([
 	{ creator: "adopted capture", replace: true },
 	{ creator: "adopted capture", replace: false },
 	{ creator: "enrolled device", replace: true },
 	{ creator: "enrolled device", replace: false },
 ])(
-	"$creator survives bootstrap replace=$replace, pruning and reopen without read authority",
+	"$creator survives bootstrap replace=$replace, pruning and reopen with revision-specific reads",
 	async ({ creator, replace }) => {
 		// Arrange: establish real enrollment before revoking its actual cached permission.
 		const id = createScoped(creator);
@@ -275,7 +278,13 @@ it.each([
 			.run(scopeId);
 		// Act: maintained bootstrap writes permanent negative provenance only if applied.
 		const bootstrap = replace ? applyBootstrapSnapshot : mergeBootstrapSnapshot;
-		const applied = bootstrap(fixture.store.db, "peer", [op], reset);
+		if (op.payload_json === null) throw new Error("capture upsert requires a JSON payload");
+		const applied = bootstrap(
+			fixture.store.db,
+			"peer",
+			[{ ...op, op_type: "upsert", payload_json: op.payload_json }],
+			reset,
+		);
 		const restoredId = fixture.store.db
 			.prepare("SELECT id FROM memory_items WHERE import_key = ?")
 			.pluck()
@@ -301,7 +310,7 @@ it.each([
 		expect(row(ambiguous)).toEqual(originalAmbiguous);
 		expect(row(restoredId)).toBeDefined();
 		expect(fixture.store.get(ambiguous)).toBeNull();
-		expect(fixture.store.get(restoredId)).toBeNull();
+		expect(fixture.store.get(restoredId)?.id ?? null).toBe(replace ? null : restoredId);
 		expect(fixture.store.get(control)?.id).toBe(control);
 		expect(fixture.store.isScopeWritable(scopeId)).toBe(false);
 		expect(hasMatchingLocalCreation(fixture.store.db, entityId, actualSources())).toBe(!replace);
@@ -314,7 +323,7 @@ it.each([
 		fixture.store = new MemoryStore(join(fixture.dir, "memory.sqlite"), {
 			keysDir: fixture.keysDir,
 		});
-		expect(fixture.store.get(restoredId)).toBeNull();
+		expect(fixture.store.get(restoredId)?.id ?? null).toBe(replace ? null : restoredId);
 		expect(fixture.store.get(control)?.id).toBe(control);
 		expect(proofFacts()).toEqual(before);
 	},
@@ -344,7 +353,7 @@ it.each(["unsigned capture", "adopted capture", "enrolled device"])(
 		expect(replay).toMatchObject({ applied: 0, skipped: 1, errors: [] });
 		expect(row(id)).toEqual(original);
 		expect(proofFacts()).toEqual(before);
-		expect(fixture.store.get(id)).toBeNull();
+		expect(fixture.store.get(id)?.id).toBe(id);
 		expect(
 			fixture.store.db
 				.prepare("SELECT COUNT(*) FROM replication_ops WHERE op_id = ?")

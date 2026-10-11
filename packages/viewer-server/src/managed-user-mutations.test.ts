@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -16,8 +16,14 @@ import {
 	showMemoryCommand,
 } from "../../cli/src/commands/memory.js";
 import { CANONICAL_PUBLIC_KEY } from "../../core/src/coordinator-ed25519-key-id-test-fixtures.js";
-import { refreshManagedScopeFixture } from "../../core/src/managed-scope-test-fixtures.js";
+import {
+	enrollFixtureSigningKey,
+	refreshManagedScopeFixture,
+} from "../../core/src/managed-scope-test-fixtures.js";
+import { getVerifiedMemorySource } from "../../core/src/memory-source-identity.js";
 import { refreshTestScopeRows } from "../../core/src/scope-membership-cache-test-fixtures.js";
+import * as syncIdentity from "../../core/src/sync-identity.js";
+import { loadRuntimeSigningPublicKey } from "../../core/src/sync-identity.js";
 import { createCodememMcpServer } from "../../mcp-server/src/index.js";
 import { memoryRoutes } from "./routes/memory.js";
 import { memoryToolRoutes } from "./routes/memory-tools.js";
@@ -30,7 +36,7 @@ vi.mock("@codemem/core", async (importOriginal) => ({
 type Tool = {
 	handler: (args: Record<string, unknown>) => Promise<{ content: { text: string }[] }>;
 };
-type State = "active" | "revoked" | "missing proof" | "wrong key";
+type State = "active" | "revoked" | "missing scope proof" | "wrong scope key";
 let directory: string;
 let dbPath: string;
 let store: MemoryStore;
@@ -99,7 +105,33 @@ async function initializeManagedHistory({ keysDir }: { keysDir: string }) {
 			.prepare("SELECT origin_device_id, actor_id FROM memory_items WHERE id = ?")
 			.get(historyId),
 	).toEqual({ origin_device_id: store.deviceId, actor_id: store.actorId });
+	expect(historyBinding()?.evidence).toBe("local_creation");
+	expect(historyBinding()?.sourceDeviceId).toBe(store.deviceId);
+	expect(actualPublicKey()).toBe(
+		(store.db.prepare("SELECT public_key FROM sync_device").get() as { public_key: string })
+			.public_key,
+	);
 	await store.flushPendingVectorWrites();
+}
+
+function historyBinding() {
+	const row = store.db
+		.prepare("SELECT import_key FROM memory_items WHERE id = ?")
+		.get(historyId) as { import_key: string };
+	return getVerifiedMemorySource(store.db, row.import_key);
+}
+function actualPublicKey() {
+	return loadRuntimeSigningPublicKey(store.db, {
+		deviceId: store.deviceId,
+		keysDir: join(directory, "keys"),
+	});
+}
+
+function assertReadableDeniedHistory() {
+	expect(store.get(historyId)?.id).toBe(historyId);
+	expect(store.isScopeWritable("managed-write")).toBe(false);
+	expect(store.canMutateMemory(historyId)).toBe(false);
+	expect(globalThis.fetch).not.toHaveBeenCalled();
 }
 
 function initializeMutationSurfaces() {
@@ -134,26 +166,35 @@ afterEach(() => {
 });
 
 function snapshot() {
+	const tables = [
+		"sessions",
+		"memory_items",
+		"replication_ops",
+		"sync_device",
+		"memory_source_bindings",
+		"memory_local_creation_snapshots",
+	] as const;
 	return Object.fromEntries(
-		["sessions", "memory_items", "replication_ops"].map((table) => [
-			table,
-			store.db.prepare(`SELECT * FROM ${table} ORDER BY 1`).all(),
-		]),
-	);
+		tables.map((table) => [table, store.db.prepare(`SELECT * FROM ${table} ORDER BY 1`).all()]),
+	) as Record<(typeof tables)[number], unknown[]>;
 }
 
 async function setState(state: State) {
 	if (state === "revoked")
 		store.db.prepare("UPDATE scope_memberships SET status = 'revoked'").run();
-	if (state === "missing proof")
+	if (state === "missing scope proof")
 		store.db.prepare("DELETE FROM scope_membership_authorization_evidence").run();
-	if (state === "wrong key")
+	if (state === "wrong scope key")
 		await refreshTestScopeRows(store.db, { [store.deviceId]: CANONICAL_PUBLIC_KEY });
 }
 
 async function mcp(name: string, args: Record<string, unknown>) {
-	const result = await tools[name].handler(args);
-	return JSON.parse(result.content[0].text);
+	const tool = tools[name];
+	if (!tool) throw new Error(`Missing fixture tool: ${name}`);
+	const result = await tool.handler(args);
+	const content = result.content[0];
+	if (!content) throw new Error(`Missing fixture tool output: ${name}`);
+	return JSON.parse(content.text);
 }
 
 function post(endpoint: string, body: Record<string, unknown>) {
@@ -170,6 +211,118 @@ async function cli(command: typeof rememberMemoryCommand, args: string[]) {
 	await command.parseAsync([...args, "--db-path", dbPath, "--json"], { from: "user" });
 	return JSON.parse(String(log.mock.calls.at(-1)?.[0]));
 }
+
+function readerSnapshot() {
+	const tables = [
+		"scope_memberships",
+		"replication_scopes",
+		"scope_membership_authorization_evidence",
+		"memory_local_capture",
+		"memory_local_capture_adoption",
+		"memory_foreign_revisions",
+	];
+	return {
+		...snapshot(),
+		schema: store.db.prepare("SELECT * FROM sqlite_master ORDER BY name").all(),
+		permissionsAndFacts: tables.map((table) => {
+			if (!store.db.prepare("SELECT 1 FROM sqlite_master WHERE name = ?").get(table)) return [];
+			return store.db.prepare(`SELECT * FROM ${table} ORDER BY 1`).all();
+		}),
+	};
+}
+
+async function assertSurfaceRead(memoryId: number, expected: "readable" | "denied") {
+	const before = readerSnapshot();
+	const response = await app.request("/api/memory");
+	const viewer = (await response.json()) as { items: { id: number }[] };
+	const tool = await mcp("memory_get", { memory_id: memoryId });
+	const command = await cli(showMemoryCommand, [String(memoryId)]);
+	expect(response.status).toBe(200);
+	if (expected === "readable") {
+		expect(viewer.items.map((item) => item.id)).toContain(memoryId);
+		expect(tool).toMatchObject({ id: memoryId });
+		expect(command).toMatchObject({ id: memoryId });
+		expect(process.exitCode).toBeUndefined();
+	} else {
+		expect(viewer.items.map((item) => item.id)).not.toContain(memoryId);
+		expect(tool).toEqual({ error: "not_found" });
+		expect(command).toEqual({ error: "not_found", message: `Memory ${memoryId} not found` });
+		expect(process.exitCode).toBe(1);
+	}
+	expect(readerSnapshot()).toEqual(before);
+	expect(globalThis.fetch).not.toHaveBeenCalled();
+}
+
+it.each<State>(["revoked", "missing scope proof", "wrong scope key"])(
+	"reads genuine history but denies unproven caller-imported history after %s",
+	async (state) => {
+		// Arrange: supplied import identity cannot acquire local creation evidence.
+		const sessionId = store.get(historyId)?.session_id;
+		if (!sessionId) throw new Error("Missing fixture session");
+		const foreign = store.rememberForUser(
+			sessionId,
+			"decision",
+			"Caller imported control",
+			"Unproven imported body",
+			0.5,
+			[],
+			{ import_key: "caller-import-control" },
+		);
+		expect(getVerifiedMemorySource(store.db, "caller-import-control")).toBeNull();
+		expect(store.get(foreign)?.id).toBe(foreign);
+		await setState(state);
+		const before = readerSnapshot();
+		const ensure = vi.spyOn(syncIdentity, "ensureDeviceIdentity");
+		// Act/Assert: both sides traverse viewer, MCP and actual CLI reads.
+		await assertSurfaceRead(historyId, "readable");
+		await assertSurfaceRead(foreign, "denied");
+		assertReadableDeniedHistory();
+		expect(store.canMutateMemory(foreign)).toBe(false);
+		expect(readerSnapshot()).toEqual(before);
+		expect(ensure).not.toHaveBeenCalled();
+	},
+);
+
+function replaceActualPrivateKey() {
+	const other = connect(":memory:");
+	const otherKeys = join(directory, "other-keys");
+	try {
+		initTestSchema(other);
+		enrollFixtureSigningKey(other, otherKeys, "other-device");
+		writeFileSync(
+			join(directory, "keys", "device.key"),
+			readFileSync(join(otherKeys, "device.key")),
+		);
+	} finally {
+		other.close();
+	}
+}
+
+it.each(["missing", "wrong"])(
+	"%s actual private key denies history across all read surfaces without repair",
+	async (failure) => {
+		// Arrange: active scope permission and prospective local proof use the original actual key.
+		expect(store.isScopeWritable("managed-write")).toBe(true);
+		await assertSurfaceRead(historyId, "readable");
+		const path = join(directory, "keys", "device.key");
+		if (failure === "missing") renameSync(path, `${path}.fixture-backup`);
+		else replaceActualPrivateKey();
+		const key = failure === "wrong" ? readFileSync(path) : null;
+		const before = readerSnapshot();
+		const ensure = vi.spyOn(syncIdentity, "ensureDeviceIdentity");
+		// Act
+		await assertSurfaceRead(historyId, "denied");
+		// Assert: neither scope proof nor local creation facts substitute for private material.
+		expect(actualPublicKey()).toBeNull();
+		expect(store.isScopeWritable("managed-write")).toBe(false);
+		expect(store.canMutateMemory(historyId)).toBe(false);
+		expect(historyBinding()?.evidence).toBe("local_creation");
+		expect(readerSnapshot()).toEqual(before);
+		expect(ensure).not.toHaveBeenCalled();
+		if (failure === "missing") expect(existsSync(path)).toBe(false);
+		else expect(readFileSync(path)).toEqual(key);
+	},
+);
 
 const remember = {
 	kind: "decision",
@@ -245,27 +398,25 @@ it.each(["MCP", "viewer"])("%s rollback schedules no vectors", async (surface) =
 	expect(vectors).not.toHaveBeenCalled();
 });
 
-it.each<State>(["revoked", "missing proof", "wrong key"])(
-	"hides managed authored history and refuses every user mutation with %s",
+it.each<State>(["revoked", "missing scope proof", "wrong scope key"])(
+	"reads genuine managed history but refuses every user mutation with %s",
 	async (state) => {
 		// Arrange: remove current permission only after real V1-authorized authorship.
 		await setState(state);
 		const before = snapshot();
-		// Act: denied managed history is hidden on all three user surfaces.
+		// Act: actual creator proof still permits historical reads on all three surfaces.
 		const read = await app.request("/api/memory");
 		const toolRead = await mcp("memory_get", { memory_id: historyId });
 		const cliRead = await cli(showMemoryCommand, [String(historyId)]);
-		// Assert: authorship does not bypass managed read authorization.
+		// Assert: historical reads do not authorize managed writes or change stored facts.
 		expect(read.status).toBe(200);
 		expect(await read.json()).toMatchObject({
-			items: [],
+			items: [{ id: historyId }],
 		});
-		expect(toolRead).toEqual({ error: "not_found" });
-		expect(cliRead).toEqual({
-			error: "not_found",
-			message: `Memory ${historyId} not found`,
-		});
-		expect(process.exitCode).toBe(1);
+		expect(toolRead).toMatchObject({ id: historyId, body_text: "History body" });
+		expect(cliRead).toMatchObject({ id: historyId, body_text: "History body" });
+		expect(process.exitCode).toBeUndefined();
+		assertReadableDeniedHistory();
 		expect(snapshot()).toEqual(before);
 		// Act/Assert: preserve each endpoint's existing failure contract and all content rows.
 		const remembered = await post("remember", remember);
@@ -359,7 +510,7 @@ it.each(["local", "manual", "invite", "local-first", "private"])(
 				)
 				.run(authority);
 		}
-		await setState("missing proof");
+		await setState("missing scope proof");
 		// Act.
 		const response = await post("remember", remember);
 		const visibility = await post("visibility", { memory_id: historyId, visibility: "private" });
@@ -416,8 +567,8 @@ function seedLegacyHistory() {
 	pinProjectIdentity();
 }
 
-it.each<State>(["revoked", "missing proof", "wrong key"])(
-	"hides managed history and rolls back the entire project correction batch with %s",
+it.each<State>(["revoked", "missing scope proof", "wrong scope key"])(
+	"reads genuine history but rolls back the entire project correction batch with %s",
 	async (state) => {
 		// Arrange: include a writable row before the unauthorized managed row.
 		seedMixedProjectBatch();
@@ -429,7 +580,7 @@ it.each<State>(["revoked", "missing proof", "wrong key"])(
 			project: "corrected-project",
 		});
 		// Assert: project, revision, session metadata, and replication operations all roll back.
-		expect(store.get(historyId)).toBeNull();
+		assertReadableDeniedHistory();
 		expect(response.status).toBe(400);
 		expect(await response.json()).toEqual({ error: "unauthorized_scope" });
 		expect(snapshot()).toEqual(before);
@@ -473,7 +624,7 @@ async function legacyPreview() {
 	return result.preview.confirmation_token;
 }
 
-it.each<State>(["revoked", "missing proof", "wrong key"])(
+it.each<State>(["revoked", "missing scope proof", "wrong scope key"])(
 	"rejects both legacy-review preview and previously confirmed commit with %s target proof",
 	async (state) => {
 		// Arrange: the token was issued while the target had actual-key V1 permission.
@@ -552,7 +703,7 @@ async function mappingTokens() {
 		.required_guardrail_tokens;
 }
 
-it.each<State>(["missing proof", "wrong key"])(
+it.each<State>(["missing scope proof", "wrong scope key"])(
 	"refuses public mapping relocation into managed scope with %s",
 	async (state) => {
 		// Arrange: remove configuration, not proof; then author a genuinely local memory.
@@ -630,7 +781,7 @@ it.each(["manual", "private"])(
 				"UPDATE replication_scopes SET authority_type = 'manual', coordinator_id = NULL, group_id = NULL WHERE scope_id = 'managed-write'",
 			)
 			.run();
-		await setState("missing proof");
+		await setState("missing scope proof");
 		pinProjectIdentity();
 		// Act.
 		const corrected = await syncPost("projects/reassign-project", {
@@ -700,7 +851,7 @@ it.each(["projects/reassign-project", "legacy-shared-review/reassign"])(
 	},
 );
 
-it.each<State>(["revoked", "missing proof", "wrong key"])(
+it.each<State>(["revoked", "missing scope proof", "wrong scope key"])(
 	"denies project correction with an empty denormalized change set after %s",
 	async (state) => {
 		// Arrange: the real viewer move relabels the session but leaves memory.project unchanged.
@@ -721,7 +872,7 @@ it.each<State>(["revoked", "missing proof", "wrong key"])(
 			project: "write-project",
 		});
 		// Assert: permission applies to session writes too, even with no memory revision change.
-		expect(store.get(historyId)).toBeNull();
+		assertReadableDeniedHistory();
 		expect(response.status).toBe(400);
 		expect(await response.json()).toEqual({ error: "unauthorized_scope" });
 		expect(snapshot()).toEqual(before);
@@ -739,7 +890,7 @@ it.each(["active V1", "local", "manual"])(
 					"UPDATE replication_scopes SET authority_type = ?, coordinator_id = NULL, group_id = NULL",
 				)
 				.run(authority);
-			await setState("missing proof");
+			await setState("missing scope proof");
 		}
 		const moved = await post("project", { memory_id: historyId, project: "viewer-relabeled" });
 		expect(moved.status).toBe(200);
@@ -822,10 +973,12 @@ it.each(["inactive", "foreign", "inactive foreign"] as const)(
 type MutationEndpoint = "CLI forget" | "MCP forget" | "viewer forget" | "viewer visibility";
 const preflightRaces = (
 	["CLI forget", "MCP forget", "viewer forget", "viewer visibility"] as const
-).flatMap((endpoint) => ["revocation", "key replacement"].map((change) => ({ endpoint, change })));
+).flatMap((endpoint) =>
+	["revocation", "scope key replacement"].map((change) => ({ endpoint, change })),
+);
 
 async function replacementEvidence() {
-	// Generate the alternate proof through actual V1 validation, then restore actual-key permission.
+	// Replace only cached scope evidence; actual private material and the device tuple stay unchanged.
 	await refreshTestScopeRows(store.db, { [store.deviceId]: CANONICAL_PUBLIC_KEY });
 	const row = store.db
 		.prepare(
@@ -854,12 +1007,15 @@ it.each(preflightRaces)(
 	"rechecks permission for $endpoint after another SQLite connection commits $change",
 	async ({ endpoint, change }) => {
 		// Arrange: preflight is genuinely authorized, using the actual local key and V1 proof.
-		const replacement = change === "key replacement" ? await replacementEvidence() : null;
+		const replacement = change === "scope key replacement" ? await replacementEvidence() : null;
 		const other = connect(dbPath);
 		const before = snapshot();
 		const actualPreflight = MemoryStore.prototype.canMutateMemory;
 		let changedAfterPreflight = false;
-		vi.spyOn(MemoryStore.prototype, "canMutateMemory").mockImplementation(function (id) {
+		vi.spyOn(MemoryStore.prototype, "canMutateMemory").mockImplementation(function (
+			this: MemoryStore,
+			id,
+		) {
 			const permitted = actualPreflight.call(this, id);
 			if (id === historyId && permitted && !this.db.inTransaction && !changedAfterPreflight) {
 				changedAfterPreflight = true;
@@ -882,7 +1038,10 @@ it.each(preflightRaces)(
 			// These callers now enter the atomic API directly. Inject a genuine successful
 			// read-only preflight at its boundary, before the normal transaction begins.
 			const atomicForget = MemoryStore.prototype.forgetForUser;
-			vi.spyOn(MemoryStore.prototype, "forgetForUser").mockImplementation(function (id) {
+			vi.spyOn(MemoryStore.prototype, "forgetForUser").mockImplementation(function (
+				this: MemoryStore,
+				id,
+			) {
 				this.canMutateMemory(id);
 				return atomicForget.call(this, id);
 			});
@@ -897,7 +1056,7 @@ it.each(preflightRaces)(
 				expect(process.exitCode).toBe(1);
 			} else if (endpoint === "MCP forget") expect(result).toEqual({ error: "not_found" });
 			else expect(result).toEqual({ status: 404, body: { error: "memory not found" } });
-			expect(store.get(historyId)).toBeNull();
+			assertReadableDeniedHistory();
 			expect(snapshot()).toEqual(before);
 		} finally {
 			other.close();

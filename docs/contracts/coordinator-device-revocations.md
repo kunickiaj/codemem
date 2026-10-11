@@ -519,8 +519,8 @@ precedence and origin-bound cleanup after revocation remain unchanged.
 
 Local store, search, semantic filters, viewer statistics, and exports now use
 retained managed proof with the runtime's actual signing key. Key loading happens
-only when coordinator scope candidates exist; reads do not create or repair keys
-or write schema. Resolved visibility and the database-backed filter fallback use
+when coordinator scope or matching local-history candidates need it; reads do not
+create or repair keys or write schema. Resolved visibility and the database-backed filter fallback use
 the same decision, while a fallback without database access cannot grant managed
 access.
 
@@ -528,8 +528,8 @@ Legacy origin-based authorship keeps history readable after losing membership
 only in explicitly unmanaged `local`, `manual`, or `invite` scopes, regardless
 of scope status. Imported rows with a legacy `local` origin and an import key
 do not count as local authorship. Managed and unknown scopes cannot use mutable
-origin fields to bypass current access checks. Retained managed authorship is
-deferred to an immutable creation-proof replacement; this slice does not activate it.
+origin fields to bypass current access checks. Immutable creation evidence supplies
+a separate historical-read alternative, as described below.
 This read exception does not permit new writes: MCP remember checks current
 resolved-scope permission inside its rollback transaction. Import permissions,
 additional share inviters, and policy inheritance still need separate adoption.
@@ -560,8 +560,7 @@ rather than granting creation proof; restart-time actor handling is a separate
 integration gate.
 
 The association is not an OIDC session, a membership grant, or permission to sync.
-It does not backfill creation proof for unproven rows. Historical-read activation
-remains a separate change.
+It does not backfill creation proof for unproven rows.
 
 Store constructors and ordinary memory reads do not create this association or
 repair keys. Sync request handlers that call device-identity ensure may complete
@@ -589,8 +588,28 @@ remain part of the deletion path.
 
 Preserving a row grants no historical read, current write, membership, or network
 permission. Cleanup diagnostics do not enroll a device, repair keys, associate
-pending captures, or backfill proof. Historical reads remain disabled unless
-current permissions already allow them.
+pending captures, or backfill proof. Historical reads require their own matching
+creation evidence or current read permission.
+
+## Historical reads from local creation evidence
+
+The shared read filter permits an original local memory after scope access is lost
+only when its immutable creation binding and original content and scope still
+match, with no recorded foreign revision. Enrolled or adopted history also requires
+the runtime's actual signing key to match the recorded device/key association.
+Unsigned local capture remains readable without generating a signing key.
+
+Copied origin labels, actor aliases, and authenticated namespaces do not supply
+creation proof. Missing or wrong keys, content or scope edits, and applied foreign
+revisions disable this historical-read alternative; retention still preserves the
+row. Current scope permission may independently allow a read. Older rows without
+creation snapshots receive no new historical access or automatic backfill.
+
+Get, search, semantic and file-based packs, exports, and viewer read filters share
+this decision. Explicit caller scope exclusions and project/date filters still
+narrow results. Reads never enroll, adopt, repair keys, create schema, or write
+creation facts. Historical readability grants neither current mutation authority
+nor permission to transmit the memory to another device.
 
 ## Activation limits
 

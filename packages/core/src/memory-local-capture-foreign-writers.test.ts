@@ -7,7 +7,7 @@ import type { ReplicationOp } from "./types.js";
 
 const { fixture, remember, rememberScoped, captureOp, row, ledger, factRows } =
 	useLocalCaptureFixture();
-function foreignOp(id: number): ReplicationOp {
+function foreignOp(id: number): ReplicationOp & { payload_json: string } {
 	const original = captureOp(id);
 	return {
 		...original,
@@ -98,10 +98,15 @@ it.each([applyBootstrapSnapshot, mergeBootstrapSnapshot])(
 		const snapshots = factRows("memory_local_creation_snapshots");
 		// Act / Assert: stale merge does not issue a negative fact.
 		expect(
-			mergeBootstrapSnapshot(fixture.store.db, "peer", [{ ...op, clock_rev: 0 }], reset).applied,
+			mergeBootstrapSnapshot(
+				fixture.store.db,
+				"peer",
+				[{ ...op, op_type: "upsert", clock_rev: 0 }],
+				reset,
+			).applied,
 		).toBe(0);
 		expect(foreignFacts()).toEqual([]);
-		const result = apply(fixture.store.db, "peer", [op], reset);
+		const result = apply(fixture.store.db, "peer", [{ ...op, op_type: "upsert" }], reset);
 		expect(result).toMatchObject({ ok: true, applied: 1 });
 		expect(foreignFacts()).toMatchObject([{ entity_id: op.entity_id, write_path: "bootstrap" }]);
 		expect(rawRows(op.entity_id)).toMatchObject([{ body_text: "Foreign body" }]);
@@ -146,7 +151,10 @@ it("rejected replication scope collisions and unauthorized import cannot issue f
 	expect(foreignFacts()).toEqual([]);
 	const importId = remember("Unauthorized import control");
 	const payload = exportMemories({ dbPath: fixture.store.dbPath, allProjects: true });
-	expect(payload.memory_items).toHaveLength(1);
+	expect(payload.memory_items.map((memory) => memory.import_key)).toEqual(
+		expect.arrayContaining([op.entity_id, row(importId).import_key]),
+	);
+	expect(payload.memory_items).toHaveLength(2);
 	for (const memory of payload.memory_items) memory.scope_id = scopeId;
 	fixture.store.db.prepare("DELETE FROM memory_items WHERE id = ?").run(importId);
 	expect(() => importMemories(payload, { dbPath: fixture.store.dbPath })).toThrow(
@@ -175,7 +183,7 @@ it.each(["replication", "replace", "merge", "import"])(
 				return applyReplicationOps(fixture.store.db, [op], fixture.store.deviceId);
 			if (path === "import") return importMemories(payload, { dbPath: fixture.store.dbPath });
 			const snapshot = path === "replace" ? applyBootstrapSnapshot : mergeBootstrapSnapshot;
-			return snapshot(fixture.store.db, "peer", [op], reset);
+			return snapshot(fixture.store.db, "peer", [{ ...op, op_type: "upsert" }], reset);
 		};
 		// Act / Assert: failed content writes cannot taint unchanged genuine creation proof.
 		if (path === "replication")

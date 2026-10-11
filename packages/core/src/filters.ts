@@ -6,6 +6,8 @@
  */
 
 import type { Database } from "./db.js";
+import { matchingLocalCreationClause } from "./memory-creation-provenance.js";
+import { localCreationSourceIds } from "./memory-local-capture.js";
 import { projectColumnClause } from "./project.js";
 import {
 	LEGACY_SHARED_REVIEW_SCOPE_ID,
@@ -172,6 +174,32 @@ function ownershipPredicateSql(context: OwnershipFilterContext): {
 	return { clause: `(${alternatives.join(" OR ")})`, params };
 }
 
+function localCreationSourcesForFilter(
+	context: OwnershipFilterContext,
+	visibleScopeIds: readonly string[] | undefined,
+): string[] {
+	const db = context.scopeVisibilityDb;
+	if (!db || !visibleScopeIds) return [];
+	const creationClause = matchingLocalCreationClause(db);
+	if (!creationClause) return [];
+	if (
+		!db
+			.prepare(
+				"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_source_bindings'",
+			)
+			.get()
+	)
+		return [];
+	// Open the signing key only when matching creation evidence needs history access.
+	const candidate = db
+		.prepare(`SELECT 1 FROM memory_source_bindings msb
+		JOIN memory_items ON memory_items.import_key = msb.entity_id
+		WHERE msb.evidence = 'local_creation' AND ${creationClause}
+		AND NOT EXISTS (SELECT 1 FROM json_each(?) visible WHERE visible.value = COALESCE(memory_items.scope_id, '')) LIMIT 1`)
+		.get(JSON.stringify(visibleScopeIds));
+	return candidate ? localCreationSourceIds(db, context.deviceId.trim(), context) : [];
+}
+
 function addScopeVisibilityFilter(
 	clauses: string[],
 	params: unknown[],
@@ -195,14 +223,23 @@ function addScopeVisibilityFilter(
 	// Mutable origin fields cannot prove managed authorship. Retain this legacy
 	// exception only for explicitly unmanaged scopes, even after membership loss.
 	// A legacy 'local' origin with an import key may be a foreign replica.
-	const authored = `(memory_items.scope_id IN (
+	let authored = `(memory_items.scope_id IN (
 		SELECT scope_id FROM replication_scopes
 		WHERE authority_type IN ('local', 'manual', 'invite')
 	) AND ((${OWNERSHIP_ORIGIN_DEVICE_SQL} = ? AND ? <> 'local')
 		OR (${OWNERSHIP_ORIGIN_DEVICE_SQL} = 'local'
 			AND COALESCE(TRIM(memory_items.import_key), '') = '')))`;
+	const sourceIds = localCreationSourcesForFilter(context, visibleScopeIds);
+	if (sourceIds.length && context.scopeVisibilityDb) {
+		// Immutable creation history can also remain readable in managed scopes.
+		authored = `(${authored} OR EXISTS (SELECT 1 FROM memory_source_bindings msb
+			WHERE msb.entity_id = memory_items.import_key AND msb.evidence = 'local_creation'
+			AND msb.source_device_id IN (${sourceIds.map(() => "?").join(", ")})
+			AND ${matchingLocalCreationClause(context.scopeVisibilityDb)}))`;
+	}
 	if (visibleScopeIds !== undefined) {
 		addResolvedScopeVisibilityFilter(clauses, params, visibleScopeIds, authored, deviceId);
+		params.push(...sourceIds);
 		return;
 	}
 	// DB-less callers cannot validate managed proof. Preserve local/manual/invite

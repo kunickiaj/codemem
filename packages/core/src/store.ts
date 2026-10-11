@@ -844,7 +844,7 @@ export class MemoryStore {
 		await Promise.allSettled([...this.pendingVectorWrites]);
 	}
 
-	/** Lazy read-only actual-key context; local reads never open the signing key. */
+	/** Lazy read-only actual-key context for managed access and proven local history. */
 	scopeResolutionDeviceContext(): ScopeVisibilityOptions {
 		const injected = this.runtimeKeyOptions.runtimeSigningKey;
 		return {
