@@ -1,5 +1,97 @@
-/* Global native-control baseline. Keep selectors low-specificity so component
- * styles can refine layout and variants without opting out of theme safety. */
+/* Shared control defaults. Native selectors stay low-specificity; component
+ * classes own shared geometry and let callers refine layout and size. */
+
+:root {
+  --control-focus-shadow: 0 0 0 3px var(--focus-ring);
+  --popup-radius: var(--radius-md);
+  --popup-shadow: var(--shadow-lg);
+  --popup-padding: 6px;
+}
+
+.radix-select-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  width: 100%;
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-md);
+  text-align: left;
+  transition: border-color var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard);
+}
+
+.radix-select-trigger[data-size="compact"] {
+  padding: 5px 10px;
+  font-size: var(--font-size-sm);
+}
+
+.radix-select-trigger:hover:not(:disabled) {
+  border-color: var(--border-hover);
+}
+
+.radix-select-trigger > span:first-child,
+.radix-select-item > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.radix-select-icon,
+.radix-select-indicator {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.radix-select-icon { color: var(--text-tertiary); }
+.radix-select-indicator { color: var(--accent); }
+
+.radix-select-content {
+  z-index: 30;
+  min-width: var(--radix-select-trigger-width);
+  max-width: min(420px, calc(100vw - 24px));
+  max-height: var(--radix-select-content-available-height);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--popup-radius);
+  background: var(--surface-1);
+  box-shadow: var(--popup-shadow);
+}
+
+.radix-select-viewport { padding: var(--popup-padding); }
+
+.radix-select-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  min-height: 36px;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-md);
+  cursor: pointer;
+  user-select: none;
+}
+
+.radix-select-item[data-highlighted] {
+  outline: none;
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+
+.radix-select-item[data-disabled] {
+  opacity: 0.45;
+  cursor: default;
+}
 
 :where(button, input, select, textarea) {
   color: var(--text-primary);
@@ -91,6 +183,33 @@
   outline: 2px solid var(--accent);
   outline-offset: 2px;
   box-shadow: 0 0 0 4px var(--focus-ring);
+}
+
+/* Text fields and selects share the inset-safe halo; buttons retain an
+ * offset outline. This also covers fields without feature-specific classes. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="button"]):not([type="reset"]):not([type="submit"]):focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+.radix-select-trigger:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--control-focus-shadow);
+}
+
+.sync-legacy-button,
+.settings-button,
+.settings-save {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-height: 36px;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius-md);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-sm);
+  line-height: 18px;
+  white-space: nowrap;
 }
 
 :where(input[type="checkbox"], input[type="radio"]) {
@@ -190,7 +309,14 @@
     appearance: auto;
   }
 
-  :where(button, input, select, textarea):focus-visible {
+  :is(button, input, select, textarea):focus-visible {
+    outline: 2px solid CanvasText;
+  }
+
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="button"]):not([type="reset"]):not([type="submit"]):focus-visible,
+  textarea:focus-visible,
+  select:focus-visible,
+  .radix-select-trigger:focus-visible {
     outline: 2px solid CanvasText;
   }
 }

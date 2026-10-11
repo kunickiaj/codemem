@@ -565,18 +565,15 @@ function renderFeedVisibilityControl(input: FeedCardRenderInput) {
 		h("span", { className: "sr-only" }, "Visible to"),
 		h(RadixSelect, {
 			ariaLabel: `Who can see ${input.model.displayTitle}`,
-			contentClassName: "sync-radix-select-content feed-visibility-content",
 			disabled: input.savingVisibility || !input.visibilityKnown,
 			id: selectId,
-			itemClassName: "sync-radix-select-item",
 			onValueChange: (value) => {
 				const visibility = value === "shared" ? "shared" : "private";
 				void input.onSaveVisibility(visibility);
 			},
 			options,
-			triggerClassName: "sync-radix-select-trigger feed-visibility-select",
+			triggerClassName: "feed-visibility-select",
 			value: input.visibilityKnown ? input.selectedVisibility : "unknown",
-			viewportClassName: "sync-radix-select-viewport",
 		}),
 	);
 }

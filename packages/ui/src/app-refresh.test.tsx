@@ -1,8 +1,28 @@
 /// <reference types="vite/client" />
 
+import type { ComponentChild } from "preact";
 import { act } from "preact/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import html from "../static/index.html?raw";
+
+// Mock the external Select runtime, not the project-filter or primitive wrapper.
+vi.mock("@radix-ui/react-select", async () => {
+	const { h } = await import("preact");
+	type Props = { children?: ComponentChild; [key: string]: unknown };
+	const container = ({ children, ...props }: Props) => h("div", props, children);
+	return {
+		Root: ({ children }: Props) => h("div", null, children),
+		Trigger: ({ children, ...props }: Props) => h("button", props, children),
+		Value: ({ placeholder }: Props) => h("span", null, placeholder as string),
+		Icon: container,
+		Portal: container,
+		Content: container,
+		Viewport: container,
+		Item: container,
+		ItemText: container,
+		ItemIndicator: container,
+	};
+});
 
 const mocks = vi.hoisted(() => ({
 	loadConfigData: vi.fn(),
@@ -13,6 +33,7 @@ const mocks = vi.hoisted(() => ({
 	refreshViewerStatus: vi.fn(),
 	loadPairingData: vi.fn(),
 	loadProjectsData: vi.fn(),
+	loadProjects: vi.fn(),
 	loadRecipientPolicySharingData: vi.fn(),
 	loadSyncData: vi.fn(),
 	pingViewerReady: vi.fn(),
@@ -39,7 +60,7 @@ vi.mock("./lib/api", () => ({
 		limit: 250,
 		offset: 0,
 	})),
-	loadProjects: vi.fn(async () => ["Codemem"]),
+	loadProjects: mocks.loadProjects,
 	loadRecipientPolicyIntent: vi.fn(async () => ({
 		version: 1,
 		identities: [],
@@ -127,6 +148,20 @@ function rejectOnAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<
 }
 
 let visibilityState: DocumentVisibilityState;
+const appDocumentListeners: Array<{
+	type: string;
+	listener: EventListenerOrEventListenerObject;
+	options?: boolean | AddEventListenerOptions;
+}> = [];
+
+function removeAppDocumentListeners() {
+	for (const { type, listener, options } of appDocumentListeners) {
+		document.removeEventListener(type, listener, options);
+	}
+	appDocumentListeners.length = 0;
+}
+
+afterEach(removeAppDocumentListeners);
 
 async function setupRefreshAppTest() {
 	vi.useFakeTimers();
@@ -135,6 +170,13 @@ async function setupRefreshAppTest() {
 	mocks.stopPolling = null;
 	visibilityState = "visible";
 	vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibilityState);
+	// Re-importing app installs document listeners again; detach each test's
+	// listeners so later visibility changes cannot refresh an old app instance.
+	const addEventListener = document.addEventListener.bind(document);
+	vi.spyOn(document, "addEventListener").mockImplementation((type, listener, options) => {
+		appDocumentListeners.push({ type, listener, options });
+		addEventListener(type, listener, options);
+	});
 	localStorage.clear();
 	localStorage.setItem("codemem-theme", "light");
 	document.body.innerHTML = bodyMarkup();
@@ -146,6 +188,7 @@ async function setupRefreshAppTest() {
 	mocks.refreshViewerStatus.mockResolvedValue(undefined);
 	mocks.loadPairingData.mockResolvedValue(true);
 	mocks.loadProjectsData.mockResolvedValue(true);
+	mocks.loadProjects.mockResolvedValue(["Codemem"]);
 	mocks.loadRecipientPolicySharingData.mockResolvedValue(true);
 	mocks.loadSyncData.mockResolvedValue(true);
 	mocks.pingViewerReady.mockResolvedValue(true);
@@ -168,6 +211,45 @@ describe("app refresh session wiring", () => {
 		vi.restoreAllMocks();
 		document.body.innerHTML = "";
 		window.location.hash = "";
+	});
+
+	it("mounts a compact project control and refreshes state when selecting and clearing a project", async () => {
+		// Objective: the header uses the shared primitive and All Projects resets the active filter.
+		// Arrange
+		const { requestProjectFilterChange } = await import("./components/project-filter");
+		const { state } = await import("./lib/state");
+		const trigger = document.getElementById("projectFilter");
+		expect(trigger?.tagName).toBe("BUTTON");
+		expect(trigger?.classList.contains("radix-select-trigger")).toBe(true);
+		expect(trigger?.dataset.size).toBe("compact");
+		expect(trigger?.getAttribute("aria-label")).toBe("Project filter");
+
+		// Act
+		act(() => {
+			requestProjectFilterChange("Codemem");
+		});
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(100);
+		});
+
+		// Assert
+		expect(state.currentProject).toBe("Codemem");
+		expect(document.getElementById("projectFilter")?.dataset.value).toBe("Codemem");
+		expect(mocks.loadProjectsData).toHaveBeenCalledOnce();
+
+		// Act
+		act(() => {
+			requestProjectFilterChange("");
+		});
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(100);
+		});
+
+		// Assert
+		expect(state.currentProject).toBe("");
+		expect(document.getElementById("projectFilter")?.dataset.value).toBe("");
+		expect(document.getElementById("projectFilter")?.textContent).toContain("All Projects");
+		expect(mocks.loadProjectsData).toHaveBeenCalledTimes(2);
 	});
 
 	it("cancels a hidden-tab refresh and starts a fresh refresh when visibility returns", async () => {
@@ -217,9 +299,10 @@ describe("app refresh session wiring", () => {
 			if (cancellation === "tab switch") {
 				document.getElementById("tabBtn-health")?.click();
 			} else {
-				const projectFilter = document.getElementById("projectFilter") as HTMLSelectElement;
-				projectFilter.value = "Codemem";
-				projectFilter.dispatchEvent(new Event("change"));
+				const { requestProjectFilterChange } = await import("./components/project-filter");
+				act(() => {
+					requestProjectFilterChange("Codemem");
+				});
 			}
 			staleRefresh.resolve(false);
 			await act(async () => {
@@ -450,4 +533,48 @@ describe("app Health polling", () => {
 		expect(mocks.loadHealthData).toHaveBeenCalledOnce();
 		expect(mocks.markHealthStatusUnchecked).not.toHaveBeenCalled();
 	});
+});
+
+describe("header project inventory refresh", () => {
+	afterEach(() => {
+		vi.clearAllTimers();
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+		document.body.innerHTML = "";
+		window.location.hash = "";
+	});
+
+	it.each(["success", "failure"] as const)(
+		"preserves the selected project after an inventory %s",
+		async (outcome) => {
+			// Objective: a successful inventory updates choices; a failed request leaves usable cached choices intact.
+			// Arrange
+			const inventory = deferred<string[]>();
+			mocks.loadProjects.mockReturnValueOnce(inventory.promise);
+			await setupRefreshAppTest();
+			const { state } = await import("./lib/state");
+			const { renderProjectFilter } = await import("./components/project-filter");
+			state.knownProjects = ["cached-project"];
+			state.currentProject = "cached-project";
+			act(() => renderProjectFilter(state.knownProjects, state.currentProject));
+			const previousTrigger = document.getElementById("projectFilter");
+
+			// Act
+			await act(async () => {
+				if (outcome === "success") inventory.resolve(["cached-project", "new-project"]);
+				else inventory.reject(new Error("inventory unavailable"));
+				await vi.advanceTimersByTimeAsync(0);
+			});
+
+			// Assert
+			expect(state.currentProject).toBe("cached-project");
+			expect(document.getElementById("projectFilter")?.dataset.value).toBe("cached-project");
+			if (outcome === "success") {
+				expect(state.knownProjects).toEqual(["cached-project", "new-project"]);
+			} else {
+				expect(state.knownProjects).toEqual(["cached-project"]);
+				expect(document.getElementById("projectFilter")).toBe(previousTrigger);
+			}
+		},
+	);
 });

@@ -65,13 +65,12 @@ type RadixSelectProps = {
 	contentClassName?: string;
 	disabled?: boolean;
 	id?: string;
-	itemClassName?: string;
 	onValueChange: (value: string) => void;
 	options: RadixSelectOption[];
 	placeholder?: string;
+	size?: "default" | "compact";
 	triggerClassName?: string;
 	value: string;
-	viewportClassName?: string;
 };
 
 export function RadixSelect({
@@ -80,15 +79,17 @@ export function RadixSelect({
 	contentClassName,
 	disabled = false,
 	id,
-	itemClassName,
 	onValueChange,
 	options,
 	placeholder,
+	size = "default",
 	triggerClassName,
 	value,
-	viewportClassName,
 }: RadixSelectProps) {
-	const encodedValue = value ? encodeValue(value) : undefined;
+	// Keep empty values controlled so clearing a filter cannot retain the previous selection.
+	const encodedValue = options.some((option) => option.value === value)
+		? encodeValue(value)
+		: value;
 
 	return (
 		<Select.Root
@@ -98,28 +99,36 @@ export function RadixSelect({
 		>
 			<Select.Trigger
 				aria-label={ariaLabel}
-				className={triggerClassName ?? className}
+				className={["radix-select-trigger", triggerClassName ?? className]
+					.filter(Boolean)
+					.join(" ")}
+				data-size={size}
 				data-value={value}
 				id={id}
 				type="button"
 			>
 				<Select.Value placeholder={placeholder} />
-				<Select.Icon className="sync-radix-select-icon" aria-hidden="true">
+				<Select.Icon className="radix-select-icon" aria-hidden="true">
 					<SelectChevronIcon />
 				</Select.Icon>
 			</Select.Trigger>
 			<Select.Portal>
-				<Select.Content className={contentClassName} position="popper">
-					<Select.Viewport className={viewportClassName}>
+				<Select.Content
+					className={["radix-select-content", contentClassName].filter(Boolean).join(" ")}
+					position="popper"
+					sideOffset={4}
+				>
+					<Select.Viewport className="radix-select-viewport">
 						{options.map((option) => (
 							<Select.Item
 								key={encodeValue(option.value)}
-								className={itemClassName}
+								className="radix-select-item"
 								disabled={option.disabled}
+								title={option.label}
 								value={encodeValue(option.value)}
 							>
 								<Select.ItemText>{option.label}</Select.ItemText>
-								<Select.ItemIndicator className="sync-radix-select-indicator">
+								<Select.ItemIndicator className="radix-select-indicator">
 									<SelectCheckIcon />
 								</Select.ItemIndicator>
 							</Select.Item>

@@ -49,16 +49,12 @@ function ConnectionModeField({
 			</div>
 			<RadixSelect
 				ariaLabel="Connection mode"
-				contentClassName="settings-select-content"
 				id="observerRuntime"
-				itemClassName="settings-select-item"
 				onValueChange={(value) =>
 					onSelectValueChange("observerRuntime")(value === "automatic" ? "" : value)
 				}
 				options={options}
-				triggerClassName="settings-select-trigger"
 				value={runtime}
-				viewportClassName="settings-select-viewport"
 			/>
 			<div className="small">{description}</div>
 		</Field>
@@ -94,9 +90,7 @@ function ProviderField({
 			</div>
 			<RadixSelect
 				ariaLabel="Model provider"
-				contentClassName="settings-select-content"
 				id="observerProvider"
-				itemClassName="settings-select-item"
 				onValueChange={onSelectValueChange("observerProvider")}
 				options={[
 					{ label: "Auto (infer provider)", value: "" },
@@ -106,9 +100,7 @@ function ProviderField({
 					})),
 				]}
 				placeholder="Auto (infer provider)"
-				triggerClassName="settings-select-trigger"
 				value={value}
-				viewportClassName="settings-select-viewport"
 			/>
 			<div className="small">Use auto unless you need to pin a provider.</div>
 		</Field>
@@ -248,9 +240,7 @@ export function ObserverPanel({
 					</div>
 					<RadixSelect
 						ariaLabel="Authentication method"
-						contentClassName="settings-select-content"
 						id="observerAuthSource"
-						itemClassName="settings-select-item"
 						onValueChange={onSelectValueChange("observerAuthSource")}
 						options={[
 							{ label: "auto (default)", value: "auto" },
@@ -259,9 +249,7 @@ export function ObserverPanel({
 							{ label: "command", value: "command" },
 							{ label: "none", value: "none" },
 						]}
-						triggerClassName="settings-select-trigger"
 						value={values.observerAuthSource}
-						viewportClassName="settings-select-viewport"
 					/>
 					<div className="small">
 						API keys are read from your config or environment. File and command sources use the

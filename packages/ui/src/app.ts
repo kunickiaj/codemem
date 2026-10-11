@@ -22,10 +22,11 @@ import {
 	showLegacyUpgradeDialog,
 } from "./components/legacy-upgrade-dialog";
 import { mountToastHost } from "./components/primitives/toast";
+import { PROJECT_FILTER_CHANGE, renderProjectFilter } from "./components/project-filter";
 import * as api from "./lib/api";
 import type { ProjectScopeInventoryProject } from "./lib/api/sync";
 import { coordinatorEnrollmentOpenIssueCount } from "./lib/coordinator-enrollment-attention";
-import { $, $button, $select } from "./lib/dom";
+import { $, $button } from "./lib/dom";
 import { friendlyError } from "./lib/form";
 import { initializeViewerIcons } from "./lib/icons";
 import { isReadTimeout, type ReadRequestOptions, waitForAbort } from "./lib/read-request";
@@ -492,19 +493,7 @@ async function loadProjects() {
 		// render is otherwise deduped on an unrelated payload hash, so tell
 		// it to invalidate. No-op when Sync hasn't loaded yet.
 		invalidateSyncPeerScopeCache();
-		const projectFilter = $select("projectFilter");
-		if (!projectFilter) return;
-		projectFilter.textContent = "";
-		const allOpt = document.createElement("option");
-		allOpt.value = "";
-		allOpt.textContent = "All Projects";
-		projectFilter.appendChild(allOpt);
-		projects.forEach((p) => {
-			const opt = document.createElement("option");
-			opt.value = p;
-			opt.textContent = p;
-			projectFilter.appendChild(opt);
-		});
+		renderProjectFilter(projects, state.currentProject);
 	} catch {}
 }
 
@@ -800,10 +789,13 @@ async function runLoadDevicesData(
 	}
 }
 
-$select("projectFilter")?.addEventListener("change", () => {
+$("projectFilterMount")?.addEventListener(PROJECT_FILTER_CHANGE, (event) => {
+	const value: unknown = (event as CustomEvent<unknown>).detail;
+	if (typeof value !== "string") return;
 	refreshSessions.cancel();
 	cancelHealthUpdateStatus();
-	state.currentProject = $select("projectFilter")?.value || "";
+	state.currentProject = value;
+	renderProjectFilter(state.knownProjects, value);
 	completeFirstRunStep("scope");
 	updateFeedView(true);
 	refresh();
@@ -957,6 +949,7 @@ async function doRefresh(): Promise<void> {
 /* ── Boot ────────────────────────────────────────────────── */
 
 initState();
+renderProjectFilter(state.knownProjects, state.currentProject);
 
 // Toast host — mount first so early notices (from tab init etc.) land.
 const toastRoot = document.getElementById("toastRoot");

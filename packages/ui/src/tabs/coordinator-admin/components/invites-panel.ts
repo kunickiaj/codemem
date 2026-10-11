@@ -82,10 +82,8 @@ export function renderInvitesPanel(deps: InvitesPanelDeps) {
 					h("span", null, "Join policy"),
 					h(RadixSelect, {
 						ariaLabel: "Invite join policy",
-						contentClassName: "sync-radix-select-content sync-actor-select-content",
 						disabled: !fresh,
 						id: "coordinatorAdminInvitePolicy",
-						itemClassName: "sync-radix-select-item",
 						onValueChange: (value) => {
 							coordinatorAdminState.invitePolicy =
 								value === "approval_required" ? "approval_required" : "auto_admit";
@@ -95,9 +93,7 @@ export function renderInvitesPanel(deps: InvitesPanelDeps) {
 							{ value: "auto_admit", label: "Auto-admit to coordinator group" },
 							{ value: "approval_required", label: "Require approval to join group" },
 						],
-						triggerClassName: "sync-radix-select-trigger sync-actor-select",
 						value: coordinatorAdminState.invitePolicy,
-						viewportClassName: "sync-radix-select-viewport",
 					}),
 				),
 				h(

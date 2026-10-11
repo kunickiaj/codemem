@@ -1,8 +1,29 @@
 /// <reference types="vite/client" />
 
+import type { ComponentChild } from "preact";
 import { act } from "preact/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import html from "../static/index.html?raw";
+
+// Keep the header wrapper real while isolating the external Select runtime,
+// matching app-refresh.test.tsx's Preact-compatible test harness.
+vi.mock("@radix-ui/react-select", async () => {
+	const { h } = await import("preact");
+	type Props = { children?: ComponentChild; [key: string]: unknown };
+	const container = ({ children, ...props }: Props) => h("div", props, children);
+	return {
+		Root: ({ children }: Props) => h("div", null, children),
+		Trigger: ({ children, ...props }: Props) => h("button", props, children),
+		Value: ({ placeholder }: Props) => h("span", null, placeholder as string),
+		Icon: container,
+		Portal: container,
+		Content: container,
+		Viewport: container,
+		Item: container,
+		ItemText: container,
+		ItemIndicator: container,
+	};
+});
 
 const mocks = vi.hoisted(() => ({
 	loadProjectScopeInventory: vi.fn(),

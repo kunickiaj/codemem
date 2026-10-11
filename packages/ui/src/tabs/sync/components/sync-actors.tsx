@@ -213,15 +213,12 @@ function SyncActorRow({
 								<div className="actor-merge-controls">
 									<RadixSelect
 										ariaLabel={`Merge ${label} into another person`}
-										contentClassName="sync-radix-select-content sync-actor-select-content"
 										disabled={mergeBusy || mergeTargets.length === 0}
-										itemClassName="sync-radix-select-item"
 										onValueChange={setMergeTargetId}
 										options={mergeOptions}
 										placeholder="Merge into person"
-										triggerClassName="sync-radix-select-trigger sync-actor-select actor-merge-select"
+										triggerClassName="actor-merge-select"
 										value={mergeTargetId}
-										viewportClassName="sync-radix-select-viewport"
 									/>
 									<button
 										type="button"

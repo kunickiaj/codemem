@@ -30,11 +30,11 @@
            1. Dark defaults from tokens.css (:root).
            2. Light overrides from themes.css ([data-theme="light"] +
               @media (prefers-color-scheme: light)).
-           3. Low-specificity native controls from controls.css.
+           3. Shared controls from controls.css.
            4. The component-level rules below, which reference the tokens
               via var(--...).
          Edit packages/ui/static/tokens.css and themes.css to change the
-         token surface, controls.css for native-control defaults, and this
+         token surface, controls.css for shared-control defaults, and this
          <style> block for per-component styling. */
 
       /* ── Reset & base ──────────────────────────────────────── */
@@ -972,9 +972,6 @@
          below only override padding / sizing / colors / typography.
          Markup stays unchanged; each variant class continues to work
          standalone. */
-      .btn,
-      .settings-button,
-      .sync-legacy-button,
       .feed-menu-trigger,
       .feed-expand {
         display: inline-flex;
@@ -990,10 +987,6 @@
         border: 1px solid var(--control-border);
         background: var(--control-bg);
         color: var(--control-text);
-        padding: 5px 12px;
-        min-width: 28px;
-        min-height: 28px;
-        font-size: var(--font-size-sm);
         transition: background var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard);
       }
       .settings-button:hover {
@@ -1199,21 +1192,8 @@
       /* ── Selects / inputs ──────────────────────────────────── */
 
       .project-filter {
-        padding: 5px 10px;
-        border-radius: var(--radius-sm);
-        border: 1px solid var(--border);
-        background: var(--input-bg);
-        color: var(--text-primary);
-        font-family: var(--font-sans);
-        font-size: var(--font-size-sm);
-        cursor: pointer;
-        transition: border-color var(--duration-fast) var(--ease-standard);
-      }
-      .project-filter:hover { border-color: var(--border-hover); }
-      .project-filter:focus {
-        outline: none;
-        border-color: var(--accent);
-        box-shadow: 0 0 0 3px var(--focus-ring);
+        min-width: 96px;
+        max-width: 240px;
       }
 
       .projects-toolbar {
@@ -2308,7 +2288,6 @@
         transition: border-color var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard);
       }
       .feed-search::placeholder { color: var(--text-tertiary); }
-      .feed-search:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-ring); }
       .feed-search.legacy-team-device-select,
       .feed-search.legacy-team-project-select {
         box-sizing: border-box;
@@ -2334,10 +2313,6 @@
         transition: border-color var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard);
       }
       .feed-inspector-files::placeholder { color: var(--text-tertiary); }
-      .feed-inspector-files:focus {
-        border-color: var(--accent);
-        box-shadow: 0 0 0 3px var(--focus-ring);
-      }
 
       .feed-toggle {
         display: inline-flex;
@@ -2526,11 +2501,11 @@
 
       .feed-menu-panel {
         min-width: 180px;
-        padding: 6px;
-        border-radius: var(--radius-lg);
+        padding: var(--popup-padding);
+        border-radius: var(--popup-radius);
         border: 1px solid var(--border);
         background: var(--surface-1);
-        box-shadow: var(--shadow-md);
+        box-shadow: var(--popup-shadow);
         z-index: 24;
       }
       .feed-menu-trigger {
@@ -2907,24 +2882,14 @@
         min-width: 0;
       }
       .feed-visibility-select {
-        display: inline-flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: var(--sp-2);
         width: 124px;
-        min-width: 0;
         min-height: 30px;
         padding: 6px 10px;
         border-radius: var(--radius-pill);
-        border: 1px solid var(--border);
-        background: var(--input-bg);
-        color: var(--text-primary);
-        font-family: var(--font-sans);
         font-size: var(--font-size-sm);
         letter-spacing: normal;
         text-transform: none;
       }
-      .feed-visibility-content { z-index: 30; }
 
       .feed-tags { display: flex; flex-wrap: wrap; gap: 6px; }
       /* File paths render as compact pill-tags in their own row — the actual
@@ -3413,11 +3378,11 @@
         display: grid;
         grid-template-rows: auto 1fr;
         gap: 4px;
-        padding: 6px;
+        padding: var(--popup-padding);
         background: var(--surface-1);
         border: 1px solid var(--border);
-        border-radius: var(--radius-md);
-        box-shadow: var(--shadow-lg, 0 10px 15px -3px rgba(0, 0, 0, 0.3));
+        border-radius: var(--popup-radius);
+        box-shadow: var(--popup-shadow);
         z-index: 50;
       }
       /* Vanilla-DOM popover (peer-scope) anchors inline under its trigger;
@@ -3440,10 +3405,6 @@
         padding: 6px 10px;
         font: inherit;
         font-size: var(--font-size-md);
-      }
-      .project-scope-picker-search:focus {
-        outline: 2px solid var(--accent);
-        outline-offset: 1px;
       }
       .project-scope-picker-results {
         margin: 0;
@@ -3731,89 +3692,11 @@
         max-width: 100%;
         flex: 1 1 320px;
       }
-      .sync-radix-select-trigger {
-        display: inline-flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        width: 100%;
-        text-align: left;
-      }
-      .sync-radix-select-trigger > span:first-child {
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .sync-radix-select-icon {
-        color: var(--text-tertiary);
-        flex: 0 0 auto;
-      }
-      .sync-radix-select-content {
-        z-index: 30;
-        min-width: var(--radix-select-trigger-width);
-        max-width: min(420px, calc(100vw - 24px));
-        overflow: hidden;
-        border: 1px solid var(--border);
-        border-radius: var(--radius-md);
-        background: var(--surface-1);
-        box-shadow: var(--shadow-lg);
-      }
-      .sync-radix-select-viewport {
-        padding: 6px;
-      }
-      .sync-radix-select-item {
-        position: relative;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        min-height: 36px;
-        padding: 8px 12px;
-        border-radius: var(--radius-sm);
-        color: var(--text-primary);
-        font-family: var(--font-sans);
-        font-size: var(--font-size-md);
-        cursor: pointer;
-        user-select: none;
-      }
-      .sync-radix-select-item[data-highlighted] {
-        outline: none;
-        background: var(--accent-subtle);
-        color: var(--accent);
-      }
-      .sync-radix-select-item[data-disabled] {
-        opacity: 0.45;
-        cursor: default;
-      }
-      .sync-radix-select-indicator {
-        color: var(--accent);
-        flex: 0 0 auto;
-      }
       .sync-legacy-claim-row { margin-top: 12px; gap: 12px; align-items: center; flex-wrap: wrap; }
-      .sync-legacy-select {
-        padding: 8px 12px;
-        border-radius: var(--radius-md);
-        border: 1px solid var(--border);
-        background: var(--input-bg);
-        color: var(--text-primary);
-        font-family: var(--font-sans);
-        font-size: var(--font-size-md);
-        cursor: pointer;
-        transition: border-color var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard);
-      }
-      .sync-legacy-select:hover { border-color: var(--border-hover); }
-      .sync-legacy-select:focus {
-        outline: none;
-        border-color: var(--accent);
-        box-shadow: 0 0 0 3px var(--focus-ring);
-      }
       .sync-legacy-button {
         border: 1px solid var(--control-border);
         background: var(--control-bg);
         color: var(--control-text);
-        padding: 8px 14px;
-        font-size: var(--font-size-md);
         font-weight: var(--font-weight-semibold);
         transition: background var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard), transform var(--duration-fast) var(--ease-standard);
       }
@@ -3829,23 +3712,6 @@
         opacity: 0.7;
         cursor: default;
         transform: none;
-      }
-      .sync-actor-select {
-        padding: 8px 12px;
-        border-radius: var(--radius-md);
-        border: 1px solid var(--border);
-        background: var(--input-bg);
-        color: var(--text-primary);
-        font-family: var(--font-sans);
-        font-size: var(--font-size-md);
-        cursor: pointer;
-        transition: border-color var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard);
-      }
-      .sync-actor-select:hover { border-color: var(--border-hover); }
-      .sync-actor-select:focus {
-        outline: none;
-        border-color: var(--accent);
-        box-shadow: 0 0 0 3px var(--focus-ring);
       }
       .peer-meta { font-size: var(--font-size-md); color: var(--text-tertiary); font-feature-settings: 'tnum' 1; }
       .peer-addresses { font-family: var(--font-mono); font-size: var(--font-size-sm); color: var(--text-tertiary); letter-spacing: 0.02em; }
@@ -4520,56 +4386,6 @@
       .settings-config-details { margin-top: var(--sp-4); font-size: var(--font-size-xs); overflow-wrap: anywhere; }
       .settings-outcome strong { color: var(--text-secondary); font-weight: var(--font-weight-medium); }
       .field input:not([type="checkbox"]), .field select, .field textarea { padding: var(--sp-2) var(--sp-3); border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--input-bg); font-family: var(--font-sans); font-size: var(--font-size-md); color: var(--text-primary); }
-      .settings-select-trigger {
-        display: inline-flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        width: 100%;
-        padding: var(--sp-2) var(--sp-3);
-        border-radius: var(--radius-sm);
-        border: 1px solid var(--border);
-        background: var(--input-bg);
-        color: var(--text-primary);
-        font-family: var(--font-sans);
-        font-size: var(--font-size-md);
-        text-align: left;
-      }
-      .settings-select-trigger:hover { border-color: var(--border-hover); }
-      .settings-select-trigger:focus {
-        outline: none;
-        border-color: var(--accent);
-        box-shadow: 0 0 0 3px var(--focus-ring);
-      }
-      .settings-select-content {
-        z-index: 30;
-        min-width: var(--radix-select-trigger-width);
-        overflow: hidden;
-        border: 1px solid var(--border);
-        border-radius: var(--radius-md);
-        background: var(--surface-1);
-        box-shadow: var(--shadow-lg);
-      }
-      .settings-select-viewport { padding: 6px; }
-      .settings-select-item {
-        min-height: 36px;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        padding: 8px 12px;
-        border-radius: var(--radius-sm);
-        color: var(--text-primary);
-        font-family: var(--font-sans);
-        font-size: var(--font-size-md);
-        cursor: pointer;
-        user-select: none;
-      }
-      .settings-select-item[data-highlighted] {
-        outline: none;
-        background: var(--accent-subtle);
-        color: var(--accent);
-      }
       .field-checkbox { flex-direction: row; align-items: center; gap: 8px; }
       .field-checkbox input[type="checkbox"] { width: 14px; height: 14px; margin: 0; }
       .field-checkbox label { margin: 0; }
@@ -4636,30 +4452,20 @@
         border: 1px solid var(--control-border);
         background: var(--control-bg);
         color: var(--control-text);
-        padding: var(--sp-2) var(--sp-4);
-        border-radius: var(--radius-md);
-        font-family: var(--font-sans);
-        font-size: var(--font-size-sm);
         cursor: pointer;
         transition: background var(--duration-fast) var(--ease-standard);
       }
       .settings-save:hover { background: var(--control-hover-bg); }
-      /* Text actions share geometry; icon, tab, and segmented controls retain theirs. */
-      .settings-button,
-      .settings-save {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        box-sizing: border-box;
-        min-height: 36px;
-        padding: 8px 12px;
-        border-radius: var(--radius-md);
-        font-size: var(--font-size-sm);
-        line-height: 18px;
-      }
       .sync-dialog-card {
         width: min(560px, 100%);
       }
+      fieldset.sync-dialog-stack {
+        border: 0;
+        margin: 0;
+        padding: 0;
+        min-width: 0;
+      }
+      fieldset.sync-dialog-stack > legend { padding: 0; }
       .sync-dialog-actions {
         display: flex;
         gap: var(--sp-2);
@@ -4677,19 +4483,14 @@
         font-size: var(--font-size-md);
         box-sizing: border-box;
       }
-      .sync-dialog-input:focus {
-        border-color: var(--accent);
-        outline: 2px solid var(--focus-ring);
-        outline-offset: 1px;
-      }
       .autocomplete-popover {
         background: var(--surface-1, var(--bg-elevated));
         border: 1px solid var(--border);
-        border-radius: var(--radius-sm);
-        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+        border-radius: var(--popup-radius);
+        box-shadow: var(--popup-shadow);
         max-height: 260px;
         overflow-y: auto;
-        padding: 4px;
+        padding: var(--popup-padding);
         z-index: 120;
       }
       .autocomplete-listbox {
@@ -4906,32 +4707,11 @@
         .feed-item > .feed-card-body { grid-column: 1; grid-row: 3; }
       }
 
-      /* ──────────────────────────────────────────────────────────────────
-         Token-aligned focus rings.
-
-         The interactive surfaces below previously relied on the browser's
-         default focus outline. They now share the same focus language as
-         the rest of the system:
-           - Buttons get a 2px var(--accent) outline with a 2px offset.
-           - Inputs and selects get an accent border + 3px var(--focus-ring)
-             halo, matching .feed-search / .project-filter / .sync-actor-select.
-         Radix-managed items (with [data-highlighted]) are intentionally not
-         touched here because their highlight state already serves as a
-         keyboard-focus indicator. */
+      /* Non-native button surfaces retain an offset keyboard outline. */
       .coordinator-admin-tab-trigger:focus-visible,
       .feed-inspector-button:focus-visible {
         outline: 2px solid var(--accent);
         outline-offset: 2px;
-      }
-      .actor-merge-select:focus,
-      .actor-name-input:focus,
-      .feed-visibility-select:focus,
-      .legacy-review-search:focus,
-      .peer-scope-input:focus,
-      .project-domain-select:focus {
-        outline: none;
-        border-color: var(--accent);
-        box-shadow: 0 0 0 3px var(--focus-ring);
       }
 
       @media (prefers-reduced-motion: reduce) {
@@ -4973,9 +4753,7 @@
             <span class="runtime-label" id="runtimeLabel" hidden></span>
             <span class="meta-line" id="metaLine"></span>
           </div>
-          <select class="project-filter" id="projectFilter" aria-label="Project filter">
-            <option value="">All Projects</option>
-          </select>
+          <div class="project-filter" id="projectFilterMount"></div>
           <button class="icon-button" id="themeToggle" type="button" aria-label="Switch theme">
             <i data-lucide="sun" aria-hidden="true"></i>
           </button>

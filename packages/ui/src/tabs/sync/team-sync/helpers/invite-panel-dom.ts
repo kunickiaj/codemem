@@ -100,9 +100,7 @@ export function renderInvitePolicySelect() {
 		mount,
 		h(RadixSelect, {
 			ariaLabel: "Join policy",
-			contentClassName: "sync-radix-select-content sync-actor-select-content",
 			id: "syncInvitePolicy",
-			itemClassName: "sync-radix-select-item",
 			onValueChange: (value) => {
 				const nextValue = value === "approval_required" ? "approval_required" : "auto_admit";
 				if (nextValue === teamSyncState.invitePolicy) return;
@@ -110,9 +108,7 @@ export function renderInvitePolicySelect() {
 				renderInvitePolicySelect();
 			},
 			options: INVITE_POLICY_OPTIONS,
-			triggerClassName: "sync-radix-select-trigger sync-actor-select",
 			value: teamSyncState.invitePolicy,
-			viewportClassName: "sync-radix-select-viewport",
 		}),
 	);
 }

@@ -63,14 +63,10 @@ export function renderLegacyClaimsSlice(input: {
 		input.mount,
 		<RadixSelect
 			ariaLabel="Legacy device"
-			contentClassName="sync-radix-select-content sync-legacy-select-content"
 			id="syncLegacyDeviceSelect"
-			itemClassName="sync-radix-select-item"
 			onValueChange={input.onValueChange}
 			options={options}
-			triggerClassName="sync-radix-select-trigger sync-legacy-select"
 			value={nextValue}
-			viewportClassName="sync-radix-select-viewport"
 		/>,
 	);
 	renderIntoSyncMount(input.meta, <LegacyClaimMeta devices={devices} />);

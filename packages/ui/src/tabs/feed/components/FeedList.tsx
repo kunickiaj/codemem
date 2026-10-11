@@ -1,4 +1,5 @@
 import { Fragment, h } from "preact";
+import { requestProjectFilterChange } from "../../../components/project-filter";
 import { setFeedScopeFilter, setFeedTypeFilter, state } from "../../../lib/state";
 import { itemKey } from "../data/helpers";
 import type { FeedItem, FeedViewOps } from "../types";
@@ -17,11 +18,8 @@ function openHealth(): void {
 function clearFeedFilters(ops: FeedViewOps): void {
 	setFeedTypeFilter("all");
 	setFeedScopeFilter("all");
-	const projectFilter = document.getElementById("projectFilter") as HTMLSelectElement | null;
-	if (projectFilter) {
-		projectFilter.value = "";
-		projectFilter.dispatchEvent(new Event("change", { bubbles: true }));
-		queueMicrotask(() => projectFilter.focus());
+	if (requestProjectFilterChange("")) {
+		queueMicrotask(() => document.getElementById("projectFilter")?.focus());
 		return;
 	}
 	state.currentProject = "";

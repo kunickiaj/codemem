@@ -108,8 +108,7 @@ export function DuplicatePersonDialogContent({
 			</ul>
 		</div>
 	) : (
-		// biome-ignore lint/a11y/noStaticElementInteractions: delegated keydown for primary-action handling; the actual interactive element is the Combine people button below.
-		<div
+		<fieldset
 			className="sync-dialog-stack"
 			onKeyDown={(event) => {
 				submitMergeFromRadioKey(event);
@@ -119,9 +118,9 @@ export function DuplicatePersonDialogContent({
 				});
 			}}
 		>
-			<div className="small" id={descriptionId}>
+			<legend className="small" id={descriptionId}>
 				Choose which person should remain after combining these duplicates.
-			</div>
+			</legend>
 			<RadixRadioGroup
 				ariaDescribedby={descriptionId}
 				ariaLabel="Person to keep after combining duplicates"
@@ -141,16 +140,13 @@ export function DuplicatePersonDialogContent({
 				</label>
 				<RadixSelect
 					ariaLabel="Person to combine into the selected record"
-					contentClassName="sync-radix-select-content sync-actor-select-content"
 					disabled={mergeOptions.length === 0}
 					id="syncDuplicateSecondaryActor"
-					itemClassName="sync-radix-select-item"
 					onValueChange={setSecondaryActorId}
 					options={mergeOptions}
 					placeholder="No merge target available"
-					triggerClassName="sync-radix-select-trigger sync-dialog-input"
+					triggerClassName="sync-dialog-input"
 					value={secondary?.actorId || ""}
-					viewportClassName="sync-radix-select-viewport"
 				/>
 			</div>
 			<div className="sync-dialog-actions">
@@ -167,6 +163,6 @@ export function DuplicatePersonDialogContent({
 					Combine people
 				</button>
 			</div>
-		</div>
+		</fieldset>
 	);
 }
