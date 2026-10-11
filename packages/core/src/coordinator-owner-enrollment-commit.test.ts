@@ -415,6 +415,21 @@ test.for(["binding", "audit", "enrollment"])(
 	},
 );
 
+test.for(["http://127.0.0.1:4567/complete", "http://127.0.0.1:9876/complete"])(
+	"private receipt rejects caller-supplied loopback destination %s",
+	async (redirect, { writer: f }) => {
+		expect(await commitOwnerEnrollment(f.input())).toBe(true);
+		const receipt = f.finalRow();
+		const before = f.effects();
+		expect(receipt.loopback_redirect).toBeNull();
+		expect(await readOwnerEnrollmentReceipt(f.backend, receipt)).toBe(true);
+		expect(
+			await readOwnerEnrollmentReceipt(f.backend, { ...receipt, loopback_redirect: redirect }),
+		).toBe(false);
+		expect(f.effects()).toEqual(before);
+	},
+);
+
 test.for([
 	"unchanged",
 	"purpose",

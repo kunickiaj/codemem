@@ -262,7 +262,7 @@ const RECEIPT_SQL = `SELECT 1 FROM coordinator_device_ownership_bindings b
   AND a.link_controller_attestation_id IS ? AND a.link_auth_config_revision IS ?
   AND a.browser_start_hash = ? AND a.browser_transaction_hash IS ? AND a.browser_binder_hash IS ?
   AND a.confirmation_hash IS ? AND a.completion_secret_hash IS ? AND a.final_key_proof_hash IS ?
-  AND a.created_at_ms = ? AND a.expires_at_ms = ?)
+  AND a.created_at_ms = ? AND a.expires_at_ms = ? AND a.loopback_redirect IS ?)
  AND NOT EXISTS (SELECT 1 FROM coordinator_owner_enrollment_audit_log e
   WHERE e.coordinator_id = ? AND (e.attempt_id = ? OR e.event_id = ?) AND
   (e.event_id <> ? OR e.attempt_id <> ? OR e.action <> 'owner_device_enrolled' OR e.binding_id <> ? OR e.device_id <> ? OR e.created_at_ms <> ?))
@@ -302,6 +302,7 @@ function receiptValues(row: OwnerAttempt): AuthLinkStatement["values"] {
 		row.final_key_proof_hash,
 		row.created_at_ms,
 		row.expires_at_ms,
+		row.loopback_redirect,
 		row.coordinator_id,
 		row.attempt_id,
 		row.audit_event_id,
