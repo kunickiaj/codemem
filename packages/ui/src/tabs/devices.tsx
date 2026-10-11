@@ -1,6 +1,7 @@
 import { type RefObject, render } from "preact";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { LoadingCardList } from "../components/LoadingCardList";
+import { ActionMenu, type MenuAction } from "../components/primitives/action-menu";
 import { Chip } from "../components/primitives/chip";
 import { PresencePip } from "../components/primitives/presence-pip";
 import type {
@@ -1242,27 +1243,6 @@ function availabilityPipState(availability: DeviceAvailabilityState) {
 	return availability;
 }
 
-// Disabled while the device list is unavailable: the form would open with a
-// disabled field, leaving keyboard focus on the closed menu.
-function RenameMenuItem({
-	onSelect,
-	options,
-}: {
-	onSelect: () => void;
-	options: DevicesRendererOptions;
-}) {
-	return (
-		<button
-			className="feed-menu-item"
-			disabled={options.inventoryUnavailable === true || options.refreshError === true}
-			onClick={onSelect}
-			type="button"
-		>
-			Rename device…
-		</button>
-	);
-}
-
 function rebindMenuBlocked(
 	inventoryItem: DeviceIdentityInventoryItemV1 | undefined,
 	options: DevicesRendererOptions,
@@ -1275,44 +1255,58 @@ function rebindMenuBlocked(
 	);
 }
 
-function SyncMenuItem({
+function deviceSyncMenuAction({
 	device,
 	options,
 	busy,
 	onSelect,
-	menuRef,
 }: {
 	device: DeviceProjection;
 	options: DevicesRendererOptions;
 	busy: boolean;
 	onSelect: () => void;
-	menuRef: RefObject<HTMLDetailsElement>;
-}) {
+}): MenuAction[] {
 	if (
 		!device.syncPeer?.paired ||
 		directLocalDeviceId(options) === device.deviceId ||
 		!options.onSyncDevice
 	)
-		return null;
-	return (
-		<button
-			aria-label={`Sync ${device.displayName}`}
-			className="feed-menu-item"
-			disabled={
+		return [];
+	return [
+		{
+			ariaLabel: `Sync ${device.displayName}`,
+			disabled:
 				busy ||
 				!device.syncPeer.statusAvailable ||
 				options.syncStatusUnavailable === true ||
-				options.refreshError === true
-			}
-			onClick={() => {
-				onSelect();
-				menuRef.current?.querySelector<HTMLElement>("summary")?.focus();
-			}}
-			type="button"
-		>
-			{busy ? "Syncing…" : "Sync this device"}
-		</button>
-	);
+				options.refreshError === true,
+			onSelect,
+			label: busy ? "Syncing…" : "Sync this device",
+		},
+	];
+}
+
+function deviceNavigationMenuAction(
+	device: DeviceProjection,
+	options: DevicesRendererOptions,
+): MenuAction[] {
+	const action = device.action;
+	if (!action || !options.onNavigate) return [];
+	return [
+		{
+			ariaLabel: `${action.label} for ${device.displayName}`,
+			label: action.label,
+			onSelect: () => options.onNavigate?.(action.target),
+			ref: (element) => {
+				if (element)
+					deviceActionFocusIdentities.set(element, {
+						control: "action",
+						deviceId: device.deviceId,
+						target: action.target,
+					});
+			},
+		},
+	];
 }
 
 function DeviceRowMenu({
@@ -1338,79 +1332,44 @@ function DeviceRowMenu({
 	syncBusy: boolean;
 	options: DevicesRendererOptions;
 }) {
-	const menuRef = useRef<HTMLDetailsElement>(null);
 	const rebindBlocked = rebindMenuBlocked(inventoryItem, options);
-	const select = (action: () => void) => {
-		if (menuRef.current) menuRef.current.open = false;
-		action();
-	};
+	const actions: MenuAction[] = [
+		...deviceSyncMenuAction({ device, options, busy: syncBusy, onSelect: onSync }),
+		...deviceNavigationMenuAction(device, options),
+		{ ariaControls: detailsId, ariaExpanded: detailsOpen, label: "Details", onSelect: onDetails },
+		{
+			// The form cannot accept input while the device list is unavailable.
+			disabled: options.inventoryUnavailable === true || options.refreshError === true,
+			label: "Rename device…",
+			onSelect: onRename,
+		},
+		...(inventoryItem
+			? [
+					{
+						disabled: rebindBlocked,
+						label: "Change Identity…",
+						onSelect: onRebind,
+						focusAfterClose: () =>
+							document.getElementById(`configured-rebind-${device.deviceId}`)?.focus(),
+					},
+				]
+			: []),
+	];
 	return (
-		<details className="devices-row-menu" ref={menuRef}>
-			<summary
-				aria-label={`Actions for ${device.displayName}`}
-				className="feed-menu-trigger"
-				id={`device-actions-${device.deviceId}`}
-				ref={(element) => {
-					if (element) {
-						deviceActionFocusIdentities.set(element, {
-							control: "menu",
-							deviceId: device.deviceId,
-							target: device.action?.target,
-						});
-					}
-				}}
-			>
-				⋯
-			</summary>
-			<div className="feed-menu-panel">
-				<SyncMenuItem
-					device={device}
-					options={options}
-					busy={syncBusy}
-					onSelect={() => select(onSync)}
-					menuRef={menuRef}
-				/>
-				{device.action && options.onNavigate ? (
-					<button
-						aria-label={`${device.action.label} for ${device.displayName}`}
-						className="feed-menu-item"
-						onClick={() => select(() => options.onNavigate?.(device.action?.target ?? "health"))}
-						ref={(element) => {
-							if (element && device.action) {
-								deviceActionFocusIdentities.set(element, {
-									control: "action",
-									deviceId: device.deviceId,
-									target: device.action.target,
-								});
-							}
-						}}
-						type="button"
-					>
-						{device.action.label}
-					</button>
-				) : null}
-				<button
-					aria-controls={detailsId}
-					aria-expanded={detailsOpen}
-					className="feed-menu-item"
-					onClick={() => select(onDetails)}
-					type="button"
-				>
-					Details
-				</button>
-				<RenameMenuItem onSelect={() => select(onRename)} options={options} />
-				{inventoryItem ? (
-					<button
-						className="feed-menu-item"
-						disabled={rebindBlocked}
-						onClick={() => select(onRebind)}
-						type="button"
-					>
-						Change Identity…
-					</button>
-				) : null}
-			</div>
-		</details>
+		<ActionMenu
+			actions={actions}
+			label={`Actions for ${device.displayName}`}
+			triggerId={`device-actions-${device.deviceId}`}
+			triggerRef={(element) => {
+				if (element) {
+					deviceActionFocusIdentities.set(element, {
+						control: "menu",
+						deviceId: device.deviceId,
+						target: device.action?.target,
+					});
+				}
+			}}
+		/>
 	);
 }
 
@@ -2405,6 +2364,9 @@ function restoreDeviceActionFocus(
 	if (focusedElement?.isConnected && document.activeElement === focusedElement) return;
 	const focusTargets = [
 		...mount.querySelectorAll<HTMLElement>(".feed-menu-trigger, .feed-menu-item"),
+		...document.querySelectorAll<HTMLElement>(
+			'[role="menu"][aria-labelledby^="device-actions-"] .feed-menu-item',
+		),
 	];
 	const matchingAction = focusTargets.find((element) => {
 		const identity = deviceActionFocusIdentities.get(element);
@@ -2426,8 +2388,17 @@ function deviceFocusIdentity(element: Element): DeviceActionFocusIdentity | unde
 	if (direct) return direct;
 	const details = element.closest<HTMLElement>(".devices-table-details");
 	if (details) return deviceActionFocusIdentities.get(details);
-	const summary = element.closest(".devices-row-menu")?.querySelector<HTMLElement>("summary");
-	return summary ? deviceActionFocusIdentities.get(summary) : undefined;
+	const menu = element.closest<HTMLElement>('[role="menu"]');
+	const triggerId = menu?.getAttribute("aria-labelledby");
+	const trigger = triggerId ? document.getElementById(triggerId) : null;
+	return trigger ? deviceActionFocusIdentities.get(trigger) : undefined;
+}
+
+function hasDevicesFocus(mount: HTMLElement, element: Element | null): element is HTMLElement {
+	return (
+		element instanceof HTMLElement &&
+		(mount.contains(element) || deviceFocusIdentity(element) !== undefined)
+	);
 }
 
 export function mountDevices(
@@ -2439,7 +2410,7 @@ export function mountDevices(
 	options: DevicesRendererOptions = {},
 ): void {
 	const focusedElement = document.activeElement;
-	const hadDevicesFocus = focusedElement instanceof HTMLElement && mount.contains(focusedElement);
+	const hadDevicesFocus = hasDevicesFocus(mount, focusedElement);
 	const focusedAction = hadDevicesFocus ? deviceFocusIdentity(focusedElement) : undefined;
 	const projection = projectDevices(
 		intent,

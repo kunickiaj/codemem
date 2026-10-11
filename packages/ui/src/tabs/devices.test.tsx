@@ -9,6 +9,7 @@ import type {
 } from "../lib/api/sync";
 import { DeviceIdentityBindingApiError } from "../lib/api/sync";
 import { state } from "../lib/state";
+import { closeActionMenu, openActionMenu } from "../menu-test-utils";
 import { deviceIdentitySetupError, mountDevices, projectDevices } from "./devices";
 
 const projects = [
@@ -226,14 +227,16 @@ describe("Devices sync health", () => {
 		expect(sync?.textContent).toContain("Synced recently");
 		expect(sync?.textContent).toContain("Last sync:");
 		expect(sync?.textContent).toContain("24h: received 7 · sent 3");
-		const action = [...(row?.querySelectorAll<HTMLButtonElement>(".feed-menu-item") ?? [])].find(
-			(button) => button.textContent === "Sync this device",
-		);
+		const action = [
+			...openActionMenu(row ?? document).querySelectorAll<HTMLButtonElement>(".feed-menu-item"),
+		].find((button) => button.textContent === "Sync this device");
 		expect(action?.disabled).toBe(false);
 		await act(async () => action?.click());
 		expect(onSyncDevice).toHaveBeenCalledExactlyOnceWith("device-address-fingerprint-secret");
 		expect(sync?.textContent).toContain("Sync finished for this device.");
-		expect(document.activeElement).toBe(row?.querySelector(".devices-row-menu summary"));
+		await vi.waitFor(() =>
+			expect(document.activeElement).toBe(row?.querySelector(".feed-menu-trigger")),
+		);
 	});
 
 	it("does not offer peer sync for this device, unpaired devices, or unavailable status", () => {
@@ -302,7 +305,9 @@ describe("Devices sync health", () => {
 		);
 		expect(stale?.querySelector(".devices-table-sync")?.textContent).not.toContain("received 2");
 		expect(
-			stale?.querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]')?.disabled,
+			openActionMenu(stale ?? document).querySelector<HTMLButtonElement>(
+				'[aria-label="Sync Work Laptop"]',
+			)?.disabled,
 		).toBe(true);
 		mount(graph, reconciliation(), {
 			peerSyncMetadata: [],
@@ -374,8 +379,9 @@ describe("Devices sync peer identity", () => {
 			onSyncDevice,
 		});
 		const row = document.getElementById("device-identity-card-device-address-fingerprint-secret");
+		const menu = openActionMenu(row ?? document);
 		await act(async () =>
-			row?.querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]')?.click(),
+			menu.querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]')?.click(),
 		);
 		expect(onSyncDevice).toHaveBeenCalledExactlyOnceWith("peer-alias");
 	});
@@ -404,17 +410,19 @@ describe("Devices sync progress", () => {
 		});
 		const row = () =>
 			document.getElementById("device-identity-card-device-address-fingerprint-secret");
+		let syncMenu = openActionMenu(row() ?? document);
 		await act(async () =>
-			row()?.querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]')?.click(),
+			syncMenu.querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]')?.click(),
 		);
 		expect(row()?.querySelector(".devices-table-sync")?.textContent).toContain(
 			"Syncing this device…",
 		);
+		syncMenu = openActionMenu(row() ?? document);
 		expect(
-			row()?.querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]')?.disabled,
+			syncMenu.querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]')?.disabled,
 		).toBe(true);
 		await act(async () =>
-			row()?.querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]')?.click(),
+			syncMenu.querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]')?.click(),
 		);
 		expect(onSyncDevice).toHaveBeenCalledTimes(1);
 		await act(async () => {
@@ -904,18 +912,14 @@ describe("Device row focus restoration across inventory refresh", () => {
 				}),
 			]),
 		});
-		const menu = document.querySelector<HTMLDetailsElement>(
-			'[aria-label="Actions for Work Laptop"]',
-		)?.parentElement;
-		if (!(menu instanceof HTMLDetailsElement)) throw new Error("Work Laptop menu missing");
 		const changeIdentity = () =>
-			[...menu.querySelectorAll<HTMLButtonElement>("button")].find(
+			[...openActionMenu().querySelectorAll<HTMLButtonElement>("button")].find(
 				(button) => button.textContent === "Change Identity…",
 			);
 
+		let changeAction = changeIdentity();
 		await act(async () => {
-			menu.open = true;
-			changeIdentity()?.click();
+			changeAction?.click();
 			await Promise.resolve();
 		});
 		const trigger = document.getElementById(
@@ -923,15 +927,17 @@ describe("Device row focus restoration across inventory refresh", () => {
 		);
 		expect(trigger?.getAttribute("aria-expanded")).toBe("true");
 
+		changeAction = changeIdentity();
 		await act(async () => {
-			menu.open = true;
-			changeIdentity()?.click();
+			changeAction?.click();
 			await Promise.resolve();
 		});
 
 		expect(trigger?.getAttribute("aria-expanded")).toBe("true");
-		expect(document.activeElement).toBe(
-			document.getElementById("configured-rebind-device-address-fingerprint-secret"),
+		await vi.waitFor(() =>
+			expect(document.activeElement).toBe(
+				document.getElementById("configured-rebind-device-address-fingerprint-secret"),
+			),
 		);
 	});
 
@@ -961,6 +967,45 @@ describe("Device row focus restoration across inventory refresh", () => {
 		);
 		expect(state.pendingDeviceIdentityFocus).toBeUndefined();
 	});
+});
+
+describe("Device menu polling focus", () => {
+	it("keeps focus on the new portalled navigation action when polling changes its label", () => {
+		// Arrange: both actions navigate to Sharing, but their labels reflect different states.
+		const waiting = reconciliation({
+			items: reconciliation().items.map((item) => ({
+				...item,
+				state: "waiting",
+				label: "Waiting",
+			})),
+		});
+		const attention = reconciliation({
+			items: reconciliation().items.map((item) => ({
+				...item,
+				state: "needs_attention",
+				label: "Needs attention",
+			})),
+		});
+		mount(intent(), waiting, { onNavigate: vi.fn() });
+		const menu = openActionMenu();
+		const action = menu.querySelector<HTMLButtonElement>(
+			'[aria-label="View sharing status for Work Laptop"]',
+		);
+		if (!action) throw new Error("Waiting navigation action missing");
+		act(() => action.focus());
+		// Act
+		mount(intent(), attention, { onNavigate: vi.fn() });
+		// Assert: the new item, not the hidden background trigger, receives focus.
+		const updated = document.querySelector<HTMLButtonElement>(
+			'[role="menu"] [aria-label="Review sharing for Work Laptop"]',
+		);
+		expect(updated).not.toBeNull();
+		expect(updated).not.toBe(action);
+		expect(document.activeElement).toBe(updated);
+		expect(document.activeElement).not.toBe(
+			document.getElementById("device-actions-device-address-fingerprint-secret"),
+		);
+	});
 
 	it("restores focus when a conditional row action disappears", () => {
 		document.body.insertAdjacentHTML("beforeend", '<button id="tabBtn-devices">Devices</button>');
@@ -976,9 +1021,9 @@ describe("Device row focus restoration across inventory refresh", () => {
 				{ onNavigate: vi.fn() },
 			),
 		);
-		const action = [...element.querySelectorAll<HTMLButtonElement>(".feed-menu-item")].find(
-			(button) => button.textContent === "Check device health",
-		);
+		const action = [
+			...openActionMenu(element).querySelectorAll<HTMLButtonElement>(".feed-menu-item"),
+		].find((button) => button.textContent === "Check device health");
 		action?.focus();
 
 		mount(intent(), reconciliation(), { onNavigate: vi.fn() });
@@ -991,7 +1036,7 @@ describe("Device row focus restoration across inventory refresh", () => {
 it("restores focus from Details after its device is removed", () => {
 	document.body.insertAdjacentHTML("beforeend", '<button id="tabBtn-devices">Devices</button>');
 	mount(intent(), reconciliation(), { onNavigate: vi.fn() });
-	const details = [...document.querySelectorAll<HTMLButtonElement>(".feed-menu-item")].find(
+	const details = [...openActionMenu().querySelectorAll<HTMLButtonElement>(".feed-menu-item")].find(
 		(button) => button.textContent === "Details",
 	);
 	expect(details).toBeDefined();
@@ -1134,9 +1179,9 @@ describe("Device runtime aliases", () => {
 				expect(row?.textContent).toContain("Studio laptop");
 				expect(row?.textContent).toContain(validated ? "Available" : "Presence unavailable");
 				expect(row?.textContent?.includes("0.42.0")).toBe(validated);
-				const action = [...mount.querySelectorAll<HTMLButtonElement>("button")].find(
-					(button) => button.textContent === "Rename device…",
-				);
+				const action = [
+					...openActionMenu(mount).querySelectorAll<HTMLButtonElement>("button"),
+				].find((button) => button.textContent === "Rename device…");
 				expect(action).toBeDefined();
 				if (action) act(() => action.click());
 			}
@@ -1240,7 +1285,7 @@ describe("Device runtime observation ordering", () => {
 					}),
 				);
 				expect(mount.querySelector(".devices-table-version")?.textContent).toBe(expected);
-				expect(mount.textContent).toContain("Rename device…");
+				expect(openActionMenu(mount).textContent).toContain("Rename device…");
 			}
 			if (!outage) {
 				const result = projectDevices(
@@ -1359,7 +1404,7 @@ describe("Device rename saving", () => {
 				renameDevice: vi.fn().mockRejectedValue(new Error("rename_failed")),
 			});
 			const item = [
-				...document.querySelectorAll<HTMLButtonElement>(".devices-row-menu .feed-menu-item"),
+				...openActionMenu().querySelectorAll<HTMLButtonElement>(".feed-menu-item"),
 			].find((button) => button.textContent === "Rename device…");
 			act(() => item?.click());
 			const form = document.querySelector<HTMLFormElement>(".devices-rename-form");
@@ -1400,10 +1445,11 @@ describe("Device rename saving", () => {
 			renameDevice,
 		});
 		const menuItem = () =>
-			[...document.querySelectorAll<HTMLButtonElement>(".devices-row-menu .feed-menu-item")].find(
+			[...openActionMenu().querySelectorAll<HTMLButtonElement>(".feed-menu-item")].find(
 				(button) => button.textContent === "Rename device…",
 			);
-		act(() => menuItem()?.click());
+		let renameAction = menuItem();
+		act(() => renameAction?.click());
 		const form = document.querySelector<HTMLFormElement>(".devices-rename-form");
 		const input = form?.querySelector<HTMLInputElement>("input");
 		if (!form || !input) throw new Error("Rename form missing");
@@ -1416,11 +1462,14 @@ describe("Device rename saving", () => {
 			await Promise.resolve();
 		});
 		expect(input.disabled).toBe(true);
+		renameAction = menuItem();
 		await act(async () => {
-			menuItem()?.click();
+			renameAction?.click();
 			await Promise.resolve();
 		});
-		expect(document.activeElement).toBe(document.querySelector(".devices-row-menu summary"));
+		await vi.waitFor(() =>
+			expect(document.activeElement).toBe(document.querySelector('[id^="device-actions-"]')),
+		);
 		await act(async () => {
 			finish();
 			await Promise.resolve();
@@ -1437,7 +1486,7 @@ describe("Device rename menu", () => {
 				...state,
 			});
 			const item = [
-				...document.querySelectorAll<HTMLButtonElement>(".devices-row-menu .feed-menu-item"),
+				...openActionMenu().querySelectorAll<HTMLButtonElement>(".feed-menu-item"),
 			].find((button) => button.textContent === "Rename device…");
 			expect(item?.disabled).toBe(true);
 		},
@@ -1452,7 +1501,7 @@ describe("Device rename menu", () => {
 		expect(document.querySelector(".devices-table-device button")).toBeNull();
 		const openRename = () => {
 			const item = [
-				...document.querySelectorAll<HTMLButtonElement>(".devices-row-menu .feed-menu-item"),
+				...openActionMenu().querySelectorAll<HTMLButtonElement>(".feed-menu-item"),
 			].find((button) => button.textContent === "Rename device…");
 			if (!item) throw new Error("Rename menu item missing");
 			act(() => item.click());
@@ -1460,7 +1509,7 @@ describe("Device rename menu", () => {
 			if (!form) throw new Error("Rename form missing");
 			return form;
 		};
-		const trigger = document.querySelector(".devices-row-menu summary");
+		const trigger = document.querySelector('[id^="device-actions-"]');
 
 		const invalid = openRename();
 		const invalidInput = invalid.querySelector<HTMLInputElement>("input");
@@ -1500,8 +1549,8 @@ describe("Device rename menu", () => {
 			}
 			input?.blur();
 		});
+		openRename();
 		await act(async () => {
-			openRename();
 			await Promise.resolve();
 		});
 		expect(document.activeElement).toBe(input);
@@ -1535,7 +1584,7 @@ describe("Device naming", () => {
 			],
 		});
 		const rename = [
-			...document.querySelectorAll<HTMLButtonElement>(".devices-row-menu .feed-menu-item"),
+			...openActionMenu().querySelectorAll<HTMLButtonElement>(".feed-menu-item"),
 		].find((button) => button.textContent?.includes("Rename device"));
 		expect(rename).toBeDefined();
 		act(() => rename?.click());
@@ -1552,11 +1601,11 @@ describe("Device naming", () => {
 		expect(renameDevice).toHaveBeenCalledWith("device-address-fingerprint-secret", "Desk laptop");
 		expect(onCommitted).toHaveBeenCalledOnce();
 		expect(onNavigate).not.toHaveBeenCalled();
-		const details = [...document.querySelectorAll<HTMLButtonElement>(".feed-menu-item")].find(
-			(button) => button.textContent === "Details",
-		);
+		const details = [
+			...openActionMenu().querySelectorAll<HTMLButtonElement>(".feed-menu-item"),
+		].find((button) => button.textContent === "Details");
 		act(() => details?.click());
-		const changeIdentity = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+		const changeIdentity = [...openActionMenu().querySelectorAll<HTMLButtonElement>("button")].find(
 			(button) => button.textContent === "Change Identity…",
 		);
 		act(() => changeIdentity?.click());
@@ -1647,16 +1696,19 @@ describe("Device identity grouping", () => {
 		expect(table.querySelectorAll(".devices-table-row")).toHaveLength(1);
 		const detailsRow = table.querySelector<HTMLElement>(".devices-table-details");
 		expect(detailsRow?.hidden).toBe(true);
-		const detailsButton = [...table.querySelectorAll<HTMLButtonElement>("button")].find(
-			(button) => button.textContent === "Details",
-		);
+		const detailsButton = [
+			...openActionMenu(table).querySelectorAll<HTMLButtonElement>("button"),
+		].find((button) => button.textContent === "Details");
 		expect(detailsButton?.getAttribute("aria-expanded")).toBe("false");
 		expect(detailsButton?.getAttribute("aria-controls")).toBe(detailsRow?.id);
 		act(() => {
 			detailsButton?.click();
 		});
 		expect(detailsRow?.hidden).toBe(false);
-		expect(detailsButton?.getAttribute("aria-expanded")).toBe("true");
+		const reopenedDetailsButton = [
+			...openActionMenu(table).querySelectorAll<HTMLButtonElement>("button"),
+		].find((button) => button.textContent === "Details");
+		expect(reopenedDetailsButton?.getAttribute("aria-expanded")).toBe("true");
 		expect(detailsRow?.textContent).toContain("API — Up to date");
 		expect(onNavigate).not.toHaveBeenCalled();
 		expect(document.body.textContent).toContain("1 revoked device is not included");
@@ -1830,11 +1882,15 @@ describe("Device refresh states", () => {
 			{ onNavigate: vi.fn() },
 		);
 
-		const actions = [
-			...document.querySelectorAll<HTMLButtonElement>(
-				'.devices-row-menu button[aria-label^="Review sharing for"]',
-			),
-		];
+		const actions = [...document.querySelectorAll<HTMLElement>(".devices-table-row")].map((row) => {
+			const menu = openActionMenu(row);
+			const action = menu.querySelector<HTMLButtonElement>(
+				'button[aria-label^="Review sharing for"]',
+			);
+			if (!action) throw new Error("Review sharing action missing");
+			closeActionMenu(menu);
+			return action;
+		});
 		expect(actions.map((action) => action.textContent)).toEqual([
 			"Review sharing",
 			"Review sharing",

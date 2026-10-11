@@ -4,6 +4,13 @@ import type { ComponentChild } from "preact";
 import { act } from "preact/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import html from "../static/index.html?raw";
+import { openActionMenu } from "./menu-test-utils";
+
+function workMenu() {
+	const row = document.getElementById("device-identity-card-device-private");
+	if (!row) throw new Error("Work device row missing");
+	return openActionMenu(row);
+}
 
 // Keep the header wrapper real while isolating the external Select runtime,
 // matching app-refresh.test.tsx's Preact-compatible test harness.
@@ -539,7 +546,7 @@ describe("Devices app integration", () => {
 			/\b(scope|grant|address|fingerprint|filter|epoch|cursor)\b/i,
 		);
 
-		const action = [...(panel?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find(
+		const action = [...workMenu().querySelectorAll<HTMLButtonElement>("button")].find(
 			(button) => button.textContent === "Review sharing",
 		);
 		if (!action) throw new Error("Devices action missing");
@@ -739,7 +746,7 @@ describe("Devices cached snapshot aliases", () => {
 			expect(deviceRow()?.textContent).toContain("Studio laptop");
 			expect(deviceRow()?.textContent).toContain("0.42.0");
 			expect(deviceRow()?.textContent).toContain("Available");
-			expect(deviceRow()?.textContent).toContain("Rename device…");
+			expect(workMenu().textContent).toContain("Rename device…");
 			if (mixed) {
 				mocks.loadDeviceIdentityInventory.mockRejectedValueOnce(new Error("inventory unavailable"));
 				await act(async () => {
@@ -747,7 +754,7 @@ describe("Devices cached snapshot aliases", () => {
 				});
 				expect(deviceRow()?.textContent).toContain("Presence unavailable");
 				expect(deviceRow()?.textContent).not.toContain("0.42.0");
-				expect(deviceRow()?.textContent).toContain("Rename device…");
+				expect(workMenu().textContent).toContain("Rename device…");
 			}
 			const stableDeviceDetails = () =>
 				[...(deviceRow()?.querySelectorAll("td:not(.devices-table-sync)") ?? [])]
@@ -767,7 +774,7 @@ describe("Devices cached snapshot aliases", () => {
 			expect(
 				panel?.textContent?.includes("Device ownership information is temporarily unavailable"),
 			).toBe(mixed);
-			const rebind = [...(panel?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find(
+			const rebind = [...workMenu().querySelectorAll<HTMLButtonElement>("button")].find(
 				(button) => button.textContent === "Change Identity…",
 			);
 			expect(rebind?.disabled).toBe(true);
@@ -810,9 +817,7 @@ describe("Devices unavailable inventory aliases", () => {
 			expect(document.getElementById("device-identity-card-device-private")?.textContent).toContain(
 				"0.42.0",
 			);
-			expect(document.getElementById("device-identity-card-device-private")?.textContent).toContain(
-				"Rename device…",
-			);
+			expect(workMenu().textContent).toContain("Rename device…");
 			mocks.loadDeviceIdentityInventory.mockRejectedValue(new Error("inventory unavailable"));
 			mocks.loadSyncData.mockImplementation(async () => {
 				const { state } = await import("./lib/state");
@@ -831,7 +836,7 @@ describe("Devices unavailable inventory aliases", () => {
 			});
 			const row = document.getElementById("device-identity-card-device-private");
 			expect(row?.textContent?.includes("0.99.0")).toBe(direct);
-			expect(row?.textContent).toContain("Rename device…");
+			expect(workMenu().textContent).toContain("Rename device…");
 			expect(row?.textContent).toContain(direct ? "Available" : "Presence unavailable");
 		},
 	);
@@ -884,7 +889,7 @@ describe("Devices presence evidence", () => {
 			expect(row?.textContent).toContain("Studio laptop");
 			expect(row?.textContent).not.toContain("Canonical device");
 			expect(row?.textContent).not.toContain("Offline");
-			expect(row?.textContent).toContain("Rename device…");
+			expect(workMenu().textContent).toContain("Rename device…");
 		},
 	);
 });
@@ -1038,7 +1043,7 @@ describe("Devices app sync health", () => {
 		expect(row?.querySelector(".devices-table-sync")?.textContent).toContain(
 			"24h: received 4 · sent 2",
 		);
-		const action = row?.querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]');
+		const action = workMenu().querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]');
 		expect(action?.disabled).toBe(false);
 		await act(async () => {
 			action?.click();
@@ -1065,9 +1070,9 @@ describe("Devices app sync health", () => {
 		await act(async () => {
 			await vi.advanceTimersByTimeAsync(5_100);
 		});
-		const row = document.getElementById("device-identity-card-device-private");
+		const menu = workMenu();
 		await act(async () => {
-			row?.querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]')?.click();
+			menu.querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]')?.click();
 			await vi.advanceTimersByTimeAsync(0);
 		});
 		expect(
@@ -1106,7 +1111,7 @@ describe("Devices app sync health", () => {
 		);
 		expect(row()?.querySelector(".devices-table-sync")?.textContent).not.toContain("received 3");
 		expect(
-			row()?.querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]')?.disabled,
+			workMenu().querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]')?.disabled,
 		).toBe(true);
 	});
 });
@@ -1129,8 +1134,9 @@ describe("Devices app sync errors", () => {
 			await vi.advanceTimersByTimeAsync(5_100);
 		});
 		const row = () => document.getElementById("device-identity-card-device-private");
+		const menu = workMenu();
 		await act(async () => {
-			row()?.querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]')?.click();
+			menu.querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]')?.click();
 			await vi.advanceTimersByTimeAsync(0);
 		});
 		expect(row()?.querySelector(".devices-table-sync")?.textContent).toContain(
@@ -1393,8 +1399,8 @@ describe("Devices app inventory refresh", () => {
 	});
 
 	it("moves focus to the Devices tab when a focused device action is removed", async () => {
-		const action = document.querySelector<HTMLButtonElement>(
-			'#tab-devices button[aria-label="Review sharing for Work Laptop"]',
+		const action = workMenu().querySelector<HTMLButtonElement>(
+			'button[aria-label="Review sharing for Work Laptop"]',
 		);
 		if (!action) throw new Error("Devices action missing");
 		action.focus();
@@ -1438,10 +1444,13 @@ describe("Devices rename polling", () => {
 	afterEach(teardownDevicesAppTest);
 
 	it("does not replace the active rename form during a background refresh", async () => {
-		const trigger = [
-			...document.querySelectorAll<HTMLButtonElement>(".devices-row-menu .feed-menu-item"),
-		].find((button) => button.textContent === "Rename device…");
+		const trigger = [...workMenu().querySelectorAll<HTMLButtonElement>(".feed-menu-item")].find(
+			(button) => button.textContent === "Rename device…",
+		);
 		act(() => trigger?.click());
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(0);
+		});
 		const input = document.querySelector<HTMLInputElement>(".devices-rename-form input");
 		if (!input) throw new Error("Rename input missing");
 		act(() => {

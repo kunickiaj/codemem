@@ -81,28 +81,28 @@ const preview = {
 	teammate: { display_name: "Brian", match: "pending" as const },
 };
 
-describe("project sharing flow", () => {
-	beforeEach(() => {
-		document.body.innerHTML = '<div id="mount"></div>';
-		vi.mocked(api.previewProjectInvite).mockResolvedValue(preview);
-		vi.mocked(api.createProjectInvite).mockResolvedValue({
-			...preview,
-			invite: {
-				encoded: "encoded",
-				expires_at: "2026-07-27T00:00:00Z",
-				link: "codemem://join?invite=encoded",
-			},
-			ok: true,
-		});
+beforeEach(() => {
+	document.body.innerHTML = '<div id="mount"></div>';
+	vi.mocked(api.previewProjectInvite).mockResolvedValue(preview);
+	vi.mocked(api.createProjectInvite).mockResolvedValue({
+		...preview,
+		invite: {
+			encoded: "encoded",
+			expires_at: "2026-07-27T00:00:00Z",
+			link: "codemem://join?invite=encoded",
+		},
+		ok: true,
 	});
+});
 
-	afterEach(() => {
-		const mount = document.getElementById("mount");
-		if (mount) act(() => render(null, mount));
-		vi.clearAllMocks();
-		document.body.innerHTML = "";
-	});
+afterEach(() => {
+	const mount = document.getElementById("mount");
+	if (mount) act(() => render(null, mount));
+	vi.clearAllMocks();
+	document.body.innerHTML = "";
+});
 
+describe("project sharing startup", () => {
 	it("opens a queued recovery request after direct Sync-tab startup", async () => {
 		expect(openProjectShareFlow([project.workspace_identity], "Brian")).toBe(true);
 		expect(window.location.hash).toBe("#projects");
@@ -121,7 +121,49 @@ describe("project sharing flow", () => {
 			true,
 		);
 	});
+});
 
+describe("project sharing close button", () => {
+	it("disables the shared close button during review and allows closing after review finishes", async () => {
+		// Arrange
+		let finish!: (value: typeof preview) => void;
+		vi.mocked(api.previewProjectInvite).mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					finish = resolve;
+				}),
+		);
+		const mount = document.getElementById("mount");
+		if (!mount) throw new Error("mount missing");
+		act(() => renderProjectShareFlow(mount, [project]));
+		act(() => (mount.querySelector("button") as HTMLButtonElement).click());
+		act(() => {
+			const name = document.getElementById("project-share-teammate") as HTMLInputElement;
+			name.value = "Brian";
+			name.dispatchEvent(new Event("input", { bubbles: true }));
+			(document.querySelector('input[type="checkbox"]') as HTMLInputElement).click();
+		});
+		// Act
+		act(() => (document.querySelector(".sync-dialog-confirm") as HTMLButtonElement).click());
+		const close = document.querySelector<HTMLButtonElement>('[aria-label="Close Share projects"]');
+		act(() => close?.click());
+		// Assert: busy close cannot dismiss an in-flight review.
+		expect(close?.classList.contains("modal-close-button")).toBe(true);
+		expect(close?.disabled).toBe(true);
+		expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+		// Act
+		await act(async () => {
+			finish(preview);
+			await Promise.resolve();
+		});
+		// Assert
+		expect(close?.disabled).toBe(false);
+		act(() => close?.click());
+		expect(document.querySelector('[role="dialog"]')).toBeNull();
+	});
+});
+
+describe("project sharing flow", () => {
 	it("reviews exact projects, counts, and future sharing without internal terminology", async () => {
 		const mount = document.getElementById("mount");
 		if (!mount) throw new Error("mount missing");

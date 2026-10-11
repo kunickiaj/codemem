@@ -3,7 +3,9 @@
 import { describe, expect, it } from "vitest";
 import html from "../static/index.html?raw";
 import appSource from "./app.ts?raw";
+import actionMenuSource from "./components/primitives/action-menu.tsx?raw";
 import coordinatorGroupsSource from "./tabs/coordinator-admin/components/groups-panel.ts?raw";
+import projectMenuSource from "./tabs/projects/ProjectRowMenu.tsx?raw";
 import syncPeersSource from "./tabs/sync/components/sync-peers.tsx?raw";
 import syncPeopleSource from "./tabs/sync/people.ts?raw";
 import invitePanelSource from "./tabs/sync/team-sync/helpers/invite-panel-dom.ts?raw";
@@ -264,9 +266,16 @@ describe("project-first navigation boundaries", () => {
 
 describe("Projects inventory overlays", () => {
 	it("lets project row menus escape the inventory table", () => {
+		// Arrange
 		const tableRule = html.match(/\.project-inventory-table \{([^}]*)\}/)?.[1] ?? "";
+		// Act: Projects now delegates popup placement to the shared portal wrapper.
+		const usesPortal =
+			projectMenuSource.includes("<ActionMenu") && actionMenuSource.includes("DropdownMenu.Portal");
+		// Assert
 		expect(tableRule).toContain("overflow: visible");
-		expect(html).toContain(".project-row-menu-panel { position: absolute;");
+		expect(usesPortal).toBe(true);
+		expect(tableRule).not.toContain("overflow: hidden");
+		expect(html).not.toContain(".project-row-menu-panel { position: absolute;");
 	});
 });
 

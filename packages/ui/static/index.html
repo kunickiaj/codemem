@@ -1280,12 +1280,7 @@
       .project-inventory-badges:empty { display: none; }
       .project-inventory-row-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--sp-2); }
       .project-inventory-row-actions .settings-button { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
-      .project-row-menu { position: relative; flex: 0 0 auto; }
-      .project-row-menu-panel { position: absolute; top: calc(100% + var(--sp-1)); right: 0; }
-      button.feed-menu-item { border: 0; background: transparent; font-family: inherit; text-align: left; }
-      button.feed-menu-item:hover,
-      button.feed-menu-item:focus-visible { background: var(--surface-2); }
-      button.feed-menu-item:disabled { color: var(--text-tertiary); cursor: default; }
+      .project-row-menu { flex: 0 0 auto; }
       .project-inventory-details { background: var(--surface-2); }
       .project-inventory-details-row,
       .project-inventory-details-cell { display: block; min-width: 0; }
@@ -1328,8 +1323,6 @@
       .project-selection-checkbox { width: 18px; height: 18px; }
       .project-recipient-summary { min-width: 0; }
       .project-recipient-status { color: var(--text-secondary); font-size: var(--font-size-sm); }
-      .project-recipient-chips { display: flex; flex-wrap: wrap; gap: var(--sp-1); padding: 0; margin: 0; list-style: none; }
-      .project-recipient-chip { overflow: hidden; padding: 2px var(--sp-2); border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--surface-2); color: var(--text-primary); font-size: var(--font-size-2xs); text-overflow: ellipsis; white-space: nowrap; }
       .project-inventory-child-row { padding-left: var(--sp-5); }
       .project-inventory-cluster + .project-inventory-child .project-inventory-child-row { border-top: 1px solid var(--border); }
       .recipient-policy-review-section + .recipient-policy-review-section { margin-top: var(--sp-5); }
@@ -1454,12 +1447,15 @@
         list-style: none;
       }
       .project-recipient-chip {
+        overflow: hidden;
         padding: 3px 9px;
         border: 1px solid var(--border);
         border-radius: var(--radius-pill);
         background: var(--surface-2);
         color: var(--text-primary);
         font-size: var(--font-size-xs);
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .project-advanced-administration { margin-top: var(--sp-3); }
       .project-advanced-surface summary,
@@ -2092,11 +2088,6 @@
       .devices-table-version { color: var(--text-tertiary); font-family: var(--font-mono); font-size: var(--font-size-xs); }
       .devices-table-sync { display: grid; gap: 2px; color: var(--text-tertiary); font-size: var(--font-size-xs); }
       .devices-table-sync strong { color: var(--text-secondary); font-weight: var(--font-weight-medium); }
-      .devices-row-menu { position: relative; }
-      .devices-row-menu > summary { list-style: none; }
-      .devices-row-menu > summary::-webkit-details-marker { display: none; }
-      .devices-row-menu[open] > .feed-menu-trigger { background: var(--surface-2); color: var(--text-primary); border-color: var(--border-hover); }
-      .devices-row-menu > .feed-menu-panel { position: absolute; top: calc(100% + 4px); right: 0; }
       .devices-table-details { border-top: 1px solid var(--border); background: var(--surface-2); }
       .devices-table-details > td { display: grid; gap: var(--sp-3); padding: var(--sp-4) var(--sp-6); }
       .devices-table-details p { margin: 0; }
@@ -2531,6 +2522,10 @@
         box-shadow: 0 0 0 4px var(--focus-ring);
       }
       .feed-menu-item {
+        border: 0;
+        background: transparent;
+        font-family: inherit;
+        text-align: left;
         display: flex;
         align-items: center;
         width: 100%;
@@ -2543,17 +2538,22 @@
         user-select: none;
         outline: none;
       }
-      .feed-menu-item[data-highlighted] {
+      .feed-menu-item:not([data-disabled]):not(:disabled):hover,
+      .feed-menu-item:not([data-disabled]):not(:disabled):focus-visible,
+      .feed-menu-item:not([data-disabled]):not(:disabled)[data-highlighted] {
         background: var(--surface-2);
-      }
-      .feed-menu-item[data-disabled] {
-        color: var(--text-tertiary);
-        cursor: default;
       }
       .feed-menu-item.danger {
         color: var(--accent-warm);
       }
-      .feed-menu-item.danger[data-highlighted] {
+      .feed-menu-item[data-disabled],
+      .feed-menu-item:disabled {
+        color: var(--text-tertiary);
+        cursor: default;
+      }
+      .feed-menu-item.danger:not([data-disabled]):not(:disabled):hover,
+      .feed-menu-item.danger:not([data-disabled]):not(:disabled):focus-visible,
+      .feed-menu-item.danger:not([data-disabled]):not(:disabled)[data-highlighted] {
         background: rgba(212, 100, 46, 0.1);
       }
 

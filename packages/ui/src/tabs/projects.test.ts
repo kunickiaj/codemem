@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { openActionMenu } from "../menu-test-utils";
 
 vi.mock("../lib/api", () => ({
 	deleteSharingDomainProjectMapping: vi.fn(),
@@ -913,30 +914,30 @@ function projectsInventoryTablePresentationTests(): void {
 		expect(closedRow?.textContent).not.toContain(selected.workspace_identity);
 		expect(closedRow?.textContent).not.toContain("Space");
 
-		menuTrigger.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowDown" }));
-		await flushAsyncWork();
-		const menuItems = [...row.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
-		expect(document.activeElement).toBe(menuItems[0]);
+		const menuItems = [
+			...openActionMenu(row).querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+		];
+		expect(menuItems).toHaveLength(4);
+		await vi.waitFor(() => expect(document.activeElement).toBe(menuItems[0]));
 		menuItems[0]?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowDown" }));
-		expect(document.activeElement).toBe(menuItems[1]);
+		await vi.waitFor(() => expect(document.activeElement).toBe(menuItems[1]));
 		await loadProjectsData();
 		await flushAsyncWork();
 		expect(document.activeElement?.textContent).toBe(menuItems[1]?.textContent);
 		menuItems[1]?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowUp" }));
-		expect(document.activeElement).toBe(menuItems[0]);
+		await vi.waitFor(() => expect(document.activeElement).toBe(menuItems[0]));
 		menuItems[0]?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "End" }));
-		expect(document.activeElement).toBe(menuItems.at(-1));
+		await vi.waitFor(() => expect(document.activeElement).toBe(menuItems.at(-1)));
 		menuItems.at(-1)?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Home" }));
-		expect(document.activeElement).toBe(menuItems[0]);
+		await vi.waitFor(() => expect(document.activeElement).toBe(menuItems[0]));
 		menuItems[0]?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
 		await flushAsyncWork();
-		expect(row.querySelector('[role="menu"]')).toBeNull();
-		expect(document.activeElement).toBe(menuTrigger);
+		await vi.waitFor(() => expect(document.querySelector('[role="menu"]')).toBeNull());
+		await vi.waitFor(() => expect(document.activeElement).toBe(menuTrigger));
 
 		for (const shiftKey of [false, true]) {
-			menuTrigger.click();
-			await flushAsyncWork();
-			const firstItem = row.querySelector<HTMLButtonElement>('[role="menuitem"]');
+			const reopenedMenu = openActionMenu(row);
+			const firstItem = reopenedMenu.querySelector<HTMLButtonElement>('[role="menuitem"]');
 			firstItem?.focus();
 			const tab = new KeyboardEvent("keydown", {
 				bubbles: true,
@@ -946,9 +947,9 @@ function projectsInventoryTablePresentationTests(): void {
 			});
 			firstItem?.dispatchEvent(tab);
 			await flushAsyncWork();
-			expect(tab.defaultPrevented).toBe(false);
-			expect(row.querySelector('[role="menu"]')).toBeNull();
-			expect(document.activeElement).not.toBe(menuTrigger);
+			await vi.waitFor(() => expect(document.querySelector('[role="menu"]')).toBeNull());
+			const destination = shiftKey ? updateSharing : details?.querySelector("summary");
+			await vi.waitFor(() => expect(document.activeElement).toBe(destination));
 		}
 
 		row.querySelector<HTMLButtonElement>(".project-recipient-action")?.click();
@@ -3588,10 +3589,9 @@ describe("Projects cached recipient presentation", () => {
 		initProjectsTab(refresh);
 		await loadProjectsData();
 		const row = document.querySelector<HTMLElement>("[data-project-workspace-identity]");
-		const menuTrigger = row?.querySelector<HTMLButtonElement>(".feed-menu-trigger");
-		menuTrigger?.click();
+		const menu = openActionMenu(row ?? document);
 		await flushAsyncWork();
-		const keepLocal = document.querySelector<HTMLButtonElement>('[role="menuitem"]:nth-child(3)');
+		const keepLocal = menu.querySelector<HTMLButtonElement>('[role="menuitem"]:nth-child(3)');
 		expect(keepLocal?.textContent).toBe("Keep local-only");
 		expect(keepLocal?.disabled).toBe(false);
 		keepLocal?.click();
@@ -3795,9 +3795,9 @@ describe("Projects cached recipient presentation", () => {
 		initProjectsTab(refresh);
 		await loadProjectsData();
 		const row = document.querySelector<HTMLElement>("[data-project-workspace-identity]");
-		row?.querySelector<HTMLButtonElement>(".feed-menu-trigger")?.click();
+		const menu = openActionMenu(row ?? document);
 		await flushAsyncWork();
-		const forget = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(
+		const forget = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(
 			(button) => button.textContent === "Forget local memories…",
 		);
 		expect(forget?.disabled).toBe(false);

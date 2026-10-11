@@ -1,5 +1,6 @@
 import { render } from "preact";
 import { useEffect, useId, useMemo, useState } from "preact/hooks";
+import { DialogCloseButton } from "../components/primitives/dialog-close-button";
 import { RadixDialog } from "../components/primitives/radix-dialog";
 import * as api from "../lib/api";
 import type {
@@ -268,14 +269,7 @@ function ProjectShareFlow({
 					<div className="modal-card sync-dialog-card">
 						<div className="modal-header">
 							<h2 id="project-share-title">Share projects</h2>
-							<button
-								aria-label="Close Share projects"
-								disabled={busy}
-								onClick={close}
-								type="button"
-							>
-								×
-							</button>
+							<DialogCloseButton ariaLabel="Close Share projects" disabled={busy} onClick={close} />
 						</div>
 						<div aria-busy={busy} className="modal-body">
 							<p className="small" id="project-share-description">

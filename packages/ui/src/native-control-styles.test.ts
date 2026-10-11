@@ -110,6 +110,29 @@ describe("shared select control styles", () => {
 });
 
 describe("shared popup styles", () => {
+	it("mutes disabled danger items and never highlights disabled menu actions", () => {
+		// Arrange: inspect the shipped CSS, including its cascade ordering.
+		const normalized = html.replace(/\s+/g, " ");
+		// Act
+		const danger = normalized.match(/\.feed-menu-item\.danger \{([^}]+)\}/);
+		const disabled = normalized.match(
+			/\.feed-menu-item\[data-disabled\], \.feed-menu-item:disabled \{([^}]+)\}/,
+		);
+		const highlights = [
+			...normalized.matchAll(/([^{}]+\.feed-menu-item[^{}]+)\{([^}]+)\}/g),
+		].filter((match) => /hover|focus-visible|data-highlighted/.test(match[1]));
+		// Assert: the equal-specificity disabled rule wins over the danger color.
+		expect(danger?.[1]).toContain("color: var(--accent-warm)");
+		expect(disabled?.[1]).toContain("color: var(--text-tertiary)");
+		expect(disabled?.index).toBeGreaterThan(danger?.index ?? -1);
+		expect(highlights).toHaveLength(2);
+		for (const rule of highlights) {
+			for (const selector of rule[1].split(",")) {
+				expect(selector).toContain(":not([data-disabled]):not(:disabled)");
+			}
+		}
+	});
+
 	it.each(["feed-menu-panel", "project-scope-picker-popover", "autocomplete-popover"])(
 		"uses the same popup tokens for %s without local radius or shadow values",
 		(className) => {
