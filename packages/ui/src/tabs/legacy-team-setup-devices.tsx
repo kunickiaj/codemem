@@ -131,7 +131,7 @@ function DeviceRow({
 			<label htmlFor={controlId}>Person using this device</label>
 			<NativeSelect
 				aria-describedby={assignmentDescription}
-				className="feed-search legacy-team-device-select"
+				className="legacy-team-device-select"
 				disabled={assignmentControlsBlocked}
 				id={controlId}
 				onChange={(event) => setDraftIdentityRef(event.currentTarget.value)}

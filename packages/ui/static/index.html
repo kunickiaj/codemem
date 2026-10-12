@@ -1332,7 +1332,6 @@
         justify-content: space-between;
         gap: var(--sp-4);
       }
-      }
       .recipient-policy-review-count {
         color: var(--text-tertiary);
         font-weight: var(--font-weight-regular);
@@ -1389,7 +1388,6 @@
         margin-top: var(--sp-1);
       }
       .recipient-policy-review-meta .badge { margin-left: var(--sp-2); }
-      .recipient-policy-review-select { min-width: 0; width: 100%; }
       .recipient-policy-review-details {
         grid-column: 1 / -1;
         padding: var(--sp-3) 0 var(--sp-1);
@@ -1528,8 +1526,6 @@
       }
       .legacy-team-device-row label { font-size: var(--font-size-sm); font-weight: var(--font-weight-semibold); }
       .legacy-team-device-evidence { display: grid; gap: var(--sp-1); }
-      .legacy-team-device-select { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; margin: 0; }
-      .legacy-team-device-select:disabled { opacity: 0.55; cursor: not-allowed; }
       .legacy-team-device-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
       .legacy-team-project-list {
         display: grid;
@@ -1564,8 +1560,6 @@
       }
       .legacy-team-project-row-content > * { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
       .legacy-team-project-row label { font-size: var(--font-size-sm); font-weight: var(--font-weight-semibold); }
-      .legacy-team-project-select { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; margin: 0; }
-      .legacy-team-project-select:disabled { opacity: 0.55; cursor: not-allowed; }
       .legacy-team-setup-row-needs-attention {
         border-color: var(--accent);
         background: var(--accent-subtle);
@@ -1972,8 +1966,6 @@
       .device-identity-rebind legend { padding: 0 var(--sp-2); font-weight: var(--font-weight-semibold); }
       .device-identity-setup-card label,
       .device-identity-rebind label { display: flex; align-items: center; gap: var(--sp-2); }
-      .device-identity-setup-card select,
-      .device-identity-rebind select { width: 100%; min-height: 36px; }
       .device-identity-rebind { margin-top: var(--sp-4); }
       .device-identity-rebind-review { display: grid; gap: var(--sp-3); padding-top: var(--sp-2); }
       .device-identity-review-panel { margin-top: var(--sp-4); }
@@ -2185,8 +2177,8 @@
 
       /* 36×36 square icon buttons — theme toggle, settings gear. */
       .icon-button {
-        width: 36px;
-        height: 36px;
+        width: var(--control-button-height);
+        height: var(--control-button-height);
         padding: 0;
         display: inline-flex;
         align-items: center;
@@ -2273,13 +2265,6 @@
         transition: border-color var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard);
       }
       .feed-search::placeholder { color: var(--text-tertiary); }
-      .feed-search.legacy-team-device-select,
-      .feed-search.legacy-team-project-select {
-        box-sizing: border-box;
-        width: 100%;
-        min-width: 0;
-        max-width: 100%;
-      }
 
       .feed-inspector-files {
         width: 100%;
@@ -2486,6 +2471,9 @@
 
       .feed-menu-panel {
         min-width: 180px;
+        max-width: min(420px, var(--radix-dropdown-menu-content-available-width));
+        max-height: var(--radix-dropdown-menu-content-available-height);
+        overflow-y: auto;
         padding: var(--popup-padding);
         border-radius: var(--popup-radius);
         border: 1px solid var(--border);
@@ -2523,13 +2511,15 @@
         display: flex;
         align-items: center;
         width: 100%;
-        min-height: 36px;
+        min-height: var(--control-button-height);
         padding: 8px 10px;
         border-radius: var(--radius-md);
         color: var(--text-primary);
         font-size: var(--font-size-md);
         cursor: pointer;
         user-select: none;
+        white-space: normal;
+        overflow-wrap: anywhere;
         outline: none;
       }
       .feed-menu-item:not([data-disabled]):not(:disabled):hover,
@@ -3303,7 +3293,16 @@
       .peer-scope-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2); }
       .peer-scope-editor { display: grid; gap: 8px; }
       .peer-scope-chips { display: flex; flex-wrap: wrap; gap: 6px; min-height: 32px; align-items: flex-start; padding: 8px 10px; margin: 0; list-style: none; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
-      .peer-scope-chip { padding: 4px 8px; background: rgba(43, 122, 176, 0.12); color: var(--accent); font-size: var(--font-size-sm); }
+      .peer-scope-chip {
+        min-width: 0;
+        max-width: 100%;
+        white-space: normal;
+        overflow-wrap: anywhere;
+        padding: 4px 8px;
+        background: rgba(43, 122, 176, 0.12);
+        color: var(--accent);
+        font-size: var(--font-size-sm);
+      }
       .peer-scope-chip.empty { background: transparent; color: var(--text-tertiary); border-style: dashed; border-color: var(--border); }
 
       /* ProjectScopePicker — selected chips on top, an "Add project"

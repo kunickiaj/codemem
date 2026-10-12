@@ -147,15 +147,21 @@ describe("project-first responsive layout", () => {
 	});
 
 	it("bounds Team setup device selectors at narrow and 200% zoom widths", () => {
-		const rule = html.match(/\.legacy-team-device-select \{([^}]*)\}/)?.[1] ?? "";
-		const cascadeOverride =
-			html.match(/\.feed-search\.legacy-team-device-select,[^{]*\{([^}]*)\}/)?.[1] ?? "";
-
-		expect(rule).toContain("width: 100%");
-		expect(rule).toContain("min-width: 0");
-		expect(rule).toContain("max-width: 100%");
-		expect(cascadeOverride).toContain("min-width: 0");
-		expect(cascadeOverride).toContain("max-width: 100%");
+		// Arrange: NativeSelect now owns sizing, without the old feed-search override cascade.
+		const normalized = controls.replace(/\s+/g, " ");
+		// Act
+		const shared = normalized.match(
+			/\.radix-select-trigger, select\.native-select[^{}]+ \{([^}]+)\}/,
+		)?.[1];
+		const native = normalized.match(
+			/select\.native-select[^{}]+ \{ appearance: none;([^}]+)\}/,
+		)?.[1];
+		// Assert
+		expect(shared).toContain("width: var(--select-width, 100%)");
+		expect(shared).toContain("min-width: var(--select-min-width, 0)");
+		expect(native).toContain("max-width: 100%");
+		expect(native).toContain("box-sizing: border-box");
+		expect(html).not.toContain(".feed-search.legacy-team-device-select");
 	});
 
 	it("does not present the legacy coordinator surface as ordinary Team administration", () => {

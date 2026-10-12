@@ -2,6 +2,9 @@
  * classes own shared geometry and let callers refine layout and size. */
 
 :root {
+  --control-height: 38px;
+  --control-button-height: 36px;
+  --control-compact-height: 30px;
   --control-focus-shadow: 0 0 0 3px var(--focus-ring);
   --popup-radius: var(--radius-md);
   --popup-shadow: var(--shadow-lg);
@@ -16,6 +19,7 @@ select.native-select:not([multiple]):not([hidden]):not([aria-hidden="true"]):whe
   gap: var(--sp-2);
   width: var(--select-width, 100%);
   min-width: var(--select-min-width, 0);
+  min-height: var(--control-height);
   padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -36,7 +40,12 @@ select.native-select:not([multiple]):not([hidden]):not([aria-hidden="true"]):whe
   appearance: none;
   display: inline-block;
   box-sizing: border-box;
-  min-height: 38px;
+  max-width: 100%;
+  /* WebKit otherwise paints the selected option beyond the select's box,
+   * contributing that text to document scroll width despite width:100%. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   line-height: 20px;
   padding-right: calc(var(--sp-3) + 14px + var(--sp-2));
   background-image:
@@ -47,9 +56,17 @@ select.native-select:not([multiple]):not([hidden]):not([aria-hidden="true"]):whe
   background-repeat: no-repeat;
 }
 
-.radix-select-trigger[data-size="compact"] {
+.radix-select-trigger[data-size="compact"],
+select.native-select[data-size="compact"]:not([multiple]):not([hidden]):not([aria-hidden="true"]):where(:not([size]), [size="0"], [size="1"]) {
+  min-height: var(--control-compact-height);
   padding: 5px 10px;
   font-size: var(--font-size-sm);
+  line-height: 18px;
+}
+
+select.native-select[data-size="compact"]:not([multiple]):not([hidden]):not([aria-hidden="true"]):where(:not([size]), [size="0"], [size="1"]) {
+  padding-right: calc(10px + 14px + var(--sp-2));
+  background-position: right calc(10px + 7px) center, right calc(10px + 3.5px) center;
 }
 
 .radix-select-trigger:hover:not(:disabled),
@@ -94,7 +111,7 @@ select.native-select:not([multiple]):not([hidden]):not([aria-hidden="true"]):whe
   align-items: center;
   justify-content: space-between;
   gap: var(--sp-3);
-  min-height: 36px;
+  min-height: var(--control-button-height);
   padding: var(--sp-2) var(--sp-3);
   border-radius: var(--radius-sm);
   color: var(--text-primary);
@@ -226,7 +243,7 @@ select.native-select:not([multiple]):not([hidden]):not([aria-hidden="true"]):whe
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
-  min-height: 36px;
+  min-height: var(--control-button-height);
   padding: var(--sp-2) var(--sp-3);
   border-radius: var(--radius-md);
   font-family: var(--font-sans);

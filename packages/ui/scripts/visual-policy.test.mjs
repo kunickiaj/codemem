@@ -251,6 +251,21 @@ test("gallery screenshot names and project matrix match the golden allowlist", (
 	// Assert
 	assert.equal(names.length, 6);
 	assert.equal(validateGeneratedGoldens(paths).length, 24);
-	assert.match(config, /projects: \[1280, 390\]/);
+	assert.match(config, /\[1280, 390\]\.flatMap/);
 	assert.match(config, /\["dark", "light"\] as const/);
+	assert.match(config, /name: `webkit-narrow-\$\{colorScheme\}`/);
+	assert.match(config, /testMatch: "layout\.spec\.ts"/);
+});
+
+test("layout checks are explicitly staged without adding WebKit goldens", () => {
+	// Arrange
+	const path = "packages/ui/visual/layout.spec.ts";
+	// Act
+	const selected = selectSourcePaths([]);
+	// Assert
+	assert.ok(HARNESS_FILES.includes(path));
+	assert.ok(selected.includes(path));
+	assert.equal(GOLDEN_FILES.length, 24);
+	assert.ok(GOLDEN_FILES.every((golden) => !golden.includes("webkit")));
+	assert.equal(selected.includes("packages/ui/visual/unapproved.spec.ts"), false);
 });

@@ -18,6 +18,7 @@ export const HARNESS_FILES = [
 	"packages/ui/scripts/visual-policy.test.mjs",
 	"packages/ui/scripts/visual-runner.mjs",
 	"packages/ui/visual/gallery.spec.ts",
+	"packages/ui/visual/layout.spec.ts",
 	"packages/ui/visual/fixtures.ts",
 	"packages/ui/visual/control.spec.ts",
 	"packages/ui/src/gallery/gallery-interactions.test.tsx",

@@ -52,9 +52,6 @@ export default defineConfig({
 	server: { host: "127.0.0.1", port: 38922, strictPort: true },
 	preview: { host: "127.0.0.1", port: 38922, strictPort: true },
 	build: {
-		// The canonical inline CSS includes browser-tolerated syntax (an extra
-		// closing brace). Preserve it as shipped instead of reparsing/minifying it.
-		cssMinify: false,
 		outDir: resolve(import.meta.dirname, "../../.tmp/gallery-dist"),
 		emptyOutDir: true,
 		rollupOptions: { input: resolve(import.meta.dirname, ".tmp/gallery.html") },

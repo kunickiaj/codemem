@@ -10,7 +10,7 @@ export const output = resolve(
 );
 export default defineConfig({
 	testDir: "./visual",
-	testMatch: "gallery.spec.ts",
+	testMatch: ["gallery.spec.ts", "layout.spec.ts"],
 	outputDir: `${output}/test-results`,
 	reporter: [["list"], ["html", { outputFolder: `${output}/report`, open: "never" }]],
 	snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
@@ -43,12 +43,19 @@ export default defineConfig({
 		reducedMotion: "reduce",
 		serviceWorkers: "block",
 	},
-	projects: [1280, 390].flatMap((width) =>
-		(["dark", "light"] as const).map((colorScheme) => ({
-			name: `${width === 390 ? "narrow" : "desktop"}-${colorScheme}`,
-			use: { viewport: { width, height: 900 }, colorScheme },
+	projects: [
+		...[1280, 390].flatMap((width) =>
+			(["dark", "light"] as const).map((colorScheme) => ({
+				name: `${width === 390 ? "narrow" : "desktop"}-${colorScheme}`,
+				use: { viewport: { width, height: 900 }, colorScheme },
+			})),
+		),
+		...(["dark", "light"] as const).map((colorScheme) => ({
+			name: `webkit-narrow-${colorScheme}`,
+			testMatch: "layout.spec.ts",
+			use: { browserName: "webkit" as const, viewport: { width: 390, height: 900 }, colorScheme },
 		})),
-	),
+	],
 	webServer: {
 		command:
 			"node scripts/make-gallery-html.mjs && pnpm exec vite --config vite.gallery.config.ts --port 38923",

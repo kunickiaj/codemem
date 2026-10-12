@@ -177,6 +177,7 @@ export function ActionMenu({ actions, label, triggerId, triggerRef }: ActionMenu
 					"aria-label": label,
 					"aria-labelledby": triggerId,
 					className: "feed-menu-panel",
+					collisionPadding: 12,
 					loop: true,
 					onKeyDown,
 					onCloseAutoFocus,

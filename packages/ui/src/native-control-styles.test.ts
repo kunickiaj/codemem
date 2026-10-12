@@ -99,7 +99,7 @@ describe("shared select control styles", () => {
 			/\.radix-select-trigger, select\.native-select[^{}]+ \{([^}]+)\}/,
 		)?.[1];
 		const compactRule = normalized.match(
-			/\.radix-select-trigger\[data-size="compact"\] \{([^}]+)\}/,
+			/\.radix-select-trigger\[data-size="compact"\], select\.native-select[^{}]+ \{([^}]+)\}/,
 		)?.[1];
 
 		// Assert
@@ -112,6 +112,31 @@ describe("shared select control styles", () => {
 });
 
 describe("intentional native select styles", () => {
+	it.each([
+		['data-size="compact"', true],
+		['data-size="compact" size="1"', true],
+		['data-size="compact" size="4"', false],
+		['data-size="compact" multiple', false],
+		['data-size="compact" hidden', false],
+		['data-size="compact" aria-hidden="true"', false],
+		['data-size="default"', false],
+	])("compact geometry excludes non-single-picker modes: %s", (attributes, expected) => {
+		// Arrange
+		const normalized = controls.replace(/\s+/g, " ");
+		const template = document.createElement("template");
+		template.innerHTML = `<select class="native-select" ${attributes}></select>`;
+		// Act: use the shipped compact selector rather than copying its qualification.
+		const rule = normalized.match(
+			/\.radix-select-trigger\[data-size="compact"\], (select\.native-select[^{}]+) \{([^}]+)\}/,
+		);
+		if (!rule) throw new Error("compact select rule missing");
+		const eligible = template.content.querySelector("select")?.matches(rule[1]);
+		// Assert
+		expect(eligible).toBe(expected);
+		expect(rule[2]).toContain("min-height: var(--control-compact-height)");
+		expect(rule[2]).not.toContain("min-height: var(--control-height)");
+	});
+
 	it.each([
 		['<button class="radix-select-trigger"></button>', true],
 		['<button class="radix-select-trigger" disabled></button>', false],
@@ -188,7 +213,7 @@ describe("intentional native select styles", () => {
 		])
 			expect(shared).toContain(declaration);
 		expect(native).toContain("box-sizing: border-box");
-		expect(native).toContain("min-height: 38px");
+		expect(shared).toContain("min-height: var(--control-height)");
 		expect(native).toContain("padding-right: calc(var(--sp-3) + 14px + var(--sp-2))");
 		expect(native).toContain("var(--text-tertiary)");
 		expect(native).toContain("right calc(var(--sp-3) + 7px) center");
@@ -264,6 +289,23 @@ describe("shared choice row styles", () => {
 });
 
 describe("shared popup styles", () => {
+	it("limits action menus to available space and wraps labels instead of clipping them", () => {
+		// Arrange
+		const normalized = html.replace(/\s+/g, " ");
+		// Act
+		const panel = normalized.match(/\.feed-menu-panel \{([^}]+)\}/)?.[1];
+		const item = normalized.match(/\.feed-menu-item \{([^}]+)\}/)?.[1];
+		// Assert: long labels must stay usable, not vanish beyond the viewport.
+		expect(panel).toContain(
+			"max-width: min(420px, var(--radix-dropdown-menu-content-available-width))",
+		);
+		expect(panel).toContain("max-height: var(--radix-dropdown-menu-content-available-height)");
+		expect(item).toContain("white-space: normal");
+		expect(item).toContain("overflow-wrap: anywhere");
+		expect(item).not.toContain("white-space: nowrap");
+		expect(item).not.toContain("overflow: hidden");
+	});
+
 	it("mutes disabled danger items and never highlights disabled menu actions", () => {
 		// Arrange: inspect the shipped CSS, including its cascade ordering.
 		const normalized = html.replace(/\s+/g, " ");
@@ -396,7 +438,7 @@ describe("native control styles", () => {
 		)?.[1];
 
 		// Assert
-		expect(sharedGeometry).toContain("min-height: 36px;");
+		expect(sharedGeometry).toContain("min-height: var(--control-button-height);");
 		expect(sharedGeometry).toContain("padding: var(--sp-2) var(--sp-3);");
 		expect(sharedGeometry).toContain("border-radius: var(--radius-md);");
 		expect(tokens).toMatch(/--radius-md:\s*12px/);

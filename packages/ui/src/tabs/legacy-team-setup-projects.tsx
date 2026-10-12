@@ -124,7 +124,7 @@ function ProjectRow({
 						<label htmlFor={controlId}>Canonical Project</label>
 						<NativeSelect
 							aria-describedby={controlDescription || undefined}
-							className="feed-search legacy-team-project-select"
+							className="legacy-team-project-select"
 							disabled={controlsBlocked}
 							id={controlId}
 							onChange={(event) => setDraftMapping(event.currentTarget.value)}

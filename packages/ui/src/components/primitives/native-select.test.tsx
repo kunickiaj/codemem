@@ -17,6 +17,46 @@ afterEach(() => {
 
 describe("NativeSelect attributes", () => {
 	it.each([
+		{ multiple: false, size: 1 },
+		{ multiple: true, size: 4 },
+	])("keeps compact visual size separate from native listbox semantics: %j", (attributes) => {
+		// Arrange: the data attribute must never become the HTML size attribute.
+		const onChange = vi.fn();
+		const ref = createRef<HTMLSelectElement>();
+		// Act
+		act(() =>
+			render(
+				<NativeSelect
+					{...attributes}
+					data-size="compact"
+					ref={ref}
+					onChange={onChange}
+					className="legacy-project-select"
+				>
+					<option value="one">One</option>
+					<option value="two">Two</option>
+				</NativeSelect>,
+				mount,
+			),
+		);
+		const select = ref.current;
+		if (!select) throw new Error("native select missing");
+		select.value = "two";
+		act(() => {
+			select.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+		// Assert: functional caller hooks and event targets survive the size variant.
+		expect(select.dataset.size).toBe("compact");
+		expect(select.size).toBe(attributes.size);
+		expect(select.multiple).toBe(attributes.multiple);
+		expect(select.classList.contains("legacy-project-select")).toBe(true);
+		expect(onChange).toHaveBeenCalledTimes(1);
+		expect(onChange.mock.calls[0][0].target).toBe(select);
+		expect(select.value).toBe("two");
+		expect(select.getAttribute("size")).not.toBe("compact");
+	});
+
+	it.each([
 		{ disabled: false, multiple: false, size: 1, hidden: false },
 		{ disabled: true, multiple: true, size: 4, hidden: true },
 	])("passes through native attributes: %j", (attributes) => {

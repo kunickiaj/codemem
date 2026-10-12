@@ -259,6 +259,7 @@ describe("isolated gallery Vite routing and exposure", () => {
 		expect(build?.rollupOptions?.input).toBe(resolve(uiRoot, ".tmp/gallery.html"));
 		expect(build?.outDir).toBe(resolve(uiRoot, "../../.tmp/gallery-dist"));
 		expect(build?.outDir).not.toBe(resolve(uiRoot, "../viewer-server/static"));
-		expect(build?.cssMinify).toBe(false);
+		// The invalid-CSS workaround is gone; gallery builds use Vite's normal minification.
+		expect(build?.cssMinify).toBeUndefined();
 	});
 });

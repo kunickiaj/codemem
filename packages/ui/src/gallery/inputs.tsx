@@ -54,10 +54,12 @@ function SelectPair({
 	variant,
 	initialValue,
 	disabled = false,
+	size = "default",
 }: {
 	variant: string;
 	initialValue: string;
 	disabled?: boolean;
+	size?: "default" | "compact";
 }) {
 	const [radix, setRadix] = useState(initialValue);
 	const [native, setNative] = useState(initialValue);
@@ -70,10 +72,12 @@ function SelectPair({
 				onValueChange={setRadix}
 				options={SELECT_OPTIONS}
 				disabled={disabled}
+				size={size}
 			/>
 			<NativeSelect
 				aria-label={`Native select ${variant}`}
 				data-testid={`gallery-native-select-${variant}`}
+				data-size={size}
 				value={native}
 				disabled={disabled}
 				onChange={(event) => setNative(event.currentTarget.value)}
@@ -94,6 +98,7 @@ export function SelectExamples() {
 			<SelectPair variant="default" initialValue="alpha" />
 			<SelectPair variant="disabled" initialValue="alpha" disabled />
 			<SelectPair variant="long" initialValue="long" />
+			<SelectPair variant="compact" initialValue="alpha" size="compact" />
 		</>
 	);
 }
