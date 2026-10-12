@@ -234,6 +234,76 @@ describe("isNewerClock", () => {
 // recordReplicationOp
 // ---------------------------------------------------------------------------
 
+function insertFullMemoryFixture(db: InstanceType<typeof Database>): number {
+	const sessionId = insertTestSession(db);
+	db.prepare(
+		"UPDATE sessions SET project = ?, cwd = ?, git_remote = ?, git_branch = ?, started_at = ? WHERE id = ?",
+	).run(
+		"test-project",
+		"/test/project",
+		"https://example.com/project.git",
+		"test-branch",
+		"2026-01-01T00:00:00Z",
+		sessionId,
+	);
+	const now = "2026-01-01T00:00:00Z";
+	const meta = { clock_device_id: "dev-a", custom_field: "preserved" };
+	const inserted = db
+		.prepare(
+			`INSERT INTO memory_items(
+			session_id, kind, title, subtitle, body_text, confidence, tags_text,
+			created_at, updated_at, import_key, rev, metadata_json, active,
+			actor_id, actor_display_name, visibility, workspace_id, workspace_kind,
+			origin_device_id, origin_source, trust_state, narrative,
+			facts, concepts, files_read, files_modified, scope_id, user_prompt_id, prompt_number
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		)
+		.run(
+			sessionId,
+			"feature",
+			"Ship TS port",
+			"The big one",
+			"Ported all the things",
+			0.95,
+			"ts port",
+			now,
+			now,
+			"key:payload",
+			2,
+			toJson(meta),
+			1,
+			"actor-1",
+			"Adam",
+			"shared",
+			"shared:team",
+			"shared",
+			"device-origin",
+			"manual",
+			"verified",
+			"Full narrative text",
+			toJson(["fact-1"]),
+			toJson(["concept-1"]),
+			toJson(["src/a.ts"]),
+			toJson(["src/b.ts"]),
+			"acme-work",
+			42,
+			7,
+		);
+	return Number(inserted.lastInsertRowid);
+}
+
+function recordAndLoadMemoryUpsert(db: InstanceType<typeof Database>, memoryId: number) {
+	const opId = recordReplicationOp(db, { memoryId, opType: "upsert", deviceId: "dev-a" });
+	const [ops] = loadReplicationOpsSince(db, null);
+	const op = ops.find((candidate) => candidate.op_id === opId);
+	expect(op).toBeDefined();
+	if (!op) throw new Error("expected op to be found");
+	const payloadJson = op.payload_json;
+	if (payloadJson === null) throw new Error("expected op.payload_json to be non-null");
+	const payload = JSON.parse(payloadJson) as Record<string, unknown>;
+	return { op, payload };
+}
+
 function expectPortableProjectWithoutSessionProvenance(payload: Record<string, unknown>): void {
 	expect(payload.project).toBe("test-project");
 	expect(payload.user_prompt_id).toBe(42);
@@ -381,86 +451,18 @@ describe("recordReplicationOp", () => {
 	});
 
 	it("includes full memory payload in upsert ops and round-trips all columns", () => {
-		// Arrange: populate portable fields and device-local session provenance.
-		const sessionId = insertTestSession(db);
-		db.prepare(
-			"UPDATE sessions SET project = ?, cwd = ?, git_remote = ?, git_branch = ?, started_at = ? WHERE id = ?",
-		).run(
-			"test-project",
-			"/test/project",
-			"https://example.com/project.git",
-			"test-branch",
-			"2026-01-01T00:00:00Z",
-			sessionId,
-		);
-		const now = "2026-01-01T00:00:00Z";
-		const meta = { clock_device_id: "dev-a", custom_field: "preserved" };
-		db.prepare(
-			`INSERT INTO memory_items(
-				session_id, kind, title, subtitle, body_text, confidence, tags_text,
-				created_at, updated_at, import_key, rev, metadata_json, active,
-				actor_id, actor_display_name, visibility, workspace_id, workspace_kind,
-				origin_device_id, origin_source, trust_state, narrative,
-				facts, concepts, files_read, files_modified, scope_id, user_prompt_id, prompt_number
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		).run(
-			sessionId,
-			"feature",
-			"Ship TS port",
-			"The big one",
-			"Ported all the things",
-			0.95,
-			"ts port",
-			now,
-			now,
-			"key:payload",
-			2,
-			toJson(meta),
-			1,
-			"actor-1",
-			"Adam",
-			"shared",
-			"shared:team",
-			"shared",
-			"device-origin",
-			"manual",
-			"verified",
-			"Full narrative text",
-			toJson(["fact-1"]),
-			toJson(["concept-1"]),
-			toJson(["src/a.ts"]),
-			toJson(["src/b.ts"]),
-			"acme-work",
-			42,
-			7,
-		);
+		const memoryId = insertFullMemoryFixture(db);
+		const { op, payload } = recordAndLoadMemoryUpsert(db, memoryId);
 
-		const memId = (
-			db.prepare("SELECT id FROM memory_items WHERE import_key = ?").get("key:payload") as {
-				id: number;
-			}
-		).id;
-
-		// Act: record and load the incremental wire payload.
-		const opId = recordReplicationOp(db, { memoryId: memId, opType: "upsert", deviceId: "dev-a" });
-		const row = db
-			.prepare("SELECT payload_json, scope_id FROM replication_ops WHERE op_id = ?")
-			.get(opId) as { payload_json: string | null; scope_id: string | null };
-		expect(row.scope_id).toBe("acme-work");
-
-		const payloadJson = row.payload_json;
-		if (payloadJson === null) throw new Error("expected row.payload_json to be non-null");
-		const payload = JSON.parse(payloadJson) as Record<string, unknown>;
-		// Assert: portable project/prompt fields survive, session provenance stays local.
+		expect(op.scope_id).toBe("acme-work");
+		// Portable project/prompt fields survive, session provenance stays local.
 		expectPortableProjectWithoutSessionProvenance(payload);
-		// Core fields
 		expect(payload.kind).toBe("feature");
 		expect(payload.title).toBe("Ship TS port");
 		expect(payload.subtitle).toBe("The big one");
 		expect(payload.body_text).toBe("Ported all the things");
 		expect(payload.confidence).toBe(0.95);
 		expect(payload.tags_text).toBe("ts port");
-		// Provenance fields
 		expect(payload.actor_id).toBe("actor-1");
 		expect(payload.actor_display_name).toBe("Adam");
 		expect(payload.visibility).toBe("shared");
@@ -476,12 +478,6 @@ describe("recordReplicationOp", () => {
 		expect(payload.facts).toEqual(["fact-1"]);
 		expect(payload.files_read).toEqual(["src/a.ts"]);
 		expect(payload.scope_id).toBe("acme-work");
-
-		// Full round-trip: load op → apply to a second DB → verify all columns
-		const [ops] = loadReplicationOpsSince(db, null);
-		const op = ops.find((o) => o.op_id === opId);
-		expect(op).toBeDefined();
-		if (!op) throw new Error("expected op to be found");
 
 		const db2 = new Database(":memory:");
 		initTestSchema(db2);
@@ -3362,7 +3358,7 @@ describe("applyReplicationOps", () => {
 	});
 
 	it("reconciles provably stale peer-received rows while preserving unverified local labels", () => {
-		// Arrange: the local label is not a genuine creation binding.
+		// The local label is not a genuine creation binding.
 		grantScope("acme-work", ["dev-remote"]);
 		setReplicationCursor(
 			db,
@@ -3389,7 +3385,7 @@ describe("applyReplicationOps", () => {
 		// Act
 		const result = reconcileStalePeerReceivedRows(db, { localDeviceId: "dev-local" });
 
-		// Assert: neither a local label nor missing origin permits deleting the row.
+		// Neither a local label nor missing origin permits deleting the row.
 		expect(result.deleted).toBe(1);
 		expect(result.deleted_memory_ids).toEqual([stalePeerMemoryId]);
 		expect(
@@ -4598,7 +4594,7 @@ describe("inbound scope rejection diagnostics", () => {
 	});
 
 	it("clamps the list limit to a sensible maximum", () => {
-		// Arrange: exceed the cap so an uncapped query cannot pass.
+		// Exceed the cap so an uncapped query cannot pass.
 		for (let i = 0; i < 501; i++) {
 			insertRejection("dev-remote", "missing_scope", {
 				opId: `op-${i}`,
