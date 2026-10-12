@@ -348,7 +348,7 @@ describe("coordinator local admin actions", () => {
 			responseOverrides: { coordinator_id: "coord-other" },
 		},
 	])("rejects a remote get response with $label", async (testCase) => {
-		// Arrange: override the request independently; never repair response bindings.
+		// Override the request independently; never repair response bindings.
 		const manifest = legacyCompletionManifest();
 		vi.stubGlobal(
 			"fetch",
@@ -357,7 +357,6 @@ describe("coordinator local admin actions", () => {
 			),
 		);
 
-		// Act / Assert
 		await expect(
 			coordinatorGetLegacyTeamCompletionAction({
 				groupId: "group-a",
@@ -370,14 +369,13 @@ describe("coordinator local admin actions", () => {
 	});
 
 	it("accepts a valid remote get manifest for its own completion candidate", async () => {
-		// Arrange: positive control for the different-requested-candidate rejection.
+		// Positive control for the different-requested-candidate rejection.
 		const manifest = legacyCompletionManifest();
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(async () => Response.json({ manifest })),
 		);
 
-		// Act
 		const result = await coordinatorGetLegacyTeamCompletionAction({
 			groupId: "group-a",
 			candidateRef: manifest.candidate_ref,
@@ -385,7 +383,6 @@ describe("coordinator local admin actions", () => {
 			adminSecret: "test-secret",
 		});
 
-		// Assert
 		expect(result).toEqual(manifest);
 	});
 
