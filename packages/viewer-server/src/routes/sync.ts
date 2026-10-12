@@ -1351,7 +1351,7 @@ function commitProjectInviteAcceptance(
 ): void {
 	store.db
 		.transaction(() => {
-			requireLocalActorRecord(store);
+			store.assertPendingLocalCaptureAdoptionActors();
 			reconcileShareOperationAcceptance(store.db, input);
 		})
 		.immediate();

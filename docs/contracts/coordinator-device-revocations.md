@@ -574,8 +574,10 @@ initialization; actor listing and explicitly device-only operations remain usabl
 Accepted Project invitations recheck the local inviter after fetching coordinator
 state, inside the same immediate transaction as local acceptance writes. Pending
 capture actor drift returns `409 device_adoption_actor_conflict` without repairing
-the actor or changing peers and sharing policy. This does not roll back an
-acceptance already recorded remotely or change initialization when no capture is pending.
+the actor or changing peers and sharing policy. The transaction's assertion never
+initializes or relabels actors. When no capture is pending, the existing sharing
+policy checks still reject an outdated inviter without restoring its locality.
+Local rejection does not roll back an acceptance already recorded remotely.
 
 Non-recipient invitation import checks the resolved actor before contacting the
 coordinator and again before its local actor upsert. If the actor changes during

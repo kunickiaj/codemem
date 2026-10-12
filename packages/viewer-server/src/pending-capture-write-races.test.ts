@@ -167,7 +167,7 @@ function acceptedResponse() {
 	);
 }
 
-function pendingShare() {
+function pendingShare(options: { adopted?: boolean } = {}) {
 	pending({ valid: true });
 	writeFileSync(
 		join(fixture.dir, "config.json"),
@@ -200,6 +200,10 @@ function pendingShare() {
 	expect(ledger().birth).toHaveLength(1);
 	expect(ledger().adoption).toEqual([]);
 	expect(() => fixture.store.assertPendingLocalCaptureAdoptionActors()).not.toThrow();
+	if (options.adopted) {
+		syncIdentity.ensureDeviceIdentity(fixture.store.db, { keysDir: fixture.keysDir, deviceId });
+		expect(ledger().adoption).toHaveLength(1);
+	}
 }
 
 function reconciliationResponse(state = "accepted") {
@@ -303,6 +307,79 @@ it("keeps maintenance waiting without inviter drift or acceptance writes", async
 	expect(result).toEqual({ advanced: false, state: "waiting_for_acceptance" });
 	expect(fetch).toHaveBeenCalledTimes(1);
 	expect(snapshot()).toEqual(before);
+});
+
+it.each(["reconcile", "maintenance"] as const)(
+	"preserves a concurrent local actor switch without pending capture in %s",
+	async (consumer) => {
+		// Arrange: actual adoption clears pending capture while preserving signed evidence.
+		pendingShare({ adopted: true });
+		fixture.store.db
+			.prepare(`INSERT INTO actors
+			(actor_id, display_name, is_local, status, created_at, updated_at)
+			VALUES ('new-local-owner', 'New Owner', 0, 'active', ?, ?)`)
+			.run(now, now);
+		const other = new Database(fixture.store.dbPath);
+		let competingCommit: ReturnType<typeof snapshot> | undefined;
+		const beforeKeys = keys();
+		const beforeConfig = config();
+		const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			if (competingCommit) throw new Error("Unexpected provisioning after actor switch");
+			expect(String(input)).toContain(
+				`/v1/admin/project-invites/${operationId}?group_id=fixture-group`,
+			);
+			expect(init?.method).toBe("GET");
+			other
+				.transaction(() => {
+					mutate(other, "foreign");
+					other.prepare("UPDATE actors SET is_local = 1 WHERE actor_id = 'new-local-owner'").run();
+				})
+				.immediate();
+			competingCommit = snapshot();
+			return reconciliationResponse();
+		});
+		vi.stubGlobal("fetch", fetch);
+		try {
+			// Act: the store still caches the old inviter when the awaited coordinator GET resumes.
+			let failure: unknown;
+			let response: Response | undefined;
+			if (consumer === "reconcile") {
+				response = await post(`/api/sync/project-invites/${operationId}/reconcile`, {});
+				failure = await response.json();
+			} else {
+				failure = await advanceProjectShareOperation(fixture.store, operationId).catch(
+					(error) => error,
+				);
+			}
+			// Assert: reconciliation cannot restore stale ownership or write acceptance/policy/evidence.
+			expect(competingCommit).toBeDefined();
+			expect(snapshot()).toEqual(competingCommit);
+			expect(keys()).toEqual(beforeKeys);
+			expect(config()).toEqual(beforeConfig);
+			expect(fetch).toHaveBeenCalledTimes(1);
+			if (response) {
+				expect(response.status).toBe(409);
+				expect(failure).toEqual({ error: "inviter_identity_conflict" });
+			} else expect(failure).toMatchObject({ message: "inviter_identity_conflict" });
+		} finally {
+			other.close();
+		}
+	},
+);
+
+it("reconciles without pending capture when local ownership has not changed", async () => {
+	// Arrange: preserve real adoption proof rather than deleting pending evidence.
+	pendingShare({ adopted: true });
+	const beforeLedger = ledger();
+	const fetch = vi.fn(async () => reconciliationResponse());
+	vi.stubGlobal("fetch", fetch);
+	// Act.
+	const response = await post(`/api/sync/project-invites/${operationId}/reconcile`, {});
+	// Assert: the no-pending path still accepts valid intent without changing capture proof.
+	expect(response.status).toBe(200);
+	expect(await response.json()).toMatchObject({ reconciled: true });
+	expect(fetch).toHaveBeenCalledTimes(1);
+	expect(ledger()).toEqual(beforeLedger);
 });
 
 it("reserves the SQLite writer before the post-GET pending actor check", async () => {
