@@ -32,6 +32,7 @@ import {
 	seedProvenMixedScopeFixture,
 } from "../../core/src/managed-scope-test-fixtures.js";
 import { refreshTestScopeRows } from "../../core/src/scope-membership-cache-test-fixtures.js";
+import * as syncApi from "../../ui/src/lib/api/sync.js";
 import { type AppOptions, createApp, createSyncApp } from "./index.js";
 import { __usageCacheTestHooks } from "./routes/stats.js";
 import { reconcileConfiguredCoordinatorEnrollment } from "./routes/sync.js";
@@ -56,6 +57,21 @@ const LEGACY_UNCLASSIFIED_PROVENANCE = {
 	estimated_count: 0,
 	legacy_unclassified_count: 1,
 };
+
+function mockBrowserDeadlineTimers() {
+	const descriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+	const timers = { setTimeout: vi.fn(() => 1), clearTimeout: vi.fn() };
+	if (descriptor) {
+		const setTimer = vi.spyOn(window, "setTimeout").mockImplementation(timers.setTimeout);
+		const clearTimer = vi.spyOn(window, "clearTimeout").mockImplementation(timers.clearTimeout);
+		return () => {
+			setTimer.mockRestore();
+			clearTimer.mockRestore();
+		};
+	}
+	Object.defineProperty(globalThis, "window", { configurable: true, value: timers });
+	return () => Reflect.deleteProperty(globalThis, "window");
+}
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -1380,9 +1396,8 @@ describe("viewer-server", () => {
 		}
 	});
 
-	it("sync UI api routes all exist in the viewer sync router", () => {
+	it("keeps Team setup routes in their versioned router", () => {
 		const root = join(import.meta.dirname, "../../..");
-		const apiSource = readFileSync(join(root, "packages/ui/src/lib/api.ts"), "utf8");
 		const syncRouteSource = readFileSync(
 			join(root, "packages/viewer-server/src/routes/sync.ts"),
 			"utf8",
@@ -1392,22 +1407,13 @@ describe("viewer-server", () => {
 			"utf8",
 		);
 		const routeSource = `${syncRouteSource}\n${teamSetupRouteSource}`;
-		const uiRoutes = [
-			...apiSource.matchAll(/fetch\('(\/api\/sync\/[^']+)'/g),
-			...apiSource.matchAll(/fetchJson\('(\/api\/sync\/[^']+)'/g),
-		].map((match) => match[1]);
 		const concreteServerRoutes = [
 			...routeSource.matchAll(/app\.(?:get|post|put|patch|delete)\("(\/api\/sync\/[^"]+)"/g),
 		].map((match) => match[1]);
 		const normalizedServerRoutes = new Set(
 			concreteServerRoutes.map((route) => route.replace(/:\w+/g, "__param__")),
 		);
-		expect(
-			uiRoutes
-				.map((route) => route.replace(/\?.*$/, ""))
-				.map((route) => route.replace(/`\$\{[^}]+\}`/g, "__param__"))
-				.every((route) => normalizedServerRoutes.has(route)),
-		).toBe(true);
+		expect(normalizedServerRoutes.size).toBeGreaterThan(0);
 		expect(concreteServerRoutes).toContain("/api/sync/team-setup/v1");
 		expect(concreteServerRoutes).toContain("/api/sync/team-setup/v1/:candidateRef");
 		expect(syncRouteSource).toContain('app.patch("/api/sync/recipient-policy/v1/teams/:teamId"');
@@ -1426,6 +1432,90 @@ describe("viewer-server", () => {
 				.filter((route) => route.includes("/team-setup/"))
 				.every((route) => route.startsWith(TEAM_SETUP_ROUTE_PREFIX)),
 		).toBe(true);
+	});
+
+	it("matches real sync UI requests to viewer routes, including methods and template paths", async () => {
+		// Arrange: exercise the actual API module, not its re-export barrel.
+		const { app, cleanup } = createTestApp();
+		const restoreTimers = mockBrowserDeadlineTimers();
+		const requests: Array<{ method: string; path: string }> = [];
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+			requests.push({
+				method: init?.method ?? "GET",
+				path: new URL(String(input), "http://localhost").pathname,
+			});
+			return new Response(JSON.stringify({ error: "contract_probe" }), { status: 500 });
+		});
+		const calls = [
+			() => syncApi.loadSyncStatus(),
+			() => syncApi.loadPairing(),
+			() => syncApi.loadLegacyTeamSetupSummary(),
+			() => syncApi.loadLegacyTeamSetupDetail("candidate"),
+			() =>
+				syncApi.saveLegacyTeamSetupAssignment("candidate", "device", {
+					attemptId: "attempt",
+					targetIdentityRef: "identity",
+					expectation: { kind: "absent" },
+				}),
+			() =>
+				syncApi.saveLegacyTeamSetupDecision("candidate", "device", {
+					attemptId: "attempt",
+					decision: "excluded",
+				}),
+			() => syncApi.clearLegacyTeamSetupDecision("candidate", "device", { attemptId: "attempt" }),
+			() =>
+				syncApi.saveLegacyTeamSetupProjectMapping("candidate", "project", {
+					attemptId: "attempt",
+					resolvedProjectRef: "resolved",
+				}),
+			() => syncApi.refreshLegacyTeamSetupCandidate("candidate"),
+			() =>
+				syncApi.finishLegacyTeamSetup("candidate", {
+					attemptId: "attempt",
+					finishDigest: "finish",
+					confirmedAccessDeltaDigest: "delta",
+					confirmedViewerAccessDeltaDigest: "viewer-delta",
+				}),
+			() =>
+				syncApi.renameRecipientPolicyTeam({
+					teamId: "team",
+					displayName: "Renamed",
+					expectedDisplayName: "Original",
+				}),
+		];
+		const hasRoute = ({ method, path }: { method: string; path: string }) =>
+			app.routes.some(
+				(route) =>
+					route.method === method &&
+					new RegExp(`^${route.path.replace(/:\w+/g, "[^/]+")}$`).test(path),
+			);
+		try {
+			// Act: failure responses stop each wrapper after its deterministic mocked request.
+			for (const call of calls) await Promise.allSettled([call()]);
+			// Assert: inventory cannot pass vacuously; mutations retain their exact verbs.
+			expect(requests).toEqual([
+				{ method: "GET", path: "/api/sync/status" },
+				{ method: "GET", path: "/api/sync/pairing" },
+				{ method: "GET", path: "/api/sync/team-setup/v1" },
+				{ method: "GET", path: "/api/sync/team-setup/v1/candidate" },
+				{ method: "PUT", path: "/api/sync/team-setup/v1/candidate/devices/device/assignment" },
+				{ method: "PUT", path: "/api/sync/team-setup/v1/candidate/devices/device/decision" },
+				{ method: "DELETE", path: "/api/sync/team-setup/v1/candidate/devices/device/decision" },
+				{ method: "PUT", path: "/api/sync/team-setup/v1/candidate/projects/project/mapping" },
+				{ method: "POST", path: "/api/sync/team-setup/v1/candidate/refresh" },
+				{ method: "POST", path: "/api/sync/team-setup/v1/candidate/finish" },
+				{ method: "PATCH", path: "/api/sync/recipient-policy/v1/teams/team" },
+			]);
+			for (const request of requests) expect(hasRoute(request), JSON.stringify(request)).toBe(true);
+			expect(hasRoute({ method: "GET", path: "/api/sync/team-setup/v1/candidate/finish" })).toBe(
+				false,
+			);
+			expect(hasRoute({ method: "POST", path: "/api/sync/not-a-route" })).toBe(false);
+		} finally {
+			fetchMock.mockRestore();
+			restoreTimers();
+			cleanup();
+		}
 	});
 
 	describe("Team setup API", () => {
@@ -10282,159 +10372,101 @@ describe("viewer-server", () => {
 		});
 
 		it("returns 400 for /v1/snapshot without required params", async () => {
-			const { syncApp, cleanup } = createTestApp();
+			// Arrange: authenticate so this tests parameter validation, not the auth gate.
+			const { syncApp, ensureStore, cleanup } = createTestApp();
+			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
 			try {
-				// Missing generation
-				const res = await syncApp.request("/v1/snapshot?snapshot_id=test");
-				// Will be 401 without auth, but let's verify the endpoint exists
-				expect([400, 401]).toContain(res.status);
+				const url = "http://localhost/v1/snapshot?snapshot_id=test";
+				peer = createAuthenticatedSyncPeer(ensureStore(), { url });
+				// Act
+				const res = await syncApp.request(url, { headers: peer.headers });
+				// Assert
+				expect(res.status).toBe(400);
+				expect(await res.json()).toEqual({ error: "missing_generation" });
 			} finally {
+				peer?.cleanup();
 				cleanup();
 			}
 		});
 
 		it("returns reset_required metadata for stale peer cursors", async () => {
+			// Arrange
 			const { syncApp, ensureStore, cleanup } = createTestApp();
-			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-peer-test-"));
-			const peerDbPath = join(peerDir, "peer.sqlite");
-			const peerKeysDir = join(peerDir, "keys");
+			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
 			try {
 				const store = ensureStore();
 
-				const peerDb = connect(peerDbPath);
-				try {
-					initTestSchema(peerDb);
-					const [peerDeviceId] = ensureDeviceIdentity(peerDb, { keysDir: peerKeysDir });
-					const peerPublicKey = loadPublicKey(peerKeysDir);
-					if (!peerPublicKey) throw new Error("peer public key missing");
-					const peerFingerprint = peerDb
-						.prepare("SELECT fingerprint FROM sync_device LIMIT 1")
-						.get() as { fingerprint: string } | undefined;
-					if (!peerFingerprint?.fingerprint) throw new Error("peer fingerprint missing");
-
-					store.db
-						.prepare(
-							`INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, created_at)
-							 VALUES (?, ?, ?, ?)`,
-						)
-						.run(
-							peerDeviceId,
-							peerFingerprint.fingerprint,
-							peerPublicKey,
-							new Date().toISOString(),
-						);
-
-					store.db
-						.prepare(
-							`INSERT OR REPLACE INTO sync_reset_state(id, generation, snapshot_id, baseline_cursor, retained_floor_cursor, updated_at)
+				store.db
+					.prepare(
+						`INSERT OR REPLACE INTO sync_reset_state(id, generation, snapshot_id, baseline_cursor, retained_floor_cursor, updated_at)
 							 VALUES (1, ?, ?, ?, ?, ?)`,
-						)
-						.run(
-							7,
-							"snapshot-7",
-							"2026-01-01T00:00:02Z|base-op",
-							"2026-01-01T00:00:03Z|floor-op",
-							new Date().toISOString(),
-						);
+					)
+					.run(
+						7,
+						"snapshot-7",
+						"2026-01-01T00:00:02Z|base-op",
+						"2026-01-01T00:00:03Z|floor-op",
+						new Date().toISOString(),
+					);
 
-					const url =
-						"http://localhost/v1/ops?since=2026-01-01T00:00:01Z%7Cold&limit=50&generation=7&snapshot_id=snapshot-7&baseline_cursor=2026-01-01T00:00:02Z%7Cbase-op";
-					const headers = buildAuthHeaders({
-						deviceId: peerDeviceId,
-						method: "GET",
-						url,
-						bodyBytes: Buffer.alloc(0),
-						keysDir: peerKeysDir,
-					});
-
-					const res = await syncApp.request(url, { headers });
-					expect(res.status).toBe(409);
-					const body = (await res.json()) as Record<string, unknown>;
-					expect(body.error).toBe("reset_required");
-					expect(body.reset_required).toBe(true);
-					expect(body.sync_capability).toBe("scoped");
-					expect(body.reason).toBe("stale_cursor");
-					expect(body.generation).toBe(7);
-					expect(body.snapshot_id).toBe("snapshot-7");
-					expect(body.retained_floor_cursor).toBe("2026-01-01T00:00:03Z|floor-op");
-				} finally {
-					peerDb.close();
-				}
+				const url =
+					"http://localhost/v1/ops?since=2026-01-01T00:00:01Z%7Cold&limit=50&generation=7&snapshot_id=snapshot-7&baseline_cursor=2026-01-01T00:00:02Z%7Cbase-op";
+				peer = createAuthenticatedSyncPeer(store, { url });
+				// Act
+				const res = await syncApp.request(url, { headers: peer.headers });
+				// Assert
+				expect(res.status).toBe(409);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body.error).toBe("reset_required");
+				expect(body.reset_required).toBe(true);
+				expect(body.sync_capability).toBe("scoped");
+				expect(body.reason).toBe("stale_cursor");
+				expect(body.generation).toBe(7);
+				expect(body.snapshot_id).toBe("snapshot-7");
+				expect(body.retained_floor_cursor).toBe("2026-01-01T00:00:03Z|floor-op");
 			} finally {
+				peer?.cleanup();
 				cleanup();
-				rmSync(peerDir, { recursive: true, force: true });
 			}
 		});
 
 		it("requires explicit reset boundary metadata on incremental sync requests", async () => {
+			// Arrange
 			const { syncApp, ensureStore, cleanup } = createTestApp();
-			const peerDir = mkdtempSync(join(tmpdir(), "codemem-sync-peer-test-"));
-			const peerDbPath = join(peerDir, "peer.sqlite");
-			const peerKeysDir = join(peerDir, "keys");
+			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
 			try {
 				const store = ensureStore();
 
-				const peerDb = connect(peerDbPath);
-				try {
-					initTestSchema(peerDb);
-					const [peerDeviceId] = ensureDeviceIdentity(peerDb, { keysDir: peerKeysDir });
-					const peerPublicKey = loadPublicKey(peerKeysDir);
-					if (!peerPublicKey) throw new Error("peer public key missing");
-					const peerFingerprint = peerDb
-						.prepare("SELECT fingerprint FROM sync_device LIMIT 1")
-						.get() as { fingerprint: string } | undefined;
-					if (!peerFingerprint?.fingerprint) throw new Error("peer fingerprint missing");
-
-					store.db
-						.prepare(
-							`INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, created_at)
-							 VALUES (?, ?, ?, ?)`,
-						)
-						.run(
-							peerDeviceId,
-							peerFingerprint.fingerprint,
-							peerPublicKey,
-							new Date().toISOString(),
-						);
-
-					store.db
-						.prepare(
-							`INSERT OR REPLACE INTO sync_reset_state(id, generation, snapshot_id, baseline_cursor, retained_floor_cursor, updated_at)
+				store.db
+					.prepare(
+						`INSERT OR REPLACE INTO sync_reset_state(id, generation, snapshot_id, baseline_cursor, retained_floor_cursor, updated_at)
 							 VALUES (1, ?, ?, ?, ?, ?)`,
-						)
-						.run(
-							9,
-							"snapshot-9",
-							"2026-01-01T00:00:02Z|base-op",
-							"2026-01-01T00:00:03Z|floor-op",
-							new Date().toISOString(),
-						);
+					)
+					.run(
+						9,
+						"snapshot-9",
+						"2026-01-01T00:00:02Z|base-op",
+						"2026-01-01T00:00:03Z|floor-op",
+						new Date().toISOString(),
+					);
 
-					const url = "http://localhost/v1/ops?since=2026-01-01T00:00:03Z%7Cfloor-op&limit=50";
-					const headers = buildAuthHeaders({
-						deviceId: peerDeviceId,
-						method: "GET",
-						url,
-						bodyBytes: Buffer.alloc(0),
-						keysDir: peerKeysDir,
-					});
-
-					const res = await syncApp.request(url, { headers });
-					expect(res.status).toBe(409);
-					const body = (await res.json()) as Record<string, unknown>;
-					expect(body.error).toBe("reset_required");
-					expect(body.reset_required).toBe(true);
-					expect(body.sync_capability).toBe("scoped");
-					expect(body.reason).toBe("boundary_mismatch");
-					expect(body.generation).toBe(9);
-					expect(body.snapshot_id).toBe("snapshot-9");
-					expect(body.baseline_cursor).toBe("2026-01-01T00:00:02Z|base-op");
-				} finally {
-					peerDb.close();
-				}
+				const url = "http://localhost/v1/ops?since=2026-01-01T00:00:03Z%7Cfloor-op&limit=50";
+				peer = createAuthenticatedSyncPeer(store, { url });
+				// Act
+				const res = await syncApp.request(url, { headers: peer.headers });
+				// Assert
+				expect(res.status).toBe(409);
+				const body = (await res.json()) as Record<string, unknown>;
+				expect(body.error).toBe("reset_required");
+				expect(body.reset_required).toBe(true);
+				expect(body.sync_capability).toBe("scoped");
+				expect(body.reason).toBe("boundary_mismatch");
+				expect(body.generation).toBe(9);
+				expect(body.snapshot_id).toBe("snapshot-9");
+				expect(body.baseline_cursor).toBe("2026-01-01T00:00:02Z|base-op");
 			} finally {
+				peer?.cleanup();
 				cleanup();
-				rmSync(peerDir, { recursive: true, force: true });
 			}
 		});
 
