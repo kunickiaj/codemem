@@ -4,7 +4,7 @@
 import { execFileSync } from "node:child_process";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { resolve } from "node:path";
-import type { Plugin, UserConfig } from "vite";
+import type { HmrContext, Plugin, UserConfig } from "vite";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Config routing does not need to start Vite or run the external Preact plugin.
@@ -48,18 +48,22 @@ function middleware(
 	return use.mock.calls[0][0];
 }
 
-function hotUpdate(file: string, server = fakeServer()) {
+function hotUpdate(
+	file: string,
+	server = fakeServer(),
+	read: HmrContext["read"] = vi.fn().mockResolvedValue("<html></html>"),
+) {
 	const plugin = galleryPlugin();
 	const hook = plugin.handleHotUpdate;
 	if (typeof hook !== "function") throw new Error("Missing gallery handleHotUpdate hook");
-	return hook.call(plugin as never, { file, server } as never);
+	return hook.call(plugin as never, { file, server, read } as never);
 }
 
-describe("isolated gallery Vite configuration", () => {
-	beforeEach(() => {
-		vi.mocked(execFileSync).mockReset();
-	});
+beforeEach(() => {
+	vi.mocked(execFileSync).mockReset();
+});
 
+describe("isolated gallery Vite server setup", () => {
 	it("watches the canonical HTML in dev without regenerating at startup", () => {
 		// Arrange
 		const server = fakeServer();
@@ -84,19 +88,25 @@ describe("isolated gallery Vite configuration", () => {
 		expect(execFileSync).not.toHaveBeenCalled();
 		expect(server.ws.send).not.toHaveBeenCalled();
 	});
+});
 
-	it("regenerates canonical HTML before a full reload and stops native HMR", () => {
+describe("isolated gallery stable-source HMR", () => {
+	it("regenerates from the exact stable HTML before a full reload and stops native HMR", async () => {
 		// Arrange
 		const server = fakeServer();
 		const uiRoot = resolve(import.meta.dirname, "../..");
 		const canonicalHtml = resolve(uiRoot, "static/index.html");
+		const html =
+			' \n<html><style media="(width >= 40rem)">\n .fixture { color: red; } }\n</style></html>\t\n';
+		const read = vi.fn().mockResolvedValue(html);
 		// Act
-		const result = hotUpdate(canonicalHtml, server);
+		const result = await hotUpdate(canonicalHtml, server, read);
 		// Assert: reload only after the generated page contains the latest inline CSS.
+		expect(read).toHaveBeenCalledExactlyOnceWith();
 		expect(execFileSync).toHaveBeenCalledExactlyOnceWith(
 			process.execPath,
-			[resolve(uiRoot, "scripts/make-gallery-html.mjs")],
-			{ cwd: uiRoot },
+			[resolve(uiRoot, "scripts/make-gallery-html.mjs"), "--stdin"],
+			{ cwd: uiRoot, input: html },
 		);
 		expect(server.ws.send).toHaveBeenCalledExactlyOnceWith({ type: "full-reload", path: "*" });
 		expect(vi.mocked(execFileSync).mock.invocationCallOrder[0]).toBeLessThan(
@@ -105,18 +115,59 @@ describe("isolated gallery Vite configuration", () => {
 		expect(result).toEqual([]);
 	});
 
-	it("propagates generator failure without reloading a stale page", () => {
+	it("waits for Vite's stable read before generating or reloading", async () => {
+		// Arrange: a truncate/rewrite save has not provided stable contents yet.
+		const server = fakeServer();
+		const canonicalHtml = resolve(import.meta.dirname, "../../static/index.html");
+		let resolveRead!: (html: string) => void;
+		const snapshot = new Promise<string>((resolve) => {
+			resolveRead = resolve;
+		});
+		const read = vi.fn(() => snapshot);
+		// Act
+		const update = hotUpdate(canonicalHtml, server, read);
+		// Assert: no generated output or browser reload before the snapshot arrives.
+		expect(read).toHaveBeenCalledExactlyOnceWith();
+		expect(execFileSync).not.toHaveBeenCalled();
+		expect(server.ws.send).not.toHaveBeenCalled();
+		// Act
+		resolveRead("<html><style> .fixture {} </style></html>");
+		const result = await update;
+		// Assert
+		expect(execFileSync).toHaveBeenCalledTimes(1);
+		expect(server.ws.send).toHaveBeenCalledExactlyOnceWith({ type: "full-reload", path: "*" });
+		expect(result).toEqual([]);
+	});
+
+	it("propagates a failed stable read without generating or reloading", async () => {
+		// Arrange
+		const server = fakeServer();
+		const canonicalHtml = resolve(import.meta.dirname, "../../static/index.html");
+		const failure = new Error("Canonical source read failed");
+		const read = vi.fn().mockRejectedValue(failure);
+		// Act
+		const update = hotUpdate(canonicalHtml, server, read);
+		// Assert
+		await expect(update).rejects.toBe(failure);
+		expect(read).toHaveBeenCalledExactlyOnceWith();
+		expect(execFileSync).not.toHaveBeenCalled();
+		expect(server.ws.send).not.toHaveBeenCalled();
+	});
+
+	it("propagates generator failure without reloading a stale page", async () => {
 		// Arrange
 		const server = fakeServer();
 		const canonicalHtml = resolve(import.meta.dirname, "../../static/index.html");
 		const failure = new Error("Invalid canonical gallery source");
+		const read = vi.fn().mockResolvedValue("<html></html>");
 		vi.mocked(execFileSync).mockImplementationOnce(() => {
 			throw failure;
 		});
 		// Act
-		const update = () => hotUpdate(canonicalHtml, server);
+		const update = Promise.resolve().then(() => hotUpdate(canonicalHtml, server, read));
 		// Assert
-		expect(update).toThrow(failure);
+		await expect(update).rejects.toBe(failure);
+		expect(read).toHaveBeenCalledExactlyOnceWith();
 		expect(execFileSync).toHaveBeenCalledTimes(1);
 		expect(server.ws.send).not.toHaveBeenCalled();
 	});
@@ -132,18 +183,22 @@ describe("isolated gallery Vite configuration", () => {
 		"scripts/make-gallery-html.mjs",
 		"static/index.html.bak",
 		"other/static/index.html",
-	])("leaves %s to native HMR without a regeneration or reload loop", (path) => {
+	])("leaves %s to native HMR without a regeneration or reload loop", async (path) => {
 		// Arrange
 		const server = fakeServer();
 		const file = resolve(import.meta.dirname, "../..", path);
+		const read = vi.fn().mockResolvedValue("<html></html>");
 		// Act
-		const result = hotUpdate(file, server);
+		const result = await hotUpdate(file, server, read);
 		// Assert: generated output and similarly named files are not canonical input.
 		expect(result).toBeUndefined();
+		expect(read).not.toHaveBeenCalled();
 		expect(execFileSync).not.toHaveBeenCalled();
 		expect(server.ws.send).not.toHaveBeenCalled();
 	});
+});
 
+describe("isolated gallery Vite routing and exposure", () => {
 	it.each(["configureServer", "configurePreviewServer"] as const)(
 		"%s redirects and rewrites only gallery URLs, preserving queries",
 		(mode) => {

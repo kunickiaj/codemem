@@ -32,9 +32,13 @@ export default defineConfig({
 				server.middlewares.use(routeGallery);
 				server.watcher.add(canonicalHtml);
 			},
-			handleHotUpdate({ file, server }) {
+			async handleHotUpdate({ file, server, read }) {
 				if (resolve(file) !== canonicalHtml) return;
-				execFileSync(process.execPath, [galleryGenerator], { cwd: import.meta.dirname });
+				const html = await read();
+				execFileSync(process.execPath, [galleryGenerator, "--stdin"], {
+					cwd: import.meta.dirname,
+					input: html,
+				});
 				server.ws.send({ type: "full-reload", path: "*" });
 				return [];
 			},
