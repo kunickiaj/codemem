@@ -86,6 +86,8 @@ Use the shared action-menu primitive for row actions. Keep action handlers and c
 
 Give each autocomplete its own listbox and option IDs. An input's active-descendant relationship must point to an option in its own open list. Help text must expose a tooltip role and a description relationship to the active help button without removing other descriptions.
 
+Keep `.tooltip-content` relatively positioned so its arrow keeps the same positioning parent while the opening transform animation runs and after it finishes. Otherwise the arrow can jump when the browser recalculates popup placement.
+
 Use `DialogCloseButton` for dialog headers rather than a separately styled character button. Preserve the caller's busy/disabled state and accessible name.
 
 ## Buttons, inputs, and popup surfaces

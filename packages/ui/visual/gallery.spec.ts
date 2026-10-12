@@ -1,4 +1,25 @@
+import type { Page } from "@playwright/test";
 import { assertScreenshot, expect, test } from "./fixtures.js";
+
+async function tooltipGeometry(page: Page) {
+	return page.locator(".tooltip-arrow").evaluate((arrow) => {
+		const content = arrow.closest<HTMLElement>(".tooltip-content");
+		const span = arrow.parentElement;
+		const trigger = document.querySelector('[data-testid="gallery-tooltip-trigger"]');
+		if (!content || !span || !trigger) throw new Error("Tooltip geometry is missing");
+		const rect = arrow.getBoundingClientRect();
+		const anchor = trigger.getBoundingClientRect();
+		const { x, y, width, height } = content.getBoundingClientRect();
+		return {
+			parentIsContent: span.offsetParent === content,
+			parentWidth: (span.offsetParent as HTMLElement | null)?.clientWidth,
+			offset: Number.parseFloat(span.style.left),
+			centerX: rect.left + rect.width / 2,
+			anchorCenterX: anchor.left + anchor.width / 2,
+			body: { x, y, width, height },
+		};
+	});
+}
 
 test("all families include default, disabled, loading and long-label examples", async ({
 	page,
@@ -70,10 +91,88 @@ test("tooltip opens on focus and dismisses on Escape", async ({ page }) => {
 	// Assert
 	await expect(trigger).toBeFocused();
 	await expect(page.getByRole("tooltip")).toHaveText("Synthetic tooltip content");
+	const initial = await tooltipGeometry(page);
+	expect(initial.parentIsContent).toBe(true);
 	await assertScreenshot(page, "tooltip-open.png");
+	const settled = await tooltipGeometry(page);
+	const viewport = page.viewportSize();
+	if (!viewport) throw new Error("Tooltip regression requires a fixed viewport");
+	// Recompute naturally after capture; a finished animation must not change the arrow's parent.
+	await page.setViewportSize({ ...viewport, width: viewport.width + 1 });
+	await page.setViewportSize(viewport);
+	await expect.poll(() => tooltipGeometry(page)).toEqual(settled);
+	await test.info().attach("tooltip-geometry", {
+		body: JSON.stringify({ initial, settled, recomputed: await tooltipGeometry(page) }),
+		contentType: "application/json",
+	});
+	expect(settled.parentWidth).toBe(initial.parentWidth);
+	expect(settled.offset).toBe(initial.offset);
+	expect(Math.abs(settled.centerX - settled.anchorCenterX)).toBeLessThanOrEqual(0.5);
 	await trigger.press("Escape");
 	await expect(page.getByRole("tooltip")).toHaveCount(0);
 	await expect(page.getByRole("button", { name: "Disabled tooltip trigger" })).toBeDisabled();
+});
+
+test.describe("tooltip opening animation", () => {
+	test.use({ reducedMotion: "no-preference" });
+	test("keeps the same arrow positioning parent when the transform animation finishes", async ({
+		page,
+	}) => {
+		// Arrange: observe the first positioned arrow within the browser task, before animation ends.
+		await page.getByTestId("gallery-tooltip-trigger").scrollIntoViewIfNeeded();
+		// Act: retain real CSS motion here; ordinary screenshot cases still use reduced motion.
+		const geometry = await page.evaluate(async () => {
+			const trigger = document.querySelector<HTMLElement>(
+				'[data-testid="gallery-tooltip-trigger"]',
+			);
+			if (!trigger) throw new Error("Tooltip trigger is missing");
+			const read = () => {
+				const content = document.querySelector<HTMLElement>(".tooltip-content");
+				const arrow = document.querySelector<SVGElement>(".tooltip-arrow");
+				const span = arrow?.parentElement;
+				if (!content || !arrow || !span) throw new Error("Tooltip arrow is missing");
+				const rect = arrow.getBoundingClientRect();
+				return {
+					parentIsContent: span.offsetParent === content,
+					parentWidth: (span.offsetParent as HTMLElement | null)?.clientWidth,
+					offset: Number.parseFloat(span.style.left),
+					centerX: rect.left + rect.width / 2,
+				};
+			};
+			const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+			await frame();
+			await frame();
+			type EarlyGeometry = ReturnType<typeof read> & { animating: boolean };
+			const early = await new Promise<EarlyGeometry>((resolve) => {
+				const observer = new MutationObserver(() => {
+					const content = document.querySelector<HTMLElement>(".tooltip-content");
+					const span = document.querySelector(".tooltip-arrow")?.parentElement;
+					if (!content || !span?.style.left || content.getBoundingClientRect().top < 0) return;
+					const anchor = trigger.getBoundingClientRect();
+					if (Math.abs(read().centerX - anchor.left - anchor.width / 2) > 0.5) return;
+					observer.disconnect();
+					const animating = content
+						.getAnimations()
+						.some(({ playState }) => playState === "running");
+					resolve({ ...read(), animating });
+				});
+				observer.observe(document.body, { subtree: true, childList: true, attributes: true });
+				trigger.focus({ preventScroll: true });
+			});
+			const content = document.querySelector<HTMLElement>(".tooltip-content");
+			if (!content) throw new Error("Tooltip content is missing");
+			await Promise.all(content.getAnimations().map((animation) => animation.finished));
+			return { early, finished: read() };
+		});
+		// Assert: a completed transform must not swap positioning parents or move the arrow sideways.
+		const { animating, ...earlyGeometry } = geometry.early;
+		expect(animating).toBe(true);
+		expect(geometry.early.parentIsContent).toBe(true);
+		expect(geometry.finished).toEqual(earlyGeometry);
+		await expect(page.getByRole("tooltip")).toHaveText("Synthetic tooltip content");
+		await page.keyboard.press("Escape");
+		await expect(page.getByRole("tooltip")).toHaveCount(0);
+	});
 });
 
 test("dialog contains focus and closes without losing trigger focus", async ({ page }) => {

@@ -34,6 +34,29 @@ afterEach(() => {
 });
 
 describe("gallery HTML generator", () => {
+	it("preserves the tooltip positioning parent and its real opening animation", async () => {
+		// Arrange: read canonical CSS through the existing mocked generator filesystem.
+		// Act
+		await import("../../scripts/make-gallery-html.mjs");
+		const rule = output("gallery-viewer.css").match(/\.tooltip-content\s*\{([^}]+)\}/)?.[1];
+		// Assert: stabilizing arrow placement must not remove the production animation.
+		expect(rule).toMatch(/position:\s*relative;/);
+		expect(rule).toMatch(/animation:\s*tooltipFade/);
+	});
+
+	it("does not invent tooltip positioning when the canonical source omits it", async () => {
+		// Arrange
+		io.read.mockReturnValue(
+			canonicalHtml.replace(/(\.tooltip-content\s*\{)\s*position:\s*relative;/, "$1"),
+		);
+		// Act
+		await import("../../scripts/make-gallery-html.mjs");
+		const rule = output("gallery-viewer.css").match(/\.tooltip-content\s*\{([^}]+)\}/)?.[1];
+		// Assert: the gallery must expose canonical regressions, not repair them with fixture CSS.
+		expect(rule).not.toMatch(/position:\s*relative;/);
+		expect(rule).toMatch(/animation:\s*tooltipFade/);
+	});
+
 	it("preserves canonical CSS byte for byte without importing viewer DOM or scripts", async () => {
 		// Arrange: use the actual canonical stylesheet, not a copied fixture snapshot.
 		const canonical = new DOMParser().parseFromString(canonicalHtml, "text/html");
