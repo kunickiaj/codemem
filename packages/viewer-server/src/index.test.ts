@@ -63,7 +63,10 @@ function syncRequestCase(method: string, path: string, invoke: () => Promise<unk
 }
 
 const syncRequestCases = {
-	loadSyncStatus: syncRequestCase("GET", "/api/sync/status", () => syncApi.loadSyncStatus(false)),
+	loadSyncStatus: syncRequestCase("GET", "/api/sync/status", () => {
+		const includeDiagnostics = false;
+		return syncApi.loadSyncStatus(includeDiagnostics);
+	}),
 	loadPairing: syncRequestCase("GET", "/api/sync/pairing", () => syncApi.loadPairing()),
 	loadSyncActors: syncRequestCase("GET", "/api/sync/actors", () => syncApi.loadSyncActors()),
 	importCoordinatorInvite: syncRequestCase("POST", "/api/sync/invites/import", () =>
@@ -75,9 +78,10 @@ const syncRequestCases = {
 	updatePeerScope: syncRequestCase("POST", "/api/sync/peers/scope", () =>
 		syncApi.updatePeerScope("peer", ["project"], null),
 	),
-	updatePeerIdentity: syncRequestCase("POST", "/api/sync/peers/identity", () =>
-		syncApi.updatePeerIdentity("peer", true),
-	),
+	updatePeerIdentity: syncRequestCase("POST", "/api/sync/peers/identity", () => {
+		const claimedLocalActor = true;
+		return syncApi.updatePeerIdentity("peer", claimedLocalActor);
+	}),
 	assignPeerActor: syncRequestCase("POST", "/api/sync/peers/identity", () =>
 		syncApi.assignPeerActor("peer", "actor"),
 	),
