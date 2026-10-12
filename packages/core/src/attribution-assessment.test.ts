@@ -430,6 +430,89 @@ function attributionSchema(db: Database.Database) {
 	};
 }
 
+describe("unknown attribution basis prerequisites", () => {
+	let db: Database.Database;
+	beforeEach(() => {
+		db = new Database(":memory:");
+		seed(db);
+	});
+	afterEach(() => db.close());
+
+	it.each([
+		{
+			basis: "content_overlap",
+			error: "content_overlap requires linked command-or-constraint reuse evidence",
+		},
+		{
+			basis: "human_review",
+			error:
+				"human_review requires linked grounded evaluator evidence naming the assessment subject",
+		},
+	] as const)("enforces $basis requirements for unknown labels", ({ basis, error }) => {
+		// Arrange: an unknown label with a valid explicit-reference witness, not helpful feedback.
+		recordRetrievalAttempt(db, attempt(22));
+		const evidenceId = basisEvidence(
+			db,
+			122,
+			id(22),
+			COMPLETED_AT,
+			NON_RANDOMIZED_BASIS_CASES_BY_BASIS.explicit_reference,
+		);
+		const valid = assessment(id(22), id(222), [evidenceId], {
+			dimension: "mechanism",
+			impactLabel: "unknown",
+		});
+		// Act: change only the claimed basis; the label and dimension remain supported.
+		const accepted = recordAttributionAssessment(db, valid);
+		const invalid = { ...valid, assessmentId: id(223), basis };
+		const rejected = tryRecordAttributionAssessment(db, invalid);
+		// Assert: the negative reaches the intended basis gate.
+		expect(accepted.assessment.impactLabel).toBe("unknown");
+		expect(() => recordAttributionAssessment(db, invalid)).toThrow(error);
+		expect(rejected).toMatchObject({ ok: false, reason: "invalid_input" });
+	});
+
+	it("requires a subject reference for unknown explicit-reference attribution", () => {
+		// Arrange: a same-session mechanism witness without a subject reference.
+		recordRetrievalAttempt(db, attempt(22));
+		const sameSessionOnlyId = id(124);
+		const witness: RecordOutcomeEvidenceInput = {
+			evidenceId: sameSessionOnlyId,
+			dimension: "mechanism",
+			evidenceType: "mechanism.memory_reference",
+			sourceClass: "derived",
+			observedAt: COMPLETED_AT,
+			producer: "reference-rule",
+			producerVersion: "v1",
+			status: "present",
+			sessionId: 1,
+			references: { reference_codes: [] },
+		};
+		recordOutcomeEvidence(db, witness);
+		recordOutcomeEvidence(
+			db,
+			referencing({ ...witness, evidenceId: id(125) }, `attempt:${id(22)}`),
+		);
+		const invalid = assessment(id(22), id(224), [sameSessionOnlyId], {
+			dimension: "mechanism",
+			impactLabel: "unknown",
+		});
+		// Act: adding only the subject reference supplies the missing prerequisite.
+		const rejected = tryRecordAttributionAssessment(db, invalid);
+		const accepted = recordAttributionAssessment(db, {
+			...invalid,
+			assessmentId: id(225),
+			evidenceIds: [id(125)],
+		});
+		// Assert
+		expect(() => recordAttributionAssessment(db, invalid)).toThrow(
+			"explicit_reference requires allowed evidence naming the exact assessment subject",
+		);
+		expect(rejected).toMatchObject({ ok: false, reason: "invalid_input" });
+		expect(accepted.assessment.impactLabel).toBe("unknown");
+	});
+});
+
 describe("contract-v1 attribution assessments", () => {
 	let db: Database.Database;
 
@@ -2017,42 +2100,6 @@ describe("contract-v1 attribution assessments", () => {
 		).toBe("human_review");
 	});
 
-	it("enforces explicit, overlap, and human-review basis requirements for unknown labels", () => {
-		recordRetrievalAttempt(db, attempt(22));
-		const evidenceId = feedback(db, 122, "helpful", id(22));
-		for (const [offset, basis] of (["content_overlap", "human_review"] as const).entries()) {
-			expect(
-				tryRecordAttributionAssessment(
-					db,
-					assessment(id(22), id(222 + offset), [evidenceId], {
-						impactLabel: "unknown",
-						basis,
-					}),
-				),
-			).toMatchObject({ ok: false, reason: "invalid_input" });
-		}
-		const sameSessionOnlyId = id(124);
-		recordOutcomeEvidence(
-			db,
-			explicitFeedbackEvidence({
-				evidenceId: sameSessionOnlyId,
-				observedAt: NOW,
-				producer: "feedback-action",
-				producerVersion: "v1",
-				feedback: "helpful",
-				actionId: "unknown-without-reference",
-				gate: "structured_action",
-				correlation: { sessionId: 1 },
-			}),
-		);
-		expect(
-			tryRecordAttributionAssessment(
-				db,
-				assessment(id(22), id(224), [sameSessionOnlyId], { impactLabel: "unknown" }),
-			),
-		).toMatchObject({ ok: false, reason: "invalid_input" });
-	});
-
 	it("accepts isolated helpful exposure evidence and rejects a non-isolated pack", () => {
 		const isolated = recordRetrievalAttempt(db, attempt(2)).attempt;
 		const exposureId = isolated.exposures[0]?.exposureId;
@@ -3310,25 +3357,49 @@ describe("contract-v1 attribution assessments", () => {
 		expect(getAttributionAssessment(db, persistedId)).toBeNull();
 	});
 
-	it("rejects unsupported causal language and weak observational high confidence", () => {
+	it("rejects unsupported causal language", () => {
+		// Arrange
 		recordRetrievalAttempt(db, attempt(7));
 		const evidenceId = feedback(db, 109, "helpful", id(7));
-		expect(
-			tryRecordAttributionAssessment(
-				db,
-				assessment(id(7), id(209), [evidenceId], { claimType: "causal" }),
-			),
-		).toMatchObject({ ok: false, reason: "invalid_input" });
-		expect(
-			tryRecordAttributionAssessment(
-				db,
-				assessment(id(7), id(210), [evidenceId], {
-					impactLabel: "unknown",
-					basis: "temporal_followup",
-					confidenceLevel: "high",
-				}),
-			),
-		).toMatchObject({ ok: false, reason: "invalid_input" });
+		const valid = assessment(id(7), id(208), [evidenceId]);
+		const invalid = { ...valid, assessmentId: id(209), claimType: "causal" as const };
+		// Act
+		const accepted = recordAttributionAssessment(db, valid);
+		const rejected = tryRecordAttributionAssessment(db, invalid);
+		// Assert
+		expect(accepted.assessment.claimType).toBe("observational");
+		expect(() => recordAttributionAssessment(db, invalid)).toThrow(
+			"causal claims require a linked preregistered randomized contrast",
+		);
+		expect(rejected).toMatchObject({ ok: false, reason: "invalid_input" });
+	});
+
+	it("rejects weak observational high confidence after accepting low confidence", () => {
+		// Arrange: a post-completion, subject-bound temporal witness supports unknown attribution.
+		recordRetrievalAttempt(db, attempt(7));
+		const evidenceId = basisEvidence(
+			db,
+			109,
+			id(7),
+			COMPLETED_AT,
+			NON_RANDOMIZED_BASIS_CASES_BY_BASIS.temporal_followup,
+		);
+		const valid = assessment(id(7), id(209), [evidenceId], {
+			dimension: "mechanism",
+			impactLabel: "unknown",
+			basis: "temporal_followup",
+			confidenceLevel: "low",
+		});
+		const invalid = { ...valid, assessmentId: id(210), confidenceLevel: "high" as const };
+		// Act: change only confidence.
+		const accepted = recordAttributionAssessment(db, valid);
+		const rejected = tryRecordAttributionAssessment(db, invalid);
+		// Assert
+		expect(accepted.assessment.confidenceLevel).toBe("low");
+		expect(() => recordAttributionAssessment(db, invalid)).toThrow(
+			"high confidence requires grounded direct evidence, strong adjudication, or a preregistered randomized contrast",
+		);
+		expect(rejected).toMatchObject({ ok: false, reason: "invalid_input" });
 	});
 
 	it("rejects high-confidence unknown explicit references without grounded outcome evidence", () => {
@@ -4398,6 +4469,7 @@ describe("contract-v1 attribution assessments", () => {
 	});
 
 	it("namespaces native source-session correlation by source", () => {
+		// Arrange: identical subject references cannot bypass native correlation via an attempt ID.
 		recordRetrievalAttempt(
 			db,
 			attempt(73, {
@@ -4424,7 +4496,7 @@ describe("contract-v1 attribution assessments", () => {
 				status: "present",
 				source,
 				sourceSessionId: "native-session-1",
-				references: source === "opencode" ? { reference_codes: [`attempt:${id(73)}`] } : undefined,
+				references: { reference_codes: ["memory:memory-10"] },
 			});
 		}
 		const temporalAssessment = (
@@ -4438,13 +4510,16 @@ describe("contract-v1 attribution assessments", () => {
 				confidenceLevel: "low",
 			});
 
-		expect(
-			tryRecordAttributionAssessment(db, temporalAssessment(id(278), wrongSourceId)),
-		).toMatchObject({ ok: false, reason: "invalid_input" });
-		expect(
-			recordAttributionAssessment(db, temporalAssessment(id(279), matchingSourceId)).assessment
-				.impactLabel,
-		).toBe("unknown");
+		// Act: only the source differs between the two evidence rows.
+		const invalid = temporalAssessment(id(278), wrongSourceId);
+		const rejected = tryRecordAttributionAssessment(db, invalid);
+		const accepted = recordAttributionAssessment(db, temporalAssessment(id(279), matchingSourceId));
+		// Assert
+		expect(() => recordAttributionAssessment(db, invalid)).toThrow(
+			"linked outcome evidence must correlate to the assessment subject",
+		);
+		expect(rejected).toMatchObject({ ok: false, reason: "invalid_input" });
+		expect(accepted.assessment.impactLabel).toBe("unknown");
 	});
 
 	it("requires complete causal prerequisites on both retained contrast cells", () => {
