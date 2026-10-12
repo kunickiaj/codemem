@@ -326,97 +326,67 @@ describe("coordinator local admin actions", () => {
 		);
 	});
 
-	it("rejects a remote get response for a different completion candidate", async () => {
-		const requested = legacyCompletionManifest();
-		vi.stubGlobal(
-			"fetch",
-			vi.fn(
-				async () =>
-					new Response(
-						JSON.stringify({
-							manifest: {
-								...requested,
-								candidate_ref: "legacy-team-candidate:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-							},
-						}),
-						{ status: 200, headers: { "Content-Type": "application/json" } },
-					),
-			),
-		);
-
-		await expect(
-			coordinatorGetLegacyTeamCompletionAction({
-				groupId: "group-a",
-				candidateRef: requested.candidate_ref,
-				remoteUrl: "https://coordinator.example.test",
-				adminSecret: "test-secret",
-			}),
-		).rejects.toThrow("coordinator_completion_response_malformed");
-	});
-
-	it("classifies an invalid remote get manifest as a malformed response", async () => {
-		const requested = legacyCompletionManifest();
+	it.each([
+		{
+			label: "a different requested candidate with an internally valid manifest",
+			requestOverrides: { candidateRef: legacyTeamCandidateId("coord-a", "group-other") },
+			responseOverrides: {},
+		},
+		{
+			label: "an invalid manifest digest",
+			requestOverrides: {},
+			responseOverrides: { access_delta_digest: "invalid" },
+		},
+		{
+			label: "a Team not derived from its candidate",
+			requestOverrides: {},
+			responseOverrides: { team_id: "team-other" },
+		},
+		{
+			label: "a coordinator that does not own the candidate",
+			requestOverrides: {},
+			responseOverrides: { coordinator_id: "coord-other" },
+		},
+	])("rejects a remote get response with $label", async (testCase) => {
+		// Arrange: override the request independently; never repair response bindings.
+		const manifest = legacyCompletionManifest();
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(async () =>
-				Response.json({ manifest: { ...requested, access_delta_digest: "invalid" } }),
+				Response.json({ manifest: { ...manifest, ...testCase.responseOverrides } }),
 			),
 		);
 
+		// Act / Assert
 		await expect(
 			coordinatorGetLegacyTeamCompletionAction({
 				groupId: "group-a",
-				candidateRef: requested.candidate_ref,
+				candidateRef: manifest.candidate_ref,
 				remoteUrl: "https://coordinator.example.test",
 				adminSecret: "test-secret",
+				...testCase.requestOverrides,
 			}),
 		).rejects.toThrow("coordinator_completion_response_malformed");
 	});
 
-	it("rejects a remote get response whose Team is not derived from its candidate", async () => {
-		const requested = legacyCompletionManifest();
+	it("accepts a valid remote get manifest for its own completion candidate", async () => {
+		// Arrange: positive control for the different-requested-candidate rejection.
+		const manifest = legacyCompletionManifest();
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(
-				async () =>
-					new Response(JSON.stringify({ manifest: { ...requested, team_id: "team-other" } }), {
-						status: 200,
-						headers: { "Content-Type": "application/json" },
-					}),
-			),
+			vi.fn(async () => Response.json({ manifest })),
 		);
 
-		await expect(
-			coordinatorGetLegacyTeamCompletionAction({
-				groupId: "group-a",
-				candidateRef: requested.candidate_ref,
-				remoteUrl: "https://coordinator.example.test",
-				adminSecret: "test-secret",
-			}),
-		).rejects.toThrow("coordinator_completion_response_malformed");
-	});
+		// Act
+		const result = await coordinatorGetLegacyTeamCompletionAction({
+			groupId: "group-a",
+			candidateRef: manifest.candidate_ref,
+			remoteUrl: "https://coordinator.example.test",
+			adminSecret: "test-secret",
+		});
 
-	it("rejects a remote get response whose coordinator does not own the candidate", async () => {
-		const requested = legacyCompletionManifest();
-		vi.stubGlobal(
-			"fetch",
-			vi.fn(
-				async () =>
-					new Response(
-						JSON.stringify({ manifest: { ...requested, coordinator_id: "coord-other" } }),
-						{ status: 200, headers: { "Content-Type": "application/json" } },
-					),
-			),
-		);
-
-		await expect(
-			coordinatorGetLegacyTeamCompletionAction({
-				groupId: "group-a",
-				candidateRef: requested.candidate_ref,
-				remoteUrl: "https://coordinator.example.test",
-				adminSecret: "test-secret",
-			}),
-		).rejects.toThrow("coordinator_completion_response_malformed");
+		// Assert
+		expect(result).toEqual(manifest);
 	});
 
 	it("enrolls and lists devices for an existing group", async () => {
@@ -435,172 +405,124 @@ describe("coordinator local admin actions", () => {
 		]);
 	});
 
-	it("retries Team onboarding without optional display names for older coordinators", async () => {
-		const actionDbPath = join(tmpDir, "legacy-coordinator-team.sqlite");
-		const keysDir = join(tmpDir, "legacy-coordinator-team-keys");
-		const configPath = join(tmpDir, "legacy-coordinator-team-config.json");
-		const identityId = "identity-team";
-		const reviewedIntent = teamReviewedIntent("team-a");
-		const reviewedDigest = await recipientReviewedIntentDigest(reviewedIntent);
-		const capturedBodies: Record<string, unknown>[] = [];
-		const acceptedResponse = {
-			ok: true,
-			status: "accepted",
-			kind: "team_member",
-			group_id: "coordinator-a",
-			identity_id: identityId,
-			policy_team_id: "team-a",
-			assigned_identity_id: identityId,
-			reviewed_preview_digest: reviewedDigest,
-			reviewed_intent: reviewedIntent,
-		};
-		vi.stubGlobal(
-			"fetch",
-			vi.fn(async (_url: string, init?: RequestInit) => {
-				const body =
-					init?.body instanceof Uint8Array ? Buffer.from(init.body).toString("utf8") : "{}";
-				const parsed = JSON.parse(body) as Record<string, unknown>;
-				capturedBodies.push(parsed);
-				return parsed.recipient_display_name
-					? new Response(JSON.stringify({ error: "unexpected_recipient_invite_fields" }), {
-							status: 400,
-						})
-					: new Response(JSON.stringify(acceptedResponse), { status: 200 });
-			}),
-		);
-		const invite = encodeInvitePayload({
-			v: 1,
-			kind: "team_member",
-			coordinator_url: "https://coord.example.test",
-			group_id: "coordinator-a",
-			policy: "auto_admit",
-			token: "legacy-coordinator-team-token",
-			expires_at: "2099-01-01T00:00:00.000Z",
-			team_name: null,
-			policy_team_id: "team-a",
-			assigned_identity_id: identityId,
-			reviewed_preview_digest: reviewedDigest,
-		});
-		const reviewedOnboardingDigest = reviewedOnboardingDigestForRecipientInvite({
-			dbPath: actionDbPath,
-			keysDir,
-			invitationId: "legacy-coordinator-team-token",
-			identityId,
-			deviceDisplayName: "Recipient laptop",
-			reviewedIntent,
-		});
-
-		await expect(
-			coordinatorImportInviteAction({
-				inviteValue: invite,
-				dbPath: actionDbPath,
-				keysDir,
-				configPath,
+	it.each([
+		{
+			label: "Team",
+			kind: "team_member" as const,
+			unsupportedField: "recipient_display_name",
+			identityId: "identity-team",
+			reviewedIntent: () => teamReviewedIntent("team-a"),
+			binding: { policy_team_id: "team-a", assigned_identity_id: "identity-team" },
+			displayNames: {
 				recipientDisplayName: "Brian Example",
 				deviceDisplayName: "Recipient laptop",
-				reviewedOnboardingDigest,
-			}),
-		).resolves.toMatchObject({ status: "accepted", identity_id: identityId });
-		expect(capturedBodies).toHaveLength(3);
-		expect(capturedBodies[1]).toMatchObject({
-			invite_kind: "team_member",
-			identity_id: identityId,
-			recipient_display_name: "Brian Example",
-			device_display_name: "Recipient laptop",
-		});
-		expect(capturedBodies[2]).toMatchObject({
-			token: "legacy-coordinator-team-token",
-			device_id: capturedBodies[1]?.device_id,
-			public_key: capturedBodies[1]?.public_key,
-			fingerprint: capturedBodies[1]?.fingerprint,
-			invite_kind: "team_member",
-			identity_id: identityId,
-		});
-		expect(capturedBodies[2]).not.toHaveProperty("recipient_display_name");
-		expect(capturedBodies[2]).not.toHaveProperty("device_display_name");
-	});
+			},
+			initialNames: {
+				recipient_display_name: "Brian Example",
+				device_display_name: "Recipient laptop",
+			},
+		},
+		{
+			label: "add-device",
+			kind: "add_device" as const,
+			unsupportedField: "device_display_name",
+			identityId: "identity-owner",
+			reviewedIntent: () => addDeviceReviewedIntent("identity-owner"),
+			binding: { target_identity_id: "identity-owner" },
+			displayNames: { deviceDisplayName: "Owner's new laptop" },
+			initialNames: { device_display_name: "Owner's new laptop" },
+		},
+	])(
+		"retries $label onboarding without optional display names for older coordinators",
+		async (testCase) => {
+			// Arrange: each kind retains its own reviewed intent, identity binding, and name fields.
+			const actionDbPath = join(tmpDir, `legacy-coordinator-${testCase.kind}.sqlite`);
+			const keysDir = join(tmpDir, `legacy-coordinator-${testCase.kind}-keys`);
+			const configPath = join(tmpDir, `legacy-coordinator-${testCase.kind}-config.json`);
+			const { identityId } = testCase;
+			const token = `legacy-coordinator-${testCase.label.toLowerCase()}-token`;
+			const reviewedIntent = testCase.reviewedIntent();
+			const reviewedDigest = await recipientReviewedIntentDigest(reviewedIntent);
+			const capturedBodies: Record<string, unknown>[] = [];
+			const acceptedResponse = {
+				ok: true,
+				status: "accepted",
+				kind: testCase.kind,
+				group_id: "coordinator-a",
+				identity_id: identityId,
+				...testCase.binding,
+				reviewed_preview_digest: reviewedDigest,
+				reviewed_intent: reviewedIntent,
+			};
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async (_url: string, init?: RequestInit) => {
+					const body =
+						init?.body instanceof Uint8Array ? Buffer.from(init.body).toString("utf8") : "{}";
+					const parsed = JSON.parse(body) as Record<string, unknown>;
+					capturedBodies.push(parsed);
+					return parsed[testCase.unsupportedField]
+						? new Response(JSON.stringify({ error: "unexpected_recipient_invite_fields" }), {
+								status: 400,
+							})
+						: new Response(JSON.stringify(acceptedResponse), { status: 200 });
+				}),
+			);
+			const invite = encodeInvitePayload({
+				v: 1,
+				kind: testCase.kind,
+				coordinator_url: "https://coord.example.test",
+				group_id: "coordinator-a",
+				policy: "auto_admit",
+				token,
+				expires_at: "2099-01-01T00:00:00.000Z",
+				team_name: null,
+				...testCase.binding,
+				reviewed_preview_digest: reviewedDigest,
+			});
+			const reviewedOnboardingDigest = reviewedOnboardingDigestForRecipientInvite({
+				dbPath: actionDbPath,
+				keysDir,
+				invitationId: token,
+				identityId,
+				deviceDisplayName: testCase.displayNames.deviceDisplayName,
+				reviewedIntent,
+			});
 
-	it("retries add-device onboarding without optional display names for older coordinators", async () => {
-		const actionDbPath = join(tmpDir, "legacy-coordinator-add-device.sqlite");
-		const keysDir = join(tmpDir, "legacy-coordinator-add-device-keys");
-		const configPath = join(tmpDir, "legacy-coordinator-add-device-config.json");
-		const identityId = "identity-owner";
-		const reviewedIntent = addDeviceReviewedIntent(identityId);
-		const reviewedDigest = await recipientReviewedIntentDigest(reviewedIntent);
-		const capturedBodies: Record<string, unknown>[] = [];
-		const acceptedResponse = {
-			ok: true,
-			status: "accepted",
-			kind: "add_device",
-			group_id: "coordinator-a",
-			identity_id: identityId,
-			target_identity_id: identityId,
-			reviewed_preview_digest: reviewedDigest,
-			reviewed_intent: reviewedIntent,
-		};
-		vi.stubGlobal(
-			"fetch",
-			vi.fn(async (_url: string, init?: RequestInit) => {
-				const body =
-					init?.body instanceof Uint8Array ? Buffer.from(init.body).toString("utf8") : "{}";
-				const parsed = JSON.parse(body) as Record<string, unknown>;
-				capturedBodies.push(parsed);
-				return parsed.device_display_name
-					? new Response(JSON.stringify({ error: "unexpected_recipient_invite_fields" }), {
-							status: 400,
-						})
-					: new Response(JSON.stringify(acceptedResponse), { status: 200 });
-			}),
-		);
-		const invite = encodeInvitePayload({
-			v: 1,
-			kind: "add_device",
-			coordinator_url: "https://coord.example.test",
-			group_id: "coordinator-a",
-			policy: "auto_admit",
-			token: "legacy-coordinator-add-device-token",
-			expires_at: "2099-01-01T00:00:00.000Z",
-			team_name: null,
-			target_identity_id: identityId,
-			reviewed_preview_digest: reviewedDigest,
-		});
-		const reviewedOnboardingDigest = reviewedOnboardingDigestForRecipientInvite({
-			dbPath: actionDbPath,
-			keysDir,
-			invitationId: "legacy-coordinator-add-device-token",
-			identityId,
-			deviceDisplayName: "Owner's new laptop",
-			reviewedIntent,
-		});
-
-		await expect(
-			coordinatorImportInviteAction({
+			// Act
+			const result = await coordinatorImportInviteAction({
 				inviteValue: invite,
 				dbPath: actionDbPath,
 				keysDir,
 				configPath,
-				deviceDisplayName: "Owner's new laptop",
+				...testCase.displayNames,
 				reviewedOnboardingDigest,
-			}),
-		).resolves.toMatchObject({ status: "accepted", identity_id: identityId });
-		expect(capturedBodies).toHaveLength(3);
-		expect(capturedBodies[1]).toMatchObject({
-			invite_kind: "add_device",
-			identity_id: identityId,
-			device_display_name: "Owner's new laptop",
-		});
-		expect(capturedBodies[1]).not.toHaveProperty("recipient_display_name");
-		expect(capturedBodies[2]).toMatchObject({
-			token: "legacy-coordinator-add-device-token",
-			device_id: capturedBodies[1]?.device_id,
-			public_key: capturedBodies[1]?.public_key,
-			fingerprint: capturedBodies[1]?.fingerprint,
-			invite_kind: "add_device",
-			identity_id: identityId,
-		});
-		expect(capturedBodies[2]).not.toHaveProperty("recipient_display_name");
-		expect(capturedBodies[2]).not.toHaveProperty("device_display_name");
-	});
+			});
+
+			// Assert: the rejected named request retries exactly once without changing credentials.
+			expect(result).toMatchObject({ status: "accepted", identity_id: identityId });
+			expect(capturedBodies).toHaveLength(3);
+			expect(capturedBodies[1]).toMatchObject({
+				invite_kind: testCase.kind,
+				identity_id: identityId,
+				...testCase.initialNames,
+			});
+			if (testCase.kind === "add_device") {
+				for (const body of capturedBodies)
+					expect(body).not.toHaveProperty("recipient_display_name");
+			}
+			expect(capturedBodies[2]).toMatchObject({
+				token,
+				device_id: capturedBodies[1]?.device_id,
+				public_key: capturedBodies[1]?.public_key,
+				fingerprint: capturedBodies[1]?.fingerprint,
+				invite_kind: testCase.kind,
+				identity_id: identityId,
+			});
+			expect(capturedBodies[2]).not.toHaveProperty("recipient_display_name");
+			expect(capturedBodies[2]).not.toHaveProperty("device_display_name");
+		},
+	);
 
 	it.each(["operation", "group", "digest", "tampered_project"] as const)(
 		"rejects an accepted Project intent with a %s mismatch before projection persistence",
