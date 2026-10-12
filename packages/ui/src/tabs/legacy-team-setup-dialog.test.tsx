@@ -1412,7 +1412,6 @@ describe("legacy Team setup dialog", () => {
 	});
 
 	it("shows deterministic Project mappings as read-only server evidence", async () => {
-		// Arrange
 		const deterministic = project({
 			canonicalProjectRef: "opaque-canonical-project",
 			mappingChoices: [],
@@ -1428,7 +1427,6 @@ describe("legacy Team setup dialog", () => {
 		);
 		setup({ loadDetail });
 
-		// Act
 		const projectsStep = await vi.waitFor(() => {
 			const match = document.querySelector<HTMLElement>(
 				'[aria-labelledby="legacy-team-setup-step-projects"]',
@@ -1437,7 +1435,6 @@ describe("legacy Team setup dialog", () => {
 			return match;
 		});
 
-		// Assert
 		expect(document.body.textContent).toContain("Mapped automatically");
 		expect(document.body.textContent).toContain("Legacy Project");
 		expect(document.body.textContent).not.toContain("opaque-canonical-project");
@@ -3250,7 +3247,7 @@ describe("Team setup follow-up read failures", () => {
 	] as const)(
 		"retries a failed $name follow-up read before offering an explicit refresh",
 		async ({ readError, guidance, privateCopy }) => {
-			// Arrange: each failure keeps its own error and user-facing guidance.
+			// Each failure keeps its own error and user-facing guidance.
 			const loadDetail = vi
 				.fn()
 				.mockRejectedValueOnce(new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale"))
@@ -3259,7 +3256,7 @@ describe("Team setup follow-up read failures", () => {
 			const refreshCandidate = vi.fn().mockResolvedValue(detail());
 			setup({ loadDetail, refreshCandidate });
 
-			// Act and assert: read-only recovery must precede the explicit refresh.
+			// Read-only recovery must precede the explicit refresh.
 			await vi.waitFor(() =>
 				expect(document.querySelector('[role="alert"]')?.textContent).toContain(guidance),
 			);
