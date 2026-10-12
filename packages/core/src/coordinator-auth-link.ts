@@ -493,13 +493,16 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			values: [...createSourceValues(c, s), ...authority],
 		});
 		if (!active) return rejected("controller_not_active");
-		const reserved = await this.first({
+		const reserved = await this.readOwnerReservation(attemptId, c);
+		return rejected(reserved ? "attempt_conflict" : "attempt_limited");
+	}
+	private readOwnerReservation(attemptId: string, c: CoordinatorAuthLinkConfig) {
+		return this.first({
 			sql: `SELECT 1 FROM coordinator_owner_enrollment_attempts WHERE coordinator_id = ? AND attempt_id = ?
  UNION ALL SELECT 1 FROM coordinator_auth_browser_transactions WHERE coordinator_id = ? AND attempt_id = ?
  AND purpose NOT IN ('signin','link') LIMIT 1`,
 			values: [c.coordinatorId, attemptId, c.coordinatorId, attemptId],
 		});
-		return rejected(reserved ? "attempt_conflict" : "attempt_limited");
 	}
 	private async createRetry(
 		row: Attempt | null,
@@ -526,6 +529,7 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			values: [row.attempt_id, ...configValues(c), ...authority],
 		});
 		if (!active) return rejected("controller_not_active");
+		if (await this.readOwnerReservation(row.attempt_id, c)) return rejected("attempt_conflict");
 		return { kind: "existing", status: status(row, now), identityId: row.identity_id };
 	}
 	private async transition(

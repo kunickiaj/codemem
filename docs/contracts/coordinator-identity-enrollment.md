@@ -426,6 +426,8 @@ access, or enroll a device; callback and finalization remain separate work.
 Owner and account-link creation reserve attempt IDs across both purposes,
 including retained terminal rows. Account-link creation reports a reserved owner
 ID as `attempt_conflict` (HTTP 409), not a retryable rate limit (HTTP 429).
+An otherwise valid exact link retry also rejects a legacy overlap with retained
+owner history; it cannot return `existing` for that reserved ID.
 The ordinary shared callback rejects owner
 transactions without consuming their nonce or PKCE material, even when a legacy
 link row shares the attempt ID and browser hash. Legacy link/sign-in retirement
