@@ -97,7 +97,9 @@ export default { async fetch(request, env) {
 	);
 	t.after(() => mf.dispose());
 	const db = await mf.getD1Database("DB");
-	const migrations = await readD1Migrations(fileURLToPath(new URL("../migrations", import.meta.url)));
+	const migrations = await readD1Migrations(
+		fileURLToPath(new URL("../migrations", import.meta.url)),
+	);
 	for (const migration of migrations) {
 		await db.batch(migration.queries.map((sql) => db.prepare(sql)));
 	}
@@ -113,6 +115,36 @@ function fields(page) {
 		[...page.body.matchAll(/name="([a-z_]+)" value="([^"]+)"/g)].map((m) => [m[1], m[2]]),
 	);
 }
+
+test("ordinary Worker HTTP serves sign-in but leaves owner enrollment unmounted", {
+	timeout: 30000,
+}, async (t) => {
+	// Arrange: use the ordinary Worker composition, not a test-only owner dispatcher.
+	const f = await harness(t);
+	// Act
+	const signin = await f.request("/auth/sign-in");
+	const statuses = [];
+	for (const path of [
+		"/auth/owner/start",
+		"/auth/owner/callback",
+		"/auth/owner/confirm",
+		"/v1/auth/owner-attempts",
+		"/v1/auth/owner-attempts/fixture/finalize",
+	]) {
+		for (const method of ["GET", "POST"]) statuses.push((await f.request(path, { method })).status);
+	}
+	// Assert: local private owner tests do not activate any production route or attempt.
+	assert.equal(signin.status, 200);
+	assert.deepEqual(statuses, Array(10).fill(404));
+	assert.equal(
+		(
+			await f.db
+				.prepare("SELECT COUNT(*) AS count FROM coordinator_owner_enrollment_attempts")
+				.first()
+		).count,
+		0,
+	);
+});
 function post(page, { client = "127.0.0.1", csrf = fields(page).csrf } = {}) {
 	return {
 		method: "POST",
