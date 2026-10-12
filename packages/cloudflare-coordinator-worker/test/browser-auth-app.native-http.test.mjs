@@ -126,16 +126,19 @@ test("ordinary Worker HTTP serves sign-in but leaves owner enrollment unmounted"
 	const statuses = [];
 	for (const path of [
 		"/auth/owner/start",
-		"/auth/owner/callback",
 		"/auth/owner/confirm",
 		"/v1/auth/owner-attempts",
 		"/v1/auth/owner-attempts/finalize",
 	]) {
 		for (const method of ["GET", "POST"]) statuses.push((await f.request(path, { method })).status);
 	}
-	// Assert: local private owner tests do not activate any production route or attempt.
+	// The shared /auth/callback stays mounted for sign-in/link; an unknown owner-like
+	// state has no matching transaction and cannot advance an owner attempt.
+	const sharedCallback = await f.request(`/auth/callback?state=${"A".repeat(43)}&code=fixture`);
+	// Assert: only owner-specific routes are 404; no owner attempt was created.
 	assert.equal(signin.status, 200);
-	assert.deepEqual(statuses, Array(10).fill(404));
+	assert.deepEqual(statuses, Array(8).fill(404));
+	assert.equal(sharedCallback.status, 403);
 	assert.equal(
 		(
 			await f.db

@@ -276,7 +276,17 @@ async function fixture(t) {
 	t = { mock: t.mock, after: close => cleanup.push(close) };
 	const now = Date.now();
 	t.mock.method(Date, "now", () => now);
-	t.mock.method(globalThis, "fetch", () => { throw new Error("External network forbidden"); });
+	let syncOrigin;
+	t.mock.method(globalThis, "fetch", async (input, init) => {
+		if (!syncOrigin) throw new Error("External network forbidden");
+		const request = new Request(input, init);
+		assert.equal(new URL(request.url).origin, syncOrigin, "External network forbidden");
+		const result = await ownerHttpRequest(request.url, {
+			method: request.method, headers: Object.fromEntries(request.headers),
+			body: Buffer.from(await request.arrayBuffer()),
+		});
+		return new Response(result.body || null, { status: result.status, headers: result.headers });
+	});
 	await mkdir(artifacts, { recursive: true });
 	const directory = await mkdtemp(join(artifacts, "two-device-owner-"));
 	let a;
@@ -300,7 +310,8 @@ async function fixture(t) {
 	b = await device(h, directory, "fresh-device-b");
 	assert.notEqual(a.key.publicKey, b.key.publicKey);
 	remote = await coordinator(h, now);
-	const f = { t, h, a, b, remote, config, provider, now };
+	const f = { t, h, a, b, remote, config, provider, now,
+		allowSyncOrigin: url => { syncOrigin = url; } };
 	f.link = await linkA(f);
 	return f;
 }
@@ -427,15 +438,7 @@ async function syncServer(f) {
 		server.listen(0, "127.0.0.1", resolve);
 	});
 	url = `http://127.0.0.1:${server.address().port}`;
-	f.t.mock.method(globalThis, "fetch", async (input, init) => {
-		const request = new Request(input, init);
-		assert.equal(new URL(request.url).origin, url, "External network forbidden");
-		const result = await ownerHttpRequest(request.url, {
-			method: request.method, headers: Object.fromEntries(request.headers),
-			body: Buffer.from(await request.arrayBuffer()),
-		});
-		return new Response(result.body || null, { status: result.status, headers: result.headers });
-	});
+	f.allowSyncOrigin(url);
 	return { url, requests };
 }
 
@@ -497,6 +500,7 @@ async function scopedCaptureAcceptance(f) {
 	assert.equal(f.b.store.db.prepare("SELECT COUNT(*) AS n FROM memory_items").get().n, 0);
 	f.b.store.db.prepare("UPDATE scope_memberships SET status='active' WHERE device_id=?").run(f.b.deviceId);
 	const server = await syncServer(f);
+	await assert.rejects(globalThis.fetch("https://example.test/not-owned"), /External network forbidden/);
 	const result = await f.h.syncOnce(f.a.store.db, f.b.deviceId, [server.url], {
 		keysDir: f.a.keysDir, scanner: f.a.store.scanner,
 	});
@@ -556,4 +560,8 @@ test("fake-only abort after B confirmation leaves no owner binding or audit", { 
 	assert.deepEqual(await ownerEffects(f), [[], []]);
 	assert.equal((await f.remote.rows("enrolled_devices")).length, 1);
 	assert.equal((await f.remote.rows("coordinator_owner_enrollment_attempts"))[0].state, "confirmed");
+});
+
+test("two-device fixture restores the original fetch after each case", () => {
+	assert.equal(globalThis.fetch.mock, undefined);
 });
