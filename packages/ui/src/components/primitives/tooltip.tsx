@@ -1,5 +1,6 @@
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import type { ComponentChildren } from "preact";
+import { useEffect, useState } from "preact/hooks";
 
 export type TooltipSide = "top" | "right" | "bottom" | "left";
 export type TooltipAlign = "start" | "center" | "end";
@@ -66,9 +67,14 @@ export function Tooltip({
 	asChild = true,
 	disabled = false,
 }: TooltipProps) {
+	// Controlled state keeps Radix's opening event ahead of content mounting in Preact.
+	const [open, setOpen] = useState(false);
+	useEffect(() => {
+		if (disabled) setOpen(false);
+	}, [disabled]);
 	if (disabled) return <>{children}</>;
 	return (
-		<TooltipPrimitive.Root>
+		<TooltipPrimitive.Root open={open} onOpenChange={setOpen}>
 			<TooltipPrimitive.Trigger asChild={asChild}>{children}</TooltipPrimitive.Trigger>
 			<TooltipPrimitive.Portal>
 				<TooltipPrimitive.Content

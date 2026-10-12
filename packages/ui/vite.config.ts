@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import preact from "@preact/preset-vite";
 import type { OutputChunk, OutputOptions } from "rollup";
 import { defineConfig } from "vitest/config";
+import { uiAliases } from "./ui-aliases.ts";
 
 function isOutputChunk(value: unknown): value is OutputChunk {
 	return (
@@ -28,16 +29,6 @@ function resolveGitCommit(): string {
 }
 
 const gitCommit = resolveGitCommit();
-const uiAliases = {
-	"@codemem/core/recipient-policy-contract": resolve(
-		import.meta.dirname,
-		"../core/src/recipient-policy-contract.ts",
-	),
-	react: "preact/compat",
-	"react-dom": "preact/compat",
-	"react-dom/test-utils": "preact/test-utils",
-	"react/jsx-runtime": "preact/jsx-runtime",
-};
 const radixTestDependencies = [
 	"@floating-ui/react-dom",
 	"@radix-ui/react-collapsible",
@@ -62,6 +53,13 @@ const radixTestDependencies = [
 	"@radix-ui/react-roving-focus",
 	"@radix-ui/react-slot",
 	"@radix-ui/react-tabs",
+	"@radix-ui/react-select",
+	"@radix-ui/react-switch",
+	"@radix-ui/react-radio-group",
+	"@radix-ui/react-popover",
+	"@radix-ui/react-tooltip",
+	"@radix-ui/react-use-previous",
+	"@radix-ui/react-visually-hidden",
 	"@radix-ui/react-use-callback-ref",
 	"@radix-ui/react-use-controllable-state",
 	"@radix-ui/react-use-effect-event",

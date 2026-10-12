@@ -1,5 +1,8 @@
 import * as Tabs from "@radix-ui/react-tabs";
-import type { ComponentChildren } from "preact";
+import { type ComponentChildren, createContext } from "preact";
+import { useContext } from "preact/hooks";
+
+const TriggerIds = createContext<Record<string, string>>({});
 
 export type RadixTabOption = {
 	disabled?: boolean;
@@ -38,25 +41,30 @@ export function RadixTabs({
 	triggerClassName,
 	value,
 }: RadixTabsProps) {
+	const triggerIds = Object.fromEntries(
+		tabs.flatMap((tab) => (tab.id ? [[tab.value, tab.id] as const] : [])),
+	);
 	return (
-		<Tabs.Root onValueChange={onValueChange} value={value}>
-			<Tabs.List aria-label={ariaLabel} className={listClassName}>
-				{tabs.map((tab) => (
-					<Tabs.Trigger
-						className={triggerClassName}
-						disabled={tab.disabled}
-						id={tab.id}
-						key={tab.value}
-						onKeyDownCapture={() => onTriggerKeyDown?.(tab.value)}
-						onMouseDownCapture={() => onTriggerMouseDown?.(tab.value)}
-						value={tab.value}
-					>
-						{tab.label}
-					</Tabs.Trigger>
-				))}
-			</Tabs.List>
-			{children}
-		</Tabs.Root>
+		<TriggerIds.Provider value={triggerIds}>
+			<Tabs.Root onValueChange={onValueChange} value={value}>
+				<Tabs.List aria-label={ariaLabel} className={listClassName}>
+					{tabs.map((tab) => (
+						<Tabs.Trigger
+							className={triggerClassName}
+							disabled={tab.disabled}
+							{...(tab.id ? { id: tab.id } : {})}
+							key={tab.value}
+							onKeyDownCapture={() => onTriggerKeyDown?.(tab.value)}
+							onMouseDownCapture={() => onTriggerMouseDown?.(tab.value)}
+							value={tab.value}
+						>
+							{tab.label}
+						</Tabs.Trigger>
+					))}
+				</Tabs.List>
+				{children}
+			</Tabs.Root>
+		</TriggerIds.Provider>
 	);
 }
 
@@ -66,8 +74,14 @@ export function RadixTabsContent({
 	forceMount = false,
 	value,
 }: RadixTabsContentProps) {
+	const triggerId = useContext(TriggerIds)[value];
 	return (
-		<Tabs.Content className={className} forceMount={forceMount ? true : undefined} value={value}>
+		<Tabs.Content
+			{...(triggerId ? { "aria-labelledby": triggerId } : {})}
+			className={className}
+			forceMount={forceMount ? true : undefined}
+			value={value}
+		>
 			{children}
 		</Tabs.Content>
 	);
