@@ -7,6 +7,15 @@ export interface CoordinatorAccountLinkReceiver {
 	completion: Promise<string>;
 	close(): Promise<void>;
 }
+export interface CoordinatorOwnerEnrollmentCompletion {
+	completionSecret: string;
+	confirmationHash: string;
+}
+export interface CoordinatorOwnerEnrollmentReceiver {
+	destination: string;
+	completion: Promise<CoordinatorOwnerEnrollmentCompletion>;
+	close(): Promise<void>;
+}
 export interface CoordinatorAccountLinkReceiverOptions {
 	attemptId: string;
 	host?: "127.0.0.1" | "::1";
@@ -68,7 +77,12 @@ function reply(response: ServerResponse, status: number, text: string): void {
 	response.writeHead(status, HEADERS);
 	response.end(text);
 }
-function readCompletion(request: IncomingMessage, host: string, attemptId: string): string | null {
+function readCompletion(
+	request: IncomingMessage,
+	host: string,
+	attemptId: string,
+	mode: "account_link" | "owner_enroll",
+): string | CoordinatorOwnerEnrollmentCompletion | null {
 	if (!isNavigation(request)) return null;
 	const raw = request.url ?? "";
 	const hosts = request.rawHeaders.filter(
@@ -81,15 +95,27 @@ function readCompletion(request: IncomingMessage, host: string, attemptId: strin
 	if (request.headers["content-length"] !== undefined && request.headers["content-length"] !== "0")
 		return null;
 	const params = new URLSearchParams(raw.slice(PATH.length + 1));
+	return parseCompletionParams(params, attemptId, mode);
+}
+function parseCompletionParams(
+	params: URLSearchParams,
+	attemptId: string,
+	mode: "account_link" | "owner_enroll",
+): string | CoordinatorOwnerEnrollmentCompletion | null {
 	if (
-		[...params].length !== 2 ||
+		[...params].length !== (mode === "owner_enroll" ? 3 : 2) ||
 		params.getAll("attempt_id").length !== 1 ||
-		params.getAll("completion").length !== 1
+		params.getAll("completion").length !== 1 ||
+		(mode === "owner_enroll" && params.getAll("confirmation").length !== 1)
 	)
 		return null;
 	if (params.get("attempt_id") !== attemptId) return null;
 	const completion = params.get("completion");
-	return decodeCoordinatorAuthProof32(completion) ? completion : null;
+	if (!completion || !decodeCoordinatorAuthProof32(completion)) return null;
+	if (mode === "account_link") return completion;
+	const confirmationHash = params.get("confirmation");
+	if (!confirmationHash || !/^[0-9a-f]{64}$/.test(confirmationHash)) return null;
+	return { completionSecret: completion, confirmationHash };
 }
 function isNavigation(request: IncomingMessage): boolean {
 	const headers = request.headers;
@@ -124,12 +150,12 @@ function listen(server: Server, host: string, port: number): Promise<void> {
 		});
 	});
 }
-function receiverLifecycle(server: Server, signal?: AbortSignal) {
+function receiverLifecycle<T>(server: Server, signal?: AbortSignal) {
 	let settled = false;
 	let closing: Promise<void> | undefined;
-	let accept: (proof: string) => void = () => {};
+	let accept: (proof: T) => void = () => {};
 	let fail: (error: Error) => void = () => {};
-	const completion = new Promise<string>((resolve, reject) => {
+	const completion = new Promise<T>((resolve, reject) => {
 		accept = resolve;
 		fail = reject;
 	});
@@ -147,7 +173,7 @@ function receiverLifecycle(server: Server, signal?: AbortSignal) {
 	return {
 		completion,
 		detach,
-		accept(proof: string, response: ServerResponse): boolean {
+		accept(proof: T, response: ServerResponse): boolean {
 			if (settled || signal?.aborted) return false;
 			settled = true;
 			response.once("finish", () => accept(proof));
@@ -179,12 +205,22 @@ function validOptions(options: CoordinatorAccountLinkReceiverOptions): boolean {
 	);
 }
 /** Bind before creating an attempt. Only this held literal-loopback listener owns delivery. */
-export async function createCoordinatorAccountLinkReceiver(
+async function createReceiver(
 	options: CoordinatorAccountLinkReceiverOptions,
-): Promise<CoordinatorAccountLinkReceiver> {
+	mode: "account_link" | "owner_enroll",
+): Promise<{
+	destination: string;
+	completion: Promise<string | CoordinatorOwnerEnrollmentCompletion>;
+	close(): Promise<void>;
+}> {
 	if (!validOptions(options)) throw new Error("Invalid account-link receiver options.");
+	if (mode === "owner_enroll" && options.coordinatorOrigin !== undefined)
+		throw new Error("Invalid owner-enrollment receiver options.");
 	const { attemptId, signal, port = 0, host = "127.0.0.1" } = options;
-	const page = completionPage(options);
+	const page =
+		mode === "owner_enroll"
+			? "Your computer received the confirmation. Return to the app to finish adding the device."
+			: completionPage(options);
 	let authority = "";
 	const server = createServer(
 		{ maxHeaderSize: 4096, requestTimeout: 5000, headersTimeout: 5000 },
@@ -193,7 +229,7 @@ export async function createCoordinatorAccountLinkReceiver(
 				reply(response, 405, "Method not allowed.");
 				return;
 			}
-			const proof = readCompletion(request, authority, attemptId);
+			const proof = readCompletion(request, authority, attemptId, mode);
 			if (!proof) {
 				reply(response, 400, "Invalid completion request.");
 				return;
@@ -206,7 +242,10 @@ export async function createCoordinatorAccountLinkReceiver(
 		},
 	);
 	server.setTimeout(5000, (socket) => socket.destroy());
-	const lifecycle = receiverLifecycle(server, signal);
+	const lifecycle = receiverLifecycle<string | CoordinatorOwnerEnrollmentCompletion>(
+		server,
+		signal,
+	);
 	try {
 		await listen(server, host, port);
 		const address = server.address();
@@ -224,4 +263,22 @@ export async function createCoordinatorAccountLinkReceiver(
 		if (server.listening) await lifecycle.close();
 		throw new Error("Could not start the account-link receiver.");
 	}
+}
+
+export async function createCoordinatorAccountLinkReceiver(
+	options: CoordinatorAccountLinkReceiverOptions,
+): Promise<CoordinatorAccountLinkReceiver> {
+	const receiver = await createReceiver(options, "account_link");
+	return { ...receiver, completion: receiver.completion as Promise<string> };
+}
+
+/** Owner-only delivery adds the browser-approved commitment; account linking stays two-parameter. */
+export async function createCoordinatorOwnerEnrollmentReceiver(
+	options: Omit<CoordinatorAccountLinkReceiverOptions, "coordinatorOrigin">,
+): Promise<CoordinatorOwnerEnrollmentReceiver> {
+	const receiver = await createReceiver(options, "owner_enroll");
+	return {
+		...receiver,
+		completion: receiver.completion as Promise<CoordinatorOwnerEnrollmentCompletion>,
+	};
 }

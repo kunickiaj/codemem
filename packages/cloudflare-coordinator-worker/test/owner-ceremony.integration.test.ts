@@ -220,6 +220,7 @@ test("native D1 rejects callback-only finalization and one-use confirmation repl
 
 const drift = {
 	link: "UPDATE coordinator_auth_account_links SET revoked_at_ms = 1",
+	account: "UPDATE coordinator_auth_account_links SET subject = 'other-subject'",
 	grant:
 		"UPDATE coordinator_identity_group_grants SET revision = revision + 1 WHERE group_id = 'group-a'",
 	group: "UPDATE groups SET archived_at = 'archived' WHERE group_id = 'group-a'",
@@ -243,7 +244,7 @@ test.for(
 	expect(await snapshot()).toEqual(before);
 });
 
-test.for(["secret", "signature", "key", "account"])(
+test.for(["secret", "signature", "key", "confirmation"])(
 	"native D1 rejects final proof for wrong %s",
 	async (fault, { ceremony: f }) => {
 		// Arrange
@@ -259,10 +260,10 @@ test.for(["secret", "signature", "key", "account"])(
 			input.signature = await (await pendingKey()).sign(
 				ownerEnrollmentFinalMessage(row, input.completionSecret),
 			);
-		if (fault === "account")
+		if (fault === "confirmation")
 			input.signature = await f.key.sign(
 				ownerEnrollmentFinalMessage(
-					{ ...row, account_subject: "other-subject" },
+					{ ...row, confirmation_hash: "9".repeat(64) },
 					input.completionSecret,
 				),
 			);

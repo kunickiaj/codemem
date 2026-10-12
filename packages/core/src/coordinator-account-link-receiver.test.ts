@@ -1,14 +1,22 @@
 import { randomBytes } from "node:crypto";
 import { connect } from "node:net";
 import { describe, expect, it } from "vitest";
-import { createCoordinatorAccountLinkReceiver } from "./coordinator-account-link-receiver.js";
+import {
+	createCoordinatorAccountLinkReceiver,
+	createCoordinatorOwnerEnrollmentReceiver,
+} from "./coordinator-account-link-receiver.js";
 
 const proof = Buffer.alloc(32, 19).toString("base64url");
 const query = `?attempt_id=attempt-a&completion=${proof}`;
 type Receiver = Awaited<ReturnType<typeof createCoordinatorAccountLinkReceiver>>;
 
 // Raw TCP preserves authorities and request targets that fetch would normalize.
-function request(receiver: Receiver, target: string, host?: string, method = "GET") {
+function request(
+	receiver: Pick<Receiver, "destination">,
+	target: string,
+	host?: string,
+	method = "GET",
+) {
 	const url = new URL(receiver.destination);
 	return new Promise<string>((resolve, reject) => {
 		const socket = connect({ host: url.hostname.replace(/^\[|\]$/g, ""), port: Number(url.port) });
@@ -41,9 +49,11 @@ describe("account link receiver pinned coordinator navigation", () => {
 			try {
 				// Act: the browser cannot nominate a return destination, even before the valid delivery.
 				const rejected = await request(receiver, `${target}&return=https://evil.example.test`);
+				const ownerDelivery = await request(receiver, `${target}&confirmation=${"a".repeat(64)}`);
 				const response = await request(receiver, target);
 				// Assert
 				expect(rejected).toMatch(/^HTTP\/1.1 400 /);
+				expect(ownerDelivery).toMatch(/^HTTP\/1.1 400 /);
 				expect(response.match(/href="([^"]+)"/)?.[1]).toBe(
 					"https://app.example.test/auth/link/complete?attempt_id=attempt-a",
 				);
@@ -223,4 +233,47 @@ describe("account link receiver literal transport boundary", () => {
 			await completion;
 		}
 	});
+});
+
+describe("owner-only confirmation delivery", () => {
+	it.each(["127.0.0.1", "::1"] as const)(
+		"requires exactly one lowercase-hex confirmation on %s without consuming invalid delivery",
+		async (host) => {
+			// Arrange: an arbitrary valid commitment is delivery data, not local account authority.
+			const receiver = await createCoordinatorOwnerEnrollmentReceiver({
+				attemptId: "attempt-a",
+				host,
+			});
+			const confirmationHash = "a".repeat(64);
+			const base = new URL(receiver.destination).pathname + query;
+			const valid = `${base}&confirmation=${confirmationHash}`;
+			const invalid = [
+				base,
+				`${valid}&confirmation=${confirmationHash}`,
+				`${valid}&extra=1`,
+				...["", "A".repeat(64), "g".repeat(64), "a".repeat(63), "a".repeat(65)].map(
+					(value) => `${base}&confirmation=${value}`,
+				),
+			];
+			try {
+				// Act
+				const denied = [];
+				for (const target of invalid) denied.push(await request(receiver, target));
+				const accepted = await request(receiver, valid);
+				const completion = await receiver.completion;
+				const replay = await request(receiver, valid);
+				// Assert
+				for (const response of denied) expect(response).toMatch(/^HTTP\/1.1 400 /);
+				expect(accepted).toMatch(/^HTTP\/1.1 200 /);
+				expect(completion).toEqual({ completionSecret: proof, confirmationHash });
+				expect(replay).toMatch(/^HTTP\/1.1 410 /);
+				for (const response of [...denied, accepted, replay]) {
+					expect(response).not.toContain(proof);
+					expect(response).not.toContain(confirmationHash);
+				}
+			} finally {
+				await receiver.close();
+			}
+		},
+	);
 });

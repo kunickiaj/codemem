@@ -11,7 +11,10 @@ import {
 	type OwnerAttempt,
 	readOwnerEnrollmentReceipt,
 } from "../../core/src/coordinator-owner-enrollment-commit.js";
-import { ownerEnrollmentFinalMessage } from "../../core/src/coordinator-owner-enrollment-proof.js";
+import {
+	ownerEnrollmentConfirmationHash,
+	ownerEnrollmentFinalMessage,
+} from "../../core/src/coordinator-owner-enrollment-proof.js";
 import {
 	finalizedOwner,
 	pendingOwner,
@@ -101,6 +104,7 @@ async function writerFixture() {
 		audit_event_id: null,
 		final_outcome_json: null,
 	};
+	row.confirmation_hash = await ownerEnrollmentConfirmationHash(row);
 	const birth = Object.entries({
 		...pendingOwner,
 		public_key: publicKey,

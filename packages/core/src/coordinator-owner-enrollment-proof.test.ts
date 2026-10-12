@@ -57,9 +57,22 @@ async function proofFixture() {
 		audit_event_id: null,
 		final_outcome_json: null,
 	};
+	const confirmationFields =
+		`coordinator_id attempt_id origin device_id public_key key_id fingerprint
+	 issuer account_subject identity_id link_id link_attempt_id link_controller_attestation_id
+	 link_auth_config_revision auth_config_revision browser_start_hash browser_transaction_hash
+	 browser_binder_hash grant_revisions_json created_at_ms expires_at_ms`.split(/\s+/);
+	row.confirmation_hash = createHash("sha256")
+		.update(
+			JSON.stringify([
+				"owner_enroll",
+				...confirmationFields.map((field) => row[field as keyof OwnerAttempt]),
+			]),
+		)
+		.digest("hex");
 	const secret = Buffer.alloc(32, 9).toString("base64url");
 	const message = JSON.stringify([
-		"codemem-owner-enrollment-finalize-v1",
+		"codemem-owner-enrollment-finalize-v2",
 		"owner_enroll",
 		row.coordinator_id,
 		row.origin,
@@ -70,9 +83,6 @@ async function proofFixture() {
 		row.key_id,
 		row.fingerprint,
 		row.issuer,
-		row.account_subject,
-		row.identity_id,
-		row.link_id,
 		row.confirmation_hash,
 		secret,
 	]);
@@ -169,7 +179,7 @@ it.for(["forged-fingerprint", "key-comment"])(
 );
 
 const signedFields =
-	"coordinator_id origin auth_config_revision attempt_id device_id public_key key_id fingerprint issuer account_subject identity_id link_id confirmation_hash".split(
+	"coordinator_id origin auth_config_revision attempt_id device_id public_key key_id fingerprint issuer confirmation_hash".split(
 		" ",
 	) as (keyof OwnerAttempt)[];
 it.for(signedFields)("pure final proof rejects altered signed %s", async (field) => {
@@ -263,10 +273,10 @@ it("pending-key hashes intentionally do not compare the stored completion commit
 });
 
 const requiredMetadata = [
-	["account_subject", 11],
-	["identity_id", 12],
-	["link_id", 13],
-	["confirmation_hash", 14],
+	["account_subject", null],
+	["identity_id", null],
+	["link_id", null],
+	["confirmation_hash", 11],
 ] as const;
 it.for(
 	requiredMetadata.flatMap(([field, index]) =>
@@ -277,7 +287,7 @@ it.for(
 	const f = await proofFixture();
 	f.row[field] = value;
 	const parts = JSON.parse(f.message) as unknown[];
-	parts[index] = value;
+	if (index !== null) parts[index] = value;
 	const signature = f.signMessage(JSON.stringify(parts));
 	// Act
 	const proof = await verifyPendingKeySignatureAndHashes(f.row, f.secret, signature);
@@ -292,6 +302,44 @@ it.for(
 	expect(proof?.completionHash).toBe(f.row.completion_secret_hash);
 	expect(completion).toBeNull();
 });
+
+it("v2 final message needs only start pins and the browser-approved commitment", async () => {
+	// Arrange: B has no account/link/grant database metadata.
+	const f = await proofFixture();
+	const { row: a } = f;
+	const pins = {
+		coordinator_id: a.coordinator_id,
+		origin: a.origin,
+		auth_config_revision: a.auth_config_revision,
+		attempt_id: a.attempt_id,
+		device_id: a.device_id,
+		public_key: a.public_key,
+		key_id: a.key_id,
+		fingerprint: a.fingerprint,
+		issuer: a.issuer,
+		confirmation_hash: a.confirmation_hash,
+	};
+	// Act
+	const message = ownerEnrollmentFinalMessage(pins, f.secret);
+	const proof = await verifyPendingKeySignatureAndHashes(a, f.secret, f.signMessage(message));
+	// Assert
+	expect(message).toBe(f.message);
+	expect(proof?.completionHash).toBe(a.completion_secret_hash);
+});
+
+it("rejects a genuine v1 final signature without downgrade fallback", async () => {
+	// Arrange
+	const f = await proofFixture();
+	const parts = JSON.parse(f.message) as unknown[];
+	parts[0] = "codemem-owner-enrollment-finalize-v1";
+	parts.splice(11, 0, f.row.account_subject, f.row.identity_id, f.row.link_id);
+	const signature = f.signMessage(JSON.stringify(parts));
+	// Act
+	const result = await verifyPendingKeySignatureAndHashes(f.row, f.secret, signature);
+	// Assert
+	expect(result).toBeNull();
+});
+
 it.for([0, 8640000000000000, -1, 8640000000000001, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
 	"pure write-time validator handles %s",
 	(value) => {

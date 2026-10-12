@@ -6,6 +6,7 @@ import {
 import { COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_RECORDS } from "./coordinator-legacy-team-completion.js";
 import {
 	type OwnerAttempt,
+	ownerEnrollmentConfirmationHash,
 	validOwnerEnrollmentReceiptMetadata,
 	verifyOwnerEnrollmentCompletion,
 } from "./coordinator-owner-enrollment-proof.js";
@@ -333,6 +334,7 @@ export async function readOwnerEnrollmentReceipt(
 ): Promise<boolean> {
 	const a = Object.freeze({ ...row });
 	if (!validOwnerEnrollmentReceiptMetadata(a)) return false;
+	if ((await ownerEnrollmentConfirmationHash(a)) !== a.confirmation_hash) return false;
 	const found = await backend.first({ sql: RECEIPT_SQL, values: receiptValues(a) });
 	return found !== null;
 }

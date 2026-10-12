@@ -9,6 +9,10 @@ import {
 	type commitOwnerEnrollment,
 	type OwnerAttempt,
 } from "./coordinator-owner-enrollment-commit.js";
+import {
+	ownerEnrollmentConfirmationHash,
+	ownerEnrollmentFinalMessage,
+} from "./coordinator-owner-enrollment-proof.js";
 import { finalizedOwner, pendingOwner } from "./coordinator-owner-enrollment-test-harness.js";
 
 const EFFECT_TABLES = [
@@ -32,16 +36,7 @@ export function commitPendingKey() {
 	};
 }
 export function commitProofMessage(a: OwnerAttempt, secret: string) {
-	const fields =
-		"coordinator_id origin auth_config_revision attempt_id device_id public_key key_id fingerprint issuer account_subject identity_id link_id confirmation_hash".split(
-			" ",
-		) as (keyof OwnerAttempt)[];
-	return JSON.stringify([
-		"codemem-owner-enrollment-finalize-v1",
-		"owner_enroll",
-		...fields.map((field) => a[field]),
-		secret,
-	]);
+	return ownerEnrollmentFinalMessage(a, secret);
 }
 function nativeBackend(db: Database.Database): AuthLinkBackend {
 	const run = (s: AuthLinkStatement) => db.prepare(s.sql).run(...s.values).changes;
@@ -57,7 +52,7 @@ function nativeBackend(db: Database.Database): AuthLinkBackend {
 	};
 }
 async function confirmedMetadata(key: ReturnType<typeof commitPendingKey>): Promise<OwnerAttempt> {
-	return {
+	const row: OwnerAttempt = {
 		...finalizedOwner,
 		purpose: "owner_enroll",
 		public_key: key.publicKey,
@@ -73,6 +68,7 @@ async function confirmedMetadata(key: ReturnType<typeof commitPendingKey>): Prom
 		audit_event_id: null,
 		final_outcome_json: null,
 	};
+	return { ...row, confirmation_hash: await ownerEnrollmentConfirmationHash(row) };
 }
 type Exec = (sql: string, ...values: AuthLinkStatement["values"]) => Promise<number>;
 async function seedCommitAuthority(exec: Exec) {

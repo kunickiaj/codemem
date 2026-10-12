@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import { NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { issueBrowserCookie, readBrowserCookie } from "./coordinator-browser-credential.js";
+import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
 import { oidcFixture, PROVIDER } from "./coordinator-oidc-test-fixtures.js";
 import { commitPendingKey } from "./coordinator-owner-enrollment-commit-test-fixtures.js";
 import {
@@ -143,7 +144,24 @@ async function confirmed() {
 	const input = {
 		attemptId: "attempt-a",
 		completionSecret: result.completionSecret,
-		signature: f.key.sign(ownerEnrollmentFinalMessage(row(), result.completionSecret)),
+		// B signs only its known start values and the commitment delivered by the browser.
+		signature: f.key.sign(
+			JSON.stringify([
+				"codemem-owner-enrollment-finalize-v2",
+				"owner_enroll",
+				cfg.coordinatorId,
+				ORIGIN,
+				cfg.revision,
+				"attempt-a",
+				"device-a",
+				f.key.publicKey,
+				await ed25519KeyId(f.key.publicKey),
+				hash(f.key.publicKey),
+				cfg.issuer,
+				c.view.confirmationHash,
+				result.completionSecret,
+			]),
+		),
 	};
 	return { ...c, result, input };
 }
@@ -358,7 +376,7 @@ it("commits only existing permitted groups, one binding, audit and immutable rec
 	expect(f.rows("coordinator_auth_sessions")).toEqual([]);
 });
 
-it.each(["secret", "signature", "key", "account", "group"])(
+it.each(["secret", "signature", "key", "account", "link", "group", "confirmation"])(
 	"rejects final proof with wrong %s",
 	async (fault) => {
 		// Arrange: signatures for different commitments are genuine, but not this pending ceremony.
@@ -371,17 +389,47 @@ it.each(["secret", "signature", "key", "account", "group"])(
 		if (fault === "signature") input.signature = "A".repeat(86);
 		const claimed = { ...row() };
 		if (fault === "account") claimed.account_subject = "other-subject";
+		if (fault === "link") claimed.link_id = "other-link";
+		if (["account", "link"].includes(fault))
+			claimed.confirmation_hash = displayedCommitment(claimed);
+		if (fault === "confirmation") claimed.confirmation_hash = "a".repeat(64);
 		if (fault === "group") {
 			claimed.grant_revisions_json = '[{"groupId":"group-other","revision":1}]';
 			claimed.confirmation_hash = displayedCommitment(claimed);
 		}
-		if (["key", "account", "group"].includes(fault)) {
+		if (["key", "account", "link", "group", "confirmation"].includes(fault)) {
 			const signer = fault === "key" ? commitPendingKey() : f.key;
 			input.signature = signer.sign(ownerEnrollmentFinalMessage(claimed, input.completionSecret));
 		}
 		const before = f.snapshot();
 		// Act
 		const result = await c.finalize(input);
+		// Assert
+		expect(result).toEqual(unavailable);
+		expect(f.snapshot()).toEqual(before);
+	},
+);
+
+it.each(["account_subject", "link_id", "grant_revisions_json", "confirmation_hash"] as const)(
+	"denies changed stored %s despite a valid browser-approved v2 proof",
+	async (field) => {
+		// Arrange: freeze B's real proof before server metadata changes.
+		const c = await confirmed();
+		let value = "other-value";
+		if (field === "grant_revisions_json") value = '[{"groupId":"group-a","revision":99}]';
+		if (field === "confirmation_hash") value = "a".repeat(64);
+		const api = await recompose(c, {
+			...f.backend,
+			first: async <T>(statement: Parameters<AuthLinkBackend["first"]>[0]) => {
+				const captured = await f.backend.first<T>(statement);
+				if (statement.sql.startsWith(`SELECT * FROM ${ATTEMPTS}`))
+					return { ...captured, [field]: value } as T;
+				return captured;
+			},
+		});
+		const before = f.snapshot();
+		// Act
+		const result = await api.finalize(c.input);
 		// Assert
 		expect(result).toEqual(unavailable);
 		expect(f.snapshot()).toEqual(before);

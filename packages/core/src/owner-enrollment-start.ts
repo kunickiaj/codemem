@@ -43,6 +43,7 @@ import {
 } from "./coordinator-owner-enrollment-commit.js";
 import {
 	type OwnerAttempt,
+	ownerEnrollmentConfirmationHash,
 	readGrantPins,
 	validAttemptTime,
 	verifyOwnerEnrollmentSignature,
@@ -505,32 +506,7 @@ async function confirmationView(row: OwnerAttempt): Promise<OwnerEnrollmentConfi
 	const grants = readGrantPins(row.grant_revisions_json);
 	if (!grants) throw new Error();
 	// Display commitment; confirm() persists it with the completion-secret hash.
-	const confirmationHash = await ownerEnrollmentHash(
-		JSON.stringify([
-			"owner_enroll",
-			row.coordinator_id,
-			row.attempt_id,
-			row.origin,
-			row.device_id,
-			row.public_key,
-			row.key_id,
-			row.fingerprint,
-			row.issuer,
-			row.account_subject,
-			row.identity_id,
-			row.link_id,
-			row.link_attempt_id,
-			row.link_controller_attestation_id,
-			row.link_auth_config_revision,
-			row.auth_config_revision,
-			row.browser_start_hash,
-			row.browser_transaction_hash,
-			row.browser_binder_hash,
-			row.grant_revisions_json,
-			row.created_at_ms,
-			row.expires_at_ms,
-		]),
-	);
+	const confirmationHash = await ownerEnrollmentConfirmationHash(row);
 	return Object.freeze({
 		attemptId: row.attempt_id,
 		coordinatorId: row.coordinator_id,

@@ -430,15 +430,22 @@ session. Failed verification, link drift, replay, or expiry grants nothing.
 The same original transaction cookie and a valid Origin/CSRF form must then
 confirm the displayed Identity, pending key, and pinned group list. Confirmation
 records only a hash of a fresh completion secret and uses the loopback address
-saved at signed start; a form cannot choose a new destination. The pending key
-signs that secret and the pinned tuple for finalization through the private
+saved at signed start; a form cannot choose a new destination. The owner-only
+loopback receiver delivers the secret and the browser-approved confirmation hash
+as three exact parameters (`attempt_id`, `completion`, `confirmation`); the
+existing account-link receiver still accepts only its original two parameters.
+The pending key signs a version-2 message containing its signed-start pins, that
+confirmation hash, and the secret. It does not need a privileged read of the
+coordinator's account or link rows. The writer recomputes the confirmation hash
+from the pinned account, browser, and grant facts before accepting a new commit;
+version-1 final signatures are not accepted. The pending key's proof then reaches the private
 atomic writer below. An exact lost-response retry reads the retained receipt
 without restoring group enrollment or current permission. These handlers are
 unmounted; loopback delivery, the viewer, native D1 parity, and live provider
 activation remain separate work.
 
 The future browser route must clear the transaction cookie after successful
-confirmation, send the completion secret only to the saved loopback destination
+confirmation, send the completion secret and confirmation hash only to the saved loopback destination
 (never render it in a page), and set `Cache-Control: no-store` and
 `Referrer-Policy: no-referrer`. Route-level admission limits must also cover
 finalization; the private proof helper is not a public rate limiter.

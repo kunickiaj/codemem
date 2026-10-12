@@ -84,9 +84,24 @@ export function validWriteTime(value: unknown): value is number {
 	);
 }
 
-export function ownerEnrollmentFinalMessage(a: OwnerAttempt, completionSecret: string): string {
+type OwnerFinalPins = Pick<
+	OwnerAttempt,
+	| "coordinator_id"
+	| "origin"
+	| "auth_config_revision"
+	| "attempt_id"
+	| "device_id"
+	| "public_key"
+	| "key_id"
+	| "fingerprint"
+	| "issuer"
+	| "confirmation_hash"
+>;
+
+/** The pending device can sign these pins from its start and the owner-only loopback delivery. */
+export function ownerEnrollmentFinalMessage(a: OwnerFinalPins, completionSecret: string): string {
 	return JSON.stringify([
-		"codemem-owner-enrollment-finalize-v1",
+		"codemem-owner-enrollment-finalize-v2",
 		"owner_enroll",
 		a.coordinator_id,
 		a.origin,
@@ -97,12 +112,25 @@ export function ownerEnrollmentFinalMessage(a: OwnerAttempt, completionSecret: s
 		a.key_id,
 		a.fingerprint,
 		a.issuer,
-		a.account_subject,
-		a.identity_id,
-		a.link_id,
 		a.confirmation_hash,
 		completionSecret,
 	]);
+}
+/** Commitment shown to the original browser, including the exact linked account and grants. */
+export async function ownerEnrollmentConfirmationHash(a: OwnerAttempt): Promise<string> {
+	const fields = `coordinator_id attempt_id origin device_id public_key key_id fingerprint
+ issuer account_subject identity_id link_id link_attempt_id link_controller_attestation_id
+ link_auth_config_revision auth_config_revision browser_start_hash browser_transaction_hash
+ browser_binder_hash grant_revisions_json created_at_ms expires_at_ms`.split(/\s+/);
+	const message = JSON.stringify([
+		"owner_enroll",
+		...fields.map((field) => a[field as keyof OwnerAttempt]),
+	]);
+	const digest = await globalThis.crypto.subtle.digest(
+		"SHA-256",
+		new TextEncoder().encode(message),
+	);
+	return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 /** Verifies the pending-key signature and hashes proof bytes, not the stored completion hash or current authority. */
 export async function verifyPendingKeySignatureAndHashes(
@@ -183,6 +211,7 @@ export async function verifyOwnerEnrollmentCompletion(
 		revision !== a.auth_config_revision
 	)
 		return null;
+	if ((await ownerEnrollmentConfirmationHash(a)) !== a.confirmation_hash) return null;
 	const proof = await verifyPendingKeySignatureAndHashes(a, completionSecret, signature);
 	if (!proof || proof.completionHash !== a.completion_secret_hash) return null;
 	return { grants, ...proof };
