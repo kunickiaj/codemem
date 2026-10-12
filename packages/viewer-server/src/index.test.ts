@@ -623,6 +623,76 @@ function createTestApp(opts?: {
 	};
 }
 
+function expectNoRejectedScopeState(store: MemoryStore, scopeId: string) {
+	expect(
+		store.db.prepare("SELECT 1 FROM sync_reset_state_v2 WHERE scope_id = ?").get(scopeId),
+	).toBeUndefined();
+}
+
+function scopeRejectionCases(): Array<{
+	name: string;
+	method: "GET" | "POST";
+	url: string;
+	scopeId: string;
+	makeBody?: () => string;
+}> {
+	return [
+		{
+			name: "returns reset_required when GET /v1/ops receives an empty scope_id",
+			method: "GET",
+			url: "http://localhost/v1/ops?scope_id=&limit=50",
+			scopeId: "",
+		},
+		{
+			name: "returns reset_required when GET /v1/ops receives an unsupported scope_id",
+			method: "GET",
+			url: "http://localhost/v1/ops?scope_id=acme-work&limit=50",
+			scopeId: "acme-work",
+		},
+		{
+			name: "returns reset_required when GET /v1/snapshot receives an unsupported scope_id",
+			method: "GET",
+			url: "http://localhost/v1/snapshot?scope_id=acme-work&generation=1&snapshot_id=test",
+			scopeId: "acme-work",
+		},
+		{
+			name: "returns reset_required when GET /v1/snapshot receives an empty scope_id",
+			method: "GET",
+			url: "http://localhost/v1/snapshot?scope_id=&generation=1&snapshot_id=test",
+			scopeId: "",
+		},
+		{
+			name: "returns reset_required when POST /v1/ops receives an unsupported body scope_id",
+			method: "POST",
+			url: "http://localhost/v1/ops",
+			scopeId: "acme-work",
+			makeBody: () => JSON.stringify({ ops: [], scope_id: "acme-work" }),
+		},
+		{
+			name: "returns reset_required for unsupported POST scope_id before missing ops validation",
+			method: "POST",
+			url: "http://localhost/v1/ops",
+			scopeId: "acme-work",
+			makeBody: () => JSON.stringify({ scope_id: "acme-work" }),
+		},
+		{
+			name: "returns reset_required for empty POST scope_id before missing ops validation",
+			method: "POST",
+			url: "http://localhost/v1/ops",
+			scopeId: "",
+			makeBody: () => JSON.stringify({ scope_id: "" }),
+		},
+		{
+			name: "returns reset_required for unsupported POST scope_id before oversized ops validation",
+			method: "POST",
+			url: "http://localhost/v1/ops",
+			scopeId: "acme-work",
+			makeBody: () =>
+				JSON.stringify({ scope_id: "acme-work", ops: Array.from({ length: 2001 }, () => null) }),
+		},
+	];
+}
+
 function bootstrapSeedEnrollment(deviceId: string) {
 	const publicKey = loadPublicKey(process.env.CODEMEM_KEYS_DIR) ?? "";
 	return {
@@ -1196,11 +1266,9 @@ function seedReceivedProjectOriginDevices(store: MemoryStore): void {
 }
 
 async function resolvesReceivedProjectOriginDeviceNames(): Promise<void> {
-	const { app, getStore, cleanup } = createTestApp();
+	const { app, ensureStore, cleanup } = createTestApp();
 	try {
-		await app.request("/api/stats");
-		const store = getStore();
-		if (!store) throw new Error("store not initialized");
+		const store = ensureStore();
 		seedReceivedProjectOriginDevices(store);
 
 		const response = await app.request("/api/sync/projects?status=received");
@@ -1236,14 +1304,12 @@ async function resolvesReceivedProjectOriginDeviceNames(): Promise<void> {
 async function aliasesPreUpgradeSharesToRepositoryProjects(
 	options: { mappingOnly?: boolean } = {},
 ): Promise<void> {
-	const { app, getStore, cleanup } = createTestApp();
+	const { app, ensureStore, cleanup } = createTestApp();
 	const repositoryDirectory = options.mappingOnly
 		? mkdtempSync(join(tmpdir(), "codemem-share-repository-"))
 		: null;
 	try {
-		await app.request("/api/stats");
-		const store = getStore();
-		if (!store) throw new Error("store not initialized");
+		const store = ensureStore();
 		const cwd = repositoryDirectory ?? "/workspace/repository";
 		const repositoryIdentity = "https://example.test/acme/repository.git";
 		if (repositoryDirectory) {
@@ -1445,11 +1511,9 @@ it("wakes affected recipient policies after an actor merge", async () => {
 });
 
 it("wakes recipient policies after single and bulk Project remaps", async () => {
-	const { app, getStore, cleanup } = createTestApp();
+	const { app, ensureStore, cleanup } = createTestApp();
 	try {
-		await app.request("/api/stats");
-		const store = getStore();
-		if (!store) throw new Error("store not initialized");
+		const store = ensureStore();
 		const now = new Date().toISOString();
 		for (const scopeId of ["mapping-wake-a", "mapping-wake-b"]) {
 			store.db
@@ -1554,11 +1618,9 @@ it("wakes recipient policies after single and bulk Project remaps", async () => 
 });
 
 it("wakes old-scope siblings when an ID-less remap uses a normalized identity", async () => {
-	const { app, getStore, cleanup } = createTestApp();
+	const { app, ensureStore, cleanup } = createTestApp();
 	try {
-		await app.request("/api/stats");
-		const store = getStore();
-		if (!store) throw new Error("store not initialized");
+		const store = ensureStore();
 		const now = new Date().toISOString();
 		for (const scopeId of ["normalized-old", "normalized-new"]) {
 			store.db
@@ -4425,11 +4487,9 @@ describe("viewer-server", () => {
 		});
 
 		it("counts only visible memory scopes in memory stats", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				await grantVisibleReaderScope(store, "authorized-team");
 				grantSyncScopeToDevices(store, "unauthorized-team", []);
 				const sessionId = insertTestSession(store.db);
@@ -4457,11 +4517,9 @@ describe("viewer-server", () => {
 		});
 
 		it("keeps active maintenance jobs in stable started order", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 
 				startMaintenanceJob(store.db, {
 					kind: "job-a",
@@ -4634,11 +4692,9 @@ describe("viewer-server", () => {
 
 	describe("GET /api/usage", () => {
 		it("returns recent pack rows for the current scope", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				store.db.prepare("UPDATE sessions SET project = ? WHERE id = ?").run("codemem", sessionId);
 				insertTestMemory(store, {
@@ -4677,11 +4733,9 @@ describe("viewer-server", () => {
 		});
 
 		it("removes hidden memory ids from recent pack metadata", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				await grantVisibleReaderScope(store, "authorized-team");
 				grantSyncScopeToDevices(store, "unauthorized-team", []);
 				const sessionId = insertTestSession(store.db);
@@ -4761,11 +4815,9 @@ describe("viewer-server", () => {
 		});
 
 		it("does not expose hidden usage rows that reference visible pack ids", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				await grantVisibleReaderScope(store, "authorized-team");
 				grantSyncScopeToDevices(store, "unauthorized-team", []);
 				const visibleSessionId = insertTestSession(store.db);
@@ -4810,11 +4862,9 @@ describe("viewer-server", () => {
 		});
 
 		it("batches usage memory visibility instead of fetching each pack item", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				const visibleIds = Array.from({ length: 25 }, (_, idx) =>
 					insertTestMemory(store, {
@@ -4850,11 +4900,9 @@ describe("viewer-server", () => {
 		});
 
 		it("serves a cached usage payload within the short TTL window", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				insertTestMemory(store, {
 					sessionId,
@@ -4888,11 +4936,9 @@ describe("viewer-server", () => {
 		});
 
 		it("busts the usage cache when scope visibility changes within the TTL", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				await grantVisibleReaderScope(store, "authorized-team");
 				const sessionId = insertTestSession(store.db);
 				insertTestMemory(store, {
@@ -4971,11 +5017,9 @@ describe("viewer-server", () => {
 		});
 
 		it("aggregates token/event totals in SQL with hand-summed global and project values", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const codememSession = insertTestSession(store.db);
 				store.db
 					.prepare("UPDATE sessions SET project = ? WHERE id = ?")
@@ -5078,11 +5122,9 @@ describe("viewer-server", () => {
 		});
 
 		it("orders recent_packs by created_at DESC and caps the surfaced window", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				insertTestMemory(store, {
 					sessionId,
@@ -5126,11 +5168,9 @@ describe("viewer-server", () => {
 			// considers only the newest RECENT_PACK_SCAN_LIMIT (200) pack events, so
 			// a visible pack buried under that many newer non-visible packs is not
 			// surfaced — while the unfiltered aggregate still counts every event.
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				insertTestMemory(store, {
 					sessionId,
@@ -5214,11 +5254,9 @@ describe("viewer-server", () => {
 		});
 
 		it("only lists projects backed by visible memory scopes", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				await grantVisibleReaderScope(store, "authorized-team");
 				grantSyncScopeToDevices(store, "unauthorized-team", []);
 
@@ -5263,11 +5301,9 @@ describe("viewer-server", () => {
 
 	describe("memory feed routes", () => {
 		it("searches eligible observations before pagination and keeps chronological pages stable", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				insertTestMemory(store, {
 					sessionId,
@@ -5316,11 +5352,9 @@ describe("viewer-server", () => {
 		});
 
 		it("searches observations and summaries by their displayed project", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionProjectId = insertTestSession(store.db);
 				store.db
 					.prepare("UPDATE sessions SET project = ? WHERE id = ?")
@@ -5412,11 +5446,9 @@ describe("viewer-server", () => {
 		});
 
 		it("searches exact positive IDs, tags, structured fields, and summary metadata", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				const idMatch = insertTestMemory(store, {
 					sessionId,
@@ -5533,11 +5565,9 @@ describe("viewer-server", () => {
 		});
 
 		it("casefolds Unicode search without locale-dependent rules", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				const cafeId = insertTestMemory(store, {
 					sessionId,
@@ -5565,11 +5595,9 @@ describe("viewer-server", () => {
 		});
 
 		it("caps normalized Feed queries at 256 code units", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				const prefix = "x".repeat(256);
 				const matchingId = insertTestMemory(store, {
@@ -5589,11 +5617,9 @@ describe("viewer-server", () => {
 		});
 
 		it("searches summaries beyond the first unfiltered page", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				insertTestMemory(store, {
 					sessionId,
@@ -5625,11 +5651,9 @@ describe("viewer-server", () => {
 		});
 
 		it("searches metadata-classified summaries by their canonical displayed kind", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				const summaryId = insertTestMemory(store, {
 					sessionId,
@@ -5674,11 +5698,9 @@ describe("viewer-server", () => {
 		});
 
 		it("intersects search with project, ownership, sharing-domain, active, and type filters", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				await grantVisibleReaderScope(store, "authorized-team");
 				grantSyncScopeToDevices(store, "unauthorized-team", []);
 				const projectSessionId = insertTestSession(store.db);
@@ -5753,11 +5775,9 @@ describe("viewer-server", () => {
 		});
 
 		it("keeps memory list routes available when identity tables are unavailable", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				insertTestMemory(store, {
 					sessionId,
@@ -5780,11 +5800,9 @@ describe("viewer-server", () => {
 		});
 
 		it("resolves trusted actor and device names across memory list routes", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const now = "2026-08-18T12:00:00.000Z";
 				const malformedId = "123e4567-e89b-12d3-a456-426614174000";
 				store.db
@@ -6040,11 +6058,9 @@ describe("viewer-server", () => {
 		});
 
 		it("applies sharing-domain visibility to memory list endpoints", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				await grantVisibleReaderScope(store, "authorized-team");
 				grantSyncScopeToDevices(store, "unauthorized-team", []);
 				const sessionId = insertTestSession(store.db);
@@ -6099,11 +6115,9 @@ describe("viewer-server", () => {
 		});
 
 		it("keeps mixed-domain unauthorized scope rows out of viewer direct surfaces", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const fixture = await provenViewerMixedScopeFixture(store);
 
 				const memoryRes = await app.request("/api/memory?limit=10");
@@ -6140,11 +6154,9 @@ describe("viewer-server", () => {
 		});
 
 		it("applies mine/theirs scope filters to observations", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				insertTestMemory(store, {
 					sessionId,
@@ -6217,11 +6229,9 @@ describe("viewer-server", () => {
 		});
 
 		it("moves an owned memory to a new project via /api/memories/project", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				const memoryId = insertTestMemory(store, {
 					sessionId,
@@ -6257,11 +6267,9 @@ describe("viewer-server", () => {
 		});
 
 		it("rejects /api/memories/project with empty project", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				const memoryId = insertTestMemory(store, {
 					sessionId,
@@ -6286,11 +6294,9 @@ describe("viewer-server", () => {
 		});
 
 		it("does not mutate memories outside visible sharing domains", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				grantSyncScopeToDevices(store, "unauthorized-team", []);
 				const sessionId = insertTestSession(store.db);
 				store.db
@@ -6334,11 +6340,9 @@ describe("viewer-server", () => {
 		});
 
 		it("forgets an owned memory via the viewer API", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				const memoryId = insertTestMemory(store, {
 					sessionId,
@@ -6375,11 +6379,9 @@ describe("viewer-server", () => {
 		});
 
 		it("treats repeated forget requests as a no-op success", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				const memoryId = insertTestMemory(store, {
 					sessionId,
@@ -6423,11 +6425,9 @@ describe("viewer-server", () => {
 		});
 
 		it("rejects forgetting a memory not owned by this device", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				const memoryId = insertTestMemory(store, {
 					sessionId,
@@ -6454,11 +6454,9 @@ describe("viewer-server", () => {
 		});
 
 		it("treats metadata-only local provenance as owned for forget requests", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				const memoryId = insertTestMemory(store, {
 					sessionId,
@@ -6517,11 +6515,9 @@ describe("viewer-server", () => {
 		});
 
 		it("preserves query parameters on the /api/memories alias", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				insertTestMemory(store, {
 					sessionId,
@@ -6563,11 +6559,9 @@ describe("viewer-server", () => {
 		});
 
 		it("routes observer summaries into summaries and excludes them from observations", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				insertTestMemory(store, {
 					sessionId,
@@ -6619,11 +6613,9 @@ describe("viewer-server", () => {
 		});
 
 		it("does not classify numeric is_summary metadata as a summary", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				insertTestMemory(store, {
 					sessionId,
@@ -6652,11 +6644,9 @@ describe("viewer-server", () => {
 		});
 
 		it("keeps session observation counts aligned with active feed items", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				insertTestMemory(store, {
 					sessionId,
@@ -6689,11 +6679,9 @@ describe("viewer-server", () => {
 		});
 
 		it("excludes hidden sharing domains from session memory counts", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				await grantVisibleReaderScope(store, "authorized-team");
 				grantSyncScopeToDevices(store, "unauthorized-team", []);
 				const sessionId = insertTestSession(store.db);
@@ -6721,11 +6709,9 @@ describe("viewer-server", () => {
 		});
 
 		it("gates prompt and artifact aggregate counts by visible memory sessions", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				await grantVisibleReaderScope(store, "authorized-team");
 				grantSyncScopeToDevices(store, "unauthorized-team", []);
 
@@ -6780,11 +6766,9 @@ describe("viewer-server", () => {
 		});
 
 		it("tolerates malformed metadata during classification and search", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				insertTestMemory(store, {
 					sessionId,
@@ -6812,11 +6796,9 @@ describe("viewer-server", () => {
 
 	describe("GET /api/artifacts", () => {
 		it("requires a visible memory in the session before returning local artifacts", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				await grantVisibleReaderScope(store, "authorized-team");
 				grantSyncScopeToDevices(store, "unauthorized-team", []);
 
@@ -6888,11 +6870,9 @@ describe("viewer-server", () => {
 
 	describe("GET /api/pack", () => {
 		it("uses async pack builder path", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 
 				const expected = {
 					context: "semantic context",
@@ -7512,11 +7492,9 @@ describe("viewer-server", () => {
 
 	describe("POST /api/pack/trace", () => {
 		it("uses async pack trace builder path", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 
 				const expected = {
 					version: 1 as const,
@@ -8416,11 +8394,9 @@ describe("viewer-server", () => {
 		});
 
 		it("returns peer runtime metadata from peer and status read models while redacted", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				store.db
 					.prepare(
 						`INSERT INTO sync_peers (
@@ -8479,11 +8455,9 @@ describe("viewer-server", () => {
 		});
 
 		it("surfaces authorized Sharing domains separately from project narrowing", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				const _warmup = await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const now = new Date().toISOString();
 				store.db
 					.prepare(
@@ -8679,11 +8653,9 @@ describe("viewer-server", () => {
 		});
 
 		it("surfaces grouped legacy shared review summary in sync status", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				const _warmup = await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const now = new Date().toISOString();
 				const session = store.db
 					.prepare(
@@ -8882,11 +8854,9 @@ describe("viewer-server", () => {
 		});
 
 		it("returns all legacy shared review groups so every group has an action path", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				const _warmup = await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const now = new Date().toISOString();
 				const insertSession = store.db.prepare(
 					`INSERT INTO sessions(started_at, cwd, project, git_remote, user, tool_version)
@@ -8930,11 +8900,9 @@ describe("viewer-server", () => {
 		});
 
 		it("previews and applies legacy shared review reassignment explicitly", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				const _warmup = await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const now = new Date().toISOString();
 				store.db
 					.prepare(
@@ -9036,11 +9004,9 @@ describe("viewer-server", () => {
 		});
 
 		it("rejects stale legacy shared review confirmation when the group changes", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				const _warmup = await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const now = new Date().toISOString();
 				store.db
 					.prepare(
@@ -9109,11 +9075,9 @@ describe("viewer-server", () => {
 		});
 
 		it("reports inbound-only legacy shared review groups without offering reassignment capacity", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				const _warmup = await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const now = new Date().toISOString();
 				store.db
 					.prepare(
@@ -9173,11 +9137,9 @@ describe("viewer-server", () => {
 		});
 
 		it("rejects legacy shared review reassignment when the local device lacks target membership", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				const _warmup = await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const now = new Date().toISOString();
 				store.db
 					.prepare(
@@ -9223,11 +9185,9 @@ describe("viewer-server", () => {
 		});
 
 		it("rejects local-default as a legacy shared review reassignment target", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				const _warmup = await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				store.db
 					.prepare("UPDATE sessions SET git_remote = ? WHERE id = ?")
@@ -9266,11 +9226,9 @@ describe("viewer-server", () => {
 		});
 
 		it("surfaces inbound scope-rejection summary per peer", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				const _warmup = await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				store.db
 					.prepare(
 						`INSERT INTO sync_peers (
@@ -9341,11 +9299,9 @@ describe("viewer-server", () => {
 		});
 
 		it("returns scope-rejection records for a peer without exposing payloads", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				const _warmup = await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				store.db.exec(`
 					CREATE TABLE IF NOT EXISTS sync_scope_rejections (
 						id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -9426,11 +9382,9 @@ describe("viewer-server", () => {
 		});
 
 		it("treats naive sync timestamps as UTC", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				const _warmup = await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				// sync_peers table already created by initTestSchema
 				const now = new Date(Date.now() - 30_000).toISOString().replace(/\.\d{3}Z$/, "");
 				store.db
@@ -10768,230 +10722,34 @@ describe("viewer-server", () => {
 			}
 		});
 
-		it("returns reset_required when GET /v1/ops receives an empty scope_id", async () => {
+		it.each(scopeRejectionCases())("$name", async ({ method, url, scopeId, makeBody }) => {
+			// Arrange: each row gets a fresh store, signed peer, and request body.
 			const { syncApp, ensureStore, cleanup } = createTestApp();
 			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
 			try {
 				const store = ensureStore();
-				const url = "http://localhost/v1/ops?scope_id=&limit=50";
-				peer = createAuthenticatedSyncPeer(store, { url });
-
-				const res = await syncApp.request(url, { headers: peer.headers });
-
-				expect(res.status).toBe(409);
-				const body = (await res.json()) as Record<string, unknown>;
-				expect(body).toMatchObject({
-					error: "reset_required",
-					reset_required: true,
-					sync_capability: "scoped",
-					reason: "missing_scope",
-					scope_id: null,
-				});
-			} finally {
-				peer?.cleanup();
-				cleanup();
-			}
-		});
-
-		it("returns reset_required when GET /v1/ops receives an unsupported scope_id", async () => {
-			const { syncApp, ensureStore, cleanup } = createTestApp();
-			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
-			try {
-				const store = ensureStore();
-				const url = "http://localhost/v1/ops?scope_id=acme-work&limit=50";
-				peer = createAuthenticatedSyncPeer(store, { url });
-
-				const res = await syncApp.request(url, { headers: peer.headers });
-
-				expect(res.status).toBe(409);
-				const body = (await res.json()) as Record<string, unknown>;
-				expect(body).toMatchObject({
-					error: "reset_required",
-					reset_required: true,
-					sync_capability: "scoped",
-					reason: "unsupported_scope",
-					scope_id: null,
-				});
-				expect(
-					store.db.prepare("SELECT 1 FROM sync_reset_state_v2 WHERE scope_id = ?").get("acme-work"),
-				).toBeUndefined();
-			} finally {
-				peer?.cleanup();
-				cleanup();
-			}
-		});
-
-		it("returns reset_required when GET /v1/snapshot receives an unsupported scope_id", async () => {
-			const { syncApp, ensureStore, cleanup } = createTestApp();
-			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
-			try {
-				const store = ensureStore();
-				const url = "http://localhost/v1/snapshot?scope_id=acme-work&generation=1&snapshot_id=test";
-				peer = createAuthenticatedSyncPeer(store, { url });
-
-				const res = await syncApp.request(url, { headers: peer.headers });
-
-				expect(res.status).toBe(409);
-				const body = (await res.json()) as Record<string, unknown>;
-				expect(body).toMatchObject({
-					error: "reset_required",
-					reset_required: true,
-					sync_capability: "scoped",
-					reason: "unsupported_scope",
-					scope_id: null,
-				});
-			} finally {
-				peer?.cleanup();
-				cleanup();
-			}
-		});
-
-		it("returns reset_required when GET /v1/snapshot receives an empty scope_id", async () => {
-			const { syncApp, ensureStore, cleanup } = createTestApp();
-			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
-			try {
-				const store = ensureStore();
-				const url = "http://localhost/v1/snapshot?scope_id=&generation=1&snapshot_id=test";
-				peer = createAuthenticatedSyncPeer(store, { url });
-
-				const res = await syncApp.request(url, { headers: peer.headers });
-
-				expect(res.status).toBe(409);
-				const body = (await res.json()) as Record<string, unknown>;
-				expect(body).toMatchObject({
-					error: "reset_required",
-					reset_required: true,
-					sync_capability: "scoped",
-					reason: "missing_scope",
-					scope_id: null,
-				});
-			} finally {
-				peer?.cleanup();
-				cleanup();
-			}
-		});
-
-		it("returns reset_required when POST /v1/ops receives an unsupported body scope_id", async () => {
-			const { syncApp, ensureStore, cleanup } = createTestApp();
-			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
-			try {
-				const store = ensureStore();
-				const url = "http://localhost/v1/ops";
-				const bodyText = JSON.stringify({ ops: [], scope_id: "acme-work" });
-				const bodyBytes = Buffer.from(bodyText);
-				peer = createAuthenticatedSyncPeer(store, { url, method: "POST", bodyBytes });
-
+				const bodyText = makeBody?.();
+				const bodyBytes = Buffer.from(bodyText ?? "");
+				peer = createAuthenticatedSyncPeer(store, { url, method, bodyBytes });
+				const headers = { ...peer.headers };
+				if (method === "POST") headers["Content-Type"] = "application/json";
+				// Act
 				const res = await syncApp.request(url, {
-					method: "POST",
-					headers: { ...peer.headers, "Content-Type": "application/json" },
+					method,
+					headers,
 					body: bodyText,
 				});
-
+				// Assert: scope rejection precedes ops validation and cannot create reset state.
 				expect(res.status).toBe(409);
 				const body = (await res.json()) as Record<string, unknown>;
 				expect(body).toMatchObject({
 					error: "reset_required",
 					reset_required: true,
 					sync_capability: "scoped",
-					reason: "unsupported_scope",
+					reason: scopeId === "" ? "missing_scope" : "unsupported_scope",
 					scope_id: null,
 				});
-			} finally {
-				peer?.cleanup();
-				cleanup();
-			}
-		});
-
-		it("returns reset_required for unsupported POST scope_id before missing ops validation", async () => {
-			const { syncApp, ensureStore, cleanup } = createTestApp();
-			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
-			try {
-				const store = ensureStore();
-				const url = "http://localhost/v1/ops";
-				const bodyText = JSON.stringify({ scope_id: "acme-work" });
-				const bodyBytes = Buffer.from(bodyText);
-				peer = createAuthenticatedSyncPeer(store, { url, method: "POST", bodyBytes });
-
-				const res = await syncApp.request(url, {
-					method: "POST",
-					headers: { ...peer.headers, "Content-Type": "application/json" },
-					body: bodyText,
-				});
-
-				expect(res.status).toBe(409);
-				const body = (await res.json()) as Record<string, unknown>;
-				expect(body).toMatchObject({
-					error: "reset_required",
-					reset_required: true,
-					sync_capability: "scoped",
-					reason: "unsupported_scope",
-					scope_id: null,
-				});
-			} finally {
-				peer?.cleanup();
-				cleanup();
-			}
-		});
-
-		it("returns reset_required for empty POST scope_id before missing ops validation", async () => {
-			const { syncApp, ensureStore, cleanup } = createTestApp();
-			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
-			try {
-				const store = ensureStore();
-				const url = "http://localhost/v1/ops";
-				const bodyText = JSON.stringify({ scope_id: "" });
-				const bodyBytes = Buffer.from(bodyText);
-				peer = createAuthenticatedSyncPeer(store, { url, method: "POST", bodyBytes });
-
-				const res = await syncApp.request(url, {
-					method: "POST",
-					headers: { ...peer.headers, "Content-Type": "application/json" },
-					body: bodyText,
-				});
-
-				expect(res.status).toBe(409);
-				const body = (await res.json()) as Record<string, unknown>;
-				expect(body).toMatchObject({
-					error: "reset_required",
-					reset_required: true,
-					sync_capability: "scoped",
-					reason: "missing_scope",
-					scope_id: null,
-				});
-			} finally {
-				peer?.cleanup();
-				cleanup();
-			}
-		});
-
-		it("returns reset_required for unsupported POST scope_id before oversized ops validation", async () => {
-			const { syncApp, ensureStore, cleanup } = createTestApp();
-			let peer: ReturnType<typeof createAuthenticatedSyncPeer> | null = null;
-			try {
-				const store = ensureStore();
-				const url = "http://localhost/v1/ops";
-				const bodyText = JSON.stringify({
-					scope_id: "acme-work",
-					ops: Array.from({ length: 2001 }, () => null),
-				});
-				const bodyBytes = Buffer.from(bodyText);
-				peer = createAuthenticatedSyncPeer(store, { url, method: "POST", bodyBytes });
-
-				const res = await syncApp.request(url, {
-					method: "POST",
-					headers: { ...peer.headers, "Content-Type": "application/json" },
-					body: bodyText,
-				});
-
-				expect(res.status).toBe(409);
-				const body = (await res.json()) as Record<string, unknown>;
-				expect(body).toMatchObject({
-					error: "reset_required",
-					reset_required: true,
-					sync_capability: "scoped",
-					reason: "unsupported_scope",
-					scope_id: null,
-				});
+				expectNoRejectedScopeState(store, scopeId);
 			} finally {
 				peer?.cleanup();
 				cleanup();
@@ -12118,11 +11876,9 @@ describe("viewer-server", () => {
 					sync_coordinator_admin_secret: "secret",
 				}),
 			);
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				ensureDeviceIdentity(store.db, { keysDir });
 				const res = await app.request(
 					"/api/sync/status?includeDiagnostics=1&includeJoinRequests=1",
@@ -12186,11 +11942,9 @@ describe("viewer-server", () => {
 					sync_port: 7337,
 				}),
 			);
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				ensureDeviceIdentity(store.db, { keysDir });
 				const res = await app.request("/api/sync/pairing?includeDiagnostics=1");
 				expect(res.status).toBe(200);
@@ -12246,11 +12000,9 @@ describe("viewer-server", () => {
 					sync_coordinator_admin_secret: "secret",
 				}),
 			);
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				ensureDeviceIdentity(store.db, { keysDir });
 
 				const res = await app.request("/api/sync/status?includeDiagnostics=1");
@@ -12308,11 +12060,9 @@ describe("viewer-server", () => {
 					sync_coordinator_admin_secret: "secret",
 				}),
 			);
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				ensureDeviceIdentity(store.db, { keysDir });
 
 				const res = await app.request("/api/sync/status?includeJoinRequests=1");
@@ -12471,11 +12221,9 @@ describe("viewer-server", () => {
 		});
 
 		it("redacts enrollment reconciliation issue identifiers while retaining counts", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				store.db
 					.prepare(`INSERT INTO coordinator_enrollment_reconciliation_issues(
 					coordinator_id, group_id, kind, reference_id, code, status,
@@ -12499,11 +12247,9 @@ describe("viewer-server", () => {
 		});
 
 		it("returns bounded safe enrollment issue diagnostics in open-first recency order", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const insert = store.db.prepare(`INSERT INTO coordinator_enrollment_reconciliation_issues(
 					coordinator_id, group_id, kind, reference_id, code, status, first_seen_at,
 					last_seen_at, resolved_at, occurrence_count, updated_at
@@ -12753,11 +12499,9 @@ describe("viewer-server", () => {
 					sync_coordinator_group: "team-a",
 				}),
 			);
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				ensureDeviceIdentity(store.db, { keysDir });
 
 				type PresenceBody = { coordinator: { presence_status: string } };
@@ -12836,11 +12580,9 @@ describe("viewer-server", () => {
 					sync_coordinator_group: "team-a",
 				}),
 			);
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				ensureDeviceIdentity(store.db, { keysDir });
 				const res = await app.request("/api/sync/status?includeDiagnostics=1");
 				expect(res.status).toBe(200);
@@ -12923,11 +12665,9 @@ describe("viewer-server", () => {
 					sync_coordinator_group: "team-a",
 				}),
 			);
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				ensureDeviceIdentity(store.db, { keysDir });
 				const res = await app.request("/api/sync/status");
 				expect(res.status).toBe(200);
@@ -13045,11 +12785,9 @@ describe("viewer-server", () => {
 					sync_coordinator_group: "team-a",
 				}),
 			);
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const [deviceId] = ensureDeviceIdentity(store.db, { keysDir });
 				expect(deviceId).toBeTruthy();
 				const res = await app.request("/api/sync/status?includeDiagnostics=1");
@@ -13146,11 +12884,9 @@ describe("viewer-server", () => {
 					sync_coordinator_group: "team-a",
 				}),
 			);
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				ensureDeviceIdentity(store.db, { keysDir });
 				const res = await app.request("/api/sync/peers/accept-discovered", {
 					method: "POST",
@@ -13258,11 +12994,9 @@ describe("viewer-server", () => {
 					sync_coordinator_group: "team-a",
 				}),
 			);
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				ensureDeviceIdentity(store.db, { keysDir });
 				const res = await app.request("/api/sync/peers/accept-discovered", {
 					method: "POST",
@@ -13342,11 +13076,9 @@ describe("viewer-server", () => {
 					sync_coordinator_group: "team-a",
 				}),
 			);
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				ensureDeviceIdentity(store.db, { keysDir });
 				const res = await app.request("/api/sync/peers/accept-discovered", {
 					method: "POST",
@@ -13434,11 +13166,9 @@ describe("viewer-server", () => {
 					sync_coordinator_groups: ["team-a", "team-b"],
 				}),
 			);
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				ensureDeviceIdentity(store.db, { keysDir });
 				const res = await app.request("/api/sync/peers/accept-discovered", {
 					method: "POST",
@@ -13469,11 +13199,9 @@ describe("viewer-server", () => {
 		});
 
 		it("renames an existing sync peer through the viewer route", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				store.db
 					.prepare(
 						"INSERT INTO sync_peers(peer_device_id, name, pinned_fingerprint, created_at) VALUES (?, ?, ?, ?)",
@@ -13550,11 +13278,9 @@ describe("viewer-server", () => {
 		});
 
 		it("updates peer project scope through the viewer route", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				store.db
 					.prepare(
 						"INSERT INTO sync_peers(peer_device_id, name, pinned_fingerprint, created_at) VALUES (?, ?, ?, ?)",
@@ -13588,11 +13314,9 @@ describe("viewer-server", () => {
 		});
 
 		it("updates local Sharing domain project mappings without granting extra membership", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const requestBehindPublication = (request: () => Promise<Response>) =>
 					requestBehindPublicationForDb(store.db, request);
 				const sessionId = insertTestSession(store.db);
@@ -13763,11 +13487,9 @@ describe("viewer-server", () => {
 		});
 
 		it("returns confirmed setup suggestion fields in Sharing domain settings", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				store.db
 					.prepare("UPDATE sessions SET cwd = ?, git_remote = ?, project = ? WHERE id = ?")
@@ -13816,11 +13538,9 @@ describe("viewer-server", () => {
 		});
 
 		it("returns a deterministic read-only legacy recipient-policy projection", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, getStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const now = "2026-07-21T12:00:00.000Z";
 				const projectId = "https://git.example.invalid/acme/projection.git";
 				const scopeId = "sensitive-managed-scope-id";
@@ -13980,11 +13700,9 @@ describe("viewer-server", () => {
 		});
 
 		it("returns safe recipient-policy reconciliation states with the delivered-copy warning", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, getStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const now = "2026-07-22T12:00:00.000Z";
 				const waitingProject = "https://git.example.invalid/acme/waiting.git";
 				const unsupportedProject = "https://git.example.invalid/acme/unsupported.git";
@@ -14095,11 +13813,9 @@ describe("viewer-server", () => {
 		});
 
 		it("serves and resolves recipient-policy review without mutating protected state", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, getStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const projectId = "https://git.example.invalid/acme/review-route.git";
 				const sessionId = insertTestSession(store.db);
 				store.db
@@ -14309,11 +14025,9 @@ describe("viewer-server", () => {
 		});
 
 		it("serves safe recipient intent and strictly validates per-Project migration", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const now = "2026-07-21T12:00:00.000Z";
 				const projectId = "https://git.example.invalid/acme/intent-route.git";
 				const scopeId = "protected-route-scope";
@@ -14461,12 +14175,10 @@ describe("viewer-server", () => {
 		});
 
 		it("returns a structured response when recipient-policy migration cannot acquire its writer lock", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			let competing: InstanceType<typeof Database> | null = null;
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				store.db.pragma("busy_timeout = 1");
 				competing = new Database(store.db.name);
 				competing.exec("BEGIN IMMEDIATE");
@@ -14488,11 +14200,9 @@ describe("viewer-server", () => {
 		});
 
 		it("returns a generic recipient-policy migration failure without leaking details", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const prepare = store.db.prepare.bind(store.db);
 				store.db.prepare = (() => {
 					throw new Error("private SQLite migration detail");
@@ -14515,11 +14225,9 @@ describe("viewer-server", () => {
 		});
 
 		it("strictly previews and commits safe recipient-policy edge changes", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const now = "2026-07-21T12:00:00.000Z";
 				const projectId = "https://git.example.invalid/acme/edge-route.git";
 				const identityId = "identity-edge-route";
@@ -14727,15 +14435,13 @@ describe("viewer-server", () => {
 		});
 
 		it("serializes Team recipient-edge commits behind Team publication", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			let releaseTeamMutation: () => void = () => undefined;
 			const teamMutationGate = new Promise<void>((resolve) => {
 				releaseTeamMutation = resolve;
 			});
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const teamId = "edge-serialization-team";
 				let markTeamMutationStarted: () => void = () => undefined;
 				const teamMutationStarted = new Promise<void>((resolve) => {
@@ -14785,15 +14491,13 @@ describe("viewer-server", () => {
 		});
 
 		it("does not queue identity-only recipient-edge commits behind Team publication", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			let releaseTeamMutation: () => void = () => undefined;
 			const teamMutationGate = new Promise<void>((resolve) => {
 				releaseTeamMutation = resolve;
 			});
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const identityId = "identity-only";
 				let markTeamMutationStarted: () => void = () => undefined;
 				const teamMutationStarted = new Promise<void>((resolve) => {
@@ -14843,15 +14547,13 @@ describe("viewer-server", () => {
 		});
 
 		it("acquires recipient-edge Team serializers in stable identity order", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			let releaseLastTeam: () => void = () => undefined;
 			const lastTeamGate = new Promise<void>((resolve) => {
 				releaseLastTeam = resolve;
 			});
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const firstTeamId = "edge-team-a";
 				const lastTeamId = "edge-team-z";
 				let markLastTeamStarted: () => void = () => undefined;
@@ -14904,12 +14606,10 @@ describe("viewer-server", () => {
 		});
 
 		it("returns retryable 503 when recipient-policy commit cannot acquire the write lock", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			let competing: InstanceType<typeof Database> | null = null;
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const now = "2026-07-21T12:00:00.000Z";
 				const projectId = "https://git.example.invalid/acme/busy-edge.git";
 				const identityId = "identity-busy-edge";
@@ -14971,11 +14671,9 @@ describe("viewer-server", () => {
 		});
 
 		it("returns searchable project inventory for the Projects screen", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				store.db
 					.prepare("UPDATE sessions SET cwd = ?, git_remote = ?, project = ? WHERE id = ?")
@@ -15045,11 +14743,9 @@ describe("viewer-server", () => {
 		});
 
 		it("reassigns a project inventory row to the corrected project", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				store.db
 					.prepare(
@@ -15089,11 +14785,9 @@ describe("viewer-server", () => {
 		});
 
 		it("preflights bulk project mappings before writing any mappings", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const now = new Date().toISOString();
 				store.db
 					.prepare(
@@ -15132,11 +14826,9 @@ describe("viewer-server", () => {
 		});
 
 		it("forgets locally owned project memories while leaving peer-owned copies", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				store.db
 					.prepare("UPDATE sessions SET git_remote = ?, project = ? WHERE id = ?")
@@ -15200,11 +14892,9 @@ describe("viewer-server", () => {
 		});
 
 		it("rejects project memory cleanup when the previewed row set changes", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				store.db
 					.prepare("UPDATE sessions SET git_remote = ?, project = ? WHERE id = ?")
@@ -15259,11 +14949,9 @@ describe("viewer-server", () => {
 		});
 
 		it("requires confirmation before saving risky Sharing domain mappings", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const now = new Date().toISOString();
 				store.db
 					.prepare(
@@ -15354,11 +15042,9 @@ describe("viewer-server", () => {
 		});
 
 		it("rejects bulk project mappings before writing any partial updates", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const now = new Date().toISOString();
 				store.db
 					.prepare(
@@ -15398,11 +15084,9 @@ describe("viewer-server", () => {
 		});
 
 		it("blocks unmapped projects from non-local Sharing domain assignment", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const now = new Date().toISOString();
 				const sessionResult = store.db
 					.prepare(
@@ -15472,11 +15156,9 @@ describe("viewer-server", () => {
 		});
 
 		it("requires confirmation before reassigning an existing project mapping", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				insertTestMemory(store, {
 					sessionId,
@@ -15589,11 +15271,9 @@ describe("viewer-server", () => {
 			const prevConfig = process.env.CODEMEM_CONFIG;
 			process.env.CODEMEM_CONFIG = configPath;
 			writeFileSync(configPath, JSON.stringify({ sync_enabled: true }));
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				store.db
 					.prepare(
 						"INSERT INTO sync_peers(peer_device_id, name, pinned_fingerprint, addresses_json, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -15624,11 +15304,9 @@ describe("viewer-server", () => {
 		});
 
 		it("claims a legacy device identity through the viewer route", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				insertTestMemory(store, {
 					sessionId,
@@ -15665,11 +15343,9 @@ describe("viewer-server", () => {
 					sync_projects_exclude: ["global-b"],
 				}),
 			);
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				store.db
 					.prepare(
 						"INSERT INTO sync_peers(peer_device_id, name, pinned_fingerprint, created_at) VALUES (?, ?, ?, ?)",
@@ -15695,11 +15371,9 @@ describe("viewer-server", () => {
 		});
 
 		it("identifies claimed local actor peers that need a personal scope grant", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const now = new Date().toISOString();
 				store.db
 					.prepare(
@@ -15800,11 +15474,9 @@ describe("viewer-server", () => {
 		});
 
 		it("redacts sync attempt errors unless diagnostics are requested", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const now = new Date().toISOString();
 				store.db
 					.prepare(
@@ -16163,11 +15835,9 @@ describe("viewer-server", () => {
 		});
 
 		it("demotes stale is_local=1 rows so only the canonical local actor stays marked local", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 
 				const now = new Date().toISOString();
 				store.db
@@ -16394,11 +16064,9 @@ describe("viewer-server", () => {
 					sync_coordinator_group: "team-a",
 				}),
 			);
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				ensureDeviceIdentity(store.db, { keysDir });
 				store.db
 					.prepare(
@@ -16522,11 +16190,9 @@ describe("viewer-server", () => {
 					sync_coordinator_groups: ["team-a", "team-b"],
 				}),
 			);
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				ensureDeviceIdentity(store.db, { keysDir });
 				store.db
 					.prepare(
@@ -16616,11 +16282,9 @@ describe("viewer-server", () => {
 					sync_coordinator_group: "team-a",
 				}),
 			);
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				ensureDeviceIdentity(store.db, { keysDir });
 				store.db
 					.prepare(
@@ -16675,11 +16339,9 @@ describe("viewer-server", () => {
 					sync_coordinator_group: "team-a",
 				}),
 			);
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				ensureDeviceIdentity(store.db, { keysDir });
 				const res = await app.request("/api/sync/peers/accept-discovered", {
 					method: "POST",
@@ -16866,11 +16528,9 @@ describe("viewer-server", () => {
 					sync_coordinator_groups: ["team-a"],
 				}),
 			);
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				ensureDeviceIdentity(store.db, { keysDir });
 				const res = await app.request("/api/sync/peers/accept-discovered", {
 					method: "POST",
@@ -16921,11 +16581,9 @@ describe("viewer-server", () => {
 					sync_coordinator_group: "team-a",
 				}),
 			);
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				ensureDeviceIdentity(store.db, { keysDir });
 				const res = await app.request("/api/sync/peers/accept-discovered", {
 					method: "POST",
@@ -16958,11 +16616,9 @@ describe("viewer-server", () => {
 				configPath,
 				JSON.stringify({ sync_enabled: true, sync_projects_include: ["codemem"] }),
 			);
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
 				store.db.prepare("UPDATE sessions SET project = ? WHERE id = ?").run("codemem", sessionId);
 				store.db
@@ -18428,11 +18084,9 @@ describe("viewer-server", () => {
 					sync_coordinator_admin_secret: "secret",
 				}),
 			);
-			const { app, getStore, cleanup } = createTestApp({ seedDevice: false });
+			const { app, ensureStore, cleanup } = createTestApp({ seedDevice: false });
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				expect(store.deviceId).toBe("local");
 				const [localDeviceId] = ensureDeviceIdentity(store.db, {
 					keysDir: process.env.CODEMEM_KEYS_DIR,
@@ -19048,11 +18702,9 @@ describe("viewer-server", () => {
 					sync_coordinator_admin_secret: "secret",
 				}),
 			);
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				store.db.exec(`
 					INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
 					VALUES ('pending-brian', 'Brian', 0, 'pending', '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z');
@@ -19494,11 +19146,9 @@ describe("viewer-server", () => {
 			process.env.CODEMEM_CONFIG = configPath;
 			process.env.CODEMEM_KEYS_DIR = keysDir;
 			writeFileSync(configPath, JSON.stringify({ actor_display_name: "Fixture User" }));
-			const { app, getStore, cleanup } = createTestApp({ seedDevice: false });
+			const { app, ensureStore, cleanup } = createTestApp({ seedDevice: false });
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				expect(store.actorId).toBe("local:local");
 				const fallbackNow = "2026-07-23T12:00:00.000Z";
 				store.db
@@ -19584,11 +19234,9 @@ describe("viewer-server", () => {
 				configPath,
 				JSON.stringify({ actor_id: "actor:configured", actor_display_name: "Configured User" }),
 			);
-			const { app, getStore, cleanup } = createTestApp({ seedDevice: false });
+			const { app, ensureStore, cleanup } = createTestApp({ seedDevice: false });
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				const now = "2026-07-23T12:00:00.000Z";
 				store.db
 					.prepare(
@@ -19702,11 +19350,9 @@ describe("viewer-server", () => {
 			process.env.CODEMEM_CONFIG = configPath;
 			process.env.CODEMEM_KEYS_DIR = keysDir;
 			writeFileSync(configPath, JSON.stringify({ actor_display_name: "Local Person" }));
-			const { app, getStore, cleanup } = createTestApp({ seedDevice: false });
+			const { app, ensureStore, cleanup } = createTestApp({ seedDevice: false });
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				expect(store.actorId).toBe("local:local");
 				const fallbackNow = "2026-07-23T12:00:00.000Z";
 				store.db
@@ -20017,11 +19663,9 @@ describe("viewer-server", () => {
 			process.env.CODEMEM_CONFIG = configPath;
 			process.env.CODEMEM_KEYS_DIR = keysDir;
 			writeFileSync(configPath, JSON.stringify({ actor_display_name: "Fixture User" }));
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				ensureDeviceIdentity(store.db, { keysDir });
 				const res = await app.request("/api/sync/invites/import", {
 					method: "POST",
@@ -20068,11 +19712,9 @@ describe("viewer-server", () => {
 			process.env.CODEMEM_CONFIG = configPath;
 			process.env.CODEMEM_KEYS_DIR = keysDir;
 			writeFileSync(configPath, JSON.stringify({ actor_display_name: "Fixture User" }));
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				ensureDeviceIdentity(store.db, { keysDir });
 				const res = await app.request("/api/sync/invites/import", {
 					method: "POST",
@@ -20163,11 +19805,9 @@ describe("viewer-server", () => {
 			};
 			const invite = Buffer.from(JSON.stringify(pairingPayload), "utf8").toString("base64");
 
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				store.db
 					.prepare(
 						"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, public_key, addresses_json, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -21344,11 +20984,9 @@ describe("viewer-server", () => {
 						sync_coordinator_admin_secret: "secret",
 					}),
 				);
-				const { app, getStore, cleanup } = createTestApp();
+				const { app, ensureStore, cleanup } = createTestApp();
 				try {
-					await app.request("/api/stats");
-					const store = getStore();
-					if (!store) throw new Error("store not initialized");
+					const store = ensureStore();
 					store.db
 						.prepare(
 							"INSERT INTO sync_peers(peer_device_id, name, public_key, created_at) VALUES (?, ?, ?, ?)",
@@ -21375,11 +21013,9 @@ describe("viewer-server", () => {
 		});
 
 		it("deletes sync peers through the viewer route", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp();
 			try {
-				await app.request("/api/stats");
-				const store = getStore();
-				if (!store) throw new Error("store not initialized");
+				const store = ensureStore();
 				store.db
 					.prepare("INSERT INTO sync_peers(peer_device_id, name, created_at) VALUES (?, ?, ?)")
 					.run("peer-delete-me", "Old Peer", new Date().toISOString());
@@ -21419,11 +21055,9 @@ describe("viewer-server", () => {
 
 describe("repository Project cleanup inference", () => {
 	it("does not infer a reused checkout over an explicit historical remote", async () => {
-		const { app, getStore, cleanup } = createTestApp();
+		const { app, ensureStore, cleanup } = createTestApp();
 		try {
-			await app.request("/api/stats");
-			const store = getStore();
-			if (!store) throw new Error("store not initialized");
+			const store = ensureStore();
 			const cwd = "/workspace/reused-api";
 			const oldRepository = "https://git.example.invalid/tmp/old-api.git";
 			const newRepository = "https://git.example.invalid/tmp/new-api.git";
@@ -21464,11 +21098,9 @@ describe("repository Project cleanup inference", () => {
 	});
 
 	it("forgets historical cwd-only memories in an inferred repository Project", async () => {
-		const { app, getStore, cleanup } = createTestApp();
+		const { app, ensureStore, cleanup } = createTestApp();
 		try {
-			await app.request("/api/stats");
-			const store = getStore();
-			if (!store) throw new Error("store not initialized");
+			const store = ensureStore();
 			const cwd = "/workspace/historical-api";
 			const repositoryIdentity = "https://git.example.invalid/tmp/historical-api.git";
 			const historicalSessionId = insertTestSession(store.db);
@@ -21521,11 +21153,9 @@ describe("repository Project cleanup inference", () => {
 
 describe("legacy shared review repository inference", () => {
 	it("groups and reassigns historical cwd-only repository memories", async () => {
-		const { app, getStore, cleanup } = createTestApp();
+		const { app, ensureStore, cleanup } = createTestApp();
 		try {
-			await app.request("/api/stats");
-			const store = getStore();
-			if (!store) throw new Error("store not initialized");
+			const store = ensureStore();
 			const now = new Date().toISOString();
 			store.db
 				.prepare(
