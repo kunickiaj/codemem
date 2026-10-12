@@ -243,6 +243,44 @@ function createMockStore(
 
 const allowRequest: CoordinatorRequestVerifier = async () => true;
 
+function sharingDomainFixture(
+	fields: Pick<CoordinatorScope, "scope_id" | "group_id" | "membership_epoch" | "status"> &
+		Partial<CoordinatorScope>,
+): CoordinatorScope {
+	return {
+		label: "Acme Work",
+		kind: "team",
+		authority_type: "coordinator",
+		coordinator_id: "coord-a",
+		manifest_issuer_device_id: null,
+		manifest_hash: null,
+		created_at: "2026-03-28T00:00:00Z",
+		updated_at: "2026-03-28T00:00:00Z",
+		...fields,
+	};
+}
+
+function sharingGroupFixture(overrides: Partial<CoordinatorGroup> = {}): CoordinatorGroup {
+	return {
+		group_id: "g1",
+		display_name: "Acme",
+		archived_at: null,
+		created_at: "2026-03-28T00:00:00Z",
+		...overrides,
+	};
+}
+
+function createSharingAdminApp(storeFactory: () => CoordinatorStoreInterface) {
+	return createCoordinatorApp({
+		storeFactory,
+		runtime: {
+			adminSecret: () => "test-secret",
+			now: () => "2026-03-28T00:00:00Z",
+		},
+		requestVerifier: allowRequest,
+	});
+}
+
 function expectNoNonceWrite(store: CoordinatorStoreInterface) {
 	expect(store.recordNonce).not.toHaveBeenCalled();
 	expect(store.recordAuthorizedNonce).not.toHaveBeenCalled();
@@ -2583,37 +2621,17 @@ describe("createCoordinatorApp dependency injection", () => {
 	});
 
 	it("lists Sharing domains for an admin-authenticated group", async () => {
-		const scope: CoordinatorScope = {
+		const scope = sharingDomainFixture({
 			scope_id: "scope-acme",
-			label: "Acme Work",
-			kind: "team",
-			authority_type: "coordinator",
-			coordinator_id: "coord-a",
 			group_id: "g1",
-			manifest_issuer_device_id: null,
 			membership_epoch: 3,
-			manifest_hash: null,
 			status: "active",
-			created_at: "2026-03-28T00:00:00Z",
-			updated_at: "2026-03-28T00:00:00Z",
-		};
+		});
 		const store = createMockStore({
-			getGroup: vi.fn(async () => ({
-				group_id: "g1",
-				display_name: "Acme",
-				archived_at: null,
-				created_at: "2026-03-28T00:00:00Z",
-			})),
+			getGroup: vi.fn(async () => sharingGroupFixture()),
 			listScopes: vi.fn(async () => [scope]),
 		});
-		const app = createCoordinatorApp({
-			storeFactory: () => store,
-			runtime: {
-				adminSecret: () => "test-secret",
-				now: () => "2026-03-28T00:00:00Z",
-			},
-			requestVerifier: allowRequest,
-		});
+		const app = createSharingAdminApp(() => store);
 
 		const res = await app.request("/v1/admin/groups/g1/scopes", {
 			headers: { "X-Codemem-Coordinator-Admin": "test-secret" },
@@ -2626,14 +2644,7 @@ describe("createCoordinatorApp dependency injection", () => {
 
 	it("rejects missing or invalid admin auth on Sharing domain routes", async () => {
 		const store = createMockStore();
-		const app = createCoordinatorApp({
-			storeFactory: () => store,
-			runtime: {
-				adminSecret: () => "test-secret",
-				now: () => "2026-03-28T00:00:00Z",
-			},
-			requestVerifier: allowRequest,
-		});
+		const app = createSharingAdminApp(() => store);
 
 		const missing = await app.request("/v1/admin/groups/g1/scopes");
 		const invalid = await app.request("/v1/admin/groups/g1/scopes", {
@@ -2648,37 +2659,18 @@ describe("createCoordinatorApp dependency injection", () => {
 	});
 
 	it("creates Sharing domain metadata without accepting memory payloads", async () => {
-		const created: CoordinatorScope = {
+		const created = sharingDomainFixture({
 			scope_id: "scope-acme",
-			label: "Acme Work",
-			kind: "team",
-			authority_type: "coordinator",
-			coordinator_id: "coord-a",
 			group_id: "g1",
-			manifest_issuer_device_id: null,
 			membership_epoch: 5,
 			manifest_hash: "hash-1",
 			status: "active",
-			created_at: "2026-03-28T00:00:00Z",
-			updated_at: "2026-03-28T00:00:00Z",
-		};
+		});
 		const store = createMockStore({
-			getGroup: vi.fn(async () => ({
-				group_id: "g1",
-				display_name: "Acme",
-				archived_at: null,
-				created_at: "2026-03-28T00:00:00Z",
-			})),
+			getGroup: vi.fn(async () => sharingGroupFixture()),
 			createScope: vi.fn(async () => created),
 		});
-		const app = createCoordinatorApp({
-			storeFactory: () => store,
-			runtime: {
-				adminSecret: () => "test-secret",
-				now: () => "2026-03-28T00:00:00Z",
-			},
-			requestVerifier: allowRequest,
-		});
+		const app = createSharingAdminApp(() => store);
 
 		const res = await app.request("/v1/admin/groups/g1/scopes", {
 			method: "POST",
@@ -2713,24 +2705,12 @@ describe("createCoordinatorApp dependency injection", () => {
 		});
 	});
 
-	it("validates Sharing domain create inputs", async () => {
-		const store = createMockStore({
-			getGroup: vi.fn(async () => ({
-				group_id: "g1",
-				display_name: "Acme",
-				archived_at: null,
-				created_at: "2026-03-28T00:00:00Z",
-			})),
-		});
-		const app = createCoordinatorApp({
-			storeFactory: () => store,
-			runtime: {
-				adminSecret: () => "test-secret",
-				now: () => "2026-03-28T00:00:00Z",
-			},
-			requestVerifier: allowRequest,
-		});
+	it("rejects Sharing domain creation without a label before opening the store", async () => {
+		// Arrange: required fields take precedence over epoch validation.
+		const storeFactory = vi.fn(() => createMockStore());
+		const app = createSharingAdminApp(storeFactory);
 
+		// Act
 		const res = await app.request("/v1/admin/groups/g1/scopes", {
 			method: "POST",
 			headers: {
@@ -2740,21 +2720,15 @@ describe("createCoordinatorApp dependency injection", () => {
 			body: JSON.stringify({ scope_id: "scope-acme", membership_epoch: "nope" }),
 		});
 
+		// Assert
 		expect(res.status).toBe(400);
 		expect(await res.json()).toEqual({ error: "scope_id_and_label_required" });
-		expect(store.createScope).not.toHaveBeenCalled();
+		expect(storeFactory).not.toHaveBeenCalled();
 	});
 
 	it("rejects non-numeric Sharing domain epochs before coercion", async () => {
 		const storeFactory = vi.fn(() => createMockStore());
-		const app = createCoordinatorApp({
-			storeFactory,
-			runtime: {
-				adminSecret: () => "test-secret",
-				now: () => "2026-03-28T00:00:00Z",
-			},
-			requestVerifier: allowRequest,
-		});
+		const app = createSharingAdminApp(storeFactory);
 		const requests = [
 			{
 				path: "/v1/admin/groups/g1/scopes",
@@ -2799,39 +2773,19 @@ describe("createCoordinatorApp dependency injection", () => {
 	});
 
 	it("updates Sharing domain metadata only within the requested group", async () => {
-		const existing: CoordinatorScope = {
+		const existing = sharingDomainFixture({
 			scope_id: "scope-acme",
-			label: "Acme Work",
-			kind: "team",
-			authority_type: "coordinator",
-			coordinator_id: "coord-a",
 			group_id: "g1",
-			manifest_issuer_device_id: null,
 			membership_epoch: 5,
-			manifest_hash: null,
 			status: "active",
-			created_at: "2026-03-28T00:00:00Z",
-			updated_at: "2026-03-28T00:00:00Z",
-		};
+		});
 		const updated = { ...existing, label: "Acme Engineering", membership_epoch: 6 };
 		const store = createMockStore({
-			getGroup: vi.fn(async () => ({
-				group_id: "g1",
-				display_name: "Acme",
-				archived_at: null,
-				created_at: "2026-03-28T00:00:00Z",
-			})),
+			getGroup: vi.fn(async () => sharingGroupFixture()),
 			listScopes: vi.fn(async () => [existing]),
 			updateScope: vi.fn(async () => updated),
 		});
-		const app = createCoordinatorApp({
-			storeFactory: () => store,
-			runtime: {
-				adminSecret: () => "test-secret",
-				now: () => "2026-03-28T00:00:00Z",
-			},
-			requestVerifier: allowRequest,
-		});
+		const app = createSharingAdminApp(() => store);
 
 		const res = await app.request("/v1/admin/groups/g1/scopes/scope-acme", {
 			method: "PATCH",
@@ -2860,22 +2814,10 @@ describe("createCoordinatorApp dependency injection", () => {
 
 	it("returns not found when updating a scope outside the requested group", async () => {
 		const store = createMockStore({
-			getGroup: vi.fn(async () => ({
-				group_id: "g1",
-				display_name: "Acme",
-				archived_at: null,
-				created_at: "2026-03-28T00:00:00Z",
-			})),
+			getGroup: vi.fn(async () => sharingGroupFixture()),
 			listScopes: vi.fn(async () => []),
 		});
-		const app = createCoordinatorApp({
-			storeFactory: () => store,
-			runtime: {
-				adminSecret: () => "test-secret",
-				now: () => "2026-03-28T00:00:00Z",
-			},
-			requestVerifier: allowRequest,
-		});
+		const app = createSharingAdminApp(() => store);
 
 		const res = await app.request("/v1/admin/groups/g1/scopes/scope-acme", {
 			method: "PATCH",
@@ -2892,27 +2834,14 @@ describe("createCoordinatorApp dependency injection", () => {
 	});
 
 	it("lists explicit Sharing domain memberships separately from group enrollment", async () => {
-		const scope: CoordinatorScope = {
+		const scope = sharingDomainFixture({
 			scope_id: "scope-acme",
-			label: "Acme Work",
-			kind: "team",
-			authority_type: "coordinator",
-			coordinator_id: "coord-a",
 			group_id: "g1",
-			manifest_issuer_device_id: null,
 			membership_epoch: 1,
-			manifest_hash: null,
 			status: "active",
-			created_at: "2026-03-28T00:00:00Z",
-			updated_at: "2026-03-28T00:00:00Z",
-		};
+		});
 		const store = createMockStore({
-			getGroup: vi.fn(async () => ({
-				group_id: "g1",
-				display_name: "Acme",
-				archived_at: null,
-				created_at: "2026-03-28T00:00:00Z",
-			})),
+			getGroup: vi.fn(async () => sharingGroupFixture()),
 			listEnrolledDevices: vi.fn(async () => [
 				{
 					group_id: "g1",
@@ -2928,14 +2857,7 @@ describe("createCoordinatorApp dependency injection", () => {
 			listScopes: vi.fn(async () => [scope]),
 			listScopeMemberships: vi.fn(async () => []),
 		});
-		const app = createCoordinatorApp({
-			storeFactory: () => store,
-			runtime: {
-				adminSecret: () => "test-secret",
-				now: () => "2026-03-28T00:00:00Z",
-			},
-			requestVerifier: allowRequest,
-		});
+		const app = createSharingAdminApp(() => store);
 
 		const devices = await app.request("/v1/admin/devices?group_id=g1", {
 			headers: { "X-Codemem-Coordinator-Admin": "test-secret" },
@@ -2953,14 +2875,7 @@ describe("createCoordinatorApp dependency injection", () => {
 
 	it("rejects missing or invalid admin auth on Sharing domain membership routes", async () => {
 		const store = createMockStore();
-		const app = createCoordinatorApp({
-			storeFactory: () => store,
-			runtime: {
-				adminSecret: () => "test-secret",
-				now: () => "2026-03-28T00:00:00Z",
-			},
-			requestVerifier: allowRequest,
-		});
+		const app = createSharingAdminApp(() => store);
 
 		const missing = await app.request("/v1/admin/groups/g1/scopes/scope-acme/members");
 		const invalid = await app.request("/v1/admin/groups/g1/scopes/scope-acme/members", {
@@ -3053,12 +2968,7 @@ describe("createCoordinatorApp dependency injection", () => {
 		};
 		const snapshot = scopeSnapshotFixture(scopes, memberships);
 		const store = createMockStore({
-			getGroup: vi.fn(async () => ({
-				group_id: "g1",
-				display_name: "Acme",
-				archived_at: null,
-				created_at: "2026-03-28T00:00:00Z",
-			})),
+			getGroup: vi.fn(async () => sharingGroupFixture()),
 			getEnrollment: vi.fn(async () => snapshot.enrollment),
 			listScopes: vi.fn(async () => scopes),
 			getScopeAuthorization: snapshot.getScopeAuthorization,
@@ -3069,14 +2979,7 @@ describe("createCoordinatorApp dependency injection", () => {
 					.filter((membership) => membership.device_id === deviceId),
 			),
 		});
-		const app = createCoordinatorApp({
-			storeFactory: () => store,
-			runtime: {
-				adminSecret: () => "test-secret",
-				now: () => "2026-03-28T00:00:00Z",
-			},
-			requestVerifier: allowRequest,
-		});
+		const app = createSharingAdminApp(() => store);
 
 		// Act
 		const scopeRes = await app.request("/v1/scopes?group_id=g1", {
@@ -3103,20 +3006,12 @@ describe("createCoordinatorApp dependency injection", () => {
 	});
 
 	it("grants devices explicitly to a Sharing domain", async () => {
-		const scope: CoordinatorScope = {
+		const scope = sharingDomainFixture({
 			scope_id: "scope-acme",
-			label: "Acme Work",
-			kind: "team",
-			authority_type: "coordinator",
-			coordinator_id: "coord-a",
 			group_id: "g1",
-			manifest_issuer_device_id: null,
 			membership_epoch: 3,
-			manifest_hash: null,
 			status: "active",
-			created_at: "2026-03-28T00:00:00Z",
-			updated_at: "2026-03-28T00:00:00Z",
-		};
+		});
 		const membership: CoordinatorScopeMembership = {
 			scope_id: "scope-acme",
 			device_id: "device-a",
@@ -3131,12 +3026,7 @@ describe("createCoordinatorApp dependency injection", () => {
 			updated_at: "2026-03-28T00:00:00Z",
 		};
 		const store = createMockStore({
-			getGroup: vi.fn(async () => ({
-				group_id: "g1",
-				display_name: "Acme",
-				archived_at: null,
-				created_at: "2026-03-28T00:00:00Z",
-			})),
+			getGroup: vi.fn(async () => sharingGroupFixture()),
 			getEnrollment: vi.fn(async () => ({
 				group_id: "g1",
 				device_id: "device-a",
@@ -3150,14 +3040,7 @@ describe("createCoordinatorApp dependency injection", () => {
 			listScopes: vi.fn(async () => [scope]),
 			grantScopeMembership: vi.fn(async () => membership),
 		});
-		const app = createCoordinatorApp({
-			storeFactory: () => store,
-			runtime: {
-				adminSecret: () => "test-secret",
-				now: () => "2026-03-28T00:00:00Z",
-			},
-			requestVerifier: allowRequest,
-		});
+		const app = createSharingAdminApp(() => store);
 
 		const res = await app.request("/v1/admin/groups/g1/scopes/scope-acme/members", {
 			method: "POST",
@@ -3206,14 +3089,7 @@ describe("createCoordinatorApp dependency injection", () => {
 				throw new Error("grant must not run");
 			}),
 		});
-		const app = createCoordinatorApp({
-			storeFactory: () => store,
-			runtime: {
-				adminSecret: () => "test-secret",
-				now: () => "2026-03-28T00:00:00Z",
-			},
-			requestVerifier: allowRequest,
-		});
+		const app = createSharingAdminApp(() => store);
 
 		const res = await app.request("/v1/admin/groups/g1/scopes/scope-acme/members", {
 			method: "POST",
@@ -3248,14 +3124,7 @@ describe("createCoordinatorApp dependency injection", () => {
 				membershipEpoch: 1,
 			});
 
-			const app = createCoordinatorApp({
-				storeFactory: () => new BetterSqliteCoordinatorStore(dbPath),
-				runtime: {
-					adminSecret: () => "test-secret",
-					now: () => "2026-03-28T00:00:00Z",
-				},
-				requestVerifier: allowRequest,
-			});
+			const app = createSharingAdminApp(() => new BetterSqliteCoordinatorStore(dbPath));
 
 			const grantRes = await app.request("/v1/admin/groups/g1/scopes/scope-acme/members", {
 				method: "POST",
@@ -3378,39 +3247,12 @@ describe("createCoordinatorApp dependency injection", () => {
 		}
 	});
 
-	it("validates Sharing domain grant inputs", async () => {
-		const scope: CoordinatorScope = {
-			scope_id: "scope-acme",
-			label: "Acme Work",
-			kind: "team",
-			authority_type: "coordinator",
-			coordinator_id: "coord-a",
-			group_id: "g1",
-			manifest_issuer_device_id: null,
-			membership_epoch: 3,
-			manifest_hash: null,
-			status: "active",
-			created_at: "2026-03-28T00:00:00Z",
-			updated_at: "2026-03-28T00:00:00Z",
-		};
-		const store = createMockStore({
-			getGroup: vi.fn(async () => ({
-				group_id: "g1",
-				display_name: "Acme",
-				archived_at: null,
-				created_at: "2026-03-28T00:00:00Z",
-			})),
-			listScopes: vi.fn(async () => [scope]),
-		});
-		const app = createCoordinatorApp({
-			storeFactory: () => store,
-			runtime: {
-				adminSecret: () => "test-secret",
-				now: () => "2026-03-28T00:00:00Z",
-			},
-			requestVerifier: allowRequest,
-		});
+	it("rejects Sharing domain grants without an effect ID before opening the store", async () => {
+		// Arrange: required fields take precedence over epoch validation.
+		const storeFactory = vi.fn(() => createMockStore());
+		const app = createSharingAdminApp(storeFactory);
 
+		// Act
 		const res = await app.request("/v1/admin/groups/g1/scopes/scope-acme/members", {
 			method: "POST",
 			headers: {
@@ -3420,46 +3262,48 @@ describe("createCoordinatorApp dependency injection", () => {
 			body: JSON.stringify({ membership_epoch: "not-a-number" }),
 		});
 
+		// Assert
 		expect(res.status).toBe(400);
 		expect(await res.json()).toEqual({ error: "effect_id_required" });
-		expect(store.grantScopeMembership).not.toHaveBeenCalled();
+		expect(storeFactory).not.toHaveBeenCalled();
+	});
+
+	it("rejects Sharing domain grants without a device ID before opening the store", async () => {
+		// Arrange: a valid effect ID reaches the distinct device validation branch.
+		const storeFactory = vi.fn(() => createMockStore());
+		const app = createSharingAdminApp(storeFactory);
+
+		// Act
+		const res = await app.request("/v1/admin/groups/g1/scopes/scope-acme/members", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"X-Codemem-Coordinator-Admin": "test-secret",
+			},
+			body: JSON.stringify({ effect_id: "api:missing-device:grant" }),
+		});
+
+		// Assert
+		expect(res.status).toBe(400);
+		expect(await res.json()).toEqual({ error: "device_id_required" });
+		expect(storeFactory).not.toHaveBeenCalled();
 	});
 
 	it("rejects Sharing domain grants for devices outside the scope group", async () => {
-		const scope: CoordinatorScope = {
+		const scope = sharingDomainFixture({
 			scope_id: "scope-acme",
-			label: "Acme Work",
-			kind: "team",
-			authority_type: "coordinator",
-			coordinator_id: "coord-a",
 			group_id: "g1",
-			manifest_issuer_device_id: null,
 			membership_epoch: 3,
-			manifest_hash: null,
 			status: "active",
-			created_at: "2026-03-28T00:00:00Z",
-			updated_at: "2026-03-28T00:00:00Z",
-		};
+		});
 		const store = createMockStore({
-			getGroup: vi.fn(async () => ({
-				group_id: "g1",
-				display_name: "Acme",
-				archived_at: null,
-				created_at: "2026-03-28T00:00:00Z",
-			})),
+			getGroup: vi.fn(async () => sharingGroupFixture()),
 			listScopes: vi.fn(async () => [scope]),
 			grantScopeMembership: vi.fn(async () => {
 				throw new CoordinatorMembershipError("device_not_enrolled");
 			}),
 		});
-		const app = createCoordinatorApp({
-			storeFactory: () => store,
-			runtime: {
-				adminSecret: () => "test-secret",
-				now: () => "2026-03-28T00:00:00Z",
-			},
-			requestVerifier: allowRequest,
-		});
+		const app = createSharingAdminApp(() => store);
 
 		const res = await app.request("/v1/admin/groups/g1/scopes/scope-acme/members", {
 			method: "POST",
@@ -3476,27 +3320,14 @@ describe("createCoordinatorApp dependency injection", () => {
 	});
 
 	it("revokes explicit Sharing domain memberships", async () => {
-		const scope: CoordinatorScope = {
+		const scope = sharingDomainFixture({
 			scope_id: "scope-acme",
-			label: "Acme Work",
-			kind: "team",
-			authority_type: "coordinator",
-			coordinator_id: "coord-a",
 			group_id: "g1",
-			manifest_issuer_device_id: null,
 			membership_epoch: 3,
-			manifest_hash: null,
 			status: "active",
-			created_at: "2026-03-28T00:00:00Z",
-			updated_at: "2026-03-28T00:00:00Z",
-		};
+		});
 		const store = createMockStore({
-			getGroup: vi.fn(async () => ({
-				group_id: "g1",
-				display_name: "Acme",
-				archived_at: null,
-				created_at: "2026-03-28T00:00:00Z",
-			})),
+			getGroup: vi.fn(async () => sharingGroupFixture()),
 			listScopes: vi.fn(async () => [scope]),
 			revokeScopeMembership: vi.fn(async () => true),
 			listScopeMemberships: vi.fn(async () => [
@@ -3515,14 +3346,7 @@ describe("createCoordinatorApp dependency injection", () => {
 				},
 			]),
 		});
-		const app = createCoordinatorApp({
-			storeFactory: () => store,
-			runtime: {
-				adminSecret: () => "test-secret",
-				now: () => "2026-03-28T00:00:00Z",
-			},
-			requestVerifier: allowRequest,
-		});
+		const app = createSharingAdminApp(() => store);
 
 		const res = await app.request("/v1/admin/groups/g1/scopes/scope-acme/members/device-a/revoke", {
 			method: "POST",
@@ -3578,14 +3402,7 @@ describe("createCoordinatorApp dependency injection", () => {
 				throw new Error("revoke must not run");
 			}),
 		});
-		const app = createCoordinatorApp({
-			storeFactory: () => store,
-			runtime: {
-				adminSecret: () => "test-secret",
-				now: () => "2026-03-28T00:00:00Z",
-			},
-			requestVerifier: allowRequest,
-		});
+		const app = createSharingAdminApp(() => store);
 
 		const res = await app.request("/v1/admin/groups/g1/scopes/scope-acme/members/device-a/revoke", {
 			method: "POST",
@@ -3602,41 +3419,21 @@ describe("createCoordinatorApp dependency injection", () => {
 	});
 
 	it("does not fail a persisted revoke when response enrichment cannot reload it", async () => {
-		const scope: CoordinatorScope = {
+		const scope = sharingDomainFixture({
 			scope_id: "scope-acme",
-			label: "Acme Work",
-			kind: "team",
-			authority_type: "coordinator",
-			coordinator_id: "coord-a",
 			group_id: "g1",
-			manifest_issuer_device_id: null,
 			membership_epoch: 3,
-			manifest_hash: null,
 			status: "active",
-			created_at: "2026-03-28T00:00:00Z",
-			updated_at: "2026-03-28T00:00:00Z",
-		};
+		});
 		const store = createMockStore({
-			getGroup: vi.fn(async () => ({
-				group_id: "g1",
-				display_name: "Acme",
-				archived_at: null,
-				created_at: "2026-03-28T00:00:00Z",
-			})),
+			getGroup: vi.fn(async () => sharingGroupFixture()),
 			listScopes: vi.fn(async () => [scope]),
 			revokeScopeMembership: vi.fn(async () => true),
 			listScopeMemberships: vi.fn(async () => {
 				throw new Error("temporarily locked");
 			}),
 		});
-		const app = createCoordinatorApp({
-			storeFactory: () => store,
-			runtime: {
-				adminSecret: () => "test-secret",
-				now: () => "2026-03-28T00:00:00Z",
-			},
-			requestVerifier: allowRequest,
-		});
+		const app = createSharingAdminApp(() => store);
 
 		const res = await app.request("/v1/admin/groups/g1/scopes/scope-acme/members/device-a/revoke", {
 			method: "POST",
@@ -3673,27 +3470,14 @@ describe("createCoordinatorApp dependency injection", () => {
 	});
 
 	it("reports persisted revoke epoch when request omits membership_epoch", async () => {
-		const scope: CoordinatorScope = {
+		const scope = sharingDomainFixture({
 			scope_id: "scope-acme",
-			label: "Acme Work",
-			kind: "team",
-			authority_type: "coordinator",
-			coordinator_id: "coord-a",
 			group_id: "g1",
-			manifest_issuer_device_id: null,
 			membership_epoch: 3,
-			manifest_hash: null,
 			status: "active",
-			created_at: "2026-03-28T00:00:00Z",
-			updated_at: "2026-03-28T00:00:00Z",
-		};
+		});
 		const store = createMockStore({
-			getGroup: vi.fn(async () => ({
-				group_id: "g1",
-				display_name: "Acme",
-				archived_at: null,
-				created_at: "2026-03-28T00:00:00Z",
-			})),
+			getGroup: vi.fn(async () => sharingGroupFixture()),
 			listScopes: vi.fn(async () => [scope]),
 			revokeScopeMembership: vi.fn(async () => true),
 			listScopeMemberships: vi.fn(async () => [
@@ -3712,14 +3496,7 @@ describe("createCoordinatorApp dependency injection", () => {
 				},
 			]),
 		});
-		const app = createCoordinatorApp({
-			storeFactory: () => store,
-			runtime: {
-				adminSecret: () => "test-secret",
-				now: () => "2026-03-28T00:00:00Z",
-			},
-			requestVerifier: allowRequest,
-		});
+		const app = createSharingAdminApp(() => store);
 
 		const res = await app.request("/v1/admin/groups/g1/scopes/scope-acme/members/device-a/revoke", {
 			method: "POST",
