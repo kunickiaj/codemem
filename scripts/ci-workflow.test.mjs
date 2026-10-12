@@ -8,6 +8,10 @@ const fullE2eWorkflow = readFileSync(
 	new URL("../.github/workflows/e2e-full.yml", import.meta.url),
 	"utf8",
 );
+const uiVisualWorkflow = readFileSync(
+	new URL("../.github/workflows/ui-visual.yml", import.meta.url),
+	"utf8",
+);
 const workerPackage = JSON.parse(
 	readFileSync(
 		new URL("../packages/cloudflare-coordinator-worker/package.json", import.meta.url),
@@ -201,6 +205,71 @@ describe("normal CI E2E workflow contract", () => {
 		assert.match(specializedJob, /^ {4}if: github\.event_name != 'pull_request'$/m);
 		assert.deepEqual(getMatrixScenarios(specializedJob), specializedScenarios);
 	});
+});
+
+function assertVisualWorkflowScope() {
+	assert.equal(
+		getTopLevelBlock(uiVisualWorkflow, "on"),
+		["on:", "  push:", "    branches: [main]", "  pull_request:"].join("\n"),
+	);
+	assert.equal(
+		getTopLevelBlock(uiVisualWorkflow, "concurrency"),
+		getExpectedConcurrency("ui-visual"),
+	);
+	assert.equal(getTopLevelBlock(uiVisualWorkflow, "permissions"), "permissions:\n  contents: read");
+	assert.deepEqual(
+		[...getTopLevelBlock(uiVisualWorkflow, "jobs").matchAll(/^ {2}([a-z0-9-]+):$/gm)].map(
+			(match) => match[1],
+		),
+		["ui-visual"],
+	);
+	const job = getJob(uiVisualWorkflow, "ui-visual");
+	assert.match(job, /^ {4}runs-on: ubuntu-24\.04$/m);
+	assert.match(
+		job,
+		/^ {6}image: mcr\.microsoft\.com\/playwright:v1\.63\.0-noble@sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27$/m,
+	);
+	assert.match(job, /uses: pnpm\/action-setup@v5/u);
+	assert.match(job, /run: pnpm install --frozen-lockfile/u);
+	assert.match(
+		job,
+		/run: pnpm --filter @codemem\/ui visual:test-harness && pnpm --filter @codemem\/ui visual:typecheck/u,
+	);
+	assert.doesNotMatch(job, /continue-on-error|strategy:|matrix:|secrets:|id-token: write/u);
+}
+
+function assertVisualWorkflowComparison() {
+	const job = getJob(uiVisualWorkflow, "ui-visual");
+	assert.match(job, /CI: "true"/u);
+	assert.match(
+		job,
+		/CODEMEM_VISUAL_OUTPUT: \$\{\{ github\.workspace \}\}\/\.tmp\/visual-ci\/results/u,
+	);
+	assert.match(
+		job,
+		/run: pnpm --filter @codemem\/ui exec playwright test --config playwright\.config\.ts/u,
+	);
+	assert.match(
+		job,
+		/run: pnpm --filter @codemem\/ui exec playwright test --config playwright\.control\.config\.ts/u,
+	);
+	assert.match(job, /if: failure\(\)[\s\S]*?uses: actions\/upload-artifact@v6/u);
+	assert.match(job, /^ {10}path: \.tmp\/visual-ci\/\*\*$/m);
+	assert.doesNotMatch(
+		job,
+		/CODEMEM_VISUAL_UPDATE|--update-snapshots|--ignore-snapshots|(?:^|\s)-u(?:\s|$)|visual:update|docker (?:run|build)/u,
+	);
+}
+
+describe("UI visual regression workflow contract", () => {
+	it(
+		"runs a single blocking comparison on pull requests and main pushes with read-only access",
+		assertVisualWorkflowScope,
+	);
+	it(
+		"compares without updating baselines and uploads only generated failure results",
+		assertVisualWorkflowComparison,
+	);
 });
 
 describe("advisory OpenCode beta workflow contract", () => {

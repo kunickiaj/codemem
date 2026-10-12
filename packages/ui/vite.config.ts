@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 
 import preact from "@preact/preset-vite";
 import type { OutputChunk, OutputOptions } from "rollup";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import { uiAliases } from "./ui-aliases.ts";
 
 function isOutputChunk(value: unknown): value is OutputChunk {
@@ -128,6 +128,7 @@ export default defineConfig(({ command, mode }) => {
 					]),
 		],
 		test: {
+			exclude: [...configDefaults.exclude, "visual/**", "scripts/visual-policy.test.mjs"],
 			css: {
 				include: [/\/static\/(?:controls|themes|tokens)\.css(?:\?inline)?$/],
 			},

@@ -1,0 +1,204 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { test } from "node:test";
+import {
+	assertCanonicalPlatform,
+	GOLDEN_FILES,
+	HARNESS_FILES,
+	isGalleryRequest,
+	isPublicSource,
+	parseMode,
+	selectSourcePaths,
+	snapshotMode,
+	validateGeneratedGoldens,
+} from "./visual-policy.mjs";
+
+test("canonical platform accepts Linux x64", () => {
+	// Arrange
+	const runtime = { platform: "linux", arch: "x64" };
+	// Act
+	const result = assertCanonicalPlatform(runtime);
+	// Assert
+	assert.equal(result, undefined);
+});
+
+test("noncanonical platforms fail with Docker wrapper instructions", () => {
+	// Arrange
+	const runtimes = [
+		{ platform: "darwin", arch: "arm64" },
+		{ platform: "darwin", arch: "x64" },
+		{ platform: "linux", arch: "arm64" },
+		{ platform: "win32", arch: "x64" },
+	];
+	// Act / Assert
+	for (const runtime of runtimes) {
+		assert.throws(
+			() => assertCanonicalPlatform(runtime),
+			/Linux x64.*visual:test or visual:update.*Docker wrapper/,
+		);
+	}
+});
+
+test("staging accepts public source and explicit harness additions", () => {
+	// Arrange
+	const paths = [
+		"pnpm-lock.yaml",
+		"packages/ui/static/tokens.css",
+		...HARNESS_FILES,
+		...GOLDEN_FILES,
+	];
+	// Act
+	const results = paths.map(isPublicSource);
+	// Assert
+	assert.ok(results.every(Boolean));
+});
+
+test("source selection deduplicates tracked files and never scans unrelated untracked paths", () => {
+	// Arrange
+	const tracked = ["package.json", "package.json", ".env.local", ".tmp/private.sqlite"];
+	// Act
+	const selected = selectSourcePaths(tracked);
+	// Assert
+	assert.deepEqual(selected, ["package.json", ...HARNESS_FILES, ...GOLDEN_FILES]);
+	assert.equal(selected.includes("packages/ui/unrelated-untracked.ts"), false);
+});
+
+test("staging rejects secrets, private databases, dependencies and generated paths", () => {
+	// Arrange
+	const paths = [
+		".git/config",
+		".beads/issues.jsonl",
+		".tmp/private.txt",
+		".env",
+		"packages/ui/.env.local",
+		"node_modules/a.js",
+		".opencode/config.json",
+		".venv/bin/python",
+		"data.sqlite-wal",
+		"nested/private.db",
+		"packages/ui/dist/app.js",
+		"packages/viewer-server/static/app.js",
+		"../secret",
+		"/secret",
+	];
+	// Act
+	const results = paths.map(isPublicSource);
+	// Assert
+	assert.ok(results.every((result) => !result));
+});
+
+test("browser requests permit local assets but reject APIs and external origins", () => {
+	// Arrange
+	const addresses = [
+		"http://127.0.0.1:38923/gallery.html",
+		"http://127.0.0.1:38923/src/gallery.css",
+		"http://127.0.0.1:38923/api/stats",
+		"https://example.com/font.woff2",
+		"http://127.0.0.1:38922/gallery.html",
+	];
+	// Act
+	const results = addresses.map(isGalleryRequest);
+	// Assert
+	assert.deepEqual(results, [true, true, false, false, false]);
+});
+
+test("normal, control and explicit local update modes are accepted", () => {
+	// Arrange
+	const args = [[], ["--control"], ["--update"]];
+	// Act
+	const results = args.map((value) => parseMode(value, undefined));
+	// Assert
+	assert.deepEqual(results, ["test", "--control", "--update"]);
+});
+
+test("CI updates and unknown runner options fail closed", () => {
+	// Arrange
+	const cases = [
+		{ args: ["--update"], ci: "1" },
+		{ args: ["--update-snapshots"], ci: undefined },
+		{ args: ["--control", "--update"], ci: undefined },
+	];
+	// Act / Assert
+	for (const { args, ci } of cases) assert.throws(() => parseMode(args, ci));
+});
+
+test("snapshot policy never updates by default and permits explicit local authoring", () => {
+	// Arrange
+	const normal = { args: [], ci: "1" };
+	// Act
+	const modes = [
+		snapshotMode(normal),
+		snapshotMode({ args: [], update: "1", browserPath: "/ms-playwright" }),
+	];
+	// Assert
+	assert.deepEqual(modes, ["none", "changed"]);
+});
+
+test("snapshot policy rejects CLI overrides and CI authoring", () => {
+	// Arrange
+	const flags = ["-u", "-uall", "--update-snapshots", "--update-snapshots=all"];
+	// Act / Assert
+	for (const flag of flags) assert.throws(() => snapshotMode({ args: [flag] }));
+	assert.throws(() => snapshotMode({ args: [], ci: "true", update: "1" }));
+});
+
+test("snapshot policy rejects ignored comparisons and bare-Linux updates", () => {
+	// Arrange
+	const flags = ["--ignore-snapshots", "--ignore-snapshots=true", "--ignore-snapshots=false"];
+	// Act / Assert
+	for (const flag of flags) assert.throws(() => snapshotMode({ args: [flag] }), /cannot ignore/);
+	for (const browserPath of [undefined, "", "/home/browsers"]) {
+		assert.throws(
+			() => snapshotMode({ args: [], update: "1", browserPath }),
+			/visual:update Docker wrapper/,
+		);
+	}
+	assert.equal(snapshotMode({ args: [], browserPath: "/other" }), "none");
+});
+
+test("golden validation returns all approved paths despite enumeration order", () => {
+	// Arrange
+	const expected = GOLDEN_FILES.map((path) =>
+		path.replace("packages/ui/visual/__screenshots__/", ""),
+	);
+	// Act
+	const approved = validateGeneratedGoldens([...expected].reverse());
+	// Assert
+	assert.deepEqual(approved, expected);
+});
+
+test("golden validation rejects extra, missing, duplicate and traversal paths before copy-back", () => {
+	// Arrange
+	const expected = GOLDEN_FILES.map((path) =>
+		path.replace("packages/ui/visual/__screenshots__/", ""),
+	);
+	const invalid = [
+		[...expected, "desktop-dark/extra.png"],
+		expected.slice(1),
+		[expected[0], ...expected.slice(0, -1)],
+		["../outside.png", ...expected.slice(1)],
+		["desktop-dark/../all-families.png", ...expected.slice(1)],
+		["/desktop-dark/all-families.png", ...expected.slice(1)],
+	];
+	// Act / Assert
+	for (const paths of invalid)
+		assert.throws(() => validateGeneratedGoldens(paths), /exactly the 24 approved/);
+});
+
+test("gallery screenshot names and project matrix match the golden allowlist", () => {
+	// Arrange
+	const spec = readFileSync(new URL("../visual/gallery.spec.ts", import.meta.url), "utf8");
+	const config = readFileSync(new URL("../playwright.config.ts", import.meta.url), "utf8");
+	// Act
+	const names = [...spec.matchAll(/assertScreenshot\([^,]+, "([^"]+\.png)"\)/g)].map(
+		(match) => match[1],
+	);
+	const paths = ["desktop-dark", "desktop-light", "narrow-dark", "narrow-light"].flatMap(
+		(project) => names.map((name) => `${project}/${name}`),
+	);
+	// Assert
+	assert.equal(names.length, 6);
+	assert.equal(validateGeneratedGoldens(paths).length, 24);
+	assert.match(config, /projects: \[1280, 390\]/);
+	assert.match(config, /\["dark", "light"\] as const/);
+});

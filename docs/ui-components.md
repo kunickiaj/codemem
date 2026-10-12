@@ -24,6 +24,46 @@ The gallery reuses the canonical inline viewer CSS and pinned local Geist and Je
 
 The extractor recognizes HTML tags and stylesheet attributes regardless of case, skips comments and script bodies, and preserves the real CSS bytes. It reads the repository's canonical HTML; it is not a sanitizer for untrusted HTML.
 
+### Visual regression checks
+
+Use the visual commands after changing shared controls or their gallery fixtures. Docker is required: `visual:test`, `visual:control`, and `visual:update` run a read-only copy of the tracked public sources in the root `packageManager`-pinned pnpm environment (`pnpm@12.2.1`) inside `mcr.microsoft.com/playwright:v1.63.0-noble@sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27` for Linux amd64.
+
+```text
+pnpm --filter @codemem/ui visual:test
+pnpm --filter @codemem/ui visual:control
+pnpm --filter @codemem/ui visual:typecheck
+
+# Optional harness-policy check
+pnpm --filter @codemem/ui visual:test-harness
+```
+
+`visual:test` is the canonical comparison. It runs six gallery screenshots in four projects—dark and light themes at 1280 px and 390 px—for 24 cases; the Playwright configuration accepts only Linux x64. Local fonts are pinned at version 5.3, and the fixture blocks API, WebSocket, and external requests.
+
+Each run writes fresh ignored output under `.tmp/visual/run-*/results`, including `report/` and `test-results/`. The runner never copies that output into its source input; CI uploads its ignored results only after a failure, and the only approved baselines are tracked synthetic PNGs in `packages/ui/visual/__screenshots__/`.
+
+Local run folders also retain their public-source staging copy for debugging and can accumulate disk usage. They are not cleaned automatically; on Linux, container-created results may be owned by root. Inspect old run folders before removing them.
+
+Ordinary comparisons never create or update a golden. A missing baseline or a pixel mismatch fails, while `visual:control` proves this with a scratch mutation and a missing-baseline case without changing a source baseline.
+
+Comparisons allow no differing-pixel count, with a `0.01` perceptual color threshold to ignore single-channel rounding in blurred backgrounds and antialiased edges. The comparator controls verify that a meaningful control change still fails; this does not mask or omit any component.
+
+### Update a golden intentionally
+
+Only an author running locally may update goldens; CI rejects updates. Review the actual images and the control baseline hash before updating, then inspect the committed PNG diff and run the comparison twice after the update.
+
+```text
+pnpm --filter @codemem/ui visual:control
+pnpm --filter @codemem/ui visual:update
+pnpm --filter @codemem/ui visual:test
+pnpm --filter @codemem/ui visual:test
+```
+
+Do not add masks or use private data or APIs to make a comparison pass. Keep a real component's overflow in the capture when it occurs; correct its cleanup in the next implementation stage instead of hiding it in the visual test.
+
+### Gallery reload behavior
+
+The live gallery reuses canonical viewer CSS. When `static/index.html` changes, its Vite plugin regenerates the gallery page before a full reload, so ephemeral gallery state resets; other assets use native HMR without regeneration.
+
 ## Selects
 
 Use `RadixSelect` from `packages/ui/src/components/primitives/radix-select.tsx`. Its default styles own the trigger, chevron, menu, options, and long-label truncation. Use its compact size for toolbar controls; keep the default size for forms.
