@@ -34,12 +34,7 @@ for (const [block] of blocks) {
 		const css = block
 			.slice(opening.length)
 			.replace(/<\/style(?:[\t\n\f\r /](?:[^>"']|"[^"]*"|'[^']*')*)?>$/i, "");
-		const previous = styles.at(-1);
-		if (media === undefined && previous && previous.media === undefined) {
-			previous.css += `\n${css}`;
-		} else {
-			styles.push({ css, media });
-		}
+		styles.push({ css, media });
 		continue;
 	}
 	if (!/^<link(?=[\t\n\f\r />])/i.test(block)) continue;

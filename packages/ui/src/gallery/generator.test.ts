@@ -87,7 +87,7 @@ describe("gallery HTML generator", () => {
 		);
 	});
 
-	it("concatenates multiple style blocks in order without normalizing CSS or copying surrounding scripts", async () => {
+	it("keeps multiple style blocks in order without normalizing CSS or copying surrounding scripts", async () => {
 		// Arrange: preserve browser-tolerated braces and whitespace too.
 		io.read.mockReturnValue(
 			'<link rel="stylesheet" href="/assets/tokens.css"><script src="/app.js"></script><style>\n.a { color: red; } }\n</style><p>Viewer</p><style>/* second */\n.b{color:blue}</style>',
@@ -95,11 +95,36 @@ describe("gallery HTML generator", () => {
 		// Act
 		await import("../../scripts/make-gallery-html.mjs");
 		// Assert
-		expect(output("gallery-viewer.css")).toBe(
-			"\n.a { color: red; } }\n\n/* second */\n.b{color:blue}",
-		);
+		expect(output("gallery-viewer.css")).toBe("\n.a { color: red; } }\n");
+		expect(output("gallery-viewer-1.css")).toBe("/* second */\n.b{color:blue}");
+		const page = new DOMParser().parseFromString(output("gallery.html"), "text/html");
+		expect([...page.querySelectorAll("link")].map((link) => link.getAttribute("href"))).toEqual([
+			"/static/tokens.css",
+			"/.tmp/gallery-viewer.css",
+			"/.tmp/gallery-viewer-1.css",
+		]);
 		expect(output("gallery.html")).not.toContain("/app.js");
 		expect(output("gallery.html")).not.toContain("<p>Viewer</p>");
+	});
+
+	it("preserves a legal import at the start of a second stylesheet instead of merging after rules", async () => {
+		// Arrange: an import after .one{} in a merged sheet would be ignored by the browser.
+		const first = ".one{}";
+		const second = '@import "/static/synthetic-import.css"; .two{}';
+		io.read.mockReturnValue(
+			`<link rel=stylesheet href=/assets/base.css><style>${first}</style><style>${second}</style>`,
+		);
+		// Act: mock all output IO; no HTTP request is needed to preserve sheet boundaries.
+		await import("../../scripts/make-gallery-html.mjs");
+		const page = new DOMParser().parseFromString(output("gallery.html"), "text/html");
+		// Assert: each original stylesheet retains its bytes and its position.
+		expect(output("gallery-viewer.css")).toBe(first);
+		expect(output("gallery-viewer-1.css")).toBe(second);
+		expect([...page.querySelectorAll("link")].map((link) => link.getAttribute("href"))).toEqual([
+			"/static/base.css",
+			"/.tmp/gallery-viewer.css",
+			"/.tmp/gallery-viewer-1.css",
+		]);
 	});
 
 	it.each(["", "<style src='missing.css'>", "<link rel='stylesheet' href='/viewer.css'>"])(
@@ -178,7 +203,7 @@ describe("gallery inline stylesheet media", () => {
 		expect(output("gallery.html")).not.toMatch(/\.fake|const fake/);
 	});
 
-	it("keeps unconditional groups around conditional styles in source order", async () => {
+	it("keeps every unconditional and conditional stylesheet in source order", async () => {
 		// Arrange: data attributes and quoted attribute values must not supply media.
 		io.read.mockReturnValue(`<link rel="stylesheet" href="/assets/base.css">
 <style data-media="print">.first{}</style><style title=' media="print"'>.second{}</style>
@@ -187,11 +212,13 @@ describe("gallery inline stylesheet media", () => {
 		// Act
 		await import("../../scripts/make-gallery-html.mjs");
 		const page = new DOMParser().parseFromString(output("gallery.html"), "text/html");
-		// Assert: merge only adjacent media-absent bodies, never across a condition.
-		expect(output("gallery-viewer.css")).toBe(".first{}\n.second{}");
-		expect(output("gallery-viewer-1.css")).toBe(".print{}");
-		expect(output("gallery-viewer-2.css")).toBe(".alsoPrint{}");
-		expect(output("gallery-viewer-3.css")).toBe(".last{}\n.end{}");
+		// Assert: retain stylesheet boundaries even when adjacent media attributes match.
+		expect(output("gallery-viewer.css")).toBe(".first{}");
+		expect(output("gallery-viewer-1.css")).toBe(".second{}");
+		expect(output("gallery-viewer-2.css")).toBe(".print{}");
+		expect(output("gallery-viewer-3.css")).toBe(".alsoPrint{}");
+		expect(output("gallery-viewer-4.css")).toBe(".last{}");
+		expect(output("gallery-viewer-5.css")).toBe(".end{}");
 		expect(
 			[...page.querySelectorAll("link")].map((link) => [
 				link.getAttribute("href"),
@@ -200,9 +227,11 @@ describe("gallery inline stylesheet media", () => {
 		).toEqual([
 			["/static/base.css", null],
 			["/.tmp/gallery-viewer.css", null],
-			["/.tmp/gallery-viewer-1.css", "print"],
+			["/.tmp/gallery-viewer-1.css", null],
 			["/.tmp/gallery-viewer-2.css", "print"],
-			["/.tmp/gallery-viewer-3.css", null],
+			["/.tmp/gallery-viewer-3.css", "print"],
+			["/.tmp/gallery-viewer-4.css", null],
+			["/.tmp/gallery-viewer-5.css", null],
 		]);
 	});
 
