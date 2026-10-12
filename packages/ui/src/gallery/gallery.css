@@ -1,0 +1,29 @@
+/* Gallery-only font aliases preserve the shipped typography tokens. */
+@font-face {
+  font-family: "Geist";
+  src: url("@fontsource-variable/geist/files/geist-latin-wght-normal.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: block;
+}
+
+/* Layout only. Control geometry, colors, and scoped rules come from the viewer. */
+.gallery { position: relative; max-width: 1200px; margin: auto; padding: var(--sp-5); }
+.gallery-header, .gallery-section { margin-bottom: var(--sp-5); }
+.gallery-header { position: static; }
+.gallery-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: var(--sp-4); }
+.gallery-section { min-width: 0; padding: var(--sp-4); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-1); }
+.gallery-section h2 { margin-bottom: var(--sp-3); }
+.gallery-stack { display: grid; min-width: 0; gap: var(--sp-3); }
+.gallery-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); }
+.gallery nav { margin-top: var(--sp-3); }
+.gallery nav a { color: var(--accent); text-underline-offset: 3px; }
+.gallery label { min-width: 0; }
+.gallery output { display: block; color: var(--text-secondary); }
