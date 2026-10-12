@@ -21,7 +21,7 @@ These fields ride on every replicated `memory_item` op and are persisted on the 
 | `visibility`, `workspace_id`, `workspace_kind`, `scope_id` | sharing scope | Required to apply the scope rules on the receiver |
 | `trust_state`, `origin_source` | trust metadata | Required for downstream filtering and review |
 | `created_at`, `updated_at`, `rev` | clock | Required for ordering and conflict resolution |
-| `import_key`, `dedup_key` | identity | Cross-device dedup |
+| `import_key` | identity | Cross-device memory identity and idempotent apply |
 | `metadata_json`, `narrative`, `facts`, `concepts`, `files_read`, `files_modified`, `user_prompt_id`, `prompt_number` | extracted artifacts | Render fidelity on the receiver |
 | `project` | originating session | Allows the receiver's Projects tab to surface the memory under its real project identity instead of an opaque placeholder. This is the **only** session-level field that crosses peers. |
 
@@ -43,10 +43,11 @@ These fields exist only on the originating device and are NEVER written to a rep
 | `session_summaries.*` | Derived from the above; same constraint |
 | `usage_events.*` | Per-device telemetry |
 | `actors.is_local` | Per-device truth; the receiver's local actor is whoever owns the local device, not the sender |
+| `memory_items.dedup_key` | Local session deduplication; the receiver may derive its own key during maintenance, but the sender's key is not on the replication wire |
 
 ## Synthetic sessions on receivers
 
-When a memory arrives on a device that has never observed its originating session, the receiver creates a *synthetic placeholder session* (`sessions.cwd = "__sync_bootstrap__:<project>"`) just to satisfy the NOT NULL foreign key on `memory_items.session_id`. These placeholders are internal scaffolding and are filtered out of the Projects tab read model. They never carry any of the device-local fields above — only the `project` value that was carried on the wire.
+When a memory arrives on a device that has never observed its originating session, the receiver creates a minimal local session to satisfy the NOT NULL foreign key on `memory_items.session_id`. Snapshot bootstrap uses `sessions.cwd = "__sync_bootstrap__:<project>"`; direct replication inserts a session with `cwd = NULL`. Neither path copies A's directory, git metadata, or user identity. Both retain the `project` carried on the wire; bootstrap placeholders are filtered out of the Projects tab read model.
 
 The shared prefix is defined as `SYNC_BOOTSTRAP_CWD_PREFIX` in the dependency-free
 `packages/core/src/sync-bootstrap-constants.ts` module and re-exported from `sync-bootstrap.ts` for compatibility;

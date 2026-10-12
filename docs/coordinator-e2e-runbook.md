@@ -98,6 +98,27 @@ security to work around it.
 
 ### Remaining gates
 
+For a disposable **two-owned-device** fake-provider acceptance run, use:
+
+```fish
+node --test --test-timeout=60000 packages/cloudflare-coordinator-worker/test/local-two-device-owner-proof.native-http.test.mjs
+```
+
+This test links A through the maintained account-link flow, enrolls fresh B
+through the fixture-only owner HTTP handoff, and sends one scoped memory A→B
+using `syncOnce` against the maintained sync app over signed loopback HTTP
+with pinned peer keys. Revoked-membership checks are separate in-process
+preflights, not HTTP denial tests.
+It provisions scope memberships and peer trust separately: an Identity-group
+transport grant does not grant Team or Project access. The received memory keeps
+its portable content and `import_key`, but not A's local session path or dedup
+key. The three test cases fail the command on a broken handoff, wrong account,
+or unsafe abort. It changes only disposable fixture state; it does not mount an
+ordinary owner route, adopt an existing populated device, test real Google, or
+approve deployment. The provider is local and fake; this HTTP test makes no
+TLS or browser `Secure`-cookie claim. It also runs in the Worker package's
+`test:auth-http` CI gate.
+
 This fixture does not cover enrollment review, migration UX, real provider
 configuration or consent, independent key provisioning, remote database checks,
 migrations, isolated deployment, or separate approval. Relay-after-auth is not
