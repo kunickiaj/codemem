@@ -66,7 +66,8 @@ export async function ownerHttpDispatcher({ getApi, origin, loseFinalReply = () 
 		const api = getApi();
 		let result;
 		if (incoming.method === "POST" && url.pathname === "/v1/auth/owner-attempts") {
-			result = await api.start(JSON.parse(bytes.toString()));
+			// Trusted socket peer, never an ID supplied by the JSON body or forwarding headers.
+			result = await api.start(JSON.parse(bytes.toString()), incoming.socket.remoteAddress);
 		} else if (incoming.method === "POST" && url.pathname === "/v1/auth/owner-attempts/finalize") {
 			result = await api.finalize(JSON.parse(bytes.toString()));
 			if (loseFinalReply()) return response.destroy();

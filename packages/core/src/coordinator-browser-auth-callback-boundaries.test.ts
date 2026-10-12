@@ -18,6 +18,7 @@ import {
 import { importBrowserCsrfKey } from "./coordinator-browser-csrf.js";
 import { createCoordinatorBrowserSigninStart } from "./coordinator-browser-signin-start.js";
 import { oidcFixture, PROVIDER } from "./coordinator-oidc-test-fixtures.js";
+import { OWNER_TABLE, pendingOwner } from "./coordinator-owner-enrollment-test-harness.js";
 
 const ORIGIN = "https://app.example.test";
 const PRIVATE = "synthetic-private-failure";
@@ -258,6 +259,63 @@ describe("callback discovery failures do not consume browser state", () => {
 });
 
 describe("runtime purpose and original cookie boundaries fail closed", () => {
+	it("rejects reserved owner enrollment despite a matching live LINK without burning either row", async () => {
+		// Arrange: reuse valid cookie/state/config and a live LINK collision; seed storage only.
+		const f = await harness();
+		const c = await linkCeremony(f);
+		f.db.prepare(`UPDATE ${TABLE} SET purpose = 'owner_enroll'`).run();
+		const owner = {
+			...pendingOwner,
+			attempt_id: "attempt-a",
+			issuer: f.cfg.issuer,
+			state: "browser_claimed",
+			browser_transaction_hash: String(c.original.browser_transaction_hash),
+			browser_binder_hash: c.hash,
+		};
+		const entries = Object.entries(owner);
+		f.db
+			.prepare(
+				`INSERT INTO ${OWNER_TABLE} (${entries.map(([key]) => key).join(",")}) VALUES (${entries.map(() => "?").join(",")})`,
+			)
+			.run(...entries.map(([, value]) => value));
+		const before = [rows(f), rows(f, OWNER_TABLE), rows(f, "coordinator_auth_link_attempts")];
+		// Confirm the collision satisfies LIVE_LINK; rejection must still respect purpose.
+		expect(
+			f.db
+				.prepare(
+					`SELECT 1 FROM ${TABLE} b JOIN coordinator_auth_link_attempts a
+					 ON a.coordinator_id = b.coordinator_id AND a.attempt_id = b.attempt_id
+					 AND a.browser_transaction_hash = b.browser_transaction_hash AND a.issuer = b.issuer
+					 AND a.auth_config_revision = b.auth_config_revision
+					 WHERE a.state = 'browser_claimed' AND a.expires_at_ms > ?`,
+				)
+				.get(NOW),
+		).toBeDefined();
+		// Act: invoke the actual shared callback, not just persistence consumption.
+		const reply = await f.callback(request(c));
+		// Assert: no provider exchange, continuation, session or cookie mutation.
+		expect(reply.outcome).toBe("transaction_unavailable");
+		expect(reply.response.status).toBe(403);
+		expect(reply.response.headers.getSetCookie()).toEqual([]);
+		expect([rows(f), rows(f, OWNER_TABLE), rows(f, "coordinator_auth_link_attempts")]).toEqual(
+			before,
+		);
+		expect(f.store.consumeAuthBrowserTransaction).toHaveBeenCalledWith(
+			{ stateHash: c.original.state_hash, binderHash: c.hash },
+			{
+				enabled: true,
+				coordinatorId: f.cfg.coordinatorId,
+				issuer: f.cfg.issuer,
+				revision: f.cfg.revision,
+				redirectUri: f.cfg.redirectUri,
+			},
+		);
+		expect(f.oidc.fetch).not.toHaveBeenCalled();
+		expect(f.completeLink).not.toHaveBeenCalled();
+		expect(f.store.readAuthSession).not.toHaveBeenCalled();
+		expect(f.store.signInWithConsumedBrowserTransaction).not.toHaveBeenCalled();
+		expect(f.store.recordAuthAccountProfile).not.toHaveBeenCalled();
+	});
 	it("rejects an unknown consumed purpose without treating it as sign-in or LINK", async () => {
 		// Arrange: use real consumption and valid SDK verification; only the union discriminant is corrupt.
 		const f = await harness();

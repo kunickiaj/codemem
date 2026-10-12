@@ -1,5 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { issueBrowserCookie } from "../../core/src/coordinator-browser-credential.js";
+import { AUTH_LINK_MAX_UNFINISHED_PER_COORDINATOR } from "../../core/src/coordinator-auth-link-contract.js";
+import { ownerEnrollmentStartMessage } from "../../core/src/owner-enrollment-start.js";
 import { ownerEnrollmentFinalMessage } from "../../core/src/coordinator-owner-enrollment-proof.js";
 import {
 	attempt,
@@ -8,9 +10,11 @@ import {
 	ceremonyFixture,
 	claimed,
 	confirmed,
+	config,
 	exec,
 	hash,
 	NOW,
+	ORIGIN,
 	pendingKey,
 	proof,
 	resetCeremony,
@@ -36,6 +40,68 @@ const test = it.extend<{ ceremony: Ceremony }>({
 			await resetCeremony();
 		}
 	},
+});
+
+test("native D1 shares trusted-client admission across nominated IDs before crypto or DB", async ({ ceremony: f }) => {
+	// Arrange: a permitted start proves admission is not a blanket rejection.
+	const check = vi.spyOn(f.options.limiter, "check");
+	expect((await f.api.start(f.start, "transport-a")).kind).toBe("started");
+	check.mockReturnValue({ allowed: false, retryAfterS: 1 });
+	const storage = { ...backend, run: vi.fn(backend.run), first: vi.fn(backend.first) };
+	const api = await f.compose(storage);
+	const verify = vi.spyOn(crypto.subtle, "verify");
+	const before = await snapshot();
+	// Act
+	const result = await api.start({ ...f.start, attemptId: "other-attempt", deviceId: "other-device" }, "transport-a");
+	// Assert
+	expect(result).toEqual(unavailable);
+	expect(check.mock.calls[1]).toEqual(check.mock.calls[0]);
+	expect(verify).not.toHaveBeenCalled();
+	expect(storage.run).not.toHaveBeenCalled();
+	expect(storage.first).not.toHaveBeenCalled();
+	expect(await snapshot()).toEqual(before);
+	verify.mockRestore();
+	check.mockRestore();
+});
+
+test.for(["active", "retained"] as const)("native D1 enforces %s capacity and preserves expired replay tombstones", { timeout: 20000 }, async (mode, { ceremony: f }) => {
+	// Arrange: use actual D1 rows and distinct device IDs, not mocked count results.
+	expect((await f.api.start(f.start, "transport-a")).kind).toBe("started");
+	const cap = mode === "active" ? 1000 : AUTH_LINK_MAX_UNFINISHED_PER_COORDINATOR;
+	const state = mode === "active" ? "pending" : "failed";
+	// Skip the quadratic fixture-seeding scan, then restore the exact trigger before admission.
+	const triggerQuery = { sql: "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='owner_enrollment_pins_insert'", values: [] };
+	const trigger = await backend.first<{ sql: string }>(triggerQuery);
+	if (!trigger) throw new Error("Missing owner pin trigger");
+	await exec("DROP TRIGGER owner_enrollment_pins_insert");
+	try {
+		await exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < ?)
+	INSERT INTO coordinator_owner_enrollment_attempts (coordinator_id,attempt_id,purpose,origin,device_id,public_key,key_id,fingerprint,
+	issuer,auth_config_revision,loopback_redirect,browser_start_hash,state,created_at_ms,expires_at_ms)
+	SELECT a.coordinator_id,'capacity-'||n.i,a.purpose,a.origin,'capacity-device-'||n.i,a.public_key,a.key_id,a.fingerprint,
+	a.issuer,a.auth_config_revision,CASE WHEN ?='pending' THEN a.loopback_redirect ELSE NULL END,
+	printf('%064x',n.i),?,a.created_at_ms,a.expires_at_ms FROM coordinator_owner_enrollment_attempts a,n WHERE a.attempt_id='attempt-a'`, cap - 2, state, state);
+	} finally {
+		await exec(trigger.sql);
+	}
+	expect(await backend.first(triggerQuery)).toEqual(trigger);
+	const next = { ...f.start, attemptId: "last-slot", browserStartCode: Buffer.alloc(32, 10).toString("base64url") };
+	next.signature = await f.key.sign(ownerEnrollmentStartMessage(next, { ...config, origin: ORIGIN }));
+	expect((await f.api.start(next, "transport-a")).kind).toBe("started");
+	const over = { ...next, attemptId: "over-cap", deviceId: "new-device", browserStartCode: Buffer.alloc(32, 11).toString("base64url") };
+	over.signature = await f.key.sign(ownerEnrollmentStartMessage(over, { ...config, origin: ORIGIN }));
+	const before = await snapshot();
+	// Act / Assert: cap is closed before expiry.
+	expect(await f.api.start(over, "transport-a")).toEqual(unavailable);
+	expect(await snapshot()).toEqual(before);
+	f.setNow(NOW + 3600000);
+	// Act
+	const afterExpiry = await f.api.start(over, "transport-a");
+	const replay = await f.api.start(f.start, "other-transport");
+	// Assert: only active capacity releases; exact old signed tuples remain denied.
+	expect(afterExpiry.kind).toBe(mode === "active" ? "started" : "rejected");
+	expect(replay.kind).toBe("rejected");
+	expect((await rows("coordinator_owner_enrollment_attempts")).length).toBe(cap + Number(mode === "active"));
 });
 
 test("native D1 private ceremony pins SDK identity and commits only after browser and pending-key proof", async ({
@@ -143,12 +209,12 @@ test.for(["signature", "start-code"])(
 	"native D1 denies invalid %s before browser claim",
 	async (fault, { ceremony: f }) => {
 		// Arrange
-		if (fault === "start-code") expect((await f.api.start(f.start)).kind).toBe("started");
+		if (fault === "start-code") expect((await f.api.start(f.start, "transport-a")).kind).toBe("started");
 		const before = await snapshot();
 		// Act
 		const result =
 			fault === "signature"
-				? await f.api.start({ ...f.start, signature: "A".repeat(86) })
+				? await f.api.start({ ...f.start, signature: "A".repeat(86) }, "transport-a")
 				: await f.api.claimBrowser(
 						f.claimRequest(Buffer.alloc(32, 10).toString("base64url")),
 						"browser-a",

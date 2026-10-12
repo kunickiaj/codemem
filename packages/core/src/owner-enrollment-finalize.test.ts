@@ -95,7 +95,8 @@ async function verified(setup: { excludeGroup?: string } = {}) {
 	const factory = await createCoordinatorOwnerEnrollment(options);
 	if (!factory.ok) throw new Error("fixture composition failed");
 	const api = factory.enrollment;
-	if ((await api.start(input)).kind !== "started") throw new Error("fixture start failed");
+	if ((await api.start(input, "transport-a")).kind !== "started")
+		throw new Error("fixture start failed");
 	const claim = await api.claimBrowser(form.request(), "browser-a");
 	if (claim.kind !== "browser_claimed") throw new Error("fixture claim failed");
 	const cookie = claim.setCookies[0]?.split(";")[0];

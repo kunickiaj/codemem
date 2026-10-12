@@ -74,7 +74,7 @@ async function compose(input = signed(), overrides: Partial<Composition> = {}) {
 }
 async function pending(overrides: Partial<Composition> = {}) {
 	const c = await compose(signed(), overrides);
-	expect(await c.start(c.input)).toEqual({
+	expect(await c.start(c.input, "transport-a")).toEqual({
 		kind: "started",
 		attemptId: c.input.attemptId,
 		expiresAtMs: NOW + 600000,
@@ -87,7 +87,7 @@ it("stores only a signed, pinned pending attempt with exact text and decoded-cod
 	const c = await compose(signed({ publicKey: `${f.key.publicKey} fixture-comment` }));
 	const before = f.snapshot();
 	// Act
-	const result = await c.start(c.input);
+	const result = await c.start(c.input, "transport-a");
 	// Assert: start grants no account, session, group or ownership authority.
 	expect(result).toEqual({ kind: "started", attemptId: "attempt-a", expiresAtMs: NOW + 600000 });
 	expect(f.rows(ATTEMPTS)).toEqual([
@@ -197,7 +197,7 @@ it.each([
 	const c = await compose();
 	const before = f.snapshot();
 	// Act
-	const result = await c.start({ ...c.input, ...patch });
+	const result = await c.start({ ...c.input, ...patch }, "transport-a");
 	// Assert
 	expect(result).toEqual(unavailable);
 	expect(f.snapshot()).toEqual(before);
@@ -210,7 +210,7 @@ it.each(["coordinatorId", "origin", "issuer", "revision"] as const)(
 		const c = await compose(signed({}, { ...pin, [field]: `${pin[field]}-wrong` }));
 		const before = f.snapshot();
 		// Act
-		const result = await c.start(c.input);
+		const result = await c.start(c.input, "transport-a");
 		// Assert
 		expect(result).toEqual(unavailable);
 		expect(f.snapshot()).toEqual(before);
@@ -230,7 +230,7 @@ it.each([
 	const c = await compose(signed(patch));
 	const before = f.snapshot();
 	// Act
-	const result = await c.start(c.input);
+	const result = await c.start(c.input, "transport-a");
 	// Assert
 	expect(result).toEqual(unavailable);
 	expect(f.snapshot()).toEqual(before);
@@ -388,7 +388,7 @@ it.each(["run", "first", "batch"] as const)(
 		// Act
 		const result =
 			method === "run"
-				? await c.start(signed({ attemptId: "attempt-b" }))
+				? await c.start(signed({ attemptId: "attempt-b" }), "transport-a")
 				: await c.claimBrowser(c.form.request(), "browser-a");
 		// Assert
 		expect(result).toEqual(unknown);

@@ -305,6 +305,10 @@ const CREATE_SQL = `INSERT INTO coordinator_auth_link_attempts (
  SELECT ?, ?, a.identity_id, a.group_id, a.device_id, a.public_key, a.fingerprint,
  a.attestation_id, a.review_receipt_id, a.revision, ?, ?, ?, ?, ?, 'pending', ?, ?
   ${CREATE_SOURCE_SQL} ${AUTHORITY_GUARD}
+ AND NOT EXISTS (SELECT 1 FROM coordinator_owner_enrollment_attempts t
+  WHERE t.coordinator_id = a.coordinator_id AND t.attempt_id = ?)
+ AND NOT EXISTS (SELECT 1 FROM coordinator_auth_browser_transactions t
+  WHERE t.coordinator_id = a.coordinator_id AND t.attempt_id = ? AND t.purpose NOT IN ('signin','link'))
  AND (SELECT count(*) FROM coordinator_auth_link_attempts t
   WHERE t.coordinator_id = a.coordinator_id AND t.group_id = a.group_id AND t.device_id = a.device_id
   AND t.state IN ('pending','browser_claimed','oidc_verified','confirmed') AND t.expires_at_ms > ?) < ?
@@ -455,6 +459,8 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			now + AUTH_LINK_ATTEMPT_TTL_MS,
 			...createSourceValues(c, s),
 			...authority,
+			i.attemptId,
+			i.attemptId,
 			now,
 			AUTH_LINK_MAX_ACTIVE_PER_DEVICE,
 			now,

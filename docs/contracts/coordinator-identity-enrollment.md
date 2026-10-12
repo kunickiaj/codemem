@@ -401,8 +401,17 @@ one-use browser-start code. The private start handler validates that signature,
 the literal loopback URI, current revocation and ownership collisions, and
 per-device attempt limits before storing an expiring pending attempt. It derives
 the canonical key ID and exact-text fingerprint from the submitted public key.
-The coordinator-wide unfinished-attempt limit still counts expired rows, and
-no route-level limiter is mounted. Both need review before public activation.
+Start admission requires a client key supplied by the trusted transport caller,
+not the signed request body. Before signature verification or database work, a
+per-client in-memory token bucket permits a burst of 20 starts and refills at
+20 starts per 60 seconds with the default limiter. It does not replace
+deployment-wide abuse controls.
+Coordinator-wide counts allow at most 1,000 active attempts, exclude expired
+attempts, and stop selecting rows at that limit. A separate ceiling of 10,000
+retained nonfinalized rows denies new starts when full.
+Expired owner attempts remain stored: deleting them would allow an old signed
+start, which has no issuance timestamp, to create a fresh attempt. No owner purge
+or public route is enabled by these admission checks.
 
 The original browser must present the start code, its start cookie, and a valid
 same-origin CSRF form. Claiming stores the cookie binding alongside an
@@ -413,6 +422,15 @@ The browser transaction and attempt transition commit atomically; a lost race
 or write-count failure cannot return an authorization URL. A claim only starts
 provider navigation. It does not verify an account, confirm ownership, grant
 access, or enroll a device; callback and finalization remain separate work.
+
+Owner and account-link creation reserve attempt IDs across both purposes,
+including retained terminal rows. The ordinary shared callback rejects owner
+transactions without consuming their nonce or PKCE material, even when a legacy
+link row shares the attempt ID and browser hash. Legacy link/sign-in retirement
+does not retire owner transactions; global expiry maintenance still clears
+expired owner nonce and PKCE material without deleting their rows.
+Public owner callback dispatch remains a
+separate integration gate; these checks do not mount it.
 
 The private callback handler admits only the original transaction cookie and
 one matching state for the configured redirect. It consumes that transaction

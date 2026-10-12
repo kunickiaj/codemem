@@ -222,7 +222,7 @@ export function formRequest(action: string, cookie: string, fields: Record<strin
 }
 export type Ceremony = Awaited<ReturnType<typeof ceremonyFixture>>;
 export async function claimed(f: Ceremony) {
-	const started = await f.api.start(f.start);
+	const started = await f.api.start(f.start, "transport-a");
 	if (started.kind !== "started")
 		throw new Error(`Native start failed: ${JSON.stringify(started)}`);
 	const claim = await f.api.claimBrowser(f.claimRequest(), "browser-a");

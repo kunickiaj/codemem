@@ -77,7 +77,7 @@ async function claimed() {
 	};
 	const composed = await createCoordinatorOwnerEnrollment(options);
 	if (!composed.ok) throw new Error("fixture composition failed");
-	expect((await composed.enrollment.start(input)).kind).toBe("started");
+	expect((await composed.enrollment.start(input, "transport-a")).kind).toBe("started");
 	const claim = await composed.enrollment.claimBrowser(form.request(), "browser-a");
 	if (claim.kind !== "browser_claimed") throw new Error("fixture claim failed");
 	const cookie = claim.setCookies[0]?.split(";")[0];

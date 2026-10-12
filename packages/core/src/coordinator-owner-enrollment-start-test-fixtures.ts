@@ -5,7 +5,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
 import { NOW } from "./coordinator-auth-link-test-fixtures.js";
-import { setupStore } from "./coordinator-auth-store-test-fixtures.js";
+import { type Store, setupStore } from "./coordinator-auth-store-test-fixtures.js";
 import { issueBrowserCookie } from "./coordinator-browser-credential.js";
 import {
 	type BrowserCsrfKey,
@@ -68,6 +68,7 @@ export function pairedReadBackends(fixture: OwnerStartFixture): AuthLinkBackend[
 }
 
 export interface OwnerStartFixture {
+	store: Store;
 	db: Database.Database;
 	second: Database.Database;
 	key: ReturnType<typeof commitPendingKey>;
@@ -79,13 +80,14 @@ export interface OwnerStartFixture {
 export function ownerStartFixture(): OwnerStartFixture {
 	const directory = mkdtempSync(join(tmpdir(), "owner-start-test-"));
 	const path = join(directory, "test.sqlite");
-	const { db } = setupStore("SQLite", { databasePath: path, authClock: () => NOW });
+	const { db, store } = setupStore("SQLite", { databasePath: path, authClock: () => NOW });
 	db.exec(COORDINATOR_OWNER_ENROLLMENT_AUDIT_SCHEMA_SQL);
 	const second = new Database(path);
 	const key = commitPendingKey();
 	const rows = (table: string) =>
 		db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all() as Record<string, unknown>[];
 	return {
+		store,
 		db,
 		second,
 		key,

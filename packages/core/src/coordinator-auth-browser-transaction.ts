@@ -264,7 +264,7 @@ function assertLinkClaim(
 }
 function linkMatch(states: string): string {
 	return `(b.purpose = 'signin' OR EXISTS (SELECT 1 FROM coordinator_auth_link_attempts a
- WHERE a.coordinator_id = b.coordinator_id AND a.attempt_id = b.attempt_id
+ WHERE b.purpose = 'link' AND a.coordinator_id = b.coordinator_id AND a.attempt_id = b.attempt_id
  AND a.browser_transaction_hash = b.browser_transaction_hash AND a.issuer = b.issuer
  AND a.auth_config_revision = b.auth_config_revision AND a.expires_at_ms > ? AND a.state IN (${states})))`;
 }
@@ -634,9 +634,9 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 		try {
 			const processedCount = await this.backend.run({
 				sql: `UPDATE ${TABLE} SET state = 'expired', nonce = NULL, pkce_verifier = NULL
- WHERE coordinator_id = ? AND state = 'pending' AND browser_transaction_hash IN
+ WHERE coordinator_id = ? AND purpose IN ('signin','link') AND state = 'pending' AND browser_transaction_hash IN
  (SELECT b.browser_transaction_hash FROM ${TABLE} b
- WHERE b.coordinator_id = ? AND b.state = 'pending' AND ${creationGuard} ${attemptFilter}
+ WHERE b.coordinator_id = ? AND b.purpose IN ('signin','link') AND b.state = 'pending' AND ${creationGuard} ${attemptFilter}
  AND (b.expires_at_ms <= ? OR ? = 0 OR b.issuer <> ? OR b.auth_config_revision <> ? OR b.redirect_uri <> ?
  OR (b.purpose = 'link' AND NOT ${LIVE_LINK}))
  ORDER BY b.expires_at_ms, b.browser_transaction_hash LIMIT ?)`,
@@ -718,6 +718,7 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 			return { kind: "rejected", error: "invalid_input" };
 		const now = authLinkNow(this.clock);
 		try {
+			// Global expiry may burn expired owner secrets; link/config retirement must not.
 			const processedCount = await this.backend.run({
 				sql: `UPDATE ${TABLE} SET state = 'expired', nonce = NULL, pkce_verifier = NULL
  WHERE coordinator_id = ? AND state = 'pending' AND expires_at_ms <= ? AND browser_transaction_hash IN

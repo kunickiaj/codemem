@@ -117,6 +117,8 @@ const unavailable: OwnerEnrollmentStartResult = Object.freeze({
 	kind: "rejected",
 	error: "owner_enrollment_unavailable",
 });
+const OWNER_START_CLIENT_LIMIT = 20;
+const OWNER_MAX_ACTIVE_PER_COORDINATOR = 1000;
 function own(value: unknown, name: string): unknown {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error();
 	const descriptor = Object.getOwnPropertyDescriptor(value, name);
@@ -226,7 +228,9 @@ export async function createCoordinatorOwnerEnrollment(input: OwnerEnrollmentCom
 		return {
 			ok: true as const,
 			enrollment: Object.freeze({
-				start: (value: OwnerEnrollmentStart) => boundary(() => start(context, value)),
+				// clientKey must come from the trusted transport, never the signed request body.
+				start: (value: OwnerEnrollmentStart, clientKey: string) =>
+					boundary(() => start(context, value, clientKey)),
 				claimBrowser: (request: Request, clientKey: string) =>
 					boundary(() => claimBrowser(context, request, clientKey)),
 				verifyCallback: (request: Request) => boundary(() => verifyCallback(context, request)),
@@ -738,7 +742,14 @@ const NO_COLLISION_SQL = `NOT EXISTS (SELECT 1 FROM coordinator_device_ownership
 async function start(
 	context: Context,
 	value: OwnerEnrollmentStart,
+	clientKey: string,
 ): Promise<OwnerEnrollmentStartResult> {
+	if (!isAuthControllerId(clientKey) || clientKey.length > 128) return unavailable;
+	const admission = context.limiter.check(
+		JSON.stringify(["owner-enrollment-start", context.c.coordinatorId, clientKey]),
+		OWNER_START_CLIENT_LIMIT,
+	);
+	if (own(admission, "allowed") !== true) return unavailable;
 	let i: OwnerEnrollmentStart;
 	let browserStartHash: string;
 	try {
@@ -772,16 +783,24 @@ function startStatement(
 	p: { keyId: string; fingerprint: string; browserStartHash: string; time: number },
 ): AuthLinkStatement {
 	const { c, pin } = context;
+	// Signed starts have no issued-at: retain every attempt ID as a replay tombstone.
+	// Expiry frees active slots only; no purge is supported, and storage fails closed.
 	return {
 		sql: `INSERT INTO coordinator_owner_enrollment_attempts
  (coordinator_id,attempt_id,purpose,origin,device_id,public_key,key_id,fingerprint,issuer,auth_config_revision,
  loopback_redirect,browser_start_hash,state,created_at_ms,expires_at_ms)
  SELECT ?,?,'owner_enroll',?,?,?,?,?,?,?,?,?,'pending',?,?
- WHERE ${NO_COLLISION_SQL}
+  WHERE ${NO_COLLISION_SQL}
+ AND NOT EXISTS (SELECT 1 FROM coordinator_auth_link_attempts WHERE coordinator_id = ? AND attempt_id = ?)
+ AND NOT EXISTS (SELECT 1 FROM coordinator_auth_browser_transactions WHERE coordinator_id = ?
+ AND attempt_id = ? AND purpose <> 'signin')
  AND (SELECT count(*) FROM coordinator_owner_enrollment_attempts WHERE coordinator_id = ? AND device_id = ?
  AND state IN ('pending','browser_claimed','oidc_verified','confirmed') AND expires_at_ms > ?) < ?
  AND (SELECT count(*) FROM coordinator_owner_enrollment_attempts WHERE coordinator_id = ? AND device_id = ? AND created_at_ms > ?) < ?
- AND (SELECT count(*) FROM coordinator_owner_enrollment_attempts WHERE coordinator_id = ? AND state <> 'finalized') < ?`,
+ AND (SELECT count(*) FROM (SELECT 1 FROM coordinator_owner_enrollment_attempts WHERE coordinator_id = ?
+ AND state IN ('pending','browser_claimed','oidc_verified','confirmed') AND expires_at_ms > ? LIMIT ?)) < ?
+ AND (SELECT count(*) FROM (SELECT 1 FROM coordinator_owner_enrollment_attempts WHERE coordinator_id = ?
+ AND state <> 'finalized' LIMIT ?)) < ?`,
 		values: [
 			c.coordinatorId,
 			i.attemptId,
@@ -801,6 +820,10 @@ function startStatement(
 			i.deviceId,
 			p.keyId,
 			c.coordinatorId,
+			i.attemptId,
+			c.coordinatorId,
+			i.attemptId,
+			c.coordinatorId,
 			i.deviceId,
 			p.time,
 			AUTH_LINK_MAX_ACTIVE_PER_DEVICE,
@@ -809,6 +832,11 @@ function startStatement(
 			p.time - AUTH_LINK_CREATE_WINDOW_MS,
 			AUTH_LINK_MAX_CREATES_PER_DEVICE_WINDOW,
 			c.coordinatorId,
+			p.time,
+			OWNER_MAX_ACTIVE_PER_COORDINATOR,
+			OWNER_MAX_ACTIVE_PER_COORDINATOR,
+			c.coordinatorId,
+			AUTH_LINK_MAX_UNFINISHED_PER_COORDINATOR,
 			AUTH_LINK_MAX_UNFINISHED_PER_COORDINATOR,
 		],
 	};
