@@ -738,6 +738,15 @@ function projectsRecipientPolicySafetyTests(): void {
 		expect(document.querySelector(".recipient-policy-review-item")).not.toBeNull();
 		expect(document.body.textContent).toContain("Changed since loaded");
 		expect(api.loadRecipientPolicyReview).toHaveBeenCalledTimes(2);
+
+		// A retry must use the refreshed evidence, not the rejected fingerprint.
+		buttonNamed("Apply")?.click();
+		await flushAsyncWork();
+		expect(api.resolveRecipientPolicyReview).toHaveBeenNthCalledWith(2, {
+			decision: "keep_current_setup",
+			reviewItemId: "review-1",
+			sourceFingerprint: "fingerprint-refreshed",
+		});
 	});
 
 	it("restores review-control focus after source data refreshes", async () => {
@@ -3235,6 +3244,11 @@ describe("Projects cached recipient presentation", () => {
 		});
 
 		await loadProjectsData();
+		const select = document.querySelector<HTMLSelectElement>(".project-inventory-cluster select");
+		if (!select) throw new Error("cluster select missing");
+		expect(select.querySelector('option[value="exampleco-work"]')).not.toBeNull();
+		select.value = "exampleco-work";
+		select.dispatchEvent(new Event("change", { bubbles: true }));
 		const save = Array.from(document.querySelectorAll("button")).find(
 			(button) => button.textContent === "Save Space for 2 identities",
 		) as HTMLButtonElement | undefined;
@@ -3328,7 +3342,7 @@ describe("Projects cached recipient presentation", () => {
 		expect(document.body.textContent).toContain("mixed suggestions or current Spaces");
 	});
 
-	it("does not partially update cluster identities when bulk assignment fails", async () => {
+	it("does not fall back to individual client writes when bulk assignment fails", async () => {
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
 			has_more: false,
 			limit: 250,
@@ -4329,10 +4343,38 @@ describe("Projects inventory controller collision subscriptions", () => {
 				.rows.flatMap((row) => (row.kind === "project" ? [row] : row.projects));
 		const peer = projectRows().find((row) => row.project.read_only === true);
 		if (!peer) throw new Error("peer project row missing");
+		const listener = vi.fn((_viewModel: ProjectsInventoryViewModel) => {});
+		const unsubscribe = controller.subscribe(listener);
 
+		// Subscribe before each transition to verify emitted, source-qualified state.
 		controller.callbacks.setProjectDetailsOpen(peer.detailKey, true);
+		const emittedRows = () =>
+			listener.mock.lastCall?.[0].rows.flatMap((row) =>
+				row.kind === "project" ? [row] : row.projects,
+			) ?? [];
+		expect(emittedRows().find((row) => row.project.read_only === true)?.detailsOpen).toBe(true);
+		expect(emittedRows().find((row) => row.project.read_only !== true)?.detailsOpen).toBe(false);
 		await controller.callbacks.saveProjectScope(identity, "exampleco-work");
+		expect(
+			emittedRows().find((row) => row.project.read_only !== true)?.pendingConfirmation,
+		).toMatchObject({
+			requiredGuardrailTokens: ["confirm-scope"],
+			scopeId: "exampleco-work",
+		});
+		expect(
+			emittedRows().find((row) => row.project.read_only === true)?.pendingConfirmation,
+		).toBeNull();
 		await controller.callbacks.forgetProject(identity);
+		expect(
+			emittedRows().find((row) => row.project.read_only !== true)?.pendingForgetConfirmation,
+		).toMatchObject({
+			confirmationToken: "forget-local",
+			localOwnedMemoryCount: 1,
+			peerOwnedMemoryCount: 1,
+		});
+		expect(
+			emittedRows().find((row) => row.project.read_only === true)?.pendingForgetConfirmation,
+		).toBeNull();
 
 		const rows = projectRows();
 		const local = rows.find((row) => row.project.read_only !== true);
@@ -4347,6 +4389,11 @@ describe("Projects inventory controller collision subscriptions", () => {
 			pendingConfirmation: null,
 			pendingForgetConfirmation: null,
 		});
+		const emissionCount = listener.mock.calls.length;
+		unsubscribe();
+		controller.callbacks.cancelProjectScopeConfirmation(identity);
+		controller.callbacks.cancelProjectForgetConfirmation(identity);
+		expect(listener).toHaveBeenCalledTimes(emissionCount);
 	});
 });
 
@@ -4435,7 +4482,7 @@ describe("Projects inventory controller coordinator refresh", () => {
 	beforeEach(setupProjectsTest);
 	afterEach(cleanupProjectsTest);
 
-	it("does not redraw a previous page after coordinator names load", async () => {
+	it("does not overwrite newer row state or notify subscribers after stale coordinator names load", async () => {
 		let resolveCoordinatorStatus: (value: {
 			has_admin_secret: boolean;
 			readiness: "ready";
@@ -4458,20 +4505,36 @@ describe("Projects inventory controller coordinator refresh", () => {
 				has_more: false,
 				limit: 250,
 				offset: 0,
-				projects: [project({ display_project: "previous page" })],
+				projects: [project({ display_project: "newer page" })],
 				total: 1,
 			});
 		initProjectsTab(() => {});
 		const status = document.getElementById("projectsStatusFilter") as HTMLSelectElement;
 		status.dispatchEvent(new Event("change"));
 		await loadProjectsData();
-		const previousRow = document.querySelector(".project-inventory-row");
+		const controller = getProjectsInventoryController();
+		const listener = vi.fn((_viewModel: ProjectsInventoryViewModel) => {});
+		const unsubscribe = controller.subscribe(listener);
 
 		document.getElementById("projectsNextPage")?.click();
+		await loadProjectsData();
+		await flushAsyncWork();
+		expect(document.body.textContent).toContain("newer page");
+		expect(document.body.textContent).not.toContain("previous page");
+		const emissionCount = listener.mock.calls.length;
+		const groupLoadCount = vi.mocked(api.loadCoordinatorAdminGroupsFiltered).mock.calls.length;
+
+		// Complete the delayed status AND subsequent group lookup before asserting.
 		resolveCoordinatorStatus({ has_admin_secret: true, readiness: "ready" });
+		await vi.waitFor(() =>
+			expect(api.loadCoordinatorAdminGroupsFiltered).toHaveBeenCalledTimes(groupLoadCount + 1),
+		);
 		await flushAsyncWork();
 
-		expect(document.querySelector(".project-inventory-row")).toBe(previousRow);
+		expect(document.body.textContent).toContain("newer page");
+		expect(document.body.textContent).not.toContain("previous page");
+		expect(listener).toHaveBeenCalledTimes(emissionCount);
+		unsubscribe();
 	});
 });
 
