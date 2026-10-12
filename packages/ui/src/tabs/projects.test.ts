@@ -1707,13 +1707,7 @@ describe("Projects cached recipient presentation", () => {
 		blockedRepairButton()?.click();
 		await vi.waitFor(() => expect(repairQueryCount).toBe(1));
 		await loadProjectsData();
-		resolveLookup({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [repairProject],
-			total: 1,
-		});
+		resolveLookup(inventoryPage([repairProject]));
 
 		await vi.waitFor(() => expect(repairQueryCount).toBe(2));
 		await vi.waitFor(() =>
@@ -1744,30 +1738,12 @@ describe("Projects cached recipient presentation", () => {
 		});
 		vi.mocked(api.loadProjectScopeInventory).mockImplementation(async (input = {}) => {
 			if (!input.q) {
-				return {
-					has_more: false,
-					limit: 250,
-					offset: 0,
-					projects: [peerExactMatch],
-					total: 1,
-				};
+				return inventoryPage([peerExactMatch]);
 			}
 			if ((input.offset ?? 0) === 0) {
-				return {
-					has_more: true,
-					limit: 250,
-					offset: 0,
-					projects: [prefixMatch, peerExactMatch],
-					total: 250,
-				};
+				return inventoryPage([prefixMatch, peerExactMatch], { has_more: true, total: 250 });
 			}
-			return {
-				has_more: false,
-				limit: 250,
-				offset: 250,
-				projects: [repairProject],
-				total: 250,
-			};
+			return inventoryPage([repairProject], { offset: 250, total: 250 });
 		});
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
 			recipientReview({
@@ -1808,18 +1784,14 @@ describe("Projects cached recipient presentation", () => {
 		const projectIdentity = "/workspace/app";
 		vi.mocked(api.loadProjectScopeInventory).mockImplementation(async (input = {}) => {
 			if (!input.q) {
-				return { has_more: false, limit: 250, offset: 0, projects: [], total: 0 };
+				return inventoryPage();
 			}
-			return {
-				has_more: true,
-				limit: 250,
-				offset: 0,
-				projects:
-					(input.offset ?? 0) === 0
-						? [project({ workspace_identity: `${projectIdentity}/nested` })]
-						: [],
-				total: 500,
-			};
+			return inventoryPage(
+				(input.offset ?? 0) === 0
+					? [project({ workspace_identity: `${projectIdentity}/nested` })]
+					: [],
+				{ has_more: true, offset: 0, total: 500 },
+			);
 		});
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
 			recipientReview({
@@ -1863,13 +1835,9 @@ describe("Projects cached recipient presentation", () => {
 			session_count: 0,
 			workspace_identity: workspaceIdentity,
 		});
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [localProject, peerProject],
-			total: 2,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([localProject, peerProject]),
+		);
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
 			recipientReview({
 				blockedItems: [
@@ -1935,13 +1903,9 @@ describe("Projects cached recipient presentation", () => {
 			project: "duplicate-repair",
 			workspace_identity: "git:https://git.example.invalid/exampleco/duplicate-name.git",
 		});
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [repairProject, duplicateNameProject],
-			total: 2,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([repairProject, duplicateNameProject]),
+		);
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
 			recipientReview({
 				blockedItems: [
@@ -2014,13 +1978,9 @@ describe("Projects cached recipient presentation", () => {
 			project: "codemem",
 			workspace_identity: "git:https://git.example.invalid/exampleco/codemem.git",
 		});
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [project(), selected],
-			total: 2,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([project(), selected]),
+		);
 
 		initProjectsTab(() => {});
 		await loadProjectsData();
@@ -2046,27 +2006,9 @@ describe("Projects cached recipient presentation", () => {
 		const filtered = project({ display_project: "filtered", workspace_identity: "git:filtered" });
 		const later = project({ display_project: "later", workspace_identity: "git:later" });
 		vi.mocked(api.loadProjectScopeInventory)
-			.mockResolvedValueOnce({
-				has_more: false,
-				limit: 250,
-				offset: 0,
-				projects: [filtered],
-				total: 1,
-			})
-			.mockResolvedValueOnce({
-				has_more: true,
-				limit: 250,
-				offset: 0,
-				projects: [project()],
-				total: 251,
-			})
-			.mockResolvedValueOnce({
-				has_more: false,
-				limit: 250,
-				offset: 250,
-				projects: [later],
-				total: 251,
-			});
+			.mockResolvedValueOnce(inventoryPage([filtered]))
+			.mockResolvedValueOnce(inventoryPage([project()], { has_more: true, total: 251 }))
+			.mockResolvedValueOnce(inventoryPage([later], { offset: 250, total: 251 }));
 
 		initProjectsTab(() => {});
 		await loadProjectsData();
@@ -2122,32 +2064,22 @@ describe("Projects cached recipient presentation", () => {
 			call += 1;
 			if (call === 1) return oldFiltered;
 			if (call === 2) return oldSharing;
-			return {
-				has_more: false,
-				limit: 250,
-				offset: 0,
-				projects: [call === 3 ? newerFiltered : newerSharing],
-				total: 1,
-			};
+			return inventoryPage([call === 3 ? newerFiltered : newerSharing]);
 		});
 
 		initProjectsTab(() => {});
 		const olderLoad = loadProjectsData();
 		await loadProjectsData();
-		resolveOldFiltered({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [project({ display_project: "old filtered", workspace_identity: "old-filtered" })],
-			total: 1,
-		});
-		resolveOldSharing({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [project({ display_project: "old sharing", workspace_identity: "old-sharing" })],
-			total: 1,
-		});
+		resolveOldFiltered(
+			inventoryPage([
+				project({ display_project: "old filtered", workspace_identity: "old-filtered" }),
+			]),
+		);
+		resolveOldSharing(
+			inventoryPage([
+				project({ display_project: "old sharing", workspace_identity: "old-sharing" }),
+			]),
+		);
 		await olderLoad;
 
 		expect(projectSharing.renderProjectShareFlow).toHaveBeenLastCalledWith(
@@ -2183,34 +2115,10 @@ describe("Projects cached recipient presentation", () => {
 		const old = project({ display_project: "old filtered", workspace_identity: "old-filtered" });
 		const newer = project({ display_project: "new filtered", workspace_identity: "new-filtered" });
 		vi.mocked(api.loadProjectScopeInventory)
-			.mockResolvedValueOnce({
-				has_more: false,
-				limit: 250,
-				offset: 0,
-				projects: [old],
-				total: 1,
-			})
-			.mockResolvedValueOnce({
-				has_more: false,
-				limit: 250,
-				offset: 0,
-				projects: [old],
-				total: 1,
-			})
-			.mockResolvedValueOnce({
-				has_more: false,
-				limit: 250,
-				offset: 0,
-				projects: [newer],
-				total: 1,
-			})
-			.mockResolvedValueOnce({
-				has_more: false,
-				limit: 250,
-				offset: 0,
-				projects: [newer],
-				total: 1,
-			});
+			.mockResolvedValueOnce(inventoryPage([old]))
+			.mockResolvedValueOnce(inventoryPage([old]))
+			.mockResolvedValueOnce(inventoryPage([newer]))
+			.mockResolvedValueOnce(inventoryPage([newer]));
 
 		initProjectsTab(() => {});
 		await loadProjectsData();
@@ -2224,13 +2132,7 @@ describe("Projects cached recipient presentation", () => {
 	});
 
 	it("disables stale sharing choices when a later primary inventory load fails", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [project()],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([project()]));
 		initProjectsTab(() => {});
 		await loadProjectsData();
 		vi.mocked(api.loadProjectScopeInventory).mockRejectedValueOnce(
@@ -2248,13 +2150,7 @@ describe("Projects cached recipient presentation", () => {
 
 	it("reports the newer successful result when an older overlapping load fails", async () => {
 		let rejectOlder!: (reason?: unknown) => void;
-		const inventory = {
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [project()],
-			total: 1,
-		};
+		const inventory = inventoryPage([project()]);
 		vi.mocked(api.loadProjectScopeInventory)
 			.mockImplementationOnce(
 				() => new Promise<ProjectScopeInventoryResult>((_, reject) => (rejectOlder = reject)),
@@ -2272,13 +2168,7 @@ describe("Projects cached recipient presentation", () => {
 
 	it("reports the newer failed result when an older overlapping load succeeds", async () => {
 		let resolveOlder!: (value: ProjectScopeInventoryResult) => void;
-		const inventory = {
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [project()],
-			total: 1,
-		};
+		const inventory = inventoryPage([project()]);
 		vi.mocked(api.loadProjectScopeInventory)
 			.mockImplementationOnce(
 				() => new Promise<ProjectScopeInventoryResult>((resolve) => (resolveOlder = resolve)),
@@ -2304,13 +2194,7 @@ describe("Projects cached recipient presentation", () => {
 				failNextPrimaryLoad = false;
 				throw new Error("inventory unavailable");
 			}
-			return {
-				has_more: false,
-				limit: 250,
-				offset: 0,
-				projects: input.q ? [] : [repairProject],
-				total: input.q ? 0 : 1,
-			};
+			return inventoryPage(input.q ? [] : [repairProject]);
 		});
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
 			recipientReview({
@@ -2372,13 +2256,7 @@ describe("Projects cached recipient presentation", () => {
 			workspace_identity: "git:https://git.example.invalid/exampleco/codemem-docs.git",
 			sharing: [],
 		});
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [selected, sibling],
-			total: 2,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([selected, sibling]));
 
 		await loadProjectsData();
 
@@ -2402,11 +2280,8 @@ describe("Projects cached recipient presentation", () => {
 	});
 
 	it("describes revoked and cancelled project shares as history", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([
 				project({
 					sharing: [
 						{
@@ -2427,9 +2302,8 @@ describe("Projects cached recipient presentation", () => {
 						},
 					],
 				}),
-			],
-			total: 1,
-		});
+			]),
+		);
 
 		await loadProjectsData();
 
@@ -2453,11 +2327,8 @@ describe("Projects cached recipient presentation", () => {
 	});
 
 	it("renders peer-received project identities read-only", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([
 				project({
 					cwd: null,
 					display_project: "codemem",
@@ -2472,9 +2343,8 @@ describe("Projects cached recipient presentation", () => {
 					statuses: ["received"],
 					workspace_identity: "peer-received:peer-a:project:codemem",
 				}),
-			],
-			total: 1,
-		});
+			]),
+		);
 
 		initProjectsTab(() => {});
 		await loadProjectsData();
@@ -2488,13 +2358,7 @@ describe("Projects cached recipient presentation", () => {
 	it("does not reload inventory while a Space select is active", async () => {
 		const refresh = vi.fn();
 		initProjectsTab(refresh);
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [project()],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([project()]));
 		await loadProjectsData();
 		await flushAsyncWork();
 		const select = document.querySelector(".project-domain-select") as HTMLSelectElement | null;
@@ -2516,11 +2380,8 @@ describe("Projects cached recipient presentation", () => {
 	it("replays skipped refresh when a focused cluster Space select blurs", async () => {
 		const refresh = vi.fn();
 		initProjectsTab(refresh);
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([
 				project({ cwd: "/workspace/a", memory_count: 2, session_count: 1 }),
 				project({
 					cwd: "/tmp/worktree-a",
@@ -2528,9 +2389,8 @@ describe("Projects cached recipient presentation", () => {
 					session_count: 2,
 					workspace_identity: "https://git.example.invalid/exampleco/api.git:worktree",
 				}),
-			],
-			total: 2,
-		});
+			]),
+		);
 		await loadProjectsData();
 		await flushAsyncWork();
 		const select = document.querySelector(
@@ -2552,11 +2412,8 @@ describe("Projects cached recipient presentation", () => {
 	it("preserves a cluster Space draft across inventory re-renders until save succeeds", async () => {
 		const refresh = vi.fn();
 		initProjectsTab(refresh);
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([
 				project({ cwd: "/workspace/a", memory_count: 2, session_count: 1 }),
 				project({
 					cwd: "/tmp/worktree-a",
@@ -2564,9 +2421,8 @@ describe("Projects cached recipient presentation", () => {
 					session_count: 2,
 					workspace_identity: "https://git.example.invalid/exampleco/api.git:worktree",
 				}),
-			],
-			total: 2,
-		});
+			]),
+		);
 		await loadProjectsData();
 		const select = document.querySelector(
 			".project-inventory-cluster .project-inventory-details-body .project-domain-select",
@@ -2638,11 +2494,8 @@ describe("Projects cached recipient presentation", () => {
 				},
 			],
 		});
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([
 				project({ resolved_scope_id: "exampleco-work" }),
 				project({
 					display_project: "old-api",
@@ -2651,9 +2504,8 @@ describe("Projects cached recipient presentation", () => {
 					resolved_scope_id: "old-work",
 					workspace_identity: "https://git.example.invalid/old/api.git",
 				}),
-			],
-			total: 2,
-		});
+			]),
+		);
 
 		await loadProjectsData();
 		expect(document.body.textContent).not.toContain("Team: ExampleCo Team");
@@ -2677,13 +2529,9 @@ describe("Projects cached recipient presentation", () => {
 				resolveStatus = resolve;
 			}),
 		);
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [project({ resolved_scope_id: "exampleco-work" })],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([project({ resolved_scope_id: "exampleco-work" })]),
+		);
 
 		await loadProjectsData();
 
@@ -2699,11 +2547,8 @@ describe("Projects cached recipient presentation", () => {
 	});
 
 	it("clusters related project identities and bulk assigns the group", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([
 				project({ cwd: "/workspace/a", memory_count: 2, session_count: 1 }),
 				project({
 					cwd: "/tmp/worktree-a",
@@ -2711,9 +2556,8 @@ describe("Projects cached recipient presentation", () => {
 					session_count: 2,
 					workspace_identity: "https://git.example.invalid/exampleco/api.git:worktree",
 				}),
-			],
-			total: 2,
-		});
+			]),
+		);
 
 		await loadProjectsData();
 
@@ -2787,16 +2631,14 @@ describe("Projects cached recipient presentation", () => {
 	it("distinguishes same-name repository groups in worktree disclosure labels", async () => {
 		const firstRemote = "https://git.example.invalid/exampleco/first.git";
 		const secondRemote = "https://git.example.invalid/exampleco/second.git";
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [firstRemote, secondRemote].flatMap((remote) => [
-				project({ git_remote: remote, workspace_identity: remote }),
-				project({ git_remote: remote, workspace_identity: `${remote}:worktree` }),
-			]),
-			total: 4,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage(
+				[firstRemote, secondRemote].flatMap((remote) => [
+					project({ git_remote: remote, workspace_identity: remote }),
+					project({ git_remote: remote, workspace_identity: `${remote}:worktree` }),
+				]),
+			),
+		);
 		await loadProjectsData();
 		const toggles = [...document.querySelectorAll<HTMLButtonElement>(".project-worktrees-toggle")];
 		expect(toggles.map((button) => button.getAttribute("aria-label"))).toEqual([
@@ -2806,11 +2648,8 @@ describe("Projects cached recipient presentation", () => {
 	});
 
 	it("excludes peer-received identities from cluster bulk assignment", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([
 				project({
 					cwd: "/workspace/a",
 					git_remote: null,
@@ -2839,9 +2678,8 @@ describe("Projects cached recipient presentation", () => {
 					statuses: ["received"],
 					workspace_identity: "peer-received:peer-a:project:api",
 				}),
-			],
-			total: 2,
-		});
+			]),
+		);
 
 		await loadProjectsData();
 
@@ -2874,11 +2712,8 @@ describe("Projects cached recipient presentation", () => {
 	});
 
 	it("does not show bulk Space controls for unmapped-only clusters", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([
 				project({
 					cwd: null,
 					git_remote: null,
@@ -2891,9 +2726,8 @@ describe("Projects cached recipient presentation", () => {
 					identity_source: "unmapped",
 					workspace_identity: "unmapped:two",
 				}),
-			],
-			total: 2,
-		});
+			]),
+		);
 
 		await loadProjectsData();
 
@@ -2902,11 +2736,8 @@ describe("Projects cached recipient presentation", () => {
 	});
 
 	it("blocks cluster bulk assignment when an identity needs guardrail review", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([
 				project(),
 				project({
 					guardrail_warnings: [
@@ -2919,9 +2750,8 @@ describe("Projects cached recipient presentation", () => {
 					],
 					workspace_identity: "https://git.example.invalid/exampleco/api.git:worktree",
 				}),
-			],
-			total: 2,
-		});
+			]),
+		);
 
 		await loadProjectsData();
 		const select = document.querySelector<HTMLSelectElement>(".project-inventory-cluster select");
@@ -2946,11 +2776,8 @@ describe("Projects cached recipient presentation", () => {
 	});
 
 	it("does not block cluster bulk assignment for informational guardrail warnings", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([
 				project(),
 				project({
 					guardrail_warnings: [
@@ -2963,9 +2790,8 @@ describe("Projects cached recipient presentation", () => {
 					],
 					workspace_identity: "https://git.example.invalid/exampleco/api.git:worktree",
 				}),
-			],
-			total: 2,
-		});
+			]),
+		);
 
 		await loadProjectsData();
 		const select = document.querySelector(
@@ -2994,20 +2820,16 @@ describe("Projects cached recipient presentation", () => {
 	});
 
 	it("requires explicit cluster domain choice for mixed suggestions", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([
 				project({ suggested_scope_id: "exampleco-work" }),
 				project({
 					resolved_scope_id: "personal",
 					suggested_scope_id: "personal",
 					workspace_identity: "https://git.example.invalid/exampleco/api.git:worktree",
 				}),
-			],
-			total: 2,
-		});
+			]),
+		);
 
 		await loadProjectsData();
 		const select = document.querySelector(
@@ -3023,19 +2845,15 @@ describe("Projects cached recipient presentation", () => {
 	});
 
 	it("does not fall back to individual client writes when bulk assignment fails", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([
 				project({ cwd: "/workspace/a" }),
 				project({
 					cwd: "/tmp/worktree-a",
 					workspace_identity: "https://git.example.invalid/exampleco/api.git:worktree",
 				}),
-			],
-			total: 2,
-		});
+			]),
+		);
 		vi.mocked(api.saveSharingDomainProjectMappings).mockRejectedValueOnce(
 			new api.SharingDomainGuardrailConfirmationError({
 				guardrail_warnings: [],
@@ -3062,19 +2880,18 @@ describe("Projects cached recipient presentation", () => {
 	});
 
 	it("does not render assignment controls for unmapped projects", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 50,
-			offset: 0,
-			projects: [
-				project({
-					identity_source: "unmapped",
-					statuses: ["local_only", "unmapped"],
-					workspace_identity: "unmapped:abc123",
-				}),
-			],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage(
+				[
+					project({
+						identity_source: "unmapped",
+						statuses: ["local_only", "unmapped"],
+						workspace_identity: "unmapped:abc123",
+					}),
+				],
+				{ limit: 50 },
+			),
+		);
 
 		await loadProjectsData();
 
@@ -3085,13 +2902,9 @@ describe("Projects cached recipient presentation", () => {
 	});
 
 	it("excludes legacy review from assignment options", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 50,
-			offset: 0,
-			projects: [project()],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([project()], { limit: 50 }),
+		);
 
 		await loadProjectsData();
 
@@ -3104,13 +2917,9 @@ describe("Projects cached recipient presentation", () => {
 	});
 
 	it("groups assignable Spaces by Team", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 50,
-			offset: 0,
-			projects: [project({ resolved_scope_id: "exampleco-work" })],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([project({ resolved_scope_id: "exampleco-work" })], { limit: 50 }),
+		);
 
 		await loadProjectsData();
 
@@ -3160,13 +2969,9 @@ describe("Projects cached recipient presentation", () => {
 				},
 			],
 		});
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 50,
-			offset: 0,
-			projects: [project()],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([project()], { limit: 50 }),
+		);
 
 		await loadProjectsData();
 
@@ -3182,13 +2987,9 @@ describe("Projects cached recipient presentation", () => {
 	});
 
 	it("ignores stale suggested Spaces that are not assignable", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 50,
-			offset: 0,
-			projects: [project({ suggested_scope_id: "legacy-shared-review" })],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([project({ suggested_scope_id: "legacy-shared-review" })], { limit: 50 }),
+		);
 
 		await loadProjectsData();
 
@@ -3207,13 +3008,9 @@ describe("Projects cached recipient presentation", () => {
 	});
 
 	it("keeps expanded project details open after refresh", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 50,
-			offset: 0,
-			projects: [project()],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([project()], { limit: 50 }),
+		);
 
 		await loadProjectsData();
 		const details = document.querySelector("details");
@@ -3227,13 +3024,9 @@ describe("Projects cached recipient presentation", () => {
 	});
 
 	it("keeps draft domain selection after refresh", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 25,
-			offset: 0,
-			projects: [project()],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([project()], { limit: 25 }),
+		);
 
 		await loadProjectsData();
 		const select = document.querySelector(".project-domain-select") as HTMLSelectElement | null;
@@ -3251,13 +3044,9 @@ describe("Projects cached recipient presentation", () => {
 
 	it("explains backend guardrail confirmation as a required acknowledgement", async () => {
 		const refresh = vi.fn();
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 25,
-			offset: 0,
-			projects: [project()],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([project()], { limit: 25 }),
+		);
 		vi.mocked(api.saveSharingDomainProjectMapping).mockRejectedValueOnce(
 			new api.SharingDomainGuardrailConfirmationError({
 				guardrail_warnings: [
@@ -3318,13 +3107,9 @@ describe("Projects cached recipient presentation", () => {
 
 	it("clears stale guardrail confirmation when the draft domain changes", async () => {
 		const refresh = vi.fn();
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 25,
-			offset: 0,
-			projects: [project()],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([project()], { limit: 25 }),
+		);
 		vi.mocked(api.saveSharingDomainProjectMapping).mockRejectedValueOnce(
 			new api.SharingDomainGuardrailConfirmationError({
 				guardrail_warnings: [
@@ -3378,28 +3163,27 @@ describe("Projects cached recipient presentation", () => {
 	});
 
 	it("surfaces suggestions and attention warnings on the collapsed card", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 50,
-			offset: 0,
-			projects: [
-				project({
-					guardrail_warnings: [
-						{
-							code: "basename_collision_review",
-							message: "Another project is also named api.",
-							requires_confirmation: true,
-							severity: "warning",
-						},
-					],
-					statuses: ["suggested", "needs_attention"],
-					suggested_scope_id: "exampleco-work",
-					suggestion_reason:
-						"ExampleCo Work is suggested because the git remote contains exampleco.",
-				}),
-			],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage(
+				[
+					project({
+						guardrail_warnings: [
+							{
+								code: "basename_collision_review",
+								message: "Another project is also named api.",
+								requires_confirmation: true,
+								severity: "warning",
+							},
+						],
+						statuses: ["suggested", "needs_attention"],
+						suggested_scope_id: "exampleco-work",
+						suggestion_reason:
+							"ExampleCo Work is suggested because the git remote contains exampleco.",
+					}),
+				],
+				{ limit: 50 },
+			),
+		);
 
 		await loadProjectsData();
 
@@ -3412,13 +3196,11 @@ describe("Projects cached recipient presentation", () => {
 	it("lets project rows reassign their stored project", async () => {
 		const refresh = vi.fn();
 		vi.mocked(openSyncInputDialog).mockResolvedValue("codemem");
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 25,
-			offset: 0,
-			projects: [project({ memory_count: 11, project: "injection", session_count: 1 })],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([project({ memory_count: 11, project: "injection", session_count: 1 })], {
+				limit: 25,
+			}),
+		);
 
 		initProjectsTab(refresh);
 		await loadProjectsData();
@@ -3445,19 +3227,18 @@ describe("Projects cached recipient presentation", () => {
 	});
 
 	it("disables project reassignment for saved mappings with no sessions", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 25,
-			offset: 0,
-			projects: [
-				project({
-					memory_count: 0,
-					resolution_reason: "exact_mapping",
-					session_count: 0,
-				}),
-			],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage(
+				[
+					project({
+						memory_count: 0,
+						resolution_reason: "exact_mapping",
+						session_count: 0,
+					}),
+				],
+				{ limit: 25 },
+			),
+		);
 
 		await loadProjectsData();
 
@@ -3470,13 +3251,9 @@ describe("Projects cached recipient presentation", () => {
 
 	it("confirms cleanup before forgetting local project memories", async () => {
 		const refresh = vi.fn();
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [project({ memory_count: 7 })],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([project({ memory_count: 7 })]),
+		);
 		vi.mocked(api.forgetProjectInventoryMemories).mockRejectedValueOnce(
 			new api.ProjectForgetConfirmationError({
 				confirmation_token: "confirm-token",
@@ -3534,13 +3311,7 @@ describe("Projects cached recipient presentation", () => {
 			project: "beta",
 			workspace_identity: "project-alpha",
 		});
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [alpha, beta],
-			total: 2,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([alpha, beta]));
 
 		initProjectsTab(() => {});
 		await loadProjectsData();
@@ -3579,13 +3350,7 @@ describe("Projects cached recipient presentation", () => {
 			project: "beta",
 			workspace_identity: "project-beta",
 		});
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [alpha, beta],
-			total: 2,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([alpha, beta]));
 
 		await loadProjectsData();
 		document
@@ -3594,13 +3359,7 @@ describe("Projects cached recipient presentation", () => {
 		document
 			.querySelector<HTMLInputElement>('input[aria-label="Select beta for recipient sharing"]')
 			?.click();
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [alpha],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([alpha]));
 
 		await loadProjectsData();
 
@@ -3615,13 +3374,7 @@ describe("Projects cached recipient presentation", () => {
 	});
 
 	it("keeps inventory usable and disables recipient actions when intent loading fails", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [project()],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([project()]));
 		vi.mocked(api.loadRecipientPolicyIntent).mockRejectedValueOnce(new Error("intent unavailable"));
 
 		initProjectsTab(() => {});
@@ -3654,13 +3407,7 @@ describe("Projects cached recipient presentation", () => {
 			display_project: "selected",
 			workspace_identity: "project-selected",
 		});
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [selected],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([selected]));
 
 		initProjectsTab(refresh);
 		await loadProjectsData();
@@ -3693,13 +3440,7 @@ describe("Projects cached recipient presentation", () => {
 	it("aggregates clustered recipients and shares all exact canonical identities", async () => {
 		const first = project({ cwd: "/workspace/a", workspace_identity: "project-zeta" });
 		const second = project({ cwd: "/workspace/b", workspace_identity: "project-alpha" });
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [first, second],
-			total: 2,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([first, second]));
 		vi.mocked(api.loadRecipientPolicyIntent).mockResolvedValue(
 			recipientIntent({
 				projectRecipients: [
@@ -3758,19 +3499,15 @@ describe("Projects cached recipient presentation", () => {
 
 describe("Projects cluster suggestions", () => {
 	it("does not classify a missing suggestion as a mixed cluster suggestion", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([
 				project({ suggested_scope_id: "exampleco-work" }),
 				project({
 					suggested_scope_id: null,
 					workspace_identity: "https://git.example.invalid/exampleco/api.git:worktree",
 				}),
-			],
-			total: 2,
-		});
+			]),
+		);
 
 		await loadProjectsData();
 
@@ -3780,13 +3517,7 @@ describe("Projects cluster suggestions", () => {
 
 describe("Projects inventory controller", () => {
 	it("exposes a serializable inventory view model for component renderers", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [project()],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([project()]));
 
 		initProjectsTab(() => {});
 		await loadProjectsData();
@@ -3843,20 +3574,16 @@ describe("Projects inventory controller collision keys", () => {
 				],
 			}),
 		);
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([
 				project({ workspace_identity: workspaceIdentity }),
 				project({
 					read_only: true,
 					read_only_reason: "peer_received",
 					workspace_identity: workspaceIdentity,
 				}),
-			],
-			total: 2,
-		});
+			]),
+		);
 		initProjectsTab(() => {});
 		await loadProjectsData();
 		const controller = getProjectsInventoryController();
@@ -3906,13 +3633,7 @@ describe("Projects inventory controller collision keys", () => {
 
 describe("Projects inventory controller subscriptions", () => {
 	it("notifies component subscribers and stops after unsubscribe", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [project()],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([project()]));
 		initProjectsTab(() => {});
 		await loadProjectsData();
 		const controller = getProjectsInventoryController();
@@ -3959,11 +3680,8 @@ describe("Projects inventory controller subscriptions", () => {
 describe("Projects inventory controller collision subscriptions", () => {
 	it("keeps colliding local and peer row state source-qualified", async () => {
 		const identity = project().workspace_identity;
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([
 				project(),
 				project({
 					cwd: null,
@@ -3975,9 +3693,8 @@ describe("Projects inventory controller collision subscriptions", () => {
 					statuses: ["received"],
 					workspace_identity: identity,
 				}),
-			],
-			total: 2,
-		});
+			]),
+		);
 		vi.mocked(api.saveSharingDomainProjectMapping).mockRejectedValueOnce(
 			new api.SharingDomainGuardrailConfirmationError({
 				required_guardrail_tokens: ["confirm-scope"],
@@ -4064,13 +3781,7 @@ describe("Projects inventory controller collision subscriptions", () => {
 
 describe("Projects inventory controller async state", () => {
 	it("notifies subscribers when an async save requires confirmation", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [project()],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([project()]));
 		vi.mocked(api.saveSharingDomainProjectMapping).mockRejectedValueOnce(
 			new api.SharingDomainGuardrailConfirmationError({
 				required_guardrail_tokens: ["confirm-scope"],
@@ -4117,20 +3828,19 @@ describe("Projects inventory controller page snapshots", () => {
 		vi.mocked(api.loadProjectScopeInventory).mockImplementation(async () => {
 			callCount += 1;
 			if (callCount === 1) return previousPage;
-			return { has_more: false, limit: 250, offset: 0, projects: [], total: 0 };
+			return inventoryPage();
 		});
 		initProjectsTab(() => {});
 		const status = document.getElementById("projectsStatusFilter") as HTMLSelectElement;
 		status.dispatchEvent(new Event("change"));
 		const previousLoad = loadProjectsData();
 		document.getElementById("projectsNextPage")?.click();
-		resolvePreviousPage({
-			has_more: true,
-			limit: 250,
-			offset: 0,
-			projects: [project({ display_project: "previous page" })],
-			total: 251,
-		});
+		resolvePreviousPage(
+			inventoryPage([project({ display_project: "previous page" })], {
+				has_more: true,
+				total: 251,
+			}),
+		);
 
 		expect(await previousLoad).toBe(false);
 		expect(document.body.textContent).not.toContain("previous page");
@@ -4150,20 +3860,13 @@ describe("Projects inventory controller coordinator refresh", () => {
 				}),
 		);
 		vi.mocked(api.loadProjectScopeInventory)
-			.mockResolvedValueOnce({
-				has_more: true,
-				limit: 250,
-				offset: 0,
-				projects: [project({ display_project: "previous page" })],
-				total: 251,
-			})
-			.mockResolvedValue({
-				has_more: false,
-				limit: 250,
-				offset: 0,
-				projects: [project({ display_project: "newer page" })],
-				total: 1,
-			});
+			.mockResolvedValueOnce(
+				inventoryPage([project({ display_project: "previous page" })], {
+					has_more: true,
+					total: 251,
+				}),
+			)
+			.mockResolvedValue(inventoryPage([project({ display_project: "newer page" })]));
 		initProjectsTab(() => {});
 		const status = document.getElementById("projectsStatusFilter") as HTMLSelectElement;
 		status.dispatchEvent(new Event("change"));
@@ -4203,17 +3906,13 @@ describe("Projects inventory controller filter snapshots", () => {
 		let unfilteredCallCount = 0;
 		vi.mocked(api.loadProjectScopeInventory).mockImplementation(async (input) => {
 			if (input.q === "new") {
-				return {
-					has_more: false,
-					limit: 250,
-					offset: 0,
-					projects: [project({ display_project: "new result", workspace_identity: "new-result" })],
-					total: 1,
-				};
+				return inventoryPage([
+					project({ display_project: "new result", workspace_identity: "new-result" }),
+				]);
 			}
 			unfilteredCallCount += 1;
 			if (unfilteredCallCount === 1) return oldFiltered;
-			return { has_more: false, limit: 250, offset: 0, projects: [], total: 0 };
+			return inventoryPage();
 		});
 
 		initProjectsTab(() => {
@@ -4225,13 +3924,9 @@ describe("Projects inventory controller filter snapshots", () => {
 		search.dispatchEvent(new Event("input"));
 		await vi.waitFor(() => expect(document.body.textContent).toContain("new result"));
 
-		resolveOldFiltered({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [project({ display_project: "old result", workspace_identity: "old-result" })],
-			total: 1,
-		});
+		resolveOldFiltered(
+			inventoryPage([project({ display_project: "old result", workspace_identity: "old-result" })]),
+		);
 		await olderLoad;
 
 		expect(document.body.textContent).toContain("new result");
@@ -4255,13 +3950,7 @@ describe("Projects refresh cancellation", () => {
 				},
 			],
 		};
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [],
-			total: 0,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage());
 		vi.mocked(api.loadLegacyTeamSetupSummary).mockResolvedValueOnce(summary);
 
 		await loadProjectsData();
