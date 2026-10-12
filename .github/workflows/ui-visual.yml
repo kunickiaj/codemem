@@ -50,5 +50,6 @@ jobs:
         with:
           name: ui-visual-results
           path: .tmp/visual-ci/**
+          include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7

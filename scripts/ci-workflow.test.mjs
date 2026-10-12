@@ -252,6 +252,7 @@ function assertVisualWorkflowComparison() {
 	);
 	assert.match(job, /if: failure\(\)[\s\S]*?uses: actions\/upload-artifact@v6/u);
 	assert.match(job, /^ {10}path: \.tmp\/visual-ci\/\*\*$/m);
+	assert.match(job, /^ {10}include-hidden-files: true$/m);
 	assert.doesNotMatch(
 		job,
 		/CODEMEM_VISUAL_UPDATE|--update-snapshots|--ignore-snapshots|(?:^|\s)-u(?:\s|$)|visual:update|docker (?:run|build)/u,
