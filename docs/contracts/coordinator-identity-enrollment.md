@@ -424,7 +424,9 @@ provider navigation. It does not verify an account, confirm ownership, grant
 access, or enroll a device; callback and finalization remain separate work.
 
 Owner and account-link creation reserve attempt IDs across both purposes,
-including retained terminal rows. The ordinary shared callback rejects owner
+including retained terminal rows. Account-link creation reports a reserved owner
+ID as `attempt_conflict` (HTTP 409), not a retryable rate limit (HTTP 429).
+The ordinary shared callback rejects owner
 transactions without consuming their nonce or PKCE material, even when a legacy
 link row shares the attempt ID and browser hash. Legacy link/sign-in retirement
 does not retire owner transactions; global expiry maintenance still clears

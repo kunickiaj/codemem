@@ -268,11 +268,58 @@ it.each(["pending", "failed"] as const)(
 			config,
 		);
 		// Assert
-		expect(result).toMatchObject({ kind: "rejected" });
+		expect(result).toEqual({ kind: "rejected", error: "attempt_conflict" });
 		expect(f.rows("coordinator_auth_link_attempts").map((r) => r.attempt_id)).toEqual([
 			"other-attempt",
 		]);
 		expect(f.rows(ATTEMPTS)).toHaveLength(1);
+	},
+);
+
+it.each(["pending", "expired"] as const)(
+	"link creation reports a conflict for a %s owner browser-only attempt ID",
+	async (state) => {
+		// Arrange: browser history reserves the ID even without an owner attempt row.
+		await enroll(f.store);
+		expect((await f.store.createAuthControllerAttestation(review())).kind).toBe("created");
+		f.db
+			.prepare(`INSERT INTO ${TRANSACTIONS}
+		(coordinator_id,browser_transaction_hash,purpose,attempt_id,state_hash,binder_hash,
+		issuer,auth_config_revision,redirect_uri,state,nonce,pkce_verifier,created_at_ms,expires_at_ms)
+		VALUES (?,?,'owner_enroll','attempt-a',?,?,?,?,?,?,?,?,?,?)`)
+			.run(
+				config.coordinatorId,
+				"1".repeat(64),
+				"2".repeat(64),
+				"3".repeat(64),
+				config.issuer,
+				config.revision,
+				config.redirectUri,
+				state,
+				state === "pending" ? proof() : null,
+				state === "pending" ? proof() : null,
+				NOW - 300000,
+				state === "pending" ? NOW + 300000 : NOW - 1,
+			);
+		const links = new AuthLinkOperations(f.backend, () => NOW);
+		const before = f.rows(TRANSACTIONS);
+		// Act: a different ID succeeds; the reserved ID must not look rate-limited.
+		const created = await links.createAuthLinkAttempt(
+			linkAttempt({ attemptId: "other-attempt" }),
+			config,
+		);
+		const collision = await links.createAuthLinkAttempt(
+			linkAttempt({ runtimeVerifierHash: "e".repeat(64) }),
+			config,
+		);
+		// Assert: terminal history also retains the reservation without being mutated.
+		expect(created.kind).toBe("created");
+		expect(collision).toEqual({ kind: "rejected", error: "attempt_conflict" });
+		expect(f.rows(ATTEMPTS)).toEqual([]);
+		expect(f.rows(TRANSACTIONS)).toEqual(before);
+		expect(f.rows("coordinator_auth_link_attempts").map((r) => r.attempt_id)).toEqual([
+			"other-attempt",
+		]);
 	},
 );
 
