@@ -435,7 +435,6 @@ describe("coordinator local admin actions", () => {
 	])(
 		"retries $label onboarding without optional display names for older coordinators",
 		async (testCase) => {
-			// Arrange: each kind retains its own reviewed intent, identity binding, and name fields.
 			const actionDbPath = join(tmpDir, `legacy-coordinator-${testCase.kind}.sqlite`);
 			const keysDir = join(tmpDir, `legacy-coordinator-${testCase.kind}-keys`);
 			const configPath = join(tmpDir, `legacy-coordinator-${testCase.kind}-config.json`);
@@ -489,7 +488,6 @@ describe("coordinator local admin actions", () => {
 				reviewedIntent,
 			});
 
-			// Act
 			const result = await coordinatorImportInviteAction({
 				inviteValue: invite,
 				dbPath: actionDbPath,
@@ -499,7 +497,6 @@ describe("coordinator local admin actions", () => {
 				reviewedOnboardingDigest,
 			});
 
-			// Assert: the rejected named request retries exactly once without changing credentials.
 			expect(result).toMatchObject({ status: "accepted", identity_id: identityId });
 			expect(capturedBodies).toHaveLength(3);
 			expect(capturedBodies[1]).toMatchObject({
