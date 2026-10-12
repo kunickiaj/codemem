@@ -315,6 +315,19 @@ function button(label: string): HTMLButtonElement {
 	return match;
 }
 
+async function confirmFinish(): Promise<HTMLInputElement> {
+	await vi.waitFor(() => expect(document.body.textContent).toContain("Finish Team setup"));
+	const confirmation = document.querySelector<HTMLInputElement>(
+		".legacy-team-setup-confirmation input",
+	);
+	if (!confirmation) throw new Error("finish confirmation missing");
+	confirmation.checked = true;
+	act(() => {
+		confirmation.dispatchEvent(new Event("change", { bubbles: true }));
+	});
+	return confirmation;
+}
+
 afterEach(() => {
 	const mount = document.getElementById("legacyTeamSetupMount");
 	if (mount) act(() => render(null, mount));
@@ -1139,6 +1152,7 @@ describe("legacy Team setup dialog", () => {
 			expect(document.body.textContent).toContain("Review Projects");
 		});
 		expect(document.activeElement?.id).toBe("legacy-team-setup-step-projects");
+		expect(document.querySelector('[role="alert"]')).toBeNull();
 		expect(loadDetail).toHaveBeenCalledTimes(1);
 	});
 
@@ -1244,7 +1258,7 @@ describe("legacy Team setup dialog", () => {
 		expect(loadDetail).toHaveBeenCalledTimes(2);
 	});
 
-	it("persists remove for inactive devices and reloads authoritative detail", async () => {
+	it("persists remove for inactive devices and applies authoritative detail without reloading", async () => {
 		const initialDevice = device({ enabled: false, suggestedIdentityRef: null });
 		const removedDevice = device({
 			enabled: false,
@@ -1281,30 +1295,7 @@ describe("legacy Team setup dialog", () => {
 		expect(loadDetail).toHaveBeenCalledTimes(1);
 	});
 
-	it("applies the authoritative device mutation response without a compensating reload", async () => {
-		const loadDetail = vi
-			.fn()
-			.mockResolvedValue(
-				detail({ devices: [device()], identityChoices: identities, unresolvedDeviceCount: 1 }),
-			);
-		const saveDecision = vi.fn().mockResolvedValue(
-			detail({
-				devices: [device({ decision: "excluded", suggestedIdentityRef: null })],
-				unresolvedProjectCount: 1,
-			}),
-		);
-		setup({ loadDetail, saveDecision });
-		await vi.waitFor(() => expect(document.body.textContent).toContain("Work laptop"));
-
-		act(() => button("Exclude").click());
-
-		await vi.waitFor(() => expect(document.body.textContent).toContain("Review Projects"));
-		expect(document.querySelector('[role="alert"]')).toBeNull();
-		expect(saveDecision).toHaveBeenCalledTimes(1);
-		expect(loadDetail).toHaveBeenCalledTimes(1);
-	});
-
-	it("clears a persisted decision with the current attempt and reloads detail", async () => {
+	it("clears a persisted decision with the current attempt and applies detail without reloading", async () => {
 		const excludedDevice = device({ decision: "excluded", suggestedIdentityRef: null });
 		const loadDetail = vi
 			.fn()
@@ -1421,6 +1412,7 @@ describe("legacy Team setup dialog", () => {
 	});
 
 	it("shows deterministic Project mappings as read-only server evidence", async () => {
+		// Arrange
 		const deterministic = project({
 			canonicalProjectRef: "opaque-canonical-project",
 			mappingChoices: [],
@@ -1436,10 +1428,30 @@ describe("legacy Team setup dialog", () => {
 		);
 		setup({ loadDetail });
 
-		await vi.waitFor(() => expect(document.body.textContent).toContain("Mapped automatically"));
+		// Act
+		const projectsStep = await vi.waitFor(() => {
+			const match = document.querySelector<HTMLElement>(
+				'[aria-labelledby="legacy-team-setup-step-projects"]',
+			);
+			if (!match) throw new Error("Projects step missing");
+			return match;
+		});
+
+		// Assert
+		expect(document.body.textContent).toContain("Mapped automatically");
 		expect(document.body.textContent).toContain("Legacy Project");
 		expect(document.body.textContent).not.toContain("opaque-canonical-project");
 		expect(document.querySelectorAll(".legacy-team-project-select")).toHaveLength(1);
+		expect(projectsStep.textContent).toContain("1 of 2 Team Projects need attention.");
+		expect(projectsStep.textContent).toContain(
+			"Review the automatic mappings below before continuing.",
+		);
+		expect(projectsStep.textContent).not.toMatch(/confirm the automatic/i);
+		expect(projectsStep.textContent).not.toContain("1 of 0 Team Projects");
+		expect(projectsStep.textContent).not.toMatch(
+			/choose (?:or|and) exclude automatically mapped Projects/i,
+		);
+		expect(projectsStep.querySelectorAll(".legacy-team-project-select")).toHaveLength(1);
 	});
 
 	it("stacks all Project rows with legends outside their inner grid content", async () => {
@@ -1472,48 +1484,6 @@ describe("legacy Team setup dialog", () => {
 			expect(row.children[0]?.textContent).toContain(`Project ${index + 1}`);
 			expect(row.children[1]?.classList.contains("legacy-team-project-row-content")).toBe(true);
 		}
-	});
-
-	it("states that every automatically mapped Project will be included", async () => {
-		// Arrange
-		const deterministic = project({
-			canonicalProjectRef: "opaque-canonical-project",
-			mappingChoices: [],
-			resolution: "deterministic",
-			resolvedProjectRef: "opaque-resolved-project",
-		});
-		setup({
-			loadDetail: vi.fn().mockResolvedValue(
-				detail({
-					projects: [
-						deterministic,
-						project({ projectRef: "project-ref-two", displayName: "Needs mapping" }),
-					],
-					unresolvedProjectCount: 1,
-				}),
-			),
-		});
-
-		// Act
-		const projectsStep = await vi.waitFor(() => {
-			const match = document.querySelector<HTMLElement>(
-				'[aria-labelledby="legacy-team-setup-step-projects"]',
-			);
-			if (!match) throw new Error("Projects step missing");
-			return match;
-		});
-
-		// Assert
-		expect(projectsStep.textContent).toContain("1 of 2 Team Projects need attention.");
-		expect(projectsStep.textContent).toContain(
-			"Review the automatic mappings below before continuing.",
-		);
-		expect(projectsStep.textContent).not.toMatch(/confirm the automatic/i);
-		expect(projectsStep.textContent).not.toContain("1 of 0 Team Projects");
-		expect(projectsStep.textContent).not.toMatch(
-			/choose (?:or|and) exclude automatically mapped Projects/i,
-		);
-		expect(projectsStep.querySelectorAll(".legacy-team-project-select")).toHaveLength(1);
 	});
 
 	it("persists one explicit Project mapping and applies the authoritative response", async () => {
@@ -1555,6 +1525,7 @@ describe("legacy Team setup dialog", () => {
 		});
 		await vi.waitFor(() => expect(document.body.textContent).toContain("Review and finish"));
 		expect(document.activeElement?.id).toBe("legacy-team-setup-step-review");
+		expect(document.querySelector('[role="alert"]')).toBeNull();
 		expect(loadDetail).toHaveBeenCalledTimes(1);
 	});
 
@@ -1676,36 +1647,6 @@ describe("legacy Team setup dialog", () => {
 		expect(button("Save mapping").getAttribute("aria-disabled")).toBe("true");
 		expect(loadDetail).toHaveBeenCalledTimes(2);
 		expect(refreshCandidate).toHaveBeenCalledTimes(1);
-	});
-
-	it("does not reload after an authoritative Project mapping response", async () => {
-		const loadDetail = vi
-			.fn()
-			.mockResolvedValue(detail({ projects: [project()], unresolvedProjectCount: 1 }));
-		const saveProjectMapping = vi.fn().mockResolvedValue(
-			detail({
-				projects: [
-					project({ resolution: "explicit", resolvedProjectRef: "resolved-project-alpha" }),
-				],
-			}),
-		);
-		setup({ loadDetail, saveProjectMapping });
-
-		const select = await vi.waitFor(() => {
-			const match = document.querySelector<HTMLSelectElement>(".legacy-team-project-select");
-			if (!match) throw new Error("Project mapping select missing");
-			return match;
-		});
-		select.value = "project-choice-1";
-		act(() => {
-			select.dispatchEvent(new Event("change", { bubbles: true }));
-		});
-		act(() => button("Save mapping").click());
-
-		await vi.waitFor(() => expect(document.body.textContent).toContain("Review and finish"));
-		expect(document.querySelector('[role="alert"]')).toBeNull();
-		expect(saveProjectMapping).toHaveBeenCalledTimes(1);
-		expect(loadDetail).toHaveBeenCalledTimes(1);
 	});
 
 	it("renders every server access-delta entry with human labels and no opaque refs", async () => {
@@ -2403,15 +2344,7 @@ describe("legacy Team setup dialog", () => {
 			finish,
 			loadDetail: vi.fn().mockResolvedValue(detail({ canFinish: true })),
 		});
-		await vi.waitFor(() => expect(document.body.textContent).toContain("Finish Team setup"));
-		const confirmation = document.querySelector<HTMLInputElement>(
-			".legacy-team-setup-confirmation input",
-		);
-		if (!confirmation) throw new Error("finish confirmation missing");
-		confirmation.checked = true;
-		act(() => {
-			confirmation.dispatchEvent(new Event("change", { bubbles: true }));
-		});
+		const confirmation = await confirmFinish();
 
 		const finishButton = button("Finish Team setup");
 		act(() => finishButton.click());
@@ -2590,15 +2523,7 @@ describe("legacy Team setup dialog", () => {
 			loadDetail,
 			onCompleted: vi.fn().mockReturnValue(completedRefresh.promise),
 		});
-		await vi.waitFor(() => expect(document.body.textContent).toContain("Finish Team setup"));
-		const confirmation = document.querySelector<HTMLInputElement>(
-			".legacy-team-setup-confirmation input",
-		);
-		if (!confirmation) throw new Error("finish confirmation missing");
-		confirmation.checked = true;
-		act(() => {
-			confirmation.dispatchEvent(new Event("change", { bubbles: true }));
-		});
+		await confirmFinish();
 		act(() => button("Finish Team setup").click());
 		await vi.waitFor(() => expect(document.body.textContent).toContain("Team setup complete"));
 
@@ -2635,15 +2560,7 @@ describe("legacy Team setup dialog", () => {
 				.mockResolvedValueOnce(completedDetail),
 			onCompleted,
 		});
-		await vi.waitFor(() => expect(document.body.textContent).toContain("Finish Team setup"));
-		const confirmation = document.querySelector<HTMLInputElement>(
-			".legacy-team-setup-confirmation input",
-		);
-		if (!confirmation) throw new Error("finish confirmation missing");
-		confirmation.checked = true;
-		act(() => {
-			confirmation.dispatchEvent(new Event("change", { bubbles: true }));
-		});
+		await confirmFinish();
 		act(() => button("Finish Team setup").click());
 		await vi.waitFor(() => expect(onCompleted).toHaveBeenCalledTimes(1));
 		await vi.waitFor(() => expect(button("Close").getAttribute("aria-disabled")).toBeNull());
@@ -2841,15 +2758,7 @@ describe("legacy Team setup dialog", () => {
 				.mockRejectedValue(new LegacyTeamSetupApiError(503, "team_setup_roster_unavailable")),
 			loadDetail: vi.fn().mockResolvedValue(detail({ canFinish: true })),
 		});
-		await vi.waitFor(() => expect(document.body.textContent).toContain("Finish Team setup"));
-		const confirmation = document.querySelector<HTMLInputElement>(
-			".legacy-team-setup-confirmation input",
-		);
-		if (!confirmation) throw new Error("finish confirmation missing");
-		confirmation.checked = true;
-		act(() => {
-			confirmation.dispatchEvent(new Event("change", { bubbles: true }));
-		});
+		await confirmFinish();
 		act(() => button("Finish Team setup").click());
 
 		await vi.waitFor(() =>
@@ -2889,15 +2798,7 @@ describe("legacy Team setup dialog", () => {
 			.fn()
 			.mockRejectedValue(new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale"));
 		setup({ finish, loadDetail, refreshCandidate });
-		await vi.waitFor(() => expect(document.body.textContent).toContain("Finish Team setup"));
-		const confirmation = document.querySelector<HTMLInputElement>(
-			".legacy-team-setup-confirmation input",
-		);
-		if (!confirmation) throw new Error("finish confirmation missing");
-		confirmation.checked = true;
-		act(() => {
-			confirmation.dispatchEvent(new Event("change", { bubbles: true }));
-		});
+		await confirmFinish();
 		act(() => button("Finish Team setup").click());
 
 		await vi.waitFor(() =>
@@ -2943,15 +2844,7 @@ describe("legacy Team setup dialog", () => {
 			const refreshCandidate = vi.fn().mockRejectedValue(stale);
 			const onCompleted = vi.fn().mockResolvedValue(undefined);
 			setup({ loadDetail, finish, refreshCandidate, onCompleted });
-			await vi.waitFor(() => expect(document.body.textContent).toContain("Finish Team setup"));
-			const confirmation = document.querySelector<HTMLInputElement>(
-				".legacy-team-setup-confirmation input",
-			);
-			if (!confirmation) throw new Error("finish confirmation missing");
-			confirmation.checked = true;
-			act(() => {
-				confirmation.dispatchEvent(new Event("change", { bubbles: true }));
-			});
+			await confirmFinish();
 			act(() => button("Finish Team setup").click());
 			await vi.waitFor(() => expect(document.querySelector('[role="alert"]')).not.toBeNull());
 			expect(loadDetail).toHaveBeenCalledTimes(2);
@@ -3014,15 +2907,7 @@ describe("legacy Team setup dialog", () => {
 			loadDetail,
 			onCompleted,
 		});
-		await vi.waitFor(() => expect(document.body.textContent).toContain("Finish Team setup"));
-		const confirmation = document.querySelector<HTMLInputElement>(
-			".legacy-team-setup-confirmation input",
-		);
-		if (!confirmation) throw new Error("finish confirmation missing");
-		confirmation.checked = true;
-		act(() => {
-			confirmation.dispatchEvent(new Event("change", { bubbles: true }));
-		});
+		await confirmFinish();
 		act(() => button("Finish Team setup").click());
 
 		await vi.waitFor(() => {
@@ -3343,50 +3228,42 @@ describe("Team setup completion check recovery", () => {
 });
 
 describe("Team setup follow-up read failures", () => {
-	it("retries a failed coordinator roster read before offering an explicit refresh", async () => {
-		const loadDetail = vi
-			.fn()
-			.mockRejectedValueOnce(new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale"))
-			.mockRejectedValueOnce(new LegacyTeamSetupApiError(503, "team_setup_roster_unavailable"))
-			.mockResolvedValueOnce(detail());
-		const refreshCandidate = vi.fn().mockResolvedValue(detail());
-		setup({ loadDetail, refreshCandidate });
-		await vi.waitFor(() =>
-			expect(document.querySelector('[role="alert"]')?.textContent).toContain(
-				"Check the coordinator connection and settings, then retry loading",
-			),
-		);
-		act(() => document.getElementById("legacy-team-setup-retry")?.click());
-		await vi.waitFor(() =>
-			expect(document.querySelector('[role="alert"]')?.textContent).toContain(
-				"changed since it was last reviewed",
-			),
-		);
-		expect(refreshCandidate).not.toHaveBeenCalled();
-		act(() => document.getElementById("legacy-team-setup-retry")?.click());
-		await vi.waitFor(() => expect(document.body.textContent).toContain("Set up Example Team"));
-		expect(loadDetail).toHaveBeenCalledTimes(3);
-		expect(refreshCandidate).toHaveBeenCalledOnce();
-	});
-
 	it.each([
-		new Error("private transport failure"),
-		new LegacyTeamSetupApiError(503, "team_setup_failed"),
-	])(
-		"retries a failed follow-up read before offering an explicit refresh (%s)",
-		async (readError) => {
+		{
+			name: "coordinator roster",
+			readError: () => new LegacyTeamSetupApiError(503, "team_setup_roster_unavailable"),
+			guidance: "Check the coordinator connection and settings, then retry loading",
+			privateCopy: "team_setup_roster_unavailable",
+		},
+		{
+			name: "transport",
+			readError: () => new Error("private transport failure"),
+			guidance: "Retry to check the latest details",
+			privateCopy: "private transport failure",
+		},
+		{
+			name: "API error",
+			readError: () => new LegacyTeamSetupApiError(503, "team_setup_failed"),
+			guidance: "Retry to check the latest details",
+			privateCopy: "team_setup_failed",
+		},
+	] as const)(
+		"retries a failed $name follow-up read before offering an explicit refresh",
+		async ({ readError, guidance, privateCopy }) => {
+			// Arrange: each failure keeps its own error and user-facing guidance.
 			const loadDetail = vi
 				.fn()
 				.mockRejectedValueOnce(new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale"))
-				.mockRejectedValueOnce(readError)
+				.mockRejectedValueOnce(readError())
 				.mockResolvedValueOnce(detail());
 			const refreshCandidate = vi.fn().mockResolvedValue(detail());
 			setup({ loadDetail, refreshCandidate });
+
+			// Act and assert: read-only recovery must precede the explicit refresh.
 			await vi.waitFor(() =>
-				expect(document.querySelector('[role="alert"]')?.textContent).toContain(
-					"Retry to check the latest details",
-				),
+				expect(document.querySelector('[role="alert"]')?.textContent).toContain(guidance),
 			);
+			expect(document.body.textContent).not.toContain(privateCopy);
 			act(() => document.getElementById("legacy-team-setup-retry")?.click());
 			await vi.waitFor(() =>
 				expect(document.querySelector('[role="alert"]')?.textContent).toContain(
@@ -3398,6 +3275,7 @@ describe("Team setup follow-up read failures", () => {
 			await vi.waitFor(() => expect(document.body.textContent).toContain("Set up Example Team"));
 			expect(loadDetail).toHaveBeenCalledTimes(3);
 			expect(refreshCandidate).toHaveBeenCalledOnce();
+			expect(document.body.textContent).not.toContain(privateCopy);
 			expect(document.body.textContent).not.toContain("private transport failure");
 		},
 	);
@@ -3482,15 +3360,7 @@ describe("Team setup completion-only read failure", () => {
 				.mockRejectedValueOnce(new LegacyTeamSetupApiError(409, code));
 			const refreshCandidate = vi.fn().mockRejectedValue(stale);
 			setup({ loadDetail, finish: vi.fn().mockRejectedValue(stale), refreshCandidate });
-			await vi.waitFor(() => expect(document.body.textContent).toContain("Finish Team setup"));
-			const confirmation = document.querySelector<HTMLInputElement>(
-				".legacy-team-setup-confirmation input",
-			);
-			if (!confirmation) throw new Error("finish confirmation missing");
-			confirmation.checked = true;
-			act(() => {
-				confirmation.dispatchEvent(new Event("change", { bubbles: true }));
-			});
+			await confirmFinish();
 			act(() => button("Finish Team setup").click());
 			await vi.waitFor(() => expect(document.querySelector('[role="alert"]')).not.toBeNull());
 			act(() => document.getElementById("legacy-team-setup-retry")?.click());
@@ -3524,15 +3394,7 @@ describe("Team setup completion-only read failure", () => {
 		const refreshCandidate = vi.fn().mockRejectedValue(stale);
 		const onCompleted = vi.fn();
 		setup({ loadDetail, finish: vi.fn().mockRejectedValue(stale), refreshCandidate, onCompleted });
-		await vi.waitFor(() => expect(document.body.textContent).toContain("Finish Team setup"));
-		const confirmation = document.querySelector<HTMLInputElement>(
-			".legacy-team-setup-confirmation input",
-		);
-		if (!confirmation) throw new Error("finish confirmation missing");
-		confirmation.checked = true;
-		act(() => {
-			confirmation.dispatchEvent(new Event("change", { bubbles: true }));
-		});
+		await confirmFinish();
 		act(() => button("Finish Team setup").click());
 		await vi.waitFor(() => expect(document.querySelector('[role="alert"]')).not.toBeNull());
 		act(() => document.getElementById("legacy-team-setup-retry")?.click());
