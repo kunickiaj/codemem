@@ -63,7 +63,10 @@ for (const path of selectSourcePaths(tracked.stdout.split("\0").filter(Boolean))
 const config = mode === "--control" ? "playwright.control.config.ts" : "playwright.config.ts";
 const command = [
 	"cp -R /input/. /work/",
-	`npm install --global ${packageManager}`,
+	// Generate public-only config here; never stage host npm configuration or credentials.
+	"printf 'registry=https://registry.npmjs.org/\\n' > /work/.npmrc",
+	`npm install --global --prefix /work/.tools ${packageManager}`,
+	'export PATH="/work/.tools/bin:$PATH"',
 	"cd /work && HUSKY=0 pnpm install --frozen-lockfile",
 	`cd /work/packages/ui && pnpm exec playwright test --config ${config}`,
 ].join(" && ");
@@ -86,6 +89,8 @@ const args = [
 	"CODEMEM_VISUAL_OUTPUT=/results",
 	"--env",
 	"PLAYWRIGHT_HTML_OPEN=never",
+	"--env",
+	"NPM_CONFIG_REGISTRY=https://registry.npmjs.org/",
 ];
 if (process.env.CI) args.push("--env", "CI=1");
 if (mode === "--update") args.push("--env", "CODEMEM_VISUAL_UPDATE=1");

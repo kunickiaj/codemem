@@ -53,6 +53,7 @@ export function isPublicSource(path) {
 		parts.some(
 			(part) =>
 				[".git", ".beads", ".tmp", ".opencode", "node_modules", ".venv"].includes(part) ||
+				part.toLowerCase() === ".npmrc" ||
 				part.startsWith(".env"),
 		)
 	)

@@ -41,6 +41,8 @@ pnpm --filter @codemem/ui visual:test-harness
 
 Each run writes fresh ignored output under `.tmp/visual/run-*/results`, including `report/` and `test-results/`. The runner never copies that output into its source input; CI uploads its ignored results only after a failure, and the only approved baselines are tracked synthetic PNGs in `packages/ui/visual/__screenshots__/`.
 
+Staging excludes `.npmrc` at every depth, including case variants, before reading source contents. The disposable container generates a registry-only `/work/.npmrc` for `https://registry.npmjs.org/` and explicitly uses that public registry for installation; it does not mount home configuration or forward host npm credentials. Existing workspace install policy and frozen-lockfile checks still apply.
+
 Local run folders also retain their public-source staging copy for debugging and can accumulate disk usage. They are not cleaned automatically; on Linux, container-created results may be owned by root. Inspect old run folders before removing them.
 
 Ordinary comparisons never create or update a golden. A missing baseline or a pixel mismatch fails, while `visual:control` proves this with a scratch mutation and a missing-baseline case without changing a source baseline.

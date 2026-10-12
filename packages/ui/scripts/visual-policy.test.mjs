@@ -79,12 +79,64 @@ test("staging rejects secrets, private databases, dependencies and generated pat
 		"packages/ui/dist/app.js",
 		"packages/viewer-server/static/app.js",
 		"../secret",
+		"packages/../secret",
+		"packages/ui/../../secret",
+		"packages//secret",
 		"/secret",
 	];
 	// Act
 	const results = paths.map(isPublicSource);
 	// Assert
 	assert.ok(results.every((result) => !result));
+});
+
+test("staging rejects npm configuration at every depth regardless of case", () => {
+	const paths = [
+		".npmrc",
+		".NPMRC",
+		"packages/pkg/.npmrc",
+		"packages/pkg/.NpMrC",
+		"nested/deeper/.npmrc",
+		".npmrc/child",
+		"../.npmrc",
+		"packages/../.npmrc",
+	];
+	assert.ok(paths.every((path) => !isPublicSource(path)));
+	const selected = selectSourcePaths(paths);
+	assert.deepEqual(selected, [...HARNESS_FILES, ...GOLDEN_FILES]);
+});
+
+test("source selection never loads synthetic npm authentication fixtures", () => {
+	const fixtures = new Map([
+		["package.json", '{"name":"synthetic-public-fixture"}'],
+		[".npmrc", "//registry.npmjs.org/:_authToken=SYNTHETIC_NOT_A_CREDENTIAL"],
+		["packages/pkg/.npmrc", "_auth=SYNTHETIC_NOT_A_CREDENTIAL"],
+		["packages/pkg/.NPMRC", "_password=SYNTHETIC_NOT_A_CREDENTIAL"],
+		["untracked/.npmrc", "_auth=SYNTHETIC_NOT_A_CREDENTIAL"],
+	]);
+	const tracked = ["package.json", ".npmrc", "packages/pkg/.npmrc", "packages/pkg/.NPMRC"];
+	/** @type {string[]} */
+	const loaded = [];
+	selectSourcePaths(tracked).forEach((path) => {
+		const content = fixtures.get(path);
+		if (content === undefined) return;
+		loaded.push(path);
+		assert.doesNotMatch(content, /_auth|_password/);
+	});
+	assert.deepEqual(loaded, ["package.json"]);
+});
+
+test("container installs use generated public registry config without forwarding host config", () => {
+	const runner = readFileSync(new URL("./visual-runner.mjs", import.meta.url), "utf8");
+	assert.match(runner, /printf 'registry=https:\/\/registry\.npmjs\.org\/\\\\n' > \/work\/\.npmrc/);
+	assert.match(runner, /NPM_CONFIG_REGISTRY=https:\/\/registry\.npmjs\.org\//);
+	assert.match(runner, /npm install --global --prefix \/work\/\.tools/);
+	assert.match(runner, /HUSKY=0 pnpm install --frozen-lockfile/);
+	assert.doesNotMatch(runner, /"--env",\s*"[^"=]+"/u);
+	assert.doesNotMatch(
+		runner,
+		/process\.env\.(?:NPM|npm|PNPM|pnpm)|--network|--ignore-scripts|--allow-build/,
+	);
 });
 
 test("browser requests permit local assets but reject APIs and external origins", () => {
