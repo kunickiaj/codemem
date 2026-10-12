@@ -90,6 +90,20 @@ import {
 import * as recipientPolicyManagement from "./recipient-policy-management";
 import { openSyncInputDialog } from "./sync/sync-dialogs";
 
+function inventoryPage(
+	projects: ProjectScopeInventoryProject[] = [],
+	overrides: Partial<Omit<ProjectScopeInventoryResult, "projects">> = {},
+): ProjectScopeInventoryResult {
+	return {
+		has_more: false,
+		limit: 250,
+		offset: 0,
+		projects,
+		total: projects.length,
+		...overrides,
+	};
+}
+
 function project(
 	overrides: Partial<ProjectScopeInventoryProject> = {},
 ): ProjectScopeInventoryProject {
@@ -207,6 +221,26 @@ function recipientReview(
 		continuity,
 		reviewItems,
 		version: overrides.version ?? 1,
+	};
+}
+
+function blockedProjectRepair(
+	projectIdentity: string,
+	overrides: Partial<Omit<RecipientPolicyReviewListV1["blockedItems"][number], "repair">> = {},
+): RecipientPolicyReviewListV1["blockedItems"][number] {
+	return {
+		blockedItemId: "blocked-1",
+		finding: "Project identity is unstable.",
+		ownerLabel: "Project owner",
+		reason: "Codemem requires source-state repair.",
+		repairAction: "Open Project administration.",
+		repair: {
+			kind: "open_project_administration",
+			projectIdentity,
+			label: "Open Project administration",
+		},
+		version: 1,
+		...overrides,
 	};
 }
 
@@ -369,13 +403,7 @@ describe("Projects tab", () => {
 	});
 
 	it("shows empty inventory without bogus pagination range", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 25,
-			offset: 0,
-			projects: [],
-			total: 0,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([], { limit: 25 }));
 
 		initProjectsTab(() => {});
 		await loadProjectsData();
@@ -399,13 +427,7 @@ describe("Projects tab", () => {
 		vi.mocked(api.loadCoordinatorAdminStatus).mockRejectedValue(
 			new Error("project refresh failed"),
 		);
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 25,
-			offset: 0,
-			projects: [],
-			total: 0,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([], { limit: 25 }));
 
 		initProjectsTab(() => {});
 		await loadProjectsData();
@@ -421,13 +443,7 @@ describe("Projects tab", () => {
 
 function projectsRecipientPolicyReviewSurfaceTests(): void {
 	it("omits preserved continuity from mixed review and repair state", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [],
-			total: 0,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage());
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue({
 			...recipientReview(),
 			blockedItems: [
@@ -480,13 +496,7 @@ function projectsRecipientPolicyReviewSurfaceTests(): void {
 	});
 
 	it("renders sharing-decision load errors", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [],
-			total: 0,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage());
 		vi.mocked(api.loadRecipientPolicyReview).mockRejectedValue(new Error("Review unavailable"));
 
 		await loadProjectsData();
@@ -524,13 +534,7 @@ function projectsRecipientPolicyGroupedResolutionTests(): void {
 				projects: [{ canonicalIdentity: "/worktrees/first", displayName: "Codemem" }],
 			},
 		}));
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [],
-			total: 0,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage());
 		vi.mocked(api.loadRecipientPolicyReview)
 			.mockResolvedValueOnce(recipientReview({ reviewItems: [first, second] }))
 			.mockResolvedValue(recipientReview({ reviewItems: [] }));
@@ -603,13 +607,7 @@ function projectsRecipientPolicyBulkTests(): void {
 				sourceFingerprint: `fingerprint-${index}`,
 			}),
 		);
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [],
-			total: 0,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage());
 		vi.mocked(api.loadRecipientPolicyReview)
 			.mockResolvedValueOnce(recipientReview({ reviewItems }))
 			.mockResolvedValue(recipientReview({ reviewItems: [] }));
@@ -644,13 +642,7 @@ function projectsRecipientPolicyBulkTests(): void {
 				sourceFingerprint: `fingerprint-${index}`,
 			}),
 		);
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [],
-			total: 0,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage());
 		vi.mocked(api.loadRecipientPolicyReview)
 			.mockResolvedValueOnce(recipientReview({ reviewItems }))
 			.mockResolvedValue(
@@ -683,13 +675,7 @@ describe("Projects recipient policy bulk resolution", projectsRecipientPolicyBul
 
 function projectsRecipientPolicySafetyTests(): void {
 	it("explains required recipient input without submitting an incomplete decision", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [],
-			total: 0,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage());
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(recipientReview());
 
 		await loadProjectsData();
@@ -707,13 +693,7 @@ function projectsRecipientPolicySafetyTests(): void {
 	});
 
 	it("keeps stale findings open and refreshes their fingerprints", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [],
-			total: 0,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage());
 		vi.mocked(api.loadRecipientPolicyReview)
 			.mockResolvedValueOnce(recipientReview())
 			.mockResolvedValue(
@@ -750,13 +730,7 @@ function projectsRecipientPolicySafetyTests(): void {
 	});
 
 	it("restores review-control focus after source data refreshes", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [],
-			total: 0,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage());
 		vi.mocked(api.loadRecipientPolicyReview)
 			.mockResolvedValueOnce(recipientReview())
 			.mockResolvedValueOnce(
@@ -850,9 +824,6 @@ function repositoryWorktreeDetails() {
 }
 
 function projectsInventoryTablePresentationTests(): void {
-	beforeEach(setupProjectsTest);
-	afterEach(cleanupProjectsTest);
-
 	it("renders active Team and Identity recipients with only recipient management primary", async () => {
 		const selected = project({
 			display_project: "codemem",
@@ -860,13 +831,7 @@ function projectsInventoryTablePresentationTests(): void {
 			git_remote: "https://git.example.invalid/exampleco/codemem.git",
 			worktrees: repositoryWorktreeDetails(),
 		});
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [selected],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([selected]));
 		vi.mocked(api.loadRecipientPolicyIntent).mockResolvedValue(
 			recipientIntent({
 				projectRecipients: [
@@ -972,9 +937,6 @@ function projectsInventoryTablePresentationTests(): void {
 describe("Projects inventory table presentation", projectsInventoryTablePresentationTests);
 
 describe("Projects cached recipient presentation", () => {
-	beforeEach(setupProjectsTest);
-	afterEach(cleanupProjectsTest);
-
 	it("keeps a loaded empty recipient state visible while a refresh is pending", async () => {
 		await loadProjectsData();
 		expect(document.querySelector(".project-recipient-status")?.textContent).toBe("Not shared");
@@ -995,13 +957,7 @@ describe("Projects cached recipient presentation", () => {
 	it("keeps sharing actions clickable during a background inventory refresh", async () => {
 		initProjectsTab(() => {});
 		const sharedProject = project();
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [sharedProject],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([sharedProject]));
 		await loadProjectsData();
 		getProjectsInventoryController().callbacks.toggleSelection([sharedProject.workspace_identity]);
 		const button = document.getElementById("projectsShareSelected") as HTMLButtonElement;
@@ -1018,13 +974,7 @@ describe("Projects cached recipient presentation", () => {
 			mode: "project-add",
 			projectIds: [sharedProject.workspace_identity],
 		});
-		releaseInventory({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [sharedProject],
-			total: 1,
-		});
+		releaseInventory(inventoryPage([sharedProject]));
 		await refresh;
 	});
 });
@@ -1051,13 +1001,7 @@ describe("Projects cached recipient presentation", () => {
 			},
 			version: 1 as const,
 		};
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [],
-			total: 0,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage());
 		vi.mocked(api.loadRecipientPolicyReview)
 			.mockResolvedValueOnce(
 				recipientReview({
@@ -1098,13 +1042,7 @@ describe("Projects cached recipient presentation", () => {
 
 	it("routes an unfinished server Team candidate into guided setup without resolving recipient review", async () => {
 		const onOpenTeamSetup = vi.fn();
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [],
-			total: 0,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage());
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(recipientReview());
 		vi.mocked(api.loadLegacyTeamSetupSummary).mockResolvedValue({
 			version: 1,
@@ -1151,13 +1089,7 @@ describe("Projects cached recipient presentation", () => {
 				},
 			],
 		};
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [],
-			total: 0,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage());
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(recipientReview());
 		vi.mocked(api.loadLegacyTeamSetupSummary).mockResolvedValueOnce(summary);
 		initProjectsTab(() => {}, { onOpenTeamSetup: vi.fn() });
@@ -1205,13 +1137,7 @@ describe("Projects cached recipient presentation", () => {
 	});
 
 	it("keeps Projects usable when guided Team setup discovery is unavailable", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [project()],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([project()]));
 		vi.mocked(api.loadLegacyTeamSetupSummary).mockRejectedValue(new Error("setup unavailable"));
 
 		await loadProjectsData();
@@ -1225,13 +1151,7 @@ describe("Projects cached recipient presentation", () => {
 
 	it("renders Projects before optional Team setup discovery finishes", async () => {
 		let resolveTeamSetup!: (value: { version: 1; candidates: [] }) => void;
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [project()],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([project()]));
 		vi.mocked(api.loadLegacyTeamSetupSummary).mockImplementation(
 			() =>
 				new Promise((resolve) => {
@@ -1253,13 +1173,7 @@ describe("Projects cached recipient presentation", () => {
 
 	it("renders Projects but reports strict refresh failure after Team setup discovery fails", async () => {
 		let rejectTeamSetup!: (reason?: unknown) => void;
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [project()],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([project()]));
 		vi.mocked(api.loadLegacyTeamSetupSummary).mockImplementation(
 			() =>
 				new Promise<LegacyTeamSetupSummaryResponseV1>((_, reject) => {
@@ -1382,13 +1296,7 @@ describe("Projects cached recipient presentation", () => {
 		select.focus();
 
 		await expect(loadProjectsData({ requireTeamSetupSummary: true })).resolves.toBe(true);
-		resolveInventory({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [project()],
-			total: 1,
-		});
+		resolveInventory(inventoryPage([project()]));
 		await expect(inventoryLoad).resolves.toBe(true);
 		expect(document.getElementById("projectsInventoryMeta")?.textContent).toContain(
 			"1 projects · 1–1",
@@ -1398,13 +1306,7 @@ describe("Projects cached recipient presentation", () => {
 
 	it("reuses slow Team setup discovery across polling generations", async () => {
 		let resolveTeamSetup!: (value: LegacyTeamSetupSummaryResponseV1) => void;
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [project()],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([project()]));
 		vi.mocked(api.loadLegacyTeamSetupSummary).mockImplementation(
 			() => new Promise((resolve) => (resolveTeamSetup = resolve)),
 		);
@@ -1436,13 +1338,7 @@ describe("Projects cached recipient presentation", () => {
 	});
 
 	it("preserves the review surface across an unchanged refresh", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [],
-			total: 0,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage());
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(recipientReview());
 
 		await loadProjectsData();
@@ -1456,13 +1352,7 @@ describe("Projects cached recipient presentation", () => {
 	});
 
 	it("hides preserved-only review results without a replacement notice", async () => {
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [],
-			total: 0,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage());
 		vi.mocked(api.loadRecipientPolicyReview)
 			.mockResolvedValueOnce(
 				recipientReview({
@@ -1507,29 +1397,13 @@ describe("Projects cached recipient presentation", () => {
 			identity_source: "unmapped",
 			workspace_identity: "unmapped:unstable",
 		});
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [repairProject],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([repairProject]));
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
 			recipientReview({
 				blockedItems: [
-					{
-						blockedItemId: "blocked-1",
-						finding: "Project identity is unstable.",
-						ownerLabel: "Project owner",
-						reason: "Codemem requires source-state repair.",
+					blockedProjectRepair("unmapped:unstable", {
 						repairAction: "Assign a stable canonical Project identity.",
-						repair: {
-							kind: "open_project_administration",
-							projectIdentity: "unmapped:unstable",
-							label: "Open Project administration",
-						},
-						version: 1,
-					},
+					}),
 				],
 				continuity: null,
 				reviewItems: [],
@@ -1559,29 +1433,18 @@ describe("Projects cached recipient presentation", () => {
 		const status = document.getElementById("projectsStatusFilter") as HTMLSelectElement;
 		status.append(new Option("Needs attention", "needs_attention"));
 		status.value = "needs_attention";
-		vi.mocked(api.loadProjectScopeInventory).mockImplementation(async (input = {}) => ({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: input.status || input.q !== repairProject.workspace_identity ? [] : [repairProject],
-			total: input.status || input.q !== repairProject.workspace_identity ? 0 : 1,
-		}));
+		vi.mocked(api.loadProjectScopeInventory).mockImplementation(async (input = {}) =>
+			inventoryPage(
+				input.status || input.q !== repairProject.workspace_identity ? [] : [repairProject],
+			),
+		);
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
 			recipientReview({
 				blockedItems: [
-					{
+					blockedProjectRepair(repairProject.workspace_identity, {
 						blockedItemId: "blocked-filtered",
-						finding: "Project identity is unstable.",
-						ownerLabel: "Project owner",
-						reason: "Codemem requires source-state repair.",
 						repairAction: "Assign a stable canonical Project identity.",
-						repair: {
-							kind: "open_project_administration",
-							projectIdentity: repairProject.workspace_identity,
-							label: "Open Project administration",
-						},
-						version: 1,
-					},
+					}),
 				],
 				continuity: null,
 				reviewItems: [],
@@ -1612,38 +1475,19 @@ describe("Projects cached recipient presentation", () => {
 		});
 		vi.mocked(api.loadProjectScopeInventory).mockImplementation((input = {}) => {
 			if (!input.q) {
-				return Promise.resolve({
-					has_more: false,
-					limit: 250,
-					offset: 0,
-					projects: [],
-					total: 0,
-				});
+				return Promise.resolve(inventoryPage());
 			}
 			if (input.q === "/workspace/first") return firstLookup;
-			return Promise.resolve({
-				has_more: false,
-				limit: 250,
-				offset: 0,
-				projects: [],
-				total: 0,
-			});
+			return Promise.resolve(inventoryPage());
 		});
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
 			recipientReview({
-				blockedItems: ["first", "second"].map((name) => ({
-					blockedItemId: `blocked-${name}`,
-					finding: `Project ${name} identity is unstable.`,
-					ownerLabel: "Project owner",
-					reason: "Codemem requires source-state repair.",
-					repairAction: "Open Project administration.",
-					repair: {
-						kind: "open_project_administration" as const,
-						projectIdentity: `/workspace/${name}`,
-						label: "Open Project administration",
-					},
-					version: 1 as const,
-				})),
+				blockedItems: ["first", "second"].map((name) =>
+					blockedProjectRepair(`/workspace/${name}`, {
+						blockedItemId: `blocked-${name}`,
+						finding: `Project ${name} identity is unstable.`,
+					}),
+				),
 				continuity: null,
 				reviewItems: [],
 			}),
@@ -1665,13 +1509,7 @@ describe("Projects cached recipient presentation", () => {
 				.mock.calls.flatMap(([input]) => (input?.q ? [input.q] : [])),
 		).toEqual(["/workspace/first"]);
 
-		resolveFirstLookup({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [],
-			total: 0,
-		});
+		resolveFirstLookup(inventoryPage());
 		await vi.waitFor(() =>
 			expect(
 				vi
@@ -1691,29 +1529,16 @@ describe("Projects cached recipient presentation", () => {
 		vi.mocked(api.loadProjectScopeInventory).mockImplementation((input = {}) => {
 			if (input.q?.startsWith("/workspace/")) repairQueries.push(input.q);
 			if (input.q === "/workspace/first") return firstLookup;
-			return Promise.resolve({
-				has_more: false,
-				limit: 250,
-				offset: 0,
-				projects: [],
-				total: 0,
-			});
+			return Promise.resolve(inventoryPage());
 		});
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
 			recipientReview({
-				blockedItems: ["first", "second"].map((name) => ({
-					blockedItemId: `blocked-${name}`,
-					finding: `Project ${name} identity is unstable.`,
-					ownerLabel: "Project owner",
-					reason: "Codemem requires source-state repair.",
-					repairAction: "Open Project administration.",
-					repair: {
-						kind: "open_project_administration" as const,
-						projectIdentity: `/workspace/${name}`,
-						label: "Open Project administration",
-					},
-					version: 1 as const,
-				})),
+				blockedItems: ["first", "second"].map((name) =>
+					blockedProjectRepair(`/workspace/${name}`, {
+						blockedItemId: `blocked-${name}`,
+						finding: `Project ${name} identity is unstable.`,
+					}),
+				),
 				continuity: null,
 				reviewItems: [],
 			}),
@@ -1735,13 +1560,7 @@ describe("Projects cached recipient presentation", () => {
 		const search = document.getElementById("projectsSearch") as HTMLInputElement;
 		search.value = "user-query";
 		search.dispatchEvent(new Event("input"));
-		resolveFirstLookup({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [],
-			total: 0,
-		});
+		resolveFirstLookup(inventoryPage());
 		await flushAsyncWork();
 
 		expect(repairQueries).toEqual(["/workspace/first"]);
@@ -1750,29 +1569,13 @@ describe("Projects cached recipient presentation", () => {
 
 	it("defers repair while a Space assignment control is active", async () => {
 		const repairProject = project({ workspace_identity: "/workspace/repair-target" });
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [repairProject],
-			total: 1,
-		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([repairProject]));
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
 			recipientReview({
 				blockedItems: [
-					{
+					blockedProjectRepair(repairProject.workspace_identity, {
 						blockedItemId: "blocked-active-space",
-						finding: "Project identity is unstable.",
-						ownerLabel: "Project owner",
-						reason: "Codemem requires source-state repair.",
-						repairAction: "Open Project administration.",
-						repair: {
-							kind: "open_project_administration",
-							projectIdentity: repairProject.workspace_identity,
-							label: "Open Project administration",
-						},
-						version: 1,
-					},
+					}),
 				],
 				continuity: null,
 				reviewItems: [],
@@ -1806,40 +1609,16 @@ describe("Projects cached recipient presentation", () => {
 			if (input.q === projectIdentity) {
 				repairQueryCount += 1;
 				if (repairQueryCount === 1) {
-					return Promise.resolve({
-						has_more: false,
-						limit: 250,
-						offset: 0,
-						projects: [repairProject],
-						total: 1,
-					});
+					return Promise.resolve(inventoryPage([repairProject]));
 				}
 				return repairLoad;
 			}
-			return Promise.resolve({
-				has_more: false,
-				limit: 250,
-				offset: 0,
-				projects: [],
-				total: 0,
-			});
+			return Promise.resolve(inventoryPage());
 		});
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
 			recipientReview({
 				blockedItems: [
-					{
-						blockedItemId: "blocked-superseded-navigation",
-						finding: "Project identity is unstable.",
-						ownerLabel: "Project owner",
-						reason: "Codemem requires source-state repair.",
-						repairAction: "Open Project administration.",
-						repair: {
-							kind: "open_project_administration",
-							projectIdentity,
-							label: "Open Project administration",
-						},
-						version: 1,
-					},
+					blockedProjectRepair(projectIdentity, { blockedItemId: "blocked-superseded-navigation" }),
 				],
 				continuity: null,
 				reviewItems: [],
@@ -1853,13 +1632,7 @@ describe("Projects cached recipient presentation", () => {
 		const search = document.getElementById("projectsSearch") as HTMLInputElement;
 		search.value = "user-query";
 		await loadProjectsData();
-		resolveRepairLoad({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [repairProject],
-			total: 1,
-		});
+		resolveRepairLoad(inventoryPage([repairProject]));
 		await flushAsyncWork();
 
 		expect(search.value).toBe("user-query");
@@ -1878,30 +1651,12 @@ describe("Projects cached recipient presentation", () => {
 				repairQueryCount += 1;
 				if (repairQueryCount === 1) return lookup;
 			}
-			return Promise.resolve({
-				has_more: false,
-				limit: 250,
-				offset: 0,
-				projects: input.q === projectIdentity ? [repairProject] : [],
-				total: input.q === projectIdentity ? 1 : 0,
-			});
+			return Promise.resolve(inventoryPage(input.q === projectIdentity ? [repairProject] : []));
 		});
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
 			recipientReview({
 				blockedItems: [
-					{
-						blockedItemId: "blocked-slow-lookup",
-						finding: "Project identity is unstable.",
-						ownerLabel: "Project owner",
-						reason: "Codemem requires source-state repair.",
-						repairAction: "Open Project administration.",
-						repair: {
-							kind: "open_project_administration",
-							projectIdentity,
-							label: "Open Project administration",
-						},
-						version: 1,
-					},
+					blockedProjectRepair(projectIdentity, { blockedItemId: "blocked-slow-lookup" }),
 				],
 				continuity: null,
 				reviewItems: [],
@@ -1915,13 +1670,7 @@ describe("Projects cached recipient presentation", () => {
 		const search = document.getElementById("projectsSearch") as HTMLInputElement;
 		search.value = "user-query";
 		await loadProjectsData();
-		resolveLookup({
-			has_more: false,
-			limit: 250,
-			offset: 0,
-			projects: [repairProject],
-			total: 1,
-		});
+		resolveLookup(inventoryPage([repairProject]));
 		await flushAsyncWork();
 
 		expect(search.value).toBe("user-query");
@@ -1940,38 +1689,14 @@ describe("Projects cached recipient presentation", () => {
 			if (input.q === projectIdentity) {
 				repairQueryCount += 1;
 				if (repairQueryCount === 1) return lookup;
-				return Promise.resolve({
-					has_more: false,
-					limit: 250,
-					offset: 0,
-					projects: [repairProject],
-					total: 1,
-				});
+				return Promise.resolve(inventoryPage([repairProject]));
 			}
-			return Promise.resolve({
-				has_more: false,
-				limit: 250,
-				offset: 0,
-				projects: [],
-				total: 0,
-			});
+			return Promise.resolve(inventoryPage());
 		});
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
 			recipientReview({
 				blockedItems: [
-					{
-						blockedItemId: "blocked-background-refresh",
-						finding: "Project identity is unstable.",
-						ownerLabel: "Project owner",
-						reason: "Codemem requires source-state repair.",
-						repairAction: "Open Project administration.",
-						repair: {
-							kind: "open_project_administration",
-							projectIdentity,
-							label: "Open Project administration",
-						},
-						version: 1,
-					},
+					blockedProjectRepair(projectIdentity, { blockedItemId: "blocked-background-refresh" }),
 				],
 				continuity: null,
 				reviewItems: [],
@@ -2047,19 +1772,10 @@ describe("Projects cached recipient presentation", () => {
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
 			recipientReview({
 				blockedItems: [
-					{
+					blockedProjectRepair(repairProject.workspace_identity, {
 						blockedItemId: "blocked-paginated",
-						finding: "Project identity is unstable.",
-						ownerLabel: "Project owner",
-						reason: "Codemem requires source-state repair.",
 						repairAction: "Assign a stable canonical Project identity.",
-						repair: {
-							kind: "open_project_administration",
-							projectIdentity: repairProject.workspace_identity,
-							label: "Open Project administration",
-						},
-						version: 1,
-					},
+					}),
 				],
 				continuity: null,
 				reviewItems: [],
@@ -2108,19 +1824,10 @@ describe("Projects cached recipient presentation", () => {
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
 			recipientReview({
 				blockedItems: [
-					{
+					blockedProjectRepair(projectIdentity, {
 						blockedItemId: "blocked-stalled-pagination",
-						finding: "Project identity is unstable.",
-						ownerLabel: "Project owner",
-						reason: "Codemem requires source-state repair.",
 						repairAction: "Assign a stable canonical Project identity.",
-						repair: {
-							kind: "open_project_administration",
-							projectIdentity,
-							label: "Open Project administration",
-						},
-						version: 1,
-					},
+					}),
 				],
 				continuity: null,
 				reviewItems: [],
@@ -2166,19 +1873,11 @@ describe("Projects cached recipient presentation", () => {
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
 			recipientReview({
 				blockedItems: [
-					{
+					blockedProjectRepair(workspaceIdentity, {
 						blockedItemId: "blocked-collision",
 						finding: "Project administration needs attention.",
-						ownerLabel: "Project owner",
-						reason: "Codemem requires source-state repair.",
 						repairAction: "Open the local Project administration controls.",
-						repair: {
-							kind: "open_project_administration",
-							projectIdentity: workspaceIdentity,
-							label: "Open Project administration",
-						},
-						version: 1,
-					},
+					}),
 				],
 				continuity: null,
 				reviewItems: [],
@@ -2246,19 +1945,10 @@ describe("Projects cached recipient presentation", () => {
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
 			recipientReview({
 				blockedItems: [
-					{
+					blockedProjectRepair(repairProject.workspace_identity, {
 						blockedItemId: "blocked-clustered",
-						finding: "Project identity is unstable.",
-						ownerLabel: "Project owner",
-						reason: "Codemem requires source-state repair.",
 						repairAction: "Assign a stable canonical Project identity.",
-						repair: {
-							kind: "open_project_administration",
-							projectIdentity: repairProject.workspace_identity,
-							label: "Open Project administration",
-						},
-						version: 1,
-					},
+					}),
 				],
 				continuity: null,
 				reviewItems: [],
@@ -2625,19 +2315,9 @@ describe("Projects cached recipient presentation", () => {
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
 			recipientReview({
 				blockedItems: [
-					{
+					blockedProjectRepair(repairProject.workspace_identity, {
 						blockedItemId: "blocked-stale-cache",
-						finding: "Project identity is unstable.",
-						ownerLabel: "Project owner",
-						reason: "Codemem requires source-state repair.",
-						repairAction: "Open Project administration.",
-						repair: {
-							kind: "open_project_administration",
-							projectIdentity: repairProject.workspace_identity,
-							label: "Open Project administration",
-						},
-						version: 1,
-					},
+					}),
 				],
 				continuity: null,
 				reviewItems: [],
@@ -4077,9 +3757,6 @@ describe("Projects cached recipient presentation", () => {
 }
 
 describe("Projects cluster suggestions", () => {
-	beforeEach(setupProjectsTest);
-	afterEach(cleanupProjectsTest);
-
 	it("does not classify a missing suggestion as a mixed cluster suggestion", async () => {
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
 			has_more: false,
@@ -4102,9 +3779,6 @@ describe("Projects cluster suggestions", () => {
 });
 
 describe("Projects inventory controller", () => {
-	beforeEach(setupProjectsTest);
-	afterEach(cleanupProjectsTest);
-
 	it("exposes a serializable inventory view model for component renderers", async () => {
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
 			has_more: false,
@@ -4139,9 +3813,6 @@ describe("Projects inventory controller", () => {
 });
 
 describe("Projects inventory controller collision keys", () => {
-	beforeEach(setupProjectsTest);
-	afterEach(cleanupProjectsTest);
-
 	it("keys colliding local and peer rows independently", async () => {
 		const workspaceIdentity = "peer-received:controller-collision";
 		vi.mocked(api.loadRecipientPolicyIntent).mockResolvedValue(
@@ -4234,9 +3905,6 @@ describe("Projects inventory controller collision keys", () => {
 });
 
 describe("Projects inventory controller subscriptions", () => {
-	beforeEach(setupProjectsTest);
-	afterEach(cleanupProjectsTest);
-
 	it("notifies component subscribers and stops after unsubscribe", async () => {
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
 			has_more: false,
@@ -4289,9 +3957,6 @@ describe("Projects inventory controller subscriptions", () => {
 });
 
 describe("Projects inventory controller collision subscriptions", () => {
-	beforeEach(setupProjectsTest);
-	afterEach(cleanupProjectsTest);
-
 	it("keeps colliding local and peer row state source-qualified", async () => {
 		const identity = project().workspace_identity;
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
@@ -4398,9 +4063,6 @@ describe("Projects inventory controller collision subscriptions", () => {
 });
 
 describe("Projects inventory controller async state", () => {
-	beforeEach(setupProjectsTest);
-	afterEach(cleanupProjectsTest);
-
 	it("notifies subscribers when an async save requires confirmation", async () => {
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue({
 			has_more: false,
@@ -4446,9 +4108,6 @@ describe("Projects inventory controller async state", () => {
 });
 
 describe("Projects inventory controller page snapshots", () => {
-	beforeEach(setupProjectsTest);
-	afterEach(cleanupProjectsTest);
-
 	it("does not render a previous page after the requested offset changes", async () => {
 		let resolvePreviousPage: (value: ProjectScopeInventoryResult) => void = () => {};
 		const previousPage = new Promise<ProjectScopeInventoryResult>((resolve) => {
@@ -4479,9 +4138,6 @@ describe("Projects inventory controller page snapshots", () => {
 });
 
 describe("Projects inventory controller coordinator refresh", () => {
-	beforeEach(setupProjectsTest);
-	afterEach(cleanupProjectsTest);
-
 	it("does not overwrite newer row state or notify subscribers after stale coordinator names load", async () => {
 		let resolveCoordinatorStatus: (value: {
 			has_admin_secret: boolean;
@@ -4539,9 +4195,6 @@ describe("Projects inventory controller coordinator refresh", () => {
 });
 
 describe("Projects inventory controller filter snapshots", () => {
-	beforeEach(setupProjectsTest);
-	afterEach(cleanupProjectsTest);
-
 	it("does not render a completed load after the user changes filters", async () => {
 		let resolveOldFiltered: (value: ProjectScopeInventoryResult) => void = () => {};
 		const oldFiltered = new Promise<ProjectScopeInventoryResult>((resolve) => {
