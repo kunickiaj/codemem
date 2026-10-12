@@ -62,6 +62,27 @@ function syncRequestCase(method: string, path: string, invoke: () => Promise<unk
 	return { method, path, invoke };
 }
 
+function matchesConcreteApiRoute(
+	route: { method: string; path: string },
+	request: { method: string; path: string },
+): boolean {
+	if (route.method !== request.method || route.path.includes("*")) return false;
+	const pattern = route.path
+		.split("/")
+		.map((segment) => {
+			if (/^:\w+$/.test(segment)) return "[^/]+";
+			return segment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		})
+		.join("/");
+	return new RegExp(`^${pattern}$`).test(request.path);
+}
+
+function registerContractProbeRoutes(app: ReturnType<typeof createApp>) {
+	// Hono normalizes the real static fallback to /*; probe raw * independently too.
+	app.routes.push({ method: "GET", path: "*", handler: (context) => context.text("fallback") });
+	app.get("/api/sync/review.v1", (context) => context.json({}));
+}
+
 const syncRequestCases = {
 	loadSyncStatus: syncRequestCase("GET", "/api/sync/status", () => {
 		const includeDiagnostics = false;
@@ -1748,6 +1769,7 @@ describe("viewer-server", () => {
 
 	it("matches real sync UI requests to viewer routes, including methods and template paths", async () => {
 		const { app, cleanup } = createTestApp();
+		registerContractProbeRoutes(app);
 		const restoreTimers = mockBrowserDeadlineTimers();
 		const requests: Array<{ method: string; path: string }> = [];
 		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
@@ -1768,12 +1790,8 @@ describe("viewer-server", () => {
 					!(value.prototype instanceof Error),
 			)
 			.map(([name]) => name);
-		const hasRoute = ({ method, path }: { method: string; path: string }) =>
-			app.routes.some(
-				(route) =>
-					route.method === method &&
-					new RegExp(`^${route.path.replace(/:\w+/g, "[^/]+")}$`).test(path),
-			);
+		const hasRoute = (request: { method: string; path: string }) =>
+			app.routes.some((route) => matchesConcreteApiRoute(route, request));
 		try {
 			const outcomes = [];
 			for (const [, request] of cases)
@@ -1784,6 +1802,9 @@ describe("viewer-server", () => {
 			expect(outcomes.map((outcome) => outcome.status)).toEqual(cases.map(() => "rejected"));
 			expect(requests).toEqual(cases.map(([, { method, path }]) => ({ method, path })));
 			for (const [name, request] of cases) expect(hasRoute(request), name).toBe(true);
+			expect(hasRoute({ method: "GET", path: "/api/sync/review.v1" })).toBe(true);
+			expect(hasRoute({ method: "GET", path: "/api/sync/reviewXv1" })).toBe(false);
+			expect(hasRoute({ method: "GET", path: "/api/sync/not-a-route" })).toBe(false);
 			expect(hasRoute({ method: "GET", path: "/api/sync/team-setup/v1/candidate/finish" })).toBe(
 				false,
 			);
