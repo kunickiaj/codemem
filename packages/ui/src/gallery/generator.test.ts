@@ -33,7 +33,7 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-describe("gallery HTML generator", () => {
+describe("gallery tooltip stylesheet fidelity", () => {
 	it("preserves the tooltip positioning parent and its real opening animation", async () => {
 		// Arrange: read canonical CSS through the existing mocked generator filesystem.
 		// Act
@@ -56,7 +56,9 @@ describe("gallery HTML generator", () => {
 		expect(rule).not.toMatch(/position:\s*relative;/);
 		expect(rule).toMatch(/animation:\s*tooltipFade/);
 	});
+});
 
+describe("gallery HTML generator", () => {
 	it("preserves canonical CSS byte for byte without importing viewer DOM or scripts", async () => {
 		// Arrange: use the actual canonical stylesheet, not a copied fixture snapshot.
 		const canonical = new DOMParser().parseFromString(canonicalHtml, "text/html");
