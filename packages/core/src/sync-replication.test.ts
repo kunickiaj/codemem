@@ -234,6 +234,51 @@ describe("isNewerClock", () => {
 // recordReplicationOp
 // ---------------------------------------------------------------------------
 
+function expectPortableProjectWithoutSessionProvenance(payload: Record<string, unknown>): void {
+	expect(payload.project).toBe("test-project");
+	expect(payload.user_prompt_id).toBe(42);
+	expect(payload.prompt_number).toBe(7);
+	expect(payload).not.toHaveProperty("cwd");
+	expect(payload).not.toHaveProperty("git_remote");
+	expect(payload).not.toHaveProperty("git_branch");
+	expect(payload).not.toHaveProperty("started_at");
+}
+
+function expectIncrementalDestinationFields(applied: Record<string, unknown>): void {
+	expect(applied).toBeTruthy();
+	expect(applied.session_project).toBe("test-project");
+	expect(applied.project).toBe("test-project");
+	expect(applied.user_prompt_id).toBe(42);
+	expect(applied.prompt_number).toBe(7);
+	// Core fields
+	expect(applied.kind).toBe("feature");
+	expect(applied.title).toBe("Ship TS port");
+	expect(applied.subtitle).toBe("The big one");
+	expect(applied.body_text).toBe("Ported all the things");
+	expect(applied.confidence).toBe(0.95);
+	expect(applied.tags_text).toBe("ts port");
+	// Provenance fields survive
+	expect(applied.actor_id).toBe("actor-1");
+	expect(applied.actor_display_name).toBe("Adam");
+	expect(applied.visibility).toBe("shared");
+	expect(applied.workspace_id).toBe("shared:team");
+	expect(applied.workspace_kind).toBe("shared");
+	expect(applied.origin_device_id).toBe("device-origin");
+	expect(applied.origin_source).toBe("manual");
+	expect(applied.trust_state).toBe("verified");
+	expect(applied.scope_id).toBe("acme-work");
+	expect(applied.narrative).toBe("Full narrative text");
+	// metadata_json round-trips as proper JSON with clock_device_id added
+	const appliedMeta = JSON.parse(applied.metadata_json as string);
+	expect(appliedMeta.custom_field).toBe("preserved");
+	expect(appliedMeta.clock_device_id).toBe("dev-a");
+	// JSON array columns round-trip
+	expect(JSON.parse(applied.facts as string)).toEqual(["fact-1"]);
+	expect(JSON.parse(applied.concepts as string)).toEqual(["concept-1"]);
+	expect(JSON.parse(applied.files_read as string)).toEqual(["src/a.ts"]);
+	expect(JSON.parse(applied.files_modified as string)).toEqual(["src/b.ts"]);
+}
+
 describe("recordReplicationOp", () => {
 	let db: InstanceType<typeof Database>;
 
@@ -336,8 +381,19 @@ describe("recordReplicationOp", () => {
 	});
 
 	it("includes full memory payload in upsert ops and round-trips all columns", () => {
+		// Arrange: populate portable fields and device-local session provenance.
 		const sessionId = insertTestSession(db);
-		const now = new Date().toISOString();
+		db.prepare(
+			"UPDATE sessions SET project = ?, cwd = ?, git_remote = ?, git_branch = ?, started_at = ? WHERE id = ?",
+		).run(
+			"test-project",
+			"/test/project",
+			"https://example.com/project.git",
+			"test-branch",
+			"2026-01-01T00:00:00Z",
+			sessionId,
+		);
+		const now = "2026-01-01T00:00:00Z";
 		const meta = { clock_device_id: "dev-a", custom_field: "preserved" };
 		db.prepare(
 			`INSERT INTO memory_items(
@@ -345,8 +401,8 @@ describe("recordReplicationOp", () => {
 				created_at, updated_at, import_key, rev, metadata_json, active,
 				actor_id, actor_display_name, visibility, workspace_id, workspace_kind,
 				origin_device_id, origin_source, trust_state, narrative,
-				facts, concepts, files_read, files_modified, scope_id
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				facts, concepts, files_read, files_modified, scope_id, user_prompt_id, prompt_number
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		).run(
 			sessionId,
 			"feature",
@@ -366,7 +422,7 @@ describe("recordReplicationOp", () => {
 			"shared",
 			"shared:team",
 			"shared",
-			"dev-a",
+			"device-origin",
 			"manual",
 			"verified",
 			"Full narrative text",
@@ -375,6 +431,8 @@ describe("recordReplicationOp", () => {
 			toJson(["src/a.ts"]),
 			toJson(["src/b.ts"]),
 			"acme-work",
+			42,
+			7,
 		);
 
 		const memId = (
@@ -383,6 +441,7 @@ describe("recordReplicationOp", () => {
 			}
 		).id;
 
+		// Act: record and load the incremental wire payload.
 		const opId = recordReplicationOp(db, { memoryId: memId, opType: "upsert", deviceId: "dev-a" });
 		const row = db
 			.prepare("SELECT payload_json, scope_id FROM replication_ops WHERE op_id = ?")
@@ -392,6 +451,8 @@ describe("recordReplicationOp", () => {
 		const payloadJson = row.payload_json;
 		if (payloadJson === null) throw new Error("expected row.payload_json to be non-null");
 		const payload = JSON.parse(payloadJson) as Record<string, unknown>;
+		// Assert: portable project/prompt fields survive, session provenance stays local.
+		expectPortableProjectWithoutSessionProvenance(payload);
 		// Core fields
 		expect(payload.kind).toBe("feature");
 		expect(payload.title).toBe("Ship TS port");
@@ -401,10 +462,14 @@ describe("recordReplicationOp", () => {
 		expect(payload.tags_text).toBe("ts port");
 		// Provenance fields
 		expect(payload.actor_id).toBe("actor-1");
+		expect(payload.actor_display_name).toBe("Adam");
 		expect(payload.visibility).toBe("shared");
 		expect(payload.workspace_id).toBe("shared:team");
-		expect(payload.origin_device_id).toBe("dev-a");
+		expect(payload.workspace_kind).toBe("shared");
+		expect(payload.origin_device_id).toBe("device-origin");
+		expect(payload.origin_source).toBe("manual");
 		expect(payload.trust_state).toBe("verified");
+		expect(payload.narrative).toBe("Full narrative text");
 		// metadata_json should be an object, not a double-encoded string
 		expect(payload.metadata_json).toEqual({ clock_device_id: "dev-a", custom_field: "preserved" });
 		// JSON array fields should be arrays, not strings
@@ -425,35 +490,11 @@ describe("recordReplicationOp", () => {
 			expect(result.applied).toBe(1);
 
 			const applied = db2
-				.prepare("SELECT * FROM memory_items WHERE import_key = ?")
+				.prepare(
+					"SELECT m.*, s.project AS session_project FROM memory_items m JOIN sessions s ON s.id = m.session_id WHERE m.import_key = ?",
+				)
 				.get("key:payload") as Record<string, unknown>;
-			// Core fields
-			expect(applied.kind).toBe("feature");
-			expect(applied.title).toBe("Ship TS port");
-			expect(applied.subtitle).toBe("The big one");
-			expect(applied.body_text).toBe("Ported all the things");
-			expect(applied.confidence).toBe(0.95);
-			expect(applied.tags_text).toBe("ts port");
-			// Provenance fields survive
-			expect(applied.actor_id).toBe("actor-1");
-			expect(applied.actor_display_name).toBe("Adam");
-			expect(applied.visibility).toBe("shared");
-			expect(applied.workspace_id).toBe("shared:team");
-			expect(applied.workspace_kind).toBe("shared");
-			expect(applied.origin_device_id).toBe("dev-a");
-			expect(applied.origin_source).toBe("manual");
-			expect(applied.trust_state).toBe("verified");
-			expect(applied.scope_id).toBe("acme-work");
-			expect(applied.narrative).toBe("Full narrative text");
-			// metadata_json round-trips as proper JSON with clock_device_id added
-			const appliedMeta = JSON.parse(applied.metadata_json as string);
-			expect(appliedMeta.custom_field).toBe("preserved");
-			expect(appliedMeta.clock_device_id).toBe("dev-a");
-			// JSON array columns round-trip
-			expect(JSON.parse(applied.facts as string)).toEqual(["fact-1"]);
-			expect(JSON.parse(applied.concepts as string)).toEqual(["concept-1"]);
-			expect(JSON.parse(applied.files_read as string)).toEqual(["src/a.ts"]);
-			expect(JSON.parse(applied.files_modified as string)).toEqual(["src/b.ts"]);
+			expectIncrementalDestinationFields(applied);
 		} finally {
 			db2.close();
 		}
@@ -2762,9 +2803,18 @@ describe("applyReplicationOps", () => {
 		});
 
 		const updateResult = applyReplicationOps(db, [updateOp], "dev-local");
+		// Assert the upsert before deletion can overwrite its scope.
+		expect(updateResult.applied).toBe(1);
+		expect(
+			db
+				.prepare("SELECT title, active, scope_id FROM memory_items WHERE import_key = ?")
+				.get(updateOp.entity_id),
+		).toEqual({ title: "Remote memory", active: 1, scope_id: "acme-work" });
+		expect(
+			db.prepare("SELECT scope_id FROM replication_ops WHERE op_id = ?").get(updateOp.op_id),
+		).toEqual({ scope_id: "acme-work" });
 		const deleteResult = applyReplicationOps(db, [deleteOp], "dev-local");
 
-		expect(updateResult.applied).toBe(1);
 		expect(deleteResult.applied).toBe(1);
 		const mem = db
 			.prepare("SELECT title, active, scope_id FROM memory_items WHERE import_key = ?")
@@ -2875,16 +2925,19 @@ describe("applyReplicationOps", () => {
 		},
 	);
 
-	function makeUnsupportedOldSideReassignment(importKey: string): ReplicationOp {
+	function makeOldSideReassignment(
+		importKey: string,
+		options: { opId?: string; operationId?: string; newScopeId?: string } = {},
+	): ReplicationOp {
 		return makeReplicationOp({
-			op_id: `unsupported-old-side-${importKey}`,
+			op_id: options.opId ?? `unsupported-old-side-${importKey}`,
 			entity_id: importKey,
 			op_type: "reassign_scope",
 			payload_json: toJson({
-				operation_id: `share-${importKey}`,
+				operation_id: options.operationId ?? `share-${importKey}`,
 				memory_id: importKey,
 				old_scope_id: DEFAULT_SYNC_SCOPE_ID,
-				new_scope_id: "managed-project",
+				new_scope_id: options.newScopeId ?? "managed-project",
 				revision: 2,
 				side: "old",
 			}),
@@ -2902,7 +2955,7 @@ describe("applyReplicationOps", () => {
 			originDeviceId: "dev-remote",
 			scopeId: DEFAULT_SYNC_SCOPE_ID,
 		});
-		const op = makeUnsupportedOldSideReassignment(importKey);
+		const op = makeOldSideReassignment(importKey);
 
 		const result = applyReplicationOps(db, [op], "dev-local", undefined, {
 			inboundScopeValidation: { peerDeviceId: "dev-remote", enabled: false },
@@ -2916,7 +2969,7 @@ describe("applyReplicationOps", () => {
 
 	it("accepts an absent-row old-side reassignment as a vacuous control operation", () => {
 		const importKey = "key:unsupported-absent-row";
-		const op = makeUnsupportedOldSideReassignment(importKey);
+		const op = makeOldSideReassignment(importKey);
 
 		const result = applyReplicationOps(db, [op], "dev-local", undefined, {
 			inboundScopeValidation: { peerDeviceId: "dev-remote", enabled: false },
@@ -2940,7 +2993,7 @@ describe("applyReplicationOps", () => {
 				originDeviceId,
 				scopeId: DEFAULT_SYNC_SCOPE_ID,
 			});
-			const op = makeUnsupportedOldSideReassignment(importKey);
+			const op = makeOldSideReassignment(importKey);
 
 			const result = applyReplicationOps(db, [op], "dev-local", undefined, {
 				inboundScopeValidation: { peerDeviceId: "dev-remote", enabled: false },
@@ -2963,22 +3016,9 @@ describe("applyReplicationOps", () => {
 			scopeId: DEFAULT_SYNC_SCOPE_ID,
 		});
 		grantScope("managed-project", ["dev-remote"]);
-		const op = makeReplicationOp({
-			op_id: "default-reassign-old",
-			entity_id: importKey,
-			op_type: "reassign_scope",
-			payload_json: toJson({
-				operation_id: "share_default",
-				memory_id: importKey,
-				old_scope_id: DEFAULT_SYNC_SCOPE_ID,
-				new_scope_id: "managed-project",
-				revision: 2,
-				side: "old",
-			}),
-			clock_rev: 2,
-			clock_updated_at: "2026-01-01T00:00:01Z",
-			created_at: "2026-01-01T00:00:01Z",
-			scope_id: DEFAULT_SYNC_SCOPE_ID,
+		const op = makeOldSideReassignment(importKey, {
+			opId: "default-reassign-old",
+			operationId: "share_default",
 		});
 
 		const result = applyWithScopeValidation(op);
@@ -3003,22 +3043,10 @@ describe("applyReplicationOps", () => {
 			scopeId: DEFAULT_SYNC_SCOPE_ID,
 		});
 		grantScope("local-project", ["dev-remote"], { authorityType: "local" });
-		const op = makeReplicationOp({
-			op_id: "default-reassign-local-destination-old",
-			entity_id: importKey,
-			op_type: "reassign_scope",
-			payload_json: toJson({
-				operation_id: "share_local_destination",
-				memory_id: importKey,
-				old_scope_id: DEFAULT_SYNC_SCOPE_ID,
-				new_scope_id: "local-project",
-				revision: 2,
-				side: "old",
-			}),
-			clock_rev: 2,
-			clock_updated_at: "2026-01-01T00:00:01Z",
-			created_at: "2026-01-01T00:00:01Z",
-			scope_id: DEFAULT_SYNC_SCOPE_ID,
+		const op = makeOldSideReassignment(importKey, {
+			opId: "default-reassign-local-destination-old",
+			operationId: "share_local_destination",
+			newScopeId: "local-project",
 		});
 
 		const result = applyWithScopeValidation(op);
@@ -3042,22 +3070,10 @@ describe("applyReplicationOps", () => {
 			originDeviceId: "dev-remote",
 			scopeId: DEFAULT_SYNC_SCOPE_ID,
 		});
-		const op = makeReplicationOp({
-			op_id: "default-reassign-unknown-destination-old",
-			entity_id: importKey,
-			op_type: "reassign_scope",
-			payload_json: toJson({
-				operation_id: "share_unknown_destination",
-				memory_id: importKey,
-				old_scope_id: DEFAULT_SYNC_SCOPE_ID,
-				new_scope_id: "sender-local-project",
-				revision: 2,
-				side: "old",
-			}),
-			clock_rev: 2,
-			clock_updated_at: "2026-01-01T00:00:01Z",
-			created_at: "2026-01-01T00:00:01Z",
-			scope_id: DEFAULT_SYNC_SCOPE_ID,
+		const op = makeOldSideReassignment(importKey, {
+			opId: "default-reassign-unknown-destination-old",
+			operationId: "share_unknown_destination",
+			newScopeId: "sender-local-project",
 		});
 
 		const result = applyWithScopeValidation(op);
@@ -3082,21 +3098,8 @@ describe("applyReplicationOps", () => {
 			scopeId: DEFAULT_SYNC_SCOPE_ID,
 		});
 		grantScope("managed-project", ["dev-local"]);
-		const op = makeReplicationOp({
-			entity_id: importKey,
-			op_type: "reassign_scope",
-			payload_json: toJson({
-				operation_id: "share_default",
-				memory_id: importKey,
-				old_scope_id: DEFAULT_SYNC_SCOPE_ID,
-				new_scope_id: "managed-project",
-				revision: 2,
-				side: "old",
-			}),
-			clock_rev: 2,
-			clock_updated_at: "2026-01-01T00:00:01Z",
-			created_at: "2026-01-01T00:00:01Z",
-			scope_id: DEFAULT_SYNC_SCOPE_ID,
+		const op = makeOldSideReassignment(importKey, {
+			operationId: "share_default",
 		});
 
 		const result = applyWithScopeValidation(op);
@@ -3115,21 +3118,8 @@ describe("applyReplicationOps", () => {
 			scopeId: DEFAULT_SYNC_SCOPE_ID,
 		});
 		grantScope("managed-project", ["dev-remote"]);
-		const op = makeReplicationOp({
-			entity_id: importKey,
-			op_type: "reassign_scope",
-			payload_json: toJson({
-				operation_id: "share_default",
-				memory_id: importKey,
-				old_scope_id: DEFAULT_SYNC_SCOPE_ID,
-				new_scope_id: "managed-project",
-				revision: 2,
-				side: "old",
-			}),
-			clock_rev: 2,
-			clock_updated_at: "2026-01-01T00:00:01Z",
-			created_at: "2026-01-01T00:00:01Z",
-			scope_id: DEFAULT_SYNC_SCOPE_ID,
+		const op = makeOldSideReassignment(importKey, {
+			operationId: "share_default",
 		});
 
 		const result = applyWithScopeValidation(op);
@@ -3148,21 +3138,8 @@ describe("applyReplicationOps", () => {
 			scopeId: DEFAULT_SYNC_SCOPE_ID,
 		});
 		grantScope("managed-project", ["dev-remote", "dev-local"]);
-		const op = makeReplicationOp({
-			entity_id: importKey,
-			op_type: "reassign_scope",
-			payload_json: toJson({
-				operation_id: "share_default",
-				memory_id: importKey,
-				old_scope_id: DEFAULT_SYNC_SCOPE_ID,
-				new_scope_id: "managed-project",
-				revision: 2,
-				side: "old",
-			}),
-			clock_rev: 2,
-			clock_updated_at: "2026-01-01T00:00:01Z",
-			created_at: "2026-01-01T00:00:01Z",
-			scope_id: DEFAULT_SYNC_SCOPE_ID,
+		const op = makeOldSideReassignment(importKey, {
+			operationId: "share_default",
 		});
 
 		const result = applyWithScopeValidation(op);
@@ -3746,40 +3723,6 @@ describe("applyReplicationOps", () => {
 		expect(mem.body_text).not.toContain(pat);
 	});
 
-	it("uses authoritative inbound op scope_id when updating existing memories", () => {
-		const sessionId = insertTestSession(db);
-		db.prepare(
-			`INSERT INTO memory_items(
-				session_id, kind, title, body_text, created_at, updated_at, import_key, rev, metadata_json, scope_id
-			 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		).run(
-			sessionId,
-			"discovery",
-			"Local old title",
-			"Local old body",
-			"2026-01-01T00:00:00Z",
-			"2026-01-01T00:00:00Z",
-			"key:test-1",
-			0,
-			toJson({ clock_device_id: "dev-local" }),
-			"local-default",
-		);
-		const op = makeReplicationOp({ scope_id: "acme-work", clock_rev: 2 });
-
-		const result = applyReplicationOps(db, [op], "dev-local");
-
-		expect(result.applied).toBe(1);
-		const mem = db
-			.prepare("SELECT title, scope_id FROM memory_items WHERE import_key = ?")
-			.get(op.entity_id) as { title: string; scope_id: string | null };
-		expect(mem.title).toBe("Remote memory");
-		expect(mem.scope_id).toBe("acme-work");
-		const recordedOp = db
-			.prepare("SELECT scope_id FROM replication_ops WHERE op_id = ?")
-			.get(op.op_id) as { scope_id: string | null };
-		expect(recordedOp.scope_id).toBe("acme-work");
-	});
-
 	it("uses authoritative inbound op scope_id when deleting existing memories", () => {
 		const sessionId = insertTestSession(db);
 		db.prepare(
@@ -4325,154 +4268,6 @@ describe("applyReplicationOps", () => {
 		// Stays tombstoned → embeddings must be queued for deletion, not upsert.
 		expect(result.vectorWork.deleteMemoryIds).toContain(mem.id);
 		expect(result.vectorWork.upsertMemoryIds).not.toContain(mem.id);
-	});
-});
-
-// ---------------------------------------------------------------------------
-// Payload round-trip parity — ensures recordReplicationOp, parseMemoryPayload,
-// and applyReplicationOps all agree on which fields are carried through the
-// replication pipeline.  If you add a field to one and not the others, this
-// test will catch the drift.
-// ---------------------------------------------------------------------------
-
-describe("replication payload round-trip parity", () => {
-	let db: InstanceType<typeof Database>;
-	let sessionId: number;
-
-	beforeEach(() => {
-		db = new Database(":memory:");
-		initTestSchema(db);
-		sessionId = insertTestSession(db);
-		setSyncResetState(db, { generation: 1, snapshot_id: "snap-rt", baseline_cursor: null });
-	});
-
-	afterEach(() => db.close());
-
-	it("round-trips all payload fields through record → parse → apply", () => {
-		const now = new Date().toISOString();
-
-		// Insert a memory with every field populated
-		db.prepare(`
-			INSERT INTO memory_items (
-				session_id, kind, title, subtitle, body_text, confidence,
-				tags_text, active, created_at, updated_at, metadata_json,
-				actor_id, actor_display_name, visibility, workspace_id,
-				workspace_kind, origin_device_id, origin_source, trust_state,
-				narrative, facts, concepts, files_read, files_modified,
-				user_prompt_id, prompt_number, import_key, rev
-			) VALUES (
-				?, 'decision', 'Round Trip Title', 'Sub', 'Body text here', 0.85,
-				'tag-a tag-b', 1, ?, ?, '{"custom_key":"custom_val"}',
-				'actor-rt', 'Actor Name', 'shared', 'ws-1',
-				'shared', 'device-origin', 'test', 'trusted',
-				'A narrative', '["fact-1"]', '["concept-1"]', '["file-a"]', '["file-b"]',
-				42, 7, 'roundtrip-key-1', 1
-			)
-		`).run(sessionId, now, now);
-
-		// Also set the session project so it flows through
-		db.prepare("UPDATE sessions SET project = ? WHERE id = ?").run("test-project", sessionId);
-
-		const memoryId = (
-			db.prepare("SELECT id FROM memory_items WHERE import_key = 'roundtrip-key-1'").get() as {
-				id: number;
-			}
-		).id;
-
-		// Record a replication op (source side)
-		const opId = recordReplicationOp(db, {
-			memoryId,
-			opType: "upsert",
-			deviceId: "source-device",
-		});
-
-		// Read the op back
-		const op = db.prepare("SELECT * FROM replication_ops WHERE op_id = ?").get(opId) as {
-			clock_rev: number;
-			clock_updated_at: string;
-			created_at: string;
-			payload_json: string;
-			scope_id: string | null;
-		};
-		const payload = JSON.parse(op.payload_json) as Record<string, unknown>;
-
-		// Verify the payload includes all the fields we care about
-		expect(payload.project).toBe("test-project");
-		// Privacy invariant: session-level provenance that is meaningful only
-		// on the originating device must NOT leak in the wire payload.
-		// memories are portable; session context (cwd, git_remote, git_branch,
-		// started_at) is device-local by design.
-		expect(payload).not.toHaveProperty("cwd");
-		expect(payload).not.toHaveProperty("git_remote");
-		expect(payload).not.toHaveProperty("git_branch");
-		expect(payload).not.toHaveProperty("started_at");
-		expect(payload.kind).toBe("decision");
-		expect(payload.title).toBe("Round Trip Title");
-		expect(payload.subtitle).toBe("Sub");
-		expect(payload.body_text).toBe("Body text here");
-		expect(payload.confidence).toBe(0.85);
-		expect(payload.actor_id).toBe("actor-rt");
-		expect(payload.actor_display_name).toBe("Actor Name");
-		expect(payload.visibility).toBe("shared");
-		expect(payload.workspace_id).toBe("ws-1");
-		expect(payload.workspace_kind).toBe("shared");
-		expect(payload.origin_device_id).toBe("device-origin");
-		expect(payload.origin_source).toBe("test");
-		expect(payload.trust_state).toBe("trusted");
-		expect(payload.narrative).toBe("A narrative");
-		expect(payload.user_prompt_id).toBe(42);
-		expect(payload.prompt_number).toBe(7);
-
-		// Now apply this op on a "target" DB (same DB, different import key scenario)
-		// Delete the original memory AND the recorded op so the apply treats this as new
-		db.prepare("DELETE FROM memory_items WHERE id = ?").run(memoryId);
-		db.prepare("DELETE FROM replication_ops WHERE op_id = ?").run(opId);
-
-		const replicationOp: ReplicationOp = {
-			op_id: "roundtrip-apply-op",
-			entity_type: "memory_item",
-			entity_id: "roundtrip-key-1",
-			op_type: "upsert",
-			payload_json: op.payload_json,
-			clock_rev: op.clock_rev,
-			clock_updated_at: op.clock_updated_at,
-			clock_device_id: "remote-device",
-			device_id: "remote-device",
-			created_at: op.created_at,
-			scope_id: op.scope_id,
-		};
-
-		const result = applyReplicationOps(db, [replicationOp], "target-device");
-		expect(result.applied).toBe(1);
-
-		// Verify the round-tripped memory has the right fields
-		const applied = db
-			.prepare(
-				"SELECT m.*, s.project as session_project FROM memory_items m JOIN sessions s ON s.id = m.session_id WHERE m.import_key = 'roundtrip-key-1'",
-			)
-			.get() as Record<string, unknown>;
-
-		expect(applied).toBeTruthy();
-		expect(applied.session_project).toBe("test-project");
-		// memory_items.project is denormalized at apply time so the read model
-		// can reach the originating project without a session join.
-		expect(applied.project).toBe("test-project");
-		expect(applied.kind).toBe("decision");
-		expect(applied.title).toBe("Round Trip Title");
-		expect(applied.subtitle).toBe("Sub");
-		expect(applied.body_text).toBe("Body text here");
-		expect(applied.confidence).toBe(0.85);
-		expect(applied.actor_id).toBe("actor-rt");
-		expect(applied.actor_display_name).toBe("Actor Name");
-		expect(applied.visibility).toBe("shared");
-		expect(applied.workspace_id).toBe("ws-1");
-		expect(applied.workspace_kind).toBe("shared");
-		expect(applied.origin_device_id).toBe("device-origin");
-		expect(applied.origin_source).toBe("test");
-		expect(applied.trust_state).toBe("trusted");
-		expect(applied.narrative).toBe("A narrative");
-		expect(applied.user_prompt_id).toBe(42);
-		expect(applied.prompt_number).toBe(7);
 	});
 });
 
