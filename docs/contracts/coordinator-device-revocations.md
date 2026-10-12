@@ -571,6 +571,12 @@ actor merges repeat the pending-capture check inside their actual immediate writ
 transactions. Actor-dependent invitation and review operations also reject skipped
 initialization; actor listing and explicitly device-only operations remain usable.
 
+Accepted Project invitations recheck the local inviter after fetching coordinator
+state, inside the same immediate transaction as local acceptance writes. Pending
+capture actor drift returns `409 device_adoption_actor_conflict` without repairing
+the actor or changing peers and sharing policy. This does not roll back an
+acceptance already recorded remotely or change initialization when no capture is pending.
+
 Non-recipient invitation import checks the resolved actor before contacting the
 coordinator and again before its local actor upsert. If the actor changes during
 the coordinator request, local persistence rejects without repairing the actor or

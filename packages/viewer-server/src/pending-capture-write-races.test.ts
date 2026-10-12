@@ -8,7 +8,8 @@ import { enrollFixtureSigningKey } from "../../core/src/managed-scope-test-fixtu
 import { now, useLocalCaptureFixture } from "../../core/src/memory-local-capture-test-fixtures.js";
 import { shareProjectSetDigest } from "../../core/src/share-operation.js";
 import * as syncIdentity from "../../core/src/sync-identity.js";
-import { syncRoutes } from "./routes/sync.js";
+import { fingerprintPublicKey } from "../../core/src/sync-identity.js";
+import { advanceProjectShareOperation, syncRoutes } from "./routes/sync.js";
 
 const { fixture, rememberScoped, factRows, ledger } = useLocalCaptureFixture();
 const deviceId = "capture-device";
@@ -74,6 +75,12 @@ function snapshot() {
 			"recipient_managed_project_projections",
 			"recipient_policy_authority_states",
 			"share_operations",
+			"share_operation_projects",
+			"share_operation_steps",
+			"replication_scopes",
+			"actor_scope_memberships",
+			"device_scope_memberships",
+			"project_scope_mappings",
 		].map((table) => [table, factRows(table)]),
 	);
 }
@@ -159,6 +166,231 @@ function acceptedResponse() {
 		{ status: 200, headers: { "content-type": "application/json" } },
 	);
 }
+
+function pendingShare() {
+	pending({ valid: true });
+	writeFileSync(
+		join(fixture.dir, "config.json"),
+		JSON.stringify({
+			sync_coordinator_url: "https://coordinator.example.test",
+			sync_coordinator_group: "fixture-group",
+			sync_coordinator_admin_secret: "fixture-secret",
+		}),
+	);
+	fixture.store.db
+		.prepare(`INSERT INTO actors
+		(actor_id, display_name, is_local, status, created_at, updated_at)
+		VALUES ('pending-recipient', 'Recipient', 0, 'pending', ?, ?)`)
+		.run(now, now);
+	fixture.store.db
+		.prepare(`INSERT INTO share_operations(
+		operation_id, state, inviter_actor_id, inviter_device_ids_json, person_id,
+		person_kind, pending_person_operation_id, teammate_name, history_policy,
+		reviewed_project_set_digest, coordinator_group_id, invite_token_digest,
+		invite_expires_at, created_at, updated_at)
+		VALUES (?, 'waiting_for_acceptance', ?, ?, 'pending-recipient', 'pending', ?,
+		'Recipient', 'existing_and_future', ?, 'fixture-group', 'fixture-digest',
+		'2099-01-01T00:00:00Z', ?, ?)`)
+		.run(operationId, actorId, JSON.stringify([deviceId]), operationId, "b".repeat(64), now, now);
+	fixture.store.db
+		.prepare(`INSERT INTO share_operation_projects(
+		operation_id, canonical_project_identity, display_name, identity_source,
+		existing_memory_count, ordinal) VALUES (?, ?, 'Project', 'git_remote', 0, 0)`)
+		.run(operationId, project.canonical_identity);
+	expect(ledger().birth).toHaveLength(1);
+	expect(ledger().adoption).toEqual([]);
+	expect(() => fixture.store.assertPendingLocalCaptureAdoptionActors()).not.toThrow();
+}
+
+function reconciliationResponse(state = "accepted") {
+	return new Response(
+		JSON.stringify({
+			operation_id: operationId,
+			group_id: "fixture-group",
+			state,
+			reviewed_project_set_digest: "b".repeat(64),
+			projects: [project],
+			recipient_actor_id: "accepted-recipient",
+			recipient_display_name: "Recipient",
+			recipient_device_id: "recipient-device",
+			recipient_device_display_name: "Recipient Laptop",
+			recipient_public_key: "fixture-recipient-key",
+			recipient_fingerprint: fingerprintPublicKey("fixture-recipient-key"),
+			consumed_at: now,
+			trust_state: "pending_inviter_device",
+		}),
+		{ status: 200 },
+	);
+}
+
+it.each(
+	states.flatMap((state) =>
+		(["reconcile", "maintenance"] as const).map((consumer) => ({ state, consumer })),
+	),
+)(
+	"rejects $state inviter drift during coordinator GET in $consumer",
+	async ({ state, consumer }) => {
+		// Fresh pending capture makes the real actor check applicable and initially valid.
+		pendingShare();
+		const other = new Database(fixture.store.dbPath);
+		let competingCommit: ReturnType<typeof snapshot> | undefined;
+		const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			expect(String(input)).toContain(
+				`/v1/admin/project-invites/${operationId}?group_id=fixture-group`,
+			);
+			expect(init?.method).toBe("GET");
+			expect(() => fixture.store.assertPendingLocalCaptureAdoptionActors()).not.toThrow();
+			mutate(other, state);
+			competingCommit = snapshot();
+			return reconciliationResponse();
+		});
+		vi.stubGlobal("fetch", fetch);
+		try {
+			// Maintenance and HTTP share the actual acceptance helper, not a mocked assertion.
+			let failure: unknown;
+			if (consumer === "reconcile") {
+				const response = await post(`/api/sync/project-invites/${operationId}/reconcile`, {});
+				expect(response.status).toBe(409);
+				failure = await response.json();
+			} else {
+				failure = await advanceProjectShareOperation(fixture.store, operationId).catch(
+					(error) => error,
+				);
+			}
+			// No acceptance, peer, actor, identity, scope, or policy writes follow the competing commit.
+			expect(fetch).toHaveBeenCalledTimes(1);
+			expect(competingCommit).toBeDefined();
+			expect(snapshot()).toEqual(competingCommit);
+			expect(ledger().adoption).toEqual([]);
+			if (consumer === "reconcile")
+				expect(failure).toEqual({ error: "device_adoption_actor_conflict" });
+			else expect(failure).toMatchObject({ message: "device_adoption_actor_conflict" });
+		} finally {
+			other.close();
+		}
+	},
+);
+
+it("reconciles accepted coordinator intent without inviter drift", async () => {
+	// Use the identical pending capture and accepted response as the race cases.
+	pendingShare();
+	const fetch = vi.fn(async () => reconciliationResponse());
+	vi.stubGlobal("fetch", fetch);
+	const response = await post(`/api/sync/project-invites/${operationId}/reconcile`, {});
+	// Acceptance persists through the real route and SQLite writer.
+	expect(response.status).toBe(200);
+	expect(await response.json()).toMatchObject({ reconciled: true, state: "pending_setup" });
+	expect(fetch).toHaveBeenCalledTimes(1);
+	expect(factRows("share_operations")).toEqual([
+		expect.objectContaining({
+			recipient_actor_id: "accepted-recipient",
+			recipient_device_id: "recipient-device",
+		}),
+	]);
+	expect(factRows("sync_peers")).toEqual([
+		expect.objectContaining({ peer_device_id: "recipient-device" }),
+	]);
+});
+
+it("keeps maintenance waiting without inviter drift or acceptance writes", async () => {
+	// A valid local actor and a genuinely unaccepted remote invite.
+	pendingShare();
+	const before = snapshot();
+	const fetch = vi.fn(async () => reconciliationResponse("waiting_for_acceptance"));
+	vi.stubGlobal("fetch", fetch);
+	const result = await advanceProjectShareOperation(fixture.store, operationId);
+	// Maintenance reaches the GET and waits without provisioning or accepting.
+	expect(result).toEqual({ advanced: false, state: "waiting_for_acceptance" });
+	expect(fetch).toHaveBeenCalledTimes(1);
+	expect(snapshot()).toEqual(before);
+});
+
+it("reserves the SQLite writer before the post-GET pending actor check", async () => {
+	// Probe only the commit-stage check, not the preflight before remote work.
+	pendingShare();
+	fixture.store.db.pragma("journal_mode = WAL");
+	const other = new Database(fixture.store.dbPath);
+	other.pragma("busy_timeout = 0");
+	const check = fixture.store.assertPendingLocalCaptureAdoptionActors.bind(fixture.store);
+	const interference: unknown[] = [];
+	let armed = false;
+	let commitChecks = 0;
+	const checked = vi
+		.spyOn(fixture.store, "assertPendingLocalCaptureAdoptionActors")
+		.mockImplementation(() => {
+			check();
+			if (!armed) return;
+			commitChecks++;
+			try {
+				mutate(other, "foreign");
+			} catch (error) {
+				interference.push(error);
+			}
+		});
+	const fetch = vi.fn(async () => {
+		armed = true;
+		return reconciliationResponse();
+	});
+	vi.stubGlobal("fetch", fetch);
+	try {
+		// The real assertion runs with a competing file-backed writer ready to commit.
+		const response = await post(`/api/sync/project-invites/${operationId}/reconcile`, {});
+		// The writer is excluded, unchanged authority permits acceptance, and the probe ran.
+		expect(response.status).toBe(200);
+		expect(fetch).toHaveBeenCalledTimes(1);
+		expect(commitChecks).toBe(1);
+		expect(interference).toEqual([expect.objectContaining({ code: "SQLITE_BUSY" })]);
+		expect(factRows("actors")).toContainEqual(
+			expect.objectContaining({
+				actor_id: actorId,
+				is_local: 1,
+				status: "active",
+			}),
+		);
+		// Positive control: the same competing SQL can commit once reconciliation releases its lock.
+		mutate(other, "foreign");
+		expect(factRows("actors")).toContainEqual(
+			expect.objectContaining({ actor_id: actorId, is_local: 0 }),
+		);
+	} finally {
+		checked.mockRestore();
+		other.close();
+	}
+});
+
+it("rolls back same-text SQLite acceptance failure without mapping it to pending actor conflict", async () => {
+	// Fail peer persistence after the nested reconciliation has written recipient/operation rows.
+	pendingShare();
+	fixture.store.db.exec(`CREATE TRIGGER fail_acceptance_peer BEFORE INSERT ON sync_peers
+		BEGIN SELECT RAISE(ABORT, 'device_adoption_actor_conflict'); END`);
+	const before = snapshot();
+	const beforeKeys = keys();
+	const beforeConfig = config();
+	const fetch = vi.fn(async () => reconciliationResponse());
+	vi.stubGlobal("fetch", fetch);
+	// Maintenance preserves the actual SQL error; HTTP uses its existing failure fallback.
+	const failure = await advanceProjectShareOperation(fixture.store, operationId).catch(
+		(error) => error,
+	);
+	const response = await post(`/api/sync/project-invites/${operationId}/reconcile`, {});
+	// Text alone cannot disguise a database failure or retain partial acceptance writes.
+	expect(failure).toBeInstanceOf(Database.SqliteError);
+	expect(failure).toMatchObject({
+		message: "device_adoption_actor_conflict",
+		code: "SQLITE_CONSTRAINT_TRIGGER",
+	});
+	expect(response.status).toBe(409);
+	expect(await response.json()).toEqual({ error: "operation_reconcile_failed" });
+	expect(fetch).toHaveBeenCalledTimes(2);
+	expect(snapshot()).toEqual(before);
+	expect(keys()).toEqual(beforeKeys);
+	expect(config()).toEqual(beforeConfig);
+	// Positive control: removing only the failing trigger permits the same accepted intent to commit.
+	fixture.store.db.exec("DROP TRIGGER fail_acceptance_peer");
+	const retry = await post(`/api/sync/project-invites/${operationId}/reconcile`, {});
+	expect(retry.status).toBe(200);
+	expect(await retry.json()).toMatchObject({ reconciled: true });
+});
 
 it.each(
 	states.flatMap((state) => (["claim", "merge"] as const).map((action) => ({ state, action }))),

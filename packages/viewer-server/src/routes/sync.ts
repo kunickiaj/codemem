@@ -1326,7 +1326,7 @@ async function reconcileProjectInviteAcceptance(
 		throw error;
 	}
 	const projects = parseAcceptedProjectIntent(payload.projects);
-	reconcileShareOperationAcceptance(store.db, {
+	commitProjectInviteAcceptance(store, {
 		operationId,
 		localInviterActorId: store.actorId,
 		coordinatorGroupId: groupId,
@@ -1343,6 +1343,18 @@ async function reconcileProjectInviteAcceptance(
 		projects,
 	});
 	return { accepted: true, payload };
+}
+
+function commitProjectInviteAcceptance(
+	store: MemoryStore,
+	input: Parameters<typeof reconcileShareOperationAcceptance>[1],
+): void {
+	store.db
+		.transaction(() => {
+			requireLocalActorRecord(store);
+			reconcileShareOperationAcceptance(store.db, input);
+		})
+		.immediate();
 }
 
 interface ShareOperationReadRow {
@@ -1611,6 +1623,9 @@ function projectInviteOwnerErrorResponse(
 } {
 	const message = error instanceof Error ? error.message : "";
 	const status = errorStatus(error);
+	if (isPendingCaptureActorConflict(error) && (status == null || status === 409)) {
+		return { code: message, status: 409 };
+	}
 	if (message === "operation_not_found" && (status == null || status === 404)) {
 		return { code: message, status: 404 };
 	}
