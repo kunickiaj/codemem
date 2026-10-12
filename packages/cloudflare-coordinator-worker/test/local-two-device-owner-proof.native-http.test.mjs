@@ -72,6 +72,9 @@ export { loadReplicationOpsSince, filterReplicationOpsForSyncWithStatus, applyRe
 					loader: "js",
 				}));
 				builder.onResolve({ filter: /^@codemem\/core$/ }, () => ({ path: join(coreDir, "src/index.ts") }));
+				builder.onResolve({ filter: /^@codemem\/embeddings$/ }, () => ({
+					path: fileURLToPath(new URL("../../embeddings/src/index.ts", import.meta.url)),
+				}));
 				builder.onResolve({ filter: /^[^./]/ }, async ({ path, pluginData, resolveDir }) => {
 					if (pluginData?.resolving) return;
 					if (path.startsWith("node:")) return { path, external: true };
