@@ -339,27 +339,33 @@ const NON_RANDOMIZED_BASIS_CASES = Object.values(NON_RANDOMIZED_BASIS_CASES_BY_B
 function basisEvidence(
 	db: Database.Database,
 	sequence: number,
-	attemptId: string,
+	referenceCodes: string[],
 	observedAt: string,
 	testCase: (typeof NON_RANDOMIZED_BASIS_CASES)[number],
+	referenceOverrides: Omit<
+		NonNullable<RecordOutcomeEvidenceInput["references"]>,
+		"reference_codes"
+	> = {},
 ): string {
 	const evidenceId = id(sequence);
 	if (testCase.basis === "source_location_overlap") {
-		recordOutcomeEvidence(
-			db,
-			referencing(
-				sourceLocationOverlapEvidence({
-					evidenceId,
-					observedAt,
-					producer: "basis-timestamp-test",
-					producerVersion: "v1",
-					retrievedPaths: ["packages/core/src/attribution-assessment.ts"],
-					downstreamPaths: ["packages/core/src/attribution-assessment.ts"],
-					correlation: { sessionId: 1 },
-				}),
-				`attempt:${attemptId}`,
-			),
-		);
+		const evidence = sourceLocationOverlapEvidence({
+			evidenceId,
+			observedAt,
+			producer: "basis-timestamp-test",
+			producerVersion: "v1",
+			retrievedPaths: ["packages/core/src/attribution-assessment.ts"],
+			downstreamPaths: ["packages/core/src/attribution-assessment.ts"],
+			correlation: { sessionId: 1 },
+		});
+		recordOutcomeEvidence(db, {
+			...evidence,
+			references: {
+				...evidence.references,
+				...referenceOverrides,
+				reference_codes: referenceCodes,
+			},
+		});
 		return evidenceId;
 	}
 	recordOutcomeEvidence(db, {
@@ -377,7 +383,8 @@ function basisEvidence(
 			...(testCase.basis === "blinded_evaluator"
 				? { assertion_id: `assertion-${evidenceId}`, rubric_id: "quality-rubric" }
 				: {}),
-			reference_codes: [`attempt:${attemptId}`],
+			...referenceOverrides,
+			reference_codes: referenceCodes,
 		},
 	});
 	return evidenceId;
@@ -454,7 +461,7 @@ describe("unknown attribution basis prerequisites", () => {
 		const evidenceId = basisEvidence(
 			db,
 			122,
-			id(22),
+			[`attempt:${id(22)}`],
 			COMPLETED_AT,
 			NON_RANDOMIZED_BASIS_CASES_BY_BASIS.explicit_reference,
 		);
@@ -475,24 +482,9 @@ describe("unknown attribution basis prerequisites", () => {
 	it("requires a subject reference for unknown explicit-reference attribution", () => {
 		// Arrange: a same-session mechanism witness without a subject reference.
 		recordRetrievalAttempt(db, attempt(22));
-		const sameSessionOnlyId = id(124);
-		const witness: RecordOutcomeEvidenceInput = {
-			evidenceId: sameSessionOnlyId,
-			dimension: "mechanism",
-			evidenceType: "mechanism.memory_reference",
-			sourceClass: "derived",
-			observedAt: COMPLETED_AT,
-			producer: "reference-rule",
-			producerVersion: "v1",
-			status: "present",
-			sessionId: 1,
-			references: { reference_codes: [] },
-		};
-		recordOutcomeEvidence(db, witness);
-		recordOutcomeEvidence(
-			db,
-			referencing({ ...witness, evidenceId: id(125) }, `attempt:${id(22)}`),
-		);
+		const basisCase = NON_RANDOMIZED_BASIS_CASES_BY_BASIS.explicit_reference;
+		const sameSessionOnlyId = basisEvidence(db, 124, [], COMPLETED_AT, basisCase);
+		const referencedId = basisEvidence(db, 125, [`attempt:${id(22)}`], COMPLETED_AT, basisCase);
 		const invalid = assessment(id(22), id(224), [sameSessionOnlyId], {
 			dimension: "mechanism",
 			impactLabel: "unknown",
@@ -502,7 +494,7 @@ describe("unknown attribution basis prerequisites", () => {
 		const accepted = recordAttributionAssessment(db, {
 			...invalid,
 			assessmentId: id(225),
-			evidenceIds: [id(125)],
+			evidenceIds: [referencedId],
 		});
 		// Assert
 		expect(() => recordAttributionAssessment(db, invalid)).toThrow(
@@ -978,6 +970,7 @@ describe("contract-v1 attribution assessments", () => {
 	});
 
 	it("applies the same eligible exposure binding to observational basis witnesses", () => {
+		// Arrange: selected and diagnostic-only memories remain distinct subjects.
 		const recorded = recordRetrievalAttempt(
 			db,
 			attempt(84, {
@@ -995,108 +988,62 @@ describe("contract-v1 attribution assessments", () => {
 			}),
 		).attempt;
 		const cases = [
-			["explicit_reference", "mechanism.memory_reference", "derived", "mechanism"],
-			["content_overlap", "mechanism.command_or_constraint_reuse", "derived", "mechanism"],
-			["human_review", "mechanism.memory_reference", "evaluator", "mechanism"],
-			["blinded_evaluator", "quality.blinded_evaluator", "evaluator", "quality"],
-		] as const;
+			NON_RANDOMIZED_BASIS_CASES_BY_BASIS.explicit_reference,
+			NON_RANDOMIZED_BASIS_CASES_BY_BASIS.content_overlap,
+			NON_RANDOMIZED_BASIS_CASES_BY_BASIS.human_review,
+			NON_RANDOMIZED_BASIS_CASES_BY_BASIS.blinded_evaluator,
+			NON_RANDOMIZED_BASIS_CASES_BY_BASIS.source_location_overlap,
+		];
 
-		for (const [index, [basis, evidenceType, sourceClass, dimension]] of cases.entries()) {
+		for (const [index, testCase] of cases.entries()) {
+			const { basis, dimension } = testCase;
 			const validId = id(550 + index * 2);
 			const diagnosticId = id(551 + index * 2);
-			for (const [evidenceId, referenceCode] of [
-				[validId, "memory:memory-10"],
-				[diagnosticId, "memory:diagnostic-only"],
+			for (const [sequence, referenceCode] of [
+				[550 + index * 2, "memory:memory-10"],
+				[551 + index * 2, "memory:diagnostic-only"],
 			] as const) {
-				recordOutcomeEvidence(db, {
-					evidenceId,
-					dimension,
-					evidenceType,
-					sourceClass,
-					observedAt: COMPLETED_AT,
-					producer: `basis-${basis}`,
-					producerVersion: "v1",
-					status: evidenceType === "quality.blinded_evaluator" ? "unknown" : "present",
-					sessionId: 1,
-					references: {
-						...(basis === "human_review"
-							? { rubric_id: "human-review-rubric" }
-							: evidenceType === "quality.blinded_evaluator"
-								? { assertion_id: `assertion-${evidenceId}`, rubric_id: "quality-rubric" }
-								: {}),
-						reference_codes: [referenceCode],
-					},
-				});
+				basisEvidence(db, sequence, [referenceCode], COMPLETED_AT, testCase);
 			}
 
-			expect(
-				recordAttributionAssessment(
-					db,
-					assessment(recorded.attemptId, id(560 + index * 2), [validId], {
-						dimension,
-						impactLabel: "unknown",
-						basis,
-					}),
-				).assessment.basis,
-			).toBe(basis);
-			expect(
-				tryRecordAttributionAssessment(
-					db,
-					assessment(recorded.attemptId, id(561 + index * 2), [diagnosticId], {
-						dimension,
-						impactLabel: "unknown",
-						basis,
-					}),
-				),
-			).toMatchObject({ ok: false, reason: "invalid_input" });
-		}
-
-		const validSourceId = id(570);
-		const diagnosticSourceId = id(571);
-		for (const [evidenceId, referenceCode] of [
-			[validSourceId, "memory:memory-10"],
-			[diagnosticSourceId, "memory:diagnostic-only"],
-		] as const) {
-			recordOutcomeEvidence(
+			// Act
+			const accepted = recordAttributionAssessment(
 				db,
-				referencing(
-					sourceLocationOverlapEvidence({
-						evidenceId,
-						observedAt: COMPLETED_AT,
-						producer: "path-rule",
-						producerVersion: "v1",
-						retrievedPaths: ["packages/core/src/schema.ts"],
-						downstreamPaths: ["packages/core/src/schema.ts"],
-						correlation: { sessionId: 1 },
-					}),
-					referenceCode,
-				),
+				assessment(recorded.attemptId, id(560 + index * 2), [validId], {
+					dimension,
+					impactLabel: "unknown",
+					basis,
+				}),
 			);
+			const rejected = tryRecordAttributionAssessment(
+				db,
+				assessment(recorded.attemptId, id(561 + index * 2), [diagnosticId], {
+					dimension,
+					impactLabel: "unknown",
+					basis,
+				}),
+			);
+			// Assert: each basis succeeds only for the handed-off memory.
+			expect(accepted.assessment.basis).toBe(basis);
+			expect(rejected).toMatchObject({ ok: false, reason: "invalid_input" });
 		}
-		expect(
-			recordAttributionAssessment(
-				db,
-				assessment(recorded.attemptId, id(572), [validSourceId], {
-					dimension: "mechanism",
-					impactLabel: "unknown",
-					basis: "source_location_overlap",
-				}),
-			).assessment.basis,
-		).toBe("source_location_overlap");
-		expect(
-			tryRecordAttributionAssessment(
-				db,
-				assessment(recorded.attemptId, id(573), [diagnosticSourceId], {
-					dimension: "mechanism",
-					impactLabel: "unknown",
-					basis: "source_location_overlap",
-				}),
-			),
-		).toMatchObject({ ok: false, reason: "invalid_input" });
 
 		const helpfulId = id(574);
-		const validReviewId = id(575);
-		const diagnosticDimensionId = id(576);
+		const validReviewId = basisEvidence(
+			db,
+			575,
+			["memory:memory-10"],
+			COMPLETED_AT,
+			NON_RANDOMIZED_BASIS_CASES_BY_BASIS.human_review,
+		);
+		const diagnosticDimensionId = basisEvidence(
+			db,
+			576,
+			["memory:diagnostic-only"],
+			COMPLETED_AT,
+			NON_RANDOMIZED_BASIS_CASES_BY_BASIS.blinded_evaluator,
+			{ assertion_id: "diagnostic-dimension" },
+		);
 		recordOutcomeEvidence(
 			db,
 			explicitFeedbackEvidence({
@@ -1111,46 +1058,19 @@ describe("contract-v1 attribution assessments", () => {
 				correlation: { sessionId: 1 },
 			}),
 		);
-		recordOutcomeEvidence(db, {
-			evidenceId: validReviewId,
-			dimension: "mechanism",
-			evidenceType: "mechanism.memory_reference",
-			sourceClass: "evaluator",
-			observedAt: COMPLETED_AT,
-			producer: "human-review",
-			producerVersion: "v1",
-			status: "present",
-			sessionId: 1,
-			references: {
-				rubric_id: "human-review-rubric",
-				reference_codes: ["memory:memory-10"],
-			},
-		});
-		recordOutcomeEvidence(db, {
-			evidenceId: diagnosticDimensionId,
-			dimension: "quality",
-			evidenceType: "quality.blinded_evaluator",
-			sourceClass: "evaluator",
-			observedAt: COMPLETED_AT,
-			producer: "human-review",
-			producerVersion: "v1",
-			status: "unknown",
-			sessionId: 1,
-			references: {
-				assertion_id: "diagnostic-dimension",
-				rubric_id: "quality-rubric",
-				reference_codes: ["memory:diagnostic-only"],
-			},
-		});
-		expect(() =>
+		// Act
+		const recordWithDiagnosticDimension = () =>
 			recordAttributionAssessment(
 				db,
 				assessment(recorded.attemptId, id(577), [helpfulId, validReviewId, diagnosticDimensionId], {
 					dimension: "quality",
 					basis: "human_review",
 				}),
-			),
-		).toThrow("assessment dimension must be represented by supporting evidence");
+			);
+		// Assert: diagnostic-only quality evidence cannot supply a supporting dimension.
+		expect(recordWithDiagnosticDimension).toThrow(
+			"assessment dimension must be represented by supporting evidence",
+		);
 	});
 
 	it("rejects non-positive or ungrounded observational basis witnesses", () => {
@@ -1726,8 +1646,20 @@ describe("contract-v1 attribution assessments", () => {
 		for (const [index, testCase] of NON_RANDOMIZED_BASIS_CASES.entries()) {
 			const attemptId = id(700 + index);
 			recordRetrievalAttempt(db, attempt(700 + index));
-			const preRetrievalId = basisEvidence(db, 800 + index * 2, attemptId, NOW, testCase);
-			const boundaryId = basisEvidence(db, 801 + index * 2, attemptId, COMPLETED_AT, testCase);
+			const preRetrievalId = basisEvidence(
+				db,
+				800 + index * 2,
+				[`attempt:${attemptId}`],
+				NOW,
+				testCase,
+			);
+			const boundaryId = basisEvidence(
+				db,
+				801 + index * 2,
+				[`attempt:${attemptId}`],
+				COMPLETED_AT,
+				testCase,
+			);
 			const basisAssessment = (
 				assessmentId: string,
 				evidenceIds: string[],
@@ -1812,7 +1744,7 @@ describe("contract-v1 attribution assessments", () => {
 				evidenceId = basisEvidence(
 					db,
 					testCase.evidenceSequence,
-					attemptId,
+					[`attempt:${attemptId}`],
 					COMPLETED_AT,
 					basisCase,
 				);
@@ -2233,44 +2165,28 @@ describe("contract-v1 attribution assessments", () => {
 	});
 
 	it("maps attempt-bound label and evaluator witnesses to a sole handed-off exposure", () => {
+		// Arrange: evaluator witnesses name the attempt, not the exposure directly.
 		const recorded = recordRetrievalAttempt(db, attempt(60)).attempt;
 		const exposureId = recorded.exposures[0]?.exposureId;
 		if (exposureId == null) throw new Error("fixture exposure missing");
 		const helpfulId = feedback(db, 500, "helpful", id(60));
-		const humanWitnessId = id(501);
-		const blindedWitnessId = id(502);
-		recordOutcomeEvidence(db, {
-			evidenceId: humanWitnessId,
-			dimension: "mechanism",
-			evidenceType: "mechanism.memory_reference",
-			sourceClass: "evaluator",
-			observedAt: COMPLETED_AT,
-			producer: "human-review",
-			producerVersion: "v1",
-			status: "present",
-			sessionId: 1,
-			references: {
-				rubric_id: "human-review-rubric",
-				reference_codes: [`attempt:${id(60)}`],
-			},
-		});
-		recordOutcomeEvidence(db, {
-			evidenceId: blindedWitnessId,
-			dimension: "quality",
-			evidenceType: "quality.blinded_evaluator",
-			sourceClass: "evaluator",
-			observedAt: COMPLETED_AT,
-			producer: "blinded-review",
-			producerVersion: "v1",
-			status: "unknown",
-			sessionId: 1,
-			references: {
-				assertion_id: "sole-exposure-review",
-				rubric_id: "quality-rubric",
-				reference_codes: [`attempt:${id(60)}`],
-			},
-		});
-
+		const humanWitnessId = basisEvidence(
+			db,
+			501,
+			[`attempt:${id(60)}`],
+			COMPLETED_AT,
+			NON_RANDOMIZED_BASIS_CASES_BY_BASIS.human_review,
+		);
+		const blindedWitnessId = basisEvidence(
+			db,
+			502,
+			[`attempt:${id(60)}`],
+			COMPLETED_AT,
+			NON_RANDOMIZED_BASIS_CASES_BY_BASIS.blinded_evaluator,
+			{ assertion_id: "sole-exposure-review" },
+		);
+		// Act: map attempt-bound evidence to the sole exposure.
+		// Assert: retain the helpful and unknown-label checks for each basis.
 		expect(
 			recordAttributionAssessment(
 				db,
@@ -3380,7 +3296,7 @@ describe("contract-v1 attribution assessments", () => {
 		const evidenceId = basisEvidence(
 			db,
 			109,
-			id(7),
+			[`attempt:${id(7)}`],
 			COMPLETED_AT,
 			NON_RANDOMIZED_BASIS_CASES_BY_BASIS.temporal_followup,
 		);
@@ -4621,73 +4537,62 @@ describe("contract-v1 attribution assessments", () => {
 		expect(getAttributionAssessment(db, id(270))).toBeNull();
 	});
 
-	it("rejects a causal contrast when the focal attempt is not retention-pinned", () => {
-		recordRetrievalAttempt(
-			db,
-			attempt(74, { experimentId: "experiment-1", experimentCellId: "cell-treatment" }),
-		);
-		recordExperimentControlAttempt(db, 5074, { retentionPinned: true });
-		const evidenceIds = [
-			experimentQualityEvidence(db, 191, {
-				cellId: "cell-treatment",
-				status: "pass",
-				causalContract: true,
-			}),
-			experimentQualityEvidence(db, 192, {
-				cellId: "cell-control",
-				status: "fail",
-				causalContract: true,
-			}),
-		];
-
-		expect(
-			tryRecordAttributionAssessment(
+	it.each([
+		{ missingPin: "focal", focalPinned: false, comparisonPinned: true, unpinnedSequence: 75 },
+		{
+			missingPin: "comparison",
+			focalPinned: true,
+			comparisonPinned: false,
+			unpinnedSequence: 5075,
+		},
+	])(
+		"rejects a causal contrast when the $missingPin attempt is not retention-pinned",
+		({ focalPinned, comparisonPinned, unpinnedSequence }) => {
+			// Arrange: both cells have complete evidence; exactly one attempt lacks its retention pin.
+			recordRetrievalAttempt(
 				db,
-				assessment(id(74), id(287), evidenceIds, {
-					dimension: "quality",
-					basis: "randomized_contrast",
-					claimType: "causal",
-					confidenceLevel: "high",
+				attempt(75, {
+					experimentId: "experiment-1",
+					experimentCellId: "cell-treatment",
+					retentionPinned: focalPinned,
 				}),
-			),
-		).toMatchObject({ ok: false, reason: "invalid_input" });
-	});
-
-	it("rejects a causal contrast when the comparison attempt is not retention-pinned", () => {
-		recordRetrievalAttempt(
-			db,
-			attempt(75, {
-				experimentId: "experiment-1",
-				experimentCellId: "cell-treatment",
-				retentionPinned: true,
-			}),
-		);
-		recordExperimentControlAttempt(db, 5075);
-		const evidenceIds = [
-			experimentQualityEvidence(db, 193, {
-				cellId: "cell-treatment",
-				status: "pass",
-				causalContract: true,
-			}),
-			experimentQualityEvidence(db, 194, {
-				cellId: "cell-control",
-				status: "fail",
-				causalContract: true,
-			}),
-		];
-
-		expect(
-			tryRecordAttributionAssessment(
-				db,
-				assessment(id(75), id(288), evidenceIds, {
-					dimension: "quality",
-					basis: "randomized_contrast",
-					claimType: "causal",
-					confidenceLevel: "high",
+			);
+			recordExperimentControlAttempt(db, 5075, { retentionPinned: comparisonPinned });
+			const evidenceIds = [
+				experimentQualityEvidence(db, 193, {
+					cellId: "cell-treatment",
+					status: "pass",
+					causalContract: true,
 				}),
-			),
-		).toMatchObject({ ok: false, reason: "invalid_input" });
-	});
+				experimentQualityEvidence(db, 194, {
+					cellId: "cell-control",
+					status: "fail",
+					causalContract: true,
+				}),
+			];
+
+			const input = assessment(id(75), id(288), evidenceIds, {
+				dimension: "quality",
+				basis: "randomized_contrast",
+				claimType: "causal",
+				confidenceLevel: "high",
+			});
+			// Act: restoring only the missing attempt pin supplies the last causal prerequisite.
+			const rejected = tryRecordAttributionAssessment(db, input);
+			// Assert: rejection must reach the causal retention gate.
+			expect(() => recordAttributionAssessment(db, input)).toThrow(
+				"causal claims require a linked preregistered randomized contrast with complete retained cells and uncertainty",
+			);
+			expect(rejected).toMatchObject({ ok: false, reason: "invalid_input" });
+			// Act: restore only the missing pin.
+			db.prepare("UPDATE retrieval_attempts SET retention_pinned = 1 WHERE attempt_id = ?").run(
+				id(unpinnedSequence),
+			);
+			const accepted = recordAttributionAssessment(db, input);
+			// Assert
+			expect(accepted.assessment.claimType).toBe("causal");
+		},
+	);
 
 	it("fails closed on malformed persisted assessment rows", () => {
 		recordRetrievalAttempt(db, attempt(8));
