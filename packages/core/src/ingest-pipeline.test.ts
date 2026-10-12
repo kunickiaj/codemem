@@ -2064,12 +2064,20 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 		};
 	}
 
-	function observerWithRaw(raw: string) {
+	function observerWithRaw(
+		raw: string | null | ((system: string, user: string) => string | null | Promise<string | null>),
+		{ provider = "test", model = "test-model" } = {},
+	) {
 		return {
-			observe: async () => ({ raw, parsed: null, provider: "test", model: "test-model" }),
+			observe: async (system: string, user: string) => ({
+				raw: typeof raw === "function" ? await raw(system, user) : raw,
+				parsed: null,
+				provider,
+				model,
+			}),
 			getStatus: () => ({
-				provider: "test",
-				model: "test-model",
+				provider,
+				model,
 				runtime: "test",
 				auth: { source: "none", type: "none", hasToken: false },
 			}),
@@ -2217,23 +2225,10 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 			<files_read></files_read><files_modified></files_modified>
 		</observation>
 		<summary><request>Preserve the parser fix</request><learned>The parser detected discarded durable content.</learned></summary>`;
-		const observer = {
-			observe: async (system: string, user: string) => {
-				calls.push({ system, user });
-				return {
-					raw: calls.length === 1 ? lossy : repaired,
-					parsed: null,
-					provider: "test",
-					model: "test-model",
-				};
-			},
-			getStatus: () => ({
-				provider: "test",
-				model: "test-model",
-				runtime: "test",
-				auth: { source: "none", type: "none", hasToken: false },
-			}),
-		};
+		const observer = observerWithRaw(async (system, user) => {
+			calls.push({ system, user });
+			return calls.length === 1 ? lossy : repaired;
+		});
 
 		await ingest(buildPayload(), store, { observer } as unknown as IngestOptions);
 
@@ -2256,23 +2251,10 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 			<request>Keep valid initial content</request>
 			<notes><observation></notes>
 		</summary>`;
-		const observer = {
-			observe: async (system: string, user: string) => {
-				calls.push({ system, user });
-				return {
-					raw: calls.length === 1 ? partiallyRetained : null,
-					parsed: null,
-					provider: "test",
-					model: "test-model",
-				};
-			},
-			getStatus: () => ({
-				provider: "test",
-				model: "test-model",
-				runtime: "test",
-				auth: { source: "none", type: "none", hasToken: false },
-			}),
-		};
+		const observer = observerWithRaw(async (system, user) => {
+			calls.push({ system, user });
+			return calls.length === 1 ? partiallyRetained : null;
+		});
 
 		await ingest(buildPayload(), store, { observer } as unknown as IngestOptions);
 
@@ -2291,24 +2273,11 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 			<title>Initial valid lesson survives repair exception</title>
 			<narrative>The parser retained this valid observation before repair failed.</narrative>
 		</observation><observation><type>bugfix</type><title>Truncated`;
-		const observer = {
-			observe: async () => {
-				callCount += 1;
-				if (callCount === 2) throw new Error("repair transport failed");
-				return {
-					raw: partiallyRetained,
-					parsed: null,
-					provider: "test",
-					model: "test-model",
-				};
-			},
-			getStatus: () => ({
-				provider: "test",
-				model: "test-model",
-				runtime: "test",
-				auth: { source: "none", type: "none", hasToken: false },
-			}),
-		};
+		const observer = observerWithRaw(async () => {
+			callCount += 1;
+			if (callCount === 2) throw new Error("repair transport failed");
+			return partiallyRetained;
+		});
 
 		await ingest(buildPayload(), store, { observer } as unknown as IngestOptions);
 
@@ -2333,23 +2302,10 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 			<title>Cache eviction uses bounded batches</title>
 			<narrative>The clean response describes a different durable outcome.</narrative>
 		</observation>`;
-		const observer = {
-			observe: async () => {
-				calls.push("observe");
-				return {
-					raw: calls.length === 1 ? partiallyRetained : disjointRepair,
-					parsed: null,
-					provider: "test",
-					model: "test-model",
-				};
-			},
-			getStatus: () => ({
-				provider: "test",
-				model: "test-model",
-				runtime: "test",
-				auth: { source: "none", type: "none", hasToken: false },
-			}),
-		};
+		const observer = observerWithRaw(async () => {
+			calls.push("observe");
+			return calls.length === 1 ? partiallyRetained : disjointRepair;
+		});
 
 		await ingest(buildPayload(), store, { observer } as unknown as IngestOptions);
 
@@ -2592,27 +2548,14 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 	});
 
 	it("suppresses summary-only micro-session recap output", async () => {
-		const summaryOnlyObserver = {
-			observe: async () => ({
-				raw: `<summary>
+		const summaryOnlyObserver = observerWithRaw(`<summary>
 					<request>Check retrieval noise</request>
 					<investigated>Looked at role report output</investigated>
 					<learned>Recap-heavy rows still dominate</learned>
 					<completed>Reviewed the current ranking behavior</completed>
 					<next_steps>Tighten recap weighting</next_steps>
 					<notes></notes>
-				</summary>`,
-				parsed: null,
-				provider: "test",
-				model: "test-model",
-			}),
-			getStatus: () => ({
-				provider: "test",
-				model: "test-model",
-				runtime: "test",
-				auth: { source: "none", type: "none", hasToken: false },
-			}),
-		};
+				</summary>`);
 
 		const payload = buildPayload({
 			events: [
@@ -2652,27 +2595,14 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 	});
 
 	it("persists session class on typed observer memories", async () => {
-		const typedObserver = {
-			observe: async () => ({
-				raw: `<observation>
+		const typedObserver = observerWithRaw(`<observation>
 					<type>decision</type>
 					<title>Keep session class on typed memories</title>
 					<narrative>Typed memories should carry the same session class as the source session.</narrative>
 					<files_read>
 						<file>src/session-policy.ts</file>
 					</files_read>
-				</observation>`,
-				parsed: null,
-				provider: "test",
-				model: "test-model",
-			}),
-			getStatus: () => ({
-				provider: "test",
-				model: "test-model",
-				runtime: "test",
-				auth: { source: "none", type: "none", hasToken: false },
-			}),
-		};
+				</observation>`);
 
 		const payload = buildPayload({
 			events: [
@@ -2710,27 +2640,14 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 	});
 
 	it("keeps summary-only output for longer sessions", async () => {
-		const summaryOnlyObserver = {
-			observe: async () => ({
-				raw: `<summary>
+		const summaryOnlyObserver = observerWithRaw(`<summary>
 					<request>Check retrieval noise</request>
 					<investigated>Looked at role report output</investigated>
 					<learned>Recap-heavy rows still dominate</learned>
 					<completed>Reviewed the current ranking behavior</completed>
 					<next_steps>Tighten recap weighting</next_steps>
 					<notes></notes>
-				</summary>`,
-				parsed: null,
-				provider: "test",
-				model: "test-model",
-			}),
-			getStatus: () => ({
-				provider: "test",
-				model: "test-model",
-				runtime: "test",
-				auth: { source: "none", type: "none", hasToken: false },
-			}),
-		};
+				</summary>`);
 
 		const payload = buildPayload({
 			events: [
@@ -2799,20 +2716,7 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 	});
 
 	it("handles observer returning null gracefully", async () => {
-		const nullObserver = {
-			observe: async () => ({
-				raw: null as string | null,
-				parsed: null,
-				provider: "test",
-				model: "test-model",
-			}),
-			getStatus: () => ({
-				provider: "test",
-				model: "test-model",
-				runtime: "test",
-				auth: { source: "none", type: "none", hasToken: false },
-			}),
-		};
+		const nullObserver = observerWithRaw(null);
 
 		const payload = buildPayload();
 		// Should not throw
@@ -2829,21 +2733,8 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 		expect(session.ended_at).not.toBeNull();
 	});
 
-	it("treats skip_summary low-signal raw-event flushes as terminal no-op", async () => {
-		const lowSignalObserver = {
-			observe: async () => ({
-				raw: '<skip_summary reason="low-signal"/>',
-				parsed: null,
-				provider: "test",
-				model: "test-model",
-			}),
-			getStatus: () => ({
-				provider: "test",
-				model: "test-model",
-				runtime: "test",
-				auth: { source: "none", type: "none", hasToken: false },
-			}),
-		};
+	it("completes ingest without memories for a pure low-signal skip in raw-event mode", async () => {
+		const lowSignalObserver = observerWithRaw('<skip_summary reason="low-signal"/>');
 
 		const payload = buildPayload({
 			sessionContext: {
@@ -2870,20 +2761,7 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 	});
 
 	it("still fails raw-event flush when skip_summary reason is not low-signal", async () => {
-		const oddSkipObserver = {
-			observe: async () => ({
-				raw: '<skip_summary reason="other"/>',
-				parsed: null,
-				provider: "test",
-				model: "test-model",
-			}),
-			getStatus: () => ({
-				provider: "test",
-				model: "test-model",
-				runtime: "test",
-				auth: { source: "none", type: "none", hasToken: false },
-			}),
-		};
+		const oddSkipObserver = observerWithRaw('<skip_summary reason="other"/>');
 
 		const payload = buildPayload({
 			sessionContext: {
@@ -2904,20 +2782,9 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 	});
 
 	it("still fails raw-event flush when low-signal skip is mixed with summary output", async () => {
-		const mixedObserver = {
-			observe: async () => ({
-				raw: '<summary><request>Check logs</request></summary><skip_summary reason="low-signal"/>',
-				parsed: null,
-				provider: "test",
-				model: "test-model",
-			}),
-			getStatus: () => ({
-				provider: "test",
-				model: "test-model",
-				runtime: "test",
-				auth: { source: "none", type: "none", hasToken: false },
-			}),
-		};
+		const mixedObserver = observerWithRaw(
+			'<summary><request>Check logs</request></summary><skip_summary reason="low-signal"/>',
+		);
 
 		const payload = buildPayload({
 			sessionContext: {
@@ -2937,28 +2804,15 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 		expect(store.recent(10)).toHaveLength(0);
 	});
 
-	it("treats summary-only micro-session raw-event flushes as terminal no-op", async () => {
-		const summaryOnlyObserver = {
-			observe: async () => ({
-				raw: `<summary>
+	it("completes ingest without memories for summary-only micro-sessions in raw-event mode", async () => {
+		const summaryOnlyObserver = observerWithRaw(`<summary>
 					<request>Check retrieval noise</request>
 					<investigated>Looked at role report output</investigated>
 					<learned>Recap-heavy rows still dominate</learned>
 					<completed>Reviewed the current ranking behavior</completed>
 					<next_steps>Tighten recap weighting</next_steps>
 					<notes></notes>
-				</summary>`,
-				parsed: null,
-				provider: "test",
-				model: "test-model",
-			}),
-			getStatus: () => ({
-				provider: "test",
-				model: "test-model",
-				runtime: "test",
-				auth: { source: "none", type: "none", hasToken: false },
-			}),
-		};
+				</summary>`);
 
 		const payload = buildPayload({
 			events: [
@@ -2994,23 +2848,10 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 	});
 
 	it("does not terminally no-op a prompt-only raw-event flush before assistant context arrives", async () => {
-		const observer = {
-			observe: async () => ({
-				raw: `<summary>
+		const observer = observerWithRaw(`<summary>
 					<request>Check retrieval noise</request>
 					<completed>Reviewed the current ranking behavior</completed>
-				</summary>`,
-				parsed: null,
-				provider: "test",
-				model: "test-model",
-			}),
-			getStatus: () => ({
-				provider: "test",
-				model: "test-model",
-				runtime: "test",
-				auth: { source: "none", type: "none", hasToken: false },
-			}),
-		};
+				</summary>`);
 
 		const payload = buildPayload({
 			events: [
@@ -3038,31 +2879,13 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 
 	it("retries once when observer returns plain text instead of XML during raw-event flush", async () => {
 		let calls = 0;
-		const retryingObserver = {
-			observe: async () => {
-				calls += 1;
-				if (calls === 1) {
-					return {
-						raw: "Got it — the session inspected current pack stats and restart state.",
-						parsed: null,
-						provider: "test",
-						model: "test-model",
-					};
-				}
-				return {
-					raw: `<observation><type>discovery</type><title>current pack stats and restart state</title><subtitle>current pack stats and restart state</subtitle><narrative>Got it — the session inspected current pack stats and restart state.</narrative><concepts><concept>how-it-works</concept></concepts></observation><summary><investigated>the session inspected current pack stats and restart state</investigated></summary>`,
-					parsed: null,
-					provider: "test",
-					model: "test-model",
-				};
-			},
-			getStatus: () => ({
-				provider: "test",
-				model: "test-model",
-				runtime: "test",
-				auth: { source: "none", type: "none", hasToken: false },
-			}),
-		};
+		const retryingObserver = observerWithRaw(async () => {
+			calls += 1;
+			if (calls === 1) {
+				return "Got it — the session inspected current pack stats and restart state.";
+			}
+			return `<observation><type>discovery</type><title>current pack stats and restart state</title><subtitle>current pack stats and restart state</subtitle><narrative>Got it — the session inspected current pack stats and restart state.</narrative><concepts><concept>how-it-works</concept></concepts></observation><summary><investigated>the session inspected current pack stats and restart state</investigated></summary>`;
+		});
 
 		const payload = buildPayload({
 			sessionContext: {
@@ -3086,23 +2909,10 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 
 	it("still fails raw-event flush when observer stays non-XML after retry", async () => {
 		let calls = 0;
-		const invalidObserver = {
-			observe: async () => {
-				calls += 1;
-				return {
-					raw: "I can summarize the session in plain English if you want.",
-					parsed: null,
-					provider: "test",
-					model: "test-model",
-				};
-			},
-			getStatus: () => ({
-				provider: "test",
-				model: "test-model",
-				runtime: "test",
-				auth: { source: "none", type: "none", hasToken: false },
-			}),
-		};
+		const invalidObserver = observerWithRaw(async () => {
+			calls += 1;
+			return "I can summarize the session in plain English if you want.";
+		});
 
 		const payload = buildPayload({
 			sessionContext: {
