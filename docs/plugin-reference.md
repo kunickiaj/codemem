@@ -63,6 +63,8 @@ When OpenCode runs from a codemem source checkout, `.opencode/plugins/lint-feedb
 
 OpenCode 2 support is pinned and host-tested against 2.0.24. Its tool hooks make feedback visible in the successful tool result and isolate overlapping calls by session and call ID. OpenCode 2 exposes no shell post-execution hook, so shell-driven file changes bypass immediate feedback; run `pnpm lint:delta -- --base <ref>` at a stable checkpoint. Hook limitations never replace or disable the required CI ratchet.
 
+The repository-only scope includes `packages/ui/playwright*.config.ts`, `packages/ui/visual/**/*.ts`, and `packages/ui/scripts/visual-*.mjs`, matching Biome's UI visual tooling includes.
+
 This hook is contributor tooling only. Neither the repository wrapper nor `src/lint-feedback.ts` is included in the published `@codemem/opencode-plugin` package, so installing codemem does not activate it. Restart OpenCode after changing the checkout's plugin configuration.
 
 The Biome pilot is the repository's bounded lint experiment. It covers package `src` trees, the canonical published OpenCode runtime under `packages/opencode-plugin/.opencode`, the two checkout plugin entrypoints, selected adapter hooks, package JSON, and root TypeScript configuration. The OpenCode runtime keeps its existing two-space formatting for package stability; Biome still applies lint rules, including the complexity-15 and 50-line production thresholds.

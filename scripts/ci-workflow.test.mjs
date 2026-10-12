@@ -241,10 +241,7 @@ function assertVisualWorkflowScope() {
 function assertVisualWorkflowComparison() {
 	const job = getJob(uiVisualWorkflow, "ui-visual");
 	assert.match(job, /CI: "true"/u);
-	assert.match(
-		job,
-		/CODEMEM_VISUAL_OUTPUT: \$\{\{ github\.workspace \}\}\/\.tmp\/visual-ci\/results/u,
-	);
+	assert.match(job, /CODEMEM_VISUAL_OUTPUT: \.\.\/\.\.\/\.tmp\/visual-ci\/results/u);
 	assert.match(
 		job,
 		/run: pnpm --filter @codemem\/ui exec playwright test --config playwright\.config\.ts/u,

@@ -386,6 +386,9 @@ describe("lint feedback configured paths", () => {
 			"packages/opencode-plugin/.opencode/plugins/**/*.js",
 			".opencode/plugins/**/*.js",
 			"packages/**/vite.config.ts",
+			"packages/ui/playwright*.config.ts",
+			"packages/ui/visual/**/*.ts",
+			"packages/ui/scripts/visual-*.mjs",
 			"plugins/claude/scripts/ingest-hook.mjs",
 			"plugins/claude/scripts/user-prompt-hook.mjs",
 			"plugins/codex/scripts/ingest-hook.mjs",
@@ -420,6 +423,38 @@ describe("lint feedback configured paths", () => {
 			"scripts/ci-workflow.test.mjs",
 		);
 		expect(resolveWorktreePath(repositoryRoot, "e2e/bin/run-local.ts")).toBeUndefined();
+	});
+
+	it.each([
+		"packages/ui/playwright.config.ts",
+		"packages/ui/playwright.visual.config.ts",
+		"packages/ui/visual/tooltip.spec.ts",
+		"packages/ui/visual/fixtures/feed.ts",
+		"packages/ui/scripts/visual-compare.mjs",
+	])("admits configured UI visual source path %s", (candidate) => {
+		expect(resolveWorktreePath(repositoryRoot, candidate)).toBe(candidate);
+	});
+
+	it.each([
+		"packages/core/playwright.config.ts",
+		"packages/ui/playwright/nested.config.ts",
+		"packages/ui/playwright.config.tsx",
+		"packages/ui/playwright.config.json",
+		"packages/ui/not-playwright.config.ts",
+		"packages/core/visual/tooltip.spec.ts",
+		"packages/ui/visuals/tooltip.spec.ts",
+		"packages/ui/visual/tooltip.spec.tsx",
+		"packages/ui/visual/fixtures/feed.json",
+		"packages/ui/visual/snapshots/tooltip.png",
+		"packages/core/scripts/visual-compare.mjs",
+		"packages/ui/scripts/visual-helpers/compare.mjs",
+		"packages/ui/scripts/visual-compare.ts",
+		"packages/ui/scripts/compare.mjs",
+		"packages/ui/visual/../other.ts",
+		"packages/ui/scripts/visual-../other.mjs",
+		"../packages/ui/visual/tooltip.spec.ts",
+	])("rejects nearby, non-source, or escaping UI visual path %s", (candidate) => {
+		expect(resolveWorktreePath(repositoryRoot, candidate)).toBeUndefined();
 	});
 
 	it("rejects removed CI helper paths", () => {

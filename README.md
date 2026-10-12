@@ -614,7 +614,7 @@ after testing. On OpenCode 2, that repository wrapper is a no-op: keep the confi
 for normal use, or follow the source-checkout steps above to load `packages/opencode-plugin`
 explicitly while testing unpublished changes.
 
-Contributor-only lint feedback and source-plugin testing are documented in [Contributing](CONTRIBUTING.md#repository-lint-feedback) and the [plugin reference](docs/plugin-reference.md#repository-only-lint-feedback); installing codemem does not enable checkout tooling.
+Contributor-only lint feedback covers Biome-included source files, including UI Playwright configs, visual tests, and visual scripts, and source-plugin testing is documented in [Contributing](CONTRIBUTING.md#repository-lint-feedback) and the [plugin reference](docs/plugin-reference.md#repository-only-lint-feedback); installing codemem does not enable checkout tooling.
 
 The repository lint ratchet matches include globs without regex backtracking, so repeated wildcards cannot trigger exponential matching work.
 

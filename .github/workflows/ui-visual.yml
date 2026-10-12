@@ -35,13 +35,13 @@ jobs:
       - name: Verify strict comparator behavior
         env:
           CI: "true"
-          CODEMEM_VISUAL_OUTPUT: ${{ github.workspace }}/.tmp/visual-ci/control
+          CODEMEM_VISUAL_OUTPUT: ../../.tmp/visual-ci/control
         run: pnpm --filter @codemem/ui exec playwright test --config playwright.control.config.ts
 
       - name: Compare gallery screenshots
         env:
           CI: "true"
-          CODEMEM_VISUAL_OUTPUT: ${{ github.workspace }}/.tmp/visual-ci/results
+          CODEMEM_VISUAL_OUTPUT: ../../.tmp/visual-ci/results
         run: pnpm --filter @codemem/ui exec playwright test --config playwright.config.ts
 
       - name: Upload visual differences on failure

@@ -4,8 +4,10 @@ import { assertCanonicalPlatform, snapshotMode } from "./scripts/visual-policy.m
 
 assertCanonicalPlatform({ platform: process.platform, arch: process.arch });
 
-export const output =
-	process.env.CODEMEM_VISUAL_OUTPUT || resolve(import.meta.dirname, "../../.tmp/visual/local");
+export const output = resolve(
+	import.meta.dirname,
+	process.env.CODEMEM_VISUAL_OUTPUT || "../../.tmp/visual/local",
+);
 export default defineConfig({
 	testDir: "./visual",
 	testMatch: "gallery.spec.ts",

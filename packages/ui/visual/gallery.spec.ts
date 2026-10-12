@@ -52,6 +52,19 @@ test("tooltip opens on focus and dismisses on Escape", async ({ page }) => {
 	// Radix dismisses on ancestor scroll; position the trigger before opening it.
 	await trigger.scrollIntoViewIfNeeded();
 	await page.getByRole("button", { name: "Fixture actions" }).focus();
+	// Native scroll events can arrive after focus and dismiss Radix content.
+	// Drain pending scroll frames before keyboard focus opens the tooltip.
+	await page.evaluate(async () => {
+		const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+		let previous = `${scrollX},${scrollY}`;
+		let stableFrames = 0;
+		while (stableFrames < 2) {
+			await frame();
+			const current = `${scrollX},${scrollY}`;
+			stableFrames = current === previous ? stableFrames + 1 : 0;
+			previous = current;
+		}
+	});
 	// Act
 	await page.keyboard.press("Shift+Tab");
 	// Assert

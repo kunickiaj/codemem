@@ -159,6 +159,9 @@ function isConfiguredLintPath(relativePath: string): boolean {
 	}
 	if (/^\.opencode\/plugins\/.+\.js$/.test(relativePath)) return true;
 	if (/^packages\/.+\/vite\.config\.ts$/.test(relativePath)) return true;
+	if (/^packages\/ui\/playwright[^/]*\.config\.ts$/.test(relativePath)) return true;
+	if (/^packages\/ui\/visual\/.+\.ts$/.test(relativePath)) return true;
+	if (/^packages\/ui\/scripts\/visual-[^/]*\.mjs$/.test(relativePath)) return true;
 	if (
 		/^plugins\/(?:claude|codex)\/scripts\/(?:ingest-hook|user-prompt-hook)\.mjs$/.test(relativePath)
 	)
