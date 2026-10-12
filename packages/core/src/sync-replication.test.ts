@@ -4483,6 +4483,34 @@ describe("replication payload round-trip parity", () => {
 // and not the other, this test will catch the drift.
 // ---------------------------------------------------------------------------
 
+function expectBootstrapDestinationFields(applied: Record<string, unknown>): void {
+	expect(applied).toBeTruthy();
+	expect(applied.session_project).toBe("bootstrap-project");
+	expect(applied.kind).toBe("feature");
+	expect(applied.title).toBe("Bootstrap Title");
+	expect(applied.subtitle).toBe("BSub");
+	expect(applied.body_text).toBe("Bootstrap body");
+	expect(applied.confidence).toBe(0.9);
+	expect(applied.actor_id).toBe("actor-bs");
+	expect(applied.actor_display_name).toBe("Bootstrap Actor");
+	expect(applied.visibility).toBe("shared");
+	expect(applied.workspace_id).toBe("ws-bs");
+	expect(applied.workspace_kind).toBe("shared");
+	expect(applied.origin_device_id).toBe("device-bs-origin");
+	expect(applied.origin_source).toBe("bootstrap-test");
+	expect(applied.trust_state).toBe("trusted");
+	expect(applied.narrative).toBe("Bootstrap narrative");
+	expect(applied.user_prompt_id).toBe(99);
+	expect(applied.prompt_number).toBe(3);
+	expect(applied.tags_text).toBe("btag-a btag-b");
+	expect(JSON.parse(applied.metadata_json as string)).toMatchObject({ bs_key: "bs_val" });
+	expect(JSON.parse(applied.facts as string)).toEqual(["bs-fact"]);
+	expect(JSON.parse(applied.concepts as string)).toEqual(["bs-concept"]);
+	expect(JSON.parse(applied.files_read as string)).toEqual(["bs-file-r"]);
+	expect(JSON.parse(applied.files_modified as string)).toEqual(["bs-file-w"]);
+	expect(applied.scope_id).toBe("bootstrap-work");
+}
+
 describe("bootstrap snapshot round-trip parity", () => {
 	let db: InstanceType<typeof Database>;
 	let sessionId: number;
@@ -4565,24 +4593,7 @@ describe("bootstrap snapshot round-trip parity", () => {
 			)
 			.get() as Record<string, unknown>;
 
-		expect(applied).toBeTruthy();
-		expect(applied.session_project).toBe("bootstrap-project");
-		expect(applied.kind).toBe("feature");
-		expect(applied.title).toBe("Bootstrap Title");
-		expect(applied.subtitle).toBe("BSub");
-		expect(applied.body_text).toBe("Bootstrap body");
-		expect(applied.confidence).toBe(0.9);
-		expect(applied.actor_id).toBe("actor-bs");
-		expect(applied.actor_display_name).toBe("Bootstrap Actor");
-		expect(applied.visibility).toBe("shared");
-		expect(applied.workspace_id).toBe("ws-bs");
-		expect(applied.workspace_kind).toBe("shared");
-		expect(applied.origin_device_id).toBe("device-bs-origin");
-		expect(applied.origin_source).toBe("bootstrap-test");
-		expect(applied.trust_state).toBe("trusted");
-		expect(applied.narrative).toBe("Bootstrap narrative");
-		expect(applied.user_prompt_id).toBe(99);
-		expect(applied.prompt_number).toBe(3);
+		expectBootstrapDestinationFields(applied);
 	});
 
 	it("records a scoped cursor marker for empty scoped bootstrap snapshots", async () => {
@@ -4792,14 +4803,16 @@ describe("inbound scope rejection diagnostics", () => {
 	});
 
 	it("clamps the list limit to a sensible maximum", () => {
-		for (let i = 0; i < 10; i++) {
+		// Arrange: exceed the cap so an uncapped query cannot pass.
+		for (let i = 0; i < 501; i++) {
 			insertRejection("dev-remote", "missing_scope", {
 				opId: `op-${i}`,
-				createdAt: `2026-01-02T00:00:${String(i).padStart(2, "0")}Z`,
+				createdAt: new Date(Date.UTC(2026, 0, 2, 0, 0, i)).toISOString(),
 			});
 		}
+		// Act and assert: ordinary limits, the lower bound, and the hard cap.
 		expect(listInboundScopeRejections(db, { limit: 3 })).toHaveLength(3);
 		expect(listInboundScopeRejections(db, { limit: 0 })).toHaveLength(1);
-		expect(listInboundScopeRejections(db, { limit: 10_000 }).length).toBeLessThanOrEqual(500);
+		expect(listInboundScopeRejections(db, { limit: 10_000 })).toHaveLength(500);
 	});
 });
