@@ -57,6 +57,7 @@ inlining ad-hoc test data when adding new ranking scenarios.
 
 - Viewer UI source is `packages/ui/` and is served by `packages/viewer-server/`.
 - OpenCode plugin source is `packages/opencode-plugin/.opencode/plugins/codemem.js`.
+- For shared-control work, run the local gallery and follow its visual checks in [Viewer component styling](docs/ui-components.md#shared-controls-gallery).
 - If you change the UI or viewer assets, rebuild first so `packages/viewer-server/static/` is restaged:
 
 ```text

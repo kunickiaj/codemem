@@ -2,6 +2,28 @@
 
 Use shared primitives for interactive controls so the header, Settings, and other tabs keep the same appearance and keyboard behavior.
 
+## Shared controls gallery
+
+The local gallery is a visual check for the actual shared primitives: Buttons, Selects, Fields, Choices, Tabs, Indicators, Overlays, and Loading. It uses synthetic local fixtures and interactions, so it does not read memories or call the viewer API.
+
+Run it during control work:
+
+```text
+pnpm --filter @codemem/ui gallery:dev
+```
+
+It serves only on `127.0.0.1:38922`; open `/gallery.html`. Use the gallery theme toggle, then check light and dark themes at desktop and narrow widths. Exercise opened, disabled, loading, and long-label states.
+
+```text
+pnpm --filter @codemem/ui gallery:build
+```
+
+The build produces an ignored gallery-only output. Generated HTML and extracted CSS stay under the UI package's ignored `.tmp` directory; the dev URL remains `/gallery.html`. They do not replace the normal dev entry or become production viewer assets.
+
+The gallery reuses the canonical inline viewer CSS and pinned local Geist and JetBrains Mono font sources, so it makes no Google Fonts requests. Its own stylesheet may arrange gallery sections, but must not copy or redefine shared-control styling.
+
+The extractor recognizes HTML tags and stylesheet attributes regardless of case, skips comments and script bodies, and preserves the real CSS bytes. It reads the repository's canonical HTML; it is not a sanitizer for untrusted HTML.
+
 ## Selects
 
 Use `RadixSelect` from `packages/ui/src/components/primitives/radix-select.tsx`. Its default styles own the trigger, chevron, menu, options, and long-label truncation. Use its compact size for toolbar controls; keep the default size for forms.
