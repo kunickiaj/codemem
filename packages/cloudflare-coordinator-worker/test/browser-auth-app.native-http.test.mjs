@@ -129,7 +129,7 @@ test("ordinary Worker HTTP serves sign-in but leaves owner enrollment unmounted"
 		"/auth/owner/callback",
 		"/auth/owner/confirm",
 		"/v1/auth/owner-attempts",
-		"/v1/auth/owner-attempts/fixture/finalize",
+		"/v1/auth/owner-attempts/finalize",
 	]) {
 		for (const method of ["GET", "POST"]) statuses.push((await f.request(path, { method })).status);
 	}
