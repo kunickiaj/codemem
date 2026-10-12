@@ -12,6 +12,7 @@ vi.mock("node:fs", () => {
 const realFs = await vi.importActual<typeof import("node:fs")>("node:fs");
 const uiRoot = resolve(import.meta.dirname, "../..");
 const canonicalHtml = realFs.readFileSync(resolve(uiRoot, "static/index.html"), "utf8");
+const originalArgv = process.argv;
 
 function output(filename: string): string {
 	const call = io.write.mock.calls.find(([path]) => path === resolve(uiRoot, ".tmp", filename));
@@ -20,13 +21,17 @@ function output(filename: string): string {
 }
 
 beforeEach(() => {
+	process.argv = originalArgv.slice();
 	vi.resetModules();
 	io.read.mockReset().mockReturnValue(canonicalHtml);
 	io.write.mockReset();
 	io.mkdir.mockReset();
 });
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+	process.argv = originalArgv;
+	vi.restoreAllMocks();
+});
 
 describe("gallery HTML generator", () => {
 	it("preserves canonical CSS byte for byte without importing viewer DOM or scripts", async () => {
@@ -219,6 +224,53 @@ describe("gallery inline stylesheet media", () => {
 
 describe("gallery canonical stylesheet links", () => {
 	it.each([
+		`<LINK data-note=' href="/assets/fake.css" rel="preload"' rEl = StYlEsHeEt hReF = /assets/Case.css?v=2&amp;x=3>`,
+		`<link title=" href='/assets/fake.css' rel='preload'" REL='alternate\tSTYLESHEET\nnext' HREF = "/assets/Case.css?v=2&amp;x=3" href='/assets/duplicate.css' rel=preload>`,
+	])("rewrites only the first real href in %s", async (link) => {
+		// Arrange: retain raw attributes and entities; rel is an ASCII-whitespace token list.
+		io.read.mockReturnValue(`${link}<style>.Case{--Keep:RED}</style>`);
+		// Act
+		await import("../../scripts/make-gallery-html.mjs");
+		// Assert
+		expect(output("gallery-viewer.css")).toBe(".Case{--Keep:RED}");
+		expect(output("gallery.html")).toContain(link.replace("/assets/Case.css", "/static/Case.css"));
+	});
+
+	it.each([
+		`<link title=' rel="stylesheet" href="/assets/fake.css"'>`,
+		`<link rel=stylesheet data-href=/assets/fake.css title=' href="/assets/fake.css"'>`,
+		`<link data-rel=stylesheet href=/assets/fake.css title=' rel="stylesheet"'>`,
+		`<link rel=preload rel=stylesheet href=/assets/fake.css>`,
+		`<link rel=stylesheet href=/remote.css href=/assets/fake.css>`,
+		`<link rel="prestylesheet stylesheet\u00a0next" href=/assets/fake.css>`,
+		`<link rel=stylesheet href=/Assets/fake.css>`,
+	])("rejects pseudo attributes or nonmatching first values: %s", async (link) => {
+		// Arrange: exact names, first duplicate values and case-sensitive asset paths matter.
+		io.read.mockReturnValue(`${link}<style>.fixture{}</style>`);
+		// Act
+		const generate = import("../../scripts/make-gallery-html.mjs");
+		// Assert
+		await expect(generate).rejects.toThrow("Gallery: canonical viewer style links are missing");
+		expect(io.mkdir).not.toHaveBeenCalled();
+		expect(io.write).not.toHaveBeenCalled();
+	});
+
+	it("rejects unquoted token-list local links after inline CSS before outputs", async () => {
+		// Arrange
+		io.read.mockReturnValue(
+			'<link rel=stylesheet href=/assets/base.css><style>.fixture{}</style><link rel="next STYLESHEET" href=/assets/late.css>',
+		);
+		// Act
+		const generate = import("../../scripts/make-gallery-html.mjs");
+		// Assert
+		await expect(generate).rejects.toThrow(
+			"Gallery: local stylesheet after inline viewer CSS would change cascade order",
+		);
+		expect(io.mkdir).not.toHaveBeenCalled();
+		expect(io.write).not.toHaveBeenCalled();
+	});
+
+	it.each([
 		["LINK", "REL", "HREF", "STYLESHEET", "STYLE", "style"],
 		["LiNk", "rEl", "hReF", "StyleSheet", "StYlE", "sTyLe"],
 	])("preserves CSS and attributes for %s markup", async (link, rel, href, value, style, end) => {
@@ -275,6 +327,44 @@ describe("gallery canonical stylesheet links", () => {
 		expect(io.write).not.toHaveBeenCalled();
 		expect(io.mkdir).not.toHaveBeenCalled();
 	});
+});
+
+describe("gallery stable stdin source", () => {
+	it("reads stdin instead of the canonical path and preserves exact CSS", async () => {
+		// Arrange: caller supplies stable canonical bytes without a second disk read.
+		process.argv.push("--stdin");
+		const css = "\n.Case{--Keep:RED} /* stable bytes */\n";
+		io.read.mockReturnValue(`<link rel=stylesheet href=/assets/base.css><style>${css}</style>`);
+		// Act
+		await import("../../scripts/make-gallery-html.mjs");
+		// Assert
+		expect(io.read).toHaveBeenCalledExactlyOnceWith(0, "utf8");
+		expect(output("gallery-viewer.css")).toBe(css);
+		expect(output("gallery.html")).toContain("href=/static/base.css");
+	});
+
+	it.each(["invalid source", "read error"])(
+		"fails before outputs for stdin %s",
+		async (failure) => {
+			// Arrange
+			process.argv.push("--stdin");
+			io.read.mockImplementation(() => {
+				if (failure === "read error") throw new Error("Synthetic stdin failure");
+				return "<style>.fixture{}</style>";
+			});
+			// Act
+			const generate = import("../../scripts/make-gallery-html.mjs");
+			// Assert
+			await expect(generate).rejects.toThrow(
+				failure === "read error"
+					? "Synthetic stdin failure"
+					: "Gallery: canonical viewer style links are missing",
+			);
+			expect(io.read).toHaveBeenCalledExactlyOnceWith(0, "utf8");
+			expect(io.mkdir).not.toHaveBeenCalled();
+			expect(io.write).not.toHaveBeenCalled();
+		},
+	);
 });
 
 describe("gallery canonical cascade order", () => {

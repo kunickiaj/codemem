@@ -2,7 +2,25 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const uiRoot = resolve(import.meta.dirname, "..");
-const source = readFileSync(resolve(uiRoot, "static/index.html"), "utf8");
+const input = process.argv.includes("--stdin") ? 0 : resolve(uiRoot, "static/index.html");
+const source = readFileSync(input, "utf8");
+
+function parseAttributes(text) {
+	const attributes = new Map();
+	const tokens = text.matchAll(
+		/([^\t\n\f\r /=>]+)(?:([\t\n\f\r ]*=[\t\n\f\r ]*)(?:"([^"]*)"|'([^']*)'|([^\t\n\f\r >]+)))?/g,
+	);
+	for (const token of tokens) {
+		const [raw, originalName, prefix = "", doubleQuoted, singleQuoted, unquoted] = token;
+		const name = originalName.toLowerCase();
+		if (attributes.has(name)) continue;
+		const value = doubleQuoted ?? singleQuoted ?? unquoted ?? "";
+		const quoted = doubleQuoted !== undefined || singleQuoted !== undefined;
+		const start = token.index + originalName.length + prefix.length + Number(quoted);
+		attributes.set(name, { name, value, raw, start, end: start + value.length });
+	}
+	return attributes;
+}
 const styles = [];
 const links = [];
 const blocks = source.matchAll(
@@ -12,10 +30,7 @@ for (const [block] of blocks) {
 	if (/^<style(?=[\t\n\f\r />])/i.test(block)) {
 		const opening = block.match(/^<style(?=[\t\n\f\r />])(?:[^>"']|"[^"]*"|'[^']*')*>/i)[0];
 		// Consume whole attributes so data-media and quoted text cannot supply media.
-		const attributes = opening.slice(6, -1).matchAll(
-			/([^\t\n\f\r /=>]+)(?:[\t\n\f\r ]*=[\t\n\f\r ]*(?:"[^"]*"|'[^']*'|[^\t\n\f\r >]+))?/g,
-		);
-		const media = [...attributes].find((attribute) => attribute[1].toLowerCase() === "media")?.[0];
+		const media = parseAttributes(opening.slice(6, -1)).get("media")?.raw;
 		const css = block
 			.slice(opening.length)
 			.replace(/<\/style(?:[\t\n\f\r /](?:[^>"']|"[^"]*"|'[^']*')*)?>$/i, "");
@@ -28,13 +43,15 @@ for (const [block] of blocks) {
 		continue;
 	}
 	if (!/^<link(?=[\t\n\f\r />])/i.test(block)) continue;
-	const rel = block.match(/\srel\s*=\s*["']([^"']+)["']/i)?.[1];
-	const href = block.match(/\shref\s*=\s*["']([^"']+)["']/i)?.[1];
-	if (rel?.toLowerCase() !== "stylesheet" || !href?.startsWith("/assets/")) continue;
+	const attributes = parseAttributes(block.slice(5, -1));
+	const rel = attributes.get("rel")?.value.toLowerCase().split(/[\t\n\f\r ]+/);
+	const href = attributes.get("href");
+	if (!rel?.includes("stylesheet") || !href?.value.startsWith("/assets/")) continue;
 	if (styles.length) {
 		throw new Error("Gallery: local stylesheet after inline viewer CSS would change cascade order");
 	}
-	links.push(block.replace(/(\shref\s*=\s*["'])\/assets\//i, "$1/static/"));
+	const valueStart = 5 + href.start;
+	links.push(`${block.slice(0, valueStart)}/static/${block.slice(valueStart + 8)}`);
 }
 if (!styles.length) throw new Error("Gallery: canonical viewer stylesheet is missing");
 if (!links.length) throw new Error("Gallery: canonical viewer style links are missing");
