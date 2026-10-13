@@ -50,7 +50,6 @@ function reply(response, status, result, headers = {}) {
 }
 
 export async function ownerHttpDispatcher({ getApi, origin, loseFinalReply = () => false }) {
-	const commitments = new Map();
 	async function dispatch(incoming, response) {
 		// Same explicit HTTPS URL rewrite as the existing native browser fixture.
 		// Preserve Origin, Cookie, content type and actual wire bytes; do not repair forms.
@@ -64,37 +63,15 @@ export async function ownerHttpDispatcher({ getApi, origin, loseFinalReply = () 
 			body: ["GET", "HEAD"].includes(incoming.method) ? undefined : bytes,
 		});
 		const api = getApi();
-		let result;
-		if (incoming.method === "POST" && url.pathname === "/v1/auth/owner-attempts") {
-			// Trusted socket peer, never an ID supplied by the JSON body or forwarding headers.
-			result = await api.start(JSON.parse(bytes.toString()), incoming.socket.remoteAddress);
-		} else if (incoming.method === "POST" && url.pathname === "/v1/auth/owner-attempts/finalize") {
-			result = await api.finalize(JSON.parse(bytes.toString()));
-			if (loseFinalReply()) return response.destroy();
-		} else if (incoming.method === "POST" && url.pathname === "/auth/owner/start") {
-			result = await api.claimBrowser(request, "fixture-browser");
-			if (result.kind === "browser_claimed")
-				return reply(response, 303, undefined, {
-					location: result.authorizationUrl,
-					"set-cookie": result.setCookies,
-				});
-		} else if (incoming.method === "GET" && url.pathname === "/auth/callback") {
-			result = await api.verifyCallback(request);
-			if (result.kind === "verified")
-				commitments.set(result.confirmation.attemptId, result.confirmation.confirmationHash);
-		} else if (incoming.method === "POST" && url.pathname === "/auth/owner/confirm") {
-			const attemptId = new URLSearchParams(bytes.toString()).get("attempt_id");
-			result = await api.confirm(request, "fixture-browser", commitments.get(attemptId) ?? "");
-			if (result.kind === "confirmed") {
-				const destination = new URL(result.loopbackRedirect);
-				destination.searchParams.set("attempt_id", result.confirmation.attemptId);
-				destination.searchParams.set("completion", result.completionSecret);
-				destination.searchParams.set("confirmation", result.confirmation.confirmationHash);
-				commitments.delete(attemptId);
-				return reply(response, 303, undefined, { location: destination.href });
-			}
-		} else return reply(response, 404);
-		return reply(response, result.kind === "rejected" ? 403 : 200, result);
+		// Socket identity is owned by this test server; never use forwarding headers.
+		const result = await api.handle(request, incoming.socket.remoteAddress);
+		if (incoming.method === "POST" && url.pathname.endsWith("/finalize") && loseFinalReply())
+			return response.destroy();
+		const headers = Object.fromEntries(result.headers);
+		const cookies = result.headers.getSetCookie();
+		if (cookies.length) headers["set-cookie"] = cookies;
+		response.writeHead(result.status, headers);
+		response.end(Buffer.from(await result.arrayBuffer()));
 	}
 	const server = createServer((request, response) => {
 		dispatch(request, response).catch(() => reply(response, 400));
@@ -112,6 +89,21 @@ export async function ownerHttpDispatcher({ getApi, origin, loseFinalReply = () 
 			return new Promise((resolve) => server.close(resolve));
 		},
 	};
+}
+
+export function ownerFormFields(html) {
+	return Object.fromEntries([...html.matchAll(/name="([^"]+)" value="([^"]*)"/g)].map(m => [m[1], m[2]]));
+}
+
+// The browser uses the rendered random CSRF and cookie, not a known test secret.
+export async function ownerBrowserStart(send, start, origin) {
+	const page = await send(`/auth/owner/start?attempt_id=${start.attemptId}&start_code=${start.browserStartCode}`);
+	assert.equal(page.status, 200);
+	return send("/auth/owner/start", {
+		method: "POST",
+		headers: { origin, cookie: page.headers["set-cookie"][0].split(";")[0], "content-type": "application/x-www-form-urlencoded" },
+		body: new URLSearchParams(ownerFormFields(page.body)).toString(),
+	});
 }
 
 // Disposable B signs only its own start pins and the owner-only receiver's delivery.

@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
 import {
 	ownerHandoffClient,
+	ownerBrowserStart,
+	ownerFormFields,
 	ownerHttpDispatcher,
 	ownerHttpRequest,
 } from "./owner-handoff-fixture.mjs";
@@ -19,7 +21,6 @@ const { build } = runtimeRequire("esbuild");
 const coreDir = fileURLToPath(new URL("../../core", import.meta.url));
 const artifacts = fileURLToPath(new URL("../../../.tmp", import.meta.url));
 const migrations = await readD1Migrations(fileURLToPath(new URL("../migrations", import.meta.url)));
-const unavailable = { kind: "rejected", error: "owner_enrollment_unavailable" };
 
 // Reuse existing key, authority, browser and fake-provider fixtures, not a second runtime.
 async function loadHelpers(t) {
@@ -32,6 +33,7 @@ async function loadHelpers(t) {
 export { ownerStartFixture, seedOwnerCallbackAuthority, browserForm, config, ORIGIN, proof } from './coordinator-owner-enrollment-start-test-fixtures.ts';
 export { commitPendingKey } from './coordinator-owner-enrollment-commit-test-fixtures.ts';
 export { createCoordinatorOwnerEnrollment, ownerEnrollmentStartMessage } from './owner-enrollment-start.ts';
+export { createCoordinatorOwnerEnrollmentHttp } from './coordinator-owner-enrollment-http.ts';
 export { ownerEnrollmentFinalMessage } from './coordinator-owner-enrollment-proof.ts';
 export { ed25519KeyId } from './coordinator-ed25519-key-id.ts';
 export { ownerEnrollmentHash } from './owner-enrollment-start.ts';
@@ -160,22 +162,17 @@ async function fixture(t, kind, host = "127.0.0.1") {
 	});
 	const { receiver, start } = client;
 	t.after(() => receiver.close());
-	const form = await h.browserForm(start.attemptId, start.browserStartCode);
 	const provider = h.oidcFixture({ issuer: h.config.issuer });
 	const options = {
 		purpose: "owner_enroll",
 		mode: "local_test",
 		config: { ...h.config, clientId: h.PROVIDER.clientId, clientSecret: h.PROVIDER.clientSecret },
 		backend: store.backend,
-		csrfKey: form.csrfKey,
-		limiter: { check: () => ({ allowed: true, retryAfterS: 0 }) },
 		oidcOptions: { fetch: provider.fetch },
 		clock: () => h.NOW,
 	};
 	const compose = async (backend = store.backend) => {
-		const result = await h.createCoordinatorOwnerEnrollment({ ...options, backend });
-		assert.equal(result.ok, true);
-		return result.enrollment;
+		return h.createCoordinatorOwnerEnrollmentHttp({ ...options, backend });
 	};
 	const api = await compose();
 	let loseReply = false;
@@ -199,7 +196,6 @@ async function fixture(t, kind, host = "127.0.0.1") {
 		receiver,
 		key,
 		start,
-		form,
 		provider,
 		compose,
 		client,
@@ -214,20 +210,13 @@ async function fixture(t, kind, host = "127.0.0.1") {
 
 async function verify(f) {
 	assert.equal(JSON.parse((await f.client.startRequest(f.base)).body).kind, "started");
-	const form = f.form.request();
-	const claimed = await f.send("/auth/owner/start", {
-		method: form.method,
-		headers: Object.fromEntries(form.headers),
-		body: await form.text(),
-	});
+	const claimed = await ownerBrowserStart(f.send, f.start, f.h.ORIGIN);
 	assert.equal(claimed.status, 303);
 	assert.equal(claimed.headers["cache-control"], "no-store");
 	const cookie = claimed.headers["set-cookie"][0].split(";")[0];
 	const callback = new URL(f.provider.authorize(claimed.headers.location));
-	const result = JSON.parse(
-		(await f.send(callback.pathname + callback.search, { headers: { cookie } })).body,
-	);
-	return { result, cookie };
+	const response = await f.send(callback.pathname + callback.search, { headers: { cookie } });
+	return { response, fields: ownerFormFields(response.body), cookie };
 }
 
 function confirm(f, c, patch = {}) {
@@ -241,14 +230,15 @@ function confirm(f, c, patch = {}) {
 		body:
 			patch.body ??
 			new URLSearchParams({
-				csrf: patch.csrf ?? c.result.csrf,
+				...c.fields,
+				csrf: patch.csrf ?? c.fields.csrf,
 				attempt_id: f.start.attemptId,
 			}).toString(),
 	});
 }
 
 async function deliver(f, c) {
-	assert.equal(c.result.kind, "verified");
+	assert.equal(c.response.status, 200);
 	const confirmed = await confirm(f, c);
 	assert.equal(confirmed.status, 303);
 	assert.equal(confirmed.headers["cache-control"], "no-store");
@@ -303,28 +293,18 @@ for (const kind of ["SQLite", "D1"]) {
 			const originalAuthority = await authority(f);
 			const substitutedDestination = new URL(f.receiver.destination);
 			substitutedDestination.port = String((Number(substitutedDestination.port) % 65535) + 1);
-			assert.deepEqual(
-				JSON.parse(
-					(
-						await f.client.startRequest(f.base, {
-							...f.start,
-							loopbackRedirect: substitutedDestination.href,
-						})
-					).body,
-				),
-				unavailable,
-			);
+			assert.equal((await f.client.startRequest(f.base, { ...f.start, loopbackRedirect: substitutedDestination.href })).status, 400);
 			const c = await verify(f);
-			assert.equal(c.result.kind, "verified");
-			assert.equal(c.result.confirmation.identityId, "identity-a");
-			assert.equal(c.result.confirmation.publicKey, f.start.publicKey);
+			assert.equal(c.response.status, 200);
+			assert.ok(c.response.body.includes("<dt>Identity</dt><dd>identity-a</dd>"));
+			assert.ok(c.response.body.includes(await f.h.ownerEnrollmentHash(f.start.publicKey)));
 			assert.deepEqual(await effects(f), [[], [], []]);
 			// Act: browser confirmation and actual HTTP delivery do not enroll the device.
 			const input = await deliver(f, c);
 			assert.deepEqual(await effects(f), [[], [], []]);
 			const wrongKey = f.h.commitPendingKey();
 			const [attempt] = await f.rows("coordinator_owner_enrollment_attempts");
-			const denied = await f.finalize({
+			const denied = await f.client.finalize(f.base, {
 				...input,
 				signature: wrongKey.sign(f.h.ownerEnrollmentFinalMessage(attempt, input.completionSecret)),
 			});
@@ -332,13 +312,14 @@ for (const kind of ["SQLite", "D1"]) {
 			const finalized = await f.finalize();
 			const beforeRetry = await effects(f);
 			const retry = await f.finalize();
-			const mismatchedRetry = await f.finalize({ ...input, completionSecret: f.h.proof() });
+			const mismatchedRetry = await f.client.finalize(f.base, { ...input, completionSecret: f.h.proof() });
 			// Assert: one binding/audit, only active existing grants, and read-only exact replay.
-			assert.deepEqual(denied, unavailable);
+			assert.equal(denied.status, 400);
 			assert.equal(finalized.kind, "finalized");
+			assert.equal(finalized.identityId, attempt.identity_id);
 			assert.deepEqual(finalized.groups, ["group-a", "group-b"]);
 			assert.deepEqual(retry, { ...finalized, kind: "prior_commit" });
-			assert.deepEqual(mismatchedRetry, unavailable);
+			assert.equal(mismatchedRetry.status, 400);
 			assert.deepEqual(await effects(f), beforeRetry);
 			assert.deepEqual(await authority(f), originalAuthority);
 			const [bindings, enrollments, audits] = beforeRetry;
@@ -367,22 +348,22 @@ for (const kind of ["SQLite", "D1"]) {
 		// Arrange
 		const f = await fixture(t, kind);
 		const c = await verify(f);
-		assert.equal(c.result.kind, "verified");
+		assert.equal(c.response.status, 200);
 		const foreign = await f.h.issueBrowserCookie("transaction");
 		// Act: neither a different cookie nor an invalid CSRF may issue completion.
 		const browserDenial = await confirm(f, c, { cookie: foreign.setCookie.split(";")[0] });
 		const csrfDenial = await confirm(f, c, { csrf: f.h.proof() });
-		assert.equal((await confirm(f, c, { origin: "https://wrong.example.test" })).status, 403);
+		assert.equal((await confirm(f, c, { origin: "https://wrong.example.test" })).status, 400);
 		assert.equal(
 			(await confirm(f, c, { body: "csrf=x&csrf=y&attempt_id=owner-attempt-b" })).status,
-			403,
+			400,
 		);
 		assert.equal((await confirm(f, c, { body: "x".repeat(16385) })).status, 400);
 		const confirmed = await confirm(f, c);
 		f.controller.abort();
 		// Assert: abort stops receipt, not the server attempt; no finalization/binding occurred.
-		assert.deepEqual(JSON.parse(browserDenial.body), unavailable);
-		assert.deepEqual(JSON.parse(csrfDenial.body), unavailable);
+		assert.equal(browserDenial.status, 400);
+		assert.equal(csrfDenial.status, 400);
 		assert.equal(confirmed.status, 303);
 		await assert.rejects(f.receiver.completion, /receiver stopped/);
 		await f.receiver.close();
@@ -399,7 +380,7 @@ for (const kind of ["SQLite", "D1"]) {
 			// Act
 			const c = await verify(f);
 			// Assert
-			assert.deepEqual(c.result, unavailable);
+			assert.equal(c.response.status, 400);
 			assert.deepEqual(await effects(f), [[], [], []]);
 		});
 	}

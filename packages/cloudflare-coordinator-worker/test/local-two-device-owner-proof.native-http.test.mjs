@@ -1,14 +1,14 @@
 // Fake-only acceptance: no production owner routes, provider network, or user state.
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
-import { ownerHandoffClient, ownerHttpDispatcher, ownerHttpRequest } from "./owner-handoff-fixture.mjs";
+import { ownerHttpRequest } from "./owner-handoff-fixture.mjs";
 
 const require = createRequire(new URL("../package.json", import.meta.url));
 const coreRequire = createRequire(new URL("../../core/package.json", import.meta.url));
@@ -21,7 +21,6 @@ const artifacts = fileURLToPath(new URL("../../../.tmp", import.meta.url));
 const migrations = await readD1Migrations(fileURLToPath(new URL("../migrations", import.meta.url)));
 const origin = "https://app.example.test";
 const scopeId = "synthetic-reviewed-project";
-const unavailable = { kind: "rejected", error: "owner_enrollment_unavailable" };
 
 async function helpers(directory) {
 	const bundle = await build({
@@ -31,16 +30,14 @@ export { linkCoordinatorAccount } from './coordinator-account-link-runtime.ts';
 export { createCoordinatorApp } from './coordinator-api.ts';
 export { captureCoordinatorBrowserAuthOptions, createCoordinatorBrowserAuth } from './coordinator-browser-auth-app.ts';
 export { createInMemoryRequestRateLimiter } from './request-rate-limit.ts';
-export { verifySignature } from './sync-auth.ts';
+export { verifySignature, buildDirectPeerAuthHeaders } from './sync-auth.ts';
 export { D1CoordinatorStore } from './d1-coordinator-store.ts';
 export { review } from './coordinator-auth-store-test-fixtures.ts';
 export { oidcFixture, PROVIDER } from './coordinator-oidc-test-fixtures.ts';
 export { browserForm, proof } from './coordinator-owner-enrollment-start-test-fixtures.ts';
-export { createCoordinatorOwnerEnrollment, ownerEnrollmentStartMessage, ownerEnrollmentHash } from './owner-enrollment-start.ts';
-export { ownerEnrollmentFinalMessage } from './coordinator-owner-enrollment-proof.ts';
-export { ed25519KeyId } from './coordinator-ed25519-key-id.ts';
+export { createCoordinatorOwnerEnrollmentHttp } from './coordinator-owner-enrollment-http.ts';
+export { runOwnerEnrollment } from './coordinator-owner-enrollment-client.ts';
 export { COORDINATOR_OWNER_ENROLLMENT_AUDIT_SCHEMA_SQL } from './coordinator-owner-enrollment-commit.ts';
-export { createCoordinatorOwnerEnrollmentReceiver } from './coordinator-account-link-receiver.ts';
 export { initTestSchema } from './test-utils.ts';
 export { MemoryStore } from './store.ts';
 export { fingerprintPublicKey } from './sync-fingerprint.ts';
@@ -51,15 +48,11 @@ export { loadReplicationOpsSince, filterReplicationOpsForSyncWithStatus, applyRe
 			sourcefile: "fake-only-two-device.ts",
 		},
 		bundle: true, write: false, platform: "node", format: "cjs", target: "node24",
-		// Compile fixture-local values, never mutate process.env or read user configuration.
+		// Compile fixture-local defaults; runtime config/key paths are scoped and restored below.
 		define: {
 			// CJS has no import.meta; sync-discovery's createRequire needs a source URL.
 			"import.meta.url": JSON.stringify(new URL("../../core/src/index.ts", import.meta.url).href),
 			"import.meta.dirname": JSON.stringify(join(coreDir, "src")),
-			"process.env.CODEMEM_CONFIG": JSON.stringify(join(directory, "config.json")),
-			"process.env.CODEMEM_DEVICE_ID": '""',
-			"process.env.CODEMEM_ACTOR_ID": '""',
-			"process.env.CODEMEM_KEYS_DIR": JSON.stringify(join(directory, "fresh-device-b")),
 			"process.env.CODEMEM_EMBEDDING_DISABLED": '"1"',
 			"process.env.CODEMEM_SYNC_KEY_STORE": '"file"',
 		},
@@ -199,7 +192,7 @@ async function fields(response, action) {
 
 async function linkA(f) {
 	const { h, remote, a, config, provider, now, t } = f;
-	const review = h.review({ publicKey: a.key.publicKey, fingerprint: h.fingerprintPublicKey(a.key.publicKey) });
+	const review = h.review({ identityId: a.store.actorId, publicKey: a.key.publicKey, fingerprint: h.fingerprintPublicKey(a.key.publicKey) });
 	await remote.store.createGroup(review.groupId, "Fake transport group");
 	await remote.store.enrollDevice(review.groupId, { ...review, identityId: null });
 	assert.equal((await remote.store.createAuthControllerAttestation(review)).kind, "created");
@@ -289,12 +282,19 @@ async function fixture(t) {
 	});
 	await mkdir(artifacts, { recursive: true });
 	const directory = await mkdtemp(join(artifacts, "two-device-owner-"));
+	const environment = Object.fromEntries(["CODEMEM_CONFIG", "CODEMEM_ACTOR_ID", "CODEMEM_DEVICE_ID", "CODEMEM_KEYS_DIR"].map(name => [name, process.env[name]]));
+	process.env.CODEMEM_CONFIG = join(directory, "config.json");
+	for (const name of ["CODEMEM_ACTOR_ID", "CODEMEM_DEVICE_ID", "CODEMEM_KEYS_DIR"]) delete process.env[name];
+	t.after(() => {
+		for (const [name, value] of Object.entries(environment)) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+	});
 	let a;
-	let b;
 	let remote;
 	t.after(async () => {
 		a?.store.close();
-		b?.store.close();
 		await remote?.dispose();
 		await rm(directory, { recursive: true, force: true });
 	});
@@ -307,55 +307,11 @@ async function fixture(t) {
 	const provider = h.oidcFixture({ issuer: config.issuer });
 	provider.claims.picture = undefined;
 	a = await device(h, directory, "device-a");
-	b = await device(h, directory, "fresh-device-b");
-	assert.notEqual(a.key.publicKey, b.key.publicKey);
 	remote = await coordinator(h, now);
-	const f = { t, h, a, b, remote, config, provider, now,
+	const f = { t, h, a, remote, config, provider, now, directory,
 		allowSyncOrigin: url => { syncOrigin = url; } };
 	f.link = await linkA(f);
 	return f;
-}
-
-async function ownerB(f) {
-	const controller = new AbortController();
-	const client = await ownerHandoffClient({
-		helpers: f.h, pin: { ...f.config, origin }, key: f.b.key, deviceId: f.b.deviceId,
-		attemptId: "owner-attempt-b", host: "127.0.0.1", signal: controller.signal,
-	});
-	f.t.after(() => client.receiver.close());
-	const form = await f.h.browserForm(client.start.attemptId, client.start.browserStartCode);
-	const composition = await f.h.createCoordinatorOwnerEnrollment({
-		purpose: "owner_enroll", mode: "local_test", config: f.config,
-		backend: f.remote.backend, csrfKey: form.csrfKey,
-		limiter: { check: () => ({ allowed: true, retryAfterS: 0 }) },
-		oidcOptions: { fetch: f.provider.fetch }, clock: () => f.now,
-	});
-	assert.equal(composition.ok, true);
-	let loseReply = false;
-	const dispatcher = await ownerHttpDispatcher({
-		getApi: () => composition.enrollment, origin,
-		loseFinalReply: () => { const lose = loseReply; loseReply = false; return lose; },
-	});
-	f.t.after(() => dispatcher.close());
-	const send = (path, init) => ownerHttpRequest(`${dispatcher.base}${path}`, init);
-	assert.equal(JSON.parse((await client.startRequest(dispatcher.base)).body).kind, "started");
-	const claim = form.request();
-	// browserForm has a fixed fixture origin; pin the actual coordinator Origin here.
-	const claimed = await send("/auth/owner/start", {
-		method: "POST", headers: { ...Object.fromEntries(claim.headers), origin }, body: await claim.text(),
-	});
-	assert.equal(claimed.status, 303);
-	const binder = claimed.headers["set-cookie"][0].split(";")[0];
-	const callback = new URL(f.provider.authorize(claimed.headers.location));
-	const verified = JSON.parse((await send(callback.pathname + callback.search, { headers: { cookie: binder } })).body);
-	return {
-		client, controller, verified, loseReply: () => { loseReply = true; },
-		finalize: () => client.finalize(dispatcher.base),
-		confirm: () => send("/auth/owner/confirm", {
-			method: "POST", headers: { origin, cookie: binder, "content-type": "application/x-www-form-urlencoded" },
-			body: new URLSearchParams({ csrf: verified.csrf, attempt_id: client.start.attemptId }).toString(),
-		}),
-	};
 }
 
 async function ownerEffects(f) {
@@ -379,9 +335,6 @@ function provisionScope(device, peer, now) {
 
 function capture(f) {
 	const { a, h } = f;
-	// Synthetic attribution only; this does not test runtime adoption of an existing local actor.
-	a.store.actorId = f.link.identityId;
-	a.store.actorDisplayName = "Synthetic owner";
 	const session = a.store.startSession({
 		cwd: "/synthetic/device-a/workspace", project: "synthetic-project",
 		gitRemote: "https://example.test/synthetic.git", gitBranch: "synthetic-local-branch",
@@ -411,6 +364,8 @@ async function syncServer(f) {
 	const requests = [];
 	let url;
 	const server = createServer(async (incoming, response) => {
+		const previousKeysDir = process.env.CODEMEM_KEYS_DIR;
+		process.env.CODEMEM_KEYS_DIR = f.b.keysDir;
 		try {
 			const chunks = [];
 			for await (const chunk of incoming) chunks.push(chunk);
@@ -420,14 +375,20 @@ async function syncServer(f) {
 				headers.append(incoming.rawHeaders[index], incoming.rawHeaders[index + 1]);
 			const target = new URL(incoming.url, url);
 			assert.equal(target.origin, url);
-			requests.push({ method: incoming.method, path: target.pathname, headers, body: bytes.toString() });
+			const wire = { method: incoming.method, path: target.pathname, headers, body: bytes.toString() };
+			requests.push(wire);
 			const result = await app.fetch(new Request(target, {
 				method: incoming.method, headers,
 				body: ["GET", "HEAD"].includes(incoming.method) ? undefined : bytes,
 			}));
+			wire.status = result.status;
 			response.writeHead(result.status, Object.fromEntries(result.headers));
 			response.end(Buffer.from(await result.arrayBuffer()));
 		} catch { response.writeHead(500); response.end(); }
+		finally {
+			if (previousKeysDir === undefined) delete process.env.CODEMEM_KEYS_DIR;
+			else process.env.CODEMEM_KEYS_DIR = previousKeysDir;
+		}
 	});
 	f.t.after(() => {
 		server.closeAllConnections();
@@ -442,34 +403,67 @@ async function syncServer(f) {
 	return { url, requests };
 }
 
-test("fake-only A runtime link → B owner handoff → separately scoped portable capture", { timeout: 60000 }, async t => {
-	// Arrange: two disposable keys/stores and one native D1; no account-link SQL seeds.
+async function maintainedOwnerB(f) {
+	const profileDir = join(f.directory, "owner-profile-b");
+	const http = await f.h.createCoordinatorOwnerEnrollmentHttp({ config: f.config, backend: f.remote.backend,
+		oidcOptions: { fetch: f.provider.fetch }, clock: () => f.now });
+	const request = await linkDispatcher(f.t, { fetch: r => http.handle(r, "owner-socket") });
+	const openBrowser = async url => {
+		const page = await request(url);
+		const claimed = await request(`${origin}/auth/owner/start`, { method: "POST",
+			headers: { origin, cookie: cookie(page), "content-type": "application/x-www-form-urlencoded" },
+			body: (await fields(page, "/auth/owner/start")).toString() });
+		assert.equal(claimed.status, 303);
+		const binder = cookie(claimed);
+		const callback = await request(f.provider.authorize(claimed.headers.get("location")), { headers: { cookie: binder } });
+		const confirmed = await request(`${origin}/auth/owner/confirm`, { method: "POST",
+			headers: { origin, cookie: binder, "content-type": "application/x-www-form-urlencoded" },
+			body: (await fields(callback, "/auth/owner/confirm")).toString() });
+		assert.equal(confirmed.status, 303);
+		assert.equal((await ownerHttpRequest(confirmed.headers.get("location"), {
+			headers: { "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" },
+		})).status, 200);
+	};
+	const previousConfig = process.env.CODEMEM_CONFIG;
+	process.env.CODEMEM_CONFIG = join(profileDir, "config.json");
+	try {
+		const receipt = await f.h.runOwnerEnrollment({ profileDir, coordinatorUrl: origin, groupId: "group-a", fetch: request, openBrowser });
+		const privateKey = await readFile(join(profileDir, "keys/device.key"), "utf8");
+		const keysDir = join(profileDir, "keys");
+		const store = new f.h.MemoryStore(join(profileDir, "mem.sqlite"), { keysDir });
+		f.t.after(() => store.close());
+		store.enqueueVectorWrite = () => {};
+		const publicKey = (await readFile(join(keysDir, "device.key.pub"), "utf8")).trim();
+		f.b = { store, keysDir, deviceId: store.deviceId,
+			key: { publicKey } };
+		assert.equal(await readFile(join(keysDir, "device.key"), "utf8"), privateKey);
+		assert.equal(store.actorId, receipt.identityId);
+		assert.equal(store.db.prepare("SELECT identity_id FROM identity_devices WHERE device_id=?").get(store.deviceId).identity_id, receipt.identityId);
+		assert.equal(JSON.parse(await readFile(join(profileDir, "config.json"), "utf8")).actor_id, receipt.identityId);
+		return receipt;
+	} finally {
+		if (previousConfig === undefined) delete process.env.CODEMEM_CONFIG;
+		else process.env.CODEMEM_CONFIG = previousConfig;
+	}
+}
+
+test("fake-only A runtime link → maintained B owner client → separately scoped portable capture", { timeout: 60000 }, async t => {
+	// Arrange: B does not exist until the maintained client creates its isolated profile.
 	const f = await fixture(t);
-	const owner = await ownerB(f);
-	assert.equal(owner.verified.kind, "verified");
-	assert.equal(owner.verified.confirmation.identityId, f.link.identityId);
-	assert.deepEqual(await ownerEffects(f), [[], []]);
 	const authority = await Promise.all(["coordinator_auth_account_links", "coordinator_identity_group_grants", "coordinator_scope_memberships"].map(f.remote.rows));
-	// Act: real loopback delivery and a lost HTTP response; exact proof reconciles the commit.
-	const confirmed = await owner.confirm();
-	assert.equal(confirmed.status, 303);
-	assert.equal((await ownerHttpRequest(confirmed.headers.location, {
-		headers: { "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" },
-	})).status, 200);
-	const input = await owner.client.consumeCompletion();
-	owner.loseReply();
-	await assert.rejects(owner.finalize(), /socket hang up/);
-	const committed = await ownerEffects(f);
-	const retry = JSON.parse((await owner.finalize()).body);
-	// Assert: one durable B binding/audit, same linked owner, no scope authority from enrollment.
-	assert.equal(retry.kind, "prior_commit");
-	assert.strictEqual(await owner.client.consumeCompletion(), input);
-	assert.deepEqual(await ownerEffects(f), committed);
-	assert.equal(committed[0].length, 1);
-	assert.equal(committed[1].length, 1);
-	assert.equal(committed[0][0].device_id, f.b.deviceId);
-	assert.equal(committed[0][0].identity_id, f.link.identityId);
-	assert.equal(retry.bindingId, committed[0][0].binding_id);
+	// Act: real browser forms, SDK and receiver create B from the verified receipt.
+	const receipt = await maintainedOwnerB(f);
+	// Assert: only the verified receipt adopts B; A identity is compared, never injected.
+	assert.equal(receipt.kind, "finalized");
+	assert.equal(receipt.identityId, f.a.store.actorId);
+	assert.equal(receipt.identityId, f.link.identityId);
+	assert.notEqual(f.a.key.publicKey, f.b.key.publicKey);
+	const [bindings, audits] = await ownerEffects(f);
+	assert.equal(bindings.length, 1);
+	assert.equal(audits.length, 1);
+	assert.equal(bindings[0].device_id, f.b.deviceId);
+	assert.equal(bindings[0].identity_id, receipt.identityId);
+	assert.equal(receipt.bindingId, bindings[0].binding_id);
 	const enrollments = await f.remote.rows("enrolled_devices");
 	assert.equal(enrollments.length, 2);
 	const enrolledB = enrollments.find(row => row.device_id === f.b.deviceId);
@@ -486,6 +480,23 @@ test("fake-only A runtime link → B owner handoff → separately scoped portabl
 });
 
 async function scopedCaptureAcceptance(f) {
+	// Arrange/Act: owner enrollment alone cannot authenticate signed A-to-B HTTP sync.
+	const server = await syncServer(f);
+	const denied = await f.h.syncOnce(f.a.store.db, f.b.deviceId, [server.url], {
+		keysDir: f.a.keysDir, scanner: f.a.store.scanner,
+	});
+	// syncOnce refuses a missing local pin; separately prove the receiver denies signed HTTP.
+	const statusUrl = `${server.url}/v1/status`;
+	const response = await globalThis.fetch(statusUrl, { headers: f.h.buildDirectPeerAuthHeaders({
+		deviceId: f.a.deviceId, recipientId: f.b.deviceId, method: "GET", url: statusUrl,
+		bodyBytes: Buffer.alloc(0), keysDir: f.a.keysDir,
+	}) });
+	// Assert: owner enrollment is neither a local peer pin nor receiver-side trust.
+	assert.equal(denied.ok, false);
+	assert.equal(denied.failureCategory, "trust");
+	assert.equal(response.status, 401);
+	assert.ok(server.requests.some(request => request.status === 401 && request.headers.get("X-Opencode-Signature")));
+	assert.equal(f.b.store.db.prepare("SELECT COUNT(*) AS n FROM memory_items").get().n, 0);
 	// Arrange: explicitly provision local scope memberships and exact peer-key trust on A/B.
 	for (const d of [f.a, f.b]) d.fingerprint = f.h.fingerprintPublicKey;
 	provisionScope(f.a, f.b, f.now);
@@ -499,7 +510,6 @@ async function scopedCaptureAcceptance(f) {
 	assert.equal(replicate(f, ops).applied, 0);
 	assert.equal(f.b.store.db.prepare("SELECT COUNT(*) AS n FROM memory_items").get().n, 0);
 	f.b.store.db.prepare("UPDATE scope_memberships SET status='active' WHERE device_id=?").run(f.b.deviceId);
-	const server = await syncServer(f);
 	await assert.rejects(globalThis.fetch("https://example.test/not-owned"), /External network forbidden/);
 	const result = await f.h.syncOnce(f.a.store.db, f.b.deviceId, [server.url], {
 		keysDir: f.a.keysDir, scanner: f.a.store.scanner,
@@ -532,36 +542,3 @@ async function scopedCaptureAcceptance(f) {
 	assert.equal(replicate(f, ops).applied, 0, "In-process replay preflight remains idempotent");
 	assert.equal(f.b.store.db.prepare("SELECT COUNT(*) AS n FROM memory_items").get().n, 1);
 }
-
-test("fake-only wrong provider subject cannot bind B after A linked successfully", { timeout: 60000 }, async t => {
-	// Arrange
-	const f = await fixture(t);
-	f.provider.claims.sub = "synthetic-unlinked-subject";
-	// Act
-	const owner = await ownerB(f);
-	// Assert
-	assert.deepEqual(owner.verified, unavailable);
-	assert.deepEqual(await ownerEffects(f), [[], []]);
-	assert.equal((await f.remote.rows("enrolled_devices")).length, 1);
-	assert.equal((await f.remote.rows("coordinator_auth_account_links")).length, 1);
-});
-
-test("fake-only abort after B confirmation leaves no owner binding or audit", { timeout: 60000 }, async t => {
-	// Arrange
-	const f = await fixture(t);
-	const owner = await ownerB(f);
-	assert.equal(owner.verified.kind, "verified");
-	// Act: local abort closes the receiver; it does not claim server cancellation or rollback.
-	assert.equal((await owner.confirm()).status, 303);
-	owner.controller.abort();
-	await assert.rejects(owner.client.receiver.completion, /receiver stopped/);
-	await owner.client.receiver.close();
-	// Assert
-	assert.deepEqual(await ownerEffects(f), [[], []]);
-	assert.equal((await f.remote.rows("enrolled_devices")).length, 1);
-	assert.equal((await f.remote.rows("coordinator_owner_enrollment_attempts"))[0].state, "confirmed");
-});
-
-test("two-device fixture restores the original fetch after each case", () => {
-	assert.equal(globalThis.fetch.mock, undefined);
-});
