@@ -144,12 +144,22 @@ it.each([undefined, JSON.stringify({ enabled: false })])(
 		env.CODEMEM_COORDINATOR_BROWSER_AUTH_CONFIG = config;
 		delete env.CODEMEM_COORDINATOR_OIDC_CLIENT_SECRET;
 		delete env.CODEMEM_COORDINATOR_BROWSER_CSRF_KEY;
+		const freshWorker = createConfiguredCloudflareCoordinatorWorker();
 		// Act
 		const signin = await defaultWorker.fetch(request("/auth/sign-in"), env);
+		const freshAuth = await Promise.all(
+			["/auth/sign-in", "/auth/callback", "/v1/auth/owner-config"].map((path) =>
+				freshWorker.fetch(request(path), env),
+			),
+		);
 		const routes = await ordinaryRoutes(defaultWorker, env);
 		// Assert: ordinary routing and signed-API rejection remain active.
 		expect(signin.status).toBe(404);
 		expect(signin.headers.get("set-cookie")).toBeNull();
+		for (const response of freshAuth) {
+			expect(response.status).toBe(404);
+			expect(response.headers.get("set-cookie")).toBeNull();
+		}
 		expect(routes.missing.status).toBe(404);
 		expect(routes.presence.status).toBe(401);
 		expect(routes.body).toEqual({ error: "missing_headers" });
@@ -258,6 +268,8 @@ it.each([
 it.each([
 	"invalid JSON",
 	"auth settings drift",
+	"missing config",
+	"disabled config",
 	"database drift",
 	"browser database drift",
 ] as const)("retains the real device API limiter across %s fallback requests", async (fault) => {
@@ -276,6 +288,9 @@ it.each([
 	else {
 		expect((await worker.fetch(request("/auth/sign-in"), env)).status).toBe(200);
 		if (fault === "auth settings drift") env.CODEMEM_COORDINATOR_BROWSER_CSRF_KEY = "ab".repeat(32);
+		else if (fault === "missing config") delete env.CODEMEM_COORDINATOR_BROWSER_AUTH_CONFIG;
+		else if (fault === "disabled config")
+			env.CODEMEM_COORDINATOR_BROWSER_AUTH_CONFIG = JSON.stringify({ enabled: false });
 		else env.COORDINATOR_DB = environment().COORDINATOR_DB;
 	}
 	const presence = () =>
@@ -336,68 +351,107 @@ it("mounts sign-in from bindings and preserves its CSRF key across independent w
 	expect(globalThis.fetch).toHaveBeenCalled();
 });
 
-it("keeps valid signed presence usable when browser configuration is malformed", async () => {
-	// Arrange: a fixture-only Ed25519 identity enrolled through the real D1 adapter.
-	const env = environment();
-	env.CODEMEM_COORDINATOR_BROWSER_AUTH_CONFIG = "{";
-	const worker = createConfiguredCloudflareCoordinatorWorker();
-	const keys = generateKeyPairSync("ed25519");
-	const raw = Buffer.from(keys.publicKey.export({ type: "spki", format: "der" })).subarray(-32);
-	const kind = Buffer.from("ssh-ed25519");
-	const wire = Buffer.alloc(8 + kind.length + raw.length);
-	wire.writeUInt32BE(kind.length);
-	kind.copy(wire, 4);
-	wire.writeUInt32BE(raw.length, 4 + kind.length);
-	raw.copy(wire, 8 + kind.length);
-	const publicKey = `ssh-ed25519 ${wire.toString("base64")}`;
-	const fingerprint = fingerprintPublicKey(publicKey);
-	if (!env.COORDINATOR_DB) throw new Error("Fixture DB missing");
-	const store = new D1CoordinatorStore(env.COORDINATOR_DB);
-	await store.createGroup("fixture-group");
-	await store.enrollDevice("fixture-group", {
-		deviceId: "fixture-device",
-		publicKey,
-		fingerprint,
-	});
-	const body = JSON.stringify({
-		group_id: "fixture-group",
-		fingerprint,
-		addresses: ["http://127.0.0.1:7337"],
-		ttl_s: 180,
-	});
-	const timestamp = String(NOW / 1000);
-	const nonce = "configured-worker-fixture";
-	const signature = sign(
-		null,
-		buildCanonicalRequest("POST", "/v1/presence", timestamp, nonce, Buffer.from(body)),
-		keys.privateKey,
-	);
-	const headers = {
-		"content-type": "application/json",
-		"X-Opencode-Device": "fixture-device",
-		"X-Opencode-Timestamp": timestamp,
-		"X-Opencode-Nonce": nonce,
-		"X-Opencode-Signature": `${SIGNATURE_VERSION}:${signature.toString("base64")}`,
-	};
-	// Act
-	const accepted = await worker.fetch(
-		request("/v1/presence", { method: "POST", headers, body }),
-		env,
-	);
-	const rejected = await worker.fetch(
-		request("/v1/presence", {
-			method: "POST",
-			headers: { ...headers, "X-Opencode-Signature": `v3:${signature.toString("base64")}` },
-			body,
-		}),
-		env,
-	);
-	// Assert: browser failure neither accepts invalid signatures nor blocks enrolled devices.
-	expect(accepted.status).toBe(200);
-	expect(rejected.status).toBe(401);
-	expect(await rejected.json()).toEqual({ error: "invalid_signature" });
-	expect(globalThis.fetch).not.toHaveBeenCalled();
-});
+it.each(["malformed", "missing", "disabled", "database"] as const)(
+	"keeps signed presence isolated from browser auth after %s configuration",
+	async (fault) => {
+		// Arrange: a fixture-only Ed25519 identity enrolled through the real D1 adapter.
+		const env = environment();
+		const worker = createConfiguredCloudflareCoordinatorWorker();
+		if (fault !== "malformed")
+			expect((await worker.fetch(request("/auth/sign-in"), env)).status).toBe(200);
+		const originalDb = databases.at(-1)?.db;
+		if (!originalDb) throw new Error("Fixture DB missing");
+		if (fault === "malformed") env.CODEMEM_COORDINATOR_BROWSER_AUTH_CONFIG = "{";
+		if (fault === "missing") delete env.CODEMEM_COORDINATOR_BROWSER_AUTH_CONFIG;
+		if (fault === "disabled")
+			env.CODEMEM_COORDINATOR_BROWSER_AUTH_CONFIG = JSON.stringify({ enabled: false });
+		const keys = generateKeyPairSync("ed25519");
+		const raw = Buffer.from(keys.publicKey.export({ type: "spki", format: "der" })).subarray(-32);
+		const kind = Buffer.from("ssh-ed25519");
+		const wire = Buffer.alloc(8 + kind.length + raw.length);
+		wire.writeUInt32BE(kind.length);
+		kind.copy(wire, 4);
+		wire.writeUInt32BE(raw.length, 4 + kind.length);
+		raw.copy(wire, 8 + kind.length);
+		const publicKey = `ssh-ed25519 ${wire.toString("base64")}`;
+		const fingerprint = fingerprintPublicKey(publicKey);
+		if (!env.COORDINATOR_DB) throw new Error("Fixture DB missing");
+		const originalStore = new D1CoordinatorStore(env.COORDINATOR_DB);
+		await originalStore.createGroup("fixture-group");
+		await originalStore.enrollDevice("fixture-group", {
+			deviceId: "old-only-device",
+			publicKey,
+			fingerprint,
+		});
+		if (fault === "database") env.COORDINATOR_DB = environment().COORDINATOR_DB;
+		const store = new D1CoordinatorStore(env.COORDINATOR_DB);
+		await store.createGroup("fixture-group");
+		await store.enrollDevice("fixture-group", {
+			deviceId: "fixture-device",
+			publicKey,
+			fingerprint,
+		});
+		const body = JSON.stringify({
+			group_id: "fixture-group",
+			fingerprint,
+			addresses: ["http://127.0.0.1:7337"],
+			ttl_s: 180,
+		});
+		const timestamp = String(NOW / 1000);
+		const nonce = "configured-worker-fixture";
+		const signature = sign(
+			null,
+			buildCanonicalRequest("POST", "/v1/presence", timestamp, nonce, Buffer.from(body)),
+			keys.privateKey,
+		);
+		const headers = {
+			"content-type": "application/json",
+			"X-Opencode-Device": "fixture-device",
+			"X-Opencode-Timestamp": timestamp,
+			"X-Opencode-Nonce": nonce,
+			"X-Opencode-Signature": `${SIGNATURE_VERSION}:${signature.toString("base64")}`,
+		};
+		// Act
+		vi.mocked(globalThis.fetch).mockClear();
+		const auth = await worker.fetch(request("/auth/sign-in"), env);
+		const accepted = await worker.fetch(
+			request("/v1/presence", { method: "POST", headers, body }),
+			env,
+		);
+		const rejected = await worker.fetch(
+			request("/v1/presence", {
+				method: "POST",
+				headers: { ...headers, "X-Opencode-Signature": `v3:${signature.toString("base64")}` },
+				body,
+			}),
+			env,
+		);
+		// Assert: browser failure neither accepts invalid signatures nor blocks enrolled devices.
+		expect(accepted.status).toBe(200);
+		expect(auth.status).toBe(503);
+		expect(await auth.text()).toBe("Authentication unavailable. Try again.");
+		expect(auth.headers.get("set-cookie")).toBeNull();
+		expect(rejected.status).toBe(401);
+		expect(await rejected.json()).toEqual({ error: "invalid_signature" });
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+		if (fault === "database") {
+			// Act: a device enrolled only in the previous database has no rights in the replacement.
+			const oldDevice = await worker.fetch(
+				request("/v1/presence", {
+					method: "POST",
+					headers: { ...headers, "X-Opencode-Device": "old-only-device" },
+					body,
+				}),
+				env,
+			);
+			// Assert: fallback writes only to the currently bound database.
+			expect(oldDevice.status).toBe(401);
+			expect(await oldDevice.json()).toEqual({ error: "unknown_device" });
+			expect(originalDb.prepare("SELECT * FROM presence_records").all()).toEqual([]);
+			expect(databases.at(-1)?.db.prepare("SELECT * FROM presence_records").all()).toHaveLength(1);
+		}
+	},
+);
 
 it("contains discovery failure to auth and reuses the settled failure", async () => {
 	// Arrange: provider errors may contain secrets but must never reach responses.
@@ -421,7 +475,14 @@ it("contains discovery failure to auth and reuses the settled failure", async ()
 	expect(routes.body).toEqual({ error: "missing_headers" });
 });
 
-it.each(["config", "csrfKey", "clientSecret", "database"] as const)(
+it.each([
+	"config",
+	"missing config",
+	"disabled config",
+	"csrfKey",
+	"clientSecret",
+	"database",
+] as const)(
 	"rejects %s drift without replacing ordinary routes or the captured worker",
 	async (field) => {
 		// Arrange: setup settles before any binding changes.
@@ -435,6 +496,9 @@ it.each(["config", "csrfKey", "clientSecret", "database"] as const)(
 				revision: "b".repeat(64),
 			});
 		if (field === "csrfKey") changed.CODEMEM_COORDINATOR_BROWSER_CSRF_KEY = "ab".repeat(32);
+		if (field === "missing config") delete changed.CODEMEM_COORDINATOR_BROWSER_AUTH_CONFIG;
+		if (field === "disabled config")
+			changed.CODEMEM_COORDINATOR_BROWSER_AUTH_CONFIG = JSON.stringify({ enabled: false });
 		if (field === "clientSecret") changed.CODEMEM_COORDINATOR_OIDC_CLIENT_SECRET = "changed-dummy";
 		if (field === "database") changed.COORDINATOR_DB = environment().COORDINATOR_DB;
 		vi.mocked(globalThis.fetch).mockClear();

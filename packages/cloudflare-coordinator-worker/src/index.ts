@@ -222,16 +222,17 @@ export function createConfiguredCloudflareCoordinatorWorker() {
 	const ownerLimiter = createInMemoryRequestRateLimiter();
 	const deviceLimiter = createInMemoryRequestRateLimiter();
 	async function configured(env: CloudflareCoordinatorEnv) {
-		const settings = captureCloudflareBrowserAuthEnv(env);
-		if (settings.kind === "disabled") return legacy;
-		if (settings.kind === "invalid") return null;
 		const bindings = [
 			env.COORDINATOR_DB,
 			env.CODEMEM_COORDINATOR_BROWSER_AUTH_CONFIG,
 			env.CODEMEM_COORDINATOR_OIDC_CLIENT_SECRET,
 			env.CODEMEM_COORDINATOR_BROWSER_CSRF_KEY,
 		];
+		// Removing or disabling config after capture is drift, not an initial legacy rollout.
 		if (captured && !sameBindings(captured, bindings)) return null;
+		const settings = captureCloudflareBrowserAuthEnv(env);
+		if (settings.kind === "disabled") return legacy;
+		if (settings.kind === "invalid") return null;
 		if (completed) return completed;
 		const db = env.COORDINATOR_DB;
 		if (!db) return null;
