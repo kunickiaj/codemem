@@ -99,7 +99,13 @@ function environmentUsage(options: Options): boolean {
 	}
 	return true;
 }
-function coordinatorOriginUsage(options: Options, value: string): boolean {
+function coordinatorOriginUsage(options: Options, value: unknown): boolean {
+	if (typeof value !== "string") {
+		return reportUsageError(
+			options,
+			"Set sync_coordinator_url to a valid HTTPS origin string before owner enrollment.",
+		);
+	}
 	try {
 		const url = new URL(value);
 		if (
@@ -170,6 +176,11 @@ function normalizeEnrollmentPath(
 function resolveEnrollmentProfile(options: Options) {
 	const configPath = resolveCodememConfigPath(options.config, "write").resolved.path;
 	const config = readCodememConfigFileAtPath(configPath);
+	if (
+		config.sync_coordinator_url !== undefined &&
+		!coordinatorOriginUsage(options, config.sync_coordinator_url)
+	)
+		return null;
 	const coordinatorUrl =
 		options.coordinator ?? readCoordinatorSyncConfig(config).syncCoordinatorUrl;
 	if (!coordinatorUrl) {
