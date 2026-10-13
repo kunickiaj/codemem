@@ -222,6 +222,7 @@ it.each(["/auth/owner/start", "/auth/owner/confirm"])(
 );
 
 it("owner routes remain unmounted without the explicit owner factory", async () => {
+	// Arrange: normal browser authentication stays enabled without owner enrollment.
 	const f = await fixture();
 	const csrfKey = await importBrowserCsrfKey(new Uint8Array(32).fill(7));
 	const oidc = oidcFixture({ issuer: config.issuer });
@@ -236,6 +237,12 @@ it("owner routes remain unmounted without the explicit owner factory", async () 
 	if (!result.ok) throw new Error("Expected composed browser auth");
 	const app = new Hono();
 	result.auth.register(app, () => "trusted-client");
+	// Act
+	const signin = await app.request("https://app.example.test/auth/sign-in");
+	const link = await app.request("https://app.example.test/auth/link/start");
+	// Assert: removing owner routes neither disables sign-in nor admits an unbound link.
+	expect(signin.status).toBe(200);
+	expect(link.status).toBe(400);
 	for (const path of [
 		"/auth/owner/start",
 		"/auth/owner/confirm",
@@ -246,34 +253,55 @@ it("owner routes remain unmounted without the explicit owner factory", async () 
 		expect((await app.request(`https://app.example.test${path}`)).status).toBe(404);
 });
 
-it("opt-in maintenance erases expired owner secrets but retains replay facts", async () => {
-	const f = await fixture();
-	f.db
-		.prepare(
-			"UPDATE coordinator_auth_browser_transactions SET created_at_ms = ?, expires_at_ms = ?",
-		)
-		.run(NOW - 600000, NOW);
-	const csrfKey = await importBrowserCsrfKey(new Uint8Array(32).fill(7));
-	const snapshot = captureCoordinatorBrowserAuthOptions({
-		config,
-		csrfKey,
-		ownerEnrollment: async () => ({ handle: f.ownerCallback, handleCallback: f.ownerCallback }),
-	});
-	expect((await maintainCoordinatorBrowserAuth(snapshot, f.store, { maxBatches: 1 })).kind).toBe(
-		"maintained",
-	);
-	expect(
+it.each(["enabled", "removed"] as const)(
+	"maintenance erases expired owner secrets with factory %s but retains replay facts",
+	async (factory) => {
+		// Arrange: pending owner material survives a deployment that removes the owner factory.
+		const f = await fixture();
+		const csrfKey = await importBrowserCsrfKey(new Uint8Array(32).fill(7));
+		const options = {
+			config,
+			csrfKey,
+			ownerEnrollment: async () => ({ handle: f.ownerCallback, handleCallback: f.ownerCallback }),
+		};
+		const enabled = captureCoordinatorBrowserAuthOptions(options);
+		const snapshot =
+			factory === "enabled" ? enabled : captureCoordinatorBrowserAuthOptions({ config, csrfKey });
+		const beforeExpiry = await maintainCoordinatorBrowserAuth(enabled, f.store, { maxBatches: 1 });
+		const pending = f.db
+			.prepare("SELECT state, nonce, pkce_verifier FROM coordinator_auth_browser_transactions")
+			.get();
 		f.db
 			.prepare(
-				"SELECT purpose, state_hash, binder_hash, state, nonce, pkce_verifier FROM coordinator_auth_browser_transactions",
+				"UPDATE coordinator_auth_browser_transactions SET created_at_ms = ?, expires_at_ms = ?",
 			)
-			.get(),
-	).toEqual({
-		purpose: "owner_enroll",
-		state_hash: digest(state),
-		binder_hash: f.cookie.cookieHash,
-		state: "expired",
-		nonce: null,
-		pkce_verifier: null,
-	});
-});
+			.run(NOW - 600000, NOW);
+		// Act: the scheduled maintenance entry point must expire old transactions regardless of route opt-in.
+		const result = await maintainCoordinatorBrowserAuth(snapshot, f.store, { maxBatches: 1 });
+		const repeated = await maintainCoordinatorBrowserAuth(snapshot, f.store, { maxBatches: 1 });
+		// Assert: live secrets remain before expiry; expired secrets clear without deleting replay bindings.
+		expect(beforeExpiry).toEqual({ kind: "maintained", processedCount: 0, more: false });
+		expect(pending).toEqual({
+			state: "pending",
+			nonce: "n".repeat(43),
+			pkce_verifier: "p".repeat(43),
+		});
+		expect(result).toEqual({ kind: "maintained", processedCount: 1, more: false });
+		expect(repeated).toEqual({ kind: "maintained", processedCount: 0, more: false });
+		expect(
+			f.db
+				.prepare(
+					"SELECT purpose, attempt_id, state_hash, binder_hash, state, nonce, pkce_verifier FROM coordinator_auth_browser_transactions",
+				)
+				.get(),
+		).toEqual({
+			purpose: "owner_enroll",
+			attempt_id: "owner-a",
+			state_hash: digest(state),
+			binder_hash: f.cookie.cookieHash,
+			state: "expired",
+			nonce: null,
+			pkce_verifier: null,
+		});
+	},
+);

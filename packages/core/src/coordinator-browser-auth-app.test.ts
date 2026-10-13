@@ -534,17 +534,26 @@ it("maintenance runs stages in order with independent budgets and fixed failed-s
 	const names = [
 		"maintainAuthLinkAttempts",
 		"retireAuthBrowserTransactions",
+		"maintainAuthBrowserTransactions",
 		"purgeAuthSigninBrowserTransactions",
 		"purgeAuthGuardedSigninSessions",
 		"purgeAuthGuardedSigninReceipts",
 	] as const;
+	const resultKinds = {
+		maintainAuthLinkAttempts: "maintained",
+		retireAuthBrowserTransactions: "retired",
+		maintainAuthBrowserTransactions: "maintained",
+		purgeAuthSigninBrowserTransactions: "purged",
+		purgeAuthGuardedSigninSessions: "purged",
+		purgeAuthGuardedSigninReceipts: "purged",
+	} as const;
 	const calls: string[] = [];
 	const methods = Object.fromEntries(
 		names.map((name) => [
 			name,
 			vi.fn(async () => {
 				calls.push(name);
-				return { kind: "purged", processedCount: 2, more: true };
+				return { kind: resultKinds[name], processedCount: 2, more: true };
 			}),
 		]),
 	);
@@ -557,8 +566,13 @@ it("maintenance runs stages in order with independent budgets and fixed failed-s
 	const failed = await maintainCoordinatorBrowserAuth(f.snapshot, store, { maxBatches: 1 });
 	const invalid = await maintainCoordinatorBrowserAuth(f.snapshot, store, { maxBatches: 0 });
 	// Assert
-	expect(result).toEqual({ kind: "maintained", processedCount: 20, more: true });
-	expect(calls.slice(0, 10)).toEqual(names.flatMap((name) => [name, name]));
+	expect(result).toEqual({ kind: "maintained", processedCount: 24, more: true });
+	expect(calls.slice(0, 12)).toEqual(names.flatMap((name) => [name, name]));
+	expect(methods.maintainAuthBrowserTransactions).toHaveBeenCalledTimes(2);
+	expect(methods.maintainAuthBrowserTransactions).toHaveBeenCalledWith(
+		{ coordinatorId: f.config.coordinatorId },
+		{ limit: 32 },
+	);
 	expect(failed).toEqual({
 		kind: "failed",
 		error: "maintenance_failed",

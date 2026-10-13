@@ -429,14 +429,10 @@ export async function maintainCoordinatorBrowserAuth(
 				step: "browser_retirement",
 				run: () => store.retireAuthBrowserTransactions(config, { limit: 32 }),
 			},
-			...(payload.ownerEnrollment
-				? [
-						{
-							step: "browser_expiry" as const,
-							run: () => store.maintainAuthBrowserTransactions(scope, { limit: 32 }),
-						},
-					]
-				: []),
+			{
+				step: "browser_expiry",
+				run: () => store.maintainAuthBrowserTransactions(scope, { limit: 32 }),
+			},
 			{
 				step: "signin_transactions",
 				run: () => store.purgeAuthSigninBrowserTransactions(scope, { limit: 256 }),
