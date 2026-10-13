@@ -66,19 +66,23 @@ function createLegacyCloudflareCoordinatorWorker(
 	};
 }
 
-function authenticationUnavailable(
+async function authenticationUnavailable(
 	request: Request,
 	env: CloudflareCoordinatorEnv,
 	opts: CreateCloudflareCoordinatorWorkerOptions,
-): Promise<Response> | Response {
-	if (!env.COORDINATOR_DB) return jsonResponse({ error: "missing_d1_binding" }, 500);
-	return createD1CoordinatorApp({
-		db: env.COORDINATOR_DB,
-		adminSecret: coordinatorAdminSecret(env, opts),
-		now: opts.now,
-		requestVerifier: verifyCloudflareCoordinatorRequest,
-		browserAuth: { kind: "unavailable" },
-	}).fetch(request);
+): Promise<Response> {
+	try {
+		if (!env.COORDINATOR_DB) return jsonResponse({ error: "missing_d1_binding" }, 500);
+		return await createD1CoordinatorApp({
+			db: env.COORDINATOR_DB,
+			adminSecret: coordinatorAdminSecret(env, opts),
+			now: opts.now,
+			requestVerifier: verifyCloudflareCoordinatorRequest,
+			browserAuth: { kind: "unavailable" },
+		}).fetch(request);
+	} catch {
+		return jsonResponse({ error: "coordinator_unavailable" }, 503);
+	}
 }
 
 function createBrowserAuthWorker(

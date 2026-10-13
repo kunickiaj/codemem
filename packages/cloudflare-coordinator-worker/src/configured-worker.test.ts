@@ -9,12 +9,15 @@ import type {
 	D1DatabaseLike,
 	D1PreparedStatementLike,
 } from "@codemem/core/internal/cloudflare-coordinator";
+import * as coordinator from "@codemem/core/internal/cloudflare-coordinator";
 import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinator";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import defaultWorker, {
 	type CloudflareCoordinatorEnv,
+	createCloudflareCoordinatorWorker,
 	createConfiguredCloudflareCoordinatorWorker,
 } from "./index.js";
+import { verifyCloudflareCoordinatorRequest } from "./request-verifier.js";
 
 const ORIGIN = "https://coordinator.example.test";
 const NOW = 1790899200000;
@@ -151,6 +154,76 @@ it.each([undefined, JSON.stringify({ enabled: false })])(
 		expect(routes.presence.status).toBe(401);
 		expect(routes.body).toEqual({ error: "missing_headers" });
 		expect(globalThis.fetch).not.toHaveBeenCalled();
+	},
+);
+
+it("contains a throwing admin-secret resolver without rejecting or redispatching", async () => {
+	// Arrange: setup is valid, but the resolver fails before application dispatch.
+	const env = environment();
+	const adminSecret = vi.fn(() => {
+		throw new Error("private-admin-secret-cause");
+	});
+	const worker = createCloudflareCoordinatorWorker({
+		browserAuth: {
+			config: { ...CONFIG, clientSecret: env.CODEMEM_COORDINATOR_OIDC_CLIENT_SECRET },
+			csrfKey: await coordinator.importBrowserCsrfKey(new Uint8Array(32).fill(7)),
+		},
+		adminSecret,
+	});
+	// Act
+	const response = await worker.fetch(request("/auth/sign-in"), env);
+	// Assert: neither the private cause nor a rejected promise escapes the Worker boundary.
+	expect(response.status).toBe(503);
+	expect(await response.json()).toEqual({ error: "coordinator_unavailable" });
+	expect(adminSecret).toHaveBeenCalled();
+});
+
+it.each(["invalid config", "binding drift", "browser binding drift", "primary dispatch"] as const)(
+	"contains async %s failure without duplicate writes",
+	async (fault) => {
+		// Arrange: a failing application records one write before its promise rejects.
+		const env = environment();
+		let worker: ReturnType<typeof createCloudflareCoordinatorWorker> =
+			createConfiguredCloudflareCoordinatorWorker();
+		if (fault === "browser binding drift") {
+			worker = createCloudflareCoordinatorWorker({
+				browserAuth: {
+					config: { ...CONFIG, clientSecret: env.CODEMEM_COORDINATOR_OIDC_CLIENT_SECRET },
+					csrfKey: await coordinator.importBrowserCsrfKey(new Uint8Array(32).fill(7)),
+				},
+			});
+		}
+		if (fault === "binding drift" || fault === "browser binding drift") {
+			const initial = await worker.fetch(request("/auth/sign-in"), env);
+			expect(initial.status).toBe(200);
+			if (fault === "binding drift") env.CODEMEM_COORDINATOR_BROWSER_CSRF_KEY = "ab".repeat(32);
+			else env.COORDINATOR_DB = environment().COORDINATOR_DB;
+		}
+		if (fault === "invalid config") env.CODEMEM_COORDINATOR_BROWSER_AUTH_CONFIG = "{";
+		const db = databases.at(-1)?.db;
+		if (!db) throw new Error("Fixture DB missing");
+		const dispatch = vi.fn(async () => {
+			db.prepare("INSERT INTO groups (group_id, created_at) VALUES (?, ?)").run(
+				`write-${dispatch.mock.calls.length}`,
+				new Date(NOW).toISOString(),
+			);
+			throw new Error("private-async-dispatch-cause");
+		});
+		if (!env.COORDINATOR_DB) throw new Error("Fixture binding missing");
+		const app = coordinator.createD1CoordinatorApp({
+			db: env.COORDINATOR_DB,
+			requestVerifier: verifyCloudflareCoordinatorRequest,
+		});
+		vi.spyOn(app, "fetch").mockImplementation(dispatch);
+		const createApp = vi.spyOn(coordinator, "createD1CoordinatorApp").mockReturnValue(app);
+		// Act
+		const response = await worker.fetch(request("/v1/admin/groups"), env);
+		// Assert: retrying the same request through a second app would repeat the write.
+		expect(response.status).toBe(503);
+		expect(await response.json()).toEqual({ error: "coordinator_unavailable" });
+		expect(createApp).toHaveBeenCalledOnce();
+		expect(dispatch).toHaveBeenCalledOnce();
+		expect(db.prepare("SELECT group_id FROM groups").all()).toEqual([{ group_id: "write-1" }]);
 	},
 );
 
