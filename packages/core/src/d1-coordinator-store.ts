@@ -486,6 +486,24 @@ function batchResultChanges(result: unknown): number {
 	return Number((result as D1RunResultLike | undefined)?.meta?.changes ?? 0);
 }
 
+/** Narrow SQL capability; multi-statement writes require D1's atomic batch. */
+export function createD1AuthLinkBackend(db: D1DatabaseLike): AuthLinkBackend {
+	return {
+		first: <T>(statement: AuthLinkStatement) =>
+			db
+				.prepare(statement.sql)
+				.bind(...statement.values)
+				.first<T>(),
+		run: (statement) => runChanges(db.prepare(statement.sql).bind(...statement.values)),
+		batch: async (statements) => {
+			if (!db.batch) throw new Error("auth_link_atomic_batch_required");
+			await db.batch(
+				statements.map((statement) => db.prepare(statement.sql).bind(...statement.values)),
+			);
+		},
+	};
+}
+
 async function allRows<T>(statement: D1PreparedStatementLike): Promise<T[]> {
 	const result = await statement.all<T>();
 	return Array.isArray(result?.results) ? result.results : [];
@@ -1006,20 +1024,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			},
 			options.authClock,
 		);
-		const authBackend: AuthLinkBackend = {
-			first: <T>(statement: AuthLinkStatement) =>
-				db
-					.prepare(statement.sql)
-					.bind(...statement.values)
-					.first<T>(),
-			run: (statement) => runChanges(db.prepare(statement.sql).bind(...statement.values)),
-			batch: async (statements) => {
-				if (!db.batch) throw new Error("auth_link_atomic_batch_required");
-				await db.batch(
-					statements.map((statement) => db.prepare(statement.sql).bind(...statement.values)),
-				);
-			},
-		};
+		const authBackend = createD1AuthLinkBackend(db);
 		this.authLinks = new AuthLinkOperations(authBackend, options.authClock);
 		this.authSessions = new AuthSessionOperations(authBackend, options.authClock);
 		this.authAccountProfiles = new AuthAccountProfileOperations(authBackend, options.authClock);
@@ -1040,6 +1045,12 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		config: CoordinatorAuthBrowserConfig,
 	) {
 		return this.authBrowserTransactions.consumeAuthBrowserTransaction(input, config);
+	}
+	async readAuthBrowserTransactionPurpose(
+		input: CoordinatorAuthBrowserTransactionConsumeInput,
+		config: CoordinatorAuthBrowserConfig,
+	) {
+		return this.authBrowserTransactions.readAuthBrowserTransactionPurpose(input, config);
 	}
 	async resolveAuthLinkBrowserTransaction(
 		input: CoordinatorAuthLinkBrowserTransactionResolveInput,

@@ -1,6 +1,7 @@
 import type { CoordinatorAuthAccountProfileStore } from "./coordinator-auth-account-profile-contract.js";
 import type {
 	CoordinatorAuthBrowserTransactionConsumeResult,
+	CoordinatorAuthBrowserTransactionPurposeStore,
 	CoordinatorAuthBrowserTransactionStore,
 } from "./coordinator-auth-browser-transaction-contract.js";
 import { renderAuthBrowserNotice } from "./coordinator-auth-browser-view.js";
@@ -42,12 +43,15 @@ export interface CoordinatorBrowserAuthCallbackInput {
 	store: CallbackStore;
 	completeLink: (input: CoordinatorBrowserAuthLinkCompletionInput) => Promise<Response>;
 	oidcOptions?: CoordinatorOidcOptions;
+	ownerCallback?: (request: Request, trustedClientKey: string) => Promise<Response>;
+	purposeStore?: CoordinatorAuthBrowserTransactionPurposeStore;
 }
 export type CoordinatorBrowserAuthCallbackOutcome =
 	| "signed_in"
 	| "signed_in_profile_not_recorded"
 	| "session_live"
 	| "link_dispatched"
+	| "owner_dispatched"
 	| "method_not_allowed"
 	| "not_found"
 	| "callback_invalid"
@@ -64,7 +68,10 @@ export type CoordinatorBrowserAuthCallbackResponse = Readonly<{
 	outcome: CoordinatorBrowserAuthCallbackOutcome;
 }>;
 export interface CoordinatorBrowserAuthCallbackHandlers {
-	callback(request: Request): Promise<CoordinatorBrowserAuthCallbackResponse>;
+	callback(
+		request: Request,
+		trustedClientKey?: string,
+	): Promise<CoordinatorBrowserAuthCallbackResponse>;
 }
 export type CoordinatorBrowserAuthCallbackResult =
 	| Readonly<{ ok: true; handlers: Readonly<CoordinatorBrowserAuthCallbackHandlers> }>
@@ -167,6 +174,8 @@ type Context = Readonly<{
 	client: CoordinatorOidcClient;
 	store: CallbackStore;
 	completeLink: CoordinatorBrowserAuthCallbackInput["completeLink"];
+	ownerCallback?: CoordinatorBrowserAuthCallbackInput["ownerCallback"];
+	readPurpose?: CoordinatorAuthBrowserTransactionPurposeStore["readAuthBrowserTransactionPurpose"];
 }>;
 
 function result(
@@ -340,9 +349,25 @@ async function signIn(
 		return notice(403, "signin_rejected", { clearTransaction: true });
 	return recordProfile(context, issued.cookieHash, verification, response);
 }
+async function dispatchOwnerCallback(
+	context: Context,
+	request: Request,
+	trustedClientKey: string,
+	stateHash: string,
+	binderHash: string,
+): Promise<CoordinatorBrowserAuthCallbackResponse | null> {
+	if (!context.readPurpose) return null;
+	const purpose = await context.readPurpose({ stateHash, binderHash }, context.storeConfig);
+	if (purpose === "owner_enroll" && context.ownerCallback)
+		return result(await context.ownerCallback(request, trustedClientKey), "owner_dispatched");
+	if (purpose === "signin" || purpose === "link") return null;
+	return notice(403, "transaction_unavailable");
+}
+
 async function callback(
 	context: Context,
 	request: Request,
+	trustedClientKey: string,
 ): Promise<CoordinatorBrowserAuthCallbackResponse> {
 	let clearSigninTransaction = false;
 	try {
@@ -355,6 +380,14 @@ async function callback(
 		if (cookie.kind === "invalid") return await notice(400, "cookie_invalid");
 		if (cookie.kind === "absent") return await notice(403, "cookie_missing");
 		const stateHash = await hashState(parsed.state);
+		const owner = await dispatchOwnerCallback(
+			context,
+			request,
+			trustedClientKey,
+			stateHash,
+			cookie.cookieHash,
+		);
+		if (owner) return owner;
 		// Atomic consumption burns matching material before any provider verification.
 		const consumed = await context.store.consumeAuthBrowserTransaction(
 			{ stateHash, binderHash: cookie.cookieHash },
@@ -390,6 +423,17 @@ export async function createCoordinatorBrowserAuthCallback(
 		const completeLink = ownData(input, "completeLink");
 		if (typeof completeLink !== "function") throw new Error();
 		const store = captureStore(ownData(input, "store"));
+		const ownerCallback = ownData(input, "ownerCallback");
+		let readPurpose: Context["readPurpose"];
+		if (ownerCallback !== undefined) {
+			if (typeof ownerCallback !== "function") throw new Error();
+			const receiver = ownData(input, "purposeStore");
+			const method = dataMethod(
+				receiver,
+				"readAuthBrowserTransactionPurpose",
+			) as CoordinatorAuthBrowserTransactionPurposeStore["readAuthBrowserTransactionPurpose"];
+			readPurpose = (...args) => Reflect.apply(method, receiver, args);
+		}
 		const options = captureOidcOptions(input);
 		const oidc = await createCoordinatorOidcClient(settings.oidc, options);
 		if (!oidc.ok) return Object.freeze({ ok: false, error: oidc.error });
@@ -400,10 +444,15 @@ export async function createCoordinatorBrowserAuthCallback(
 			client: oidc.client,
 			store,
 			completeLink: completeLink as CoordinatorBrowserAuthCallbackInput["completeLink"],
+			ownerCallback: ownerCallback as CoordinatorBrowserAuthCallbackInput["ownerCallback"],
+			readPurpose,
 		});
 		return Object.freeze({
 			ok: true,
-			handlers: Object.freeze({ callback: (request: Request) => callback(context, request) }),
+			handlers: Object.freeze({
+				callback: (request: Request, trustedClientKey = "") =>
+					callback(context, request, trustedClientKey),
+			}),
 		});
 	} catch {
 		return Object.freeze({ ok: false, error: "invalid_input" });

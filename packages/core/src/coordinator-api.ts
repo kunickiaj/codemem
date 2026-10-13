@@ -126,6 +126,9 @@ function registerOptionalCoordinatorAuth(
 			"/auth/*",
 			"/v1/auth/link-attempts",
 			"/v1/auth/link-attempts/*",
+			"/v1/auth/owner-config",
+			"/v1/auth/owner-attempts",
+			"/v1/auth/owner-attempts/*",
 			"/v1/admin/auth-controller-reviews",
 		]) {
 			app.all(

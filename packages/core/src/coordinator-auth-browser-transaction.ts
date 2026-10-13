@@ -12,6 +12,7 @@ import {
 	type CoordinatorAuthBrowserTransactionError,
 	type CoordinatorAuthBrowserTransactionMaintenanceOptions,
 	type CoordinatorAuthBrowserTransactionMaintenanceResult,
+	type CoordinatorAuthBrowserTransactionPurpose,
 	type CoordinatorAuthBrowserTransactionRejected,
 	type CoordinatorAuthBrowserTransactionRetirementOptions,
 	type CoordinatorAuthBrowserTransactionRetirementResult,
@@ -515,7 +516,7 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 			await this.backend.run({
 				sql: `UPDATE ${TABLE} AS b SET state = 'consumed', nonce = NULL, pkce_verifier = NULL, claim_token = ?, consumed_at_ms = ?
  WHERE ${MATCH_CONFIG} AND b.browser_transaction_hash = ? AND b.state_hash = ? AND b.binder_hash = ?
- AND b.state = 'pending' AND b.expires_at_ms > ? AND b.created_at_ms <= ? AND b.nonce = ? AND b.pkce_verifier = ? AND ${LIVE_LINK}`,
+ AND b.purpose = ? AND b.attempt_id IS ? AND b.state = 'pending' AND b.expires_at_ms > ? AND b.created_at_ms <= ? AND b.nonce = ? AND b.pkce_verifier = ? AND ${LIVE_LINK}`,
 				values: [
 					token,
 					now,
@@ -523,6 +524,8 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 					row.browser_transaction_hash,
 					i.stateHash,
 					i.binderHash,
+					row.purpose,
+					row.attempt_id,
 					now,
 					now,
 					row.nonce,
@@ -548,6 +551,23 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 			return { ...materials, purpose: "link", attemptId: row.attempt_id };
 		if (row.purpose === "signin") return { ...materials, purpose: "signin" };
 		return rejected("transaction_unavailable");
+	}
+	async readAuthBrowserTransactionPurpose(
+		input: CoordinatorAuthBrowserTransactionConsumeInput,
+		config: CoordinatorAuthBrowserConfig,
+	): Promise<CoordinatorAuthBrowserTransactionPurpose | null> {
+		const c = captureConfig(config);
+		const i = capture(input, ["stateHash", "binderHash"]);
+		if (!c?.enabled || !i || !isHash(i.stateHash) || !isHash(i.binderHash)) return null;
+		const now = authLinkNow(this.clock);
+		const row = await this.first<{ purpose: string }>({
+			sql: `SELECT b.purpose FROM ${TABLE} b WHERE ${MATCH_CONFIG} AND b.state_hash = ? AND b.binder_hash = ?
+ AND b.state = 'pending' AND b.expires_at_ms > ? AND b.created_at_ms <= ?`,
+			values: [...configValues(c), i.stateHash, i.binderHash, now, now],
+		});
+		if (row?.purpose === "signin" || row?.purpose === "link" || row?.purpose === "owner_enroll")
+			return row.purpose;
+		return null;
 	}
 	private async diagnoseTransactionConfig(
 		stateHash: string,

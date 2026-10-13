@@ -1,6 +1,7 @@
 import type { Context, Hono } from "hono";
 import type {
 	CoordinatorAuthBrowserConfig,
+	CoordinatorAuthBrowserTransactionPurposeStore,
 	CoordinatorAuthBrowserTransactionStore,
 } from "./coordinator-auth-browser-transaction-contract.js";
 import type { CoordinatorAuthLinkStore } from "./coordinator-auth-link-contract.js";
@@ -43,14 +44,27 @@ export interface CoordinatorBrowserAuthOptions {
 	config: unknown;
 	csrfKey?: BrowserCsrfKey;
 	oidcOptions?: CoordinatorOidcOptions;
+	ownerEnrollment?: CoordinatorBrowserOwnerEnrollmentFactory;
 }
+export interface CoordinatorBrowserOwnerEnrollmentAdapter {
+	handle(request: Request, trustedClientKey: string): Promise<Response | null>;
+	handleCallback(request: Request, trustedClientKey: string): Promise<Response>;
+}
+export type CoordinatorBrowserOwnerEnrollmentFactory = (
+	input: Readonly<{
+		config: Readonly<CoordinatorBrowserAuthConfig>;
+		csrfKey: BrowserCsrfKey;
+		oidcOptions: Readonly<CoordinatorOidcOptions>;
+		limiter: InMemoryRequestRateLimiter;
+	}>,
+) => Promise<CoordinatorBrowserOwnerEnrollmentAdapter>;
 type EnabledSettings = Extract<CoordinatorBrowserAuthSettings, { kind: "enabled" }>;
 export type CoordinatorBrowserAuthSnapshot =
 	| Readonly<{ kind: "disabled" }>
 	| Readonly<{
 			kind: "invalid";
 			error: "browser_auth_config_invalid";
-			field: CoordinatorBrowserAuthConfigField | "csrfKey" | "oidcOptions";
+			field: CoordinatorBrowserAuthConfigField | "csrfKey" | "oidcOptions" | "ownerEnrollment";
 	  }>
 	| Readonly<{ kind: "enabled" }>;
 type EnabledPayload = Readonly<{
@@ -59,6 +73,7 @@ type EnabledPayload = Readonly<{
 	csrfKey: BrowserCsrfKey;
 	oidcOptions: Readonly<CoordinatorOidcOptions>;
 	callbackPath: string;
+	ownerEnrollment?: CoordinatorBrowserOwnerEnrollmentFactory;
 }>;
 const enabledPayloads = new WeakMap<object, EnabledPayload>();
 export type CoordinatorBrowserAuthStore = CoordinatorBrowserAccountInput["store"] &
@@ -66,7 +81,8 @@ export type CoordinatorBrowserAuthStore = CoordinatorBrowserAccountInput["store"
 	CoordinatorBrowserLinkInput["store"] &
 	CoordinatorBrowserLinkCompletionInput["store"] &
 	CoordinatorBrowserLinkStartInput["store"] &
-	CoordinatorBrowserSigninStartInput["store"];
+	CoordinatorBrowserSigninStartInput["store"] &
+	Partial<CoordinatorAuthBrowserTransactionPurposeStore>;
 export type CoordinatorBrowserAuthClientKey = (context: Context) => string | null;
 export interface CoordinatorBrowserAuth {
 	readonly storeConfig: Readonly<CoordinatorAuthBrowserConfig>;
@@ -87,6 +103,15 @@ const FIXED_PATHS = [
 	"/auth/link/complete",
 	"/auth/account",
 	"/auth/logout",
+	"/auth/owner/start",
+	"/auth/owner/confirm",
+];
+const OWNER_PATHS = [
+	"/auth/owner/start",
+	"/auth/owner/confirm",
+	"/v1/auth/owner-config",
+	"/v1/auth/owner-attempts",
+	"/v1/auth/owner-attempts/finalize",
 ];
 function ownData(value: unknown, name: string): unknown {
 	if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error();
@@ -146,10 +171,20 @@ export function captureCoordinatorBrowserAuthOptions(
 			clientId: settings.oidc.clientId,
 			clientSecret: settings.oidc.clientSecret,
 		});
+		const ownerEnrollment = ownData(input, "ownerEnrollment");
+		if (ownerEnrollment !== undefined && typeof ownerEnrollment !== "function")
+			return invalid("ownerEnrollment");
 		const handle = Object.freeze({ kind: "enabled" as const });
 		enabledPayloads.set(
 			handle,
-			Object.freeze({ settings, config, csrfKey, oidcOptions, callbackPath }),
+			Object.freeze({
+				settings,
+				config,
+				csrfKey,
+				oidcOptions,
+				callbackPath,
+				ownerEnrollment: ownerEnrollment as CoordinatorBrowserOwnerEnrollmentFactory | undefined,
+			}),
 		);
 		return handle;
 	} catch {
@@ -216,6 +251,7 @@ export async function createCoordinatorBrowserAuth(
 	try {
 		const payload = enabledPayloads.get(snapshot);
 		if (!payload) return Object.freeze({ ok: false, error: "browser_auth_setup_failed" });
+		const purposeStore = payload.ownerEnrollment ? capturePurposeStore(store) : undefined;
 		const input = Object.freeze({
 			config: payload.config,
 			csrfKey: payload.csrfKey,
@@ -235,9 +271,12 @@ export async function createCoordinatorBrowserAuth(
 			return Object.freeze({ ok: false, error: "browser_auth_setup_failed" });
 		const signin = await createCoordinatorBrowserSigninStart(input);
 		const start = await createCoordinatorBrowserLinkStart(input);
+		const owner = await createOwnerAdapter(payload, limiter);
 		const callback = await createCoordinatorBrowserAuthCallback({
 			...input,
 			completeLink: link.handlers.completeLink,
+			ownerCallback: owner?.handleCallback,
+			purposeStore,
 		});
 		const account = await createCoordinatorBrowserAccount(input);
 		if (!signin.ok || !start.ok || !callback.ok || !account.ok)
@@ -259,6 +298,7 @@ export async function createCoordinatorBrowserAuth(
 			},
 			{ path: "/auth/account", get: account.handlers.account },
 			{ path: "/auth/logout", post: account.handlers.logout },
+			...ownerRoutes(owner),
 		]);
 		return Object.freeze({
 			ok: true,
@@ -273,13 +313,75 @@ export async function createCoordinatorBrowserAuth(
 	}
 }
 
+function ownerRoutes(owner: CoordinatorBrowserOwnerEnrollmentAdapter | undefined): Route[] {
+	if (!owner) return [];
+	const handler: BrowserHandler = async (request, key) => ({
+		response: (await owner.handle(request, key)) ?? coordinatorBrowserAuthUnavailableResponse(),
+	});
+	return OWNER_PATHS.map((path) => ({ path, get: handler, post: handler }));
+}
+
+async function createOwnerAdapter(
+	payload: EnabledPayload,
+	limiter: InMemoryRequestRateLimiter,
+): Promise<CoordinatorBrowserOwnerEnrollmentAdapter | undefined> {
+	if (!payload.ownerEnrollment) return undefined;
+	const adapter = await payload.ownerEnrollment(
+		Object.freeze({
+			config: payload.config,
+			csrfKey: payload.csrfKey,
+			oidcOptions: payload.oidcOptions,
+			limiter,
+		}),
+	);
+	const handle = ownData(adapter, "handle");
+	const handleCallback = ownData(adapter, "handleCallback");
+	if (typeof handle !== "function" || typeof handleCallback !== "function") throw new Error();
+	return Object.freeze({
+		handle: (...args: Parameters<CoordinatorBrowserOwnerEnrollmentAdapter["handle"]>) =>
+			Reflect.apply(handle, adapter, args),
+		handleCallback: (
+			...args: Parameters<CoordinatorBrowserOwnerEnrollmentAdapter["handleCallback"]>
+		) => Reflect.apply(handleCallback, adapter, args),
+	});
+}
+
+function capturePurposeStore(
+	store: CoordinatorBrowserAuthStore,
+): CoordinatorAuthBrowserTransactionPurposeStore {
+	let cursor: object | null = store;
+	const seen = new Set<object>();
+	while (cursor !== null) {
+		if (seen.has(cursor)) throw new Error();
+		seen.add(cursor);
+		const descriptor = Object.getOwnPropertyDescriptor(cursor, "readAuthBrowserTransactionPurpose");
+		if (descriptor) {
+			if (!Object.hasOwn(descriptor, "value") || typeof descriptor.value !== "function")
+				throw new Error();
+			const method =
+				descriptor.value as CoordinatorAuthBrowserTransactionPurposeStore["readAuthBrowserTransactionPurpose"];
+			return Object.freeze({
+				readAuthBrowserTransactionPurpose: (
+					...args: Parameters<
+						CoordinatorAuthBrowserTransactionPurposeStore["readAuthBrowserTransactionPurpose"]
+					>
+				) => Reflect.apply(method, store, args),
+			});
+		}
+		cursor = Object.getPrototypeOf(cursor);
+	}
+	throw new Error();
+}
+
 export type CoordinatorBrowserAuthMaintenanceStore = Pick<
 	CoordinatorAuthLinkStore,
 	"maintainAuthLinkAttempts"
 > &
 	Pick<
 		CoordinatorAuthBrowserTransactionStore,
-		"retireAuthBrowserTransactions" | "purgeAuthSigninBrowserTransactions"
+		| "retireAuthBrowserTransactions"
+		| "purgeAuthSigninBrowserTransactions"
+		| "maintainAuthBrowserTransactions"
 	> &
 	Pick<
 		CoordinatorAuthSessionStore,
@@ -288,6 +390,7 @@ export type CoordinatorBrowserAuthMaintenanceStore = Pick<
 export type CoordinatorBrowserAuthMaintenanceStep =
 	| "link_attempts"
 	| "browser_retirement"
+	| "browser_expiry"
 	| "signin_transactions"
 	| "signin_sessions"
 	| "signin_receipts";
@@ -326,6 +429,14 @@ export async function maintainCoordinatorBrowserAuth(
 				step: "browser_retirement",
 				run: () => store.retireAuthBrowserTransactions(config, { limit: 32 }),
 			},
+			...(payload.ownerEnrollment
+				? [
+						{
+							step: "browser_expiry" as const,
+							run: () => store.maintainAuthBrowserTransactions(scope, { limit: 32 }),
+						},
+					]
+				: []),
 			{
 				step: "signin_transactions",
 				run: () => store.purgeAuthSigninBrowserTransactions(scope, { limit: 256 }),
