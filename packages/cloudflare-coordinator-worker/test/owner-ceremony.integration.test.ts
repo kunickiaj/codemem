@@ -154,14 +154,21 @@ test("native D1 private ceremony pins SDK identity and commits only after browse
 	});
 	// Assert: real D1 batch counts drive binding, both eligible enrollments, audit and receipt.
 	const receipt = await attempt();
-	expect(result).toEqual({ kind: "finalized", bindingId: receipt.binding_id, groups });
+	expect(result).toEqual({
+		kind: "finalized", bindingId: receipt.binding_id, identityId: receipt.identity_id, groups,
+	});
 	expect(receipt).toMatchObject({
 		state: "finalized",
 		loopback_redirect: null,
 		finalized_at_ms: NOW,
 		final_key_proof_hash: hash(signature),
 	});
-	expect(JSON.parse(receipt.final_outcome_json as string)).toEqual(result);
+	expect(JSON.parse(receipt.final_outcome_json as string)).toEqual({
+		kind: "finalized", bindingId: receipt.binding_id, groups,
+	});
+	expect(result).toEqual({
+		...JSON.parse(receipt.final_outcome_json as string), identityId: receipt.identity_id,
+	});
 	expect(await rows("coordinator_device_ownership_bindings")).toEqual([
 		expect.objectContaining({
 			device_id: "device-a",
@@ -481,7 +488,10 @@ test("native D1 reconciles a lost post-commit response read-only with the same p
 	// Act
 	const retry = await retryApi.finalize(c.input);
 	// Assert
-	expect(retry).toEqual({ kind: "prior_commit", bindingId: (await attempt()).binding_id, groups });
+	const receipt = await attempt();
+	expect(retry).toEqual({
+		kind: "prior_commit", bindingId: receipt.binding_id, identityId: receipt.identity_id, groups,
+	});
 	expect(await snapshot()).toEqual(before);
 	expect(storage.run).not.toHaveBeenCalled();
 	expect(storage.batch).not.toHaveBeenCalled();

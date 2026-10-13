@@ -349,7 +349,12 @@ it("commits only existing permitted groups, one binding, audit and immutable rec
 	// Act
 	const result = await c.finalize(c.input);
 	// Assert
-	expect(result).toMatchObject({ kind: "finalized", bindingId: expect.any(String), groups });
+	expect(result).toMatchObject({
+		kind: "finalized",
+		bindingId: expect.any(String),
+		identityId: row().identity_id,
+		groups,
+	});
 	expect(f.rows("coordinator_device_ownership_bindings")).toHaveLength(1);
 	expect(f.rows("coordinator_device_ownership_bindings")[0]).toMatchObject({
 		device_id: "device-a",
@@ -371,7 +376,16 @@ it("commits only existing permitted groups, one binding, audit and immutable rec
 		finalized_at_ms: NOW,
 		final_key_proof_hash: hash(c.input.signature),
 	});
-	expect(JSON.parse(row().final_outcome_json as string)).toEqual(result);
+	// Response adds the validated row identity; retained schema remains the legacy three fields.
+	expect(JSON.parse(row().final_outcome_json as string)).toEqual({
+		kind: "finalized",
+		bindingId: row().binding_id,
+		groups,
+	});
+	expect(result).toEqual({
+		...JSON.parse(row().final_outcome_json as string),
+		identityId: row().identity_id,
+	});
 	expect(f.rows("coordinator_identity_group_grants")).toEqual(grants);
 	expect(f.rows("coordinator_auth_account_links")).toEqual(account);
 	expect(f.rows("coordinator_auth_sessions")).toEqual([]);
@@ -411,31 +425,34 @@ it.each(["secret", "signature", "key", "account", "link", "group", "confirmation
 	},
 );
 
-it.each(["account_subject", "link_id", "grant_revisions_json", "confirmation_hash"] as const)(
-	"denies changed stored %s despite a valid browser-approved v2 proof",
-	async (field) => {
-		// Arrange: freeze B's real proof before server metadata changes.
-		const c = await confirmed();
-		let value = "other-value";
-		if (field === "grant_revisions_json") value = '[{"groupId":"group-a","revision":99}]';
-		if (field === "confirmation_hash") value = "a".repeat(64);
-		const api = await recompose(c, {
-			...f.backend,
-			first: async <T>(statement: Parameters<AuthLinkBackend["first"]>[0]) => {
-				const captured = await f.backend.first<T>(statement);
-				if (statement.sql.startsWith(`SELECT * FROM ${ATTEMPTS}`))
-					return { ...captured, [field]: value } as T;
-				return captured;
-			},
-		});
-		const before = f.snapshot();
-		// Act
-		const result = await api.finalize(c.input);
-		// Assert
-		expect(result).toEqual(unavailable);
-		expect(f.snapshot()).toEqual(before);
-	},
-);
+it.each([
+	"identity_id",
+	"account_subject",
+	"link_id",
+	"grant_revisions_json",
+	"confirmation_hash",
+] as const)("denies changed stored %s despite a valid browser-approved v2 proof", async (field) => {
+	// Arrange: freeze B's real proof before server metadata changes.
+	const c = await confirmed();
+	let value = "other-value";
+	if (field === "grant_revisions_json") value = '[{"groupId":"group-a","revision":99}]';
+	if (field === "confirmation_hash") value = "a".repeat(64);
+	const api = await recompose(c, {
+		...f.backend,
+		first: async <T>(statement: Parameters<AuthLinkBackend["first"]>[0]) => {
+			const captured = await f.backend.first<T>(statement);
+			if (statement.sql.startsWith(`SELECT * FROM ${ATTEMPTS}`))
+				return { ...captured, [field]: value } as T;
+			return captured;
+		},
+	});
+	const before = f.snapshot();
+	// Act
+	const result = await api.finalize(c.input);
+	// Assert
+	expect(result).toEqual(unavailable);
+	expect(f.snapshot()).toEqual(before);
+});
 
 it.each(["unchanged", "removed", "disabled", "revoked", "wrong-secret", "wrong-signature"])(
 	"exact retry is read-only prior_commit with enrollment %s",
@@ -575,7 +592,12 @@ it("lost post-commit response reports unknown then reconciles the same proof rea
 	const retry = await c.finalize(c.input);
 	// Assert
 	expect(lost).toEqual(unknown);
-	expect(retry).toMatchObject({ kind: "prior_commit", bindingId: row().binding_id, groups });
+	expect(retry).toMatchObject({
+		kind: "prior_commit",
+		bindingId: row().binding_id,
+		identityId: row().identity_id,
+		groups,
+	});
 	expect(f.snapshot()).toEqual(before);
 	expect(f.rows("coordinator_owner_enrollment_audit_log")).toHaveLength(1);
 });
@@ -610,8 +632,8 @@ it("two concurrent finalizers return one commit and its prior receipt", async ()
 	expect(results.map((r) => r.kind).sort()).toEqual(["finalized", "prior_commit"]);
 	expect(results).toEqual(
 		expect.arrayContaining([
-			{ kind: "finalized", bindingId: row().binding_id, groups },
-			{ kind: "prior_commit", bindingId: row().binding_id, groups },
+			{ kind: "finalized", bindingId: row().binding_id, identityId: row().identity_id, groups },
+			{ kind: "prior_commit", bindingId: row().binding_id, identityId: row().identity_id, groups },
 		]),
 	);
 	expect(f.rows("coordinator_device_ownership_bindings")).toHaveLength(1);

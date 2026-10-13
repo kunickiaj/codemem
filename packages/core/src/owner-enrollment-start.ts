@@ -64,6 +64,12 @@ interface OwnerEnrollmentFinalize {
 	completionSecret: string;
 	signature: string;
 }
+export type OwnerEnrollmentReceipt = {
+	kind: "finalized" | "prior_commit";
+	bindingId: string;
+	identityId: string;
+	groups: string[];
+};
 export type OwnerEnrollmentStartResult =
 	| { kind: "rejected"; error: "owner_enrollment_unavailable" | "owner_enrollment_unknown" }
 	| { kind: "started"; attemptId: string; expiresAtMs: number }
@@ -75,7 +81,7 @@ export type OwnerEnrollmentStartResult =
 			loopbackRedirect: string;
 			confirmation: OwnerEnrollmentConfirmation;
 	  }
-	| { kind: "finalized" | "prior_commit"; bindingId: string; groups: string[] };
+	| OwnerEnrollmentReceipt;
 interface OwnerEnrollmentConfirmation {
 	attemptId: string;
 	coordinatorId: string;
@@ -728,13 +734,15 @@ async function priorCommit(
 	if (!(await matchesReceipt(context, row, proof))) return unavailable;
 	return receipt(row, "prior_commit");
 }
-function receipt(
-	row: OwnerAttempt,
-	kind: "finalized" | "prior_commit",
-): OwnerEnrollmentStartResult {
+function receipt(row: OwnerAttempt, kind: "finalized" | "prior_commit"): OwnerEnrollmentReceipt {
 	const grants = readGrantPins(row.grant_revisions_json);
-	if (!grants || !row.binding_id) throw new Error();
-	return { kind, bindingId: row.binding_id, groups: grants.map((grant) => grant.groupId) };
+	if (!grants || !row.binding_id || !isAuthControllerId(row.identity_id)) throw new Error();
+	return {
+		kind,
+		bindingId: row.binding_id,
+		identityId: row.identity_id,
+		groups: grants.map((grant) => grant.groupId),
+	};
 }
 const NO_COLLISION_SQL = `NOT EXISTS (SELECT 1 FROM coordinator_device_ownership_bindings WHERE device_id = ? OR key_id = ?)
  AND NOT EXISTS (SELECT 1 FROM coordinator_device_revocations WHERE (subject_kind = 'device_id' AND subject_value = ?)
