@@ -172,11 +172,9 @@ function assertConfig(
 	const actorId = configuredOwnerActorId(config.actor_id) ?? `local:${review.deviceId}`;
 	if (actorId !== review.actorId && actorId !== receipt?.identityId) ownerProfileConflict();
 	if (
-		(config.sync_coordinator_url !== undefined &&
-			(typeof config.sync_coordinator_url !== "string" ||
-				origin(config.sync_coordinator_url) !== origin(options.coordinatorUrl))) ||
-		(config.sync_coordinator_group !== undefined &&
-			config.sync_coordinator_group !== options.groupId)
+		config.sync_coordinator_url !== undefined &&
+		(typeof config.sync_coordinator_url !== "string" ||
+			origin(config.sync_coordinator_url) !== origin(options.coordinatorUrl))
 	)
 		ownerProfileConflict();
 	// Runtime gives a nonempty plural selection precedence; adoption preserves it verbatim.
@@ -449,7 +447,7 @@ async function complete(
 			response.kind !== "started" ||
 			response.attemptId !== prepared.start.attemptId ||
 			!Number.isSafeInteger(response.expiresAtMs) ||
-			Number(response.expiresAtMs) <= Date.now()
+			Number(response.expiresAtMs) <= 0
 		)
 			return ownerProfileConflict();
 		const query = new URLSearchParams({
