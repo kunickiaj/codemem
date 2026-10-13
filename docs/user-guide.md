@@ -656,6 +656,8 @@ The review reports the current Identity, device, key, and memory-author counts. 
 
 Preparation writes a private `capability-request.json` containing the browser-start code. Submit the unchanged file through the operator's private process and never paste it into chat. After admission, resume with the review digest and capability, reusing the same coordinator, configuration, database, and key selections:
 
+If multiple databases share a directory, give each profile a distinct `--state-dir` and reuse it for every prepare/resume command. The default state directory is shared by colocated databases. All resume operations currently require an interactive terminal, including retained-final and config-only retries; `--json` is supported for preparation, not resume.
+
 ```fish
 codemem coordinator enroll-owner team-alpha --resume --review-digest '<review-digest>' --capability '<operator-provided-capability>' --coordinator "https://coord.example.com"
 ```
