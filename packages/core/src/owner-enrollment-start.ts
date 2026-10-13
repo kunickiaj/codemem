@@ -25,6 +25,7 @@ import {
 import {
 	type BrowserCsrfKey,
 	type BrowserCsrfScope,
+	isBrowserCsrfKey,
 	issueBrowserCsrfToken,
 } from "./coordinator-browser-csrf.js";
 import { guardBrowserForm } from "./coordinator-browser-form-guard.js";
@@ -49,6 +50,11 @@ import {
 	verifyOwnerEnrollmentSignature,
 	verifyPendingKeySignatureAndHashes,
 } from "./coordinator-owner-enrollment-proof.js";
+import {
+	isOwnerEnrollmentAdmissionKey,
+	type OwnerEnrollmentAdmissionKey,
+	verifyOwnerEnrollmentAdmission,
+} from "./owner-enrollment-admission.js";
 import type { InMemoryRequestRateLimiter } from "./request-rate-limit.js";
 
 export interface OwnerEnrollmentStart {
@@ -99,9 +105,8 @@ interface OwnerEnrollmentConfirmation {
 	groups: readonly string[];
 }
 type StartPin = { coordinatorId: string; origin: string; issuer: string; revision: string };
-interface OwnerEnrollmentComposition {
+interface OwnerEnrollmentCompositionBase {
 	purpose: "owner_enroll";
-	mode: "local_test";
 	config: unknown;
 	backend: AuthLinkBackend;
 	csrfKey: BrowserCsrfKey;
@@ -109,6 +114,11 @@ interface OwnerEnrollmentComposition {
 	oidcOptions: CoordinatorOidcOptions;
 	clock?: () => number;
 }
+export type OwnerEnrollmentComposition = OwnerEnrollmentCompositionBase &
+	(
+		| { mode: "local_test"; admissionKey?: never }
+		| { mode: "production"; admissionKey: OwnerEnrollmentAdmissionKey }
+	);
 type Context = {
 	backend: AuthLinkBackend;
 	c: CoordinatorAuthBrowserConfig;
@@ -118,6 +128,7 @@ type Context = {
 	limiter: InMemoryRequestRateLimiter;
 	client: CoordinatorOidcClient;
 	now: () => number;
+	admissionKey?: OwnerEnrollmentAdmissionKey;
 };
 const unavailable: OwnerEnrollmentStartResult = Object.freeze({
 	kind: "rejected",
@@ -190,36 +201,79 @@ async function boundary(
 	}
 }
 
-/** Private, unmounted local-test composition. Config and transport belong to the server.
+/** Opt-in server composition. Production requires exact-start admission; local fixtures require custom fetch.
  * Native SQLite atomic batch semantics and schema constraints are required; errors
  * report unknown, never a claim that an attempted commit made no changes.
  */
+function captureComposition(input: OwnerEnrollmentComposition) {
+	const mode = own(input, "mode");
+	if (
+		own(input, "purpose") !== "owner_enroll" ||
+		!["local_test", "production"].includes(mode as string)
+	)
+		throw new Error();
+	const settings = captureCoordinatorBrowserAuthConfig(own(input, "config"));
+	if (settings.kind !== "enabled") throw new Error();
+	const oidcOptions = captureOwnerOidcOptions(mode, own(input, "oidcOptions"));
+	const admissionKey = mode === "production" ? own(input, "admissionKey") : undefined;
+	if (mode === "production" && !isOwnerEnrollmentAdmissionKey(admissionKey)) throw new Error();
+	const csrfKey = own(input, "csrfKey");
+	const limiter = own(input, "limiter") as InMemoryRequestRateLimiter;
+	if (!isBrowserCsrfKey(csrfKey) || typeof limiter?.check !== "function") throw new Error();
+	const backend = own(input, "backend") as AuthLinkBackend;
+	if (
+		!backend ||
+		![backend.first, backend.run, backend.batch].every((f) => typeof f === "function")
+	)
+		throw new Error();
+	return {
+		mode,
+		settings,
+		backend,
+		csrfKey,
+		limiter,
+		oidcOptions,
+		admissionKey: admissionKey as OwnerEnrollmentAdmissionKey | undefined,
+	};
+}
+
+function captureOwnerOidcOptions(mode: unknown, value: unknown): CoordinatorOidcOptions {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error();
+	const captured: Record<string, unknown> = {};
+	for (const name of ["fetch", "timeoutSeconds"]) {
+		const descriptor = Object.getOwnPropertyDescriptor(value, name);
+		if (descriptor && !Object.hasOwn(descriptor, "value")) throw new Error();
+		captured[name] = descriptor?.value;
+	}
+	const { fetch, timeoutSeconds } = captured;
+	if (fetch !== undefined && typeof fetch !== "function") throw new Error();
+	if (mode === "local_test" && typeof fetch !== "function") throw new Error();
+	if (
+		timeoutSeconds !== undefined &&
+		(typeof timeoutSeconds !== "number" ||
+			!Number.isFinite(timeoutSeconds) ||
+			timeoutSeconds < 1 ||
+			timeoutSeconds > 30)
+	)
+		throw new Error();
+	return {
+		fetch: fetch as CoordinatorOidcOptions["fetch"],
+		timeoutSeconds: timeoutSeconds as number | undefined,
+	};
+}
+
 export async function createCoordinatorOwnerEnrollment(input: OwnerEnrollmentComposition) {
 	try {
-		if (own(input, "purpose") !== "owner_enroll" || own(input, "mode") !== "local_test")
-			return { ok: false as const };
-		const settings = captureCoordinatorBrowserAuthConfig(own(input, "config"));
-		if (settings.kind !== "enabled") return { ok: false as const };
-		const options = own(input, "oidcOptions") as CoordinatorOidcOptions;
-		const fetch = own(options, "fetch");
-		if (typeof fetch !== "function") return { ok: false as const };
-		const backend = own(input, "backend") as AuthLinkBackend;
-		if (
-			!backend ||
-			![backend.first, backend.run, backend.batch].every((f) => typeof f === "function")
-		)
-			return { ok: false as const };
-		const oidc = await createCoordinatorOidcClient(settings.oidc, {
-			fetch: fetch as NonNullable<CoordinatorOidcOptions["fetch"]>,
-			timeoutSeconds: options.timeoutSeconds,
-		});
-		if (!oidc.ok) return { ok: false as const };
+		const { mode, settings, backend, csrfKey, limiter, oidcOptions, admissionKey } =
+			captureComposition(input);
+		const client = await composeOidcClient(mode, settings.oidc, oidcOptions);
 		const c = settings.store;
 		const clock = input.clock ?? Date.now;
 		const context: Context = {
 			backend,
 			c,
-			client: oidc.client,
+			client,
+			admissionKey,
 			now: () => authLinkNow(clock),
 			pin: Object.freeze({
 				coordinatorId: c.coordinatorId,
@@ -228,15 +282,15 @@ export async function createCoordinatorOwnerEnrollment(input: OwnerEnrollmentCom
 				revision: c.revision,
 			}),
 			scope: Object.freeze({ publicOrigin: settings.publicOrigin, store: c }),
-			csrfKey: own(input, "csrfKey") as BrowserCsrfKey,
-			limiter: own(input, "limiter") as InMemoryRequestRateLimiter,
+			csrfKey,
+			limiter,
 		};
 		return {
 			ok: true as const,
 			enrollment: Object.freeze({
 				// clientKey must come from the trusted transport, never the signed request body.
-				start: (value: OwnerEnrollmentStart, clientKey: string) =>
-					boundary(() => start(context, value, clientKey)),
+				start: (value: OwnerEnrollmentStart, clientKey: string, admissionToken?: string) =>
+					boundary(() => start(context, value, clientKey, admissionToken)),
 				claimBrowser: (request: Request, clientKey: string) =>
 					boundary(() => claimBrowser(context, request, clientKey)),
 				verifyCallback: (request: Request) => boundary(() => verifyCallback(context, request)),
@@ -248,6 +302,37 @@ export async function createCoordinatorOwnerEnrollment(input: OwnerEnrollmentCom
 	} catch {
 		return { ok: false as const };
 	}
+}
+
+async function composeOidcClient(
+	mode: unknown,
+	config: Parameters<typeof createCoordinatorOidcClient>[0],
+	options: CoordinatorOidcOptions,
+): Promise<CoordinatorOidcClient> {
+	if (mode === "production") return deferredOidcClient(config, options);
+	const result = await createCoordinatorOidcClient(config, options);
+	if (!result.ok) throw new Error("owner_enrollment_oidc_unavailable");
+	return result.client;
+}
+
+/** Discovery is deferred until an eligible browser claim or consumed callback. */
+function deferredOidcClient(
+	config: Parameters<typeof createCoordinatorOidcClient>[0],
+	options: CoordinatorOidcOptions,
+): CoordinatorOidcClient {
+	let settled: CoordinatorOidcClient | undefined;
+	async function getClient() {
+		if (settled) return settled;
+		const result = await createCoordinatorOidcClient(config, options);
+		if (!result.ok) throw new Error("owner_enrollment_oidc_unavailable");
+		settled ??= result.client;
+		return settled;
+	}
+	return {
+		createAuthorizationRequest: async () => (await getClient()).createAuthorizationRequest(),
+		verifyCallback: async (input, callbackOptions) =>
+			(await getClient()).verifyCallback(input, callbackOptions),
+	};
 }
 
 interface OwnerBrowserTransaction {
@@ -751,6 +836,7 @@ async function start(
 	context: Context,
 	value: OwnerEnrollmentStart,
 	clientKey: string,
+	admissionToken?: string,
 ): Promise<OwnerEnrollmentStartResult> {
 	if (!isAuthControllerId(clientKey) || clientKey.length > 128) return unavailable;
 	const admission = context.limiter.check(
@@ -766,6 +852,17 @@ async function start(
 	} catch {
 		return unavailable;
 	}
+	if (
+		context.admissionKey &&
+		!(await verifyOwnerEnrollmentAdmission(
+			context.admissionKey,
+			admissionToken,
+			context.pin,
+			i,
+			context.now(),
+		))
+	)
+		return unavailable;
 	if (!parseCoordinatorAuthLoopback(i.loopbackRedirect).ok) return unavailable;
 	const keyId = await ed25519KeyId(i.publicKey);
 	if (

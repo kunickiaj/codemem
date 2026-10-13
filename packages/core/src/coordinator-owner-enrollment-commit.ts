@@ -16,7 +16,7 @@ export {
 	verifyOwnerEnrollmentSignature,
 } from "./coordinator-owner-enrollment-proof.js";
 
-/** Local test composition installs this explicitly; no production schema or route mounts it. */
+/** Matches the optional Worker owner-enrollment audit migration. */
 export const COORDINATOR_OWNER_ENROLLMENT_AUDIT_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS coordinator_owner_enrollment_audit_log (
  coordinator_id TEXT NOT NULL, event_id TEXT NOT NULL, attempt_id TEXT NOT NULL,

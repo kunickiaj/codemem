@@ -1,4 +1,4 @@
-/** Private owner-only transport. No public entrypoint mounts this adapter. */
+/** Opt-in owner transport; production admission and server dependencies are explicit. */
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import { parseCoordinatorAuthLoopback } from "./coordinator-auth-loopback.js";
@@ -16,6 +16,7 @@ import {
 } from "./coordinator-browser-csrf.js";
 import { parseBrowserFormBody, readBrowserFormBody } from "./coordinator-browser-form-body.js";
 import type { CoordinatorOidcOptions } from "./coordinator-oidc.js";
+import type { OwnerEnrollmentAdmissionKey } from "./owner-enrollment-admission.js";
 import {
 	createCoordinatorOwnerEnrollment,
 	type OwnerEnrollmentStart,
@@ -26,11 +27,29 @@ import {
 	type InMemoryRequestRateLimiter,
 } from "./request-rate-limit.js";
 
-interface HttpOptions {
+interface HttpOptionsBase {
 	config: unknown;
 	backend: AuthLinkBackend;
 	oidcOptions: CoordinatorOidcOptions;
 	clock?: () => number;
+}
+export type CoordinatorOwnerEnrollmentHttpOptions = HttpOptionsBase &
+	(
+		| { mode?: "private" | "local_test"; csrfKey?: never; limiter?: never; admissionKey?: never }
+		| {
+				mode: "production";
+				csrfKey: BrowserCsrfKey;
+				limiter: InMemoryRequestRateLimiter;
+				admissionKey: OwnerEnrollmentAdmissionKey;
+		  }
+	);
+export interface CoordinatorOwnerEnrollmentHttp {
+	readonly pin: BrowserCsrfScope["store"] & { origin: string; issuer: string };
+	/** Owner-only paths, never the shared OIDC callback. */
+	matchesPath(path: string): boolean;
+	handle(request: Request, trustedClientKey: string): Promise<Response>;
+	/** Call only after shared dispatch has picked the persisted owner_enroll purpose. */
+	handleCallback(request: Request, trustedClientKey: string): Promise<Response>;
 }
 type Enrollment = Extract<
 	Awaited<ReturnType<typeof createCoordinatorOwnerEnrollment>>,
@@ -213,17 +232,37 @@ async function jsonAction(request: Request, api: Enrollment, clientKey: string):
 		return reject();
 	const result = finalize
 		? await api.finalize(body as Parameters<Enrollment["finalize"]>[0])
-		: await api.start(body as OwnerEnrollmentStart, clientKey);
+		: await api.start(
+				body as OwnerEnrollmentStart,
+				clientKey,
+				/^Bearer (v1\.[A-Za-z0-9._-]+)$/.exec(request.headers.get("authorization") ?? "")?.[1],
+			);
 	if (result.kind === "started" || result.kind === "finalized" || result.kind === "prior_commit")
 		return json(result);
 	return reject();
 }
-function routeMethod(path: string, callback: string): string | null {
-	if (path === "/v1/auth/owner-pilot" || path === callback) return "GET";
+function routeMethod(
+	path: string,
+	callback: string,
+	pinPath = "/v1/auth/owner-pilot",
+): string | null {
+	if (path === pinPath || path === callback) return "GET";
 	if (path === START_PATH) return "GET, POST";
 	if (path === CONFIRM_PATH || path === ATTEMPTS_PATH || path === `${ATTEMPTS_PATH}/finalize`)
 		return "POST";
 	return null;
+}
+export function matchesCoordinatorOwnerEnrollmentHttpPath(
+	path: string,
+	mode: "private" | "production" = "private",
+): boolean {
+	return (
+		routeMethod(
+			path,
+			"",
+			mode === "production" ? "/v1/auth/owner-config" : "/v1/auth/owner-pilot",
+		) !== null && path !== ""
+	);
 }
 async function dispatch(
 	request: Request,
@@ -232,7 +271,7 @@ async function dispatch(
 ): Promise<Response> {
 	const { api, scope, key, pin, callback } = context;
 	const path = new URL(request.url).pathname;
-	if (path === "/v1/auth/owner-pilot") return json(pin);
+	if (path === context.pinPath) return json(pin);
 	if (path === ATTEMPTS_PATH || path === `${ATTEMPTS_PATH}/finalize`)
 		return jsonAction(request, api, clientKey);
 	if (path === START_PATH && request.method === "GET") return startPage(request, scope, key);
@@ -256,6 +295,7 @@ type HttpContext = {
 	key: BrowserCsrfKey;
 	pin: BrowserCsrfScope["store"] & { origin: string; issuer: string };
 	callback: string;
+	pinPath: string;
 	limiter: InMemoryRequestRateLimiter;
 };
 function checkTransport(request: Request, context: HttpContext): Response | null {
@@ -268,7 +308,7 @@ function checkTransport(request: Request, context: HttpContext): Response | null
 		url.hash
 	)
 		return reject();
-	const methods = routeMethod(url.pathname, context.callback);
+	const methods = routeMethod(url.pathname, context.callback, context.pinPath);
 	if (!methods) return reject(404);
 	if (!methods.split(", ").includes(request.method)) return respond(null, 405, { Allow: methods });
 	if (url.search && ![START_PATH, context.callback].includes(url.pathname)) return reject();
@@ -300,20 +340,48 @@ async function handleOwnerRequest(
 }
 
 /** Server supplies the trusted client key; no header or request body can override it. */
-export async function createCoordinatorOwnerEnrollmentHttp(options: HttpOptions) {
+export async function createCoordinatorOwnerEnrollmentHttp(
+	options: CoordinatorOwnerEnrollmentHttpOptions,
+): Promise<CoordinatorOwnerEnrollmentHttp> {
+	if (
+		options.mode !== undefined &&
+		options.mode !== "private" &&
+		options.mode !== "local_test" &&
+		options.mode !== "production"
+	)
+		throw new Error("owner_enrollment_http_unavailable");
 	const settings = captureCoordinatorBrowserAuthConfig(options.config);
 	if (settings.kind !== "enabled") throw new Error("owner_enrollment_http_unavailable");
 	const callback = new URL(settings.store.redirectUri).pathname;
-	if (routeMethod(callback, "") !== null) throw new Error("owner_enrollment_http_unavailable");
-	const csrfKey = await importBrowserCsrfKey(globalThis.crypto.getRandomValues(new Uint8Array(32)));
-	const limiter = createInMemoryRequestRateLimiter({ now: options.clock });
-	const created = await createCoordinatorOwnerEnrollment({
-		...options,
-		mode: "local_test",
-		purpose: "owner_enroll",
-		csrfKey,
-		limiter,
-	});
+	if (
+		matchesCoordinatorOwnerEnrollmentHttpPath(callback, "private") ||
+		matchesCoordinatorOwnerEnrollmentHttpPath(callback, "production")
+	)
+		throw new Error("owner_enrollment_http_unavailable");
+	const production = options.mode === "production";
+	const csrfKey = production
+		? options.csrfKey
+		: await importBrowserCsrfKey(globalThis.crypto.getRandomValues(new Uint8Array(32)));
+	const limiter = production
+		? options.limiter
+		: createInMemoryRequestRateLimiter({ now: options.clock });
+	const composition = production
+		? {
+				...options,
+				mode: "production" as const,
+				purpose: "owner_enroll" as const,
+				csrfKey,
+				limiter,
+			}
+		: {
+				...options,
+				mode: "local_test" as const,
+				purpose: "owner_enroll" as const,
+				csrfKey,
+				limiter,
+				admissionKey: undefined,
+			};
+	const created = await createCoordinatorOwnerEnrollment(composition);
 	if (!created.ok) throw new Error("owner_enrollment_http_unavailable");
 	const pin = Object.freeze({
 		coordinatorId: settings.store.coordinatorId,
@@ -322,10 +390,28 @@ export async function createCoordinatorOwnerEnrollmentHttp(options: HttpOptions)
 		revision: settings.store.revision,
 	});
 	const scope = { publicOrigin: pin.origin, store: settings.store };
-	const context = { api: created.enrollment, scope, key: csrfKey, pin, callback, limiter };
+	const pinPath = production ? "/v1/auth/owner-config" : "/v1/auth/owner-pilot";
+	const context = { api: created.enrollment, scope, key: csrfKey, pin, callback, pinPath, limiter };
+	return httpAdapter(context, { production });
+}
+
+function httpAdapter(
+	context: HttpContext,
+	options: { production: boolean },
+): CoordinatorOwnerEnrollmentHttp {
+	const { pin, callback } = context;
+	const { production } = options;
 	return {
 		pin,
+		matchesPath: (path) =>
+			matchesCoordinatorOwnerEnrollmentHttpPath(path, production ? "production" : "private"),
 		handle: (request: Request, trustedClientKey: string) =>
-			handleOwnerRequest(request, trustedClientKey, context),
+			production && new URL(request.url).pathname === callback
+				? Promise.resolve(reject(404))
+				: handleOwnerRequest(request, trustedClientKey, context),
+		handleCallback: (request: Request, trustedClientKey: string) =>
+			new URL(request.url).pathname === callback
+				? handleOwnerRequest(request, trustedClientKey, context)
+				: Promise.resolve(reject(404)),
 	};
 }
