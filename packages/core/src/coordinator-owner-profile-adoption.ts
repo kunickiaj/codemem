@@ -201,7 +201,8 @@ export function reviewOwnerProfile(input: {
 		)
 			ownerProfileConflict();
 	}
-	if (memories.some((r) => !r.actor_id)) return ownerProfileConflict();
+	if (memories.some((r) => typeof r.actor_id !== "string" || !r.actor_id.trim()))
+		return ownerProfileConflict();
 	return {
 		deviceId: device.deviceId,
 		publicKey: device.publicKey,

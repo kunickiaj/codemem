@@ -148,11 +148,12 @@ export function assertOwnerEnvironment(paths: OwnerProfilePaths): void {
 		ownerProfileConflict();
 	const configOverride = process.env.CODEMEM_CONFIG?.trim();
 	const dbOverride = process.env.CODEMEM_DB;
-	// Match runtime resolvers without trimming DB/key paths or expanding key-directory tildes.
+	const keysOverride = process.env.CODEMEM_KEYS_DIR?.trim() || undefined;
+	// Match runtime resolvers; DB spaces remain literal and key-directory tildes are not expanded.
 	for (const [override, path] of [
 		[configOverride ? expandUserPath(configOverride) : undefined, paths.configPath],
 		[dbOverride ? expandUserPath(dbOverride) : undefined, paths.dbPath],
-		[process.env.CODEMEM_KEYS_DIR, paths.keysDir],
+		[keysOverride, paths.keysDir],
 	] as const) {
 		if (override !== undefined && resolve(override) !== resolve(path)) ownerProfileConflict();
 	}
