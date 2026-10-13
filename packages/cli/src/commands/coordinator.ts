@@ -48,6 +48,7 @@ import {
 	emitJsonError,
 	resolveDbOpt,
 } from "../shared-options.js";
+import { buildCoordinatorEnrollOwnerCommand } from "./coordinator-enroll-owner.js";
 import { buildCoordinatorLinkAccountCommand } from "./coordinator-link-account.js";
 import { buildCoordinatorReviewDeviceOwnerCommand } from "./coordinator-review-device-owner.js";
 
@@ -114,6 +115,7 @@ function createCoordinatorCommandRoot(): Command {
 		.configureHelp(helpStyle)
 		.description("Manage coordinator invites, join requests, and relay server");
 	cmd.addCommand(buildCoordinatorLinkAccountCommand());
+	cmd.addCommand(buildCoordinatorEnrollOwnerCommand());
 	cmd.addCommand(buildCoordinatorReviewDeviceOwnerCommand());
 	return cmd;
 }

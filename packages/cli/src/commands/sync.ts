@@ -1484,6 +1484,7 @@ syncCommand.addCommand(connectCmd);
 const syncCoordinatorAlias = buildCoordinatorCommand();
 
 syncCoordinatorAlias.hook("preAction", (_thisCmd: Command, actionCmd: Command) => {
+	if (actionCmd.optsWithGlobals().json) return;
 	const subName = actionCmd.name();
 	emitDeprecationWarning(`codemem sync coordinator ${subName}`, `codemem coordinator ${subName}`);
 });

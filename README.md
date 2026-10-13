@@ -566,6 +566,28 @@ A review conflict, revocation, or stopped review needs coordinator-operator help
 
 An account-link conflict may involve the Google account or the coordinator Identity, including a revoked binding. If the account already belongs to the intended Identity, sign in at the configured coordinator's `/auth/sign-in`; otherwise, ask the operator. Replacing or removing account links is not supported by these commands.
 
+#### Optional coordinator owner enrollment
+
+The maintained `codemem coordinator enroll-owner` flow is for an operator-enabled coordinator owner enrollment. It does not configure Google or deploy a coordinator; see [Cloudflare coordinator deployment](docs/cloudflare-coordinator-deployment.md) for the operator setup.
+
+This enrollment flow currently requires POSIX private-file checks. Windows enrollment stops before changing the profile because Windows ACL verification is not implemented; do not copy signing keys to work around this limitation.
+
+Stop this profile's capture plugin, viewer, and sync daemon before preparing, and keep them stopped until the command reports `Verified coordinator Identity`:
+
+```text
+codemem coordinator enroll-owner team-alpha --prepare --coordinator "https://coord.example.com"
+```
+
+The review shows the current Identity, device, key, and memory-author counts. Existing keys, history, and authorship stay unchanged. The command does not create Team or Project grants, merge Identities, populate existing Identity devices or access authorities, or transfer legacy ownership. Bootstrap state is populated only after immutable creation proof. A conflict, legacy enrollment, or already-enrolled key stops the review for operator help.
+
+Preparation writes a private `capability-request.json` that includes the browser-start code. Submit that file unchanged through the operator's private process; never paste its contents into chat. After admission, resume with the review digest and capability using the same coordinator, configuration, database, and key selections:
+
+```text
+codemem coordinator enroll-owner team-alpha --resume --review-digest '<review-digest>' --capability '<operator-provided-capability>' --coordinator "https://coord.example.com"
+```
+
+After an ambiguous failure with a retained final request, retry that exact request unchanged. If a start succeeded but no final request was saved, retain the old state and prepare a new attempt in a new `--state-dir`; do not delete or replace the earlier state. Google confirmation and a two-device workflow have not been verified live.
+
 ### Device pairing and compatibility
 
 For a same-person device or compatibility workflow, open **Devices**, choose **Pair a device**, and copy the displayed command. Run it on the device you want to connect, copy that device's payload, then paste and review the payload back in **Devices**.

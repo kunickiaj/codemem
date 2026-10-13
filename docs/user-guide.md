@@ -640,6 +640,28 @@ otherwise ask the operator. These commands cannot replace or remove account link
 
 See [Coordinator-backed discovery](coordinator-discovery.md#optional-account-linking) for the link-session limits and privacy rules.
 
+### Optional coordinator owner enrollment
+
+The maintained `codemem coordinator enroll-owner` flow is for an operator-enabled coordinator owner enrollment. It does not configure Google or deploy a coordinator; follow [Cloudflare coordinator deployment](cloudflare-coordinator-deployment.md) for operator setup.
+
+This enrollment flow currently requires POSIX private-file checks. Windows enrollment stops before changing the profile because Windows ACL verification is not implemented; do not copy signing keys to work around this limitation.
+
+Before preparing, stop this profile's capture plugin, viewer, and sync daemon. Keep them stopped until the command reports `Verified coordinator Identity`:
+
+```fish
+codemem coordinator enroll-owner team-alpha --prepare --coordinator "https://coord.example.com"
+```
+
+The review reports the current Identity, device, key, and memory-author counts. Existing keys, history, and authorship remain unchanged. It does not create Team or Project grants, merge Identities, populate existing Identity devices or access authorities, or transfer legacy ownership. Bootstrap state is populated only after immutable creation proof. Conflicts, legacy enrollment, and already-enrolled keys stop the review; ask the coordinator operator to resolve them.
+
+Preparation writes a private `capability-request.json` containing the browser-start code. Submit the unchanged file through the operator's private process and never paste it into chat. After admission, resume with the review digest and capability, reusing the same coordinator, configuration, database, and key selections:
+
+```fish
+codemem coordinator enroll-owner team-alpha --resume --review-digest '<review-digest>' --capability '<operator-provided-capability>' --coordinator "https://coord.example.com"
+```
+
+If an ambiguous failure occurs after a final request is retained, retry that exact request unchanged. If a start succeeded but no final request was saved, keep the old state and prepare a new attempt in a new `--state-dir`; do not delete or replace the prior state. Google confirmation and a two-device workflow have not been verified live.
+
 ### Keychain (optional)
 
 - `CODEMEM_SYNC_KEY_STORE=keychain` stores the private key in Secret Service (Linux) or Keychain (macOS).

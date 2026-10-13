@@ -89,17 +89,101 @@ wrangler secret put CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET --config examples/clou
 
 This secret is required for admin routes such as invite creation and join-request review.
 
-## 4. Apply the schema
+## 4. Optional Google owner authentication
 
-Use the package schema:
+This is an optional normal Worker route, not a separate pilot. The implementation is available in the current source
+checkout and has passed its compile and test checks, but it is unreleased. Do not
+use it for a live deployment or device onboarding until the live workflow is approved; operator-managed enrollment
+remains the current path.
 
-```fish
-wrangler d1 execute codemem-coordinator --remote --file packages/cloudflare-coordinator-worker/schema.sql
+When this route is available, its non-secret configuration will be loaded from
+`CODEMEM_COORDINATOR_BROWSER_AUTH_CONFIG` as JSON:
+
+```json
+{
+  "enabled": true,
+  "ownerEnrollmentEnabled": true,
+  "coordinatorId": "your-coordinator-id",
+  "issuer": "https://accounts.google.com",
+  "clientId": "your-google-client-id",
+  "redirectUri": "https://your-worker.example.workers.dev/auth/callback",
+  "revision": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}
 ```
 
-The package schema includes the current coordinator tables for invites, join requests, and reciprocal approvals.
+- `enabled` and `ownerEnrollmentEnabled` are booleans.
+- `coordinatorId` must retain the namespace used by existing coordinator authority and Team decisions. Inspect that
+  stored authority before choosing it; a new identifier must not bypass existing exclusions or revocations.
+- `issuer` must be exactly `https://accounts.google.com`.
+- `redirectUri` must be an HTTPS authentication callback URL.
+- `revision` must contain 64 lowercase hexadecimal characters.
+- Keep `CODEMEM_COORDINATOR_OIDC_CLIENT_SECRET` separate from that JSON. Set
+  `CODEMEM_COORDINATOR_BROWSER_CSRF_KEY` separately to a stable 64-character lowercase hexadecimal value representing
+  32 cryptographically random bytes; it must remain the same across Worker isolates.
 
-## 5. Deploy the Worker
+Owner enrollment will require an existing linked Google account and an explicit grant for an eligible coordinator
+group. It will not grant access by email matching, create a team, transfer legacy ownership, or create automatic
+grants. Before moving an existing CLI profile to this flow, an operator must review its current coordinator enrollment;
+stop the transition if it conflicts with the existing enrollment.
+
+Admin-issued owner-enrollment capabilities are signed, bound to one exact signed start value, and short-lived. They do
+not allow arbitrary anonymous writes. The admin endpoints are server/admin calls, not browser calls:
+
+- `POST /v1/admin/owner-enrollment-capabilities` with `{ "start": { ... } }`. The `start` object contains exactly six
+  string fields: `attemptId`, `deviceId`, `publicKey`, `loopbackRedirect`, `browserStartCode`, and `signature`.
+  Submit the prepared signed object unchanged; `publicKey` uses canonical `ssh-ed25519 BASE64` spelling without a comment.
+- `POST /v1/admin/identity-group-grants` with `{ "attestation_id": "..." }`
+
+They use the `X-Codemem-Coordinator-Admin` header, must not include a browser `Origin` header, and never create
+automatic grants.
+
+Use the maintained CLI in three steps:
+
+1. **Pause capture, then review and prepare.** Stop this profile's capture plugin, viewer, and sync daemon until the
+   command reports `Verified coordinator Identity`. Run `codemem coordinator enroll-owner <group> --prepare --config <path>
+   --db-path <path> --keys-dir <path>`. It prints the current identity, device, public key, own and foreign memory counts,
+   the review digest, and the private request-file path. It writes
+   `capability-request.json` in owner-enrollment state beside the database by default; use
+   `--state-dir <new-private-directory>` to select a fresh private directory instead. The file contains the private
+   browser-start code; do not print it or paste it into chat.
+2. **Request operator admission.** Review the output, then submit the unchanged private request file to the capability
+   admin endpoint. Do not send client secrets or capability material in chat, and do not put admin secrets in a curl
+   command.
+3. **Confirm in Google and resume interactively.** Run the same command with `--resume`, `--review-digest <digest>`,
+   and the required `--capability` flag. Obtain and supply the capability outside chat or shared command transcripts.
+   Resume retains the final exact request. After a final request and receipt are retained, an unchanged retry or a
+   configuration-only retry does not need `--capability` again.
+
+If a start succeeds but no final request is saved, retrying that start is not recovery. Retain the old state and prepare
+a new attempt in a new `--state-dir`; do not delete or replace an existing final request after an ambiguous response.
+
+The implementation preserves keys, devices, authorship, history, and unrelated configuration. It populates bootstrap
+state only when it has immutable creation proof; it does not populate existing identity devices or access authorities,
+infer managed authority or private history, or create automatic grants. A denied already-enrolled coordinator key does
+not transfer legacy ownership automatically.
+
+Eligibility for an existing profile remains unknown until it is checked on the real device. Google confirmation and the
+normal device finish line have not been verified in a live workflow.
+
+## 5. Apply the D1 migrations
+
+The example Wrangler template already sets `migrations_dir`. Apply the complete migration history through migration
+`0031`, which adds the owner-auth audit table. Do not use only
+`packages/cloudflare-coordinator-worker/schema.sql`: the consolidated schema does not include the earlier owner-related
+DDL, so it is not sufficient to create a fresh owner-auth-enabled deployment.
+
+For a **new, empty database only**, run this from the repository root after setting the real database ID in the ignored
+deployment config:
+
+```fish
+pnpm --filter @codemem/cloudflare-coordinator-worker exec wrangler d1 migrations apply codemem-coordinator --remote --config ../../examples/cloudflare-coordinator/wrangler.toml
+```
+
+For a database originally created from `schema.sql`, first compare its schema with the migration history and review
+the migration records. Baseline only the migrations whose changes are already present, then apply the remaining
+migrations; do not replay from `0001` or reset the database to make the migration bookkeeping match.
+
+## 6. Deploy the Worker
 
 From `examples/cloudflare-coordinator/`:
 
@@ -112,7 +196,7 @@ Expected result:
 - Wrangler prints a `https://...workers.dev` URL
 - that URL becomes `sync_coordinator_url`
 
-## 6. Enroll the first device
+## 7. Enroll the first device
 
 The Worker path assumes explicit operator-managed enrollment in D1. The old Python bootstrap helper has been archived with
 the legacy runtime, so the current path is manual.
@@ -141,7 +225,7 @@ Apply it:
 wrangler d1 execute codemem-coordinator --remote --command "<paste generated SQL here>"
 ```
 
-## 7. Configure codemem clients
+## 8. Configure codemem clients
 
 Admin device example:
 
@@ -168,7 +252,7 @@ Teammate device example:
 }
 ```
 
-## 8. Validate the deployment
+## 9. Validate the deployment
 
 There is no longer a repo-shipped Python smoke-check script. Validate the Worker with real codemem clients instead:
 
@@ -179,7 +263,10 @@ There is no longer a repo-shipped Python smoke-check script. Validate the Worker
 Treat the deployment as minimally valid only when a real client can register, discover peers, and complete the onboarding
 flow below.
 
-## 9. Validate invite and join behavior
+No live Google configuration, deployment, or migration has been applied as part of this code-in-progress route. Do not
+consider the normal device finish line verified until an approved live workflow completes it.
+
+## 10. Validate invite and join behavior
 
 After smoke validation, confirm the actual onboarding flows.
 

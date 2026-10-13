@@ -77,6 +77,7 @@ describe("coordinator command parity", () => {
 		expect(coordinator).toBeDefined();
 		expect(coordinator?.commands.map((command) => command.name())).toEqual([
 			"link-account",
+			"enroll-owner",
 			"review-device-owner",
 			"group-create",
 			"list-groups",
