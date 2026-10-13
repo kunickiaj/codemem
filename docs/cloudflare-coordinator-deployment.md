@@ -167,10 +167,10 @@ normal device finish line have not been verified in a live workflow.
 
 ## 5. Apply the D1 migrations
 
-The example Wrangler template already sets `migrations_dir`. Apply the complete migration history through migration
-`0031`, which adds the owner-auth audit table. Do not use only
-`packages/cloudflare-coordinator-worker/schema.sql`: the consolidated schema does not include the earlier owner-related
-DDL, so it is not sufficient to create a fresh owner-auth-enabled deployment.
+The example Wrangler template already sets `migrations_dir`. For a new database, prefer applying the complete migration
+history through `0031`, which adds the owner-auth audit table, so migration records support later upgrades.
+`packages/cloudflare-coordinator-worker/schema.sql` also includes the complete owner-auth tables and can initialize a
+fresh database; using it directly does not record which migrations were applied.
 
 For a **new, empty database only**, run this from the repository root after setting the real database ID in the ignored
 deployment config:
