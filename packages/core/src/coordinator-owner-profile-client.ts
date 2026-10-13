@@ -669,6 +669,7 @@ export async function enrollOwnerProfile(
 		const timeout = AbortSignal.timeout(600000);
 		options = {
 			...options,
+			...paths(options),
 			signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout,
 		};
 		assertOwnerEnvironment(paths(options));
