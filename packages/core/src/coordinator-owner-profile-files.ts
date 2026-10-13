@@ -160,6 +160,7 @@ export function assertOwnerEnvironment(paths: OwnerProfilePaths): void {
 	for (const name of [
 		"CODEMEM_SYNC_COORDINATOR_URL",
 		"CODEMEM_SYNC_COORDINATOR_GROUP",
+		"CODEMEM_SYNC_COORDINATOR_GROUPS",
 		"CODEMEM_WORKSPACE_ID",
 	]) {
 		if (process.env[name] !== undefined) ownerProfileConflict();

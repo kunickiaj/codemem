@@ -166,6 +166,15 @@ export {
 	normalizeCoordinatorLegacyTeamCompletionManifest,
 } from "./coordinator-legacy-team-completion.js";
 export type {
+	OwnerProfileClientOptions,
+	OwnerProfileClientResult,
+	OwnerProfileEnrollmentErrorCode,
+} from "./coordinator-owner-profile-client.js";
+export {
+	enrollOwnerProfile,
+	OwnerProfileEnrollmentError,
+} from "./coordinator-owner-profile-client.js";
+export type {
 	CoordinatorOwnerReviewLocalEvidence,
 	CoordinatorOwnerReviewLocalOptions,
 } from "./coordinator-owner-review-local.js";
