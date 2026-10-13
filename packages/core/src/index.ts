@@ -708,6 +708,7 @@ export {
 	CodememConfigMutationError,
 	coerceObserverCommand,
 	deleteCodememConfigFile,
+	expandUserPath,
 	getCodememConfigPath,
 	getCodememEnvOverrides,
 	getCodememEnvOverrideValues,

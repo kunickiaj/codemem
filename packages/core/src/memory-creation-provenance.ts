@@ -118,13 +118,21 @@ export function hasMatchingLocalCreation(
 	db: Database,
 	entityId: string,
 	sourceIds: readonly string[],
+	options: { memoryId?: number } = {},
 ): boolean {
 	if (!sourceIds.length) return false;
+	if (options.memoryId !== undefined && !Number.isSafeInteger(options.memoryId)) return false;
 	const clause = matchingLocalCreationClause(db);
 	if (!clause) return false;
 	const binding = getVerifiedMemorySource(db, entityId);
 	if (binding?.evidence !== "local_creation" || !sourceIds.includes(binding.sourceDeviceId))
 		return false;
+	if (options.memoryId !== undefined)
+		return (
+			db
+				.prepare(`SELECT 1 FROM memory_items WHERE id = ? AND import_key = ? AND ${clause}`)
+				.get(options.memoryId, entityId) !== undefined
+		);
 	return (
 		db.prepare(`SELECT 1 FROM memory_items WHERE import_key = ? AND ${clause}`).get(entityId) !==
 		undefined
