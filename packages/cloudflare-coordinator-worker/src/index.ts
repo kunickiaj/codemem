@@ -4,16 +4,24 @@ import {
 	type CoordinatorBrowserAuthResult,
 	type CoordinatorBrowserAuthSnapshot,
 	captureCoordinatorBrowserAuthOptions,
-	coordinatorBrowserAuthUnavailableResponse,
 	createCoordinatorBrowserAuth,
+	createCoordinatorOwnerEnrollmentHttp,
+	createD1AuthLinkBackend,
 	createD1CoordinatorApp,
 	createInMemoryRequestRateLimiter,
 	D1CoordinatorStore,
+	importBrowserCsrfKey,
+	importOwnerEnrollmentAdmissionKey,
 	maintainCoordinatorBrowserAuth,
 } from "@codemem/core/internal/cloudflare-coordinator";
+import {
+	type CloudflareBrowserAuthEnv,
+	captureCloudflareBrowserAuthEnv,
+} from "./browser-auth-env.js";
+import { handleOwnerEntrypoint } from "./owner-entrypoint.js";
 import { verifyCloudflareCoordinatorRequest } from "./request-verifier.js";
 
-export interface CloudflareCoordinatorEnv {
+export interface CloudflareCoordinatorEnv extends CloudflareBrowserAuthEnv {
 	COORDINATOR_DB?: D1DatabaseLike;
 	CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET?: string;
 }
@@ -31,6 +39,14 @@ function jsonResponse(payload: Record<string, unknown>, status = 200): Response 
 	});
 }
 
+function coordinatorAdminSecret(
+	env: CloudflareCoordinatorEnv,
+	opts: CreateCloudflareCoordinatorWorkerOptions,
+): string | null {
+	if (opts.adminSecret) return opts.adminSecret(env);
+	return String(env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET ?? "").trim() || null;
+}
+
 function createLegacyCloudflareCoordinatorWorker(
 	opts: CreateCloudflareCoordinatorWorkerOptions = {},
 ) {
@@ -41,15 +57,28 @@ function createLegacyCloudflareCoordinatorWorker(
 			}
 			const app = createD1CoordinatorApp({
 				db: env.COORDINATOR_DB,
-				adminSecret: opts.adminSecret
-					? opts.adminSecret(env)
-					: String(env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET ?? "").trim() || null,
+				adminSecret: coordinatorAdminSecret(env, opts),
 				now: opts.now,
 				requestVerifier: verifyCloudflareCoordinatorRequest,
 			});
 			return app.fetch(request);
 		},
 	};
+}
+
+function authenticationUnavailable(
+	request: Request,
+	env: CloudflareCoordinatorEnv,
+	opts: CreateCloudflareCoordinatorWorkerOptions,
+): Promise<Response> | Response {
+	if (!env.COORDINATOR_DB) return jsonResponse({ error: "missing_d1_binding" }, 500);
+	return createD1CoordinatorApp({
+		db: env.COORDINATOR_DB,
+		adminSecret: coordinatorAdminSecret(env, opts),
+		now: opts.now,
+		requestVerifier: verifyCloudflareCoordinatorRequest,
+		browserAuth: { kind: "unavailable" },
+	}).fetch(request);
 }
 
 function createBrowserAuthWorker(
@@ -72,10 +101,11 @@ function createBrowserAuthWorker(
 	}
 	return {
 		async fetch(request: Request, env: CloudflareCoordinatorEnv): Promise<Response> {
+			let dispatched = false;
 			try {
 				if (!env.COORDINATOR_DB) return jsonResponse({ error: "missing_d1_binding" }, 500);
 				const db = pinBinding(env);
-				if (!db || !browserStore) return coordinatorBrowserAuthUnavailableResponse();
+				if (!db || !browserStore) return authenticationUnavailable(request, env, opts);
 				if (!completed) {
 					// Each cold request owns its discovery promise. Only settled results cross requests.
 					const result = await createCoordinatorBrowserAuth(snapshot, browserStore, browserLimiter);
@@ -83,9 +113,7 @@ function createBrowserAuthWorker(
 				}
 				const app = createD1CoordinatorApp({
 					db,
-					adminSecret: opts.adminSecret
-						? opts.adminSecret(env)
-						: String(env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET ?? "").trim() || null,
+					adminSecret: coordinatorAdminSecret(env, opts),
 					now: opts.now,
 					requestVerifier: verifyCloudflareCoordinatorRequest,
 					requestRateLimit: { limiter: deviceLimiter },
@@ -98,9 +126,11 @@ function createBrowserAuthWorker(
 							}
 						: { kind: "unavailable" },
 				});
+				dispatched = true;
 				return await app.fetch(request);
 			} catch {
-				return coordinatorBrowserAuthUnavailableResponse();
+				if (dispatched) return jsonResponse({ error: "coordinator_unavailable" }, 503);
+				return authenticationUnavailable(request, env, opts);
 			}
 		},
 		scheduled(
@@ -124,4 +154,113 @@ export function createCloudflareCoordinatorWorker(
 	return createBrowserAuthWorker(opts, snapshot);
 }
 
-export default createCloudflareCoordinatorWorker();
+function sameBindings(first: readonly unknown[], second: readonly unknown[]): boolean {
+	return first.length === second.length && first.every((value, index) => value === second[index]);
+}
+
+async function createWorkerFromSettings(
+	settings: Extract<ReturnType<typeof captureCloudflareBrowserAuthEnv>, { kind: "enabled" }>,
+	db: D1DatabaseLike,
+	ownerLimiter: ReturnType<typeof createInMemoryRequestRateLimiter>,
+) {
+	const csrfKey = await importBrowserCsrfKey(settings.csrfKeyBytes);
+	const admissionKey = settings.ownerEnrollmentEnabled
+		? await importOwnerEnrollmentAdmissionKey(settings.csrfKeyBytes)
+		: undefined;
+	const browserAuth: CoordinatorBrowserAuthOptions = {
+		config: settings.config,
+		csrfKey,
+		ownerEnrollment: admissionKey
+			? async (input) =>
+					createCoordinatorOwnerEnrollmentHttp({
+						...input,
+						mode: "production",
+						backend: createD1AuthLinkBackend(db),
+						admissionKey,
+					})
+			: undefined,
+	};
+	if (captureCoordinatorBrowserAuthOptions(browserAuth).kind !== "enabled")
+		throw new Error("browser_auth_config_invalid");
+	const underlying = createCloudflareCoordinatorWorker({ browserAuth });
+	const pin = {
+		coordinatorId: String(settings.config.coordinatorId),
+		origin: new URL(String(settings.config.redirectUri)).origin,
+		issuer: String(settings.config.issuer),
+		revision: String(settings.config.revision),
+	};
+	return {
+		...underlying,
+		async fetch(request: Request, env: CloudflareCoordinatorEnv): Promise<Response> {
+			if (admissionKey) {
+				const handled = await handleOwnerEntrypoint(request, {
+					key: admissionKey,
+					pin,
+					db,
+					limiter: ownerLimiter,
+					adminSecret: String(env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET ?? "").trim() || null,
+				});
+				if (handled) return handled;
+			}
+			return underlying.fetch(request, env);
+		},
+	};
+}
+
+/** Capture configured authentication once; only settled setup crosses requests. */
+export function createConfiguredCloudflareCoordinatorWorker() {
+	const legacy = createLegacyCloudflareCoordinatorWorker();
+	let captured: readonly unknown[] | undefined;
+	let completed: ReturnType<typeof createCloudflareCoordinatorWorker> | undefined;
+	const ownerLimiter = createInMemoryRequestRateLimiter();
+	async function configured(env: CloudflareCoordinatorEnv) {
+		const settings = captureCloudflareBrowserAuthEnv(env);
+		if (settings.kind === "disabled") return legacy;
+		if (settings.kind === "invalid") return null;
+		const bindings = [
+			env.COORDINATOR_DB,
+			env.CODEMEM_COORDINATOR_BROWSER_AUTH_CONFIG,
+			env.CODEMEM_COORDINATOR_OIDC_CLIENT_SECRET,
+			env.CODEMEM_COORDINATOR_BROWSER_CSRF_KEY,
+		];
+		if (captured && !sameBindings(captured, bindings)) return null;
+		if (completed) return completed;
+		const db = env.COORDINATOR_DB;
+		if (!db) return null;
+		const worker = await createWorkerFromSettings(settings, db, ownerLimiter);
+		if (captured && !sameBindings(captured, bindings)) return null;
+		captured ??= bindings;
+		completed ??= worker;
+		return completed;
+	}
+	return {
+		async fetch(request: Request, env: CloudflareCoordinatorEnv): Promise<Response> {
+			let dispatched = false;
+			try {
+				const worker = await configured(env);
+				if (!worker) return await authenticationUnavailable(request, env, {});
+				dispatched = true;
+				return await worker.fetch(request, env);
+			} catch {
+				if (dispatched) return jsonResponse({ error: "coordinator_unavailable" }, 503);
+				return authenticationUnavailable(request, env, {});
+			}
+		},
+		scheduled(
+			controller: ScheduledController,
+			env: CloudflareCoordinatorEnv,
+			ctx: ExecutionContext,
+		): void {
+			ctx.waitUntil(
+				configured(env)
+					.then((worker) => {
+						if (worker && "scheduled" in worker && typeof worker.scheduled === "function")
+							worker.scheduled(controller, env, ctx);
+					})
+					.catch(() => undefined),
+			);
+		},
+	};
+}
+
+export default createConfiguredCloudflareCoordinatorWorker();
