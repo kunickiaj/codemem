@@ -630,5 +630,16 @@ CREATE TABLE IF NOT EXISTS coordinator_auth_account_profiles (
  picture_url TEXT CHECK (picture_url IS NULL OR (typeof(picture_url) = 'text' AND length(picture_url) BETWEEN 1 AND 2048 AND substr(picture_url, 1, 8) = 'https://')),
  source_session_id TEXT NOT NULL,
  source_signed_in_at_ms INTEGER NOT NULL CHECK (typeof(source_signed_in_at_ms) = 'integer' AND source_signed_in_at_ms BETWEEN 0 AND 9007199225940991),
- PRIMARY KEY (coordinator_id, link_id)
+  PRIMARY KEY (coordinator_id, link_id)
+);
+CREATE TABLE IF NOT EXISTS coordinator_owner_enrollment_audit_log (
+ coordinator_id TEXT NOT NULL,
+ event_id TEXT NOT NULL,
+ attempt_id TEXT NOT NULL,
+ action TEXT NOT NULL CHECK (action = 'owner_device_enrolled'),
+ binding_id TEXT NOT NULL,
+ device_id TEXT NOT NULL,
+ created_at_ms INTEGER NOT NULL,
+ PRIMARY KEY (coordinator_id, event_id),
+ UNIQUE (coordinator_id, attempt_id)
 );

@@ -7,3 +7,4 @@ compatibility_flags = ["nodejs_compat"]
 binding = "COORDINATOR_DB"
 database_name = "codemem-coordinator"
 database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "../../packages/cloudflare-coordinator-worker/migrations"
