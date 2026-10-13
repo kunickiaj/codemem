@@ -250,7 +250,9 @@ it("prepares read-only, then keeps key/device/authorship/history and unrelated c
 		.prepare("SELECT * FROM memory_items WHERE actor_id = 'foreign'")
 		.all();
 	// Act: adopt the clean locally authored capture, not the imported row.
+	databaseOpens.length = 0;
 	await prepared();
+	expect(databaseOpens).toEqual([expect.objectContaining({ readonly: true })]);
 	expect(facts()).toEqual(before);
 	// Assert: imported rows remain physically unchanged and receive no identity assignment.
 	expect(fixture.db.prepare("SELECT * FROM memory_items WHERE actor_id = 'foreign'").all()).toEqual(
