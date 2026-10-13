@@ -9,6 +9,64 @@ import {
 
 it.each(
 	[
+		" https://private-coordinator.example ",
+		"https://private-user:private-password@coordinator.example",
+		"https://private-coordinator.example/path",
+		"not-a-private-url",
+		"",
+		null,
+		42,
+		{ private: "value" },
+	].flatMap((url) =>
+		[false, true].flatMap((override) =>
+			enrollmentModes.map((mode) => ({ url, override, ...mode })),
+		),
+	),
+)(
+	"refuses raw config URL before $mode profile work (override: $override, case %#)",
+	async ({ url, override, args }) => {
+		// Arrange: an explicit valid coordinator cannot hide malformed retained configuration.
+		mocks.readCodememConfigFileAtPath.mockReturnValue({ sync_coordinator_url: url });
+		const json = vi.spyOn(console, "log").mockImplementation(() => {});
+		const selected = [...args];
+		if (override) selected.push("--coordinator", "https://coordinator.example");
+		// Act: validate raw config before resolving the database or existing signing keys.
+		await parseSelected("group", selected);
+		// Assert: classify as usage, with no private URL, credentials or core operation exposed.
+		expect(process.exitCode).toBe(2);
+		const output = JSON.stringify([json.mock.calls, mocks.log.error.mock.calls]);
+		expect(output).toContain("sync_coordinator_url");
+		expect(output).not.toMatch(/private-|private-coordinator|not-a-private-url/);
+		if (args.includes("--json"))
+			expect(JSON.parse(String(json.mock.calls[0]?.[0])).error).toBe("usage_error");
+		expect(mocks.resolveDbPath).not.toHaveBeenCalled();
+		expect(mocks.resolveKeyPaths).not.toHaveBeenCalled();
+		expect(mocks.enrollOwnerProfile).not.toHaveBeenCalled();
+		expect(mocks.execFile).not.toHaveBeenCalled();
+	},
+);
+
+it.each(enrollmentModes)(
+	"accepts a raw config origin trailing slash during $mode",
+	async ({ args }) => {
+		// Arrange: a canonical origin's optional slash is valid even with an explicit override.
+		mocks.readCodememConfigFileAtPath.mockReturnValue({
+			sync_coordinator_url: "https://coordinator.example/",
+		});
+		vi.spyOn(process.stdout, "write").mockReturnValue(true);
+		// Act: compare equivalent normalized origins and enter enrollment.
+		await parseSelected("group", [...args, "--coordinator", "https://coordinator.example/"]);
+		// Assert: the valid selection reaches core, which owns origin normalization.
+		expect(process.exitCode).toBeUndefined();
+		expect(mocks.enrollOwnerProfile).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ coordinatorUrl: "https://coordinator.example/" }),
+		);
+		expect(mocks.log.error).not.toHaveBeenCalled();
+	},
+);
+
+it.each(
+	[
 		{ environment: "  fixture-keys\t", explicit: undefined, expected: "fixture-keys" },
 		{ environment: "  fixture-keys\t", explicit: "fixture-keys", expected: "fixture-keys" },
 		{ environment: "", explicit: undefined, expected: "fixture-keys" },
