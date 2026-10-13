@@ -17,6 +17,13 @@ This directory holds the first local Docker/Compose-based E2E harness for sync s
 - automatic artifact capture under `.tmp/e2e-artifacts/`
 - disposable three-peer sharing dogfood sandbox
 
+## Isolated owner pilot
+
+[`owner-pilot.md`](owner-pilot.md) is an unpublished, opt-in runbook for a
+two-device owner-enrollment handoff using fresh disposable profiles. It uses the
+existing Advanced Sharing-domains mapping UI and remains unverified until an approved
+real Google/HTTPS/private-network run observes the documented data flow.
+
 ## Disposable sharing dogfood sandbox
 
 Use the test-only runner to exercise the real sharing UI. It uses only synthetic, isolated state under `.tmp/dogfood/`; it never reads or changes a normal user database, config, keys, coordinator, or Projects. Invitations remain operator-driven: the fixture never creates, inspects, accepts, or commits them.
