@@ -1,11 +1,12 @@
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import { copyFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { expect, it, vi } from "vitest";
 import * as enrollmentReceiver from "./coordinator-account-link-receiver.js";
 import { enrollOwnerProfile } from "./coordinator-owner-profile-client.js";
 import {
+	browser,
 	facts,
 	fakeFetch,
 	fixture,
@@ -80,6 +81,91 @@ vi.mock("node:crypto", async (importOriginal) => {
 	};
 });
 registerOwnerProfileClientMockState({ signing, databaseOpens });
+
+it.each(["success", "finalize failure"])(
+	"keeps relative profile paths anchored after browser cwd changes: %s",
+	async (outcome) => {
+		// Arrange: only process.cwd is simulated; the receiver and its callback stay real.
+		await prepared();
+		const original = fixture.options;
+		const alternate = join(fixture.directory, "alternate");
+		fs.mkdirSync(alternate);
+		let cwd = fixture.directory;
+		vi.spyOn(process, "cwd").mockImplementation(() => cwd);
+		const before = facts();
+		const config = readFileSync(original.configPath, "utf8");
+		const keys = ["device.key", "device.key.pub"].map((name) =>
+			ownerFileSnapshot(join(original.keysDir, name)),
+		);
+		const databaseInode = fs.lstatSync(original.dbPath).ino;
+		const options = {
+			...original,
+			dbPath: relative(cwd, original.dbPath),
+			configPath: relative(cwd, original.configPath),
+			keysDir: relative(cwd, original.keysDir),
+			stateDir: relative(cwd, original.stateDir),
+			onBrowserStart: async () => {
+				cwd = alternate;
+				await browser();
+			},
+		};
+		fixture.failFinal = outcome === "finalize failure";
+		// Act: browser delivery must not redirect any subsequent path or failure inspection.
+		if (outcome === "finalize failure") {
+			await expect(enrollOwnerProfile(options)).rejects.toMatchObject({
+				code: "retained_request_incomplete",
+			});
+			// Assert: retain the original final without adoption or artifacts in the new cwd.
+			expect(readFileSync(original.configPath, "utf8")).toBe(config);
+			expect(facts()).toEqual(before);
+			expect(fixture.db.prepare("SELECT COUNT(*) FROM identity_devices").pluck().get()).toBe(0);
+			expect(existsSync(join(original.stateDir, "receipt.json"))).toBe(false);
+			expect(fs.readdirSync(alternate)).toEqual([]);
+			const final = ownerFileSnapshot(join(original.stateDir, "final.json"));
+			fixture.failFinal = false;
+			fixture.calls = [];
+			// Act: an absolute-path resume from the changed cwd retries the exact retained body.
+			expect(
+				await enrollOwnerProfile({ ...original, capability: undefined, onBrowserStart: undefined }),
+			).toMatchObject({ kind: "adopted" });
+			expect(fixture.finalBodies).toEqual([fixture.finalBodies[0], fixture.finalBodies[0]]);
+			expect(fixture.calls.map((call) => call.path)).toEqual([
+				"/v1/auth/owner-config",
+				"/v1/auth/owner-attempts/finalize",
+			]);
+			expect(ownerFileSnapshot(join(original.stateDir, "final.json"))).toEqual(final);
+		} else expect(await enrollOwnerProfile(options)).toMatchObject({ kind: "adopted" });
+		// Assert: only the original profile receives enrollment state and intended adoption.
+		expect(cwd).toBe(alternate);
+		expect(fs.readdirSync(alternate)).toEqual([]);
+		expect(fs.readdirSync(original.stateDir).sort()).toEqual([
+			"capability-request.json",
+			"final.json",
+			"prepared.json",
+			"receipt.json",
+			"start-attempted.json",
+		]);
+		expect(read("prepared.json").paths).toEqual({
+			dbPath: original.dbPath,
+			configPath: original.configPath,
+			keysDir: original.keysDir,
+			stateDir: original.stateDir,
+		});
+		expect(facts()).toEqual(before);
+		expect(fs.lstatSync(original.dbPath).ino).toBe(databaseInode);
+		expect(
+			["device.key", "device.key.pub"].map((name) =>
+				ownerFileSnapshot(join(original.keysDir, name)),
+			),
+		).toEqual(keys);
+		expect(JSON.parse(readFileSync(original.configPath, "utf8"))).toEqual({
+			...JSON.parse(config),
+			actor_id: "identity",
+			sync_coordinator_url: pin.origin,
+			sync_coordinator_group: "group",
+		});
+	},
+);
 
 it("config CAS refuses an intervening config writer after metadata commits", async () => {
 	// Arrange: another writer changes config between metadata commit and config replacement.
