@@ -70,6 +70,7 @@ async function authenticationUnavailable(
 	request: Request,
 	env: CloudflareCoordinatorEnv,
 	opts: CreateCloudflareCoordinatorWorkerOptions,
+	dependencies: { deviceLimiter: ReturnType<typeof createInMemoryRequestRateLimiter> },
 ): Promise<Response> {
 	try {
 		if (!env.COORDINATOR_DB) return jsonResponse({ error: "missing_d1_binding" }, 500);
@@ -78,6 +79,7 @@ async function authenticationUnavailable(
 			adminSecret: coordinatorAdminSecret(env, opts),
 			now: opts.now,
 			requestVerifier: verifyCloudflareCoordinatorRequest,
+			requestRateLimit: { limiter: dependencies.deviceLimiter },
 			browserAuth: { kind: "unavailable" },
 		}).fetch(request);
 	} catch {
@@ -109,7 +111,8 @@ function createBrowserAuthWorker(
 			try {
 				if (!env.COORDINATOR_DB) return jsonResponse({ error: "missing_d1_binding" }, 500);
 				const db = pinBinding(env);
-				if (!db || !browserStore) return authenticationUnavailable(request, env, opts);
+				if (!db || !browserStore)
+					return authenticationUnavailable(request, env, opts, { deviceLimiter });
 				if (!completed) {
 					// Each cold request owns its discovery promise. Only settled results cross requests.
 					const result = await createCoordinatorBrowserAuth(snapshot, browserStore, browserLimiter);
@@ -134,7 +137,7 @@ function createBrowserAuthWorker(
 				return await app.fetch(request);
 			} catch {
 				if (dispatched) return jsonResponse({ error: "coordinator_unavailable" }, 503);
-				return authenticationUnavailable(request, env, opts);
+				return authenticationUnavailable(request, env, opts, { deviceLimiter });
 			}
 		},
 		scheduled(
@@ -217,6 +220,7 @@ export function createConfiguredCloudflareCoordinatorWorker() {
 	let captured: readonly unknown[] | undefined;
 	let completed: ReturnType<typeof createCloudflareCoordinatorWorker> | undefined;
 	const ownerLimiter = createInMemoryRequestRateLimiter();
+	const deviceLimiter = createInMemoryRequestRateLimiter();
 	async function configured(env: CloudflareCoordinatorEnv) {
 		const settings = captureCloudflareBrowserAuthEnv(env);
 		if (settings.kind === "disabled") return legacy;
@@ -242,12 +246,12 @@ export function createConfiguredCloudflareCoordinatorWorker() {
 			let dispatched = false;
 			try {
 				const worker = await configured(env);
-				if (!worker) return await authenticationUnavailable(request, env, {});
+				if (!worker) return await authenticationUnavailable(request, env, {}, { deviceLimiter });
 				dispatched = true;
 				return await worker.fetch(request, env);
 			} catch {
 				if (dispatched) return jsonResponse({ error: "coordinator_unavailable" }, 503);
-				return authenticationUnavailable(request, env, {});
+				return authenticationUnavailable(request, env, {}, { deviceLimiter });
 			}
 		},
 		scheduled(

@@ -255,6 +255,54 @@ it.each([
 	expect(globalThis.fetch).not.toHaveBeenCalled();
 });
 
+it.each([
+	"invalid JSON",
+	"auth settings drift",
+	"database drift",
+	"browser database drift",
+] as const)("retains the real device API limiter across %s fallback requests", async (fault) => {
+	// Arrange: each fetch creates an app, but its anonymous route bucket must survive.
+	const env = environment();
+	let worker = createConfiguredCloudflareCoordinatorWorker();
+	if (fault === "browser database drift") {
+		worker = createCloudflareCoordinatorWorker({
+			browserAuth: {
+				config: { ...CONFIG, clientSecret: env.CODEMEM_COORDINATOR_OIDC_CLIENT_SECRET },
+				csrfKey: await coordinator.importBrowserCsrfKey(new Uint8Array(32).fill(7)),
+			},
+		});
+	}
+	if (fault === "invalid JSON") env.CODEMEM_COORDINATOR_BROWSER_AUTH_CONFIG = "{";
+	else {
+		expect((await worker.fetch(request("/auth/sign-in"), env)).status).toBe(200);
+		if (fault === "auth settings drift") env.CODEMEM_COORDINATOR_BROWSER_CSRF_KEY = "ab".repeat(32);
+		else env.COORDINATOR_DB = environment().COORDINATOR_DB;
+	}
+	const presence = () =>
+		request("/v1/presence", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ group_id: "fixture-group", addresses: [] }),
+		});
+	// Act: anonymous API buckets use method and route, not browser client IP.
+	const statuses: number[] = [];
+	for (let attempt = 0; attempt < 10; attempt++) {
+		statuses.push((await worker.fetch(presence(), env)).status);
+	}
+	const limited = await worker.fetch(presence(), env);
+	const independent = await worker.fetch(
+		request("/v1/reciprocal-approvals?group_id=fixture-group"),
+		env,
+	);
+	// Assert: the exhausted mutation namespace cannot consume another route's read bucket.
+	expect(statuses).toEqual(Array(10).fill(401));
+	expect(limited.status).toBe(429);
+	expect(await limited.json()).toMatchObject({ error: "rate_limited" });
+	expect(Number(limited.headers.get("Retry-After"))).toBeGreaterThan(0);
+	expect(independent.status).toBe(401);
+	expect(await independent.json()).toEqual({ error: "missing_headers" });
+});
+
 it("mounts sign-in from bindings and preserves its CSRF key across independent workers", async () => {
 	// Arrange: a browser form from one isolate must work in another with the same bindings.
 	const env = environment();
