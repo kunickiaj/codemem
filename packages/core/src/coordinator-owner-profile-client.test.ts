@@ -285,23 +285,101 @@ it("prepares read-only, then keeps key/device/authorship/history and unrelated c
 	]);
 });
 
-it("stops when the key or reviewed database changes before resume", async () => {
-	// Arrange: change the reviewed local capture after preparation.
+it.each(["database", "key"])("stops independent %s drift before resume", async (drift) => {
+	// Arrange: every case starts from a fresh prepared fixture and changes only one fact.
 	await prepared();
+	const before = facts();
+	const keyPath = join(fixture.options.keysDir, "device.key");
+	const key = ownerFileSnapshot(keyPath);
+	const saved = ownerFileSnapshot(join(fixture.options.stateDir, "prepared.json"));
+	if (drift === "database")
+		fixture.db
+			.prepare(
+				"UPDATE memory_items SET body_text = 'competing writer' WHERE actor_id = 'local:local'",
+			)
+			.run();
+	else rotateKey();
+	const changed = facts();
+	const changedKey = ownerFileSnapshot(keyPath);
 	fixture.calls = [];
-	fixture.db
-		.prepare(
-			"UPDATE memory_items SET body_text = 'competing writer' WHERE actor_id = 'local:local'",
-		)
-		.run();
-	// Act: refuse review drift and then additional key drift.
+	// Act: one conflict alone must prevent coordinator discovery or a start request.
 	await expect(enrollOwnerProfile(fixture.options)).rejects.toThrow();
+	// Assert: the other reviewed fact is intact and neither drift is overwritten.
 	expect(fixture.calls).toEqual([]);
-	rotateKey();
-	await expect(enrollOwnerProfile(fixture.options)).rejects.toThrow();
-	// Assert: neither refusal contacts the coordinator.
-	expect(fixture.calls).toEqual([]);
+	expect(fixture.finalBodies).toEqual([]);
+	expect(facts()).toEqual(changed);
+	expect(ownerFileSnapshot(keyPath)).toEqual(changedKey);
+	expect(ownerFileSnapshot(join(fixture.options.stateDir, "prepared.json"))).toEqual(saved);
+	if (drift === "database") {
+		expect(changed).not.toEqual(before);
+		expect(changedKey).toEqual(key);
+	} else {
+		expect(changed).toEqual(before);
+		expect(changedKey).not.toEqual(key);
+	}
 });
+
+it("completes the same started attempt when the client clock is ahead of server expiry", async () => {
+	// Arrange: server expiry is valid even though the client's clock is one day ahead.
+	const serverNow = Date.now();
+	await prepared();
+	const saved = ownerFileSnapshot(join(fixture.options.stateDir, "prepared.json"));
+	const start = read("capability-request.json").start;
+	const before = facts();
+	fixture.options.fetch = async (input, init) => {
+		const response = await fakeFetch(input, init);
+		if (new URL(String(input)).pathname === "/v1/auth/owner-attempts")
+			return Response.json({
+				kind: "started",
+				attemptId: start.attemptId,
+				expiresAtMs: serverNow + 60000,
+			});
+		return response;
+	};
+	vi.spyOn(Date, "now").mockReturnValue(serverNow + 86400000);
+	fixture.calls = [];
+	// Act: retain real receiver timers and deliver the mocked browser's loopback callback.
+	const result = await enrollOwnerProfile(fixture.options);
+	// Assert: no fresh marker or replacement attempt is required for client clock skew.
+	expect(result.kind).toBe("adopted");
+	expect(fixture.calls.map((call) => call.path)).toEqual([
+		"/v1/auth/owner-config",
+		"/v1/auth/owner-attempts",
+		"/v1/auth/owner-attempts/finalize",
+	]);
+	expect(JSON.parse(read("final.json").body).attemptId).toBe(start.attemptId);
+	expect(ownerFileSnapshot(join(fixture.options.stateDir, "prepared.json"))).toEqual(saved);
+	expect(facts()).toEqual(before);
+});
+
+it.each([undefined, null, "123", 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
+	"refuses malformed server expiry without browser delivery or finalization (case %#)",
+	async (expiresAtMs) => {
+		// Arrange: the mock server starts the reviewed attempt with an invalid timestamp.
+		await prepared();
+		const before = facts();
+		const config = ownerFileSnapshot(fixture.options.configPath);
+		fixture.options.onBrowserStart = vi.fn();
+		fixture.options.fetch = async (input, init) => {
+			const response = await fakeFetch(input, init);
+			if (new URL(String(input)).pathname === "/v1/auth/owner-attempts")
+				return Response.json({
+					kind: "started",
+					attemptId: read("prepared.json").start.attemptId,
+					expiresAtMs,
+				});
+			return response;
+		};
+		// Act: clock-independent validation must still reject malformed server data.
+		await expect(enrollOwnerProfile(fixture.options)).rejects.toThrow();
+		// Assert: no browser callback, final request or local adoption occurs.
+		expect(fixture.options.onBrowserStart).not.toHaveBeenCalled();
+		expect(fixture.finalBodies).toEqual([]);
+		expect(existsSync(join(fixture.options.stateDir, "final.json"))).toBe(false);
+		expect(facts()).toEqual(before);
+		expect(ownerFileSnapshot(fixture.options.configPath)).toEqual(config);
+	},
+);
 it("requires exact reviewed digest and never sends an unadmitted start", async () => {
 	// Arrange: first corrupt the reviewed digest, then omit admission.
 	await prepared();

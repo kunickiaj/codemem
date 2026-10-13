@@ -185,12 +185,14 @@ it.each([
 	{ plural: ["private-other-group"] },
 	{ plural: ["group", "private-other-group"] },
 	{ plural: "group, private-other-group" },
+	{ plural: [], singular: "private-other-group" },
+	{ plural: " , ", singular: "private-other-group" },
 ])(
-	"refuses incompatible effective plural groups even when singular matches (case %#)",
-	async ({ plural }) => {
-		// Arrange: the runtime parser gives a populated plural field precedence.
+	"refuses incompatible effective groups including singular fallback (case %#)",
+	async ({ plural, singular = "group" }) => {
+		// Arrange: populated plural groups take precedence; empty lists use singular fallback.
 		const config = JSON.parse(readFileSync(fixture.options.configPath, "utf8"));
-		config.sync_coordinator_group = "group";
+		config.sync_coordinator_group = singular;
 		config.sync_coordinator_groups = plural;
 		writeFileSync(fixture.options.configPath, JSON.stringify(config));
 		const snapshot = ownerFileSnapshot(fixture.options.configPath);
@@ -215,10 +217,13 @@ it.each([
 	{ plural: [], singular: "group" },
 	{ plural: ["", " \t ", 42], singular: "group" },
 	{ plural: " , \t , ", singular: "group" },
+	{ plural: ["group"], singular: "stale-group" },
+	{ plural: " group ", singular: " stale-group " },
+	{ plural: ["group"], singular: 42 },
 ])(
 	"preserves parser-compatible plural settings through adoption (case %#)",
 	async ({ plural, singular }) => {
-		// Arrange: empty parsed lists fall back to singular; padded entries parse to the same group.
+		// Arrange: effective plural groups supersede stale singular values; empty lists fall back.
 		const config = JSON.parse(readFileSync(fixture.options.configPath, "utf8"));
 		config.sync_coordinator_group = singular;
 		config.sync_coordinator_groups = plural;
@@ -366,6 +371,27 @@ it("rejects a different configured coordinator rather than normalizing it into a
 	expect(facts()).toEqual(before);
 	expect(existsSync(fixture.options.stateDir)).toBe(false);
 });
+
+it.each([` ${pin.origin} `, "https://private-user:private-password@coordinator.example", null, 42])(
+	"refuses malformed raw coordinator config before discovery (case %#)",
+	async (url) => {
+		// Arrange: the explicit valid URL must not conceal invalid retained config.
+		const config = JSON.parse(readFileSync(fixture.options.configPath, "utf8"));
+		config.sync_coordinator_url = url;
+		writeFileSync(fixture.options.configPath, JSON.stringify(config));
+		const snapshot = ownerFileSnapshot(fixture.options.configPath);
+		const before = facts();
+		// Act: reject raw URL whitespace, credentials and nonstring values without normalizing.
+		const error = await enrollOwnerProfile(fixture.options).catch((error: unknown) => error);
+		// Assert: sanitized refusal preserves the profile and never reaches the coordinator.
+		expect(error).toBeInstanceOf(Error);
+		expect(String(error)).not.toContain("private-");
+		expect(fixture.calls).toEqual([]);
+		expect(facts()).toEqual(before);
+		expect(ownerFileSnapshot(fixture.options.configPath)).toEqual(snapshot);
+		expect(existsSync(fixture.options.stateDir)).toBe(false);
+	},
+);
 
 it.each(["CODEMEM_ACTOR_ID", "CODEMEM_DEVICE_ID", "CODEMEM_SYNC_COORDINATOR_URL"])(
 	"denies %s overrides before any request or profile mutation",
