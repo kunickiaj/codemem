@@ -19,6 +19,7 @@ import type {
 import { MemoryStore, type RawEventSweeper, resolveDbPath, VERSION } from "@codemem/core";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
+import { type AccountLinkOptions, createAccountGuard } from "./account/guard.js";
 import { originGuard, preflightHandler } from "./middleware.js";
 import type { RawEventInbox } from "./raw-event-inbox.js";
 import {
@@ -44,6 +45,7 @@ import {
 } from "./routes/team-setup.js";
 import { updateStatusRoutes } from "./routes/update-status.js";
 
+export type { AccountLinkOptions } from "./account/guard.js";
 export type {
 	AdvancePendingProjectSharesResult,
 	AdvanceProjectShareOperationResult,
@@ -113,6 +115,7 @@ export function closeStore(): void {
  * Exported for testing — pass a custom store factory to inject test DBs.
  */
 export interface AppOptions {
+	accountLink?: AccountLinkOptions;
 	storeFactory?: () => MemoryStore;
 	rawEventInbox?: RawEventInbox | null;
 	rawEventTarget?: ViewerTargetStore;
@@ -196,6 +199,13 @@ function registerConfigRoutes(
 	);
 }
 
+function registerAccountRoutes(app: Hono, options?: AccountLinkOptions): void {
+	if (!options) return;
+	const account = createAccountGuard(options);
+	app.use("*", account.middleware);
+	app.route("/", account.routes);
+}
+
 export function createApp(opts?: AppOptions) {
 	const storeFactory = opts?.storeFactory ?? getStore;
 	const sweeper = opts?.sweeper ?? null;
@@ -203,6 +213,7 @@ export function createApp(opts?: AppOptions) {
 	const getSyncRuntimeStatus = opts?.getSyncRuntimeStatus ?? (() => null);
 	let invalidateTeamSetupSummary = () => {};
 	const app = new Hono();
+	registerAccountRoutes(app, opts?.accountLink);
 
 	// CORS / origin guard
 	app.use("*", preflightHandler());
