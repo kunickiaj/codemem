@@ -42,6 +42,40 @@ the token only in memory, never in cookies, HTML, Web Storage, URLs or logs. A
 viewer restart requires fetching a new session token. A missing or invalid token
 returns `403 account_csrf_invalid`.
 
-This slice exposes only the session route. Status, linking operations and viewer
-startup wiring follow separately; a successful session does not mean an account
-is linked or that the current device has passed an operator review.
+A successful session does not mean an account is linked or that the current
+device has passed an operator review.
+
+## Current account status
+
+`GET /api/account/link-status?group_id=...` requires the account CSRF header. The
+optional `group_id` must name a configured group; no other query keys, duplicate
+selectors or request bodies are accepted. One configured group is selected
+automatically. Multiple groups require an explicit choice before a remote read.
+Malformed group lists, including empty entries, fail closed instead of silently
+discarding entries.
+
+The route is mounted only when the application supplies a trusted context reader.
+That reader uses the running viewer's database, device, Identity, selected config
+and keys directory. Browser callers cannot supply paths, coordinator URLs or
+Identity IDs. Missing setup, invalid coordinator configuration, unavailable
+device evidence and disagreement with the running Identity stop the read.
+
+The exported `AccountLinkViewV1` describes local context, coordinator origin,
+remote status, link eligibility and the check time. It contains no local paths
+or credentials.
+
+The context ID binds the database file identity, selected paths, coordinator,
+group, device key fingerprint and Identity. Normal memory capture does not change
+it. The broker reads context before and after the coordinator request; a changed
+context removes account metadata and returns `context_changed` instead of attaching
+an old response to the new profile.
+
+Google display metadata is returned only for a linked account whose coordinator
+Identity matches the running local Identity. A missing controller review is
+`review_required`, not unlinked. Unsupported, offline and rejected reads do not
+imply that Google is required. `canLink` is true only for a fresh, matching,
+unlinked subject; the broker never publishes an operator review or grants access.
+
+Link operations and viewer startup wiring follow separately. The status broker
+does not initialize a store, migrate a schema, generate keys or change Identity
+assignments. It returns no private browser URLs, tokens or admin credentials.

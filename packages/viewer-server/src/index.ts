@@ -20,12 +20,14 @@ import { MemoryStore, type RawEventSweeper, resolveDbPath, VERSION } from "@code
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { type AccountLinkOptions, createAccountGuard } from "./account/guard.js";
+import type { AccountStatusOptions } from "./account/status.js";
 import { originGuard, preflightHandler } from "./middleware.js";
 import type { RawEventInbox } from "./raw-event-inbox.js";
 import {
 	createInMemoryRequestRateLimiter,
 	type InMemoryRequestRateLimiter,
 } from "./request-rate-limit.js";
+import { accountStatusRoutes } from "./routes/account-status.js";
 import { type ConfigRouteOptions, configRoutes } from "./routes/config.js";
 import { diagnosticsRoutes } from "./routes/diagnostics.js";
 import { healthRoutes } from "./routes/health.js";
@@ -45,7 +47,17 @@ import {
 } from "./routes/team-setup.js";
 import { updateStatusRoutes } from "./routes/update-status.js";
 
+export type {
+	AccountContext,
+	AccountContextReader,
+	AccountContextReaderOptions,
+	AccountContextResult,
+	AccountProfile,
+	AccountSetup,
+} from "./account/context.js";
+export { createAccountContextReader } from "./account/context.js";
 export type { AccountLinkOptions } from "./account/guard.js";
+export type { AccountLinkViewV1, AccountStatusOptions } from "./account/status.js";
 export type {
 	AdvancePendingProjectSharesResult,
 	AdvanceProjectShareOperationResult,
@@ -115,7 +127,7 @@ export function closeStore(): void {
  * Exported for testing — pass a custom store factory to inject test DBs.
  */
 export interface AppOptions {
-	accountLink?: AccountLinkOptions;
+	accountLink?: AccountLinkOptions & AccountStatusOptions;
 	storeFactory?: () => MemoryStore;
 	rawEventInbox?: RawEventInbox | null;
 	rawEventTarget?: ViewerTargetStore;
@@ -199,11 +211,16 @@ function registerConfigRoutes(
 	);
 }
 
-function registerAccountRoutes(app: Hono, options?: AccountLinkOptions): void {
+function registerAccountRoutes(
+	app: Hono,
+	options?: AccountLinkOptions & AccountStatusOptions,
+): void {
 	if (!options) return;
 	const account = createAccountGuard(options);
 	app.use("*", account.middleware);
 	app.route("/", account.routes);
+	if (options.readContext)
+		app.route("/", accountStatusRoutes({ ...options, readContext: options.readContext }));
 }
 
 export function createApp(opts?: AppOptions) {

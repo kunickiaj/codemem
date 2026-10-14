@@ -50,6 +50,7 @@ export {
 	CoordinatorAccountLinkError,
 	linkCoordinatorAccount,
 } from "./coordinator-account-link-runtime.js";
+export { readAccountLinkDevice } from "./coordinator-account-link-signer.js";
 export type {
 	CoordinatorAccountLinkStatus,
 	CoordinatorAccountLinkStatusStore,
