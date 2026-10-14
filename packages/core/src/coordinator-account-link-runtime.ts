@@ -1,11 +1,14 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import Database from "better-sqlite3";
 import {
 	type CoordinatorAccountLinkReceiver,
 	createCoordinatorAccountLinkReceiver,
 	normalizeCoordinatorAccountLinkOrigin,
 } from "./coordinator-account-link-receiver.js";
+import {
+	readAccountLinkDevice,
+	signAccountLinkRequest,
+} from "./coordinator-account-link-signer.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import {
 	AUTH_LINK_ATTEMPT_TTL_MS,
@@ -16,11 +19,7 @@ import {
 	encodeCoordinatorAuthProof32,
 	hashCoordinatorAuthProofBytes32,
 } from "./coordinator-auth-proof.js";
-import {
-	type CoordinatorDeviceLocalEvidence,
-	readCoordinatorDeviceLocalEvidence,
-} from "./coordinator-device-local.js";
-import { buildAuthHeaders, verifySignature } from "./sync-auth.js";
+import type { CoordinatorDeviceLocalEvidence } from "./coordinator-device-local.js";
 import { DEFAULT_TIME_WINDOW_S } from "./sync-auth-constants.js";
 import { loadPrivateKey } from "./sync-identity.js";
 
@@ -113,20 +112,9 @@ async function assertCurrentContext(
 	}
 	throw failure("context_changed");
 }
-function readDevice(dbPath: string): CoordinatorDeviceLocalEvidence {
-	if (!dbPath || dbPath === ":memory:") throw failure("device_unavailable");
-	const db = new Database(dbPath, { readonly: true, fileMustExist: true, timeout: 1000 });
-	try {
-		const device = readCoordinatorDeviceLocalEvidence(db);
-		if (!device) throw failure("device_unavailable");
-		return device;
-	} finally {
-		db.close();
-	}
-}
 function readDeviceWithKey(options: LinkCoordinatorAccountOptions): CoordinatorDeviceLocalEvidence {
 	try {
-		const device = readDevice(options.dbPath);
+		const device = readAccountLinkDevice(options.dbPath);
 		if (!loadPrivateKey(options.keysDir, undefined, device.deviceId))
 			throw failure("device_unavailable");
 		return device;
@@ -149,37 +137,14 @@ interface Runtime {
 function signedHeaders(runtime: Runtime, method: string, url: string, bodyBytes: Buffer) {
 	const { options, device } = runtime;
 	try {
-		const current = readDevice(options.dbPath);
-		if (
-			current.deviceId !== device.deviceId ||
-			current.publicKey !== device.publicKey ||
-			current.fingerprint !== device.fingerprint
-		)
-			throw failure("device_unavailable");
-		// Passing dbPath to the existing key loader invokes connect() maintenance. Instead select
-		// the explicit device key without a DB lookup, then verify its signature against our readonly snapshot.
-		const headers = buildAuthHeaders({
+		return signAccountLinkRequest({
+			dbPath: options.dbPath,
+			keysDir: options.keysDir,
+			device,
 			method,
 			url,
 			bodyBytes,
-			deviceId: device.deviceId,
-			keysDir: options.keysDir,
 		});
-		const parsed = new URL(url);
-		if (
-			!verifySignature({
-				method,
-				pathWithQuery: `${parsed.pathname}${parsed.search}`,
-				bodyBytes,
-				deviceId: device.deviceId,
-				publicKey: device.publicKey,
-				timestamp: headers["X-Opencode-Timestamp"],
-				nonce: headers["X-Opencode-Nonce"],
-				signature: headers["X-Opencode-Signature"],
-			})
-		)
-			throw failure("device_unavailable");
-		return headers;
 	} catch {
 		throw failure("device_unavailable");
 	}

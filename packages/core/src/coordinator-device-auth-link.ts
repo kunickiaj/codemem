@@ -252,20 +252,36 @@ async function finalizeDeviceAttempt(
 	return c.json({ status: result.status });
 }
 
+function readAccountStatusInput(
+	c: Context,
+	url: string,
+	deps: DeviceAuthLinkDeps,
+): { raw: Uint8Array; data: Record<string, unknown> } | Response {
+	const parsed = new URL(url);
+	const origin = new URL(deps.config.redirectUri).origin;
+	if (parsed.origin !== origin) return c.json({ error: "auth_link_unavailable" }, 403);
+	const entries = [...parsed.searchParams.entries()];
+	if (
+		c.req.raw.body !== null ||
+		entries.length !== 2 ||
+		parsed.searchParams.getAll("group_id").length !== 1 ||
+		parsed.searchParams.getAll("coordinator_origin").length !== 1
+	) {
+		return c.json({ error: "auth_link_invalid_input" }, 400);
+	}
+	if (parsed.searchParams.get("coordinator_origin") !== origin)
+		return c.json({ error: "auth_link_unavailable" }, 403);
+	return { raw: new Uint8Array(), data: { group_id: parsed.searchParams.get("group_id") } };
+}
+
 async function readDeviceInput(
 	c: Context,
 	action: Action,
 	url: string,
 	deps: DeviceAuthLinkDeps,
 ): Promise<{ raw: Uint8Array; data: Record<string, unknown> } | Response> {
-	if (action === "status" || action === "account_status") {
-		if (
-			action === "account_status" &&
-			new URL(url).origin !== new URL(deps.config.redirectUri).origin
-		)
-			return c.json({ error: "auth_link_unavailable" }, 403);
-		if (action === "account_status" && c.req.raw.body !== null)
-			return c.json({ error: "auth_link_invalid_input" }, 400);
+	if (action === "account_status") return readAccountStatusInput(c, url, deps);
+	if (action === "status") {
 		const entries = [...new URL(url).searchParams.entries()];
 		const entry = entries[0];
 		if (entries.length !== 1 || !entry || entry[0] !== "group_id") {

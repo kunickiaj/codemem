@@ -15,8 +15,11 @@ import { buildCanonicalRequest, SIGNATURE_VERSION, verifySignature } from "./syn
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 const ROOT = "/v1/auth/account-link-status";
-const PATH = `${ROOT}?group_id=group-a`;
 const ORIGIN = "https://app.example.test";
+function statusPath(groupId = "group-a", origin = ORIGIN) {
+	return `${ROOT}?${new URLSearchParams({ group_id: groupId, coordinator_origin: origin })}`;
+}
+const PATH = statusPath();
 const config = {
 	...PROVIDER,
 	issuer: "https://accounts.google.com",
@@ -66,16 +69,15 @@ function headers(key: Identity, path = PATH, timestamp = String(NOW / 1000)) {
 		"X-Opencode-Signature": `${SIGNATURE_VERSION}:${signature.toString("base64")}`,
 	};
 }
-async function setup(backend: Backend = "SQLite") {
+async function setup(backend: Backend = "SQLite", origin = ORIGIN, key = identity()) {
 	const f = setupStore(backend, { authClock: () => NOW });
 	databases.push(f.db);
 	vi.spyOn(f.store, "close").mockResolvedValue(undefined);
-	const key = identity();
 	await f.store.createGroup("group-a");
 	await f.store.enrollDevice("group-a", key);
 	const oidc = oidcFixture({ issuer: config.issuer });
 	const captured = captureCoordinatorBrowserAuthOptions({
-		config,
+		config: { ...config, redirectUri: `${origin}/auth/callback` },
 		csrfKey: await importBrowserCsrfKey(new Uint8Array(32).fill(7)),
 		oidcOptions: { fetch: oidc.fetch },
 	});
@@ -97,7 +99,7 @@ async function setup(backend: Backend = "SQLite") {
 			clientKey: () => "synthetic-client",
 		},
 	};
-	return { ...f, key, options, app: createCoordinatorApp(options), oidc };
+	return { ...f, key, origin, options, app: createCoordinatorApp(options), oidc };
 }
 type Fixture = Awaited<ReturnType<typeof setup>>;
 function snapshot(f: Fixture) {
@@ -118,10 +120,10 @@ async function get(
 		app?: Fixture["app"];
 	} = {},
 ) {
-	const path = options.path ?? PATH;
+	const path = options.path ?? statusPath("group-a", f.origin);
 	const before = snapshot(f);
 	const providerCalls = f.oidc.requests.length;
-	const response = await (options.app ?? f.app).request(`${options.origin ?? ORIGIN}${path}`, {
+	const response = await (options.app ?? f.app).request(`${options.origin ?? f.origin}${path}`, {
 		headers: options.headers ?? headers(f.key, path),
 	});
 	expect(snapshot(f)).toEqual(before);
@@ -437,11 +439,11 @@ it.each([
 	if (variant === "wrong-key") signed = headers(identity());
 	if (variant === "wrong-device") signed = headers({ ...f.key, deviceId: "unknown-device" });
 	if (variant === "wrong-group") {
-		path = `${ROOT}?group_id=other-group`;
+		path = statusPath("other-group");
 		signed = headers(f.key, path);
 	}
 	if (variant === "stale-timestamp") signed = headers(f.key, PATH, String(NOW / 1000 - 10000));
-	if (variant === "query-tamper") signed = headers(f.key, `${ROOT}?group_id=other-group`);
+	if (variant === "query-tamper") signed = headers(f.key, statusPath("other-group"));
 	if (variant === "removed") await f.store.removeDevice("group-a", f.key.deviceId);
 	if (variant === "disabled") {
 		await f.store.setDeviceEnabled("group-a", f.key.deviceId, false);
@@ -482,12 +484,14 @@ it("accepts a fresh signature once and rejects nonce replay", async () => {
 
 it.each([
 	"",
-	"?group_id=",
-	"?group_id=group-a&group_id=group-a",
-	"?group_id=group-a&identity_id=other",
-	"?group_id=group-a&identityId=other",
-	"?group_id=group-a&device_id=other",
-	"?group_id=group-a&coordinator_id=other",
+	`?${new URLSearchParams({ coordinator_origin: ORIGIN })}`,
+	"?group_id=group-a",
+	statusPath("").slice(ROOT.length),
+	`${PATH}&group_id=group-a`.slice(ROOT.length),
+	`${PATH}&coordinator_origin=${encodeURIComponent(ORIGIN)}`.slice(ROOT.length),
+	...["identity_id", "identityId", "device_id", "coordinator_id"].map((key) =>
+		`${PATH}&${key}=other`.slice(ROOT.length),
+	),
 ])("rejects caller selectors or invalid query %s", async (query) => {
 	// Arrange
 	const f = await setup();
@@ -510,6 +514,52 @@ it("rejects a valid signature sent to an unpinned origin", async () => {
 	expect(response.status).toBe(403);
 	privateFields(await response.text());
 	expect(f.db.prepare("SELECT * FROM request_nonces").all()).toEqual(nonces);
+});
+
+it("rejects cross-coordinator replay before metadata or nonce use and rejects origin tampering", async () => {
+	// Arrange: both configured coordinators enroll exactly the same valid group/device/key.
+	const a = await setup();
+	const b = await setup("SQLite", "https://coordinator-b.example.test", a.key);
+	await seedLink(a);
+	await seedLink(b);
+	const metadata = vi.spyOn(b.store, "readAccountLinkStatus");
+	const verifier = vi.fn(b.options.requestVerifier);
+	b.app = createCoordinatorApp({ ...b.options, requestVerifier: verifier });
+	const pathA = statusPath("group-a", a.origin);
+	const pathB = statusPath("group-a", b.origin);
+	const signedA = headers(a.key, pathA);
+	const nonces = b.db.prepare("SELECT * FROM request_nonces").all();
+	// Act
+	const replay = await get(b, { path: pathA, headers: signedA });
+	const replayText = await replay.text();
+	// Assert: reject A's signed recipient before authorizing on B.
+	expect(replay.status).toBe(403);
+	expect(verifier).not.toHaveBeenCalled();
+	expect(metadata).not.toHaveBeenCalled();
+	expect(b.db.prepare("SELECT * FROM request_nonces").all()).toEqual(nonces);
+	privateFields(replayText);
+	expect(replayText).not.toMatch(/synthetic@example.test|Synthetic Person|identity-a/);
+	// Act: rewriting the recipient to B cannot repair A's signature.
+	const tampered = await get(b, { path: pathB, headers: signedA });
+	const tamperedText = await tampered.text();
+	// Assert
+	expect(tampered.status).toBe(401);
+	expect(metadata).not.toHaveBeenCalled();
+	expect(b.db.prepare("SELECT * FROM request_nonces").all()).toEqual(nonces);
+	privateFields(tamperedText);
+	expect(tamperedText).not.toMatch(/synthetic@example.test|Synthetic Person|identity-a/);
+	// Act: B's own recipient and a fresh matching signature remain valid.
+	const valid = await get(b, { path: pathB, headers: headers(b.key, pathB) });
+	// Assert
+	expect(valid.status).toBe(200);
+	expect(await valid.json()).toEqual(
+		dto(b, "linked", "identity-a", {
+			email: "synthetic@example.test",
+			displayName: "Synthetic Person",
+		}),
+	);
+	expect(metadata).toHaveBeenCalledOnce();
+	expect(b.db.prepare("SELECT * FROM request_nonces").all()).toHaveLength(nonces.length + 1);
 });
 
 it.each(["absent", "unavailable"])(

@@ -55,6 +55,11 @@ export type {
 	CoordinatorAccountLinkStatusStore,
 } from "./coordinator-account-link-status.js";
 export type {
+	CoordinatorAccountLinkStatusRead,
+	ReadCoordinatorAccountLinkStatusOptions,
+} from "./coordinator-account-link-status-client.js";
+export { readCoordinatorAccountLinkStatus } from "./coordinator-account-link-status-client.js";
+export type {
 	CoordinatorAuthControllerReviewActionOptions,
 	CoordinatorConsumedTeamInvite,
 	CoordinatorReviewedRecipientInviteEvidence,

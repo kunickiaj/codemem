@@ -221,12 +221,14 @@ This option changes no enrollment or access.
 
 ### Current-account link status
 
-`GET /v1/auth/account-link-status?group_id=...` reports the signed device's own
-account-link state. It requires the ready browser-auth adapter, not merely the
+`GET /v1/auth/account-link-status?group_id=...&coordinator_origin=...` reports the
+signed device's own account-link state. It requires the ready browser-auth adapter, not merely the
 legacy link-attempt option; absent or unavailable browser auth returns `503`.
 Requests must use the configured callback origin, contain exactly one `group_id`
-query parameter and no body, and pass existing enrollment, signature, nonce and
-rate-limit checks. Responses are never cached.
+and one `coordinator_origin` query parameter and no body, and pass existing
+enrollment, signature, nonce and rate-limit checks. The signed `coordinator_origin` must equal the configured
+callback origin, preventing another coordinator from forwarding the request to
+read account metadata. Responses are never cached.
 
 The version-1 response includes `coordinatorId`, `groupId`, `deviceId`,
 `fingerprint`, `identityId`, `state`, and `account`. The Identity comes only from
@@ -241,6 +243,18 @@ returning metadata. Revoked links remain tombstones and are not replaced. Apart
 from normal request nonce admission, this operation changes no accounts, reviews,
 enrollments, grants, history or ownership. It does not advertise or introduce a
 requirement to use Google for legacy coordinator requests.
+
+The Node client `readCoordinatorAccountLinkStatus` uses an existing-file read-only
+device snapshot and the existing matching signing key. It performs no database
+maintenance, schema initialization or key generation. Requests use manual
+redirect handling and a ten-second header/body deadline; response bodies are
+limited to 16 KiB. The client validates the exact version-1 shape and requested
+group/device/fingerprint tuple, copying only allowed display fields.
+
+Failures return fixed unsupported/unavailable results, never an inferred unlinked
+or Google-required state. Embedded callers must still match the reported Identity
+to their current local Identity, pin the coordinator when starting a link, and
+recheck their current context before displaying account metadata or acting on it.
 
 ### Signed-device route errors
 
