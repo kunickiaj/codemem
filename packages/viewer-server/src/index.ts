@@ -27,6 +27,7 @@ import {
 	createInMemoryRequestRateLimiter,
 	type InMemoryRequestRateLimiter,
 } from "./request-rate-limit.js";
+import { accountOperationRoutes } from "./routes/account-operations.js";
 import { accountStatusRoutes } from "./routes/account-status.js";
 import { type ConfigRouteOptions, configRoutes } from "./routes/config.js";
 import { diagnosticsRoutes } from "./routes/diagnostics.js";
@@ -229,6 +230,15 @@ function registerAccountRoutes(
 	app.route("/", account.routes);
 	if (options.readContext)
 		app.route("/", accountStatusRoutes({ ...options, readContext: options.readContext }));
+	if (options.readContext && options.registry)
+		app.route(
+			"/",
+			accountOperationRoutes({
+				...options,
+				readContext: options.readContext,
+				registry: options.registry,
+			}),
+		);
 }
 
 export function createApp(opts?: AppOptions) {

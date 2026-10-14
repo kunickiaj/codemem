@@ -8,8 +8,10 @@ import type {
 	AccountContextResult,
 	AccountSetup,
 } from "./context.js";
+import type { AccountLinkOperationV1, AccountLinkRegistry } from "./link-registry.js";
 
 export interface AccountStatusOptions {
+	registry?: AccountLinkRegistry;
 	readContext?: AccountContextReader;
 	readRemoteStatus?: typeof readCoordinatorAccountLinkStatus;
 }
@@ -49,10 +51,19 @@ export interface AccountLinkViewV1 {
 		| "conflict"
 		| "identity_mismatch"
 		| "operation_active";
-	operation: null;
+	operation: AccountLinkOperationV1 | null;
 	checkedAt: string;
 }
 type LocalResult = Exclude<AccountContextResult, { error: string }>;
+function attachOperation(
+	view: AccountLinkViewV1,
+	registry?: AccountLinkRegistry,
+): AccountLinkViewV1 {
+	const operation = view.contextId ? (registry?.forContext(view.contextId) ?? null) : null;
+	if (registry?.hasActive())
+		return { ...view, operation, canLink: false, blockedReason: "operation_active" };
+	return { ...view, operation };
+}
 export function accountLocalView(result: LocalResult): AccountLinkViewV1 {
 	const context = result.context;
 	return {
@@ -122,7 +133,7 @@ export async function readAccountStatus(
 	const initial = options.readContext(groupId);
 	if ("error" in initial) return initial;
 	const view = accountLocalView(initial);
-	if (initial.setup !== "ready" || !initial.context) return view;
+	if (initial.setup !== "ready" || !initial.context) return attachOperation(view, options.registry);
 	const snapshot = JSON.stringify(initial);
 	let remote: CoordinatorAccountLinkStatusRead;
 	try {
@@ -160,11 +171,14 @@ export async function readAccountStatus(
 						context: null,
 					})
 				: accountLocalView(fresh);
-		return {
-			...local,
-			remote: { kind: "unavailable", code: "context_changed" },
-			blockedReason: "status_unavailable",
-		};
+		return attachOperation(
+			{
+				...local,
+				remote: { kind: "unavailable", code: "context_changed" },
+				blockedReason: "status_unavailable",
+			},
+			options.registry,
+		);
 	}
-	return applyRemote(accountLocalView(fresh), remote);
+	return attachOperation(applyRemote(accountLocalView(fresh), remote), options.registry);
 }

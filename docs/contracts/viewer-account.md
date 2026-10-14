@@ -101,4 +101,25 @@ confirmed cancellation. Shutdown aborts active work and waits at most five secon
 unfinished work remains unknown, and late callbacks cannot change a terminal
 record. Finished records expire after fifteen minutes, with at most eight retained.
 
-This registry is not yet exposed through HTTP or wired into viewer startup.
+## Protected link operations
+
+Operation routes are mounted only when the app supplies both `readContext` and
+`registry`. They require the existing account request protection and CSRF header.
+POST bodies must contain exactly the documented object keys and be at most 1 KiB,
+read within ten seconds; disconnects stop body reads. Operation routes accept no query parameters.
+
+| Route | Body and result |
+| --- | --- |
+| `POST /api/account/link-operations` | `{groupId, contextId}`; fresh matching unlinked status and a final context check precede start. Returns `202 {version:1, operation}`. |
+| `GET /api/account/link-operations/:id` | Returns `{version:1, operation, current}` without private URLs. |
+| `POST /api/account/link-operations/:id/browser-url` | `{}`; returns `{version:1, url}` only for the current awaiting-browser context. This is the only HTTP response containing the private URL. |
+| `POST /api/account/link-operations/:id/cancel` | `{}`; aborts idempotently, returning `202` while pending or `200` once terminal. Cancellation can clean up an old context. |
+
+An active operation blocks another start even in a different group. Status embeds
+only a matching-context operation; terminal records do not replace fresh account
+status. Start rejects unsupported coordinators and `review_required`, `linked`,
+`revoked` or `conflict` states. Unavailable coordinator status returns `503` rather than assuming the
+Identity is unlinked. Context changes return `409` without starting another job.
+
+Errors use fixed codes and never include callback exceptions or private URLs.
+Viewer startup/shutdown wiring follows in a separate slice.
