@@ -79,3 +79,26 @@ unlinked subject; the broker never publishes an operator review or grants access
 Link operations and viewer startup wiring follow separately. The status broker
 does not initialize a store, migrate a schema, generate keys or change Identity
 assignments. It returns no private browser URLs, tokens or admin credentials.
+
+## In-process link lifecycle
+
+`createAccountLinkRegistry` permits one active operation per viewer process,
+including across groups. It captures the profile context and passes expected
+Identity/coordinator pins and a current-context check to the core linking runtime.
+The registry rejects changed authority fields even if a caller reuses a context ID.
+
+Public operation snapshots contain only IDs, state, fixed failure codes, times and
+browser-link availability. The private URL stays in memory and is never included
+in snapshots. Delivery requires the current context, an awaiting-browser operation
+and a validated coordinator origin/path; it is limited to five deliveries.
+The origin follows core policy: HTTPS, or HTTP on literal `127.0.0.1`/`[::1]` for
+local coordinators. Delivery still requires the exact configured origin.
+Cancellation and terminal states clear the URL. Invalid URL rejection is retained
+while the core runtime finishes cancellation, rather than reporting success early.
+
+`cancellation_unconfirmed` and `receiver_close_failed` mean `outcome_unknown`, not
+confirmed cancellation. Shutdown aborts active work and waits at most five seconds;
+unfinished work remains unknown, and late callbacks cannot change a terminal
+record. Finished records expire after fifteen minutes, with at most eight retained.
+
+This registry is not yet exposed through HTTP or wired into viewer startup.

@@ -57,6 +57,14 @@ export type {
 } from "./account/context.js";
 export { createAccountContextReader } from "./account/context.js";
 export type { AccountLinkOptions } from "./account/guard.js";
+export type {
+	AccountLinkFailure,
+	AccountLinkOperationV1,
+	AccountLinkRegistry,
+	AccountLinkRegistryOptions,
+	AccountLinkStartResult,
+} from "./account/link-registry.js";
+export { createAccountLinkRegistry } from "./account/link-registry.js";
 export type { AccountLinkViewV1, AccountStatusOptions } from "./account/status.js";
 export type {
 	AdvancePendingProjectSharesResult,
