@@ -270,6 +270,25 @@ deadline. Neither a status response nor a loopback proof alone reports success:
 the device requires its own proof-bearing finalization response. A lost final
 reply may be retried once with a fresh signed nonce.
 
+Embedded callers can supply `expectedIdentityId`, `expectedCoordinatorId`, and
+`assertCurrentContext` to `linkCoordinatorAccount`. Expected IDs and callback types
+are validated before local access. A context callback must return `true`; a false
+result, thrown error, or rejected promise produces `context_changed`. The callback
+runs before local access, attempt creation, private browser-link delivery, and each
+finalization POST, including retries. Waiting for the callback honors caller
+cancellation and the link's ten-minute deadline, including the first check before
+local access. A late callback cannot release a browser link after cancellation.
+Creation replies with a different expected
+Identity or coordinator produce `identity_mismatch` before the browser link is
+released. These checks do not replace the existing loopback and final-response
+proofs; omitted options keep proof and result verification unchanged. Cancellation
+is checked before creation and browser-link delivery even without a context hook.
+
+If cancellation cannot be confirmed after a mismatch or context change, the result
+is `cancellation_unconfirmed`. Callers must not report that nothing changed when a
+finalization response or cleanup outcome is uncertain; read authoritative account
+status before offering another linking attempt.
+
 ### Optional app lifetime and maintenance
 
 `captureCoordinatorBrowserAuthOptions` captures server-owned configuration, an

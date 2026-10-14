@@ -1,11 +1,16 @@
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
+import { Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { linkCoordinatorAccount } from "./coordinator-account-link-runtime.js";
+import * as receiverRuntime from "./coordinator-account-link-receiver.js";
+import {
+	CoordinatorAccountLinkError,
+	linkCoordinatorAccount,
+} from "./coordinator-account-link-runtime.js";
 import { createCoordinatorApp } from "./coordinator-api.js";
 import { materials } from "./coordinator-auth-browser-transaction-test-fixtures.js";
 import { cfg, NOW } from "./coordinator-auth-link-test-fixtures.js";
@@ -685,4 +690,411 @@ test("a review label on status polling does not become owner-review guidance", a
 	expect(f.remote.db.prepare("SELECT state FROM coordinator_auth_link_attempts").get()).toEqual({
 		state: "failed",
 	});
+});
+
+test.for(
+	["expectedIdentityId", "expectedCoordinatorId", "assertCurrentContext"].flatMap((field) =>
+		[null, false, 42, {}, ""].map((value) => ({ field, value })),
+	),
+)(
+	"rejects malformed $field=$value before local IO or listener bind",
+	async ({ field, value }, { f }) => {
+		// Arrange: throwing accessors detect even attempted DB/key access, not only writes.
+		const dbPath = vi.fn(() => {
+			throw new Error("private-db-access");
+		});
+		const keysDir = vi.fn(() => {
+			throw new Error("private-key-access");
+		});
+		const listen = vi.spyOn(Server.prototype, "listen");
+		const onBrowserStart = vi.fn();
+		const options = { ...f.options, [field]: value, onBrowserStart };
+		Object.defineProperties(options, {
+			dbPath: { get: dbPath },
+			keysDir: { get: keysDir },
+		});
+		// Act: malformed values deliberately cross the typed caller boundary.
+		const error = await linkCoordinatorAccount(
+			options as Parameters<typeof linkCoordinatorAccount>[0],
+		).catch((cause: unknown) => cause);
+		// Assert
+		expect(error).toBeInstanceOf(CoordinatorAccountLinkError);
+		expect(error).toMatchObject({ code: "invalid_options" });
+		expect(dbPath).not.toHaveBeenCalled();
+		expect(keysDir).not.toHaveBeenCalled();
+		expect(listen).not.toHaveBeenCalled();
+		expect(f.options.fetch).not.toHaveBeenCalled();
+		expect(onBrowserStart).not.toHaveBeenCalled();
+	},
+);
+
+test.for(["sync", "async", "retry"])(
+	"matching context pins and a %s hook finalize normally",
+	async (mode, { f }) => {
+		// Arrange
+		const before = localSnapshot(f);
+		const assertCurrentContext = vi.fn(() => (mode === "async" ? Promise.resolve(true) : true));
+		const forwarding = f.options.fetch.getMockImplementation();
+		if (!forwarding) throw new Error("fixture fetch missing");
+		let interrupted = false;
+		f.options.fetch.mockImplementation(async (input, init) => {
+			const req = new Request(input, init);
+			if (mode === "retry" && !interrupted && req.url.endsWith("/finalize")) {
+				interrupted = true;
+				f.calls.push(req);
+				throw new Error("private-lost-finalize-proof");
+			}
+			return forwarding(input, init);
+		});
+		let browserDone: Promise<unknown> = Promise.resolve();
+		// Act
+		const result = await linkCoordinatorAccount({
+			...f.options,
+			expectedIdentityId: "identity-a",
+			expectedCoordinatorId: cfg.coordinatorId,
+			assertCurrentContext,
+			onBrowserStart: (url) => {
+				browserDone = browser(f, url);
+				void browserDone.catch(() => {});
+			},
+		});
+		await browserDone;
+		// Assert
+		expect(result).toMatchObject({
+			identityId: "identity-a",
+			coordinatorId: cfg.coordinatorId,
+			state: "finalized",
+		});
+		expect(assertCurrentContext).toHaveBeenCalledTimes(mode === "retry" ? 5 : 4);
+		const finalizes = f.calls.filter((req) => req.url.endsWith("/finalize"));
+		expect(finalizes).toHaveLength(mode === "retry" ? 2 : 1);
+		if (mode === "retry") {
+			expect(finalizes[0]?.headers.get("x-opencode-nonce")).not.toBe(
+				finalizes[1]?.headers.get("x-opencode-nonce"),
+			);
+		}
+		expect(localSnapshot(f)).toEqual(before);
+	},
+);
+
+test.for(
+	["identity_id", "coordinator_id"].flatMap((field) =>
+		[false, true].map((cancelFails) => ({ field, cancelFails })),
+	),
+)(
+	"a different valid $field never releases a URL; cancel failure=$cancelFails",
+	async ({ field, cancelFails }, { f }) => {
+		// Arrange: create a real remote attempt, then substitute a well-formed but unexpected pin.
+		const before = localSnapshot(f);
+		const forwarding = f.options.fetch.getMockImplementation();
+		if (!forwarding) throw new Error("fixture fetch missing");
+		const onBrowserStart = vi.fn();
+		let destination = "";
+		f.options.fetch.mockImplementation(async (input, init) => {
+			const req = new Request(input, init);
+			if (cancelFails && req.url.endsWith("/cancel")) {
+				f.calls.push(req);
+				throw new Error("private-cancel-proof");
+			}
+			const response = await forwarding(input, init);
+			if (req.method === "POST" && req.url.endsWith("/v1/auth/link-attempts")) {
+				destination = (await req.json()).loopback_redirect;
+				return Response.json({ ...(await response.json()), [field]: "unexpected-pin" });
+			}
+			return response;
+		});
+		// Act
+		const error = await linkCoordinatorAccount({
+			...f.options,
+			expectedIdentityId: "identity-a",
+			expectedCoordinatorId: cfg.coordinatorId,
+			onBrowserStart,
+		}).catch((cause: unknown) => cause);
+		// Assert
+		expect(error).toBeInstanceOf(CoordinatorAccountLinkError);
+		expect(error).toMatchObject({
+			code: cancelFails ? "cancellation_unconfirmed" : "identity_mismatch",
+		});
+		expect(onBrowserStart).not.toHaveBeenCalled();
+		expect(f.calls.filter((req) => req.url.endsWith("/finalize"))).toHaveLength(0);
+		expect(f.calls.filter((req) => req.url.endsWith("/cancel"))).toHaveLength(1);
+		expect(f.remote.db.prepare("SELECT state FROM coordinator_auth_link_attempts").get()).toEqual({
+			state: cancelFails ? "pending" : "failed",
+		});
+		expect(f.remote.db.prepare("SELECT * FROM coordinator_auth_account_links").all()).toEqual([]);
+		expect(String(error)).not.toMatch(/unexpected-pin|identity-a|private-cancel-proof|https?:\/\//);
+		await expect(localGet(destination)).rejects.toThrow();
+		expect(localSnapshot(f)).toEqual(before);
+	},
+);
+
+const contextStages = [
+	{ stage: "initial", checkpoint: 1, creates: 0, finalizes: 0, browsers: 0 },
+	{ stage: "after listener bind", checkpoint: 2, creates: 0, finalizes: 0, browsers: 0 },
+	{ stage: "before URL release", checkpoint: 3, creates: 1, finalizes: 0, browsers: 0 },
+	{ stage: "before finalize", checkpoint: 4, creates: 1, finalizes: 0, browsers: 1 },
+	{ stage: "before finalize retry", checkpoint: 5, creates: 1, finalizes: 1, browsers: 1 },
+];
+test.for(
+	contextStages
+		.flatMap((stage) =>
+			["false", "throw", "reject"].map((mode) => ({
+				...stage,
+				mode,
+				cancelFails: false,
+				lostReply: false,
+			})),
+		)
+		.concat(
+			contextStages
+				.slice(2)
+				.map((stage) => ({ ...stage, mode: "false", cancelFails: true, lostReply: false })),
+			contextStages
+				.filter(({ checkpoint }) => checkpoint === 5)
+				.map((stage) => ({ ...stage, mode: "reject", cancelFails: false, lostReply: true })),
+		),
+)(
+	"context $mode $stage prevents the next mutation; cancel failure=$cancelFails lost reply=$lostReply",
+	async ({ checkpoint, creates, finalizes, browsers, mode, cancelFails, lostReply }, { f }) => {
+		// Arrange: every checkpoint uses a fresh fixture and independently rejects its next action.
+		const before = localSnapshot(f);
+		const forwarding = f.options.fetch.getMockImplementation();
+		if (!forwarding) throw new Error("fixture fetch missing");
+		const createReceiver = receiverRuntime.createCoordinatorAccountLinkReceiver;
+		let receiver: Awaited<ReturnType<typeof createReceiver>> | undefined;
+		vi.spyOn(receiverRuntime, "createCoordinatorAccountLinkReceiver").mockImplementation(
+			async (options) => {
+				receiver = await createReceiver(options);
+				return receiver;
+			},
+		);
+		const dbPath = vi.fn(() => f.options.dbPath);
+		const keysDir = vi.fn(() => f.options.keysDir);
+		const assertCurrentContext = vi.fn(() => {
+			if (assertCurrentContext.mock.calls.length !== checkpoint) return true;
+			if (mode === "throw") throw new Error("private-context-proof");
+			if (mode === "reject") return Promise.reject(new Error("private-context-proof"));
+			return false;
+		});
+		f.options.fetch.mockImplementation(async (input, init) => {
+			const req = new Request(input, init);
+			if (cancelFails && req.url.endsWith("/cancel")) {
+				f.calls.push(req);
+				return Response.json({ error: "private-cancel-proof" }, { status: 503 });
+			}
+			if (checkpoint === 5 && req.url.endsWith("/finalize")) {
+				if (lostReply) await forwarding(input, init);
+				else f.calls.push(req);
+				throw new Error("private-lost-finalize-proof");
+			}
+			return forwarding(input, init);
+		});
+		let proofs: Awaited<ReturnType<typeof browser>> | undefined;
+		let browserDone: Promise<unknown> = Promise.resolve();
+		const onBrowserStart = vi.fn((url: string) => {
+			browserDone = browser(f, url).then((value) => {
+				proofs = value;
+			});
+			void browserDone.catch(() => {});
+		});
+		const options = { ...f.options, assertCurrentContext, onBrowserStart };
+		Object.defineProperties(options, { dbPath: { get: dbPath }, keysDir: { get: keysDir } });
+		// Act
+		const error = await linkCoordinatorAccount(options).catch((cause: unknown) => cause);
+		await browserDone;
+		// Assert: cancellation is cleanup, and remains necessary even after context rejection.
+		expect(error).toBeInstanceOf(CoordinatorAccountLinkError);
+		let code = "context_changed";
+		if (cancelFails || lostReply) code = "cancellation_unconfirmed";
+		expect(error).toMatchObject({ code });
+		expect(assertCurrentContext).toHaveBeenCalledTimes(checkpoint);
+		expect(onBrowserStart).toHaveBeenCalledTimes(browsers);
+		expect(
+			f.calls.filter((req) => req.method === "POST" && req.url.endsWith("/v1/auth/link-attempts")),
+		).toHaveLength(creates);
+		expect(f.calls.filter((req) => req.url.endsWith("/finalize"))).toHaveLength(finalizes);
+		expect(f.calls.filter((req) => req.url.endsWith("/cancel"))).toHaveLength(creates);
+		if (checkpoint === 1) {
+			expect(dbPath).not.toHaveBeenCalled();
+			expect(keysDir).not.toHaveBeenCalled();
+			expect(receiver).toBeUndefined();
+		}
+		if (checkpoint <= 2) expect(f.options.fetch).not.toHaveBeenCalled();
+		if (checkpoint === 2) expect(receiver?.destination).toMatch(/^http:\/\/127\.0\.0\.1:/);
+		if (receiver) await expect(localGet(receiver.destination)).rejects.toThrow();
+		let state = "failed";
+		if (cancelFails) state = browsers ? "confirmed" : "pending";
+		if (lostReply) state = "finalized";
+		const expectedRows = creates ? [{ state }] : [];
+		expect(f.remote.db.prepare("SELECT state FROM coordinator_auth_link_attempts").all()).toEqual(
+			expectedRows,
+		);
+		expect(
+			f.remote.db.prepare("SELECT identity_id FROM coordinator_auth_account_links").all(),
+		).toEqual(lostReply ? [{ identity_id: "identity-a" }] : []);
+		expect(String(error)).not.toMatch(/private-|identity-a|https?:\/\//);
+		for (const secret of [proofs?.completion, proofs?.start].filter(
+			(value) => value !== undefined,
+		)) {
+			expect(String(error)).not.toContain(secret);
+		}
+		expect(localSnapshot(f)).toEqual(before);
+	},
+);
+
+test.for([false, true])(
+	"aborting a pending pre-browser hook closes its receiver; late true=$lateTrue",
+	async (lateTrue, { f }) => {
+		// Arrange: track the composed runtime signal, not just the caller's signal.
+		const controller = new AbortController();
+		const before = localSnapshot(f);
+		const createReceiver = receiverRuntime.createCoordinatorAccountLinkReceiver;
+		let receiver: Awaited<ReturnType<typeof createReceiver>> | undefined;
+		let runtimeSignal: AbortSignal | undefined;
+		vi.spyOn(receiverRuntime, "createCoordinatorAccountLinkReceiver").mockImplementation(
+			async (options) => {
+				runtimeSignal = options.signal;
+				receiver = await createReceiver(options);
+				return receiver;
+			},
+		);
+		const added = vi.spyOn(AbortSignal.prototype, "addEventListener");
+		const removed = vi.spyOn(AbortSignal.prototype, "removeEventListener");
+		const pending = Promise.withResolvers<boolean>();
+		const entered = Promise.withResolvers<void>();
+		const onBrowserStart = vi.fn();
+		const assertCurrentContext = vi.fn(() => {
+			if (assertCurrentContext.mock.calls.length !== 3) return true;
+			entered.resolve();
+			return pending.promise;
+		});
+		// Act
+		const result = linkCoordinatorAccount({
+			...f.options,
+			signal: controller.signal,
+			assertCurrentContext,
+			onBrowserStart,
+		}).catch((cause: unknown) => cause);
+		await entered.promise;
+		controller.abort(new Error("private-abort-proof"));
+		if (lateTrue) pending.resolve(true);
+		const error = await result;
+		// Assert: cleanup cannot depend on the untrusted callback ever settling.
+		expect(error).toBeInstanceOf(CoordinatorAccountLinkError);
+		expect(error).toMatchObject({ code: "link_stopped" });
+		expect(onBrowserStart).not.toHaveBeenCalled();
+		expect(f.calls.filter((req) => req.url.endsWith("/cancel"))).toHaveLength(1);
+		expect(f.calls.filter((req) => req.url.endsWith("/finalize"))).toHaveLength(0);
+		expect(f.remote.db.prepare("SELECT state FROM coordinator_auth_link_attempts").get()).toEqual({
+			state: "failed",
+		});
+		expect(receiver).toBeDefined();
+		if (!receiver) throw new Error("fixture receiver missing");
+		await expect(localGet(receiver.destination)).rejects.toThrow();
+		expect(runtimeSignal).not.toBe(controller.signal);
+		expect(runtimeSignal?.aborted).toBe(true);
+		const handlers = added.mock.calls.flatMap(([event, handler], index) => {
+			if (event === "abort" && added.mock.contexts[index] === runtimeSignal) return [handler];
+			return [];
+		});
+		expect(handlers.length).toBeGreaterThan(0);
+		for (const handler of handlers) {
+			expect(
+				removed.mock.calls.some(
+					([event, candidate], index) =>
+						event === "abort" &&
+						candidate === handler &&
+						removed.mock.contexts[index] === runtimeSignal,
+				),
+			).toBe(true);
+		}
+		expect(String(error)).not.toMatch(/private-|https?:\/\//);
+		expect(localSnapshot(f)).toEqual(before);
+	},
+);
+
+test.for(["caller abort", "default deadline"])(
+	"a pending initial hook stops on %s without local IO, listener bind, or network",
+	async (stop, { f }) => {
+		// Arrange: fake only timers; no socket or browser is started in this test.
+		const controller = new AbortController();
+		const entered = Promise.withResolvers<void>();
+		const assertCurrentContext = vi.fn(() => {
+			entered.resolve();
+			return new Promise<boolean>(() => {});
+		});
+		const access = vi.fn(() => {
+			throw new Error("private-local-access");
+		});
+		const listen = vi.spyOn(Server.prototype, "listen");
+		const onBrowserStart = vi.fn();
+		const options = {
+			...f.options,
+			assertCurrentContext,
+			onBrowserStart,
+			signal: stop === "caller abort" ? controller.signal : undefined,
+		};
+		Object.defineProperties(options, { dbPath: { get: access }, keysDir: { get: access } });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			// Act
+			const result = linkCoordinatorAccount(options).catch((cause: unknown) => cause);
+			await entered.promise;
+			if (stop === "caller abort") controller.abort();
+			else await vi.advanceTimersByTimeAsync(600000);
+			const error = await result;
+			// Assert
+			expect(error).toBeInstanceOf(CoordinatorAccountLinkError);
+			expect(error).toMatchObject({ code: "link_stopped" });
+			expect(assertCurrentContext).toHaveBeenCalledOnce();
+			expect(access).not.toHaveBeenCalled();
+			expect(listen).not.toHaveBeenCalled();
+			expect(f.options.fetch).not.toHaveBeenCalled();
+			expect(onBrowserStart).not.toHaveBeenCalled();
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	},
+);
+
+test.for(["promise false", "truthy non-boolean"])(
+	"the context hook rejects %s rather than accepting truthiness",
+	async (mode, { f }) => {
+		// Arrange: exercise untyped callback results at the runtime boundary.
+		const onBrowserStart = vi.fn();
+		const hook = () => (mode === "promise false" ? Promise.resolve(false) : 1);
+		const assertCurrentContext = hook as () => boolean | Promise<boolean>;
+		// Act
+		const error = await linkCoordinatorAccount({
+			...f.options,
+			assertCurrentContext,
+			onBrowserStart,
+		}).catch((cause: unknown) => cause);
+		// Assert
+		expect(error).toMatchObject({ code: "context_changed" });
+		expect(onBrowserStart).not.toHaveBeenCalled();
+		expect(f.options.fetch).not.toHaveBeenCalled();
+	},
+);
+
+test("the context callback runs detached from the private options object", async ({ f }) => {
+	// Arrange
+	const detached: boolean[] = [];
+	const onBrowserStart = vi.fn();
+	function assertCurrentContext(this: unknown) {
+		detached.push(this === undefined);
+		return false;
+	}
+	// Act
+	const error = await linkCoordinatorAccount({
+		...f.options,
+		assertCurrentContext,
+		onBrowserStart,
+	}).catch((cause: unknown) => cause);
+	// Assert
+	expect(error).toMatchObject({ code: "context_changed" });
+	expect(detached).toEqual([true]);
+	expect(onBrowserStart).not.toHaveBeenCalled();
+	expect(f.options.fetch).not.toHaveBeenCalled();
 });

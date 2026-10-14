@@ -29,6 +29,9 @@ export interface LinkCoordinatorAccountOptions {
 	keysDir?: string;
 	groupId: string;
 	coordinatorUrl: string;
+	expectedIdentityId?: string;
+	expectedCoordinatorId?: string;
+	assertCurrentContext?: () => boolean | Promise<boolean>;
 	loopbackHost?: "127.0.0.1" | "::1";
 	signal?: AbortSignal;
 	onBrowserStart: (privateUrl: string) => void;
@@ -47,6 +50,8 @@ type Failure =
 	| "review_required"
 	| "link_conflict"
 	| "invalid_response"
+	| "context_changed"
+	| "identity_mismatch"
 	| "link_stopped"
 	| "cancellation_unconfirmed"
 	| "receiver_close_failed";
@@ -60,6 +65,10 @@ const MESSAGES: Record<Failure, string> = {
 	link_conflict:
 		"Account linking conflicts with an existing or revoked coordinator link. This request did not replace it.",
 	invalid_response: "The coordinator returned an invalid account-link response.",
+	context_changed:
+		"The current account-link context changed. Check the current Identity and coordinator before trying again.",
+	identity_mismatch:
+		"The coordinator returned a different Identity or coordinator. Check the current Identity and coordinator before trying again.",
 	link_stopped: "Account linking stopped or expired. Try again.",
 	cancellation_unconfirmed:
 		"Could not confirm cancellation; request will expire. Linking may already have finished if the final reply was lost.",
@@ -75,6 +84,35 @@ export class CoordinatorAccountLinkError extends Error {
 function failure(code: Failure): CoordinatorAccountLinkError {
 	return new CoordinatorAccountLinkError(code);
 }
+async function assertCurrentContext(
+	options: LinkCoordinatorAccountOptions,
+	signal: AbortSignal,
+): Promise<void> {
+	if (signal.aborted) throw failure("link_stopped");
+	const checkContext = options.assertCurrentContext;
+	if (!checkContext) return;
+	let onAbort = () => {};
+	try {
+		const aborted = new Promise<never>((_, reject) => {
+			onAbort = () => reject(failure("link_stopped"));
+			signal.addEventListener("abort", onAbort, { once: true });
+		});
+		// Keep a late callback resolution or rejection handled after cancellation.
+		const check = Promise.resolve().then(() => {
+			if (signal.aborted) throw failure("link_stopped");
+			return checkContext();
+		});
+		const current = await Promise.race([check, aborted]);
+		if (signal.aborted) throw failure("link_stopped");
+		if (current === true) return;
+	} catch {
+		// Context callbacks may contain private details; expose only the fixed public error.
+		if (signal.aborted) throw failure("link_stopped");
+	} finally {
+		signal.removeEventListener("abort", onAbort);
+	}
+	throw failure("context_changed");
+}
 function readDevice(dbPath: string): CoordinatorDeviceLocalEvidence {
 	if (!dbPath || dbPath === ":memory:") throw failure("device_unavailable");
 	const db = new Database(dbPath, { readonly: true, fileMustExist: true, timeout: 1000 });
@@ -84,6 +122,16 @@ function readDevice(dbPath: string): CoordinatorDeviceLocalEvidence {
 		return device;
 	} finally {
 		db.close();
+	}
+}
+function readDeviceWithKey(options: LinkCoordinatorAccountOptions): CoordinatorDeviceLocalEvidence {
+	try {
+		const device = readDevice(options.dbPath);
+		if (!loadPrivateKey(options.keysDir, undefined, device.deviceId))
+			throw failure("device_unavailable");
+		return device;
+	} catch {
+		throw failure("device_unavailable");
 	}
 }
 interface Runtime {
@@ -274,6 +322,7 @@ async function createAttempt(
 		browser_start_hash: await hashCoordinatorAuthProofBytes32(startCode),
 		loopback_redirect: runtime.receiver.destination,
 	};
+	await assertCurrentContext(runtime.options, runtime.signal);
 	const reply = await request(runtime, {
 		method: "POST",
 		path: "/v1/auth/link-attempts",
@@ -287,6 +336,13 @@ async function createAttempt(
 		!isAuthControllerId(reply.identity_id)
 	)
 		throw failure("invalid_response");
+	if (
+		(runtime.options.expectedIdentityId !== undefined &&
+			runtime.options.expectedIdentityId !== reply.identity_id) ||
+		(runtime.options.expectedCoordinatorId !== undefined &&
+			runtime.options.expectedCoordinatorId !== reply.coordinator_id)
+	)
+		throw failure("identity_mismatch");
 	runtime.expiresAtMs = status.expiresAtMs;
 	runtime.deadline = Math.min(runtime.deadline, status.expiresAtMs + CLOCK_SKEW_MS);
 	return { coordinatorId: reply.coordinator_id, identityId: reply.identity_id };
@@ -297,6 +353,7 @@ async function finalize(
 	verifier: Uint8Array,
 	completion: string,
 ): Promise<LinkCoordinatorAccountResult> {
+	await assertCurrentContext(runtime.options, runtime.signal);
 	const reply = await request(runtime, {
 		method: "POST",
 		path: `${attemptPath(runtime)}/finalize`,
@@ -394,6 +451,7 @@ async function runBrowserLink(
 		const url = new URL("/auth/link/start", runtime.origin);
 		url.searchParams.set("attempt_id", runtime.attemptId);
 		url.searchParams.set("start_code", encodeCoordinatorAuthProof32(startCode));
+		await assertCurrentContext(runtime.options, runtime.signal);
 		runtime.options.onBrowserStart(url.href);
 		return await waitForFinalization(runtime, pin, verifier);
 	} catch (error) {
@@ -444,20 +502,17 @@ export async function linkCoordinatorAccount(
 	if (
 		!origin ||
 		!isAuthControllerId(options.groupId) ||
+		(options.expectedIdentityId !== undefined && !isAuthControllerId(options.expectedIdentityId)) ||
+		(options.expectedCoordinatorId !== undefined &&
+			!isAuthControllerId(options.expectedCoordinatorId)) ||
+		(options.assertCurrentContext !== undefined &&
+			typeof options.assertCurrentContext !== "function") ||
 		typeof options.onBrowserStart !== "function" ||
 		(options.loopbackHost !== undefined &&
 			options.loopbackHost !== "127.0.0.1" &&
 			options.loopbackHost !== "::1")
 	)
 		throw failure("invalid_options");
-	let device: CoordinatorDeviceLocalEvidence;
-	try {
-		device = readDevice(options.dbPath);
-		if (!loadPrivateKey(options.keysDir, undefined, device.deviceId))
-			throw failure("device_unavailable");
-	} catch {
-		throw failure("device_unavailable");
-	}
 	const deadline = Date.now() + AUTH_LINK_ATTEMPT_TTL_MS;
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), AUTH_LINK_ATTEMPT_TTL_MS);
@@ -465,6 +520,8 @@ export async function linkCoordinatorAccount(
 		? AbortSignal.any([controller.signal, options.signal])
 		: controller.signal;
 	try {
+		await assertCurrentContext(options, signal);
+		const device = readDeviceWithKey(options);
 		const attemptId = randomUUID();
 		const receiver = await createCoordinatorAccountLinkReceiver({
 			attemptId,
