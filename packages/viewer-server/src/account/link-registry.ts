@@ -27,7 +27,7 @@ export interface AccountLinkOperationV1 {
 }
 export type AccountLinkStartResult =
 	| { operation: AccountLinkOperationV1 }
-	| { error: "account_link_in_progress"; operationId: string }
+	| { error: "account_link_in_progress"; operationId?: string }
 	| { error: "account_shutting_down" | "account_context_changed" };
 export interface AccountLinkRegistry {
 	start(options: {
@@ -58,6 +58,17 @@ interface Job {
 }
 const DEADLINE_MS = 10 * 60_000;
 const RETENTION_MS = 15 * 60_000;
+// One viewer JS runtime, including duplicate module loads; no cross-worker coordination.
+// Only an opaque owner token is shared. Jobs, contexts, and URL capabilities stay instance-private.
+const BUSY_SLOT = Symbol.for("codemem.account-link.busy-owner");
+const runtime = globalThis as typeof globalThis & {
+	[BUSY_SLOT]?: { owner: symbol | null };
+};
+runtime[BUSY_SLOT] ??= { owner: null };
+const busySlot = runtime[BUSY_SLOT];
+function releaseBusyOwner(owner: symbol): void {
+	if (busySlot.owner === owner) busySlot.owner = null;
+}
 const AUTHORITY_FIELDS = [
 	"contextId",
 	"dbPath",
@@ -148,6 +159,12 @@ class InProcessAccountLinkRegistry implements AccountLinkRegistry {
 		this.#cleanup();
 		return [...this.#jobs.values()].find((job) => !terminal(job));
 	}
+	#inProgress(): { error: "account_link_in_progress"; operationId?: string } | null {
+		const pending = this.#active();
+		if (pending)
+			return { error: "account_link_in_progress", operationId: pending.operation.operationId };
+		return busySlot.owner ? { error: "account_link_in_progress" } : null;
+	}
 	#snapshot(job: Job): AccountLinkOperationV1 {
 		return { ...job.operation };
 	}
@@ -219,9 +236,8 @@ class InProcessAccountLinkRegistry implements AccountLinkRegistry {
 		expectedCoordinatorId,
 	}: Parameters<AccountLinkRegistry["start"]>[0]): AccountLinkStartResult {
 		if (this.#shuttingDown) return { error: "account_shutting_down" };
-		const pending = this.#active();
-		if (pending)
-			return { error: "account_link_in_progress", operationId: pending.operation.operationId };
+		const pending = this.#inProgress();
+		if (pending) return pending;
 		if (!this.#current(context)) return { error: "account_context_changed" };
 		const started = this.#now();
 		const job: Job = {
@@ -244,8 +260,17 @@ class InProcessAccountLinkRegistry implements AccountLinkRegistry {
 				finishedAt: null,
 			},
 		};
+		// Context readers and clocks are callbacks and can reenter start() synchronously.
+		if (this.#shuttingDown) return { error: "account_shutting_down" };
+		const reentrantPending = this.#inProgress();
+		if (reentrantPending) return reentrantPending;
+		const owner = Symbol();
+		busySlot.owner = owner;
 		this.#jobs.set(job.operation.operationId, job);
-		job.done = Promise.resolve().then(() => this.#run(job, expectedCoordinatorId));
+		// A shutdown timeout ends the public record, not the underlying Core work.
+		job.done = Promise.resolve()
+			.then(() => this.#run(job, expectedCoordinatorId))
+			.finally(() => releaseBusyOwner(owner));
 		return { operation: this.#snapshot(job) };
 	}
 	get(operationId: string): AccountLinkOperationV1 | null {
@@ -316,7 +341,7 @@ class InProcessAccountLinkRegistry implements AccountLinkRegistry {
 		return this.#closing;
 	}
 	hasActive(): boolean {
-		return Boolean(this.#active());
+		return Boolean(this.#active() || busySlot.owner);
 	}
 	forContext(contextId: string): AccountLinkOperationV1 | null {
 		this.#cleanup();

@@ -82,8 +82,9 @@ assignments. It returns no private browser URLs, tokens or admin credentials.
 
 ## In-process link lifecycle
 
-`createAccountLinkRegistry` permits one active operation per viewer process,
-including across groups. It captures the profile context and passes expected
+`createAccountLinkRegistry` permits one active operation in the foreground viewer's
+JavaScript runtime, including across groups and registry instances. It captures
+the profile context and passes expected
 Identity/coordinator pins and a current-context check to the core linking runtime.
 The registry rejects changed authority fields even if a caller reuses a context ID.
 
@@ -100,6 +101,12 @@ while the core runtime finishes cancellation, rather than reporting success earl
 confirmed cancellation. Shutdown aborts active work and waits at most five seconds;
 unfinished work remains unknown, and late callbacks cannot change a terminal
 record. Finished records expire after fifteen minutes, with at most eight retained.
+
+Instances share only an opaque busy-owner token, including across duplicate module
+loads. Operation records, contexts and browser URLs remain instance-private;
+another registry's busy response contains no operation ID. Ownership is released
+only when the underlying core work settles, not when a shutdown timeout marks its
+public record unknown. This local registry does not coordinate separate workers.
 
 ## Protected link operations
 

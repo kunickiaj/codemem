@@ -30,7 +30,12 @@ function deferred<T>() {
 	});
 	return { promise, resolve, reject };
 }
-function fixture(subject: AccountContext = context) {
+const fixtures: ReturnType<typeof fixture>[] = [];
+function fixture(
+	subject: AccountContext = context,
+	expectedCoordinatorId = "coordinator-a",
+	createRegistry = createAccountLinkRegistry,
+) {
 	const pending = deferred<Awaited<ReturnType<typeof linkCoordinatorAccount>>>();
 	const readContext = vi.fn(
 		(): AccountContextResult => ({
@@ -42,24 +47,254 @@ function fixture(subject: AccountContext = context) {
 		}),
 	);
 	const link = vi.fn<typeof linkCoordinatorAccount>(() => pending.promise);
-	const registry = createAccountLinkRegistry({ readContext, link });
+	const registry = createRegistry({ readContext, link });
 	const start = () => {
 		const started = registry.start({
 			context: structuredClone(subject),
-			expectedCoordinatorId: "coordinator-a",
+			expectedCoordinatorId,
 		});
 		if (!("operation" in started)) throw new Error("Expected operation fixture");
 		return started.operation.operationId;
 	};
-	return { registry, readContext, link, pending, start };
+	const f = { registry, readContext, link, pending, start };
+	fixtures.push(f);
+	return f;
 }
 async function settle() {
-	await Promise.resolve();
-	await Promise.resolve();
+	// Drain Core completion, promise adoption, and the owner's final release.
+	for (let i = 0; i < 8; i++) await Promise.resolve();
 }
-afterEach(() => {
+afterEach(async () => {
+	const owned = fixtures.splice(0);
+	// Settle fake Core work even when shutdown already ended its public record.
+	for (const f of owned) f.pending.resolve(result);
+	await settle();
+	await Promise.all(owned.map((f) => f.registry.close()));
 	vi.restoreAllMocks();
 	vi.useRealTimers();
+});
+
+describe("account link runtime-wide ownership", () => {
+	it.each(["same", "different"])(
+		"serializes factories across groups with %s profiles without sharing authority",
+		async (profile) => {
+			// Arrange: each factory reads and links only its own captured subject.
+			const first = fixture();
+			const subject = {
+				...context,
+				contextId: "context-b",
+				groupId: "group-b",
+				coordinatorUrl: "https://second.example.test",
+			};
+			if (profile === "different") {
+				subject.dbPath = "/fixture/second.sqlite";
+				subject.keysDir = "/fixture/second-keys";
+			}
+			const second = fixture(subject, "coordinator-b");
+			const firstId = first.start();
+			// Act: the slot must be reserved before the Core microtask starts.
+			const blocked = second.registry.start({
+				context: subject,
+				expectedCoordinatorId: "coordinator-b",
+			});
+			await settle();
+			first.link.mock.calls[0][0].onBrowserStart(privateUrl);
+			// Assert: only busy state crosses factory boundaries, not an ID or capability.
+			expect(blocked).toEqual({ error: "account_link_in_progress" });
+			expect(second.registry.hasActive()).toBe(true);
+			expect(first.link).toHaveBeenCalledOnce();
+			expect(second.link).not.toHaveBeenCalled();
+			expect(second.registry.get(firstId)).toBeNull();
+			expect(second.registry.forContext(context.contextId)).toBeNull();
+			expect(second.registry.browserUrl(firstId)).toBeNull();
+			expect(second.registry.cancel(firstId)).toBeNull();
+			expect(first.registry.browserUrl(firstId)).toBe(privateUrl);
+			first.pending.resolve(result);
+			await settle();
+			expect(second.registry.hasActive()).toBe(false);
+			const secondId = second.start();
+			await settle();
+			const options = second.link.mock.calls[0][0];
+			expect(options).toMatchObject({
+				dbPath: subject.dbPath,
+				keysDir: subject.keysDir,
+				groupId: subject.groupId,
+				coordinatorUrl: subject.coordinatorUrl,
+				expectedIdentityId: subject.identityId,
+				expectedCoordinatorId: "coordinator-b",
+			});
+			expect(await options.assertCurrentContext?.()).toBe(true);
+			expect(second.readContext).toHaveBeenCalledWith("group-b");
+			const secondUrl = `${subject.coordinatorUrl}/auth/link/start?proof=second-only`;
+			options.onBrowserStart(secondUrl);
+			expect(second.registry.browserUrl(secondId)).toBe(secondUrl);
+			expect(first.registry.get(secondId)).toBeNull();
+			expect(first.registry.forContext(subject.contextId)).toBeNull();
+			expect(first.registry.browserUrl(secondId)).toBeNull();
+		},
+	);
+	it.each([
+		"link_stopped",
+		"request_failed",
+		"cancellation_unconfirmed",
+		"receiver_close_failed",
+	] as const)(
+		"releases cancelled Core work only after %s settles and ignores old-owner callbacks",
+		async (code) => {
+			// Arrange
+			const first = fixture();
+			const second = fixture();
+			const firstId = first.start();
+			await settle();
+			const oldOptions = first.link.mock.calls[0][0];
+			// Act
+			first.registry.cancel(firstId);
+			expect(second.registry.start({ context, expectedCoordinatorId: "coordinator-a" })).toEqual({
+				error: "account_link_in_progress",
+			});
+			first.pending.reject(new CoordinatorAccountLinkError(code));
+			await settle();
+			const secondId = second.start();
+			await settle();
+			second.link.mock.calls[0][0].onBrowserStart(privateUrl);
+			oldOptions.onBrowserStart(`${context.coordinatorUrl}/auth/link/start?proof=old-owner`);
+			await first.registry.close();
+			// Assert: finishing/closing the previous owner cannot free its successor's slot.
+			expect(second.registry.hasActive()).toBe(true);
+			expect(first.registry.get(firstId)?.state).toBe(
+				code === "link_stopped" || code === "request_failed" ? "cancelled" : "outcome_unknown",
+			);
+			expect(first.registry.browserUrl(firstId)).toBeNull();
+			expect(second.registry.browserUrl(secondId)).toBe(privateUrl);
+			const third = fixture();
+			expect(third.registry.start({ context, expectedCoordinatorId: "coordinator-a" })).toEqual({
+				error: "account_link_in_progress",
+			});
+			expect(third.link).not.toHaveBeenCalled();
+		},
+	);
+});
+describe("account link runtime-wide shutdown", () => {
+	it("releases a failed operation after Core rejects without requiring cancellation", async () => {
+		// Arrange
+		const first = fixture();
+		const second = fixture();
+		const id = first.start();
+		await settle();
+		// Act
+		first.pending.reject(new CoordinatorAccountLinkError("request_failed"));
+		await settle();
+		second.start();
+		await settle();
+		// Assert
+		expect(first.registry.get(id)?.state).toBe("failed");
+		expect(second.link).toHaveBeenCalledOnce();
+	});
+	it("keeps other factories busy after shutdown times out until underlying Core settles", async () => {
+		// Arrange
+		vi.useFakeTimers();
+		const first = fixture();
+		const second = fixture();
+		const id = first.start();
+		await settle();
+		const options = first.link.mock.calls[0][0];
+		// Act: public shutdown is not evidence that the receiver stopped.
+		const closed = first.registry.close();
+		await vi.advanceTimersByTimeAsync(5000);
+		await closed;
+		options.onBrowserStart(privateUrl);
+		// Assert
+		expect(first.registry.get(id)?.state).toBe("outcome_unknown");
+		expect(first.registry.browserUrl(id)).toBeNull();
+		expect(second.registry.hasActive()).toBe(true);
+		expect(second.registry.start({ context, expectedCoordinatorId: "coordinator-a" })).toEqual({
+			error: "account_link_in_progress",
+		});
+		expect(second.link).not.toHaveBeenCalled();
+		first.pending.resolve(result);
+		await settle();
+		expect(second.registry.hasActive()).toBe(false);
+		const secondId = second.start();
+		await settle();
+		options.onBrowserStart(privateUrl);
+		expect(second.link).toHaveBeenCalledOnce();
+		expect(second.registry.browserUrl(secondId)).toBeNull();
+		expect(first.registry.get(id)?.state).toBe("outcome_unknown");
+	});
+	it.each(["cancel", "close"])(
+		"releases %s before the Core microtask without invoking Core",
+		async (action) => {
+			// Arrange
+			const first = fixture();
+			const second = fixture();
+			const id = first.start();
+			// Act
+			if (action === "cancel") first.registry.cancel(id);
+			else void first.registry.close();
+			expect(second.registry.start({ context, expectedCoordinatorId: "coordinator-a" })).toEqual({
+				error: "account_link_in_progress",
+			});
+			await settle();
+			second.start();
+			await settle();
+			// Assert
+			expect(first.link).not.toHaveBeenCalled();
+			expect(first.registry.get(id)?.state).toBe("cancelled");
+			expect(second.link).toHaveBeenCalledOnce();
+		},
+	);
+});
+
+describe("account link runtime module and callback isolation", () => {
+	it("shares only the busy slot across independently loaded module copies", async () => {
+		// Arrange: keep the statically imported factory's Core work pending.
+		const first = fixture();
+		const id = first.start();
+		await settle();
+		first.link.mock.calls[0][0].onBrowserStart(privateUrl);
+		vi.resetModules();
+		const reloaded = await import("./link-registry.js");
+		const second = fixture(context, "coordinator-a", reloaded.createAccountLinkRegistry);
+		// Act
+		const blocked = second.registry.start({ context, expectedCoordinatorId: "coordinator-a" });
+		await settle();
+		// Assert: prove this is a second module, not a cached factory reference.
+		expect(reloaded.createAccountLinkRegistry).not.toBe(createAccountLinkRegistry);
+		expect(blocked).toEqual({ error: "account_link_in_progress" });
+		expect(second.registry.hasActive()).toBe(true);
+		expect(second.link).not.toHaveBeenCalled();
+		expect(second.registry.get(id)).toBeNull();
+		expect(second.registry.browserUrl(id)).toBeNull();
+		first.pending.resolve(result);
+		await settle();
+		second.start();
+		await settle();
+		expect(second.link).toHaveBeenCalledOnce();
+	});
+	it("rechecks ownership when a context reader starts another registry synchronously", async () => {
+		// Arrange: only the first validation reenters; later reads stay ordinary.
+		const outer = fixture();
+		const inner = fixture({ ...context, contextId: "context-inner", groupId: "group-b" });
+		const ready = outer.readContext();
+		outer.readContext.mockImplementationOnce(() => {
+			inner.start();
+			return ready;
+		});
+		// Act
+		const blocked = outer.registry.start({ context, expectedCoordinatorId: "coordinator-a" });
+		await settle();
+		// Assert: the callback's owner wins; the outer start creates no local record.
+		expect(blocked).toEqual({ error: "account_link_in_progress" });
+		expect(outer.link).not.toHaveBeenCalled();
+		expect(outer.registry.forContext(context.contextId)).toBeNull();
+		expect(inner.link).toHaveBeenCalledOnce();
+		expect(inner.link.mock.calls[0][0].groupId).toBe("group-b");
+		inner.pending.resolve(result);
+		await settle();
+		outer.start();
+		await settle();
+		expect(outer.link).toHaveBeenCalledOnce();
+	});
 });
 
 describe("account link registry", () => {
