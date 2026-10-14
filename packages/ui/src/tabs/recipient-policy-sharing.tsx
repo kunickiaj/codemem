@@ -16,6 +16,7 @@ import {
 } from "../lib/project-identity-presentation";
 import { ProvenanceChip } from "./feed/components/ProvenanceChip";
 import { TagChip } from "./feed/components/TagChip";
+import { MyAccount } from "./my-account";
 import { RecipientPolicyInvitations } from "./recipient-policy-invitations";
 import {
 	openRecipientPolicyManagement,
@@ -963,6 +964,7 @@ function RecipientPolicySharing(props: {
 			<header className="recipient-policy-sharing-header">
 				<h2>Sharing</h2>
 			</header>
+			<MyAccount />
 			<TeamSetupStatus options={options} />
 			<DeviceSetupStatus options={options} />
 			<ReconciliationStatus options={options} />

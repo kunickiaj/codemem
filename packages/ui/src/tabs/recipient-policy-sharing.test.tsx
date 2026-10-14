@@ -7,6 +7,9 @@ import html from "../../static/index.html?raw";
 
 const openManagement = vi.hoisted(() => vi.fn());
 
+// Account integration is covered with the real child in my-account-sharing.test.tsx.
+vi.mock("./my-account", () => ({ MyAccount: () => null }));
+
 vi.mock("../components/primitives/radix-dialog", () => ({
 	RadixDialog: ({
 		ariaDescribedby,

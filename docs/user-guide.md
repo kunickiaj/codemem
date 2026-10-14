@@ -317,6 +317,38 @@ Candidate mining is deterministic and review-first:
 
 For the short Project-first walkthrough, see [Share Projects and add devices](sharing-guide.md).
 
+### Link a Google account
+
+**Sharing → My Account** is separate from recipient, Identity, and access views. It shows the current Codemem Identity, device, and coordinator, plus Google account metadata only after the coordinator verifies that the link belongs to the same Identity.
+
+This card is available from the current source checkout or a release that includes My Account. It is not available in every installed version. If more than one coordinator group is configured, choose the group in the card; it does not accept an arbitrary profile, URL, or identifier.
+
+To link an account:
+
+1. Open the Viewer on the device whose existing Identity you want to link, then choose **Link Google account**.
+2. Complete Google sign-in in the browser window that opens. If the browser blocks the window, choose **Open Google sign-in** to open it on the same computer.
+3. Return to the Viewer and choose **Check status**. The coordinator's signed account status is the completion record.
+
+The card starts Google sign-in only when you choose **Link Google account**. Do not paste a private sign-in link into another browser or computer.
+
+The Viewer and browser must run on the same computer. Account linking requires the Viewer to bind to `localhost`, `127.0.0.1`, or `::1`; wildcard bindings do not expose the account API. An SSH tunnel can show Viewer status on another computer, but its loopback callback reaches that other computer, so linking is unsupported there. Do not copy private sign-in links or use an SSH workaround.
+
+The coordinator must support the signed account-status endpoint and have Google browser authentication enabled. An older coordinator that returns unsupported is not asking for Google; the card cannot start linking against it. An unavailable or unknown status does not mean the Identity is unlinked—check status again.
+
+For an already enrolled device, the coordinator operator—the person who administers that coordinator—must first review its owner on that device:
+
+```fish
+codemem coordinator review-device-owner "your-group"
+```
+
+Inspect the preview before confirming. Confirmation defaults to **No**. Then use **My Account** to link Google; do not use owner enrollment, reset a profile, create a new Identity, or enter administrator credentials in the Viewer. If devices may use different Identities, inspect each device's existing Identity before linking rather than assuming they match.
+
+Account linking is optional. It does not grant Team or Project access, move an Identity, merge accounts, reassign devices, transfer history, or change existing device keys or enrollments. At one coordinator, one Google account links to one existing Identity, and each Identity links to one account. You cannot replace, unlink, merge, or transfer a link from this card. Choose an account that follows your work policy.
+
+If the coordinator reports an Identity mismatch, conflict, revoked link, or required review, ask the coordinator operator to resolve it; the card does not merge or repair identities. Use **Cancel linking** to ask to stop an in-progress request, then **Check status**. The request may already have completed, and an unconfirmed cancellation or cleanup can still finish later.
+
+Returning to the tab or refreshing resumes an in-progress operation. Restarting the Viewer loses its in-memory operation, but **Check status** still reads the signed coordinator result. The linking request has a ten-minute deadline. Local capture, reading, and direct sync continue without Google, and this optional link does not add a required-auth policy.
+
 ### Choose a sharing flow
 
 The normal flow is **Projects → Sharing → Devices → Health**, not manual pairing. Inside **Sharing**, open **Teams** when you want to manage ongoing Team membership and inherited Project access:
