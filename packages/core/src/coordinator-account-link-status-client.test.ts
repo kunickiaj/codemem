@@ -1,4 +1,5 @@
 import {
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
@@ -11,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { readAccountLinkDevice } from "./coordinator-account-link-signer.js";
 import type { CoordinatorAccountLinkStatus } from "./coordinator-account-link-status.js";
 import { readCoordinatorAccountLinkStatus as read } from "./coordinator-account-link-status-client.js";
 import * as localEvidence from "./coordinator-device-local.js";
@@ -100,9 +102,16 @@ function snapshot() {
 			});
 	return {
 		files: files(dir),
-		schema: db.prepare("SELECT * FROM sqlite_master ORDER BY name").all(),
-		rows: db.prepare("SELECT * FROM sync_device").all(),
-		metadata: db.prepare("SELECT * FROM metadata").all(),
+		...logicalSnapshot(db),
+	};
+}
+
+function logicalSnapshot(connection: Database.Database) {
+	return {
+		schema: connection.prepare("SELECT * FROM sqlite_master ORDER BY name").all(),
+		version: connection.pragma("user_version", { simple: true }),
+		rows: connection.prepare("SELECT * FROM sync_device").all(),
+		metadata: connection.prepare("SELECT * FROM metadata").all(),
 	};
 }
 
@@ -115,7 +124,7 @@ it.each([
 	["linked", "identity-a", { email: "person@example.test" }],
 	["linked", "identity-a", { displayName: "Test Person" }],
 ] as const)(
-	"reads %s without changing any local file, row, or schema",
+	"reads %s in rollback-journal mode without changing any local file, row, or schema",
 	async (state, identityId, account) => {
 		// Arrange: a minimal persisted device, not an initialized MemoryStore.
 		const dto = status({ state, identityId, account });
@@ -138,6 +147,103 @@ it.each([
 		expect(transport).toHaveBeenCalledTimes(1);
 		expect(readers.length).toBeGreaterThan(0);
 		expect(readers.every((connection) => !connection.open)).toBe(true);
+	},
+);
+
+it("reads and signs after a WAL writer closes, allowing SQLite coordination files only", async () => {
+	// Arrange: closing the last writer removes sidecars without manual cleanup.
+	expect(db.pragma("journal_mode = WAL", { simple: true })).toBe("wal");
+	const before = logicalSnapshot(db);
+	db.close();
+	const mainBytes = readFileSync(options.dbPath);
+	const privateKey = readFileSync(join(options.keysDir, "device.key"));
+	const publicKeyBytes = readFileSync(join(options.keysDir, "device.key.pub"));
+	expect(existsSync(`${options.dbPath}-wal`)).toBe(false);
+	expect(existsSync(`${options.dbPath}-shm`)).toBe(false);
+
+	// Act: readonly SQLite handles may create and leave WAL/SHM coordination files.
+	const result = await read(options);
+
+	// Assert: no promise of zero filesystem writes; persisted application data is unchanged.
+	expect(result).toEqual({ kind: "status", status: status() });
+	expect(transport).toHaveBeenCalledOnce();
+	expect(existsSync(`${options.dbPath}-wal`)).toBe(true);
+	expect(existsSync(`${options.dbPath}-shm`)).toBe(true);
+	expect(readFileSync(options.dbPath)).toEqual(mainBytes);
+	expect(readFileSync(join(options.keysDir, "device.key"))).toEqual(privateKey);
+	expect(readFileSync(join(options.keysDir, "device.key.pub"))).toEqual(publicKeyBytes);
+	expect(readFileSync(join(dir, "config.json"), "utf8")).toBe('{"sentinel":"unchanged"}');
+	db = new Database(options.dbPath, { readonly: true, fileMustExist: true });
+	expect(logicalSnapshot(db)).toEqual(before);
+});
+
+it.each(["fresh evidence", "captured old evidence"])(
+	"uses committed device/key changes in a live WAL with %s",
+	async (mode) => {
+		// Arrange: checkpoint the old identity, then commit a new identity only to WAL.
+		expect(db.pragma("journal_mode = WAL", { simple: true })).toBe("wal");
+		db.pragma("wal_checkpoint(TRUNCATE)");
+		const captured = readAccountLinkDevice(options.dbPath);
+		const mainBytes = readFileSync(options.dbPath);
+		generateKeypair(join(dir, "next.key"), join(dir, "next.key.pub"));
+		writeFileSync(join(options.keysDir, "device.key"), readFileSync(join(dir, "next.key")));
+		writeFileSync(join(options.keysDir, "device.key.pub"), readFileSync(join(dir, "next.key.pub")));
+		const nextPublicKey = loadPublicKey(options.keysDir) ?? "";
+		const nextFingerprint = fingerprintPublicKey(nextPublicKey);
+		expect(nextPublicKey).not.toBe(captured.publicKey);
+		db.prepare("UPDATE sync_device SET device_id=?, public_key=?, fingerprint=?").run(
+			"device-b",
+			nextPublicKey,
+			nextFingerprint,
+		);
+		expect(statSync(`${options.dbPath}-wal`).size).toBeGreaterThan(0);
+		expect(readFileSync(options.dbPath)).toEqual(mainBytes);
+		const before = logicalSnapshot(db);
+		const privateKey = readFileSync(join(options.keysDir, "device.key"));
+		const publicKeyBytes = readFileSync(join(options.keysDir, "device.key.pub"));
+		const dto = status({ deviceId: "device-b", fingerprint: nextFingerprint });
+		transport.mockResolvedValue(Response.json(dto));
+		const current = readAccountLinkDevice(options.dbPath);
+		if (mode === "captured old evidence") {
+			// Simulate capture before the commit; the signer's second read must reject it.
+			vi.spyOn(localEvidence, "readCoordinatorDeviceLocalEvidence").mockReturnValueOnce(captured);
+		}
+
+		// Act: the reader must see the committed WAL, not the checkpointed main file.
+		const result = await read(options);
+
+		// Assert: fresh evidence signs with the matching key; stale evidence cannot sign.
+		expect(current).toEqual({
+			deviceId: "device-b",
+			publicKey: nextPublicKey,
+			fingerprint: nextFingerprint,
+		});
+		if (mode === "fresh evidence") {
+			expect(result).toEqual({ kind: "status", status: dto });
+			expect(transport).toHaveBeenCalledOnce();
+			const [input, init] = transport.mock.calls[0];
+			const request = new Request(input, init);
+			const url = new URL(request.url);
+			expect(
+				verifySignature({
+					method: "GET",
+					pathWithQuery: `${url.pathname}${url.search}`,
+					bodyBytes: Buffer.alloc(0),
+					deviceId: "device-b",
+					publicKey: nextPublicKey,
+					timestamp: request.headers.get("X-Opencode-Timestamp") ?? "",
+					nonce: request.headers.get("X-Opencode-Nonce") ?? "",
+					signature: request.headers.get("X-Opencode-Signature") ?? "",
+				}),
+			).toBe(true);
+		} else {
+			expect(result).toEqual({ kind: "unavailable", code: "device_unavailable" });
+			expect(transport).not.toHaveBeenCalled();
+		}
+		expect(logicalSnapshot(db)).toEqual(before);
+		expect(readFileSync(options.dbPath)).toEqual(mainBytes);
+		expect(readFileSync(join(options.keysDir, "device.key"))).toEqual(privateKey);
+		expect(readFileSync(join(options.keysDir, "device.key.pub"))).toEqual(publicKeyBytes);
 	},
 );
 
@@ -376,7 +482,7 @@ it.each([
 	"wrong key",
 	"rekey before sign",
 ])("returns device_unavailable for %s without a request or local repair", async (mode) => {
-	// Arrange: mutations belong to fixture setup, never the read under test.
+	// Arrange: rollback-journal fixture; mutations belong to setup, never the read under test.
 	if (mode === "missing database") options.dbPath = join(dir, "absent.sqlite");
 	if (mode === "memory database") options.dbPath = ":memory:";
 	if (mode === "missing table") db.exec("DROP TABLE sync_device");

@@ -246,7 +246,11 @@ requirement to use Google for legacy coordinator requests.
 
 The Node client `readCoordinatorAccountLinkStatus` uses an existing-file read-only
 device snapshot and the existing matching signing key. It performs no database
-maintenance, schema initialization or key generation. Requests use manual
+maintenance, schema initialization or key generation. Read-only means no SQL,
+schema, key or history changes; SQLite may create or update its normal WAL/SHM
+coordination files, so the profile directory may need to be writable. Reads use
+committed WAL data rather than an immutable or main-file-only snapshot that could
+miss a key change. Requests use manual
 redirect handling and a ten-second header/body deadline; response bodies are
 limited to 16 KiB. The client validates the exact version-1 shape and requested
 group/device/fingerprint tuple, copying only allowed display fields.

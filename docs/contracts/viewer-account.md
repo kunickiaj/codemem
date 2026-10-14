@@ -4,6 +4,10 @@ The My Account API is separate from recipient and access management. Its local
 request protection does not grant operator privileges or require Google for
 existing coordinator operations.
 
+Account evidence reads do not change database rows, schema, keys or history.
+SQLite may still create or update its WAL/SHM coordination files. This is not a
+zero-filesystem-write guarantee; reads must see current committed WAL data.
+
 ## Local request protection
 
 The account routes are opt-in through `createApp({ accountLink: ... })`. The

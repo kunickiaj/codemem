@@ -9,7 +9,10 @@ function signerError(): Error {
 	return new Error("Account-link device unavailable.");
 }
 
-/** Read existing public evidence without migrations, identity creation, or DB maintenance. */
+/**
+ * Read existing public evidence without SQL writes, migrations, or identity creation.
+ * SQLite may create or update its WAL/SHM coordination files, even in readonly mode.
+ */
 export function readAccountLinkDevice(dbPath: string): CoordinatorDeviceLocalEvidence {
 	try {
 		if (typeof dbPath !== "string" || !dbPath || dbPath === ":memory:") throw signerError();
