@@ -122,4 +122,14 @@ status. Start rejects unsupported coordinators and `review_required`, `linked`,
 Identity is unlinked. Context changes return `409` without starting another job.
 
 Errors use fixed codes and never include callback exceptions or private URLs.
-Viewer startup/shutdown wiring follows in a separate slice.
+
+## Foreground viewer binding
+
+Foreground serve binds account reads to its existing store and the config/key
+paths selected at startup. Later environment changes cannot switch those paths.
+The listener remains unavailable to account requests until its actual port is
+known; wildcard bind hosts remain wildcard hosts and are rejected by the guard.
+
+Shutdown closes the account registry before draining listeners and closing the
+shared store. Account reads do not initialize another profile or use an admin
+credential. The separate sync listener still exposes no account routes.

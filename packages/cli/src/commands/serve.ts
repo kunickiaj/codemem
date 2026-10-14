@@ -13,7 +13,9 @@ import {
 	readCodememConfigFile,
 	readCodememConfigFileAtPath,
 	readCoordinatorSyncConfig,
+	resolveCodememConfigPath,
 	resolveDbPath,
+	resolveKeyPaths,
 	runSyncDaemon,
 	VERSION,
 } from "@codemem/core";
@@ -801,7 +803,57 @@ export function createRawEventTargetState(
 	};
 }
 
-async function startForegroundViewer(invocation: ResolvedServeInvocation): Promise<void> {
+function createViewerAccountLink(
+	store: MemoryStore,
+	invocation: ResolvedServeInvocation,
+	serverModule: typeof import("@codemem/server"),
+) {
+	const configPath = resolveCodememConfigPath(invocation.configPath ?? undefined).resolved.path;
+	const keysDir = dirname(resolveKeyPaths(process.env.CODEMEM_KEYS_DIR?.trim() || undefined)[0]);
+	const readContext = serverModule.createAccountContextReader({
+		getProfile: () => ({
+			dbPath: store.dbPath,
+			deviceId: store.deviceId,
+			identityId: store.actorId,
+			identityLabel: store.actorDisplayName,
+		}),
+		readConfig: () => readCodememConfigFileAtPath(configPath),
+		configPath,
+		keysDir,
+	});
+	const registry = serverModule.createAccountLinkRegistry({ readContext });
+	let actualBoundPort: number | null = null;
+	return {
+		registry,
+		setBoundPort: (port: number) => {
+			actualBoundPort = port;
+		},
+		options: {
+			readContext,
+			registry,
+			getListenerAddress: () =>
+				actualBoundPort === null ? null : { host: invocation.host, port: actualBoundPort },
+		},
+	};
+}
+function announceViewerStartup(options: {
+	pidPath: string;
+	invocation: ResolvedServeInvocation;
+	preparedDb: string;
+	info: { address: string; port: number };
+}): void {
+	const { pidPath, invocation, preparedDb, info } = options;
+	writeFileSync(
+		pidPath,
+		JSON.stringify({ pid: process.pid, host: invocation.host, port: invocation.port }),
+		"utf-8",
+	);
+	p.intro("codemem viewer");
+	p.log.success(`Listening on http://${info.address}:${info.port}`);
+	p.log.info(`Database: ${preparedDb}`);
+	p.log.step("Raw event sweeper started");
+}
+export async function startForegroundViewer(invocation: ResolvedServeInvocation): Promise<void> {
 	const serverModule = await import("@codemem/server");
 	const { createApp, createSyncApp, closeStore, createViewerRawEventInbox, getStore } =
 		serverModule;
@@ -851,6 +903,7 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 		: readCodememConfigFile();
 	const syncConfig = readCoordinatorSyncConfig(config);
 	const syncEnabled = syncConfig.syncEnabled;
+	const accountLink = createViewerAccountLink(store, invocation, serverModule);
 	const syncRuntimeStatus: {
 		phase: "starting" | "running" | "stopping" | "error" | "disabled" | null;
 		detail: string | null;
@@ -860,6 +913,7 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 	};
 
 	const appOpts = {
+		accountLink: accountLink.options,
 		storeFactory: () => store,
 		...rawEventProcessing.appOptions,
 		getSyncRuntimeStatus: () => syncRuntimeStatus,
@@ -896,15 +950,8 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 	const server = serve(
 		{ fetch: app.fetch, hostname: invocation.host, port: invocation.port },
 		(info) => {
-			writeFileSync(
-				pidPath,
-				JSON.stringify({ pid: process.pid, host: invocation.host, port: invocation.port }),
-				"utf-8",
-			);
-			p.intro("codemem viewer");
-			p.log.success(`Listening on http://${info.address}:${info.port}`);
-			p.log.info(`Database: ${preparedDb}`);
-			p.log.step("Raw event sweeper started");
+			accountLink.setBoundPort(info.port);
+			announceViewerStartup({ pidPath, invocation, preparedDb, info });
 			maintenanceWorker = startMaintenanceWorkerProcess(invocation);
 			if (syncEnabled) {
 				const syncStartDelayMs = 3000;
@@ -968,6 +1015,7 @@ async function startForegroundViewer(invocation: ResolvedServeInvocation): Promi
 	const shutdown = async () => {
 		p.outro("shutting down");
 		syncAbort.abort();
+		await accountLink.registry.close();
 		await stopMaintenanceWorkerProcess(maintenanceWorker, dbPath);
 
 		// Stop accepting requests and drain both listeners before stopping workers
