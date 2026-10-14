@@ -15,6 +15,7 @@ import type {
 import {
 	type CoordinatorDeviceAuthLinkOptions,
 	type CoordinatorDeviceAuthLinkStore,
+	registerCoordinatorAccountLinkStatusRoute,
 	registerCoordinatorDeviceAuthLinkRoutes,
 } from "./coordinator-device-auth-link.js";
 import type { InvitePayload } from "./coordinator-invites.js";
@@ -112,6 +113,18 @@ function recipientInviteErrorStatus(code: string): 403 | 404 | 409 | 410 {
 	return 409;
 }
 
+function authenticationUnavailableResponse(): Response {
+	return new Response("Authentication unavailable. Try again.", {
+		status: 503,
+		headers: {
+			"Cache-Control": "no-store",
+			"Referrer-Policy": "no-referrer",
+			"X-Content-Type-Options": "nosniff",
+			"Content-Type": "text/plain;charset=utf-8",
+		},
+	});
+}
+
 function registerOptionalCoordinatorAuth(
 	app: Hono,
 	opts: CreateCoordinatorAppOptions,
@@ -121,6 +134,9 @@ function registerOptionalCoordinatorAuth(
 	>,
 ): void {
 	if (opts.authLink && opts.browserAuth) throw new Error("coordinator_auth_configuration_conflict");
+	if (opts.browserAuth?.kind !== "ready") {
+		app.all("/v1/auth/account-link-status", authenticationUnavailableResponse);
+	}
 	if (opts.browserAuth?.kind === "unavailable") {
 		for (const path of [
 			"/auth/*",
@@ -131,19 +147,7 @@ function registerOptionalCoordinatorAuth(
 			"/v1/auth/owner-attempts/*",
 			"/v1/admin/auth-controller-reviews",
 		]) {
-			app.all(
-				path,
-				() =>
-					new Response("Authentication unavailable. Try again.", {
-						status: 503,
-						headers: {
-							"Cache-Control": "no-store",
-							"Referrer-Policy": "no-referrer",
-							"X-Content-Type-Options": "nosniff",
-							"Content-Type": "text/plain;charset=utf-8",
-						},
-					}),
-			);
+			app.all(path, authenticationUnavailableResponse);
 		}
 		return;
 	}
@@ -160,7 +164,14 @@ function registerOptionalCoordinatorAuth(
 			adminSecret: () => opts.runtime.adminSecret(),
 		});
 	}
-	if (ready?.kind === "ready") ready.auth.register(app, ready.clientKey);
+	if (ready?.kind === "ready") {
+		registerCoordinatorAccountLinkStatusRoute(app, {
+			...deps,
+			config: ready.auth.storeConfig,
+			storeFactory: ready.storeFactory,
+		});
+		ready.auth.register(app, ready.clientKey);
+	}
 }
 
 export interface CoordinatorVerifyRequestInput {

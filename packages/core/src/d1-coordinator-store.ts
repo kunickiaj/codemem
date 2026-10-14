@@ -1,3 +1,4 @@
+import { AccountLinkStatusOperations } from "./coordinator-account-link-status.js";
 import {
 	AuthAccountProfileOperations,
 	type CoordinatorAuthAccountProfileInput,
@@ -1001,6 +1002,7 @@ async function runProjectInviteBatch(
 export class D1CoordinatorStore implements CoordinatorStore {
 	readonly db: D1DatabaseLike;
 	private readonly authLinks: AuthLinkOperations;
+	private readonly accountLinkStatus: AccountLinkStatusOperations;
 	private readonly deviceRevocations: DeviceRevocationOperations;
 	private readonly authSessions: AuthSessionOperations;
 	private readonly authAccountProfiles: AuthAccountProfileOperations;
@@ -1026,6 +1028,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		);
 		const authBackend = createD1AuthLinkBackend(db);
 		this.authLinks = new AuthLinkOperations(authBackend, options.authClock);
+		this.accountLinkStatus = new AccountLinkStatusOperations(authBackend);
 		this.authSessions = new AuthSessionOperations(authBackend, options.authClock);
 		this.authAccountProfiles = new AuthAccountProfileOperations(authBackend, options.authClock);
 		this.authBrowserTransactions = new CoordinatorAuthBrowserTransactions(
@@ -1155,6 +1158,9 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		options?: CoordinatorAuthLinkMaintenanceOptions,
 	) {
 		return this.authLinks.maintainAuthLinkAttempts(config, options);
+	}
+	readAccountLinkStatus(...args: Parameters<AccountLinkStatusOperations["readAccountLinkStatus"]>) {
+		return this.accountLinkStatus.readAccountLinkStatus(...args);
 	}
 	async createAuthLinkAttempt(
 		input: CoordinatorAuthLinkCreateInput,

@@ -1,3 +1,8 @@
+export {
+	AccountLinkStatusOperations,
+	type CoordinatorAccountLinkStatus,
+	type CoordinatorAccountLinkStatusStore,
+} from "../coordinator-account-link-status.js";
 export type {
 	CoordinatorAppBrowserAuthOptions,
 	CoordinatorRequestRateLimitOptions,

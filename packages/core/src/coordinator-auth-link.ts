@@ -363,6 +363,18 @@ function createSourceValues(
 	return [c.coordinatorId, s.groupId, s.deviceId, s.publicKey, s.fingerprint, Number(c.enabled)];
 }
 
+export type { AuthoritySource as AuthLinkAuthoritySource };
+// Shared with the read-only own-account query: never derive authority from labels alone.
+export {
+	AUTHORITY_COLUMNS as AUTH_LINK_AUTHORITY_COLUMNS,
+	AUTHORITY_GUARD as AUTH_LINK_AUTHORITY_GUARD_SQL,
+	CREATE_SOURCE_SQL as AUTH_LINK_CONTROLLER_SOURCE_SQL,
+	captureConfig as captureAuthLinkConfig,
+	captureSigner as captureAuthLinkSigner,
+	createSourceValues as authLinkControllerSourceValues,
+	deriveAuthority as deriveAuthLinkAuthority,
+};
+
 /** Optional persistence capability. No token verification, routes, sessions or grants. */
 export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 	constructor(

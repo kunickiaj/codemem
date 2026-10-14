@@ -199,8 +199,9 @@ reopens consumed attempts or creates browser ownership from a request label.
 
 The device API is opt-in through `createCoordinatorApp({ authLink: ... })` with
 trusted browser configuration and a store factory that supplies both request
-authentication and link operations. Absent or disabled configuration leaves all
-four routes at `404`; the default Worker does not wire this option yet.
+authentication and link operations. Absent or disabled configuration leaves the
+four attempt routes at `404`. The configured Worker mounts them when optional
+browser authentication is ready.
 
 | Route | Signed input and result |
 | --- | --- |
@@ -217,6 +218,29 @@ claims are not device authorization. Storage or cleanup faults report no success
 and disclose no proof or private cause. The local command and listener are
 implemented, along with optional app mounting; real browser checks remain outstanding.
 This option changes no enrollment or access.
+
+### Current-account link status
+
+`GET /v1/auth/account-link-status?group_id=...` reports the signed device's own
+account-link state. It requires the ready browser-auth adapter, not merely the
+legacy link-attempt option; absent or unavailable browser auth returns `503`.
+Requests must use the configured callback origin, contain exactly one `group_id`
+query parameter and no body, and pass existing enrollment, signature, nonce and
+rate-limit checks. Responses are never cached.
+
+The version-1 response includes `coordinatorId`, `groupId`, `deviceId`,
+`fingerprint`, `identityId`, `state`, and `account`. The Identity comes only from
+the current controller review for that enrollment and key; callers cannot select
+another Identity. State is `review_required`, `unlinked`, `linked`, `revoked`, or
+`conflict`. Review-required and conflict responses contain no Identity or account
+metadata. Linked responses allow only an optional display name and verified email;
+provider subjects, proofs, tokens and credentials are not returned.
+
+The read rechecks current controller, enrollment and revocation evidence before
+returning metadata. Revoked links remain tombstones and are not replaced. Apart
+from normal request nonce admission, this operation changes no accounts, reviews,
+enrollments, grants, history or ownership. It does not advertise or introduce a
+requirement to use Google for legacy coordinator requests.
 
 ### Signed-device route errors
 

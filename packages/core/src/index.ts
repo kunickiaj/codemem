@@ -51,6 +51,10 @@ export {
 	linkCoordinatorAccount,
 } from "./coordinator-account-link-runtime.js";
 export type {
+	CoordinatorAccountLinkStatus,
+	CoordinatorAccountLinkStatusStore,
+} from "./coordinator-account-link-status.js";
+export type {
 	CoordinatorAuthControllerReviewActionOptions,
 	CoordinatorConsumedTeamInvite,
 	CoordinatorReviewedRecipientInviteEvidence,

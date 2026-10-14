@@ -1,4 +1,5 @@
 import type { Context } from "hono";
+import type { CoordinatorAccountLinkStatusStore } from "./coordinator-account-link-status.js";
 import type {
 	CoordinatorAuthBrowserConfig,
 	CoordinatorAuthBrowserTransactionStore,
@@ -19,6 +20,7 @@ import {
 import type { CoordinatorEnrollment, CoordinatorStore } from "./coordinator-store-contract.js";
 
 export type CoordinatorDeviceAuthLinkStore = CoordinatorStore &
+	Partial<CoordinatorAccountLinkStatusStore> &
 	Pick<CoordinatorAuthControllerStore, "createAuthControllerAttestation"> &
 	Pick<
 		CoordinatorAuthLinkStore,
@@ -62,7 +64,7 @@ interface DeviceAuthLinkApp {
 	get(path: string, handler: (c: Context) => Promise<Response>): unknown;
 	post(path: string, handler: (c: Context) => Promise<Response>): unknown;
 }
-type Action = "create" | "status" | "finalize" | "cancel";
+type Action = "create" | "status" | "finalize" | "cancel" | "account_status";
 const FIELDS = {
 	create: [
 		"group_id",
@@ -150,6 +152,10 @@ async function applyDeviceAction(
 	signer: CoordinatorAuthLinkSigner,
 	config: CoordinatorAuthBrowserConfig,
 ): Promise<Response> {
+	if (action === "account_status") {
+		if (!store.readAccountLinkStatus) return c.json({ error: "auth_link_unavailable" }, 503);
+		return c.json(await store.readAccountLinkStatus(signer, config));
+	}
 	if (action === "status") {
 		const status = await store.getAuthLinkAttemptStatus(
 			attemptId,
@@ -252,7 +258,14 @@ async function readDeviceInput(
 	url: string,
 	deps: DeviceAuthLinkDeps,
 ): Promise<{ raw: Uint8Array; data: Record<string, unknown> } | Response> {
-	if (action === "status") {
+	if (action === "status" || action === "account_status") {
+		if (
+			action === "account_status" &&
+			new URL(url).origin !== new URL(deps.config.redirectUri).origin
+		)
+			return c.json({ error: "auth_link_unavailable" }, 403);
+		if (action === "account_status" && c.req.raw.body !== null)
+			return c.json({ error: "auth_link_invalid_input" }, 400);
 		const entries = [...new URL(url).searchParams.entries()];
 		const entry = entries[0];
 		if (entries.length !== 1 || !entry || entry[0] !== "group_id") {
@@ -265,6 +278,16 @@ async function readDeviceInput(
 	const data = deps.parseJsonObject(raw);
 	if (!exactStrings(data, FIELDS[action])) return c.json({ error: "auth_link_invalid_input" }, 400);
 	return { raw, data };
+}
+
+function validDeviceInput(
+	action: Action,
+	data: Record<string, unknown>,
+	attemptId: unknown,
+	config: CoordinatorAuthBrowserConfig,
+): data is Record<string, unknown> & { group_id: string } {
+	if (action === "account_status") return isAuthControllerId(data.group_id);
+	return isAuthControllerId(attemptId) && validInput(action, data, attemptId, config);
 }
 
 async function handleDeviceRequest(
@@ -290,7 +313,7 @@ async function handleDeviceRequest(
 			if (input instanceof Response) return input;
 			const { raw, data } = input;
 			const attemptId = action === "create" ? data.attempt_id : pathAttemptId;
-			if (!isAuthControllerId(attemptId) || !validInput(action, data, attemptId, config))
+			if (!validDeviceInput(action, data, attemptId, config))
 				return c.json({ error: "auth_link_invalid_input" }, 400);
 			store = storeFactory();
 			const auth = await authorizeRequest(store, {
@@ -315,13 +338,26 @@ async function handleDeviceRequest(
 				publicKey: enrollment.public_key,
 				fingerprint: enrollment.fingerprint,
 			};
-			return await applyDeviceAction(c, action, store, data, attemptId, signer, config);
+			return await applyDeviceAction(c, action, store, data, String(attemptId), signer, config);
 		} finally {
 			await store?.close();
 		}
 	} catch {
 		return c.json({ error: "auth_link_unavailable" }, 503);
 	}
+}
+
+/** Mount only for the actual ready browser-auth adapter, never the legacy link option. */
+export function registerCoordinatorAccountLinkStatusRoute(
+	app: DeviceAuthLinkApp,
+	deps: DeviceAuthLinkDeps,
+): void {
+	if (!deps.config.enabled) return;
+	const { coordinatorId, issuer, revision, enabled, redirectUri } = deps.config;
+	const config = Object.freeze({ coordinatorId, issuer, revision, enabled, redirectUri });
+	app.get("/v1/auth/account-link-status", (c) =>
+		handleDeviceRequest(c, "account_status", { ...deps, config }),
+	);
 }
 
 export function registerCoordinatorDeviceAuthLinkRoutes(

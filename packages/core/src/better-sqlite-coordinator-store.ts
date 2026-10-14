@@ -16,6 +16,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Database as DatabaseType } from "better-sqlite3";
 import Database from "better-sqlite3";
+import { AccountLinkStatusOperations } from "./coordinator-account-link-status.js";
 import {
 	AUTH_ACCOUNT_PROFILE_SCHEMA_SQL,
 	AuthAccountProfileOperations,
@@ -802,6 +803,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	readonly path: string;
 	readonly db: DatabaseType;
 	private readonly authLinks: AuthLinkOperations;
+	private readonly accountLinkStatus: AccountLinkStatusOperations;
 	private readonly deviceRevocations: DeviceRevocationOperations;
 	private readonly authSessions: AuthSessionOperations;
 	private readonly authAccountProfiles: AuthAccountProfileOperations;
@@ -845,6 +847,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			},
 		};
 		this.authLinks = new AuthLinkOperations(authBackend, options.authClock);
+		this.accountLinkStatus = new AccountLinkStatusOperations(authBackend);
 		this.authSessions = new AuthSessionOperations(authBackend, options.authClock);
 		this.authAccountProfiles = new AuthAccountProfileOperations(authBackend, options.authClock);
 		this.authBrowserTransactions = new CoordinatorAuthBrowserTransactions(
@@ -968,6 +971,9 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		options?: CoordinatorAuthLinkMaintenanceOptions,
 	) {
 		return this.authLinks.maintainAuthLinkAttempts(config, options);
+	}
+	readAccountLinkStatus(...args: Parameters<AccountLinkStatusOperations["readAccountLinkStatus"]>) {
+		return this.accountLinkStatus.readAccountLinkStatus(...args);
 	}
 	async createAuthLinkAttempt(
 		input: CoordinatorAuthLinkCreateInput,
