@@ -580,18 +580,24 @@ it("refuses temp-only prepare evidence without promoting or deleting unknown art
 	expect(facts()).toEqual(profile);
 });
 
-it.each(["rejected", "expired", "browser interrupted"])(
+it.each(["rejected", "malformed expiry", "server-expired admission", "browser interrupted"])(
 	"requires fresh prepare in a new state directory after a nonfinal %s attempt",
 	async (failure) => {
 		// Arrange: these failures cannot be recovered by replaying the consumed start.
 		await prepared();
 		const saved = readFileSync(join(fixture.options.stateDir, "capability-request.json"));
+		const preparedState = ownerFileSnapshot(join(fixture.options.stateDir, "prepared.json"));
+		const config = ownerFileSnapshot(fixture.options.configPath);
+		const key = readFileSync(join(fixture.options.keysDir, "device.key"));
 		const before = facts();
 		fixture.options.fetch = async (input, init) => {
 			if (new URL(String(input)).pathname !== "/v1/auth/owner-attempts")
 				return fakeFetch(input, init);
 			if (failure === "rejected") return Response.json({ kind: "denied" }, { status: 403 });
-			if (failure === "expired")
+			// Production admission deliberately hides expiry behind enrollment_unavailable.
+			if (failure === "server-expired admission")
+				return Response.json({ error: "enrollment_unavailable" }, { status: 403 });
+			if (failure === "malformed expiry")
 				return Response.json({
 					kind: "started",
 					attemptId: read("prepared.json").start.attemptId,
@@ -609,11 +615,20 @@ it.each(["rejected", "expired", "browser interrupted"])(
 
 		// Assert: preserve evidence, but do not tell the user to replay the dead attempt.
 		expect(error).toBeInstanceOf(Error);
+		expect(error).toMatchObject({ code: "fresh_prepare_required" });
 		expect(String(error)).toMatch(/(?:fresh|new).*prepare|prepare.*(?:fresh|new)/i);
 		expect(String(error)).toContain("--state-dir");
 		expect(String(error)).not.toContain("private-browser-code");
 		expect(String(error)).not.toMatch(/resume.*unchanged/i);
 		expect(readFileSync(join(fixture.options.stateDir, "capability-request.json"))).toEqual(saved);
+		expect(ownerFileSnapshot(join(fixture.options.stateDir, "prepared.json"))).toEqual(
+			preparedState,
+		);
+		expect(read("start-attempted.json")).toEqual({
+			attemptId: read("prepared.json").start.attemptId,
+		});
+		expect(ownerFileSnapshot(fixture.options.configPath)).toEqual(config);
+		expect(readFileSync(join(fixture.options.keysDir, "device.key"))).toEqual(key);
 		expect(existsSync(join(fixture.options.stateDir, "final.json"))).toBe(false);
 		expect(fixture.finalBodies).toEqual([]);
 		expect(facts()).toEqual(before);
