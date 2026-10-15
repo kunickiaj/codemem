@@ -113,7 +113,9 @@ it.each(["", " ", "\t", null])(
 		expect(fixture.db.prepare("SELECT * FROM actors").all()).toEqual(actors);
 		expect(fixture.db.prepare("SELECT * FROM sqlite_master ORDER BY name").all()).toEqual(schema);
 		expect(ownerFileSnapshot(fixture.options.configPath)).toEqual(config);
-		expect(readFileSync(fixture.options.dbPath)).toEqual(database);
+		expect(readFileSync(fixture.options.dbPath).equals(database), "database bytes unchanged").toBe(
+			true,
+		);
 		expect(fs.lstatSync(fixture.options.dbPath).ino).toBe(databaseInode);
 		expect(ownerFileSnapshot(join(fixture.options.keysDir, "device.key"))).toEqual(key);
 		expect(ownerFileSnapshot(join(fixture.options.keysDir, "device.key.pub"))).toEqual(publicFile);

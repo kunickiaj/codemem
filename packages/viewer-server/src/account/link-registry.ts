@@ -307,7 +307,10 @@ class InProcessAccountLinkRegistry implements AccountLinkRegistry {
 		this.#shuttingDown = true;
 		for (const job of this.#jobs.values()) {
 			this.#clearUrl(job);
-			if (!terminal(job)) job.controller.abort();
+			if (!terminal(job)) {
+				job.cancelled = true;
+				job.controller.abort();
+			}
 		}
 		this.#closing = this.#drain();
 		return this.#closing;

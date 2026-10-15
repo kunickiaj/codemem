@@ -272,6 +272,64 @@ describe("account link cancellation", () => {
 		expect(f.registry.cancel("unknown")).toBeNull();
 	});
 });
+describe("account link shutdown outcomes", () => {
+	it.each([
+		["link_stopped", "cancelled"],
+		["request_failed", "cancelled"],
+		["cancellation_unconfirmed", "outcome_unknown"],
+		["receiver_close_failed", "outcome_unknown"],
+		[null, "succeeded"],
+	] as const)("after Core enters, close maps %s to %s", async (code, state) => {
+		const f = fixture(); // Arrange: Core must already be running, not queued.
+		const id = f.start();
+		await settle();
+		expect(f.link).toHaveBeenCalledTimes(1);
+		const options = f.link.mock.calls[0][0];
+		const aborted = vi.fn();
+		options.signal?.addEventListener("abort", aborted);
+		options.onBrowserStart(privateUrl);
+		const closed = f.registry.close(); // Act
+		const closedAgain = f.registry.close();
+		options.onBrowserStart(privateUrl);
+		// Assert: close requests cancellation, but Core alone confirms the outcome.
+		expect(options.signal?.aborted).toBe(true);
+		expect(aborted).toHaveBeenCalledTimes(1);
+		expect(f.registry.hasActive()).toBe(true);
+		expect(f.registry.get(id)?.finishedAt).toBeNull();
+		expect(f.registry.browserUrl(id)).toBeNull();
+		expect(f.registry.start({ context, expectedCoordinatorId: "coordinator-a" })).toEqual({
+			error: "account_shutting_down",
+		});
+		if (code) f.pending.reject(new CoordinatorAccountLinkError(code));
+		else f.pending.resolve(result);
+		await Promise.all([closed, closedAgain]);
+		expect(f.registry.get(id)).toMatchObject({
+			state,
+			failure: code,
+			browserUrlAvailable: false,
+			finishedAt: expect.any(String),
+		});
+		expect(f.registry.hasActive()).toBe(false);
+		expect(f.registry.browserUrl(id)).toBeNull();
+		expect(JSON.stringify(f.registry.get(id))).not.toMatch(
+			/secret-probe|never-open|private-attempt/,
+		);
+		expect(aborted).toHaveBeenCalledTimes(1);
+	});
+	it("cancels queued work when closed before Core enters", async () => {
+		const f = fixture(); // Arrange
+		const id = f.start();
+		await f.registry.close(); // Act: no microtask has started Core yet.
+		expect(f.link).not.toHaveBeenCalled(); // Assert
+		expect(f.registry.get(id)).toMatchObject({
+			state: "cancelled",
+			failure: "link_stopped",
+			browserUrlAvailable: false,
+			finishedAt: expect.any(String),
+		});
+		expect(f.registry.hasActive()).toBe(false);
+	});
+});
 describe("account link failures and lifecycle", () => {
 	it.each([
 		"invalid_options",
