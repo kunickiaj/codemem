@@ -214,6 +214,55 @@ describe("My Account polling generation and local cleanup", () => {
 });
 
 describe("My Account cancellation and terminal privacy", () => {
+	it("sends one cancellation for two calls before rerender without aborting it", async () => {
+		view = status({ operation: operation(), canLink: false });
+		await probe();
+		const pending = deferred<Response>();
+		transport.mockImplementationOnce(() => pending.promise);
+		await act(async () => {
+			const first = flow.cancel();
+			const second = flow.cancel();
+			await second;
+			expect(calls("/cancel")).toHaveLength(1);
+			expect(calls("/cancel")[0]?.[1]?.signal?.aborted).toBe(false);
+			pending.resolve(response({ version: 1, operation: operation() }));
+			await first;
+		});
+		expect(flow.busy).toBe(false);
+	});
+	it("does not let an old cancellation release a newer generation's cancellation", async () => {
+		view = status({ operation: operation(), canLink: false });
+		await probe();
+		const old = deferred<Response>();
+		transport.mockImplementationOnce(() => old.promise);
+		let first!: Promise<void>;
+		act(() => {
+			first = flow.cancel();
+		});
+		await act(async () => {
+			await flow.refresh();
+		});
+		await settle();
+		const pending = deferred<Response>();
+		transport.mockImplementationOnce(() => pending.promise);
+		let current!: Promise<void>;
+		act(() => {
+			current = flow.cancel();
+		});
+		await act(async () => {
+			old.resolve(response({ version: 1, operation: operation() }));
+			await first;
+			await flow.cancel();
+		});
+		expect(flow.busy).toBe(true);
+		expect(calls("/cancel")).toHaveLength(2);
+		expect(calls("/cancel")[1]?.[1]?.signal?.aborted).toBe(false);
+		await act(async () => {
+			pending.resolve(response({ version: 1, operation: operation() }));
+			await current;
+		});
+		expect(flow.busy).toBe(false);
+	});
 	it("does not duplicate a pending cancellation and redacts a lost cancellation reply", async () => {
 		// Arrange
 		view = status({ operation: operation(), canLink: false });

@@ -202,6 +202,91 @@ describe("account operation HTTP contract", () => {
 		expect(f.link).toHaveBeenCalledOnce();
 	});
 });
+describe("account start authority and lifecycle races", () => {
+	it.each([
+		"dbPath",
+		"keysDir",
+		"configPath",
+		"coordinatorUrl",
+		"deviceId",
+		"fingerprint",
+		"identityId",
+		"fileIdentity.dev",
+		"fileIdentity.ino",
+	] as const)("rejects reused contextId with final %s authority drift", async (field) => {
+		const f = await fixture();
+		const changed = structuredClone(ready);
+		if (field === "fileIdentity.dev") changed.context.fileIdentity.dev = "new";
+		else if (field === "fileIdentity.ino") changed.context.fileIdentity.ino = "new";
+		else changed.context[field] = "new";
+		let reads = 0;
+		f.readContext.mockImplementation(() => (++reads <= 3 ? structuredClone(ready) : changed));
+		const response = await f.request();
+		expect(response.status).toBe(409);
+		expect(await response.json()).toEqual({ error: "account_context_changed" });
+		expect(f.link).not.toHaveBeenCalled();
+		expect(f.registry.forContext(context.contextId)).toBeNull();
+	});
+	it.each(["before-status", "mutated-reader-result"])(
+		"retains the captured authority through %s drift with a reused contextId",
+		async (when) => {
+			const f = await fixture();
+			const shared = structuredClone(ready);
+			let reads = 0;
+			f.readContext.mockImplementation(() => {
+				reads++;
+				if (reads === (when === "before-status" ? 2 : 4))
+					shared.context.keysDir = "/fixture/new-keys";
+				return shared;
+			});
+			const response = await f.request();
+			expect(response.status).toBe(409);
+			expect(await response.json()).toEqual({ error: "account_context_changed" });
+			expect(f.link).not.toHaveBeenCalled();
+			expect(f.registry.forContext(context.contextId)).toBeNull();
+		},
+	);
+	it.each(["same", "other"])(
+		"rejects delayed unlinked eligibility after the %s registry owner succeeds",
+		async (ownership) => {
+			const f = await fixture();
+			const owner = ownership === "same" ? f : await fixture();
+			const id = await owner.start();
+			await owner.started.promise;
+			const reading = deferred<void>();
+			const delayed = deferred<CoordinatorAccountLinkStatusRead>();
+			const stale = remote(); // Produced while A is active, before its successful finalization.
+			f.readRemoteStatus.mockImplementationOnce(() => {
+				reading.resolve();
+				return delayed.promise;
+			});
+			const pending = f.request();
+			await reading.promise;
+			owner.done.resolve({
+				coordinatorId: "coordinator-a",
+				identityId: "actor-a",
+				attemptId: "fixture",
+				state: "finalized",
+			});
+			await owner.done.promise;
+			for (let i = 0; i < 8; i++) await Promise.resolve();
+			expect(owner.registry.get(id)?.state).toBe("succeeded");
+			expect(f.registry.hasActive()).toBe(false);
+			delayed.resolve(stale);
+			const response = await pending;
+			expect(response.status).toBe(409);
+			expect(await response.json()).toEqual({ error: "account_context_changed" });
+			expect(f.link).toHaveBeenCalledTimes(ownership === "same" ? 1 : 0);
+			if (ownership === "other") expect(f.registry.get(id)).toBeNull();
+			f.readRemoteStatus.mockResolvedValue(remote("linked"));
+			const fresh = await f.request();
+			expect(await fresh.json()).toEqual({
+				error: "account_link_not_allowed",
+				blockedReason: "already_linked",
+			});
+		},
+	);
+});
 describe("account start eligibility", () => {
 	it.each([
 		["review_required", remote("review_required"), "link_not_allowed"],

@@ -255,6 +255,7 @@ describe("account link runtime module and callback isolation", () => {
 		vi.resetModules();
 		const reloaded = await import("./link-registry.js");
 		const second = fixture(context, "coordinator-a", reloaded.createAccountLinkRegistry);
+		const expectedLifecycleToken = second.registry.lifecycleToken();
 		// Act
 		const blocked = second.registry.start({ context, expectedCoordinatorId: "coordinator-a" });
 		await settle();
@@ -267,6 +268,14 @@ describe("account link runtime module and callback isolation", () => {
 		expect(second.registry.browserUrl(id)).toBeNull();
 		first.pending.resolve(result);
 		await settle();
+		expect(
+			second.registry.start({
+				context,
+				expectedCoordinatorId: "coordinator-a",
+				expectedLifecycleToken,
+			}),
+		).toEqual({ error: "account_context_changed" });
+		expect(second.registry.forContext(context.contextId)).toBeNull();
 		second.start();
 		await settle();
 		expect(second.link).toHaveBeenCalledOnce();
@@ -298,6 +307,32 @@ describe("account link runtime module and callback isolation", () => {
 });
 
 describe("account link registry", () => {
+	it("rejects eligibility captured before another owner starts and finishes, then accepts a fresh token", async () => {
+		const first = fixture();
+		const second = fixture();
+		const expectedLifecycleToken = second.registry.lifecycleToken();
+		first.start();
+		await settle();
+		first.pending.resolve(result);
+		await settle();
+		expect(
+			second.registry.start({
+				context,
+				expectedCoordinatorId: "coordinator-a",
+				expectedLifecycleToken,
+			}),
+		).toEqual({ error: "account_context_changed" });
+		expect(second.link).not.toHaveBeenCalled();
+		expect(second.registry.forContext(context.contextId)).toBeNull();
+		const fresh = second.registry.start({
+			context,
+			expectedCoordinatorId: "coordinator-a",
+			expectedLifecycleToken: second.registry.lifecycleToken(),
+		});
+		expect(fresh).toHaveProperty("operation");
+		await settle();
+		expect(second.link).toHaveBeenCalledOnce();
+	});
 	it("reserves one viewer-wide slot synchronously and passes the captured Core subject", async () => {
 		const f = fixture(); // Arrange
 		const id = f.start(); // Act

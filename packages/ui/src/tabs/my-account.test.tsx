@@ -149,6 +149,11 @@ describe("My Account read-only status", () => {
 		expect(mount.textContent).not.toContain("unverified@example.test");
 		if (state === "review_required") {
 			expect(mount.textContent).toContain("review-device-owner");
+			expect(mount.textContent).toContain(
+				"Reuse the exact database, config, coordinator and environment settings (including the keys directory) used to start this Viewer",
+			);
+			expect(mount.textContent).toContain("Example only, with those same selections");
+			expect(mount.textContent).toContain("Confirmation defaults to No");
 			expect(mount.textContent).not.toContain("enroll-owner");
 		}
 		if (state === "conflict") expect(mount.textContent).toContain("conflicting account link");
@@ -220,8 +225,38 @@ describe("My Account retained outcomes and current guidance", () => {
 });
 
 describe("My Account linking lifecycle", () => {
+	it.each(["starting", "awaiting_browser"] as const)(
+		"locks group selection during %s without losing Cancel or browser delivery",
+		async (state) => {
+			vi.mocked(window.open).mockReturnValue(null);
+			view = status({
+				groups: ["group-one", "group-two"],
+				operation: operation(state),
+				canLink: false,
+			});
+			await show();
+			const select = mount.querySelector<HTMLSelectElement>("select");
+			if (!select) throw new Error("Missing group selector");
+			expect(select.disabled).toBe(true);
+			await act(async () => {
+				select.value = "group-two";
+				select.dispatchEvent(new Event("change", { bubbles: true }));
+			});
+			await settle();
+			expect(calls("link-status?group_id=group-two")).toHaveLength(0);
+			expect(button("Cancel linking").disabled).toBe(false);
+			expect(calls("/cancel")).toHaveLength(0);
+			if (state === "awaiting_browser") {
+				await click("Open Google sign-in");
+				expect(window.open).toHaveBeenCalledWith(privateUrl, "_blank", "noopener,noreferrer");
+			}
+			await click("Cancel linking");
+			expect(calls("/cancel")).toHaveLength(1);
+		},
+	);
 	it("reserves a blank popup synchronously, clears opener and waits for browser readiness", async () => {
 		// Arrange
+		view = status({ groups: ["group-one", "group-two"] });
 		await show();
 		const pending = deferred<Response>();
 		transport.mockImplementationOnce(() => pending.promise);
@@ -232,6 +267,7 @@ describe("My Account linking lifecycle", () => {
 		expect(popup.opener).toBeNull();
 		expect(popup.location.replace).not.toHaveBeenCalled();
 		expect(button("Link Google account").disabled).toBe(true);
+		expect(mount.querySelector<HTMLSelectElement>("select")?.disabled).toBe(true);
 		await act(async () => {
 			pending.resolve(response({ version: 1, operation: operation() }));
 		});

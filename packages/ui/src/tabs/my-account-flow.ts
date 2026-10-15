@@ -54,6 +54,7 @@ function useFlowState() {
 		delivered: null as string | null,
 		generation: 0,
 		starting: false,
+		cancelling: false,
 		controller: null as AbortController | null,
 	});
 	return {
@@ -87,6 +88,7 @@ function closeReservedPopup(flow: Flow): void {
 function reset(flow: Flow): void {
 	flow.refs.current.generation++;
 	flow.refs.current.starting = false;
+	flow.refs.current.cancelling = false;
 	flow.refs.current.controller?.abort();
 	flow.refs.current.controller = null;
 	flow.refs.current.privateUrl = null;
@@ -377,8 +379,9 @@ function showCancellation(flow: Flow, result: AccountOperation): void {
 
 async function cancel(flow: Flow): Promise<void> {
 	const { operation, busy } = flow;
-	if (!operation || busy || !active(operation)) return;
+	if (flow.refs.current.cancelling || !operation || busy || !active(operation)) return;
 	reset(flow);
+	flow.refs.current.cancelling = true;
 	// A pending cancellation must not start a fresh browser delivery for this operation.
 	flow.refs.current.delivered = operation.operationId;
 	const abort = new AbortController();
@@ -396,7 +399,10 @@ async function cancel(flow: Flow): Promise<void> {
 				"Cancellation could not be confirmed. Check status; linking may still finish.",
 			);
 	} finally {
-		if (epoch === flow.refs.current.generation) flow.setBusy(false);
+		if (epoch === flow.refs.current.generation) {
+			flow.refs.current.cancelling = false;
+			flow.setBusy(false);
+		}
 	}
 }
 

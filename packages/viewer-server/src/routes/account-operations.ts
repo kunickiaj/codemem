@@ -1,6 +1,10 @@
 import { type Context, Hono, type MiddlewareHandler } from "hono";
-import type { AccountContextReader } from "../account/context.js";
-import type { AccountLinkOperationV1, AccountLinkRegistry } from "../account/link-registry.js";
+import type { AccountContext, AccountContextReader } from "../account/context.js";
+import {
+	type AccountLinkOperationV1,
+	type AccountLinkRegistry,
+	sameAuthority,
+} from "../account/link-registry.js";
 import {
 	type AccountLinkViewV1,
 	type AccountStatusOptions,
@@ -92,10 +96,16 @@ async function startOperation(c: Context, options: Options): Promise<Response> {
 	if (
 		"error" in initial ||
 		initial.setup !== "ready" ||
+		!initial.context ||
 		initial.context?.contextId !== body.contextId
 	)
 		return c.json({ error: "account_context_changed" }, 409);
-	const view = await readAccountStatus(options, body.groupId, c.req.raw.signal);
+	// Preserve the complete authority checked by signed status, not just its public ID.
+	const checkedContext = structuredClone(initial.context);
+	const expectedLifecycleToken = options.registry.lifecycleToken();
+	const view = await readAccountStatus(options, body.groupId, c.req.raw.signal, {
+		expectedContext: checkedContext,
+	});
 	if (
 		"error" in view ||
 		view.setup !== "ready" ||
@@ -120,6 +130,8 @@ async function startOperation(c: Context, options: Options): Promise<Response> {
 		{ groupId: body.groupId, contextId: body.contextId },
 		view,
 		view.remote.coordinatorId,
+		checkedContext,
+		expectedLifecycleToken,
 	);
 }
 function beginCurrentOperation(
@@ -128,6 +140,8 @@ function beginCurrentOperation(
 	body: { groupId: string; contextId: string },
 	view: AccountLinkViewV1,
 	expectedCoordinatorId: string,
+	checkedContext: AccountContext,
+	expectedLifecycleToken: symbol,
 ): Response {
 	if (c.req.raw.signal.aborted) return c.json({ error: "account_invalid_request" }, 400);
 	const fresh = options.readContext(body.groupId);
@@ -137,12 +151,14 @@ function beginCurrentOperation(
 		!fresh.context ||
 		fresh.context.contextId !== body.contextId ||
 		fresh.context.contextId !== view.contextId ||
-		fresh.context.groupId !== body.groupId
+		fresh.context.groupId !== body.groupId ||
+		!sameAuthority(checkedContext, fresh.context)
 	)
 		return c.json({ error: "account_context_changed" }, 409);
 	const result = options.registry.start({
-		context: fresh.context,
+		context: checkedContext,
 		expectedCoordinatorId,
+		expectedLifecycleToken,
 	});
 	if ("error" in result)
 		return c.json(result, result.error === "account_shutting_down" ? 503 : 409);

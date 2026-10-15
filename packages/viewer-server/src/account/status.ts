@@ -8,7 +8,11 @@ import type {
 	AccountContextResult,
 	AccountSetup,
 } from "./context.js";
-import type { AccountLinkOperationV1, AccountLinkRegistry } from "./link-registry.js";
+import {
+	type AccountLinkOperationV1,
+	type AccountLinkRegistry,
+	sameAuthority,
+} from "./link-registry.js";
 
 export interface AccountStatusOptions {
 	registry?: AccountLinkRegistry;
@@ -129,6 +133,7 @@ export async function readAccountStatus(
 	options: AccountStatusOptions & { readContext: AccountContextReader },
 	groupId: string | undefined,
 	signal: AbortSignal,
+	readOptions: { expectedContext?: AccountContext } = {},
 ): Promise<AccountLinkViewV1 | Extract<AccountContextResult, { error: string }>> {
 	const initial = options.readContext(groupId);
 	if ("error" in initial) return initial;
@@ -160,7 +165,10 @@ export async function readAccountStatus(
 		(remote.status.groupId !== subject?.groupId ||
 			remote.status.deviceId !== subject?.deviceId ||
 			remote.status.fingerprint !== subject?.fingerprint);
-	if ("error" in fresh || snapshot !== JSON.stringify(fresh) || tupleChanged) {
+	const expectedChanged =
+		readOptions.expectedContext !== undefined &&
+		(!initial.context || !sameAuthority(readOptions.expectedContext, initial.context));
+	if ("error" in fresh || snapshot !== JSON.stringify(fresh) || tupleChanged || expectedChanged) {
 		const local =
 			"error" in fresh
 				? accountLocalView({

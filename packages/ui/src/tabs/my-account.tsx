@@ -17,7 +17,7 @@ function remoteSummary(view: AccountView): string {
 	if (view.remote.kind === "unavailable" || view.remote.kind === "not_checked")
 		return "Account status could not be verified. Check status again; this does not mean the Identity is unlinked.";
 	if (view.remote.state === "review_required")
-		return `An operator must review this device before linking. On this device, run codemem coordinator review-device-owner ${view.selectedGroupId ?? "<group>"}; review the preview before confirming. Confirmation defaults to No.`;
+		return `An operator must review this device before linking. Reuse the exact database, config, coordinator and environment settings (including the keys directory) used to start this Viewer. Example only, with those same selections: codemem coordinator review-device-owner ${view.selectedGroupId ?? "<group>"}. Review the preview before confirming. Confirmation defaults to No; linking does not grant sharing access.`;
 	if (view.remote.state === "conflict")
 		return "This Identity has a conflicting account link. An operator must resolve it; linking here cannot replace or merge accounts.";
 	if (!view.remote.identityMatches)
@@ -127,6 +127,8 @@ export function MyAccount() {
 	const { view, operation, message } = flow;
 	const selectedGroup = flow.group ?? view?.selectedGroupId ?? "";
 	const guidance = currentBlockGuidance(view, operation);
+	const groupLocked =
+		flow.busy || operation?.state === "starting" || operation?.state === "awaiting_browser";
 	return (
 		<section
 			className="peer-card peer-card--padded recipient-policy-sharing-card"
@@ -143,7 +145,11 @@ export function MyAccount() {
 					<select
 						id="my-account-group"
 						value={selectedGroup}
-						onChange={(event) => flow.selectGroup(event.currentTarget.value || undefined)}
+						disabled={groupLocked}
+						onChange={(event) => {
+							if (event.currentTarget.disabled) return;
+							flow.selectGroup(event.currentTarget.value || undefined);
+						}}
 					>
 						<option value="">Choose a group</option>
 						{view.groups.map((id) => (

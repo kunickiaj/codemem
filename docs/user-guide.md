@@ -335,7 +335,9 @@ The Viewer and browser must run on the same computer. Account linking requires t
 
 The coordinator must support the signed account-status endpoint and have Google browser authentication enabled. An older coordinator that returns unsupported is not asking for Google; the card cannot start linking against it. An unavailable or unknown status does not mean the Identity is unlinked—check status again.
 
-For an already enrolled device, the coordinator operator—the person who administers that coordinator—must first review its owner on that device:
+For an already enrolled device, the coordinator operator—the person who administers that coordinator—must first review its owner on that device.
+
+Run the example below with the same `--db-path`, `--config`, `--coordinator` and environment settings (including `CODEMEM_KEYS_DIR`) used to start the Viewer. Otherwise, the command may review a different device or Identity.
 
 ```fish
 codemem coordinator review-device-owner "your-group"
