@@ -696,6 +696,132 @@ describe("My Account transient polling continuity", () => {
 	});
 });
 
+describe("My Account expired previous-operation manual recovery", () => {
+	const notice =
+		"The earlier link finished for its original Identity. Check status there to confirm.";
+	const retainExpiredPrevious = async () => {
+		vi.setSystemTime(new Date("2026-01-01T00:04:59Z"));
+		view = status({ operation: operation(), canLink: false });
+		await probe();
+		view = status({
+			contextId: "new-context",
+			selectedGroupId: "new-group",
+			canLink: false,
+			remote: {
+				kind: "status",
+				coordinatorId: "coordinator-one",
+				identityId: "new-identity",
+				state: "linked",
+				identityMatches: true,
+				account: { email: "new@example.test" },
+			},
+		});
+		transport.mockResolvedValueOnce(response({ operation: operation(), current: false }));
+		await tick();
+		await tick();
+		expect(flow.pendingOperation?.operationId).toBe("op-one");
+		expect(calls("/op-one")).toHaveLength(1);
+	};
+	const expectReadOnly = () => {
+		expect(transport.mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(
+			0,
+		);
+		expect(calls("browser-url")).toHaveLength(0);
+		expect(window.open).not.toHaveBeenCalled();
+		expect(flow.operation).toBeNull();
+		expect(flow.fallback).toBe(false);
+	};
+	it.each([200, 503])(
+		"checks the expired old ID once and retains its success notice when current status returns %s",
+		async (statusCode) => {
+			// Arrange: a linked new Identity must not hide the original Identity's outcome.
+			await retainExpiredPrevious();
+			transport.mockImplementation(async (url) => {
+				if (String(url).endsWith("/op-one"))
+					return response({ operation: operation("succeeded"), current: false });
+				return statusCode === 200
+					? response(view)
+					: response({ error: "account_internal_error", detail: privateUrl }, 503);
+			});
+			// Act: this is the public Check status handler, not a cancellation or timer.
+			await act(async () => {
+				await flow.refresh();
+			});
+			await tick();
+			// Assert
+			expect(calls("/op-one")).toHaveLength(2);
+			expect(flow.pendingOperation).toBeNull();
+			expect(flow.view).toEqual(statusCode === 200 ? view : null);
+			expect(flow.message).toBe(
+				statusCode === 200
+					? notice
+					: `${notice} Account status is unavailable right now. Check status again later.`,
+			);
+			expect(flow.message).not.toContain(privateUrl);
+			expect(flow.message).not.toContain("new@example.test");
+			expectReadOnly();
+		},
+	);
+	it.each(["active", "missing", "unavailable"] as const)(
+		"handles an expired manual operation read that is %s without restarting automatic retries",
+		async (outcome) => {
+			// Arrange
+			await retainExpiredPrevious();
+			transport.mockImplementation(async (url) => {
+				if (!String(url).endsWith("/op-one")) return response(view);
+				if (outcome === "missing") return response({ error: "account_operation_not_found" }, 404);
+				if (outcome === "unavailable")
+					return response({ error: "account_internal_error", detail: privateUrl }, 503);
+				return response({ operation: operation("awaiting_browser"), current: false });
+			});
+			// Act
+			await act(async () => {
+				await flow.refresh();
+			});
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(10_000);
+			});
+			// Assert: only a terminal reply or confirmed absence releases the old handle.
+			expect(calls("/op-one")).toHaveLength(2);
+			if (outcome === "missing") expect(flow.pendingOperation).toBeNull();
+			else expect(flow.pendingOperation?.operationId).toBe("op-one");
+			expect(flow.view).toEqual(view);
+			expect(flow.busy).toBe(false);
+			if (outcome === "unavailable") expect(flow.message).toContain("Check status");
+			expect(flow.message).not.toContain(privateUrl);
+			expectReadOnly();
+		},
+	);
+	it("ignores a late expired-operation success after a group change supersedes the manual read", async () => {
+		// Arrange: the transport deliberately ignores abort to test generation checks.
+		await retainExpiredPrevious();
+		const late = deferred<Response>();
+		transport.mockImplementation(async (url) => {
+			if (String(url).endsWith("/op-one")) return late.promise;
+			return response(view);
+		});
+		let check!: Promise<void>;
+		act(() => {
+			check = flow.refresh();
+		});
+		await settle();
+		// Act
+		view = status({ contextId: "third-context", selectedGroupId: "third-group" });
+		await chooseGroup("third-group");
+		await act(async () => {
+			late.resolve(response({ operation: operation("succeeded"), current: false }));
+			await check;
+		});
+		await tick();
+		// Assert: the superseded success cannot clear the handle or label the new view.
+		expect(calls("/op-one")).toHaveLength(2);
+		expect(flow.pendingOperation?.operationId).toBe("op-one");
+		expect(flow.view).toEqual(view);
+		expect(flow.message).not.toContain("earlier link finished");
+		expectReadOnly();
+	});
+});
+
 describe("My Account uncertain transport privacy", () => {
 	it("does not let a late previous cancellation clear or unlock a newer cancellation", async () => {
 		view = status({ operation: operation(), canLink: false });

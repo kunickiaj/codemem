@@ -124,6 +124,31 @@ function previousOutcomeNotice(operation: AccountOperation): string | undefined 
 	}
 }
 
+async function checkExpiredPendingOperation(
+	flow: Flow,
+	options: { epoch: number; signal: AbortSignal },
+): Promise<string | undefined> {
+	const pending = flow.pendingOperation;
+	if (!pending || Date.parse(pending.deadlineAt) > Date.now()) return;
+	try {
+		const result = await getAccountOperation(pending.operationId, options.signal);
+		if (options.signal.aborted || options.epoch !== flow.refs.current.generation) return;
+		if (active(result.operation)) {
+			flow.setPendingOperation(result.operation);
+			return;
+		}
+		flow.setPendingOperation(null);
+		return previousOutcomeNotice(result.operation);
+	} catch (error) {
+		if (options.signal.aborted || options.epoch !== flow.refs.current.generation) return;
+		if (operationMissing(error)) {
+			flow.setPendingOperation(null);
+			return "The earlier link attempt is no longer available. Check status for its original Identity.";
+		}
+		return "The earlier link outcome could not be checked. Check status again.";
+	}
+}
+
 function showStatus(
 	flow: Flow,
 	result: AccountView,
@@ -163,6 +188,7 @@ async function refresh(
 		previousNotice?: string;
 		excludeOperationId?: string;
 		terminalOperationId?: string;
+		checkExpiredPending?: boolean;
 	} = {},
 ): Promise<void> {
 	rememberOperation(flow, options.terminalOperationId);
@@ -174,15 +200,22 @@ async function refresh(
 	flow.setView(null);
 	flow.setOperation(null);
 	flow.setMessage("Checking account status…");
+	let previousNotice = options.previousNotice;
 	try {
+		if (options.checkExpiredPending) {
+			previousNotice =
+				(await checkExpiredPendingOperation(flow, { epoch, signal: abort.signal })) ??
+				previousNotice;
+			if (epoch !== flow.refs.current.generation) return;
+		}
 		const groupId = "groupId" in options ? options.groupId : flow.group;
 		const result = await loadStatus(flow, groupId, epoch, abort.signal);
 		if (epoch !== flow.refs.current.generation) return;
-		showStatus(flow, result, options);
+		showStatus(flow, result, { ...options, previousNotice });
 	} catch (error) {
 		if (epoch === flow.refs.current.generation) {
 			let message = errorText(error);
-			if (options.previousNotice) message = `${options.previousNotice} ${message}`;
+			if (previousNotice) message = `${previousNotice} ${message}`;
 			flow.setMessage(message);
 		}
 	} finally {
@@ -555,7 +588,8 @@ export function useMyAccount() {
 		message: flow.message,
 		busy: flow.busy,
 		fallback: flow.fallback,
-		refresh: (options?: { groupId?: string; notice?: string }) => refresh(flow, options),
+		refresh: (options?: { groupId?: string; notice?: string }) =>
+			refresh(flow, { ...options, checkExpiredPending: true }),
 		link: () => link(flow),
 		openFallback: () => openFallback(flow),
 		cancel: () => cancel(flow, { operation: flow.operation, previous: false }),
