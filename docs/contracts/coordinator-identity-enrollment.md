@@ -61,7 +61,8 @@ can force fresh credential entry. No provider settings change is authorized here
 | Team membership / Project scope | Current peer-local recipient policy and authorized scope reconciliation | Device enrollment or browser sign-in |
 | New-person admission | Reviewed invitation or operator bootstrap policy | Ordinary sign-in alone |
 | Group enrollment / sync transport | Active server-trusted Identity group grant | Unreviewed enrollment actor claims or discovery-group membership as a Project grant |
-| Controller review | Existing reviewed controller/admin authority for first-account linking | Fresh-key possession or owner enrollment as a new controller attestation |
+| Controller review | Existing operator-reviewed link or privileged owner-admission authority | Fresh-key possession, owner enrollment, or a device claim as a new controller attestation |
+| Device claim (planned) | Enrolled key with matching or unassigned Identity, plus verified Google, plus the guard in the [account-link protocol](coordinator-auth-protocol.md#device-claim-first-link-planned) | Admin review, grants, or owner-enrollment authority; it yields Google sign-in only |
 
 The local backend retains its private key and local proofs. The coordinator stores server-owned request bindings, commitments, the validated private loopback destination, and redacted audit facts; no private proof is available by GET, polling, logs, or durable browser storage. A fresh-key signature proves possession only. It cannot authorize itself, an Identity, a Team, or an invite. The existing no-retained-Google-token rule applies unchanged.
 
@@ -69,9 +70,10 @@ The local backend retains its private key and local proofs. The coordinator stor
 
 | Path | Identity result | Account/link rule | Device result |
 | --- | --- | --- | --- |
-| Legacy existing-Identity first link | Existing Identity | Existing controller/admin review unchanged | Existing enrolled signer only; no new enrollment |
-| Fresh device for active linked account | Existing linked Identity | Server resolves exact active `issuer` + `sub` | Bind the pinned pending key after owner confirmation and signed completion |
-| Existing authenticated Identity accepts another Team invite | Same existing Identity | Verify its current active link; do not create another link | Preserve device bindings; add only invited Team membership |
+| Attestation-backed existing-Identity first link | Existing Identity | Existing controller/admin review unchanged | Existing enrolled signer only; no new enrollment |
+| Device-owned first link (planned) | Current local Identity, if no authoritative record contradicts it | Device claim committed with the link; not operator review | Existing enrolled signer only; matching or unassigned enrollment remains unchanged |
+| Fresh device for active linked account | Existing linked Identity | Server resolves exact active `issuer` + `sub` with an attestation-backed link | Bind the pinned pending key after owner confirmation and signed completion |
+| Existing authenticated Identity accepts another Team invite | Same existing Identity | Verify its current active attestation-backed link (`authority_kind = 'controller_attestation'`); do not create another link | Preserve device bindings; add only invited Team membership |
 | New-person authenticated Team invite | New assigned Identity | Explicit verified-account binding in a separately reviewed admission ceremony | Bind invitation's pending device |
 | Operator first owner | New first Identity | Operator- or invitation-trusted bootstrap, separately reviewed | Enroll in discovery group before a Team exists |
 
@@ -90,7 +92,7 @@ quotas and native D1 commit details still gate the endpoint.
 1. The runtime checks local adoption eligibility, binds a literal loopback listener, and signs the pending request with the key being registered. The server verifies that signature without treating the key as enrolled, then derives the fingerprints from that exact signed public key before persisting an attempt. Compute the legacy `fingerprintPublicKey(publicKey)` for exact-text evidence and the canonical Ed25519 key ID from the verified key bytes for revocation and collision checks. The new request need not carry either fingerprint; if a compatibility wire format includes a legacy fingerprint, reject any supplied mismatch. Neither value is caller-selected authority. Coordinator/origin, purpose, exact key, derived fingerprints, device ID, attempt ID and callback address are fixed at start. No client-selected Identity or group grants are accepted.
 2. The server creates one ten-minute, single-use request and persists its coordinator/origin, purpose, exact pending public key, server-derived legacy fingerprint and canonical key ID, device ID, attempt ID, browser-start commitment, deadline, and validated loopback destination as immutable fields. Validate that destination at creation with the existing literal-loopback rules: `http://127.0.0.1:<port>/codemem/auth/complete` or `http://[::1]:<port>/codemem/auth/complete`, with a valid explicit port and no hostname, user information, query or fragment. Once OIDC resolves an Identity, pin the active account-link row and trusted Identity-group grant revision set. This path consumes no invitation.
 3. The original browser claims the request through a CSRF/Origin-protected POST presenting the raw one-time browser-start value. The server hashes the decoded value and matches the stored commitment before atomically recording the browser-cookie binding and starting OIDC; an attempt ID or caller-supplied hash alone cannot claim it. Reject an incorrect, missing, expired or already-claimed start value without changing the binding or starting OIDC. Use the documented `prompt=select_account` to make the selected account visible; this is not forced password entry. An existing Google session is accepted. State, nonce, PKCE and normal ID-token validation remain required; an existing Codemem session must not skip this purpose-bound transaction.
-4. The server resolves only the verified exact `issuer` + `sub` to an active link. Unknown, revoked, conflicting, or replacement links deny the attempt; they do not reserve or preclaim an Identity indefinitely.
+4. The server resolves only the verified exact `issuer` + `sub` to an active link whose authority kind is `controller_attestation`. Unknown, revoked, conflicting, replacement, or device-claim links deny the attempt; they do not reserve or preclaim an Identity indefinitely.
 5. The CSRF/Origin-protected confirmation names the account, resolved Identity, device label and short server-derived canonical key fingerprint. The local viewer or CLI independently derives and shows the same canonical fingerprint. Warn: continue only if this computer started enrollment; never paste a callback URL or completion code. Deliver the one-use completion secret only to the validated destination persisted at creation; confirmation and later requests cannot supply or replace that destination. Only server-generated handoff parameters may be appended to the saved URI.
 6. Finalization is signed by the exact pending key and carries that completion secret, the purpose, coordinator ID and immutable request bindings. The server commits only after current-state checks pass. The original-cookie browser receives safe status after finalization; registration mints no new browser session.
 
@@ -252,6 +254,12 @@ device, or signer to remain active, enrolled, reachable, or unrevoked.
 
 Revoking an old signing device does not erase an account link, its sessions, or issued
 grants.
+
+Only links whose authority kind is `controller_attestation` qualify. A
+device-claim link (planned) never starts, pins, or commits owner enrollment, even
+if grants for its Identity exist later. The existing rule that an owner attempt
+stores all link pins or none rejects such a link as a second barrier, because
+its controller attestation reference is null.
 
 Build that record only from the trusted provider-verification result followed by
 the server lookup of the active exact account link. A public
@@ -641,7 +649,8 @@ Project access. Finalization inserts only the pinned key into groups authorized
 by current active grants; it does not create controller attestations or scopes.
 
 Allowed initial provenance is an admin-reviewed controller attestation or a
-consumed `team_member` invitation with a server-assigned Identity. Future
+consumed `team_member` invitation with a server-assigned Identity. A device claim
+is never grant provenance. Future
 admin-issued `add_device` provenance must be recorded explicitly at issuance.
 Existing `add_device` receipts cannot be distinguished reliably by issuer and
 are not a safe automatic backfill source. Never infer grants from
@@ -761,7 +770,9 @@ Revocation before commit denies. After commit it follows the actual revocation m
 
 ## Invitations, stores, and memory
 
-An existing authenticated Identity accepting another Team invitation must add only the reviewed snapshot's Team membership and must not mint an actor or rebind a device. A verified provider result for this attempt that resolves to its existing active link proves account ownership; no new link is created. Invite possession is not account ownership; provider ownership is not admission. The commit needs the server-reviewed invite, verified ownership, and a scoped key-possession proof. Which existing enrolled key is eligible, and how a pending new device first enrolls, must be fixed in the separate invite protocol before implementation.
+An existing authenticated Identity accepting another Team invitation must add only the reviewed snapshot's Team membership and must not mint an actor or rebind a device. A verified provider result for this attempt must resolve to an existing active link with `authority_kind = 'controller_attestation'`; no new link is created. A device-claim link is not sufficient account-ownership proof for this path.
+
+Invite possession is not account ownership; provider ownership is not admission. The commit needs the server-reviewed invite, verified ownership, and a scoped key-possession proof. Which existing enrolled key is eligible, and how a pending new device first enrolls, must be fixed in the separate invite protocol before implementation; until then device-claim links are denied by default.
 
 For a new person joining an authenticated Team, a separate invitation admission commit assigns the new Identity, binds its verified account and pending device, and adds exactly the reviewed invitation's membership. Unlike ordinary fresh-device enrollment, this path may admit an unknown account using explicit invitation/operator authority. Its proof and atomic first-binding contract remain unresolved. Ordinary sign-in cannot claim any known Identity. Admin/invite authority must come from server-reviewed policy, not an unauthenticated new key.
 

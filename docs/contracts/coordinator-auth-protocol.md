@@ -16,6 +16,10 @@ coordinator, and one link per Identity. Issuer plus subject is the account key;
 email, name, and picture never prove ownership or select an Identity. Revoked
 link rows remain uniqueness conflicts.
 
+A first link has one of two authority sources: an admin-reviewed controller
+attestation, or a planned device claim for an enrolled device that has no
+assigned Identity. See [Device-claim first link](#device-claim-first-link-planned).
+
 The coordinator HTTPS origin is configured and pinned. Google uses `openid email
 profile`; the flow requests neither `offline_access` nor Google's
 `access_type=offline`, and retains no Google access,
@@ -33,7 +37,8 @@ For initial linking, the runtime starts a 10-minute, single-use attempt over the
 pinned coordinator origin. It supplies its existing signed-device request;
 `authorizeRequest` in `coordinator-api.ts` checks the group/enrollment, stored public key,
 signature, freshness, and nonce. That check proves key possession, not Identity
-ownership; neither its result nor a caller label supplies the controller authority below.
+ownership; neither its result nor a caller label is link authority by itself.
+Authority comes from a controller attestation or from the device-claim guard below.
 
 The runtime generates:
 
@@ -43,7 +48,8 @@ The runtime generates:
 
 The coordinator stores a pending attempt with the coordinator ID, actor ID,
 enrolled device ID, pinned public key and fingerprint, runtime-verifier and browser-start commitments,
-group ID, configured issuer, and auth-config revision. Those fields and the local callback
+group ID, configured issuer, and auth-config revision. Every attempt (planned)
+also records its server-derived authority kind. Those fields and the local callback
 target are immutable. The runtime does not create or receive the browser-completion
 secret at attempt creation; knowing both proofs at initiation would defeat their separation.
 
@@ -205,7 +211,7 @@ browser authentication is ready.
 
 | Route | Signed input and result |
 | --- | --- |
-| `POST /v1/auth/link-attempts` | Requires `group_id`, `attempt_id`, `runtime_verifier_hash`, `browser_start_hash`, and the literal `loopback_redirect`. Returns public status plus controller-derived `identity_id` and configured `coordinator_id`, never proofs or a private start URL. |
+| `POST /v1/auth/link-attempts` | Requires `group_id`, `attempt_id`, `runtime_verifier_hash`, `browser_start_hash`, and the literal `loopback_redirect`. Returns public status plus controller-derived `identity_id` and configured `coordinator_id`, never proofs or a private start URL. Planned replacement: `identity_id` (the current local Identity) and the expected `authority` become required, and the response adds `authority`; see [Device-claim first link](#device-claim-first-link-planned). |
 | `GET /v1/auth/link-attempts/:attemptId?group_id=...` | The attempt device's signed request reads public status; a different device and a missing attempt both receive an unavailable response. |
 | `POST /v1/auth/link-attempts/:attemptId/finalize` | Exact purpose, coordinator/attempt/group/Identity/device/fingerprint fields and canonical raw `runtime_verifier`/`completion` proofs. The path and body attempt must match; the server hashes decoded 32-byte proofs. Client-nominated proof hashes are rejected. |
 | `POST /v1/auth/link-attempts/:attemptId/cancel` | Signed `group_id` only; fails the requester's bound attempt and retires its temporary provider material before reporting success. |
@@ -213,7 +219,7 @@ browser authentication is ready.
 Bodies are limited to 4 KiB and exact fields. Authentication uses the existing
 stored enrollment key, signature, timestamp and nonce, with a separate
 per-device quota using the existing limits; SQL
-still supplies the reviewed controller authority. Browser sessions or Google
+still supplies the attempt's authority. Browser sessions or Google
 claims are not device authorization. Storage or cleanup faults report no success
 and disclose no proof or private cause. The local command and listener are
 implemented, along with optional app mounting; real browser checks remain outstanding.
@@ -244,6 +250,57 @@ from normal request nonce admission, this operation changes no accounts, reviews
 enrollments, grants, history or ownership. It does not advertise or introduce a
 requirement to use Google for legacy coordinator requests.
 
+#### Planned version 2 status
+
+The account-link feature is unreleased, so version 2 replaces version 1 with no
+compatibility negotiation. The coordinator and viewer must ship together.
+Ordinary signed-device sync routes do not change.
+
+Requests carry exactly three query parameters: `group_id`, `coordinator_origin`,
+and `identity_id`. `identity_id` is the running profile's current Identity. It
+is not secret, but it hints at a person, so the server treats it as a question,
+never as a selector or an authority. It may appear in platform request logs, as
+`group_id` already does.
+
+```json
+{ "version": 2, "coordinatorId": "...", "groupId": "...", "deviceId": "...",
+  "fingerprint": "...", "identityId": "...", "state": "unlinked",
+  "authority": "device_claim", "account": null }
+```
+
+`authority` names the link's source, or the source a new link would use. The
+server evaluates these rules in order:
+
+| Condition | `state` | `identityId` | `authority` |
+| --- | --- | --- | --- |
+| The device's committed device claim and its unique active attestation name different Identities | `conflict` | `null` | `null` |
+| The device ID or key has a committed device claim, and the exact current enrollment still agrees with it | `linked` or `revoked` | Claim Identity | `device_claim` |
+| The device ID or key has a committed device claim that no longer agrees (new key, assigned to another Identity, or archived or disabled) | `conflict` | `null` | `null` |
+| One active attestation matches the exact enrolled key | `unlinked`, `linked`, or `revoked` | Attested Identity | `controller_attestation` |
+| The [eligibility guard](#eligibility) passes for `identity_id` | `unlinked` | `identity_id` | `device_claim` |
+| Anything else | `review_required` | `null` | `null` |
+
+For `device_claim`, `unlinked` means only that this device may start an attempt
+for that Identity. Nothing is verified, reserved, or linked until the same
+operation's device finalization commits after Google verification. Clients must
+not describe it as a Google-verified or linked state.
+
+Account metadata appears only for this device's own link, and only when the link
+Identity equals `identity_id`; otherwise `account` is `null`. A requested Identity
+that belongs to someone else gets a generic `review_required`, never that
+Identity's email, Google metadata, link state, or authority. The read is
+read-only: it creates no attempt, claim, attestation, grant, or link, and it
+never reports a device claim as an operator review.
+
+First-link availability reveals one bit: a signed enrolled device can distinguish
+an eligible requested Identity from one it cannot claim, including because of
+an existing coordinator footprint. This disclosure is accepted for first-link
+readiness; it does not reveal which record caused a denial.
+
+Every request counts against the existing authenticated-device quota, whose key
+must not depend on the requested Identity. There is no bulk lookup or detailed
+denial endpoint.
+
 The Node client `readCoordinatorAccountLinkStatus` uses an existing-file read-only
 device snapshot and the existing matching signing key. It performs no database
 maintenance, schema initialization or key generation. Read-only means no SQL,
@@ -252,8 +309,12 @@ coordination files, so the profile directory may need to be writable. Reads use
 committed WAL data rather than an immutable or main-file-only snapshot that could
 miss a key change. Requests use manual
 redirect handling and a ten-second header/body deadline; response bodies are
-limited to 16 KiB. The client validates the exact version-1 shape and requested
-group/device/fingerprint tuple, copying only allowed display fields.
+limited to 16 KiB. The current client validates the exact version-1 shape and
+requested group/device/fingerprint tuple, copying only allowed display fields.
+
+The planned status replaces that decoder with the exact version-2 shape when
+the matched coordinator and clients ship. It does not add a dual-version
+fallback.
 
 Failures return fixed unsupported/unavailable results, never an inferred unlinked
 or Google-required state. Embedded callers must still match the reported Identity
@@ -264,8 +325,9 @@ recheck their current context before displaying account metadata or acting on it
 
 | Route | Condition | Response |
 | --- | --- | --- |
-| Create or finalize | The authenticated, enabled enrolled signer has a verified signature and nonce, but its stored controller review is absent, inactive, or no longer matches, including concurrent enrollment or group changes | `403 auth_link_review_required` |
+| Create or finalize | The authenticated, enabled enrolled signer has a verified signature and nonce, but its stored controller review is absent, inactive, or no longer matches, including concurrent enrollment or group changes. For a device-claim request or attempt, the eligibility guard fails instead. | `403 auth_link_review_required` |
 | Create | The attempt ID conflicts with a different immutable create request | `409 auth_link_conflict` (attempt conflict only) |
+| Create (planned) | The requested `identity_id` or `authority` no longer matches the server's evaluation | `403 auth_link_review_required`; no attempt is created |
 | Finalize | A matched finalization conflicts with an existing account-link binding, including a revoked tombstone | `409 auth_link_conflict` |
 | Any signed route | Bad signatures or proofs, disabled enrollment, archived group, expiry, unavailable attempt, or another failed guard | Existing generic response; do not reveal controller or account-link state |
 
@@ -274,6 +336,7 @@ Only the finalization `409 auth_link_conflict` indicates an account-link conflic
 the same label on create is an attempt conflict. Clients must match the request
 stage, status, and exact error label, not infer a binding from any `409` response.
 Neither rejection identifies an account or Identity, grants access, or replaces a link.
+A failed device-claim guard never says which check failed.
 
 All mounted device-link responses, including errors, use `Cache-Control: no-store`.
 Custom signature headers do not provide the caching protections of a standard
@@ -362,12 +425,14 @@ confirmed by the browser. The runtime neither supplies nor learns those claims.
 The canonical signature does not sign the origin; explicit purpose and
 coordinator ID in the body prevent cross-coordinator replay.
 
-Linking requires an active controller attestation for the initiating key, created
+Attested linking requires an active controller attestation for the initiating key, created
 only by an admin-authenticated ownership review in this slice. The configured
 review-route source and tests are ready, but publishing that route, applying its
 schema to a live deployment, and enabling Google remain separate approvals. A
 legacy caller-provided `recipient_actor_id`, enrollment
-`identity_id`, invitation claim, or request label cannot authorize linking.
+`identity_id`, invitation claim, or request label cannot authorize linking. The
+planned device-claim path treats the local Identity only as a claim that its
+guard checks, never as authority on its own.
 
 Persist controller attestations with coordinator ID, existing actor ID, group ID,
 device ID, exact stored public key/fingerprint, authority-source receipt ID,
@@ -392,15 +457,284 @@ this optional link slice does not enable that enrollment or recovery operation.
 For linking, read the active attestation for the initiating enrolled key and keep
 its receipt ID/revision in the attempt. A changed key, disabled enrollment,
 archived group, revoked attestation, or mismatched Identity invalidates it.
-An unattested legacy device must wait for explicit admin review; never bootstrap
-a controller from its own signature or a Google account alone.
+An unattested legacy device either uses an eligible device claim or waits for
+admin review. Neither its signature nor a Google account alone creates a
+controller, and a device claim never creates one.
+
+## Device-claim first link (planned)
+
+**Status:** Contract only. Schema, store, routes, and viewer changes are not
+implemented. Until they ship, every first link still requires a controller
+attestation.
+
+A device claim lets an enrolled device link Google to the running profile's
+current Identity without a separate admin review. A matching enrollment Identity
+is reused; an unassigned legacy enrollment uses trust on first use.
+
+The coordinator learns that the holder of the enrolled key and the
+holder of a verified Google account agreed on the same Identity during one
+attempt. It cannot see who unlocked the device.
+
+An Identity with no coordinator footprint is first-come under this trust model.
+An administrator can revoke a mistaken link, but revocation preserves its
+tombstone; reclaiming or transferring that Identity requires a separately
+approved recovery policy, not another first-link attempt.
+
+The user's explicit **Link Google** action, with the current Identity pinned,
+plus the normal Google consent and confirmation pages, is the claim
+confirmation. There is no extra checkbox or admin step. The confirmation page
+names the Identity and device as it does today, and says that this link comes
+from the device key and Google sign-in, not an admin review.
+
+A device claim yields Google sign-in for that Identity and nothing else. It
+creates no controller attestation, Identity-group grant, enrollment assignment,
+ownership binding, key, scope, or owner-enrollment right, and changes no
+enrollment or history. The link cannot authorize another device or owner
+enrollment, even if grants for the Identity appear later. Upgrading a device-claim
+link with stronger proof is out of scope.
+
+### Authority model
+
+Each row states its authority source in an `authority_kind` column and refers
+only to the record of that kind:
+
+| Table | `controller_attestation` row | `device_claim` row |
+| --- | --- | --- |
+| `coordinator_auth_link_attempts` | Attestation ID, review receipt ID, and revision 1 | All three controller columns null. `identity_id` holds the pending claim. |
+| `coordinator_auth_device_claims` (new) | Not used | One immutable row per committed claim |
+| `coordinator_auth_account_links` | `controller_attestation_id` set, `device_claim_id` null | `device_claim_id` set, `controller_attestation_id` null |
+| `coordinator_auth_link_audit_log` | Same as account links | Same as account links |
+
+A `CHECK` constraint on each table enforces that pairing. Readers also check it
+through `readAuthLinkAttemptAuthority` and `readAuthLinkRecordAuthority` in
+`coordinator-auth-link-authority.ts`, and treat any mismatch as no authority. The
+kind is server-owned: no transition changes it, and the request only states
+which kind the client expects.
+
+The readers validate row shape, not ownership or caller permission. Every
+authorization decision must also resolve the referenced proof and rerun its live
+eligibility checks; a kind string alone never authorizes an operation.
+
+New writes must name their authority kind explicitly. There is no default that
+silently turns an omitted kind into administrator-reviewed authority.
+
+`coordinator_auth_device_claims` is the committed proof. It stores the
+coordinator ID, claim ID, Identity, group ID, device ID, exact public key and
+fingerprint, canonical key ID, the link attempt ID, issuer, auth-config revision,
+and creation time. It is unique per coordinator on Identity, device ID, key ID,
+and attempt ID, so each device, key, and Identity can hold at most one committed
+claim, ever. Triggers reject updates, deletes, and replacing inserts, following
+the device-ownership bindings. Link revocation leaves the claim in place as a
+tombstone.
+
+Account links keep their existing uniques on link ID, issuer plus subject,
+Identity, and attempt ID, including revoked rows, and add one on
+`device_claim_id`. References are logical, as elsewhere in the coordinator
+schema: there are no declared foreign keys, because local SQLite stores do not
+enable them. The finalization batch writes the references together, and readers
+join on them exactly. Comparisons on nullable reference columns use `IS`, not `=`.
+
+The controller attestation table is unchanged, and no attestation row is ever
+written for a device claim. Attested authority queries also require the attempt's
+`authority_kind = 'controller_attestation'`.
+
+### Schema migration
+
+The three link tables declare `controller_attestation_id` as `NOT NULL`, and
+SQLite cannot relax that with `ALTER TABLE`. The schema change therefore rebuilds
+those tables by creating a replacement, copying every row with
+`authority_kind = 'controller_attestation'`, checking row counts, swapping names,
+and recreating indexes. It then creates the device-claims table. Existing rows
+keep every value.
+
+The copy must contain executable assertions, not merely `SELECT` results. Create
+a migration-owned check table with `passed INTEGER NOT NULL CHECK (passed = 1)`
+and insert each count and full-row equality result as 1 or 0 before any table
+swap. A mismatch inserts 0, fails the constraint, and aborts the transaction.
+
+An unexpected pre-existing check-table name also aborts; it is never cleared or
+reused. Remove only that migration-owned table after all assertions succeed.
+
+This work ships migration code and local tests only. Nothing is applied to a
+live D1 database or a user's database without a separate approval. Before any
+live apply:
+
+1. Run read-only preflight queries for tables, dependencies, and row counts.
+   Validate every reference with `isAuthControllerId` and resolve every old
+   attempt, link, and audit controller ID to the matching stored attestation.
+   Each attempt's receipt and revision must match that attestation, and the
+   existing coordinator, Identity, and link/attempt relationships must agree.
+
+   Revoked records are preserved, not required to be currently active. Any
+   missing, malformed, or inconsistent provenance aborts with an actionable
+   operator report. Never drop, repair, default, or silently promote a bad row.
+2. Take a D1 Time Travel bookmark and an export.
+3. Pause affected auth writers and apply only the reviewed upgrade file through
+   a verified atomic execution path. Do not assume a migration ledger or replay
+   the existing migration directory.
+4. Re-check row counts and compare every preserved column in every existing row,
+   using exact projections or deterministic hashes rather than sampling.
+
+An existing SQLite coordinator store also requires an explicit upgrade. Opening
+a store or reading account status must never rebuild its tables automatically.
+Fresh stores use the new schema directly; old stores fail with an actionable
+upgrade-required result until an operator runs the reviewed migration.
+
+Cloudflare documents transactional rollback for Worker `db.batch()` and failure
+recovery for remote SQL-file import. Wrangler 4.127.1 uses the D1 import service
+for remote `execute --file`; it does not apply that file one statement at a time
+through its command-query path. The exact copy/check/swap file must still pass
+non-live D1 runtime tests, including injected failures before and after each
+table swap and deliberately failing the check-table assertion, before those
+guarantees are used for a rollout. That assertion failure must roll back the
+entire import, including all previously executed copy and DDL statements.
+
+The D1 file has no explicit `BEGIN` or `COMMIT`; D1 owns that transaction. A local
+SQLite upgrade uses an explicit immediate transaction. Neither path may rely on
+`PRAGMA foreign_keys = OFF`: D1 enforces foreign keys, and deferring checks does
+not suppress cascading deletes. Preflight and fixtures must cover referenced
+tables, triggers, indexes, and views, as well as row contents.
+
+The old auth writer omits `authority_kind`, while the new schema requires it.
+The code/schema cutover therefore needs a coordinated writer pause, not an
+implicit administrator default or a compatibility shim. Time Travel restore is
+a separately controlled recovery operation that overwrites current data, not a
+routine rollback step.
+
+References: [D1 batch transactions](https://developers.cloudflare.com/d1/worker-api/d1-database/),
+[remote SQL-file execution](https://developers.cloudflare.com/d1/get-started/),
+[D1 foreign keys](https://developers.cloudflare.com/d1/sql-api/foreign-keys/), and
+[Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/).
+
+The coordinator and viewer ship together. Ordinary signed-device sync routes,
+enrollments, keys, and memory history do not change.
+
+### Eligibility
+
+One guard decides whether a device claim may exist. The coordinator runs it as a
+single SQL statement that binds its inputs once through a CTE, keeping at most
+100 bound parameters. For device-claim attempts it runs at status reads,
+creation, creation retries, the browser start-code claim, OIDC verification,
+confirmation, the completion-destination read, and finalization. Attested
+attempts keep their current checks. A failed guard fails closed and never says
+which check failed.
+
+"Target" means the signer's exact enrollment: group, device ID, public key,
+fingerprint, and canonical key ID. "Claim" means the requested Identity. "Live"
+means an attempt in `pending`, `browser_claimed`, `oidc_verified`, or `confirmed`
+before its deadline, other than the attempt being checked.
+
+| Subject | The guard denies when |
+| --- | --- |
+| Target enrollment | It is missing, disabled, in an archived group, or has a non-null `identity_id` that differs from the claim |
+| Target revocation | A coordinator-wide revocation exists for the device ID or key ID |
+| Other enrollments of the target device or key | Any has a non-null `identity_id` other than the claim |
+| Attestations for the target device or key | Any is revoked or names another Identity. An active matching attestation uses the attested path instead. |
+| Ownership bindings for the target device or key | The bound Identity is not the claim |
+| Consumed, unrevoked invites bound to the target device, key, or fingerprint | `assigned_identity_id` or `target_identity_id` is set to another Identity |
+| Legacy team completions | A device decision for the target is `excluded`, or includes it with another Identity |
+| Owner-enrollment attempts for the target | One is live |
+| Device claims for the target | A committed claim exists for the device ID or key ID |
+| Link attempts from the target | A live device-claim attempt names another Identity |
+| Account links for the claim | Any exists, active or revoked |
+| Device claims for the claim | A committed claim exists |
+| Enrollments naming the claim | One belongs to another device or key |
+| Attestations naming the claim | One, active or revoked, belongs to another device or key (`identity_id` or `enrollment_identity_id`) |
+| Ownership bindings naming the claim | One belongs to another device or key |
+| Identity-group grants for the claim | Any exists, active or revoked |
+| Invites naming the claim | An unrevoked invite assigns or targets it and is still pending, or is bound to another device or key |
+| Invite or completion Identity footprints | `recipient_actor_id` names the claim and is bound to another device or key, or `inviter_actor_id` names the claim and `inviter_device_id` is another device; completion records tying the claim to another device/key also deny |
+| Legacy team completions naming the claim | A device decision gives it to another device |
+| Owner-enrollment attempts for the claim | One is live |
+| Link attempts for the claim | A live attempt of either kind comes from another device or key |
+| Claim format | It starts with `local:` but is not exactly `local:` followed by the target device ID |
+
+These are not contradictions, and must not block a claim:
+
+- records about other people in the same group or Team;
+- unrelated labels and display names that do not name the claim; a claimed
+  Identity tied to another device is ambiguous even when
+  that older record was not an account-ownership proof;
+- expired, cancelled, failed, or retired attempts of either flow, including
+  attempts that reached OIDC verification;
+- invites that expired or were revoked before being consumed;
+- legacy completion memberships that neither name the claim nor assign it to
+  another device or key;
+- evidence that agrees with both the target and the claim.
+
+The local Identity comes from the current profile context, whether config or
+environment selects it. The viewer and runtime pin that context and stop on any
+change; the coordinator does not treat one local source as more trustworthy than
+the other.
+
+### Pending claim and committed proof
+
+A pending claim is only a link attempt with `authority_kind = 'device_claim'`.
+It pins the device key and claimed Identity before Google starts. It uses the
+normal ten-minute deadline, quotas, start code, runtime verifier, and
+cancellation, and it reserves nothing after it ends. Creation is a single
+`INSERT … SELECT` that includes the guard, so competing live claims serialize
+there. An exact retry with the same attempt ID, key, Identity, and commitments
+returns the existing attempt.
+
+Expiry, failure, and cancellation leave no claim record and no link. After any of
+them, including cancellation after OIDC verification, the device may start a new
+attempt once the guard passes again; the existing per-device quotas still apply.
+`link_id` stays null until finalization.
+
+Finalization commits in one SQLite immediate transaction or one D1 batch:
+
+1. Consume the attempt, with its proofs and the guard.
+2. Insert the device-claims row from the consumed attempt.
+3. Insert the account link that references that claim.
+4. Insert the redacted audit row.
+
+A unique conflict on the claim (Identity, device, or key) or on the link
+(Identity, or issuer plus subject) rolls back the whole batch and returns
+`409 auth_link_conflict`. Only this committed claim and link use up the first
+claim. If the outcome is unknown, read status before offering another attempt.
+
+### Operator-only consumers
+
+Device claims must never pass as operator approval:
+
+- Owner-enrollment start, callback, and commit accept only account links with
+  `authority_kind = 'controller_attestation'`. The owner attempt's existing
+  check that all link pins are non-null rejects a device-claim link as a
+  second barrier.
+- Identity-group grants come only from active attestations or consumed
+  `team_member` invites. A device-claim link is never accepted as the
+  account-ownership proof for either path.
+- The separate existing-Identity invitation-acceptance protocol must require an
+  attestation-backed link before it can use that link as account-ownership
+  proof. Until that protocol is implemented and reviewed, device-claim links
+  are denied by default. Existing device-signed legacy invite flows are unchanged.
+- Admin review, attestation revocation, and link revocation stay
+  admin-authenticated. Link revocation works on both kinds and keeps tombstones.
+- Status and audit output never present a device claim as a review.
+
+### Request changes
+
+`POST /v1/auth/link-attempts` adds two required fields: `identity_id` (the
+current local Identity) and `authority` (the kind that the client's status read
+reported). The server repeats its own evaluation. If the kind or Identity no
+longer matches, it returns `403 auth_link_review_required` and creates nothing.
+The response adds `authority`. Finalize and cancel bodies do not change.
+
+`linkCoordinatorAccount` takes the current Identity and expected authority. The
+viewer passes the values from the status it displayed when the user clicks
+**Link Google**; a status read or poll never starts an attempt. The CLI resolves
+the same readiness for its current profile and uses the same linking runtime,
+without a new flag or an administrator-only default. Neither caller selects
+authority independently of the coordinator's read-only readiness result.
 
 ## Atomic consume-and-bind transaction
 
 One transaction must:
 
-1. guard the live pending attempt and recheck expiry, state, controller proof,
-   live enrollment, issuer, config revision, and both secrets;
+1. guard the live pending attempt and recheck expiry, state, the attempt's
+   authority (active attestation or device-claim guard), live enrollment,
+   issuer, config revision, and both secrets;
 2. verify one-to-one account-to-Identity uniqueness across active **and revoked**
    rows, then bind the verified issuer/subject to the existing actor; and
 3. consume the proofs and attempt, persist a redacted audit record, and create no
@@ -410,9 +744,11 @@ Any conflict, backend error, or race rolls back. A consumed retry cannot return 
 session secret. Transaction and callback replays fail closed.
 SQLite uses an immediate transaction. D1 uses a guarded atomic batch: all writes
 depend on the winning attempt transition. Its first conditional UPDATE contains
-every live predicate: state/expiry, proof hashes, active attestation/revision,
-exact group/device/public key/fingerprint matching both attempt and attestation,
-enabled enrollment, null-or-matching Identity, unarchived group, and config revision.
+every live predicate: state/expiry, proof hashes, the source-specific authority
+check, exact group/device/public key/fingerprint, enabled enrollment,
+null-or-matching Identity, unarchived group, and config revision. An attested
+attempt also matches the active attestation and revision; a device-claim attempt
+instead reruns the device-claim eligibility guard.
 There is no existing enrollment key-revision column to rely on; compare the live
 key values. Link and audit writes depend only on that winning consume token, not
 on later fallible guards. Use full UNIQUE indexes on `(coordinator_id, issuer,
@@ -454,7 +790,7 @@ clears the cookie. It does not revoke links or devices. Sessions end when their
 link is revoked or provider configuration is disabled or changed. Management
 authorization still uses existing role checks; this flow grants no administrator
 role. Sensitive **first-account linking** requires fresh OIDC plus the original
-controller or admin proof. That legacy/bootstrap rule does not authorize future
+controller or admin proof, or an eligible device claim. That legacy/bootstrap rule does not authorize future
 owner enrollment of a fresh key for an already active linked Identity; the
 separate [Identity enrollment contract](coordinator-identity-enrollment.md) is
 a proposed, review-gated protocol for that path and is not implemented or an
@@ -493,3 +829,27 @@ Both backends must test revoked-link uniqueness and re-enrollment with another
 key between initiation and finalization (no link and no consumed attempt). Test
 cross-coordinator signed-body replay, one-shot confirmation, competing browser
 claims, and lost session-redemption responses without leaking bearer credentials.
+
+Device-claim tests run on both backends and cover:
+
+- schema: preserved rows after the rebuild, kind/reference `CHECK` rejections,
+  claim immutability triggers, and rollback of the entire upgrade on a failing
+  copy-equality assertion;
+- the primary case: an unassigned legacy device with unrelated group members
+  present links its own Identity;
+- each guard row as a separate rejection, plus each listed non-contradiction
+  still succeeding;
+- the claim appearing in a consumed invite or completion tied to another
+  device/key, including recipient and inviter Identity footprints;
+- races: two devices claiming one Identity, one device claiming two Identities,
+  and a Google account already linked or revoked;
+- mid-flow changes before each transition: disabled, revoked, re-keyed,
+  archived, assigned, or newly attested;
+- OIDC verification, then cancellation or failure, then a successful retry;
+- owner-enrollment start, callback, and commit, plus grant issuance, rejecting a
+  device-claim link even when grants exist;
+- existing-Identity invite acceptance rejecting a device-claim link as its
+  account-ownership proof;
+- status privacy: no metadata for another person's Identity, no writes, and
+  different requested Identities sharing the same authenticated-device quota;
+- attested behavior unchanged.

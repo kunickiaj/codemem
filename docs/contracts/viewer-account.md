@@ -76,6 +76,18 @@ Identity matches the running local Identity. A missing controller review is
 imply that Google is required. `canLink` is true only for a fresh, matching,
 unlinked subject; the broker never publishes an operator review or grants access.
 
+### Planned device-claim status
+
+With the planned version-2 coordinator status, the broker sends the running
+Identity as `identity_id` and the view adds `remote.authority`
+(`controller_attestation`, `device_claim`, or `null`). `canLink` also becomes true
+for `unlinked` with `device_claim` authority and a matching Identity. That state
+is eligibility only: the view must not call it verified or linked, and the
+coordinator reserves nothing until the operation finalizes. A linked device-claim
+account is shown as linked by this device and Google sign-in, never as reviewed
+by an admin. There is no fallback to the older status shape; the viewer and
+coordinator ship together.
+
 Link operations and viewer startup wiring follow separately. The status broker
 does not initialize a store, migrate a schema, generate keys or change Identity
 assignments. It returns no private browser URLs, tokens or admin credentials.
@@ -129,6 +141,16 @@ status. Start rejects unsupported coordinators and `review_required`, `linked`,
 Identity is unlinked. Context changes return `409` without starting another job.
 
 Errors use fixed codes and never include callback exceptions or private URLs.
+
+Planned device-claim start: the start body becomes `{groupId, contextId,
+identityId, authority}`. The viewer fills `identityId` and `authority` from the
+status it displayed when the user clicks **Link Google**; there is no separate
+claim checkbox or dialog. Start re-reads status and requires the same Identity,
+authority, and complete context before starting. The registry pins both values,
+passes them to the core runtime, and records `authority` in the operation
+snapshot so a later result can be checked against it. A status read or poll
+never starts an operation. Config and environment Identity selection are both
+supported; the existing context pins stop the operation if either changes.
 
 ## Foreground viewer binding
 
