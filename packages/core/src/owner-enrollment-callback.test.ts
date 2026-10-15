@@ -293,6 +293,23 @@ it.each(["missing", "revoked", "wrong-issuer", "wrong-subject", "no-eligible-gra
 	},
 );
 
+it("denies a device-claim account link despite verified account and active grants", async () => {
+	// Arrange: use a coherent claim row, not an invalid mixed controller/claim fixture.
+	const c = await claimed();
+	f.db.exec(`UPDATE coordinator_auth_account_links SET authority_kind='device_claim',
+ controller_attestation_id=NULL, device_claim_id='claim-a'`);
+	const before = ownerCallbackAuthority(f);
+	// Act
+	const result = await c.verifyCallback(c.request());
+	// Assert: account authentication and grants cannot substitute for operator approval.
+	expect(result).toEqual(unavailable);
+	consumed();
+	noVerifiedAccount();
+	noNewEnrollmentAuthority();
+	expect(ownerCallbackAuthority(f)).toEqual(before);
+	expect(c.provider.requests.filter(({ url }) => url === `${cfg.issuer}/token`)).toHaveLength(1);
+});
+
 it("rejects expiry at the exact deadline without provider access or new authority", async () => {
 	// Arrange
 	const c = await claimed();

@@ -57,6 +57,7 @@ import {
 	isAuthControllerId,
 	isAuthControllerUniqueError,
 } from "./coordinator-auth-controller.js";
+import { COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_SQL } from "./coordinator-auth-device-claim-schema.js";
 import {
 	type AuthLinkBackend,
 	AuthLinkOperations,
@@ -497,12 +498,22 @@ function initializeAuthBrowserSchema(db: DatabaseType): void {
 	db.exec(AUTH_BROWSER_TXN_SCHEMA_SQL);
 }
 
+function initializeAuthLinkSchema(db: DatabaseType): void {
+	const hasAuthLinks = db
+		.prepare(
+			"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'coordinator_auth_link_attempts'",
+		)
+		.get();
+	upgradeAuthLinkBrowserStartSchema(db);
+	db.exec(AUTH_LINK_SCHEMA_SQL);
+	if (!hasAuthLinks) db.exec(COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_SQL);
+}
+
 function initializeSchema(db: DatabaseType): void {
 	db.exec(IDENTITY_GROUP_GRANT_SCHEMA_SQL);
 	initializeDeviceLedgerSchemas(db);
 	db.exec(AUTH_CONTROLLER_SCHEMA_SQL);
-	upgradeAuthLinkBrowserStartSchema(db);
-	db.exec(AUTH_LINK_SCHEMA_SQL);
+	initializeAuthLinkSchema(db);
 	upgradeAuthSessionRetentionSchema(db);
 	db.exec(AUTH_SESSION_SCHEMA_SQL);
 	db.exec(AUTH_ACCOUNT_PROFILE_SCHEMA_SQL);

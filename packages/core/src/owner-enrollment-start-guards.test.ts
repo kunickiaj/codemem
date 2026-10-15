@@ -226,9 +226,9 @@ it.each(["pending", "expired"] as const)(
 		const c = await compose();
 		const sql = `INSERT INTO coordinator_auth_link_attempts
 	(coordinator_id,attempt_id,identity_id,group_id,device_id,public_key,fingerprint,controller_attestation_id,
-	controller_review_receipt_id,controller_revision,issuer,auth_config_revision,runtime_verifier_hash,loopback_redirect,state,created_at_ms,expires_at_ms)
+	controller_review_receipt_id,controller_revision,issuer,auth_config_revision,runtime_verifier_hash,loopback_redirect,state,created_at_ms,expires_at_ms,authority_kind)
 	VALUES ('${config.coordinatorId}','attempt-a','identity-a','group-a','link-device','key','${"b".repeat(64)}','attestation-a','receipt-a',1,
-	'${config.issuer}','${config.revision}','${"c".repeat(64)}','http://127.0.0.1:43210/complete','${state}',${NOW},${NOW + 600000})`;
+	'${config.issuer}','${config.revision}','${"c".repeat(64)}','http://127.0.0.1:43210/complete','${state}',${NOW},${NOW + 600000},'controller_attestation')`;
 		const run = f.backend.run;
 		vi.spyOn(f.backend, "run").mockImplementationOnce(async (s) => {
 			f.db.exec(sql);

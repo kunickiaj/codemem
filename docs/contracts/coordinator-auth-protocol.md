@@ -555,11 +555,16 @@ It is not called when a store opens, exported from the public API, or installed 
 the Worker's auto-discovered migration directory. Its SQLite and native D1 fixture
 tests exercise the same copy/check/swap SQL, including rollback at each swap.
 It rejects unknown schema and dependencies rather than rebuilding them silently.
-Fresh-schema installation, explicit-kind writers/readers, proof-table bootstrap,
-and the actionable old-schema auth error still need a coordinated cutover before
-this source can be deployed. Ordinary device-signed sync remains unchanged.
+Fresh auth storage now uses explicit authority kinds, and current link writers
+and readers accept only controller attestations. Fresh SQLite auth storage also
+installs the committed-proof table; it does not enable device-claim creation.
+Owner enrollment requires an attestation-backed link without rechecking its old
+controller or device. Existing auth storage is not rebuilt on open, and ordinary
+device-signed sync remains unchanged. The actionable old-schema auth error and a
+coordinated deployment cutover remain separate work; no authority upgrade is
+automatically applied through the Worker migration directory.
 
-The three link tables declare `controller_attestation_id` as `NOT NULL`, and
+The three legacy link tables declare `controller_attestation_id` as `NOT NULL`, and
 SQLite cannot relax that with `ALTER TABLE`. The schema change therefore rebuilds
 those tables by creating a replacement, copying every row with
 `authority_kind = 'controller_attestation'`, checking row counts, swapping names,

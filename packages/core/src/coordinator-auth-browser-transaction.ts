@@ -257,6 +257,7 @@ function assertLinkClaim(
 		sql: `UPDATE ${TABLE} AS b SET nonce = NULL WHERE ${MATCH_CONFIG} AND b.browser_transaction_hash = ?
  AND b.state = 'pending' AND b.attempt_id = ? AND b.created_at_ms = ? AND NOT EXISTS
  (SELECT 1 FROM coordinator_auth_link_attempts a WHERE a.coordinator_id = b.coordinator_id AND a.attempt_id = b.attempt_id
+ AND a.authority_kind = 'controller_attestation'
  AND a.browser_transaction_hash = b.browser_transaction_hash AND a.state = 'browser_claimed'
  AND a.claimed_at_ms = ? AND a.issuer = b.issuer AND a.auth_config_revision = b.auth_config_revision
  AND a.expires_at_ms = b.expires_at_ms AND a.expires_at_ms > ?)`,
@@ -266,6 +267,7 @@ function assertLinkClaim(
 function linkMatch(states: string): string {
 	return `(b.purpose = 'signin' OR EXISTS (SELECT 1 FROM coordinator_auth_link_attempts a
  WHERE b.purpose = 'link' AND a.coordinator_id = b.coordinator_id AND a.attempt_id = b.attempt_id
+ AND a.authority_kind = 'controller_attestation'
  AND a.browser_transaction_hash = b.browser_transaction_hash AND a.issuer = b.issuer
  AND a.auth_config_revision = b.auth_config_revision AND a.expires_at_ms > ? AND a.state IN (${states})))`;
 }
@@ -407,6 +409,7 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 			sql: `INSERT INTO ${TABLE} (${COLUMNS}) SELECT a.coordinator_id, ?, 'link', a.attempt_id, ?, ?, a.issuer,
  a.auth_config_revision, ?, 'pending', ?, ?, ?, a.expires_at_ms, NULL, NULL FROM coordinator_auth_link_attempts a
  WHERE a.coordinator_id = ? AND a.attempt_id = ? AND a.issuer = ? AND a.auth_config_revision = ?
+ AND a.authority_kind = 'controller_attestation'
  AND a.state = 'pending' AND a.browser_transaction_hash IS NULL AND a.expires_at_ms > ?
  AND ((a.browser_start_hash IS NULL AND ? IS NULL) OR a.browser_start_hash = ?) AND ${FRESH_HASH}
  ${ASSERT_HASH_FRESH}`,
@@ -433,6 +436,7 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 		const claim: AuthLinkStatement = {
 			sql: `UPDATE coordinator_auth_link_attempts SET state = 'browser_claimed', browser_transaction_hash = ?, claimed_at_ms = ?
  WHERE coordinator_id = ? AND attempt_id = ? AND issuer = ? AND auth_config_revision = ?
+ AND authority_kind = 'controller_attestation'
  AND state = 'pending' AND browser_transaction_hash IS NULL AND expires_at_ms > ?
  AND ((browser_start_hash IS NULL AND ? IS NULL) OR browser_start_hash = ?)
  AND NOT EXISTS (SELECT 1 FROM coordinator_auth_session_receipts r WHERE r.coordinator_id = ? AND r.browser_transaction_hash = ?)
@@ -485,7 +489,7 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 		now: number,
 	): Promise<CoordinatorAuthBrowserTransactionRejected> {
 		const attempt = await this.first<AttemptDiagnosis>({
-			sql: "SELECT issuer, auth_config_revision, state, expires_at_ms FROM coordinator_auth_link_attempts WHERE coordinator_id = ? AND attempt_id = ?",
+			sql: "SELECT issuer, auth_config_revision, state, expires_at_ms FROM coordinator_auth_link_attempts WHERE coordinator_id = ? AND attempt_id = ? AND authority_kind = 'controller_attestation'",
 			values: [c.coordinatorId, attemptId],
 		});
 		if (!attempt) return rejected("attempt_unavailable");

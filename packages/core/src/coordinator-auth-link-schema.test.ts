@@ -3,6 +3,7 @@ import { join } from "node:path";
 import Database, { type Database as SqliteDatabase } from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { connectCoordinator } from "./better-sqlite-coordinator-store.js";
+import { upgradeAuthLinkAuthoritySchema } from "./coordinator-auth-link-authority-upgrade.js";
 import { AUTH_LINK_SCHEMA_SQL } from "./coordinator-auth-link-contract.js";
 
 // Foundation coverage uses only schema initialization and existing one-argument constructors.
@@ -37,7 +38,7 @@ function schema(db: SqliteDatabase, table: (typeof TABLES)[number]) {
 				.pluck()
 				.get(table) as string
 		)
-			.replace(/\s+/gu, " ")
+			.replace(/[\s"]/gu, "")
 			.trim(),
 		columns: db.pragma(`table_info(${table})`),
 		indexes: indexes
@@ -105,6 +106,15 @@ function registerBackend(backend: Backend) {
 			const expected = TABLES.map((table) => schema(peer, table));
 			// Assert
 			expect(actual).toEqual(expected);
+			expect(
+				db
+					.prepare("SELECT sql FROM sqlite_master WHERE name = 'coordinator_auth_device_claims'")
+					.get(),
+			).toEqual(
+				peer
+					.prepare("SELECT sql FROM sqlite_master WHERE name = 'coordinator_auth_device_claims'")
+					.get(),
+			);
 			expect(actual[0].namedIndexes).toEqual([
 				{
 					name: "idx_auth_link_attempts_device_created",
@@ -144,7 +154,7 @@ function registerBackend(backend: Backend) {
 			peer.close();
 		}
 	});
-	it("migrations 0017, 0019, and 0025 match the fresh-install link tables", () => {
+	it("legacy migrations plus the explicit authority upgrade match fresh-install link storage", () => {
 		// Arrange: explicit SQL seeds an existing review; no account-link operations are imported.
 		const db = setupSchema(backend);
 		try {
@@ -164,6 +174,7 @@ function registerBackend(backend: Backend) {
 			db.exec(indexesMigration);
 			db.exec(indexesMigration);
 			db.exec(browserStartMigration);
+			upgradeAuthLinkAuthoritySchema(db);
 			const migrated = TABLES.map((table) => schema(db, table));
 			for (const table of [...TABLES].reverse()) db.exec(`DROP TABLE ${table}`);
 			db.exec(AUTH_LINK_SCHEMA_SQL);

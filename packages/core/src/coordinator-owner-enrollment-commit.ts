@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS coordinator_owner_enrollment_audit_log (
 /** Historical link provenance is equality only: never consult the old controller/device. */
 export const OWNER_ACTIVE_LINK_SQL = `EXISTS (SELECT 1 FROM coordinator_auth_account_links l
  WHERE l.coordinator_id = a.coordinator_id AND l.link_id = a.link_id
+ AND l.authority_kind = 'controller_attestation' AND l.controller_attestation_id IS NOT NULL AND l.device_claim_id IS NULL
  AND l.issuer = a.issuer AND l.subject = a.account_subject AND l.identity_id = a.identity_id
  AND l.attempt_id = a.link_attempt_id AND l.controller_attestation_id = a.link_controller_attestation_id
  AND l.auth_config_revision = a.link_auth_config_revision AND l.revoked_at_ms IS NULL)`;

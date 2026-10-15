@@ -122,8 +122,8 @@ export async function pendingKey() {
 async function seedAuthority() {
 	await exec(
 		`INSERT INTO coordinator_auth_account_links
-		(coordinator_id,link_id,issuer,subject,identity_id,attempt_id,controller_attestation_id,auth_config_revision,created_at_ms)
-		VALUES (?,'link-a',?,'fixture-subject','identity-a','historical-attempt','historical-controller',?,?)`,
+		(coordinator_id,link_id,issuer,subject,identity_id,attempt_id,controller_attestation_id,auth_config_revision,created_at_ms,authority_kind)
+		VALUES (?,'link-a',?,'fixture-subject','identity-a','historical-attempt','historical-controller',?,?,'controller_attestation')`,
 		config.coordinatorId,
 		config.issuer,
 		"b".repeat(64),

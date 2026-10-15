@@ -44,8 +44,8 @@ it("migration 0019 adds only named nonunique indexes and retains expired evidenc
 			(coordinator_id, attempt_id, identity_id, group_id, device_id, public_key, fingerprint,
 			controller_attestation_id, controller_review_receipt_id, controller_revision, issuer,
 			auth_config_revision, runtime_verifier_hash, loopback_redirect, state, browser_transaction_hash,
-			account_subject, completion_secret_hash, created_at_ms, expires_at_ms)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 'expired', ?, ?, ?, 0, 600000)`).run(
+			account_subject, completion_secret_hash, created_at_ms, expires_at_ms, authority_kind)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 'expired', ?, ?, ?, 0, 600000, 'controller_attestation')`).run(
 			"coordinator-a",
 			"legacy-attempt",
 			"identity-a",

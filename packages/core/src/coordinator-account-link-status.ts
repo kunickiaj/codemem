@@ -112,7 +112,7 @@ export class AccountLinkStatusOperations implements CoordinatorAccountLinkStatus
 				 SELECT a.identity_id, l.link_id, l.issuer, l.revoked_at_ms,
 				 p.display_name, p.email, p.email_verified
 				 FROM unique_controller a LEFT JOIN coordinator_auth_account_links l
-				 ON l.coordinator_id = ? AND l.identity_id = a.identity_id
+				 ON l.coordinator_id = ? AND l.identity_id = a.identity_id AND l.authority_kind = 'controller_attestation'
 				 LEFT JOIN coordinator_auth_account_profiles p
 				 ON p.coordinator_id = l.coordinator_id AND p.link_id = l.link_id`,
 				values: [...values, ...authority, c.coordinatorId],

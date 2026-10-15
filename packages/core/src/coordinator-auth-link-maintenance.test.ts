@@ -211,6 +211,24 @@ function registerCeiling(test: Test) {
 	});
 }
 
+backendTest("SQLite")(
+	"attested maintenance leaves an expired device-claim attempt untouched",
+	async ({ fixture: f }) => {
+		// Arrange: keep real current controller evidence, but make the attempt a coherent claim.
+		await authorize(f);
+		await advance(f, "pending");
+		f.db.exec(`UPDATE coordinator_auth_link_attempts SET authority_kind='device_claim',
+ controller_attestation_id=NULL, controller_review_receipt_id=NULL, controller_revision=NULL`);
+		f.now = NOW + TTL;
+		const before = snapshot(f);
+		// Act
+		const result = await f.store.maintainAuthLinkAttempts(f.cfg);
+		// Assert: this source filter must not retire another authority's ceremony.
+		expect(result).toEqual({ kind: "maintained", processedCount: 0, more: false });
+		expect(snapshot(f)).toEqual(before);
+	},
+);
+
 function registerMaintenance(test: Test) {
 	test("bounded expiry drains forty rows in 32 then 8 while preserving commitments", async ({
 		fixture: f,

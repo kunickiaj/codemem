@@ -8,6 +8,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
+import { AUTH_LINK_AUTHORITY_UPGRADE_SQL } from "../../core/src/coordinator-auth-link-authority-upgrade.ts";
 import { ownerHttpRequest } from "./owner-handoff-fixture.mjs";
 
 const require = createRequire(new URL("../package.json", import.meta.url));
@@ -128,6 +129,7 @@ async function coordinator(h, now) {
 	}));
 	const db = await mf.getD1Database("DB");
 	for (const migration of migrations) await db.batch(migration.queries.map(sql => db.prepare(sql)));
+	await db.batch(AUTH_LINK_AUTHORITY_UPGRADE_SQL.split(";").map((sql) => sql.trim()).filter(Boolean).map((sql) => db.prepare(sql)));
 	await db.prepare(h.COORDINATOR_OWNER_ENROLLMENT_AUDIT_SCHEMA_SQL).run();
 	const prepare = s => db.prepare(s.sql).bind(...s.values);
 	return {

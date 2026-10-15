@@ -3,6 +3,7 @@ import {
 	parseCoordinatorAccountReference,
 } from "./coordinator-auth-contract.js";
 import { isAuthControllerId, isAuthControllerUniqueError } from "./coordinator-auth-controller.js";
+import { readAuthLinkAttemptAuthority } from "./coordinator-auth-link-authority.js";
 import {
 	AUTH_LINK_ATTEMPT_TTL_MS,
 	AUTH_LINK_CREATE_WINDOW_MS,
@@ -48,6 +49,7 @@ export interface AuthLinkBackend {
 	batch(statements: AuthLinkStatement[]): Promise<void>;
 }
 interface Attempt {
+	authority_kind: "controller_attestation";
 	coordinator_id: string;
 	attempt_id: string;
 	identity_id: string;
@@ -229,7 +231,8 @@ function diagnose(
 	if (!isTerminal(row) && row.expires_at_ms <= now) return rejected("attempt_expired");
 	return rejected("attempt_unavailable");
 }
-const LIVE_CONFIG = "coordinator_id = ? AND issuer = ? AND auth_config_revision = ? AND ? = 1";
+const LIVE_CONFIG =
+	"coordinator_id = ? AND issuer = ? AND auth_config_revision = ? AND ? = 1 AND authority_kind = 'controller_attestation'";
 function configValues(c: CoordinatorAuthLinkConfig): (string | number)[] {
 	return [c.coordinatorId, c.issuer, c.revision, Number(c.enabled)];
 }
@@ -284,6 +287,7 @@ const AUTHORITY_SOURCE_SQL = `coordinator_auth_controller_attestations a
  JOIN enrolled_devices e ON e.group_id = a.group_id AND e.device_id = a.device_id
  JOIN groups g ON g.group_id = a.group_id
  WHERE a.coordinator_id = coordinator_auth_link_attempts.coordinator_id
+ AND coordinator_auth_link_attempts.authority_kind = 'controller_attestation'
  AND a.attestation_id = coordinator_auth_link_attempts.controller_attestation_id AND a.review_receipt_id = coordinator_auth_link_attempts.controller_review_receipt_id
  AND a.revision = coordinator_auth_link_attempts.controller_revision AND a.revoked_at IS NULL
  AND a.identity_id = coordinator_auth_link_attempts.identity_id
@@ -300,10 +304,10 @@ const CREATE_SOURCE_SQL = `FROM coordinator_auth_controller_attestations a
  AND e.public_key = a.public_key AND e.fingerprint = a.fingerprint AND (e.identity_id IS NULL OR e.identity_id = a.identity_id)`;
 const CREATE_SQL = `INSERT INTO coordinator_auth_link_attempts (
  coordinator_id, attempt_id, identity_id, group_id, device_id, public_key, fingerprint,
- controller_attestation_id, controller_review_receipt_id, controller_revision,
+ controller_attestation_id, controller_review_receipt_id, controller_revision, authority_kind,
  issuer, auth_config_revision, runtime_verifier_hash, loopback_redirect, browser_start_hash, state, created_at_ms, expires_at_ms)
  SELECT ?, ?, a.identity_id, a.group_id, a.device_id, a.public_key, a.fingerprint,
- a.attestation_id, a.review_receipt_id, a.revision, ?, ?, ?, ?, ?, 'pending', ?, ?
+ a.attestation_id, a.review_receipt_id, a.revision, 'controller_attestation', ?, ?, ?, ?, ?, 'pending', ?, ?
   ${CREATE_SOURCE_SQL} ${AUTHORITY_GUARD}
  AND NOT EXISTS (SELECT 1 FROM coordinator_owner_enrollment_attempts t
   WHERE t.coordinator_id = a.coordinator_id AND t.attempt_id = ?)
@@ -323,7 +327,7 @@ const CREATE_SQL = `INSERT INTO coordinator_auth_link_attempts (
   AND t.created_at_ms > ?) < ?
  AND (SELECT count(*) FROM (SELECT 1 FROM coordinator_auth_link_attempts t
   WHERE t.coordinator_id = a.coordinator_id AND t.state NOT IN ('finalized','session_redeemed') LIMIT ?)) < ?`;
-const MAINTENANCE_CANDIDATE_SQL = `link_id IS NULL AND (
+const MAINTENANCE_CANDIDATE_SQL = `authority_kind = 'controller_attestation' AND link_id IS NULL AND (
  (state IN ('pending','browser_claimed','oidc_verified','confirmed') AND expires_at_ms <= ?)
  OR (state IN ('failed','expired') AND account_subject IS NOT NULL))`;
 const MAINTENANCE_SQL = `UPDATE coordinator_auth_link_attempts
@@ -381,11 +385,12 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		private readonly backend: AuthLinkBackend,
 		private readonly clock: () => number = Date.now,
 	) {}
-	private read(attemptId: string, c: CoordinatorAuthLinkConfig): Promise<Attempt | null> {
-		return this.first<Attempt>({
-			sql: "SELECT * FROM coordinator_auth_link_attempts WHERE coordinator_id = ? AND attempt_id = ?",
+	private async read(attemptId: string, c: CoordinatorAuthLinkConfig): Promise<Attempt | null> {
+		const row = await this.first<Attempt>({
+			sql: "SELECT * FROM coordinator_auth_link_attempts WHERE coordinator_id = ? AND attempt_id = ? AND authority_kind = 'controller_attestation'",
 			values: [c.coordinatorId, attemptId],
 		});
+		return row && readAuthLinkAttemptAuthority(row)?.kind === "controller_attestation" ? row : null;
 	}
 	private async first<T>(statement: AuthLinkStatement): Promise<T | null> {
 		try {
@@ -864,11 +869,11 @@ function finalizeStatements(
 		],
 	};
 	const link: AuthLinkStatement = {
-		sql: `INSERT INTO coordinator_auth_account_links (coordinator_id, link_id, issuer, subject, identity_id, attempt_id, controller_attestation_id, auth_config_revision, created_at_ms) SELECT coordinator_id, link_id, issuer, account_subject, identity_id, attempt_id, controller_attestation_id, auth_config_revision, finalized_at_ms FROM coordinator_auth_link_attempts WHERE attempt_id = ? AND ${LIVE_CONFIG} AND link_id = ? AND state = 'finalized'`,
+		sql: `INSERT INTO coordinator_auth_account_links (coordinator_id, link_id, issuer, subject, identity_id, attempt_id, controller_attestation_id, auth_config_revision, created_at_ms, authority_kind) SELECT coordinator_id, link_id, issuer, account_subject, identity_id, attempt_id, controller_attestation_id, auth_config_revision, finalized_at_ms, 'controller_attestation' FROM coordinator_auth_link_attempts WHERE attempt_id = ? AND ${LIVE_CONFIG} AND link_id = ? AND state = 'finalized'`,
 		values: [i.attemptId, ...configValues(c), linkId],
 	};
 	const audit: AuthLinkStatement = {
-		sql: `INSERT INTO coordinator_auth_link_audit_log (coordinator_id, link_id, action, attempt_id, identity_id, group_id, device_id, fingerprint, controller_attestation_id, auth_config_revision, created_at_ms) SELECT t.coordinator_id, t.link_id, 'link_created', t.attempt_id, t.identity_id, t.group_id, t.device_id, t.fingerprint, t.controller_attestation_id, t.auth_config_revision, t.finalized_at_ms FROM coordinator_auth_link_attempts t JOIN coordinator_auth_account_links l ON l.coordinator_id = t.coordinator_id AND l.link_id = t.link_id WHERE t.attempt_id = ? AND t.coordinator_id = ? AND t.issuer = ? AND t.auth_config_revision = ? AND ? = 1 AND t.link_id = ?`,
+		sql: `INSERT INTO coordinator_auth_link_audit_log (coordinator_id, link_id, action, attempt_id, identity_id, group_id, device_id, fingerprint, controller_attestation_id, auth_config_revision, created_at_ms, authority_kind) SELECT t.coordinator_id, t.link_id, 'link_created', t.attempt_id, t.identity_id, t.group_id, t.device_id, t.fingerprint, t.controller_attestation_id, t.auth_config_revision, t.finalized_at_ms, 'controller_attestation' FROM coordinator_auth_link_attempts t JOIN coordinator_auth_account_links l ON l.coordinator_id = t.coordinator_id AND l.link_id = t.link_id AND l.authority_kind = 'controller_attestation' WHERE t.authority_kind = 'controller_attestation' AND t.attempt_id = ? AND t.coordinator_id = ? AND t.issuer = ? AND t.auth_config_revision = ? AND ? = 1 AND t.link_id = ?`,
 		values: [i.attemptId, ...configValues(c), linkId],
 	};
 	return [consume, link, audit];
@@ -876,8 +881,8 @@ function finalizeStatements(
 const RECEIPT_SQL = `SELECT 1 FROM coordinator_auth_link_attempts t
  JOIN coordinator_auth_account_links l ON l.coordinator_id = t.coordinator_id AND l.link_id = t.link_id
  AND l.attempt_id = t.attempt_id AND l.identity_id = t.identity_id AND l.issuer = t.issuer AND l.subject = t.account_subject
- AND l.controller_attestation_id = t.controller_attestation_id AND l.auth_config_revision = t.auth_config_revision AND l.created_at_ms = t.finalized_at_ms
+ AND l.authority_kind = 'controller_attestation' AND l.controller_attestation_id IS NOT NULL AND l.controller_attestation_id IS t.controller_attestation_id AND l.device_claim_id IS NULL AND l.auth_config_revision = t.auth_config_revision AND l.created_at_ms = t.finalized_at_ms
  JOIN coordinator_auth_link_audit_log a ON a.coordinator_id = t.coordinator_id AND a.link_id = t.link_id AND a.action = 'link_created'
  AND a.attempt_id = t.attempt_id AND a.identity_id = t.identity_id AND a.group_id = t.group_id AND a.device_id = t.device_id
- AND a.fingerprint = t.fingerprint AND a.controller_attestation_id = t.controller_attestation_id AND a.auth_config_revision = t.auth_config_revision AND a.created_at_ms = t.finalized_at_ms
- WHERE t.coordinator_id = ? AND t.attempt_id = ? AND t.link_id = ?`;
+ AND a.fingerprint = t.fingerprint AND a.authority_kind = 'controller_attestation' AND a.controller_attestation_id IS t.controller_attestation_id AND a.device_claim_id IS NULL AND a.auth_config_revision = t.auth_config_revision AND a.created_at_ms = t.finalized_at_ms
+ WHERE t.authority_kind = 'controller_attestation' AND t.coordinator_id = ? AND t.attempt_id = ? AND t.link_id = ?`;

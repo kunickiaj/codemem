@@ -254,7 +254,7 @@ it("completes the normal owner flow with stable cross-instance CSRF and the shar
 	await store.enrollDevice(review.groupId, review);
 	await store.createAuthControllerAttestation(review);
 	await exec(
-		`INSERT INTO coordinator_auth_account_links (coordinator_id,link_id,issuer,subject,identity_id,attempt_id,controller_attestation_id,auth_config_revision,created_at_ms) VALUES (?,'configured-link',?,'fixture-subject','identity-a','historical-attempt',?,?,?)`,
+		`INSERT INTO coordinator_auth_account_links (coordinator_id,link_id,issuer,subject,identity_id,attempt_id,controller_attestation_id,auth_config_revision,created_at_ms,authority_kind) VALUES (?,'configured-link',?,'fixture-subject','identity-a','historical-attempt',?,?,?,'controller_attestation')`,
 		config.coordinatorId,
 		config.issuer,
 		review.attestationId,

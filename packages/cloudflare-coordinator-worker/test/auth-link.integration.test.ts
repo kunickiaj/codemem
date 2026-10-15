@@ -267,8 +267,8 @@ it("finalizes concurrently with exactly one durable link and audit and only publ
 async function seedConflictingLink(f: Fixture, dimension: "account" | "actor", revoked: boolean) {
 	await env.COORDINATOR_DB.prepare(`INSERT INTO ${linkTable} (
 		coordinator_id, link_id, issuer, subject, identity_id, attempt_id,
-		controller_attestation_id, auth_config_revision, created_at_ms, revoked_at_ms
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		controller_attestation_id, auth_config_revision, created_at_ms, revoked_at_ms, authority_kind
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'controller_attestation')`)
 		.bind(f.cfg.coordinatorId, randomUUID(), f.cfg.issuer,
 			dimension === "account" ? f.account.subject : "other-subject",
 			dimension === "actor" ? f.review.identityId : randomUUID(), randomUUID(),

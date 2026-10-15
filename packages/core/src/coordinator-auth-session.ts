@@ -177,7 +177,8 @@ function dto(row: SessionRow): CoordinatorAuthSession {
 	};
 }
 export const AUTH_SESSION_LINK_MATCH_SQL = `l.coordinator_id = s.coordinator_id AND l.link_id = s.link_id
- AND l.identity_id = s.identity_id AND l.issuer = s.issuer AND l.subject = s.subject`;
+ AND l.identity_id = s.identity_id AND l.issuer = s.issuer AND l.subject = s.subject
+ AND l.authority_kind = 'controller_attestation' AND l.controller_attestation_id IS NOT NULL AND l.device_claim_id IS NULL`;
 const LINK_MATCH = AUTH_SESSION_LINK_MATCH_SQL;
 export const AUTH_SESSION_LIVE_GUARD_SQL = `s.coordinator_id = ? AND s.credential_hash = ? AND s.issuer = ? AND s.auth_config_revision = ? AND s.revoked_at_ms IS NULL AND l.revoked_at_ms IS NULL AND s.expires_at_ms > ? AND s.created_at_ms <= ?`;
 const RECEIPT_COLUMNS = `coordinator_id, browser_transaction_hash, source, attempt_id, link_id, session_id, auth_config_revision, created_at_ms`;
@@ -186,7 +187,8 @@ const REDEEM_RECEIPT_SELECT_SQL = `INSERT INTO coordinator_auth_session_receipts
  FROM coordinator_auth_link_attempts t JOIN coordinator_auth_account_links l
  ON l.coordinator_id = t.coordinator_id AND l.link_id = t.link_id AND l.attempt_id = t.attempt_id
  AND l.identity_id = t.identity_id AND l.issuer = t.issuer AND l.subject = t.account_subject
- AND l.auth_config_revision = t.auth_config_revision
+ AND l.auth_config_revision = t.auth_config_revision AND l.authority_kind = 'controller_attestation'
+ AND t.authority_kind = 'controller_attestation'
  WHERE t.coordinator_id = ? AND t.attempt_id = ? AND t.browser_transaction_hash = ?
  AND t.state = 'finalized' AND t.issuer = ? AND t.auth_config_revision = ? AND l.revoked_at_ms IS NULL
  AND ? >= t.finalized_at_ms AND ? < t.finalized_at_ms + 120000 AND ? < t.expires_at_ms`;
@@ -204,19 +206,19 @@ const BOUND_LINK_REDEEM_RECEIPT_SQL = `${REDEEM_RECEIPT_SELECT_SQL}
  ON CONFLICT(coordinator_id, browser_transaction_hash) DO NOTHING`;
 const PRESERVE_LINK_COMPLETION_SQL = `UPDATE coordinator_auth_link_attempts AS t SET state = 'session_redeemed'
  WHERE t.coordinator_id = ? AND t.attempt_id = ? AND t.browser_transaction_hash = ?
- AND t.issuer = ? AND t.auth_config_revision = ? AND t.state = 'finalized'
+ AND t.issuer = ? AND t.auth_config_revision = ? AND t.state = 'finalized' AND t.authority_kind = 'controller_attestation'
  AND t.created_at_ms <= ? AND t.finalized_at_ms <= ?
  AND ? < t.finalized_at_ms + 120000 AND t.expires_at_ms > ?
  AND EXISTS (SELECT 1 FROM coordinator_auth_account_links l
  WHERE l.coordinator_id = t.coordinator_id AND l.link_id = t.link_id AND l.attempt_id = t.attempt_id
  AND l.identity_id = t.identity_id AND l.issuer = t.issuer AND l.subject = t.account_subject
- AND l.auth_config_revision = t.auth_config_revision AND l.revoked_at_ms IS NULL)
+ AND l.auth_config_revision = t.auth_config_revision AND l.revoked_at_ms IS NULL AND l.authority_kind = 'controller_attestation')
  AND EXISTS (SELECT 1 FROM coordinator_auth_browser_transactions b WHERE ${BOUND_LINK_BROWSER_GUARD_SQL})
  AND EXISTS (SELECT 1 FROM coordinator_auth_sessions s
  JOIN coordinator_auth_account_links l ON ${LINK_MATCH} WHERE ${AUTH_SESSION_LIVE_GUARD_SQL})`;
 const SIGNIN_RECEIPT_SQL = `INSERT INTO coordinator_auth_session_receipts (${RECEIPT_COLUMNS})
  SELECT l.coordinator_id, ?, 'signin', NULL, l.link_id, ?, ?, ? FROM coordinator_auth_account_links l
- WHERE l.coordinator_id = ? AND l.issuer = ? AND l.subject = ? AND l.revoked_at_ms IS NULL
+ WHERE l.coordinator_id = ? AND l.issuer = ? AND l.subject = ? AND l.revoked_at_ms IS NULL AND l.authority_kind = 'controller_attestation'
  AND NOT EXISTS (SELECT 1 FROM coordinator_auth_link_attempts t WHERE t.coordinator_id = l.coordinator_id AND t.browser_transaction_hash = ?)
  ON CONFLICT(coordinator_id, browser_transaction_hash) DO NOTHING`;
 const CONSUMED_BROWSER_GUARD_SQL = `b.coordinator_id = ? AND b.browser_transaction_hash = ?
@@ -228,7 +230,7 @@ const CONSUMED_SIGNIN_RECEIPT_SQL = `INSERT INTO coordinator_auth_session_receip
  SELECT b.coordinator_id, b.browser_transaction_hash, 'signin', NULL, l.link_id, ?, ?, ?, 1
  FROM coordinator_auth_browser_transactions b JOIN coordinator_auth_account_links l
  ON l.coordinator_id = b.coordinator_id AND l.issuer = b.issuer
- WHERE ${CONSUMED_BROWSER_GUARD_SQL} AND l.subject = ? AND l.revoked_at_ms IS NULL
+ WHERE ${CONSUMED_BROWSER_GUARD_SQL} AND l.subject = ? AND l.revoked_at_ms IS NULL AND l.authority_kind = 'controller_attestation'
  AND NOT EXISTS (SELECT 1 FROM coordinator_auth_link_attempts t
  WHERE t.coordinator_id = b.coordinator_id AND t.browser_transaction_hash = b.browser_transaction_hash)
  AND (SELECT COUNT(*) FROM coordinator_auth_sessions s WHERE ${LINK_MATCH}
@@ -239,9 +241,9 @@ const SESSION_INSERT_SQL = `INSERT INTO coordinator_auth_sessions
  (coordinator_id, session_id, credential_hash, browser_transaction_hash, link_id, identity_id, issuer, subject, auth_config_revision, created_at_ms, expires_at_ms)
  SELECT r.coordinator_id, r.session_id, ?, r.browser_transaction_hash, r.link_id, l.identity_id, l.issuer, l.subject, r.auth_config_revision, r.created_at_ms, r.created_at_ms + 28800000
  FROM coordinator_auth_session_receipts r JOIN coordinator_auth_account_links l ON l.coordinator_id = r.coordinator_id AND l.link_id = r.link_id
- WHERE r.coordinator_id = ? AND r.browser_transaction_hash = ? AND r.session_id = ?`;
+ WHERE r.coordinator_id = ? AND r.browser_transaction_hash = ? AND r.session_id = ? AND l.authority_kind = 'controller_attestation'`;
 const REDEEM_CONSUME_SQL = `UPDATE coordinator_auth_link_attempts SET state = 'session_redeemed'
- WHERE coordinator_id = ? AND attempt_id = ? AND browser_transaction_hash = ? AND state = 'finalized'
+ WHERE coordinator_id = ? AND attempt_id = ? AND browser_transaction_hash = ? AND state = 'finalized' AND authority_kind = 'controller_attestation'
  AND EXISTS (SELECT 1 FROM coordinator_auth_sessions s WHERE s.coordinator_id = coordinator_auth_link_attempts.coordinator_id AND s.session_id = ? AND s.browser_transaction_hash = coordinator_auth_link_attempts.browser_transaction_hash)`;
 const ISSUE_READ_SQL = `SELECT s.session_id, s.identity_id, s.link_id, s.issuer, s.subject, s.expires_at_ms
  FROM coordinator_auth_session_receipts r JOIN coordinator_auth_sessions s
@@ -252,7 +254,7 @@ const ISSUE_READ_SQL = `SELECT s.session_id, s.identity_id, s.link_id, s.issuer,
  AND s.credential_hash = ? AND r.auth_config_revision = ? AND r.created_at_ms = ? AND s.expires_at_ms = ? AND s.issuer = ?
  AND ((r.source = 'signin' AND r.attempt_id IS NULL) OR (r.source = 'link_redeem' AND EXISTS
  (SELECT 1 FROM coordinator_auth_link_attempts t WHERE t.coordinator_id = r.coordinator_id AND t.attempt_id = r.attempt_id
- AND t.state = 'session_redeemed' AND t.link_id = r.link_id AND t.browser_transaction_hash = r.browser_transaction_hash
+ AND t.state = 'session_redeemed' AND t.authority_kind = 'controller_attestation' AND t.link_id = r.link_id AND t.browser_transaction_hash = r.browser_transaction_hash
  AND t.identity_id = s.identity_id AND t.issuer = s.issuer AND t.account_subject = s.subject)))`;
 
 const PURGE_GUARDED_SIGNIN_SESSIONS_SQL = `DELETE FROM coordinator_auth_sessions
@@ -685,7 +687,7 @@ export class AuthSessionOperations
 		const now = sessionNow(this.clock);
 		await this.batch(revokeStatements(i.linkId, s.coordinatorId, now));
 		const link = await this.first<{ revoked_at_ms: number | null }>({
-			sql: "SELECT revoked_at_ms FROM coordinator_auth_account_links WHERE coordinator_id = ? AND link_id = ?",
+			sql: "SELECT revoked_at_ms FROM coordinator_auth_account_links WHERE coordinator_id = ? AND link_id = ? AND authority_kind = 'controller_attestation'",
 			values: [s.coordinatorId, i.linkId],
 		});
 		if (!link) return { kind: "rejected", error: "link_unavailable" };
@@ -696,17 +698,18 @@ export class AuthSessionOperations
 	}
 }
 const AUDIT_MATCH = `a.coordinator_id = l.coordinator_id AND a.link_id = l.link_id AND a.action = 'link_created'
- AND a.attempt_id = l.attempt_id AND a.identity_id = l.identity_id AND a.controller_attestation_id = l.controller_attestation_id
+ AND a.attempt_id = l.attempt_id AND a.identity_id = l.identity_id AND a.controller_attestation_id IS l.controller_attestation_id
+ AND a.authority_kind = 'controller_attestation' AND l.authority_kind = 'controller_attestation' AND l.controller_attestation_id IS NOT NULL AND a.device_claim_id IS NULL AND l.device_claim_id IS NULL
  AND a.auth_config_revision = l.auth_config_revision AND a.created_at_ms = l.created_at_ms`;
 function revokeStatements(linkId: string, coordinatorId: string, now: number): AuthLinkStatement[] {
 	return [
 		{
-			sql: "UPDATE coordinator_auth_account_links SET revoked_at_ms = ? WHERE coordinator_id = ? AND link_id = ? AND revoked_at_ms IS NULL",
+			sql: "UPDATE coordinator_auth_account_links SET revoked_at_ms = ? WHERE coordinator_id = ? AND link_id = ? AND revoked_at_ms IS NULL AND authority_kind = 'controller_attestation' AND controller_attestation_id IS NOT NULL AND device_claim_id IS NULL",
 			values: [now, coordinatorId, linkId],
 		},
 		{
-			sql: `INSERT INTO coordinator_auth_link_audit_log (coordinator_id, link_id, action, attempt_id, identity_id, group_id, device_id, fingerprint, controller_attestation_id, auth_config_revision, created_at_ms)
- SELECT l.coordinator_id, l.link_id, 'link_revoked', a.attempt_id, a.identity_id, a.group_id, a.device_id, a.fingerprint, a.controller_attestation_id, a.auth_config_revision, l.revoked_at_ms
+			sql: `INSERT INTO coordinator_auth_link_audit_log (coordinator_id, link_id, action, attempt_id, identity_id, group_id, device_id, fingerprint, controller_attestation_id, auth_config_revision, created_at_ms, authority_kind)
+ SELECT l.coordinator_id, l.link_id, 'link_revoked', a.attempt_id, a.identity_id, a.group_id, a.device_id, a.fingerprint, a.controller_attestation_id, a.auth_config_revision, l.revoked_at_ms, 'controller_attestation'
  FROM coordinator_auth_account_links l JOIN coordinator_auth_link_audit_log a ON ${AUDIT_MATCH}
  WHERE l.coordinator_id = ? AND l.link_id = ? AND l.revoked_at_ms IS NOT NULL
  ON CONFLICT(coordinator_id, link_id, action) DO NOTHING`,
@@ -717,5 +720,5 @@ function revokeStatements(linkId: string, coordinatorId: string, now: number): A
 const REVOKE_READ_SQL = `SELECT 1 FROM coordinator_auth_account_links l JOIN coordinator_auth_link_audit_log a ON ${AUDIT_MATCH}
  JOIN coordinator_auth_link_audit_log r ON r.coordinator_id = l.coordinator_id AND r.link_id = l.link_id AND r.action = 'link_revoked'
  AND r.attempt_id = a.attempt_id AND r.identity_id = a.identity_id AND r.group_id = a.group_id AND r.device_id = a.device_id
- AND r.fingerprint = a.fingerprint AND r.controller_attestation_id = a.controller_attestation_id AND r.auth_config_revision = a.auth_config_revision AND r.created_at_ms = l.revoked_at_ms
+ AND r.fingerprint = a.fingerprint AND r.controller_attestation_id IS a.controller_attestation_id AND r.authority_kind = 'controller_attestation' AND r.device_claim_id IS a.device_claim_id AND r.auth_config_revision = a.auth_config_revision AND r.created_at_ms = l.revoked_at_ms
  WHERE l.coordinator_id = ? AND l.link_id = ? AND l.revoked_at_ms IS NOT NULL`;

@@ -479,6 +479,17 @@ it("upgrades an old isolated SQLite file before index creation and reopens idemp
 		// Assert
 		assertUpgrade(store.db, before);
 		const schema = store.db.prepare(`PRAGMA table_info(${TABLES[0]})`).all();
+		expect(
+			store.db
+				.prepare(`SELECT 1 FROM pragma_table_info('${TABLES[0]}') WHERE name = 'authority_kind'`)
+				.get(),
+		).toBeUndefined();
+		expect(
+			store.db
+				.prepare("SELECT 1 FROM sqlite_master WHERE name = 'coordinator_auth_device_claims'")
+				.get(),
+		).toBeUndefined();
+		expect(await store.listGroups()).toEqual([]);
 		await store.close();
 		store = new BetterSqliteCoordinatorStore(path);
 		expect(store.db.prepare(`PRAGMA table_info(${TABLES[0]})`).all()).toEqual(schema);
@@ -505,7 +516,11 @@ it("additive D1 migration preserves old NULL rows and fresh contract enforces th
 		assertUpgrade(db, before);
 		for (const target of [db, fresh]) {
 			const columns = target.prepare(`PRAGMA table_info(${TABLES[0]})`).all() as { name: string }[];
-			const copy: Record<string, unknown> = { ...before, browser_start_hash: null };
+			const copy: Record<string, unknown> = {
+				...before,
+				browser_start_hash: null,
+				authority_kind: "controller_attestation",
+			};
 			const names = columns.map((column) => column.name);
 			const insert = target.prepare(
 				`INSERT INTO ${TABLES[0]} (${names.join(",")}) VALUES (${names.map(() => "?").join(",")})`,

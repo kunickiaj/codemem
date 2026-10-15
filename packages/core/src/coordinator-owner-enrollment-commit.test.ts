@@ -171,6 +171,20 @@ test.for(Object.entries(authorityChanges))(
 	},
 );
 
+test("private SQL winner denies a device-claim link with otherwise current grants", async ({
+	writer: f,
+}) => {
+	// Arrange: retain the confirmed historical pins, but replace the current link authority.
+	await f.exec(`UPDATE coordinator_auth_account_links SET authority_kind='device_claim',
+ controller_attestation_id=NULL, device_claim_id='claim-a'`);
+	const before = f.effects();
+	// Act
+	const result = await commitOwnerEnrollment(f.input());
+	// Assert: a valid pending-key proof cannot turn a claim into owner enrollment.
+	expect(result).toBe(false);
+	expect(f.effects()).toEqual(before);
+});
+
 test.for(["device_id", "ed25519_key"] as const)(
 	"private writer denies durable %s revocation",
 	async (kind, { writer: f }) => {

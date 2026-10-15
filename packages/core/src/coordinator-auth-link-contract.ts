@@ -163,9 +163,9 @@ CREATE TABLE IF NOT EXISTS coordinator_auth_link_attempts (
  device_id TEXT NOT NULL,
  public_key TEXT NOT NULL,
  fingerprint TEXT NOT NULL CHECK (length(fingerprint) = 64 AND fingerprint NOT GLOB '*[^0-9a-f]*'),
- controller_attestation_id TEXT NOT NULL,
- controller_review_receipt_id TEXT NOT NULL,
- controller_revision INTEGER NOT NULL CHECK (controller_revision = 1),
+ controller_attestation_id TEXT,
+ controller_review_receipt_id TEXT,
+ controller_revision INTEGER,
  issuer TEXT NOT NULL,
  auth_config_revision TEXT NOT NULL CHECK (length(auth_config_revision) = 64 AND auth_config_revision NOT GLOB '*[^0-9a-f]*'),
  runtime_verifier_hash TEXT NOT NULL CHECK (length(runtime_verifier_hash) = 64 AND runtime_verifier_hash NOT GLOB '*[^0-9a-f]*'),
@@ -184,6 +184,7 @@ CREATE TABLE IF NOT EXISTS coordinator_auth_link_attempts (
  finalized_at_ms INTEGER,
  failed_at_ms INTEGER,
  ${AUTH_LINK_BROWSER_START_COLUMN_SQL},
+ authority_kind TEXT NOT NULL CHECK (authority_kind IN ('controller_attestation','device_claim')),
  PRIMARY KEY (coordinator_id, attempt_id),
  UNIQUE (coordinator_id, runtime_verifier_hash),
  UNIQUE (coordinator_id, browser_transaction_hash),
@@ -194,7 +195,12 @@ CREATE TABLE IF NOT EXISTS coordinator_auth_link_attempts (
  CHECK (state NOT IN ('oidc_verified','confirmed','finalized','session_redeemed') OR account_subject IS NOT NULL),
  CHECK (state NOT IN ('confirmed','finalized','session_redeemed') OR completion_secret_hash IS NOT NULL),
  CHECK ((state IN ('finalized','session_redeemed') AND link_id IS NOT NULL AND finalized_at_ms IS NOT NULL) OR (state NOT IN ('finalized','session_redeemed') AND link_id IS NULL AND finalized_at_ms IS NULL)),
- CHECK ((state = 'failed' AND failure_reason IS NOT NULL AND failed_at_ms IS NOT NULL) OR (state <> 'failed' AND failure_reason IS NULL AND failed_at_ms IS NULL))
+ CHECK ((state = 'failed' AND failure_reason IS NOT NULL AND failed_at_ms IS NOT NULL) OR (state <> 'failed' AND failure_reason IS NULL AND failed_at_ms IS NULL)),
+ CHECK ((authority_kind = 'controller_attestation'
+  AND (controller_attestation_id IS NOT NULL AND typeof(controller_attestation_id) = 'text' AND length(controller_attestation_id) BETWEEN 1 AND 256 AND controller_attestation_id = trim(controller_attestation_id) AND instr(controller_attestation_id, char(0)) = 0)
+  AND (controller_review_receipt_id IS NOT NULL AND typeof(controller_review_receipt_id) = 'text' AND length(controller_review_receipt_id) BETWEEN 1 AND 256 AND controller_review_receipt_id = trim(controller_review_receipt_id) AND instr(controller_review_receipt_id, char(0)) = 0)
+  AND controller_revision IS NOT NULL AND typeof(controller_revision) = 'integer' AND controller_revision = 1)
+  OR (authority_kind = 'device_claim' AND controller_attestation_id IS NULL AND controller_review_receipt_id IS NULL AND controller_revision IS NULL))
 );
 CREATE TABLE IF NOT EXISTS coordinator_auth_account_links (
  coordinator_id TEXT NOT NULL,
@@ -203,14 +209,21 @@ CREATE TABLE IF NOT EXISTS coordinator_auth_account_links (
  subject TEXT NOT NULL CHECK (length(subject) BETWEEN 1 AND 255),
  identity_id TEXT NOT NULL,
  attempt_id TEXT NOT NULL,
- controller_attestation_id TEXT NOT NULL,
+ controller_attestation_id TEXT,
  auth_config_revision TEXT NOT NULL CHECK (length(auth_config_revision) = 64 AND auth_config_revision NOT GLOB '*[^0-9a-f]*'),
  created_at_ms INTEGER NOT NULL,
  revoked_at_ms INTEGER,
+ authority_kind TEXT NOT NULL CHECK (authority_kind IN ('controller_attestation','device_claim')),
+ device_claim_id TEXT,
  PRIMARY KEY (coordinator_id, link_id),
  UNIQUE (coordinator_id, issuer, subject),
  UNIQUE (coordinator_id, identity_id),
- UNIQUE (coordinator_id, attempt_id)
+ UNIQUE (coordinator_id, attempt_id),
+ UNIQUE (device_claim_id),
+ CHECK ((authority_kind = 'controller_attestation'
+  AND (controller_attestation_id IS NOT NULL AND typeof(controller_attestation_id) = 'text' AND length(controller_attestation_id) BETWEEN 1 AND 256 AND controller_attestation_id = trim(controller_attestation_id) AND instr(controller_attestation_id, char(0)) = 0) AND device_claim_id IS NULL)
+  OR (authority_kind = 'device_claim' AND controller_attestation_id IS NULL
+  AND (device_claim_id IS NOT NULL AND typeof(device_claim_id) = 'text' AND length(device_claim_id) BETWEEN 1 AND 256 AND device_claim_id = trim(device_claim_id) AND instr(device_claim_id, char(0)) = 0)))
 );
 CREATE TABLE IF NOT EXISTS coordinator_auth_link_audit_log (
  coordinator_id TEXT NOT NULL,
@@ -221,10 +234,16 @@ CREATE TABLE IF NOT EXISTS coordinator_auth_link_audit_log (
  group_id TEXT NOT NULL,
  device_id TEXT NOT NULL,
  fingerprint TEXT NOT NULL CHECK (length(fingerprint) = 64 AND fingerprint NOT GLOB '*[^0-9a-f]*'),
- controller_attestation_id TEXT NOT NULL,
+ controller_attestation_id TEXT,
  auth_config_revision TEXT NOT NULL CHECK (length(auth_config_revision) = 64 AND auth_config_revision NOT GLOB '*[^0-9a-f]*'),
  created_at_ms INTEGER NOT NULL,
- PRIMARY KEY (coordinator_id, link_id, action)
+ authority_kind TEXT NOT NULL CHECK (authority_kind IN ('controller_attestation','device_claim')),
+ device_claim_id TEXT,
+ PRIMARY KEY (coordinator_id, link_id, action),
+ CHECK ((authority_kind = 'controller_attestation'
+  AND (controller_attestation_id IS NOT NULL AND typeof(controller_attestation_id) = 'text' AND length(controller_attestation_id) BETWEEN 1 AND 256 AND controller_attestation_id = trim(controller_attestation_id) AND instr(controller_attestation_id, char(0)) = 0) AND device_claim_id IS NULL)
+  OR (authority_kind = 'device_claim' AND controller_attestation_id IS NULL
+  AND (device_claim_id IS NOT NULL AND typeof(device_claim_id) = 'text' AND length(device_claim_id) BETWEEN 1 AND 256 AND device_claim_id = trim(device_claim_id) AND instr(device_claim_id, char(0)) = 0)))
 );
 CREATE INDEX IF NOT EXISTS idx_auth_link_attempts_device_created
  ON coordinator_auth_link_attempts(coordinator_id, group_id, device_id, created_at_ms);

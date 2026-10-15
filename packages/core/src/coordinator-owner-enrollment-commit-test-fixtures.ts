@@ -73,7 +73,7 @@ async function confirmedMetadata(key: ReturnType<typeof commitPendingKey>): Prom
 type Exec = (sql: string, ...values: AuthLinkStatement["values"]) => Promise<number>;
 async function seedCommitAuthority(exec: Exec) {
 	await exec(
-		"INSERT INTO coordinator_auth_account_links (coordinator_id,link_id,issuer,subject,identity_id,attempt_id,controller_attestation_id,auth_config_revision,created_at_ms) SELECT coordinator_id,link_id,issuer,account_subject,identity_id,link_attempt_id,link_controller_attestation_id,link_auth_config_revision,created_at_ms FROM coordinator_owner_enrollment_attempts",
+		"INSERT INTO coordinator_auth_account_links (coordinator_id,link_id,issuer,subject,identity_id,attempt_id,controller_attestation_id,auth_config_revision,created_at_ms,authority_kind) SELECT coordinator_id,link_id,issuer,account_subject,identity_id,link_attempt_id,link_controller_attestation_id,link_auth_config_revision,created_at_ms,'controller_attestation' FROM coordinator_owner_enrollment_attempts",
 	);
 	for (const group of ["group-a", "group-b"]) {
 		await exec(

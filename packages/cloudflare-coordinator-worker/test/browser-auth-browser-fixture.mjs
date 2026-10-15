@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
+import { AUTH_LINK_AUTHORITY_UPGRADE_SQL } from "../../core/src/coordinator-auth-link-authority-upgrade.ts";
 
 const require = createRequire(new URL("../package.json", import.meta.url));
 const coreRequire = createRequire(new URL("../../core/package.json", import.meta.url));
@@ -364,6 +365,7 @@ const migrations = await readD1Migrations(fileURLToPath(new URL("../migrations",
 for (const migration of migrations) {
 	await db.batch(migration.queries.map((sql) => db.prepare(sql)));
 }
+await db.batch(AUTH_LINK_AUTHORITY_UPGRADE_SQL.split(";").map((sql) => sql.trim()).filter(Boolean).map((sql) => db.prepare(sql)));
 store = new D1CoordinatorStore(db);
 await store.createGroup(demo.groupId, "Fake browser demo group");
 await store.enrollDevice(demo.groupId, { ...demo, identityId: null });

@@ -522,10 +522,10 @@ async function persistVerified(
 	account: { issuer: string; subject: string },
 ): Promise<OwnerAttempt | null> {
 	const link = await context.backend.first<OwnerAccountLink>({
-		sql: `SELECT * FROM coordinator_auth_account_links WHERE coordinator_id = ? AND issuer = ? AND subject = ? AND revoked_at_ms IS NULL`,
+		sql: `SELECT * FROM coordinator_auth_account_links WHERE coordinator_id = ? AND issuer = ? AND subject = ? AND revoked_at_ms IS NULL AND authority_kind = 'controller_attestation'`,
 		values: [context.c.coordinatorId, account.issuer, account.subject],
 	});
-	if (!link) return null;
+	if (!link || !isAuthControllerId(link.controller_attestation_id)) return null;
 	const grants = await context.backend.first<{ rows: string }>({
 		sql: `SELECT (${CALLBACK_GRANTS_SQL}) AS rows FROM coordinator_owner_enrollment_attempts a
  WHERE ${ownerAttemptSql("browser_claimed")}`,
@@ -566,7 +566,7 @@ function verifiedStatement(
  AND b.state = 'consumed' AND b.claim_token = ? AND b.nonce IS NULL AND b.pkce_verifier IS NULL)
  AND EXISTS (SELECT 1 FROM coordinator_auth_account_links l WHERE l.coordinator_id = a.coordinator_id
  AND l.link_id = ? AND l.issuer = a.issuer AND l.subject = ? AND l.identity_id = ? AND l.attempt_id = ?
- AND l.controller_attestation_id = ? AND l.auth_config_revision = ? AND l.created_at_ms = ? AND l.revoked_at_ms IS NULL)
+ AND l.authority_kind = 'controller_attestation' AND l.controller_attestation_id = ? AND l.auth_config_revision = ? AND l.created_at_ms = ? AND l.revoked_at_ms IS NULL)
  AND (${CALLBACK_GRANTS_SQL}) = ?
  AND ${NO_COLLISION_SQL}`,
 		values: [

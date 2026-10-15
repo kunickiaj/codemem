@@ -37,7 +37,14 @@ async function definitions() {
 }
 
 beforeEach(async () => {
-	// The normal test setup has already installed the real migration chain.
+	// Freeze the legacy input at the actual pre-authority migrations, not the
+	// current fresh DDL installed by the shared test setup.
+	await batch(linkAuthorityTables.map((table) => `DROP TABLE ${table};`).join("\n"));
+	for (const name of ["0017_add_auth_account_links.sql", "0019_add_auth_link_attempt_limit_indexes.sql", "0025_add_auth_link_browser_start_hash.sql"]) {
+		const migration = env.TEST_MIGRATIONS.find((migration) => migration.name === name);
+		if (!migration) throw new Error(`Missing legacy fixture migration: ${name}`);
+		await env.COORDINATOR_DB.batch(migration.queries.map((sql) => env.COORDINATOR_DB.prepare(sql)));
+	}
 	await batch(legacyLinkAuthorityRowsSql);
 });
 afterEach(async () => {

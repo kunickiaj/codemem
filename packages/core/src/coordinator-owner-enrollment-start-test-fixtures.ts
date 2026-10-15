@@ -84,8 +84,13 @@ export function ownerStartFixture(): OwnerStartFixture {
 	db.exec(COORDINATOR_OWNER_ENROLLMENT_AUDIT_SCHEMA_SQL);
 	const second = new Database(path);
 	const key = commitPendingKey();
-	const rows = (table: string) =>
-		db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all() as Record<string, unknown>[];
+	const rows = (table: string) => {
+		const order = table === "coordinator_auth_device_claims" ? "claim_id" : "rowid";
+		return db.prepare(`SELECT * FROM ${table} ORDER BY ${order}`).all() as Record<
+			string,
+			unknown
+		>[];
+	};
 	return {
 		store,
 		db,
@@ -150,8 +155,8 @@ export async function browserForm(attemptId: string, startCode: string): Promise
 export function seedOwnerCallbackAuthority(f: OwnerStartFixture): void {
 	f.db
 		.prepare(`INSERT INTO coordinator_auth_account_links
- (coordinator_id,link_id,issuer,subject,identity_id,attempt_id,controller_attestation_id,auth_config_revision,created_at_ms)
- VALUES (?,?,?,?,?,?,?,?,?)`)
+ (coordinator_id,link_id,issuer,subject,identity_id,attempt_id,controller_attestation_id,auth_config_revision,created_at_ms,authority_kind)
+ VALUES (?,?,?,?,?,?,?,?,?,'controller_attestation')`)
 		.run(
 			config.coordinatorId,
 			"link-a",

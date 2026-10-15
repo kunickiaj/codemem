@@ -12,24 +12,25 @@ import {
 	AUTH_LINK_AUTHORITY_UPGRADE_SQL,
 	upgradeAuthLinkAuthoritySchema,
 } from "./coordinator-auth-link-authority-upgrade.js";
-import { AUTH_LINK_SCHEMA_SQL } from "./coordinator-auth-link-contract.js";
+import { LEGACY_INLINE_AUTH_LINK_SCHEMA_SQL } from "./coordinator-auth-link-legacy-inline-test-fixture.js";
 
-function legacyDatabase(options: { migrated?: boolean } = {}) {
+const LEGACY_LINK_SCHEMA_SQL = [
+	"0017_add_auth_account_links.sql",
+	"0019_add_auth_link_attempt_limit_indexes.sql",
+	"0025_add_auth_link_browser_start_hash.sql",
+]
+	.map((name) =>
+		readFileSync(
+			new URL(`../../cloudflare-coordinator-worker/migrations/${name}`, import.meta.url),
+			"utf8",
+		),
+	)
+	.join("\n");
+
+function legacyDatabase(schemaSql = LEGACY_LINK_SCHEMA_SQL) {
 	const db = new Database(":memory:");
 	db.exec(AUTH_CONTROLLER_SCHEMA_SQL);
-	if (options.migrated) {
-		for (const name of [
-			"0017_add_auth_account_links.sql",
-			"0019_add_auth_link_attempt_limit_indexes.sql",
-			"0025_add_auth_link_browser_start_hash.sql",
-		])
-			db.exec(
-				readFileSync(
-					new URL(`../../cloudflare-coordinator-worker/migrations/${name}`, import.meta.url),
-					"utf8",
-				),
-			);
-	} else db.exec(AUTH_LINK_SCHEMA_SQL);
+	db.exec(schemaSql);
 	db.exec(legacyLinkAuthorityRowsSql);
 	return db;
 }
@@ -40,13 +41,19 @@ function snapshot(db: Database.Database) {
 	);
 }
 
-it.each([false, true])(
-	"copies every historical column and rowid from migrated=%s without live enrollment/controller pins",
-	(migrated) => {
-		const db = legacyDatabase({ migrated });
+it.each([
+	["actual migrations", LEGACY_LINK_SCHEMA_SQL],
+	["frozen inline DDL", LEGACY_INLINE_AUTH_LINK_SCHEMA_SQL],
+])(
+	"copies every historical column and rowid from %s without live enrollment/controller pins",
+	(_label, schemaSql) => {
+		// Arrange: both supported legacy shapes retain historical rows without live controller pins.
+		const db = legacyDatabase(schemaSql);
 		try {
 			const before = snapshot(db);
+			// Act
 			upgradeAuthLinkAuthoritySchema(db);
+			// Assert: the full copy survives, while a repeated upgrade is rejected.
 			expect(snapshot(db).map(withoutNewAuthorityColumns)).toEqual(before);
 			for (const rows of snapshot(db)) {
 				expect(rows.every((row) => row.authority_kind === "controller_attestation")).toBe(true);
@@ -296,7 +303,7 @@ it("rejects a changed CHECK literal rather than normalizing away its whitespace"
 	const db = new Database(":memory:");
 	try {
 		db.exec(AUTH_CONTROLLER_SCHEMA_SQL);
-		db.exec(AUTH_LINK_SCHEMA_SQL.replace("'pending'", "'pending '"));
+		db.exec(LEGACY_LINK_SCHEMA_SQL.replace("'pending'", "'pending '"));
 		db.exec(legacyLinkAuthorityRowsSql);
 		const before = snapshot(db);
 		expect(() => upgradeAuthLinkAuthoritySchema(db)).toThrow(/CHECK/);

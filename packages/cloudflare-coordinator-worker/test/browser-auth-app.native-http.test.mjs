@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
+import { AUTH_LINK_AUTHORITY_UPGRADE_SQL } from "../../core/src/coordinator-auth-link-authority-upgrade.ts";
 
 const require = createRequire(new URL("../package.json", import.meta.url));
 const runtimeRequire = createRequire(require.resolve("wrangler/package.json"));
@@ -103,6 +104,7 @@ export default { async fetch(request, env) {
 	for (const migration of migrations) {
 		await db.batch(migration.queries.map((sql) => db.prepare(sql)));
 	}
+	await db.batch(AUTH_LINK_AUTHORITY_UPGRADE_SQL.split(";").map((sql) => sql.trim()).filter(Boolean).map((sql) => db.prepare(sql)));
 	const base = await mf.ready;
 	const request = async (path, init) => {
 		const response = await fetch(new URL(path, base), { ...init, redirect: "manual" });
