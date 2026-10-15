@@ -122,6 +122,27 @@ it.each([
 	}
 });
 
+it.each(["00", "0c"])(
+	"rejects JSONB-shaped BLOB group ID x'%s' without changing schema or rows",
+	(hex) => {
+		const db = legacyDatabase();
+		try {
+			// Arrange: these BLOBs can be interpreted as JSONB, but IDs must remain text.
+			db.exec(
+				`UPDATE coordinator_auth_link_attempts SET group_id = x'${hex}' WHERE attempt_id = 'retired'`,
+			);
+			const before = snapshot(db);
+			const schema = db.prepare("SELECT * FROM sqlite_master ORDER BY name").all();
+			// Act / Assert: require the type assertion, not an unrelated JSON parsing error.
+			expect(() => upgradeAuthLinkAuthoritySchema(db)).toThrow(/CHECK/);
+			expect(snapshot(db)).toEqual(before);
+			expect(db.prepare("SELECT * FROM sqlite_master ORDER BY name").all()).toEqual(schema);
+		} finally {
+			db.close();
+		}
+	},
+);
+
 it.each([
 	["copy omission", "SELECT rowid, coordinator_id", "SELECT rowid + 10, coordinator_id"],
 	["copy corruption", "SELECT rowid, coordinator_id", "SELECT rowid, 'changed-coordinator'"],
@@ -314,6 +335,86 @@ it("retains valid non-ASCII reference bytes at the 256 UTF-16-unit boundary", ()
 		const before = snapshot(db);
 		upgradeAuthLinkAuthoritySchema(db);
 		expect(snapshot(db).map(withoutNewAuthorityColumns)).toEqual(before);
+	} finally {
+		db.close();
+	}
+});
+
+it.each([
+	["device_id", ""],
+	["group_id", "has\u200bformat"],
+	["identity_id", "has\ncontrol"],
+	["coordinator_id", " padded"],
+	["attempt_id", "x".repeat(257)],
+	["controller_attestation_id", "has\0nul"],
+	["controller_review_receipt_id", ""],
+	["device_id", "has\u200bformat"],
+	["group_id", ""],
+	["identity_id", "padded "],
+	["coordinator_id", "has\0nul"],
+	["attempt_id", "has\u200bformat"],
+])("rejects failed-attempt %s reference %j independently of relationships", (column, value) => {
+	const db = legacyDatabase();
+	try {
+		// Arrange: the failed attempt has no link or audit relationship to contradict.
+		db.prepare(
+			`UPDATE coordinator_auth_link_attempts SET ${column} = ? WHERE attempt_id = 'retired'`,
+		).run(value);
+		const before = snapshot(db);
+		const schema = db.prepare(linkAuthorityDefinitionsSql).all();
+		// Act / Assert: validation rejects the bytes and leaves schema and rows intact.
+		expect(() => upgradeAuthLinkAuthoritySchema(db)).toThrow(/CHECK/);
+		expect(snapshot(db)).toEqual(before);
+		expect(db.prepare(linkAuthorityDefinitionsSql).all()).toEqual(schema);
+	} finally {
+		db.close();
+	}
+});
+
+it.each(["", "has\u200bformat", " padded", "😀".repeat(129)])(
+	"rejects malformed link ID %j even when every retained relationship agrees",
+	(value) => {
+		const db = legacyDatabase();
+		try {
+			// Arrange: change all matching references, not the join consistency.
+			for (const table of linkAuthorityTables)
+				db.prepare(`UPDATE ${table} SET link_id = ? WHERE link_id = 'link-a'`).run(value);
+			const before = snapshot(db);
+			const schema = db.prepare(linkAuthorityDefinitionsSql).all();
+			// Act / Assert.
+			expect(() => upgradeAuthLinkAuthoritySchema(db)).toThrow(/CHECK/);
+			expect(snapshot(db)).toEqual(before);
+			expect(db.prepare(linkAuthorityDefinitionsSql).all()).toEqual(schema);
+		} finally {
+			db.close();
+		}
+	},
+);
+
+it("preserves boundary-sized failed-attempt IDs and an optional NULL link", () => {
+	const db = legacyDatabase();
+	try {
+		// Arrange: all required IDs reach 256 UTF-16 units; link_id stays NULL.
+		for (const column of [
+			"coordinator_id",
+			"identity_id",
+			"group_id",
+			"device_id",
+			"controller_attestation_id",
+			"controller_review_receipt_id",
+			"attempt_id",
+		])
+			db.prepare(
+				`UPDATE coordinator_auth_link_attempts SET ${column} = ? WHERE state = 'failed'`,
+			).run("😀".repeat(128));
+		const before = snapshot(db);
+		// Act.
+		upgradeAuthLinkAuthoritySchema(db);
+		// Assert.
+		expect(snapshot(db).map(withoutNewAuthorityColumns)).toEqual(before);
+		expect(
+			db.prepare("SELECT link_id FROM coordinator_auth_link_attempts WHERE state = 'failed'").get(),
+		).toEqual({ link_id: null });
 	} finally {
 		db.close();
 	}

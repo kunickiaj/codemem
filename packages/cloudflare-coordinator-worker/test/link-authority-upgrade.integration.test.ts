@@ -118,6 +118,24 @@ it("native D1 requires active attempts to drain before copying", async () => {
 	expect(await definitions()).toEqual(schema);
 });
 
+it.each(["has\u200bformat", "", new Uint8Array([0]).buffer])(
+	"native D1 rejects failed-attempt group ID %j and rolls back every schema and row change",
+	async (value) => {
+		// Arrange: this failed attempt has no linked rows to cause a join mismatch.
+		await env.COORDINATOR_DB.prepare(
+			"UPDATE coordinator_auth_link_attempts SET group_id = ? WHERE attempt_id = 'retired'",
+		)
+			.bind(value)
+			.run();
+		const before = await snapshot();
+		const schema = await definitions();
+		// Act / Assert.
+		await expect(batch(AUTH_LINK_AUTHORITY_UPGRADE_SQL)).rejects.toThrow(/CHECK/);
+		expect(await snapshot()).toEqual(before);
+		expect(await definitions()).toEqual(schema);
+	},
+);
+
 it("native D1 leaves an unexpected assertion table and its contents untouched", async () => {
 	await batch(
 		"CREATE TABLE coordinator_auth_link_authority_upgrade_checks (valuable TEXT); INSERT INTO coordinator_auth_link_authority_upgrade_checks VALUES ('keep');",

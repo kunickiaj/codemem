@@ -222,17 +222,36 @@ const forbiddenCodepoints = [
 	[917505, 917505],
 	[917536, 917631],
 ];
+const idColumns = (table: (typeof tables)[number]) =>
+	table.columns
+		.map((column) => column.slice(0, column.indexOf(" ")))
+		.filter((column) => column.endsWith("_id"));
+const referenceTypes = tables.map((table) =>
+	assertion(
+		`NOT EXISTS (SELECT 1 FROM ${table.name} WHERE ${idColumns(table)
+			.map((column) => `typeof(${column}) NOT IN ('text','null')`)
+			.join(" OR ")})`,
+	),
+);
 const legacyReferenceValidation = assertion(`NOT EXISTS (
- WITH RECURSIVE refs(value) AS (
- SELECT controller_attestation_id FROM ${ATTEMPTS} UNION SELECT controller_review_receipt_id FROM ${ATTEMPTS}),
+ WITH RECURSIVE retained_refs(value) AS (
+  ${tables
+		.map((table) => {
+			const columns = idColumns(table).map((column) => `legacy.${column}`);
+			return `SELECT ids.value FROM ${table.name} legacy, json_each(json_array(${columns.join(", ")})) ids`;
+		})
+		.join(" UNION ")}),
+ refs(value) AS (SELECT value FROM retained_refs WHERE value IS NOT NULL),
  characters(value, position, cp) AS (
  SELECT value, 1, unicode(substr(value, 1, 1)) FROM refs
  UNION ALL SELECT value, position + 1, unicode(substr(value, position + 1, 1)) FROM characters
  WHERE position < length(value) AND position < 256)
- SELECT value FROM characters GROUP BY value HAVING sum(CASE WHEN cp > 65535 THEN 2 ELSE 1 END) > 256
+ SELECT value FROM characters GROUP BY value HAVING NOT ${validReference("value")}
+ OR sum(CASE WHEN cp > 65535 THEN 2 ELSE 1 END) > 256
  OR max(${forbiddenCodepoints.map(([start, end]) => `(cp BETWEEN ${start} AND ${end})`).join(" OR ")}
  OR (position IN (1, length(value)) AND cp IN (32,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288))) = 1)`);
 const provenance = [
+	...referenceTypes,
 	legacyReferenceValidation,
 	assertion(
 		`NOT EXISTS (SELECT 1 FROM ${ATTEMPTS} WHERE state IN ('pending','browser_claimed','oidc_verified','confirmed'))`,
