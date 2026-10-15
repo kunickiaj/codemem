@@ -42,7 +42,11 @@ const purged = (processedCount = 0, limit = 256) => ({
 });
 
 function rows(f: LinkFixture, table: string) {
-	return f.db.prepare(`SELECT * FROM "${table}" ORDER BY rowid`).all() as Record<string, unknown>[];
+	const orderBy = table === "coordinator_auth_device_claims" ? "claim_id" : "rowid";
+	return f.db.prepare(`SELECT * FROM "${table}" ORDER BY ${orderBy}`).all() as Record<
+		string,
+		unknown
+	>[];
 }
 function snapshot(f: LinkFixture, omit: string[] = []) {
 	const tables = f.db

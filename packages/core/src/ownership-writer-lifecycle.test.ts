@@ -41,7 +41,8 @@ describe.each(["SQLite", "D1"] as const)(
 				},
 				rows: async (table) => {
 					if (!f.tables.includes(table)) throw new Error("Unknown lifecycle fixture table");
-					return local.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all();
+					const orderBy = table === "coordinator_auth_device_claims" ? "claim_id" : "rowid";
+					return local.db.prepare(`SELECT * FROM ${table} ORDER BY ${orderBy}`).all();
 				},
 				reopen: async () => {
 					const before = await Promise.all(f.tables.map(f.rows));
