@@ -45,6 +45,7 @@ function useFlowState() {
 	const [group, setGroup] = useState<string | undefined>(undefined);
 	const [view, setView] = useState<AccountView | null>(null);
 	const [operation, setOperation] = useState<AccountOperation | null>(null);
+	const [pendingOperation, setPendingOperation] = useState<AccountOperation | null>(null);
 	const [message, setMessage] = useState("Checking account status…");
 	const [busy, setBusy] = useState(false);
 	const [fallback, setFallback] = useState(false);
@@ -64,6 +65,8 @@ function useFlowState() {
 		setView,
 		operation,
 		setOperation,
+		pendingOperation,
+		setPendingOperation,
 		message,
 		setMessage,
 		busy,
@@ -93,20 +96,54 @@ function reset(flow: Flow): void {
 	flow.refs.current.controller = null;
 	flow.refs.current.privateUrl = null;
 	closeReservedPopup(flow);
-	flow.refs.current.delivered = null;
+	// Keep delivery suppressed across uncertain status and cancellation replies.
 	flow.setFallback(false);
+}
+
+function rememberOperation(flow: Flow, excludeOperationId?: string): void {
+	if (flow.operation && active(flow.operation) && flow.operation.operationId !== excludeOperationId)
+		flow.setPendingOperation(flow.operation);
+}
+
+function operationMissing(error: unknown): boolean {
+	return error instanceof AccountRequestError && error.code === "account_operation_not_found";
+}
+
+function previousOutcomeNotice(operation: AccountOperation): string | undefined {
+	switch (operation.state) {
+		case "succeeded":
+			return "The earlier link finished for its original Identity. Check status there to confirm.";
+		case "cancelled":
+			return "The earlier link was cancelled.";
+		case "failed":
+			return "The earlier link failed for its original Identity.";
+		case "outcome_unknown":
+			return "We couldn’t confirm how the earlier link ended. Check status for its original Identity.";
+		default:
+			return undefined;
+	}
 }
 
 function showStatus(
 	flow: Flow,
 	result: AccountView,
-	options: { notice?: string; excludeOperationId?: string },
+	options: { notice?: string; previousNotice?: string; excludeOperationId?: string },
 ): void {
 	const verifiedLinked =
 		result.remote.kind === "status" &&
 		result.remote.state === "linked" &&
 		result.remote.identityMatches;
 	flow.setView(result);
+	if (
+		result.operation &&
+		(!active(result.operation) ||
+			(!verifiedLinked && sameOperationContext(result.operation, result)))
+	) {
+		const candidate = result.operation;
+		flow.setPendingOperation((previous) =>
+			previous?.operationId === candidate.operationId ? null : previous,
+		);
+	}
 	flow.setOperation(
 		!verifiedLinked &&
 			result.operation &&
@@ -115,13 +152,20 @@ function showStatus(
 			? result.operation
 			: null,
 	);
-	flow.setMessage(verifiedLinked ? "" : (options.notice ?? ""));
+	flow.setMessage(options.previousNotice ?? (verifiedLinked ? "" : (options.notice ?? "")));
 }
 
 async function refresh(
 	flow: Flow,
-	options: { groupId?: string; notice?: string; excludeOperationId?: string } = {},
+	options: {
+		groupId?: string;
+		notice?: string;
+		previousNotice?: string;
+		excludeOperationId?: string;
+		terminalOperationId?: string;
+	} = {},
 ): Promise<void> {
+	rememberOperation(flow, options.terminalOperationId);
 	reset(flow);
 	const epoch = flow.refs.current.generation;
 	const abort = new AbortController();
@@ -131,13 +175,40 @@ async function refresh(
 	flow.setOperation(null);
 	flow.setMessage("Checking account status…");
 	try {
-		const result = await getAccountStatus(options.groupId ?? flow.group, abort.signal);
+		const groupId = "groupId" in options ? options.groupId : flow.group;
+		const result = await loadStatus(flow, groupId, epoch, abort.signal);
 		if (epoch !== flow.refs.current.generation) return;
 		showStatus(flow, result, options);
 	} catch (error) {
-		if (epoch === flow.refs.current.generation) flow.setMessage(errorText(error));
+		if (epoch === flow.refs.current.generation) {
+			let message = errorText(error);
+			if (options.previousNotice) message = `${options.previousNotice} ${message}`;
+			flow.setMessage(message);
+		}
 	} finally {
 		if (epoch === flow.refs.current.generation) flow.setBusy(false);
+	}
+}
+
+async function loadStatus(
+	flow: Flow,
+	groupId: string | undefined,
+	epoch: number,
+	signal: AbortSignal,
+): Promise<AccountView> {
+	try {
+		return await getAccountStatus(groupId, signal);
+	} catch (error) {
+		if (
+			epoch !== flow.refs.current.generation ||
+			!groupId ||
+			!(error instanceof AccountRequestError) ||
+			error.code !== "account_group_not_configured"
+		)
+			throw error;
+		flow.setGroup(undefined);
+		// A single default lookup can discover changed configuration, including zero groups.
+		return getAccountStatus(undefined, signal);
 	}
 }
 
@@ -145,14 +216,12 @@ function useStatusEffect(flow: Flow): void {
 	useEffect(() => {
 		void refresh(flow, { groupId: flow.group });
 		return () => reset(flow);
-	}, [flow.group]);
+	}, []);
 }
 
 function selectGroup(flow: Flow, groupId: string | undefined): void {
-	reset(flow);
-	flow.setView(null);
-	flow.setOperation(null);
 	flow.setGroup(groupId);
+	void refresh(flow, { groupId });
 }
 
 async function adoptConflict(
@@ -211,7 +280,7 @@ async function startFailure(
 
 async function link(flow: Flow): Promise<void> {
 	const { view, busy } = flow;
-	if (flow.refs.current.starting || !canBeginLink(view, busy)) return;
+	if (flow.refs.current.starting || flow.pendingOperation || !canBeginLink(view, busy)) return;
 	flow.refs.current.starting = true;
 	const epoch = flow.refs.current.generation;
 	let opened: Window | null = null;
@@ -317,67 +386,95 @@ function openFallback(flow: Flow): void {
 
 async function poll(
 	flow: Flow,
-	operationId: string,
-	currentView: AccountView,
+	operation: AccountOperation,
+	currentView: AccountView | null,
 	epoch: number,
 	signal: AbortSignal,
 ): Promise<void> {
 	try {
-		const result = await getAccountOperation(operationId, signal);
+		const result = await getAccountOperation(operation.operationId, signal);
 		if (epoch !== flow.refs.current.generation) return;
-		if (!result.current || !sameOperationContext(result.operation, currentView)) {
-			void refresh(flow);
-			return;
-		}
-		flow.setOperation(result.operation);
-		if (!active(result.operation)) {
-			flow.refs.current.privateUrl = null;
-			flow.setFallback(false);
-			// Fetch verified status, not the callback's claimed account data.
-			void refresh(flow, {
-				notice:
-					result.operation.state === "outcome_unknown"
-						? "We couldn’t confirm whether linking finished. Check status."
-						: "",
-			});
-		}
-	} catch {
-		if (signal.aborted) return;
-		if (epoch === flow.refs.current.generation) {
-			reset(flow);
-			flow.setView(null);
-			flow.setOperation(null);
-			flow.setMessage("We couldn’t confirm whether linking finished. Check status.");
-		}
+		showPolledOperation(flow, result, currentView);
+	} catch (error) {
+		if (signal.aborted || epoch !== flow.refs.current.generation) return;
+		reset(flow);
+		flow.refs.current.delivered = operation.operationId;
+		flow.setView(null);
+		flow.setOperation(null);
+		flow.setPendingOperation(operationMissing(error) ? null : { ...operation });
+		flow.setMessage("We couldn’t confirm whether linking finished. Check status.");
 	}
 }
 
+function showPolledOperation(
+	flow: Flow,
+	result: { operation: AccountOperation; current: boolean },
+	currentView: AccountView | null,
+): void {
+	const terminal = !active(result.operation);
+	if (!currentView) {
+		flow.setPendingOperation(terminal ? null : result.operation);
+		if (terminal || result.current)
+			void refresh(flow, { previousNotice: previousOutcomeNotice(result.operation) });
+		return;
+	}
+	if (!result.current || !sameOperationContext(result.operation, currentView)) {
+		flow.refs.current.delivered = result.operation.operationId;
+		if (terminal) flow.setPendingOperation(null);
+		void refresh(flow, {
+			terminalOperationId: terminal ? result.operation.operationId : undefined,
+			previousNotice: previousOutcomeNotice(result.operation),
+		});
+		return;
+	}
+	flow.setOperation(result.operation);
+	if (!terminal) return;
+	flow.setPendingOperation(null);
+	// Fetch verified status, not the callback's claimed account data.
+	void refresh(flow, {
+		terminalOperationId: result.operation.operationId,
+		notice:
+			result.operation.state === "outcome_unknown"
+				? "We couldn’t confirm whether linking finished. Check status."
+				: "",
+	});
+}
+
 function useOperationPolling(flow: Flow): void {
-	const { operation, view } = flow;
+	const { operation, pendingOperation, view, busy } = flow;
 	useEffect(() => {
-		if (!operation || !view || !active(operation) || !sameOperationContext(operation, view)) return;
+		const candidate = operation ?? pendingOperation;
+		if (!candidate || busy || !active(candidate)) return;
+		if (operation && (!view || !sameOperationContext(operation, view))) return;
+		// Past the server deadline, retain explicit cancellation/status actions, not endless retries.
+		if (!operation && !(Date.parse(candidate.deadlineAt) > Date.now())) return;
 		const epoch = flow.refs.current.generation;
 		const abort = new AbortController();
 		const timer = window.setTimeout(
-			() => void poll(flow, operation.operationId, view, epoch, abort.signal),
+			() => void poll(flow, candidate, operation ? view : null, epoch, abort.signal),
 			1000,
 		);
 		return () => {
 			window.clearTimeout(timer);
 			abort.abort();
 		};
-	}, [operation, view?.contextId]);
+	}, [operation, pendingOperation, view?.contextId, busy]);
 }
 
 function showCancellation(flow: Flow, result: AccountOperation): void {
 	if (!flow.view || !sameOperationContext(result, flow.view)) {
-		void refresh(flow);
+		if (!active(result)) flow.setPendingOperation(null);
+		void refresh(flow, {
+			terminalOperationId: !active(result) ? result.operationId : undefined,
+			previousNotice: previousOutcomeNotice(result),
+		});
 		return;
 	}
 	flow.setOperation(result);
 	flow.setMessage("Cancellation is pending. Check status to confirm.");
 	if (!active(result))
 		void refresh(flow, {
+			terminalOperationId: result.operationId,
 			notice:
 				result.state === "outcome_unknown"
 					? "We couldn’t confirm whether linking finished. Check status."
@@ -385,9 +482,12 @@ function showCancellation(flow: Flow, result: AccountOperation): void {
 		});
 }
 
-async function cancel(flow: Flow): Promise<void> {
-	const { operation, busy } = flow;
-	if (flow.refs.current.cancelling || !operation || busy || !active(operation)) return;
+async function cancel(
+	flow: Flow,
+	options: { operation: AccountOperation | null; previous: boolean },
+): Promise<void> {
+	const { operation, previous } = options;
+	if (flow.refs.current.cancelling || !operation || flow.busy || !active(operation)) return;
 	reset(flow);
 	flow.refs.current.cancelling = true;
 	// A pending cancellation must not start a fresh browser delivery for this operation.
@@ -400,21 +500,43 @@ async function cancel(flow: Flow): Promise<void> {
 	try {
 		const result = await cancelAccountLink(operation.operationId, abort.signal);
 		if (epoch !== flow.refs.current.generation) return;
-		showCancellation(flow, result.operation);
-	} catch {
-		if (epoch === flow.refs.current.generation) {
-			// Restart polling in this generation without requesting another browser URL.
-			flow.setOperation({ ...operation });
-			flow.setMessage(
-				"Cancellation could not be confirmed. Linking may still finish; status will update here, or try Cancel again.",
-			);
-		}
+		if (previous) {
+			flow.setPendingOperation(active(result.operation) ? result.operation : null);
+			flow.setMessage("Cancellation is pending. Check status to confirm.");
+			if (!active(result.operation))
+				void refresh(flow, { previousNotice: previousOutcomeNotice(result.operation) });
+		} else showCancellation(flow, result.operation);
+	} catch (error) {
+		if (epoch === flow.refs.current.generation)
+			showCancellationFailure(flow, operation, error, { previous });
 	} finally {
 		if (epoch === flow.refs.current.generation) {
 			flow.refs.current.cancelling = false;
 			flow.setBusy(false);
 		}
 	}
+}
+
+function showCancellationFailure(
+	flow: Flow,
+	operation: AccountOperation,
+	error: unknown,
+	options: { previous: boolean },
+): void {
+	if (operationMissing(error)) {
+		flow.setPendingOperation(null);
+		void refresh(flow, {
+			excludeOperationId: operation.operationId,
+			terminalOperationId: operation.operationId,
+		});
+		return;
+	}
+	// Restart polling in this generation without requesting another browser URL.
+	if (options.previous) flow.setPendingOperation({ ...operation });
+	else flow.setOperation({ ...operation });
+	flow.setMessage(
+		"Cancellation could not be confirmed. Linking may still finish; you can try cancellation again.",
+	);
 }
 
 export function useMyAccount() {
@@ -429,12 +551,14 @@ export function useMyAccount() {
 		setGroup: select,
 		view: flow.view,
 		operation: flow.operation,
+		pendingOperation: flow.pendingOperation,
 		message: flow.message,
 		busy: flow.busy,
 		fallback: flow.fallback,
 		refresh: (options?: { groupId?: string; notice?: string }) => refresh(flow, options),
 		link: () => link(flow),
 		openFallback: () => openFallback(flow),
-		cancel: () => cancel(flow),
+		cancel: () => cancel(flow, { operation: flow.operation, previous: false }),
+		cancelPrevious: () => cancel(flow, { operation: flow.pendingOperation, previous: true }),
 	};
 }

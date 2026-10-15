@@ -80,7 +80,7 @@ function VerifiedAccount({ view }: { view: AccountView }) {
 }
 
 function AccountActions({ flow }: { flow: ReturnType<typeof useMyAccount> }) {
-	const { view, operation, busy, fallback } = flow;
+	const { view, operation, pendingOperation, busy, fallback } = flow;
 	const running = operation?.state === "starting" || operation?.state === "awaiting_browser";
 	return (
 		<div className="peer-actions">
@@ -88,7 +88,7 @@ function AccountActions({ flow }: { flow: ReturnType<typeof useMyAccount> }) {
 				<button
 					className="settings-save"
 					type="button"
-					disabled={busy || !view.canLink}
+					disabled={busy || !view.canLink || Boolean(pendingOperation)}
 					onClick={() => void flow.link()}
 				>
 					Link Google account
@@ -107,6 +107,16 @@ function AccountActions({ flow }: { flow: ReturnType<typeof useMyAccount> }) {
 					onClick={() => void flow.cancel()}
 				>
 					Cancel linking
+				</button>
+			) : null}
+			{pendingOperation && !running ? (
+				<button
+					className="settings-button"
+					type="button"
+					disabled={busy}
+					onClick={() => void flow.cancelPrevious()}
+				>
+					Cancel previous link
 				</button>
 			) : null}
 			<button
@@ -165,6 +175,13 @@ export function MyAccount() {
 				{message || accountSummary(view, operation)}
 			</p>
 			{guidance ? <p className="small">{guidance}</p> : null}
+			{flow.pendingOperation ? (
+				<p className="small">
+					An earlier link may still finish for its original Identity. Its current account context is
+					unverified and may differ from the Identity shown here. Cancel previous link requests
+					cancellation of that earlier attempt. Check status to confirm.
+				</p>
+			) : null}
 			{view?.local ? (
 				<p className="small">
 					Codemem Identity: {view.local.identityLabel || view.local.identityId}

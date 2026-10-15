@@ -408,6 +408,56 @@ describe("My Account configured coordinator browser origins", () => {
 });
 
 describe("My Account uncertain cancellation recovery", () => {
+	it("offers explicit previous-link cancellation after drift without attaching its account or URL", async () => {
+		vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+		vi.mocked(window.open).mockReturnValue(null);
+		view = status({ operation: operation("awaiting_browser"), canLink: false });
+		await show();
+		transport.mockResolvedValueOnce(
+			response({ operation: operation("awaiting_browser"), current: false }),
+		);
+		view = status({
+			contextId: "context-two",
+			selectedGroupId: "group-two",
+			groups: ["group-two", "group-three"],
+			blockedReason: "operation_active",
+			canLink: false,
+			local: {
+				deviceId: "device-two",
+				fingerprint: "fingerprint-two",
+				identityId: "identity-two",
+				identityLabel: "New identity",
+			},
+		});
+		await tick();
+		expect(mount.textContent).toContain("New identity");
+		expect(mount.textContent).not.toContain("Local identity");
+		expect(mount.textContent).toContain("earlier link may still finish for its original Identity");
+		expect(button("Cancel previous link").disabled).toBe(false);
+		expect(button("Check status").disabled).toBe(false);
+		expect(mount.querySelector<HTMLSelectElement>("select")?.disabled).toBe(false);
+		expect(buttons().some((node) => node.textContent === "Open Google sign-in")).toBe(false);
+		expect(calls("/cancel")).toHaveLength(0);
+		transport.mockResolvedValueOnce(response({ operation: operation("cancelled") }));
+		await click("Cancel previous link");
+		expect(calls("/cancel")).toHaveLength(1);
+		expect(buttons().some((node) => node.textContent === "Cancel previous link")).toBe(false);
+		expect(calls("browser-url")).toHaveLength(1);
+		expect(mount.innerHTML).not.toContain("private-fixture");
+		expect(window.open).not.toHaveBeenCalled();
+	});
+	it("keeps status and cancellation available when polling remains unavailable past its deadline", async () => {
+		vi.setSystemTime(new Date("2026-01-01T00:04:59Z"));
+		view = status({ operation: operation("awaiting_browser"), canLink: false });
+		await show();
+		transport.mockRejectedValueOnce(new TypeError("offline"));
+		await tick();
+		await tick();
+		expect(button("Cancel previous link").disabled).toBe(false);
+		expect(button("Check status").disabled).toBe(false);
+		expect(buttons().some((node) => node.textContent === "Open Google sign-in")).toBe(false);
+		expect(calls("/op-one")).toHaveLength(1);
+	});
 	it("keeps polling after a lost cancellation reply until verified status resolves linking", async () => {
 		vi.mocked(window.open).mockReturnValue(null);
 		view = status({ operation: operation("awaiting_browser"), canLink: false });

@@ -147,10 +147,8 @@ async function httpBridge(app: ReturnType<typeof createAccountGuard>["routes"]) 
 	const pending = new Set<Promise<Response>>();
 	function send(path: string, init: RequestInit = {}) {
 		// This is the simulated document origin. Never derive it from arbitrary input.
-		const headers = new Headers({
-			Origin: origin,
-			...Object.fromEntries(new Headers(init.headers)),
-		});
+		const headers = new Headers(init.headers);
+		if (!headers.has("Origin")) headers.set("Origin", origin);
 		const response = new Promise<Response>((resolve, reject) => {
 			const req = request(
 				{
@@ -450,7 +448,9 @@ describe("My Account synthetic end-to-end terminal states and context lifetime",
 			state: "succeeded",
 		});
 		expect(mount.textContent).toContain("New synthetic identity");
-		expect(mount.textContent).toContain("could not be verified");
+		expect(mount.textContent).toContain(
+			"The earlier link finished for its original Identity. Check status there to confirm.",
+		);
 		expect(mount.textContent).not.toContain("fake@example.test");
 		expect(button("Link Google account").disabled).toBe(true);
 		expect(f.link).toHaveBeenCalledOnce();
@@ -491,6 +491,11 @@ describe("My Account synthetic end-to-end request authority", () => {
 				body: "{}",
 			});
 			// Assert: Origin, exact Host port and CSRF are checked by production middleware.
+			const expectedHeaders = Object.fromEntries(new Headers(headers));
+			expect(f.seen.slice(-2).map((entry) => Object.fromEntries(entry.headers))).toEqual([
+				expectedHeaders,
+				expectedHeaders,
+			]);
 			for (const response of [start, delivery]) {
 				expect(response.status).toBe(403);
 				expect(response.headers.get("cache-control")).toBe("no-store");
@@ -498,12 +503,32 @@ describe("My Account synthetic end-to-end request authority", () => {
 				expect(
 					[...response.headers.keys()].filter((key) => key.startsWith("access-control-")),
 				).toEqual([]);
-				expect(await response.text()).not.toContain(PRIVATE);
+				const body = await response.text();
+				expect(body).not.toContain(PRIVATE);
+				expect(JSON.parse(body).error).toBe(
+					{
+						"foreign-origin": "account_request_rejected",
+						"foreign-port": "account_request_rejected",
+						"foreign-host": "account_request_rejected",
+						"missing-csrf": "account_csrf_invalid",
+					}[attack],
+				);
 			}
 			expect(f.readContext).toHaveBeenCalledTimes(reads);
 			expect(f.link).not.toHaveBeenCalled();
 			// A real private URL exists now: the same hostile request still cannot retrieve it.
-			await f.click("Link Google account");
+			const authorized = await f.send(PATH, {
+				method: "POST",
+				headers: {
+					...headers,
+					Origin: f.origin,
+					Host: new URL(f.origin).host,
+					"X-Codemem-Account-Csrf": token,
+				},
+				body: JSON.stringify({ groupId: context.groupId, contextId: context.contextId }),
+			});
+			expect(authorized.status).toBe(202);
+			expect(f.seen.slice(-1).map((entry) => entry.headers.get("Origin"))).toEqual([f.origin]);
 			const active = f.registry.forContext(context.contextId);
 			if (!active) throw new Error("Expected authorized synthetic operation");
 			const protectedDelivery = await f.send(`${PATH}/${active.operationId}/browser-url`, {
@@ -512,6 +537,9 @@ describe("My Account synthetic end-to-end request authority", () => {
 				body: "{}",
 			});
 			expect(protectedDelivery.status).toBe(403);
+			expect(f.seen.slice(-1).map((entry) => entry.headers.get("Origin"))).toEqual([
+				headers.Origin,
+			]);
 			expect(await protectedDelivery.text()).not.toContain(PRIVATE);
 			expect(f.link).toHaveBeenCalledOnce();
 			f.noLeaks();

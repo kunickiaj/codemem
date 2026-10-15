@@ -351,6 +351,8 @@ If the coordinator reports an Identity mismatch, conflict, revoked link, or requ
 
 Use **Cancel linking** to ask to stop an in-progress request. Status updates continue if the cancellation request fails. An unknown outcome can still finish later; use **Check status** when it becomes available.
 
+If the Viewer configuration changes during an attempt, **Cancel previous link** requests cancellation for the original Identity; it does not attach that attempt to the newly displayed Identity. Transient status failures retry until the attempt's deadline without reopening sign-in. After that deadline, use the available cancellation and status controls to check the outcome.
+
 Returning to the tab or refreshing resumes an in-progress operation. Restarting the Viewer loses its in-memory operation, but **Check status** still reads the signed coordinator result. The linking request has a ten-minute deadline. Local capture, reading, and direct sync continue without Google, and this optional link does not add a required-auth policy.
 
 ### Choose a sharing flow
