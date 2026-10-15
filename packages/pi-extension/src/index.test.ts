@@ -14,6 +14,17 @@ import codememPiExtension, {
 } from "./index.js";
 import { buildViewerIdentityTarget, resolveViewerDbPath } from "./viewer.js";
 
+// Viewer startup bypasses __setTestExecImpl and calls spawn directly.
+const { spawnMock } = vi.hoisted(() => ({
+	spawnMock: vi.fn(() => {
+		throw new Error("subprocess disabled in extension tests");
+	}),
+}));
+vi.mock("node:child_process", async (importOriginal) => ({
+	...(await importOriginal<typeof import("node:child_process")>()),
+	spawn: spawnMock,
+}));
+
 type Handler = (event: unknown, ctx: unknown) => unknown | Promise<unknown>;
 
 function createMockPi() {
@@ -94,6 +105,7 @@ function matchingProfile(cwd: string) {
 describe("extension factory lifecycle", () => {
 	beforeEach(() => {
 		vi.stubEnv("CODEMEM_VIEWER_AUTO", "0");
+		spawnMock.mockClear();
 	});
 	afterEach(resetPiExtensionTest);
 
@@ -126,55 +138,82 @@ describe("extension factory lifecycle", () => {
 	});
 
 	it("session_start re-keys state and persists cursor after ingest attempt", async () => {
-		vi.stubGlobal(
-			"fetch",
-			vi.fn(async () => {
-				throw new Error("offline");
-			}),
-		);
-		__setTestExecImpl(async () => ({
+		// Arrange: keep offline HTTP and CLI fallback inside this test.
+		const fetchMock = vi.fn(async () => {
+			throw new Error("offline");
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		const execMock = vi.fn(async () => ({
 			stdout: JSON.stringify({ inserted: 1, skipped: 0, via: "cli" }),
 			stderr: "",
 		}));
+		__setTestExecImpl(execMock);
 
 		const { pi, handlers, appended } = createMockPi();
 		codememPiExtension(pi as never);
 
 		const ctx = createMockCtx({ sessionId: "sess-fork-9", cwd: "/work/app" });
-		const startHandlers = handlers.get("session_start") ?? [];
-		await startHandlers[0]?.({ type: "session_start", reason: "startup" }, ctx);
+		vi.useFakeTimers();
+		try {
+			// Act.
+			const startHandlers = handlers.get("session_start") ?? [];
+			await startHandlers[0]?.({ type: "session_start", reason: "startup" }, ctx);
 
-		expect(appended.some((e) => e.type === "codemem.cursor")).toBe(true);
-		expect(ctx.sessionManager.getSessionId()).toBe("sess-fork-9");
+			// Assert: ingest succeeds without starting a viewer or leaving a delayed probe.
+			expect(appended.some((e) => e.type === "codemem.cursor")).toBe(true);
+			expect(ctx.sessionManager.getSessionId()).toBe("sess-fork-9");
+			expect(execMock).toHaveBeenCalled();
+			expect(fetchMock).toHaveBeenCalled();
+			const fetchCalls = fetchMock.mock.calls.length;
+			await vi.advanceTimersByTimeAsync(1_000);
+			expect(fetchMock).toHaveBeenCalledTimes(fetchCalls);
+			expect(spawnMock).not.toHaveBeenCalled();
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("session_before_compact handler never returns compaction", async () => {
-		vi.stubGlobal(
-			"fetch",
-			vi.fn(async () => {
-				throw new Error("offline");
-			}),
-		);
-		__setTestExecImpl(async () => ({ stdout: "{}", stderr: "" }));
+		// Arrange: auto-start is disabled before constructing the extension.
+		const fetchMock = vi.fn(async () => {
+			throw new Error("offline");
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		const execMock = vi.fn(async () => ({ stdout: "{}", stderr: "" }));
+		__setTestExecImpl(execMock);
 		const { pi, handlers } = createMockPi();
 		codememPiExtension(pi as never);
 		const ctx = createMockCtx();
-		await handlers.get("session_start")?.[0]?.({ type: "session_start", reason: "startup" }, ctx);
-
-		const result = await handlers.get("session_before_compact")?.[0]?.(
-			{
-				type: "session_before_compact",
-				reason: "threshold",
-				willRetry: false,
-				signal: ctx.signal,
-				preparation: {},
-				branchEntries: [],
-			},
-			ctx,
-		);
-		expect(result).toBeUndefined();
-		if (result && typeof result === "object") {
-			expect(result).not.toHaveProperty("compaction");
+		vi.useFakeTimers();
+		try {
+			// Act.
+			await handlers.get("session_start")?.[0]?.({ type: "session_start", reason: "startup" }, ctx);
+			const result = await handlers.get("session_before_compact")?.[0]?.(
+				{
+					type: "session_before_compact",
+					reason: "threshold",
+					willRetry: false,
+					signal: ctx.signal,
+					preparation: {},
+					branchEntries: [],
+				},
+				ctx,
+			);
+			// Assert: preserve compaction semantics and prevent startup escaping cleanup.
+			expect(result).toBeUndefined();
+			if (result && typeof result === "object") {
+				expect(result).not.toHaveProperty("compaction");
+			}
+			expect(execMock).toHaveBeenCalled();
+			expect(fetchMock).toHaveBeenCalled();
+			const fetchCalls = fetchMock.mock.calls.length;
+			await vi.advanceTimersByTimeAsync(1_000);
+			expect(fetchMock).toHaveBeenCalledTimes(fetchCalls);
+			expect(spawnMock).not.toHaveBeenCalled();
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
 		}
 	});
 });
