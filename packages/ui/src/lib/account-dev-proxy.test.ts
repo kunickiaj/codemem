@@ -87,7 +87,12 @@ function privateResponse(response: Awaited<ReturnType<typeof send>>) {
 }
 
 async function fixture(
-	options: { occupiedPort?: boolean; noAdapter?: boolean; noPrivacyStrip?: boolean } = {},
+	options: {
+		occupiedPort?: boolean;
+		noAdapter?: boolean;
+		noPrivacyStrip?: boolean;
+		onProxyResponse?: (upstream: IncomingMessage, res: ServerResponse) => void;
+	} = {},
 ) {
 	const seen: { path: string; host: string | null; origin: string | null; body: string }[] = [];
 	let backendPort = 0;
@@ -128,6 +133,11 @@ async function fixture(
 	const target = `http://127.0.0.1:${backendPort}`;
 	const adapter = createAccountDevProxy({ viewerPort: backendPort });
 	const configure = adapter.proxy.configure;
+	if (options.onProxyResponse)
+		adapter.proxy.configure = (proxy, config) => {
+			configure(proxy, config);
+			proxy.on("proxyRes", (upstream, _req, res) => options.onProxyResponse(upstream, res));
+		};
 	if (options.noPrivacyStrip)
 		adapter.proxy.configure = (proxy, config) => {
 			configure(proxy, config);
@@ -346,6 +356,143 @@ describe("account path aliases cannot bypass frontend validation", () => {
 	);
 });
 describe("account proxy backend failures", () => {
+	it.each([false, true])(
+		"handles errors after headers without rewriting an ended response (ended=%s)",
+		(ended) => {
+			const f = middlewareFixture({ address: "127.0.0.1", port: 4567 });
+			Object.defineProperties(f.res, {
+				headersSent: { value: true },
+				writableEnded: { value: ended },
+			});
+			const destroy = vi.spyOn(f.res, "destroy").mockReturnValue(f.res);
+			const headers = vi.spyOn(f.res, "setHeader");
+			const emitter = new EventEmitter();
+			f.adapter.proxy.configure(emitter as never, {});
+			emitter.emit("error", new Error("fixture failure"), f.req, f.res);
+			expect(destroy).toHaveBeenCalledTimes(ended ? 0 : 1);
+			expect(headers).not.toHaveBeenCalled();
+			expect(f.end).not.toHaveBeenCalled();
+		},
+	);
+	it("closes a partial response when the backend disconnects without logging private details", async () => {
+		let probe: (destroyed: boolean) => void;
+		const probed = new Promise<boolean>((resolve) => {
+			probe = resolve;
+		});
+		const f = await fixture({
+			onProxyResponse(upstream, res) {
+				// Probe after the adapter's close listener, before awaiting client close.
+				upstream.once("close", () => probe(res.destroyed));
+			},
+		});
+		let backendResponse: ServerResponse;
+		f.backend.removeAllListeners("request");
+		f.backend.on("request", (_req, res) => {
+			backendResponse = res;
+			res.writeHead(200, {
+				"Content-Type": "application/json",
+				"Access-Control-Allow-Origin": "*",
+			});
+			res.write('{"pending":');
+		});
+		const logs = [
+			vi.spyOn(console, "error").mockImplementation(() => {}),
+			vi.spyOn(console, "warn").mockImplementation(() => {}),
+			vi.spyOn(f.vite.config.logger, "error"),
+		];
+		const res = await new Promise<IncomingMessage>((resolve, reject) => {
+			const req = request(
+				{
+					hostname: "127.0.0.1",
+					port: f.port,
+					path: SESSION,
+					agent: false,
+					headers: { Origin: f.origin },
+				},
+				resolve,
+			);
+			req.on("error", reject);
+			req.end();
+		});
+		const closed = new Promise<void>((resolve) => res.once("close", resolve));
+		res.on("error", () => {}); // Truncated HTTP bodies must not become unhandled test errors.
+		res.setEncoding("utf8");
+		let body = "";
+		await new Promise<void>((resolve) =>
+			res.once("data", (chunk) => {
+				body += chunk;
+				resolve();
+			}),
+		);
+		backendResponse.destroy();
+		// The old adapter fails here immediately instead of hanging until the test timeout.
+		expect(await probed).toBe(true);
+		await closed;
+		expect(res.aborted).toBe(true);
+		expect(res.complete).toBe(false);
+		expect(body).toBe('{"pending":');
+		privateResponse({ status: res.statusCode ?? 0, headers: res.headers, body });
+		expect(logs.flatMap((log) => log.mock.calls)).toEqual([]);
+	});
+});
+describe("account proxy headers-only backend failures", () => {
+	it("closes a headers-only truncated response instead of sending JSON under upstream headers", async () => {
+		let probe: (destroyed: boolean) => void;
+		const probed = new Promise<boolean>((resolve) => {
+			probe = resolve;
+		});
+		let backendResponse: ServerResponse;
+		const f = await fixture({
+			onProxyResponse(upstream, res) {
+				upstream.once("close", () => probe(res.destroyed));
+				queueMicrotask(() => backendResponse.destroy());
+			},
+		});
+		f.backend.removeAllListeners("request");
+		f.backend.on("request", (_req, res) => {
+			backendResponse = res;
+			res.writeHead(200, {
+				"Content-Type": "application/json",
+				"Content-Length": "100",
+				"Content-Encoding": "gzip",
+				"Set-Cookie": "fixture=value",
+				ETag: '"fixture"',
+				"Access-Control-Allow-Origin": "*",
+			});
+			res.flushHeaders();
+		});
+		const logs = [
+			vi.spyOn(console, "error").mockImplementation(() => {}),
+			vi.spyOn(console, "warn").mockImplementation(() => {}),
+			vi.spyOn(f.vite.config.logger, "error"),
+		];
+		const receivedResponse = vi.fn();
+		const errors: string[] = [];
+		const req = request(
+			{
+				hostname: "127.0.0.1",
+				port: f.port,
+				path: SESSION,
+				agent: false,
+				headers: { Origin: f.origin },
+			},
+			(res) => {
+				receivedResponse();
+				res.on("error", () => {});
+				res.resume();
+			},
+		);
+		const closed = new Promise<void>((resolve) => req.once("close", resolve));
+		req.on("error", (error: NodeJS.ErrnoException) => errors.push(error.code ?? ""));
+		req.end();
+		expect(await probed).toBe(true);
+		await closed;
+		expect(receivedResponse).not.toHaveBeenCalled();
+		expect(errors).toEqual(["ECONNRESET"]);
+		expect(logs.flatMap((log) => log.mock.calls)).toEqual([]);
+	});
+});
+describe("account proxy backend rejection responses", () => {
 	it("keeps invalid CSRF rejected after the frontend request passes validation", async () => {
 		// Arrange
 		const f = await fixture();

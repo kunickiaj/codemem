@@ -439,10 +439,11 @@ describe("My Account synthetic end-to-end terminal states and context lifetime",
 		});
 		f.readRemoteStatus.mockResolvedValue({ kind: "unavailable", code: "coordinator_unreachable" });
 		// Act
+		expect(button("Check status").disabled).toBe(true);
 		await f.click("Check status");
 		f.done.resolve(finalResult);
 		await f.drain();
-		await f.click("Check status");
+		await f.poll();
 		// Assert
 		expect(f.registry.get(old.operationId)).toMatchObject({
 			contextId: "context-a",

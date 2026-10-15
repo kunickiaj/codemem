@@ -63,6 +63,60 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
+describe("My Account conflict transport recovery", () => {
+	it("recovers an active conflict from status after a transient operation GET failure", async () => {
+		await probe();
+		view = status({ operation: operation("awaiting_browser"), canLink: false });
+		transport
+			.mockResolvedValueOnce(
+				response({ error: "account_link_in_progress", operationId: "op-one" }, 409),
+			)
+			.mockRejectedValueOnce(new TypeError("private-operation-failure"));
+		await act(async () => {
+			await flow.link();
+		});
+		await settle();
+		expect(flow.operation).toEqual(view.operation);
+		expect(flow.fallback).toBe(true);
+		expect(flow.busy).toBe(false);
+		expect(calls("browser-url")).toHaveLength(1);
+		expect(flow.message).not.toContain("private-operation-failure");
+		await tick();
+		expect(calls("/op-one")).toHaveLength(2);
+		await act(async () => {
+			await flow.cancel();
+		});
+		expect(calls("/cancel")).toHaveLength(1);
+		expect(calls("link-operations")).toHaveLength(1);
+	});
+	it.each(["context", "group"] as const)(
+		"rejects a wrong-%s status operation after a transient conflict GET failure",
+		async (mismatch) => {
+			await probe();
+			const candidate = operation("awaiting_browser");
+			if (mismatch === "context") candidate.contextId = "other-context";
+			else candidate.groupId = "other-group";
+			view = status({ operation: candidate, canLink: false });
+			transport
+				.mockResolvedValueOnce(
+					response({ error: "account_link_in_progress", operationId: "op-one" }, 409),
+				)
+				.mockRejectedValueOnce(new TypeError("private-operation-failure"));
+			await act(async () => {
+				await flow.link();
+			});
+			await settle();
+			await tick();
+			expect(flow.operation).toBeNull();
+			expect(flow.fallback).toBe(false);
+			expect(calls("browser-url")).toHaveLength(0);
+			expect(calls("/op-one")).toHaveLength(1);
+			expect(calls("link-operations")).toHaveLength(1);
+			expect(flow.message).not.toContain("private-operation-failure");
+		},
+	);
+});
+
 describe("My Account stale work and conflict safety", () => {
 	it.each(["matching", "not-current", "wrong-context", "wrong-group", "finished"])(
 		"validates a conflicting operation before adopting: %s",
@@ -544,7 +598,9 @@ describe("My Account reserved blank cleanup", () => {
 			expect(popup.close).toHaveBeenCalledTimes(1);
 			expect(popup.location.replace).not.toHaveBeenCalled();
 			expect(flow.fallback).toBe(false);
-			expect(flow.message).toContain("Check status");
+			expect(flow.message).toBe(
+				"Google sign-in could not be opened. Cancel linking, or wait for status to update.",
+			);
 			expect(flow.message).not.toContain("private-url-details");
 		},
 	);

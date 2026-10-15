@@ -17,7 +17,7 @@ function remoteSummary(view: AccountView): string {
 	if (view.remote.kind === "unavailable" || view.remote.kind === "not_checked")
 		return "Account status could not be verified. Check status again; this does not mean the Identity is unlinked.";
 	if (view.remote.state === "review_required")
-		return `An operator must review this device before linking. Reuse the exact database, config, coordinator and environment settings (including the keys directory) used to start this Viewer. Example only, with those same selections: codemem coordinator review-device-owner ${view.selectedGroupId ?? "<group>"}. Review the preview before confirming. Confirmation defaults to No; linking does not grant sharing access.`;
+		return 'An operator must review this device before linking. Reuse the exact database, config, coordinator and environment settings (including the keys directory) used to start this Viewer. Example only, with those same selections: codemem coordinator review-device-owner "your-group". Replace "your-group" with your group argument, quoted for your shell. Review the preview before confirming. Confirmation defaults to No; linking does not grant sharing access.';
 	if (view.remote.state === "conflict")
 		return "This Identity has a conflicting account link. An operator must resolve it; linking here cannot replace or merge accounts.";
 	if (!view.remote.identityMatches)
@@ -112,7 +112,7 @@ function AccountActions({ flow }: { flow: ReturnType<typeof useMyAccount> }) {
 			<button
 				className="settings-button"
 				type="button"
-				disabled={busy}
+				disabled={busy || running}
 				onClick={() => void flow.refresh()}
 			>
 				Check status

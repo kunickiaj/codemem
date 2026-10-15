@@ -68,6 +68,37 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
+describe("My Account safe operator review guidance", () => {
+	it.each([
+		"group with spaces",
+		"group'\"quotes",
+		"$(touch marker)",
+		"`touch marker`",
+		"group;touch marker",
+	])("keeps review guidance command fixed for group %s", async (groupId) => {
+		view = status({
+			selectedGroupId: groupId,
+			groups: [groupId],
+			canLink: false,
+			remote: {
+				kind: "status",
+				coordinatorId: "coordinator-one",
+				identityId: null,
+				identityMatches: false,
+				state: "review_required",
+				account: {},
+			},
+		});
+		await show();
+		expect(mount.textContent).toContain('codemem coordinator review-device-owner "your-group".');
+		expect(mount.textContent).toContain('Replace "your-group" with your group argument');
+		expect(mount.textContent).not.toContain(groupId);
+		expect(mount.textContent).toContain(
+			"exact database, config, coordinator and environment settings (including the keys directory)",
+		);
+	});
+});
+
 describe("My Account read-only status", () => {
 	it("explains a foreign active operation without exposing its details or enabling linking", async () => {
 		// Arrange: the selected group's unlinked status is not permission to start another job.
@@ -226,6 +257,30 @@ describe("My Account retained outcomes and current guidance", () => {
 
 describe("My Account linking lifecycle", () => {
 	it.each(["starting", "awaiting_browser"] as const)(
+		"ignores repeated status clicks during %s and retains one browser delivery",
+		async (state) => {
+			vi.mocked(window.open).mockReturnValue(null);
+			view = status({ operation: operation(state), canLink: false });
+			await show();
+			for (let attempt = 0; attempt < 6; attempt++) await click("Check status");
+			expect(button("Check status").disabled).toBe(true);
+			expect(calls("link-status")).toHaveLength(1);
+			expect(button("Cancel linking").disabled).toBe(false);
+			if (state === "starting") {
+				transport.mockResolvedValueOnce(
+					response({ version: 1, current: true, operation: operation("awaiting_browser") }),
+				);
+				await tick();
+			}
+			expect(button("Open Google sign-in").disabled).toBe(false);
+			expect(calls("browser-url")).toHaveLength(1);
+			expect(calls("browser-url")[0]?.[1]?.method).toBe("POST");
+			await click("Open Google sign-in");
+			expect(window.open).toHaveBeenCalledWith(privateUrl, "_blank", "noopener,noreferrer");
+			expect(mount.innerHTML).not.toContain("private-fixture");
+		},
+	);
+	it.each(["starting", "awaiting_browser"] as const)(
 		"locks group selection during %s without losing Cancel or browser delivery",
 		async (state) => {
 			vi.mocked(window.open).mockReturnValue(null);
@@ -349,6 +404,50 @@ describe("My Account configured coordinator browser origins", () => {
 		}
 		expect(mount.innerHTML).not.toContain("private-fixture");
 		expect(window.location.href).not.toContain("private-fixture");
+	});
+});
+
+describe("My Account uncertain cancellation recovery", () => {
+	it("keeps polling after a lost cancellation reply until verified status resolves linking", async () => {
+		vi.mocked(window.open).mockReturnValue(null);
+		view = status({ operation: operation("awaiting_browser"), canLink: false });
+		await show();
+		expect(calls("browser-url")).toHaveLength(1);
+		transport.mockRejectedValueOnce(new TypeError("private-cancel-failure"));
+		await click("Cancel linking");
+		expect(button("Check status").disabled).toBe(true);
+		expect(button("Cancel linking").disabled).toBe(false);
+		expect(mount.textContent).toContain("Cancellation could not be confirmed");
+		expect(mount.textContent).not.toContain("private-cancel-failure");
+		expect(buttons().some((node) => node.textContent === "Open Google sign-in")).toBe(false);
+		transport.mockResolvedValueOnce(
+			response({ version: 1, current: true, operation: operation("awaiting_browser") }),
+		);
+		await tick();
+		expect(calls("/op-one")).toHaveLength(1);
+		transport.mockResolvedValueOnce(
+			response({ version: 1, current: true, operation: operation("succeeded") }),
+		);
+		view = status({
+			canLink: false,
+			remote: {
+				kind: "status",
+				coordinatorId: "coordinator-one",
+				identityId: "identity-one",
+				identityMatches: true,
+				state: "linked",
+				account: { email: "verified@example.test" },
+			},
+		});
+		await tick();
+		expect(calls("/op-one")).toHaveLength(2);
+		expect(calls("link-status")).toHaveLength(2);
+		expect(mount.textContent).toContain("verified@example.test");
+		expect(button("Check status").disabled).toBe(false);
+		expect(calls("/cancel")).toHaveLength(1);
+		expect(calls("link-operations")).toHaveLength(0);
+		expect(calls("browser-url")).toHaveLength(1);
+		expect(window.open).not.toHaveBeenCalled();
 	});
 });
 

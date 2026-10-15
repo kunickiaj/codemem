@@ -18,8 +18,26 @@ function privateHeaders(res: ServerResponse): void {
 	res.setHeader("Referrer-Policy", "no-referrer");
 }
 
+function privateUpstreamResponse(upstream: IncomingMessage, res: ServerResponse): void {
+	// Never replace a truncated response with JSON under copied upstream headers.
+	upstream.once("close", () => {
+		if (!upstream.complete && !res.writableEnded) res.destroy();
+	});
+	for (const name of Object.keys(upstream.headers)) {
+		if (name.toLowerCase().startsWith("access-control-")) delete upstream.headers[name];
+	}
+	privateHeaders(res);
+	upstream.headers["cache-control"] = "no-store";
+	upstream.headers["x-content-type-options"] = "nosniff";
+	upstream.headers["referrer-policy"] = "no-referrer";
+}
+
 function reject(res: ServerResponse, status = 403): void {
-	if (res.headersSent || res.writableEnded) return;
+	if (res.writableEnded) return;
+	if (res.headersSent) {
+		res.destroy();
+		return;
+	}
 	privateHeaders(res);
 	res.statusCode = status;
 	res.setHeader("Content-Type", "application/json");
@@ -173,13 +191,7 @@ export function createAccountDevProxy(options: { viewerPort: number }): {
 					else outgoing.removeHeader("Origin");
 				});
 				proxy.on("proxyRes", (upstream, _req, res) => {
-					for (const name of Object.keys(upstream.headers)) {
-						if (name.toLowerCase().startsWith("access-control-")) delete upstream.headers[name];
-					}
-					privateHeaders(res);
-					upstream.headers["cache-control"] = "no-store";
-					upstream.headers["x-content-type-options"] = "nosniff";
-					upstream.headers["referrer-policy"] = "no-referrer";
+					privateUpstreamResponse(upstream, res);
 				});
 				const onError = (_error: Error, _req: IncomingMessage, res: ServerResponse | Socket) => {
 					if ("setHeader" in res) reject(res, 502);

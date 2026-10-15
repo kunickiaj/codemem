@@ -327,7 +327,7 @@ To link an account:
 
 1. Open the Viewer on the device whose existing Identity you want to link, then choose **Link Google account**.
 2. Complete Google sign-in in the browser window that opens. If the browser blocks the window, choose **Open Google sign-in** to open it on the same computer.
-3. Return to the Viewer and choose **Check status**. The coordinator's signed account status is the completion record.
+3. Return to the Viewer. Status updates automatically while linking; after the attempt finishes, **Check status** is available to verify the result. The coordinator's signed account status is the completion record.
 
 The card starts Google sign-in only when you choose **Link Google account**. Do not paste a private sign-in link into another browser or computer.
 
@@ -347,7 +347,9 @@ Inspect the preview before confirming. Confirmation defaults to **No**. Then use
 
 Account linking is optional. It does not grant Team or Project access, move an Identity, merge accounts, reassign devices, transfer history, or change existing device keys or enrollments. At one coordinator, one Google account links to one existing Identity, and each Identity links to one account. You cannot replace, unlink, merge, or transfer a link from this card. Choose an account that follows your work policy.
 
-If the coordinator reports an Identity mismatch, conflict, revoked link, or required review, ask the coordinator operator to resolve it; the card does not merge or repair identities. Use **Cancel linking** to ask to stop an in-progress request, then **Check status**. The request may already have completed, and an unconfirmed cancellation or cleanup can still finish later.
+If the coordinator reports an Identity mismatch, conflict, revoked link, or required review, ask the coordinator operator to resolve it; the card does not merge or repair identities.
+
+Use **Cancel linking** to ask to stop an in-progress request. Status updates continue if the cancellation request fails. An unknown outcome can still finish later; use **Check status** when it becomes available.
 
 Returning to the tab or refreshing resumes an in-progress operation. Restarting the Viewer loses its in-memory operation, but **Check status** still reads the signed coordinator result. The linking request has a ten-minute deadline. Local capture, reading, and direct sync continue without Google, and this optional link does not add a required-auth policy.
 

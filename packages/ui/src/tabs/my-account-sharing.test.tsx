@@ -202,7 +202,10 @@ describe("My Account inside Sharing", () => {
 			if (state === "pending") expect(card().textContent).toContain("Checking account status");
 			if (state === "unavailable") expect(card().textContent).toContain("unavailable right now");
 			if (state === "review_required") {
-				expect(card().textContent).toContain("codemem coordinator review-device-owner group-one");
+				expect(card().textContent).toContain(
+					'codemem coordinator review-device-owner "your-group"',
+				);
+				expect(card().textContent).not.toContain("review-device-owner group-one");
 				expect(card().textContent).not.toContain("enroll-owner");
 			}
 			assertNoAccountWrites();

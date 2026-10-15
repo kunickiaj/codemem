@@ -180,7 +180,11 @@ async function adoptConflict(
 		flow.setMessage("Linking is already in progress for this Identity.");
 		return true;
 	} catch {
-		return false;
+		if (epoch === flow.refs.current.generation) {
+			// An unavailable operation GET does not invalidate fresh status for this context.
+			await refresh(flow, { groupId: currentView.selectedGroupId ?? undefined });
+		}
+		return true;
 	}
 }
 
@@ -259,7 +263,9 @@ function deliverBrowserUrl(
 			if (signal.aborted || epoch !== flow.refs.current.generation) return;
 			if (!validAccountBrowserUrl(url, view.coordinator?.origin ?? "")) {
 				closeReservedPopup(flow);
-				flow.setMessage("Google sign-in could not be opened. Check status.");
+				flow.setMessage(
+					"Google sign-in could not be opened. Cancel linking, or wait for status to update.",
+				);
 				return;
 			}
 			const target = flow.refs.current.popup;
@@ -275,7 +281,9 @@ function deliverBrowserUrl(
 		.catch(() => {
 			if (signal.aborted || epoch !== flow.refs.current.generation) return;
 			closeReservedPopup(flow);
-			flow.setMessage("Google sign-in could not be opened. Check status.");
+			flow.setMessage(
+				"Google sign-in could not be opened. Cancel linking, or wait for status to update.",
+			);
 		});
 }
 
@@ -394,10 +402,13 @@ async function cancel(flow: Flow): Promise<void> {
 		if (epoch !== flow.refs.current.generation) return;
 		showCancellation(flow, result.operation);
 	} catch {
-		if (epoch === flow.refs.current.generation)
+		if (epoch === flow.refs.current.generation) {
+			// Restart polling in this generation without requesting another browser URL.
+			flow.setOperation({ ...operation });
 			flow.setMessage(
-				"Cancellation could not be confirmed. Check status; linking may still finish.",
+				"Cancellation could not be confirmed. Linking may still finish; status will update here, or try Cancel again.",
 			);
+		}
 	} finally {
 		if (epoch === flow.refs.current.generation) {
 			flow.refs.current.cancelling = false;
