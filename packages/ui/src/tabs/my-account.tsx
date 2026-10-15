@@ -17,7 +17,7 @@ function remoteSummary(view: AccountView): string {
 	if (view.remote.kind === "unavailable" || view.remote.kind === "not_checked")
 		return "Account status could not be verified. Check status again; this does not mean the Identity is unlinked.";
 	if (view.remote.state === "review_required")
-		return 'An operator must review this device before linking. Reuse the exact database, config, coordinator and environment settings (including the keys directory) used to start this Viewer. Example only, with those same selections: codemem coordinator review-device-owner "your-group". Replace "your-group" with your group argument, quoted for your shell. Review the preview before confirming. Confirmation defaults to No; linking does not grant sharing access.';
+		return "This device needs a one-time owner review before Google sign-in.";
 	if (view.remote.state === "conflict")
 		return "This Identity has a conflicting account link. An operator must resolve it; linking here cannot replace or merge accounts.";
 	if (!view.remote.identityMatches)
@@ -76,6 +76,37 @@ function VerifiedAccount({ view }: { view: AccountView }) {
 			<strong>{displayName || email || "Google account linked"}</strong>
 			{displayName && email ? <p className="small">{email}</p> : null}
 		</div>
+	);
+}
+
+function DeviceReviewInstructions({ view }: { view: AccountView | null }) {
+	if (view?.remote.kind !== "status" || view.remote.state !== "review_required") return null;
+	return (
+		<details className="recipient-policy-management-details">
+			<summary>How to approve this device</summary>
+			<p>The coordinator administrator must review this device’s existing Identity.</p>
+			<ol>
+				<li>
+					On this device, reuse the exact database, config, coordinator and environment settings
+					(including the keys directory) used to start this Viewer.
+				</li>
+				<li>
+					Run this example with those same settings:
+					<p>
+						<code>codemem coordinator review-device-owner "your-group"</code>
+					</p>
+					<p className="small">
+						Replace "your-group" with your group argument, quoted for your shell.
+					</p>
+				</li>
+				<li>Review the preview before confirming. Confirmation defaults to No.</li>
+				<li>
+					Return here, choose <strong>Check status</strong>, then{" "}
+					<strong>Link Google account</strong>.
+				</li>
+			</ol>
+			<p className="small">This review does not move your Identity or grant sharing access.</p>
+		</details>
 	);
 }
 
@@ -189,6 +220,7 @@ export function MyAccount() {
 					{view.coordinator ? <> · Coordinator: {view.coordinator.origin}</> : null}
 				</p>
 			) : null}
+			<DeviceReviewInstructions view={view} />
 			<AccountActions flow={flow} />
 		</section>
 	);

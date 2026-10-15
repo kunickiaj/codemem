@@ -202,12 +202,18 @@ describe("My Account inside Sharing", () => {
 			if (state === "pending") expect(card().textContent).toContain("Checking account status");
 			if (state === "unavailable") expect(card().textContent).toContain("unavailable right now");
 			if (state === "review_required") {
-				expect(card().textContent).toContain(
+				expect(card().querySelector('[role="status"]')?.textContent).toBe(
+					"This device needs a one-time owner review before Google sign-in.",
+				);
+				const details = required(card().querySelector("details"));
+				expect(details.open).toBe(false);
+				expect(details.querySelector("summary")?.textContent).toBe("How to approve this device");
+				expect(details.querySelector("code")?.textContent).toBe(
 					'codemem coordinator review-device-owner "your-group"',
 				);
 				expect(card().textContent).not.toContain("review-device-owner group-one");
 				expect(card().textContent).not.toContain("enroll-owner");
-			}
+			} else expect(card().querySelector("details")).toBeNull();
 			assertNoAccountWrites();
 		},
 	);

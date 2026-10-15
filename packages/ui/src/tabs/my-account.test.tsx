@@ -76,6 +76,7 @@ describe("My Account safe operator review guidance", () => {
 		"`touch marker`",
 		"group;touch marker",
 	])("keeps review guidance command fixed for group %s", async (groupId) => {
+		// Arrange: group arguments must never become executable example text.
 		view = status({
 			selectedGroupId: groupId,
 			groups: [groupId],
@@ -89,13 +90,114 @@ describe("My Account safe operator review guidance", () => {
 				account: {},
 			},
 		});
+		// Act
 		await show();
-		expect(mount.textContent).toContain('codemem coordinator review-device-owner "your-group".');
-		expect(mount.textContent).toContain('Replace "your-group" with your group argument');
+		// Assert
+		const details = mount.querySelector("details");
+		expect(details?.querySelector("code")?.textContent).toBe(
+			'codemem coordinator review-device-owner "your-group"',
+		);
+		expect(details?.textContent).toContain('Replace "your-group" with your group argument');
 		expect(mount.textContent).not.toContain(groupId);
-		expect(mount.textContent).toContain(
+		expect(details?.textContent).toContain(
 			"exact database, config, coordinator and environment settings (including the keys directory)",
 		);
+	});
+});
+
+describe("My Account optional device review instructions", () => {
+	it("keeps the short live status separate from closed, ordered operator instructions", async () => {
+		// Arrange
+		view = status({
+			canLink: false,
+			remote: {
+				kind: "status",
+				coordinatorId: "coordinator-one",
+				identityId: null,
+				identityMatches: false,
+				state: "review_required",
+				account: null,
+			},
+		});
+		// Act
+		await show();
+		// Assert: technical instructions are available without filling the live status.
+		const liveStatus = mount.querySelector('[role="status"][aria-live="polite"]');
+		expect(liveStatus?.textContent).toBe(
+			"This device needs a one-time owner review before Google sign-in.",
+		);
+		expect(liveStatus?.textContent).not.toMatch(
+			/codemem coordinator|database|config|keys directory/,
+		);
+		const details = mount.querySelector("details.recipient-policy-management-details");
+		if (!(details instanceof HTMLDetailsElement)) throw new Error("Missing native review details");
+		expect(details.open).toBe(false);
+		expect(details.hasAttribute("open")).toBe(false);
+		expect(details.firstElementChild?.tagName).toBe("SUMMARY");
+		expect(details.querySelector("summary")?.textContent).toBe("How to approve this device");
+		expect(details.querySelector("summary")?.hasAttribute("role")).toBe(false);
+		expect(details.textContent).toContain(
+			"The coordinator administrator must review this device’s existing Identity.",
+		);
+		const steps = [...details.querySelectorAll("ol > li")].map((step) => step.textContent);
+		expect(steps).toHaveLength(4);
+		expect(steps[0]).toContain(
+			"On this device, reuse the exact database, config, coordinator and environment settings (including the keys directory) used to start this Viewer.",
+		);
+		expect(steps[1]).toContain('codemem coordinator review-device-owner "your-group"');
+		expect(steps[1]).toContain(
+			'Replace "your-group" with your group argument, quoted for your shell.',
+		);
+		expect(steps[2]).toBe("Review the preview before confirming. Confirmation defaults to No.");
+		expect(steps[3]).toBe("Return here, choose Check status, then Link Google account.");
+		expect(details.textContent).toContain(
+			"This review does not move your Identity or grant sharing access.",
+		);
+		expect(details.previousElementSibling?.textContent).toContain("Codemem Identity:");
+		expect(details.nextElementSibling?.contains(button("Check status"))).toBe(true);
+		const outsideInstructions = mount.cloneNode(true) as HTMLElement;
+		outsideInstructions.querySelector("details")?.remove();
+		expect(outsideInstructions.textContent).not.toMatch(
+			/review-device-owner|database|config|keys directory|Confirmation defaults/,
+		);
+		expect(button("Link Google account").disabled).toBe(true);
+		expect(button("Check status").disabled).toBe(false);
+	});
+	it("opens and closes native instructions without requests or account actions", async () => {
+		// Arrange
+		view = status({
+			canLink: false,
+			remote: {
+				kind: "status",
+				coordinatorId: "coordinator-one",
+				identityId: null,
+				identityMatches: false,
+				state: "review_required",
+				account: null,
+			},
+		});
+		await show();
+		const details = mount.querySelector("details");
+		const summary = details?.querySelector("summary");
+		if (!details || !summary) throw new Error("Missing native review disclosure");
+		const initialRequests = transport.mock.calls.length;
+		// Act
+		await act(async () => summary.click());
+		await settle();
+		// Assert: JSDOM native click toggles the element; this is not a browser keyboard test.
+		expect(details.open).toBe(true);
+		expect(transport).toHaveBeenCalledTimes(initialRequests);
+		expect(window.open).not.toHaveBeenCalled();
+		expect(transport.mock.calls.some(([, options]) => options?.method === "POST")).toBe(false);
+		expect(button("Link Google account").disabled).toBe(true);
+		expect(button("Check status").disabled).toBe(false);
+		// Act: closing the instructions must be equally read-only.
+		await act(async () => summary.click());
+		await settle();
+		// Assert
+		expect(details.open).toBe(false);
+		expect(transport).toHaveBeenCalledTimes(initialRequests);
+		expect(window.open).not.toHaveBeenCalled();
 	});
 });
 
@@ -112,6 +214,7 @@ describe("My Account read-only status", () => {
 		expect(mount.innerHTML).not.toContain("op-one");
 		expect(mount.innerHTML).not.toContain("private-fixture");
 		expect(calls("browser-url")).toHaveLength(0);
+		expect(mount.querySelector("details")).toBeNull();
 	});
 	it("shows verified account, local device and coordinator without account administration", async () => {
 		// Arrange
@@ -144,6 +247,7 @@ describe("My Account read-only status", () => {
 				.map((node) => node.textContent),
 		).toEqual(["Check status"]);
 		expect(mount.querySelector('[role="status"][aria-live="polite"]')).not.toBeNull();
+		expect(mount.querySelector("details")).toBeNull();
 	});
 	it.each([
 		"review_required",
@@ -179,14 +283,17 @@ describe("My Account read-only status", () => {
 		expect(mount.textContent).not.toContain("Unverified secret");
 		expect(mount.textContent).not.toContain("unverified@example.test");
 		if (state === "review_required") {
-			expect(mount.textContent).toContain("review-device-owner");
-			expect(mount.textContent).toContain(
-				"Reuse the exact database, config, coordinator and environment settings (including the keys directory) used to start this Viewer",
+			const details = mount.querySelector("details");
+			expect(details?.textContent).toContain("review-device-owner");
+			expect(details?.textContent).toContain(
+				"reuse the exact database, config, coordinator and environment settings (including the keys directory) used to start this Viewer",
 			);
-			expect(mount.textContent).toContain("Example only, with those same selections");
-			expect(mount.textContent).toContain("Confirmation defaults to No");
+			expect(details?.querySelector("ol > li:nth-child(2)")?.textContent).toContain(
+				"Run this example with those same settings:",
+			);
+			expect(details?.textContent).toContain("Confirmation defaults to No");
 			expect(mount.textContent).not.toContain("enroll-owner");
-		}
+		} else expect(mount.querySelector("details")).toBeNull();
 		if (state === "conflict") expect(mount.textContent).toContain("conflicting account link");
 	});
 	it("requires explicit group selection rather than choosing the first group", async () => {
@@ -207,6 +314,46 @@ describe("My Account read-only status", () => {
 });
 
 describe("My Account retained outcomes and current guidance", () => {
+	it.each(["failed", "cancelled", "outcome_unknown"] as const)(
+		"retains closed review instructions alongside a %s outcome",
+		async (state) => {
+			// Arrange: a terminal result must not hide a known device review requirement.
+			view = status({
+				canLink: false,
+				operation: operation(state),
+				remote: {
+					kind: "status",
+					coordinatorId: "coordinator-one",
+					identityId: null,
+					identityMatches: false,
+					state: "review_required",
+					account: null,
+				},
+			});
+			const outcome = {
+				failed: "Linking did not finish. Check status before trying again.",
+				cancelled: "Cancellation was reported. Check status to confirm the account state.",
+				outcome_unknown: "We couldn’t confirm whether linking finished. Check status.",
+			}[state];
+			// Act
+			await show();
+			// Assert
+			expect(mount.querySelector('[role="status"]')?.textContent).toBe(outcome);
+			expect(mount.textContent).toContain(
+				"This device needs a one-time owner review before Google sign-in.",
+			);
+			const details = mount.querySelector("details");
+			expect(details?.open).toBe(false);
+			expect(details?.querySelector("summary")?.textContent).toBe("How to approve this device");
+			expect(details?.querySelector("code")?.textContent).toBe(
+				'codemem coordinator review-device-owner "your-group"',
+			);
+			expect(button("Link Google account").disabled).toBe(true);
+			expect(button("Check status").disabled).toBe(false);
+			expect(transport.mock.calls.some(([, options]) => options?.method === "POST")).toBe(false);
+			expect(window.open).not.toHaveBeenCalled();
+		},
+	);
 	it.each(["review_required", "mismatch"] as const)(
 		"keeps the retained outcome and fresh %s guidance visible",
 		async (state) => {
