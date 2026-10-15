@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mapPiEventPayload } from "@codemem/core";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CLI_PACK_TIMEOUT_MS } from "./client.js";
 import type { PiExtensionConfig } from "./config.js";
 import { defaultPiExtensionConfig } from "./config.js";
@@ -92,6 +92,9 @@ function matchingProfile(cwd: string) {
 	});
 }
 describe("extension factory lifecycle", () => {
+	beforeEach(() => {
+		vi.stubEnv("CODEMEM_VIEWER_AUTO", "0");
+	});
 	afterEach(resetPiExtensionTest);
 
 	it("registers session + agent + tool handlers without starting daemons", () => {
@@ -146,6 +149,12 @@ describe("extension factory lifecycle", () => {
 	});
 
 	it("session_before_compact handler never returns compaction", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				throw new Error("offline");
+			}),
+		);
 		__setTestExecImpl(async () => ({ stdout: "{}", stderr: "" }));
 		const { pi, handlers } = createMockPi();
 		codememPiExtension(pi as never);
