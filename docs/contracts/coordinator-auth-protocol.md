@@ -550,12 +550,22 @@ written for a device claim. Attested authority queries also require the attempt'
 
 ### Schema migration
 
+The planned leaf source is `packages/core/src/coordinator-auth-link-authority-upgrade.ts`.
+It is not called when a store opens, exported from the public API, or installed in
+the Worker's auto-discovered migration directory. Its SQLite and native D1 fixture
+tests exercise the same copy/check/swap SQL, including rollback at each swap.
+It rejects unknown schema and dependencies rather than rebuilding them silently.
+Fresh-schema installation, explicit-kind writers/readers, proof-table bootstrap,
+and the actionable old-schema auth error still need a coordinated cutover before
+this source can be deployed. Ordinary device-signed sync remains unchanged.
+
 The three link tables declare `controller_attestation_id` as `NOT NULL`, and
 SQLite cannot relax that with `ALTER TABLE`. The schema change therefore rebuilds
 those tables by creating a replacement, copying every row with
 `authority_kind = 'controller_attestation'`, checking row counts, swapping names,
-and recreating indexes. It then creates the device-claims table. Existing rows
-keep every value.
+and recreating indexes. The separate proof-table definition is in migration
+`0032_device_claim_proofs.sql`; coordinating its installation with this upgrade
+remains part of the cutover work. Existing rows keep every value.
 
 The copy must contain executable assertions, not merely `SELECT` results. Create
 a migration-owned check table with `passed INTEGER NOT NULL CHECK (passed = 1)`
