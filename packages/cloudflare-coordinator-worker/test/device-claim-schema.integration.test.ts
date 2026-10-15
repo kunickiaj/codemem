@@ -100,6 +100,20 @@ it.each(["claim_id", "identity_id", "device_id", "key_id", "attempt_id"])("rejec
 	expect(await rows()).toEqual([row]);
 });
 
+it("rejects every hidden row identifier with fresh logical values", async () => {
+	// Arrange
+	await insert();
+	const fresh = { coordinator_id: "fresh-coordinator", claim_id: "fresh-claim", identity_id: "fresh-identity", device_id: "fresh-device", key_id: "e".repeat(64), attempt_id: "fresh-attempt" };
+	// Act
+	const replace = (alias: string) => insert(fresh, insertSql.replace("INSERT INTO", "INSERT OR REPLACE INTO").replace("(", `(${alias},`).replace("VALUES (", "VALUES (1,"));
+	// Assert
+	expect((await db.prepare("PRAGMA recursive_triggers").first())?.recursive_triggers).toBe(0);
+	for (const alias of ["rowid", "_rowid_", "oid"]) {
+		await expect(replace(alias)).rejects.toThrow(/no column named/);
+		expect(await rows()).toEqual([row]);
+	}
+});
+
 it.each([
 	`UPDATE ${TABLE} SET public_key = 'changed'`,
 	`UPDATE ${TABLE} SET claim_id = claim_id`,

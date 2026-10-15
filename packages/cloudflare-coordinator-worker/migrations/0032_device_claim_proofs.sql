@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS coordinator_auth_device_claims (
   UNIQUE (coordinator_id, device_id),
   UNIQUE (coordinator_id, key_id),
   UNIQUE (coordinator_id, attempt_id)
-);
+) WITHOUT ROWID;
 
 -- REPLACE's implicit deletes may skip DELETE triggers when recursive triggers are off.
 -- Check every unique identifier before conflict handling, including UPSERT DO NOTHING.

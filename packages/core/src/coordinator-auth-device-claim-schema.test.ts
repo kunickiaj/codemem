@@ -191,6 +191,41 @@ describe.each(["constant", "migration", "Worker"] as const)("%s claim storage", 
 	});
 });
 
+describe.each(["constant", "migration", "Worker"] as const)(
+	"%s hidden-row replacement",
+	(source) => {
+		it("rejects every hidden row identifier with fresh logical values", () => {
+			// Arrange
+			const db = setup(source);
+			insert(db);
+			const fresh = {
+				coordinator_id: "fresh-coordinator",
+				claim_id: "fresh-claim",
+				identity_id: "fresh-identity",
+				device_id: "fresh-device",
+				key_id: "e".repeat(64),
+				attempt_id: "fresh-attempt",
+			};
+			// Act
+			const replace = (alias: string) =>
+				insert(
+					db,
+					fresh,
+					insertSql
+						.replace("INSERT INTO", "INSERT OR REPLACE INTO")
+						.replace("(", `(${alias},`)
+						.replace("VALUES (", "VALUES (1,"),
+				);
+			// Assert
+			expect(db.pragma("recursive_triggers", { simple: true })).toBe(0);
+			for (const alias of ["rowid", "_rowid_", "oid"]) {
+				expect(() => replace(alias)).toThrow(/no column named/);
+				expect(db.prepare(`SELECT * FROM ${TABLE}`).all()).toEqual([row]);
+			}
+		});
+	},
+);
+
 describe.each(["constant", "migration", "Worker"] as const)("%s claim CHECKs", (source) => {
 	it.each(columns)("rejects missing/null required %s", (column) => {
 		// Arrange
