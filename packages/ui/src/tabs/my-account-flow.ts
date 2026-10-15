@@ -53,6 +53,7 @@ function useFlowState() {
 		popup: null as Window | null,
 		delivered: null as string | null,
 		generation: 0,
+		starting: false,
 		controller: null as AbortController | null,
 	});
 	return {
@@ -85,6 +86,7 @@ function closeReservedPopup(flow: Flow): void {
 
 function reset(flow: Flow): void {
 	flow.refs.current.generation++;
+	flow.refs.current.starting = false;
 	flow.refs.current.controller?.abort();
 	flow.refs.current.controller = null;
 	flow.refs.current.privateUrl = null;
@@ -168,6 +170,10 @@ async function adoptConflict(
 			!sameOperationContext(candidate, currentView)
 		)
 			return false;
+		if (!active(candidate)) {
+			await refresh(flow, { excludeOperationId: candidate.operationId });
+			return true;
+		}
 		flow.setOperation(candidate);
 		flow.setMessage("Linking is already in progress for this Identity.");
 		return true;
@@ -199,15 +205,17 @@ async function startFailure(
 
 async function link(flow: Flow): Promise<void> {
 	const { view, busy } = flow;
-	if (!canBeginLink(view, busy)) return;
-	// Reserve the popup in the click gesture; never navigate the Viewer itself.
-	const opened = window.open("about:blank", "_blank");
-	if (opened) opened.opener = null;
-	flow.refs.current.popup = opened;
+	if (flow.refs.current.starting || !canBeginLink(view, busy)) return;
+	flow.refs.current.starting = true;
 	const epoch = flow.refs.current.generation;
+	let opened: Window | null = null;
 	flow.setBusy(true);
 	flow.setMessage("Starting Google sign-in…");
 	try {
+		// Reserve the popup in the click gesture; never navigate the Viewer itself.
+		opened = window.open("about:blank", "_blank");
+		if (opened) opened.opener = null;
+		flow.refs.current.popup = opened;
 		const result = await startAccountLink(
 			view.selectedGroupId,
 			view.contextId,
@@ -230,7 +238,10 @@ async function link(flow: Flow): Promise<void> {
 		opened?.close();
 		await startFailure(flow, error, epoch, view);
 	} finally {
-		if (epoch === flow.refs.current.generation) flow.setBusy(false);
+		if (epoch === flow.refs.current.generation) {
+			flow.refs.current.starting = false;
+			flow.setBusy(false);
+		}
 	}
 }
 

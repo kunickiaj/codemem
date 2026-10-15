@@ -64,15 +64,16 @@ afterEach(() => {
 });
 
 describe("My Account stale work and conflict safety", () => {
-	it.each(["matching", "not-current", "wrong-context", "wrong-group"])(
+	it.each(["matching", "not-current", "wrong-context", "wrong-group", "finished"])(
 		"validates a conflicting operation before adopting: %s",
 		async (mode) => {
 			// Arrange
 			await probe();
-			const candidate = operation();
+			const candidate = operation(mode === "finished" ? "succeeded" : "starting");
 			if (mode === "wrong-context") candidate.contextId = "old-context";
 			if (mode === "wrong-group") candidate.groupId = "other-group";
 			view = status({ operation: candidate, canLink: false });
+			view.checkedAt = "2026-01-01T00:01:00Z";
 			transport.mockImplementation(async (url, options) => {
 				if (String(url).endsWith("link-operations") && options?.method === "POST")
 					return response({ error: "account_link_in_progress", operationId: "op-one" }, 409);
@@ -89,8 +90,29 @@ describe("My Account stale work and conflict safety", () => {
 			expect(calls("/op-one")).toHaveLength(1);
 			if (mode === "matching") expect(flow.operation?.operationId).toBe("op-one");
 			else expect(flow.operation).toBeNull();
+			if (mode === "finished") {
+				expect(flow.view?.checkedAt).toBe(view.checkedAt);
+				expect(flow.message).not.toContain("in progress");
+				expect(calls("link-operations")).toHaveLength(1);
+			}
 		},
 	);
+	it("opens one popup and starts one operation for same-tick link requests", async () => {
+		// Arrange
+		await probe();
+		const startResponse = deferred<Response>();
+		transport.mockImplementationOnce(() => startResponse.promise);
+		// Act: both calls precede the state rerender.
+		await act(async () => {
+			const first = flow.link();
+			const second = flow.link();
+			startResponse.resolve(response({ version: 1, operation: operation() }));
+			await Promise.all([first, second]);
+		});
+		// Assert
+		expect(window.open).toHaveBeenCalledTimes(1);
+		expect(calls("link-operations")).toHaveLength(1);
+	});
 	it("lets the newest group status win even when the old fetch ignores abort", async () => {
 		// Arrange
 		const late = deferred<Response>();
