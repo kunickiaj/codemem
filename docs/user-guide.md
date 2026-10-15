@@ -319,7 +319,7 @@ For the short Project-first walkthrough, see [Share Projects and add devices](sh
 
 ### Link a Google account
 
-**Sharing → My Account** is separate from recipient, Identity, and access views. It shows the current Codemem Identity, device, and coordinator, plus Google account metadata only after the coordinator verifies that the link belongs to the same Identity.
+The **My Account** card at the top of **Sharing** is separate from recipient, Identity, and access views. It shows the current Codemem Identity, device, and coordinator, plus Google account metadata only after the coordinator verifies that the link belongs to the same Identity.
 
 This card is available from the current source checkout or a release that includes My Account. It is not available in every installed version. If more than one coordinator group is configured, choose the group in the card; it does not accept an arbitrary profile, URL, or identifier.
 
