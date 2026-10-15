@@ -83,7 +83,8 @@ export function readAuthLinkRecordAuthority(
 
 /**
  * Operator-only consumers accept no other source kind. This classifies a stored
- * reference; callers must still resolve and validate the referenced attestation.
+ * reference, not caller permission. In-flight links revalidate their source;
+ * completed-link consumers apply historical-provenance and active-link checks.
  */
 export function isOperatorReviewedAuthority(
 	authority: CoordinatorAuthLinkRecordAuthority | null,

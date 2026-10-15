@@ -17,8 +17,9 @@ email, name, and picture never prove ownership or select an Identity. Revoked
 link rows remain uniqueness conflicts.
 
 A first link has one of two authority sources: an admin-reviewed controller
-attestation, or a planned device claim for an enrolled device that has no
-assigned Identity. See [Device-claim first link](#device-claim-first-link-planned).
+attestation, or a planned device claim for an enrolled device whose Identity is
+unassigned or matches the requested Identity. Both still pass the complete
+eligibility guard. See [Device-claim first link](#device-claim-first-link-planned).
 
 The coordinator HTTPS origin is configured and pinned. Google uses `openid email
 profile`; the flow requests neither `offline_access` nor Google's
@@ -511,9 +512,17 @@ through `readAuthLinkAttemptAuthority` and `readAuthLinkRecordAuthority` in
 kind is server-owned: no transition changes it, and the request only states
 which kind the client expects.
 
-The readers validate row shape, not ownership or caller permission. Every
-authorization decision must also resolve the referenced proof and rerun its live
-eligibility checks; a kind string alone never authorizes an operation.
+The readers validate row shape, not ownership or caller permission. Link creation
+and in-flight transitions resolve their source and rerun its live eligibility
+checks. A kind string alone never authorizes an operation.
+
+After finalization, the source fields are immutable historical provenance.
+Consumers of an existing link validate the active, unrevoked link and that
+provenance, plus their own current session, grant, or key-possession requirements.
+They do not require the link-creation controller, device, or signer to remain
+active, enrolled, reachable, or unrevoked. Current device-authenticated requests
+still authenticate their present signer; that is not a reauthorization of the
+link's historical source.
 
 New writes must name their authority kind explicitly. There is no default that
 silently turns an omitted kind into administrator-reviewed authority.
@@ -559,15 +568,22 @@ This work ships migration code and local tests only. Nothing is applied to a
 live D1 database or a user's database without a separate approval. Before any
 live apply:
 
-1. Run read-only preflight queries for tables, dependencies, and row counts.
-   Validate every reference with `isAuthControllerId` and resolve every old
-   attempt, link, and audit controller ID to the matching stored attestation.
-   Each attempt's receipt and revision must match that attestation, and the
-   existing coordinator, Identity, and link/attempt relationships must agree.
+1. Pause affected auth writers, require live link attempts to finish or expire,
+   and recognize the exact legacy schema that supported only attestation-backed
+   links. Run read-only preflight queries for tables, dependencies, and row
+   counts, and validate every reference with `isAuthControllerId`.
 
-   Revoked records are preserved, not required to be currently active. Any
-   missing, malformed, or inconsistent provenance aborts with an actionable
-   operator report. Never drop, repair, default, or silently promote a bad row.
+   Existing completed links retain their known legacy authority kind and
+   immutable historical tuple; their original controller need not still exist.
+   Retained source or audit records must agree with that tuple, including
+   receipts, revisions, coordinator, Identity, and attempt references where
+   present. Expired or failed attempts confer no authority and keep their
+   historical references; revoked records are also preserved.
+
+   An unknown schema, malformed references, inconsistent retained provenance, or
+   any remaining live attempt aborts with an actionable operator report. Known
+   historical provenance is not a default for new writes or a reconstructed
+   operator attestation. Never drop, repair, or silently promote a bad row.
 2. Take a D1 Time Travel bookmark and an export.
 3. Pause affected auth writers and apply only the reviewed upgrade file through
    a verified atomic execution path. Do not assume a migration ledger or replay
@@ -853,3 +869,9 @@ Device-claim tests run on both backends and cover:
 - status privacy: no metadata for another person's Identity, no writes, and
   different requested Identities sharing the same authenticated-device quota;
 - attested behavior unchanged.
+- historical link consumers continue to accept a valid active attested link
+  after its original controller or device is revoked or removed, while current
+  session, key-possession, grant, and link-revocation checks remain enforced;
+- schema upgrades preserve valid completed legacy links with historical-only
+  source pins, including after their original controller was removed, and reject
+  contradictions in any source or creation audit that is still retained.
