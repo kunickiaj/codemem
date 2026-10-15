@@ -18,8 +18,9 @@ link rows remain uniqueness conflicts.
 
 A first link has one of two authority sources: an admin-reviewed controller
 attestation, or a planned device claim for an enrolled device whose Identity is
-unassigned or matches the requested Identity. Both still pass the complete
-eligibility guard. See [Device-claim first link](#device-claim-first-link-planned).
+unassigned or matches the requested Identity. Device claims pass the complete
+device-claim eligibility guard; attested links keep their existing attestation
+checks. See [Device-claim first link](#device-claim-first-link-planned).
 
 The coordinator HTTPS origin is configured and pinned. Google uses `openid email
 profile`; the flow requests neither `offline_access` nor Google's
