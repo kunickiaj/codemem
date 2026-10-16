@@ -360,6 +360,7 @@ it("signs the exact group=0 GET with an empty body and manual redirects", async 
 it.each([
 	[404, "unsupported", undefined],
 	[400, "unavailable", "coordinator_incompatible"],
+	[408, "unavailable", "coordinator_unavailable"],
 	[503, "unavailable", "coordinator_unavailable"],
 	[429, "unavailable", "rate_limited"],
 	[401, "unavailable", "coordinator_rejected"],

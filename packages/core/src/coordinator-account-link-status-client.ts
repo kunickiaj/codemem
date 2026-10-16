@@ -180,7 +180,8 @@ function responseFailure(response: Response): CoordinatorAccountLinkStatusRead |
 	if (status === 200) return null;
 	if (status === 404) return { kind: "unsupported" };
 	if (status === 400) return unavailable("coordinator_incompatible");
-	if (status >= 500 && status < 600) return unavailable("coordinator_unavailable");
+	if (status === 408 || (status >= 500 && status < 600))
+		return unavailable("coordinator_unavailable");
 	if (status === 429) return unavailable("rate_limited");
 	if ([401, 403, 409].includes(status)) return unavailable("coordinator_rejected");
 	return unavailable("invalid_response");
