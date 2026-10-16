@@ -90,6 +90,23 @@ const inviteConsumed = `(i.consumed_at IS NOT NULL AND i.consumed_at <> '' AND (
 const inviteBinding = `(i.bound_device_id IS NOT NULL OR i.bound_public_key IS NOT NULL)`;
 const completionJson = `CASE WHEN typeof(c.manifest_json) = 'text' AND json_valid(c.manifest_json) THEN c.manifest_json ELSE '{}' END`;
 
+/** Consumed assignments survive removal/re-enrollment and later token revocation. */
+export const AUTH_DEVICE_CLAIM_REQUESTER_INVITE_COMPATIBLE_SQL = `NOT EXISTS (
+ SELECT 1 FROM coordinator_invites i WHERE ${inviteConsumed}
+ AND (i.bound_device_id = p.device_id OR ${sameKey("i.bound_public_key")} OR i.bound_fingerprint = p.fingerprint)
+ AND ((i.assigned_identity_id IS NOT NULL AND i.assigned_identity_id <> p.identity_id)
+ OR (i.target_identity_id IS NOT NULL AND i.target_identity_id <> p.identity_id)))`;
+
+/** A completed other-Identity binding remains a contradiction without its old controller. */
+export const AUTH_DEVICE_CLAIM_REQUESTER_LINK_COMPATIBLE_SQL = `NOT EXISTS (
+ SELECT 1 FROM coordinator_auth_account_links l JOIN coordinator_auth_link_attempts a
+ ON a.coordinator_id = l.coordinator_id AND a.link_id = l.link_id
+ WHERE l.coordinator_id = p.coordinator_id AND l.identity_id <> p.identity_id
+ AND (a.device_id = p.device_id OR ${sameKey("a.public_key")}))
+ AND NOT EXISTS (SELECT 1 FROM coordinator_auth_account_links l JOIN coordinator_auth_link_audit_log a
+ ON a.coordinator_id = l.coordinator_id AND a.link_id = l.link_id
+ WHERE l.coordinator_id = p.coordinator_id AND a.device_id = p.device_id AND l.identity_id <> p.identity_id)`;
+
 /** Shared by first-link writes and exact-assignment status reads. */
 export const AUTH_DEVICE_CLAIM_LEGACY_COMPATIBLE_SQL = `NOT EXISTS (
  SELECT 1 FROM coordinator_legacy_team_completions c, json_each(${completionJson}, '$.device_decisions') d
@@ -137,14 +154,8 @@ export const AUTH_DEVICE_CLAIM_ELIGIBLE_SQL = `(
  AND (d.identity_id = p.identity_id OR d.device_id = p.device_id OR d.key_id = p.key_id))
  AND NOT EXISTS (SELECT 1 FROM coordinator_auth_account_links l
  WHERE l.coordinator_id = p.coordinator_id AND l.identity_id = p.identity_id)
- ) AND (
- NOT EXISTS (SELECT 1 FROM coordinator_auth_account_links l JOIN coordinator_auth_link_attempts a
- ON a.coordinator_id = l.coordinator_id AND a.link_id = l.link_id
- WHERE l.coordinator_id = p.coordinator_id AND l.identity_id <> p.identity_id
- AND (a.device_id = p.device_id OR ${sameKey("a.public_key")}))
- AND NOT EXISTS (SELECT 1 FROM coordinator_auth_account_links l JOIN coordinator_auth_link_audit_log a
- ON a.coordinator_id = l.coordinator_id AND a.link_id = l.link_id
- WHERE l.coordinator_id = p.coordinator_id AND a.device_id = p.device_id AND l.identity_id <> p.identity_id)
+  ) AND (
+  (${AUTH_DEVICE_CLAIM_REQUESTER_LINK_COMPATIBLE_SQL})
  AND NOT EXISTS (SELECT 1 FROM coordinator_owner_enrollment_attempts o WHERE o.coordinator_id = p.coordinator_id
  AND ${live("o")} AND (o.device_id = p.device_id OR o.key_id = p.key_id OR o.identity_id = p.identity_id))
  AND NOT EXISTS (SELECT 1 FROM coordinator_auth_link_attempts a WHERE a.coordinator_id = p.coordinator_id AND ${live("a")}

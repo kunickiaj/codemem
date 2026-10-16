@@ -830,6 +830,9 @@ of its device or canonical key naming another Identity denies this shared read,
 even if the old completion still names the requested Identity. The requester's
 attestations in this coordinator also deny access when revoked or naming another
 Identity, including in another group or through a text alias of the same key.
+Consumed invitations assigning this requester to another Identity, and its
+committed account-link history for another Identity, also deny the shared read.
+Later token revocation or missing historical controllers do not erase those pins.
 These checks do not require the historical claim's origin device or controller
 to remain active.
 This read exception never permits a second binding or

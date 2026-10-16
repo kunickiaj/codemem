@@ -229,6 +229,44 @@ const invalidEvidence = [
 	],
 ] as const;
 
+function seedHistoricalPeerLink(f: LinkFixture) {
+	// Imported committed history can retain a link after its controller source is absent.
+	f.db.exec("UPDATE enrolled_devices SET identity_id=NULL WHERE device_id='unrelated-device'");
+	const overrides: Record<string, string | number | null> = {
+		attempt_id: "historical-peer-attempt",
+		link_id: "historical-peer-link",
+		identity_id: "other",
+		device_id: "unrelated-device",
+		public_key: otherKey,
+		fingerprint: "b".repeat(64),
+		authority_kind: "controller_attestation",
+		controller_attestation_id: "historical-peer-controller",
+		controller_review_receipt_id: "historical-peer-receipt",
+		controller_revision: 1,
+		device_claim_id: null,
+		runtime_verifier_hash: "1".repeat(64),
+		browser_transaction_hash: "2".repeat(64),
+		completion_secret_hash: "3".repeat(64),
+		browser_start_hash: "4".repeat(64),
+		subject: "historical-peer-subject",
+		account_subject: "historical-peer-subject",
+	};
+	for (const table of ["link_attempts", "account_links", "link_audit_log"]) {
+		const row = f.db.prepare(`SELECT * FROM coordinator_auth_${table}`).get() as Record<
+			string,
+			string | number | null
+		>;
+		const columns = Object.keys(row);
+		const values = columns.map((key) =>
+			Object.hasOwn(overrides, key) ? overrides[key] : row[key],
+		);
+		f.db
+			.prepare(`INSERT INTO coordinator_auth_${table} (${columns.join(",")})
+			VALUES (${columns.map(() => "?").join(",")})`)
+			.run(...values);
+	}
+}
+
 afterEach(() => vi.restoreAllMocks());
 for (const backend of ["SQLite", "D1"] as const) {
 	const test = backendTest(backend);
@@ -384,6 +422,14 @@ for (const backend of ["SQLite", "D1"] as const) {
 			`INSERT INTO groups (group_id,created_at) VALUES ('other-group','created');
 			INSERT INTO enrolled_devices (group_id,device_id,public_key,fingerprint,identity_id,created_at)
 			VALUES ('other-group','unrelated-device','${otherKey}','${"b".repeat(64)}','other','created')`,
+			() => seedHistoricalPeerLink(f),
+			...["NULL", "'2026-03-01T00:00:00.000Z'"].map(
+				(revokedAt) => `
+			UPDATE enrolled_devices SET identity_id=NULL WHERE device_id='unrelated-device';
+			INSERT INTO coordinator_invites
+			(invite_id,group_id,token,policy,expires_at,created_at,assigned_identity_id,consumed_at,bound_device_id,bound_public_key,bound_fingerprint,revoked_at)
+			VALUES ('invite-peer','group-a','token-peer','open','2027-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z','other','2026-02-01T00:00:00.000Z','unrelated-device','${otherKey}','${"b".repeat(64)}',${revokedAt})`,
+			),
 			...[
 				["other", "group-a", "'revoked'"],
 				["other", "other-group", "NULL"],
@@ -398,7 +444,9 @@ for (const backend of ["SQLite", "D1"] as const) {
 			),
 		]) {
 			// Arrange: current peer contradictions cannot inherit the origin's historical proof.
-			f.db.exec(`SAVEPOINT peer_contradiction; ${contradiction}`);
+			f.db.exec("SAVEPOINT peer_contradiction");
+			if (typeof contradiction === "string") f.db.exec(contradiction);
+			else contradiction();
 			const contradictory = snapshot(f);
 			// Act
 			const status = await f.store.readAccountLinkStatus(peer, f.cfg, {
