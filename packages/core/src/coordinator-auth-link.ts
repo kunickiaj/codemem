@@ -480,9 +480,21 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		if (!source) return null;
 		return deriveAuthority(source);
 	}
-	private async source(attemptId: string, c: CoordinatorAuthLinkConfig, now: number) {
+	private async source(
+		attemptId: string,
+		c: CoordinatorAuthLinkConfig,
+		now: number,
+		options: { currentDevice?: boolean } = {},
+	) {
 		try {
-			return await captureAuthLinkSource(this.backend, attemptId, c, now);
+			return await captureAuthLinkSource(
+				this.backend,
+				attemptId,
+				c,
+				now,
+				"coordinator_auth_link_attempts",
+				options,
+			);
 		} catch (error) {
 			throw authPersistenceError(error, "auth_link_persistence_error");
 		}
@@ -856,7 +868,7 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		const r = captureRequester(requester);
 		if (!c || !r || !isAuthControllerId(attemptId) || !c.enabled) return null;
 		const now = authLinkNow(this.clock);
-		const source = await this.source(attemptId, c, now);
+		const source = await this.source(attemptId, c, now, { currentDevice: r.kind === "device" });
 		const proof = requesterGuard(r);
 		const row = await this.first<Attempt>({
 			sql: `SELECT * FROM coordinator_auth_link_attempts WHERE attempt_id = ? AND ${CURRENT_CONFIG}
@@ -922,6 +934,8 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			return rejected("attempt_unavailable");
 		const now = authLinkNow(this.clock);
 		const linkId = globalThis.crypto.randomUUID();
+		const row = await this.read(i.attemptId, c, { authority: "either" });
+		if (row?.authority_kind === "device_claim") return this.finalizeDevice(i, c, now, linkId, row);
 		const authority = await this.readAuthority(i.attemptId, c);
 		try {
 			await this.backend.batch(finalizeStatements(i, c, now, linkId, authority));
@@ -930,6 +944,53 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			throw authPersistenceError(error, "auth_link_persistence_error");
 		}
 		return this.finalizeReceipt(i, c, now, linkId);
+	}
+	private async finalizeDevice(
+		i: CoordinatorAuthLinkFinalizeInput,
+		c: CoordinatorAuthLinkConfig,
+		now: number,
+		linkId: string,
+		row: Attempt,
+	): Promise<CoordinatorAuthLinkResult> {
+		if (!configMatches(row, c) || !finalizeMatches(row, i)) return diagnose(row, c, now);
+		const source = await this.source(i.attemptId, c, now, { currentDevice: true });
+		// Exact retries read retained evidence. The immutable proof must never be reinserted.
+		if (["finalized", "session_redeemed"].includes(row.state))
+			return this.deviceReceipt(i, c, now, linkId, source);
+		const keyId = await ed25519KeyIdForRevocation(i.signer.publicKey);
+		if (!keyId) return rejected("attempt_unavailable");
+		try {
+			await this.backend.batch(deviceFinalizeStatements(i, c, now, linkId, keyId, source));
+		} catch (error) {
+			if (
+				isAuthControllerUniqueError(error) ||
+				String(error).includes("auth_device_claim_collision")
+			)
+				return rejected("link_conflict");
+			throw authPersistenceError(error, "auth_link_persistence_error");
+		}
+		return this.deviceReceipt(
+			i,
+			c,
+			now,
+			linkId,
+			await this.source(i.attemptId, c, now, { currentDevice: true }),
+		);
+	}
+	private async deviceReceipt(
+		i: CoordinatorAuthLinkFinalizeInput,
+		c: CoordinatorAuthLinkConfig,
+		now: number,
+		linkId: string,
+		source: AuthLinkStatement,
+	): Promise<CoordinatorAuthLinkResult> {
+		const row = await this.first<Attempt>({
+			sql: `SELECT * FROM coordinator_auth_link_attempts WHERE attempt_id = ? AND ${CURRENT_CONFIG}
+ AND authority_kind = 'device_claim' AND state IN ('finalized','session_redeemed') AND ${source.sql}`,
+			values: [i.attemptId, ...configValues(c), ...source.values],
+		});
+		if (!row || !finalizeMatches(row, i)) return rejected("attempt_unavailable");
+		return { kind: row.link_id === linkId ? "applied" : "existing", status: status(row, now) };
 	}
 	private async finalizeReceipt(
 		i: CoordinatorAuthLinkFinalizeInput,
@@ -962,6 +1023,68 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			return diagnosis;
 		return rejected("controller_not_active");
 	}
+}
+function deviceFinalizeStatements(
+	i: CoordinatorAuthLinkFinalizeInput,
+	c: CoordinatorAuthLinkConfig,
+	now: number,
+	linkId: string,
+	keyId: string,
+	source: AuthLinkStatement,
+): AuthLinkStatement[] {
+	// Every insert selects only this batch's winning transition, never an older receipt.
+	const winning = `attempt_id = ? AND ${CURRENT_CONFIG} AND authority_kind = 'device_claim'
+ AND state = 'finalized' AND link_id = ? AND finalized_at_ms = ?`;
+	const values = [i.attemptId, ...configValues(c), linkId, now];
+	return [
+		{
+			sql: `UPDATE coordinator_auth_link_attempts SET state = 'finalized', link_id = ?, finalized_at_ms = ?
+ WHERE attempt_id = ? AND ${CURRENT_CONFIG} AND authority_kind = 'device_claim' AND state = 'confirmed'
+ AND created_at_ms <= ? AND expires_at_ms > ? AND group_id = ? AND identity_id = ? AND device_id = ?
+ AND fingerprint = ? AND public_key = ? AND runtime_verifier_hash = ? AND completion_secret_hash = ?
+ AND account_subject IS NOT NULL AND browser_transaction_hash IS NOT NULL
+ AND created_at_ms <= claimed_at_ms AND claimed_at_ms <= oidc_verified_at_ms
+ AND oidc_verified_at_ms <= confirmed_at_ms AND confirmed_at_ms <= ? AND ${source.sql}`,
+			values: [
+				linkId,
+				now,
+				i.attemptId,
+				...configValues(c),
+				now,
+				now,
+				i.groupId,
+				i.identityId,
+				i.deviceId,
+				i.fingerprint,
+				i.signer.publicKey,
+				i.runtimeVerifierHash,
+				i.completionSecretHash,
+				now,
+				...source.values,
+			],
+		},
+		{
+			sql: `INSERT INTO coordinator_auth_device_claims
+ (claim_id,coordinator_id,identity_id,group_id,device_id,public_key,fingerprint,key_id,attempt_id,issuer,auth_config_revision,created_at_ms)
+ SELECT link_id,coordinator_id,identity_id,group_id,device_id,public_key,fingerprint,?,attempt_id,issuer,auth_config_revision,finalized_at_ms
+ FROM coordinator_auth_link_attempts WHERE ${winning}`,
+			values: [keyId, ...values],
+		},
+		{
+			sql: `INSERT INTO coordinator_auth_account_links
+ (coordinator_id,link_id,issuer,subject,identity_id,attempt_id,controller_attestation_id,device_claim_id,auth_config_revision,created_at_ms,authority_kind)
+ SELECT coordinator_id,link_id,issuer,account_subject,identity_id,attempt_id,NULL,link_id,auth_config_revision,finalized_at_ms,'device_claim'
+ FROM coordinator_auth_link_attempts WHERE ${winning}`,
+			values,
+		},
+		{
+			sql: `INSERT INTO coordinator_auth_link_audit_log
+ (coordinator_id,link_id,action,attempt_id,identity_id,group_id,device_id,fingerprint,controller_attestation_id,device_claim_id,auth_config_revision,created_at_ms,authority_kind)
+ SELECT coordinator_id,link_id,'link_created',attempt_id,identity_id,group_id,device_id,fingerprint,NULL,link_id,auth_config_revision,finalized_at_ms,'device_claim'
+ FROM coordinator_auth_link_attempts WHERE ${winning}`,
+			values,
+		},
+	];
 }
 function requesterGuard(r: CoordinatorAuthLinkRequester): AuthLinkStatement {
 	if (r.kind === "browser")

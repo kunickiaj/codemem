@@ -465,10 +465,26 @@ controller, and a device claim never creates one.
 
 ## Device-claim first link (planned)
 
-**Status:** Storage definitions and internal read-only readiness are implemented.
-Device-claim attempt creation, transition guards, external routes, and Viewer
-support remain planned. Until those ship, every first link still requires a
-controller attestation.
+**Status:** Internal Core readiness, attempt creation, browser transitions, and
+atomic device-claim finalization are implemented. The finalization batch consumes
+only a confirmed attempt and writes its immutable proof, account link, and
+creation audit together. Exact finalization retries read the retained receipt;
+they never insert the proof again. Completed status and browser resolution check
+historical proof/link/audit pins instead of rerunning first-binding eligibility.
+Device-authenticated status and finalization retries also require the original
+key's current enrollment and no device/key revocation.
+
+Core account-session issuance, redemption, sign-in, profile/account reads, and
+operator link revocation accept device-claim links only with coherent retained
+attempt, immutable proof, link, and creation-audit provenance. They do not require
+the original device to remain active. Session/profile checks still require an
+active link and current session/configuration pins. Revocation preserves the
+proof and link tombstone and records the original authority kind in its audit.
+Owner enrollment and privileged invite/grant proofs remain attestation-only,
+even if the device-claimed Identity later receives grants.
+
+External creation remains attestation-only; device-claim HTTP mode, external
+routes, and Viewer support are not enabled by these internal Core operations.
 
 A device claim lets an enrolled device link Google to the running profile's
 current Identity without a separate admin review. A matching enrollment Identity
@@ -556,9 +572,11 @@ The operator command calls its explicit transaction; store opening never runs it
 It is not installed in the Worker's migration directory. SQLite and native D1 fixture
 tests exercise the same copy/check/swap SQL, including rollback at each swap.
 It rejects unknown schema and dependencies rather than rebuilding them silently.
-Fresh auth storage now uses explicit authority kinds, and current link writers
-and readers accept only controller attestations. Fresh SQLite auth storage also
-installs the committed-proof table; it does not enable device-claim creation.
+Fresh auth storage now uses explicit authority kinds. HTTP link creation still
+accepts only controller attestations; internal Core link and account-session
+operations also support device claims as described above. Fresh SQLite
+auth storage installs the committed-proof table without enabling external
+device-claim creation.
 Owner enrollment requires an attestation-backed link without rechecking its old
 controller or device. Existing auth storage is not rebuilt on open, and ordinary
 device-signed sync remains unchanged. Optional auth on an old schema returns
