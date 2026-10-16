@@ -91,6 +91,7 @@ async function linkedAccount(f: Fixture) {
 		evidenceDigest: hash(),
 	};
 	const start = {
+		authority: { kind: "controller_attestation" as const },
 		attemptId: crypto.randomUUID(),
 		signer: review,
 		runtimeVerifierHash: hash(),

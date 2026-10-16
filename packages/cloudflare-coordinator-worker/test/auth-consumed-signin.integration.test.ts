@@ -37,6 +37,7 @@ async function fixture(config?: Config) {
 		evidenceDigest: hash(),
 	};
 	const start = {
+		authority: { kind: "controller_attestation" as const },
 		attemptId: randomUUID(),
 		signer: review,
 		runtimeVerifierHash: hash(),

@@ -56,6 +56,7 @@ function inputs(f: LinkRevocationFixture) {
 		fingerprint: f.input.fingerprint,
 	};
 	const start = {
+		authority: { kind: "controller_attestation" as const },
 		attemptId: `${f.input.deviceId}-attempt`,
 		signer,
 		runtimeVerifierHash: "b".repeat(64),

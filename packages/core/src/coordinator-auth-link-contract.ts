@@ -15,7 +15,7 @@ export interface CoordinatorAuthLinkConfig {
 	revision: string;
 	enabled: boolean;
 }
-/** Already verified request key possession; SQL supplies controller authority. */
+/** Already verified request key possession; SQL rechecks the selected authority source. */
 export interface CoordinatorAuthLinkSigner {
 	groupId: string;
 	deviceId: string;
@@ -72,11 +72,13 @@ export type CoordinatorAuthLinkOidcResult =
 	  }
 	| CoordinatorAuthLinkRejected;
 export interface CoordinatorAuthLinkCreateInput {
+	/** Trusted server-selected source; device claims pin the current local Identity. */
+	authority: { kind: "controller_attestation" } | { kind: "device_claim"; identityId: string };
 	attemptId: string;
 	signer: CoordinatorAuthLinkSigner;
 	runtimeVerifierHash: string;
 	loopbackRedirect: string;
-	/** Trusted commitment; omit only for internal legacy compatibility. */
+	/** Required for device claims; trusted attested callers may omit it. */
 	browserStartHash?: string;
 }
 export interface CoordinatorAuthLinkClaimInput {

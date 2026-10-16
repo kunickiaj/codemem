@@ -57,6 +57,7 @@ async function setup(legacy = false) {
 	expect(await store.createAuthControllerAttestation(review)).toMatchObject({ kind: "created" });
 	const startCode = randomBytes(32).toString("base64url");
 	const attempt = {
+		authority: { kind: "controller_attestation" as const },
 		attemptId: crypto.randomUUID(),
 		signer: review,
 		runtimeVerifierHash: hash(randomBytes(32)),

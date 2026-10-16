@@ -59,6 +59,7 @@ function createInputs(review: Review, cfg: Config) {
 		fingerprint: review.fingerprint,
 	};
 	const start = {
+		authority: { kind: "controller_attestation" as const },
 		attemptId: randomUUID(),
 		runtimeVerifierHash: fixtureHash(),
 		signer,

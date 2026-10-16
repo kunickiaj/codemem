@@ -316,6 +316,7 @@ async function separateAuthority(f: LifecycleFixture) {
 	expect(
 		await f.store.createAuthLinkAttempt(
 			{
+				authority: { kind: "controller_attestation" },
 				signer,
 				attemptId: "attempt-a",
 				runtimeVerifierHash: "b".repeat(64),

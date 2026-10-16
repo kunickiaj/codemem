@@ -59,6 +59,7 @@ async function fixture() {
 	};
 	const signer = review;
 	const start = {
+		authority: { kind: "controller_attestation" as const },
 		attemptId: randomUUID(),
 		signer,
 		runtimeVerifierHash: hash(),

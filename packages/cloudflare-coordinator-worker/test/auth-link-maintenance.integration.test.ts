@@ -69,6 +69,7 @@ async function fixture(overrides: Partial<Review> = {}) {
 		fingerprint: review.fingerprint,
 	};
 	const start = {
+		authority: { kind: "controller_attestation" as const },
 		attemptId: randomUUID(),
 		signer,
 		runtimeVerifierHash: hash(),

@@ -58,6 +58,7 @@ async function setup(destination = "http://127.0.0.1:80/codemem/auth/complete") 
 	await store.enrollDevice(review.groupId, { ...review, identityId: null });
 	expect(await store.createAuthControllerAttestation(review)).toMatchObject({ kind: "created" });
 	const attempt = {
+		authority: { kind: "controller_attestation" as const },
 		attemptId: crypto.randomUUID(),
 		signer: review,
 		runtimeVerifierHash: "d".repeat(64),

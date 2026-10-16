@@ -84,6 +84,7 @@ async function setup() {
 		evidenceDigest: "c".repeat(64),
 	};
 	const start = {
+		authority: { kind: "controller_attestation" as const },
 		attemptId: crypto.randomUUID(),
 		signer: review,
 		runtimeVerifierHash: "d".repeat(64),

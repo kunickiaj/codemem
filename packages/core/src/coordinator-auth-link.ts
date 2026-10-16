@@ -1,8 +1,10 @@
-import {
-	isCoordinatorAccountIssuer,
-	parseCoordinatorAccountReference,
-} from "./coordinator-auth-contract.js";
+import { parseCoordinatorAccountReference } from "./coordinator-auth-contract.js";
 import { isAuthControllerId, isAuthControllerUniqueError } from "./coordinator-auth-controller.js";
+import {
+	AUTH_DEVICE_CLAIM_ELIGIBLE_SQL,
+	AUTH_DEVICE_CLAIM_INPUT_SQL,
+	captureDeviceClaimEligibility,
+} from "./coordinator-auth-device-claim-eligibility.js";
 import { readAuthLinkAttemptAuthority } from "./coordinator-auth-link-authority.js";
 import {
 	AUTH_LINK_ATTEMPT_TTL_MS,
@@ -35,6 +37,13 @@ import {
 	type CoordinatorAuthLinkStatus,
 	type CoordinatorAuthLinkStore,
 } from "./coordinator-auth-link-contract.js";
+import {
+	type Captured,
+	capture,
+	captureAuthLinkConfig as captureConfig,
+	captureAuthLinkSigner as captureSigner,
+	isHash,
+} from "./coordinator-auth-link-input.js";
 import { parseCoordinatorAuthLoopback } from "./coordinator-auth-loopback.js";
 import { authPersistenceError } from "./coordinator-auth-schema.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
@@ -50,7 +59,7 @@ export interface AuthLinkBackend {
 	batch(statements: AuthLinkStatement[]): Promise<void>;
 }
 interface Attempt {
-	authority_kind: "controller_attestation";
+	authority_kind: "controller_attestation" | "device_claim";
 	coordinator_id: string;
 	attempt_id: string;
 	identity_id: string;
@@ -58,9 +67,9 @@ interface Attempt {
 	device_id: string;
 	public_key: string;
 	fingerprint: string;
-	controller_attestation_id: string;
-	controller_review_receipt_id: string;
-	controller_revision: number;
+	controller_attestation_id: string | null;
+	controller_review_receipt_id: string | null;
+	controller_revision: number | null;
 	issuer: string;
 	auth_config_revision: string;
 	runtime_verifier_hash: string;
@@ -75,27 +84,7 @@ interface Attempt {
 	created_at_ms: number;
 	expires_at_ms: number;
 }
-type Captured = Record<string, unknown>;
-const HASH = /^[0-9a-f]{64}$/;
-function isHash(value: unknown): value is string {
-	return typeof value === "string" && value.length === 64 && HASH.test(value);
-}
-function capture(value: unknown, fields: readonly string[]): Captured | null {
-	if (!value || typeof value !== "object") return null;
-	try {
-		if (Array.isArray(value)) return null;
-		const result: Captured = {};
-		for (const key of fields) {
-			const descriptor = Object.getOwnPropertyDescriptor(value, key);
-			if (!descriptor || !Object.hasOwn(descriptor, "value")) return null;
-			result[key] = descriptor.value;
-		}
-		return result;
-	} catch {
-		return null;
-	}
-}
-/** Capture without invoking accessors; null denotes an omitted legacy commitment. */
+/** Capture without invoking accessors; null denotes an omitted attested commitment. */
 export function captureAuthLinkBrowserStartHash(value: unknown): string | null | false {
 	if (!value || typeof value !== "object") return false;
 	try {
@@ -108,48 +97,29 @@ export function captureAuthLinkBrowserStartHash(value: unknown): string | null |
 		return false;
 	}
 }
-function captureConfig(value: unknown): CoordinatorAuthLinkConfig | null {
-	const c = capture(value, ["coordinatorId", "issuer", "revision", "enabled"]);
-	if (
-		!c ||
-		!isAuthControllerId(c.coordinatorId) ||
-		!isCoordinatorAccountIssuer(c.issuer) ||
-		!isHash(c.revision) ||
-		typeof c.enabled !== "boolean"
-	)
-		return null;
-	return c as unknown as CoordinatorAuthLinkConfig;
-}
-function isPublicKey(value: unknown): value is string {
-	if (typeof value !== "string" || value.length > 4096) return false;
-	const flat = value.replace(/[\r\n]/g, "");
-	return flat.length > 0 && flat.trim() === flat && !/[\p{Cc}\p{Cf}\p{Cs}]/u.test(flat);
-}
-function captureSigner(value: unknown): CoordinatorAuthLinkSigner | null {
-	const s = capture(value, ["groupId", "deviceId", "publicKey", "fingerprint"]);
-	if (
-		!s ||
-		!isAuthControllerId(s.groupId) ||
-		!isAuthControllerId(s.deviceId) ||
-		!isPublicKey(s.publicKey) ||
-		!isHash(s.fingerprint)
-	)
-		return null;
-	return s as unknown as CoordinatorAuthLinkSigner;
-}
 function captureCreateInput(value: unknown):
 	| (Captured & {
 			attemptId: string;
 			runtimeVerifierHash: string;
 			loopbackRedirect: string;
 			browserStartHash: string | null;
+			authority: CoordinatorAuthLinkCreateInput["authority"];
 	  })
 	| null {
-	const i = capture(value, ["attemptId", "signer", "runtimeVerifierHash", "loopbackRedirect"]);
+	const i = capture(value, [
+		"attemptId",
+		"signer",
+		"runtimeVerifierHash",
+		"loopbackRedirect",
+		"authority",
+	]);
+	const authority = captureCreateAuthority(i?.authority);
 	const browserStartHash = captureAuthLinkBrowserStartHash(value);
 	if (
 		!i ||
+		!authority ||
 		browserStartHash === false ||
+		(authority.kind === "device_claim" && browserStartHash === null) ||
 		!isAuthControllerId(i.attemptId) ||
 		!isHash(i.runtimeVerifierHash) ||
 		!parseCoordinatorAuthLoopback(i.loopbackRedirect).ok
@@ -161,7 +131,20 @@ function captureCreateInput(value: unknown):
 		runtimeVerifierHash: i.runtimeVerifierHash,
 		loopbackRedirect: i.loopbackRedirect as string,
 		browserStartHash,
+		authority,
 	};
+}
+type CreateInput = NonNullable<ReturnType<typeof captureCreateInput>>;
+function captureCreateAuthority(
+	value: unknown,
+): CoordinatorAuthLinkCreateInput["authority"] | null {
+	const a = capture(value, ["kind"]);
+	if (a?.kind === "controller_attestation") return { kind: "controller_attestation" };
+	if (a?.kind !== "device_claim") return null;
+	const claim = capture(value, ["identityId"]);
+	return isAuthControllerId(claim?.identityId)
+		? { kind: "device_claim", identityId: claim.identityId }
+		: null;
 }
 function captureRequester(value: unknown): CoordinatorAuthLinkRequester | null {
 	const k = capture(value, ["kind"]);
@@ -215,6 +198,22 @@ function signerMatches(row: Attempt, s: CoordinatorAuthLinkSigner): boolean {
 		row.device_id === s.deviceId &&
 		row.public_key === s.publicKey &&
 		row.fingerprint === s.fingerprint
+	);
+}
+function creationMatches(
+	row: Attempt,
+	i: CreateInput,
+	s: CoordinatorAuthLinkSigner,
+	c: CoordinatorAuthLinkConfig,
+): boolean {
+	return (
+		configMatches(row, c) &&
+		signerMatches(row, s) &&
+		row.authority_kind === i.authority.kind &&
+		(i.authority.kind !== "device_claim" || row.identity_id === i.authority.identityId) &&
+		row.runtime_verifier_hash === i.runtimeVerifierHash &&
+		row.browser_start_hash === i.browserStartHash &&
+		row.loopback_redirect === i.loopbackRedirect
 	);
 }
 function requesterMatches(row: Attempt, r: CoordinatorAuthLinkRequester): boolean {
@@ -310,24 +309,60 @@ const CREATE_SQL = `INSERT INTO coordinator_auth_link_attempts (
  SELECT ?, ?, a.identity_id, a.group_id, a.device_id, a.public_key, a.fingerprint,
  a.attestation_id, a.review_receipt_id, a.revision, 'controller_attestation', ?, ?, ?, ?, ?, 'pending', ?, ?
   ${CREATE_SOURCE_SQL} ${AUTHORITY_GUARD}
+ ${creationAdmissionSql("a")}`;
+function creationAdmissionSql(source: "a" | "p"): string {
+	return `
  AND NOT EXISTS (SELECT 1 FROM coordinator_owner_enrollment_attempts t
-  WHERE t.coordinator_id = a.coordinator_id AND t.attempt_id = ?)
+  WHERE t.coordinator_id = ${source}.coordinator_id AND t.attempt_id = ?)
  AND NOT EXISTS (SELECT 1 FROM coordinator_auth_browser_transactions t
-  WHERE t.coordinator_id = a.coordinator_id AND t.attempt_id = ? AND t.purpose NOT IN ('signin','link'))
+  WHERE t.coordinator_id = ${source}.coordinator_id AND t.attempt_id = ? AND t.purpose NOT IN ('signin','link'))
  AND (SELECT count(*) FROM coordinator_auth_link_attempts t
-  WHERE t.coordinator_id = a.coordinator_id AND t.group_id = a.group_id AND t.device_id = a.device_id
+  WHERE t.coordinator_id = ${source}.coordinator_id AND t.group_id = ${source}.group_id AND t.device_id = ${source}.device_id
   AND t.state IN ('pending','browser_claimed','oidc_verified','confirmed') AND t.expires_at_ms > ?) < ?
  AND (SELECT count(*) FROM coordinator_auth_link_attempts t
-  WHERE t.coordinator_id = a.coordinator_id AND t.identity_id = a.identity_id
+  WHERE t.coordinator_id = ${source}.coordinator_id AND t.identity_id = ${source}.identity_id
   AND t.state IN ('pending','browser_claimed','oidc_verified','confirmed') AND t.expires_at_ms > ?) < ?
  AND (SELECT count(*) FROM coordinator_auth_link_attempts t
-  WHERE t.coordinator_id = a.coordinator_id AND t.group_id = a.group_id AND t.device_id = a.device_id
+  WHERE t.coordinator_id = ${source}.coordinator_id AND t.group_id = ${source}.group_id AND t.device_id = ${source}.device_id
   AND t.created_at_ms > ?) < ?
  AND (SELECT count(*) FROM coordinator_auth_link_attempts t
-  WHERE t.coordinator_id = a.coordinator_id AND t.group_id = a.group_id AND t.device_id = a.device_id
+  WHERE t.coordinator_id = ${source}.coordinator_id AND t.group_id = ${source}.group_id AND t.device_id = ${source}.device_id
   AND t.created_at_ms > ?) < ?
  AND (SELECT count(*) FROM (SELECT 1 FROM coordinator_auth_link_attempts t
-  WHERE t.coordinator_id = a.coordinator_id AND t.state NOT IN ('finalized','session_redeemed') LIMIT ?)) < ?`;
+  WHERE t.coordinator_id = ${source}.coordinator_id AND t.state NOT IN ('finalized','session_redeemed') LIMIT ?)) < ?`;
+}
+function creationAdmissionValues(attemptId: string, now: number): (string | number)[] {
+	return [
+		attemptId,
+		attemptId,
+		now,
+		AUTH_LINK_MAX_ACTIVE_PER_DEVICE,
+		now,
+		AUTH_LINK_MAX_ACTIVE_PER_IDENTITY,
+		now - AUTH_LINK_CREATE_WINDOW_MS,
+		AUTH_LINK_MAX_CREATES_PER_DEVICE_WINDOW,
+		now - AUTH_LINK_RETENTION_WINDOW_MS,
+		AUTH_LINK_MAX_CREATES_PER_DEVICE_RETENTION,
+		AUTH_LINK_MAX_UNFINISHED_PER_COORDINATOR,
+		AUTH_LINK_MAX_UNFINISHED_PER_COORDINATOR,
+	];
+}
+const DEVICE_CREATE_SQL = `${AUTH_DEVICE_CLAIM_INPUT_SQL}
+ INSERT INTO coordinator_auth_link_attempts (
+ coordinator_id,attempt_id,identity_id,group_id,device_id,public_key,fingerprint,
+ controller_attestation_id,controller_review_receipt_id,controller_revision,authority_kind,
+ issuer,auth_config_revision,runtime_verifier_hash,loopback_redirect,browser_start_hash,state,created_at_ms,expires_at_ms)
+ SELECT p.coordinator_id,p.attempt_id,p.identity_id,p.group_id,p.device_id,p.public_key,p.fingerprint,
+ NULL,NULL,NULL,'device_claim',p.issuer,p.revision,?,?,?,'pending',p.now_ms,p.now_ms + ${AUTH_LINK_ATTEMPT_TTL_MS}
+ FROM claim_input p WHERE ${AUTH_DEVICE_CLAIM_ELIGIBLE_SQL} ${creationAdmissionSql("p")}`;
+const DEVICE_RETRY_SQL = `${AUTH_DEVICE_CLAIM_INPUT_SQL}
+ SELECT 1 FROM claim_input p JOIN coordinator_auth_link_attempts t
+ ON t.coordinator_id = p.coordinator_id AND t.attempt_id = p.attempt_id
+ WHERE t.authority_kind = 'device_claim' AND t.identity_id = p.identity_id
+ AND t.group_id = p.group_id AND t.device_id = p.device_id AND t.public_key = p.public_key AND t.fingerprint = p.fingerprint
+ AND t.issuer = p.issuer AND t.auth_config_revision = p.revision
+ AND t.runtime_verifier_hash = ? AND t.browser_start_hash IS ? AND t.loopback_redirect = ?
+ AND t.state <> 'expired' AND t.expires_at_ms > p.now_ms AND ${AUTH_DEVICE_CLAIM_ELIGIBLE_SQL}`;
 const MAINTENANCE_CANDIDATE_SQL = `authority_kind = 'controller_attestation' AND link_id IS NULL AND (
  (state IN ('pending','browser_claimed','oidc_verified','confirmed') AND expires_at_ms <= ?)
  OR (state IN ('failed','expired') AND account_subject IS NOT NULL))`;
@@ -386,12 +421,25 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		private readonly backend: AuthLinkBackend,
 		private readonly clock: () => number = Date.now,
 	) {}
-	private async read(attemptId: string, c: CoordinatorAuthLinkConfig): Promise<Attempt | null> {
+	private async read(
+		attemptId: string,
+		c: CoordinatorAuthLinkConfig,
+		source: { authority: Attempt["authority_kind"] | "either" } = {
+			authority: "controller_attestation",
+		},
+	): Promise<Attempt | null> {
 		const row = await this.first<Attempt>({
-			sql: "SELECT * FROM coordinator_auth_link_attempts WHERE coordinator_id = ? AND attempt_id = ? AND authority_kind = 'controller_attestation'",
-			values: [c.coordinatorId, attemptId],
+			sql: `SELECT * FROM coordinator_auth_link_attempts WHERE coordinator_id = ? AND attempt_id = ?${source.authority === "either" ? "" : " AND authority_kind = ?"}`,
+			values: [
+				c.coordinatorId,
+				attemptId,
+				...(source.authority === "either" ? [] : [source.authority]),
+			],
 		});
-		return row && readAuthLinkAttemptAuthority(row)?.kind === "controller_attestation" ? row : null;
+		const authority = row && readAuthLinkAttemptAuthority(row);
+		return authority && (source.authority === "either" || authority.kind === source.authority)
+			? row
+			: null;
 	}
 	private async first<T>(statement: AuthLinkStatement): Promise<T | null> {
 		try {
@@ -455,12 +503,23 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		if (!c || !i || !s) return rejected("invalid_input");
 		if (!c.enabled) return rejected("auth_config_changed");
 		const now = authLinkNow(this.clock);
+		const existing = await this.read(i.attemptId, c, { authority: "either" });
+		if (existing) return this.retryCreation(existing, i, s, c, now);
+		if (i.authority.kind === "device_claim") return this.createDeviceAttempt(i, s, c, now);
+		return this.createAttestedAttempt(i, s, c, now);
+	}
+	private async createAttestedAttempt(
+		i: CreateInput,
+		s: CoordinatorAuthLinkSigner,
+		c: CoordinatorAuthLinkConfig,
+		now: number,
+	): Promise<CoordinatorAuthLinkCreateResult> {
 		const source = await this.first<AuthoritySource>({
 			sql: `SELECT ${AUTHORITY_COLUMNS} ${CREATE_SOURCE_SQL}`,
 			values: createSourceValues(c, s),
 		});
 		if (!source) {
-			const row = await this.read(i.attemptId, c);
+			const row = await this.read(i.attemptId, c, { authority: "either" });
 			if (row) return this.createRetry(row, i, s, c, now, null);
 			return rejected("controller_not_active");
 		}
@@ -477,27 +536,106 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			now + AUTH_LINK_ATTEMPT_TTL_MS,
 			...createSourceValues(c, s),
 			...authority,
-			i.attemptId,
-			i.attemptId,
-			now,
-			AUTH_LINK_MAX_ACTIVE_PER_DEVICE,
-			now,
-			AUTH_LINK_MAX_ACTIVE_PER_IDENTITY,
-			now - AUTH_LINK_CREATE_WINDOW_MS,
-			AUTH_LINK_MAX_CREATES_PER_DEVICE_WINDOW,
-			now - AUTH_LINK_RETENTION_WINDOW_MS,
-			AUTH_LINK_MAX_CREATES_PER_DEVICE_RETENTION,
-			AUTH_LINK_MAX_UNFINISHED_PER_COORDINATOR,
-			AUTH_LINK_MAX_UNFINISHED_PER_COORDINATOR,
+			...creationAdmissionValues(i.attemptId, now),
 		];
 		const result = await this.execute({ sql: CREATE_SQL, values }, "attempt_conflict");
-		const row = await this.read(i.attemptId, c);
+		const row = await this.read(i.attemptId, c, { authority: "either" });
 		if (result === 0) {
 			if (row) return this.createRetry(row, i, s, c, now, authority);
 			return this.diagnoseCreateAdmission(i.attemptId, c, s, authority);
 		}
 		if (typeof result !== "number") return this.createRetry(row, i, s, c, now, authority);
-		if (!row) throw new Error("auth_link_persistence_incomplete");
+		if (!row || !creationMatches(row, i, s, c)) throw new Error("auth_link_persistence_incomplete");
+		return { kind: "created", status: status(row, now), identityId: row.identity_id };
+	}
+	private async retryCreation(
+		row: Attempt,
+		i: CreateInput,
+		s: CoordinatorAuthLinkSigner,
+		c: CoordinatorAuthLinkConfig,
+		now: number,
+	): Promise<CoordinatorAuthLinkCreateResult> {
+		if (!creationMatches(row, i, s, c) || row.state === "expired" || row.expires_at_ms <= now)
+			return rejected("attempt_conflict");
+		if (i.authority.kind === "device_claim") {
+			const captured = await this.captureDevice(i, s, c, now);
+			const active =
+				captured &&
+				(await this.first({
+					sql: DEVICE_RETRY_SQL,
+					values: [
+						...captured.values,
+						i.runtimeVerifierHash,
+						i.browserStartHash,
+						i.loopbackRedirect,
+					],
+				}));
+			if (!active) {
+				const current = await this.read(i.attemptId, c, { authority: "either" });
+				return rejected(
+					current && !creationMatches(current, i, s, c)
+						? "attempt_conflict"
+						: "attempt_unavailable",
+				);
+			}
+			if (await this.readOwnerReservation(i.attemptId, c)) return rejected("attempt_conflict");
+			return { kind: "existing", status: status(row, now), identityId: row.identity_id };
+		}
+		return this.createRetry(row, i, s, c, now, await this.readAuthority(i.attemptId, c));
+	}
+	private async captureDevice(
+		i: CreateInput,
+		s: CoordinatorAuthLinkSigner,
+		c: CoordinatorAuthLinkConfig,
+		now: number,
+	) {
+		if (i.authority.kind !== "device_claim") return null;
+		try {
+			return await captureDeviceClaimEligibility(
+				this.backend,
+				{ signer: s, identityId: i.authority.identityId, attemptId: i.attemptId },
+				c,
+				now,
+			);
+		} catch (error) {
+			throw authPersistenceError(error, "auth_link_persistence_error");
+		}
+	}
+	private async createDeviceAttempt(
+		i: CreateInput,
+		s: CoordinatorAuthLinkSigner,
+		c: CoordinatorAuthLinkConfig,
+		now: number,
+	): Promise<CoordinatorAuthLinkCreateResult> {
+		const captured = await this.captureDevice(i, s, c, now);
+		if (!captured) return rejected("attempt_unavailable");
+		const result = await this.execute(
+			{
+				sql: DEVICE_CREATE_SQL,
+				values: [
+					...captured.values,
+					i.runtimeVerifierHash,
+					i.loopbackRedirect,
+					i.browserStartHash,
+					...creationAdmissionValues(i.attemptId, now),
+				],
+			},
+			"attempt_conflict",
+		);
+		const row = await this.read(i.attemptId, c, { authority: "either" });
+		if (typeof result !== "number" || result === 0) {
+			if (row) return this.retryCreation(row, i, s, c, now);
+			if (typeof result !== "number") return result;
+			const eligible = await this.first({
+				sql: `${AUTH_DEVICE_CLAIM_INPUT_SQL} SELECT 1 FROM claim_input p WHERE ${AUTH_DEVICE_CLAIM_ELIGIBLE_SQL}`,
+				values: captured.values,
+			});
+			if (!eligible) return rejected("attempt_unavailable");
+			return rejected(
+				(await this.readOwnerReservation(i.attemptId, c)) ? "attempt_conflict" : "attempt_limited",
+			);
+		}
+		if (!row || !creationMatches(row, i, s, c)) throw new Error("auth_link_persistence_incomplete");
 		return { kind: "created", status: status(row, now), identityId: row.identity_id };
 	}
 	private async diagnoseCreateAdmission(
@@ -524,7 +662,7 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 	}
 	private async createRetry(
 		row: Attempt | null,
-		i: Captured,
+		i: CreateInput,
 		s: CoordinatorAuthLinkSigner,
 		c: CoordinatorAuthLinkConfig,
 		now: number,
@@ -532,11 +670,7 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 	): Promise<CoordinatorAuthLinkCreateResult> {
 		if (
 			!row ||
-			!configMatches(row, c) ||
-			!signerMatches(row, s) ||
-			row.runtime_verifier_hash !== i.runtimeVerifierHash ||
-			(row.browser_start_hash ?? null) !== i.browserStartHash ||
-			row.loopback_redirect !== i.loopbackRedirect ||
+			!creationMatches(row, i, s, c) ||
 			row.state === "expired" ||
 			row.expires_at_ms <= now
 		)

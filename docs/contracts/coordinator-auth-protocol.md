@@ -692,9 +692,17 @@ enrollments, keys, and memory history do not change.
 
 The internal `readAuthDeviceClaimReadiness` store method now evaluates the shared
 guard in `coordinator-auth-device-claim-eligibility.ts` on SQLite and D1. It reads
-only and returns no account metadata or committed proof. Existing HTTP status and
-creation contracts remain unchanged. Device-claim creation/retry and reuse of this
-guard in every transition still need the following implementation units.
+only and returns no account metadata or committed proof. Existing external status
+and creation contracts remain unchanged. Trusted Core creation now explicitly
+names `authority.kind`; `device_claim` also pins the current local Identity and
+requires a browser-start commitment. Its atomic INSERT uses this same guard and
+the existing quotas; exact retry rechecks both the full tuple and live eligibility
+without extending its deadline. The canonical key ID is derived from the pinned
+public key, not stored as a new attempt column. No committed proof is created.
+Current HTTP creation still selects only `controller_attestation`. Device-claim
+status, cancellation, expiry, start-code claim, OIDC, confirmation, destination,
+and finalization need their source-specific lifecycle checks before external
+device-claim creation can be enabled.
 
 One guard decides whether a device claim may exist. The coordinator runs it as a
 single SQL statement that binds its inputs once through a CTE, keeping at most

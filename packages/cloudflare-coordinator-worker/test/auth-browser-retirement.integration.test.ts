@@ -71,6 +71,7 @@ async function startLink(f: Fixture) {
 	expect(await f.store.createAuthControllerAttestation(review)).toMatchObject({ kind: "created" });
 	const created = await f.store.createAuthLinkAttempt(
 		{
+			authority: { kind: "controller_attestation" },
 			attemptId,
 			signer: review,
 			runtimeVerifierHash: hash(),

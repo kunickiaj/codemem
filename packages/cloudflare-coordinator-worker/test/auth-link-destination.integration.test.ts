@@ -53,7 +53,7 @@ async function fixture(destination: string) {
 	const authorized = await store.createAuthControllerAttestation(review);
 	expect(authorized.kind).toBe("created");
 	await store.createAuthLinkAttempt(
-		{ attemptId: id, signer, runtimeVerifierHash: cfg.revision, loopbackRedirect: destination },
+		{ authority: { kind: "controller_attestation" }, attemptId: id, signer, runtimeVerifierHash: cfg.revision, loopbackRedirect: destination },
 		cfg,
 	);
 	const proof = { attemptId: id, browserTransactionHash: "e".repeat(64) };

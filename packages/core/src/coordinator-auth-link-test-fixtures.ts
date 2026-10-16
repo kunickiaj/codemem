@@ -43,6 +43,7 @@ export const browser: Requester = { kind: "browser", browserTransactionHash: bro
 
 export function attempt(overrides: Partial<CreateInput> = {}): CreateInput {
 	return {
+		authority: { kind: "controller_attestation" },
 		attemptId: "attempt-a",
 		signer: { ...signer },
 		runtimeVerifierHash: "b".repeat(64),

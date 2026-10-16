@@ -260,6 +260,7 @@ it("attaches scheduled retirement to waitUntil; defaults and missing/mismatched 
 	const attemptId = crypto.randomUUID();
 	await f.store.createAuthLinkAttempt(
 		{
+			authority: { kind: "controller_attestation" },
 			attemptId,
 			signer: f.review,
 			runtimeVerifierHash: "c".repeat(64),

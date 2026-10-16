@@ -1,10 +1,10 @@
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
-import { captureAuthLinkConfig, captureAuthLinkSigner } from "./coordinator-auth-link.js";
 import type {
 	CoordinatorAuthLinkConfig,
 	CoordinatorAuthLinkSigner,
 } from "./coordinator-auth-link-contract.js";
+import { captureAuthLinkConfig, captureAuthLinkSigner } from "./coordinator-auth-link-input.js";
 import {
 	ed25519KeyIdForRevocation,
 	parseSshEd25519PublicKeyForRevocation,

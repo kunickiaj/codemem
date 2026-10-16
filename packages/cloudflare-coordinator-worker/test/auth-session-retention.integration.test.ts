@@ -37,6 +37,7 @@ async function fixture() {
 		redirectUri: "https://app.example.test/callback",
 	};
 	const start = {
+		authority: { kind: "controller_attestation" as const },
 		attemptId: crypto.randomUUID(),
 		signer: review,
 		runtimeVerifierHash: hash(),

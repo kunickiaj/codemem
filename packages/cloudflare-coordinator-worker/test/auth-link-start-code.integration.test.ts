@@ -37,6 +37,7 @@ async function fixture(protectedRow = true) {
 	};
 	const browserStartHash = hash();
 	const create = {
+		authority: { kind: "controller_attestation" as const },
 		attemptId: crypto.randomUUID(),
 		signer,
 		runtimeVerifierHash: hash(),

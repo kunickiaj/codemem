@@ -43,6 +43,7 @@ async function confirmedFlow({ store }: Fixture) {
 	const metadata = { attemptId: input.attemptId, expiresAtMs: now + 600_000 };
 	const created = await store.createAuthLinkAttempt(
 		{
+			authority: { kind: "controller_attestation" },
 			attemptId: input.attemptId,
 			signer,
 			runtimeVerifierHash: input.runtimeVerifierHash,

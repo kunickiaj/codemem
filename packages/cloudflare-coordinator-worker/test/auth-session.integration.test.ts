@@ -56,6 +56,7 @@ async function createFixture() {
 		publicKey: review.publicKey, fingerprint: review.fingerprint,
 	};
 	const start = {
+		authority: { kind: "controller_attestation" as const },
 		attemptId: randomUUID(), signer, runtimeVerifierHash: hash(),
 		loopbackRedirect: "http://127.0.0.1:4567/codemem/auth/complete",
 	};

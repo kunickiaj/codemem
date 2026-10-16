@@ -66,6 +66,7 @@ async function linkFixture(f: Fixture) {
 		fingerprint: review.fingerprint,
 	};
 	const start = {
+		authority: { kind: "controller_attestation" as const },
 		attemptId: crypto.randomUUID(),
 		signer,
 		runtimeVerifierHash: hash(),

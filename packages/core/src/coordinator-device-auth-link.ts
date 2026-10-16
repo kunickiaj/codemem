@@ -175,6 +175,7 @@ async function applyDeviceAction(
 			return c.json({ error: "auth_link_invalid_input" }, 400);
 		const result = await store.createAuthLinkAttempt(
 			{
+				authority: { kind: "controller_attestation" },
 				attemptId,
 				signer,
 				runtimeVerifierHash: data.runtime_verifier_hash,
