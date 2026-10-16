@@ -68,6 +68,9 @@ async function harness(backend: Backend = "SQLite") {
 	const key = await importBrowserCsrfKey(new Uint8Array(32).fill(7));
 	const store = {
 		startAuthBrowserTransaction: vi.fn(f.store.startAuthBrowserTransaction.bind(f.store)),
+		readAuthBrowserTransactionActivity: vi.fn(
+			f.store.readAuthBrowserTransactionActivity.bind(f.store),
+		),
 		readAuthSession: vi.fn(f.store.readAuthSession.bind(f.store)),
 	};
 	const limiter = {
@@ -232,6 +235,7 @@ describe("GET sign-in is read-only and does not restart ceremonies", () => {
 	it("refuses Back/reload with only TXN rather than replacing a pending ceremony", async () => {
 		// Arrange
 		const f = await harness();
+		f.store.readAuthBrowserTransactionActivity.mockResolvedValue({ kind: "active" });
 		const txn = await issueBrowserCookie("transaction");
 		// Act
 		const response = await f.handlers.signInPageGET(get(txn.setCookie.split(";")[0]));
@@ -348,6 +352,7 @@ describe("existing transaction takes priority after transport gates", () => {
 		async (caseName) => {
 			// Arrange
 			const f = await harness();
+			f.store.readAuthBrowserTransactionActivity.mockResolvedValue({ kind: "active" });
 			const c = await ceremony(f);
 			const txn = await issueBrowserCookie("transaction");
 			const cookie = [caseName === "missing-start" ? "" : c.cookie, txn.setCookie.split(";")[0]]
@@ -460,6 +465,7 @@ describe.each(["SQLite", "D1"] as const)("%s durable sign-in admission", (backen
 		const allArrived = Promise.withResolvers<void>();
 		const makeStore = (start: typeof f.store.startAuthBrowserTransaction) => ({
 			readAuthSession: f.store.readAuthSession,
+			readAuthBrowserTransactionActivity: f.store.readAuthBrowserTransactionActivity,
 			async startAuthBrowserTransaction(...args: Parameters<typeof start>) {
 				arrived++;
 				if (arrived === 8) allArrived.resolve();
@@ -636,6 +642,7 @@ describe("request snapshots survive asynchronous cookie mutations", () => {
 		async (mutation) => {
 			// Arrange
 			const f = await harness();
+			f.store.readAuthBrowserTransactionActivity.mockResolvedValue({ kind: "active" });
 			const c = await ceremony(f);
 			const alternate = await issueBrowserCookie("start");
 			const txn = await issueBrowserCookie("transaction");

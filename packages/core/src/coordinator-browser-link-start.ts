@@ -29,13 +29,20 @@ import {
 import { type BrowserFormGuardResult, guardBrowserForm } from "./coordinator-browser-form-guard.js";
 import { snapshotBrowserRequest, snapshotBrowserRoute } from "./coordinator-browser-request.js";
 import {
+	clearInactiveStartTransaction,
+	readBrowserStartTransaction,
+} from "./coordinator-browser-start-transaction.js";
+import {
 	type CoordinatorOidcClient,
 	type CoordinatorOidcOptions,
 	createCoordinatorOidcClient,
 } from "./coordinator-oidc.js";
 import type { InMemoryRequestRateLimiter } from "./request-rate-limit.js";
 
-type LinkStartStore = Pick<CoordinatorAuthBrowserTransactionStore, "startAuthBrowserTransaction">;
+type LinkStartStore = Pick<
+	CoordinatorAuthBrowserTransactionStore,
+	"startAuthBrowserTransaction" | "readAuthBrowserTransactionActivity"
+>;
 type Settings = Extract<CoordinatorBrowserAuthSettings, { kind: "enabled" }>;
 export interface CoordinatorBrowserLinkStartInput {
 	config: unknown;
@@ -208,9 +215,13 @@ async function linkStartPage(
 		const query = parseStartQuery(context, route.url);
 		if (!query) return await notice(400, "form_invalid");
 		const snapshot = snapshotBrowserRequest(request);
-		const transaction = await readBrowserCookie(snapshot.cookie, "transaction");
-		if (transaction.kind === "invalid") return await notice(400, "cookie_invalid");
-		if (transaction.kind === "present") return await notice(409, "link_in_progress");
+		const transaction = await readBrowserStartTransaction(
+			snapshot.cookie,
+			context.store,
+			context.storeConfig,
+		);
+		if (transaction === "invalid") return await notice(400, "cookie_invalid");
+		if (transaction === "active") return await notice(409, "link_in_progress");
 		const existing = await readBrowserCookie(snapshot.cookie, "start");
 		if (existing.kind === "invalid") return await notice(400, "cookie_invalid");
 		const cookie = existing.kind === "present" ? existing : await issueBrowserCookie("start");
@@ -222,7 +233,7 @@ async function linkStartPage(
 		);
 		const response = pageResponse(await renderAuthLinkStartPage({ ...query, csrfToken }));
 		if ("setCookie" in cookie) response.headers.append("Set-Cookie", cookie.setCookie);
-		return result(response, "link_start_page");
+		return clearInactiveStartTransaction(result(response, "link_start_page"), transaction);
 	} catch {
 		return await notice(503, "internal_error");
 	}
@@ -333,12 +344,16 @@ async function linkStart(
 		const guard = await pendingGuard;
 		const priority = guardPriority(guard);
 		if (priority) return await priority;
-		const transaction = await readBrowserCookie(snapshot.cookie, "transaction");
-		if (transaction.kind === "invalid") return await notice(400, "cookie_invalid");
-		if (transaction.kind === "present") return await notice(409, "link_in_progress");
+		const transaction = await readBrowserStartTransaction(
+			snapshot.cookie,
+			context.store,
+			context.storeConfig,
+		);
+		if (transaction === "invalid") return await notice(400, "cookie_invalid");
+		if (transaction === "active") return await notice(409, "link_in_progress");
 		if (!guard.ok) return await guardFailure(guard);
 		if (guard.action !== "link_start") return await notice(503, "internal_error");
-		return await admitStart(context, snapshot, guard);
+		return clearInactiveStartTransaction(await admitStart(context, snapshot, guard), transaction);
 	} catch {
 		return await notice(503, "internal_error");
 	}
@@ -373,7 +388,14 @@ export async function createCoordinatorBrowserLinkStart(
 			receiver,
 			"startAuthBrowserTransaction",
 		) as LinkStartStore["startAuthBrowserTransaction"];
-		const store = Object.freeze({ startAuthBrowserTransaction: start.bind(receiver) });
+		const activity = dataMethod(
+			receiver,
+			"readAuthBrowserTransactionActivity",
+		) as LinkStartStore["readAuthBrowserTransactionActivity"];
+		const store = Object.freeze({
+			startAuthBrowserTransaction: start.bind(receiver),
+			readAuthBrowserTransactionActivity: activity.bind(receiver),
+		});
 		const limiter = ownData(input, "limiter") as InMemoryRequestRateLimiter;
 		dataMethod(limiter, "check");
 		const oidcOptions = captureOidcOptions(input);

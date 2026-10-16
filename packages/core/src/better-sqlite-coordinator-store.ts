@@ -893,6 +893,12 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		);
 	}
 
+	async readAuthBrowserTransactionActivity(
+		input: { binderHash: string },
+		config: CoordinatorAuthBrowserConfig,
+	) {
+		return this.authBrowserTransactions.readAuthBrowserTransactionActivity(input, config);
+	}
 	async startAuthBrowserTransaction(
 		input: CoordinatorAuthBrowserTransactionStartInput,
 		config: CoordinatorAuthBrowserConfig,

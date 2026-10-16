@@ -295,6 +295,34 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 			throw authPersistenceError(error, "auth_browser_transaction_persistence_error");
 		}
 	}
+	async readAuthBrowserTransactionActivity(
+		input: { binderHash: string },
+		config: CoordinatorAuthBrowserConfig,
+	): ReturnType<CoordinatorAuthBrowserTransactionStore["readAuthBrowserTransactionActivity"]> {
+		const c = captureConfig(config);
+		const i = capture(input, ["binderHash"]);
+		if (!c || !i || !isHash(i.binderHash)) return { kind: "rejected", error: "invalid_input" };
+		if (!c.enabled) return { kind: "rejected", error: "auth_config_changed" };
+		const now = authLinkNow(this.clock);
+		// One statement reads the current transaction and its own attempt. Config drift
+		// fails closed, even for an expired row; unrelated coordinators never match.
+		const row = await this.first<{ activity: string }>({
+			sql: `SELECT CASE
+ WHEN b.issuer <> ? OR b.auth_config_revision <> ? OR b.redirect_uri <> ? THEN 'config_changed'
+ WHEN b.state = 'expired' OR b.expires_at_ms <= ? THEN 'inactive'
+ WHEN b.purpose = 'link' AND EXISTS (SELECT 1 FROM coordinator_auth_link_attempts a
+ WHERE a.coordinator_id = b.coordinator_id AND a.attempt_id = b.attempt_id
+ AND a.browser_transaction_hash = b.browser_transaction_hash AND a.issuer = b.issuer
+ AND a.auth_config_revision = b.auth_config_revision
+ AND (a.state IN ('finalized','session_redeemed','failed','expired') OR a.expires_at_ms <= ?))
+ THEN 'inactive' ELSE 'active' END AS activity
+ FROM ${TABLE} b WHERE b.coordinator_id = ? AND b.binder_hash = ?`,
+			values: [c.issuer, c.revision, c.redirectUri, now, now, c.coordinatorId, i.binderHash],
+		});
+		if (!row || row.activity === "inactive") return { kind: "inactive" };
+		if (row.activity === "active") return { kind: "active" };
+		return { kind: "rejected", error: "auth_config_changed" };
+	}
 	async startAuthBrowserTransaction(
 		input: CoordinatorAuthBrowserTransactionStartInput,
 		config: CoordinatorAuthBrowserConfig,

@@ -159,6 +159,24 @@ commits but its return page is lost, the original confirmation form can still
 cancel the attempt. Scheduled maintenance must finish erasing temporary material
 when a cancellation commits but its cleanup fails.
 
+### Starting again after a completed browser transaction
+
+Both GET and POST sign-in and link-start handlers check an existing transaction
+cookie against the current server transaction using its binder hash and exact
+coordinator. One SQL statement reads that transaction and its own stored link
+attempt; the caller cannot nominate an attempt. Invalid cookies or changed issuer,
+configuration revision, or redirect URI deny restart without clearing the cookie.
+Lookup faults return an unavailable response without exposing storage errors.
+
+An active sign-in, link, or owner-enrollment transaction still returns 409 without
+changing cookies. A missing or expired transaction, or its exact link attempt in
+`finalized`, `session_redeemed`, `failed`, or `expired` state (or past its deadline),
+allows a fresh start. A successful start replaces the old transaction cookie;
+otherwise a successful start page or existing-session redirect clears it. No
+other transaction is cancelled or modified. Account confirmation does not clear
+the cookie. Starting again intentionally gives up optional session redemption
+for the previous link; it never redeems that link or switches accounts automatically.
+
 Runtime polling requires the attempt device's signed request; browser polling
 requires its original transaction cookie. A public attempt ID is not authorization.
 Polling exposes status only. It never returns a browser-completion secret, raw

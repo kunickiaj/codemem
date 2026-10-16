@@ -86,6 +86,14 @@ export type CoordinatorAuthSigninBrowserTransactionPurgeResult =
 	| { kind: "purged"; processedCount: number; more: boolean }
 	| { kind: "rejected"; error: "invalid_input" };
 export interface CoordinatorAuthBrowserTransactionStore {
+	/** Server-only binder lookup; never accepts a caller-selected attempt. */
+	readAuthBrowserTransactionActivity(
+		input: { binderHash: string },
+		config: CoordinatorAuthBrowserConfig,
+	): Promise<
+		| { kind: "active" | "inactive" }
+		| { kind: "rejected"; error: "invalid_input" | "auth_config_changed" }
+	>;
 	startAuthBrowserTransaction(
 		input: CoordinatorAuthBrowserTransactionStartInput,
 		config: CoordinatorAuthBrowserConfig,

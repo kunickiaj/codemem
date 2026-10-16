@@ -2,6 +2,7 @@ import { env, exports } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	BROWSER_COOKIE_NAMES,
+	clearBrowserCookie,
 	readBrowserCookie,
 } from "../../core/src/coordinator-browser-credential.js";
 import {
@@ -219,6 +220,20 @@ describe("unmounted browser signin handlers in workerd with native D1", () => {
 			expect(response.headers.getSetCookie()).toEqual([]);
 		}
 		const txn = `${BROWSER_COOKIE_NAMES.transaction}=${page.cookie.split("=")[1]}`;
+		// A missing row is inactive: GET clears the old cookie without writing authority.
+		const missing = await f.handlers[0].signInPage(
+			new Request(URL_START, { headers: { cookie: txn } }),
+		);
+		expect(missing.response.status).toBe(200);
+		expect(missing.response.headers.getSetCookie()).toContain(clearBrowserCookie("transaction"));
+		expect(await rows()).toEqual([]);
+		// POST still verifies START CSRF and replaces the inactive cookie with a real pending row.
+		const started = await f.handlers[0].signInStart(
+			post(`${page.cookie}; ${txn}`, page.csrf), "txn-client",
+		);
+		expect(started.response.status).toBe(200);
+		const pending = await rows();
+		expect(pending).toHaveLength(1);
 		for (const [cookie, status] of [
 			[txn, 409],
 			[`${BROWSER_COOKIE_NAMES.transaction}=bad`, 400],
@@ -232,7 +247,7 @@ describe("unmounted browser signin handlers in workerd with native D1", () => {
 			expect(get.headers.getSetCookie()).toEqual([]);
 			expect(response.headers.getSetCookie()).toEqual([]);
 		}
-		expect(await rows()).toEqual([]);
+		expect(await rows()).toEqual(pending);
 		expect(f.fixture.fetch).not.toHaveBeenCalled();
 	});
 

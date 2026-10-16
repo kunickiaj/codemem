@@ -65,7 +65,12 @@ async function setup(backend: Backend = "SQLite", options: { legacy?: boolean } 
 		config,
 		csrfKey,
 		limiter,
-		store: { startAuthBrowserTransaction: start },
+		store: {
+			startAuthBrowserTransaction: start,
+			readAuthBrowserTransactionActivity: vi.fn(
+				f.store.readAuthBrowserTransactionActivity.bind(f.store),
+			),
+		},
 		oidcOptions: { fetch: oidc.fetch },
 	};
 	const factory = await createCoordinatorBrowserLinkStart(factoryOptions);
@@ -129,7 +134,9 @@ async function rejected(response: Response, code: string, status?: number) {
 	if (status !== undefined) expect(response.status).toBe(status);
 	else expect(response.status).toBeGreaterThanOrEqual(400);
 	expect(response.headers.getSetCookie()).toEqual([]);
-	expect(await response.text()).not.toMatch(
+	const body = await response.text();
+	expect(body).not.toContain("<script");
+	expect(body).not.toMatch(
 		new RegExp(`${code}|fixture-secret|synthetic-private-failure|fixture-access-token`),
 	);
 }
@@ -225,6 +232,7 @@ async function callbackAndConfirmation(
 		new Request(f.oidc.authorize(url), { headers: { cookie: transactionCookie } }),
 	);
 	const confirmation = await completed.response.text();
+	expect(confirmation).not.toMatch(/<script\b|http-equiv=["']refresh/i);
 	const csrf = /name="csrf" value="([^"]+)"/.exec(confirmation)?.[1] ?? "";
 	const confirmed = await handlers.link.confirm(
 		new Request(`${ORIGIN}/auth/link/confirm`, {
@@ -387,6 +395,7 @@ describe("browser page and transport boundaries", () => {
 	it("reuses START and preserves SESSION without account redirect; refuses existing TXN", async () => {
 		// Arrange
 		const f = await setup();
+		f.options.store.readAuthBrowserTransactionActivity.mockResolvedValue({ kind: "active" });
 		const c = await form(f);
 		const session = await issueBrowserCookie("session");
 		const cookie = `${c.cookie}; ${session.setCookie.split(";")[0]}`;
@@ -537,6 +546,189 @@ describe("shared quota and durable failure", () => {
 			expect(snapshot(f)).toEqual(before);
 			expect(f.oidc.fetch).not.toHaveBeenCalled();
 			if (fault === "provider") expect(f.start).not.toHaveBeenCalled();
+		},
+	);
+});
+
+async function restartHandlers(f: Fixture) {
+	const options = { ...f.options, store: f.store };
+	const link = await createCoordinatorBrowserLinkStart(options);
+	const signin = await createCoordinatorBrowserSigninStart(options);
+	if (!link.ok || !signin.ok) throw new Error("Restart handlers unavailable");
+	f.oidc.fetch.mockClear();
+	return { link: link.handlers, signin: signin.handlers };
+}
+
+async function linkStage(
+	f: Fixture,
+	stage:
+		| "browser_claimed"
+		| "oidc_verified"
+		| "confirmed"
+		| "finalized"
+		| "signin"
+		| "owner_enroll",
+) {
+	const handlers = await restartHandlers(f);
+	f.handlers = handlers.link;
+	if (stage === "signin" || stage === "owner_enroll") {
+		const issued = await issueBrowserCookie("transaction");
+		expect(
+			await f.store.startAuthBrowserTransaction(
+				{
+					purpose: "signin",
+					binderHash: issued.cookieHash,
+					stateHash: hash(randomBytes(32)),
+					nonce: "n".repeat(43),
+					pkceVerifier: "p".repeat(43),
+				},
+				f.config,
+			),
+		).toMatchObject({ kind: "started" });
+		// Owner enrollment uses the same native transaction schema and must also block restart.
+		if (stage === "owner_enroll")
+			f.db.prepare(`UPDATE ${TABLE} SET purpose='owner_enroll', attempt_id='owner-attempt'`).run();
+		return { ...handlers, cookie: issued.setCookie.split(";")[0] };
+	}
+	const admitted = await checkAdmission(f, await form(f));
+	const row = rows(f)[0];
+	const browser = {
+		attemptId: f.input.attemptId,
+		browserTransactionHash: String(row.browser_transaction_hash),
+	};
+	if (stage !== "browser_claimed") {
+		expect(
+			await f.store.consumeAuthBrowserTransaction(
+				{ stateHash: String(row.state_hash), binderHash: String(row.binder_hash) },
+				f.config,
+			),
+		).toMatchObject({ kind: "consumed" });
+		expect(
+			await f.store.recordAuthLinkOidcVerified(
+				{ ...browser, account: { issuer: f.config.issuer, subject: "synthetic-restart-subject" } },
+				f.config,
+			),
+		).toMatchObject({ kind: "applied" });
+	}
+	if (stage === "confirmed" || stage === "finalized") {
+		expect(
+			await f.store.confirmAuthLinkAttempt(
+				{ ...browser, completionSecretHash: "e".repeat(64) },
+				f.config,
+			),
+		).toMatchObject({ kind: "applied" });
+	}
+	if (stage === "finalized") {
+		expect(
+			await f.store.finalizeAuthLinkAttempt(
+				finalize({ runtimeVerifierHash: hash(f.deviceRaw), completionSecretHash: "e".repeat(64) }),
+				f.config,
+			),
+		).toMatchObject({ kind: "applied" });
+	}
+	return { ...handlers, cookie: admitted.transactionCookie };
+}
+
+describe.each(["SQLite", "D1"] as const)("%s terminal browser-cookie restart", (backend) => {
+	it.each(["link", "signin"] as const)(
+		"allows %s GET and protected POST after finalization without session redemption",
+		async (kind) => {
+			// Arrange: device proof finalized the prior link, but its browser still holds TXN.
+			const f = await setup(backend);
+			const handlers = await linkStage(f, "finalized");
+			expect(rows(f, "coordinator_auth_sessions")).toEqual([]);
+			const raw = randomBytes(32);
+			f.startCode = raw.toString("base64url");
+			f.input = attempt({
+				attemptId: "attempt-next",
+				runtimeVerifierHash: hash(randomBytes(32)),
+				browserStartHash: hash(raw),
+			});
+			expect(await f.store.createAuthLinkAttempt(f.input, f.config)).toMatchObject({
+				kind: "created",
+			});
+			const before = snapshot(f);
+			// Act: GET replaces no authority; POST independently rechecks a lingering old TXN.
+			const url = kind === "link" ? pageUrl(f) : `${ORIGIN}/auth/sign-in`;
+			const request = new Request(url, { headers: { cookie: handlers.cookie } });
+			const page =
+				kind === "link"
+					? await handlers.link.linkStartPage(request)
+					: await handlers.signin.signInPage(request);
+			const body = await page.response.text();
+			const fields = Object.fromEntries(
+				[...body.matchAll(/name="([a-z_]+)" value="([^"]+)"/g)].map((m) => [m[1], m[2]]),
+			);
+			const cookies = page.response.headers.getSetCookie();
+			const start = cookies
+				.find((value) => value.startsWith(`${BROWSER_COOKIE_NAMES.start}=`))
+				?.split(";")[0];
+			// Assert: cleanup depends on the finalized attempt, not browser session issuance.
+			expect(page.response.status).toBe(200);
+			expect(cookies).toContain(clearBrowserCookie("transaction"));
+			expect(start).toBeTruthy();
+			expect(snapshot(f)).toEqual(before);
+			const next = new Request(kind === "link" ? URL_START : `${ORIGIN}/auth/sign-in`, {
+				method: "POST",
+				headers: {
+					origin: ORIGIN,
+					cookie: `${start}; ${handlers.cookie}`,
+					"content-type": "application/x-www-form-urlencoded",
+				},
+				body: new URLSearchParams(fields),
+			});
+			const badProof = new Request(next.clone(), {
+				body: new URLSearchParams({ ...fields, csrf: "A".repeat(86) }),
+			});
+			const denied =
+				kind === "link"
+					? await handlers.link.linkStart(badProof, "restart")
+					: await handlers.signin.signInStart(badProof, "restart");
+			await rejected(denied.response, f.startCode, 403);
+			expect(snapshot(f)).toEqual(before);
+			const result =
+				kind === "link"
+					? await handlers.link.linkStart(next, "restart")
+					: await handlers.signin.signInStart(next, "restart");
+			expect(result.response.status).toBe(200);
+			expect(authorization(await result.response.text()).origin).toBe(f.config.issuer);
+			expect(rows(f)).toHaveLength(2);
+			expect(rows(f, "coordinator_auth_sessions")).toEqual([]);
+			expect(f.oidc.fetch).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(["browser_claimed", "oidc_verified", "confirmed", "signin", "owner_enroll"] as const)(
+		"keeps %s ceremonies active in all four start handlers",
+		async (stage) => {
+			// Arrange: even a consumed callback remains active until device finalization.
+			const f = await setup(backend);
+			const handlers = await linkStage(f, stage);
+			const c = await form(f);
+			const before = snapshot(f);
+			const cookie = `${c.cookie}; ${handlers.cookie}`;
+			// Act: both GET and POST must refuse to overwrite an unfinished ceremony.
+			const responses = await Promise.all([
+				handlers.link.linkStartPage(new Request(pageUrl(f), { headers: { cookie } })),
+				handlers.link.linkStart(post(c, { cookie }), "active"),
+				handlers.signin.signInPage(new Request(`${ORIGIN}/auth/sign-in`, { headers: { cookie } })),
+				handlers.signin.signInStart(
+					new Request(`${ORIGIN}/auth/sign-in`, {
+						method: "POST",
+						headers: {
+							origin: ORIGIN,
+							cookie,
+							"content-type": "application/x-www-form-urlencoded",
+						},
+						body: new URLSearchParams({ csrf: c.fields.csrf }),
+					}),
+					"active",
+				),
+			]);
+			// Assert: active cookies and persisted authority survive unchanged.
+			for (const { response } of responses) await rejected(response, f.startCode, 409);
+			expect(snapshot(f)).toEqual(before);
+			expect(f.oidc.fetch).not.toHaveBeenCalled();
 		},
 	);
 });
