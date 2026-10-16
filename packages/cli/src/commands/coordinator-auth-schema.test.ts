@@ -16,12 +16,17 @@ afterEach(() => {
 });
 
 it("exports complete D1 SQL including intact proof triggers without opening a database", async () => {
+	// Arrange
 	const output = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+	// Act
 	await buildCoordinatorAuthSchemaCommand().parseAsync(["--export-sql", "--json"], {
 		from: "user",
 	});
 	const result = JSON.parse(String(output.mock.calls[0]?.[0]));
+	// Assert: the CLI must not reintroduce empty statements into the exported file.
 	expect(result.applied).toBe(false);
+	expect(result.sql).not.toMatch(/;\s*;/u);
+	expect(result.sql).toMatch(/;\n+$/u);
 	expect(result.sql).toContain("CREATE TABLE coordinator_auth_link_authority_upgrade_checks");
 	expect(result.sql).toContain("RAISE(ABORT, 'auth_device_claim_immutable');\nEND;");
 	expect(upgrade).not.toHaveBeenCalled();

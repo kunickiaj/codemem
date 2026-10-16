@@ -326,7 +326,10 @@ export const AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS = Object.freeze([
 		.filter(Boolean),
 	...COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_STATEMENTS,
 ]);
-export const AUTH_LINK_AUTHORITY_CUTOVER_SQL = AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS.join(";\n");
+// D1 file imports reject empty statements; normalize only terminal delimiters, not trigger bodies.
+export const AUTH_LINK_AUTHORITY_CUTOVER_SQL = `${AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS.map(
+	(sql) => sql.trim().replace(/;$/u, ""),
+).join(";\n")};\n`;
 
 /** Explicit invocation only; never call on open. Failure rolls back all DDL/data, including proofs. */
 export function upgradeAuthLinkAuthoritySchema(db: Database): void {

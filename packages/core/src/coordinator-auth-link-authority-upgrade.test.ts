@@ -10,6 +10,8 @@ import {
 import { AUTH_CONTROLLER_SCHEMA_SQL } from "./coordinator-auth-controller.js";
 import { COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_STATEMENTS as proof } from "./coordinator-auth-device-claim-schema.js";
 import {
+	AUTH_LINK_AUTHORITY_CUTOVER_SQL,
+	AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS,
 	AUTH_LINK_AUTHORITY_UPGRADE_SQL,
 	upgradeAuthLinkAuthoritySchema,
 } from "./coordinator-auth-link-authority-upgrade.js";
@@ -42,6 +44,54 @@ function snapshot(db: Database.Database) {
 			db.prepare(`SELECT rowid, * FROM ${table} ORDER BY rowid`).all() as Record<string, unknown>[],
 	);
 }
+
+it("exports one terminal delimiter per statement without changing trigger bodies", () => {
+	// Arrange: strip only terminal delimiters, retaining every internal trigger statement.
+	const statements = AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS;
+	const expected = `${statements.map((sql) => sql.trim().replace(/;$/u, "")).join(";\n")};\n`;
+	// Act
+	const sql = AUTH_LINK_AUTHORITY_CUTOVER_SQL;
+	// Assert: D1 file imports reject empty statements that SQLite silently ignores.
+	expect(sql).not.toMatch(/;\s*;/u);
+	expect(sql).toBe(expected);
+	expect(sql).toContain("RAISE(ABORT, 'auth_device_claim_immutable');\nEND;");
+	expect(Object.isFrozen(statements)).toBe(true);
+});
+
+it("executes the exported file atomically with all readiness proofs and historical rows", () => {
+	// Arrange
+	const db = legacyDatabase();
+	try {
+		const before = snapshot(db);
+		// Act: execute the file itself, not the native D1 statement array.
+		db.transaction(() => db.exec(AUTH_LINK_AUTHORITY_CUTOVER_SQL)).immediate();
+		// Assert
+		expect(db.prepare(AUTH_SCHEMA_READINESS_SQL).get()).toEqual({ ready: AUTH_SCHEMA_READY_COUNT });
+		expect(snapshot(db).map(withoutNewAuthorityColumns)).toEqual(before);
+		expect(db.inTransaction).toBe(false);
+	} finally {
+		db.close();
+	}
+});
+
+it("rolls back the exported file for incompatible proof DDL without changing rows or schema", () => {
+	// Arrange
+	const db = legacyDatabase();
+	try {
+		db.exec("CREATE TABLE coordinator_auth_device_claims (claim_id TEXT)");
+		const before = snapshot(db);
+		const schema = db.prepare("SELECT * FROM sqlite_master ORDER BY name").all();
+		// Act
+		const execute = db.transaction(() => db.exec(AUTH_LINK_AUTHORITY_CUTOVER_SQL));
+		// Assert
+		expect(() => execute.immediate()).toThrow(/CHECK/);
+		expect(snapshot(db)).toEqual(before);
+		expect(db.prepare("SELECT * FROM sqlite_master ORDER BY name").all()).toEqual(schema);
+		expect(db.inTransaction).toBe(false);
+	} finally {
+		db.close();
+	}
+});
 
 it.each([
 	"CREATE TABLE coordinator_auth_device_claims (claim_id TEXT)",
