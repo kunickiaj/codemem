@@ -1,11 +1,15 @@
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import {
+	AUTH_DEVICE_CLAIM_CURRENT_SUBJECT_COMPATIBLE_SQL,
 	AUTH_DEVICE_CLAIM_ELIGIBLE_SQL,
 	AUTH_DEVICE_CLAIM_INPUT_SQL,
+	AUTH_DEVICE_CLAIM_LEGACY_COMPATIBLE_SQL,
+	AUTH_DEVICE_CLAIM_REQUESTER_ATTESTATION_COMPATIBLE_SQL,
 	type CoordinatorDeviceClaimReadiness,
 	type CoordinatorDeviceClaimReadinessInput,
 	captureDeviceClaimEligibility,
 } from "./coordinator-auth-device-claim-eligibility.js";
+import { AUTH_CURRENT_LEGACY_ASSIGNMENT_SQL } from "./coordinator-auth-legacy-assignment.js";
 import {
 	AUTH_LINK_AUTHORITY_COLUMNS,
 	AUTH_LINK_CONTROLLER_SOURCE_SQL,
@@ -167,9 +171,12 @@ export class AccountLinkStatusOperations implements CoordinatorAccountLinkStatus
  AND NOT EXISTS (SELECT 1 FROM coordinator_device_revocations r
  WHERE (r.subject_kind = 'device_id' AND r.subject_value = a.device_id)
  OR (r.subject_kind = 'ed25519_key' AND r.subject_value = ?))),
- claims AS (SELECT d.identity_id, l.link_id, l.issuer, l.revoked_at_ms,
- CASE WHEN l.identity_id = d.identity_id AND d.group_id = p.group_id AND d.device_id = p.device_id
- AND d.key_id = p.key_id AND d.fingerprint = p.fingerprint
+  status_assignment AS MATERIALIZED (SELECT 1 FROM claim_input p
+   WHERE ${AUTH_CURRENT_LEGACY_ASSIGNMENT_SQL} AND ${AUTH_DEVICE_CLAIM_LEGACY_COMPATIBLE_SQL}
+   AND ${AUTH_DEVICE_CLAIM_CURRENT_SUBJECT_COMPATIBLE_SQL}
+   AND ${AUTH_DEVICE_CLAIM_REQUESTER_ATTESTATION_COMPATIBLE_SQL}),
+  claims AS MATERIALIZED (SELECT d.identity_id, l.link_id, l.issuer, l.revoked_at_ms,
+ CASE WHEN l.identity_id = d.identity_id
  AND EXISTS (SELECT 1 FROM enrolled_devices e JOIN groups g ON g.group_id = e.group_id
  WHERE e.group_id = p.group_id AND e.device_id = p.device_id AND e.public_key = p.public_key
  AND e.fingerprint = p.fingerprint AND e.enabled = 1 AND g.archived_at IS NULL
@@ -177,11 +184,18 @@ export class AccountLinkStatusOperations implements CoordinatorAccountLinkStatus
  AND NOT EXISTS (SELECT 1 FROM coordinator_device_revocations r
  WHERE (r.subject_kind = 'device_id' AND r.subject_value = p.device_id)
  OR (r.subject_kind = 'ed25519_key' AND r.subject_value = p.key_id))
- AND ${authDeviceClaimProvenanceSql({ link: "l", canonicalKeyId: "?" })}
+ AND ((d.group_id = p.group_id AND d.device_id = p.device_id
+ AND d.key_id = p.key_id AND d.fingerprint = p.fingerprint
+ AND ${authDeviceClaimProvenanceSql({ link: "l", canonicalKeyId: "?" })})
+ OR (d.identity_id = p.identity_id AND d.device_id <> p.device_id
+ AND d.key_id <> p.key_id AND d.fingerprint <> p.fingerprint
+ AND EXISTS (SELECT 1 FROM status_assignment)
+ AND ${authDeviceClaimProvenanceSql({ link: "l" })}))
  THEN 1 ELSE 0 END AS valid
  FROM claim_input p JOIN coordinator_auth_device_claims d ON d.coordinator_id = p.coordinator_id
  LEFT JOIN coordinator_auth_account_links l ON l.coordinator_id = d.coordinator_id AND l.device_claim_id = d.claim_id
- WHERE d.device_id = p.device_id OR d.key_id = p.key_id),
+ WHERE d.device_id = p.device_id OR d.key_id = p.key_id
+ OR (d.identity_id = p.identity_id AND EXISTS (SELECT 1 FROM status_assignment))),
  candidates AS (
  SELECT *, 'device_claim' AS authority FROM claims
  UNION ALL SELECT a.controller_identity_id, l.link_id, l.issuer, l.revoked_at_ms, 1, 'controller_attestation'

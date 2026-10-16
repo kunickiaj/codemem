@@ -197,7 +197,7 @@ describe.each(["SQLite", "D1"] as const)("%s device-claim readiness", (backend) 
 			};
 			const captured = await captureDeviceClaimEligibility(sqlBackend, input, config, NOW);
 			if (!captured) throw new Error("Missing fixture eligibility input");
-			expect(captured.values).toHaveLength(14);
+			expect(captured.values).toHaveLength(15);
 			f.db
 				.prepare("UPDATE enrolled_devices SET public_key=? WHERE device_id='unrelated-device'")
 				.run(key);
