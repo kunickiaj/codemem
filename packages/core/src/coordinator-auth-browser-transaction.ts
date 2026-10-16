@@ -33,6 +33,7 @@ import {
 	authLinkNow,
 	captureAuthLinkBrowserStartHash,
 } from "./coordinator-auth-link.js";
+import { captureAuthLinkSource } from "./coordinator-auth-link-source.js";
 import { authPersistenceError } from "./coordinator-auth-schema.js";
 
 export * from "./coordinator-auth-browser-transaction-contract.js";
@@ -258,23 +259,27 @@ function assertLinkClaim(
 		sql: `UPDATE ${TABLE} AS b SET nonce = NULL WHERE ${MATCH_CONFIG} AND b.browser_transaction_hash = ?
  AND b.state = 'pending' AND b.attempt_id = ? AND b.created_at_ms = ? AND NOT EXISTS
  (SELECT 1 FROM coordinator_auth_link_attempts a WHERE a.coordinator_id = b.coordinator_id AND a.attempt_id = b.attempt_id
- AND a.authority_kind = 'controller_attestation'
+ AND (a.authority_kind = 'controller_attestation' OR (a.authority_kind = 'device_claim'
+ AND a.controller_attestation_id IS NULL AND a.controller_review_receipt_id IS NULL AND a.controller_revision IS NULL))
  AND a.browser_transaction_hash = b.browser_transaction_hash AND a.state = 'browser_claimed'
  AND a.claimed_at_ms = ? AND a.issuer = b.issuer AND a.auth_config_revision = b.auth_config_revision
  AND a.expires_at_ms = b.expires_at_ms AND a.expires_at_ms > ?)`,
 		values: [...configValues(c), hash, i.attemptId, now, now, now],
 	};
 }
-function linkMatch(states: string): string {
+function linkMatch(states: string, source = "a.authority_kind = 'controller_attestation'"): string {
 	return `(b.purpose = 'signin' OR EXISTS (SELECT 1 FROM coordinator_auth_link_attempts a
  WHERE b.purpose = 'link' AND a.coordinator_id = b.coordinator_id AND a.attempt_id = b.attempt_id
- AND a.authority_kind = 'controller_attestation'
+ AND ${source}
  AND a.browser_transaction_hash = b.browser_transaction_hash AND a.issuer = b.issuer
  AND a.auth_config_revision = b.auth_config_revision AND a.expires_at_ms > ? AND a.state IN (${states})))`;
 }
-const LIVE_LINK = linkMatch("'browser_claimed'");
-const RESOLVABLE_LINK = linkMatch(
-	"'browser_claimed','oidc_verified','confirmed','finalized','session_redeemed'",
+// Retirement only destroys pending browser secrets; it cannot grant authority.
+const LIVE_LINK = linkMatch(
+	"'browser_claimed'",
+	`(a.authority_kind = 'controller_attestation' OR
+ (a.authority_kind = 'device_claim' AND a.controller_attestation_id IS NULL
+ AND a.controller_review_receipt_id IS NULL AND a.controller_revision IS NULL AND a.link_id IS NULL))`,
 );
 
 /** Persistence capability only; consumed secrets are returned solely to a trusted exchange caller. */
@@ -374,16 +379,17 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 		});
 		return row !== null;
 	}
-	private startedRow(
+	private async startedRow(
 		i: CoordinatorAuthBrowserTransactionStartInput,
 		c: CoordinatorAuthBrowserConfig,
 		hash: string,
 		now: number,
 	): Promise<TransactionRow | null> {
+		const source = i.purpose === "link" ? await this.source(i.attemptId, c, now) : null;
 		return this.first<TransactionRow>({
 			sql: `SELECT b.* FROM ${TABLE} b WHERE ${MATCH_CONFIG} AND b.browser_transaction_hash = ?
  AND b.state_hash = ? AND b.binder_hash = ? AND b.nonce = ? AND b.pkce_verifier = ?
- AND b.purpose = ? AND b.attempt_id IS ? AND b.created_at_ms = ? AND b.state = 'pending' AND b.expires_at_ms > ? AND ${LIVE_LINK}`,
+ AND b.purpose = ? AND b.attempt_id IS ? AND b.created_at_ms = ? AND b.state = 'pending' AND b.expires_at_ms > ? AND ${linkMatch("'browser_claimed'", source?.sql)}`,
 			values: [
 				...configValues(c),
 				hash,
@@ -395,6 +401,7 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 				i.purpose === "link" ? i.attemptId : null,
 				now,
 				now,
+				...(source?.values ?? []),
 				now,
 			],
 		});
@@ -406,11 +413,13 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 		hash: string,
 	): Promise<CoordinatorAuthBrowserTransactionStartResult> {
 		const browserStartHash = i.browserStartHash ?? null;
+		const source = await this.source(i.attemptId, c, now);
+		const claimSource = await this.source(i.attemptId, c, now, "coordinator_auth_link_attempts");
 		const insert: AuthLinkStatement = {
 			sql: `INSERT INTO ${TABLE} (${COLUMNS}) SELECT a.coordinator_id, ?, 'link', a.attempt_id, ?, ?, a.issuer,
  a.auth_config_revision, ?, 'pending', ?, ?, ?, a.expires_at_ms, NULL, NULL FROM coordinator_auth_link_attempts a
  WHERE a.coordinator_id = ? AND a.attempt_id = ? AND a.issuer = ? AND a.auth_config_revision = ?
- AND a.authority_kind = 'controller_attestation'
+ AND ${source.sql}
  AND a.state = 'pending' AND a.browser_transaction_hash IS NULL AND a.expires_at_ms > ?
  AND ((a.browser_start_hash IS NULL AND ? IS NULL) OR a.browser_start_hash = ?) AND ${FRESH_HASH}
  ${ASSERT_HASH_FRESH}`,
@@ -426,6 +435,7 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 				i.attemptId,
 				c.issuer,
 				c.revision,
+				...source.values,
 				now,
 				browserStartHash,
 				browserStartHash,
@@ -437,7 +447,7 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 		const claim: AuthLinkStatement = {
 			sql: `UPDATE coordinator_auth_link_attempts SET state = 'browser_claimed', browser_transaction_hash = ?, claimed_at_ms = ?
  WHERE coordinator_id = ? AND attempt_id = ? AND issuer = ? AND auth_config_revision = ?
- AND authority_kind = 'controller_attestation'
+ AND ${claimSource.sql}
  AND state = 'pending' AND browser_transaction_hash IS NULL AND expires_at_ms > ?
  AND ((browser_start_hash IS NULL AND ? IS NULL) OR browser_start_hash = ?)
  AND NOT EXISTS (SELECT 1 FROM coordinator_auth_session_receipts r WHERE r.coordinator_id = ? AND r.browser_transaction_hash = ?)
@@ -451,6 +461,7 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 				i.attemptId,
 				c.issuer,
 				c.revision,
+				...claimSource.values,
 				now,
 				browserStartHash,
 				browserStartHash,
@@ -464,14 +475,50 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 				now,
 			],
 		};
-		const assertClaim = assertLinkClaim(i, c, now, hash);
+		const failure = await this.persistLinkStart([insert, claim, assertLinkClaim(i, c, now, hash)]);
+		if (failure) return failure;
+		return this.startLinkReceipt(i, c, now, hash);
+	}
+	private async persistLinkStart(statements: AuthLinkStatement[]) {
 		try {
-			await this.backend.batch([insert, claim, assertClaim]);
+			await this.backend.batch(statements);
 		} catch (error) {
 			if (isAuthControllerUniqueError(error)) return rejected("transaction_conflict");
 			throw authPersistenceError(error, "auth_browser_transaction_persistence_incomplete");
 		}
-		return this.startLinkReceipt(i, c, now, hash);
+		return null;
+	}
+	private async source(
+		attemptId: string,
+		c: CoordinatorAuthBrowserConfig,
+		now: number,
+		alias: "a" | "coordinator_auth_link_attempts" = "a",
+	) {
+		try {
+			return await captureAuthLinkSource(this.backend, attemptId, c, now, alias);
+		} catch (error) {
+			throw authPersistenceError(error, "auth_browser_transaction_persistence_error");
+		}
+	}
+	private async browserSource(
+		i: { binderHash: string; stateHash?: string; attemptId?: string },
+		c: CoordinatorAuthBrowserConfig,
+		now: number,
+	): Promise<AuthLinkStatement> {
+		const row = await this.first<{ attempt_id: string | null }>({
+			sql: `SELECT attempt_id FROM ${TABLE} b WHERE ${MATCH_CONFIG} AND b.binder_hash = ?
+ AND (? IS NULL OR b.state_hash = ?) AND (? IS NULL OR b.attempt_id = ?) AND b.purpose = 'link'`,
+			values: [
+				...configValues(c),
+				i.binderHash,
+				i.stateHash ?? null,
+				i.stateHash ?? null,
+				i.attemptId ?? null,
+				i.attemptId ?? null,
+			],
+		});
+		if (!row?.attempt_id) return { sql: "0 = 1", values: [] };
+		return this.source(row.attempt_id, c, now);
 	}
 	private async startLinkReceipt(
 		i: CoordinatorAuthBrowserTransactionStartInput & { purpose: "link" },
@@ -490,7 +537,7 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 		now: number,
 	): Promise<CoordinatorAuthBrowserTransactionRejected> {
 		const attempt = await this.first<AttemptDiagnosis>({
-			sql: "SELECT issuer, auth_config_revision, state, expires_at_ms FROM coordinator_auth_link_attempts WHERE coordinator_id = ? AND attempt_id = ? AND authority_kind = 'controller_attestation'",
+			sql: "SELECT issuer, auth_config_revision, state, expires_at_ms FROM coordinator_auth_link_attempts WHERE coordinator_id = ? AND attempt_id = ? AND authority_kind IN ('controller_attestation','device_claim')",
 			values: [c.coordinatorId, attemptId],
 		});
 		if (!attempt) return rejected("attempt_unavailable");
@@ -509,10 +556,16 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 		if (!c || !i || !isHash(i.stateHash) || !isHash(i.binderHash)) return rejected("invalid_input");
 		if (!c.enabled) return rejected("auth_config_changed");
 		const now = authLinkNow(this.clock);
+		const source = await this.browserSource(
+			{ stateHash: i.stateHash, binderHash: i.binderHash },
+			c,
+			now,
+		);
+		const liveLink = linkMatch("'browser_claimed'", source.sql);
 		const row = await this.first<TransactionRow>({
 			sql: `SELECT b.* FROM ${TABLE} b WHERE ${MATCH_CONFIG} AND b.state_hash = ? AND b.binder_hash = ?
- AND b.state = 'pending' AND b.expires_at_ms > ? AND b.created_at_ms <= ? AND ${LIVE_LINK}`,
-			values: [...configValues(c), i.stateHash, i.binderHash, now, now, now],
+ AND b.state = 'pending' AND b.expires_at_ms > ? AND b.created_at_ms <= ? AND ${liveLink}`,
+			values: [...configValues(c), i.stateHash, i.binderHash, now, now, ...source.values, now],
 		});
 		if (!row) return this.diagnoseTransactionConfig(i.stateHash, i.binderHash, c);
 		if (!isConsumableRow(row)) return rejected("transaction_unavailable");
@@ -521,7 +574,7 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 			await this.backend.run({
 				sql: `UPDATE ${TABLE} AS b SET state = 'consumed', nonce = NULL, pkce_verifier = NULL, claim_token = ?, consumed_at_ms = ?
  WHERE ${MATCH_CONFIG} AND b.browser_transaction_hash = ? AND b.state_hash = ? AND b.binder_hash = ?
- AND b.purpose = ? AND b.attempt_id IS ? AND b.state = 'pending' AND b.expires_at_ms > ? AND b.created_at_ms <= ? AND b.nonce = ? AND b.pkce_verifier = ? AND ${LIVE_LINK}`,
+ AND b.purpose = ? AND b.attempt_id IS ? AND b.state = 'pending' AND b.expires_at_ms > ? AND b.created_at_ms <= ? AND b.nonce = ? AND b.pkce_verifier = ? AND ${liveLink}`,
 				values: [
 					token,
 					now,
@@ -535,6 +588,7 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 					now,
 					row.nonce,
 					row.pkce_verifier,
+					...source.values,
 					now,
 				],
 			});
@@ -565,10 +619,16 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 		const i = capture(input, ["stateHash", "binderHash"]);
 		if (!c?.enabled || !i || !isHash(i.stateHash) || !isHash(i.binderHash)) return null;
 		const now = authLinkNow(this.clock);
+		const source = await this.browserSource(
+			{ stateHash: i.stateHash, binderHash: i.binderHash },
+			c,
+			now,
+		);
 		const row = await this.first<{ purpose: string }>({
 			sql: `SELECT b.purpose FROM ${TABLE} b WHERE ${MATCH_CONFIG} AND b.state_hash = ? AND b.binder_hash = ?
- AND b.state = 'pending' AND b.expires_at_ms > ? AND b.created_at_ms <= ?`,
-			values: [...configValues(c), i.stateHash, i.binderHash, now, now],
+ AND b.state = 'pending' AND b.expires_at_ms > ? AND b.created_at_ms <= ?
+ AND (b.purpose <> 'link' OR ${linkMatch("'browser_claimed'", source.sql)})`,
+			values: [...configValues(c), i.stateHash, i.binderHash, now, now, ...source.values, now],
 		});
 		if (row?.purpose === "signin" || row?.purpose === "link" || row?.purpose === "owner_enroll")
 			return row.purpose;
@@ -605,10 +665,15 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 		if (!c || !i || !c.enabled || !isAuthControllerId(i.attemptId) || !isHash(i.binderHash))
 			return null;
 		const now = authLinkNow(this.clock);
+		const source = await this.browserSource(
+			{ attemptId: i.attemptId, binderHash: i.binderHash },
+			c,
+			now,
+		);
 		const row = await this.first<{ browser_transaction_hash: string }>({
 			sql: `SELECT b.browser_transaction_hash FROM ${TABLE} b WHERE ${MATCH_CONFIG} AND b.purpose = 'link'
- AND b.attempt_id = ? AND b.binder_hash = ? AND b.state IN ('pending','consumed') AND b.expires_at_ms > ? AND ${RESOLVABLE_LINK}`,
-			values: [...configValues(c), i.attemptId, i.binderHash, now, now],
+ AND b.attempt_id = ? AND b.binder_hash = ? AND b.state IN ('pending','consumed') AND b.expires_at_ms > ? AND ${linkMatch("'browser_claimed','oidc_verified','confirmed','finalized','session_redeemed'", source.sql)}`,
+			values: [...configValues(c), i.attemptId, i.binderHash, now, ...source.values, now],
 		});
 		return row ? { browserTransactionHash: row.browser_transaction_hash } : null;
 	}

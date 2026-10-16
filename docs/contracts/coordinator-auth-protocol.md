@@ -699,10 +699,19 @@ requires a browser-start commitment. Its atomic INSERT uses this same guard and
 the existing quotas; exact retry rechecks both the full tuple and live eligibility
 without extending its deadline. The canonical key ID is derived from the pinned
 public key, not stored as a new attempt column. No committed proof is created.
-Current HTTP creation still selects only `controller_attestation`. Device-claim
-status, cancellation, expiry, start-code claim, OIDC, confirmation, destination,
-and finalization need their source-specific lifecycle checks before external
-device-claim creation can be enabled.
+Current HTTP creation still selects only `controller_attestation`. Trusted Core
+device-claim status, browser-start claim, browser exchange and resolution, OIDC
+verification, confirmation, and pre-finalization destination reads now recheck
+the shared eligibility guard inside the winning SQL statement. Each operation
+captures fresh key aliases and pins the stored source, target, config, and
+commitments; a stale capture fails closed rather than bypassing the guard.
+Original device or browser cancellation proof can release an uncommitted
+attempt even after enrollment changes. Time-based maintenance also expires these
+attempts without requiring live enrollment and clears their account subject;
+neither operation creates ownership proof or removes retained quota history.
+Device-claim finalization remains disabled, as do external device-claim creation
+and sign-in/session acceptance of device-owned links. Those boundaries need
+their own atomic proof/link/audit and consumer checks before HTTP enablement.
 
 One guard decides whether a device claim may exist. The coordinator runs it as a
 single SQL statement that binds its inputs once through a CTE, keeping at most

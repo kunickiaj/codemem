@@ -44,6 +44,7 @@ import {
 	captureAuthLinkSigner as captureSigner,
 	isHash,
 } from "./coordinator-auth-link-input.js";
+import { captureAuthLinkSource } from "./coordinator-auth-link-source.js";
 import { parseCoordinatorAuthLoopback } from "./coordinator-auth-loopback.js";
 import { authPersistenceError } from "./coordinator-auth-schema.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
@@ -233,6 +234,11 @@ function diagnose(
 }
 const LIVE_CONFIG =
 	"coordinator_id = ? AND issuer = ? AND auth_config_revision = ? AND ? = 1 AND authority_kind = 'controller_attestation'";
+const CURRENT_CONFIG = "coordinator_id = ? AND issuer = ? AND auth_config_revision = ? AND ? = 1";
+// Cancellation and time cleanup release an uncommitted promise, not ownership.
+const RELEASABLE_SOURCE = `(authority_kind = 'controller_attestation' OR
+ (authority_kind = 'device_claim' AND controller_attestation_id IS NULL
+ AND controller_review_receipt_id IS NULL AND controller_revision IS NULL))`;
 function configValues(c: CoordinatorAuthLinkConfig): (string | number)[] {
 	return [c.coordinatorId, c.issuer, c.revision, Number(c.enabled)];
 }
@@ -363,7 +369,7 @@ const DEVICE_RETRY_SQL = `${AUTH_DEVICE_CLAIM_INPUT_SQL}
  AND t.issuer = p.issuer AND t.auth_config_revision = p.revision
  AND t.runtime_verifier_hash = ? AND t.browser_start_hash IS ? AND t.loopback_redirect = ?
  AND t.state <> 'expired' AND t.expires_at_ms > p.now_ms AND ${AUTH_DEVICE_CLAIM_ELIGIBLE_SQL}`;
-const MAINTENANCE_CANDIDATE_SQL = `authority_kind = 'controller_attestation' AND link_id IS NULL AND (
+const MAINTENANCE_CANDIDATE_SQL = `${RELEASABLE_SOURCE} AND link_id IS NULL AND (
  (state IN ('pending','browser_claimed','oidc_verified','confirmed') AND expires_at_ms <= ?)
  OR (state IN ('failed','expired') AND account_subject IS NOT NULL))`;
 const MAINTENANCE_SQL = `UPDATE coordinator_auth_link_attempts
@@ -473,6 +479,13 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		});
 		if (!source) return null;
 		return deriveAuthority(source);
+	}
+	private async source(attemptId: string, c: CoordinatorAuthLinkConfig, now: number) {
+		try {
+			return await captureAuthLinkSource(this.backend, attemptId, c, now);
+		} catch (error) {
+			throw authPersistenceError(error, "auth_link_persistence_error");
+		}
 	}
 	async maintainAuthLinkAttempts(
 		config: CoordinatorAuthLinkConfig,
@@ -692,7 +705,7 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 	): Promise<CoordinatorAuthLinkResult> {
 		const result = await this.execute(update, "attempt_conflict");
 		if (typeof result !== "number") return result;
-		const row = await this.read(i.attemptId, c);
+		const row = await this.read(i.attemptId, c, { authority: "either" });
 		if (!result) {
 			if (
 				row &&
@@ -761,8 +774,9 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		if (!account.ok) return rejected("invalid_input");
 		if (!c.enabled) return rejected("auth_config_changed");
 		const now = authLinkNow(this.clock);
+		const source = await this.source(i.attemptId, c, now);
 		const result = await this.transition(i, c, now, {
-			sql: `UPDATE coordinator_auth_link_attempts SET state = 'oidc_verified', account_subject = ?, oidc_verified_at_ms = ? WHERE attempt_id = ? AND ${LIVE_CONFIG} AND expires_at_ms > ? AND state = 'browser_claimed' AND browser_transaction_hash = ? AND account_subject IS NULL`,
+			sql: `UPDATE coordinator_auth_link_attempts SET state = 'oidc_verified', account_subject = ?, oidc_verified_at_ms = ? WHERE attempt_id = ? AND ${CURRENT_CONFIG} AND expires_at_ms > ? AND state = 'browser_claimed' AND browser_transaction_hash = ? AND account_subject IS NULL AND ${source.sql}`,
 			values: [
 				account.account.subject,
 				now,
@@ -770,10 +784,11 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 				...configValues(c),
 				now,
 				i.browserTransactionHash,
+				...source.values,
 			],
 		});
 		if (result.kind === "rejected") return result;
-		const row = await this.read(i.attemptId, c);
+		const row = await this.read(i.attemptId, c, { authority: "either" });
 		if (!row) throw new Error("auth_link_persistence_incomplete");
 		return {
 			kind: "applied",
@@ -791,8 +806,9 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		if (!c || !i || !isHash(i.completionSecretHash)) return rejected("invalid_input");
 		if (!c.enabled) return rejected("auth_config_changed");
 		const now = authLinkNow(this.clock);
+		const source = await this.source(i.attemptId, c, now);
 		return this.transition(i, c, now, {
-			sql: `UPDATE coordinator_auth_link_attempts SET state = 'confirmed', completion_secret_hash = ?, confirmed_at_ms = ? WHERE attempt_id = ? AND ${LIVE_CONFIG} AND expires_at_ms > ? AND state = 'oidc_verified' AND browser_transaction_hash = ? AND completion_secret_hash IS NULL`,
+			sql: `UPDATE coordinator_auth_link_attempts SET state = 'confirmed', completion_secret_hash = ?, confirmed_at_ms = ? WHERE attempt_id = ? AND ${CURRENT_CONFIG} AND expires_at_ms > ? AND state = 'oidc_verified' AND browser_transaction_hash = ? AND completion_secret_hash IS NULL AND ${source.sql}`,
 			values: [
 				i.completionSecretHash,
 				now,
@@ -800,6 +816,7 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 				...configValues(c),
 				now,
 				i.browserTransactionHash,
+				...source.values,
 			],
 		});
 	}
@@ -812,7 +829,12 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		const i = this.browserInput(input);
 		if (!c || !i || !c.enabled) return null;
 		const now = authLinkNow(this.clock);
-		const row = await this.read(i.attemptId, c);
+		const source = await this.source(i.attemptId, c, now);
+		const row = await this.first<Attempt>({
+			sql: `SELECT * FROM coordinator_auth_link_attempts WHERE attempt_id = ? AND ${CURRENT_CONFIG}
+ AND browser_transaction_hash = ? AND ${source.sql}`,
+			values: [i.attemptId, ...configValues(c), i.browserTransactionHash, ...source.values],
+		});
 		if (
 			!row ||
 			!configMatches(row, c) ||
@@ -834,7 +856,13 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		const r = captureRequester(requester);
 		if (!c || !r || !isAuthControllerId(attemptId) || !c.enabled) return null;
 		const now = authLinkNow(this.clock);
-		const row = await this.read(attemptId, c);
+		const source = await this.source(attemptId, c, now);
+		const proof = requesterGuard(r);
+		const row = await this.first<Attempt>({
+			sql: `SELECT * FROM coordinator_auth_link_attempts WHERE attempt_id = ? AND ${CURRENT_CONFIG}
+ AND ${proof.sql} AND ${source.sql}`,
+			values: [attemptId, ...configValues(c), ...proof.values, ...source.values],
+		});
 		if (!row || !configMatches(row, c) || !requesterMatches(row, r)) return null;
 		return status(row, now);
 	}
@@ -860,13 +888,13 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		const proof = requesterGuard(r);
 		const result = await this.execute(
 			{
-				sql: `UPDATE coordinator_auth_link_attempts SET state = 'failed', failure_reason = ?, failed_at_ms = ? WHERE attempt_id = ? AND ${LIVE_CONFIG} AND expires_at_ms > ? AND state IN ('pending','browser_claimed','oidc_verified','confirmed') AND ${proof.sql}`,
+				sql: `UPDATE coordinator_auth_link_attempts SET state = 'failed', failure_reason = ?, failed_at_ms = ?, account_subject = CASE WHEN authority_kind = 'device_claim' THEN NULL ELSE account_subject END WHERE attempt_id = ? AND ${CURRENT_CONFIG} AND ${RELEASABLE_SOURCE} AND link_id IS NULL AND expires_at_ms > ? AND state IN ('pending','browser_claimed','oidc_verified','confirmed') AND ${proof.sql}`,
 				values: [reason, now, i.attemptId, ...configValues(c), now, ...proof.values],
 			},
 			"attempt_conflict",
 		);
 		if (typeof result !== "number") return result;
-		const row = await this.read(i.attemptId, c);
+		const row = await this.read(i.attemptId, c, { authority: "either" });
 		if (row && !requesterMatches(row, r)) return rejected("attempt_unavailable");
 		if (
 			row &&

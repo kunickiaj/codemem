@@ -212,20 +212,32 @@ function registerCeiling(test: Test) {
 }
 
 backendTest("SQLite")(
-	"attested maintenance leaves an expired device-claim attempt untouched",
+	"maintenance expires a device claim even after eligibility is lost, preserving pins and other tables",
 	async ({ fixture: f }) => {
-		// Arrange: keep real current controller evidence, but make the attempt a coherent claim.
+		// Arrange: retain proof commitments and provider metadata in a coherent device claim.
 		await authorize(f);
-		await advance(f, "pending");
+		await advance(f, "confirmed");
 		f.db.exec(`UPDATE coordinator_auth_link_attempts SET authority_kind='device_claim',
  controller_attestation_id=NULL, controller_review_receipt_id=NULL, controller_revision=NULL`);
+		f.db.exec("UPDATE enrolled_devices SET enabled=0");
 		f.now = NOW + TTL;
 		const before = snapshot(f);
+		const tables = f.db
+			.prepare(
+				"SELECT name FROM sqlite_master WHERE type='table' AND name <> 'coordinator_auth_link_attempts' ORDER BY name",
+			)
+			.all() as { name: string }[];
+		const otherRows = () => tables.map(({ name }) => f.db.prepare(`SELECT * FROM "${name}"`).all());
+		const immutable = otherRows();
 		// Act
 		const result = await f.store.maintainAuthLinkAttempts(f.cfg);
-		// Assert: this source filter must not retire another authority's ceremony.
-		expect(result).toEqual({ kind: "maintained", processedCount: 0, more: false });
-		expect(snapshot(f)).toEqual(before);
+		// Assert: expiry changes only state and provider metadata, never TTL or authority.
+		expect(result).toEqual({ kind: "maintained", processedCount: 1, more: false });
+		expect(snapshot(f)).toEqual([
+			before[0].map((row) => ({ ...row, state: "expired", account_subject: null })),
+			...before.slice(1),
+		]);
+		expect(otherRows()).toEqual(immutable);
 	},
 );
 
