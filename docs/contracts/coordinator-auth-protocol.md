@@ -716,7 +716,8 @@ names `authority.kind`; `device_claim` also pins the current local Identity and
 requires a browser-start commitment. Its atomic INSERT uses this same guard and
 the existing quotas; exact retry rechecks both the full tuple and live eligibility
 without extending its deadline. The canonical key ID is derived from the pinned
-public key, not stored as a new attempt column. No committed proof is created.
+public key, not stored as a new attempt column. Creation and eligibility reads
+create no committed proof; only successful finalization commits one.
 Current HTTP creation still selects only `controller_attestation`. Trusted Core
 device-claim status, browser-start claim, browser exchange and resolution, OIDC
 verification, confirmation, and pre-finalization destination reads now recheck
@@ -727,9 +728,13 @@ Original device or browser cancellation proof can release an uncommitted
 attempt even after enrollment changes. Time-based maintenance also expires these
 attempts without requiring live enrollment and clears their account subject;
 neither operation creates ownership proof or removes retained quota history.
-Device-claim finalization remains disabled, as do external device-claim creation
-and sign-in/session acceptance of device-owned links. Those boundaries need
-their own atomic proof/link/audit and consumer checks before HTTP enablement.
+Trusted Core finalization now atomically consumes the confirmed attempt and
+commits its immutable device proof, account link, and audit. Exact retries read
+the retained receipt without reinserting proof. Core sign-in, sessions, profiles,
+and operator revocation validate the committed device provenance; device proof
+still supplies no owner-enrollment or privileged grant/invite authority.
+External device-claim creation remains disabled until the matched status,
+server/client, and Viewer contracts and complete-flow tests are ready.
 
 One guard decides whether a device claim may exist. The coordinator runs it as a
 single SQL statement that binds its inputs once through a CTE, keeping at most
