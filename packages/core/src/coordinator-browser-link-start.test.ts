@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { JSDOM } from "jsdom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TABLE } from "./coordinator-auth-browser-transaction-test-fixtures.js";
 import { attempt, authorize, finalize, NOW } from "./coordinator-auth-link-test-fixtures.js";
@@ -389,6 +390,50 @@ describe.each(["SQLite", "D1"] as const)("%s protected admission failures", (bac
 				expect(r.response.headers.getSetCookie()).toHaveLength(r.response.status === 200 ? 2 : 0);
 		},
 	);
+});
+
+describe("automatic protected browser start", () => {
+	it("auto-submits only the existing protected start form with an exact CSP hash and manual fallback", async () => {
+		// Arrange: JSDOM never loads provider URLs; submission is intercepted locally.
+		const f = await setup();
+		const c = await form(f);
+		const dom = new JSDOM(c.body, { url: pageUrl(f), runScripts: "outside-only" });
+		const document = dom.window.document;
+		const submit = vi
+			.spyOn(dom.window.HTMLFormElement.prototype, "requestSubmit")
+			.mockImplementation(() => {});
+		const directSubmit = vi
+			.spyOn(dom.window.HTMLFormElement.prototype, "submit")
+			.mockImplementation(() => {});
+		const scripts = [...document.querySelectorAll("script")];
+		// Act
+		for (const script of scripts) dom.window.eval(script.textContent ?? "");
+		// Assert: private fields remain form values, not script data or GET redirects.
+		expect(scripts).toHaveLength(1);
+		const script = scripts[0].textContent ?? "";
+		const digest = createHash("sha256").update(script).digest("base64");
+		const csp = c.response.headers.get("content-security-policy") ?? "";
+		expect(
+			csp
+				.split(";")
+				.find((part) => part.trim().startsWith("script-src "))
+				?.trim(),
+		).toBe(`script-src 'sha256-${digest}'`);
+		expect(csp).not.toContain("unsafe-inline");
+		expect(submit.mock.calls.length + directSubmit.mock.calls.length).toBe(1);
+		const submitted = submit.mock.contexts[0] ?? directSubmit.mock.contexts[0];
+		expect(submitted).toBe(document.querySelector("form"));
+		expect(document.querySelector("form")?.getAttribute("action")).toBe("/auth/link/start");
+		expect(document.querySelector("button[type='submit']")?.textContent).toMatch(
+			/link|continue|Google/i,
+		);
+		expect(document.querySelector("meta[http-equiv='refresh']")).toBeNull();
+		expect(script).not.toContain(f.startCode);
+		expect(script).not.toContain(c.fields.csrf);
+		expect(c.response.headers.get("referrer-policy")).toBe("same-origin");
+		expect(f.start).not.toHaveBeenCalled();
+		dom.window.close();
+	});
 });
 
 describe("browser page and transport boundaries", () => {

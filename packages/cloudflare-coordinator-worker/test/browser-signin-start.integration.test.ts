@@ -119,7 +119,9 @@ describe("unmounted browser signin handlers in workerd with native D1", () => {
 		expect(await rows()).toEqual([]);
 		const { response } = await f.handlers[0].signInStart(post(page.cookie, page.csrf), "client-1");
 		const body = await response.text();
-		const href = body.match(/href="(https:[^"]+)"/)?.[1];
+		const anchors = [...body.matchAll(/<a\b[^>]*href="(https:[^"]+)"[^>]*>[\s\S]*?<\/a>/g)];
+		expect(anchors).toHaveLength(1);
+		const href = anchors[0]?.[1];
 		if (!href) throw new Error("Missing explicit provider anchor");
 		const authorization = new URL(href.replaceAll("&amp;", "&"));
 		const stored = await rows();
@@ -151,19 +153,29 @@ describe("unmounted browser signin handlers in workerd with native D1", () => {
 			await challenge(String(row.pkce_verifier)),
 		);
 		expect(authorization.searchParams.get("code_challenge_method")).toBe("S256");
-		const outsideAnchor = body.replace(/<a\b[^>]*href="https:[^"]+"[^>]*>[\s\S]*?<\/a>/g, "");
+		const refresh = [...body.matchAll(/<meta\b[^>]*http-equiv=[^>]*>/gi)];
+		expect(refresh.map((match) => match[0])).toEqual([
+			`<meta http-equiv="refresh" content="0;url=${href}">`,
+		]);
+		expect(anchors[0][0]).toContain('rel="noreferrer"');
+		expect(anchors[0][0]).toContain('referrerpolicy="no-referrer"');
+		expect(body).toContain('<meta name="referrer" content="no-referrer">');
+		expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+		expect(body).not.toMatch(/<form|<input|<img|<script/i);
+		const outsideTransport = body.replace(refresh[0][0], "").replace(anchors[0][0], "");
 		for (const value of [
 			row.nonce,
 			authorization.searchParams.get("state"),
 			row.pkce_verifier,
 			config.clientSecret,
 		]) {
-			expect(outsideAnchor).not.toContain(String(value));
+			expect(outsideTransport).not.toContain(String(value));
 		}
 		expect(body).not.toContain(String(row.pkce_verifier));
+		expect(body).not.toContain(config.clientSecret);
 		expect(JSON.stringify([...response.headers])).not.toContain(String(row.pkce_verifier));
 		expect(body).not.toMatch(
-			/outcome|privateCause|clientSecret|pkceVerifier|access_token|id_token/,
+			/outcome|privateCause|clientSecret|pkceVerifier|access_token|id_token|eyJ[A-Za-z0-9_-]*\./,
 		);
 		expect(f.fixture.fetch).not.toHaveBeenCalled();
 	});

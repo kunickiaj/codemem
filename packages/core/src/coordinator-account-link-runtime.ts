@@ -465,7 +465,7 @@ async function runLink(runtime: Runtime): Promise<LinkCoordinatorAccountResult> 
 	verifier.fill(0);
 	startCode.fill(0);
 	try {
-		await runtime.receiver.close();
+		await runtime.receiver.close({ linked: runtime.succeeded });
 	} catch {
 		throw failure("receiver_close_failed");
 	}

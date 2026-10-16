@@ -1,11 +1,14 @@
+import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createAccountLinkReceipt } from "./coordinator-account-link-receipt.js";
+import { COORDINATOR_AUTH_STYLE } from "./coordinator-auth-browser-style.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import { decodeCoordinatorAuthProof32 } from "./coordinator-auth-proof.js";
 
 export interface CoordinatorAccountLinkReceiver {
 	destination: string;
 	completion: Promise<string>;
-	close(): Promise<void>;
+	close(options?: { linked?: boolean }): Promise<void>;
 }
 export interface CoordinatorOwnerEnrollmentCompletion {
 	completionSecret: string;
@@ -50,32 +53,30 @@ export function normalizeCoordinatorAccountLinkOrigin(value: unknown): string | 
 	}
 }
 
-function completionPage(options: CoordinatorAccountLinkReceiverOptions): string {
-	if (options.coordinatorOrigin === undefined)
-		return "Return to the coordinator tab to finish linking.";
-	const origin = normalizeCoordinatorAccountLinkOrigin(options.coordinatorOrigin);
-	if (!origin) throw new Error("Invalid account-link receiver options.");
-	const url = new URL("/auth/link/complete", origin);
-	url.searchParams.set("attempt_id", options.attemptId);
-	const href = url.href
-		.replaceAll("&", "&amp;")
-		.replaceAll('"', "&quot;")
-		.replaceAll("'", "&#39;")
-		.replaceAll("<", "&lt;")
-		.replaceAll(">", "&gt;");
-	return `<p>Your computer received the confirmation. Finish linking at the coordinator.</p><a href="${href}" referrerpolicy="no-referrer" rel="noreferrer">Finish linking</a>`;
-}
 const PATH = "/codemem/auth/complete";
 const HEADERS = {
 	"Content-Type": "text/html; charset=utf-8",
 	"Referrer-Policy": "no-referrer",
 	"Cache-Control": "no-store",
 	"X-Content-Type-Options": "nosniff",
-	"Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+	"Content-Security-Policy": `default-src 'none'; style-src 'sha256-${createHash("sha256").update(COORDINATOR_AUTH_STYLE).digest("base64")}'; frame-ancestors 'none'; base-uri 'none'`,
 };
 function reply(response: ServerResponse, status: number, text: string): void {
 	response.writeHead(status, HEADERS);
 	response.end(text);
+}
+function replyWithReceipt(
+	response: ServerResponse,
+	page: string,
+	receipt: ReturnType<typeof createAccountLinkReceipt> | null,
+): void {
+	if (!receipt) {
+		reply(response, 200, page);
+		return;
+	}
+	response.once("finish", receipt.delivered);
+	response.writeHead(200, { ...HEADERS, ...receipt.headers });
+	response.end(page);
 }
 function readCompletion(
 	request: IncomingMessage,
@@ -211,20 +212,23 @@ async function createReceiver(
 ): Promise<{
 	destination: string;
 	completion: Promise<string | CoordinatorOwnerEnrollmentCompletion>;
-	close(): Promise<void>;
+	close(options?: { linked?: boolean }): Promise<void>;
 }> {
 	if (!validOptions(options)) throw new Error("Invalid account-link receiver options.");
 	if (mode === "owner_enroll" && options.coordinatorOrigin !== undefined)
 		throw new Error("Invalid owner-enrollment receiver options.");
 	const { attemptId, signal, port = 0, host = "127.0.0.1" } = options;
+	const receipt = mode === "account_link" ? createAccountLinkReceipt() : null;
 	const page =
 		mode === "owner_enroll"
 			? "Your computer received the confirmation. Return to the app to finish adding the device."
-			: completionPage(options);
+			: (receipt?.page ?? "Return to Codemem and check status.");
 	let authority = "";
+	let closing: Promise<void> | undefined;
 	const server = createServer(
 		{ maxHeaderSize: 4096, requestTimeout: 5000, headersTimeout: 5000 },
 		(request, response) => {
+			if (receipt?.handle(request, response, authority)) return;
 			if (request.method !== "GET") {
 				reply(response, 405, "Method not allowed.");
 				return;
@@ -238,7 +242,7 @@ async function createReceiver(
 				reply(response, 410, "Completion is no longer available.");
 				return;
 			}
-			reply(response, 200, page);
+			replyWithReceipt(response, page, receipt);
 		},
 	);
 	server.setTimeout(5000, (socket) => socket.destroy());
@@ -256,7 +260,14 @@ async function createReceiver(
 		return {
 			destination: `http://${authority}${PATH}`,
 			completion: lifecycle.completion,
-			close: lifecycle.close,
+			close(options?: { linked?: boolean }) {
+				if (!closing)
+					closing = (async () => {
+						await receipt?.finish(options);
+						await lifecycle.close();
+					})();
+				return closing;
+			},
 		};
 	} catch {
 		lifecycle.detach();

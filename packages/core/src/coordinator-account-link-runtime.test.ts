@@ -201,9 +201,9 @@ async function browser(
 		`${row.loopback_redirect}?attempt_id=${row.attempt_id}&completion=${completion}`,
 	);
 	expect(response.status).toBe(200);
-	expect(response.body.match(/href="([^"]+)"/)?.[1]).toBe(
-		`${origin}/auth/link/complete?attempt_id=${row.attempt_id}`,
-	);
+	expect(response.body).not.toMatch(/<a\b|http-equiv=["']refresh/i);
+	expect(response.body).toContain("Finishing account link");
+	expect(response.body).toContain("return to Codemem and check status");
 	for (const secret of [start, completion]) expect(response.body).not.toContain(secret);
 	return { completion, row, start };
 }

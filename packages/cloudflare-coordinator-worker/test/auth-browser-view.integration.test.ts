@@ -55,10 +55,22 @@ it("preserves the explicit loopback :80 completion anchor in workerd", async () 
 	]);
 	expect(page.body).toContain("Continue on this computer");
 	expect(page.body).toContain("Do not share this link");
-	expect(page.body).not.toMatch(/<form|<input|<img|<script|http-equiv=/i);
+	const outsideTransport = assertTransport(page.body, anchors[0].href ?? "");
+	expect(outsideTransport).not.toContain(completionSecret);
+	expect(outsideTransport).not.toContain(encodeURIComponent(attemptId));
 	expect(page.headers["Content-Security-Policy"]).toContain("img-src 'none'");
 	await assertPage(page, { referrerPolicy: "no-referrer" });
 });
+
+function assertTransport(body: string, escapedHref: string) {
+	const refresh = [...body.matchAll(/<meta\b[^>]*http-equiv=[^>]*>/gi)];
+	expect(refresh.map((match) => match[0])).toEqual([
+		`<meta http-equiv="refresh" content="0;url=${escapedHref}">`,
+	]);
+	expect(body).toContain('<meta name="referrer" content="no-referrer">');
+	expect(body).not.toMatch(/<form|<input|<img|<script/i);
+	return body.replace(refresh[0][0], "").replace(/<a\b[^>]*>[\s\S]*?<\/a>/gi, "");
+}
 
 it("rejects malformed completion secrets and destinations in workerd", async () => {
 	// Arrange
@@ -342,7 +354,9 @@ it("preserves the trusted continuation anchor and redacts bad URLs in workerd wi
 			target: null,
 		},
 	]);
-	expect(page.body).not.toMatch(/<form|<input|<img|http-equiv=/i);
+	const outsideTransport = assertTransport(page.body, anchors[0].href ?? "");
+	expect(outsideTransport).not.toContain(url.searchParams.get("state"));
+	expect(outsideTransport).not.toContain(encodeURIComponent(url.searchParams.get("state") ?? ""));
 	expect(page.headers["Content-Security-Policy"]).toContain("img-src 'none'");
 	for (const outcome of invalid)
 		expect(outcome).toEqual({

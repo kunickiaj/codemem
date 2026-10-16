@@ -197,3 +197,39 @@ known; wildcard bind hosts remain wildcard hosts and are rejected by the guard.
 Shutdown closes the account registry before draining listeners and closing the
 shared store. Account reads do not initialize another profile or use an admin
 credential. The separate sync listener still exposes no account routes.
+
+## Browser handoffs and completion
+
+The Viewer opens an isolated window from the user's **Link Google account** click.
+The coordinator start page automatically submits its existing same-origin form;
+the start cookie, CSRF token and private device-issued start proof remain required.
+With scripts disabled, the same form offers **Continue with Google**. After the
+transaction commits, a validated provider URL opens automatically with a manual
+fallback. Google authentication and the verified-account confirmation remain
+separate from device proof; no account is linked by loading a page alone.
+
+After explicit account confirmation commits, the browser automatically navigates
+to the saved literal-loopback receiver, without a referrer. Its receipt says that
+the computer is checking the link, not that linking has succeeded. Device
+finalization still requires the signed runtime proof. Coordinator website session
+redemption remains available separately and is not required to finish Viewer
+linking; an existing browser session is never switched automatically.
+
+The Viewer retains the auth window handle without exposing `window.opener`. It
+closes it only after its own current operation reports success and a fresh status
+read confirms that the same local context and group have a matching linked
+Identity. Poll failures, uncertain outcomes and mismatched status cannot close
+the window. Provider isolation headers can sever this handle. The loopback receipt
+therefore also polls its held listener using a random per-receiver token and
+same-origin fetch checks. Only the runtime's successful signed finalization can
+mark that result as linked; the receipt then closes itself. Cleanup waits at most
+1.5 seconds for that response to flush. Failure or uncertainty never signals
+success. Manually opened tabs and browsers that refuse closure retain a check-status
+message. Neither popup messages nor receipt content can authorize a link.
+
+Hosted pages and the receipt use Codemem's dark mint palette, sans-serif type,
+rounded cards and keyboard focus treatment, with light colors following the OS.
+These separate origins cannot read the Viewer's saved theme preference. Inline
+styles use exact CSP hashes. The start page permits only its fixed form-submission
+script; the receipt permits only its fixed result-checking script and same-origin
+connections. No remote scripts or fonts are loaded.

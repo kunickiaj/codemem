@@ -52,16 +52,24 @@ function header(headers: Record<string, string>, name: string): string {
 	);
 }
 
-function assertPassivePage(document: Document): void {
-	expect(
-		document.querySelector("script,base,svg,iframe,link,meta[http-equiv='refresh']"),
-	).toBeNull();
+function assertPassivePage(document: Document, options: { refresh?: boolean } = {}): void {
+	expect(document.querySelector("script,base,svg,iframe,link")).toBeNull();
+	if (!options.refresh) expect(document.querySelector("meta[http-equiv='refresh']")).toBeNull();
 	for (const element of document.querySelectorAll("*")) {
 		for (const attribute of element.attributes) {
 			expect(attribute.name).not.toMatch(/^on/i);
 			expect(attribute.name).not.toBe("style");
 		}
 	}
+}
+
+function assertAutomaticNavigation(document: Document, href: string): void {
+	const refresh = document.querySelectorAll("meta[http-equiv='refresh']");
+	expect(refresh).toHaveLength(1);
+	const content = refresh[0].getAttribute("content") ?? "";
+	expect(content).toMatch(/^0;\s*url=/i);
+	expect(content.replace(/^0;\s*url=/i, "")).toBe(href);
+	assertPassivePage(document, { refresh: true });
 }
 
 describe("browser link completion page", () => {
@@ -531,14 +539,14 @@ describe("explicit link completion hop", () => {
 		expect(anchor?.textContent).toBe("Continue on this computer");
 		expect(document.body.textContent).toContain("Do not share this link");
 		expect(page.body).not.toMatch(/private-session|Ada Lovelace|ada@example\.test/);
-		expect(page.body.split(completionSecret)).toHaveLength(2);
+		expect(page.body.split(completionSecret)).toHaveLength(3);
 		for (const value of [destination, attemptId, completionSecret]) {
 			expect(document.body.textContent).not.toContain(value);
 			expect(JSON.stringify(page.headers)).not.toContain(value);
 		}
 		expect(document.querySelector("form,input,button,img,code,dl,section.profile")).toBeNull();
 		expect(header(page.headers, "Location")).toBe("");
-		assertPassivePage(document);
+		assertAutomaticNavigation(document, href);
 	});
 
 	it.each([
@@ -661,7 +669,7 @@ describe("sign-in presentation only", () => {
 			// Act
 			const page = await renderAuthSigninContinuePage({ authorizationUrl });
 			const document = openPage(page.body);
-			// Assert: public protocol values occur only in the one escaped anchor.
+			// Assert: validated transport and manual fallback use the identical URL.
 			expect(document.querySelectorAll("a")).toHaveLength(1);
 			const anchor = document.querySelector("a");
 			expect(anchor?.getAttribute("href")).toBe(authorizationUrl);
@@ -675,7 +683,7 @@ describe("sign-in presentation only", () => {
 			expect(document.body.textContent).not.toMatch(
 				/public-|accounts\.google\.com|authorizationUrl/,
 			);
-			assertPassivePage(document);
+			assertAutomaticNavigation(document, authorizationUrl);
 		},
 	);
 
@@ -1096,11 +1104,11 @@ describe("passive notices and response policy", () => {
 			);
 			if (index === 5) expect(document.querySelector("img")).toBeNull();
 			expect(csp).not.toMatch(/unsafe-inline|nonce-|data:|\bhttps:\s|\bhttp:/);
-			assertPassivePage(document);
+			assertPassivePage(document, { refresh: index === 7 });
 		}
 	});
 
-	it("keeps the renderer source free of network, database, and script capabilities", async () => {
+	it("keeps the renderer source free of network and database capabilities", async () => {
 		// Arrange
 		const sourceUrl = new URL("./coordinator-auth-browser-view.ts", import.meta.url);
 		// Act
@@ -1110,6 +1118,6 @@ describe("passive notices and response policy", () => {
 			/\bfetch\s*\(|\bXMLHttpRequest\b|\bimport\s*\(|\b(?:SELECT|INSERT|UPDATE|DELETE)\s+(?:FROM|INTO|SET)\b/,
 		);
 		expect(source).not.toMatch(/from\s+["'][^"']*(?:store|database|node:|http)[^"']*["']/);
-		expect(source).not.toMatch(/<script\b|\bonerror\s*=/i);
+		expect(source).not.toMatch(/\bonerror\s*=/i);
 	});
 });

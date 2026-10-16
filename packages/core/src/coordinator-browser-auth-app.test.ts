@@ -278,13 +278,14 @@ it("mounts signed device → Google → confirmation → finalize → completion
 	if (!href) throw new Error("Loopback hop missing");
 	const received = await navigateLoopback(href.replaceAll("&amp;", "&"));
 	const returnPage = await received.text();
-	const returnHref = returnPage.match(/href="([^"]+)"/)?.[1];
-	if (!returnHref) throw new Error("Receiver return navigation missing");
+	// The static receipt does not require a coordinator browser session to finish device linking.
+	const returnHref = `${ORIGIN}/auth/link/complete?attempt_id=${link.attemptId}`;
 	const completion = await receiver.completion;
 	expect(received.status).toBe(200);
-	expect(returnHref).toBe(`${ORIGIN}/auth/link/complete?attempt_id=${link.attemptId}`);
+	expect(returnPage).not.toMatch(/<a\b|http-equiv=["']refresh/i);
+	expect(returnPage).toContain("Finishing account link");
 	expect(returnPage).not.toContain(completion);
-	expect(returnPage).toContain('referrerpolicy="no-referrer"');
+	expect(returnPage).toContain('<meta name="referrer" content="no-referrer">');
 	expect(new Set([link.startCode, link.runtimeVerifier, completion]).size).toBe(3);
 	for (const raw of [link.startCode, link.runtimeVerifier, completion])
 		expect(Buffer.from(raw, "base64url")).toHaveLength(32);
@@ -305,6 +306,7 @@ it("mounts signed device → Google → confirmation → finalize → completion
 		runtime_verifier: link.runtimeVerifier,
 		completion,
 	});
+	// Optional browser-session completion remains available at this trusted coordinator route.
 	const page = await f.app.request(returnHref, {
 		headers: { cookie: link.binder },
 	});

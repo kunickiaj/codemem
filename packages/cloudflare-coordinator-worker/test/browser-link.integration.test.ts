@@ -130,6 +130,7 @@ async function setup(destination = "http://127.0.0.1:80/codemem/auth/complete") 
 		handlers: link.handlers,
 		callback: callback.handlers.callback,
 		url: oidc.authorize(new URL(authorization.authorizationUrl)),
+		material: authorization.material,
 		destination,
 	};
 }
@@ -197,12 +198,21 @@ it("native D1 Google callback and explicit confirmation preserve literal IPv4/IP
 		});
 		const confirmed = await f.handlers.confirm(post(f), "trusted-client");
 		const body = await confirmed.response.text();
-		const anchors = [...body.matchAll(/<a\b[^>]*href="([^"]+)"/g)];
+		const anchors = [...body.matchAll(/<a\b[^>]*href="([^"]+)"[^>]*>[\s\S]*?<\/a>/g)];
 		expect(confirmed.outcome).toBe("link_confirmed");
 		expect(confirmed.response.status).toBe(200);
 		expect(confirmed.response.headers.getSetCookie()).toEqual([]);
 		expect(anchors).toHaveLength(1);
 		const href = anchors[0][1].replaceAll("&amp;", "&");
+		const refresh = [...body.matchAll(/<meta\b[^>]*http-equiv=[^>]*>/gi)];
+		expect(refresh.map((match) => match[0])).toEqual([
+			`<meta http-equiv="refresh" content="0;url=${anchors[0][1]}">`,
+		]);
+		expect(anchors[0][0]).toContain('rel="noreferrer"');
+		expect(anchors[0][0]).toContain('referrerpolicy="no-referrer"');
+		expect(body).toContain('<meta name="referrer" content="no-referrer">');
+		expect(confirmed.response.headers.get("referrer-policy")).toBe("no-referrer");
+		expect(body).not.toMatch(/<form|<input|<img|<script/i);
 		const secret = new URL(href).searchParams.get("completion") ?? "";
 		expect(secret).toMatch(/^[A-Za-z0-9_-]{43}$/);
 		expect(href).toBe(`${destination}?attempt_id=${f.attempt.attemptId}&completion=${secret}`);
@@ -211,7 +221,21 @@ it("native D1 Google callback and explicit confirmation preserve literal IPv4/IP
 		const hash = createHash("sha256").update(decoded).digest("hex");
 		expect((await rows(f))[0]).toMatchObject({ state: "confirmed", completion_secret_hash: hash });
 		expect(hash).not.toBe(createHash("sha256").update(secret).digest("hex"));
-		expect(body.replace(anchors[0][0], "")).not.toContain(secret);
+		const outsideTransport = body.replace(refresh[0][0], "").replace(anchors[0][0], "");
+		expect(outsideTransport).not.toContain(secret);
+		for (const value of [f.material.nonce, f.material.state]) {
+			expect(outsideTransport).not.toContain(value);
+		}
+		expect(outsideTransport).not.toMatch(/completion=|nonce=|state=/i);
+		for (const value of [
+			f.material.pkceVerifier,
+			PROVIDER.clientSecret,
+			"fixture-access-token",
+			"fixture-refresh-token",
+		]) {
+			expect(body).not.toContain(value);
+		}
+		expect(body).not.toMatch(/pkceVerifier|pkce_verifier|access_token|id_token|eyJ[A-Za-z0-9_-]*\./);
 		expect(JSON.stringify([...confirmed.response.headers])).not.toContain(secret);
 		expect(await authority(f)).toEqual(before);
 		const final = {

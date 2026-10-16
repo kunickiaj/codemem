@@ -1,6 +1,7 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { connect } from "node:net";
-import { describe, expect, it } from "vitest";
+import { JSDOM } from "jsdom";
+import { describe, expect, it, vi } from "vitest";
 import {
 	createCoordinatorAccountLinkReceiver,
 	createCoordinatorOwnerEnrollmentReceiver,
@@ -16,6 +17,7 @@ function request(
 	target: string,
 	host?: string,
 	method = "GET",
+	headers = "",
 ) {
 	const url = new URL(receiver.destination);
 	return new Promise<string>((resolve, reject) => {
@@ -29,15 +31,42 @@ function request(
 		socket.on("end", () => resolve(response));
 		socket.on("connect", () =>
 			socket.write(
-				`${method} ${target} HTTP/1.1\r\nHost: ${host ?? url.host}\r\nConnection: close\r\n\r\n`,
+				`${method} ${target} HTTP/1.1\r\nHost: ${host ?? url.host}\r\n${headers}Connection: close\r\n\r\n`,
 			),
 		);
 	});
 }
 
-describe("account link receiver pinned coordinator navigation", () => {
+function receiptToken(response: string): string {
+	const document = new JSDOM(response.split("\r\n\r\n")[1]).window.document;
+	const scripts = [...document.querySelectorAll("script")];
+	expect(scripts).toHaveLength(1);
+	expect(scripts[0].hasAttribute("src")).toBe(false);
+	const script = scripts[0].textContent ?? "";
+	const hash = createHash("sha256").update(script).digest("base64");
+	const csp = /content-security-policy: ([^\r\n]+)/i.exec(response)?.[1] ?? "";
+	expect(
+		csp
+			.split(";")
+			.find((part) => part.trim().startsWith("script-src "))
+			?.trim(),
+	).toBe(`script-src 'sha256-${hash}'`);
+	expect(csp).toContain("connect-src 'self'");
+	expect(csp).not.toMatch(/unsafe-inline|unsafe-eval/);
+	const token = document.querySelector("main[data-receipt]")?.getAttribute("data-receipt") ?? "";
+	expect(token.length).toBeGreaterThanOrEqual(32);
+	expect(script).not.toContain(token);
+	expect(document.body.textContent).not.toContain(token);
+	return token;
+}
+
+function receiptHeaders(token: string): string {
+	return `X-Codemem-Receipt: ${token}\r\nSec-Fetch-Site: same-origin\r\nSec-Fetch-Mode: cors\r\n`;
+}
+
+describe("account link receiver finishing receipt", () => {
 	it.each(["127.0.0.1", "::1"] as const)(
-		"returns a pinned coordinator navigation link on %s",
+		"returns an isolated finishing receipt without requiring another browser session on %s",
 		async (host) => {
 			// Arrange
 			const receiver = await createCoordinatorAccountLinkReceiver({
@@ -54,15 +83,21 @@ describe("account link receiver pinned coordinator navigation", () => {
 				// Assert
 				expect(rejected).toMatch(/^HTTP\/1.1 400 /);
 				expect(ownerDelivery).toMatch(/^HTTP\/1.1 400 /);
-				expect(response.match(/href="([^"]+)"/)?.[1]).toBe(
-					"https://app.example.test/auth/link/complete?attempt_id=attempt-a",
-				);
-				expect(response).toMatch(/rel="[^"]*noreferrer[^"]*"/);
+				expect(response).toMatch(/^HTTP\/1.1 200 /);
 				expect(response.toLowerCase()).toContain("referrer-policy: no-referrer");
 				expect(response.toLowerCase()).toContain("cache-control: no-store");
 				expect(response.toLowerCase()).not.toMatch(/location:|access-control-allow-origin:/);
 				expect(response).not.toContain(proof);
 				expect(response).not.toContain("evil.example.test");
+				const document = new JSDOM(response.split("\r\n\r\n")[1]).window.document;
+				expect(document.querySelector("h1")?.textContent).toMatch(/finishing|return/i);
+				expect(document.body.textContent).toMatch(/Codemem/);
+				expect(document.querySelector("main")?.textContent).not.toMatch(
+					/finish.*coordinator|successfully linked|linking complete|account linked/i,
+				);
+				expect(document.querySelector("style")?.textContent?.length).toBeGreaterThan(0);
+				expect(document.querySelector("a,meta[http-equiv='refresh'],form")).toBeNull();
+				receiptToken(response);
 				expect(await receiver.completion).toBe(proof);
 			} finally {
 				await receiver.close();
@@ -97,6 +132,199 @@ describe("account link receiver pinned coordinator navigation", () => {
 			// Assert
 			expect(result).toBeInstanceOf(Error);
 			expect(String(result)).not.toContain(coordinatorOrigin);
+		}
+	});
+});
+
+describe("account link receiver trusted receipt acknowledgement", () => {
+	it.each(["linked", "pending", "claimed string", "fetch failure"])(
+		"receipt closes itself only for trusted linked status: %s",
+		async (state) => {
+			// Arrange: execute only the fixed receipt script, with all browser I/O mocked.
+			const receiver = await createCoordinatorAccountLinkReceiver({ attemptId: "attempt-a" });
+			try {
+				const receipt = await request(receiver, new URL(receiver.destination).pathname + query);
+				const token = receiptToken(receipt);
+				const dom = new JSDOM(receipt.split("\r\n\r\n")[1], {
+					url: receiver.destination + query,
+					runScripts: "outside-only",
+				});
+				const results: Record<string, unknown> = {
+					linked: true,
+					pending: false,
+					"claimed string": "true",
+				};
+				const fetch = vi
+					.fn()
+					.mockResolvedValue({ ok: true, json: async () => ({ linked: results[state] }) });
+				if (state === "fetch failure")
+					fetch.mockRejectedValue(new Error("local receiver unavailable"));
+				Object.defineProperty(dom.window, "fetch", { value: fetch });
+				const close = vi.spyOn(dom.window, "close").mockImplementation(() => {});
+				vi.spyOn(dom.window, "setTimeout").mockReturnValue(0);
+				try {
+					// Act
+					dom.window.eval(dom.window.document.querySelector("script")?.textContent ?? "");
+					for (let turn = 0; turn < 12; turn++) await Promise.resolve();
+					// Assert: neither an uncertain result nor a failed request claims success.
+					expect(fetch).toHaveBeenCalled();
+					const [url, options] = fetch.mock.calls[0];
+					expect(new URL(String(url), receiver.destination).href).toBe(
+						new URL("/codemem/auth/result", receiver.destination).href,
+					);
+					expect(new Headers(options?.headers).get("X-Codemem-Receipt")).toBe(token);
+					expect(options).toMatchObject({ cache: "no-store", credentials: "omit" });
+					expect(dom.window.location.search).toBe("");
+					expect(close).toHaveBeenCalledTimes(state === "linked" ? 1 : 0);
+					expect(dom.window.document.body.textContent).toMatch(/return to Codemem|check status/i);
+				} finally {
+					close.mockRestore();
+					dom.window.close();
+				}
+			} finally {
+				await receiver.close();
+			}
+		},
+	);
+});
+
+describe("account link receiver result endpoint", () => {
+	it("reports pending until trusted finalization and flushes the linked acknowledgement before closing", async () => {
+		// Arrange
+		const receiver = await createCoordinatorAccountLinkReceiver({ attemptId: "attempt-a" });
+		try {
+			const receipt = await request(receiver, new URL(receiver.destination).pathname + query);
+			const token = receiptToken(receipt);
+			expect(await receiver.completion).toBe(proof);
+			// Act: browser-supplied status cannot mark the local runtime successful.
+			const forged = await request(
+				receiver,
+				"/codemem/auth/result?linked=true",
+				undefined,
+				"GET",
+				receiptHeaders(token),
+			);
+			const pending = await request(
+				receiver,
+				"/codemem/auth/result",
+				undefined,
+				"GET",
+				receiptHeaders(token),
+			);
+			// Assert
+			expect(forged).toMatch(/^HTTP\/1.1 4\d\d /);
+			expect(pending).toMatch(/^HTTP\/1.1 200 /);
+			expect(pending).toContain('"linked":false');
+			// Act: only the runtime's trusted close call can acknowledge success.
+			const closing = (receiver as { close(options: { linked: boolean }): Promise<void> }).close({
+				linked: true,
+			});
+			const linked = await request(
+				receiver,
+				"/codemem/auth/result",
+				undefined,
+				"GET",
+				receiptHeaders(token),
+			);
+			await closing;
+			// Assert
+			expect(linked).toMatch(/^HTTP\/1.1 200 /);
+			expect(linked).toContain('"linked":true');
+			expect(linked.toLowerCase()).toContain("cache-control: no-store");
+			expect(linked.toLowerCase()).not.toContain("access-control-allow-origin:");
+			for (const response of [forged, pending, linked]) {
+				expect(response).not.toContain(token);
+				expect(response).not.toContain(proof);
+			}
+			await expect(request(receiver, "/codemem/auth/result")).rejects.toThrow();
+		} finally {
+			await receiver.close();
+		}
+	});
+
+	it("denies result reads before proof and rejects wrong tokens, authorities and cross-site requests", async () => {
+		// Arrange
+		const receiver = await createCoordinatorAccountLinkReceiver({ attemptId: "attempt-a" });
+		try {
+			const early = await request(
+				receiver,
+				"/codemem/auth/result",
+				undefined,
+				"GET",
+				receiptHeaders("forged-token"),
+			);
+			const receipt = await request(receiver, new URL(receiver.destination).pathname + query);
+			const token = receiptToken(receipt);
+			const validHeaders = receiptHeaders(token);
+			const invalid: [string | undefined, string, string][] = [
+				[undefined, "GET", receiptHeaders("wrong-token")],
+				["localhost:1234", "GET", validHeaders],
+				[undefined, "POST", validHeaders],
+				[undefined, "OPTIONS", validHeaders],
+				[undefined, "GET", validHeaders.replace("same-origin", "cross-site")],
+				[undefined, "GET", validHeaders.replace("cors", "navigate")],
+				[undefined, "GET", `X-Codemem-Receipt: ${token}\r\n`],
+				[undefined, "GET", `${validHeaders}X-Codemem-Receipt: ${token}\r\n`],
+			];
+			// Act
+			const denied = [early];
+			for (const [host, method, headers] of invalid)
+				denied.push(await request(receiver, "/codemem/auth/result", host, method, headers));
+			const pending = await request(
+				receiver,
+				"/codemem/auth/result",
+				undefined,
+				"GET",
+				validHeaders,
+			);
+			await receiver.close();
+			// Assert: rejected probes neither consume proof nor acknowledge success.
+			for (const response of denied) {
+				expect(response).toMatch(/^HTTP\/1.1 4\d\d /);
+				expect(response).not.toContain('"linked":true');
+				expect(response.toLowerCase()).not.toContain("access-control-allow-origin:");
+			}
+			expect(pending).toContain('"linked":false');
+			expect(await receiver.completion).toBe(proof);
+			await expect(
+				request(receiver, "/codemem/auth/result", undefined, "GET", validHeaders),
+			).rejects.toThrow();
+		} finally {
+			await receiver.close();
+		}
+	});
+});
+
+describe("account link receiver acknowledgement timeout", () => {
+	it("releases the listener after exactly 1500ms without a browser acknowledgement", async () => {
+		// Arrange: deliver and flush the receipt over real localhost sockets before faking timers.
+		const receiver = await createCoordinatorAccountLinkReceiver({ attemptId: "attempt-a" });
+		try {
+			const receipt = await request(receiver, new URL(receiver.destination).pathname + query);
+			expect(receipt).toMatch(/^HTTP\/1.1 200 /);
+			expect(await receiver.completion).toBe(proof);
+			vi.useFakeTimers();
+			let closed = false;
+			// Act: the browser never polls the result endpoint.
+			const closing = receiver.close({ linked: true }).then(() => {
+				closed = true;
+			});
+			await vi.advanceTimersByTimeAsync(1499);
+			// Assert: the acknowledgement window remains available until its deadline.
+			expect(closed).toBe(false);
+			// Act
+			await vi.advanceTimersByTimeAsync(1);
+			await closing;
+			vi.useRealTimers();
+			// Assert: no acknowledgement is required to finish cleanup after the deadline.
+			expect(closed).toBe(true);
+			await expect(request(receiver, "/codemem/auth/result")).rejects.toThrow();
+		} finally {
+			if (vi.isFakeTimers()) {
+				await vi.runAllTimersAsync();
+				vi.useRealTimers();
+			}
+			await receiver.close();
 		}
 	});
 });
@@ -266,6 +494,7 @@ describe("owner-only confirmation delivery", () => {
 				for (const response of denied) expect(response).toMatch(/^HTTP\/1.1 400 /);
 				expect(accepted).toMatch(/^HTTP\/1.1 200 /);
 				expect(completion).toEqual({ completionSecret: proof, confirmationHash });
+				expect(accepted).not.toMatch(/<script\b/i);
 				expect(replay).toMatch(/^HTTP\/1.1 410 /);
 				for (const response of [...denied, accepted, replay]) {
 					expect(response).not.toContain(proof);

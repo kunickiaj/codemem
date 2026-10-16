@@ -52,6 +52,13 @@ function useFlowState() {
 	const refs = useRef({
 		privateUrl: null as string | null,
 		popup: null as Window | null,
+		authWindow: null as {
+			window: Window;
+			operationId: string;
+			contextId: string;
+			groupId: string;
+			succeeded: boolean;
+		} | null,
 		delivered: null as string | null,
 		generation: 0,
 		starting: false,
@@ -158,6 +165,21 @@ function showStatus(
 		result.remote.kind === "status" &&
 		result.remote.state === "linked" &&
 		result.remote.identityMatches;
+	const authWindow = flow.refs.current.authWindow;
+	if (
+		verifiedLinked &&
+		authWindow &&
+		authWindow.contextId === result.contextId &&
+		authWindow.groupId === result.selectedGroupId &&
+		authWindow.succeeded
+	) {
+		flow.refs.current.authWindow = null;
+		try {
+			authWindow.window.close();
+		} catch {
+			// Isolated browser windows may need to be closed manually.
+		}
+	}
 	flow.setView(result);
 	if (
 		result.operation &&
@@ -381,6 +403,13 @@ function deliverBrowserUrl(
 			flow.refs.current.popup = null;
 			if (target && !target.closed) {
 				target.location.replace(url);
+				flow.refs.current.authWindow = {
+					window: target,
+					operationId: operation.operationId,
+					contextId: operation.contextId,
+					groupId: operation.groupId,
+					succeeded: false,
+				};
 				return;
 			}
 			flow.refs.current.privateUrl = url;
@@ -420,8 +449,19 @@ function openFallback(flow: Flow): void {
 	flow.setFallback(false);
 	if (!url || !flow.view?.coordinator || !validAccountBrowserUrl(url, flow.view.coordinator.origin))
 		return;
-	// With noopener browsers may return null even after opening the new tab.
-	window.open(url, "_blank", "noopener,noreferrer");
+	// Keep a close handle without exposing the Viewer through window.opener.
+	const target = window.open("about:blank", "_blank");
+	if (!target) return;
+	target.opener = null;
+	target.location.replace(url);
+	if (flow.operation)
+		flow.refs.current.authWindow = {
+			window: target,
+			operationId: flow.operation.operationId,
+			contextId: flow.operation.contextId,
+			groupId: flow.operation.groupId,
+			succeeded: false,
+		};
 }
 
 async function poll(
@@ -469,6 +509,9 @@ function showPolledOperation(
 	}
 	flow.setOperation(result.operation);
 	if (!terminal) return;
+	const authWindow = flow.refs.current.authWindow;
+	if (authWindow?.operationId === result.operation.operationId)
+		authWindow.succeeded = result.operation.state === "succeeded";
 	flow.setPendingOperation(null);
 	// Fetch verified status, not the callback's claimed account data.
 	void refresh(flow, {

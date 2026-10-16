@@ -49,6 +49,11 @@ const click = async (name: string) => {
 };
 const calls = (suffix: string) =>
 	transport.mock.calls.filter(([url]) => String(url).endsWith(suffix));
+function assertIsolatedPopup(url: string) {
+	expect(window.open).toHaveBeenCalledWith("about:blank", "_blank");
+	expect(popup.opener).toBeNull();
+	expect(popup.location.replace).toHaveBeenCalledWith(url);
+}
 beforeEach(() => {
 	vi.useFakeTimers();
 	view = status();
@@ -485,8 +490,9 @@ describe("My Account linking lifecycle", () => {
 			expect(button("Open Google sign-in").disabled).toBe(false);
 			expect(calls("browser-url")).toHaveLength(1);
 			expect(calls("browser-url")[0]?.[1]?.method).toBe("POST");
+			vi.mocked(window.open).mockReturnValue(popup as unknown as Window);
 			await click("Open Google sign-in");
-			expect(window.open).toHaveBeenCalledWith(privateUrl, "_blank", "noopener,noreferrer");
+			assertIsolatedPopup(privateUrl);
 			expect(mount.innerHTML).not.toContain("private-fixture");
 		},
 	);
@@ -512,8 +518,9 @@ describe("My Account linking lifecycle", () => {
 			expect(button("Cancel linking").disabled).toBe(false);
 			expect(calls("/cancel")).toHaveLength(0);
 			if (state === "awaiting_browser") {
+				vi.mocked(window.open).mockReturnValue(popup as unknown as Window);
 				await click("Open Google sign-in");
-				expect(window.open).toHaveBeenCalledWith(privateUrl, "_blank", "noopener,noreferrer");
+				assertIsolatedPopup(privateUrl);
 			}
 			await click("Cancel linking");
 			expect(calls("/cancel")).toHaveLength(1);
@@ -548,15 +555,16 @@ describe("My Account linking lifecycle", () => {
 		await click("Check status");
 		expect(popup.close).not.toHaveBeenCalled();
 	});
-	it("uses an explicit synchronous fallback with noopener, without re-fetching private URLs", async () => {
+	it("isolates an explicit synchronous fallback without re-fetching private URLs", async () => {
 		// Arrange
 		vi.mocked(window.open).mockReturnValue(null);
 		view = status({ operation: operation("awaiting_browser"), canLink: false });
 		await show();
 		// Act
 		await click("Open Google sign-in");
-		// Assert: null is the normal noopener return, not an opening failure.
-		expect(window.open).toHaveBeenCalledWith(privateUrl, "_blank", "noopener,noreferrer");
+		// Assert: a blocked fallback never navigates the Viewer or exposes its URL.
+		expect(window.open).toHaveBeenCalledWith("about:blank", "_blank");
+		expect(popup.location.replace).not.toHaveBeenCalled();
 		expect(mount.textContent).not.toContain("could not be opened");
 		expect(mount.innerHTML).not.toContain("private-fixture");
 		expect(window.location.href).not.toContain("private-fixture");
@@ -606,7 +614,7 @@ describe("My Account configured coordinator browser origins", () => {
 		if (allowed) await click("Open Google sign-in");
 		// Assert
 		if (allowed) {
-			expect(window.open).toHaveBeenCalledWith(url, "_blank", "noopener,noreferrer");
+			assertIsolatedPopup(url);
 			expect(mount.textContent).toContain("on this computer");
 		} else {
 			expect(window.open).not.toHaveBeenCalled();

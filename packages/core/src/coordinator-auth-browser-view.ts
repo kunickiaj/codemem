@@ -1,3 +1,4 @@
+import { COORDINATOR_AUTH_STYLE as STYLE } from "./coordinator-auth-browser-style.js";
 import { isCoordinatorAccountIssuer } from "./coordinator-auth-contract.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import { parseCoordinatorAuthLoopback } from "./coordinator-auth-loopback.js";
@@ -88,18 +89,7 @@ const SENSITIVE_AUTHORIZATION_KEYS = new Set([
 	"refresh_token",
 	"id_token",
 ]);
-const STYLE = `
-:root{color-scheme:light;font-family:system-ui,-apple-system,sans-serif;color:#202731;background:#f7f5ef}
-*{box-sizing:border-box}body{margin:0;padding:2rem 1rem}main{max-width:42rem;margin:0 auto;border-top:4px solid #183b60;padding-top:1.5rem}
-h1,h2{font-family:"Iowan Old Style",Palatino,serif;font-weight:600}h1{font-size:2rem;margin:.4rem 0 1.5rem}h2{font-size:1.25rem;margin:0 0 .5rem}
-p{line-height:1.6;margin:.5rem 0}section{padding:1.25rem 0;border-bottom:1px solid #c8ccd0}.eyebrow{font-size:.8rem;letter-spacing:.08em;text-transform:uppercase;color:#46515d}
-.profile{display:flex;align-items:center;gap:1rem}.profile-text{min-width:0;overflow-wrap:anywhere}.avatar{position:relative;display:inline-flex;align-items:center;justify-content:center;flex:0 0 3rem;width:3rem;height:3rem;border-radius:50%;background:#e1e6eb;color:#183b60;overflow:hidden}
-.initials{font-weight:700}.avatar img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:transparent}.note{font-size:.875rem;color:#46515d}
-dl{margin:0}dt{font-weight:600;margin-top:1rem}dd{margin:.25rem 0 0}code{font-family:ui-monospace,monospace;font-size:.9rem;overflow-wrap:anywhere;white-space:pre-wrap}
-.actions{display:flex;flex-wrap:wrap;gap:.75rem;margin:1.5rem 0}form{margin:0}button,.link{font:inherit;display:inline-block;padding:.7rem 1rem;border:1px solid #183b60;border-radius:2px;background:#183b60;color:#fff;cursor:pointer;text-decoration:none}
-button.secondary{background:transparent;color:#183b60}a{color:#183b60}button:hover,.link:hover{background:#254d76;color:#fff}:focus-visible{outline:3px solid #986008;outline-offset:4px}
-@media(max-width:30rem){body{padding:1rem}h1{font-size:1.75rem}.profile{align-items:flex-start}}
-`;
+const START_SUBMIT_SCRIPT = "document.querySelector('form').requestSubmit();";
 
 function invalidInput(): never {
 	throw new Error(INVALID_INPUT);
@@ -320,7 +310,11 @@ async function buildPage(
 	title: string,
 	content: string,
 	issuer?: string,
-	options: { referrerPolicy?: "no-referrer" | "same-origin" } = {},
+	options: {
+		referrerPolicy?: "no-referrer" | "same-origin";
+		refreshUrl?: string;
+		autoSubmit?: boolean;
+	} = {},
 ): Promise<CoordinatorAuthBrowserPage> {
 	try {
 		const digest = await globalThis.crypto.subtle.digest(
@@ -328,18 +322,32 @@ async function buildPage(
 			new TextEncoder().encode(STYLE),
 		);
 		const hash = btoa(String.fromCharCode(...new Uint8Array(digest)));
+		let script = "";
+		let scriptPolicy = "";
+		if (options.autoSubmit) {
+			const scriptDigest = await globalThis.crypto.subtle.digest(
+				"SHA-256",
+				new TextEncoder().encode(START_SUBMIT_SCRIPT),
+			);
+			const scriptHash = btoa(String.fromCharCode(...new Uint8Array(scriptDigest)));
+			script = `<script>${START_SUBMIT_SCRIPT}</script>`;
+			scriptPolicy = `; script-src 'sha256-${scriptHash}'`;
+		}
+		const refresh = options.refreshUrl
+			? `<meta http-equiv="refresh" content="0;url=${escapeHtml(options.refreshUrl)}">`
+			: "";
 		let images = "'none'";
 		if (issuer === GOOGLE_ISSUER)
 			images = AUTH_BROWSER_AVATAR_HOSTS[GOOGLE_ISSUER].map((host) => `https://${host}`).join(" ");
 		return {
-			body: `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)}</title><style>${STYLE}</style></head><body><main>${content}</main></body></html>`,
+			body: `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="${options.referrerPolicy ?? "no-referrer"}">${refresh}<title>${escapeHtml(title)} · Codemem</title><style>${STYLE}</style></head><body><main><p class="brand">codemem</p>${content}</main>${script}</body></html>`,
 			headers: {
 				"Content-Type": "text/html;charset=utf-8",
 				"Cache-Control": "no-store",
 				"Referrer-Policy": options.referrerPolicy ?? "no-referrer",
 				"X-Content-Type-Options": "nosniff",
 				"X-Frame-Options": "DENY",
-				"Content-Security-Policy": `default-src 'none'; style-src 'sha256-${hash}'; img-src ${images}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
+				"Content-Security-Policy": `default-src 'none'; style-src 'sha256-${hash}'; img-src ${images}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'${scriptPolicy}`,
 			},
 		};
 	} catch {
@@ -373,8 +381,10 @@ export async function renderAuthLinkCompletionHopPage(
 		return invalidInput();
 	}
 	return buildPage(
-		"Continue on this computer",
-		`<h1>Continue on this computer</h1><p>Return to the computer where you started linking to finish.</p><p><strong>Do not share this link.</strong> It lets your computer finish linking.</p><div class="actions"><a class="link" href="${escapeHtml(href)}" referrerpolicy="no-referrer" rel="noreferrer">Continue on this computer</a></div>`,
+		"Finishing account link",
+		`<h1>Finishing account link…</h1><p>Returning to Codemem on this computer. If nothing happens, continue below.</p><p class="note">Do not share this link.</p><div class="actions"><a class="link" href="${escapeHtml(href)}" referrerpolicy="no-referrer" rel="noreferrer">Continue on this computer</a></div>`,
+		undefined,
+		{ refreshUrl: href },
 	);
 }
 
@@ -418,9 +428,9 @@ export async function renderAuthLinkStartPage(
 		return invalidInput();
 	return buildPage(
 		"Link this device",
-		`<h1>Link this device</h1><p>Continue only if you started linking on this computer. Do not share this link.</p><p>Linking does not change project access or your current signed-in session.</p><div class="actions">${form(AUTH_BROWSER_FORM_ACTIONS.startLink, csrfToken, "Continue with Google", { attemptId, startCode })}</div>`,
+		`<h1>Connecting to Google…</h1><p>You’ll choose an account and confirm it before linking. Linking does not change project access.</p><p class="note">If nothing happens, continue below. Do not share this page.</p><div class="actions">${form(AUTH_BROWSER_FORM_ACTIONS.startLink, csrfToken, "Continue with Google", { attemptId, startCode })}</div>`,
 		undefined,
-		{ referrerPolicy: "same-origin" },
+		{ referrerPolicy: "same-origin", autoSubmit: true },
 	);
 }
 
@@ -448,6 +458,8 @@ export async function renderAuthSigninContinuePage(
 	return buildPage(
 		"Continue sign-in",
 		`<h1>Continue sign-in</h1><div class="actions"><a class="link" href="${escapeHtml(authorizationUrl)}" referrerpolicy="no-referrer" rel="noreferrer">Continue to Google</a></div>`,
+		undefined,
+		{ refreshUrl: authorizationUrl },
 	);
 }
 

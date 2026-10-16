@@ -357,12 +357,16 @@ describe("My Account synthetic end-to-end over protected loopback HTTP", () => {
 		await f.poll();
 		expect(button("Open Google sign-in")).toBeTruthy();
 		f.noLeaks();
+		f.open.mockReturnValue(f.popup as unknown as Window);
 		await f.click("Open Google sign-in");
 		f.readRemoteStatus.mockResolvedValue(remote("linked"));
 		f.done.resolve(finalResult);
 		await f.poll();
 		// Assert
-		expect(f.open).toHaveBeenLastCalledWith(PRIVATE, "_blank", "noopener,noreferrer");
+		expect(f.open).toHaveBeenLastCalledWith("about:blank", "_blank");
+		expect(f.popup.opener).toBeNull();
+		expect(f.popup.location.replace).toHaveBeenCalledWith(PRIVATE);
+		expect(f.popup.close).toHaveBeenCalledTimes(1);
 		expect(mount.textContent).toContain("fake@example.test");
 		expect(button("Link Google account").disabled).toBe(true);
 		expect(mount.textContent).not.toContain("Open Google sign-in");

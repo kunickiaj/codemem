@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { JSDOM } from "jsdom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TABLE } from "./coordinator-auth-browser-transaction-test-fixtures.js";
 import {
@@ -27,6 +28,24 @@ import { oidcFixture, PROVIDER } from "./coordinator-oidc-test-fixtures.js";
 const ORIGIN = "https://app.example.test";
 const ATTEMPTS = "coordinator_auth_link_attempts";
 const databases: ReturnType<typeof setupStore>["db"][] = [];
+
+function assertCompletionTransport(hop: string, href: string, secret: string): void {
+	const document = new JSDOM(hop).window.document;
+	const refresh = document.querySelectorAll("meta[http-equiv='refresh']");
+	expect(refresh).toHaveLength(1);
+	expect(refresh[0].getAttribute("content")).toBe(`0;url=${href}`);
+	expect(document.querySelector("meta[name='referrer']")?.getAttribute("content")).toBe(
+		"no-referrer",
+	);
+	const anchor = document.querySelector("a");
+	expect(anchor?.getAttribute("href")).toBe(href);
+	expect(anchor?.getAttribute("referrerpolicy")).toBe("no-referrer");
+	expect(anchor?.getAttribute("rel")).toBe("noreferrer");
+	expect(document.querySelector("script")).toBeNull();
+	anchor?.removeAttribute("href");
+	refresh[0].removeAttribute("content");
+	expect(document.documentElement.outerHTML).not.toContain(secret);
+}
 beforeEach(() => {
 	vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
 	vi.spyOn(Date, "now").mockReturnValue(NOW);
@@ -289,7 +308,8 @@ describe.each(["SQLite", "D1"] as const)("%s bound browser link", (backend) => {
 			expect(authority(f)).toEqual(before);
 			expect(JSON.stringify([...confirmed.response.headers])).not.toContain(secret);
 			expect(JSON.stringify(confirmed.outcome)).not.toContain(secret);
-			expect(hop.replace(anchors[0][0], "")).not.toContain(secret);
+			expect(confirmed.response.headers.get("referrer-policy")).toBe("no-referrer");
+			assertCompletionTransport(hop, href, secret);
 			// Act: replay cannot release a replacement, and either missing runtime proof blocks grants.
 			const replay = await f.handlers.confirm(post(f), "trusted-client");
 			await safe(replay.response, 403);
