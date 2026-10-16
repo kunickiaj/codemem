@@ -881,7 +881,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		this.assertAuthSchemaReady = () => assertCoordinatorAuthSchema(rawAuthBackend);
 		const authBackend = withCoordinatorAuthSchema(rawAuthBackend);
 		this.authLinks = new AuthLinkOperations(authBackend, options.authClock);
-		this.accountLinkStatus = new AccountLinkStatusOperations(authBackend);
+		this.accountLinkStatus = new AccountLinkStatusOperations(authBackend, options.authClock);
 		this.authSessions = new AuthSessionOperations(authBackend, options.authClock);
 		this.authAccountProfiles = new AuthAccountProfileOperations(authBackend, options.authClock);
 		this.authBrowserTransactions = new CoordinatorAuthBrowserTransactions(
@@ -1008,6 +1008,11 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	}
 	readAccountLinkStatus(...args: Parameters<AccountLinkStatusOperations["readAccountLinkStatus"]>) {
 		return this.accountLinkStatus.readAccountLinkStatus(...args);
+	}
+	readAuthDeviceClaimReadiness(
+		...args: Parameters<AccountLinkStatusOperations["readAuthDeviceClaimReadiness"]>
+	) {
+		return this.accountLinkStatus.readAuthDeviceClaimReadiness(...args);
 	}
 	async createAuthLinkAttempt(
 		input: CoordinatorAuthLinkCreateInput,

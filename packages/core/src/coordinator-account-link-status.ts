@@ -1,10 +1,18 @@
 import {
+	AUTH_DEVICE_CLAIM_ELIGIBLE_SQL,
+	AUTH_DEVICE_CLAIM_INPUT_SQL,
+	type CoordinatorDeviceClaimReadiness,
+	type CoordinatorDeviceClaimReadinessInput,
+	captureDeviceClaimEligibility,
+} from "./coordinator-auth-device-claim-eligibility.js";
+import {
 	AUTH_LINK_AUTHORITY_COLUMNS,
 	AUTH_LINK_AUTHORITY_GUARD_SQL,
 	AUTH_LINK_CONTROLLER_SOURCE_SQL,
 	type AuthLinkAuthoritySource,
 	type AuthLinkBackend,
 	authLinkControllerSourceValues,
+	authLinkNow,
 	captureAuthLinkConfig,
 	captureAuthLinkSigner,
 	deriveAuthLinkAuthority,
@@ -74,7 +82,36 @@ function projectStatus(
 
 /** Reads only. Rechecks the exact enrollment and controller after key derivation. */
 export class AccountLinkStatusOperations implements CoordinatorAccountLinkStatusStore {
-	constructor(private readonly backend: Pick<AuthLinkBackend, "first">) {}
+	constructor(
+		private readonly backend: Pick<AuthLinkBackend, "first">,
+		private readonly clock: () => number = Date.now,
+	) {}
+
+	/** Internal store capability only. It does not reserve a claim or expose account data. */
+	async readAuthDeviceClaimReadiness(
+		input: CoordinatorDeviceClaimReadinessInput,
+		config: CoordinatorAuthLinkConfig,
+	): Promise<CoordinatorDeviceClaimReadiness> {
+		const c = captureAuthLinkConfig(config);
+		if (!c?.enabled) return { kind: "unavailable" };
+		try {
+			const captured = await captureDeviceClaimEligibility(
+				this.backend,
+				input,
+				c,
+				authLinkNow(this.clock),
+			);
+			if (!captured) return { kind: "unavailable" };
+			const row = await this.backend.first<{ eligible: number }>({
+				sql: `${AUTH_DEVICE_CLAIM_INPUT_SQL} SELECT CASE WHEN ${AUTH_DEVICE_CLAIM_ELIGIBLE_SQL} THEN 1 ELSE 0 END AS eligible FROM claim_input p`,
+				values: captured.values,
+			});
+			if (row?.eligible !== 1) return { kind: "unavailable" };
+			return { kind: "eligible", authority: "device_claim", identityId: captured.identityId };
+		} catch (error) {
+			throw authPersistenceError(error, "auth_device_claim_unavailable");
+		}
+	}
 
 	async readAccountLinkStatus(
 		signer: CoordinatorAuthLinkSigner,

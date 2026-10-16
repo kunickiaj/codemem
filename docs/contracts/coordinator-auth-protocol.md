@@ -465,9 +465,10 @@ controller, and a device claim never creates one.
 
 ## Device-claim first link (planned)
 
-**Status:** Contract only. Schema, store, routes, and viewer changes are not
-implemented. Until they ship, every first link still requires a controller
-attestation.
+**Status:** Storage definitions and internal read-only readiness are implemented.
+Device-claim attempt creation, transition guards, external routes, and Viewer
+support remain planned. Until those ship, every first link still requires a
+controller attestation.
 
 A device claim lets an enrolled device link Google to the running profile's
 current Identity without a separate admin review. A matching enrollment Identity
@@ -689,6 +690,12 @@ enrollments, keys, and memory history do not change.
 
 ### Eligibility
 
+The internal `readAuthDeviceClaimReadiness` store method now evaluates the shared
+guard in `coordinator-auth-device-claim-eligibility.ts` on SQLite and D1. It reads
+only and returns no account metadata or committed proof. Existing HTTP status and
+creation contracts remain unchanged. Device-claim creation/retry and reuse of this
+guard in every transition still need the following implementation units.
+
 One guard decides whether a device claim may exist. The coordinator runs it as a
 single SQL statement that binds its inputs once through a CTE, keeping at most
 100 bound parameters. For device-claim attempts it runs at status reads,
@@ -709,7 +716,7 @@ before its deadline, other than the attempt being checked.
 | Other enrollments of the target device or key | Any has a non-null `identity_id` other than the claim |
 | Attestations for the target device or key | Any is revoked or names another Identity. An active matching attestation uses the attested path instead. |
 | Ownership bindings for the target device or key | The bound Identity is not the claim |
-| Consumed, unrevoked invites bound to the target device, key, or fingerprint | `assigned_identity_id` or `target_identity_id` is set to another Identity |
+| Consumed invites bound to the target device, key, or fingerprint, unless revoked before consumption | `assigned_identity_id` or `target_identity_id` is set to another Identity |
 | Legacy team completions | A device decision for the target is `excluded`, or includes it with another Identity |
 | Owner-enrollment attempts for the target | One is live |
 | Device claims for the target | A committed claim exists for the device ID or key ID |
@@ -725,7 +732,6 @@ before its deadline, other than the attempt being checked.
 | Legacy team completions naming the claim | A device decision gives it to another device |
 | Owner-enrollment attempts for the claim | One is live |
 | Link attempts for the claim | A live attempt of either kind comes from another device or key |
-| Claim format | It starts with `local:` but is not exactly `local:` followed by the target device ID |
 
 These are not contradictions, and must not block a claim:
 
