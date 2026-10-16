@@ -108,7 +108,7 @@ export const AUTH_DEVICE_CLAIM_DEFINITION_CHECKS = proofDefinitions.map((definit
 		.join("");
 	return {
 		name: header[2],
-		matches: `EXISTS (SELECT 1 FROM sqlite_master WHERE type = ${quoteSql(header[1].toLowerCase())} AND name = ${quoteSql(header[2])} AND ${canonicalProofSql("sql")} = ${canonicalProofSql(`CAST(X'${hex}' AS TEXT)`)})`,
+		matches: `EXISTS (SELECT 1 FROM sqlite_master WHERE type = ${quoteSql(header[1].toLowerCase())} AND name = ${quoteSql(header[2])} COLLATE NOCASE AND ${canonicalProofSql("sql")} = ${canonicalProofSql(`CAST(X'${hex}' AS TEXT)`)})`,
 	};
 });
 

@@ -65,9 +65,15 @@ beforeEach(async () => {
 
 it.each([
 	"CREATE TABLE coordinator_auth_device_claims (claim_id TEXT)",
+	// SQLite resolves these names to the expected objects despite their case.
+	"CREATE TABLE COORDINATOR_AUTH_DEVICE_CLAIMS (claim_id TEXT)",
+	"CREATE TABLE Coordinator_Auth_Device_Claims (claim_id TEXT)",
+	"CREATE TRIGGER COORDINATOR_AUTH_DEVICE_CLAIMS_IMMUTABLE_UPDATE BEFORE UPDATE ON coordinator_auth_device_claims BEGIN SELECT 1; END;",
+	"CREATE TRIGGER Coordinator_Auth_Device_Claims_Insert_Collision BEFORE INSERT ON coordinator_auth_device_claims BEGIN SELECT 1; END;",
 	proof[0].replace("UNIQUE (coordinator_id, identity_id),", ""),
 	proof[2].replace(/SELECT RAISE\([^;]+;/u, "SELECT 1;"),
 ])("native D1 rejects unknown proof DDL atomically (case %#)", async (damage) => {
+	// Arrange: retain the complete legacy rows and schema, including incompatible proof objects.
 	await env.COORDINATOR_DB.prepare("DROP TABLE coordinator_auth_device_claims").run();
 	if (damage.trimStart().startsWith("CREATE TABLE")) await env.COORDINATOR_DB.prepare(damage).run();
 	else {
@@ -76,6 +82,7 @@ it.each([
 	}
 	const before = await snapshot();
 	const schema = (await env.COORDINATOR_DB.prepare("SELECT * FROM sqlite_master ORDER BY name").all()).results;
+	// Act / Assert: reject before any link swap commits, not just at readiness checking.
 	await expect(env.COORDINATOR_DB.batch(AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS.map((sql) => env.COORDINATOR_DB.prepare(sql)))).rejects.toThrow(/CHECK/);
 	expect(await snapshot()).toEqual(before);
 	expect((await env.COORDINATOR_DB.prepare("SELECT * FROM sqlite_master ORDER BY name").all()).results).toEqual(schema);

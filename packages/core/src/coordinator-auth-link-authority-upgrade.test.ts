@@ -45,16 +45,23 @@ function snapshot(db: Database.Database) {
 
 it.each([
 	"CREATE TABLE coordinator_auth_device_claims (claim_id TEXT)",
+	// SQLite resolves these names to the expected objects despite their case.
+	"CREATE TABLE COORDINATOR_AUTH_DEVICE_CLAIMS (claim_id TEXT)",
+	"CREATE TABLE Coordinator_Auth_Device_Claims (claim_id TEXT)",
+	`${proof[0]} CREATE TRIGGER COORDINATOR_AUTH_DEVICE_CLAIMS_IMMUTABLE_UPDATE BEFORE UPDATE ON coordinator_auth_device_claims BEGIN SELECT 1; END;`,
+	`${proof[0]} CREATE TRIGGER Coordinator_Auth_Device_Claims_Insert_Collision BEFORE INSERT ON coordinator_auth_device_claims BEGIN SELECT 1; END;`,
 	proof[0].replace("UNIQUE (coordinator_id, identity_id),", ""),
 	...proof
 		.slice(1)
 		.map((sql) => `${proof[0]} ${sql.replace(/SELECT RAISE\([^;]+;/u, "SELECT 1;")}`),
 ])("aborts the whole cutover for unknown proof DDL (case %#)", (damage) => {
+	// Arrange: retain the complete legacy rows and schema, including incompatible proof objects.
 	const db = legacyDatabase();
 	try {
 		db.exec(damage);
 		const before = snapshot(db);
 		const schema = db.prepare("SELECT * FROM sqlite_master ORDER BY name").all();
+		// Act / Assert: reject before any link swap commits, not just at readiness checking.
 		expect(() => upgradeAuthLinkAuthoritySchema(db)).toThrow(/CHECK/);
 		expect(snapshot(db)).toEqual(before);
 		expect(db.prepare("SELECT * FROM sqlite_master ORDER BY name").all()).toEqual(schema);
