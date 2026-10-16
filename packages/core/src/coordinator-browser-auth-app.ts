@@ -5,6 +5,12 @@ import type {
 	CoordinatorAuthBrowserTransactionStore,
 } from "./coordinator-auth-browser-transaction-contract.js";
 import type { CoordinatorAuthLinkStore } from "./coordinator-auth-link-contract.js";
+import {
+	AUTH_SCHEMA_UPGRADE_REQUIRED,
+	assertConfiguredAuthSchema,
+	type CoordinatorAuthSchemaStore,
+	CoordinatorAuthSchemaUpgradeRequiredError,
+} from "./coordinator-auth-schema.js";
 import type { CoordinatorAuthSessionStore } from "./coordinator-auth-session-contract.js";
 import {
 	type CoordinatorBrowserAccountInput,
@@ -82,7 +88,7 @@ export type CoordinatorBrowserAuthStore = CoordinatorBrowserAccountInput["store"
 	CoordinatorBrowserLinkCompletionInput["store"] &
 	CoordinatorBrowserLinkStartInput["store"] &
 	CoordinatorBrowserSigninStartInput["store"] &
-	Partial<CoordinatorAuthBrowserTransactionPurposeStore>;
+	Partial<CoordinatorAuthBrowserTransactionPurposeStore & CoordinatorAuthSchemaStore>;
 export type CoordinatorBrowserAuthClientKey = (context: Context) => string | null;
 export interface CoordinatorBrowserAuth {
 	readonly storeConfig: Readonly<CoordinatorAuthBrowserConfig>;
@@ -92,7 +98,12 @@ export type CoordinatorBrowserAuthResult =
 	| Readonly<{ ok: true; auth: CoordinatorBrowserAuth }>
 	| Readonly<{
 			ok: false;
-			error: "browser_auth_disabled" | "browser_auth_config_invalid" | "browser_auth_setup_failed";
+			error:
+				| "browser_auth_disabled"
+				| "browser_auth_config_invalid"
+				| "browser_auth_setup_failed"
+				| "browser_auth_store_unavailable"
+				| typeof AUTH_SCHEMA_UPGRADE_REQUIRED;
 	  }>;
 
 const FIXED_PATHS = [
@@ -251,6 +262,8 @@ export async function createCoordinatorBrowserAuth(
 	try {
 		const payload = enabledPayloads.get(snapshot);
 		if (!payload) return Object.freeze({ ok: false, error: "browser_auth_setup_failed" });
+		const storeError = await browserAuthStoreError(store);
+		if (storeError) return Object.freeze({ ok: false, error: storeError });
 		const purposeStore = payload.ownerEnrollment ? capturePurposeStore(store) : undefined;
 		const input = Object.freeze({
 			config: payload.config,
@@ -300,17 +313,43 @@ export async function createCoordinatorBrowserAuth(
 			{ path: "/auth/logout", post: account.handlers.logout },
 			...ownerRoutes(owner),
 		]);
-		return Object.freeze({
-			ok: true,
-			auth: Object.freeze({
-				storeConfig: payload.settings.store,
-				register: (app: Hono, clientKey: CoordinatorBrowserAuthClientKey) =>
-					registerRoutes(app, routes, clientKey),
-			}),
-		});
-	} catch {
-		return Object.freeze({ ok: false, error: "browser_auth_setup_failed" });
+		return browserAuthReady(payload.settings.store, routes);
+	} catch (error) {
+		return browserAuthSetupFailure(error);
 	}
+}
+
+function browserAuthReady(
+	storeConfig: CoordinatorAuthBrowserConfig,
+	routes: readonly Route[],
+): CoordinatorBrowserAuthResult {
+	return Object.freeze({
+		ok: true,
+		auth: Object.freeze({
+			storeConfig,
+			register: (app: Hono, clientKey: CoordinatorBrowserAuthClientKey) =>
+				registerRoutes(app, routes, clientKey),
+		}),
+	});
+}
+
+async function browserAuthStoreError(
+	store: CoordinatorBrowserAuthStore,
+): Promise<typeof AUTH_SCHEMA_UPGRADE_REQUIRED | "browser_auth_store_unavailable" | null> {
+	try {
+		await assertConfiguredAuthSchema(store);
+		return null;
+	} catch (error) {
+		if (error instanceof CoordinatorAuthSchemaUpgradeRequiredError)
+			return AUTH_SCHEMA_UPGRADE_REQUIRED;
+		return "browser_auth_store_unavailable";
+	}
+}
+
+function browserAuthSetupFailure(error: unknown): CoordinatorBrowserAuthResult {
+	if (error instanceof CoordinatorAuthSchemaUpgradeRequiredError)
+		return Object.freeze({ ok: false, error: AUTH_SCHEMA_UPGRADE_REQUIRED });
+	return Object.freeze({ ok: false, error: "browser_auth_setup_failed" });
 }
 
 function ownerRoutes(owner: CoordinatorBrowserOwnerEnrollmentAdapter | undefined): Route[] {

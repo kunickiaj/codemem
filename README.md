@@ -1,5 +1,10 @@
 # codemem
 
+Coordinator operators upgrading optional account linking must pause auth writers
+and follow the [explicit auth-schema cutover](docs/contracts/coordinator-auth-protocol.md#operator-cutover).
+`codemem coordinator upgrade-auth-schema --db-path coordinator.sqlite` upgrades an
+existing local coordinator file; `--export-sql` exports D1 SQL without applying it.
+
 [![CI](https://github.com/kunickiaj/codemem/actions/workflows/ci.yml/badge.svg)](https://github.com/kunickiaj/codemem/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/codemem)](https://www.npmjs.com/package/codemem) [![npm downloads per month](https://img.shields.io/npm/dm/codemem?label=npm%20downloads%2Fmonth)](https://www.npmjs.com/package/codemem) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 

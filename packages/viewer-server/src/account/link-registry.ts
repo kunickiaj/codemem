@@ -3,6 +3,7 @@ import { CoordinatorAccountLinkError, linkCoordinatorAccount } from "@codemem/co
 import type { AccountContext, AccountContextReader } from "./context.js";
 
 export type AccountLinkFailure =
+	| "schema_upgrade_required"
 	| "configuration_invalid"
 	| "device_unavailable"
 	| "request_failed"
@@ -101,6 +102,7 @@ function safeFailure(error: unknown): AccountLinkFailure {
 	switch (error.code) {
 		case "device_unavailable":
 		case "request_failed":
+		case "schema_upgrade_required":
 		case "review_required":
 		case "link_conflict":
 		case "invalid_response":

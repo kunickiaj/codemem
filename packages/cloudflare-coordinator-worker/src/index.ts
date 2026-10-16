@@ -3,6 +3,7 @@ import {
 	type CoordinatorBrowserAuthOptions,
 	type CoordinatorBrowserAuthResult,
 	type CoordinatorBrowserAuthSnapshot,
+	type CreateD1CoordinatorAppOptions,
 	captureCoordinatorBrowserAuthOptions,
 	createCoordinatorBrowserAuth,
 	createCoordinatorOwnerEnrollmentHttp,
@@ -113,25 +114,22 @@ function createBrowserAuthWorker(
 				const db = pinBinding(env);
 				if (!db || !browserStore)
 					return authenticationUnavailable(request, env, opts, { deviceLimiter });
-				if (!completed) {
-					// Each cold request owns its discovery promise. Only settled results cross requests.
-					const result = await createCoordinatorBrowserAuth(snapshot, browserStore, browserLimiter);
+				// Each cold request owns its I/O. A schema refusal must not survive an explicit upgrade.
+				const result =
+					completed ?? (await createCoordinatorBrowserAuth(snapshot, browserStore, browserLimiter));
+				if (
+					result.ok ||
+					(result.error !== "coordinator_auth_schema_upgrade_required" &&
+						result.error !== "browser_auth_store_unavailable")
+				)
 					completed ??= result;
-				}
 				const app = createD1CoordinatorApp({
 					db,
 					adminSecret: coordinatorAdminSecret(env, opts),
 					now: opts.now,
 					requestVerifier: verifyCloudflareCoordinatorRequest,
 					requestRateLimit: { limiter: deviceLimiter },
-					browserAuth: completed.ok
-						? {
-								kind: "ready",
-								auth: completed.auth,
-								clientKey: (context) =>
-									context.req.raw.headers.get("CF-Connecting-IP")?.trim() || null,
-							}
-						: { kind: "unavailable" },
+					browserAuth: browserRuntimeOptions(result),
 				});
 				dispatched = true;
 				return await app.fetch(request);
@@ -149,6 +147,21 @@ function createBrowserAuthWorker(
 			if (!db) return;
 			ctx.waitUntil(maintainCoordinatorBrowserAuth(snapshot, new D1CoordinatorStore(db)));
 		},
+	};
+}
+
+function browserRuntimeOptions(
+	result: CoordinatorBrowserAuthResult,
+): CreateD1CoordinatorAppOptions["browserAuth"] {
+	if (result.ok)
+		return {
+			kind: "ready",
+			auth: result.auth,
+			clientKey: (context) => context.req.raw.headers.get("CF-Connecting-IP")?.trim() || null,
+		};
+	return {
+		kind: "unavailable",
+		error: result.error === "coordinator_auth_schema_upgrade_required" ? result.error : undefined,
 	};
 }
 

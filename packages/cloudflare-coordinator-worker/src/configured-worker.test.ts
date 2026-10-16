@@ -12,6 +12,7 @@ import type {
 import * as coordinator from "@codemem/core/internal/cloudflare-coordinator";
 import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinator";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { AUTH_SCHEMA_READINESS_SQL } from "../../core/src/coordinator-auth-schema.js";
 import defaultWorker, {
 	type CloudflareCoordinatorEnv,
 	createCloudflareCoordinatorWorker,
@@ -166,6 +167,32 @@ it.each([undefined, JSON.stringify({ enabled: false })])(
 		expect(globalThis.fetch).not.toHaveBeenCalled();
 	},
 );
+
+it("retries a transient readiness failure on the next request to the same Worker", async () => {
+	// Arrange: a fresh schema is ready, but its first readiness query fails before discovery.
+	const env = environment();
+	const binding = env.COORDINATOR_DB;
+	if (!binding) throw new Error("Fixture binding missing");
+	const prepare = binding.prepare.bind(binding);
+	let readinessQueries = 0;
+	vi.spyOn(binding, "prepare").mockImplementation((sql) => {
+		if (sql === AUTH_SCHEMA_READINESS_SQL && ++readinessQueries === 1)
+			throw new Error("private-transient-D1-cause");
+		return prepare(sql);
+	});
+	const worker = createConfiguredCloudflareCoordinatorWorker();
+	// Act
+	const unavailable = await worker.fetch(request("/auth/sign-in"), env);
+	const discoveriesAfterFailure = vi.mocked(globalThis.fetch).mock.calls.length;
+	const recovered = await worker.fetch(request("/auth/sign-in"), env);
+	// Assert: transient I/O failure stays private and never becomes a cached setup failure.
+	expect(unavailable.status).toBe(503);
+	expect(await unavailable.text()).toBe("Authentication unavailable. Try again.");
+	expect(discoveriesAfterFailure).toBe(0);
+	expect(recovered.status).toBe(200);
+	expect(readinessQueries).toBeGreaterThan(1);
+	expect(globalThis.fetch).toHaveBeenCalled();
+});
 
 it("contains a throwing admin-secret resolver without rejecting or redispatching", async () => {
 	// Arrange: setup is valid, but the resolver fails before application dispatch.

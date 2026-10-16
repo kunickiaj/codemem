@@ -1,5 +1,15 @@
 # User Guide
 
+## Coordinator authentication upgrades
+
+An older coordinator can keep serving ordinary device-signed sync while optional
+auth reports `coordinator_auth_schema_upgrade_required`. The operator must pause
+auth writers and back up the coordinator database before running
+`codemem coordinator upgrade-auth-schema --db-path coordinator.sqlite --json`.
+For D1, `codemem coordinator upgrade-auth-schema --export-sql` only prints the
+reviewed SQL; apply it separately using the [controlled cutover](contracts/coordinator-auth-protocol.md#operator-cutover).
+Never replay historical migrations on a deployment without a migration ledger.
+
 ## Explore the viewer
 
 The Feed shows captured memories in the same order used when packing context: the full title, narrative, then every fact. Cards open by default; use **Collapse memory** or **Expand memory** to hide or reveal content and supplemental provenance, and use search to narrow the list.

@@ -6,6 +6,7 @@ import {
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
 import type { CoordinatorAuthLinkConfig } from "./coordinator-auth-link-contract.js";
+import { authPersistenceError } from "./coordinator-auth-schema.js";
 import {
 	AUTH_GUARDED_SIGNIN_PURGE_BATCH_MAX,
 	AUTH_GUARDED_SIGNIN_PURGE_GRACE_MS,
@@ -331,22 +332,22 @@ export class AuthSessionOperations
 				values: [s.coordinatorId, cutoff, s.coordinatorId, cutoff, limit],
 			});
 			return { kind: "purged", processedCount, more: processedCount === limit };
-		} catch {
-			throw new Error("auth_session_persistence_error");
+		} catch (error) {
+			throw authPersistenceError(error, "auth_session_persistence_error");
 		}
 	}
 	private async first<T>(statement: AuthLinkStatement): Promise<T | null> {
 		try {
 			return await this.backend.first<T>(statement);
-		} catch {
-			throw new Error("auth_session_persistence_error");
+		} catch (error) {
+			throw authPersistenceError(error, "auth_session_persistence_error");
 		}
 	}
 	private async batch(statements: AuthLinkStatement[]): Promise<void> {
 		try {
 			await this.backend.batch(statements);
-		} catch {
-			throw new Error("auth_session_persistence_error");
+		} catch (error) {
+			throw authPersistenceError(error, "auth_session_persistence_error");
 		}
 	}
 	async redeemAuthLinkSession(
@@ -428,8 +429,8 @@ export class AuthSessionOperations
 					now,
 				],
 			});
-		} catch {
-			throw new Error("auth_session_persistence_error");
+		} catch (error) {
+			throw authPersistenceError(error, "auth_session_persistence_error");
 		}
 		if (changed !== 1) return rejected("attempt_unavailable");
 		const row = await this.first<{ state: string }>({

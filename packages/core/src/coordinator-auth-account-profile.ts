@@ -10,6 +10,7 @@ import { isCoordinatorAccountIssuer } from "./coordinator-auth-contract.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
 import type { CoordinatorAuthLinkConfig } from "./coordinator-auth-link-contract.js";
+import { authPersistenceError } from "./coordinator-auth-schema.js";
 import {
 	AUTH_SESSION_LINK_MATCH_SQL,
 	AUTH_SESSION_LIVE_GUARD_SQL,
@@ -170,15 +171,15 @@ export class AuthAccountProfileOperations implements CoordinatorAuthAccountProfi
 	private async first<T>(statement: AuthLinkStatement): Promise<T | null> {
 		try {
 			return await this.backend.first<T>(statement);
-		} catch {
-			throw new Error("auth_account_profile_persistence_error");
+		} catch (error) {
+			throw authPersistenceError(error, "auth_account_profile_persistence_error");
 		}
 	}
 	private async run(statement: AuthLinkStatement): Promise<number> {
 		try {
 			return await this.backend.run(statement);
-		} catch {
-			throw new Error("auth_account_profile_persistence_error");
+		} catch (error) {
+			throw authPersistenceError(error, "auth_account_profile_persistence_error");
 		}
 	}
 	async recordAuthAccountProfile(

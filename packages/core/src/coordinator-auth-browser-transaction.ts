@@ -33,6 +33,7 @@ import {
 	authLinkNow,
 	captureAuthLinkBrowserStartHash,
 } from "./coordinator-auth-link.js";
+import { authPersistenceError } from "./coordinator-auth-schema.js";
 
 export * from "./coordinator-auth-browser-transaction-contract.js";
 
@@ -285,8 +286,8 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 	private async first<T>(statement: AuthLinkStatement): Promise<T | null> {
 		try {
 			return await this.backend.first<T>(statement);
-		} catch {
-			throw new Error("auth_browser_transaction_persistence_error");
+		} catch (error) {
+			throw authPersistenceError(error, "auth_browser_transaction_persistence_error");
 		}
 	}
 	async startAuthBrowserTransaction(
@@ -335,7 +336,7 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 			});
 		} catch (error) {
 			if (isAuthControllerUniqueError(error)) return rejected("transaction_conflict");
-			throw new Error("auth_browser_transaction_persistence_error");
+			throw authPersistenceError(error, "auth_browser_transaction_persistence_error");
 		}
 		const row = await this.startedRow(i, c, hash, now);
 		if (row) return { kind: "started", expiresAtMs: row.expires_at_ms };
@@ -468,7 +469,7 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 			await this.backend.batch([insert, claim, assertClaim]);
 		} catch (error) {
 			if (isAuthControllerUniqueError(error)) return rejected("transaction_conflict");
-			throw new Error("auth_browser_transaction_persistence_incomplete");
+			throw authPersistenceError(error, "auth_browser_transaction_persistence_incomplete");
 		}
 		return this.startLinkReceipt(i, c, now, hash);
 	}
@@ -537,8 +538,8 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 					now,
 				],
 			});
-		} catch {
-			throw new Error("auth_browser_transaction_persistence_error");
+		} catch (error) {
+			throw authPersistenceError(error, "auth_browser_transaction_persistence_error");
 		}
 		const winner = await this.first({
 			sql: `SELECT 1 FROM ${TABLE} WHERE coordinator_id = ? AND browser_transaction_hash = ? AND state = 'consumed' AND claim_token = ?`,
@@ -630,8 +631,8 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
  WHERE ${match} AND state = 'pending'`,
 				values,
 			});
-		} catch {
-			throw new Error("auth_browser_transaction_persistence_error");
+		} catch (error) {
+			throw authPersistenceError(error, "auth_browser_transaction_persistence_error");
 		}
 		const row = await this.first({
 			sql: `SELECT 1 FROM ${TABLE} WHERE ${match} AND state = 'expired' AND nonce IS NULL AND pkce_verifier IS NULL`,
@@ -679,8 +680,8 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 				],
 			});
 			return { kind: "retired", processedCount, more: processedCount === o.limit };
-		} catch {
-			throw new Error("auth_browser_transaction_persistence_error");
+		} catch (error) {
+			throw authPersistenceError(error, "auth_browser_transaction_persistence_error");
 		}
 	}
 	async purgeAuthSigninBrowserTransactions(
@@ -701,8 +702,8 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 				limit,
 			);
 			return { kind: "purged", processedCount, more: processedCount === limit };
-		} catch {
-			throw new Error("auth_browser_transaction_persistence_error");
+		} catch (error) {
+			throw authPersistenceError(error, "auth_browser_transaction_persistence_error");
 		}
 	}
 	private advanceSigninPurgeFloor(coordinatorId: string, cutoff: number): Promise<number> {
@@ -751,8 +752,8 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 				values: [s.coordinatorId, now, s.coordinatorId, now, limit],
 			});
 			return { kind: "maintained", processedCount, more: processedCount === limit };
-		} catch {
-			throw new Error("auth_browser_transaction_persistence_error");
+		} catch (error) {
+			throw authPersistenceError(error, "auth_browser_transaction_persistence_error");
 		}
 	}
 }

@@ -357,7 +357,8 @@ for (const backend of ["SQLite", "D1"] as const) {
 			expect(response.status).toBe(403);
 			expect(await response.json()).toEqual({ error: "auth_link_review_required" });
 			expect(snapshot(f)).toEqual(before);
-			expect(f.store.close).toHaveBeenCalledOnce();
+			// The read-only readiness check and the route each own a store lifetime.
+			expect(f.store.close).toHaveBeenCalledTimes(2);
 		});
 		test.for([
 			"http://127.0.0.1:80/codemem/auth/complete",

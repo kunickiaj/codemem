@@ -318,6 +318,19 @@ it.each([
 	},
 );
 
+it("reports the fixed schema-upgrade refusal without reading an upstream error body", async () => {
+	transport.mockResolvedValue(
+		new Response("private upstream cause", {
+			status: 503,
+			headers: { "X-Codemem-Auth-Error": "coordinator_auth_schema_upgrade_required" },
+		}),
+	);
+	expect(await read(options)).toEqual({
+		kind: "unavailable",
+		code: "coordinator_auth_schema_upgrade_required",
+	});
+});
+
 const invalid = [
 	{ version: 2 },
 	{ coordinatorId: "" },

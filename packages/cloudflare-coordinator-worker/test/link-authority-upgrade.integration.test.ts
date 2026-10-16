@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { AUTH_LINK_AUTHORITY_UPGRADE_SQL } from "../../core/src/coordinator-auth-link-authority-upgrade.js";
+import { AUTH_LINK_AUTHORITY_UPGRADE_SQL, AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS } from "../../core/src/coordinator-auth-link-authority-upgrade.js";
 import { AUTH_LINK_SCHEMA_SQL } from "../../core/src/coordinator-auth-link-contract.js";
 import {
 	legacyLinkAuthorityRowsSql,
@@ -35,6 +35,19 @@ async function snapshot() {
 async function definitions() {
 	return (await env.COORDINATOR_DB.prepare(linkAuthorityDefinitionsSql).all()).results;
 }
+
+it("rolls back all swaps when proof installation fails, then commits the exact cutover statements", async () => {
+	await env.COORDINATOR_DB.prepare("DROP TABLE coordinator_auth_device_claims").run();
+	const before = await snapshot();
+	const schema = await definitions();
+	const fault = AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS.map((sql) => sql.replace("BEFORE DELETE ON coordinator_auth_device_claims", "BEFORE DELETE ON missing_fixture_table"));
+	await expect(env.COORDINATOR_DB.batch(fault.map((sql) => env.COORDINATOR_DB.prepare(sql)))).rejects.toThrow(/missing_fixture_table/);
+	expect(await snapshot()).toEqual(before);
+	expect(await definitions()).toEqual(schema);
+	expect((await env.COORDINATOR_DB.prepare("SELECT name FROM sqlite_master WHERE name = 'coordinator_auth_device_claims'").all()).results).toEqual([]);
+	await env.COORDINATOR_DB.batch(AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS.map((sql) => env.COORDINATOR_DB.prepare(sql)));
+	expect((await env.COORDINATOR_DB.prepare("SELECT sql FROM sqlite_master WHERE name = 'coordinator_auth_device_claims'").all()).results).toEqual([{ sql: expect.stringContaining("WITHOUT ROWID") }]);
+});
 
 beforeEach(async () => {
 	// Freeze the legacy input at the actual pre-authority migrations, not the

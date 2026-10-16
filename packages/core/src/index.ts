@@ -113,6 +113,11 @@ export type {
 	CoordinatorControllerReviewStore,
 } from "./coordinator-auth-controller-review-route.js";
 export { registerCoordinatorAuthControllerReviewRoutes } from "./coordinator-auth-controller-review-route.js";
+export {
+	AUTH_LINK_AUTHORITY_CUTOVER_SQL,
+	AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS,
+} from "./coordinator-auth-link-authority-upgrade.js";
+export { upgradeCoordinatorAuthSchemaFile } from "./coordinator-auth-schema-operator.js";
 export { parseBootstrapExpiry } from "./coordinator-bootstrap-grant-authorization.js";
 export type {
 	CoordinatorEnrollmentReconcileIssue,

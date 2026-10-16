@@ -550,9 +550,9 @@ written for a device claim. Attested authority queries also require the attempt'
 
 ### Schema migration
 
-The planned leaf source is `packages/core/src/coordinator-auth-link-authority-upgrade.ts`.
-It is not called when a store opens, exported from the public API, or installed in
-the Worker's auto-discovered migration directory. Its SQLite and native D1 fixture
+The reviewed leaf source is `packages/core/src/coordinator-auth-link-authority-upgrade.ts`.
+The operator command calls its explicit transaction; store opening never runs it.
+It is not installed in the Worker's migration directory. SQLite and native D1 fixture
 tests exercise the same copy/check/swap SQL, including rollback at each swap.
 It rejects unknown schema and dependencies rather than rebuilding them silently.
 Fresh auth storage now uses explicit authority kinds, and current link writers
@@ -560,17 +560,63 @@ and readers accept only controller attestations. Fresh SQLite auth storage also
 installs the committed-proof table; it does not enable device-claim creation.
 Owner enrollment requires an attestation-backed link without rechecking its old
 controller or device. Existing auth storage is not rebuilt on open, and ordinary
-device-signed sync remains unchanged. The actionable old-schema auth error and a
-coordinated deployment cutover remain separate work; no authority upgrade is
-automatically applied through the Worker migration directory.
+device-signed sync remains unchanged. Optional auth on an old schema returns
+`503 coordinator_auth_schema_upgrade_required`, with operator instructions, before
+querying the new columns or starting provider discovery. The fixed
+`X-Codemem-Auth-Error` header carries the same code to CLI and Viewer clients.
+Disabled auth stays disabled.
+No authority upgrade is automatically applied through the Worker migration directory.
+
+#### Operator cutover
+
+Do not deploy new auth writers against a legacy schema. Stop admitting new link
+attempts, drain or expire existing attempts using the existing deployment, then
+pause all optional-auth writers. Back up SQLite; for D1, take a Time Travel bookmark and export.
+Keep ordinary device-signed sync separate from this auth pause.
+
+If new auth writers were deployed prematurely, restore the previous deployment
+before draining attempts; the new schema check also refuses legacy maintenance.
+
+For an existing local coordinator database, explicitly run:
+
+```text
+codemem coordinator upgrade-auth-schema --db-path coordinator.sqlite --json
+```
+
+This opens only that existing file, validates the recognized legacy schema and
+retained provenance, then commits the three-table copy/check/swap and proof schema
+in one immediate transaction. A failed assertion aborts everything; do not repair
+references, delete history, or invent controller IDs to force it through.
+
+For D1, export the exact reviewed source without opening any database:
+
+```text
+codemem coordinator upgrade-auth-schema --export-sql > coordinator-auth-upgrade.sql
+```
+
+The file targets Wrangler's remote SQL-file import (`wrangler d1 execute --remote
+--file`), which requires separate operator approval and confirmation of the
+deployed import service's atomicity. No remote import is tested or run here.
+
+The native D1 tests prove the programmatic path: execute the exported
+`AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS` array in one `db.batch()` while auth
+writers remain paused. The file contains complete proof triggers; never split
+it on semicolons.
+Do not replay the historical migration directory on a deployment without a ledger.
+The export command performs no remote execution and grants no rollout approval.
+
+Before resuming auth writers, verify row counts and every preserved column, proof
+immutability, and an enabled auth request against the upgraded database. Deploy
+the matching writers as part of that controlled cutover; restart SQLite auth
+composition if it was stopped during setup. Device-claim creation remains disabled.
 
 The three legacy link tables declare `controller_attestation_id` as `NOT NULL`, and
 SQLite cannot relax that with `ALTER TABLE`. The schema change therefore rebuilds
 those tables by creating a replacement, copying every row with
 `authority_kind = 'controller_attestation'`, checking row counts, swapping names,
-and recreating indexes. The separate proof-table definition is in migration
-`0032_device_claim_proofs.sql`; coordinating its installation with this upgrade
-remains part of the cutover work. Existing rows keep every value.
+and recreating indexes. The proof definition matches the separate additive migration
+`0032_device_claim_proofs.sql`; the explicit cutover also installs that leaf schema
+in the same transaction or D1 batch. Existing rows keep every value.
 
 The copy must contain executable assertions, not merely `SELECT` results. Create
 a migration-owned check table with `passed INTEGER NOT NULL CHECK (passed = 1)`

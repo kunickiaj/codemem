@@ -1,4 +1,5 @@
 import type { Database } from "better-sqlite3";
+import { COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_STATEMENTS } from "./coordinator-auth-device-claim-schema.js";
 
 /**
  * Planned, explicit upgrade source only. Nothing imports this from store-open or
@@ -314,7 +315,16 @@ ${indexes.join(";\n")};
 DROP TABLE ${CHECKS};
 `;
 
-/** Explicit invocation only; never call on open. Failure rolls back all DDL/data. */
+/** Only the link-table source above has no triggers; each proof trigger stays one statement. */
+export const AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS = Object.freeze([
+	...AUTH_LINK_AUTHORITY_UPGRADE_SQL.split(";")
+		.map((sql) => sql.trim())
+		.filter(Boolean),
+	...COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_STATEMENTS,
+]);
+export const AUTH_LINK_AUTHORITY_CUTOVER_SQL = AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS.join(";\n");
+
+/** Explicit invocation only; never call on open. Failure rolls back all DDL/data, including proofs. */
 export function upgradeAuthLinkAuthoritySchema(db: Database): void {
-	db.transaction(() => db.exec(AUTH_LINK_AUTHORITY_UPGRADE_SQL)).immediate();
+	db.transaction(() => db.exec(AUTH_LINK_AUTHORITY_CUTOVER_SQL)).immediate();
 }

@@ -5,15 +5,29 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
-import { AUTH_LINK_AUTHORITY_UPGRADE_SQL } from "../../core/src/coordinator-auth-link-authority-upgrade.ts";
+import { AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS } from "@codemem/core";
 
 const require = createRequire(new URL("../package.json", import.meta.url));
 const runtimeRequire = createRequire(require.resolve("wrangler/package.json"));
 const { Miniflare, convertV4MiniflareOptions } = runtimeRequire("miniflare");
 const { build } = runtimeRequire("esbuild");
 const ORIGIN = "https://app.example.test";
+test("legacy D1 refuses optional auth before discovery and recovers after the explicit atomic cutover", async (t) => {
+	const f = await harness(t, { legacyAuth: true });
+	for (const path of ["/auth/sign-in", "/v1/auth/account-link-status", "/v1/auth/owner-config"]) {
+		const response = await f.request(path);
+		assert.equal(response.status, 503);
+		assert.equal(JSON.parse(response.body).error, "coordinator_auth_schema_upgrade_required");
+	}
+	assert.equal(f.discoveries(), 0);
+	const ordinary = await f.request("/v1/peers");
+	assert.equal(ordinary.status, 400);
+	assert.equal(JSON.parse(ordinary.body).error, "group_id_required");
+	await f.db.batch(AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS.map((sql) => f.db.prepare(sql)));
+	assert.equal((await f.request("/auth/sign-in")).status, 200);
+});
 // Test-only HTTP URL rewrite exercises Worker request contexts, not browser HTTPS/Secure cookies.
-async function harness(t, { coldRequests = 1 } = {}) {
+async function harness(t, { coldRequests = 1, legacyAuth = false } = {}) {
 	let discoveries = 0;
 	const waiting = [];
 	const metadata = JSON.stringify({
@@ -104,7 +118,7 @@ export default { async fetch(request, env) {
 	for (const migration of migrations) {
 		await db.batch(migration.queries.map((sql) => db.prepare(sql)));
 	}
-	await db.batch(AUTH_LINK_AUTHORITY_UPGRADE_SQL.split(";").map((sql) => sql.trim()).filter(Boolean).map((sql) => db.prepare(sql)));
+	if (!legacyAuth) await db.batch(AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS.map((sql) => db.prepare(sql)));
 	const base = await mf.ready;
 	const request = async (path, init) => {
 		const response = await fetch(new URL(path, base), { ...init, redirect: "manual" });

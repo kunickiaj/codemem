@@ -10,6 +10,7 @@ export type AccountOperation = {
 		| "link_stopped"
 		| "link_expired"
 		| "request_failed"
+		| "schema_upgrade_required"
 		| "invalid_response"
 		| "device_unavailable"
 		| "identity_mismatch"

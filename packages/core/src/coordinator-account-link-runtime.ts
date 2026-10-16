@@ -46,6 +46,7 @@ type Failure =
 	| "invalid_options"
 	| "device_unavailable"
 	| "request_failed"
+	| "schema_upgrade_required"
 	| "review_required"
 	| "link_conflict"
 	| "invalid_response"
@@ -59,6 +60,8 @@ const MESSAGES: Record<Failure, string> = {
 	device_unavailable:
 		"An existing device and matching private key are required. Complete device setup first.",
 	request_failed: "Account linking could not finish. Try again.",
+	schema_upgrade_required:
+		"Ask the coordinator operator to pause auth writers, back up the coordinator database and run the explicit auth-schema upgrade before linking. Ordinary device-signed sync remains available.",
 	review_required:
 		"This device needs an active owner review on the coordinator before linking. This linking request was rejected.",
 	link_conflict:
@@ -183,6 +186,11 @@ async function readFailureCode(
 	response: Response,
 	failureCodes?: FailureCodes,
 ): Promise<Failure | undefined> {
+	if (response.status === 503) {
+		if (response.headers.get("X-Codemem-Auth-Error") === "coordinator_auth_schema_upgrade_required")
+			return "schema_upgrade_required";
+		return undefined;
+	}
 	if (!failureCodes || !Object.hasOwn(failureCodes, response.status)) return undefined;
 	const labels = failureCodes[response.status];
 	try {
@@ -427,7 +435,7 @@ async function runBrowserLink(
 				// A known rejection describes this request, not future proof copies or cleanup.
 				if (
 					!(error instanceof CoordinatorAccountLinkError) ||
-					(error.code !== "review_required" && error.code !== "link_conflict")
+					!["review_required", "link_conflict", "schema_upgrade_required"].includes(error.code)
 				)
 					throw cancellationError;
 			}

@@ -495,6 +495,25 @@ test("an enrolled but unreviewed device gets review guidance before browser hand
 	expect(localSnapshot(f)).toEqual(before);
 });
 
+test("keeps actionable schema-upgrade guidance when cleanup is also refused", async ({ f }) => {
+	const onBrowserStart = vi.fn();
+	const before = localSnapshot(f);
+	const fetch: typeof globalThis.fetch = async () =>
+		new Response("private upstream cause", {
+			status: 503,
+			headers: { "X-Codemem-Auth-Error": "coordinator_auth_schema_upgrade_required" },
+		});
+	const error = await linkCoordinatorAccount({ ...f.options, fetch, onBrowserStart }).catch(
+		(cause: unknown) => cause,
+	);
+	expect(error).toMatchObject({
+		code: "schema_upgrade_required",
+		message: expect.stringContaining("coordinator operator"),
+	});
+	expect(onBrowserStart).not.toHaveBeenCalled();
+	expect(localSnapshot(f)).toEqual(before);
+});
+
 test.for([false, true])(
 	"a revoked Identity link conflicts once and preserves guidance when cancellation fails=%s",
 	async (cancelFails, { f }) => {

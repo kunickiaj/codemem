@@ -4,7 +4,8 @@
  * References are logical, and revocation retains this immutable proof forever.
  * This leaf schema is not installed automatically when an existing store opens.
  */
-export const COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_SQL = `
+export const COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_STATEMENTS = [
+	`
 CREATE TABLE IF NOT EXISTS coordinator_auth_device_claims (
   claim_id TEXT PRIMARY KEY NOT NULL CHECK(
     typeof(claim_id) = 'text' AND length(claim_id) BETWEEN 1 AND 256
@@ -47,7 +48,8 @@ CREATE TABLE IF NOT EXISTS coordinator_auth_device_claims (
   UNIQUE (coordinator_id, key_id),
   UNIQUE (coordinator_id, attempt_id)
 ) WITHOUT ROWID;
-
+`,
+	`
 -- REPLACE's implicit deletes may skip DELETE triggers when recursive triggers are off.
 -- Check every unique identifier before conflict handling, including UPSERT DO NOTHING.
 CREATE TRIGGER IF NOT EXISTS coordinator_auth_device_claims_insert_collision
@@ -62,19 +64,25 @@ WHEN EXISTS (
 BEGIN
   SELECT RAISE(ABORT, 'auth_device_claim_collision');
 END;
-
+`,
+	`
 CREATE TRIGGER IF NOT EXISTS coordinator_auth_device_claims_immutable_update
 BEFORE UPDATE ON coordinator_auth_device_claims
 BEGIN
   SELECT RAISE(ABORT, 'auth_device_claim_immutable');
 END;
-
+`,
+	`
 CREATE TRIGGER IF NOT EXISTS coordinator_auth_device_claims_immutable_delete
 BEFORE DELETE ON coordinator_auth_device_claims
 BEGIN
   SELECT RAISE(ABORT, 'auth_device_claim_immutable');
 END;
-`;
+`,
+] as const;
+
+export const COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_SQL =
+	COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_STATEMENTS.join("\n");
 
 /**
  * Database columns for an already committed proof, not an authorization input.

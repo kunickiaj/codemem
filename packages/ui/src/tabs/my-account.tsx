@@ -2,6 +2,8 @@ import type { AccountOperation, AccountView } from "../lib/api/account";
 import { useMyAccount } from "./my-account-flow";
 
 const FAILURE_MESSAGES: Partial<Record<NonNullable<AccountOperation["failure"]>, string>> = {
+	schema_upgrade_required:
+		"Ask the coordinator operator to back up the coordinator database and complete its explicit auth-schema upgrade. Device-signed sync remains available.",
 	link_stopped: "Linking stopped. Check status before trying again.",
 	link_conflict:
 		"Account linking conflicts with an existing or revoked link. Ask the coordinator operator; this action cannot replace links or move Identities.",
@@ -14,6 +16,13 @@ function remoteSummary(view: AccountView): string {
 		return "Account linking is not ready for this local Identity. Check the Viewer’s coordinator and device setup.";
 	if (view.remote.kind === "unsupported")
 		return "This coordinator does not support Google account linking.";
+	if (
+		view.remote.kind === "unavailable" &&
+		view.remote.code === "coordinator_auth_schema_upgrade_required"
+	)
+		return (
+			FAILURE_MESSAGES.schema_upgrade_required ?? "The coordinator needs an auth-schema upgrade."
+		);
 	if (view.remote.kind === "unavailable" || view.remote.kind === "not_checked")
 		return "Account status could not be verified. Check status again; this does not mean the Identity is unlinked.";
 	if (view.remote.state === "review_required")

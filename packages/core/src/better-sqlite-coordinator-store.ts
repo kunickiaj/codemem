@@ -77,6 +77,12 @@ import {
 	type CoordinatorAuthLinkOptions,
 	type CoordinatorAuthLinkRequester,
 } from "./coordinator-auth-link-contract.js";
+import {
+	AUTH_SCHEMA_READINESS_SQL,
+	AUTH_SCHEMA_READY_COUNT,
+	assertCoordinatorAuthSchema,
+	withCoordinatorAuthSchema,
+} from "./coordinator-auth-schema.js";
 import { AuthSessionOperations } from "./coordinator-auth-session.js";
 import {
 	AUTH_SESSION_RETENTION_COLUMN_SQL,
@@ -499,14 +505,28 @@ function initializeAuthBrowserSchema(db: DatabaseType): void {
 }
 
 function initializeAuthLinkSchema(db: DatabaseType): void {
-	const hasAuthLinks = db
+	const ready = db.prepare(AUTH_SCHEMA_READINESS_SQL).get() as { ready: number };
+	if (ready.ready === AUTH_SCHEMA_READY_COUNT) return;
+	const existing = db
 		.prepare(
-			"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'coordinator_auth_link_attempts'",
+			"SELECT sql FROM sqlite_master WHERE type='table' AND name='coordinator_auth_link_attempts'",
 		)
-		.get();
-	upgradeAuthLinkBrowserStartSchema(db);
-	db.exec(AUTH_LINK_SCHEMA_SQL);
-	if (!hasAuthLinks) db.exec(COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_SQL);
+		.get() as { sql: string } | undefined;
+	if (existing && !existing.sql.includes("authority_kind")) {
+		upgradeAuthLinkBrowserStartSchema(db);
+		db.exec(AUTH_LINK_SCHEMA_SQL);
+		return;
+	}
+	db.transaction(() => {
+		upgradeAuthLinkBrowserStartSchema(db);
+		db.exec(AUTH_LINK_SCHEMA_SQL);
+		const explicit = db
+			.prepare(
+				"SELECT 1 FROM pragma_table_info('coordinator_auth_link_attempts') WHERE name = 'authority_kind'",
+			)
+			.get();
+		if (explicit) db.exec(COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_SQL);
+	}).immediate();
 }
 
 function initializeSchema(db: DatabaseType): void {
@@ -814,6 +834,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	readonly path: string;
 	readonly db: DatabaseType;
 	private readonly authLinks: AuthLinkOperations;
+	readonly assertAuthSchemaReady: () => Promise<void>;
 	private readonly accountLinkStatus: AccountLinkStatusOperations;
 	private readonly deviceRevocations: DeviceRevocationOperations;
 	private readonly authSessions: AuthSessionOperations;
@@ -841,7 +862,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			},
 			options.authClock,
 		);
-		const authBackend: AuthLinkBackend = {
+		const rawAuthBackend: AuthLinkBackend = {
 			first: async <T>(statement: AuthLinkStatement) =>
 				(this.db.prepare(statement.sql).get(...statement.values) as T | undefined) ?? null,
 			run: async (statement) =>
@@ -857,6 +878,8 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 					.immediate();
 			},
 		};
+		this.assertAuthSchemaReady = () => assertCoordinatorAuthSchema(rawAuthBackend);
+		const authBackend = withCoordinatorAuthSchema(rawAuthBackend);
 		this.authLinks = new AuthLinkOperations(authBackend, options.authClock);
 		this.accountLinkStatus = new AccountLinkStatusOperations(authBackend);
 		this.authSessions = new AuthSessionOperations(authBackend, options.authClock);

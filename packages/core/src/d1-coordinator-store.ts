@@ -52,6 +52,10 @@ import type {
 	CoordinatorAuthLinkOptions,
 	CoordinatorAuthLinkRequester,
 } from "./coordinator-auth-link-contract.js";
+import {
+	assertCoordinatorAuthSchema,
+	withCoordinatorAuthSchema,
+} from "./coordinator-auth-schema.js";
 import { AuthSessionOperations } from "./coordinator-auth-session.js";
 import type {
 	CoordinatorAuthAccountSignInInput,
@@ -489,7 +493,7 @@ function batchResultChanges(result: unknown): number {
 
 /** Narrow SQL capability; multi-statement writes require D1's atomic batch. */
 export function createD1AuthLinkBackend(db: D1DatabaseLike): AuthLinkBackend {
-	return {
+	return withCoordinatorAuthSchema({
 		first: <T>(statement: AuthLinkStatement) =>
 			db
 				.prepare(statement.sql)
@@ -502,7 +506,7 @@ export function createD1AuthLinkBackend(db: D1DatabaseLike): AuthLinkBackend {
 				statements.map((statement) => db.prepare(statement.sql).bind(...statement.values)),
 			);
 		},
-	};
+	});
 }
 
 async function allRows<T>(statement: D1PreparedStatementLike): Promise<T[]> {
@@ -1002,6 +1006,15 @@ async function runProjectInviteBatch(
 export class D1CoordinatorStore implements CoordinatorStore {
 	readonly db: D1DatabaseLike;
 	private readonly authLinks: AuthLinkOperations;
+	async assertAuthSchemaReady(): Promise<void> {
+		await assertCoordinatorAuthSchema({
+			first: <T>({ sql, values }: AuthLinkStatement) =>
+				this.db
+					.prepare(sql)
+					.bind(...values)
+					.first<T>(),
+		});
+	}
 	private readonly accountLinkStatus: AccountLinkStatusOperations;
 	private readonly deviceRevocations: DeviceRevocationOperations;
 	private readonly authSessions: AuthSessionOperations;

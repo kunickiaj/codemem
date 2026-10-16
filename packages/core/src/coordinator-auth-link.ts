@@ -36,6 +36,7 @@ import {
 	type CoordinatorAuthLinkStore,
 } from "./coordinator-auth-link-contract.js";
 import { parseCoordinatorAuthLoopback } from "./coordinator-auth-loopback.js";
+import { authPersistenceError } from "./coordinator-auth-schema.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
 
 export * from "./coordinator-auth-link-contract.js";
@@ -395,8 +396,8 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 	private async first<T>(statement: AuthLinkStatement): Promise<T | null> {
 		try {
 			return await this.backend.first<T>(statement);
-		} catch {
-			throw new Error("auth_link_persistence_error");
+		} catch (error) {
+			throw authPersistenceError(error, "auth_link_persistence_error");
 		}
 	}
 	private async execute(
@@ -407,7 +408,7 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			return await this.backend.run(statement);
 		} catch (error) {
 			if (isAuthControllerUniqueError(error)) return rejected(conflict);
-			throw new Error("auth_link_persistence_error");
+			throw authPersistenceError(error, "auth_link_persistence_error");
 		}
 	}
 	private async readAuthority(
@@ -764,7 +765,7 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			await this.backend.batch(finalizeStatements(i, c, now, linkId, authority));
 		} catch (error) {
 			if (isAuthControllerUniqueError(error)) return rejected("link_conflict");
-			throw new Error("auth_link_persistence_error");
+			throw authPersistenceError(error, "auth_link_persistence_error");
 		}
 		return this.finalizeReceipt(i, c, now, linkId);
 	}

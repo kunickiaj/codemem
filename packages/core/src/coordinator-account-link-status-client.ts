@@ -22,6 +22,7 @@ export type CoordinatorAccountLinkStatusRead =
 			kind: "unavailable";
 			code:
 				| "coordinator_unavailable"
+				| "coordinator_auth_schema_upgrade_required"
 				| "rate_limited"
 				| "coordinator_rejected"
 				| "coordinator_unreachable"
@@ -133,7 +134,13 @@ async function boundedJson(response: Response, signal: AbortSignal): Promise<unk
 		reader.releaseLock();
 	}
 }
-function responseFailure(status: number): CoordinatorAccountLinkStatusRead | null {
+function responseFailure(response: Response): CoordinatorAccountLinkStatusRead | null {
+	const status = response.status;
+	if (
+		status === 503 &&
+		response.headers.get("X-Codemem-Auth-Error") === "coordinator_auth_schema_upgrade_required"
+	)
+		return unavailable("coordinator_auth_schema_upgrade_required");
 	if (status === 200) return null;
 	if (status === 404) return { kind: "unsupported" };
 	if (status === 503) return unavailable("coordinator_unavailable");
@@ -182,7 +189,7 @@ async function readStatus(
 		discard(response);
 		return unavailable("coordinator_unreachable");
 	}
-	const failed = responseFailure(response.status);
+	const failed = responseFailure(response);
 	if (failed) {
 		discard(response);
 		return failed;

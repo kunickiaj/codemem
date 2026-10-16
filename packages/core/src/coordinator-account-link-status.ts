@@ -13,6 +13,7 @@ import type {
 	CoordinatorAuthLinkConfig,
 	CoordinatorAuthLinkSigner,
 } from "./coordinator-auth-link-contract.js";
+import { authPersistenceError } from "./coordinator-auth-schema.js";
 
 /** Public device-authenticated response. No account identifiers or credentials. */
 export interface CoordinatorAccountLinkStatus {
@@ -118,8 +119,8 @@ export class AccountLinkStatusOperations implements CoordinatorAccountLinkStatus
 				values: [...values, ...authority, c.coordinatorId],
 			});
 			return projectStatus(base, row, c);
-		} catch {
-			throw new Error("account_link_status_unavailable");
+		} catch (error) {
+			throw authPersistenceError(error, "account_link_status_unavailable");
 		}
 	}
 }
