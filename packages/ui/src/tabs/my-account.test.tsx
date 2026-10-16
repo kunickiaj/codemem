@@ -14,6 +14,13 @@ import {
 } from "./my-account-test-utils";
 
 const transport = vi.fn<typeof fetch>();
+function statusIdentity(state: string): {
+	identityId: string | null;
+	authority: "device_claim" | null;
+} {
+	if (["review_required", "conflict"].includes(state)) return { identityId: null, authority: null };
+	return { identityId: "identity-one", authority: "device_claim" };
+}
 let view: AccountView;
 let mount: HTMLDivElement;
 let popup: {
@@ -85,6 +92,7 @@ describe("My Account safe operator review guidance", () => {
 				kind: "status",
 				coordinatorId: "coordinator-one",
 				identityId: null,
+				authority: null,
 				identityMatches: false,
 				state: "review_required",
 				account: {},
@@ -115,6 +123,7 @@ describe("My Account optional device review instructions", () => {
 				coordinatorId: "coordinator-one",
 				identityId: null,
 				identityMatches: false,
+				authority: null,
 				state: "review_required",
 				account: null,
 			},
@@ -173,6 +182,7 @@ describe("My Account optional device review instructions", () => {
 				identityId: null,
 				identityMatches: false,
 				state: "review_required",
+				authority: null,
 				account: null,
 			},
 		});
@@ -224,6 +234,7 @@ describe("My Account read-only status", () => {
 				kind: "status",
 				coordinatorId: "coordinator-one",
 				identityId: "identity-one",
+				authority: "device_claim",
 				identityMatches: true,
 				state: "linked",
 				account: { displayName: "Example Person", email: "person@example.test" },
@@ -262,7 +273,7 @@ describe("My Account read-only status", () => {
 		const remote: AccountView["remote"] = {
 			kind: "status",
 			coordinatorId: "coordinator-one",
-			identityId: state === "review_required" ? null : "identity-one",
+			...statusIdentity(state),
 			identityMatches: !["mismatch", "linked_mismatch", "review_required", "conflict"].includes(
 				state,
 			),
@@ -325,6 +336,7 @@ describe("My Account retained outcomes and current guidance", () => {
 					kind: "status",
 					coordinatorId: "coordinator-one",
 					identityId: null,
+					authority: null,
 					identityMatches: false,
 					state: "review_required",
 					account: null,
@@ -366,6 +378,7 @@ describe("My Account retained outcomes and current guidance", () => {
 					coordinatorId: "coordinator-one",
 					identityId: null,
 					identityMatches: false,
+					authority: state === "review_required" ? null : "device_claim",
 					state: state === "review_required" ? "review_required" : "unlinked",
 					account: { displayName: "Unverified secret", email: "unverified@example.test" },
 				},
@@ -632,6 +645,7 @@ describe("My Account uncertain cancellation recovery", () => {
 				coordinatorId: "coordinator-one",
 				identityId: "identity-one",
 				identityMatches: true,
+				authority: "device_claim",
 				state: "linked",
 				account: { email: "verified@example.test" },
 			},
@@ -665,6 +679,7 @@ describe("My Account recovery", () => {
 				identityId: "identity-one",
 				identityMatches: true,
 				state: "linked",
+				authority: "device_claim",
 				account: { email: "verified@example.test" },
 			},
 		});

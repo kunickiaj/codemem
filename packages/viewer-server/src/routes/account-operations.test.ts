@@ -31,19 +31,28 @@ function remote(
 	state: "unlinked" | "linked" | "review_required" | "revoked" | "conflict" = "unlinked",
 	patch: Partial<Extract<CoordinatorAccountLinkStatusRead, { kind: "status" }>["status"]> = {},
 ): CoordinatorAccountLinkStatusRead {
+	const subject = {
+		version: 2 as const,
+		coordinatorId: "coordinator-a",
+		groupId: context.groupId,
+		deviceId: context.deviceId,
+		fingerprint: context.fingerprint,
+	};
+	if (state === "review_required" || state === "conflict")
+		return {
+			kind: "status",
+			status: { ...subject, state, identityId: null, authority: null, account: null },
+		};
 	return {
 		kind: "status",
 		status: {
-			version: 1,
-			coordinatorId: "coordinator-a",
-			groupId: context.groupId,
-			deviceId: context.deviceId,
-			fingerprint: context.fingerprint,
+			...subject,
 			identityId: context.identityId,
+			authority: "device_claim",
 			state,
 			account: null,
 			...patch,
-		},
+		} as Extract<CoordinatorAccountLinkStatusRead, { kind: "status" }>["status"],
 	};
 }
 function deferred<T>() {
@@ -101,6 +110,8 @@ async function fixture() {
 		body: string | undefined = JSON.stringify({
 			groupId: context.groupId,
 			contextId: context.contextId,
+			authority: "device_claim",
+			coordinatorId: "coordinator-a",
 		}),
 		extra = {},
 	) =>
@@ -156,6 +167,7 @@ describe("account operation HTTP contract", () => {
 			dbPath: context.dbPath,
 			keysDir: context.keysDir,
 			expectedIdentityId: context.identityId,
+			expectedAuthority: "device_claim",
 			expectedCoordinatorId: "coordinator-a",
 		});
 		const snapshot = await result.text();
@@ -373,7 +385,12 @@ describe("account start cancellation during status read", () => {
 				method: "POST",
 				headers: f.headers,
 				signal: controller.signal,
-				body: JSON.stringify({ groupId: context.groupId, contextId: context.contextId }),
+				body: JSON.stringify({
+					groupId: context.groupId,
+					contextId: context.contextId,
+					authority: "device_claim",
+					coordinatorId: "coordinator-a",
+				}),
 			}),
 		); // Act
 		expect(response.status).toBe(400); // Assert
@@ -480,7 +497,12 @@ describe("account operation request boundary", () => {
 		"enforces the streamed byte limit at %i bytes without Content-Length",
 		async (size) => {
 			const f = await fixture(); // Arrange
-			const json = JSON.stringify({ groupId: context.groupId, contextId: context.contextId });
+			const json = JSON.stringify({
+				groupId: context.groupId,
+				contextId: context.contextId,
+				authority: "device_claim",
+				coordinatorId: "coordinator-a",
+			});
 			const bytes = new TextEncoder().encode(json.padEnd(size));
 			const stream = new ReadableStream<Uint8Array>({
 				start(controller) {

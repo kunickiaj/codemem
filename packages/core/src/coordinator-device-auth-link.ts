@@ -73,6 +73,8 @@ type Action = "create" | "status" | "finalize" | "cancel" | "account_status";
 const FIELDS = {
 	create: [
 		"group_id",
+		"identity_id",
+		"authority",
 		"attempt_id",
 		"runtime_verifier_hash",
 		"browser_start_hash",
@@ -115,6 +117,8 @@ function validInput(
 	if (action === "create") {
 		return (
 			exactStrings(data, FIELDS.create) &&
+			isAuthControllerId(data.identity_id) &&
+			(data.authority === "device_claim" || data.authority === "controller_attestation") &&
 			isHash(data.runtime_verifier_hash) &&
 			isHash(data.browser_start_hash) &&
 			parseCoordinatorAuthLoopback(data.loopback_redirect).ok
@@ -159,7 +163,9 @@ async function applyDeviceAction(
 ): Promise<Response> {
 	if (action === "account_status") {
 		if (!store.readAccountLinkStatus) return c.json({ error: "auth_link_unavailable" }, 503);
-		return c.json(await store.readAccountLinkStatus(signer, config));
+		return c.json(
+			await store.readAccountLinkStatus(signer, config, { identityId: String(data.identity_id) }),
+		);
 	}
 	if (action === "status") {
 		const status = await store.getAuthLinkAttemptStatus(
@@ -171,28 +177,7 @@ async function applyDeviceAction(
 		return c.json({ status });
 	}
 	if (action === "create") {
-		if (!exactStrings(data, FIELDS.create))
-			return c.json({ error: "auth_link_invalid_input" }, 400);
-		const result = await store.createAuthLinkAttempt(
-			{
-				authority: { kind: "controller_attestation" },
-				attemptId,
-				signer,
-				runtimeVerifierHash: data.runtime_verifier_hash,
-				browserStartHash: data.browser_start_hash,
-				loopbackRedirect: data.loopback_redirect,
-			},
-			config,
-		);
-		if (result.kind === "rejected") return rejectedResponse(c, result, { reviewRequired: true });
-		return c.json(
-			{
-				status: result.status,
-				identity_id: result.identityId,
-				coordinator_id: config.coordinatorId,
-			},
-			result.kind === "created" ? 201 : 200,
-		);
+		return createDeviceAttempt(c, store, data, attemptId, signer, config);
 	}
 	if (action === "cancel") {
 		return cancelDeviceAttempt(c, store, attemptId, signer, config);
@@ -200,6 +185,57 @@ async function applyDeviceAction(
 	if (!exactStrings(data, FIELDS.finalize))
 		return c.json({ error: "auth_link_invalid_input" }, 400);
 	return finalizeDeviceAttempt(c, store, data, attemptId, signer, config);
+}
+
+async function createDeviceAttempt(
+	c: Context,
+	store: CoordinatorDeviceAuthLinkStore,
+	data: Record<string, unknown>,
+	attemptId: string,
+	signer: CoordinatorAuthLinkSigner,
+	config: CoordinatorAuthBrowserConfig,
+): Promise<Response> {
+	if (!exactStrings(data, FIELDS.create)) return c.json({ error: "auth_link_invalid_input" }, 400);
+	if (!store.readAccountLinkStatus) return c.json({ error: "auth_link_unavailable" }, 503);
+	const current = await store.readAccountLinkStatus(signer, config, {
+		identityId: data.identity_id,
+	});
+	if (
+		(current.state !== "unlinked" && current.state !== "linked") ||
+		current.identityId !== data.identity_id ||
+		current.authority !== data.authority
+	)
+		return c.json({ error: "auth_link_review_required" }, 403);
+	const authority =
+		current.authority === "device_claim"
+			? { kind: "device_claim" as const, identityId: data.identity_id }
+			: { kind: "controller_attestation" as const };
+	const result = await store.createAuthLinkAttempt(
+		{
+			authority,
+			expectedIdentityId: data.identity_id,
+			attemptId,
+			signer,
+			runtimeVerifierHash: data.runtime_verifier_hash,
+			browserStartHash: data.browser_start_hash,
+			loopbackRedirect: data.loopback_redirect,
+		},
+		config,
+	);
+	if (result.kind === "rejected") {
+		if (result.error === "attempt_unavailable")
+			return c.json({ error: "auth_link_review_required" }, 403);
+		return rejectedResponse(c, result, { reviewRequired: true });
+	}
+	return c.json(
+		{
+			status: result.status,
+			identity_id: result.identityId,
+			authority: current.authority,
+			coordinator_id: config.coordinatorId,
+		},
+		result.kind === "created" ? 201 : 200,
+	);
 }
 
 async function cancelDeviceAttempt(
@@ -269,7 +305,8 @@ function readAccountStatusInput(
 	const entries = [...parsed.searchParams.entries()];
 	if (
 		c.req.raw.body !== null ||
-		entries.length !== 2 ||
+		entries.length !== 3 ||
+		parsed.searchParams.getAll("identity_id").length !== 1 ||
 		parsed.searchParams.getAll("group_id").length !== 1 ||
 		parsed.searchParams.getAll("coordinator_origin").length !== 1
 	) {
@@ -277,7 +314,13 @@ function readAccountStatusInput(
 	}
 	if (parsed.searchParams.get("coordinator_origin") !== origin)
 		return c.json({ error: "auth_link_unavailable" }, 403);
-	return { raw: new Uint8Array(), data: { group_id: parsed.searchParams.get("group_id") } };
+	return {
+		raw: new Uint8Array(),
+		data: {
+			group_id: parsed.searchParams.get("group_id"),
+			identity_id: parsed.searchParams.get("identity_id"),
+		},
+	};
 }
 
 async function readDeviceInput(
@@ -308,7 +351,8 @@ function validDeviceInput(
 	attemptId: unknown,
 	config: CoordinatorAuthBrowserConfig,
 ): data is Record<string, unknown> & { group_id: string } {
-	if (action === "account_status") return isAuthControllerId(data.group_id);
+	if (action === "account_status")
+		return isAuthControllerId(data.group_id) && isAuthControllerId(data.identity_id);
 	return isAuthControllerId(attemptId) && validInput(action, data, attemptId, config);
 }
 

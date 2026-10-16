@@ -56,6 +56,8 @@ function headers(
 function createBody(overrides: Record<string, unknown> = {}) {
 	return {
 		group_id: "group-a",
+		identity_id: "identity-a",
+		authority: "controller_attestation",
 		attempt_id: "attempt-a",
 		runtime_verifier_hash: hash(runtimeProof),
 		browser_start_hash: "c".repeat(64),
@@ -384,6 +386,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 					status: { attemptId: "attempt-a", state: "pending", expiresAtMs: NOW + 600000 },
 					identity_id: "identity-a",
 					coordinator_id: config.coordinatorId,
+					authority: "controller_attestation",
 				});
 				expect(await retry.json()).toEqual(payload);
 				expectPrivate(JSON.stringify(payload));
@@ -402,7 +405,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 			"signer",
 			"public_key",
 			"device_id",
-			"identity_id",
+			"identityId",
 			"hostname",
 			"userinfo",
 			"query",
@@ -414,7 +417,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 			if (variant === "omitted") delete input.browser_start_hash;
 			else if (variant === "null") input.browser_start_hash = null;
 			else if (variant === "bad") input.browser_start_hash = "g".repeat(64);
-			else if (["signer", "public_key", "device_id", "identity_id"].includes(variant))
+			else if (["signer", "public_key", "device_id", "identityId"].includes(variant))
 				input[variant] = "spoofed";
 			else
 				input.loopback_redirect = {

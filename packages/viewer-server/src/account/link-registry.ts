@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import { CoordinatorAccountLinkError, linkCoordinatorAccount } from "@codemem/core";
 import type { AccountContext, AccountContextReader } from "./context.js";
 
+type CoordinatorAuthLinkAuthorityKind = Parameters<
+	typeof linkCoordinatorAccount
+>[0]["expectedAuthority"];
+
 export type AccountLinkFailure =
 	| "schema_upgrade_required"
 	| "configuration_invalid"
@@ -34,6 +38,7 @@ export interface AccountLinkRegistry {
 	start(options: {
 		context: AccountContext;
 		expectedCoordinatorId: string;
+		expectedAuthority: CoordinatorAuthLinkAuthorityKind;
 		expectedLifecycleToken?: symbol;
 	}): AccountLinkStartResult;
 	lifecycleToken(): symbol;
@@ -207,7 +212,11 @@ class InProcessAccountLinkRegistry implements AccountLinkRegistry {
 		job.operation.state = "awaiting_browser";
 		job.operation.browserUrlAvailable = job.deliveries < 5;
 	}
-	async #run(job: Job, expectedCoordinatorId: string): Promise<void> {
+	async #run(
+		job: Job,
+		expectedCoordinatorId: string,
+		expectedAuthority: CoordinatorAuthLinkAuthorityKind,
+	): Promise<void> {
 		try {
 			if (terminal(job) || job.controller.signal.aborted) {
 				this.#finish(job, "cancelled", "link_stopped");
@@ -221,6 +230,7 @@ class InProcessAccountLinkRegistry implements AccountLinkRegistry {
 				coordinatorUrl,
 				expectedIdentityId: identityId,
 				expectedCoordinatorId,
+				expectedAuthority,
 				assertCurrentContext: () => this.#current(job.context),
 				signal: job.controller.signal,
 				onBrowserStart: (url) => this.#browserStart(job, url),
@@ -241,6 +251,7 @@ class InProcessAccountLinkRegistry implements AccountLinkRegistry {
 	start({
 		context,
 		expectedCoordinatorId,
+		expectedAuthority,
 		expectedLifecycleToken,
 	}: Parameters<AccountLinkRegistry["start"]>[0]): AccountLinkStartResult {
 		if (this.#shuttingDown) return { error: "account_shutting_down" };
@@ -282,7 +293,7 @@ class InProcessAccountLinkRegistry implements AccountLinkRegistry {
 		this.#jobs.set(job.operation.operationId, job);
 		// A shutdown timeout ends the public record, not the underlying Core work.
 		job.done = Promise.resolve()
-			.then(() => this.#run(job, expectedCoordinatorId))
+			.then(() => this.#run(job, expectedCoordinatorId, expectedAuthority))
 			.finally(() => releaseBusyOwner(owner));
 		return { operation: this.#snapshot(job) };
 	}

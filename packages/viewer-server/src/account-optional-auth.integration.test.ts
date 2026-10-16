@@ -130,13 +130,14 @@ function fixture(state: BlockedState) {
 		return {
 			kind: "status",
 			status: {
-				version: 1,
+				version: 2,
 				coordinatorId: "synthetic-coordinator",
 				groupId: context.groupId,
 				deviceId,
 				fingerprint,
-				identityId: store.actorId,
-				state,
+				...(state === "revoked"
+					? { state, identityId: store.actorId, authority: "device_claim" as const }
+					: { state, identityId: null, authority: null }),
 				account: null,
 			},
 		};
@@ -192,7 +193,12 @@ describe("Google account state never gates unrelated application routes", () => 
 			const denied = await f.app.request(`${ORIGIN}/api/account/link-operations`, {
 				method: "POST",
 				headers,
-				body: JSON.stringify({ groupId: f.context.groupId, contextId: f.context.contextId }),
+				body: JSON.stringify({
+					groupId: f.context.groupId,
+					contextId: f.context.contextId,
+					authority: "device_claim",
+					coordinatorId: "synthetic-coordinator",
+				}),
 			});
 			expect(denied.status).toBe(state === "unavailable" ? 503 : 409);
 			const accountReads = f.readRemoteStatus.mock.calls.length;

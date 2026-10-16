@@ -100,6 +100,8 @@ async function setup(options: { reviewed?: boolean } = {}) {
 function createBody(f: Fixture) {
 	return {
 		group_id: f.review.groupId,
+		identity_id: f.review.identityId,
+		authority: "controller_attestation",
 		attempt_id: f.attemptId,
 		runtime_verifier_hash: hash(runtimeProof),
 		browser_start_hash: "c".repeat(64),
@@ -143,6 +145,33 @@ function init(f: Fixture, path: string, value: unknown, method = "POST") {
 function request(f: Fixture, path = ROOT, value: unknown = createBody(f), method = "POST") {
 	return f.app.request(`https://coordinator.example.test${path}`, init(f, path, value, method));
 }
+
+it.each(["device_claim", "controller_attestation"])("native HTTP honors server-selected authority %s without an operator review", async (authority) => {
+	// Arrange: a real Worker verifier and native D1, with no operator review.
+	const f = await setup({ reviewed: false });
+	// Act
+	const created = await request(f, ROOT, { ...createBody(f), authority });
+	// Assert
+	expect(created.status).toBe(authority === "device_claim" ? 201 : 403);
+	if (authority === "device_claim") {
+		expect(await created.json()).toMatchObject({ identity_id: f.review.identityId, authority: "device_claim" });
+		expect(await rows(f, "link_attempts")).toEqual([expect.objectContaining({ authority_kind: "device_claim", controller_attestation_id: null })]);
+		await confirm(f);
+		expect((await request(f, `${ROOT}/${f.attemptId}/finalize`, finalBody(f))).status).toBe(200);
+		// Native D1's expression-depth limit of 100 applies to this committed-provenance read.
+		const signer = { groupId: f.review.groupId, ...f.key };
+		const read = () => f.store.readAccountLinkStatus(signer, f.config, { identityId: f.review.identityId });
+		expect(await read()).toMatchObject({ version: 2, state: "linked", authority: "device_claim", identityId: f.review.identityId });
+		await env.COORDINATOR_DB.prepare("UPDATE coordinator_auth_account_links SET revoked_at_ms=? WHERE coordinator_id=?").bind(NOW, f.config.coordinatorId).run();
+		expect(await read()).toMatchObject({ state: "revoked", authority: "device_claim", account: null });
+	} else {
+		expect(await created.json()).toEqual({ error: "auth_link_review_required" });
+		expect(await rows(f, "link_attempts")).toEqual([]);
+	}
+	expect(await rows(f, "account_links")).toHaveLength(authority === "device_claim" ? 1 : 0);
+	expect(await rows(f, "controller_attestations")).toEqual([]);
+});
+
 async function rows(f: Fixture, name: string) {
 	return (
 		await env.COORDINATOR_DB.prepare(
@@ -247,6 +276,7 @@ it("native D1 signed create, protected browser proof, finalize and retry preserv
 		status: { attemptId: f.attemptId, state: "pending", expiresAtMs: NOW + 600000 },
 		identity_id: f.review.identityId,
 		coordinator_id: f.config.coordinatorId,
+		authority: "controller_attestation",
 	});
 	expect(finalized.status).toBe(200);
 	expect(replay.status).toBe(401);

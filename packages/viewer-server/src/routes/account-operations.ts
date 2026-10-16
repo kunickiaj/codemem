@@ -86,10 +86,23 @@ function isCurrent(options: Options, operation: AccountLinkOperationV1): boolean
 		fresh.context.contextId === operation.contextId
 	);
 }
+function validStartBody(body: Record<string, unknown> | null): body is {
+	groupId: string;
+	contextId: string;
+	coordinatorId: string;
+	authority: "controller_attestation" | "device_claim";
+} {
+	return (
+		body !== null &&
+		validString(body.groupId) &&
+		validString(body.contextId) &&
+		validString(body.coordinatorId) &&
+		(body.authority === "controller_attestation" || body.authority === "device_claim")
+	);
+}
 async function startOperation(c: Context, options: Options): Promise<Response> {
-	const body = await readBody(c.req.raw, ["groupId", "contextId"]);
-	if (!body || !validString(body.groupId) || !validString(body.contextId))
-		return c.json({ error: "account_invalid_request" }, 400);
+	const body = await readBody(c.req.raw, ["groupId", "contextId", "authority", "coordinatorId"]);
+	if (!validStartBody(body)) return c.json({ error: "account_invalid_request" }, 400);
 	const initial = options.readContext(body.groupId);
 	if ("error" in initial && initial.error === "account_group_not_configured")
 		return c.json({ error: initial.error }, 400);
@@ -127,7 +140,7 @@ async function startOperation(c: Context, options: Options): Promise<Response> {
 	return beginCurrentOperation(
 		c,
 		options,
-		{ groupId: body.groupId, contextId: body.contextId },
+		body,
 		view,
 		view.remote.coordinatorId,
 		checkedContext,
@@ -137,13 +150,24 @@ async function startOperation(c: Context, options: Options): Promise<Response> {
 function beginCurrentOperation(
 	c: Context,
 	options: Options,
-	body: { groupId: string; contextId: string },
+	body: {
+		groupId: string;
+		contextId: string;
+		coordinatorId: string;
+		authority: "controller_attestation" | "device_claim";
+	},
 	view: AccountLinkViewV1,
 	expectedCoordinatorId: string,
 	checkedContext: AccountContext,
 	expectedLifecycleToken: symbol,
 ): Response {
 	if (c.req.raw.signal.aborted) return c.json({ error: "account_invalid_request" }, 400);
+	if (
+		view.remote.kind !== "status" ||
+		view.remote.authority !== body.authority ||
+		view.remote.coordinatorId !== body.coordinatorId
+	)
+		return c.json({ error: "account_context_changed" }, 409);
 	const fresh = options.readContext(body.groupId);
 	if (
 		"error" in fresh ||
@@ -158,6 +182,7 @@ function beginCurrentOperation(
 	const result = options.registry.start({
 		context: checkedContext,
 		expectedCoordinatorId,
+		expectedAuthority: body.authority,
 		expectedLifecycleToken,
 	});
 	if ("error" in result)

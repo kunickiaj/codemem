@@ -52,6 +52,7 @@ export type AccountView = {
 		| {
 				kind: "status";
 				coordinatorId: string;
+				authority: "controller_attestation" | "device_claim" | null;
 				identityId: string | null;
 				state: "review_required" | "unlinked" | "linked" | "revoked" | "conflict";
 				identityMatches: boolean;
@@ -191,11 +192,12 @@ export function getAccountStatus(groupId?: string, signal?: AbortSignal): Promis
 export function startAccountLink(
 	groupId: string,
 	contextId: string,
+	checked: { authority: "controller_attestation" | "device_claim"; coordinatorId: string },
 	signal?: AbortSignal,
 ): Promise<{ version: 1; operation: AccountOperation }> {
 	return request("/api/account/link-operations", {
 		method: "POST",
-		body: { groupId, contextId },
+		body: { groupId, contextId, ...checked },
 		signal,
 	});
 }

@@ -33,6 +33,7 @@ export const status = (overrides: Partial<AccountView> = {}): AccountView => ({
 		coordinatorId: "coordinator-one",
 		identityId: "identity-one",
 		state: "unlinked",
+		authority: "device_claim",
 		identityMatches: true,
 		account: null,
 	},

@@ -64,20 +64,30 @@ async function fixture() {
 }
 function status(
 	state: "unlinked" | "linked" | "review_required" | "revoked" | "conflict",
-	identityId: string | null = local.identityId,
+	identityId = local.identityId,
+	authority: "device_claim" | "controller_attestation" = "device_claim",
 ): CoordinatorAccountLinkStatusRead {
+	const subject = {
+		version: 2 as const,
+		coordinatorId: "coordinator-a",
+		groupId: "group-a",
+		deviceId: local.deviceId,
+		fingerprint: local.fingerprint,
+	};
+	if (state === "review_required" || state === "conflict")
+		return {
+			kind: "status",
+			status: { ...subject, state, identityId: null, authority: null, account: null },
+		};
 	return {
 		kind: "status",
 		status: {
-			version: 1,
-			coordinatorId: "coordinator-a",
-			groupId: "group-a",
-			deviceId: local.deviceId,
-			fingerprint: local.fingerprint,
+			...subject,
 			identityId,
-			state,
-			account:
-				state === "linked" ? { email: "fixture@example.test", displayName: "Fixture name" } : null,
+			authority,
+			...(state === "linked"
+				? { state, account: { email: "fixture@example.test", displayName: "Fixture name" } }
+				: { state, account: null }),
 		},
 	};
 }
@@ -94,9 +104,7 @@ describe("account status route", () => {
 		"projects %s without treating blocked states as unlinked",
 		async (state) => {
 			const f = await fixture(); // Arrange
-			f.readRemoteStatus.mockResolvedValue(
-				status(state, state === "review_required" ? null : local.identityId),
-			);
+			f.readRemoteStatus.mockResolvedValue(status(state));
 			const response = await f.request(); // Act
 			const body = await response.json();
 			expect(response.status).toBe(200); // Assert
@@ -125,6 +133,7 @@ describe("account status route", () => {
 				dbPath: subject.dbPath,
 				keysDir: subject.keysDir,
 				groupId: subject.groupId,
+				identityId: subject.identityId,
 				coordinatorUrl: subject.coordinatorUrl,
 				signal: expect.any(AbortSignal),
 			});

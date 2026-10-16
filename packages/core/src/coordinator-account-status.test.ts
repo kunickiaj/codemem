@@ -16,8 +16,8 @@ import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 const ROOT = "/v1/auth/account-link-status";
 const ORIGIN = "https://app.example.test";
-function statusPath(groupId = "group-a", origin = ORIGIN) {
-	return `${ROOT}?${new URLSearchParams({ group_id: groupId, coordinator_origin: origin })}`;
+function statusPath(groupId = "group-a", origin = ORIGIN, identityId = "identity-a") {
+	return `${ROOT}?${new URLSearchParams({ group_id: groupId, coordinator_origin: origin, identity_id: identityId })}`;
 }
 const PATH = statusPath();
 const config = {
@@ -172,13 +172,14 @@ function dto(
 	account: unknown = null,
 ) {
 	return {
-		version: 1,
+		version: 2,
 		coordinatorId: config.coordinatorId,
 		groupId: "group-a",
 		deviceId: f.key.deviceId,
 		fingerprint: f.key.fingerprint,
 		identityId,
 		state,
+		authority: identityId === null ? null : "controller_attestation",
 		account,
 	};
 }
@@ -273,7 +274,9 @@ for (const backend of ["SQLite", "D1"] as const) {
 			if (state === "unverified-email") account = { displayName: "Synthetic Person" };
 			const identityId = ["conflict", "review_required"].includes(state) ? null : "identity-a";
 			// Act
-			const result = await f.store.readAccountLinkStatus({ groupId: "group-a", ...f.key }, config);
+			const result = await f.store.readAccountLinkStatus({ groupId: "group-a", ...f.key }, config, {
+				identityId: "identity-a",
+			});
 			// Assert
 			expect(result).toEqual(
 				dto(f, state === "unverified-email" ? "linked" : state, identityId, account),
@@ -325,7 +328,9 @@ for (const backend of ["SQLite", "D1"] as const) {
 			return row;
 		});
 		// Act: no HTTP snapshot helper, because the injected write is intentional.
-		const result = await f.store.readAccountLinkStatus({ groupId: "group-a", ...f.key }, config);
+		const result = await f.store.readAccountLinkStatus({ groupId: "group-a", ...f.key }, config, {
+			identityId: "identity-a",
+		});
 		// Assert: link revocation keeps the derived identity; lost controller authority does not.
 		expect(result).toEqual(
 			dto(
@@ -487,6 +492,9 @@ it.each([
 	`?${new URLSearchParams({ coordinator_origin: ORIGIN })}`,
 	"?group_id=group-a",
 	statusPath("").slice(ROOT.length),
+	`?${new URLSearchParams({ group_id: "group-a", coordinator_origin: ORIGIN })}`,
+	statusPath("group-a", ORIGIN, "").slice(ROOT.length),
+	statusPath("group-a", ORIGIN, " identity-a").slice(ROOT.length),
 	`${PATH}&group_id=group-a`.slice(ROOT.length),
 	`${PATH}&coordinator_origin=${encodeURIComponent(ORIGIN)}`.slice(ROOT.length),
 	...["identity_id", "identityId", "device_id", "coordinator_id"].map((key) =>
@@ -595,7 +603,10 @@ it.each(["signed", "anonymous"])(
 		const options = mode === "anonymous" ? { app, headers: {} } : { app };
 		// Act
 		const first = await get(f, options);
-		const blocked = await get(f, options);
+		const blocked = await get(f, {
+			...options,
+			path: statusPath("group-a", f.origin, "rotated-identity"),
+		});
 		// Assert
 		expect(first.status).toBe(mode === "anonymous" ? 401 : 200);
 		expect(blocked.status).toBe(429);

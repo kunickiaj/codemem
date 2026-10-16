@@ -28,6 +28,7 @@ async function helpers(directory) {
 		stdin: {
 			contents: `
 export { linkCoordinatorAccount } from './coordinator-account-link-runtime.ts';
+export { readCoordinatorAccountLinkStatus } from './coordinator-account-link-status-client.ts';
 export { createCoordinatorApp } from './coordinator-api.ts';
 export { captureCoordinatorBrowserAuthOptions, createCoordinatorBrowserAuth } from './coordinator-browser-auth-app.ts';
 export { createInMemoryRequestRateLimiter } from './request-rate-limit.ts';
@@ -210,9 +211,17 @@ async function linkA(f) {
 		browserAuth: { kind: "ready", auth: auth.auth, storeFactory: () => remote.store, clientKey: () => "fake-browser-a" },
 	});
 	const request = await linkDispatcher(t, app);
+	const readiness = await h.readCoordinatorAccountLinkStatus({
+		dbPath: a.dbPath, keysDir: a.keysDir, coordinatorUrl: origin, groupId: review.groupId,
+		identityId: a.store.actorId, fetch: request,
+	});
+	assert.equal(readiness.kind, "status");
+	assert.equal(readiness.status.state, "unlinked");
+	assert.equal(readiness.status.authority, "controller_attestation");
 	let browserDone;
 	const result = await h.linkCoordinatorAccount({
 		dbPath: a.dbPath, keysDir: a.keysDir, coordinatorUrl: origin, groupId: review.groupId,
+		expectedIdentityId: readiness.status.identityId, expectedAuthority: readiness.status.authority,
 		fetch: request,
 		onBrowserStart: url => {
 			browserDone = linkBrowser(request, provider, url);

@@ -3,8 +3,11 @@ import {
 	readAccountLinkDevice,
 	signAccountLinkRequest,
 } from "./coordinator-account-link-signer.js";
-import type { CoordinatorAccountLinkStatus } from "./coordinator-account-link-status.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
+import type {
+	CoordinatorAccountLinkStatusV2,
+	CoordinatorAuthLinkAuthorityKind,
+} from "./coordinator-auth-link-authority.js";
 import type { CoordinatorDeviceLocalEvidence } from "./coordinator-device-local.js";
 
 export interface ReadCoordinatorAccountLinkStatusOptions {
@@ -12,11 +15,12 @@ export interface ReadCoordinatorAccountLinkStatusOptions {
 	keysDir?: string;
 	groupId: string;
 	coordinatorUrl: string;
+	identityId: string;
 	signal?: AbortSignal;
 	fetch?: typeof globalThis.fetch;
 }
 export type CoordinatorAccountLinkStatusRead =
-	| { kind: "status"; status: CoordinatorAccountLinkStatus }
+	| { kind: "status"; status: CoordinatorAccountLinkStatusV2 }
 	| { kind: "unsupported" }
 	| {
 			kind: "unavailable";
@@ -36,6 +40,9 @@ function unavailable(code: UnavailableCode): CoordinatorAccountLinkStatusRead {
 function record(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
+function authorityKind(value: unknown): value is CoordinatorAuthLinkAuthorityKind {
+	return value === "controller_attestation" || value === "device_claim";
+}
 function displayText(value: unknown, limit: number): value is string {
 	return (
 		typeof value === "string" &&
@@ -44,10 +51,10 @@ function displayText(value: unknown, limit: number): value is string {
 		!/[\p{Cc}\p{Cf}\p{Cs}]/u.test(value)
 	);
 }
-function accountMetadata(value: unknown): NonNullable<CoordinatorAccountLinkStatus["account"]> {
+function accountMetadata(value: unknown): NonNullable<CoordinatorAccountLinkStatusV2["account"]> {
 	if (!record(value) || Object.keys(value).some((key) => key !== "email" && key !== "displayName"))
 		throw new Error("Invalid status.");
-	const account: NonNullable<CoordinatorAccountLinkStatus["account"]> = {};
+	const account: NonNullable<CoordinatorAccountLinkStatusV2["account"]> = {};
 	if (Object.hasOwn(value, "email")) {
 		if (!displayText(value.email, 320)) throw new Error("Invalid status.");
 		account.email = value.email;
@@ -62,11 +69,12 @@ function decodeStatus(
 	value: unknown,
 	groupId: string,
 	device: CoordinatorDeviceLocalEvidence,
-): CoordinatorAccountLinkStatus {
+	identityId: string,
+): CoordinatorAccountLinkStatusV2 {
 	if (
 		!record(value) ||
-		Object.keys(value).length !== 8 ||
-		value.version !== 1 ||
+		Object.keys(value).length !== 9 ||
+		value.version !== 2 ||
 		!isAuthControllerId(value.coordinatorId) ||
 		value.groupId !== groupId ||
 		value.deviceId !== device.deviceId ||
@@ -74,27 +82,54 @@ function decodeStatus(
 	)
 		throw new Error("Invalid status.");
 	const base = {
-		version: 1 as const,
+		version: 2 as const,
 		coordinatorId: value.coordinatorId,
 		groupId,
 		deviceId: device.deviceId,
 		fingerprint: device.fingerprint,
 	};
+	return decodeStatusState(value, base, identityId);
+}
+function decodeStatusState(
+	value: Record<string, unknown>,
+	base: Pick<
+		CoordinatorAccountLinkStatusV2,
+		"version" | "coordinatorId" | "groupId" | "deviceId" | "fingerprint"
+	>,
+	identityId: string,
+): CoordinatorAccountLinkStatusV2 {
 	if (value.state === "review_required" || value.state === "conflict") {
-		if (value.identityId !== null || value.account !== null) throw new Error("Invalid status.");
-		return { ...base, identityId: null, state: value.state, account: null };
+		if (value.identityId !== null || value.authority !== null || value.account !== null)
+			throw new Error("Invalid status.");
+		return { ...base, identityId: null, authority: null, state: value.state, account: null };
 	}
-	if (!isAuthControllerId(value.identityId)) throw new Error("Invalid status.");
+	if (
+		!isAuthControllerId(value.identityId) ||
+		!authorityKind(value.authority) ||
+		(value.identityId !== identityId && value.account !== null)
+	)
+		throw new Error("Invalid status.");
 	if (value.state === "linked")
 		return {
 			...base,
 			identityId: value.identityId,
+			authority: value.authority,
 			state: "linked",
-			account: accountMetadata(value.account),
+			account: value.account === null ? null : accountMetadata(value.account),
 		};
-	if ((value.state !== "unlinked" && value.state !== "revoked") || value.account !== null)
+	if (
+		(value.state !== "unlinked" && value.state !== "revoked") ||
+		(value.state === "unlinked" && value.identityId !== identityId) ||
+		value.account !== null
+	)
 		throw new Error("Invalid status.");
-	return { ...base, identityId: value.identityId, state: value.state, account: null };
+	return {
+		...base,
+		identityId: value.identityId,
+		authority: value.authority,
+		state: value.state,
+		account: null,
+	};
 }
 
 /** Race even injected transports/streams that do not implement AbortSignal themselves. */
@@ -154,11 +189,13 @@ async function readStatus(
 ): Promise<CoordinatorAccountLinkStatusRead> {
 	const origin = normalizeCoordinatorAccountLinkOrigin(options.coordinatorUrl);
 	const groupId = options.groupId;
-	if (!origin || !isAuthControllerId(groupId)) return unavailable("invalid_response");
+	if (!origin || !isAuthControllerId(groupId) || !isAuthControllerId(options.identityId))
+		return unavailable("invalid_response");
 	if (signal.aborted) return unavailable("coordinator_unreachable");
 	const url = new URL("/v1/auth/account-link-status", origin);
 	url.searchParams.set("group_id", groupId);
 	url.searchParams.set("coordinator_origin", origin);
+	url.searchParams.set("identity_id", options.identityId);
 	let device: CoordinatorDeviceLocalEvidence;
 	let headers: ReturnType<typeof signAccountLinkRequest>;
 	try {
@@ -199,7 +236,7 @@ async function readStatus(
 		if (signal.aborted) return unavailable("coordinator_unreachable");
 		return {
 			kind: "status",
-			status: decodeStatus(body, groupId, device),
+			status: decodeStatus(body, groupId, device, options.identityId),
 		};
 	} catch {
 		return unavailable(signal.aborted ? "coordinator_unreachable" : "invalid_response");

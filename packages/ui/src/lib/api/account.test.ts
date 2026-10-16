@@ -1,7 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AccountView } from "./account";
 
 let api: typeof import("./account");
 const transport = vi.fn<typeof fetch>();
+const checkedStatus = {
+	kind: "status",
+	state: "unlinked",
+	authority: "controller_attestation",
+	coordinatorId: "coordinator-fixture",
+	identityId: "identity-fixture",
+	identityMatches: true,
+	account: null,
+} satisfies Extract<AccountView["remote"], { kind: "status" }>;
+const checked = {
+	authority: checkedStatus.authority,
+	coordinatorId: checkedStatus.coordinatorId,
+};
 const reply = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 function deferred<T>() {
 	let resolve!: (value: T) => void;
@@ -50,7 +64,7 @@ describe("account transport safety", () => {
 			// Arrange
 			transport.mockResolvedValueOnce(reply({ version: 1, csrfToken }));
 			// Act
-			const result = api.startAccountLink("group", "context");
+			const result = api.startAccountLink("group", "context", checked);
 			// Assert
 			await expect(result).rejects.toMatchObject({ code: "invalid_response" });
 			expect(transport).toHaveBeenCalledTimes(1);
@@ -60,7 +74,7 @@ describe("account transport safety", () => {
 		// Arrange
 		transport.mockResolvedValueOnce(reply(null));
 		// Act
-		const result = api.startAccountLink("group", "context");
+		const result = api.startAccountLink("group", "context", checked);
 		// Assert
 		await expect(result).rejects.toMatchObject({
 			code: "invalid_response",
@@ -72,7 +86,7 @@ describe("account transport safety", () => {
 		// Arrange
 		transport.mockImplementation(async () => reply({ version: 1, csrfToken: "fixture-token" }));
 		// Act
-		await api.startAccountLink('group"', "context");
+		await api.startAccountLink('group"', "context", checked);
 		await api.getAccountOperation("id/?");
 		await api.getAccountBrowserUrl("id/?");
 		await api.cancelAccountLink("id/?");
@@ -81,7 +95,12 @@ describe("account transport safety", () => {
 			"/api/account/link-operations",
 			expect.objectContaining({
 				method: "POST",
-				body: JSON.stringify({ groupId: 'group"', contextId: "context" }),
+				body: JSON.stringify({
+					groupId: 'group"',
+					contextId: "context",
+					authority: checkedStatus.authority,
+					coordinatorId: checkedStatus.coordinatorId,
+				}),
 			}),
 		]);
 		expect(
@@ -100,7 +119,7 @@ describe("account transport safety", () => {
 			.mockResolvedValueOnce(reply({ csrfToken: "new" }))
 			.mockResolvedValueOnce(reply({ version: 1 }));
 		// Act
-		await api.startAccountLink("group", "context");
+		await api.startAccountLink("group", "context", checked);
 		// Assert
 		expect(transport).toHaveBeenCalledTimes(4);
 		expect(transport.mock.calls[3][1]?.headers).toMatchObject({ "X-Codemem-Account-Csrf": "new" });
@@ -127,7 +146,7 @@ describe("account transport safety", () => {
 				.mockResolvedValueOnce(reply({ csrfToken: "new" }))
 				.mockResolvedValueOnce(reply({ error: "account_csrf_invalid" }, 403));
 		// Act
-		const result = api.startAccountLink("group", "context");
+		const result = api.startAccountLink("group", "context", checked);
 		// Assert
 		await expect(result).rejects.toMatchObject(expected);
 		expect(transport).toHaveBeenCalledTimes(callCount);
@@ -196,7 +215,7 @@ describe("account session lifetime and failures", () => {
 			// Arrange
 			transport.mockResolvedValueOnce(reply({ error: "private-server-details" }, status));
 			// Act
-			const result = api.startAccountLink("group", "context");
+			const result = api.startAccountLink("group", "context", checked);
 			// Assert
 			await expect(result).rejects.toMatchObject({ status, code: "session_unavailable" });
 			expect(transport).toHaveBeenCalledTimes(1);
@@ -209,7 +228,7 @@ describe("account session lifetime and failures", () => {
 			.mockResolvedValueOnce(reply({ error: "account_csrf_invalid" }, 403))
 			.mockResolvedValueOnce(reply({ error: "unavailable" }, 503));
 		// Act
-		const result = api.startAccountLink("group", "context");
+		const result = api.startAccountLink("group", "context", checked);
 		// Assert
 		await expect(result).rejects.toMatchObject({ code: "session_unavailable" });
 		expect(transport).toHaveBeenCalledTimes(3);
@@ -222,7 +241,7 @@ describe("account session lifetime and failures", () => {
 				reply({ error: "account_link_in_progress", operationId: "active-id" }, 409),
 			);
 		// Act
-		const result = api.startAccountLink("group", "context");
+		const result = api.startAccountLink("group", "context", checked);
 		// Assert
 		await expect(result).rejects.toMatchObject({
 			status: 409,
@@ -271,7 +290,7 @@ describe("account error redaction", () => {
 		// Arrange
 		transport.mockResolvedValueOnce(reply({ error: code }, status));
 		// Act
-		const result = api.startAccountLink("group", "context");
+		const result = api.startAccountLink("group", "context", checked);
 		// Assert
 		await expect(result).rejects.toMatchObject({ status, code, message: code });
 		expect(transport).toHaveBeenCalledTimes(1);
@@ -297,7 +316,7 @@ describe("account error redaction", () => {
 		transport
 			.mockResolvedValueOnce(reply({ csrfToken: "fixture-token" }))
 			.mockResolvedValueOnce(reply(body, 409));
-		const requestFailure = api.startAccountLink("group", "context");
+		const requestFailure = api.startAccountLink("group", "context", checked);
 		// Assert
 		await expect(requestFailure).rejects.toMatchObject({
 			code: "request_failed",
@@ -318,7 +337,7 @@ describe("account error redaction", () => {
 			.mockResolvedValueOnce(reply({ csrfToken: "fixture-token" }))
 			.mockResolvedValueOnce(reply({ error: "account_link_in_progress", operationId }, 409));
 		// Act
-		const result = api.startAccountLink("group", "context");
+		const result = api.startAccountLink("group", "context", checked);
 		// Assert
 		await expect(result).rejects.toMatchObject({
 			code: "account_link_in_progress",

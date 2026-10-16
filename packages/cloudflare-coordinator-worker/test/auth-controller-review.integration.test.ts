@@ -54,7 +54,7 @@ function review(f: Fixture, digest?: string) {
 }
 function signedLink(f: Fixture) {
 	const path = "/v1/auth/link-attempts";
-	const body = JSON.stringify({ group_id: f.input.group_id, attempt_id: randomUUID(), runtime_verifier_hash: "c".repeat(64), browser_start_hash: "d".repeat(64), loopback_redirect: "http://127.0.0.1:4567/codemem/auth/complete" });
+	const body = JSON.stringify({ group_id: f.input.group_id, identity_id: f.input.identity_id, authority: "controller_attestation", attempt_id: randomUUID(), runtime_verifier_hash: "c".repeat(64), browser_start_hash: "d".repeat(64), loopback_redirect: "http://127.0.0.1:4567/codemem/auth/complete" });
 	const timestamp = String(NOW / 1000);
 	const nonce = randomUUID();
 	const signature = sign(null, buildCanonicalRequest("POST", path, timestamp, nonce, Buffer.from(body)), f.privateKey);

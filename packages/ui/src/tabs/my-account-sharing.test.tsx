@@ -175,6 +175,7 @@ describe("My Account inside Sharing", () => {
 							kind: "status",
 							coordinatorId: "coordinator-one",
 							identityId: null,
+							authority: null,
 							identityMatches: false,
 							state: "review_required",
 							account: null,
@@ -232,6 +233,7 @@ describe("My Account data and lifetime inside Sharing", () => {
 						coordinatorId: "coordinator-one",
 						identityId: "identity-one",
 						identityMatches,
+						authority: "device_claim",
 						state: "linked",
 						account: { displayName: "Example Person", email: "fake@example.test" },
 					},
@@ -284,6 +286,7 @@ describe("My Account data and lifetime inside Sharing", () => {
 		expect(account.startAccountLink).toHaveBeenCalledExactlyOnceWith(
 			"group-one",
 			"context-one",
+			{ authority: "device_claim", coordinatorId: "coordinator-one" },
 			expect.any(AbortSignal),
 		);
 		expect(account.getAccountBrowserUrl).toHaveBeenCalledTimes(1);

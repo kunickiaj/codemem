@@ -35,6 +35,7 @@ let options: {
 	dbPath: string;
 	keysDir: string;
 	groupId: string;
+	identityId: string;
 	coordinatorUrl: string;
 	fetch: typeof fetch;
 };
@@ -58,6 +59,7 @@ beforeEach(() => {
 		dbPath: db.name,
 		keysDir,
 		groupId: "group-a",
+		identityId: "identity-a",
 		coordinatorUrl: origin,
 		fetch: transport,
 	};
@@ -77,16 +79,17 @@ function status(
 	overrides: Partial<CoordinatorAccountLinkStatus> = {},
 ): CoordinatorAccountLinkStatus {
 	return {
-		version: 1,
+		version: 2,
 		coordinatorId: "coordinator-a",
 		groupId: options?.groupId ?? "group-a",
 		deviceId: "device-a",
 		fingerprint,
 		identityId: "identity-a",
+		authority: "controller_attestation",
 		state: "linked",
 		account: {},
 		...overrides,
-	};
+	} as CoordinatorAccountLinkStatus;
 }
 function snapshot() {
 	const files = (base: string): unknown[] =>
@@ -127,7 +130,8 @@ it.each([
 	"reads %s in rollback-journal mode without changing any local file, row, or schema",
 	async (state, identityId, account) => {
 		// Arrange: a minimal persisted device, not an initialized MemoryStore.
-		const dto = status({ state, identityId, account });
+		const authority = identityId === null ? null : "controller_attestation";
+		const dto = status({ state, identityId, authority, account });
 		transport.mockResolvedValue(Response.json(dto));
 		const before = snapshot();
 		const readers: Database.Database[] = [];
@@ -260,7 +264,7 @@ it("signs the exact group=0 GET with an empty body and manual redirects", async 
 	const url = new URL(request.url);
 	expect(url.origin).toBe(origin);
 	expect(`${url.pathname}${url.search}`).toBe(
-		`/v1/auth/account-link-status?group_id=0&coordinator_origin=${encodeURIComponent(origin)}`,
+		`/v1/auth/account-link-status?group_id=0&coordinator_origin=${encodeURIComponent(origin)}&identity_id=identity-a`,
 	);
 	expect(request.method).toBe("GET");
 	expect(await request.text()).toBe("");
@@ -279,6 +283,12 @@ it("signs the exact group=0 GET with an empty body and manual redirects", async 
 		deviceId: "device-a",
 	};
 	expect(verifySignature(proof)).toBe(true);
+	expect(
+		verifySignature({
+			...proof,
+			pathWithQuery: proof.pathWithQuery.replace("identity_id=identity-a", "identity_id=other"),
+		}),
+	).toBe(false);
 	expect(
 		verifySignature({
 			...proof,
@@ -332,7 +342,11 @@ it("reports the fixed schema-upgrade refusal without reading an upstream error b
 });
 
 const invalid = [
-	{ version: 2 },
+	{ version: 1 },
+	{ authority: undefined },
+	{ authority: "admin" },
+	{ state: "unlinked", identityId: "other-identity", account: null },
+	{ identityId: "other-identity", account: { email: "private response marker" } },
 	{ coordinatorId: "" },
 	{ coordinatorId: "bad\ncoordinator" },
 	{ deviceId: "other-device" },
@@ -345,7 +359,7 @@ const invalid = [
 	{ state: "conflict", identityId: null, account: {} },
 	{ state: "unlinked", identityId: null, account: null },
 	{ state: "revoked", account: {} },
-	{ state: "linked", account: null },
+	{ state: "review_required", identityId: null, account: null },
 	{ privateKey: "private response marker" },
 	{ subject: "private response marker" },
 	...[

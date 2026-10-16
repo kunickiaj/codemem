@@ -38,6 +38,7 @@ export interface AccountLinkViewV1 {
 		| {
 				kind: "status";
 				coordinatorId: string;
+				authority: "controller_attestation" | "device_claim" | null;
 				identityId: string | null;
 				state: "review_required" | "unlinked" | "linked" | "revoked" | "conflict";
 				identityMatches: boolean;
@@ -120,6 +121,7 @@ function applyRemote(
 		remote: {
 			kind: "status",
 			coordinatorId: status.coordinatorId,
+			authority: status.authority,
 			identityId: status.identityId,
 			state: status.state,
 			identityMatches,
@@ -142,12 +144,13 @@ export async function readAccountStatus(
 	const snapshot = JSON.stringify(initial);
 	let remote: CoordinatorAccountLinkStatusRead;
 	try {
-		const { dbPath, keysDir, groupId, coordinatorUrl } = initial.context;
+		const { dbPath, keysDir, groupId, coordinatorUrl, identityId } = initial.context;
 		remote = await (options.readRemoteStatus ?? readCoordinatorAccountLinkStatus)({
 			dbPath,
 			keysDir,
 			groupId,
 			coordinatorUrl,
+			identityId,
 			signal,
 		});
 	} catch {

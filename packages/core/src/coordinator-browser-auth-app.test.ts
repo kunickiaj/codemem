@@ -200,6 +200,8 @@ async function startLink(
 	const runtimeVerifier = randomBytes(32).toString("base64url");
 	const created = await signed(f, ROOT, {
 		group_id: "group-a",
+		identity_id: review(f.key).identityId,
+		authority: "controller_attestation",
 		attempt_id: attemptId,
 		runtime_verifier_hash: hash(runtimeVerifier),
 		browser_start_hash: hash(startCode),

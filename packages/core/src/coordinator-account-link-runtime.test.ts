@@ -127,7 +127,15 @@ async function fixture() {
 		calls.push(req.clone());
 		return app.fetch(req);
 	});
-	const options = { dbPath, keysDir, coordinatorUrl: origin, groupId: "group-a", fetch };
+	const options = {
+		dbPath,
+		keysDir,
+		coordinatorUrl: origin,
+		groupId: "group-a",
+		fetch,
+		expectedIdentityId: "identity-a",
+		expectedAuthority: "controller_attestation" as "controller_attestation" | "device_claim",
+	};
 	return { dir, local, remote, remoteClock, calls, options, fingerprint, publicKey };
 }
 function localSnapshot(f: Awaited<ReturnType<typeof fixture>>) {
@@ -303,7 +311,7 @@ test.for([-5000, 5000])(
 	},
 );
 
-test.for(["attempt", "coordinator", "identity"])(
+test.for(["attempt", "coordinator", "identity", "authority", "missing authority"])(
 	"invalid create %s pin never opens browser or finalizes",
 	async (variant, { f }) => {
 		// Arrange
@@ -311,6 +319,9 @@ test.for(["attempt", "coordinator", "identity"])(
 		const before = localSnapshot(f);
 		f.options.fetch.mockImplementationOnce(async (_input, init) => {
 			const create = JSON.parse(String(init?.body));
+			let authority: string | undefined = "controller_attestation";
+			if (variant === "authority") authority = "device_claim";
+			if (variant === "missing authority") authority = undefined;
 			return Response.json({
 				status: {
 					attemptId: variant === "attempt" ? "other" : create.attempt_id,
@@ -319,6 +330,7 @@ test.for(["attempt", "coordinator", "identity"])(
 				},
 				coordinator_id: variant === "coordinator" ? "" : cfg.coordinatorId,
 				identity_id: variant === "identity" ? "" : "identity-a",
+				authority,
 			});
 		});
 		// Act
@@ -328,6 +340,7 @@ test.for(["attempt", "coordinator", "identity"])(
 		// Assert
 		expect(error).toBeInstanceOf(Error);
 		expect(onBrowserStart).not.toHaveBeenCalled();
+		expect(f.options.fetch).toHaveBeenCalledTimes(2);
 		expect(f.calls.some((req) => req.url.endsWith("/finalize"))).toBe(false);
 		expect(localSnapshot(f)).toEqual(before);
 	},
@@ -515,7 +528,7 @@ test("keeps actionable schema-upgrade guidance when cleanup is also refused", as
 });
 
 test.for([false, true])(
-	"a revoked Identity link conflicts once and preserves guidance when cancellation fails=%s",
+	"a revoked Identity link is rejected before browser handoff; cancellation fails=%s",
 	async (cancelFails, { f }) => {
 		// Arrange: complete one real signed link, then retain its revoked unique tombstone.
 		let browserDone: Promise<unknown> = Promise.resolve();
@@ -529,8 +542,10 @@ test.for([false, true])(
 		f.remote.db.prepare("UPDATE coordinator_auth_account_links SET revoked_at_ms = ?").run(NOW);
 		const links = f.remote.db.prepare("SELECT * FROM coordinator_auth_account_links").all();
 		const audit = f.remote.db.prepare("SELECT * FROM coordinator_auth_link_audit_log").all();
+		const attempts = f.remote.db.prepare("SELECT * FROM coordinator_auth_link_attempts").all();
 		const before = localSnapshot(f);
 		f.calls.length = 0;
+		const rejectedBrowserStart = vi.fn();
 		const forwarding = f.options.fetch.getMockImplementation();
 		if (!forwarding) throw new Error("fixture fetch missing");
 		f.options.fetch.mockImplementation(async (input, init) => {
@@ -542,14 +557,17 @@ test.for([false, true])(
 			return forwarding(input, init);
 		});
 		// Act
-		const error = await linkCoordinatorAccount({ ...f.options, onBrowserStart }).catch(
-			(cause: unknown) => cause,
-		);
+		const error = await linkCoordinatorAccount({
+			...f.options,
+			onBrowserStart: rejectedBrowserStart,
+		}).catch((cause: unknown) => cause);
 		await browserDone;
 		// Assert
-		expect(error).toMatchObject({ code: "link_conflict" });
+		expect(error).toMatchObject({ code: "review_required" });
+		expect(rejectedBrowserStart).not.toHaveBeenCalled();
 		expect(String(error)).not.toContain("private-transport-proof");
-		expect(f.calls.filter((req) => req.url.endsWith("/finalize"))).toHaveLength(1);
+		expect(f.calls.filter((req) => req.url.endsWith("/finalize"))).toHaveLength(0);
+		expect(f.calls.filter((req) => req.method === "GET")).toHaveLength(0);
 		expect(f.calls.filter((req) => req.url.endsWith("/cancel"))).toHaveLength(1);
 		expect(f.remote.db.prepare("SELECT * FROM coordinator_auth_account_links").all()).toEqual(
 			links,
@@ -557,10 +575,9 @@ test.for([false, true])(
 		expect(f.remote.db.prepare("SELECT * FROM coordinator_auth_link_audit_log").all()).toEqual(
 			audit,
 		);
-		const second = f.remote.db
-			.prepare("SELECT state FROM coordinator_auth_link_attempts WHERE state <> 'finalized'")
-			.get();
-		expect(second).toEqual({ state: cancelFails ? "confirmed" : "failed" });
+		expect(f.remote.db.prepare("SELECT * FROM coordinator_auth_link_attempts").all()).toEqual(
+			attempts,
+		);
 		expect(localSnapshot(f)).toEqual(before);
 	},
 );
@@ -712,8 +729,20 @@ test("a review label on status polling does not become owner-review guidance", a
 });
 
 test.for(
-	["expectedIdentityId", "expectedCoordinatorId", "assertCurrentContext"].flatMap((field) =>
-		[null, false, 42, {}, ""].map((value) => ({ field, value })),
+	[
+		"expectedIdentityId",
+		"expectedCoordinatorId",
+		"expectedAuthority",
+		"assertCurrentContext",
+	].flatMap((field) =>
+		[
+			null,
+			false,
+			42,
+			{},
+			"",
+			...(field === "expectedIdentityId" || field === "expectedAuthority" ? [undefined] : []),
+		].map((value) => ({ field, value })),
 	),
 )(
 	"rejects malformed $field=$value before local IO or listener bind",

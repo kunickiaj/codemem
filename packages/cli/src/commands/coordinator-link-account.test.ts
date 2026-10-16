@@ -4,6 +4,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	linkCoordinatorAccount: vi.fn(),
+	readAccountLinkDevice: vi.fn(),
+	statSync: vi.fn(),
+	readCoordinatorAccountLinkStatus: vi.fn(),
 	readCodememConfigFile: vi.fn(),
 	readCodememConfigFileAtPath: vi.fn(),
 	resolveDbPath: vi.fn((path: string) => path),
@@ -14,6 +17,10 @@ vi.mock("@codemem/core", async (original) => ({
 	...mocks,
 }));
 vi.mock("@clack/prompts", () => ({ log: mocks.log }));
+vi.mock("node:fs", async (original) => ({
+	...(await original<typeof import("node:fs")>()),
+	statSync: mocks.statSync,
+}));
 
 import { buildCoordinatorCommand } from "./coordinator.js";
 import { buildCoordinatorLinkAccountCommand } from "./coordinator-link-account.js";
@@ -32,16 +39,39 @@ beforeEach(() => {
 		"CODEMEM_SYNC_COORDINATOR_TIMEOUT_S",
 		"CODEMEM_SYNC_COORDINATOR_PRESENCE_TTL_S",
 		"CODEMEM_KEYS_DIR",
+		"CODEMEM_ACTOR_ID",
+		"CODEMEM_DEVICE_ID",
 	])
 		vi.stubEnv(name, undefined);
 	process.exitCode = undefined;
 	Object.defineProperty(process.stderr, "isTTY", { configurable: true, value: true });
 	mocks.readCodememConfigFile.mockReturnValue({
 		sync_coordinator_url: "https://saved.example.test",
+		actor_id: "identity-a",
 	});
 	mocks.readCodememConfigFileAtPath.mockReturnValue({
 		sync_coordinator_url: "https://saved.example.test",
+		actor_id: "identity-a",
 	});
+	mocks.statSync.mockReset().mockReturnValue({ isFile: () => true, dev: 1n, ino: 2n });
+	mocks.readAccountLinkDevice.mockReset().mockReturnValue({
+		deviceId: "device-a",
+		fingerprint: "a".repeat(64),
+	});
+	mocks.readCoordinatorAccountLinkStatus.mockImplementation(async (options) => ({
+		kind: "status",
+		status: {
+			version: 2,
+			coordinatorId: "coordinator-a",
+			groupId: options.groupId,
+			deviceId: "device-a",
+			fingerprint: "a".repeat(64),
+			identityId: options.identityId,
+			state: "unlinked",
+			authority: "device_claim",
+			account: null,
+		},
+	}));
 	mocks.linkCoordinatorAccount.mockResolvedValue({
 		coordinatorId: "coordinator-a",
 		identityId: "identity-a",
@@ -78,6 +108,8 @@ it("canonical and legacy trees own distinct link-account instances", async () =>
 			groupId: "group-a",
 			dbPath: "fixture.sqlite",
 			coordinatorUrl: "https://saved.example.test",
+			expectedIdentityId: "identity-a",
+			expectedAuthority: "device_claim",
 		}),
 	);
 });
@@ -112,13 +144,24 @@ it("TTY-only handoff prints privately to stderr and removes signal listeners", a
 	);
 	// Assert
 	expect(mocks.readCodememConfigFileAtPath).toHaveBeenCalledWith("fixture.json");
+	expect(mocks.readCodememConfigFileAtPath).toHaveBeenCalledTimes(1);
+	expect(mocks.readAccountLinkDevice).toHaveBeenCalledExactlyOnceWith("fixture.sqlite");
+	expect(mocks.statSync).toHaveBeenCalledTimes(2);
+	expect(mocks.statSync).toHaveBeenNthCalledWith(1, "fixture.sqlite", { bigint: true });
+	expect(mocks.statSync).toHaveBeenNthCalledWith(2, "fixture.sqlite", { bigint: true });
 	expect(mocks.linkCoordinatorAccount).toHaveBeenCalledWith(
 		expect.objectContaining({
 			dbPath: "fixture.sqlite",
 			keysDir: "fixture-keys",
+			deviceId: "device-a",
+			fingerprint: "a".repeat(64),
+			fileIdentity: { dev: "1", ino: "2" },
 			groupId: "group-a",
 			coordinatorUrl: "https://override.example.test",
 			loopbackHost: "::1",
+			expectedIdentityId: "identity-a",
+			expectedAuthority: "device_claim",
+			expectedCoordinatorId: "coordinator-a",
 			signal: expect.any(AbortSignal),
 		}),
 	);
@@ -142,7 +185,10 @@ it.each([
 ])("$name uses the same coordinator as the shared runtime config", async ({ saved, flag }) => {
 	// Arrange: the actual shared loader trims the environment override, including custom configs.
 	vi.stubEnv("CODEMEM_SYNC_COORDINATOR_URL", "  https://environment.example.test  ");
-	mocks.readCodememConfigFileAtPath.mockReturnValue({ sync_coordinator_url: saved });
+	mocks.readCodememConfigFileAtPath.mockReturnValue({
+		sync_coordinator_url: saved,
+		actor_id: "identity-a",
+	});
 	// Act
 	await buildCoordinatorLinkAccountCommand().parseAsync(
 		["group-a", "-d", "fixture.sqlite", "-c", "fixture.json", ...(flag ? ["-u", flag] : [])],
@@ -200,7 +246,7 @@ it("unexpected failure cannot echo private URLs or proof-bearing causes", async 
 	expect([process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")]).toEqual(signals);
 });
 
-it("review rejection names the operator action without reconstructing secret-bearing arguments", async () => {
+it("review rejection does not prescribe admin approval or reconstruct secret-bearing arguments", async () => {
 	// Arrange
 	vi.stubEnv("CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET", "private-admin-secret");
 	mocks.linkCoordinatorAccount.mockRejectedValueOnce(
@@ -213,11 +259,8 @@ it("review rejection names the operator action without reconstructing secret-bea
 	);
 	// Assert
 	const output = JSON.stringify([mocks.log.error.mock.calls, mocks.log.message.mock.calls]);
-	expect(output).toContain("codemem coordinator review-device-owner");
-	expect(output).toMatch(/this group.*this device/);
-	expect(output).toMatch(/admin.*credential/);
-	for (const setting of ["--coordinator", "--config", "--db-path", "environment"])
-		expect(output).toContain(setting);
+	expect(output).toContain(new CoordinatorAccountLinkError("review_required").message);
+	expect(output).not.toMatch(/review-device-owner|admin.*credential|needs an active owner review/);
 	for (const secret of [
 		"group-private",
 		"private-db.sqlite",

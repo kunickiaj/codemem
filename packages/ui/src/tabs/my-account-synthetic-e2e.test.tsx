@@ -56,18 +56,27 @@ const graph: RecipientPolicyIntentGraphV1 = {
 };
 type RemoteState = "unlinked" | "linked" | "review_required" | "conflict" | "revoked";
 function remote(state: RemoteState = "unlinked"): CoordinatorAccountLinkStatusRead {
+	const subject = {
+		version: 2 as const,
+		coordinatorId: "coordinator-a",
+		groupId: context.groupId,
+		deviceId: context.deviceId,
+		fingerprint: context.fingerprint,
+	};
+	if (state === "review_required" || state === "conflict")
+		return {
+			kind: "status",
+			status: { ...subject, state, identityId: null, authority: null, account: null },
+		};
 	return {
 		kind: "status",
 		status: {
-			version: 1,
-			coordinatorId: "coordinator-a",
-			groupId: context.groupId,
-			deviceId: context.deviceId,
-			fingerprint: context.fingerprint,
+			...subject,
 			identityId: context.identityId,
-			state,
-			account:
-				state === "linked" ? { displayName: "Synthetic person", email: "fake@example.test" } : null,
+			authority: "device_claim",
+			...(state === "linked"
+				? { state, account: { displayName: "Synthetic person", email: "fake@example.test" } }
+				: { state, account: null }),
 		},
 	};
 }
@@ -323,6 +332,7 @@ describe("My Account synthetic end-to-end over protected loopback HTTP", () => {
 		expect(await f.started.promise).toMatchObject({
 			dbPath: context.dbPath,
 			expectedIdentityId: context.identityId,
+			expectedAuthority: "device_claim",
 		});
 		expect(f.open).toHaveBeenCalledExactlyOnceWith("about:blank", "_blank");
 		expect(f.popup.opener).toBeNull();
@@ -483,7 +493,12 @@ describe("My Account synthetic end-to-end request authority", () => {
 			const start = await f.send(PATH, {
 				method: "POST",
 				headers,
-				body: JSON.stringify({ groupId: context.groupId, contextId: context.contextId }),
+				body: JSON.stringify({
+					groupId: context.groupId,
+					contextId: context.contextId,
+					authority: "device_claim",
+					coordinatorId: "coordinator-a",
+				}),
 			});
 			const delivery = await f.send(`${PATH}/00000000-0000-4000-8000-000000000000/browser-url`, {
 				method: "POST",
@@ -525,7 +540,12 @@ describe("My Account synthetic end-to-end request authority", () => {
 					Host: new URL(f.origin).host,
 					"X-Codemem-Account-Csrf": token,
 				},
-				body: JSON.stringify({ groupId: context.groupId, contextId: context.contextId }),
+				body: JSON.stringify({
+					groupId: context.groupId,
+					contextId: context.contextId,
+					authority: "device_claim",
+					coordinatorId: "coordinator-a",
+				}),
 			});
 			expect(authorized.status).toBe(202);
 			expect(f.seen.slice(-1).map((entry) => entry.headers.get("Origin"))).toEqual([f.origin]);

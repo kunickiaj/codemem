@@ -52,6 +52,7 @@ function fixture(
 		const started = registry.start({
 			context: structuredClone(subject),
 			expectedCoordinatorId,
+			expectedAuthority: "device_claim",
 		});
 		if (!("operation" in started)) throw new Error("Expected operation fixture");
 		return started.operation.operationId;
@@ -96,6 +97,7 @@ describe("account link runtime-wide ownership", () => {
 			const blocked = second.registry.start({
 				context: subject,
 				expectedCoordinatorId: "coordinator-b",
+				expectedAuthority: "device_claim",
 			});
 			await settle();
 			first.link.mock.calls[0][0].onBrowserStart(privateUrl);
@@ -121,6 +123,7 @@ describe("account link runtime-wide ownership", () => {
 				groupId: subject.groupId,
 				coordinatorUrl: subject.coordinatorUrl,
 				expectedIdentityId: subject.identityId,
+				expectedAuthority: "device_claim",
 				expectedCoordinatorId: "coordinator-b",
 			});
 			expect(await options.assertCurrentContext?.()).toBe(true);
@@ -149,7 +152,13 @@ describe("account link runtime-wide ownership", () => {
 			const oldOptions = first.link.mock.calls[0][0];
 			// Act
 			first.registry.cancel(firstId);
-			expect(second.registry.start({ context, expectedCoordinatorId: "coordinator-a" })).toEqual({
+			expect(
+				second.registry.start({
+					context,
+					expectedCoordinatorId: "coordinator-a",
+					expectedAuthority: "device_claim",
+				}),
+			).toEqual({
 				error: "account_link_in_progress",
 			});
 			first.pending.reject(new CoordinatorAccountLinkError(code));
@@ -167,7 +176,13 @@ describe("account link runtime-wide ownership", () => {
 			expect(first.registry.browserUrl(firstId)).toBeNull();
 			expect(second.registry.browserUrl(secondId)).toBe(privateUrl);
 			const third = fixture();
-			expect(third.registry.start({ context, expectedCoordinatorId: "coordinator-a" })).toEqual({
+			expect(
+				third.registry.start({
+					context,
+					expectedCoordinatorId: "coordinator-a",
+					expectedAuthority: "device_claim",
+				}),
+			).toEqual({
 				error: "account_link_in_progress",
 			});
 			expect(third.link).not.toHaveBeenCalled();
@@ -207,7 +222,13 @@ describe("account link runtime-wide shutdown", () => {
 		expect(first.registry.get(id)?.state).toBe("outcome_unknown");
 		expect(first.registry.browserUrl(id)).toBeNull();
 		expect(second.registry.hasActive()).toBe(true);
-		expect(second.registry.start({ context, expectedCoordinatorId: "coordinator-a" })).toEqual({
+		expect(
+			second.registry.start({
+				context,
+				expectedCoordinatorId: "coordinator-a",
+				expectedAuthority: "device_claim",
+			}),
+		).toEqual({
 			error: "account_link_in_progress",
 		});
 		expect(second.link).not.toHaveBeenCalled();
@@ -231,7 +252,13 @@ describe("account link runtime-wide shutdown", () => {
 			// Act
 			if (action === "cancel") first.registry.cancel(id);
 			else void first.registry.close();
-			expect(second.registry.start({ context, expectedCoordinatorId: "coordinator-a" })).toEqual({
+			expect(
+				second.registry.start({
+					context,
+					expectedCoordinatorId: "coordinator-a",
+					expectedAuthority: "device_claim",
+				}),
+			).toEqual({
 				error: "account_link_in_progress",
 			});
 			await settle();
@@ -257,7 +284,11 @@ describe("account link runtime module and callback isolation", () => {
 		const second = fixture(context, "coordinator-a", reloaded.createAccountLinkRegistry);
 		const expectedLifecycleToken = second.registry.lifecycleToken();
 		// Act
-		const blocked = second.registry.start({ context, expectedCoordinatorId: "coordinator-a" });
+		const blocked = second.registry.start({
+			context,
+			expectedCoordinatorId: "coordinator-a",
+			expectedAuthority: "device_claim",
+		});
 		await settle();
 		// Assert: prove this is a second module, not a cached factory reference.
 		expect(reloaded.createAccountLinkRegistry).not.toBe(createAccountLinkRegistry);
@@ -273,6 +304,7 @@ describe("account link runtime module and callback isolation", () => {
 				context,
 				expectedCoordinatorId: "coordinator-a",
 				expectedLifecycleToken,
+				expectedAuthority: "device_claim",
 			}),
 		).toEqual({ error: "account_context_changed" });
 		expect(second.registry.forContext(context.contextId)).toBeNull();
@@ -290,7 +322,11 @@ describe("account link runtime module and callback isolation", () => {
 			return ready;
 		});
 		// Act
-		const blocked = outer.registry.start({ context, expectedCoordinatorId: "coordinator-a" });
+		const blocked = outer.registry.start({
+			context,
+			expectedCoordinatorId: "coordinator-a",
+			expectedAuthority: "device_claim",
+		});
 		await settle();
 		// Assert: the callback's owner wins; the outer start creates no local record.
 		expect(blocked).toEqual({ error: "account_link_in_progress" });
@@ -320,6 +356,7 @@ describe("account link registry", () => {
 				context,
 				expectedCoordinatorId: "coordinator-a",
 				expectedLifecycleToken,
+				expectedAuthority: "device_claim",
 			}),
 		).toEqual({ error: "account_context_changed" });
 		expect(second.link).not.toHaveBeenCalled();
@@ -328,6 +365,7 @@ describe("account link registry", () => {
 			context,
 			expectedCoordinatorId: "coordinator-a",
 			expectedLifecycleToken: second.registry.lifecycleToken(),
+			expectedAuthority: "device_claim",
 		});
 		expect(fresh).toHaveProperty("operation");
 		await settle();
@@ -339,6 +377,7 @@ describe("account link registry", () => {
 		const duplicate = f.registry.start({
 			context: { ...context, groupId: "group-b" },
 			expectedCoordinatorId: "coordinator-b",
+			expectedAuthority: "device_claim",
 		});
 		await settle();
 		// Assert: no CLI, key access, or real receiver is used.
@@ -350,6 +389,7 @@ describe("account link registry", () => {
 				keysDir: context.keysDir,
 				groupId: context.groupId,
 				expectedIdentityId: context.identityId,
+				expectedAuthority: "device_claim",
 				expectedCoordinatorId: "coordinator-a",
 				signal: expect.any(AbortSignal),
 				assertCurrentContext: expect.any(Function),
@@ -365,6 +405,8 @@ describe("account link registry", () => {
 		expect(f.registry.get(id)?.state).toBe("succeeded");
 		expect(f.registry.hasActive()).toBe(false);
 	});
+});
+describe("account link private capability snapshots", () => {
 	it("returns detached public snapshots and delivers a URL at most five times", async () => {
 		const f = fixture(); // Arrange
 		const id = f.start();
@@ -456,7 +498,11 @@ describe("account link context and cancellation", () => {
 				coordinator: { origin: context.coordinatorUrl },
 				context: fresh,
 			});
-			const started = f.registry.start({ context, expectedCoordinatorId: "coordinator-a" }); // Act
+			const started = f.registry.start({
+				context,
+				expectedCoordinatorId: "coordinator-a",
+				expectedAuthority: "device_claim",
+			}); // Act
 			expect(started).toEqual({ error: "account_context_changed" }); // Assert
 			expect(f.link).not.toHaveBeenCalled();
 			expect(f.registry.hasActive()).toBe(false);
@@ -467,7 +513,11 @@ describe("account link context and cancellation", () => {
 		const ready = f.readContext();
 		if ("error" in ready) throw new Error("Expected ready fixture");
 		f.readContext.mockReturnValue({ ...ready, setup: "device_unavailable" });
-		const started = f.registry.start({ context, expectedCoordinatorId: "coordinator-a" }); // Act
+		const started = f.registry.start({
+			context,
+			expectedCoordinatorId: "coordinator-a",
+			expectedAuthority: "device_claim",
+		}); // Act
 		expect(started).toEqual({ error: "account_context_changed" }); // Assert
 		expect(f.link).not.toHaveBeenCalled();
 		expect(f.registry.hasActive()).toBe(false);
@@ -567,7 +617,13 @@ describe("account link shutdown outcomes", () => {
 		expect(f.registry.hasActive()).toBe(true);
 		expect(f.registry.get(id)?.finishedAt).toBeNull();
 		expect(f.registry.browserUrl(id)).toBeNull();
-		expect(f.registry.start({ context, expectedCoordinatorId: "coordinator-a" })).toEqual({
+		expect(
+			f.registry.start({
+				context,
+				expectedCoordinatorId: "coordinator-a",
+				expectedAuthority: "device_claim",
+			}),
+		).toEqual({
 			error: "account_shutting_down",
 		});
 		if (code) f.pending.reject(new CoordinatorAccountLinkError(code));
@@ -645,7 +701,13 @@ describe("account link failures and lifecycle", () => {
 		options.onBrowserStart(privateUrl);
 		const closed = f.registry.close(); // Act
 		expect(options.signal?.aborted).toBe(true); // Assert
-		expect(f.registry.start({ context, expectedCoordinatorId: "coordinator-a" })).toEqual({
+		expect(
+			f.registry.start({
+				context,
+				expectedCoordinatorId: "coordinator-a",
+				expectedAuthority: "device_claim",
+			}),
+		).toEqual({
 			error: "account_shutting_down",
 		});
 		expect(f.registry.browserUrl(id)).toBeNull();

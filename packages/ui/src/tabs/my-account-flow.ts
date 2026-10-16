@@ -314,6 +314,12 @@ async function startFailure(
 async function link(flow: Flow): Promise<void> {
 	const { view, busy } = flow;
 	if (flow.refs.current.starting || flow.pendingOperation || !canBeginLink(view, busy)) return;
+	if (
+		view.remote.kind !== "status" ||
+		view.remote.state !== "unlinked" ||
+		(view.remote.authority !== "controller_attestation" && view.remote.authority !== "device_claim")
+	)
+		return;
 	flow.refs.current.starting = true;
 	const epoch = flow.refs.current.generation;
 	let opened: Window | null = null;
@@ -327,6 +333,7 @@ async function link(flow: Flow): Promise<void> {
 		const result = await startAccountLink(
 			view.selectedGroupId,
 			view.contextId,
+			{ authority: view.remote.authority, coordinatorId: view.remote.coordinatorId },
 			flow.refs.current.controller?.signal,
 		);
 		if (epoch !== flow.refs.current.generation) {

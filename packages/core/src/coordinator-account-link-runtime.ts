@@ -10,6 +10,7 @@ import {
 	signAccountLinkRequest,
 } from "./coordinator-account-link-signer.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
+import type { CoordinatorAuthLinkAuthorityKind } from "./coordinator-auth-link-authority.js";
 import {
 	AUTH_LINK_ATTEMPT_TTL_MS,
 	AUTH_LINK_PURPOSE,
@@ -28,7 +29,8 @@ export interface LinkCoordinatorAccountOptions {
 	keysDir?: string;
 	groupId: string;
 	coordinatorUrl: string;
-	expectedIdentityId?: string;
+	expectedIdentityId: string;
+	expectedAuthority: CoordinatorAuthLinkAuthorityKind;
 	expectedCoordinatorId?: string;
 	assertCurrentContext?: () => boolean | Promise<boolean>;
 	loopbackHost?: "127.0.0.1" | "::1";
@@ -63,7 +65,7 @@ const MESSAGES: Record<Failure, string> = {
 	schema_upgrade_required:
 		"Ask the coordinator operator to pause auth writers, back up the coordinator database and run the explicit auth-schema upgrade before linking. Ordinary device-signed sync remains available.",
 	review_required:
-		"This device needs an active owner review on the coordinator before linking. This linking request was rejected.",
+		"This device cannot link the current Identity, or coordinator information changed. Check account-link status before trying again.",
 	link_conflict:
 		"Account linking conflicts with an existing or revoked coordinator link. This request did not replace it.",
 	invalid_response: "The coordinator returned an invalid account-link response.",
@@ -264,6 +266,7 @@ function readStatus(data: Record<string, unknown>, runtime: Runtime): Coordinato
 	const status = value as Record<string, unknown>;
 	const now = Date.now();
 	if (
+		Object.keys(status).length !== 3 ||
 		status.attemptId !== runtime.attemptId ||
 		typeof status.state !== "string" ||
 		!STATES.has(status.state) ||
@@ -290,6 +293,8 @@ async function createAttempt(
 ): Promise<Pin> {
 	const body = {
 		group_id: runtime.options.groupId,
+		identity_id: runtime.options.expectedIdentityId,
+		authority: runtime.options.expectedAuthority,
 		attempt_id: runtime.attemptId,
 		runtime_verifier_hash: await hashCoordinatorAuthProofBytes32(verifier),
 		browser_start_hash: await hashCoordinatorAuthProofBytes32(startCode),
@@ -304,14 +309,15 @@ async function createAttempt(
 	});
 	const status = readStatus(reply, runtime);
 	if (
+		Object.keys(reply).length !== 4 ||
 		status.state !== "pending" ||
 		!isAuthControllerId(reply.coordinator_id) ||
-		!isAuthControllerId(reply.identity_id)
+		!isAuthControllerId(reply.identity_id) ||
+		reply.authority !== runtime.options.expectedAuthority
 	)
 		throw failure("invalid_response");
 	if (
-		(runtime.options.expectedIdentityId !== undefined &&
-			runtime.options.expectedIdentityId !== reply.identity_id) ||
+		runtime.options.expectedIdentityId !== reply.identity_id ||
 		(runtime.options.expectedCoordinatorId !== undefined &&
 			runtime.options.expectedCoordinatorId !== reply.coordinator_id)
 	)
@@ -475,7 +481,9 @@ export async function linkCoordinatorAccount(
 	if (
 		!origin ||
 		!isAuthControllerId(options.groupId) ||
-		(options.expectedIdentityId !== undefined && !isAuthControllerId(options.expectedIdentityId)) ||
+		!isAuthControllerId(options.expectedIdentityId) ||
+		(options.expectedAuthority !== "controller_attestation" &&
+			options.expectedAuthority !== "device_claim") ||
 		(options.expectedCoordinatorId !== undefined &&
 			!isAuthControllerId(options.expectedCoordinatorId)) ||
 		(options.assertCurrentContext !== undefined &&

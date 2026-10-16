@@ -151,6 +151,8 @@ it("runs the mounted Worker link, native Ed25519 finalize, completion and subseq
 		runtimeVerifier = randomBytes(32).toString("base64url");
 	const created = await signed(f, ROOT, {
 		group_id: f.review.groupId,
+		identity_id: f.review.identityId,
+		authority: "controller_attestation",
 		attempt_id: attemptId,
 		runtime_verifier_hash: hash(runtimeVerifier),
 		browser_start_hash: hash(startCode),
