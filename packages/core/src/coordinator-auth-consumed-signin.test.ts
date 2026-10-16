@@ -12,6 +12,7 @@ import {
 	type LinkFixture,
 	snapshot,
 } from "./coordinator-auth-link-test-fixtures.js";
+import { AUTH_SCHEMA_READINESS_SQL } from "./coordinator-auth-schema.js";
 import { AuthSessionOperations } from "./coordinator-auth-session.js";
 import type { CoordinatorAuthAccountSignInInput } from "./coordinator-auth-session-contract.js";
 import {
@@ -393,7 +394,9 @@ function registerBudget(test: SessionTest) {
 			);
 			await Promise.all(peers.map((peer) => peer.entered));
 			// Assert: no pre-read may make an admission decision against the empty budget.
-			expect(peers.map((peer) => peer.reads)).toEqual(inputs.map(() => []));
+			expect(
+				peers.map((peer) => peer.reads.filter((sql) => sql !== AUTH_SCHEMA_READINESS_SQL)),
+			).toEqual(inputs.map(() => []));
 			expect(sessionRows(f)).toEqual([[], []]);
 			// Act: each held batch sees commits made while its own batch was blocked.
 			const results = [];
@@ -543,7 +546,9 @@ function registerAtomicity(test: SessionTest) {
 			);
 			await Promise.all(peers.map((peer) => peer.entered));
 			// Assert: receipt ownership cannot come from a stale pre-read.
-			expect(peers.map((peer) => peer.reads)).toEqual([[], []]);
+			expect(
+				peers.map((peer) => peer.reads.filter((sql) => sql !== AUTH_SCHEMA_READINESS_SQL)),
+			).toEqual([[], []]);
 			expect(sessionRows(f)).toEqual([[], []]);
 			// Act: synchronous transactions still serialize on this single connection.
 			const results = [];

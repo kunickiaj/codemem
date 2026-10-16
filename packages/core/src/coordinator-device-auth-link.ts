@@ -17,6 +17,11 @@ import {
 	decodeCoordinatorAuthProof32,
 	hashCoordinatorAuthProofBytes32,
 } from "./coordinator-auth-proof.js";
+import {
+	assertConfiguredAuthSchema,
+	authSchemaUpgradeResponse,
+	CoordinatorAuthSchemaUpgradeRequiredError,
+} from "./coordinator-auth-schema.js";
 import type { CoordinatorEnrollment, CoordinatorStore } from "./coordinator-store-contract.js";
 
 export type CoordinatorDeviceAuthLinkStore = CoordinatorStore &
@@ -348,6 +353,7 @@ async function handleDeviceRequest(
 				authenticated: true,
 			});
 			if (limited) return limited;
+			await assertConfiguredAuthSchema(store);
 			const signer = {
 				groupId: enrollment.group_id,
 				deviceId: enrollment.device_id,
@@ -358,9 +364,15 @@ async function handleDeviceRequest(
 		} finally {
 			await store?.close();
 		}
-	} catch {
-		return c.json({ error: "auth_link_unavailable" }, 503);
+	} catch (error) {
+		return deviceAuthFailure(c, error);
 	}
+}
+
+function deviceAuthFailure(c: Context, error: unknown): Response {
+	if (error instanceof CoordinatorAuthSchemaUpgradeRequiredError)
+		return authSchemaUpgradeResponse();
+	return c.json({ error: "auth_link_unavailable" }, 503);
 }
 
 /** Mount only for the actual ready browser-auth adapter, never the legacy link option. */

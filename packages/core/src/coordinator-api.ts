@@ -10,9 +10,7 @@ import { Hono } from "hono";
 import { registerCoordinatorAuthControllerReviewRoutes } from "./coordinator-auth-controller-review-route.js";
 import {
 	AUTH_SCHEMA_UPGRADE_REQUIRED,
-	assertConfiguredAuthSchema,
 	authSchemaUpgradeResponse,
-	CoordinatorAuthSchemaUpgradeRequiredError,
 } from "./coordinator-auth-schema.js";
 import type {
 	CoordinatorBrowserAuth,
@@ -140,9 +138,13 @@ function registerOptionalCoordinatorAuth(
 	>,
 ): void {
 	if (opts.authLink && opts.browserAuth) throw new Error("coordinator_auth_configuration_conflict");
-	registerAuthSchemaReadiness(app, opts);
+	const unavailable =
+		opts.browserAuth?.kind === "unavailable" &&
+		opts.browserAuth.error === AUTH_SCHEMA_UPGRADE_REQUIRED
+			? authSchemaUpgradeResponse
+			: authenticationUnavailableResponse;
 	if (opts.browserAuth?.kind !== "ready") {
-		app.all("/v1/auth/account-link-status", authenticationUnavailableResponse);
+		app.all("/v1/auth/account-link-status", unavailable);
 	}
 	if (opts.browserAuth?.kind === "unavailable") {
 		for (const path of [
@@ -154,7 +156,7 @@ function registerOptionalCoordinatorAuth(
 			"/v1/auth/owner-attempts/*",
 			"/v1/admin/auth-controller-reviews",
 		]) {
-			app.all(path, authenticationUnavailableResponse);
+			app.all(path, unavailable);
 		}
 		return;
 	}
@@ -179,36 +181,6 @@ function registerOptionalCoordinatorAuth(
 		});
 		ready.auth.register(app, ready.clientKey);
 	}
-}
-
-function registerAuthSchemaReadiness(app: Hono, opts: CreateCoordinatorAppOptions): void {
-	const enabled =
-		opts.authLink?.config.enabled ||
-		opts.browserAuth?.kind === "ready" ||
-		(opts.browserAuth?.kind === "unavailable" &&
-			opts.browserAuth.error === AUTH_SCHEMA_UPGRADE_REQUIRED);
-	if (!enabled) return;
-	app.use("*", async (context, next) => {
-		const path = context.req.path;
-		if (
-			!path.startsWith("/auth/") &&
-			!path.startsWith("/v1/auth/") &&
-			path !== "/v1/admin/auth-controller-reviews"
-		)
-			return next();
-		let store: CoordinatorStore | undefined;
-		try {
-			store = opts.storeFactory();
-			await assertConfiguredAuthSchema(store);
-		} catch (error) {
-			if (error instanceof CoordinatorAuthSchemaUpgradeRequiredError)
-				return authSchemaUpgradeResponse();
-			return authenticationUnavailableResponse();
-		} finally {
-			await store?.close();
-		}
-		return next();
-	});
 }
 
 export interface CoordinatorVerifyRequestInput {

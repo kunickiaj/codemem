@@ -6,6 +6,11 @@ import {
 	captureVerifiedSnapshot,
 	isAuthControllerId,
 } from "./coordinator-auth-controller.js";
+import {
+	assertConfiguredAuthSchema,
+	authSchemaUpgradeResponse,
+	CoordinatorAuthSchemaUpgradeRequiredError,
+} from "./coordinator-auth-schema.js";
 import type {
 	CoordinatorEnrollment,
 	CoordinatorInvite,
@@ -302,11 +307,14 @@ async function handleReview(c: Context, deps: CoordinatorControllerReviewDeps): 
 			const input = captureInput(deps.parseJsonObject(raw));
 			if (!input) return c.json({ error: "review_invalid_input" }, 400);
 			store = deps.storeFactory();
+			await assertConfiguredAuthSchema(store);
 			return await applyReview(c, store, input, deps.config.coordinatorId);
 		} finally {
 			await store?.close();
 		}
-	} catch {
+	} catch (error) {
+		if (error instanceof CoordinatorAuthSchemaUpgradeRequiredError)
+			return authSchemaUpgradeResponse();
 		return c.json({ error: "review_unavailable" }, 503);
 	}
 }
