@@ -99,7 +99,7 @@ interface AccountLinkStatusSubject {
 	deviceId: string;
 	fingerprint: string;
 }
-type AccountMetadata = { email?: string; displayName?: string };
+type AccountMetadata = { email?: string; displayName?: string; pictureUrl?: string };
 
 /**
  * Signed-device account-link status for the requested Identity.

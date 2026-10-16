@@ -42,7 +42,7 @@ export interface AccountLinkViewV1 {
 				identityId: string | null;
 				state: "review_required" | "unlinked" | "linked" | "revoked" | "conflict";
 				identityMatches: boolean;
-				account: { email?: string; displayName?: string } | null;
+				account: { email?: string; displayName?: string; pictureUrl?: string } | null;
 		  };
 	canLink: boolean;
 	blockedReason:

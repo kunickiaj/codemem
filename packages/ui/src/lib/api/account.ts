@@ -56,7 +56,7 @@ export type AccountView = {
 				identityId: string | null;
 				state: "review_required" | "unlinked" | "linked" | "revoked" | "conflict";
 				identityMatches: boolean;
-				account: null | { email?: string; displayName?: string };
+				account: null | { email?: string; displayName?: string; pictureUrl?: string };
 		  };
 	canLink: boolean;
 	blockedReason:
@@ -239,6 +239,25 @@ export function validAccountBrowserUrl(value: string, origin: string): boolean {
 			!url.username &&
 			!url.password &&
 			!url.hash
+		);
+	} catch {
+		return false;
+	}
+}
+
+/** Mirrors the coordinator's conservative Google avatar policy; never fetch arbitrary URLs. */
+export function validAccountPictureUrl(value: unknown): value is string {
+	if (typeof value !== "string" || value.length > 2048 || /[\p{Cc}\p{Cf}\p{Cs}\\#]/u.test(value))
+		return false;
+	try {
+		const url = new URL(value);
+		return (
+			url.href === value &&
+			url.protocol === "https:" &&
+			url.hostname === "lh3.googleusercontent.com" &&
+			!url.username &&
+			!url.password &&
+			!url.port
 		);
 	} catch {
 		return false;

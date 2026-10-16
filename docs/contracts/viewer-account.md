@@ -76,6 +76,30 @@ matching, unlinked subject authorized by `device_claim` or
 `controller_attestation`; the broker never publishes an operator review or grants
 access. Unsupported, offline, and rejected reads do not imply that Google is required.
 
+### Linked profile display
+
+`remote.account` contains only optional `displayName`, verified `email`, and
+`pictureUrl` display fields. Older responses with no picture remain valid. The
+coordinator omits unsafe persisted pictures; its strict status client rejects
+unknown account keys and invalid picture URLs. Pictures use the same conservative
+Google host policy as the hosted account pages: HTTPS on
+`lh3.googleusercontent.com`, without credentials, non-default ports, or fragments.
+Revoked links, mismatched Identities, and changed local contexts expose no profile.
+
+The Viewer shows the available name, verified email, and “Linked to Google”, with
+Identity, device, and coordinator information below the account summary. Missing
+metadata stays missing: existing links need no relink, and the Viewer does not
+backfill account data. Missing, blocked, or failed photos fall back to initials
+or a generic Google marker.
+
+Avatar requests go directly to Google, which can see the browser's network address.
+Images load lazily with `no-referrer` and anonymous CORS (no cross-origin
+credentials). Google must allow that CORS request; otherwise the fallback remains.
+The Viewer currently sends no document Content Security Policy (CSP); this change
+does not add or relax one. Any deployment CSP must permit
+`img-src https://lh3.googleusercontent.com` to show photos; a stricter policy keeps
+the fallback. No avatar is fetched or proxied by the Viewer server.
+
 ### Device-claim status
 
 Version-2 coordinator status sends the running Identity as `identity_id` and the

@@ -4,6 +4,7 @@ import { type AppOptions, createApp } from "../index.js";
 
 const ORIGIN = "http://127.0.0.1:7441";
 const PATH = "/api/account/link-status";
+const pictureUrl = "https://lh3.googleusercontent.com/a/photo";
 const local = {
 	deviceId: "device-a",
 	fingerprint: "a".repeat(64),
@@ -86,7 +87,10 @@ function status(
 			identityId,
 			authority,
 			...(state === "linked"
-				? { state, account: { email: "fixture@example.test", displayName: "Fixture name" } }
+				? {
+						state,
+						account: { email: "fixture@example.test", displayName: "Fixture name", pictureUrl },
+					}
 				: { state, account: null }),
 		},
 	};
@@ -131,7 +135,9 @@ describe("account status route", () => {
 				operation: null,
 			});
 			expect(body.remote.account).toEqual(
-				state === "linked" ? { email: "fixture@example.test", displayName: "Fixture name" } : null,
+				state === "linked"
+					? { email: "fixture@example.test", displayName: "Fixture name", pictureUrl }
+					: null,
 			);
 			if (state === "review_required") expect(body.blockedReason).toBe("review_required");
 			expect(new Date(body.checkedAt).toISOString()).toBe(body.checkedAt);
@@ -164,6 +170,7 @@ describe("account status route", () => {
 				remote: { identityMatches: false, account: null },
 			});
 			expect(JSON.stringify(body)).not.toContain("fixture@example.test");
+			expect(JSON.stringify(body)).not.toContain(pictureUrl);
 		},
 	);
 	it.each(["groupId", "deviceId", "fingerprint"] as const)(
@@ -180,6 +187,7 @@ describe("account status route", () => {
 				remote: { kind: "unavailable", code: "context_changed" },
 			}); // Assert
 			expect(JSON.stringify(body)).not.toContain("fixture@example.test");
+			expect(JSON.stringify(body)).not.toContain(pictureUrl);
 		},
 	);
 });

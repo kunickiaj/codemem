@@ -1,4 +1,9 @@
-import type { AccountOperation, AccountView } from "../lib/api/account";
+import { useState } from "preact/hooks";
+import {
+	type AccountOperation,
+	type AccountView,
+	validAccountPictureUrl,
+} from "../lib/api/account";
 import { useMyAccount } from "./my-account-flow";
 
 const SCHEMA_UPGRADE_MESSAGE =
@@ -105,19 +110,61 @@ function currentBlockGuidance(view: AccountView | null, operation: AccountOperat
 	return null;
 }
 
+function AccountAvatar({ displayName, pictureUrl }: { displayName?: string; pictureUrl?: string }) {
+	const [failedUrl, setFailedUrl] = useState<string>();
+	const initials = (displayName ?? "")
+		.trim()
+		.split(/\s+/u)
+		.filter(Boolean)
+		.filter((_, index, words) => index === 0 || index === words.length - 1)
+		.map((word) => Array.from(word)[0])
+		.join("")
+		.toLocaleUpperCase();
+	const showPhoto = validAccountPictureUrl(pictureUrl) && pictureUrl !== failedUrl;
+	return (
+		<span className="my-account-avatar" aria-hidden="true">
+			<span>{initials || "G"}</span>
+			{showPhoto ? (
+				<img
+					src={pictureUrl}
+					alt=""
+					width="48"
+					height="48"
+					referrerPolicy="no-referrer"
+					loading="lazy"
+					decoding="async"
+					crossOrigin="anonymous"
+					onError={() => setFailedUrl(pictureUrl)}
+				/>
+			) : null}
+		</span>
+	);
+}
+
 function VerifiedAccount({ view }: { view: AccountView }) {
 	if (
 		view.remote.kind !== "status" ||
 		view.remote.state !== "linked" ||
-		!view.remote.identityMatches ||
-		!view.remote.account
+		!view.remote.identityMatches
 	)
 		return null;
-	const { displayName, email } = view.remote.account;
+	const { displayName, email, pictureUrl } = view.remote.account ?? {};
 	return (
-		<div className="recipient-policy-sharing-identity-rows">
-			<strong>{displayName || email || "Google account linked"}</strong>
-			{displayName && email ? <p className="small">{email}</p> : null}
+		<div className="my-account-profile">
+			<AccountAvatar
+				key={`${view.contextId}:${pictureUrl ?? ""}`}
+				displayName={displayName}
+				pictureUrl={pictureUrl}
+			/>
+			<div className="my-account-profile-text">
+				<strong>{displayName || "Google account"}</strong>
+				{email ? (
+					<p className="small">
+						{email} <span>· Verified email</span>
+					</p>
+				) : null}
+				<p className="small">Linked to Google</p>
+			</div>
 		</div>
 	);
 }
@@ -248,7 +295,7 @@ export function MyAccount() {
 				</p>
 			) : null}
 			{view?.local ? (
-				<p className="small">
+				<p className="small my-account-technical-details">
 					Codemem Identity: {view.local.identityLabel || view.local.identityId}
 					{" · "}Device: {view.local.deviceLabel || view.local.deviceId}
 					{view.coordinator ? <> · Coordinator: {view.coordinator.origin}</> : null}

@@ -3,6 +3,7 @@ import {
 	readAccountLinkDevice,
 	signAccountLinkRequest,
 } from "./coordinator-account-link-signer.js";
+import { projectAccountProfileView } from "./coordinator-auth-browser-view.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import type {
 	CoordinatorAccountLinkStatusV2,
@@ -53,7 +54,10 @@ function displayText(value: unknown, limit: number): value is string {
 	);
 }
 function accountMetadata(value: unknown): NonNullable<CoordinatorAccountLinkStatusV2["account"]> {
-	if (!record(value) || Object.keys(value).some((key) => key !== "email" && key !== "displayName"))
+	if (
+		!record(value) ||
+		Object.keys(value).some((key) => !["email", "displayName", "pictureUrl"].includes(key))
+	)
 		throw new Error("Invalid status.");
 	const account: NonNullable<CoordinatorAccountLinkStatusV2["account"]> = {};
 	if (Object.hasOwn(value, "email")) {
@@ -63,6 +67,11 @@ function accountMetadata(value: unknown): NonNullable<CoordinatorAccountLinkStat
 	if (Object.hasOwn(value, "displayName")) {
 		if (!displayText(value.displayName, 256)) throw new Error("Invalid status.");
 		account.displayName = value.displayName;
+	}
+	if (Object.hasOwn(value, "pictureUrl")) {
+		const { pictureUrl } = projectAccountProfileView(value, "https://accounts.google.com");
+		if (!pictureUrl || pictureUrl !== value.pictureUrl) throw new Error("Invalid status.");
+		account.pictureUrl = pictureUrl;
 	}
 	return account;
 }

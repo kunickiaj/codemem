@@ -109,6 +109,36 @@ function snapshot() {
 	};
 }
 
+it.each([
+	{ displayName: "Test Person" },
+	{ displayName: "Test Person", pictureUrl: "https://lh3.googleusercontent.com/a/photo" },
+])("accepts optional trusted profile photo %j", async (account) => {
+	// Arrange: older coordinators may omit the photo field entirely.
+	const dto = status({ account });
+	transport.mockResolvedValue(Response.json(dto));
+	// Act
+	const result = await read(options);
+	// Assert
+	expect(result).toEqual({ kind: "status", status: dto });
+});
+
+it.each([
+	{ pictureUrl: "http://lh3.googleusercontent.com/a/photo" },
+	{ pictureUrl: "data:image/png;base64,AA==" },
+	{ pictureUrl: "https://user:pass@lh3.googleusercontent.com/a/photo" },
+	{ pictureUrl: "https://lh3.googleusercontent.com:8443/a/photo" },
+	{ pictureUrl: "https://lh3.googleusercontent.com.evil.test/a/photo" },
+	{ pictureUrl: "https://images.example.test/a/photo" },
+	{ pictureUrl: "https://lh3.googleusercontent.com/a/photo", subject: "unexpected" },
+])("rejects unsafe photos and unknown account keys %j", async (account) => {
+	// Arrange: adding an optional field must not relax the strict account contract.
+	transport.mockResolvedValue(Response.json(status({ account })));
+	// Act
+	const result = await read(options);
+	// Assert
+	expect(result).toEqual({ kind: "unavailable", code: "invalid_response" });
+});
+
 function logicalSnapshot(connection: Database.Database) {
 	return {
 		schema: connection.prepare("SELECT * FROM sqlite_master ORDER BY name").all(),

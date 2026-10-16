@@ -1,3 +1,4 @@
+import { projectAccountProfileView } from "./coordinator-auth-browser-view.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import {
 	AUTH_DEVICE_CLAIM_CURRENT_SUBJECT_COMPATIBLE_SQL,
@@ -47,6 +48,7 @@ interface StatusRow {
 	display_name: unknown;
 	email: unknown;
 	email_verified: unknown;
+	picture_url: unknown;
 	authority: "device_claim" | "controller_attestation";
 	valid: number;
 	claim_count: number;
@@ -99,6 +101,11 @@ function projectStatus(
 	const email = row.email_verified === 1 ? safeDisplayText(row.email, 320) : undefined;
 	if (displayName !== undefined) account.displayName = displayName;
 	if (email !== undefined) account.email = email;
+	const { pictureUrl } = projectAccountProfileView(
+		{ pictureUrl: row.picture_url },
+		row.issuer ?? "",
+	);
+	if (pictureUrl !== undefined) account.pictureUrl = pictureUrl;
 	return { ...derived, state: "linked", account };
 }
 
@@ -213,9 +220,19 @@ export class AccountLinkStatusOperations implements CoordinatorAccountLinkStatus
  SELECT a.*, (SELECT count(*) FROM claims) AS claim_count,
  (SELECT count(*) FROM controller) AS controller_count,
  (SELECT controller_identity_id FROM controller LIMIT 1) AS controller_identity,
- m.display_name, m.email, m.email_verified FROM candidates a
- LEFT JOIN coordinator_auth_account_profiles m ON m.coordinator_id = ? AND m.link_id = a.link_id
- AND a.identity_id = ? LIMIT 1`,
+  CASE WHEN m.link_id IS NOT NULL THEN m.display_name ELSE b.display_name END AS display_name,
+  CASE WHEN m.link_id IS NOT NULL THEN m.email ELSE b.email END AS email,
+  CASE WHEN m.link_id IS NOT NULL THEN m.email_verified ELSE b.email_verified END AS email_verified,
+  CASE WHEN m.link_id IS NOT NULL THEN m.picture_url ELSE b.picture_url END AS picture_url
+  FROM candidates a
+  LEFT JOIN coordinator_auth_account_links l ON l.coordinator_id = ? AND l.link_id = a.link_id
+  AND l.identity_id = a.identity_id AND a.identity_id = ? AND l.issuer = a.issuer
+  AND l.revoked_at_ms IS NULL
+  LEFT JOIN coordinator_auth_account_profiles m ON m.coordinator_id = l.coordinator_id
+  AND m.link_id = l.link_id
+  LEFT JOIN coordinator_auth_link_profiles b ON b.coordinator_id = l.coordinator_id
+  AND b.link_id = l.link_id AND b.attempt_id = l.attempt_id AND b.issuer = l.issuer
+  AND b.subject = l.subject AND b.auth_config_revision = l.auth_config_revision LIMIT 1`,
 				values: [
 					...captured.values,
 					...authLinkControllerSourceValues(c, s),
