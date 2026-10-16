@@ -82,7 +82,7 @@ describe("My Account safe operator review guidance", () => {
 		"$(touch marker)",
 		"`touch marker`",
 		"group;touch marker",
-	])("keeps review guidance command fixed for group %s", async (groupId) => {
+	])("keeps review recovery free of admin commands for group %s", async (groupId) => {
 		// Arrange: group arguments must never become executable example text.
 		view = status({
 			selectedGroupId: groupId,
@@ -101,20 +101,21 @@ describe("My Account safe operator review guidance", () => {
 		// Act
 		await show();
 		// Assert
-		const details = mount.querySelector("details");
-		expect(details?.querySelector("code")?.textContent).toBe(
-			'codemem coordinator review-device-owner "your-group"',
+		expect(mount.textContent).toMatch(/profile/i);
+		expect(mount.textContent).toMatch(/group/i);
+		expect(mount.textContent).toMatch(/operator|person who runs/i);
+		expect(mount.textContent).toMatch(/device|binding/i);
+		expect(mount.textContent).not.toMatch(
+			/review-device-owner|one-time owner review|administrator|credential|keys directory/i,
 		);
-		expect(details?.textContent).toContain('Replace "your-group" with your group argument');
+		expect(mount.querySelector("code")).toBeNull();
 		expect(mount.textContent).not.toContain(groupId);
-		expect(details?.textContent).toContain(
-			"exact database, config, coordinator and environment settings (including the keys directory)",
-		);
+		expect(button("Link Google account").disabled).toBe(true);
 	});
 });
 
 describe("My Account optional device review instructions", () => {
-	it("keeps the short live status separate from closed, ordered operator instructions", async () => {
+	it("keeps device recovery separate from the short live status without admin onboarding", async () => {
 		// Arrange
 		view = status({
 			canLink: false,
@@ -132,9 +133,7 @@ describe("My Account optional device review instructions", () => {
 		await show();
 		// Assert: technical instructions are available without filling the live status.
 		const liveStatus = mount.querySelector('[role="status"][aria-live="polite"]');
-		expect(liveStatus?.textContent).toBe(
-			"This device needs a one-time owner review before Google sign-in.",
-		);
+		expect(liveStatus?.textContent).toMatch(/device|Identity|profile/i);
 		expect(liveStatus?.textContent).not.toMatch(
 			/codemem coordinator|database|config|keys directory/,
 		);
@@ -143,24 +142,14 @@ describe("My Account optional device review instructions", () => {
 		expect(details.open).toBe(false);
 		expect(details.hasAttribute("open")).toBe(false);
 		expect(details.firstElementChild?.tagName).toBe("SUMMARY");
-		expect(details.querySelector("summary")?.textContent).toBe("How to approve this device");
+		expect(details.querySelector("summary")?.textContent).toMatch(/device|link|check/i);
 		expect(details.querySelector("summary")?.hasAttribute("role")).toBe(false);
-		expect(details.textContent).toContain(
-			"The coordinator administrator must review this device’s existing Identity.",
-		);
-		const steps = [...details.querySelectorAll("ol > li")].map((step) => step.textContent);
-		expect(steps).toHaveLength(4);
-		expect(steps[0]).toContain(
-			"On this device, reuse the exact database, config, coordinator and environment settings (including the keys directory) used to start this Viewer.",
-		);
-		expect(steps[1]).toContain('codemem coordinator review-device-owner "your-group"');
-		expect(steps[1]).toContain(
-			'Replace "your-group" with your group argument, quoted for your shell.',
-		);
-		expect(steps[2]).toBe("Review the preview before confirming. Confirmation defaults to No.");
-		expect(steps[3]).toBe("Return here, choose Check status, then Link Google account.");
-		expect(details.textContent).toContain(
-			"This review does not move your Identity or grant sharing access.",
+		expect(details.textContent).toMatch(/profile/i);
+		expect(details.textContent).toMatch(/group/i);
+		expect(details.textContent).toMatch(/operator|person who runs/i);
+		expect(details.textContent).toMatch(/binding|device/i);
+		expect(mount.textContent).not.toMatch(
+			/review-device-owner|one-time owner review|administrator|credential|keys directory/i,
 		);
 		expect(details.previousElementSibling?.textContent).toContain("Codemem Identity:");
 		expect(details.nextElementSibling?.contains(button("Check status"))).toBe(true);
@@ -209,6 +198,79 @@ describe("My Account optional device review instructions", () => {
 		expect(transport).toHaveBeenCalledTimes(initialRequests);
 		expect(window.open).not.toHaveBeenCalled();
 	});
+});
+
+describe("My Account unavailable recovery", () => {
+	it.each([
+		[
+			"coordinator_incompatible",
+			/coordinator.*rejected|rejected.*request/i,
+			/update/i,
+			/person who runs|operator/i,
+		],
+		[
+			"coordinator_unreachable",
+			/connect|network|reach/i,
+			/check/i,
+			/connection|network|address|coordinator/i,
+		],
+		["coordinator_unavailable", /unavailable|service/i, /wait|later/i, /check|try/i],
+		["coordinator_rejected", /reject/i, /enroll|device/i, /operator|person who runs/i],
+		["rate_limited", /too many|limit/i, /wait/i, /check|try/i],
+		["device_unavailable", /device/i, /profile/i, /check|restart|open/i],
+		[
+			"coordinator_auth_schema_upgrade_required",
+			/schema/i,
+			/upgrade/i,
+			/operator|person who runs/i,
+		],
+		["context_changed", /changed/i, /profile|group/i, /check/i],
+		["invalid_response", /reply|response/i, /operator|person who runs/i, /update|check/i],
+	] as const)(
+		"gives actionable %s guidance without automatically linking or polling",
+		async (code, reason, action, helper) => {
+			// Arrange: unavailable status cannot prove whether Google is linked.
+			view = status({ canLink: false, remote: { kind: "unavailable", code } });
+			// Act: elapsed time and a disabled link click must not trigger account work.
+			await show();
+			await click("Link Google account");
+			await tick();
+			await tick();
+			// Assert: each known reason has its own safe recovery, not a generic retry.
+			const text = mount.querySelector('[role="status"]')?.textContent;
+			expect(text).toMatch(reason);
+			expect(text).toMatch(action);
+			expect(text).toMatch(helper);
+			expect(text).not.toContain("Account status could not be verified. Check status again;");
+			expect(text).not.toMatch(
+				/No Google account is linked|This Google account is linked|review-device-owner/,
+			);
+			expect(button("Link Google account").disabled).toBe(true);
+			expect(calls("link-status")).toHaveLength(1);
+			expect(transport.mock.calls.some(([, options]) => options?.method === "POST")).toBe(false);
+			expect(window.open).not.toHaveBeenCalled();
+		},
+	);
+	it.each(["unknown_reason", "__proto__", "constructor", `private-upstream-error ${privateUrl}`])(
+		"uses a fixed safe fallback for unknown unavailable reason %s",
+		async (code) => {
+			// Arrange: future or malicious reason strings are not display copy.
+			view = status({ canLink: false, remote: { kind: "unavailable", code } });
+			// Act
+			await show();
+			await tick();
+			// Assert
+			expect(mount.textContent).not.toContain(code);
+			expect(mount.innerHTML).not.toContain("private-fixture");
+			expect(mount.querySelector('[role="status"]')?.textContent).toMatch(
+				/check|operator|person who runs/i,
+			);
+			expect(button("Link Google account").disabled).toBe(true);
+			expect(calls("link-status")).toHaveLength(1);
+			expect(transport.mock.calls.some(([, options]) => options?.method === "POST")).toBe(false);
+			expect(window.open).not.toHaveBeenCalled();
+		},
+	);
 });
 
 describe("My Account read-only status", () => {
@@ -294,16 +356,8 @@ describe("My Account read-only status", () => {
 		expect(mount.textContent).not.toContain("Unverified secret");
 		expect(mount.textContent).not.toContain("unverified@example.test");
 		if (state === "review_required") {
-			const details = mount.querySelector("details");
-			expect(details?.textContent).toContain("review-device-owner");
-			expect(details?.textContent).toContain(
-				"reuse the exact database, config, coordinator and environment settings (including the keys directory) used to start this Viewer",
-			);
-			expect(details?.querySelector("ol > li:nth-child(2)")?.textContent).toContain(
-				"Run this example with those same settings:",
-			);
-			expect(details?.textContent).toContain("Confirmation defaults to No");
-			expect(mount.textContent).not.toContain("enroll-owner");
+			expect(mount.textContent).toMatch(/profile/i);
+			expect(mount.textContent).not.toMatch(/review-device-owner|enroll-owner/);
 		} else expect(mount.querySelector("details")).toBeNull();
 		if (state === "conflict") expect(mount.textContent).toContain("conflicting account link");
 	});
@@ -351,15 +405,11 @@ describe("My Account retained outcomes and current guidance", () => {
 			await show();
 			// Assert
 			expect(mount.querySelector('[role="status"]')?.textContent).toBe(outcome);
-			expect(mount.textContent).toContain(
-				"This device needs a one-time owner review before Google sign-in.",
-			);
+			expect(mount.textContent).toMatch(/profile/i);
 			const details = mount.querySelector("details");
 			expect(details?.open).toBe(false);
-			expect(details?.querySelector("summary")?.textContent).toBe("How to approve this device");
-			expect(details?.querySelector("code")?.textContent).toBe(
-				'codemem coordinator review-device-owner "your-group"',
-			);
+			expect(details?.textContent).toMatch(/operator|person who runs/i);
+			expect(mount.textContent).not.toMatch(/review-device-owner|one-time owner review/);
 			expect(button("Link Google account").disabled).toBe(true);
 			expect(button("Check status").disabled).toBe(false);
 			expect(transport.mock.calls.some(([, options]) => options?.method === "POST")).toBe(false);
@@ -393,7 +443,7 @@ describe("My Account retained outcomes and current guidance", () => {
 					: "Linking did not finish",
 			);
 			expect(mount.textContent).toContain(
-				state === "review_required" ? "review-device-owner" : "does not match this local Identity",
+				state === "review_required" ? "profile" : "does not match this local Identity",
 			);
 			expect(button("Link Google account").disabled).toBe(true);
 			expect(mount.textContent).not.toContain("Unverified secret");

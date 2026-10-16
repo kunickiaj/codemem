@@ -387,11 +387,22 @@ describe("My Account synthetic end-to-end terminal states and context lifetime",
 			expect(button("Link Google account").disabled).toBe(true);
 			expect(mount.textContent).toContain(
 				{
-					review_required: "review-device-owner",
+					review_required: "Check the selected profile and group",
 					conflict: "conflicting account link",
 					revoked: "was revoked",
 				}[state],
 			);
+			if (state === "review_required") {
+				const details = mount.querySelector("details");
+				expect(details?.open).toBe(false);
+				expect(details?.querySelector("summary")?.textContent).toBe("What to check before linking");
+				expect(details?.textContent).toMatch(
+					/person who runs the coordinator.*device.*existing account link/,
+				);
+				expect(mount.textContent).not.toMatch(
+					/review-device-owner|enroll-owner|one-time owner review|administrator|credential/i,
+				);
+			}
 			expect(f.link).not.toHaveBeenCalled();
 			expect(f.open).not.toHaveBeenCalled();
 			expect(f.seen.every((entry) => entry.method === "GET")).toBe(true);

@@ -204,16 +204,20 @@ describe("My Account inside Sharing", () => {
 			if (state === "unavailable") expect(card().textContent).toContain("unavailable right now");
 			if (state === "review_required") {
 				expect(card().querySelector('[role="status"]')?.textContent).toBe(
-					"This device needs a one-time owner review before Google sign-in.",
+					"This profile can’t link Google yet. Check the selected profile and group. If they’re correct, ask the person who runs the coordinator to check this device.",
 				);
 				const details = required(card().querySelector("details"));
 				expect(details.open).toBe(false);
-				expect(details.querySelector("summary")?.textContent).toBe("How to approve this device");
-				expect(details.querySelector("code")?.textContent).toBe(
-					'codemem coordinator review-device-owner "your-group"',
+				expect(details.querySelector("summary")?.textContent).toBe("What to check before linking");
+				const steps = [...details.querySelectorAll("ol > li")].map((step) => step.textContent);
+				expect(steps[0]).toMatch(/profile, group and coordinator/);
+				expect(steps[1]).toMatch(/person who runs the coordinator.*device.*existing account link/);
+				expect(steps[2]).toContain("Check status");
+				expect(card().textContent).not.toMatch(
+					/review-device-owner|enroll-owner|one-time owner review|administrator|credential/i,
 				);
-				expect(card().textContent).not.toContain("review-device-owner group-one");
-				expect(card().textContent).not.toContain("enroll-owner");
+				expect(button("Link Google account").disabled).toBe(true);
+				expect(button("Check status").disabled).toBe(false);
 			} else expect(card().querySelector("details")).toBeNull();
 			assertNoAccountWrites();
 		},

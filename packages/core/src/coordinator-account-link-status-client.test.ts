@@ -359,14 +359,17 @@ it("signs the exact group=0 GET with an empty body and manual redirects", async 
 
 it.each([
 	[404, "unsupported", undefined],
+	[400, "unavailable", "coordinator_incompatible"],
 	[503, "unavailable", "coordinator_unavailable"],
 	[429, "unavailable", "rate_limited"],
 	[401, "unavailable", "coordinator_rejected"],
 	[403, "unavailable", "coordinator_rejected"],
 	[409, "unavailable", "coordinator_rejected"],
-	[500, "unavailable", "coordinator_unreachable"],
-	[302, "unavailable", "coordinator_unreachable"],
-	[204, "unavailable", "coordinator_unreachable"],
+	[500, "unavailable", "coordinator_unavailable"],
+	[502, "unavailable", "coordinator_unavailable"],
+	[504, "unavailable", "coordinator_unavailable"],
+	[302, "unavailable", "invalid_response"],
+	[204, "unavailable", "invalid_response"],
 ] as const)(
 	"maps HTTP %s without trusting or exposing its text body",
 	async (httpStatus, kind, code) => {
@@ -381,6 +384,27 @@ it.each([
 		expect(JSON.stringify(result)).not.toMatch(/private upstream|unlinked|identity-a/);
 	},
 );
+
+it("reports an incompatible request without leaking proof URLs or retrying a legacy request", async () => {
+	// Arrange: error bodies are untrusted, including an upstream proof URL.
+	transport.mockResolvedValue(
+		Response.json(
+			{
+				error: "auth_link_invalid_input",
+				proofUrl: "https://coordinator.example.test/proof?token=private-proof-marker",
+			},
+			{ status: 400 },
+		),
+	);
+	const before = snapshot();
+	// Act
+	const result = await read(options);
+	// Assert: one signed request, no V1 fallback, and no account-state claim.
+	expect(result).toEqual({ kind: "unavailable", code: "coordinator_incompatible" });
+	expect(JSON.stringify(result)).not.toMatch(/auth_link_invalid_input|proof|token|unlinked/);
+	expect(transport).toHaveBeenCalledOnce();
+	expect(snapshot()).toEqual(before);
+});
 
 it("reports the fixed schema-upgrade refusal without reading an upstream error body", async () => {
 	transport.mockResolvedValue(

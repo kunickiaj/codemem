@@ -1,13 +1,48 @@
 import type { AccountOperation, AccountView } from "../lib/api/account";
 import { useMyAccount } from "./my-account-flow";
 
+const SCHEMA_UPGRADE_MESSAGE =
+	"The coordinator needs a database schema upgrade before Google linking can work. Ask the person who runs it to back up and upgrade the coordinator. Normal device sync is still available.";
+
 const FAILURE_MESSAGES: Partial<Record<NonNullable<AccountOperation["failure"]>, string>> = {
-	schema_upgrade_required:
-		"Ask the coordinator operator to back up the coordinator database and complete its explicit auth-schema upgrade. Device-signed sync remains available.",
+	schema_upgrade_required: SCHEMA_UPGRADE_MESSAGE,
 	link_stopped: "Linking stopped. Check status before trying again.",
 	link_conflict:
 		"Account linking conflicts with an existing or revoked link. Ask the coordinator operator; this action cannot replace links or move Identities.",
 };
+
+const UNAVAILABLE_MESSAGES = new Map<string, string>([
+	[
+		"coordinator_incompatible",
+		"The coordinator rejected this Viewer’s Google-linking request. Ask the person who runs the coordinator to update it, then check status.",
+	],
+	[
+		"coordinator_unreachable",
+		"Can’t reach the coordinator. Check your connection and the coordinator address, then check status again.",
+	],
+	[
+		"coordinator_unavailable",
+		"The coordinator service is unavailable. Wait a moment, then check status. If it keeps failing, ask the person who runs it to check the service.",
+	],
+	[
+		"coordinator_rejected",
+		"The coordinator rejected this device’s request. Check the selected group and coordinator, or ask the person who runs it to check this device’s enrollment.",
+	],
+	["rate_limited", "Too many status requests. Wait a moment, then check status again."],
+	[
+		"device_unavailable",
+		"This Viewer can’t read the existing device identity or key. Check that you opened the correct Codemem profile.",
+	],
+	["coordinator_auth_schema_upgrade_required", SCHEMA_UPGRADE_MESSAGE],
+	[
+		"context_changed",
+		"The selected profile or group changed during the check. Check status again for the current selection.",
+	],
+	[
+		"invalid_response",
+		"The coordinator returned an unexpected account-linking response. Ask the person who runs it to check that the coordinator and Viewer are up to date.",
+	],
+]);
 
 function remoteSummary(view: AccountView): string {
 	if (view.setup === "group_selection_required")
@@ -15,18 +50,16 @@ function remoteSummary(view: AccountView): string {
 	if (view.setup !== "ready")
 		return "Account linking is not ready for this local Identity. Check the Viewer’s coordinator and device setup.";
 	if (view.remote.kind === "unsupported")
-		return "This coordinator does not support Google account linking.";
-	if (
-		view.remote.kind === "unavailable" &&
-		view.remote.code === "coordinator_auth_schema_upgrade_required"
-	)
+		return "Google linking is not available on this coordinator. Ask the person who runs it to enable or update its Google-linking service.";
+	if (view.remote.kind === "unavailable")
 		return (
-			FAILURE_MESSAGES.schema_upgrade_required ?? "The coordinator needs an auth-schema upgrade."
+			UNAVAILABLE_MESSAGES.get(view.remote.code) ??
+			"Google linking is unavailable. Check the selected coordinator, or ask the person who runs it for help."
 		);
-	if (view.remote.kind === "unavailable" || view.remote.kind === "not_checked")
-		return "Account status could not be verified. Check status again; this does not mean the Identity is unlinked.";
+	if (view.remote.kind === "not_checked")
+		return "Choose Check status to see whether you can link Google.";
 	if (view.remote.state === "review_required")
-		return "This device needs a one-time owner review before Google sign-in.";
+		return "This profile can’t link Google yet. Check the selected profile and group. If they’re correct, ask the person who runs the coordinator to check this device.";
 	if (view.remote.state === "conflict")
 		return "This Identity has a conflicting account link. An operator must resolve it; linking here cannot replace or merge accounts.";
 	if (!view.remote.identityMatches)
@@ -41,7 +74,8 @@ function remoteSummary(view: AccountView): string {
 }
 
 function accountSummary(view: AccountView | null, operation: AccountOperation | null): string {
-	if (!view) return "Account status is unavailable. This does not mean the Identity is unlinked.";
+	if (!view)
+		return "Google-linking status could not be loaded. Check that the Viewer is running, then check status again.";
 	if (operation?.state === "starting") return "Preparing Google sign-in…";
 	if (operation?.state === "awaiting_browser")
 		return "Waiting for Google sign-in. Keep this Viewer open on the same computer.";
@@ -88,33 +122,24 @@ function VerifiedAccount({ view }: { view: AccountView }) {
 	);
 }
 
-function DeviceReviewInstructions({ view }: { view: AccountView | null }) {
+function DeviceLinkRecovery({ view }: { view: AccountView | null }) {
 	if (view?.remote.kind !== "status" || view.remote.state !== "review_required") return null;
 	return (
 		<details className="recipient-policy-management-details">
-			<summary>How to approve this device</summary>
-			<p>The coordinator administrator must review this device’s existing Identity.</p>
+			<summary>What to check before linking</summary>
 			<ol>
+				<li>Check that the Viewer shows the profile, group and coordinator you intended to use.</li>
 				<li>
-					On this device, reuse the exact database, config, coordinator and environment settings
-					(including the keys directory) used to start this Viewer.
+					If those are correct, ask the person who runs the coordinator to check that this device is
+					enabled and whether an existing account link blocks it.
 				</li>
 				<li>
-					Run this example with those same settings:
-					<p>
-						<code>codemem coordinator review-device-owner "your-group"</code>
-					</p>
-					<p className="small">
-						Replace "your-group" with your group argument, quoted for your shell.
-					</p>
-				</li>
-				<li>Review the preview before confirming. Confirmation defaults to No.</li>
-				<li>
-					Return here, choose <strong>Check status</strong>, then{" "}
-					<strong>Link Google account</strong>.
+					After the issue is resolved, choose <strong>Check status</strong> before trying to link.
 				</li>
 			</ol>
-			<p className="small">This review does not move your Identity or grant sharing access.</p>
+			<p className="small">
+				Do not reset the profile or create another Identity to bypass this refusal.
+			</p>
 		</details>
 	);
 }
@@ -229,7 +254,7 @@ export function MyAccount() {
 					{view.coordinator ? <> · Coordinator: {view.coordinator.origin}</> : null}
 				</p>
 			) : null}
-			<DeviceReviewInstructions view={view} />
+			<DeviceLinkRecovery view={view} />
 			<AccountActions flow={flow} />
 		</section>
 	);

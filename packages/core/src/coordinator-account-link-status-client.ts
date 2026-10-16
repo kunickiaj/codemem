@@ -29,6 +29,7 @@ export type CoordinatorAccountLinkStatusRead =
 				| "coordinator_auth_schema_upgrade_required"
 				| "rate_limited"
 				| "coordinator_rejected"
+				| "coordinator_incompatible"
 				| "coordinator_unreachable"
 				| "invalid_response"
 				| "device_unavailable";
@@ -178,10 +179,11 @@ function responseFailure(response: Response): CoordinatorAccountLinkStatusRead |
 		return unavailable("coordinator_auth_schema_upgrade_required");
 	if (status === 200) return null;
 	if (status === 404) return { kind: "unsupported" };
-	if (status === 503) return unavailable("coordinator_unavailable");
+	if (status === 400) return unavailable("coordinator_incompatible");
+	if (status >= 500 && status < 600) return unavailable("coordinator_unavailable");
 	if (status === 429) return unavailable("rate_limited");
 	if ([401, 403, 409].includes(status)) return unavailable("coordinator_rejected");
-	return unavailable("coordinator_unreachable");
+	return unavailable("invalid_response");
 }
 async function readStatus(
 	options: ReadCoordinatorAccountLinkStatusOptions,

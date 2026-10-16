@@ -89,6 +89,21 @@ Status reads and link operations do not initialize a store, migrate a schema,
 generate keys, or change Identity assignments. Status responses return no private
 browser URLs, tokens, or admin credentials.
 
+### Failed status checks
+
+The Viewer reports a rejected linking request (`400`, `coordinator_incompatible`)
+separately from a network failure and asks the coordinator operator to update the
+service. This does not infer a remote version or whether an account is linked.
+Server failures, rate limits, refused device requests, schema upgrades, local
+device problems, and changed profile selections each have their own recovery
+guidance. Unexpected replies are not described as network outages, and raw
+upstream error bodies are never shown.
+
+`review_required` asks the user to check the selected profile and group, then
+contact the coordinator operator to check the device and existing links. It does
+not prescribe an administrator command as a client onboarding step. Status checks
+never start linking automatically; unavailable results keep linking disabled.
+
 ## In-process link lifecycle
 
 `createAccountLinkRegistry` permits one active operation in the foreground viewer's
