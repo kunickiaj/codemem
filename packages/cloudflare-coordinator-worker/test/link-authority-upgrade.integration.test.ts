@@ -64,6 +64,21 @@ beforeEach(async () => {
 });
 
 it.each([
+	"CREATE UNIQUE INDEX custom_claim_group ON coordinator_auth_device_claims(group_id)",
+	"CREATE TRIGGER custom_claim_insert BEFORE INSERT ON coordinator_auth_device_claims BEGIN SELECT RAISE(IGNORE); END;",
+])("native D1 rejects extra proof objects atomically: %s", async (damage) => {
+	// Arrange: all four reviewed proof objects exist before adding the custom object.
+	await env.COORDINATOR_DB.batch(proof.map((sql) => env.COORDINATOR_DB.prepare(sql)));
+	const before = await snapshot();
+	await env.COORDINATOR_DB.prepare(damage).run();
+	const schema = (await env.COORDINATOR_DB.prepare("SELECT * FROM sqlite_master ORDER BY name").all()).results;
+	// Act / Assert: neither the legacy links nor any schema object changes on rejection.
+	await expect(env.COORDINATOR_DB.batch(AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS.map((sql) => env.COORDINATOR_DB.prepare(sql)))).rejects.toThrow(/CHECK/);
+	expect(await snapshot()).toEqual(before);
+	expect((await env.COORDINATOR_DB.prepare("SELECT * FROM sqlite_master ORDER BY name").all()).results).toEqual(schema);
+});
+
+it.each([
 	"CREATE TABLE coordinator_auth_device_claims (claim_id TEXT)",
 	// SQLite resolves these names to the expected objects despite their case.
 	"CREATE TABLE COORDINATOR_AUTH_DEVICE_CLAIMS (claim_id TEXT)",

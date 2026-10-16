@@ -106,9 +106,12 @@ export const AUTH_DEVICE_CLAIM_DEFINITION_CHECKS = proofDefinitions.map((definit
 	const hex = [...definition]
 		.map((character) => character.charCodeAt(0).toString(16).padStart(2, "0"))
 		.join("");
+	let auxiliaryCheck = "";
+	if (header[1] === "TABLE")
+		auxiliaryCheck = ` AND (SELECT count(*) FROM sqlite_master WHERE tbl_name = ${quoteSql(header[2])} COLLATE NOCASE AND type IN ('index','trigger') AND sql IS NOT NULL) = 3`;
 	return {
 		name: header[2],
-		matches: `EXISTS (SELECT 1 FROM sqlite_master WHERE type = ${quoteSql(header[1].toLowerCase())} AND name = ${quoteSql(header[2])} COLLATE NOCASE AND ${canonicalProofSql("sql")} = ${canonicalProofSql(`CAST(X'${hex}' AS TEXT)`)})`,
+		matches: `EXISTS (SELECT 1 FROM sqlite_master WHERE type = ${quoteSql(header[1].toLowerCase())} AND name = ${quoteSql(header[2])} COLLATE NOCASE AND ${canonicalProofSql("sql")} = ${canonicalProofSql(`CAST(X'${hex}' AS TEXT)`)}${auxiliaryCheck})`,
 	};
 });
 

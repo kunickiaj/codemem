@@ -45,6 +45,8 @@ function snapshot(db: Database.Database) {
 
 it.each([
 	"CREATE TABLE coordinator_auth_device_claims (claim_id TEXT)",
+	`${proof.join("\n")} CREATE UNIQUE INDEX custom_claim_group ON coordinator_auth_device_claims(group_id);`,
+	`${proof.join("\n")} CREATE TRIGGER custom_claim_insert BEFORE INSERT ON coordinator_auth_device_claims BEGIN SELECT RAISE(IGNORE); END;`,
 	// SQLite resolves these names to the expected objects despite their case.
 	"CREATE TABLE COORDINATOR_AUTH_DEVICE_CLAIMS (claim_id TEXT)",
 	"CREATE TABLE Coordinator_Auth_Device_Claims (claim_id TEXT)",

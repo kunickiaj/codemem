@@ -142,6 +142,26 @@ it("does not create a database when an operator selects a missing file", () => {
 afterAll(() => rmSync(directory, { recursive: true, force: true }));
 
 it.each([
+	"CREATE UNIQUE INDEX custom_claim_group ON coordinator_auth_device_claims(group_id)",
+	"CREATE TRIGGER custom_claim_insert BEFORE INSERT ON coordinator_auth_device_claims BEGIN SELECT RAISE(IGNORE); END;",
+])("rejects extra proof objects without repairing them: %s", async (damage) => {
+	// Arrange: the complete reviewed proof schema passes before adding a custom object.
+	const store = new BetterSqliteCoordinatorStore(":memory:");
+	try {
+		await expect(store.assertAuthSchemaReady()).resolves.toBeUndefined();
+		store.db.exec(damage);
+		const schema = store.db.prepare("SELECT * FROM sqlite_master ORDER BY name").all();
+		// Act / Assert: the extra object invalidates readiness and remains untouched.
+		await expect(store.assertAuthSchemaReady()).rejects.toBeInstanceOf(
+			CoordinatorAuthSchemaUpgradeRequiredError,
+		);
+		expect(store.db.prepare("SELECT * FROM sqlite_master ORDER BY name").all()).toEqual(schema);
+	} finally {
+		await store.close();
+	}
+});
+
+it.each([
 	"CREATE TABLE coordinator_auth_device_claims (claim_id TEXT)",
 	proof[0].replace("UNIQUE (coordinator_id, identity_id),", ""),
 	proof[0].replace("'text'", "'te xt'"),
