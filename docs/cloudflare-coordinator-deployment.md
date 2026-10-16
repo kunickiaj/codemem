@@ -185,6 +185,23 @@ migrations; do not replay from `0001` or reset the database to make the migratio
 
 ## 6. Deploy the Worker
 
+### Linked-account display metadata rollout
+
+Migration `0033_add_auth_link_profiles.sql` adds an empty display-only table. Review and apply it before deploying
+upgraded Worker readers and writers; both require the new table and report a schema upgrade error when it is absent.
+Pause auth writers and back up the database first. This change includes
+source SQL only: it does not apply a migration or deploy a Worker. SQLite coordinators create the empty table during
+normal schema initialization. Existing links receive no backfill; they remain without display metadata until an
+explicit verified sign-in refreshes their profile.
+
+Only verified callback claims are staged, tied to the exact attempt, issuer, subject, browser transaction and auth
+configuration. Finalization promotes them in the same transaction as the account link. Cancelled, failed, expired,
+conflicting or mismatched attempts cannot publish a profile. Maintenance removes failed/expired/config-changed
+staging and revoked-link snapshots; authenticated revocation cleanup also purges promoted display rows. Readers
+must join promoted rows to the matching live account link, and never return private staging. Explicit sign-in
+snapshots take precedence, including an intentionally empty snapshot. Names, email and pictures are display hints,
+not identity or permission evidence. No coordinator browser session is required to persist a successful link profile.
+
 From `examples/cloudflare-coordinator/`:
 
 ```fish

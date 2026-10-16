@@ -3,6 +3,7 @@ import {
 	AUTH_DEVICE_CLAIM_DEFINITION_CHECKS,
 	COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_STATEMENTS,
 } from "./coordinator-auth-device-claim-schema.js";
+import { AUTH_LINK_PROFILE_SCHEMA_SQL } from "./coordinator-auth-link-profile.js";
 
 /**
  * Planned, explicit upgrade source only. Nothing imports this from store-open or
@@ -325,6 +326,7 @@ export const AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS = Object.freeze([
 		.map((sql) => sql.trim())
 		.filter(Boolean),
 	...COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_STATEMENTS,
+	AUTH_LINK_PROFILE_SCHEMA_SQL,
 ]);
 // D1 file imports reject empty statements; normalize only terminal delimiters, not trigger bodies.
 export const AUTH_LINK_AUTHORITY_CUTOVER_SQL = `${AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS.map(

@@ -77,6 +77,7 @@ import {
 	type CoordinatorAuthLinkOptions,
 	type CoordinatorAuthLinkRequester,
 } from "./coordinator-auth-link-contract.js";
+import { AUTH_LINK_PROFILE_SCHEMA_SQL } from "./coordinator-auth-link-profile.js";
 import {
 	AUTH_SCHEMA_READINESS_SQL,
 	AUTH_SCHEMA_READY_COUNT,
@@ -537,6 +538,7 @@ function initializeSchema(db: DatabaseType): void {
 	upgradeAuthSessionRetentionSchema(db);
 	db.exec(AUTH_SESSION_SCHEMA_SQL);
 	db.exec(AUTH_ACCOUNT_PROFILE_SCHEMA_SQL);
+	db.exec(AUTH_LINK_PROFILE_SCHEMA_SQL);
 	initializeAuthBrowserSchema(db);
 	db.exec(`
 		CREATE TABLE IF NOT EXISTS groups (
@@ -870,11 +872,12 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 					.transaction(() => this.db.prepare(statement.sql).run(...statement.values).changes)
 					.immediate(),
 			batch: async (statements) => {
-				this.db
-					.transaction(() => {
-						for (const statement of statements)
-							this.db.prepare(statement.sql).run(...statement.values);
-					})
+				return this.db
+					.transaction(() =>
+						statements.map(
+							(statement) => this.db.prepare(statement.sql).run(...statement.values).changes,
+						),
+					)
 					.immediate();
 			},
 		};

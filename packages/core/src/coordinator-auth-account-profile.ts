@@ -114,6 +114,15 @@ function projectProfile(fields: Record<string, unknown>): CoordinatorOidcProfile
 	if (pictureUrl !== undefined) profile.pictureUrl = pictureUrl;
 	return profile;
 }
+/** Capture display claims without invoking accessors or retaining unknown fields. */
+export function captureAuthAccountProfile(value: unknown): CoordinatorOidcProfile | null {
+	const fields = capture(value, {
+		fields: ["displayName", "email", "emailVerified", "pictureUrl"],
+		required: false,
+		plain: true,
+	});
+	return fields ? projectProfile(fields) : null;
+}
 interface AccountRow {
 	session_id: string;
 	identity_id: string;
@@ -143,9 +152,15 @@ const PROFILE_WRITE_SQL = `INSERT INTO coordinator_auth_account_profiles
  source_session_id = excluded.source_session_id, source_signed_in_at_ms = excluded.source_signed_in_at_ms
  WHERE excluded.source_signed_in_at_ms > coordinator_auth_account_profiles.source_signed_in_at_ms`;
 const PROFILE_READ_SQL = `SELECT s.session_id, s.identity_id, s.link_id, s.issuer, s.subject, s.expires_at_ms,
- p.display_name, p.email, p.email_verified, p.picture_url
+ CASE WHEN p.link_id IS NOT NULL THEN p.display_name ELSE b.display_name END AS display_name,
+ CASE WHEN p.link_id IS NOT NULL THEN p.email ELSE b.email END AS email,
+ CASE WHEN p.link_id IS NOT NULL THEN p.email_verified ELSE b.email_verified END AS email_verified,
+ CASE WHEN p.link_id IS NOT NULL THEN p.picture_url ELSE b.picture_url END AS picture_url
  ${SESSION_FROM_SQL} LEFT JOIN coordinator_auth_account_profiles p
  ON p.coordinator_id = s.coordinator_id AND p.link_id = s.link_id
+ LEFT JOIN coordinator_auth_link_profiles b ON b.coordinator_id = l.coordinator_id AND b.link_id = l.link_id
+ AND b.attempt_id = l.attempt_id AND b.issuer = l.issuer AND b.subject = l.subject
+ AND b.auth_config_revision = l.auth_config_revision
  WHERE ${AUTH_SESSION_LIVE_GUARD_SQL}`;
 const PROFILE_RECORDED_SQL = `SELECT 1 ${SESSION_FROM_SQL}
  JOIN coordinator_auth_account_profiles p ON p.coordinator_id = s.coordinator_id AND p.link_id = s.link_id
@@ -262,6 +277,13 @@ export class AuthAccountProfileOperations implements CoordinatorAuthAccountProfi
  AND l.link_id = coordinator_auth_account_profiles.link_id AND l.revoked_at_ms IS NOT NULL)`,
 			values: [s.coordinatorId, i.linkId],
 		});
-		return { kind: "cleared", deletedCount };
+		const linkProfilesDeleted = await this.run({
+			sql: `DELETE FROM coordinator_auth_link_profiles WHERE coordinator_id = ? AND link_id = ?
+ AND EXISTS (SELECT 1 FROM coordinator_auth_account_links l
+ WHERE l.coordinator_id = coordinator_auth_link_profiles.coordinator_id
+ AND l.link_id = coordinator_auth_link_profiles.link_id AND l.revoked_at_ms IS NOT NULL)`,
+			values: [s.coordinatorId, i.linkId],
+		});
+		return { kind: "cleared", deletedCount: deletedCount + linkProfilesDeleted };
 	}
 }

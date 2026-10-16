@@ -211,6 +211,7 @@ async function completeLink(
 				attemptId: input.attemptId,
 				browserTransactionHash: transaction.browserTransactionHash,
 				account: input.verification.account,
+				profile: input.verification.profile,
 			},
 			context.config,
 		);
@@ -342,7 +343,7 @@ async function post(
 }
 
 /** Requires trusted store config from captureCoordinatorBrowserAuthConfig, never HTTP input.
- * Unmounted continuation only: no provider client, profile/session writes or finalization.
+ * The verified callback stages display claims; no session writes or finalization.
  */
 export function createCoordinatorBrowserLinkHandlers(
 	input: CoordinatorBrowserLinkInput,

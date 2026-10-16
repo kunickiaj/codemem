@@ -89,6 +89,8 @@ export interface CoordinatorAuthLinkClaimInput {
 }
 export interface CoordinatorAuthLinkOidcInput extends CoordinatorAuthLinkClaimInput {
 	account: { issuer: string; subject: string };
+	/** Optional display claims from the same verified callback, never request JSON. */
+	profile?: unknown;
 }
 export interface CoordinatorAuthLinkConfirmInput extends CoordinatorAuthLinkClaimInput {
 	completionSecretHash: string;

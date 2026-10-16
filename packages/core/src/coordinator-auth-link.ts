@@ -1,3 +1,4 @@
+import { captureAuthAccountProfile } from "./coordinator-auth-account-profile.js";
 import { parseCoordinatorAccountReference } from "./coordinator-auth-contract.js";
 import { isAuthControllerId, isAuthControllerUniqueError } from "./coordinator-auth-controller.js";
 import {
@@ -44,6 +45,11 @@ import {
 	captureAuthLinkSigner as captureSigner,
 	isHash,
 } from "./coordinator-auth-link-input.js";
+import {
+	cleanAuthLinkProfiles,
+	promoteAuthLinkProfile,
+	stageAuthLinkProfile,
+} from "./coordinator-auth-link-profile.js";
 import { captureAuthLinkSource } from "./coordinator-auth-link-source.js";
 import { parseCoordinatorAuthLoopback } from "./coordinator-auth-loopback.js";
 import { authPersistenceError } from "./coordinator-auth-schema.js";
@@ -57,7 +63,8 @@ export interface AuthLinkStatement {
 export interface AuthLinkBackend {
 	first<T>(statement: AuthLinkStatement): Promise<T | null>;
 	run(statement: AuthLinkStatement): Promise<number>;
-	batch(statements: AuthLinkStatement[]): Promise<void>;
+	/** Atomic execution; production backends return each statement's native change count. */
+	batch(statements: AuthLinkStatement[]): Promise<unknown>;
 }
 interface Attempt {
 	authority_kind: "controller_attestation" | "device_claim";
@@ -534,7 +541,13 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			"attempt_conflict",
 		);
 		if (typeof result !== "number") return result;
-		return { kind: "maintained", processedCount: result, more: result === limit };
+		const cleaned = await this.execute(cleanAuthLinkProfiles(c, now, limit), "attempt_conflict");
+		if (typeof cleaned !== "number") return cleaned;
+		return {
+			kind: "maintained",
+			processedCount: result,
+			more: result === limit || cleaned === limit,
+		};
 	}
 	async createAuthLinkAttempt(
 		input: CoordinatorAuthLinkCreateInput,
@@ -734,8 +747,11 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		c: CoordinatorAuthLinkConfig,
 		now: number,
 		update: AuthLinkStatement,
+		after?: AuthLinkStatement | null,
 	): Promise<CoordinatorAuthLinkResult> {
-		const result = await this.execute(update, "attempt_conflict");
+		const result = after
+			? await this.executeTransitionBatch(update, after)
+			: await this.execute(update, "attempt_conflict");
 		if (typeof result !== "number") return result;
 		const row = await this.read(i.attemptId, c, { authority: "either" });
 		if (!result) {
@@ -750,6 +766,22 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		if (!row || row.browser_transaction_hash !== i.browserTransactionHash)
 			throw new Error("auth_link_persistence_incomplete");
 		return { kind: "applied", status: status(row, now) };
+	}
+	private async executeTransitionBatch(update: AuthLinkStatement, after: AuthLinkStatement) {
+		try {
+			const counts = await this.backend.batch([update, after]);
+			if (
+				!Array.isArray(counts) ||
+				counts.length !== 2 ||
+				typeof counts[0] !== "number" ||
+				!Number.isSafeInteger(counts[0])
+			)
+				throw new Error("auth_link_batch_result_missing");
+			return counts[0];
+		} catch (error) {
+			if (isAuthControllerUniqueError(error)) return rejected("attempt_conflict");
+			throw authPersistenceError(error, "auth_link_persistence_error");
+		}
 	}
 	private browserInput(
 		input: unknown,
@@ -805,20 +837,40 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		const account = parseCoordinatorAccountReference(accountValue, { issuer: c.issuer });
 		if (!account.ok) return rejected("invalid_input");
 		if (!c.enabled) return rejected("auth_config_changed");
+		const descriptor = Object.getOwnPropertyDescriptor(input, "profile");
+		const profile = captureAuthAccountProfile(
+			descriptor && Object.hasOwn(descriptor, "value") ? descriptor.value : undefined,
+		);
 		const now = authLinkNow(this.clock);
 		const source = await this.source(i.attemptId, c, now);
-		const result = await this.transition(i, c, now, {
-			sql: `UPDATE coordinator_auth_link_attempts SET state = 'oidc_verified', account_subject = ?, oidc_verified_at_ms = ? WHERE attempt_id = ? AND ${CURRENT_CONFIG} AND expires_at_ms > ? AND state = 'browser_claimed' AND browser_transaction_hash = ? AND account_subject IS NULL AND ${source.sql}`,
-			values: [
-				account.account.subject,
-				now,
-				i.attemptId,
-				...configValues(c),
-				now,
-				i.browserTransactionHash,
-				...source.values,
-			],
-		});
+		const staged = stageAuthLinkProfile(
+			{
+				attemptId: i.attemptId,
+				browserTransactionHash: i.browserTransactionHash,
+				account: account.account,
+				profile,
+			},
+			c,
+			now,
+		);
+		const result = await this.transition(
+			i,
+			c,
+			now,
+			{
+				sql: `UPDATE coordinator_auth_link_attempts SET state = 'oidc_verified', account_subject = ?, oidc_verified_at_ms = ? WHERE attempt_id = ? AND ${CURRENT_CONFIG} AND expires_at_ms > ? AND state = 'browser_claimed' AND browser_transaction_hash = ? AND account_subject IS NULL AND ${source.sql}`,
+				values: [
+					account.account.subject,
+					now,
+					i.attemptId,
+					...configValues(c),
+					now,
+					i.browserTransactionHash,
+					...source.values,
+				],
+			},
+			staged,
+		);
 		if (result.kind === "rejected") return result;
 		const row = await this.read(i.attemptId, c, { authority: "either" });
 		if (!row) throw new Error("auth_link_persistence_incomplete");
@@ -934,8 +986,16 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			requesterMatches(row, r) &&
 			row.state === "failed" &&
 			row.failure_reason === reason
-		)
+		) {
+			await this.execute(
+				{
+					sql: "DELETE FROM coordinator_auth_link_profiles WHERE coordinator_id = ? AND attempt_id = ? AND link_id IS NULL",
+					values: [c.coordinatorId, i.attemptId],
+				},
+				"attempt_conflict",
+			);
 			return { kind: result ? "applied" : "existing", status: status(row, now) };
+		}
 		return diagnose(row, c, now);
 	}
 	async finalizeAuthLinkAttempt(
@@ -958,7 +1018,10 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		if (row?.authority_kind === "device_claim") return this.finalizeDevice(i, c, now, linkId, row);
 		const authority = await this.readAuthority(i.attemptId, c);
 		try {
-			await this.backend.batch(finalizeStatements(i, c, now, linkId, authority));
+			await this.backend.batch([
+				...finalizeStatements(i, c, now, linkId, authority),
+				promoteAuthLinkProfile(c.coordinatorId, i.attemptId, linkId),
+			]);
 		} catch (error) {
 			if (isAuthControllerUniqueError(error)) return rejected("link_conflict");
 			throw authPersistenceError(error, "auth_link_persistence_error");
@@ -980,7 +1043,10 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		const keyId = await ed25519KeyIdForRevocation(i.signer.publicKey);
 		if (!keyId) return rejected("attempt_unavailable");
 		try {
-			await this.backend.batch(deviceFinalizeStatements(i, c, now, linkId, keyId, source));
+			await this.backend.batch([
+				...deviceFinalizeStatements(i, c, now, linkId, keyId, source),
+				promoteAuthLinkProfile(c.coordinatorId, i.attemptId, linkId),
+			]);
 		} catch (error) {
 			if (
 				isAuthControllerUniqueError(error) ||

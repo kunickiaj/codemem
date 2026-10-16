@@ -23,6 +23,7 @@ const EXPECTED_COORDINATOR_TABLES = [
 	"coordinator_auth_device_claims",
 	"coordinator_auth_link_attempts",
 	"coordinator_auth_link_audit_log",
+	"coordinator_auth_link_profiles",
 	"coordinator_auth_session_receipts",
 	"coordinator_auth_sessions",
 	"coordinator_auth_signin_purge_floors",

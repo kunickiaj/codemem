@@ -502,9 +502,10 @@ export function createD1AuthLinkBackend(db: D1DatabaseLike): AuthLinkBackend {
 		run: (statement) => runChanges(db.prepare(statement.sql).bind(...statement.values)),
 		batch: async (statements) => {
 			if (!db.batch) throw new Error("auth_link_atomic_batch_required");
-			await db.batch(
+			const results = await db.batch(
 				statements.map((statement) => db.prepare(statement.sql).bind(...statement.values)),
 			);
+			return results.map(batchResultChanges);
 		},
 	});
 }

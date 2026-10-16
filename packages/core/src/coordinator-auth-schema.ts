@@ -3,7 +3,7 @@ import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link
 
 export const AUTH_SCHEMA_UPGRADE_REQUIRED = "coordinator_auth_schema_upgrade_required";
 export const AUTH_SCHEMA_UPGRADE_MESSAGE =
-	"Coordinator authentication needs a schema upgrade. Pause auth writers, back up the coordinator database, then run codemem coordinator upgrade-auth-schema --db-path <coordinator.sqlite>. D1 operators must review the exported SQL and apply it separately before deploying new auth writers. Device-signed sync remains available.";
+	"Coordinator authentication needs a schema upgrade. Pause auth writers and back up the coordinator database. For the legacy authority upgrade, run codemem coordinator upgrade-auth-schema --db-path <coordinator.sqlite>. D1 operators must review and apply outstanding auth migrations before deploying the upgraded Worker. A coordinator already using device-claim auth needs only outstanding additive migrations, including 0033; do not replay its authority-table cutover. Device-signed sync remains available.";
 
 export class CoordinatorAuthSchemaUpgradeRequiredError extends Error {
 	constructor() {
@@ -12,13 +12,14 @@ export class CoordinatorAuthSchemaUpgradeRequiredError extends Error {
 	}
 }
 
-// Inspect five actual authority columns and all four reviewed proof definitions.
+// Inspect five authority columns, four proof definitions and the display staging table.
 // No writes or I/O cache; unknown proof variants fail closed.
-export const AUTH_SCHEMA_READY_COUNT = 9;
+export const AUTH_SCHEMA_READY_COUNT = 10;
 export const AUTH_SCHEMA_READINESS_SQL = `SELECT
  (SELECT count(*) FROM pragma_table_info('coordinator_auth_link_attempts') WHERE lower(name) = 'authority_kind')
  + (SELECT count(*) FROM pragma_table_info('coordinator_auth_account_links') WHERE lower(name) IN ('authority_kind','device_claim_id'))
- + (SELECT count(*) FROM pragma_table_info('coordinator_auth_link_audit_log') WHERE lower(name) IN ('authority_kind','device_claim_id'))
+	+ (SELECT count(*) FROM pragma_table_info('coordinator_auth_link_audit_log') WHERE lower(name) IN ('authority_kind','device_claim_id'))
+	+ (SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'coordinator_auth_link_profiles')
  + ${AUTH_DEVICE_CLAIM_DEFINITION_CHECKS.map(({ matches }) => `(${matches})`).join(" + ")} AS ready`;
 
 export interface CoordinatorAuthSchemaStore {
@@ -54,6 +55,8 @@ export function withCoordinatorAuthSchema(backend: AuthLinkBackend): AuthLinkBac
 }
 
 export function authPersistenceError(error: unknown, fallback: string): Error {
+	if (String(error).includes("no such table: coordinator_auth_link_profiles"))
+		return new CoordinatorAuthSchemaUpgradeRequiredError();
 	return error instanceof CoordinatorAuthSchemaUpgradeRequiredError ? error : new Error(fallback);
 }
 

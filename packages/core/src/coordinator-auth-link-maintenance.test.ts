@@ -729,9 +729,12 @@ it("maintenance reports the native update count without reading authority metada
 	const result = await operations.maintainAuthLinkAttempts(cfg);
 	// Assert
 	expect(result).toEqual({ kind: "maintained", processedCount: 7, more: false });
-	expect(run).toHaveBeenCalledTimes(1);
+	expect(run).toHaveBeenCalledTimes(2);
 	expect(run.mock.calls[0][0]).toMatchObject({
 		sql: expect.stringMatching(/^UPDATE coordinator_auth_link_attempts/u),
+	});
+	expect(run.mock.calls[1][0]).toMatchObject({
+		sql: expect.stringMatching(/^DELETE FROM coordinator_auth_link_profiles/u),
 	});
 	expect(first).not.toHaveBeenCalled();
 	expect(batch).not.toHaveBeenCalled();
