@@ -54,6 +54,9 @@ async function harness() {
 	const store = {
 		startAuthBrowserTransaction: vi.fn(f.store.startAuthBrowserTransaction.bind(f.store)),
 		readAuthSession: vi.fn(f.store.readAuthSession.bind(f.store)),
+		readAuthBrowserTransactionActivity: vi.fn(
+			f.store.readAuthBrowserTransactionActivity.bind(f.store),
+		),
 	};
 	const input: Input = {
 		config: config(),
@@ -103,6 +106,17 @@ async function rejected(response: Response, status: number) {
 }
 
 describe("sign-in factory captures only explicit capabilities", () => {
+	it("rejects a missing transaction-activity capability before discovery", async () => {
+		// Arrange: a partial test adapter must not weaken the factory contract.
+		const f = await harness();
+		Reflect.deleteProperty(f.store, "readAuthBrowserTransactionActivity");
+		// Act
+		const result = await createCoordinatorBrowserSigninStart(f.input);
+		// Assert
+		expect(result.ok).toBe(false);
+		expect(f.oidc.fetch).not.toHaveBeenCalled();
+		expect(rows(f)).toEqual([]);
+	});
 	it.each([undefined, { enabled: false }, { ...config(), clientSecret: null }])(
 		"does not discover disabled or invalid configuration %j",
 		async (value) => {
@@ -138,11 +152,21 @@ describe("sign-in factory captures only explicit capabilities", () => {
 				expect(this).toBe(store);
 				return original.readAuthSession(...args);
 			});
+			const activity = vi.fn(function (
+				this: unknown,
+				...args: Parameters<typeof original.readAuthBrowserTransactionActivity>
+			) {
+				expect(this).toBe(store);
+				return original.readAuthBrowserTransactionActivity(...args);
+			});
+			const methods = {
+				startAuthBrowserTransaction: start,
+				readAuthSession: read,
+				readAuthBrowserTransactionActivity: activity,
+			};
 			const store = Object.assign(
-				shape === "prototype"
-					? Object.create({ startAuthBrowserTransaction: start, readAuthSession: read })
-					: {},
-				shape === "own" ? { startAuthBrowserTransaction: start, readAuthSession: read } : {},
+				shape === "prototype" ? Object.create(methods) : {},
+				shape === "own" ? methods : {},
 			);
 			const forbidden = vi.fn(() => {
 				throw new Error(PRIVATE);
@@ -159,12 +183,17 @@ describe("sign-in factory captures only explicit capabilities", () => {
 			const pending = createCoordinatorBrowserSigninStart({ ...f.input, store });
 			store.startAuthBrowserTransaction = forbidden;
 			store.readAuthSession = forbidden;
+			store.readAuthBrowserTransactionActivity = forbidden;
 			(f.input.config as ReturnType<typeof config>).clientSecret = "changed-secret";
 			// Act
 			const result = await pending;
 			if (!result.ok) throw new Error("Expected capture success");
 			const session = await issueBrowserCookie("session");
 			await responses(result).signInPageGET(get(session.setCookie.split(";")[0]));
+			const transaction = await issueBrowserCookie("transaction");
+			expect(
+				(await responses(result).signInPageGET(get(transaction.setCookie.split(";")[0]))).status,
+			).toBe(200);
 			f.handlers = responses(result);
 			const c = await ceremony(f);
 			const response = await responses(result).signInStartPOST(
@@ -175,12 +204,13 @@ describe("sign-in factory captures only explicit capabilities", () => {
 			expect(response.status).toBe(200);
 			expect(start).toHaveBeenCalledOnce();
 			expect(read).toHaveBeenCalledOnce();
+			expect(activity).toHaveBeenCalledOnce();
 			expect(forbidden).not.toHaveBeenCalled();
 			expect(Object.isFrozen(result)).toBe(true);
 			expect(Object.isFrozen(result.handlers)).toBe(true);
 		},
 	);
-	it.each(["startAuthBrowserTransaction", "readAuthSession"])(
+	it.each(["startAuthBrowserTransaction", "readAuthSession", "readAuthBrowserTransactionActivity"])(
 		"rejects getter capability %s without executing it",
 		async (name) => {
 			// Arrange
