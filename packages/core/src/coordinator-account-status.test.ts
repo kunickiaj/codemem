@@ -1,8 +1,15 @@
 import { generateKeyPairSync, sign } from "node:crypto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { type CreateCoordinatorAppOptions, createCoordinatorApp } from "./coordinator-api.js";
+import { materials } from "./coordinator-auth-browser-transaction-test-fixtures.js";
 import type { AuthLinkBackend } from "./coordinator-auth-link.js";
-import { advance, attempt, finalize, NOW } from "./coordinator-auth-link-test-fixtures.js";
+import {
+	advance,
+	attempt,
+	completionHash,
+	finalize,
+	NOW,
+} from "./coordinator-auth-link-test-fixtures.js";
 import { type Backend, review, setupStore } from "./coordinator-auth-store-test-fixtures.js";
 import {
 	captureCoordinatorBrowserAuthOptions,
@@ -247,6 +254,130 @@ it.each(["linked", "unlinked", "revoked", "no-profile", "conflict", "unverified-
 );
 
 for (const backend of ["SQLite", "D1"] as const) {
+	it.each(["identity-a", "device:local-profile"])(
+		`${backend} reports first-link readiness for the explicit current Identity %s`,
+		async (identityId) => {
+			// Arrange: no attestation, account, grant or derived Identity prefix.
+			const f = await setup(backend);
+			// Act
+			const response = await get(f, { path: statusPath("group-a", f.origin, identityId) });
+			// Assert: get also verifies all stored tables except nonce admission remain unchanged.
+			expect(response.status).toBe(200);
+			expect(await response.json()).toEqual({
+				...dto(f, "unlinked", identityId),
+				authority: "device_claim",
+			});
+		},
+	);
+	it.each(["own", "other", "revoked", "disagrees"])(
+		`${backend} projects a completed device claim for %s without requiring review`,
+		async (variant) => {
+			// Arrange: use the existing proof-bearing store finalizer, not an invented status row.
+			const f = await setup(backend);
+			const signer = { groupId: "group-a", ...f.key };
+			expect(
+				await f.store.createAuthLinkAttempt(
+					attempt({
+						signer,
+						browserStartHash: "c".repeat(64),
+						authority: { kind: "device_claim", identityId: "identity-a" },
+					}),
+					config,
+				),
+			).toMatchObject({ kind: "created" });
+			const start = {
+				...materials(),
+				purpose: "link" as const,
+				attemptId: "attempt-a",
+				browserStartHash: "c".repeat(64),
+			};
+			expect(await f.store.startAuthBrowserTransaction(start, config)).toMatchObject({
+				kind: "started",
+			});
+			const consumed = await f.store.consumeAuthBrowserTransaction(start, config);
+			if (consumed.kind !== "consumed") throw new Error("fixture consume failed");
+			const browser = {
+				attemptId: "attempt-a",
+				browserTransactionHash: consumed.browserTransactionHash,
+			};
+			expect(
+				await f.store.recordAuthLinkOidcVerified(
+					{ ...browser, account: { issuer: config.issuer, subject: "opaque-subject-a" } },
+					config,
+				),
+			).toMatchObject({ kind: "applied" });
+			expect(
+				await f.store.confirmAuthLinkAttempt(
+					{ ...browser, completionSecretHash: completionHash },
+					config,
+				),
+			).toMatchObject({ kind: "applied" });
+			expect(
+				(
+					await f.store.finalizeAuthLinkAttempt(
+						finalize({ signer, fingerprint: f.key.fingerprint }),
+						config,
+					)
+				).kind,
+			).toBe("applied");
+			f.db
+				.prepare(`INSERT INTO coordinator_auth_account_profiles
+			(coordinator_id,link_id,display_name,email,email_verified,source_session_id,source_signed_in_at_ms)
+			SELECT coordinator_id,link_id,'Synthetic Person','synthetic@example.test',1,'private-session',?
+			FROM coordinator_auth_account_links`)
+				.run(NOW);
+			if (variant === "revoked")
+				f.db.prepare("UPDATE coordinator_auth_account_links SET revoked_at_ms=?").run(NOW);
+			if (variant === "disagrees")
+				f.db.prepare("UPDATE enrolled_devices SET identity_id='changed-identity'").run();
+			// Act
+			const response = await get(f, {
+				path: statusPath(
+					"group-a",
+					f.origin,
+					variant === "other" ? "other-identity" : "identity-a",
+				),
+			});
+			const text = await response.text();
+			// Assert: metadata is visible only for the running profile's matching Identity.
+			expect(response.status).toBe(200);
+			let expectedState = "linked";
+			if (variant === "disagrees") expectedState = "conflict";
+			if (variant === "revoked") expectedState = "revoked";
+			expect(JSON.parse(text)).toEqual({
+				...dto(
+					f,
+					expectedState,
+					variant === "disagrees" ? null : "identity-a",
+					variant === "own"
+						? { displayName: "Synthetic Person", email: "synthetic@example.test" }
+						: null,
+				),
+				authority: variant === "disagrees" ? null : "device_claim",
+			});
+			privateFields(text);
+			if (variant !== "own") expect(text).not.toMatch(/synthetic@example.test|Synthetic Person/);
+		},
+	);
+	it(`${backend} does not disclose another device's account through requested Identity`, async () => {
+		// Arrange
+		const f = await setup(backend);
+		await seedLink(f);
+		const other = identity("other-device");
+		await f.store.enrollDevice("group-a", other);
+		const path = statusPath();
+		// Act
+		const response = await get(f, { path, headers: headers(other, path) });
+		const text = await response.text();
+		// Assert
+		expect(response.status).toBe(200);
+		expect(JSON.parse(text)).toEqual({
+			...dto(f, "review_required", null),
+			deviceId: other.deviceId,
+			fingerprint: other.fingerprint,
+		});
+		expect(text).not.toMatch(/synthetic@example.test|Synthetic Person|identity-a/);
+	});
 	it.each(["linked", "unlinked", "revoked", "conflict", "unverified-email", "review_required"])(
 		`${backend} store projects %s without changing any stored fields`,
 		async (state) => {

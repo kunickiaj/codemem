@@ -117,11 +117,11 @@ follow-up.
 
 ## Optional account linking
 
-Review the existing device owner before starting optional Google account linking.
-The review uses the already configured coordinator-admin credential; it grants no
-new access and does not enable Google, relay, or account-link routes.
+On an active enrolled device whose current Identity matches coordinator eligibility, users link Google by starting the link flow and completing Google sign-in. This needs no administrator credential, review command, or device-claim control. It links only that current Identity; it does not change keys, enrollment, grants, history, or another device's access.
 
-Run this on the existing device first:
+The review below is a separate administrator workflow for legacy ownership or enrollment. It uses the configured coordinator-admin credential; it grants no new access and does not enable Google, relay, or account-link routes.
+
+For that operator review, run this on the existing device:
 
 ```fish
 codemem coordinator review-device-owner team-alpha --coordinator "https://coord.example.com"
@@ -165,27 +165,14 @@ A differing `CODEMEM_DEVICE_ID` override stops the review without a write.
 `--config` selects that configuration, and `--db-path` selects the device memory
 database, not the coordinator's server database.
 
-After a successful review, linking remains a separate opt-in step:
-
-If the review used `--coordinator`, `--config`, or `--db-path` (including `-d`),
-repeat those selections when linking. Keep `CODEMEM_SYNC_COORDINATOR_URL` and
-`CODEMEM_KEYS_DIR` unchanged when they were part of the original setup. The
-next-step hint reminds you to reuse them rather than suggesting a command that
-silently targets saved defaults.
-
-Run it from a terminal on the device being linked:
+Run the interactive link command from a terminal on the device being linked. It resolves the current configuration or environment Identity and readiness automatically:
 
 ```fish
 codemem coordinator link-account team-alpha --coordinator "https://coord.example.com"
 codemem coordinator link-account team-alpha --coordinator "https://coord.example.com" --loopback-host "::1"
 ```
 
-`--config` can select the saved coordinator configuration. Here, `--db-path`
-selects the **device's memory database**, not the coordinator database used by
-admin commands. `CODEMEM_KEYS_DIR` selects existing device keys when configured;
-the command never creates keys, enrolls a device, adopts another Identity, or
-changes Project access. Remote coordinators require HTTPS; literal HTTP loopback
-origins are allowed only for local development.
+`--config` selects the saved coordinator configuration, and `--db-path` selects the **device's memory database**, not the coordinator database used by admin commands. `CODEMEM_KEYS_DIR` selects existing device keys when configured. The command never creates keys, enrolls a device, adopts another Identity, or changes Project access. Remote coordinators require HTTPS; literal HTTP loopback origins are allowed only for local development.
 
 Open the private link printed to terminal stderr, review the account, Identity,
 and device in the browser, then return to the coordinator tab to finish. Do not
@@ -198,9 +185,7 @@ minutes. Interrupting it attempts to cancel only its own request. If cancellatio
 or the final reply cannot be confirmed, the command reports that uncertainty
 instead of claiming a rollback; an already completed link may still exist.
 
-If linking says this device needs an active owner review (`auth_link_review_required`
-on the signed API), run the review command on this device with the same group and settings, then
-retry linking.
+If linking returns `auth_link_review_required`, check the current Identity and coordinator status again. If it still cannot link, ask the coordinator operator; do not run an administrator command or use administrator credentials as a client workaround.
 
 If review conflicts, is revoked, or stops, ask the coordinator operator. A
 rejected request does not replace any existing account link, so do not create

@@ -555,19 +555,19 @@ If retained proof is missing, reconnect to the configured coordinator and let th
 
 #### Optional coordinator account linking
 
-Coordinator account linking is an advanced operator flow and is off by default. These commands do not configure Google or deploy a coordinator; an operator must first enable optional account linking on the coordinator. Local memory and direct sync remain usable without Google.
+Coordinator account linking is optional. On an active enrolled device whose current Identity matches coordinator eligibility, choose **Link Google account**, complete Google sign-in, and return to the Viewer. This client flow needs no administrator credential or command, and it changes no keys, enrollment, grants, history, or other device access. Local memory and direct sync remain usable without Google.
 
-First preview the owner on the device being linked; `--json` is always preview-only:
+Operators can separately preview legacy ownership or enrollment cases; `--json` is always preview-only:
 
 ```text
 codemem coordinator review-device-owner team-alpha --coordinator "https://coord.example.com" --json
 ```
 
-The review reads the existing local device database and current Identity without running maintenance, changing configuration or credentials, rotating keys, adopting an Identity, moving memories, or changing grants. Interactive review defaults to **No**; only an operator confirmation records ownership evidence for linking, without changing device assignments or access. It requires the configured coordinator-admin credential.
+The review reads the existing local device database and current Identity without running maintenance, changing configuration or credentials, rotating keys, adopting an Identity, moving memories, or changing grants. Interactive review defaults to **No**; only an operator confirmation records ownership evidence, without changing device assignments or access. It requires the configured coordinator-admin credential.
 
-Ambiguous ownership stops the review; ownership records disappearing or changing during confirmation require a fresh preview. To link, reuse the exact `--coordinator`, `--config`, and `--db-path` (or `-d`) selections from the review, and choose the intended Google account in the browser. See [coordinator-backed discovery](docs/coordinator-discovery.md#optional-account-linking).
+Ambiguous ownership stops the review; ownership records disappearing or changing during confirmation require a fresh preview. The interactive link command resolves the current configuration or environment Identity and readiness automatically. See [coordinator-backed discovery](docs/coordinator-discovery.md#optional-account-linking).
 
-Keep any `CODEMEM_SYNC_COORDINATOR_URL` or `CODEMEM_KEYS_DIR` setting unchanged between review and linking. If linking says this device needs an active owner review, run the review on this device with the same group and settings, then retry linking.
+Keep any `CODEMEM_SYNC_COORDINATOR_URL` or `CODEMEM_KEYS_DIR` setting unchanged when selecting existing configuration or keys. If linking returns `auth_link_review_required`, check the current Identity and coordinator status again. If it still cannot link, ask the coordinator operator; do not run an administrator command or use administrator credentials as a client workaround.
 
 A review conflict, revocation, or stopped review needs coordinator-operator help. A rejected link does not replace an existing link; do not create another Identity, key, or credential to work around it.
 

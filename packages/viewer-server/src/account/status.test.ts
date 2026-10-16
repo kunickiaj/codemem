@@ -100,6 +100,18 @@ function privateResponse(response: Response) {
 }
 
 describe("account status route", () => {
+	it.each(["device_claim", "controller_attestation"] as const)(
+		"preserves %s eligibility",
+		async (authority) => {
+			const f = await fixture(); // Arrange
+			f.readRemoteStatus.mockResolvedValue(status("unlinked", local.identityId, authority));
+			const body = await (await f.request()).json(); // Act
+			expect(body).toMatchObject({
+				canLink: true,
+				remote: { authority, identityId: local.identityId },
+			}); // Assert
+		},
+	);
 	it.each(["unlinked", "linked", "review_required", "revoked", "conflict"] as const)(
 		"projects %s without treating blocked states as unlinked",
 		async (state) => {

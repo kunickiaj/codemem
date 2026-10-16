@@ -198,7 +198,13 @@ async function linkA(f) {
 	const review = h.review({ identityId: a.store.actorId, publicKey: a.key.publicKey, fingerprint: h.fingerprintPublicKey(a.key.publicKey) });
 	await remote.store.createGroup(review.groupId, "Fake transport group");
 	await remote.store.enrollDevice(review.groupId, { ...review, identityId: null });
-	assert.equal((await remote.store.createAuthControllerAttestation(review)).kind, "created");
+	if (!f.deviceOwned) assert.equal((await remote.store.createAuthControllerAttestation(review)).kind, "created");
+	if (f.deviceOwned) {
+		const session = a.store.startSession({ project: "existing-device-history" });
+		a.store.remember(session, "discovery", "Existing memory", "Keep the current Identity and history.", 0.8);
+		f.beforeLink = await deviceOwnedSnapshot(f);
+		assert.equal(f.beforeLink.remote[0][0].identity_id, null);
+	}
 	const csrfKey = (await h.browserForm("unused", h.proof())).csrfKey;
 	const auth = await h.createCoordinatorBrowserAuth(h.captureCoordinatorBrowserAuthOptions({
 		config, csrfKey, oidcOptions: { fetch: provider.fetch },
@@ -217,7 +223,7 @@ async function linkA(f) {
 	});
 	assert.equal(readiness.kind, "status");
 	assert.equal(readiness.status.state, "unlinked");
-	assert.equal(readiness.status.authority, "controller_attestation");
+	assert.equal(readiness.status.authority, f.deviceOwned ? "device_claim" : "controller_attestation");
 	let browserDone;
 	const result = await h.linkCoordinatorAccount({
 		dbPath: a.dbPath, keysDir: a.keysDir, coordinatorUrl: origin, groupId: review.groupId,
@@ -228,15 +234,17 @@ async function linkA(f) {
 			void browserDone.catch(() => {});
 		},
 	});
-	await browserDone;
+	f.browser = await browserDone;
+	f.request = request;
 	assert.equal(result.state, "finalized");
 	assert.equal(result.identityId, review.identityId);
 	const links = await remote.rows("coordinator_auth_account_links");
 	assert.equal(links.length, 1);
 	assert.equal(links[0].attempt_id, result.attemptId);
 	assert.equal(links[0].subject, "fixture-subject");
-	assert.equal(links[0].controller_attestation_id, review.attestationId);
+	assert.equal(links[0].controller_attestation_id, f.deviceOwned ? null : review.attestationId);
 	assert.equal((await remote.rows("coordinator_auth_link_audit_log")).length, 1);
+	if (f.deviceOwned) return result;
 	assert.equal((await remote.store.issueIdentityGroupGrantFromControllerAttestation({
 		coordinatorId: review.coordinatorId, attestationId: review.attestationId,
 	})).kind, "created");
@@ -265,9 +273,10 @@ async function linkBrowser(request, provider, url) {
 	const hop = (await confirmed.text()).match(/href="(http:\/\/127\.0\.0\.1[^\"]+)"/)?.[1];
 	assert.ok(hop);
 	assert.equal((await ownerHttpRequest(hop.replaceAll("&amp;", "&"))).status, 200);
+	return { transactionCookie };
 }
 
-async function fixture(t) {
+async function fixture(t, { deviceOwned = false } = {}) {
 	// Explicit reverse acquisition order: close servers/stores before removing files.
 	const cleanup = [];
 	t.after(async () => {
@@ -319,7 +328,7 @@ async function fixture(t) {
 	provider.claims.picture = undefined;
 	a = await device(h, directory, "device-a");
 	remote = await coordinator(h, now);
-	const f = { t, h, a, remote, config, provider, now, directory,
+	const f = { t, h, a, remote, config, provider, now, directory, deviceOwned,
 		allowSyncOrigin: url => { syncOrigin = url; } };
 	f.link = await linkA(f);
 	return f;
@@ -414,7 +423,7 @@ async function syncServer(f) {
 	return { url, requests };
 }
 
-async function maintainedOwnerB(f) {
+async function maintainedOwnerB(f, { expectAdmissionDenied = false } = {}) {
 	const profileDir = join(f.directory, "owner-profile-b");
 	const http = await f.h.createCoordinatorOwnerEnrollmentHttp({ config: f.config, backend: f.remote.backend,
 		oidcOptions: { fetch: f.provider.fetch }, clock: () => f.now });
@@ -427,6 +436,12 @@ async function maintainedOwnerB(f) {
 		assert.equal(claimed.status, 303);
 		const binder = cookie(claimed);
 		const callback = await request(f.provider.authorize(claimed.headers.get("location")), { headers: { cookie: binder } });
+		if (expectAdmissionDenied) {
+			f.ownerCallbackStatus = callback.status;
+			f.ownerCallbackBody = await callback.text();
+			f.ownerCallbackCookies = callback.headers.getSetCookie();
+			throw new Error("Owner admission denial observed");
+		}
 		const confirmed = await request(`${origin}/auth/owner/confirm`, { method: "POST",
 			headers: { origin, cookie: binder, "content-type": "application/x-www-form-urlencoded" },
 			body: (await fields(callback, "/auth/owner/confirm")).toString() });
@@ -457,6 +472,79 @@ async function maintainedOwnerB(f) {
 		else process.env.CODEMEM_CONFIG = previousConfig;
 	}
 }
+
+async function deviceOwnedSnapshot(f) {
+	return {
+		local: ["sync_device", "actors", "identity_devices", "sessions", "memory_items", "replication_ops", "scope_memberships"]
+			.map(table => f.a.store.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()),
+		keys: await Promise.all(["device.key", "device.key.pub"].map(name => readFile(join(f.a.keysDir, name), "utf8"))),
+		remote: await Promise.all(["enrolled_devices", "coordinator_auth_controller_attestations", "coordinator_identity_group_grants",
+			"coordinator_device_ownership_bindings", "coordinator_owner_enrollment_audit_log", "coordinator_scope_memberships"].map(f.remote.rows)),
+	};
+}
+
+test("fake-only device-owned Google link keeps the current Identity without owner admission", { timeout: 60000 }, async t => {
+	// Arrange: active, legacy-unassigned A, existing local history, no review or admin credential.
+	const logs = [];
+	for (const method of ["log", "warn", "error"]) t.mock.method(console, method, (...args) => logs.push(args));
+	const f = await fixture(t, { deviceOwned: true });
+	assert.deepEqual(await deviceOwnedSnapshot(f), f.beforeLink);
+	assert.equal(f.beforeLink.remote[0][0].enabled, 1);
+	assert.equal(f.beforeLink.local[4].length, 1);
+	for (const rows of f.beforeLink.remote.slice(1)) assert.deepEqual(rows, []);
+	const attemptId = f.link.attemptId;
+	const completionUrl = `${origin}/auth/link/complete?attempt_id=${attemptId}`;
+	// Act: finish the actual browser completion form after the signed runtime finalize.
+	assert.equal((await f.request(completionUrl)).status, 403);
+	const page = await f.request(completionUrl, { headers: { cookie: f.browser.transactionCookie } });
+	const body = (await fields(page, "/auth/link/complete")).toString();
+	assert.equal((await f.request(`${origin}/auth/link/complete`, { method: "POST",
+		headers: { origin, cookie: f.browser.transactionCookie, "content-type": "application/x-www-form-urlencoded" },
+		body: body.replace(/csrf=[^&]*/, "csrf=invalid") })).status, 403);
+	const completed = await f.request(`${origin}/auth/link/complete`, { method: "POST",
+		headers: { origin, cookie: f.browser.transactionCookie, "content-type": "application/x-www-form-urlencoded" }, body });
+	assert.equal(completed.status, 303);
+	const sessionCookie = cookie(completed);
+	const profile = await f.request(completed.headers.get("location"), { headers: { cookie: sessionCookie } });
+	const status = await f.h.readCoordinatorAccountLinkStatus({ dbPath: f.a.dbPath, keysDir: f.a.keysDir,
+		coordinatorUrl: origin, groupId: "group-a", identityId: f.a.store.actorId, fetch: f.request });
+	// Assert: real signed-JWS SDK verification, browser session and fresh V2 status agree on A.
+	assert.equal(profile.status, 200);
+	const profileHtml = await profile.text();
+	assert.ok(profileHtml.includes(`<code>${f.a.store.actorId}</code>`));
+	assert.match(profileHtml, /aria-label="Account profile"/);
+	assert.match(profileHtml, /Signed in/);
+	assert.equal(status.kind, "status");
+	assert.equal(status.status.version, 2);
+	assert.equal(status.status.state, "linked");
+	assert.equal(status.status.authority, "device_claim");
+	assert.equal(status.status.identityId, f.a.store.actorId);
+	assert.equal(f.link.identityId, f.a.store.actorId);
+	assert.deepEqual(Object.keys(f.link).sort(), ["attemptId", "coordinatorId", "identityId", "state"]);
+	assert.ok(f.provider.requests.some(({ url }) => url.endsWith("/token")));
+	assert.ok(f.provider.requests.some(({ url }) => url.endsWith("/jwks")));
+	assert.deepEqual(await deviceOwnedSnapshot(f), f.beforeLink);
+	assert.equal((await f.remote.rows("coordinator_auth_sessions")).length, 1);
+	assert.equal((await f.remote.rows("coordinator_auth_link_attempts"))[0].state, "session_redeemed");
+	assert.equal((await f.remote.rows("coordinator_auth_account_links"))[0].authority_kind, "device_claim");
+	// Arrange: independently reviewed Team grant from another device does not promote this Google link.
+	const grantKey = key();
+	const review = f.h.review({ deviceId: "grant-source-device", identityId: f.a.store.actorId,
+		publicKey: grantKey.publicKey, fingerprint: f.h.fingerprintPublicKey(grantKey.publicKey) });
+	await f.remote.store.enrollDevice(review.groupId, { ...review, identityId: null });
+	assert.equal((await f.remote.store.createAuthControllerAttestation(review)).kind, "created");
+	assert.equal((await f.remote.store.issueIdentityGroupGrantFromControllerAttestation({
+		coordinatorId: review.coordinatorId, attestationId: review.attestationId })).kind, "created");
+	const beforeOwner = await deviceOwnedSnapshot(f);
+	// Act/Assert: maintained owner browser/client cannot enroll B with the device-claim account.
+	await assert.rejects(maintainedOwnerB(f, { expectAdmissionDenied: true }), /Owner pilot incomplete/);
+	assert.equal(f.ownerCallbackStatus, 400);
+	assert.equal(f.ownerCallbackBody, "Owner enrollment unavailable.");
+	assert.deepEqual(f.ownerCallbackCookies, []);
+	assert.deepEqual(await deviceOwnedSnapshot(f), beforeOwner);
+	assert.equal(f.b, undefined);
+	assert.deepEqual(logs, [], "Private browser URLs, proofs and credentials never reach console logs");
+});
 
 test("fake-only A runtime link → maintained B owner client → separately scoped portable capture", { timeout: 60000 }, async t => {
 	// Arrange: B does not exist until the maintained client creates its isolated profile.

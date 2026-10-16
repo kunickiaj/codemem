@@ -208,67 +208,75 @@ async function browser(
 	return { completion, row, start };
 }
 
-test("real signatures, reviewed actor and independent browser proof finalize without local mutations", async ({
-	f,
-}) => {
-	// Arrange
-	const before = localSnapshot(f);
-	const protectedTables = [
-		"enrolled_devices",
-		"coordinator_auth_controller_attestations",
-		"coordinator_bootstrap_grants",
-		"coordinator_scope_memberships",
-		"coordinator_scopes",
-	];
-	const protectedBefore = protectedTables.map((name) =>
-		f.remote.db.prepare(`SELECT * FROM ${name}`).all(),
-	);
-	let proofs: Awaited<ReturnType<typeof browser>> | undefined;
-	let browserDone: Promise<unknown> = Promise.resolve();
-	// Act
-	const result = await linkCoordinatorAccount({
-		...f.options,
-		onBrowserStart: (url) => {
-			browserDone = browser(f, url).then((result) => {
-				proofs = result;
-			});
-			void browserDone.catch(() => {});
-		},
-	});
-	await browserDone;
-	// Assert
-	expect(result).toEqual({
-		coordinatorId: cfg.coordinatorId,
-		identityId: "identity-a",
-		attemptId: proofs?.row.attempt_id,
-		state: "finalized",
-	});
-	const finalize = f.calls.find((req) => req.url.endsWith("/finalize"));
-	expect(finalize).toBeDefined();
-	const body = await finalize?.json();
-	expect(body).toMatchObject({
-		purpose: "coordinator-account-link-v1",
-		identity_id: "identity-a",
-		coordinator_id: cfg.coordinatorId,
-		device_id: "device-a",
-		fingerprint: f.fingerprint,
-		completion: proofs?.completion,
-	});
-	expect(hash(body.runtime_verifier)).toBe(proofs?.row.runtime_verifier_hash);
-	expect(body.runtime_verifier).not.toBe(proofs?.completion);
-	expect(body.runtime_verifier).not.toBe(proofs?.start);
-	expect(finalize?.headers.get("x-opencode-signature")).toMatch(/^v2:/);
-	expect(f.calls.some((req) => req.method === "GET")).toBe(true);
-	expect(
-		f.remote.db.prepare("SELECT identity_id FROM coordinator_auth_account_links").all(),
-	).toEqual([{ identity_id: "identity-a" }]);
-	expect(protectedTables.map((name) => f.remote.db.prepare(`SELECT * FROM ${name}`).all())).toEqual(
-		protectedBefore,
-	);
-	expect(localSnapshot(f)).toEqual(before);
-	for (const secret of [body.runtime_verifier, proofs?.completion, proofs?.start])
-		expect(JSON.stringify(result)).not.toContain(secret);
-});
+test.for(["controller_attestation", "device_claim"] as const)(
+	"real signatures and %s authority finalize without local mutations",
+	async (authority, { f }) => {
+		// Arrange
+		f.options.expectedAuthority = authority;
+		if (authority === "device_claim")
+			f.remote.db.prepare("DELETE FROM coordinator_auth_controller_attestations").run();
+		const before = localSnapshot(f);
+		const protectedTables = [
+			"enrolled_devices",
+			"coordinator_auth_controller_attestations",
+			"coordinator_bootstrap_grants",
+			"coordinator_scope_memberships",
+			"coordinator_scopes",
+		];
+		const protectedBefore = protectedTables.map((name) =>
+			f.remote.db.prepare(`SELECT * FROM ${name}`).all(),
+		);
+		let proofs: Awaited<ReturnType<typeof browser>> | undefined;
+		let browserDone: Promise<unknown> = Promise.resolve();
+		// Act
+		const result = await linkCoordinatorAccount({
+			...f.options,
+			onBrowserStart: (url) => {
+				browserDone = browser(f, url).then((result) => {
+					proofs = result;
+				});
+				void browserDone.catch(() => {});
+			},
+		});
+		await browserDone;
+		// Assert
+		expect(result).toEqual({
+			coordinatorId: cfg.coordinatorId,
+			identityId: "identity-a",
+			attemptId: proofs?.row.attempt_id,
+			state: "finalized",
+		});
+		const finalize = f.calls.find((req) => req.url.endsWith("/finalize"));
+		const create = f.calls.find(
+			(req) => req.method === "POST" && req.url.endsWith("/v1/auth/link-attempts"),
+		);
+		expect(await create?.json()).toMatchObject({ identity_id: "identity-a", authority });
+		expect(finalize).toBeDefined();
+		const body = await finalize?.json();
+		expect(body).toMatchObject({
+			purpose: "coordinator-account-link-v1",
+			identity_id: "identity-a",
+			coordinator_id: cfg.coordinatorId,
+			device_id: "device-a",
+			fingerprint: f.fingerprint,
+			completion: proofs?.completion,
+		});
+		expect(hash(body.runtime_verifier)).toBe(proofs?.row.runtime_verifier_hash);
+		expect(body.runtime_verifier).not.toBe(proofs?.completion);
+		expect(body.runtime_verifier).not.toBe(proofs?.start);
+		expect(finalize?.headers.get("x-opencode-signature")).toMatch(/^v2:/);
+		expect(f.calls.some((req) => req.method === "GET")).toBe(true);
+		expect(
+			f.remote.db.prepare("SELECT identity_id FROM coordinator_auth_account_links").all(),
+		).toEqual([{ identity_id: "identity-a" }]);
+		expect(
+			protectedTables.map((name) => f.remote.db.prepare(`SELECT * FROM ${name}`).all()),
+		).toEqual(protectedBefore);
+		expect(localSnapshot(f)).toEqual(before);
+		for (const secret of [body.runtime_verifier, proofs?.completion, proofs?.start])
+			expect(JSON.stringify(result)).not.toContain(secret);
+	},
+);
 
 test.for([-5000, 5000])(
 	"signed account linking tolerates coordinator clock offset %i ms",

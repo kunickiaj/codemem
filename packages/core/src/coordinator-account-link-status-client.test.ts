@@ -154,6 +154,60 @@ it.each([
 	},
 );
 
+it.each(["device_claim", "controller_attestation"] as const)(
+	"accepts %s eligibility and a different linked Identity only with masked metadata",
+	async (authority) => {
+		// Arrange: eligibility belongs to the requested Identity; a prior link need not.
+		const eligible = status({ state: "unlinked", authority, account: null });
+		const linked = status({ identityId: "other-identity", authority, account: null });
+		transport
+			.mockResolvedValueOnce(Response.json(eligible))
+			.mockResolvedValueOnce(Response.json(linked));
+		// Act
+		const results = [await read(options), await read(options)];
+		// Assert: a status read never starts or polls a browser transaction.
+		expect(results).toEqual([
+			{ kind: "status", status: eligible },
+			{ kind: "status", status: linked },
+		]);
+		expect(transport).toHaveBeenCalledTimes(2);
+		for (const [input, init] of transport.mock.calls) {
+			const request = new Request(input, init);
+			expect(request.method).toBe("GET");
+			expect(new URL(request.url).pathname).toBe("/v1/auth/account-link-status");
+		}
+	},
+);
+
+it.each([undefined, "", "bad\nidentity"])(
+	"refuses missing or invalid Identity %s before local IO",
+	async (identityId) => {
+		// Arrange
+		const access = vi.fn(() => {
+			throw new Error("private-local-access");
+		});
+		const input = { ...options, identityId };
+		Object.defineProperty(input, "dbPath", { get: access });
+		// Act: model an untyped caller omitting the required Identity.
+		const result = await read(input as Parameters<typeof read>[0]);
+		// Assert
+		expect(result).toEqual({ kind: "unavailable", code: "invalid_response" });
+		expect(access).not.toHaveBeenCalled();
+		expect(transport).not.toHaveBeenCalled();
+	},
+);
+
+it("rejects a non-origin coordinator URL without requesting or repairing local state", async () => {
+	// Arrange
+	const before = snapshot();
+	// Act
+	const result = await read({ ...options, coordinatorUrl: `${origin}/other` });
+	// Assert
+	expect(result).toEqual({ kind: "unavailable", code: "invalid_response" });
+	expect(transport).not.toHaveBeenCalled();
+	expect(snapshot()).toEqual(before);
+});
+
 it("reads and signs after a WAL writer closes, allowing SQLite coordination files only", async () => {
 	// Arrange: closing the last writer removes sidecars without manual cleanup.
 	expect(db.pragma("journal_mode = WAL", { simple: true })).toBe("wal");

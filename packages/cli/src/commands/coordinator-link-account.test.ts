@@ -226,6 +226,128 @@ it.each(["json", "nonterminal"])(
 	},
 );
 
+it.each([
+	{ actor: "  environment-identity  ", expected: "environment-identity" },
+	{ actor: "", expected: "local:device-a" },
+	{ actor: "   ", expected: "local:device-a" },
+])(
+	"reads environment Identity '$actor' before starting an explicitly requested device claim",
+	async ({ actor, expected }) => {
+		// Arrange
+		vi.stubEnv("CODEMEM_ACTOR_ID", actor);
+		// Act
+		await buildCoordinatorLinkAccountCommand().parseAsync(["group-a", "-d", "fixture.sqlite"], {
+			from: "user",
+		});
+		// Assert: no operator flag or review command supplies the Identity or authority.
+		expect(mocks.readAccountLinkDevice).toHaveBeenCalledExactlyOnceWith("fixture.sqlite");
+		expect(mocks.readCoordinatorAccountLinkStatus).toHaveBeenCalledWith(
+			expect.objectContaining({ identityId: expected, groupId: "group-a" }),
+		);
+		const statusOrder = mocks.readCoordinatorAccountLinkStatus.mock.invocationCallOrder[0];
+		const runtimeOrder = mocks.linkCoordinatorAccount.mock.invocationCallOrder[0];
+		if (typeof statusOrder !== "number" || typeof runtimeOrder !== "number")
+			throw new Error("Expected status read and runtime start calls");
+		expect(statusOrder).toBeLessThan(runtimeOrder);
+		expect(mocks.linkCoordinatorAccount).toHaveBeenCalledWith(
+			expect.objectContaining({
+				expectedIdentityId: expected,
+				expectedAuthority: "device_claim",
+			}),
+		);
+	},
+);
+
+function arrangeLinkReadiness(mode: string): void {
+	if (mode === "local unavailable") {
+		mocks.readAccountLinkDevice.mockImplementation(() => {
+			throw new Error(privateUrl);
+		});
+		return;
+	}
+	if (mode === "device file changed" || mode === "inode changed") {
+		mocks.statSync
+			.mockReturnValueOnce({ isFile: () => true, dev: 1n, ino: 2n })
+			.mockReturnValueOnce({
+				isFile: () => true,
+				dev: mode === "device file changed" ? 3n : 1n,
+				ino: mode === "inode changed" ? 3n : 2n,
+			});
+		return;
+	}
+	if (mode === "unavailable") {
+		mocks.readCoordinatorAccountLinkStatus.mockResolvedValue({ kind: "unsupported" });
+		return;
+	}
+	mocks.readCoordinatorAccountLinkStatus.mockResolvedValue({
+		kind: "status",
+		status: {
+			version: 2,
+			coordinatorId: "coordinator-a",
+			groupId: "group-a",
+			deviceId: "device-a",
+			fingerprint: "a".repeat(64),
+			state: mode === "other Identity" ? "unlinked" : mode,
+			identityId: mode === "review_required" ? null : "identity-a",
+			authority: "device_claim",
+			account: null,
+			...(mode === "review_required" ? { authority: null } : {}),
+			...(mode === "other Identity" ? { identityId: "other-identity" } : {}),
+		},
+	});
+}
+
+it.each([
+	"linked",
+	"revoked",
+	"review_required",
+	"other Identity",
+	"unavailable",
+	"local unavailable",
+	"device file changed",
+	"inode changed",
+])("%s readiness never starts the runtime or emits a private browser URL", async (mode) => {
+	// Arrange
+	arrangeLinkReadiness(mode);
+	// Act
+	await buildCoordinatorLinkAccountCommand().parseAsync(["group-a", "-d", "fixture.sqlite"], {
+		from: "user",
+	});
+	// Assert
+	expect(mocks.linkCoordinatorAccount).not.toHaveBeenCalled();
+	const output = JSON.stringify(mocks.log.message.mock.calls);
+	expect(output).not.toMatch(/auth\/link\/start|start_code|private-proof/);
+	if (mode === "revoked")
+		expect(output).toContain("Replacing or removing coordinator account links is not supported");
+	else expect(mocks.log.message).not.toHaveBeenCalled();
+	expect(process.exitCode).toBe(mode === "linked" ? undefined : 1);
+	if (["local unavailable", "device file changed", "inode changed"].includes(mode)) {
+		expect(mocks.readCoordinatorAccountLinkStatus).not.toHaveBeenCalled();
+		expect(mocks.log.error).toHaveBeenCalledWith(
+			new CoordinatorAccountLinkError("device_unavailable").message,
+			{ output: process.stderr },
+		);
+	}
+});
+
+it.each([
+	["-u", "https://coordinator.example.test/not-an-origin"],
+	["-l", "localhost"],
+])("invalid configuration %s %s fails before device IO", async (flag, value) => {
+	// Arrange
+	const args = ["group-a", "-d", "fixture.sqlite", flag, value];
+	// Act
+	await buildCoordinatorLinkAccountCommand().parseAsync(args, { from: "user" });
+	// Assert
+	expect(mocks.readCodememConfigFile).toHaveBeenCalledTimes(1);
+	expect(mocks.statSync).not.toHaveBeenCalled();
+	expect(mocks.readAccountLinkDevice).not.toHaveBeenCalled();
+	expect(mocks.readCoordinatorAccountLinkStatus).not.toHaveBeenCalled();
+	expect(mocks.linkCoordinatorAccount).not.toHaveBeenCalled();
+	expect(mocks.log.message).not.toHaveBeenCalled();
+	expect(process.exitCode).toBe(2);
+});
+
 it("unexpected failure cannot echo private URLs or proof-bearing causes", async () => {
 	// Arrange
 	const signals = [process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")];

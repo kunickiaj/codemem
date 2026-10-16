@@ -207,6 +207,8 @@ const server = httpsServer({ cert, key: readFileSync(keyPath) }, async (request,
 					dbPath,
 					keysDir,
 					groupId: demo.groupId,
+					expectedIdentityId: demo.identityId,
+					expectedAuthority: "controller_attestation",
 					coordinatorUrl: origin,
 					loopbackHost: host,
 					signal: controller.signal,
@@ -340,7 +342,7 @@ const workerBundle = await build({
 	platform: "browser",
 	format: "esm",
 	target: "es2022",
-	external: ["node:crypto", "node:path"],
+	external: ["node:buffer", "node:crypto", "node:path"],
 	alias: {
 		"@codemem/core/internal/cloudflare-coordinator": fileURLToPath(
 			new URL("../../core/src/internal/cloudflare-coordinator.ts", import.meta.url),

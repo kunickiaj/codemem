@@ -213,7 +213,7 @@ browser authentication is ready.
 
 | Route | Signed input and result |
 | --- | --- |
-| `POST /v1/auth/link-attempts` | Requires `group_id`, `attempt_id`, `runtime_verifier_hash`, `browser_start_hash`, and the literal `loopback_redirect`. Returns public status plus controller-derived `identity_id` and configured `coordinator_id`, never proofs or a private start URL. Planned replacement: `identity_id` (the current local Identity) and the expected `authority` become required, and the response adds `authority`; see [Device-claim first link](#device-claim-first-link-planned). |
+| `POST /v1/auth/link-attempts` | Requires `group_id`, `identity_id`, `authority`, `attempt_id`, `runtime_verifier_hash`, `browser_start_hash`, and the literal `loopback_redirect`. Returns public status, server-evaluated `identity_id` and `authority`, and configured `coordinator_id`, never proofs or a private start URL. |
 | `GET /v1/auth/link-attempts/:attemptId?group_id=...` | The attempt device's signed request reads public status; a different device and a missing attempt both receive an unavailable response. |
 | `POST /v1/auth/link-attempts/:attemptId/finalize` | Exact purpose, coordinator/attempt/group/Identity/device/fingerprint fields and canonical raw `runtime_verifier`/`completion` proofs. The path and body attempt must match; the server hashes decoded 32-byte proofs. Client-nominated proof hashes are rejected. |
 | `POST /v1/auth/link-attempts/:attemptId/cancel` | Signed `group_id` only; fails the requester's bound attempt and retires its temporary provider material before reporting success. |
@@ -229,21 +229,19 @@ This option changes no enrollment or access.
 
 ### Current-account link status
 
-`GET /v1/auth/account-link-status?group_id=...&coordinator_origin=...` reports the
+`GET /v1/auth/account-link-status?group_id=...&coordinator_origin=...&identity_id=...` reports the
 signed device's own account-link state. It requires the ready browser-auth adapter, not merely the
 legacy link-attempt option; absent or unavailable browser auth returns `503`.
 Requests must use the configured callback origin, contain exactly one `group_id`
-and one `coordinator_origin` query parameter and no body, and pass existing
+and one `coordinator_origin` and one `identity_id` query parameter and no body, and pass existing
 enrollment, signature, nonce and rate-limit checks. The signed `coordinator_origin` must equal the configured
 callback origin, preventing another coordinator from forwarding the request to
 read account metadata. Responses are never cached.
 
-The version-1 response includes `coordinatorId`, `groupId`, `deviceId`,
-`fingerprint`, `identityId`, `state`, and `account`. The Identity comes only from
-the current controller review for that enrollment and key; callers cannot select
-another Identity. State is `review_required`, `unlinked`, `linked`, `revoked`, or
-`conflict`. Review-required and conflict responses contain no Identity or account
-metadata. Linked responses allow only an optional display name and verified email;
+The version-2 response includes `coordinatorId`, `groupId`, `deviceId`,
+`fingerprint`, `identityId`, `state`, `authority`, and `account`. Review-required
+and conflict responses contain no Identity, authority or account metadata.
+Linked responses allow only an optional display name and verified email;
 provider subjects, proofs, tokens and credentials are not returned.
 
 The read rechecks current controller, enrollment and revocation evidence before
@@ -252,10 +250,11 @@ from normal request nonce admission, this operation changes no accounts, reviews
 enrollments, grants, history or ownership. It does not advertise or introduce a
 requirement to use Google for legacy coordinator requests.
 
-#### Planned version 2 status
+#### Version 2 status
 
 The account-link feature is unreleased, so version 2 replaces version 1 with no
-compatibility negotiation. The coordinator and viewer must ship together.
+compatibility negotiation. The server implements this contract; the matched
+client/runtime and viewer changes must land before release or activation.
 Ordinary signed-device sync routes do not change.
 
 Requests carry exactly three query parameters: `group_id`, `coordinator_origin`,
@@ -281,6 +280,11 @@ server evaluates these rules in order:
 | One active attestation matches the exact enrolled key | `unlinked`, `linked`, or `revoked` | Attested Identity | `controller_attestation` |
 | The [eligibility guard](#eligibility) passes for `identity_id` | `unlinked` | `identity_id` | `device_claim` |
 | Anything else | `review_required` | `null` | `null` |
+
+An unlinked attestation for a different requested Identity reports
+`review_required`, with null Identity and authority. An existing linked or revoked
+attestation still reports its bound Identity, with account metadata masked when
+the requested Identity differs.
 
 For `device_claim`, `unlinked` means only that this device may start an attempt
 for that Identity. Nothing is verified, reserved, or linked until the same
@@ -311,12 +315,16 @@ coordination files, so the profile directory may need to be writable. Reads use
 committed WAL data rather than an immutable or main-file-only snapshot that could
 miss a key change. Requests use manual
 redirect handling and a ten-second header/body deadline; response bodies are
-limited to 16 KiB. The current client validates the exact version-1 shape and
+limited to 16 KiB. The matched client must validate the exact version-2 shape and
 requested group/device/fingerprint tuple, copying only allowed display fields.
+The old decoder must be replaced before release, without a dual-version fallback.
 
-The planned status replaces that decoder with the exact version-2 shape when
-the matched coordinator and clients ship. It does not add a dual-version
-fallback.
+The store API is `readAccountLinkStatus(signer, config, { identityId })` on both
+SQLite and D1. Its final SQL statement reads source authority, current enrollment,
+tombstones and display metadata together. Committed device claims use historical
+proof, while the current signed enrollment must still match. Create passes the
+trusted optional `expectedIdentityId` pin for either authority kind; the atomic
+store checks repeat the source and Identity constraints, not just HTTP readiness.
 
 Failures return fixed unsupported/unavailable results, never an inferred unlinked
 or Google-required state. Embedded callers must still match the reported Identity
@@ -329,7 +337,7 @@ recheck their current context before displaying account metadata or acting on it
 | --- | --- | --- |
 | Create or finalize | The authenticated, enabled enrolled signer has a verified signature and nonce, but its stored controller review is absent, inactive, or no longer matches, including concurrent enrollment or group changes. For a device-claim request or attempt, the eligibility guard fails instead. | `403 auth_link_review_required` |
 | Create | The attempt ID conflicts with a different immutable create request | `409 auth_link_conflict` (attempt conflict only) |
-| Create (planned) | The requested `identity_id` or `authority` no longer matches the server's evaluation | `403 auth_link_review_required`; no attempt is created |
+| Create | The requested `identity_id` or `authority` no longer matches the server's evaluation | `403 auth_link_review_required`; no attempt is created |
 | Finalize | A matched finalization conflicts with an existing account-link binding, including a revoked tombstone | `409 auth_link_conflict` |
 | Any signed route | Bad signatures or proofs, disabled enrollment, archived group, expiry, unavailable attempt, or another failed guard | Existing generic response; do not reveal controller or account-link state |
 

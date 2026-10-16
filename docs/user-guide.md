@@ -343,17 +343,11 @@ The card starts Google sign-in only when you choose **Link Google account**. Do 
 
 The Viewer and browser must run on the same computer. Account linking requires the Viewer to bind to `localhost`, `127.0.0.1`, or `::1`; wildcard bindings do not expose the account API. An SSH tunnel can show Viewer status on another computer, but its loopback callback reaches that other computer, so linking is unsupported there. Do not copy private sign-in links or use an SSH workaround.
 
-The coordinator must support the signed account-status endpoint and have Google browser authentication enabled. An older coordinator that returns unsupported is not asking for Google; the card cannot start linking against it. An unavailable or unknown status does not mean the Identity is unlinked—check status again.
+The coordinator must support the signed account-status endpoint and have Google browser authentication enabled. For a self-hosted coordinator, its operator separately approves and performs the record-preserving auth-schema apply and deployment before linking is available; this client flow does not perform that upgrade. An older coordinator that returns unsupported is not asking for Google; the card cannot start linking against it. An unavailable or unknown status does not mean the Identity is unlinked—check status again.
 
-For an already enrolled device, the coordinator operator—the person who administers that coordinator—must first review its owner on that device.
+For an active enrolled device with a current Identity that matches coordinator eligibility, choose **Link Google account**, complete Google sign-in, and return to the Viewer. This normal flow needs no administrator credential, review command, enrollment, claim checkbox, or new Identity.
 
-Run the example below with the same `--db-path`, `--config`, `--coordinator` and environment settings (including `CODEMEM_KEYS_DIR`) used to start the Viewer. Otherwise, the command may review a different device or Identity.
-
-```fish
-codemem coordinator review-device-owner "your-group"
-```
-
-Inspect the preview before confirming. Confirmation defaults to **No**. Then use **My Account** to link Google; do not use owner enrollment, reset a profile, create a new Identity, or enter administrator credentials in the Viewer. If devices may use different Identities, inspect each device's existing Identity before linking rather than assuming they match.
+Linking applies only to the current Identity. It does not change device keys, enrollment, grants, or history, and it cannot authorize another device. If the coordinator cannot link the eligible context, ask its operator; do not reset a profile, create an Identity, or use an administrator credential in the Viewer.
 
 Account linking is optional. It does not grant Team or Project access, move an Identity, merge accounts, reassign devices, transfer history, or change existing device keys or enrollments. At one coordinator, one Google account links to one existing Identity, and each Identity links to one account. You cannot replace, unlink, merge, or transfer a link from this card. Choose an account that follows your work policy.
 
@@ -649,9 +643,9 @@ When selected history may already have replicated, all participating owner devic
 
 ### Optional coordinator account linking
 
-This advanced operator flow is off by default. The commands do not configure Google or deploy a coordinator; an operator must first enable optional account linking on the coordinator. Local memory and direct sync do not require Google.
+This is a separate operator workflow for legacy ownership or enrollment. It is not a client onboarding step: an eligible current Identity links Google without an administrator command or credential. The commands do not configure Google or deploy a coordinator; deployment upgrades remain operator work. Local memory and direct sync do not require Google.
 
-Preview the existing device owner before linking. The group name is the coordinator administrative group, not a Team permission or an access grant:
+For a separate operator review, preview the existing device owner. The group name is the coordinator administrative group, not a Team permission or an access grant:
 
 ```fish
 codemem coordinator review-device-owner team-alpha --coordinator "https://coord.example.com" --json
@@ -663,19 +657,15 @@ Without `--json`, the interactive prompt defaults to **No**. Only an operator co
 
 Ambiguous ownership stops the review. If ownership records disappear or change during the prompt, the command stops and requires a fresh preview; it never migrates legacy records automatically.
 
-After a successful review, linking is a separate opt-in step. Reuse the exact `--coordinator`, `--config`, and `--db-path` selections (including `-d`) used for review, and choose the intended Google account in the browser:
+The interactive link command resolves the current configuration or environment Identity and readiness automatically. Use it on the device being linked, then choose the intended Google account in its browser:
 
 ```fish
 codemem coordinator link-account team-alpha --coordinator "https://coord.example.com"
 ```
 
-Add the same `--config` and `--db-path` options only if the review used them.
-Keep `CODEMEM_KEYS_DIR` unchanged when selecting existing device keys.
-Both commands also honor `CODEMEM_SYNC_COORDINATOR_URL`;
-keep that setting unchanged between review and linking.
+Add `--config` or `--db-path` only to select the intended existing configuration or database. Keep `CODEMEM_KEYS_DIR` unchanged when selecting existing device keys. The command also honors `CODEMEM_SYNC_COORDINATOR_URL`.
 
-If linking says this device needs an active owner review, run the review on this
-device with the same group and settings, then retry linking.
+If linking returns `auth_link_review_required`, check the current Identity and coordinator status again. If it still cannot link, ask the coordinator operator; do not run an administrator command or use administrator credentials as a client workaround.
 
 If review conflicts, is revoked, or stops, contact the coordinator operator. A
 rejected link does not replace an existing link; do not create another Identity,

@@ -210,6 +210,109 @@ for (const backend of ["SQLite", "D1"] as const) {
 		).toBe("applied");
 	}
 
+	describe(`${backend} matched V2 create authority`, () => {
+		test("creates a first link directly from the enrolled device without an operator review", async ({
+			f,
+			key,
+			app,
+		}) => {
+			// Arrange
+			const before = snapshot(f, ["coordinator_auth_link_attempts"]);
+			// Act
+			const response = await request(app, key, ROOT, createBody({ authority: "device_claim" }));
+			const payload = await response.json();
+			// Assert: creation is not completion and grants no authority or account binding.
+			expect(response.status).toBe(201);
+			expect(payload).toEqual({
+				status: { attemptId: "attempt-a", state: "pending", expiresAtMs: NOW + 600000 },
+				identity_id: "identity-a",
+				coordinator_id: config.coordinatorId,
+				authority: "device_claim",
+			});
+			expect(rows(f, "coordinator_auth_link_attempts")).toEqual([
+				expect.objectContaining({
+					authority_kind: "device_claim",
+					identity_id: "identity-a",
+					controller_attestation_id: null,
+				}),
+			]);
+			expect(snapshot(f, ["coordinator_auth_link_attempts"])).toEqual(before);
+			// Arrange: preserve the pending row, TTL, proofs, links and audit metadata.
+			const pending = snapshot(f);
+			// Act: repeat the exact create tuple with a fresh signed nonce.
+			const retry = await request(app, key, ROOT, createBody({ authority: "device_claim" }));
+			// Assert: this device's own pending claim must not block its exact retry.
+			expect(retry.status).toBe(200);
+			expect(await retry.json()).toEqual(payload);
+			expect(snapshot(f)).toEqual(pending);
+		});
+		test.for([
+			{ identity_id: undefined },
+			{ authority: undefined },
+			{ identity_id: "" },
+			{ identity_id: " identity-a" },
+			{ identity_id: 7 },
+			{ authority: "unknown" },
+			{ authority: "" },
+			{ unexpected: "field" },
+		])(
+			"rejects invalid V2 create fields %j without an attested fallback",
+			async (change, { f, key, app }) => {
+				// Arrange
+				await authorize(f, key);
+				const before = snapshot(f);
+				// Act
+				const response = await request(app, key, ROOT, createBody(change));
+				// Assert
+				expect(response.status).toBe(400);
+				expect(snapshot(f)).toEqual(before);
+			},
+		);
+		test.for(["source", "Identity", "assignment"])(
+			"denies a stale %s with no attempt",
+			async (change, { f, key, app }) => {
+				// Arrange
+				await authorize(f, key);
+				if (change === "assignment")
+					f.db.prepare("UPDATE enrolled_devices SET identity_id='changed-identity'").run();
+				const before = snapshot(f);
+				let body = createBody();
+				if (change === "source") body = createBody({ authority: "device_claim" });
+				if (change === "Identity") body = createBody({ identity_id: "other-identity" });
+				// Act
+				const response = await request(app, key, ROOT, body);
+				// Assert
+				expect(response.status).toBe(403);
+				expect(await response.json()).toEqual({ error: "auth_link_review_required" });
+				expect(snapshot(f)).toEqual(before);
+			},
+		);
+		test("rechecks first-link eligibility in the winning INSERT after HTTP readiness", async ({
+			f,
+			key,
+			app,
+		}) => {
+			// Arrange
+			let injected = false;
+			const prepare = f.db.prepare.bind(f.db);
+			vi.spyOn(f.db, "prepare").mockImplementation((sql) => {
+				if (!injected && sql.includes("INSERT INTO coordinator_auth_link_attempts")) {
+					injected = true;
+					f.db.exec("UPDATE enrolled_devices SET identity_id='changed-identity'");
+				}
+				return prepare(sql);
+			});
+			// Act
+			const response = await request(app, key, ROOT, createBody({ authority: "device_claim" }));
+			// Assert
+			expect(injected).toBe(true);
+			expect(response.status).toBe(403);
+			expect(await response.json()).toEqual({ error: "auth_link_review_required" });
+			expect(rows(f, "coordinator_auth_link_attempts")).toEqual([]);
+			expect(rows(f, "coordinator_auth_device_claims")).toEqual([]);
+		});
+	});
+
 	describe(`${backend} global revocation authorization`, () => {
 		test("admits a valid real signature before revocation and denies it afterwards", async ({
 			f,

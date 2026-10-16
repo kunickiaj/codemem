@@ -300,6 +300,17 @@ describe("account start authority and lifecycle races", () => {
 	);
 });
 describe("account start eligibility", () => {
+	it("rejects a changed authority instead of falling back to controller linking", async () => {
+		const f = await fixture(); // Arrange: the displayed device eligibility changed.
+		f.readRemoteStatus.mockResolvedValue(
+			remote("unlinked", { authority: "controller_attestation" }),
+		);
+		const response = await f.request(); // Act
+		expect(response.status).toBe(409); // Assert
+		expect(await response.json()).toEqual({ error: "account_context_changed" });
+		expect(f.link).not.toHaveBeenCalled();
+		expect(f.registry.forContext(context.contextId)).toBeNull();
+	});
 	it.each([
 		["review_required", remote("review_required"), "link_not_allowed"],
 		["revoked", remote("revoked"), "link_not_allowed"],

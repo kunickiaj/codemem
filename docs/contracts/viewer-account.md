@@ -43,7 +43,7 @@ viewer restart requires fetching a new session token. A missing or invalid token
 returns `403 account_csrf_invalid`.
 
 A successful session does not mean an account is linked or that the current
-device has passed an operator review.
+device is eligible to link one.
 
 ## Current account status
 
@@ -71,26 +71,23 @@ context removes account metadata and returns `context_changed` instead of attach
 an old response to the new profile.
 
 Google display metadata is returned only for a linked account whose coordinator
-Identity matches the running local Identity. A missing controller review is
-`review_required`, not unlinked. Unsupported, offline and rejected reads do not
-imply that Google is required. `canLink` is true only for a fresh, matching,
-unlinked subject; the broker never publishes an operator review or grants access.
+Identity matches the running local Identity. `canLink` is true only for a fresh,
+matching, unlinked subject authorized by `device_claim` or
+`controller_attestation`; the broker never publishes an operator review or grants
+access. Unsupported, offline, and rejected reads do not imply that Google is required.
 
-### Planned device-claim status
+### Device-claim status
 
-With the planned version-2 coordinator status, the broker sends the running
-Identity as `identity_id` and the view adds `remote.authority`
-(`controller_attestation`, `device_claim`, or `null`). `canLink` also becomes true
-for `unlinked` with `device_claim` authority and a matching Identity. That state
-is eligibility only: the view must not call it verified or linked, and the
-coordinator reserves nothing until the operation finalizes. A linked device-claim
-account is shown as linked by this device and Google sign-in, never as reviewed
-by an admin. There is no fallback to the older status shape; the viewer and
-coordinator ship together.
+Version-2 coordinator status sends the running Identity as `identity_id` and the
+view includes `remote.authority` (`controller_attestation`, `device_claim`, or
+`null`). Device-claim eligibility is not a link: the coordinator reserves nothing
+until finalization. A device-claim account is shown as linked by this device and
+Google sign-in, never as reviewed by an administrator. The viewer and coordinator
+ship together; there is no fallback to the older status shape.
 
-Link operations and viewer startup wiring follow separately. The status broker
-does not initialize a store, migrate a schema, generate keys or change Identity
-assignments. It returns no private browser URLs, tokens or admin credentials.
+Status reads and link operations do not initialize a store, migrate a schema,
+generate keys, or change Identity assignments. Status responses return no private
+browser URLs, tokens, or admin credentials.
 
 ## In-process link lifecycle
 
@@ -129,7 +126,7 @@ read within ten seconds; disconnects stop body reads. Operation routes accept no
 
 | Route | Body and result |
 | --- | --- |
-| `POST /api/account/link-operations` | `{groupId, contextId}`; fresh matching unlinked status and a final context check precede start. Returns `202 {version:1, operation}`. |
+| `POST /api/account/link-operations` | `{groupId, contextId, coordinatorId, authority}`; fresh matching unlinked status and a final context check precede start. Returns `202 {version:1, operation}`. |
 | `GET /api/account/link-operations/:id` | Returns `{version:1, operation, current}` without private URLs. |
 | `POST /api/account/link-operations/:id/browser-url` | `{}`; returns `{version:1, url}` only for the current awaiting-browser context. This is the only HTTP response containing the private URL. |
 | `POST /api/account/link-operations/:id/cancel` | `{}`; aborts idempotently, returning `202` while pending or `200` once terminal. Cancellation can clean up an old context. |
@@ -142,15 +139,14 @@ Identity is unlinked. Context changes return `409` without starting another job.
 
 Errors use fixed codes and never include callback exceptions or private URLs.
 
-Planned device-claim start: the start body becomes `{groupId, contextId,
-identityId, authority}`. The viewer fills `identityId` and `authority` from the
-status it displayed when the user clicks **Link Google**; there is no separate
-claim checkbox or dialog. Start re-reads status and requires the same Identity,
-authority, and complete context before starting. The registry pins both values,
-passes them to the core runtime, and records `authority` in the operation
-snapshot so a later result can be checked against it. A status read or poll
-never starts an operation. Config and environment Identity selection are both
-supported; the existing context pins stop the operation if either changes.
+The viewer supplies the displayed `coordinatorId` and `authority` when the user
+clicks **Link Google account**; there is no separate claim checkbox or dialog.
+Start re-reads status and verifies both against the complete current context. The
+Identity is pinned by `contextId`; the registry passes its expected authority,
+coordinator, and context Identity to the core runtime. Public operation snapshots
+do not record authority. A status read or poll never starts an operation. Config
+and environment Identity selection are both supported; the existing context pins
+stop the operation if either changes.
 
 ## Foreground viewer binding
 
